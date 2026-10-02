@@ -1,0 +1,192 @@
+{
+  "contract": "sac-canon-1",
+  "node": "22.23.1",
+  "icu": "78.2",
+  "unicode": "17.0",
+  "generated": {
+    "decompositionMappings": 13253,
+    "combiningClassEntries": 964,
+    "compositionPairs": 961,
+    "compositionExclusions": 1120
+  },
+  "verification": {
+    "combiningClassPairsChecked": 464166,
+    "corpusCases": 3376,
+    "corpusCasesChangedByNFC": 2061
+  },
+  "singleCodePointDigest": "1234f515bdf9ca19158ad72c132ca78d4629facc5674a7953d1db33fe11a9e23",
+  "digestChecks": [
+    {
+      "name": "vietnamese",
+      "nfdInput": "Tiếng Việt",
+      "nfcInput": "Tiếng Việt",
+      "sha256": "690829f87a103acd5eb5734b27b86ca2fc994ea6cabf6c18285130906fed8419"
+    },
+    {
+      "name": "greek",
+      "nfdInput": "αίσθηση",
+      "nfcInput": "αίσθηση",
+      "sha256": "ad1bc86fa1b4f837a328e08f68b5360e43db692372ba3ea21c5a33505e548318"
+    },
+    {
+      "name": "japanese",
+      "nfdInput": "がぐ",
+      "nfcInput": "がぐ",
+      "sha256": "3b049e5ad86bb5edd7347034df3e0129d0e7fa639de6348c3e21c5b5d34067e5"
+    },
+    {
+      "name": "contract-sentence",
+      "nfdInput": "Summarise the attached contract.",
+      "nfcInput": "Summarise the attached contract.",
+      "sha256": "9ac286d5458ee88b94aba95b6ff41bd8e5f336fdcb82a5653dc46078e836ae1e"
+    },
+    {
+      "name": "hangul",
+      "nfdInput": "한글",
+      "nfcInput": "한글",
+      "sha256": "bd87f9bb68b67d2fa1cb82b6751820e946d5b1316d25d5fd96512fb4be44a2a8"
+    }
+  ],
+  "coverage": {
+    "distinctCodePoints": 3162,
+    "outsideNamedRanges": 1769,
+    "byScript": [
+      {
+        "script": "Latin",
+        "codePoints": 270
+      },
+      {
+        "script": "Latin-Extended-Additional",
+        "codePoints": 245
+      },
+      {
+        "script": "Greek-Extended",
+        "codePoints": 229
+      },
+      {
+        "script": "Arabic",
+        "codePoints": 65
+      },
+      {
+        "script": "Combining-Diacritical-Supplement",
+        "codePoints": 64
+      },
+      {
+        "script": "Kana",
+        "codePoints": 63
+      },
+      {
+        "script": "Cyrillic",
+        "codePoints": 57
+      },
+      {
+        "script": "Hebrew",
+        "codePoints": 56
+      },
+      {
+        "script": "Hangul-Syllables",
+        "codePoints": 44
+      },
+      {
+        "script": "Musical-Symbols",
+        "codePoints": 42
+      },
+      {
+        "script": "Greek",
+        "codePoints": 38
+      },
+      {
+        "script": "Tibetan",
+        "codePoints": 37
+      },
+      {
+        "script": "Syriac",
+        "codePoints": 27
+      },
+      {
+        "script": "Combining-Diacritical-Marks-for-Symbols",
+        "codePoints": 26
+      },
+      {
+        "script": "Devanagari",
+        "codePoints": 19
+      },
+      {
+        "script": "Thai",
+        "codePoints": 16
+      },
+      {
+        "script": "Bengali",
+        "codePoints": 9
+      },
+      {
+        "script": "Tamil",
+        "codePoints": 9
+      },
+      {
+        "script": "Gurmukhi",
+        "codePoints": 8
+      },
+      {
+        "script": "Oriya",
+        "codePoints": 7
+      },
+      {
+        "script": "Kannada",
+        "codePoints": 7
+      },
+      {
+        "script": "Malayalam",
+        "codePoints": 7
+      },
+      {
+        "script": "Hangul-Jamo",
+        "codePoints": 7
+      },
+      {
+        "script": "Lao",
+        "codePoints": 7
+      },
+      {
+        "script": "Adlam",
+        "codePoints": 7
+      },
+      {
+        "script": "Telugu",
+        "codePoints": 5
+      },
+      {
+        "script": "Sinhala",
+        "codePoints": 5
+      },
+      {
+        "script": "Myanmar",
+        "codePoints": 5
+      },
+      {
+        "script": "CJK",
+        "codePoints": 4
+      },
+      {
+        "script": "Ethiopic",
+        "codePoints": 3
+      },
+      {
+        "script": "Gujarati",
+        "codePoints": 2
+      },
+      {
+        "script": "Khmer",
+        "codePoints": 2
+      },
+      {
+        "script": "Mongolian",
+        "codePoints": 1
+      }
+    ]
+  },
+  "scope": {
+    "covers": "every canonical decomposition mapping and every composition pair in the tables, every combination of two in the pairwise check, all Hangul boundary shapes, combining-class reordering, composition exclusions, and seeded multi-mark sequences",
+    "doesNotCover": "Unicode text that is not canonically decomposable or combining, i.e. scripts with no canonical decomposition (CJK, emoji, most of the SMP). Those are NFC-invariant and are covered only at the \"already NFC\" level."
+  }
+}

@@ -1,6 +1,6 @@
 module_bytes=6344880
-compile_and_instantiate_ms=12.504
-run_ms=42.489
+compile_and_instantiate_ms=12.047
+run_ms=40.301
 corpus=classifier-equivalence-v1
 cases=20
 target=js/wasm

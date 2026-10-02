@@ -76,35 +76,44 @@ function passDecompositions() {
 // Pass 2 — canonical combining classes, by observation.
 //
 // Node exposes no CCC property, and Python's unicodedata on this host is Unicode 14.0 while
-// Node is 17.0, so importing CCC values would silently mix versions. Instead the class
-// *order* is observed directly:
+// Node is 17.0, so importing CCC values would silently mix versions. The class *order* is
+// therefore observed directly from canonical ordering, which is the only thing UAX #15 uses
+// the classes for.
 //
-//   probe1 = U+0334 (CCC 1), probe2 = U+0301 (CCC 230), both NFD-stable.
-//   ccc(c) > 1        <=>  NFD(probe1 + c) !== probe1 + c   (a swap happened)
-//   0 < ccc(c) < 230  <=>  NFD(probe2 + c) !== probe2 + c
+// Two probes, both non-starters with different classes:
+//   PROBE_HIGH = U+0345 COMBINING GREEK YPOGEGRAMMENI
+//   PROBE_LOW  = U+0334 COMBINING TILDE OVERLAY
+// The generator asserts against ICU that they really are ordered (NFD(H+L) === L+H), so a
+// Unicode version that changed them stops the generator rather than silently misclassifying.
 //
-// For a code point c whose own NFD is c, the only thing NFD can do to a two-character
-// sequence is reorder it, so those two probes identify exactly the non-starters and split
-// them into "greater than 1" and "less than 230".
+// A code point c is a non-starter exactly when NFD(H + c + L) !== H + c + L:
+//   * if c is a starter it terminates the combining sequence, so all three runs have one
+//     element and nothing can reorder — the string is unchanged;
+//   * if c is a non-starter the three form one run, and since ccc(H) > ccc(L) no input
+//     order [H, c, L] can already be sorted, so something moves.
+// That is exact for every class value, including c equal to one of the probes.
 //
-// The algorithm needs only the ordering and equality of classes, never the UCD's numeric
-// values: canonical ordering is a stable sort by class, and the blocking rule compares two
-// classes. So the table stores a *rank*, and pass 4 proves exhaustively that the ranks
-// reproduce ICU's ordering for every pair of non-starters.
+// Only the ordering and equality of classes matter to the algorithm: canonical ordering is a
+// stable sort by class, and the blocking rule compares two classes. The table therefore
+// stores a *rank*, and pass 4 proves exhaustively that the ranks reproduce ICU's ordering
+// for every pair of non-starters.
 // ---------------------------------------------------------------------------------------
-const PROBE_LOW = 0x0334; // COMBINING TILDE OVERLAY, CCC 1
-const PROBE_HIGH = 0x0301; // COMBINING ACUTE ACCENT, CCC 230
+const PROBE_HIGH = 0x0345;
+const PROBE_LOW = 0x0334;
 
 function passCombiningClasses(nfdStable) {
-  const low = fromCp(PROBE_LOW);
-  const high = fromCp(PROBE_HIGH);
+  const H = fromCp(PROBE_HIGH);
+  const L = fromCp(PROBE_LOW);
+  // The probes must be ordered, or the sandwich test classifies nothing correctly.
+  check(nfd(H + L) === L + H, `probe U+${PROBE_HIGH.toString(16)} does not sort after U+${PROBE_LOW.toString(16)} under ICU`);
+  check(nfd(L + H) === L + H, `probe U+${PROBE_LOW.toString(16)} is not already ordered before U+${PROBE_HIGH.toString(16)} under ICU`);
+  check(nfd(H) === H && nfd(L) === L, 'a probe is not NFD-stable');
+
   const candidates = [];
   for (let cp = 0; cp <= MAX_CP; cp++) {
     if (isSurrogate(cp) || !nfdStable[cp]) continue;
     const s = fromCp(cp);
-    const aboveOne = nfd(low + s) !== low + s;
-    const belowHigh = nfd(high + s) !== high + s;
-    if (aboveOne || belowHigh) candidates.push(cp);
+    if (nfd(H + s + L) !== H + s + L) candidates.push(cp);
   }
   check(
     candidates.includes(PROBE_LOW) && candidates.includes(PROBE_HIGH),
