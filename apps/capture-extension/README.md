@@ -183,14 +183,32 @@ actually held, and reports `enforcement: observation_only` when it is not. Obser
 on blocking; only §7.4's ability to cancel does, and that is now stated rather than silently absent.
 The unit suite covers both modes.
 
-**One residual window, recorded rather than claimed as fixed.** Between `connectNative()` returning a
-port and the browser delivering the disconnect for a host that does not exist, `native.isConnected()`
-is briefly `true`, so an observation emitted in that window is posted into a dead port and counted as
-`emitted` instead of being queued. It was seen once (`emitted: 1`, queue depth 0, no observation
-anywhere) and did not reproduce once the harness gated on the extension's readiness, so it is an
-unreproduced residual rather than a confirmed defect. The robust fix, if wanted, is to stop
-special-casing the connected path in `pipeline.emit()`: always enqueue, and remove an entry only when
-`capture-core` acks it — which is what §3.4 describes and what `native.drain()` already does.
+**The window is closed, and it was worse than a window.** The residual noted in an earlier revision —
+an observation emitted between `connectNative()` returning a port and the browser delivering the
+disconnect for an absent host being posted into a dead port and counted `emitted` — turned out to be
+two defects, and the browser gate caught both.
+
+1. **`connected` meant "a port object was handed out".** The health report therefore claimed
+   `core: connected` for a host that does not exist while `state` was `degraded` — a coverage claim
+   that was simply wrong, and the §15.2/INV-6 failure the gate exists to catch. The native client now
+   distinguishes `port_opened` from `connected`, and only the latter — emitted when a message actually
+   round-trips — marks the channel healthy. `emitted` likewise counts **acks**: `pipeline.emit()` now
+   always enqueues, and an entry leaves the queue only when `capture-core` acknowledges it. There is
+   no connected fast path left to be wrong about.
+2. **The dead host produced a retry loop.** Measured in Edge 154 at **~23,700 failed connects in about
+   four seconds** — instrumented, not inferred: the stack was the port's `onDisconnect` →
+   `handleDisconnect` → counted as `native_unavailable`; `typeof` was `number` and `window.errors` was
+   `0`, so it was a cumulative running count and **not** a signed-16-bit reinterpretation of `32769`.
+   Each connect was followed by a disconnect, the port was dropped, and the next send opened another;
+   work hung off the port-creation event closed the cycle. On a real endpoint that is sustained CPU
+   and log volume for a channel that is simply not there, and §3.5's crash-loop rule is the same rule
+   one process down. The client now backs off (`DEFAULT_CONNECT_COOLDOWN_MS`) after a disconnect,
+   nothing is hung off `port_opened`, and a refusal during the backoff is not counted as a fresh
+   error. The browser check now reports `errors: 2` where it reported `errors: 23739`.
+
+Both are covered by tests that assert the property rather than the sequence: an observation emitted
+against a port that will not answer must end up **queued, not counted**; and 20 observations against a
+dead host must produce a bounded number of connect attempts, not one per observation.
 
 ## Decisions `docs/01-collectors.md` §7 leaves open
 
