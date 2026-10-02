@@ -81,6 +81,7 @@ export function createFakeCore({
         // different bytes than the user typed, while `content_digest` was taken over the original.
         // This fake reproduces both, so the content-identity break cannot come back unnoticed.
         let decoded = null;
+        let digestOk = true;
         if (typeof body.content === 'string' && body.content.length > 0) {
           decoded = decodeBase64Strict(body.content);
           if (decoded === null) {
@@ -89,19 +90,25 @@ export function createFakeCore({
               message: `illegal base64 data in content: ${JSON.stringify(body.content.slice(0, 24))}...`,
             });
           }
-          if (body.content_digest) {
-            // Go's consumer computes its own digest over the decoded bytes. If the two disagree,
-            // the record's digest does not describe its content — reject it here.
-            const computed = await sha256Prefixed(CRYPTO, new Uint8Array(decoded));
-            if (computed !== body.content_digest) {
-              return reply(CORE_TYPE.REFUSAL, id, {
-                reason: REFUSAL.MALFORMED,
-                message: `content_digest ${body.content_digest} does not match the digest of the decoded content ${computed}`,
-              });
-            }
+        }
+
+        // The observation is recorded here, synchronously, so a test can assert on it the moment
+        // the frame was posted. The digest check below is asynchronous (WebCrypto) and can only
+        // turn the *reply* into a refusal — which is where a consumer would notice it too.
+        const record = { type, body, decoded_content: decoded ? new Uint8Array(decoded) : null, digest_ok: null };
+        emitted.push(record);
+
+        if (decoded && body.content_digest) {
+          const computed = await sha256Prefixed(CRYPTO, new Uint8Array(decoded));
+          digestOk = computed === body.content_digest;
+          record.digest_ok = digestOk;
+          if (!digestOk) {
+            return reply(CORE_TYPE.REFUSAL, id, {
+              reason: REFUSAL.MALFORMED,
+              message: `content_digest ${body.content_digest} does not match the digest of the decoded content ${computed}`,
+            });
           }
         }
-        emitted.push({ type, body, decoded_content: decoded ? new Uint8Array(decoded) : null });
         return reply(CORE_TYPE.ACK, id, { detail: 'spooled' });
       }
 

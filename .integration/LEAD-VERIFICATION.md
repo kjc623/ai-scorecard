@@ -135,21 +135,46 @@ component's own suite can only ever confirm its author's model of the world.** E
 catalog, another component's enum. That is also the instruction I gave the verifier.
 
 
-## L4. End-to-end acceptance harness (round 2)
+## L4. End-to-end acceptance harness (round 2, final)
 
 ```
-node tools/verify-all.mjs
+node tools/accept.mjs
 ```
 
-Round-2 state: `device/protocol` PASS (22 tests), `device/capture-spool` PASS, `device/capture-core`
-compiles with core tests passing and `dedup`/`policy` uncovered, `device/classifier-host` FAIL (5
-compile errors in `parser/parser.go`, reported to its owner with the errors verbatim),
-`apps/capture-extension` FAIL (3 of 66 tests — in-progress work by its owner),
-`services/ingest-api` FAIL (`cmd/ingest-api/main.go:19` unused import, reported; the module-path bug
-from round 1 is fixed and the seam check now sees 21 contract fields declared in that tree).
+Nine of thirteen packages pass, zero fail, with the three absences named rather than skipped:
+`contracts/tools` (12 tests), `apps/capture-extension`, `services/query-api` (150 tests),
+`device/protocol` (22), `device/capture-core` (111), `device/capture-spool` (33),
+`device/classifier-host` (88), `services/ingest-api` (156), `contracts/generated` (build is the
+assertion, reported `BLDOK` so it is not miscounted as "no suite"). Missing: `apps/dashboard`,
+`db/tools`, `infra/tools`. `services/content-vault` is no longer missing — it has a module and no
+suite yet, reported `NOTS`.
 
-The harness treats a package with no test files, and a module with no packages, as `NO-TESTS` rather than
-`PASS`, so "green" cannot mean "nothing ran".
+Every structural gate passes: contract codegen drift, seam field check, vocabulary drift, the six
+invariants, and the database suite at **43 assertions, 45 PASS notices, 0 failures**.
+
+**Four harness defects were found and fixed this round**, and every one of them was a way for a
+green result to mean nothing:
+
+- **No per-package timeout.** `capture-core`'s TLS provider deadlocked on a non-reentrant mutex, so
+  `go test ./...` never returned and `node tools/accept.mjs` hung instead of reporting. A gate that
+  cannot fail is worse than one that fails; every package now has a hard budget and `TIMEOUT` is a
+  distinct status.
+- **Temp directories outside the workspace.** The file sandbox denies them, so `TestDiscoverWalksUp`
+  failed with "Access is denied" — a sandbox boundary wearing the costume of a component defect.
+  Runners now get `TMP`/`TEMP` inside the workspace, but *not* inside the repo, because a component
+  that walks up from its temp dir looking for a repository marker would otherwise find this one and
+  change its own verdict.
+- **`contracts/tools` reported MISSING while holding 12 passing tests**, because its suite is
+  `verify.mjs` re-exported from `index.js` and discovery looked only for `*.test.*`. A suite does not
+  have to be named after the runner.
+- **A module with one test-less package was reported as having no suite at all.** `go test ./...`
+  prints `?  cmd/...  [no test files]` next to eight passing packages; the check now requires that
+  *nothing* in the module has tests before it says NO-TESTS.
+
+There is a fifth, still open: the `packages` gate fails while three declared components do not exist,
+which is the honest outcome — "the directory is not there yet" is the state this harness exists to
+make visible — but it means a green `accept.mjs` is not available until dashboard, infra and the
+vault's suite land.
 
 ## L5. Seam check against the contract (round 1; superseded by L7)
 
@@ -170,13 +195,35 @@ Does **not** prove: nesting, optionality or types across a seam. Behavioural fix
 
 ## What is NOT verified at this point
 
-- **No independent integration verification has run.** `.integration/REPORT.md` does not exist yet: the
-  team-member cap (8) has been full since round 1, so the verifier task is created and unowned. Until it
-  runs, every cross-component claim above is the Lead's own, which is exactly the conflict the verifier
-  exists to remove.
-- **No component has been exercised in a browser, on a real device, or against a real cloud.** Chromium is
-  not installed; there is no Azure subscription; there is no cloud KMS. Anything touching those is
-  unverified by construction, and each component's report is expected to say so.
-- **`apps/dashboard`, `services/content-vault` and `infra` have no owner yet** — the same cap.
-- **The classifier's dual-target equivalence and the canonicalisation normaliser are in flight.** Neither
-  result is quoted here until it lands with raw output.
+- **`apps/dashboard`, `infra`, and the content vault's suite are incomplete.** Dashboard and vault
+  were assigned at the end of this round after five early members freed slots; infra has no owner.
+  Until they land, `INV-1` (content crosses only on a per-event grant) and `INV-3` (the dashboard
+  never speaks SQL) stay BLOCKED in `check-invariants.mjs` — not "pass", not "fail", blocked.
+- **No browser, no device, no cloud.** Chromium is not installed; there is no Azure subscription, no
+  cloud KMS, no real system-proxy or trust-store interaction. Four device subsystems sit behind
+  interfaces with fakes: `SystemProxy`, trust-store install/remove, DPAPI/Keychain sealing, and the
+  Windows named-pipe *server* side. Each is named in its component's own report and none is claimed
+  as working.
+- **Two of the seven collection routes had no provider** until mid-round; `proc.detect` now exists
+  (9 tests) and `cli.shim` does not. One route out of seven is unimplemented, and its §3.5 ordering
+  slot is covered only by a recording fake.
+- **The `content` encoding seam was broken** when the verifier found it: the extension sent raw text
+  where `device/protocol` declares `[]byte` (base64). Text payloads failed to decode outright, and
+  text that happened to be valid base64 decoded *silently to different bytes than the user typed*
+  while the digest was computed over the original — a content-identity break. The fix is in flight on
+  the extension side; it is not verified here until the round-trip test runs.
+- **PostgreSQL 16 is the deployment target and 17.11 is what was tested.** Every construct used has a
+  minimum version ≤13, which is an argument, not a run, and no PG16 image exists on this host.
+- **`go test -race` cannot run** (needs cgo; no gcc), so concurrency is covered by concurrent tests
+  rather than by the race detector, in both the spool and the classifier host.
+- **The NFC normaliser does not exist yet** (task-15). Until it does, C3 is unimplemented, and the
+  ruled behaviour is that a device without it emits the *weak* dedup key with `confidence: degraded`
+  — an honest visible undercount rather than a silent one. `services/ingest-api`'s canonicaliser is
+  likewise identity-based and off the request path.
+- **The database's `database/sql` plumbing is unexecuted**: no PostgreSQL wire driver exists offline,
+  so only the statement text (run against the live schema) and the stored procedure's semantics are
+  proven, not the Go code around them.
+- **`.integration/REPORT.md` is the independent verifier's report, not the Lead's.** Where the two
+  disagree, the disagreement is a finding; there is at least one such case this round (the verifier's
+  account of whether `capture-core` completes, which the deadlock explains and which the owner has
+  since confirmed was his bug and his fix).

@@ -291,6 +291,12 @@ function buildCorpus({ decomp, nfdStable, ranks, pairs, excluded }) {
     ['hangul-jamo-then-syllable', 'a jamo followed by a syllable does not recompose', fromCp(T) + fromCp(LVT)],
   ];
   for (const [name, note, input] of hangul) add(name, note, input);
+  // A deterministic sweep of the 11,172 algorithmic syllables, so the algorithmic path is
+  // exercised across the whole range rather than at its edges only.
+  for (let i = 0; i < 40; i++) {
+    const cp = S_BASE + Math.floor((i * S_COUNT) / 40);
+    add(`hangul-sweep-${String(i).padStart(2, '0')}`, `algorithmic syllable U+${cp.toString(16).toUpperCase()}`, fromCp(cp));
+  }
 
   // (c) Combining-class reordering with multiple marks, including equal classes (which must
   // stay in input order) and the classic 230/220/1 ladders.
@@ -415,7 +421,8 @@ function sha256Hex(s) {
 }
 
 function buildTables({ decomp, ranks, pairs, quickRanges }) {
-  const decompKeys = [...decomp.keys()].sort((a, b) => a - b);
+  // Hangul syllables are algorithmic, so they are deliberately absent from the table.
+  const decompKeys = [...decomp.keys()].filter((cp) => !isHangulSyllable(cp)).sort((a, b) => a - b);
   const offsets = [0];
   const data = [];
   for (const cp of decompKeys) {

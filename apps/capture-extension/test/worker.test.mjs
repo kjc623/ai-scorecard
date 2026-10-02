@@ -15,7 +15,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createHarness, settle } from '../test-support/harness.mjs';
+import { createHarness, settle, waitFor } from '../test-support/harness.mjs';
 import { chromeRequest, INVALID_UTF8 } from '../test-support/fake-chrome.mjs';
 import { CHAT_BODY, DRAFT_BODY, STREAMING_RESPONSE } from '../test-support/fixtures.mjs';
 import { COUNTER, CORE_TYPE, REFUSAL, TYPE } from '../src/messages.js';

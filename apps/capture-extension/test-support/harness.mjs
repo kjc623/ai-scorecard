@@ -86,9 +86,32 @@ export function createHarness({ core = {}, capacity = 200, failConnect = false, 
   return { fake, scope, adapter, contentAdapter, content, core: fakeCore, app, crypto };
 }
 
-/** Let queued microtasks (native replies) settle. */
+/**
+ * Let queued work settle: both microtasks and macrotasks, alternating, because the path under test
+ * crosses `await` boundaries (WebCrypto digests, native replies dispatched through a microtask, the
+ * confirmation window). A fixed `setImmediate` count alone was intermittently too short, which made
+ * a passing suite flaky — worth fixing rather than tolerating, because a flaky suite is one a
+ * verifier cannot trust.
+ */
 export async function settle(n = 8) {
-  for (let i = 0; i < n; i++) await new Promise((resolve) => setImmediate(resolve));
+  for (let i = 0; i < n; i++) {
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+}
+
+/**
+ * Wait until `predicate()` is true, or fail loudly. Use this instead of `settle()` wherever a test
+ * asserts on a specific message having arrived: it removes the guesswork about how many turns the
+ * path needs, and it fails with a clear message rather than on a downstream assertion.
+ */
+export async function waitFor(predicate, { timeoutMs = 5000, label = 'condition' } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (predicate()) return true;
+    if (Date.now() > deadline) throw new Error(`waitFor timed out waiting for ${label}`);
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
 }
 
 export { createFakeChrome, createFakeCore, NATIVE_MESSAGE_VERSION };
