@@ -146,12 +146,6 @@ export const DETAIL = Object.freeze({
   UNDECODABLE_CONTENT: 'undecodable_content',
   VERSION_MISMATCH: 'version_mismatch',
   MODE_VIOLATION: 'mode_violation',
-  /**
-   * §7.4/§15.2: this install holds `webRequestBlocking` in its manifest but was not *granted* it, so
-   * it observes normally and cannot cancel. Every unpacked load is in this state, and the browser
-   * says so only in a console message — which is why it needs a name on the wire.
-   */
-  ENFORCEMENT_UNAVAILABLE: 'enforcement_unavailable',
 });
 
 export const DETAILS = Object.freeze(Object.values(DETAIL).filter(Boolean));

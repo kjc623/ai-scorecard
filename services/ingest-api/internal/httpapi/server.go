@@ -25,6 +25,7 @@ import (
 
 	"github.com/shadow-ai-capture/ingest-api/internal/auth"
 	"github.com/shadow-ai-capture/ingest-api/internal/batchguard"
+	"github.com/shadow-ai-capture/ingest-api/internal/contract"
 	"github.com/shadow-ai-capture/ingest-api/internal/ingest"
 )
 
@@ -97,9 +98,12 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			}, "")
 			return
 		}
+		// A read error is the transport's business, not the device's: logged here, described to the
+		// caller only as "unreadable". The device already knows what it sent.
+		s.Logger.Warn("ingest: reading the request body failed", "error", err, "remote", r.RemoteAddr)
 		s.writeError(w, 400, protocol.ReasonSchemaViolation, &protocol.BatchRejectionDetail{
 			Expected: "a readable request body",
-		}, err.Error())
+		}, "the request body could not be read; send it again in full")
 		return
 	}
 
@@ -107,9 +111,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if enc := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Encoding"))); enc == "gzip" {
 		body, err = gunzipBounded(body, s.MaxDecompressedBody)
 		if err != nil {
+			s.Logger.Warn("ingest: decompressing the request body failed", "error", err, "remote", r.RemoteAddr)
 			s.writeError(w, 413, protocol.ReasonOversize, &protocol.BatchRejectionDetail{
 				Expected: "decompressed body at most " + itoa(s.MaxDecompressedBody) + " bytes",
-			}, err.Error())
+			}, "the body could not be decompressed or is over the cap")
 			return
 		}
 	} else if enc != "" && enc != "identity" {
@@ -123,6 +128,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	var batch protocol.EventBatch
 	dec := json.NewDecoder(bytes.NewReader(body))
 	if err := dec.Decode(&batch); err != nil {
+		// Kept verbatim, unlike the two above: this text is derived entirely from the device's own
+		// bytes (encoding/json names the offending character or field), it is how a poison batch is
+		// diagnosed from the device side, and it carries nothing the caller does not already have.
+		// See the note in internal/ingest on Error.Message for the rule this satisfies.
 		s.writeError(w, 400, protocol.ReasonSchemaViolation, &protocol.BatchRejectionDetail{
 			Expected: "the batch envelope of §5.3: schema_version, batch_id, device_sent_at, event_count, events",
 		}, err.Error())
@@ -153,12 +162,22 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var apiErr *ingest.Error
 		if errors.As(err, &apiErr) {
+			// The service's own message is device-facing by construction; its internal cause, if it
+			// has one, is logged here and never sent.
+			if apiErr.Cause != nil {
+				s.Logger.Error("ingest: batch failed with an internal cause",
+					"error", apiErr.Cause, "code", apiErr.Code, "status", apiErr.Status,
+					"batch_id", batch.BatchID, "device_id", principal.DeviceID)
+			}
 			s.writeError(w, apiErr.Status, apiErr.Code, apiErr.Detail, apiErr.Message)
 			return
 		}
-		// A failure the service could not classify is still a machine-readable surface (I3).
+		// A failure the service could not classify is still a machine-readable surface (I3): the
+		// closed code and a sentence the device can act on. The failure itself is logged, not sent —
+		// it can be a driver's text, and a device is an untrusted reader.
 		s.Logger.Error("ingest: unclassified write failure", "error", err, "batch_id", batch.BatchID)
-		s.writeError(w, 503, protocol.ReasonSchemaViolation, nil, err.Error())
+		s.writeError(w, 503, protocol.ReasonSchemaViolation, nil,
+			"the write failed; nothing was committed, so the batch is retryable")
 		return
 	}
 	if s.Guard != nil {
@@ -174,6 +193,11 @@ func (s *Server) writeAuthError(w http.ResponseWriter, err error) {
 	// from the in-transaction re-check of §2.3. A failure path that cannot be told apart from
 	// another is a failure path that reports the wrong cause (I3).
 	switch {
+	case errors.Is(err, ErrBadDevIdentity):
+		// A development-only path, so the message can name the headers; the code stays in §7's
+		// closed set, because a malformed credential is a 401 and nothing else.
+		s.writeError(w, 401, protocol.ReasonRevokedDevice, nil,
+			"admission: the development principal headers must be uuid strings (tenant id and device id)")
 	case errors.Is(err, auth.ErrUnknownTenant):
 		s.writeError(w, 403, protocol.ReasonUnknownTenant, nil, "admission: the authenticated principal's tenant is unknown to this deployment")
 	case errors.Is(err, auth.ErrTenantSuspended):
@@ -264,6 +288,15 @@ func itoa(n int64) string {
 	return string(buf[i:])
 }
 
+// ErrBadDevIdentity is returned when the development headers do not carry uuids.
+//
+// The check exists because the identity a request claims is validated *where it is established*, and
+// this authenticator is an identity source like any other. Without it a typo in a header reached the
+// store, where the device id is bound as a uuid parameter and PostgreSQL answered with a driver
+// error surfaced as a 503 — a database error for what is really a malformed credential. A malformed
+// identifier is an authentication failure: 401, before anything is read or written.
+var ErrBadDevIdentity = errors.New("httpapi: the development principal headers must be uuids")
+
 // DevHeader is a development and verification authenticator. It trusts two headers and is used
 // ONLY when the binary is started with -dev-trust-principal, which also refuses to run without an
 // explicit acknowledgement. It exists so the endpoint can be exercised end to end without
@@ -285,6 +318,11 @@ func (d DevHeader) Authenticate(_ context.Context, r *http.Request) (auth.Princi
 	device := r.Header.Get(d.DeviceHeader)
 	if tenant == "" || device == "" {
 		return auth.Principal{}, auth.ErrNoCredential
+	}
+	// The certificate path validates the same shapes in auth.identityFromCertificate; a header is no
+	// less an identity claim for being a development one.
+	if !contract.IsUUID(tenant) || !contract.IsUUID(device) {
+		return auth.Principal{}, ErrBadDevIdentity
 	}
 	credential := d.CredentialID
 	if credential == "" {

@@ -30,7 +30,7 @@ export const POLICY_SYNC_ALARM = 'capture-policy-sync';
 export const POLICY_SYNC_PERIOD_MINUTES = 15;
 
 /** Build the running extension. Exported so a test can drive the whole thing with a fake adapter. */
-export function bootstrap(adapter, { deviceId = null, version = '0.1.0', capacity = 200 } = {}) {
+export function bootstrap(adapter, { deviceId = null, version = '0.1.0', capacity = 200, nativeTimeoutMs = undefined } = {}) {
   const policy = createPolicyCache();
   const health = createHealthReporter({
     device_id: deviceId || 'unbound',
@@ -48,6 +48,7 @@ export function bootstrap(adapter, { deviceId = null, version = '0.1.0', capacit
 
   const native = createNativeClient({
     adapter,
+    ...(Number.isFinite(nativeTimeoutMs) ? { timeoutMs: nativeTimeoutMs } : {}),
     onEvent: (ev) => {
       if (ev.kind === 'connected') {
         health.onChannelConnected();

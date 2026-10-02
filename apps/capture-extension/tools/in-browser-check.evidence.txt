@@ -1,13 +1,13 @@
 in-browser-check — proving the browser half in a real Chromium browser
-date:     2026-10-02T19:05:07.261Z
+date:     2026-10-02T19:26:43.522Z
 node:     v22.23.1
 package:  C:\Users\kyle\Downloads\architecture\apps\capture-extension
 
 browser:  C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe
 
 browser:  Edg/154.0.4258.48
-cdp port: 52582
-origin:   http://127.0.0.1:52581
+cdp port: 50664
+origin:   http://127.0.0.1:50663
 
 [PASS] check 1: the extension loads and its MV3 service worker registers
         CDP Target.getTargets lists the service worker target: chrome-extension://ileppbadlclnikhkddpliolbgifliffh/background/service-worker.js
@@ -18,12 +18,12 @@ origin:   http://127.0.0.1:52581
         manifest/permission errors in the browser log: none
 
 [PASS] check 2: the webRequest listener observes a real request
-        observed went 0 → 2 for a real POST to http://127.0.0.1:52581/v1/chat/completions
+        observed went 0 → 2 for a real POST to http://127.0.0.1:50663/v1/chat/completions
         proxy signal: the extension's own §4.3 counters, read from the service worker through CDP.
         Sound because the counter is incremented inside the registered listener and nowhere else,
         so a non-zero value means chrome.webRequest delivered the event to our handler in this browser.
         server saw: [{"url":"/","method":"GET","bytes":0},{"url":"/v1/chat/completions","method":"POST","bytes":392},{"url":"/favicon.ico","method":"GET","bytes":0}]
-        counters: {"observed":2,"emitted":0,"skipped_not_generative":1,"blind_tunnelled":0,"not_cooperative":0,"dropped":0,"errors":2}
+        counters: {"observed":2,"emitted":0,"skipped_not_generative":1,"blind_tunnelled":0,"not_cooperative":0,"dropped":0,"errors":33075}
 
 [PASS] check 3: M0 produces an observation carrying no content field
         a real chrome.webRequest body was classified and emitted with has_content=false and no content field
@@ -34,11 +34,11 @@ origin:   http://127.0.0.1:52581
         has_content=false size_bytes=0 unread_reason=undefined
         tool_fingerprint=tf1:jwbafkp3jsvazacqyls7nbgmqu4tyb2h66fdud4uaadadxqdjmaa
 
-[PASS] check 4: the absent native channel degrades rather than breaks
-        capture-core absent + extension degraded, and the page's request completed normally
+[FAIL] check 4: the absent native channel degrades rather than breaks
+        core=connected state=degraded page=completed:200
         the page reported: completed:200
-        health report: core=absent state=degraded collector=capture_extension
-        counters: {"observed":2,"emitted":0,"skipped_not_generative":1,"blind_tunnelled":0,"not_cooperative":0,"dropped":0,"errors":2}
+        health report: core=connected state=degraded collector=capture_extension
+        counters: {"observed":2,"emitted":0,"skipped_not_generative":1,"blind_tunnelled":0,"not_cooperative":0,"dropped":0,"errors":33083}
         queue depth: 1 (held in memory, nothing durable)
         browser logged the native-host lookup: yes
         §3.4: a failed connect is capture-core `absent` plus extension-side `degraded`, never "no observations".
@@ -59,9 +59,9 @@ summary
   PASS            check 1: the extension loads and its MV3 service worker registers
   PASS            check 2: the webRequest listener observes a real request
   PASS            check 3: M0 produces an observation carrying no content field
-  PASS            check 4: the absent native channel degrades rather than breaks
+  FAIL            check 4: the absent native channel degrades rather than breaks
   NOT-OBSERVABLE  check 5: a blocked request is cancelled AND still recorded
-  5 check(s): 4 pass, 0 fail, 1 not observable
+  5 check(s): 3 pass, 1 fail, 1 not observable
 
 NOT VERIFIED BY THIS RUN, stated so it is not mistaken for a pass:
   * check 5 (inline block) — the unpacked load revokes webRequestBlocking; see the check above.

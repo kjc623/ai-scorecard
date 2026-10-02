@@ -25,9 +25,19 @@ import (
 type harness struct {
 	server *Server
 	mem    *store.Memory
+	// logs captures the server's structured log, so a test can assert that what must not reach the
+	// device did reach the operator.
+	logs *bytes.Buffer
 }
 
 func newHarness(t *testing.T, a auth.Authenticator) *harness {
+	return newHarnessWithStore(t, a, nil)
+}
+
+// newHarnessWithStore builds the same server around a caller-supplied store. A nil store means the
+// in-memory one; a test that needs a failure the real store cannot produce (an unclassified write
+// error, for instance) passes its own wrapper.
+func newHarnessWithStore(t *testing.T, a auth.Authenticator, st store.Store) *harness {
 	t.Helper()
 	path, err := contract.Discover(".")
 	if err != nil {
@@ -47,12 +57,16 @@ func newHarness(t *testing.T, a auth.Authenticator) *harness {
 		DeviceKnown: true, CredentialKnown: true,
 		CredentialExpiry: time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC),
 	})
-	svc, err := ingest.New(schema, mem, ingest.DefaultConfig())
+	if st == nil {
+		st = mem
+	}
+	svc, err := ingest.New(schema, st, ingest.DefaultConfig())
 	if err != nil {
 		t.Fatalf("ingest.New: %v", err)
 	}
-	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
-	return &harness{server: New(svc, a, batchguard.New(time.Hour), logger), mem: mem}
+	logs := &bytes.Buffer{}
+	logger := slog.New(slog.NewTextHandler(logs, nil))
+	return &harness{server: New(svc, a, batchguard.New(time.Hour), logger), mem: mem, logs: logs}
 }
 
 func staticAuth() auth.Authenticator {

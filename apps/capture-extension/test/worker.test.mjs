@@ -637,6 +637,74 @@ test('the body lane keeps its filter when blocking is unavailable', async () => 
   assert.equal(h.app.lanes.bodyLaneInstalled, true);
 });
 
+// ── the emit path, and the window the browser exposed ───────────────────────────────────────
+
+/** A port that accepts a post and silently discards it: exactly what Chrome does before the
+ *  disconnect for a missing host has been delivered. It never acks and never disconnects. */
+function blackHolePort() {
+  return {
+    postMessage: () => {},
+    onMessage: { addListener: () => {} },
+    onDisconnect: { addListener: () => {} },
+    disconnect: () => {},
+  };
+}
+
+test('an observation emitted while the channel looks up but cannot deliver ends up QUEUED, not counted emitted', async () => {
+  // The property, not the sequence. `connectNative()` succeeded, so `isConnected()` is true, and
+  // the browser has not yet delivered the disconnect — the window in which the old `emit()` took a
+  // fast path, posted into a dead port, incremented `emitted`, and lost the observation. A counted
+  // `emitted` that was never delivered is a silent undercount, which is the failure this design
+  // exists to make visible.
+  const h = createHarness({ nativeTimeoutMs: 150 });
+  h.fake.chrome.runtime.connectNative = () => blackHolePort();
+  await h.app.start();
+  h.app.applyPolicy({ policy_version: 'b1', bundle: { policy_version: 'b1', default_mode: 'm1' } });
+  await settle();
+
+  assert.equal(h.app.native.isConnected(), true, 'the channel looks up, which is the trap');
+
+  await h.fake.drive('body', chromeRequest({ url: CHAT_URL, headers: { 'content-type': 'application/json' }, body: JSON.stringify(CHAT_BODY) }));
+  await waitFor(() => h.app.queue.size() > 0, { label: 'the observation to be queued' });
+
+  const c = h.app.health.counters.snapshot().counters;
+  assert.equal(c.observed, 1);
+  assert.equal(c.emitted, 0, 'nothing was acknowledged, so nothing is counted as emitted');
+  assert.equal(h.app.queue.size(), 1, 'and the observation is held, not lost');
+  assert.equal(observationFrames(h.core).length, 0, 'the black hole swallowed it: no frame reached a core');
+
+  // Once the send gives up, the entry is still there for the next drain — nothing was consumed.
+  await settle(30);
+  assert.equal(h.app.queue.size(), 1, 'a failed send leaves the entry in place');
+  assert.equal(h.app.health.counters.snapshot().counters.emitted, 0);
+});
+
+test('an observation leaves the queue only when capture-core acks it', async () => {
+  // The other half: with a real channel the entry is enqueued, sent, acked, and only then removed
+  // and counted. `emitted` therefore means "accepted by capture-core", which is what §3.4 and the
+  // protocol's own note about an ack describe.
+  const h = await started();
+  await h.fake.drive('body', chromeRequest({ url: CHAT_URL, headers: { 'content-type': 'application/json' }, body: JSON.stringify(CHAT_BODY) }));
+  await waitFor(() => h.core.observations().length === 1, { label: 'the frame to reach capture-core' });
+  await waitFor(() => h.app.queue.size() === 0, { label: 'the ack to remove the entry' });
+  assert.equal(h.app.queue.stats().delivered_total, 1);
+  assert.equal(h.app.health.counters.snapshot().counters.emitted, 1, 'counted when acked, not when posted');
+  assert.equal(h.app.queue.stats().dropped_total, 0, 'and nothing was dropped on the way');
+});
+
+test('a burst coalesces into at most one drain in flight, and every entry still leaves', async () => {
+  const h = await started();
+  for (let i = 0; i < 5; i++) {
+    await h.fake.drive(
+      'body',
+      chromeRequest({ requestId: `burst${i}`, url: CHAT_URL, headers: { 'content-type': 'application/json' }, body: JSON.stringify(CHAT_BODY) }),
+    );
+  }
+  await waitFor(() => h.core.observations().length === 5, { label: 'all five frames to arrive' });
+  assert.equal(h.app.queue.size(), 0);
+  assert.equal(h.app.health.counters.snapshot().counters.emitted, 5);
+});
+
 // ── the frames themselves ───────────────────────────────────────────────────────────────────
 
 test('every emitted observation frame validates against the protocol\'s own rules', async () => {

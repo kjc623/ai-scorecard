@@ -117,11 +117,19 @@ func (s *Service) Routes() store.RouteTable { return s.routes }
 
 // Error is a batch-level failure, rendered by the transport as §5's common error envelope:
 // { "error": { "code", "detail", "server_time" } }.
+//
+// Message is what the device reads, and it is written by hand for that reader: a device is
+// untrusted, so nothing derived from a driver, a socket or the schema loader belongs in it. Cause
+// carries that internal detail instead — the transport logs it and never sends it. The split exists
+// because one field serving both audiences is how a PostgreSQL error string ends up in a response
+// body, which is what happened before this comment existed.
 type Error struct {
 	Status  int
 	Code    protocol.ReasonCode
 	Detail  *protocol.BatchRejectionDetail
 	Message string
+	// Cause is the internal failure behind a generic Message, if any. Logged, never sent.
+	Cause error
 }
 
 func (e *Error) Error() string {
@@ -130,6 +138,9 @@ func (e *Error) Error() string {
 	}
 	return string(e.Code)
 }
+
+// Unwrap exposes the internal cause, so a caller can still classify a returned *Error with errors.Is.
+func (e *Error) Unwrap() error { return e.Cause }
 
 func batchErr(status int, code protocol.ReasonCode, pointer, expected string) *Error {
 	d := &protocol.BatchRejectionDetail{}
@@ -196,8 +207,14 @@ func (s *Service) Submit(ctx context.Context, p auth.Principal, batch protocol.E
 		}
 		for _, out := range res.Outcomes {
 			if out.Index < 0 || out.Index >= len(results) {
-				return nil, &Error{Status: 500, Code: protocol.ReasonSchemaViolation,
-					Message: fmt.Sprintf("store returned an outcome for index %d, outside the batch", out.Index)}
+				// A server defect, not a device defect: the device gets the closed code and a sentence
+				// that says what to do, and the detail goes to the log through Cause.
+				return nil, &Error{
+					Status:  500,
+					Code:    protocol.ReasonSchemaViolation,
+					Message: "the batch could not be recorded; nothing was committed and the batch is retryable",
+					Cause:   fmt.Errorf("store returned an outcome for index %d, outside a batch of %d", out.Index, len(results)),
+				}
 			}
 			res := protocol.EventResult{
 				EventID:      out.EventID,
@@ -279,6 +296,11 @@ func (s *Service) checkBatchShape(batch protocol.EventBatch) error {
 	}
 	// The protocol package's own validation is the authority for the batch shape; if it disagrees
 	// with the checks above, the batch is reported as a schema violation rather than guessed at.
+	//
+	// Its message goes to the device verbatim, and that is deliberate: it is written by
+	// device/protocol from the batch's own declared shape ("batch carries 3 events, outside 1-500"),
+	// so it is a description of the request rather than an internal detail. The same test is applied
+	// to every message on this path — see the note on Error.Message.
 	if err := batch.Validate(); err != nil {
 		return batchErr(400, protocol.ReasonSchemaViolation, "", err.Error())
 	}
@@ -355,7 +377,12 @@ func (s *Service) validateOne(p auth.Principal, idx int, raw json.RawMessage, re
 	// 4. The contract itself: the generated types decode it, and the schema walk re-derives the
 	//    same verdict while supplying the JSON Pointer and violated constraint §7 asks for.
 	if viol, err := s.schema.ValidateEnvelope(env); err != nil {
-		return verdict{}, batchErr(400, protocol.ReasonSchemaViolation, ptr(""), err.Error())
+		// The loader's error can name an internal schema reference, so the device gets a sentence
+		// about its own event and the detail goes to the log through Cause.
+		e := batchErr(400, protocol.ReasonSchemaViolation, ptr(""),
+			"the envelope could not be validated against the contract schema")
+		e.Cause = err
+		return verdict{}, e
 	} else if viol != nil {
 		detail := &protocol.BatchRejectionDetail{
 			Pointer:  ptr(strings.TrimPrefix(viol.Pointer, "/")),
@@ -549,6 +576,12 @@ func (s *Service) rejection(idx int, eventID string, env *contract.Envelope, rea
 
 // mapStoreError turns a write failure into the §5 common error. A write error is retryable at
 // batch level and nothing has committed (§6), so the device never observes a partial batch.
+//
+// Every message here is written for the device and none is derived from the failure. The one place
+// that used to break that rule is the default branch: it rendered err.Error() into the response, so a
+// driver's text reached an untrusted reader — `invalid input syntax for type uuid: "sha256:aaa…"`
+// told a caller which fields reach the database. The failure now travels in Cause, which the
+// transport logs and never sends.
 func mapStoreError(err error) *Error {
 	switch {
 	case errors.Is(err, store.ErrUnknownTenant):
@@ -562,9 +595,14 @@ func mapStoreError(err error) *Error {
 	case errors.Is(err, store.ErrCredentialUnknown):
 		return batchErr(401, protocol.ReasonRevokedDevice, "", "write re-check: the device credential is not known to this deployment")
 	case errors.Is(err, store.ErrUnknownRoute):
-		return batchErr(503, protocol.ReasonSchemaViolation, "", "ref.route_fidelity changed under the request; retry")
+		return batchErr(503, protocol.ReasonSchemaViolation, "", "ref.route_fidelity changed under the request; nothing was committed, retry")
 	default:
-		return &Error{Status: 503, Code: protocol.ReasonSchemaViolation, Message: "write failure: " + err.Error()}
+		return &Error{
+			Status:  503,
+			Code:    protocol.ReasonSchemaViolation,
+			Message: "the write failed; nothing was committed, so the batch is retryable",
+			Cause:   err,
+		}
 	}
 }
 

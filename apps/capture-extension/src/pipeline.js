@@ -40,6 +40,9 @@ import { computeToolFingerprint } from './tool-fingerprint.js';
 /** Bounded: a service worker can be killed at any time, and a candidate that is never answered must not accumulate. */
 export const MAX_CANDIDATES = 256;
 
+/** How many queued observations one drain pass attempts. */
+export const DRAIN_BATCH = 20;
+
 export function createPipeline({
   adapter,
   policy,
@@ -54,6 +57,9 @@ export function createPipeline({
   let sequence = 0;
   /** @type {Map<string, object>} requestId -> candidate awaiting a response contract (§7.5 Mode B) */
   const candidates = new Map();
+  /** One drain at a time; a burst coalesces instead of stacking overlapping sends. */
+  let drainInFlight = false;
+  let drainAgain = false;
 
   function nextClientId() {
     sequence += 1;
@@ -504,26 +510,52 @@ export function createPipeline({
     return confirmed;
   }
 
+  /**
+   * Emit one observation. §7.1: emission is narrow — a negative match never reaches here.
+   *
+   * **Always enqueue, then deliver.** There is no "send it directly when the channel looks up" path,
+   * and that is deliberate. `native.isConnected()` is true from the moment `connectNative()` returns
+   * a port until the browser delivers the disconnect for a host that does not exist, and an
+   * observation emitted inside that window was posted into a dead port, counted `emitted`, and lost —
+   * a silent undercount, which is the one failure mode this whole design exists to make visible.
+   *
+   * The queue is the only route out. An entry leaves it when `capture-core` acks it (`native.drain`),
+   * so `emitted` means "accepted by capture-core" rather than "handed to a port". That is what §3.4
+   * describes and what `native.go` says an ack is worth.
+   */
   function emit(observation) {
     const payload = protocolBody(observation);
-    // §7.1: emission is narrow. A negative match never reaches here.
-    if (native.isConnected()) {
-      try {
-        native.sendOneWay(TYPE.OBSERVATION, payload);
-        counters.inc(COUNTER.EMITTED);
-        health.markSuccess();
-        if (onEmit) onEmit(observation);
-        return { queued: false };
-      } catch (e) {
-        counters.countError(errorCode(e));
-        health.onChannelAbsent();
-      }
-    }
     // §3.4: bounded, in extension memory only, dropped oldest-first with a counter, merged into
     // the next health report when the channel returns.
     queue.enqueue(TYPE.OBSERVATION, payload, JSON.stringify(payload).length);
     if (onEmit) onEmit(observation);
-    return { queued: true };
+    scheduleDrain();
+    return { queued: true, depth: queue.size() };
+  }
+
+  /**
+   * Deliver what is queued, coalescing a burst into one drain. A drain already running just sets a
+   * flag, so N observations produce at most two passes rather than N overlapping ones, and an entry
+   * that fails keeps its place for the next attempt.
+   */
+  function scheduleDrain() {
+    if (drainInFlight) {
+      drainAgain = true;
+      return;
+    }
+    drainInFlight = true;
+    void Promise.resolve()
+      .then(() => drainQueue(DRAIN_BATCH))
+      .catch(() => {
+        /* drainQueue already counts and reports; a rejection here must not escape a listener */
+      })
+      .finally(() => {
+        drainInFlight = false;
+        if (drainAgain) {
+          drainAgain = false;
+          scheduleDrain();
+        }
+      });
   }
 
   /** Exactly the fields device/protocol/native.go declares for ObservationMessage, and nothing local. */

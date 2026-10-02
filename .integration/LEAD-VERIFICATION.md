@@ -450,6 +450,39 @@ Also still unverified, stated by the script itself: the content script reading a
 `File` (no file is attached in an automated run), a **connected** native channel (no host is
 registered on this host), and Google Chrome specifically.
 
+## L21. Gate 8 went red the same round it was added — and that is the point (round 8)
+
+Immediately after I wired the browser check in as gate 8, the full acceptance run reported:
+
+```
+[PASS] packages ... [PASS] contract ... [PASS] browser?  NO —
+[FAIL] browser (7.1s) - The browser half in a real Chromium
+gates: 8   pass: 7   fail: 1
+```
+
+**Check 4 fails: `core=connected` where it must be `absent`.** With no native messaging host
+registered, the extension's health report claims a connection. Reproduced twice. The page still
+completes `200`, so fail-open is intact — it is the *coverage claim* that is wrong, which is what
+INV-6 exists to prevent: a path that is not working must appear as degraded or absent, never as a
+working connection.
+
+The mechanism is the residual window the extension's owner had already recorded as unreproduced:
+between `connectNative()` handing back a port and the browser delivering the disconnect for a
+missing host, `isConnected()` is true. The fix is the one he proposed and I approved — always
+enqueue, remove only on acknowledgement, so "connected" means a message round-tripped rather than an
+object was handed out. §3.4 describes exactly that, and the special-cased connected path in
+`pipeline.emit()` is the only thing creating the window.
+
+A second signal in the same run: `errors: 32769` (`0x8001`) where earlier runs of the same check
+showed `2`. Either the native path is failing ~32,000 times in a short run — a retry loop, which is
+a defect on a user's machine and not just in the report — or a counter is being reinterpreted as
+signed 16-bit. Untriaged, and it is with the owner.
+
+**Why this is recorded rather than quietly fixed:** the gate was added and immediately failed, which
+is the strongest available evidence that it is doing something. A gate that only ever passes is a
+gate nobody has tested. The acceptance run is red, and that is the correct state while the behaviour
+is wrong.
+
 ---
 
 ## What is NOT verified at this point
