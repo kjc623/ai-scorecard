@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -264,7 +265,144 @@ func runSelftest(cfg Config, log *slog.Logger) error {
 		}
 	}
 
+	// The last step is the one that cannot be faked in-process: the binary is started again as the
+	// native-messaging host a browser would start, with real Chromium frames on its stdin and its
+	// answers read back from its stdout. Everything above ran inside one process; this runs the
+	// actual child-process model.
+	st.section("native-messaging host as a separate process (Chromium's model)")
+	if err := childProcessCheck(st, cfg, work); err != nil {
+		st.failf("child-process native host: %v", err)
+	}
+
 	return st.finish()
+}
+
+// childProcessCheck starts this executable in --native-host mode with the six golden frames framed
+// exactly as Chromium frames them, and decodes what comes back on stdout.
+func childProcessCheck(st *selfTest, cfg Config, work string) error {
+	framesDir, err := findFramesDir()
+	if err != nil {
+		return err
+	}
+	frames, err := frameBundle(framesDir)
+	if err != nil {
+		return err
+	}
+	framesFile := filepath.Join(work, "frames.bin")
+	if err := os.WriteFile(framesFile, frames, 0o600); err != nil {
+		return err
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	childSpool := filepath.Join(work, "child-spool")
+	if err := os.MkdirAll(childSpool, 0o700); err != nil {
+		return err
+	}
+	args := []string{
+		"--native-host",
+		"--spool-dir", childSpool,
+		"--spool-key", filepath.Join(work, "child-spool.key"),
+		"--tenant-id", cfg.TenantID,
+		"--device-id", cfg.DeviceID,
+		"--user-ref", cfg.UserRef,
+		"--bundle", cfg.BundlePath,
+		"--policy-key", cfg.PolicyKey,
+		"--policy-key-id", cfg.PolicyKeyID,
+		// The classifier host was stopped above, so the child must degrade exactly as the parent
+		// did: rules-only, confidence degraded, and no failed submission.
+		"--classifier-address", cfg.ClassifierAddress,
+		"--health-file", "",
+		"--proxy-tls=false",
+		"--proxy-loopback=false",
+		"--log-format", "text",
+	}
+	cmd := exec.Command(exe, args...)
+	cmd.Stdin = bytes.NewReader(frames)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("running %s: %w (stderr: %s)", exe, err, truncate(stderr.String(), 400))
+	}
+
+	responses, err := decodeFrames(stdout.Bytes())
+	if err != nil {
+		return err
+	}
+	acks, refusals := 0, 0
+	for i, resp := range responses {
+		switch resp.Type {
+		case protocol.TypeAck:
+			acks++
+		case protocol.TypeRefusal:
+			refusals++
+		}
+		fmt.Fprintf(st.out, "  child response %d: %-8s %s\n", i+1, resp.Type, summarizeResponse(resp))
+	}
+	st.check(len(responses) == 6, "the child process answered all six frames (got %d)", len(responses))
+	st.check(acks+refusals == len(responses), "every child response was an ack or a typed refusal")
+	fmt.Fprintf(st.out, "  frames file: %s (%d bytes, %d frames)\n", framesFile, len(frames), len(responses))
+	return nil
+}
+
+// frameBundle concatenates every golden case file as real Chromium frames.
+func frameBundle(dir string) ([]byte, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	var buf bytes.Buffer
+	for _, name := range names {
+		raw, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			return nil, err
+		}
+		var c goldenCase
+		if err := json.Unmarshal(raw, &c); err != nil {
+			return nil, fmt.Errorf("%s: %w", name, err)
+		}
+		if err := writeNativeFrame(&buf, compactJSON(c.Frame)); err != nil {
+			return nil, err
+		}
+	}
+	return buf.Bytes(), nil
+}
+
+// decodeFrames reads a stream of Chromium frames and returns the messages in them.
+func decodeFrames(data []byte) ([]protocol.NativeMessage, error) {
+	r := bytes.NewReader(data)
+	var out []protocol.NativeMessage
+	for {
+		payload, err := readNativeFrame(r)
+		if err != nil {
+			if err == io.EOF {
+				return out, nil
+			}
+			return out, err
+		}
+		var msg protocol.NativeMessage
+		if err := json.Unmarshal(payload, &msg); err != nil {
+			return out, err
+		}
+		out = append(out, msg)
+	}
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 // ---------------------------------------------------------------------------------------------

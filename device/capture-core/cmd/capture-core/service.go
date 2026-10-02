@@ -173,7 +173,11 @@ func newService(ctx context.Context, cfg Config, log *slog.Logger) (*service, er
 	sup.Policy = &policyLoader{store: store, path: cfg.BundlePath, reg: s.reg, result: &s.result, log: log}
 	sup.Spool = s.spool
 	sup.ClassifierHost = s.host
-	sup.Loopback = s.broker
+	// Assign only a real provider: a typed-nil interface is not nil, and calling Release on it
+	// would panic the shutdown path (E14 is the path that must never fail).
+	if s.broker != nil {
+		sup.Loopback = s.broker
+	}
 	sup.DrainDeadline = cfg.DrainDeadline
 	// No system proxy and no trust store on this host: those are platform facilities behind
 	// interfaces, and the binary deliberately does not install them (they are NOT VERIFIED).

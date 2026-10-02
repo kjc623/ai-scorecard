@@ -118,10 +118,53 @@ $line = ($r.Output -split "`n" | Where-Object { $_ -match "^(uploaded|shredded)/
 if ($line -ne "shredded/erasure/2/00/true") { throw "lifecycle row is '$line', want shredded/erasure/2/00/true" }
 Emit "content_object lifecycle: $line"
 
-# 6. The one schema gap this service has.
-$r = Invoke-Psql "SELECT COALESCE(to_regclass('ops.retrieval_grant')::text,'absent');"
-Emit "ops.retrieval_grant: $(($r.Output).Trim()) (absent means the retrieval-grant SQL path is NOT VERIFIED; the in-memory implementation is the tested one)"
-Emit "SQLRetrievalGrantDDL: see store/sql.go"
+# 6. ops.retrieval_grant (landed by db): put, read, claim, a second claim, and the trigger that
+#    makes single use structural rather than caller-dependent. Rolled back.
+$grants = @"
+BEGIN;
+INSERT INTO ops.tenant (tenant_id, name, status, residency_region, key_custody, kek_id, ceiling_mode, content_search)
+VALUES ('99999999-9999-4999-8999-999999999995','grants','active','eastus','vendor','kek-g','m3','disabled');
+INSERT INTO ops.retrieval_grant (tenant_id, grant_id, event_id, object_id, submission_id, principal,
+                                 case_reference, second_approver, issued_at, expires_at, raw_digest)
+VALUES ('99999999-9999-4999-8999-999999999995','99999999-9999-4999-8999-99999999999d',
+        '99999999-9999-4999-8999-99999999999e','99999999-9999-4999-8999-99999999999f',
+        '99999999-9999-4999-8999-9999999999a0','analyst@example.com','CASE-1','approver@example.com',
+        now(), now() + interval '5 minutes', 'sha256:$(('ab' * 32))');
+-- The claim the service sends.
+UPDATE ops.retrieval_grant SET used_at = now(), used_by = 'analyst@example.com'
+ WHERE tenant_id='99999999-9999-4999-8999-999999999995'
+   AND grant_id='99999999-9999-4999-8999-99999999999d' AND used_at IS NULL
+RETURNING (used_at IS NOT NULL AND used_by IS NOT NULL)::text;
+-- A second claim through the same guarded statement matches no row.
+SELECT count(*) FROM (
+  UPDATE ops.retrieval_grant SET used_at = now(), used_by = 'someone.else@example.com'
+   WHERE tenant_id='99999999-9999-4999-8999-999999999995'
+     AND grant_id='99999999-9999-4999-8999-99999999999d' AND used_at IS NULL
+  RETURNING 1) x;
+ROLLBACK;
+"@
+$r = Invoke-Psql $grants
+if ($r.Output -notmatch "true" -or $r.Output -notmatch "0") { throw "put/claim/claim-again evidence missing: $($r.Output)" }
+Emit "ops.retrieval_grant: put + claim OK (both used halves set), second guarded claim matched 0 rows"
+
+# 7. An unguarded UPDATE of a redeemed grant is refused by db's trigger.
+$unguarded = @"
+BEGIN;
+INSERT INTO ops.tenant (tenant_id, name, status, residency_region, key_custody, kek_id, ceiling_mode, content_search)
+VALUES ('99999999-9999-4999-8999-999999999996','g2','active','eastus','vendor','kek-g2','m3','disabled');
+INSERT INTO ops.retrieval_grant (tenant_id, grant_id, event_id, object_id, submission_id, principal,
+                                 case_reference, second_approver, issued_at, expires_at, used_at, used_by, raw_digest)
+VALUES ('99999999-9999-4999-8999-999999999996','99999999-9999-4999-8999-9999999999b1',
+        '99999999-9999-4999-8999-99999999999e','99999999-9999-4999-8999-99999999999f',
+        '99999999-9999-4999-8999-9999999999a0','analyst@example.com','CASE-1','approver@example.com',
+        now(), now() + interval '5 minutes', now(), 'analyst@example.com', 'sha256:$(('ab' * 32))');
+UPDATE ops.retrieval_grant SET used_by = 'attacker@example.com'
+ WHERE tenant_id='99999999-9999-4999-8999-999999999996' AND grant_id='99999999-9999-4999-8999-9999999999b1';
+ROLLBACK;
+"@
+$r = Invoke-Psql $unguarded -AllowFail
+if ($r.Code -eq 0) { throw "an unguarded UPDATE of a redeemed grant was ACCEPTED" }
+Emit "unguarded UPDATE of a redeemed grant refused by the retrieval_grant_single_use trigger"
 
 Emit "== all live-schema checks passed"
 Set-Content -Path $Out -Value ($log -join "`n") -Encoding utf8

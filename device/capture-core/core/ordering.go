@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sync"
 	"time"
 
@@ -267,10 +268,20 @@ func (s *Supervisor) proxyAddr(route protocol.Route) string {
 // visibly (§4.1). An error is returned only for the two things shutdown cannot proceed past —
 // nothing here is one, so the return exists for future fatal steps.
 func (s *Supervisor) Shutdown(ctx context.Context) error {
+	// Shutdown must not be the place a defect becomes user-visible. A provider that panics while
+	// being released would otherwise abort the whole shutdown column — leaving the loopback port
+	// bound, which is precisely the failure E14 exists to prevent. The panic is logged loudly and
+	// the column continues.
+	defer func() {
+		if rec := recover(); rec != nil {
+			s.Log.Printf("core: a provider panicked during shutdown; the shutdown column continues: %v", rec)
+		}
+	}()
+
 	// 1. Release the loopback port before anything else (E14: the one path whose failure
 	// breaks the user rather than losing data).
 	s.record(StepReleaseLoopback)
-	if s.Loopback != nil {
+	if s.Loopback != nil && !isNilInterface(s.Loopback) {
 		if r, ok := s.Loopback.(Releaser); ok {
 			if err := r.Release(ctx); err != nil {
 				s.Log.Printf("core: loopback release reported an error; the registry will report it tampered: %v", err)
@@ -334,6 +345,23 @@ func (s *Supervisor) Shutdown(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// isNilInterface reports whether an interface value holds a typed nil pointer. It exists because
+// a typed nil is not equal to nil: a composition that assigns `var b *Broker; sup.Loopback = b`
+// passes a non-nil interface whose method calls dereference a nil receiver. That is how a disabled
+// provider becomes a panic on the shutdown path, and shutdown is the one path that must not fail.
+func isNilInterface(v any) bool {
+	if v == nil {
+		return true
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Ptr, reflect.Interface, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan:
+		return rv.IsNil()
+	default:
+		return false
+	}
 }
 
 // CrashLoopGuard is §3.5's crash policy: a crash is a restart with backoff, and a crash loop —

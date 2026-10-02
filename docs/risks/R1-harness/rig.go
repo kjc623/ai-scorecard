@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -16,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/shadow-ai-capture/device/capture-core/core"
@@ -95,14 +97,46 @@ func freePort() (int, error) {
 
 func loopbackAddr(port int) string { return fmt.Sprintf("127.0.0.1:%d", port) }
 
+// wsaECONNREFUSED is Windows' WSAECONNREFUSED. Go's net package surfaces it as a
+// syscall.Errno inside a *net.OpError, and on Windows it is *not* equal to
+// syscall.ECONNREFUSED, so a typed check has to name both. The message match is the
+// documented fallback for an error that hides its errno.
+const wsaECONNREFUSED = syscall.Errno(10061)
+
 // isRefused reports whether a dial failed because nothing is listening, as opposed to timing
 // out. A release window must produce the first, never the second (§6.2, assumption A7).
 func isRefused(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "refused") || strings.Contains(msg, "actively refused")
+	var errno syscall.Errno
+	if errors.As(err, &errno) && (errno == wsaECONNREFUSED || errno == syscall.ECONNREFUSED) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "refused")
+}
+
+// refusalKind describes how a refusal was recognised, so the transcript shows whether the
+// check was typed (an errno) or fell back to the message.
+func refusalKind(err error) string {
+	if err == nil {
+		return "no error"
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		switch errno {
+		case wsaECONNREFUSED:
+			return fmt.Sprintf("typed errno WSAECONNREFUSED(%d)", uint32(errno))
+		case syscall.ECONNREFUSED:
+			return fmt.Sprintf("typed errno ECONNREFUSED(%d)", uint32(errno))
+		default:
+			return fmt.Sprintf("errno %d (not a refusal)", uint32(errno))
+		}
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "refused") {
+		return "message match"
+	}
+	return "unrecognised error"
 }
 
 // ---------------------------------------------------------------------------------------

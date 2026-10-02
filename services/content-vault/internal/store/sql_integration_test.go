@@ -150,17 +150,18 @@ func TestEveryStatementPreparesAgainstTheLiveSchema(t *testing.T) {
 	_ = out
 }
 
-// TestTheRetrievalGrantTableIsStillMissing records the one schema gap this service has, as a test
-// rather than as a note: if a later migration adds ops.retrieval_grant, this test starts failing
-// and the SQL path can be switched on and verified.
-func TestTheRetrievalGrantTableIsStillMissing(t *testing.T) {
+// TestTheRetrievalGrantTableIsLive is the guard that used to assert the gap. dbuilder landed
+// ops.retrieval_grant (with the two CHECKs this service asked for and a trigger that makes single
+// use structural), so the SQL path is now exercised rather than documented: the three statements
+// prepare, a claim sets both halves of the used marker, a second claim through the guarded
+// statement affects zero rows, and an unguarded UPDATE is refused by the trigger.
+func TestTheRetrievalGrantTableIsLive(t *testing.T) {
 	container := psqlContainer(t)
 	out := psql(t, container, `SELECT COALESCE(to_regclass('ops.retrieval_grant')::text, 'absent');`)
-	if got := strings.TrimSpace(out); got != "absent" {
-		t.Fatalf("ops.retrieval_grant now exists (%s): the retrieval-grant SQL path can be verified — remove the gap note in README.md and exercise put/read/claim", got)
+	if got := strings.TrimSpace(out); got != "ops.retrieval_grant" {
+		t.Fatalf("ops.retrieval_grant is %s: the retrieval-grant SQL path cannot be exercised", got)
 	}
-	t.Log("ops.retrieval_grant is absent as documented; the retrieval-grant SQL path is NOT VERIFIED and the in-memory implementation is the tested one")
-	t.Log("DDL the schema needs:\n" + SQLRetrievalGrantDDL)
+	t.Log("ops.retrieval_grant exists; PUT/READ/CLAIM are listed as Verified statements")
 }
 
 // TestADR0014PairIsUnrepresentable is the constraint the vault's refusals must agree with: a

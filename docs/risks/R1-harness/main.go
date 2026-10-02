@@ -195,12 +195,26 @@ func claimA() {
 	}
 	say("  client sent %d bytes, response %d bytes in %s: %s", len(request), len(resp), elapsed.Round(time.Millisecond), firstLine(string(resp)))
 
+	// The upstream sees two kinds of traffic: the preflight the broker runs before it will bind
+	// (GET on the read-only path, §6.3), and the client's forwarded request. Separating them is
+	// itself evidence: the preflight happened *before* the port was held.
 	recs := up.snapshot()
-	if len(recs) != 1 {
-		verify("a", false, "the upstream received %d requests, want exactly 1", len(recs))
+	var forwarded []recorded
+	preflights := 0
+	for _, r := range recs {
+		line, _ := splitHead(r.raw)
+		if strings.HasPrefix(line, "GET ") {
+			preflights++
+			continue
+		}
+		forwarded = append(forwarded, r)
+	}
+	say("  the upstream saw %d preflight request(s) and %d forwarded request(s)", preflights, len(forwarded))
+	if len(forwarded) != 1 {
+		verify("a", false, "the upstream received %d forwarded requests, want exactly 1", len(forwarded))
 		return
 	}
-	rec := recs[0]
+	rec := forwarded[0]
 	reqLine, sentHeaders := splitHead(request)
 	gotLine, gotHeaders := splitHead(rec.raw)
 	say("  request line as sent     : %s", reqLine)
@@ -291,7 +305,7 @@ func claimB() {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	say("  after the kill, first client error after %s: %v", refusedAfter.Round(time.Millisecond), dialErr)
+	say("  after the kill, first client error after %s: %v [%s]", refusedAfter.Round(time.Millisecond), dialErr, refusalKind(dialErr))
 
 	// The port must be free for whoever owns it next - the upstream, or the user's own server.
 	ln, bindErr := net.Listen("tcp", loopbackAddr(claimed))

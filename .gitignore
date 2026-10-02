@@ -51,3 +51,8 @@ db/evidence/*.log
 # Editor / OS
 .DS_Store
 Thumbs.db
+
+# Selftest work directories: run artifacts, never deliverables. A selftest must leave the tree as
+# it found it; this is the belt to that braces, because one of these files is a spool key.
+.selftest/
+**/.selftest/

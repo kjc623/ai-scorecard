@@ -305,9 +305,9 @@ var Statements = []Statement{
 	{Name: "insert_audit", Purpose: "audit-before-serve; the chain trigger fills the hashes", SQL: SQLInsertAudit, Verified: true},
 	{Name: "put_erasure_receipt", Purpose: "the receipt C34 requires", SQL: SQLPutErasureReceipt, Verified: true},
 	{Name: "last_receipt", Purpose: "link a no_longer_available result to its receipt", SQL: SQLLastReceipt, Verified: true},
-	{Name: "put_retrieval_grant", Purpose: "record a single-use retrieval grant", SQL: SQLPutRetrievalGrant, Verified: false},
-	{Name: "retrieval_grant", Purpose: "read a retrieval grant", SQL: SQLRetrievalGrant, Verified: false},
-	{Name: "claim_retrieval_grant", Purpose: "consume it atomically (UPDATE ... WHERE used_at IS NULL)", SQL: SQLClaimRetrievalGrant, Verified: false},
+	{Name: "put_retrieval_grant", Purpose: "record a single-use retrieval grant", SQL: SQLPutRetrievalGrant, Verified: true},
+	{Name: "retrieval_grant", Purpose: "read a retrieval grant", SQL: SQLRetrievalGrant, Verified: true},
+	{Name: "claim_retrieval_grant", Purpose: "consume it atomically (UPDATE ... WHERE used_at IS NULL)", SQL: SQLClaimRetrievalGrant, Verified: true},
 }
 
 // SQLStore is the database/sql implementation.
