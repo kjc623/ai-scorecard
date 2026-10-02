@@ -1,0 +1,171 @@
+/**
+ * test/golden-frames.test.mjs — the seam the Lead's cross-module harness reads, kept honest from
+ * this side.
+ *
+ * `tools/emit-frames.mjs` builds the golden native-messaging frames that `device/integration`
+ * decodes through the real `device/protocol` Go types. Those frames are built by *this* package's
+ * `observationBody()` and `frame()`, which is the whole point: a fixture that agrees with the Go
+ * types by construction is what let the content-encoding break survive every check on both sides.
+ *
+ * So the generator is a coupling, and this file is the test that keeps it from rotting. Three
+ * properties:
+ *
+ *   1. **the generator still produces six cases**, each decodable with a matching digest — a change
+ *      to `observationBody()` that breaks the seam fails here rather than in someone else's suite;
+ *   2. **the committed golden files still match what the generator produces** — a drift check, so a
+ *      lead who never re-runs the generator still finds out;
+ *   3. **importing the generator writes nothing** — a test must not have a filesystem side effect in
+ *      another component's tree, and the CLI must still work exactly as documented.
+ *
+ * This file also encodes the mutation the Lead used to prove the harness has teeth: sending
+ * `content` raw. If the encoder were removed, the mutation below is what the frames would look like,
+ * and the assertions here show it would be caught.
+ */
+
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { buildCases, emitCases, DEFAULT_OUT } from '../tools/emit-frames.mjs';
+import { decodeContentFrame } from '../src/messages.js';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const PKG = resolve(HERE, '..');
+const REPO_ROOT = resolve(PKG, '..', '..');
+const GOLDEN_DIR = DEFAULT_OUT;
+
+const digestOf = (bytes) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+/** Base64 exactly as `encoding/json` reads a `[]byte`. */
+const jsonByteField = (s) => Buffer.from(s, 'base64').toString('base64') === s;
+
+test('the generator emits six cases, each with a frame the consumer can decode', () => {
+  const cases = buildCases();
+  assert.equal(cases.length, 6, 'the payload classes the seam must cover: ascii, base64-looking, utf8, binary, m0, over-cap');
+  assert.deepEqual(
+    cases.map((c) => c.name),
+    [
+      'text-ascii.json',
+      'text-that-looks-like-base64.json',
+      'text-utf8-multibyte.json',
+      'binary-undecodable.json',
+      'm0-no-content.json',
+      'over-cap-no-bytes.json',
+    ],
+  );
+
+  for (const { name, payload } of cases) {
+    const frame = payload.frame;
+    assert.equal(frame.type, 'observation', `${name}: the frame type is the protocol's`);
+    assert.equal(frame.version, 1, `${name}: the protocol version is carried`);
+    assert.ok(frame.id, `${name}: each frame carries its correlation id`);
+    const body = frame.body;
+
+    // The encoding property, checked the way a Go consumer checks it.
+    if (payload.expects.content_bytes > 0) {
+      assert.equal(typeof body.content, 'string', `${name}: content is a JSON string`);
+      assert.ok(jsonByteField(body.content), `${name}: and it is valid base64, or encoding/json errors out`);
+      const decoded = decodeContentFrame(body.content);
+      assert.equal(decoded.byteLength, payload.expects.content_bytes, `${name}: it decodes to the expected length`);
+      assert.equal(digestOf(decoded), body.content_digest, `${name}: and its digest is the one on the frame`);
+      if (payload.expects.content_text !== undefined) {
+        assert.equal(Buffer.from(decoded).toString('utf8'), payload.expects.content_text, `${name}: byte-identical to what was sent`);
+      }
+    } else {
+      assert.equal('content' in body, false, `${name}: no content field at all`);
+    }
+
+    assert.equal(body.has_content, payload.expects.has_content, `${name}: has_content as declared`);
+    if (payload.expects.content_is_binary) {
+      assert.equal(body.content_is_binary, true, `${name}: the binary marker is carried`);
+    }
+  }
+});
+
+test('the base64-looking case is the silent one: raw text would decode to different bytes without erroring', () => {
+  // The mutation the Lead used to prove the cross-module harness has teeth, reproduced here so this
+  // side of the seam fails too if the encoder is ever removed.
+  const c = buildCases().find((x) => x.name === 'text-that-looks-like-base64.json');
+  const typed = 'aGVsbG8gd29ybGQ=';
+
+  // What the frame sends, and what a consumer sees.
+  const sent = decodeContentFrame(c.payload.frame.body.content);
+  assert.equal(Buffer.from(sent).toString('utf8'), typed, 'the user typed base64 text and that is what arrives');
+
+  // What sending `content` raw would have produced: no error, different bytes, digest now describing
+  // content nobody sent.
+  const raw = Buffer.from(typed, 'base64');
+  assert.equal(raw.toString('utf8'), 'hello world', 'which is why it is silent rather than loud');
+  assert.notDeepEqual([...raw], [...sent]);
+  assert.notEqual(digestOf(raw), c.payload.frame.body.content_digest, 'and the digest would not have described the bytes on the wire');
+
+  // And the loud half, for completeness: ordinary ASCII sent raw is not valid base64 at all.
+  const ascii = buildCases().find((x) => x.name === 'text-ascii.json');
+  const rawAscii = decodeContentFrame('Summarise the Q4 revenue deck for the board.');
+  assert.notDeepEqual([...rawAscii], [...decodeContentFrame(ascii.payload.frame.body.content)]);
+});
+
+test('importing the generator writes nothing — a test must not touch another component\'s tree', () => {
+  // The generator's default output is the Lead's golden directory. Importing it must build cases and
+  // stop; only the CLI writes. Asserted on the module's shape rather than by watching the clock.
+  const before = existsSync(GOLDEN_DIR) ? readdirSync(GOLDEN_DIR).sort() : null;
+  const cases = buildCases();
+  assert.equal(cases.length, 6);
+  const after = existsSync(GOLDEN_DIR) ? readdirSync(GOLDEN_DIR).sort() : null;
+  assert.deepEqual(after, before, 'no file appeared or vanished by importing the module');
+});
+
+test('the CLI writes the same six cases to a directory it is told to use', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'emit-frames-'));
+  try {
+    const out = execFileSync(process.execPath, [join(PKG, 'tools', 'emit-frames.mjs'), tmp], { encoding: 'utf8' });
+    assert.match(out, /wrote 6 golden frame\(s\)/);
+    const written = readdirSync(tmp).sort();
+    assert.equal(written.length, 6);
+    assert.deepEqual(written.sort(), buildCases().map((c) => c.name).sort());
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('the committed golden files still match what the generator produces', { skip: existsSync(GOLDEN_DIR) ? false : 'device/integration/testdata is not present in this checkout' }, () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'emit-drift-'));
+  try {
+    emitCases(tmp);
+    const produced = readdirSync(tmp).sort();
+    const committed = readdirSync(GOLDEN_DIR).filter((f) => f.endsWith('.json')).sort();
+    assert.deepEqual(committed, produced, 'the committed set must be exactly what the generator emits');
+
+    for (const name of produced) {
+      const a = readFileSync(join(tmp, name), 'utf8');
+      const b = readFileSync(join(GOLDEN_DIR, name), 'utf8');
+      assert.equal(
+        b,
+        a,
+        `${name} has drifted from what tools/emit-frames.mjs produces. Re-run: node apps/capture-extension/tools/emit-frames.mjs`,
+      );
+    }
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('the golden frames are the ones the device-side harness decodes', { skip: existsSync(GOLDEN_DIR) ? false : 'device/integration/testdata is not present' }, () => {
+  // A shape check against the real files, so this suite notices if the golden set is replaced by
+  // something hand-written that does not carry the extension's frame structure.
+  for (const file of readdirSync(GOLDEN_DIR).filter((f) => f.endsWith('.json'))) {
+    const payload = JSON.parse(readFileSync(join(GOLDEN_DIR, file), 'utf8'));
+    assert.ok(payload.name, `${file}: names its case`);
+    assert.ok(payload.why, `${file}: says why the case exists`);
+    assert.equal(payload.frame.type, 'observation', `${file}: is an observation frame`);
+    assert.equal(typeof payload.frame.body.has_content, 'boolean', `${file}: carries has_content`);
+    assert.equal(typeof payload.frame.body.tool_fingerprint, 'string', `${file}: carries a tool fingerprint`);
+    if (payload.frame.body.has_content) {
+      assert.ok(jsonByteField(payload.frame.body.content), `${file}: content is valid base64`);
+    }
+  }
+});

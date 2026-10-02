@@ -395,6 +395,12 @@ function keyOf(body) {
   return body?.template ?? body?.source ?? 'unknown';
 }
 
+/** A template request carries its cursor inside `params`; a document carries it at the top level. */
+function cursorOf(body) {
+  const value = body?.params?.cursor ?? body?.cursor;
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
 /**
  * The stub transport for a scenario. It answers by template name, and it answers a request that
  * carries a cursor with the second page — which is what makes "iterate until next_cursor is null"
@@ -404,15 +410,20 @@ function keyOf(body) {
  */
 export function createStubTransport(scenario = 'realistic') {
   const spec = SCENARIOS[scenario] ?? SCENARIOS.realistic;
+  // Cursors this stub has actually handed out. A cursor is opaque and single-iteration: one the
+  // stub never issued gets the API's own answer for it rather than a second page.
+  const issued = new Set();
   return stubTransport({
     routes: [
       {
-        match: (body) => typeof body?.cursor === 'string' && body.cursor.length > 0,
+        match: (body) => cursorOf(body) !== null,
         reply: (body) => {
           const name = keyOf(body);
+          const cursor = cursorOf(body);
+          if (!issued.has(cursor)) return STATE_ENVELOPES.cursor_expired;
+          issued.delete(cursor);
           if (spec.pageTwo?.[name]) return spec.pageTwo[name];
           if (spec.forced) return spec.forced;
-          // A cursor that this stub never issued: the honest answer is the API's own state for it.
           return STATE_ENVELOPES.cursor_expired;
         },
       },
@@ -421,7 +432,9 @@ export function createStubTransport(scenario = 'realistic') {
         reply: (body) => {
           const name = keyOf(body);
           if (spec.forced) return spec.forced;
-          return spec.answers?.[name] ?? REALISTIC[name] ?? STATE_ENVELOPES.refused_shape;
+          const reply = spec.answers?.[name] ?? REALISTIC[name] ?? STATE_ENVELOPES.refused_shape;
+          if (reply?.page?.next_cursor) issued.add(reply.page.next_cursor);
+          return reply;
         },
       },
       {

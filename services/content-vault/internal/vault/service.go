@@ -177,12 +177,9 @@ func (s *Service) PrepareObject(ctx context.Context, req PrepareRequest) (Prepar
 		return PrepareResult{}, err
 	}
 	aad := keys.AAD{TenantID: tenant.TenantID, ObjectID: req.ObjectID, KEKID: tenant.KEKID}
-	wrapped, err := s.opts.Keys.Wrap(ctx, tenant.KEKID, aad, dek)
+	wrapped, err := s.wrapForObject(ctx, tenant, aad, dek)
 	if err != nil {
-		if errors.Is(err, keys.ErrNotImplemented) {
-			return PrepareResult{}, Denialf(DenyCustodyModeUnsupported, "the configured key backend cannot wrap: %v", err)
-		}
-		return PrepareResult{}, fmt.Errorf("vault: wrapping the data key: %w", err)
+		return PrepareResult{}, err
 	}
 	if err := s.audit(ctx, store.AuditEntry{
 		TenantID: tenant.TenantID, ActorType: "service", ActorID: "content-vault",
@@ -937,6 +934,42 @@ func (s *Service) unwrap(ctx context.Context, tenant store.Tenant, obj store.Con
 
 func (s *Service) audit(ctx context.Context, e store.AuditEntry) error {
 	return s.opts.Store.AppendAudit(ctx, e)
+}
+
+// provisioner is implemented by a key store that can create a tenant's first KEK on demand. The
+// local development wrapper does; a Key Vault backend does **not**, because creating a key is a
+// control-plane action with its own audit trail and its own approval (docs/06 §6.2), and a service
+// that silently minted cloud keys would be doing key management behind the operator's back.
+type provisioner interface {
+	EnsureKEK(kekID string) (string, error)
+}
+
+// wrapForObject seals a DEK, provisioning the local backend's key on first use. The retry exists
+// because a fresh deployment (and every test fixture) has a tenant row naming a KEK that the local
+// store has never seen; the alternative — requiring a separate provisioning step before the first
+// grant — is a step a deployment can forget, and forgetting it fails the *upload*, which is the
+// user-visible path.
+func (s *Service) wrapForObject(ctx context.Context, tenant store.Tenant, aad keys.AAD, dek []byte) (keys.Wrapped, error) {
+	wrapped, err := s.opts.Keys.Wrap(ctx, tenant.KEKID, aad, dek)
+	switch {
+	case err == nil:
+		return wrapped, nil
+	case errors.Is(err, keys.ErrUnknownKEK):
+		p, ok := s.opts.Keys.(provisioner)
+		if !ok {
+			return keys.Wrapped{}, Denialf(DenyCustodyModeUnsupported,
+				"the tenant names KEK %q, the configured backend does not hold it, and this backend cannot create keys: %v",
+				tenant.KEKID, err)
+		}
+		if _, perr := p.EnsureKEK(tenant.KEKID); perr != nil {
+			return keys.Wrapped{}, fmt.Errorf("vault: provisioning KEK %q: %w", tenant.KEKID, perr)
+		}
+		return s.opts.Keys.Wrap(ctx, tenant.KEKID, aad, dek)
+	case errors.Is(err, keys.ErrNotImplemented):
+		return keys.Wrapped{}, Denialf(DenyCustodyModeUnsupported, "the configured key backend cannot wrap: %v", err)
+	default:
+		return keys.Wrapped{}, fmt.Errorf("vault: wrapping the data key: %w", err)
+	}
 }
 
 // refuse records a refusal and returns it. §6.3: "a search that returns zero rows is still

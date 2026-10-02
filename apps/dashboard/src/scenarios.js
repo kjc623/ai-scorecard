@@ -15,14 +15,18 @@ import { createStubTransport, SCENARIOS, SCENARIO_NAMES } from './fixtures.js';
  */
 export function scenarioTransport(initial = 'realistic') {
   let current = SCENARIO_NAMES.includes(initial) ? initial : 'realistic';
+  // One stub per scenario, kept across requests: the stub tracks the cursors it has issued, and a
+  // stub rebuilt per request would forget them and answer every page two with cursor_expired.
+  let stub = createStubTransport(current);
   return Object.freeze({
     async send(body) {
-      return createStubTransport(current).send(body);
+      return stub.send(body);
     },
     /** Point the stub at another scenario. Returns the new one. */
     setScenario(name) {
-      if (!SCENARIO_NAMES.includes(name)) return current;
+      if (!SCENARIO_NAMES.includes(name) || name === current) return current;
       current = name;
+      stub = createStubTransport(current);
       return current;
     },
     scenario() {

@@ -1,0 +1,12 @@
+﻿goos: windows
+goarch: amd64
+pkg: github.com/shadow-ai-capture/device/canon
+cpu: AMD Ryzen 9 5900XT 16-Core Processor           
+BenchmarkNFC1KBPrompt-32                 	  123217	      2894 ns/op	 353.83 MB/s	       0 B/op	       0 allocs/op
+BenchmarkNFC1KBPromptDecomposed-32       	    8750	     44487 ns/op	  23.02 MB/s	    5120 B/op	       2 allocs/op
+BenchmarkNFC64KBDocument-32              	    1062	    344456 ns/op	 190.26 MB/s	       0 B/op	       0 allocs/op
+BenchmarkNFC64KBDocumentDecomposed-32    	     133	   2751192 ns/op	  23.82 MB/s	  327680 B/op	       2 allocs/op
+BenchmarkNFC64KBCombiningMarks-32        	     162	   2296277 ns/op	  42.52 MB/s	  630786 B/op	       3 allocs/op
+BenchmarkNFCASCII-32                     	  458166	       740.2 ns/op	1383.45 MB/s	       0 B/op	       0 allocs/op
+PASS
+ok  	github.com/shadow-ai-capture/device/canon	3.036s

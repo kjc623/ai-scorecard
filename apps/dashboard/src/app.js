@@ -185,7 +185,7 @@ const NAV_ITEMS = SCREENS.map((s) => ({ id: s.id, label: s.label, question: s.qu
  * @param {string} [input.scenario] one of SCENARIO_NAMES; ignored when `api` is supplied
  * @param {object} [input.api]      a real api, e.g. over httpTransport
  */
-export function boot({ document, scenario = 'realistic', api } = {}) {
+export async function boot({ document, scenario = 'realistic', api } = {}) {
   const root = document.getElementById('app');
   const nav = document.getElementById('nav');
   // One dashboard for the whole session, so the coverage strip persists across navigation: the
@@ -208,8 +208,11 @@ export function boot({ document, scenario = 'realistic', api } = {}) {
     root.innerHTML = renderScreen(view, shell);
   }
 
-  document.addEventListener('hashchange', () => { void render(); });
-  void render();
+  // The handler returns the render promise. A browser ignores a listener's return value, so this
+  // costs nothing there; it means a test can await a navigation and read the finished page rather
+  // than racing it.
+  document.addEventListener('hashchange', render);
+  await render();
 
   return { render, dashboard };
 }

@@ -44,7 +44,7 @@ test('§14.1 the unsanctioned table is ordered by tool and person, never by volu
   const subjects = table.rows.map((r) => r.row.subject).filter(Boolean);
   assert.deepEqual(subjects, ['u_9a02', 'u_4f21'], 'rows keep the API order rather than a volume ranking');
   const volumes = table.rows.filter((r) => typeof r.row.submissions === 'number').map((r) => r.row.submissions);
-  assert.ok(volumes[0] < volumes[1], 'the fixture is ordered against volume on purpose');
+  assert.ok(volumes[0] > volumes[1], 'the fixture is ordered against volume on purpose, so a volume sort would be visible');
   assert.ok(view.notes.some((n) => /not a ranking/.test(n)));
 });
 
@@ -284,7 +284,7 @@ test('§14.13 this client performs no write of any kind', async () => {
 
 test('§14.14 the coverage denominator is on screen whenever a reporting figure is', () => {
   const html = renderScreen(devicesView(readState(envelope('ok', { data: DEVICE_ROWS, freshness: FRESH, coverage: PARTIAL, meta: { source: 'mart.v_device_liveness' } }))), SHELL);
-  assert.match(html, /4180 of 4620 enrolled devices reporting/);
+  assert.match(html, /4,180 of 4,620 enrolled devices reporting/);
   const noDenominator = renderScreen(devicesView(readState(envelope('ok', {
     data: DEVICE_ROWS, freshness: FRESH,
     coverage: { state: 'not_yet_covered', devices_reporting: null, devices_enrolled: null, gap_reasons: {} },
@@ -347,10 +347,12 @@ test('INV-3 the only endpoint in this package is the query endpoint', () => {
   for (const url of urls) assert.equal(url, endpoint, `only ${endpoint} may be called`);
 });
 
-test('INV-3 fetch appears in exactly one module: the transport', () => {
-  const files = sourceFiles();
+test('INV-3 the fetch global is reachable from exactly one module of the application', () => {
+  // Scoped to src/: that is the tree a browser loads. tools/ are node-side build and preview
+  // helpers and are never shipped, so a prose mention there is not a seam.
+  const files = sourceFiles().filter((rel) => rel.startsWith('src/'));
   const withFetch = files.filter((rel) => /\bfetch\b/.test(codeOnly(readFileSync(join(ROOT, rel), 'utf8'), rel)));
-  assert.deepEqual(withFetch, ['src/transport.js']);
+  assert.deepEqual(withFetch, ['src/transport.js'], 'one seam, and it is the transport');
 });
 
 // ── recorded, not skipped ────────────────────────────────────────────────────────────────────

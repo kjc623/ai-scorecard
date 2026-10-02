@@ -226,24 +226,35 @@ func (m *Memory) searchText(_ context.Context, q SearchQuery) ([]SearchHit, erro
 }
 
 // matchUnit applies one of the three closed forms. It returns a bounded highlighted snippet.
+//
+// The terms form receives the *sanitised* tsquery text the service built (`a <-> b & c`), not the
+// analyst's raw input, and this double interprets the two operators that text can contain: `&` is
+// conjunction and `<->` is adjacency. That is a deliberate approximation of
+// `to_tsvector('simple', body) @@ to_tsquery('simple', text)` — whole-word matching, no stemming,
+// no stopwords — and sql_integration_test.go checks the approximation against the real database
+// rather than against my reading of it.
 func matchUnit(q SearchQuery, u SearchUnit) (string, float64, bool) {
 	switch q.Form {
 	case FormTerms:
-		terms := queryTerms(q.Text)
-		if len(terms) == 0 {
+		if strings.TrimSpace(q.Text) == "" {
 			return "", 0, false
 		}
-		lower := strings.ToLower(u.Body)
-		matched := 0
-		for _, t := range terms {
-			if strings.Contains(lower, t) {
-				matched++
+		parts := strings.Split(q.Text, " & ")
+		words := make([]string, 0, len(parts))
+		for _, part := range parts {
+			p := strings.TrimSpace(part)
+			if p == "" {
+				continue
 			}
+			if !matchTsqueryPart(u.Body, p) {
+				return "", 0, false
+			}
+			words = append(words, strings.Split(p, " <-> ")...)
 		}
-		if matched != len(terms) {
+		if len(words) == 0 {
 			return "", 0, false
 		}
-		return highlight(u.Body, terms, 240), float64(matched) / float64(len(terms)), true
+		return highlight(u.Body, words, 240), 1, true
 	case FormSubstring:
 		if q.Text == "" || !strings.Contains(strings.ToLower(u.Body), strings.ToLower(q.Text)) {
 			return "", 0, false
@@ -260,39 +271,102 @@ func matchUnit(q SearchQuery, u SearchUnit) (string, float64, bool) {
 	}
 }
 
-// queryTerms splits a match expression into terms, honouring double-quoted phrases. PostgreSQL's
-// to_tsquery syntax is richer; the vault builds the SQL query text from the same terms, so the
-// double and the database see the same shape (§15.3's "term or phrase" row).
-func queryTerms(q string) []string {
-	var out []string
-	var cur strings.Builder
-	inQuote := false
-	flush := func() {
-		t := strings.TrimSpace(cur.String())
-		cur.Reset()
-		if t != "" && !strings.EqualFold(t, "and") && !strings.EqualFold(t, "or") {
-			out = append(out, strings.ToLower(t))
+// matchTsqueryPart matches one conjunction part: a single term, or a `<->` chain requiring the
+// words to appear in order and adjacent.
+func matchTsqueryPart(body, part string) bool {
+	words := strings.Split(part, " <-> ")
+	for i := range words {
+		words[i] = strings.TrimSpace(words[i])
+		if words[i] == "" {
+			return false
 		}
 	}
-	for i := 0; i < len(q); i++ {
-		c := q[i]
-		switch {
-		case c == '"':
-			if inQuote {
-				flush()
-				inQuote = false
-			} else {
-				flush()
-				inQuote = true
+	if len(words) == 1 {
+		return hasWord(body, words[0])
+	}
+	for _, pos := range wordPositions(body, words[0]) {
+		at := pos + len(words[0])
+		ok := true
+		for _, w := range words[1:] {
+			next := nextWord(body, at)
+			if next != w {
+				ok = false
+				break
 			}
-		case (c == ' ' || c == '\t') && !inQuote:
-			flush()
-		default:
-			cur.WriteByte(c)
+			at += len(next)
+			// Skip the single separator run between adjacent tokens.
+			for at < len(body) && !isWordByte(lowerByte(body[at])) {
+				break
+			}
+			at = skipSeparators(body, at)
+		}
+		if ok {
+			return true
 		}
 	}
-	flush()
+	return false
+}
+
+func lowerByte(b byte) byte {
+	if b >= 'A' && b <= 'Z' {
+		return b + 'a' - 'A'
+	}
+	return b
+}
+
+// skipSeparators advances past one run of non-word bytes, which is what `<->` allows between two
+// tokens: "wire-transfer" and "wire transfer" both satisfy `wire <-> transfer`.
+func skipSeparators(body string, at int) int {
+	// A word boundary must be crossed, and only whitespace or punctuation may be crossed:
+	// "wire and transfer" therefore does not satisfy the adjacency operator.
+	for at < len(body) && !isWordByte(lowerByte(body[at])) {
+		if body[at] == ' ' || body[at] == '\t' || body[at] == '-' || body[at] == '_' || body[at] == '.' {
+			at++
+			continue
+		}
+		return at // some other punctuation: stop here rather than skipping it
+	}
+	return at
+}
+
+func isWordByte(b byte) bool {
+	return b == '_' || b >= '0' && b <= '9' || b >= 'a' && b <= 'z'
+}
+
+func hasWord(body, word string) bool { return len(wordPositions(body, word)) > 0 }
+
+// wordPositions returns the byte offsets at which a word appears as a whole token.
+func wordPositions(body, word string) []int {
+	lower := strings.ToLower(body)
+	var out []int
+	for i := 0; i+len(word) <= len(lower); i++ {
+		if lower[i:i+len(word)] != word {
+			continue
+		}
+		before := i == 0 || !isWordByte(lower[i-1])
+		after := i+len(word) == len(lower) || !isWordByte(lower[i+len(word)])
+		if before && after {
+			out = append(out, i)
+		}
+	}
 	return out
+}
+
+// nextWord returns the token beginning at the next word byte after at, or "" at the end.
+func nextWord(body string, at int) string {
+	lower := strings.ToLower(body)
+	i := at
+	for i < len(lower) && !isWordByte(lower[i]) {
+		i++
+	}
+	if i >= len(lower) {
+		return ""
+	}
+	j := i
+	for j < len(lower) && isWordByte(lower[j]) {
+		j++
+	}
+	return lower[i:j]
 }
 
 // highlight returns a bounded window of the body with the matched terms marked, mirroring

@@ -28,3 +28,4 @@ import './test/attachments.test.mjs';
 import './test/content-script.test.mjs';
 import './test/content-roundtrip.test.mjs';
 import './test/worker.test.mjs';
+import './test/golden-frames.test.mjs';

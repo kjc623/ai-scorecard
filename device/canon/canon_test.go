@@ -50,9 +50,14 @@ type metaFile struct {
 		CombiningClassPairsChecked int `json:"combiningClassPairsChecked"`
 		CorpusCases                int `json:"corpusCases"`
 		CorpusCasesChangedByNFC    int `json:"corpusCasesChangedByNFC"`
+		PairCrossProductCases      int `json:"pairCrossProductCases"`
 	} `json:"verification"`
-	SingleCodePointDigest string `json:"singleCodePointDigest"`
-	DigestChecks          []struct {
+	SingleCodePointDigest  string   `json:"singleCodePointDigest"`
+	PairSet                []uint32 `json:"pairSet"`
+	PairCrossProductDigest string   `json:"pairCrossProductDigest"`
+	NonStarterSet          []uint32 `json:"nonStarterSet"`
+	NonStarterPairDigest   string   `json:"nonStarterPairDigest"`
+	DigestChecks           []struct {
 		Name     string `json:"name"`
 		NFDInput string `json:"nfdInput"`
 		NFCInput string `json:"nfcInput"`
@@ -236,6 +241,74 @@ func TestExhaustiveSingleCodePointDigest(t *testing.T) {
 			got, meta.SingleCodePointDigest)
 	}
 	t.Logf("all 1,112,064 code points agree with node: %s", got)
+}
+
+// TestPairCrossProductDigest is the systematic companion to the single-code-point digest:
+// both implementations hash NFC of every ordered pair drawn from a 256-code-point sample of
+// everything the algorithm reacts to — non-starters, excluded characters, and both halves of
+// every composition pair. Single code points are covered exhaustively; this covers ordered
+// pairs by construction rather than by random sampling.
+func TestPairCrossProductDigest(t *testing.T) {
+	_, _, meta := loadCorpus(t)
+	if len(meta.PairSet) != 256 {
+		t.Fatalf("pair set has %d code points, want 256", len(meta.PairSet))
+	}
+	h := sha256.New()
+	var pair [2]rune
+	buf := make([]byte, 0, 8)
+	for _, a := range meta.PairSet {
+		for _, b := range meta.PairSet {
+			pair[0], pair[1] = rune(a), rune(b)
+			buf = buf[:0]
+			for _, r := range pair {
+				buf = utf8.AppendRune(buf, r)
+			}
+			got, err := NFC(buf)
+			if err != nil {
+				t.Fatalf("NFC(U+%04X U+%04X): %v", a, b, err)
+			}
+			h.Write(got)
+			h.Write([]byte{0x1f})
+		}
+	}
+	got := hex.EncodeToString(h.Sum(nil))
+	if got != meta.PairCrossProductDigest {
+		t.Fatalf("pair cross-product digest over %d ordered pairs\n got %s\nwant %s (node)",
+			len(meta.PairSet)*len(meta.PairSet), got, meta.PairCrossProductDigest)
+	}
+	t.Logf("%d ordered pairs agree with node", len(meta.PairSet)*len(meta.PairSet))
+}
+
+// TestAllNonStarterPairsDigest is the exhaustive check on the one table that is derived
+// rather than transcribed. Both implementations hash NFC of every ordered pair of
+// non-starters — all 929,296 of them — so a single misclassified combining class shows up
+// here even if no corpus case happens to exercise that pair.
+func TestAllNonStarterPairsDigest(t *testing.T) {
+	_, _, meta := loadCorpus(t)
+	if len(meta.NonStarterSet) < 900 {
+		t.Fatalf("non-starter set has %d entries, want the ~964 the tables were built from", len(meta.NonStarterSet))
+	}
+	h := sha256.New()
+	buf := make([]byte, 0, 8)
+	for _, a := range meta.NonStarterSet {
+		for _, b := range meta.NonStarterSet {
+			buf = buf[:0]
+			buf = utf8.AppendRune(buf, rune(a))
+			buf = utf8.AppendRune(buf, rune(b))
+			got, err := NFC(buf)
+			if err != nil {
+				t.Fatalf("NFC(U+%04X U+%04X): %v", a, b, err)
+			}
+			h.Write(got)
+			h.Write([]byte{0x1f})
+		}
+	}
+	got := hex.EncodeToString(h.Sum(nil))
+	if got != meta.NonStarterPairDigest {
+		t.Fatalf("non-starter pair digest over %d ordered pairs\n got %s\nwant %s (node)\nAt least one combining class is ranked wrongly.",
+			len(meta.NonStarterSet)*len(meta.NonStarterSet), got, meta.NonStarterPairDigest)
+	}
+	t.Logf("all %d ordered non-starter pairs agree with node", len(meta.NonStarterSet)*len(meta.NonStarterSet))
 }
 
 // TestGoldenDigestPrecomposedVsDecomposed is the property dedup_key actually depends on: the

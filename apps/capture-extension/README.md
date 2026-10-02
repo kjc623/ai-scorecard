@@ -30,6 +30,10 @@ background/
   service-worker.js        MV3 entry. Wiring only: policy, queue, health, lanes, alarms, relay.
 content/
   content-script.js        Isolated-world entry. Owns the File; renders §7.4's confirmation.
+tools/
+  emit-frames.mjs          Emits the golden native-messaging frames device/integration consumes,
+                           built by this package's own frame code. `buildCases()` is exported so
+                           the suite can build them without touching the Lead's golden directory.
 src/
   adapter.js               THE SEAM. Names the whole assumed chrome.* surface. Every other module
                            takes an adapter; nothing else calls chrome.* (`contract.test.mjs` greps).
@@ -48,9 +52,35 @@ src/
   tool-fingerprint.js      §8.1's tf1: fingerprint from the route-independent signal vector.
   attachments/files.js     Page-context File registry (metadata at selection, bytes at send).
   attachments/sender.js    Manifest-then-chunks transfer, refusal before any byte.
-test/                      The suite: 187 tests.
+test/                      The suite: 193 tests, no browser required.
 test-support/              Fake chrome, fake capture-core, harness, fixtures. Not tests themselves.
 ```
+
+## The cross-component seam
+
+`tools/emit-frames.mjs` builds six golden native-messaging frames using this package's own
+`observationBody()` and `frame()`, and `device/integration` decodes them through the real
+`device/protocol` Go types and drives one into the real spool. That coupling is deliberate: a fixture
+that agrees with the Go types by construction is exactly how the content-encoding break survived every
+check on both sides, so the frames must come from the code that ships.
+
+`test/golden-frames.test.mjs` keeps that coupling honest from this side. It asserts that the generator
+still emits six decodable cases, that importing it writes nothing, that the CLI writes where it is
+told, and — a drift check — that the committed golden files still match what the generator produces.
+If you change `observationBody()` or `frame()`, that test fails and names the fix:
+
+```powershell
+node apps/capture-extension/tools/emit-frames.mjs
+```
+
+## What happens to an observation after it leaves here
+
+Nothing in this package mints an envelope. It hands `capture-core` an `ObservationMessage` and stops:
+the core mints the envelope (it holds device identity, the effective mode and the spool sequence),
+spools it, and the spool drains to `ingest-api`. [`device/integration/device_path_test.go`](../../device/integration/device_path_test.go)
+is the readable description of that path, including the two properties this package cannot test from
+inside a browser: that M0 never reaches the content reader or the classifier, and that the spooled
+payload is a contract-shaped envelope with no `received_at`.
 
 ## Why `run-tests.mjs` exists
 

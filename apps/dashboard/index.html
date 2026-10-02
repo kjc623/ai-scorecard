@@ -450,6 +450,7 @@ function formatDuration(fromIso, toIso) {
 //   * `coverage_degraded` always names the gap and always carries the enrolled denominator.
 
 
+
 /** Keys that are part of a row's envelope rather than its data. */
 const SYSTEM_ROW_KEYS = Object.freeze([
   'result_state', 'reason', 'k', 'suppressed_measures', 'bucket', 'snapshot_day',
@@ -553,7 +554,7 @@ function coverageText(coverage) {
   if (reporting === null || reporting === undefined || enrolled === null || enrolled === undefined) {
     return { text: 'Coverage denominator unavailable', state, gaps };
   }
-  const base = `${reporting} of ${enrolled} enrolled devices reporting`;
+  const base = `${formatCount(reporting)} of ${formatCount(enrolled)} enrolled devices reporting`;
   return {
     text: state === 'partial' ? `${base} · gaps in ${gaps.length} categor${gaps.length === 1 ? 'y' : 'ies'}` : base,
     state,
@@ -801,12 +802,32 @@ function isObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-/** An ISO-8601 UTC instant. Local times are refused rather than silently reinterpreted. */
+/**
+ * An ISO-8601 instant, normalised to UTC.
+ *
+ * The wire format is `…Z` and only `…Z`; the API refuses anything else. An offset (`+02:00`) is
+ * accepted here and converted, because a browser that hands back what a human typed should not
+ * fail when the same instant was written a different way. A bare date or a time with no offset is
+ * refused: both are ambiguous, and guessing a timezone for an analyst's window is exactly the kind
+ * of silent reinterpretation this DSL exists to avoid.
+ */
 function isoUtc(value) {
-  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$/.test(value)) {
-    throw new DashboardQueryError('bad_window', `"${String(value)}" is not an ISO-8601 UTC instant.`);
+  if (typeof value !== 'string') {
+    throw new DashboardQueryError('bad_window', `"${String(value)}" is not an ISO-8601 instant.`);
   }
-  return new Date(value).toISOString();
+  const utc = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$/;
+  const offset = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?[+-]\d{2}:\d{2}$/;
+  if (!utc.test(value) && !offset.test(value)) {
+    throw new DashboardQueryError(
+      'bad_window',
+      `"${value}" is not an ISO-8601 instant with an explicit offset. Use 2026-09-24T00:00:00Z.`,
+    );
+  }
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) {
+    throw new DashboardQueryError('bad_window', `"${value}" is not a real instant.`);
+  }
+  return new Date(ms).toISOString();
 }
 
 /** A window from a named preset, anchored at `now` so the label and the request cannot disagree. */
@@ -1443,8 +1464,8 @@ const REALISTIC = Object.freeze({
   }),
   q2_unsanctioned_users: ok({
     data: [
-      { bucket: DAY, tool: 'claude_web', subject: 'u_4f21', submissions: 214, bytes_total: 12_000_000 },
-      { bucket: DAY, tool: 'claude_web', subject: 'u_9a02', submissions: 188, bytes_total: 9_400_000 },
+      { bucket: DAY, tool: 'claude_web', subject: 'u_9a02', submissions: 214, bytes_total: 12_000_000 },
+      { bucket: DAY, tool: 'claude_web', subject: 'u_4f21', submissions: 188, bytes_total: 9_400_000 },
       { bucket: DAY, tool: 'shadow_llm_gateway', result_state: 'suppressed', reason: 'fewer_than_k_subjects', k: 5 },
     ],
     freshness: freshness(),
@@ -1585,6 +1606,12 @@ function keyOf(body) {
   return body?.template ?? body?.source ?? 'unknown';
 }
 
+/** A template request carries its cursor inside `params`; a document carries it at the top level. */
+function cursorOf(body) {
+  const value = body?.params?.cursor ?? body?.cursor;
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
 /**
  * The stub transport for a scenario. It answers by template name, and it answers a request that
  * carries a cursor with the second page — which is what makes "iterate until next_cursor is null"
@@ -1594,15 +1621,20 @@ function keyOf(body) {
  */
 function createStubTransport(scenario = 'realistic') {
   const spec = SCENARIOS[scenario] ?? SCENARIOS.realistic;
+  // Cursors this stub has actually handed out. A cursor is opaque and single-iteration: one the
+  // stub never issued gets the API's own answer for it rather than a second page.
+  const issued = new Set();
   return stubTransport({
     routes: [
       {
-        match: (body) => typeof body?.cursor === 'string' && body.cursor.length > 0,
+        match: (body) => cursorOf(body) !== null,
         reply: (body) => {
           const name = keyOf(body);
+          const cursor = cursorOf(body);
+          if (!issued.has(cursor)) return STATE_ENVELOPES.cursor_expired;
+          issued.delete(cursor);
           if (spec.pageTwo?.[name]) return spec.pageTwo[name];
           if (spec.forced) return spec.forced;
-          // A cursor that this stub never issued: the honest answer is the API's own state for it.
           return STATE_ENVELOPES.cursor_expired;
         },
       },
@@ -1611,7 +1643,9 @@ function createStubTransport(scenario = 'realistic') {
         reply: (body) => {
           const name = keyOf(body);
           if (spec.forced) return spec.forced;
-          return spec.answers?.[name] ?? REALISTIC[name] ?? STATE_ENVELOPES.refused_shape;
+          const reply = spec.answers?.[name] ?? REALISTIC[name] ?? STATE_ENVELOPES.refused_shape;
+          if (reply?.page?.next_cursor) issued.add(reply.page.next_cursor);
+          return reply;
         },
       },
       {
@@ -1640,14 +1674,18 @@ function createStubTransport(scenario = 'realistic') {
  */
 function scenarioTransport(initial = 'realistic') {
   let current = SCENARIO_NAMES.includes(initial) ? initial : 'realistic';
+  // One stub per scenario, kept across requests: the stub tracks the cursors it has issued, and a
+  // stub rebuilt per request would forget them and answer every page two with cursor_expired.
+  let stub = createStubTransport(current);
   return Object.freeze({
     async send(body) {
-      return createStubTransport(current).send(body);
+      return stub.send(body);
     },
     /** Point the stub at another scenario. Returns the new one. */
     setScenario(name) {
-      if (!SCENARIO_NAMES.includes(name)) return current;
+      if (!SCENARIO_NAMES.includes(name) || name === current) return current;
       current = name;
+      stub = createStubTransport(current);
       return current;
     },
     scenario() {
@@ -3223,7 +3261,7 @@ const NAV_ITEMS = SCREENS.map((s) => ({ id: s.id, label: s.label, question: s.qu
  * @param {string} [input.scenario] one of SCENARIO_NAMES; ignored when `api` is supplied
  * @param {object} [input.api]      a real api, e.g. over httpTransport
  */
-function boot({ document, scenario = 'realistic', api } = {}) {
+async function boot({ document, scenario = 'realistic', api } = {}) {
   const root = document.getElementById('app');
   const nav = document.getElementById('nav');
   // One dashboard for the whole session, so the coverage strip persists across navigation: the
@@ -3246,8 +3284,11 @@ function boot({ document, scenario = 'realistic', api } = {}) {
     root.innerHTML = renderScreen(view, shell);
   }
 
-  document.addEventListener('hashchange', () => { void render(); });
-  void render();
+  // The handler returns the render promise. A browser ignores a listener's return value, so this
+  // costs nothing there; it means a test can await a navigation and read the finished page rather
+  // than racing it.
+  document.addEventListener('hashchange', render);
+  await render();
 
   return { render, dashboard };
 }

@@ -39,6 +39,9 @@ const PACKAGES = [
   { kind: 'node', dir: 'db/tools' },
   { kind: 'node', dir: 'infra/tools' },
   { kind: 'go', dir: 'device/protocol', args: ['./...'] },
+  // The canonicalisation contract (docs/02 §4, `sac-canon-1` step C3). One source verified against
+  // Node's ICU over the whole corpus, all 1.1M code points, and every non-starter pair.
+  { kind: 'go', dir: 'device/canon', args: ['./...'] },
   // The cross-component harness: it imports capture-core, capture-spool and protocol, and drives a
   // real extension frame through them. It is the only place the device pieces are wired together -
   // each component's own suite proves it against its own fakes, which cannot show that they compose.
@@ -48,6 +51,12 @@ const PACKAGES = [
   { kind: 'go', dir: 'device/classifier-host', args: ['./...'] },
   { kind: 'go', dir: 'services/ingest-api', args: ['./...'] },
   { kind: 'go', dir: 'services/content-vault', args: ['./...'] },
+  // Lead-owned external invariant tests for the vault: INV-1 says content crosses only on a
+  // per-event grant, and a component should not be the only witness to the invariant it implements.
+  // It lives inside the vault's module (an external test package, not a second module), so the
+  // directory is named without a label override - the label is what the harness reports, and the
+  // path is what go needs.
+  { kind: 'go', dir: 'services/content-vault/vaultinvariants', args: ['./...'] },
   // Contracts' generated Go types are compiled, not tested: a build is the assertion, and the
   // codegen suite in contracts/tools is what checks their content. Marking this one NO-TESTS would
   // be true but misleading - nothing here is *supposed* to have a suite.
@@ -91,6 +100,18 @@ function ensureGoDirs() {
 /** A Go package must have a go.mod, or `go test ./...` escapes into the parent tree. */
 function hasGoMod(dir) {
   return existsSync(join(dir, 'go.mod'));
+}
+
+/** A package directory may belong to a module above it; that is still a valid target. */
+function hasGoModAbove(dir) {
+  let d = dir;
+  for (let i = 0; i < 6; i++) {
+    const parent = dirname(d);
+    if (parent === d) return false;
+    if (existsSync(join(parent, 'go.mod'))) return true;
+    d = parent;
+  }
+  return false;
 }
 
 function findSubmoduleRoots(dir) {
@@ -170,8 +191,12 @@ function run(pkg) {
   let cmdArgs;
   let env = { ...process.env };
   if (pkg.kind === 'go') {
-    if (!hasGoMod(abs)) {
-      return { label, status: 'MISSING', code: null, seconds: 0, output: 'no go.mod in ' + pkg.dir };
+    // A package directory does not have to BE a module: a package inside a module (an external
+    // test package, for instance) belongs to the module above it, and `go test ./...` from that
+    // directory resolves it. Requiring a go.mod in the directory itself reported such a package
+    // MISSING while `go test` ran it happily two directories up.
+    if (!hasGoMod(abs) && !hasGoModAbove(abs)) {
+      return { label, status: 'MISSING', code: null, seconds: 0, output: `no go.mod in ${pkg.dir} or any parent` };
     }
     ensureGoDirs();
     Object.assign(env, GO_ENV);

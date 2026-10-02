@@ -20,6 +20,7 @@
 //   * `coverage_degraded` always names the gap and always carries the enrolled denominator.
 
 import { K, RESULT_STATES, STATE_PAIRS } from './vocab.js';
+import { formatCount } from './format.js';
 
 /** Keys that are part of a row's envelope rather than its data. */
 const SYSTEM_ROW_KEYS = Object.freeze([
@@ -124,7 +125,7 @@ export function coverageText(coverage) {
   if (reporting === null || reporting === undefined || enrolled === null || enrolled === undefined) {
     return { text: 'Coverage denominator unavailable', state, gaps };
   }
-  const base = `${reporting} of ${enrolled} enrolled devices reporting`;
+  const base = `${formatCount(reporting)} of ${formatCount(enrolled)} enrolled devices reporting`;
   return {
     text: state === 'partial' ? `${base} · gaps in ${gaps.length} categor${gaps.length === 1 ? 'y' : 'ies'}` : base,
     state,

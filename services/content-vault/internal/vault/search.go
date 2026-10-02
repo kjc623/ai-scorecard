@@ -62,15 +62,17 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (SearchResult, 
 			"full_text requires M3 for the searched scope and tenant %s has ceiling %s", tenant.TenantID, tenant.CeilingMode)
 	}
 
-	effective := s.effectiveTier(tenant, req.Scope)
+	effective, inBundle := s.effectiveTier(tenant, req.Scope)
 	switch {
+	case !inBundle:
+		// §6.3: "a scope that is not named carries disabled". The distinction between "the bundle
+		// never named this scope" and "the bundle named it as disabled" is the difference between a
+		// configuration that is silent and one that is deliberate, and an operator acts on them
+		// differently.
+		return SearchResult{}, Denialf(DenySearchTierNotInScope,
+			"the signed bundle does not name scope %q for tenant %s, and an unnamed scope carries disabled", req.Scope, tenant.TenantID)
 	case effective == store.SearchDisabled:
 		return SearchResult{}, Denialf(DenySearchDisabled, "content search is disabled for tenant %s", tenant.TenantID)
-	case effective.Rank() < tenant.ContentSearch.Rank():
-		// The bundle named the scope, but with a lower tier than the tenant holds: that is the
-		// narrowing working, not a refusal of the tenant's own tier.
-		//
-		// Falls through: the effective tier is what governs.
 	}
 	if !req.Form.Valid() {
 		return SearchResult{}, fmt.Errorf("vault: search form %q is outside the closed set {terms, substring, fuzzy}", req.Form)
@@ -129,18 +131,19 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (SearchResult, 
 }
 
 // effectiveTier applies the bundle's narrowing: the tenant tier is a ceiling, and a scope the
-// bundle does not name carries disabled.
-func (s *Service) effectiveTier(tenant store.Tenant, scope string) store.SearchTier {
+// bundle does not name carries disabled. The second return value distinguishes "not named" from
+// "named as disabled", because only the caller can explain the former.
+func (s *Service) effectiveTier(tenant store.Tenant, scope string) (store.SearchTier, bool) {
 	bundle, ok := s.opts.ScopeTiers[scope]
 	if !ok {
-		return store.SearchDisabled
+		return store.SearchDisabled, false
 	}
 	if bundle.Rank() > tenant.ContentSearch.Rank() {
 		// The bundle may not raise a scope above the tenant's ceiling. This is a defect in the
 		// signed bundle, and taking the lower value is the fail-closed reading.
-		return tenant.ContentSearch
+		return tenant.ContentSearch, true
 	}
-	return bundle
+	return bundle, true
 }
 
 // unitKindFor maps the tier and the form to the one unit kind the SQL statements will consider.
@@ -181,11 +184,21 @@ func unitKinds(tier store.SearchTier) []string {
 
 // buildQuery turns an analyst's match expression into the parameter the statement receives.
 //
-// It is a closed transformation, and that is the point: to_tsquery() raises a syntax error on
-// malformed input, and a search must not be a way to make the database raise. Terms are restricted
-// to letters, digits and underscores — which also removes every tsquery operator, so an analyst
-// cannot inject `!`, `&`, `<->` or a subquery-shaped string into the query text — joined with `&`,
-// with a quoted phrase becoming a `<->` sequence.
+// The transformation depends on the form, and conflating the two was a real defect caught by the
+// tests: the terms form needs a *tsquery text*, while the substring and fuzzy forms are not tsquery
+// syntax at all — a filename like `Q3-contract.pdf` is matched by `ILIKE` and by trigram
+// similarity, and running it through the term sanitiser would strip the hyphen and search for
+// something nobody typed.
+//
+// For the terms form the sanitiser is a closed transformation, and that is the point: to_tsquery()
+// raises a syntax error on malformed input, and a search must not be a way to make the database
+// raise. Terms are restricted to letters, digits and underscores — which also removes every tsquery
+// operator, so an analyst cannot inject `!`, `&`, `<->` or a subquery-shaped string into the query
+// text — joined with `&`, with a quoted phrase becoming a `<->` sequence.
+//
+// For the other two forms the text is trimmed, length-capped and lower-cased, which is what makes
+// the in-memory double and PostgreSQL agree: `ILIKE` is case-insensitive by definition, and the
+// fuzzy statement compares `lower(body)` with `lower($2)`.
 func (s *Service) buildQuery(req SearchRequest) (string, error) {
 	raw := strings.TrimSpace(req.Query)
 	if raw == "" {
@@ -193,6 +206,9 @@ func (s *Service) buildQuery(req SearchRequest) (string, error) {
 	}
 	if len([]rune(raw)) > 256 {
 		return "", fmt.Errorf("vault: search text is %d characters, over the 256-character cap", len([]rune(raw)))
+	}
+	if req.Form == store.FormSubstring || req.Form == store.FormFuzzy {
+		return strings.ToLower(raw), nil
 	}
 	terms := splitTerms(raw)
 	if len(terms) == 0 {

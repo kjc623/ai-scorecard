@@ -1,0 +1,19 @@
+{
+  "name": "@shadow/dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Shadow AI Capture dashboard: the ten questions of docs/04 §3 asked through the closed query DSL, with the information architecture of §11.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/",
+    "serve": "node tools/serve.mjs",
+    "build:index": "node tools/build-index.mjs",
+    "check:index": "node tools/build-index.mjs --check",
+    "probe": "node tools/probe.mjs"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

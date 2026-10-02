@@ -84,10 +84,10 @@ test('a data-bearing response without freshness or coverage is refused, not rend
 
 test('the coverage sentence always carries the enrolled denominator', () => {
   const partial = coverageText(PARTIAL);
-  assert.match(partial.text, /4180 of 4620 enrolled devices reporting/);
+  assert.match(partial.text, /4,180 of 4,620 enrolled devices reporting/);
   assert.equal(partial.gaps.length, 2);
   const complete = coverageText(COMPLETE);
-  assert.match(complete.text, /4620 of 4620 enrolled devices reporting/);
+  assert.match(complete.text, /4,620 of 4,620 enrolled devices reporting/);
   const blind = coverageText({ state: 'not_yet_covered', reason: 'no_coverage_snapshot' });
   assert.match(blind.text, /not yet measured/);
   assert.equal(coverageText(null).text, 'Coverage unknown');

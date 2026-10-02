@@ -596,14 +596,57 @@ const digestChecks = digestPairs.map(([name, nfdForm, nfcForm]) => {
   return { name, nfdInput: nfdForm, nfcInput: nfcForm, sha256: sha256Hex(a) };
 });
 
+// A second check that is exhaustive in structure: the cross-product of a 256-entry
+// deterministic sample of every code point the algorithm can react to (non-starters, excluded
+// characters, and both halves of every composition pair). Single code points are covered
+// exhaustively by the digest above; this covers ordered pairs systematically rather than by
+// random sampling.
+const interesting = [...new Set([
+  ...ranks.keys(),
+  ...qcNoPoints,
+  ...[...pairs.keys()].map((k) => Math.floor(k / 2097152)),
+  ...[...pairs.keys()].map((k) => k % 2097152),
+])].sort((a, b) => a - b);
+const stride = Math.max(1, Math.floor(interesting.length / 256));
+const pairSet = interesting.filter((_, i) => i % stride === 0).slice(0, 256);
+const pairDigest = createHash('sha256');
+for (const a of pairSet) {
+  for (const b of pairSet) {
+    pairDigest.update(nfc(fromCp(a) + fromCp(b)), 'utf8');
+    pairDigest.update('\u001f', 'utf8');
+  }
+}
+
+// The combining-class table is the one artifact that is derived rather than transcribed, so
+// it gets an exhaustive cross-implementation check of its own: every ordered pair of
+// non-starters. 929,296 pairs, hashed by both implementations. A single misclassified rank
+// shows up here even if nothing else in the corpus happens to exercise that pair.
+const markDigest = createHash('sha256');
+for (const a of sorted) {
+  for (const b of sorted) {
+    markDigest.update(nfc(fromCp(a) + fromCp(b)), 'utf8');
+    markDigest.update('\u001f', 'utf8');
+  }
+}
+
 const meta = {
   contract: 'sac-canon-1',
   node: process.versions.node,
   icu: process.versions.icu,
   unicode: process.versions.unicode,
   generated: { decompositionMappings: decomp.size, combiningClassEntries: ranks.size, compositionPairs: pairs.size, compositionExclusions: excluded.length },
-  verification: { combiningClassPairsChecked: pairCount, corpusCases: cases.length, corpusCasesChangedByNFC: changed },
+  verification: {
+    combiningClassPairsChecked: pairCount,
+    corpusCases: cases.length,
+    corpusCasesChangedByNFC: changed,
+    pairCrossProductCases: pairSet.length * pairSet.length,
+    nonStarterPairCases: sorted.length * sorted.length,
+  },
   singleCodePointDigest: singleDigest.digest('hex'),
+  pairSet,
+  pairCrossProductDigest: pairDigest.digest('hex'),
+  nonStarterSet: sorted,
+  nonStarterPairDigest: markDigest.digest('hex'),
   digestChecks,
   coverage: coverageOf(cases),
   scope: {

@@ -407,29 +407,56 @@ const record = (inv, title, status, detail, extra = {}) =>
 
 // ---------------------------------------------------------------------------------------------
 // INV-1 - Content stays put: the only content-egress path is a per-event grant.
-// Proves: at this point, whether the grant path exists at all.
-// Does NOT prove: anything about unreachability until the vault and the device content store exist,
-// which is why the honest verdict today is BLOCKED rather than PASS.
+// Proves: (a) the vault exposes exactly one content-producing operation, `Redeem`, and no route that
+// returns content without one; (b) the Lead-owned external suite services/content-vault/vaultinvariants
+// drives that gate against the real service - a fabricated grant is refused, a grant for event A does
+// not produce event B, another principal cannot redeem it, an expired grant is refused, and a second
+// redemption is refused - each with a reason from the closed vocabulary.
+// Does NOT prove: that no OTHER component can produce content, and nothing about the storage or key
+// backends, which the component's own suite owns. Those stay in the not-verified list.
 // ---------------------------------------------------------------------------------------------
 {
   const vault = tree('services/content-vault');
-  const deviceGrantSearch = [...tree('device'), ...tree('apps')].filter((f) =>
-    /grant/i.test(readFileSync(f, 'utf8')),
-  );
+  const invariantsSuite = join(ROOT, 'services', 'content-vault', 'vaultinvariants', 'invariants_test.go');
   if (vault.length === 0) {
-    record(
-      'INV-1',
-      'Content crosses only on a per-event grant',
-      'BLOCKED',
-      `services/content-vault does not exist yet; ${deviceGrantSearch.length} device-side file(s) mention a grant, which is not the same as an enforced egress path`,
-    );
-  } else {
+    record('INV-1', 'Content crosses only on a per-event grant', 'BLOCKED', 'services/content-vault does not exist yet');
+  } else if (!existsSync(invariantsSuite)) {
     record(
       'INV-1',
       'Content crosses only on a per-event grant',
       'PARTIAL',
-      'content-vault exists; unreachability of a bulk upload path needs the vault and the ingest content path to be exercised together, which is a behavioural check',
+      'content-vault exists but the external invariant suite has not been written, so the gate is unexercised from outside the component',
     );
+  } else {
+    // Run the external suite. A gate that is only described is not a gate, so this shells out to it
+    // rather than reading it: the verdict comes from the same command a human would run.
+    const goEnv = {
+      ...process.env,
+      GOCACHE: join(ROOT, '.tools', 'gocache'),
+      GOPROXY: 'off',
+      GOTOOLCHAIN: 'local',
+      GOFLAGS: '-mod=mod',
+      GOTMPDIR: join(ROOT, '.tools', 'tmp', 'go'),
+      TMP: join(ROOT, '.testtmp'),
+      TEMP: join(ROOT, '.testtmp'),
+    };
+    const r = spawnSync('go', ['test', './vaultinvariants/', '-count=1', '-timeout', '60s'], {
+      cwd: join(ROOT, 'services', 'content-vault'),
+      env: goEnv,
+      encoding: 'utf8',
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    const out = `${r.stdout ?? ''}${r.stderr ?? ''}`.trim();
+    if (r.status === 0) {
+      record(
+        'INV-1',
+        'Content crosses only on a per-event grant',
+        'PASS',
+        'the external suite drives the vault\'s single content-producing operation: a fabricated grant is refused, a grant is bound to its event and principal, an expired grant and a second redemption are refused, all with closed reasons',
+      );
+    } else {
+      record('INV-1', 'Content crosses only on a per-event grant', 'FAIL', `the external suite failed:\n${out.split('\n').slice(-12).join('\n')}`);
+    }
   }
 }
 

@@ -164,32 +164,35 @@ SELECT submission_id::text,
  LIMIT $4::int`
 
 	// SQLSearchFilenameSubstring is the substring form, served by the partial trigram index and
-	// restricted to filenames by that index's predicate.
+	// restricted to filenames by that index's predicate. The stored text and the parameter are both
+	// lower-cased, so this statement and the in-memory double answer the same question rather than
+	// differing on case.
 	SQLSearchFilenameSubstring = `
 SELECT submission_id::text,
        unit_kind,
        unit_index,
        body,
-       similarity(body, $2::text)
+       similarity(lower(body), lower($2::text))
   FROM ingest.search_text
  WHERE tenant_id = ops.current_tenant()
    AND unit_kind = 'attachment_name'
-   AND body ILIKE '%' || $2::text || '%'
+   AND lower(body) LIKE '%' || lower($2::text) || '%'
  ORDER BY 5 DESC, 1
  LIMIT $3::int`
 
-	// SQLSearchFilenameFuzzy is the fuzzy form: pg_trgm similarity over filenames only.
+	// SQLSearchFilenameFuzzy is the fuzzy form: pg_trgm similarity over filenames only, with both
+	// sides lower-cased for the same reason.
 	SQLSearchFilenameFuzzy = `
 SELECT submission_id::text,
        unit_kind,
        unit_index,
        body,
-       similarity(body, $2::text)
+       similarity(lower(body), lower($2::text))
   FROM ingest.search_text
  WHERE tenant_id = ops.current_tenant()
    AND unit_kind = 'attachment_name'
-   AND body % $2::text
-   AND similarity(body, $2::text) >= $3::float8
+   AND lower(body) % lower($2::text)
+   AND similarity(lower(body), lower($2::text)) >= $3::float8
  ORDER BY 5 DESC, 1
  LIMIT $4::int`
 
