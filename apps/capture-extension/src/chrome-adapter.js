@@ -18,6 +18,8 @@ const BLOCKING_TIMEOUT_MS = 25_000;
 export function createChromeAdapter(scope = globalThis) {
   const api = chromeApi(scope);
   const cryptoObj = scope.crypto || globalThis.crypto;
+  /** The live body-lane listener, so it can be removed when policy closes every destination. */
+  let bodyLaneListener = null;
 
   function headerMap(list) {
     const out = {};
@@ -100,7 +102,26 @@ export function createChromeAdapter(scope = globalThis) {
   return {
     webRequest: {
       onBeforeRequest: (handler, opts) => register(handler, opts, false),
-      onBeforeRequestWithBody: (handler, opts) => register(handler, opts, true),
+      onBeforeRequestWithBody: (handler, opts) => {
+        const listener = register(handler, opts, true);
+        bodyLaneListener = listener;
+        return listener;
+      },
+      /**
+       * Unregister the body lane. Needed, not optional: when policy changes so that every
+       * destination resolves to M0, the extension must stop asking Chrome for bodies at all —
+       * otherwise the request that arrives after the change still carries bytes.
+       */
+      removeBodyLane: () => {
+        if (bodyLaneListener) {
+          try {
+            api.webRequest.onBeforeRequest.removeListener(bodyLaneListener);
+          } catch (e) {
+            /* the listener may already be gone */
+          }
+          bodyLaneListener = null;
+        }
+      },
       onCompleted: (handler, opts) => {
         const filter = { urls: opts.urls && opts.urls.length ? opts.urls : ['<all_urls>'] };
         if (opts.types) filter.types = opts.types;

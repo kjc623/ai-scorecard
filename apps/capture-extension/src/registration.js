@@ -47,7 +47,9 @@ export const NEVER_BODY_BEARING = ['http://localhost/*', 'http://127.0.0.1/*', '
 
 export function installLanes({ adapter, policy, onBodyLane, onMetadataLane, onResponse = null, types = OBSERVED_TYPES }) {
   /** @type {string[]} what lane B is currently registered for — the thing the test asserts on. */
-  let bodyFilter = computeBodyFilter(policy);
+  let bodyFilter = [];
+  let installed = false;
+  let reinstallCount = 0;
 
   async function bodyHandler(detail) {
     // Guard 2: the filter is rebuilt on policy change, but a request already in flight must not
@@ -64,76 +66,97 @@ export function installLanes({ adapter, policy, onBodyLane, onMetadataLane, onRe
     return toBlockingResponse(await onMetadataLane({ detail, tab_context: tabContextOf(detail) }));
   }
 
-  const responseHandler = onResponse
-    ? (detail) => {
-        Promise.resolve(onResponse({ detail })).catch(() => {
-          /* a response record corroborates an observation; it is never the observation itself */
-        });
-      }
-    : null;
-
-  adapter.webRequest.onBeforeRequest(guard(metadataHandler), { urls: ALL_URLS, types });
-  if (bodyFilter.length > 0) {
-    adapter.webRequest.onBeforeRequestWithBody(guard(bodyHandler), { urls: bodyFilter.slice(), types });
+  function install() {
+    adapter.webRequest.onBeforeRequest(guard(metadataHandler), { urls: ALL_URLS, types });
+    if (onResponse) {
+      adapter.webRequest.onCompleted(responseHandler, { urls: ALL_URLS, types });
+    }
+    // Lane B is registered only when its filter is non-empty. Until the first policy arrives
+    // `computeBodyFilter` returns [] — the extension has no bundle entry for any destination, so
+    // §11.3's "cannot exceed a ceiling it holds no bundle entry for" resolves everything to M0 and
+    // the body-bearing listener is simply not installed. Chrome then never produces `requestBody`
+    // for this extension at all, which is the strongest form of §11.2's guarantee.
+    if (bodyFilter.length > 0) {
+      adapter.webRequest.onBeforeRequestWithBody(guard(bodyHandler), { urls: bodyFilter.slice(), types });
+      bodyInstalled = true;
+    }
   }
-  if (responseHandler) adapter.webRequest.onCompleted(responseHandler, { urls: ALL_URLS, types });
+
+  let bodyInstalled = false;
+
+  const responseHandler = (detail) => {
+    Promise.resolve(onResponse({ detail })).catch(() => {
+      /* a response record corroborates an observation; it is never the observation itself */
+    });
+  };
 
   /**
-   * Re-derive lane B's filter and re-register it. Called on every policy sync, which is what
-   * makes a mode change take effect without a browser restart (§11.3: "the device stores the
-   * bundle it is enforcing, and the health report carries that version").
-   *
-   * Chrome cannot remove one URL pattern from a live listener, so a change re-installs the
-   * listener. The old listener is replaced rather than duplicated: `removeListener` is not
-   * available to us here, so the adapter's fake and the real adapter both key the listener by
-   * lane name (`onBeforeRequestWithBody` is the body lane and there is exactly one).
+   * Re-derive lane B's filter and (re-)register it, or remove it when policy now says every
+   * destination is M0. Called on every policy sync, which is what makes a mode change take effect
+   * without a browser restart (§11.3: "the device stores the bundle it is enforcing").
    */
   function refresh() {
     const next = computeBodyFilter(policy);
     const changed = next.join('\n') !== bodyFilter.join('\n');
     bodyFilter = next;
-    adapter.webRequest.onBeforeRequestWithBody(guard(bodyHandler), { urls: bodyFilter.slice(), types });
-    return changed;
+    if (!installed) {
+      installed = true;
+      install();
+      return true;
+    }
+    if (!changed) return false;
+    reinstallCount += 1;
+    if (bodyFilter.length > 0) {
+      adapter.webRequest.onBeforeRequestWithBody(guard(bodyHandler), { urls: bodyFilter.slice(), types });
+      bodyInstalled = true;
+    } else {
+      adapter.webRequest.removeBodyLane();
+      bodyInstalled = false;
+    }
+    return true;
   }
 
   return {
     get bodyLaneInstalled() {
-      return bodyFilter.length > 0;
+      return bodyInstalled;
     },
     get metadataFilter() {
-      return ALL_URLS.slice();
+      return installed ? ALL_URLS.slice() : [];
     },
     get bodyFilter() {
       return bodyFilter.slice();
+    },
+    get reinstallCount() {
+      return reinstallCount;
     },
     refresh,
   };
 }
 
 /**
- * The URL patterns Chrome is given for lane B. It is not `<all_urls>` when the bundle names M0
- * scope entries or a body-lane include list: the whole point is that those destinations are
- * excluded by pattern, so their bytes never arrive.
+ * The URL patterns Chrome is given for lane B.
  *
- * `policy.bodyLanePatterns()` is the bundle's include list (a deployment's decided observation
- * set). Where the bundle gives neither an include list nor any M0 entry, the default is
- * `<all_urls>` — broad observation, narrow emission (§7.1).
+ * Three cases, in order of how much the bundle has decided:
+ *
+ *   1. **No bundle at all** ⇒ `[]`: lane B is not installed, so no destination is body-bearing.
+ *      §11.3's "a device cannot exceed a ceiling it holds no bundle entry for" makes this the
+ *      correct starting state, and it also makes §11.2's M0 guarantee structural: the extension
+ *      has not merely promised not to read those bodies, it has not asked Chrome for them.
+ *   2. **A bundle with a body-lane include list** ⇒ exactly that list. Chrome match patterns
+ *      cannot express "everything except", so a deployment that wants a strict observation set
+ *      names it, and the exclusion of M0 destinations is then by construction.
+ *   3. **A bundle with no include list** ⇒ `<all_urls>`. Broad observation, narrow emission
+ *      (§7.1); the M0 destinations are excluded per-request by the handler guard instead.
  */
 export function computeBodyFilter(policy) {
+  const snapshot = typeof policy.snapshot === 'function' ? policy.snapshot() : null;
   const includes = typeof policy.bodyLanePatterns === 'function' ? policy.bodyLanePatterns() : [];
   const never = NEVER_BODY_BEARING.slice();
   if (includes && includes.length > 0) {
-    // An explicit include list is authoritative and already excludes what the deployment decided
-    // not to read. The static never-list is unioned in only as an assertion of intent.
     return includes.filter((p) => !never.includes(p));
   }
-  // No include list and no M0 entries: observe broadly. With M0 entries, the exclusion is
-  // applied by the handler guard, because Chrome match patterns cannot express "everything
-  // except" — and a bundle that needs the strict version supplies the include list above.
-  const m0 = typeof policy.m0Patterns === 'function' ? policy.m0Patterns() : [];
-  if (m0.length === 0) return ALL_URLS.slice();
-  const strict = typeof policy.bodyLanePatternsStrict === 'function' && policy.bodyLanePatternsStrict();
-  return strict ? [] : ALL_URLS.slice();
+  if (!snapshot || !snapshot.present) return [];
+  return ALL_URLS.slice();
 }
 
 function guard(handler) {

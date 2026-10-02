@@ -74,26 +74,39 @@ export function createFileRegistry({ document = globalThis.document, maxFiles = 
   function collectCandidates() {
     const out = [];
     // A drop target that already received files is the strongest signal: it is the element the
-    // user actually used.
+    // user actually used. Drops are reported first and inputs only top the list up afterwards.
+    let sawDrop = false;
     for (const f of dropped.slice(-maxFiles).reverse()) {
       const c = snapshot(f, 'drop');
-      if (c) out.push(c);
-      if (out.length >= maxFiles) return { candidates: out, reachable: true, reason: 'drop' };
+      if (c) {
+        out.push(c);
+        sawDrop = true;
+      }
+      if (out.length >= maxFiles) break;
     }
-    if (document && typeof document.querySelectorAll === 'function') {
+    let sawInput = false;
+    if (out.length < maxFiles && document && typeof document.querySelectorAll === 'function') {
       for (const input of document.querySelectorAll('input[type="file"]')) {
         const files = input && input.files;
         if (!files || !files.length) continue;
         for (const f of Array.from(files).slice(0, maxFiles - out.length)) {
           const c = snapshot(f, 'input');
-          if (c) out.push(c);
+          if (c) {
+            out.push(c);
+            sawInput = true;
+          }
         }
         if (out.length >= maxFiles) break;
       }
     }
-    if (out.length > 0) return { candidates: out, reachable: true, reason: 'input' };
-    // §7.3's honest case: the composer built the upload in a worker or canvas and no File
-    // handle is reachable. The caller records `content_no_attachments` and counts it.
+    if (out.length > 0) {
+      // The reason names the path that produced the candidates, because the caller records it:
+      // §7.3 resolves "the page's file input **or** drop target", and which one answered is a
+      // coverage fact rather than a detail.
+      return { candidates: out, reachable: true, reason: sawDrop ? (sawInput ? 'drop_and_input' : 'drop') : 'input' };
+    }
+    // §7.3's honest case: the composer built the upload in a worker or canvas and no File handle
+    // is reachable. The caller records `content_no_attachments` and counts it.
     return { candidates: [], reachable: false, reason: 'no_reachable_file' };
   }
 

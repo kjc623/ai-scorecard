@@ -251,7 +251,10 @@ func foldUnicode(s string) string {
 		case r == 0x00A0 || (r >= 0x2000 && r <= 0x200A) || r == 0x202F || r == 0x205F || r == 0x3000:
 			b.WriteByte(' ')
 		case r >= 0xFF01 && r <= 0xFF5E:
-			b.WriteByte(byte(r - 0xFF00)) // fullwidth ASCII -> ASCII
+			// Fullwidth ASCII (U+FF01..U+FF5E) -> ASCII. The offset is 0xFEE0, so U+FF01 is '!'
+			// and U+FF14 is '4'; using 0xFF00 here would emit C0 control bytes instead of
+			// digits, which is exactly how a rule goes blind to a pasted full-width card number.
+			b.WriteByte(byte(r - 0xFEE0))
 		case r == '\r':
 			// canonicalised with \n in collapseWhitespace
 			b.WriteByte('\n')

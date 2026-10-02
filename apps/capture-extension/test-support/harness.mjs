@@ -41,7 +41,14 @@ export function createHarness({ core = {}, capacity = 200, failConnect = false, 
 
   // Route every native port into the fake core, before anything builds an adapter.
   const origConnect = fake.chrome.runtime.connectNative.bind(fake.chrome.runtime);
+  let connectCount = 0;
   fake.chrome.runtime.connectNative = (application) => {
+    connectCount += 1;
+    if (connectCount > 50) {
+      // A reconnect loop is a defect in the extension, and a test that hangs instead of failing
+      // hides it. Fail loudly.
+      throw new Error(`connectNative called ${connectCount} times: the channel is reconnecting in a loop`);
+    }
     if (failConnect) return origConnect(application);
     const port = origConnect(application);
     const realPost = port.postMessage.bind(port);

@@ -15,11 +15,14 @@ psql -v ON_ERROR_STOP=1 -f db/schema.sql && psql -v ON_ERROR_STOP=1 -f db/invari
 
 | file | sha256 |
 |---|---|
-| `db/schema.sql` (current, post-fix) | `F0CC80B2F2C117FACC0691ECDC591D42E8845A80484E49666E7DA7F5F1E3AFF0` |
-| `db/invariants.test.sql` (current, T1..T37) | `E658DAB7478CB5B68BB72FCDEC3B867E92E45F3D3C50BD4C7B1A7ECD3829EEA8` |
-| `db/schema.sql` as first captured (pre-fix) | `F796F93DAB9E2A5FD08569634375CD3101038AF0854DA0496F8A23608392590D` |
+| `db/schema.sql` (current: adopt fix + §7 reason-code alignment) | `513020D2D016DC0404272FE85EC47DA7FC6D585894F6A91F87296BE2A813C6B0` |
+| `db/invariants.test.sql` (current, T1..T38) | `2376E0C7A3D19CDFF41F56F4B8597514D212DBA9090DC9EC7C9E2B181C0352AB` |
+| `db/tools/check-schema.mjs` (current, 62 checks) | `C4E9246560C73D641448293DD64E390D7411C7419F9E197F53E96D0567C7E9CA` |
+| `db/schema.sql` after the adopt fix only (before the alignment) | `F0CC80B2F2C117FACC0691ECDC591D42E8845A80484E49666E7DA7F5F1E3AFF0` |
+| `db/invariants.test.sql` at T1..T37 | `E658DAB7478CB5B68BB72FCDEC3B867E92E45F3D3C50BD4C7B1A7ECD3829EEA8` |
+| `db/schema.sql` as first captured (pre-adopt-fix) | `F796F93DAB9E2A5FD08569634375CD3101038AF0854DA0496F8A23608392590D` |
 | `db/invariants.test.sql` as first captured (T1..T35) | `6890D8CCAD855164B15F1BEEC8393851BAAC064D11D12D3AAD1A431ACDA8DFAB` |
-| pre-fix schema reconstructed for the bugcheck (run 07) | `8450B639082F46585EE4988E21686695C513FC72207CBE89FED56579A7D75B0D` |
+| pre-fix schema reconstructed for the bugcheck (runs 07–09) | `8450B639082F46585EE4988E21686695C513FC72207CBE89FED56579A7D75B0D` |
 
 Hashes are re-verified **inside the container** immediately before each run
 (`sha256sum /db/schema.sql /db/invariants.test.sql`), so the files that executed are the files
@@ -64,9 +67,11 @@ That is an argument that nothing in the file is 17-specific. It is **not** a run
 | F | `2026-10-02-133710-*.log` … `2026-10-02-133855-*.log` (9 pairs) | Harness runs during the T36/T37 and tally-fix work; from `133710` on, each pair carries the `#` provenance header | schema 0, invariants 0 — 39 PASS, 37 distinct, 0 FAIL, 0 ERROR |
 | G | `08-negative-control-raw-prefix-schema.log` | **Negative control (raw).** The unedited `psql` output of the full suite against the pre-fix schema, kept raw so the anchored error pattern could be tested against a genuine failure rather than a filtered extract | `tests_exit=3`; `grep -cE '^(psql:.*)?(ERROR\|FATAL\|PANIC):'` → **1**, naive `grep -ci ERROR` → 2 |
 | H | `09-harness-negative-control.log` | **Negative control for the harness itself.** `db/tools/run-invariants.ps1` run against the pre-fix schema from a scratch repo copy, so `db/` was never touched | `RESULT: FAIL`, `invariants exit code 3`, `ERROR lines 1`, **harness exit 1**. A failing suite is reported as a failure, and the header's `ON_ERROR_STOP` does not inflate the count. |
+| I | `2026-10-02-134105-*.log` (failed), `2026-10-02-1341xx-*.log` … onward | The reason-code alignment: the first pair is the T38 draft failing on `permission denied for table rejected` (see the T38 note below); later pairs are green | final: schema 0, invariants 0 — **40 PASS, 38 distinct**, 0 FAIL, 0 ERROR |
 
-Runs A, D and F agree on every assertion they share. Run E is the evidence that the suite can
-fail, which is what makes the passes mean something.
+Runs A, D, F and I agree on every assertion they share. Run E is the evidence that the suite can
+fail, which is what makes the passes mean something; runs G and H do the same for the raw error
+pattern and for the harness's own exit code.
 
 ## The defect found after the first green run, and its fix
 
@@ -99,19 +104,65 @@ path at equal fidelity, and that path was broken.
   double-counting) and T37 (the adopted row carries the key *with* its digest and is no longer
   flagged low). Both run as `sac_ingest`. Run E proves they fail against the pre-fix code.
 
-## The assertion count is 37, not 27
+## The quarantine reason-code alignment
 
-`db/invariants.test.sql` contains **37 named assertions, T1–T37, contiguous, with no gaps**, at
-39 `PASS` raise-sites — T32 and T33 each carry two sub-cases, which is why the notice count is 39.
-T36 and T37 were added in this session for the defect above; the file held 35 (T1..T35) before.
+`ingest.rejected.reason_code` carried eleven codes: eight that §7 also names, and three
+storage-only codes. Three of the eight were spelled differently from §7 for the same facts —
+`device_revoked`, `batch_oversize`, `schema_version_unsupported`. The sharpest evidence that this
+was drift and not a design was the table's own COMMENT, which pointed readers at §7 for the
+reason codes while the CHECK implemented a different set.
 
-`README.md:54`, `README.md:154`, `docs/00-architecture.md:855`, `docs/03-data-platform.md:375`
-and `.cockpit/project.json` all say **27**. The documents are stale; the SQL is the artifact
-under test and was not changed to match the prose. `db/tools/check-schema.mjs` reports this as a
-`WARN` (documentation drift), not a structural failure.
+The Lead ruled that §7 is the contract and the quarantine surface follows it, but **sequenced the
+change deliberately**: `services/ingest-api/internal/store/store.go` first, `db/schema.sql`
+second. Flipping the CHECK first would have left the three renamed codes rejected by the live
+server, so every one of those quarantines would have started failing at runtime with nothing
+static noticing. ingestor confirmed their side done before the CHECK moved.
+
+Result: the CHECK is now exactly 8 wire codes plus `malformed_json`, `dedup_key_mismatch` and
+`internal_error`. `tenant_mismatch` and `duplicate_batch` remain deliberately unrepresentable —
+the first because `ingest.rejected.tenant_id` is `NOT NULL` and RLS-scoped, so a cross-tenant body
+has no honest tenant to file under; the second because it is batch-level and has no per-event
+envelope. The table COMMENT now states that relationship explicitly instead of misdirecting.
+
+**The new check caught a regression I introduced in the same change.** My first rewrite of the
+CHECK dropped `revoked_device` — and T38 passed anyway, because I had made the same omission in
+both the CHECK and the assertion's expected list. `db/tools/check-schema.mjs` compares the CHECK
+against the wire enum parsed from `device/protocol/batch.go` and against the codes
+`QuarantineReason` can actually emit, and it failed with
+`QuarantineReason can emit codes the CHECK rejects: revoked_device`. That is the whole argument
+for checking a seam from both ends rather than asserting a list against itself; a test written
+from the same misunderstanding as the code confirms the misunderstanding.
+
+Two new invariants now hold this:
+
+- **T38** (`db/invariants.test.sql`) asserts it behaviourally on the live server: all 11 codes are
+  written through a real `INSERT` as `sac_ingest`, and 5 are refused — the 2 wire-only codes and
+  the 3 pre-alignment spellings. It counts with `ROW_COUNT` rather than `SELECT`, because
+  `sac_ingest` deliberately holds `INSERT` but not `SELECT` on `ingest.rejected`, and widening the
+  grant to make a test convenient would weaken the property the suite exists to protect.
+- **Eight checks in `db/tools/check-schema.mjs`** verify the seam statically: the mapping is
+  exhaustive over the wire enum (a code with no `case` would silently lose its quarantine row),
+  every code the mapping can emit is accepted by the CHECK, the unmapped set is exactly the
+  documented pair, the CHECK's set is exactly wire-minus-wire-only plus storage-only, and none of
+  the three pre-alignment spellings has returned.
+
+## The assertion count is 38
+
+`db/invariants.test.sql` contains **38 named assertions, T1–T38, contiguous, with no gaps**, at
+40 `PASS` raise-sites — T32 and T33 each carry two sub-cases, which is why the notice count is 40.
+The file held 35 (T1..T35) at the start of this session; T36 and T37 were added for the adopt
+defect, and T38 for the quarantine reason-code vocabulary.
+
+**The documents are stale and the SQL was not changed to match them.** As of the last run,
+`db/tools/check-schema.mjs` reads the claims out of the documents themselves and reports:
+`README.md` 37, `.cockpit/project.json` 37 (three occurrences),
+`docs/00-architecture.md` 27, `docs/03-data-platform.md` 27 — against a file that contains 38.
+The 27s in `docs/00` and `docs/03` were never caught by the earlier correction. Fix the prose,
+not the file; the checker reports this as a `WARN` (documentation drift), not a structural
+failure.
 
 Other stale counts in `.cockpit/project.json` (component `database`), measured from the live
-catalog: it claims 34 tables, 3 views and 28 RLS policies; the server holds **37 tables,
+catalog: it claimed 34 tables, 3 views and 28 RLS policies; the server holds **37 tables,
 4 views and 31 policies**, with **31/31** RLS-enabled and **31/31** RLS-forced. No tenant-scoped
 table lacks a policy.
 

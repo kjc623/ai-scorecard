@@ -143,6 +143,9 @@ type Header struct {
 	MediaType    string `json:"media_type"`
 	DeclaredSize int64  `json:"declared_size"`
 	Digest       string `json:"digest,omitempty"`
+	// Limits carries the parent's child-side caps, so the process the parent configured is the
+	// process whose caps are in force. Nil means the child's defaults.
+	Limits *Limits `json:"limits,omitempty"`
 }
 
 const headerLenBytes = 4
@@ -232,6 +235,12 @@ func Execute(stdin io.Reader, stdout io.Writer, lim Limits, hook func()) int {
 	}
 	if hook != nil {
 		hook()
+	}
+	// The parent's child-side caps win over this process's defaults: the parent configured the
+	// child it spawned, and §10's "a limit a child enforces on itself is not a limit" applies to
+	// which numbers are in force, not only to who does the killing.
+	if h.Limits != nil {
+		lim = h.Limits.withDefaults()
 	}
 	res := Parse(h.MediaType, doc, lim)
 	res.PeakAllocBytes = HeapBytes()

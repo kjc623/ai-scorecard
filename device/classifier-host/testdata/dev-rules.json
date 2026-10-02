@@ -1,0 +1,102 @@
+{
+  "version": "dev-rules-1",
+  "rules": [
+    {
+      "rule_id": "PAYMENT_CARD_PAN",
+      "class": "payment_card",
+      "family": "payment_card",
+      "score": 0.9,
+      "when": [
+        { "signal": "regex", "dialect": "linear", "pattern": "\\b[0-9][0-9 .-]{11,25}[0-9]\\b", "max_matches": 64 },
+        { "signal": "validator", "validator": "luhn" },
+        { "signal": "context", "predicate": "not_preceded_by", "value": "test" }
+      ],
+      "emits": { "excerpt_kind": "match_span" }
+    },
+    {
+      "rule_id": "IBAN_ACCOUNT",
+      "class": "payment_card",
+      "family": "payment_card",
+      "score": 0.85,
+      "when": [
+        { "signal": "regex", "dialect": "linear", "pattern": "\\b[A-Z]{2}[0-9]{2}[A-Z0-9]{10,30}\\b", "max_matches": 32 },
+        { "signal": "validator", "validator": "iban" }
+      ],
+      "emits": { "excerpt_kind": "match_span" }
+    },
+    {
+      "rule_id": "US_SSN_STRUCTURE",
+      "class": "government_id",
+      "family": "government_id",
+      "score": 0.9,
+      "when": [
+        { "signal": "regex", "dialect": "linear", "pattern": "\\b[0-9]{3}[- ][0-9]{2}[- ][0-9]{4}\\b", "max_matches": 32 },
+        { "signal": "validator", "validator": "us_ssn" }
+      ]
+    },
+    {
+      "rule_id": "UK_NINO",
+      "class": "government_id",
+      "family": "government_id",
+      "score": 0.85,
+      "when": [
+        { "signal": "regex", "dialect": "linear", "pattern": "\\b[A-CEGHJ-PR-TW-Z]{2}[0-9]{6}[A-D]\\b", "max_matches": 16 },
+        { "signal": "validator", "validator": "gb_nino" }
+      ]
+    },
+    {
+      "rule_id": "PRIVATE_KEY_BLOCK",
+      "class": "credential",
+      "family": "credential",
+      "score": 0.95,
+      "when": [
+        { "signal": "regex", "dialect": "linear", "pattern": "-----BEGIN [A-Z ]*PRIVATE KEY-----", "max_matches": 4 }
+      ]
+    },
+    {
+      "rule_id": "AWS_ACCESS_KEY_ID",
+      "class": "credential",
+      "family": "credential",
+      "score": 0.9,
+      "when": [
+        { "signal": "regex", "dialect": "linear", "pattern": "\\b(AKIA|ASIA)[0-9A-Z]{16}\\b", "max_matches": 8 }
+      ]
+    },
+    {
+      "rule_id": "SOURCE_DECLARATION",
+      "class": "source_code",
+      "family": "source_code",
+      "score": 0.7,
+      "when": [
+        { "signal": "regex", "dialect": "linear", "pattern": "(?m)^[ \\t]*(func|def|class|package|import)[ \\t]+[A-Za-z_][A-Za-z0-9_]*", "max_matches": 16 }
+      ]
+    },
+    {
+      "rule_id": "LEGAL_CLAUSE_VOCABULARY",
+      "class": "legal",
+      "family": "legal",
+      "score": 0.7,
+      "when": [
+        { "signal": "regex", "dialect": "linear", "pattern": "(?i)\\b(whereas|hereinafter|indemnify|governing law|liability of)\\b", "max_matches": 16 }
+      ]
+    },
+    {
+      "rule_id": "HEALTH_CLINICAL_VOCABULARY",
+      "class": "health",
+      "family": "health",
+      "score": 0.7,
+      "when": [
+        { "signal": "regex", "dialect": "linear", "pattern": "(?i)\\b(patient|diagnosis|prescription|clinical trial)\\b", "max_matches": 16 }
+      ]
+    },
+    {
+      "rule_id": "CUSTOMER_PII_LABEL",
+      "class": "customer_pii",
+      "family": "customer_pii",
+      "score": 0.65,
+      "when": [
+        { "signal": "regex", "dialect": "linear", "pattern": "(?i)\\b(date of birth|national insurance|passport number|home address)\\b", "max_matches": 16 }
+      ]
+    }
+  ]
+}

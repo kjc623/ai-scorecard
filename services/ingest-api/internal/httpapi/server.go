@@ -137,8 +137,12 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 5. duplicate_batch: the one check-then-act §6 allows, and it is benign when it races.
-	if s.Guard != nil && s.Guard.Seen(principal.TenantID, principal.DeviceID, batch.BatchID) {
+	// 5. duplicate_batch: §5.3's batch-level idempotency. The check happens before the write and the
+	//    mark after it commits, so a batch refused for its shape can be re-sent unchanged and a
+	//    genuine replay is answered with the batch-level code. §6 prices the race in between: both
+	//    racers fall through to the event-key constraint and both events report as duplicates, which
+	//    is the correct answer anyway.
+	if s.Guard != nil && s.Guard.Check(principal.TenantID, principal.DeviceID, batch.BatchID) {
 		s.writeError(w, 409, protocol.ReasonDuplicateBatch, &protocol.BatchRejectionDetail{
 			Expected: "a batch_id not seen from this device inside the replay window; re-send with a fresh batch_id (§5.3)",
 		}, batch.BatchID)
@@ -156,6 +160,9 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		s.Logger.Error("ingest: unclassified write failure", "error", err, "batch_id", batch.BatchID)
 		s.writeError(w, 503, protocol.ReasonSchemaViolation, nil, err.Error())
 		return
+	}
+	if s.Guard != nil {
+		s.Guard.Mark(principal.TenantID, principal.DeviceID, batch.BatchID)
 	}
 
 	// §5.3: a batch that parses always returns 200, even when every event inside it is rejected.
@@ -258,9 +265,15 @@ func itoa(n int64) string {
 // ONLY when the binary is started with -dev-trust-principal, which also refuses to run without an
 // explicit acknowledgement. It exists so the endpoint can be exercised end to end without
 // provisioning a certificate authority, and it is not part of any deployment.
+//
+// It still goes through the store's authoritative credential check: trusting a header is not the
+// same as skipping the revocation lookup, which is why the credential id has to name a row that
+// exists.
 type DevHeader struct {
 	TenantHeader string
 	DeviceHeader string
+	// CredentialID names the row the store's status check resolves. Default "dev".
+	CredentialID string
 }
 
 // Authenticate implements auth.Authenticator.
@@ -270,5 +283,9 @@ func (d DevHeader) Authenticate(_ context.Context, r *http.Request) (auth.Princi
 	if tenant == "" || device == "" {
 		return auth.Principal{}, auth.ErrNoCredential
 	}
-	return auth.Principal{TenantID: tenant, DeviceID: device, CredentialID: "dev"}, nil
+	credential := d.CredentialID
+	if credential == "" {
+		credential = "dev"
+	}
+	return auth.Principal{TenantID: tenant, DeviceID: device, CredentialID: credential}, nil
 }

@@ -202,39 +202,119 @@ func (s *Schema) ValidateEnvelope(env *Envelope) (*Violation, error) {
 	return s.ValidateDeviceSubmission(env.rawBytes)
 }
 
-// violationFromGenerated turns a generated decoder error into a located Violation. The pointer is
-// recovered by looking for a schema-declared field name in the message, so the vocabulary stays in
-// the schema.
+// violationFromGenerated turns a generated decoder error into a located Violation.
+//
+// Two things are deliberately recovered rather than passed through:
+//
+//   - the pointer, from the generated messages' own field lists, so the vocabulary stays in the
+//     contract and the pointer names the offending field;
+//   - §7's rule that the report never echoes the offending value. The generated messages quote
+//     values ("source is \"ext.telepathy\"") and those values can be content, so every quoted
+//     substring is replaced before the text reaches `detail.expected`. The field *name* survives,
+//     and that is contract vocabulary rather than content -- §7 keeps it in the presence map.
 func (s *Schema) violationFromGenerated(err error) *Violation {
 	msg := err.Error()
 	pointer := ""
-	// `additionalProperties: false` surfaces as encoding/json's unknown-field error, and the field
-	// it names is by definition not in the schema, so it cannot be found by the scan below.
-	if i := strings.Index(msg, "unknown field "); i >= 0 {
-		rest := msg[i+len("unknown field "):]
-		if len(rest) > 1 && rest[0] == '"' {
-			if j := strings.IndexByte(rest[1:], '"'); j >= 0 {
-				pointer = "/" + escapePointer(rest[1:1+j])
-			}
-		}
+
+	// The generated decoder's three field-bearing message forms.
+	switch {
+	case strings.Contains(msg, "unknown field"): // additionalProperties: false
+		pointer = "/" + escapePointer(firstQuoted(msg))
+	case strings.Contains(msg, "field(s) not permitted"):
+		pointer = "/" + escapePointer(firstListed(msg))
+	case strings.Contains(msg, "missing required field(s)"):
+		pointer = "/" + escapePointer(firstListed(msg))
+	}
+	if pointer == "/" {
+		pointer = ""
 	}
 	if pointer == "" {
+		// Fallback: the earliest schema-declared field name mentioned as a whole word.
 		best := -1
 		for _, name := range s.FieldNames() {
-			if i := strings.Index(msg, name); i >= 0 {
-				// Prefer the earliest mention: "missing required field(s): confidence, labels"
-				// names the first offender first.
-				if best == -1 || i < best {
-					best, pointer = i, "/"+name
-				}
+			i := indexWord(msg, name)
+			if i >= 0 && (best == -1 || i < best) {
+				best, pointer = i, "/"+name
 			}
 		}
 	}
+
 	expected := msg
 	if i := strings.LastIndex(msg, ": "); i >= 0 && i+2 < len(msg) {
 		expected = msg[i+2:]
 	}
-	return &Violation{Pointer: pointer, Expected: expected}
+	return &Violation{Pointer: pointer, Expected: redactQuoted(expected)}
+}
+
+// firstQuoted returns the first double-quoted token in a message.
+func firstQuoted(msg string) string {
+	i := strings.Index(msg, `"`)
+	if i < 0 {
+		return ""
+	}
+	rest := msg[i+1:]
+	j := strings.IndexByte(rest, '"')
+	if j < 0 {
+		return ""
+	}
+	return rest[:j]
+}
+
+// firstListed returns the first comma-separated name after the last colon.
+func firstListed(msg string) string {
+	i := strings.LastIndex(msg, ": ")
+	if i < 0 {
+		return ""
+	}
+	rest := msg[i+2:]
+	if j := strings.IndexByte(rest, ','); j >= 0 {
+		rest = rest[:j]
+	}
+	return strings.TrimSpace(rest)
+}
+
+// redactQuoted removes every double-quoted span, so a diagnostic can never carry an instance value.
+func redactQuoted(s string) string {
+	var b strings.Builder
+	inQuote := false
+	for _, r := range s {
+		switch {
+		case r == '"':
+			if !inQuote {
+				b.WriteString(`"<value omitted>`)
+			}
+			inQuote = !inQuote
+			if !inQuote {
+				b.WriteString(`"`)
+			}
+		case !inQuote:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// indexWord finds name in msg as a whole word, so prose like "this kind and mode" does not match
+// the field `kind`.
+func indexWord(msg, name string) int {
+	for from := 0; ; {
+		i := strings.Index(msg[from:], name)
+		if i < 0 {
+			return -1
+		}
+		abs := from + i
+		beforeOK := abs == 0 || !isWordByte(msg[abs-1])
+		after := abs + len(name)
+		afterOK := after >= len(msg) || !isWordByte(msg[after])
+		if beforeOK && afterOK {
+			return abs
+		}
+		from = abs + 1
+	}
+}
+
+func isWordByte(b byte) bool {
+	return b == '_' || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
 }
 
 // validate walks the instance. It returns the first violation, or nil.

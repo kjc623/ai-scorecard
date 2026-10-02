@@ -35,8 +35,8 @@
 //   StoredPromptM3: attachments
 //   DeviceUsageRollup: confidence
 //   StoredUsageRollup: confidence
-//   DeviceModelDetection: confidence, window_end, submission_count, bytes_total
-//   StoredModelDetection: confidence, window_end, submission_count, bytes_total
+//   DeviceModelDetection: confidence
+//   StoredModelDetection: confidence
 
 package envelope
 
@@ -1203,17 +1203,15 @@ func (e *StoredUsageRollup) Validate() error {
 // DeviceModelDetection is the device envelope for kind "model_detection".
 //
 // Required: the common core (direction, kind pinned), plus detection_basis.
-// Permitted but not required: confidence, window_end, submission_count, bytes_total.
+// Permitted but not required: confidence.
 // Must not carry, so absent from this struct: received_at, size_bytes, content_digest, labels,
-// classifier_version, content_excerpt, attachments, policy_decision, window_start.
+// classifier_version, content_excerpt, attachments, policy_decision, window_start, window_end,
+// submission_count, bytes_total.
 type DeviceModelDetection struct {
 	EnvelopeCore
 
-	Confidence      *Confidence    `json:"confidence,omitempty"`
-	WindowEnd       *DateTime      `json:"window_end,omitempty"`
-	SubmissionCount *int64         `json:"submission_count,omitempty"`
-	BytesTotal      *int64         `json:"bytes_total,omitempty"`
-	DetectionBasis  DetectionBasis `json:"detection_basis"`
+	Confidence     *Confidence    `json:"confidence,omitempty"`
+	DetectionBasis DetectionBasis `json:"detection_basis"`
 }
 
 // deviceSubmission marks DeviceModelDetection as a member of the closed DeviceSubmission union.
@@ -1238,21 +1236,6 @@ func (e *DeviceModelDetection) Validate() error {
 			return fmt.Errorf("envelope: DeviceModelDetection: confidence is %q, which is outside the closed set", string((*e.Confidence)))
 		}
 	}
-	if e.WindowEnd != nil {
-		if (*e.WindowEnd) == "" {
-			return fmt.Errorf("envelope: DeviceModelDetection: window_end is required and must not be empty")
-		}
-	}
-	if e.SubmissionCount != nil {
-		if (*e.SubmissionCount) < 0 {
-			return fmt.Errorf("envelope: DeviceModelDetection: submission_count must be >= 0, got %d", (*e.SubmissionCount))
-		}
-	}
-	if e.BytesTotal != nil {
-		if (*e.BytesTotal) < 0 {
-			return fmt.Errorf("envelope: DeviceModelDetection: bytes_total must be >= 0, got %d", (*e.BytesTotal))
-		}
-	}
 	if !e.DetectionBasis.Valid() {
 		return fmt.Errorf("envelope: DeviceModelDetection: detection_basis is %q, which is outside the closed set", string(e.DetectionBasis))
 	}
@@ -1262,18 +1245,16 @@ func (e *DeviceModelDetection) Validate() error {
 // StoredModelDetection is the stored envelope for kind "model_detection".
 //
 // Required: the common core (direction, kind pinned), plus received_at, detection_basis.
-// Permitted but not required: confidence, window_end, submission_count, bytes_total.
+// Permitted but not required: confidence.
 // Must not carry, so absent from this struct: size_bytes, content_digest, labels,
-// classifier_version, content_excerpt, attachments, policy_decision, window_start.
+// classifier_version, content_excerpt, attachments, policy_decision, window_start, window_end,
+// submission_count, bytes_total.
 type StoredModelDetection struct {
 	EnvelopeCore
 
-	ReceivedAt      DateTime       `json:"received_at"`
-	Confidence      *Confidence    `json:"confidence,omitempty"`
-	WindowEnd       *DateTime      `json:"window_end,omitempty"`
-	SubmissionCount *int64         `json:"submission_count,omitempty"`
-	BytesTotal      *int64         `json:"bytes_total,omitempty"`
-	DetectionBasis  DetectionBasis `json:"detection_basis"`
+	ReceivedAt     DateTime       `json:"received_at"`
+	Confidence     *Confidence    `json:"confidence,omitempty"`
+	DetectionBasis DetectionBasis `json:"detection_basis"`
 }
 
 // storedEnvelope marks StoredModelDetection as a member of the closed StoredEnvelope union.
@@ -1299,21 +1280,6 @@ func (e *StoredModelDetection) Validate() error {
 	if e.Confidence != nil {
 		if !(*e.Confidence).Valid() {
 			return fmt.Errorf("envelope: StoredModelDetection: confidence is %q, which is outside the closed set", string((*e.Confidence)))
-		}
-	}
-	if e.WindowEnd != nil {
-		if (*e.WindowEnd) == "" {
-			return fmt.Errorf("envelope: StoredModelDetection: window_end is required and must not be empty")
-		}
-	}
-	if e.SubmissionCount != nil {
-		if (*e.SubmissionCount) < 0 {
-			return fmt.Errorf("envelope: StoredModelDetection: submission_count must be >= 0, got %d", (*e.SubmissionCount))
-		}
-	}
-	if e.BytesTotal != nil {
-		if (*e.BytesTotal) < 0 {
-			return fmt.Errorf("envelope: StoredModelDetection: bytes_total must be >= 0, got %d", (*e.BytesTotal))
 		}
 	}
 	if !e.DetectionBasis.Valid() {
@@ -1468,7 +1434,7 @@ var requiredDeviceModelDetection = []string{
 // Fields DeviceModelDetection must not carry.
 var forbiddenDeviceModelDetection = []string{
 	"received_at", "size_bytes", "content_digest", "labels", "classifier_version", "content_excerpt",
-	"attachments", "policy_decision", "window_start",
+	"attachments", "policy_decision", "window_start", "window_end", "submission_count", "bytes_total",
 }
 
 // Fields the schema requires of StoredModelDetection.
@@ -1481,7 +1447,7 @@ var requiredStoredModelDetection = []string{
 // Fields StoredModelDetection must not carry.
 var forbiddenStoredModelDetection = []string{
 	"size_bytes", "content_digest", "labels", "classifier_version", "content_excerpt", "attachments",
-	"policy_decision", "window_start",
+	"policy_decision", "window_start", "window_end", "submission_count", "bytes_total",
 }
 
 var ruleDevicePromptM0 = variantRule{

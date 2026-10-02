@@ -1138,11 +1138,11 @@ export interface StoredUsageRollup extends EnvelopeCore {
  * Required by the schema: the common core (with `direction`, `kind` pinned), plus
  * `detection_basis`.
  *
- * Permitted but not required: `confidence`, `window_end`, `submission_count`, `bytes_total`.
+ * Permitted but not required: `confidence`.
  *
  * Must not carry, so absent from this interface: `received_at`, `size_bytes`,
  * `content_digest`, `labels`, `classifier_version`, `content_excerpt`, `attachments`,
- * `policy_decision`, `window_start`.
+ * `policy_decision`, `window_start`, `window_end`, `submission_count`, `bytes_total`.
  */
 export interface DeviceModelDetection extends EnvelopeCore {
   /**
@@ -1171,21 +1171,6 @@ export interface DeviceModelDetection extends EnvelopeCore {
    */
   readonly confidence?: Confidence;
   /**
-   * End of the rollup window. Required for usage_rollup.
-   * @format date-time
-   */
-  readonly window_end?: DateTime;
-  /**
-   * Submissions observed in the window. Required for usage_rollup.
-   * @minimum 0
-   */
-  readonly submission_count?: number;
-  /**
-   * Total bytes observed in the window. Required for usage_rollup.
-   * @minimum 0
-   */
-  readonly bytes_total?: number;
-  /**
    * How an on-device model was detected. Required for model_detection. Recorded because the four
    * mechanisms have materially different confidence and coverage, and merging them would overstate
    * what is known.
@@ -1200,10 +1185,11 @@ export interface DeviceModelDetection extends EnvelopeCore {
  * Required by the schema: the common core (with `direction`, `kind` pinned), plus
  * `received_at`, `detection_basis`.
  *
- * Permitted but not required: `confidence`, `window_end`, `submission_count`, `bytes_total`.
+ * Permitted but not required: `confidence`.
  *
  * Must not carry, so absent from this interface: `size_bytes`, `content_digest`, `labels`,
- * `classifier_version`, `content_excerpt`, `attachments`, `policy_decision`, `window_start`.
+ * `classifier_version`, `content_excerpt`, `attachments`, `policy_decision`, `window_start`,
+ * `window_end`, `submission_count`, `bytes_total`.
  */
 export interface StoredModelDetection extends EnvelopeCore {
   /**
@@ -1238,21 +1224,6 @@ export interface StoredModelDetection extends EnvelopeCore {
    * @enum "high" | "medium" | "low" | "degraded"
    */
   readonly confidence?: Confidence;
-  /**
-   * End of the rollup window. Required for usage_rollup.
-   * @format date-time
-   */
-  readonly window_end?: DateTime;
-  /**
-   * Submissions observed in the window. Required for usage_rollup.
-   * @minimum 0
-   */
-  readonly submission_count?: number;
-  /**
-   * Total bytes observed in the window. Required for usage_rollup.
-   * @minimum 0
-   */
-  readonly bytes_total?: number;
   /**
    * How an on-device model was detected. Required for model_detection. Recorded because the four
    * mechanisms have materially different confidence and coverage, and merging them would overstate

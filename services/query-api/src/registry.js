@@ -543,10 +543,11 @@ export const SOURCES = Object.freeze({
         ...MANAGED_CARD,
         values: ['managed', 'unmanaged', 'unknown'],
       }),
-      region: dim('region', 'd.residency_region', 'text', {
+      region: dim('region', 'dd.residency_region', 'text', {
         nullable: true,
         cardinality: 4,
         cardinalitySource: 'ASSUMPTION: residency regions per deployment; ops.tenant.residency_region is NOT NULL',
+        orderSql: 'coalesce(dd.residency_region, chr(1))',
       }),
       liveness: dim('liveness', "CASE WHEN d.revoked_at IS NOT NULL THEN 'revoked' WHEN d.last_seen_at IS NULL THEN 'never_reported' WHEN d.last_seen_at < now() - interval '24 hours' THEN 'stale' ELSE 'reporting' END", 'text', {
         ...LIVENESS_CARD,
@@ -577,6 +578,16 @@ export const SOURCES = Object.freeze({
       'ops.device PK (tenant_id, device_id), docs/04 §3.11 (tenant_id, last_seen_at)',
       'ops.collector_state PK (tenant_id, device_id, collector), docs/04 §3.11 (tenant_id, state)',
     ]),
+    joins: Object.freeze([
+      Object.freeze({
+        // mart.v_device_liveness does not expose ops.device.residency_region, and §2.4 lists
+        // `region` among the dimensions. The join is keyed on the device primary key and is
+        // emitted only when the dimension is actually used.
+        id: 'device_region',
+        sql: 'LEFT JOIN ops.device dd ON dd.tenant_id = d.tenant_id AND dd.device_id = d.device_id',
+        when: Object.freeze(['region']),
+      }),
+    ]),
     /**
      * The complete SELECT list of this bounded list. Dimensions on a list source are filters and
      * order keys rather than a grouping, so the output shape is frozen here instead of being
@@ -586,7 +597,7 @@ export const SOURCES = Object.freeze({
       'd.device_id AS "device"',
       'd.os AS "device_os"',
       'd.managed_state AS "managed_state"',
-      'd.residency_region AS "region"',
+      'dd.residency_region AS "region"',
       "CASE WHEN d.revoked_at IS NOT NULL THEN 'revoked' WHEN d.last_seen_at IS NULL THEN 'never_reported' WHEN d.last_seen_at < now() - interval '24 hours' THEN 'stale' ELSE 'reporting' END AS \"liveness\"",
       'cs.collector AS "collector"',
       'cs.state AS "collector_state"',
@@ -637,6 +648,14 @@ export const SOURCES = Object.freeze({
     }),
     measures: Object.freeze({}),
     grain: Object.freeze(['snapshot_day', 'device', 'collector']),
+    listSelect: Object.freeze([
+      'v.snapshot_day AS "snapshot_day"',
+      'v.device_id AS "device"',
+      'v.collector AS "collector"',
+      'v.expected AS "expected"',
+      'v.observed AS "observed"',
+      'v.gap_reason AS "gap_reason"',
+    ]),
     order: Object.freeze([
       { dim: 'snapshot_day', dir: 'desc' },
       { dim: 'device', dir: 'asc' },
@@ -937,6 +956,17 @@ export const SOURCES = Object.freeze({
       'au.prev_hash AS prev_hash',
       'au.row_hash AS row_hash',
       'encode(sha256(convert_to(concat_ws(E\'\\x1f\'::text, au.tenant_id::text, au.audit_seq::text, ' +
+        "to_char(au.occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US'), au.actor_type, au.actor_id, " +
+        "au.action, au.object_type, coalesce(au.object_id, ''), coalesce(au.subject_ref, ''), " +
+        "coalesce(au.case_reference, ''), au.detail::text, coalesce(au.prev_hash, '')), 'UTF8')), 'hex') " +
+        'AS __recomputed_hash',
+      'lag(au.prev_hash) OVER (ORDER BY au.occurred_at DESC, au.audit_seq DESC) AS __newer_prev_hash',
+    ]),
+    columns: Object.freeze({
+      audit_seq: dim('audit_seq', 'au.audit_seq', 'number', { cardinalitySource: 'identity sequence' }),
+      occurred_at: dim('occurred_at', 'au.occurred_at', 'timestamp', { cardinalitySource: 'audit timeline' }),
+      object_id: dim('object_id', 'au.object_id', 'text', { nullable: true, cardinalitySource: 'object identity' }),
+    }),
     warnings: Object.freeze([
       'Chain verification here covers the returned page only: whole-chain verification is the reconciler\'s job (docs/04 §3.10). A mismatch returns audit_chain_broken (500) instead of a list that looks fine.',
       'One audit row per query is written for a read of this table, and that row is not re-audited (docs/04 §3.10, ASSUMPTION: one-level recursion is the only terminating reading of C30).',

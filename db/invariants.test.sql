@@ -1003,7 +1003,7 @@ DO $$
 DECLARE
   accepted text[] := ARRAY[
     'schema_violation','unsupported_schema_version','unknown_kind','unknown_tenant',
-    'region_mismatch','mode_violation','oversize',
+    'revoked_device','region_mismatch','mode_violation','oversize',
     'malformed_json','dedup_key_mismatch','internal_error'];
   forbidden text[] := ARRAY[
     -- wire-only: deliberately unrepresentable in quarantine, see the table comment
@@ -1012,12 +1012,18 @@ DECLARE
     'device_revoked','batch_oversize','schema_version_unsupported'];
   c text;
   n int;
+  inserted int := 0;
 BEGIN
   FOREACH c IN ARRAY accepted LOOP
     BEGIN
       INSERT INTO ingest.rejected (tenant_id, device_id, reason_code, expires_at)
       VALUES ('11111111-1111-7111-8111-111111111111',
               'aaaaaaaa-0000-7000-8000-000000000001', c, now() + interval '7 days');
+      -- Count with ROW_COUNT rather than SELECT: sac_ingest holds INSERT but deliberately not
+      -- SELECT on ingest.rejected, and widening the grant to make a test convenient would
+      -- weaken the least-privilege property this suite exists to protect.
+      GET DIAGNOSTICS n = ROW_COUNT;
+      inserted := inserted + n;
     EXCEPTION WHEN others THEN
       RAISE EXCEPTION 'FAIL T38 the CHECK rejects %, which is part of the agreed vocabulary (%)', c, SQLERRM;
     END;
@@ -1034,13 +1040,11 @@ BEGIN
     END;
   END LOOP;
 
-  SELECT count(*) INTO n FROM ingest.rejected
-   WHERE tenant_id = '11111111-1111-7111-8111-111111111111';
-  IF n <> array_length(accepted, 1) THEN
-    RAISE EXCEPTION 'FAIL T38 expected % accepted codes to persist, found %', array_length(accepted, 1), n;
+  IF inserted <> array_length(accepted, 1) THEN
+    RAISE EXCEPTION 'FAIL T38 expected % accepted codes to be written, % were', array_length(accepted, 1), inserted;
   END IF;
-  RAISE NOTICE 'PASS T38 quarantine vocabulary pinned: % codes accepted, % rejected (2 wire-only, 3 pre-alignment spellings)',
-    array_length(accepted, 1), array_length(forbidden, 1);
+  RAISE NOTICE 'PASS T38 quarantine vocabulary pinned: % codes written, % rejected (2 wire-only, 3 pre-alignment spellings)',
+    inserted, array_length(forbidden, 1);
 END $$;
 
 RESET ROLE;

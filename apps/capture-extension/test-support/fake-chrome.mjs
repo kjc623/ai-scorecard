@@ -58,6 +58,14 @@ export function createFakeChrome() {
           const entry = { handler, filter, extra: extra || [], lane };
           if (idx >= 0) listeners.onBeforeRequest[idx] = entry;
           else listeners.onBeforeRequest.push(entry);
+          registrations.push({ action: 'add', lane, extra: (extra || []).slice(), urls: (filter.urls || []).slice() });
+        },
+        removeListener() {
+          const idx = listeners.onBeforeRequest.findIndex((l) => l.lane === 'body');
+          if (idx >= 0) {
+            listeners.onBeforeRequest.splice(idx, 1);
+            registrations.push({ action: 'remove', lane: 'body' });
+          }
         },
       },
       onCompleted: {

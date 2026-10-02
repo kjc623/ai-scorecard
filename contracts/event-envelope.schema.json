@@ -306,6 +306,7 @@
         },
 
         {
+          "comment": "model_detection carries no window at all: a detection with window_end, submission_count or bytes_total would be a rollup wearing the detection kind. This list only forbids and requires nothing, so no previously-valid record is invalidated. See docs/adr/0018-model-detection-carries-no-window.md.",
           "if": {
             "properties": { "kind": { "const": "model_detection" } },
             "required": ["kind"]
@@ -322,7 +323,10 @@
                 { "required": ["policy_decision"] },
                 { "required": ["size_bytes"] },
                 { "required": ["attachments"] },
-                { "required": ["window_start"] }
+                { "required": ["window_start"] },
+                { "required": ["window_end"] },
+                { "required": ["submission_count"] },
+                { "required": ["bytes_total"] }
               ]
             }
           }

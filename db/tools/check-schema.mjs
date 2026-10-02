@@ -19,7 +19,7 @@
 
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DB = join(HERE, '..');
@@ -44,6 +44,14 @@ function readOrDie(path) {
   } catch (err) {
     console.error(`check-schema: cannot read ${path}: ${err.message}`);
     process.exit(2);
+  }
+}
+
+function readMaybe(path) {
+  try {
+    return readFileSync(path, 'utf8');
+  } catch {
+    return null;
   }
 }
 
@@ -362,11 +370,142 @@ const grants = [...schemaCode.matchAll(/GRANT\s+([\s\S]*?)\s+ON\s+([\s\S]*?)\s+T
   // Report the count the design documents claim, so a drift is visible rather than silent.
   // This is a WARNING, not a failure: the stale number is in the documents, and the test
   // file is the artifact under test. Fixing it means editing README/project.json, not the SQL.
-  const DOC_CLAIM = 27;
-  warn('tests.count-matches-docs', ids.length === DOC_CLAIM,
-    ids.length === DOC_CLAIM
-      ? `assertion count matches the documented ${DOC_CLAIM}`
-      : `DOC DRIFT: the file contains ${ids.length} assertions (T1..T${Math.max(...ids)}), but README.md:54, README.md:154, docs/00-architecture.md:855, docs/03-data-platform.md:375 and .cockpit/project.json all claim ${DOC_CLAIM}. The documents are stale; the SQL is the artifact under test.`);
+  // Compare against what the documents actually claim, rather than a constant that is itself a
+  // memory of them: a constant would agree with the file and miss the drift this exists to find.
+  const repoRoot = join(DB, '..');
+  const ONES = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9 };
+  const TENS = { twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90 };
+  const wordToNum = (w) => {
+    const p = w.toLowerCase().split(/[-\s]+/).filter(Boolean);
+    if (p.length === 1) return TENS[p[0]] ?? ONES[p[0]] ?? null;
+    if (p.length === 2 && TENS[p[0]] != null && ONES[p[1]] != null) return TENS[p[0]] + ONES[p[1]];
+    return null;
+  };
+
+  const docFiles = ['README.md', 'docs/00-architecture.md', 'docs/03-data-platform.md', '.cockpit/project.json'];
+  const claims = [];
+  for (const rel of docFiles) {
+    const txt = readMaybe(join(repoRoot, rel.replace(/\//g, sep)));
+    if (!txt) continue;
+    for (const mm of txt.matchAll(/(\d+)\s+assertions|([A-Za-z]+(?:-[A-Za-z]+)?)\s+assertions/g)) {
+      const n = mm[1] != null ? Number(mm[1]) : wordToNum(mm[2]);
+      if (n != null) claims.push({ file: rel, n });
+    }
+  }
+
+  const agree = claims.filter((c) => c.n === ids.length);
+  const disagree = claims.filter((c) => c.n !== ids.length);
+  warn('tests.count-matches-docs', disagree.length === 0,
+    disagree.length === 0
+      ? `all ${claims.length} documented claims match the file: ${ids.length} assertions (T1..T${Math.max(...ids)})`
+      : `DOC DRIFT: the file contains ${ids.length} assertions (T1..T${Math.max(...ids)}), but ${disagree.map((c) => `${c.file} claims ${c.n}`).join('; ')}. ${agree.length} other claim(s) already agree. The SQL is the artifact under test; fix the prose, not the file.`);
+}
+
+// -------------------------------------------------------------------------------------
+// 7. The quarantine reason-code vocabulary, checked across the SQL/Go seam
+// -------------------------------------------------------------------------------------
+// The ruling recorded in db/schema.sql: ingest.rejected.reason_code carries the docs/02 section 7
+// wire vocabulary, spelled as device/protocol.ReasonCode spells it, plus three storage-only codes.
+// Two wire codes are deliberately unrepresentable in quarantine.
+//
+// This checks the seam from both ends, because the failure it guards against is an ORDERING
+// hazard rather than a syntax error: if the CHECK is narrowed before the Go mapping is changed,
+// every quarantine for the renamed codes starts failing at runtime, and nothing static notices.
+// The Go unit test proves the mapping is total over the wire enum; this proves that everything
+// the mapping can emit is something the database will actually accept.
+
+const WIRE_ONLY_EXPECTED = ['tenant_mismatch', 'duplicate_batch'];
+const STORAGE_ONLY_EXPECTED = ['malformed_json', 'dedup_key_mismatch', 'internal_error'];
+
+{
+  const repoRoot = join(DB, '..');
+  const readMaybe = (p) => { try { return readFileSync(p, 'utf8'); } catch { return null; } };
+
+  const protocolSrc = readMaybe(join(repoRoot, 'device', 'protocol', 'batch.go'));
+  const storeSrc = readMaybe(join(repoRoot, 'services', 'ingest-api', 'internal', 'store', 'store.go'));
+
+  // --- the SQL side ---
+  const m = schemaCode.match(/reason_code\s+text\s+NOT NULL\s+CHECK\s*\(\s*reason_code\s+IN\s*\(([\s\S]*?)\)\)/);
+  check('vocab.check-found', Boolean(m),
+    m ? 'ingest.rejected.reason_code CHECK located in schema.sql' : 'could not locate the reason_code CHECK');
+  const sqlCodes = m ? [...m[1].matchAll(/'([a-z_]+)'/g)].map((x) => x[1]) : [];
+  const sqlSet = new Set(sqlCodes);
+  check('vocab.check-no-duplicates', sqlSet.size === sqlCodes.length,
+    sqlSet.size === sqlCodes.length ? `${sqlCodes.length} codes, no duplicates` : 'duplicate codes in the CHECK');
+
+  // --- the Go side ---
+  if (!protocolSrc || !storeSrc) {
+    warn('vocab.seam-checkable', false,
+      `cannot check the SQL/Go seam: ${!protocolSrc ? 'device/protocol/batch.go ' : ''}${!storeSrc ? 'services/ingest-api/internal/store/store.go ' : ''}not readable. The vocabulary check below is INCOMPLETE.`);
+  } else {
+    const wireEnum = [...strip(protocolSrc).matchAll(/(Reason\w+)\s+ReasonCode\s*=\s*"([a-z_]+)"/g)]
+      .map((x) => ({ name: x[1], code: x[2] }));
+    check('vocab.wire-enum-found', wireEnum.length > 0,
+      `${wireEnum.length} wire codes in device/protocol.ReasonCode`);
+
+    const fnStart = storeSrc.indexOf('func QuarantineReason(');
+    const fnBody = fnStart >= 0 ? storeSrc.slice(fnStart, storeSrc.indexOf('\n}', fnStart)) : '';
+    check('vocab.mapping-found', fnStart >= 0 && fnBody.length > 0,
+      fnStart >= 0 ? 'QuarantineReason located' : 'QuarantineReason not found in store.go');
+
+    // Each case body is exactly one `return "code", true|false`, so match the pair directly.
+    // (A lazy `[\s\S]*?` between case and return would let one case span into later ones and
+    // report a mapped code as unmapped.)
+    const cases = [...fnBody.matchAll(/case\s+protocol\.(Reason\w+)\s*:\s*return\s+"([a-z_]*)"\s*,\s*(true|false)/g)]
+      .map((x) => ({ name: x[1], code: x[2], mapped: x[3] === 'true' }));
+    const cased = new Set(cases.map((c) => c.name));
+    const emitted = cases.filter((c) => c.mapped).map((c) => c.code);
+    const unmapped = cases.filter((c) => !c.mapped).map((c) => c.name);
+
+    check('vocab.mapping-cases-parsed', cases.length > 0,
+      `${cases.length} case arms parsed from QuarantineReason (${emitted.length} mapped, ${unmapped.length} deliberately unmapped)`);
+
+    // Every wire code must be handled by name. A code that falls through to the trailing
+    // `return "", false` would silently lose its quarantine row instead of failing loudly.
+    const unhandled = wireEnum.filter((w) => !cased.has(w.name));
+    check('vocab.mapping-is-exhaustive-over-wire-enum', unhandled.length === 0,
+      unhandled.length
+        ? `wire codes with no case in QuarantineReason (they fall through to the default and lose their quarantine row): ${unhandled.map((u) => u.name).join(', ')}`
+        : `all ${wireEnum.length} wire codes are handled explicitly`);
+
+    // THE key check: everything the mapping can emit must be accepted by the CHECK.
+    const notAccepted = emitted.filter((c) => !sqlSet.has(c));
+    check('vocab.every-emitted-code-is-accepted-by-the-check', notAccepted.length === 0,
+      notAccepted.length
+        ? `QuarantineReason can emit codes the CHECK rejects, so those quarantines fail at runtime: ${notAccepted.join(', ')}`
+        : `all ${emitted.length} emitted codes are accepted by the CHECK`);
+
+    // The deliberately unmapped set must be exactly the documented pair, by wire code.
+    const unmappedCodes = unmapped
+      .map((n) => (wireEnum.find((w) => w.name === n) || {}).code)
+      .filter(Boolean)
+      .sort();
+    check('vocab.unmapped-are-exactly-the-documented-wire-only-pair',
+      JSON.stringify(unmappedCodes) === JSON.stringify([...WIRE_ONLY_EXPECTED].sort()),
+      JSON.stringify(unmappedCodes) === JSON.stringify([...WIRE_ONLY_EXPECTED].sort())
+        ? `unrepresentable in quarantine, as documented: ${unmappedCodes.join(', ')}`
+        : `unmapped wire codes are ${unmappedCodes.join(', ') || '(none)'}, expected exactly ${[...WIRE_ONLY_EXPECTED].sort().join(', ')}`);
+
+    // The CHECK's set must be exactly: wire codes minus the wire-only pair, plus the storage-only
+    // codes. This catches both a removal and a silent addition.
+    const wireOnlySet = new Set(WIRE_ONLY_EXPECTED);
+    const expectedSql = new Set([
+      ...wireEnum.map((w) => w.code).filter((c) => !wireOnlySet.has(c)),
+      ...STORAGE_ONLY_EXPECTED,
+    ]);
+    const missing = [...expectedSql].filter((c) => !sqlSet.has(c));
+    const extra = [...sqlSet].filter((c) => !expectedSql.has(c));
+    check('vocab.check-set-is-exact', missing.length === 0 && extra.length === 0,
+      missing.length || extra.length
+        ? `CHECK vocabulary differs from (wire codes minus ${WIRE_ONLY_EXPECTED.join('/')}) plus ${STORAGE_ONLY_EXPECTED.join('/')}: missing [${missing.join(', ')}], unexpected [${extra.join(', ')}]`
+        : `CHECK accepts exactly ${sqlSet.size} codes: 8 wire codes plus ${STORAGE_ONLY_EXPECTED.join(', ')}`);
+
+    // The three renamed spellings must be gone from the SQL, so the rename cannot half-revert.
+    const oldSpellings = ['device_revoked', 'batch_oversize', 'schema_version_unsupported'];
+    const resurrected = oldSpellings.filter((c) => sqlSet.has(c));
+    check('vocab.pre-alignment-spellings-absent', resurrected.length === 0,
+      resurrected.length ? `pre-alignment spellings are back in the CHECK: ${resurrected.join(', ')}` : `none of the three pre-alignment spellings remain: ${oldSpellings.join(', ')}`);
+  }
 }
 
 // -------------------------------------------------------------------------------------

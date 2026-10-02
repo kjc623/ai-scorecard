@@ -129,12 +129,16 @@ export function createNativeClient({ adapter, application = NATIVE_APP, timeoutM
   function sendRequest(type, body) {
     const { id } = post(type, body);
     return new Promise((resolve, reject) => {
+      // NOT unref'd on purpose. In a service worker the port keeps the worker alive anyway, so
+      // unref'ing would buy nothing; in a test it would let the event loop drain before the
+      // timeout fires, turning "we time out and report it" into "the promise never settles",
+      // which is precisely the failure mode this timer exists to prevent (C21: "no answer" is
+      // `degraded`, never "nothing happened").
       const timer = setTimeout(() => {
         pending.delete(id);
         onEvent({ kind: 'timeout', type });
         reject(new ExtError('native_timeout', `no answer to ${type} within ${timeoutMs}ms`));
       }, timeoutMs);
-      if (timer && typeof timer.unref === 'function') timer.unref();
       pending.set(id, { resolve, reject, timer, type });
     });
   }

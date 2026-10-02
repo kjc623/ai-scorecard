@@ -134,7 +134,9 @@ export function compile(validated, opts = {}) {
   for (const t of orderTerms) {
     if (t.expr === t.selectExpr) continue;
     select.push(`${t.expr} AS ${quoteIdent(`__ord_${t.by}`)}`);
-    if (!groupBy.includes(t.expr)) groupBy.push(t.expr);
+    // A list is not grouped; only an aggregate needs the ordering expression in its GROUP BY,
+    // and only when it actually groups (a single-row aggregate must stay single-row).
+    if (source.kind === 'aggregate' && groupBy.length > 0 && !groupBy.includes(t.expr)) groupBy.push(t.expr);
   }
 
   const collapsing = collapsesGrain(query, source);
@@ -192,17 +194,20 @@ export function compile(validated, opts = {}) {
   where.push(`${source.tenantColumn} = ops.current_tenant()`);
 
   const timeColumn = source.time ? source.time.sql : source.bucket?.startColumn ?? null;
+  // A `date` window (ops.coverage_snapshot.snapshot_day) is compared as a date, not cast up to
+  // timestamptz: the predicate is the covering index and must stay in its own type.
+  const windowCast = !source.time && source.bucket ? '::timestamptz' : (source.time?.type === 'date' ? '::date' : '::timestamptz');
   if (query.window) {
-    where.push(`${timeColumn} >= ${bind(query.window.from)}::timestamptz`);
-    where.push(`${timeColumn} < ${bind(query.window.to)}::timestamptz`);
+    where.push(`${timeColumn} >= ${bind(query.window.from)}${windowCast}`);
+    where.push(`${timeColumn} < ${bind(query.window.to)}${windowCast}`);
     if (opts.snapshotUpper) {
       // §7.3: the window is frozen at the first page. Rows are appended at the head of a DESC
       // ordering, so without this an insert after page one would shift boundaries and a row
       // would be seen twice or skipped.
-      where.push(`${timeColumn} <= ${bind(opts.snapshotUpper)}::timestamptz`);
+      where.push(`${timeColumn} <= ${bind(opts.snapshotUpper)}${windowCast}`);
     }
   } else if (opts.snapshotUpper && timeColumn) {
-    where.push(`${timeColumn} <= ${bind(opts.snapshotUpper)}::timestamptz`);
+    where.push(`${timeColumn} <= ${bind(opts.snapshotUpper)}${windowCast}`);
   }
 
   if (source.bucket && meta.native_bucket_size) {
@@ -410,6 +415,8 @@ function collapsesGrain(query, source) {
   if (source.kind !== 'aggregate') return false;
   if (query.bucket === 'week' || query.bucket === 'month') return true;
   const grouped = new Set(query.dimensions);
+  // The bucket is part of the source grain and is always grouped when it is asked for.
+  if (query.bucket) grouped.add('bucket');
   return source.grain.some((name) => !grouped.has(name));
 }
 

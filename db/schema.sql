@@ -926,7 +926,8 @@ CREATE TABLE ingest.rejected (
                        -- batch_oversize, schema_version_unsupported); §7 is the closed contract,
                        -- so the quarantine surface follows it rather than translating to it.
                        'schema_violation','unsupported_schema_version','unknown_kind',
-                       'unknown_tenant','region_mismatch','mode_violation','oversize',
+                       'unknown_tenant','revoked_device','region_mismatch','mode_violation',
+                       'oversize',
                        -- Storage-only facts. They have no wire code because the record was held
                        -- at a layer that has no per-event outcome to report: an unparseable
                        -- envelope, a server-side fault, and a device-computed dedup key that

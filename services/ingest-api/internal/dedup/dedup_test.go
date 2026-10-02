@@ -1,6 +1,7 @@
 package dedup
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -110,11 +111,13 @@ func TestWeakDedupKeyMirrorsTheStoredFunction(t *testing.T) {
 	got := WeakDedupKey("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222",
 		"tool-1", "prompt", at, 42)
 	// concat_ws('|', tenant::text, device::text, tool, kind, floor(epoch/300)::bigint::text, size::text)
+	// This test pins the layout; the *value* is compared against the live ingest.weak_dedup_key()
+	// in internal/store's database-gated test.
 	preimage := strings.Join([]string{
 		"11111111-1111-1111-1111-111111111111",
 		"22222222-2222-2222-2222-222222222222",
 		"tool-1", "prompt",
-		"5937840", // floor(1780497000 / 300) for 2026-10-02T14:30:00Z
+		strconv.FormatInt(at.Unix()/300, 10),
 		"42",
 	}, "|")
 	if want := hash(preimage); got != want {

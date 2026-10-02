@@ -20,6 +20,15 @@ import { createHarness, createFakeChrome, settle } from '../test-support/harness
 import { createChromeAdapter } from '../src/chrome-adapter.js';
 import { fakeCrypto } from '../test-support/harness.mjs';
 
+/** Await a promise that is expected to reject, without letting the rejection escape. */
+async function settled(p) {
+  try {
+    return { ok: true, value: await p };
+  } catch (e) {
+    return { ok: false, error: e };
+  }
+}
+
 function clientOn(fake, core, opts = {}) {
   const scope = { chrome: { ...fake.chrome, crypto: fake.crypto }, crypto: fake.crypto, performance: globalThis.performance };
   const adapter = createChromeAdapter(scope);
@@ -42,11 +51,12 @@ function clientOn(fake, core, opts = {}) {
 
 test('a failed connect throws native_unavailable and does not pretend the channel exists', () => {
   const fake = createFakeChrome();
-  fake.state.failConnect = true;
+  fake.state.failConnect = true; // set before the adapter closes over connectNative
   const { client, events } = clientOn(fake, { handle: () => null });
-  assert.throws(() => client.sendOneWay(TYPE.HEALTH, { a: 1 }), /native_unavailable|native host/i);
+  assert.throws(() => client.sendOneWay(TYPE.HEALTH, { a: 1 }), (e) => e.code === 'native_unavailable');
   assert.equal(client.isConnected(), false);
   assert.ok(events.some((e) => e.kind === 'connect_failed'));
+  assert.equal(fake.state.posted.length, 0, 'nothing was posted on a channel that does not exist');
 });
 
 test('the client reaches the fake core and gets an ack for a health report', async () => {
@@ -61,23 +71,45 @@ test('the client reaches the fake core and gets an ack for a health report', asy
 });
 
 test('a disconnect surfaces as native_unavailable and fails every in-flight request', async () => {
+  // A core that never answers, so the request is genuinely in flight when the host dies.
   const h = createHarness();
-  h.app.native.connect();
-  const port = h.fake.state.nativePorts[0];
-  const pending = h.app.native.sendRequest(TYPE.MODE_QUERY, modeQuery({ tool_fingerprint: 'tf1:x', host: 'a.invalid' }));
+  let captured = null;
+  const silent = {
+    postMessage: () => {},
+    onMessage: { addListener: () => {} },
+    onDisconnect: { addListener: (fn) => (captured = fn) },
+    disconnect: () => {},
+  };
+  h.fake.chrome.runtime.connectNative = () => silent;
+  const scoped = createChromeAdapter({ chrome: h.fake.chrome, crypto: h.crypto, performance: globalThis.performance });
+  const client = createNativeClient({ adapter: scoped, timeoutMs: 5000 });
+  const inFlight = client.sendRequest(TYPE.MODE_QUERY, modeQuery({ tool_fingerprint: 'tf1:x', host: 'a.invalid' }));
   await settle(1);
-  port.__die('Native host has exited.');
-  await assert.rejects(pending, (e) => e.code === 'native_unavailable');
+  assert.equal(client.isConnected(), true);
+  assert.ok(captured, 'the client must have registered a disconnect listener');
+  captured({ message: 'Native host has exited.' });
+  const outcome = await settled(inFlight);
+  assert.equal(outcome.ok, false, 'an in-flight request must fail, not hang');
+  assert.equal(outcome.error.code, 'native_unavailable');
+  assert.equal(client.isConnected(), false);
 });
 
 test('a timeout is native_timeout, not a hang', async () => {
   const h = createHarness();
-  // Silence the fake core's answers for this port so the request stays pending.
-  const recorded = [];
-  const silent = h.fake.chrome.runtime.connectNative(NATIVE_APP);
-  silent.onMessage.addListener((m) => recorded.push(m));
-  const client = createNativeClient({ adapter: h.adapter, timeoutMs: 20 });
-  await assert.rejects(client.sendRequest(TYPE.MODE_QUERY, modeQuery({ tool_fingerprint: 'tf1:x', host: 'a.invalid' })), (e) => e.code === 'native_timeout');
+  // A port that accepts a post and never answers: silence, not a refusal.
+  const silent = {
+    postMessage: () => {},
+    onMessage: { addListener: () => {} },
+    onDisconnect: { addListener: () => {} },
+    disconnect: () => {},
+  };
+  h.fake.chrome.runtime.connectNative = () => silent;
+  const scoped = createChromeAdapter({ chrome: h.fake.chrome, crypto: h.crypto, performance: globalThis.performance });
+  const client = createNativeClient({ adapter: scoped, timeoutMs: 20 });
+  await assert.rejects(
+    client.sendRequest(TYPE.MODE_QUERY, modeQuery({ tool_fingerprint: 'tf1:x', host: 'a.invalid' })),
+    (e) => e.code === 'native_timeout',
+  );
 });
 
 test('a refusal is typed: the reason comes from the closed set and is preserved', async () => {

@@ -33,6 +33,7 @@ import {
   PROHIBITED_FIELDS,
   REASON,
   QueryError,
+  cursorExpired,
   tooBroad,
   unsupported,
 } from './errors.js';
@@ -533,7 +534,9 @@ function resolveCursor(doc) {
     throw unsupported(REASON.MALFORMED_DOCUMENT, 'cursor must be an opaque string or null.', { received_type: typeof raw });
   }
   if (raw.length > 4096) {
-    throw unsupported(REASON.MALFORMED_DOCUMENT, 'cursor is too long to be one of ours.', { max_length: 4096 });
+    // Every cursor failure is `cursor_expired` (§13): the client's action is the same in all of
+    // them — restart from page one, told why.
+    throw cursorExpired(REASON.CURSOR_UNKNOWN, 'Cursor is too long to be one of ours.', { max_length: 4096 });
   }
   return raw;
 }

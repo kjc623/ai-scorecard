@@ -34,11 +34,37 @@ func New(window time.Duration) *Guard {
 // SetNow overrides the clock for tests.
 func (g *Guard) SetNow(now func() time.Time) { g.now = now }
 
-// Seen reports whether this (tenant, device, batch_id) was already accepted inside the window, and
-// records it if not. One call decides one batch.
-func (g *Guard) Seen(tenantID, deviceID, batchID string) bool {
+// Check reports whether this (tenant, device, batch_id) was accepted inside the window. It does not
+// record anything: the batch is only marked by Mark, after the write committed.
+//
+// The split matters. Marking a batch before it is written would answer `duplicate_batch` to a device
+// that sent a malformed batch, fixed it and re-sent it under the same batch_id -- a batch that never
+// committed would look like a replay, and the documented recovery in §5.3 ("re-send with a fresh
+// batch_id") would be the only way out of a defect the device had already fixed.
+//
+// The cost of checking before the commit is a race, and §6 already priced it: "a race there is
+// benign -- both racers fall through to the event-key constraint and both events report as
+// duplicates, which is the correct answer anyway."
+func (g *Guard) Check(tenantID, deviceID, batchID string) bool {
 	if g.window <= 0 {
 		return false
+	}
+	key := tenantID + "|" + deviceID + "|" + batchID
+	now := g.now()
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if at, ok := g.seen[key]; ok && now.Sub(at) <= g.window {
+		return true
+	}
+	return false
+}
+
+// Mark records a batch as accepted. It is called after the batch has committed, so a batch that was
+// refused for its shape can be re-sent unchanged.
+func (g *Guard) Mark(tenantID, deviceID, batchID string) {
+	if g.window <= 0 {
+		return
 	}
 	key := tenantID + "|" + deviceID + "|" + batchID
 	now := g.now()
@@ -55,9 +81,15 @@ func (g *Guard) Seen(tenantID, deviceID, batchID string) bool {
 			}
 		}
 	}
-	if at, ok := g.seen[key]; ok && now.Sub(at) <= g.window {
+	g.seen[key] = now
+}
+
+// Seen combines Check and Mark. It exists for callers that genuinely want both in one step; the
+// ingest handler does not, because the mark must follow the commit.
+func (g *Guard) Seen(tenantID, deviceID, batchID string) bool {
+	if g.Check(tenantID, deviceID, batchID) {
 		return true
 	}
-	g.seen[key] = now
+	g.Mark(tenantID, deviceID, batchID)
 	return false
 }

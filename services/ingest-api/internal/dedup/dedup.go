@@ -267,25 +267,39 @@ func basename(p string) string {
 	return p
 }
 
-// Text applies C3–C6: normalise, strip controls and invisibles (C4), collapse whitespace (C5),
-// trim; no case folding, no stemming, no punctuation stripping (C6).
+// Text applies C3–C6: normalise, strip controls and invisibles (C4), collapse every *run* of
+// whitespace to a single U+0020 (C5), trim; no case folding, no stemming, no punctuation stripping
+// (C6). Collapsing runs rather than individual characters is the point of C5: a compose box and a
+// serialised body legitimately differ in trailing newlines, line endings and doubled spaces, and
+// the digest is an identity, not a rendering.
 func (c Canonical) Text(in string) string {
 	if c.Normalize != nil {
 		in = c.Normalize(in)
 	}
 	var b strings.Builder
 	b.Grow(len(in))
+	pendingSpace := false
+	started := false
 	for _, r := range in {
 		if isStrippedControl(r) {
 			continue
 		}
 		if isCollapsibleSpace(r) {
-			b.WriteRune(' ')
+			if started {
+				pendingSpace = true
+			}
 			continue
 		}
+		if pendingSpace {
+			b.WriteRune(' ')
+			pendingSpace = false
+		}
 		b.WriteRune(r)
+		started = true
 	}
-	return strings.Trim(b.String(), " ")
+	// Trailing whitespace was never flushed, so no Trim is needed; the loop cannot emit a leading
+	// space either, because `started` is false until a non-space rune is written.
+	return b.String()
 }
 
 // DigestInput builds C9's layout:

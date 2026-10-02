@@ -68,9 +68,11 @@ func crashChild(spoolDir string) int {
 		// write interposition stops in.
 		cfg.Bounds = Bounds{MaxEntries: 5}
 	case modeFoldCrash:
-		// Small bound and small segments, so a segment dies and is folded early.
+		// A small bound makes every append evict one record, and a segment large enough to
+		// hold several records *and* the tombstones that evict them: the segment that gets
+		// folded therefore carries a non-zero counter, which is what this window is about.
 		cfg.Bounds = Bounds{MaxEntries: 4}
-		cfg.SegmentBytes = 1024
+		cfg.SegmentBytes = 2048
 	}
 	sp, err := Open(cfg)
 	if err != nil {
@@ -80,15 +82,24 @@ func crashChild(spoolDir string) int {
 	if mode == modeFoldCrash {
 		// The process is stopped between the counter fold and the segment unlink, which is
 		// the only window in which a counter could be counted twice. The marker carries the
-		// counter's value at that instant so the parent can demand the same number back.
+		// child's own ground truth — how many records it appended, and how many it still
+		// holds — so the parent can demand the drop count that arithmetic implies rather
+		// than trusting whatever the spool reports about itself.
+		appended := 0
 		testReclaimBarrier = func(seg *segment, droppedTotal uint64) {
-			signalChildValue(marker, strconv.FormatUint(droppedTotal, 10))
+			layout := make([]string, 0, len(sp.segments))
+			for _, sg := range sp.segments {
+				layout = append(layout, fmt.Sprintf("%d:sz%d:live%d:drop%d", sg.id, sg.size, sg.live(), sg.counters.dropped))
+			}
+			signalChildValue(marker, fmt.Sprintf("appended=%d|reported=%d|depth=%d|pending=%d|inflight=%d|%s",
+				appended, droppedTotal, sp.pending+sp.inFlight, sp.pending, sp.inFlight, strings.Join(layout, ",")))
 			blockForever()
 		}
 		for i := 0; i < 1000; i++ {
 			if _, err := sp.Append(testEntry(i)); err != nil {
 				return fail("append %d: %v", i, err)
 			}
+			appended++
 		}
 		return fail("the reclaim barrier never fired")
 	}
@@ -358,49 +369,123 @@ func TestCrashKillMidWriteLeavesNoTornRecord(t *testing.T) {
 func TestCrashBetweenTheCounterFoldAndTheUnlink(t *testing.T) {
 	run := newCrashRun(t)
 	child := run.spawn(t, modeFoldCrash, "")
-	atCrash, err := strconv.ParseUint(child.markerValue(t), 10, 64)
-	if err != nil {
-		t.Fatalf("the child did not report a drop counter at the crash point: %v", err)
-	}
-	if atCrash == 0 {
-		t.Fatal("the child reached the reclaim barrier with a zero drop counter, so the test proves nothing")
-	}
+	raw := child.markerValue(t)
+	t.Logf("the child reported at the crash point: %s", raw)
+	report := parseChildReport(t, raw)
 	child.kill(t)
 
-	sp := run.open(t)
-	if got := sp.DroppedTotal(); got != atCrash {
-		t.Fatalf("DroppedTotal = %d after reopening, want %d: the counters of a folded-but-not-unlinked segment were counted twice",
-			got, atCrash)
+	// The ground truth is the child's own arithmetic: every record it appended is either
+	// still held or was dropped, because this child delivers nothing.
+	if report.appended <= 0 {
+		t.Fatal("the child appended nothing, so the test proves nothing")
 	}
-	// The folded segment may still be on disk with an id at or below the watermark; its
-	// records must still be readable, and its counters must not be added again.
+	wantDropped := uint64(report.appended - report.pending)
+
+	sp := run.open(t)
 	st := sp.Extended()
+	if st.DroppedTotal != wantDropped {
+		t.Fatalf("DroppedTotal = %d after reopening, want %d (%d appended - %d still held): the counters of a folded-but-not-unlinked segment were counted twice",
+			st.DroppedTotal, wantDropped, report.appended, report.pending)
+	}
+	if st.Pending != report.pending {
+		t.Fatalf("pending = %d after reopening, want %d", st.Pending, report.pending)
+	}
 	if st.Watermark == 0 {
 		t.Fatal("the crash left no watermark, so the window under test was not reached")
 	}
-	if st.Depth != st.Pending {
-		t.Fatalf("depth %d does not match pending %d", st.Depth, st.Pending)
+	// The window is only under test if a folded segment is still on disk *and* it carried a
+	// non-zero counter when it was folded, otherwise nothing could be double counted.
+	folded := false
+	for _, id := range onDiskSegmentIDs(t, run.spoolDir) {
+		if id <= st.Watermark {
+			folded = true
+		}
+	}
+	if !folded {
+		t.Fatalf("no segment with id <= watermark %d is on disk, so the fold/unlink window was not reached", st.Watermark)
+	}
+	if !strings.Contains(raw, "drop1") && !strings.Contains(raw, "drop2") {
+		t.Fatalf("the folded segment carried no counters, so the test cannot detect a double count: %s", raw)
 	}
 
-	// A second open, and a fresh append that forces another eviction, keep the count exact.
+	// A second open, then appends at the bound: each one past the bound evicts exactly one,
+	// and every count stays exact across the segment that was folded but not unlinked.
 	if err := sp.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 	sp2 := run.openWith(t, func(c *Config) {
 		c.Bounds = Bounds{MaxEntries: 4}
-		c.SegmentBytes = 1024
+		c.SegmentBytes = 2048
 	})
-	if got := sp2.DroppedTotal(); got != atCrash {
-		t.Fatalf("DroppedTotal = %d on the second open, want %d", got, atCrash)
+	if got := sp2.DroppedTotal(); got != wantDropped {
+		t.Fatalf("DroppedTotal = %d on the second open, want %d", got, wantDropped)
 	}
-	if _, err := sp2.Append(testEntry(4242)); err != nil {
-		t.Fatalf("Append after recovery: %v", err)
+	state := sp2.Extended()
+	pending, want := state.Pending, wantDropped
+	for i := 0; i < 3; i++ {
+		if pending+1 > state.Bounds.MaxEntries {
+			pending--
+			want++
+		}
+		pending++
+		if _, err := sp2.Append(testEntry(4242 + i)); err != nil {
+			t.Fatalf("Append after recovery: %v", err)
+		}
+		if got := sp2.DroppedTotal(); got != want {
+			t.Fatalf("after %d appends at a %d-record bound: DroppedTotal = %d, want %d",
+				i+1, state.Bounds.MaxEntries, got, want)
+		}
 	}
-	if got := sp2.DroppedTotal(); got != atCrash+1 {
-		before := sp2.Extended()
-		t.Fatalf("DroppedTotal = %d after one more append at the bound, want %d (depth %d pending %d in-flight %d watermark %d segments %d bounds %+v)",
-			got, atCrash+1, before.Depth, before.Pending, before.InFlight, before.Watermark, before.Segments, before.Bounds)
+	if got := sp2.Extended().Pending; got != pending {
+		t.Fatalf("pending = %d after the appends, want %d", got, pending)
 	}
+}
+
+// childReport is the child's own account of what it did before it was killed.
+type childReport struct {
+	appended int
+	reported uint64 // what the spool said about its own counter at the crash instant
+	pending  int
+}
+
+func parseChildReport(t *testing.T, raw string) childReport {
+	t.Helper()
+	var r childReport
+	for _, field := range strings.Split(raw, "|") {
+		kv := strings.SplitN(field, "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		n, err := strconv.Atoi(kv[1])
+		if err != nil {
+			t.Fatalf("child report field %q is not a number: %v", field, err)
+		}
+		switch kv[0] {
+		case "appended":
+			r.appended = n
+		case "reported":
+			r.reported = uint64(n)
+		case "pending":
+			r.pending = n
+		}
+	}
+	return r
+}
+
+// onDiskSegmentIDs lists the segment files present in a spool directory.
+func onDiskSegmentIDs(t *testing.T, spoolDir string) []uint64 {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(spoolDir, segmentsDirName))
+	if err != nil {
+		t.Fatalf("reading the segments directory: %v", err)
+	}
+	var ids []uint64
+	for _, e := range entries {
+		if id, ok := parseSegmentName(e.Name()); ok {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 // In-flight is not a delivery. A process killed after handing records to a delivery attempt

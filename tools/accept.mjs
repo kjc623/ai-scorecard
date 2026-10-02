@@ -85,6 +85,12 @@ const GATES = [
     run: () => runNode(['tools/check-vocab.mjs']),
   },
   {
+    id: 'invariants',
+    title: 'The six invariants (.cockpit/project.json) statically, plus a query-DSL runtime probe',
+    decides: 'A structural property the architecture relies on is violated, or a component that owns one no longer exists.',
+    run: () => runNode(['tools/check-invariants.mjs']),
+  },
+  {
     id: 'db',
     title: 'Database invariants against a real server (db/tools/run-invariants.ps1)',
     decides: 'The schema asserts its own properties, as the runtime roles, on PostgreSQL.',

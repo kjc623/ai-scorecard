@@ -1,6 +1,6 @@
 # Architecture decision records
 
-Seventeen records. Each states the context, the decision, the alternatives that were actually
+Eighteen records. Each states the context, the decision, the alternatives that were actually
 considered, and the consequences — including what becomes harder and what would change the decision.
 
 All are `proposed`. None has been reviewed outside this package.
@@ -24,8 +24,9 @@ All are `proposed`. None has been reviewed outside this package.
 | [0015](0015-suspension-is-a-human-decision-and-usage-is-metered-forward.md) | Suspension is a human decision with two separate gates, and usage is metered forward | proposed |
 | [0016](0016-the-classifier-host-is-one-go-source-built-for-native-and-js-wasm.md) | The classifier host is one Go source built for native and `js/wasm` | proposed |
 | [0017](0017-the-m3-content-state-marker-is-device-local.md) | The M3 content-state marker is device-local and never enters the envelope | proposed |
+| [0018](0018-model-detection-carries-no-window.md) | `model_detection` carries no window, and a kind's branch is exhaustive over the other kinds' fields | proposed |
 
-Seventeen records. One is superseded, and the supersession is the most consequential edit in the set:
+Eighteen records. One is superseded, and the supersession is the most consequential edit in the set:
 **ADR 0014 reverses ADR 0008 on customer requirement.** ADR 0008 is kept, marked superseded, because
 its reasoning about brief §3.5 is still correct — what changed is the response to it. **ADR 0016** is an
 amendment of a different kind: it changes the classifier host's language, and with it a §4.1 clause, while

@@ -158,8 +158,18 @@ type EventOutcome struct {
 	Outcome         Outcome
 	SubmissionID    string
 	FirstReceivedAt *time.Time
-	// WonFields reports whether this observation supplied the submission's contested fields.
-	// It is read back from the store's own decision, not recomputed here.
+	// WonFields reports whether the submission's contested fields are this observation's route's.
+	// It is read back from the store's own decision (winning_source / winning_fidelity), not
+	// recomputed here, so the response cannot hold a second opinion about the tie-break.
+	//
+	// The reading is *route*-based and that is deliberate: §4.4's requirement is that "the record
+	// must carry which route produced it", and winning_source is that fact. It follows that a
+	// re-observation from the route that already holds the fields reports true even though no
+	// contested field changed, because the fields the submission carries did come from that route.
+	// An observation from a route that does not hold them reports false. Distinguishing "this
+	// observation changed a field" would need the row's pre-update winner, which the stored
+	// procedure does not return; inventing a second read for a display flag would put a
+	// ladder-shaped query back into application code, which §6 forbids.
 	WonFields bool
 }
 
@@ -227,28 +237,6 @@ func QuarantineReason(r protocol.ReasonCode) (string, bool) {
 		return "", false
 	}
 	return "", false
-}
-
-// QuarantineVocabulary is the mapping as data, so a cross-artifact check (db/tools/check-schema.mjs)
-// can read one list instead of scraping switch arms, and so a test can assert totality without
-// duplicating the mapping. A false Mapped means "no honest row exists on this surface", which is a
-// decision rather than a gap; see QuarantineReason.
-func QuarantineVocabulary() map[string]struct {
-	Code   string
-	Mapped bool
-} {
-	out := map[string]struct {
-		Code   string
-		Mapped bool
-	}{}
-	for _, r := range protocol.AllReasonCodes {
-		code, ok := QuarantineReason(r)
-		out[string(r)] = struct {
-			Code   string
-			Mapped bool
-		}{Code: code, Mapped: ok}
-	}
-	return out
 }
 
 // TTLFromLabels is a deliberately small mirror of ops.event_ttl_days(): the in-memory store needs
