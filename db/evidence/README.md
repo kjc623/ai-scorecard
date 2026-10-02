@@ -402,9 +402,28 @@ direction this schema avoids:
   either fail on those legitimate sites or need an allowlist that drifts, while
   `TestDigestHasExactlyOneSpelling` fails loudly if case folding returns *in the place it matters*
   and is verified in the failing direction. A weaker duplicate is worse than no duplicate.
-- `ops.policy_bundle.signed_digest` — **still excused.** Its owner has not stated the format, and
-  the producer declined to guess at another team's column, which is the right answer. The checker
-  asserts the excused set is exactly this one, so it cannot grow silently and a stale entry fails.
+- `ops.policy_bundle.signed_digest` — **excused, and the reason is a measurement rather than a
+  question mark.** The classifier-host owner went looking for the *writer* instead of leaving it as
+  an owner question, and found there isn't one: `services/` holds only `content-vault`, `ingest-api`
+  and `query-api` — **no `control-api` on disk** — and no code in the repository writes
+  `ops.policy_bundle`. Verified here before rewriting the entry: no `control-api` directory
+  anywhere, zero `signed_digest` hits in code (the only match is a captured `verify-all` run
+  artefact), zero writers of the table. The only policy-bundle code that exists is the
+  **consumer**, `device/capture-core/policy/verify.go`.
+
+  So the reason is "the column has no writer", which is stronger than "nobody has told us the
+  format" — and it **expires by itself**, which meant it could be checked.
+  `digest.excused-column-still-has-no-writer` walks the repository's source files (skipping version
+  control, vendored packages, local tool state, `db/`, captured evidence and generated output) for a
+  statement writing `ops.policy_bundle`, and **fails the moment one appears**, naming the writer and
+  pointing at the consumer's shape to copy. A test creates a writer, asserts the check fails, and
+  asserts the message says `EXPIRED` and names both files — so the exemption cannot survive becoming
+  false.
+
+  When control-api lands: constrain the column in the same change, and take the format from
+  `device/capture-core/policy/verify.go`'s `SignedBundle` rather than inventing one. That file
+  compares its *algorithm* case-insensitively, which is correct (JWS spells it both ways) and is
+  exactly why the digest rule has to be applied deliberately rather than by pattern.
 
 `digest.every-column-format-checked-or-excused` covers all 9 digest-shaped columns. Five negative
 controls prove it can fail: weakening a CHECK, adding a new unchecked digest column, leaving a

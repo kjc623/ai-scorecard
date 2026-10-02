@@ -17,9 +17,9 @@
 // Exit codes: 0 all structural checks passed, 1 one or more failed, 2 the checker could not run.
 // =====================================================================================
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, join, resolve, sep } from 'node:path';
+import { dirname, extname, join, relative, resolve, sep } from 'node:path';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -226,14 +226,20 @@ if (arrMatch) {
 // whole purpose is to be verified against. ops.retrieval_grant.raw_digest was exactly that, found
 // while checking content-vault's claim that it copies ops.content_object.ciphertext_sha256.
 //
-// One column is EXCUSED rather than tightened: no owner has stated that it is always sha256, and
-// adding a restriction on a guess is the direction this schema deliberately avoids (the same
-// reasoning that keeps the M2 excerpt a permission rather than a requirement). The excused set is
-// asserted to be exactly this one, so it cannot grow silently and a stale entry fails.
+// One column is EXCUSED rather than tightened. The reason is NOT "nobody has told us the format" --
+// it is that **nothing writes ops.policy_bundle in this build**: services/ holds only content-vault,
+// ingest-api and query-api, there is no control-api on disk, and no code in the repository writes
+// the table. Adding a restriction on a guess is the direction this schema deliberately avoids (the
+// same reasoning that keeps the M2 excerpt a permission rather than a requirement), and a column
+// with no writer has no shape to constrain.
+//
+// That is a measurement, not an assumption, and it is checked: see
+// digest.excused-column-still-has-no-writer below, which fails the moment a writer appears. An
+// exemption that can outlive its reason is a hole; this one cannot.
 //
 // ref.classifier_release.artifact_digest was excused here until its producer stated the format and
 // supplied the evidence (hex.EncodeToString, so lowercase by construction, plus the seed row and
-// every fixture already in that shape); it is constrained now and the excused list shrinks with it.
+// every fixture already in that shape); it is constrained now and the excused list shrank with it.
 // That is the intended lifecycle for an exemption: a placeholder for an answer, not a hole.
 const DIGEST_COLUMNS_EXCUSED = ['ops.policy_bundle.signed_digest'];
 
@@ -288,6 +294,53 @@ const DIGEST_COLUMNS_EXCUSED = ['ops.policy_bundle.signed_digest'];
 // exact, and no other. So the property is bounded and stated rather than assumed: if a third one
 // appears, the guard is a test in the package that owns it, and this comment is the pointer to
 // where the question was already answered.
+
+// THE ONE EXCUSED COLUMN'S JUSTIFICATION IS ASSERTED, SO THE EXEMPTION EXPIRES BY ITSELF.
+//
+// ops.policy_bundle.signed_digest is excused because NO COMPONENT WRITES ops.policy_bundle IN THIS
+// BUILD -- not because its format is unknown. That is a measurement (services/ holds only
+// content-vault, ingest-api and query-api; no control-api on disk; no code writes the table), and
+// it is a stronger justification than "nobody has told us yet" precisely because it can be checked
+// and because it stops being true on its own.
+//
+// So it is checked. The moment a writer appears, the reason for the exemption is gone and this
+// fails, naming the writer and pointing at the consumer's shape. An exemption whose precondition is
+// unverified is a hole that waits for someone to notice; this one cannot outlive its reason.
+const POLICY_BUNDLE_WRITE = /(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+ops\.policy_bundle\b/i;
+
+{
+  const CODE_EXT = new Set(['.go', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.rs', '.cs', '.py', '.ps1']);
+  // Skipped because they are not authored source: version control, vendored packages, local tool
+  // state, the schema itself, captured run output, and generated artefacts.
+  const SKIP_DIR = new Set(['.git', 'node_modules', '.tools', 'db', 'evidence', '.integration', 'generated', 'dist', 'build']);
+
+  const writers = [];
+  const walk = (dir) => {
+    let entries;
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (!SKIP_DIR.has(entry.name)) walk(full);
+        continue;
+      }
+      if (!CODE_EXT.has(extname(entry.name))) continue;
+      let text;
+      try { text = readFileSync(full, 'utf8'); } catch { continue; }
+      text.split(/\r?\n/).forEach((line, i) => {
+        if (POLICY_BUNDLE_WRITE.test(line)) {
+          writers.push(`${relative(REPO, full).split(sep).join('/')}:${i + 1}`);
+        }
+      });
+    }
+  };
+  walk(REPO);
+
+  check('digest.excused-column-still-has-no-writer', writers.length === 0,
+    writers.length === 0
+      ? 'ops.policy_bundle has no writer in this build, so excusing signed_digest is a measurement rather than an assumption'
+      : `a component now writes ops.policy_bundle (${writers.slice(0, 3).join(', ')}${writers.length > 3 ? `, +${writers.length - 3} more` : ''}), so the exemption recorded for ops.policy_bundle.signed_digest has EXPIRED: constrain the column in the same change that lands the writer, and take the format from the consumer at device/capture-core/policy/verify.go rather than inventing one`);
+}
 
 // -------------------------------------------------------------------------------------
 // 3. Append-only / tamper-evidence triggers

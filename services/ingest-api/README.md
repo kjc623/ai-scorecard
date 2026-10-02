@@ -126,6 +126,56 @@ those two, so a new code cannot quietly lose its quarantine row. dbuilder's
 `db/tools/check-schema.mjs` checks the other direction across the seam (every code this service
 emits is one the CHECK accepts).
 
+## Configuration: flags, environment, and the deployment
+
+Every setting is settable by a flag and by an environment variable, and **a flag wins**. Precedence is
+decided by asking the flag package which flags were passed, so `--region ""` is a request rather than
+an absence. The environment names are the deployment's names: the `SAC_*` variables
+`infra/main.bicep` passes to the ingest-api container app.
+
+| Setting | Flag | Environment | Passed by |
+|---|---|---|---|
+| identity | `--role` | `SAC_ROLE` | `infra/main.bicep` |
+| database host / name | `--pg-host`, `--pg-database` | `SAC_PG_HOST`, `SAC_PG_DATABASE` | `infra/main.bicep` |
+| blob ciphertext endpoint | `--blob-ciphertext-endpoint` | `SAC_BLOB_CIPHERTEXT_ENDPOINT` | `infra/main.bicep` — read, validated, reported **unused** (the ingest path does no blob I/O) |
+| telemetry | — | `SAC_APPINSIGHTS` | `infra/main.bicep` — read, validated, never logged, not exported to |
+| listen address | `--addr` | `SAC_HTTP_ADDR` | the image (`0.0.0.0:8080`) |
+| store mode | `--store` | `SAC_STORE` | the image (`memory`) |
+| contract schema | `--schema` | `SAC_SCHEMA` | the image (`/etc/sac/…`) |
+| route ranking | `--routes-file` | `SAC_ROUTES_FILE` | the image — `ref.route_fidelity` ships as data, never compiled in (§4.4) |
+| region | `--region` | `SAC_REGION` | **nobody yet**: `infra/main.bicep` passes no region, so §12 region pinning is inert in Azure. The agreement test prints this gap on every run. |
+
+The agreement between the binary and the deployment is asserted, not assumed:
+`TestDeploymentEnvironmentNamesAreRead` and `TestEveryReadNameIsEitherPassedOrDocumented` in
+`cmd/ingest-api/infra_agreement_test.go` read `infra/main.bicep` and this package's own source. They
+fail if a name is passed to a process that never reads it — which is what the deployment did before —
+or read without being accounted for. `node lab/tools/check-config-agreement.mjs` adds both Dockerfiles
+and the lab compose file to the same check.
+
+## Containers
+
+`Dockerfile` has three stages:
+
+| Stage | Base | For |
+|---|---|---|
+| `build` | `golang:1.27-alpine` | compiling from source; needs a toolchain image |
+| `lab` | `alpine:latest` | a binary compiled by `node lab/build.mjs`; **no toolchain image needed**, which is what makes the offline lab runnable |
+| `production` | `gcr.io/distroless/static-debian12:nonroot` | the default target of `docker build .` — no shell, non-root |
+
+The build context is the **repository root** (`docker build -f services/ingest-api/Dockerfile .`),
+because the image needs `contracts/event-envelope.schema.json` and
+`services/ingest-api/testdata/route-fidelity.seed.json` — neither of which is under the service
+directory — and the Go module replaces its two dependencies with paths relative to the module root. The
+image bakes no secret: only the non-secret vocabulary above, with `SAC_HTTP_ADDR` and the two file paths
+as image-level defaults because a container platform cannot mount a repository path.
+
+Two probe paths matter, and `infra/modules/container-app.bicep` uses both: `/healthz` (liveness, the
+service's own) and `/readyz` (readiness, added by `cmd/ingest-api/probes.go` — it did not exist before,
+so a container from this binary would have stayed unready behind a 404). Readiness asks the store to
+read `ref.route_fidelity`, which is a real query once the SQL mode exists, and answers 503 when it
+fails. The module's own comment asks for exactly that distinction: "a service holding a broken database
+connection is ready to be taken out of rotation, not killed".
+
 ## Running the checks
 
 No network access, no `go get` (`GOPROXY=off`); PostgreSQL is reached through `docker exec psql`
@@ -183,11 +233,15 @@ seeds).
 
 Stated so a reader does not infer more than the tests show.
 
-1. **The `database/sql` plumbing is not executed.** This repository has no PostgreSQL wire driver
-   offline, so `store.NewSQL` is never driven end to end. What *is* verified is the statement text —
-   executed through `PREPARE`/`EXECUTE` against the live schema — and the stored procedure's
-   semantics. A binary embedding this service must register a driver; `sql.Open` without one fails
-   with a message that says so.
+1. **The `database/sql` plumbing is not executed.** `store.NewSQL` is never driven end to end, so
+   connection pooling, the transaction boundary and driver-level error mapping are unverified. What
+   *is* verified is the statement text — executed through `PREPARE`/`EXECUTE` against the live schema —
+   and the stored procedure's semantics. `--store sql` therefore refuses to start and names the driver,
+   the variables it read and the commands that close the gap; it never falls back to memory.
+   The nuance worth knowing: `github.com/jackc/pgx/v5` v5.11.0 **is** in this host's module cache, with
+   its dependencies. What makes the one-line `require` unsafe here is the acceptance harness, which runs
+   every Go package with `GOMODCACHE` pointed at an empty `.tools/gopath/pkg/mod` — on a host whose
+   module cache is the default one, F4 closes in a single commit.
 2. **No concurrency testing of the SQL path.** The memory store is mutex-serialised; the database
    path relies on the unique constraints and row locks, which were not stressed.
 3. **`duplicate_batch` is a per-process window** (`internal/batchguard`). With more than one ingest

@@ -1,0 +1,62 @@
+in-browser-check — proving the browser half in a real Chromium browser
+date:     2026-10-02T18:50:36.286Z
+node:     v22.23.1
+package:  C:\Users\kyle\Downloads\architecture\apps\capture-extension
+
+browser:  C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe
+
+browser:  Edg/154.0.4258.48
+cdp port: 52827
+origin:   http://127.0.0.1:52826
+
+[PASS] check 1: the extension loads and its MV3 service worker registers
+        CDP Target.getTargets lists the service worker target: chrome-extension://ileppbadlclnikhkddpliolbgifliffh/background/service-worker.js
+        proxy signal: Target.getTargets filtered to type=service_worker with our own script path,
+        read over the browser's DevTools socket. It is the browser asserting that an MV3 worker
+        for this extension is registered — not the extension reporting on itself.
+        extension id: ileppbadlclnikhkddpliolbgifliffh
+        manifest/permission errors in the browser log: none
+
+[FAIL] check 2: the webRequest listener observes a real request
+        the page reached the server (392 bytes POSTed) but the extension observed 0 requests
+        counters: {"observed":0,"emitted":0,"skipped_not_generative":0,"blind_tunnelled":0,"not_cooperative":0,"dropped":0,"errors":1}
+        browser log: "You do not have permission to use blocking webRequest listeners. Be sure to declare the webRequestBlocking permission in your manifest. Note that webRequestBlocking is only allowed for extensions that are installed using ExtensionInstallForcelist.", source:  (0)
+
+[FAIL] check 3: M0 produces an observation carrying no content field
+        no observation reached the extension queue, so the M0 property could not be exercised
+        queue: {"depth":0,"capacity":200,"dropped_total":0,"dropped_bytes_total":0,"dropped_by_kind":{},"enqueued_total":0,"delivered_total":0,"depth_bytes":0}
+        this check depends on check 2
+
+[PASS] check 4: the absent native channel degrades rather than breaks
+        capture-core absent + extension degraded, and the page's request completed normally
+        the page reported: completed:200
+        health report: core=absent state=degraded collector=capture_extension
+        counters: {"observed":0,"emitted":0,"skipped_not_generative":0,"blind_tunnelled":0,"not_cooperative":0,"dropped":0,"errors":1}
+        queue depth: 0 (held in memory, nothing durable)
+        browser logged the native-host lookup: yes
+        §3.4: a failed connect is capture-core `absent` plus extension-side `degraded`, never "no observations".
+        §7.4/brief §6 fail-open: the user's request is unaffected.
+
+[NOT-OBSERVABLE] check 5: a blocked request is cancelled AND still recorded
+        an unpacked load revokes webRequestBlocking, so no blocking listener can be registered here
+        the browser said, verbatim: "You do not have permission to use blocking webRequest listeners. Be sure to declare the webRequestBlocking permission in your manifest. Note that webRequestBlocking is only allowed for extensions that are installed using ExtensionInstallForcelist.", source:  (0)
+        the manifest declares webRequestBlocking and a policy-installed extension retains it (E1, §7.4);
+        the unpacked *load* is what removes it, so this is a limit of the load path, not of the extension.
+        what a human must do: install the extension by policy (ExtensionInstallForcelist) — an elevated
+        registry write — then load a bundle with a `blocked` rule and confirm net::ERR_BLOCKED_BY_CLIENT
+        together with an observation for the same request.
+
+──────────────────────────────────────────────────────────────────────────────
+summary
+  PASS            check 1: the extension loads and its MV3 service worker registers
+  FAIL            check 2: the webRequest listener observes a real request
+  FAIL            check 3: M0 produces an observation carrying no content field
+  PASS            check 4: the absent native channel degrades rather than breaks
+  NOT-OBSERVABLE  check 5: a blocked request is cancelled AND still recorded
+  5 check(s): 2 pass, 2 fail, 1 not observable
+
+NOT VERIFIED BY THIS RUN, stated so it is not mistaken for a pass:
+  * check 5 (inline block) — the unpacked load revokes webRequestBlocking; see the check above.
+  * the content script reading a real user-selected File — no file is attached in this run.
+  * a connected native channel — no host is registered on this host.
+  * Google Chrome specifically — Chrome 154 refuses --load-extension; this ran in Edge (Chromium).

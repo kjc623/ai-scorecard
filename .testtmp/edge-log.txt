@@ -1,2 +1,0 @@
-[8624:34876:1002/144850.982:WARNING:chrome\browser\extensions\external_registry_loader_win.cc:283] Error observing HKLM: 5
-[8624:34876:1002/144851.236:INFO:CONSOLE:5645] "[ProtocolLaunch] handler constructed; wiring port events.", source: chrome-extension://ndcpkimcihhghdcddljkfmmjccdmcmof/background.rollup.js (5645)

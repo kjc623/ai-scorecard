@@ -134,6 +134,62 @@ Identity comes from the internal ingress (`internal/auth`): the header authentic
 headers **only** because the ingress authenticates the peer and strips any inbound copy. Every
 missing fact is a refusal — there is no anonymous principal and no default tenant.
 
+`GET /readyz` is added by the binary (`cmd/content-vault/probes.go`), not by the service handler:
+`infra/modules/container-app.bicep` probes both `/healthz` (liveness) and `/readyz` (readiness), and
+before this the second path did not exist, so a container from this binary would have stayed unready
+behind a 404. Readiness answers a question this service can actually fail — *is the key backend
+implemented?* — and returns 503 for a process started with an acknowledged-but-absent KMS, which is
+alive and must not be sent traffic.
+
+## Configuration: flags, environment, and the deployment
+
+Every setting is settable by a flag and by an environment variable, and **a flag wins**. Precedence is
+decided by asking the flag package which flags were passed, so `--addr ""` is a request rather than an
+absence. The environment names are the deployment's names: the `SAC_*` variables
+`infra/main.bicep` passes to the content-vault container app.
+
+| Setting | Flag | Environment | Passed by |
+|---|---|---|---|
+| identity | `--role` | `SAC_ROLE` | `infra/main.bicep` |
+| database host / name | `--pg-host`, `--pg-database` | `SAC_PG_HOST`, `SAC_PG_DATABASE` | `infra/main.bicep` |
+| Key Vault URI | `--keyvault-uri` | `SAC_KEYVAULT_URI` | `infra/main.bicep` |
+| blob ciphertext endpoint | `--blob-ciphertext-endpoint` | `SAC_BLOB_CIPHERTEXT_ENDPOINT` | `infra/main.bicep` |
+| internal ingress | — | `SAC_INTERNAL_ONLY` | `infra/main.bicep`; also the non-loopback acknowledgement |
+| telemetry | — | `SAC_APPINSIGHTS` | `infra/main.bicep` (read, validated, never logged, not exported to) |
+| listen address | `--addr` | `SAC_HTTP_ADDR` | the image (`0.0.0.0:8080`) |
+| store mode | `--store` | `SAC_STORE` | the image (`memory`) |
+| key backend | `--key-backend` | `SAC_KEY_BACKEND` | the image (`local`) |
+| non-loopback acknowledgement | `--allow-non-loopback` | `SAC_ALLOW_NON_LOOPBACK` | the image, or `SAC_INTERNAL_ONLY=true` |
+
+`SAC_KEYVAULT_URI` supersedes `CONTENT_VAULT_KMS_ENDPOINT` for the kms backend; the `CONTENT_VAULT_*`
+variables stay as they are, because they are inputs from the control plane (scope tiers, KMS mode)
+rather than deployment parameters.
+
+The agreement between this table and `infra/main.bicep` is asserted, not assumed:
+`TestDeploymentEnvironmentNamesAreRead` and `TestEveryReadNameIsEitherPassedOrDocumented` in
+`cmd/content-vault/infra_agreement_test.go` read the Bicep and this package's own source and fail if a
+name is passed to something that never reads it, or read without being accounted for.
+`node lab/tools/check-config-agreement.mjs` is the wider view across both services, both Dockerfiles
+and `lab/docker-compose.yml`.
+
+## Containers
+
+`Dockerfile` has three stages. `build` compiles from source and needs a Go toolchain image;
+`production` is distroless and non-root (the default target of `docker build .`); `lab` packages a
+binary compiled by `node lab/build.mjs` and needs no toolchain image at all, which is what makes the
+lab runnable on a host with no network and no cached golang image:
+
+```powershell
+node lab/build.mjs                      # cross-compiles and builds sac/content-vault:lab
+docker build --target lab -f services/content-vault/Dockerfile -t sac/content-vault:lab .
+```
+
+The build context is the **repository root**, because the Go module graph is expressed relative to it.
+The image sets `SAC_HTTP_ADDR=0.0.0.0:8080` and `SAC_INTERNAL_ONLY=true`: a container's loopback is
+unreachable, and `SAC_INTERNAL_ONLY=true` is the deployment's own statement of the fact
+`--allow-non-loopback` asks an operator to assert. It carries no secret. `CMD` is `["serve"]` because
+the binary is subcommand-shaped, so `version` and `schema-sql` remain reachable.
+
 ## Build and test
 
 ```powershell

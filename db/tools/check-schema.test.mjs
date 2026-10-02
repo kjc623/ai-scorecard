@@ -365,6 +365,31 @@ expectCaught(
   'digest.every-column-format-checked-or-excused',
 );
 
+// The one excused column is excused because nothing writes its table yet. That reason has to be
+// checkable, or the exemption outlives it. This test creates a writer and expects the check to
+// notice -- so the exemption cannot survive becoming false.
+test('digests: the excused column\'s justification is checked, so the exemption expires by itself', () => {
+  const writer = q(root, 'services/ingest-api/internal/probe/policy_writer.go');
+  mkdirSync(dirname(writer), { recursive: true });
+
+  // Before: no writer anywhere in the fixture, so the exemption stands.
+  assert.equal(runChecker().checks.get('digest.excused-column-still-has-no-writer')?.status, 'PASS',
+    'the fixture has no writer, so the exemption should hold');
+
+  writeFileSync(writer, 'package probe\n\nconst stmt = `INSERT INTO ops.policy_bundle (tenant_id) VALUES ($1)`\n');
+  try {
+    const r = runChecker();
+    assert.equal(r.code, 1, 'a writer appearing must fail the run, not just warn');
+    const hit = r.checks.get('digest.excused-column-still-has-no-writer');
+    assert.equal(hit?.status, 'FAIL');
+    assert.match(hit.detail, /EXPIRED/, 'the failure must say the exemption expired, not merely that something changed');
+    assert.match(hit.detail, /policy_writer\.go/, 'the failure must name the writer');
+    assert.match(hit.detail, /verify\.go/, 'the failure must point at the consumer whose shape to take');
+  } finally {
+    rmSync(writer, { force: true });
+  }
+});
+
 // -------------------------------------------------------------------------------------
 // Documentation drift: a WARNING, and it must clear when the prose is fixed
 // -------------------------------------------------------------------------------------
