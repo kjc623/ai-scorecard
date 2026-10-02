@@ -314,10 +314,19 @@ func readArtifact(root *os.Root, name string, max int64) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(f, max+1))
 }
 
+// verifyDigest compares a declared digest with the one computed over the artefact.
+//
+// The comparison is **exact**, not case-insensitive, and that is a decision rather than a
+// simplification: a digest has one spelling, `sha256:<64 lowercase hex>`. Uppercase hex is the same
+// bytes written differently, which is exactly why it must not be accepted as a second spelling —
+// the database's own columns say so (`ops.content_object.ciphertext_sha256` and
+// `ops.retrieval_grant.raw_digest` both carry `~ '^sha256:[0-9a-f]{64}$'`), and a loader that
+// accepted the uppercase form would admit a release the store would refuse. Two components each
+// individually correct, disagreeing at the seam, is the class of defect this line closes.
 func verifyDigest(raw []byte, want, what string) error {
 	got := digestOf(raw)
-	if !strings.EqualFold(got, want) {
-		return fmt.Errorf("%w: %s is %s, manifest declares %s", ErrDigest, what, got, want)
+	if got != want {
+		return fmt.Errorf("%w: %s is %s, manifest declares %s (a digest has one spelling: sha256:<64 lowercase hex>)", ErrDigest, what, got, want)
 	}
 	return nil
 }

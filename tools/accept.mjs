@@ -86,8 +86,9 @@ const GATES = [
   },
   {
     id: 'invariants',
-    title: 'The six invariants (.cockpit/project.json) statically, plus a query-DSL runtime probe',
-    decides: 'A structural property the architecture relies on is violated, or a component that owns one no longer exists.',
+    title: 'The six declared invariants, plus the mechanical half of INV-3 and a query-DSL runtime probe',
+    decides:
+      'A structural property the architecture relies on is violated, or a component that owns one no longer exists. The checker reports seven rows because INV-3 is checked twice: once as "the dashboard contains no SQL" and once as "the DSL binds every value as a parameter", which are different claims about the same invariant.',
     run: () => runNode(['tools/check-invariants.mjs']),
   },
   {

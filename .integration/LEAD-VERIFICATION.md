@@ -323,6 +323,59 @@ decision (how much edge isolation each tenant gets), so it is recorded rather th
 smaller finding is an unpriced line item: §11.1 says HSM-backed keys cost extra but gives no rate, while
 §11.2 charges ~30 keys at about $2 in total.
 
+## L15. Seven gates, all green — and the endpoint runs as a process (round 6)
+
+```
+node tools/accept.mjs
+  [PASS] packages    16 packages, 0 fail, 0 missing, 0 timeouts
+  [PASS] contract    codegen drift
+  [PASS] seams       field names against the contract
+  [PASS] vocab       enumerated vocabularies
+  [PASS] invariants  7 rows, 0 fail, 0 blocked, 0 partial
+  [PASS] endpoint    capture-core --selftest: 21 assertions, 0 failures
+  [PASS] db          46 assertions on a real PostgreSQL server
+  VERDICT: every gate passed. This is the acceptance run.
+```
+
+The `endpoint` gate is new and it is the one that changes what "green" means here. Every other gate
+tests a component or a seam; this one builds `device/capture-core/cmd/capture-core` and runs
+`--selftest`, which drives the **assembled** agent: the literal §3.5 startup and shutdown order
+(loopback released first, the port free afterwards), six real extension frames through the real
+framing, the native-messaging host as **two separate child processes** (one with the classifier host
+up, one with it down, the second proving the rules-only fallback), the real spool, M0 carrying no
+content-derived field, and every coverage row validating as `protocol.HealthReport`.
+
+It mints its own signed bundle, opens its own spool, uses ephemeral ports and removes its own work
+directory, so it is safe to run from a gate. I reproduced it independently: build exit 0, selftest
+exit 0, 21 assertions.
+
+## L16. A correction to the record, and what it is worth
+
+I diagnosed the failing child-process check as "the fixture uses a Unix socket, which does not exist
+on Windows". **That was wrong**, and the owner said so with a stack trace: the child exited 2 from a
+panic in the shutdown path — a typed-nil `*loopback.Broker` assigned to `Supervisor.Loopback` passed
+the `!= nil` test, the `Releaser` assertion succeeded, and `Release` dereferenced a nil receiver.
+AF_UNIX works on this host and always did; the classifier WARN I saw was §3.4's degradation working
+correctly, and I read it as the cause when it was a symptom.
+
+The fix is better than the one I asked for: a typed-nil guard, per-step panic containment in the
+shutdown column, and two regression tests. The lesson is the one this project keeps re-teaching — a
+plausible mechanism that fits the visible output is not a diagnosis. I had the WARN line and built a
+story around it; the owner had the stack trace.
+
+## L17. Security findings this round
+
+- **A false security finding, fixed.** The loopback broker reported `tampered` permanently after a
+  port conflict ended, even though it had re-bound and was serving. `tampered` is the only state that
+  raises a security finding, so every ordinary port conflict would have raised a permanent alert on a
+  working device. Now `tampered` is present-tense while the conflict history is sticky, separately,
+  on the coverage row — the option I asked for, with the reasoning recorded at the method.
+- **A cross-component digest inconsistency, being fixed.** The classifier host's release loader
+  compares digests with `strings.EqualFold` while the database column is lowercase-only by CHECK, so a
+  hand-written uppercase manifest digest would be accepted by the loader and refused by the store.
+  Third instance of this class in the project, after the content-encoding break and the reason-code
+  vocabulary conflict.
+
 ---
 
 ## What is NOT verified at this point
