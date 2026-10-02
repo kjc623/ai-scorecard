@@ -417,12 +417,17 @@ func (h *fakeClassifierHost) close() {
 // selftestBundle is the policy the run enforces. The tool modes come from the golden frames' own
 // tool fingerprints, so the resolved mode for each frame is the mode the frame's name claims:
 // gemini is an M0 tool (its frame carries no content), chatgpt and claude are M1/M2 tools.
+//
+// The tenant default is M3 on purpose. §11.1 takes the most restrictive value across every axis and
+// applies the tenant default where an axis has no entry, which makes the default a tenant-wide
+// *ceiling* that a tool entry can only lower. A default of M0 would cap every tool at M0 and the run
+// would prove nothing about M1/M2 handling.
 func selftestBundle(heldPort, upstreamPort int) *policy.Bundle {
 	return &policy.Bundle{
 		Version:       "selftest-1",
 		EffectiveAt:   time.Now().Add(-time.Hour),
 		Actor:         "selftest",
-		TenantDefault: protocol.ModeM0,
+		TenantDefault: protocol.ModeM3,
 		ToolModes: map[string]protocol.CollectionMode{
 			"genai.web.chat.v1:chatgpt": protocol.ModeM2,
 			"genai.web.chat.v1:claude":  protocol.ModeM1,

@@ -15,7 +15,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shadow-ai-capture/device/capture-core/core"
 	"github.com/shadow-ai-capture/device/capture-core/policy"
 	"github.com/shadow-ai-capture/device/capture-core/proxy/loopback"
 	"github.com/shadow-ai-capture/device/protocol"
@@ -221,8 +220,8 @@ func claimA() {
 	obs, bodies := pipe.snapshot()
 	captured := len(obs) == 1 && len(bodies) == 1 && sha256.Sum256(bodies[0]) == sentSum
 	if len(obs) == 1 {
-		say("  pipeline observed        : route=%s kind=%s size_bytes=%d mode=%s content_retained=%d bytes",
-			obs[0].Route, obs[0].Kind, obs[0].SizeBytes, obs[0].Mode, len(bodies[0]))
+		say("  pipeline observed        : route=%s kind=%s size_bytes=%d content_retained=%d bytes",
+			obs[0].Route, obs[0].Kind, obs[0].SizeBytes, len(bodies[0]))
 	}
 	extracted := ""
 	if len(obs) == 1 {
