@@ -437,7 +437,7 @@ export function shapeVector(req) {
   return {
     v: 1,
     destination: registeredDomain(host),
-    method: String(req.method || 'GET').toUpperCase(),
+    method: String(req.forced_method || req.method || 'GET').toUpperCase(),
     path_shape: r.path_signal || normalisePath(pathnameOf(req.url)),
     content_type: contentTypeClass(req.headers || {}).base,
     body_shape: r.structure,

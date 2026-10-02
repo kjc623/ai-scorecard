@@ -40,9 +40,27 @@ type ClassifyRequest struct {
 	// resident release"; a caller never selects a release, policy does.
 	ReleaseID string `json:"release_id,omitempty"`
 
-	// Budget is the wall-clock budget for the whole pipeline. A stage that would exceed it
-	// degrades rather than blocking the submission (C21).
-	Budget time.Duration `json:"budget_ms"`
+	// BudgetMS is the wall-clock budget for the whole pipeline, in **milliseconds**. It is an
+	// explicit integer rather than a time.Duration because encoding/json marshals a Duration as
+	// nanoseconds, which would put a number whose unit disagrees with its name on the wire and
+	// silently mean 150 ns to a JavaScript host reading "budget_ms": 150.
+	BudgetMS int64 `json:"budget_ms"`
+
+	// Budget returns the budget as a duration, for the Go side.
+	Budget time.Duration `json:"-"`
+}
+
+// EffectiveBudget returns the request's budget as a duration, honouring whichever field the
+// caller set. A zero budget means "no explicit budget": the host then applies its own default
+// rather than treating zero as "fail immediately".
+func (q ClassifyRequest) EffectiveBudget() (time.Duration, bool) {
+	if q.BudgetMS > 0 {
+		return time.Duration(q.BudgetMS) * time.Millisecond, true
+	}
+	if q.Budget > 0 {
+		return q.Budget, true
+	}
+	return 0, false
 }
 
 // Label is one classification verdict: a label set, never a boolean and never a bare
@@ -67,6 +85,12 @@ type Excerpt struct {
 // MaxExcerptChars is the structural bound on a minimised excerpt. "Minimised" is enforced by
 // the contract's maxLength and by this constant, not by convention.
 const MaxExcerptChars = 2048
+
+// Excerpt kind values, from the contract's $defs/excerpt.
+const (
+	ExcerptMatchSpan      = "match_span"
+	ExcerptRedactedWindow = "redacted_window"
+)
 
 // StageResult records one pipeline stage's outcome, so a degraded answer names the stage that
 // degraded instead of being an unattributed failure.
@@ -96,6 +120,13 @@ type ClassifyResponse struct {
 // Validate enforces the cross-field rules a response must satisfy regardless of what the
 // pipeline did. It is called by the core before the response is allowed into an envelope, so a
 // defective classifier cannot widen what the device claims to know.
+//
+// The empty-label rule is subtle and was wrong here once: an event with **no labels** is a
+// legitimate output meaning the classifier ran and found nothing — `confidence: high` with an
+// empty label set (docs/01-collectors.md §9.2, §9.7's "not emitted when" column, and the
+// contract's `labels` has maxItems 64 and no minItems). What is *not* legitimate is an empty
+// label set that is also degraded, because §9.7 requires every exhaustion path to say so, which
+// is the case that would otherwise be reported as "no sensitive data found".
 func (r ClassifyResponse) Validate() error {
 	if r.ClassifierVersion == "" {
 		return fmt.Errorf("protocol: classifier response without a classifier_version cannot be attributed to a release")
@@ -106,11 +137,18 @@ func (r ClassifyResponse) Validate() error {
 		return fmt.Errorf("protocol: classifier response has confidence %q outside the closed set", r.Confidence)
 	}
 	if r.Confidence == ConfidenceDegraded {
-		return nil // a degraded answer carries no confident label; the envelope omits labels
+		// A degraded answer carries no confident label: the envelope omits labels entirely and
+		// reports the stage that did not complete instead.
+		if len(r.Labels) > 0 {
+			return fmt.Errorf("protocol: a degraded response carries %d labels; a stage that did not complete cannot produce a confident verdict", len(r.Labels))
+		}
+		if !anyStageFailed(r.Stages) {
+			return fmt.Errorf("protocol: a degraded response names no failed or truncated stage, so the cause is unattributable")
+		}
+		return nil
 	}
-	if len(r.Labels) == 0 {
-		return fmt.Errorf("protocol: a non-degraded response must carry at least one label or be degraded")
-	}
+	// Non-degraded: labels may legitimately be empty (the classifier ran and found nothing), so
+	// only the label contents are checked.
 	for i, l := range r.Labels {
 		if l.Class == "" {
 			return fmt.Errorf("protocol: label %d has no class", i)
@@ -123,7 +161,21 @@ func (r ClassifyResponse) Validate() error {
 		return fmt.Errorf("protocol: excerpt is %d characters, over the %d-character structural bound",
 			len([]rune(r.Excerpt.Text)), MaxExcerptChars)
 	}
+	if r.Excerpt != nil && r.Excerpt.Kind != ExcerptMatchSpan && r.Excerpt.Kind != ExcerptRedactedWindow {
+		return fmt.Errorf("protocol: excerpt kind %q outside the closed set", r.Excerpt.Kind)
+	}
 	return nil
+}
+
+// anyStageFailed reports whether a stage did not complete, which is what makes a degraded answer
+// attributable to something rather than to "the classifier felt unwell".
+func anyStageFailed(stages []StageResult) bool {
+	for _, s := range stages {
+		if s.Failed || s.Truncated {
+			return true
+		}
+	}
+	return false
 }
 
 // Validate rejects a request that asks the classifier to do something the mode forbids. The
@@ -136,11 +188,6 @@ func (q ClassifyRequest) Validate() error {
 	if !q.Mode.ReadsContent() && len(q.Content) > 0 {
 		return fmt.Errorf("protocol: classify request carries %d content bytes at mode %s, which forbids reading content",
 			len(q.Content), q.Mode)
-	}
-	if len(q.Content) == 0 && q.Mode.ReadsContent() {
-		// Allowed: an over-cap payload is hashed and sized and classified on shape alone,
-		// which the contract records as `confidence: degraded`.
-		return nil
 	}
 	return nil
 }

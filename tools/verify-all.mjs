@@ -141,6 +141,7 @@ function run(pkg) {
   const output = `${res.stdout ?? ''}${res.stderr ?? ''}`.trim();
   // `go test` exits 0 for a package with no test files, which would report a component as
   // passing when it has no tests at all. That is a gap, not a pass, so it is reported as one.
+  // The same applies to a module that exists but has no packages yet.
   if (pkg.kind === 'go' && res.status === 0 && /\[no test files\]/.test(output)) {
     return {
       label,
@@ -148,6 +149,15 @@ function run(pkg) {
       code: 0,
       seconds,
       output: `${output}\n(go test reported no test files: this package has no suite, so nothing was proven)`,
+    };
+  }
+  if (pkg.kind === 'go' && /matched no packages/.test(output)) {
+    return {
+      label,
+      status: 'NO-TESTS',
+      code: 0,
+      seconds,
+      output: `${output}\n(the module exists but declares no packages yet, so nothing was compiled)`,
     };
   }
   return {

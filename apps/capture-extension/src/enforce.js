@@ -27,6 +27,22 @@ import { DETAIL } from './messages.js';
 /** §7.4: "the budget is the 300 ms target, not the 150 ms classification target". */
 export const DECISION_BUDGET_MS = 300;
 
+/**
+ * The confirmation window, kept separate from the decision budget on purpose.
+ *
+ * §7.4's 300 ms is a *decision* budget: it bounds evaluating the rules and reaching a verdict,
+ * because "the only work permitted to delay a request is the inline warn/block decision, bounded
+ * by §9.4's decision budget". A `warned` verdict then has to be rendered and answered by a human,
+ * and a human does not answer inside 300 ms — so treating the two as one number would make
+ * `warned` behaviourally identical to fail-open, and the schema's `warned` action unreachable.
+ *
+ * This is therefore a **decision the document leaves open**, recorded as such in the module
+ * report: rule evaluation is bounded at 300 ms, the confirmation window is bounded separately,
+ * and the separation is what keeps a `warned` rule from silently degrading to `logged`.
+ * Whoever owns the deployment can set this; it is bundle-overridable in `policy.rules()` usage.
+ */
+export const CONFIRMATION_WINDOW_MS = 20_000;
+
 /** The closed decision vocabulary (protocol.Action). */
 export const DECISION = Object.freeze({ BLOCKED: 'blocked', WARNED: 'warned', LOGGED: 'logged' });
 

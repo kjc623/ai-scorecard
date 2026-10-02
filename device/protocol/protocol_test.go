@@ -191,8 +191,9 @@ func TestClassifyRequestRefusesContentAtM0(t *testing.T) {
 	}
 }
 
-// §9.7: `degraded` means classification was attempted and did not complete. A non-degraded
-// answer with no labels, or a degraded answer with a confident label, are both defects.
+// §9.7: `degraded` means classification was attempted and did not complete. §9.2 and §9.7's
+// "not emitted when" column also fix the other half: an empty label set with `confidence: high`
+// is a *legitimate* output meaning the classifier ran and found nothing, so it must validate.
 func TestClassifyResponseConfidenceSemantics(t *testing.T) {
 	ok := ClassifyResponse{
 		ClassifierVersion: "c-1",
@@ -207,25 +208,125 @@ func TestClassifyResponseConfidenceSemantics(t *testing.T) {
 	if err := noVersion.Validate(); err == nil {
 		t.Fatal("a response with no classifier version was accepted; a label that cannot be attributed to a release is not evidence")
 	}
-	noLabels := ok
-	noLabels.Labels = nil
-	if err := noLabels.Validate(); err == nil {
-		t.Fatal("a non-degraded response with no labels was accepted")
+	// The defect this test now pins: empty labels with high confidence is the classifier having
+	// found nothing, which is a fact about the data, not a failure.
+	empty := ClassifyResponse{ClassifierVersion: "c-1", Confidence: ConfidenceHigh}
+	if err := empty.Validate(); err != nil {
+		t.Fatalf("an empty label set with confidence high was refused: %v (docs/01-collectors.md §9.2)", err)
 	}
 	badScore := ok
 	badScore.Labels = []Label{{Class: "x", Score: 1.5}}
 	if err := badScore.Validate(); err == nil {
 		t.Fatal("a label score outside [0,1] was accepted")
 	}
+	noClass := ok
+	noClass.Labels = []Label{{Score: 0.5}}
+	if err := noClass.Validate(); err == nil {
+		t.Fatal("a label with no class was accepted")
+	}
+	// A degraded answer must name the stage that did not complete, and must not assert a
+	// confident verdict at the same time.
 	degraded := ClassifyResponse{ClassifierVersion: "c-1", Confidence: ConfidenceDegraded}
+	if err := degraded.Validate(); err == nil {
+		t.Fatal("a degraded response naming no failed stage was accepted; the cause would be unattributable")
+	}
+	degraded.Stages = []StageResult{{Stage: "model", Ran: true, Failed: true, Detail: DetailModelUnavailable}}
 	if err := degraded.Validate(); err != nil {
-		t.Fatalf("a degraded response with no labels was refused: %v", err)
+		t.Fatalf("a well-formed degraded response was refused: %v", err)
+	}
+	degradedWithLabels := degraded
+	degradedWithLabels.Labels = []Label{{Class: "credential", Score: 0.9}}
+	if err := degradedWithLabels.Validate(); err == nil {
+		t.Fatal("a degraded response carrying a confident label was accepted; every exhaustion path must emit degraded and no path may claim a verdict")
 	}
 	long := strings.Repeat("x", MaxExcerptChars+1)
 	over := ok
-	over.Excerpt = &Excerpt{Kind: "redacted_window", Text: long}
+	over.Excerpt = &Excerpt{Kind: ExcerptRedactedWindow, Text: long}
 	if err := over.Validate(); err == nil {
 		t.Fatal("an excerpt over the structural bound was accepted; 'minimised' is enforced, not advised")
+	}
+	badKind := ok
+	badKind.Excerpt = &Excerpt{Kind: "full_payload", Text: "short"}
+	if err := badKind.Validate(); err == nil {
+		t.Fatal("an excerpt kind outside the closed set was accepted")
+	}
+	goodExcerpt := ok
+	goodExcerpt.Excerpt = &Excerpt{Kind: ExcerptMatchSpan, Text: "4111 1111 1111 1111", OffsetStart: 10, OffsetEnd: 29}
+	if err := goodExcerpt.Validate(); err != nil {
+		t.Fatalf("a valid match_span excerpt was refused: %v", err)
+	}
+}
+
+// The budget is on the wire in milliseconds. A time.Duration with a `budget_ms` JSON tag would
+// marshal as nanoseconds and mean something different to every non-Go peer, which is the bug
+// this test pins.
+func TestClassifyRequestBudgetIsMillisecondsOnTheWire(t *testing.T) {
+	q := ClassifyRequest{Mode: ModeM1, Content: []byte("x"), BudgetMS: 150}
+	b, err := json.Marshal(q)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(b), `"budget_ms":150`) {
+		t.Fatalf("serialised request is %s, want budget_ms:150", b)
+	}
+	var back ClassifyRequest
+	if err := json.Unmarshal(b, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	d, ok := back.EffectiveBudget()
+	if !ok || d != 150*time.Millisecond {
+		t.Fatalf("round-tripped budget = %v (set=%v), want 150ms", d, ok)
+	}
+	// A duration set directly by a Go caller still works, so the two fields cannot disagree
+	// about intent, and an unset budget is reported as absent rather than as zero.
+	direct := ClassifyRequest{Mode: ModeM1, Budget: 2 * time.Second}
+	if d, ok := direct.EffectiveBudget(); !ok || d != 2*time.Second {
+		t.Fatalf("direct Budget = %v (set=%v), want 2s", d, ok)
+	}
+	if _, ok := (ClassifyRequest{Mode: ModeM1}).EffectiveBudget(); ok {
+		t.Fatal("an unset budget reported itself as set; zero means 'no explicit budget', not 'fail now'")
+	}
+}
+
+// The detail vocabulary is closed and every value the documents name must be in it, or a
+// coverage report cannot group by cause.
+func TestDetailVocabularyIsClosed(t *testing.T) {
+	required := []Detail{
+		DetailParserMemory, DetailParserTimeout, DetailParserCrash, DetailParserOutputCap,
+		DetailModelUnavailable, DetailNormaliseTruncated, DetailContentOverCap,
+		DetailUndecodableContent, DetailReleaseLoadFailed, DetailModeViolation,
+		DetailBudgetExhausted, DetailHostUnreachable, DetailContentUnprocessable,
+		DetailParserFailed, DetailPortHeldByOther, DetailKilled, DetailVersionMismatch,
+	}
+	for _, d := range required {
+		if !d.Valid() {
+			t.Fatalf("detail %q is named in the documents but missing from the closed vocabulary", d)
+		}
+	}
+	if Detail("parser_oom").Valid() {
+		t.Fatal("an invented detail reported itself as valid; a locally invented cause cannot be grouped")
+	}
+	if !DetailNone.Valid() {
+		t.Fatal("an empty detail must be valid: a healthy provider has no cause to report")
+	}
+	for _, d := range AllDetails {
+		if !d.Valid() {
+			t.Fatalf("%q is in AllDetails but not Valid", d)
+		}
+	}
+}
+
+// A health report carrying a detail outside the vocabulary is refused for the same reason.
+func TestHealthReportDetailIsClosed(t *testing.T) {
+	h := NewHealthReport("d1", "classifier-host", "1.0.0", time.Now())
+	h.State = StateDegraded
+	h.Detail = DetailParserMemory
+	if err := h.Validate(); err != nil {
+		t.Fatalf("a report with a valid detail was refused: %v", err)
+	}
+	h.Detail = Detail("something_invented")
+	if err := h.Validate(); err == nil {
+		t.Fatal("a report with a detail outside the closed vocabulary was accepted")
 	}
 }
 

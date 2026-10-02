@@ -124,27 +124,90 @@ var AllCounters = [...]Counter{
 
 // Detail is the closed per-provider detail vocabulary carried as error_code on the health
 // channel, so a coverage report can group by cause without parsing prose.
+//
+// Every value below appears in the document set; a value that appears nowhere and is needed
+// belongs here rather than in a component, because a detail string invented locally is a
+// coverage cause the reporting layer cannot group. The lists:
+//
+//   - proxy and broker states: docs/01-collectors.md §5.4, §5.6, §6.3, §6.4
+//   - proc.detect: §4.4 — enumeration_partial, signature_set_stale
+//   - classifier host: §9.7 — the six "emitted when" reasons degraded is produced
+//   - document parser: §10 — parser_memory, parser_timeout, parser_crash, parser_output_cap
+//   - kill switch: §5.5 — killed
+//   - framing handshake: §3.4 — version_mismatch
 type Detail string
 
 const (
-	DetailNone                Detail = ""
+	DetailNone Detail = ""
+
+	// Proxy and broker (docs/01-collectors.md §5.4, §5.6, §6.3, §6.4)
 	DetailClassifierUnavailable Detail = "classifier_unavailable"
-	DetailSpoolUnwritable     Detail = "spool_unwritable"
-	DetailUpstreamFailure     Detail = "upstream_failure"
-	DetailUpstreamUnreachable Detail = "upstream_unreachable"
-	DetailClientPinned        Detail = "client_pinned"
-	DetailNotEffectiveProxy   Detail = "not_effective_proxy"
-	DetailTLSProbeFailed      Detail = "tls_probe_failed"
-	DetailPortHeldByOther     Detail = "port_held_by_other"
-	DetailCoolingDown         Detail = "cooling_down"
-	DetailKilled              Detail = "killed"
-	DetailEnumerationPartial  Detail = "enumeration_partial"
-	DetailSignatureSetStale   Detail = "signature_set_stale"
-	DetailVersionMismatch     Detail = "version_mismatch"
-	DetailParseFailed         Detail = "parse_failed"
-	DetailDocumentTooLarge    Detail = "document_too_large"
-	DetailBudgetExceeded      Detail = "budget_exceeded"
+	DetailSpoolUnwritable       Detail = "spool_unwritable"
+	DetailUpstreamFailure       Detail = "upstream_failure"
+	DetailUpstreamUnreachable   Detail = "upstream_unreachable"
+	DetailClientPinned          Detail = "client_pinned"
+	DetailNotEffectiveProxy     Detail = "not_effective_proxy"
+	DetailTLSProbeFailed        Detail = "tls_probe_failed"
+	DetailPortHeldByOther       Detail = "port_held_by_other"
+	DetailCoolingDown           Detail = "cooling_down"
+	DetailKilled                Detail = "killed"
+
+	// proc.detect (§4.4)
+	DetailEnumerationPartial Detail = "enumeration_partial"
+	DetailSignatureSetStale  Detail = "signature_set_stale"
+
+	// Classifier host (§9.7's "emitted when" column, in its order)
+	DetailBudgetExhausted     Detail = "budget_exhausted"     // a stage was skipped because its budget was exhausted
+	DetailModelUnavailable    Detail = "model_unavailable"    // the model artefact was missing, unloadable or failed to verify
+	DetailNormaliseTruncated  Detail = "normalise_truncated"  // normalisation truncated the payload so a rule could not see all of it
+	DetailParserFailed        Detail = "parser_failed"        // the document parser failed, timed out or was killed (§10; see the specific codes below)
+	DetailContentUnprocessable Detail = "content_unprocessable" // over-cap body or undecodable bytes handed over by a provider
+	DetailHostUnreachable     Detail = "host_unreachable"     // the host was unreachable and the event was emitted unclassified
+	DetailReleaseLoadFailed   Detail = "release_load_failed"  // a release failed to load and rules-only labels came from the retained release
+
+	// Document parser (§10) — the specific causes behind DetailParserFailed
+	DetailParserMemory    Detail = "parser_memory"
+	DetailParserTimeout   Detail = "parser_timeout"
+	DetailParserCrash     Detail = "parser_crash"
+	DetailParserOutputCap Detail = "parser_output_cap"
+
+	// Content-shape causes that reach the classifier
+	DetailContentOverCap      Detail = "content_over_cap"
+	DetailUndecodableContent  Detail = "undecodable_content"
+
+	// Framing and contract
+	DetailVersionMismatch Detail = "version_mismatch"
+	DetailModeViolation   Detail = "mode_violation"
 )
+
+// AllDetails is the closed vocabulary, for validation and for a coverage report that needs to
+// enumerate causes rather than discover them.
+var AllDetails = [...]Detail{
+	DetailClassifierUnavailable, DetailSpoolUnwritable, DetailUpstreamFailure,
+	DetailUpstreamUnreachable, DetailClientPinned, DetailNotEffectiveProxy,
+	DetailTLSProbeFailed, DetailPortHeldByOther, DetailCoolingDown, DetailKilled,
+	DetailEnumerationPartial, DetailSignatureSetStale,
+	DetailBudgetExhausted, DetailModelUnavailable, DetailNormaliseTruncated,
+	DetailParserFailed, DetailContentUnprocessable, DetailHostUnreachable,
+	DetailReleaseLoadFailed,
+	DetailParserMemory, DetailParserTimeout, DetailParserCrash, DetailParserOutputCap,
+	DetailContentOverCap, DetailUndecodableContent,
+	DetailVersionMismatch, DetailModeViolation,
+}
+
+// Valid reports whether the detail is in the closed vocabulary. An empty detail is valid: a
+// healthy provider has no cause to report.
+func (d Detail) Valid() bool {
+	if d == DetailNone {
+		return true
+	}
+	for _, k := range AllDetails {
+		if k == d {
+			return true
+		}
+	}
+	return false
+}
 
 // Decision is what policy did about an observation. The three values are never merged:
 // `blocked`, `warned` and `logged` are distinct facts about the same outcome.
@@ -247,6 +310,9 @@ func (h HealthReport) Validate() error {
 		if !known {
 			return fmt.Errorf("protocol: health report for %q carries counter %q outside the closed set", h.Collector, k)
 		}
+	}
+	if !h.Detail.Valid() {
+		return fmt.Errorf("protocol: health report for %q carries detail %q outside the closed vocabulary", h.Collector, h.Detail)
 	}
 	return nil
 }

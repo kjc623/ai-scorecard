@@ -1,5 +1,6 @@
 # Build output and local tool state - never part of the deliverable
 .tools/gocache/
+.tools/gopath/
 .tools/probe/
 .tools/tmp/
 .tools/shot/
@@ -7,6 +8,12 @@
 .tools/dsh-src/
 .tools/asar-extract.mjs
 .tools/asar-pick.mjs
+
+# A per-component build cache: some tool invocations default GOCACHE to a .tools directory
+# beside the module rather than to the repo root. Regenerable, ~950 files per module, and
+# never a deliverable.
+**/.tools/gocache/
+**/.tools/gopath/
 
 # Extracted DSH SDK packages, kept only as a local reference while building
 # .cockpit/. Regenerable from the installed harness's app.asar, and 35 MB of
