@@ -101,6 +101,15 @@ function upperSnake(name) {
     .toUpperCase();
 }
 
+/** English plural for the generated registry names: DetectionBasis -> DetectionBases. */
+function pluralize(name) {
+  return /is$/.test(name) ? name.replace(/is$/, "es") : `${name}s`;
+}
+
+function registryConstName(typeName) {
+  return upperSnake(pluralize(typeName));
+}
+
 function enumConstName(typeName, value) {
   return `${typeName}${goPascal(value)}`;
 }
@@ -186,7 +195,7 @@ function renderTsHeader(model) {
 function renderTsEnums(model) {
   const out = [];
   for (const enumDef of model.enums) {
-    const constName = `${upperSnake(enumDef.typeName)}S`;
+    const constName = registryConstName(enumDef.typeName);
     out.push(...tsDoc(`The closed ${enumDef.typeName} set from ${enumDef.source}. ${enumDef.description}`));
     out.push(`export const ${constName} = [${enumDef.values.map((v) => JSON.stringify(v)).join(", ")}] as const;`);
     out.push("");
@@ -231,9 +240,9 @@ function renderTsVariant(variant) {
   const out = [];
   const where = variant.mode ? ` at collection mode \`${variant.mode}\`` : "";
   const shape = variant.shape === "stored" ? "The envelope as stored" : "What a device is permitted to send";
-  const doc = [
+  const doc = [];
+  const paragraphs = [
     `${shape} for kind \`${variant.kind}\`${where}.`,
-    "",
     `Required by the schema: the common core${variant.narrowedCore.length > 0 ? ` (with \`${variant.narrowedCore.map((f) => f.name).join("`, `")}\` pinned)` : ""}${
       variant.ownFields.filter((f) => f.required).length > 0 ? `, plus \`${variant.ownFields.filter((f) => f.required).map((f) => f.name).join("`, `")}\`` : ""
     }.`,
@@ -244,6 +253,10 @@ function renderTsVariant(variant) {
       ? `Must not carry, so absent from this interface: \`${variant.forbidden.join("`, `")}\`.`
       : "No field is forbidden for this kind.",
   ];
+  paragraphs.forEach((paragraph, index) => {
+    if (index > 0) doc.push("");
+    doc.push(...wrap(paragraph, 92));
+  });
   out.push(...tsDoc(doc));
   out.push(`export interface ${variant.name} extends EnvelopeCore {`);
   for (const field of variant.narrowedCore) out.push(...renderTsField(field, true));
@@ -359,8 +372,8 @@ function renderGoEnum(enumDef) {
   out.push("\treturn false");
   out.push("}");
   out.push("");
-  out.push(...goComment(`All${enumDef.typeName}s returns the closed set in schema order.`));
-  out.push(`func All${enumDef.typeName}s() []${enumDef.typeName} {`);
+  out.push(...goComment(`All${pluralize(enumDef.typeName)} returns the closed set in schema order.`));
+  out.push(`func All${pluralize(enumDef.typeName)}() []${enumDef.typeName} {`);
   out.push(`\treturn []${enumDef.typeName}{${enumDef.values.map((value) => enumConstName(enumDef.typeName, value)).join(", ")}}`);
   out.push("}");
   out.push("");
@@ -406,8 +419,12 @@ function goFieldChecks(ownerType, field, required) {
     }
   } else if (field.type === "array") {
     if (required) statement(`${access} == nil`, `envelope: ${label} is required and must be present`);
-    checks.push(`\tfor i := range ${access} {`);
-    checks.push(`\t\tif err := ${access}[i].Validate(); err != nil {`);
+    // gofmt drops the redundant parentheses around a range expression but keeps them
+    // around the dereference that is indexed, so the two are emitted differently.
+    const slice = required ? `e.${goName}` : `*e.${goName}`;
+    const indexed = required ? `e.${goName}` : `(*e.${goName})`;
+    checks.push(`\tfor i := range ${slice} {`);
+    checks.push(`\t\tif err := ${indexed}[i].Validate(); err != nil {`);
     checks.push(`\t\t\treturn fmt.Errorf("envelope: ${label}[%d]: %w", i, err)`);
     checks.push("\t\t}");
     checks.push("\t}");
@@ -496,7 +513,7 @@ function renderGoCore(model) {
 
 /** The field lookup a pin needs: core fields first, then the variant's own fields. */
 function findField(variant, model, name) {
-  return model.coreFields.find((f) => f.name === name) ?? variant.ownFields.find((f) => f.name === name) ?? null;
+  return model.declaredFields.find((f) => f.name === name) ?? variant.ownFields.find((f) => f.name === name) ?? null;
 }
 
 function goPinChecks(variant, model) {
@@ -724,9 +741,11 @@ function renderGoUnionsAndDecoder(model) {
     const unionName = SHAPE_UNION_NAME[shape];
     const fnName = `Decode${unionName}`;
     const label = shape === "stored" ? "stored envelope" : "device submission";
-    out.push(...goComment(`${fnName} decodes the ${label} in data and returns the variant named by kind, and by`));
-    out.push(...goComment("collection_mode within kind prompt. It refuses an unknown kind, an unknown mode, a missing"));
-    out.push(...goComment("required field, a forbidden field and a field the contract does not declare."));
+    out.push(
+      ...goComment(
+        `${fnName} decodes the ${label} in data and returns the variant selected by kind, and for prompts by collection_mode. It refuses an unknown kind, an unknown mode, a missing required field, a forbidden field, and a field the contract does not declare.`,
+      ),
+    );
     out.push(`func ${fnName}(data []byte) (${unionName}, error) {`);
     out.push("\tvar probe kindProbe");
     out.push("\tif err := json.Unmarshal(data, &probe); err != nil {");
@@ -770,7 +789,7 @@ function renderGoUnionsAndDecoder(model) {
 
 function renderGo(model) {
   const imports = ["bytes", "encoding/json", "fmt", "strings"];
-  const hasPattern = [...model.coreFields, ...model.objects.flatMap((o) => o.fields)].some((f) => f.pattern);
+  const hasPattern = [...model.declaredFields, ...model.objects.flatMap((o) => o.fields)].some((f) => f.pattern);
   if (hasPattern) imports.push("regexp");
   imports.sort();
 
@@ -795,7 +814,7 @@ function renderGo(model) {
 
   if (hasPattern) {
     const seen = new Map();
-    for (const field of [...model.coreFields, ...model.objects.flatMap((o) => o.fields)]) {
+    for (const field of [...model.declaredFields, ...model.objects.flatMap((o) => o.fields)]) {
       if (field.pattern && !seen.has(regexVarName(field))) seen.set(regexVarName(field), field.pattern);
     }
     for (const [name, pattern] of seen) {

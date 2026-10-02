@@ -370,9 +370,14 @@ func sanitise(h Health) Health {
 	return h
 }
 
-// Reports renders every row for the health channel. A row that still fails protocol
-// validation after sanitising is skipped rather than sent with a name the reporting layer
-// does not know; the caller gets the error so it can be logged.
+// Reports renders every row for the health channel.
+//
+// A row is never dropped for a detail the closed vocabulary does not yet contain: losing a
+// `tampered` signal because its cause name is unknown to the reporting layer would be worse
+// than sending a cause the server records as unknown, and the cause is what an operator needs
+// to attribute a coverage cliff. The validation error is returned so the caller logs it, and
+// the row still goes. (The four §13.3 policy causes are not in protocol.AllDetails today;
+// that gap is raised with the protocol owner rather than papered over here.)
 func (r *Registry) Reports(deviceID, version string) ([]protocol.HealthReport, []error) {
 	rows := r.Health()
 	reports := make([]protocol.HealthReport, 0, len(rows))
@@ -383,7 +388,7 @@ func (r *Registry) Reports(deviceID, version string) ([]protocol.HealthReport, [
 		rep.Collector = string(route)
 		if err := rep.Validate(); err != nil {
 			errs = append(errs, err)
-			continue
+			r.log.Printf("core: health row for %s is not fully valid; sending it anyway: %v", route, err)
 		}
 		reports = append(reports, rep)
 	}

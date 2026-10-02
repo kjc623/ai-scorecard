@@ -42,6 +42,16 @@ type ContentStore interface {
 	Put(ctx context.Context, eventID string, content []byte, expiresAt time.Time) error
 }
 
+// ContentStateReporter is the optional device-local half of M3 that ADR 0017 keeps off the
+// wire: how many content objects are held and how many bytes they occupy. A store that
+// implements it can have its state surfaced in the device's own coverage row; nothing about
+// it enters an envelope, because a device *claiming* it holds content is not evidence that it
+// does.
+type ContentStateReporter interface {
+	HeldObjects() int
+	HeldBytes() int64
+}
+
 // Sink is the narrow view of the spool this package needs. It is deliberately a local
 // interface rather than a copy of protocol.Store: capture-spool implements protocol.Store,
 // and the assertion below proves the view is a subset, so a spool can be handed straight to
@@ -134,6 +144,10 @@ const (
 	ReasonExtractionDegraded = "extraction_degraded"
 	ReasonOverCap            = "over_cap"
 	ReasonInvalidEnvelope    = "envelope_refused"
+	// ReasonNoCanonicaliser means C3 cannot be performed, so the digest is not canonical and
+	// the observation is reported degraded rather than passing an unnormalised digest off as
+	// the versioned `sac-canon-1` value.
+	ReasonNoCanonicaliser = "canonicaliser_absent"
 )
 
 // Pipeline resolves the mode, applies it before content is read, mints the envelope and
@@ -150,8 +164,10 @@ type Pipeline struct {
 	Content    ContentStore
 	Sink       Sink
 
-	// Normalizer is C3. It defaults to dedup.IdentityNFC (see that type: the stdlib has no
-	// Unicode normalisation and this host is offline), and the deviation is reported.
+	// Normalizer is C3 of docs/02 §4.2. It has no default on purpose: Go's standard library has
+	// no Unicode normalisation and a wrong digest presented as canonical is corruption, so a
+	// pipeline with no normaliser installed takes the degraded path (Tier S key, `confidence:
+	// degraded`) instead of silently computing an unnormalised `sac-canon-1` value.
 	Normalizer dedup.Normalizer
 
 	// Retention is the device-side retention deadline for spooled observations.
@@ -187,7 +203,6 @@ func NewPipeline(sink Sink, clock func() time.Time, newID func() string) (*Pipel
 		Sink:           sink,
 		Clock:          clock,
 		NewID:          newID,
-		Normalizer:     dedup.IdentityNFC{},
 		Retention:      30 * 24 * time.Hour,
 		ClassifyBudget: 2 * time.Second,
 		mu:             sync.Mutex{},
@@ -223,6 +238,17 @@ func (p *Pipeline) LastSuccess(route protocol.Route) time.Time {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.lastOK[route]
+}
+
+// ContentState reports how much content the device is holding locally for M3. This is
+// ADR 0017's device-local content-state marker: it never enters an envelope, and it is what
+// an operator needs when diagnosing a missing upload. A store that does not report state
+// answers zero rather than being guessed at.
+func (p *Pipeline) ContentState() (objects int, bytes int64) {
+	if r, ok := p.Content.(ContentStateReporter); ok {
+		return r.HeldObjects(), r.HeldBytes()
+	}
+	return 0, 0
 }
 
 // ResolveMode is how a provider asks for the effective mode *before* it reads anything. The
@@ -303,66 +329,93 @@ func (p *Pipeline) Process(ctx context.Context, obs Observation) (Outcome, error
 			return out, err
 		}
 
-		digest, tier, degraded, exErr := p.canonicalDigest(obs, body)
-		if exErr != nil {
+		text, atts, xerr := p.extract(obs, body)
+		canonical := xerr == nil && p.Normalizer != nil && !obs.OverCap
+		var digest string
+		switch {
+		case obs.OverCap:
+			// §5.3: an over-cap body is not read into memory. It is sized and a digest of the
+			// first N bytes is recorded, nothing is classified, and the record says so rather
+			// than implying "clean". This digest is explicitly *not* the canonical content
+			// digest, so the key ladder stays on Tier S.
+			digest = SHA256Hex(body)
+		case canonical:
+			digest = dedup.ContentDigest(text, atts, p.Normalizer)
+		default:
+			// The digest exists but is not canonical: either no C3 normaliser is installed or
+			// the route could not identify the user-authored segment. It is emitted (the schema
+			// requires content_digest at M1 and above) with `confidence: degraded` and a Tier S
+			// dedup key, because a wrong digest presented as canonical is corruption while a
+			// wrong digest presented as degraded is an honest undercount.
+			digest = SHA256Hex(body)
+		}
+
+		tier := dedup.TierT
+		if !canonical {
+			tier = dedup.TierS
+		}
+		switch {
+		case obs.OverCap:
+			out.Degraded = true
+			out.Reason = ReasonOverCap
+		case xerr != nil:
 			out.Degraded = true
 			out.Reason = ReasonExtractionDegraded
 			c.Add(protocol.CounterErrors)
-		} else if degraded && out.Reason == ReasonEmitted {
+		case p.Normalizer == nil:
 			out.Degraded = true
-			out.Reason = ReasonExtractionDegraded
+			out.Reason = ReasonNoCanonicaliser
 		}
-		if obs.OverCap {
-			// §5.3: an over-cap body is not read into memory. It is sized and degraded, and
-			// the record says classification did not complete rather than implying "clean".
-			degraded = true
-			out.Degraded = true
-			out.Reason = ReasonOverCap
-			tier = dedup.TierS
-			digest = ""
+		if out.Degraded {
+			c.Add(protocol.CounterErrors)
 		}
 
-		key, err := p.dedupKey(tier, obs, digest, size)
+		key, err := p.dedupKey(tier, obs, digest, size, atts)
 		if err != nil {
 			c.Add(protocol.CounterErrors)
 			return out, err
 		}
 		in.DedupKey = key
+		in.ContentDigest = digest
+		in.Attachments = wireAttachments(atts)
 
-		if tier == dedup.TierT {
-			in.ContentDigest = digest
-			in.Attachments = wireAttachments(obs.Attachments)
-		} else {
-			// Tier S at M1+ (over-cap or unextractable): the canonical digest does not exist,
-			// so nothing that pretends to be one may appear. The classifier still sees the
-			// bytes, and the event carries the surrogate key.
-			in.Attachments = wireAttachments(obs.Attachments)
-		}
-
-		// 3. hand bytes to the classifier.
-		resp, cerr := p.classify(ctx, obs, res.Mode, body, digest)
-		if cerr != nil {
-			// §5.4: classifier unavailable or over budget → carry the request unclassified.
-			// The record says classification was attempted and did not complete.
-			out.Degraded = true
-			if out.Reason == ReasonEmitted {
-				out.Reason = ReasonClassifierDegraded
-			}
+		if obs.OverCap {
+			// §5.3: classify nothing. The record still carries the classifier's attribution and
+			// an empty label set with `confidence: degraded`, which is the explicit signal that
+			// classification did not complete.
 			in.ClassifierVersion = p.classifierVersion(obs.Route)
 			in.Confidence = protocol.ConfidenceDegraded
 			in.Labels = []protocol.Label{}
-			c.Add(protocol.CounterErrors)
 		} else {
-			in.ClassifierVersion = resp.ClassifierVersion
-			in.Confidence = resp.Confidence
-			in.Labels = resp.Labels
-			if in.Labels == nil {
+			// 3. hand bytes to the classifier.
+			resp, cerr := p.classify(ctx, obs, res.Mode, body, digest)
+			if cerr != nil {
+				// §5.4: classifier unavailable or over budget → carry the request unclassified.
+				// The record says classification was attempted and did not complete.
+				out.Degraded = true
+				if out.Reason == ReasonEmitted {
+					out.Reason = ReasonClassifierDegraded
+				}
+				in.ClassifierVersion = p.classifierVersion(obs.Route)
+				in.Confidence = protocol.ConfidenceDegraded
 				in.Labels = []protocol.Label{}
-			}
-			p.setClassifierVersion(obs.Route, resp.ClassifierVersion)
-			if res.Mode == protocol.ModeM2 {
-				// 4. the minimised excerpt, from the classifier's match span.
-				in.Excerpt = excerptForM2(resp)
+				c.Add(protocol.CounterErrors)
+			} else {
+				in.ClassifierVersion = resp.ClassifierVersion
+				in.Confidence = resp.Confidence
+				in.Labels = resp.Labels
+				if in.Labels == nil {
+					in.Labels = []protocol.Label{}
+				}
+				p.setClassifierVersion(obs.Route, resp.ClassifierVersion)
+				if res.Mode == protocol.ModeM2 {
+					// 4. the minimised excerpt, from the classifier's match span.
+					in.Excerpt = excerptForM2(resp)
+				}
+				if !canonical {
+					// Non-canonical: the labels are real, the confidence band is not.
+					in.Confidence = protocol.ConfidenceDegraded
+				}
 			}
 		}
 		if res.Mode == protocol.ModeM2 && in.Excerpt == nil {
@@ -466,27 +519,29 @@ func readContent(ctx context.Context, mode protocol.CollectionMode, r ContentRea
 	return r.Read(ctx)
 }
 
-func (p *Pipeline) canonicalDigest(obs Observation, body []byte) (digest, tier string, degraded bool, err error) {
+// extract runs the route's C1 extraction. The attachment list falls back to the descriptors
+// the provider already had (filenames from a multipart body, for example), which is what the
+// Tier S names digest is built from.
+func (p *Pipeline) extract(obs Observation, body []byte) (string, []dedup.Attachment, error) {
 	if obs.Extract == nil {
-		// No extractor means no canonical text: the surrogate tier, with the reason recorded.
-		return "", dedup.TierS, true, errors.New("core: no extractor for this route, so no canonical text exists")
+		return "", obs.Attachments, errors.New("core: no extractor for this route, so no canonical text exists")
 	}
-	text, atts, eerr := obs.Extract.Extract(body, obs.MediaType)
-	if eerr != nil {
-		return "", dedup.TierS, true, eerr
+	text, atts, err := obs.Extract.Extract(body, obs.MediaType)
+	if err != nil {
+		return "", obs.Attachments, err
 	}
 	if len(atts) == 0 {
 		atts = obs.Attachments
 	}
-	return dedup.ContentDigest(text, atts, p.Normalizer), dedup.TierT, false, nil
+	return text, atts, nil
 }
 
-func (p *Pipeline) dedupKey(tier string, obs Observation, digest string, size int64) (string, error) {
+func (p *Pipeline) dedupKey(tier string, obs Observation, digest string, size int64, atts []dedup.Attachment) (string, error) {
 	switch tier {
 	case dedup.TierT:
 		return dedup.ContentKey(p.Identity.TenantID, p.Identity.DeviceID, obs.ToolFingerprint, string(obs.Kind), obs.OccurredAt, digest)
 	default:
-		return dedup.SurrogateKey(p.Identity.TenantID, p.Identity.DeviceID, obs.ToolFingerprint, string(obs.Kind), obs.OccurredAt, size, obs.Attachments, p.Normalizer)
+		return dedup.SurrogateKey(p.Identity.TenantID, p.Identity.DeviceID, obs.ToolFingerprint, string(obs.Kind), obs.OccurredAt, size, atts, p.Normalizer)
 	}
 }
 
@@ -500,7 +555,10 @@ func (p *Pipeline) classify(ctx context.Context, obs Observation, mode protocol.
 		Mode:          mode,
 		MediaType:     obs.MediaType,
 		ContentDigest: digest,
-		Budget:        budget,
+		// BudgetMS is the wire field (an explicit integer, so a JavaScript host cannot read a
+		// nanosecond Duration as milliseconds); Budget carries the same value for the Go side.
+		BudgetMS: int64(budget / time.Millisecond),
+		Budget:   budget,
 	}
 	if err := req.Validate(); err != nil {
 		return protocol.ClassifyResponse{}, err
@@ -568,13 +626,17 @@ func degradedExcerpt() *protocol.Excerpt {
 	return &protocol.Excerpt{Kind: "redacted_window", Text: "", RedactionApplied: true}
 }
 
-func wireAttachments(atts []dedup.Attachment) []AttachmentWire {
+// wireAttachments converts canonicalisation inputs to the contract's `$defs/attachment`
+// shape. It uses protocol.AttachmentDescriptor directly — one shape, one name — so a
+// descriptor forwarded from the extension through native messaging and one minted here cannot
+// disagree about a field name.
+func wireAttachments(atts []dedup.Attachment) []protocol.AttachmentDescriptor {
 	if len(atts) == 0 {
 		return nil
 	}
-	out := make([]AttachmentWire, 0, len(atts))
+	out := make([]protocol.AttachmentDescriptor, 0, len(atts))
 	for _, a := range atts {
-		w := AttachmentWire{Name: a.Name, SizeBytes: a.SizeBytes}
+		w := protocol.AttachmentDescriptor{Name: a.Name, MediaType: a.MediaType, SizeBytes: a.SizeBytes}
 		if a.ContentDigest != "" && a.ContentDigest != dedup.Unreadable {
 			w.ContentDigest = a.ContentDigest
 		}

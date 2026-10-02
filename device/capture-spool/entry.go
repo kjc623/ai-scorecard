@@ -139,25 +139,25 @@ func decodeControlFrame(pt []byte) (controlRecord, error) {
 // from the segment at off, so a 25 MB spool does not become a 25 MB heap index and a
 // spooled payload is never held twice.
 type entryMeta struct {
-	seq            uint64
-	state          protocol.SpoolState
-	attempts       int
-	sizeBytes      int64
-	kind           protocol.Kind
-	route          protocol.Route
-	collectionMode protocol.CollectionMode
+	seq             uint64
+	state           protocol.SpoolState
+	attempts        int
+	sizeBytes       int64
+	kind            protocol.Kind
+	route           protocol.Route
+	collectionMode  protocol.CollectionMode
 	toolFingerprint string
-	clientID       string
-	dedupKey       string
-	occurredAt     time.Time
-	monotonicMS    int64
-	expiresAt      time.Time
-	appendedAt     time.Time
-	lastError      string
-	rejectReason   string
-	segID          uint64
-	off            int64
-	frameLen       int64
+	clientID        string
+	dedupKey        string
+	occurredAt      time.Time
+	monotonicMS     int64
+	expiresAt       time.Time
+	appendedAt      time.Time
+	lastError       string
+	rejectReason    string
+	segID           uint64
+	off             int64
+	frameLen        int64
 }
 
 // toEntry rebuilds the protocol record. Payload is returned byte-for-byte as appended.

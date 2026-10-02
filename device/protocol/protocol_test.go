@@ -297,6 +297,10 @@ func TestDetailVocabularyIsClosed(t *testing.T) {
 		DetailUndecodableContent, DetailReleaseLoadFailed, DetailModeViolation,
 		DetailBudgetExhausted, DetailHostUnreachable, DetailContentUnprocessable,
 		DetailParserFailed, DetailPortHeldByOther, DetailKilled, DetailVersionMismatch,
+		// §13.3 rule 4: the four causes behind the `tampered` state a policy-verification
+		// failure produces. A closed vocabulary that cannot name them cannot report them.
+		DetailBundleSignatureInvalid, DetailBundleSchemaInvalid,
+		DetailBundleVersionRegression, DetailBundleArtefactMissing,
 	}
 	for _, d := range required {
 		if !d.Valid() {
@@ -327,6 +331,40 @@ func TestHealthReportDetailIsClosed(t *testing.T) {
 	h.Detail = Detail("something_invented")
 	if err := h.Validate(); err == nil {
 		t.Fatal("a report with a detail outside the closed vocabulary was accepted")
+	}
+	// The bundle-failure causes are the ones a `tampered` row uses, and they must survive
+	// validation because dropping a tamper signal is worse than any other reporting defect.
+	h.State = StateTampered
+	for _, cause := range []Detail{
+		DetailBundleSignatureInvalid, DetailBundleSchemaInvalid,
+		DetailBundleVersionRegression, DetailBundleArtefactMissing,
+	} {
+		h.Detail = cause
+		if err := h.Validate(); err != nil {
+			t.Fatalf("a tampered report naming cause %q was refused: %v", cause, err)
+		}
+	}
+}
+
+// The attachment descriptor uses the contract's field names verbatim, because the contract is
+// closed: a local `digest` forwarded into an envelope would be rejected by ingest.
+func TestAttachmentDescriptorUsesContractFieldNames(t *testing.T) {
+	b, err := json.Marshal(AttachmentDescriptor{Name: "q4.pdf", SizeBytes: 10, ContentDigest: "sha256:abc"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := m["content_digest"]; !ok {
+		t.Fatalf("descriptor serialised as %s; the contract's $defs/attachment requires content_digest", b)
+	}
+	if _, ok := m["digest"]; ok {
+		t.Fatalf("descriptor serialised as %s; `digest` is not a contract field and additionalProperties is false", b)
+	}
+	if _, ok := m["name"]; !ok {
+		t.Fatalf("descriptor serialised as %s; it lost the contract's required `name`", b)
 	}
 }
 

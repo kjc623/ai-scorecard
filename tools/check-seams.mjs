@@ -183,6 +183,11 @@ const COMPONENTS = [
       listen_port: 'broker configuration',
       relocations: 'broker configuration',
       ports: 'broker configuration',
+      // The broker's captured request body, docs/01-collectors.md §6: the plaintext a client sent
+      // to a local inference server. It is content the broker holds to classify and hash, and it is
+      // deliberately NOT an envelope field - §3.3's content-never-enters-the-envelope rule is the
+      // reason capture-core mints the envelope separately from this.
+      content: 'broker request body',
       // envelope construction, §5.2 - the fields the core mints
       envelope: 'envelope construction',
       envelope_json: 'envelope construction',
@@ -238,6 +243,11 @@ const COMPONENTS = [
       text: 'parser output',
       offsets: 'parser output',
       status: 'parser output',
+      // The parser child's own accounting, docs/01-collectors.md §10's output cap. Named like an
+      // envelope field and deliberately not one: it counts bytes through the pipe, not bytes of an
+      // observation, and it never leaves the classifier host.
+      bytes_in: 'parser accounting (§10 output cap)',
+      bytes_out: 'parser accounting (§10 output cap)',
       budget_ms: 'classifier request',
       content: 'classifier payload',
     },
@@ -391,7 +401,17 @@ function walkFiles(dir, out = []) {
     const p = join(dir, name);
     const st = statSync(p);
     if (st.isDirectory()) walkFiles(p, out);
-    else if (/\.(go|mjs|cjs|js|ts)$/.test(name) && !/\.test\.(mjs|cjs|js)$/.test(name)) out.push(p);
+    else if (
+      /\.(go|mjs|cjs|js|ts)$/.test(name) &&
+      // Test files are excluded deliberately: a fixture that keys a map by a data-class name or a
+      // scope-axis name is speaking the product's vocabulary, not the contract's, and reporting it
+      // would train the reader to ignore this script.
+      !/_test\.go$/.test(name) &&
+      !/\.test\.(mjs|cjs|js)$/.test(name) &&
+      !/^test-support\//.test(name)
+    ) {
+      out.push(p);
+    }
   }
   return out;
 }

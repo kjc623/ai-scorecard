@@ -1,6 +1,7 @@
 package spool
 
 import (
+	"crypto/cipher"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,11 +27,11 @@ import (
 // fold (segment still present, counted from the segment) or after it (segment already
 // accounted, and its id is at or below the watermark).
 type countersFile struct {
-	Version       int    `json:"v"`
-	DroppedTotal  uint64 `json:"dropped_total"`
-	ExpiredTotal  uint64 `json:"expired_total"`
+	Version        int    `json:"v"`
+	DroppedTotal   uint64 `json:"dropped_total"`
+	ExpiredTotal   uint64 `json:"expired_total"`
 	DeliveredTotal uint64 `json:"delivered_total"`
-	RejectedTotal uint64 `json:"rejected_total"`
+	RejectedTotal  uint64 `json:"rejected_total"`
 
 	// SegmentWatermark is the highest segment id whose tombstones are folded into the
 	// totals above. Every segment with a higher id is still on disk and is counted from
@@ -118,19 +119,38 @@ func attrMap(s []attribution) map[attrKey]uint64 {
 	return m
 }
 
-// loadCounters reads the counter file. A missing file is a fresh spool, not an error: the
-// file is created on the first fold or close. A file that exists but cannot be parsed is
-// corruption, and the caller applies Config.OnCorrupt.
-func loadCounters(path string) (countersFile, error) {
+// The counter file is sealed with the same AEAD as the log, in the same frame format. It is
+// small but it is not harmless: the drop attribution names kinds and routes, and §12 requires
+// a spool directory that another local user can read to expose neither content nor metadata.
+// Sealing it also means a modified counter file is detected rather than trusted.
+func loadCounters(path string, aead cipher.AEAD) (countersFile, error) {
 	var c countersFile
-	b, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return countersFile{Version: recordVersion}, nil
 		}
 		return c, fmt.Errorf("spool: reading counters: %w", err)
 	}
-	if err := json.Unmarshal(b, &c); err != nil {
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return c, fmt.Errorf("spool: stating counters: %w", err)
+	}
+	h, pt, next, err := readFrameAt(f, path, 0, aead)
+	if err != nil {
+		if errors.Is(err, errCleanEnd) || errors.Is(err, ErrTornTail) {
+			return c, &CorruptError{Path: path, Offset: 0, Reason: "counter file is incomplete"}
+		}
+		return c, err
+	}
+	if h.Type != frameCounters {
+		return c, &CorruptError{Path: path, Offset: 0, Reason: "counter file does not carry a counter frame"}
+	}
+	if next != fi.Size() {
+		return c, &CorruptError{Path: path, Offset: next, Reason: "counter file has trailing bytes"}
+	}
+	if err := json.Unmarshal(pt, &c); err != nil {
 		return c, &CorruptError{Path: path, Offset: 0, Reason: "counter file is not valid JSON: " + err.Error()}
 	}
 	if c.Version != recordVersion {
@@ -142,18 +162,22 @@ func loadCounters(path string) (countersFile, error) {
 // saveCounters replaces the counter file atomically: write to a sibling temporary file,
 // flush it, rename over the target. A reader therefore sees either the old file or the new
 // one, never a partial write — the same property the segment log gets from a frame.
-func saveCounters(path string, c countersFile) error {
+func saveCounters(path string, c countersFile, aead cipher.AEAD) error {
 	c.Version = recordVersion
 	b, err := json.Marshal(c)
 	if err != nil {
 		return fmt.Errorf("spool: encoding counters: %w", err)
+	}
+	frame, err := encodeFrame(aead, frameCounters, 0, b)
+	if err != nil {
+		return err
 	}
 	tmp := path + ".tmp"
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("spool: writing counters: %w", err)
 	}
-	if _, err := f.Write(b); err != nil {
+	if _, err := f.Write(frame); err != nil {
 		f.Close()
 		os.Remove(tmp)
 		return fmt.Errorf("spool: writing counters: %w", err)

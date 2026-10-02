@@ -164,7 +164,7 @@ func (p *FileKeyProvider) Sealed() bool { return false }
 // wrapping of §12 (DPAPI / Keychain): the function unwraps the key with the platform
 // protector and passes sealed=true only when that is genuinely what happened.
 type FuncKeyProvider struct {
-	Fn     func() ([]byte, error)
+	Fn       func() ([]byte, error)
 	IsSealed bool
 }
 

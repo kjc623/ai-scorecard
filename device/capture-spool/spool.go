@@ -23,12 +23,12 @@ const (
 	// (an order of 10 KB, §12) never rolls a segment.
 	DefaultSegmentBytes = 1 << 20
 
-	segmentsDirName    = "segments"
-	quarantineSuffix   = ".bad"
-	countersFileName   = "counters.json"
-	segmentSuffix      = ".seg"
+	segmentsDirName        = "segments"
+	quarantineSuffix       = ".bad"
+	countersFileName       = "counters.json"
+	segmentSuffix          = ".seg"
 	maxTransitionsPerFrame = 512
-	tombstoneEstimate  = 128
+	tombstoneEstimate      = 128
 )
 
 // DefaultBounds is ASSUMPTION A16: ~25 MB or ~25,000 rows, whichever comes first, tuned per
@@ -231,7 +231,7 @@ func Open(cfg Config) (*Spool, error) {
 	s.aead = aead
 	s.keySealed = cfg.Keys.Sealed()
 
-	counters, err := loadCounters(s.countersIn)
+	counters, err := loadCounters(s.countersIn, aead)
 	if err != nil {
 		if !errors.Is(err, ErrCorrupt) {
 			s.lock.release()
@@ -241,7 +241,7 @@ func Open(cfg Config) (*Spool, error) {
 			s.lock.release()
 			return nil, fmt.Errorf("%w (set Config.OnCorrupt = CorruptQuarantine to quarantine the counter file and continue, reporting the loss)", err)
 		}
-		if qerr := quarantine(s.countersIn); qerr != nil {
+		if _, qerr := quarantine(s.countersIn); qerr != nil {
 			s.lock.release()
 			return nil, qerr
 		}
@@ -314,11 +314,21 @@ func (s *Spool) replay() error {
 		path := filepath.Join(s.segsDir, segmentName(id))
 		seg := &segment{id: id, path: path, counters: newSegmentCounters()}
 		last := i == len(ids)-1
-		discard, err := s.replaySegment(seg, path, last, &lastFrameSeq, &first)
+		outcome, corruptBytes, err := s.replaySegment(seg, path, last, &lastFrameSeq, &first)
 		if err != nil {
 			return err
 		}
-		if discard {
+		if outcome == segQuarantine {
+			// Quarantine runs here, after replaySegment has closed its handle: Windows
+			// refuses to rename a file that is still open.
+			dest, err := quarantine(path)
+			if err != nil {
+				return err
+			}
+			s.recovery.CorruptSegments++
+			s.recovery.CorruptBytes += corruptBytes
+			s.recovery.Quarantined = append(s.recovery.Quarantined, dest)
+			s.recovery.LostEventsKnown = false
 			continue
 		}
 		if id >= s.nextSegmentSeq {
@@ -333,17 +343,28 @@ func (s *Spool) replay() error {
 	return nil
 }
 
-// replaySegment reads one segment. It returns discard=true when the segment was quarantined
-// and must not join the log.
-func (s *Spool) replaySegment(seg *segment, path string, isTail bool, lastFrameSeq *uint64, first *bool) (bool, error) {
-	f, err := os.Open(path)
+// segmentOutcome is what replay decided about one segment.
+type segmentOutcome int
+
+const (
+	segKeep segmentOutcome = iota
+	// segQuarantine means the segment was damaged and Config.OnCorrupt asked for it to be
+	// set aside. The rename happens after this function has closed its handle.
+	segQuarantine
+)
+
+// replaySegment reads one segment. Recovery is replay and truncation, never repair.
+func (s *Spool) replaySegment(seg *segment, path string, isTail bool, lastFrameSeq *uint64, first *bool) (segmentOutcome, int64, error) {
+	// O_RDWR because a torn tail is truncated away, and a read-only handle cannot truncate
+	// on Windows.
+	f, err := os.OpenFile(path, os.O_RDWR, 0o600)
 	if err != nil {
-		return false, fmt.Errorf("spool: opening segment %s: %w", path, err)
+		return segKeep, 0, fmt.Errorf("spool: opening segment %s: %w", path, err)
 	}
 	defer f.Close()
 	fi, err := f.Stat()
 	if err != nil {
-		return false, fmt.Errorf("spool: stating segment %s: %w", path, err)
+		return segKeep, 0, fmt.Errorf("spool: stating segment %s: %w", path, err)
 	}
 	size := fi.Size()
 
@@ -358,27 +379,21 @@ func (s *Spool) replaySegment(seg *segment, path string, isTail bool, lastFrameS
 			// cannot be a record, so it is discarded — but only at the very tail of the
 			// log. An incomplete frame anywhere else means a segment was damaged.
 			if !isTail {
-				return false, &CorruptError{Path: path, Offset: off, Reason: "incomplete trailing frame in a segment that is not the tail of the log"}
+				return segKeep, 0, &CorruptError{Path: path, Offset: off, Reason: "incomplete trailing frame in a segment that is not the tail of the log"}
 			}
 			torn = true
 		case err != nil:
 			if s.cfg.OnCorrupt == CorruptQuarantine && errors.Is(err, ErrCorrupt) {
 				// The damaged segment is set aside, not deleted, and the loss is reported.
-				if err := quarantine(path); err != nil {
-					return false, err
-				}
-				s.recovery.CorruptSegments++
-				s.recovery.CorruptBytes += size
-				s.recovery.Quarantined = append(s.recovery.Quarantined, path)
-				s.recovery.LostEventsKnown = false
-				return true, nil
+				// The rename itself happens in the caller, once this handle is closed.
+				return segQuarantine, size, nil
 			}
-			return false, err
+			return segKeep, 0, err
 		default:
 			if !*first && h.Seq <= *lastFrameSeq {
 				// Frames are sequence-numbered and the number is authenticated. A frame
 				// that is out of order is a reordered, duplicated or replayed frame.
-				return false, &CorruptError{Path: path, Offset: off, Reason: fmt.Sprintf("frame sequence %d does not follow %d", h.Seq, *lastFrameSeq)}
+				return segKeep, 0, &CorruptError{Path: path, Offset: off, Reason: fmt.Sprintf("frame sequence %d does not follow %d", h.Seq, *lastFrameSeq)}
 			}
 			*first = false
 			*lastFrameSeq = h.Seq
@@ -389,12 +404,15 @@ func (s *Spool) replaySegment(seg *segment, path string, isTail bool, lastFrameS
 			switch h.Type {
 			case frameData:
 				if err := s.applyDataFrame(seg, off, frameLen, pt); err != nil {
-					return false, err
+					return segKeep, 0, err
 				}
 			case frameControl:
 				if err := s.applyControl(seg, pt); err != nil {
-					return false, err
+					return segKeep, 0, err
 				}
+			default:
+				// A counter frame belongs in the counter file, not in the log.
+				return segKeep, 0, &CorruptError{Path: path, Offset: off, Reason: "counter frame inside a segment"}
 			}
 		}
 		if errors.Is(err, errCleanEnd) || errors.Is(err, ErrTornTail) {
@@ -406,14 +424,14 @@ func (s *Spool) replaySegment(seg *segment, path string, isTail bool, lastFrameS
 	if torn || off < size {
 		// Truncate the incomplete tail so the next append does not follow a partial frame.
 		if err := f.Truncate(off); err != nil {
-			return false, fmt.Errorf("spool: truncating the incomplete tail of %s: %w", path, err)
+			return segKeep, 0, fmt.Errorf("spool: truncating the incomplete tail of %s: %w", path, err)
 		}
 		_ = f.Sync()
 		s.recovery.TornBytes += size - off
 		s.recovery.TornSegments++
 	}
 	seg.size = off
-	return false, nil
+	return segKeep, 0, nil
 }
 
 func (s *Spool) applyDataFrame(seg *segment, off, frameLen int64, pt []byte) error {
@@ -647,10 +665,17 @@ func (s *Spool) rollIfNeededLocked(incoming int64) error {
 	return nil
 }
 
+// testReclaimBarrier, when non-nil, is called with the mutex held at the instant between
+// folding a segment's counters into the counter file and unlinking that segment. That
+// instant is the one window in which the counter design could double-count, so the crash test
+// stops a real process exactly there and reopens the spool. It is nil in every production
+// path.
+var testReclaimBarrier func(seg *segment, droppedTotal uint64)
+
 // reclaim unlinks whole segments whose records are all terminal, front to back, folding each
 // segment's tombstones into the counter file first. Front-to-back order is not cosmetic: it
-// is what keeps "segments with id <= watermark no longer exist" true, which is what makes the
-// counter count exactly once across a crash.
+// is what keeps the counter exact, because a segment's tombstones are counted either from
+// the segment or from the counter file, and the watermark says which.
 func (s *Spool) reclaim() {
 	for i := 0; i < len(s.segments); {
 		seg := s.segments[i]
@@ -661,6 +686,10 @@ func (s *Spool) reclaim() {
 		}
 		if err := s.foldSegment(seg); err != nil {
 			return // keep the segment rather than lose its counters
+		}
+		if testReclaimBarrier != nil {
+			dropped, _, _, _ := s.totalsLocked()
+			testReclaimBarrier(seg, dropped)
 		}
 		s.forgetSegment(seg)
 		seg.close()
@@ -708,7 +737,7 @@ func (s *Spool) saveCounters() error {
 	c.CorruptBytes = s.recovery.CorruptBytes
 	c.CountersReset = s.recovery.CountersReset
 	s.persisted = c
-	return saveCounters(s.countersIn, c)
+	return saveCounters(s.countersIn, c, s.aead)
 }
 
 // writeFrameLocked appends one complete frame. A short write is treated as a failure and the
@@ -716,7 +745,7 @@ func (s *Spool) saveCounters() error {
 // appending after a torn frame would make every later frame unreadable.
 func (s *Spool) writeFrameLocked(seg *segment, frame []byte) error {
 	off := seg.size
-	n, err := seg.file.Write(frame)
+	n, err := writeSegmentFrame(seg.file, frame)
 	if err == nil && n != len(frame) {
 		err = io.ErrShortWrite
 	}
@@ -886,6 +915,7 @@ func (s *Spool) enforceBoundLocked(incoming int64) {
 	if bounds.MaxEntries <= 0 && bounds.MaxBytes <= 0 {
 		return
 	}
+	victims := s.collectVictims(incoming)
 
 	if len(victims) > 0 {
 		now := unixNano(s.cfg.Now())
@@ -998,8 +1028,9 @@ func parseQuarantinedName(name string) (uint64, bool) {
 }
 
 // quarantine renames a damaged file aside, keeping it for a human rather than deleting it.
-// A quarantined segment is evidence; a deleted one is only a story.
-func quarantine(path string) error {
+// A quarantined segment is evidence; a deleted one is only a story. It returns the path the
+// file now lives at, which is what a report should name.
+func quarantine(path string) (string, error) {
 	dest := path + quarantineSuffix
 	for i := 1; ; i++ {
 		if _, err := os.Stat(dest); errors.Is(err, fs.ErrNotExist) {
@@ -1008,8 +1039,8 @@ func quarantine(path string) error {
 		dest = fmt.Sprintf("%s%s.%d", path, quarantineSuffix, i)
 	}
 	if err := os.Rename(path, dest); err != nil {
-		return fmt.Errorf("spool: quarantining %s: %w", path, err)
+		return "", fmt.Errorf("spool: quarantining %s: %w", path, err)
 	}
 	syncDir(filepath.Dir(path))
-	return nil
+	return dest, nil
 }

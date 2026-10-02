@@ -21,18 +21,10 @@ type Identity struct {
 // SchemaVersion is the contract version these records validate against.
 const SchemaVersion = "1.0"
 
-// AttachmentWire is the `$defs/attachment` shape from contracts/event-envelope.schema.json.
-//
-// It exists because protocol.AttachmentDescriptor carries `digest` while the contract's field
-// is `content_digest`; the wire type here is the contract's, and the mismatch is reported to
-// the contract owner rather than papered over (see the endpoint report). Emitting
-// protocol.AttachmentDescriptor directly would produce `digest`, which the schema rejects
-// under `additionalProperties: false`.
-type AttachmentWire struct {
-	Name          string `json:"name"`
-	SizeBytes     int64  `json:"size_bytes,omitempty"`
-	ContentDigest string `json:"content_digest,omitempty"`
-}
+// Attachment descriptors use protocol.AttachmentDescriptor, whose field names are the
+// contract's `$defs/attachment` names verbatim (`content_digest`). One shape, one name: the
+// same descriptor crosses native messaging from the extension into capture-core and ends up
+// inside an envelope, and the contract is closed with `additionalProperties: false`.
 
 // EnvelopeInput is everything an envelope needs. Content-derived fields are present here so
 // the builder can *refuse* them at a mode that forbids them rather than silently dropping
@@ -58,7 +50,7 @@ type EnvelopeInput struct {
 	ClassifierVersion string
 	Confidence        protocol.Confidence
 	Excerpt           *protocol.Excerpt
-	Attachments       []AttachmentWire
+	Attachments       []protocol.AttachmentDescriptor
 
 	// Metadata that every prompt carries, including M0.
 	Decision *protocol.Decision
@@ -92,14 +84,14 @@ type envelopeWire struct {
 	CollectionMode    protocol.CollectionMode `json:"collection_mode"`
 	DedupKey          string                  `json:"dedup_key"`
 
-	SizeBytes         *int64              `json:"size_bytes,omitempty"`
-	ContentDigest     string              `json:"content_digest,omitempty"`
-	Labels            []protocol.Label    `json:"labels,omitempty"`
-	ClassifierVersion string              `json:"classifier_version,omitempty"`
-	Confidence        protocol.Confidence `json:"confidence,omitempty"`
-	ContentExcerpt    *protocol.Excerpt   `json:"content_excerpt,omitempty"`
-	Attachments       []AttachmentWire    `json:"attachments,omitempty"`
-	PolicyDecision    *protocol.Decision  `json:"policy_decision,omitempty"`
+	SizeBytes         *int64                          `json:"size_bytes,omitempty"`
+	ContentDigest     string                          `json:"content_digest,omitempty"`
+	Labels            *[]protocol.Label               `json:"labels,omitempty"`
+	ClassifierVersion string                          `json:"classifier_version,omitempty"`
+	Confidence        protocol.Confidence             `json:"confidence,omitempty"`
+	ContentExcerpt    *protocol.Excerpt               `json:"content_excerpt,omitempty"`
+	Attachments       []protocol.AttachmentDescriptor `json:"attachments,omitempty"`
+	PolicyDecision    *protocol.Decision              `json:"policy_decision,omitempty"`
 
 	WindowStart     *time.Time `json:"window_start,omitempty"`
 	WindowEnd       *time.Time `json:"window_end,omitempty"`
@@ -119,10 +111,12 @@ type envelopeWire struct {
 //   - M2 requires a minimised excerpt; M3 forbids one, because M3's content path is the
 //     approved per-event retrieval path, not the wire.
 //
-// **Open decision (reported):** §11.3 says an M3 envelope "notes only that content is held
-// locally", but contracts/event-envelope.schema.json has no field for that marker and sets
-// `additionalProperties: false`. M3 is therefore carried by `collection_mode` alone; adding a
-// marker would be a schema change, which is not this component's to make.
+// **ADR 0017 (decided):** the M3 content-state marker is device-local. §11.3's phrase "a
+// local content-state marker" has no field in contracts/event-envelope.schema.json, whose
+// `additionalProperties: false` and version-change convention leave nowhere to put one, so
+// the M3 envelope carries exactly the M1 fields, no excerpt, and nothing about content held.
+// The "content is held locally" fact lives in the content store and the spool record, where
+// the content actually is; Pipeline.ContentState exposes the count for the coverage row.
 func BuildEnvelope(in EnvelopeInput) ([]byte, error) {
 	if !in.Mode.Valid() {
 		return nil, fmt.Errorf("core: envelope has mode %q outside the closed set", in.Mode)
@@ -171,7 +165,14 @@ func BuildEnvelope(in EnvelopeInput) ([]byte, error) {
 	}
 	if in.Mode.ReadsContent() && in.Kind == protocol.KindPrompt {
 		e.ContentDigest = in.ContentDigest
-		e.Labels = in.Labels
+		// The schema requires `labels` at M1 and above, and an empty label set is a legitimate
+		// output ("the classifier ran and found nothing"). It is emitted as an empty array
+		// rather than omitted, because absence and emptiness are different facts.
+		labels := in.Labels
+		if labels == nil {
+			labels = []protocol.Label{}
+		}
+		e.Labels = &labels
 		e.ClassifierVersion = in.ClassifierVersion
 		e.Confidence = in.Confidence
 		e.ContentExcerpt = in.Excerpt

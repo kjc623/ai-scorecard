@@ -920,9 +920,18 @@ CREATE TABLE ingest.rejected (
   device_id          uuid,
   received_at        timestamptz NOT NULL DEFAULT now(),
   reason_code        text NOT NULL CHECK (reason_code IN (
-                       'schema_violation','unknown_kind','unknown_tenant','device_revoked',
-                       'region_mismatch','mode_violation','batch_oversize','malformed_json',
-                       'dedup_key_mismatch','schema_version_unsupported','internal_error')),
+                       -- The §7 wire vocabulary, spelled exactly as docs/02 §7 and
+                       -- device/protocol.ReasonCode spell it. Three of these were previously
+                       -- spelled differently here for the same facts (device_revoked,
+                       -- batch_oversize, schema_version_unsupported); §7 is the closed contract,
+                       -- so the quarantine surface follows it rather than translating to it.
+                       'schema_violation','unsupported_schema_version','unknown_kind',
+                       'unknown_tenant','region_mismatch','mode_violation','oversize',
+                       -- Storage-only facts. They have no wire code because the record was held
+                       -- at a layer that has no per-event outcome to report: an unparseable
+                       -- envelope, a server-side fault, and a device-computed dedup key that
+                       -- disagrees with the server's derivation.
+                       'malformed_json','dedup_key_mismatch','internal_error')),
   detail             jsonb NOT NULL DEFAULT '{}'::jsonb,
   field_presence     jsonb NOT NULL DEFAULT '{}'::jsonb,
   envelope_redacted  jsonb,
@@ -943,7 +952,7 @@ CREATE TABLE ingest.rejected (
 );
 
 COMMENT ON TABLE ingest.rejected IS
-  'Rejected envelopes, content-stripped, with a short TTL. See docs/02-ingest-and-transport.md §7 for the reason codes and docs/03-data-platform.md for the retention window.';
+  'Rejected envelopes, content-stripped, with a short TTL. reason_code carries the docs/02 §7 wire vocabulary, spelled exactly as device/protocol.ReasonCode spells it, plus three storage-only codes that have no per-event wire outcome: malformed_json, dedup_key_mismatch and internal_error. Two wire codes deliberately never appear here -- tenant_mismatch, because tenant_id is NOT NULL and RLS-scoped so a cross-tenant body has no honest tenant to file it under, and duplicate_batch, which is batch-level by construction and has no per-event envelope to quarantine. services/ingest-api/internal/store.QuarantineReason is the single place that translation lives, and db/tools/check-schema.mjs asserts every code it can emit is accepted by this CHECK. See docs/03-data-platform.md for the retention window.';
 
 -- The content search index. One row per searchable unit: the prompt body, and one row per
 -- attachment filename.
@@ -1619,6 +1628,16 @@ BEGIN
     -- arrived on an equal- or worse-ranked route than the weak row's winner. Note that only
     -- strictly-better fidelity reached the upgrade branch, so the strictly-better case worked
     -- and hid the defect; see the equal-rank assertion in db/invariants.test.sql.
+    --
+    -- AT EQUAL RANK THIS IS DELIBERATE, NOT A BLEND OF TWO OBSERVATIONS. Docs/02 section 4.5
+    -- ranks by route fidelity, so equal rank means the tie-break does not apply and the
+    -- first-seen observation stays the winner: the adopting observation contributes only its
+    -- key and its digest, while the incumbent keeps labels, classifier_version and confidence.
+    -- Those content fields stay coherent because the exact key matched -- that same key is the
+    -- evidence that both routes observed one submission, read the same content and derived the
+    -- same digest -- and merge_confidence promotes to 'high' precisely because the row now
+    -- carries an exact identity. This is a decision, recorded here so a later reader does not
+    -- have to work out whether it was an oversight.
     UPDATE ingest.submission s
        SET first_occurred_at  = least(s.first_occurred_at, v_occurred),
            last_occurred_at   = greatest(s.last_occurred_at, v_occurred),

@@ -1,0 +1,9 @@
+[
+  {"source": "ext.page_context", "rank": 10, "yields_content": true},
+  {"source": "cli.shim",         "rank": 20, "yields_content": true},
+  {"source": "proxy.loopback",   "rank": 30, "yields_content": true},
+  {"source": "ext.web_request",  "rank": 40, "yields_content": true},
+  {"source": "proxy.tls",        "rank": 50, "yields_content": true},
+  {"source": "ext.dom",          "rank": 60, "yields_content": true},
+  {"source": "proc.detect",      "rank": 70, "yields_content": false}
+]

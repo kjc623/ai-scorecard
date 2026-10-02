@@ -219,6 +219,14 @@ function resolveDimensions(doc, source, bucket) {
       requested: out.length,
     });
   }
+  if (out.length > 0 && source.kind === 'list') {
+    // A bounded list is a list. Grouping it would collapse the rows the cursor pages over, and
+    // any time-bucketed number must come from mart rather than from event rows (C27, §3.8).
+    throw unsupported(REASON.NO_MEASURES, `Source "${source.id}" is a bounded list and does not group; filter on the dimension instead of grouping by it.`, {
+      source: source.id,
+      offered_as_filters: [...Object.keys(source.dimensions)],
+    });
+  }
   return out;
 }
 
@@ -416,9 +424,15 @@ function resolveFilters(doc, source) {
   return out;
 }
 
-function resolveWindow(doc) {
+/**
+ * The window is mandatory everywhere except on a source that has no event clock at all: the
+ * device-liveness list is current state, not an event stream, and its result set is bounded by
+ * the cursor's page cap instead (§3.7: ≤ 5,000 devices × 6 collectors).
+ */
+function resolveWindow(doc, source) {
   const window = doc.window;
-  if (!isPlainObject(window)) {
+  if (window === null || window === undefined) {
+    if (source.kind === 'list' && source.time === null) return null;
     throw unsupported(REASON.MISSING_WINDOW, 'A window is required: no read in this DSL is unbounded.', { example: { from: '2026-09-01T00:00:00Z', to: '2026-10-01T00:00:00Z' } });
   }
   for (const key of Object.keys(window)) {
@@ -580,7 +594,7 @@ export function validate(doc) {
   const dimensions = resolveDimensions(doc, withTime, bucket);
   const measures = resolveMeasures(doc, withTime);
   const filters = resolveFilters(doc, withTime);
-  const window = resolveWindow(doc);
+  const window = resolveWindow(doc, withTime);
   const order = resolveOrder(doc, withTime, dimensions, measures, bucket);
   const limit = resolveLimit(doc, withTime, klass);
   const cursor = resolveCursor(doc);
@@ -616,7 +630,9 @@ function klassOf(source) {
  * @returns {string}
  */
 export function canonicalJson(value) {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value ?? null);
+  if (value === null || value === undefined) return 'null';
+  if (value instanceof Date) return JSON.stringify(value.toISOString());
+  if (typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
   const keys = Object.keys(value).sort();
   return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(value[k])}`).join(',')}}`;

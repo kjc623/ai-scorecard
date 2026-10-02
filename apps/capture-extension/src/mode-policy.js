@@ -99,12 +99,20 @@ export function createPolicyCache({ now = () => Date.now(), staleAfterMs = DEFAU
       if (!isMode(mode)) continue;
       if (patternMatches(pattern, host, target.tool_fingerprint)) matches.push({ pattern, mode });
     }
-    const defaultMode = isMode(current.bundle.default_mode) ? current.bundle.default_mode : CONSERVATIVE_MODE;
-    matches.push({ pattern: '(default)', mode: defaultMode });
+
+    // §11.3: "an observation with no matching scope entry resolves to the tenant default". The
+    // default is therefore a *fallback*, not a competing entry — including it in the
+    // most-restrictive reduction would let an M0 default silently override an explicit m2 scope
+    // entry, which is the wrong reading of "most restrictive" and would make the scope matrix
+    // inert. Most-restrictive applies across the entries that DO match; the default stands in
+    // when none does.
+    const entries = matches.length
+      ? matches
+      : [{ pattern: '(default)', mode: isMode(current.bundle.default_mode) ? current.bundle.default_mode : CONSERVATIVE_MODE }];
 
     // most_restrictive = the lowest value in m0 < m1 < m2 < m3
-    let winner = matches[0];
-    for (const m of matches) if (order(m.mode) < order(winner.mode)) winner = m;
+    let winner = entries[0];
+    for (const m of entries) if (order(m.mode) < order(winner.mode)) winner = m;
     return { mode: winner.mode, reason: `scope:${winner.pattern}`, policy_version: current.bundle.policy_version, unsigned: false };
   }
 

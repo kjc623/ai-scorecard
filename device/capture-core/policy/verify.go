@@ -13,10 +13,10 @@ import (
 	"github.com/shadow-ai-capture/device/protocol"
 )
 
-// Cause is §13.3's closed list of signature-failure causes. It is a string type so it can be
-// carried on the health channel's `error_code` (protocol.Detail is a string type; the value
-// is converted rather than invented — see the endpoint report: protocol.Detail's closed
-// vocabulary does not yet contain these four names).
+// Cause is §13.3's closed list of signature-failure causes. The wire value always comes from
+// protocol.Detail's closed vocabulary (the four names were added there at this component's
+// request): a cause string invented locally would be a coverage cause the reporting layer
+// cannot group.
 type Cause string
 
 // The four causes of §13.3 rule 4, in the order the verification chain checks them.
@@ -38,8 +38,21 @@ func (c Cause) Valid() bool {
 	}
 }
 
-// Detail renders the cause for the health channel.
-func (c Cause) Detail() protocol.Detail { return protocol.Detail(c) }
+// Detail maps the cause to the health channel's closed vocabulary.
+func (c Cause) Detail() protocol.Detail {
+	switch c {
+	case CauseSignatureInvalid:
+		return protocol.DetailBundleSignatureInvalid
+	case CauseSchemaInvalid:
+		return protocol.DetailBundleSchemaInvalid
+	case CauseVersionRegression:
+		return protocol.DetailBundleVersionRegression
+	case CauseArtefactMissing:
+		return protocol.DetailBundleArtefactMissing
+	default:
+		return protocol.DetailNone
+	}
+}
 
 // SignedBundle is the envelope around a bundle payload. **Open decision:** docs/01-collectors.md
 // §13.2 fixes the verification *order* but not the signing envelope's wire format, so this

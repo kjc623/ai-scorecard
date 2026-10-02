@@ -1,6 +1,10 @@
 /**
  * harness.mjs — wires a fake chrome plus a fake capture-core into the real extension code, so
  * every test drives the same modules the browser will.
+ *
+ * The fake core is wired in *before* the adapter is built, because the adapter closes over
+ * `chrome.runtime.connectNative` at construction time. Wiring it afterwards would leave every
+ * request unanswered, and a test that "passes" against an unanswered channel is worse than none.
  */
 
 import { webcrypto } from 'node:crypto';
@@ -26,29 +30,20 @@ export function fakeCrypto() {
 
 /**
  * A complete extension under test: the real worker wiring, the real content-script wiring, a fake
- * chrome and a fake core answering on the native port.
+ * chrome, and a fake core answering on every native port.
  */
-export function createHarness({ core = {}, capacity = 200, failConnect = false, deviceId = null } = {}) {
+export function createHarness({ core = {}, capacity = 200, failConnect = false, deviceId = null, document = null } = {}) {
   const fake = createFakeChrome();
   fake.state.failConnect = failConnect;
 
   const crypto = fakeCrypto();
-  const chromeObj = { ...fake.chrome, crypto: fake.crypto };
-  // The adapter reads `scope.chrome` and `scope.crypto`.
-  const scope = { chrome: chromeObj, crypto, performance: globalThis.performance };
-
-  const adapter = createChromeAdapter(scope);
-  const contentAdapter = createContentScriptAdapter(scope);
-
   const fakeCore = createFakeCore(core);
 
-  const app = bootstrapWorker(adapter, { capacity, deviceId });
-
-  // When a port connects, route its messages into the fake core and answer back.
+  // Route every native port into the fake core, before anything builds an adapter.
   const origConnect = fake.chrome.runtime.connectNative.bind(fake.chrome.runtime);
   fake.chrome.runtime.connectNative = (application) => {
+    if (failConnect) return origConnect(application);
     const port = origConnect(application);
-    port.onMessage.addListener(() => {});
     const realPost = port.postMessage.bind(port);
     port.postMessage = (message) => {
       realPost(message);
@@ -58,13 +53,19 @@ export function createHarness({ core = {}, capacity = 200, failConnect = false, 
     return port;
   };
 
-  const content = bootstrapContentScript(contentAdapter, { document: null });
+  const chromeObj = { ...fake.chrome, crypto };
+  const scope = { chrome: chromeObj, crypto, performance: globalThis.performance };
+
+  const adapter = createChromeAdapter(scope);
+  const contentAdapter = createContentScriptAdapter(scope);
+  const app = bootstrapWorker(adapter, { capacity, deviceId });
+  const content = bootstrapContentScript(contentAdapter, { document });
 
   return { fake, scope, adapter, contentAdapter, content, core: fakeCore, app, crypto };
 }
 
 /** Let queued microtasks (native replies) settle. */
-export async function settle(n = 6) {
+export async function settle(n = 8) {
   for (let i = 0; i < n; i++) await new Promise((resolve) => setImmediate(resolve));
 }
 

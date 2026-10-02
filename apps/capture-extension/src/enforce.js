@@ -95,14 +95,36 @@ export function createBudget({ budgetMs = DECISION_BUDGET_MS, now = nowMs } = {}
   };
 }
 
-/** A rule matches when every matcher it names matches. `mode` is the strictest mode the rule may act at. */
+/**
+ * A rule matches when every matcher it names matches. `mode` is the strictest mode the rule may act at.
+ *
+ * A matcher that is present but malformed makes the rule **not match**, rather than matching
+ * everything: rule data comes from a signed bundle and can be malformed without being hostile, and
+ * a broken rule must not become an unqualified block. `evaluateRule` reports the skip so it is
+ * counted rather than silent (§7.4: "the failure is counted").
+ */
 export function ruleMatches(rule, { host, path, tool_fingerprint: tool, size_bytes: size, mode }) {
   if (!rule || typeof rule !== 'object') return false;
-  if (Array.isArray(rule.hosts) && rule.hosts.length && !rule.hosts.some((h) => hostMatches(h, host))) return false;
-  if (Array.isArray(rule.paths) && rule.paths.length && !rule.paths.some((p) => pathMatches(p, path))) return false;
-  if (Array.isArray(rule.tools) && rule.tools.length && !rule.tools.includes(tool)) return false;
-  if (Number.isFinite(rule.min_size_bytes) && !(size >= rule.min_size_bytes)) return false;
-  if (Array.isArray(rule.modes) && rule.modes.length && !rule.modes.includes(mode)) return false;
+  if (rule.hosts !== undefined) {
+    if (!Array.isArray(rule.hosts) || rule.hosts.length === 0) return false;
+    if (!rule.hosts.some((h) => hostMatches(h, host))) return false;
+  }
+  if (rule.paths !== undefined) {
+    if (!Array.isArray(rule.paths) || rule.paths.length === 0) return false;
+    if (!rule.paths.some((p) => pathMatches(p, path))) return false;
+  }
+  if (rule.tools !== undefined) {
+    if (!Array.isArray(rule.tools) || rule.tools.length === 0) return false;
+    if (!rule.tools.includes(tool)) return false;
+  }
+  if (rule.modes !== undefined) {
+    if (!Array.isArray(rule.modes) || rule.modes.length === 0) return false;
+    if (!rule.modes.includes(mode)) return false;
+  }
+  if (rule.min_size_bytes !== undefined) {
+    if (!Number.isFinite(rule.min_size_bytes)) return false;
+    if (!(size >= rule.min_size_bytes)) return false;
+  }
   return true;
 }
 
@@ -124,12 +146,35 @@ function pathMatches(pattern, path) {
   return String(path).includes(p);
 }
 
-/** Rules are ordered; the first match wins, which is what makes a bundle's ordering meaningful. */
+/**
+ * Rules are ordered; the first match wins, which is what makes a bundle's ordering meaningful.
+ *
+ * @returns {{rule: object|null, skipped: Array<{rule_id: string, reason: string}>}} `skipped` is
+ * non-empty when the bundle held a rule this build could not evaluate. The caller counts it —
+ * a rule the device cannot apply is a coverage fact, never a silent no-op.
+ */
 export function evaluateRule(rules, req) {
-  for (const rule of rules || []) {
-    if (ruleMatches(rule, req)) return rule;
+  if (!Array.isArray(rules)) throw new TypeError('rules is not a list');
+  const skipped = [];
+  for (const rule of rules) {
+    if (!rule || typeof rule !== 'object') {
+      skipped.push({ rule_id: 'NONE', reason: 'not_an_object' });
+      continue;
+    }
+    if (hasMalformedMatcher(rule)) {
+      skipped.push({ rule_id: safeRuleId(rule), reason: 'malformed_matcher' });
+      continue;
+    }
+    if (ruleMatches(rule, req)) return { rule, skipped };
   }
-  return null;
+  return { rule: null, skipped };
+}
+
+function hasMalformedMatcher(rule) {
+  for (const key of ['hosts', 'paths', 'tools', 'modes']) {
+    if (rule[key] !== undefined && (!Array.isArray(rule[key]) || rule[key].length === 0)) return true;
+  }
+  return rule.min_size_bytes !== undefined && !Number.isFinite(rule.min_size_bytes);
 }
 
 /** §9.6: only an `enforcing` release may act. */
@@ -145,6 +190,7 @@ function decide(action, ruleId, reason, extra = {}) {
     error_counted: false,
     over_budget: false,
     rule_id: ruleId || 'NONE',
+    skipped_rules: [],
     ...extra,
   };
 }
@@ -185,16 +231,15 @@ export function decideSync(input) {
   const budget = createBudget({ budgetMs: input.budgetMs || DECISION_BUDGET_MS, now: input.now || nowMs });
   let outcome;
   try {
-    outcome = budget.sync(() => {
-      const rule = evaluateRule(input.rules, {
+    outcome = budget.sync(() =>
+      evaluateRule(input.rules, {
         host,
         path,
         tool_fingerprint: input.tool_fingerprint,
         size_bytes: Number.isFinite(input.size_bytes) ? input.size_bytes : 0,
         mode: input.mode,
-      });
-      return rule;
-    });
+      }),
+    );
   } catch (e) {
     // §7.4: "if evaluation errors ... the request proceeds (logged)".
     return decide(DECISION.LOGGED, 'NONE', REASON.FAILED_OPEN, {
@@ -207,11 +252,13 @@ export function decideSync(input) {
     });
   }
 
-  const rule = outcome.value;
+  const rule = outcome.value.rule;
+  const skippedRules = outcome.value.skipped;
   const elapsed = outcome.elapsed_ms;
+  const degradedReasons = skippedRules.length ? [...skippedRules.map((s) => `skipped_rule:${s.reason}`)] : [];
 
   if (outcome.expired) {
-    return decide(DECISION.LOGGED, rule ? rule.rule_id : 'NONE', REASON.BUDGET_EXCEEDED, {
+    return decide(DECISION.LOGGED, rule ? safeRuleId(rule) : 'NONE', REASON.BUDGET_EXCEEDED, {
       degraded: true,
       error_counted: true,
       over_budget: true,
@@ -226,48 +273,90 @@ export function decideSync(input) {
       needs_confirmation: false,
       cancel: false,
       elapsed_ms: elapsed,
+      skipped_rules: skippedRules,
+      // A bundle rule the device could not apply is a coverage fact: the decision is still
+      // `logged` (nothing here blocked anything), but it is reported as degraded so the gap is
+      // visible rather than looking like "no rule matched".
+      degraded: degradedReasons.length > 0,
+      error_counted: degradedReasons.length > 0,
+      error: degradedReasons.join(','),
+    });
+  }
+
+  // Past this point the rule's own fields are read, and a rule that is not shaped like a rule
+  // must fail open rather than throw out of the request path (§7.4).
+  let ruleId;
+  let action;
+  try {
+    ruleId = safeRuleId(rule);
+    action = rule.action;
+  } catch (e) {
+    return decide(DECISION.LOGGED, 'NONE', REASON.FAILED_OPEN, {
+      degraded: true,
+      error_counted: true,
+      error: String((e && e.message) || e),
+      needs_confirmation: false,
+      cancel: false,
+      elapsed_ms: elapsed,
     });
   }
 
   if (!enforcing(input.release_state)) {
     // Shadow and rolled_back compute the decision, record it, and never act (§9.6).
-    return decide(DECISION.LOGGED, rule.rule_id, input.release_state === 'shadow' ? REASON.SHADOW : REASON.ROLLED_BACK, {
+    return decide(DECISION.LOGGED, ruleId, input.release_state === 'shadow' ? REASON.SHADOW : REASON.ROLLED_BACK, {
       needs_confirmation: false,
       cancel: false,
       shadow: true,
       elapsed_ms: elapsed,
+      skipped_rules: skippedRules,
+      degraded: degradedReasons.length > 0,
+      error_counted: degradedReasons.length > 0,
+      error: degradedReasons.join(','),
     });
   }
 
-  switch (rule.action) {
+  switch (action) {
     case DECISION.BLOCKED:
-      return decide(DECISION.BLOCKED, rule.rule_id, REASON.RULE_BLOCK, {
+      return decide(DECISION.BLOCKED, ruleId, REASON.RULE_BLOCK, {
         needs_confirmation: false,
         cancel: true,
         elapsed_ms: elapsed,
+        skipped_rules: skippedRules,
       });
     case DECISION.WARNED:
-      return decide(DECISION.WARNED, rule.rule_id, REASON.RULE_WARN, {
+      return decide(DECISION.WARNED, ruleId, REASON.RULE_WARN, {
         needs_confirmation: true,
         cancel: false,
         elapsed_ms: elapsed,
+        skipped_rules: skippedRules,
       });
     case DECISION.LOGGED:
-      return decide(DECISION.LOGGED, rule.rule_id, REASON.RULE_LOG, {
+      return decide(DECISION.LOGGED, ruleId, REASON.RULE_LOG, {
         needs_confirmation: false,
         cancel: false,
         elapsed_ms: elapsed,
+        skipped_rules: skippedRules,
+        degraded: degradedReasons.length > 0,
+        error_counted: degradedReasons.length > 0,
+        error: degradedReasons.join(','),
       });
     default:
-      return decide(DECISION.LOGGED, rule.rule_id, REASON.FAILED_OPEN, {
+      return decide(DECISION.LOGGED, ruleId, REASON.FAILED_OPEN, {
         degraded: true,
         error_counted: true,
-        error: `unknown_action:${rule.action}`,
+        error: `unknown_action:${String(action)}`,
         needs_confirmation: false,
         cancel: false,
         elapsed_ms: elapsed,
       });
   }
+}
+
+/** The schema gives `rule_id` a 128-character bound; a bundle-sourced id is still validated. */
+function safeRuleId(rule) {
+  const id = rule && rule.rule_id;
+  if (typeof id !== 'string' || id.length === 0 || id.length > 128) return 'NONE';
+  return id;
 }
 
 /**
@@ -405,9 +494,9 @@ export function decisionRecord(outcome, { client_id, occurred_at, url, tool_fing
   };
 }
 
-/** `Detail` for a degraded decision, from the closed vocabulary. */
+/** `Detail` for a degraded decision, from the closed vocabulary of device/protocol/envelope.go. */
 export function degradedDetail(outcome) {
-  return outcome.over_budget ? DETAIL.BUDGET_EXCEEDED : DETAIL.CLASSIFIER_UNAVAILABLE;
+  return outcome.over_budget ? DETAIL.BUDGET_EXHAUSTED : DETAIL.CLASSIFIER_UNAVAILABLE;
 }
 
 function round(n) {

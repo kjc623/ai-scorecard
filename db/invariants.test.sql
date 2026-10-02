@@ -984,6 +984,65 @@ BEGIN
   RAISE NOTICE 'PASS T37 adopted row carries the exact key with its digest and is no longer flagged low';
 END $$;
 
+
+-- =====================================================================================
+-- T38  The quarantine reason-code vocabulary is pinned
+-- =====================================================================================
+-- The Lead's ruling: ingest.rejected.reason_code carries the docs/02 §7 wire vocabulary,
+-- spelled exactly as device/protocol.ReasonCode spells it, plus three storage-only codes that
+-- have no per-event wire outcome. Three codes used to be spelled differently here for the same
+-- facts (device_revoked, batch_oversize, schema_version_unsupported); §7 is the closed contract,
+-- so the quarantine surface follows it rather than translating to it.
+--
+-- This pins the vocabulary from the database's side, so the Go mapping and the CHECK cannot
+-- drift apart silently in either direction. It runs as sac_ingest, the role the ingest API
+-- actually uses, and it exercises the real INSERT rather than reading the catalog: a constraint
+-- that exists but is not enforced is not a constraint.
+
+DO $$
+DECLARE
+  accepted text[] := ARRAY[
+    'schema_violation','unsupported_schema_version','unknown_kind','unknown_tenant',
+    'region_mismatch','mode_violation','oversize',
+    'malformed_json','dedup_key_mismatch','internal_error'];
+  forbidden text[] := ARRAY[
+    -- wire-only: deliberately unrepresentable in quarantine, see the table comment
+    'tenant_mismatch','duplicate_batch',
+    -- the pre-alignment spellings of three codes above; their return would be a regression
+    'device_revoked','batch_oversize','schema_version_unsupported'];
+  c text;
+  n int;
+BEGIN
+  FOREACH c IN ARRAY accepted LOOP
+    BEGIN
+      INSERT INTO ingest.rejected (tenant_id, device_id, reason_code, expires_at)
+      VALUES ('11111111-1111-7111-8111-111111111111',
+              'aaaaaaaa-0000-7000-8000-000000000001', c, now() + interval '7 days');
+    EXCEPTION WHEN others THEN
+      RAISE EXCEPTION 'FAIL T38 the CHECK rejects %, which is part of the agreed vocabulary (%)', c, SQLERRM;
+    END;
+  END LOOP;
+
+  FOREACH c IN ARRAY forbidden LOOP
+    BEGIN
+      INSERT INTO ingest.rejected (tenant_id, device_id, reason_code, expires_at)
+      VALUES ('11111111-1111-7111-8111-111111111111',
+              'aaaaaaaa-0000-7000-8000-000000000001', c, now() + interval '7 days');
+      RAISE EXCEPTION 'FAIL T38 the CHECK accepts %, which is not part of the vocabulary', c;
+    EXCEPTION WHEN check_violation THEN
+      NULL;  -- expected: the vocabulary is enforced, not merely documented
+    END;
+  END LOOP;
+
+  SELECT count(*) INTO n FROM ingest.rejected
+   WHERE tenant_id = '11111111-1111-7111-8111-111111111111';
+  IF n <> array_length(accepted, 1) THEN
+    RAISE EXCEPTION 'FAIL T38 expected % accepted codes to persist, found %', array_length(accepted, 1), n;
+  END IF;
+  RAISE NOTICE 'PASS T38 quarantine vocabulary pinned: % codes accepted, % rejected (2 wire-only, 3 pre-alignment spellings)',
+    array_length(accepted, 1), array_length(forbidden, 1);
+END $$;
+
 RESET ROLE;
 
 

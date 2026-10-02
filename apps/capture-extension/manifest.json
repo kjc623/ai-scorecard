@@ -1,0 +1,49 @@
+{
+  "manifest_version": 3,
+  "name": "Shadow AI Capture",
+  "version": "1",
+  "description": "Observe generative-AI submissions and report matched observations to capture-core. Policy-installed; requests are never changed.",
+  "minimum_chrome_version": "110",
+  "background": {
+    "service_worker": "background/service-worker.js",
+    "type": "module"
+  },
+  "permissions": [
+    "webRequest",
+    "webRequestBlocking",
+    "nativeMessaging",
+    "scripting",
+    "tabs",
+    "alarms"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content/content-script.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "src/adapter.js",
+        "src/chrome-adapter.js",
+        "src/codec.js",
+        "src/messages.js",
+        "src/attachments/files.js",
+        "src/attachments/sender.js"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ]
+}

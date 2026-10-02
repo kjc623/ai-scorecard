@@ -275,8 +275,8 @@ func (v DetectionBasis) Valid() bool {
 	return false
 }
 
-// AllDetectionBasiss returns the closed set in schema order.
-func AllDetectionBasiss() []DetectionBasis {
+// AllDetectionBases returns the closed set in schema order.
+func AllDetectionBases() []DetectionBasis {
 	return []DetectionBasis{DetectionBasisProcessScan, DetectionBasisEndpointSecurity, DetectionBasisETW, DetectionBasisModuleSignature}
 }
 
@@ -444,10 +444,6 @@ type EnvelopeCore struct {
 	// Device clock at observation. Retained for ordering and skew analysis; the server stamps
 	// received_at and that is what display uses (brief §3.6).
 	OccurredAt DateTime `json:"occurred_at"`
-	// Server receive time, stamped by the ingest gateway. Authoritative for display; occurred_at is
-	// retained for ordering and skew (brief §3.6). A device must not send this — see
-	// $defs/deviceSubmission.
-	ReceivedAt DateTime `json:"received_at"`
 	// Milliseconds since an arbitrary device-local monotonic origin. Gives intra-device ordering that
 	// survives clock changes, which wall-clock device time does not.
 	MonotonicOffsetMS int64 `json:"monotonic_offset_ms"`
@@ -455,52 +451,16 @@ type EnvelopeCore struct {
 	// in ref.route_fidelity and is what decides the winner when two routes observe one submission
 	// (brief §4.1).
 	Source Route `json:"source"`
-	// Overall classifier confidence band. 'degraded' means classification was attempted and did not
-	// complete — the explicit signal required by brief §6 so that a failed classifier is never
-	// reported as 'no sensitive data found'.
-	Confidence Confidence `json:"confidence"`
 	// The effective mode applied to this observation, resolved on the device from the signed scope
 	// matrix by taking the most restrictive applicable value across tool, data class and user
 	// population (brief §1.1).
 	CollectionMode CollectionMode `json:"collection_mode"`
-	// Size of the observed payload. Available at every mode including M0.
-	SizeBytes int64 `json:"size_bytes"`
-	// Digest of the normalised content. Required at M1 and above. Absent at M0, where the collector is
-	// not permitted to read content at all.
-	ContentDigest Sha256 `json:"content_digest"`
-	// Classification verdicts. Required at M1 and above, absent at M0.
-	Labels []Label `json:"labels"`
-	// Classifier release that produced `labels`, from ref.classifier_release. Required at M1 and above
-	// so a change in classifier behaviour is visible as a version change.
-	ClassifierVersion string `json:"classifier_version"`
-	// Required at M2, forbidden at M0 and M3.
-	ContentExcerpt Excerpt `json:"content_excerpt"`
-	// Attachment descriptors: filename always, bytes-derived fields only when the collector could read
-	// the file. Permitted at M1 and above and forbidden at M0, because M0's closed list is device,
-	// user, tool, timestamp, size and destination -- a filename is not on it. Present, possibly empty,
-	// whenever the submission carried attachments.
-	Attachments []Attachment `json:"attachments"`
-	// Required for every prompt event, including M0: a tenant can block a tool outright without
-	// reading content.
-	PolicyDecision PolicyDecision `json:"policy_decision"`
 	// Idempotency key, derived per kind from tenant, device, tool and the best material the mode
 	// permits. At M1 and above it includes the normalised content digest; at M0 the device cannot read
 	// content, so it is derived from an occurred_at bucket and size instead, and dedup is
 	// correspondingly weaker. The canonicalisation is normative and lives in
 	// docs/02-ingest-and-transport.md §4.
 	DedupKey Sha256 `json:"dedup_key"`
-	// Start of the rollup window. Required for usage_rollup.
-	WindowStart DateTime `json:"window_start"`
-	// End of the rollup window. Required for usage_rollup.
-	WindowEnd DateTime `json:"window_end"`
-	// Submissions observed in the window. Required for usage_rollup.
-	SubmissionCount int64 `json:"submission_count"`
-	// Total bytes observed in the window. Required for usage_rollup.
-	BytesTotal int64 `json:"bytes_total"`
-	// How an on-device model was detected. Required for model_detection. Recorded because the four
-	// mechanisms have materially different confidence and coverage, and merging them would overstate
-	// what is known.
-	DetectionBasis DetectionBasis `json:"detection_basis"`
 }
 
 // ValidateCore checks the constraints the schema places on the common core alone.
@@ -538,81 +498,25 @@ func (e EnvelopeCore) ValidateCore() error {
 	if e.OccurredAt == "" {
 		return fmt.Errorf("envelope: EnvelopeCore: occurred_at is required and must not be empty")
 	}
-	if e.ReceivedAt == "" {
-		return fmt.Errorf("envelope: EnvelopeCore: received_at is required and must not be empty")
-	}
 	if e.MonotonicOffsetMS < 0 {
 		return fmt.Errorf("envelope: EnvelopeCore: monotonic_offset_ms must be >= 0, got %d", e.MonotonicOffsetMS)
 	}
 	if !e.Source.Valid() {
 		return fmt.Errorf("envelope: EnvelopeCore: source is %q, which is outside the closed set", string(e.Source))
 	}
-	if !e.Confidence.Valid() {
-		return fmt.Errorf("envelope: EnvelopeCore: confidence is %q, which is outside the closed set", string(e.Confidence))
-	}
 	if !e.CollectionMode.Valid() {
 		return fmt.Errorf("envelope: EnvelopeCore: collection_mode is %q, which is outside the closed set", string(e.CollectionMode))
 	}
-	if e.SizeBytes < 0 {
-		return fmt.Errorf("envelope: EnvelopeCore: size_bytes must be >= 0, got %d", e.SizeBytes)
-	}
-	if !reSha256.MatchString(e.ContentDigest) {
-		return fmt.Errorf("envelope: EnvelopeCore: content_digest must match %s", reSha256)
-	}
-	if e.Labels == nil {
-		return fmt.Errorf("envelope: EnvelopeCore: labels is required and must be present")
-	}
-	for i := range e.Labels {
-		if err := e.Labels[i].Validate(); err != nil {
-			return fmt.Errorf("envelope: EnvelopeCore: labels[%d]: %w", i, err)
-		}
-	}
-	if len(e.ClassifierVersion) < 1 {
-		return fmt.Errorf("envelope: EnvelopeCore: classifier_version must be at least 1 character(s), got %d", len(e.ClassifierVersion))
-	}
-	if len(e.ClassifierVersion) > 64 {
-		return fmt.Errorf("envelope: EnvelopeCore: classifier_version must be at most 64 character(s), got %d", len(e.ClassifierVersion))
-	}
-	if err := e.ContentExcerpt.Validate(); err != nil {
-		return fmt.Errorf("envelope: EnvelopeCore: content_excerpt: %w", err)
-	}
-	if e.Attachments == nil {
-		return fmt.Errorf("envelope: EnvelopeCore: attachments is required and must be present")
-	}
-	for i := range e.Attachments {
-		if err := e.Attachments[i].Validate(); err != nil {
-			return fmt.Errorf("envelope: EnvelopeCore: attachments[%d]: %w", i, err)
-		}
-	}
-	if err := e.PolicyDecision.Validate(); err != nil {
-		return fmt.Errorf("envelope: EnvelopeCore: policy_decision: %w", err)
-	}
 	if !reSha256.MatchString(e.DedupKey) {
 		return fmt.Errorf("envelope: EnvelopeCore: dedup_key must match %s", reSha256)
-	}
-	if e.WindowStart == "" {
-		return fmt.Errorf("envelope: EnvelopeCore: window_start is required and must not be empty")
-	}
-	if e.WindowEnd == "" {
-		return fmt.Errorf("envelope: EnvelopeCore: window_end is required and must not be empty")
-	}
-	if e.SubmissionCount < 0 {
-		return fmt.Errorf("envelope: EnvelopeCore: submission_count must be >= 0, got %d", e.SubmissionCount)
-	}
-	if e.BytesTotal < 0 {
-		return fmt.Errorf("envelope: EnvelopeCore: bytes_total must be >= 0, got %d", e.BytesTotal)
-	}
-	if !e.DetectionBasis.Valid() {
-		return fmt.Errorf("envelope: EnvelopeCore: detection_basis is %q, which is outside the closed set", string(e.DetectionBasis))
 	}
 	return nil
 }
 
 // DevicePromptM0 is the device envelope for kind "prompt" at collection mode "m0".
 //
-// Required: the common core (direction, kind, collection_mode pinned), plus schema_version,
-// event_id, tenant_id, device_id, user_ref, tool_fingerprint, direction, kind, occurred_at,
-// monotonic_offset_ms, source, collection_mode, size_bytes, policy_decision, dedup_key.
+// Required: the common core (direction, kind, collection_mode pinned), plus size_bytes,
+// policy_decision.
 // Permitted but not required: nothing beyond the required fields.
 // Must not carry, so absent from this struct: received_at, confidence, content_digest, labels,
 // classifier_version, content_excerpt, attachments, window_start, window_end, submission_count,
@@ -620,21 +524,8 @@ func (e EnvelopeCore) ValidateCore() error {
 type DevicePromptM0 struct {
 	EnvelopeCore
 
-	SchemaVersion     string         `json:"schema_version"`
-	EventID           UUID           `json:"event_id"`
-	TenantID          UUID           `json:"tenant_id"`
-	DeviceID          UUID           `json:"device_id"`
-	UserRef           string         `json:"user_ref"`
-	ToolFingerprint   string         `json:"tool_fingerprint"`
-	Direction         Direction      `json:"direction"`
-	Kind              Kind           `json:"kind"`
-	OccurredAt        DateTime       `json:"occurred_at"`
-	MonotonicOffsetMS int64          `json:"monotonic_offset_ms"`
-	Source            Route          `json:"source"`
-	CollectionMode    CollectionMode `json:"collection_mode"`
-	SizeBytes         int64          `json:"size_bytes"`
-	PolicyDecision    PolicyDecision `json:"policy_decision"`
-	DedupKey          Sha256         `json:"dedup_key"`
+	SizeBytes      int64          `json:"size_bytes"`
+	PolicyDecision PolicyDecision `json:"policy_decision"`
 }
 
 // deviceSubmission marks DevicePromptM0 as a member of the closed DeviceSubmission union.
@@ -657,53 +548,11 @@ func (e *DevicePromptM0) Validate() error {
 	if e.CollectionMode != CollectionModeM0 {
 		return fmt.Errorf("envelope: DevicePromptM0: collection_mode must be %q, got %q", CollectionModeM0, e.CollectionMode)
 	}
-	if e.EventID == "" {
-		return fmt.Errorf("envelope: DevicePromptM0: event_id is required and must not be empty")
-	}
-	if e.TenantID == "" {
-		return fmt.Errorf("envelope: DevicePromptM0: tenant_id is required and must not be empty")
-	}
-	if e.DeviceID == "" {
-		return fmt.Errorf("envelope: DevicePromptM0: device_id is required and must not be empty")
-	}
-	if len(e.UserRef) < 1 {
-		return fmt.Errorf("envelope: DevicePromptM0: user_ref must be at least 1 character(s), got %d", len(e.UserRef))
-	}
-	if len(e.UserRef) > 200 {
-		return fmt.Errorf("envelope: DevicePromptM0: user_ref must be at most 200 character(s), got %d", len(e.UserRef))
-	}
-	if len(e.ToolFingerprint) < 1 {
-		return fmt.Errorf("envelope: DevicePromptM0: tool_fingerprint must be at least 1 character(s), got %d", len(e.ToolFingerprint))
-	}
-	if len(e.ToolFingerprint) > 128 {
-		return fmt.Errorf("envelope: DevicePromptM0: tool_fingerprint must be at most 128 character(s), got %d", len(e.ToolFingerprint))
-	}
-	if !e.Direction.Valid() {
-		return fmt.Errorf("envelope: DevicePromptM0: direction is %q, which is outside the closed set", string(e.Direction))
-	}
-	if !e.Kind.Valid() {
-		return fmt.Errorf("envelope: DevicePromptM0: kind is %q, which is outside the closed set", string(e.Kind))
-	}
-	if e.OccurredAt == "" {
-		return fmt.Errorf("envelope: DevicePromptM0: occurred_at is required and must not be empty")
-	}
-	if e.MonotonicOffsetMS < 0 {
-		return fmt.Errorf("envelope: DevicePromptM0: monotonic_offset_ms must be >= 0, got %d", e.MonotonicOffsetMS)
-	}
-	if !e.Source.Valid() {
-		return fmt.Errorf("envelope: DevicePromptM0: source is %q, which is outside the closed set", string(e.Source))
-	}
-	if !e.CollectionMode.Valid() {
-		return fmt.Errorf("envelope: DevicePromptM0: collection_mode is %q, which is outside the closed set", string(e.CollectionMode))
-	}
 	if e.SizeBytes < 0 {
 		return fmt.Errorf("envelope: DevicePromptM0: size_bytes must be >= 0, got %d", e.SizeBytes)
 	}
 	if err := e.PolicyDecision.Validate(); err != nil {
 		return fmt.Errorf("envelope: DevicePromptM0: policy_decision: %w", err)
-	}
-	if !reSha256.MatchString(e.DedupKey) {
-		return fmt.Errorf("envelope: DevicePromptM0: dedup_key must match %s", reSha256)
 	}
 	return nil
 }
@@ -711,9 +560,7 @@ func (e *DevicePromptM0) Validate() error {
 // StoredPromptM0 is the stored envelope for kind "prompt" at collection mode "m0".
 //
 // Required: the common core (direction, kind, collection_mode pinned), plus received_at,
-// schema_version, event_id, tenant_id, device_id, user_ref, tool_fingerprint, direction, kind,
-// occurred_at, monotonic_offset_ms, source, collection_mode, size_bytes, policy_decision,
-// dedup_key.
+// size_bytes, policy_decision.
 // Permitted but not required: nothing beyond the required fields.
 // Must not carry, so absent from this struct: confidence, content_digest, labels,
 // classifier_version, content_excerpt, attachments, window_start, window_end, submission_count,
@@ -721,22 +568,9 @@ func (e *DevicePromptM0) Validate() error {
 type StoredPromptM0 struct {
 	EnvelopeCore
 
-	ReceivedAt        DateTime       `json:"received_at"`
-	SchemaVersion     string         `json:"schema_version"`
-	EventID           UUID           `json:"event_id"`
-	TenantID          UUID           `json:"tenant_id"`
-	DeviceID          UUID           `json:"device_id"`
-	UserRef           string         `json:"user_ref"`
-	ToolFingerprint   string         `json:"tool_fingerprint"`
-	Direction         Direction      `json:"direction"`
-	Kind              Kind           `json:"kind"`
-	OccurredAt        DateTime       `json:"occurred_at"`
-	MonotonicOffsetMS int64          `json:"monotonic_offset_ms"`
-	Source            Route          `json:"source"`
-	CollectionMode    CollectionMode `json:"collection_mode"`
-	SizeBytes         int64          `json:"size_bytes"`
-	PolicyDecision    PolicyDecision `json:"policy_decision"`
-	DedupKey          Sha256         `json:"dedup_key"`
+	ReceivedAt     DateTime       `json:"received_at"`
+	SizeBytes      int64          `json:"size_bytes"`
+	PolicyDecision PolicyDecision `json:"policy_decision"`
 }
 
 // storedEnvelope marks StoredPromptM0 as a member of the closed StoredEnvelope union.
@@ -762,82 +596,26 @@ func (e *StoredPromptM0) Validate() error {
 	if e.ReceivedAt == "" {
 		return fmt.Errorf("envelope: StoredPromptM0: received_at is required and must not be empty")
 	}
-	if e.EventID == "" {
-		return fmt.Errorf("envelope: StoredPromptM0: event_id is required and must not be empty")
-	}
-	if e.TenantID == "" {
-		return fmt.Errorf("envelope: StoredPromptM0: tenant_id is required and must not be empty")
-	}
-	if e.DeviceID == "" {
-		return fmt.Errorf("envelope: StoredPromptM0: device_id is required and must not be empty")
-	}
-	if len(e.UserRef) < 1 {
-		return fmt.Errorf("envelope: StoredPromptM0: user_ref must be at least 1 character(s), got %d", len(e.UserRef))
-	}
-	if len(e.UserRef) > 200 {
-		return fmt.Errorf("envelope: StoredPromptM0: user_ref must be at most 200 character(s), got %d", len(e.UserRef))
-	}
-	if len(e.ToolFingerprint) < 1 {
-		return fmt.Errorf("envelope: StoredPromptM0: tool_fingerprint must be at least 1 character(s), got %d", len(e.ToolFingerprint))
-	}
-	if len(e.ToolFingerprint) > 128 {
-		return fmt.Errorf("envelope: StoredPromptM0: tool_fingerprint must be at most 128 character(s), got %d", len(e.ToolFingerprint))
-	}
-	if !e.Direction.Valid() {
-		return fmt.Errorf("envelope: StoredPromptM0: direction is %q, which is outside the closed set", string(e.Direction))
-	}
-	if !e.Kind.Valid() {
-		return fmt.Errorf("envelope: StoredPromptM0: kind is %q, which is outside the closed set", string(e.Kind))
-	}
-	if e.OccurredAt == "" {
-		return fmt.Errorf("envelope: StoredPromptM0: occurred_at is required and must not be empty")
-	}
-	if e.MonotonicOffsetMS < 0 {
-		return fmt.Errorf("envelope: StoredPromptM0: monotonic_offset_ms must be >= 0, got %d", e.MonotonicOffsetMS)
-	}
-	if !e.Source.Valid() {
-		return fmt.Errorf("envelope: StoredPromptM0: source is %q, which is outside the closed set", string(e.Source))
-	}
-	if !e.CollectionMode.Valid() {
-		return fmt.Errorf("envelope: StoredPromptM0: collection_mode is %q, which is outside the closed set", string(e.CollectionMode))
-	}
 	if e.SizeBytes < 0 {
 		return fmt.Errorf("envelope: StoredPromptM0: size_bytes must be >= 0, got %d", e.SizeBytes)
 	}
 	if err := e.PolicyDecision.Validate(); err != nil {
 		return fmt.Errorf("envelope: StoredPromptM0: policy_decision: %w", err)
 	}
-	if !reSha256.MatchString(e.DedupKey) {
-		return fmt.Errorf("envelope: StoredPromptM0: dedup_key must match %s", reSha256)
-	}
 	return nil
 }
 
 // DevicePromptM1 is the device envelope for kind "prompt" at collection mode "m1".
 //
-// Required: the common core (direction, kind, collection_mode pinned), plus schema_version,
-// event_id, tenant_id, device_id, user_ref, tool_fingerprint, direction, kind, occurred_at,
-// monotonic_offset_ms, source, confidence, collection_mode, size_bytes, content_digest, labels,
-// classifier_version, policy_decision, dedup_key.
+// Required: the common core (direction, kind, collection_mode pinned), plus confidence,
+// size_bytes, content_digest, labels, classifier_version, policy_decision.
 // Permitted but not required: content_excerpt, attachments.
 // Must not carry, so absent from this struct: received_at, window_start, window_end,
 // submission_count, bytes_total, detection_basis.
 type DevicePromptM1 struct {
 	EnvelopeCore
 
-	SchemaVersion     string         `json:"schema_version"`
-	EventID           UUID           `json:"event_id"`
-	TenantID          UUID           `json:"tenant_id"`
-	DeviceID          UUID           `json:"device_id"`
-	UserRef           string         `json:"user_ref"`
-	ToolFingerprint   string         `json:"tool_fingerprint"`
-	Direction         Direction      `json:"direction"`
-	Kind              Kind           `json:"kind"`
-	OccurredAt        DateTime       `json:"occurred_at"`
-	MonotonicOffsetMS int64          `json:"monotonic_offset_ms"`
-	Source            Route          `json:"source"`
 	Confidence        Confidence     `json:"confidence"`
-	CollectionMode    CollectionMode `json:"collection_mode"`
 	SizeBytes         int64          `json:"size_bytes"`
 	ContentDigest     Sha256         `json:"content_digest"`
 	Labels            []Label        `json:"labels"`
@@ -845,7 +623,6 @@ type DevicePromptM1 struct {
 	ContentExcerpt    *Excerpt       `json:"content_excerpt,omitempty"`
 	Attachments       *[]Attachment  `json:"attachments,omitempty"`
 	PolicyDecision    PolicyDecision `json:"policy_decision"`
-	DedupKey          Sha256         `json:"dedup_key"`
 }
 
 // deviceSubmission marks DevicePromptM1 as a member of the closed DeviceSubmission union.
@@ -868,47 +645,8 @@ func (e *DevicePromptM1) Validate() error {
 	if e.CollectionMode != CollectionModeM1 {
 		return fmt.Errorf("envelope: DevicePromptM1: collection_mode must be %q, got %q", CollectionModeM1, e.CollectionMode)
 	}
-	if e.EventID == "" {
-		return fmt.Errorf("envelope: DevicePromptM1: event_id is required and must not be empty")
-	}
-	if e.TenantID == "" {
-		return fmt.Errorf("envelope: DevicePromptM1: tenant_id is required and must not be empty")
-	}
-	if e.DeviceID == "" {
-		return fmt.Errorf("envelope: DevicePromptM1: device_id is required and must not be empty")
-	}
-	if len(e.UserRef) < 1 {
-		return fmt.Errorf("envelope: DevicePromptM1: user_ref must be at least 1 character(s), got %d", len(e.UserRef))
-	}
-	if len(e.UserRef) > 200 {
-		return fmt.Errorf("envelope: DevicePromptM1: user_ref must be at most 200 character(s), got %d", len(e.UserRef))
-	}
-	if len(e.ToolFingerprint) < 1 {
-		return fmt.Errorf("envelope: DevicePromptM1: tool_fingerprint must be at least 1 character(s), got %d", len(e.ToolFingerprint))
-	}
-	if len(e.ToolFingerprint) > 128 {
-		return fmt.Errorf("envelope: DevicePromptM1: tool_fingerprint must be at most 128 character(s), got %d", len(e.ToolFingerprint))
-	}
-	if !e.Direction.Valid() {
-		return fmt.Errorf("envelope: DevicePromptM1: direction is %q, which is outside the closed set", string(e.Direction))
-	}
-	if !e.Kind.Valid() {
-		return fmt.Errorf("envelope: DevicePromptM1: kind is %q, which is outside the closed set", string(e.Kind))
-	}
-	if e.OccurredAt == "" {
-		return fmt.Errorf("envelope: DevicePromptM1: occurred_at is required and must not be empty")
-	}
-	if e.MonotonicOffsetMS < 0 {
-		return fmt.Errorf("envelope: DevicePromptM1: monotonic_offset_ms must be >= 0, got %d", e.MonotonicOffsetMS)
-	}
-	if !e.Source.Valid() {
-		return fmt.Errorf("envelope: DevicePromptM1: source is %q, which is outside the closed set", string(e.Source))
-	}
 	if !e.Confidence.Valid() {
 		return fmt.Errorf("envelope: DevicePromptM1: confidence is %q, which is outside the closed set", string(e.Confidence))
-	}
-	if !e.CollectionMode.Valid() {
-		return fmt.Errorf("envelope: DevicePromptM1: collection_mode is %q, which is outside the closed set", string(e.CollectionMode))
 	}
 	if e.SizeBytes < 0 {
 		return fmt.Errorf("envelope: DevicePromptM1: size_bytes must be >= 0, got %d", e.SizeBytes)
@@ -936,7 +674,7 @@ func (e *DevicePromptM1) Validate() error {
 		}
 	}
 	if e.Attachments != nil {
-		for i := range (*e.Attachments) {
+		for i := range *e.Attachments {
 			if err := (*e.Attachments)[i].Validate(); err != nil {
 				return fmt.Errorf("envelope: DevicePromptM1: attachments[%d]: %w", i, err)
 			}
@@ -945,18 +683,13 @@ func (e *DevicePromptM1) Validate() error {
 	if err := e.PolicyDecision.Validate(); err != nil {
 		return fmt.Errorf("envelope: DevicePromptM1: policy_decision: %w", err)
 	}
-	if !reSha256.MatchString(e.DedupKey) {
-		return fmt.Errorf("envelope: DevicePromptM1: dedup_key must match %s", reSha256)
-	}
 	return nil
 }
 
 // StoredPromptM1 is the stored envelope for kind "prompt" at collection mode "m1".
 //
 // Required: the common core (direction, kind, collection_mode pinned), plus received_at,
-// schema_version, event_id, tenant_id, device_id, user_ref, tool_fingerprint, direction, kind,
-// occurred_at, monotonic_offset_ms, source, confidence, collection_mode, size_bytes,
-// content_digest, labels, classifier_version, policy_decision, dedup_key.
+// confidence, size_bytes, content_digest, labels, classifier_version, policy_decision.
 // Permitted but not required: content_excerpt, attachments.
 // Must not carry, so absent from this struct: window_start, window_end, submission_count,
 // bytes_total, detection_basis.
@@ -964,19 +697,7 @@ type StoredPromptM1 struct {
 	EnvelopeCore
 
 	ReceivedAt        DateTime       `json:"received_at"`
-	SchemaVersion     string         `json:"schema_version"`
-	EventID           UUID           `json:"event_id"`
-	TenantID          UUID           `json:"tenant_id"`
-	DeviceID          UUID           `json:"device_id"`
-	UserRef           string         `json:"user_ref"`
-	ToolFingerprint   string         `json:"tool_fingerprint"`
-	Direction         Direction      `json:"direction"`
-	Kind              Kind           `json:"kind"`
-	OccurredAt        DateTime       `json:"occurred_at"`
-	MonotonicOffsetMS int64          `json:"monotonic_offset_ms"`
-	Source            Route          `json:"source"`
 	Confidence        Confidence     `json:"confidence"`
-	CollectionMode    CollectionMode `json:"collection_mode"`
 	SizeBytes         int64          `json:"size_bytes"`
 	ContentDigest     Sha256         `json:"content_digest"`
 	Labels            []Label        `json:"labels"`
@@ -984,7 +705,6 @@ type StoredPromptM1 struct {
 	ContentExcerpt    *Excerpt       `json:"content_excerpt,omitempty"`
 	Attachments       *[]Attachment  `json:"attachments,omitempty"`
 	PolicyDecision    PolicyDecision `json:"policy_decision"`
-	DedupKey          Sha256         `json:"dedup_key"`
 }
 
 // storedEnvelope marks StoredPromptM1 as a member of the closed StoredEnvelope union.
@@ -1010,47 +730,8 @@ func (e *StoredPromptM1) Validate() error {
 	if e.ReceivedAt == "" {
 		return fmt.Errorf("envelope: StoredPromptM1: received_at is required and must not be empty")
 	}
-	if e.EventID == "" {
-		return fmt.Errorf("envelope: StoredPromptM1: event_id is required and must not be empty")
-	}
-	if e.TenantID == "" {
-		return fmt.Errorf("envelope: StoredPromptM1: tenant_id is required and must not be empty")
-	}
-	if e.DeviceID == "" {
-		return fmt.Errorf("envelope: StoredPromptM1: device_id is required and must not be empty")
-	}
-	if len(e.UserRef) < 1 {
-		return fmt.Errorf("envelope: StoredPromptM1: user_ref must be at least 1 character(s), got %d", len(e.UserRef))
-	}
-	if len(e.UserRef) > 200 {
-		return fmt.Errorf("envelope: StoredPromptM1: user_ref must be at most 200 character(s), got %d", len(e.UserRef))
-	}
-	if len(e.ToolFingerprint) < 1 {
-		return fmt.Errorf("envelope: StoredPromptM1: tool_fingerprint must be at least 1 character(s), got %d", len(e.ToolFingerprint))
-	}
-	if len(e.ToolFingerprint) > 128 {
-		return fmt.Errorf("envelope: StoredPromptM1: tool_fingerprint must be at most 128 character(s), got %d", len(e.ToolFingerprint))
-	}
-	if !e.Direction.Valid() {
-		return fmt.Errorf("envelope: StoredPromptM1: direction is %q, which is outside the closed set", string(e.Direction))
-	}
-	if !e.Kind.Valid() {
-		return fmt.Errorf("envelope: StoredPromptM1: kind is %q, which is outside the closed set", string(e.Kind))
-	}
-	if e.OccurredAt == "" {
-		return fmt.Errorf("envelope: StoredPromptM1: occurred_at is required and must not be empty")
-	}
-	if e.MonotonicOffsetMS < 0 {
-		return fmt.Errorf("envelope: StoredPromptM1: monotonic_offset_ms must be >= 0, got %d", e.MonotonicOffsetMS)
-	}
-	if !e.Source.Valid() {
-		return fmt.Errorf("envelope: StoredPromptM1: source is %q, which is outside the closed set", string(e.Source))
-	}
 	if !e.Confidence.Valid() {
 		return fmt.Errorf("envelope: StoredPromptM1: confidence is %q, which is outside the closed set", string(e.Confidence))
-	}
-	if !e.CollectionMode.Valid() {
-		return fmt.Errorf("envelope: StoredPromptM1: collection_mode is %q, which is outside the closed set", string(e.CollectionMode))
 	}
 	if e.SizeBytes < 0 {
 		return fmt.Errorf("envelope: StoredPromptM1: size_bytes must be >= 0, got %d", e.SizeBytes)
@@ -1078,7 +759,7 @@ func (e *StoredPromptM1) Validate() error {
 		}
 	}
 	if e.Attachments != nil {
-		for i := range (*e.Attachments) {
+		for i := range *e.Attachments {
 			if err := (*e.Attachments)[i].Validate(); err != nil {
 				return fmt.Errorf("envelope: StoredPromptM1: attachments[%d]: %w", i, err)
 			}
@@ -1087,37 +768,20 @@ func (e *StoredPromptM1) Validate() error {
 	if err := e.PolicyDecision.Validate(); err != nil {
 		return fmt.Errorf("envelope: StoredPromptM1: policy_decision: %w", err)
 	}
-	if !reSha256.MatchString(e.DedupKey) {
-		return fmt.Errorf("envelope: StoredPromptM1: dedup_key must match %s", reSha256)
-	}
 	return nil
 }
 
 // DevicePromptM2 is the device envelope for kind "prompt" at collection mode "m2".
 //
-// Required: the common core (direction, kind, collection_mode pinned), plus schema_version,
-// event_id, tenant_id, device_id, user_ref, tool_fingerprint, direction, kind, occurred_at,
-// monotonic_offset_ms, source, confidence, collection_mode, size_bytes, content_digest, labels,
-// classifier_version, content_excerpt, policy_decision, dedup_key.
+// Required: the common core (direction, kind, collection_mode pinned), plus confidence,
+// size_bytes, content_digest, labels, classifier_version, content_excerpt, policy_decision.
 // Permitted but not required: attachments.
 // Must not carry, so absent from this struct: received_at, window_start, window_end,
 // submission_count, bytes_total, detection_basis.
 type DevicePromptM2 struct {
 	EnvelopeCore
 
-	SchemaVersion     string         `json:"schema_version"`
-	EventID           UUID           `json:"event_id"`
-	TenantID          UUID           `json:"tenant_id"`
-	DeviceID          UUID           `json:"device_id"`
-	UserRef           string         `json:"user_ref"`
-	ToolFingerprint   string         `json:"tool_fingerprint"`
-	Direction         Direction      `json:"direction"`
-	Kind              Kind           `json:"kind"`
-	OccurredAt        DateTime       `json:"occurred_at"`
-	MonotonicOffsetMS int64          `json:"monotonic_offset_ms"`
-	Source            Route          `json:"source"`
 	Confidence        Confidence     `json:"confidence"`
-	CollectionMode    CollectionMode `json:"collection_mode"`
 	SizeBytes         int64          `json:"size_bytes"`
 	ContentDigest     Sha256         `json:"content_digest"`
 	Labels            []Label        `json:"labels"`
@@ -1125,7 +789,6 @@ type DevicePromptM2 struct {
 	ContentExcerpt    Excerpt        `json:"content_excerpt"`
 	Attachments       *[]Attachment  `json:"attachments,omitempty"`
 	PolicyDecision    PolicyDecision `json:"policy_decision"`
-	DedupKey          Sha256         `json:"dedup_key"`
 }
 
 // deviceSubmission marks DevicePromptM2 as a member of the closed DeviceSubmission union.
@@ -1148,47 +811,8 @@ func (e *DevicePromptM2) Validate() error {
 	if e.CollectionMode != CollectionModeM2 {
 		return fmt.Errorf("envelope: DevicePromptM2: collection_mode must be %q, got %q", CollectionModeM2, e.CollectionMode)
 	}
-	if e.EventID == "" {
-		return fmt.Errorf("envelope: DevicePromptM2: event_id is required and must not be empty")
-	}
-	if e.TenantID == "" {
-		return fmt.Errorf("envelope: DevicePromptM2: tenant_id is required and must not be empty")
-	}
-	if e.DeviceID == "" {
-		return fmt.Errorf("envelope: DevicePromptM2: device_id is required and must not be empty")
-	}
-	if len(e.UserRef) < 1 {
-		return fmt.Errorf("envelope: DevicePromptM2: user_ref must be at least 1 character(s), got %d", len(e.UserRef))
-	}
-	if len(e.UserRef) > 200 {
-		return fmt.Errorf("envelope: DevicePromptM2: user_ref must be at most 200 character(s), got %d", len(e.UserRef))
-	}
-	if len(e.ToolFingerprint) < 1 {
-		return fmt.Errorf("envelope: DevicePromptM2: tool_fingerprint must be at least 1 character(s), got %d", len(e.ToolFingerprint))
-	}
-	if len(e.ToolFingerprint) > 128 {
-		return fmt.Errorf("envelope: DevicePromptM2: tool_fingerprint must be at most 128 character(s), got %d", len(e.ToolFingerprint))
-	}
-	if !e.Direction.Valid() {
-		return fmt.Errorf("envelope: DevicePromptM2: direction is %q, which is outside the closed set", string(e.Direction))
-	}
-	if !e.Kind.Valid() {
-		return fmt.Errorf("envelope: DevicePromptM2: kind is %q, which is outside the closed set", string(e.Kind))
-	}
-	if e.OccurredAt == "" {
-		return fmt.Errorf("envelope: DevicePromptM2: occurred_at is required and must not be empty")
-	}
-	if e.MonotonicOffsetMS < 0 {
-		return fmt.Errorf("envelope: DevicePromptM2: monotonic_offset_ms must be >= 0, got %d", e.MonotonicOffsetMS)
-	}
-	if !e.Source.Valid() {
-		return fmt.Errorf("envelope: DevicePromptM2: source is %q, which is outside the closed set", string(e.Source))
-	}
 	if !e.Confidence.Valid() {
 		return fmt.Errorf("envelope: DevicePromptM2: confidence is %q, which is outside the closed set", string(e.Confidence))
-	}
-	if !e.CollectionMode.Valid() {
-		return fmt.Errorf("envelope: DevicePromptM2: collection_mode is %q, which is outside the closed set", string(e.CollectionMode))
 	}
 	if e.SizeBytes < 0 {
 		return fmt.Errorf("envelope: DevicePromptM2: size_bytes must be >= 0, got %d", e.SizeBytes)
@@ -1214,7 +838,7 @@ func (e *DevicePromptM2) Validate() error {
 		return fmt.Errorf("envelope: DevicePromptM2: content_excerpt: %w", err)
 	}
 	if e.Attachments != nil {
-		for i := range (*e.Attachments) {
+		for i := range *e.Attachments {
 			if err := (*e.Attachments)[i].Validate(); err != nil {
 				return fmt.Errorf("envelope: DevicePromptM2: attachments[%d]: %w", i, err)
 			}
@@ -1223,18 +847,14 @@ func (e *DevicePromptM2) Validate() error {
 	if err := e.PolicyDecision.Validate(); err != nil {
 		return fmt.Errorf("envelope: DevicePromptM2: policy_decision: %w", err)
 	}
-	if !reSha256.MatchString(e.DedupKey) {
-		return fmt.Errorf("envelope: DevicePromptM2: dedup_key must match %s", reSha256)
-	}
 	return nil
 }
 
 // StoredPromptM2 is the stored envelope for kind "prompt" at collection mode "m2".
 //
 // Required: the common core (direction, kind, collection_mode pinned), plus received_at,
-// schema_version, event_id, tenant_id, device_id, user_ref, tool_fingerprint, direction, kind,
-// occurred_at, monotonic_offset_ms, source, confidence, collection_mode, size_bytes,
-// content_digest, labels, classifier_version, content_excerpt, policy_decision, dedup_key.
+// confidence, size_bytes, content_digest, labels, classifier_version, content_excerpt,
+// policy_decision.
 // Permitted but not required: attachments.
 // Must not carry, so absent from this struct: window_start, window_end, submission_count,
 // bytes_total, detection_basis.
@@ -1242,19 +862,7 @@ type StoredPromptM2 struct {
 	EnvelopeCore
 
 	ReceivedAt        DateTime       `json:"received_at"`
-	SchemaVersion     string         `json:"schema_version"`
-	EventID           UUID           `json:"event_id"`
-	TenantID          UUID           `json:"tenant_id"`
-	DeviceID          UUID           `json:"device_id"`
-	UserRef           string         `json:"user_ref"`
-	ToolFingerprint   string         `json:"tool_fingerprint"`
-	Direction         Direction      `json:"direction"`
-	Kind              Kind           `json:"kind"`
-	OccurredAt        DateTime       `json:"occurred_at"`
-	MonotonicOffsetMS int64          `json:"monotonic_offset_ms"`
-	Source            Route          `json:"source"`
 	Confidence        Confidence     `json:"confidence"`
-	CollectionMode    CollectionMode `json:"collection_mode"`
 	SizeBytes         int64          `json:"size_bytes"`
 	ContentDigest     Sha256         `json:"content_digest"`
 	Labels            []Label        `json:"labels"`
@@ -1262,7 +870,6 @@ type StoredPromptM2 struct {
 	ContentExcerpt    Excerpt        `json:"content_excerpt"`
 	Attachments       *[]Attachment  `json:"attachments,omitempty"`
 	PolicyDecision    PolicyDecision `json:"policy_decision"`
-	DedupKey          Sha256         `json:"dedup_key"`
 }
 
 // storedEnvelope marks StoredPromptM2 as a member of the closed StoredEnvelope union.
@@ -1288,47 +895,8 @@ func (e *StoredPromptM2) Validate() error {
 	if e.ReceivedAt == "" {
 		return fmt.Errorf("envelope: StoredPromptM2: received_at is required and must not be empty")
 	}
-	if e.EventID == "" {
-		return fmt.Errorf("envelope: StoredPromptM2: event_id is required and must not be empty")
-	}
-	if e.TenantID == "" {
-		return fmt.Errorf("envelope: StoredPromptM2: tenant_id is required and must not be empty")
-	}
-	if e.DeviceID == "" {
-		return fmt.Errorf("envelope: StoredPromptM2: device_id is required and must not be empty")
-	}
-	if len(e.UserRef) < 1 {
-		return fmt.Errorf("envelope: StoredPromptM2: user_ref must be at least 1 character(s), got %d", len(e.UserRef))
-	}
-	if len(e.UserRef) > 200 {
-		return fmt.Errorf("envelope: StoredPromptM2: user_ref must be at most 200 character(s), got %d", len(e.UserRef))
-	}
-	if len(e.ToolFingerprint) < 1 {
-		return fmt.Errorf("envelope: StoredPromptM2: tool_fingerprint must be at least 1 character(s), got %d", len(e.ToolFingerprint))
-	}
-	if len(e.ToolFingerprint) > 128 {
-		return fmt.Errorf("envelope: StoredPromptM2: tool_fingerprint must be at most 128 character(s), got %d", len(e.ToolFingerprint))
-	}
-	if !e.Direction.Valid() {
-		return fmt.Errorf("envelope: StoredPromptM2: direction is %q, which is outside the closed set", string(e.Direction))
-	}
-	if !e.Kind.Valid() {
-		return fmt.Errorf("envelope: StoredPromptM2: kind is %q, which is outside the closed set", string(e.Kind))
-	}
-	if e.OccurredAt == "" {
-		return fmt.Errorf("envelope: StoredPromptM2: occurred_at is required and must not be empty")
-	}
-	if e.MonotonicOffsetMS < 0 {
-		return fmt.Errorf("envelope: StoredPromptM2: monotonic_offset_ms must be >= 0, got %d", e.MonotonicOffsetMS)
-	}
-	if !e.Source.Valid() {
-		return fmt.Errorf("envelope: StoredPromptM2: source is %q, which is outside the closed set", string(e.Source))
-	}
 	if !e.Confidence.Valid() {
 		return fmt.Errorf("envelope: StoredPromptM2: confidence is %q, which is outside the closed set", string(e.Confidence))
-	}
-	if !e.CollectionMode.Valid() {
-		return fmt.Errorf("envelope: StoredPromptM2: collection_mode is %q, which is outside the closed set", string(e.CollectionMode))
 	}
 	if e.SizeBytes < 0 {
 		return fmt.Errorf("envelope: StoredPromptM2: size_bytes must be >= 0, got %d", e.SizeBytes)
@@ -1354,7 +922,7 @@ func (e *StoredPromptM2) Validate() error {
 		return fmt.Errorf("envelope: StoredPromptM2: content_excerpt: %w", err)
 	}
 	if e.Attachments != nil {
-		for i := range (*e.Attachments) {
+		for i := range *e.Attachments {
 			if err := (*e.Attachments)[i].Validate(); err != nil {
 				return fmt.Errorf("envelope: StoredPromptM2: attachments[%d]: %w", i, err)
 			}
@@ -1363,44 +931,26 @@ func (e *StoredPromptM2) Validate() error {
 	if err := e.PolicyDecision.Validate(); err != nil {
 		return fmt.Errorf("envelope: StoredPromptM2: policy_decision: %w", err)
 	}
-	if !reSha256.MatchString(e.DedupKey) {
-		return fmt.Errorf("envelope: StoredPromptM2: dedup_key must match %s", reSha256)
-	}
 	return nil
 }
 
 // DevicePromptM3 is the device envelope for kind "prompt" at collection mode "m3".
 //
-// Required: the common core (direction, kind, collection_mode pinned), plus schema_version,
-// event_id, tenant_id, device_id, user_ref, tool_fingerprint, direction, kind, occurred_at,
-// monotonic_offset_ms, source, confidence, collection_mode, size_bytes, content_digest, labels,
-// classifier_version, policy_decision, dedup_key.
+// Required: the common core (direction, kind, collection_mode pinned), plus confidence,
+// size_bytes, content_digest, labels, classifier_version, policy_decision.
 // Permitted but not required: attachments.
 // Must not carry, so absent from this struct: received_at, content_excerpt, window_start,
 // window_end, submission_count, bytes_total, detection_basis.
 type DevicePromptM3 struct {
 	EnvelopeCore
 
-	SchemaVersion     string         `json:"schema_version"`
-	EventID           UUID           `json:"event_id"`
-	TenantID          UUID           `json:"tenant_id"`
-	DeviceID          UUID           `json:"device_id"`
-	UserRef           string         `json:"user_ref"`
-	ToolFingerprint   string         `json:"tool_fingerprint"`
-	Direction         Direction      `json:"direction"`
-	Kind              Kind           `json:"kind"`
-	OccurredAt        DateTime       `json:"occurred_at"`
-	MonotonicOffsetMS int64          `json:"monotonic_offset_ms"`
-	Source            Route          `json:"source"`
 	Confidence        Confidence     `json:"confidence"`
-	CollectionMode    CollectionMode `json:"collection_mode"`
 	SizeBytes         int64          `json:"size_bytes"`
 	ContentDigest     Sha256         `json:"content_digest"`
 	Labels            []Label        `json:"labels"`
 	ClassifierVersion string         `json:"classifier_version"`
 	Attachments       *[]Attachment  `json:"attachments,omitempty"`
 	PolicyDecision    PolicyDecision `json:"policy_decision"`
-	DedupKey          Sha256         `json:"dedup_key"`
 }
 
 // deviceSubmission marks DevicePromptM3 as a member of the closed DeviceSubmission union.
@@ -1423,47 +973,8 @@ func (e *DevicePromptM3) Validate() error {
 	if e.CollectionMode != CollectionModeM3 {
 		return fmt.Errorf("envelope: DevicePromptM3: collection_mode must be %q, got %q", CollectionModeM3, e.CollectionMode)
 	}
-	if e.EventID == "" {
-		return fmt.Errorf("envelope: DevicePromptM3: event_id is required and must not be empty")
-	}
-	if e.TenantID == "" {
-		return fmt.Errorf("envelope: DevicePromptM3: tenant_id is required and must not be empty")
-	}
-	if e.DeviceID == "" {
-		return fmt.Errorf("envelope: DevicePromptM3: device_id is required and must not be empty")
-	}
-	if len(e.UserRef) < 1 {
-		return fmt.Errorf("envelope: DevicePromptM3: user_ref must be at least 1 character(s), got %d", len(e.UserRef))
-	}
-	if len(e.UserRef) > 200 {
-		return fmt.Errorf("envelope: DevicePromptM3: user_ref must be at most 200 character(s), got %d", len(e.UserRef))
-	}
-	if len(e.ToolFingerprint) < 1 {
-		return fmt.Errorf("envelope: DevicePromptM3: tool_fingerprint must be at least 1 character(s), got %d", len(e.ToolFingerprint))
-	}
-	if len(e.ToolFingerprint) > 128 {
-		return fmt.Errorf("envelope: DevicePromptM3: tool_fingerprint must be at most 128 character(s), got %d", len(e.ToolFingerprint))
-	}
-	if !e.Direction.Valid() {
-		return fmt.Errorf("envelope: DevicePromptM3: direction is %q, which is outside the closed set", string(e.Direction))
-	}
-	if !e.Kind.Valid() {
-		return fmt.Errorf("envelope: DevicePromptM3: kind is %q, which is outside the closed set", string(e.Kind))
-	}
-	if e.OccurredAt == "" {
-		return fmt.Errorf("envelope: DevicePromptM3: occurred_at is required and must not be empty")
-	}
-	if e.MonotonicOffsetMS < 0 {
-		return fmt.Errorf("envelope: DevicePromptM3: monotonic_offset_ms must be >= 0, got %d", e.MonotonicOffsetMS)
-	}
-	if !e.Source.Valid() {
-		return fmt.Errorf("envelope: DevicePromptM3: source is %q, which is outside the closed set", string(e.Source))
-	}
 	if !e.Confidence.Valid() {
 		return fmt.Errorf("envelope: DevicePromptM3: confidence is %q, which is outside the closed set", string(e.Confidence))
-	}
-	if !e.CollectionMode.Valid() {
-		return fmt.Errorf("envelope: DevicePromptM3: collection_mode is %q, which is outside the closed set", string(e.CollectionMode))
 	}
 	if e.SizeBytes < 0 {
 		return fmt.Errorf("envelope: DevicePromptM3: size_bytes must be >= 0, got %d", e.SizeBytes)
@@ -1486,7 +997,7 @@ func (e *DevicePromptM3) Validate() error {
 		return fmt.Errorf("envelope: DevicePromptM3: classifier_version must be at most 64 character(s), got %d", len(e.ClassifierVersion))
 	}
 	if e.Attachments != nil {
-		for i := range (*e.Attachments) {
+		for i := range *e.Attachments {
 			if err := (*e.Attachments)[i].Validate(); err != nil {
 				return fmt.Errorf("envelope: DevicePromptM3: attachments[%d]: %w", i, err)
 			}
@@ -1495,18 +1006,13 @@ func (e *DevicePromptM3) Validate() error {
 	if err := e.PolicyDecision.Validate(); err != nil {
 		return fmt.Errorf("envelope: DevicePromptM3: policy_decision: %w", err)
 	}
-	if !reSha256.MatchString(e.DedupKey) {
-		return fmt.Errorf("envelope: DevicePromptM3: dedup_key must match %s", reSha256)
-	}
 	return nil
 }
 
 // StoredPromptM3 is the stored envelope for kind "prompt" at collection mode "m3".
 //
 // Required: the common core (direction, kind, collection_mode pinned), plus received_at,
-// schema_version, event_id, tenant_id, device_id, user_ref, tool_fingerprint, direction, kind,
-// occurred_at, monotonic_offset_ms, source, confidence, collection_mode, size_bytes,
-// content_digest, labels, classifier_version, policy_decision, dedup_key.
+// confidence, size_bytes, content_digest, labels, classifier_version, policy_decision.
 // Permitted but not required: attachments.
 // Must not carry, so absent from this struct: content_excerpt, window_start, window_end,
 // submission_count, bytes_total, detection_basis.
@@ -1514,26 +1020,13 @@ type StoredPromptM3 struct {
 	EnvelopeCore
 
 	ReceivedAt        DateTime       `json:"received_at"`
-	SchemaVersion     string         `json:"schema_version"`
-	EventID           UUID           `json:"event_id"`
-	TenantID          UUID           `json:"tenant_id"`
-	DeviceID          UUID           `json:"device_id"`
-	UserRef           string         `json:"user_ref"`
-	ToolFingerprint   string         `json:"tool_fingerprint"`
-	Direction         Direction      `json:"direction"`
-	Kind              Kind           `json:"kind"`
-	OccurredAt        DateTime       `json:"occurred_at"`
-	MonotonicOffsetMS int64          `json:"monotonic_offset_ms"`
-	Source            Route          `json:"source"`
 	Confidence        Confidence     `json:"confidence"`
-	CollectionMode    CollectionMode `json:"collection_mode"`
 	SizeBytes         int64          `json:"size_bytes"`
 	ContentDigest     Sha256         `json:"content_digest"`
 	Labels            []Label        `json:"labels"`
 	ClassifierVersion string         `json:"classifier_version"`
 	Attachments       *[]Attachment  `json:"attachments,omitempty"`
 	PolicyDecision    PolicyDecision `json:"policy_decision"`
-	DedupKey          Sha256         `json:"dedup_key"`
 }
 
 // storedEnvelope marks StoredPromptM3 as a member of the closed StoredEnvelope union.
@@ -1559,47 +1052,8 @@ func (e *StoredPromptM3) Validate() error {
 	if e.ReceivedAt == "" {
 		return fmt.Errorf("envelope: StoredPromptM3: received_at is required and must not be empty")
 	}
-	if e.EventID == "" {
-		return fmt.Errorf("envelope: StoredPromptM3: event_id is required and must not be empty")
-	}
-	if e.TenantID == "" {
-		return fmt.Errorf("envelope: StoredPromptM3: tenant_id is required and must not be empty")
-	}
-	if e.DeviceID == "" {
-		return fmt.Errorf("envelope: StoredPromptM3: device_id is required and must not be empty")
-	}
-	if len(e.UserRef) < 1 {
-		return fmt.Errorf("envelope: StoredPromptM3: user_ref must be at least 1 character(s), got %d", len(e.UserRef))
-	}
-	if len(e.UserRef) > 200 {
-		return fmt.Errorf("envelope: StoredPromptM3: user_ref must be at most 200 character(s), got %d", len(e.UserRef))
-	}
-	if len(e.ToolFingerprint) < 1 {
-		return fmt.Errorf("envelope: StoredPromptM3: tool_fingerprint must be at least 1 character(s), got %d", len(e.ToolFingerprint))
-	}
-	if len(e.ToolFingerprint) > 128 {
-		return fmt.Errorf("envelope: StoredPromptM3: tool_fingerprint must be at most 128 character(s), got %d", len(e.ToolFingerprint))
-	}
-	if !e.Direction.Valid() {
-		return fmt.Errorf("envelope: StoredPromptM3: direction is %q, which is outside the closed set", string(e.Direction))
-	}
-	if !e.Kind.Valid() {
-		return fmt.Errorf("envelope: StoredPromptM3: kind is %q, which is outside the closed set", string(e.Kind))
-	}
-	if e.OccurredAt == "" {
-		return fmt.Errorf("envelope: StoredPromptM3: occurred_at is required and must not be empty")
-	}
-	if e.MonotonicOffsetMS < 0 {
-		return fmt.Errorf("envelope: StoredPromptM3: monotonic_offset_ms must be >= 0, got %d", e.MonotonicOffsetMS)
-	}
-	if !e.Source.Valid() {
-		return fmt.Errorf("envelope: StoredPromptM3: source is %q, which is outside the closed set", string(e.Source))
-	}
 	if !e.Confidence.Valid() {
 		return fmt.Errorf("envelope: StoredPromptM3: confidence is %q, which is outside the closed set", string(e.Confidence))
-	}
-	if !e.CollectionMode.Valid() {
-		return fmt.Errorf("envelope: StoredPromptM3: collection_mode is %q, which is outside the closed set", string(e.CollectionMode))
 	}
 	if e.SizeBytes < 0 {
 		return fmt.Errorf("envelope: StoredPromptM3: size_bytes must be >= 0, got %d", e.SizeBytes)
@@ -1622,7 +1076,7 @@ func (e *StoredPromptM3) Validate() error {
 		return fmt.Errorf("envelope: StoredPromptM3: classifier_version must be at most 64 character(s), got %d", len(e.ClassifierVersion))
 	}
 	if e.Attachments != nil {
-		for i := range (*e.Attachments) {
+		for i := range *e.Attachments {
 			if err := (*e.Attachments)[i].Validate(); err != nil {
 				return fmt.Errorf("envelope: StoredPromptM3: attachments[%d]: %w", i, err)
 			}
@@ -1631,41 +1085,24 @@ func (e *StoredPromptM3) Validate() error {
 	if err := e.PolicyDecision.Validate(); err != nil {
 		return fmt.Errorf("envelope: StoredPromptM3: policy_decision: %w", err)
 	}
-	if !reSha256.MatchString(e.DedupKey) {
-		return fmt.Errorf("envelope: StoredPromptM3: dedup_key must match %s", reSha256)
-	}
 	return nil
 }
 
 // DeviceUsageRollup is the device envelope for kind "usage_rollup".
 //
-// Required: the common core (direction, kind pinned), plus schema_version, event_id, tenant_id,
-// device_id, user_ref, tool_fingerprint, direction, kind, occurred_at, monotonic_offset_ms,
-// source, collection_mode, dedup_key, window_start, window_end, submission_count, bytes_total.
+// Required: the common core (direction, kind pinned), plus window_start, window_end,
+// submission_count, bytes_total.
 // Permitted but not required: confidence.
 // Must not carry, so absent from this struct: received_at, size_bytes, content_digest, labels,
 // classifier_version, content_excerpt, attachments, policy_decision, detection_basis.
 type DeviceUsageRollup struct {
 	EnvelopeCore
 
-	SchemaVersion     string         `json:"schema_version"`
-	EventID           UUID           `json:"event_id"`
-	TenantID          UUID           `json:"tenant_id"`
-	DeviceID          UUID           `json:"device_id"`
-	UserRef           string         `json:"user_ref"`
-	ToolFingerprint   string         `json:"tool_fingerprint"`
-	Direction         Direction      `json:"direction"`
-	Kind              Kind           `json:"kind"`
-	OccurredAt        DateTime       `json:"occurred_at"`
-	MonotonicOffsetMS int64          `json:"monotonic_offset_ms"`
-	Source            Route          `json:"source"`
-	Confidence        *Confidence    `json:"confidence,omitempty"`
-	CollectionMode    CollectionMode `json:"collection_mode"`
-	DedupKey          Sha256         `json:"dedup_key"`
-	WindowStart       DateTime       `json:"window_start"`
-	WindowEnd         DateTime       `json:"window_end"`
-	SubmissionCount   int64          `json:"submission_count"`
-	BytesTotal        int64          `json:"bytes_total"`
+	Confidence      *Confidence `json:"confidence,omitempty"`
+	WindowStart     DateTime    `json:"window_start"`
+	WindowEnd       DateTime    `json:"window_end"`
+	SubmissionCount int64       `json:"submission_count"`
+	BytesTotal      int64       `json:"bytes_total"`
 }
 
 // deviceSubmission marks DeviceUsageRollup as a member of the closed DeviceSubmission union.
@@ -1685,52 +1122,10 @@ func (e *DeviceUsageRollup) Validate() error {
 	if e.Kind != KindUsageRollup {
 		return fmt.Errorf("envelope: DeviceUsageRollup: kind must be %q, got %q", KindUsageRollup, e.Kind)
 	}
-	if e.EventID == "" {
-		return fmt.Errorf("envelope: DeviceUsageRollup: event_id is required and must not be empty")
-	}
-	if e.TenantID == "" {
-		return fmt.Errorf("envelope: DeviceUsageRollup: tenant_id is required and must not be empty")
-	}
-	if e.DeviceID == "" {
-		return fmt.Errorf("envelope: DeviceUsageRollup: device_id is required and must not be empty")
-	}
-	if len(e.UserRef) < 1 {
-		return fmt.Errorf("envelope: DeviceUsageRollup: user_ref must be at least 1 character(s), got %d", len(e.UserRef))
-	}
-	if len(e.UserRef) > 200 {
-		return fmt.Errorf("envelope: DeviceUsageRollup: user_ref must be at most 200 character(s), got %d", len(e.UserRef))
-	}
-	if len(e.ToolFingerprint) < 1 {
-		return fmt.Errorf("envelope: DeviceUsageRollup: tool_fingerprint must be at least 1 character(s), got %d", len(e.ToolFingerprint))
-	}
-	if len(e.ToolFingerprint) > 128 {
-		return fmt.Errorf("envelope: DeviceUsageRollup: tool_fingerprint must be at most 128 character(s), got %d", len(e.ToolFingerprint))
-	}
-	if !e.Direction.Valid() {
-		return fmt.Errorf("envelope: DeviceUsageRollup: direction is %q, which is outside the closed set", string(e.Direction))
-	}
-	if !e.Kind.Valid() {
-		return fmt.Errorf("envelope: DeviceUsageRollup: kind is %q, which is outside the closed set", string(e.Kind))
-	}
-	if e.OccurredAt == "" {
-		return fmt.Errorf("envelope: DeviceUsageRollup: occurred_at is required and must not be empty")
-	}
-	if e.MonotonicOffsetMS < 0 {
-		return fmt.Errorf("envelope: DeviceUsageRollup: monotonic_offset_ms must be >= 0, got %d", e.MonotonicOffsetMS)
-	}
-	if !e.Source.Valid() {
-		return fmt.Errorf("envelope: DeviceUsageRollup: source is %q, which is outside the closed set", string(e.Source))
-	}
 	if e.Confidence != nil {
 		if !(*e.Confidence).Valid() {
 			return fmt.Errorf("envelope: DeviceUsageRollup: confidence is %q, which is outside the closed set", string((*e.Confidence)))
 		}
-	}
-	if !e.CollectionMode.Valid() {
-		return fmt.Errorf("envelope: DeviceUsageRollup: collection_mode is %q, which is outside the closed set", string(e.CollectionMode))
-	}
-	if !reSha256.MatchString(e.DedupKey) {
-		return fmt.Errorf("envelope: DeviceUsageRollup: dedup_key must match %s", reSha256)
 	}
 	if e.WindowStart == "" {
 		return fmt.Errorf("envelope: DeviceUsageRollup: window_start is required and must not be empty")
@@ -1749,9 +1144,7 @@ func (e *DeviceUsageRollup) Validate() error {
 
 // StoredUsageRollup is the stored envelope for kind "usage_rollup".
 //
-// Required: the common core (direction, kind pinned), plus received_at, schema_version, event_id,
-// tenant_id, device_id, user_ref, tool_fingerprint, direction, kind, occurred_at,
-// monotonic_offset_ms, source, collection_mode, dedup_key, window_start, window_end,
+// Required: the common core (direction, kind pinned), plus received_at, window_start, window_end,
 // submission_count, bytes_total.
 // Permitted but not required: confidence.
 // Must not carry, so absent from this struct: size_bytes, content_digest, labels,
@@ -1759,25 +1152,12 @@ func (e *DeviceUsageRollup) Validate() error {
 type StoredUsageRollup struct {
 	EnvelopeCore
 
-	ReceivedAt        DateTime       `json:"received_at"`
-	SchemaVersion     string         `json:"schema_version"`
-	EventID           UUID           `json:"event_id"`
-	TenantID          UUID           `json:"tenant_id"`
-	DeviceID          UUID           `json:"device_id"`
-	UserRef           string         `json:"user_ref"`
-	ToolFingerprint   string         `json:"tool_fingerprint"`
-	Direction         Direction      `json:"direction"`
-	Kind              Kind           `json:"kind"`
-	OccurredAt        DateTime       `json:"occurred_at"`
-	MonotonicOffsetMS int64          `json:"monotonic_offset_ms"`
-	Source            Route          `json:"source"`
-	Confidence        *Confidence    `json:"confidence,omitempty"`
-	CollectionMode    CollectionMode `json:"collection_mode"`
-	DedupKey          Sha256         `json:"dedup_key"`
-	WindowStart       DateTime       `json:"window_start"`
-	WindowEnd         DateTime       `json:"window_end"`
-	SubmissionCount   int64          `json:"submission_count"`
-	BytesTotal        int64          `json:"bytes_total"`
+	ReceivedAt      DateTime    `json:"received_at"`
+	Confidence      *Confidence `json:"confidence,omitempty"`
+	WindowStart     DateTime    `json:"window_start"`
+	WindowEnd       DateTime    `json:"window_end"`
+	SubmissionCount int64       `json:"submission_count"`
+	BytesTotal      int64       `json:"bytes_total"`
 }
 
 // storedEnvelope marks StoredUsageRollup as a member of the closed StoredEnvelope union.
@@ -1800,52 +1180,10 @@ func (e *StoredUsageRollup) Validate() error {
 	if e.ReceivedAt == "" {
 		return fmt.Errorf("envelope: StoredUsageRollup: received_at is required and must not be empty")
 	}
-	if e.EventID == "" {
-		return fmt.Errorf("envelope: StoredUsageRollup: event_id is required and must not be empty")
-	}
-	if e.TenantID == "" {
-		return fmt.Errorf("envelope: StoredUsageRollup: tenant_id is required and must not be empty")
-	}
-	if e.DeviceID == "" {
-		return fmt.Errorf("envelope: StoredUsageRollup: device_id is required and must not be empty")
-	}
-	if len(e.UserRef) < 1 {
-		return fmt.Errorf("envelope: StoredUsageRollup: user_ref must be at least 1 character(s), got %d", len(e.UserRef))
-	}
-	if len(e.UserRef) > 200 {
-		return fmt.Errorf("envelope: StoredUsageRollup: user_ref must be at most 200 character(s), got %d", len(e.UserRef))
-	}
-	if len(e.ToolFingerprint) < 1 {
-		return fmt.Errorf("envelope: StoredUsageRollup: tool_fingerprint must be at least 1 character(s), got %d", len(e.ToolFingerprint))
-	}
-	if len(e.ToolFingerprint) > 128 {
-		return fmt.Errorf("envelope: StoredUsageRollup: tool_fingerprint must be at most 128 character(s), got %d", len(e.ToolFingerprint))
-	}
-	if !e.Direction.Valid() {
-		return fmt.Errorf("envelope: StoredUsageRollup: direction is %q, which is outside the closed set", string(e.Direction))
-	}
-	if !e.Kind.Valid() {
-		return fmt.Errorf("envelope: StoredUsageRollup: kind is %q, which is outside the closed set", string(e.Kind))
-	}
-	if e.OccurredAt == "" {
-		return fmt.Errorf("envelope: StoredUsageRollup: occurred_at is required and must not be empty")
-	}
-	if e.MonotonicOffsetMS < 0 {
-		return fmt.Errorf("envelope: StoredUsageRollup: monotonic_offset_ms must be >= 0, got %d", e.MonotonicOffsetMS)
-	}
-	if !e.Source.Valid() {
-		return fmt.Errorf("envelope: StoredUsageRollup: source is %q, which is outside the closed set", string(e.Source))
-	}
 	if e.Confidence != nil {
 		if !(*e.Confidence).Valid() {
 			return fmt.Errorf("envelope: StoredUsageRollup: confidence is %q, which is outside the closed set", string((*e.Confidence)))
 		}
-	}
-	if !e.CollectionMode.Valid() {
-		return fmt.Errorf("envelope: StoredUsageRollup: collection_mode is %q, which is outside the closed set", string(e.CollectionMode))
-	}
-	if !reSha256.MatchString(e.DedupKey) {
-		return fmt.Errorf("envelope: StoredUsageRollup: dedup_key must match %s", reSha256)
 	}
 	if e.WindowStart == "" {
 		return fmt.Errorf("envelope: StoredUsageRollup: window_start is required and must not be empty")
@@ -1864,33 +1202,18 @@ func (e *StoredUsageRollup) Validate() error {
 
 // DeviceModelDetection is the device envelope for kind "model_detection".
 //
-// Required: the common core (direction, kind pinned), plus schema_version, event_id, tenant_id,
-// device_id, user_ref, tool_fingerprint, direction, kind, occurred_at, monotonic_offset_ms,
-// source, collection_mode, dedup_key, detection_basis.
+// Required: the common core (direction, kind pinned), plus detection_basis.
 // Permitted but not required: confidence, window_end, submission_count, bytes_total.
 // Must not carry, so absent from this struct: received_at, size_bytes, content_digest, labels,
 // classifier_version, content_excerpt, attachments, policy_decision, window_start.
 type DeviceModelDetection struct {
 	EnvelopeCore
 
-	SchemaVersion     string         `json:"schema_version"`
-	EventID           UUID           `json:"event_id"`
-	TenantID          UUID           `json:"tenant_id"`
-	DeviceID          UUID           `json:"device_id"`
-	UserRef           string         `json:"user_ref"`
-	ToolFingerprint   string         `json:"tool_fingerprint"`
-	Direction         Direction      `json:"direction"`
-	Kind              Kind           `json:"kind"`
-	OccurredAt        DateTime       `json:"occurred_at"`
-	MonotonicOffsetMS int64          `json:"monotonic_offset_ms"`
-	Source            Route          `json:"source"`
-	Confidence        *Confidence    `json:"confidence,omitempty"`
-	CollectionMode    CollectionMode `json:"collection_mode"`
-	DedupKey          Sha256         `json:"dedup_key"`
-	WindowEnd         *DateTime      `json:"window_end,omitempty"`
-	SubmissionCount   *int64         `json:"submission_count,omitempty"`
-	BytesTotal        *int64         `json:"bytes_total,omitempty"`
-	DetectionBasis    DetectionBasis `json:"detection_basis"`
+	Confidence      *Confidence    `json:"confidence,omitempty"`
+	WindowEnd       *DateTime      `json:"window_end,omitempty"`
+	SubmissionCount *int64         `json:"submission_count,omitempty"`
+	BytesTotal      *int64         `json:"bytes_total,omitempty"`
+	DetectionBasis  DetectionBasis `json:"detection_basis"`
 }
 
 // deviceSubmission marks DeviceModelDetection as a member of the closed DeviceSubmission union.
@@ -1910,52 +1233,10 @@ func (e *DeviceModelDetection) Validate() error {
 	if e.Kind != KindModelDetection {
 		return fmt.Errorf("envelope: DeviceModelDetection: kind must be %q, got %q", KindModelDetection, e.Kind)
 	}
-	if e.EventID == "" {
-		return fmt.Errorf("envelope: DeviceModelDetection: event_id is required and must not be empty")
-	}
-	if e.TenantID == "" {
-		return fmt.Errorf("envelope: DeviceModelDetection: tenant_id is required and must not be empty")
-	}
-	if e.DeviceID == "" {
-		return fmt.Errorf("envelope: DeviceModelDetection: device_id is required and must not be empty")
-	}
-	if len(e.UserRef) < 1 {
-		return fmt.Errorf("envelope: DeviceModelDetection: user_ref must be at least 1 character(s), got %d", len(e.UserRef))
-	}
-	if len(e.UserRef) > 200 {
-		return fmt.Errorf("envelope: DeviceModelDetection: user_ref must be at most 200 character(s), got %d", len(e.UserRef))
-	}
-	if len(e.ToolFingerprint) < 1 {
-		return fmt.Errorf("envelope: DeviceModelDetection: tool_fingerprint must be at least 1 character(s), got %d", len(e.ToolFingerprint))
-	}
-	if len(e.ToolFingerprint) > 128 {
-		return fmt.Errorf("envelope: DeviceModelDetection: tool_fingerprint must be at most 128 character(s), got %d", len(e.ToolFingerprint))
-	}
-	if !e.Direction.Valid() {
-		return fmt.Errorf("envelope: DeviceModelDetection: direction is %q, which is outside the closed set", string(e.Direction))
-	}
-	if !e.Kind.Valid() {
-		return fmt.Errorf("envelope: DeviceModelDetection: kind is %q, which is outside the closed set", string(e.Kind))
-	}
-	if e.OccurredAt == "" {
-		return fmt.Errorf("envelope: DeviceModelDetection: occurred_at is required and must not be empty")
-	}
-	if e.MonotonicOffsetMS < 0 {
-		return fmt.Errorf("envelope: DeviceModelDetection: monotonic_offset_ms must be >= 0, got %d", e.MonotonicOffsetMS)
-	}
-	if !e.Source.Valid() {
-		return fmt.Errorf("envelope: DeviceModelDetection: source is %q, which is outside the closed set", string(e.Source))
-	}
 	if e.Confidence != nil {
 		if !(*e.Confidence).Valid() {
 			return fmt.Errorf("envelope: DeviceModelDetection: confidence is %q, which is outside the closed set", string((*e.Confidence)))
 		}
-	}
-	if !e.CollectionMode.Valid() {
-		return fmt.Errorf("envelope: DeviceModelDetection: collection_mode is %q, which is outside the closed set", string(e.CollectionMode))
-	}
-	if !reSha256.MatchString(e.DedupKey) {
-		return fmt.Errorf("envelope: DeviceModelDetection: dedup_key must match %s", reSha256)
 	}
 	if e.WindowEnd != nil {
 		if (*e.WindowEnd) == "" {
@@ -1980,34 +1261,19 @@ func (e *DeviceModelDetection) Validate() error {
 
 // StoredModelDetection is the stored envelope for kind "model_detection".
 //
-// Required: the common core (direction, kind pinned), plus received_at, schema_version, event_id,
-// tenant_id, device_id, user_ref, tool_fingerprint, direction, kind, occurred_at,
-// monotonic_offset_ms, source, collection_mode, dedup_key, detection_basis.
+// Required: the common core (direction, kind pinned), plus received_at, detection_basis.
 // Permitted but not required: confidence, window_end, submission_count, bytes_total.
 // Must not carry, so absent from this struct: size_bytes, content_digest, labels,
 // classifier_version, content_excerpt, attachments, policy_decision, window_start.
 type StoredModelDetection struct {
 	EnvelopeCore
 
-	ReceivedAt        DateTime       `json:"received_at"`
-	SchemaVersion     string         `json:"schema_version"`
-	EventID           UUID           `json:"event_id"`
-	TenantID          UUID           `json:"tenant_id"`
-	DeviceID          UUID           `json:"device_id"`
-	UserRef           string         `json:"user_ref"`
-	ToolFingerprint   string         `json:"tool_fingerprint"`
-	Direction         Direction      `json:"direction"`
-	Kind              Kind           `json:"kind"`
-	OccurredAt        DateTime       `json:"occurred_at"`
-	MonotonicOffsetMS int64          `json:"monotonic_offset_ms"`
-	Source            Route          `json:"source"`
-	Confidence        *Confidence    `json:"confidence,omitempty"`
-	CollectionMode    CollectionMode `json:"collection_mode"`
-	DedupKey          Sha256         `json:"dedup_key"`
-	WindowEnd         *DateTime      `json:"window_end,omitempty"`
-	SubmissionCount   *int64         `json:"submission_count,omitempty"`
-	BytesTotal        *int64         `json:"bytes_total,omitempty"`
-	DetectionBasis    DetectionBasis `json:"detection_basis"`
+	ReceivedAt      DateTime       `json:"received_at"`
+	Confidence      *Confidence    `json:"confidence,omitempty"`
+	WindowEnd       *DateTime      `json:"window_end,omitempty"`
+	SubmissionCount *int64         `json:"submission_count,omitempty"`
+	BytesTotal      *int64         `json:"bytes_total,omitempty"`
+	DetectionBasis  DetectionBasis `json:"detection_basis"`
 }
 
 // storedEnvelope marks StoredModelDetection as a member of the closed StoredEnvelope union.
@@ -2030,52 +1296,10 @@ func (e *StoredModelDetection) Validate() error {
 	if e.ReceivedAt == "" {
 		return fmt.Errorf("envelope: StoredModelDetection: received_at is required and must not be empty")
 	}
-	if e.EventID == "" {
-		return fmt.Errorf("envelope: StoredModelDetection: event_id is required and must not be empty")
-	}
-	if e.TenantID == "" {
-		return fmt.Errorf("envelope: StoredModelDetection: tenant_id is required and must not be empty")
-	}
-	if e.DeviceID == "" {
-		return fmt.Errorf("envelope: StoredModelDetection: device_id is required and must not be empty")
-	}
-	if len(e.UserRef) < 1 {
-		return fmt.Errorf("envelope: StoredModelDetection: user_ref must be at least 1 character(s), got %d", len(e.UserRef))
-	}
-	if len(e.UserRef) > 200 {
-		return fmt.Errorf("envelope: StoredModelDetection: user_ref must be at most 200 character(s), got %d", len(e.UserRef))
-	}
-	if len(e.ToolFingerprint) < 1 {
-		return fmt.Errorf("envelope: StoredModelDetection: tool_fingerprint must be at least 1 character(s), got %d", len(e.ToolFingerprint))
-	}
-	if len(e.ToolFingerprint) > 128 {
-		return fmt.Errorf("envelope: StoredModelDetection: tool_fingerprint must be at most 128 character(s), got %d", len(e.ToolFingerprint))
-	}
-	if !e.Direction.Valid() {
-		return fmt.Errorf("envelope: StoredModelDetection: direction is %q, which is outside the closed set", string(e.Direction))
-	}
-	if !e.Kind.Valid() {
-		return fmt.Errorf("envelope: StoredModelDetection: kind is %q, which is outside the closed set", string(e.Kind))
-	}
-	if e.OccurredAt == "" {
-		return fmt.Errorf("envelope: StoredModelDetection: occurred_at is required and must not be empty")
-	}
-	if e.MonotonicOffsetMS < 0 {
-		return fmt.Errorf("envelope: StoredModelDetection: monotonic_offset_ms must be >= 0, got %d", e.MonotonicOffsetMS)
-	}
-	if !e.Source.Valid() {
-		return fmt.Errorf("envelope: StoredModelDetection: source is %q, which is outside the closed set", string(e.Source))
-	}
 	if e.Confidence != nil {
 		if !(*e.Confidence).Valid() {
 			return fmt.Errorf("envelope: StoredModelDetection: confidence is %q, which is outside the closed set", string((*e.Confidence)))
 		}
-	}
-	if !e.CollectionMode.Valid() {
-		return fmt.Errorf("envelope: StoredModelDetection: collection_mode is %q, which is outside the closed set", string(e.CollectionMode))
-	}
-	if !reSha256.MatchString(e.DedupKey) {
-		return fmt.Errorf("envelope: StoredModelDetection: dedup_key must match %s", reSha256)
 	}
 	if e.WindowEnd != nil {
 		if (*e.WindowEnd) == "" {
@@ -2445,10 +1669,9 @@ func decodeVariant(data []byte, dst variantTarget, rule variantRule) error {
 	return dst.Validate()
 }
 
-// DecodeDeviceSubmission decodes the device submission in data and returns the variant named by
-// kind, and by
-// collection_mode within kind prompt. It refuses an unknown kind, an unknown mode, a missing
-// required field, a forbidden field and a field the contract does not declare.
+// DecodeDeviceSubmission decodes the device submission in data and returns the variant selected by
+// kind, and for prompts by collection_mode. It refuses an unknown kind, an unknown mode, a missing
+// required field, a forbidden field, and a field the contract does not declare.
 func DecodeDeviceSubmission(data []byte) (DeviceSubmission, error) {
 	var probe kindProbe
 	if err := json.Unmarshal(data, &probe); err != nil {
@@ -2501,10 +1724,9 @@ func DecodeDeviceSubmission(data []byte) (DeviceSubmission, error) {
 	}
 }
 
-// DecodeStoredEnvelope decodes the stored envelope in data and returns the variant named by kind,
-// and by
-// collection_mode within kind prompt. It refuses an unknown kind, an unknown mode, a missing
-// required field, a forbidden field and a field the contract does not declare.
+// DecodeStoredEnvelope decodes the stored envelope in data and returns the variant selected by
+// kind, and for prompts by collection_mode. It refuses an unknown kind, an unknown mode, a missing
+// required field, a forbidden field, and a field the contract does not declare.
 func DecodeStoredEnvelope(data []byte) (StoredEnvelope, error) {
 	var probe kindProbe
 	if err := json.Unmarshal(data, &probe); err != nil {

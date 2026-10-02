@@ -2,6 +2,7 @@ package spool
 
 import (
 	"crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -143,6 +144,28 @@ func segmentFiles(t *testing.T, dir string) []string {
 		if _, ok := parseSegmentName(e.Name()); ok {
 			out = append(out, filepath.Join(dir, segmentsDirName, e.Name()))
 		}
+	}
+	return out
+}
+
+// frameOffsets walks a segment file and returns the offset of every complete frame, using
+// the same header layout the package writes. It exists so a test can tamper with a specific
+// frame instead of guessing at byte positions.
+func frameOffsets(t *testing.T, data []byte) []int {
+	t.Helper()
+	var out []int
+	off := 0
+	for off+frameHeaderSize <= len(data) {
+		if !isMagic(data[off:]) {
+			t.Fatalf("no frame magic at offset %d", off)
+		}
+		bodyLen := int(binary.LittleEndian.Uint32(data[off+16 : off+20]))
+		next := off + frameHeaderSize + bodyLen + frameTrailerSize
+		if next > len(data) {
+			t.Fatalf("frame at %d claims to end at %d, past the %d-byte file", off, next, len(data))
+		}
+		out = append(out, off)
+		off = next
 	}
 	return out
 }

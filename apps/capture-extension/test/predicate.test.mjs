@@ -281,5 +281,5 @@ test('the predicate is pure: the same record gives the same score twice', () => 
 test('the fixture bodies are what the test names claim', () => {
   assert.ok(CHAT_BODY.messages.length >= 2);
   assert.equal(typeof DRAFT_BODY.body, 'string');
-  assert.equal(DRAFT_BODY.body.length < LONG_TEXT_CHARS, 'the draft fixture must not accidentally be a long-text case');
+  assert.ok(DRAFT_BODY.body.length < LONG_TEXT_CHARS, 'the draft fixture must not accidentally be a long-text case');
 });

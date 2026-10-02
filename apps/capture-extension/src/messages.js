@@ -108,7 +108,7 @@ export const COUNTER = Object.freeze({
   ERRORS: 'errors',
 });
 
-/** protocol.Detail — the closed per-provider detail vocabulary. */
+/** protocol.Detail — the closed per-provider detail vocabulary (device/protocol/envelope.go). */
 export const DETAIL = Object.freeze({
   NONE: '',
   CLASSIFIER_UNAVAILABLE: 'classifier_unavailable',
@@ -123,10 +123,25 @@ export const DETAIL = Object.freeze({
   KILLED: 'killed',
   ENUMERATION_PARTIAL: 'enumeration_partial',
   SIGNATURE_SET_STALE: 'signature_set_stale',
+  BUDGET_EXHAUSTED: 'budget_exhausted',
+  MODEL_UNAVAILABLE: 'model_unavailable',
+  NORMALISE_TRUNCATED: 'normalise_truncated',
+  PARSER_FAILED: 'parser_failed',
+  CONTENT_UNPROCESSABLE: 'content_unprocessable',
+  HOST_UNREACHABLE: 'host_unreachable',
+  RELEASE_LOAD_FAILED: 'release_load_failed',
+  PARSER_MEMORY: 'parser_memory',
+  PARSER_TIMEOUT: 'parser_timeout',
+  PARSER_CRASH: 'parser_crash',
+  PARSER_OUTPUT_CAP: 'parser_output_cap',
+  BUNDLE_SIGNATURE_INVALID: 'bundle_signature_invalid',
+  BUNDLE_SCHEMA_INVALID: 'bundle_schema_invalid',
+  BUNDLE_VERSION_REGRESSION: 'bundle_version_regression',
+  BUNDLE_ARTEFACT_MISSING: 'bundle_artefact_missing',
+  CONTENT_OVER_CAP: 'content_over_cap',
+  UNDECODABLE_CONTENT: 'undecodable_content',
   VERSION_MISMATCH: 'version_mismatch',
-  PARSE_FAILED: 'parse_failed',
-  DOCUMENT_TOO_LARGE: 'document_too_large',
-  BUDGET_EXCEEDED: 'budget_exceeded',
+  MODE_VIOLATION: 'mode_violation',
 });
 
 export const DETAILS = Object.freeze(Object.values(DETAIL).filter(Boolean));

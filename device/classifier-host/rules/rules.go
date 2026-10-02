@@ -39,17 +39,17 @@ import (
 // capped at load time; a signed release that violates them is rejected, reported, and the
 // previous release retained."
 type Caps struct {
-	MaxRules           int
-	MaxFamilies        int
-	MaxSignalsPerRule  int
-	MaxPatternBytes    int
-	MaxMatchesPerRule  int
-	MaxValueBytes      int
-	MaxRuleIDBytes     int
-	MaxClassBytes      int
-	MaxReleaseBytes    int
-	MaxContextWindow   int
-	MaxVersionBytes    int
+	MaxRules          int
+	MaxFamilies       int
+	MaxSignalsPerRule int
+	MaxPatternBytes   int
+	MaxMatchesPerRule int
+	MaxValueBytes     int
+	MaxRuleIDBytes    int
+	MaxClassBytes     int
+	MaxReleaseBytes   int
+	MaxContextWindow  int
+	MaxVersionBytes   int
 }
 
 // DefaultCaps is the shipped bound. Values are deliberately small: a signed release that needs

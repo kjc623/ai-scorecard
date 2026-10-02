@@ -94,6 +94,12 @@ export const REDUCTION_BUCKETS = Object.freeze(['week', 'month']);
 export const BUCKETS = Object.freeze(['hour', 'day', 'week', 'month']);
 /** The source bucket a reduction bucket is computed from. */
 export const REDUCTION_SOURCE_BUCKET = 'day';
+/**
+ * Frozen SQL for the reduction buckets. The bucket name is validated against the closed list
+ * first, and it is *still* mapped through this table rather than concatenated: `date_trunc`
+ * takes a literal, and "validated then concatenated" is one edit away from "concatenated".
+ */
+export const BUCKET_TRUNC_SQL = Object.freeze({ week: "'week'", month: "'month'" });
 /** Coarsening order for §7.5's "auto-coarsened, applied bucket named in freshness". */
 export const COARSENING_ORDER = Object.freeze(['hour', 'day', 'week', 'month']);
 
@@ -361,7 +367,7 @@ export const SOURCES = Object.freeze({
         nullable: true,
         cardinality: 8,
         cardinalitySource: 'ASSUMPTION: ops.user_dim.population is a directory attribute; a handful of values',
-        orderSql: "coalesce(o.population, chr(0))",
+        orderSql: "coalesce(o.population, chr(1))",
       }),
       tool: dim('tool', 'o.tool_fingerprint', 'text', { startsWith: true, ...TOOL_CARD }),
     }),
@@ -549,7 +555,7 @@ export const SOURCES = Object.freeze({
       collector: dim('collector', 'cs.collector', 'text', {
         nullable: true,
         ...COLLECTOR_CARD,
-        orderSql: "coalesce(cs.collector, chr(0))",
+        orderSql: "coalesce(cs.collector, chr(1))",
       }),
       collector_state: dim('collector_state', 'cs.state', 'text', {
         nullable: true,
@@ -571,7 +577,19 @@ export const SOURCES = Object.freeze({
       'ops.device PK (tenant_id, device_id), docs/04 §3.11 (tenant_id, last_seen_at)',
       'ops.collector_state PK (tenant_id, device_id, collector), docs/04 §3.11 (tenant_id, state)',
     ]),
-    extraSelect: Object.freeze([
+    /**
+     * The complete SELECT list of this bounded list. Dimensions on a list source are filters and
+     * order keys rather than a grouping, so the output shape is frozen here instead of being
+     * derived from the request: no filter can add a column to a response.
+     */
+    listSelect: Object.freeze([
+      'd.device_id AS "device"',
+      'd.os AS "device_os"',
+      'd.managed_state AS "managed_state"',
+      'd.residency_region AS "region"',
+      "CASE WHEN d.revoked_at IS NOT NULL THEN 'revoked' WHEN d.last_seen_at IS NULL THEN 'never_reported' WHEN d.last_seen_at < now() - interval '24 hours' THEN 'stale' ELSE 'reporting' END AS \"liveness\"",
+      'cs.collector AS "collector"',
+      'cs.state AS "collector_state"',
       'd.enrolled_at AS enrolled_at',
       'd.revoked_at AS revoked_at',
       'd.last_seen_at AS last_seen_at',
@@ -682,12 +700,12 @@ export const SOURCES = Object.freeze({
         nullable: true,
         cardinality: 8,
         cardinalitySource: 'ASSUMPTION: ops.user_dim.population is a directory attribute; a handful of values',
-        orderSql: "coalesce(ud.population, chr(0))",
+        orderSql: "coalesce(ud.population, chr(1))",
       }),
       manager: dim('manager', 'ud.manager_ref', 'text', {
         nullable: true,
         ...USER_CARD,
-        orderSql: "coalesce(ud.manager_ref, chr(0))",
+        orderSql: "coalesce(ud.manager_ref, chr(1))",
       }),
     }),
     /**
@@ -712,6 +730,7 @@ export const SOURCES = Object.freeze({
       }),
     }),
     measures: Object.freeze({}),
+    grain: Object.freeze(['received_at', 'submission_id']),
     order: Object.freeze([
       { dim: 'received_at', dir: 'desc' },
       { dim: 'submission_id', dir: 'desc' },
@@ -734,14 +753,24 @@ export const SOURCES = Object.freeze({
         when: Object.freeze(['department', 'population', 'manager']),
       }),
     ]),
-    extraSelect: Object.freeze([
+    listSelect: Object.freeze([
       's.submission_id AS submission_id',
       's.received_at AS received_at',
       's.first_occurred_at AS first_occurred_at',
       's.last_occurred_at AS last_occurred_at',
-      's.observation_count AS observation_count',
-      's.content_state AS row_content_state',
+      's.user_ref AS "subject"',
+      's.tool_fingerprint AS "tool"',
+      's.device_id AS "device"',
+      's.collection_mode AS "mode"',
+      's.policy_action AS "action"',
+      's.policy_rule_id AS policy_rule_id',
+      's.content_state AS "content_state"',
       's.shredded_reason AS shredded_reason',
+      's.winning_source AS "route"',
+      's.kind AS "detection_basis"',
+      's.merge_confidence AS "merge_confidence"',
+      's.confidence AS "confidence"',
+      's.observation_count AS observation_count',
       's.labels AS labels',
       's.size_bytes AS size_bytes',
       's.winning_fidelity AS winning_fidelity',
@@ -810,11 +839,18 @@ export const SOURCES = Object.freeze({
       'docs/04 §3.11 mart.finding (tenant_id, severity, detected_at DESC)',
       'mart.finding PK (tenant_id, submission_id, rule_id)',
     ]),
-    extraSelect: Object.freeze([
+    listSelect: Object.freeze([
       'f.submission_id AS submission_id',
-      'f.rule_id AS rule_id',
-      'f.rule_title AS rule_title',
       'f.detected_at AS detected_at',
+      'f.rule_id AS "rule"',
+      'f.rule_title AS rule_title',
+      'f.class_code AS "class"',
+      'f.severity AS "severity"',
+      'f.user_ref AS "subject"',
+      'f.tool_fingerprint AS "tool"',
+      'f.collection_mode AS "mode"',
+      'f.decided_locally AS "decided_locally"',
+      'f.review_state AS "review_state"',
       'f.reviewed_by AS reviewed_by',
       'f.reviewed_at AS reviewed_at',
       'f.policy_action AS policy_action',
@@ -887,29 +923,20 @@ export const SOURCES = Object.freeze({
      * trigger uses. Doing it in JS would duplicate `detail::text`'s exact jsonb rendering and
      * would therefore produce false alarms; asking the database that owns the format cannot.
      */
-    extraSelect: Object.freeze([
+    listSelect: Object.freeze([
       'au.audit_seq AS audit_seq',
       'au.occurred_at AS occurred_at',
-      'au.actor_type AS actor_type',
-      'au.actor_id AS actor_id',
-      'au.action AS action',
-      'au.object_type AS object_type',
+      'au.actor_type AS "actor_type"',
+      'au.actor_id AS "actor"',
+      'au.action AS "action"',
+      'au.object_type AS "object_type"',
       'au.object_id AS object_id',
+      'au.subject_ref AS "subject"',
+      'au.case_reference AS "case"',
       'au.detail AS detail',
       'au.prev_hash AS prev_hash',
       'au.row_hash AS row_hash',
       'encode(sha256(convert_to(concat_ws(E\'\\x1f\'::text, au.tenant_id::text, au.audit_seq::text, ' +
-        "to_char(au.occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US'), au.actor_type, au.actor_id, " +
-        "au.action, au.object_type, coalesce(au.object_id, ''), coalesce(au.subject_ref, ''), " +
-        "coalesce(au.case_reference, ''), au.detail::text, coalesce(au.prev_hash, '')), 'UTF8')), 'hex') " +
-        'AS __recomputed_hash',
-      'lag(au.row_hash) OVER (ORDER BY au.occurred_at DESC, au.audit_seq DESC) AS __next_newer_hash',
-    ]),
-    columns: Object.freeze({
-      audit_seq: dim('audit_seq', 'au.audit_seq', 'number', { cardinalitySource: 'identity sequence' }),
-      occurred_at: dim('occurred_at', 'au.occurred_at', 'timestamp', { cardinalitySource: 'audit timeline' }),
-      object_id: dim('object_id', 'au.object_id', 'text', { nullable: true, cardinalitySource: 'object identity' }),
-    }),
     warnings: Object.freeze([
       'Chain verification here covers the returned page only: whole-chain verification is the reconciler\'s job (docs/04 §3.10). A mismatch returns audit_chain_broken (500) instead of a list that looks fine.',
       'One audit row per query is written for a read of this table, and that row is not re-audited (docs/04 §3.10, ASSUMPTION: one-level recursion is the only terminating reading of C30).',

@@ -336,15 +336,18 @@ export function buildModel(schema) {
     throw new Error("schema-model: $defs/envelopeCore must set additionalProperties:false to stay closed");
   }
   const coreRequired = [...(coreDef.required ?? [])];
-  const coreFields = Object.entries(coreDef.properties ?? {}).map(([name, prop]) => describeField(schema, "envelopeCore", name, prop));
-  const propertyOrder = coreFields.map((f) => f.name);
+  const declaredFields = Object.entries(coreDef.properties ?? {}).map(([name, prop]) => describeField(schema, "envelopeCore", name, prop));
+  const propertyOrder = declaredFields.map((f) => f.name);
   const propertyIndex = new Map(propertyOrder.map((name, i) => [name, i]));
   for (const name of coreRequired) {
     if (!propertyIndex.has(name)) throw new Error(`schema-model: envelopeCore.required names undeclared property ${name}`);
   }
+  // The core is only the universally required fields; everything else is a per-variant field,
+  // because a kind that must not carry a property must not have it in the embedded core.
+  const coreFields = declaredFields.filter((f) => coreRequired.includes(f.name)).map((f) => ({ ...f, required: true }));
 
   // Inline enums declared on the core and on nested objects.
-  for (const field of [...coreFields, ...objects.flatMap((o) => o.fields)]) {
+  for (const field of [...declaredFields, ...objects.flatMap((o) => o.fields)]) {
     if (field.enumType) {
       const owner = field.owner;
       const expected = INLINE_ENUM_TYPES[`${owner}.${field.name}`] ?? ENUM_DEF_TYPES[field.def];
@@ -356,13 +359,13 @@ export function buildModel(schema) {
   }
 
   // ---- kind registry -----------------------------------------------------------------
-  const kindField = coreFields.find((f) => f.name === "kind");
+  const kindField = declaredFields.find((f) => f.name === "kind");
   if (!kindField || !kindField.enumValues) throw new Error("schema-model: envelopeCore.kind must be an inline enum");
   const kinds = [...kindField.enumValues];
-  const modeField = coreFields.find((f) => f.name === "collection_mode");
+  const modeField = declaredFields.find((f) => f.name === "collection_mode");
   if (!modeField || !modeField.enumValues) throw new Error("schema-model: envelopeCore.collection_mode must be an inline enum");
   const collectionModes = [...modeField.enumValues];
-  const schemaVersionField = coreFields.find((f) => f.name === "schema_version");
+  const schemaVersionField = declaredFields.find((f) => f.name === "schema_version");
   if (!schemaVersionField || typeof schemaVersionField.const !== "string") {
     throw new Error("schema-model: envelopeCore.schema_version must pin a string const");
   }
@@ -422,7 +425,9 @@ export function buildModel(schema) {
         if (!propertyIndex.has(name)) throw new Error(`schema-model: pinned field ${name} is not a declared property`);
       }
 
-      const ownOrder = [RECEIVED_AT, ...propertyOrder.filter((name) => name !== RECEIVED_AT)];
+      // Own fields are the properties the core does not already hold: the core struct carries
+      // the universally required fields, and each variant carries the rest.
+      const ownOrder = [RECEIVED_AT, ...propertyOrder.filter((name) => name !== RECEIVED_AT && !coreRequired.includes(name))];
       for (const shape of SHAPES) {
         const shapeRequired = shape === "stored" ? [RECEIVED_AT] : [];
         const shapeForbidden = shape === "device" ? [RECEIVED_AT] : [];
@@ -433,7 +438,7 @@ export function buildModel(schema) {
         const ownFields = ownOrder
           .filter((name) => !allForbidden.includes(name))
           .map((name) => {
-            const field = coreFields[propertyIndex.get(name)];
+            const field = declaredFields[propertyIndex.get(name)];
             return { ...field, required: allRequired.includes(name) };
           });
         // Core fields whose value is pinned by a branch, where the pin is narrower than
@@ -477,7 +482,8 @@ export function buildModel(schema) {
     kinds,
     collectionModes,
     coreRequired,
-    coreFields: coreFields.map((f) => ({ ...f, required: coreRequired.includes(f.name) })),
+    coreFields,
+    declaredFields,
     propertyOrder,
     objects,
     enums: enumList,

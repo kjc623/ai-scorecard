@@ -105,6 +105,7 @@ func Resolve(b *policy.Bundle, q ScopeQuery) Resolution {
 			res.Contributions = append(res.Contributions, Contribution{
 				Axis: a.axis, Key: a.key, Mode: b.TenantDefault, Reason: ReasonTenantDefault,
 			})
+			addReason(&res, ReasonTenantDefault)
 			continue
 		}
 		m, ok := a.set[a.key]
@@ -112,6 +113,7 @@ func Resolve(b *policy.Bundle, q ScopeQuery) Resolution {
 			res.Contributions = append(res.Contributions, Contribution{
 				Axis: a.axis, Key: a.key, Mode: b.TenantDefault, Reason: ReasonTenantDefault,
 			})
+			addReason(&res, ReasonTenantDefault)
 			continue
 		}
 		if !m.Valid() {
@@ -161,6 +163,17 @@ func contributionsToModes(cs []Contribution) []protocol.CollectionMode {
 		out = append(out, c.Mode)
 	}
 	return out
+}
+
+// addReason records a reason once. The three axes can each fall back to the tenant default in
+// one resolution, and a coverage report wants the fact once, not three times.
+func addReason(res *Resolution, reason string) {
+	for _, r := range res.Reasons {
+		if r == reason {
+			return
+		}
+	}
+	res.Reasons = append(res.Reasons, reason)
 }
 
 // ModeRank orders the modes: m0 < m1 < m2 < m3. An unknown mode ranks below M0, so it can

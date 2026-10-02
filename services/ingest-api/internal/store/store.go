@@ -22,6 +22,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"sort"
 	"time"
 
 	"github.com/shadow-ai-capture/device/protocol"
@@ -31,10 +33,11 @@ import (
 
 // RouteFidelity is one row of ref.route_fidelity. The rank is *stored*, never compiled in: §4.4
 // says so explicitly, and ingest.record_event() looks it up before it will accept a route at all.
+// Rank is lower-is-better, which is the direction the stored procedure compares.
 type RouteFidelity struct {
-	Source        string
-	Rank          int
-	YieldsContent bool
+	Source        string `json:"source"`
+	Rank          int    `json:"rank"`
+	YieldsContent bool   `json:"yields_content"`
 }
 
 // RouteTable is ref.route_fidelity, keyed by source.
@@ -46,7 +49,7 @@ func (t RouteTable) Sources() []string {
 	for k := range t {
 		out = append(out, k)
 	}
-	sortStrings(out)
+	sort.Strings(out)
 	return out
 }
 
@@ -181,40 +184,71 @@ type Store interface {
 
 // QuarantineReason maps the §7 wire vocabulary onto the live ingest.rejected.reason_code CHECK.
 //
-// The two vocabularies are not the same set, which is a real integration hazard rather than a
-// naming preference: db/schema.sql's CHECK accepts device_revoked, batch_oversize,
-// schema_version_unsupported, malformed_json, internal_error and dedup_key_mismatch, and accepts
-// neither tenant_mismatch nor duplicate_batch. §7 and protocol.ReasonCode are the *wire* contract
-// and are closed, so the wire keeps its names and this function is the only place the mapping
-// exists. The second return value is false when there is no representable row.
+// The two vocabularies now use the same spellings for every fact that can appear on both surfaces,
+// which is what the schema's own COMMENT on ingest.rejected asks for ("See
+// docs/02-ingest-and-transport.md §7 for the reason codes"). The CHECK used to say device_revoked,
+// batch_oversize and schema_version_unsupported; those were renames rather than a second
+// vocabulary, and db/schema.sql is aligned to the §7 spellings.
+//
+// What remains a genuine difference is not a rename but a fact that lives on one surface only:
+//
+//   - storage/batch-only: malformed_json, internal_error and dedup_key_mismatch describe why a
+//     record was held at a layer that has no per-event wire outcome, so no wire code maps to them;
+//   - wire-only: duplicate_batch is batch-level by construction (§5.3) and tenant_mismatch is a
+//     body disagreeing with the authenticated principal, which must not be filed under this
+//     tenant's row under a code that means something else (ingest.rejected.tenant_id is NOT NULL
+//     and RLS-scoped, so there is no honest tenant to file a cross-tenant body under).
+//
+// §7 and protocol.ReasonCode are the wire contract and are closed, so the wire keeps its names and
+// this function is the only place the translation exists. The second return value is false when
+// there is no representable row; TestQuarantineMappingIsTotal asserts that every wire code is
+// either mapped or one of those two documented exceptions.
 func QuarantineReason(r protocol.ReasonCode) (string, bool) {
 	switch r {
 	case protocol.ReasonSchemaViolation:
 		return "schema_violation", true
 	case protocol.ReasonUnsupportedSchemaVersion:
-		return "schema_version_unsupported", true
+		return "unsupported_schema_version", true
 	case protocol.ReasonUnknownKind:
 		return "unknown_kind", true
 	case protocol.ReasonUnknownTenant:
 		return "unknown_tenant", true
 	case protocol.ReasonRevokedDevice:
-		return "device_revoked", true
+		return "revoked_device", true
 	case protocol.ReasonRegionMismatch:
 		return "region_mismatch", true
 	case protocol.ReasonModeViolation:
 		return "mode_violation", true
 	case protocol.ReasonOversize:
-		return "batch_oversize", true
+		return "oversize", true
 	case protocol.ReasonTenantMismatch:
-		// No equivalent: quarantining a body claiming another tenant under this tenant's row
-		// would misattribute the defect, and the live CHECK has no code that means "the body
-		// disagrees with the authenticated principal".
 		return "", false
 	case protocol.ReasonDuplicateBatch:
-		// Batch-level by construction (§5.3): there is no per-event envelope to quarantine.
 		return "", false
 	}
 	return "", false
+}
+
+// QuarantineVocabulary is the mapping as data, so a cross-artifact check (db/tools/check-schema.mjs)
+// can read one list instead of scraping switch arms, and so a test can assert totality without
+// duplicating the mapping. A false Mapped means "no honest row exists on this surface", which is a
+// decision rather than a gap; see QuarantineReason.
+func QuarantineVocabulary() map[string]struct {
+	Code   string
+	Mapped bool
+} {
+	out := map[string]struct {
+		Code   string
+		Mapped bool
+	}{}
+	for _, r := range protocol.AllReasonCodes {
+		code, ok := QuarantineReason(r)
+		out[string(r)] = struct {
+			Code   string
+			Mapped bool
+		}{Code: code, Mapped: ok}
+	}
+	return out
 }
 
 // TTLFromLabels is a deliberately small mirror of ops.event_ttl_days(): the in-memory store needs
@@ -227,13 +261,7 @@ func TTLFromLabels(defaultDays int, _ json.RawMessage) int {
 	return defaultDays
 }
 
-func sortStrings(s []string) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j] < s[j-1]; j-- {
-			s[j], s[j-1] = s[j-1], s[j]
-		}
-	}
-}
+func sortStrings(s []string) { sort.Strings(s) }
 
 // TierOf is a small helper so both implementations describe a tier identically. The service
 // reports it; no write decision depends on it.
@@ -241,4 +269,27 @@ func TierOf(kind, contentDigest string, hasDigest bool, attachments []dedup.Atta
 	return dedup.TierFor(kind, contentDigest, hasDigest, attachments)
 }
 
-var errNotImplemented = fmt.Errorf("store: not implemented")
+// LoadRouteTable reads ref.route_fidelity rows from a JSON file, for the in-memory store.
+// The rows are data, never compiled in: §4.4 is explicit that the ranking lives in the table.
+// services/ingest-api/testdata/route-fidelity.seed.json holds the rows db/schema.sql seeds.
+func LoadRouteTable(path string) (RouteTable, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read route table %s: %w", path, err)
+	}
+	var rows []RouteFidelity
+	if err := json.Unmarshal(b, &rows); err != nil {
+		return nil, fmt.Errorf("parse route table %s: %w", path, err)
+	}
+	table := RouteTable{}
+	for _, r := range rows {
+		if r.Source == "" {
+			return nil, fmt.Errorf("route table %s has a row with no source", path)
+		}
+		table[r.Source] = r
+	}
+	if len(table) == 0 {
+		return nil, fmt.Errorf("route table %s carries no routes", path)
+	}
+	return table, nil
+}

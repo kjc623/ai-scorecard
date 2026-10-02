@@ -96,6 +96,23 @@ func (s *Schema) RequiredFields() []string {
 	return sortedStrings(core["required"])
 }
 
+// FieldNames returns every declared envelopeCore property name, sorted. It is used to turn a
+// generated decoder's error message (which names a field) into a JSON Pointer, so the diagmostic
+// vocabulary also comes from the schema rather than from a list in Go.
+func (s *Schema) FieldNames() []string {
+	core, err := s.def("envelopeCore")
+	if err != nil {
+		return nil
+	}
+	props, _ := core["properties"].(map[string]any)
+	out := make([]string, 0, len(props))
+	for k := range props {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // KindRegistry returns the closed `kind` enum from the schema (D8/R7).
 func (s *Schema) KindRegistry() []string {
 	return s.enumOf("kind")
@@ -160,6 +177,64 @@ func (s *Schema) ValidateDeviceSubmission(raw []byte) (*Violation, error) {
 		return nil, err
 	}
 	return s.validate(def, inst, ""), nil
+}
+
+// ValidateEnvelope is the ingest path's validation entry point, and it is deliberately two
+// independent checks rather than one:
+//
+//  1. The generated contract types (contracts/generated/go/envelope, T1) decode the bytes. They are
+//     the contract's own code, linked at compile time, and they enforce the per-kind and per-mode
+//     required/forbidden field sets and `additionalProperties: false`.
+//  2. The schema walk below re-derives the same verdict from
+//     contracts/event-envelope.schema.json, and supplies the JSON Pointer and violated constraint
+//     that §7's `detail` is made of. The generated decoder names the field in prose; the pointer is
+//     what a device-side defect report can be reproduced from.
+//
+// A record must pass both. Where they can disagree, the schema walk is the stricter one and wins:
+// draft 2020-12 treats `format` as an annotation, so the generated decoder asserts only that a uuid
+// field is non-empty (its own documented choice), while this walker asserts the uuid shape. Ingest
+// must assert it, because ingest.record_event() casts these fields to uuid and a malformed value
+// would abort the whole batch in the database.
+func (s *Schema) ValidateEnvelope(env *Envelope) (*Violation, error) {
+	if env.genErr != nil {
+		return s.violationFromGenerated(env.genErr), nil
+	}
+	return s.ValidateDeviceSubmission(env.rawBytes)
+}
+
+// violationFromGenerated turns a generated decoder error into a located Violation. The pointer is
+// recovered by looking for a schema-declared field name in the message, so the vocabulary stays in
+// the schema.
+func (s *Schema) violationFromGenerated(err error) *Violation {
+	msg := err.Error()
+	pointer := ""
+	// `additionalProperties: false` surfaces as encoding/json's unknown-field error, and the field
+	// it names is by definition not in the schema, so it cannot be found by the scan below.
+	if i := strings.Index(msg, "unknown field "); i >= 0 {
+		rest := msg[i+len("unknown field "):]
+		if len(rest) > 1 && rest[0] == '"' {
+			if j := strings.IndexByte(rest[1:], '"'); j >= 0 {
+				pointer = "/" + escapePointer(rest[1:1+j])
+			}
+		}
+	}
+	if pointer == "" {
+		best := -1
+		for _, name := range s.FieldNames() {
+			if i := strings.Index(msg, name); i >= 0 {
+				// Prefer the earliest mention: "missing required field(s): confidence, labels"
+				// names the first offender first.
+				if best == -1 || i < best {
+					best, pointer = i, "/"+name
+				}
+			}
+		}
+	}
+	expected := msg
+	if i := strings.LastIndex(msg, ": "); i >= 0 && i+2 < len(msg) {
+		expected = msg[i+2:]
+	}
+	return &Violation{Pointer: pointer, Expected: expected}
 }
 
 // validate walks the instance. It returns the first violation, or nil.

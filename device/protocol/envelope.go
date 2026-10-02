@@ -171,6 +171,14 @@ const (
 	DetailParserCrash     Detail = "parser_crash"
 	DetailParserOutputCap Detail = "parser_output_cap"
 
+	// Policy bundle verification failure (docs/01-collectors.md §13.3 rule 4). These are the four
+	// causes behind the `tampered` state a policy-verification failure produces, and C10's "less
+	// inspection, silently" failure mode: naming the cause is what makes the signal actionable.
+	DetailBundleSignatureInvalid Detail = "bundle_signature_invalid"
+	DetailBundleSchemaInvalid    Detail = "bundle_schema_invalid"
+	DetailBundleVersionRegression Detail = "bundle_version_regression"
+	DetailBundleArtefactMissing  Detail = "bundle_artefact_missing"
+
 	// Content-shape causes that reach the classifier
 	DetailContentOverCap      Detail = "content_over_cap"
 	DetailUndecodableContent  Detail = "undecodable_content"
@@ -191,6 +199,8 @@ var AllDetails = [...]Detail{
 	DetailParserFailed, DetailContentUnprocessable, DetailHostUnreachable,
 	DetailReleaseLoadFailed,
 	DetailParserMemory, DetailParserTimeout, DetailParserCrash, DetailParserOutputCap,
+	DetailBundleSignatureInvalid, DetailBundleSchemaInvalid,
+	DetailBundleVersionRegression, DetailBundleArtefactMissing,
 	DetailContentOverCap, DetailUndecodableContent,
 	DetailVersionMismatch, DetailModeViolation,
 }
@@ -228,11 +238,19 @@ const (
 // capture-core can refuse an oversized upload before transfer (docs/01-collectors.md §3.4).
 // A filename alone is still a valid descriptor: attachment_names is metadata obtainable at
 // M1 without reading the file at all.
+//
+// Its field names are the contract's `$defs/attachment` names verbatim, `content_digest`
+// included, so the descriptor that crosses native messaging and the descriptor that ends up in
+// an envelope are one shape. That matters because the contract is closed
+// (`additionalProperties: false`): a local `digest` here and a contract `content_digest` there
+// would be a rename waiting to be forgotten, and the first component to forward the descriptor
+// unchanged would emit a record ingest rejects.
 type AttachmentDescriptor struct {
-	Name      string `json:"name"`
-	MediaType string `json:"media_type,omitempty"`
-	SizeBytes int64  `json:"size_bytes"`
-	Digest    string `json:"digest,omitempty"` // sha256:<hex>, present only when bytes were read
+	Name          string `json:"name"`
+	MediaType     string `json:"media_type,omitempty"` // not a contract field: the contract records
+	// the name and the bytes-derived fields, and media type is the collector's own hint.
+	SizeBytes     int64  `json:"size_bytes,omitempty"`
+	ContentDigest string `json:"content_digest,omitempty"` // sha256:<hex>, present only when bytes were read
 }
 
 // AttachmentManifest opens a chunked attachment transfer. TransferID correlates the

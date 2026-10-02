@@ -45,9 +45,29 @@ var frameMagic = [4]byte{'D', 'S', 'P', '1'}
 type frameType uint8
 
 const (
-	frameData    frameType = 1
-	frameControl frameType = 2
+	frameData     frameType = 1
+	frameControl  frameType = 2
+	frameCounters frameType = 3
 )
+
+// valid reports whether a frame type belongs to the log or to the counter file.
+func (t frameType) valid() bool {
+	return t == frameData || t == frameControl || t == frameCounters
+}
+
+// testWriteHalf replaces the single Write of a frame when it is non-nil. It is nil in every
+// production path; the crash test sets it in a *child test process* so that a real process
+// can be killed with a known half-written frame on disk.
+var testWriteHalf func(f *os.File, frame []byte) (int, error)
+
+// writeSegmentFrame appends one frame with a single Write call, so a kill leaves either the
+// whole frame or a prefix of it.
+func writeSegmentFrame(f *os.File, frame []byte) (int, error) {
+	if testWriteHalf != nil {
+		return testWriteHalf(f, frame)
+	}
+	return f.Write(frame)
+}
 
 // errCleanEnd is the internal end-of-log signal: the byte after the last complete frame.
 var errCleanEnd = errors.New("spool: end of log")
@@ -145,7 +165,7 @@ func readFrameAt(f *os.File, path string, off int64, aead cipher.AEAD) (frameHea
 		return h, nil, off, &CorruptError{Path: path, Offset: off, Reason: "reserved header byte is not zero"}
 	}
 	ft := frameType(header[5])
-	if ft != frameData && ft != frameControl {
+	if !ft.valid() {
 		return h, nil, off, &CorruptError{Path: path, Offset: off, Reason: fmt.Sprintf("unknown frame type %d", header[5])}
 	}
 	h = frameHeader{

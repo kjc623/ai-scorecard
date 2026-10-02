@@ -41,6 +41,13 @@ node_modules/
 # Local database cluster state
 .tools/pgdata/
 
+# Evidence logs are produced by a run, not authored. The prose that interprets them
+# (db/evidence/README.md, .integration/*.md) stays tracked; the raw logs do not, or every
+# acceptance run adds thirty files to the repository.
+db/evidence/*.log
+.integration/verify-all-*.json
+.integration/accept-*.json
+
 # Editor / OS
 .DS_Store
 Thumbs.db

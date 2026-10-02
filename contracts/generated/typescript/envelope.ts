@@ -138,13 +138,13 @@ export type ExcerptKind = (typeof EXCERPT_KINDS)[number];
  * detected. Required for model_detection. Recorded because the four mechanisms have materially
  * different confidence and coverage, and merging them would overstate what is known.
  */
-export const DETECTION_BASISS = ["process_scan", "endpoint_security", "etw", "module_signature"] as const;
+export const DETECTION_BASES = ["process_scan", "endpoint_security", "etw", "module_signature"] as const;
 
 /**
- * A member of DETECTION_BASISS: the union is derived from the runtime list, so a value
+ * A member of DETECTION_BASES: the union is derived from the runtime list, so a value
  * cannot be added to the type without being added to the closed set.
  */
-export type DetectionBasis = (typeof DETECTION_BASISS)[number];
+export type DetectionBasis = (typeof DETECTION_BASES)[number];
 
 /**
  * Label: One classification verdict. A label set, never a boolean and never a bare 'sensitive:
@@ -325,13 +325,6 @@ export interface EnvelopeCore {
    */
   readonly occurred_at: DateTime;
   /**
-   * Server receive time, stamped by the ingest gateway. Authoritative for display; occurred_at is
-   * retained for ordering and skew (brief §3.6). A device must not send this — see
-   * $defs/deviceSubmission.
-   * @format date-time
-   */
-  readonly received_at?: DateTime;
-  /**
    * Milliseconds since an arbitrary device-local monotonic origin. Gives intra-device ordering that
    * survives clock changes, which wall-clock device time does not.
    * @minimum 0
@@ -345,59 +338,12 @@ export interface EnvelopeCore {
    */
   readonly source: Route;
   /**
-   * Overall classifier confidence band. 'degraded' means classification was attempted and did not
-   * complete — the explicit signal required by brief §6 so that a failed classifier is never
-   * reported as 'no sensitive data found'.
-   * @enum "high" | "medium" | "low" | "degraded"
-   */
-  readonly confidence?: Confidence;
-  /**
    * The effective mode applied to this observation, resolved on the device from the signed scope
    * matrix by taking the most restrictive applicable value across tool, data class and user
    * population (brief §1.1).
    * @enum "m0" | "m1" | "m2" | "m3"
    */
   readonly collection_mode: CollectionMode;
-  /**
-   * Size of the observed payload. Available at every mode including M0.
-   * @minimum 0
-   */
-  readonly size_bytes?: number;
-  /**
-   * Digest of the normalised content. Required at M1 and above. Absent at M0, where the collector is
-   * not permitted to read content at all.
-   * @pattern ^sha256:[0-9a-f]{64}$
-   */
-  readonly content_digest?: Sha256;
-  /**
-   * Classification verdicts. Required at M1 and above, absent at M0.
-   * @maxItems 64
-   */
-  readonly labels?: readonly Label[];
-  /**
-   * Classifier release that produced `labels`, from ref.classifier_release. Required at M1 and above
-   * so a change in classifier behaviour is visible as a version change.
-   * @minLength 1
-   * @maxLength 64
-   */
-  readonly classifier_version?: string;
-  /**
-   * Required at M2, forbidden at M0 and M3.
-   */
-  readonly content_excerpt?: Excerpt;
-  /**
-   * Attachment descriptors: filename always, bytes-derived fields only when the collector could read
-   * the file. Permitted at M1 and above and forbidden at M0, because M0's closed list is device,
-   * user, tool, timestamp, size and destination -- a filename is not on it. Present, possibly empty,
-   * whenever the submission carried attachments.
-   * @maxItems 32
-   */
-  readonly attachments?: readonly Attachment[];
-  /**
-   * Required for every prompt event, including M0: a tenant can block a tool outright without
-   * reading content.
-   */
-  readonly policy_decision?: PolicyDecision;
   /**
    * Idempotency key, derived per kind from tenant, device, tool and the best material the mode
    * permits. At M1 and above it includes the normalised content digest; at M0 the device cannot read
@@ -407,41 +353,19 @@ export interface EnvelopeCore {
    * @pattern ^sha256:[0-9a-f]{64}$
    */
   readonly dedup_key: Sha256;
-  /**
-   * Start of the rollup window. Required for usage_rollup.
-   * @format date-time
-   */
-  readonly window_start?: DateTime;
-  /**
-   * End of the rollup window. Required for usage_rollup.
-   * @format date-time
-   */
-  readonly window_end?: DateTime;
-  /**
-   * Submissions observed in the window. Required for usage_rollup.
-   * @minimum 0
-   */
-  readonly submission_count?: number;
-  /**
-   * Total bytes observed in the window. Required for usage_rollup.
-   * @minimum 0
-   */
-  readonly bytes_total?: number;
-  /**
-   * How an on-device model was detected. Required for model_detection. Recorded because the four
-   * mechanisms have materially different confidence and coverage, and merging them would overstate
-   * what is known.
-   * @enum "process_scan" | "endpoint_security" | "etw" | "module_signature"
-   */
-  readonly detection_basis?: DetectionBasis;
 }
 
 /**
  * What a device is permitted to send for kind `prompt` at collection mode `m0`.
  *
- * Required by the schema: the common core (with `direction`, `kind`, `collection_mode` pinned), plus `schema_version`, `event_id`, `tenant_id`, `device_id`, `user_ref`, `tool_fingerprint`, `direction`, `kind`, `occurred_at`, `monotonic_offset_ms`, `source`, `collection_mode`, `size_bytes`, `policy_decision`, `dedup_key`.
+ * Required by the schema: the common core (with `direction`, `kind`, `collection_mode`
+ * pinned), plus `size_bytes`, `policy_decision`.
+ *
  * Permitted but not required: nothing beyond the required fields.
- * Must not carry, so absent from this interface: `received_at`, `confidence`, `content_digest`, `labels`, `classifier_version`, `content_excerpt`, `attachments`, `window_start`, `window_end`, `submission_count`, `bytes_total`, `detection_basis`.
+ *
+ * Must not carry, so absent from this interface: `received_at`, `confidence`,
+ * `content_digest`, `labels`, `classifier_version`, `content_excerpt`, `attachments`,
+ * `window_start`, `window_end`, `submission_count`, `bytes_total`, `detection_basis`.
  */
 export interface DevicePromptM0 extends EnvelopeCore {
   /**
@@ -471,86 +395,6 @@ export interface DevicePromptM0 extends EnvelopeCore {
    */
   readonly collection_mode: "m0";
   /**
-   * Contract version this record validates against (brief §4.3).
-   * @constant "1.0"
-   */
-  readonly schema_version: "1.0";
-  /**
-   * Identifier for this observation, minted by the collector. Two routes observing one submission
-   * mint two different event_ids; they collapse later through dedup_key, not here.
-   * @format uuid
-   */
-  readonly event_id: Uuid;
-  /**
-   *
-   * @format uuid
-   */
-  readonly tenant_id: Uuid;
-  /**
-   *
-   * @format uuid
-   */
-  readonly device_id: Uuid;
-  /**
-   * Pseudonymous subject reference, stable per tenant. Resolved to a person only through
-   * ops.user_dim, which is populated from the customer's directory. The wire format never carries a
-   * name, email or directory object id.
-   * @minLength 1
-   * @maxLength 200
-   */
-  readonly user_ref: string;
-  /**
-   * Behaviour-derived identifier for the destination or application, not a brand name. Discovery
-   * must classify behaviour rather than match a curated list (brief §2), so this value is computed
-   * from observable signals and the sanctioned/unsanctioned judgement is per-tenant state held in
-   * ops.tool.
-   * @minLength 1
-   * @maxLength 128
-   */
-  readonly tool_fingerprint: string;
-  /**
-   * 'ingress' is reserved and cannot appear on a v1.0 record at all: the prompt branch pins
-   * direction to 'egress', so a collector that emits a response-side record is rejected rather than
-   * stored. The value exists so that enabling response capture is a schema_version change rather
-   * than a rewrite of this field, which is what brief §1.2 means by leaving the seam without
-   * building it.
-   * @enum "egress" | "ingress" | "none"
-   */
-  readonly direction: Direction;
-  /**
-   * Discriminator. Closed registry, enforced by the ingest API, which is what makes risk R7
-   * structural: a collector defect cannot begin shipping raw per-process telemetry, because no kind
-   * exists for it.
-   * @enum "prompt" | "usage_rollup" | "model_detection"
-   */
-  readonly kind: Kind;
-  /**
-   * Device clock at observation. Retained for ordering and skew analysis; the server stamps
-   * received_at and that is what display uses (brief §3.6).
-   * @format date-time
-   */
-  readonly occurred_at: DateTime;
-  /**
-   * Milliseconds since an arbitrary device-local monotonic origin. Gives intra-device ordering that
-   * survives clock changes, which wall-clock device time does not.
-   * @minimum 0
-   */
-  readonly monotonic_offset_ms: number;
-  /**
-   * Which collection route produced this record. Closed vocabulary; fidelity ranking per route lives
-   * in ref.route_fidelity and is what decides the winner when two routes observe one submission
-   * (brief §4.1).
-   * @enum "ext.web_request" | "ext.page_context" | "ext.dom" | "proxy.tls" | "proxy.loopback" | "proc.detect" | "cli.shim"
-   */
-  readonly source: Route;
-  /**
-   * The effective mode applied to this observation, resolved on the device from the signed scope
-   * matrix by taking the most restrictive applicable value across tool, data class and user
-   * population (brief §1.1).
-   * @enum "m0" | "m1" | "m2" | "m3"
-   */
-  readonly collection_mode: CollectionMode;
-  /**
    * Size of the observed payload. Available at every mode including M0.
    * @minimum 0
    */
@@ -560,23 +404,19 @@ export interface DevicePromptM0 extends EnvelopeCore {
    * reading content.
    */
   readonly policy_decision: PolicyDecision;
-  /**
-   * Idempotency key, derived per kind from tenant, device, tool and the best material the mode
-   * permits. At M1 and above it includes the normalised content digest; at M0 the device cannot read
-   * content, so it is derived from an occurred_at bucket and size instead, and dedup is
-   * correspondingly weaker. The canonicalisation is normative and lives in
-   * docs/02-ingest-and-transport.md §4.
-   * @pattern ^sha256:[0-9a-f]{64}$
-   */
-  readonly dedup_key: Sha256;
 }
 
 /**
  * The envelope as stored for kind `prompt` at collection mode `m0`.
  *
- * Required by the schema: the common core (with `direction`, `kind`, `collection_mode` pinned), plus `received_at`, `schema_version`, `event_id`, `tenant_id`, `device_id`, `user_ref`, `tool_fingerprint`, `direction`, `kind`, `occurred_at`, `monotonic_offset_ms`, `source`, `collection_mode`, `size_bytes`, `policy_decision`, `dedup_key`.
+ * Required by the schema: the common core (with `direction`, `kind`, `collection_mode`
+ * pinned), plus `received_at`, `size_bytes`, `policy_decision`.
+ *
  * Permitted but not required: nothing beyond the required fields.
- * Must not carry, so absent from this interface: `confidence`, `content_digest`, `labels`, `classifier_version`, `content_excerpt`, `attachments`, `window_start`, `window_end`, `submission_count`, `bytes_total`, `detection_basis`.
+ *
+ * Must not carry, so absent from this interface: `confidence`, `content_digest`, `labels`,
+ * `classifier_version`, `content_excerpt`, `attachments`, `window_start`, `window_end`,
+ * `submission_count`, `bytes_total`, `detection_basis`.
  */
 export interface StoredPromptM0 extends EnvelopeCore {
   /**
@@ -613,86 +453,6 @@ export interface StoredPromptM0 extends EnvelopeCore {
    */
   readonly received_at: DateTime;
   /**
-   * Contract version this record validates against (brief §4.3).
-   * @constant "1.0"
-   */
-  readonly schema_version: "1.0";
-  /**
-   * Identifier for this observation, minted by the collector. Two routes observing one submission
-   * mint two different event_ids; they collapse later through dedup_key, not here.
-   * @format uuid
-   */
-  readonly event_id: Uuid;
-  /**
-   *
-   * @format uuid
-   */
-  readonly tenant_id: Uuid;
-  /**
-   *
-   * @format uuid
-   */
-  readonly device_id: Uuid;
-  /**
-   * Pseudonymous subject reference, stable per tenant. Resolved to a person only through
-   * ops.user_dim, which is populated from the customer's directory. The wire format never carries a
-   * name, email or directory object id.
-   * @minLength 1
-   * @maxLength 200
-   */
-  readonly user_ref: string;
-  /**
-   * Behaviour-derived identifier for the destination or application, not a brand name. Discovery
-   * must classify behaviour rather than match a curated list (brief §2), so this value is computed
-   * from observable signals and the sanctioned/unsanctioned judgement is per-tenant state held in
-   * ops.tool.
-   * @minLength 1
-   * @maxLength 128
-   */
-  readonly tool_fingerprint: string;
-  /**
-   * 'ingress' is reserved and cannot appear on a v1.0 record at all: the prompt branch pins
-   * direction to 'egress', so a collector that emits a response-side record is rejected rather than
-   * stored. The value exists so that enabling response capture is a schema_version change rather
-   * than a rewrite of this field, which is what brief §1.2 means by leaving the seam without
-   * building it.
-   * @enum "egress" | "ingress" | "none"
-   */
-  readonly direction: Direction;
-  /**
-   * Discriminator. Closed registry, enforced by the ingest API, which is what makes risk R7
-   * structural: a collector defect cannot begin shipping raw per-process telemetry, because no kind
-   * exists for it.
-   * @enum "prompt" | "usage_rollup" | "model_detection"
-   */
-  readonly kind: Kind;
-  /**
-   * Device clock at observation. Retained for ordering and skew analysis; the server stamps
-   * received_at and that is what display uses (brief §3.6).
-   * @format date-time
-   */
-  readonly occurred_at: DateTime;
-  /**
-   * Milliseconds since an arbitrary device-local monotonic origin. Gives intra-device ordering that
-   * survives clock changes, which wall-clock device time does not.
-   * @minimum 0
-   */
-  readonly monotonic_offset_ms: number;
-  /**
-   * Which collection route produced this record. Closed vocabulary; fidelity ranking per route lives
-   * in ref.route_fidelity and is what decides the winner when two routes observe one submission
-   * (brief §4.1).
-   * @enum "ext.web_request" | "ext.page_context" | "ext.dom" | "proxy.tls" | "proxy.loopback" | "proc.detect" | "cli.shim"
-   */
-  readonly source: Route;
-  /**
-   * The effective mode applied to this observation, resolved on the device from the signed scope
-   * matrix by taking the most restrictive applicable value across tool, data class and user
-   * population (brief §1.1).
-   * @enum "m0" | "m1" | "m2" | "m3"
-   */
-  readonly collection_mode: CollectionMode;
-  /**
    * Size of the observed payload. Available at every mode including M0.
    * @minimum 0
    */
@@ -702,23 +462,19 @@ export interface StoredPromptM0 extends EnvelopeCore {
    * reading content.
    */
   readonly policy_decision: PolicyDecision;
-  /**
-   * Idempotency key, derived per kind from tenant, device, tool and the best material the mode
-   * permits. At M1 and above it includes the normalised content digest; at M0 the device cannot read
-   * content, so it is derived from an occurred_at bucket and size instead, and dedup is
-   * correspondingly weaker. The canonicalisation is normative and lives in
-   * docs/02-ingest-and-transport.md §4.
-   * @pattern ^sha256:[0-9a-f]{64}$
-   */
-  readonly dedup_key: Sha256;
 }
 
 /**
  * What a device is permitted to send for kind `prompt` at collection mode `m1`.
  *
- * Required by the schema: the common core (with `direction`, `kind`, `collection_mode` pinned), plus `schema_version`, `event_id`, `tenant_id`, `device_id`, `user_ref`, `tool_fingerprint`, `direction`, `kind`, `occurred_at`, `monotonic_offset_ms`, `source`, `confidence`, `collection_mode`, `size_bytes`, `content_digest`, `labels`, `classifier_version`, `policy_decision`, `dedup_key`.
+ * Required by the schema: the common core (with `direction`, `kind`, `collection_mode`
+ * pinned), plus `confidence`, `size_bytes`, `content_digest`, `labels`, `classifier_version`,
+ * `policy_decision`.
+ *
  * Permitted but not required: `content_excerpt`, `attachments`.
- * Must not carry, so absent from this interface: `received_at`, `window_start`, `window_end`, `submission_count`, `bytes_total`, `detection_basis`.
+ *
+ * Must not carry, so absent from this interface: `received_at`, `window_start`, `window_end`,
+ * `submission_count`, `bytes_total`, `detection_basis`.
  */
 export interface DevicePromptM1 extends EnvelopeCore {
   /**
@@ -748,92 +504,12 @@ export interface DevicePromptM1 extends EnvelopeCore {
    */
   readonly collection_mode: "m1";
   /**
-   * Contract version this record validates against (brief §4.3).
-   * @constant "1.0"
-   */
-  readonly schema_version: "1.0";
-  /**
-   * Identifier for this observation, minted by the collector. Two routes observing one submission
-   * mint two different event_ids; they collapse later through dedup_key, not here.
-   * @format uuid
-   */
-  readonly event_id: Uuid;
-  /**
-   *
-   * @format uuid
-   */
-  readonly tenant_id: Uuid;
-  /**
-   *
-   * @format uuid
-   */
-  readonly device_id: Uuid;
-  /**
-   * Pseudonymous subject reference, stable per tenant. Resolved to a person only through
-   * ops.user_dim, which is populated from the customer's directory. The wire format never carries a
-   * name, email or directory object id.
-   * @minLength 1
-   * @maxLength 200
-   */
-  readonly user_ref: string;
-  /**
-   * Behaviour-derived identifier for the destination or application, not a brand name. Discovery
-   * must classify behaviour rather than match a curated list (brief §2), so this value is computed
-   * from observable signals and the sanctioned/unsanctioned judgement is per-tenant state held in
-   * ops.tool.
-   * @minLength 1
-   * @maxLength 128
-   */
-  readonly tool_fingerprint: string;
-  /**
-   * 'ingress' is reserved and cannot appear on a v1.0 record at all: the prompt branch pins
-   * direction to 'egress', so a collector that emits a response-side record is rejected rather than
-   * stored. The value exists so that enabling response capture is a schema_version change rather
-   * than a rewrite of this field, which is what brief §1.2 means by leaving the seam without
-   * building it.
-   * @enum "egress" | "ingress" | "none"
-   */
-  readonly direction: Direction;
-  /**
-   * Discriminator. Closed registry, enforced by the ingest API, which is what makes risk R7
-   * structural: a collector defect cannot begin shipping raw per-process telemetry, because no kind
-   * exists for it.
-   * @enum "prompt" | "usage_rollup" | "model_detection"
-   */
-  readonly kind: Kind;
-  /**
-   * Device clock at observation. Retained for ordering and skew analysis; the server stamps
-   * received_at and that is what display uses (brief §3.6).
-   * @format date-time
-   */
-  readonly occurred_at: DateTime;
-  /**
-   * Milliseconds since an arbitrary device-local monotonic origin. Gives intra-device ordering that
-   * survives clock changes, which wall-clock device time does not.
-   * @minimum 0
-   */
-  readonly monotonic_offset_ms: number;
-  /**
-   * Which collection route produced this record. Closed vocabulary; fidelity ranking per route lives
-   * in ref.route_fidelity and is what decides the winner when two routes observe one submission
-   * (brief §4.1).
-   * @enum "ext.web_request" | "ext.page_context" | "ext.dom" | "proxy.tls" | "proxy.loopback" | "proc.detect" | "cli.shim"
-   */
-  readonly source: Route;
-  /**
    * Overall classifier confidence band. 'degraded' means classification was attempted and did not
    * complete — the explicit signal required by brief §6 so that a failed classifier is never
    * reported as 'no sensitive data found'.
    * @enum "high" | "medium" | "low" | "degraded"
    */
   readonly confidence: Confidence;
-  /**
-   * The effective mode applied to this observation, resolved on the device from the signed scope
-   * matrix by taking the most restrictive applicable value across tool, data class and user
-   * population (brief §1.1).
-   * @enum "m0" | "m1" | "m2" | "m3"
-   */
-  readonly collection_mode: CollectionMode;
   /**
    * Size of the observed payload. Available at every mode including M0.
    * @minimum 0
@@ -874,23 +550,19 @@ export interface DevicePromptM1 extends EnvelopeCore {
    * reading content.
    */
   readonly policy_decision: PolicyDecision;
-  /**
-   * Idempotency key, derived per kind from tenant, device, tool and the best material the mode
-   * permits. At M1 and above it includes the normalised content digest; at M0 the device cannot read
-   * content, so it is derived from an occurred_at bucket and size instead, and dedup is
-   * correspondingly weaker. The canonicalisation is normative and lives in
-   * docs/02-ingest-and-transport.md §4.
-   * @pattern ^sha256:[0-9a-f]{64}$
-   */
-  readonly dedup_key: Sha256;
 }
 
 /**
  * The envelope as stored for kind `prompt` at collection mode `m1`.
  *
- * Required by the schema: the common core (with `direction`, `kind`, `collection_mode` pinned), plus `received_at`, `schema_version`, `event_id`, `tenant_id`, `device_id`, `user_ref`, `tool_fingerprint`, `direction`, `kind`, `occurred_at`, `monotonic_offset_ms`, `source`, `confidence`, `collection_mode`, `size_bytes`, `content_digest`, `labels`, `classifier_version`, `policy_decision`, `dedup_key`.
+ * Required by the schema: the common core (with `direction`, `kind`, `collection_mode`
+ * pinned), plus `received_at`, `confidence`, `size_bytes`, `content_digest`, `labels`,
+ * `classifier_version`, `policy_decision`.
+ *
  * Permitted but not required: `content_excerpt`, `attachments`.
- * Must not carry, so absent from this interface: `window_start`, `window_end`, `submission_count`, `bytes_total`, `detection_basis`.
+ *
+ * Must not carry, so absent from this interface: `window_start`, `window_end`,
+ * `submission_count`, `bytes_total`, `detection_basis`.
  */
 export interface StoredPromptM1 extends EnvelopeCore {
   /**
@@ -927,92 +599,12 @@ export interface StoredPromptM1 extends EnvelopeCore {
    */
   readonly received_at: DateTime;
   /**
-   * Contract version this record validates against (brief §4.3).
-   * @constant "1.0"
-   */
-  readonly schema_version: "1.0";
-  /**
-   * Identifier for this observation, minted by the collector. Two routes observing one submission
-   * mint two different event_ids; they collapse later through dedup_key, not here.
-   * @format uuid
-   */
-  readonly event_id: Uuid;
-  /**
-   *
-   * @format uuid
-   */
-  readonly tenant_id: Uuid;
-  /**
-   *
-   * @format uuid
-   */
-  readonly device_id: Uuid;
-  /**
-   * Pseudonymous subject reference, stable per tenant. Resolved to a person only through
-   * ops.user_dim, which is populated from the customer's directory. The wire format never carries a
-   * name, email or directory object id.
-   * @minLength 1
-   * @maxLength 200
-   */
-  readonly user_ref: string;
-  /**
-   * Behaviour-derived identifier for the destination or application, not a brand name. Discovery
-   * must classify behaviour rather than match a curated list (brief §2), so this value is computed
-   * from observable signals and the sanctioned/unsanctioned judgement is per-tenant state held in
-   * ops.tool.
-   * @minLength 1
-   * @maxLength 128
-   */
-  readonly tool_fingerprint: string;
-  /**
-   * 'ingress' is reserved and cannot appear on a v1.0 record at all: the prompt branch pins
-   * direction to 'egress', so a collector that emits a response-side record is rejected rather than
-   * stored. The value exists so that enabling response capture is a schema_version change rather
-   * than a rewrite of this field, which is what brief §1.2 means by leaving the seam without
-   * building it.
-   * @enum "egress" | "ingress" | "none"
-   */
-  readonly direction: Direction;
-  /**
-   * Discriminator. Closed registry, enforced by the ingest API, which is what makes risk R7
-   * structural: a collector defect cannot begin shipping raw per-process telemetry, because no kind
-   * exists for it.
-   * @enum "prompt" | "usage_rollup" | "model_detection"
-   */
-  readonly kind: Kind;
-  /**
-   * Device clock at observation. Retained for ordering and skew analysis; the server stamps
-   * received_at and that is what display uses (brief §3.6).
-   * @format date-time
-   */
-  readonly occurred_at: DateTime;
-  /**
-   * Milliseconds since an arbitrary device-local monotonic origin. Gives intra-device ordering that
-   * survives clock changes, which wall-clock device time does not.
-   * @minimum 0
-   */
-  readonly monotonic_offset_ms: number;
-  /**
-   * Which collection route produced this record. Closed vocabulary; fidelity ranking per route lives
-   * in ref.route_fidelity and is what decides the winner when two routes observe one submission
-   * (brief §4.1).
-   * @enum "ext.web_request" | "ext.page_context" | "ext.dom" | "proxy.tls" | "proxy.loopback" | "proc.detect" | "cli.shim"
-   */
-  readonly source: Route;
-  /**
    * Overall classifier confidence band. 'degraded' means classification was attempted and did not
    * complete — the explicit signal required by brief §6 so that a failed classifier is never
    * reported as 'no sensitive data found'.
    * @enum "high" | "medium" | "low" | "degraded"
    */
   readonly confidence: Confidence;
-  /**
-   * The effective mode applied to this observation, resolved on the device from the signed scope
-   * matrix by taking the most restrictive applicable value across tool, data class and user
-   * population (brief §1.1).
-   * @enum "m0" | "m1" | "m2" | "m3"
-   */
-  readonly collection_mode: CollectionMode;
   /**
    * Size of the observed payload. Available at every mode including M0.
    * @minimum 0
@@ -1053,23 +645,19 @@ export interface StoredPromptM1 extends EnvelopeCore {
    * reading content.
    */
   readonly policy_decision: PolicyDecision;
-  /**
-   * Idempotency key, derived per kind from tenant, device, tool and the best material the mode
-   * permits. At M1 and above it includes the normalised content digest; at M0 the device cannot read
-   * content, so it is derived from an occurred_at bucket and size instead, and dedup is
-   * correspondingly weaker. The canonicalisation is normative and lives in
-   * docs/02-ingest-and-transport.md §4.
-   * @pattern ^sha256:[0-9a-f]{64}$
-   */
-  readonly dedup_key: Sha256;
 }
 
 /**
  * What a device is permitted to send for kind `prompt` at collection mode `m2`.
  *
- * Required by the schema: the common core (with `direction`, `kind`, `collection_mode` pinned), plus `schema_version`, `event_id`, `tenant_id`, `device_id`, `user_ref`, `tool_fingerprint`, `direction`, `kind`, `occurred_at`, `monotonic_offset_ms`, `source`, `confidence`, `collection_mode`, `size_bytes`, `content_digest`, `labels`, `classifier_version`, `content_excerpt`, `policy_decision`, `dedup_key`.
+ * Required by the schema: the common core (with `direction`, `kind`, `collection_mode`
+ * pinned), plus `confidence`, `size_bytes`, `content_digest`, `labels`, `classifier_version`,
+ * `content_excerpt`, `policy_decision`.
+ *
  * Permitted but not required: `attachments`.
- * Must not carry, so absent from this interface: `received_at`, `window_start`, `window_end`, `submission_count`, `bytes_total`, `detection_basis`.
+ *
+ * Must not carry, so absent from this interface: `received_at`, `window_start`, `window_end`,
+ * `submission_count`, `bytes_total`, `detection_basis`.
  */
 export interface DevicePromptM2 extends EnvelopeCore {
   /**
@@ -1099,92 +687,12 @@ export interface DevicePromptM2 extends EnvelopeCore {
    */
   readonly collection_mode: "m2";
   /**
-   * Contract version this record validates against (brief §4.3).
-   * @constant "1.0"
-   */
-  readonly schema_version: "1.0";
-  /**
-   * Identifier for this observation, minted by the collector. Two routes observing one submission
-   * mint two different event_ids; they collapse later through dedup_key, not here.
-   * @format uuid
-   */
-  readonly event_id: Uuid;
-  /**
-   *
-   * @format uuid
-   */
-  readonly tenant_id: Uuid;
-  /**
-   *
-   * @format uuid
-   */
-  readonly device_id: Uuid;
-  /**
-   * Pseudonymous subject reference, stable per tenant. Resolved to a person only through
-   * ops.user_dim, which is populated from the customer's directory. The wire format never carries a
-   * name, email or directory object id.
-   * @minLength 1
-   * @maxLength 200
-   */
-  readonly user_ref: string;
-  /**
-   * Behaviour-derived identifier for the destination or application, not a brand name. Discovery
-   * must classify behaviour rather than match a curated list (brief §2), so this value is computed
-   * from observable signals and the sanctioned/unsanctioned judgement is per-tenant state held in
-   * ops.tool.
-   * @minLength 1
-   * @maxLength 128
-   */
-  readonly tool_fingerprint: string;
-  /**
-   * 'ingress' is reserved and cannot appear on a v1.0 record at all: the prompt branch pins
-   * direction to 'egress', so a collector that emits a response-side record is rejected rather than
-   * stored. The value exists so that enabling response capture is a schema_version change rather
-   * than a rewrite of this field, which is what brief §1.2 means by leaving the seam without
-   * building it.
-   * @enum "egress" | "ingress" | "none"
-   */
-  readonly direction: Direction;
-  /**
-   * Discriminator. Closed registry, enforced by the ingest API, which is what makes risk R7
-   * structural: a collector defect cannot begin shipping raw per-process telemetry, because no kind
-   * exists for it.
-   * @enum "prompt" | "usage_rollup" | "model_detection"
-   */
-  readonly kind: Kind;
-  /**
-   * Device clock at observation. Retained for ordering and skew analysis; the server stamps
-   * received_at and that is what display uses (brief §3.6).
-   * @format date-time
-   */
-  readonly occurred_at: DateTime;
-  /**
-   * Milliseconds since an arbitrary device-local monotonic origin. Gives intra-device ordering that
-   * survives clock changes, which wall-clock device time does not.
-   * @minimum 0
-   */
-  readonly monotonic_offset_ms: number;
-  /**
-   * Which collection route produced this record. Closed vocabulary; fidelity ranking per route lives
-   * in ref.route_fidelity and is what decides the winner when two routes observe one submission
-   * (brief §4.1).
-   * @enum "ext.web_request" | "ext.page_context" | "ext.dom" | "proxy.tls" | "proxy.loopback" | "proc.detect" | "cli.shim"
-   */
-  readonly source: Route;
-  /**
    * Overall classifier confidence band. 'degraded' means classification was attempted and did not
    * complete — the explicit signal required by brief §6 so that a failed classifier is never
    * reported as 'no sensitive data found'.
    * @enum "high" | "medium" | "low" | "degraded"
    */
   readonly confidence: Confidence;
-  /**
-   * The effective mode applied to this observation, resolved on the device from the signed scope
-   * matrix by taking the most restrictive applicable value across tool, data class and user
-   * population (brief §1.1).
-   * @enum "m0" | "m1" | "m2" | "m3"
-   */
-  readonly collection_mode: CollectionMode;
   /**
    * Size of the observed payload. Available at every mode including M0.
    * @minimum 0
@@ -1225,23 +733,19 @@ export interface DevicePromptM2 extends EnvelopeCore {
    * reading content.
    */
   readonly policy_decision: PolicyDecision;
-  /**
-   * Idempotency key, derived per kind from tenant, device, tool and the best material the mode
-   * permits. At M1 and above it includes the normalised content digest; at M0 the device cannot read
-   * content, so it is derived from an occurred_at bucket and size instead, and dedup is
-   * correspondingly weaker. The canonicalisation is normative and lives in
-   * docs/02-ingest-and-transport.md §4.
-   * @pattern ^sha256:[0-9a-f]{64}$
-   */
-  readonly dedup_key: Sha256;
 }
 
 /**
  * The envelope as stored for kind `prompt` at collection mode `m2`.
  *
- * Required by the schema: the common core (with `direction`, `kind`, `collection_mode` pinned), plus `received_at`, `schema_version`, `event_id`, `tenant_id`, `device_id`, `user_ref`, `tool_fingerprint`, `direction`, `kind`, `occurred_at`, `monotonic_offset_ms`, `source`, `confidence`, `collection_mode`, `size_bytes`, `content_digest`, `labels`, `classifier_version`, `content_excerpt`, `policy_decision`, `dedup_key`.
+ * Required by the schema: the common core (with `direction`, `kind`, `collection_mode`
+ * pinned), plus `received_at`, `confidence`, `size_bytes`, `content_digest`, `labels`,
+ * `classifier_version`, `content_excerpt`, `policy_decision`.
+ *
  * Permitted but not required: `attachments`.
- * Must not carry, so absent from this interface: `window_start`, `window_end`, `submission_count`, `bytes_total`, `detection_basis`.
+ *
+ * Must not carry, so absent from this interface: `window_start`, `window_end`,
+ * `submission_count`, `bytes_total`, `detection_basis`.
  */
 export interface StoredPromptM2 extends EnvelopeCore {
   /**
@@ -1278,92 +782,12 @@ export interface StoredPromptM2 extends EnvelopeCore {
    */
   readonly received_at: DateTime;
   /**
-   * Contract version this record validates against (brief §4.3).
-   * @constant "1.0"
-   */
-  readonly schema_version: "1.0";
-  /**
-   * Identifier for this observation, minted by the collector. Two routes observing one submission
-   * mint two different event_ids; they collapse later through dedup_key, not here.
-   * @format uuid
-   */
-  readonly event_id: Uuid;
-  /**
-   *
-   * @format uuid
-   */
-  readonly tenant_id: Uuid;
-  /**
-   *
-   * @format uuid
-   */
-  readonly device_id: Uuid;
-  /**
-   * Pseudonymous subject reference, stable per tenant. Resolved to a person only through
-   * ops.user_dim, which is populated from the customer's directory. The wire format never carries a
-   * name, email or directory object id.
-   * @minLength 1
-   * @maxLength 200
-   */
-  readonly user_ref: string;
-  /**
-   * Behaviour-derived identifier for the destination or application, not a brand name. Discovery
-   * must classify behaviour rather than match a curated list (brief §2), so this value is computed
-   * from observable signals and the sanctioned/unsanctioned judgement is per-tenant state held in
-   * ops.tool.
-   * @minLength 1
-   * @maxLength 128
-   */
-  readonly tool_fingerprint: string;
-  /**
-   * 'ingress' is reserved and cannot appear on a v1.0 record at all: the prompt branch pins
-   * direction to 'egress', so a collector that emits a response-side record is rejected rather than
-   * stored. The value exists so that enabling response capture is a schema_version change rather
-   * than a rewrite of this field, which is what brief §1.2 means by leaving the seam without
-   * building it.
-   * @enum "egress" | "ingress" | "none"
-   */
-  readonly direction: Direction;
-  /**
-   * Discriminator. Closed registry, enforced by the ingest API, which is what makes risk R7
-   * structural: a collector defect cannot begin shipping raw per-process telemetry, because no kind
-   * exists for it.
-   * @enum "prompt" | "usage_rollup" | "model_detection"
-   */
-  readonly kind: Kind;
-  /**
-   * Device clock at observation. Retained for ordering and skew analysis; the server stamps
-   * received_at and that is what display uses (brief §3.6).
-   * @format date-time
-   */
-  readonly occurred_at: DateTime;
-  /**
-   * Milliseconds since an arbitrary device-local monotonic origin. Gives intra-device ordering that
-   * survives clock changes, which wall-clock device time does not.
-   * @minimum 0
-   */
-  readonly monotonic_offset_ms: number;
-  /**
-   * Which collection route produced this record. Closed vocabulary; fidelity ranking per route lives
-   * in ref.route_fidelity and is what decides the winner when two routes observe one submission
-   * (brief §4.1).
-   * @enum "ext.web_request" | "ext.page_context" | "ext.dom" | "proxy.tls" | "proxy.loopback" | "proc.detect" | "cli.shim"
-   */
-  readonly source: Route;
-  /**
    * Overall classifier confidence band. 'degraded' means classification was attempted and did not
    * complete — the explicit signal required by brief §6 so that a failed classifier is never
    * reported as 'no sensitive data found'.
    * @enum "high" | "medium" | "low" | "degraded"
    */
   readonly confidence: Confidence;
-  /**
-   * The effective mode applied to this observation, resolved on the device from the signed scope
-   * matrix by taking the most restrictive applicable value across tool, data class and user
-   * population (brief §1.1).
-   * @enum "m0" | "m1" | "m2" | "m3"
-   */
-  readonly collection_mode: CollectionMode;
   /**
    * Size of the observed payload. Available at every mode including M0.
    * @minimum 0
@@ -1404,23 +828,19 @@ export interface StoredPromptM2 extends EnvelopeCore {
    * reading content.
    */
   readonly policy_decision: PolicyDecision;
-  /**
-   * Idempotency key, derived per kind from tenant, device, tool and the best material the mode
-   * permits. At M1 and above it includes the normalised content digest; at M0 the device cannot read
-   * content, so it is derived from an occurred_at bucket and size instead, and dedup is
-   * correspondingly weaker. The canonicalisation is normative and lives in
-   * docs/02-ingest-and-transport.md §4.
-   * @pattern ^sha256:[0-9a-f]{64}$
-   */
-  readonly dedup_key: Sha256;
 }
 
 /**
  * What a device is permitted to send for kind `prompt` at collection mode `m3`.
  *
- * Required by the schema: the common core (with `direction`, `kind`, `collection_mode` pinned), plus `schema_version`, `event_id`, `tenant_id`, `device_id`, `user_ref`, `tool_fingerprint`, `direction`, `kind`, `occurred_at`, `monotonic_offset_ms`, `source`, `confidence`, `collection_mode`, `size_bytes`, `content_digest`, `labels`, `classifier_version`, `policy_decision`, `dedup_key`.
+ * Required by the schema: the common core (with `direction`, `kind`, `collection_mode`
+ * pinned), plus `confidence`, `size_bytes`, `content_digest`, `labels`, `classifier_version`,
+ * `policy_decision`.
+ *
  * Permitted but not required: `attachments`.
- * Must not carry, so absent from this interface: `received_at`, `content_excerpt`, `window_start`, `window_end`, `submission_count`, `bytes_total`, `detection_basis`.
+ *
+ * Must not carry, so absent from this interface: `received_at`, `content_excerpt`,
+ * `window_start`, `window_end`, `submission_count`, `bytes_total`, `detection_basis`.
  */
 export interface DevicePromptM3 extends EnvelopeCore {
   /**
@@ -1450,92 +870,12 @@ export interface DevicePromptM3 extends EnvelopeCore {
    */
   readonly collection_mode: "m3";
   /**
-   * Contract version this record validates against (brief §4.3).
-   * @constant "1.0"
-   */
-  readonly schema_version: "1.0";
-  /**
-   * Identifier for this observation, minted by the collector. Two routes observing one submission
-   * mint two different event_ids; they collapse later through dedup_key, not here.
-   * @format uuid
-   */
-  readonly event_id: Uuid;
-  /**
-   *
-   * @format uuid
-   */
-  readonly tenant_id: Uuid;
-  /**
-   *
-   * @format uuid
-   */
-  readonly device_id: Uuid;
-  /**
-   * Pseudonymous subject reference, stable per tenant. Resolved to a person only through
-   * ops.user_dim, which is populated from the customer's directory. The wire format never carries a
-   * name, email or directory object id.
-   * @minLength 1
-   * @maxLength 200
-   */
-  readonly user_ref: string;
-  /**
-   * Behaviour-derived identifier for the destination or application, not a brand name. Discovery
-   * must classify behaviour rather than match a curated list (brief §2), so this value is computed
-   * from observable signals and the sanctioned/unsanctioned judgement is per-tenant state held in
-   * ops.tool.
-   * @minLength 1
-   * @maxLength 128
-   */
-  readonly tool_fingerprint: string;
-  /**
-   * 'ingress' is reserved and cannot appear on a v1.0 record at all: the prompt branch pins
-   * direction to 'egress', so a collector that emits a response-side record is rejected rather than
-   * stored. The value exists so that enabling response capture is a schema_version change rather
-   * than a rewrite of this field, which is what brief §1.2 means by leaving the seam without
-   * building it.
-   * @enum "egress" | "ingress" | "none"
-   */
-  readonly direction: Direction;
-  /**
-   * Discriminator. Closed registry, enforced by the ingest API, which is what makes risk R7
-   * structural: a collector defect cannot begin shipping raw per-process telemetry, because no kind
-   * exists for it.
-   * @enum "prompt" | "usage_rollup" | "model_detection"
-   */
-  readonly kind: Kind;
-  /**
-   * Device clock at observation. Retained for ordering and skew analysis; the server stamps
-   * received_at and that is what display uses (brief §3.6).
-   * @format date-time
-   */
-  readonly occurred_at: DateTime;
-  /**
-   * Milliseconds since an arbitrary device-local monotonic origin. Gives intra-device ordering that
-   * survives clock changes, which wall-clock device time does not.
-   * @minimum 0
-   */
-  readonly monotonic_offset_ms: number;
-  /**
-   * Which collection route produced this record. Closed vocabulary; fidelity ranking per route lives
-   * in ref.route_fidelity and is what decides the winner when two routes observe one submission
-   * (brief §4.1).
-   * @enum "ext.web_request" | "ext.page_context" | "ext.dom" | "proxy.tls" | "proxy.loopback" | "proc.detect" | "cli.shim"
-   */
-  readonly source: Route;
-  /**
    * Overall classifier confidence band. 'degraded' means classification was attempted and did not
    * complete — the explicit signal required by brief §6 so that a failed classifier is never
    * reported as 'no sensitive data found'.
    * @enum "high" | "medium" | "low" | "degraded"
    */
   readonly confidence: Confidence;
-  /**
-   * The effective mode applied to this observation, resolved on the device from the signed scope
-   * matrix by taking the most restrictive applicable value across tool, data class and user
-   * population (brief §1.1).
-   * @enum "m0" | "m1" | "m2" | "m3"
-   */
-  readonly collection_mode: CollectionMode;
   /**
    * Size of the observed payload. Available at every mode including M0.
    * @minimum 0
@@ -1572,23 +912,19 @@ export interface DevicePromptM3 extends EnvelopeCore {
    * reading content.
    */
   readonly policy_decision: PolicyDecision;
-  /**
-   * Idempotency key, derived per kind from tenant, device, tool and the best material the mode
-   * permits. At M1 and above it includes the normalised content digest; at M0 the device cannot read
-   * content, so it is derived from an occurred_at bucket and size instead, and dedup is
-   * correspondingly weaker. The canonicalisation is normative and lives in
-   * docs/02-ingest-and-transport.md §4.
-   * @pattern ^sha256:[0-9a-f]{64}$
-   */
-  readonly dedup_key: Sha256;
 }
 
 /**
  * The envelope as stored for kind `prompt` at collection mode `m3`.
  *
- * Required by the schema: the common core (with `direction`, `kind`, `collection_mode` pinned), plus `received_at`, `schema_version`, `event_id`, `tenant_id`, `device_id`, `user_ref`, `tool_fingerprint`, `direction`, `kind`, `occurred_at`, `monotonic_offset_ms`, `source`, `confidence`, `collection_mode`, `size_bytes`, `content_digest`, `labels`, `classifier_version`, `policy_decision`, `dedup_key`.
+ * Required by the schema: the common core (with `direction`, `kind`, `collection_mode`
+ * pinned), plus `received_at`, `confidence`, `size_bytes`, `content_digest`, `labels`,
+ * `classifier_version`, `policy_decision`.
+ *
  * Permitted but not required: `attachments`.
- * Must not carry, so absent from this interface: `content_excerpt`, `window_start`, `window_end`, `submission_count`, `bytes_total`, `detection_basis`.
+ *
+ * Must not carry, so absent from this interface: `content_excerpt`, `window_start`,
+ * `window_end`, `submission_count`, `bytes_total`, `detection_basis`.
  */
 export interface StoredPromptM3 extends EnvelopeCore {
   /**
@@ -1625,92 +961,12 @@ export interface StoredPromptM3 extends EnvelopeCore {
    */
   readonly received_at: DateTime;
   /**
-   * Contract version this record validates against (brief §4.3).
-   * @constant "1.0"
-   */
-  readonly schema_version: "1.0";
-  /**
-   * Identifier for this observation, minted by the collector. Two routes observing one submission
-   * mint two different event_ids; they collapse later through dedup_key, not here.
-   * @format uuid
-   */
-  readonly event_id: Uuid;
-  /**
-   *
-   * @format uuid
-   */
-  readonly tenant_id: Uuid;
-  /**
-   *
-   * @format uuid
-   */
-  readonly device_id: Uuid;
-  /**
-   * Pseudonymous subject reference, stable per tenant. Resolved to a person only through
-   * ops.user_dim, which is populated from the customer's directory. The wire format never carries a
-   * name, email or directory object id.
-   * @minLength 1
-   * @maxLength 200
-   */
-  readonly user_ref: string;
-  /**
-   * Behaviour-derived identifier for the destination or application, not a brand name. Discovery
-   * must classify behaviour rather than match a curated list (brief §2), so this value is computed
-   * from observable signals and the sanctioned/unsanctioned judgement is per-tenant state held in
-   * ops.tool.
-   * @minLength 1
-   * @maxLength 128
-   */
-  readonly tool_fingerprint: string;
-  /**
-   * 'ingress' is reserved and cannot appear on a v1.0 record at all: the prompt branch pins
-   * direction to 'egress', so a collector that emits a response-side record is rejected rather than
-   * stored. The value exists so that enabling response capture is a schema_version change rather
-   * than a rewrite of this field, which is what brief §1.2 means by leaving the seam without
-   * building it.
-   * @enum "egress" | "ingress" | "none"
-   */
-  readonly direction: Direction;
-  /**
-   * Discriminator. Closed registry, enforced by the ingest API, which is what makes risk R7
-   * structural: a collector defect cannot begin shipping raw per-process telemetry, because no kind
-   * exists for it.
-   * @enum "prompt" | "usage_rollup" | "model_detection"
-   */
-  readonly kind: Kind;
-  /**
-   * Device clock at observation. Retained for ordering and skew analysis; the server stamps
-   * received_at and that is what display uses (brief §3.6).
-   * @format date-time
-   */
-  readonly occurred_at: DateTime;
-  /**
-   * Milliseconds since an arbitrary device-local monotonic origin. Gives intra-device ordering that
-   * survives clock changes, which wall-clock device time does not.
-   * @minimum 0
-   */
-  readonly monotonic_offset_ms: number;
-  /**
-   * Which collection route produced this record. Closed vocabulary; fidelity ranking per route lives
-   * in ref.route_fidelity and is what decides the winner when two routes observe one submission
-   * (brief §4.1).
-   * @enum "ext.web_request" | "ext.page_context" | "ext.dom" | "proxy.tls" | "proxy.loopback" | "proc.detect" | "cli.shim"
-   */
-  readonly source: Route;
-  /**
    * Overall classifier confidence band. 'degraded' means classification was attempted and did not
    * complete — the explicit signal required by brief §6 so that a failed classifier is never
    * reported as 'no sensitive data found'.
    * @enum "high" | "medium" | "low" | "degraded"
    */
   readonly confidence: Confidence;
-  /**
-   * The effective mode applied to this observation, resolved on the device from the signed scope
-   * matrix by taking the most restrictive applicable value across tool, data class and user
-   * population (brief §1.1).
-   * @enum "m0" | "m1" | "m2" | "m3"
-   */
-  readonly collection_mode: CollectionMode;
   /**
    * Size of the observed payload. Available at every mode including M0.
    * @minimum 0
@@ -1747,23 +1003,19 @@ export interface StoredPromptM3 extends EnvelopeCore {
    * reading content.
    */
   readonly policy_decision: PolicyDecision;
-  /**
-   * Idempotency key, derived per kind from tenant, device, tool and the best material the mode
-   * permits. At M1 and above it includes the normalised content digest; at M0 the device cannot read
-   * content, so it is derived from an occurred_at bucket and size instead, and dedup is
-   * correspondingly weaker. The canonicalisation is normative and lives in
-   * docs/02-ingest-and-transport.md §4.
-   * @pattern ^sha256:[0-9a-f]{64}$
-   */
-  readonly dedup_key: Sha256;
 }
 
 /**
  * What a device is permitted to send for kind `usage_rollup`.
  *
- * Required by the schema: the common core (with `direction`, `kind` pinned), plus `schema_version`, `event_id`, `tenant_id`, `device_id`, `user_ref`, `tool_fingerprint`, `direction`, `kind`, `occurred_at`, `monotonic_offset_ms`, `source`, `collection_mode`, `dedup_key`, `window_start`, `window_end`, `submission_count`, `bytes_total`.
+ * Required by the schema: the common core (with `direction`, `kind` pinned), plus
+ * `window_start`, `window_end`, `submission_count`, `bytes_total`.
+ *
  * Permitted but not required: `confidence`.
- * Must not carry, so absent from this interface: `received_at`, `size_bytes`, `content_digest`, `labels`, `classifier_version`, `content_excerpt`, `attachments`, `policy_decision`, `detection_basis`.
+ *
+ * Must not carry, so absent from this interface: `received_at`, `size_bytes`,
+ * `content_digest`, `labels`, `classifier_version`, `content_excerpt`, `attachments`,
+ * `policy_decision`, `detection_basis`.
  */
 export interface DeviceUsageRollup extends EnvelopeCore {
   /**
@@ -1785,101 +1037,12 @@ export interface DeviceUsageRollup extends EnvelopeCore {
    */
   readonly kind: "usage_rollup";
   /**
-   * Contract version this record validates against (brief §4.3).
-   * @constant "1.0"
-   */
-  readonly schema_version: "1.0";
-  /**
-   * Identifier for this observation, minted by the collector. Two routes observing one submission
-   * mint two different event_ids; they collapse later through dedup_key, not here.
-   * @format uuid
-   */
-  readonly event_id: Uuid;
-  /**
-   *
-   * @format uuid
-   */
-  readonly tenant_id: Uuid;
-  /**
-   *
-   * @format uuid
-   */
-  readonly device_id: Uuid;
-  /**
-   * Pseudonymous subject reference, stable per tenant. Resolved to a person only through
-   * ops.user_dim, which is populated from the customer's directory. The wire format never carries a
-   * name, email or directory object id.
-   * @minLength 1
-   * @maxLength 200
-   */
-  readonly user_ref: string;
-  /**
-   * Behaviour-derived identifier for the destination or application, not a brand name. Discovery
-   * must classify behaviour rather than match a curated list (brief §2), so this value is computed
-   * from observable signals and the sanctioned/unsanctioned judgement is per-tenant state held in
-   * ops.tool.
-   * @minLength 1
-   * @maxLength 128
-   */
-  readonly tool_fingerprint: string;
-  /**
-   * 'ingress' is reserved and cannot appear on a v1.0 record at all: the prompt branch pins
-   * direction to 'egress', so a collector that emits a response-side record is rejected rather than
-   * stored. The value exists so that enabling response capture is a schema_version change rather
-   * than a rewrite of this field, which is what brief §1.2 means by leaving the seam without
-   * building it.
-   * @enum "egress" | "ingress" | "none"
-   */
-  readonly direction: Direction;
-  /**
-   * Discriminator. Closed registry, enforced by the ingest API, which is what makes risk R7
-   * structural: a collector defect cannot begin shipping raw per-process telemetry, because no kind
-   * exists for it.
-   * @enum "prompt" | "usage_rollup" | "model_detection"
-   */
-  readonly kind: Kind;
-  /**
-   * Device clock at observation. Retained for ordering and skew analysis; the server stamps
-   * received_at and that is what display uses (brief §3.6).
-   * @format date-time
-   */
-  readonly occurred_at: DateTime;
-  /**
-   * Milliseconds since an arbitrary device-local monotonic origin. Gives intra-device ordering that
-   * survives clock changes, which wall-clock device time does not.
-   * @minimum 0
-   */
-  readonly monotonic_offset_ms: number;
-  /**
-   * Which collection route produced this record. Closed vocabulary; fidelity ranking per route lives
-   * in ref.route_fidelity and is what decides the winner when two routes observe one submission
-   * (brief §4.1).
-   * @enum "ext.web_request" | "ext.page_context" | "ext.dom" | "proxy.tls" | "proxy.loopback" | "proc.detect" | "cli.shim"
-   */
-  readonly source: Route;
-  /**
    * Overall classifier confidence band. 'degraded' means classification was attempted and did not
    * complete — the explicit signal required by brief §6 so that a failed classifier is never
    * reported as 'no sensitive data found'.
    * @enum "high" | "medium" | "low" | "degraded"
    */
   readonly confidence?: Confidence;
-  /**
-   * The effective mode applied to this observation, resolved on the device from the signed scope
-   * matrix by taking the most restrictive applicable value across tool, data class and user
-   * population (brief §1.1).
-   * @enum "m0" | "m1" | "m2" | "m3"
-   */
-  readonly collection_mode: CollectionMode;
-  /**
-   * Idempotency key, derived per kind from tenant, device, tool and the best material the mode
-   * permits. At M1 and above it includes the normalised content digest; at M0 the device cannot read
-   * content, so it is derived from an occurred_at bucket and size instead, and dedup is
-   * correspondingly weaker. The canonicalisation is normative and lives in
-   * docs/02-ingest-and-transport.md §4.
-   * @pattern ^sha256:[0-9a-f]{64}$
-   */
-  readonly dedup_key: Sha256;
   /**
    * Start of the rollup window. Required for usage_rollup.
    * @format date-time
@@ -1905,9 +1068,14 @@ export interface DeviceUsageRollup extends EnvelopeCore {
 /**
  * The envelope as stored for kind `usage_rollup`.
  *
- * Required by the schema: the common core (with `direction`, `kind` pinned), plus `received_at`, `schema_version`, `event_id`, `tenant_id`, `device_id`, `user_ref`, `tool_fingerprint`, `direction`, `kind`, `occurred_at`, `monotonic_offset_ms`, `source`, `collection_mode`, `dedup_key`, `window_start`, `window_end`, `submission_count`, `bytes_total`.
+ * Required by the schema: the common core (with `direction`, `kind` pinned), plus
+ * `received_at`, `window_start`, `window_end`, `submission_count`, `bytes_total`.
+ *
  * Permitted but not required: `confidence`.
- * Must not carry, so absent from this interface: `size_bytes`, `content_digest`, `labels`, `classifier_version`, `content_excerpt`, `attachments`, `policy_decision`, `detection_basis`.
+ *
+ * Must not carry, so absent from this interface: `size_bytes`, `content_digest`, `labels`,
+ * `classifier_version`, `content_excerpt`, `attachments`, `policy_decision`,
+ * `detection_basis`.
  */
 export interface StoredUsageRollup extends EnvelopeCore {
   /**
@@ -1936,101 +1104,12 @@ export interface StoredUsageRollup extends EnvelopeCore {
    */
   readonly received_at: DateTime;
   /**
-   * Contract version this record validates against (brief §4.3).
-   * @constant "1.0"
-   */
-  readonly schema_version: "1.0";
-  /**
-   * Identifier for this observation, minted by the collector. Two routes observing one submission
-   * mint two different event_ids; they collapse later through dedup_key, not here.
-   * @format uuid
-   */
-  readonly event_id: Uuid;
-  /**
-   *
-   * @format uuid
-   */
-  readonly tenant_id: Uuid;
-  /**
-   *
-   * @format uuid
-   */
-  readonly device_id: Uuid;
-  /**
-   * Pseudonymous subject reference, stable per tenant. Resolved to a person only through
-   * ops.user_dim, which is populated from the customer's directory. The wire format never carries a
-   * name, email or directory object id.
-   * @minLength 1
-   * @maxLength 200
-   */
-  readonly user_ref: string;
-  /**
-   * Behaviour-derived identifier for the destination or application, not a brand name. Discovery
-   * must classify behaviour rather than match a curated list (brief §2), so this value is computed
-   * from observable signals and the sanctioned/unsanctioned judgement is per-tenant state held in
-   * ops.tool.
-   * @minLength 1
-   * @maxLength 128
-   */
-  readonly tool_fingerprint: string;
-  /**
-   * 'ingress' is reserved and cannot appear on a v1.0 record at all: the prompt branch pins
-   * direction to 'egress', so a collector that emits a response-side record is rejected rather than
-   * stored. The value exists so that enabling response capture is a schema_version change rather
-   * than a rewrite of this field, which is what brief §1.2 means by leaving the seam without
-   * building it.
-   * @enum "egress" | "ingress" | "none"
-   */
-  readonly direction: Direction;
-  /**
-   * Discriminator. Closed registry, enforced by the ingest API, which is what makes risk R7
-   * structural: a collector defect cannot begin shipping raw per-process telemetry, because no kind
-   * exists for it.
-   * @enum "prompt" | "usage_rollup" | "model_detection"
-   */
-  readonly kind: Kind;
-  /**
-   * Device clock at observation. Retained for ordering and skew analysis; the server stamps
-   * received_at and that is what display uses (brief §3.6).
-   * @format date-time
-   */
-  readonly occurred_at: DateTime;
-  /**
-   * Milliseconds since an arbitrary device-local monotonic origin. Gives intra-device ordering that
-   * survives clock changes, which wall-clock device time does not.
-   * @minimum 0
-   */
-  readonly monotonic_offset_ms: number;
-  /**
-   * Which collection route produced this record. Closed vocabulary; fidelity ranking per route lives
-   * in ref.route_fidelity and is what decides the winner when two routes observe one submission
-   * (brief §4.1).
-   * @enum "ext.web_request" | "ext.page_context" | "ext.dom" | "proxy.tls" | "proxy.loopback" | "proc.detect" | "cli.shim"
-   */
-  readonly source: Route;
-  /**
    * Overall classifier confidence band. 'degraded' means classification was attempted and did not
    * complete — the explicit signal required by brief §6 so that a failed classifier is never
    * reported as 'no sensitive data found'.
    * @enum "high" | "medium" | "low" | "degraded"
    */
   readonly confidence?: Confidence;
-  /**
-   * The effective mode applied to this observation, resolved on the device from the signed scope
-   * matrix by taking the most restrictive applicable value across tool, data class and user
-   * population (brief §1.1).
-   * @enum "m0" | "m1" | "m2" | "m3"
-   */
-  readonly collection_mode: CollectionMode;
-  /**
-   * Idempotency key, derived per kind from tenant, device, tool and the best material the mode
-   * permits. At M1 and above it includes the normalised content digest; at M0 the device cannot read
-   * content, so it is derived from an occurred_at bucket and size instead, and dedup is
-   * correspondingly weaker. The canonicalisation is normative and lives in
-   * docs/02-ingest-and-transport.md §4.
-   * @pattern ^sha256:[0-9a-f]{64}$
-   */
-  readonly dedup_key: Sha256;
   /**
    * Start of the rollup window. Required for usage_rollup.
    * @format date-time
@@ -2056,9 +1135,14 @@ export interface StoredUsageRollup extends EnvelopeCore {
 /**
  * What a device is permitted to send for kind `model_detection`.
  *
- * Required by the schema: the common core (with `direction`, `kind` pinned), plus `schema_version`, `event_id`, `tenant_id`, `device_id`, `user_ref`, `tool_fingerprint`, `direction`, `kind`, `occurred_at`, `monotonic_offset_ms`, `source`, `collection_mode`, `dedup_key`, `detection_basis`.
+ * Required by the schema: the common core (with `direction`, `kind` pinned), plus
+ * `detection_basis`.
+ *
  * Permitted but not required: `confidence`, `window_end`, `submission_count`, `bytes_total`.
- * Must not carry, so absent from this interface: `received_at`, `size_bytes`, `content_digest`, `labels`, `classifier_version`, `content_excerpt`, `attachments`, `policy_decision`, `window_start`.
+ *
+ * Must not carry, so absent from this interface: `received_at`, `size_bytes`,
+ * `content_digest`, `labels`, `classifier_version`, `content_excerpt`, `attachments`,
+ * `policy_decision`, `window_start`.
  */
 export interface DeviceModelDetection extends EnvelopeCore {
   /**
@@ -2080,101 +1164,12 @@ export interface DeviceModelDetection extends EnvelopeCore {
    */
   readonly kind: "model_detection";
   /**
-   * Contract version this record validates against (brief §4.3).
-   * @constant "1.0"
-   */
-  readonly schema_version: "1.0";
-  /**
-   * Identifier for this observation, minted by the collector. Two routes observing one submission
-   * mint two different event_ids; they collapse later through dedup_key, not here.
-   * @format uuid
-   */
-  readonly event_id: Uuid;
-  /**
-   *
-   * @format uuid
-   */
-  readonly tenant_id: Uuid;
-  /**
-   *
-   * @format uuid
-   */
-  readonly device_id: Uuid;
-  /**
-   * Pseudonymous subject reference, stable per tenant. Resolved to a person only through
-   * ops.user_dim, which is populated from the customer's directory. The wire format never carries a
-   * name, email or directory object id.
-   * @minLength 1
-   * @maxLength 200
-   */
-  readonly user_ref: string;
-  /**
-   * Behaviour-derived identifier for the destination or application, not a brand name. Discovery
-   * must classify behaviour rather than match a curated list (brief §2), so this value is computed
-   * from observable signals and the sanctioned/unsanctioned judgement is per-tenant state held in
-   * ops.tool.
-   * @minLength 1
-   * @maxLength 128
-   */
-  readonly tool_fingerprint: string;
-  /**
-   * 'ingress' is reserved and cannot appear on a v1.0 record at all: the prompt branch pins
-   * direction to 'egress', so a collector that emits a response-side record is rejected rather than
-   * stored. The value exists so that enabling response capture is a schema_version change rather
-   * than a rewrite of this field, which is what brief §1.2 means by leaving the seam without
-   * building it.
-   * @enum "egress" | "ingress" | "none"
-   */
-  readonly direction: Direction;
-  /**
-   * Discriminator. Closed registry, enforced by the ingest API, which is what makes risk R7
-   * structural: a collector defect cannot begin shipping raw per-process telemetry, because no kind
-   * exists for it.
-   * @enum "prompt" | "usage_rollup" | "model_detection"
-   */
-  readonly kind: Kind;
-  /**
-   * Device clock at observation. Retained for ordering and skew analysis; the server stamps
-   * received_at and that is what display uses (brief §3.6).
-   * @format date-time
-   */
-  readonly occurred_at: DateTime;
-  /**
-   * Milliseconds since an arbitrary device-local monotonic origin. Gives intra-device ordering that
-   * survives clock changes, which wall-clock device time does not.
-   * @minimum 0
-   */
-  readonly monotonic_offset_ms: number;
-  /**
-   * Which collection route produced this record. Closed vocabulary; fidelity ranking per route lives
-   * in ref.route_fidelity and is what decides the winner when two routes observe one submission
-   * (brief §4.1).
-   * @enum "ext.web_request" | "ext.page_context" | "ext.dom" | "proxy.tls" | "proxy.loopback" | "proc.detect" | "cli.shim"
-   */
-  readonly source: Route;
-  /**
    * Overall classifier confidence band. 'degraded' means classification was attempted and did not
    * complete — the explicit signal required by brief §6 so that a failed classifier is never
    * reported as 'no sensitive data found'.
    * @enum "high" | "medium" | "low" | "degraded"
    */
   readonly confidence?: Confidence;
-  /**
-   * The effective mode applied to this observation, resolved on the device from the signed scope
-   * matrix by taking the most restrictive applicable value across tool, data class and user
-   * population (brief §1.1).
-   * @enum "m0" | "m1" | "m2" | "m3"
-   */
-  readonly collection_mode: CollectionMode;
-  /**
-   * Idempotency key, derived per kind from tenant, device, tool and the best material the mode
-   * permits. At M1 and above it includes the normalised content digest; at M0 the device cannot read
-   * content, so it is derived from an occurred_at bucket and size instead, and dedup is
-   * correspondingly weaker. The canonicalisation is normative and lives in
-   * docs/02-ingest-and-transport.md §4.
-   * @pattern ^sha256:[0-9a-f]{64}$
-   */
-  readonly dedup_key: Sha256;
   /**
    * End of the rollup window. Required for usage_rollup.
    * @format date-time
@@ -2202,9 +1197,13 @@ export interface DeviceModelDetection extends EnvelopeCore {
 /**
  * The envelope as stored for kind `model_detection`.
  *
- * Required by the schema: the common core (with `direction`, `kind` pinned), plus `received_at`, `schema_version`, `event_id`, `tenant_id`, `device_id`, `user_ref`, `tool_fingerprint`, `direction`, `kind`, `occurred_at`, `monotonic_offset_ms`, `source`, `collection_mode`, `dedup_key`, `detection_basis`.
+ * Required by the schema: the common core (with `direction`, `kind` pinned), plus
+ * `received_at`, `detection_basis`.
+ *
  * Permitted but not required: `confidence`, `window_end`, `submission_count`, `bytes_total`.
- * Must not carry, so absent from this interface: `size_bytes`, `content_digest`, `labels`, `classifier_version`, `content_excerpt`, `attachments`, `policy_decision`, `window_start`.
+ *
+ * Must not carry, so absent from this interface: `size_bytes`, `content_digest`, `labels`,
+ * `classifier_version`, `content_excerpt`, `attachments`, `policy_decision`, `window_start`.
  */
 export interface StoredModelDetection extends EnvelopeCore {
   /**
@@ -2233,101 +1232,12 @@ export interface StoredModelDetection extends EnvelopeCore {
    */
   readonly received_at: DateTime;
   /**
-   * Contract version this record validates against (brief §4.3).
-   * @constant "1.0"
-   */
-  readonly schema_version: "1.0";
-  /**
-   * Identifier for this observation, minted by the collector. Two routes observing one submission
-   * mint two different event_ids; they collapse later through dedup_key, not here.
-   * @format uuid
-   */
-  readonly event_id: Uuid;
-  /**
-   *
-   * @format uuid
-   */
-  readonly tenant_id: Uuid;
-  /**
-   *
-   * @format uuid
-   */
-  readonly device_id: Uuid;
-  /**
-   * Pseudonymous subject reference, stable per tenant. Resolved to a person only through
-   * ops.user_dim, which is populated from the customer's directory. The wire format never carries a
-   * name, email or directory object id.
-   * @minLength 1
-   * @maxLength 200
-   */
-  readonly user_ref: string;
-  /**
-   * Behaviour-derived identifier for the destination or application, not a brand name. Discovery
-   * must classify behaviour rather than match a curated list (brief §2), so this value is computed
-   * from observable signals and the sanctioned/unsanctioned judgement is per-tenant state held in
-   * ops.tool.
-   * @minLength 1
-   * @maxLength 128
-   */
-  readonly tool_fingerprint: string;
-  /**
-   * 'ingress' is reserved and cannot appear on a v1.0 record at all: the prompt branch pins
-   * direction to 'egress', so a collector that emits a response-side record is rejected rather than
-   * stored. The value exists so that enabling response capture is a schema_version change rather
-   * than a rewrite of this field, which is what brief §1.2 means by leaving the seam without
-   * building it.
-   * @enum "egress" | "ingress" | "none"
-   */
-  readonly direction: Direction;
-  /**
-   * Discriminator. Closed registry, enforced by the ingest API, which is what makes risk R7
-   * structural: a collector defect cannot begin shipping raw per-process telemetry, because no kind
-   * exists for it.
-   * @enum "prompt" | "usage_rollup" | "model_detection"
-   */
-  readonly kind: Kind;
-  /**
-   * Device clock at observation. Retained for ordering and skew analysis; the server stamps
-   * received_at and that is what display uses (brief §3.6).
-   * @format date-time
-   */
-  readonly occurred_at: DateTime;
-  /**
-   * Milliseconds since an arbitrary device-local monotonic origin. Gives intra-device ordering that
-   * survives clock changes, which wall-clock device time does not.
-   * @minimum 0
-   */
-  readonly monotonic_offset_ms: number;
-  /**
-   * Which collection route produced this record. Closed vocabulary; fidelity ranking per route lives
-   * in ref.route_fidelity and is what decides the winner when two routes observe one submission
-   * (brief §4.1).
-   * @enum "ext.web_request" | "ext.page_context" | "ext.dom" | "proxy.tls" | "proxy.loopback" | "proc.detect" | "cli.shim"
-   */
-  readonly source: Route;
-  /**
    * Overall classifier confidence band. 'degraded' means classification was attempted and did not
    * complete — the explicit signal required by brief §6 so that a failed classifier is never
    * reported as 'no sensitive data found'.
    * @enum "high" | "medium" | "low" | "degraded"
    */
   readonly confidence?: Confidence;
-  /**
-   * The effective mode applied to this observation, resolved on the device from the signed scope
-   * matrix by taking the most restrictive applicable value across tool, data class and user
-   * population (brief §1.1).
-   * @enum "m0" | "m1" | "m2" | "m3"
-   */
-  readonly collection_mode: CollectionMode;
-  /**
-   * Idempotency key, derived per kind from tenant, device, tool and the best material the mode
-   * permits. At M1 and above it includes the normalised content digest; at M0 the device cannot read
-   * content, so it is derived from an occurred_at bucket and size instead, and dedup is
-   * correspondingly weaker. The canonicalisation is normative and lives in
-   * docs/02-ingest-and-transport.md §4.
-   * @pattern ^sha256:[0-9a-f]{64}$
-   */
-  readonly dedup_key: Sha256;
   /**
    * End of the rollup window. Required for usage_rollup.
    * @format date-time

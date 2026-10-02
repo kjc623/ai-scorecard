@@ -1,0 +1,10 @@
+{
+  "name": "capture-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Manifest V3 browser half of Shadow AI Capture (docs/01-collectors.md 7). Zero dependencies; runs offline.",
+  "scripts": {
+    "test": "node --test"
+  }
+}

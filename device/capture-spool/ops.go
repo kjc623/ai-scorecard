@@ -115,28 +115,29 @@ func (s *Spool) Settle(seq uint64, state protocol.SpoolState, reason string) err
 		if reason != "" {
 			return &EntryError{Seq: seq, Reason: fmt.Sprintf("a delivered record carries no reason code, got %q", reason)}
 		}
-		m := s.entries[seq]
-		if m == nil || m.state == protocol.SpoolDelivered {
-			return nil
-		}
 		t = transition{Op: opSettle, Seq: seq, State: string(protocol.SpoolDelivered)}
 	case protocol.SpoolRejected:
 		if !protocol.ReasonCode(reason).Valid() {
 			return &EntryError{Seq: seq, Reason: fmt.Sprintf("rejection reason %q is outside the closed set", reason)}
 		}
-		m := s.entries[seq]
-		if m == nil || m.state == protocol.SpoolRejected {
-			return nil
-		}
 		t = transition{Op: opSettle, Seq: seq, State: string(protocol.SpoolRejected), Reason: reason}
 	case protocol.SpoolPending:
-		m := s.entries[seq]
-		if m == nil || m.state == protocol.SpoolPending {
-			return nil
-		}
 		t = transition{Op: opRelease, Seq: seq, LastError: reason}
 	default:
 		return &EntryError{Seq: seq, Reason: fmt.Sprintf("Settle accepts delivered, rejected or pending, got %q", state)}
+	}
+
+	m := s.entries[seq]
+	switch {
+	case m == nil:
+		// Already reclaimed, or never existed. Settling twice is not an error.
+		return nil
+	case m.state == state:
+		// Already settled, or already back in the queue.
+		return nil
+	case !indexable(m.state):
+		// Evicted, or terminally rejected: a delivery outcome cannot resurrect it.
+		return nil
 	}
 	t.At = unixNano(s.cfg.Now())
 	_, err := s.appendControlChunked([]transition{t})
@@ -256,6 +257,9 @@ func (s *Spool) attributionLocked(folded map[attrKey]uint64, drops bool) []DropA
 	merged := map[attrKey]uint64{}
 	mergeAttr(merged, folded)
 	for _, seg := range s.segments {
+		if seg.id <= s.persisted.SegmentWatermark {
+			continue // already folded into the map above
+		}
 		if drops {
 			mergeAttr(merged, seg.counters.drops)
 		} else {
@@ -310,11 +314,11 @@ type ExtendedStats struct {
 	// ExpiredTotal and OverBoundTotal are the two facts protocol.SpoolStats cannot carry:
 	// a retention expiry is not an overflow drop (§12.2), and an over-bound append is a
 	// record that was accepted while the spool could not free space.
-	ExpiredTotal  uint64
+	ExpiredTotal   uint64
 	OverBoundTotal uint64
 
-	Bounds  Bounds
-	Recovery Recovery
+	Bounds    Bounds
+	Recovery  Recovery
 	Watermark uint64
 
 	DroppedBy []DropAttribution
@@ -355,12 +359,20 @@ func (s *Spool) Extended() ExtendedStats {
 // totalsLocked is the monotonic totals: what has been folded into the counter file, plus the
 // tombstones still on disk in segments that exist. A segment's tombstones are counted from
 // exactly one of the two, which is what makes the totals exact across a crash.
+//
+// Segments at or below the watermark are excluded: their counters have already been folded
+// in, and their file may still be present if the process died between the fold and the
+// unlink. That window is small, reachable, and tested with a real killed process
+// (TestCrashBetweenTheCounterFoldAndTheUnlink).
 func (s *Spool) totalsLocked() (dropped, expired, delivered, rejected uint64) {
 	dropped = s.persisted.DroppedTotal
 	expired = s.persisted.ExpiredTotal
 	delivered = s.persisted.DeliveredTotal
 	rejected = s.persisted.RejectedTotal
 	for _, seg := range s.segments {
+		if seg.id <= s.persisted.SegmentWatermark {
+			continue
+		}
 		dropped += seg.counters.dropped
 		expired += seg.counters.expired
 		delivered += seg.counters.delivered

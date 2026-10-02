@@ -2,6 +2,7 @@ package spool
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"testing"
 	"time"
@@ -39,10 +40,11 @@ func TestAppendAssignsSequenceAndPeekReturnsIt(t *testing.T) {
 }
 
 // The payload is opaque and immutable: Peek must hand back exactly the bytes Append was
-// given, before and after a reopen (ADR 0004).
+// given, before and after a reopen (ADR 0004). The payload here is not JSON at all — the
+// spool has no decoder for it, and a payload it could not parse must still round-trip.
 func TestPayloadIsStoredAndReturnedByteForByte(t *testing.T) {
 	dir := t.TempDir()
-	payload := []byte{0x00, 0x01, 0xff, 0xfe, '{', '"', 'x', '"', ':', '\n', 0x00, '}'}
+	payload := []byte{0x00, 0xff, 0xfe, 0x01, 0x80, 0x7f, 0x00, 0xc3, 0x28, 0x0a}
 	e := testEntry(7)
 	e.Payload = payload
 
@@ -82,7 +84,7 @@ func TestAppendRefusesDefectsAtTheDoor(t *testing.T) {
 	sp := openTest(t, t.TempDir())
 
 	cases := []struct {
-		name  string
+		name   string
 		mutate func(*protocol.Entry)
 	}{
 		{"no payload", func(e *protocol.Entry) { e.Payload = nil }},
@@ -165,9 +167,9 @@ func TestMarkInFlightIncrementsAttemptsAndIsIdempotent(t *testing.T) {
 // test drives the spool through that mapping rather than re-deriving it.
 func TestSettleFollowsProtocolOutcomeMapping(t *testing.T) {
 	cases := []struct {
-		name     string
-		outcome  protocol.Outcome
-		reason   protocol.ReasonCode
+		name      string
+		outcome   protocol.Outcome
+		reason    protocol.ReasonCode
 		wantState protocol.SpoolState
 		wantRetry bool
 	}{
@@ -310,6 +312,108 @@ func TestExpireIsCountedSeparatelyFromDrops(t *testing.T) {
 	}
 	if len(sp.ExpiredBy()) != 1 || sp.ExpiredBy()[0].Count != 2 {
 		t.Fatalf("expiry attribution = %+v, want one row of 2", sp.ExpiredBy())
+	}
+}
+
+// Append-only: a delivered observation is never rewritten. Every byte that was on disk
+// before the delivery is still on disk, at the same offset, afterwards (§12, ADR 0004).
+func TestDeliveredRecordsAreNeverRewritten(t *testing.T) {
+	dir := t.TempDir()
+	sp := openTest(t, dir)
+	appended := appendN(t, sp, 3)
+	segPath := segmentFiles(t, dir)[0]
+	before := mustRead(t, segPath)
+	beforeOffsets := frameOffsets(t, before)
+
+	seqs := []uint64{appended[0].Seq, appended[1].Seq, appended[2].Seq}
+	if err := sp.MarkInFlight(seqs); err != nil {
+		t.Fatalf("MarkInFlight: %v", err)
+	}
+	for _, seq := range seqs {
+		if err := sp.Settle(seq, protocol.SpoolDelivered, ""); err != nil {
+			t.Fatalf("Settle: %v", err)
+		}
+	}
+
+	after := mustRead(t, segPath)
+	if !bytes.HasPrefix(after, before) {
+		t.Fatal("delivery rewrote bytes that were already in the segment: the log is not append-only")
+	}
+	// The three observation frames are byte-identical, at the same offsets.
+	for _, off := range beforeOffsets {
+		bodyLen := int(binary.LittleEndian.Uint32(before[off+16 : off+20]))
+		end := off + frameHeaderSize + bodyLen + frameTrailerSize
+		if !bytes.Equal(before[off:end], after[off:end]) {
+			t.Fatalf("frame at offset %d was rewritten by delivery", off)
+		}
+	}
+	if st := sp.Extended(); st.Depth != 0 || st.DeliveredTotal != 3 {
+		t.Fatalf("depth %d delivered %d, want 0/3", st.Depth, st.DeliveredTotal)
+	}
+
+	// And it is still true after a reopen.
+	if err := sp.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	sp2 := openTest(t, dir)
+	if !bytes.Equal(mustRead(t, segPath), after) {
+		t.Fatal("reopening rewrote the segment")
+	}
+	if st := sp2.Extended(); st.DeliveredTotal != 3 || st.Depth != 0 {
+		t.Fatalf("after reopen: delivered %d depth %d, want 3/0", st.DeliveredTotal, st.Depth)
+	}
+}
+
+// A drain loop driven through protocol.Store exactly as capture-core will drive it. The
+// caller here holds the interface, not the concrete type, which is what makes a
+// SQLite-backed implementation a drop-in replacement later.
+func TestDrainCycleThroughTheStoreInterface(t *testing.T) {
+	dir := t.TempDir()
+	sp := openTest(t, dir)
+	appendN(t, sp, 5)
+
+	var st protocol.Store = sp
+	batch, err := st.Peek(500)
+	if err != nil {
+		t.Fatalf("Peek: %v", err)
+	}
+	if len(batch) != 5 {
+		t.Fatalf("Peek returned %d, want 5", len(batch))
+	}
+	seqs := make([]uint64, 0, len(batch))
+	for _, e := range batch {
+		seqs = append(seqs, e.Seq)
+	}
+	if err := st.MarkInFlight(seqs); err != nil {
+		t.Fatalf("MarkInFlight: %v", err)
+	}
+	// Three accepted, one duplicate, two terminally rejected: the outcome-to-state mapping
+	// is protocol.Outcome.SettleState, not a second opinion held here.
+	outcomes := []struct {
+		outcome protocol.Outcome
+		reason  protocol.ReasonCode
+	}{
+		{protocol.OutcomeAccepted, ""},
+		{protocol.OutcomeDuplicate, ""},
+		{protocol.OutcomeAccepted, ""},
+		{protocol.OutcomeRejected, protocol.ReasonSchemaViolation},
+		{protocol.OutcomeRejected, protocol.ReasonModeViolation},
+	}
+	for i, o := range outcomes {
+		state, _ := o.outcome.SettleState(o.reason)
+		if err := st.Settle(seqs[i], state, string(o.reason)); err != nil {
+			t.Fatalf("Settle(%s): %v", o.outcome, err)
+		}
+	}
+	stats := st.Stats()
+	if stats.Depth != 0 {
+		t.Fatalf("Depth = %d after a full drain, want 0", stats.Depth)
+	}
+	if stats.DeliveredTotal != 3 || stats.RejectedTotal != 2 {
+		t.Fatalf("delivered %d rejected %d, want 3/2", stats.DeliveredTotal, stats.RejectedTotal)
+	}
+	if stats.DroppedTotal != 0 {
+		t.Fatalf("DroppedTotal = %d, want 0", stats.DroppedTotal)
 	}
 }
 

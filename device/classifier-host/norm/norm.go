@@ -92,8 +92,8 @@ var (
 
 // Result is the normalised text plus the facts a caller needs to decide about degradation.
 type Result struct {
-	Text   string
-	Digest string // sha256:<hex> of Text — the digest that becomes content_digest
+	Text     string
+	Digest   string // sha256:<hex> of Text — the digest that becomes content_digest
 	Encoding Encoding
 
 	// Truncated is true when input was dropped to fit a cap.

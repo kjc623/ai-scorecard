@@ -213,10 +213,32 @@ echo "### psql -v ON_ERROR_STOP=1 -f db/invariants.test.sql"
 PGDATABASE=$DB psql -U postgres -v ON_ERROR_STOP=1 -f /db/invariants.test.sql > $LOG2 2>&1
 TESTS_EXIT=$?
 
+# Make each log self-describing: a raw psql log with no record of which revision produced it
+# is not evidence, it is an anecdote.
+SCHEMA_SHA=$(sha256sum /db/schema.sql | cut -d' ' -f1)
+TESTS_SHA=$(sha256sum /db/invariants.test.sql | cut -d' ' -f1)
+SERVER=$(psql -U postgres -tAc 'select version();')
+
+header() {
+  echo "# command : psql -v ON_ERROR_STOP=1 -f db/schema.sql && psql -v ON_ERROR_STOP=1 -f db/invariants.test.sql"
+  echo "# schema  : db/schema.sql sha256 $SCHEMA_SHA"
+  echo "# tests   : db/invariants.test.sql sha256 $TESTS_SHA"
+  echo "# server  : $SERVER"
+  echo "# database: $DB   captured: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "#"
+}
+header > /tmp/01-headed.log && cat $LOG1 >> /tmp/01-headed.log && mv /tmp/01-headed.log $LOG1
+header > /tmp/02-headed.log && cat $LOG2 >> /tmp/02-headed.log && mv /tmp/02-headed.log $LOG2
+
+# Tally AFTER the header is in place, and anchor every error pattern to a real psql diagnostic.
+# The header quotes the documented command, and "ON_ERROR_STOP" contains the substring "ERROR",
+# so an unanchored `grep -ci ERROR` counts the header and reports a healthy run as a failure --
+# which is worse than no harness, because the next reader learns to ignore the exit code.
+# Anchoring also makes the tally independent of the order these two blocks appear in.
 PASS=$(grep -c 'NOTICE:  PASS ' $LOG2 || true)
-FAILC=$(grep -c 'FAIL ' $LOG2 || true)
-ERRC=$(grep -ci 'ERROR' $LOG2 || true)
-SERRC=$(grep -ci 'ERROR' $LOG1 || true)
+FAILC=$(grep -cE '^(psql:.*)?ERROR:  FAIL' $LOG2 || true)
+ERRC=$(grep -cE '^(psql:.*)?(ERROR|FATAL|PANIC):' $LOG2 || true)
+SERRC=$(grep -cE '^(psql:.*)?(ERROR|FATAL|PANIC):' $LOG1 || true)
 IDS=$(grep -o 'PASS T[0-9]*' $LOG2 | sort -u | wc -l || true)
 
 echo "TALLY pass=$PASS fail=$FAILC error_lines=$ERRC schema_error_lines=$SERRC distinct_ids=$IDS"
@@ -261,11 +283,15 @@ Head "tally"
 if (-not (Test-Path -LiteralPath $logTests)) { Die "the invariants log was not produced; the run did not complete" }
 
 $testLog = Get-Content -LiteralPath $logTests -Raw
-$passIds = [regex]::Matches($testLog, 'PASS (T\d+)') | ForEach-Object { $_.Groups[1].Value }
+# Tally the psql output only, and anchor the failure patterns to a real diagnostic. The
+# provenance header deliberately quotes the command, which contains the string ON_ERROR_STOP --
+# counting that as an ERROR would report every healthy run as a failure.
+$testBody = (($testLog -split "`n") | Where-Object { $_ -notmatch '^#' }) -join "`n"
+$passIds = [regex]::Matches($testBody, 'PASS (T\d+)') | ForEach-Object { $_.Groups[1].Value }
 $passCount = $passIds.Count
 $distinct  = ($passIds | Sort-Object -Unique).Count
-$failCount = ([regex]::Matches($testLog, 'FAIL ')).Count
-$errCount  = ([regex]::Matches($testLog, 'ERROR')).Count
+$failCount = ([regex]::Matches($testBody, '(?m)^(psql:.*)?ERROR:  FAIL')).Count
+$errCount  = ([regex]::Matches($testBody, '(?m)^(psql:.*)?(ERROR|FATAL|PANIC):')).Count
 
 Say "  schema exit code     : $schemaExit"
 Say "  invariants exit code : $testsExit"

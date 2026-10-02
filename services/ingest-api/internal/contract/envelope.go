@@ -1,51 +1,73 @@
 package contract
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
+
+	"shadow-ai-capture.invalid/contracts/generated/go/envelope"
 )
 
 // This file is the adapter between the raw wire bytes and the rest of the service.
 //
-// It is deliberately *not* a struct declaration of the envelope. It holds the raw JSON object and
-// reads named fields out of it, so there is exactly one source of truth for the wire shape --
-// contracts/event-envelope.schema.json -- and no second Go definition of it (ADR 0010). The field
-// names below are the *accessor* set the ingest path needs; validation of every one of them,
-// including their required/forbidden status per kind and mode, is performed by the schema in
-// schema.go, not here.
+// The wire shape is NOT declared here. Two things are consumed instead, and neither is a copy:
 //
-// When contracts/generated/go/envelope lands (T1), Decode changes to unmarshal into the generated
-// type and these accessors become one-line delegations. Nothing else in the service moves.
+//   - contracts/generated/go/envelope (T1, ADR 0010) is the compile-time field vocabulary. Every
+//     DecodeEnvelope call goes through envelope.DecodeDeviceSubmission, so a renamed or retyped
+//     field breaks this build rather than drifting quietly.
+//   - contracts/event-envelope.schema.json is the validation authority, walked for the JSON Pointer
+//     and violated constraint that §7's rejection `detail` is made of.
+//
+// What remains below is a projection: the field names the ingest path needs to *read* (tenant,
+// device, kind, mode, sizes, digests, timestamps) plus the redaction and presence-map helpers that
+// operate on the raw object. `AdditionalProperties:false` means the raw object and the generated
+// types hold the same key set, so the projection cannot invent a field the contract does not have.
 
 var uuidRE = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 func parseTime(s string) (time.Time, error) { return time.Parse(time.RFC3339, s) }
 
-// Envelope is a decoded device submission kept in its JSON form.
+// Envelope is a decoded device submission: the raw object, the generated contract value, and the
+// generated decoder's verdict.
 type Envelope struct {
-	raw    map[string]json.RawMessage
-	fields []string // sorted field names present, for the §7 presence map
+	raw      map[string]json.RawMessage
+	rawBytes []byte
+	fields   []string // sorted field names present, for the §7 presence map
+
+	gen    envelope.DeviceSubmission
+	genErr error
 }
 
-// DecodeEnvelope reads one envelope object. It rejects anything that is not a JSON object: a
-// non-object has no field vocabulary to validate against, and §5.3's per-event result contract is
-// keyed by event_id, which a non-object cannot carry.
+// DecodeEnvelope reads one envelope object and decodes it with the generated contract types.
+//
+// It returns an error only when the element is not a JSON object: that element has no field
+// vocabulary to validate and cannot carry the event_id the per-event result contract is keyed by,
+// so it is a batch-level defect. A contract violation inside a well-formed object is NOT an error
+// here — it is the per-event rejection that Schema.ValidateEnvelope reports.
 func DecodeEnvelope(raw []byte) (*Envelope, error) {
 	var m map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return nil, fmt.Errorf("contract: envelope is not a JSON object: %w", err)
+	if err := json.Unmarshal(raw, &m); err != nil || m == nil {
+		return nil, fmt.Errorf("contract: envelope is not a JSON object")
 	}
 	fields := make([]string, 0, len(m))
 	for k := range m {
 		fields = append(fields, k)
 	}
 	sort.Strings(fields)
-	return &Envelope{raw: m, fields: fields}, nil
+	e := &Envelope{raw: m, rawBytes: append([]byte(nil), raw...), fields: fields}
+	e.gen, e.genErr = envelope.DecodeDeviceSubmission(raw)
+	return e, nil
 }
+
+// Generated returns the generated contract value, or nil when the decoder refused the envelope.
+func (e *Envelope) Generated() envelope.DeviceSubmission { return e.gen }
+
+// GeneratedError returns the generated decoder's verdict, nil when the envelope is well-formed.
+func (e *Envelope) GeneratedError() error { return e.genErr }
 
 // Has reports whether a field is present.
 func (e *Envelope) Has(name string) bool { _, ok := e.raw[name]; return ok }
@@ -71,6 +93,28 @@ func (e *Envelope) Missing(names []string) []string {
 func (e *Envelope) Raw(name string) (json.RawMessage, bool) {
 	v, ok := e.raw[name]
 	return v, ok
+}
+
+// RawOrNil returns the field's raw bytes, or nil when absent.
+func (e *Envelope) RawOrNil(name string) json.RawMessage {
+	if v, ok := e.raw[name]; ok {
+		return v
+	}
+	return nil
+}
+
+// IsUUID reports whether s has the shape the contract's uuid fields require.
+func IsUUID(s string) bool { return uuidRE.MatchString(s) }
+
+// DeterministicUUID derives a stable uuid from a purpose-separated input. It is used where an
+// identifier must be recomputable from the credential rather than stored: a re-issued certificate
+// is a different credential, and the value must not depend on the process.
+func DeterministicUUID(prefix string, data []byte) string {
+	sum := sha256.Sum256(append([]byte(prefix), data...))
+	b := sum[:16]
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 func (e *Envelope) String(name string) (string, bool) {
@@ -136,38 +180,52 @@ func (e *Envelope) DetectionBasis() (string, bool) { return e.String("detection_
 func (e *Envelope) SubmissionCount() (int64, bool) { return e.Int("submission_count") }
 func (e *Envelope) BytesTotal() (int64, bool)      { return e.Int("bytes_total") }
 
-// AttachmentNames returns the attachment `name` values in wire order, for the §4.5 names digest.
-func (e *Envelope) AttachmentNames() []string {
+// AttachmentView is a projection of one wire attachment descriptor onto the fields §4.2 C7 and
+// §4.5 need. It is a projection, not a wire type: the wire type is the generated
+// envelope.Attachment, whose field names are `name`, `size_bytes` and `content_digest`.
+type AttachmentView struct {
+	Name          string
+	MediaType     string // not carried by the v1.0 contract; C7's default applies when empty
+	SizeBytes     int64
+	ContentDigest string
+	// Readable is false when the collector could not obtain the bytes (E3), which is what makes an
+	// observation Tier T-B rather than T-A.
+	Readable bool
+}
+
+// Attachments returns the attachment descriptors in wire order.
+func (e *Envelope) Attachments() []AttachmentView {
 	raw, ok := e.raw["attachments"]
 	if !ok {
 		return nil
 	}
 	var list []struct {
-		Name string `json:"name"`
+		Name          string `json:"name"`
+		SizeBytes     *int64 `json:"size_bytes"`
+		ContentDigest string `json:"content_digest"`
 	}
 	if err := json.Unmarshal(raw, &list); err != nil {
 		return nil
 	}
-	out := make([]string, 0, len(list))
+	out := make([]AttachmentView, 0, len(list))
 	for _, a := range list {
-		out = append(out, a.Name)
+		v := AttachmentView{Name: a.Name, ContentDigest: a.ContentDigest, Readable: a.ContentDigest != ""}
+		if a.SizeBytes != nil {
+			v.SizeBytes = *a.SizeBytes
+		}
+		out = append(out, v)
 	}
 	return out
 }
 
-// AttachmentCount returns the number of attachment descriptors present, 0 when absent. A count of
-// -1 means the field is present but not a JSON array, which only happens on an envelope that the
-// schema has already rejected.
-func (e *Envelope) AttachmentCount() int {
-	raw, ok := e.raw["attachments"]
-	if !ok {
-		return 0
+// AttachmentNames returns the attachment `name` values in wire order, for the §4.5 names digest.
+func (e *Envelope) AttachmentNames() []string {
+	views := e.Attachments()
+	out := make([]string, 0, len(views))
+	for _, a := range views {
+		out = append(out, a.Name)
 	}
-	var list []json.RawMessage
-	if err := json.Unmarshal(raw, &list); err != nil {
-		return -1
-	}
-	return len(list)
+	return out
 }
 
 // quarantineForbidden are the keys ingest.rejected refuses to hold at all. They are the strictest
