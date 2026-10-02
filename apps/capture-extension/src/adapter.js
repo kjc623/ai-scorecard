@@ -131,6 +131,12 @@ export const ERROR_CODES = Object.freeze([
   'native_unavailable',
   'native_timeout',
   'native_protocol_error',
+  /**
+   * A connect was refused because the channel is cooling down after a disconnect. It is deliberately
+   * NOT counted as a fresh error: it is the same failure still standing, and counting it per attempt
+   * is what would turn a backoff into a counter that climbs while nothing new happens.
+   */
+  'native_cooling_down',
   'core_refused',
   'oversize_refused',
   'attachment_read_failed',

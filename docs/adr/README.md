@@ -1,6 +1,6 @@
 # Architecture decision records
 
-Eighteen records. Each states the context, the decision, the alternatives that were actually
+Nineteen records. Each states the context, the decision, the alternatives that were actually
 considered, and the consequences — including what becomes harder and what would change the decision.
 
 All are `proposed`. None has been reviewed outside this package.
@@ -25,14 +25,18 @@ All are `proposed`. None has been reviewed outside this package.
 | [0016](0016-the-classifier-host-is-one-go-source-built-for-native-and-js-wasm.md) | The classifier host is one Go source built for native and `js/wasm` | proposed |
 | [0017](0017-the-m3-content-state-marker-is-device-local.md) | The M3 content-state marker is device-local and never enters the envelope | proposed |
 | [0018](0018-model-detection-carries-no-window.md) | `model_detection` carries no window, and a kind's branch is exhaustive over the other kinds' fields | proposed |
+| [0019](0019-the-origin-validates-the-device-certificate-itself.md) | The origin validates the device certificate itself; the edge is a filter | proposed |
 
-Eighteen records. One is superseded, and the supersession is the most consequential edit in the set:
+Nineteen records. One is superseded, and the supersession is the most consequential edit in the set:
 **ADR 0014 reverses ADR 0008 on customer requirement.** ADR 0008 is kept, marked superseded, because
 its reasoning about brief §3.5 is still correct — what changed is the response to it. **ADR 0016** is an
 amendment of a different kind: it changes the classifier host's language, and with it a §4.1 clause, while
 leaving every property §9.1 requires of that component intact. **ADR 0017** resolves a contradiction rather
 than a preference: §11.3's M3 row describes a content-state marker the closed envelope contract has no field
-for, and the record decides it in the contract's favour.
+for, and the record decides it in the contract's favour. **ADR 0019** records a requirement the design
+already states and the deployment does not yet implement: the origin validates the device certificate
+itself, so the edge stays a filter rather than becoming the authority — and it is the record that makes
+"the origin is reachable only through the edge" a correctness requirement rather than a hardening note.
 
 ## Which decisions carry the most weight
 

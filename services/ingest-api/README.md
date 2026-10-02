@@ -51,6 +51,26 @@ POST /v1/events
 * `won_fields` means "the submission's contest-winning route is this observation's route" — not
   "this observation changed a field". See the comment on `store.EventOutcome`.
 
+## What the device is allowed to see
+
+A device is an untrusted reader, so a response may carry: the closed reason code, the JSON Pointer and
+the violated constraint's *shape*, the presence map, `server_time`, and a sentence written by hand for
+that reader. It may not carry anything derived from a driver, a socket or the schema loader.
+
+`ingest.Error` enforces the split: `Message` is device-facing, `Cause` is internal, and the transport
+(`internal/httpapi`) logs the cause and sends only the message. This is not decoration — a driver's
+text reached a device once (`invalid input syntax for type uuid: "sha256:aaa…"`, from the old
+`mapStoreError` default branch), which is both an internal leak and a hint about which fields reach the
+database. `internal/httpapi/devicefacing_test.go` asserts the class rather than the site: an
+unclassified store failure, an unclassified authentication failure, and a malformed development
+identity are each checked to produce a clean code and no internal text, while the detail is verified to
+have reached the log. Reverting the fix makes those tests fail with the original string, which is how
+the guard was checked.
+
+The one deliberate exception: a JSON *decode* failure returns encoding/json's own message. It is
+derived entirely from the device's own bytes (it names the offending character or field), it is how a
+poison batch is diagnosed from the device side, and it tells the caller nothing it did not send.
+
 ## The integration seam
 
 One transaction per batch, and this is the write:

@@ -33,36 +33,80 @@ export const NATIVE_APP = 'com.shadowaicapture.capture_core';
 export const DEFAULT_TIMEOUT_MS = 10_000;
 
 /**
+ * After a disconnect, refuse to open a new port for this long.
+ *
+ * Without it, a missing or broken native host produces a **tight loop**, measured in Edge 154 at
+ * roughly 6,000 connect attempts per second: `connectNative` returns a port, the browser delivers
+ * the disconnect for the absent host, the port is dropped, and the next send opens another. Anything
+ * that triggers a send on each connect (a policy sync, a queue drain) closes the cycle and spins.
+ * That is a real defect on a user's machine — sustained CPU burn for a channel that is simply not
+ * there — and §3.5's "a crash loops stops retrying into a state where the user's machine is
+ * intermittently broken" is the same rule applied one process down.
+ *
+ * The queue is what makes the wait harmless: an observation emitted during the cool-down is held,
+ * counted, and delivered by the next drain once the channel is real (§3.4).
+ */
+export const DEFAULT_CONNECT_COOLDOWN_MS = 5_000;
+
+/** How a refused-while-cooling-down connect is reported, so it is never mistaken for a new failure. */
+export const COOLDOWN_ERROR_CODE = 'native_cooling_down';
+
+/**
  * @param {object} opts
  * @param {import('./adapter.js').Adapter} opts.adapter
  * @param {string} [opts.application]
  * @param {number} [opts.timeoutMs]
  * @param {(event: object) => void} [opts.onEvent]   channel events for the health reporter
  */
-export function createNativeClient({ adapter, application = NATIVE_APP, timeoutMs = DEFAULT_TIMEOUT_MS, onEvent = () => {} }) {
+export function createNativeClient({
+  adapter,
+  application = NATIVE_APP,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  connectCooldownMs = DEFAULT_CONNECT_COOLDOWN_MS,
+  onEvent = () => {},
+}) {
   /** @type {import('./adapter.js').NativePort|null} */
   let port = null;
   let nextId = 0;
   const pending = new Map();
   let connected = false;
   let lastError = null;
+  /** True once a message has actually been answered on the current port. */
+  let answered = false;
+  /** Wall-clock gate: no new port is opened before this, so a dead host cannot be hammered. */
+  let nextConnectAllowedAt = 0;
 
   function connect() {
     if (port) return port;
+    const remaining = nextConnectAllowedAt - Date.now();
+    if (remaining > 0) {
+      // Cooling down after a disconnect. Refused without opening a port and **without emitting an
+      // event**, because this is not a new failure — it is the same one, still standing. Emitting
+      // here is what would rebuild the loop the cool-down exists to break.
+      throw new ExtError(COOLDOWN_ERROR_CODE, `native host unavailable; next attempt in ${Math.ceil(remaining / 1000)}s`);
+    }
     try {
       const p = adapter.runtime.connectNative(application);
       if (!p) throw new ExtError('native_unavailable', `connectNative(${application}) returned no port`);
       port = p;
       connected = true;
+      answered = false;
       lastError = null;
       p.onMessage((raw) => handleMessage(raw));
       p.onDisconnect((err) => handleDisconnect(err));
-      onEvent({ kind: 'connected' });
+      // **`port_opened`, not `connected`.** A port object is not a working channel: for a host that
+      // does not exist the browser hands one out and only later delivers the disconnect, so a
+      // health report that called this "connected" would claim a coverage path that does not work —
+      // the §15.2/INV-6 failure, and the one the browser gate caught. `connected` is emitted below,
+      // when a message actually round-trips. Nothing may hang work off this event either: doing so
+      // is what closed the retry loop.
+      onEvent({ kind: 'port_opened' });
       return port;
     } catch (e) {
       port = null;
       connected = false;
       lastError = e;
+      nextConnectAllowedAt = Date.now() + connectCooldownMs;
       onEvent({ kind: 'connect_failed', error: String((e && e.message) || e) });
       throw e instanceof ExtError ? e : new ExtError('native_unavailable', String((e && e.message) || e));
     }
@@ -71,8 +115,12 @@ export function createNativeClient({ adapter, application = NATIVE_APP, timeoutM
   function handleDisconnect(err) {
     const message = (err && err.message) || (adapter.runtime && adapter.runtime.lastError && adapter.runtime.lastError.message) || 'native host disconnected';
     connected = false;
+    answered = false;
     port = null;
     lastError = new ExtError('native_unavailable', message);
+    // Start the cool-down *here*, at the moment the channel is known bad, so the very next send in
+    // the same tick cannot open another port.
+    nextConnectAllowedAt = Date.now() + connectCooldownMs;
     for (const [, entry] of pending) {
       clearTimeout(entry.timer);
       entry.reject(lastError);
@@ -98,8 +146,12 @@ export function createNativeClient({ adapter, application = NATIVE_APP, timeoutM
       clearTimeout(entry.timer);
       if (msg.type === CORE_TYPE.REFUSAL) {
         const body = msg.body || {};
+        // A refusal is still an answer: the channel works, the core declined this message. It proves
+        // the round trip, so it counts as a working channel even though the request failed.
+        markAnswered();
         entry.reject(new ExtError('core_refused', body.message || 'refused', { reason: body.reason }));
       } else {
+        markAnswered();
         entry.resolve(msg);
       }
       return;
@@ -143,7 +195,19 @@ export function createNativeClient({ adapter, application = NATIVE_APP, timeoutM
     });
   }
 
-  /** Fire-and-forget, used where a refusal is not actionable (health). */
+  /**
+   * A message came back: the channel is real. Emitted once per port, so `connected` means "a
+   * round trip succeeded" rather than "a port object was handed out".
+   */
+  function markAnswered() {
+    if (answered) return;
+    answered = true;
+    onEvent({ kind: 'connected' });
+  }
+
+  /**
+   * Fire-and-forget, used where a refusal is not actionable (health).
+   */
   function sendOneWay(type, body) {
     return post(type, body);
   }

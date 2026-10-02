@@ -50,10 +50,20 @@ export function bootstrap(adapter, { deviceId = null, version = '0.1.0', capacit
     adapter,
     ...(Number.isFinite(nativeTimeoutMs) ? { timeoutMs: nativeTimeoutMs } : {}),
     onEvent: (ev) => {
+      if (ev.kind === 'port_opened') {
+        // A port object exists. That is NOT a working channel — for a host that does not exist the
+        // browser hands one out and delivers the disconnect later — so nothing is marked connected
+        // and **nothing is hung off this event**. Starting a policy sync or a drain here closes a
+        // retry loop: the send fails, the port drops, the next send opens another port, and this
+        // event fires again. Measured at ~6,000 attempts/second before it was removed.
+        return;
+      }
       if (ev.kind === 'connected') {
+        // A message round-tripped: the channel is real. §3.4's "merged into the health report when
+        // the channel returns" hangs off this, and it is what makes `core: connected` honest.
         health.onChannelConnected();
-        void pipeline.drainQueue(20).then(() => reportHealth());
         requestPolicySync();
+        void pipeline.drainQueue(20).then(() => reportHealth());
       } else if (ev.kind === 'connect_failed' || ev.kind === 'disconnected') {
         // §3.4: a failed connect is capture-core `absent` plus extension-side `degraded`,
         // never "no observations".

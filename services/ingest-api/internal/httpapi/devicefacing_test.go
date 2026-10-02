@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -39,8 +40,14 @@ func (f failingStore) WriteBatch(context.Context, store.BatchWrite) (store.Batch
 const markerText = `store: principal status: ERROR: invalid input syntax for type uuid: "sha256:SECRET-MARKER"`
 
 func TestInternalErrorTextNeverReachesTheDevice(t *testing.T) {
+	// The wrapper needs a real route table: the service refuses to serve without one, which is itself
+	// a property worth keeping (a deployment whose ref.route_fidelity is empty accepts nothing).
+	routes, err := store.LoadRouteTable(filepath.Join("..", "..", "testdata", "route-fidelity.seed.json"))
+	if err != nil {
+		t.Fatalf("load routes: %v", err)
+	}
 	h := newHarnessWithStore(t, staticAuth(), failingStore{
-		Store: store.NewMemory(nil),
+		Store: store.NewMemory(routes),
 		err:   errors.New(markerText),
 	})
 

@@ -36,6 +36,7 @@ import {
 } from './messages.js';
 import { classifyWithResponse, CANDIDATE_FLOOR, predicateRequest } from './predicate.js';
 import { computeToolFingerprint } from './tool-fingerprint.js';
+import { COOLDOWN_ERROR_CODE } from './native.js';
 
 /** Bounded: a service worker can be killed at any time, and a candidate that is never answered must not accumulate. */
 export const MAX_CANDIDATES = 256;
@@ -58,7 +59,7 @@ export function createPipeline({
   /** @type {Map<string, object>} requestId -> candidate awaiting a response contract (§7.5 Mode B) */
   const candidates = new Map();
   /** One drain at a time; a burst coalesces instead of stacking overlapping sends. */
-  let drainInFlight = false;
+  let drainPromise = null;
   let drainAgain = false;
 
   function nextClientId() {
@@ -593,18 +594,59 @@ export function createPipeline({
     return observation;
   }
 
-  /** Drain the queue against the channel; the queue owns the drop counter, this owns the send. */
-  async function drainQueue(max = 20) {
-    const result = await native.drain(queue, max);
-    if (result.failures.length) {
-      counters.countError(result.failures[0].code);
-      health.onChannelAbsent();
-    } else if (result.sent > 0) {
-      // `emitted` counts envelopes handed to capture-core. It is not a delivery claim: the spool
-      // is what separates accepted from delivered (Lead, task-6; native.go on Ack).
-      health.markEmitted(result.sent);
+  /**
+   * Deliver what is queued. **One drain at a time, whichever caller asks** — the invalidation guard
+   * has to live here rather than in `scheduleDrain`, because the service worker also drains directly
+   * (on `connected`, and on the health alarm). Two concurrent drains read the same head entry before
+   * either acks it and send it twice, which is how this was caught: the fake core received
+   * `['a','a','b','b']`.
+   *
+   * A caller that arrives while a drain is running joins it and marks that another pass is wanted,
+   * so a burst coalesces into at most two passes and every entry still leaves.
+   */
+  function drainQueue(max = DRAIN_BATCH) {
+    if (drainPromise) {
+      drainAgain = true;
+      return drainPromise;
     }
-    return result;
+    drainPromise = (async () => {
+      try {
+        const result = await native.drain(queue, max);
+        if (result.failures.length) {
+          const code = result.failures[0].code;
+          // A refusal-while-cooling-down is the same failure still standing, not a new one. Counting
+          // it per attempt is how a backoff becomes a counter that climbs while nothing changed —
+          // the ~23,700-error run the browser gate caught. The original disconnect was counted once.
+          if (code !== COOLDOWN_ERROR_CODE) {
+            counters.countError(code);
+            health.onChannelAbsent();
+          }
+        } else if (result.sent > 0) {
+          // `emitted` counts envelopes capture-core has ACKED. It is not a delivery claim either —
+          // the spool is what separates accepted from delivered (native.go on Ack) — but "acked" is
+          // the strongest thing the extension can observe, and it is what makes `core: connected`
+          // and `emitted` honest rather than optimistic.
+          health.markEmitted(result.sent);
+        }
+        return result;
+      } finally {
+        drainPromise = null;
+        if (drainAgain) {
+          drainAgain = false;
+          scheduleDrain();
+        }
+      }
+    })();
+    return drainPromise;
+  }
+
+  /** Kick a drain without waiting for it; a burst coalesces instead of stacking overlapping sends. */
+  function scheduleDrain() {
+    void Promise.resolve()
+      .then(() => drainQueue(DRAIN_BATCH))
+      .catch(() => {
+        /* drainQueue counts and reports its own failures; nothing may escape a listener */
+      });
   }
 
   return {
