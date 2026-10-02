@@ -316,19 +316,6 @@ async function main() {
     const swCtx = await attach(cdp, sw.targetId);
     const killSwLog = capturedConsole(cdp, swCtx.sessionId);
 
-    // The registration facts, read from inside the running extension. These are evidence in their
-    // own right: they say which `extraInfoSpec` each lane actually asked for, which is the thing
-    // §7.4's capability changes.
-    const registration = await swCtx.evaluate(
-      `JSON.stringify(globalThis.__captureApp ? {
-         blockingAvailable: globalThis.__captureApp.blockingAvailable,
-         enforcement: globalThis.__captureApp.lanes ? globalThis.__captureApp.lanes.enforcement : null,
-         extraInfoSpec: globalThis.__captureApp.lanes ? globalThis.__captureApp.lanes.extraInfoSpec : null,
-         bodyFilter: globalThis.__captureApp.lanes ? globalThis.__captureApp.lanes.bodyFilter : null,
-         hasListeners: chrome.webRequest.onBeforeRequest.hasListeners(),
-       } : null)`,
-    );
-
     // ── check 2: the listener is live, driven by a real request ─────────────────────────
     //
     // Readiness gate first. An MV3 service worker target exists as soon as the worker is created,
@@ -345,8 +332,21 @@ async function main() {
     if (!ready) {
       verdict('2', 'the webRequest listener observes a real request', 'FAIL',
         'the extension never finished registering its lanes within 20s',
-        [`registration as the extension holds it: ${registration}`]);
+        [`app object present: ${await swCtx.evaluate('String(typeof globalThis.__captureApp)')}`]);
     }
+
+    // The registration facts, read from inside the running extension once it is ready. They are
+    // evidence in their own right: they say which `extraInfoSpec` each lane actually asked for,
+    // which is the thing §7.4's capability changes.
+    const registration = await swCtx.evaluate(
+      `JSON.stringify(globalThis.__captureApp ? {
+         blockingAvailable: globalThis.__captureApp.blockingAvailable,
+         enforcement: globalThis.__captureApp.lanes ? globalThis.__captureApp.lanes.enforcement : null,
+         extraInfoSpec: globalThis.__captureApp.lanes ? globalThis.__captureApp.lanes.extraInfoSpec : null,
+         bodyFilter: globalThis.__captureApp.lanes ? globalThis.__captureApp.lanes.bodyFilter : null,
+         hasListeners: chrome.webRequest.onBeforeRequest.hasListeners(),
+       } : null)`,
+    );
 
     const before = await swCtx.evaluate('JSON.stringify(globalThis.__captureApp ? globalThis.__captureApp.health.counters.snapshot() : null)');
     const pageTarget = (await cdp.send('Target.getTargets')).targetInfos.find((t) => t.type === 'page');
@@ -464,14 +464,15 @@ async function main() {
     const blockMsg = blockingMessage(launched.getLog());
     const swConsole = killSwLog();
     const browserRefusal = blockMsg || swConsole.find((l) => /blocking webRequest/i.test(l)) || null;
-    const enforcement = registration ? JSON.parse(registration).enforcement : null;
+    const reg = registration ? JSON.parse(registration) : null;
+    const enforcement = reg ? reg.enforcement : null;
 
     if (enforcement === 'observation_only' || browserRefusal) {
       verdict('5', 'a blocked request is cancelled AND still recorded', 'NOT-OBSERVABLE',
         'an unpacked load revokes webRequestBlocking, so no blocking listener can act here',
         [
           `the browser said, verbatim: ${(browserRefusal || '(not captured)').trim()}`,
-          `the running extension reports: blockingAvailable=${registration ? JSON.parse(registration).blockingAvailable : '?'}, enforcement=${enforcement}`,
+          `the running extension reports: blockingAvailable=${reg ? reg.blockingAvailable : '?'}, enforcement=${enforcement}`,
           'the manifest declares webRequestBlocking and a policy-installed extension retains it (E1, §7.4);',
           'the unpacked *load* is what removes it, so this is a limit of the load path, not of the extension.',
           'what a human must do: install the extension by policy (ExtensionInstallForcelist) — an elevated',
@@ -480,8 +481,13 @@ async function main() {
         ]);
     } else {
       verdict('5', 'a blocked request is cancelled AND still recorded', 'NOT-OBSERVABLE',
-        'no bundle could be delivered (no native host), so no blocking rule could be in force',
-        ['a bundle needs the native channel, or a policy install; both are unavailable on this host.']);
+        enforcement
+          ? 'the install holds webRequestBlocking, but no bundle could be delivered, so no blocking rule was in force'
+          : 'the capability could not be read from the running extension',
+        [
+          `registration: ${registration || '(unreadable)'}`,
+          'a bundle needs the native channel, or a policy install; both are unavailable on this host.',
+        ]);
     }
 
     return 0;

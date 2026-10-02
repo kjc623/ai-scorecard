@@ -419,6 +419,37 @@ is unchanged, while a tagged build and a tagged integration test can use the rea
 cache or a network exists. That keeps "may the gate carry a third-party dependency?" as a decision
 rather than an accident.
 
+## L20. The browser half is now verified in a real browser (round 8)
+
+Every report in this project carried "in-browser E2E is NOT VERIFIED — no Chromium". That is no
+longer true, and the correction matters in both directions: Chrome **is** installed but **Google
+Chrome Stable refuses `--load-extension` entirely** (`extension_service.cc:423 --load-extension is
+not allowed in Google Chrome, ignoring`), while **Edge 154 loads the extension and runs it**.
+
+```
+node apps/capture-extension/tools/in-browser-check.mjs
+  4 pass, 0 fail, 1 NOT-OBSERVABLE
+```
+
+I reproduced this myself, and it is now gate 8 of `tools/accept.mjs`.
+
+| Check | Result | How it is known |
+|---|---|---|
+| 1. The extension loads and its MV3 worker registers | PASS | CDP `Target.getTargets` lists `chrome-extension://ileppbadl…/background/service-worker.js` — the **browser** asserting an MV3 worker is registered, not the extension reporting on itself |
+| 2. The `webRequest` listener observes a real request | PASS | the extension's own §4.3 `observed` counter went 0 → 2 for a real POST to a loopback server, read out of the service worker over CDP |
+| 3. M0 produces an observation with no content field | PASS | a real `chrome.webRequest` body, classified and emitted with `has_content=false` and no `content` key — the same property `device/integration` proves in Go, now with a browser's body |
+| 4. An absent native channel degrades, not breaks | PASS | `capture-core` **absent** + extension **degraded**, the page's request completed `200`, and the queue held the observation in memory. §3.4 and §7.4's fail-open, observed for the first time |
+| 5. A blocked request is cancelled *and* recorded | **NOT-OBSERVABLE** | the browser said, verbatim: *"webRequestBlocking is only allowed for extensions that are installed using ExtensionInstallForcelist"*. The manifest declares it and a policy-installed extension keeps it; the **unpacked load** is what revokes it |
+
+Check 5 is reported as not observable with the browser's own message rather than skipped, and the
+script prints what a human must do: install by policy — an elevated registry write — then load a
+bundle with a `blocked` rule and confirm `net::ERR_BLOCKED_BY_CLIENT` together with an observation
+for the same request. **No report in this project should claim blocking works until that is done.**
+
+Also still unverified, stated by the script itself: the content script reading a real user-selected
+`File` (no file is attached in an automated run), a **connected** native channel (no host is
+registered on this host), and Google Chrome specifically.
+
 ---
 
 ## What is NOT verified at this point

@@ -575,6 +575,68 @@ test('an unusable bundle leaves the previous policy enforcing and is reported', 
   assert.ok(h.app.health.counters.snapshot().counters.errors >= 1);
 });
 
+// ── §7.4's capability, and the defect the browser found ─────────────────────────────────────
+
+test('with webRequestBlocking granted, both lanes register as blocking (the deployed case)', async () => {
+  const h = await started();
+  assert.deepEqual(h.fake.registration('metadata').extra, ['blocking'], 'a policy-installed extension keeps §7.4');
+  assert.deepEqual(h.fake.registration('body').extra, ['blocking', 'requestBody']);
+  assert.equal(h.app.blockingAvailable, true);
+  assert.equal(h.app.lanes.enforcement, 'blocking');
+  assert.equal(h.app.reportHealth().enforcement, 'blocking');
+});
+
+test('without the grant, the lanes register WITHOUT blocking and observation still works', async () => {
+  // The state a real unpacked install is in. Before this was handled, the extension asked for
+  // `blocking` on every lane; the browser accepted the registration and then never invoked the
+  // listener, so the extension observed NOTHING. Measured in Edge 154: on the same event, in the
+  // same worker, a plain listener received 3 events and a blocking listener received 0.
+  const h = createHarness();
+  h.fake.state.blockingGranted = false;
+  await h.app.start();
+  h.app.applyPolicy({ policy_version: 'b1', bundle: { policy_version: 'b1', default_mode: 'm1' } });
+  await settle();
+
+  assert.equal(h.app.blockingAvailable, false);
+  assert.equal(h.app.lanes.enforcement, 'observation_only');
+  assert.deepEqual(h.fake.registration('metadata').extra, [], 'no `blocking`: asking for it makes the listener inert');
+  assert.deepEqual(h.fake.registration('body').extra, ['requestBody'], 'requestBody is orthogonal and still needed');
+  assert.equal(h.app.reportHealth().enforcement, 'observation_only', 'reported, never silent');
+  assert.ok(h.app.health.counters.snapshot().errors_by_code.enforcement_unavailable >= 1);
+
+  // And observation actually happens: this is the property that was broken.
+  await h.fake.drive('body', chromeRequest({ url: CHAT_URL, headers: { 'content-type': 'application/json' }, body: JSON.stringify(CHAT_BODY) }));
+  await settle();
+  assert.equal(h.app.health.counters.snapshot().counters.observed, 1, '§15.2/C21: never less inspection, silently');
+  const obs = h.core.lastObservation();
+  assert.equal(obs.decision.action, 'logged');
+  assert.equal(obs.decision.decided_locally, true);
+});
+
+test('a capability that cannot be read defaults to blocking, never to lost collection', async () => {
+  // The deployed case is the policy-installed one, and observation no longer depends on the answer
+  // either way — so an unanswerable probe must not silently disable enforcement.
+  const h = createHarness();
+  delete h.fake.chrome.permissions;
+  await h.app.start();
+  assert.equal(h.app.blockingAvailable, true);
+  assert.equal(h.app.lanes.enforcement, 'blocking');
+});
+
+test('the body lane keeps its filter when blocking is unavailable', async () => {
+  const h = createHarness();
+  h.fake.state.blockingGranted = false;
+  await h.app.start();
+  h.app.applyPolicy({
+    policy_version: 'b1',
+    bundle: { policy_version: 'b1', default_mode: 'm1', body_lane_patterns: ['https://chat.example-ai.invalid/*'] },
+  });
+  await settle();
+  assert.deepEqual(h.fake.registration('body').urls, ['https://chat.example-ai.invalid/*']);
+  assert.deepEqual(h.fake.registration('body').extra, ['requestBody']);
+  assert.equal(h.app.lanes.bodyLaneInstalled, true);
+});
+
 // ── the frames themselves ───────────────────────────────────────────────────────────────────
 
 test('every emitted observation frame validates against the protocol\'s own rules', async () => {

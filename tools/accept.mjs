@@ -144,6 +144,47 @@ const GATES = [
     },
   },
   {
+    id: 'browser',
+    title: 'The browser half in a real Chromium (apps/capture-extension/tools/in-browser-check.mjs)',
+    decides:
+      'The extension does not load as a browser extension, its webRequest listener never fires, M0 reads content it should not, or an absent native channel breaks the page instead of degrading. This is the only gate that runs the extension inside a browser.',
+    run: () => {
+      const script = join(ROOT, 'apps', 'capture-extension', 'tools', 'in-browser-check.mjs');
+      if (!existsSync(script)) return { status: 'SKIPPED', why: 'the in-browser check does not exist yet' };
+      // The check needs a Chromium-family browser that will load an unpacked extension. Edge does;
+      // Google Chrome Stable refuses --load-extension outright (verified), so this looks for either
+      // and reports which one it used.
+      const candidates = [
+        'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+        'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+        'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+      ];
+      const browser = candidates.find((p) => existsSync(p));
+      if (!browser) {
+        return { status: 'SKIPPED', why: 'no Chromium-family browser found at the usual Windows paths' };
+      }
+      const r = spawnSync(process.execPath, [script], {
+        cwd: join(ROOT, 'apps', 'capture-extension'),
+        env: { ...process.env, SAC_BROWSER: browser },
+        encoding: 'utf8',
+        maxBuffer: 32 * 1024 * 1024,
+        timeout: 300_000,
+      });
+      const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+      if (r.status !== 0) {
+        return { status: 'FAIL', detail: `the in-browser check exited ${r.status}:\n${tail(out, 30)}` };
+      }
+      const pass = (out.match(/^\s*PASS\s/gm) ?? []).length;
+      // Count the summary rows only: the string also appears in the per-check detail and in the
+      // "NOT VERIFIED BY THIS RUN" list, so a plain match over-counts.
+      const notObservable = (out.match(/^\s*NOT-OBSERVABLE\s+check/gm) ?? []).length;
+      return {
+        status: 'PASS',
+        detail: `${pass} check(s) passed in a real browser, ${notObservable} honestly not observable (blocking needs a policy install). Browser: ${browser.split('\\\\').pop()}.`,
+      };
+    },
+  },
+  {
     id: 'db',
     title: 'Database invariants against a real server (db/tools/run-invariants.ps1)',
     decides: 'The schema asserts its own properties, as the runtime roles, on PostgreSQL.',

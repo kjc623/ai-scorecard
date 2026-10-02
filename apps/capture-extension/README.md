@@ -108,44 +108,89 @@ chrome.alarms.create / onAlarm
 
 Not used: `declarativeNetRequest`, any storage, any analytics, any remote code.
 
-## What is NOT VERIFIED
+## What has been verified in a real browser, and what has not
 
-This host has no Chromium and no native messaging host, so **in-browser end-to-end behaviour is NOT
-VERIFIED**. The suite tests every decision and the two facts observable at the API boundary (which
-listener each lane registered on, and with which `extraInfoSpec`), against a fake `chrome` and a fake
-`capture-core`. Five things can only be confirmed by a human in a browser:
+`tools/in-browser-check.mjs` launches a real Chromium browser with this extension loaded, drives a
+request to a `node:http` server it starts on `127.0.0.1`, and reports a per-check verdict. It exits
+non-zero on any FAIL:
 
-1. **`webRequestBlocking` actually cancels.** The suite asserts the extension returns
-   `{cancel: true}` for a `blocked` rule; that Chromium honours it for a policy-installed extension
-   is the E1 assumption itself.
-   *To verify:* load the unpacked extension (`chrome://extensions` → Developer mode → Load
-   unpacked → `apps/capture-extension`), install a bundle whose `scope` denies one destination and
-   whose rules hold a `blocked` rule for it, then navigate to that destination and confirm
-   **`chrome://net-export`** shows the request cancelled and DevTools shows
-   `net::ERR_BLOCKED_BY_CLIENT`.
-2. **A real `requestBody` arrives in the two shapes E2 claims** — parsed `formData` for a form
-   encoding, `raw` bytes otherwise.
-   *To verify:* visit a page that POSTs `application/x-www-form-urlencoded`, then
-   `chrome://extensions` → the extension's service worker → Console, and inspect the observation for
-   the form case; then repeat on a JSON POST.
-3. **A content script can read a user-selected `File`.** The suite drives a fake document and a fake
-   `File`; `File.slice().arrayBuffer()`, drop events, and the isolated world's access to
-   `input.files` are all browser behaviour.
-   *To verify:* on a page with a file input, attach a file, submit, and confirm the health channel
-   reports an attachment transfer with a digest and no `attachment_read_failed`.
-4. **The M0 registration guarantee holds against a real policy change.** The suite asserts the
-   listener filter and that the lane is removed when every destination resolves to M0; that Chrome
-   stops producing `requestBody` after `removeListener` is browser behaviour.
-   *To verify:* with the extension loaded, apply a bundle that resolves one host to M0, then
-   `chrome://extensions` → service worker → Console: the metadata lane must still fire for that host
-   and no body must appear on any observation, before and after the change.
-5. **Native messaging against a real host** — the frame shapes, the 1 MiB ceiling and the refusal
-   path are tested against `test-support/fake-core.mjs`, which mirrors `device/protocol`, and against
-   the **real Go type** in `test/content-roundtrip.test.mjs` (which compiles and runs a Go consumer
-   when a toolchain is present). What is not tested is a real registered host process.
-   *To verify:* install the native messaging host manifest for
-   `com.shadowaicapture.capture_core`, restart the browser, and confirm the health channel reports
-   `core: connected` with a policy version.
+```powershell
+node apps/capture-extension/tools/in-browser-check.mjs
+```
+
+Its raw output is committed as [`tools/in-browser-check.evidence.txt`](tools/in-browser-check.evidence.txt).
+
+### Which browser, and why not Chrome
+
+**The verification runs in Microsoft Edge 154, which is Chromium.** Google Chrome Stable 154 refuses
+to load an unpacked extension at all — it ignores both flags:
+
+```
+WARNING:extension_service.cc:445] --disable-extensions-except is not allowed in Google Chrome, ignoring.
+WARNING:extension_service.cc:423] --load-extension is not allowed in Google Chrome, ignoring.
+```
+
+So the claim is "verified in Edge 154 (Chromium)", not "verified in Chrome". The extension APIs are
+the same, but the engine difference is stated rather than glossed over.
+
+### Verified in the browser (4 of 5 checks)
+
+| # | Property | How it is observed |
+|---|---|---|
+| 1 | The extension loads and its MV3 service worker registers | `Target.getTargets` over the browser's DevTools socket lists a `service_worker` target at `background/service-worker.js` under the extension's own origin |
+| 2 | Its `webRequest` listener observes a real request | a page served from the harness's own loopback server POSTs a chat-shaped body and the extension's §4.3 `observed` counter moves; that counter is incremented inside the listener and nowhere else |
+| 3 | A real `chrome.webRequest` body yields an M0 observation with **no content field** | the frame the extension would send is read out of its own queue and shown to carry `has_content: false` and no `content`, `content_digest`, `labels`, `classifier_version` or `confidence` |
+| 4 | An absent native channel degrades rather than breaks | the extension reports capture-core `absent` + itself `degraded`, and the page's request still completes with HTTP 200 — §3.4 plus §7.4's fail-open |
+
+Check 3 is the browser-side counterpart of what `device/integration/device_path_test.go` proves in Go:
+the same property, now with a body that came from a real browser. A run's counters also show §7.3's "a
+negative match is counted, not emitted" happening for real — the page's `main_frame` GET is counted as
+`skipped_not_generative` while the chat-shaped POST produces the observation.
+
+### NOT observed, and why
+
+- **Check 5 — a blocked request is cancelled AND recorded — is NOT OBSERVABLE on this host.** An
+  unpacked load revokes `webRequestBlocking` whatever the manifest declares, and the browser says so
+  itself: *"You do not have permission to use blocking webRequest listeners. ... webRequestBlocking is
+  only allowed for extensions that are installed using ExtensionInstallForcelist."* The manifest
+  declares it and a policy-installed extension retains it (E1, §7.4); the load path is what removes
+  it. **A human must** install the extension by policy (`ExtensionInstallForcelist`, an elevated
+  registry write — the real deployment path), load a bundle with a `blocked` rule, and confirm
+  `net::ERR_BLOCKED_BY_CLIENT` in `chrome://net-export` together with an observation for the same
+  request. Until then no report should claim that blocking works.
+- **A content script reading a real user-selected `File`.** No file is attached in this run. **A
+  human must** open a page with a file input and a chat-shaped composer, attach a file, submit, and
+  confirm the health channel reports an attachment transfer with a digest and no
+  `attachment_read_failed`.
+- **A connected native channel.** No messaging host is registered, so only the degraded path is
+  exercised. **A human must** install the host manifest for
+  `com.shadowaicapture.capture_core`, restart the browser, and confirm the health channel reports
+  `core: connected` with a policy version.
+- **Google Chrome specifically** — Chrome 154 refuses `--load-extension` outright; see above.
+
+### What the browser run found that the unit suite could not
+
+The first in-browser run failed checks 2 and 3, and the cause was a real defect rather than a test
+gap. The extension registered **every** `webRequest` lane with `['blocking']`. Only a policy-installed
+extension is granted that privilege, and a refused blocking registration is accepted **silently** and
+then never invoked — `hasListeners()` still returns `true`. Measured in Edge 154, on the same event in
+the same worker: a plain listener received 3 events, a blocking listener received 0.
+
+So on any install without the privilege the extension observed **nothing at all** while its health
+report said nothing about it — the failure §15.2 and C21/C22 forbid ("never less inspection,
+silently"). `registration.js` now asks for the capability, registers `blocking` only when it is
+actually held, and reports `enforcement: observation_only` when it is not. Observation never depended
+on blocking; only §7.4's ability to cancel does, and that is now stated rather than silently absent.
+The unit suite covers both modes.
+
+**One residual window, recorded rather than claimed as fixed.** Between `connectNative()` returning a
+port and the browser delivering the disconnect for a host that does not exist, `native.isConnected()`
+is briefly `true`, so an observation emitted in that window is posted into a dead port and counted as
+`emitted` instead of being queued. It was seen once (`emitted: 1`, queue depth 0, no observation
+anywhere) and did not reproduce once the harness gated on the extension's readiness, so it is an
+unreproduced residual rather than a confirmed defect. The robust fix, if wanted, is to stop
+special-casing the connected path in `pipeline.emit()`: always enqueue, and remove an entry only when
+`capture-core` acks it — which is what §3.4 describes and what `native.drain()` already does.
 
 ## Decisions `docs/01-collectors.md` §7 leaves open
 

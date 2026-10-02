@@ -1,13 +1,13 @@
 in-browser-check — proving the browser half in a real Chromium browser
-date:     2026-10-02T18:55:11.650Z
+date:     2026-10-02T18:57:11.056Z
 node:     v22.23.1
 package:  C:\Users\kyle\Downloads\architecture\apps\capture-extension
 
 browser:  C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe
 
 browser:  Edg/154.0.4258.48
-cdp port: 58188
-origin:   http://127.0.0.1:58187
+cdp port: 49467
+origin:   http://127.0.0.1:49466
 
 [PASS] check 1: the extension loads and its MV3 service worker registers
         CDP Target.getTargets lists the service worker target: chrome-extension://ileppbadlclnikhkddpliolbgifliffh/background/service-worker.js
@@ -18,7 +18,7 @@ origin:   http://127.0.0.1:58187
         manifest/permission errors in the browser log: none
 
 [PASS] check 2: the webRequest listener observes a real request
-        observed went 0 → 2 for a real POST to http://127.0.0.1:58187/v1/chat/completions
+        observed went 0 → 2 for a real POST to http://127.0.0.1:49466/v1/chat/completions
         proxy signal: the extension's own §4.3 counters, read from the service worker through CDP.
         Sound because the counter is incremented inside the registered listener and nowhere else,
         so a non-zero value means chrome.webRequest delivered the event to our handler in this browser.
@@ -44,16 +44,24 @@ origin:   http://127.0.0.1:58187
         §3.4: a failed connect is capture-core `absent` plus extension-side `degraded`, never "no observations".
         §7.4/brief §6 fail-open: the user's request is unaffected.
 
-[FAIL] the check harness itself threw: TypeError: Cannot read properties of null (reading 'enforcement')
-    at main (file:///C:/Users/kyle/Downloads/architecture/apps/capture-extension/tools/in-browser-check.mjs:467:64)
-    at async file:///C:/Users/kyle/Downloads/architecture/apps/capture-extension/tools/in-browser-check.mjs:564:14
+[NOT-OBSERVABLE] check 5: a blocked request is cancelled AND still recorded
+        an unpacked load revokes webRequestBlocking, so no blocking listener can act here
+        the browser said, verbatim: "You do not have permission to use blocking webRequest listeners. Be sure to declare the webRequestBlocking permission in your manifest. Note that webRequestBlocking is only allowed for extensions that are installed using ExtensionInstallForcelist.", source:  (0)
+        the running extension reports: blockingAvailable=false, enforcement=observation_only
+        the manifest declares webRequestBlocking and a policy-installed extension retains it (E1, §7.4);
+        the unpacked *load* is what removes it, so this is a limit of the load path, not of the extension.
+        what a human must do: install the extension by policy (ExtensionInstallForcelist) — an elevated
+        registry write — then load a bundle with a `blocked` rule and confirm net::ERR_BLOCKED_BY_CLIENT
+        together with an observation for the same request. Until then no report should claim blocking works.
+
 ──────────────────────────────────────────────────────────────────────────────
 summary
   PASS            check 1: the extension loads and its MV3 service worker registers
   PASS            check 2: the webRequest listener observes a real request
   PASS            check 3: M0 produces an observation carrying no content field
   PASS            check 4: the absent native channel degrades rather than breaks
-  4 check(s): 4 pass, 0 fail, 0 not observable
+  NOT-OBSERVABLE  check 5: a blocked request is cancelled AND still recorded
+  5 check(s): 4 pass, 0 fail, 1 not observable
 
 NOT VERIFIED BY THIS RUN, stated so it is not mistaken for a pass:
   * check 5 (inline block) — the unpacked load revokes webRequestBlocking; see the check above.
