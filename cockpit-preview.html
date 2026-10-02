@@ -1,0 +1,958 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Project Cockpit â€” Shadow AI Capture</title>
+<style>
+/* The panel's own stylesheet, verbatim. */
+
+.pcx-root {
+  --pcx-bg: var(--dsw-alias-bg-base, #16171a);
+  --pcx-surface: var(--dsw-alias-bg-layer-1, #1d1f23);
+  --pcx-surface2: var(--dsw-alias-bg-layer-2, #24272c);
+  --pcx-overlay: var(--dsw-alias-bg-overlay, #2a2e34);
+  --pcx-line: var(--dsw-alias-border-l1, #31353c);
+  --pcx-line2: var(--dsw-alias-border-l2, #3d434c);
+  --pcx-text: var(--dsw-alias-label-primary, #e8eaed);
+  --pcx-text2: var(--dsw-alias-label-secondary, #a2a9b4);
+  --pcx-brand: var(--dsw-alias-brand-primary, #4d8dff);
+  --pcx-ok: var(--dsw-alias-state-success-primary, #3fb950);
+  --pcx-warn: var(--dsw-alias-state-warn-primary, #d29922);
+  --pcx-err: var(--dsw-alias-state-error-primary, #f85149);
+  --pcx-idle: var(--dsw-alias-state-idle-primary, #8b949e);
+  --pcx-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--pcx-bg);
+  color: var(--pcx-text);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.pcx-header {
+  flex: none;
+  padding: 16px 20px 0;
+  border-bottom: 1px solid var(--pcx-line);
+  background: var(--pcx-surface);
+}
+
+.pcx-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.pcx-subtitle {
+  color: var(--pcx-text2);
+  font-size: 12.5px;
+  margin: 4px 0 0;
+  max-width: 90ch;
+}
+
+.pcx-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0 0;
+}
+
+.pcx-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border: 1px solid var(--pcx-line);
+  border-radius: 999px;
+  background: var(--pcx-surface2);
+  color: var(--pcx-text2);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.pcx-chipdot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.pcx-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 12px 0 0;
+}
+
+.pcx-button {
+  appearance: none;
+  border: 1px solid var(--pcx-line2);
+  background: var(--pcx-surface2);
+  color: var(--pcx-text);
+  border-radius: 7px;
+  padding: 4px 11px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.pcx-button:hover { border-color: var(--pcx-brand); }
+.pcx-button:disabled { opacity: 0.55; cursor: default; }
+
+.pcx-button-primary {
+  background: var(--pcx-brand);
+  border-color: var(--pcx-brand);
+  color: #fff;
+}
+
+.pcx-tabs {
+  display: flex;
+  gap: 2px;
+  margin-top: 12px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.pcx-tabs::-webkit-scrollbar { display: none; }
+
+.pcx-tab {
+  appearance: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--pcx-text2);
+  font-family: inherit;
+  font-size: 12.5px;
+  padding: 7px 11px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.pcx-tab:hover { color: var(--pcx-text); }
+.pcx-tab-active { color: var(--pcx-text); border-bottom-color: var(--pcx-brand); }
+
+.pcx-tabcount {
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  color: var(--pcx-text2);
+  background: var(--pcx-surface2);
+  border-radius: 999px;
+  padding: 0 6px;
+}
+
+.pcx-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 18px 20px 32px;
+  scrollbar-gutter: stable;
+}
+
+.pcx-view { display: flex; flex-direction: column; gap: 18px; }
+
+.pcx-section {
+  border: 1px solid var(--pcx-line);
+  border-radius: var(--pcx-radius);
+  background: var(--pcx-surface);
+  padding: 14px 16px;
+}
+
+.pcx-section-title {
+  margin: 0 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--pcx-text2);
+}
+
+.pcx-kpi {
+  display: flex;
+  gap: 22px;
+  flex-wrap: wrap;
+}
+
+.pcx-kpivalue {
+  font-size: 21px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.pcx-kpilabel {
+  font-size: 11px;
+  color: var(--pcx-text2);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.pcx-bar {
+  display: flex;
+  height: 12px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--pcx-surface2);
+  border: 1px solid var(--pcx-line);
+}
+
+.pcx-barseg { height: 100%; min-width: 2px; }
+
+.pcx-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.pcx-legenditem {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--pcx-text2);
+}
+
+.pcx-swatch { width: 9px; height: 9px; border-radius: 3px; flex: none; }
+
+.pcx-layer { display: flex; flex-direction: column; gap: 10px; }
+
+.pcx-layerhead { display: flex; align-items: center; gap: 10px; }
+
+.pcx-layername {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--pcx-text2);
+  white-space: nowrap;
+}
+
+.pcx-layerrule { flex: 1; height: 1px; background: var(--pcx-line); }
+
+.pcx-nodes {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(238px, 1fr));
+  gap: 10px;
+}
+
+.pcx-node {
+  border: 1px solid var(--pcx-line);
+  border-left-width: 3px;
+  border-radius: 8px;
+  background: var(--pcx-surface2);
+  padding: 9px 11px;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  color: inherit;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.pcx-node:hover { border-color: var(--pcx-line2); background: var(--pcx-overlay); }
+.pcx-node-active { box-shadow: 0 0 0 1px var(--pcx-brand) inset; }
+
+.pcx-nodetop { display: flex; align-items: center; gap: 7px; min-width: 0; }
+
+.pcx-nodename {
+  font-weight: 600;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.pcx-nodekind { font-size: 11px; color: var(--pcx-text2); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+.pcx-nodedeps { font-size: 11px; color: var(--pcx-text2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.pcx-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 11px;
+  border: 1px solid var(--pcx-line2);
+  color: var(--pcx-text2);
+  white-space: nowrap;
+}
+
+.pcx-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+
+.pcx-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px; }
+
+.pcx-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
+}
+
+.pcx-card {
+  border: 1px solid var(--pcx-line);
+  border-radius: var(--pcx-radius);
+  background: var(--pcx-surface);
+  padding: 12px 14px;
+  min-width: 0;
+}
+
+.pcx-cardheader { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+.pcx-cardtitle { font-weight: 600; font-size: 13.5px; display: flex; align-items: center; gap: 7px; }
+
+.pcx-cardmeta { color: var(--pcx-text2); font-size: 11.5px; margin-top: 3px; }
+
+.pcx-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+
+.pcx-col { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+
+.pcx-list { display: flex; flex-direction: column; gap: 5px; }
+
+.pcx-listitem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  min-width: 0;
+}
+
+.pcx-treerow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 6px;
+  border-radius: 5px;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  min-width: 0;
+}
+
+.pcx-treerow:hover { background: var(--pcx-surface2); }
+.pcx-treename { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pcx-treemeta { color: var(--pcx-text2); font-size: 11px; white-space: nowrap; }
+
+.pcx-present { color: var(--pcx-ok); }
+.pcx-missing { color: var(--pcx-err); }
+.pcx-warn { color: var(--pcx-warn); }
+.pcx-ok { color: var(--pcx-ok); }
+.pcx-err { color: var(--pcx-err); }
+.pcx-muted { color: var(--pcx-text2); }
+
+.pcx-warnbox {
+  border: 1px solid var(--pcx-warn);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--pcx-warn) 9%, transparent);
+  padding: 9px 12px;
+  font-size: 12px;
+}
+
+.pcx-err { color: var(--pcx-err); }
+
+.pcx-empty {
+  border: 1px dashed var(--pcx-line2);
+  border-radius: var(--pcx-radius);
+  padding: 26px 18px;
+  text-align: center;
+  color: var(--pcx-text2);
+  font-size: 12.5px;
+}
+
+.pcx-agentrow {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 9px;
+  border: 1px solid var(--pcx-line);
+  border-radius: 8px;
+  background: var(--pcx-surface2);
+  cursor: pointer;
+  font-family: inherit;
+  color: inherit;
+  text-align: left;
+  width: 100%;
+}
+
+.pcx-agentrow:hover { border-color: var(--pcx-line2); }
+.pcx-emoji { font-size: 16px; flex: none; }
+.pcx-agentname { font-weight: 600; font-size: 12.5px; }
+.pcx-agentrole { color: var(--pcx-text2); font-size: 11.5px; }
+
+.pcx-deps { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+.pcx-dep { border: 1px solid var(--pcx-line2); border-radius: 5px; padding: 0 6px; font-size: 11px; font-family: ui-monospace, monospace; color: var(--pcx-text2); }
+.pcx-arrow { color: var(--pcx-text2); font-size: 11px; }
+
+.pcx-taskcard {
+  border: 1px solid var(--pcx-line);
+  border-left-width: 3px;
+  border-radius: 8px;
+  background: var(--pcx-surface);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+
+.pcx-taskhead { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pcx-taskbody { font-size: 12px; color: var(--pcx-text2); }
+
+.pcx-inv {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  padding: 6px 0;
+  border-top: 1px solid var(--pcx-line);
+  font-size: 12px;
+}
+
+.pcx-invid {
+  flex: none;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--pcx-text2);
+  min-width: 54px;
+}
+
+.pcx-tag {
+  font-size: 10.5px;
+  border: 1px solid var(--pcx-line2);
+  border-radius: 4px;
+  padding: 0 5px;
+  color: var(--pcx-text2);
+}
+
+.pcx-details { font-size: 12px; }
+.pcx-summary { cursor: pointer; color: var(--pcx-text2); }
+.pcx-summary:hover { color: var(--pcx-text); }
+
+.pcx-heading { font-size: 14px; font-weight: 600; margin: 0; }
+.pcx-heading-l2 { margin: 12px 0 4px; font-size: 12.5px; font-weight: 600; }
+.pcx-heading-l3 { margin: 10px 0 4px; font-size: 12px; font-weight: 600; color: var(--pcx-text2); }
+
+.pcx-footer {
+  flex: none;
+  border-top: 1px solid var(--pcx-line);
+  padding: 7px 20px;
+  font-size: 11px;
+  color: var(--pcx-text2);
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  background: var(--pcx-surface);
+}
+
+.pcx-table { display: flex; flex-direction: column; gap: 2px; }
+.pcx-row { display: flex; gap: 10px; align-items: center; padding: 3px 6px; border-radius: 5px; font-size: 12px; min-width: 0; }
+.pcx-rowclick { cursor: pointer; font-family: inherit; color: inherit; border: 0; background: transparent; text-align: left; width: 100%; }
+.pcx-rowclick:hover { background: var(--pcx-surface2); }
+.pcx-cell { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Page chrome, so this reads as a standalone document rather than a fragment. */
+html,body{margin:0;height:100%;background:var(--dsw-alias-bg-base, #16171a)}
+body{display:flex;align-items:stretch;justify-content:center}
+.pcx-root{width:100%;max-width:1180px}
+.pcx-note{max-width:1180px;margin:10px auto 0;padding:0 20px;color:var(--dsw-alias-label-secondary,#a2a9b4);font-size:11.5px}
+[hidden]{display:none !important}
+</style></head>
+<body>
+<div class="pcx-root">
+  <div class="pcx-header">
+    <h1 class="pcx-title">Shadow AI Capture<span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-idle)"></span>design</span></h1>
+    <p class="pcx-subtitle">Records what employees send to generative AI tools from company-managed devices, and makes it queryable - with content interpreted on the device by default and crossing the network only on an explicit per-event grant.</p>
+    <div class="pcx-chips">
+      <span class="pcx-chip"><span class="pcx-chipdot" style="background:var(--pcx-brand)"></span>14 components</span>
+      <span class="pcx-chip"><span class="pcx-chipdot" style="background:var(--pcx-ok)"></span>6 agents planned</span>
+      <span class="pcx-chip">502 files</span>
+      <span class="pcx-chip" style="border-color:var(--pcx-warn)"><span class="pcx-chipdot" style="background:var(--pcx-warn)"></span>5 declared path(s) absent</span>
+      
+    </div>
+    <div class="pcx-tabs" role="tablist">
+      <button type="button" role="tab" class="pcx-tab pcx-tab-active" data-tab="architecture" aria-selected="true">Architecture<span class="pcx-tabcount">14</span></button><button type="button" role="tab" class="pcx-tab" data-tab="agents" aria-selected="false">Agents<span class="pcx-tabcount">6</span></button><button type="button" role="tab" class="pcx-tab" data-tab="tasks" aria-selected="false">Tasks<span class="pcx-tabcount">7</span></button><button type="button" role="tab" class="pcx-tab" data-tab="files" aria-selected="false">Files â†’ Agents<span class="pcx-tabcount">502</span></button><button type="button" role="tab" class="pcx-tab" data-tab="verify" aria-selected="false">Verify<span class="pcx-tabcount">0</span></button>
+    </div>
+  </div>
+  <div class="pcx-body">
+    <div class="pcx-view" data-view="architecture">
+<section class="pcx-section">
+  <h2 class="pcx-section-title">Build state</h2>
+  <div class="pcx-kpi"><div><div class="pcx-kpivalue">14</div><div class="pcx-kpilabel">components</div><div class="pcx-muted pcx-mono">7 layers</div></div><div><div class="pcx-kpivalue">6</div><div class="pcx-kpilabel">agents</div><div class="pcx-muted pcx-mono">planned roster</div></div><div><div class="pcx-kpivalue">0/7</div><div class="pcx-kpilabel">tasks</div><div class="pcx-muted pcx-mono">3 ready</div></div><div><div class="pcx-kpivalue">502</div><div class="pcx-kpilabel">files on disk</div><div class="pcx-muted pcx-mono">200 unclaimed</div></div><div><div class="pcx-kpivalue">5</div><div class="pcx-kpilabel">declared paths absent</div><div class="pcx-muted pcx-mono">32 declared</div></div></div>
+  <div style="margin-top:14px">
+    <div class="pcx-bar"><div class="pcx-barseg" style="background:var(--pcx-ok);flex-grow:3"></div><div class="pcx-barseg" style="background:var(--pcx-idle);flex-grow:11"></div></div>
+    <div class="pcx-legend"><span class="pcx-legenditem"><span class="pcx-swatch" style="background:var(--pcx-ok)"></span>3 done</span><span class="pcx-legenditem"><span class="pcx-swatch" style="background:var(--pcx-idle)"></span>11 proposed</span></div>
+  </div>
+  <p class="pcx-cardmeta">3 of 14 components done (21%).</p>
+</section>
+
+<section class="pcx-layer">
+  <div class="pcx-layerhead"><span class="pcx-layername">device</span><span class="pcx-layerrule"></span><span class="pcx-muted">3</span></div>
+  <div class="pcx-nodes">
+    
+      <div class="pcx-node" style="border-left-color:var(--pcx-idle)">
+        <div class="pcx-nodetop"><span class="pcx-nodename">Capture Extension</span><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-idle)"></span>proposed</span></div>
+        <div class="pcx-nodekind">device-agent Â· TypeScript</div>
+        <div class="pcx-nodedeps">no dependencies</div>
+        
+        
+      </div>
+      <div class="pcx-node" style="border-left-color:var(--pcx-idle)">
+        <div class="pcx-nodetop"><span class="pcx-nodename">Capture Core</span><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-idle)"></span>proposed</span></div>
+        <div class="pcx-nodekind">device-agent Â· Go</div>
+        <div class="pcx-nodedeps">no dependencies</div>
+        
+        
+      </div>
+      <div class="pcx-node" style="border-left-color:var(--pcx-idle)">
+        <div class="pcx-nodetop"><span class="pcx-nodename">Classifier Host</span><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-idle)"></span>proposed</span></div>
+        <div class="pcx-nodekind">classifier Â· Rust</div>
+        <div class="pcx-nodedeps">&larr; capture-core</div>
+        
+        
+      </div>
+  </div>
+</section>
+<section class="pcx-layer">
+  <div class="pcx-layerhead"><span class="pcx-layername">contract</span><span class="pcx-layerrule"></span><span class="pcx-muted">1</span></div>
+  <div class="pcx-nodes">
+    
+      <div class="pcx-node" style="border-left-color:var(--pcx-ok)">
+        <div class="pcx-nodetop"><span class="pcx-nodename">Event Envelope Contract</span><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-ok)"></span>done</span></div>
+        <div class="pcx-nodekind">contract Â· JSON Schema 2020-12</div>
+        <div class="pcx-nodedeps">no dependencies</div>
+        
+        <div class="pcx-deps" style="margin-top:6px"><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">contracts/event-envelope.schema.json</span></span></div>
+      </div>
+  </div>
+</section>
+<section class="pcx-layer">
+  <div class="pcx-layerhead"><span class="pcx-layername">backend</span><span class="pcx-layerrule"></span><span class="pcx-muted">4</span></div>
+  <div class="pcx-nodes">
+    
+      <div class="pcx-node" style="border-left-color:var(--pcx-idle)">
+        <div class="pcx-nodetop"><span class="pcx-nodename">Ingest API</span><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-idle)"></span>proposed</span></div>
+        <div class="pcx-nodekind">service Â· Go</div>
+        <div class="pcx-nodedeps">&larr; envelope-contract</div>
+        
+        
+      </div>
+      <div class="pcx-node" style="border-left-color:var(--pcx-idle)">
+        <div class="pcx-nodetop"><span class="pcx-nodename">Control API</span><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-idle)"></span>proposed</span></div>
+        <div class="pcx-nodekind">service Â· Go</div>
+        <div class="pcx-nodedeps">&larr; envelope-contract</div>
+        
+        
+      </div>
+      <div class="pcx-node" style="border-left-color:var(--pcx-idle)">
+        <div class="pcx-nodetop"><span class="pcx-nodename">Content Vault</span><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-idle)"></span>proposed</span></div>
+        <div class="pcx-nodekind">service Â· Go</div>
+        <div class="pcx-nodedeps">&larr; control-api</div>
+        
+        
+      </div>
+      <div class="pcx-node" style="border-left-color:var(--pcx-idle)">
+        <div class="pcx-nodetop"><span class="pcx-nodename">Query API</span><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-idle)"></span>proposed</span></div>
+        <div class="pcx-nodekind">service Â· TypeScript</div>
+        <div class="pcx-nodedeps">&larr; database</div>
+        
+        
+      </div>
+  </div>
+</section>
+<section class="pcx-layer">
+  <div class="pcx-layerhead"><span class="pcx-layername">presentation</span><span class="pcx-layerrule"></span><span class="pcx-muted">1</span></div>
+  <div class="pcx-nodes">
+    
+      <div class="pcx-node" style="border-left-color:var(--pcx-idle)">
+        <div class="pcx-nodetop"><span class="pcx-nodename">Dashboard</span><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-idle)"></span>proposed</span></div>
+        <div class="pcx-nodekind">ui Â· TypeScript</div>
+        <div class="pcx-nodedeps">&larr; query-api</div>
+        
+        
+      </div>
+  </div>
+</section>
+<section class="pcx-layer">
+  <div class="pcx-layerhead"><span class="pcx-layername">data</span><span class="pcx-layerrule"></span><span class="pcx-muted">3</span></div>
+  <div class="pcx-nodes">
+    
+      <div class="pcx-node" style="border-left-color:var(--pcx-idle)">
+        <div class="pcx-nodetop"><span class="pcx-nodename">Aggregator</span><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-idle)"></span>proposed</span></div>
+        <div class="pcx-nodekind">job</div>
+        <div class="pcx-nodedeps">&larr; database</div>
+        
+        
+      </div>
+      <div class="pcx-node" style="border-left-color:var(--pcx-ok)">
+        <div class="pcx-nodetop"><span class="pcx-nodename">PostgreSQL Schema</span><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-ok)"></span>done</span></div>
+        <div class="pcx-nodekind">data Â· SQL</div>
+        <div class="pcx-nodedeps">&larr; envelope-contract</div>
+        
+        <div class="pcx-deps" style="margin-top:6px"><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">db/schema.sql</span></span><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">db/invariants.test.sql</span></span></div>
+      </div>
+      <div class="pcx-node" style="border-left-color:var(--pcx-idle)">
+        <div class="pcx-nodetop"><span class="pcx-nodename">Device Spool</span><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-idle)"></span>proposed</span></div>
+        <div class="pcx-nodekind">data Â· SQL</div>
+        <div class="pcx-nodedeps">&larr; capture-core, envelope-contract</div>
+        
+        
+      </div>
+  </div>
+</section>
+<section class="pcx-layer">
+  <div class="pcx-layerhead"><span class="pcx-layername">platform</span><span class="pcx-layerrule"></span><span class="pcx-muted">1</span></div>
+  <div class="pcx-nodes">
+    
+      <div class="pcx-node" style="border-left-color:var(--pcx-idle)">
+        <div class="pcx-nodetop"><span class="pcx-nodename">Azure Infrastructure</span><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-idle)"></span>proposed</span></div>
+        <div class="pcx-nodekind">infra Â· Bicep</div>
+        <div class="pcx-nodedeps">&larr; ingest-api, control-api, query-api, content-vault, database</div>
+        
+        
+      </div>
+  </div>
+</section>
+<section class="pcx-layer">
+  <div class="pcx-layerhead"><span class="pcx-layername">documentation</span><span class="pcx-layerrule"></span><span class="pcx-muted">1</span></div>
+  <div class="pcx-nodes">
+    
+      <div class="pcx-node" style="border-left-color:var(--pcx-ok)">
+        <div class="pcx-nodetop"><span class="pcx-nodename">Design Package</span><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-ok)"></span>done</span></div>
+        <div class="pcx-nodekind">docs Â· Markdown</div>
+        <div class="pcx-nodedeps">&larr; envelope-contract, database</div>
+        
+        <div class="pcx-deps" style="margin-top:6px"><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs</span> <span class="pcx-muted">(23)</span></span><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">README.md</span></span></div>
+      </div>
+  </div>
+</section>
+<section class="pcx-section"><h2 class="pcx-section-title">Invariants</h2><div class="pcx-inv"><span class="pcx-invid">INV-1</span><span>Content stays put by default: the only content-egress path is a per-event grant, so uploading everything is structurally unreachable rather than merely forbidden. <span class="pcx-muted pcx-mono">Â· docs/adr/0008-no-server-side-content-search-in-any-key-mode.md</span></span></div><div class="pcx-inv"><span class="pcx-invid">INV-2</span><span>One validating write path: collectors hold no database credential, and every event is validated once, in one place. <span class="pcx-muted pcx-mono">Â· docs/adr/0001-one-validating-write-path-collectors-hold-no-database-credential.md</span></span></div><div class="pcx-inv"><span class="pcx-invid">INV-3</span><span>One read path: the browser never speaks SQL; a closed DSL compiles to parameterised queries. <span class="pcx-muted pcx-mono">Â· docs/adr/0003-the-dashboard-reads-through-a-query-api-with-a-closed-query-dsl.md</span></span></div><div class="pcx-inv"><span class="pcx-invid">INV-4</span><span>Observations are immutable - history cannot be rewritten by anyone short of a superuser. <span class="pcx-muted pcx-mono">Â· docs/adr/0004-observations-are-immutable-and-the-closed-envelope-is-the-record.md</span></span></div><div class="pcx-inv"><span class="pcx-invid">INV-5</span><span>Isolation is structural: forced row-level security, tenant-leading keys, and per-tenant content keys as an independent second layer. <span class="pcx-muted pcx-mono">Â· docs/adr/0005-every-device-holds-its-own-revocable-credential-bound-to-transport.md</span></span></div><div class="pcx-inv"><span class="pcx-invid">INV-6</span><span>Coverage is honest: every collection path reports its own health, so a path that is not working appears as degraded or absent, never as an absence of data. <span class="pcx-muted pcx-mono">Â· docs/adr/0011-collector-health-is-a-keyed-operational-channel-not-an-event-stream.md</span></span></div></section></div><div class="pcx-view" data-view="agents" hidden>
+<section class="pcx-section">
+  <h2 class="pcx-section-title">Roster</h2>
+  <div class="pcx-kpi"><div><div class="pcx-kpivalue">6</div><div class="pcx-kpilabel">planned agents</div></div><div><div class="pcx-kpivalue">0</div><div class="pcx-kpilabel">live teammates</div></div><div><div class="pcx-kpivalue">0</div><div class="pcx-kpilabel">active now</div></div><div><div class="pcx-kpivalue">6</div><div class="pcx-kpilabel">not created yet</div></div></div>
+  <p class="pcx-cardmeta">Rendered outside the harness, so live team state is unavailable â€” this is the declared roster. In the panel these read <em>running</em>, <em>inactive</em> or <em>not created</em> from the session's Agent Team projection.</p>
+</section>
+<div class="pcx-grid">
+
+  <div class="pcx-card" style="border-left:3px solid var(--pcx-idle)">
+    <div class="pcx-cardheader">
+      <span class="pcx-emoji">📜</span>
+      <span><span class="pcx-agentname">contractor</span><span class="pcx-agentrole"> Â· Contract owner</span>
+      <div class="pcx-cardmeta">Keeps the wire contract the single source of shape, and generates the language bindings from it.</div></span>
+      <span style="flex:1"></span><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-idle)"></span>not created</span>
+    </div>
+    <div style="margin-top:9px"><div class="pcx-heading-l2">Task</div>
+      <div class="pcx-taskbody"><strong>Generate TypeScript and Go types from the envelope contract</strong> <span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-idle)"></span>pending</span></div>
+    </div>
+    <div style="margin-top:9px"><div class="pcx-heading-l2">Files provided (3)</div>
+      <div class="pcx-deps"><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs/02-ingest-and-transport.md</span></span><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs/adr/0010-the-envelope-is-a-discriminated-union-with-a-closed-kind-registry.md</span></span><span class="pcx-badge" style="border-color:var(--pcx-brand)"><span class="pcx-dot" style="background:var(--pcx-brand)"></span><span class="pcx-mono">contracts</span> <span class="pcx-muted">(1)</span> <span class="pcx-tag">write</span></span></div>
+      
+    </div>
+  </div>
+  <div class="pcx-card" style="border-left:3px solid var(--pcx-idle)">
+    <div class="pcx-cardheader">
+      <span class="pcx-emoji">🗄️</span>
+      <span><span class="pcx-agentname">dbuilder</span><span class="pcx-agentrole"> Â· Data engineer</span>
+      <div class="pcx-cardmeta">Owns the schema, the row-level security policies and the invariants that prove them.</div></span>
+      <span style="flex:1"></span><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-idle)"></span>not created</span>
+    </div>
+    <div style="margin-top:9px"><div class="pcx-heading-l2">Task</div>
+      <div class="pcx-taskbody"><strong>Stand up the PostgreSQL schema and prove its invariants</strong> <span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-idle)"></span>pending</span></div>
+    </div>
+    <div style="margin-top:9px"><div class="pcx-heading-l2">Files provided (4)</div>
+      <div class="pcx-deps"><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs/03-data-platform.md</span></span><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs/adr/0002-postgresql-is-the-server-store-sqlite-is-only-the-device-spool.md</span></span><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs/adr/0007-tenant-residency-is-pinned-and-fails-closed-at-ingest.md</span></span><span class="pcx-badge" style="border-color:var(--pcx-brand)"><span class="pcx-dot" style="background:var(--pcx-brand)"></span><span class="pcx-mono">db</span> <span class="pcx-muted">(2)</span> <span class="pcx-tag">write</span></span></div>
+      
+    </div>
+  </div>
+  <div class="pcx-card" style="border-left:3px solid var(--pcx-idle)">
+    <div class="pcx-cardheader">
+      <span class="pcx-emoji">📥</span>
+      <span><span class="pcx-agentname">ingestor</span><span class="pcx-agentrole"> Â· Backend engineer - write path</span>
+      <div class="pcx-cardmeta">Builds the one validating write path and the dedup ladder behind it.</div></span>
+      <span style="flex:1"></span><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-idle)"></span>not created</span>
+    </div>
+    <div style="margin-top:9px"><div class="pcx-heading-l2">Task</div>
+      <div class="pcx-taskbody"><strong>Implement the ingest write path and the two-tier dedup ladder</strong> <span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-idle)"></span>pending</span></div>
+    </div>
+    <div style="margin-top:9px"><div class="pcx-heading-l2">Files provided (4)</div>
+      <div class="pcx-deps"><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">contracts/event-envelope.schema.json</span></span><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs/02-ingest-and-transport.md</span></span><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs/adr/0001-one-validating-write-path-collectors-hold-no-database-credential.md</span></span><span class="pcx-badge" style="border-color:var(--pcx-err)"><span class="pcx-dot" style="background:var(--pcx-err)"></span><span class="pcx-mono">services/ingest-api</span> <span class="pcx-tag">write</span></span></div>
+      <div class="pcx-warn pcx-mono" style="margin-top:6px">1 declared path(s) are not on disk</div>
+    </div>
+  </div>
+  <div class="pcx-card" style="border-left:3px solid var(--pcx-idle)">
+    <div class="pcx-cardheader">
+      <span class="pcx-emoji">🔎</span>
+      <span><span class="pcx-agentname">reader</span><span class="pcx-agentrole"> Â· Backend engineer - read path</span>
+      <div class="pcx-cardmeta">Builds the closed query DSL and the dashboard read path.</div></span>
+      <span style="flex:1"></span><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-idle)"></span>not created</span>
+    </div>
+    <div style="margin-top:9px"><div class="pcx-heading-l2">Task</div>
+      <div class="pcx-taskbody"><strong>Implement the closed query DSL and the read path</strong> <span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-idle)"></span>pending</span></div>
+    </div>
+    <div style="margin-top:9px"><div class="pcx-heading-l2">Files provided (5)</div>
+      <div class="pcx-deps"><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs/04-dashboard-and-query.md</span></span><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs/adr/0003-the-dashboard-reads-through-a-query-api-with-a-closed-query-dsl.md</span></span><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">db/schema.sql</span></span><span class="pcx-badge" style="border-color:var(--pcx-err)"><span class="pcx-dot" style="background:var(--pcx-err)"></span><span class="pcx-mono">services/query-api</span> <span class="pcx-tag">write</span></span><span class="pcx-badge" style="border-color:var(--pcx-err)"><span class="pcx-dot" style="background:var(--pcx-err)"></span><span class="pcx-mono">apps/dashboard</span> <span class="pcx-tag">write</span></span></div>
+      <div class="pcx-warn pcx-mono" style="margin-top:6px">2 declared path(s) are not on disk</div>
+    </div>
+  </div>
+  <div class="pcx-card" style="border-left:3px solid var(--pcx-idle)">
+    <div class="pcx-cardheader">
+      <span class="pcx-emoji">🔐</span>
+      <span><span class="pcx-agentname">vaultkeeper</span><span class="pcx-agentrole"> Â· Security engineer</span>
+      <div class="pcx-cardmeta">Owns the key hierarchy and the only component permitted to unwrap content.</div></span>
+      <span style="flex:1"></span><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-idle)"></span>not created</span>
+    </div>
+    <div style="margin-top:9px"><div class="pcx-heading-l2">Task</div>
+      <div class="pcx-taskbody"><strong>Implement the content vault key hierarchy and grant-bound retrieval</strong> <span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-idle)"></span>pending</span></div>
+    </div>
+    <div style="margin-top:9px"><div class="pcx-heading-l2">Files provided (4)</div>
+      <div class="pcx-deps"><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs/06-security-and-threat-model.md</span></span><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs/adr/0006-content-is-ciphertext-under-per-object-keys-wrapped-by-a-per-tenant-key.md</span></span><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs/adr/0014-content-search-is-a-per-tenant-capability.md</span></span><span class="pcx-badge" style="border-color:var(--pcx-err)"><span class="pcx-dot" style="background:var(--pcx-err)"></span><span class="pcx-mono">services/content-vault</span> <span class="pcx-tag">write</span></span></div>
+      <div class="pcx-warn pcx-mono" style="margin-top:6px">1 declared path(s) are not on disk</div>
+    </div>
+  </div>
+  <div class="pcx-card" style="border-left:3px solid var(--pcx-idle)">
+    <div class="pcx-cardheader">
+      <span class="pcx-emoji">🧪</span>
+      <span><span class="pcx-agentname">prober</span><span class="pcx-agentrole"> Â· Validation engineer</span>
+      <div class="pcx-cardmeta">Closes the three brief risks that are validation tasks rather than design tasks.</div></span>
+      <span style="flex:1"></span><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-idle)"></span>not created</span>
+    </div>
+    <div style="margin-top:9px"><div class="pcx-heading-l2">Task</div>
+      <div class="pcx-taskbody"><strong>Validate local-inference capture, which gates build step 8</strong> <span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-idle)"></span>pending</span></div>
+    </div>
+    <div style="margin-top:9px"><div class="pcx-heading-l2">Files provided (3)</div>
+      <div class="pcx-deps"><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs/01-collectors.md</span></span><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs/00-architecture.md</span></span><span class="pcx-badge" style="border-color:var(--pcx-err)"><span class="pcx-dot" style="background:var(--pcx-err)"></span><span class="pcx-mono">docs/risks</span> <span class="pcx-tag">write</span></span></div>
+      <div class="pcx-warn pcx-mono" style="margin-top:6px">1 declared path(s) are not on disk</div>
+    </div>
+  </div>
+</div></div><div class="pcx-view" data-view="tasks" hidden>
+<section class="pcx-section">
+  <h2 class="pcx-section-title">Written plan</h2>
+  <div class="pcx-kpi"><div><div class="pcx-kpivalue">7</div><div class="pcx-kpilabel">planned tasks</div></div><div><div class="pcx-kpivalue">3</div><div class="pcx-kpilabel">ready now</div></div><div><div class="pcx-kpivalue">4</div><div class="pcx-kpilabel">blocked</div></div><div><div class="pcx-kpivalue">6</div><div class="pcx-kpilabel">owners</div></div></div>
+  <p class="pcx-cardmeta">The live board is read from the Agent Teams service inside the harness. Here the dependencies are the manifest's own, so this is the plan as written.</p>
+</section>
+<div class="pcx-grid">
+
+  <div class="pcx-taskcard" style="border-left-color:var(--pcx-idle)">
+    <div class="pcx-taskhead"><span class="pcx-mono">T1</span><strong style="flex:1">Generate TypeScript and Go types from the envelope contract</strong><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-idle)"></span>pending</span></div>
+    <div class="pcx-taskbody">The contract exists; nothing consumes it yet. Every other component depends on this shape being stable and generated rather than hand-copied.</div>
+    <div class="pcx-listitem"><span class="pcx-muted">owner</span><span class="pcx-tag">contractor</span></div>
+    
+    <div class="pcx-deps"><span class="pcx-badge" style="border-color:var(--pcx-brand)"><span class="pcx-dot" style="background:var(--pcx-brand)"></span><span class="pcx-mono">contracts</span> <span class="pcx-muted">(1)</span> <span class="pcx-tag">write</span></span></div>
+  </div>
+  <div class="pcx-taskcard" style="border-left-color:var(--pcx-idle)">
+    <div class="pcx-taskhead"><span class="pcx-mono">T2</span><strong style="flex:1">Stand up the PostgreSQL schema and prove its invariants</strong><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-idle)"></span>pending</span></div>
+    <div class="pcx-taskbody">Run db/schema.sql then db/invariants.test.sql against a real PostgreSQL 16 server as the runtime roles. The 27 assertions are the acceptance criteria.</div>
+    <div class="pcx-listitem"><span class="pcx-muted">owner</span><span class="pcx-tag">dbuilder</span></div>
+    
+    <div class="pcx-deps"><span class="pcx-badge" style="border-color:var(--pcx-brand)"><span class="pcx-dot" style="background:var(--pcx-brand)"></span><span class="pcx-mono">db</span> <span class="pcx-muted">(2)</span> <span class="pcx-tag">write</span></span></div>
+  </div>
+  <div class="pcx-taskcard" style="border-left-color:var(--pcx-idle)">
+    <div class="pcx-taskhead"><span class="pcx-mono">T3</span><strong style="flex:1">Implement the ingest write path and the two-tier dedup ladder</strong><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-err)"></span>blocked</span></div>
+    <div class="pcx-taskbody">ingest.record_event() owns idempotency, the dedup tie-break and retention, enforced by partial unique indices per docs/02-ingest-and-transport.md section 4.</div>
+    <div class="pcx-listitem"><span class="pcx-muted">owner</span><span class="pcx-tag">ingestor</span></div>
+    <div class="pcx-listitem"><span class="pcx-muted">waiting on</span><span class="pcx-dep">T1 pending</span><span class="pcx-dep">T2 pending</span></div>
+    <div class="pcx-deps"><span class="pcx-badge" style="border-color:var(--pcx-err)"><span class="pcx-dot" style="background:var(--pcx-err)"></span><span class="pcx-mono">services/ingest-api</span> <span class="pcx-tag">write</span></span></div>
+  </div>
+  <div class="pcx-taskcard" style="border-left-color:var(--pcx-idle)">
+    <div class="pcx-taskhead"><span class="pcx-mono">T4</span><strong style="flex:1">Implement the closed query DSL and the read path</strong><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-err)"></span>blocked</span></div>
+    <div class="pcx-taskbody">The browser must never speak SQL. A closed DSL compiles to parameterised queries, with audit-on-read and k-suppression, per ADR 0003.</div>
+    <div class="pcx-listitem"><span class="pcx-muted">owner</span><span class="pcx-tag">reader</span></div>
+    <div class="pcx-listitem"><span class="pcx-muted">waiting on</span><span class="pcx-dep">T2 pending</span></div>
+    <div class="pcx-deps"><span class="pcx-badge" style="border-color:var(--pcx-err)"><span class="pcx-dot" style="background:var(--pcx-err)"></span><span class="pcx-mono">services/query-api</span> <span class="pcx-tag">write</span></span><span class="pcx-badge" style="border-color:var(--pcx-err)"><span class="pcx-dot" style="background:var(--pcx-err)"></span><span class="pcx-mono">apps/dashboard</span> <span class="pcx-tag">write</span></span></div>
+  </div>
+  <div class="pcx-taskcard" style="border-left-color:var(--pcx-idle)">
+    <div class="pcx-taskhead"><span class="pcx-mono">T5</span><strong style="flex:1">Implement the content vault key hierarchy and grant-bound retrieval</strong><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-err)"></span>blocked</span></div>
+    <div class="pcx-taskbody">Per-object content keys wrapped by a per-tenant key; the only component that can unwrap. Grant issuance is per event and recorded.</div>
+    <div class="pcx-listitem"><span class="pcx-muted">owner</span><span class="pcx-tag">vaultkeeper</span></div>
+    <div class="pcx-listitem"><span class="pcx-muted">waiting on</span><span class="pcx-dep">T3 pending</span></div>
+    <div class="pcx-deps"><span class="pcx-badge" style="border-color:var(--pcx-err)"><span class="pcx-dot" style="background:var(--pcx-err)"></span><span class="pcx-mono">services/content-vault</span> <span class="pcx-tag">write</span></span></div>
+  </div>
+  <div class="pcx-taskcard" style="border-left-color:var(--pcx-idle)">
+    <div class="pcx-taskhead"><span class="pcx-mono">T6</span><strong style="flex:1">Validate local-inference capture, which gates build step 8</strong><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-idle)"></span>pending</span></div>
+    <div class="pcx-taskbody">Brief risk R1. A validation task, not a design task: measure whether the loopback inference broker sees what the design assumes it sees on both operating systems.</div>
+    <div class="pcx-listitem"><span class="pcx-muted">owner</span><span class="pcx-tag">prober</span></div>
+    
+    <div class="pcx-deps"><span class="pcx-badge" style="border-color:var(--pcx-brand)"><span class="pcx-dot" style="background:var(--pcx-brand)"></span><span class="pcx-mono">docs</span> <span class="pcx-muted">(23)</span> <span class="pcx-tag">write</span></span></div>
+  </div>
+  <div class="pcx-taskcard" style="border-left-color:var(--pcx-idle)">
+    <div class="pcx-taskhead"><span class="pcx-mono">T7</span><strong style="flex:1">Resolve the organisational dimension, without which three headline questions cannot be answered</strong><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-err)"></span>blocked</span></div>
+    <div class="pcx-taskbody">Brief risk Q2. Decide where the org dimension comes from and record it, then amend the affected read paths.</div>
+    <div class="pcx-listitem"><span class="pcx-muted">owner</span><span class="pcx-tag">prober</span></div>
+    <div class="pcx-listitem"><span class="pcx-muted">waiting on</span><span class="pcx-dep">T2 pending</span></div>
+    <div class="pcx-deps"><span class="pcx-badge" style="border-color:var(--pcx-brand)"><span class="pcx-dot" style="background:var(--pcx-brand)"></span><span class="pcx-mono">docs</span> <span class="pcx-muted">(23)</span> <span class="pcx-tag">write</span></span></div>
+  </div>
+</div></div><div class="pcx-view" data-view="files" hidden>
+<section class="pcx-section">
+  <h2 class="pcx-section-title">Which files each agent is handed</h2>
+  <div class="pcx-table">
+    
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="width:120px;flex:none">contractor</span>
+      <span class="pcx-cell" style="width:70px;flex:none">2 read</span>
+      <span class="pcx-cell" style="width:80px;flex:none">1 write</span>
+      <span class="pcx-cell pcx-muted">Generate TypeScript and Go types from the envelope contract</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="width:120px;flex:none">dbuilder</span>
+      <span class="pcx-cell" style="width:70px;flex:none">3 read</span>
+      <span class="pcx-cell" style="width:80px;flex:none">1 write</span>
+      <span class="pcx-cell pcx-muted">Stand up the PostgreSQL schema and prove its invariants</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="width:120px;flex:none">ingestor</span>
+      <span class="pcx-cell" style="width:70px;flex:none">3 read</span>
+      <span class="pcx-cell" style="width:80px;flex:none">1 write</span>
+      <span class="pcx-cell pcx-muted">Implement the ingest write path and the two-tier dedup ladder</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="width:120px;flex:none">reader</span>
+      <span class="pcx-cell" style="width:70px;flex:none">3 read</span>
+      <span class="pcx-cell" style="width:80px;flex:none">2 write</span>
+      <span class="pcx-cell pcx-muted">Implement the closed query DSL and the read path</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="width:120px;flex:none">vaultkeeper</span>
+      <span class="pcx-cell" style="width:70px;flex:none">3 read</span>
+      <span class="pcx-cell" style="width:80px;flex:none">1 write</span>
+      <span class="pcx-cell pcx-muted">Implement the content vault key hierarchy and grant-bound retrieval</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="width:120px;flex:none">prober</span>
+      <span class="pcx-cell" style="width:70px;flex:none">2 read</span>
+      <span class="pcx-cell" style="width:80px;flex:none">1 write</span>
+      <span class="pcx-cell pcx-muted">Validate local-inference capture, which gates build step 8</span>
+    </div>
+  </div>
+</section>
+<section class="pcx-section">
+  <h2 class="pcx-section-title">Files claimed by an agent (16)</h2>
+  <div class="pcx-table">
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">contracts/event-envelope.schema.json</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">contractor</span><span class="pcx-tag" style="margin-left:4px">ingestor</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: envelope-contract</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/invariants.test.sql</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/schema.sql</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span><span class="pcx-tag" style="margin-left:4px">reader</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">docs/00-architecture.md</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">prober</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: design-package</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">docs/01-collectors.md</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">prober</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: capture-extension, capture-core, classifier-host, device-spool, design-package</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">docs/02-ingest-and-transport.md</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">contractor</span><span class="pcx-tag" style="margin-left:4px">ingestor</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: envelope-contract, ingest-api, control-api, design-package</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">docs/03-data-platform.md</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: aggregator, database, design-package</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">docs/04-dashboard-and-query.md</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">reader</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: query-api, dashboard, design-package</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">docs/06-security-and-threat-model.md</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">vaultkeeper</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: content-vault, design-package</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">docs/adr/0001-one-validating-write-path-collectors-hold-no-database-credential.md</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">ingestor</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: ingest-api, design-package</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">docs/adr/0002-postgresql-is-the-server-store-sqlite-is-only-the-device-spool.md</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database, device-spool, design-package</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">docs/adr/0003-the-dashboard-reads-through-a-query-api-with-a-closed-query-dsl.md</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">reader</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: query-api, design-package</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">docs/adr/0006-content-is-ciphertext-under-per-object-keys-wrapped-by-a-per-tenant-key.md</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">vaultkeeper</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: content-vault, design-package</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">docs/adr/0007-tenant-residency-is-pinned-and-fails-closed-at-ingest.md</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database, design-package</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">docs/adr/0010-the-envelope-is-a-discriminated-union-with-a-closed-kind-registry.md</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">contractor</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: envelope-contract, design-package</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">docs/adr/0014-content-search-is-a-per-tenant-capability.md</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">vaultkeeper</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: content-vault, design-package</span>
+    </div></div>
+</section>
+<section class="pcx-section">
+  <h2 class="pcx-section-title">Unclaimed (200 shown of 475)</h2>
+  <div class="pcx-table"><div class="pcx-row pcx-mono pcx-muted">.cockpit/README.md</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/cockpit.json</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/cordis.patch.yml</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/lib/actions.js</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/lib/client.js</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/lib/client/index.js</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/lib/client/styles.js</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/lib/client/viewmodel.js</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/lib/discover.js</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/lib/index.js</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/lib/manifest.js</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/lib/store.js</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/package.json</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/project.json</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/schema/README.md</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/schema/manifest-v1.schema.json</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/test/all.mjs</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/test/bundle.mjs</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/test/composition.mjs</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/test/host.mjs</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/test/panel.mjs</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/test/run.mjs</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/tools/asar.mjs</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/tools/build-client.mjs</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/tools/inspect.mjs</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/tools/link-sdk.mjs</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/tools/move.mjs</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/tools/preview.mjs</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/tools/relaunch.cmd</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/tools/sync-install.mjs</div></div>
+</section></div><div class="pcx-view" data-view="verify" hidden>
+<section class="pcx-section">
+  <h2 class="pcx-section-title">Findings (0)</h2>
+  <div class="pcx-ok">Nothing is inconsistent: every declared path resolves, no write scopes overlap, and no task is blocked while in progress.</div>
+</section>
+<section class="pcx-section">
+  <h2 class="pcx-section-title">Commands</h2>
+  <div class="pcx-list">
+    <div class="pcx-listitem"><span class="pcx-muted" style="min-width:90px">verify</span><code class="pcx-mono">psql -v ON_ERROR_STOP=1 -f db/schema.sql &amp;&amp; psql -v ON_ERROR_STOP=1 -f db/invariants.test.sql</code></div>
+    <div class="pcx-listitem"><span class="pcx-muted" style="min-width:90px">manifest</span><code class="pcx-mono">.cockpit/project.json</code></div>
+  </div>
+</section>
+
+<section class="pcx-section">
+  <h2 class="pcx-section-title">Coverage</h2>
+  <div class="pcx-kpi"><div><div class="pcx-kpivalue">502</div><div class="pcx-kpilabel">files on disk</div></div><div><div class="pcx-kpivalue">32</div><div class="pcx-kpilabel">declared paths</div></div><div><div class="pcx-kpivalue">27</div><div class="pcx-kpilabel">declared and present</div></div><div><div class="pcx-kpivalue">5</div><div class="pcx-kpilabel">declared but absent</div></div><div><div class="pcx-kpivalue">475</div><div class="pcx-kpilabel">unclaimed files</div></div></div>
+</section></div>
+  </div>
+  <div class="pcx-footer">
+    <span class="pcx-mono">C:\Users\kyle\Downloads\architecture</span>
+    <span class="pcx-mono">.cockpit/project.json</span>
+    <span>read 10/2/2026, 1:18:55 PM</span>
+    <span class="pcx-muted">standalone preview</span>
+  </div>
+</div>
+<p class="pcx-note">Rendered by <code>tools/preview.mjs</code> from the same index and the same stylesheet the panel uses. The live panel adds session-aware team state and the two task-board actions.</p>
+<script>
+for (const button of document.querySelectorAll('[data-tab]')) {
+  button.addEventListener('click', () => {
+    for (const other of document.querySelectorAll('[data-tab]')) {
+      const on = other === button;
+      other.classList.toggle('pcx-tab-active', on);
+      other.setAttribute('aria-selected', String(on));
+      document.querySelector('[data-view="' + other.dataset.tab + '"]').hidden = !on;
+    }
+  });
+}
+</script>
+</body></html>

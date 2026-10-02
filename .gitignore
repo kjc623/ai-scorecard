@@ -1,0 +1,27 @@
+# Build output and local tool state - never part of the deliverable
+.tools/gocache/
+.tools/probe/
+.tools/tmp/
+.tools/shot/
+.tools/pg/
+.tools/dsh-src/
+.tools/asar-extract.mjs
+.tools/asar-pick.mjs
+
+# Go
+bin/
+*.exe
+*.test
+*.wasm
+!device/classifier-host/wasm/*.wasm
+
+# Node
+node_modules/
+*.log
+
+# Local database cluster state
+.tools/pgdata/
+
+# Editor / OS
+.DS_Store
+Thumbs.db

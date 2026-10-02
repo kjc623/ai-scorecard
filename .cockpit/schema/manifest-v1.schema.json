@@ -1,0 +1,106 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://dsh.local/schemas/project-cockpit-manifest-v1.json",
+  "title": "Project Cockpit manifest (schemaVersion 1)",
+  "description": "The hand-authored source of truth for a project's intended architecture, its components, and the agents that will build it. The cockpit validates this file and maps it onto the real workspace, marking every declared path as present, missing, or extra.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "project", "components"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string" },
+        "stage": { "type": "string", "enum": ["design", "scaffold", "building", "hardening", "shipped"] },
+        "docsRoot": { "type": "string", "description": "Workspace-relative directory holding the design documents, used to link components to their prose." },
+        "testCommand": { "type": "string", "description": "The command that proves the project still works, shown in the cockpit's Verify panel." },
+        "runCommand": { "type": "string" }
+      }
+    },
+    "components": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+          "name": { "type": "string", "minLength": 1 },
+          "kind": { "type": "string", "description": "Free-form category, e.g. device-agent, service, data, ui, infra, docs, contract." },
+          "layer": { "type": "string", "description": "Grouping row in the architecture map, e.g. device, edge, backend, data, presentation." },
+          "language": { "type": "string" },
+          "runtime": { "type": "string" },
+          "status": { "type": "string", "enum": ["proposed", "scaffolded", "in-progress", "done", "blocked", "cut"] },
+          "summary": { "type": "string" },
+          "dependsOn": { "type": "array", "items": { "type": "string" }, "description": "Component ids this component consumes. Rendered as directed edges." },
+          "paths": { "type": "array", "items": { "type": "string" }, "description": "Workspace-relative files or directory prefixes this component owns." },
+          "docs": { "type": "array", "items": { "type": "string" }, "description": "Workspace-relative documents describing this component." },
+          "decisions": { "type": "array", "items": { "type": "string" }, "description": "Workspace-relative ADRs or decision records binding this component." },
+          "notes": { "type": "string" }
+        }
+      }
+    },
+    "tasks": {
+      "type": "array",
+      "description": "The planned work breakdown. This is the cockpit's own copy of intent; live execution state comes from the DSH team task board.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "subject"],
+        "properties": {
+          "id": { "type": "string" },
+          "subject": { "type": "string", "minLength": 1 },
+          "description": { "type": "string" },
+          "status": { "type": "string", "enum": ["pending", "in_progress", "completed", "blocked"] },
+          "dependsOn": { "type": "array", "items": { "type": "string" } },
+          "componentIds": { "type": "array", "items": { "type": "string" } },
+          "writeScopes": { "type": "array", "items": { "type": "string" } },
+          "owner": { "type": "string", "description": "Agent id, or 'lead'." },
+          "order": { "type": "number" }
+        }
+      }
+    },
+    "agents": {
+      "type": "array",
+      "description": "The roster the project is planned around. Each entry pairs an agent with the task it owns and the exact files it will be handed.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "role"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+          "role": { "type": "string", "minLength": 1 },
+          "emoji": { "type": "string" },
+          "purpose": { "type": "string" },
+          "taskId": { "type": "string" },
+          "task": { "type": "string", "description": "The task statement handed to this agent, verbatim." },
+          "componentIds": { "type": "array", "items": { "type": "string" } },
+          "readPaths": { "type": "array", "items": { "type": "string" }, "description": "Files the agent is explicitly given as context." },
+          "writeScopes": { "type": "array", "items": { "type": "string" }, "description": "Workspace-relative prefixes this agent may modify. Overlaps are flagged." },
+          "model": { "type": "string" },
+          "notes": { "type": "string" }
+        }
+      }
+    },
+    "invariants": {
+      "type": "array",
+      "description": "Properties that must hold. Shown beside the components they constrain.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "statement"],
+        "properties": {
+          "id": { "type": "string" },
+          "statement": { "type": "string" },
+          "componentIds": { "type": "array", "items": { "type": "string" } },
+          "record": { "type": "string", "description": "Workspace-relative decision record that binds this invariant." }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,432 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://shadow-ai-capture.invalid/contracts/event-envelope.schema.json",
+  "title": "Shadow AI Capture event envelope",
+  "description": "The single record emitted by every collection path. Brief §4.1 fixes the common core; this contract makes `kind` a discriminator with per-kind required fields rather than making prompt-only fields nullable, so a malformed record is rejected at the edge instead of stored (ADR 0010). Two changes to §4.1 are deliberate: `received_at` is server-assigned and a device MUST NOT send it, and `schema_version` is added because §4.3 requires validation against a versioned schema. TypeScript and Go types are generated from this file; it is the only permitted source of field names. Every field is declared in envelopeCore so that `additionalProperties: false` stays meaningful; which fields are *required* is decided by the `if/then` branches in envelopeCore.allOf.",
+  "$ref": "#/$defs/storedEnvelope",
+
+  "$defs": {
+
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "Lowercase hex SHA-256, prefixed. Never a truncated or base64 form."
+    },
+
+    "route": {
+      "type": "string",
+      "description": "Which collection route produced this record. Closed vocabulary; fidelity ranking per route lives in ref.route_fidelity and is what decides the winner when two routes observe one submission (brief §4.1).",
+      "enum": [
+        "ext.web_request",
+        "ext.page_context",
+        "ext.dom",
+        "proxy.tls",
+        "proxy.loopback",
+        "proc.detect",
+        "cli.shim"
+      ]
+    },
+
+    "label": {
+      "type": "object",
+      "description": "One classification verdict. A label set, never a boolean and never a bare 'sensitive: yes' (brief §6).",
+      "required": ["class", "score"],
+      "additionalProperties": false,
+      "properties": {
+        "class": {
+          "type": "string",
+          "description": "Data class code, from the catalogue in ref.data_class: payment_card, government_id, credential, source_code, customer_pii, legal_commercial, health.",
+          "pattern": "^[a-z][a-z0-9_]{1,63}$"
+        },
+        "score": { "type": "number", "minimum": 0, "maximum": 1 },
+        "rule_id": {
+          "type": "string",
+          "description": "Present when the label came from a deterministic rule, so a customer asking 'why was this flagged' has an answer (brief §6).",
+          "pattern": "^[A-Z][A-Z0-9_]{2,63}$"
+        }
+      }
+    },
+
+    "policyDecision": {
+      "type": "object",
+      "description": "What policy did about this event, and where the decision was made. `action` values are never merged (brief §3.2).",
+      "required": ["rule_id", "action", "decided_locally"],
+      "additionalProperties": false,
+      "properties": {
+        "rule_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "action": { "type": "string", "enum": ["blocked", "warned", "logged"] },
+        "decided_locally": {
+          "type": "boolean",
+          "description": "True when the device decided without a server round trip. Recorded because an offline device and a server-decided event are different facts about the same outcome."
+        }
+      }
+    },
+
+    "attachment": {
+      "type": "object",
+      "description": "An attachment as the collector saw it. A file upload reports a filename and never bytes (brief E3), so the name is metadata obtainable at M1 without reading the file at all, while the bytes are obtainable only in page context. Attachment names are searchable at the `attachment_names` tier from ADR 0014; the bytes are a separate, costlier decision.",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "description": "The filename as reported by the request or read from the file object. Recorded as-is rather than normalised, because the customer searches for the name they recognise; normalisation for matching happens at index time."
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "content_digest": {
+          "$ref": "#/$defs/sha256",
+          "description": "Digest of the attachment bytes. Present only when the collector could read the file object, which is the page-context route; a filename alone is still emitted without it."
+        }
+      }
+    },
+
+    "excerpt": {
+      "type": "object",
+      "description": "A minimised excerpt, present only at M2 and only when policy permits it. Either a matched span identified by offsets or a redacted window — never the whole payload.",
+      "required": ["kind", "text"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["match_span", "redacted_window"],
+          "description": "'match_span' is offsets into the original payload with the matched text; 'redacted_window' is surrounding context with non-matching content removed."
+        },
+        "text": { "type": "string", "maxLength": 2048 },
+        "match_type": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "The rule family that produced the span, e.g. payment_card, government_id."
+        },
+        "offset_start": { "type": "integer", "minimum": 0 },
+        "offset_end": { "type": "integer", "minimum": 0 },
+        "redaction_applied": { "type": "boolean" }
+      }
+    },
+
+    "envelopeCore": {
+      "type": "object",
+      "description": "Common core plus every kind-specific field. Which are required depends on `kind` and, for prompts, on `collection_mode`.",
+      "required": [
+        "schema_version",
+        "event_id",
+        "tenant_id",
+        "device_id",
+        "user_ref",
+        "tool_fingerprint",
+        "direction",
+        "kind",
+        "occurred_at",
+        "monotonic_offset_ms",
+        "source",
+        "collection_mode",
+        "dedup_key"
+      ],
+      "additionalProperties": false,
+      "properties": {
+
+        "schema_version": {
+          "type": "string",
+          "const": "1.0",
+          "description": "Contract version this record validates against (brief §4.3)."
+        },
+
+        "event_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Identifier for this observation, minted by the collector. Two routes observing one submission mint two different event_ids; they collapse later through dedup_key, not here."
+        },
+
+        "tenant_id": { "type": "string", "format": "uuid" },
+        "device_id": { "type": "string", "format": "uuid" },
+
+        "user_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Pseudonymous subject reference, stable per tenant. Resolved to a person only through ops.user_dim, which is populated from the customer's directory. The wire format never carries a name, email or directory object id."
+        },
+
+        "tool_fingerprint": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Behaviour-derived identifier for the destination or application, not a brand name. Discovery must classify behaviour rather than match a curated list (brief §2), so this value is computed from observable signals and the sanctioned/unsanctioned judgement is per-tenant state held in ops.tool."
+        },
+
+        "direction": {
+          "type": "string",
+          "enum": ["egress", "ingress", "none"],
+          "description": "'ingress' is reserved and cannot appear on a v1.0 record at all: the prompt branch pins direction to 'egress', so a collector that emits a response-side record is rejected rather than stored. The value exists so that enabling response capture is a schema_version change rather than a rewrite of this field, which is what brief §1.2 means by leaving the seam without building it."
+        },
+
+        "kind": {
+          "type": "string",
+          "enum": ["prompt", "usage_rollup", "model_detection"],
+          "description": "Discriminator. Closed registry, enforced by the ingest API, which is what makes risk R7 structural: a collector defect cannot begin shipping raw per-process telemetry, because no kind exists for it."
+        },
+
+        "occurred_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Device clock at observation. Retained for ordering and skew analysis; the server stamps received_at and that is what display uses (brief §3.6)."
+        },
+
+        "received_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server receive time, stamped by the ingest gateway. Authoritative for display; occurred_at is retained for ordering and skew (brief §3.6). A device must not send this — see $defs/deviceSubmission."
+        },
+
+        "monotonic_offset_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Milliseconds since an arbitrary device-local monotonic origin. Gives intra-device ordering that survives clock changes, which wall-clock device time does not."
+        },
+
+        "source": { "$ref": "#/$defs/route" },
+
+        "confidence": {
+          "type": "string",
+          "enum": ["high", "medium", "low", "degraded"],
+          "description": "Overall classifier confidence band. 'degraded' means classification was attempted and did not complete — the explicit signal required by brief §6 so that a failed classifier is never reported as 'no sensitive data found'."
+        },
+
+        "collection_mode": {
+          "type": "string",
+          "enum": ["m0", "m1", "m2", "m3"],
+          "description": "The effective mode applied to this observation, resolved on the device from the signed scope matrix by taking the most restrictive applicable value across tool, data class and user population (brief §1.1)."
+        },
+
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Size of the observed payload. Available at every mode including M0."
+        },
+
+        "content_digest": {
+          "$ref": "#/$defs/sha256",
+          "description": "Digest of the normalised content. Required at M1 and above. Absent at M0, where the collector is not permitted to read content at all."
+        },
+
+        "labels": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/label" },
+          "description": "Classification verdicts. Required at M1 and above, absent at M0."
+        },
+
+        "classifier_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "Classifier release that produced `labels`, from ref.classifier_release. Required at M1 and above so a change in classifier behaviour is visible as a version change."
+        },
+
+        "content_excerpt": {
+          "$ref": "#/$defs/excerpt",
+          "description": "Required at M2, forbidden at M0 and M3."
+        },
+
+        "attachments": {
+          "type": "array",
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/attachment" },
+          "description": "Attachment descriptors: filename always, bytes-derived fields only when the collector could read the file. Permitted at M1 and above and forbidden at M0, because M0's closed list is device, user, tool, timestamp, size and destination -- a filename is not on it. Present, possibly empty, whenever the submission carried attachments."
+        },
+
+        "policy_decision": {
+          "$ref": "#/$defs/policyDecision",
+          "description": "Required for every prompt event, including M0: a tenant can block a tool outright without reading content."
+        },
+
+        "dedup_key": {
+          "$ref": "#/$defs/sha256",
+          "description": "Idempotency key, derived per kind from tenant, device, tool and the best material the mode permits. At M1 and above it includes the normalised content digest; at M0 the device cannot read content, so it is derived from an occurred_at bucket and size instead, and dedup is correspondingly weaker. The canonicalisation is normative and lives in docs/02-ingest-and-transport.md §4."
+        },
+
+        "window_start": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Start of the rollup window. Required for usage_rollup."
+        },
+
+        "window_end": {
+          "type": "string",
+          "format": "date-time",
+          "description": "End of the rollup window. Required for usage_rollup."
+        },
+
+        "submission_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Submissions observed in the window. Required for usage_rollup."
+        },
+
+        "bytes_total": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total bytes observed in the window. Required for usage_rollup."
+        },
+
+        "detection_basis": {
+          "type": "string",
+          "enum": ["process_scan", "endpoint_security", "etw", "module_signature"],
+          "description": "How an on-device model was detected. Required for model_detection. Recorded because the four mechanisms have materially different confidence and coverage, and merging them would overstate what is known."
+        }
+      },
+
+      "allOf": [
+
+        {
+          "if": {
+            "properties": { "kind": { "const": "usage_rollup" } },
+            "required": ["kind"]
+          },
+          "then": {
+            "required": ["window_start", "window_end", "submission_count", "bytes_total"],
+            "properties": { "direction": { "const": "none" } },
+            "not": {
+              "anyOf": [
+                { "required": ["content_digest"] },
+                { "required": ["labels"] },
+                { "required": ["classifier_version"] },
+                { "required": ["content_excerpt"] },
+                { "required": ["policy_decision"] },
+                { "required": ["size_bytes"] },
+                { "required": ["attachments"] },
+                { "required": ["detection_basis"] }
+              ]
+            }
+          }
+        },
+
+        {
+          "if": {
+            "properties": { "kind": { "const": "model_detection" } },
+            "required": ["kind"]
+          },
+          "then": {
+            "required": ["detection_basis"],
+            "properties": { "direction": { "const": "none" } },
+            "not": {
+              "anyOf": [
+                { "required": ["content_digest"] },
+                { "required": ["labels"] },
+                { "required": ["classifier_version"] },
+                { "required": ["content_excerpt"] },
+                { "required": ["policy_decision"] },
+                { "required": ["size_bytes"] },
+                { "required": ["attachments"] },
+                { "required": ["window_start"] }
+              ]
+            }
+          }
+        },
+
+        {
+          "if": {
+            "properties": { "kind": { "const": "prompt" } },
+            "required": ["kind"]
+          },
+          "then": {
+            "required": ["size_bytes", "policy_decision"],
+            "properties": { "direction": { "const": "egress" } },
+            "not": {
+              "anyOf": [
+                { "required": ["window_start"] },
+                { "required": ["window_end"] },
+                { "required": ["submission_count"] },
+                { "required": ["bytes_total"] },
+                { "required": ["detection_basis"] }
+              ]
+            }
+          }
+        },
+
+        {
+          "comment": "M0 prompt: no content was read, so no content-derived field may appear, and no attachment descriptor either -- M0's closed list is device, user, tool, timestamp, size and destination. A digest, a label set or a filename on an M0 record is evidence of a defect, and is rejected rather than ignored, because it would mean the device read something it was not permitted to read.",
+          "if": {
+            "properties": {
+              "kind": { "const": "prompt" },
+              "collection_mode": { "const": "m0" }
+            },
+            "required": ["kind", "collection_mode"]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                { "required": ["content_digest"] },
+                { "required": ["labels"] },
+                { "required": ["classifier_version"] },
+                { "required": ["confidence"] },
+                { "required": ["content_excerpt"] },
+                { "required": ["attachments"] }
+              ]
+            }
+          }
+        },
+
+        {
+          "comment": "M1 and above: the record must carry the classifier's output including its version, so a change in classifier behaviour shows up as a version change rather than a mysterious shift in the numbers (brief §6).",
+          "if": {
+            "properties": {
+              "kind": { "const": "prompt" },
+              "collection_mode": { "enum": ["m1", "m2", "m3"] }
+            },
+            "required": ["kind", "collection_mode"]
+          },
+          "then": {
+            "required": ["content_digest", "labels", "classifier_version", "confidence"]
+          }
+        },
+
+        {
+          "comment": "M2 adds a minimised excerpt so an analyst can see why something was flagged. 'Minimised' is enforced structurally: 2048 characters maximum, never the whole payload.",
+          "if": {
+            "properties": {
+              "kind": { "const": "prompt" },
+              "collection_mode": { "const": "m2" }
+            },
+            "required": ["kind", "collection_mode"]
+          },
+          "then": { "required": ["content_excerpt"] }
+        },
+
+        {
+          "comment": "M3 does NOT carry prompt text or attachment bytes in the envelope. The envelope is what crosses the network by default, and at M3 what crosses is still only a classification, a digest and dimensions; the content itself moves solely on an explicit per-event grant (brief §1, §4.4). A minimised excerpt at M3 is therefore rejected — M3's content path is the approved retrieval path, not the wire.",
+          "if": {
+            "properties": {
+              "kind": { "const": "prompt" },
+              "collection_mode": { "const": "m3" }
+            },
+            "required": ["kind", "collection_mode"]
+          },
+          "then": {
+            "not": { "required": ["content_excerpt"] }
+          }
+        }
+      ]
+    },
+
+    "storedEnvelope": {
+      "description": "The envelope as stored: the common core plus the server-assigned receive time.",
+      "allOf": [
+        { "$ref": "#/$defs/envelopeCore" },
+        { "required": ["received_at"] }
+      ]
+    },
+
+    "deviceSubmission": {
+      "description": "What a device is permitted to send: the common core, with received_at forbidden, because a device-supplied receive time would be neither device time nor server time and brief §3.6 requires exactly two clocks.",
+      "allOf": [
+        { "$ref": "#/$defs/envelopeCore" },
+        { "not": { "required": ["received_at"] } }
+      ]
+    }
+  }
+}

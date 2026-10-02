@@ -1,0 +1,190 @@
+{
+  "schemaVersion": 1,
+  "project": {
+    "name": "Project Cockpit",
+    "summary": "A DSH plugin that gives a project a holistic visual cockpit: the architecture map, the live agent team, the shared task board, and exactly which files each agent is handed. Read-only by default, with two narrow team-board actions.",
+    "stage": "building",
+    "docsRoot": "",
+    "testCommand": "node test/all.mjs",
+    "runCommand": ""
+  },
+  "components": [
+    {
+      "id": "host-half",
+      "name": "Host Half",
+      "kind": "service",
+      "layer": "plugin",
+      "language": "JavaScript",
+      "runtime": "Node, inside the DSH host",
+      "status": "done",
+      "summary": "The cordis plugin: validates and derives the project index, serves it to the panel over an authenticated /api route, registers the project_cockpit model-facing tool, and performs the two guarded task-board actions.",
+      "dependsOn": ["manifest-engine", "workspace-index", "team-actions"],
+      "paths": ["lib/index.js"],
+      "docs": ["README.md"],
+      "decisions": [],
+      "notes": "No default export: the loader's unwrapExports would drop inject and the plugin would mount without its services."
+    },
+    {
+      "id": "manifest-engine",
+      "name": "Manifest Engine",
+      "kind": "library",
+      "layer": "plugin",
+      "language": "JavaScript",
+      "runtime": "pure",
+      "status": "done",
+      "summary": "Validates the project manifest and normalizes it, reporting every problem with a JSON pointer, and rejects dependency cycles and dangling references.",
+      "dependsOn": [],
+      "paths": ["lib/manifest.js", "schema/manifest-v1.schema.json"],
+      "docs": ["README.md"],
+      "decisions": [],
+      "notes": "A silently misread manifest would draw a confident, wrong architecture, so validation never stops at the first problem."
+    },
+    {
+      "id": "workspace-index",
+      "name": "Workspace Index",
+      "kind": "library",
+      "layer": "plugin",
+      "language": "JavaScript",
+      "runtime": "pure",
+      "status": "done",
+      "summary": "Walks the workspace within bounds, resolves every declared path as present, directory or missing, and joins files to the component that owns them and the agent that will touch them.",
+      "dependsOn": ["manifest-engine"],
+      "paths": ["lib/discover.js", "lib/store.js"],
+      "docs": ["README.md"],
+      "decisions": [],
+      "notes": "Planned is never conflated with present: a declared path that is not on disk is reported as absent, not omitted."
+    },
+    {
+      "id": "team-actions",
+      "name": "Team Actions",
+      "kind": "library",
+      "layer": "plugin",
+      "language": "JavaScript",
+      "runtime": "pure, over the Agent Teams service",
+      "status": "done",
+      "summary": "The narrow write surface: create a task, apply a compare-and-set transition, send a durable message. Every action is attributed to the named session's exact live Lead agent.",
+      "dependsOn": [],
+      "paths": ["lib/actions.js"],
+      "docs": ["README.md"],
+      "decisions": [],
+      "notes": "Cannot touch files, spawn members, or change policy. Those stay with the agent tools."
+    },
+    {
+      "id": "panel",
+      "name": "Cockpit Panel",
+      "kind": "ui",
+      "layer": "plugin",
+      "language": "JavaScript",
+      "runtime": "React via the shell's platform module table",
+      "status": "done",
+      "summary": "The sidebar glyph and the full-width panel: architecture map, roster against the live team, the task board, the file-to-agent join, and the findings list.",
+      "dependsOn": ["host-half"],
+      "paths": ["lib/client/index.js", "lib/client/viewmodel.js", "lib/client/styles.js", "lib/client.js"],
+      "docs": ["README.md"],
+      "decisions": [],
+      "notes": "lib/client.js is generated from lib/client/*.js by tools/build-client.mjs."
+    },
+    {
+      "id": "checks",
+      "name": "Test Suites",
+      "kind": "tests",
+      "layer": "plugin",
+      "language": "JavaScript",
+      "runtime": "Node without dependencies",
+      "status": "done",
+      "summary": "Five suites: manifest derivation against a real tree, the client bundle's contract with the shell, what the panel renders, that the host plugin mounts and its actions answer, and that the shell's own client-module scanner composes the package.",
+      "dependsOn": ["host-half", "panel"],
+      "paths": ["test"],
+      "docs": ["README.md"],
+      "decisions": [],
+      "notes": "The composition suite imports the shipped ClientModuleRegistry rather than reimplementing its rules."
+    },
+    {
+      "id": "tooling",
+      "name": "Tooling",
+      "kind": "tooling",
+      "layer": "plugin",
+      "language": "JavaScript",
+      "runtime": "Node",
+      "status": "done",
+      "summary": "The client bundle builder, the workspace inspector, the install synchroniser, the SDK linker (which extracts from app.asar when no checkout exists), and the asar reader.",
+      "dependsOn": ["panel"],
+      "paths": ["tools"],
+      "docs": ["README.md"],
+      "decisions": [],
+      "notes": "The package must work moved, so nothing here assumes a particular location."
+    }
+  ],
+  "tasks": [
+    {
+      "id": "C1",
+      "subject": "Confirm the cockpit renders in the live GUI",
+      "description": "Restart DSH so the client module graph re-composes, open the panel from the sidebar, and check all five tabs against the real project. This is the only part of the objective not yet observed.",
+      "status": "in_progress",
+      "dependsOn": [],
+      "componentIds": ["panel", "host-half"],
+      "writeScopes": [],
+      "owner": "lead",
+      "order": 1
+    },
+    {
+      "id": "C2",
+      "subject": "Exercise the two team-board actions end to end",
+      "description": "From the Tasks tab, add a planned task to the shared board and confirm it appears with its revision; from the Agents tab, send a member its task and confirm delivery.",
+      "status": "pending",
+      "dependsOn": ["C1"],
+      "componentIds": ["team-actions"],
+      "writeScopes": [],
+      "owner": "lead",
+      "order": 2
+    }
+  ],
+  "agents": [
+    {
+      "id": "lead",
+      "role": "Build owner",
+      "emoji": "🛠️",
+      "purpose": "Builds and verifies the cockpit, and owns the install it runs from.",
+      "taskId": "C1",
+      "task": "Restart the harness, open the cockpit, and confirm the panel against the real project before claiming the work done.",
+      "componentIds": ["host-half", "panel"],
+      "readPaths": ["README.md", "schema/manifest-v1.schema.json"],
+      "writeScopes": ["lib", "test", "tools"],
+      "model": "",
+      "notes": ""
+    },
+    {
+      "id": "cartographer",
+      "role": "Tooling engineer",
+      "emoji": "🗺️",
+      "purpose": "Keeps the cockpit's own map of itself true, and the package relocatable.",
+      "taskId": "",
+      "task": "When a module moves or a component lands, update cockpit.json in the same change. Run `node tools/inspect.mjs` afterwards - it prints exactly what the panel will show, and the cockpit reads this manifest when it is opened against its own folder.",
+      "componentIds": ["tooling", "checks"],
+      "readPaths": ["README.md", "cockpit.json"],
+      "writeScopes": ["cockpit.json", "tools", "test"],
+      "model": "",
+      "notes": "A manifest that lags the tree is worse than none, because it reads as authoritative."
+    }
+  ],
+  "invariants": [
+    {
+      "id": "INV-A",
+      "statement": "Planned and present are never conflated: a declared path that is not on disk is reported as absent, not omitted.",
+      "componentIds": ["workspace-index", "panel"],
+      "record": ""
+    },
+    {
+      "id": "INV-B",
+      "statement": "The cockpit cannot write to the project. Its only writes are two task-board actions, each attributed to the named session's live Lead.",
+      "componentIds": ["team-actions"],
+      "record": ""
+    },
+    {
+      "id": "INV-C",
+      "statement": "No project is chosen by default: the resolved directory and the rule that chose it are always shown.",
+      "componentIds": ["host-half", "panel"],
+      "record": ""
+    }
+  ]
+}

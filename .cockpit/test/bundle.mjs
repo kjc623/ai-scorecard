@@ -1,0 +1,223 @@
+/**
+ * Project Cockpit â€” client bundle contract checks.
+ *
+ * These are about the one thing a syntax check cannot see and the render checks
+ * (test/panel.mjs) do not cover: that the bundle registers itself with the shell
+ * exactly the way the module loader and the slot registry require. A mistake
+ * here means the panel silently never appears â€” the sidebar button selects a
+ * `main` key nothing is registered under, or a default export drops `inject` and
+ * the plugin never mounts.
+ *
+ * Run: node .cockpit/test/bundle.mjs
+ */
+
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const here = path.dirname(fileURLToPath(import.meta.url))
+const root = path.resolve(here, '..')
+
+let passed = 0
+let failed = 0
+
+/** Run one named check. */
+function test(name, fn) {
+  try {
+    fn()
+    passed += 1
+    process.stdout.write(`  ok   ${name}\n`)
+  } catch (error) {
+    failed += 1
+    process.stdout.write(`  FAIL ${name}\n         ${error instanceof Error ? error.message : String(error)}\n`)
+  }
+}
+
+// --- the shell environment ---------------------------------------------------
+
+const styleTags = []
+const documentStub = {
+  querySelector: (selector) => styleTags.find((tag) => `style[data-plugin-css="${tag.dataset.pluginCss}"]` === selector) ?? null,
+  createElement: () => ({ dataset: {}, textContent: '' }),
+  head: { appendChild: (element) => (styleTags.push(element), element) },
+}
+
+/** A React stand-in: the bundle only builds elements here, never renders. */
+const ReactStub = {
+  createElement: (type, props, ...children) => ({ $$typeof: 'element', type, props: { ...(props ?? {}), ...(children.length === 0 ? {} : { children: children.length === 1 ? children[0] : children }) } }),
+  Fragment: 'Fragment',
+  useState: () => [undefined, () => {}],
+  useCallback: (fn) => fn,
+  useEffect: () => {},
+  useRef: () => ({ current: undefined }),
+  useSyncExternalStore: (subscribe, get) => get(),
+}
+
+const registrations = []
+const injections = []
+const sessionsStub = { list: { getSnapshot: () => ({ ids: [], byId: {}, projectionsBySession: {} }), subscribe: () => () => {} } }
+const ctx = {
+  sessions: sessionsStub,
+  slots: {
+    inject: (slot, register) => {
+      injections.push(slot)
+      register()
+    },
+    register: (options, component) => {
+      registrations.push({ options, component })
+      return () => {}
+    },
+  },
+}
+
+const loaded = { id: undefined, exports: undefined }
+const facade = {
+  load: ({ id, factory }) => {
+    loaded.id = id
+    loaded.exports = factory((specifier) => {
+      if (specifier === 'react') return ReactStub
+      if (specifier === 'react-dom' || specifier === 'react/jsx-runtime') return {}
+      throw new Error(`module ${specifier} is not in the platform module table`)
+    })
+  },
+}
+
+const sandbox = {
+  window: { __ModuleLoader__: facade, location: { href: 'http://127.0.0.1:19387/' } },
+  document: documentStub,
+  fetch: async () => {
+    throw new Error('the bundle must not fetch before the panel renders')
+  },
+  console,
+  setTimeout,
+  clearTimeout,
+  AbortController,
+  URL,
+}
+
+// --- load --------------------------------------------------------------------
+
+process.stdout.write('bundle contract\n')
+
+const source = readFileSync(path.join(root, 'lib', 'client.js'), 'utf8')
+// eslint-disable-next-line no-new-func
+new Function('window', 'document', 'fetch', 'console', 'setTimeout', 'clearTimeout', 'AbortController', 'URL', source)(
+  sandbox.window,
+  sandbox.document,
+  sandbox.fetch,
+  sandbox.console,
+  sandbox.setTimeout,
+  sandbox.clearTimeout,
+  sandbox.AbortController,
+  sandbox.URL,
+)
+
+test('registers under the package name the host serves', () => {
+  assert.equal(loaded.id, 'dsh-project-cockpit')
+})
+
+test('exports apply, inject and name â€” and no default export', () => {
+  assert.equal(typeof loaded.exports.apply, 'function')
+  assert.deepEqual(loaded.exports.inject, ['slots', 'sessions'])
+  assert.equal(loaded.exports.name, 'project-cockpit')
+  // A default export makes the loader's unwrapExports collapse the module and
+  // drop `inject`, so the plugin would load without its services.
+  assert.equal(loaded.exports.default, undefined)
+})
+
+test('requires nothing outside the shell platform module table', () => {
+  const specifiers = [...source.matchAll(/require\((["'])([^"']+)\1\)/gu)].map((match) => match[2])
+  const unexpected = [...new Set(specifiers)].filter((specifier) => !['react', 'react-dom', 'react/jsx-runtime'].includes(specifier))
+  assert.deepEqual(unexpected, [], `undeclared externals: ${unexpected.join(', ')}`)
+})
+
+test('injects no stylesheet until it is actually applied', () => {
+  assert.equal(styleTags.length, 0, 'loading the bundle must not touch the page')
+})
+
+test('carries a generation banner so a stale bundle is obvious', () => {
+  assert.ok(source.startsWith('/* dsh-project-cockpit'), 'the banner must name the package')
+  assert.ok(source.includes('Generated by .cockpit/tools/build-client.mjs'), 'the banner must say where to edit the source')
+})
+
+// --- registration ------------------------------------------------------------
+
+process.stdout.write('\nregistration\n')
+
+loaded.exports.apply(ctx)
+
+test('injects exactly one stylesheet, tagged the way the shell clears it', () => {
+  assert.equal(styleTags.length, 1)
+  assert.equal(styleTags[0].dataset.plugin, 'project-cockpit')
+  assert.ok(styleTags[0].textContent.includes('.pcx-root'))
+  assert.ok(styleTags[0].textContent.includes('--dsw-alias-label-primary'), 'colours must ride the host theme tokens')
+})
+
+test('registers exactly two seats: the sidebar glyph and the main panel', () => {
+  assert.equal(registrations.length, 2)
+  assert.deepEqual(
+    registrations.map((entry) => entry.options.name).sort(),
+    ['main', 'sidebar.panellist'],
+  )
+})
+
+test('the sidebar id is the main panel key, or the button opens nothing', () => {
+  const glyph = registrations.find((entry) => entry.options.name === 'sidebar.panellist')
+  const panel = registrations.find((entry) => entry.options.name === 'main')
+  assert.equal(glyph.options.id, 'project-cockpit')
+  assert.equal(panel.options.key, 'project-cockpit')
+  assert.equal(glyph.options.id, panel.options.key)
+})
+
+test('every registration names its own slot and waits for it to exist', () => {
+  for (const entry of registrations) {
+    assert.equal(entry.options.name, entry.options.name)
+    assert.ok(injections.includes(entry.options.name), `${entry.options.name} was registered without waiting for the slot`)
+  }
+})
+
+test('a list seat carries an id and a keyed seat carries a key', () => {
+  const glyph = registrations.find((entry) => entry.options.name === 'sidebar.panellist')
+  const panel = registrations.find((entry) => entry.options.name === 'main')
+  assert.equal(typeof glyph.options.id, 'string')
+  assert.equal(glyph.options.key, undefined, 'a list seat must not carry a key')
+  assert.equal(typeof panel.options.key, 'string')
+  assert.equal(panel.options.id, undefined, 'a keyed seat must not carry an id')
+})
+
+test('the panel injects the sessions service through the registration', () => {
+  const panel = registrations.find((entry) => entry.options.name === 'main')
+  assert.equal(panel.options.inject().sessions, sessionsStub)
+})
+
+// --- the glyph ---------------------------------------------------------------
+
+process.stdout.write('\nsidebar glyph\n')
+
+const glyph = registrations.find((entry) => entry.options.name === 'sidebar.panellist')
+
+test('renders an svg at the size the sidebar asks for', () => {
+  const element = glyph.component({ size: 18, active: true })
+  const svg = element.type === 'svg' ? element : element.type(element.props)
+  assert.equal(svg.type, 'svg', 'a panellist entry is the toolbar button icon and nothing else')
+  assert.equal(svg.props.width, 18)
+  assert.equal(svg.props.height, 18)
+  assert.ok(Array.isArray(svg.props.children) && svg.props.children.length > 0, 'the glyph must draw something')
+})
+
+test('falls back to a default size when the sidebar passes no props', () => {
+  const outer = glyph.component({})
+  const svg = outer.type === 'svg' ? outer : outer.type(outer.props)
+  assert.equal(svg.type, 'svg')
+  assert.equal(svg.props.width, 16)
+})
+
+test('marks itself decorative so the button supplies the accessible name', () => {
+  const outer = glyph.component({})
+  const svg = outer.type === 'svg' ? outer : outer.type(outer.props)
+  assert.equal(svg.props['aria-hidden'], 'true')
+})
+
+process.stdout.write(`\n${passed} passed, ${failed} failed\n`)
+if (failed > 0) process.exitCode = 1
