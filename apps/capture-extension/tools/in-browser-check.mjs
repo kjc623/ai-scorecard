@@ -316,7 +316,38 @@ async function main() {
     const swCtx = await attach(cdp, sw.targetId);
     const killSwLog = capturedConsole(cdp, swCtx.sessionId);
 
+    // The registration facts, read from inside the running extension. These are evidence in their
+    // own right: they say which `extraInfoSpec` each lane actually asked for, which is the thing
+    // §7.4's capability changes.
+    const registration = await swCtx.evaluate(
+      `JSON.stringify(globalThis.__captureApp ? {
+         blockingAvailable: globalThis.__captureApp.blockingAvailable,
+         enforcement: globalThis.__captureApp.lanes ? globalThis.__captureApp.lanes.enforcement : null,
+         extraInfoSpec: globalThis.__captureApp.lanes ? globalThis.__captureApp.lanes.extraInfoSpec : null,
+         bodyFilter: globalThis.__captureApp.lanes ? globalThis.__captureApp.lanes.bodyFilter : null,
+         hasListeners: chrome.webRequest.onBeforeRequest.hasListeners(),
+       } : null)`,
+    );
+
     // ── check 2: the listener is live, driven by a real request ─────────────────────────
+    //
+    // Readiness gate first. An MV3 service worker target exists as soon as the worker is created,
+    // which is before its module body has finished running — so driving traffic immediately would
+    // race the extension's own registration and produce a failure that says nothing about the
+    // extension. Waiting for the app object AND its lanes is waiting for the extension to say it is
+    // ready to observe.
+    const ready = await waitFor(async () => {
+      const state = await swCtx.evaluate(
+        'JSON.stringify(globalThis.__captureApp && globalThis.__captureApp.lanes ? { ok: true } : null)',
+      );
+      return state === '{"ok":true}';
+    }, 20000);
+    if (!ready) {
+      verdict('2', 'the webRequest listener observes a real request', 'FAIL',
+        'the extension never finished registering its lanes within 20s',
+        [`registration as the extension holds it: ${registration}`]);
+    }
+
     const before = await swCtx.evaluate('JSON.stringify(globalThis.__captureApp ? globalThis.__captureApp.health.counters.snapshot() : null)');
     const pageTarget = (await cdp.send('Target.getTargets')).targetInfos.find((t) => t.type === 'page');
     const pageCtx = await attach(cdp, pageTarget.targetId);
@@ -326,6 +357,14 @@ async function main() {
       const h = await pageCtx.evaluate('window.__result || "pending"');
       return typeof h === 'string' && h !== 'pending';
     }, 15000);
+    // The handler is asynchronous (fingerprint, decision), so give it a moment to reach `emit`
+    // before reading counters. The wait is bounded and the check still fails if nothing arrives.
+    await waitFor(async () => {
+      const c = await swCtx.evaluate(
+        'JSON.stringify(globalThis.__captureApp ? globalThis.__captureApp.health.counters.snapshot().counters.observed : 0)',
+      );
+      return typeof c === 'number' && c > 0;
+    }, 5000);
 
     const countersAfter = await swCtx.evaluate(
       'JSON.stringify(globalThis.__captureApp ? globalThis.__captureApp.health.counters.snapshot() : null)',
@@ -351,6 +390,7 @@ async function main() {
       verdict('2', 'the webRequest listener observes a real request', 'FAIL',
         `the page reached the server (${posted.bytes} bytes POSTed) but the extension observed 0 requests`,
         [
+          `registration as the extension holds it: ${registration}`,
           `counters: ${JSON.stringify(parsed.counters)}`,
           `browser log: ${blockingMessage(launched.getLog()) || '(no blocking message found)'}`,
         ]);
@@ -411,18 +451,32 @@ async function main() {
       ]);
 
     // ── check 5: blocked is cancelled and recorded ──────────────────────────────────────
+    //
+    // The extension no longer asks for a blocking lane when the install lacks the grant, so the
+    // browser's refusal message no longer appears on its own. To make this verdict evidenced by the
+    // BROWSER's words rather than by our own capability probe, the harness attempts a blocking
+    // registration itself (in the extension's worker, over CDP — not a change to the extension) and
+    // reads what the browser says about it. An inert listener on a throwaway profile is harmless.
+    await swCtx.evaluate(
+      `(() => { try { chrome.webRequest.onBeforeRequest.addListener(function () {}, { urls: ['<all_urls>'] }, ['blocking']); return 'registered'; } catch (e) { return 'threw: ' + e.message; } })()`,
+    );
+    await sleep(600);
     const blockMsg = blockingMessage(launched.getLog());
     const swConsole = killSwLog();
-    if (blockMsg || swConsole.some((l) => /blocking webRequest/i.test(l))) {
+    const browserRefusal = blockMsg || swConsole.find((l) => /blocking webRequest/i.test(l)) || null;
+    const enforcement = registration ? JSON.parse(registration).enforcement : null;
+
+    if (enforcement === 'observation_only' || browserRefusal) {
       verdict('5', 'a blocked request is cancelled AND still recorded', 'NOT-OBSERVABLE',
-        'an unpacked load revokes webRequestBlocking, so no blocking listener can be registered here',
+        'an unpacked load revokes webRequestBlocking, so no blocking listener can act here',
         [
-          `the browser said, verbatim: ${(blockMsg || swConsole.find((l) => /blocking webRequest/i.test(l))).trim()}`,
+          `the browser said, verbatim: ${(browserRefusal || '(not captured)').trim()}`,
+          `the running extension reports: blockingAvailable=${registration ? JSON.parse(registration).blockingAvailable : '?'}, enforcement=${enforcement}`,
           'the manifest declares webRequestBlocking and a policy-installed extension retains it (E1, §7.4);',
           'the unpacked *load* is what removes it, so this is a limit of the load path, not of the extension.',
           'what a human must do: install the extension by policy (ExtensionInstallForcelist) — an elevated',
           'registry write — then load a bundle with a `blocked` rule and confirm net::ERR_BLOCKED_BY_CLIENT',
-          'together with an observation for the same request.',
+          'together with an observation for the same request. Until then no report should claim blocking works.',
         ]);
     } else {
       verdict('5', 'a blocked request is cancelled AND still recorded', 'NOT-OBSERVABLE',
@@ -444,7 +498,16 @@ async function main() {
       await sleep(500);
       if (launched.child.exitCode === null) launched.child.kill();
     }
-    if (!KEEP) rmSync(PROFILE, { recursive: true, force: true });
+    if (!KEEP) {
+      // A profile directory released a moment ago can still be held by a child process (the browser
+      // writes SQLite journals as it exits), which shows up as EBUSY. Retry rather than leaving
+      // hundreds of files behind; a stray profile would confuse the next run.
+      try {
+        rmSync(PROFILE, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+      } catch (e) {
+        say(`note: could not fully remove ${PROFILE} (${e.code}); it is under .tools/tmp and ignored`);
+      }
+    }
   }
 }
 

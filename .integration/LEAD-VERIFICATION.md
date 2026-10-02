@@ -376,6 +376,49 @@ story around it; the owner had the stack trace.
   Third instance of this class in the project, after the content-encoding break and the reason-code
   vocabulary conflict.
 
+## L18. The lab runs, and the deployment cannot authenticate a device (round 7)
+
+```
+node lab/run.mjs        # 13 checks: both probes on both services, schema applied, a two-route
+                        # batch collapsing to one submission, duplicate_batch on replay, and M0
+                        # mode_violation — passing from a cold start with the volume removed
+```
+
+The container images are real and I verified one myself: `docker image inspect sac/ingest-api:lab`
+shows entrypoint `/usr/local/bin/ingest-api`, non-root user 10001, no shell. Running it with the
+wrong flags produces exactly the refusal it should — *"refusing to serve without device
+authentication: supply -tls-cert, -tls-key and -tls-client-ca, or -dev-trust-principal for a local
+test"* — which is the right behaviour and which also names the gap below.
+
+**The finding that matters: the deployment can make a service reachable but not authenticated.**
+`infra/modules/container-app.bicep` probes `scheme: 'HTTP'` on the serving port, while §2.1 requires
+the origin to receive the **device certificate**. There is no certificate mount, no `command`/`args`
+to pass the flags, and an HTTP probe cannot succeed against a port that requires TLS. So a deployed
+container would be probeable and would refuse every device request — correctly, and the refusal is
+loud, which is why it was found rather than shipped.
+
+Ruled: **PEM-in-environment first** (`SAC_TLS_CERT_PEM` / `SAC_TLS_KEY_PEM` / `SAC_TLS_CLIENT_CA_PEM`),
+because the module already delivers Key Vault material to the app through `keyVaultEnv`, so it needs
+no new Azure resource, no volume mount and no trust-model change — the material still arrives from Key
+Vault under managed identity. Then the probe must become HTTPS (or move to a second plaintext port).
+**Edge-forwarded-certificate mode is explicitly deferred to an ADR**: Front Door vouching for a device
+in a header is a different trust model, not a configuration option.
+
+## L19. Persistence is the largest unproven claim, and it is one decision away
+
+The lab runs both services against a real PostgreSQL, but in **memory mode**: nothing in it proves
+persistence, and `--store sql` refuses to start in production. So the product's central data path —
+events written to the database through `ingest.record_event` — is verified as SQL text against a live
+server and as procedure semantics, but never through a driver.
+
+The reason turned out to be narrower than it looked: **`pgx/v5 v5.11.0` is in this host's module
+cache**; the blocker is that `tools/verify-all.mjs` points `GOMODCACHE` at an empty directory for
+every Go package, so the gate would go red on a host that cannot fetch it. Ruled: add the SQL path
+behind a **build tag** (`sac_sql_driver`), so the default build keeps no third-party `require` and CI
+is unchanged, while a tagged build and a tagged integration test can use the real driver anywhere a
+cache or a network exists. That keeps "may the gate carry a third-party dependency?" as a decision
+rather than an accident.
+
 ---
 
 ## What is NOT verified at this point
