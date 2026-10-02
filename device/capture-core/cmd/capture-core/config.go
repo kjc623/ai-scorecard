@@ -11,7 +11,6 @@ import (
 
 	"github.com/shadow-ai-capture/device/capture-core/core"
 	"github.com/shadow-ai-capture/device/capture-core/policy"
-	"github.com/shadow-ai-capture/device/protocol"
 )
 
 // Config is everything the binary resolves before it starts anything. Every field is either a flag
@@ -38,12 +37,12 @@ type Config struct {
 	ClassifierBudget  time.Duration
 
 	// Providers.
-	EnableTLS       bool
-	TLSListen       string
-	TLSCanary       string
-	EnableLoopback  bool
+	EnableTLS        bool
+	TLSListen        string
+	TLSCanary        string
+	EnableLoopback   bool
 	EnableProcDetect bool
-	DrainDeadline   time.Duration
+	DrainDeadline    time.Duration
 
 	// Health channel.
 	HealthFile     string
@@ -60,9 +59,10 @@ type Config struct {
 }
 
 func (c Config) validate(mode runMode) error {
-	// The native-messaging modes still need identity (they mint envelopes) and storage (they write
-	// them); --print-config and --version do not.
-	needsStorage := mode.selftest || mode.nativeHost || mode.nativeFrames != "" || (!mode.showVersion && !mode.printConfig)
+	// The native-messaging mode still needs identity (it mints envelopes) and storage (it writes
+	// them); --print-config and --version do not. --selftest supplies its own work directory, spool,
+	// bundle and identity, so it validates only what it was given.
+	needsStorage := mode.nativeHost || mode.nativeFrames != "" || (!mode.showVersion && !mode.printConfig && !mode.selftest)
 	if needsStorage {
 		if strings.TrimSpace(c.SpoolDir) == "" {
 			return errors.New("--spool-dir is required: a provider with nowhere to write must not start (§3.5 step 2)")

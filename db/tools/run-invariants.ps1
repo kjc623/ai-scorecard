@@ -230,18 +230,10 @@ header() {
 header > /tmp/01-headed.log && cat $LOG1 >> /tmp/01-headed.log && mv /tmp/01-headed.log $LOG1
 header > /tmp/02-headed.log && cat $LOG2 >> /tmp/02-headed.log && mv /tmp/02-headed.log $LOG2
 
-# Tally AFTER the header is in place, and anchor every error pattern to a real psql diagnostic.
-# The header quotes the documented command, and "ON_ERROR_STOP" contains the substring "ERROR",
-# so an unanchored `grep -ci ERROR` counts the header and reports a healthy run as a failure --
-# which is worse than no harness, because the next reader learns to ignore the exit code.
-# Anchoring also makes the tally independent of the order these two blocks appear in.
-PASS=$(grep -c 'NOTICE:  PASS ' $LOG2 || true)
-FAILC=$(grep -cE '^(psql:.*)?ERROR:  FAIL' $LOG2 || true)
-ERRC=$(grep -cE '^(psql:.*)?(ERROR|FATAL|PANIC):' $LOG2 || true)
-SERRC=$(grep -cE '^(psql:.*)?(ERROR|FATAL|PANIC):' $LOG1 || true)
-IDS=$(grep -o 'PASS T[0-9]*' $LOG2 | sort -u | wc -l || true)
-
-echo "TALLY pass=$PASS fail=$FAILC error_lines=$ERRC schema_error_lines=$SERRC distinct_ids=$IDS"
+# The tally is deliberately NOT computed here. It lives in db/tools/tally-log.mjs so it can be
+# unit-tested against captured logs: the false positive that made a healthy run exit 1 was an
+# inline grep that no test could reach, and it survived until a second person ran the script.
+# This script runs psql and reports exit codes; the host side does the judging.
 echo "EXITS schema=$SCHEMA_EXIT invariants=$TESTS_EXIT"
 '@
 
@@ -283,15 +275,26 @@ Head "tally"
 if (-not (Test-Path -LiteralPath $logTests)) { Die "the invariants log was not produced; the run did not complete" }
 
 $testLog = Get-Content -LiteralPath $logTests -Raw
-# Tally the psql output only, and anchor the failure patterns to a real diagnostic. The
-# provenance header deliberately quotes the command, which contains the string ON_ERROR_STOP --
-# counting that as an ERROR would report every healthy run as a failure.
-$testBody = (($testLog -split "`n") | Where-Object { $_ -notmatch '^#' }) -join "`n"
-$passIds = [regex]::Matches($testBody, 'PASS (T\d+)') | ForEach-Object { $_.Groups[1].Value }
-$passCount = $passIds.Count
-$distinct  = ($passIds | Sort-Object -Unique).Count
-$failCount = ([regex]::Matches($testBody, '(?m)^(psql:.*)?ERROR:  FAIL')).Count
-$errCount  = ([regex]::Matches($testBody, '(?m)^(psql:.*)?(ERROR|FATAL|PANIC):')).Count
+
+# Judge through the tested module rather than inline pattern matching. Its rules are covered by
+# db/tools/tally-log.test.mjs against captured logs, including the exact log that the old inline
+# `grep -ci ERROR` mis-counted because the provenance header quotes ON_ERROR_STOP.
+$tallyScript = Join-Path $PSScriptRoot 'tally-log.mjs'
+if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+    Die "node is not on PATH. db/tools/tally-log.mjs computes the tally and is the tested implementation; install Node rather than trusting an inline fallback."
+}
+$tallyRaw = & node $tallyScript $logTests $logSchema 2>&1
+if ($LASTEXITCODE -ne 0) { Die "tally-log.mjs failed: $($tallyRaw -join ' ')" }
+$t = ($tallyRaw | Select-Object -First 1) | ConvertFrom-Json
+$tallyLine = ($tallyRaw | Select-Object -Last 1)
+
+$passCount = [int]$t.pass
+$distinct  = [int]$t.distinct
+$failCount = [int]$t.fail
+$errCount  = [int]$t.errorLines
+
+# tools/accept.mjs parses exactly this line, so its shape is a contract. It is printed unwrapped.
+Write-Host $tallyLine
 
 Say "  schema exit code     : $schemaExit"
 Say "  invariants exit code : $testsExit"

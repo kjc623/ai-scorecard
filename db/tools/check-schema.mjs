@@ -223,11 +223,14 @@ if (arrMatch) {
 // -------------------------------------------------------------------------------------
 
 {
+  // `\b` matters: without it `CREATE TRIGGER\s+audit_append_only` also matches a trigger named
+  // `audit_append_only_moved`, so renaming a guard would have read as the guard still being there.
+  // Found by db/tools/check-schema.test.mjs, which renames one and expects this check to fail.
   const required = [
-    ['audit_append_only', /CREATE TRIGGER\s+audit_append_only/],
-    ['audit_chain_before_insert', /CREATE TRIGGER\s+audit_chain_before_insert/],
-    ['observation_append_only', /CREATE TRIGGER\s+observation_append_only/],
-    ['policy_bundle_ceiling', /CREATE TRIGGER\s+policy_bundle_ceiling/],
+    ['audit_append_only', /CREATE TRIGGER\s+audit_append_only\b/],
+    ['audit_chain_before_insert', /CREATE TRIGGER\s+audit_chain_before_insert\b/],
+    ['observation_append_only', /CREATE TRIGGER\s+observation_append_only\b/],
+    ['policy_bundle_ceiling', /CREATE TRIGGER\s+policy_bundle_ceiling\b/],
   ];
   const missing = required.filter(([, re]) => !re.test(schemaCode)).map(([n]) => n);
   check('triggers.present', missing.length === 0,
@@ -236,10 +239,10 @@ if (arrMatch) {
   // BOTH BEFORE UPDATE OR DELETE and BEFORE INSERT OR UPDATE OR DELETE forms must appear for
   // the append-only guarantee, and the guard functions must actually RAISE.
   check('triggers.audit-blocks-update-and-delete',
-    /CREATE TRIGGER\s+audit_append_only[\s\S]{0,400}?BEFORE\s+(UPDATE\s+OR\s+DELETE|INSERT\s+OR\s+UPDATE\s+OR\s+DELETE|DELETE\s+OR\s+UPDATE)/.test(schemaCode),
+    /CREATE TRIGGER\s+audit_append_only\b[\s\S]{0,400}?BEFORE\s+(UPDATE\s+OR\s+DELETE|INSERT\s+OR\s+UPDATE\s+OR\s+DELETE|DELETE\s+OR\s+UPDATE)/.test(schemaCode),
     'audit_append_only fires BEFORE UPDATE OR DELETE');
   check('triggers.observation-blocks-mutation',
-    /CREATE TRIGGER\s+observation_append_only[\s\S]{0,400}?BEFORE\s+(UPDATE\s+OR\s+DELETE|INSERT\s+OR\s+UPDATE\s+OR\s+DELETE|DELETE\s+OR\s+UPDATE)/.test(schemaCode),
+    /CREATE TRIGGER\s+observation_append_only\b[\s\S]{0,400}?BEFORE\s+(UPDATE\s+OR\s+DELETE|INSERT\s+OR\s+UPDATE\s+OR\s+DELETE|DELETE\s+OR\s+UPDATE)/.test(schemaCode),
     'observation_append_only fires BEFORE UPDATE OR DELETE');
 
   const raiseCount = (schemaCode.match(/RAISE\s+EXCEPTION/g) || []).length;

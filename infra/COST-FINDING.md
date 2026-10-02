@@ -76,3 +76,21 @@ one mis-scoped line and one missing rate.
 asserts them, so the finding fails a test if the model stops reproducing it. Whoever resolves the
 contradiction should change the document and the model together, and the checker will confirm the two
 agree again.
+
+---
+
+## Resolution status: recorded, not decided
+
+The user was asked which reading is intended and answered: *"I'm not sure. Record and move on."* So this
+finding stands as a **recorded contradiction**, not a corrected model. Nothing in `infra/cost-model.md`
+or `docs/05-platform-delivery.md` has been changed, and the ˜$830–840 figure remains what the
+documents say while this file records why it may be wrong by a factor of ~1.7.
+
+Two consequences, so the open question does not become invisible:
+
+1. **Every cost figure in this repository is now marked as under review**, including those quoted in
+   `README.md` and `docs/00-architecture.md` §1.4. A commercial decision should not be taken on
+   ˜$830–840 until §11.1 and §11.2 are made to agree.
+2. **A lab-cost task exists (task-23, `docs/lab/LAB-COST.md`)** which is explicitly told not to inherit
+   this conclusion as fact. The lab is the near-term need; the production number can wait for a real
+   quote, which is the only thing that will settle it.

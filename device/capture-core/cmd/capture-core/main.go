@@ -59,7 +59,7 @@ func run() error {
 
 	switch {
 	case mode.printConfig:
-		return printConfig(cfg, logger)
+		return printConfig(cfg, slogLogger{logger})
 	case mode.selftest:
 		return runSelftest(cfg, logger)
 	case mode.nativeFrames != "":
