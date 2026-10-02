@@ -1355,6 +1355,168 @@ BEGIN
   RAISE NOTICE 'PASS T43 an M0 record carrying `confidence` is refused, and a clean M0 record is accepted';
 END $$;
 
+
+-- =====================================================================================
+-- T44-T45  The single-use retrieval grant (ops.retrieval_grant)
+-- =====================================================================================
+-- The content vault states the whole guarantee as a conditional UPDATE:
+--
+--   UPDATE ops.retrieval_grant SET used_at = ..., used_by = ...
+--    WHERE tenant_id = ... AND grant_id = ... AND used_at IS NULL
+--   RETURNING ...
+--
+-- and treats an UPDATE that returns nothing as the refusal. These assertions run that statement as
+-- `sac_vault` -- the actual runtime role -- so they exercise the table, the row-level policy and
+-- the grants together. Running them as a superuser would prove the shape of the table and nothing
+-- about whether the vault can reach it.
+--
+-- The single-use property is tested at three levels, because only the third is structural:
+--   1. the first claim redeems the grant and sets both halves of the claim;
+--   2. a second claim through the guarded statement affects zero rows and leaves the first
+--      redemption intact -- this is the vault's refusal mechanism, and it is evidence the
+--      statement is right, not that the store would catch a wrong one;
+--   3. an UPDATE that has *forgotten* the guard is refused by the trigger. This is the one that
+--      does not depend on the caller being correct, and a CHECK cannot provide it: a CHECK sees
+--      only the new row and cannot tell a first claim from a second.
+
+SET ROLE sac_vault;
+SET app.tenant_id = '11111111-1111-7111-8111-111111111111';
+
+DO $$
+DECLARE
+  v_tenant constant uuid := '11111111-1111-7111-8111-111111111111';
+  v_grant  constant uuid := 'cccccccc-0000-7000-8000-000000000001';
+  n int;
+  l_used_at timestamptz;
+  l_used_by text;
+BEGIN
+  -- put_retrieval_grant: the vault's INSERT, so the INSERT grant and the policy are both exercised
+  INSERT INTO ops.retrieval_grant (tenant_id, grant_id, event_id, object_id, submission_id,
+                                   principal, case_reference, second_approver, issued_at, expires_at,
+                                   raw_digest)
+  VALUES (v_tenant, v_grant, gen_random_uuid(), gen_random_uuid(), gen_random_uuid(),
+          'analyst@example.test', 'CASE-1', 'approver@example.test', now(),
+          now() + interval '1 hour', 'sha256:' || repeat('e1', 32));
+
+  -- read_retrieval_grant: a fresh grant is unclaimed
+  SELECT used_at, used_by INTO l_used_at, l_used_by
+    FROM ops.retrieval_grant WHERE tenant_id = v_tenant AND grant_id = v_grant;
+  IF l_used_at IS NOT NULL OR l_used_by IS NOT NULL THEN
+    RAISE EXCEPTION 'FAIL T44 a freshly issued grant is already marked as redeemed';
+  END IF;
+
+  -- claim, exactly as the vault claims it
+  UPDATE ops.retrieval_grant
+     SET used_at = now(), used_by = 'analyst@example.test'
+   WHERE tenant_id = v_tenant AND grant_id = v_grant AND used_at IS NULL
+  RETURNING used_at, used_by INTO l_used_at, l_used_by;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN
+    RAISE EXCEPTION 'FAIL T44 the first claim affected % rows, expected exactly 1', n;
+  END IF;
+  IF l_used_at IS NULL OR l_used_by IS NULL THEN
+    RAISE EXCEPTION 'FAIL T44 the first claim left a half-claimed row (used_at=%, used_by=%)', l_used_at, l_used_by;
+  END IF;
+
+  -- the SAME guarded statement a second time: this is the vault's refusal path
+  UPDATE ops.retrieval_grant
+     SET used_at = now(), used_by = 'attacker@example.test'
+   WHERE tenant_id = v_tenant AND grant_id = v_grant AND used_at IS NULL;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 0 THEN
+    RAISE EXCEPTION 'FAIL T44 a SECOND claim affected % rows; the grant is not single-use', n;
+  END IF;
+
+  -- and the first redemption must be untouched
+  SELECT used_by INTO l_used_by FROM ops.retrieval_grant
+   WHERE tenant_id = v_tenant AND grant_id = v_grant;
+  IF l_used_by <> 'analyst@example.test' THEN
+    RAISE EXCEPTION 'FAIL T44 the second claim overwrote the first redemption (used_by is now %)', l_used_by;
+  END IF;
+
+  RAISE NOTICE 'PASS T44 first claim redeems the grant; a second claim affects 0 rows and cannot overwrite it';
+END $$;
+
+DO $$
+DECLARE
+  v_tenant constant uuid := '11111111-1111-7111-8111-111111111111';
+  v_grant  constant uuid := 'cccccccc-0000-7000-8000-000000000002';
+  n int;
+  l_used_by text;
+BEGIN
+  INSERT INTO ops.retrieval_grant (tenant_id, grant_id, event_id, object_id, submission_id,
+                                   principal, case_reference, second_approver, issued_at, expires_at,
+                                   raw_digest)
+  VALUES (v_tenant, v_grant, gen_random_uuid(), gen_random_uuid(), gen_random_uuid(),
+          'analyst@example.test', 'CASE-2', 'approver@example.test', now(),
+          now() + interval '1 hour', 'sha256:' || repeat('e2', 32));
+
+  UPDATE ops.retrieval_grant SET used_at = now(), used_by = 'analyst@example.test'
+   WHERE tenant_id = v_tenant AND grant_id = v_grant AND used_at IS NULL;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN RAISE EXCEPTION 'FAIL T45 setup: the first claim affected % rows', n; END IF;
+
+  -- 3. The UPDATE that forgot the guard. The row matches, so the trigger must refuse it. Asserting
+  --    on the message keeps this from passing for the wrong reason: if some other constraint
+  --    happened to fire, this would not contain 'single-use'.
+  BEGIN
+    UPDATE ops.retrieval_grant
+       SET used_at = now(), used_by = 'attacker@example.test'
+     WHERE tenant_id = v_tenant AND grant_id = v_grant;   -- no `used_at IS NULL`
+    RAISE EXCEPTION 'FAIL T45 an UPDATE without the `used_at IS NULL` guard re-redeemed a claimed grant; single use depends on the caller remembering the guard';
+  EXCEPTION WHEN others THEN
+    IF SQLERRM LIKE 'FAIL%' THEN RAISE; END IF;
+    IF position('single-use' in SQLERRM) = 0 THEN
+      RAISE EXCEPTION 'FAIL T45 the unguarded UPDATE was refused, but not by the single-use trigger (%)', SQLERRM;
+    END IF;
+    RAISE NOTICE '  (unguarded UPDATE refused by the store: %)', SQLERRM;
+  END;
+
+  -- The first redemption must still be intact after the refused attempt.
+  SELECT used_by INTO l_used_by FROM ops.retrieval_grant
+   WHERE tenant_id = v_tenant AND grant_id = v_grant;
+  IF l_used_by <> 'analyst@example.test' THEN
+    RAISE EXCEPTION 'FAIL T45 the refused update still changed the row (used_by is now %)', l_used_by;
+  END IF;
+  RAISE NOTICE 'PASS T45 the store refuses a redemption that bypasses the `used_at IS NULL` guard';
+
+  -- A half-claimed row is unrepresentable. Tested by INSERT rather than UPDATE on purpose: an
+  -- UPDATE of a claimed row would be refused by the trigger first, and the assertion would pass
+  -- without the CHECK ever firing -- which is exactly the "right result, wrong reason" failure.
+  BEGIN
+    INSERT INTO ops.retrieval_grant (tenant_id, grant_id, event_id, object_id, submission_id,
+                                     principal, case_reference, second_approver, issued_at, expires_at,
+                                     used_at, used_by, raw_digest)
+    VALUES (v_tenant, 'cccccccc-0000-7000-8000-000000000003', gen_random_uuid(), gen_random_uuid(),
+            gen_random_uuid(), 'analyst@example.test', 'CASE-3', 'approver@example.test',
+            now(), now() + interval '1 hour', now(), NULL, 'sha256:' || repeat('e3', 32));
+    RAISE EXCEPTION 'FAIL T45 a half-claimed row (used_at set, used_by NULL) was accepted';
+  EXCEPTION WHEN others THEN
+    IF SQLERRM LIKE 'FAIL%' THEN RAISE; END IF;
+    IF position('retrieval_grant_claim_is_whole' in SQLERRM) = 0 THEN
+      RAISE EXCEPTION 'FAIL T45 the half-claimed row was refused, but not by retrieval_grant_claim_is_whole (%)', SQLERRM;
+    END IF;
+  END;
+
+  -- Two-person control: an approver cannot approve their own request.
+  BEGIN
+    INSERT INTO ops.retrieval_grant (tenant_id, grant_id, event_id, object_id, submission_id,
+                                     principal, case_reference, second_approver, issued_at, expires_at,
+                                     raw_digest)
+    VALUES (v_tenant, 'cccccccc-0000-7000-8000-000000000004', gen_random_uuid(), gen_random_uuid(),
+            gen_random_uuid(), 'same@example.test', 'CASE-4', 'same@example.test',
+            now(), now() + interval '1 hour', 'sha256:' || repeat('e4', 32));
+    RAISE EXCEPTION 'FAIL T45 a grant whose approver is also the requester was accepted';
+  EXCEPTION WHEN others THEN
+    IF SQLERRM LIKE 'FAIL%' THEN RAISE; END IF;
+    IF position('retrieval_grant_second_approver_distinct' in SQLERRM) = 0 THEN
+      RAISE EXCEPTION 'FAIL T45 the self-approved grant was refused, but not by retrieval_grant_second_approver_distinct (%)', SQLERRM;
+    END IF;
+  END;
+
+  RAISE NOTICE 'PASS T45 a half-claimed row and a self-approved grant are both unrepresentable';
+END $$;
+
 RESET ROLE;
 
 

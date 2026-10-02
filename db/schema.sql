@@ -542,6 +542,53 @@ CREATE TABLE ops.grant (
 COMMENT ON TABLE ops.grant IS
   'One row per content grant request. Single-use and per-event by construction: there is no bulk grant, which is why brief C5 ("must not be possible to configure the system into an upload-everything state") holds structurally rather than by a configuration check.';
 
+-- The redemption record for a per-event content grant: the single-use half of ops.grant.
+-- ADR 0006 and docs/02 §11 bind retrieval to a recorded per-event grant, and brief C5's "must not
+-- be possible to configure an upload-everything state" means a grant that could be redeemed twice
+-- would be a bulk-retrieval path by repetition. So the single-use property is enforced here rather
+-- than trusted to the service:
+--
+--   * `used_at IS NULL` in the claim's WHERE clause is the race. Two concurrent redemptions cannot
+--     both match the row, so the second updates nothing and is refused.
+--   * retrieval_grant_claim_is_whole makes a half-claimed row unrepresentable: a claimed grant
+--     always names when it was redeemed and by whom, so "redeemed" is never a partial state.
+--   * the retrieval_grant_single_use trigger refuses any UPDATE of a row that is already claimed,
+--     so an implementation that forgets the WHERE clause fails loudly instead of quietly
+--     overwriting the first redemption. A CHECK cannot express this -- a CHECK sees only the new
+--     row and cannot tell a first claim from a second -- which is why it is a trigger.
+--
+-- The column list is the contract used by services/content-vault (SQLPutRetrievalGrant,
+-- SQLRetrievalGrant, SQLClaimRetrievalGrant). db/tools/check-schema.mjs asserts that every column
+-- those statements name still exists here, so the two cannot drift apart.
+CREATE TABLE ops.retrieval_grant (
+  tenant_id       uuid NOT NULL REFERENCES ops.tenant(tenant_id),
+  grant_id        uuid NOT NULL,
+  event_id        uuid NOT NULL,
+  object_id       uuid NOT NULL,
+  submission_id   uuid NOT NULL,
+  principal       text NOT NULL,
+  case_reference  text NOT NULL,
+  second_approver text NOT NULL,
+  issued_at       timestamptz NOT NULL,
+  expires_at      timestamptz NOT NULL,
+  used_at         timestamptz,
+  used_by         text,
+  raw_digest      text NOT NULL,
+  PRIMARY KEY (tenant_id, grant_id),
+  -- Two-person control: the approver cannot be the requester, the same rule the control-api
+  -- enforces on a sanction decision, expressed where it cannot be skipped.
+  CONSTRAINT retrieval_grant_second_approver_distinct CHECK (second_approver <> principal),
+  CONSTRAINT retrieval_grant_window_bounded CHECK (expires_at > issued_at),
+  -- A claimed grant carries both halves of the claim, or neither.
+  CONSTRAINT retrieval_grant_claim_is_whole CHECK ((used_at IS NULL) = (used_by IS NULL))
+);
+
+COMMENT ON TABLE ops.retrieval_grant IS
+  'One row per single-use content retrieval grant. A redemption is a conditional UPDATE matching used_at IS NULL, so a second redemption affects zero rows and is refused; the retrieval_grant_single_use trigger additionally refuses any update of an already-claimed row. Content is served only against a grant recorded here.';
+
+COMMENT ON COLUMN ops.retrieval_grant.used_at IS
+  'When the grant was redeemed. NULL until then, and the claim statement matches on `used_at IS NULL`, which is what makes a second redemption lose the race rather than overwrite the first.';
+
 -- Stored content objects: ciphertext in Blob Storage, wrapped data key here. Master doc D7 --
 -- this table is reachable only by the content-vault role, which is the only component holding
 -- Key Vault unwrap rights and which has internal-only ingress. query-api is deliberately NOT
@@ -1471,6 +1518,30 @@ CREATE TRIGGER observation_append_only
   BEFORE UPDATE OR DELETE ON ingest.observation
   FOR EACH ROW EXECUTE FUNCTION ingest.block_observation_mutation();
 
+-- Single-use enforcement for a content retrieval grant. The claim path is a conditional UPDATE
+-- matching `used_at IS NULL`, and a row that does not match is never updated -- so this trigger
+-- does not fire on the correct statement and does not change its behaviour or its "zero rows
+-- means refused" result. It fires on the statement that has forgotten the guard, which is the
+-- only way a grant could be redeemed twice, and turns that from a silent overwrite of the first
+-- redemption into an error.
+--
+-- A CHECK cannot do this: a CHECK is evaluated against the new row alone and cannot distinguish a
+-- first claim from a second. This is the same shape as the observation and audit append-only
+-- guards, for the same reason -- the store enforces the property rather than the caller.
+CREATE FUNCTION ops.block_grant_reuse() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF OLD.used_at IS NOT NULL THEN
+    RAISE EXCEPTION 'ops.retrieval_grant is single-use; grant % was already redeemed at % by % (content is served once per recorded grant)',
+      OLD.grant_id, OLD.used_at, OLD.used_by;
+  END IF;
+  RETURN NEW;
+END $$;
+
+CREATE TRIGGER retrieval_grant_single_use
+  BEFORE UPDATE ON ops.retrieval_grant
+  FOR EACH ROW EXECUTE FUNCTION ops.block_grant_reuse();
+
 -- Effective retention for an event, resolved at write time rather than at read time. The lookup
 -- uses the highest-severity class present in the label set, because a row carrying a payment
 -- card must not expire on the schedule of a row carrying nothing. M0 rows carry no labels by
@@ -1784,7 +1855,8 @@ DECLARE
     -- ops
     'ops.user_dim', 'ops.device', 'ops.device_credential', 'ops.collector_state',
     'ops.policy_bundle', 'ops.tool', 'ops.notice_acknowledgement', 'ops.retention_policy',
-    'ops.hold', 'ops.audit', 'ops.grant', 'ops.content_object', 'ops.finding_review',
+    'ops.hold', 'ops.audit', 'ops.grant', 'ops.retrieval_grant', 'ops.content_object',
+    'ops.finding_review',
     'ops.erasure_receipt', 'ops.reconciliation_run', 'ops.aggregate_watermark',
     'ops.coverage_snapshot', 'ops.subscription', 'ops.usage_daily',
     -- ingest
@@ -1864,6 +1936,12 @@ GRANT EXECUTE ON FUNCTION ops.current_tenant(), ops.mode_rank(text) TO sac_contr
 
 -- content-vault: the only role that can read wrapped keys.
 GRANT SELECT, INSERT, UPDATE ON ops.content_object TO sac_vault;
+-- The redemption path: put a grant, read one, claim one. INSERT and UPDATE are what
+-- SQLPutRetrievalGrant and SQLClaimRetrievalGrant need, and UPDATE is deliberately paired with the
+-- retrieval_grant_single_use trigger rather than with a DELETE: a redemption row is the record
+-- that content left the vault, so no role is granted DELETE on it. A grant that expires is a row
+-- with an expires_at in the past, not a row that disappears.
+GRANT SELECT, INSERT, UPDATE ON ops.retrieval_grant TO sac_vault;
 -- And the only role that can read or write the content search index. `query-api` is deliberately
 -- NOT granted here: it calls content-vault, which runs the search and returns hits and snippets.
 -- The alternative -- letting the query tier read an index of plaintext prompt content -- would
