@@ -575,6 +575,22 @@ func TestPipelineWithoutCanonicaliserIsDegradedAndNeverClaimsTierT(t *testing.T)
 	if sink.last().DedupKey != wantKey {
 		t.Fatalf("dedup key = %q, want the Tier S surrogate %q", sink.last().DedupKey, wantKey)
 	}
+
+	// The negative half of the ruling: the device *has* a digest, and must still not claim the
+	// exact key built from it. If these two ever coincide the premise of §4.5's Tier T has been
+	// asserted for bytes that were never canonically normalised — a silent over-merge whose two
+	// rows the server and the device would count differently (R9).
+	digest := unquoted(env["content_digest"])
+	if digest == "" {
+		t.Fatal("no content_digest was emitted; the schema requires one at M1 and above")
+	}
+	exactKey, err := dedup.ContentKey("tenant-1", "device-1", "tool", string(protocol.KindPrompt), time.Unix(1_700_000_000, 0), digest)
+	if err != nil {
+		t.Fatalf("ContentKey: %v", err)
+	}
+	if sink.last().DedupKey == exactKey {
+		t.Fatal("a non-canonical digest produced the exact Tier T key; the key must claim only what the device can prove")
+	}
 }
 
 func TestPipelineExtractionFailureDegradesToTheSurrogateTier(t *testing.T) {
@@ -602,6 +618,15 @@ func TestPipelineExtractionFailureDegradesToTheSurrogateTier(t *testing.T) {
 	}
 	if !out.Degraded || out.Reason != ReasonExtractionDegraded {
 		t.Fatalf("outcome = %+v, want degraded with %s", out, ReasonExtractionDegraded)
+	}
+	// A route that could not identify the authored segment has no canonical text either, so the
+	// key must be the weak one for the same reason the missing-normaliser case is.
+	wantKey, err := dedup.SurrogateKey("tenant-1", "device-1", "tool", string(protocol.KindPrompt), time.Unix(1_700_000_000, 0), 5, nil, dedup.IdentityNFC{})
+	if err != nil {
+		t.Fatalf("SurrogateKey: %v", err)
+	}
+	if sink.last().DedupKey != wantKey {
+		t.Fatalf("dedup key = %q, want the Tier S surrogate %q", sink.last().DedupKey, wantKey)
 	}
 }
 

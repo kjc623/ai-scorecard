@@ -223,7 +223,10 @@ func (b *Broker) Stop(ctx context.Context) error {
 
 	b.stopOnce.Do(func() { close(b.stopCh) })
 	for _, r := range runners {
-		r.releaseNow()
+		// stopNow closes the runner's own stop channel and releases the listener immediately:
+		// the release happens before the goroutine is even asked to wind down, so the port is
+		// free the moment Stop begins (§6.2 rule 1, §3.5 step 2).
+		r.stopNow()
 	}
 	done := make(chan struct{})
 	go func() {
@@ -572,8 +575,17 @@ func (r *portRunner) run() {
 		case ActPreflight:
 			ev = r.preflightEvent()
 			continue
+		case ActClose:
+			// A release is a restart path: the port is closed, and the next attempt happens
+			// after a backoff. Without arming the timer here a released broker would wait for
+			// an event that never comes and never recover (§6.4 row 3).
+			backoffTimer.Reset(r.nextBackoff())
+		case ActRelease:
+			// Something else holds the port. The broker does not fight for it, and re-checks
+			// only after a cool-down rather than in a tight loop.
+			backoffTimer.Reset(r.broker.cfg.CoolDown)
 		default:
-			// ActClose/ActRelease/ActNone/re-probe: nothing to do but wait for input.
+			// ActNone: nothing to do but wait for input.
 		}
 		wait()
 	}
@@ -629,6 +641,10 @@ func (r *portRunner) apply(ev Event) Action {
 		}
 		r.mu.Lock()
 		r.ln = ln
+		// The bind is the positive observation that moves BINDING -> HOLDING. Without it the
+		// port would be open while the machine believed it was still binding, which is exactly
+		// the "listening is not observing" confusion §4.1 forbids.
+		r.stateFollow(EvBindOK)
 		r.mu.Unlock()
 		return ActServe
 	case ActReprobe:

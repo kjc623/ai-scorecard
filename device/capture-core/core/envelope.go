@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/shadow-ai-capture/device/protocol"
@@ -189,10 +192,15 @@ func BuildEnvelope(in EnvelopeInput) ([]byte, error) {
 	return raw, nil
 }
 
-// ValidateEnvelopeMode re-checks the minted JSON against the contract's mode branches. It is
-// deliberately a second pass over the bytes rather than over the input struct: it is the only
-// check that can catch a mistake in the builder itself, and it is the same check a test uses
-// to assert that an M0 record carries no content-derived key.
+// ValidateEnvelopeMode re-checks the minted JSON against the contract's per-kind and per-mode
+// branches. It is deliberately a second pass over the bytes rather than over the input struct:
+// it is the only check that can catch a mistake in the builder itself, and it is the same check
+// a test uses to assert that an M0 record carries no content-derived key.
+//
+// It is driven by kindFieldPolicy, so a field added to envelopeWire without deciding which
+// kinds may carry it fails here (and in TestEnvelope_KindFieldPolicyIsExhaustive) rather than
+// at ingest. That is ADR 0018's rule: a kind's branch is exhaustive over the fields the other
+// kinds own.
 func ValidateEnvelopeMode(raw []byte) error {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
@@ -206,56 +214,184 @@ func ValidateEnvelopeMode(raw []byte) error {
 	if !mode.Valid() {
 		return fmt.Errorf("core: envelope mode %q outside the closed set", mode)
 	}
+	if err := checkKindFields(kind, mode, fields); err != nil {
+		return err
+	}
+	if kind == protocol.KindPrompt {
+		return checkPromptModeFields(mode, fields)
+	}
+	return nil
+}
 
-	forbiddenAtM0 := []string{"content_digest", "labels", "classifier_version", "confidence", "content_excerpt", "attachments"}
-	switch kind {
-	case protocol.KindPrompt:
-		if _, ok := fields["size_bytes"]; !ok {
-			return fmt.Errorf("core: prompt envelope has no size_bytes; it is available at every mode")
+// fieldRule is what a kind's branch says about one field.
+type fieldRule int
+
+const (
+	// fieldForbidden: the contract's `not: required` for this kind. Minting it is a defect.
+	fieldForbidden fieldRule = iota
+	// fieldRequired: the contract's `required` for this kind.
+	fieldRequired
+	// fieldOptional: permitted but not required for this kind (the mode branch refines it).
+	fieldOptional
+)
+
+// kindFieldPolicy is the per-kind field permission table — the device-side mirror of
+// contracts/event-envelope.schema.json's allOf branches. Every JSON name envelopeWire can
+// emit must appear here for all three kinds; the test enumerates the struct by reflection and
+// fails if one is undecided, so this table cannot silently fall behind the struct.
+var kindFieldPolicy = map[protocol.Kind]map[string]fieldRule{
+	protocol.KindPrompt: {
+		"schema_version": fieldRequired, "event_id": fieldRequired, "tenant_id": fieldRequired,
+		"device_id": fieldRequired, "user_ref": fieldRequired, "tool_fingerprint": fieldRequired,
+		"direction": fieldRequired, "kind": fieldRequired, "occurred_at": fieldRequired,
+		"monotonic_offset_ms": fieldRequired, "source": fieldRequired, "collection_mode": fieldRequired,
+		"dedup_key":       fieldRequired,
+		"size_bytes":      fieldRequired, // available at every mode, including M0
+		"policy_decision": fieldRequired, // a tenant can block a tool without reading content
+		"content_digest":  fieldOptional, "labels": fieldOptional, "classifier_version": fieldOptional,
+		"confidence": fieldOptional, "content_excerpt": fieldOptional, "attachments": fieldOptional,
+		"window_start": fieldForbidden, "window_end": fieldForbidden,
+		"submission_count": fieldForbidden, "bytes_total": fieldForbidden,
+		"detection_basis": fieldForbidden,
+	},
+	protocol.KindUsageRollup: {
+		"schema_version": fieldRequired, "event_id": fieldRequired, "tenant_id": fieldRequired,
+		"device_id": fieldRequired, "user_ref": fieldRequired, "tool_fingerprint": fieldRequired,
+		"direction": fieldRequired, "kind": fieldRequired, "occurred_at": fieldRequired,
+		"monotonic_offset_ms": fieldRequired, "source": fieldRequired, "collection_mode": fieldRequired,
+		"dedup_key":        fieldRequired,
+		"window_start":     fieldRequired,
+		"window_end":       fieldRequired,
+		"submission_count": fieldRequired,
+		"bytes_total":      fieldRequired,
+		"size_bytes":       fieldForbidden,
+		"policy_decision":  fieldForbidden,
+		"content_digest":   fieldForbidden, "labels": fieldForbidden, "classifier_version": fieldForbidden,
+		"confidence": fieldForbidden, "content_excerpt": fieldForbidden, "attachments": fieldForbidden,
+		"detection_basis": fieldForbidden,
+	},
+	protocol.KindModelDetection: {
+		"schema_version": fieldRequired, "event_id": fieldRequired, "tenant_id": fieldRequired,
+		"device_id": fieldRequired, "user_ref": fieldRequired, "tool_fingerprint": fieldRequired,
+		"direction": fieldRequired, "kind": fieldRequired, "occurred_at": fieldRequired,
+		"monotonic_offset_ms": fieldRequired, "source": fieldRequired, "collection_mode": fieldRequired,
+		"dedup_key":       fieldRequired,
+		"detection_basis": fieldRequired,
+		"size_bytes":      fieldForbidden,
+		"policy_decision": fieldForbidden,
+		"content_digest":  fieldForbidden, "labels": fieldForbidden, "classifier_version": fieldForbidden,
+		"confidence": fieldForbidden, "content_excerpt": fieldForbidden, "attachments": fieldForbidden,
+		"window_start": fieldForbidden, "window_end": fieldForbidden,
+		"submission_count": fieldForbidden, "bytes_total": fieldForbidden,
+	},
+}
+
+// checkKindFields applies kindFieldPolicy to a marshalled envelope. A field the table does not
+// decide for this kind is refused, which is what makes an undecided new field fail loudly at
+// mint time instead of quietly at ingest.
+func checkKindFields(kind protocol.Kind, mode protocol.CollectionMode, fields map[string]json.RawMessage) error {
+	policy, ok := kindFieldPolicy[kind]
+	if !ok {
+		return fmt.Errorf("core: kind %q has no field policy; a kind without a decided field set must not be minted", kind)
+	}
+	for _, name := range wireFieldNames() {
+		rule, decided := policy[name]
+		_, present := fields[name]
+		if !decided {
+			return fmt.Errorf("core: field %q is not decided for kind %s; ADR 0018 requires every kind's branch to decide every field", name, kind)
 		}
-		if _, ok := fields["policy_decision"]; !ok {
-			return fmt.Errorf("core: prompt envelope has no policy_decision; a tenant can block a tool without reading content")
-		}
-		if mode == protocol.ModeM0 {
-			for _, f := range forbiddenAtM0 {
-				if _, ok := fields[f]; ok {
-					return fmt.Errorf("%w: envelope carries %q with collection_mode=m0", ErrContentAtM0, f)
+		switch rule {
+		case fieldForbidden:
+			if present {
+				if isContentDerivedField(name) && mode == protocol.ModeM0 {
+					return fmt.Errorf("%w: envelope carries %q with collection_mode=m0", ErrContentAtM0, name)
 				}
+				return fmt.Errorf("core: kind %s must not carry %q; the contract forbids it and no route may produce it", kind, name)
 			}
-			return nil
+		case fieldRequired:
+			if !present {
+				return fmt.Errorf("core: kind %s envelope has no %q, which the contract requires", kind, name)
+			}
+		case fieldOptional:
+			// Decided as permitted; the mode branch below may still refine it.
 		}
-		for _, f := range []string{"content_digest", "labels", "classifier_version", "confidence"} {
-			if _, ok := fields[f]; !ok {
-				return fmt.Errorf("core: %s envelope has no %s; M1 and above must carry the classifier's output", mode, f)
-			}
-		}
-		if mode == protocol.ModeM2 {
-			if _, ok := fields["content_excerpt"]; !ok {
-				return fmt.Errorf("core: m2 envelope has no content_excerpt")
-			}
-		}
-		if mode == protocol.ModeM3 {
-			if _, ok := fields["content_excerpt"]; ok {
-				return fmt.Errorf("core: m3 envelope carries content_excerpt; the schema forbids it because content moves only on a per-event grant")
-			}
-		}
-		if ex, ok := fields["content_excerpt"]; ok {
-			var e protocol.Excerpt
-			if err := json.Unmarshal(ex, &e); err != nil {
-				return fmt.Errorf("core: content_excerpt is not an excerpt: %w", err)
-			}
-			if len([]rune(e.Text)) > protocol.MaxExcerptChars {
-				return fmt.Errorf("core: excerpt is %d characters, over the %d-character cap", len([]rune(e.Text)), protocol.MaxExcerptChars)
-			}
-		}
-	case protocol.KindUsageRollup, protocol.KindModelDetection:
-		for _, f := range append([]string{"content_digest", "labels", "classifier_version", "confidence", "content_excerpt", "attachments"}, "size_bytes", "policy_decision") {
-			if _, ok := fields[f]; ok {
-				return fmt.Errorf("core: %s envelope carries %q, which the schema forbids for this kind", kind, f)
-			}
+	}
+	// Refuse a field that is present but that the table does not know at all: a JSON name the
+	// struct emits but the table has never heard of is exactly the drift this guards against.
+	for name := range fields {
+		if _, known := policy[name]; !known {
+			return fmt.Errorf("core: kind %s envelope carries field %q that no kind policy decides", kind, name)
 		}
 	}
 	return nil
+}
+
+// isContentDerivedField is the set M0 forbids outright: reading content is not permitted, so a
+// digest, a label set, an excerpt or even a filename is evidence of a defect (§11.2, §11.3).
+func isContentDerivedField(name string) bool {
+	switch name {
+	case "content_digest", "labels", "classifier_version", "confidence", "content_excerpt", "attachments":
+		return true
+	default:
+		return false
+	}
+}
+
+// checkPromptModeFields refines the prompt branch by mode: M0's closed list, M1's required
+// classifier attribution, M2's excerpt, M3's forbidden excerpt.
+func checkPromptModeFields(mode protocol.CollectionMode, fields map[string]json.RawMessage) error {
+	if mode == protocol.ModeM0 {
+		for _, f := range []string{"content_digest", "labels", "classifier_version", "confidence", "content_excerpt", "attachments"} {
+			if _, ok := fields[f]; ok {
+				return fmt.Errorf("%w: envelope carries %q with collection_mode=m0", ErrContentAtM0, f)
+			}
+		}
+		return nil
+	}
+	for _, f := range []string{"content_digest", "labels", "classifier_version", "confidence"} {
+		if _, ok := fields[f]; !ok {
+			return fmt.Errorf("core: %s envelope has no %s; M1 and above must carry the classifier's output", mode, f)
+		}
+	}
+	if mode == protocol.ModeM2 {
+		if _, ok := fields["content_excerpt"]; !ok {
+			return fmt.Errorf("core: m2 envelope has no content_excerpt")
+		}
+	}
+	if mode == protocol.ModeM3 {
+		if _, ok := fields["content_excerpt"]; ok {
+			return fmt.Errorf("core: m3 envelope carries content_excerpt; the schema forbids it because content moves only on a per-event grant")
+		}
+	}
+	if ex, ok := fields["content_excerpt"]; ok {
+		var e protocol.Excerpt
+		if err := json.Unmarshal(ex, &e); err != nil {
+			return fmt.Errorf("core: content_excerpt is not an excerpt: %w", err)
+		}
+		if len([]rune(e.Text)) > protocol.MaxExcerptChars {
+			return fmt.Errorf("core: excerpt is %d characters, over the %d-character cap", len([]rune(e.Text)), protocol.MaxExcerptChars)
+		}
+	}
+	return nil
+}
+
+// wireFieldNames lists every JSON name envelopeWire can emit, by reflection. It is the join
+// between the struct and kindFieldPolicy: TestEnvelope_KindFieldPolicyIsExhaustive asserts
+// every name is decided for every kind, so adding a field to the struct without deciding the
+// kinds that may carry it fails the build's tests rather than the ingest path.
+func wireFieldNames() []string {
+	t := reflect.TypeOf(envelopeWire{})
+	out := make([]string, 0, t.NumField())
+	for i := 0; i < t.NumField(); i++ {
+		tag := t.Field(i).Tag.Get("json")
+		name := strings.SplitN(tag, ",", 2)[0]
+		if name == "" || name == "-" {
+			continue
+		}
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func unquoted(raw json.RawMessage) string {

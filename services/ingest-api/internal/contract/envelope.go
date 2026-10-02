@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
-	"strings"
 	"time"
 
 	"shadow-ai-capture.invalid/contracts/generated/go/envelope"
@@ -155,30 +154,30 @@ func (e *Envelope) Time(name string) (time.Time, bool) {
 
 // --- the accessor set the ingest path uses -------------------------------------------------
 
-func (e *Envelope) EventID() (string, bool)    { return e.String("event_id") }
-func (e *Envelope) TenantID() (string, bool)   { return e.String("tenant_id") }
-func (e *Envelope) DeviceID() (string, bool)   { return e.String("device_id") }
-func (e *Envelope) UserRef() (string, bool)    { return e.String("user_ref") }
-func (e *Envelope) Tool() (string, bool)       { return e.String("tool_fingerprint") }
-func (e *Envelope) Direction() (string, bool)  { return e.String("direction") }
-func (e *Envelope) Kind() (string, bool)       { return e.String("kind") }
-func (e *Envelope) Mode() (string, bool)       { return e.String("collection_mode") }
-func (e *Envelope) Source() (string, bool)     { return e.String("source") }
-func (e *Envelope) DedupKey() (string, bool)   { return e.String("dedup_key") }
+func (e *Envelope) EventID() (string, bool)       { return e.String("event_id") }
+func (e *Envelope) TenantID() (string, bool)      { return e.String("tenant_id") }
+func (e *Envelope) DeviceID() (string, bool)      { return e.String("device_id") }
+func (e *Envelope) UserRef() (string, bool)       { return e.String("user_ref") }
+func (e *Envelope) Tool() (string, bool)          { return e.String("tool_fingerprint") }
+func (e *Envelope) Direction() (string, bool)     { return e.String("direction") }
+func (e *Envelope) Kind() (string, bool)          { return e.String("kind") }
+func (e *Envelope) Mode() (string, bool)          { return e.String("collection_mode") }
+func (e *Envelope) Source() (string, bool)        { return e.String("source") }
+func (e *Envelope) DedupKey() (string, bool)      { return e.String("dedup_key") }
 func (e *Envelope) SchemaVersion() (string, bool) { return e.String("schema_version") }
 
-func (e *Envelope) OccurredAt() (time.Time, bool) { return e.Time("occurred_at") }
+func (e *Envelope) OccurredAt() (time.Time, bool)  { return e.Time("occurred_at") }
 func (e *Envelope) WindowStart() (time.Time, bool) { return e.Time("window_start") }
 func (e *Envelope) WindowEnd() (time.Time, bool)   { return e.Time("window_end") }
 
 func (e *Envelope) SizeBytes() (int64, bool) { return e.Int("size_bytes") }
 
-func (e *Envelope) ContentDigest() (string, bool) { return e.String("content_digest") }
+func (e *Envelope) ContentDigest() (string, bool)     { return e.String("content_digest") }
 func (e *Envelope) ClassifierVersion() (string, bool) { return e.String("classifier_version") }
-func (e *Envelope) Confidence() (string, bool)     { return e.String("confidence") }
-func (e *Envelope) DetectionBasis() (string, bool) { return e.String("detection_basis") }
-func (e *Envelope) SubmissionCount() (int64, bool) { return e.Int("submission_count") }
-func (e *Envelope) BytesTotal() (int64, bool)      { return e.Int("bytes_total") }
+func (e *Envelope) Confidence() (string, bool)        { return e.String("confidence") }
+func (e *Envelope) DetectionBasis() (string, bool)    { return e.String("detection_basis") }
+func (e *Envelope) SubmissionCount() (int64, bool)    { return e.Int("submission_count") }
+func (e *Envelope) BytesTotal() (int64, bool)         { return e.Int("bytes_total") }
 
 // AttachmentView is a projection of one wire attachment descriptor onto the fields §4.2 C7 and
 // §4.5 need. It is a projection, not a wire type: the wire type is the generated
@@ -274,39 +273,4 @@ type FieldPresence struct {
 // PresenceOf builds the presence record.
 func (e *Envelope) PresenceOf(required []string) FieldPresence {
 	return FieldPresence{Present: e.Presence(), Missing: e.Missing(required)}
-}
-
-// Describe renders an instance shape for a diagnostic without ever echoing a value.
-func DescribeShape(raw json.RawMessage) string {
-	if len(raw) == 0 {
-		return "absent"
-	}
-	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
-		return "not JSON"
-	}
-	return shapeOf(v)
-}
-
-func shapeOf(v any) string {
-	switch t := v.(type) {
-	case nil:
-		return "null"
-	case bool:
-		return "boolean"
-	case string:
-		return fmt.Sprintf("string(len=%d)", len(t))
-	case float64:
-		return "number"
-	case []any:
-		return fmt.Sprintf("array(len=%d)", len(t))
-	case map[string]any:
-		keys := make([]string, 0, len(t))
-		for k := range t {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		return "object(" + strings.Join(keys, ",") + ")"
-	}
-	return "unknown"
 }

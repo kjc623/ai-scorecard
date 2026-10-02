@@ -83,13 +83,3 @@ func (g *Guard) Mark(tenantID, deviceID, batchID string) {
 	}
 	g.seen[key] = now
 }
-
-// Seen combines Check and Mark. It exists for callers that genuinely want both in one step; the
-// ingest handler does not, because the mark must follow the commit.
-func (g *Guard) Seen(tenantID, deviceID, batchID string) bool {
-	if g.Check(tenantID, deviceID, batchID) {
-		return true
-	}
-	g.Mark(tenantID, deviceID, batchID)
-	return false
-}

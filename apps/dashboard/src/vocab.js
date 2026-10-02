@@ -1,0 +1,288 @@
+// vocab.js — the closed vocabularies of the query DSL, mirrored on the client.
+//
+// This file is a *client-side mirror* of services/query-api/src/registry.js. It exists so the
+// dashboard can refuse to build a query the server would reject, before the request leaves the
+// browser: the DSL is closed, so an unknown dimension is a 400 rather than a silent no-op, and a
+// guessed field name is a hard failure. `test/parity.test.mjs` imports the server's registry and
+// asserts that these lists are equal name for name — a mirror that drifts is a mirror that lies.
+//
+// Nothing here is a query. It is a list of nouns the API admits.
+
+/** The DSL version this client speaks. A different version is not a downgrade, it is a rejection. */
+export const QUERY_VERSION = '1';
+export const API_VERSION = '1';
+
+/** The single endpoint this client may call. `test/section14.test.mjs` asserts it is the only one. */
+export const QUERY_ENDPOINT = '/v1/query';
+
+/** k, the small-cell floor. A cell below it arrives suppressed and is never a number. */
+export const K = 5;
+
+export const OPERATORS = Object.freeze([
+  'eq',
+  'ne',
+  'in',
+  'not_in',
+  'lt',
+  'lte',
+  'gt',
+  'gte',
+  'between',
+  'starts_with',
+  'is_null',
+]);
+
+export const BUCKETS = Object.freeze(['hour', 'day', 'week', 'month']);
+export const NATIVE_BUCKETS = Object.freeze(['hour', 'day']);
+
+/** Bucket length in milliseconds, for the "how many points will this be" hint. */
+export const BUCKET_MS = Object.freeze({
+  hour: 3_600_000,
+  day: 86_400_000,
+  week: 604_800_000,
+  month: 2_629_800_000,
+});
+
+/**
+ * Sources, with the dimensions and measures each actually carries. A dimension or measure that
+ * is not listed here is not offered by the API for that source.
+ */
+export const SOURCES = Object.freeze({
+  'mart.v_tool_usage': Object.freeze({
+    kind: 'aggregate',
+    label: 'Tool usage (view)',
+    dimensions: Object.freeze(['bucket', 'tool', 'sanctioned_state']),
+    measures: Object.freeze(['submissions', 'users', 'bytes_total', 'blocked', 'warned', 'logged']),
+    answers: 'Q1',
+    note: 'sanctioned state is joined at read time; a tool with no decision arrives as unknown, never as unsanctioned',
+  }),
+  'mart.agg_tool_period': Object.freeze({
+    kind: 'aggregate',
+    label: 'Tool usage (full measure set)',
+    dimensions: Object.freeze(['bucket', 'tool', 'sanctioned_state']),
+    measures: Object.freeze([
+      'submissions', 'users', 'bytes_total', 'blocked', 'warned', 'logged',
+      'detections', 'rollup_events', 'degraded_events',
+    ]),
+    answers: 'Q1',
+    note: 'detection-only and rollup-only tools appear here and not in the view',
+  }),
+  'mart.agg_tool_user_period': Object.freeze({
+    kind: 'aggregate',
+    label: 'Usage per tool per person',
+    dimensions: Object.freeze(['bucket', 'tool', 'subject']),
+    measures: Object.freeze(['submissions', 'bytes_total']),
+    answers: 'Q2',
+    subjectBearing: true,
+    note: 'subject-bearing: every read is audited, and the cursor is server-side',
+  }),
+  'mart.agg_org_period': Object.freeze({
+    kind: 'aggregate',
+    label: 'Usage per team',
+    dimensions: Object.freeze(['bucket', 'department', 'population', 'tool']),
+    measures: Object.freeze(['submissions', 'users']),
+    answers: 'Q3',
+    note: 'empty until the directory sync; the answer is then not_yet_covered, never a zero line',
+  }),
+  'mart.agg_class_period': Object.freeze({
+    kind: 'aggregate',
+    label: 'Sensitive-data class mix',
+    dimensions: Object.freeze(['bucket', 'class', 'tool', 'severity', 'classifier_version']),
+    measures: Object.freeze(['submissions', 'users', 'max_score', 'degraded_events']),
+    answers: 'Q4',
+    note: 'submissions counts submissions carrying the class: the rows fan out and are not additive',
+  }),
+  'mart.agg_user_period': Object.freeze({
+    kind: 'aggregate',
+    label: 'One person over time',
+    dimensions: Object.freeze(['bucket', 'subject']),
+    measures: Object.freeze(['submissions', 'bytes_total', 'tools_used', 'block_events']),
+    answers: 'Q6',
+    subjectBearing: true,
+    requiresSubjectFilter: true,
+    note: 'requires a subject filter: a read without one would enumerate people',
+  }),
+  'mart.agg_device_period': Object.freeze({
+    kind: 'aggregate',
+    label: 'Device health history',
+    dimensions: Object.freeze(['bucket', 'device', 'collector']),
+    measures: Object.freeze(['healthy_days', 'degraded_days', 'absent_days', 'tampered_days', 'spool_dropped']),
+    answers: 'Q7',
+  }),
+  'mart.v_device_liveness': Object.freeze({
+    kind: 'list',
+    label: 'Devices and their collection state',
+    dimensions: Object.freeze(['device', 'device_os', 'managed_state', 'region', 'liveness', 'collector', 'collector_state']),
+    measures: Object.freeze([]),
+    answers: 'Q7',
+    noWindow: true,
+    note: 'current state, not a stream: it needs no window and is bounded by its page',
+  }),
+  'ops.coverage_snapshot': Object.freeze({
+    kind: 'list',
+    label: 'Coverage gaps',
+    dimensions: Object.freeze(['snapshot_day', 'device', 'collector', 'gap_reason', 'observed', 'expected']),
+    measures: Object.freeze([]),
+    answers: 'Posture',
+  }),
+  'ingest.submission': Object.freeze({
+    kind: 'list',
+    label: 'Events',
+    dimensions: Object.freeze([
+      'subject', 'tool', 'device', 'mode', 'action', 'content_state', 'route',
+      'detection_basis', 'merge_confidence', 'confidence', 'department', 'population', 'manager',
+    ]),
+    measures: Object.freeze([]),
+    answers: 'Q8, Q9',
+    subjectBearing: true,
+  }),
+  'mart.v_finding': Object.freeze({
+    kind: 'list',
+    label: 'Findings',
+    dimensions: Object.freeze(['severity', 'rule', 'class', 'subject', 'tool', 'review_state', 'mode', 'decided_locally']),
+    measures: Object.freeze([]),
+    answers: 'Q5',
+    subjectBearing: true,
+  }),
+  'ops.audit': Object.freeze({
+    kind: 'list',
+    label: 'Audit trail',
+    dimensions: Object.freeze(['actor_type', 'actor', 'action', 'object_type', 'subject', 'case']),
+    measures: Object.freeze([]),
+    answers: 'Q10',
+    subjectBearing: true,
+  }),
+});
+
+export const SOURCE_NAMES = Object.freeze(Object.keys(SOURCES));
+
+/** The ten questions of docs/04 §3, with the parameters each template admits. */
+export const TEMPLATES = Object.freeze({
+  q1_tools_ranked: Object.freeze({
+    question: 1,
+    title: 'Which AI tools are in use, ranked, over time?',
+    source: 'mart.v_tool_usage',
+    screen: 'tools',
+    params: Object.freeze(['window', 'bucket', 'limit', 'tool', 'sanctioned_state']),
+  }),
+  q2_unsanctioned_users: Object.freeze({
+    question: 2,
+    title: 'Which are unsanctioned, and who is using them?',
+    source: 'mart.agg_tool_user_period',
+    screen: 'unsanctioned',
+    params: Object.freeze(['window', 'bucket', 'limit', 'tool', 'subject']),
+  }),
+  q3_team_growth: Object.freeze({
+    question: 3,
+    title: 'How much is usage growing, per team?',
+    source: 'mart.agg_org_period',
+    screen: 'teams',
+    params: Object.freeze(['window', 'bucket', 'limit', 'department', 'population']),
+  }),
+  q4_class_mix: Object.freeze({
+    question: 4,
+    title: 'What classes of sensitive data are going into AI?',
+    source: 'mart.agg_class_period',
+    screen: 'classes',
+    params: Object.freeze(['window', 'bucket', 'limit', 'dimensions', 'class', 'severity']),
+  }),
+  q5_findings: Object.freeze({
+    question: 5,
+    title: 'Which specific submissions hit a policy rule?',
+    source: 'mart.v_finding',
+    screen: 'findings',
+    params: Object.freeze(['window', 'limit', 'cursor', 'severity', 'rule', 'review_state', 'subject', 'tool', 'class']),
+  }),
+  q6_subject_series: Object.freeze({
+    question: 6,
+    title: "Has a given person's usage changed, or spiked?",
+    source: 'mart.agg_user_period',
+    screen: 'person',
+    params: Object.freeze(['subject', 'window', 'bucket', 'limit']),
+    requires: Object.freeze(['subject']),
+  }),
+  q7_devices: Object.freeze({
+    question: 7,
+    title: "What is the state of every device's collection?",
+    source: 'mart.v_device_liveness',
+    screen: 'devices',
+    params: Object.freeze(['limit', 'cursor', 'liveness', 'collector_state', 'collector', 'device_os', 'managed_state', 'region']),
+  }),
+  q8_activity: Object.freeze({
+    question: 8,
+    title: 'What happened in this window, for this tool or person?',
+    source: 'ingest.submission',
+    screen: 'activity',
+    params: Object.freeze(['window', 'limit', 'cursor', 'subject', 'tool', 'device', 'class', 'content_state', 'action', 'mode', 'department']),
+  }),
+  q9_event_detail: Object.freeze({
+    question: 9,
+    title: 'What exactly was sent?',
+    source: 'ingest.submission',
+    screen: 'event',
+    params: Object.freeze(['submission_id', 'received_at_hint']),
+    requires: Object.freeze(['submission_id']),
+  }),
+  q10_audit_trail: Object.freeze({
+    question: 10,
+    title: 'What has been accessed, and by whom?',
+    source: 'ops.audit',
+    screen: 'audit',
+    params: Object.freeze(['window', 'limit', 'cursor', 'actor', 'action', 'object_type', 'subject', 'case']),
+  }),
+});
+
+export const TEMPLATE_NAMES = Object.freeze(Object.keys(TEMPLATES));
+
+/** §13's result states, with the treatment each one demands of the UI. */
+export const RESULT_STATES = Object.freeze({
+  ok: Object.freeze({ http: 200, carriesData: true, treatment: 'data', label: 'A real answer' }),
+  empty: Object.freeze({ http: 200, carriesData: true, treatment: 'empty', label: 'We looked, coverage was adequate, there is nothing' }),
+  not_yet_covered: Object.freeze({ http: 200, carriesData: true, treatment: 'hatched', label: 'Window predates collection, or the dimension has no source' }),
+  stale_aggregate: Object.freeze({ http: 200, carriesData: true, treatment: 'warning', label: 'Watermark older than three cadences' }),
+  coverage_degraded: Object.freeze({ http: 200, carriesData: true, treatment: 'warning', label: 'The value is a floor, not a total' }),
+  suppressed: Object.freeze({ http: 200, carriesData: true, treatment: 'hatched', label: 'Fewer than k subjects in the cell' }),
+  no_longer_available: Object.freeze({ http: 410, carriesData: false, treatment: 'gone', label: 'The record or its content existed and was destroyed' }),
+  not_captured: Object.freeze({ http: 200, carriesData: true, treatment: 'plain', label: 'The mode never permitted reading content' }),
+  not_retrievable: Object.freeze({ http: 200, carriesData: true, treatment: 'plain', label: 'Content remains on the device' }),
+  not_found: Object.freeze({ http: 404, carriesData: false, treatment: 'plain', label: 'No such record, and no purge covers its window' }),
+  unsupported_query_shape: Object.freeze({ http: 400, carriesData: false, treatment: 'refusal', label: 'Filter combination not servable' }),
+  query_too_broad: Object.freeze({ http: 400, carriesData: false, treatment: 'refusal', label: 'Over budget or over a cap' }),
+  cursor_expired: Object.freeze({ http: 400, carriesData: false, treatment: 'restart', label: 'Cursor expired, mismatched, or from another query' }),
+  audit_unavailable: Object.freeze({ http: 503, carriesData: false, treatment: 'refusal', label: 'The audit row could not be committed: no data at all' }),
+  key_unavailable: Object.freeze({ http: 503, carriesData: false, treatment: 'refusal', label: 'Tenant key disabled or unreachable' }),
+  busy: Object.freeze({ http: 429, carriesData: false, treatment: 'retry', label: 'Shed by concurrency' }),
+  unauthorised_role: Object.freeze({ http: 403, carriesData: false, treatment: 'refusal', label: 'The role cannot make this read' }),
+  content_search_not_enabled: Object.freeze({ http: 403, carriesData: false, treatment: 'refusal', label: "The tenant's tier does not include this search" }),
+  audit_chain_broken: Object.freeze({ http: 500, carriesData: false, treatment: 'refusal', label: "A page's hash links do not verify" }),
+});
+
+export const RESULT_STATE_NAMES = Object.freeze(Object.keys(RESULT_STATES));
+
+/** Values that must never be merged in a rendering (docs/04 §14 item 8, brief §3.2). */
+export const STATE_PAIRS = Object.freeze({
+  liveness: Object.freeze(['reporting', 'stale', 'never_reported', 'revoked']),
+  collector_state: Object.freeze(['healthy', 'degraded', 'absent', 'tampered']),
+  content_state: Object.freeze(['not_captured', 'local_only', 'uploaded', 'shredded']),
+  policy_action: Object.freeze(['blocked', 'warned', 'logged']),
+  review_state: Object.freeze(['open', 'disputed', 'confirmed']),
+  sanctioned_state: Object.freeze(['sanctioned', 'unsanctioned', 'unknown']),
+  merge_confidence: Object.freeze(['high', 'low']),
+});
+
+/** The coverage gap vocabulary: `unknown` is a value, not a blank (docs/04 §11.3). */
+export const GAP_REASONS = Object.freeze([
+  'not_enrolled', 'not_managed', 'client_bypassed_proxy', 'pinned_certificate',
+  'permission_denied', 'process_excluded', 'tampered', 'unknown',
+]);
+
+/** Windows the UI offers, in hours. Named so the label and the request cannot disagree. */
+export const WINDOWS = Object.freeze({
+  h24: Object.freeze({ label: 'Last 24 hours', hours: 24, bucket: 'hour' }),
+  d7: Object.freeze({ label: 'Last 7 days', hours: 24 * 7, bucket: 'day' }),
+  d30: Object.freeze({ label: 'Last 30 days', hours: 24 * 30, bucket: 'day' }),
+  d90: Object.freeze({ label: 'Last 90 days', hours: 24 * 90, bucket: 'day' }),
+});
+
+/** Page sizes the API admits, per kind. The client never asks for more. */
+export const PAGE_SIZES = Object.freeze({ list: 50, listMax: 500, aggregateDefault: 400 });

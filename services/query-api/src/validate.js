@@ -168,12 +168,13 @@ function resolveSource(doc) {
 }
 
 function resolveBucket(doc, source) {
+  const explicit = doc.bucket !== undefined && doc.bucket !== null;
   const bucket = doc.bucket ?? null;
   if (bucket === null) {
-    if (source.kind === 'list') return null;
+    if (source.kind === 'list') return { bucket: null, explicit: false };
     // No bucket asked for: the read is a single window total. It must still pin one
     // bucket_size, or summing hour and day rows would double-count the same events.
-    return 'day';
+    return { bucket: 'day', explicit: false };
   }
   if (typeof bucket !== 'string' || ![...NATIVE_BUCKETS, ...REDUCTION_BUCKETS].includes(bucket)) {
     throw unsupported(REASON.UNKNOWN_BUCKET, `Unknown bucket "${String(bucket)}".`, {
@@ -184,7 +185,7 @@ function resolveBucket(doc, source) {
   if (source.kind === 'list') {
     throw unsupported(REASON.UNKNOWN_BUCKET, `Source "${source.id}" is a bounded list and does not bucket; remove "bucket".`, { source: source.id });
   }
-  return bucket;
+  return { bucket, explicit };
 }
 
 function resolveDimensions(doc, source, bucket) {
@@ -229,6 +230,31 @@ function resolveDimensions(doc, source, bucket) {
     });
   }
   return out;
+}
+
+/**
+ * A source whose row grain IS a person (`mart.agg_user_period`) may only be read about a named
+ * subject. §11.2: "Person is a lookup, not a list … there is no screen that enumerates people
+ * sorted by volume and no column that ranks them", and §14 item 1 makes a volume leaderboard a
+ * non-goal. Left unenforced, that non-goal would be one document away.
+ */
+function assertSubjectScope(doc, source, dimensions) {
+  if (!source.requiresSubjectScope) return;
+  const filters = Array.isArray(doc.filters) ? doc.filters : [];
+  const named = filters.some(
+    (f) => isPlainObject(f) && f.field === 'subject' && (f.op === 'eq' || f.op === 'in'),
+  );
+  if (!named) {
+    throw unsupported(
+      REASON.SUBJECT_SCOPE_REQUIRED,
+      `Source "${source.id}" is a per-subject series and must name the subject it is about: a read without a subject filter would enumerate people (docs/04 §11.2, §14 item 1).`,
+      {
+        source: source.id,
+        fix: { add_filter: { field: 'subject', op: 'eq', value: '<user_ref>' } },
+        grouped_by: [...dimensions],
+      },
+    );
+  }
 }
 
 function resolveMeasures(doc, source) {
@@ -593,8 +619,10 @@ export function validate(doc) {
     : source;
 
   const klass = klassOf(withTime);
-  const bucket = resolveBucket(doc, withTime);
+  const bucketChoice = resolveBucket(doc, withTime);
+  const bucket = bucketChoice.bucket;
   const dimensions = resolveDimensions(doc, withTime, bucket);
+  assertSubjectScope(doc, withTime, dimensions);
   const measures = resolveMeasures(doc, withTime);
   const filters = resolveFilters(doc, withTime);
   const window = resolveWindow(doc, withTime);
@@ -609,6 +637,7 @@ export function validate(doc) {
     source: withTime.id,
     kind: withTime.kind,
     bucket,
+    bucket_explicit: bucketChoice.explicit,
     dimensions: Object.freeze([...dimensions]),
     measures: Object.freeze([...measures]),
     filters: Object.freeze([...filters]),

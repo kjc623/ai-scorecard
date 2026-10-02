@@ -73,8 +73,13 @@ export function bootstrap(adapter, { deviceId = null, version = '0.1.0', capacit
     policy,
     onBodyLane: (input) => pipeline.captureWithBody(input),
     onMetadataLane: (input) => pipeline.captureMetadata(input),
-    onResponse: (input) => pipeline.onResponse(input),
+    // The response lane hands over a bare response record; the pipeline takes it wrapped, the same
+    // shape the two request lanes use.
+    onResponse: (detail) => pipeline.onResponse({ detail }),
   });
+  // Nothing is registered until the first policy arrives: with no bundle every destination
+  // resolves to M0, so §11.2's guarantee holds by construction rather than by a handler check.
+  lanes.refresh();
 
   // ── policy (§3.4 bidirectional channel, §11.3's device-side bundle) ───────────────────────
   async function requestPolicySync() {

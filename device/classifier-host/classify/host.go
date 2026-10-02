@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/shadow-ai-capture/device/classifier-host/docparse"
+	"github.com/shadow-ai-capture/device/classifier-host/internal/hiresclock"
 	"github.com/shadow-ai-capture/device/classifier-host/norm"
 	"github.com/shadow-ai-capture/device/classifier-host/release"
 	"github.com/shadow-ai-capture/device/protocol"
@@ -133,7 +134,10 @@ func New(opts Options) (*Host, error) {
 		opts.Enforcement = DefaultEnforcement()
 	}
 	if opts.Now == nil {
-		opts.Now = time.Now
+		// §9.4's budget has to be visible to the clock that measures it: on Windows time.Now's
+		// resolution is coarser than most stages, so the host defaults to the platform's
+		// high-resolution monotonic source (internal/hiresclock).
+		opts.Now = hiresclock.Now
 	}
 	if opts.Version == "" {
 		opts.Version = "classifier-host-unknown"
@@ -226,13 +230,15 @@ func (h *Host) classifyWithRelease(ctx context.Context, rel *release.Release, re
 		return h.assemble(p, v)
 	}
 	if f := h.opts.Store.Failure(); f != nil {
-		// The retained release still classifies; the answer is degraded because the release the
-		// device was told to run is not the release that produced it.
+		// §9.6: the previously loaded release is *retained* and still classifies; §9.7 lists
+		// "a release failed to load and rules-only labels came from the retained release" as a
+		// degraded cause. So the pipeline runs on (returning its labels for the audit path) and
+		// the answer is degraded, because the release the device was told to run is not the
+		// release that produced it.
 		p.record(StageRelease, true, true, false, protocol.DetailReleaseLoadFailed,
 			"release "+f.Version+" failed to load ("+f.Cause+"); labels came from the retained release "+rel.Version, 0)
 		p.degrade(protocol.DetailReleaseLoadFailed, "a release failed to load: "+f.Err)
 		p.inc("release_load_failed")
-		return h.assemble(p, v)
 	}
 
 	content := req.Content
@@ -340,8 +346,13 @@ func (h *Host) parseDocument(ctx context.Context, p *pipeline, mediaType string,
 		Duration:  res.Duration,
 		Truncated: res.Truncated,
 	}
-	if stage.Detail == protocol.DetailNone && stage.Failed {
+	switch {
+	case stage.Detail == protocol.DetailNone && stage.Failed:
 		stage.Detail = protocol.DetailParserFailed
+	case stage.Detail == protocol.DetailNone && stage.Truncated:
+		// §10's output cap: "truncating and recording degraded". The stage must name the cause,
+		// or a degraded response would be attributable to nothing in particular.
+		stage.Detail = protocol.DetailParserOutputCap
 	}
 	p.stages = append(p.stages, stage)
 	if h.opts.Metrics != nil {

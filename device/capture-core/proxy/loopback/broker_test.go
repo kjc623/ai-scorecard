@@ -120,6 +120,20 @@ func (u *stubUpstream) requestCount() int {
 	return len(u.requests)
 }
 
+// countPath counts requests the *broker* made, which excludes the preflight's own request:
+// the preflight is a real request to the upstream and is expected to appear here.
+func (u *stubUpstream) countPath(path string) int {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	n := 0
+	for _, r := range u.requests {
+		if r.Path == path {
+			n++
+		}
+	}
+	return n
+}
+
 func (u *stubUpstream) lastBody() []byte {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -292,8 +306,8 @@ func TestBroker_6_2_BindsAfterPreflightAndBrokersRequests(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || !bytes.Contains(got, []byte(`"ok":true`)) {
 		t.Fatalf("response through the broker = %d %q", resp.StatusCode, got)
 	}
-	if upstream.requestCount() != 1 {
-		t.Fatalf("upstream saw %d requests, want 1", upstream.requestCount())
+	if n := upstream.countPath("/v1/chat/completions"); n != 1 {
+		t.Fatalf("upstream saw %d brokered chat requests, want 1", n)
 	}
 	if string(upstream.lastBody()) != body {
 		t.Fatalf("upstream saw body %q, want the client's bytes unchanged", upstream.lastBody())
@@ -566,7 +580,7 @@ func TestBroker_SkipsNonGenerativeRequestsAndCountsThem(t *testing.T) {
 	}
 	_, _ = io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
-	if upstream.requestCount() != 1 {
+	if n := upstream.countPath("/v1/models"); n != 1 {
 		t.Fatal("a non-generative request was not forwarded")
 	}
 	waitFor(t, time.Second, "the skip counter", func() bool {

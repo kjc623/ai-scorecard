@@ -162,11 +162,18 @@ test('an over-cap body contributes what a prefix can honestly contribute, and sa
     truncated: true,
   });
   assert.equal(r.over_cap, true, 'the caller must be able to emit confidence: degraded');
-  assert.ok(r.signals.some((s) => s.id === 'body_prompt_member'), 'the prefix key scan still yields evidence');
+  assert.equal(r.structure, 'unparsed', 'the prefix is not a complete JSON document');
+  assert.ok(r.signals.some((s) => s.id === 'body_messages_named_member'), 'the prefix key scan finds the chat member');
+  assert.ok(r.signals.some((s) => s.id === 'body_role_discriminator'));
+  assert.ok(r.signals.some((s) => s.id === 'body_content_payload'));
   assert.ok(r.signals.some((s) => s.id === 'request_non_trivial_size'));
+  assert.equal(r.match, true, 'and a truncated chat payload is still a submission');
 });
 
-test('an invalid-UTF-8 body is not decoded, so it contributes no text evidence', () => {
+test('an invalid-UTF-8 body contributes KEY evidence but never value evidence', () => {
+  // The distinction that matters: shape is carried by ASCII key names, which a replacement
+  // character cannot corrupt, while the payload's *values* are only ever a digest and a size.
+  // So the key scan runs, and no text evidence is invented from bytes that were never decoded.
   const r = predicateRequest({
     url: 'https://example-ai.invalid/v1/chat',
     method: 'POST',
@@ -174,9 +181,24 @@ test('an invalid-UTF-8 body is not decoded, so it contributes no text evidence',
     size_bytes: 8,
     bytes: new Uint8Array([0xc3, 0x28, 0xc3, 0x28, 0xc3, 0x28, 0xc3, 0x28]),
   });
-  assert.equal(r.match, false);
-  assert.equal(r.structure, 'unparsed');
-  assert.equal(r.signals.filter((s) => s.id === 'body_long_text').length, 0);
+  assert.equal(r.match, false, 'undecodable noise with no structure is not a submission');
+  assert.equal(r.structure, 'binary');
+  assert.equal(r.signals.filter((s) => s.id === 'body_long_text').length, 0, 'no text evidence is invented');
+
+  const structured = predicateRequest({
+    url: 'https://example-ai.invalid/v1/chat',
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    size_bytes: 40,
+    bytes: new Uint8Array([
+      ...new TextEncoder().encode('{"messages":[{"role":"user","content":"'),
+      0xc3, 0x28, 0xff, 0xfe,
+      ...new TextEncoder().encode('"}]}'),
+    ]),
+  });
+  assert.equal(structured.structure, 'binary');
+  assert.ok(structured.signals.some((s) => s.id === 'body_messages_named_member'), 'the key is still readable');
+  assert.equal(structured.match, true, 'and a chat-shaped payload with undecodable bytes is still a submission');
 });
 
 test('form bodies are classified from parsed key/value pairs (E2)', () => {

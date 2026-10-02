@@ -17,7 +17,7 @@
 
 import { createHash } from 'node:crypto';
 import { API_VERSION, K, QUERY_VERSION, SOURCE_WATERMARK } from './registry.js';
-import { REASON, QueryError, auditUnavailable, unsupported } from './errors.js';
+import { PROHIBITED_FIELDS, REASON, QueryError, auditUnavailable, unsupported } from './errors.js';
 import { validate, canonicalJson } from './validate.js';
 import { guard } from './guard.js';
 import { compile, effectiveOrderKeys } from './compile.js';
@@ -95,6 +95,7 @@ const SIDE_READ_IDS = Object.freeze([
 export function plan(request, ctx = {}) {
   const now = toDate(ctx.now ?? new Date());
   const expansion = isTemplateRequest(request) ? expandTemplate(request) : null;
+  if (expansion) assertTemplateRequestKeys(request);
   const document = expansion ? expansion.document : request;
 
   if (expansion && expansion.document === null) {
@@ -179,6 +180,8 @@ export function plan(request, ctx = {}) {
       guard: Object.freeze({
         buckets: guarded.buckets,
         estimated_cells: guarded.estimatedCells,
+        bounded_cells: guarded.boundedCells,
+        paged: guarded.paged,
         estimated_bytes: guarded.estimatedBytes,
       }),
       notes: Object.freeze([...(expansion?.notes ?? []), ...guarded.notes]),
@@ -193,6 +196,10 @@ function planSingle(expansion, ctx, now) {
     const built = statement();
     if (built) statements.push(built);
   }
+  // A missing record is ambiguous between "never existed" and "existed and was purged", and §13
+  // resolves it from the window the record would have been received in. The caller may name that
+  // window with `received_at_hint`; without it the response says so rather than guessing.
+  const hint = expansion.params?.received_at_hint ?? null;
   const decision = Object.freeze({
     required: true,
     phase: 'pre_read',
@@ -216,7 +223,7 @@ function planSingle(expansion, ctx, now) {
     template: { name: expansion.name, question: expansion.question, title: expansion.title },
     query: null,
     source: null,
-    dsl_hash: hashOf({ template: expansion.name, params: ctx.params ?? null }),
+    dsl_hash: hashOf({ template: expansion.name, params: expansion.params ?? null }),
     compiled: null,
     statements: Object.freeze([auditStatementBuilt, ...statements, ...sideReads]),
     audit: Object.freeze({ decision, plan: auditPlan(decision, true), subjectRef: ctx.subjectRef ?? null, action: decision.action, object_type: decision.object_type }),
@@ -224,6 +231,7 @@ function planSingle(expansion, ctx, now) {
       api_version: API_VERSION,
       query_version: QUERY_VERSION,
       single_record: true,
+      received_at_hint: hint,
       notes: Object.freeze([...expansion.notes]),
     }),
   });
@@ -235,9 +243,7 @@ function planSingle(expansion, ctx, now) {
 
 function resolveCursorFor(query, source, orderKeys, dslHash, ctx) {
   const subjectBearing = isSubjectBearingOrder(orderKeys);
-  const fallbackUpper = ctx.snapshotUpper
-    ?? (source.time && query.window ? query.window.to : new Date().toISOString());
-
+  const fallbackUpper = ctx.snapshotUpper ?? defaultUpper(query, source, ctx);
   if (!query.cursor) {
     return Object.freeze({ position: null, snapshotUpper: fallbackUpper, mode: subjectBearing ? 'server_side' : 'self_contained' });
   }
@@ -268,6 +274,20 @@ function resolveCursorFor(query, source, orderKeys, dslHash, ctx) {
     order: orderKeys,
   }, { key: ctx.cursorKey });
   return Object.freeze({ position: payload.pos, snapshotUpper: payload.upper, mode: 'self_contained' });
+}
+
+/**
+ * §7.3: "snapshot_upper_bound is the maximum received_at visible when the first page was served;
+ * every later page carries WHERE received_at <= :upper."
+ *
+ * For a list that bound is the moment page one is served — rows appended after it are announced
+ * by `newer_events_exist` rather than shifting the boundary. For an aggregate there is nothing to
+ * shift (the read re-derives its buckets), so the window's own upper bound is the honest answer
+ * and it is deterministic, which a cursor needs.
+ */
+function defaultUpper(query, source, ctx) {
+  if (source.kind === 'list' && source.time) return (ctx.now instanceof Date ? ctx.now : new Date(ctx.now ?? Date.now())).toISOString();
+  return query.window ? query.window.to : new Date().toISOString();
 }
 
 /**
@@ -414,7 +434,11 @@ function assemble(planResult, results, now, ctx) {
     });
     const auditRow = results.get('audit_insert')?.rows?.[0] ?? null;
     if (detailRows.length === 0) {
-      const verdict = resolveMissingRecord({ found: false, receivedAtHint: ctx.receivedAtHint ?? null, receipts });
+      const verdict = resolveMissingRecord({
+        found: false,
+        receivedAtHint: ctx.receivedAtHint ?? planResult.meta.received_at_hint ?? null,
+        receipts,
+      });
       if (verdict.result_state === 'no_longer_available') {
         return Object.freeze({
           api_version: API_VERSION,
@@ -465,7 +489,7 @@ function assemble(planResult, results, now, ctx) {
         query_version: QUERY_VERSION,
         result_state: 'audit_chain_broken',
         error: Object.freeze({
-          code: REASON.CHAIN_MISMATCH,
+          code: verdict.broken[0]?.reason ?? REASON.CHAIN_MISMATCH,
           message: 'The audit page\'s hash links do not verify; this is an integrity alert, not a list.',
           detail: Object.freeze({ broken: verdict.broken }),
         }),
@@ -473,7 +497,10 @@ function assemble(planResult, results, now, ctx) {
     }
   }
 
-  let rows = readRows.map(stripPrivate);
+  // Hidden columns (`__k_subjects`, `__ord_*`) are stripped by applySuppression, after it has
+  // used them: the k decision needs the distinct-subject count, and stripping first would make
+  // every cell look wide.
+  let rows = [...readRows];
   let page = null;
   if (planResult.source.kind === 'list') {
     const limit = planResult.query.limit ?? rows.length;
@@ -562,10 +589,42 @@ function stripPrivate(row) {
   return out;
 }
 
+export { stripPrivate };
+
 // ---------------------------------------------------------------------------------------------
 
 function isTemplateRequest(request) {
   return Boolean(request) && typeof request === 'object' && typeof request.template === 'string';
+}
+
+/**
+ * A template request is validated for closure too. Without this, a request carrying both a
+ * template and `{"sql": "..."}` would have the SQL key dropped by the expansion and answered —
+ * which is exactly the "ignore what you do not recognise" failure §2.4 forbids. Only the three
+ * template keys exist, and the prohibited ones are named rather than merely unknown.
+ */
+function assertTemplateRequestKeys(request) {
+  const allowed = ['query_version', 'template', 'params'];
+  for (const key of Object.keys(request)) {
+    if (allowed.includes(key)) continue;
+    const prohibited = PROHIBITED_FIELDS[key];
+    if (prohibited === REASON.TENANT_IN_REQUEST) {
+      throw unsupported(REASON.TENANT_IN_REQUEST, 'The tenant comes from the authenticated session and never from the request; a request carrying a tenant identifier is rejected.', { key });
+    }
+    if (prohibited === REASON.TEXT_PREDICATE_IN_REQUEST) {
+      throw unsupported(REASON.TEXT_PREDICATE_IN_REQUEST, `"${key}" is a content-search field. /v1/query has no text predicate; use POST /v1/content-search.`, { key, endpoint: '/v1/content-search' });
+    }
+    if (prohibited === REASON.PROHIBITED_FIELD) {
+      throw unsupported(REASON.PROHIBITED_FIELD, `"${key}" is not part of the DSL; the DSL has no SQL, expression or ordering-text field.`, { key });
+    }
+    throw unsupported(REASON.UNKNOWN_KEY, `Unknown key "${key}" in a template request.`, { key, known_keys: allowed });
+  }
+  if (request.query_version === undefined) {
+    throw unsupported(REASON.UNSUPPORTED_QUERY_VERSION, 'query_version is required; the DSL is a versioned contract.', { served: [QUERY_VERSION] });
+  }
+  if (request.query_version !== QUERY_VERSION) {
+    throw unsupported(REASON.UNSUPPORTED_QUERY_VERSION, `Unsupported query_version "${String(request.query_version)}"; this service serves version ${QUERY_VERSION} and never silently downgrades.`, { requested: request.query_version, served: [QUERY_VERSION] });
+  }
 }
 
 /** §7.2: the cursor binds to `dsl_hash`, the hash of the normalised query. */

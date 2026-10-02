@@ -179,6 +179,10 @@ func (m *Machine) Apply(ev Event) Action {
 		case EvPreflightFail:
 			m.failures++
 			m.lastFail = ev
+			// FROM ORPHAN this is also the return to RELEASED: process death is a release, and
+			// the supervisor does not recreate the socket before re-running preflight (§6.2
+			// rule 4).
+			m.state = StateReleased
 			return ActBackoff
 		case EvBackoffExpired:
 			return ActPreflight

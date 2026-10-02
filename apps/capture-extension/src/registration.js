@@ -69,7 +69,9 @@ export function installLanes({ adapter, policy, onBodyLane, onMetadataLane, onRe
   function install() {
     adapter.webRequest.onBeforeRequest(guard(metadataHandler), { urls: ALL_URLS, types });
     if (onResponse) {
-      adapter.webRequest.onCompleted(responseHandler, { urls: ALL_URLS, types });
+      // The response lane is not blocking: a response record can only corroborate an observation
+      // that has already been released, so it has no business delaying anything.
+      adapter.webRequest.onCompleted(guard(onResponse), { urls: ALL_URLS, types });
     }
     // Lane B is registered only when its filter is non-empty. Until the first policy arrives
     // `computeBodyFilter` returns [] — the extension has no bundle entry for any destination, so
@@ -83,12 +85,6 @@ export function installLanes({ adapter, policy, onBodyLane, onMetadataLane, onRe
   }
 
   let bodyInstalled = false;
-
-  const responseHandler = (detail) => {
-    Promise.resolve(onResponse({ detail })).catch(() => {
-      /* a response record corroborates an observation; it is never the observation itself */
-    });
-  };
 
   /**
    * Re-derive lane B's filter and (re-)register it, or remove it when policy now says every
@@ -161,11 +157,13 @@ export function computeBodyFilter(policy) {
 
 function guard(handler) {
   return (detail) =>
-    handler(detail).catch((e) => {
-      // Fail open: a broken classifier must not become a broken browser (brief §6, §7.4).
-      if (typeof console !== 'undefined' && console.warn) console.warn('[capture] observation failed; failing open', e);
-      return undefined;
-    });
+    Promise.resolve()
+      .then(() => handler(detail))
+      .catch((e) => {
+        // Fail open: a broken classifier must not become a broken browser (brief §6, §7.4).
+        if (typeof console !== 'undefined' && console.warn) console.warn('[capture] observation failed; failing open', e);
+        return undefined;
+      });
 }
 
 function toBlockingResponse(result) {

@@ -27,8 +27,6 @@ import (
 	"time"
 
 	"github.com/shadow-ai-capture/device/protocol"
-
-	"github.com/shadow-ai-capture/ingest-api/internal/dedup"
 )
 
 // RouteFidelity is one row of ref.route_fidelity. The rank is *stored*, never compiled in: §4.4
@@ -247,14 +245,6 @@ func TTLFromLabels(defaultDays int, _ json.RawMessage) int {
 		return 90 // ref.retention_class 'standard' default_ttl_days
 	}
 	return defaultDays
-}
-
-func sortStrings(s []string) { sort.Strings(s) }
-
-// TierOf is a small helper so both implementations describe a tier identically. The service
-// reports it; no write decision depends on it.
-func TierOf(kind, contentDigest string, hasDigest bool, attachments []dedup.Attachment) dedup.Tier {
-	return dedup.TierFor(kind, contentDigest, hasDigest, attachments)
 }
 
 // LoadRouteTable reads ref.route_fidelity rows from a JSON file, for the in-memory store.

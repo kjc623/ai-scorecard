@@ -101,7 +101,20 @@ test('normaliseBody reports the whole size but holds only the prefix when over c
   assert.equal(body.size, 1000, 'size reports the payload as sent');
   assert.equal(body.bytes.byteLength, 64, 'only the prefix is materialised');
   assert.equal(body.truncated_reason, 'body_over_cap');
+  // The prefix is still decoded strictly: its encoding is a fact about the payload the caller has
+  // to report, and labelling valid UTF-8 as binary would be its own small lie.
+  assert.equal(body.decode.encoding, 'utf8');
+  assert.equal(body.decode.text.length, 64);
+});
+
+test('an over-cap prefix that cannot be decoded is labelled binary, not silently replaced', () => {
+  const big = new Uint8Array(1000);
+  big.set([0xc3, 0x28, 0xff, 0xfe], 0);
+  const body = normaliseBody({ raw: [{ bytes: big.buffer }] }, { capBytes: 64 });
+  assert.equal(body.source, 'over_cap');
+  assert.equal(body.size, 1000);
   assert.equal(body.decode.encoding, 'binary');
+  assert.equal(body.decode.text, null);
 });
 
 test('normaliseBody keeps a form body as key/value pairs (E2) and still produces bytes', () => {

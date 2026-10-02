@@ -142,6 +142,27 @@ if (arrMatch) {
     'FORCE appears in the loop and for ops.tenant');
 }
 
+// Every table outside `ref` must be covered by the RLS set, so a tenant-scoped table added later
+// cannot quietly ship without a policy. `ref` is the deliberate exception: six tables of shared
+// vocabulary (classifier_release, collector, data_class, retention_class, route_fidelity, rule),
+// none of which has a tenant_id column -- verified against the live catalog -- and all of whose
+// per-tenant variation lives in ops.* (policy_bundle, retention_policy, tool), which IS covered.
+// This is the static half; the runtime half counts forced tables against the live catalog.
+{
+  const created = [...schemaCode.matchAll(/CREATE TABLE\s+([a-z_]+)\.([a-z_]+)/g)]
+    .map((m) => `${m[1]}.${m[2]}`);
+  const nonRef = [...new Set(created.filter((t) => !t.startsWith('ref.')))];
+  const rlsCovered = new Set([...tenantTables, 'ops.tenant']);
+
+  const missing = nonRef.filter((t) => !rlsCovered.has(t));   // created outside ref, no policy
+  const extra = [...rlsCovered].filter((t) => !created.includes(t)); // policy for a table that is gone
+
+  check('rls.every-non-ref-table-is-covered', missing.length === 0 && extra.length === 0,
+    missing.length || extra.length
+      ? `tables outside ref without a tenant_isolation policy: [${missing.join(', ')}]${extra.length ? `; policies for tables that do not exist: [${extra.join(', ')}]` : ''}`
+      : `all ${nonRef.length} tables outside ref are in the RLS set; the ${created.length - nonRef.length} ref tables are the documented exception (shared vocabulary, no tenant_id column)`);
+}
+
 // -------------------------------------------------------------------------------------
 // 2. The two-tier dedup ladder (brief R9)
 // -------------------------------------------------------------------------------------
@@ -505,6 +526,144 @@ const STORAGE_ONLY_EXPECTED = ['malformed_json', 'dedup_key_mismatch', 'internal
     const resurrected = oldSpellings.filter((c) => sqlSet.has(c));
     check('vocab.pre-alignment-spellings-absent', resurrected.length === 0,
       resurrected.length ? `pre-alignment spellings are back in the CHECK: ${resurrected.join(', ')}` : `none of the three pre-alignment spellings remain: ${oldSpellings.join(', ')}`);
+  }
+}
+
+// -------------------------------------------------------------------------------------
+// 8. The store's kind and mode boundaries, compared against the contract mechanically
+// -------------------------------------------------------------------------------------
+// The defect this exists to catch: the store's per-kind CHECK constraints constrained only SOME
+// of the fields the contract forbids for that kind, so a record arriving by any path other than
+// the ingest gate was accepted carrying a field its kind is defined not to have. Reading the two
+// side by side is what a reviewer does once; comparing them mechanically is what catches the next
+// drift. Same independent-artefact comparison that caught the reason-code regression.
+//
+// contracts/event-envelope.schema.json is authoritative. A contract field with no column here is
+// excused EXPLICITLY and named in the output, so a field cannot be dropped from the store's list
+// silently: either it has no column and is listed below, or this check fails.
+
+// Contract fields with no column on ingest.observation, so no CHECK on that table can mention them.
+const NO_COLUMN_ON_OBSERVATION = new Set(['attachments']);
+
+{
+  const repoDir = join(DB, '..');
+  const contractPath = join(repoDir, 'contracts', 'event-envelope.schema.json');
+  const contractText = readMaybe(contractPath);
+
+  if (!contractText) {
+    warn('kinds.contract-readable', false, `cannot read ${contractPath}; the contract-vs-store comparison is INCOMPLETE`);
+  } else {
+    let contract = null;
+    try {
+      contract = JSON.parse(contractText);
+      check('kinds.contract-parses', true, 'contracts/event-envelope.schema.json parses');
+    } catch (err) {
+      check('kinds.contract-parses', false, `contract is not valid JSON: ${err.message}`);
+    }
+
+    if (contract) {
+      // Every if/then branch keyed on `kind` (optionally narrowed by `collection_mode`).
+      const branches = [];
+      const walk = (node) => {
+        if (Array.isArray(node)) { node.forEach(walk); return; }
+        if (node && typeof node === 'object') {
+          const k = node.if && node.if.properties && node.if.properties.kind && node.if.properties.kind.const;
+          if (k && node.then) {
+            const modeConst = node.if.properties.collection_mode && node.if.properties.collection_mode.const;
+            const modeEnum = node.if.properties.collection_mode && node.if.properties.collection_mode.enum;
+            branches.push({ key: k + (modeConst ? `:${modeConst}` : modeEnum ? ':m1+' : ''), then: node.then });
+          }
+          Object.values(node).forEach(walk);
+        }
+      };
+      walk(contract);
+      check('kinds.branches-found', branches.length >= 6,
+        `${branches.length} contract kind/mode branches: ${branches.map((b) => b.key).join(', ')}`);
+
+      // One CHECK constraint's body out of schema.sql: from its CONSTRAINT keyword to the next
+      // CONSTRAINT (or the end of the table definition).
+      const constraintBody = (name) => {
+        const i = schemaCode.indexOf(`CONSTRAINT ${name}`);
+        if (i < 0) return null;
+        let j = schemaCode.indexOf('CONSTRAINT ', i + 1);
+        const k = schemaCode.indexOf('\n);', i);
+        if (j < 0 || (k >= 0 && k < j)) j = k;
+        if (j < 0) j = i + 1500;
+        return schemaCode.slice(i, j);
+      };
+      const sqlFields = (body, negated) => body
+        ? [...body.matchAll(negated ? /(\w+)\s+IS\s+NULL/gi : /(\w+)\s+IS\s+NOT\s+NULL/gi)].map((m) => m[1])
+        : [];
+
+      // The four branches that FORBID a field set: contract not.anyOf vs the CHECK's IS NULL list.
+      const forbidMap = [
+        ['usage_rollup', 'observation_rollup_shape'],
+        ['model_detection', 'observation_detection_shape'],
+        ['prompt', 'observation_prompt_shape'],
+        ['prompt:m0', 'observation_m0_carries_no_content'],
+      ];
+
+      for (const [branchKey, constraintName] of forbidMap) {
+        const branch = branches.find((b) => b.key === branchKey);
+        const body = constraintBody(constraintName);
+        if (!branch) { check(`kinds.${constraintName}.contract-branch`, false, `no contract branch for ${branchKey}`); continue; }
+        if (!body) { check(`kinds.${constraintName}.exists`, false, `CONSTRAINT ${constraintName} not found in schema.sql`); continue; }
+
+        const contractForbids = (branch.then.not && branch.then.not.anyOf ? branch.then.not.anyOf : [])
+          .map((r) => (r.required || [])[0]).filter(Boolean).sort();
+        const excused = contractForbids.filter((f) => NO_COLUMN_ON_OBSERVATION.has(f));
+        const expected = contractForbids.filter((f) => !NO_COLUMN_ON_OBSERVATION.has(f)).sort();
+        const actual = [...new Set(sqlFields(body, true))].sort();
+
+        const missing = expected.filter((f) => !actual.includes(f));   // store does not forbid it
+        const surplus = actual.filter((f) => !expected.includes(f));   // store forbids something extra
+
+        check(`kinds.${constraintName}.matches-contract`, missing.length === 0 && surplus.length === 0,
+          missing.length || surplus.length
+            ? `${constraintName} differs from the contract's ${branchKey} branch: the store does NOT forbid [${missing.join(', ')}]${surplus.length ? `, and forbids extra [${surplus.join(', ')}]` : ''}`
+            : `${constraintName} forbids exactly the contract's ${expected.length} fields${excused.length ? ` (${excused.join(', ')} excused: no column on this table)` : ''}`);
+      }
+
+      // The M1+ branch REQUIRES a field set: contract then.required vs the CHECK's IS NOT NULL list.
+      {
+        const branch = branches.find((b) => b.key === 'prompt:m1+');
+        const body = constraintBody('observation_m1_plus_carries_labels');
+        if (branch && body) {
+          const expected = [...(branch.then.required || [])].sort();
+          const actual = [...new Set(sqlFields(body, false))].sort();
+          const same = JSON.stringify(expected) === JSON.stringify(actual);
+          check('kinds.observation_m1_plus_carries_labels.matches-contract', same,
+            same
+              ? `requires exactly the contract's ${expected.length} fields: ${expected.join(', ')}`
+              : `M1+ requires [${expected.join(', ')}] but the store requires [${actual.join(', ')}]`);
+        }
+      }
+
+      // The M2 branch REQUIRES an excerpt; the store only PERMITS one there. That difference is a
+      // recorded decision, not an open question: the requirement is a wire-level statement
+      // enforced at ingest (mode_violation + quarantine), and "M2 without an excerpt" is a less
+      // informative record rather than a dangerous one, so the store deliberately does not add a
+      // requirement that could invalidate a previously-valid row.
+      //
+      // The exemption is ASSERTED, not assumed: this passes while the world matches the recorded
+      // decision and fails the moment it stops matching, so the exemption cannot rot into a hole.
+      // Same treatment `attachments` gets, and for the same reason.
+      {
+        const branch = branches.find((b) => b.key === 'prompt:m2');
+        const requiresExcerpt = Boolean(branch && branch.then.required && branch.then.required.includes('content_excerpt'));
+        const body = constraintBody('observation_excerpt_only_at_m2');
+        const storeRequiresIt = body ? /content_excerpt\s+IS\s+NOT\s+NULL/i.test(body) : false;
+
+        check('kinds.m2-excerpt-is-an-excused-difference', Boolean(body) && requiresExcerpt && !storeRequiresIt,
+          !body
+            ? 'CONSTRAINT observation_excerpt_only_at_m2 not found in schema.sql, so the recorded exemption cannot be checked'
+            : !requiresExcerpt
+              ? 'the contract no longer requires content_excerpt at M2, so the exemption recorded at observation_excerpt_only_at_m2 is STALE and should be removed'
+              : storeRequiresIt
+                ? 'the store now requires content_excerpt at M2, so the exemption recorded at observation_excerpt_only_at_m2 is STALE'
+                : 'EXCUSED BY DECISION: the contract requires content_excerpt at M2, the store only permits it. Enforced at ingest as mode_violation + quarantine; a less informative record, not a dangerous one. Recorded at the constraint.');
+      }
+    }
   }
 }
 

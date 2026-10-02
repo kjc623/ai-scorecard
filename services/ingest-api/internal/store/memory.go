@@ -354,7 +354,7 @@ func (m *Memory) recordEventLocked(w BatchWrite, ev AcceptedEvent) (EventOutcome
 		FirstOccurredAt: occurred, LastOccurredAt: occurred, ReceivedAt: w.ReceivedAt,
 		CollectionMode: mode, SizeBytes: size, ContentDigest: digest,
 		Labels: env.RawOrNil("labels"), ClassifierVer: stringOr(env, "classifier_version"),
-		Confidence: stringOr(env, "confidence"),
+		Confidence:    stringOr(env, "confidence"),
 		WinningSource: source, WinningFidelity: fidelity.Rank,
 		ObservedRoutes: []string{source}, ObservationCount: 1,
 		MergeConfidence: "high", ExpiresAt: expires,

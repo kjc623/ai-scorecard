@@ -14,11 +14,9 @@
 import {
   COARSENING_ORDER,
   K,
-  MAX_LIST_WINDOW_DAYS,
   MAX_RESPONSE_BYTES,
   MAX_SERIES_POINTS,
   MAX_UNNARROWED_SUBJECT_WINDOW_DAYS,
-  NATIVE_BUCKETS,
 } from './registry.js';
 import { REASON, tooBroad, unsupported } from './errors.js';
 
@@ -61,35 +59,38 @@ export function guard(validated, opts = {}) {
 
   // -------------------------------------------------------------------------------------------
   // §7.5 time series: at most 400 points, auto-coarsened, and the applied bucket is reported in
-  // `freshness`. Auto-coarsening is the one place the document allows the shape to change under
-  // the caller; it never changes silently, and `coarsened` is returned for that reason.
+  // `freshness`. §12.3 answers the same case with `query_too_broad` and a suggestion of week or
+  // month. The two are reconciled by who chose the resolution: a series whose bucket the server
+  // picked (none was asked for) is auto-coarsened and says so; a caller who explicitly pinned a
+  // bucket that cannot fit 400 points is refused and told which bucket would fit. Silently
+  // changing a resolution a caller asked for would be the "degrade instead of reject" failure
+  // §12.2 forbids. DSL.md §9 records the reconciliation.
   // -------------------------------------------------------------------------------------------
   let coarsened = null;
   const maxSeriesPoints = opts.maxSeriesPoints ?? MAX_SERIES_POINTS;
   if (query.bucket) {
-    let applied = query.bucket;
-    let buckets = countBuckets(windowDays, applied);
-    while (buckets > maxSeriesPoints) {
-      const next = COARSENING_ORDER[COARSENING_ORDER.indexOf(applied) + 1];
-      if (!next) break;
-      applied = next;
-      buckets = countBuckets(windowDays, applied);
-    }
-    if (applied !== query.bucket) {
+    const bucketsAtRequested = countBuckets(windowDays, query.bucket);
+    if (bucketsAtRequested > maxSeriesPoints) {
+      const fitting = fittingBucket(windowDays, query.bucket, maxSeriesPoints);
+      if (query.bucket_explicit || !fitting) {
+        throw tooBroad(
+          REASON.SERIES_TOO_LONG,
+          `A ${query.bucket}-bucketed window of ${round(windowDays)} days is about ${bucketsAtRequested} points, above the ${maxSeriesPoints}-point series bound.`,
+          {
+            max_points: maxSeriesPoints,
+            requested_points: bucketsAtRequested,
+            window_days: round(windowDays),
+            ...(fitting ? { fix: { coarser_bucket: fitting } } : { fix: { narrow_window: true, drop_dimensions: true } }),
+          },
+        );
+      }
       coarsened = {
         from: query.bucket,
-        to: applied,
+        to: fitting,
         reason: `series_exceeds_${maxSeriesPoints}_points`,
       };
-      notes.push(`A ${query.bucket}-bucketed window of ${round(windowDays)} days exceeds ${maxSeriesPoints} points; it was auto-coarsened to ${applied} (§7.5) and the applied bucket is reported in freshness.`);
-      query = Object.freeze({ ...query, bucket: applied });
-    }
-    if (countBuckets(windowDays, query.bucket) > maxSeriesPoints) {
-      throw tooBroad(REASON.SERIES_TOO_LONG, `This series cannot be reduced below ${maxSeriesPoints} points even at month granularity; narrow the window or drop a grouping dimension.`, {
-        max_points: maxSeriesPoints,
-        window_days: round(windowDays),
-        coarsest_bucket: 'month',
-      });
+      notes.push(`A ${query.bucket}-bucketed window of ${round(windowDays)} days exceeds ${maxSeriesPoints} points; the server-chosen bucket was auto-coarsened to ${fitting} (§7.5) and the applied bucket is reported in freshness.`);
+      query = Object.freeze({ ...query, bucket: fitting });
     }
   }
 
@@ -101,7 +102,16 @@ export function guard(validated, opts = {}) {
   if (query.rollup) estimatedCells += 1;
 
   const maxCells = opts.maxCells ?? klass.maxCells;
-  if (maxCells !== null && query.kind === 'aggregate' && estimatedCells > maxCells) {
+  // §12.1 caps an aggregate read at 2,000 cells and §7.5 caps an aggregate RESPONSE at 2,000
+  // cells. A cursor-paged aggregate (Q2's tool-by-subject list, §3.2 "50/500") has a response
+  // bounded by its page, not by the size of the set it pages over — and the document requires
+  // that shape explicitly. So the cap is applied to what the response can carry:
+  //   * no page size  -> the whole estimated result set must fit;
+  //   * a page size   -> the page must fit, and the estimate is reported rather than hidden.
+  // DSL.md §9 records this as a decision the document left open.
+  const paged = query.kind === 'aggregate' && query.limit !== null;
+  const boundedCells = paged ? Math.min(estimatedCells, query.limit + 1) : estimatedCells;
+  if (maxCells !== null && query.kind === 'aggregate' && boundedCells > maxCells) {
     const suggestion = suggestCoarserBucket(query, source, cardinalities, maxCells);
     throw tooBroad(REASON.COST_ESTIMATE_EXCEEDED, `This shape may return about ${estimatedCells} cells, above the ${maxCells}-cell cap for a ${source.costClass} read.`, {
       estimated_cells: estimatedCells,
@@ -111,10 +121,15 @@ export function guard(validated, opts = {}) {
       fix: suggestion,
     });
   }
+  if (paged && estimatedCells > maxCells) {
+    notes.push(
+      `Paged aggregate: the response is bounded by the ${query.limit}-row page, and the set being paged over is estimated at ${estimatedCells} cells. The estimator runs before execution and the number is reported so it is not mistaken for a total.`,
+    );
+  }
 
   const estimatedBytes = query.kind === 'list'
     ? (query.limit ?? 0) * ESTIMATED_BYTES_PER_CELL + ESTIMATED_BYTES_OVERHEAD
-    : estimatedCells * ESTIMATED_BYTES_PER_CELL + ESTIMATED_BYTES_OVERHEAD;
+    : boundedCells * ESTIMATED_BYTES_PER_CELL + ESTIMATED_BYTES_OVERHEAD;
   if (estimatedBytes > MAX_RESPONSE_BYTES) {
     throw tooBroad(REASON.COST_ESTIMATE_EXCEEDED, `This response could reach about ${Math.round(estimatedBytes / 1024 / 1024)} MB, above the 8 MB bound.`, {
       estimated_bytes: estimatedBytes,
@@ -127,6 +142,8 @@ export function guard(validated, opts = {}) {
     query,
     buckets,
     estimatedCells,
+    boundedCells,
+    paged,
     estimatedBytes,
     coarsened,
     notes: Object.freeze(notes),
@@ -219,6 +236,14 @@ function countBuckets(days, bucket) {
   return Math.max(1, Math.ceil(days / unit));
 }
 
+/** The next coarser bucket that fits the point bound, or null when none does. */
+function fittingBucket(days, from, maxPoints) {
+  for (const candidate of COARSENING_ORDER.slice(COARSENING_ORDER.indexOf(from) + 1)) {
+    if (countBuckets(days, candidate) <= maxPoints) return candidate;
+  }
+  return null;
+}
+
 /**
  * Cardinality of each grouped dimension *after* filters, which is the whole point of a closed
  * DSL: a filter that pins a dimension collapses its cardinality to the number of values asked
@@ -270,8 +295,6 @@ export const ESTIMATE_BYTES_PER_CELL = ESTIMATED_BYTES_PER_CELL;
 export function bucketsForWindow(fromIso, toIso, bucket) {
   return countBuckets((Date.parse(toIso) - Date.parse(fromIso)) / MS_PER_DAY, bucket);
 }
-
-export { MAX_LIST_WINDOW_DAYS };
 
 function round(value) {
   return Math.round(value * 100) / 100;

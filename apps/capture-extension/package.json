@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Manifest V3 browser half of Shadow AI Capture (docs/01-collectors.md 7). Zero dependencies; runs offline.",
+  "main": "run-tests.mjs",
   "scripts": {
     "test": "node --test"
   }

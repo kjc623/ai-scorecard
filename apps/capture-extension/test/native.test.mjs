@@ -15,7 +15,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createNativeClient, NATIVE_APP, policySyncRequest, modeQuery } from '../src/native.js';
-import { CORE_TYPE, REFUSAL, TYPE, frame, framedByteLength, unframe, validateHealthReport, validateObservation } from '../src/messages.js';
+import { CORE_TYPE, REFUSAL, TYPE, frame, framedByteLength, observationBody, unframe, validateHealthReport, validateObservation } from '../src/messages.js';
 import { createHarness, createFakeChrome, settle } from '../test-support/harness.mjs';
 import { createChromeAdapter } from '../src/chrome-adapter.js';
 import { fakeCrypto } from '../test-support/harness.mjs';
@@ -39,8 +39,9 @@ function clientOn(fake, core, opts = {}) {
     const realPost = port.postMessage.bind(port);
     port.postMessage = (m) => {
       realPost(m);
-      const answer = fakeCore.handle(m);
-      if (answer) queueMicrotask(() => port.__answer(answer));
+      void fakeCore.handle(m).then((answer) => {
+        if (answer) queueMicrotask(() => port.__answer(answer));
+      });
     };
     return port;
   };
@@ -141,8 +142,21 @@ test('framedByteLength measures the frame, not the body', () => {
 test('the drain sends oldest-first and removes an entry only after the ack', async () => {
   const h = createHarness();
   h.app.native.connect();
-  h.app.queue.enqueue(TYPE.OBSERVATION, { client_id: 'a', tool_fingerprint: 'tf1:a', route: 'ext.web_request', occurred_at: new Date().toISOString(), monotonic_offset_ms: 1, size_bytes: 1, has_content: true, content: 'hi' }, 1);
-  h.app.queue.enqueue(TYPE.OBSERVATION, { client_id: 'b', tool_fingerprint: 'tf1:b', route: 'ext.web_request', occurred_at: new Date().toISOString(), monotonic_offset_ms: 2, size_bytes: 1, has_content: true, content: 'hi' }, 1);
+  // Built by the extension's own frame builder, so the frame carries base64 content exactly as
+  // the protocol's `[]byte` field requires — see test/content-roundtrip.test.mjs.
+  const frameFor = (clientId, tool) =>
+    observationBody({
+      client_id: clientId,
+      route: 'ext.web_request',
+      tool_fingerprint: tool,
+      occurred_at: new Date().toISOString(),
+      monotonic_offset_ms: 1,
+      size_bytes: 2,
+      has_content: true,
+      content: new TextEncoder().encode('hi'),
+    });
+  h.app.queue.enqueue(TYPE.OBSERVATION, frameFor('a', 'tf1:a'), 1);
+  h.app.queue.enqueue(TYPE.OBSERVATION, frameFor('b', 'tf1:b'), 1);
   const result = await h.app.pipeline.drainQueue(10);
   assert.equal(result.sent, 2);
   assert.equal(h.app.queue.size(), 0, 'both entries were acked and removed');
@@ -151,13 +165,27 @@ test('the drain sends oldest-first and removes an entry only after the ack', asy
     ['a', 'b'],
     'oldest first',
   );
+  assert.equal(h.core.received.some((m) => m.type === CORE_TYPE.REFUSAL), false, 'and both were accepted');
 });
 
 test('a transport failure during a drain leaves the queue intact so nothing is lost silently', async () => {
   const h = createHarness();
   h.app.native.connect();
   h.fake.state.failPostAfter = 1; // the next post fails
-  h.app.queue.enqueue(TYPE.OBSERVATION, { client_id: 'a', tool_fingerprint: 'tf1:a', route: 'ext.web_request', occurred_at: new Date().toISOString(), monotonic_offset_ms: 1, size_bytes: 1, has_content: true, content: 'hi' }, 1);
+  h.app.queue.enqueue(
+    TYPE.OBSERVATION,
+    observationBody({
+      client_id: 'a',
+      route: 'ext.web_request',
+      tool_fingerprint: 'tf1:a',
+      occurred_at: new Date().toISOString(),
+      monotonic_offset_ms: 1,
+      size_bytes: 2,
+      has_content: true,
+      content: new TextEncoder().encode('hi'),
+    }),
+    1,
+  );
   const result = await h.app.pipeline.drainQueue(10);
   assert.equal(result.sent, 0);
   assert.equal(h.app.queue.size(), 1, 'the entry is still there for the next drain');

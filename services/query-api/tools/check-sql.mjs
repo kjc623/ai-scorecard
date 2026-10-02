@@ -74,6 +74,9 @@ export function corpus() {
         })
         .slice(0, 1);
       const narrow = source.dimensions.device ? [{ field: 'device', op: 'eq', value: TENANT }] : [];
+      // A per-subject source cannot be read without naming its subject (§11.2); every corpus
+      // builder has to say who it is asking about.
+      if (source.requiresSubjectScope) narrow.push({ field: 'subject', op: 'eq', value: 'user_ref_0001' });
       cases.push({ name: id, doc: { query_version: '1', source: id, bucket: 'day', dimensions: dims, measures, filters: [...filters, ...narrow], window: WINDOW, limit: 10 } });
       cases.push({ name: `${id} week+rollup`, doc: { query_version: '1', source: id, bucket: 'week', dimensions: dims, measures, filters: narrow, window: WINDOW, rollup: true } });
     } else {

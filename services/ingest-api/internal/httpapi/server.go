@@ -170,26 +170,29 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) writeAuthError(w http.ResponseWriter, err error) {
+	// Each message names the stage, so an operator reading one line can tell an admission refusal
+	// from the in-transaction re-check of §2.3. A failure path that cannot be told apart from
+	// another is a failure path that reports the wrong cause (I3).
 	switch {
 	case errors.Is(err, auth.ErrUnknownTenant):
-		s.writeError(w, 403, protocol.ReasonUnknownTenant, nil, "the authenticated principal's tenant is unknown to this deployment")
+		s.writeError(w, 403, protocol.ReasonUnknownTenant, nil, "admission: the authenticated principal's tenant is unknown to this deployment")
 	case errors.Is(err, auth.ErrTenantSuspended):
-		s.writeError(w, 403, protocol.ReasonUnknownTenant, nil, "the tenant's ingest gate is shut")
+		s.writeError(w, 403, protocol.ReasonUnknownTenant, nil, "admission: the tenant's ingest gate is shut")
 	case errors.Is(err, auth.ErrRegionMismatch):
-		s.writeError(w, 403, protocol.ReasonRegionMismatch, nil, "this deployment is not the tenant's pinned region")
+		s.writeError(w, 403, protocol.ReasonRegionMismatch, nil, "admission: this deployment is not the tenant's pinned region")
 	case errors.Is(err, auth.ErrNoCredential):
-		s.writeError(w, 401, protocol.ReasonRevokedDevice, nil, "no client credential presented")
+		s.writeError(w, 401, protocol.ReasonRevokedDevice, nil, "admission: no client credential presented")
 	case errors.Is(err, auth.ErrCredentialExpired):
-		s.writeError(w, 401, protocol.ReasonRevokedDevice, nil, "the device credential expired")
+		s.writeError(w, 401, protocol.ReasonRevokedDevice, nil, "admission: the device credential expired")
 	case errors.Is(err, auth.ErrCredentialRevoked):
-		s.writeError(w, 401, protocol.ReasonRevokedDevice, nil, "the device credential was revoked")
+		s.writeError(w, 401, protocol.ReasonRevokedDevice, nil, "admission: the device credential was revoked")
 	case errors.Is(err, auth.ErrDeviceRevoked):
-		s.writeError(w, 401, protocol.ReasonRevokedDevice, nil, "the device was revoked")
+		s.writeError(w, 401, protocol.ReasonRevokedDevice, nil, "admission: the device was revoked")
 	case errors.Is(err, auth.ErrBadCredential), errors.Is(err, auth.ErrCredentialUnknown):
-		s.writeError(w, 401, protocol.ReasonRevokedDevice, nil, "the client credential is not a device credential this deployment issued")
+		s.writeError(w, 401, protocol.ReasonRevokedDevice, nil, "admission: the client credential is not a device credential this deployment issued")
 	default:
 		s.Logger.Error("ingest: unclassified authentication failure", "error", err)
-		s.writeError(w, 401, protocol.ReasonRevokedDevice, nil, "the client credential could not be verified")
+		s.writeError(w, 401, protocol.ReasonRevokedDevice, nil, "admission: the client credential could not be verified")
 	}
 }
 

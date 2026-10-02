@@ -24,7 +24,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 )
 
 // Version prefixes. §4.2 and §4.5 make these versioned contracts: changing either splits the fleet
@@ -379,6 +378,3 @@ func isCollapsibleSpace(r rune) bool {
 	}
 	return r >= 0x2000 && r <= 0x200A
 }
-
-// ValidUTF8 reports whether a byte slice decodes as UTF-8, which is C2's precondition.
-func ValidUTF8(b []byte) bool { return utf8.Valid(b) }

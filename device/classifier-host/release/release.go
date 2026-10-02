@@ -169,11 +169,15 @@ func Load(dir string, trust *Trust, rc rules.Caps, mc model.Caps) (*Release, err
 	if trust == nil || len(trust.Keys) == 0 {
 		return nil, fmt.Errorf("%w: no release-signing keys are configured, so nothing can be verified", ErrManifest)
 	}
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrManifest, err)
+	if dir == "" {
+		return nil, fmt.Errorf("%w: no release directory", ErrManifest)
 	}
-	root, err := os.OpenRoot(abs)
+	// The directory is used exactly as given: no filepath.Abs. On js/wasm the working directory
+	// is the browser's or Node's, whose path syntax the wasm target does not share with the host
+	// that launched it (a Windows path is not "absolute" to GOOS=js), so resolving it here would
+	// silently join two path dialects. os.OpenRoot already guarantees the artefacts are inside
+	// the directory, whatever the path syntax.
+	root, err := os.OpenRoot(dir)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrManifest, err)
 	}
@@ -241,7 +245,7 @@ func Load(dir string, trust *Trust, rc rules.Caps, mc model.Caps) (*Release, err
 		RulesDigest:     m.RulesDigest,
 		ModelDigest:     m.ModelDigest,
 		ManifestDigest:  digestOf(manifestRaw),
-		Dir:             abs,
+		Dir:             dir,
 		PreviousVersion: m.PreviousVersion,
 	}
 	if m.ModelFile != "" {

@@ -230,7 +230,11 @@ export const TEMPLATES = Object.freeze({
     params: ['window', 'bucket', 'limit', 'dimensions', 'class', 'severity'],
     build(params) {
       const allowed = ['class', 'tool', 'severity', 'classifier_version'];
-      let dimensions = ['class', 'tool', 'severity'];
+      // Default grouping is the class mix a dashboard shows. Adding `tool` (or
+      // `classifier_version`) is available but multiplies the cell count by T, which the cost
+      // guard will refuse beyond the window it fits in — that is the guard doing its job, and
+      // the error names the coarser bucket that would fit.
+      let dimensions = ['class', 'severity'];
       if (params.dimensions !== undefined && params.dimensions !== null) {
         if (!Array.isArray(params.dimensions) || params.dimensions.length === 0 || params.dimensions.length > 3) {
           throw unsupported(REASON.TOO_MANY_DIMENSIONS, 'dimensions must be 1 to 3 entries from: ' + allowed.join(', ') + '.', {
@@ -519,6 +523,7 @@ export function expandTemplate(input) {
     // builds them once validation has produced it.
     extras: Object.freeze([...(built.extras ?? [])]),
     notes: Object.freeze([...(built.notes ?? [])]),
+    params: Object.freeze({ ...params }),
     singleRecord: built.singleRecord ?? template.kind === 'single',
   });
 }

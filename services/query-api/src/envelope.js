@@ -142,14 +142,19 @@ export function resultStateFor(input) {
   const coverageState = input.coverage?.state ?? 'complete';
   const suppressedCells = input.suppressedCells ?? 0;
 
-  if (coverageState === 'not_yet_covered') return 'not_yet_covered';
   if (rows === 0) {
+    // Nothing to show, and we can say why: no source for the window or dimension at all beats
+    // every weaker statement, because it is the one that says "do not read this as zero".
+    if (coverageState === 'not_yet_covered') return 'not_yet_covered';
     if (freshnessState === 'not_yet_covered') return 'not_yet_covered';
     if (freshnessState === 'stale') return 'stale_aggregate';
     if (coverageState === 'partial') return 'coverage_degraded';
     return 'empty';
   }
-  if (coverageState === 'partial') return 'coverage_degraded';
+  // Data is present. Coverage first: a floor is a stronger statement about the number than its
+  // age is, and where coverage cannot be stated at all the number must be treated as a floor
+  // (C25: a path that cannot say must not read as a clean bill of health).
+  if (coverageState === 'partial' || coverageState === 'not_yet_covered') return 'coverage_degraded';
   if (freshnessState === 'stale') return 'stale_aggregate';
   if (suppressedCells > 0 && suppressedCells >= rows) return 'suppressed';
   return 'ok';

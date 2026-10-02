@@ -46,6 +46,8 @@ export function createFakeChrome() {
   };
 
   const onMessageAdd = [];
+  /** Every add/remove on the webRequest listener, in order, so a test can assert on the sequence. */
+  const registrations = [];
 
   const chrome = {
     webRequest: {
@@ -72,8 +74,7 @@ export function createFakeChrome() {
         addListener(handler, filter) {
           listeners.onCompleted[0] = { handler, filter };
         },
-      },
-    },
+      },    },
 
     runtime: {
       id: 'fake-extension-id',
@@ -159,6 +160,7 @@ export function createFakeChrome() {
     chrome,
     state,
     listeners,
+    registrations,
     drive,
     /** Which lanes are registered, and with what extraInfoSpec — the M0 assertion surface. */
     registration(lane) {

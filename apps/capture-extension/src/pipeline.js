@@ -22,8 +22,8 @@
  */
 
 import { ExtError, errorCode } from './adapter.js';
-import { decideSync, decideWithConfirmation } from './enforce.js';
-import { bytesToBase64, sha256Prefixed } from './codec.js';
+import { decideSync, decideWithConfirmation, degradedDetail } from './enforce.js';
+import { sha256Prefixed } from './codec.js';
 import {
   COUNTER,
   DETAIL,
@@ -34,7 +34,7 @@ import {
   observationBody,
   validateObservation,
 } from './messages.js';
-import { classifyWithResponse, predicateRequest } from './predicate.js';
+import { classifyWithResponse, CANDIDATE_FLOOR, predicateRequest } from './predicate.js';
 import { computeToolFingerprint } from './tool-fingerprint.js';
 
 /** Bounded: a service worker can be killed at any time, and a candidate that is never answered must not accumulate. */
@@ -100,7 +100,30 @@ export function createPipeline({
     const host = hostOf(url);
 
     // ── 2. shape classification, before the mode is consulted for content (§7.3) ──────────
-    const shape = predicateRequest(shapeInput(detail, body, tab_context));
+    const request = shapeInput(detail, body, tab_context);
+    const shape = predicateRequest(request);
+
+    // §7.5 Mode B: a request above the candidate floor but below the threshold is *held* — not
+    // emitted, because "a negative match is counted, never emitted" (§7.3) — so the response
+    // contract can settle it. Without this the conjunction §7.5 describes could never be
+    // evaluated at all, because the response arrives after the request has gone.
+    if (!shape.match && shape.score >= CANDIDATE_FLOOR) {
+      holdCandidate({
+        request_id: detail.requestId,
+        client_id: null,
+        tool_fingerprint: null,
+        vector: null,
+        shape,
+        request,
+        size_bytes: body.size,
+        content: null,
+        content_digest: null,
+        decision: null,
+        mode: MODE.M0,
+        host,
+      });
+    }
+
     if (!shape.match) {
       // §7.3: "A negative match is counted, not emitted."
       counters.inc(COUNTER.SKIPPED_NOT_GENERATIVE);
@@ -112,7 +135,7 @@ export function createPipeline({
     const mode = gate.mode;
 
     const fingerprint = await computeToolFingerprint(adapter, {
-      ...shapeInput(detail, body, tab_context),
+      ...request,
       body_read: modeReadsContent(mode),
     });
 
@@ -128,14 +151,26 @@ export function createPipeline({
     });
 
     let contentDigest;
-    let contentText;
+    let contentBytes;
     let contentIsBinary = false;
     if (gate.bytes && modeReadsContent(mode)) {
-      // §7.2: digest over the bytes as sent; a strict decode, or an explicit binary marker.
-      contentDigest = await sha256Prefixed(adapter.crypto, body.digest_bytes || gate.bytes);
+      // §7.2: digest over the bytes as sent; a strict decode, or an explicit binary marker. The
+      // digest is over the BYTES in both cases, which is why the two paths cannot disagree.
+      contentDigest = await sha256Prefixed(adapter.crypto, gate.bytes);
       contentIsBinary = body.decode.encoding === 'binary';
-      contentText = contentIsBinary ? base64Of(gate.bytes) : body.decode.text;
+      // `observationBody` base64-encodes this, because the protocol's `Content []byte` is what
+      // `encoding/json` base64-decodes. Passing a string here would be the content-identity break.
+      contentBytes = gate.bytes;
     }
+
+    // §9.7's "degraded, exactly": a whole-payload read that did not happen is a degraded
+    // classification even when the decision path itself was fine. `content_over_cap` is the
+    // protocol's own name for it, and it is why an over-cap body is never reported as "clean".
+    const degradedReason = decision.degraded
+      ? degradedDetail(decision)
+      : body.truncated_reason
+        ? DETAIL.CONTENT_OVER_CAP
+        : undefined;
 
     const observation = decorate(
       observationBody({
@@ -146,12 +181,12 @@ export function createPipeline({
         monotonic_offset_ms: Math.max(0, Math.round(monotonic())),
         size_bytes: body.size,
         has_content: Boolean(gate.bytes && modeReadsContent(mode)),
-        content: contentText,
+        content: contentBytes,
         content_digest: contentDigest,
         content_is_binary: contentIsBinary,
         over_cap: Boolean(body.truncated_reason),
         decision: decision.decision,
-        degraded_reason: decision.degraded ? DETAIL.BUDGET_EXCEEDED : undefined,
+        degraded_reason: degradedReason,
         attachments: [],
       }),
       {
@@ -162,11 +197,10 @@ export function createPipeline({
         host,
         unread_reason: gate.unread_reason,
         decision,
-        request: shapeInput(detail, body, tab_context),
+        request,
         detail,
       },
     );
-
     // §7.4: a blocked request is still an event — emit first, then cancel.
     emit(observation);
 
@@ -326,21 +360,29 @@ export function createPipeline({
 
     // Nothing further to read: the request has already been released and its bytes were either
     // read under the mode's permission or never read at all.
+    //
+    // The follow-up carries the same content decision as the request did, so the two observations
+    // of one submission agree on `has_content` and `content_digest`. Where the request lane was
+    // not permitted to read at all (M0), there is nothing to carry and the follow-up is metadata
+    // too — which is what keeps a response contract from becoming a way to read content at M0.
+    const carriesContent = Boolean(entry.content_digest) && entry.has_content;
     const followUp = decorate(
       observationBody({
-        client_id: entry.client_id,
+        client_id: entry.client_id || 'pending',
         route: ROUTE.EXT_PAGE_CONTEXT,
-        tool_fingerprint: entry.tool_fingerprint,
+        tool_fingerprint: entry.tool_fingerprint || 'tf1:unread',
         occurred_at: new Date(clock()).toISOString(),
         monotonic_offset_ms: Math.max(0, Math.round(monotonic())),
         size_bytes: entry.size_bytes,
-        has_content: false,
-        decision: entry.decision,
+        has_content: carriesContent,
+        content: carriesContent ? entry.content : undefined,
+        content_digest: carriesContent ? entry.content_digest : undefined,
+        decision: entry.decision || { rule_id: 'NONE', action: 'logged', decided_locally: true },
       }),
       {
         mode: entry.mode,
         gate: { mode: entry.mode, resolution: { reason: 'response_contract' }, bytes: null, unread_reason: null },
-        fingerprint: { fingerprint: entry.tool_fingerprint, vector: entry.vector, canonical: '' },
+        fingerprint: { fingerprint: entry.tool_fingerprint || 'tf1:unread', vector: entry.vector || {}, canonical: '' },
         shape: entry.shape,
         host: entry.host,
         unread_reason: null,
@@ -351,12 +393,7 @@ export function createPipeline({
     );
     followUp.response_contract = verdict.signals.filter((s) => s.id.startsWith('response_')).map((s) => s.id);
     followUp.upgrade_reason = verdict.reason;
-    followUp.supersedes = entry.client_id;
-    if (entry.content_digest) {
-      followUp.content_digest = entry.content_digest;
-      followUp.has_content = true;
-      followUp.content = entry.content;
-    }
+    if (entry.client_id) followUp.supersedes = entry.client_id;
     emit(followUp);
     return { matched: true, reason: verdict.reason, score: verdict.score, observation: followUp };
   }
@@ -371,11 +408,23 @@ export function createPipeline({
       size_bytes,
       content,
       content_digest,
+      has_content: Boolean(observation.has_content),
       decision,
       mode,
       host,
       at: clock(),
     });
+    while (candidates.size > MAX_CANDIDATES) candidates.delete(candidates.keys().next().value);
+  }
+
+  /**
+   * Hold a request whose score is above the candidate floor but below the threshold, so the
+   * response contract can settle it (§7.5 Mode B). Nothing is emitted for it: §7.3's "a negative
+   * match is counted, never emitted" is not suspended by the fact that a response may later
+   * change the verdict — the counting happens in `captureWithBody` either way.
+   */
+  function holdCandidate(entry) {
+    candidates.set(entry.request_id, { ...entry, at: clock() });
     while (candidates.size > MAX_CANDIDATES) candidates.delete(candidates.keys().next().value);
   }
 
@@ -462,7 +511,7 @@ export function createPipeline({
       try {
         native.sendOneWay(TYPE.OBSERVATION, payload);
         counters.inc(COUNTER.EMITTED);
-        health.markEmitted();
+        health.markSuccess();
         if (onEmit) onEmit(observation);
         return { queued: false };
       } catch (e) {
@@ -489,6 +538,8 @@ export function createPipeline({
       has_content: observation.has_content,
     };
     if (observation.content_digest) body.content_digest = observation.content_digest;
+    // `observation.content` is already the base64 wire form (observationBody encoded it), so this
+    // passes it through unchanged. See observationBody() for why the wire form is base64.
     if (observation.has_content && observation.content) body.content = observation.content;
     if (observation.content_is_binary) body.content_is_binary = true;
     if (observation.over_cap) body.over_cap = true;
@@ -561,8 +612,4 @@ function pathOf(url) {
 
 function formTextOf(body) {
   return body.form ? Object.entries(body.form).map(([k, v]) => `${k}=${v.join(',')}`).join('&') : '';
-}
-
-function base64Of(bytes) {
-  return bytesToBase64(bytes);
 }

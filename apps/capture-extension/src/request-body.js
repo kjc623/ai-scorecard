@@ -131,15 +131,16 @@ export function normaliseBody(requestBody, opts = {}) {
   }
 
   if (rawLen > capBytes) {
-    // Copy only the prefix; the whole body is never materialised.
-    const head = joinRaw(requestBody).subarray(0, capBytes);
-    const prefix = head.slice();
+    // Copy only the prefix; the whole body is never materialised. The prefix is still *decoded
+    // strictly*, because its encoding is a fact about the payload the caller has to report: an
+    // over-cap body that is valid UTF-8 must not be labelled binary, and one that is not must be.
+    const prefix = joinRaw(requestBody).subarray(0, capBytes).slice();
     return {
       source: 'over_cap',
       size: rawLen,
       bytes: prefix,
       prefix,
-      decode: { encoding: 'binary', text: null },
+      decode: decodeBody(prefix),
       form: null,
       truncated_reason: 'body_over_cap',
     };

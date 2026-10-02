@@ -494,9 +494,17 @@ export function decisionRecord(outcome, { client_id, occurred_at, url, tool_fing
   };
 }
 
-/** `Detail` for a degraded decision, from the closed vocabulary of device/protocol/envelope.go. */
+/**
+ * `Detail` for a degraded decision, from the closed vocabulary of device/protocol/envelope.go.
+ *
+ * The choice carries the diagnosis, not just the fact: a `warned` rule that could not be put to a
+ * human is a different coverage failure from an evaluation that ran out of budget time, and an
+ * operator looking at a degraded share needs to know which one they have (§9.7's table).
+ */
 export function degradedDetail(outcome) {
-  return outcome.over_budget ? DETAIL.BUDGET_EXHAUSTED : DETAIL.CLASSIFIER_UNAVAILABLE;
+  if (outcome.reason === REASON.BUDGET_EXCEEDED) return DETAIL.BUDGET_EXHAUSTED;
+  if (outcome.reason === REASON.WARN_UNANSWERED || outcome.reason === REASON.WARN_CANCELLED) return DETAIL.CLASSIFIER_UNAVAILABLE;
+  return DETAIL.CLASSIFIER_UNAVAILABLE;
 }
 
 function round(n) {

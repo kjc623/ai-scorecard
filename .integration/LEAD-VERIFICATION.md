@@ -135,17 +135,18 @@ component's own suite can only ever confirm its author's model of the world.** E
 catalog, another component's enum. That is also the instruction I gave the verifier.
 
 
-## L4. End-to-end acceptance harness
+## L4. End-to-end acceptance harness (round 2)
 
 ```
 node tools/verify-all.mjs
 ```
 
-Round-2 state: `device/protocol` PASS (22 tests), `device/capture-spool` PASS (11 tests),
-`device/capture-core` and `device/classifier-host` compile with partially-covered packages,
+Round-2 state: `device/protocol` PASS (22 tests), `device/capture-spool` PASS, `device/capture-core`
+compiles with core tests passing and `dedup`/`policy` uncovered, `device/classifier-host` FAIL (5
+compile errors in `parser/parser.go`, reported to its owner with the errors verbatim),
 `apps/capture-extension` FAIL (3 of 66 tests — in-progress work by its owner),
-`services/ingest-api` FAIL (module path error, `replace => ../protocol` resolving to
-`services/protocol`; reported to the owner with the one-line fix).
+`services/ingest-api` FAIL (`cmd/ingest-api/main.go:19` unused import, reported; the module-path bug
+from round 1 is fixed and the seam check now sees 21 contract fields declared in that tree).
 
 The harness treats a package with no test files, and a module with no packages, as `NO-TESTS` rather than
 `PASS`, so "green" cannot mean "nothing ran".

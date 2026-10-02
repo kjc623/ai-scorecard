@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -106,15 +107,22 @@ func isSubmission(req *http.Request, preflightPath string) bool {
 func (r *portRunner) handleConn(ctx context.Context, client net.Conn) {
 	defer client.Close()
 	b := r.broker
-	b.counters.Add(protocol.CounterObserved)
 
 	br := bufio.NewReader(io.LimitReader(client, maxRequestBytes))
 	req, err := http.ReadRequest(br)
 	if err != nil {
+		// A connection that closes without sending a request is not a unit of work: liveness
+		// probes and port scanners do this, and counting them would inflate `observed` with
+		// things the broker never saw. A malformed request *is* a defect and is counted.
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return
+		}
 		b.counters.Add(protocol.CounterErrors)
 		return
 	}
 	defer req.Body.Close()
+	// A parsed request is a unit of work observed, which is what the coverage denominator means.
+	b.counters.Add(protocol.CounterObserved)
 
 	submission := isSubmission(req, r.currentSpec().PreflightPath)
 	if !submission {

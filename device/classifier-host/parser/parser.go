@@ -308,8 +308,14 @@ func parseGZIP(doc []byte, lim Limits, res Result) Result {
 	inner := res
 	inner = extractText("text/plain", buf, lim, inner)
 	inner.BytesIn = res.BytesIn
-	if inner.Status == StatusOK && res.Truncated {
+	if res.Truncated {
+		// §10's output cap: the status must say the cap cut the result, not merely that the text
+		// happened to extract cleanly from the prefix.
 		inner.Truncated = true
+		if inner.Status == StatusOK {
+			inner.Status = StatusOutputCap
+			inner.Err = "the decompressed body reached the parser's output cap"
+		}
 	}
 	return inner
 }

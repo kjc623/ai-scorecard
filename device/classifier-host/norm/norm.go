@@ -256,7 +256,11 @@ func foldUnicode(s string) string {
 			// digits, which is exactly how a rule goes blind to a pasted full-width card number.
 			b.WriteByte(byte(r - 0xFEE0))
 		case r == '\r':
-			// canonicalised with \n in collapseWhitespace
+			// CRLF is one line ending, not two: the \r is dropped when the \n that follows it
+			// would otherwise be doubled.
+			if i < len(s) && s[i] == '\n' {
+				continue
+			}
 			b.WriteByte('\n')
 		case r < 0x20 && r != '\n' && r != '\t':
 			// C0 controls other than tab and newline: dropped rather than mapped, so they

@@ -21,10 +21,7 @@ function makeSender(core, overrides = {}) {
   const counts = [];
   const bridge = {
     async sendMessage(message) {
-      const answer = core.handle({ type: message.frame_type, version: NATIVE_MESSAGE_VERSION, id: `m${counts.length}`, body: message.body });
-      if (answer.type === CORE_TYPE.REFUSAL) {
-        return { ok: true, answer };
-      }
+      const answer = await core.handle({ type: message.frame_type, version: NATIVE_MESSAGE_VERSION, id: `m${counts.length}`, body: message.body });
       return { ok: true, answer };
     },
   };

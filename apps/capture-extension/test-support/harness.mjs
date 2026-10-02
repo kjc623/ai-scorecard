@@ -54,8 +54,23 @@ export function createHarness({ core = {}, capacity = 200, failConnect = false, 
     const realPost = port.postMessage.bind(port);
     port.postMessage = (message) => {
       realPost(message);
-      const answer = fakeCore.handle(message);
-      if (answer) queueMicrotask(() => port.__answer(answer));
+      void fakeCore
+        .handle(message)
+        .then((answer) => {
+          if (answer) queueMicrotask(() => port.__answer(answer));
+        })
+        .catch((e) => {
+          // A throw inside the fake core must surface as a refusal, not as a request that never
+          // gets answered — a hang hides the defect the fake exists to catch.
+          queueMicrotask(() =>
+            port.__answer({
+              type: 'refusal',
+              version: 1,
+              id: message.id,
+              body: { reason: 'malformed', message: `fake core threw: ${(e && e.message) || e}` },
+            }),
+          );
+        });
     };
     return port;
   };

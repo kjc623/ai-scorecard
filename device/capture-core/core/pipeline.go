@@ -344,9 +344,13 @@ func (p *Pipeline) Process(ctx context.Context, obs Observation) (Outcome, error
 		default:
 			// The digest exists but is not canonical: either no C3 normaliser is installed or
 			// the route could not identify the user-authored segment. It is emitted (the schema
-			// requires content_digest at M1 and above) with `confidence: degraded` and a Tier S
-			// dedup key, because a wrong digest presented as canonical is corruption while a
-			// wrong digest presented as degraded is an honest undercount.
+			// requires content_digest at M1 and above) with `confidence: degraded`, and the key
+			// ladder stays on Tier S. **The key claims what the device can prove**: §4.5's Tier T
+			// premise is that two routes deriving the key independently agree, and an unnormalised
+			// digest does not satisfy that premise. Emitting the exact key anyway would be a
+			// silent over-merge; the weak key leaves two observations of one submission as two
+			// rows, which is a visible undercount with `merge_confidence: low` rather than a count
+			// the server and the device disagree about (R9).
 			digest = SHA256Hex(body)
 		}
 

@@ -126,7 +126,14 @@ function main() {
     const goPath = join(ROOT, vocab.go.file);
     const jsPath = join(ROOT, vocab.js.file);
     if (!existsSync(goPath) || !existsSync(jsPath)) {
-      summaries.push({ id: vocab.id, status: 'ABSENT', go: 0, js: 0, findings: 0 });
+      // ABSENT is not agreement: a component that is not there cannot be compared, and reporting
+      // it as a clean result would let a deleted consumer pass the drift check.
+      findings.push({
+        id: vocab.id,
+        kind: 'consumer-absent',
+        detail: `${vocab.go.file} or ${vocab.js.file} does not exist, so this vocabulary cannot be compared`,
+      });
+      summaries.push({ id: vocab.id, status: 'ABSENT', go: 0, js: 0, findings: 1 });
       continue;
     }
     const go = goConstants(vocab.go.file, vocab.go.prefix);

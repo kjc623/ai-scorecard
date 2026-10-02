@@ -15,9 +15,13 @@ psql -v ON_ERROR_STOP=1 -f db/schema.sql && psql -v ON_ERROR_STOP=1 -f db/invari
 
 | file | sha256 |
 |---|---|
-| `db/schema.sql` (current: adopt fix + §7 reason-code alignment) | `513020D2D016DC0404272FE85EC47DA7FC6D585894F6A91F87296BE2A813C6B0` |
-| `db/invariants.test.sql` (current, T1..T38) | `2376E0C7A3D19CDFF41F56F4B8597514D212DBA9090DC9EC7C9E2B181C0352AB` |
-| `db/tools/check-schema.mjs` (current, 62 checks) | `C4E9246560C73D641448293DD64E390D7411C7419F9E197F53E96D0567C7E9CA` |
+| `db/schema.sql` (current: adopt fix, §7 reason codes, tightened boundaries, M2 decision recorded) | `19D109E4C40FE3716902A529BFA1E9DF0C2151DC15AC728207F4CCBAA5FE52EA` |
+| `db/invariants.test.sql` (current, T1..T43) | `D59BE434C3B57827FAA129B2950436BDF208CA520E63893CA9C206D6C5D6AACA` |
+| `db/tools/check-schema.mjs` (current, 71 checks) | `0D5D5BF119763A4AD939A3B9140A27482CCA7AEFB91D92A859054AE5F8F439EA` |
+| `db/schema.sql`, `confidence` clause of the M0 constraint reverted (negative controls, runs 12–13) | `737BF11811266F9596A18F084E154C6B2B9642AB6C2F99A6843E1FD9B9EBDA48` |
+| `db/schema.sql` with the pre-tightening kind/mode constraints (negative controls, runs 10–11) | `3690661D464DEFF70BFA43C2A72B3D695FD9D866EB4BC7DE62B8B49487BA2E67` |
+| `db/schema.sql` after the adopt fix and reason-code alignment only | `513020D2D016DC0404272FE85EC47DA7FC6D585894F6A91F87296BE2A813C6B0` |
+| `db/invariants.test.sql` at T1..T38 | `2376E0C7A3D19CDFF41F56F4B8597514D212DBA9090DC9EC7C9E2B181C0352AB` |
 | `db/schema.sql` after the adopt fix only (before the alignment) | `F0CC80B2F2C117FACC0691ECDC591D42E8845A80484E49666E7DA7F5F1E3AFF0` |
 | `db/invariants.test.sql` at T1..T37 | `E658DAB7478CB5B68BB72FCDEC3B867E92E45F3D3C50BD4C7B1A7ECD3829EEA8` |
 | `db/schema.sql` as first captured (pre-adopt-fix) | `F796F93DAB9E2A5FD08569634375CD3101038AF0854DA0496F8A23608392590D` |
@@ -67,11 +71,18 @@ That is an argument that nothing in the file is 17-specific. It is **not** a run
 | F | `2026-10-02-133710-*.log` … `2026-10-02-133855-*.log` (9 pairs) | Harness runs during the T36/T37 and tally-fix work; from `133710` on, each pair carries the `#` provenance header | schema 0, invariants 0 — 39 PASS, 37 distinct, 0 FAIL, 0 ERROR |
 | G | `08-negative-control-raw-prefix-schema.log` | **Negative control (raw).** The unedited `psql` output of the full suite against the pre-fix schema, kept raw so the anchored error pattern could be tested against a genuine failure rather than a filtered extract | `tests_exit=3`; `grep -cE '^(psql:.*)?(ERROR\|FATAL\|PANIC):'` → **1**, naive `grep -ci ERROR` → 2 |
 | H | `09-harness-negative-control.log` | **Negative control for the harness itself.** `db/tools/run-invariants.ps1` run against the pre-fix schema from a scratch repo copy, so `db/` was never touched | `RESULT: FAIL`, `invariants exit code 3`, `ERROR lines 1`, **harness exit 1**. A failing suite is reported as a failure, and the header's `ON_ERROR_STOP` does not inflate the count. |
-| I | `2026-10-02-134105-*.log` (failed), `2026-10-02-1341xx-*.log` … onward | The reason-code alignment: the first pair is the T38 draft failing on `permission denied for table rejected` (see the T38 note below); later pairs are green | final: schema 0, invariants 0 — **40 PASS, 38 distinct**, 0 FAIL, 0 ERROR |
+| I | `2026-10-02-134105-*.log` (failed), `2026-10-02-1341xx-*.log` … onward | The reason-code alignment: the first pair is the T38 draft failing on `permission denied for table rejected` (see the T38 note); later pairs are green | final: schema 0, invariants 0 — 40 PASS, 38 distinct, 0 FAIL, 0 ERROR |
+| J | `10-negative-control-pretightening-kind-constraints.log` | **Negative control for T39–T42.** The suite against the pre-tightening kind/mode constraints (`3690661D…`) in an isolated container | `tests_exit=3` — T1..T38 pass, then **T39 fails**: `model_detection accepted classifier_version, which the contract forbids for this kind` |
+| K | `11-negative-control-contract-vs-store-check.log` | **Negative control for the checker's new contract comparison.** `check-schema.mjs` run against the same loosened schema from a scratch repo copy, so `db/` was never touched | **exit 1**, four `kinds.*` FAILs naming exactly the missing fields per branch |
+| L | current `*-invariants.log` pairs with the `#` header | Final state after the boundary tightening | schema 0, invariants 0 — 44 PASS, 42 distinct, 0 FAIL, 0 ERROR |
+| M | `12-negative-control-m0-confidence-reverted.log` | **Negative control for `confidence` on M0.** ONLY that clause of `observation_m0_carries_no_content` reverted (`737BF118…`); every other constraint left tightened, in an isolated container | `tests_exit=3` — T1..T41 pass, then **T42 fails**: `an M0 record accepted confidence, which is evidence the collector read content it was not permitted to read` |
+| N | `13-t43-isolation-proof.log` | **Isolation proof for T43.** The same revert with `confidence` removed from T42's sweep, so T42 passes and T43 must catch it alone | T42 passed, **T43 failed** with its own named message — T43 is not dead code behind T42 |
+| O | current `*-invariants.log` pairs | Final state after T43 and the M2 decision | schema 0, invariants 0 — **45 PASS, 43 distinct**, 0 FAIL, 0 ERROR |
 
-Runs A, D, F and I agree on every assertion they share. Run E is the evidence that the suite can
-fail, which is what makes the passes mean something; runs G and H do the same for the raw error
-pattern and for the harness's own exit code.
+Runs A, D, F, I, L and O agree on every assertion they share. Run E is the evidence that the suite
+can fail, which is what makes the passes mean something; runs G, H, J, K, M and N do the same for
+the raw error pattern, the harness's own exit code, the new assertions, the new checker checks, and
+the single most important constraint in the schema.
 
 ## The defect found after the first green run, and its fix
 
@@ -146,20 +157,125 @@ Two new invariants now hold this:
   documented pair, the CHECK's set is exactly wire-minus-wire-only plus storage-only, and none of
   the three pre-alignment spellings has returned.
 
-## The assertion count is 38
+## The kind and mode boundaries: the store was weaker than the contract
 
-`db/invariants.test.sql` contains **38 named assertions, T1–T38, contiguous, with no gaps**, at
-40 `PASS` raise-sites — T32 and T33 each carry two sub-cases, which is why the notice count is 40.
+Found by the verifier while checking ADR 0018's consequences. The store's per-kind CHECK
+constraints constrained only *some* of the fields `contracts/event-envelope.schema.json` forbids
+for that kind, so a record arriving by any path other than the ingest gate — a migration, a
+restore, a support query, a future service — was accepted carrying a field its kind is defined not
+to have. The database is the last line that does not depend on application code being correct, so
+a half-enforced boundary is worse than none: it reads as a guarantee.
+
+Verified field by field against the contract, not against the finding's prose. Four constraints
+were short, and one of them was short in a place the finding had not named:
+
+| constraint | fields the contract forbids that the store did not | added |
+|---|---|---|
+| `observation_detection_shape` | `window_end`, `submission_count`, `bytes_total`, `classifier_version`, `content_excerpt` | 5 |
+| `observation_rollup_shape` | `classifier_version`, `content_excerpt`, `detection_basis` | 3 |
+| `observation_prompt_shape` | `window_end`, `submission_count`, `bytes_total` | 3 |
+| `observation_m0_carries_no_content` | `confidence` | 1 |
+| `observation_m1_plus_carries_labels` | — already exact | 0 |
+
+The `confidence` omission was the one not in the report: `confidence` is a classifier output, so an
+M0 record carrying it is evidence the collector read content it was not permitted to read — which
+is exactly what that constraint exists to catch, and it was letting it through. Also checked:
+`observation_excerpt_only_at_m2` and the M1+ requirement were already correct.
+
+**`attachments` is not implementable here and is not silently dropped.** It appears in all four of
+the contract's forbid-lists, but `ingest.observation` has no such column — verified against the
+live catalog, 28 columns, none of them `attachments`, and no column of that name exists anywhere in
+`ref`/`ops`/`ingest`/`mart`. The contract's `attachments` is an envelope-level field whose
+store-side home is `ingest.search_text` (`unit_kind = 'attachment_name'`, keyed by `submission_id`
+and written by content-vault). A `CHECK` on one table cannot see another table, so that one is
+enforced on the write path instead. `db/tools/check-schema.mjs` names it explicitly as excused, so
+a future contract field with no column fails the check rather than disappearing from the list
+quietly.
+
+**The M2 excerpt difference is a recorded decision, not an open question.** The contract *requires*
+`content_excerpt` at M2; the store only *permits* it there. The schema owner ruled that the store
+stays as it is:
+
+- The contract's requirement is a statement about the **wire** — an M2 record must carry an
+  excerpt — and is enforced at ingest, where a violation becomes a `mode_violation` and a
+  quarantine row, which is the diagnosability §7 exists for.
+- The store makes the *dangerous* states unreachable. "M2 without an excerpt" is a less
+  informative record, not one that leaks content or double-counts. Every other constraint in this
+  block tightens a prohibition; adding a requirement runs the other way and could invalidate a
+  previously-valid row — a migration question, not a constraint question.
+- It would also have to answer "what about an M2 record whose excerpt was minimised away to
+  nothing", and the honest answer is that the write path decides, not a `CHECK`.
+
+The reasoning is recorded at the constraint in `db/schema.sql`, and the checker asserts the
+difference and reports it as **excused-by-decision**, exactly as it treats `attachments`. Crucially
+the exemption is *asserted*, not assumed: the check passes only while the world matches the
+recorded decision, and fails if the contract stops requiring the excerpt or the store starts
+requiring it — so the exemption cannot rot into a hole. That leaves the checker with **one**
+warning, the documentation count, and a checker whose warnings are all explained is one people
+keep reading.
+
+### RLS coverage: the six `ref` tables (framing verified and agreed)
+
+`ref.collector`, `ref.data_class`, `ref.route_fidelity`, `ref.rule`, `ref.retention_class` and
+`ref.classifier_release` carry no policy. Verified rather than taken on trust: `docker` catalog
+query shows exactly those six lacking RLS, **none of them has a `tenant_id` column**, no table
+*outside* `ref` lacks RLS, and the counts are 37 tables / 31 RLS-enabled-and-forced.
+
+The framing is right, and the reason is worth stating: each is shared vocabulary (a class
+taxonomy, a route-fidelity ranking, a collector registry, a retention-class default, a rule
+catalogue, a classifier-release record), and **every per-tenant variation of any of them lives in
+`ops.*`** — `ops.policy_bundle`, `ops.retention_policy`, `ops.tool` — all of which *are* in the RLS
+set. A tenant-specific rule is a policy bundle, not a `ref.rule` row. So no `ref` table needs
+scoping, and giving one a policy would make a global catalogue invisible rather than safe.
+
+`db/tools/check-schema.mjs` now asserts the static half of this — every table created outside
+`ref` must be in the RLS set, and a policy must not exist for a table that does not — which
+complements the runtime count against the live catalog.
+
+### How it is held
+
+Two halves, because either alone can pass while the property is broken: a list can be *enforced but
+incomplete*, or *complete but unenforced*.
+
+- **T39–T43** prove enforcement against the live server. Each iterates the contract's forbid-list
+  for its kind, attempts an insert carrying exactly that one field, and requires a
+  `check_violation` — then ends with a **positive control**: a well-formed row of the same kind
+  must still be accepted. Without that control the assertion would pass just as well if the
+  constraint rejected everything, which is the failure mode a one-directional test cannot see.
+  **T43** is separate from T42's sweep and pins `confidence` on M0 alone, by name.
+- **Seven checks in `db/tools/check-schema.mjs`** prove completeness by parsing the contract's
+  `allOf` branches and the SQL constraint bodies and comparing the sets, with `attachments`
+  excused by name and the M2 excerpt difference excused by decision. An eighth check asserts that
+  every table created outside `ref` is in the RLS set.
+
+Both halves were verified in the failing direction, not just the passing one:
+
+- Run 10: the suite against the pre-tightening constraints (`3690661D…`) — T1..T38 pass, then
+  **T39 fails** with `model_detection accepted classifier_version, which the contract forbids for
+  this kind`.
+- Run 11: the checker against the same loosened schema — **exit 1**, with four `kinds.*` failures
+  naming exactly the missing fields per branch.
+- Run 12: **only** the `confidence` clause of `observation_m0_carries_no_content` reverted
+  (`737BF118…`), everything else left tightened — T1..T41 pass, then **T42 fails** with
+  `an M0 record accepted confidence, which is evidence the collector read content it was not
+  permitted to read`.
+- Run 13: the same revert with `confidence` removed from T42's sweep, so T42 passes and **T43**
+  must catch it alone — T42 passed, **T43 failed** with its own named message. T43 is not dead
+  code behind T42; both assertions pin the field independently.
+
+## The assertion count is 43
+
+`db/invariants.test.sql` contains **43 named assertions, T1–T43, contiguous, with no gaps**, at
+45 `PASS` raise-sites — T32 and T33 each carry two sub-cases, which is why the notice count is 45.
 The file held 35 (T1..T35) at the start of this session; T36 and T37 were added for the adopt
-defect, and T38 for the quarantine reason-code vocabulary.
+defect, T38 for the quarantine reason-code vocabulary, T39–T42 for the kind and mode
+boundaries, and T43 to pin `confidence` on M0 by name.
 
-**The documents are stale and the SQL was not changed to match them.** As of the last run,
-`db/tools/check-schema.mjs` reads the claims out of the documents themselves and reports:
-`README.md` 37, `.cockpit/project.json` 37 (three occurrences),
-`docs/00-architecture.md` 27, `docs/03-data-platform.md` 27 — against a file that contains 38.
-The 27s in `docs/00` and `docs/03` were never caught by the earlier correction. Fix the prose,
-not the file; the checker reports this as a `WARN` (documentation drift), not a structural
-failure.
+**The documents are stale again.** The checker reads the claims out of the documents themselves
+rather than trusting a constant: they say 42 (README.md ×2, `.cockpit/project.json` ×3,
+`docs/00-architecture.md`, `docs/03-data-platform.md`) against a file that contains 43. The
+earlier 27s in `docs/00` and `docs/03` are gone. Fix the prose, not the file; the checker reports
+this as a `WARN` (documentation drift), not a structural failure.
 
 Other stale counts in `.cockpit/project.json` (component `database`), measured from the live
 catalog: it claimed 34 tables, 3 views and 28 RLS policies; the server holds **37 tables,

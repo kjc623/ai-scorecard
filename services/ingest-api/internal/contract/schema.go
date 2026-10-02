@@ -58,11 +58,33 @@ func Parse(b []byte) (*Schema, error) {
 }
 
 // Discover walks up from start looking for contracts/event-envelope.schema.json, so the service
-// runs from the repo root or from services/ingest-api without a flag.
-func Discover(start string) (string, error) {
+// runs from the repo root or from services/ingest-api without a flag. It searches to the filesystem
+// root; a deployment that must not pick up a schema from an unrelated ancestor should pass -schema
+// explicitly, or use DiscoverWithin with a boundary.
+func Discover(start string) (string, error) { return DiscoverWithin(start, "") }
+
+// DiscoverWithin is Discover with an explicit search boundary: when stop is non-empty the walk
+// examines stop and then gives up instead of continuing towards the filesystem root.
+//
+// The boundary is a real property and not only a test affordance. Unbounded discovery means a
+// process started from an unexpected working directory can silently adopt a
+// contracts/event-envelope.schema.json that belongs to something else entirely and then validate
+// traffic against it. Naming the root makes that impossible to hit by accident.
+//
+// It is also what makes the negative case expressible. The previous test for "no schema is
+// reachable" assumed the directory above its own temp directory had no schema in it, which is false
+// on any host whose temp directory lives inside the repository -- so the assertion failed there for
+// a reason that had nothing to do with discovery.
+func DiscoverWithin(start, stop string) (string, error) {
 	dir, err := filepath.Abs(start)
 	if err != nil {
 		return "", err
+	}
+	boundary := ""
+	if stop != "" {
+		if boundary, err = filepath.Abs(stop); err != nil {
+			return "", err
+		}
 	}
 	for {
 		candidate := filepath.Join(dir, "contracts", "event-envelope.schema.json")
@@ -70,7 +92,10 @@ func Discover(start string) (string, error) {
 			return candidate, nil
 		}
 		parent := filepath.Dir(dir)
-		if parent == dir {
+		if parent == dir || (boundary != "" && dir == boundary) {
+			if boundary != "" {
+				return "", fmt.Errorf("contract: no contracts/event-envelope.schema.json between %s and the search boundary %s", start, stop)
+			}
 			return "", fmt.Errorf("contract: could not find contracts/event-envelope.schema.json above %s", start)
 		}
 		dir = parent

@@ -44,7 +44,7 @@ test('every filter value is a bound parameter with an explicit cast', () => {
   assert.match(statement.text, /starts_with\(t\.tool_fingerprint, \$\d+::text\)/);
   assert.match(statement.text, /t\.sanctioned_state = ANY\(\$\d+::text\[\]\)/);
   assert.ok(statement.text.includes('t.sanctioned_state IS NULL'));
-  for (const value of ['claude_web', 'chat']) assert.ok(statement.params.includes(value), missing param ${value});
+  for (const value of ['claude_web', 'chat']) assert.ok(statement.params.includes(value), `missing param ${value}`);
   assert.ok(statement.params.some((p) => Array.isArray(p) && p.length === 2));
   assert.ok(!statement.text.includes('claude_web'));
 });
@@ -57,19 +57,24 @@ test('starts_with is a literal prefix test, not a LIKE pattern', () => {
 });
 
 test('the bucket_size predicate is always pinned, so hour rows are never added to day rows', () => {
-  for (const bucket of ['hour', 'day', 'week', 'month']) {
+  const short = { from: '2026-09-01T00:00:00Z', to: '2026-09-02T00:00:00Z' };
+  const hour = read(baseDoc({ bucket: 'hour', window: short, dimensions: ['tool'], filters: [{ field: 'tool', op: 'eq', value: 'claude_web' }] }));
+  assert.ok(hour.text.includes('t.bucket_size = $'), 'an hour read must pin bucket_size');
+  assert.ok(hour.params.includes('hour'));
+  for (const bucket of ['day', 'week', 'month']) {
     const statement = read(baseDoc({ bucket }));
     assert.ok(statement.text.includes('t.bucket_size = $'), `bucket ${bucket} must pin bucket_size`);
   }
   const native = read(baseDoc({ bucket: 'week' }));
   assert.ok(native.text.includes("date_trunc('week', t.bucket_start) AS bucket"));
-  assert.equal(native.params[3], 'day', 'a week reduction reads day rows');
+  assert.ok(native.params.includes('day'), 'a week reduction reads day rows');
 });
 
-test('an unbucketed aggregate still pins one bucket size and says which', () => {
+test('an unbucketed aggregate defaults to day buckets and says which one it applied', () => {
   const statement = read(baseDoc({ bucket: undefined }));
   assert.ok(statement.text.includes('t.bucket_size = $'));
-  assert.equal(statement.text.includes('GROUP BY t.bucket_start'), false);
+  assert.ok(statement.params.includes('day'));
+  assert.ok(statement.text.includes('GROUP BY t.bucket_start'), 'the default bucket is day, so it groups by day');
 });
 
 test('the window is half-open and bound', () => {
@@ -165,13 +170,18 @@ test('the directory join is emitted only when a directory dimension is used', ()
 
 test('a nullable ordering key is ordered through a sentinel and carried privately', () => {
   const { compiled: c } = compiled(
-    baseDoc({ source: 'mart.agg_org_period', dimensions: ['department', 'population'], measures: ['submissions'] }),
+    baseDoc({
+      source: 'mart.agg_org_period',
+      window: { from: '2026-09-01T00:00:00Z', to: '2026-09-02T00:00:00Z' },
+      dimensions: ['department', 'population'],
+      measures: ['submissions'],
+    }),
   );
   // The sentinel keeps the ORDER BY total over a nullable column; the client still receives the
   // real value, and the keyset comparison uses the sentinel rather than the displayed NULL.
   assert.ok(c.text.includes('coalesce(o.population, chr(1))'));
   assert.ok(c.text.includes('AS "__ord_population"'));
-  assert.ok(c.text.includes('GROUP BY o.department, o.population, coalesce(o.population, chr(1))'));
+  assert.ok(c.text.includes('GROUP BY o.bucket_start, o.department, o.population, coalesce(o.population, chr(1))'));
 });
 
 test('the class predicate is jsonb containment over labels, never a string concatenation', () => {

@@ -32,6 +32,7 @@ import (
 	"os"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -160,6 +161,14 @@ func (l Limits) withDefaults() Limits {
 	}
 	if l.FormatWindow <= 0 {
 		l.FormatWindow = d.FormatWindow
+	}
+	if l.ResidencyCapBytes == 0 && l.MemoryCapBytes > 0 {
+		// §10's requirement is that the *parent* enforces the cap it sets. A job object alone
+		// makes the child's allocations fail, and a Go runtime answers an allocation failure by
+		// thrashing before it exits — measured here: a child under a 192 MB job cap sat at exactly
+		// the cap for 15 s without dying. So a job limit that has no explicit sampler gets one
+		// derived from it, and every cap the parent sets is a cap the parent polices.
+		l.ResidencyCapBytes = l.MemoryCapBytes * 8 / 10
 	}
 	return l
 }
@@ -303,8 +312,15 @@ func (r *Runner) Parse(ctx context.Context, mediaType string, doc []byte) docpar
 		err error
 	}
 	outCh := make(chan outResult, 1)
+	outCapBreach := make(chan struct{}, 1)
 	go func() {
 		b, err := readBounded(stdout, lim.OutputCapBytes)
+		if errors.Is(err, errOutputCap) {
+			select {
+			case outCapBreach <- struct{}{}:
+			default:
+			}
+		}
 		outCh <- outResult{b, err}
 	}()
 	errCh := make(chan string, 1)
@@ -333,6 +349,14 @@ func (r *Runner) Parse(ctx context.Context, mediaType string, doc []byte) docpar
 	case n := <-breach:
 		cause = docparse.CauseMemory
 		detail = fmt.Sprintf("parser child reached %d bytes of commit charge, over the %d-byte residency cap", n, lim.ResidencyCapBytes)
+		killed = true
+		killChild(cmd, enf)
+	case <-outCapBreach:
+		// The child is trying to hand back more than the parent will read. Killing it is what
+		// unblocks the write it is stuck in: without this the parent would wait out its own
+		// timeout and report a timeout instead of §10's output cap.
+		cause = docparse.CauseOutputCap
+		detail = "the parser child wrote more than the parent's " + strconv.Itoa(lim.OutputCapBytes) + "-byte output cap"
 		killed = true
 		killChild(cmd, enf)
 	case <-timer.C:
@@ -380,6 +404,13 @@ func (r *Runner) Parse(ctx context.Context, mediaType string, doc []byte) docpar
 	}
 	out := <-outCh
 	if out.err != nil {
+		if errors.Is(out.err, errOutputCap) {
+			// §10's output cap, enforced on the read side: the child produced more than the parent
+			// will accept, so the result is a bounded failure rather than an allocation in the
+			// host that must stay trusted to say `degraded` honestly.
+			return failure(docparse.CauseOutputCap,
+				"the parser child wrote more than the parent's "+strconv.Itoa(lim.OutputCapBytes)+"-byte output cap", start)
+		}
 		return failure(docparse.CauseMalformed, "reading the parser result: "+out.err.Error(), start)
 	}
 	parsed, err := parser.ReadResult(bytes.NewReader(out.b))

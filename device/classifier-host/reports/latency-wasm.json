@@ -1,0 +1,58 @@
+{
+  "target": "js/wasm",
+  "version": "0.1.0-dev",
+  "corpus": "C:/Users/kyle/Downloads/architecture/device/classifier-host/testdata/corpus.json",
+  "cases": 20,
+  "iterations": 200,
+  "budget_ms": {
+    "model": 90,
+    "normalise": 10,
+    "rules": 35,
+    "total": 150,
+    "validators": 15
+  },
+  "stages": {
+    "mode": {
+      "count": 200,
+      "p50_ms": 0,
+      "p95_ms": 0,
+      "max_ms": 0
+    },
+    "model": {
+      "count": 3800,
+      "p50_ms": 0.011776,
+      "p95_ms": 0.032768,
+      "max_ms": 4.374016
+    },
+    "normalise": {
+      "count": 3800,
+      "p50_ms": 0.004096,
+      "p95_ms": 0.021248,
+      "max_ms": 3.615232
+    },
+    "rules": {
+      "count": 3800,
+      "p50_ms": 0.056832,
+      "p95_ms": 0.553472,
+      "max_ms": 2.138112
+    },
+    "validators": {
+      "count": 3800,
+      "p50_ms": 0.002048,
+      "p95_ms": 0.00512,
+      "max_ms": 0.401408
+    }
+  },
+  "total": {
+    "count": 4000,
+    "p50_ms": 0.086272,
+    "p95_ms": 0.600064,
+    "max_ms": 8.497152
+  },
+  "sum_stage_p95_ms": 0.612608,
+  "within_budget": true,
+  "notes": [
+    "p95 is nearest-rank over every stage observation of the whole run, not per corpus case",
+    "stage shares are docs/01-collectors.md §9.4's columns for this target"
+  ]
+}

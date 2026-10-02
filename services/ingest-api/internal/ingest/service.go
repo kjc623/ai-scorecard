@@ -51,17 +51,11 @@ type Config struct {
 	// needs to, not because there is a case for it today: §5.3 puts device identity in the
 	// credential.
 	AllowBodyIdentityMismatch bool
-	// ReplayWindow bounds the `duplicate_batch` guard. §5.3 does not state a value; the guard is
-	// owned by the transport (`internal/batchguard`), and this field documents the assumption.
-	ReplayWindow time.Duration
 }
 
 // DefaultConfig returns the serving configuration.
 func DefaultConfig() Config {
-	return Config{
-		SupportedSchemaVersions: []string{"1.0"},
-		ReplayWindow:            24 * time.Hour,
-	}
+	return Config{SupportedSchemaVersions: []string{"1.0"}}
 }
 
 // Service validates and writes batches.
@@ -558,15 +552,15 @@ func (s *Service) rejection(idx int, eventID string, env *contract.Envelope, rea
 func mapStoreError(err error) *Error {
 	switch {
 	case errors.Is(err, store.ErrUnknownTenant):
-		return batchErr(403, protocol.ReasonUnknownTenant, "", "the authenticated principal's tenant is unknown to this deployment")
+		return batchErr(403, protocol.ReasonUnknownTenant, "", "write re-check: the authenticated principal's tenant is unknown to this deployment")
 	case errors.Is(err, store.ErrTenantSuspended):
-		return batchErr(403, protocol.ReasonUnknownTenant, "", "the tenant's ingest gate is shut")
+		return batchErr(403, protocol.ReasonUnknownTenant, "", "write re-check: the tenant's ingest gate is shut")
 	case errors.Is(err, store.ErrCredentialRevoked), errors.Is(err, store.ErrDeviceRevoked):
-		return batchErr(401, protocol.ReasonRevokedDevice, "", "the device credential was revoked while the batch was being written; nothing was written")
+		return batchErr(401, protocol.ReasonRevokedDevice, "", "write re-check: the device credential was revoked while the batch was being written; nothing was written")
 	case errors.Is(err, store.ErrCredentialExpired):
-		return batchErr(401, protocol.ReasonRevokedDevice, "", "the device credential expired")
+		return batchErr(401, protocol.ReasonRevokedDevice, "", "write re-check: the device credential expired")
 	case errors.Is(err, store.ErrCredentialUnknown):
-		return batchErr(401, protocol.ReasonRevokedDevice, "", "the device credential is not known to this deployment")
+		return batchErr(401, protocol.ReasonRevokedDevice, "", "write re-check: the device credential is not known to this deployment")
 	case errors.Is(err, store.ErrUnknownRoute):
 		return batchErr(503, protocol.ReasonSchemaViolation, "", "ref.route_fidelity changed under the request; retry")
 	default:
@@ -583,15 +577,5 @@ func attachmentsOf(env *contract.Envelope) []dedup.Attachment {
 			ContentDigest: a.ContentDigest, Readable: a.Readable,
 		})
 	}
-	return out
-}
-
-// SortedCodes is a convenience for diagnostics: the closed reason set, sorted.
-func SortedCodes() []string {
-	out := make([]string, 0, len(protocol.AllReasonCodes))
-	for _, c := range protocol.AllReasonCodes {
-		out = append(out, string(c))
-	}
-	sort.Strings(out)
 	return out
 }

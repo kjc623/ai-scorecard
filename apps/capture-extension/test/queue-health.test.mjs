@@ -87,9 +87,47 @@ test('counters are cumulative since start plus a windowed delta (§4.3)', () => 
   assert.equal(set.snapshot().window.observed, 3);
   set.inc('observed', 1);
   const previous = set.rollWindow();
-  assert.equal(previous.observed, 3, 'the rolled window is returned');
+  assert.equal(previous.observed, 4, 'the rolled window is everything since the last roll, including the last increment');
   assert.equal(set.snapshot().window.observed, 0, 'and the new window starts clean');
   assert.equal(set.snapshot().counters.observed, 4, 'cumulatively it only grows');
+});
+
+test('a failed connect is reported as capture-core absent AND extension-side degraded, never as "no observations"', () => {
+  const counters = createCounterSet();
+  const queue = createQueue({ capacity: 2, onDrop: () => counters.inc(COUNTER.DROPPED, 1) });
+  const health = createHealthReporter({
+    device_id: 'dev-1',
+    queueStats: () => queue.stats(),
+    policySnapshot: () => ({ policy_version: 'v3', present: true, stale: false }),
+  });
+  health.counters.inc(COUNTER.OBSERVED, 4);
+  health.onChannelAbsent();
+
+  queue.enqueue('observation', { a: 1 }, 10);
+  queue.enqueue('observation', { b: 1 }, 10);
+  queue.enqueue('observation', { c: 1 }, 10); // evicts one
+
+  const report = health.report();
+  assert.equal(report.core, 'absent');
+  assert.equal(report.state, 'degraded', 'never "healthy", and never "no observations"');
+  assert.equal(report.collector, 'capture_extension');
+  assert.equal(report.counters.observed, 4, 'what was observed is still reported');
+  assert.equal(report.queue.depth, 2);
+  assert.equal(report.queue.capacity, 2);
+  assert.equal(report.queue.dropped_total, 1);
+  assert.equal(report.policy.version, 'v3', '§11.3 mode-change attribution');
+});
+
+test('the queue\'s drop counter and the health counter are the same number, because the queue drives it', () => {
+  // In the running extension this is `bootstrap`'s `onDrop: () => health.counters.inc('dropped', 1)`.
+  const queue = createQueue({ capacity: 1 });
+  const health = createHealthReporter({ device_id: 'dev-1', queueStats: () => queue.stats() });
+  const wired = createQueue({ capacity: 1, onDrop: () => health.counters.inc(COUNTER.DROPPED, 1) });
+  wired.enqueue('observation', { a: 1 }, 1);
+  wired.enqueue('observation', { b: 1 }, 1);
+  assert.equal(wired.stats().dropped_total, 1);
+  assert.equal(health.counters.snapshot().counters.dropped, 1);
+  assert.equal(health.report().counters.dropped, 1);
 });
 
 test('errors are counted with a cause, so an operator can group without reading prose', () => {
@@ -104,13 +142,14 @@ test('errors are counted with a cause, so an operator can group without reading 
 });
 
 test('§3.4: a dead channel reports capture-core absent AND extension-side degraded', () => {
-  const counters = createCounterSet();
-  const queue = createQueue({ capacity: 2, onDrop: () => counters.inc(COUNTER.DROPPED, 1) });
   const health = createHealthReporter({
     device_id: 'dev-1',
     queueStats: () => queue.stats(),
     policySnapshot: () => ({ policy_version: 'v3', present: true, stale: false }),
   });
+  // The queue drives the counter, exactly as `bootstrap` wires it, so the report and the queue
+  // cannot disagree about how much was lost.
+  const queue = createQueue({ capacity: 2, onDrop: () => health.counters.inc(COUNTER.DROPPED, 1) });
   health.counters.inc(COUNTER.OBSERVED, 4);
   health.onChannelAbsent();
 

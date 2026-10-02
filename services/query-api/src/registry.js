@@ -586,6 +586,9 @@ export const SOURCES = Object.freeze({
         id: 'device_region',
         sql: 'LEFT JOIN ops.device dd ON dd.tenant_id = d.tenant_id AND dd.device_id = d.device_id',
         when: Object.freeze(['region']),
+        // The column travels with the join: a SELECT list that names `dd` without the join is a
+        // missing-FROM-clause error, and the integration test caught exactly that.
+        select: Object.freeze(['dd.residency_region AS "region"']),
       }),
     ]),
     /**
@@ -597,7 +600,6 @@ export const SOURCES = Object.freeze({
       'd.device_id AS "device"',
       'd.os AS "device_os"',
       'd.managed_state AS "managed_state"',
-      'dd.residency_region AS "region"',
       "CASE WHEN d.revoked_at IS NOT NULL THEN 'revoked' WHEN d.last_seen_at IS NULL THEN 'never_reported' WHEN d.last_seen_at < now() - interval '24 hours' THEN 'stale' ELSE 'reporting' END AS \"liveness\"",
       'cs.collector AS "collector"',
       'cs.state AS "collector_state"',
@@ -770,6 +772,11 @@ export const SOURCES = Object.freeze({
         id: 'user_dim',
         sql: 'LEFT JOIN ops.user_dim ud ON ud.tenant_id = s.tenant_id AND ud.user_ref = s.user_ref',
         when: Object.freeze(['department', 'population', 'manager']),
+        select: Object.freeze([
+          'ud.department AS "department"',
+          'ud.population AS "population"',
+          'ud.manager_ref AS "manager"',
+        ]),
       }),
     ]),
     listSelect: Object.freeze([

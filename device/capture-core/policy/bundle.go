@@ -163,10 +163,44 @@ type Bundle struct {
 	KillSwitches   []KillSwitch      `json:"kill_switches,omitempty"`
 	Interception   Interception      `json:"interception"`
 	Loopback       LoopbackPolicy    `json:"loopback"`
+	ProcDetect     ProcDetectPolicy  `json:"proc_detect"`
 	Spool          SpoolBounds       `json:"spool"`
 	ShapePredicate ShapePredicate    `json:"shape_predicate"`
 	Classifier     ClassifierRelease `json:"classifier"`
 	Artefacts      []ArtefactRef     `json:"artefacts,omitempty"`
+}
+
+// ProcDetectPolicy is §4.4's signed seed set: the inference-runtime signatures proc.detect
+// matches against. It is bundle data rather than compiled in, so a new runtime becomes
+// detectable without a software release — and so a signature the vendor gets wrong is fixable
+// without one.
+type ProcDetectPolicy struct {
+	// ImageSignatures match a process image path (case-insensitive substring).
+	ImageSignatures []string `json:"image_signatures,omitempty"`
+	// ModuleSignatures match a loaded module name (§4.4's module_signature basis).
+	ModuleSignatures []string `json:"module_signatures,omitempty"`
+	// PortMap is the configured loopback port map: a process holding one of these ports is a
+	// candidate, which is the "listening loopback socket" half of the detection rule.
+	PortMap []PortMapEntry `json:"port_map,omitempty"`
+	// MinComputePermille is the coarse compute signature above which a loaded runtime module
+	// counts as sustained compute rather than an idle import. Zero disables that path.
+	MinComputePermille int `json:"min_compute_permille,omitempty"`
+	// SignatureVersion is reported so an operator can see which seed set the device holds.
+	SignatureVersion string `json:"signature_version,omitempty"`
+	// CycleIntervalSeconds and MissWindowSeconds shape the sampling cycle: the provider is
+	// `absent` when a cycle misses its window (§4.4).
+	CycleIntervalSeconds int `json:"cycle_interval_seconds,omitempty"`
+	MissWindowSeconds    int `json:"miss_window_seconds,omitempty"`
+	// RollupWindowSeconds is the usage_rollup window. §4.4 asks for one rollup per device, per
+	// tool, per day; the default is 24 h and a tenant can shorten it, never lengthen the record
+	// into per-cycle telemetry.
+	RollupWindowSeconds int `json:"rollup_window_seconds,omitempty"`
+}
+
+// PortMapEntry is one loopback port a known inference runtime listens on.
+type PortMapEntry struct {
+	Port            int    `json:"port"`
+	ToolFingerprint string `json:"tool_fingerprint"`
 }
 
 // KillSwitchFor returns the kill switch for a route, if one is in force.
@@ -341,6 +375,25 @@ func (b *Bundle) Validate() error {
 	}
 	if b.Spool.MaxBytes < 0 || b.Spool.MaxRows < 0 || b.Spool.DeviceRetentionHours < 0 {
 		return fmt.Errorf("policy: spool bounds are negative")
+	}
+	for _, sig := range append(append([]string(nil), b.ProcDetect.ImageSignatures...), b.ProcDetect.ModuleSignatures...) {
+		if strings.TrimSpace(sig) == "" {
+			return fmt.Errorf("policy: proc_detect has an empty runtime signature; an empty substring matches every process")
+		}
+	}
+	for _, pm := range b.ProcDetect.PortMap {
+		if !validPort(pm.Port) {
+			return fmt.Errorf("policy: proc_detect port map names port %d, which is not a usable TCP port", pm.Port)
+		}
+		if strings.TrimSpace(pm.ToolFingerprint) == "" {
+			return fmt.Errorf("policy: proc_detect port map entry for port %d has no tool fingerprint", pm.Port)
+		}
+	}
+	if b.ProcDetect.MinComputePermille < 0 || b.ProcDetect.MinComputePermille > 1000 {
+		return fmt.Errorf("policy: proc_detect min_compute_permille %d is outside 0..1000", b.ProcDetect.MinComputePermille)
+	}
+	if b.ProcDetect.CycleIntervalSeconds < 0 || b.ProcDetect.MissWindowSeconds < 0 || b.ProcDetect.RollupWindowSeconds < 0 {
+		return fmt.Errorf("policy: proc_detect intervals are negative")
 	}
 	switch b.Classifier.State {
 	case ReleaseShadow, ReleaseEnforcing, ReleaseRolledBack:

@@ -269,7 +269,20 @@ export function refusal(reason, message) {
   return { reason, message };
 }
 
-/** Build an outbound observation body with every protocol field present exactly once. */
+/**
+ * Build an outbound observation body with every protocol field present exactly once.
+ *
+ * **`content` is base64 in every case, text and binary alike.** `ObservationMessage.Content` in
+ * device/protocol/native.go is `[]byte` with `json:"content"`, and `encoding/json` base64-decodes
+ * a `[]byte` — so a raw text payload fails to decode ("illegal base64 data at input byte 9"), and
+ * text that happens to *be* valid base64 silently decodes to different bytes than the user typed
+ * while `content_digest` was computed over the original. The digest and the content disagreeing is
+ * a content-identity break: it propagates into `dedup_key`, into what the classifier sees, and
+ * into the record's value as evidence.
+ *
+ * So the encoding happens HERE, where the value is created, rather than at each call site — the
+ * one place a caller cannot forget it. `encodeContent()` is the single encoder for both paths.
+ */
 export function observationBody(fields) {
   const body = {
     client_id: fields.client_id,
@@ -281,7 +294,9 @@ export function observationBody(fields) {
     has_content: Boolean(fields.has_content),
   };
   if (fields.content_digest) body.content_digest = fields.content_digest;
-  if (fields.has_content && typeof fields.content === 'string') body.content = fields.content;
+  if (fields.has_content && fields.content !== undefined && fields.content !== null) {
+    body.content = encodeContent(fields.content);
+  }
   if (fields.content_is_binary) body.content_is_binary = true;
   if (fields.over_cap) body.over_cap = true;
   if (fields.attachments && fields.attachments.length) body.attachments = fields.attachments;
@@ -289,4 +304,66 @@ export function observationBody(fields) {
   if (fields.degraded_reason) body.degraded_reason = fields.degraded_reason;
   if (fields.page_context_attachments) body.page_context_attachments = true;
   return body;
+}
+
+/**
+ * The one encoder for `content`. Accepts the bytes, a base64 string (what the binary path already
+ * holds), or a decoded text string, and always returns the base64 that `[]byte` requires.
+ *
+ * @param {Uint8Array|ArrayBuffer|string} value
+ * @param {{alreadyBase64?: boolean}} [opts]
+ */
+export function encodeContent(value, opts = {}) {
+  if (typeof value === 'string') {
+    if (opts.alreadyBase64) return value;
+    return bytesToBase64(new TextEncoder().encode(value));
+  }
+  return bytesToBase64(toBytes(value));
+}
+
+/** Decode a frame's `content` back to the bytes the digest was taken over. Mirrors encoding/json. */
+export function decodeContentFrame(value) {
+  if (typeof value !== 'string') return new Uint8Array(0);
+  return base64ToBytes(value);
+}
+
+function toBytes(input) {
+  if (input == null) return new Uint8Array(0);
+  if (input instanceof Uint8Array) return input;
+  if (input instanceof ArrayBuffer) return new Uint8Array(input);
+  if (ArrayBuffer.isView(input)) return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+  return new Uint8Array(0);
+}
+
+const B64_TABLE = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+function bytesToBase64(input) {
+  const b = toBytes(input);
+  let out = '';
+  for (let i = 0; i < b.length; i += 3) {
+    const n = (b[i] << 16) | ((b[i + 1] || 0) << 8) | (b[i + 2] || 0);
+    out +=
+      B64_TABLE[(n >> 18) & 63] +
+      B64_TABLE[(n >> 12) & 63] +
+      (i + 1 < b.length ? B64_TABLE[(n >> 6) & 63] : '=') +
+      (i + 2 < b.length ? B64_TABLE[n & 63] : '=');
+  }
+  return out;
+}
+
+function base64ToBytes(s) {
+  const clean = String(s ?? '').replace(/[^A-Za-z0-9+/]/g, '');
+  const out = new Uint8Array(Math.floor((clean.length * 3) / 4));
+  let o = 0;
+  let acc = 0;
+  let bits = 0;
+  for (const ch of clean) {
+    acc = (acc << 6) | B64_TABLE.indexOf(ch);
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out[o++] = (acc >> bits) & 0xff;
+    }
+  }
+  return out.subarray(0, o);
 }

@@ -224,26 +224,23 @@ func TestDecodeEnvelopeRefusesNonObject(t *testing.T) {
 	}
 }
 
-func TestDiscoverWalksUp(t *testing.T) {
-	dir, err := os.MkdirTemp("", "discover")
-	if err != nil {
-		t.Fatalf("temp dir: %v", err)
-	}
-	defer os.RemoveAll(dir)
-	nested := filepath.Join(dir, "a", "b", "c")
+// TestDiscoverWalksUpToASchemaItControls asserts the positive behaviour — a nested working
+// directory finds the schema above it — against a tree this test builds itself, so the result does
+// not depend on what happens to exist above the temp directory.
+func TestDiscoverWalksUpToASchemaItControls(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "a", "b", "c")
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if _, err := Discover(nested); err == nil {
-		t.Error("Discover must fail when no schema exists above the directory")
-	}
-	if err := os.MkdirAll(filepath.Join(dir, "contracts"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "contracts"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	want := filepath.Join(dir, "contracts", "event-envelope.schema.json")
+	want := filepath.Join(root, "contracts", "event-envelope.schema.json")
 	if err := os.WriteFile(want, []byte(`{"$defs":{}}`), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
+
 	got, err := Discover(nested)
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
@@ -251,6 +248,42 @@ func TestDiscoverWalksUp(t *testing.T) {
 	if got != want {
 		t.Errorf("Discover = %q, want %q", got, want)
 	}
+	// The bounded form must agree with the unbounded one when it is not bounded.
+	if gotWithin, err := DiscoverWithin(nested, ""); err != nil || gotWithin != want {
+		t.Errorf("DiscoverWithin(nested, \"\") = %q, %v; want %q, nil", gotWithin, err, want)
+	}
+	// A directory that contains the schema must be the first hit, without walking further up.
+	if got, err := DiscoverWithin(filepath.Join(root, "contracts"), root); err != nil || got != want {
+		t.Errorf("DiscoverWithin from the contracts directory = %q, %v; want %q, nil", got, err, want)
+	}
+}
+
+// TestDiscoverWithinReportsNoSchemaInItsSearchBoundary is the negative case, and its premise is
+// constructed rather than assumed: the search is bounded to a tree this test owns, which contains
+// no schema anywhere.
+//
+// The earlier version of this test asserted that Discover failed from a temp directory, on the
+// assumption that no contracts/event-envelope.schema.json existed above it. That assumption is
+// about the machine's layout, and it is false wherever the temp directory lives inside the
+// repository — which is the case in the sandboxed acceptance run, where it produced a failure that
+// looked like a discovery defect and was not one.
+func TestDiscoverWithinReportsNoSchemaInItsSearchBoundary(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "a", "b", "c")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	if _, err := DiscoverWithin(nested, root); err == nil {
+		t.Error("DiscoverWithin must report that no schema exists between the start directory and its boundary")
+	}
+	// The boundary itself is examined, not treated as the first directory to skip.
+	if _, err := DiscoverWithin(root, root); err == nil {
+		t.Error("the boundary directory must be searched before giving up")
+	}
+	// Without a boundary there is nothing to stop at, so it can only fail at the filesystem root;
+	// that path is covered by the sandboxed run and is deliberately not asserted here, because
+	// whether it fails depends on the machine.
 }
 
 func contains(list []string, s string) bool {

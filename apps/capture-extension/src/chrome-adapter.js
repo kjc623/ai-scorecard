@@ -133,8 +133,12 @@ export function createChromeAdapter(scope = globalThis) {
               method: d.method,
               statusCode: d.statusCode,
               responseHeaders: headerMap(d.responseHeaders),
+              // Request headers are carried because §8.2's response row is "a ... response contract
+              // for the same request": the pair is what the predicate evaluates.
+              requestHeaders: headerMap(d.requestHeaders),
               type: d.type,
               timeStamp: d.timeStamp,
+              fromCache: Boolean(d.fromCache),
             }),
           filter,
         );

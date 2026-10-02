@@ -23,6 +23,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -53,6 +55,7 @@ type options struct {
 	tlsKey           string
 	tlsClientCA      string
 	devTrust         bool
+	devSeed          string
 	verifyDedupKey   bool
 	maxBatchEvents   int
 	replayWindow     time.Duration
@@ -72,6 +75,7 @@ func run() error {
 	flag.StringVar(&o.tlsKey, "tls-key", "", "server private key (PEM)")
 	flag.StringVar(&o.tlsClientCA, "tls-client-ca", "", "CA bundle that must have issued the device certificate (PEM)")
 	flag.BoolVar(&o.devTrust, "dev-trust-principal", false, "TEST ONLY: trust X-Dev-Tenant-Id and X-Dev-Device-Id instead of a client certificate")
+	flag.StringVar(&o.devSeed, "dev-seed-principal", "", "TEST ONLY with -store=memory: register tenant:device[:credential] as an active principal so a local run can accept a batch (default credential \"dev\", matching -dev-trust-principal)")
 	flag.BoolVar(&o.verifyDedupKey, "verify-dedup-key", false, "diagnostic: recompute §4.5 dedup_key and reject a mismatch (off by default; §7 has no wire code for it)")
 	flag.IntVar(&o.maxBatchEvents, "max-batch-events", 500, "advertised batch cap")
 	flag.DurationVar(&o.replayWindow, "replay-window", 24*time.Hour, "duplicate_batch replay window")
@@ -95,21 +99,40 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// The repository root, derived from the schema's own location, is what lets the development
+	// defaults below be module-relative and still work from any working directory.
+	repoRoot := filepath.Dir(filepath.Dir(schemaPath))
 	logger.Info("contract loaded", "schema", schemaPath)
 
 	var st store.Store
 	switch o.storeKind {
 	case "memory":
-		routes, err := loadRoutes(o.routesFile)
+		routes, err := loadRoutes(o.routesFile, repoRoot)
 		if err != nil {
 			return err
 		}
 		mem := store.NewMemory(routes)
+		if o.devSeed != "" {
+			tenant, device, credential, err := parseSeed(o.devSeed)
+			if err != nil {
+				return err
+			}
+			mem.SetPrincipal(tenant, device, credential, store.PrincipalStatus{
+				TenantKnown: true, TenantStatus: "active", IngestEnabled: true, TenantRegion: o.region,
+				DeviceKnown: true, CredentialKnown: true,
+				CredentialExpiry: time.Now().Add(90 * 24 * time.Hour),
+			})
+			logger.Warn("TEST ONLY: seeded an active principal in the in-memory store",
+				"tenant", tenant, "device", device, "credential", credential)
+		}
 		logger.Warn("running with the in-memory store: nothing is persisted and no database identity is used; this is for a local run and for tests")
 		st = mem
 	case "sql":
 		if o.dsn == "" || o.driver == "" {
 			return errors.New("-store=sql requires -dsn and -driver")
+		}
+		if o.devSeed != "" {
+			return errors.New("-dev-seed-principal is only for -store=memory; with a database the principal comes from ops.*")
 		}
 		db, err := sql.Open(o.driver, o.dsn)
 		if err != nil {
@@ -202,10 +225,70 @@ func run() error {
 	return httpServer.Shutdown(ctx)
 }
 
+// parseSeed reads tenant:device[:credential] for -dev-seed-principal.
+func parseSeed(s string) (tenant, device, credential string, err error) {
+	parts := strings.Split(s, ":")
+	if len(parts) < 2 || len(parts) > 3 {
+		return "", "", "", fmt.Errorf("-dev-seed-principal %q is not tenant:device[:credential]", s)
+	}
+	tenant, device = parts[0], parts[1]
+	credential = "dev"
+	if len(parts) == 3 {
+		credential = parts[2]
+	}
+	if !contract.IsUUID(tenant) || !contract.IsUUID(device) {
+		return "", "", "", fmt.Errorf("-dev-seed-principal %q: tenant and device must be uuids", s)
+	}
+	return tenant, device, credential, nil
+}
+
 // loadRoutes reads ref.route_fidelity rows for the in-memory store. Rank data is *data*: §4.4 is
 // explicit that ranks are not compiled into services, so a local run reads the same rows the
 // database would return rather than carrying its own copy.
-func loadRoutes(path string) (store.RouteTable, error) { return store.LoadRouteTable(path) }
+//
+// The flag's default is module-relative, and the process may be started from the repository root or
+// from the module directory. Rather than fail with a path that looks plausible, the file is looked
+// for in the three places it can be: as given, relative to the repository root derived from the
+// contract schema, and upwards from the working directory.
+func loadRoutes(path, repoRoot string) (store.RouteTable, error) {
+	if table, err := store.LoadRouteTable(path); err == nil {
+		return table, nil
+	}
+	if repoRoot != "" {
+		candidate := filepath.Join(repoRoot, "services", "ingest-api", filepath.FromSlash(path))
+		if table, err := store.LoadRouteTable(candidate); err == nil {
+			return table, nil
+		}
+	}
+	if wd, err := os.Getwd(); err == nil {
+		if found, ferr := findUpwards(wd, filepath.FromSlash(path)); ferr == nil {
+			return store.LoadRouteTable(found)
+		}
+	}
+	return nil, fmt.Errorf("read route table %s: not found as given, at the repository root (%s), or above the working directory",
+		path, repoRoot)
+}
+
+// findUpwards walks up from `from` looking for a relative path. It takes the starting directory
+// rather than reading the working directory itself, so a caller -- and a test -- can name the tree
+// it means instead of mutating process-wide state.
+func findUpwards(from, rel string) (string, error) {
+	dir, err := filepath.Abs(from)
+	if err != nil {
+		return "", err
+	}
+	for {
+		candidate := filepath.Join(dir, rel)
+		if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+			return candidate, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("could not find %s above %s", rel, from)
+		}
+		dir = parent
+	}
+}
 
 func loadCAPool(path string) (*x509.CertPool, error) {
 	pem, err := os.ReadFile(path)

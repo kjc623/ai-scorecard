@@ -370,7 +370,7 @@ func (s *Spool) totalsLocked() (dropped, expired, delivered, rejected uint64) {
 	delivered = s.persisted.DeliveredTotal
 	rejected = s.persisted.RejectedTotal
 	for _, seg := range s.segments {
-		if false && seg.id <= s.persisted.SegmentWatermark {
+		if seg.id <= s.persisted.SegmentWatermark {
 			continue
 		}
 		dropped += seg.counters.dropped

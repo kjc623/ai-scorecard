@@ -36,6 +36,14 @@ export const SIGNAL_WEIGHT = Object.freeze({
   body_system_member: 0.05,
   body_long_text: 0.25,
   body_many_fields: 0.10,
+  /**
+   * The §8.2 chat shape found by a key scan instead of a parse: the body is a capped prefix (§5.3)
+   * or its bytes are not valid UTF-8 (§7.2). It carries its own weight because the evidence is
+   * weaker than a parsed array — no value was ever read — and it exists so that §5.3's
+   * "over-cap body emitted with confidence: degraded" and §7.2's binary fallback are reachable
+   * rather than dead paths.
+   */
+  body_chat_shape_from_key_scan: 0.25,
   // Method, content type, size
   request_post: 0.10,
   request_json_content_type: 0.10,
@@ -113,6 +121,21 @@ function contentTypeClass(headers) {
     json: JSON_CONTENT_TYPES.some((t) => base === t || base.endsWith('+json')),
     form: base === 'application/x-www-form-urlencoded' || base.startsWith('multipart/form-data'),
   };
+}
+
+/** Cheap key-name scan for a payload that could not be parsed. Values are never read. */
+function byteKeyScan(bytes, lossy) {
+  if (!bytes || bytes.byteLength === 0) return null;
+  const text = lossy
+    // A replacement character cannot create or destroy an ASCII key name, so the shape is still
+    // readable even though the payload is not — and nothing else is taken from this reading.
+    ? new TextDecoder('utf-8', { fatal: false }).decode(bytes)
+    : (() => {
+        const strict = utf8Strict(bytes);
+        return strict.ok ? strict.text : null;
+      })();
+  if (text === null) return null;
+  return new Set([...text.matchAll(/"([A-Za-z_][A-Za-z0-9_]*)"\s*:/g)].map((m) => m[1]));
 }
 
 function tryParseJson(bytes) {
@@ -298,12 +321,46 @@ export function predicateRequest(rec, threshold = DEFAULT_THRESHOLD) {
       signal(signals, 'body_many_fields', SIGNAL_WEIGHT.body_many_fields, 'json');
     }
   } else if (bytes && bytes.byteLength > 0) {
-    structure = 'unparsed';
-    // A capped prefix of a larger payload still yields evidence: §5.3's whole point is that
-    // the over-cap body is sized and hashed rather than read, so a cheap key scan beats nothing.
-    const strict = utf8Strict(bytes);
-    if (strict.ok && /"(messages|prompt|input|contents|system)"\s*:/.test(strict.text)) {
-      signal(signals, 'body_prompt_member', SIGNAL_WEIGHT.body_prompt_member, 'unparsed_prefix');
+    // Bytes that did not parse as JSON. Either the payload is a capped prefix (§5.3) or its bytes
+    // are not valid UTF-8 (§7.2); §7.2's binary case is decided by the strict decoder, not assumed.
+    structure = utf8Strict(bytes).ok ? 'unparsed' : 'binary';
+  }
+
+  // Body structure discovered from a key scan rather than a parse. Both cases must still be able to
+  // reach a match, or §5.3's "over-cap body is emitted with `confidence: degraded`" would never
+  // happen and §7.2's binary fallback would be a dead path.
+  if (structure === 'unparsed' || structure === 'binary') {
+    const scanDetail = structure === 'binary' ? 'binary_key_scan' : 'unparsed_prefix';
+    const keys = byteKeyScan(bytes, structure === 'binary');
+    if (keys) {
+      if (keys.has('messages') || keys.has('contents')) {
+        signal(signals, 'body_messages_named_member', SIGNAL_WEIGHT.body_messages_named_member, scanDetail);
+      }
+      if ([...keys].some((k) => ROLE_KEYS.includes(k))) {
+        signal(signals, 'body_role_discriminator', SIGNAL_WEIGHT.body_role_discriminator, scanDetail);
+      }
+      if ([...keys].some((k) => CONTENT_KEYS.includes(k))) {
+        signal(signals, 'body_content_payload', SIGNAL_WEIGHT.body_content_payload, scanDetail);
+      }
+      if ([...keys].some((k) => PROMPT_KEYS.has(k))) {
+        signal(signals, 'body_prompt_member', SIGNAL_WEIGHT.body_prompt_member, scanDetail);
+      }
+      if ([...keys].some((k) => MODEL_PARAM_KEYS.has(k))) {
+        signal(signals, 'body_model_params', SIGNAL_WEIGHT.body_model_params, scanDetail);
+      }
+      if ([...keys].some((k) => TOOL_KEYS.has(k))) {
+        signal(signals, 'body_tool_declarations', SIGNAL_WEIGHT.body_tool_declarations, scanDetail);
+      }
+      // A member named `messages`, a role discriminator and a content payload found together is the
+      // §8.2 chat shape, seen without a parse. It carries its own weight because the evidence is
+      // weaker than a parsed array — the values were never read — and it is exactly the situation
+      // §5.3 and §7.2 describe.
+      const roleLike = [...keys].some((k) => ROLE_KEYS.includes(k));
+      const contentLike = [...keys].some((k) => CONTENT_KEYS.includes(k));
+      const messagesNamed = keys.has('messages') || keys.has('contents');
+      if (messagesNamed && roleLike && contentLike) {
+        signal(signals, 'body_chat_shape_from_key_scan', SIGNAL_WEIGHT.body_chat_shape_from_key_scan, scanDetail);
+      }
     }
   }
 
@@ -313,7 +370,9 @@ export function predicateRequest(rec, threshold = DEFAULT_THRESHOLD) {
   if (tabContext.includes('active_composer')) signal(signals, 'context_composer', SIGNAL_WEIGHT.context_composer, 'composer');
 
   const score = round3(signals.reduce((n, s) => n + s.weight, 0));
-  const structural = messages !== null || signals.some((s) => s.id === 'body_tool_declarations');
+  const structural = messages !== null
+    || signals.some((s) => s.id === 'body_tool_declarations')
+    || signals.some((s) => s.id === 'body_chat_shape_from_key_scan');
   const match = score >= threshold;
 
   // The metadata-only counterpart of `match`, for the lane where no body exists at all
@@ -321,10 +380,16 @@ export function predicateRequest(rec, threshold = DEFAULT_THRESHOLD) {
   // from a body that was never read, so the question on that lane is whether the request is
   // worth an identity-and-volume observation — the strongest thing the route may report at M0
   // (§11.3's M0 row: identity, tool, times, mode, size, policy decision).
+  //
+  // The size test is loosened to "non-zero OR a conversational path", because on this lane the
+  // size is genuinely unknown: the extension has not asked for the body, so a hard minimum here
+  // would make M0 observation impossible rather than conservative. What it emits is identity and
+  // volume, and a false positive costs one uninteresting event (§8.2's stated asymmetry).
+  const conversationalPath = signals.some((s) => s.id === 'path_conversational_vocabulary');
   const metadata_candidate =
     method !== 'GET' &&
-    (ct.json || ct.form || signals.some((s) => s.id === 'path_conversational_vocabulary')) &&
-    size > TRIVIAL_SIZE_BYTES;
+    (ct.json || ct.form || conversationalPath) &&
+    (size > TRIVIAL_SIZE_BYTES || conversationalPath);
 
   return {
     match,

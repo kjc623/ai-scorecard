@@ -38,15 +38,15 @@ type Authenticator interface {
 // Authentication failures. They are distinct because the operator-facing response distinguishes
 // them, even where §7's closed code set has only one code for the class.
 var (
-	ErrNoCredential       = errors.New("auth: no client credential presented")
-	ErrBadCredential      = errors.New("auth: client credential is not a device credential")
-	ErrCredentialUnknown  = errors.New("auth: credential unknown or not issued by this deployment")
-	ErrCredentialRevoked  = errors.New("auth: credential revoked")
-	ErrCredentialExpired  = errors.New("auth: credential expired")
-	ErrDeviceRevoked      = errors.New("auth: device revoked")
-	ErrUnknownTenant      = errors.New("auth: tenant unknown or inactive")
-	ErrTenantSuspended    = errors.New("auth: tenant ingest is disabled")
-	ErrRegionMismatch     = errors.New("auth: deployment region is not the tenant's pinned region")
+	ErrNoCredential      = errors.New("auth: no client credential presented")
+	ErrBadCredential     = errors.New("auth: client credential is not a device credential")
+	ErrCredentialUnknown = errors.New("auth: credential unknown or not issued by this deployment")
+	ErrCredentialRevoked = errors.New("auth: credential revoked")
+	ErrCredentialExpired = errors.New("auth: credential expired")
+	ErrDeviceRevoked     = errors.New("auth: device revoked")
+	ErrUnknownTenant     = errors.New("auth: tenant unknown or inactive")
+	ErrTenantSuspended   = errors.New("auth: tenant ingest is disabled")
+	ErrRegionMismatch    = errors.New("auth: deployment region is not the tenant's pinned region")
 )
 
 // MTLSAuthenticator authenticates a request from its TLS client certificate and the credential

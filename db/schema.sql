@@ -775,22 +775,71 @@ CREATE TABLE ingest.observation (
   PRIMARY KEY (tenant_id, event_id),
   FOREIGN KEY (tenant_id, device_id) REFERENCES ops.device(tenant_id, device_id),
 
-  -- The contract's mode boundary, restated where it can actually be enforced. Brief §1.1 makes
-  -- M0 a permission boundary: at M0 the collector must not have read content at all, so a
-  -- content-derived field on an M0 record is evidence of a defect and is rejected rather than
-  -- ignored. The mirror of this is enforced for M1+ by the CHECK on content_digest below.
+  -- The contract's mode and kind boundaries, restated where they can actually be enforced.
+  -- Brief §1.1 makes M0 a permission boundary: at M0 the collector must not have read content at
+  -- all, so a content-derived field on an M0 record is evidence of a defect and is rejected
+  -- rather than ignored.
+  --
+  -- Each forbid-list below is meant to be EQUAL to the `not.anyOf` of the matching branch in
+  -- contracts/event-envelope.schema.json. Three of them had drifted and constrained only some of
+  -- the fields the contract forbids, so a record arriving by any path other than the ingest gate
+  -- -- a migration, a restore, a support query, a future service -- was accepted while carrying
+  -- a field its kind is defined not to have. The database is the last line that does not depend
+  -- on application code being correct, so a half-enforced boundary is worse than none: it reads
+  -- as a guarantee. db/tools/check-schema.mjs now compares these lists against the contract
+  -- mechanically, so the next drift fails a check instead of waiting to be discovered.
+  --
+  -- `attachments` is the one contract field with no column here: attachment descriptors are
+  -- envelope-level, and their store-side home is ingest.search_text, written by content-vault and
+  -- keyed by submission. A CHECK on this table cannot see another table, so that field is
+  -- enforced on the write path instead, and the checker is told to expect its absence here.
   CONSTRAINT observation_m0_carries_no_content
-    CHECK (collection_mode <> 'm0' OR (content_digest IS NULL AND labels IS NULL AND content_excerpt IS NULL AND classifier_version IS NULL)),
+    CHECK (collection_mode <> 'm0' OR (
+      content_digest IS NULL AND labels IS NULL AND classifier_version IS NULL
+      AND confidence IS NULL AND content_excerpt IS NULL)),
   CONSTRAINT observation_m1_plus_carries_labels
-    CHECK (kind <> 'prompt' OR collection_mode = 'm0' OR (content_digest IS NOT NULL AND labels IS NOT NULL AND classifier_version IS NOT NULL AND confidence IS NOT NULL)),
+    CHECK (kind <> 'prompt' OR collection_mode = 'm0' OR (
+      content_digest IS NOT NULL AND labels IS NOT NULL AND classifier_version IS NOT NULL
+      AND confidence IS NOT NULL)),
+  -- This constraint PERMITS an excerpt at M2; it does not REQUIRE one, while the contract does
+  -- (contracts/event-envelope.schema.json, the M2 branch: then.required: ["content_excerpt"]).
+  -- That gap is deliberate and recorded here so it stays a decision rather than a standing
+  -- question:
+  --
+  --   * The contract's requirement is a statement about the WIRE -- an M2 record must carry an
+  --     excerpt. It is enforced at ingest, where a violation becomes a mode_violation and a
+  --     quarantine row, which is the diagnosability docs/02 section 7 exists for.
+  --   * The store's job is to make the dangerous states unreachable. "M2 without an excerpt" is
+  --     not dangerous: it is a less informative record, not one that leaks content or
+  --     double-counts. Every other constraint in this block tightens a prohibition, and adding a
+  --     requirement here would run the other way, making a previously-valid row invalid -- a
+  --     migration question, not a constraint question.
+  --   * It would also have to answer "what about an M2 record whose excerpt was minimised away to
+  --     nothing", and the honest answer is that the write path decides, not a CHECK.
+  --
+  -- db/tools/check-schema.mjs asserts this difference and reports it as excused-by-decision, the
+  -- same treatment attachments gets, so the exemption cannot silently become something else.
   CONSTRAINT observation_excerpt_only_at_m2
     CHECK (content_excerpt IS NULL OR (kind = 'prompt' AND collection_mode = 'm2')),
   CONSTRAINT observation_prompt_shape
-    CHECK (kind <> 'prompt' OR (direction = 'egress' AND size_bytes IS NOT NULL AND policy_decision IS NOT NULL AND window_start IS NULL AND detection_basis IS NULL)),
+    CHECK (kind <> 'prompt' OR (
+      direction = 'egress' AND size_bytes IS NOT NULL AND policy_decision IS NOT NULL
+      AND window_start IS NULL AND window_end IS NULL AND submission_count IS NULL
+      AND bytes_total IS NULL AND detection_basis IS NULL)),
   CONSTRAINT observation_rollup_shape
-    CHECK (kind <> 'usage_rollup' OR (direction = 'none' AND window_start IS NOT NULL AND window_end IS NOT NULL AND submission_count IS NOT NULL AND bytes_total IS NOT NULL AND content_digest IS NULL AND labels IS NULL AND policy_decision IS NULL AND size_bytes IS NULL)),
+    CHECK (kind <> 'usage_rollup' OR (
+      direction = 'none' AND window_start IS NOT NULL AND window_end IS NOT NULL
+      AND submission_count IS NOT NULL AND bytes_total IS NOT NULL
+      AND content_digest IS NULL AND labels IS NULL AND classifier_version IS NULL
+      AND content_excerpt IS NULL AND policy_decision IS NULL AND size_bytes IS NULL
+      AND detection_basis IS NULL)),
   CONSTRAINT observation_detection_shape
-    CHECK (kind <> 'model_detection' OR (direction = 'none' AND detection_basis IS NOT NULL AND content_digest IS NULL AND labels IS NULL AND policy_decision IS NULL AND size_bytes IS NULL AND window_start IS NULL))
+    CHECK (kind <> 'model_detection' OR (
+      direction = 'none' AND detection_basis IS NOT NULL
+      AND content_digest IS NULL AND labels IS NULL AND classifier_version IS NULL
+      AND content_excerpt IS NULL AND policy_decision IS NULL AND size_bytes IS NULL
+      AND window_start IS NULL AND window_end IS NULL AND submission_count IS NULL
+      AND bytes_total IS NULL))
 );
 
 COMMENT ON TABLE ingest.observation IS

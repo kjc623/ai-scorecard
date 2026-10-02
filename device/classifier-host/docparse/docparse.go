@@ -38,12 +38,15 @@ const (
 	CauseCircuitOpen   Cause = "format_circuit_open"
 )
 
-// Detail maps a cause to the closed protocol vocabulary (§9.7, §10). Every non-OK, non-None
-// cause maps to a detail that is in protocol.AllDetails, so a health report carrying it
-// validates.
+// Detail maps a cause to the closed protocol vocabulary (§9.7, §10). Every non-OK cause maps to a
+// detail that is in protocol.AllDetails, so a health report carrying it validates — and a cause
+// that is not a failure maps to DetailNone, so a successful stage cannot carry a failure detail
+// into a response that a report would then group by.
 func (c Cause) Detail() protocol.Detail {
 	switch c {
-	case CauseNone, CauseOK, CauseDeferred:
+	case CauseNone, CauseOK:
+		return protocol.DetailNone
+	case CauseDeferred:
 		return protocol.DetailParserFailed
 	case CauseTimeout:
 		return protocol.DetailParserTimeout
@@ -57,7 +60,7 @@ func (c Cause) Detail() protocol.Detail {
 		return protocol.DetailContentOverCap
 	case CauseUndecodable:
 		return protocol.DetailUndecodableContent
-	case CauseUnsupported, CauseDepthExceeded, CauseCircuitOpen:
+	case CauseUnsupported, CauseDepthExceeded, CauseCircuitOpen, CauseUnavailable:
 		return protocol.DetailParserFailed
 	default:
 		return protocol.DetailParserFailed

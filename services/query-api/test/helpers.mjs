@@ -53,7 +53,7 @@ export function findContainer() {
 export function psqlScript(container, sql) {
   return spawnSync(
     'docker',
-    ['exec', '-i', container, 'psql', '-U', 'postgres', '-d', 'shadow', '-v', 'ON_ERROR_STOP=1', '-q', '-f', '-'],
+    ['exec', '-i', container, 'psql', '-U', 'postgres', '-d', 'shadow', '-v', 'ON_ERROR_STOP=1', '-q', '-tA', '-f', '-'],
     { encoding: 'utf8', input: sql, maxBuffer: 32 * 1024 * 1024 },
   );
 }

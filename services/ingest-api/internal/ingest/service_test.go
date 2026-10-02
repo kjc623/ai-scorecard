@@ -87,9 +87,9 @@ func clone(m map[string]any) map[string]any {
 // rejected at ingest rather than ignored.
 func TestM0PromptCarryingContentIsRejected(t *testing.T) {
 	cases := []struct {
-		name  string
+		name   string
 		mutate func(m map[string]any)
-		want  string // the pointer the rejection must name
+		want   string // the pointer the rejection must name
 	}{
 		{"content_digest", func(m map[string]any) { m["content_digest"] = ladder.Hash('c') }, "/events/0/content_digest"},
 		{"labels", func(m map[string]any) { m["labels"] = []any{} }, "/events/0/labels"},

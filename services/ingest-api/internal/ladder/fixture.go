@@ -105,16 +105,16 @@ func Prompt(s PromptSpec) json.RawMessage {
 
 // RollupSpec describes one usage_rollup envelope (§4.5 Tier R).
 type RollupSpec struct {
-	EventID      string
-	Tool         string
-	OccurredAt   string
-	WindowStart  string
-	WindowEnd    string
-	Source       string
-	Mode         string
-	SubmissionN  int64
-	BytesTotal   int64
-	DedupKey     string
+	EventID     string
+	Tool        string
+	OccurredAt  string
+	WindowStart string
+	WindowEnd   string
+	Source      string
+	Mode        string
+	SubmissionN int64
+	BytesTotal  int64
+	DedupKey    string
 }
 
 // Rollup builds a usage_rollup envelope. A rollup carries no size, no content and no labels: the
@@ -174,9 +174,9 @@ func Detection(s DetectionSpec) json.RawMessage {
 
 // Step is one submission inside a scenario.
 type Step struct {
-	Name      string
-	Envelope  json.RawMessage
-	SentAt    string // the batch's receive time
+	Name     string
+	Envelope json.RawMessage
+	SentAt   string // the batch's receive time
 	// Expect is the ladder outcome the store must produce.
 	Expect Expect
 }

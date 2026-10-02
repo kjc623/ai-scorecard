@@ -172,6 +172,26 @@ test('rollup and a cursor are mutually exclusive', () => {
   assert.equal(error.reason, 'rollup_with_cursor');
 });
 
+test('a per-subject source cannot be read without naming the subject (§11.2, §14.1)', () => {
+  const bare = {
+    query_version: '1',
+    source: 'mart.agg_user_period',
+    bucket: 'day',
+    dimensions: ['subject'],
+    measures: ['submissions'],
+    filters: [],
+    window: { ...baseDoc().window },
+    limit: 200,
+  };
+  const error = rejection(() => validate(bare));
+  assert.equal(error.reason, 'subject_scope_required');
+  assert.equal(error.resultState, 'unsupported_query_shape');
+  assert.equal(error.detail.fix.add_filter.field, 'subject');
+
+  const named = validate({ ...bare, filters: [{ field: 'subject', op: 'eq', value: 'user_ref_1' }] });
+  assert.equal(named.query.filters[0].field, 'subject');
+});
+
 test('prototype-laden documents are rejected before anything else looks at them', () => {
   const error = rejection(() => validate(JSON.parse('{"__proto__":{"polluted":true},"query_version":"1"}')));
   assert.equal(error.reason, 'not_closed');

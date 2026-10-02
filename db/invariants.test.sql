@@ -1047,6 +1047,314 @@ BEGIN
     inserted, array_length(forbidden, 1);
 END $$;
 
+
+-- =====================================================================================
+-- T39-T42  The store's kind and mode boundaries match the contract, field for field
+-- =====================================================================================
+-- These cover a systematic asymmetry found by the verifier while checking ADR 0018: the store's
+-- per-kind CHECK constraints constrained only some of the fields the contract forbids for that
+-- kind. A record arriving by any path other than the ingest gate -- a migration, a restore, a
+-- support query, a future service -- was accepted carrying a field its kind is defined not to
+-- have. The database is the last line that does not depend on application code being correct, so
+-- a half-enforced boundary is worse than none: it reads as a guarantee.
+--
+-- Two halves, deliberately split, because either alone can pass while the property is broken:
+--   * db/tools/check-schema.mjs proves each forbid-list is EQUAL to the contract's not.anyOf, so
+--     nothing is missing (a list could be enforced but incomplete);
+--   * these assertions prove the fields are actually enforced against the live server, so
+--     nothing in the list is decorative (a list could be complete but unenforced).
+-- Each assertion ends with a POSITIVE CONTROL: a well-formed row of the same kind must still be
+-- accepted. Without it the assertion would pass just as well if the constraint rejected
+-- everything, which is the failure mode a one-directional test cannot see.
+--
+-- `attachments` appears in every contract forbid-list and in none of these, because it has no
+-- column on ingest.observation -- attachment descriptors are envelope-level and their store-side
+-- home is ingest.search_text. A CHECK cannot see another table; the checker expects its absence.
+
+DO $$
+DECLARE
+  -- the contract's model_detection not.anyOf, minus attachments (no column on this table)
+  forbids text[] := ARRAY['content_digest','labels','classifier_version','content_excerpt',
+                          'policy_decision','size_bytes','window_start','window_end',
+                          'submission_count','bytes_total'];
+  vals jsonb := jsonb_build_object(
+    'content_digest', 'sha256:' || repeat('a1', 32),
+    'labels', jsonb_build_array(jsonb_build_object('class','payment_card','score',0.5)),
+    'classifier_version', 'test-2026.01',
+    'content_excerpt', 'minimised excerpt',
+    'policy_decision', jsonb_build_object('rule_id','R','action','logged','decided_locally',true),
+    'size_bytes', 100,
+    'window_start', '2026-11-01T00:00:00Z',
+    'window_end', '2026-11-02T00:00:00Z',
+    'submission_count', 1,
+    'bytes_total', 100);
+  base jsonb;
+  f text;
+  n int;
+BEGIN
+  FOREACH f IN ARRAY forbids LOOP
+    base := jsonb_build_object(
+      'tenant_id','11111111-1111-7111-8111-111111111111',
+      'event_id', gen_random_uuid(),
+      'device_id','aaaaaaaa-0000-7000-8000-000000000001',
+      'user_ref','u_test','tool_fingerprint','ondevice.runtime.v1:contract-sweep',
+      'direction','none','kind','model_detection',
+      'occurred_at','2026-11-02T09:00:00Z','received_at', now(), 'ingested_at', now(),
+      'monotonic_offset_ms', 1, 'source','proc.detect','collection_mode','m1',
+      'detection_basis','process_scan','dedup_key','sha256:' || repeat('d1', 32),
+      'schema_version','1.0','expires_at', now() + interval '30 days')
+      || jsonb_build_object(f, vals -> f);
+    BEGIN
+      INSERT INTO ingest.observation SELECT * FROM jsonb_populate_record(NULL::ingest.observation, base);
+      RAISE EXCEPTION 'FAIL T39 model_detection accepted %, which the contract forbids for this kind', f;
+    EXCEPTION WHEN check_violation THEN
+      NULL;
+    END;
+  END LOOP;
+
+  -- Positive control: the well-formed detection must still be accepted.
+  base := jsonb_build_object(
+    'tenant_id','11111111-1111-7111-8111-111111111111',
+    'event_id', gen_random_uuid(),
+    'device_id','aaaaaaaa-0000-7000-8000-000000000001',
+    'user_ref','u_test','tool_fingerprint','ondevice.runtime.v1:contract-sweep',
+    'direction','none','kind','model_detection',
+    'occurred_at','2026-11-02T09:00:00Z','received_at', now(), 'ingested_at', now(),
+    'monotonic_offset_ms', 1, 'source','proc.detect','collection_mode','m1',
+    'detection_basis','process_scan','dedup_key','sha256:' || repeat('d1', 32),
+    'schema_version','1.0','expires_at', now() + interval '30 days');
+  INSERT INTO ingest.observation SELECT * FROM jsonb_populate_record(NULL::ingest.observation, base);
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN
+    RAISE EXCEPTION 'FAIL T39 the well-formed model_detection was not accepted, so the refusals above prove nothing';
+  END IF;
+  RAISE NOTICE 'PASS T39 model_detection refuses all % contract-forbidden fields and still accepts a valid one', array_length(forbids, 1);
+END $$;
+
+DO $$
+DECLARE
+  -- the contract's usage_rollup not.anyOf, minus attachments
+  forbids text[] := ARRAY['content_digest','labels','classifier_version','content_excerpt',
+                          'policy_decision','size_bytes','detection_basis'];
+  vals jsonb := jsonb_build_object(
+    'content_digest', 'sha256:' || repeat('a2', 32),
+    'labels', jsonb_build_array(jsonb_build_object('class','payment_card','score',0.5)),
+    'classifier_version', 'test-2026.01',
+    'content_excerpt', 'minimised excerpt',
+    'policy_decision', jsonb_build_object('rule_id','R','action','logged','decided_locally',true),
+    'size_bytes', 100,
+    'detection_basis', 'process_scan');
+  base jsonb;
+  f text;
+  n int;
+BEGIN
+  FOREACH f IN ARRAY forbids LOOP
+    base := jsonb_build_object(
+      'tenant_id','11111111-1111-7111-8111-111111111111',
+      'event_id', gen_random_uuid(),
+      'device_id','aaaaaaaa-0000-7000-8000-000000000001',
+      'user_ref','u_test','tool_fingerprint','ondevice.runtime.v1:contract-sweep',
+      'direction','none','kind','usage_rollup',
+      'occurred_at','2026-11-02T10:00:00Z','received_at', now(), 'ingested_at', now(),
+      'monotonic_offset_ms', 1, 'source','proc.detect','collection_mode','m1',
+      'window_start','2026-11-01T00:00:00Z','window_end','2026-11-02T00:00:00Z',
+      'submission_count', 3, 'bytes_total', 2048,
+      'dedup_key','sha256:' || repeat('d2', 32),
+      'schema_version','1.0','expires_at', now() + interval '30 days')
+      || jsonb_build_object(f, vals -> f);
+    BEGIN
+      INSERT INTO ingest.observation SELECT * FROM jsonb_populate_record(NULL::ingest.observation, base);
+      RAISE EXCEPTION 'FAIL T40 usage_rollup accepted %, which the contract forbids for this kind', f;
+    EXCEPTION WHEN check_violation THEN
+      NULL;
+    END;
+  END LOOP;
+
+  base := jsonb_build_object(
+    'tenant_id','11111111-1111-7111-8111-111111111111',
+    'event_id', gen_random_uuid(),
+    'device_id','aaaaaaaa-0000-7000-8000-000000000001',
+    'user_ref','u_test','tool_fingerprint','ondevice.runtime.v1:contract-sweep',
+    'direction','none','kind','usage_rollup',
+    'occurred_at','2026-11-02T10:00:00Z','received_at', now(), 'ingested_at', now(),
+    'monotonic_offset_ms', 1, 'source','proc.detect','collection_mode','m1',
+    'window_start','2026-11-01T00:00:00Z','window_end','2026-11-02T00:00:00Z',
+    'submission_count', 3, 'bytes_total', 2048,
+    'dedup_key','sha256:' || repeat('d2', 32),
+    'schema_version','1.0','expires_at', now() + interval '30 days');
+  INSERT INTO ingest.observation SELECT * FROM jsonb_populate_record(NULL::ingest.observation, base);
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN
+    RAISE EXCEPTION 'FAIL T40 the well-formed usage_rollup was not accepted, so the refusals above prove nothing';
+  END IF;
+  RAISE NOTICE 'PASS T40 usage_rollup refuses all % contract-forbidden fields and still accepts a valid one', array_length(forbids, 1);
+END $$;
+
+DO $$
+DECLARE
+  -- the contract's prompt not.anyOf: the four window fields and detection_basis
+  forbids text[] := ARRAY['window_start','window_end','submission_count','bytes_total','detection_basis'];
+  vals jsonb := jsonb_build_object(
+    'window_start','2026-11-01T00:00:00Z',
+    'window_end','2026-11-02T00:00:00Z',
+    'submission_count', 1,
+    'bytes_total', 100,
+    'detection_basis','process_scan');
+  base jsonb;
+  f text;
+  n int;
+BEGIN
+  FOREACH f IN ARRAY forbids LOOP
+    base := jsonb_build_object(
+      'tenant_id','11111111-1111-7111-8111-111111111111',
+      'event_id', gen_random_uuid(),
+      'device_id','aaaaaaaa-0000-7000-8000-000000000001',
+      'user_ref','u_test','tool_fingerprint','genai.web.chat.v1:contract-sweep',
+      'direction','egress','kind','prompt',
+      'occurred_at','2026-11-02T11:00:00Z','received_at', now(), 'ingested_at', now(),
+      'monotonic_offset_ms', 1, 'source','ext.page_context','collection_mode','m1',
+      'size_bytes', 100,
+      'content_digest','sha256:' || repeat('a3', 32),
+      'labels', jsonb_build_array(jsonb_build_object('class','payment_card','score',0.9)),
+      'classifier_version','test-2026.01','confidence','high',
+      'policy_decision', jsonb_build_object('rule_id','R','action','logged','decided_locally',true),
+      'dedup_key','sha256:' || repeat('d3', 32),
+      'schema_version','1.0','expires_at', now() + interval '30 days')
+      || jsonb_build_object(f, vals -> f);
+    BEGIN
+      INSERT INTO ingest.observation SELECT * FROM jsonb_populate_record(NULL::ingest.observation, base);
+      RAISE EXCEPTION 'FAIL T41 prompt accepted %, which the contract forbids for this kind', f;
+    EXCEPTION WHEN check_violation THEN
+      NULL;
+    END;
+  END LOOP;
+
+  base := jsonb_build_object(
+    'tenant_id','11111111-1111-7111-8111-111111111111',
+    'event_id', gen_random_uuid(),
+    'device_id','aaaaaaaa-0000-7000-8000-000000000001',
+    'user_ref','u_test','tool_fingerprint','genai.web.chat.v1:contract-sweep',
+    'direction','egress','kind','prompt',
+    'occurred_at','2026-11-02T11:00:00Z','received_at', now(), 'ingested_at', now(),
+    'monotonic_offset_ms', 1, 'source','ext.page_context','collection_mode','m1',
+    'size_bytes', 100,
+    'content_digest','sha256:' || repeat('a3', 32),
+    'labels', jsonb_build_array(jsonb_build_object('class','payment_card','score',0.9)),
+    'classifier_version','test-2026.01','confidence','high',
+    'policy_decision', jsonb_build_object('rule_id','R','action','logged','decided_locally',true),
+    'dedup_key','sha256:' || repeat('d3', 32),
+    'schema_version','1.0','expires_at', now() + interval '30 days');
+  INSERT INTO ingest.observation SELECT * FROM jsonb_populate_record(NULL::ingest.observation, base);
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN
+    RAISE EXCEPTION 'FAIL T41 the well-formed prompt was not accepted, so the refusals above prove nothing';
+  END IF;
+  RAISE NOTICE 'PASS T41 prompt refuses all % contract-forbidden fields and still accepts a valid one', array_length(forbids, 1);
+END $$;
+
+DO $$
+DECLARE
+  -- the contract's M0 prompt not.anyOf, minus attachments. confidence was the missing one.
+  forbids text[] := ARRAY['content_digest','labels','classifier_version','confidence','content_excerpt'];
+  vals jsonb := jsonb_build_object(
+    'content_digest','sha256:' || repeat('a4', 32),
+    'labels', jsonb_build_array(jsonb_build_object('class','payment_card','score',0.9)),
+    'classifier_version','test-2026.01',
+    'confidence','high',
+    'content_excerpt','minimised excerpt');
+  base jsonb;
+  f text;
+  n int;
+BEGIN
+  FOREACH f IN ARRAY forbids LOOP
+    base := jsonb_build_object(
+      'tenant_id','11111111-1111-7111-8111-111111111111',
+      'event_id', gen_random_uuid(),
+      'device_id','aaaaaaaa-0000-7000-8000-000000000001',
+      'user_ref','u_test','tool_fingerprint','genai.web.chat.v1:contract-sweep',
+      'direction','egress','kind','prompt',
+      'occurred_at','2026-11-02T12:00:00Z','received_at', now(), 'ingested_at', now(),
+      'monotonic_offset_ms', 1, 'source','ext.page_context','collection_mode','m0',
+      'size_bytes', 100,
+      'policy_decision', jsonb_build_object('rule_id','R','action','logged','decided_locally',true),
+      'dedup_key','sha256:' || repeat('d4', 32),
+      'schema_version','1.0','expires_at', now() + interval '30 days')
+      || jsonb_build_object(f, vals -> f);
+    BEGIN
+      INSERT INTO ingest.observation SELECT * FROM jsonb_populate_record(NULL::ingest.observation, base);
+      RAISE EXCEPTION 'FAIL T42 an M0 record accepted %, which is evidence the collector read content it was not permitted to read', f;
+    EXCEPTION WHEN check_violation THEN
+      NULL;
+    END;
+  END LOOP;
+
+  base := jsonb_build_object(
+    'tenant_id','11111111-1111-7111-8111-111111111111',
+    'event_id', gen_random_uuid(),
+    'device_id','aaaaaaaa-0000-7000-8000-000000000001',
+    'user_ref','u_test','tool_fingerprint','genai.web.chat.v1:contract-sweep',
+    'direction','egress','kind','prompt',
+    'occurred_at','2026-11-02T12:00:00Z','received_at', now(), 'ingested_at', now(),
+    'monotonic_offset_ms', 1, 'source','ext.page_context','collection_mode','m0',
+    'size_bytes', 100,
+    'policy_decision', jsonb_build_object('rule_id','R','action','logged','decided_locally',true),
+    'dedup_key','sha256:' || repeat('d4', 32),
+    'schema_version','1.0','expires_at', now() + interval '30 days');
+  INSERT INTO ingest.observation SELECT * FROM jsonb_populate_record(NULL::ingest.observation, base);
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN
+    RAISE EXCEPTION 'FAIL T42 the well-formed M0 record was not accepted, so the refusals above prove nothing';
+  END IF;
+  RAISE NOTICE 'PASS T42 an M0 record refuses all % content-derived fields and a clean M0 record is still accepted', array_length(forbids, 1);
+END $$;
+
+-- T43: M0 must refuse `confidence`, on its own and by name.
+--
+-- T42 covers this inside a loop, but this is the single field the schema owner most wants to see
+-- fail if someone reverts the constraint, so it gets an assertion whose PASS line and FAIL message
+-- both name it. `confidence` was the last field added to observation_m0_carries_no_content and the
+-- one the store was missing: it is a classifier output, so an M0 record carrying it is evidence the
+-- collector read content it was not permitted to read, which is precisely what that constraint
+-- exists to catch.
+DO $$
+DECLARE
+  n int;
+BEGIN
+  BEGIN
+    INSERT INTO ingest.observation (tenant_id, event_id, device_id, user_ref, tool_fingerprint,
+                                    direction, kind, occurred_at, received_at,
+                                    monotonic_offset_ms, source, collection_mode, size_bytes,
+                                    confidence, policy_decision, dedup_key, schema_version, expires_at)
+    VALUES ('11111111-1111-7111-8111-111111111111', gen_random_uuid(),
+            'aaaaaaaa-0000-7000-8000-000000000001', 'u_test',
+            'genai.web.chat.v1:contract-sweep', 'egress', 'prompt', now(), now(), 1,
+            'ext.page_context', 'm0', 100,
+            'high',   -- the field under test: a classifier output on a mode that reads no content
+            jsonb_build_object('rule_id','R','action','logged','decided_locally',true),
+            'sha256:' || repeat('d5', 32), '1.0', now() + interval '30 days');
+    RAISE EXCEPTION 'FAIL T43 an M0 record was accepted carrying `confidence`, which is a classifier output and therefore evidence the collector read content it was not permitted to read';
+  EXCEPTION WHEN check_violation THEN
+    NULL;  -- expected
+  END;
+
+  -- Positive control: the same record without `confidence` must still be accepted.
+  INSERT INTO ingest.observation (tenant_id, event_id, device_id, user_ref, tool_fingerprint,
+                                  direction, kind, occurred_at, received_at,
+                                  monotonic_offset_ms, source, collection_mode, size_bytes,
+                                  policy_decision, dedup_key, schema_version, expires_at)
+  VALUES ('11111111-1111-7111-8111-111111111111', gen_random_uuid(),
+          'aaaaaaaa-0000-7000-8000-000000000001', 'u_test',
+          'genai.web.chat.v1:contract-sweep', 'egress', 'prompt', now(), now(), 1,
+          'ext.page_context', 'm0', 100,
+          jsonb_build_object('rule_id','R','action','logged','decided_locally',true),
+          'sha256:' || repeat('d5', 32), '1.0', now() + interval '30 days');
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN
+    RAISE EXCEPTION 'FAIL T43 the clean M0 record was not accepted, so the refusal above proves nothing';
+  END IF;
+  RAISE NOTICE 'PASS T43 an M0 record carrying `confidence` is refused, and a clean M0 record is accepted';
+END $$;
+
 RESET ROLE;
 
 

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/shadow-ai-capture/device/classifier-host/classify"
+	"github.com/shadow-ai-capture/device/classifier-host/internal/hiresclock"
 )
 
 // Percentiles is one measured distribution, in milliseconds.
@@ -100,9 +101,9 @@ func runMeasure(args []string) int {
 			if err != nil {
 				return fatalf("measure: %v", err)
 			}
-			t0 := time.Now()
+			t0 := hiresclock.Now()
 			v := r.host.Classify(ctx, req)
-			totals = append(totals, ms(time.Since(t0)))
+			totals = append(totals, ms(hiresclock.Now().Sub(t0)))
 			for _, st := range v.Response.Stages {
 				samples[st.Stage] = append(samples[st.Stage], ms(st.Duration))
 			}
