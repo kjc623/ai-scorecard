@@ -1098,6 +1098,13 @@ what crosses the network by default, and brief §1's defining property is that w
 classification, a digest and dimensions". M3's content path is the approved retrieval path, and the schema
 enforces the distinction by rejecting a `content_excerpt` on an M3 record.
 
+**The M3 row's "local content-state marker" is device-local and does not enter the envelope**
+([ADR 0017](adr/0017-the-m3-content-state-marker-is-device-local.md)). The contract is closed
+(`additionalProperties: false`) so there is no field for it, and a device's claim to hold content is not
+evidence that it does: the server learns content exists when a per-event grant is requested and the upload
+arrives. The marker lives beside the content it describes, in the device's local store, and the device's
+coverage row may report held-content *counts*.
+
 "Why can't the system be put into an upload-everything state?" has five candidate answers and none of them
 works:
 

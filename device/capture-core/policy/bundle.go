@@ -63,10 +63,10 @@ type Interception struct {
 // the relocated upstream now listens, and the read-only preflight path the tool documents as
 // safe (A8). Ports are policy data, never a compiled-in list.
 type LoopbackPort struct {
-	ToolFingerprint string                `json:"tool_fingerprint"`
-	Port            int                   `json:"port"`
-	UpstreamPort    int                   `json:"upstream_port"`
-	PreflightPath   string                `json:"preflight_path"`
+	ToolFingerprint string                  `json:"tool_fingerprint"`
+	Port            int                     `json:"port"`
+	UpstreamPort    int                     `json:"upstream_port"`
+	PreflightPath   string                  `json:"preflight_path"`
 	Mode            protocol.CollectionMode `json:"mode"`
 
 	// OriginalPort is the value the tool had before relocation, recorded so uninstall
@@ -79,11 +79,11 @@ type LoopbackPort struct {
 type LoopbackPolicy struct {
 	Ports []LoopbackPort `json:"ports,omitempty"`
 
-	ProbeIntervalSeconds      int `json:"probe_interval_seconds,omitempty"`      // cheap TCP liveness
-	PreflightIntervalSeconds  int `json:"preflight_interval_seconds,omitempty"`  // full HTTP preflight
-	PreflightTimeoutMS        int `json:"preflight_timeout_ms,omitempty"`        // single-digit seconds
-	MaxConsecutiveFailures    int `json:"max_consecutive_failures,omitempty"`    // before cooling down
-	CoolDownSeconds           int `json:"cool_down_seconds,omitempty"`           // long, bounded cool-down
+	ProbeIntervalSeconds     int `json:"probe_interval_seconds,omitempty"`     // cheap TCP liveness
+	PreflightIntervalSeconds int `json:"preflight_interval_seconds,omitempty"` // full HTTP preflight
+	PreflightTimeoutMS       int `json:"preflight_timeout_ms,omitempty"`       // single-digit seconds
+	MaxConsecutiveFailures   int `json:"max_consecutive_failures,omitempty"`   // before cooling down
+	CoolDownSeconds          int `json:"cool_down_seconds,omitempty"`          // long, bounded cool-down
 }
 
 // SpoolBounds is §12's bound: per-tenant tunable, enforced on write, defaulting to A16's
@@ -97,10 +97,10 @@ type SpoolBounds struct {
 // ShapePredicate is §8.2's predicate parameters. They are bundle data because the predicate's
 // scope decision (C7) must be changeable without shipping code.
 type ShapePredicate struct {
-	MinBodyBytes   int64    `json:"min_body_bytes,omitempty"`
-	MaxBodyBytes   int64    `json:"max_body_bytes,omitempty"`
-	Methods        []string `json:"methods,omitempty"`
-	MediaTypes     []string `json:"media_types,omitempty"`
+	MinBodyBytes       int64    `json:"min_body_bytes,omitempty"`
+	MaxBodyBytes       int64    `json:"max_body_bytes,omitempty"`
+	Methods            []string `json:"methods,omitempty"`
+	MediaTypes         []string `json:"media_types,omitempty"`
 	UserAuthoredFields []string `json:"user_authored_fields,omitempty"`
 }
 
@@ -160,13 +160,13 @@ type Bundle struct {
 	RequiredNoticeVersion string            `json:"required_notice_version,omitempty"`
 	AcknowledgedNotices   map[string]string `json:"acknowledged_notices,omitempty"`
 
-	KillSwitches  []KillSwitch      `json:"kill_switches,omitempty"`
-	Interception  Interception      `json:"interception"`
-	Loopback      LoopbackPolicy    `json:"loopback"`
-	Spool         SpoolBounds       `json:"spool"`
-	ShapePredicate ShapePredicate   `json:"shape_predicate"`
-	Classifier    ClassifierRelease `json:"classifier"`
-	Artefacts     []ArtefactRef     `json:"artefacts,omitempty"`
+	KillSwitches   []KillSwitch      `json:"kill_switches,omitempty"`
+	Interception   Interception      `json:"interception"`
+	Loopback       LoopbackPolicy    `json:"loopback"`
+	Spool          SpoolBounds       `json:"spool"`
+	ShapePredicate ShapePredicate    `json:"shape_predicate"`
+	Classifier     ClassifierRelease `json:"classifier"`
+	Artefacts      []ArtefactRef     `json:"artefacts,omitempty"`
 }
 
 // KillSwitchFor returns the kill switch for a route, if one is in force.

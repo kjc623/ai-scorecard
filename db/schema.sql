@@ -1607,6 +1607,18 @@ BEGIN
     -- content-bearing fields; a lower-fidelity one only adds itself to observed_routes.
     -- Fields are replaced wholesale and never partially merged, because a blend of two
     -- observations of one submission would correspond to neither of them.
+    --
+    -- The exact key is the one exception, and it is not optional. When this observation is
+    -- exact and the row it matched is still weak-only, the row is being ADOPTED: it takes this
+    -- observation's exact key because it had none, and it must take the content digest that
+    -- key was derived from in the same breath, because CHECK submission_exact_key_implies_digest
+    -- requires the two to arrive together. v_is_exact is defined above as "kind = 'prompt' AND
+    -- content_digest IS NOT NULL", so an exact observation always carries the digest this needs.
+    -- Taking the key alone -- which is what this statement used to do -- left the row holding an
+    -- exact key with a NULL digest, and the UPDATE was rejected whenever the exact observation
+    -- arrived on an equal- or worse-ranked route than the weak row's winner. Note that only
+    -- strictly-better fidelity reached the upgrade branch, so the strictly-better case worked
+    -- and hid the defect; see the equal-rank assertion in db/invariants.test.sql.
     UPDATE ingest.submission s
        SET first_occurred_at  = least(s.first_occurred_at, v_occurred),
            last_occurred_at   = greatest(s.last_occurred_at, v_occurred),
@@ -1619,13 +1631,24 @@ BEGIN
            winning_fidelity   = least(s.winning_fidelity, v_fidelity),
            collection_mode    = CASE WHEN v_fidelity < s.winning_fidelity THEN v_mode ELSE s.collection_mode END,
            size_bytes         = CASE WHEN v_fidelity < s.winning_fidelity THEN (p_envelope->>'size_bytes')::bigint ELSE s.size_bytes END,
-           content_digest     = CASE WHEN v_fidelity < s.winning_fidelity THEN p_envelope->>'content_digest' ELSE s.content_digest END,
+           -- Same coalesce discipline as dedup_key above: adopt the digest with the key, so the
+           -- pair can never diverge. The strictly-better branch is unchanged.
+           content_digest     = CASE WHEN v_fidelity < s.winning_fidelity
+                                     THEN p_envelope->>'content_digest'
+                                     ELSE coalesce(s.content_digest,
+                                                   CASE WHEN v_is_exact THEN p_envelope->>'content_digest' END) END,
            labels             = CASE WHEN v_fidelity < s.winning_fidelity THEN p_envelope->'labels' ELSE s.labels END,
            classifier_version = CASE WHEN v_fidelity < s.winning_fidelity THEN p_envelope->>'classifier_version' ELSE s.classifier_version END,
            confidence         = CASE WHEN v_fidelity < s.winning_fidelity THEN p_envelope->>'confidence' ELSE s.confidence END,
            -- A row that still has no exact key is the honest lower bound on that count, so it
            -- stays flagged: brief §7 requires an undercount to be visible rather than silent.
+           -- "still has no exact key" is a claim about the row AFTER this update, so the adopt
+           -- case promotes to 'high' instead of keeping the old flag. Leaving an adopted row
+           -- flagged 'low' would count a submission we did merge among the ones we could not,
+           -- which is the same class of quiet error the flag exists to prevent, in the other
+           -- direction.
            merge_confidence   = CASE WHEN s.dedup_key IS NULL AND NOT v_is_exact THEN 'low'
+                                     WHEN s.dedup_key IS NULL AND v_is_exact THEN 'high'
                                      ELSE s.merge_confidence END,
            expires_at         = greatest(s.expires_at, p_received_at + make_interval(days => v_ttl))
      WHERE s.tenant_id = v_tenant AND s.submission_id = v_sub_id;

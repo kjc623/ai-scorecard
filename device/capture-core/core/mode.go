@@ -44,11 +44,11 @@ func (r Resolution) ReadsContent() bool { return r.Mode.ReadsContent() }
 
 // Reason strings used in reports. They are stable so a coverage report can group by them.
 const (
-	ReasonNoBundle          = "no_bundle_in_force"
-	ReasonNoticeUnacked     = "notice_unacknowledged"
-	ReasonTenantDefault     = "tenant_default_applies"
-	ReasonClassPriorAbsent  = "class_prior_absent"
-	ReasonUnresolved        = "scope_entry_unresolvable_resolved_downward"
+	ReasonNoBundle         = "no_bundle_in_force"
+	ReasonNoticeUnacked    = "notice_unacknowledged"
+	ReasonTenantDefault    = "tenant_default_applies"
+	ReasonClassPriorAbsent = "class_prior_absent"
+	ReasonUnresolved       = "scope_entry_unresolvable_resolved_downward"
 )
 
 // Resolve applies §11.1's rule:

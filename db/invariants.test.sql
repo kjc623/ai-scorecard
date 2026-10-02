@@ -891,6 +891,103 @@ END $$;
 
 
 -- =====================================================================================
+-- T36-T37  The adopt path at EQUAL fidelity (regression; added after the original T1-T35)
+-- =====================================================================================
+-- T25-T26 exercise adoption only when the exact observation arrives on a strictly better
+-- ranked route (ext.page_context, rank 10, against a proxy.tls winner, rank 50). The equal and
+-- worse ranked cases were therefore untested, and the equal one was broken: the adopt UPDATE
+-- took the exact key with `coalesce(s.dedup_key, ...)` but wrote content_digest only when the
+-- route strictly outranked the row's winner, so the row ended up with a non-NULL dedup_key and
+-- a NULL content_digest and CHECK submission_exact_key_implies_digest rejected the UPDATE. The
+-- transaction aborted, which docs/02 section 6 makes a permanently retrying batch.
+--
+-- Reported by task-3 (ingestor) with a live reproduction; reproduced independently, fixed in
+-- db/schema.sql. Both observations below use ext.web_request, whose ref.route_fidelity rank is
+-- 40 -- equal rank is the entire point. T37 additionally pins the two consequences the fix
+-- asserts: the adopted row must carry the digest with the key, and must stop being reported as
+-- a submission that could not be merged.
+--
+-- These run as sac_ingest, like the rest of the dedup ladder, so they hold for the runtime role
+-- the ingest API actually uses.
+
+SET ROLE sac_ingest;
+SET app.tenant_id = '11111111-1111-7111-8111-111111111111';
+
+DO $$
+DECLARE
+  r record;
+  n int;
+  k text;
+  d text;
+  c text;
+BEGIN
+  -- E1: first sighting, M0, so this route could not read content: a weak-only row, no exact key.
+  SELECT * INTO r FROM ingest.record_event(jsonb_build_object(
+    'schema_version','1.0',
+    'event_id','e0000000-0000-7000-8000-000000000041',
+    'tenant_id','11111111-1111-7111-8111-111111111111',
+    'device_id','aaaaaaaa-0000-7000-8000-000000000001',
+    'user_ref','u_test','tool_fingerprint','genai.web.chat.v1:adopt-equal',
+    'direction','egress','kind','prompt',
+    'occurred_at','2026-11-01T09:00:00Z','monotonic_offset_ms',1000,
+    'source','ext.web_request','collection_mode','m0',
+    'dedup_key','sha256:' || repeat('1a', 32),'size_bytes',100,
+    'policy_decision', jsonb_build_object('rule_id','POL-A','action','logged','decided_locally',true)
+  ), now());
+  IF r.event_outcome <> 'inserted' THEN
+    RAISE EXCEPTION 'FAIL T36 first M0 observation expected inserted, got %', r.event_outcome;
+  END IF;
+
+  -- E2: the same submission seen by a route that CAN read content, on a route of the SAME rank
+  -- and in the same 300-second bucket. It must adopt the weak-only row: not raise, not twin.
+  SELECT * INTO r FROM ingest.record_event(jsonb_build_object(
+    'schema_version','1.0',
+    'event_id','e0000000-0000-7000-8000-000000000042',
+    'tenant_id','11111111-1111-7111-8111-111111111111',
+    'device_id','aaaaaaaa-0000-7000-8000-000000000001',
+    'user_ref','u_test','tool_fingerprint','genai.web.chat.v1:adopt-equal',
+    'direction','egress','kind','prompt',
+    'occurred_at','2026-11-01T09:01:00Z','monotonic_offset_ms',61000,
+    'source','ext.web_request','collection_mode','m1',
+    'dedup_key','sha256:' || repeat('2b', 32),'size_bytes',100,
+    'content_digest','sha256:' || repeat('3c', 32),
+    'labels', jsonb_build_array(jsonb_build_object('class','payment_card','score',0.94)),
+    'classifier_version','test-2026.01','confidence','high',
+    'policy_decision', jsonb_build_object('rule_id','POL-A','action','logged','decided_locally',true)
+  ), now());
+  IF r.event_outcome <> 'merged' THEN
+    RAISE EXCEPTION 'FAIL T36 equal-rank exact observation did not adopt the weak-only row, got %', r.event_outcome;
+  END IF;
+
+  SELECT count(*) INTO n FROM ingest.submission
+   WHERE tenant_id = '11111111-1111-7111-8111-111111111111'
+     AND tool_fingerprint = 'genai.web.chat.v1:adopt-equal';
+  IF n <> 1 THEN
+    RAISE EXCEPTION 'FAIL T36 equal-rank adoption double-counted: % submissions', n;
+  END IF;
+  RAISE NOTICE 'PASS T36 equal-rank exact observation adopted the weak-only row without raising or double-counting';
+
+  -- T37: the pair must arrive together, and an adopted row is no longer one we could not merge.
+  SELECT dedup_key, content_digest, merge_confidence INTO k, d, c
+    FROM ingest.submission
+   WHERE tenant_id = '11111111-1111-7111-8111-111111111111'
+     AND tool_fingerprint = 'genai.web.chat.v1:adopt-equal';
+  IF k <> 'sha256:' || repeat('2b', 32) THEN
+    RAISE EXCEPTION 'FAIL T37 adopted row did not take the exact key, got %', k;
+  END IF;
+  IF d <> 'sha256:' || repeat('3c', 32) THEN
+    RAISE EXCEPTION 'FAIL T37 adopted row took the exact key without the digest it was derived from, got %', d;
+  END IF;
+  IF c <> 'high' THEN
+    RAISE EXCEPTION 'FAIL T37 adopted row holds an exact key but is still flagged %, so it would be counted among the submissions we could not merge', c;
+  END IF;
+  RAISE NOTICE 'PASS T37 adopted row carries the exact key with its digest and is no longer flagged low';
+END $$;
+
+RESET ROLE;
+
+
+-- =====================================================================================
 -- Report
 -- =====================================================================================
 

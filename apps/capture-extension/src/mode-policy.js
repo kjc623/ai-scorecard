@@ -147,9 +147,33 @@ export function createPolicyCache({ now = () => Date.now(), staleAfterMs = DEFAU
     return current ? current.bundle.rules || [] : [];
   }
 
+  /** Scope keys this device resolves to a non-reading mode, for the body-lane filter. */
+  function m0Patterns() {
+    return [...m0Hosts];
+  }
+
+  /**
+   * The bundle's body-lane include list, if the deployment supplies one. Chrome match patterns
+   * cannot express "everything except", so a deployment that needs a strict observation set names
+   * it here; otherwise the lane observes broadly (§7.1) and the per-request gate does the work.
+   */
+  function bodyLanePatterns() {
+    const p = current && current.bundle.body_lane_patterns;
+    return Array.isArray(p) ? p.slice() : [];
+  }
+
   function releaseState() {
     const r = current && current.bundle.classifier_release;
     return r && typeof r.state === 'string' ? r.state : 'rolled_back';
+  }
+
+  /**
+   * How long a `warned` request waits for its human. Bundle-overridable, because the right number
+   * is a deployment's decision about its own users; the default is exported from enforce.js.
+   */
+  function confirmationWindowMs() {
+    const v = current && current.bundle.confirmation_window_ms;
+    return Number.isFinite(v) && v > 0 ? v : 20_000;
   }
 
   /** §11.3: the cap comes from the bundle; absent a bundle there is no cap to exceed, only M0. */
@@ -175,7 +199,7 @@ export function createPolicyCache({ now = () => Date.now(), staleAfterMs = DEFAU
     };
   }
 
-  return { applyBundle, modeFor, isBodyBearing, snapshot, clear, rules, releaseState, caps, discoverySets };
+  return { applyBundle, modeFor, isBodyBearing, snapshot, clear, rules, releaseState, caps, discoverySets, confirmationWindowMs, m0Patterns, bodyLanePatterns };
 }
 
 function isMode(m) {

@@ -97,6 +97,17 @@ export const COUNTERS = Object.freeze([
   'errors',
 ]);
 
+/** Named access to the same closed set, so no call site hard-codes a counter string. */
+export const COUNTER = Object.freeze({
+  OBSERVED: 'observed',
+  EMITTED: 'emitted',
+  SKIPPED_NOT_GENERATIVE: 'skipped_not_generative',
+  BLIND_TUNNELLED: 'blind_tunnelled',
+  NOT_COOPERATIVE: 'not_cooperative',
+  DROPPED: 'dropped',
+  ERRORS: 'errors',
+});
+
 /** protocol.Detail — the closed per-provider detail vocabulary. */
 export const DETAIL = Object.freeze({
   NONE: '',

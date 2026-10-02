@@ -662,6 +662,7 @@ func (s *Spool) reclaim() {
 		if err := s.foldSegment(seg); err != nil {
 			return // keep the segment rather than lose its counters
 		}
+		s.forgetSegment(seg)
 		seg.close()
 		if err := os.Remove(seg.path); err != nil {
 			return
@@ -885,6 +886,48 @@ func (s *Spool) enforceBoundLocked(incoming int64) {
 	if bounds.MaxEntries <= 0 && bounds.MaxBytes <= 0 {
 		return
 	}
+
+	if len(victims) > 0 {
+		now := unixNano(s.cfg.Now())
+		for start := 0; start < len(victims); start += maxTransitionsPerFrame {
+			end := start + maxTransitionsPerFrame
+			if end > len(victims) {
+				end = len(victims)
+			}
+			transitions := make([]transition, 0, end-start)
+			for _, m := range victims[start:end] {
+				transitions = append(transitions, transition{
+					Op:    opDrop,
+					Seq:   m.seq,
+					Kind:  string(m.kind),
+					Route: string(m.route),
+					Cause: causeBound,
+					At:    now,
+				})
+			}
+			if err := s.appendControlLocked(controlRecord{Transitions: transitions}); err != nil {
+				// The eviction did not happen; the records stay pending and the next append
+				// will try again. No count is invented for a drop that was not written.
+				return
+			}
+		}
+		s.reclaim()
+	}
+	// Still over after evicting everything evictable — because the rest is in flight or
+	// already terminal — is a fact the health report must see, not a reason to discard the
+	// new observation (§12.2).
+	if bounds.MaxEntries > 0 && s.pending+s.inFlight+1 > bounds.MaxEntries {
+		s.overBound++
+	} else if bounds.MaxBytes > 0 && s.diskBytes+incoming > bounds.MaxBytes {
+		s.overBound++
+	}
+}
+
+// collectVictims selects the oldest pending records to evict, without changing any state.
+// Selection is pure so that the tombstones can be written and made durable before anything
+// is applied: a drop that is not on disk must not be counted.
+func (s *Spool) collectVictims(incoming int64) []*entryMeta {
+	bounds := s.cfg.Bounds
 	var victims []*entryMeta
 	perSeg := map[uint64]int{}
 
@@ -925,39 +968,7 @@ func (s *Spool) enforceBoundLocked(incoming int64) {
 		victims = append(victims, m)
 		perSeg[m.segID]++
 	}
-	if len(victims) == 0 {
-		return
-	}
-
-	now := unixNano(s.cfg.Now())
-	for start := 0; start < len(victims); start += maxTransitionsPerFrame {
-		end := start + maxTransitionsPerFrame
-		if end > len(victims) {
-			end = len(victims)
-		}
-		transitions := make([]transition, 0, end-start)
-		for _, m := range victims[start:end] {
-			transitions = append(transitions, transition{
-				Op:    opDrop,
-				Seq:   m.seq,
-				Kind:  string(m.kind),
-				Route: string(m.route),
-				Cause: causeBound,
-				At:    now,
-			})
-		}
-		if err := s.appendControlLocked(controlRecord{Transitions: transitions}); err != nil {
-			// The eviction did not happen; the records stay pending and the next append
-			// will try again. No count is invented for a drop that was not written.
-			return
-		}
-	}
-	s.reclaim()
-	if bounds.MaxEntries > 0 && s.pending+s.inFlight+1 > bounds.MaxEntries {
-		s.overBound++
-	} else if bounds.MaxBytes > 0 && s.diskBytes+incoming > bounds.MaxBytes {
-		s.overBound++
-	}
+	return victims
 }
 
 func segmentName(id uint64) string {

@@ -432,6 +432,10 @@ export function createPipeline({
     const sync = decideSync(base);
     if (!sync.needs_confirmation) return sync;
 
+    // A `warned` verdict is rendered before the request proceeds, and the answer is recorded as
+    // part of the decision (§7.4). Rule evaluation stays inside the 300 ms decision budget; the
+    // wait for a human is bounded separately (see CONFIRMATION_WINDOW_MS — a decision the
+    // document leaves open, reported to the Lead).
     const confirmed = await decideWithConfirmation({
       ...base,
       confirm: () =>
@@ -442,11 +446,12 @@ export function createPipeline({
           rule_id: sync.rule_id,
           message: 'Your organisation\u2019s policy requires confirmation before this request is sent.',
           tab_id: input.tab_id,
-          timeout_ms: 300,
+          timeout_ms: policy.confirmationWindowMs(),
           request_id: input.request_id,
         }),
+      confirmationWindowMs: policy.confirmationWindowMs(),
     });
-    if (confirmed.degraded) counters.countError('evaluation_failed_open');
+    if (confirmed.degraded) counters.countError(confirmed.reason === 'budget_exceeded' ? 'budget_exceeded' : 'warn_unavailable');
     return confirmed;
   }
 

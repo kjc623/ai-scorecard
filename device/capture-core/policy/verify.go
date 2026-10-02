@@ -298,11 +298,11 @@ type Store struct {
 	verifier *Verifier
 	refs     ArtefactResolver
 
-	mu        sync.Mutex
-	inForce   *Bundle
+	mu         sync.Mutex
+	inForce    *Bundle
 	inForceRaw []byte
-	failures  int
-	lastCause Cause
+	failures   int
+	lastCause  Cause
 }
 
 // NewStore builds a store around a pinned verifier. A nil verifier is a programming error:

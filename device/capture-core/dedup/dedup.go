@@ -132,9 +132,9 @@ func CanonicalText(s string, n Normalizer) string {
 		n = IdentityNFC{}
 	}
 	s = strings.TrimPrefix(s, "\ufeff") // C2: a leading BOM belongs to the encoding, not the content
-	s = n.NFC(s)                       // C3
-	s = stripControlsAndInvisibles(s)  // C4
-	s = collapseWhitespace(s)          // C5
+	s = n.NFC(s)                        // C3
+	s = stripControlsAndInvisibles(s)   // C4
+	s = collapseWhitespace(s)           // C5
 	return s
 }
 
@@ -363,4 +363,3 @@ func Decode(b []byte) string {
 	}
 	return strings.TrimPrefix(string(b), "\ufeff")
 }
-

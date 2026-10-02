@@ -1,6 +1,6 @@
 # Architecture decision records
 
-Thirteen records. Each states the context, the decision, the alternatives that were actually
+Seventeen records. Each states the context, the decision, the alternatives that were actually
 considered, and the consequences — including what becomes harder and what would change the decision.
 
 All are `proposed`. None has been reviewed outside this package.
@@ -22,10 +22,16 @@ All are `proposed`. None has been reviewed outside this package.
 | [0013](0013-no-kernel-driver-and-no-apple-entitlement-in-v1.md) | No kernel-mode component and no Apple restricted entitlement in v1 | proposed |
 | [0014](0014-content-search-is-a-per-tenant-capability.md) | Content search is a per-tenant capability; the key model is chosen with it, not against it | proposed |
 | [0015](0015-suspension-is-a-human-decision-and-usage-is-metered-forward.md) | Suspension is a human decision with two separate gates, and usage is metered forward | proposed |
+| [0016](0016-the-classifier-host-is-one-go-source-built-for-native-and-js-wasm.md) | The classifier host is one Go source built for native and `js/wasm` | proposed |
+| [0017](0017-the-m3-content-state-marker-is-device-local.md) | The M3 content-state marker is device-local and never enters the envelope | proposed |
 
-Fifteen records. One is superseded, and the supersession is the most consequential edit in the set:
+Seventeen records. One is superseded, and the supersession is the most consequential edit in the set:
 **ADR 0014 reverses ADR 0008 on customer requirement.** ADR 0008 is kept, marked superseded, because
-its reasoning about brief §3.5 is still correct — what changed is the response to it.
+its reasoning about brief §3.5 is still correct — what changed is the response to it. **ADR 0016** is an
+amendment of a different kind: it changes the classifier host's language, and with it a §4.1 clause, while
+leaving every property §9.1 requires of that component intact. **ADR 0017** resolves a contradiction rather
+than a preference: §11.3's M3 row describes a content-state marker the closed envelope contract has no field
+for, and the record decides it in the contract's favour.
 
 ## Which decisions carry the most weight
 

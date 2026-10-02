@@ -41,9 +41,9 @@ type EnvelopeInput struct {
 	Identity Identity
 	EventID  string
 
-	Kind protocol.Kind
+	Kind  protocol.Kind
 	Route protocol.Route
-	Mode protocol.CollectionMode
+	Mode  protocol.CollectionMode
 
 	ToolFingerprint   string
 	OccurredAt        time.Time
@@ -92,14 +92,14 @@ type envelopeWire struct {
 	CollectionMode    protocol.CollectionMode `json:"collection_mode"`
 	DedupKey          string                  `json:"dedup_key"`
 
-	SizeBytes         *int64                    `json:"size_bytes,omitempty"`
-	ContentDigest     string                    `json:"content_digest,omitempty"`
-	Labels            []protocol.Label          `json:"labels,omitempty"`
-	ClassifierVersion string                    `json:"classifier_version,omitempty"`
-	Confidence        protocol.Confidence       `json:"confidence,omitempty"`
-	ContentExcerpt    *protocol.Excerpt         `json:"content_excerpt,omitempty"`
-	Attachments       []AttachmentWire          `json:"attachments,omitempty"`
-	PolicyDecision    *protocol.Decision        `json:"policy_decision,omitempty"`
+	SizeBytes         *int64              `json:"size_bytes,omitempty"`
+	ContentDigest     string              `json:"content_digest,omitempty"`
+	Labels            []protocol.Label    `json:"labels,omitempty"`
+	ClassifierVersion string              `json:"classifier_version,omitempty"`
+	Confidence        protocol.Confidence `json:"confidence,omitempty"`
+	ContentExcerpt    *protocol.Excerpt   `json:"content_excerpt,omitempty"`
+	Attachments       []AttachmentWire    `json:"attachments,omitempty"`
+	PolicyDecision    *protocol.Decision  `json:"policy_decision,omitempty"`
 
 	WindowStart     *time.Time `json:"window_start,omitempty"`
 	WindowEnd       *time.Time `json:"window_end,omitempty"`
@@ -174,7 +174,7 @@ func BuildEnvelope(in EnvelopeInput) ([]byte, error) {
 		e.Labels = in.Labels
 		e.ClassifierVersion = in.ClassifierVersion
 		e.Confidence = in.Confidence
-		e.Excerpt = in.Excerpt
+		e.ContentExcerpt = in.Excerpt
 		e.Attachments = in.Attachments
 	}
 

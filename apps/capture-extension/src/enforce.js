@@ -272,32 +272,59 @@ export function decideSync(input) {
 
 /**
  * The asynchronous half: a `warned` decision, rendered before the request proceeds, with the
- * user's answer recorded as part of the decision. Bounded by the same 300 ms budget: an
- * unanswered prompt is fail-open `logged` with `confidence: degraded`, never a silent block
- * (and never an indefinitely held request).
+ * user's answer recorded as part of the decision.
+ *
+ * Two different bounds, and keeping them distinct is deliberate (see CONFIRMATION_WINDOW_MS):
+ *   - rule evaluation is bounded by the **300 ms decision budget**, and an evaluation that
+ *     cannot finish inside it is fail-open `logged` with `confidence: degraded`;
+ *   - the **confirmation window** bounds how long the request waits for a human. An unanswered
+ *     prompt inside *that* window is fail-open `logged` with `confidence: degraded`, never a
+ *     silent block and never an indefinitely held request.
+ *
+ * A `warned` verdict that is answered records the answer as part of the decision — "so the same
+ * rule deciding the same way twice is two events, because two prompts were sent" (§7.4).
  *
  * @param {object} input                 as for decideSync, plus:
  * @param {() => Promise<{proceeded: boolean, answered: boolean, reason: string}>} input.confirm
- * @returns {Promise<{decision: {rule_id: string, action: string, decided_locally: true},
- *                    reason: string, degraded: boolean, error_counted: boolean,
- *                    over_budget: boolean, confirmed: boolean|null, user_answer: string|null,
- *                    needs_confirmation: boolean, cancel: boolean, elapsed_ms: number}>}
+ * @param {number} [input.confirmationWindowMs]
+ * @returns {Promise<object>}
  */
 export async function decideWithConfirmation(input) {
-  const sync = decideSync({ ...input, budgetMs: Number.POSITIVE_INFINITY });
-  const budget = createBudget({ budgetMs: input.budgetMs || DECISION_BUDGET_MS, now: input.now || nowMs });
+  const evalBudget = createBudget({ budgetMs: input.budgetMs || DECISION_BUDGET_MS, now: input.now || nowMs });
+  // decideSync takes its own budget reading; the outer budget measures the whole evaluation and
+  // is what decides whether the 300 ms was respected.
+  const decision = decideSync({ ...input });
 
-  if (!sync.needs_confirmation) {
-    return { ...sync, confirmed: null, user_answer: null };
+  if (decision.over_budget || evalBudget.expired()) {
+    return {
+      ...decision,
+      decision: { action: DECISION.LOGGED, rule_id: decision.rule_id, decided_locally: true },
+      reason: REASON.BUDGET_EXCEEDED,
+      degraded: true,
+      error_counted: true,
+      over_budget: true,
+      confirmed: null,
+      user_answer: null,
+      needs_confirmation: false,
+      cancel: false,
+      elapsed_ms: round(evalBudget.elapsed()),
+    };
   }
+
+  if (!decision.needs_confirmation) {
+    return { ...decision, confirmed: null, user_answer: null };
+  }
+
+  const windowMs = input.confirmationWindowMs || CONFIRMATION_WINDOW_MS;
+  const confirmBudget = createBudget({ budgetMs: windowMs, now: input.now || nowMs });
 
   let answer;
   try {
-    answer = await budget.run(() => input.confirm());
+    answer = await confirmBudget.run(() => input.confirm());
   } catch (e) {
     return {
-      ...sync,
-      decision: { action: DECISION.LOGGED, rule_id: sync.rule_id, decided_locally: true },
+      ...decision,
+      decision: { action: DECISION.LOGGED, rule_id: decision.rule_id, decided_locally: true },
       reason: REASON.FAILED_OPEN,
       degraded: true,
       error_counted: true,
@@ -306,17 +333,18 @@ export async function decideWithConfirmation(input) {
       needs_confirmation: false,
       cancel: false,
       error: String((e && e.message) || e),
-      elapsed_ms: round(budget.elapsed()),
+      elapsed_ms: round(evalBudget.elapsed()),
+      confirmation_elapsed_ms: round(confirmBudget.elapsed()),
     };
   }
 
   const a = answer.value || { proceeded: true, answered: false, reason: 'no_receiver' };
-  const overBudget = answer.expired || !a.answered;
+  const unanswered = answer.expired || !a.answered;
 
-  if (overBudget) {
+  if (unanswered) {
     return {
-      ...sync,
-      decision: { action: DECISION.LOGGED, rule_id: sync.rule_id, decided_locally: true },
+      ...decision,
+      decision: { action: DECISION.LOGGED, rule_id: decision.rule_id, decided_locally: true },
       reason: answer.expired ? REASON.BUDGET_EXCEEDED : REASON.WARN_UNANSWERED,
       degraded: true,
       error_counted: true,
@@ -325,32 +353,35 @@ export async function decideWithConfirmation(input) {
       user_answer: a.reason,
       needs_confirmation: false,
       cancel: false,
-      elapsed_ms: round(budget.elapsed()),
+      elapsed_ms: round(evalBudget.elapsed()),
+      confirmation_elapsed_ms: round(confirmBudget.elapsed()),
     };
   }
 
   if (a.proceeded) {
     return {
-      ...sync,
-      decision: { action: DECISION.WARNED, rule_id: sync.rule_id, decided_locally: true },
+      ...decision,
+      decision: { action: DECISION.WARNED, rule_id: decision.rule_id, decided_locally: true },
       reason: REASON.WARN_PROCEEDED,
       confirmed: true,
       user_answer: 'proceeded',
       needs_confirmation: false,
       cancel: false,
-      elapsed_ms: round(budget.elapsed()),
+      elapsed_ms: round(evalBudget.elapsed()),
+      confirmation_elapsed_ms: round(confirmBudget.elapsed()),
     };
   }
 
   return {
-    ...sync,
-    decision: { action: DECISION.BLOCKED, rule_id: sync.rule_id, decided_locally: true },
+    ...decision,
+    decision: { action: DECISION.BLOCKED, rule_id: decision.rule_id, decided_locally: true },
     reason: REASON.WARN_CANCELLED,
     confirmed: true,
     user_answer: 'cancelled',
     needs_confirmation: false,
     cancel: true,
-    elapsed_ms: round(budget.elapsed()),
+    elapsed_ms: round(evalBudget.elapsed()),
+    confirmation_elapsed_ms: round(confirmBudget.elapsed()),
   };
 }
 
