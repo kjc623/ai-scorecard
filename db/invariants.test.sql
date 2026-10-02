@@ -1578,6 +1578,48 @@ END $$;
 
 RESET ROLE;
 
+-- T47: ref.classifier_release.artifact_digest must be a sha256 digest too.
+--
+-- The value identifies the signed release artefact, and its producer is device/classifier-host:
+-- `digestOf` builds every digest as "sha256:" + hex.EncodeToString(sum), which is lowercase by
+-- construction, and the seed row as well as every fixture already uses that shape. T46 pins the
+-- same rule on the grant's copy; this pins it on the source.
+--
+-- Runs as the bootstrap role because ref.* is shared reference data that no runtime role may
+-- write. The one divergence worth recording: the producer's manifest check uses
+-- strings.EqualFold, so it would accept a hand-written uppercase digest that this column then
+-- refuses. That is the safe direction -- a loud refusal at the store rather than a silently
+-- stored second spelling -- and the producer has flagged the one-line fix on their side.
+DO $$
+DECLARE
+  n int;
+BEGIN
+  INSERT INTO ref.classifier_release (release_version, ruleset_version, model_version,
+                                      artifact_digest, state, promoted_at)
+  VALUES ('test-digest-format', 'rules-digest-test', 'model-digest-test',
+          'sha256:' || repeat('7f', 32), 'enforcing', now());
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN RAISE EXCEPTION 'FAIL T47 a well-formed artifact_digest was not accepted'; END IF;
+
+  BEGIN
+    INSERT INTO ref.classifier_release (release_version, ruleset_version, model_version,
+                                        artifact_digest, state, promoted_at)
+    VALUES ('test-digest-upper', 'rules-digest-test', 'model-digest-test',
+            'sha256:' || repeat('7F', 32), 'enforcing', now());
+    RAISE EXCEPTION 'FAIL T47 an uppercase-hex artifact_digest was accepted; the digest has one spelling, not two';
+  EXCEPTION WHEN others THEN
+    IF SQLERRM LIKE 'FAIL%' THEN RAISE; END IF;
+    IF position('classifier_release_digest_is_sha256' in SQLERRM) = 0 THEN
+      RAISE EXCEPTION 'FAIL T47 the uppercase digest was refused, but not by classifier_release_digest_is_sha256 (%)', SQLERRM;
+    END IF;
+  END;
+
+  -- Leave the reference table as it was found.
+  DELETE FROM ref.classifier_release WHERE release_version = 'test-digest-format';
+
+  RAISE NOTICE 'PASS T47 a classifier release carries a lowercase sha256 artifact digest or it is refused';
+END $$;
+
 
 -- =====================================================================================
 -- Report

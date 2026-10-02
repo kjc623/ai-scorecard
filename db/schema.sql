@@ -153,7 +153,19 @@ CREATE TABLE ref.classifier_release (
   notes             text,
   created_at        timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT classifier_enforcing_requires_promotion
-    CHECK (state <> 'enforcing' OR promoted_at IS NOT NULL)
+    CHECK (state <> 'enforcing' OR promoted_at IS NOT NULL),
+  -- The digest identifies the release artefact that was signed and promoted, so it must be the
+  -- same shape everywhere it appears. The producer is device/classifier-host/release, which
+  -- builds every digest as "sha256:" + hex.EncodeToString(sum) -- lowercase by construction --
+  -- and the seed row below plus every fixture already use that shape.
+  --
+  -- KNOWN DIVERGENCE, on the producer's side and flagged by them: their manifest check uses
+  -- strings.EqualFold, so it would ACCEPT a hand-written uppercase digest that this constraint
+  -- then refuses at insert. That is the safe direction -- a loud refusal at the store rather than
+  -- a silently stored second spelling -- but the two should agree, and the one-line fix is an
+  -- exact comparison in release.go's verifyDigest.
+  CONSTRAINT classifier_release_digest_is_sha256
+    CHECK (artifact_digest ~ '^sha256:[0-9a-f]{64}$')
 );
 
 -- Rule metadata for display and for findings. Rules are published as signed data alongside a

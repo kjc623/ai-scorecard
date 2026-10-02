@@ -91,6 +91,58 @@ const GATES = [
     run: () => runNode(['tools/check-invariants.mjs']),
   },
   {
+    id: 'endpoint',
+    title: 'The endpoint agent runs as a process (capture-core --selftest)',
+    decides:
+      'The assembled endpoint does not run: the §3.5 startup/shutdown order, the native-messaging host, the spool, M0 handling or the coverage rows are broken when wired together. Every other gate tests components; this one tests the binary.',
+    run: () => {
+      const dir = join(ROOT, 'device', 'capture-core');
+      const exe = join(dir, 'bin', process.platform === 'win32' ? 'capture-core.exe' : 'capture-core');
+      if (!existsSync(join(dir, 'cmd', 'capture-core'))) {
+        return { status: 'SKIPPED', why: 'device/capture-core/cmd/capture-core does not exist yet' };
+      }
+      const env = {
+        ...process.env,
+        ...GO_ENV,
+        TMP: join(ROOT, '.testtmp'),
+        TEMP: join(ROOT, '.testtmp'),
+      };
+      if (!existsSync(join(ROOT, '.tools', 'tmp', 'go'))) mkdirSync(join(ROOT, '.tools', 'tmp', 'go'), { recursive: true });
+      if (!existsSync(join(ROOT, '.testtmp'))) mkdirSync(join(ROOT, '.testtmp'), { recursive: true });
+
+      const build = spawnSync('go', ['build', '-o', exe, './cmd/capture-core'], {
+        cwd: dir,
+        env,
+        encoding: 'utf8',
+        maxBuffer: 32 * 1024 * 1024,
+        timeout: 240_000,
+      });
+      if (build.status !== 0) {
+        return { status: 'FAIL', detail: `the endpoint binary does not build:\n${tail(`${build.stdout ?? ''}${build.stderr ?? ''}`)}` };
+      }
+      // The selftest mints its own signed bundle, opens its own spool, uses ephemeral ports and
+      // removes its own work directory, so it is safe to run from a gate. It is the only test in
+      // this repository that exercises the assembled endpoint rather than a component.
+      const run = spawnSync(exe, ['--selftest'], {
+        cwd: dir,
+        env,
+        encoding: 'utf8',
+        maxBuffer: 32 * 1024 * 1024,
+        timeout: 300_000,
+      });
+      const out = `${run.stdout ?? ''}${run.stderr ?? ''}`;
+      if (run.status !== 0) {
+        return { status: 'FAIL', detail: `capture-core --selftest exited ${run.status}:\n${tail(out, 40)}` };
+      }
+      const passed = (out.match(/\[PASS\]/g) ?? []).length;
+      const failed = (out.match(/\[FAIL\]/g) ?? []).length;
+      return {
+        status: failed === 0 ? 'PASS' : 'FAIL',
+        detail: `the endpoint binary ran its own selftest: ${passed} assertion(s), ${failed} failure(s). Covers the §3.5 order, the native-messaging host in two child processes, the spool, M0, and the coverage rows.`,
+      };
+    },
+  },
+  {
     id: 'db',
     title: 'Database invariants against a real server (db/tools/run-invariants.ps1)',
     decides: 'The schema asserts its own properties, as the runtime roles, on PostgreSQL.',

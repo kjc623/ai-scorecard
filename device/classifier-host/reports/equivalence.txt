@@ -1,5 +1,5 @@
 corpus=classifier-equivalence-v1 cases=20
 native=windows/amd64 bytes=8142
 wasm=js/wasm bytes=8142
-module_bytes=6344880 compile_and_instantiate_ms=12.641 run_ms=37.803
+module_bytes=6344880 compile_and_instantiate_ms=12.379 run_ms=38.932
 identical=true

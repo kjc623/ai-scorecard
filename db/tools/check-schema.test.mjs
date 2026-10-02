@@ -355,6 +355,16 @@ expectCaught(
   'digest.every-column-format-checked-or-excused',
 );
 
+expectCaught(
+  'digests: the classifier-release digest CHECK cannot be dropped either',
+  'db/schema.sql',
+  (s) => s.replace(
+    "  CONSTRAINT classifier_release_digest_is_sha256\n    CHECK (artifact_digest ~ '^sha256:[0-9a-f]{64}$')",
+    '  CONSTRAINT classifier_release_digest_is_sha256\n    CHECK (length(artifact_digest) > 0)',
+  ),
+  'digest.every-column-format-checked-or-excused',
+);
+
 // -------------------------------------------------------------------------------------
 // Documentation drift: a WARNING, and it must clear when the prose is fixed
 // -------------------------------------------------------------------------------------

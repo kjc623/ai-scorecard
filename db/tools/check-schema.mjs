@@ -226,11 +226,16 @@ if (arrMatch) {
 // whole purpose is to be verified against. ops.retrieval_grant.raw_digest was exactly that, found
 // while checking content-vault's claim that it copies ops.content_object.ciphertext_sha256.
 //
-// Two columns are EXCUSED rather than tightened: no owner has stated that they are always sha256,
-// and adding a restriction on a guess is the direction this schema deliberately avoids (the same
+// One column is EXCUSED rather than tightened: no owner has stated that it is always sha256, and
+// adding a restriction on a guess is the direction this schema deliberately avoids (the same
 // reasoning that keeps the M2 excerpt a permission rather than a requirement). The excused set is
-// asserted to be exactly these two, so it cannot grow silently and a stale entry fails.
-const DIGEST_COLUMNS_EXCUSED = ['ops.policy_bundle.signed_digest', 'ref.classifier_release.artifact_digest'];
+// asserted to be exactly this one, so it cannot grow silently and a stale entry fails.
+//
+// ref.classifier_release.artifact_digest was excused here until its producer stated the format and
+// supplied the evidence (hex.EncodeToString, so lowercase by construction, plus the seed row and
+// every fixture already in that shape); it is constrained now and the excused list shrinks with it.
+// That is the intended lifecycle for an exemption: a placeholder for an answer, not a hole.
+const DIGEST_COLUMNS_EXCUSED = ['ops.policy_bundle.signed_digest'];
 
 {
   // Each `CREATE TABLE` block, so a column can be attributed to its table.
