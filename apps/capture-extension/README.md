@@ -227,3 +227,9 @@ choice this implementation had to make:
    described the original — a content-identity break that would propagate into `dedup_key` and into
    what the classifier sees. `observationBody()` is the single encoder, so a call site cannot get it
    wrong; `test/content-roundtrip.test.mjs` proves it against the real Go type.
+8. **`enforcement: observation_only` has no `Detail` in the protocol's closed vocabulary.** The
+   browser can revoke `webRequestBlocking` from an otherwise valid install (it does so for every
+   unpacked load), which leaves observation working and §7.4's ability to cancel gone. `device/protocol`
+   has no member for "this install cannot enforce", so the extension reports it as an extension-side
+   field on the health report and counts it as `enforcement_unavailable` rather than inventing a
+   `Detail`. **A protocol decision, not an implementation one** — raised for the Lead.

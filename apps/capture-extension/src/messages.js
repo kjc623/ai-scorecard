@@ -138,10 +138,20 @@ export const DETAIL = Object.freeze({
   BUNDLE_SCHEMA_INVALID: 'bundle_schema_invalid',
   BUNDLE_VERSION_REGRESSION: 'bundle_version_regression',
   BUNDLE_ARTEFACT_MISSING: 'bundle_artefact_missing',
+  // §7.4/§15.2: this install holds webRequestBlocking but was not granted it — every unpacked
+  // load, and the browser says so only in a console message. Observation still works; cancelling a
+  // request does not. A coverage state with no name is what §15.2 forbids, so it has one.
+  ENFORCEMENT_UNAVAILABLE: 'enforcement_unavailable',
   CONTENT_OVER_CAP: 'content_over_cap',
   UNDECODABLE_CONTENT: 'undecodable_content',
   VERSION_MISMATCH: 'version_mismatch',
   MODE_VIOLATION: 'mode_violation',
+  /**
+   * §7.4/§15.2: this install holds `webRequestBlocking` in its manifest but was not *granted* it, so
+   * it observes normally and cannot cancel. Every unpacked load is in this state, and the browser
+   * says so only in a console message — which is why it needs a name on the wire.
+   */
+  ENFORCEMENT_UNAVAILABLE: 'enforcement_unavailable',
 });
 
 export const DETAILS = Object.freeze(Object.values(DETAIL).filter(Boolean));

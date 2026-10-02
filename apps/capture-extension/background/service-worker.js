@@ -125,11 +125,9 @@ export function bootstrap(adapter, { deviceId = null, version = '0.1.0', capacit
 
   // ── health ────────────────────────────────────────────────────────────────────────────────
   function reportHealth() {
+    // `detail` and `enforcement` are set by the health reporter from the capability it was told
+    // about at startup, so the wire report and the internal state cannot disagree.
     const report = health.report();
-    // §7.4's capability travels with the coverage row. The protocol's `detail` vocabulary is closed
-    // and has no member for it, so it is reported as an extension-side field rather than by
-    // inventing a Detail — a vocabulary gap for the Lead, recorded in the README.
-    report.enforcement = blockingAvailable ? 'blocking' : 'observation_only';
     try {
       native.sendOneWay(TYPE.HEALTH, report);
       health.counters.rollWindow();
@@ -195,10 +193,12 @@ export function bootstrap(adapter, { deviceId = null, version = '0.1.0', capacit
       blockingAvailable = true;
     }
     if (!blockingAvailable) {
-      // §7.4's enforcement is unavailable on this install. Reported, never silent: §15.2 forbids a
-      // coverage path that looks healthy while it observes nothing, and the same rule applies to an
-      // enforcement path that looks present while it can never act.
-      health.counters.countError('enforcement_unavailable');
+      // §7.4/§15.2's coverage state, carried in the protocol's own `detail` vocabulary as
+      // `enforcement_unavailable`. Reported rather than silent: a path that cannot enforce must say
+      // so instead of reporting healthy while inspection is wider than enforcement.
+      health.onEnforcementUnavailable();
+    } else {
+      health.onEnforcementAvailable();
     }
     installAlarms();
     const installed = installLanesNow();

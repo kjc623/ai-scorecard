@@ -117,8 +117,25 @@ func seed(t *testing.T, db *sql.DB) fixture {
 		}
 	}
 	t.Cleanup(func() {
+		// ingest.observation is append-only: its trigger refuses DELETE unless the session says it is
+		// the retention path, which is exactly the discipline db/schema.sql documents ("UPDATE is
+		// blocked outright; DELETE is possible only through the retention path, which sets a session
+		// flag"). A test that wants its rows gone has to go through that door rather than around it —
+		// and doing so is also the cheapest proof that the door exists and is the only one.
 		ctx := context.Background()
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			t.Logf("cleanup: begin: %v", err)
+			return
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.ExecContext(ctx, `SET LOCAL sac.retention_delete = on`); err != nil {
+			t.Logf("cleanup: set the retention flag: %v", err)
+			return
+		}
+		// Dependency order: rows that reference the device and the submissions go first.
 		for _, s := range []string{
+			`DELETE FROM ingest.search_text WHERE tenant_id = $1::uuid`,
 			`DELETE FROM ingest.rejected WHERE tenant_id = $1::uuid`,
 			`DELETE FROM ingest.observation WHERE tenant_id = $1::uuid`,
 			`DELETE FROM ingest.submission WHERE tenant_id = $1::uuid`,
@@ -126,9 +143,13 @@ func seed(t *testing.T, db *sql.DB) fixture {
 			`DELETE FROM ops.device WHERE tenant_id = $1::uuid`,
 			`DELETE FROM ops.tenant WHERE tenant_id = $1::uuid`,
 		} {
-			if _, err := db.ExecContext(ctx, s, f.tenant); err != nil {
+			if _, err := tx.ExecContext(ctx, s, f.tenant); err != nil {
 				t.Logf("cleanup (%s): %v", firstLine(s), err)
+				return
 			}
+		}
+		if err := tx.Commit(); err != nil {
+			t.Logf("cleanup: commit: %v", err)
 		}
 	})
 	return f
@@ -291,13 +312,13 @@ func TestStatementsThroughDatabaseSQL(t *testing.T) {
 		res, err := st.WriteBatch(ctx, store.BatchWrite{
 			TenantID: f.tenant, DeviceID: f.device, CredentialID: f.credential,
 			ReceivedAt: time.Date(2026, 10, 2, 15, 0, 0, 0, time.UTC),
-			Accepted: []store.AcceptedEvent{},
+			Accepted:   []store.AcceptedEvent{},
 			Rejected: []store.Rejection{{
 				Index: 0, EventID: ladder.DeterministicUUID(9003),
-				Reason: protocol.ReasonUnknownKind,
-				Detail: &protocol.BatchRejectionDetail{Pointer: "/events/0/kind", Expected: "one of prompt | usage_rollup | model_detection"},
-				Presence: map[string][]string{"present": {"kind", "event_id"}, "missing": []string{}},
-				Redacted: map[string]json.RawMessage{"kind": json.RawMessage(`"process_telemetry"`)},
+				Reason:     protocol.ReasonUnknownKind,
+				Detail:     &protocol.BatchRejectionDetail{Pointer: "/events/0/kind", Expected: "one of prompt | usage_rollup | model_detection"},
+				Presence:   map[string][]string{"present": {"kind", "event_id"}, "missing": []string{}},
+				Redacted:   map[string]json.RawMessage{"kind": json.RawMessage(`"process_telemetry"`)},
 				Quarantine: true,
 			}},
 		})

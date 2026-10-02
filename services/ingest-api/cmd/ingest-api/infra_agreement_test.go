@@ -156,6 +156,10 @@ func TestEveryReadNameIsEitherPassedOrDocumented(t *testing.T) {
 	}
 	deploymentGaps := map[string]string{
 		EnvRegion: "§12's region pinning: the binary refuses a tenant pinned to another region, but infra/main.bicep passes no region, so the check is inert in Azure until it does",
+		EnvTLSCertPEM: "F5: the server certificate as PEM text, for the module's keyVaultEnv to inject. No deployment passes it yet " +
+			"(every app in infra/main.bicep has keyVaultEnv: []), so the device-facing listener still cannot be given mTLS material in a container",
+		EnvTLSKeyPEM:      "F5: the server private key as PEM text — see " + EnvTLSCertPEM,
+		EnvTLSClientCAPEM: "F5: the CA that must have signed the device certificates, as PEM text — see " + EnvTLSCertPEM,
 	}
 
 	var undocumented []string

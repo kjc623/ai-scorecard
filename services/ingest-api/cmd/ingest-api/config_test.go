@@ -243,10 +243,12 @@ func TestSQLRefusalIsActionable(t *testing.T) {
 	msg := sqlRefusal(o, postgresDSN(o.pgHost, o.pgPort, o.pgDatabase, o.role)).Error()
 	for _, want := range []string{
 		"github.com/jackc/pgx/v5/stdlib", "pgx",
+		"sac_sql_driver", // how to build the binary that carries the driver
+		"sqlpg",          // where the database/sql plumbing is verified
+		"TestLive",       // where the statement text is verified
 		EnvPGHost, EnvPGDatabase, EnvRole,
 		"pg.example.internal", "sslmode=require",
-		"TestLive", "go get",
-		"NOT verified",
+		"go get", // how to fetch the driver on a host with a proxy
 	} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("the refusal does not mention %q:\n%s", want, msg)
@@ -254,5 +256,16 @@ func TestSQLRefusalIsActionable(t *testing.T) {
 	}
 	if strings.Contains(msg, "password=") {
 		t.Errorf("the refusal prints a password: %s", msg)
+	}
+}
+
+// TestDefaultBuildCarriesNoDriver asserts the property the acceptance gate depends on: the default
+// build has no driver, so `-store sql` refuses. If someone ever makes the default build carry one,
+// this fails here rather than the gate failing somewhere less obvious.
+func TestDefaultBuildCarriesNoDriver(t *testing.T) {
+	if defaultDriverName != "" {
+		t.Fatalf("the default build reports driver %q; it must carry none — the dependency is compiled "+
+			"only under the sac_sql_driver tag, so that a machine with no module cache still builds and "+
+			"still passes", defaultDriverName)
 	}
 }

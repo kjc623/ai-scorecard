@@ -117,6 +117,22 @@ func postgresDSN(host, port, database, role string) string {
 // configuration typo is a startup failure rather than a container that runs and serves nothing. The
 // port is checked numerically: ":host" is a host with a non-numeric port, which ListenAndServe would
 // reject only after the process reported itself as listening.
+// redactDSN removes the password from a DSN before it can reach a log. The service never logs a
+// credential: infra/main.bicep passes none, because the deployed database authenticates a managed
+// identity — but a local run may, and a log line is a durable place for a mistake to live.
+func redactDSN(dsn string) string {
+	at := strings.LastIndex(dsn, "@")
+	proto := strings.Index(dsn, "://")
+	if at < 0 || proto < 0 || at < proto {
+		return dsn
+	}
+	creds := dsn[proto+3 : at]
+	if i := strings.Index(creds, ":"); i >= 0 {
+		creds = creds[:i] + ":<redacted>"
+	}
+	return dsn[:proto+3] + creds + dsn[at:]
+}
+
 func validateHTTPAddr(addr string) error {
 	if addr == "" {
 		return fmt.Errorf("listen address is empty")

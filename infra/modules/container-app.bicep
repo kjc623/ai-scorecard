@@ -66,6 +66,10 @@ param livenessPath string = '/healthz'
 @description('Readiness probe path. Distinct from liveness on purpose: a service holding a broken database connection is ready to be taken out of rotation, not killed.')
 param readinessPath string = '/readyz'
 
+@description('Scheme both probes use. HTTP while the container serves plaintext (the default, and what every app does today). Set HTTPS for an app that terminates TLS on targetPort itself: an HTTP probe against a TLS listener can never succeed, so the app would fail its own liveness check. §2.1 requires mutual TLS on the device channel, and F5 in the lab work is where this became visible.')
+@allowed(['HTTP', 'HTTPS'])
+param probeScheme string = 'HTTP'
+
 @description('Tags applied to the app.')
 param tags object = {}
 
@@ -126,7 +130,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
             httpGet: {
               path: livenessPath
               port: targetPort
-              scheme: 'HTTP'
+              scheme: probeScheme
             }
             initialDelaySeconds: 5
             periodSeconds: 10
@@ -136,7 +140,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
             httpGet: {
               path: readinessPath
               port: targetPort
-              scheme: 'HTTP'
+              scheme: probeScheme
             }
             initialDelaySeconds: 3
             periodSeconds: 5

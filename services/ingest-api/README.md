@@ -176,6 +176,49 @@ read `ref.route_fidelity`, which is a real query once the SQL mode exists, and a
 fails. The module's own comment asks for exactly that distinction: "a service holding a broken database
 connection is ready to be taken out of rotation, not killed".
 
+## Persistence (`--store sql`)
+
+The default build has no third-party dependency and `--store sql` refuses to start, naming the driver,
+the variables it read, and the commands below. The production path is the tagged build:
+
+```powershell
+# default: standard library only, no module cache needed — what CI and the gate run
+go build ./... && go test ./...
+
+# tagged: the real PostgreSQL driver (github.com/jackc/pgx/v5/stdlib), needs a module cache or a network
+go build -tags sac_sql_driver -o ingest-api-sql ./cmd/ingest-api
+go test -tags sac_sql_driver ./sqlpg/ -v
+
+./ingest-api-sql -store sql -dsn "$SAC_PG_DSN"     # -driver pgx is the tagged default
+```
+
+`sqlpg` holds the only import of the dependency, and `cmd/ingest-api/driver_tagged.go` links it into
+the binary under the same tag. The tagged integration test applies nothing (the lab's compose file
+applies `db/schema.sql`), seeds its own tenant and removes it through the retention path, and **skips
+loudly** when no server is reachable — with the command that starts one. The service README's sibling,
+`lab/README.md`, describes the lab itself.
+
+## TLS material: files or PEM in the environment
+
+§2.1 requires mutual authentication and §2.2 has the origin re-validate the credential on every
+request, so the origin needs a server key pair and the CA that signed the device certificates. On a
+laptop that is three files and three flags. In a container it is neither: the Container Apps module has
+no `command`/`args` and no volume mount, but it does have `keyVaultEnv`, which injects a Key Vault
+secret as an environment variable under the workload's managed identity. So the same material also
+arrives as PEM text:
+
+| Flag | Environment | What |
+|---|---|---|
+| `--tls-cert` | `SAC_TLS_CERT_PEM` | the server certificate chain |
+| `--tls-key` | `SAC_TLS_KEY_PEM` | its private key |
+| `--tls-client-ca` | `SAC_TLS_CLIENT_CA_PEM` | the CA that must have signed the device certificates |
+
+A flag wins when both are present (the one precedence rule the whole configuration uses), and a
+partial set — two of three, in either form — is a startup error rather than a handshake failure on the
+first device request. This is not a new trust model: the material still comes from Key Vault under the
+managed identity, the listener is still TLS 1.3 with `RequireAndVerifyClientCert`, and the per-device
+credential status is still re-checked inside the write transaction.
+
 ## Running the checks
 
 No network access, no `go get` (`GOPROXY=off`); PostgreSQL is reached through `docker exec psql`
@@ -233,15 +276,18 @@ seeds).
 
 Stated so a reader does not infer more than the tests show.
 
-1. **The `database/sql` plumbing is not executed.** `store.NewSQL` is never driven end to end, so
-   connection pooling, the transaction boundary and driver-level error mapping are unverified. What
-   *is* verified is the statement text — executed through `PREPARE`/`EXECUTE` against the live schema —
-   and the stored procedure's semantics. `--store sql` therefore refuses to start and names the driver,
-   the variables it read and the commands that close the gap; it never falls back to memory.
-   The nuance worth knowing: `github.com/jackc/pgx/v5` v5.11.0 **is** in this host's module cache, with
-   its dependencies. What makes the one-line `require` unsafe here is the acceptance harness, which runs
-   every Go package with `GOMODCACHE` pointed at an empty `.tools/gopath/pkg/mod` — on a host whose
-   module cache is the default one, F4 closes in a single commit.
+1. **The `database/sql` plumbing is verified only under the build tag.** The default build carries no
+   driver, so `--store sql` refuses with an actionable message rather than starting and degrading.
+   Under `-tags sac_sql_driver` the plumbing *is* exercised against a real PostgreSQL — pooling, the
+   transaction boundary, `record_event`, driver error mapping, the §2.3 revocation re-check — by
+   `sqlpg`'s integration test, and the same tagged binary has been run against the lab's database with
+   events landing in `ingest.observation` and the fidelity tie-break visible in `ingest.submission`.
+   What remains unproven is concurrency (item 2) and any server other than the lab's.
+   The design detail worth knowing: `github.com/jackc/pgx/v5` v5.11.0 is in this host's module cache,
+   but the acceptance harness runs every Go package with `GOMODCACHE` pointed at an empty
+   `.tools/gopath/pkg/mod`. Hence the tag rather than a dependency the default build needs — the gate
+   stays green on a machine with no cache, and a machine with a cache or a network can build and test
+   the production path. See [Persistence](#persistence-store-sql).
 2. **No concurrency testing of the SQL path.** The memory store is mutex-serialised; the database
    path relies on the unique constraints and row locks, which were not stressed.
 3. **`duplicate_batch` is a per-process window** (`internal/batchguard`). With more than one ingest

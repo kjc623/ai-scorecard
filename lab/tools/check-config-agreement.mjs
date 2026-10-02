@@ -44,6 +44,9 @@ const EXTENSIONS = {
     SAC_SCHEMA: 'image: the contract schema at a path a container can read',
     SAC_ROUTES_FILE: 'image: ref.route_fidelity shipped as data (§4.4), never compiled in',
     SAC_REGION: 'gap: §12 region pinning is inert until the deployment passes the region',
+    SAC_TLS_CERT_PEM: 'gap (F5): the server certificate for the module keyVaultEnv to inject; every app in infra/main.bicep has keyVaultEnv: [] today',
+    SAC_TLS_KEY_PEM: 'gap (F5): the server private key — see SAC_TLS_CERT_PEM',
+    SAC_TLS_CLIENT_CA_PEM: 'gap (F5): the CA that must have signed the device certificates — see SAC_TLS_CERT_PEM',
   },
   'content-vault': {
     SAC_HTTP_ADDR: 'image: a container binds 0.0.0.0',

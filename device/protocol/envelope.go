@@ -186,6 +186,14 @@ const (
 	// Framing and contract
 	DetailVersionMismatch Detail = "version_mismatch"
 	DetailModeViolation   Detail = "mode_violation"
+
+	// Enforcement capability (docs/01-collectors.md §7.4, §15.2). An install that holds the
+	// webRequestBlocking permission but was not *granted* it — which is every unpacked load, and
+	// which the browser reports only as a console message — can still observe but cannot cancel a
+	// request. That is a coverage state, and §15.2 forbids a coverage state with no name: a path
+	// that cannot enforce must say so rather than reporting `healthy` while inspection is silently
+	// wider than enforcement.
+	DetailEnforcementUnavailable Detail = "enforcement_unavailable"
 )
 
 // AllDetails is the closed vocabulary, for validation and for a coverage report that needs to
@@ -202,7 +210,7 @@ var AllDetails = [...]Detail{
 	DetailBundleSignatureInvalid, DetailBundleSchemaInvalid,
 	DetailBundleVersionRegression, DetailBundleArtefactMissing,
 	DetailContentOverCap, DetailUndecodableContent,
-	DetailVersionMismatch, DetailModeViolation,
+	DetailVersionMismatch, DetailModeViolation, DetailEnforcementUnavailable,
 }
 
 // Valid reports whether the detail is in the closed vocabulary. An empty detail is valid: a

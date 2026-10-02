@@ -103,6 +103,8 @@ export function createHealthReporter({ device_id, version = '0.1.0', queueStats,
   let lastSuccessAt = null;
   let channelState = STATE.ABSENT; // nothing has connected yet, and "not connected" is not "nothing observed"
   let channelDetail = DETAIL.NONE;
+  /** §7.4's capability as this install holds it. Answered before any lane is registered. */
+  let enforcementDetail = DETAIL.NONE;
 
   /**
    * @param {{state?: string, detail?: string, core?: 'connected'|'absent'}} [override]
@@ -114,8 +116,16 @@ export function createHealthReporter({ device_id, version = '0.1.0', queueStats,
 
     // §3.4: a failed connect is `absent` for capture-core *plus* `degraded` extension-side.
     const coreAbsent = override.core === 'absent' || channelState === STATE.ABSENT;
-    const state = override.state || (coreAbsent ? STATE.DEGRADED : STATE.HEALTHY);
-    const detail = override.detail || (coreAbsent ? DETAIL.CLASSIFIER_UNAVAILABLE : channelDetail);
+    const state = override.state || (coreAbsent || enforcementDetail !== DETAIL.NONE ? STATE.DEGRADED : STATE.HEALTHY);
+
+    // `HealthReport` carries one `detail`, and two facts can hold at once. **Precedence goes to the
+    // enforcement capability**, because it is a permanent property of the install that the protocol
+    // can express nowhere else, whereas the channel state is already carried by `state` and by the
+    // `core` field below. Reporting `classifier_unavailable` for a device whose classifier is fine
+    // but whose install cannot enforce would be a wrong cause on a coverage report — and the
+    // capability fact is the one §15.2 requires to have a name.
+    const detail = override.detail
+      || (enforcementDetail !== DETAIL.NONE ? enforcementDetail : coreAbsent ? DETAIL.CLASSIFIER_UNAVAILABLE : channelDetail);
 
     const health = {
       device_id,
@@ -136,7 +146,23 @@ export function createHealthReporter({ device_id, version = '0.1.0', queueStats,
     health.queue = q;
     health.core = coreAbsent ? 'absent' : 'connected';
     health.policy = { version: policy.policy_version, present: policy.present, stale: policy.stale };
+    // The other half of the same pair, always present so neither fact is lost when one takes
+    // `detail`. `enforcement` is the capability; `core` above is the channel.
+    health.enforcement = enforcementDetail === DETAIL.NONE ? 'blocking' : 'observation_only';
     return health;
+  }
+
+  /**
+   * §7.4/§15.2: the install does not hold the blocking grant, so it observes and cannot cancel.
+   * Recorded in `detail` as the protocol's own member rather than as a private field.
+   */
+  function onEnforcementUnavailable() {
+    enforcementDetail = DETAIL.ENFORCEMENT_UNAVAILABLE;
+    counters.countError('enforcement_unavailable');
+  }
+
+  function onEnforcementAvailable() {
+    enforcementDetail = DETAIL.NONE;
   }
 
   function onChannelConnected() {
@@ -179,11 +205,16 @@ export function createHealthReporter({ device_id, version = '0.1.0', queueStats,
     report,
     onChannelConnected,
     onChannelAbsent,
+    onEnforcementUnavailable,
+    onEnforcementAvailable,
     markSuccess,
     markEmitted,
     resetSince,
     get state() {
       return channelState;
+    },
+    get enforcement() {
+      return enforcementDetail === DETAIL.NONE ? 'blocking' : 'observation_only';
     },
   };
 }

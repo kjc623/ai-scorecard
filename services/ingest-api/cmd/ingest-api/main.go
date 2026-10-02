@@ -13,7 +13,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"crypto/x509"
 	"database/sql"
 	"errors"
@@ -43,6 +42,14 @@ func main() {
 	}
 }
 
+// defaultDriverName is the database/sql driver this binary carries, or empty.
+//
+// It is empty in the default build, which has no third-party dependency: `-store sql` then refuses
+// with the actionable message below rather than starting and degrading. It is set to "pgx" by
+// cmd/ingest-api/driver_tagged.go in the sac_sql_driver build, where the driver is linked in — so the
+// tagged binary needs no -driver flag and the untagged one cannot pretend to have one.
+var defaultDriverName = ""
+
 type options struct {
 	addr             string
 	schemaPath       string
@@ -60,6 +67,7 @@ type options struct {
 	tlsClientCA      string
 	devTrust         bool
 	devSeed          string
+	devCredentialID  string
 	verifyDedupKey   bool
 	replayWindow     time.Duration
 	shutdownGraceful time.Duration
@@ -84,6 +92,8 @@ func run() error {
 	flag.StringVar(&o.tlsKey, "tls-key", "", "server private key (PEM)")
 	flag.StringVar(&o.tlsClientCA, "tls-client-ca", "", "CA bundle that must have issued the device certificate (PEM)")
 	flag.BoolVar(&o.devTrust, "dev-trust-principal", false, "TEST ONLY: trust X-Dev-Tenant-Id and X-Dev-Device-Id instead of a client certificate")
+	flag.StringVar(&o.devCredentialID, "dev-credential-id", "dev",
+		"TEST ONLY with -dev-trust-principal: the credential id the header principal presents. The in-memory store ignores it; a -store sql run needs a uuid that names an ops.device_credential row")
 	flag.StringVar(&o.devSeed, "dev-seed-principal", "", "TEST ONLY with -store=memory: register tenant:device[:credential] as an active principal so a local run can accept a batch (default credential \"dev\", matching -dev-trust-principal)")
 	flag.BoolVar(&o.verifyDedupKey, "verify-dedup-key", false, "diagnostic: recompute §4.5 dedup_key and reject a mismatch (off by default; §7 has no wire code for it)")
 	flag.DurationVar(&o.replayWindow, "replay-window", 24*time.Hour, "duplicate_batch replay window")
@@ -177,16 +187,24 @@ func run() error {
 		if dsn == "" {
 			dsn = postgresDSN(o.pgHost, o.pgPort, o.pgDatabase, o.role)
 		}
-		if o.driver == "" {
+		// -driver wins; the tagged build knows its own driver and needs neither flag. The default
+		// build has neither, so this is where it refuses with something actionable instead of
+		// starting and quietly serving out of memory.
+		driver := o.driver
+		if driver == "" {
+			driver = defaultDriverName
+		}
+		if driver == "" {
 			return sqlRefusal(o, dsn)
 		}
-		db, err := sql.Open(o.driver, dsn)
+		db, err := sql.Open(driver, dsn)
 		if err != nil {
-			return fmt.Errorf("open database with driver %q: %w (a registered driver is required; the standard library has none)", o.driver, err)
+			return fmt.Errorf("open database with driver %q: %w (a registered driver is required; the standard library has none)", driver, err)
 		}
 		db.SetMaxOpenConns(16)
 		db.SetConnMaxIdleTime(5 * time.Minute)
 		st = store.NewSQL(db)
+		logger.Info("serving from PostgreSQL", "driver", driver, "dsn", redactDSN(dsn))
 	default:
 		return fmt.Errorf("unknown -store %q (want memory or sql)", o.storeKind)
 	}
@@ -199,18 +217,35 @@ func run() error {
 		return err
 	}
 
+	// The TLS material decides how devices authenticate: files on a laptop, PEM from the environment
+	// in a container (SAC_TLS_*_PEM, injectable from Key Vault by the module's keyVaultEnv).
+	material, err := loadTLSMaterial(o)
+	if err != nil {
+		return err
+	}
+
 	var authenticator auth.Authenticator
-	switch {
-	case o.devTrust:
-		if o.tlsClientCA != "" {
-			return errors.New("-dev-trust-principal and -tls-client-ca are mutually exclusive")
+	if o.devTrust {
+		if material != nil {
+			return errors.New("-dev-trust-principal and TLS material are mutually exclusive: one replaces the device credential, the other verifies it")
 		}
 		logger.Warn("TEST ONLY: trusting X-Dev-Tenant-Id / X-Dev-Device-Id; never enable this in a deployment")
-		authenticator = httpapi.DevHeader{TenantHeader: "X-Dev-Tenant-Id", DeviceHeader: "X-Dev-Device-Id"}
-	case o.tlsCert != "" && o.tlsKey != "" && o.tlsClientCA != "":
+		authenticator = httpapi.DevHeader{
+			TenantHeader: "X-Dev-Tenant-Id", DeviceHeader: "X-Dev-Device-Id",
+			CredentialID: o.devCredentialID,
+		}
+	} else if material != nil {
 		authenticator = &auth.MTLSAuthenticator{Store: st, Region: o.region}
-	default:
-		return errors.New("refusing to serve without device authentication: supply -tls-cert, -tls-key and -tls-client-ca, or -dev-trust-principal for a local test")
+	} else {
+		return fmt.Errorf(`refusing to serve without device authentication.
+
+  supply the material as files:      --tls-cert FILE --tls-key FILE --tls-client-ca FILE
+  or as PEM in the environment:      %s, %s, %s
+                                     (what a deployment injects from Key Vault: the Container Apps
+                                      module has no command/args and no volume mount, but it does
+                                      have keyVaultEnv)
+  or, for a local test only:         -dev-trust-principal`,
+			EnvTLSCertPEM, EnvTLSKeyPEM, EnvTLSClientCAPEM)
 	}
 
 	srv := httpapi.New(svc, authenticator, batchguard.New(o.replayWindow), logger)
@@ -226,23 +261,9 @@ func run() error {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       90 * time.Second,
 	}
-	// §2.1: TLS 1.3 minimum, mutual authentication required. Go negotiates no 0-RTT and does not
-	// renegotiate, which is the rest of §2.1's refusal list.
-	if o.tlsCert != "" {
-		pool, err := loadCAPool(o.tlsClientCA)
-		if err != nil {
-			return err
-		}
-		cert, err := tls.LoadX509KeyPair(o.tlsCert, o.tlsKey)
-		if err != nil {
-			return fmt.Errorf("load server key pair: %w", err)
-		}
-		httpServer.TLSConfig = &tls.Config{
-			MinVersion:   tls.VersionTLS13,
-			Certificates: []tls.Certificate{cert},
-			ClientAuth:   tls.RequireAndVerifyClientCert,
-			ClientCAs:    pool,
-		}
+	// §2.1: TLS 1.3 minimum, mutual authentication required.
+	if material != nil {
+		httpServer.TLSConfig = material.serverTLSConfig()
 	}
 
 	errCh := make(chan error, 1)
@@ -275,35 +296,34 @@ func run() error {
 
 // sqlRefusal is the F4 decision (task-24), stated as a message rather than a dead end.
 //
-// This build has no PostgreSQL driver and cannot fetch one (GOPROXY=off). The two acceptable failures
-// were "refuse with something actionable" or "hide it behind a build tag"; vendoring a driver this
-// host cannot test was not one of them, and neither was starting in memory and letting a deployment
-// believe it is persisting. So: it refuses, and the refusal names the driver, the variables it read,
-// what IS verified, and the exact commands a networked host runs to close the gap.
+// The default build carries no PostgreSQL driver: the third-party dependency is compiled only under
+// the sac_sql_driver build tag, so that `go build ./...` and `go test ./...` stay standard-library
+// only and a machine with no module cache still passes. The two acceptable failures were "refuse with
+// something actionable" or "hide it behind a build tag"; this does both, and neither vendors a driver
+// this host cannot test nor starts in memory while a deployment believes it is persisting.
 //
 // The DSN is printed without a password by construction (postgresDSN builds one from the managed
 // identity), and the environment values named here are never secret.
 func sqlRefusal(o options, dsn string) error {
 	return fmt.Errorf(`--store sql cannot start in this build: no PostgreSQL driver is compiled in.
 
-  driver   github.com/jackc/pgx/v5/stdlib (registered as "pgx"); a Go module, and this offline build
-           neither vendors nor fetches one. The module *is* present in the host's module cache
-           (pgx/v5 v5.11.0 with all of its dependencies), so a host whose GOMODCACHE points at it can
-           land the wiring in one line -- see README.md "Configuration" for why that line is not
-           here today.
+  driver   github.com/jackc/pgx/v5/stdlib (registered as "pgx"). This build does not carry it -- the
+           dependency is compiled only under the sac_sql_driver tag, which is what keeps the default
+           build dependency-free (see sqlpg/doc.go).
   dsn      %s
            from %s=%s %s=%s %s=%s (read from this process; never logged with a credential in them)
 
-  what IS verified without a driver: every statement this service issues is executed against a live
-  PostgreSQL by the live-schema test, and ingest.record_event()'s semantics are asserted there:
-      go test ./internal/store -run TestLive -v
-  what is NOT verified: the database/sql plumbing this flag would enable -- connection pooling, the
-  transaction boundary, and driver-level error mapping. README.md lists it under "Not verified".
+  the tagged build, which uses the real driver and needs no -driver flag:
+      go build -tags sac_sql_driver -o ingest-api-sql ./cmd/ingest-api
+      ./ingest-api-sql -store sql -dsn "$SAC_PG_DSN"
 
-  to close it on a host with a module proxy:
-      go get github.com/jackc/pgx/v5/stdlib
-      go build ./... && go test ./internal/store -run TestLive -v
-      ./ingest-api -store sql -driver pgx -dsn "$SAC_PG_DSN"`,
+  what IS verified:
+      go test ./internal/store -run TestLive -v            # the statement text, against a live server
+      go test -tags sac_sql_driver ./sqlpg/ -v             # the database/sql plumbing: pooling, the
+                                                           # transaction boundary, record_event, errors
+
+  to fetch the driver on a host with a module proxy:
+      go get github.com/jackc/pgx/v5/stdlib && go mod tidy`,
 		dsn, EnvPGHost, o.pgHost, EnvPGDatabase, o.pgDatabase, EnvRole, o.role)
 }
 
