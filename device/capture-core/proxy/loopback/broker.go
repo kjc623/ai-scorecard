@@ -295,6 +295,24 @@ func (b *Broker) Health() core.Health {
 	}
 }
 
+// PortConflicts reports how many times any port has been observed held by another process since the
+// process started. It is the sticky half of §6.2 rule 5: the *state* is present-tense (`tampered`
+// clears on a successful bind, because `tampered` is the only state that raises a security finding),
+// and the history travels here rather than in the closed seven counters or in a detail code that
+// describes the current state.
+func (b *Broker) PortConflicts() int {
+	b.mu.Lock()
+	runners := append([]*portRunner(nil), b.runners...)
+	b.mu.Unlock()
+	total := 0
+	for _, r := range runners {
+		r.mu.Lock()
+		total += r.machine.ConflictCount()
+		r.mu.Unlock()
+	}
+	return total
+}
+
 // Coverage is §6.5's coverage row: ports configured N, held M, upstream reachable K. `K < M` is
 // an alarm rather than a footnote, which is why it is a separate accessor rather than prose.
 func (b *Broker) Coverage() (configured, held, reachable int) {

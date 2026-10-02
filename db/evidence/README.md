@@ -15,10 +15,11 @@ psql -v ON_ERROR_STOP=1 -f db/schema.sql && psql -v ON_ERROR_STOP=1 -f db/invari
 
 | file | sha256 |
 |---|---|
-| `db/schema.sql` (current: + `ops.retrieval_grant`, single-use trigger, RLS, grants) | `AB2624502946B98CF6742D6892D75361E986E39EF5DEA7CE47CB852DD8239A7E` |
-| `db/invariants.test.sql` (current, T1..T45) | `F28552368E469D02…` (full hash in the run logs, which embed it) |
-| `db/tools/check-schema.mjs` (current, 71 checks) | `2563A62CE7CEC26F…` |
+| `db/schema.sql` (current: + `ops.retrieval_grant`, single-use trigger, RLS, grants, digest CHECK) | `B37EA56557CEBEB6…` (full hash in the run logs) |
+| `db/invariants.test.sql` (current, T1..T46) | `34B54BF48AED73F5…` |
+| `db/tools/check-schema.mjs` (current, 73 checks) | `23108BD92B800D8F…` |
 | `db/tools/tally-log.mjs` (the harness's tally, tested) | `070E633B3F38F5E6…` |
+| `db/schema.sql` with `retrieval_grant_raw_digest_is_sha256` removed (negative control, run 15) | `ECD86AF13D139FDBB6248F81724F1951C171751DDF742ED78661EC0217A1B630` |
 | `db/schema.sql` with the single-use trigger removed (negative control A, run 14) | `6104CD59162F9EC2E4E3A2912F076286125B25391E5A3A49BB0452B1F203F141` |
 | `db/schema.sql` with `retrieval_grant_claim_is_whole` weakened (negative control B, run 14) | `36523A65058E1A52BFD5260BAC5DFA9C867AF3CFA6083C270CA943D53BF9501E` |
 | `db/schema.sql`, `confidence` clause of the M0 constraint reverted (negative controls, runs 12–13) | `737BF11811266F9596A18F084E154C6B2B9642AB6C2F99A6843E1FD9B9EBDA48` |
@@ -82,8 +83,9 @@ That is an argument that nothing in the file is 17-specific. It is **not** a run
 | N | `13-t43-isolation-proof.log` | **Isolation proof for T43.** The same revert with `confidence` removed from T42's sweep, so T42 passes and T43 must catch it alone | T42 passed, **T43 failed** with its own named message — T43 is not dead code behind T42 |
 | O | current `*-invariants.log` pairs | State after T43 and the M2 decision | schema 0, invariants 0 — 45 PASS, 43 distinct, 0 FAIL, 0 ERROR |
 | P | `14-negative-controls-retrieval-grant.log` | **Negative controls for the single-use grant.** A: the `retrieval_grant_single_use` trigger removed (`6104CD59…`). B: `retrieval_grant_claim_is_whole` weakened (`36523A65…`). Shipped schema run as contrast | A: T44 passes, **T45 fails** — `an UPDATE without the 'used_at IS NULL' guard re-redeemed a claimed grant`. B: **T45 fails** — `a half-claimed row (used_at set, used_by NULL) was accepted`. Contrast: schema 0, invariants 0 |
-| Q | `node --test db/tools/` (36 tests, in the acceptance output) | **The db/tools suite**, added so `tools/verify-all.mjs` has something to run for this component | 36 tests, 36 pass, 0 fail. Includes one negative case per checker family, each asserting the checker exits 1 and names the right check |
-| R | current `*-invariants.log` pairs | Final state | schema 0, invariants 0 — **48 PASS, 45 distinct**, 0 FAIL, 0 ERROR |
+| Q | `node --test db/tools/` (39 tests, in the acceptance output) | **The db/tools suite**, added so `tools/verify-all.mjs` has something to run for this component | 39 tests, 39 pass, 0 fail. One negative case per checker family, each asserting the checker exits 1 and names the right check |
+| R | `15-negative-control-raw-digest-format.log` | **Negative control for T46.** `retrieval_grant_raw_digest_is_sha256` removed (`ECD86AF1…`), every other constraint intact | `tests_exit=3` — T1..T45 pass, then **T46 fails**: `a raw_digest that is not a sha256 digest was accepted` |
+| S | current `*-invariants.log` pairs | Final state | schema 0, invariants 0 — **49 PASS, 46 distinct**, 0 FAIL, 0 ERROR |
 
 Runs A, D, F, I, L and O agree on every assertion they share. Run E is the evidence that the suite
 can fail, which is what makes the passes mean something; runs G, H, J, K, M and N do the same for
@@ -340,13 +342,32 @@ the single-use claim loses a race — those are runtime properties, they live in
 cannot run under `node --test`. The split is deliberate: the static half proves each forbid-list is
 **complete**, the runtime half proves it is **enforced**.
 
-## The assertion count is 45
+## The assertion count is 46
 
-`db/invariants.test.sql` contains **45 named assertions, T1–T45, contiguous, with no gaps**, at
-48 `PASS` raise-sites — T32 and T33 each carry two sub-cases, which is why the notice count is 48.
+`db/invariants.test.sql` contains **46 named assertions, T1–T46, contiguous, with no gaps**, at
+49 `PASS` raise-sites — T32 and T33 each carry two sub-cases, which is why the notice count is 49.
 The file held 35 (T1..T35) at the start of this session; T36 and T37 were added for the adopt
 defect, T38 for the quarantine reason-code vocabulary, T39–T42 for the kind and mode
-boundaries, T43 to pin `confidence` on M0 by name, and T44–T45 for the single-use retrieval grant.
+boundaries, T43 to pin `confidence` on M0 by name, T44–T45 for the single-use retrieval grant, and
+T46 for the grant's `raw_digest` format.
+
+### `raw_digest` and the digest-format rule
+
+content-vault asked for the digest CHECK and supplied the evidence: `raw_digest` is copied verbatim
+from `ops.content_object.ciphertext_sha256`, which already carries
+`CHECK (ciphertext_sha256 ~ '^sha256:[0-9a-f]{64}$')`. Verified that claim against the live catalog
+before acting, then added the same pattern to the grant. T46 pins it in both directions — the real
+shape is accepted, a non-digest is refused, and **uppercase hex is refused too**, because the digest
+has one spelling and a second spelling is a second value.
+
+Looking for other columns in the same state turned up two: `ops.policy_bundle.signed_digest` and
+`ref.classifier_release.artifact_digest` carry no format CHECK either. No owner has stated that they
+are always `sha256:` and adding a restriction on a guess is the direction this schema avoids, so
+they are recorded as **excused** rather than tightened — and the checker asserts the excused set is
+exactly those two, so it cannot grow silently and a stale entry fails.
+`digest.every-column-format-checked-or-excused` now covers all 9 digest-shaped columns, and three
+negative controls in the suite prove it can fail: weakening a CHECK, adding a new unchecked digest
+column, and leaving a stale exemption.
 
 **The documents are stale again.** The checker reads the claims out of the documents themselves
 rather than trusting a constant: they say 42 (README.md ×2, `.cockpit/project.json` ×3,

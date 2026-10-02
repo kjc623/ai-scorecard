@@ -151,6 +151,57 @@ func TestMachine_6_4_RepeatedFailureCoolsDown(t *testing.T) {
 	}
 }
 
+// A conflict that ends is no longer true. `tampered` is the only state that raises a security
+// finding (§4.2, C24), so a broker that has recovered, re-bound and is serving must not keep
+// reporting it — the defect the R1 harness measured: the port was re-bound in 1.01 s and served a
+// request while the health row still said `port_held_by_other`. The history stays in ConflictCount.
+func TestMachine_6_2_RecoveredConflictIsNotTampered(t *testing.T) {
+	m := NewMachine(MachineConfig{})
+	m.Apply(EvPreflightOK)
+	if action := m.Apply(EvPortHeldByOther); action != ActRelease {
+		t.Fatalf("conflict action = %q, want stay released", action)
+	}
+	if !m.Tampered() || m.ConflictCount() != 1 {
+		t.Fatalf("after the conflict: tampered=%v conflicts=%d, want true/1", m.Tampered(), m.ConflictCount())
+	}
+	if m.Detail() != protocol.DetailPortHeldByOther {
+		t.Fatalf("detail during the conflict = %q, want %q", m.Detail(), protocol.DetailPortHeldByOther)
+	}
+
+	// The holder goes away: the retry preflights, binds and serves.
+	if action := m.Apply(EvPreflightOK); action != ActBind {
+		t.Fatalf("retry action = %q, want bind", action)
+	}
+	if action := m.Apply(EvBindOK); action != ActServe {
+		t.Fatalf("bind action = %q, want serve", action)
+	}
+	if m.State() != StateHolding {
+		t.Fatalf("state after recovery = %s, want HOLDING", m.State())
+	}
+	if m.Tampered() {
+		t.Fatal("a recovered, serving port still reports tampered: that is a false security finding")
+	}
+	if m.Detail() != protocol.DetailNone {
+		t.Fatalf("detail after recovery = %q, want none", m.Detail())
+	}
+	if m.ConflictCount() != 1 {
+		t.Fatalf("conflict count = %d, want the history kept (1)", m.ConflictCount())
+	}
+
+	// A second, later conflict is counted too, and cleared by the next successful bind.
+	m.Apply(EvShutdown)
+	m.Apply(EvPreflightOK)
+	m.Apply(EvPortHeldByOther)
+	if m.ConflictCount() != 2 {
+		t.Fatalf("conflict count = %d, want 2", m.ConflictCount())
+	}
+	m.Apply(EvPreflightOK)
+	m.Apply(EvBindOK)
+	if m.Tampered() || m.ConflictCount() != 2 {
+		t.Fatalf("after the second recovery: tampered=%v conflicts=%d, want false/2", m.Tampered(), m.ConflictCount())
+	}
+}
+
 func TestPreflightPathDefaultIsReadOnlyRoot(t *testing.T) {
 	// A8: the preflight path is per-tool bundle configuration; the default must still be a
 	// read-only request, so an empty path becomes "/" rather than the generation endpoint.

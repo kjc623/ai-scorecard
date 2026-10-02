@@ -94,7 +94,12 @@ type healthSnapshot struct {
 	Extension      *protocol.HealthReport  `json:"extension,omitempty"`
 	Spool          protocol.SpoolStats     `json:"spool"`
 	NamedGaps      []string                `json:"named_gaps,omitempty"`
-	Note           string                  `json:"note"`
+	// LoopbackPortConflicts is the sticky half of §6.2 rule 5: how many times a port was found held
+	// by another process since start. The provider's *state* is present-tense (a recovered port is
+	// not `tampered`, because tampered is the only state that raises a security finding), and this is
+	// where the history lives — visible without mislabelling a working port.
+	LoopbackPortConflicts int    `json:"loopback_port_conflicts,omitempty"`
+	Note                  string `json:"note"`
 }
 
 type classifierStatus struct {
@@ -153,6 +158,9 @@ func (h *healthChannel) Snapshot() healthSnapshot {
 	}
 	if !h.cfg.EnableLoopback {
 		snap.NamedGaps = append(snap.NamedGaps, "proxy.loopback: no coverage row (provider disabled by configuration)")
+	}
+	if h.svc.broker != nil {
+		snap.LoopbackPortConflicts = h.svc.broker.PortConflicts()
 	}
 	return snap
 }

@@ -36,8 +36,19 @@ one.** A lab that inherits a production tenant shape is the failure this documen
 
 ## 1. The answer
 
-The question was: *cheapest Azure lab that still runs this architecture.* The answer has two parts,
-because there are two different things to test and they have different price tags.
+The request this document answers, in the requester's words:
+
+> *"find cheap alternatives in azure for a lab so I can test what we're building without paying full
+> tenant costs for something that isn't generating revenue. Ensure the agent selects resources that
+> will work with our architecture."*
+
+The second sentence is the hard one: a lab that swaps PostgreSQL for something cheaper, or that makes
+the content vault publicly reachable to avoid Private Link, is testing a **different system**. §2
+therefore lists the five properties any answer must keep, and §6 names, property by property, the
+ones this configuration cannot exercise.
+
+The answer has two parts, because there are two different things to test and they have different
+price tags.
 
 ### Part A — the development lab: your own machine. **$0.00/month.**
 
@@ -317,10 +328,10 @@ in cost order:
 | **A shell container app** (`minReplicas: 0`) + `az containerapp exec` | ≈$0.09/hour while you are in it | an interactive prompt inside the environment |
 | **A B1s jump VM** in the VNet | ≈$16/month (VM $7.59 **[EST]** + OS disk ≈$4.80 **[EST]** + public IP ≈$3.65 **[EST]**) | a place to run the device agent and a browser against the APIs. **Lab-only**: `Microsoft.Compute/virtualMachines` is on `infra/inventory.json`'s deliberately-absent list for production. |
 
-Not offered: **Azure Bastion** (≈$140/month **[EST]** — 4× the whole lab) and a **VPN Gateway**
-(≈$26/month **[EST]** for Basic, plus setup). Both are correct tools for a private network and both
-cost more than the thing they protect. If you need your laptop *inside* the VNet regularly, §7.6's
-open mode is the cheaper answer, with the deviation it names.
+Not offered: **Azure Bastion** (≈$140–265/month depending on SKU **[EST]** — several times the whole
+lab) and a **VPN Gateway** (≈$13–30/month **[EST]** for the entry SKUs, plus setup). Both are correct
+tools for a private network and both cost more than the thing they protect. If you need your laptop
+*inside* the VNet regularly, §7.6's open mode is the cheaper answer, with the deviation it names.
 
 ### 4.5 The cost of forgetting, in the numbers that decide whether this lab is usable
 
@@ -415,7 +426,7 @@ unstated half is how someone concludes "it works" from evidence that never cover
 | **Managed identity** | **Partly** | The seven user-assigned identities deploy and can be role-assigned; a job or shell can acquire a token. **But** the services do not read their configuration from the environment (§9 F3–F4), so *the services' use of their identity* is untestable until that seam is closed. |
 | **Key Vault** (RBAC, purge protection, soft delete 90 d) | **Yes**, with one deviation | The vault deploys and behaves. The lab uses the **Standard** SKU; production requires **Premium** (HSM-backed KEKs), and `content-vault`'s `--key-backend kms` is **not implemented in this build**, so nothing unwraps anything. |
 | **Key rotation** | **No** | Two reasons: nothing in the build reads a key, and the HSM-backed key type needs Premium. Rotating a key nothing reads proves nothing. |
-| **Private Link approval** | **Partly** | One endpoint with an auto-approval flow exercised once. Production has ~7 endpoints (PostgreSQL, two storage accounts, Key Vault, ACR, Log Analytics, Front Door origins) and a cross-subscription approval to rehearse. |
+| **Private Link approval** | **Partly** | One endpoint, auto-approved by the owning subscription, exercised once. Production has five (two storage accounts, Key Vault, ACR, Log Analytics — `inventory.json`: "one endpoint per PaaS resource"), six when a contract adds Managed HSM, and they include a cross-subscription approval to rehearse. PostgreSQL is not among them: it is VNet-delegated, not privately ended. |
 | **Front Door + WAF behaviour** | **No** | Dropped. No edge routing, no managed rule set, no custom rules, no rate limiting, no Private Link origin, no single public hostname. **This is the largest untestable area in the lab**, and it is the direct consequence of deleting a $330/month resource. |
 | **Residency pinning** | **Partly** | One region is deployed, so "everything is in eastus" is observable. The *refusal* path (`ingest-api --region`) is a local code test. Multi-region failover is not testable at any lab price. |
 | **Erasure receipts / retention expiry** | **Partly** | `ops.erasure_receipt`, its triggers and the erasure's effect on aggregates are all in the schema, so a scripted erasure can be exercised end to end **against the database**. The components that would perform one in production (retention job, reconciler) **do not exist in this repository**, so the *flow* is not testable anywhere. |

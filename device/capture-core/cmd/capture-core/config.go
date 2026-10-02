@@ -182,19 +182,71 @@ var errNoClassifierAddress = errors.New("no classifier address configured")
 
 // workDirFor returns the selftest's work directory, resolved against the process's working
 // directory so it never lands in a system temp path the sandbox may deny.
+// workDirFor returns the selftest's work directory. It never writes into the source tree by default:
+// a run artifact inside the repository is a file somebody commits by accident (which happened once,
+// with a spool key in it). Candidates are tried in order and the first writable one wins, because a
+// sandbox can deny the system temp directory while allowing a workspace-scoped one.
 func workDirFor(cfg Config) (string, error) {
-	dir := cfg.WorkDir
-	if dir == "" {
-		// The OS temp directory, not the source tree: a run artifact inside the repository is a
-		// file somebody commits by accident. Under the acceptance harness TMP/TEMP point inside the
-		// workspace (.testtmp), which is writable, so this works confined and unconfined alike.
-		dir = filepath.Join(os.TempDir(), "capture-core-selftest")
+	if strings.TrimSpace(cfg.WorkDir) != "" {
+		return filepath.Abs(cfg.WorkDir)
 	}
-	abs, err := filepath.Abs(dir)
+	candidates := []string{
+		filepath.Join(os.TempDir(), "capture-core-selftest"),
+		// The repository's own ignored scratch directory: present in .gitignore by policy, so even a
+		// hard-killed run cannot leave something a person is tempted to commit.
+		filepath.Join(repoRootGuess(), ".tools", "tmp", "capture-core-selftest"),
+		// The harness's workspace temp directory, when it has pointed TMP/TEMP here.
+		filepath.Join(repoRootGuess(), ".testtmp", "capture-core-selftest"),
+		filepath.Join(".", ".selftest"), // last resort: gitignored, and removed on exit either way
+	}
+	var lastErr error
+	for _, candidate := range candidates {
+		if err := probeWritable(candidate); err != nil {
+			lastErr = err
+			continue
+		}
+		return filepath.Abs(candidate)
+	}
+	return "", fmt.Errorf("no writable work directory (last error: %w); pass --work-dir", lastErr)
+}
+
+// probeWritable creates the directory and a file in it, so the selftest discovers an unwritable
+// location before it has started a service rather than half-way through one.
+func probeWritable(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(dir, "probe-*")
 	if err != nil {
-		return "", err
+		return err
 	}
-	return abs, nil
+	name := f.Name()
+	_ = f.Close()
+	_ = os.Remove(name)
+	return nil
+}
+
+// repoRootGuess walks up from the working directory looking for the repository markers the build
+// environment uses (.tools, .git). It returns "." when it finds neither, which keeps the candidate
+// list honest rather than inventing a path.
+func repoRootGuess() string {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "."
+	}
+	for i := 0; i < 6; i++ {
+		for _, marker := range []string{".tools", ".git"} {
+			if st, err := os.Stat(filepath.Join(dir, marker)); err == nil && st.IsDir() {
+				return dir
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return "."
 }
 
 // describeMode renders a resolved mode and the axes that produced it, so --print-config can explain

@@ -412,6 +412,73 @@ func TestBroker_6_4_UpstreamCrashReleasesAndRecoveryRebinds(t *testing.T) {
 	}
 }
 
+// The R1 harness's question, asked as an assertion: when a port conflict ends, the health row and
+// the coverage row must agree about the same port. Before the fix they did not — the broker recovered,
+// re-bound in about a second and served a request while Health still said `tampered`, the only state
+// that raises a security finding.
+func TestBroker_6_2_RecoveredPortConflictIsNotTamperedAndCoverageAgrees(t *testing.T) {
+	upstream := newStubUpstream(t)
+	held := freePort(t)
+
+	holder, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", held))
+	if err != nil {
+		t.Fatalf("hold the port: %v", err)
+	}
+
+	pipe := &recordingPipeline{mode: protocol.ModeM1}
+	b := New(testConfig(upstream.Port(), held, pipe))
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := b.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer b.Stop(context.Background())
+
+	waitFor(t, 5*time.Second, "the broker to report the tampered port", func() bool {
+		return b.Health().State == protocol.StateTampered
+	})
+	if b.PortConflicts() == 0 {
+		t.Fatal("a conflict was reported as tampered but not counted")
+	}
+
+	// The conflict ends: the holder releases the port.
+	if err := holder.Close(); err != nil {
+		t.Fatalf("release the port: %v", err)
+	}
+	waitFor(t, 10*time.Second, "the broker to recover and hold the port", func() bool {
+		configured, heldN, reachable := b.Coverage()
+		return configured == 1 && heldN == 1 && reachable == 1
+	})
+
+	h := b.Health()
+	if h.State == protocol.StateTampered {
+		t.Fatalf("after recovery the health row still says tampered (detail=%q) while coverage says held=1 reachable=1: a false security finding on a working port", h.Detail)
+	}
+	if h.Detail == protocol.DetailPortHeldByOther {
+		t.Fatalf("after recovery the health detail still names the ended conflict: %q", h.Detail)
+	}
+	if h.State != protocol.StateHealthy {
+		t.Fatalf("health after recovery = %s/%s, want healthy", h.State, h.Detail)
+	}
+	// The history survives the recovery, on the coverage row rather than in the state.
+	if b.PortConflicts() != 1 {
+		t.Fatalf("conflict count = %d, want the ended conflict to remain observable as history", b.PortConflicts())
+	}
+	// And the port is genuinely serving: a request through it reaches the upstream.
+	resp, err := http.Post(fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", held), "application/json", strings.NewReader(`{"messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatalf("POST through the recovered broker: %v", err)
+	}
+	_, _ = io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if upstream.countPath("/v1/chat/completions") != 1 {
+		t.Fatal("the recovered broker did not forward the request")
+	}
+	if state := b.Health().State; state == protocol.StateTampered {
+		t.Fatalf("serving a request changed nothing: health is %s again", state)
+	}
+}
+
 // §6.2 rule 5: if something is listening that is not the expected upstream, the broker does not
 // bind, does not kill the holder, and reports tampered with detail=port_held_by_other.
 func TestBroker_6_2_PortHeldByOtherIsTamperedAndNeverFoughtFor(t *testing.T) {

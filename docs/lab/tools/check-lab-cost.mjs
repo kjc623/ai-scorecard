@@ -104,3 +104,36 @@ console.log(`  production Container Apps floor   $${round((4 * UNIT.acaVcpuHour[
 console.log(`  dev Container Apps floor          $${round((2.5 * UNIT.acaVcpuHour[0] + 5 * UNIT.acaGibHour[0]) * HOURS).toFixed(0)}/month  (2.5 vCPU + 5 GiB continuous)`);
 console.log(`\n  lab vs dev-as-is: ${round(devShape / labTotal, 1)}x cheaper`);
 console.log(`  a forgotten week, prod shape ($${round((prodShape / DAYS) * 7).toFixed(0)}) vs a year of the lab ($${round(labTotal * 12).toFixed(0)})`);
+
+// ── the document must agree with the arithmetic ───────────────────────────────────────────────
+// A costing document whose own numbers drift from its own terms is worse than no document, so the
+// figures are asserted here by string. `--check` is what a reviewer runs; without it this script is
+// a readable recomputation.
+const DOC = new URL('../LAB-COST.md', import.meta.url);
+const expected = [
+  ['lab total', `$${round(labTotal).toFixed(2)}`],
+  ['lab per day', `$${round(labTotal / DAYS).toFixed(2)}`],
+  ['lab per week', `$${round((labTotal / DAYS) * 7).toFixed(2)}`],
+  ['floor, unused', `$${round(floorIdle).toFixed(2)}`],
+  ['floor, PG stopped', `$${round(floorStopped).toFixed(2)}`],
+  ['dev shape, per month', `$${round(devShape).toFixed(0)}`],
+  ['dev shape, per week', `$${round((devShape / DAYS) * 7).toFixed(0)}`],
+  ['prod shape, per month', Number(round(prodShape).toFixed(0)).toLocaleString('en-US')],
+  ['prod shape, per week', `$${round((prodShape / DAYS) * 7).toFixed(0)}`],
+  ['Managed HSM, per week', `$${round((UNIT.managedHsmHour[0] * HOURS / DAYS) * 7).toFixed(0)}`],
+  ['production Container Apps floor', `$${round((4 * UNIT.acaVcpuHour[0] + 8 * UNIT.acaGibHour[0]) * HOURS).toFixed(0)}`],
+  ['dev Container Apps floor', `$${round((2.5 * UNIT.acaVcpuHour[0] + 5 * UNIT.acaGibHour[0]) * HOURS).toFixed(0)}`],
+];
+
+const text = await import('node:fs').then((fs) => fs.readFileSync(DOC, 'utf8'));
+const missing = expected.filter(([, needle]) => !text.includes(needle.replace('$', '$')));
+console.log('\n=== the document agrees with this arithmetic ===');
+for (const [label, needle] of expected) {
+  const ok = text.includes(needle);
+  console.log(`  ${ok ? 'ok  ' : 'MISS'} ${label.padEnd(34)} ${needle}`);
+}
+if (process.argv.includes('--check') && missing.length > 0) {
+  console.error(`\n${missing.length} figure(s) in LAB-COST.md do not match the recomputation: ${missing.map(([l]) => l).join(', ')}`);
+  process.exit(1);
+}
+console.log(missing.length === 0 ? '\nall document figures match' : `\n${missing.length} to reconcile`);

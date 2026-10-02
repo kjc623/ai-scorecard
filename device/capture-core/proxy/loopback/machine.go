@@ -78,12 +78,13 @@ type MachineConfig struct {
 // Machine is §6.2's state machine for one held port. It is pure: no sockets, no clock, no
 // goroutines, so every transition in the document's diagram is directly testable.
 type Machine struct {
-	cfg      MachineConfig
-	state    State
-	missed   int
-	failures int
-	tampered bool
-	lastFail Event
+	cfg       MachineConfig
+	state     State
+	missed    int
+	failures  int
+	tampered  bool
+	conflicts int
+	lastFail  Event
 }
 
 // NewMachine returns a machine whose default state is RELEASED (§6.2 rule 1).
@@ -100,9 +101,21 @@ func (m *Machine) State() State { return m.state }
 // ConsecutiveFailures returns the current failure streak.
 func (m *Machine) ConsecutiveFailures() int { return m.failures }
 
-// Tampered reports whether the port was observed held by something that is not the expected
-// upstream (§6.2 rule 5): the broker does not bind and does not fight for it.
+// Tampered reports whether the port is held by something that is not the expected upstream
+// (§6.2 rule 5): the broker does not bind and does not fight for it.
+//
+// It is **present tense**, and that is a decision rather than a detail: `tampered` is the only state
+// that raises a security finding (§4.2, C24), so a conflict that has ended must not keep raising one.
+// A sticky flag that outlives its cause made a recovered, serving broker report `tampered` forever —
+// measured by the R1 harness, where the port was re-bound in 1.01 s and served a request while the
+// health row still said `port_held_by_other`. The history is kept in ConflictCount, because "this
+// happened once" is worth knowing without mislabelling a working port.
 func (m *Machine) Tampered() bool { return m.tampered }
+
+// ConflictCount is how many times a port conflict has been observed since the process started. It
+// is deliberately NOT a protocol.Counter: the closed set of seven is closed (A15), so this travels
+// on the provider's coverage row rather than inventing a name the reporting layer cannot group.
+func (m *Machine) ConflictCount() int { return m.conflicts }
 
 // Detail is the health cause the machine's current state implies, from §6.3/§6.4's closed
 // vocabulary.
@@ -195,6 +208,11 @@ func (m *Machine) Apply(ev Event) Action {
 		case EvBindOK:
 			m.state = StateHolding
 			m.missed = 0
+			// The bind is the positive observation that the conflict, if there was one, is over:
+			// the port is ours and serving. Clearing it here rather than leaving it sticky is what
+			// keeps `tampered` present-tense, so a working port does not raise a security finding
+			// forever. ConflictCount keeps the history.
+			m.tampered = false
 			return "serve"
 		case EvBindFail:
 			m.failures++
@@ -203,6 +221,7 @@ func (m *Machine) Apply(ev Event) Action {
 			return ActBackoff
 		case EvPortHeldByOther:
 			m.tampered = true
+			m.conflicts++
 			m.state = StateReleased
 			return ActRelease
 		case EvPreflightFail:
