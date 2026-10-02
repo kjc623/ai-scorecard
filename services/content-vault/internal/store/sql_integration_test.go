@@ -26,18 +26,45 @@ import (
 // `docker exec ... psql` rather than through database/sql. What this does *not* exercise is the
 // database/sql plumbing itself; that is stated in the package comment and in README.md.
 
+// dockerBin finds the docker client. On this host it is installed but not on the PATH the test
+// inherits, so the known install location is a fallback rather than a reason to skip: a skipped
+// database test is "no evidence", and the schema agreement is the whole point of this file.
+func dockerBin() (string, error) {
+	if p := os.Getenv("SHADOWPG_DOCKER"); p != "" {
+		return p, nil
+	}
+	if p, err := exec.LookPath("docker"); err == nil {
+		return p, nil
+	}
+	for _, p := range []string{
+		`C:\Program Files\Docker\Docker\resources\bin\docker.exe`,
+		`C:\ProgramData\DockerDesktop\version-bin\docker.exe`,
+		"/usr/bin/docker",
+		"/usr/local/bin/docker",
+	} {
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+	}
+	return "", os.ErrNotExist
+}
+
 // psqlContainer returns a container hosting the schema, or skips the test.
 func psqlContainer(t *testing.T) string {
 	t.Helper()
+	docker, err := dockerBin()
+	if err != nil {
+		t.Skipf("no live-PG evidence: the docker client was not found (%v)", err)
+	}
 	if name := os.Getenv("SHADOWPG_CONTAINER"); name != "" {
-		if containerReady(t, name) {
+		if containerReady(t, docker, name) {
 			return name
 		}
 		t.Skipf("SHADOWPG_CONTAINER=%s does not answer a probe for the sac schema", name)
 	}
-	out, err := exec.Command("docker", "ps", "--format", "{{.Names}}\t{{.Image}}").Output()
+	out, err := exec.Command(docker, "ps", "--format", "{{.Names}}\t{{.Image}}").CombinedOutput()
 	if err != nil {
-		t.Skipf("no live-PG evidence: docker is unavailable (%v)", err)
+		t.Skipf("no live-PG evidence: %s ps failed (%v): %s", docker, err, strings.TrimSpace(string(out)))
 	}
 	var candidates []string
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
@@ -48,13 +75,13 @@ func psqlContainer(t *testing.T) string {
 	}
 	for _, want := range []string{"shadowpg-invariants", "shadowpg"} {
 		for _, c := range candidates {
-			if c == want && containerReady(t, c) {
+			if c == want && containerReady(t, docker, c) {
 				return c
 			}
 		}
 	}
 	for _, c := range candidates {
-		if containerReady(t, c) {
+		if containerReady(t, docker, c) {
 			return c
 		}
 	}
@@ -62,9 +89,9 @@ func psqlContainer(t *testing.T) string {
 	return ""
 }
 
-func containerReady(t *testing.T, container string) bool {
+func containerReady(t *testing.T, docker, container string) bool {
 	t.Helper()
-	out, err := exec.Command("docker", "exec", container, "psql", "-U", "postgres", "-d", "shadow",
+	out, err := exec.Command(docker, "exec", container, "psql", "-U", "postgres", "-d", "shadow",
 		"-A", "-t", "-c", `SELECT count(*) FROM pg_tables WHERE schemaname = 'ops' AND tablename = 'content_object'`).CombinedOutput()
 	if err != nil {
 		return false
@@ -76,7 +103,8 @@ func containerReady(t *testing.T, container string) bool {
 // nothing is scrolled past.
 func psql(t *testing.T, container, script string) string {
 	t.Helper()
-	out, err := psqlAllowFail(t, container, script)
+	docker, _ := dockerBin()
+	out, err := psqlAllowFail(t, docker, container, script)
 	if err != nil {
 		t.Fatalf("psql failed: %v\n--- script ---\n%s\n--- output ---\n%s", err, script, out)
 	}
@@ -85,9 +113,15 @@ func psql(t *testing.T, container, script string) string {
 
 // psqlAllowFail runs one script and returns the output and the exit status. One test's evidence *is*
 // a constraint violation, so the failing case needs the raw result.
-func psqlAllowFail(t *testing.T, container, script string) (string, error) {
+func psqlAllowFail(t *testing.T, docker, container, script string) (string, error) {
 	t.Helper()
-	cmd := exec.Command("docker", "exec", "-i", container, "psql", "-U", "postgres", "-d", "shadow",
+	if docker == "" {
+		var err error
+		if docker, err = dockerBin(); err != nil {
+			t.Skipf("no docker client: %v", err)
+		}
+	}
+	cmd := exec.Command(docker, "exec", "-i", container, "psql", "-U", "postgres", "-d", "shadow",
 		"-A", "-t", "-q", "-v", "ON_ERROR_STOP=1", "-f", "-")
 	cmd.Stdin = strings.NewReader(script)
 	out, err := cmd.CombinedOutput()
@@ -141,7 +175,7 @@ INSERT INTO ops.tenant (tenant_id, name, status, residency_region, key_custody, 
 VALUES ('99999999-9999-4999-8999-999999999991', 'impossible', 'active', 'eastus',
         'customer_held', 'kek-x', 'm3', 'full_text');
 ROLLBACK;`
-	out, err := psqlAllowFail(t, container, script)
+	out, err := psqlAllowFail(t, "", container, script)
 	if err == nil {
 		t.Fatalf("the database accepted content_search=full_text with key_custody=customer_held:\n%s", out)
 	}
@@ -163,7 +197,7 @@ INSERT INTO ops.tenant (tenant_id, name, status, residency_region, key_custody, 
 VALUES ('99999999-9999-4999-8999-999999999992', 'tier-without-mode', 'active', 'eastus',
         'vendor', NULL, 'm1', 'full_text');
 ROLLBACK;`
-	out, err := psqlAllowFail(t, container, script)
+	out, err := psqlAllowFail(t, "", container, script)
 	if err == nil {
 		t.Fatalf("the database accepted full_text below M3:\n%s", out)
 	}
@@ -232,7 +266,7 @@ ROLLBACK;`
 func TestSearchTextShapesMatchTheSchema(t *testing.T) {
 	container := psqlContainer(t)
 	// A prompt body at a non-zero index is refused by the schema's own constraint.
-	out, err := psqlAllowFail(t, container, `
+	out, err := psqlAllowFail(t, "", container, `
 BEGIN;
 INSERT INTO ingest.search_text (tenant_id, submission_id, unit_kind, unit_index, body, expires_at)
 VALUES ('99999999-9999-4999-8999-999999999994', '99999999-9999-4999-8999-99999999999c',

@@ -242,6 +242,51 @@ Passing: `contracts/tools`, `apps/capture-extension`, `apps/dashboard`, `service
 its assertion). Missing: `db/tools` (its checker is a script, not a suite — a harness gap, mine) and
 `infra/tools`. `services/content-vault` has a module and no suite yet.
 
+## L11. All seven invariants pass, none blocked (round 3)
+
+```
+node tools/check-invariants.mjs      # invariants: 7   pass: 7   fail: 0   partial: 0   blocked: 0
+```
+
+Two of these closed this round, and neither closed by assertion:
+
+- **INV-1 (content crosses only on a per-event grant)** was PARTIAL with a note that a component
+  should not be the only witness to the invariant it implements. It is now driven by a Lead-owned
+  external suite, `services/content-vault/vaultinvariants/`, against the real service: a fabricated
+  grant is refused with a closed reason; a grant for event A does not produce event B; another
+  principal cannot redeem it; an expired grant is refused; a second redemption is refused; and the
+  granted path reports **unavailability with a reason rather than an empty success** — an empty
+  success being the failure mode a caller would read as "there was nothing to see".
+- **INV-3 (the browser never speaks SQL)** was BLOCKED; the dashboard landed and the check now reads
+  23 files with no SQL statement and no database driver. **INV-5** moved from a DDL text count to the
+  live catalog (31 tenant-scoped tables with RLS enabled *and* forced, 31 policies; the six without
+  it are all global reference data with no tenant column).
+
+## L12. The canonicalisation contract now exists (round 3)
+
+`device/canon` implements `sac-canon-1` step C3 (NFC) in pure Go with no external dependency, tables
+generated from Node's ICU because the UCD cannot be downloaded. Its evidence is the strongest
+verification pattern in this repository: **four independent equivalence checks**, not one.
+
+- Live Node over a 3,376-case corpus, byte for byte: agree.
+- All **1,112,064** code points: NFC digests agree.
+- All **929,296** ordered non-starter pairs — the one table derived by observation rather than
+  transcribed: agree.
+- 65,536 pairs from a stride sample: agree.
+
+And, in the pattern this round has established: **the tests can fail.** Three mutations were applied
+and reverted — blocking rule removed → 3 tests fail; quick check disabled → 8 fail; combining classes
+zeroed → 3 fail.
+
+Two limits it states rather than hides: browser ICU is NOT verified (Chrome and Edge ship their own
+ICU builds; the oracle script is the mechanism, but no browser is installed here), and canonically
+indecomposable text — CJK, emoji, most of the SMP — is covered only as *already NFC*, because it is
+NFC-invariant.
+
+**This closes the gap the dedup tier ruling depended on.** Until now the device had no C3, so it
+emitted the weak dedup key with `confidence: degraded`; that remains the correct behaviour when no
+normaliser is installed, and the installer now exists.
+
 ---
 
 ## What is NOT verified at this point
@@ -250,10 +295,17 @@ its assertion). Missing: `db/tools` (its checker is a script, not a suite — a 
   native-messaging host binary, no browser, and no installed root CA. `device/integration` wires the
   libraries together in one process; it starts no service, binds no port, and installs nothing. That
   is the largest single gap between this repository and a deployable product.
-- **`apps/dashboard` and the content vault have suites but young ones, and `infra` has no owner
-  yet.** Dashboard and vault were only started at the end of round 2. Until `infra` lands,
-  `INV-1` (content crosses only on a per-event grant) stays BLOCKED in `check-invariants.mjs` — not
-  "pass", not "fail", blocked, which is the honest verdict for a property whose component is absent.
+- **The browser half is the least-verified surface in the project.** The extension's own suite
+  reports green, and the native-messaging seam is now driven from the outside by `device/integration`
+  with negative controls — but `chrome.*` behaviour, native-messaging host registration, the inline
+  warn/block path and attachment capture from a live page have never executed. Chromium is not
+  installed. The extension owner still has `worker.test.mjs` cases open and a README outstanding.
+- **`infra` is mid-flight.** Its own suite is failing on a self-check about the not-verified
+  statement, which is what a component's suite is for. Until it is green, the `packages` gate cannot
+  be green, and the deployment remains the one artefact nobody has attempted to render runnable.
+- **`db/tools` has no suite** for the acceptance harness to run. Its checker is invoked by the
+  database gate itself, so the work is checked — but it is reported MISSING by the package harness,
+  and a component that cannot be run by the acceptance command is one step away from being skipped.
 - **No browser, no device, no cloud.** Chromium is not installed; there is no Azure subscription, no
   cloud KMS, no real system-proxy or trust-store interaction. Four device subsystems sit behind
   interfaces with fakes: `SystemProxy`, trust-store install/remove, DPAPI/Keychain sealing, and the

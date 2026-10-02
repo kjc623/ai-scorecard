@@ -18,6 +18,9 @@ param skuName string = 'Premium'
 @description('Paired region for geo-replication, e.g. centralus for eastus. Empty disables replication, which is the dev setting.')
 param geoReplicaLocation string = ''
 
+@description('Whether the registry is zone-redundant. Zone redundancy requires the Premium tier, so the composition states both rather than deriving one from the SKU inside the module.')
+param zoneRedundant bool = true
+
 @description('Resource id of the private-endpoint subnet from network.bicep.')
 param privateEndpointSubnetId string = ''
 
@@ -50,7 +53,7 @@ resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
         type: 'Notary'
       }
     }
-    zoneRedundancy: skuName == 'Premium' ? 'Enabled' : 'Disabled'
+    zoneRedundancy: zoneRedundant ? 'Enabled' : 'Disabled'
   }
 }
 

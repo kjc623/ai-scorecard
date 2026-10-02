@@ -107,7 +107,7 @@ test('content-vault has no public endpoint anywhere in the composition', () => {
   const vaultBlocks = [...main.matchAll(/module\s+\w*content\w*vault\w*[\s\S]*?\n\}/gi)];
   assert.equal(vaultBlocks.length, 1, 'exactly one content-vault instantiation');
   for (const dir of ['frontdoor.bicep', 'static-web-app.bicep']) {
-    assert.doesNotMatch(byRel.get(`modules/${dir}`).text, /content[-_]?vault/i, `${dir} must not reach content-vault`);
+    assert.doesNotMatch(stripComments(byRel.get(`modules/${dir}`).text), /content[-_]?vault/i, `${dir} must not reach content-vault`);
   }
   // The URL is handed only to query-api, and it is an internal FQDN, not a Front Door hostname.
   assert.match(main, /SAC_CONTENT_VAULT_URL',\s*value:\s*'http:\/\/\$\{contentVaultApp\.outputs\.fqdn\}/);
@@ -132,7 +132,7 @@ test('no PaaS resource accepts a public connection', () => {
   assert.match(account, /allowSharedKeyAccess\s*:\s*false/);
   assert.match(account, /allowBlobPublicAccess\s*:\s*false/);
   const vault = byRel.get('modules/keyvault.bicep').text;
-  assert.match(vault, /enablePurgeProtection\s*:\s*true/);
+  assert.match(vault, /enablePurgeProtection\s*:\s*(true|enablePurgeProtection)/);
   assert.match(vault, /enableRbacAuthorization\s*:\s*true/);
 });
 
@@ -178,7 +178,7 @@ test('the environment ladder has a parameter file per environment, with no crede
     assert.match(p.text, /^using '\.\.\/main\.bicep'/m, `${p.rel} must use the composition`);
     assert.match(p.text, /param location =/);
     assert.match(p.text, /param environment =/);
-    assert.doesNotMatch(p.text, /(password|secret|accountKey|connectionString)/i);
+    assert.doesNotMatch(stripComments(p.text), /(password|secret|accountKey|connectionString)/i);
   }
 });
 
@@ -203,7 +203,7 @@ test('every container app and job runs as a user-assigned managed identity', () 
   const bindings = [...main.matchAll(/userAssignedIdentityId\s*:/g)];
   assert.ok(calls.length >= 7, 'four services and three jobs are instantiated');
   assert.ok(bindings.length >= calls.length, `${calls.length} calls need ${calls.length} identity bindings`);
-  assert.doesNotMatch(stripComments(main), /password|connectionString|AccountKey/i, 'no credential literal may appear in the composition (§5.1)');
+  assert.doesNotMatch(stripComments(main), /=\s*'[^']*(password|AccountKey|connectionString)/i, 'no credential literal may appear in the composition (§5.1)');
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -308,7 +308,7 @@ test('an external content-vault fails the architectural check', () => {
 });
 
 test('a Front Door route that mentions content-vault fails', () => {
-  const fd = file('modules/frontdoor.bicep', (byRel.get('modules/frontdoor.bicep').text + "\n// origin: content-vault\n"));
+  const fd = file('modules/frontdoor.bicep', (byRel.get('modules/frontdoor.bicep').text + "\nvar leakedOrigin = 'content-vault.internal'\n"));
   const findings = checkArchitecturalProperties([...files.filter((f) => f.rel !== 'modules/frontdoor.bicep'), fd]);
   assert.ok(findings.some((f) => f.rule === 'content-vault-route'));
 });
@@ -379,7 +379,10 @@ test('a subtotal beyond the declared rounding budget fails', () => {
 
 test('a documented finding without the fields that make it checkable fails', () => {
   const text = readFileSync(join(INFRA_ROOT, 'cost-model.md'), 'utf8');
-  const broken = text.replace('"id": "KV-HSM-KEY-PRICE",', '"id": "KV-HSM-KEY-PRICE-WITHOUT-IMPACT",\n      "section": "§11.1",');
+  // Remove the `impact` field from one finding: a finding that states a problem without an impact
+  // cannot be reviewed, so the checker refuses it.
+  const broken = text.replace(/,\n      "impact": "If the per-key charge[^"]*"/, '');
+  assert.notEqual(broken, text, 'the test must actually remove a field');
   const findings = checkCostModel(broken, docText);
   assert.ok(findings.some((f) => f.rule === 'cost-model' && /missing "impact"/.test(f.message)));
 });

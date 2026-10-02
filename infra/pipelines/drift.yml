@@ -1,0 +1,78 @@
+# drift.yml — scheduled what-if per environment (docs/05-platform-delivery.md §3.5).
+#
+# Two mechanisms, because one of them is always asleep. This is the scheduled `what-if` half: it
+# runs nightly against the same parameter file as the last deployment and classifies each diff as
+# expected, noise, or drift. Drift pages on-call; the report lands in the platform channel either way.
+#
+# The other half — hourly resource-graph assertions against live resource state — is a documented
+# gap in infra/README.md: it needs an Azure connection, and a pipeline that silently skipped it would
+# be worse than one that says so.
+
+name: drift
+
+on:
+  schedule:
+    - cron: '17 3 * * *' # nightly, at an odd minute so it does not collide with the aggregator's window
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [dev, staging, prod]
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+  issues: write
+
+jobs:
+  what-if:
+    name: nightly what-if ${{ matrix.environment }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [dev, staging, prod]
+    environment: ${{ matrix.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_DEPLOY_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: what-if against the deployed template
+        id: whatif
+        shell: bash
+        run: |
+          set -euo pipefail
+          ENV="${{ matrix.environment }}"
+          RG="rg-sac-${ENV}-eastus"
+          PARAMS="infra/params/${ENV}.bicepparam"
+          if [ "$ENV" = "prod" ]; then PARAMS="infra/params/prod.eastus.bicepparam"; fi
+          az deployment group what-if \
+            --resource-group "$RG" \
+            --template-file infra/main.bicep \
+            --parameters "$PARAMS" \
+            --parameters postgresAdministratorLogin="${{ vars.SAC_PG_ADMIN_LOGIN }}" \
+            --no-pretty-print > whatif.txt
+          # Drift is anything touching network, identity, encryption or ingress. Everything else is
+          # classified expected or noise by a human reading the report — the pipeline labels, it does
+          # not decide (§3.5).
+          if grep -Eiq '^(~|-) ' whatif.txt && grep -Eiq '(publicNetworkAccess|allowSharedKeyAccess|enablePurgeProtection|ingress|identity|privateEndpoint|firewall)' whatif.txt; then
+            echo "drift=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: record the report
+        uses: actions/upload-artifact@v4
+        with:
+          name: drift-${{ matrix.environment }}-${{ github.run_id }}
+          path: whatif.txt
+          retention-days: 90 # §12.2's investigation window, applied to the evidence as well
+      - name: page on drift
+        if: steps.whatif.outputs.drift == 'true'
+        shell: bash
+        run: |
+          echo "::error::drift detected in ${{ matrix.environment }}: a network, identity, encryption or ingress property differs from the template. Portal changes are permitted only during a declared incident and must be reverted by pull request within 24 hours (§3.5)."
+          exit 1
