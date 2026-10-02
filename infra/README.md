@@ -84,12 +84,20 @@ purge protection). Those queries are not in this directory yet: `infra/pipelines
 ## How to check the infrastructure without Azure
 
 ```powershell
-node --test infra/tools/index.mjs        # the suite (38 checks)
+node --test infra/tools/index.mjs        # the suite: 38 checks
+node --test infra/tools/check-infra.test.mjs   # the same suite, named directly
 node infra/tools/check-infra.mjs         # the same checks as a report, exit 1 on a finding
 ```
 
+Both invocations above were run and pass on Node 22.23.1 (Windows). `node --test infra/tools/` — the
+directory form — resolves the directory as a module on this Node build and fails with
+`MODULE_NOT_FOUND` before running anything, which is why `index.mjs` exists and is named explicitly
+here; `tools/verify-all.mjs` discovers `check-infra.test.mjs` by name and reports `infra/tools` PASS.
+A glob also works: `node --test 'infra/tools/*.test.mjs'`.
+
 The checker has no dependencies and never makes a network call. It reads `infra/**/*.bicep`,
-`infra/params/*.bicepparam`, `infra/inventory.json` and `docs/05-platform-delivery.md`.
+`infra/params/*.bicepparam`, `infra/inventory.json`, `infra/cost-model.md` and
+`docs/05-platform-delivery.md`.
 
 ## What is where
 

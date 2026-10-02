@@ -255,8 +255,8 @@ ROLLBACK;`
 	}
 	got := lines[len(lines)-1]
 	// shredded / erasure / version 2 / the key replaced by a single zero byte / expiry after creation
-	if got != "shredded/erasure/2/00/t" {
-		t.Fatalf("the lifecycle row is %q, want shredded/erasure/2/00/t", got)
+	if got != "shredded/erasure/2/00/true" {
+		t.Fatalf("the lifecycle row is %q, want shredded/erasure/2/00/true", got)
 	}
 	t.Logf("content_object lifecycle against the live schema: %s", got)
 }

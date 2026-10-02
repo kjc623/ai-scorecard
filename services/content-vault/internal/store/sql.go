@@ -36,7 +36,9 @@ const (
 	// SQLSetTenant sets the row-level-security session tenant. ops.current_tenant() reads this
 	// setting; a session that has not set it reads zero rows, which is C32's fail-closed default.
 	// `true` makes it transaction-local, so a pooled connection cannot leak one tenant's session
-	// into the next request.
+	// into the next request. The cast on $1 is required, not cosmetic: set_config's parameters are
+	// not inferable from a bare placeholder, and PostgreSQL refuses to prepare the statement
+	// without it — a defect the live-schema harness found rather than a style preference.
 	SQLSetTenant = `SELECT set_config('app.tenant_id', $1::text, true)`
 
 	// SQLTenant reads the tenant row the vault branches on: custody decides which key store the
@@ -157,7 +159,7 @@ SELECT submission_id::text,
                    'StartSel=<em>, StopSel=</em>, MaxFragments=1, MaxWords=24, MinWords=6, FragmentDelimiter= … '),
        ts_rank(tsv, to_tsquery('simple', $2::text))
   FROM ingest.search_text
- WHERE tenant_id = ops.current_tenant()
+ WHERE tenant_id = $1::uuid
    AND tsv @@ to_tsquery('simple', $2::text)
    AND ($3::text = '' OR unit_kind = $3::text)
  ORDER BY 5 DESC, 1
@@ -174,7 +176,7 @@ SELECT submission_id::text,
        body,
        similarity(lower(body), lower($2::text))
   FROM ingest.search_text
- WHERE tenant_id = ops.current_tenant()
+ WHERE tenant_id = $1::uuid
    AND unit_kind = 'attachment_name'
    AND lower(body) LIKE '%' || lower($2::text) || '%'
  ORDER BY 5 DESC, 1
@@ -189,7 +191,7 @@ SELECT submission_id::text,
        body,
        similarity(lower(body), lower($2::text))
   FROM ingest.search_text
- WHERE tenant_id = ops.current_tenant()
+ WHERE tenant_id = $1::uuid
    AND unit_kind = 'attachment_name'
    AND lower(body) % lower($2::text)
    AND similarity(lower(body), lower($2::text)) >= $3::float8

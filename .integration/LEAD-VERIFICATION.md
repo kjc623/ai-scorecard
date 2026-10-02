@@ -287,6 +287,42 @@ NFC-invariant.
 emitted the weak dedup key with `confidence: degraded`; that remains the correct behaviour when no
 normaliser is installed, and the installer now exists.
 
+## L13. A defect in my own acceptance harness, found by a component owner (round 3)
+
+`tools/verify-all.mjs:231` built its Node command line as
+`['--test-timeout', T, ...cmdArgs.slice(1)]`, which **dropped the `--test` flag**: the remaining paths
+became `process.argv`, Node ran the first file as the entry module, and every multi-file Node package
+was reported PASS after running one file. The numbers were the tell — and nobody read them:
+
+| Package | Reported | Actually |
+|---|---|---|
+| `apps/capture-extension` | PASS (17 tests, 0.1s) | 193 tests, 32s |
+| `apps/dashboard` | PASS (0.1s) | 100 tests |
+| `services/query-api` | PASS (0.1s) | 150 tests |
+
+443 tests were being replaced by 3, and the gate said PASS. This is the fifth harness defect this
+project has produced and by far the worst, because every other one failed loudly. It was found by the
+extension's owner reading his own test count against the harness output — which is the argument for
+every agent being told its own numbers rather than a verdict.
+
+Fixed by inserting the flag instead of substituting it, plus an assertion that the runner flag survived
+construction, so the same class of mistake cannot be silent. Re-run after the fix: the three Node
+packages execute their full suites and still pass.
+
+## L14. Cost-model contradiction (round 3, unresolved by design)
+
+`infra/COST-FINDING.md` records a contradiction the infrastructure checker found by recomputing
+docs/05 §11 from its own unit prices, which I then verified against the document:
+**§11.1's table prices Front Door's $330 base "per profile per region", while §11.2 charges it per
+tenant and §11.6 calls it "40% of the tenant"**. §11.3's list of shared regional costs does not include
+it. If the unit-price row is right, the base belongs in the shared allocation and the per-tenant figure
+is ≈$498 at 100 tenants — back inside the $300–700 band that master §1.4 records as corrected away.
+
+This changes the headline number of the cost model by roughly 1.7×, and the resolution is a product
+decision (how much edge isolation each tenant gets), so it is recorded rather than decided. A second,
+smaller finding is an unpriced line item: §11.1 says HSM-backed keys cost extra but gives no rate, while
+§11.2 charges ~30 keys at about $2 in total.
+
 ---
 
 ## What is NOT verified at this point

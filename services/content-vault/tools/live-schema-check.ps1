@@ -16,8 +16,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$repo = Split-Path -Parent $PSScriptRoot
-$module = Join-Path $repo "services\content-vault"
+# The script lives in services/content-vault/tools, so its parent is the module directory.
+$module = Split-Path -Parent $PSScriptRoot
+$repo = Split-Path -Parent (Split-Path -Parent $module)
 if (-not $Out) { $Out = Join-Path $module "evidence\live-schema.log" }
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Out) | Out-Null
 
@@ -28,7 +29,8 @@ function Invoke-Psql {
     Set-Content -Path $tmp -Value $Script -Encoding utf8
     $previous = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    $out = & $Docker exec -i $Container psql -U postgres -d shadow -A -t -q -v ON_ERROR_STOP=1 -f - < $tmp 2>&1
+    # PowerShell has no `<` redirection; piping into the process's stdin is the equivalent.
+    $out = Get-Content -Raw -Path $tmp | & $Docker exec -i $Container psql -U postgres -d shadow -A -t -q -v ON_ERROR_STOP=1 -f - 2>&1
     $code = $LASTEXITCODE
     $ErrorActionPreference = $previous
     if ($code -ne 0 -and -not $AllowFail) {
@@ -55,7 +57,12 @@ Emit "ops.content_object present: $(($probe.Output).Trim())"
 $env:GOCACHE = Join-Path $repo ".tools\gocache"
 $env:GOPROXY = "off"; $env:GOTOOLCHAIN = "local"; $env:GOFLAGS = "-mod=mod"
 Push-Location $module
-$sqlFile = Join-Path ([System.IO.Path]::GetTempPath()) "content-vault-schema.sql"
+# The intermediate script goes inside the workspace: the file sandbox denies a child process a
+# system-temp path, and a harness that fails for that reason reports "no evidence" for something
+# that has nothing to do with the SQL.
+$evidenceDir = Join-Path $module "evidence"
+New-Item -ItemType Directory -Force -Path $evidenceDir | Out-Null
+$sqlFile = Join-Path $evidenceDir "_schema.sql"
 go run ./cmd/content-vault schema-sql --out $sqlFile
 if ($LASTEXITCODE -ne 0) { throw "content-vault schema-sql failed" }
 $statements = Get-Content -Raw $sqlFile
@@ -108,7 +115,7 @@ ROLLBACK;
 "@
 $r = Invoke-Psql $lifecycle
 $line = ($r.Output -split "`n" | Where-Object { $_ -match "^(uploaded|shredded)/" } | Select-Object -Last 1)
-if ($line -ne "shredded/erasure/2/00/t") { throw "lifecycle row is '$line', want shredded/erasure/2/00/t" }
+if ($line -ne "shredded/erasure/2/00/true") { throw "lifecycle row is '$line', want shredded/erasure/2/00/true" }
 Emit "content_object lifecycle: $line"
 
 # 6. The one schema gap this service has.

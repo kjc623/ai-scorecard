@@ -226,9 +226,17 @@ function run(pkg) {
   if (pkg.kind === 'go') {
     cmdArgs = [...cmdArgs, `-timeout=${PER_PACKAGE_TIMEOUT_MS}ms`];
   } else {
-    // node:test exits on its own timer for the tests it owns; the spawnSync timeout below is the
-    // backstop for anything the runner itself hangs on.
-    cmdArgs = ['--test-timeout', String(PER_PACKAGE_TIMEOUT_MS), ...cmdArgs.slice(1)];
+    // node:test gets its own timeout flag, and the runner flag must stay FIRST and stay present.
+    // An earlier version of this line read `['--test-timeout', T, ...cmdArgs.slice(1)]`, which
+    // dropped `--test` entirely: the remaining paths became process.argv, Node ran the first file
+    // as the entry module, and every multi-file Node package was reported PASS after running one
+    // file. `apps/capture-extension` showed 17 tests instead of 193 and the gate said PASS, which
+    // is the worst possible failure mode for an acceptance harness. The flag is inserted, never
+    // substituted.
+    cmdArgs = [cmdArgs[0], '--test-timeout', String(PER_PACKAGE_TIMEOUT_MS), ...cmdArgs.slice(1)];
+    if (cmdArgs[0] !== '--test') {
+      throw new Error(`verify-all: internal error - the node runner flag was lost for ${pkg.dir} (got ${JSON.stringify(cmdArgs.slice(0, 2))})`);
+    }
   }
   const res = spawnSync(cmd, cmdArgs, {
     cwd: abs,
