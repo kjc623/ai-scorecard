@@ -253,8 +253,8 @@ const REALISTIC = Object.freeze({
   }),
   q2_unsanctioned_users: ok({
     data: [
-      { bucket: DAY, tool: 'claude_web', subject: 'u_4f21', submissions: 214, bytes_total: 12_000_000 },
-      { bucket: DAY, tool: 'claude_web', subject: 'u_9a02', submissions: 188, bytes_total: 9_400_000 },
+      { bucket: DAY, tool: 'claude_web', subject: 'u_9a02', submissions: 214, bytes_total: 12_000_000 },
+      { bucket: DAY, tool: 'claude_web', subject: 'u_4f21', submissions: 188, bytes_total: 9_400_000 },
       { bucket: DAY, tool: 'shadow_llm_gateway', result_state: 'suppressed', reason: 'fewer_than_k_subjects', k: 5 },
     ],
     freshness: freshness(),

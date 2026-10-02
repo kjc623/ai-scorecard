@@ -644,4 +644,58 @@ export function needsInputView({ id, title, question, hint }) {
   });
 }
 
+/**
+ * A refusal, rendered as a screen. A refusal is a state with a sentence, not a blank page: the
+ * dashboard must never show "nothing happened" where the API said "I cannot answer that".
+ */
+export function refusalView(state, { title }) {
+  const error = state.error ?? {};
+  const detail = error.detail ?? {};
+  const fix = [];
+  if (detail.fix?.coarser_bucket) fix.push(`coarsen the bucket to ${detail.fix.coarser_bucket}`);
+  if (detail.fix?.drop_dimension) fix.push(`drop ${detail.fix.drop_dimension}`);
+  if (detail.fix?.narrow_window || detail.fix?.or_narrow_window) fix.push('narrow the window');
+  if (detail.fix?.lower_limit) fix.push('lower the page size');
+  if (detail.fix?.add_filter) fix.push(`add a filter on ${Array.isArray(detail.fix.add_filter) ? detail.fix.add_filter.join(' or ') : detail.fix.add_filter}`);
+  if (detail.fix?.alternative_source) fix.push(`read ${detail.fix.alternative_source}`);
+  if (detail.or_use) fix.push(`or use ${detail.or_use}`);
+  if (detail.max_days) fix.push(`window ≤ ${detail.max_days} days`);
+  if (detail.max_values) fix.push(`≤ ${detail.max_values} values in a membership list`);
+  if (detail.max_limit) fix.push(`limit ≤ ${detail.max_limit}`);
+  const rows = [
+    { field: 'result_state', value: state.resultState },
+    { field: 'code', value: error.code ?? '—' },
+    { field: 'message', value: error.message ?? '—' },
+    ...(Object.keys(detail).filter((k) => k !== 'fix').map((k) => ({ field: `detail.${k}`, value: typeof detail[k] === 'object' ? JSON.stringify(detail[k]) : String(detail[k]) }))),
+    ...(fix.length > 0 ? [{ field: 'fix', value: fix.join('; ') }] : []),
+  ];
+  return Object.freeze({
+    id: `refusal-${state.resultState}`,
+    title,
+    question: null,
+    source: null,
+    sourceLabel: null,
+    subtitle: state.spec?.label ?? 'The read was refused.',
+    tiles: Object.freeze([
+      tile('Result state', { kind: 'vocab', text: state.resultState }, state.spec?.label ?? null),
+      tile('Rows served', { kind: 'number', text: '0' }, 'A refusal carries no data, by construction.'),
+    ]),
+    tables: Object.freeze([
+      Object.freeze({
+        title: 'What the API said',
+        columns: Object.freeze([column('field', 'Field'), column('value', 'Value')]),
+        rows: Object.freeze(rows.map((row) => Object.freeze({ row, vocab: {}, suppressed: false }))),
+        emptyText: 'No detail.',
+        suppressedCells: 0,
+      }),
+    ]),
+    series: Object.freeze([]),
+    banners: state.banners,
+    notes: Object.freeze([
+      'The API refuses rather than degrading, so the fix is always in the response. Present it as the action to take.',
+      ...(fix.length > 0 ? [`Suggested fix: ${fix.join('; ')}.`] : []),
+    ]),
+  });
+}
+
 export { screen, tile, column };

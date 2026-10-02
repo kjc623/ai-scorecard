@@ -1,0 +1,27 @@
+{
+  "name": "text-that-looks-like-base64",
+  "why": "raw text that is also valid base64: if this is sent unencoded it decodes WITHOUT error to different bytes (\"hello world\") while the digest describes what the user typed - the failure a decode-error test cannot see",
+  "frame": {
+    "type": "observation",
+    "version": 1,
+    "id": "case-text-that-looks-like-base64",
+    "body": {
+      "client_id": "c-b64look",
+      "route": "ext.web_request",
+      "tool_fingerprint": "genai.web.chat.v1:chatgpt",
+      "occurred_at": "2026-10-02T18:00:01.000Z",
+      "monotonic_offset_ms": 123457,
+      "size_bytes": 16,
+      "has_content": true,
+      "content_digest": "sha256:dc9c1c09907c36f5379d615ae61c02b46ba254d92edb77cb63bdcc5247ccd01c",
+      "content": "YUdWc2JHOGdkMjl5YkdRPQ=="
+    }
+  },
+  "expects": {
+    "decodable": true,
+    "has_content": true,
+    "content_bytes": 16,
+    "content_text": "aGVsbG8gd29ybGQ=",
+    "content_digest": "sha256:dc9c1c09907c36f5379d615ae61c02b46ba254d92edb77cb63bdcc5247ccd01c"
+  }
+}

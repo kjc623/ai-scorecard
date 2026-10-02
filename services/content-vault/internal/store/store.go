@@ -238,6 +238,7 @@ var (
 	ErrObjectNotFound     = errors.New("store: content object not found")
 	ErrGrantNotFound      = errors.New("store: retrieval grant not found")
 	ErrGrantAlreadyUsed   = errors.New("store: retrieval grant already used")
+	ErrNoReceipt          = errors.New("store: no erasure receipt for this tenant")
 	ErrTenantNotPermitted = errors.New("store: tenant is not permitted to store content")
 )
 
@@ -276,8 +277,11 @@ type Store interface {
 	// destruction does not touch it.
 	DeleteSearchText(ctx context.Context, tenantID, submissionID string) (int64, error)
 
-	// SearchText runs one bounded search query.
-	SearchText(ctx context.Context, q SearchQuery) ([]SearchHit, error)
+	// SearchAudited serves one search: it writes the audit row and runs the query **in one
+	// transaction, audit first**, and fails closed (docs/06 §6.3: "no audit row, no results").
+	// It is one method rather than two calls because a search whose audit committed separately
+	// could be served without a record, which is the failure §3.6 forbids.
+	SearchAudited(ctx context.Context, q SearchQuery, e AuditEntry) ([]SearchHit, error)
 
 	// AppendAudit writes one audit row. In SQL this is the same transaction that serves the read,
 	// which is what "audit before serve, failing closed" means mechanically.
@@ -296,6 +300,12 @@ type Store interface {
 
 	// PutErasureReceipt records what was removed and what deliberately survived.
 	PutErasureReceipt(ctx context.Context, r ErasureReceipt) error
+
+	// LastReceipt returns the tenant's most recent erasure receipt, so a §11
+	// `no_longer_available` result can link the receipt that explains it. It returns
+	// ErrNoReceipt when there is none; a missing reference must not turn unavailability into an
+	// error.
+	LastReceipt(ctx context.Context, tenantID string) (ErasureReceipt, error)
 
 	// Close releases resources.
 	Close() error

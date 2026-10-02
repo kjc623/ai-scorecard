@@ -39,6 +39,10 @@ const PACKAGES = [
   { kind: 'node', dir: 'db/tools' },
   { kind: 'node', dir: 'infra/tools' },
   { kind: 'go', dir: 'device/protocol', args: ['./...'] },
+  // The cross-component harness: it imports capture-core, capture-spool and protocol, and drives a
+  // real extension frame through them. It is the only place the device pieces are wired together -
+  // each component's own suite proves it against its own fakes, which cannot show that they compose.
+  { kind: 'go', dir: 'device/integration', args: ['./...'] },
   { kind: 'go', dir: 'device/capture-core', args: ['./...'] },
   { kind: 'go', dir: 'device/capture-spool', args: ['./...'] },
   { kind: 'go', dir: 'device/classifier-host', args: ['./...'] },

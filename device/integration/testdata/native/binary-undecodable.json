@@ -1,0 +1,28 @@
+{
+  "name": "binary-undecodable",
+  "why": "bytes that are not valid UTF-8: the binary path, which must survive a round trip unchanged",
+  "frame": {
+    "type": "observation",
+    "version": 1,
+    "id": "case-binary-undecodable",
+    "body": {
+      "client_id": "c-binary",
+      "route": "ext.page_context",
+      "tool_fingerprint": "genai.web.chat.v1:claude",
+      "occurred_at": "2026-10-02T18:00:03.000Z",
+      "monotonic_offset_ms": 123459,
+      "size_bytes": 12,
+      "has_content": true,
+      "content_digest": "sha256:1ba29a48a4ed879f3263b4eb18f7a1613263e5b0c55d4e452d5fad96b8bbc2c2",
+      "content": "iVBORw0KGgoA//4B",
+      "content_is_binary": true
+    }
+  },
+  "expects": {
+    "decodable": true,
+    "has_content": true,
+    "content_bytes": 12,
+    "content_is_binary": true,
+    "content_digest": "sha256:1ba29a48a4ed879f3263b4eb18f7a1613263e5b0c55d4e452d5fad96b8bbc2c2"
+  }
+}

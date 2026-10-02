@@ -1,0 +1,27 @@
+{
+  "name": "text-utf8-multibyte",
+  "why": "multi-byte UTF-8: proves the encoding is over bytes, not code units, and that size_bytes counts octets",
+  "frame": {
+    "type": "observation",
+    "version": 1,
+    "id": "case-text-utf8-multibyte",
+    "body": {
+      "client_id": "c-utf8",
+      "route": "ext.page_context",
+      "tool_fingerprint": "genai.web.chat.v1:claude",
+      "occurred_at": "2026-10-02T18:00:02.000Z",
+      "monotonic_offset_ms": 123458,
+      "size_bytes": 54,
+      "has_content": true,
+      "content_digest": "sha256:44d4a0afd71acab95870c036fb2976bd2bc0347633eea80260ecf047b55ab26e",
+      "content": "UsOpc3Vtw6kg4oCUIOaXpeacrOiqnuOBruODhuOCreOCueODiCDigJQgbmHDr3ZlIGNhZsOp"
+    }
+  },
+  "expects": {
+    "decodable": true,
+    "has_content": true,
+    "content_bytes": 54,
+    "content_text": "Résumé — 日本語のテキスト — naïve café",
+    "content_digest": "sha256:44d4a0afd71acab95870c036fb2976bd2bc0347633eea80260ecf047b55ab26e"
+  }
+}

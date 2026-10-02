@@ -1,0 +1,23 @@
+{
+  "name": "m0-no-content",
+  "why": "M0: the mode forbids reading content, so the frame must carry no content field and the Go type must decode an absent one",
+  "frame": {
+    "type": "observation",
+    "version": 1,
+    "id": "case-m0-no-content",
+    "body": {
+      "client_id": "c-m0",
+      "route": "ext.web_request",
+      "tool_fingerprint": "genai.web.chat.v1:gemini",
+      "occurred_at": "2026-10-02T18:00:04.000Z",
+      "monotonic_offset_ms": 123460,
+      "size_bytes": 4096,
+      "has_content": false
+    }
+  },
+  "expects": {
+    "decodable": true,
+    "has_content": false,
+    "content_bytes": 0
+  }
+}

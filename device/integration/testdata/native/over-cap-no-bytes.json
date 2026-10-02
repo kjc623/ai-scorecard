@@ -1,0 +1,27 @@
+{
+  "name": "over-cap-no-bytes",
+  "why": "an over-cap body is sized and hashed and its classification is degraded; no content is sent",
+  "frame": {
+    "type": "observation",
+    "version": 1,
+    "id": "case-over-cap-no-bytes",
+    "body": {
+      "client_id": "c-overcap",
+      "route": "ext.web_request",
+      "tool_fingerprint": "genai.web.chat.v1:gemini",
+      "occurred_at": "2026-10-02T18:00:05.000Z",
+      "monotonic_offset_ms": 123461,
+      "size_bytes": 2000000,
+      "has_content": false,
+      "content_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "over_cap": true,
+      "degraded_reason": "content_over_cap"
+    }
+  },
+  "expects": {
+    "decodable": true,
+    "has_content": false,
+    "content_bytes": 0,
+    "content_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

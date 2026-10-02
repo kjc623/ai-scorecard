@@ -1,0 +1,163 @@
+/* styles.css — the dashboard's whole visual vocabulary.
+ *
+ * Three states get three treatments, and they are not interchangeable:
+ *   .v-number       a real value, including 0
+ *   .v-suppressed   there was something and the number is withheld (hatched)
+ *   .v-absent       the response does not carry this value at all
+ * The hatching is on the suppressed marker and nowhere else, so a hatched thing on this page always
+ * means the same thing.
+ */
+
+:root {
+  --ink: #12161c;
+  --ink-soft: #4a5567;
+  --line: #d8dee8;
+  --bg: #f6f8fb;
+  --panel: #ffffff;
+  --accent: #1f5fbf;
+  --warn: #8a5a00;
+  --warn-bg: #fff8e6;
+  --bad: #9d1c1c;
+  --bad-bg: #fdecec;
+  --ok: #1c6b3f;
+  --hatch: repeating-linear-gradient(45deg, #e8ecf4 0 6px, #f6f8fb 6px 12px);
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+a { color: var(--accent); }
+
+.app-head {
+  display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; justify-content: space-between;
+  padding: 18px 24px 12px; background: var(--panel); border-bottom: 1px solid var(--line);
+}
+.app-head h1 { font-size: 20px; margin: 0 0 2px; letter-spacing: -0.01em; }
+.tagline { margin: 0; color: var(--ink-soft); font-size: 13px; }
+.app-head-meta { display: flex; gap: 6px; flex-wrap: wrap; }
+.badge {
+  font: 11px/1 var(--mono); text-transform: uppercase; letter-spacing: .04em;
+  border: 1px solid var(--line); border-radius: 999px; padding: 5px 9px; color: var(--ink-soft);
+}
+.badge-stub { border-color: #c9d6ef; color: var(--accent); }
+
+.nav {
+  display: flex; flex-wrap: wrap; gap: 2px; padding: 8px 20px;
+  background: var(--panel); border-bottom: 1px solid var(--line);
+  position: sticky; top: 0; z-index: 5;
+}
+.nav a {
+  text-decoration: none; color: var(--ink-soft); padding: 6px 10px; border-radius: 6px; font-size: 13px;
+}
+.nav a:hover { background: var(--bg); }
+.nav a.active { background: var(--accent); color: #fff; }
+.nav-q { font: 10px/1 var(--mono); opacity: .7; margin-right: 5px; }
+
+.app { padding: 18px 24px 48px; max-width: 1400px; }
+.loading { color: var(--ink-soft); }
+
+/* ── the persistent strip: coverage and freshness on every screen ─────────────────────────── */
+.strip {
+  display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: baseline;
+  padding: 10px 14px; margin-bottom: 16px; border-radius: 8px;
+  background: var(--panel); border: 1px solid var(--line); font-size: 13px;
+}
+.strip-partial { border-color: #e5c98a; background: var(--warn-bg); }
+.strip-not_yet_covered { border-color: #cfd6e2; background: var(--hatch); }
+.strip-item strong { margin-right: 6px; }
+.strip-gaps { display: flex; gap: 8px; flex-wrap: wrap; }
+.gap { font: 11px/1.6 var(--mono); background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px; }
+.state-stale { color: var(--warn); font-weight: 600; }
+.state-not_yet_covered { color: var(--ink-soft); }
+
+.screen-head h2 { margin: 0 0 4px; font-size: 22px; }
+.screen-head .question { margin: 0; font-style: italic; color: var(--ink-soft); }
+.screen-head .subtitle { margin: 6px 0 0; color: var(--ink-soft); max-width: 80ch; }
+.screen-head .source { margin: 6px 0 0; font-size: 12px; color: var(--ink-soft); }
+code { font: 12px/1.4 var(--mono); background: #eef1f7; padding: 1px 4px; border-radius: 4px; }
+
+.banner {
+  display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap;
+  margin: 12px 0; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--panel); font-size: 13px;
+}
+.banner-warning { border-color: #e5c98a; background: var(--warn-bg); color: var(--warn); }
+.banner-refusal { border-color: #e7b4b4; background: var(--bad-bg); color: var(--bad); }
+.banner-hatched { background: var(--hatch); }
+.banner-gone { border-color: #e7b4b4; background: var(--bad-bg); color: var(--bad); }
+.banner-restart, .banner-retry { border-color: #c9d6ef; }
+
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin: 16px 0; }
+.tile {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  padding: 12px 14px; display: flex; flex-direction: column; gap: 4px;
+}
+.tile-label { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-soft); }
+.tile-value { font-size: 26px; line-height: 1.15; }
+.tile-note { font-size: 12px; color: var(--ink-soft); }
+
+.v-number { font-variant-numeric: tabular-nums; }
+.v-floor { font-variant-numeric: tabular-nums; color: var(--warn); }
+.v-suppressed {
+  display: inline-block; background: var(--hatch); border: 1px dashed #97a3b8; border-radius: 4px;
+  padding: 1px 6px; font-size: 12px; color: var(--ink-soft); white-space: nowrap;
+}
+.v-k { font: 10px/1 var(--mono); margin-left: 5px; opacity: .75; }
+.v-absent { color: #9aa4b5; }
+.v-text { word-break: break-word; }
+.v-time { font: 12px/1.4 var(--mono); }
+.v-device-clock { color: var(--warn); }
+.v-vocab {
+  font: 11px/1.6 var(--mono); border: 1px solid var(--line); border-radius: 4px;
+  padding: 1px 6px; background: #f2f5fa;
+}
+.v-vocab-unsanctioned, .v-vocab-tampered, .v-vocab-absent, .v-vocab-critical, .v-vocab-shredded,
+.v-vocab-revoked, .v-vocab-never_reported, .v-vocab-broken { background: var(--bad-bg); color: var(--bad); border-color: #e7b4b4; }
+.v-vocab-degraded, .v-vocab-stale, .v-vocab-disputed, .v-vocab-low, .v-vocab-warned, .v-vocab-uploaded, .v-vocab-partial { background: var(--warn-bg); color: var(--warn); border-color: #e5c98a; }
+.v-vocab-sanctioned, .v-vocab-healthy, .v-vocab-reporting, .v-vocab-confirmed, .v-vocab-high { background: #eaf6ee; color: var(--ok); border-color: #b9dcc7; }
+.v-vocab-unknown, .v-vocab-not_captured, .v-vocab-local_only, .v-vocab-open { background: var(--hatch); }
+
+.table-block, .series-block, .notes, .gallery, .needs {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  padding: 14px 16px; margin: 16px 0;
+}
+.table-block h3, .series-block h3, .notes h3, .gallery h3 { margin: 0 0 10px; font-size: 15px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-soft); font-weight: 600; }
+tbody tr:hover { background: #fafbfe; }
+tr.row-suppressed { background: var(--hatch); }
+tr.row-empty td { color: var(--ink-soft); font-style: italic; }
+.table-note, .series-note { font-size: 12px; color: var(--ink-soft); margin: 8px 0 0; }
+
+.bars { display: flex; align-items: flex-end; gap: 3px; height: 140px; padding-top: 8px; }
+.bar { position: relative; flex: 1 1 0; min-width: 6px; height: 100%; display: flex; align-items: flex-end; }
+.bar-fill { display: block; width: 100%; background: var(--accent); border-radius: 3px 3px 0 0; min-height: 2px; }
+.bar-floor .bar-fill { background: var(--hatch); border: 1px dashed #97a3b8; }
+.bar-label { position: absolute; bottom: -18px; left: 0; right: 0; text-align: center; font: 9px/1 var(--mono); color: var(--ink-soft); }
+.series-unavailable { color: var(--ink-soft); font-style: italic; margin: 0; }
+
+.notes ul { margin: 0; padding-left: 18px; }
+.notes li { margin-bottom: 6px; color: var(--ink-soft); font-size: 13px; }
+
+.gallery-items { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.gallery-item {
+  text-decoration: none; border: 1px solid var(--line); border-radius: 999px;
+  padding: 5px 12px; font-size: 13px; color: var(--ink-soft); background: var(--bg);
+}
+.gallery-item.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.gallery-hint { font-size: 13px; color: var(--ink-soft); }
+
+.app-foot { padding: 14px 24px 32px; color: var(--ink-soft); font-size: 12px; max-width: 90ch; }
+
+@media (max-width: 700px) {
+  .app, .app-head, .nav, .app-foot { padding-left: 12px; padding-right: 12px; }
+  .tile-value { font-size: 22px; }
+}

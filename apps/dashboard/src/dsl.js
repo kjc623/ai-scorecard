@@ -57,12 +57,32 @@ function isObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-/** An ISO-8601 UTC instant. Local times are refused rather than silently reinterpreted. */
+/**
+ * An ISO-8601 instant, normalised to UTC.
+ *
+ * The wire format is `…Z` and only `…Z`; the API refuses anything else. An offset (`+02:00`) is
+ * accepted here and converted, because a browser that hands back what a human typed should not
+ * fail when the same instant was written a different way. A bare date or a time with no offset is
+ * refused: both are ambiguous, and guessing a timezone for an analyst's window is exactly the kind
+ * of silent reinterpretation this DSL exists to avoid.
+ */
 export function isoUtc(value) {
-  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$/.test(value)) {
-    throw new DashboardQueryError('bad_window', `"${String(value)}" is not an ISO-8601 UTC instant.`);
+  if (typeof value !== 'string') {
+    throw new DashboardQueryError('bad_window', `"${String(value)}" is not an ISO-8601 instant.`);
   }
-  return new Date(value).toISOString();
+  const utc = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$/;
+  const offset = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?[+-]\d{2}:\d{2}$/;
+  if (!utc.test(value) && !offset.test(value)) {
+    throw new DashboardQueryError(
+      'bad_window',
+      `"${value}" is not an ISO-8601 instant with an explicit offset. Use 2026-09-24T00:00:00Z.`,
+    );
+  }
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) {
+    throw new DashboardQueryError('bad_window', `"${value}" is not a real instant.`);
+  }
+  return new Date(ms).toISOString();
 }
 
 /** A window from a named preset, anchored at `now` so the label and the request cannot disagree. */

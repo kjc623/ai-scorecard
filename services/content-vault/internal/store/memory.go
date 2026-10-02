@@ -23,14 +23,14 @@ import (
 // concurrency, a shred that destroys the wrapped key in the same call, a delete that reports how
 // many rows it removed, and a search that returns snippets rather than bodies.
 type Memory struct {
-	mu        sync.Mutex
-	tenants   map[string]Tenant
-	objects   map[string]map[string]ContentObject // tenant -> object
-	grants    map[string]map[string]RetrievalGrant
-	search    map[string][]SearchUnit // tenant -> units
-	audit     []AuditEntry
-	receipts  map[string]ErasureReceipt
-	closed    bool
+	mu       sync.Mutex
+	tenants  map[string]Tenant
+	objects  map[string]map[string]ContentObject // tenant -> object
+	grants   map[string]map[string]RetrievalGrant
+	search   map[string][]SearchUnit // tenant -> units
+	audit    []AuditEntry
+	receipts map[string]ErasureReceipt
+	closed   bool
 }
 
 // NewMemory returns an empty store.
@@ -185,9 +185,17 @@ func (m *Memory) DeleteSearchText(_ context.Context, tenantID, submissionID stri
 	return removed, nil
 }
 
-// SearchText implements Store. It approximates PostgreSQL's `simple` configuration: no stemming,
-// no stopwords, whole-term matching, with the same three forms the SQL statements serve.
-func (m *Memory) SearchText(_ context.Context, q SearchQuery) ([]SearchHit, error) {
+// SearchAudited implements Store: the audit row is appended before the query runs, in one lock
+// scope, which is the in-process equivalent of the single transaction the SQL implementation uses.
+func (m *Memory) SearchAudited(ctx context.Context, q SearchQuery, e AuditEntry) ([]SearchHit, error) {
+	if err := m.AppendAudit(ctx, e); err != nil {
+		return nil, err
+	}
+	return m.searchText(ctx, q)
+}
+
+// searchText is the un-audited query, private so no caller can reach a read path without a record.
+func (m *Memory) searchText(_ context.Context, q SearchQuery) ([]SearchHit, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	limit := q.Limit
@@ -454,6 +462,26 @@ func (m *Memory) ErasureReceipt(receiptID string) (ErasureReceipt, bool) {
 	defer m.mu.Unlock()
 	r, ok := m.receipts[receiptID]
 	return r, ok
+}
+
+// LastReceipt implements Store: the most recent receipt for the tenant, by completion time.
+func (m *Memory) LastReceipt(_ context.Context, tenantID string) (ErasureReceipt, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var best ErasureReceipt
+	found := false
+	for _, r := range m.receipts {
+		if r.TenantID != tenantID {
+			continue
+		}
+		if !found || r.CompletedAt.After(best.CompletedAt) {
+			best, found = r, true
+		}
+	}
+	if !found {
+		return ErasureReceipt{}, fmt.Errorf("%w: %s", ErrNoReceipt, tenantID)
+	}
+	return best, nil
 }
 
 // Close implements Store.

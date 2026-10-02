@@ -209,7 +209,7 @@ function passCompositionPairs(decomp) {
       // character. This is asserted against ICU, not assumed.
       check(nfc(fromCp(a) + fromCp(b)) === fromCp(c),
         `pair U+${a.toString(16)} + U+${b.toString(16)} does not compose to U+${c.toString(16)} under ICU`);
-      pairs.set((a << 21) | b, c);
+      pairs.set(a * 2097152 + b, c); // a<<21 overflows JS int32; 2^21 keeps it exact
     }
   }
   return { pairs, excluded };
@@ -429,7 +429,7 @@ function sha256Hex(s) {
   return createHash('sha256').update(s, 'utf8').digest('hex');
 }
 
-function buildTables({ decomp, ranks, pairs, quickRanges }) {
+function buildTables({ decomp, ranks, pairs, qcNoRanges, qcMaybeRanges }) {
   // Hangul syllables are algorithmic, so they are deliberately absent from the table.
   const decompKeys = [...decomp.keys()].filter((cp) => !isHangulSyllable(cp)).sort((a, b) => a - b);
   const offsets = [0];
@@ -461,8 +461,8 @@ const unicodeVersion = "${process.versions.unicode}"
 // icuVersion and nodeBuild record the oracle, so a table regenerated on a different
 // implementation is visible in review rather than implied.
 const (
-\ticuVersion  = "${process.versions.icu}"
-\tnodeBuild   = "node ${process.versions.node}"
+\ticuVersion = "${process.versions.icu}"
+\tnodeBuild  = "node ${process.versions.node}"
 \tmaxCCCRank = ${maxRank}
 )
 
@@ -497,14 +497,19 @@ const (
   out += goTable('compVals', pairVals, 'uint32', (v) => '0x' + v.toString(16).toUpperCase());
 
   out += `
-// quickRanges are inclusive [lo,hi] spans of code points that can require work: they
-// decompose, they carry a non-zero combining class, they can be the first element of a
-// composition pair, or they are Hangul. An input containing none of them is already NFC,
-// which is the fast path for ordinary text.
+// qcNoRanges are inclusive [lo,hi] spans of code points that NFC changes on their own
+// (UAX #15's NFC_QC=No: singleton decompositions, script-specific exclusions, non-starter
+// decompositions). qcMaybeRanges spans code points that can combine with a *preceding*
+// character: the second element of every composition pair, plus the Hangul V and T jamo.
+// Together with the canonical-order test they make up the conservative quick check in
+// nfc.go: an input containing none of them, in canonical order, is already NFC.
 `;
-  const flat = [];
-  for (const [lo, hi] of quickRanges) flat.push(lo, hi);
-  out += goTable('quickRanges', flat, 'uint32', (v) => '0x' + v.toString(16).toUpperCase());
+  const noFlat = [];
+  for (const [lo, hi] of qcNoRanges) noFlat.push(lo, hi);
+  out += goTable('qcNoRanges', noFlat, 'uint32', (v) => '0x' + v.toString(16).toUpperCase());
+  const maybeFlat = [];
+  for (const [lo, hi] of qcMaybeRanges) maybeFlat.push(lo, hi);
+  out += goTable('qcMaybeRanges', maybeFlat, 'uint32', (v) => '0x' + v.toString(16).toUpperCase());
   return out;
 }
 
@@ -522,17 +527,38 @@ function mergeRanges(points) {
 // ---------------------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------------------
-const { decomp, nfdStable } = passDecompositions();
+const { decomp, nfdStable, nfcSelf } = passDecompositions();
 const { ranks, sorted, cmp } = passCombiningClasses(nfdStable);
 const pairCount = verifyCombiningClasses(sorted, cmp, ranks);
 const { pairs, excluded } = passCompositionPairs(decomp);
 
-const quickPoints = new Set();
-for (const cp of decomp.keys()) quickPoints.add(cp);
-for (const cp of ranks.keys()) quickPoints.add(cp);
-for (const k of pairs.keys()) quickPoints.add(k >> 21);
-for (let cp = L_BASE; cp < L_BASE + L_COUNT; cp++) quickPoints.add(cp); // Hangul leading jamo
-const quickRanges = mergeRanges(quickPoints);
+// Quick-check properties, both derived rather than transcribed.
+//
+// qcNo: code points NFC changes on their own. Derived from the oracle (NFC(c) !== c) and
+// cross-checked against the exclusion set derived independently from the composition chains:
+// the two derivations must agree exactly.
+const qcNoPoints = [];
+for (let cp = 0; cp <= MAX_CP; cp++) {
+  if (isSurrogate(cp)) continue;
+  if (!nfcSelf[cp]) qcNoPoints.push(cp);
+}
+const excludedSet = new Set(excluded);
+check(qcNoPoints.length === excludedSet.size,
+  `NFC_QC=No has ${qcNoPoints.length} entries but the composition-chain derivation found ${excludedSet.size} exclusions`);
+for (const cp of qcNoPoints) {
+  check(excludedSet.has(cp), `U+${cp.toString(16)} changes under NFC but was not derived as a composition exclusion`);
+}
+
+// qcMaybe: code points that can combine with a preceding character — the second element of
+// every composition pair, plus the Hangul V and T jamo (whose composition is algorithmic).
+const qcMaybePoints = new Set();
+for (const k of pairs.keys()) qcMaybePoints.add(k % 2097152);
+for (let i = 0; i < V_COUNT; i++) qcMaybePoints.add(V_BASE + i);
+for (let i = 1; i < T_COUNT; i++) qcMaybePoints.add(T_BASE + i);
+for (const cp of qcNoPoints) check(!qcMaybePoints.has(cp), `U+${cp.toString(16)} is both QC=No and QC=Maybe`);
+
+const qcNoRanges = mergeRanges(qcNoPoints);
+const qcMaybeRanges = mergeRanges(qcMaybePoints);
 
 const cases = buildCorpus({ decomp, nfdStable, ranks, pairs, excluded });
 const expected = cases.map((c) => nfc(c.in));
@@ -593,7 +619,7 @@ if (failures.length) {
 }
 
 const files = new Map();
-files.set(join(ROOT, 'tables.go'), buildTables({ decomp, ranks, pairs, quickRanges }));
+files.set(join(ROOT, 'tables.go'), buildTables({ decomp, ranks, pairs, qcNoRanges, qcMaybeRanges }));
 files.set(join(ROOT, 'testdata', 'corpus.json'), JSON.stringify({ contract: 'sac-canon-1', unicode: process.versions.unicode, cases }, null, 0) + '\n');
 files.set(join(ROOT, 'testdata', 'corpus.expected.json'), JSON.stringify({ unicode: process.versions.unicode, icu: process.versions.icu, expected }, null, 0) + '\n');
 files.set(join(ROOT, 'testdata', 'meta.json'), JSON.stringify(meta, null, 2) + '\n');
@@ -625,7 +651,7 @@ console.log(`decomposition mappings : ${decomp.size} (of which Hangul excluded: 
 console.log(`combining-class entries: ${ranks.size} in ${maxRankOf(ranks)} classes`);
 console.log(`composition pairs      : ${pairs.size}`);
 console.log(`composition exclusions : ${excluded.length}`);
-console.log(`quick-check ranges     : ${quickRanges.length}`);
+console.log(`quick-check ranges     : No=${qcNoRanges.length} Maybe=${qcMaybeRanges.length}`);
 console.log(`pairwise CCC checks    : ${pairCount}`);
 console.log(`corpus cases           : ${cases.length} (${changed} change under NFC)`);
 console.log(`single-code-point hash : ${meta.singleCodePointDigest}`);

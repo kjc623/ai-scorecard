@@ -20,36 +20,36 @@
     },
     "model": {
       "count": 3800,
-      "p50_ms": 0.01152,
-      "p95_ms": 0.031232,
-      "max_ms": 3.7312
+      "p50_ms": 0.011776,
+      "p95_ms": 0.030976,
+      "max_ms": 3.737344
     },
     "normalise": {
       "count": 3800,
       "p50_ms": 0.004096,
-      "p95_ms": 0.020992,
-      "max_ms": 3.879424
+      "p95_ms": 0.020736,
+      "max_ms": 3.924736
     },
     "rules": {
       "count": 3800,
-      "p50_ms": 0.056576,
-      "p95_ms": 0.57216,
-      "max_ms": 2.921216
+      "p50_ms": 0.055552,
+      "p95_ms": 0.554496,
+      "max_ms": 2.119936
     },
     "validators": {
       "count": 3800,
       "p50_ms": 0.002048,
       "p95_ms": 0.004864,
-      "max_ms": 0.340224
+      "max_ms": 0.9152
     }
   },
   "total": {
     "count": 4000,
-    "p50_ms": 0.08576,
-    "p95_ms": 0.6208,
-    "max_ms": 7.327232
+    "p50_ms": 0.08448,
+    "p95_ms": 0.602112,
+    "max_ms": 6.531072
   },
-  "sum_stage_p95_ms": 0.629248,
+  "sum_stage_p95_ms": 0.611072,
   "within_budget": true,
   "notes": [
     "p95 is nearest-rank over every stage observation of the whole run, not per corpus case",

@@ -1,0 +1,274 @@
+// unavailable.js — what this dashboard cannot render from the documented API, stated in the UI.
+//
+// The Lead asked for exactly this: "If you find a state you cannot render because the API does not
+// expose it, that is exactly what I want in your report — do not paper over it in the client."
+//
+// So it is not only in the report. A dashboard that silently omits a panel teaches its users that
+// the panel has nothing to say, which is the same failure mode as rendering a blind spot as a
+// zero. Every gap below is rendered as a row with the reason and the source that would fill it.
+//
+// This file is also the registry the §14 tests read: "no content search" and "no export links" are
+// properties of this catalogue, not comments in a renderer.
+
+/**
+ * @typedef {object} Gap
+ * @property {string} id
+ * @property {string} screen      the information-architecture screen it belongs to
+ * @property {string} title
+ * @property {string} needs       what the API would have to expose
+ * @property {string} consequence what a user cannot do today
+ * @property {'absent'|'partial'} severity
+ */
+
+/** @type {ReadonlyArray<Gap>} */
+export const GAPS = Object.freeze([
+  Object.freeze({
+    id: 'content-search',
+    screen: 'search',
+    title: 'Content search (Q9, first half)',
+    needs: 'POST /v1/content-search, executed by content-vault over ingest.search_text, returning bounded snippets with an index-coverage block.',
+    consequence: 'An analyst cannot search prompt text or attachment filenames from this dashboard at all. The DSL has no text predicate by design, and this API does not expose the search endpoint the document specifies. Nothing here renders as "no matches" — there is no search to return them.',
+    severity: 'absent',
+  }),
+  Object.freeze({
+    id: 'content-retrieval',
+    screen: 'event',
+    title: 'Approved content retrieval (§8)',
+    needs: 'Retrieval request, second approval, audit-first reveal, and a content-vault call.',
+    consequence: 'Event detail shows metadata and the content_state answer. An analyst cannot raise, approve or reveal content here, and a screenshot cannot be mistaken for one that did.',
+    severity: 'absent',
+  }),
+  Object.freeze({
+    id: 'export',
+    screen: 'exports',
+    title: 'Exports (§9) and subject export (§10)',
+    needs: 'The export planner and job state machine (requested → authorised → running → sealed → delivered → expired) and the destination configuration.',
+    consequence: 'No export can be requested, listed or receipted from this dashboard. There is no link to render and none is faked.',
+    severity: 'absent',
+  }),
+  Object.freeze({
+    id: 'settings',
+    screen: 'settings',
+    title: 'Settings: modes, retention, holds, directory sync',
+    needs: 'ops.tenant, ops.grant, ops.hold, ops.retention_policy and ops.policy_bundle as readable sources; none is registered in the DSL.',
+    consequence: 'A tenant admin cannot see or change configuration here. Reading configuration through a query DSL would also be the wrong shape: a change is an audited act, not a read.',
+    severity: 'absent',
+  }),
+  Object.freeze({
+    id: 'rejected-histogram',
+    screen: 'degraded',
+    title: 'Rejected-envelope histogram by reason',
+    needs: 'ingest.rejected as a registered source (reason_code, received_at, device_id).',
+    consequence: 'An agent defect reported by ingest cannot be diagnosed from the dashboard. The quarantine table holds the diagnosis without the content precisely so this panel is possible; the DSL does not expose it.',
+    severity: 'absent',
+  }),
+  Object.freeze({
+    id: 'reconciliation-drift',
+    screen: 'degraded',
+    title: 'Reconciliation drift (C34)',
+    needs: 'ops.reconciliation_run as a registered source (drift_found, checks, started_at, finished_at).',
+    consequence: 'Drift between the two deletion mechanisms is recorded and alerted, but this dashboard cannot show it. The table is granted to the query role; it is not in the DSL.',
+    severity: 'absent',
+  }),
+  Object.freeze({
+    id: 'clock-skew',
+    screen: 'degraded',
+    title: 'Per-device clock skew (C26)',
+    needs: 'A skew figure per device — ops.collector_state.detail is jsonb and is not exposed as a dimension or measure.',
+    consequence: 'Both clocks are shown side by side on every row and the device clock is labelled as possibly skewed, but the skew itself cannot be quantified here.',
+    severity: 'partial',
+  }),
+  Object.freeze({
+    id: 'index-expiry-drift',
+    screen: 'degraded',
+    title: 'Index expiry drift (§15.5)',
+    needs: 'Read access to ingest.search_text.expires_at, which sac_query does not hold and the DSL does not register.',
+    consequence: 'Index rows surviving their expiry cannot be seen from the dashboard. The component that answers analyst questions is deliberately unable to read the index at all.',
+    severity: 'absent',
+  }),
+  Object.freeze({
+    id: 'degraded-share',
+    screen: 'degraded',
+    title: 'Degraded-classification share over the window',
+    needs: 'degraded_events as a measure on a tool- or class-level aggregate, or a confidence dimension on one.',
+    consequence: 'The classes screen carries degraded_events per cell when the source is mart.agg_class_period, so classifier health is visible there. A tenant-wide degraded share has no aggregate behind it and is not approximated by paging events.',
+    severity: 'partial',
+  }),
+  Object.freeze({
+    id: 'low-merge-share',
+    screen: 'activity',
+    title: 'Low-merge-confidence share (R9)',
+    needs: 'A merge_confidence measure on an aggregate, or a count over a window on the event list.',
+    consequence: 'The activity screen counts low-confidence merges over the rows it has in hand and labels the figure "of N rows in this page". A window-wide share would need a narrower read than the page, and inventing one would be worse than saying so.',
+    severity: 'partial',
+  }),
+  Object.freeze({
+    id: 'anchor-head',
+    screen: 'audit',
+    title: 'Anchored chain head and anchor time (§3.10)',
+    needs: 'The anchor record written to write-once storage.',
+    consequence: 'The audit screen reports that this page\'s hash links verify, and says the anchor head is not exposed. Whole-chain verification remains the reconciler\'s job.',
+    severity: 'partial',
+  }),
+  Object.freeze({
+    id: 'top-n-per-bucket',
+    screen: 'tools',
+    title: 'Top-N tools per bucket',
+    needs: 'A window function over the grouped result, which the DSL does not express.',
+    consequence: 'The tools screen ranks within a bucket-major ordering, so a page limit truncates whole buckets rather than returning the top N of each. Reported as a DSL limitation rather than approximated in the client.',
+    severity: 'partial',
+  }),
+  Object.freeze({
+    id: 'person-enumeration',
+    screen: 'unsanctioned',
+    title: 'A list of people sorted by volume',
+    needs: 'Nothing: this is forbidden, not missing. mart.agg_user_period refuses a read without a subject filter, and the client refuses to build one.',
+    consequence: 'The product has no leaderboard and this dashboard cannot construct one. Recorded here so the constraint is visible rather than merely absent.',
+    severity: 'absent',
+  }),
+]);
+
+export const GAP_IDS = Object.freeze(GAPS.map((g) => g.id));
+
+/** The rows the "what this dashboard cannot show" screen renders. */
+export function gapsFor(screenId) {
+  return screenId ? GAPS.filter((g) => g.screen === screenId) : GAPS;
+}
+
+/**
+ * Degraded collection (§11.4). The signals the API can support are shown; the ones it cannot are
+ * listed with the reason, in the same panel, so a gap cannot be read as a healthy zero.
+ *
+ * @param {object} input
+ * @param {object} input.devices view state for the device list (collector states, spool counters)
+ */
+export function degradedCollectionView({ devices }) {
+  const counts = new Map();
+  for (const row of devices.data) {
+    const key = row.collector_state ?? 'not_reported';
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const spoolDepth = devices.data.reduce((sum, row) => sum + (typeof row.spool_depth === 'number' ? row.spool_depth : 0), 0);
+  const dropped = devices.data.reduce((sum, row) => sum + (typeof row.spool_dropped_total === 'number' ? row.spool_dropped_total : 0), 0);
+
+  const available = [
+    { signal: 'Collector state counts', source: 'mart.v_device_liveness', detail: [...counts.entries()].map(([state, n]) => `${state}: ${n}`).join(', ') || 'no rows' },
+    { signal: 'Spool depth on devices', source: 'mart.v_device_liveness', detail: `${spoolDepth} events held on the devices in this page` },
+    { signal: 'Events already dropped (C22)', source: 'mart.v_device_liveness', detail: `${dropped} dropped because a spool was full — a visible undercount` },
+    { signal: 'Coverage gaps by reason', source: 'ops.coverage_snapshot', detail: devices.coverageText?.text ?? 'no coverage block' },
+  ];
+  const unavailable = GAPS.filter((g) => g.screen === 'degraded');
+
+  return Object.freeze({
+    id: 'degraded',
+    title: 'Degraded collection',
+    question: null,
+    source: 'mart.v_device_liveness',
+    sourceLabel: 'Devices and collector state',
+    subtitle: 'Everything the collection paths report about themselves — and, in the same panel, what this API cannot report.',
+    tiles: Object.freeze([
+      { label: 'Devices in page', value: { kind: 'number', text: String(devices.data.length) }, note: null },
+      { label: 'Spool depth (page)', value: { kind: 'number', text: String(spoolDepth) }, note: 'Events waiting on the devices in this page.' },
+      { label: 'Dropped (page)', value: { kind: 'number', text: String(dropped) }, note: 'Reported, never inferred: silent data loss is the failure this counter prevents.' },
+      { label: 'Coverage', value: { kind: 'vocab', text: devices.coverage?.state ?? 'unknown' }, note: devices.coverageText?.text ?? null },
+    ]),
+    tables: Object.freeze([
+      {
+        title: 'Signals this API supports',
+        columns: Object.freeze([
+          { key: 'signal', label: 'Signal' },
+          { key: 'source', label: 'Source' },
+          { key: 'detail', label: 'Value' },
+        ]),
+        rows: Object.freeze(available.map((row) => Object.freeze({ row, vocab: {}, suppressed: false }))),
+        emptyText: 'No device rows.',
+        suppressedCells: 0,
+      },
+      {
+        title: 'Signals this API does not expose',
+        columns: Object.freeze([
+          { key: 'title', label: 'Missing signal' },
+          { key: 'needs', label: 'What would be needed' },
+          { key: 'consequence', label: 'Consequence' },
+        ]),
+        rows: Object.freeze(unavailable.map((row) => Object.freeze({ row, vocab: {}, suppressed: false }))),
+        emptyText: 'Nothing is missing.',
+        suppressedCells: 0,
+      },
+    ]),
+    series: Object.freeze([]),
+    banners: devices.banners,
+    notes: Object.freeze([
+      'A panel that is absent because the API cannot answer looks identical to a panel that is absent because nothing happened. This screen exists so that the difference is visible.',
+    ]),
+  });
+}
+
+/** The whole catalogue, as a screen. */
+export function unavailableView() {
+  return Object.freeze({
+    id: 'unavailable',
+    title: 'What this dashboard cannot show',
+    question: null,
+    source: null,
+    sourceLabel: null,
+    subtitle: 'Every state the documented query API cannot express, with the source that would fill it. Nothing here is approximated in the client.',
+    tiles: Object.freeze([
+      { label: 'Screens with no API behind them', value: { kind: 'number', text: String(new Set(GAPS.filter((g) => g.severity === 'absent').map((g) => g.screen)).size) }, note: 'Content search, exports, settings.' },
+      { label: 'Partial signals', value: { kind: 'number', text: String(GAPS.filter((g) => g.severity === 'partial').length) }, note: 'Shown with the caveat that makes them honest.' },
+      { label: 'Forbidden, not missing', value: { kind: 'number', text: String(GAPS.filter((g) => g.id === 'person-enumeration').length) }, note: 'A leaderboard is a non-goal, enforced on both sides.' },
+    ]),
+    tables: Object.freeze([
+      {
+        title: 'Gaps',
+        columns: Object.freeze([
+          { key: 'screen', label: 'Screen' },
+          { key: 'title', label: 'Missing' },
+          { key: 'needs', label: 'What would be needed' },
+          { key: 'consequence', label: 'Consequence' },
+          { key: 'severity', label: 'Kind', kind: 'vocab' },
+        ]),
+        rows: Object.freeze(GAPS.map((row) => Object.freeze({ row, vocab: { severity: row.severity }, suppressed: false }))),
+        emptyText: 'Nothing is missing.',
+        suppressedCells: 0,
+      },
+    ]),
+    series: Object.freeze([]),
+    banners: Object.freeze([]),
+    notes: Object.freeze([
+      'These are reported rather than rendered as empty panels. A quiet panel and a blind panel must not look the same.',
+    ]),
+  });
+}
+
+/** A screen for a section that has no API behind it (exports, settings). */
+export function noApiView({ id, title, subtitle }) {
+  const rows = gapsFor(id);
+  return Object.freeze({
+    id,
+    title,
+    question: null,
+    source: null,
+    sourceLabel: null,
+    subtitle,
+    tiles: Object.freeze([]),
+    tables: Object.freeze([
+      {
+        title: 'Why this screen is empty',
+        columns: Object.freeze([
+          { key: 'title', label: 'Missing' },
+          { key: 'needs', label: 'What would be needed' },
+          { key: 'consequence', label: 'Consequence' },
+        ]),
+        rows: Object.freeze(rows.map((row) => Object.freeze({ row, vocab: {}, suppressed: false }))),
+        emptyText: 'Nothing is missing.',
+        suppressedCells: 0,
+      },
+    ]),
+    series: Object.freeze([]),
+    banners: Object.freeze([
+      { level: 'hatched', title: 'No API behind this screen', text: 'This is not "nothing happened": the query API has no endpoint for it.' },
+    ]),
+    notes: Object.freeze(['Reported by the client rather than hidden, so the gap is visible to whoever reads this dashboard.']),
+  });
+}

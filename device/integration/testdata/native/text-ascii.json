@@ -1,0 +1,27 @@
+{
+  "name": "text-ascii",
+  "why": "the ordinary case: a user prompt that is not base64 and would fail outright if sent raw",
+  "frame": {
+    "type": "observation",
+    "version": 1,
+    "id": "case-text-ascii",
+    "body": {
+      "client_id": "c-ascii",
+      "route": "ext.web_request",
+      "tool_fingerprint": "genai.web.chat.v1:chatgpt",
+      "occurred_at": "2026-10-02T18:00:00.000Z",
+      "monotonic_offset_ms": 123456,
+      "size_bytes": 44,
+      "has_content": true,
+      "content_digest": "sha256:142e97afd5043118e7b4165c55077b7e9945c35212a0477dfddb7b108d831b67",
+      "content": "U3VtbWFyaXNlIHRoZSBRNCByZXZlbnVlIGRlY2sgZm9yIHRoZSBib2FyZC4="
+    }
+  },
+  "expects": {
+    "decodable": true,
+    "has_content": true,
+    "content_bytes": 44,
+    "content_text": "Summarise the Q4 revenue deck for the board.",
+    "content_digest": "sha256:142e97afd5043118e7b4165c55077b7e9945c35212a0477dfddb7b108d831b67"
+  }
+}
