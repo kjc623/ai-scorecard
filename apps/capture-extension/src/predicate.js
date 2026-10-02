@@ -316,8 +316,19 @@ export function predicateRequest(rec, threshold = DEFAULT_THRESHOLD) {
   const structural = messages !== null || signals.some((s) => s.id === 'body_tool_declarations');
   const match = score >= threshold;
 
+  // The metadata-only counterpart of `match`, for the lane where no body exists at all
+  // (§11.2: an M0 destination's body was never requested). "Match" cannot honestly be decided
+  // from a body that was never read, so the question on that lane is whether the request is
+  // worth an identity-and-volume observation — the strongest thing the route may report at M0
+  // (§11.3's M0 row: identity, tool, times, mode, size, policy decision).
+  const metadata_candidate =
+    method !== 'GET' &&
+    (ct.json || ct.form || signals.some((s) => s.id === 'path_conversational_vocabulary')) &&
+    size > TRIVIAL_SIZE_BYTES;
+
   return {
     match,
+    metadata_candidate,
     score,
     threshold,
     signals,
@@ -326,7 +337,7 @@ export function predicateRequest(rec, threshold = DEFAULT_THRESHOLD) {
     messages,
     path_signal: pathSignal,
     over_cap: Boolean(rec.truncated),
-    upload_bearing: isUploadBearing({ headers, form: rec.form, ct }),
+    upload_bearing: isUploadBearing({ headers, form: rec.form || null, ct }),
     attachment_candidates: rec.form ? formFileCandidates(rec.form) : [],
   };
 }

@@ -1,0 +1,105 @@
+{
+  "ranAt": "2026-10-02T17:30:17.765Z",
+  "node": "v22.23.1",
+  "go": "go version go1.27.0 windows/amd64",
+  "cwd": "C:\\Users\\kyle\\Downloads\\architecture",
+  "results": [
+    {
+      "label": "contracts/tools",
+      "status": "MISSING",
+      "code": null,
+      "seconds": 0,
+      "output": "directory does not exist"
+    },
+    {
+      "label": "apps/capture-extension",
+      "status": "MISSING",
+      "code": null,
+      "seconds": 0,
+      "output": "no *.test.{mjs,cjs,js} under apps/capture-extension"
+    },
+    {
+      "label": "apps/dashboard",
+      "status": "MISSING",
+      "code": null,
+      "seconds": 0,
+      "output": "directory does not exist"
+    },
+    {
+      "label": "services/query-api",
+      "status": "MISSING",
+      "code": null,
+      "seconds": 0,
+      "output": "directory does not exist"
+    },
+    {
+      "label": "db/tools",
+      "status": "MISSING",
+      "code": null,
+      "seconds": 0,
+      "output": "no *.test.{mjs,cjs,js} under db/tools"
+    },
+    {
+      "label": "infra/tools",
+      "status": "MISSING",
+      "code": null,
+      "seconds": 0,
+      "output": "directory does not exist"
+    },
+    {
+      "label": "device/protocol",
+      "status": "PASS",
+      "code": 0,
+      "seconds": 0.201,
+      "output": "ok  \tgithub.com/shadow-ai-capture/device/protocol\t(cached)"
+    },
+    {
+      "label": "device/capture-core",
+      "status": "MISSING",
+      "code": null,
+      "seconds": 0,
+      "output": "directory does not exist"
+    },
+    {
+      "label": "device/capture-spool",
+      "status": "PASS",
+      "code": 0,
+      "seconds": 1.157,
+      "output": "?   \tgithub.com/shadow-ai-capture/device/capture-spool\t[no test files]"
+    },
+    {
+      "label": "device/classifier-host",
+      "status": "MISSING",
+      "code": null,
+      "seconds": 0,
+      "output": "no go.mod in device/classifier-host"
+    },
+    {
+      "label": "services/ingest-api",
+      "status": "MISSING",
+      "code": null,
+      "seconds": 0,
+      "output": "directory does not exist"
+    },
+    {
+      "label": "services/content-vault",
+      "status": "MISSING",
+      "code": null,
+      "seconds": 0,
+      "output": "directory does not exist"
+    },
+    {
+      "label": "contracts/generated (go build)",
+      "status": "MISSING",
+      "code": null,
+      "seconds": 0,
+      "output": "directory does not exist"
+    }
+  ],
+  "totals": {
+    "packages": 13,
+    "passed": 2,
+    "failed": 0,
+    "missing": 11
+  }
+}
