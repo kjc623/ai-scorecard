@@ -52,23 +52,30 @@ services:
       postgres:
         condition: service_healthy
     environment:
+      PGHOST: postgres
+      PGUSER: postgres
+      PGDATABASE: shadow
       PGPASSWORD: sac-lab-only
     volumes:
       # The file itself, not a copy: the lab must exercise the schema the repository ships.
       - ../db/schema.sql:/schema/schema.sql:ro
-    # ON_ERROR_STOP so a failing statement fails the init container and therefore the lab.
-    command:
-      - psql
-      - -v
-      - ON_ERROR_STOP=1
-      - -h
-      - postgres
-      - -U
-      - postgres
-      - -d
-      - shadow
-      - -f
-      - /schema/schema.sql
+    # Idempotent on purpose. db/schema.sql starts with `CREATE SCHEMA ref;`, so applying it twice
+    # fails — and a lab you cannot start twice in a row is a lab nobody uses. The guard is a check
+    # for the schema, not for a marker file, so it is correct after a partially-applied run too.
+    # ON_ERROR_STOP so a failing statement fails this container, and therefore the lab, instead of
+    # leaving a half-built database for a service to fail against later.
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -e
+        if [ "$$(psql -Atc "select 1 from information_schema.schemata where schema_name='ingest'")" = "1" ]; then
+          echo "schema: already applied (schema 'ingest' exists); nothing to do"
+          exit 0
+        fi
+        echo "schema: applying db/schema.sql"
+        psql -v ON_ERROR_STOP=1 -f /schema/schema.sql
+        echo "schema: applied"
     restart: "no"
 
   ingest-api:
