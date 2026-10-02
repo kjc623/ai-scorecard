@@ -106,3 +106,34 @@ empty Q3 as a working tenant with unusual data.
 `services/control-api` with a documented sync endpoint, `ops.user_dim` written by it, and a dashboard
 state for "no directory sync configured" distinguished from "this user is unmapped". That is a
 component, not a decision — which is why this record answers Q2 and leaves the build to the board.
+
+## What this record cannot know
+
+Stated rather than left implicit, because the task asked for it and because a decision record that
+implies more certainty than it has is worse than one that admits its edges.
+
+1. **What a real customer's directory will actually return.** Whether Entra ID department attributes
+   are populated for a typical 500–5,000-employee buyer is a fact about customers, not about this
+   repository. It has never been checked against a tenant. If a material share of users have no
+   department set, Q3 is answerable only for the mapped subset, and the aggregate's "unmapped users
+   reported" behaviour becomes the normal case rather than an edge — which would make the *denominator*
+   the thing to design for, and this record does not.
+   *How to close it: one real tenant's directory export, counted by coverage.*
+2. **How often it changes, and what a change means for history.** A person who moves team mid-quarter
+   has usage attributed to one team for part of the window and another for the rest. Recomputing the
+   aggregate would rewrite history; not recomputing leaves two rows that disagree with the directory.
+   §591 stops short of naming this. It is the same class as ADR 0004's immutability question, in a
+   dimension nobody has thought about yet.
+   *How to close it: a decision on whether `agg_org_period` is point-in-time or as-at-now, taken with
+   the erasure and retention owners, because it also decides what an erasure receipt must say.*
+3. **Whether `manager_ref` can be used at all.** It is a reporting-line attribute about a person, and
+   the brief's legal workstream has not spoken to it. This record keeps it readable for aggregation
+   and out of exports, following `directory_object_id_enc`'s treatment, but that is a conservative
+   default rather than a ruling.
+   *How to close it: the same legal workstream that owns the notice acknowledgement. Engineering can
+   only attest to what the system does with it.*
+4. **The cost of the sync.** A full directory read per tenant per interval is small at this scale,
+   but it is a new customer-side credential and a new failure mode (a sync that stops does not look
+   like an error — it looks like an unchanged organisation). Nothing in this repository measures it.
+   *How to close it: it appears as a line item and a health signal once `control-api` exists.*
+

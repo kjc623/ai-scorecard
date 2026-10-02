@@ -19,10 +19,25 @@
 
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, join, sep } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const DB = join(HERE, '..');
+
+// The tree to check. Normally the repository this file lives in. SAC_SCHEMA_ROOT points the
+// checker at a fixture instead, which is what db/tools/check-schema.test.mjs uses to prove each
+// check can FAIL: a checker that can only ever be run against a correct tree cannot show that it
+// checks anything. Overriding the root changes only WHICH files are read, never how.
+const REPO = process.env.SAC_SCHEMA_ROOT ? resolve(process.env.SAC_SCHEMA_ROOT) : join(HERE, '..', '..');
+const DB = join(REPO, 'db');
+
+if (!readable(join(DB, 'schema.sql'))) {
+  console.error(`check-schema: no db/schema.sql under ${REPO} (set SAC_SCHEMA_ROOT to a fixture tree)`);
+  process.exit(2);
+}
+
+function readable(p) {
+  try { readFileSync(p); return true; } catch { return false; }
+}
 
 const results = [];
 let failed = 0;
