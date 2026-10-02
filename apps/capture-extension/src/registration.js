@@ -10,8 +10,36 @@
  *
  * So there are two lanes, and the difference between them is one option in the filter:
  *
- *   lane A (metadata)  addListener(handler, {urls}, ['blocking'])                   — always installed
- *   lane B (body)      addListener(handler, {urls: bodyFilter}, ['blocking','requestBody']) — gated
+ *   lane A (metadata)  addListener(handler, {urls}, [...])                        — always installed
+ *   lane B (body)      addListener(handler, {urls: bodyFilter}, [...,'requestBody']) — gated
+ *
+ * ── The blocking capability, and why registration adapts to it ──────────────────────────────
+ *
+ * §7.4 needs `webRequestBlocking` so a `blocked` rule can cancel. Only a policy-installed extension
+ * is granted it (E1). **An unpacked load is not, and the refusal is silent**: the browser logs
+ *
+ *   "You do not have permission to use blocking webRequest listeners. ... webRequestBlocking is only
+ *    allowed for extensions that are installed using ExtensionInstallForcelist."
+ *
+ * and `addListener(..., ['blocking'])` neither throws nor reports anything — `hasListeners()` still
+ * returns true and the listener is simply **never invoked**. Measured in Edge 154: a listener
+ * registered with `['blocking']` received 0 events while a plain listener on the same event, in the
+ * same worker, received 3.
+ *
+ * The first version of this module registered *every* lane with `['blocking']`, which made the
+ * consequence severe and silent: on any install without the privilege the extension observed
+ * **nothing at all**, while its health report said nothing about it. §15.2 and C21/C22 forbid exactly
+ * that — never less inspection, silently.
+ *
+ * So the lanes adapt to the capability the install actually holds:
+ *
+ *   blocking available   → the lanes register with `['blocking']`, and a `blocked` rule cancels.
+ *   blocking unavailable → the same lanes register WITHOUT it. Observation is unaffected — it never
+ *                          needed to cancel — and enforcement is reported unavailable rather than
+ *                          being silently inert.
+ *
+ * §7.2 holds either way: the observation lane returns no blocking response, so a request is released
+ * as soon as its handler settles.
  *
  * Three guards, in order, all of which must pass before any byte is handed to the logic:
  *
@@ -21,10 +49,11 @@
  *      change and the filter being rebuilt.
  *   3. `pipeline.readBodyForMode()` — the mode gate at the point of use.
  *
- * A test asserts on the registered filter, which is the only place the guarantee can be checked
- * from outside a browser. The cost is stated rather than hidden: §11.2 says "any resulting
- * weakness in the shape predicate [is] recorded as a coverage property of M0", so a
- * metadata-lane observation carries `unread_reason: 'mode_forbids_read'` and no content.
+ * A test asserts on the registered filter *and* the registered `extraInfoSpec`, which is the only
+ * place either guarantee can be checked from outside a browser; `tools/in-browser-check.mjs` checks
+ * the behaviour in a real one. The cost is stated rather than hidden: §11.2 says "any resulting
+ * weakness in the shape predicate [is] recorded as a coverage property of M0", so a metadata-lane
+ * observation carries `unread_reason: 'mode_forbids_read'` and no content.
  */
 
 import { normaliseBody } from './request-body.js';
@@ -45,7 +74,31 @@ export const OBSERVED_TYPES = ['main_frame', 'sub_frame', 'xmlhttprequest', 'web
  */
 export const NEVER_BODY_BEARING = ['http://localhost/*', 'http://127.0.0.1/*', 'http://[::1]/*', 'http://169.254.0.0/16/*'];
 
-export function installLanes({ adapter, policy, onBodyLane, onMetadataLane, onResponse = null, types = OBSERVED_TYPES }) {
+/**
+ * The `extraInfoSpec` for a lane, given what the install actually permits.
+ *
+ * @param {{withBody: boolean, blocking: boolean}} spec
+ */
+export function laneExtraInfoSpec({ withBody, blocking }) {
+  const out = [];
+  // §7.4: 'blocking' is what lets a `blocked` rule cancel, and it is the only reason to ask for it.
+  if (blocking) out.push('blocking');
+  // §7.2/E2: 'requestBody' is orthogonal to 'blocking'. It must be requested on the body lane even
+  // when blocking is unavailable, or that lane would observe nothing but metadata.
+  if (withBody) out.push('requestBody');
+  return out;
+}
+
+export function installLanes({
+  adapter,
+  policy,
+  onBodyLane,
+  onMetadataLane,
+  onResponse = null,
+  types = OBSERVED_TYPES,
+  /** §7.4's capability. False means observation still works and enforcement is reported unavailable. */
+  blockingAvailable = true,
+}) {
   /** @type {string[]} what lane B is currently registered for — the thing the test asserts on. */
   let bodyFilter = [];
   let installed = false;
@@ -67,7 +120,11 @@ export function installLanes({ adapter, policy, onBodyLane, onMetadataLane, onRe
   }
 
   function install() {
-    adapter.webRequest.onBeforeRequest(guard(metadataHandler), { urls: ALL_URLS, types });
+    adapter.webRequest.onBeforeRequest(guard(metadataHandler), {
+      urls: ALL_URLS,
+      types,
+      blocking: blockingAvailable,
+    });
     if (onResponse) {
       // The response lane is not blocking: a response record can only corroborate an observation
       // that has already been released, so it has no business delaying anything.
@@ -79,7 +136,11 @@ export function installLanes({ adapter, policy, onBodyLane, onMetadataLane, onRe
     // the body-bearing listener is simply not installed. Chrome then never produces `requestBody`
     // for this extension at all, which is the strongest form of §11.2's guarantee.
     if (bodyFilter.length > 0) {
-      adapter.webRequest.onBeforeRequestWithBody(guard(bodyHandler), { urls: bodyFilter.slice(), types });
+      adapter.webRequest.onBeforeRequestWithBody(guard(bodyHandler), {
+        urls: bodyFilter.slice(),
+        types,
+        blocking: blockingAvailable,
+      });
       bodyInstalled = true;
     }
   }
@@ -103,7 +164,11 @@ export function installLanes({ adapter, policy, onBodyLane, onMetadataLane, onRe
     if (!changed) return false;
     reinstallCount += 1;
     if (bodyFilter.length > 0) {
-      adapter.webRequest.onBeforeRequestWithBody(guard(bodyHandler), { urls: bodyFilter.slice(), types });
+      adapter.webRequest.onBeforeRequestWithBody(guard(bodyHandler), {
+        urls: bodyFilter.slice(),
+        types,
+        blocking: blockingAvailable,
+      });
       bodyInstalled = true;
     } else {
       adapter.webRequest.removeBodyLane();
@@ -115,6 +180,17 @@ export function installLanes({ adapter, policy, onBodyLane, onMetadataLane, onRe
   return {
     get bodyLaneInstalled() {
       return bodyInstalled;
+    },
+    /** §7.4's capability as this install holds it, so the health report can state it. */
+    get enforcement() {
+      return blockingAvailable ? 'blocking' : 'observation_only';
+    },
+    /** The `extraInfoSpec` each lane was registered with, for the tests and the README. */
+    get extraInfoSpec() {
+      return {
+        metadata: laneExtraInfoSpec({ withBody: false, blocking: blockingAvailable }),
+        body: laneExtraInfoSpec({ withBody: true, blocking: blockingAvailable }),
+      };
     },
     get metadataFilter() {
       return installed ? ALL_URLS.slice() : [];

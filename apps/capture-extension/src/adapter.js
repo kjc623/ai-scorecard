@@ -138,6 +138,8 @@ export const ERROR_CODES = Object.freeze([
   'evaluation_error',
   'budget_exceeded',
   'warn_unavailable',
+  /** §7.4's capability is absent on this install: observation works, a `blocked` rule cannot act. */
+  'enforcement_unavailable',
   'internal_error',
 ]);
 

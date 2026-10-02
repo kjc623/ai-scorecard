@@ -31,6 +31,29 @@ param baseName string
 param tags object = {}
 
 // ---------------------------------------------------------------------------------------------
+// Deployment scope: what this composition is allowed to deploy.
+//
+// These exist so a lab is a PARAMETER FILE rather than a second composition. The lab in
+// docs/lab/LAB-COST.md drops three resource families — the edge, the dashboard and the export
+// storage — because each is either unwanted in a lab or the single largest line in the bill
+// (Front Door's base fee is ~$330/month, more than ten times the whole cheap lab). Forking
+// main.bicep for that would have produced a parallel tree that drifts from production within a
+// month; three switches keep one composition and make the lab's differences explicit and reviewable.
+//
+// Every default is true, so an existing parameter file deploys exactly what it deployed before.
+// A lab sets them false. Nothing else about the composition changes.
+// ---------------------------------------------------------------------------------------------
+
+@description('Deploy Front Door Premium and its WAF policy. False in the lab: the edge is the largest single line in the bill, and a lab is reached over the VNet instead.')
+param deployEdge bool = true
+
+@description('Deploy the static web app that hosts the dashboard. False in the lab: the dashboard is a static file that opens from disk (apps/dashboard/index.html).')
+param deployDashboard bool = true
+
+@description('Deploy the second storage account used for customer-facing columnar exports. False in the lab: exports are a delivery feature, not something a lab exercises.')
+param deployExports bool = true
+
+// ---------------------------------------------------------------------------------------------
 // Sizing that differs per environment (§3.1, §3.2)
 
 @description('PostgreSQL compute SKU. B_Standard_B2s in dev, D2ds_v5 in staging and production.')
@@ -245,7 +268,9 @@ module ciphertext 'modules/storage-ciphertext.bicep' = {
   }
 }
 
-module exports 'modules/storage-exports.bicep' = {
+// Conditional on deployExports: a lab does not exercise the customer-facing export path, and the
+// second storage account plus its lifecycle policy is a resource with no reader in a lab.
+module exports 'modules/storage-exports.bicep' = if (deployExports) {
   name: 'storage-exports'
   params: {
     location: location
@@ -276,14 +301,17 @@ module postgres 'modules/postgres.bicep' = {
   }
 }
 
-module managedHsm 'modules/managed-hsm.bicep' = {
+// Conditional on the switch AND the quorum: the module already refuses to create a pool without
+// three administrators, so the condition here only avoids instantiating a module that would deploy
+// nothing. A lab leaves deployManagedHsm false — a pool is ~$3,360/month.
+module managedHsm 'modules/managed-hsm.bicep' = if (deployManagedHsm && length(hsmAdministratorObjectIds) == 3) {
   name: 'managed-hsm'
   params: {
     location: location
     baseName: baseName
     hsmSku: 'Custom_B32'
     administratorObjectIds: hsmAdministratorObjectIds
-    deployManagedHsm: deployManagedHsm && length(hsmAdministratorObjectIds) == 3
+    deployManagedHsm: true
     tags: tags
   }
 }
@@ -316,10 +344,12 @@ module platformPrivateEndpoints 'modules/private-endpoints.bicep' = {
         groupId: 'azuremonitor'
         dnsZoneName: 'privatelink.monitor.azure.com'
       }
-    ], deployManagedHsm ? [
+    ], deployManagedHsm && length(hsmAdministratorObjectIds) == 3 ? [
       {
         name: 'managed-hsm'
-        resourceId: managedHsm.outputs.hsmId
+        // Safe access: the managedHsm module is conditional on the same two conditions, so this
+        // branch is only reached when its outputs exist.
+        resourceId: managedHsm.outputs.?hsmId ?? ''
         groupId: 'managedhsm'
         dnsZoneName: 'privatelink.managedhsm.azure.net'
       }
@@ -524,7 +554,10 @@ module migrationJob 'modules/container-app-job.bicep' = {
 // ---------------------------------------------------------------------------------------------
 // Edge, dashboard, monitoring and budget
 
-module waf 'modules/waf.bicep' = {
+// The edge pair is conditional on deployEdge. Front Door and its WAF are one decision, not two:
+// the WAF policy exists only to be attached to the profile, so deploying one without the other is
+// never a state anyone wants. False in the lab, where the base fee alone exceeds the whole lab.
+module waf 'modules/waf.bicep' = if (deployEdge) {
   name: 'waf'
   params: {
     wafMode: wafMode
@@ -532,7 +565,7 @@ module waf 'modules/waf.bicep' = {
   }
 }
 
-module frontDoor 'modules/frontdoor.bicep' = {
+module frontDoor 'modules/frontdoor.bicep' = if (deployEdge) {
   name: 'frontdoor'
   params: {
     wafPolicyId: waf.outputs.wafPolicyId
@@ -547,7 +580,9 @@ module frontDoor 'modules/frontdoor.bicep' = {
   }
 }
 
-module dashboard 'modules/static-web-app.bicep' = {
+// Conditional on deployDashboard: the dashboard is a static file that opens from disk
+// (apps/dashboard/index.html), so a lab reaches it without a Static Web App.
+module dashboard 'modules/static-web-app.bicep' = if (deployDashboard) {
   name: 'static-web-app'
   params: {
     location: location
@@ -589,8 +624,8 @@ module budget 'modules/budget.bicep' = {
 // as a value instead of a comment; the CI policy scan (infra/pipelines/policy-scan.yml) fails the
 // build if it is ever external, and infra/tools/check-infra.mjs asserts it statically.
 
-@description('The one public hostname in the deployment. Everything else is private or internal.')
-output frontDoorHostName string = frontDoor.outputs.endpointHostName
+@description('The one public hostname in the deployment. Everything else is private or internal. Empty when deployEdge is false, which is what the lab does — a lab is reached over the VNet, not the internet.')
+output frontDoorHostName string = deployEdge ? frontDoor.outputs.endpointHostName : ''
 
 @description('content-vault ingress mode. Must be "internal": it has no public endpoint and no Front Door route (C15, D7).')
 output contentVaultIngress string = contentVaultApp.outputs.ingressMode
@@ -619,7 +654,16 @@ output identities object = {
 }
 
 @description('Whether the Managed HSM pool was deployed. Per-contract only (§2, §11.6).')
-output managedHsmDeployed bool = managedHsm.outputs.deployed
+output managedHsmDeployed bool = deployManagedHsm && length(hsmAdministratorObjectIds) == 3 ? managedHsm.outputs.?deployed ?? false : false
+
+@description('Whether the edge (Front Door + WAF) was deployed. False in the lab, where the base fee exceeds the whole environment.')
+output edgeDeployed bool = deployEdge
+
+@description('Whether the dashboard was deployed as a Static Web App. False in the lab: the dashboard is a static file.')
+output dashboardDeployed bool = deployDashboard
+
+@description('Whether the export storage account was deployed.')
+output exportsDeployed bool = deployExports
 
 @description('How many §10.3 alerts are live. §10.3 has 18 rows; a smaller number is a gap the deployment states rather than hides.')
 output alertCount int = monitoring.outputs.alertCount

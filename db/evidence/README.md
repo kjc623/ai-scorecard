@@ -514,11 +514,18 @@ ignore its exit code.
 
 ## Container naming
 
-**`shadowpg-invariants`** is the pinned name and the only container that should exist; it
-publishes port 55432 and is what `db/tools/run-invariants.ps1` creates and reuses. The scratch
-containers used for the negative controls (`sac-bugcheck`, `sac-bugcheck2`, `sac-negctl`,
-`sac-harness-negative`) were destroyed after their logs were captured, and the original manual
+**`shadowpg-invariants`** is the pinned name for this workstream and the only container the database
+work creates; it publishes port 55432 and is what `db/tools/run-invariants.ps1` creates and reuses.
+The scratch containers used for the negative controls (`sac-bugcheck`, `sac-bugcheck2`,
+`sac-negctl`, `sac-harness-negative`, `sac-grant*`, `sac-conf`, `sac-t43`, `sac-kinds*`, `sac-crel*`,
+`sac-digest`, `sac-neg`) were destroyed after their logs were captured, and the original manual
 container `shadowpg` was removed once the harness owned the name.
+
+**The `sac-lab-*` containers are not mine.** `sac-lab-postgres-1`, `sac-lab-schema-1`,
+`sac-lab-ingest-api-1` and `sac-lab-content-vault-1` are another workstream's integration lab
+(images `sac/ingest-api:lab` and `sac/content-vault:lab`), so they are left running. If a verifier
+is hunting for stray containers, these are deliberate and belong to someone else — the database
+work has exactly one.
 
 ## Note: this directory is committed by another actor
 

@@ -43,6 +43,8 @@ export function createFakeChrome() {
     failConnect: false,
     failPostAfter: Infinity,
     posted: [],
+    /** Whether this install actually holds `webRequestBlocking`. False models an unpacked load. */
+    blockingGranted: true,
   };
 
   const onMessageAdd = [];
@@ -74,7 +76,20 @@ export function createFakeChrome() {
         addListener(handler, filter) {
           listeners.onCompleted[0] = { handler, filter };
         },
-      },    },
+      },
+    },
+
+    /**
+     * The §7.4 capability probe. `blockingGranted` is settable so a test can put the extension in
+     * the state a real unpacked install is in: the manifest declares `webRequestBlocking`, and the
+     * grant is absent, so a blocking listener is accepted and then never invoked.
+     */
+    permissions: {
+      async contains({ permissions }) {
+        if (!Array.isArray(permissions) || !permissions.includes('webRequestBlocking')) return true;
+        return state.blockingGranted;
+      },
+    },
 
     runtime: {
       id: 'fake-extension-id',

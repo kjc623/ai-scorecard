@@ -79,7 +79,14 @@ export function createChromeAdapter(scope = globalThis) {
     // DISABLE_OPTIMIZATION is deliberately NOT requested: it exists for extensions that mutate
     // requests, and §7.1 requires that no request is modified and none is delayed beyond the
     // blocking decision.
-    const extraInfoSpec = withBody ? ['blocking', 'requestBody'] : ['blocking'];
+    //
+    // `blocking` is per-lane and comes from the caller, because the capability is per-install: only
+    // a policy-installed extension is granted `webRequestBlocking`, and a refused blocking
+    // registration is accepted silently and then never invoked (see registration.js). Asking for
+    // 'blocking' only when it can work is what keeps observation alive on installs that lack it.
+    const extraInfoSpec = [];
+    if (opts.blocking) extraInfoSpec.push('blocking');
+    if (withBody) extraInfoSpec.push('requestBody');
     const filter = { urls: opts.urls && opts.urls.length ? opts.urls : ['<all_urls>'] };
     if (opts.types) filter.types = opts.types;
 
@@ -148,8 +155,7 @@ export function createChromeAdapter(scope = globalThis) {
     runtime: {
       connectNative: (application) => {
         const port = api.runtime.connectNative(application);
-        if (!port) throw new ExtError('native_unavailable', `connectNative(${application}) failed`);
-        return {
+        if (!port) throw new ExtError('native_unavailable', `connectNative(${application}) failed`);        return {
           postMessage: (m) => port.postMessage(m),
           onMessage: (fn) => port.onMessage.addListener(fn),
           onDisconnect: (fn) => port.onDisconnect.addListener(() => fn(api.runtime.lastError || null)),
@@ -195,6 +201,30 @@ export function createChromeAdapter(scope = globalThis) {
     crypto: cryptoObj,
     now: () => (scope.performance && typeof scope.performance.now === 'function' ? scope.performance.now() : Date.now()),
     getURL: (path) => api.runtime.getURL(path),
+
+    /**
+     * §7.4's capability, asked rather than assumed.
+     *
+     * `webRequestBlocking` is granted only to a policy-installed extension (E1). An install that
+     * lacks it still *declares* it in the manifest — `chrome.runtime.getManifest().permissions`
+     * lists it either way — so the manifest is not the signal. `chrome.permissions.contains` asks
+     * about the grant, which is the thing that decides whether a blocking listener will ever be
+     * invoked.
+     *
+     * When the answer cannot be obtained the default is `true`: the deployed case is the
+     * policy-installed one, and observation no longer depends on the answer either way, so a wrong
+     * `true` costs an inert blocking lane (reported) rather than lost collection.
+     */
+    permissions: {
+      hasWebRequestBlocking: async () => {
+        try {
+          if (!api.permissions || typeof api.permissions.contains !== 'function') return true;
+          return await api.permissions.contains({ permissions: ['webRequestBlocking'] });
+        } catch {
+          return true;
+        }
+      },
+    },
     randomUUIDs: (n) => {
       const out = [];
       for (let i = 0; i < n; i++) {

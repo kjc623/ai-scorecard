@@ -68,18 +68,35 @@ export function bootstrap(adapter, { deviceId = null, version = '0.1.0', capacit
 
   const pipeline = createPipeline({ adapter, policy, native, queue, health });
 
-  const lanes = installLanes({
-    adapter,
-    policy,
-    onBodyLane: (input) => pipeline.captureWithBody(input),
-    onMetadataLane: (input) => pipeline.captureMetadata(input),
-    // The response lane hands over a bare response record; the pipeline takes it wrapped, the same
-    // shape the two request lanes use.
-    onResponse: (detail) => pipeline.onResponse({ detail }),
-  });
-  // Nothing is registered until the first policy arrives: with no bundle every destination
-  // resolves to M0, so §11.2's guarantee holds by construction rather than by a handler check.
-  lanes.refresh();
+  /**
+   * §7.4's capability, asked before registration rather than assumed.
+   *
+   * A refused blocking registration is accepted silently and then never invoked, so registering the
+   * observation lanes as blocking on an install that lacks the grant would collect **nothing at
+   * all** — the failure §15.2 forbids. The lanes therefore adapt: with the grant a `blocked` rule can
+   * cancel; without it observation is unchanged and the health report says enforcement is
+   * unavailable instead of leaving it silently inert.
+   */
+  let blockingAvailable = true;
+  let lanes = null;
+
+  function installLanesNow() {
+    if (lanes) return lanes;
+    lanes = installLanes({
+      adapter,
+      policy,
+      blockingAvailable,
+      onBodyLane: (input) => pipeline.captureWithBody(input),
+      onMetadataLane: (input) => pipeline.captureMetadata(input),
+      // The response lane hands over a bare response record; the pipeline takes it wrapped, the
+      // same shape the two request lanes use.
+      onResponse: (detail) => pipeline.onResponse({ detail }),
+    });
+    // Nothing is registered until the first policy arrives: with no bundle every destination
+    // resolves to M0, so §11.2's guarantee holds by construction rather than by a handler check.
+    lanes.refresh();
+    return lanes;
+  }
 
   // ── policy (§3.4 bidirectional channel, §11.3's device-side bundle) ───────────────────────
   async function requestPolicySync() {
@@ -102,13 +119,17 @@ export function bootstrap(adapter, { deviceId = null, version = '0.1.0', capacit
       return applied;
     }
     if (bundle.device_id) pipeline.setDeviceId(bundle.device_id);
-    lanes.refresh();
+    installLanesNow().refresh();
     return applied;
   }
 
   // ── health ────────────────────────────────────────────────────────────────────────────────
   function reportHealth() {
     const report = health.report();
+    // §7.4's capability travels with the coverage row. The protocol's `detail` vocabulary is closed
+    // and has no member for it, so it is reported as an extension-side field rather than by
+    // inventing a Detail — a vocabulary gap for the Lead, recorded in the README.
+    report.enforcement = blockingAvailable ? 'blocking' : 'observation_only';
     try {
       native.sendOneWay(TYPE.HEALTH, report);
       health.counters.rollWindow();
@@ -165,8 +186,24 @@ export function bootstrap(adapter, { deviceId = null, version = '0.1.0', capacit
   }
 
   async function start() {
+    // Ask for the capability before anything is registered, because the answer changes what the
+    // lanes ask for. `hasWebRequestBlocking` defaults to true when it cannot be answered, so this
+    // can only ever turn a silently-inert lane into a working observation lane.
+    try {
+      blockingAvailable = await adapter.permissions.hasWebRequestBlocking();
+    } catch {
+      blockingAvailable = true;
+    }
+    if (!blockingAvailable) {
+      // §7.4's enforcement is unavailable on this install. Reported, never silent: §15.2 forbids a
+      // coverage path that looks healthy while it observes nothing, and the same rule applies to an
+      // enforcement path that looks present while it can never act.
+      health.counters.countError('enforcement_unavailable');
+    }
     installAlarms();
-    return await requestPolicySync().then(() => ({ policy, queue, health, native, pipeline, lanes }));
+    const installed = installLanesNow();
+    await requestPolicySync();
+    return { policy, queue, health, native, pipeline, lanes: installed, blockingAvailable };
   }
 
   return {
@@ -176,12 +213,18 @@ export function bootstrap(adapter, { deviceId = null, version = '0.1.0', capacit
     health,
     native,
     pipeline,
-    lanes,
     reportHealth,
     requestPolicySync,
     applyPolicy,
     relayFrame,
     collector: COLLECTOR_NAME,
+    /** §7.4's capability as this install holds it, and the lanes once they are registered. */
+    get blockingAvailable() {
+      return blockingAvailable;
+    },
+    get lanes() {
+      return lanes;
+    },
   };
 }
 
