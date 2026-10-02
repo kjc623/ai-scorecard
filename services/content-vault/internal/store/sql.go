@@ -25,11 +25,10 @@ func protocolMode(s string) protocol.CollectionMode { return protocol.Collection
 // audit-before-serve ordering and the single-use claim checkable by reading rather than by
 // trusting.
 //
-// Two of these statements target a table db/schema.sql does not have: ops.retrieval_grant. The
-// docs require retrieval to produce "a short-lived, single-use retrieval URL" (§11) and this
-// service needs somewhere to record it with the uniqueness that makes single-use structural; the
-// DDL it needs is in SQLRetrievalGrantDDL below, and README.md reports the gap rather than
-// presenting the SQL path as verified. services/content-vault is not the schema owner and cannot
+// The retrieval-grant statements target ops.retrieval_grant, which the database owner landed with
+// the two CHECKs this service asked for and a trigger that refuses an unguarded UPDATE of a
+// redeemed grant. SQLRetrievalGrantDDL below is the shape as requested, kept so a future
+// migration can be diffed against what this service actually needs.
 // add the table.
 
 const (
@@ -251,9 +250,9 @@ SELECT tenant_id::text, receipt_id::text, scope_kind, subject_ref, requested_by,
  ORDER BY completed_at DESC NULLS LAST, requested_at DESC
  LIMIT 1`
 
-	// SQLRetrievalGrantDDL is the table the retrieval path needs and db/schema.sql does not yet
-	// have. It is here, with the columns the statements above use, so the gap is a migration
-	// rather than a discovery. `ops` is not this service's schema to alter.
+// SQLRetrievalGrantDDL is the table the retrieval path needs, as this service asked for it. It is
+// live in db/schema.sql with these columns (plus the single-use trigger); this constant is kept
+// as the requested shape so a future migration can be diffed against it.
 	SQLRetrievalGrantDDL = `
 CREATE TABLE ops.retrieval_grant (
   tenant_id       uuid NOT NULL REFERENCES ops.tenant(tenant_id),

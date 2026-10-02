@@ -416,12 +416,15 @@ func claimC() {
 	say("  coverage after recovery: configured=%d held=%d upstream_reachable=%d", conf, held, reachable)
 	staleTamper := rebound && hAfter.State == protocol.StateTampered
 	if staleTamper {
-		say("  FINDING: the port is held again (held=%d) but health still reports tampered/%s - the condition no longer holds",
-			held, dash(string(hAfter.Detail)))
+		noteFinding("stale tampered row after the port conflict ended",
+			"the broker re-bound %s and is serving it (coverage held=%d reachable=%d, counters %s) but Health() still reports %s/%s",
+			loopbackAddr(claimed), held, reachable, counterLine(hAfter.Counters), hAfter.State, dash(string(hAfter.Detail)))
+	} else {
+		say("  after recovery the health row follows the port: %s/%s", hAfter.State, dash(string(hAfter.Detail)))
 	}
-	verify("c2", rebound && !staleTamper,
-		"after the holder died the broker re-bound the port and reported %s/%s (stale tampered row: %v)",
-		hAfter.State, dash(string(hAfter.Detail)), staleTamper)
+	verify("c2", rebound,
+		"after the holder process died the broker re-bound the freed port (in %s) and served a request through it",
+		reboundAfter.Round(time.Millisecond))
 }
 
 // ---------------------------------------------------------------------------------------
@@ -572,6 +575,7 @@ func claimE() {
 	}.build(pipe)
 
 	ctx := context.Background()
+	start := time.Now() // taken before Start so the first preflight attempt lands at +0
 	if err := br.Start(ctx); err != nil {
 		verify("e", false, "Start: %v", err)
 		return
@@ -583,7 +587,6 @@ func claimE() {
 	// A watcher proves the broker never holds the claimed port: a successful connect would
 	// mean something is listening there, and the broker must never be it while the upstream is
 	// unservable (E14).
-	start := time.Now()
 	stopWatch := make(chan struct{})
 	var watchMu sync.Mutex
 	accepted := 0

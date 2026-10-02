@@ -43,7 +43,16 @@ func runSelftest(cfg Config, log *slog.Logger) error {
 	if err := os.MkdirAll(filepath.Join(work, "spool"), 0o700); err != nil {
 		return err
 	}
-	st.section("work directory", work)
+	// A self test leaves the tree as it found it, on the success path and on the failure path
+	// alike. --keep-work-dir is the explicit opt-in for inspecting a run.
+	if !cfg.KeepWorkDir {
+		defer func() {
+			if err := os.RemoveAll(work); err != nil {
+				fmt.Fprintf(os.Stderr, "capture-core: could not remove the selftest work directory %s: %v\n", work, err)
+			}
+		}()
+	}
+	st.section("work directory", fmt.Sprintf("%s (removed on exit unless --keep-work-dir)", work))
 
 	// The held and upstream ports are chosen here and written into the bundle as policy data. No
 	// test binds a vendor default (§6.1), and nothing here binds a fixed port.
@@ -97,11 +106,10 @@ func runSelftest(cfg Config, log *slog.Logger) error {
 	// host: it answers with fixed labels so the run does not depend on a release directory. The real
 	// host is started with `classifier-host serve --release DIR --pubkey HEX --transport unix --addr
 	// PATH`; the README names that command.
-	sockPath := filepath.Join(work, "classifier.sock")
-	classifier := startFakeClassifierHost(log, sockPath)
+	classifier, classAddr, classTransport := startFakeClassifierHost(log, work)
 	defer classifier.close()
-	cfg.ClassifierAddress = "unix:" + sockPath
-	st.section("classifier host", fmt.Sprintf("fake host on unix:%s (real framing, fixed labels; the real host command is in the README)", sockPath))
+	cfg.ClassifierAddress = classAddr
+	st.section("classifier host", fmt.Sprintf("fake host on %s — %s (real protocol framing, fixed labels; the real host command is in the README)", classAddr, classTransport))
 
 	// Resolved configuration, printed before anything starts.
 	st.section("resolved configuration")
@@ -171,6 +179,17 @@ func runSelftest(cfg Config, log *slog.Logger) error {
 	rawOverCap, _ := json.Marshal(mustMessage(protocol.TypeObservation, "x-overcap", overCap))
 	fmt.Fprintf(st.out, "  response: %s\n", summarizeResponsePayload(host.Handle(ctx, rawOverCap)))
 
+	// The child-process check runs HERE, while the classifier host is up: the child is a separate
+	// process speaking real Chromium frames, connecting to the real local-socket transport and
+	// classifying. The degraded case is a second child, after the host is stopped, further down.
+	st.section("native-messaging host as a separate process (Chromium's model) — classifier host up")
+	if err := childProcessCheck(st, cfg, work, childRun{
+		label: "child-1", spoolName: "child-spool-1", address: classAddr, transport: classTransport,
+		expectDegraded: false,
+	}); err != nil {
+		st.failf("child-process native host: %v", err)
+	}
+
 	// The classifier host goes away: the next content-bearing frame must degrade to rules-only with
 	// `confidence: degraded` and still be accepted — never fail the submission (§3.4, C21).
 	st.section("classifier host stopped: rules-only fallback")
@@ -183,8 +202,6 @@ func runSelftest(cfg Config, log *slog.Logger) error {
 	}
 	rawFallback, _ := json.Marshal(mustMessage(protocol.TypeObservation, "x-fallback", fallback))
 	fmt.Fprintf(st.out, "  response: %s\n", summarizeResponsePayload(host.Handle(ctx, rawFallback)))
-	classifierStarted := true
-	_ = classifierStarted
 
 	// Health channel.
 	st.section("health channel")
@@ -265,21 +282,34 @@ func runSelftest(cfg Config, log *slog.Logger) error {
 		}
 	}
 
-	// The last step is the one that cannot be faked in-process: the binary is started again as the
-	// native-messaging host a browser would start, with real Chromium frames on its stdin and its
-	// answers read back from its stdout. Everything above ran inside one process; this runs the
-	// actual child-process model.
-	st.section("native-messaging host as a separate process (Chromium's model)")
-	if err := childProcessCheck(st, cfg, work); err != nil {
-		st.failf("child-process native host: %v", err)
+	// The last step is the one that cannot be faked in-process, and it is deliberately run with the
+	// classifier host DOWN: the binary is started again as the native-messaging host a browser would
+	// start, with real Chromium frames on its stdin and its answers read back from its stdout. The
+	// assertion is that it degrades exactly as §3.4 requires and still exits zero — a child process
+	// that dies when its classifier is unavailable would be a browser-visible failure.
+	st.section("native-messaging host as a separate process — classifier host down (degrades, never fails)")
+	if err := childProcessCheck(st, cfg, work, childRun{
+		label: "child-2", spoolName: "child-spool-2", address: classAddr, transport: classTransport,
+		expectDegraded: true,
+	}); err != nil {
+		st.failf("child-process native host (degraded): %v", err)
 	}
 
 	return st.finish()
 }
 
+// childRun is one child-process invocation of the native-messaging host.
+type childRun struct {
+	label          string
+	spoolName      string
+	address        string
+	transport      string
+	expectDegraded bool
+}
+
 // childProcessCheck starts this executable in --native-host mode with the six golden frames framed
 // exactly as Chromium frames them, and decodes what comes back on stdout.
-func childProcessCheck(st *selfTest, cfg Config, work string) error {
+func childProcessCheck(st *selfTest, cfg Config, work string, run childRun) error {
 	framesDir, err := findFramesDir()
 	if err != nil {
 		return err
@@ -297,23 +327,21 @@ func childProcessCheck(st *selfTest, cfg Config, work string) error {
 	if err != nil {
 		return err
 	}
-	childSpool := filepath.Join(work, "child-spool")
+	childSpool := filepath.Join(work, run.spoolName)
 	if err := os.MkdirAll(childSpool, 0o700); err != nil {
 		return err
 	}
 	args := []string{
 		"--native-host",
 		"--spool-dir", childSpool,
-		"--spool-key", filepath.Join(work, "child-spool.key"),
+		"--spool-key", filepath.Join(work, run.spoolName+".key"),
 		"--tenant-id", cfg.TenantID,
 		"--device-id", cfg.DeviceID,
 		"--user-ref", cfg.UserRef,
 		"--bundle", cfg.BundlePath,
 		"--policy-key", cfg.PolicyKey,
 		"--policy-key-id", cfg.PolicyKeyID,
-		// The classifier host was stopped above, so the child must degrade exactly as the parent
-		// did: rules-only, confidence degraded, and no failed submission.
-		"--classifier-address", cfg.ClassifierAddress,
+		"--classifier-address", run.address,
 		"--health-file", "",
 		"--proxy-tls=false",
 		"--proxy-loopback=false",
@@ -324,8 +352,9 @@ func childProcessCheck(st *selfTest, cfg Config, work string) error {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("running %s: %w (stderr: %s)", exe, err, truncate(stderr.String(), 400))
+	runErr := cmd.Run()
+	if runErr != nil {
+		return fmt.Errorf("%s: running %s: %w (stderr: %s)", run.label, exe, runErr, truncate(stderr.String(), 1200))
 	}
 
 	responses, err := decodeFrames(stdout.Bytes())
@@ -340,11 +369,23 @@ func childProcessCheck(st *selfTest, cfg Config, work string) error {
 		case protocol.TypeRefusal:
 			refusals++
 		}
-		fmt.Fprintf(st.out, "  child response %d: %-8s %s\n", i+1, resp.Type, summarizeResponse(resp))
+		fmt.Fprintf(st.out, "  %s response %d: %-8s %s\n", run.label, i+1, resp.Type, summarizeResponse(resp))
 	}
-	st.check(len(responses) == 6, "the child process answered all six frames (got %d)", len(responses))
-	st.check(acks+refusals == len(responses), "every child response was an ack or a typed refusal")
-	fmt.Fprintf(st.out, "  frames file: %s (%d bytes, %d frames)\n", framesFile, len(frames), len(responses))
+	st.check(len(responses) == 6, "%s answered all six frames over %s (got %d)", run.label, run.transport, len(responses))
+	st.check(acks+refusals == len(responses), "%s answered with an ack or a typed refusal only", run.label)
+	st.check(acks > 0, "%s accepted at least one observation (acks=%d refusals=%d)", run.label, acks, refusals)
+
+	// The degradation is asserted from the child's own log, not inferred: a child that could not
+	// reach its classifier must say so and keep going (§3.4). A child that says nothing and still
+	// acks would be the silent-failure case this check exists to catch.
+	degraded := strings.Contains(stderr.String(), "rules-only")
+	if run.expectDegraded {
+		st.check(degraded, "%s reported the rules-only fallback when its classifier was unavailable", run.label)
+	} else {
+		st.check(!degraded, "%s reached its classifier host over %s and did not degrade", run.label, run.transport)
+	}
+	fmt.Fprintf(st.out, "  %s: exit 0, %d frames, transport %s, frames file %s (%d bytes)\n",
+		run.label, len(responses), run.transport, framesFile, len(frames))
 	return nil
 }
 
@@ -484,24 +525,40 @@ type fakeClassifierHost struct {
 	closed bool
 }
 
-func startFakeClassifierHost(log *slog.Logger, sockPath string) *fakeClassifierHost {
+// startFakeClassifierHost listens on the production transport when the platform has it (a Unix
+// socket; a named pipe would need CreateNamedPipe, which the standard library does not expose) and
+// falls back to loopback TCP when it does not. The fallback exists so the self test runs on every
+// platform it ships on — a test that fails on the platform it ships on gets ignored, and this one is
+// the only end-to-end check of the assembled endpoint. It returns the address, the transport it
+// chose, and says which in the output.
+func startFakeClassifierHost(log *slog.Logger, work string) (*fakeClassifierHost, string, string) {
+	sockPath := filepath.Join(work, "classifier.sock")
 	_ = os.Remove(sockPath)
-	ln, err := net.Listen("unix", sockPath)
+	if ln, err := net.Listen("unix", sockPath); err == nil {
+		h := &fakeClassifierHost{ln: ln, done: make(chan struct{})}
+		h.accept()
+		return h, "unix:" + sockPath, "unix socket (the production transport on this platform)"
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		log.Error("selftest: fake classifier host could not listen", "path", sockPath, "error", err)
-		return &fakeClassifierHost{done: closedChan()}
+		log.Error("selftest: fake classifier host could not listen on unix or loopback tcp", "error", err)
+		return &fakeClassifierHost{done: closedChan()}, "", "none (classifier host unavailable)"
 	}
 	h := &fakeClassifierHost{ln: ln, done: make(chan struct{})}
+	h.accept()
+	return h, "tcp:" + ln.Addr().String(), "loopback TCP (fallback: no AF_UNIX on this platform)"
+}
+
+func (h *fakeClassifierHost) accept() {
 	go func() {
 		for {
-			conn, err := ln.Accept()
+			conn, err := h.ln.Accept()
 			if err != nil {
 				return
 			}
 			go h.serve(conn)
 		}
 	}()
-	return h
 }
 
 func (h *fakeClassifierHost) serve(conn net.Conn) {

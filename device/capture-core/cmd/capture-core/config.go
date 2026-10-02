@@ -52,10 +52,14 @@ type Config struct {
 	AttachmentCap int64
 
 	// Modes and misc.
-	WorkDir   string
-	LogFormat string
-	LogLevel  string
-	DryRun    bool
+	WorkDir string
+
+	// KeepWorkDir leaves the selftest's work directory in place for inspection. The default is to
+	// remove it: a self test leaves the tree as it found it, including on the failure path.
+	KeepWorkDir bool
+	LogFormat   string
+	LogLevel    string
+	DryRun      bool
 }
 
 func (c Config) validate(mode runMode) error {
@@ -166,12 +170,12 @@ func classifierAddress(s string) (classifierlinkAddress, error) {
 	if s == "" {
 		return classifierlinkAddress{}, errNoClassifierAddress
 	}
-	for _, transport := range []string{"unix:", "pipe:"} {
+	for _, transport := range []string{"unix:", "pipe:", "tcp:"} {
 		if strings.HasPrefix(s, transport) {
 			return classifierlinkAddress{Network: strings.TrimSuffix(transport, ":"), Path: strings.TrimPrefix(s, transport)}, nil
 		}
 	}
-	return classifierlinkAddress{}, fmt.Errorf("--classifier-address %q: expected unix:PATH or pipe:NAME", s)
+	return classifierlinkAddress{}, fmt.Errorf("--classifier-address %q: expected unix:PATH, pipe:NAME or tcp:127.0.0.1:PORT (loopback only)", s)
 }
 
 var errNoClassifierAddress = errors.New("no classifier address configured")
@@ -181,7 +185,10 @@ var errNoClassifierAddress = errors.New("no classifier address configured")
 func workDirFor(cfg Config) (string, error) {
 	dir := cfg.WorkDir
 	if dir == "" {
-		dir = ".selftest"
+		// The OS temp directory, not the source tree: a run artifact inside the repository is a
+		// file somebody commits by accident. Under the acceptance harness TMP/TEMP point inside the
+		// workspace (.testtmp), which is writable, so this works confined and unconfined alike.
+		dir = filepath.Join(os.TempDir(), "capture-core-selftest")
 	}
 	abs, err := filepath.Abs(dir)
 	if err != nil {

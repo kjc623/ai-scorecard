@@ -134,7 +134,8 @@ func parseFlags(args []string) (Config, runMode, error) {
 	fs.BoolVar(&mode.selftest, "selftest", false, "run the end-to-end self test (service, golden frames, health, shutdown) and exit non-zero on failure")
 	fs.BoolVar(&mode.nativeHost, "native-host", false, "run the native-messaging host on stdin/stdout")
 	fs.StringVar(&mode.nativeFrames, "native-frames", "", "directory of golden frame case files to run through the real native-messaging framing, then exit")
-	fs.StringVar(&cfg.WorkDir, "work-dir", cfg.WorkDir, "work directory for --selftest (created and wiped per run)")
+	fs.StringVar(&cfg.WorkDir, "work-dir", cfg.WorkDir, "work directory for --selftest (default: the OS temp directory; wiped per run)")
+	fs.BoolVar(&cfg.KeepWorkDir, "keep-work-dir", cfg.KeepWorkDir, "leave the --selftest work directory behind for inspection (default: remove it, including after a failure)")
 	fs.StringVar(&cfg.LogFormat, "log-format", cfg.LogFormat, "log format: json | text")
 	fs.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "log level: debug | info | warn | error")
 	fs.BoolVar(&cfg.DryRun, "dry-run", cfg.DryRun, "resolve and validate everything, print the plan, and start nothing")
@@ -175,9 +176,12 @@ func defaultConfig() Config {
 		DrainDeadline:      30 * time.Second,
 		HealthInterval:     30 * time.Second,
 		AttachmentCap:      64 << 20, // protocol.MaxAttachmentBytes: the transport ceiling, overridable by policy
-		WorkDir:            ".selftest",
-		LogFormat:          "json",
-		LogLevel:           "info",
+		// WorkDir is deliberately empty: the selftest defaults to the OS temp directory so a run
+		// never writes artifacts into the source tree. --work-dir overrides it, and
+		// --keep-work-dir leaves the directory behind for inspection.
+		WorkDir:   "",
+		LogFormat: "json",
+		LogLevel:  "info",
 	}
 }
 

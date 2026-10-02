@@ -182,13 +182,30 @@ SELECT tenant_id::text, receipt_id::text, scope_kind, subject_ref, requested_by,
 DEALLOCATE last_receipt;
 
 -- put_retrieval_grant: record a single-use retrieval grant
--- NOT EXECUTED: put_retrieval_grant does not exist in db/schema.sql; see SQLRetrievalGrantDDL
+PREPARE put_retrieval_grant AS 
+INSERT INTO ops.retrieval_grant (tenant_id, grant_id, event_id, object_id, submission_id,
+                                 principal, case_reference, second_approver, issued_at, expires_at, raw_digest)
+VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6::text, $7::text, $8::text,
+        $9::timestamptz, $10::timestamptz, $11::text);
+DEALLOCATE put_retrieval_grant;
 
 -- retrieval_grant: read a retrieval grant
--- NOT EXECUTED: retrieval_grant does not exist in db/schema.sql; see SQLRetrievalGrantDDL
+PREPARE retrieval_grant AS 
+SELECT tenant_id::text, grant_id::text, event_id::text, object_id::text, submission_id::text,
+       principal, case_reference, second_approver, issued_at, expires_at, used_at, COALESCE(used_by, ''), raw_digest
+  FROM ops.retrieval_grant
+ WHERE tenant_id = $1::uuid AND grant_id = $2::uuid;
+DEALLOCATE retrieval_grant;
 
 -- claim_retrieval_grant: consume it atomically (UPDATE ... WHERE used_at IS NULL)
--- NOT EXECUTED: claim_retrieval_grant does not exist in db/schema.sql; see SQLRetrievalGrantDDL
+PREPARE claim_retrieval_grant AS 
+UPDATE ops.retrieval_grant
+   SET used_at = $3::timestamptz,
+       used_by = $4::text
+ WHERE tenant_id = $1::uuid AND grant_id = $2::uuid AND used_at IS NULL
+RETURNING tenant_id::text, grant_id::text, event_id::text, object_id::text, submission_id::text,
+          principal, case_reference, second_approver, issued_at, expires_at, used_at, COALESCE(used_by, ''), raw_digest;
+DEALLOCATE claim_retrieval_grant;
 
 ROLLBACK;
 

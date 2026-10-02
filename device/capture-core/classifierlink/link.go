@@ -39,15 +39,33 @@ type Address struct {
 }
 
 // Valid reports whether the address is one this package can dial.
+//
+// "tcp" is accepted only for a loopback address, and only because a host on a platform without
+// AF_UNIX (or a lab running the two components on different machines' loopback interfaces) has no
+// other transport. The production transports are "unix" and "pipe" (§3.4); a non-loopback TCP
+// address is refused rather than silently becoming a network listener for a component that is
+// supposed to be local.
 func (a Address) Valid() bool {
 	switch a.Network {
-	case "unix":
+	case "unix", "pipe":
 		return strings.TrimSpace(a.Path) != ""
-	case "pipe":
-		return strings.TrimSpace(a.Path) != ""
+	case "tcp":
+		return isLoopbackAddr(a.Path)
 	default:
 		return false
 	}
+}
+
+func isLoopbackAddr(hostport string) bool {
+	host, _, err := net.SplitHostPort(hostport)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // DefaultAddress returns the platform's address for a service directory and host name.
@@ -61,13 +79,20 @@ func DefaultAddress(serviceDir, name string) Address {
 // Dialer connects to the host. It is a seam so a test can use net.Pipe and never bind anything.
 type Dialer func(ctx context.Context, addr Address) (net.Conn, error)
 
-// Dial is the real dialer: a Unix socket, or a Windows named pipe opened through CreateFile.
+// Dial is the real dialer: a Unix socket, a Windows named pipe opened through CreateFile, or a
+// loopback TCP address for a platform without AF_UNIX.
 // (The named-pipe *server* side is out of scope here: it belongs to classifier-host.)
 func Dial(ctx context.Context, addr Address) (net.Conn, error) {
 	switch addr.Network {
 	case "unix":
 		d := net.Dialer{}
 		return d.DialContext(ctx, "unix", addr.Path)
+	case "tcp":
+		if !isLoopbackAddr(addr.Path) {
+			return nil, fmt.Errorf("classifierlink: refusing non-loopback TCP address %q; the classifier channel is local", addr.Path)
+		}
+		d := net.Dialer{}
+		return d.DialContext(ctx, "tcp", addr.Path)
 	case "pipe":
 		// os.OpenFile reaches CreateFile on Windows; a named pipe path is a file path there.
 		f, err := os.OpenFile(addr.Path, os.O_RDWR, 0)

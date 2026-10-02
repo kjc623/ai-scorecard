@@ -1,18 +1,21 @@
 # content-vault
 
-The content vault of [docs/06-security-and-threat-model.md §5.3, §6](../../docs/06-security-and-threat-model.md)
+The content vault of [docs/06-security-and-threat-model.md §..3, §6](../../docs/06-security-and-threat-model.md)
 and [docs/02-ingest-and-transport.md §10-11](../../docs/02-ingest-and-transport.md), and the only
 component that can unwrap a content key (master **D7**). It is what makes **INV-1** true: content
 crosses the network only on a per-event grant.
 
 Go, standard library only. No PostgreSQL wire driver is fetchable offline (ADR 0016), so the SQL
-lives as statement text in one file and is verified against the live schema by a harness.
+lives as statement text in one file and is verified against the live schema by a harness
+(`tools/live-schema-check.ps1`): 20 statements prepared, the ADR 0014 pair and the tier/mode rule
+exercised, the content-object lifecycle and the retrieval-grant put/claim/trigger path run against
+the real tables.
 
 ## The key hierarchy as built
 
 ```
 Object plaintext  (one submission's prompt or attachment)
-    │  AES-256-GCM under a per-object data key (the DEK), 256 bits, fresh per object
+    │  AES-2.6-GCM under a per-object data key (the DEK), 2.6 bits, fresh per object
     ▼
 Per-object DEK ──wrapped by──► per-tenant key-encryption key (KEK), by version
     │                              │
@@ -25,15 +28,15 @@ ops.content_object: wrapped_dek + kek_id + kek_version, beside the blob referenc
 
 `internal/keys` is five methods wide and holds the invariants structurally:
 
-| Invariant (§5.3) | How it is held |
+| Invariant (§..3) | How it is held |
 |---|---|
 | The KEK never leaves the key store | `KeyWrapper` has no `GetKey`/`ExportKey`/`ListKeys`; a test asserts the method set, so nothing can ask for key bytes |
 | The unwrapped key exists for one operation only | `Wrap`/`Unwrap` return or take a 32-byte DEK; the service drops it when the operation returns, and it is never stored in a grant |
 | A wrapped key opens only in its own row | GCM additional authenticated data is `sac.dek.v1` + length-prefixed tenant, object, KEK id and KEK version; a wrapped key moved to another row fails authentication rather than decrypting |
-| 256-bit wrap, not brute-forceable (§6.4 point 3) | AES-256-GCM with a fresh 96-bit nonce per wrap |
+| 2.6-bit wrap, not brute-forceable (§6.4 point 3) | AES-2.6-GCM with a fresh 96-bit nonce per wrap |
 | Only one service unwraps (D7) | `vault.Service` is the only caller of `Unwrap`, and the service has internal ingress only |
 
-**Key backends.** `keys.LocalKeyWrapper` (AES-256-GCM software, in memory or a 0600 file) is what
+**Key backends.** `keys.LocalKeyWrapper` (AES-2.6-GCM software, in memory or a 0600 file) is what
 tests and local development use. `keys.KMSKeyWrapper` is **explicitly unimplemented**: every method
 returns `ErrNotImplemented`, `Health()` says so, and the binary refuses to start with
 `--key-backend kms` unless the operator passes `--allow-unimplemented-kms`. Its doc comment is the
@@ -168,13 +171,12 @@ surface including the edge-route rejection.
    digests and — only if the binary wires `Options.FetchBlob` — the bytes. A deployment returns a
    short-lived storage URL and the content never transits the vault's response (docs/02 §11). The
    *authorisation* is identical either way; the *serving* half is a stand-in.
-5. **The retrieval grant has no table.** `ops.retrieval_grant` does not exist in `db/schema.sql`
-   and `services/content-vault` is not the schema owner, so the retrieval-grant SQL path
-   (`SQLPutRetrievalGrant`, `SQLRetrievalGrant`, `SQLClaimRetrievalGrant` — the conditional UPDATE
-   that makes single use structural) is **NOT VERIFIED**. `SQLRetrievalGrantDDL` in
-   `internal/store/sql.go` is the migration the schema needs, a test fails if the table appears
-   (so the gap cannot be forgotten), and the in-memory implementation is what the matrix is tested
-   against.
+5. **The retrieval-grant SQL path is verified as text, not through a driver.**
+   `ops.retrieval_grant` landed (database owner, T44/T45) with the two CHECKs this service asked
+   for and a `retrieval_grant_single_use` trigger that refuses an unguarded UPDATE of a redeemed
+   grant. The live-schema harness now exercises put, claim, a second guarded claim matching zero
+   rows, and that trigger, all against the real table inside a rolled-back transaction. What is
+   still not exercised is the `database/sql` plumbing around those statements (item 2).
 6. **RLS as the second isolation layer.** The database owner's 43 assertions cover tenant isolation;
    this service sets the session tenant inside every transaction (`set_config(..., true)`) and the
    search statements now compare `tenant_id` to a bound parameter *as well*, but the vault's own
@@ -185,10 +187,11 @@ surface including the edge-route rejection.
 - **§10.2 does not enumerate retrieval refusals.** The extra reasons above are a closed set in this
   package; if the design wants one closed set for both surfaces, §10.2 or the schema should carry
   them.
-- **The audit row doubles as the retrieval-grant record in the SQL path** (via
-  `ops.retrieval_grant` once it exists). The audit-before-serve row is written for every attempt,
-  including refusals, and a search that returns nothing is audited too (§6.3).
-- **`full_text` sets a plaintext-derived copy outside the key hierarchy** (§5.6, §6.4). The service
+- **The retrieval grant is a row, and the audit row is separate.** `ops.retrieval_grant` carries
+  the single-use claim (`used_at`/`used_by`, guarded by the claim statement and by db's trigger);
+  `ops.audit` carries the record that the attempt happened, written before anything is served, for
+  refusals and for searched-but-empty alike (§6.3).
+- **`full_text` sets a plaintext-derived copy outside the key hierarchy** (§..6, §6.4). The service
   refuses the impossible custody pair, but nothing here changes the fact that a `full_text` tenant's
   prompt text is server-readable by design; the erasure path reaches it by row deletion because key
   destruction cannot.

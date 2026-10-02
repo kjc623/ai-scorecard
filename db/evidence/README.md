@@ -15,9 +15,12 @@ psql -v ON_ERROR_STOP=1 -f db/schema.sql && psql -v ON_ERROR_STOP=1 -f db/invari
 
 | file | sha256 |
 |---|---|
-| `db/schema.sql` (current: adopt fix, §7 reason codes, tightened boundaries, M2 decision recorded) | `19D109E4C40FE3716902A529BFA1E9DF0C2151DC15AC728207F4CCBAA5FE52EA` |
-| `db/invariants.test.sql` (current, T1..T43) | `D59BE434C3B57827FAA129B2950436BDF208CA520E63893CA9C206D6C5D6AACA` |
-| `db/tools/check-schema.mjs` (current, 71 checks) | `0D5D5BF119763A4AD939A3B9140A27482CCA7AEFB91D92A859054AE5F8F439EA` |
+| `db/schema.sql` (current: + `ops.retrieval_grant`, single-use trigger, RLS, grants) | `AB2624502946B98CF6742D6892D75361E986E39EF5DEA7CE47CB852DD8239A7E` |
+| `db/invariants.test.sql` (current, T1..T45) | `F28552368E469D02…` (full hash in the run logs, which embed it) |
+| `db/tools/check-schema.mjs` (current, 71 checks) | `2563A62CE7CEC26F…` |
+| `db/tools/tally-log.mjs` (the harness's tally, tested) | `070E633B3F38F5E6…` |
+| `db/schema.sql` with the single-use trigger removed (negative control A, run 14) | `6104CD59162F9EC2E4E3A2912F076286125B25391E5A3A49BB0452B1F203F141` |
+| `db/schema.sql` with `retrieval_grant_claim_is_whole` weakened (negative control B, run 14) | `36523A65058E1A52BFD5260BAC5DFA9C867AF3CFA6083C270CA943D53BF9501E` |
 | `db/schema.sql`, `confidence` clause of the M0 constraint reverted (negative controls, runs 12–13) | `737BF11811266F9596A18F084E154C6B2B9642AB6C2F99A6843E1FD9B9EBDA48` |
 | `db/schema.sql` with the pre-tightening kind/mode constraints (negative controls, runs 10–11) | `3690661D464DEFF70BFA43C2A72B3D695FD9D866EB4BC7DE62B8B49487BA2E67` |
 | `db/schema.sql` after the adopt fix and reason-code alignment only | `513020D2D016DC0404272FE85EC47DA7FC6D585894F6A91F87296BE2A813C6B0` |
@@ -77,7 +80,10 @@ That is an argument that nothing in the file is 17-specific. It is **not** a run
 | L | current `*-invariants.log` pairs with the `#` header | Final state after the boundary tightening | schema 0, invariants 0 — 44 PASS, 42 distinct, 0 FAIL, 0 ERROR |
 | M | `12-negative-control-m0-confidence-reverted.log` | **Negative control for `confidence` on M0.** ONLY that clause of `observation_m0_carries_no_content` reverted (`737BF118…`); every other constraint left tightened, in an isolated container | `tests_exit=3` — T1..T41 pass, then **T42 fails**: `an M0 record accepted confidence, which is evidence the collector read content it was not permitted to read` |
 | N | `13-t43-isolation-proof.log` | **Isolation proof for T43.** The same revert with `confidence` removed from T42's sweep, so T42 passes and T43 must catch it alone | T42 passed, **T43 failed** with its own named message — T43 is not dead code behind T42 |
-| O | current `*-invariants.log` pairs | Final state after T43 and the M2 decision | schema 0, invariants 0 — **45 PASS, 43 distinct**, 0 FAIL, 0 ERROR |
+| O | current `*-invariants.log` pairs | State after T43 and the M2 decision | schema 0, invariants 0 — 45 PASS, 43 distinct, 0 FAIL, 0 ERROR |
+| P | `14-negative-controls-retrieval-grant.log` | **Negative controls for the single-use grant.** A: the `retrieval_grant_single_use` trigger removed (`6104CD59…`). B: `retrieval_grant_claim_is_whole` weakened (`36523A65…`). Shipped schema run as contrast | A: T44 passes, **T45 fails** — `an UPDATE without the 'used_at IS NULL' guard re-redeemed a claimed grant`. B: **T45 fails** — `a half-claimed row (used_at set, used_by NULL) was accepted`. Contrast: schema 0, invariants 0 |
+| Q | `node --test db/tools/` (36 tests, in the acceptance output) | **The db/tools suite**, added so `tools/verify-all.mjs` has something to run for this component | 36 tests, 36 pass, 0 fail. Includes one negative case per checker family, each asserting the checker exits 1 and names the right check |
+| R | current `*-invariants.log` pairs | Final state | schema 0, invariants 0 — **48 PASS, 45 distinct**, 0 FAIL, 0 ERROR |
 
 Runs A, D, F, I, L and O agree on every assertion they share. Run E is the evidence that the suite
 can fail, which is what makes the passes mean something; runs G, H, J, K, M and N do the same for
@@ -263,13 +269,84 @@ Both halves were verified in the failing direction, not just the passing one:
   must catch it alone — T42 passed, **T43 failed** with its own named message. T43 is not dead
   code behind T42; both assertions pin the field independently.
 
-## The assertion count is 43
+## The single-use retrieval grant
 
-`db/invariants.test.sql` contains **43 named assertions, T1–T43, contiguous, with no gaps**, at
-45 `PASS` raise-sites — T32 and T33 each carry two sub-cases, which is why the notice count is 45.
+`ops.retrieval_grant` was missing: the content vault's whole single-use guarantee is a conditional
+UPDATE against it, and without the table only its in-memory store was tested. The vault's author
+had the DDL ready as `SQLRetrievalGrantDDL` and a test that FAILS once the table exists, so the gap
+could not be quietly forgotten.
+
+The table is built from the vault's DDL and its three statements — the column list, the
+`second_approver <> principal` check and `expires_at > issued_at` are taken verbatim from that
+contract, not invented — plus everything the store needs to enforce the property itself:
+
+- **RLS enabled and forced**, in the `tenant_tables` array so it gets the standard
+  `tenant_isolation` policy from the same loop as every other ops table.
+- **`GRANT SELECT, INSERT, UPDATE ON ops.retrieval_grant TO sac_vault`** — what put, read and claim
+  need. **No role is granted DELETE**: a redemption row is the record that content left the vault,
+  so an expired grant is a row with `expires_at` in the past rather than a row that disappears.
+- **`retrieval_grant_claim_is_whole`** makes a half-claimed row unrepresentable.
+- **`retrieval_grant_single_use`**, a BEFORE UPDATE trigger refusing any update of a row whose
+  `used_at` is already set. It does not change the contract statement's behaviour — a claim
+  matching `used_at IS NULL` matches no row on the second attempt, so the trigger never fires and
+  the vault still sees "zero rows means refused". It fires on the UPDATE that has *forgotten* the
+  guard, which is the only way a grant could be redeemed twice. A CHECK cannot do this: it sees
+  only the new row and cannot tell a first claim from a second.
+
+T44/T45 assert it as `sac_vault` — the real runtime role — so the grants and the policy are
+exercised rather than just the table shape. Held in both directions (run 14): removing the trigger
+fails T45, and weakening the claim CHECK fails T45, each with its own message.
+
+## The db/tools suite, and a gate hole it closed
+
+`tools/verify-all.mjs` reported `db/tools` **MISSING**: the checkers existed but nothing ran them,
+so the component was one step from being skipped. There are now two suites, 36 tests:
+
+- `check-schema.test.mjs` builds a fixture tree from the real repository, makes **one deliberate
+  change**, and asserts the checker exits 1 and names the specific check that should have caught
+  it — one negative case per family (RLS coverage, the RLS loop, dedup, triggers, roles and least
+  privilege, SECURITY DEFINER, the contract-vs-store seam, and the reason-code seam), plus a
+  baseline case so a checker that failed everything could not pass, and the empty-root case
+  proving "could not run" is exit 2 rather than a vacuous pass.
+- `tally-log.test.mjs` covers the harness's parsing against captured log shapes, including the
+  provenance header that contains `ON_ERROR_STOP`.
+
+**The suite immediately found a real checker bug.** `CREATE TRIGGER\s+audit_append_only` also
+matches a trigger named `audit_append_only_moved` — no word boundary — so renaming a guard read as
+the guard still being present. Fixed with `\b`. That is the whole argument for a suite that asserts
+the checker can fail: the check had been passing for the wrong reason since it was written.
+
+**It also closed a hole in the acceptance gate.** `tools/accept.mjs` judges the database gate on
+the `fail=` field of the TALLY line alone. `fail` counted only `ERROR:  FAIL` markers, so a run
+that aborted on a *raw* SQL error — a CHECK violation raised by psql rather than by an assertion —
+produced `fail=0` and was reported as PASS. The tally now lives in `db/tools/tally-log.mjs`, is
+unit-tested, and defines `fail` as every real diagnostic; `error_lines` and `fail_markers` keep the
+breakdown visible. Demonstrated on the captured fixture
+`08-negative-control-raw-prefix-schema.log`: it now reports `fail=1` where the old rule reported
+`fail=0`. The TALLY line keeps the exact shape `accept.mjs` parses, and that shape is itself
+asserted by a test.
+
+`run-invariants.ps1` no longer computes the tally inline: the rules had been wrong twice and
+inline shell is not reachable from a test suite. It runs psql, reports exit codes, and calls the
+tested module. Node is now a hard requirement of the harness, and it fails loudly without it
+rather than falling back to a second, untested implementation.
+
+### Labelled gap
+
+`check-schema.mjs` is static, and the suite does not pretend otherwise. It cannot show that a
+declared constraint is enforced by a running server, that RLS hides another tenant's rows, or that
+the single-use claim loses a race — those are runtime properties, they live in
+`db/invariants.test.sql`, and they need a server. That half is driven by `run-invariants.ps1` and
+cannot run under `node --test`. The split is deliberate: the static half proves each forbid-list is
+**complete**, the runtime half proves it is **enforced**.
+
+## The assertion count is 45
+
+`db/invariants.test.sql` contains **45 named assertions, T1–T45, contiguous, with no gaps**, at
+48 `PASS` raise-sites — T32 and T33 each carry two sub-cases, which is why the notice count is 48.
 The file held 35 (T1..T35) at the start of this session; T36 and T37 were added for the adopt
 defect, T38 for the quarantine reason-code vocabulary, T39–T42 for the kind and mode
-boundaries, and T43 to pin `confidence` on M0 by name.
+boundaries, T43 to pin `confidence` on M0 by name, and T44–T45 for the single-use retrieval grant.
 
 **The documents are stale again.** The checker reads the claims out of the documents themselves
 rather than trusting a constant: they say 42 (README.md ×2, `.cockpit/project.json` ×3,

@@ -46,8 +46,11 @@ type recordingProvider struct {
 	startErr error
 	addr     string
 	released bool
-	mu       sync.Mutex
-	started  bool
+	// panicOnRelease simulates a provider whose release path has a defect: the supervisor must
+	// contain it rather than let it abort the shutdown column.
+	panicOnRelease bool
+	mu             sync.Mutex
+	started        bool
 }
 
 func (p *recordingProvider) Name() protocol.Route { return p.route }
@@ -83,6 +86,9 @@ func (p *recordingProvider) ListenAddr() string { return p.addr }
 
 // Release is `proxy.loopback`'s §3.5 step 2: the port goes first, before anything else.
 func (p *recordingProvider) Release(context.Context) error {
+	if p.panicOnRelease {
+		panic("provider release defect (simulated)")
+	}
 	p.log.add("provider.Release:" + string(p.route))
 	p.mu.Lock()
 	p.released = true
@@ -379,6 +385,76 @@ func TestCrashLoopGuard_3_5_StopsTheLoopAndReportsTheCount(t *testing.T) {
 	now = now.Add(2 * time.Minute)
 	if !g2.ShouldRestart("panic") {
 		t.Fatal("a crash outside the window counted toward the loop")
+	}
+}
+
+// A typed-nil provider is not nil. A composition that disables a provider by leaving a nil pointer
+// in an interface field must not turn shutdown into a panic — found by running the assembled binary
+// with `--proxy-loopback=false`, where the nil *loopback.Broker passed the `s.Loopback != nil` check,
+// Release dereferenced the nil receiver and the shutdown column aborted before the port was released.
+// That is E14's failure mode arriving through a configuration switch, so it gets a regression test.
+func TestShutdown_3_5_TypedNilLoopbackDoesNotPanicTheShutdownColumn(t *testing.T) {
+	f := newOrderingFixture(t, nil)
+	var nilBroker *typedNilBroker // the interface holds a typed nil, exactly as the binary did
+	f.sup.Loopback = nilBroker
+
+	if err := f.sup.Startup(context.Background()); err != nil {
+		t.Fatalf("Startup: %v", err)
+	}
+	if err := f.sup.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown with a typed-nil loopback: %v", err)
+	}
+	steps := f.sup.Order()
+	if steps[len(steps)-1] != StepStopClassifierHost {
+		t.Fatalf("shutdown column ended at %q, want %q", steps[len(steps)-1], StepStopClassifierHost)
+	}
+}
+
+// A provider that panics while being released must not abort the shutdown column either: the panic
+// is logged and the column continues, because the loopback release is the step that matters most.
+func TestShutdown_3_5_PanickingProviderDoesNotAbortTheColumn(t *testing.T) {
+	f := newOrderingFixture(t, nil)
+	f.loopback.panicOnRelease = true
+
+	if err := f.sup.Startup(context.Background()); err != nil {
+		t.Fatalf("Startup: %v", err)
+	}
+	if err := f.sup.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown with a panicking provider: %v", err)
+	}
+	steps := f.sup.Order()
+	if len(steps) == 0 || steps[len(steps)-1] != StepStopClassifierHost {
+		t.Fatalf("shutdown column stopped early: %v", steps)
+	}
+	if !f.spool.drained {
+		t.Fatal("the spool was not drained because a provider panicked")
+	}
+}
+
+// typedNilBroker is a nil pointer whose type implements Releaser, so assigning it to an interface
+// produces the typed-nil case.
+type typedNilBroker struct{}
+
+func (*typedNilBroker) Name() protocol.Route            { return protocol.RouteProxyLoopback }
+func (*typedNilBroker) Start(context.Context) error     { return nil }
+func (*typedNilBroker) Stop(context.Context) error      { return nil }
+func (*typedNilBroker) Health() Health                  { return Health{} }
+func (*typedNilBroker) ApplyPolicy(policy.Bundle) error { return nil }
+func (*typedNilBroker) Release(context.Context) error   { return nil }
+
+var _ Provider = (*typedNilBroker)(nil)
+var _ Releaser = (*typedNilBroker)(nil)
+
+// The declared orders are data, so this asserts the rows they encode rather than restating them.
+func TestOrdering_DeclaredOrdersNameTheRowsTheyEncode(t *testing.T) {
+	if StartupOrder()[0] != StepLoadBundle {
+		t.Fatal("§3.5 row 1 is the bundle, verified before anything is opened")
+	}
+	if ShutdownOrder()[0] != StepReleaseLoopback {
+		t.Fatal("§3.5 row 2 releases the loopback port before anything else")
+	}
+	if ShutdownOrder()[len(ShutdownOrder())-1] != StepStopClassifierHost {
+		t.Fatal("§3.5 row 6 stops the classifier host last")
 	}
 }
 

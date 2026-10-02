@@ -579,6 +579,12 @@ CREATE TABLE ops.retrieval_grant (
   -- enforces on a sanction decision, expressed where it cannot be skipped.
   CONSTRAINT retrieval_grant_second_approver_distinct CHECK (second_approver <> principal),
   CONSTRAINT retrieval_grant_window_bounded CHECK (expires_at > issued_at),
+  -- The analyst-verifiable digest of exactly the bytes the retrieval returns: content-vault copies
+  -- it verbatim from ops.content_object.ciphertext_sha256, which already carries this same
+  -- pattern. Constrained here so the value a grant promises and the value the vault can prove
+  -- cannot drift apart in shape, and so a grant cannot carry a digest that is not one.
+  CONSTRAINT retrieval_grant_raw_digest_is_sha256
+    CHECK (raw_digest ~ '^sha256:[0-9a-f]{64}$'),
   -- A claimed grant carries both halves of the claim, or neither.
   CONSTRAINT retrieval_grant_claim_is_whole CHECK ((used_at IS NULL) = (used_by IS NULL))
 );

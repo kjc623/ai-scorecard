@@ -1,0 +1,24 @@
+﻿Stability check: go run . was executed three times. The verdict lines are reproduced below
+with port numbers normalised, because ports are kernel-chosen ephemeral ports and differ every
+run by design. The only other difference between runs is the cool-down-bounded recovery
+latency in claim c2 (1.013s / 1.014s / 1.015s).
+
+--- run 2 ---
+  [PASS] a    body byte-identical to the upstream (sha256 72b5fcf015f24061), method+path preserved, pipeline captured 1 observation(s) with the same bytes; headers re-serialized (Host rewritten to the upstream: true)
+  [PASS] b    connection refused (not a timeout) 2ms after the kill, error "dial tcp 127.0.0.1:65252: connectex: No connection could be made because the target machine actively refused it."; port immediately rebindable by another process: true
+  [PASS] c    reported tampered/port_held_by_other with coverage held=0 while a live upstream was reachable, and the holder process kept the port
+  [PASS] c2   after the holder process died the broker re-bound the freed port (in 1.015s) and served a request through it
+  [PASS] d    stayed released (connection refused), reported degraded/upstream_unreachable, coverage held=0 reachable=0
+  [PASS] d2   the broker followed the relocation through policy (HOLDING, healthy/(none))
+  [PASS] e    4 attempts, largest gap 3.3s (>= cool-down 3s), reported cooling_down: true, port never held: true
+  [FINDING] stale tampered row after the port conflict ended - the broker re-bound 127.0.0.1:65259 and is serving it (coverage held=1 reachable=1, counters emitted=1 observed=1) but Health() still reports tampered/port_held_by_other
+
+--- run 3 ---
+  [PASS] a    body byte-identical to the upstream (sha256 72b5fcf015f24061), method+path preserved, pipeline captured 1 observation(s) with the same bytes; headers re-serialized (Host rewritten to the upstream: true)
+  [PASS] b    connection refused (not a timeout) 2ms after the kill, error "dial tcp 127.0.0.1:65480: connectex: No connection could be made because the target machine actively refused it."; port immediately rebindable by another process: true
+  [PASS] c    reported tampered/port_held_by_other with coverage held=0 while a live upstream was reachable, and the holder process kept the port
+  [PASS] c2   after the holder process died the broker re-bound the freed port (in 1.013s) and served a request through it
+  [PASS] d    stayed released (connection refused), reported degraded/upstream_unreachable, coverage held=0 reachable=0
+  [PASS] d2   the broker followed the relocation through policy (HOLDING, healthy/(none))
+  [PASS] e    4 attempts, largest gap 3.3s (>= cool-down 3s), reported cooling_down: true, port never held: true
+  [FINDING] stale tampered row after the port conflict ended - the broker re-bound 127.0.0.1:65487 and is serving it (coverage held=1 reachable=1, counters emitted=1 observed=1) but Health() still reports tampered/port_held_by_other

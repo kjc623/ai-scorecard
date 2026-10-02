@@ -281,52 +281,62 @@ func (s *Supervisor) Shutdown(ctx context.Context) error {
 	// 1. Release the loopback port before anything else (E14: the one path whose failure
 	// breaks the user rather than losing data).
 	s.record(StepReleaseLoopback)
-	if s.Loopback != nil && !isNilInterface(s.Loopback) {
-		if r, ok := s.Loopback.(Releaser); ok {
-			if err := r.Release(ctx); err != nil {
-				s.Log.Printf("core: loopback release reported an error; the registry will report it tampered: %v", err)
+	s.safeStep("loopback release", func() {
+		if s.Loopback != nil && !isNilInterface(s.Loopback) {
+			if r, ok := s.Loopback.(Releaser); ok {
+				if err := r.Release(ctx); err != nil {
+					s.Log.Printf("core: loopback release reported an error; the registry will report it tampered: %v", err)
+				}
+			} else if _, ok := s.Registry.Provider(protocol.RouteProxyLoopback); ok {
+				s.Registry.StopRoute(ctx, protocol.RouteProxyLoopback)
 			}
-		} else if _, ok := s.Registry.Provider(protocol.RouteProxyLoopback); ok {
-			s.Registry.StopRoute(ctx, protocol.RouteProxyLoopback)
 		}
-	}
+	})
 
 	// 2. The proxy stops enforcing first: interception and enforcement stop before the system
 	// proxy is restored, so traffic is never pointed at a proxy that has stopped intercepting.
 	s.record(StepStopProxyTLS)
-	if _, ok := s.Registry.Provider(protocol.RouteProxyTLS); ok {
-		s.Registry.StopRoute(ctx, protocol.RouteProxyTLS)
-	}
+	s.safeStep("proxy.tls stop", func() {
+		if _, ok := s.Registry.Provider(protocol.RouteProxyTLS); ok {
+			s.Registry.StopRoute(ctx, protocol.RouteProxyTLS)
+		}
+	})
 
 	// 3. Remaining providers; proc.detect (started first) stops last.
 	s.record(StepStopProviders)
-	for _, route := range []protocol.Route{protocol.RouteCLIShim, protocol.RouteProcDetect} {
-		if _, ok := s.Registry.Provider(route); ok {
-			s.Registry.StopRoute(ctx, route)
+	s.safeStep("remaining providers stop", func() {
+		for _, route := range []protocol.Route{protocol.RouteCLIShim, protocol.RouteProcDetect} {
+			if _, ok := s.Registry.Provider(route); ok {
+				s.Registry.StopRoute(ctx, route)
+			}
 		}
-	}
+	})
 
 	// 4. Drain the spool, bounded by a deadline.
 	s.record(StepDrainSpool)
-	if s.Spool != nil {
-		deadline := s.Clock().Add(s.DrainDeadline)
-		if res, err := s.Spool.Drain(ctx, deadline); err != nil {
-			s.Log.Printf("core: spool drain ended with %d delivered, %d dropped: %v", res.Delivered, res.Dropped, err)
+	s.safeStep("spool drain", func() {
+		if s.Spool != nil {
+			deadline := s.Clock().Add(s.DrainDeadline)
+			if res, err := s.Spool.Drain(ctx, deadline); err != nil {
+				s.Log.Printf("core: spool drain ended with %d delivered, %d dropped: %v", res.Delivered, res.Dropped, err)
+			}
+			// Nothing uninstalls while the spool holds undelivered events without recording it
+			// (§3.5, §12.2): the dropped count for an uninstall is an operator-visible fact.
+			if stats := s.Spool.Stats(); stats.Depth > 0 {
+				s.Log.Printf("core: shutdown with %d undelivered events still spooled; they are counted as dropped for this shutdown", stats.Depth)
+			}
 		}
-		// Nothing uninstalls while the spool holds undelivered events without recording it
-		// (§3.5, §12.2): the dropped count for an uninstall is an operator-visible fact.
-		if stats := s.Spool.Stats(); stats.Depth > 0 {
-			s.Log.Printf("core: shutdown with %d undelivered events still spooled; they are counted as dropped for this shutdown", stats.Depth)
-		}
-	}
+	})
 
 	// 5. Restore the system proxy to its pre-install value.
 	s.record(StepRestoreSystemProxy)
-	if s.SystemProxy != nil {
-		if err := s.SystemProxy.Restore(ctx); err != nil {
-			s.Log.Printf("core: could not restore the system proxy: %v", err)
+	s.safeStep("system proxy restore", func() {
+		if s.SystemProxy != nil {
+			if err := s.SystemProxy.Restore(ctx); err != nil {
+				s.Log.Printf("core: could not restore the system proxy: %v", err)
+			}
 		}
-	}
+	})
 
 	// 6. Remove the trusted root only when the kill switch or an uninstall asks for it.
 	s.record(StepRemoveTrustRoot)
@@ -339,12 +349,26 @@ func (s *Supervisor) Shutdown(ctx context.Context) error {
 	// 7. Stop the classifier host, then exit.
 	// (Unbinding 80/443 belongs to the proxy providers' own Stop and has already happened.)
 	s.record(StepStopClassifierHost)
-	if s.ClassifierHost != nil {
-		if err := s.ClassifierHost.Stop(ctx); err != nil {
-			s.Log.Printf("core: classifier host did not stop cleanly: %v", err)
+	s.safeStep("classifier host stop", func() {
+		if s.ClassifierHost != nil {
+			if err := s.ClassifierHost.Stop(ctx); err != nil {
+				s.Log.Printf("core: classifier host did not stop cleanly: %v", err)
+			}
 		}
-	}
+	})
 	return nil
+}
+
+// safeStep runs one shutdown step and contains a panic inside it. Shutdown is the one path that must
+// not fail visibly (§4.1), and a defect in a later step must not cancel the steps before it: the
+// loopback release, the proxy stop and the spool drain each protect something the user can feel.
+func (s *Supervisor) safeStep(name string, fn func()) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			s.Log.Printf("core: panic during %s; the shutdown column continues: %v", name, rec)
+		}
+	}()
+	fn()
 }
 
 // isNilInterface reports whether an interface value holds a typed nil pointer. It exists because

@@ -322,14 +322,71 @@ expectCaught(
 );
 
 // -------------------------------------------------------------------------------------
+// Digest-shaped columns must carry a format CHECK, or be a recorded exemption
+// -------------------------------------------------------------------------------------
+
+expectCaught(
+  'digests: a digest column whose format CHECK is replaced by a weaker one is caught',
+  'db/schema.sql',
+  (s) => s.replace(
+    "  CONSTRAINT retrieval_grant_raw_digest_is_sha256\n    CHECK (raw_digest ~ '^sha256:[0-9a-f]{64}$'),",
+    '  CONSTRAINT retrieval_grant_raw_digest_is_sha256\n    CHECK (length(raw_digest) > 0),',
+  ),
+  'digest.every-column-format-checked-or-excused',
+);
+
+expectCaught(
+  'digests: a newly added digest column with no format CHECK is caught',
+  'db/schema.sql',
+  (s) => s.replace(
+    '  raw_digest      text NOT NULL,',
+    '  raw_digest      text NOT NULL,\n  proof_digest    text NOT NULL,',
+  ),
+  'digest.every-column-format-checked-or-excused',
+);
+
+expectCaught(
+  'digests: an exemption that is no longer needed is caught, so the excused list cannot rot',
+  'db/schema.sql',
+  (s) => s.replace(
+    /^(\s*signed_digest\s+text NOT NULL)(,)$/m,
+    "$1 CHECK (signed_digest ~ '^sha256:[0-9a-f]{64}$')$2",
+  ),
+  'digest.every-column-format-checked-or-excused',
+);
+
+// -------------------------------------------------------------------------------------
 // Documentation drift: a WARNING, and it must clear when the prose is fixed
 // -------------------------------------------------------------------------------------
 
+// The two doc-drift cases are deliberately self-contained: they CREATE the drift they test, rather
+// than assuming the repository is currently drifted. An earlier version asserted "the fixture docs
+// do not match, so this must WARN", which meant that correcting the documentation - the very thing
+// the check exists to encourage - turned the test red. A test that fails when the code gets better
+// is worse than no test, so the drift is now part of the fixture.
+
 test('docs: drift is reported as a WARN and does not fail the structural run', () => {
-  const r = runChecker();
-  const w = r.checks.get('tests.count-matches-docs');
-  assert.equal(w?.status, 'WARN', 'the fixture docs do not match the assertion count, so this must WARN');
-  assert.equal(r.code, 0, 'documentation drift must not fail the structural run -- the SQL is the artifact under test');
+  const tests = readFileSync(q(root, 'db/invariants.test.sql'), 'utf8');
+  const n = new Set([...tests.matchAll(/PASS (T\d+)/g)].map((m) => m[1])).size;
+
+  // Move every claim OFF the true count by one, so the mismatch is the test's own doing.
+  const docFiles = ['README.md', 'docs/00-architecture.md', 'docs/03-data-platform.md', '.cockpit/project.json'];
+  const restores = docFiles.map((rel) =>
+    perturb(rel, (s) =>
+      s
+        .replace(/\d+\s+assertions/g, `${n + 1} assertions`)
+        .replace(/\b[A-Za-z]+(?:-[A-Za-z]+)?\s+assertions/g, `${n + 1} assertions`),
+    ),
+  );
+  try {
+    const perturbed = docFiles.map((rel) => readFileSync(q(root, rel), 'utf8')).join('\n');
+    assert.match(perturbed, new RegExp(`${n + 1}\\s+assertions`), 'the perturbation changed nothing -- the test would prove nothing');
+    const r = runChecker();
+    assert.equal(r.checks.get('tests.count-matches-docs')?.status, 'WARN', 'drift must WARN, not fail');
+    assert.equal(r.code, 0, 'documentation drift must not fail the structural run -- the SQL is the artifact under test');
+  } finally {
+    restores.forEach((restore) => restore());
+  }
 });
 
 test('docs: correcting every claim clears the warning', () => {
@@ -337,20 +394,36 @@ test('docs: correcting every claim clears the warning', () => {
   const n = new Set([...tests.matchAll(/PASS (T\d+)/g)].map((m) => m[1])).size;
 
   const docFiles = ['README.md', 'docs/00-architecture.md', 'docs/03-data-platform.md', '.cockpit/project.json'];
-  const restores = docFiles.map((rel) => perturb(rel, (s) => {
-    // Both the numeric and the spelled-out forms the checker accepts.
-    return s
-      .replace(/\d+\s+assertions/g, `${n} assertions`)
-      .replace(/\b[A-Za-z]+(?:-[A-Za-z]+)?\s+assertions/g, `${n} assertions`);
-  }));
+  const originals = new Map(docFiles.map((rel) => [rel, readFileSync(q(root, rel), 'utf8')]));
+
+  // Rewrites both the numeric and the spelled-out forms the checker reads.
+  const setClaims = (value) => {
+    for (const rel of docFiles) {
+      writeFileSync(
+        q(root, rel),
+        originals.get(rel)
+          .replace(/\d+\s+assertions/g, `${value} assertions`)
+          .replace(/\b[A-Za-z]+(?:-[A-Za-z]+)?\s+assertions/g, `${value} assertions`),
+      );
+    }
+  };
 
   try {
-    const r = runChecker();
-    assert.equal(r.checks.get('tests.count-matches-docs')?.status, 'PASS',
-      `with every claim set to ${n} the drift check should clear. Detail: ${r.checks.get('tests.count-matches-docs')?.detail}`);
-    assert.equal(r.code, 0);
+    // Create the drift first, then remove it. Asserting only the "clears" half was idempotent on a
+    // correct tree, which meant that keeping the documentation right -- the thing this check exists
+    // to encourage -- made the test unrunnable. Both halves are now the test's own doing.
+    setClaims(n + 1);
+    const drifted = runChecker();
+    assert.equal(drifted.checks.get('tests.count-matches-docs')?.status, 'WARN',
+      'a deliberately wrong claim must WARN before it is corrected');
+
+    setClaims(n);
+    const corrected = runChecker();
+    assert.equal(corrected.checks.get('tests.count-matches-docs')?.status, 'PASS',
+      `with every claim set to ${n} the drift check should clear. Detail: ${corrected.checks.get('tests.count-matches-docs')?.detail}`);
+    assert.equal(corrected.code, 0);
   } finally {
-    restores.forEach((restore) => restore());
+    for (const [rel, original] of originals) writeFileSync(q(root, rel), original);
   }
 });
 

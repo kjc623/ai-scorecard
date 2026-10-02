@@ -1517,6 +1517,65 @@ BEGIN
   RAISE NOTICE 'PASS T45 a half-claimed row and a self-approved grant are both unrepresentable';
 END $$;
 
+-- T46: a grant's raw_digest must be a sha256 digest.
+--
+-- The value is what the analyst verifies the returned bytes against (docs/02 §11), and
+-- content-vault copies it verbatim from ops.content_object.ciphertext_sha256. That column already
+-- constrains the shape, so this pins the shape on the copy too: a grant cannot promise a digest it
+-- could not have been derived from, and the vault's own statement and this table cannot disagree
+-- about what a digest looks like. The lowercase requirement is part of the pattern, so uppercase
+-- hex is refused rather than quietly accepted as a second spelling of the same value.
+DO $$
+DECLARE
+  v_tenant constant uuid := '11111111-1111-7111-8111-111111111111';
+  n int;
+BEGIN
+  -- Positive control: the real shape is accepted.
+  INSERT INTO ops.retrieval_grant (tenant_id, grant_id, event_id, object_id, submission_id,
+                                   principal, case_reference, second_approver, issued_at, expires_at,
+                                   raw_digest)
+  VALUES (v_tenant, 'cccccccc-0000-7000-8000-000000000005', gen_random_uuid(), gen_random_uuid(),
+          gen_random_uuid(), 'analyst@example.test', 'CASE-5', 'approver@example.test',
+          now(), now() + interval '1 hour', 'sha256:' || repeat('a5', 32));
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN RAISE EXCEPTION 'FAIL T46 a well-formed raw_digest was not accepted'; END IF;
+
+  -- Negative: a digest that is not one. Asserting the constraint name keeps this from passing
+  -- because something else refused the row.
+  BEGIN
+    INSERT INTO ops.retrieval_grant (tenant_id, grant_id, event_id, object_id, submission_id,
+                                     principal, case_reference, second_approver, issued_at, expires_at,
+                                     raw_digest)
+    VALUES (v_tenant, 'cccccccc-0000-7000-8000-000000000006', gen_random_uuid(), gen_random_uuid(),
+            gen_random_uuid(), 'analyst@example.test', 'CASE-6', 'approver@example.test',
+            now(), now() + interval '1 hour', 'not-a-digest');
+    RAISE EXCEPTION 'FAIL T46 a raw_digest that is not a sha256 digest was accepted';
+  EXCEPTION WHEN others THEN
+    IF SQLERRM LIKE 'FAIL%' THEN RAISE; END IF;
+    IF position('retrieval_grant_raw_digest_is_sha256' in SQLERRM) = 0 THEN
+      RAISE EXCEPTION 'FAIL T46 the malformed digest was refused, but not by retrieval_grant_raw_digest_is_sha256 (%)', SQLERRM;
+    END IF;
+  END;
+
+  -- Negative: uppercase hex is a second spelling, not the same value.
+  BEGIN
+    INSERT INTO ops.retrieval_grant (tenant_id, grant_id, event_id, object_id, submission_id,
+                                     principal, case_reference, second_approver, issued_at, expires_at,
+                                     raw_digest)
+    VALUES (v_tenant, 'cccccccc-0000-7000-8000-000000000007', gen_random_uuid(), gen_random_uuid(),
+            gen_random_uuid(), 'analyst@example.test', 'CASE-7', 'approver@example.test',
+            now(), now() + interval '1 hour', 'sha256:' || repeat('A5', 32));
+    RAISE EXCEPTION 'FAIL T46 an uppercase-hex raw_digest was accepted; the digest has one spelling, not two';
+  EXCEPTION WHEN others THEN
+    IF SQLERRM LIKE 'FAIL%' THEN RAISE; END IF;
+    IF position('retrieval_grant_raw_digest_is_sha256' in SQLERRM) = 0 THEN
+      RAISE EXCEPTION 'FAIL T46 the uppercase digest was refused, but not by retrieval_grant_raw_digest_is_sha256 (%)', SQLERRM;
+    END IF;
+  END;
+
+  RAISE NOTICE 'PASS T46 a grant carries a lowercase sha256 digest or it is refused';
+END $$;
+
 RESET ROLE;
 
 

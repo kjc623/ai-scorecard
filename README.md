@@ -51,7 +51,7 @@ surface small enough to sell, and it constrains almost every decision in this pa
 | [docs/06-security-and-threat-model.md](docs/06-security-and-threat-model.md) | Trust boundaries; ranked asset inventory; identity; cryptography; **the key model decision**; tenant isolation; STRIDE; the interceptor as a liability; abuse cases; what the legal workstream needs; residual risks; security invariants |
 | [contracts/event-envelope.schema.json](contracts/event-envelope.schema.json) | The wire contract (JSON Schema 2020-12). Generates the TypeScript and Go types |
 | [db/schema.sql](db/schema.sql) | PostgreSQL 16 DDL: 34 tables, 3 views, 28 row-level security policies, roles, triggers, functions, seed data |
-| [db/invariants.test.sql](db/invariants.test.sql) | 42 assertions that the schema's properties actually hold |
+| [db/invariants.test.sql](db/invariants.test.sql) | 46 assertions that the schema's properties actually hold |
 | [docs/adr/](docs/adr/) | 15 architecture decision records, one of which (0014) supersedes another |
 
 ---
@@ -151,7 +151,7 @@ psql -v ON_ERROR_STOP=1 -f db/schema.sql
 psql -v ON_ERROR_STOP=1 -f db/invariants.test.sql
 ```
 
-The 42 assertions cover the collection-mode boundary, tenant isolation (including fail-closed behaviour
+The 46 assertions cover the collection-mode boundary, tenant isolation (including fail-closed behaviour
 with no tenant set), the two-tier dedup ladder, the policy ceiling, the audit hash chain, append-only
 enforcement, retention materialisation, and the states brief §3.2 says must never be merged.
 

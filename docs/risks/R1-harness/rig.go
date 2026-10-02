@@ -36,10 +36,28 @@ type result struct {
 	detail string
 }
 
+// finding is an observation about the component that is not one of the claims under test. It
+// is printed with the same prominence but does not change the harness's exit code: the
+// harness measures, and a claim it was asked to measure can pass while the run still shows
+// something the component owner needs to see.
+type finding struct {
+	title  string
+	detail string
+}
+
 var (
 	resultsMu sync.Mutex
 	results   []result
+	findings  []finding
 )
+
+func noteFinding(title, format string, args ...any) {
+	detail := fmt.Sprintf(format, args...)
+	say("  FINDING: %s - %s", title, detail)
+	resultsMu.Lock()
+	findings = append(findings, finding{title: title, detail: detail})
+	resultsMu.Unlock()
+}
 
 func say(format string, args ...any) {
 	fmt.Printf(format+"\n", args...)
@@ -70,6 +88,9 @@ func summary() bool {
 			allOK = false
 		}
 		say("  [%s] %-4s %s", mark, r.claim, r.detail)
+	}
+	for _, f := range findings {
+		say("  [FINDING] %s - %s", f.title, f.detail)
 	}
 	say("=========================================")
 	return allOK

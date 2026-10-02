@@ -178,6 +178,20 @@ const COMPONENTS = [
       counters: 'health channel',
       last_success_at: 'health channel',
       since: 'health channel',
+      // The device-level health document (master §4.4), which the service binary carries because
+      // protocol has no device-level type yet. These are health-channel fields and deliberately not
+      // envelope fields: `policy_outcome` says whether the signed bundle was accepted or rejected,
+      // which is a fact about the agent's configuration rather than about any observation. It sits
+      // close to the contract's `policy_decision` by name and is unrelated to it - that one is what
+      // policy did about a specific event.
+      policy_outcome: 'device-level health document',
+      policy_cause: 'device-level health document',
+      agent_version: 'device-level health document',
+      generated_at: 'device-level health document',
+      named_gaps: 'device-level health document',
+      note: 'device-level health document',
+      classification: 'device-level health document',
+      reports: 'device-level health document',
       // loopback broker / proxy local state
       upstream_port: 'broker configuration',
       listen_port: 'broker configuration',

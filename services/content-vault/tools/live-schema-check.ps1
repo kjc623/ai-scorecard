@@ -136,11 +136,12 @@ UPDATE ops.retrieval_grant SET used_at = now(), used_by = 'analyst@example.com'
    AND grant_id='99999999-9999-4999-8999-99999999999d' AND used_at IS NULL
 RETURNING (used_at IS NOT NULL AND used_by IS NOT NULL)::text;
 -- A second claim through the same guarded statement matches no row.
-SELECT count(*) FROM (
+WITH claimed AS (
   UPDATE ops.retrieval_grant SET used_at = now(), used_by = 'someone.else@example.com'
    WHERE tenant_id='99999999-9999-4999-8999-999999999995'
      AND grant_id='99999999-9999-4999-8999-99999999999d' AND used_at IS NULL
-  RETURNING 1) x;
+  RETURNING 1)
+SELECT count(*) FROM claimed;
 ROLLBACK;
 "@
 $r = Invoke-Psql $grants

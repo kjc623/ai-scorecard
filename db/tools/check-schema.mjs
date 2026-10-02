@@ -219,6 +219,51 @@ if (arrMatch) {
 }
 
 // -------------------------------------------------------------------------------------
+// 2b. Every digest-shaped column carries a format CHECK
+// -------------------------------------------------------------------------------------
+// A digest column with no format CHECK accepts any text at all, so a caller can store a value that
+// is not a digest and nothing notices until something tries to verify against it -- and the value's
+// whole purpose is to be verified against. ops.retrieval_grant.raw_digest was exactly that, found
+// while checking content-vault's claim that it copies ops.content_object.ciphertext_sha256.
+//
+// Two columns are EXCUSED rather than tightened: no owner has stated that they are always sha256,
+// and adding a restriction on a guess is the direction this schema deliberately avoids (the same
+// reasoning that keeps the M2 excerpt a permission rather than a requirement). The excused set is
+// asserted to be exactly these two, so it cannot grow silently and a stale entry fails.
+const DIGEST_COLUMNS_EXCUSED = ['ops.policy_bundle.signed_digest', 'ref.classifier_release.artifact_digest'];
+
+{
+  // Each `CREATE TABLE` block, so a column can be attributed to its table.
+  const tables = [...schemaCode.matchAll(/CREATE TABLE\s+([a-z_]+)\.([a-z_]+)\s*\(([\s\S]*?)\n\);/g)];
+  const digestish = [];
+  for (const [, schemaName, tableName, body] of tables) {
+    for (const m of body.matchAll(/^\s{2}([a-z_][a-z0-9_]*)\s+(?:text|character varying)\b/gm)) {
+      const col = m[1];
+      if (!/(_digest|_sha256)$/.test(col) && col !== 'dedup_key' && col !== 'dedup_weak_key') continue;
+      digestish.push({ qualified: `${schemaName}.${tableName}.${col}`, col });
+    }
+  }
+
+  check('digest.columns-found', digestish.length >= 6,
+    `${digestish.length} digest-shaped columns: ${digestish.map((d) => d.col).join(', ')}`);
+
+  const unconstrained = digestish.filter(
+    (d) => !new RegExp(`${d.col}\\s*~\\s*'\\^sha256:`).test(schemaCode),
+  );
+  const unconstrainedNames = unconstrained.map((d) => d.qualified);
+
+  const notExcused = unconstrainedNames.filter((q) => !DIGEST_COLUMNS_EXCUSED.includes(q));
+  const staleExemptions = DIGEST_COLUMNS_EXCUSED.filter((q) => !unconstrainedNames.includes(q));
+
+  check('digest.every-column-format-checked-or-excused',
+    notExcused.length === 0 && staleExemptions.length === 0,
+    notExcused.length || staleExemptions.length
+      ? `${notExcused.length ? `digest columns with no sha256 format CHECK and no recorded exemption: [${notExcused.join(', ')}]` : ''}` +
+        `${staleExemptions.length ? `${notExcused.length ? '; ' : ''}exemptions recorded for columns that no longer need one: [${staleExemptions.join(', ')}]` : ''}`
+      : `all ${digestish.length} digest-shaped columns carry a sha256 format CHECK, except the ${DIGEST_COLUMNS_EXCUSED.length} recorded as excused: ${DIGEST_COLUMNS_EXCUSED.join(', ')}`);
+}
+
+// -------------------------------------------------------------------------------------
 // 3. Append-only / tamper-evidence triggers
 // -------------------------------------------------------------------------------------
 
