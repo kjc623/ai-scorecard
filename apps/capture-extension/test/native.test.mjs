@@ -171,7 +171,10 @@ test('the drain sends oldest-first and removes an entry only after the ack', asy
 test('a transport failure during a drain leaves the queue intact so nothing is lost silently', async () => {
   const h = createHarness();
   h.app.native.connect();
-  h.fake.state.failPostAfter = 1; // the next post fails
+  // Fail from this point on, rather than "the Nth post fails": the count of posts before the drain
+  // depends on unrelated start-up work, and a test that pins an absolute post number is really
+  // asserting that ordering rather than the property it names.
+  h.fake.state.failPostAfter = h.fake.state.posted.length;
   h.app.queue.enqueue(
     TYPE.OBSERVATION,
     observationBody({

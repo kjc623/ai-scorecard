@@ -1,13 +1,13 @@
 in-browser-check — proving the browser half in a real Chromium browser
-date:     2026-10-02T19:29:29.662Z
+date:     2026-10-02T19:34:06.333Z
 node:     v22.23.1
 package:  C:\Users\kyle\Downloads\architecture\apps\capture-extension
 
 browser:  C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe
 
 browser:  Edg/154.0.4258.48
-cdp port: 61708
-origin:   http://127.0.0.1:61706
+cdp port: 50696
+origin:   http://127.0.0.1:50695
 
 [PASS] check 1: the extension loads and its MV3 service worker registers
         CDP Target.getTargets lists the service worker target: chrome-extension://ileppbadlclnikhkddpliolbgifliffh/background/service-worker.js
@@ -18,7 +18,7 @@ origin:   http://127.0.0.1:61706
         manifest/permission errors in the browser log: none
 
 [PASS] check 2: the webRequest listener observes a real request
-        observed went 0 → 2 for a real POST to http://127.0.0.1:61706/v1/chat/completions
+        observed went 0 → 2 for a real POST to http://127.0.0.1:50695/v1/chat/completions
         proxy signal: the extension's own §4.3 counters, read from the service worker through CDP.
         Sound because the counter is incremented inside the registered listener and nowhere else,
         so a non-zero value means chrome.webRequest delivered the event to our handler in this browser.

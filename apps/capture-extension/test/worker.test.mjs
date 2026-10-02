@@ -20,6 +20,9 @@ import { chromeRequest, INVALID_UTF8 } from '../test-support/fake-chrome.mjs';
 import { CHAT_BODY, DRAFT_BODY, STREAMING_RESPONSE } from '../test-support/fixtures.mjs';
 import { COUNTER, CORE_TYPE, REFUSAL, TYPE } from '../src/messages.js';
 
+/** A real delay, for the one test that has to let a backoff window elapse. */
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 const CHAT_URL = 'https://chat.example-ai.invalid/v1/chat/completions';
 const DRAFT_URL = 'https://saas.example-ai.invalid/api/drafts';
 
@@ -442,26 +445,55 @@ test('a failed connect is reported as capture-core absent AND extension-side deg
 });
 
 test('when the channel returns, the queued observations are merged out and the report says so', async () => {
-  // Queue first, against a dead channel.
-  const h = createHarness();
-  h.fake.state.failConnect = true;
+  // Queue first, against a dead channel. A short cool-down keeps the test quick: the backoff is a
+  // real behaviour with a real duration, so the test shortens the duration rather than the property.
+  const h = createHarness({ failConnect: true, connectCooldownMs: 40 });
   await h.app.start();
   h.app.applyPolicy({ policy_version: 'b1', bundle: { policy_version: 'b1', default_mode: 'm1' } });
   await settle();
   await h.fake.drive('body', chromeRequest({ url: CHAT_URL, headers: { 'content-type': 'application/json' }, body: JSON.stringify(CHAT_BODY) }));
   await settle();
+  await waitFor(() => h.app.queue.size() === 1, { label: 'the observation to be held' });
   assert.equal(h.app.queue.size(), 1, 'held in extension memory only');
   const held = h.app.health.report();
   assert.equal(held.core, 'absent');
 
-  // Now let the channel come back: the drain runs and the queue empties.
+  // Now let the channel come back. The cool-down has to elapse first — that is the backoff doing its
+  // job, not a delay to paper over — and then the drain empties the queue.
   h.fake.state.failConnect = false;
+  await sleep(60);
   const sent = await h.app.pipeline.drainQueue(10);
   assert.equal(sent.sent, 1, 'the queued observation went out oldest-first');
-  assert.equal(h.app.queue.size(), 0);
+  await waitFor(() => h.app.queue.size() === 0, { label: 'the ack to remove the entry' });
   const report = h.app.health.report();
-  assert.equal(report.core, 'connected');
+  assert.equal(report.core, 'connected', 'connected means a message round-tripped, not that a port was handed out');
   assert.ok(report.counters.emitted >= 1);
+});
+
+test('a dead native host does not become a retry loop: connects are backed off, not hammered', async () => {
+  // Measured in Edge 154 at ~6,000 connect attempts/second before the cool-down existed, because
+  // each connect was followed by the browser delivering a disconnect for the absent host and the
+  // next send opening another port. On a user's machine that is sustained CPU burn for a channel
+  // that is simply not there, and §3.5's crash-loop rule is the same rule one process down.
+  const h = createHarness({ failConnect: true, connectCooldownMs: 5000 });
+  await h.app.start();
+  h.app.applyPolicy({ policy_version: 'b1', bundle: { policy_version: 'b1', default_mode: 'm1' } });
+  await settle();
+
+  const attemptsBefore = h.fake.state.connectAttempts;
+  for (let i = 0; i < 20; i++) {
+    await h.fake.drive(
+      'body',
+      chromeRequest({ requestId: `loop${i}`, url: CHAT_URL, headers: { 'content-type': 'application/json' }, body: JSON.stringify(CHAT_BODY) }),
+    );
+    await settle(2);
+  }
+  const attempts = h.fake.state.connectAttempts - attemptsBefore;
+
+  assert.ok(attempts <= 4, `20 observations against a dead host made ${attempts} connect attempts; a loop would make ~20+`);
+  assert.ok(h.app.queue.size() > 0, 'and every observation is held rather than lost');
+  const errors = h.app.health.counters.snapshot().counters.errors;
+  assert.ok(errors <= 6, `the error counter must not climb per attempt while nothing new happens: ${errors}`);
 });
 
 test('nothing durable is written: no extension storage call is ever made', async () => {
@@ -576,7 +608,6 @@ test('an unusable bundle leaves the previous policy enforcing and is reported', 
 });
 
 // ── §7.4's capability, and the defect the browser found ─────────────────────────────────────
-
 test('with webRequestBlocking granted, both lanes register as blocking (the deployed case)', async () => {
   const h = await started();
   assert.deepEqual(h.fake.registration('metadata').extra, ['blocking'], 'a policy-installed extension keeps §7.4');

@@ -30,7 +30,7 @@ export const POLICY_SYNC_ALARM = 'capture-policy-sync';
 export const POLICY_SYNC_PERIOD_MINUTES = 15;
 
 /** Build the running extension. Exported so a test can drive the whole thing with a fake adapter. */
-export function bootstrap(adapter, { deviceId = null, version = '0.1.0', capacity = 200, nativeTimeoutMs = undefined } = {}) {
+export function bootstrap(adapter, { deviceId = null, version = '0.1.0', capacity = 200, nativeTimeoutMs = undefined, connectCooldownMs = undefined } = {}) {
   const policy = createPolicyCache();
   const health = createHealthReporter({
     device_id: deviceId || 'unbound',
@@ -49,6 +49,7 @@ export function bootstrap(adapter, { deviceId = null, version = '0.1.0', capacit
   const native = createNativeClient({
     adapter,
     ...(Number.isFinite(nativeTimeoutMs) ? { timeoutMs: nativeTimeoutMs } : {}),
+    ...(Number.isFinite(connectCooldownMs) ? { connectCooldownMs } : {}),
     onEvent: (ev) => {
       if (ev.kind === 'port_opened') {
         // A port object exists. That is NOT a working channel — for a host that does not exist the
