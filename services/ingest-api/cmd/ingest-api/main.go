@@ -50,6 +50,10 @@ type options struct {
 	storeKind        string
 	dsn              string
 	driver           string
+	pgHost           string
+	pgPort           string
+	pgDatabase       string
+	role             string
 	routesFile       string
 	tlsCert          string
 	tlsKey           string
@@ -57,32 +61,56 @@ type options struct {
 	devTrust         bool
 	devSeed          string
 	verifyDedupKey   bool
-	maxBatchEvents   int
 	replayWindow     time.Duration
 	shutdownGraceful time.Duration
 }
 
 func run() error {
 	var o options
-	flag.StringVar(&o.addr, "addr", "127.0.0.1:8443", "listen address")
-	flag.StringVar(&o.schemaPath, "schema", "", "path to contracts/event-envelope.schema.json (default: discovered above the working directory)")
-	flag.StringVar(&o.region, "region", "", "the region this deployment serves; a tenant pinned elsewhere is refused (empty disables only that check)")
-	flag.StringVar(&o.storeKind, "store", "memory", "memory | sql")
-	flag.StringVar(&o.dsn, "dsn", "", "database DSN (with -store=sql)")
+	flag.StringVar(&o.addr, "addr", "127.0.0.1:8443",
+		"listen address (env "+EnvHTTPAddr+"); a container needs 0.0.0.0:8080, which the image sets")
+	flag.StringVar(&o.schemaPath, "schema", "", "path to contracts/event-envelope.schema.json (env "+EnvSchema+"; default: discovered above the working directory)")
+	flag.StringVar(&o.region, "region", "", "the region this deployment serves; a tenant pinned elsewhere is refused (env "+EnvRegion+"; empty disables only that check)")
+	flag.StringVar(&o.storeKind, "store", "memory", "memory | sql (env "+EnvStore+")")
+	flag.StringVar(&o.dsn, "dsn", "", "database DSN (with -store=sql); the caller must register a driver")
 	flag.StringVar(&o.driver, "driver", "", "database/sql driver name (with -store=sql); must be registered in this binary")
-	flag.StringVar(&o.routesFile, "routes-file", "testdata/route-fidelity.seed.json", "ref.route_fidelity rows for -store=memory, so route ranks are never compiled in")
+	flag.StringVar(&o.pgHost, "pg-host", "", "database host (env "+EnvPGHost+"); used to build the DSN, not a password")
+	flag.StringVar(&o.pgPort, "pg-port", "5432", "database port; the deployment passes no port, so it stays a flag")
+	flag.StringVar(&o.pgDatabase, "pg-database", "shadow", "database name (env "+EnvPGDatabase+")")
+	flag.StringVar(&o.role, "role", "ingest-api", "the identity this process runs as (env "+EnvRole+")")
+	flag.StringVar(&o.routesFile, "routes-file", "testdata/route-fidelity.seed.json",
+		"ref.route_fidelity rows (env "+EnvRoutesFile+"), so route ranks are never compiled in")
 	flag.StringVar(&o.tlsCert, "tls-cert", "", "server certificate (PEM)")
 	flag.StringVar(&o.tlsKey, "tls-key", "", "server private key (PEM)")
 	flag.StringVar(&o.tlsClientCA, "tls-client-ca", "", "CA bundle that must have issued the device certificate (PEM)")
 	flag.BoolVar(&o.devTrust, "dev-trust-principal", false, "TEST ONLY: trust X-Dev-Tenant-Id and X-Dev-Device-Id instead of a client certificate")
 	flag.StringVar(&o.devSeed, "dev-seed-principal", "", "TEST ONLY with -store=memory: register tenant:device[:credential] as an active principal so a local run can accept a batch (default credential \"dev\", matching -dev-trust-principal)")
 	flag.BoolVar(&o.verifyDedupKey, "verify-dedup-key", false, "diagnostic: recompute §4.5 dedup_key and reject a mismatch (off by default; §7 has no wire code for it)")
-	flag.IntVar(&o.maxBatchEvents, "max-batch-events", 500, "advertised batch cap")
 	flag.DurationVar(&o.replayWindow, "replay-window", 24*time.Hour, "duplicate_batch replay window")
 	flag.DurationVar(&o.shutdownGraceful, "shutdown-grace", 10*time.Second, "graceful shutdown grace period")
 	flag.Parse()
 
+	// Everything below this line is a resolved setting: flag if it was passed, otherwise the
+	// deployment's environment, otherwise the laptop default.
+	passed := visited(flag.CommandLine)
+	o.addr = passed.str("addr", o.addr, EnvHTTPAddr, "127.0.0.1:8443")
+	o.schemaPath = passed.str("schema", o.schemaPath, EnvSchema, "")
+	o.region = passed.str("region", o.region, EnvRegion, "")
+	o.storeKind = passed.str("store", o.storeKind, EnvStore, "memory")
+	o.pgHost = passed.str("pg-host", o.pgHost, EnvPGHost, "")
+	o.pgDatabase = passed.str("pg-database", o.pgDatabase, EnvPGDatabase, "shadow")
+	o.role = passed.str("role", o.role, EnvRole, "ingest-api")
+	o.routesFile = passed.str("routes-file", o.routesFile, EnvRoutesFile, "testdata/route-fidelity.seed.json")
+	appInsights := os.Getenv(EnvAppInsights)
+
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	if err := validateHTTPAddr(o.addr); err != nil {
+		return err
+	}
+	if err := checkURL(EnvAppInsights, appInsights); err != nil {
+		return err
+	}
 
 	schemaPath := o.schemaPath
 	if schemaPath == "" {
@@ -102,7 +130,13 @@ func run() error {
 	// The repository root, derived from the schema's own location, is what lets the development
 	// defaults below be module-relative and still work from any working directory.
 	repoRoot := filepath.Dir(filepath.Dir(schemaPath))
-	logger.Info("contract loaded", "schema", schemaPath)
+	logger.Info("contract loaded", "schema", schemaPath, "role", o.role, "region", o.region,
+		"appinsights_configured", appInsights != "")
+	if appInsights != "" {
+		// Stated rather than implied: the deployment passes a connection string this build does not
+		// export to. Adding an exporter means adding a dependency, and this build has none.
+		logger.Warn("SAC_APPINSIGHTS is set but this build exports no telemetry to it; the connection string is read, validated, and never logged")
+	}
 
 	var st store.Store
 	switch o.storeKind {
@@ -128,13 +162,17 @@ func run() error {
 		logger.Warn("running with the in-memory store: nothing is persisted and no database identity is used; this is for a local run and for tests")
 		st = mem
 	case "sql":
-		if o.dsn == "" || o.driver == "" {
-			return errors.New("-store=sql requires -dsn and -driver")
-		}
 		if o.devSeed != "" {
 			return errors.New("-dev-seed-principal is only for -store=memory; with a database the principal comes from ops.*")
 		}
-		db, err := sql.Open(o.driver, o.dsn)
+		dsn := o.dsn
+		if dsn == "" {
+			dsn = postgresDSN(o.pgHost, o.pgPort, o.pgDatabase, o.role)
+		}
+		if o.driver == "" {
+			return sqlRefusal(o, dsn)
+		}
+		db, err := sql.Open(o.driver, dsn)
 		if err != nil {
 			return fmt.Errorf("open database with driver %q: %w (a registered driver is required; the standard library has none)", o.driver, err)
 		}
@@ -142,16 +180,12 @@ func run() error {
 		db.SetConnMaxIdleTime(5 * time.Minute)
 		st = store.NewSQL(db)
 	default:
-		return fmt.Errorf("unknown -store %q", o.storeKind)
+		return fmt.Errorf("unknown -store %q (want memory or sql)", o.storeKind)
 	}
 	defer st.Close()
 
 	cfg := ingest.DefaultConfig()
 	cfg.VerifyDedupKey = o.verifyDedupKey
-	if o.maxBatchEvents > 0 {
-		// The cap constants live in the protocol package; this only narrows the advertised set.
-		_ = o.maxBatchEvents
-	}
 	svc, err := ingest.New(schema, st, cfg)
 	if err != nil {
 		return err
@@ -172,9 +206,15 @@ func run() error {
 	}
 
 	srv := httpapi.New(svc, authenticator, batchguard.New(o.replayWindow), logger)
+	// The store probe behind /readyz: reading the route table is a real query in the SQL mode and a
+	// real state check in memory mode, and it is the one dependency the write path cannot run without.
+	ready := func(ctx context.Context) error {
+		_, err := st.RouteFidelity(ctx)
+		return err
+	}
 	httpServer := &http.Server{
 		Addr:              o.addr,
-		Handler:           srv.Handler(),
+		Handler:           withProbes(srv.Handler(), ready, logger),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       90 * time.Second,
 	}
@@ -223,6 +263,40 @@ func run() error {
 	defer cancel()
 	logger.Info("shutting down")
 	return httpServer.Shutdown(ctx)
+}
+
+// sqlRefusal is the F4 decision (task-24), stated as a message rather than a dead end.
+//
+// This build has no PostgreSQL driver and cannot fetch one (GOPROXY=off). The two acceptable failures
+// were "refuse with something actionable" or "hide it behind a build tag"; vendoring a driver this
+// host cannot test was not one of them, and neither was starting in memory and letting a deployment
+// believe it is persisting. So: it refuses, and the refusal names the driver, the variables it read,
+// what IS verified, and the exact commands a networked host runs to close the gap.
+//
+// The DSN is printed without a password by construction (postgresDSN builds one from the managed
+// identity), and the environment values named here are never secret.
+func sqlRefusal(o options, dsn string) error {
+	return fmt.Errorf(`--store sql cannot start in this build: no PostgreSQL driver is compiled in.
+
+  driver   github.com/jackc/pgx/v5/stdlib (registered as "pgx"); a Go module, and this offline build
+           neither vendors nor fetches one. The module *is* present in the host's module cache
+           (pgx/v5 v5.11.0 with all of its dependencies), so a host whose GOMODCACHE points at it can
+           land the wiring in one line -- see README.md "Configuration" for why that line is not
+           here today.
+  dsn      %s
+           from %s=%s %s=%s %s=%s (read from this process; never logged with a credential in them)
+
+  what IS verified without a driver: every statement this service issues is executed against a live
+  PostgreSQL by the live-schema test, and ingest.record_event()'s semantics are asserted there:
+      go test ./internal/store -run TestLive -v
+  what is NOT verified: the database/sql plumbing this flag would enable -- connection pooling, the
+  transaction boundary, and driver-level error mapping. README.md lists it under "Not verified".
+
+  to close it on a host with a module proxy:
+      go get github.com/jackc/pgx/v5/stdlib
+      go build ./... && go test ./internal/store -run TestLive -v
+      ./ingest-api -store sql -driver pgx -dsn "$SAC_PG_DSN"`,
+		dsn, EnvPGHost, o.pgHost, EnvPGDatabase, o.pgDatabase, EnvRole, o.role)
 }
 
 // parseSeed reads tenant:device[:credential] for -dev-seed-principal.

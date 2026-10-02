@@ -268,6 +268,27 @@ const DIGEST_COLUMNS_EXCUSED = ['ops.policy_bundle.signed_digest'];
       : `all ${digestish.length} digest-shaped columns carry a sha256 format CHECK, except the ${DIGEST_COLUMNS_EXCUSED.length} recorded as excused: ${DIGEST_COLUMNS_EXCUSED.join(', ')}`);
 }
 
+// WHAT THIS SECTION DELIBERATELY DOES NOT CHECK, so the next reader does not add it back.
+//
+// The other half of the digest rule is that a digest comparison must be exact -- case folding one
+// lets a loader admit an artefact the store would refuse. That property is NOT checked here, on
+// purpose:
+//
+//   * A rule that greps for `EqualFold` or `toLowerCase()` across the tree would either fail on
+//     the legitimate case-insensitive comparisons that exist for good reasons (an algorithm
+//     identifier, a Windows path comparison, tenant UUIDs, dropping the words and/or/not from a
+//     search expression) or would need an allowlist that drifts as those sites change. A checked
+//     allowlist is worse than the thing it replaces.
+//   * It is already guarded where the behaviour lives and in the failing direction:
+//     device/classifier-host's TestDigestHasExactlyOneSpelling refuses an uppercase digest and
+//     fails if case folding returns. That test is strictly stronger than anything this file could
+//     scrape, because it runs the comparison rather than pattern-matching the source.
+//
+// A repo-wide sweep by the classifier-host owner found exactly two digest comparisons, both now
+// exact, and no other. So the property is bounded and stated rather than assumed: if a third one
+// appears, the guard is a test in the package that owns it, and this comment is the pointer to
+// where the question was already answered.
+
 // -------------------------------------------------------------------------------------
 // 3. Append-only / tamper-evidence triggers
 // -------------------------------------------------------------------------------------

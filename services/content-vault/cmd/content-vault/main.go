@@ -81,15 +81,56 @@ func fatalf(format string, args ...any) int {
 
 func runServe(args []string) int {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
-	addr := fs.String("addr", "127.0.0.1:8090", "listen address")
-	backend := fs.String("key-backend", "local", "local | kms")
+	addr := fs.String("addr", "127.0.0.1:8090", "listen address (env "+EnvHTTPAddr+"); a container needs 0.0.0.0:8080, which the image sets")
+	backend := fs.String("key-backend", "local", "local | kms (env "+EnvKeyBackend+")")
 	keyFile := fs.String("key-file", "", "local key file (development); empty means in-memory")
-	allowNonLoopback := fs.Bool("allow-non-loopback", false, "acknowledge that this binds a non-loopback address")
+	keyVaultURI := fs.String("keyvault-uri", "", "Key Vault URI the kms backend would call (env "+EnvKeyVaultURI+")")
+	blobEndpoint := fs.String("blob-ciphertext-endpoint", "", "private blob endpoint for ciphertext (env "+EnvBlobCiphertextEndpoint+")")
+	role := fs.String("role", "content-vault", "the identity this process runs as (env "+EnvRole+")")
+	allowNonLoopback := fs.Bool("allow-non-loopback", false, "acknowledge that this binds a non-loopback address (env "+EnvAllowNonLoopback+", or "+EnvInternalOnly+"=true from a deployment that has internal ingress)")
 	allowKMS := fs.Bool("allow-unimplemented-kms", false, "start with a cloud KMS backend this build has not implemented")
-	storeKind := fs.String("store", "memory", "memory | sql")
+	storeKind := fs.String("store", "memory", "memory | sql (env "+EnvStore+")")
 	dsn := fs.String("dsn", "", "database/sql DSN (the caller must register a driver)")
+	pgHost := fs.String("pg-host", "", "database host (env "+EnvPGHost+"); used to build the DSN, not a password")
+	pgPort := fs.String("pg-port", "5432", "database port; the deployment passes no port, so it stays a flag")
+	pgDatabase := fs.String("pg-database", "shadow", "database name (env "+EnvPGDatabase+")")
 	if err := fs.Parse(args); err != nil {
 		return 2
+	}
+
+	// The deployment's names, with a flag winning. Everything below is a resolved setting.
+	passed := visited(fs)
+	*addr = passed.str("addr", *addr, EnvHTTPAddr, "127.0.0.1:8090")
+	*backend = passed.str("key-backend", *backend, EnvKeyBackend, "local")
+	*keyVaultURI = passed.str("keyvault-uri", *keyVaultURI, EnvKeyVaultURI, "")
+	*blobEndpoint = passed.str("blob-ciphertext-endpoint", *blobEndpoint, EnvBlobCiphertextEndpoint, "")
+	*role = passed.str("role", *role, EnvRole, "content-vault")
+	*storeKind = passed.str("store", *storeKind, EnvStore, "memory")
+	*pgHost = passed.str("pg-host", *pgHost, EnvPGHost, "")
+	*pgDatabase = passed.str("pg-database", *pgDatabase, EnvPGDatabase, "shadow")
+	*allowNonLoopback = passed.boolean("allow-non-loopback", *allowNonLoopback, EnvAllowNonLoopback, false)
+	appInsights := os.Getenv(EnvAppInsights)
+
+	// A non-loopback bind needs an acknowledgement from the operator or from the deployment. The
+	// deployment's form is SAC_INTERNAL_ONLY=true, which says the fact the flag asks a person to
+	// assert; it is still an acknowledgement and not a control (docs/02 §12, and the README).
+	internalOnly := envTrue(EnvInternalOnly)
+	acknowledged := *allowNonLoopback || internalOnly
+
+	logger := slog.Default()
+	if err := validateHTTPAddr(*addr); err != nil {
+		return fatalf("%v", err)
+	}
+	if err := checkURL(EnvKeyVaultURI, *keyVaultURI); err != nil {
+		return fatalf("%v", err)
+	}
+	if err := checkURL(EnvBlobCiphertextEndpoint, *blobEndpoint); err != nil {
+		return fatalf("%v", err)
+	}
+	if appInsights != "" {
+		// The deployment passes a connection string this build does not export to. Read, reported,
+		// and never logged: a connection string carries a key.
+		slog.Warn("SAC_APPINSIGHTS is set but this build exports no telemetry to it; the connection string is read, validated, and never logged")
 	}
 
 	// The key backend is the component's whole reason to exist, so the one thing this binary must
@@ -109,43 +150,77 @@ func runServe(args []string) int {
 	case "kms":
 		if !*allowKMS {
 			return fatalf("the azure-key-vault backend is NOT IMPLEMENTED in this build (no network, no cloud SDK: TOOLCHAIN-DECISION.md §3). " +
-				"Starting with it would mean a deployment reporting a KMS it does not have. Pass --allow-unimplemented-kms only to demonstrate the refusal.")
+				"Starting with it would mean a deployment reporting a KMS it does not have. Pass --allow-unimplemented-kms only to demonstrate the refusal. " +
+				"(" + EnvKeyBackend + "=" + *backend + ", " + EnvKeyVaultURI + "=" + *keyVaultURI + ")")
 		}
-		kw = keys.NewKMS(os.Getenv("CONTENT_VAULT_KMS_ENDPOINT"), os.Getenv("CONTENT_VAULT_KMS_MODE"))
+		endpoint := *keyVaultURI
+		if endpoint == "" {
+			endpoint = os.Getenv("CONTENT_VAULT_KMS_ENDPOINT")
+		}
+		kw = keys.NewKMS(endpoint, os.Getenv("CONTENT_VAULT_KMS_MODE"))
 	default:
-		return fatalf("unknown --key-backend %q", *backend)
+		return fatalf("unknown --key-backend %q (want local or kms)", *backend)
 	}
 
 	if *storeKind != "memory" {
+		if *storeKind != "sql" {
+			return fatalf("unknown --store %q (want memory or sql)", *storeKind)
+		}
 		// The SQL store needs a registered database/sql driver, and no PostgreSQL driver is
-		// fetchable offline (ADR 0016). The binary says so rather than half-wiring it.
-		return fatalf("--store sql requires a database/sql driver registered by the embedding build; "+
-			"this offline build has none (ADR 0016). The SQL path and its statements are exercised by internal/store's live-schema harness. --dsn %q", *dsn)
+		// fetchable offline (ADR 0016). Saying which driver, which variables and which evidence
+		// exists is the difference between a refusal and a dead end; the one thing this must never
+		// do is start in memory and let a deployment believe it is persisting.
+		databaseDSN := postgresDSN(*pgHost, *pgPort, *pgDatabase, *role)
+		return fatalf(`--store sql cannot start in this build: no PostgreSQL driver is compiled in.
+
+  driver       github.com/jackc/pgx/v5/stdlib (registered as "pgx"); a Go module, deliberately not vendored by an offline build
+  dsn          %s   (from %s=%s %s=%s %s=%s)
+  --dsn        %q
+  what IS verified: every statement this service issues is rendered by `+"`schema-sql`"+` and executed against a
+  live PostgreSQL by internal/store's live-schema harness -- the SQL text, not the database/sql plumbing.
+  to close it on a host with a module proxy:
+      go get github.com/jackc/pgx/v5/stdlib
+      go build ./...
+      content-vault serve -store sql -dsn "$SAC_PG_DSN"`,
+			databaseDSN, EnvPGHost, *pgHost, EnvPGDatabase, *pgDatabase, EnvRole, *role, *dsn)
 	}
 
 	svc, err := vault.New(vault.Options{
 		Store:      store.NewMemory(),
 		Keys:       kw,
-		Logger:     slog.Default(),
+		Logger:     logger,
 		ScopeTiers: scopeTiersFromEnv(),
 	})
 	if err != nil {
 		return fatalf("%v", err)
 	}
-	h := httpapi.New(svc, auth.NewHeaderAuthenticator("query-api", "control-api", "ops"), slog.Default())
+	h := httpapi.New(svc, auth.NewHeaderAuthenticator("query-api", "control-api", "ops"), logger)
 
-	if err := checkBindAddress(*addr, *allowNonLoopback); err != nil {
+	if err := checkBindAddress(*addr, acknowledged); err != nil {
 		return fatalf("%v", err)
 	}
 	srv := &http.Server{
 		Addr:              *addr,
-		Handler:           h.Handler(),
+		Handler:           withProbes(h.Handler(), kw, *storeKind, logger),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
 	}
+	ingress := "internal-only"
+	if internalOnly {
+		ingress = "internal-only (declared by " + EnvInternalOnly + ")"
+	}
 	slog.Info("content-vault listening",
-		"addr", *addr, "key_backend", string(kw.Kind()), "ingress", "internal-only")
+		"addr", *addr, "key_backend", string(kw.Kind()), "ingress", ingress, "role", *role,
+		"store", *storeKind, "non_loopback_acknowledged", acknowledged,
+		"blob_ciphertext_endpoint_configured", *blobEndpoint != "",
+		"appinsights_configured", appInsights != "")
+	if *blobEndpoint != "" {
+		// Stated rather than implied: the deployment passes this endpoint and this build performs no
+		// blob I/O. It is validated at boot so a typo fails now, and reported so nobody assumes it is
+		// in use.
+		slog.Warn("SAC_BLOB_CIPHERTEXT_ENDPOINT is set but this build performs no blob I/O; the endpoint is validated and recorded, not used")
+	}
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fatalf("serving: %v", err)
 	}

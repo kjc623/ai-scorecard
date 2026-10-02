@@ -26,6 +26,11 @@ func TestLoadVerifiesTheDigestBeforeAnythingElse(t *testing.T) {
 	} else if !strings.Contains(err.Error(), "does not match its signed digest") {
 		t.Errorf("unexpected error: %v", err)
 	}
+	// A digest has one spelling. An uppercase one is the same bytes written differently, and
+	// accepting it would admit an artefact the release loader and the database columns refuse.
+	if _, err := model.Load(raw, strings.ToUpper(digest(raw)), model.DefaultCaps()); err == nil {
+		t.Fatal("an uppercase digest was accepted")
+	}
 	m, err := model.Load(raw, digest(raw), model.DefaultCaps())
 	if err != nil {
 		t.Fatalf("a correctly digested artefact was rejected: %v", err)
@@ -88,6 +93,11 @@ func TestHostileArtefactsAreRejected(t *testing.T) {
 // integer arithmetic divided once, so two targets cannot disagree in the last bit.
 func TestScoringIsFixedPointAndRepeatable(t *testing.T) {
 	raw := model.DevArtefactJSON()
+	// A digest has one spelling. An uppercase one is the same bytes written differently, and
+	// accepting it would admit an artefact the release loader and the database columns refuse.
+	if _, err := model.Load(raw, strings.ToUpper(digest(raw)), model.DefaultCaps()); err == nil {
+		t.Fatal("an uppercase digest was accepted")
+	}
 	m, err := model.Load(raw, digest(raw), model.DefaultCaps())
 	if err != nil {
 		t.Fatal(err)
@@ -120,6 +130,11 @@ func TestScoringIsFixedPointAndRepeatable(t *testing.T) {
 
 func TestResolvedClassesAreSkipped(t *testing.T) {
 	raw := model.DevArtefactJSON()
+	// A digest has one spelling. An uppercase one is the same bytes written differently, and
+	// accepting it would admit an artefact the release loader and the database columns refuse.
+	if _, err := model.Load(raw, strings.ToUpper(digest(raw)), model.DefaultCaps()); err == nil {
+		t.Fatal("an uppercase digest was accepted")
+	}
 	m, err := model.Load(raw, digest(raw), model.DefaultCaps())
 	if err != nil {
 		t.Fatal(err)
@@ -139,6 +154,11 @@ func TestResolvedClassesAreSkipped(t *testing.T) {
 
 func TestDeadlineStopsScoring(t *testing.T) {
 	raw := model.DevArtefactJSON()
+	// A digest has one spelling. An uppercase one is the same bytes written differently, and
+	// accepting it would admit an artefact the release loader and the database columns refuse.
+	if _, err := model.Load(raw, strings.ToUpper(digest(raw)), model.DefaultCaps()); err == nil {
+		t.Fatal("an uppercase digest was accepted")
+	}
 	m, err := model.Load(raw, digest(raw), model.DefaultCaps())
 	if err != nil {
 		t.Fatal(err)
@@ -151,6 +171,11 @@ func TestDeadlineStopsScoring(t *testing.T) {
 
 func TestScoresAreSortedDeterministically(t *testing.T) {
 	raw := model.DevArtefactJSON()
+	// A digest has one spelling. An uppercase one is the same bytes written differently, and
+	// accepting it would admit an artefact the release loader and the database columns refuse.
+	if _, err := model.Load(raw, strings.ToUpper(digest(raw)), model.DefaultCaps()); err == nil {
+		t.Fatal("an uppercase digest was accepted")
+	}
 	m, err := model.Load(raw, digest(raw), model.DefaultCaps())
 	if err != nil {
 		t.Fatal(err)

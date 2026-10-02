@@ -111,8 +111,11 @@ func Load(raw []byte, wantDigest string, caps Caps) (*Model, error) {
 	}
 	sum := sha256.Sum256(raw)
 	got := "sha256:" + hex.EncodeToString(sum[:])
-	if !strings.EqualFold(got, wantDigest) {
-		return nil, fmt.Errorf("%w: artefact is %s, manifest declares %s", ErrVerify, got, wantDigest)
+	// Exact comparison, like the release loader's verifyDigest: `sha256:<64 lowercase hex>` has one
+	// spelling, and accepting an uppercase one here would admit an artefact the release's own digest
+	// check (and the database columns that carry digests) would refuse.
+	if got != wantDigest {
+		return nil, fmt.Errorf("%w: artefact is %s, manifest declares %s (a digest has one spelling: sha256:<64 lowercase hex>)", ErrVerify, got, wantDigest)
 	}
 	if len(raw) > caps.MaxArtefactBytes {
 		return nil, fmt.Errorf("%w: artefact is %d bytes, over the %d-byte cap", ErrRejected, len(raw), caps.MaxArtefactBytes)

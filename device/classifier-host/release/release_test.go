@@ -348,3 +348,69 @@ func mustRead(t *testing.T, path string) []byte {
 	}
 	return b
 }
+
+// TestDigestHasExactlyOneSpelling is the seam between this loader and the store.
+//
+// A digest is `sha256:<64 lowercase hex>` and only that spelling is the same value. Uppercase hex is
+// the same bytes written differently, which is exactly why it must not be accepted: the database's
+// own digest columns carry `~ '^sha256:[0-9a-f]{64}$'`, so a loader that accepted the uppercase form
+// would admit a release the store would refuse. This test was added after the vault's implementation
+// found the same fact from the other side (ops.retrieval_grant.raw_digest), because two components
+// each individually correct had disagreed here.
+func TestDigestHasExactlyOneSpelling(t *testing.T) {
+	priv, pub := key(t)
+	dir := filepath.Join(t.TempDir(), "rel")
+	rulesRaw := []byte(testRules)
+	modelRaw := model.DevArtefactJSON()
+	correct := digestOf(rulesRaw)
+	upper := strings.ToUpper(correct)
+	if upper == correct {
+		t.Fatal("the fixture digest has no letters, so the test cannot distinguish the spellings")
+	}
+
+	writeSpelled := func(spelling string) {
+		t.Helper()
+		m := release.Manifest{
+			Version: "v1", State: release.StateShadow,
+			RulesFile: release.RulesFileName, RulesDigest: spelling,
+			ModelFile: release.ModelFileName, ModelDigest: digestOf(modelRaw),
+		}
+		if err := release.Sign(&m, rulesRaw, modelRaw, priv); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		for name, body := range map[string][]byte{release.RulesFileName: rulesRaw, release.ModelFileName: modelRaw} {
+			if err := os.WriteFile(filepath.Join(dir, name), body, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		out, err := json.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, release.ManifestFileName), out, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The negative case: a valid signature over a correctly-computed digest written in uppercase.
+	// Only the spelling is wrong, so anything that accepts it is accepting a second spelling of one
+	// value rather than detecting a mismatch.
+	writeSpelled(upper)
+	_, err := release.Load(dir, release.NewTrust(pub), rules.DefaultCaps(), model.DefaultCaps())
+	if err == nil {
+		t.Fatal("an uppercase digest was accepted; the store would refuse the release the loader admitted")
+	}
+	if !strings.Contains(err.Error(), "does not match its declared digest") {
+		t.Fatalf("the uppercase digest was refused for the wrong reason: %v", err)
+	}
+
+	// The positive control: the identical construction with the lowercase spelling loads, so the
+	// negative case is about the spelling and not about a broken fixture.
+	writeSpelled(correct)
+	if _, err := release.Load(dir, release.NewTrust(pub), rules.DefaultCaps(), model.DefaultCaps()); err != nil {
+		t.Fatalf("the correct lowercase digest was rejected: %v", err)
+	}
+}

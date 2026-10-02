@@ -155,15 +155,17 @@ CREATE TABLE ref.classifier_release (
   CONSTRAINT classifier_enforcing_requires_promotion
     CHECK (state <> 'enforcing' OR promoted_at IS NOT NULL),
   -- The digest identifies the release artefact that was signed and promoted, so it must be the
-  -- same shape everywhere it appears. The producer is device/classifier-host/release, which
-  -- builds every digest as "sha256:" + hex.EncodeToString(sum) -- lowercase by construction --
-  -- and the seed row below plus every fixture already use that shape.
+  -- same shape everywhere it appears. The producer is device/classifier-host/release, which builds
+  -- every digest as "sha256:" + hex.EncodeToString(sum) -- lowercase by construction -- and the
+  -- seed row below plus every fixture already use that shape.
   --
-  -- KNOWN DIVERGENCE, on the producer's side and flagged by them: their manifest check uses
-  -- strings.EqualFold, so it would ACCEPT a hand-written uppercase digest that this constraint
-  -- then refuses at insert. That is the safe direction -- a loud refusal at the store rather than
-  -- a silently stored second spelling -- but the two should agree, and the one-line fix is an
-  -- exact comparison in release.go's verifyDigest.
+  -- The loader and the store refuse the same spelling, in both directions:
+  -- release.verifyDigest and model.Load compare exactly, so an uppercase digest in a manifest is
+  -- refused before this constraint ever sees it, and refused here if it does arrive. They were
+  -- briefly out of step -- the loader accepted the uppercase form while this column would have
+  -- rejected it -- and that is exactly why the same pattern is enforced on both sides rather than
+  -- only where the value is produced. Two components, each individually correct, disagreeing at
+  -- the seam, is the defect class this constraint and those two comparisons close together.
   CONSTRAINT classifier_release_digest_is_sha256
     CHECK (artifact_digest ~ '^sha256:[0-9a-f]{64}$')
 );

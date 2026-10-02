@@ -125,6 +125,21 @@ verdict is returned and the shadow verdict rides alongside in `Verdict.Shadow`. 
 fails to load retains the previous one and degrades with `release_load_failed`; there is no path
 that ends at "no rules".
 
+## A digest has exactly one spelling
+
+A digest is **`sha256:<64 lowercase hex>`** and only that spelling is the same value. Uppercase hex
+is the same bytes written differently, which is precisely why it must not be accepted as a second
+spelling: the database's digest columns carry `~ '^sha256:[0-9a-f]{64}$'`
+(`ops.content_object.ciphertext_sha256`, `ops.retrieval_grant.raw_digest`), so a loader that accepted
+the uppercase form would admit a release the store would refuse.
+
+Both digest comparisons in this component are therefore exact — `release.verifyDigest` (rules and
+model artefacts) and `model.Load` (the model artefact against its signed digest) — and
+`TestDigestHasExactlyOneSpelling` pins the negative case (a valid signature over a correctly computed
+digest written in uppercase is refused) with a positive control (the lowercase spelling loads). The
+test was verified in the failing direction: restoring `strings.EqualFold` makes it fail. Nothing else
+in the component normalises a digest; the remaining `strings.ToLower` calls are over media types,
+rule tokens, filenames and context values, where case folding is the intended comparison.
 ## Parser child isolation (§10)
 
 One child per document, spawned as `classifier-host parse-child` and reaped after one result.

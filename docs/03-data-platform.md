@@ -372,7 +372,7 @@ psql -v ON_ERROR_STOP=1 -f db/invariants.test.sql
 
 [db/invariants.test.sql](../db/invariants.test.sql) runs as the runtime roles, not as a superuser,
 because a superuser bypasses row-level security and would therefore prove nothing about it. The
-46 assertions cover:
+47 assertions cover:
 
 | Group | What it proves |
 |---|---|
