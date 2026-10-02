@@ -1,0 +1,2 @@
+[28756:28868:1002/144837.174:INFO:components\enterprise\browser\controller\chrome_browser_cloud_management_controller.cc:241] No machine level policy manager exists.
+[28756:28868:1002/144837.207:WARNING:chrome\browser\extensions\extension_service.cc:445] --disable-extensions-except is not allowed in Google Chrome, ignoring.

@@ -386,6 +386,22 @@ direction this schema avoids:
   both sides rather than only where the value is produced. T47 stays: with the loader fixed it
   guards the *producer* side of the same fact, so a future edit that reintroduced case folding, or
   a hand-written manifest, is refused by both rather than by one.
+
+  **The defect class is now bounded, not assumed.** The classifier-host owner swept every
+  `.go`/`.js`/`.mjs`/`.sql` file in the repository outside `.tools`, `evidence`, `node_modules` and
+  generated bundles for `EqualFold` and for `toLowerCase()` applied to a digest. Result: **the only
+  two digest comparisons in the repository were the two that were wrong, and both are now exact.**
+  Every other case-insensitive comparison is legitimate and none is digest-shaped — an algorithm
+  identifier (`capture-core/policy/verify.go`, case-insensitive by JWS convention), a Windows path
+  comparison (`capture-spool/keys.go`, where the platform's semantics require it), tenant UUIDs,
+  and dropping the words and/or/not from a search expression. So "is it elsewhere?" has an answer
+  rather than an assumption.
+
+  The complementary decision is recorded in `db/tools/check-schema.mjs` next to the digest check:
+  this file deliberately does **not** grep for case-folded digests, because such a rule would
+  either fail on those legitimate sites or need an allowlist that drifts, while
+  `TestDigestHasExactlyOneSpelling` fails loudly if case folding returns *in the place it matters*
+  and is verified in the failing direction. A weaker duplicate is worse than no duplicate.
 - `ops.policy_bundle.signed_digest` — **still excused.** Its owner has not stated the format, and
   the producer declined to guess at another team's column, which is the right answer. The checker
   asserts the excused set is exactly this one, so it cannot grow silently and a stale entry fails.

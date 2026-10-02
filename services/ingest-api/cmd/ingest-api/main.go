@@ -101,6 +101,7 @@ func run() error {
 	o.pgDatabase = passed.str("pg-database", o.pgDatabase, EnvPGDatabase, "shadow")
 	o.role = passed.str("role", o.role, EnvRole, "ingest-api")
 	o.routesFile = passed.str("routes-file", o.routesFile, EnvRoutesFile, "testdata/route-fidelity.seed.json")
+	blobEndpoint := os.Getenv(EnvBlobCiphertextEndpoint)
 	appInsights := os.Getenv(EnvAppInsights)
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -109,6 +110,9 @@ func run() error {
 		return err
 	}
 	if err := checkURL(EnvAppInsights, appInsights); err != nil {
+		return err
+	}
+	if err := checkURL(EnvBlobCiphertextEndpoint, blobEndpoint); err != nil {
 		return err
 	}
 
@@ -131,11 +135,15 @@ func run() error {
 	// defaults below be module-relative and still work from any working directory.
 	repoRoot := filepath.Dir(filepath.Dir(schemaPath))
 	logger.Info("contract loaded", "schema", schemaPath, "role", o.role, "region", o.region,
-		"appinsights_configured", appInsights != "")
+		"appinsights_configured", appInsights != "",
+		"blob_ciphertext_endpoint_configured", blobEndpoint != "")
 	if appInsights != "" {
 		// Stated rather than implied: the deployment passes a connection string this build does not
 		// export to. Adding an exporter means adding a dependency, and this build has none.
 		logger.Warn("SAC_APPINSIGHTS is set but this build exports no telemetry to it; the connection string is read, validated, and never logged")
+	}
+	if blobEndpoint != "" {
+		logger.Warn("SAC_BLOB_CIPHERTEXT_ENDPOINT is set but the ingest path performs no blob I/O; the endpoint is validated and recorded, not used")
 	}
 
 	var st store.Store

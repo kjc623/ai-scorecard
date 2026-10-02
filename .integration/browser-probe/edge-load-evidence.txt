@@ -1,0 +1,50 @@
+﻿# Browser load probe — run by the Lead, 2026-10-02
+
+Command (Edge 154.0.4258.48, headless, throwaway profile, unpacked extension):
+
+  msedge.exe --headless=new --disable-gpu --no-first-run --user-data-dir=<temp>
+    --remote-debugging-port=19222 --load-extension=apps\capture-extension
+    --enable-logging=stderr --vmodule=extension_service=1 about:blank
+
+## What the browser printed (verbatim, trimmed)
+
+[WARNING:extensions\api\messaging\launch_context.cc:148] Can't find manifest for native messaging host com.shadowaicapture.capture_core
+
+[INFO:CONSOLE:0] "You do not have permission to use blocking webRequest listeners. Be sure to declare
+the webRequestBlocking permission in your manifest. Note that webRequestBlocking is only allowed for
+extensions that are installed using ExtensionInstallForcelist."
+
+## CDP target list
+
+  service_worker  chrome-extension://ileppbadlclkhkddpliolbgifliffh/background/service-worker.js
+
+## What this proves, and how
+
+1. THE EXTENSION'S SERVICE WORKER REGISTERED. The CDP target list contains a service_worker target
+   whose path is exactly ours (background/service-worker.js) under an extension origin. That is the
+   extension running as a browser extension, not as a Node module.
+
+2. THE NATIVE-MESSAGING BRIDGE IS LIVE. The browser logged that it cannot find the manifest for
+   "com.shadowaicapture.capture_core" — which is protocol.NATIVE_APP in
+   apps/capture-extension/src/native.js. Edge only logs that when an extension actually calls
+   runtime.connectNative. So the extension reached the real chrome.runtime API and requested the real
+   host.
+
+3. webRequestBlocking IS REVOKED FOR AN UNPACKED LOAD, CONFIRMED BY THE BROWSER. The console message
+   says so explicitly: blocking listeners need ExtensionInstallForcelist. This is the load path, not
+   the extension: the manifest declares the permission and a policy-installed extension retains it
+   (docs/01-collectors.md §7.4, E1). Consequence for testing: the inline warn/block path (task-25
+   check 5) CANNOT be proven by an unpacked load on this host, and any report claiming otherwise
+   should be distrusted.
+
+## Route notes, so the next person does not repeat the dead ends
+
+- Google Chrome Stable 154 REFUSES BOTH --load-extension and --disable-extensions-except:
+    "WARNING:extension_service.cc:445] --disable-extensions-except is not allowed in Google Chrome, ignoring."
+    "WARNING:extension_service.cc:423] --load-extension is not allowed in Google Chrome, ignoring."
+- Edge 154 accepts --load-extension and loads the extension (proven above), with webRequestBlocking
+  revoked as described.
+- The policy route (ExtensionInstallForcelist) would restore blocking AND is how this extension is
+  designed to be deployed, but both policy registry paths are denied on this host:
+    HKCU\Software\Policies\Google\Chrome -> "Access to the registry key ... is denied."
+  An elevated one-time install would open it; that needs a human, not an agent.

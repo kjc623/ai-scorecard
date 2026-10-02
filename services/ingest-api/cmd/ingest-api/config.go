@@ -45,6 +45,12 @@ const (
 	EnvRoutesFile = "SAC_ROUTES_FILE"
 	// EnvSchema is the contract schema the service validates against.
 	EnvSchema = "SAC_SCHEMA"
+	// EnvBlobCiphertextEndpoint is the private blob endpoint the deployment configures. Read so a
+	// malformed value fails at boot and so the startup log can say plainly that this build performs
+	// no blob I/O: the ingest path writes events, and ciphertext moves device→blob under a grant
+	// (docs/02 §10). A deployment parameter that nothing reads is worse than one that is read and
+	// reported unused, which is what the agreement test enforces.
+	EnvBlobCiphertextEndpoint = "SAC_BLOB_CIPHERTEXT_ENDPOINT"
 	// EnvAppInsights is the Application Insights connection string. It is a credential: it is read
 	// only to report whether it is configured, and its value is never logged.
 	EnvAppInsights = "SAC_APPINSIGHTS"

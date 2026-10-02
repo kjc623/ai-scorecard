@@ -1,0 +1,20 @@
+[21100:31600:1002/144903.176:VERBOSE1:extensions\browser\extension_registrar.cc:630] AddComponentExtension Microsoft Edge PDF Viewer
+[21100:31600:1002/144903.177:VERBOSE1:extensions\browser\extension_registrar.cc:632] Component extension Microsoft Edge PDF Viewer (mhjfbmdgcfjbbpaeojofohoefgiehjai) installing/upgrading from '' to 1
+[21100:31600:1002/144903.179:VERBOSE1:extensions\browser\extension_registrar.cc:630] AddComponentExtension Microsoft Store
+[21100:31600:1002/144903.179:VERBOSE1:extensions\browser\extension_registrar.cc:632] Component extension Microsoft Store (iglcjdemknebjbklcgkfaebgojjphkec) installing/upgrading from '' to 0.2
+[21100:31600:1002/144903.180:VERBOSE1:extensions\browser\extension_registrar.cc:630] AddComponentExtension Microsoft Clipboard Extension
+[21100:31600:1002/144903.181:VERBOSE1:extensions\browser\extension_registrar.cc:632] Component extension Microsoft Clipboard Extension (dgiklkfkllikcanfonkcabmbdfmgleag) installing/upgrading from '' to 1.0
+[21100:31600:1002/144903.182:VERBOSE1:extensions\browser\extension_registrar.cc:630] AddComponentExtension WebRTC Extension
+[21100:31600:1002/144903.182:VERBOSE1:extensions\browser\extension_registrar.cc:632] Component extension WebRTC Extension (nkeimhogjdpnpccoofpliimaahmaaome) installing/upgrading from '' to 4.3.26
+[21100:31600:1002/144903.183:VERBOSE1:extensions\browser\extension_registrar.cc:630] AddComponentExtension Edge Copilot Bridge
+[21100:31600:1002/144903.183:VERBOSE1:extensions\browser\extension_registrar.cc:632] Component extension Edge Copilot Bridge (ndcpkimcihhghdcddljkfmmjccdmcmof) installing/upgrading from '' to 154.0.4258.22
+[21100:31600:1002/144903.184:VERBOSE1:extensions\browser\extension_registrar.cc:630] AddComponentExtension Edge Feedback
+[21100:31600:1002/144903.184:VERBOSE1:extensions\browser\extension_registrar.cc:632] Component extension Edge Feedback (ihmafllikibpmigkcoadcmckbfhibefp) installing/upgrading from '' to 1.0.0.1
+[21100:31600:1002/144903.185:VERBOSE1:extensions\browser\extension_registrar.cc:630] AddComponentExtension Media Internals Services Extension
+[21100:31600:1002/144903.185:VERBOSE1:extensions\browser\extension_registrar.cc:632] Component extension Media Internals Services Extension (fikbjbembnmfhppjfnmfkahdhfohhjmg) installing/upgrading from '' to 2.0.0
+[21100:31600:1002/144903.185:VERBOSE1:extensions\browser\extension_registrar.cc:630] AddComponentExtension WebRTC Internals Extension
+[21100:31600:1002/144903.186:VERBOSE1:extensions\browser\extension_registrar.cc:632] Component extension WebRTC Internals Extension (ncbjelpjchkpbikbpkcchkhkblodoama) installing/upgrading from '' to 2.0.4
+[21100:31600:1002/144903.187:VERBOSE1:extensions\browser\extension_registrar.cc:630] AddComponentExtension Microsoft Voices
+[21100:31600:1002/144903.188:VERBOSE1:extensions\browser\extension_registrar.cc:632] Component extension Microsoft Voices (jdiccldimpdaibmpdkjnbmckianbfold) installing/upgrading from '' to 1.0
+[21100:31600:1002/144903.303:WARNING:chrome\browser\extensions\external_registry_loader_win.cc:283] Error observing HKLM: 5
+[21100:31600:1002/144903.524:INFO:CONSOLE:5645] "[ProtocolLaunch] handler constructed; wiring port events.", source: chrome-extension://ndcpkimcihhghdcddljkfmmjccdmcmof/background.rollup.js (5645)
