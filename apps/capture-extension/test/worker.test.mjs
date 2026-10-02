@@ -445,29 +445,37 @@ test('a failed connect is reported as capture-core absent AND extension-side deg
 });
 
 test('when the channel returns, the queued observations are merged out and the report says so', async () => {
-  // Queue first, against a dead channel. A short cool-down keeps the test quick: the backoff is a
-  // real behaviour with a real duration, so the test shortens the duration rather than the property.
-  const h = createHarness({ failConnect: true, connectCooldownMs: 40 });
+  // Queue first, against a dead channel. The backoff is set to zero here so this test isolates the
+  // ack semantics; the backoff has its own test below, and mixing the two would make this one fail
+  // for a reason that is not its claim.
+  const h = createHarness({ failConnect: true, connectCooldownMs: 0 });
   await h.app.start();
   h.app.applyPolicy({ policy_version: 'b1', bundle: { policy_version: 'b1', default_mode: 'm1' } });
   await settle();
+  const errorsBefore = h.app.health.counters.snapshot().counters.errors;
   await h.fake.drive('body', chromeRequest({ url: CHAT_URL, headers: { 'content-type': 'application/json' }, body: JSON.stringify(CHAT_BODY) }));
-  await settle();
+
+  // BEFORE the ack: present, and the failed attempt is counted. "Not lost" and "we tried and failed"
+  // are different facts, and an operator needs the second one.
   await waitFor(() => h.app.queue.size() === 1, { label: 'the observation to be held' });
   assert.equal(h.app.queue.size(), 1, 'held in extension memory only');
-  const held = h.app.health.report();
-  assert.equal(held.core, 'absent');
+  assert.equal(h.app.health.report().core, 'absent');
+  assert.ok(
+    h.app.health.counters.snapshot().counters.errors > errorsBefore,
+    'the failed delivery attempt is counted, not silently swallowed',
+  );
+  assert.equal(h.app.queue.stats().dropped_total, 0, 'and it was queued, not dropped');
 
-  // Now let the channel come back. The cool-down has to elapse first — that is the backoff doing its
-  // job, not a delay to paper over — and then the drain empties the queue.
+  // AFTER the ack: gone, folded into `emitted`, and only then.
   h.fake.state.failConnect = false;
-  await sleep(60);
   const sent = await h.app.pipeline.drainQueue(10);
   assert.equal(sent.sent, 1, 'the queued observation went out oldest-first');
+  assert.equal(sent.failures.length, 0);
   await waitFor(() => h.app.queue.size() === 0, { label: 'the ack to remove the entry' });
+  assert.equal(h.app.queue.stats().delivered_total, 1, 'removed because it was acked, and counted as such');
   const report = h.app.health.report();
   assert.equal(report.core, 'connected', 'connected means a message round-tripped, not that a port was handed out');
-  assert.ok(report.counters.emitted >= 1);
+  assert.equal(report.counters.emitted, 1, 'emitted follows the ack');
 });
 
 test('a dead native host does not become a retry loop: connects are backed off, not hammered', async () => {
@@ -723,7 +731,7 @@ test('an observation leaves the queue only when capture-core acks it', async () 
   assert.equal(h.app.queue.stats().dropped_total, 0, 'and nothing was dropped on the way');
 });
 
-test('a burst coalesces into at most one drain in flight, and every entry still leaves', async () => {
+test('a burst coalesces into at most one drain in flight, and every entry is acked', async () => {
   const h = await started();
   for (let i = 0; i < 5; i++) {
     await h.fake.drive(
@@ -732,8 +740,16 @@ test('a burst coalesces into at most one drain in flight, and every entry still 
     );
   }
   await waitFor(() => h.core.observations().length === 5, { label: 'all five frames to arrive' });
-  assert.equal(h.app.queue.size(), 0);
-  assert.equal(h.app.health.counters.snapshot().counters.emitted, 5);
+  await waitFor(() => h.app.queue.size() === 0, { label: 'all five acks' });
+
+  // The claim is about *acks*, not sends: an entry leaves the queue only because capture-core
+  // accepted it, so the ack count and the delivery count must agree exactly, and no frame may be
+  // sent twice by overlapping drains.
+  assert.equal(h.app.queue.stats().delivered_total, 5, 'five acks removed five entries');
+  assert.equal(h.app.health.counters.snapshot().counters.emitted, 5, 'and `emitted` counts acks');
+  assert.equal(h.core.observations().length, 5, 'exactly five frames arrived: no duplicate sends');
+  assert.equal(new Set(h.core.observations().map((o) => o.client_id)).size, 5, 'and five distinct observations');
+  assert.equal(h.app.queue.stats().dropped_total, 0);
 });
 
 // ── the frames themselves ───────────────────────────────────────────────────────────────────

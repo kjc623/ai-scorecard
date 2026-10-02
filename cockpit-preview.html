@@ -484,7 +484,7 @@ body{display:flex;align-items:stretch;justify-content:center}
     <div class="pcx-view" data-view="architecture">
 <section class="pcx-section">
   <h2 class="pcx-section-title">Build state</h2>
-  <div class="pcx-kpi"><div><div class="pcx-kpivalue">17</div><div class="pcx-kpilabel">components</div><div class="pcx-muted pcx-mono">7 layers</div></div><div><div class="pcx-kpivalue">6</div><div class="pcx-kpilabel">agents</div><div class="pcx-muted pcx-mono">planned roster</div></div><div><div class="pcx-kpivalue">0/7</div><div class="pcx-kpilabel">tasks</div><div class="pcx-muted pcx-mono">1 ready</div></div><div><div class="pcx-kpivalue">4000</div><div class="pcx-kpilabel">files on disk</div><div class="pcx-muted pcx-mono">200 unclaimed</div></div><div><div class="pcx-kpivalue">0</div><div class="pcx-kpilabel">declared paths absent</div><div class="pcx-muted pcx-mono">44 declared</div></div></div>
+  <div class="pcx-kpi"><div><div class="pcx-kpivalue">17</div><div class="pcx-kpilabel">components</div><div class="pcx-muted pcx-mono">7 layers</div></div><div><div class="pcx-kpivalue">6</div><div class="pcx-kpilabel">agents</div><div class="pcx-muted pcx-mono">planned roster</div></div><div><div class="pcx-kpivalue">0/7</div><div class="pcx-kpilabel">tasks</div><div class="pcx-muted pcx-mono">0 ready</div></div><div><div class="pcx-kpivalue">4000</div><div class="pcx-kpilabel">files on disk</div><div class="pcx-muted pcx-mono">200 unclaimed</div></div><div><div class="pcx-kpivalue">0</div><div class="pcx-kpilabel">declared paths absent</div><div class="pcx-muted pcx-mono">44 declared</div></div></div>
   <div style="margin-top:14px">
     <div class="pcx-bar"><div class="pcx-barseg" style="background:var(--pcx-idle);flex-grow:17"></div></div>
     <div class="pcx-legend"><span class="pcx-legenditem"><span class="pcx-swatch" style="background:var(--pcx-idle)"></span>17 proposed</span></div>
@@ -562,7 +562,7 @@ body{display:flex;align-items:stretch;justify-content:center}
         <div class="pcx-nodekind">service Â· Go</div>
         <div class="pcx-nodedeps">&larr; envelope-contract</div>
         
-        <div class="pcx-deps" style="margin-top:6px"><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">services/ingest-api</span> <span class="pcx-muted">(2)</span></span></div>
+        <div class="pcx-deps" style="margin-top:6px"><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">services/ingest-api</span> <span class="pcx-muted">(4)</span></span></div>
       </div>
       <div class="pcx-node" style="border-left-color:var(--pcx-idle)">
         <div class="pcx-nodetop"><span class="pcx-nodename">Control API</span><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-idle)"></span>proposed</span></div>
@@ -576,7 +576,7 @@ body{display:flex;align-items:stretch;justify-content:center}
         <div class="pcx-nodekind">service Â· Go</div>
         <div class="pcx-nodedeps">&larr; control-api</div>
         
-        <div class="pcx-deps" style="margin-top:6px"><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">services/content-vault</span> <span class="pcx-muted">(2)</span></span></div>
+        <div class="pcx-deps" style="margin-top:6px"><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">services/content-vault</span> <span class="pcx-muted">(3)</span></span></div>
       </div>
       <div class="pcx-node" style="border-left-color:var(--pcx-idle)">
         <div class="pcx-nodetop"><span class="pcx-nodename">Query API</span><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-idle)"></span>built</span></div>
@@ -616,7 +616,7 @@ body{display:flex;align-items:stretch;justify-content:center}
         <div class="pcx-nodekind">data Â· SQL</div>
         <div class="pcx-nodedeps">&larr; envelope-contract</div>
         
-        <div class="pcx-deps" style="margin-top:6px"><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">db/schema.sql</span></span><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">db/invariants.test.sql</span></span><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">db/tools</span> <span class="pcx-muted">(5)</span></span><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">db/evidence</span> <span class="pcx-muted">(95)</span></span></div>
+        <div class="pcx-deps" style="margin-top:6px"><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">db/schema.sql</span></span><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">db/invariants.test.sql</span></span><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">db/tools</span> <span class="pcx-muted">(7)</span></span><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">db/evidence</span> <span class="pcx-muted">(155)</span></span></div>
       </div>
       <div class="pcx-node" style="border-left-color:var(--pcx-idle)">
         <div class="pcx-nodetop"><span class="pcx-nodename">Device Spool</span><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-idle)"></span>built</span></div>
@@ -636,7 +636,7 @@ body{display:flex;align-items:stretch;justify-content:center}
         <div class="pcx-nodekind">infra Â· Bicep</div>
         <div class="pcx-nodedeps">&larr; ingest-api, control-api, query-api, content-vault, database</div>
         
-        <div class="pcx-deps" style="margin-top:6px"><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">infra</span> <span class="pcx-muted">(32)</span></span></div>
+        <div class="pcx-deps" style="margin-top:6px"><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">infra</span> <span class="pcx-muted">(33)</span></span></div>
       </div>
   </div>
 </section>
@@ -649,7 +649,7 @@ body{display:flex;align-items:stretch;justify-content:center}
         <div class="pcx-nodekind">docs Â· Markdown</div>
         <div class="pcx-nodedeps">&larr; envelope-contract, database</div>
         
-        <div class="pcx-deps" style="margin-top:6px"><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs</span> <span class="pcx-muted">(27)</span></span><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">README.md</span></span></div>
+        <div class="pcx-deps" style="margin-top:6px"><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs</span> <span class="pcx-muted">(30)</span></span><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">README.md</span></span></div>
       </div>
   </div>
 </section>
@@ -687,7 +687,7 @@ body{display:flex;align-items:stretch;justify-content:center}
       <div class="pcx-taskbody"><strong>Stand up the PostgreSQL schema and prove its invariants</strong> <span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-ok)"></span>done</span></div>
     </div>
     <div style="margin-top:9px"><div class="pcx-heading-l2">Files provided (4)</div>
-      <div class="pcx-deps"><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs/03-data-platform.md</span></span><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs/adr/0002-postgresql-is-the-server-store-sqlite-is-only-the-device-spool.md</span></span><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs/adr/0007-tenant-residency-is-pinned-and-fails-closed-at-ingest.md</span></span><span class="pcx-badge" style="border-color:var(--pcx-brand)"><span class="pcx-dot" style="background:var(--pcx-brand)"></span><span class="pcx-mono">db</span> <span class="pcx-muted">(102)</span> <span class="pcx-tag">write</span></span></div>
+      <div class="pcx-deps"><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs/03-data-platform.md</span></span><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs/adr/0002-postgresql-is-the-server-store-sqlite-is-only-the-device-spool.md</span></span><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs/adr/0007-tenant-residency-is-pinned-and-fails-closed-at-ingest.md</span></span><span class="pcx-badge" style="border-color:var(--pcx-brand)"><span class="pcx-dot" style="background:var(--pcx-brand)"></span><span class="pcx-mono">db</span> <span class="pcx-muted">(164)</span> <span class="pcx-tag">write</span></span></div>
       
     </div>
   </div>
@@ -702,7 +702,7 @@ body{display:flex;align-items:stretch;justify-content:center}
       <div class="pcx-taskbody"><strong>Implement the ingest write path and the two-tier dedup ladder</strong> <span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-ok)"></span>done</span></div>
     </div>
     <div style="margin-top:9px"><div class="pcx-heading-l2">Files provided (4)</div>
-      <div class="pcx-deps"><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">contracts/event-envelope.schema.json</span></span><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs/02-ingest-and-transport.md</span></span><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs/adr/0001-one-validating-write-path-collectors-hold-no-database-credential.md</span></span><span class="pcx-badge" style="border-color:var(--pcx-brand)"><span class="pcx-dot" style="background:var(--pcx-brand)"></span><span class="pcx-mono">services/ingest-api</span> <span class="pcx-muted">(2)</span> <span class="pcx-tag">write</span></span></div>
+      <div class="pcx-deps"><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">contracts/event-envelope.schema.json</span></span><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs/02-ingest-and-transport.md</span></span><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs/adr/0001-one-validating-write-path-collectors-hold-no-database-credential.md</span></span><span class="pcx-badge" style="border-color:var(--pcx-brand)"><span class="pcx-dot" style="background:var(--pcx-brand)"></span><span class="pcx-mono">services/ingest-api</span> <span class="pcx-muted">(4)</span> <span class="pcx-tag">write</span></span></div>
       
     </div>
   </div>
@@ -732,7 +732,7 @@ body{display:flex;align-items:stretch;justify-content:center}
       <div class="pcx-taskbody"><strong>Implement the content vault key hierarchy and grant-bound retrieval</strong> <span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-ok)"></span>done</span></div>
     </div>
     <div style="margin-top:9px"><div class="pcx-heading-l2">Files provided (4)</div>
-      <div class="pcx-deps"><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs/06-security-and-threat-model.md</span></span><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs/adr/0006-content-is-ciphertext-under-per-object-keys-wrapped-by-a-per-tenant-key.md</span></span><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs/adr/0014-content-search-is-a-per-tenant-capability.md</span></span><span class="pcx-badge" style="border-color:var(--pcx-brand)"><span class="pcx-dot" style="background:var(--pcx-brand)"></span><span class="pcx-mono">services/content-vault</span> <span class="pcx-muted">(2)</span> <span class="pcx-tag">write</span></span></div>
+      <div class="pcx-deps"><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs/06-security-and-threat-model.md</span></span><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs/adr/0006-content-is-ciphertext-under-per-object-keys-wrapped-by-a-per-tenant-key.md</span></span><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs/adr/0014-content-search-is-a-per-tenant-capability.md</span></span><span class="pcx-badge" style="border-color:var(--pcx-brand)"><span class="pcx-dot" style="background:var(--pcx-brand)"></span><span class="pcx-mono">services/content-vault</span> <span class="pcx-muted">(3)</span> <span class="pcx-tag">write</span></span></div>
       
     </div>
   </div>
@@ -744,17 +744,17 @@ body{display:flex;align-items:stretch;justify-content:center}
       <span style="flex:1"></span><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-idle)"></span>not created</span>
     </div>
     <div style="margin-top:9px"><div class="pcx-heading-l2">Task</div>
-      <div class="pcx-taskbody"><strong>Validate local-inference capture, which gates build step 8</strong> <span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-idle)"></span>pending</span></div>
+      <div class="pcx-taskbody"><strong>Validate local-inference capture, which gates build step 8</strong> <span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-ok)"></span>done</span></div>
     </div>
     <div style="margin-top:9px"><div class="pcx-heading-l2">Files provided (3)</div>
-      <div class="pcx-deps"><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs/01-collectors.md</span></span><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs/00-architecture.md</span></span><span class="pcx-badge" style="border-color:var(--pcx-brand)"><span class="pcx-dot" style="background:var(--pcx-brand)"></span><span class="pcx-mono">docs/risks</span> <span class="pcx-muted">(1)</span> <span class="pcx-tag">write</span></span></div>
+      <div class="pcx-deps"><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs/01-collectors.md</span></span><span class="pcx-badge" style="border-color:var(--pcx-ok)"><span class="pcx-dot" style="background:var(--pcx-ok)"></span><span class="pcx-mono">docs/00-architecture.md</span></span><span class="pcx-badge" style="border-color:var(--pcx-brand)"><span class="pcx-dot" style="background:var(--pcx-brand)"></span><span class="pcx-mono">docs/risks</span> <span class="pcx-muted">(2)</span> <span class="pcx-tag">write</span></span></div>
       
     </div>
   </div>
 </div></div><div class="pcx-view" data-view="tasks" hidden>
 <section class="pcx-section">
   <h2 class="pcx-section-title">Written plan</h2>
-  <div class="pcx-kpi"><div><div class="pcx-kpivalue">7</div><div class="pcx-kpilabel">planned tasks</div></div><div><div class="pcx-kpivalue">1</div><div class="pcx-kpilabel">ready now</div></div><div><div class="pcx-kpivalue">4</div><div class="pcx-kpilabel">blocked</div></div><div><div class="pcx-kpivalue">6</div><div class="pcx-kpilabel">owners</div></div></div>
+  <div class="pcx-kpi"><div><div class="pcx-kpivalue">7</div><div class="pcx-kpilabel">planned tasks</div></div><div><div class="pcx-kpivalue">0</div><div class="pcx-kpilabel">ready now</div></div><div><div class="pcx-kpivalue">4</div><div class="pcx-kpilabel">blocked</div></div><div><div class="pcx-kpivalue">6</div><div class="pcx-kpilabel">owners</div></div></div>
   <p class="pcx-cardmeta">The live board is read from the Agent Teams service inside the harness. Here the dependencies are the manifest's own, so this is the plan as written.</p>
 </section>
 <div class="pcx-grid">
@@ -768,17 +768,17 @@ body{display:flex;align-items:stretch;justify-content:center}
   </div>
   <div class="pcx-taskcard" style="border-left-color:var(--pcx-ok)">
     <div class="pcx-taskhead"><span class="pcx-mono">T2</span><strong style="flex:1">Stand up the PostgreSQL schema and prove its invariants</strong><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-ok)"></span>done</span></div>
-    <div class="pcx-taskbody">Run db/schema.sql then db/invariants.test.sql against a real PostgreSQL 16 server as the runtime roles. The 42 assertions are the acceptance criteria.</div>
+    <div class="pcx-taskbody">Run db/schema.sql then db/invariants.test.sql against a real PostgreSQL 16 server as the runtime roles. The 47 assertions are the acceptance criteria.</div>
     <div class="pcx-listitem"><span class="pcx-muted">owner</span><span class="pcx-tag">dbuilder</span></div>
     
-    <div class="pcx-deps"><span class="pcx-badge" style="border-color:var(--pcx-brand)"><span class="pcx-dot" style="background:var(--pcx-brand)"></span><span class="pcx-mono">db</span> <span class="pcx-muted">(102)</span> <span class="pcx-tag">write</span></span></div>
+    <div class="pcx-deps"><span class="pcx-badge" style="border-color:var(--pcx-brand)"><span class="pcx-dot" style="background:var(--pcx-brand)"></span><span class="pcx-mono">db</span> <span class="pcx-muted">(164)</span> <span class="pcx-tag">write</span></span></div>
   </div>
   <div class="pcx-taskcard" style="border-left-color:var(--pcx-ok)">
     <div class="pcx-taskhead"><span class="pcx-mono">T3</span><strong style="flex:1">Implement the ingest write path and the two-tier dedup ladder</strong><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-err)"></span>blocked</span></div>
     <div class="pcx-taskbody">ingest.record_event() owns idempotency, the dedup tie-break and retention, enforced by partial unique indices per docs/02-ingest-and-transport.md section 4.</div>
     <div class="pcx-listitem"><span class="pcx-muted">owner</span><span class="pcx-tag">ingestor</span></div>
     <div class="pcx-listitem"><span class="pcx-muted">waiting on</span><span class="pcx-dep">T1 done</span><span class="pcx-dep">T2 done</span></div>
-    <div class="pcx-deps"><span class="pcx-badge" style="border-color:var(--pcx-brand)"><span class="pcx-dot" style="background:var(--pcx-brand)"></span><span class="pcx-mono">services/ingest-api</span> <span class="pcx-muted">(2)</span> <span class="pcx-tag">write</span></span></div>
+    <div class="pcx-deps"><span class="pcx-badge" style="border-color:var(--pcx-brand)"><span class="pcx-dot" style="background:var(--pcx-brand)"></span><span class="pcx-mono">services/ingest-api</span> <span class="pcx-muted">(4)</span> <span class="pcx-tag">write</span></span></div>
   </div>
   <div class="pcx-taskcard" style="border-left-color:var(--pcx-ok)">
     <div class="pcx-taskhead"><span class="pcx-mono">T4</span><strong style="flex:1">Implement the closed query DSL and the read path</strong><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-err)"></span>blocked</span></div>
@@ -792,21 +792,21 @@ body{display:flex;align-items:stretch;justify-content:center}
     <div class="pcx-taskbody">Per-object content keys wrapped by a per-tenant key; the only component that can unwrap. Grant issuance is per event and recorded.</div>
     <div class="pcx-listitem"><span class="pcx-muted">owner</span><span class="pcx-tag">vaultkeeper</span></div>
     <div class="pcx-listitem"><span class="pcx-muted">waiting on</span><span class="pcx-dep">T3 done</span></div>
-    <div class="pcx-deps"><span class="pcx-badge" style="border-color:var(--pcx-brand)"><span class="pcx-dot" style="background:var(--pcx-brand)"></span><span class="pcx-mono">services/content-vault</span> <span class="pcx-muted">(2)</span> <span class="pcx-tag">write</span></span></div>
+    <div class="pcx-deps"><span class="pcx-badge" style="border-color:var(--pcx-brand)"><span class="pcx-dot" style="background:var(--pcx-brand)"></span><span class="pcx-mono">services/content-vault</span> <span class="pcx-muted">(3)</span> <span class="pcx-tag">write</span></span></div>
   </div>
-  <div class="pcx-taskcard" style="border-left-color:var(--pcx-idle)">
-    <div class="pcx-taskhead"><span class="pcx-mono">T6</span><strong style="flex:1">Validate local-inference capture, which gates build step 8</strong><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-idle)"></span>pending</span></div>
+  <div class="pcx-taskcard" style="border-left-color:var(--pcx-ok)">
+    <div class="pcx-taskhead"><span class="pcx-mono">T6</span><strong style="flex:1">Validate local-inference capture, which gates build step 8</strong><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-ok)"></span>done</span></div>
     <div class="pcx-taskbody">Brief risk R1. A validation task, not a design task: measure whether the loopback inference broker sees what the design assumes it sees on both operating systems.</div>
     <div class="pcx-listitem"><span class="pcx-muted">owner</span><span class="pcx-tag">prober</span></div>
     
-    <div class="pcx-deps"><span class="pcx-badge" style="border-color:var(--pcx-brand)"><span class="pcx-dot" style="background:var(--pcx-brand)"></span><span class="pcx-mono">docs</span> <span class="pcx-muted">(27)</span> <span class="pcx-tag">write</span></span></div>
+    <div class="pcx-deps"><span class="pcx-badge" style="border-color:var(--pcx-brand)"><span class="pcx-dot" style="background:var(--pcx-brand)"></span><span class="pcx-mono">docs</span> <span class="pcx-muted">(30)</span> <span class="pcx-tag">write</span></span></div>
   </div>
-  <div class="pcx-taskcard" style="border-left-color:var(--pcx-idle)">
+  <div class="pcx-taskcard" style="border-left-color:var(--pcx-ok)">
     <div class="pcx-taskhead"><span class="pcx-mono">T7</span><strong style="flex:1">Resolve the organisational dimension, without which three headline questions cannot be answered</strong><span class="pcx-badge"><span class="pcx-dot" style="background:var(--pcx-err)"></span>blocked</span></div>
     <div class="pcx-taskbody">Brief risk Q2. Decide where the org dimension comes from and record it, then amend the affected read paths.</div>
     <div class="pcx-listitem"><span class="pcx-muted">owner</span><span class="pcx-tag">prober</span></div>
     <div class="pcx-listitem"><span class="pcx-muted">waiting on</span><span class="pcx-dep">T2 done</span></div>
-    <div class="pcx-deps"><span class="pcx-badge" style="border-color:var(--pcx-brand)"><span class="pcx-dot" style="background:var(--pcx-brand)"></span><span class="pcx-mono">docs</span> <span class="pcx-muted">(27)</span> <span class="pcx-tag">write</span></span></div>
+    <div class="pcx-deps"><span class="pcx-badge" style="border-color:var(--pcx-brand)"><span class="pcx-dot" style="background:var(--pcx-brand)"></span><span class="pcx-mono">docs</span> <span class="pcx-muted">(30)</span> <span class="pcx-tag">write</span></span></div>
   </div>
 </div></div><div class="pcx-view" data-view="files" hidden>
 <section class="pcx-section">
@@ -852,7 +852,7 @@ body{display:flex;align-items:stretch;justify-content:center}
   </div>
 </section>
 <section class="pcx-section">
-  <h2 class="pcx-section-title">Files claimed by an agent (134)</h2>
+  <h2 class="pcx-section-title">Files claimed by an agent (200)</h2>
   <div class="pcx-table">
     <div class="pcx-row">
       <span class="pcx-cell pcx-mono" style="flex:1">apps/dashboard/README.md</span>
@@ -966,6 +966,16 @@ body{display:flex;align-items:stretch;justify-content:center}
     </div>
     <div class="pcx-row">
       <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/14-negative-controls-retrieval-grant.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/15-negative-control-raw-digest-format.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/16-negative-control-classifier-release-digest.log</span>
       <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
       <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
     </div>
@@ -1380,6 +1390,296 @@ body{display:flex;align-items:stretch;justify-content:center}
       <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
     </div>
     <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-143125-invariants.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-143125-schema-apply.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-143128-invariants.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-143128-schema-apply.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-143438-invariants.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-143438-schema-apply.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-143654-invariants.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-143654-schema-apply.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-143817-invariants.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-143817-schema-apply.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-143837-invariants.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-143837-schema-apply.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-144050-invariants.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-144050-schema-apply.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-144121-invariants.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-144121-schema-apply.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-144235-invariants.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-144235-schema-apply.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-144251-invariants.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-144251-schema-apply.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-144258-invariants.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-144258-schema-apply.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-144331-invariants.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-144331-schema-apply.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-144534-invariants.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-144534-schema-apply.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-144557-invariants.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-144557-schema-apply.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-144752-invariants.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-144752-schema-apply.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-144817-invariants.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-144817-schema-apply.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-145101-invariants.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-145101-schema-apply.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-145215-invariants.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-145215-schema-apply.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-145243-invariants.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-145243-schema-apply.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-145457-invariants.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-145457-schema-apply.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-145639-invariants.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-145639-schema-apply.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-145718-invariants.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-145718-schema-apply.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-145848-invariants.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-145848-schema-apply.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-150515-invariants.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-150515-schema-apply.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-152605-invariants.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-152605-schema-apply.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-152836-invariants.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-152836-schema-apply.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-152937-invariants.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-152937-schema-apply.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-153414-invariants.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-153414-schema-apply.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-153550-invariants.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/2026-10-02-153550-schema-apply.log</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
       <span class="pcx-cell pcx-mono" style="flex:1">db/evidence/README.md</span>
       <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
       <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
@@ -1400,6 +1700,11 @@ body{display:flex;align-items:stretch;justify-content:center}
       <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
     </div>
     <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/tools/check-schema.test.mjs</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
       <span class="pcx-cell pcx-mono" style="flex:1">db/tools/probe-rls-nonsuperuser.sql</span>
       <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
       <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
@@ -1416,6 +1721,11 @@ body{display:flex;align-items:stretch;justify-content:center}
     </div>
     <div class="pcx-row">
       <span class="pcx-cell pcx-mono" style="flex:1">db/tools/tally-log.mjs</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">db/tools/tally-log.test.mjs</span>
       <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">dbuilder</span></span>
       <span class="pcx-cell pcx-muted" style="flex:none">component: database</span>
     </div>
@@ -1490,6 +1800,16 @@ body{display:flex;align-items:stretch;justify-content:center}
       <span class="pcx-cell pcx-muted" style="flex:none">component: design-package</span>
     </div>
     <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">docs/risks/R1-loopback-inference-capture.md</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">prober</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: design-package</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">services/content-vault/Dockerfile</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">vaultkeeper</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: content-vault</span>
+    </div>
+    <div class="pcx-row">
       <span class="pcx-cell pcx-mono" style="flex:1">services/content-vault/README.md</span>
       <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">vaultkeeper</span></span>
       <span class="pcx-cell pcx-muted" style="flex:none">component: content-vault</span>
@@ -1500,12 +1820,22 @@ body{display:flex;align-items:stretch;justify-content:center}
       <span class="pcx-cell pcx-muted" style="flex:none">component: content-vault</span>
     </div>
     <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">services/ingest-api/Dockerfile</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">ingestor</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: ingest-api</span>
+    </div>
+    <div class="pcx-row">
       <span class="pcx-cell pcx-mono" style="flex:1">services/ingest-api/README.md</span>
       <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">ingestor</span></span>
       <span class="pcx-cell pcx-muted" style="flex:none">component: ingest-api</span>
     </div>
     <div class="pcx-row">
       <span class="pcx-cell pcx-mono" style="flex:1">services/ingest-api/go.mod</span>
+      <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">ingestor</span></span>
+      <span class="pcx-cell pcx-muted" style="flex:none">component: ingest-api</span>
+    </div>
+    <div class="pcx-row">
+      <span class="pcx-cell pcx-mono" style="flex:1">services/ingest-api/go.sum</span>
       <span class="pcx-cell" style="flex:none"><span class="pcx-tag" style="margin-left:4px">ingestor</span></span>
       <span class="pcx-cell pcx-muted" style="flex:none">component: ingest-api</span>
     </div>
@@ -1526,7 +1856,7 @@ body{display:flex;align-items:stretch;justify-content:center}
     </div></div>
 </section>
 <section class="pcx-section">
-  <h2 class="pcx-section-title">Unclaimed (200 shown of 3755)</h2>
+  <h2 class="pcx-section-title">Unclaimed (200 shown of 3686)</h2>
   <div class="pcx-table"><div class="pcx-row pcx-mono pcx-muted">.cockpit/README.md</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/cockpit.json</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/cordis.patch.yml</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/lib/actions.js</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/lib/client.js</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/lib/client/index.js</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/lib/client/styles.js</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/lib/client/viewmodel.js</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/lib/discover.js</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/lib/index.js</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/lib/manifest.js</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/lib/store.js</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/package.json</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/project.json</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/schema/README.md</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/schema/manifest-v1.schema.json</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/test/all.mjs</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/test/bundle.mjs</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/test/composition.mjs</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/test/host.mjs</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/test/panel.mjs</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/test/run.mjs</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/tools/asar.mjs</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/tools/build-client.mjs</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/tools/check-preview.mjs</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/tools/inspect.mjs</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/tools/link-sdk.mjs</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/tools/move.mjs</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/tools/preview.mjs</div><div class="pcx-row pcx-mono pcx-muted">.cockpit/tools/relaunch.cmd</div></div>
 </section></div><div class="pcx-view" data-view="verify" hidden>
 <section class="pcx-section">
@@ -1540,16 +1870,16 @@ body{display:flex;align-items:stretch;justify-content:center}
     <div class="pcx-listitem"><span class="pcx-muted" style="min-width:90px">manifest</span><code class="pcx-mono">.cockpit/project.json</code></div>
   </div>
 </section>
-<section class="pcx-section"><h2 class="pcx-section-title">Manifest problems</h2><div class="pcx-mono pcx-err">/components/0/status â€” unknown status &quot;built&quot;</div><div class="pcx-mono pcx-err">/components/1/status â€” unknown status &quot;built&quot;</div><div class="pcx-mono pcx-err">/components/2/status â€” unknown status &quot;built&quot;</div><div class="pcx-mono pcx-err">/components/3/status â€” unknown status &quot;built&quot;</div><div class="pcx-mono pcx-err">/components/4/status â€” unknown status &quot;built&quot;</div><div class="pcx-mono pcx-err">/components/6/status â€” unknown status &quot;built&quot;</div><div class="pcx-mono pcx-err">/components/7/status â€” unknown status &quot;built&quot;</div><div class="pcx-mono pcx-err">/components/8/status â€” unknown status &quot;built&quot;</div><div class="pcx-mono pcx-err">/components/10/status â€” unknown status &quot;built&quot;</div><div class="pcx-mono pcx-err">/components/11/status â€” unknown status &quot;built&quot;</div><div class="pcx-mono pcx-err">/components/12/status â€” unknown status &quot;built&quot;</div><div class="pcx-mono pcx-err">/components/13/status â€” unknown status &quot;built&quot;</div><div class="pcx-mono pcx-err">/components/14/status â€” unknown status &quot;built&quot;</div><div class="pcx-mono pcx-err">/components/15/status â€” unknown status &quot;built&quot;</div><div class="pcx-mono pcx-err">/components/16/status â€” unknown status &quot;built&quot;</div><div class="pcx-mono pcx-err">/tasks/0/status â€” unknown status &quot;done&quot;</div><div class="pcx-mono pcx-err">/tasks/1/status â€” unknown status &quot;done&quot;</div><div class="pcx-mono pcx-err">/tasks/2/status â€” unknown status &quot;done&quot;</div><div class="pcx-mono pcx-err">/tasks/3/status â€” unknown status &quot;done&quot;</div><div class="pcx-mono pcx-err">/tasks/4/status â€” unknown status &quot;done&quot;</div></section>
+<section class="pcx-section"><h2 class="pcx-section-title">Manifest problems</h2><div class="pcx-mono pcx-err">/components/0/status â€” unknown status &quot;built&quot;</div><div class="pcx-mono pcx-err">/components/1/status â€” unknown status &quot;built&quot;</div><div class="pcx-mono pcx-err">/components/2/status â€” unknown status &quot;built&quot;</div><div class="pcx-mono pcx-err">/components/3/status â€” unknown status &quot;built&quot;</div><div class="pcx-mono pcx-err">/components/4/status â€” unknown status &quot;built&quot;</div><div class="pcx-mono pcx-err">/components/6/status â€” unknown status &quot;built&quot;</div><div class="pcx-mono pcx-err">/components/7/status â€” unknown status &quot;built&quot;</div><div class="pcx-mono pcx-err">/components/8/status â€” unknown status &quot;built&quot;</div><div class="pcx-mono pcx-err">/components/10/status â€” unknown status &quot;built&quot;</div><div class="pcx-mono pcx-err">/components/11/status â€” unknown status &quot;built&quot;</div><div class="pcx-mono pcx-err">/components/12/status â€” unknown status &quot;built&quot;</div><div class="pcx-mono pcx-err">/components/13/status â€” unknown status &quot;built&quot;</div><div class="pcx-mono pcx-err">/components/14/status â€” unknown status &quot;built&quot;</div><div class="pcx-mono pcx-err">/components/15/status â€” unknown status &quot;built&quot;</div><div class="pcx-mono pcx-err">/components/16/status â€” unknown status &quot;built&quot;</div><div class="pcx-mono pcx-err">/tasks/0/status â€” unknown status &quot;done&quot;</div><div class="pcx-mono pcx-err">/tasks/1/status â€” unknown status &quot;done&quot;</div><div class="pcx-mono pcx-err">/tasks/2/status â€” unknown status &quot;done&quot;</div><div class="pcx-mono pcx-err">/tasks/3/status â€” unknown status &quot;done&quot;</div><div class="pcx-mono pcx-err">/tasks/4/status â€” unknown status &quot;done&quot;</div><div class="pcx-mono pcx-err">/tasks/5/status â€” unknown status &quot;done&quot;</div><div class="pcx-mono pcx-err">/tasks/6/status â€” unknown status &quot;done&quot;</div></section>
 <section class="pcx-section">
   <h2 class="pcx-section-title">Coverage</h2>
-  <div class="pcx-kpi"><div><div class="pcx-kpivalue">4000</div><div class="pcx-kpilabel">files on disk</div></div><div><div class="pcx-kpivalue">44</div><div class="pcx-kpilabel">declared paths</div></div><div><div class="pcx-kpivalue">44</div><div class="pcx-kpilabel">declared and present</div></div><div><div class="pcx-kpivalue">0</div><div class="pcx-kpilabel">declared but absent</div></div><div><div class="pcx-kpivalue">3755</div><div class="pcx-kpilabel">unclaimed files</div></div></div>
+  <div class="pcx-kpi"><div><div class="pcx-kpivalue">4000</div><div class="pcx-kpilabel">files on disk</div></div><div><div class="pcx-kpivalue">44</div><div class="pcx-kpilabel">declared paths</div></div><div><div class="pcx-kpivalue">44</div><div class="pcx-kpilabel">declared and present</div></div><div><div class="pcx-kpivalue">0</div><div class="pcx-kpilabel">declared but absent</div></div><div><div class="pcx-kpivalue">3686</div><div class="pcx-kpilabel">unclaimed files</div></div></div>
 </section></div>
   </div>
   <div class="pcx-footer">
     <span class="pcx-mono">C:\Users\kyle\Downloads\architecture</span>
     <span class="pcx-mono">.cockpit/project.json</span>
-    <span>read 10/2/2026, 2:31:11 PM</span>
+    <span>read 10/2/2026, 3:38:21 PM</span>
     <span class="pcx-muted">standalone preview</span>
   </div>
 </div>

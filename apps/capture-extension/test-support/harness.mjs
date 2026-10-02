@@ -40,6 +40,13 @@ export function createHarness({ core = {}, capacity = 200, failConnect = false, 
   const fakeCore = createFakeCore(core);
 
   // Route every native port into the fake core, before anything builds an adapter.
+  //
+  // `state.failConnect` is the single source of truth for whether a connect fails, and this wrapper
+  // must not shadow it with the closure value. It did, and the inconsistency was invisible until a
+  // test revived the channel mid-run: the wrapper took its "failing" branch, `origConnect` saw
+  // `state.failConnect === false` and handed back a port **without the routing patch**, and the frame
+  // went nowhere — surfacing as a 10-second `native_timeout` in a test that was about ack semantics.
+  // Reading the state in one place means a port that exists is always a port that answers.
   const origConnect = fake.chrome.runtime.connectNative.bind(fake.chrome.runtime);
   let connectCount = 0;
   fake.chrome.runtime.connectNative = (application) => {
@@ -49,7 +56,6 @@ export function createHarness({ core = {}, capacity = 200, failConnect = false, 
       // hides it. Fail loudly.
       throw new Error(`connectNative called ${connectCount} times: the channel is reconnecting in a loop`);
     }
-    if (failConnect) return origConnect(application);
     const port = origConnect(application);
     const realPost = port.postMessage.bind(port);
     port.postMessage = (message) => {

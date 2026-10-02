@@ -44,12 +44,12 @@ const STATE = {
     note: 'Content vault: 38 component tests plus the Lead-owned `vaultinvariants` external suite with zero skips, driving the grant matrix against the real service. No cloud KMS has been exercised.',
   },
   T6: {
-    status: 'pending',
-    note: 'NOT DONE. docs/risks/ does not exist: no R1 harness was built and no measurement was made. The loopback broker itself IS implemented in device/capture-core/proxy/loopback with real-socket tests, so the subject of the validation exists — the validation does not.',
+    status: 'done',
+    note: 'R1 measured with a runnable harness against the REAL loopback broker (docs/risks/R1-harness/, 7 claim verdicts, three runs identical). What remains unvalidated is stated there without softening: relocation through a real vendor tool, a real client resolving a substitute port, and behaviour across a reboot are NOT VALIDATED for any tool, so no port-set entry should ship enabled on the strength of this document — mode F stays detection_only per tool until a real lab result exists.',
   },
   T7: {
-    status: 'pending',
-    note: 'NOT DONE. docs/risks/ does not exist and no Q2 decision is recorded. schema.sql has an ops.user_dim table, so the org dimension may already have a home, but nobody has checked it against the three questions that need it.',
+    status: 'done',
+    note: 'Q2 answered in docs/risks/Q2-organisational-dimension.md. The finding is not what the task assumed: ops.user_dim, mart.agg_org_period and the query-api dimension are all built and plumbed, and NOTHING writes user_dim — services/control-api does not exist. An empty Q3 therefore renders as a data state rather than a missing component, which is the part worth knowing.',
   },
 };
 

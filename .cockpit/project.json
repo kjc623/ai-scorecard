@@ -484,7 +484,7 @@
       "id": "T6",
       "subject": "Validate local-inference capture, which gates build step 8",
       "description": "Brief risk R1. A validation task, not a design task: measure whether the loopback inference broker sees what the design assumes it sees on both operating systems.",
-      "status": "pending",
+      "status": "done",
       "dependsOn": [],
       "componentIds": [
         "capture-core",
@@ -495,13 +495,13 @@
       ],
       "owner": "prober",
       "order": 6,
-      "completionNote": "NOT DONE. docs/risks/ does not exist: no R1 harness was built and no measurement was made. The loopback broker itself IS implemented in device/capture-core/proxy/loopback with real-socket tests, so the subject of the validation exists — the validation does not."
+      "completionNote": "R1 measured with a runnable harness against the REAL loopback broker (docs/risks/R1-harness/, 7 claim verdicts, three runs identical). What remains unvalidated is stated there without softening: relocation through a real vendor tool, a real client resolving a substitute port, and behaviour across a reboot are NOT VALIDATED for any tool, so no port-set entry should ship enabled on the strength of this document — mode F stays detection_only per tool until a real lab result exists."
     },
     {
       "id": "T7",
       "subject": "Resolve the organisational dimension, without which three headline questions cannot be answered",
       "description": "Brief risk Q2. Decide where the org dimension comes from and record it, then amend the affected read paths.",
-      "status": "pending",
+      "status": "done",
       "dependsOn": [
         "T2"
       ],
@@ -514,7 +514,7 @@
       ],
       "owner": "prober",
       "order": 7,
-      "completionNote": "NOT DONE. docs/risks/ does not exist and no Q2 decision is recorded. schema.sql has an ops.user_dim table, so the org dimension may already have a home, but nobody has checked it against the three questions that need it."
+      "completionNote": "Q2 answered in docs/risks/Q2-organisational-dimension.md. The finding is not what the task assumed: ops.user_dim, mart.agg_org_period and the query-api dimension are all built and plumbed, and NOTHING writes user_dim — services/control-api does not exist. An empty Q3 therefore renders as a data state rather than a missing component, which is the part worth knowing."
     }
   ],
   "agents": [
