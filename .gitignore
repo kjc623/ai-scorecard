@@ -8,6 +8,18 @@
 .tools/asar-extract.mjs
 .tools/asar-pick.mjs
 
+# Extracted DSH SDK packages, kept only as a local reference while building
+# .cockpit/. Regenerable from the installed harness's app.asar, and 35 MB of
+# third-party files - a backup should not carry a copy of someone else's SDK.
+.research/
+
+# Generated preview (regenerate with: node .cockpit/tools/preview.mjs)
+cockpit-preview.html
+
+# Local SDK links for the cockpit's test suite
+# (regenerate with: node .cockpit/tools/link-sdk.mjs)
+.cockpit/node_modules/
+
 # Go
 bin/
 *.exe
