@@ -54,7 +54,8 @@ the resources marked region-shared are deployed once per region, the rest are sh
 
 | Resource | SKU / tier | Why this tier (and which master §4.1 component it hosts) |
 |---|---|---|
-| **Front Door Premium** + WAF policy | Premium; WAF in Prevention, managed rule set plus custom rules | Premium is required for Private Link origins, which is what keeps Container Apps off the public internet; Standard cannot use Private Link. WAF must block at the edge, not in the app, because `ingest-api` accepts traffic from machines the vendor does not control. Public entry for `/v1/enrol`, `/v1/policy`, `/v1/events`, `/v1/health`, `/v1/content/grant`, and analyst entry to `query-api` |
+| **Application Gateway `WAF_v2`** + WAF policy | `WAF_v2`; WAF in Prevention, managed rule set plus custom rules; listener in **passthrough** mode | The public device ingress (ADR 0020 decision 1). GA client-certificate authentication; it terminates the device TLS connection and reaches the internal Container Apps environment over the VNet. Passthrough forwards the client certificate and the origin authenticates; strict mode is optional for certificate-only tenants. WAF must block at the edge, not in the app, because `ingest-api` accepts traffic from machines the vendor does not control. Public entry for `/v1/enrol`, `/v1/token`, `/v1/policy`, `/v1/events`, `/v1/health`, `/v1/content/grant` |
+| **Front Door Premium** + WAF policy | Premium; WAF in Prevention, managed rule set plus custom rules | **Analyst ingress only** (ADR 0020 decision 1). Premium is required for the Private Link origin that keeps Container Apps off the public internet; Standard cannot use Private Link. Analyst entry to `query-api` |
 | **Container Apps environment** | Consumption-only, no workload profiles, VNet-injected, internal load balancer | Peak demand is ~50–500 events/s during a fleet flush (master §1.4) against ~0.14 events/s steady. Consumption costs nothing when idle, which is most of the day; a dedicated workload profile would bill for idle capacity. Network boundary for all four apps |
 | **Container App `ingest-api`** | Min 2, max 20; 0.5 vCPU / 1 GiB; HTTP/2 ingress transport (`transport: 'http2'`, as on every app); external via Private Link origin | Two replicas is the availability floor for 99.9% (brief §8); the ceiling covers a flush storm, which is bursty by nature. Validates and writes; it never decrypts |
 | **Container App `control-api`** | Min 2, max 10; 0.5 vCPU / 1 GiB | Enrolment, policy signing, health upsert, grant decisions. Policy signing is CPU-cheap — it signs a bundle, not an event |
@@ -76,13 +77,17 @@ the resources marked region-shared are deployed once per region, the rest are sh
 
 ### 2.1 Networking, stated once
 
-Inbound: device or browser → Front Door Premium (public 443, the only public surface) → WAF →
-Private Link origin → Container Apps environment (internal LB). Analyst traffic reaches `query-api`
-through the same path, authenticated by Entra ID. Egress: container apps → subnet → private endpoint →
-PaaS, except PostgreSQL, which is reached at its VNet-injected address in a delegated subnet rather than
-through a private endpoint. No container app holds a public IP; no PaaS resource accepts a public connection; the PostgreSQL
-server additionally has no firewall rules at all, so "reachable from the internet" is not a
-configuration state it can be put into.
+Inbound, devices: device → Application Gateway `WAF_v2` (public 443) → VNet → Container Apps
+environment (internal LB). Inbound, analysts: browser → Front Door Premium (public 443) → WAF →
+Private Link origin → Container Apps environment (internal LB), authenticated by Entra ID. The two
+audiences have two public edges, and neither reaches a container app directly: Application Gateway is
+the only public device endpoint, and Front Door is the only public analyst endpoint. Egress: container
+apps → subnet → private endpoint → PaaS, except PostgreSQL, which is reached at its VNet-injected
+address in a delegated subnet rather than through a private endpoint. No container app holds a public
+IP — it is reachable only through the internal load balancer, from the gateway subnet on the device
+path and from the Private Link origin on the analyst path — and no PaaS resource accepts a public
+connection; the PostgreSQL server additionally has no firewall rules at all, so "reachable from the
+internet" is not a configuration state it can be put into.
 
 ### 2.2 Deliberately absent
 
@@ -138,9 +143,9 @@ Analytics sampling and retention (10% traces, 30 d, no archive / 10% traces, 90 
 archive / the same); alert routing (none / non-paging channel / on-call, §10.3); and ring assignment
 (n/a / internal ring 0 / the full ladder, §9.2).
 
-The composition also carries three deployment-scope switches — `deployEdge` (Front Door and its WAF),
-`deployDashboard` (the Static Web App) and `deployExports` (the exports storage account) — each
-defaulting to true. `params/lab.bicepparam` sets all three false, so the lab is a parameter file over
+The composition also carries three deployment-scope switches — `deployEdge` (the edge: Front Door and its
+WAF today, and the Application Gateway ADR 0020 adds), `deployDashboard` (the Static Web App) and
+`deployExports` (the exports storage account) — each defaulting to true. `params/lab.bicepparam` sets all three false, so the lab is a parameter file over
 the same composition rather than a second one; it is the one case in which the resource set, and not
 only the sizing, differs by parameter file.
 
@@ -176,7 +181,9 @@ azure/
     container-apps-env.bicep     environment, VNet injection, internal LB, log destination
     container-app.bicep          one app: identity, secrets refs, probes, scale rules
     container-app-job.bicep      one scheduled job: cron, timeout, retry, identity
-    frontdoor.bicep              profile, endpoint, origin group, Private Link origin, routes
+    application-gateway.bicep    WAF_v2, listener in passthrough, rewrite to X-Client-Cert, backend pool
+                                 (ADR 0020; the module is not built yet)
+    frontdoor.bicep              analyst profile, endpoint, origin group, Private Link origin, routes
     waf.bicep                    policy, managed rule set, custom rules, rate limits
     static-web-app.bicep         dashboard, custom domain, auth config
     monitoring.bicep             action groups and scheduled-query alert rules (the §10.3 set)
@@ -225,7 +232,9 @@ reads back, a service-assigned property), *noise* (case, ordering) or **drift** 
 network, identity, encryption or ingress. Drift pages on-call, and the report lands in the platform
 channel either way. **Continuous resource-graph assertions**, hourly, queried from Azure Resource Graph
 against resource state rather than against the deployment that was supposed to produce it: no PaaS
-resource with `publicNetworkAccess` enabled; no storage account with shared-key access enabled;
+resource with `publicNetworkAccess` enabled; no storage account with shared-key access enabled; **the
+only public device endpoint is Application Gateway; the container environment stays private** (no
+container app has external ingress, and Front Door's origin is the Private Link endpoint);
 `content-vault` ingress internal; every container app has a user-assigned identity; every Key Vault has
 purge protection. These are the invariants whose failure is a security event rather than a configuration
 event.
@@ -472,10 +481,12 @@ insufficient, and the product must not depend on a client honouring a setting it
 
 ### 6.2 Enrolment, and what the user sees
 
-One-shot, mutually authenticated enrolment (brief §4.2, C11). Re-imaging returns the existing identity
-rather than creating a duplicate. The user-visible part of deployment is deliberately small on Windows
-and larger on macOS, because **M0 → M1 is a permission boundary** (C2): M0 requires no content access,
-and M1 requires reading prompts and attachments.
+One-shot enrolment (brief §4.2, C11). The credential is either an `x509` certificate or an RFC 9449
+`dpop` key — **a certificate is no longer mandatory**, so an MDM/PKI is optional rather than a hard
+prerequisite (ADR 0020). Re-imaging returns the existing identity rather than creating a duplicate. The
+user-visible part of deployment is deliberately small on Windows and larger on macOS, because **M0 → M1
+is a permission boundary** (C2): M0 requires no content access, and M1 requires reading prompts and
+attachments.
 
 **M0 requires no content permission on either platform** — a service install on Windows, a LaunchDaemon
 install on macOS. That is the whole enrolment experience at M0. **M1 and above are a permission
@@ -797,7 +808,7 @@ All targets are brief §8 unless stated. Measurement windows are 28-day rolling.
 |---|---|---|
 | Classification latency, interactive path | ≤150 ms p95 | **On the device** — a `classifier-host` histogram reported in health. Only timings leave the device, never prompt text. The interactive path is device-local (C19), so a server-side measurement would measure the wrong thing |
 | Warn/block decision | ≤300 ms p95 | On the device, observation to decision. This is the number the user feels, and brief §6 warns that beyond it users route around the product |
-| Ingest availability | 99.9% | Front Door plus `ingest-api` 5xx rate, excluding device-auth 401s, which are a revocation rather than an outage. Brief §8 attaches the reason: devices buffer through outages |
+| Ingest availability | 99.9% | Application Gateway plus `ingest-api` 5xx rate, excluding device-auth 401s, which are a revocation rather than an outage. Brief §8 attaches the reason: devices buffer through outages |
 | Event visible in query layer | <60 s from receipt | `received_at` to recomputed aggregate bucket (`mart` watermark). This is a **freshness** SLO and it is what keeps a stale dashboard honest — master §4.4 requires aggregation lag to be visible, not hidden |
 | Dashboard aggregate query | <2 s p95 | `query-api` per route template, served only from `mart`. C27: when this regresses, it is almost always because something began scanning `ingest` |
 | Content retrieval once granted | <30 s | End-to-end, grant issued to content streamed to the analyst — because the components in between are a chain and the customer experiences the chain |
@@ -893,6 +904,8 @@ a list price for East US on the date above; none includes a discount.
 | Front Door Premium, base | $330 / month | Per profile per region |
 | Front Door / WAF requests | $0.012 / 10,000 | |
 | Front Door egress | $0.085 / GiB | First-tier rate |
+| Application Gateway `WAF_v2`, fixed | ≈ $0.44 / hour | ≈ $321 / month per gateway; the GA device ingress (ADR 0020) |
+| Application Gateway capacity units | ≈ $0.014 / CU-hour | Estimate; a passthrough listener at this traffic uses few capacity units |
 | Log Analytics ingestion | $2.76 / GiB | Pay-as-you-go; 90-day interactive retention included |
 | Key Vault operations | $0.03 / 10,000 | HSM-backed keys carry an additional per-key monthly charge |
 | Managed HSM | ≈ $4.6 / hour | ≈ $3,360 per month per pool, largely independent of use |
@@ -945,6 +958,10 @@ Front Door Premium
   requests 43.2 M × $0.012/10k                        = $52
   egress ~4 GiB × $0.085                              = $0.34
   → Front Door subtotal                               ≈ $382
+Application Gateway WAF_v2
+  fixed 730 h × $0.44                                 ≈ $321
+  capacity units ~2 CU × 730 h × $0.014               ≈ $20
+  → Application Gateway subtotal                      ≈ $341
 Static Web App Standard                               = $9
 Key Vault: ~100k ops ($0.30) + ~30 HSM-backed keys ($2) ≈ $3
 Log Analytics: ~5 GiB × $2.76 (metadata only)         ≈ $14
@@ -956,22 +973,26 @@ Blob (events + ops, ~40 GiB hot)                      ≈ $1
 > **Under review.** The Front Door Premium base is charged per tenant here although §11.1 prices it per
 > profile per region and §2 describes the inventory as shared by all tenants in a region;
 > `azure/COST-FINDING.md` records that contradiction and the two possible resolutions. The PostgreSQL
-> line is charged per tenant on the same footing, against the same §2 statement. The figures below, and
-> those in §11.4–§11.6 that derive from them, stand unreconciled until that is decided.
+> line is charged per tenant on the same footing, against the same §2 statement. ADR 0020 adds the same
+> ambiguity for Application Gateway: it is a per-region component shared by that region's tenants, but
+> the line below charges its base per tenant like Front Door, so the added $341 is an upper bound on the
+> per-tenant share until §11.3's allocation question is decided. The figures below, and those in
+> §11.4–§11.6 that derive from them, stand unreconciled until that is decided.
 
 | Line | M1 (default) |
 |---|---|
 | Container apps + jobs (incl. 2 migrations/month) | $27 |
 | PostgreSQL (compute + HA + storage + backup) | $392 |
 | Front Door Premium (base + requests + egress) | $382 |
+| Application Gateway WAF_v2 (device ingress; base + capacity units) | $341 |
 | Static Web App | $9 |
 | Key Vault | $3 |
 | Log Analytics | $14 |
 | Blob — events and operational data | $1 |
-| **Subtotal, in-tenant consumption** | **$828** |
+| **Subtotal, in-tenant consumption** | **$1,169** |
 | Shared regional baseline, allocated (§11.3) | $1–9 |
 | Daily per-device health rollups and `mart`/ops growth not captured above | $1–3 |
-| **Estimate per tenant per month, M1, 5,000 devices** | **≈ $830–840** |
+| **Estimate per tenant per month, M1, 5,000 devices** | **≈ $1,170–1,180** |
 
 **ASSUMPTION:** this is materially above the $300–700/month band quoted in master §1.4, and the reason
 is a sizing choice, not a contradiction. The master's band is met by the same model with a **smaller
@@ -999,6 +1020,9 @@ Budgets, cost alerts, diagnostic settings                ≈ $10/month
 The regional baseline is small enough that it is not the reason to add tenants, and large enough that a
 pilot with three tenants carries a noticeable fixed cost per tenant. It is **multiplicative per region**
 (§3.1): a second residency region doubles the baseline and does not reduce the per-tenant variable cost.
+ADR 0020 adds Application Gateway `WAF_v2` as another region-shared component (≈ $321/month fixed, plus
+capacity units). §11.2 charges that base per tenant, on the same under-review footing as Front Door, so
+it is deliberately not counted again in the baseline above.
 
 ### 11.4 A tenant at M3, and the attachment tier
 
@@ -1031,13 +1055,14 @@ Additional at M3: grant and retrieval operations, audit volume, egress on retrie
 | Container apps + jobs | $27 | $27 |
 | PostgreSQL (compute + HA + storage + backup) | $392 | $392 |
 | Front Door Premium | $382 | $382 |
+| Application Gateway WAF_v2 (device ingress) | $341 | $341 |
 | Static Web App | $9 | $9 |
 | Key Vault | $3 | $3 |
 | Log Analytics | $14 | $17 |
 | Blob — events and operational data | $1 | $1 |
 | **Blob — attachment ciphertext** | $0 | **$1–9** (hot, 12-month retention) — **$0.24–2.35** if tiered |
 | Grant/retrieval operations | $0 | $0.20 |
-| **Estimate per tenant per month** | **≈ $830–840** | **≈ $833–849** |
+| **Estimate per tenant per month** | **≈ $1,170–1,180** | **≈ $1,175–1,190** |
 
 **The attachment tier is the only line item with an unbounded tail, and the arithmetic shows why the
 distinction matters.** At brief §3.1's own upper bound of 500 GB/year with a 12-month hot retention, the
@@ -1073,14 +1098,15 @@ cost of one more device is measured against that baseline.
 |---|---|---|
 | **One more device** (average user, 3 events/day) | **≈ zero** | Storage: 3 events/day × 1.5 KiB × 30 = 135 KiB/month ≈ $0.0000025. Compute: 3 events/day is 0.00003 events/s, far below any scaling threshold. Requests: 288 batches/month out of 43.2 M |
 | **1,000 more devices** (3,000 events/day more) | **≈ $0.01** | The same arithmetic, and it is still below the rounding of any line |
-| **5,000 devices with a 10× traffic increase** (120,000 events/day) | ≈ $55–70 | Front Door requests ×10 (+$52), Log Analytics +$5–10, blob +$5, Postgres storage +$2, no SKU change at 3 years (the 50M-row partitioning trigger, D2, is 11 years away at this rate) |
-| **Tenant at M1, 5,000 devices** | **$830–840** | §11.2 |
+| **5,000 devices with a 10× traffic increase** (120,000 events/day) | ≈ $55–70 | Edge requests and capacity units ×10 (order +$50), Log Analytics +$5–10, blob +$5, Postgres storage +$2, no SKU change at 3 years (the 50M-row partitioning trigger, D2, is 11 years away at this rate) |
+| **Tenant at M1, 5,000 devices** | **$1,170–1,180** | §11.2 |
 | **Tenant at M3 with 500 GB/year attachments, 12-month hot retention** | **+$9** | §11.4 |
 | **Tenant requiring Managed HSM** | **+$3,360** | A pool is ~$4.6/hour regardless of use; it is only justified by a contract that requires vendor-blind key custody |
 | **A second residency region** | **+$145 baseline, +$392 per tenant if a tenant is duplicated** | §11.3. Residency is a per-tenant property, not a per-platform one |
 
-**The conclusion the arithmetic forces:** the fixed cost of a tenant is the database and the edge, and
-it is **~$800/month at the recommended production configuration**. The marginal cost of a device is
+**The conclusion the arithmetic forces:** the fixed cost of a tenant is the database and the two edges —
+Application Gateway for devices, Front Door for analysts — and it is **~$1,150/month at the recommended
+production configuration**. The marginal cost of a device is
 effectively zero, and the marginal cost of *content* is the only line that grows without a designed
 ceiling. Pricing that follows device count is therefore mispriced against the cost structure, and
 pricing that follows content volume is aligned with it. That the brief's §3.1 observation — "the event
@@ -1102,7 +1128,8 @@ product's cost actually is.
 | **Residency regions** | +$145 baseline and +$392 per tenant per additional region | Region count is a product decision (Q1), not a tuning decision |
 | **Managed HSM** | +$3,360 per pool, ~4× the entire rest of the tenant | Per-contract only. If a customer's requirement can be met with Key Vault Premium in a dedicated vault, the saving exceeds everything else in this table combined |
 | **Log Analytics verbosity** | $14 at M1 with sampling; ×5–10 without | Sampling, retention tiering and log-level discipline (§10.4). Grows with verbosity, not with traffic, so it is entirely under the vendor's control |
-| **Front Door base fee** | $330, or 40% of the tenant, before a single request (under review per `azure/COST-FINDING.md`: the base is per profile per region) | Fixed and unavoidable in this design. It is the reason the fixed tenant cost is where it is, and the reason adding tenants is accretive |
+| **Front Door base fee** | $330, a large fixed fee before a single request (under review per `azure/COST-FINDING.md`: the base is per profile per region) | Fixed and unavoidable in this design, and the reason adding tenants is accretive |
+| **Application Gateway `WAF_v2` base** | ≈ $321 plus capacity units, a second per-region fixed fee on the device side | New under ADR 0020. Fixed and unavoidable if devices authenticate through Application Gateway; it is why the device edge now appears twice in the fixed cost |
 | **Event volume growth** | 10× traffic adds ~$55–70 | Only relevant if the brief's constraints are violated (C9 forbids per-keystroke capture). Not a lever; a boundary condition |
 | **Reservations or savings plan** | 20–40% off compute lines, i.e. ~$80–160 per tenant | Deliberately not taken in v1 (§2.2). Becomes available once the fleet is real |
 
@@ -1115,7 +1142,7 @@ product's cost actually is.
 | Component | RPO | RTO | Reasoning |
 |---|---|---|---|
 | Collection on devices | **0** | n/a | The spool is the DR plan for the last mile: bounded local buffering, encrypted at rest, dropping oldest only when full and counting the drop (C22, brief §7). A platform outage of a working day costs zero events *as long as* the spool's capacity exceeds the outage — which is why spool capacity is sized in hours of normal operation and stated to customers |
-| Ingest availability | 0 | 15 min | Stateless container apps; Front Door origin health probes remove a failed revision. Devices retry with backoff and jitter through the outage |
+| Ingest availability | 0 | 15 min | Stateless container apps; Application Gateway origin health probes remove a failed revision. Devices retry with backoff and jitter through the outage |
 | PostgreSQL, in-region | ≤5 min | **60 min** | Zone-redundant HA gives an automatic failover to the standby in the second zone; PITR at 5-minute granularity bounds loss. 60 min is a target, not a guarantee: the failover itself is minutes, and the remaining time is verification and, if PITR is needed, restore time proportional to the WAL to replay |
 | PostgreSQL, cross-region | ≤15 min | **4 h** | Geo-restore from geo-redundant backups into the paired region, then verify, then repoint. Stated as hours because it is hours — a number under an hour here would be a claim the drill has not yet earned (§12.4) |
 | Ciphertext blobs | ≤15 min | 30 min | RA-GRS replication; the secondary is readable. Object-level RPO is bounded by replication lag |
@@ -1213,7 +1240,7 @@ accident afterwards.
 
 | Runbook | Trigger | Steps | Verification | Rollback / exit |
 |---|---|---|---|---|
-| **Ingest outage** | Ingest 5xx > 1% for 5 min, or the availability SLO burning | 1. Confirm scope (one region, one tenant, all). 2. Check Front Door origin health and WAF block rate before touching the app. 3. If a revision regressed, return traffic to the previous revision. 4. If PostgreSQL is the cause, go to *database failover*. 5. Do **not** raise device retry rates — devices already back off and spool | Batch success rate recovering; spool depth on devices falling rather than rising; **zero** increase in `dropped_total` | Previous revision restored; if the outage continues, devices keep spooling and the spool-capacity rehearsal (§12.4) says how long is safe |
+| **Ingest outage** | Ingest 5xx > 1% for 5 min, or the availability SLO burning | 1. Confirm scope (one region, one tenant, all). 2. Check Application Gateway origin health and WAF block rate before touching the app. 3. If a revision regressed, return traffic to the previous revision. 4. If PostgreSQL is the cause, go to *database failover*. 5. Do **not** raise device retry rates — devices already back off and spool | Batch success rate recovering; spool depth on devices falling rather than rising; **zero** increase in `dropped_total` | Previous revision restored; if the outage continues, devices keep spooling and the spool-capacity rehearsal (§12.4) says how long is safe |
 | **Database failover** | Primary unreachable, or an HA failover event | 1. Do **not** restart the container apps; let connections re-establish. 2. Confirm the new primary and its zone. 3. Verify row-level security is still forced on every session (a failover does not change it; a *restore* might). 4. Check `aggregator`'s watermark and re-run the affected window if it failed mid-run | Writes succeeding; aggregate freshness recovering; no duplicate `(tenant_id, event_id)` rows | None needed — HA failover is the designed path. Escalate if it does not complete in 60 min (§12.1) |
 | **Key Vault outage, or a customer key disabled** | Unwrap failure > 1% for 10 min; or a key state change event | 1. Separate the two cases: platform outage (all tenants) versus a customer disabling their own key (one tenant). 2. Platform: metadata and dashboards keep working; retrieval is degraded; **do not** attempt to decrypt by any other path — there is none, by design. 3. Customer key: notify the customer contact immediately, because their content is unretrievable until they re-enable. 4. Check whether retention is about to expire on unretrievable objects and whether a hold should be applied (C35) | Retrieval path returns an explicit key-unavailable error (never an empty result, C17); no tenant is silently returning empty content | Content retrieval only. If a key was **destroyed** rather than disabled, §12.5 applies: the content is gone and the notification says so |
 | **Revoked-credential storm** | > 50 revocations in 1 h | 1. Determine whether it is one tenant (incident response, or a defect) or the fleet (a defect or a bad rollout). 2. If a rollout, halt the ring (§9.2) and check whether revocations correlate with the new version. 3. If one tenant, verify the actor is the customer and confirm the audit trail. 4. Ensure revoked devices are rejected and marked, and that their spool is not silently lost — the device stops sending and retains, which is visible as a device in `revoked` | Revocation rate returning to baseline; re-enrolment (C11) returns the **existing** identity rather than creating duplicates | If caused by the release: rollback per §9.4, and re-enrol the affected devices idempotently |

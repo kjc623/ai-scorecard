@@ -26,20 +26,20 @@ type NativeMessage struct {
 
 // Native message types, extension -> capture-core.
 const (
-	TypeObservation        = "observation"          // one observed submission, already shape-classified
-	TypeAttachmentManifest = "attachment_manifest"  // descriptor first: refuse before transfer
+	TypeObservation        = "observation"         // one observed submission, already shape-classified
+	TypeAttachmentManifest = "attachment_manifest" // descriptor first: refuse before transfer
 	TypeAttachmentChunk    = "attachment_chunk"
 	TypeAttachmentComplete = "attachment_complete"
-	TypeHealth             = "health"               // the extension's own coverage row
-	TypePolicySync         = "policy_sync"          // ask for the current bundle / version
-	TypeModeQuery          = "mode_query"           // ask for a destination's effective mode
-	TypeDecisionRecord     = "decision_record"      // a locally decided warn/block, including blocked requests
+	TypeHealth             = "health"          // the extension's own coverage row
+	TypePolicySync         = "policy_sync"     // ask for the current bundle / version
+	TypeModeQuery          = "mode_query"      // ask for a destination's effective mode
+	TypeDecisionRecord     = "decision_record" // a locally decided warn/block, including blocked requests
 )
 
 // Native message types, capture-core -> extension.
 const (
 	TypeAck            = "ack"
-	TypeRefusal        = "refusal"     // typed, with a reason from the closed set
+	TypeRefusal        = "refusal" // typed, with a reason from the closed set
 	TypePolicyBundle   = "policy_bundle"
 	TypeModeAnswer     = "mode_answer"
 	TypeHealthSnapshot = "health_snapshot"
@@ -172,9 +172,9 @@ type ModeQuery struct {
 // ModeAnswer is the resolved effective mode, with the reason it resolved that way, so an
 // operator can explain a decision without reading a policy bundle by hand.
 type ModeAnswer struct {
-	Mode        CollectionMode `json:"mode"`
-	PolicyVersion string       `json:"policy_version"`
-	Reason      string         `json:"reason,omitempty"`
+	Mode          CollectionMode `json:"mode"`
+	PolicyVersion string         `json:"policy_version"`
+	Reason        string         `json:"reason,omitempty"`
 }
 
 // PolicySyncRequest asks for the current signed bundle. The extension holds no durable state, so

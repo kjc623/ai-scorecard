@@ -1,0 +1,188 @@
+# The opt-in device-authentication lab: the real SQL stores, the real production auth modes, and
+# the simulated Application Gateway in front of them (ADR 0020 decisions 1, 2 and 5).
+#
+#   node localdev/build.mjs --auth && node localdev/run.mjs --auth
+#
+# The default lab (docker-compose.yml) runs both services in memory with -dev-trust-principal, so
+# control-api and ingest-api share no state and no real device credential is exercised. This file
+# exists because that cannot prove enrol-then-ingest: the credential control-api issues has to be
+# the credential ingest-api later verifies, and the only thing that makes them the same is the
+# database and the shared CA. So this lab is deliberately a separate compose project with:
+#
+#   * PostgreSQL 17 with database/schema.sql applied unmodified (the real ops.* tables);
+#   * control-api built with -tags sac_sql_driver and -store sql, signing leaves with the dev CA;
+#   * ingest-api built with -tags sac_sql_driver and -store sql, verifying x509 and dpop against the
+#     same database and the same CA;
+#   * edge, the Application Gateway stand-in, terminating TLS 1.3 in passthrough mode and forwarding
+#     X-Client-Cert / X-Forwarded-Proto / X-Forwarded-Host.
+#
+# What it needs before it starts:
+#   * the images from `node localdev/build.mjs --auth` (sac/{control-api,ingest-api}:lab-auth and
+#     sac/edge:lab). The tagged build needs github.com/jackc/pgx/v5 in the module cache; see the
+#     build.mjs header and localdev/README.md "The module-cache precondition".
+#   * key material in ./authlab/ (gitignored): run `localdev/authlab/bin/authlab pki -pki-dir
+#     localdev/.authlab`, which run.mjs --auth does for you.
+#
+# No secret is in this file: the CA, the server key pair and the token key are generated fresh into
+# .authlab/ and mounted read-only; PostgreSQL holds nothing but the lab's own schema.
+#
+#   service      from a container on the network   from the host (default)   host port variable
+#   postgres     postgres:5432                     localhost:55435           LAB_AUTH_PG_PORT
+#   control-api  http://control-api:8080           (not published)
+#   ingest-api   http://ingest-api:8080            (not published)
+#   edge         https://edge:8443                 https://localhost:8443   LAB_EDGE_PORT
+
+name: sac-authlab
+
+networks:
+  default:
+    name: scorecard-authlab
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_PASSWORD: sac-lab-only
+      POSTGRES_DB: shadow
+    ports:
+      - "${LAB_AUTH_PG_PORT:-55435}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d shadow"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 2s
+    volumes:
+      - authpgdata:/var/lib/postgresql/data
+
+  # Built by localdev/build.mjs as sac/schema:lab (see localdev/schema/Dockerfile). An image rather
+  # than a bind mount of database/schema.sql because some Docker daemons replace a file bind with an
+  # empty stub; the build-time COPY is reliable and applies the repository's own schema unmodified.
+  schema:
+    image: sac/schema:lab
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: postgres
+      PGDATABASE: shadow
+      PGPASSWORD: sac-lab-only
+    restart: "no"
+
+  # control-api — the enrolment and token authority. It loads the dev CA it signs leaves with and
+  # the ES256 key it signs access tokens with from the mounted material; both are file paths, which
+  # --ca-cert/--ca-key/--dpop-token-key-pem already accept.
+  control-api:
+    image: sac/control-api:lab-auth
+    depends_on:
+      schema:
+        condition: service_completed_successfully
+    command:
+      - --store
+      - sql
+      - --dsn
+      - postgres://postgres:sac-lab-only@postgres:5432/shadow?sslmode=disable
+      - --ca-cert
+      - /authlab/dev-ca.crt
+      - --ca-key
+      - /authlab/dev-ca.key
+      - --dpop-token-key-pem
+      - /authlab/token.key
+      - --token-issuer
+      - sac-authlab
+      - --token-audience
+      - shadow-ingest
+    volumes:
+      # A named volume, populated before `up` by run.mjs from the sac/authlab-pki:lab image, rather
+      # than a host-path bind: some Docker daemons present a bind as an empty stub, which is why the
+      # services first reported `open /authlab/dev-ca.crt: no such file or directory`.
+      - authpki:/authlab:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8080/healthz"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
+
+  # ingest-api — the write path. It re-verifies every credential against ops.* and the same CA the
+  # edge forwards from, so a certificate the dev CA did not sign is refused here and not trusted by
+  # the edge. The deployment vocabulary (SAC_AUTH_MODES, SAC_TLS_CLIENT_CERT_HEADER, SAC_DPOP_*) is
+  # set as the deployment sets it; only the CA and token key are file paths to the mounted material.
+  ingest-api:
+    image: sac/ingest-api:lab-auth
+    depends_on:
+      schema:
+        condition: service_completed_successfully
+    command:
+      - --store
+      - sql
+      - --dsn
+      - postgres://postgres:sac-lab-only@postgres:5432/shadow?sslmode=disable
+      - --tls-client-ca
+      - /authlab/dev-ca.crt
+      - --dpop-token-public-pem
+      - /authlab/token.pub.pem
+    environment:
+      SAC_AUTH_MODES: x509,dpop
+      SAC_TLS_CLIENT_CERT_HEADER: X-Client-Cert
+      SAC_DPOP_ISSUER: sac-authlab
+      SAC_DPOP_AUDIENCE: shadow-ingest
+    volumes:
+      # A named volume, populated before `up` by run.mjs from the sac/authlab-pki:lab image, rather
+      # than a host-path bind: some Docker daemons present a bind as an empty stub, which is why the
+      # services first reported `open /authlab/dev-ca.crt: no such file or directory`.
+      - authpki:/authlab:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8080/healthz"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
+
+  # edge — the Application Gateway stand-in. It terminates TLS 1.3, requests a client certificate
+  # without requiring one, forwards the presented chain in X-Client-Cert, and reverse-proxies by
+  # path. It has no tenant, device or credential knowledge.
+  edge:
+    image: sac/edge:lab
+    depends_on:
+      control-api:
+        condition: service_healthy
+      ingest-api:
+        condition: service_healthy
+    ports:
+      - "${LAB_EDGE_PORT:-8443}:8443"
+    command:
+      - --addr
+      - 0.0.0.0:8443
+      - --health-addr
+      - 0.0.0.0:8081
+      - --tls-cert
+      - /authlab/edge-server.crt
+      - --tls-key
+      - /authlab/edge-server.key
+      - --client-ca
+      - /authlab/dev-ca.crt
+      - --control-url
+      - http://control-api:8080
+      - --ingest-url
+      - http://ingest-api:8080
+    volumes:
+      # A named volume, populated before `up` by run.mjs from the sac/authlab-pki:lab image, rather
+      # than a host-path bind: some Docker daemons present a bind as an empty stub, which is why the
+      # services first reported `open /authlab/dev-ca.crt: no such file or directory`.
+      - authpki:/authlab:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8081/healthz"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
+
+volumes:
+  authpgdata:
+  # Populated before `up` by run.mjs --auth from sac/authlab-pki:lab (which bakes localdev/.authlab
+  # in with a build-time COPY), then mounted read-only into the three services. Pinned so run.mjs
+  # can target it without guessing the compose project prefix.
+  authpki:
+    name: sac-authlab-authpki

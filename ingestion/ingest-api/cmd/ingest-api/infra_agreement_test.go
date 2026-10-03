@@ -160,6 +160,14 @@ func TestEveryReadNameIsEitherPassedOrDocumented(t *testing.T) {
 			"(every app in infra/main.bicep has keyVaultEnv: []), so the device-facing listener still cannot be given mTLS material in a container",
 		EnvTLSKeyPEM:      "F5: the server private key as PEM text — see " + EnvTLSCertPEM,
 		EnvTLSClientCAPEM: "F5: the CA that must have signed the device certificates, as PEM text — see " + EnvTLSCertPEM,
+		// ADR 0020 decision 2 adds the authenticator mode set and the DPoP material. infra/main.bicep
+		// passes none of them yet, so Azure still serves only the legacy inference; a deployment that
+		// wants DPoP must be given these by the Application Gateway slice before it is usable.
+		EnvAuthModes:           "ADR 0020: the x509,dpop mode list; infra/main.bicep does not pass it, so the binary infers x509 from the material present",
+		EnvTLSClientCertHeader: "ADR 0020: the edge-forwarded certificate header (Application Gateway X-Client-Cert); no deployment passes it yet",
+		EnvDPoPTokenPublicPEM:  "ADR 0020: the access-token signing public key; no deployment passes it yet",
+		EnvDPoPIssuer:          "ADR 0020: the access-token issuer; no deployment passes it yet — see " + EnvDPoPTokenPublicPEM,
+		EnvDPoPAudience:        "ADR 0020: the access-token audience; no deployment passes it yet — see " + EnvDPoPTokenPublicPEM,
 	}
 
 	var undocumented []string

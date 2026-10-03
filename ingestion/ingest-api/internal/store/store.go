@@ -19,6 +19,7 @@ package store
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -63,6 +64,15 @@ type PrincipalStatus struct {
 	CredentialKnown   bool
 	CredentialExpiry  time.Time
 	CredentialRevoked *time.Time
+	// CredentialType is ops.device_credential.credential_type: "x509" or "dpop". It is what makes
+	// the credential's mode a property of the row rather than of the deployment (ADR 0020 §4), so
+	// an x509 presentation cannot authenticate against a dpop credential even if the thumbprint
+	// somehow matched.
+	CredentialType string
+	// PublicKeyThumbprint is the single transport binding for both modes (ADR 0020 §4): SHA-256 over
+	// the certificate SPKI for x509, the RFC 7638 JWK thumbprint for dpop. The authenticator computes
+	// the same value from what the request presented and refuses a disagreement (CheckBinding).
+	PublicKeyThumbprint string
 }
 
 // Errors the write path distinguishes. Everything else is an infrastructure failure and is
@@ -76,7 +86,32 @@ var (
 	ErrDeviceRevoked      = errors.New("store: device revoked")
 	ErrUnknownRoute       = errors.New("store: route not in ref.route_fidelity")
 	ErrSubmissionNotFound = errors.New("store: submission row not found after write")
+	// ErrCredentialThumbprintMismatch is the transport-binding failure of ADR 0020 §4: the key the
+	// request presented is not the key the credential row was issued against. It is compared during
+	// admission, before revocation and expiry are reported, so a stolen credential whose key does
+	// not match is refused as a bad credential rather than as a revoked one.
+	ErrCredentialThumbprintMismatch = errors.New("store: presented key does not match the credential's public_key_thumbprint")
+	// ErrCredentialTypeMismatch refuses a credential presented in a mode other than the one its row
+	// records, so a dpop row cannot be authenticated by a certificate and an x509 row cannot be
+	// authenticated by a DPoP key.
+	ErrCredentialTypeMismatch = errors.New("store: credential_type does not match the presented credential mode")
 )
+
+// CheckBinding compares what a request presented with what the credential row binds (ADR 0020 §4).
+// It is the one place both x509 paths and the DPoP path make the comparison, so they cannot drift
+// to different binding rules. An empty presented or stored value means the comparison is not
+// available (the in-memory double and older rows), and is skipped rather than guessed: the live
+// schema makes both columns NOT NULL, so a deployed row always carries them.
+func (s PrincipalStatus) CheckBinding(presentedType, presentedThumbprint string) error {
+	if presentedType != "" && s.CredentialType != "" && presentedType != s.CredentialType {
+		return ErrCredentialTypeMismatch
+	}
+	if presentedThumbprint != "" && s.PublicKeyThumbprint != "" &&
+		subtle.ConstantTimeCompare([]byte(presentedThumbprint), []byte(s.PublicKeyThumbprint)) != 1 {
+		return ErrCredentialThumbprintMismatch
+	}
+	return nil
+}
 
 // CheckWritable applies the §2.3 rules to a status. It is shared by both implementations so the
 // double cannot be more permissive than the real thing.
@@ -182,6 +217,10 @@ type Store interface {
 	RouteFidelity(ctx context.Context) (RouteTable, error)
 	// PrincipalStatus resolves the authenticated principal to tenant, device and credential state.
 	PrincipalStatus(ctx context.Context, tenantID, deviceID, credentialID string) (PrincipalStatus, error)
+	// DPoPReplaySeen records an RFC 9449 proof jti for tenantID and reports whether it had already
+	// been seen inside the window that ends at expiresAt. A true second return is an authentication
+	// failure, not a permissions failure: the same proof must never authorise two requests.
+	DPoPReplaySeen(ctx context.Context, tenantID, jti string, expiresAt time.Time) (bool, error)
 	// WriteBatch performs the whole batch in one transaction: credential re-check, then one
 	// ingest.record_event() call per accepted event, then the rejections. Either all of it
 	// commits or none of it does.

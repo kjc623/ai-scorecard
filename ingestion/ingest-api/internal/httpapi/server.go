@@ -214,6 +214,16 @@ func (s *Server) writeAuthError(w http.ResponseWriter, err error) {
 		s.writeError(w, 401, protocol.ReasonRevokedDevice, nil, "admission: the device was revoked")
 	case errors.Is(err, auth.ErrBadCredential), errors.Is(err, auth.ErrCredentialUnknown):
 		s.writeError(w, 401, protocol.ReasonRevokedDevice, nil, "admission: the client credential is not a device credential this deployment issued")
+	case errors.Is(err, auth.ErrBadAccessToken):
+		s.writeError(w, 401, protocol.ReasonRevokedDevice, nil, "admission: the DPoP access token is not one this deployment issued")
+	case errors.Is(err, auth.ErrBadProof):
+		s.writeError(w, 401, protocol.ReasonRevokedDevice, nil, "admission: the DPoP proof is not a valid sender-constrained proof for this request")
+	case errors.Is(err, auth.ErrReplay):
+		s.writeError(w, 401, protocol.ReasonRevokedDevice, nil, "admission: the DPoP proof was already presented (jti replay)")
+	case errors.Is(err, auth.ErrThumbprintMismatch):
+		s.writeError(w, 401, protocol.ReasonRevokedDevice, nil, "admission: the presented key is not the credential's transport binding")
+	case errors.Is(err, auth.ErrCredentialTypeMismatch):
+		s.writeError(w, 401, protocol.ReasonRevokedDevice, nil, "admission: the credential type does not match the presented authentication mode")
 	default:
 		s.Logger.Error("ingest: unclassified authentication failure", "error", err)
 		s.writeError(w, 401, protocol.ReasonRevokedDevice, nil, "admission: the client credential could not be verified")
@@ -310,6 +320,13 @@ type DevHeader struct {
 	DeviceHeader string
 	// CredentialID names the row the store's status check resolves. Default "dev".
 	CredentialID string
+}
+
+// Presents reports whether the request carries both development principal headers. The pluggable
+// selector uses it so an ordinary request is refused as absent rather than served as the dev
+// principal.
+func (d DevHeader) Presents(r *http.Request) bool {
+	return r.Header.Get(d.TenantHeader) != "" && r.Header.Get(d.DeviceHeader) != ""
 }
 
 // Authenticate implements auth.Authenticator.

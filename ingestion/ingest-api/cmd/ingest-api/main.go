@@ -27,6 +27,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/shadow-ai-capture/device/protocol"
+
 	"github.com/shadow-ai-capture/ingest-api/internal/auth"
 	"github.com/shadow-ai-capture/ingest-api/internal/batchguard"
 	"github.com/shadow-ai-capture/ingest-api/internal/contract"
@@ -65,6 +67,11 @@ type options struct {
 	tlsCert          string
 	tlsKey           string
 	tlsClientCA      string
+	authModes        string
+	clientCertHeader string
+	dpopTokenPublic  string
+	dpopIssuer       string
+	dpopAudience     string
 	devTrust         bool
 	devSeed          string
 	devCredentialID  string
@@ -91,6 +98,11 @@ func run() error {
 	flag.StringVar(&o.tlsCert, "tls-cert", "", "server certificate (PEM)")
 	flag.StringVar(&o.tlsKey, "tls-key", "", "server private key (PEM)")
 	flag.StringVar(&o.tlsClientCA, "tls-client-ca", "", "CA bundle that must have issued the device certificate (PEM)")
+	flag.StringVar(&o.authModes, "auth-modes", "", "comma list of production auth modes: x509, dpop (env "+EnvAuthModes+"; default: inferred from the material present)")
+	flag.StringVar(&o.clientCertHeader, "tls-client-cert-header", "", "edge-forwarded leaf certificate header (env "+EnvTLSClientCertHeader+"; empty disables the forwarded x509 path)")
+	flag.StringVar(&o.dpopTokenPublic, "dpop-token-public-pem", "", "deployment access-token signing public key (PEM text; env "+EnvDPoPTokenPublicPEM+")")
+	flag.StringVar(&o.dpopIssuer, "dpop-issuer", "", "access-token issuer the DPoP mode requires (env "+EnvDPoPIssuer+")")
+	flag.StringVar(&o.dpopAudience, "dpop-audience", "", "access-token audience the DPoP mode requires (env "+EnvDPoPAudience+")")
 	flag.BoolVar(&o.devTrust, "dev-trust-principal", false, "TEST ONLY: trust X-Dev-Tenant-Id and X-Dev-Device-Id instead of a client certificate")
 	flag.StringVar(&o.devCredentialID, "dev-credential-id", "dev",
 		"TEST ONLY with -dev-trust-principal: the credential id the header principal presents. The in-memory store ignores it; a -store sql run needs a uuid that names an ops.device_credential row")
@@ -106,6 +118,11 @@ func run() error {
 	o.addr = passed.str("addr", o.addr, EnvHTTPAddr, "127.0.0.1:8443")
 	o.schemaPath = passed.str("schema", o.schemaPath, EnvSchema, "")
 	o.region = passed.str("region", o.region, EnvRegion, "")
+	o.authModes = passed.str("auth-modes", o.authModes, EnvAuthModes, "")
+	o.clientCertHeader = passed.str("tls-client-cert-header", o.clientCertHeader, EnvTLSClientCertHeader, "")
+	o.dpopTokenPublic = passed.str("dpop-token-public-pem", o.dpopTokenPublic, EnvDPoPTokenPublicPEM, "")
+	o.dpopIssuer = passed.str("dpop-issuer", o.dpopIssuer, EnvDPoPIssuer, "")
+	o.dpopAudience = passed.str("dpop-audience", o.dpopAudience, EnvDPoPAudience, "")
 	o.storeKind = passed.str("store", o.storeKind, EnvStore, "memory")
 	o.pgHost = passed.str("pg-host", o.pgHost, EnvPGHost, "")
 	o.pgDatabase = passed.str("pg-database", o.pgDatabase, EnvPGDatabase, "shadow")
@@ -217,35 +234,74 @@ func run() error {
 		return err
 	}
 
-	// The TLS material decides how devices authenticate: files on a laptop, PEM from the environment
-	// in a container (SAC_TLS_*_PEM, injectable from Key Vault by the module's keyVaultEnv).
+	// The authenticator material decides how devices authenticate. The direct listener needs a server
+	// key pair (files on a laptop, PEM from the environment in a container); the forwarded path needs
+	// only the client CA, because the edge terminated TLS. Both are loaded before the mode set is
+	// validated so a mode with no material is a startup refusal that names the setting to supply.
 	material, err := loadTLSMaterial(o)
 	if err != nil {
 		return err
 	}
+	clientCA, err := loadClientCAPool(o)
+	if err != nil {
+		return err
+	}
+	tokenKey, err := loadTokenPublicKey(o.dpopTokenPublic)
+	if err != nil {
+		return err
+	}
+	am := authMaterial{
+		clientCA: clientCA, directTLS: material != nil, forwardedHeader: o.clientCertHeader,
+		tokenPublicKey: tokenKey, issuer: o.dpopIssuer, audience: o.dpopAudience,
+	}
 
 	var authenticator auth.Authenticator
 	if o.devTrust {
-		if material != nil {
-			return errors.New("-dev-trust-principal and TLS material are mutually exclusive: one replaces the device credential, the other verifies it")
+		if material != nil || clientCA != nil || o.clientCertHeader != "" || tokenKey != nil || o.authModes != "" {
+			return errors.New("-dev-trust-principal and production device-authentication material are mutually exclusive: one replaces the device credential, the other verifies it")
 		}
 		logger.Warn("TEST ONLY: trusting X-Dev-Tenant-Id / X-Dev-Device-Id; never enable this in a deployment")
 		authenticator = httpapi.DevHeader{
 			TenantHeader: "X-Dev-Tenant-Id", DeviceHeader: "X-Dev-Device-Id",
 			CredentialID: o.devCredentialID,
 		}
-	} else if material != nil {
-		authenticator = &auth.MTLSAuthenticator{Store: st, Region: o.region}
 	} else {
-		return fmt.Errorf(`refusing to serve without device authentication.
-
-  supply the material as files:      --tls-cert FILE --tls-key FILE --tls-client-ca FILE
-  or as PEM in the environment:      %s, %s, %s
-                                     (what a deployment injects from Key Vault: the Container Apps
-                                      module has no command/args and no volume mount, but it does
-                                      have keyVaultEnv)
-  or, for a local test only:         -dev-trust-principal`,
-			EnvTLSCertPEM, EnvTLSKeyPEM, EnvTLSClientCAPEM)
+		modes, err := parseAuthModes(o.authModes)
+		if err != nil {
+			return err
+		}
+		if len(modes) == 0 {
+			modes = inferAuthModes(am)
+		}
+		if err := checkAuthMaterial(modes, am); err != nil {
+			return err
+		}
+		var p auth.Pluggable
+		for _, mode := range modes {
+			switch mode {
+			case protocol.AuthModeX509:
+				if material != nil {
+					p.Direct = &auth.MTLSAuthenticator{Store: st, Region: o.region}
+				}
+				if o.clientCertHeader != "" {
+					p.Forwarded = &auth.ForwardedCertAuthenticator{
+						Store: st, ClientCAs: clientCA, Region: o.region, Header: o.clientCertHeader,
+					}
+				}
+			case protocol.AuthModeDPoP:
+				p.DPoP = &auth.DPoPAuthenticator{
+					Store: st, TokenPublicKey: tokenKey, Issuer: o.dpopIssuer, Audience: o.dpopAudience,
+					Region: o.region, Now: time.Now,
+				}
+			}
+		}
+		selector, err := auth.NewPluggable(p)
+		if err != nil {
+			return refusalNoDeviceAuth()
+		}
+		logger.Info("device authentication configured",
+			"modes", modes, "direct_tls", p.Direct != nil, "forwarded_header", o.clientCertHeader)
+		authenticator = selector
 	}
 
 	srv := httpapi.New(svc, authenticator, batchguard.New(o.replayWindow), logger)
@@ -292,6 +348,24 @@ func run() error {
 	defer cancel()
 	logger.Info("shutting down")
 	return httpServer.Shutdown(ctx)
+}
+
+// refusalNoDeviceAuth is the existing "refuses to serve without device authentication" refusal. It
+// is reached whenever no production mode is configured and the dev acknowledgement is absent, and
+// it names every material form the deployment could supply, including the two ADR 0020 adds.
+func refusalNoDeviceAuth() error {
+	return fmt.Errorf(`refusing to serve without device authentication.
+
+  supply the material as files:      --tls-cert FILE --tls-key FILE --tls-client-ca FILE
+  or as PEM in the environment:      %s, %s, %s
+                                     (what a deployment injects from Key Vault: the Container Apps
+                                      module has no command/args and no volume mount, but it does
+                                      have keyVaultEnv)
+  or forward the certificate:        --tls-client-cert-header X-Client-Cert plus a client CA
+  or serve DPoP:                     --auth-modes dpop --dpop-token-public-pem PEM
+                                     --dpop-issuer ISS --dpop-audience AUD
+  or, for a local test only:         -dev-trust-principal`,
+		EnvTLSCertPEM, EnvTLSKeyPEM, EnvTLSClientCAPEM)
 }
 
 // sqlRefusal is the F4 decision (task-24), stated as a message rather than a dead end.

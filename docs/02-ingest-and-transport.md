@@ -25,7 +25,7 @@ with them. Three invariants are owned here, and everything below exists to hold 
 | I3 | No failure path reports success: every rejection, gap, undercount and unreconcilable observation has a machine-readable surface | brief §7; C22–C25; R11 |
 
 **In scope:** transport and device authentication (§2); the grant state machine (§3); deduplication —
-normative (§4); the five device-facing APIs (§5); the idempotent write path (§6); validation and reason
+normative (§4); the six device-facing APIs (§5); the idempotent write path (§6); validation and reason
 codes (§7); batching, backpressure and retry (§8); the health channel (§9); grant issuance and upload
 (§10); the analyst retrieval path (§11); tenant and region enforcement at the edge (§12); the wire-level
 failure catalogue (§13).
@@ -48,32 +48,48 @@ schema change with a conformance test, not as a tuning exercise.
 
 | Property | Value | Source / why |
 |---|---|---|
-| Hostname | Per-region service FQDN on a **custom domain** (e.g. `ingest.eu.example.com`) | Azure Front Door mTLS cannot be enabled on the default `*.azurefd.net` domain, and requires the FQDN in the client certificate's SAN (Appendix B) |
+| Hostname | Per-region service FQDN on a **custom domain** (e.g. `ingest.eu.example.com`) | Application Gateway terminates the device TLS connection; the device credential names it — the certificate's SAN in `x509` mode, the token audience in `dpop` mode (Appendix B) |
 | Protocol | TLS 1.3 minimum; TLS 1.2 refused | Cipher agility without configuration drift; the device population is ours, not the customer's browser |
 | 0-RTT / early data | **Refused** | Early data is replayable and every endpoint here writes |
 | Renegotiation | Refused | No legitimate need; it is an attack surface |
-| Mutual auth | Client certificate **required**; validated at the edge and authoritatively at the origin | brief §4.2 "one-shot, mutually authenticated"; master §4.2 step 6 |
-| Pinning | Device pins the **issuing CA set** (not a leaf), delivered in the MDM enrolment profile | Leaf pinning breaks on every rotation; CA pinning survives it |
+| Mutual auth | A per-device credential is **required**, and it is one of two production modes: **`x509`** (client certificate) or **`dpop`** (RFC 9449 proof of possession). The edge forwards; the origin authenticates (ADR 0020) | brief §4.2 "one-shot, mutually authenticated"; master §4.2 step 6 |
+| Pinning | In `x509` mode the device pins the **issuing CA set** (not a leaf), delivered in the MDM enrolment profile. In `dpop` mode the device holds the keypair and no CA pins | Leaf pinning breaks on every rotation; CA pinning survives it |
 | Payload | Envelope JSON only (§5.3). Content never travels on this channel | I1; master §4.2 step 5 |
 
-**Edge validation vs origin validation.** Front Door Premium mTLS is the edge control (presence, chain,
-validity window, EKU, optional SAN/CN allowlist, OCSP). It is in **preview**, its revocation check is
-OCSP-only, and it validates against up to two CA certificates with no auto-rotation (Appendix B).
-Therefore the edge is treated as a *filter*, never as the authority: the origin re-validates the
-certificate chain and, decisively, the **per-device credential status** on every request (§2.3). The
-design does not depend on a preview feature's validation semantics for correctness, and a change to
-those semantics degrades to "the origin refuses what it cannot verify".
+**The edge, and why it is a filter rather than the authority.** Application Gateway `WAF_v2` is the
+public device ingress (ADR 0020 decision 1). Its listener runs in **passthrough** mode by default: it
+requests a client certificate when one is presented and forwards it as PEM in `X-Client-Cert`, set by a
+rewrite from the `{var_client_certificate}` server variable, and does not validate the chain. The origin
+re-validates the chain against its configured trust bundle and, decisively, the **per-device credential
+status** on every request (§2.3); in `dpop` mode there is no certificate at the edge at all and the
+origin verifies the token, the per-request proof and the replay store. The edge is a *filter*, never the
+authority. Strict mode — the edge validating against an uploaded CA chain — is an optional hardening for
+certificate-only tenants, not the default, because one regional gateway serves tenants with different
+credential modes. This replaces the Front Door Premium mTLS premise: that feature is in **preview**, its
+revocation check is OCSP-only, its support for our Private Link origin is denied by Azure's own
+documentation, and as an L7 proxy it always terminates TLS, so the origin could never verify the device
+handshake under it (ADR 0020; Appendix B). Front Door remains in front of the analyst surface
+(`/analyst/*`) and is not on the device path.
 
 **Origin reachability.** The origin must be reachable only through the edge: the container app
-environment takes no public ingress, and Front Door reaches it over Private Link (master §4.1 diagram).
-The platform documents that mTLS can be bypassed by calling the origin directly, so this is a
-correctness requirement of the authentication design, not a hardening nicety (Appendix B).
+environment takes no public ingress, and Application Gateway reaches it over the VNet, with the source
+restricted to the gateway subnet (master §4.1 diagram). A forwarded `X-Client-Cert` is trusted **only**
+behind that lock — the origin re-validates the chain regardless, but the lock is what makes the
+forwarded header meaningful, because the platform documents that an origin reachable from the internet
+can be called directly and bypass the edge entirely. This is a correctness requirement of the
+authentication design, not a hardening nicety (ADR 0019's intent, kept).
 
 ### 2.2 The per-device credential
 
-One X.509 client certificate per device, per tenant. Private key generated on the device and never
-exported (enrolment carries a PKCS#10 CSR, never a key). The certificate carries `device_id` as subject
-CN, the tenant in an organisational attribute, `clientAuth` EKU, and the regional service FQDNs in SAN.
+One credential per device, per tenant, and it is one of two kinds: an **`x509`** client certificate or a
+**`dpop`** RFC 9449 keypair (ADR 0020 decision 4). The private key is generated on the device and never
+exported — enrolment carries a PKCS#10 CSR in `x509` mode and the public JWK plus a proof of possession
+in `dpop` mode, never key material. The certificate carries `device_id` as subject CN, the tenant in an
+organisational attribute, `clientAuth` EKU, and the regional service FQDNs in SAN.
+`public_key_thumbprint` on `ops.device_credential` is the **single transport binding for both modes**:
+SHA-256 over the certificate's SubjectPublicKeyInfo for `x509`, and the RFC 7638 JWK thumbprint for
+`dpop`, in the same base64url spelling. `credential_type` records which, so one gateway can serve a
+mixed fleet.
 
 Why per-device rather than per-tenant: brief §4.2 requires device identity to be "revocable per device",
 and revocation granularity is the whole point — a stolen credential must cost one device, not a fleet.
@@ -81,12 +97,12 @@ Per-device credentials are also what make every write attributable, which §9, �
 
 | Lifecycle step | Behaviour | Source |
 |---|---|---|
-| **Issue** | MDM delivers an enrolment profile (service FQDN, bootstrap CA set, short-lived enrolment token). Device calls `POST /v1/enrol` with the token and a CSR; tenant intermediate CA signs; response returns the certificate, `device_id`, tenant and region | brief §4.2; D4 (MDM-delivered profile) |
-| **Re-image** | Re-enrolment with the same hardware identity returns the **existing** `device_id` and a fresh certificate; no duplicate device row is created | C11; brief §4.2 |
-| **Rotate** | At 60 days of a 90-day life, the device re-enrols authenticated with its **current** credential and receives a replacement. Old and new are both accepted for a 7-day overlap, so a failed rotation never locks a device out | **ASSUMPTION:** duration and overlap are operational parameters, not measured. Front Door's two-CA allowance makes overlap the natural choice |
+| **Issue** | MDM delivers an enrolment profile (service FQDN, short-lived enrolment token). Device calls `POST /v1/enrol` with the token: in `x509` mode with a CSR, which the tenant intermediate CA signs; in `dpop` mode with its public JWK and a proof of possession, which registers the key. Either response returns the credential, `device_id`, tenant and region | brief §4.2; D4 (MDM-delivered profile); ADR 0020 decision 3 |
+| **Re-image** | Re-enrolment with the same hardware identity returns the **existing** `device_id` and a fresh credential; no duplicate device row is created | C11; brief §4.2 |
+| **Rotate** | At 60 days of a 90-day life, the device re-enrols authenticated with its **current** credential and receives a replacement. Old and new are both accepted for a 7-day overlap, so a failed rotation never locks a device out | **ASSUMPTION:** duration and overlap are operational parameters, not measured. The overlap is enforced at the origin's credential store, not at the edge, so it does not depend on the edge's CA list |
 | **Expiry watch** | The server knows every `not_after` it issued. A daily job alarms on credentials inside 14 days with no rotation, and the device reports `credential_not_after` in health (§9) | C24; avoids the E19-class known-date outage |
 | **Revoke** | An operator sets `revoked_at` (with a reason) on the credential in `ops.device_credential`, or on the device in `ops.device`. The **origin** checks status on every request — no cache, because the volume is 0.14 events/s mean and ≤500 events/s worst case (master §1.4), which a point lookup absorbs | brief §4.2 "a revoked device is rejected and marked accordingly" |
-| **Emergency (tenant-wide)** | Replacing the tenant's CA bundle at the edge invalidates every certificate that tenant's CA issued. It is a manual, audited, two-person action with an obvious blast radius | Appendix B (CA certs are uploaded manually, no auto-rotation) |
+| **Emergency (tenant-wide, `x509` only)** | Replacing the tenant's CA in the origin's trust bundle invalidates every certificate that tenant's CA issued. It is a manual, audited, two-person action with an obvious blast radius; it does not touch a `dpop` credential, which is revoked row by row instead | ADR 0020: the origin is the authority, so the CA bundle is replaced there rather than at the edge |
 
 **Revocation is not erasure.** A revoked device's already-ingested observations remain subject to the
 retention and erasure paths (brief §3.4). Revocation stops the flow; it does not rewrite history, and
@@ -115,7 +131,7 @@ unknown one (brief §3.2's list of states that must never be merged).
 | The database has no public listener and the ingest service holds the only writer identity | Bypass of every control in this document |
 
 So: `ingest-api` writes `ingest.*` under its own managed identity with forced row-level security; the
-device's only capability is to call five endpoints as itself.
+device's only capability is to call six endpoints as itself.
 
 ---
 
@@ -502,14 +518,20 @@ way — and can check the arithmetic.
 
 ---
 
-## 5. The five device-facing APIs
+## 5. The six device-facing APIs
 
-Five endpoints and no more: each additional device-facing endpoint is another thing to authenticate,
-version and keep compatible with clients on machines nobody controls (master §5.1). Paths are
+Six endpoints and no more: each additional device-facing endpoint is another thing to authenticate,
+version and keep compatible with clients on machines nobody controls (master §5.1). This count was five
+until ADR 0020. DPoP is now a first-class production mode, and a DPoP device needs a token endpoint to
+exchange a proof of possession for a short-lived, sender-constrained access token; that endpoint is
+`POST /v1/token` (§5.6). The invariant the old count protected still holds — there is no unbounded,
+bulk or device-initiated push path, and every endpoint is authenticated, versioned and enumerated here —
+but it was never a claim that the number could not change. It was a claim that adding one is a
+deliberate, reviewable act, which is why the sixth is argued rather than slipped in. Paths are
 `/v1`-prefixed; the body carries `schema_version`, which is the *document* version, independent of the
 API major version.
 
-**Versioning rules, common to all five.** A server accepts a closed set of `schema_version` values it
+**Versioning rules, common to all six.** A server accepts a closed set of `schema_version` values it
 advertises in the policy bundle, so a device never guesses. An unknown value is rejected with
 `unsupported_schema_version` and the supported list in `detail` — an explicit, diagnosable failure
 rather than a partial parse. Because the envelope schema sets `additionalProperties: false`, any new
@@ -526,12 +548,12 @@ rate limited with `retry_after_s`; `503` unavailable with `retry_after_s`. Bodie
 
 | Facet | Specification |
 |---|---|
-| Purpose | One-shot mutually authenticated enrolment; issues the per-device credential and returns identity, region, and the current policy ETag (brief §4.2, C11) |
-| Auth | mTLS with the MDM-delivered enrolment token as the body credential; the token is tenant-scoped, single-use per device and short-lived. Re-enrolment for rotation authenticates with the **current** device credential instead |
-| Request | `{ schema_version, enrolment_token?, csr (PKCS#10 PEM), device: { os, os_version, agent_version, mdm_id?, hardware_identity_hash }, claimed_region? }` — no hostname, no username, no directory identifiers |
-| Response | `200` `{ device_id, tenant_id, region, reenrolled: bool, credential: { cert_pem, not_after }, policy_etag, schema_version, server_time }` |
-| Errors | `400` schema violation; `401` bad bootstrap credential; `403` `revoked_device` (a revoked device may **not** re-enrol into a fresh identity — revocation is not bypassable by re-imaging), tenant inactive; `409` the hardware identity already belongs to another tenant; `410` enrolment token expired |
-| Idempotency | Store-enforced unique on `(tenant_id, hardware_identity_hash)`. Re-enrolment returns the **existing** `device_id` with `reenrolled: true` and HTTP 200, never a duplicate row (C11). **As built:** `ops.device` has no hardware-identity column and no such unique constraint (its key is `(tenant_id, device_id)`), and `control-api` is not implemented, so this requirement is not yet enforced anywhere |
+| Purpose | One-shot enrolment; issues the per-device credential and returns identity, region, and the current policy ETag (brief §4.2, C11) |
+| Auth | Pluggable bootstrap (ADR 0020 decision 3): a short-lived, tenant-scoped, single-use **enrolment token** in the body, or the **current** device credential on re-enrolment (a forwarded `x509` certificate, or a `dpop` access token plus a fresh proof). The edge forwards, the origin authenticates, and the tenant comes from the token or the credential — never the body |
+| Request | `{ schema_version, enrolment_token?, mode, csr?, jwk?, device: { os, os_version, agent_version, mdm_id?, hardware_identity_hash }, claimed_region? }` — `x509` carries a PKCS#10 CSR and no JWK; `dpop` carries the public JWK and a proof of possession and no CSR. No hostname, no username, no directory identifiers |
+| Response | `200` `{ device_id, tenant_id, region, reenrolled: bool, credential: { mode, cert_pem?, chain_pem?, not_after?, jwk? }, policy_etag, schema_version, server_time }` — the certificate fields are present in `x509` mode, the JWK in `dpop` mode |
+| Errors | `400` schema violation or a body that does not match the declared mode; `401` bad bootstrap credential; `403` `revoked_device` (a revoked device may **not** re-enrol into a fresh identity — revocation is not bypassable by re-imaging), tenant inactive; `409` the hardware identity already belongs to another tenant; `410` enrolment token expired |
+| Idempotency | Store-enforced unique on `(tenant_id, hardware_identity_hash)`. Re-enrolment returns the **existing** `device_id` with `reenrolled: true` and HTTP 200, never a duplicate row (C11). **As built:** `control-api` implements `POST /v1/enrol` for both modes, and `ops.device.hardware_identity_hash` exists with the per-tenant partial unique index that makes re-enrolment idempotent. Two limits remain: the column is nullable, so a device that supplies no hardware identity gets no idempotency; and the §2.2 rotation overlap is not implemented — a rotation revokes the previous credential in the same transaction that inserts the new one |
 | Versioning | `schema_version` admitted from the advertised set; the credential format is versioned by the CSR's signature algorithm, not by the path |
 | **ASSUMPTION:** | The enrolment profile (service FQDN, bootstrap CA set, token) is delivered by MDM. The master doc assumes MDM delivery of trust and proxy configuration (D4); this reuses that channel rather than inventing one |
 
@@ -608,6 +630,23 @@ stored row keeps its first-accepted value, because a retry is not a second recei
 | Idempotency | Unique on `(tenant_id, event_id)` for live grants: a repeat request while a grant is live returns the same `grant_id` and the same upload URL. A grant is **single-use** — one object, one write — so a second upload attempt is refused by the storage layer and by the finaliser (§10) |
 | Versioning | As common rules. The upload URL is opaque and must be used verbatim; its shape is not part of the contract |
 | Denial is not an error | A denial is a successful decision about a well-formed request and returns `200` with `state: "denied"`. Returning 4xx would inflate device error rates, confuse retry logic, and hide the one number the operator most needs to see: the denial reason mix |
+
+### 5.6 `POST /v1/token` — control-api
+
+The DPoP bootstrap endpoint ADR 0020 adds. It is device-facing, and it is the sixth endpoint; §5's
+preamble states why the count changed.
+
+| Facet | Specification |
+|---|---|
+| Purpose | Exchange a proof of possession for a short-lived, sender-constrained DPoP access token (RFC 7523 assertion plus RFC 9449 DPoP) |
+| Auth | The device's **registered key**: a compact ES256 JWS `assertion` whose `sub` is `device_id` and whose `tenant_id` names the tenant, plus a `DPoP` header proof bound to `htm`/`htu` with a `jti`. Both are verified against `ops.device_credential.public_key_jwk`, and the proof key must equal the registered key. No enrolment token is accepted here |
+| Request | `{ grant_type, assertion, device_id? }` with the `DPoP` header |
+| Response | `200` `{ access_token, token_type: "DPoP", expires_in, server_time }`. `token_type` is always `DPoP`; there is no bearer fallback, because a token replayable from any host would break ADR 0005's sender-constraint |
+| Errors | `400` malformed assertion or proof; `401` bad/expired/revoked credential, a proof key that does not match the registered key, or a replayed `jti`; `403` tenant suspended or region mismatch; `429`; `503` |
+| Idempotency | Not idempotent by design: each call mints a token with its own `jti`, but the assertion and the proof are single-use within their validity windows, so a replay is refused rather than reissuing |
+| Versioning | `schema_version` admitted from the advertised set, as the other endpoints; the token format is versioned by the JWS `typ` (`at+jwt`) and the claim set |
+| **ASSUMPTION:** | Access-token lifetime 900 s (15 min) and proof clock tolerance ±30 s are chosen, not measured: short enough that a leaked token is bounded, long enough to cover a batch drain. The `jti` replay window is 5 min |
+| **As built:** | `control-api` serves the endpoint, issuing `ES256` / `at+jwt` tokens bound to `cnf.jkt`; `ingest-api` verifies them and persists the proof `jti` in `ops.dpop_replay`. Two limits remain: the token endpoint verifies the proof `jti` is present but does not persist it, and `ops.dpop_replay` is granted to `sac_ingest` but not yet to `sac_control` |
 
 ---
 
@@ -909,16 +948,16 @@ all.
 
 | Control | Rule |
 |---|---|
-| Tenant resolution | From the **authenticated principal** — the mTLS certificate's tenant attribute for devices, the Entra ID token for analysts. Never from the request body. A body `tenant_id` that disagrees is rejected `tenant_mismatch`, not reconciled |
+| Tenant resolution | From the **authenticated principal** — for devices the credential's tenant (the certificate's tenant attribute in `x509` mode, the signed token's `tenant_id` claim in `dpop`), and for analysts the Entra ID token. Never from the request body. A body `tenant_id` that disagrees is rejected `tenant_mismatch`, not reconciled |
 | Session tenant | `ingest-api` and `control-api` set the tenant on the database session from the principal before any statement; row-level security is forced and every application role is a non-owner without `BYPASSRLS`, so a session with no tenant reads zero rows rather than all rows (C32; master §4.3) |
 | Region | Pinned per tenant and **enforced at ingest, failing closed**. Regional service FQDNs make the mapping mechanical: a device pointed at the wrong region's endpoint is rejected `region_mismatch` rather than written cross-region. A device's `claimed_region` is advisory and ignored for enforcement | **master Q1 (ASSUMPTION):** the brief does not state residency requirements; the master document assumes enterprise buyers in this segment will require in-region storage and pins region per tenant |
-| Edge filtering | Front Door Premium + WAF: managed rule sets, request size limits aligned with §5.3's caps, per-device and per-tenant rate limits, and mTLS as an admission filter with authoritative validation at the origin (§2.1) |
+| Edge filtering | Application Gateway `WAF_v2` + WAF: managed rule sets, request size limits aligned with §5.3's caps, per-device and per-tenant rate limits, and `x509` / `dpop` admission with authoritative validation at the origin (§2.1). Strict mode additionally validates `x509` chains at the edge, but never as the authority |
 | Rate limits | Per device: events as a request-rate cap with a burst allowance sized to a post-outage flush; health at a hard minimum interval (§5.4); grants at a low per-device rate, because a device that needs many grants in a minute is a defect or an attack. Per tenant: a ceiling that bounds one compromised tenant's blast on shared infrastructure |
-| **ASSUMPTION:** | Concrete limit values are operational parameters set with the first design-partner deployment. They are not measured, and they are deliberately held in Front Door and WAF configuration rather than in device code so they can be changed without a release |
-| Identity over IP | Authentication is certificate-based; IP reputation and geo rules are **not** used to admit or refuse devices. Endpoint traffic comes from remote and hybrid workers on residential and carrier-grade-NAT addresses (brief §5.5: 70–85% management coverage, most users off any corporate egress), where IP-based decisions produce false outages and no security benefit |
+| **ASSUMPTION:** | Concrete limit values are operational parameters set with the first design-partner deployment. They are not measured, and they are deliberately held in Application Gateway and WAF configuration rather than in device code so they can be changed without a release |
+| Identity over IP | Authentication is credential-based — an `x509` certificate or a `dpop` proof — and not IP-based; IP reputation and geo rules are **not** used to admit or refuse devices. Endpoint traffic comes from remote and hybrid workers on residential and carrier-grade-NAT addresses (brief §5.5: 70–85% management coverage, most users off any corporate egress), where IP-based decisions produce false outages and no security benefit |
 | WAF visibility | The WAF inspects envelopes at the edge. At M0 and M1 an envelope contains no content by construction; at M2 it contains a minimised excerpt of at most 2048 characters, which therefore *does* transit the edge and is in scope for the edge's data handling. At M3 no excerpt is permitted on the wire at all (schema) — M3's content path is the approved retrieval path, not the ingest path |
-| Bot protection | Front Door's bot-management rules must not be applied to the device endpoints: the clients are automation by design, and an authenticated device presenting a valid client certificate is not a bot problem. Device traffic is admitted on the certificate; bot rules apply to the analyst-facing surface |
-| Origin lock | Origin ingress is private and Front Door-only (§2.1). Without it, mTLS is advisory: the platform documents that the origin can otherwise be reached directly, bypassing the client-certificate check entirely |
+| Bot protection | Application Gateway's bot-management rule set must not be applied to the device endpoints: the clients are automation by design, and an authenticated device presenting a valid `x509` credential or DPoP proof is not a bot problem. Device traffic is admitted on the credential; bot rules apply to the analyst-facing surface |
+| Origin lock | Origin ingress is private and Application Gateway-only (§2.1). Without it, a forwarded certificate is advisory: the platform documents that the origin can otherwise be reached directly, bypassing the edge's check entirely |
 
 ---
 
@@ -926,13 +965,14 @@ all.
 
 | Failure | Device behaviour | Operator-visible signal |
 |---|---|---|
-| **TLS failure** (handshake refused, untrusted chain, pinning mismatch, protocol below 1.3, clock so far off that the credential is not yet valid or already expired) | Do not retry in a loop: back off, record locally, report `tls_failure` with the peer's TLS alert in the next health report | mTLS failure metrics at the edge (§2.1) break down by SNI and error; `collector_state = degraded` fleet-wide if it is a CA or clock problem. Distinguish "our CA rotated and the device is stale" from "this device's clock is wrong" |
+| **TLS failure** (handshake refused, untrusted chain, pinning mismatch, protocol below 1.3, clock so far off that the credential is not yet valid or already expired) | Do not retry in a loop: back off, record locally, report `tls_failure` with the peer's TLS alert in the next health report | Device-auth failure metrics at the edge (§2.1) break down by SNI and error; `collector_state = degraded` fleet-wide if it is a CA or clock problem. Distinguish "our CA rotated and the device is stale" from "this device's clock is wrong" |
 | **Clock skew beyond tolerance** | Events continue to be accepted; the device reports `clock_offset_ms`; the bucket is unaffected because it is device-relative (§4.3) | Per-device skew from the health report, reported and never normalised away (C26); `ops.collector_state` has no dedicated skew column, so the row's `detail` document is the only place the schema can hold it. A skew large enough to break certificate validity windows shows up first as a TLS failure |
 | **Partial batch accepted** | Cannot happen by contract: per-event outcomes are the response, and the transaction is all-or-nothing (§6). The device acts on each event's outcome independently — `accepted` is removed, `duplicate` is removed, `rejected` is recorded and removed, retryable failures stay | `counts` per batch in ingest metrics; a rising `rejected` share per reason code, per agent version |
 | **Gateway timeout after commit** | The device does not know whether the batch landed. It re-sends **with a new `batch_id`**; the event-key constraint makes every already-committed event return `duplicate` and the rest `accepted`. No local state is discarded on a timeout | Duplicate-to-accepted ratio in ingest metrics; a spike means a gateway or timeout-configuration problem, not data loss |
 | **Duplicate batch replay** (same `batch_id` twice) | Whole batch rejected `duplicate_batch`; the device mints a fresh `batch_id` and re-sends, receiving exact per-event outcomes | Batch-level rejections counted by code; a single device repeating this is a defective agent, many devices are a spool-drain bug |
 | **Credential expired mid-batch** | Exactly the revocation path (§2.3): `401`, nothing written, spool retained, sending stops. If the credential is merely *expired* rather than revoked, the device attempts rotation via `POST /v1/enrol` before giving up; a **revoked** device cannot re-enrol (§5.1) | Device marked `revoked`, or an expiry alarm inside 14 days (§2.2). Retained spool depth is visible, so held-back data is a number, not a suspicion |
 | **WAF block** | The device sees a `403` from the edge that does not match the API's error envelope. It must not treat an unrecognised `403` as a decision: back off, record locally, report | WAF logs correlated with device id from the certificate; a WAF rule that blocks device traffic while analyst traffic is unaffected is diagnosable only if the device reports the anomaly, which is why it must |
+| **Edge rejects a certificate before authentication** (Application Gateway strict mode returns `400` for a certificate outside the uploaded CA chain, or a listener misconfiguration) | The device sees a bare `400` from the edge that does not match the API's error envelope. It must not treat an unrecognised edge `400` as a decision: back off, record locally, report — exactly as for the WAF `403` | Edge `400` rate by SNI and error; a strict-mode CA mismatch is a fleet-wide `degraded` signal, distinguished from a malformed request by the absence of an envelope |
 | **Region mismatch** | `403 region_mismatch`. The device does not fall back to another region's endpoint — falling back would defeat the pin. It reports the mismatch and stops content-reading until the policy bundle tells it the correct endpoint | A named error on the device record, plus a tenant-level alert. A tenant whose devices are all hitting the wrong region indicates a DNS or enrolment-profile error, not device misbehaviour |
 
 ---
@@ -951,22 +991,39 @@ The wire contract is frozen; these live only in the database, in
 | `ops.grant` | `decision`, `denial_reason`, `object_id`, `upload_expires_at`, `case_reference`, `approved_by` | §3, §10 |
 | `ops.content_object` | `state` (`uploaded · shredded`), `shredded_reason`, `shredded_at`, `ciphertext_sha256` (the upload's `raw_digest`), `wrapped_dek`, `kek_id`, `kek_version` | §3, §10, §11 |
 | `ops.retrieval_grant` | `principal`, `case_reference`, `second_approver`, `raw_digest`, `expires_at`, `used_at`, `used_by` | §11: the single-use redemption record |
+| `ops.device` | `hardware_identity_hash` (nullable, with a per-tenant partial unique index) | §5.1: C11's idempotency key, so re-enrolment after a re-image returns the existing `device_id` |
+| `ops.device_credential` | `credential_type` (`x509 · dpop`), `public_key_thumbprint` (the single binding for both modes), `public_key_jwk` (`dpop` only), `revoked_at` | §2.2, §5.1: the per-device revocable credential and the one transport binding |
+| `ops.enrolment_token` | `token_hash` (SHA-256, tenant-leading key), `hardware_identity_hash?`, `expires_at`, `used_at`, `revoked_at` | §5.1: the bootstrap credential, stored only as its hash |
+| `ops.dpop_replay` | `(tenant_id, jti)`, `seen_at`, `expires_at`, swept once expired | §5.6: the bounded DPoP replay window, deliberately not an audit log |
 
 ## Appendix B — Platform facts relied on
 
-From Microsoft Learn, *Mutual TLS authentication in Azure Front Door (preview)*
-(<https://learn.microsoft.com/en-us/azure/frontdoor/mutual-tls>), which §2.1, §2.2 and §12 are built
-against:
+From Microsoft Learn, *Mutual TLS authentication with Application Gateway* and the Application Gateway
+`WAF_v2` / `Standard_v2` documentation, which §2.1, §2.2 and §12 are built against. This appendix
+**supersedes the Front Door Premium mTLS facts it previously held**; Front Door is now the analyst
+ingress only, and no device-authentication claim here depends on it (ADR 0020).
 
-- Front Door **Premium** supports mTLS, **in preview**, with modes including full edge validation and
-  "required but not validated" (origin validates). It **strips** client-supplied `X-Azure-ClientCert*`
-  headers and forwards its own, so the origin can trust that header against spoofing — but must still
-  validate the chain and the device's credential status itself.
-- Client CA chain: root plus up to three intermediates, PEM under 25 KB, uploaded via Key Vault **with
-  no auto-rotation**; up to two CA certificates can be attached for rollover. The custom-domain hostname
-  must appear in the client certificate's SAN, so the default `*.azurefd.net` domain cannot carry mTLS.
-- Revocation checking is **OCSP only**, and Microsoft documents that the origin must be restricted to
-  Front Door traffic, because mTLS is otherwise bypassable by calling the origin directly.
+- Application Gateway **`WAF_v2` / `Standard_v2`** supports client-certificate authentication on the
+  listener in **General Availability** (since February 2023). A listener either **requests** a client
+  certificate and forwards it for the origin to validate (passthrough, the default here) or **requires
+  and validates** it against an uploaded CA chain (strict mode, optional hardening for certificate-only
+  tenants).
+- In passthrough mode a **rewrite rule** sets a header — here `X-Client-Cert` — from the
+  `{var_client_certificate}` server variable, PEM-encoded. The origin trusts it only when it is
+  reachable solely through the gateway (private VNet, source restricted to the gateway subnet), and
+  re-validates the chain against its own trust bundle regardless: the edge is a filter, the origin is
+  the authority.
+- Strict mode's uploaded CA chain is a manual artefact with no automatic rotation, so it is reserved
+  for certificate-only tenants; a gateway that serves a mixed `x509` / `dpop` fleet runs passthrough,
+  because the origin is the authority for both modes.
+- **Historical (Front Door).** The prior version of this appendix cited *Mutual TLS authentication in
+  Azure Front Door (preview)* (<https://learn.microsoft.com/en-us/azure/frontdoor/mutual-tls>): mTLS
+  in preview, OCSP-only revocation, up to two CA certificates with no auto-rotation, a custom-domain
+  SAN requirement, and an origin that had to be restricted to Front Door traffic because mTLS was
+  otherwise bypassable. ADR 0019 and §2.1 as first written rested on those facts. ADR 0020 replaced
+  them: Azure's Front Door Private Link page states it does not support client/mutual authentication
+  for private-link origins, and Front Door is an L7 proxy that always terminates TLS, so the origin
+  could never verify the device handshake behind it.
 
 Azure Blob's shared-access-signature model — scoped, time-bounded, permission-limited access — is the
 mechanism behind §10.3's single-object write credential, in its user-delegation form so that no storage
@@ -980,7 +1037,7 @@ account key exists anywhere in the flow.
 | A2 | 300 s bucket width is a chosen parameter, justified against both failure directions | §4.3 |
 | A3 | Inter-route observation gap is ≤50 ms typical, ≤2 s pathological | §4.3 |
 | A4 | Device credential life 90 days, rotation at 60 days, 7-day overlap | §2.2 |
-| A5 | Enrolment profile (FQDN, bootstrap CA set, token) is delivered by MDM | §5.1 |
+| A5 | Enrolment profile (FQDN, short-lived enrolment token, and the credential mode) is delivered by MDM | §5.1 |
 | A6 | Batch caps: 8 MiB compressed, 32 MiB decompressed, 256 KiB per envelope | §5.3 |
 | A7 | Health report interval 15 min; minimum accepted interval 60 s | §5.4 |
 | A8 | `ingest.rejected` TTL 14 days (the `quarantine` retention class), not suspended by holds | §7 |
@@ -990,3 +1047,4 @@ account key exists anywhere in the flow.
 | A12 | Liveness: stale at 24 h | §9 |
 | A13 | Grant TTL ≤15 min, single object, single write | §10.3 |
 | A14 | Rate-limit values are operational parameters set with the first deployment | §12 |
+| A15 | DPoP access-token lifetime 900 s, proof clock tolerance ±30 s, `jti` replay window 5 min | §5.6 |

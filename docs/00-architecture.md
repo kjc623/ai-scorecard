@@ -866,9 +866,9 @@ psql -v ON_ERROR_STOP=1 -f database/schema.sql
 psql -v ON_ERROR_STOP=1 -f database/invariants.test.sql
 ```
 
-47 assertions covering the mode boundary, the tenant-isolation guarantee, the dedup ladder,
-the policy ceiling, the audit hash chain, append-only enforcement, retention materialisation and the
-states that must not be merged. The tests are part of the deliverable rather than a one-off check
+54 assertions covering the mode boundary, the tenant-isolation guarantee, the dedup ladder,
+the policy ceiling, the audit hash chain, append-only enforcement, retention materialisation, the
+device-credential mode boundary and the states that must not be merged. The tests are part of the deliverable rather than a one-off check
 precisely because the properties they assert are the ones the product's credibility rests on.
 
 ---

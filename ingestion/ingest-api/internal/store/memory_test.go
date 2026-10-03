@@ -266,3 +266,56 @@ func TestPrincipalStatusCheckWritable(t *testing.T) {
 		t.Errorf("revoked device: %v", err)
 	}
 }
+
+// TestPrincipalStatusCheckBinding pins the transport-binding comparison ADR 0020 §4 makes the one
+// rule for both modes.
+func TestPrincipalStatusCheckBinding(t *testing.T) {
+	base := PrincipalStatus{CredentialType: "x509", PublicKeyThumbprint: "thumb"}
+
+	if err := base.CheckBinding("x509", "thumb"); err != nil {
+		t.Errorf("a matching binding was refused: %v", err)
+	}
+	if err := base.CheckBinding("dpop", "thumb"); err != ErrCredentialTypeMismatch {
+		t.Errorf("mode mismatch = %v, want ErrCredentialTypeMismatch", err)
+	}
+	if err := base.CheckBinding("x509", "other"); err != ErrCredentialThumbprintMismatch {
+		t.Errorf("thumbprint mismatch = %v, want ErrCredentialThumbprintMismatch", err)
+	}
+	// The in-memory double and pre-ADR rows may not carry the binding; an empty value is skipped
+	// rather than guessed, and the live schema makes it NOT NULL so a deployed row always does.
+	if err := base.CheckBinding("", ""); err != nil {
+		t.Errorf("an unavailable comparison was refused: %v", err)
+	}
+	if err := (PrincipalStatus{}).CheckBinding("x509", "thumb"); err != nil {
+		t.Errorf("an unset stored binding was refused: %v", err)
+	}
+}
+
+// TestMemoryDPoPReplaySeen covers the jti one-shot memory: a second presentation is a replay, the
+// window is tenant-scoped, and an expired entry is forgotten so the same opaque string may recur.
+func TestMemoryDPoPReplaySeen(t *testing.T) {
+	m := NewMemory(nil)
+	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	m.SetNow(func() time.Time { return now })
+	expiry := now.Add(5 * time.Minute)
+
+	first, err := m.DPoPReplaySeen(context.Background(), "tenant-1", "jti-1", expiry)
+	if err != nil || first {
+		t.Fatalf("first presentation = %v, %v; want false, nil", first, err)
+	}
+	second, err := m.DPoPReplaySeen(context.Background(), "tenant-1", "jti-1", expiry)
+	if err != nil || !second {
+		t.Fatalf("second presentation = %v, %v; want true, nil", second, err)
+	}
+	// The same jti from another tenant is a different key, not a replay.
+	other, err := m.DPoPReplaySeen(context.Background(), "tenant-2", "jti-1", expiry)
+	if err != nil || other {
+		t.Fatalf("cross-tenant presentation = %v, %v; want false, nil", other, err)
+	}
+	// Past the window the entry is forgotten and may legitimately recur.
+	now = now.Add(6 * time.Minute)
+	again, err := m.DPoPReplaySeen(context.Background(), "tenant-1", "jti-1", now.Add(5*time.Minute))
+	if err != nil || again {
+		t.Fatalf("expired presentation = %v, %v; want false, nil", again, err)
+	}
+}

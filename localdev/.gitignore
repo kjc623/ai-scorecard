@@ -1,0 +1,8 @@
+# The development PKI and the compiled client. Both are generated, both are lab-only, and neither
+# is a deliverable: the keys must be fresh on every run, and the binary is rebuilt by build.mjs.
+.authlab/
+authlab/bin/
+# A stray `go build .` in either tool drops a binary beside the source; keep it out of git.
+authlab/authlab
+edge/edge
+edge/sac-edge

@@ -50,6 +50,10 @@ const PACKAGES = [
   { kind: 'go', dir: 'endpoint/capture-spool', args: ['./...'] },
   { kind: 'go', dir: 'endpoint/classifier-host', args: ['./...'] },
   { kind: 'go', dir: 'ingestion/ingest-api', args: ['./...'] },
+  // control-api: enrolment, the DPoP token endpoint and (later) policy/health/grants. It shares the
+  // device wire vocabulary with ingest-api and the schema with the database, so its suite runs here
+  // like every other service's (ADR 0020).
+  { kind: 'go', dir: 'control/control-api', args: ['./...'] },
   { kind: 'go', dir: 'vault/content-vault', args: ['./...'] },
   // Lead-owned external invariant tests for the vault: INV-1 says content crosses only on a
   // per-event grant, and a component should not be the only witness to the invariant it implements.

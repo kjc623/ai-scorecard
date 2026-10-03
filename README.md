@@ -23,6 +23,7 @@ it constrains almost every other decision here.
 | [`extension/`](extension/) | The browser extension: Chromium MV3, wide observation, narrow emission, inline warn/block |
 | [`endpoint/`](endpoint/) | The desktop agent: the capture core, its encrypted spool, the classifier host, the device protocol package, and the NFC canonicaliser |
 | [`ingestion/`](ingestion/) | The API devices POST events to. The one write path |
+| [`control/`](control/) | The control plane: device enrolment and the DPoP token endpoint (`control-api`) |
 | [`vault/`](vault/) | The content vault — the only component that can unwrap content keys |
 | [`query/`](query/) | The read path: the closed query DSL and the dashboard the ten questions are answered in |
 | [`database/`](database/) | The PostgreSQL schema, its assertions, and the tools that check both |
@@ -36,11 +37,17 @@ Every one of those has its own README explaining what is inside and how it works
 
 ## What is built, and what is not
 
-Fifteen of the seventeen components have code. The two that do not are `control-api` (enrolment,
-policy, grants, health) and `aggregator` (the scheduled job that keeps the dashboard's aggregates
-fresh). One gap is not a missing component but a missing wire: **`capture-core` spools observations
-and nothing sends them to a server yet** — there is no device-to-cloud transport and no enrolment, so the
-endpoint half of the path currently ends at the spool.
+Sixteen of the seventeen components have code, though `control-api` is partial — enrolment and the
+DPoP token endpoint are built ([ADR 0020](docs/adr/0020-device-transport-is-application-gateway-with-a-pluggable-authenticator.md)),
+while policy, health and grants are not. The one with none is `aggregator` (the scheduled job that
+keeps the dashboard's aggregates fresh). One gap is the Azure transport: there is **no Application
+Gateway module in [`azure/`](azure/) yet**, so a deployed device has no configured edge to enrol
+against. Another is not a missing component but a missing wire: **`capture-core` spools observations
+and nothing sends them to a server yet** — the production device-to-cloud drain is not built, so the
+endpoint half of the path still ends at the spool. What *is* proven is the server side: the opt-in
+auth lab (`node localdev/build.mjs --auth && node localdev/run.mjs --auth`) drives a real device
+client through an Application Gateway stand-in to enrol (`x509` or `dpop`), obtain a DPoP-bound token
+and deliver a batch that lands in the real schema.
 
 The browser half is verified in a real browser: Edge loads the extension, its listener observes real
 requests, M0 carries no content, a registered native host produces a genuinely connected channel, and

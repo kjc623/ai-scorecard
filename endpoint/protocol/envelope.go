@@ -28,8 +28,8 @@ type Envelope = json.RawMessage
 type Kind string
 
 const (
-	KindPrompt        Kind = "prompt"
-	KindUsageRollup   Kind = "usage_rollup"
+	KindPrompt         Kind = "prompt"
+	KindUsageRollup    Kind = "usage_rollup"
 	KindModelDetection Kind = "model_detection"
 )
 
@@ -38,13 +38,13 @@ const (
 type Route string
 
 const (
-	RouteExtWebRequest Route = "ext.web_request"
+	RouteExtWebRequest  Route = "ext.web_request"
 	RouteExtPageContext Route = "ext.page_context"
-	RouteExtDOM        Route = "ext.dom"
-	RouteProxyTLS      Route = "proxy.tls"
-	RouteProxyLoopback Route = "proxy.loopback"
-	RouteProcDetect    Route = "proc.detect"
-	RouteCLIShim       Route = "cli.shim"
+	RouteExtDOM         Route = "ext.dom"
+	RouteProxyTLS       Route = "proxy.tls"
+	RouteProxyLoopback  Route = "proxy.loopback"
+	RouteProcDetect     Route = "proc.detect"
+	RouteCLIShim        Route = "cli.shim"
 )
 
 // CollectionMode is the effective mode resolved on the device from the signed scope
@@ -157,13 +157,13 @@ const (
 	DetailSignatureSetStale  Detail = "signature_set_stale"
 
 	// Classifier host (§9.7's "emitted when" column, in its order)
-	DetailBudgetExhausted     Detail = "budget_exhausted"     // a stage was skipped because its budget was exhausted
-	DetailModelUnavailable    Detail = "model_unavailable"    // the model artefact was missing, unloadable or failed to verify
-	DetailNormaliseTruncated  Detail = "normalise_truncated"  // normalisation truncated the payload so a rule could not see all of it
-	DetailParserFailed        Detail = "parser_failed"        // the document parser failed, timed out or was killed (§10; see the specific codes below)
+	DetailBudgetExhausted      Detail = "budget_exhausted"      // a stage was skipped because its budget was exhausted
+	DetailModelUnavailable     Detail = "model_unavailable"     // the model artefact was missing, unloadable or failed to verify
+	DetailNormaliseTruncated   Detail = "normalise_truncated"   // normalisation truncated the payload so a rule could not see all of it
+	DetailParserFailed         Detail = "parser_failed"         // the document parser failed, timed out or was killed (§10; see the specific codes below)
 	DetailContentUnprocessable Detail = "content_unprocessable" // over-cap body or undecodable bytes handed over by a provider
-	DetailHostUnreachable     Detail = "host_unreachable"     // the host was unreachable and the event was emitted unclassified
-	DetailReleaseLoadFailed   Detail = "release_load_failed"  // a release failed to load and rules-only labels came from the retained release
+	DetailHostUnreachable      Detail = "host_unreachable"      // the host was unreachable and the event was emitted unclassified
+	DetailReleaseLoadFailed    Detail = "release_load_failed"   // a release failed to load and rules-only labels came from the retained release
 
 	// Document parser (§10) — the specific causes behind DetailParserFailed
 	DetailParserMemory    Detail = "parser_memory"
@@ -174,14 +174,14 @@ const (
 	// Policy bundle verification failure (docs/01-collectors.md §13.3 rule 4). These are the four
 	// causes behind the `tampered` state a policy-verification failure produces, and C10's "less
 	// inspection, silently" failure mode: naming the cause is what makes the signal actionable.
-	DetailBundleSignatureInvalid Detail = "bundle_signature_invalid"
-	DetailBundleSchemaInvalid    Detail = "bundle_schema_invalid"
+	DetailBundleSignatureInvalid  Detail = "bundle_signature_invalid"
+	DetailBundleSchemaInvalid     Detail = "bundle_schema_invalid"
 	DetailBundleVersionRegression Detail = "bundle_version_regression"
-	DetailBundleArtefactMissing  Detail = "bundle_artefact_missing"
+	DetailBundleArtefactMissing   Detail = "bundle_artefact_missing"
 
 	// Content-shape causes that reach the classifier
-	DetailContentOverCap      Detail = "content_over_cap"
-	DetailUndecodableContent  Detail = "undecodable_content"
+	DetailContentOverCap     Detail = "content_over_cap"
+	DetailUndecodableContent Detail = "undecodable_content"
 
 	// Framing and contract
 	DetailVersionMismatch Detail = "version_mismatch"
@@ -254,8 +254,8 @@ const (
 // would be a rename waiting to be forgotten, and the first component to forward the descriptor
 // unchanged would emit a record ingest rejects.
 type AttachmentDescriptor struct {
-	Name          string `json:"name"`
-	MediaType     string `json:"media_type,omitempty"` // not a contract field: the contract records
+	Name      string `json:"name"`
+	MediaType string `json:"media_type,omitempty"` // not a contract field: the contract records
 	// the name and the bytes-derived fields, and media type is the collector's own hint.
 	SizeBytes     int64  `json:"size_bytes,omitempty"`
 	ContentDigest string `json:"content_digest,omitempty"` // sha256:<hex>, present only when bytes were read
@@ -293,14 +293,14 @@ const MaxAttachmentBytes = 64 << 20
 // HealthReport is what a component sends on the health channel. It is carried on
 // POST /v1/health, upserted by key, and never as an event stream.
 type HealthReport struct {
-	DeviceID   string             `json:"device_id"`
-	Collector  string             `json:"collector"`
-	State      CollectorState     `json:"state"`
-	Detail     Detail             `json:"detail,omitempty"`
-	LastSuccess *time.Time        `json:"last_success_at,omitempty"`
-	Since      time.Time          `json:"since"`
-	Counters   map[Counter]uint64 `json:"counters"`
-	Version    string             `json:"version,omitempty"`
+	DeviceID    string             `json:"device_id"`
+	Collector   string             `json:"collector"`
+	State       CollectorState     `json:"state"`
+	Detail      Detail             `json:"detail,omitempty"`
+	LastSuccess *time.Time         `json:"last_success_at,omitempty"`
+	Since       time.Time          `json:"since"`
+	Counters    map[Counter]uint64 `json:"counters"`
+	Version     string             `json:"version,omitempty"`
 }
 
 // NewHealthReport returns a report with every counter present, so a missing counter is

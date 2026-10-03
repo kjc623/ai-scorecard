@@ -22,12 +22,15 @@ import (
 // the deployed function is the Tier S -> Tier T adopt path, which raises
 // submission_exact_key_implies_digest on the live server; see memory.adoptDivergence.
 type Memory struct {
-	mu             sync.Mutex
-	ranks          RouteTable
-	principals     map[string]PrincipalStatus
-	observations   map[string]*memoryObservation
-	submissions    map[string]*memorySubmission
-	quarantine     []memoryRejection
+	mu           sync.Mutex
+	ranks        RouteTable
+	principals   map[string]PrincipalStatus
+	observations map[string]*memoryObservation
+	submissions  map[string]*memorySubmission
+	quarantine   []memoryRejection
+	// replay is the DPoP jti one-shot memory, keyed tenantID|jti. It mirrors ops.dpop_replay: a
+	// bounded window, not an audit log, so an expired entry is forgotten and may legitimately recur.
+	replay         map[string]time.Time
 	defaultTTLDays int
 	now            func() time.Time
 }
@@ -99,6 +102,7 @@ func NewMemory(ranks RouteTable) *Memory {
 		principals:     map[string]PrincipalStatus{},
 		observations:   map[string]*memoryObservation{},
 		submissions:    map[string]*memorySubmission{},
+		replay:         map[string]time.Time{},
 		defaultTTLDays: 90,
 		now:            time.Now,
 	}
@@ -156,6 +160,27 @@ func (m *Memory) principalStatusLocked(tenantID, deviceID, credentialID string) 
 
 // Close implements Store.
 func (m *Memory) Close() error { return nil }
+
+// DPoPReplaySeen implements Store. A jti already recorded inside its window is a replay; an expired
+// entry is forgotten and the new presentation is recorded, which mirrors ops.dpop_replay's
+// documented bounded forgetfulness. The opportunistic sweep keeps the map from growing without a
+// separate job, the same way the SQL implementation deletes expired rows on the way past.
+func (m *Memory) DPoPReplaySeen(_ context.Context, tenantID, jti string, expiresAt time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := m.now()
+	key := tenantID + "|" + jti
+	if exp, ok := m.replay[key]; ok && exp.After(now) {
+		return true, nil
+	}
+	m.replay[key] = expiresAt
+	for k, exp := range m.replay {
+		if !exp.After(now) {
+			delete(m.replay, k)
+		}
+	}
+	return false, nil
+}
 
 // WriteBatch implements Store. One call is one transaction: on any error the state is restored
 // before returning, so the caller never observes a partial commit (§6).

@@ -149,7 +149,7 @@ Direction is from the vendor's perspective: **in** = toward the vendor's cloud.
 
 | # | Boundary | What crosses | Dir. | Control |
 |---|---|---|---|---|
-| B1 | Device spool → Azure edge | Envelope batch, 1–500 records: identity, tool fingerprint, timestamps, mode, labels, digest, size. **No prompt text, no attachment bytes** (§2.3) | in | HTTPS 443, per-device credential, mTLS transport binding, schema validation, tenant-scoped idempotency (C12) |
+| B1 | Device spool → Azure edge | Envelope batch, 1–500 records: identity, tool fingerprint, timestamps, mode, labels, digest, size. **No prompt text, no attachment bytes** (§2.3) | in | HTTPS 443 at Application Gateway (public device ingress); a per-device `x509` or `dpop` credential with the `public_key_thumbprint` transport binding, re-validated at the origin; schema validation; tenant-scoped idempotency (C12) |
 | B2 | Browser sandbox → `capture-core` | Observed request bodies, page-context attachment bytes, tool identity (brief §5.1) | local | Native messaging on a per-install channel the page cannot reach |
 | B3 | Cloud → device (policy) | Signed bundle: classifier version, mode per scope, retention class, destination allowlist, spool bounds, feature state (brief §4.2) | out | Signature verification; **failure retains the previous bundle and refuses content-reading modes** (C10) |
 | B4 | Device ↔ cloud (grant) | One grant request per event; on approval a single-object upload credential and key material (C14) | both | Per-event, single-use, one object. No bulk path, which is why C5 holds structurally |
@@ -320,10 +320,10 @@ account, no shared analyst login and no separate password store.
 
 | Property | Mechanism | Source |
 |---|---|---|
-| Enrolment | One-shot and mutually authenticated. The device generates a key pair whose private key is hardware-backed where the platform supplies a TPM or Secure Enclave | Brief §4.2 |
+| Enrolment | One-shot; the device generates a key pair whose private key is hardware-backed where the platform supplies a TPM or Secure Enclave. It submits a PKCS#10 CSR (`x509`) or a public JWK and a proof of possession (`dpop`); the bootstrap credential is a short-lived, single-use enrolment token | Brief §4.2; ADR 0020 |
 | Re-enrolment | Idempotent after re-imaging: returns the existing identity rather than creating a duplicate | C11 |
 | Identity | **Revocable per device.** A revoked device is rejected and marked accordingly | Brief §4.2 |
-| Transport binding | The request is bound to the client certificate presented on *that* TLS connection: its public key must match the key the credential was issued against (`ops.device_credential.public_key_thumbprint`) | **derived from** brief §4.2's "mutually authenticated" plus "revocable per device" — a bearer token alone would be replayable from any host and would make revocation a race |
+| Transport binding | One seam with three modes (ADR 0020 decision 2). `x509`: the certificate presented on the connection or forwarded by the edge in `X-Client-Cert` is re-validated against the trust bundle, and its **SHA-256 SPKI thumbprint** must equal `ops.device_credential.public_key_thumbprint`. `dpop`: the token's `cnf.jkt` and the per-request proof must equal the same `public_key_thumbprint` (RFC 7638), with the proof's `jti` refused on replay. `dev`: no cryptography, refused unless explicitly acknowledged at startup | **derived from** brief §4.2's "mutually authenticated" plus "revocable per device" — a bearer token alone would be replayable from any host and would make revocation a race |
 | Revocation check | Checked on every ingest and control request against server state, with a short cache. The cache window is a bounded, stated exposure | Derived from the same |
 | Lifecycle | Short-lived by construction; renewal is automatic and auditable; a device that cannot renew stops sending rather than sending unauthenticated | Derived from C10's fail-closed posture |
 
@@ -332,17 +332,17 @@ a connection proving possession of the device's private key, and where that key 
 hardware-backed, exfiltrating the credential file yields an unusable secret. Where it is not
 hardware-backed, §14.1 A2 records the honest position.
 
-**As built:** `ingest-api` binds a request to the certificate presented on its connection, but not
-by comparing a public-key thumbprint. It takes the device from the certificate's subject CN and the
-tenant from a subject OU, derives `credential_id` as a deterministic UUID over the certificate's DER
-bytes (`ingestion/ingest-api/internal/auth/auth.go:121-141`), and looks the credential up in
-`ops.device_credential` by that `credential_id` (`ingestion/ingest-api/internal/store/sql.go:40-54`).
-`ops.device_credential.public_key_thumbprint` exists in the schema and is not read on the ingest
-path. The listener requires TLS 1.3 and a verified client certificate
-(`ingestion/ingest-api/cmd/ingest-api/tlsmaterial.go`), but the declared deployment cannot supply
-it with TLS material: every app in `azure/main.bicep` passes `keyVaultEnv: []`. ADR 0019 records
-that gap — a deployed container "cannot authenticate a device" — and decides that the origin
-terminates TLS and validates the device certificate itself.
+**As built:** the pluggable seam and `control-api` exist. `ingest-api` selects among a direct-TLS
+certificate, an edge-forwarded certificate and DPoP by what the request presents
+(`ingestion/ingest-api/internal/auth/pluggable.go`); the production paths share one status check and
+one transport-binding comparison against `ops.device_credential.public_key_thumbprint`
+(`internal/auth/binding.go`), where `x509` uses SHA-256 over the certificate SPKI and `dpop` the RFC
+7638 JWK thumbprint. `control-api` serves `POST /v1/enrol` for both modes and `POST /v1/token`, and the
+schema carries `credential_type`, `public_key_jwk`, `ops.enrolment_token` and `ops.dpop_replay`. What is
+**not** deployed is the Azure wiring: Front Door is still the declared edge, there is no Application
+Gateway module, and every app in `azure/main.bicep` passes `keyVaultEnv: []` — so a deployed container
+cannot yet authenticate a device (ADR 0019, ADR 0020). The device-auth lab proves the seam through a
+simulated Application Gateway; Azure is the part that is not built.
 
 ### 4.3 What revocation does to in-flight work
 
@@ -442,25 +442,38 @@ fails the product's core requirement.
 ### 5.2 Transport — TLS 1.3 on the wire
 
 TLS 1.3 with forward secrecy on every hop: device to edge, service to service, service to PostgreSQL,
-analyst browser to `query-api`.
+analyst browser to `query-api`. The device hop authenticates with a per-device credential, and mTLS is
+no longer the only mode: `x509` client-certificate authentication and DPoP (RFC 9449) are both
+first-class production modes, and the transport binding for both is the same
+`ops.device_credential.public_key_thumbprint` (§4.2, ADR 0020).
 
 **As built:** the requirement is not met on the one service-to-service hop the deployment declares.
 `query-api` is given `content-vault`'s address as `http://…` (`azure/main.bicep`, line 469);
 peer mTLS is disabled on the Container Apps environment (`azure/modules/container-apps-env.bicep`,
 lines 47–50); and the vault binary serves plain HTTP (`vault/content-vault/cmd/content-vault/main.go`,
 `ListenAndServe`) and trusts identity headers set by its ingress
-(`vault/content-vault/internal/auth/auth.go`). On the device hop, `ingest-api` requires TLS 1.3 and a
-verified client certificate when it is given TLS material, and the deployment does not yet give it
-any (§4.2, ADR 0019).
+(`vault/content-vault/internal/auth/auth.go`). On the device hop, `ingest-api` enforces TLS 1.3 with a
+verified client certificate when it terminates TLS itself, and otherwise authenticates the
+edge-forwarded certificate or DPoP; the deployment supplies the material for none of these yet (§4.2,
+ADR 0019).
 
 | Protected | Against |
 |---|---|
 | The envelope batch in transit (identity, labels, digest, dimensions) | Passive observation on the customer's network or any intermediate network |
-| The device credential and its mTLS key proof | Replay by an observer who captures the handshake |
+| The device credential and its proof of possession (the mTLS handshake, or a DPoP signature over the request) | Replay by an observer who captures the handshake or the request |
 | Content ciphertext on upload | Anyone on the path — the object is encrypted before it is sent |
 
 **What transport security does not protect: anything from the endpoint.** The device is untrusted
 (§2.1), so TLS between device and vendor protects the *network*, not the vendor.
+
+**The DPoP token endpoint widens the device-facing surface, and how that is bounded.** `POST /v1/token`
+is a second entry point on the device edge that a device calls before it holds an access token, so it is
+exposed on the same gateway as the data path and is deliberately narrow. It accepts only a client
+assertion signed by the device's **registered** key plus a per-request DPoP proof; the issued token is
+sender-constrained (`cnf.jkt`) and short-lived; the proof's `jti` is refused on replay within its
+window; and a wrong key or a replayed proof is a `401`, not a token. It cannot name a tenant other than
+the one the credential lives in, and it mints no content capability. The endpoint and its bounds are
+[02-ingest-and-transport](02-ingest-and-transport.md) §5.6.
 
 ### 5.3 The content key hierarchy
 

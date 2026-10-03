@@ -63,8 +63,11 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
 
+  # Built by localdev/build.mjs as sac/schema:lab. An image rather than a bind mount of
+  # database/schema.sql, because some Docker daemons replace a single-file (or directory) bind with
+  # an empty stub; a build-time COPY is reliable and still applies the repository's own schema.
   schema:
-    image: postgres:17-alpine
+    image: sac/schema:lab
     depends_on:
       postgres:
         condition: service_healthy
@@ -73,26 +76,6 @@ services:
       PGUSER: postgres
       PGDATABASE: shadow
       PGPASSWORD: sac-lab-only
-    volumes:
-      # The file itself, not a copy: the lab must exercise the schema the repository ships.
-      - ../database/schema.sql:/schema/schema.sql:ro
-    # Idempotent on purpose. database/schema.sql starts with `CREATE SCHEMA ref;`, so applying it twice
-    # fails — and a lab you cannot start twice in a row is a lab nobody uses. The guard is a check
-    # for the schema, not for a marker file, so it is correct after a partially-applied run too.
-    # ON_ERROR_STOP so a failing statement fails this container, and therefore the lab, instead of
-    # leaving a half-built database for a service to fail against later.
-    entrypoint:
-      - sh
-      - -c
-      - |
-        set -e
-        if [ "$$(psql -Atc "select 1 from information_schema.schemata where schema_name='ingest'")" = "1" ]; then
-          echo "schema: already applied (schema 'ingest' exists); nothing to do"
-          exit 0
-        fi
-        echo "schema: applying database/schema.sql"
-        psql -v ON_ERROR_STOP=1 -f /schema/schema.sql
-        echo "schema: applied"
     restart: "no"
 
   ingest-api:

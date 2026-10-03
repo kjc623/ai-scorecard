@@ -336,6 +336,11 @@ CREATE TABLE ops.device (
   tenant_id        uuid NOT NULL REFERENCES ops.tenant(tenant_id),
   device_id        uuid NOT NULL,
   hostname_hash    text,
+  -- The stable, privacy-preserving idempotency key for enrolment (brief C11, master doc A17).
+  -- A hash rather than the raw hardware identifier, so re-enrolment can recognise a returning
+  -- device without the store holding an identifier that is personal data in its own right.
+  -- NULL is permitted: a device may enrol without supplying one.
+  hardware_identity_hash text,
   os               text NOT NULL CHECK (os IN ('windows','macos')),
   os_version       text,
   mdm_id           text,
@@ -349,15 +354,40 @@ CREATE TABLE ops.device (
   PRIMARY KEY (tenant_id, device_id)
 );
 
+-- Brief C11: re-enrolment after a re-image is idempotent and returns the existing identity, so a
+-- hardware identity may appear at most once per tenant. A plain UNIQUE constraint is the wrong
+-- tool: PostgreSQL treats every NULL as distinct, and the column is legitimately NULL for devices
+-- that do not supply an identity, so a UNIQUE constraint would enforce nothing for those rows
+-- while still forbidding the duplicates that matter. The partial index enforces the uniqueness
+-- only where a value is present, which is the property C11 actually states.
+CREATE UNIQUE INDEX device_hardware_identity_uniq
+  ON ops.device (tenant_id, hardware_identity_hash)
+  WHERE hardware_identity_hash IS NOT NULL;
+
+COMMENT ON COLUMN ops.device.hardware_identity_hash IS
+  'Per-device enrolment idempotency key (brief C11, A17): a hash of the hardware identity, so re-enrolment after a re-image returns the existing device_id rather than creating a second row. Uniqueness is per tenant and is enforced by the device_hardware_identity_uniq partial index, not by a UNIQUE constraint, because the column is nullable and PostgreSQL permits unlimited NULLs in a UNIQUE constraint, which would silently weaken the guard.';
+
 -- Brief C11: enrolment is one-shot and mutually authenticated, re-enrolment after re-imaging
 -- is idempotent and returns the existing identity. Brief §4.2: a revoked device is rejected
--- and marked accordingly. The mTLS thumbprint is the transport binding, so a stolen bearer
--- token alone is not enough to impersonate a device.
+-- and marked accordingly. ADR 0020 §4: the credential may be an X.509 certificate or an
+-- RFC 9449 DPoP key; public_key_thumbprint is the single transport binding for both, so a
+-- stolen credential alone is not enough to impersonate a device.
 CREATE TABLE ops.device_credential (
   tenant_id            uuid NOT NULL,
   credential_id        uuid NOT NULL,
   device_id            uuid NOT NULL,
+  -- ADR 0020 §4: the credential is either an X.509 client certificate or an RFC 9449 DPoP key.
+  -- The mode is a property of the credential, not of the deployment, because one gateway serves
+  -- a mixed fleet. Defaults to x509 so the existing certificate path is unchanged.
+  credential_type      text NOT NULL DEFAULT 'x509' CHECK (credential_type IN ('x509','dpop')),
+  -- The single transport-binding value for BOTH modes (ADR 0020 §4): SHA-256 over the certificate
+  -- SPKI for x509, SHA-256 over the RFC 7638 JWK thumbprint for dpop. One column, not one per
+  -- mode, so the authenticator compares the same field regardless of what the wire presented and
+  -- the two modes cannot drift to different binding values.
   public_key_thumbprint text NOT NULL,
+  -- The registered public key of a DPoP credential, as an RFC 7517 JWK. NULL for x509, where the
+  -- certificate carries the key.
+  public_key_jwk       jsonb,
   issued_at            timestamptz NOT NULL DEFAULT now(),
   expires_at           timestamptz NOT NULL,
   revoked_at           timestamptz,
@@ -365,8 +395,86 @@ CREATE TABLE ops.device_credential (
   last_used_at         timestamptz,
   PRIMARY KEY (tenant_id, credential_id),
   FOREIGN KEY (tenant_id, device_id) REFERENCES ops.device(tenant_id, device_id),
-  CONSTRAINT credential_expiry_after_issue CHECK (expires_at > issued_at)
+  CONSTRAINT credential_expiry_after_issue CHECK (expires_at > issued_at),
+  -- A DPoP credential IS the key: a row that says dpop and carries no JWK could never be
+  -- verified. An x509 credential need not carry one, because the certificate is the material.
+  CONSTRAINT credential_dpop_requires_jwk
+    CHECK (credential_type <> 'dpop' OR public_key_jwk IS NOT NULL)
 );
+
+COMMENT ON COLUMN ops.device_credential.credential_type IS
+  'Which authenticator mode this credential belongs to (ADR 0020 §4): x509 for an X.509 client certificate verified against the configured trust bundle, dpop for an RFC 9449 device-held key. The mode is a property of the credential so a single gateway can serve a mixed fleet.';
+
+COMMENT ON COLUMN ops.device_credential.public_key_jwk IS
+  'The registered public key of a DPoP credential, as an RFC 7517 JWK. NULL for x509, where the certificate carries the key; the credential_dpop_requires_jwk CHECK makes a dpop row without one unrepresentable.';
+
+COMMENT ON COLUMN ops.device_credential.public_key_thumbprint IS
+  'The single transport-binding value for both credential modes (ADR 0020 §4): SHA-256 over the certificate SPKI for x509, SHA-256 over the RFC 7638 JWK thumbprint for dpop. Deliberately one column rather than one per mode, so the binding the authenticator checks cannot differ by mode or drift between two columns.';
+
+-- RFC 9449 DPoP replay detection (ADR 0020 §4). A DPoP proof carries a jti the origin must not
+-- accept twice within the proof's lifetime; this table is that one-shot memory. It is a BOUNDED
+-- REPLAY WINDOW, NOT AN AUDIT LOG: a row exists only to refuse a replay, it is deleted once
+-- expires_at passes, it holds no actor, device or key reference, and nothing is derived from it.
+-- Absence of a row is therefore not evidence that a jti was never presented -- the window is
+-- deliberately short and the store is deliberately forgetful.
+CREATE TABLE ops.dpop_replay (
+  tenant_id    uuid NOT NULL REFERENCES ops.tenant(tenant_id),
+  -- The RFC 9449 jti claim, tenant-scoped: the same opaque string from two tenants is not a
+  -- collision. The pair is the key, so the uniqueness replay detection needs is structural.
+  jti          text NOT NULL,
+  seen_at      timestamptz NOT NULL DEFAULT now(),
+  expires_at   timestamptz NOT NULL,
+  PRIMARY KEY (tenant_id, jti),
+  -- The window is bounded in the future by construction rather than by trust in the caller.
+  CONSTRAINT dpop_replay_expiry_after_seen CHECK (expires_at > seen_at)
+);
+
+COMMENT ON TABLE ops.dpop_replay IS
+  'Bounded RFC 9449 jti replay window, not an audit log. A row is inserted with ON CONFLICT DO NOTHING so a replayed jti is a no-op rather than an error, and it is deleted once expires_at passes. It carries no actor, device or key reference and nothing derives from it, so it is safe to forget and is not a record of who presented what.';
+
+COMMENT ON COLUMN ops.dpop_replay.jti IS
+  'The RFC 9449 jti claim. Opaque to the store; held only so a second presentation within the proof lifetime can be refused.';
+
+COMMENT ON COLUMN ops.dpop_replay.expires_at IS
+  'When this replay window closes. The row is swept afterwards, so the same jti may legitimately recur once this time has passed; that bounded forgetfulness is a property of the design, not a gap.';
+
+-- The sweep is tenant-scoped because row-level security is forced here, so tenant leads the
+-- index for the same reason it leads every other key (brief C32).
+CREATE INDEX dpop_replay_expiry
+  ON ops.dpop_replay (tenant_id, expires_at);
+
+-- The bootstrap credential of §5.1 / ADR 0020 decision 3: a short-lived, single-use, tenant-scoped
+-- enrolment token. The MDM delivers the plaintext token in the enrolment profile (A5); the server
+-- stores only its SHA-256 hash, so a database read is not a credential. `used_at` closes a token
+-- after one device uses it; `revoked_at` is the operator's escape hatch. `hardware_identity_hash`
+-- is an optional binding: when present, only a device presenting that identity may redeem the
+-- token, which stops a token leaked in one profile from enrolling a different machine.
+--
+-- Empty tenant_id is impossible (NOT NULL) and the primary key is tenant-leading, because row-level
+-- security is forced here and the context the token bootstraps -- the tenant -- must come from the
+-- token, never from the request body (docs/02 §12).
+CREATE TABLE ops.enrolment_token (
+  tenant_id              uuid NOT NULL REFERENCES ops.tenant(tenant_id),
+  -- SHA-256 over the plaintext token, in the one spelling the repository uses for digests.
+  token_hash             text NOT NULL,
+  hardware_identity_hash text,
+  issued_at              timestamptz NOT NULL DEFAULT now(),
+  expires_at             timestamptz NOT NULL,
+  used_at                timestamptz,
+  revoked_at             timestamptz,
+  PRIMARY KEY (tenant_id, token_hash),
+  CONSTRAINT enrolment_token_expiry_after_issue CHECK (expires_at > issued_at),
+  CONSTRAINT enrolment_token_hash_is_sha256 CHECK (token_hash ~ '^sha256:[0-9a-f]{64}$')
+);
+
+COMMENT ON TABLE ops.enrolment_token IS
+  'The §5.1 bootstrap credential (ADR 0020 decision 3): a short-lived, single-use, tenant-scoped enrolment token, stored only as its SHA-256 hash. The plaintext is delivered by the MDM enrolment profile (A5) and never stored. tenant_id is taken from the token and never from the request body (docs/02 §12); a token that has been used or revoked is refused rather than reused.';
+
+COMMENT ON COLUMN ops.enrolment_token.token_hash IS
+  'SHA-256 of the plaintext enrolment token, spelled sha256:<64 lowercase hex>. The hash is the stored value; the plaintext is never written, so a database compromise does not yield an enrolment capability.';
+
+COMMENT ON COLUMN ops.enrolment_token.hardware_identity_hash IS
+  'Optional binding to one device: when set, only a request carrying this hardware identity may redeem the token, so a token leaked from one enrolment profile cannot be used to enrol a different machine. NULL leaves the token unbound, which is required for a device that cannot supply an identity.';
 
 -- Brief C23 and C25: per-collector health, version, last successful capture, permission state;
 -- and no path may fail into a state that reports success. The four state values are never
@@ -1873,7 +1981,9 @@ DECLARE
   t text;
   tenant_tables text[] := ARRAY[
     -- ops
-    'ops.user_dim', 'ops.device', 'ops.device_credential', 'ops.collector_state',
+    'ops.user_dim', 'ops.device', 'ops.device_credential', 'ops.enrolment_token',
+    'ops.dpop_replay',
+    'ops.collector_state',
     'ops.policy_bundle', 'ops.tool', 'ops.notice_acknowledgement', 'ops.retention_policy',
     'ops.hold', 'ops.audit', 'ops.grant', 'ops.retrieval_grant', 'ops.content_object',
     'ops.finding_review',
@@ -1931,6 +2041,10 @@ GRANT SELECT, INSERT, UPDATE ON ops.usage_daily TO sac_ingest;
 GRANT SELECT, INSERT ON ingest.observation TO sac_ingest;
 GRANT SELECT, INSERT, UPDATE ON ingest.submission TO sac_ingest;
 GRANT INSERT ON ingest.rejected TO sac_ingest;
+-- The DPoP replay window: ingest-api records a jti with ON CONFLICT DO NOTHING and sweeps
+-- expired rows, so it needs INSERT, SELECT and DELETE. There is no UPDATE: a seen jti is never
+-- rewritten, and no other role is granted the table at all.
+GRANT SELECT, INSERT, DELETE ON ops.dpop_replay TO sac_ingest;
 GRANT INSERT ON ops.audit TO sac_ingest;
 GRANT EXECUTE ON FUNCTION ingest.record_event(jsonb, timestamptz) TO sac_ingest;
 GRANT EXECUTE ON FUNCTION ops.current_tenant() TO sac_ingest;
@@ -1940,6 +2054,7 @@ GRANT EXECUTE ON FUNCTION ops.current_tenant() TO sac_ingest;
 -- grant. Column-level grants are used rather than a table grant, so "control-api can read the
 -- event" cannot quietly become "control-api can read the labels".
 GRANT SELECT, INSERT, UPDATE ON ops.tenant, ops.user_dim, ops.device, ops.device_credential,
+      ops.enrolment_token,
       ops.collector_state, ops.policy_bundle, ops.tool, ops.notice_acknowledgement,
       ops.retention_policy, ops.hold, ops.grant, ops.coverage_snapshot, ops.finding_review,
       ops.subscription

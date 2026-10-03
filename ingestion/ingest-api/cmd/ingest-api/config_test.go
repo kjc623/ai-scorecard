@@ -2,6 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"flag"
 	"io"
@@ -10,6 +16,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/shadow-ai-capture/device/protocol"
 )
 
 // TestFlagWinsOverEnvironment is the precedence rule the whole vocabulary rests on. It is tested
@@ -267,5 +275,157 @@ func TestDefaultBuildCarriesNoDriver(t *testing.T) {
 		t.Fatalf("the default build reports driver %q; it must carry none — the dependency is compiled "+
 			"only under the sac_sql_driver tag, so that a machine with no module cache still builds and "+
 			"still passes", defaultDriverName)
+	}
+}
+
+// TestParseAuthModes pins the closed mode vocabulary: anything outside x509/dpop is refused rather
+// than defaulted, because a typo must not silently disable device authentication.
+func TestParseAuthModes(t *testing.T) {
+	t.Run("unset means infer", func(t *testing.T) {
+		modes, err := parseAuthModes("")
+		if err != nil || modes != nil {
+			t.Fatalf("parseAuthModes(\"\") = %v, %v; want nil, nil", modes, err)
+		}
+	})
+	t.Run("a subset", func(t *testing.T) {
+		modes, err := parseAuthModes("x509,dpop")
+		if err != nil {
+			t.Fatalf("parseAuthModes: %v", err)
+		}
+		if len(modes) != 2 || modes[0] != protocol.AuthModeX509 || modes[1] != protocol.AuthModeDPoP {
+			t.Fatalf("modes = %v, want [x509 dpop]", modes)
+		}
+	})
+	t.Run("whitespace and duplicates", func(t *testing.T) {
+		modes, err := parseAuthModes(" x509 , x509 ,dpop")
+		if err != nil {
+			t.Fatalf("parseAuthModes: %v", err)
+		}
+		if len(modes) != 2 {
+			t.Fatalf("modes = %v, want the duplicate collapsed", modes)
+		}
+	})
+	t.Run("dev is not a mode", func(t *testing.T) {
+		if _, err := parseAuthModes("dev"); err == nil {
+			t.Fatal("parseAuthModes accepted dev, which is -dev-trust-principal, not a wire mode")
+		}
+	})
+	for _, bad := range []string{"x509,", ",dpop", "x509,banana"} {
+		if _, err := parseAuthModes(bad); err == nil {
+			t.Errorf("parseAuthModes(%q) accepted an invalid list", bad)
+		}
+	}
+}
+
+// TestInferAuthModes preserves the legacy behaviour: no SAC_AUTH_MODES infers the modes the
+// material can actually serve.
+func TestInferAuthModes(t *testing.T) {
+	pool := x509.NewCertPool()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("key: %v", err)
+	}
+	cases := []struct {
+		name string
+		m    authMaterial
+		want []protocol.AuthMode
+	}{
+		{"nothing", authMaterial{}, nil},
+		{"direct tls", authMaterial{directTLS: true, clientCA: pool}, []protocol.AuthMode{protocol.AuthModeX509}},
+		{"forwarded", authMaterial{forwardedHeader: EnvTLSClientCertHeader, clientCA: pool}, []protocol.AuthMode{protocol.AuthModeX509}},
+		{"dpop only", authMaterial{tokenPublicKey: &key.PublicKey}, []protocol.AuthMode{protocol.AuthModeDPoP}},
+		{"both", authMaterial{directTLS: true, clientCA: pool, tokenPublicKey: &key.PublicKey},
+			[]protocol.AuthMode{protocol.AuthModeX509, protocol.AuthModeDPoP}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := inferAuthModes(c.m)
+			if len(got) != len(c.want) {
+				t.Fatalf("inferAuthModes = %v, want %v", got, c.want)
+			}
+			for i := range got {
+				if got[i] != c.want[i] {
+					t.Fatalf("inferAuthModes = %v, want %v", got, c.want)
+				}
+			}
+		})
+	}
+}
+
+// TestCheckAuthMaterialIsTheStartupRefusal is the "a mode with no material must not start" rule.
+func TestCheckAuthMaterialIsTheStartupRefusal(t *testing.T) {
+	pool := x509.NewCertPool()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("key: %v", err)
+	}
+	x509Mode := []protocol.AuthMode{protocol.AuthModeX509}
+	dpopMode := []protocol.AuthMode{protocol.AuthModeDPoP}
+
+	cases := []struct {
+		name    string
+		modes   []protocol.AuthMode
+		m       authMaterial
+		wantErr bool
+	}{
+		{"no modes", nil, authMaterial{}, false},
+		{"x509 direct", x509Mode, authMaterial{directTLS: true, clientCA: pool}, false},
+		{"x509 forwarded", x509Mode, authMaterial{forwardedHeader: "X-Client-Cert", clientCA: pool}, false},
+		{"x509 with no listener or header", x509Mode, authMaterial{clientCA: pool}, true},
+		{"x509 with no client ca", x509Mode, authMaterial{directTLS: true}, true},
+		{"forwarded with no client ca", x509Mode, authMaterial{forwardedHeader: "X-Client-Cert"}, true},
+		{"dpop complete", dpopMode, authMaterial{tokenPublicKey: &key.PublicKey, issuer: "iss", audience: "aud"}, false},
+		{"dpop with no key", dpopMode, authMaterial{issuer: "iss", audience: "aud"}, true},
+		{"dpop with no issuer or audience", dpopMode, authMaterial{tokenPublicKey: &key.PublicKey}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := checkAuthMaterial(c.modes, c.m)
+			if c.wantErr && err == nil {
+				t.Fatal("checkAuthMaterial accepted a mode with no material")
+			}
+			if !c.wantErr && err != nil {
+				t.Fatalf("checkAuthMaterial: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadTokenPublicKey(t *testing.T) {
+	if key, err := loadTokenPublicKey(""); err != nil || key != nil {
+		t.Fatalf("empty PEM = %v, %v; want nil, nil", key, err)
+	}
+	if _, err := loadTokenPublicKey("not pem"); err == nil {
+		t.Fatal("loadTokenPublicKey accepted non-PEM text")
+	}
+	// An RSA key is refused at startup: DPoP tokens are ES256.
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("rsa key: %v", err)
+	}
+	rsaDER, err := x509.MarshalPKIXPublicKey(&rsaKey.PublicKey)
+	if err != nil {
+		t.Fatalf("marshal rsa: %v", err)
+	}
+	if _, err := loadTokenPublicKey(string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: rsaDER}))); err == nil {
+		t.Fatal("loadTokenPublicKey accepted an RSA key, which cannot verify an ES256 token")
+	}
+
+	// Build a real EC public key PEM and check it round-trips.
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("key: %v", err)
+	}
+	der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
+	got, err := loadTokenPublicKey(string(pemBytes))
+	if err != nil {
+		t.Fatalf("loadTokenPublicKey: %v", err)
+	}
+	if _, ok := got.(*ecdsa.PublicKey); !ok {
+		t.Fatalf("loaded key is %T, want *ecdsa.PublicKey", got)
 	}
 }

@@ -52,13 +52,13 @@ func (s SpoolState) Valid() bool {
 // Payload is the envelope exactly as the device minted it, and the spool never rewrites it -
 // an observation is immutable once spooled (ADR 0004).
 type Entry struct {
-	Seq              uint64          `json:"seq"`
-	ClientID         string          `json:"client_id,omitempty"` // correlates with the extension's observation id
-	Kind             Kind            `json:"kind"`
-	Route            Route           `json:"route"`
-	CollectionMode   CollectionMode  `json:"collection_mode"`
-	ToolFingerprint  string          `json:"tool_fingerprint"`
-	OccurredAt       time.Time       `json:"occurred_at"`
+	Seq               uint64         `json:"seq"`
+	ClientID          string         `json:"client_id,omitempty"` // correlates with the extension's observation id
+	Kind              Kind           `json:"kind"`
+	Route             Route          `json:"route"`
+	CollectionMode    CollectionMode `json:"collection_mode"`
+	ToolFingerprint   string         `json:"tool_fingerprint"`
+	OccurredAt        time.Time      `json:"occurred_at"`
 	MonotonicOffsetMS int64          `json:"monotonic_offset_ms"`
 
 	// DedupKey is the canonical idempotency key computed by the device (§4 of the ingest
@@ -138,14 +138,14 @@ func (r Route) Valid() bool {
 // for the operator: an observation lost before the spool and one evicted from it are different
 // failures with different fixes.
 type SpoolStats struct {
-	Depth             int    `json:"spool_depth"`
-	DroppedTotal      uint64 `json:"spool_dropped_total"`
-	RejectedTotal     uint64 `json:"spool_rejected_total"`
-	DeliveredTotal    uint64 `json:"spool_delivered_total"`
-	OldestSpooledAt   time.Time `json:"oldest_spooled_at,omitempty"`
-	EncryptionKeySealed bool `json:"encryption_key_sealed"`
-	BoundBytes        int64  `json:"bound_bytes"`
-	UsedBytes         int64  `json:"used_bytes"`
+	Depth               int       `json:"spool_depth"`
+	DroppedTotal        uint64    `json:"spool_dropped_total"`
+	RejectedTotal       uint64    `json:"spool_rejected_total"`
+	DeliveredTotal      uint64    `json:"spool_delivered_total"`
+	OldestSpooledAt     time.Time `json:"oldest_spooled_at,omitempty"`
+	EncryptionKeySealed bool      `json:"encryption_key_sealed"`
+	BoundBytes          int64     `json:"bound_bytes"`
+	UsedBytes           int64     `json:"used_bytes"`
 }
 
 // Store is the interface capture-core uses and device/capture-spool implements.

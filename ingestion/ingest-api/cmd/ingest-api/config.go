@@ -1,6 +1,9 @@
 package main
 
 import (
+	"crypto"
+	"crypto/x509"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -8,6 +11,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/shadow-ai-capture/device/protocol"
 )
 
 // Configuration: one vocabulary, two sources.
@@ -54,7 +59,103 @@ const (
 	// EnvAppInsights is the Application Insights connection string. It is a credential: it is read
 	// only to report whether it is configured, and its value is never logged.
 	EnvAppInsights = "SAC_APPINSIGHTS"
+	// EnvAuthModes is the comma list of production modes to serve: a subset of "x509,dpop". Dev is
+	// not a wire mode and remains the separate -dev-trust-principal acknowledgement (ADR 0020 §2).
+	EnvAuthModes = "SAC_AUTH_MODES"
+	// EnvTLSClientCertHeader is the edge-forwarded leaf certificate header. Empty disables the
+	// forwarded x509 path; the direct peer-certificate path is unaffected.
+	EnvTLSClientCertHeader = "SAC_TLS_CLIENT_CERT_HEADER"
+	// EnvDPoPTokenPublicPEM is the deployment access-token signing public key as PEM text.
+	EnvDPoPTokenPublicPEM = "SAC_DPOP_TOKEN_PUBLIC_PEM"
+	// EnvDPoPIssuer and EnvDPoPAudience are the registered iss and aud a token must carry.
+	EnvDPoPIssuer   = "SAC_DPOP_ISSUER"
+	EnvDPoPAudience = "SAC_DPOP_AUDIENCE"
 )
+
+// authMaterial is what the deployment actually configured for device authentication. It is the
+// input to checkAuthMaterial, so "a mode was enabled without its material" is a startup refusal
+// with a specific message rather than a request-time failure.
+type authMaterial struct {
+	// clientCA is the bundle forwarded and direct x509 chains verify against.
+	clientCA *x509.CertPool
+	// directTLS is true when the process holds a server key pair and can terminate client TLS itself.
+	directTLS bool
+	// forwardedHeader is the forwarding header; empty means the forwarded path is disabled.
+	forwardedHeader string
+	tokenPublicKey  crypto.PublicKey
+	issuer          string
+	audience        string
+}
+
+// parseAuthModes parses SAC_AUTH_MODES. The empty string means "not configured", which lets main
+// infer a legacy default from the material present. Anything outside the closed x509/dpop set is
+// refused rather than defaulted: a typo must not silently disable device authentication.
+func parseAuthModes(raw string) ([]protocol.AuthMode, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	seen := map[protocol.AuthMode]bool{}
+	var modes []protocol.AuthMode
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return nil, fmt.Errorf("auth mode list %q has an empty entry", raw)
+		}
+		mode := protocol.AuthMode(part)
+		if !mode.Valid() {
+			return nil, fmt.Errorf("auth mode %q is not one of x509, dpop (dev is -dev-trust-principal)", part)
+		}
+		if seen[mode] {
+			continue
+		}
+		seen[mode] = true
+		modes = append(modes, mode)
+	}
+	return modes, nil
+}
+
+// inferAuthModes is the backward-compatible default when SAC_AUTH_MODES is unset: serve x509 when
+// any certificate material is present, dpop when the token key is, and nothing otherwise. A
+// deployment that wants a mode with no material still has to name it and be refused.
+func inferAuthModes(m authMaterial) []protocol.AuthMode {
+	var modes []protocol.AuthMode
+	if m.directTLS || m.forwardedHeader != "" {
+		modes = append(modes, protocol.AuthModeX509)
+	}
+	if m.tokenPublicKey != nil {
+		modes = append(modes, protocol.AuthModeDPoP)
+	}
+	return modes
+}
+
+// checkAuthMaterial refuses a mode set the configured material cannot serve, before the listener
+// starts. It is the "refuse to start if a mode is enabled without its material" rule from ADR 0020
+// decision 2, and it names the setting an operator has to supply.
+func checkAuthMaterial(modes []protocol.AuthMode, m authMaterial) error {
+	for _, mode := range modes {
+		switch mode {
+		case protocol.AuthModeX509:
+			if !m.directTLS && m.forwardedHeader == "" {
+				return errors.New("x509 mode is enabled but neither TLS server material (--tls-cert/--tls-key) " +
+					"nor a forwarded-certificate header (--tls-client-cert-header) is configured")
+			}
+			if m.clientCA == nil {
+				return fmt.Errorf("x509 mode is enabled but no client CA bundle is configured (--tls-client-ca / %s)", EnvTLSClientCAPEM)
+			}
+		case protocol.AuthModeDPoP:
+			if m.tokenPublicKey == nil {
+				return fmt.Errorf("dpop mode is enabled but no token public key is configured (--dpop-token-public-pem / %s)", EnvDPoPTokenPublicPEM)
+			}
+			if m.issuer == "" || m.audience == "" {
+				return fmt.Errorf("dpop mode is enabled but the token issuer and audience must both be configured (--dpop-issuer / %s, --dpop-audience / %s)", EnvDPoPIssuer, EnvDPoPAudience)
+			}
+		default:
+			return fmt.Errorf("unknown auth mode %q", mode)
+		}
+	}
+	return nil
+}
 
 // flagSet records which flags the operator passed.
 type flagSet map[string]bool

@@ -21,6 +21,7 @@ as stored records; core to `ingest-api` as an HTTPS batch.
 | `spool.go` | The spool record and `protocol.Store` — the interface `capture-core` calls and `capture-spool` implements. |
 | `native.go` | Chromium native messaging: one JSON object with a `type` discriminator, attachment bytes chunked behind a manifest so an oversized upload is refused before transfer. |
 | `batch.go` | `POST /v1/events` request and response shapes, and the batch caps (1–500 events, 8 MiB compressed, 32 MiB decompressed, 256 KiB per envelope). |
+| `auth.go` | The device-authentication and enrolment vocabulary: the closed `x509`/`dpop` `AuthMode` set with its refusal-by-default check, the `X-Client-Cert`/`DPoP`/`Authorization` header names, `POST /v1/enrol` request and response, the `hardware_identity_hash` idempotency key, the issued-credential shape, and the RFC 7517 JWK subset with its RFC 7638 thumbprint (ADR 0020). |
 
 ## Two properties the shapes enforce
 
@@ -56,3 +57,6 @@ would be a second source of truth for the wire shape.
 `protocol_test.go` covers framing round trips, version mismatch, oversize refusal before allocation,
 truncated payloads, the closed vocabularies, the batch envelope rules, the spool entry shape, and the
 two structural claims above: a `ClassifyRequest` cannot carry identity, and it refuses content at M0.
+`auth_test.go` covers the closed `AuthMode` set, the header and version constants, enrolment
+request/response round trips, the token-type refusal, and `JWK.Thumbprint` against the RFC 7638 §3.1
+vector and the RFC 7515 Appendix A.3 EC key.

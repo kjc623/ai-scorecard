@@ -52,65 +52,76 @@ type tlsMaterial struct {
 	source string
 }
 
-// pemFromEnv returns the three environment values, so the caller can decide whether a deployment is
-// using this form at all. A partial set is an error rather than a silent mix with the file form: a
-// server certificate without its key cannot serve, and would otherwise surface as a TLS handshake
-// failure on the first device request.
-func pemFromEnv() (cert, key, ca string, err error) {
-	cert, key, ca = os.Getenv(EnvTLSCertPEM), os.Getenv(EnvTLSKeyPEM), os.Getenv(EnvTLSClientCAPEM)
-	set := 0
-	for _, v := range []string{cert, key, ca} {
-		if strings.TrimSpace(v) != "" {
-			set++
-		}
+// loadClientCAPool resolves the device CA bundle from the file flag first and the environment
+// second. It returns (nil, nil) when neither is configured, which is a valid state the caller
+// checks: x509 cannot serve without roots, and the forwarded path must not trust an unverified
+// chain. The CA is loaded separately from the server key pair so a forwarded-only deployment — the
+// edge terminates TLS and no listener-level mTLS is configured — can still supply roots without a
+// server certificate.
+func loadClientCAPool(o options) (*x509.CertPool, error) {
+	if o.tlsClientCA != "" {
+		return loadCAPool(o.tlsClientCA)
 	}
-	switch set {
-	case 0, 3:
-		return cert, key, ca, nil
-	default:
-		return "", "", "", fmt.Errorf(
-			"TLS material is incomplete in the environment: set all of %s, %s and %s, or none of them "+
-				"(a deployment injects all three from Key Vault; a laptop supplies files with "+
-				"--tls-cert/--tls-key/--tls-client-ca)",
-			EnvTLSCertPEM, EnvTLSKeyPEM, EnvTLSClientCAPEM)
+	pemText := os.Getenv(EnvTLSClientCAPEM)
+	if strings.TrimSpace(pemText) == "" {
+		return nil, nil
 	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM([]byte(pemText)) {
+		return nil, fmt.Errorf("%s contains no certificates", EnvTLSClientCAPEM)
+	}
+	return pool, nil
 }
 
-// loadTLSMaterial resolves the material from the file flags first and the environment second.
-// It returns (nil, nil) when no material is configured at all, which is a valid state: the binary
-// then refuses to serve unless the dev principal is enabled, and the refusal is the caller's.
+// loadTLSMaterial resolves the direct-listener material: a server key pair, present only when the
+// process itself terminates client TLS. It returns (nil, nil) when no server key pair is configured
+// at all, which is a valid state (a forwarded-only deployment, or dev), and the caller decides
+// whether authentication is possible. A server certificate without its key, or without the client
+// CA it verifies devices against, is a startup error rather than a handshake failure on the first
+// device request.
 func loadTLSMaterial(o options) (*tlsMaterial, error) {
-	if o.tlsCert != "" || o.tlsKey != "" || o.tlsClientCA != "" {
-		if o.tlsCert == "" || o.tlsKey == "" || o.tlsClientCA == "" {
-			return nil, errors.New("TLS material is incomplete: --tls-cert, --tls-key and --tls-client-ca are all required")
+	var certPEM, keyPEM []byte
+	source := ""
+	switch {
+	case o.tlsCert != "" || o.tlsKey != "":
+		if o.tlsCert == "" || o.tlsKey == "" {
+			return nil, errors.New("TLS server material is incomplete: --tls-cert and --tls-key are both required")
 		}
-		cert, err := tls.LoadX509KeyPair(o.tlsCert, o.tlsKey)
+		cert, err := os.ReadFile(o.tlsCert)
 		if err != nil {
-			return nil, fmt.Errorf("load the server key pair: %w", err)
+			return nil, fmt.Errorf("read server certificate %s: %w", o.tlsCert, err)
 		}
-		pool, err := loadCAPool(o.tlsClientCA)
+		key, err := os.ReadFile(o.tlsKey)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("read server private key %s: %w", o.tlsKey, err)
 		}
-		return &tlsMaterial{cert: cert, clientCAs: pool, source: "files"}, nil
+		certPEM, keyPEM, source = cert, key, "files"
+	default:
+		envCert, envKey := os.Getenv(EnvTLSCertPEM), os.Getenv(EnvTLSKeyPEM)
+		if strings.TrimSpace(envCert) == "" && strings.TrimSpace(envKey) == "" {
+			return nil, nil
+		}
+		if strings.TrimSpace(envCert) == "" || strings.TrimSpace(envKey) == "" {
+			return nil, fmt.Errorf(
+				"TLS server key pair is incomplete in the environment: set both %s and %s, or neither "+
+					"(a deployment injects them from Key Vault; a laptop supplies files with --tls-cert/--tls-key)",
+				EnvTLSCertPEM, EnvTLSKeyPEM)
+		}
+		certPEM, keyPEM, source = []byte(envCert), []byte(envKey), "environment (Key Vault secret reference)"
 	}
 
-	certPEM, keyPEM, caPEM, err := pemFromEnv()
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return nil, fmt.Errorf("parse the server key pair: %w", err)
+	}
+	pool, err := loadClientCAPool(o)
 	if err != nil {
 		return nil, err
 	}
-	if certPEM == "" {
-		return nil, nil
+	if pool == nil {
+		return nil, fmt.Errorf("TLS server material requires the device CA bundle: --tls-client-ca or %s", EnvTLSClientCAPEM)
 	}
-	cert, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
-	if err != nil {
-		return nil, fmt.Errorf("parse %s/%s: %w", EnvTLSCertPEM, EnvTLSKeyPEM, err)
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM([]byte(caPEM)) {
-		return nil, fmt.Errorf("%s contains no certificates", EnvTLSClientCAPEM)
-	}
-	return &tlsMaterial{cert: cert, clientCAs: pool, source: "environment (Key Vault secret reference)"}, nil
+	return &tlsMaterial{cert: cert, clientCAs: pool, source: source}, nil
 }
 
 // serverTLSConfig is the §2.1 configuration: TLS 1.3 minimum, mutual authentication required. Go

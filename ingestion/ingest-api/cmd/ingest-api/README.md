@@ -18,10 +18,13 @@ an outcome the write path did not make.
   build **refuses to start** with a message naming the driver, the variables it read and the two
   commands that would make it real, rather than starting in memory while a deployment believes it is
   persisting.
-- Selects the authenticator: the mTLS authenticator when TLS material is present,
-  `-dev-trust-principal` when explicitly asked for, and a hard refusal otherwise — "refusing to serve
-  without device authentication". The dev flag is loudly logged and is mutually exclusive with TLS
-  material.
+- Selects the authenticator through one pluggable seam (ADR 0020): a direct TLS peer certificate, an
+  edge-forwarded certificate (`X-Client-Cert`), a DPoP-bound request (RFC 9449), or the
+  `-dev-trust-principal` escape hatch when explicitly asked for. `--auth-modes` names the production
+  modes (`x509,dpop`); when unset they are inferred from the material present. A mode enabled without
+  its material is a startup refusal, and a process with no production mode and no acknowledged dev
+  mode refuses with "refusing to serve without device authentication". The dev flag is loudly logged
+  and is mutually exclusive with production material.
 - Serves `POST /v1/events` and `/healthz` through `internal/httpapi`, and `/readyz` through its own
   wrapper.
 
@@ -44,6 +47,10 @@ for; `node localdev/tools/check-config-agreement.mjs` adds both Dockerfiles and 
 | blob endpoint (unused) | — | `SAC_BLOB_CIPHERTEXT_ENDPOINT` |
 | telemetry | — | `SAC_APPINSIGHTS` |
 | server certificate / key / client CA | `--tls-cert`, `--tls-key`, `--tls-client-ca` | `SAC_TLS_CERT_PEM`, `SAC_TLS_KEY_PEM`, `SAC_TLS_CLIENT_CA_PEM` |
+| production auth modes | `--auth-modes` | `SAC_AUTH_MODES` (`x509,dpop`; unset infers from material) |
+| forwarded certificate header | `--tls-client-cert-header` | `SAC_TLS_CLIENT_CERT_HEADER` (empty disables the forwarded path) |
+| DPoP token public key | `--dpop-token-public-pem` | `SAC_DPOP_TOKEN_PUBLIC_PEM` |
+| DPoP token issuer / audience | `--dpop-issuer`, `--dpop-audience` | `SAC_DPOP_ISSUER`, `SAC_DPOP_AUDIENCE` |
 
 Three entries are deliberately inert. `SAC_BLOB_CIPHERTEXT_ENDPOINT` is read, validated and reported
 unused, because the ingest path performs no blob I/O and a deployment parameter nobody reads is worse
@@ -53,10 +60,17 @@ region pinning is inert in Azure — a gap the agreement test prints on every ru
 omission.
 
 TLS material arrives either as three files on a laptop or as PEM in the environment in a container
-(the Container Apps module has `keyVaultEnv` but no volume mount). A flag wins; a partial set is a
-startup error rather than a handshake failure on the first device request. The listener is TLS 1.3
-with `RequireAndVerifyClientCert`, and the per-device credential status is still re-checked inside the
-write transaction.
+(the Container Apps module has `keyVaultEnv` but no volume mount). A flag wins; a partial server key
+pair is a startup error rather than a handshake failure on the first device request. The listener is
+TLS 1.3 with `RequireAndVerifyClientCert`, and the per-device credential status is still re-checked
+inside the write transaction.
+
+When Application Gateway terminates the device TLS handshake, the origin does not hold a server key
+pair: it needs only the client CA and `--tls-client-cert-header`, and it re-verifies the forwarded
+chain (and the credential's SPKI thumbprint) exactly as the direct path does. The forwarded path is
+only trustworthy behind the origin lock; that is a deployment property, not something this binary can
+assert. DPoP needs no CA: `--dpop-token-public-pem` plus `--dpop-issuer`/`--dpop-audience`, and the
+RFC 9449 proof's `jti` is recorded once per tenant so a replay is refused.
 
 ## Probes
 

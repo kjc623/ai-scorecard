@@ -12,6 +12,9 @@
 //   node localdev/run.mjs            # up (if needed) + smoke + report, leaves the lab running
 //   node localdev/run.mjs --down     # tear the lab down and remove the volume
 //   node localdev/run.mjs --no-up    # smoke against something already running
+//   node localdev/run.mjs --auth     # the opt-in device-auth lab (needs build.mjs --auth):
+//                                    # real SQL stores, both production modes, and the edge
+//   node localdev/run.mjs --auth --down
 //
 // Addresses come from localdev/docker-compose.yml, not from this file:
 //   * on the host, the published ports are asked of `docker compose port`, so LAB_*_PORT
@@ -22,6 +25,8 @@
 // either side.
 
 import { spawnSync } from 'node:child_process';
+import { createHash, randomBytes } from 'node:crypto';
+import { chmodSync, copyFileSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -29,8 +34,14 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const ARGS = process.argv.slice(2);
 const DOWN = ARGS.includes('--down');
 const NO_UP = ARGS.includes('--no-up');
+// --auth selects the opt-in device-authentication lab: the real SQL stores, the real x509 and DPoP
+// authenticators, and the simulated Application Gateway. See localdev/authlab.compose.yaml.
+const AUTH = ARGS.includes('--auth');
 
 const COMPOSE = ['compose', '-f', join(ROOT, 'localdev', 'docker-compose.yml')];
+const COMPOSE_AUTH = ['compose', '-f', join(ROOT, 'localdev', 'authlab.compose.yaml')];
+const AUTH_DIR = join(ROOT, 'localdev', '.authlab');
+const AUTH_BIN = join(ROOT, 'localdev', 'authlab', 'bin', 'authlab') + (process.platform === 'win32' ? '.exe' : '');
 const TMP = join(ROOT, '.testtmp');
 const ENV = { ...process.env, TMP, TEMP: TMP, TMPDIR: TMP };
 
@@ -75,6 +86,152 @@ function check(name, ok, detail) {
 function compose(args, opts = {}) {
   const res = spawnSync('docker', [...COMPOSE, ...args], { encoding: 'utf8', env: ENV, cwd: ROOT, ...opts });
   return { code: res.status, out: `${res.stdout ?? ''}${res.stderr ?? ''}`, stdout: res.stdout ?? '' };
+}
+
+function composeAuth(args, opts = {}) {
+  const res = spawnSync('docker', [...COMPOSE_AUTH, ...args], { encoding: 'utf8', env: ENV, cwd: ROOT, ...opts });
+  return { code: res.status, out: `${res.stdout ?? ''}${res.stderr ?? ''}`, stdout: res.stdout ?? '' };
+}
+
+/** A plain docker invocation (not compose), for staging the PKI volume. */
+function dockerRun(args) {
+  const res = spawnSync('docker', args, { encoding: 'utf8', env: ENV, cwd: ROOT });
+  return { code: res.status, out: `${res.stdout ?? ''}${res.stderr ?? ''}` };
+}
+
+/**
+ * The opt-in device-authentication lab, in order:
+ *
+ *   1. generate fresh PKI material (dev CA, edge server leaf, token key) into .authlab/;
+ *   2. bring up the SQL stores and the edge behind the gateway simulation;
+ *   3. seed a tenant and two single-use enrolment tokens;
+ *   4. run the Go client, which proves x509 enrol -> events, dpop enrol -> token -> events, and the
+ *      negatives (no credential, a replayed DPoP jti, a certificate from another CA).
+ *
+ * It is self-contained: its own PostgreSQL, its own schema apply, its own network. The default
+ * memory lab is untouched and can run at the same time.
+ */
+async function runAuth() {
+  if (!existsSync(AUTH_BIN)) {
+    console.error(`lab --auth: ${AUTH_BIN} is missing. Build the tagged images and the client first:`);
+    console.error('  node localdev/build.mjs --auth');
+    return 1;
+  }
+
+  console.log('auth lab: generating fresh development PKI …');
+  let r = spawnSync(AUTH_BIN, ['pki', '-pki-dir', AUTH_DIR], { encoding: 'utf8', env: ENV, cwd: ROOT });
+  process.stdout.write(r.stdout ?? '');
+  process.stderr.write(r.stderr ?? '');
+  if (r.status !== 0) return r.status ?? 1;
+
+  // Stage the client binary beside the PKI so the pki image carries both. The smoke then runs
+  // *inside* the lab network: some Docker daemons publish ports the host cannot reach, so a
+  // host-side client sees `connection refused`. This is also the more faithful test — the device is
+  // on the network with the gateway, not on the operator's machine.
+  const stagedClient = join(AUTH_DIR, 'authlab');
+  copyFileSync(AUTH_BIN, stagedClient);
+  chmodSync(stagedClient, 0o755);
+
+  // Deliver the generated PKI to the containers through a named volume rather than a host-path
+  // bind: some Docker daemons present a bind of a path the daemon cannot see as an empty directory,
+  // so the services would report `open /authlab/dev-ca.crt: no such file or directory`. The PKI is
+  // baked into sac/authlab-pki:lab with a build-time COPY (which streams through the build context)
+  // and copied into the volume the compose file mounts.
+  console.log('\nauth lab: staging the development PKI into the authpki volume …');
+  r = dockerRun(['build', '-f', join(ROOT, 'localdev', 'pki', 'Dockerfile'), '-t', 'sac/authlab-pki:lab', '.']);
+  if (r.code !== 0) {
+    console.error(r.out);
+    return r.code ?? 1;
+  }
+  r = dockerRun(['run', '--rm', '-v', 'sac-authlab-authpki:/tgt', 'sac/authlab-pki:lab', '-c',
+    'cp -a /pki/. /tgt/ && ls -A /tgt']);
+  process.stdout.write(r.out);
+  if (r.code !== 0) {
+    console.error('auth lab: staging the PKI volume failed');
+    return r.code ?? 1;
+  }
+
+  console.log('\nauth lab: starting PostgreSQL, the two SQL services and the edge …');
+  r = composeAuth(['up', '-d', '--wait']);
+  if (r.code !== 0) {
+    console.error(r.out.trim());
+    console.error('\nauth lab: compose up failed. Are the --auth images built? node localdev/build.mjs --auth');
+    return 1;
+  }
+
+  // The schema container is a one-shot dependency. `--wait` honours service_completed_successfully,
+  // but this poll is the belt to that braces, so the seed never races a half-applied schema.
+  if (!(await waitForOpsSchema())) {
+    console.error('auth lab: database/schema.sql did not finish applying within 60s');
+    return 1;
+  }
+
+  console.log('\nauth lab: seeding a tenant and two single-use enrolment tokens …');
+  const tokenX509 = `sac1.${TENANT}.${randomBytes(32).toString('base64url')}`;
+  const tokenDPoP = `sac1.${TENANT}.${randomBytes(32).toString('base64url')}`;
+  const seedSQL = `
+    INSERT INTO ops.tenant (tenant_id, name, status, residency_region, key_custody, ceiling_mode)
+    VALUES ('${TENANT}', 'authlab', 'active', 'authlab-region', 'vendor', 'm1')
+    ON CONFLICT (tenant_id) DO NOTHING;
+    INSERT INTO ops.enrolment_token (tenant_id, token_hash, expires_at)
+    VALUES ('${TENANT}', '${hashEnrolmentToken(tokenX509)}', now() + interval '1 day')
+    ON CONFLICT DO NOTHING;
+    INSERT INTO ops.enrolment_token (tenant_id, token_hash, expires_at)
+    VALUES ('${TENANT}', '${hashEnrolmentToken(tokenDPoP)}', now() + interval '1 day')
+    ON CONFLICT DO NOTHING;
+  `;
+  r = composeAuth(['exec', '-T', 'postgres', 'psql', '-U', 'postgres', '-d', 'shadow',
+    '-v', 'ON_ERROR_STOP=1', '-c', seedSQL]);
+  if (r.code !== 0) {
+    console.error(r.out.trim());
+    return r.code ?? 1;
+  }
+  check('a tenant and two enrolment tokens are seeded in ops.*', true, `${TENANT}`);
+
+  const edgeURL = 'https://edge:8443';
+  console.log(`\nauth lab: smoke against ${edgeURL} from inside the lab network (both modes through the edge, then the negatives)`);
+  r = dockerRun([
+    'run', '--rm', '--network', 'scorecard-authlab', '--entrypoint', '/pki/authlab', 'sac/authlab-pki:lab',
+    'smoke',
+    '-edge-url', edgeURL,
+    '-pki-dir', '/pki',
+    '-tenant', TENANT,
+    '-enrolment-token-x509', tokenX509,
+    '-enrolment-token-dpop', tokenDPoP,
+  ]);
+  process.stdout.write(r.out);
+
+  const failed = r.code !== 0;
+  console.log(`\n${failed ? 'auth lab: FAILED' : 'auth lab: all checks passed'}`);
+  console.log('auth lab: left running. Logs: docker compose -f localdev/authlab.compose.yaml logs -f');
+  console.log('auth lab: tear down with: node localdev/run.mjs --auth --down');
+  return failed ? 1 : 0;
+}
+
+/** The edge's published base URL, asked of compose so LAB_EDGE_PORT is followed without a second edit. */
+function authEdgeURL() {
+  const explicit = process.env.LAB_EDGE_URL;
+  if (explicit) return explicit.replace(/\/+$/, '');
+  const r = composeAuth(['port', 'edge', '8443']);
+  const m = /:(\d+)\s*$/.exec(r.stdout.trim());
+  const port = m ? m[1] : (process.env.LAB_EDGE_PORT ?? '8443');
+  return `https://127.0.0.1:${port}`;
+}
+
+/** Wait until the seeded schema is queryable, so the seed cannot race the schema container. */
+async function waitForOpsSchema() {
+  for (let i = 0; i < 60; i++) {
+    const r = composeAuth(['exec', '-T', 'postgres', 'psql', '-U', 'postgres', '-d', 'shadow', '-Atc',
+      "select 1 from information_schema.schemata where schema_name='ops'"]);
+    if (r.stdout.trim() === '1') return true;
+    await new Promise((res) => setTimeout(res, 1000));
+  }
+  return false;
+}
+
+/** The enrolment token's stored form: sha256 over the plaintext, in the one spelling the repo uses. */
+function hashEnrolmentToken(plaintext) {
+  return 'sha256:' + createHash('sha256').update(plaintext).digest('hex');
 }
 
 /**
@@ -161,6 +318,16 @@ async function waitFor(url, timeoutMs = 40000) {
     if (Date.now() > deadline) return false;
     await new Promise((r) => setTimeout(r, 500));
   }
+}
+
+if (AUTH) {
+  if (DOWN) {
+    console.log('auth lab: tearing down (volume included) …');
+    const r = composeAuth(['down', '-v']);
+    console.log(r.out.trim());
+    process.exit(r.code ?? 0);
+  }
+  process.exit(await runAuth());
 }
 
 if (DOWN) {

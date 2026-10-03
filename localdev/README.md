@@ -115,9 +115,12 @@ schema; it does not prove who is allowed to ask.
 
 | File | What it does |
 |---|---|
-| `build.mjs` | Cross-compiles the two Go services and builds all three lab images. `--skip-docker` compiles only; `--production` prints the commands a networked host would run instead |
-| `run.mjs` | Up, smoke test, report. Leaves the lab running; `--down` tears it down with the volume; `--no-up` smokes against something already running |
+| `build.mjs` | Cross-compiles the Go services and builds the lab images. `--auth` also compiles the two services with `-tags sac_sql_driver` for the device-auth lab; `--skip-docker` compiles only; `--production` prints the commands a networked host would run instead |
+| `run.mjs` | Up, smoke test, report. Leaves the lab running; `--down` tears it down with the volume; `--no-up` smokes against something already running; `--auth` runs the opt-in device-auth lab against `authlab.compose.yaml` |
 | `docker-compose.yml` | The five containers, their addresses and their wiring. There is no `build:` stanza on purpose — see "The build constraints" |
+| `authlab.compose.yaml` | The opt-in device-auth lab: PostgreSQL with the real schema, `control-api` and `ingest-api` in `sql` mode, and the `edge` gateway stand-in. Driven by `run.mjs --auth` |
+| `edge/` | A standard-library Go program that simulates Application Gateway: TLS 1.3, an optional client certificate forwarded as `X-Client-Cert`, and `X-Forwarded-Proto`/`Host`. It imports no service package and is the same path a deployment uses |
+| `authlab/` | The host-side tool `run.mjs --auth` builds and runs: it generates the development PKI (fresh every run, into `.authlab/`) and drives both auth modes end to end through the edge |
 | `tools/check-config-agreement.mjs` | **The checker that keeps the configuration honest.** It parses the `SAC_*` names out of `azure/main.bicep`, each service's own source and its Dockerfile, and fails the build when the deployment passes a name a binary never reads, or a binary reads a name nothing accounts for |
 
 That last one is worth knowing about even if you never run the lab. It is the reason a name in
@@ -140,6 +143,48 @@ Both are refused in a deployment (and `-dev-trust-principal` is mutually exclusi
 image cannot accidentally trust a header. There is no secret anywhere in this directory: the
 PostgreSQL password is a throwaway for a container on the host's loopback, and the lab's tenant,
 device and key material are fixtures.
+
+## The device-auth lab (opt-in)
+
+The default lab above cannot prove enrol-then-ingest: with the memory store `control-api` and
+`ingest-api` share no state, so the credential one issues is not the credential the other verifies.
+This opt-in lab fixes that by running both services against the real PostgreSQL schema, behind a
+stand-in for the Azure edge (ADR 0020):
+
+```
+node localdev/build.mjs --auth     # also compiles the two services with -tags sac_sql_driver
+node localdev/run.mjs --auth       # up, generate dev PKI, seed, smoke, report
+node localdev/run.mjs --auth --down
+```
+
+It stands up PostgreSQL with `database/schema.sql` applied unmodified, `control-api` and `ingest-api`
+in `sql` mode, and `edge` — a faithful stand-in for Application Gateway: it terminates TLS 1.3,
+requests a client certificate **without requiring one** (so a `dpop` device needs none), forwards the
+presented chain as `X-Client-Cert`, and sets `X-Forwarded-Proto`/`X-Forwarded-Host`. The service code
+behind it is the production code path; the edge imports nothing from a service and no service has an
+"if lab" branch.
+
+It proves, through the edge, exactly the two production modes and their refusals:
+
+* `x509` — generate a key and CSR, `POST /v1/enrol`, receive a leaf, `POST /v1/events` with it: accepted;
+* `dpop` — generate a key and JWK, `POST /v1/enrol`, `POST /v1/token`, `POST /v1/events` with the bound
+  token and proof: accepted;
+* no credential is refused `401`, a replayed DPoP `jti` is refused `401`, and a certificate from
+  another CA is refused `401`.
+
+The edge answers on `https://localhost:8443` (`LAB_EDGE_PORT`), PostgreSQL on `localhost:55435`
+(`LAB_AUTH_PG_PORT`). No secret is in the repository: the dev CA, the edge server leaf and the
+access-token key are generated fresh into `localdev/.authlab/` on every run, and that directory is
+gitignored.
+
+### The module-cache precondition
+
+`build.mjs --auth` compiles the two services with `-tags sac_sql_driver`, which is the only thing that
+links `github.com/jackc/pgx/v5` into them, and it runs with `GOPROXY=off`. The tagged build therefore
+needs `pgx` (v5.11.0) already in the host module cache; a host without it fails the tagged compile and
+leaves the default lab untouched, because the tag is opt-in. This is the same constraint that keeps
+the default lab in `memory` mode (see "What is not fixed"): the acceptance gates run every Go package
+with an empty module cache, so nothing the default build needs may require a fetch.
 
 ## The build constraints, stated
 

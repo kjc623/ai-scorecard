@@ -45,13 +45,30 @@ SELECT t.status,
        d.revoked_at           AS device_revoked_at,
        c.credential_id IS NOT NULL AS credential_known,
        c.expires_at,
-       c.revoked_at           AS credential_revoked_at
+       c.revoked_at           AS credential_revoked_at,
+       c.credential_type,
+       c.public_key_thumbprint
   FROM ops.tenant t
   LEFT JOIN ops.device d
          ON d.tenant_id = t.tenant_id AND d.device_id = $2::uuid
   LEFT JOIN ops.device_credential c
          ON c.tenant_id = d.tenant_id AND c.device_id = d.device_id AND c.credential_id = $3::uuid
  WHERE t.tenant_id = $1::uuid`
+
+	// SQLDPoPReplayInsert records one RFC 9449 proof jti. ON CONFLICT DO NOTHING makes a replay a
+	// no-op the caller detects from rows-affected == 0, which is the mechanism the table's own COMMENT
+	// names. expires_at is floored at now()+1s so a caller clock that is behind the database cannot
+	// insert a row that violates dpop_replay_expiry_after_seen; the window stays bounded in the
+	// future by construction rather than by trust in the caller.
+	SQLDPoPReplayInsert = `INSERT INTO ops.dpop_replay (tenant_id, jti, seen_at, expires_at)
+VALUES ($1::uuid, $2::text, now(), GREATEST($3::timestamptz, now() + interval '1 second'))
+ON CONFLICT (tenant_id, jti) DO NOTHING`
+
+	// SQLDPoPReplaySweep deletes the tenant's expired rows on the way past, so the table stays a
+	// bounded window without a separate job. A scheduled sweeper is welcome to do it too; this is
+	// cheap because the table is tiny and the index leads with tenant_id.
+	SQLDPoPReplaySweep = `DELETE FROM ops.dpop_replay
+ WHERE tenant_id = $1::uuid AND expires_at <= now()`
 
 	// SQLRouteFidelity reads the stored route ranking. §4.4: ranks live in ref.route_fidelity,
 	// "not compiled into services".
@@ -104,6 +121,8 @@ type Statement struct {
 var Statements = []Statement{
 	{Name: "set_tenant", Purpose: "RLS session tenant (transaction-local)", SQL: SQLSetTenant},
 	{Name: "principal_status", Purpose: "§2.3 admission and in-transaction credential check", SQL: SQLPrincipalStatus},
+	{Name: "dpop_replay_insert", Purpose: "RFC 9449 jti one-shot memory (ADR 0020 §4)", SQL: SQLDPoPReplayInsert},
+	{Name: "dpop_replay_sweep", Purpose: "forget expired RFC 9449 jti rows", SQL: SQLDPoPReplaySweep},
 	{Name: "route_fidelity", Purpose: "§4.4 stored route ranking", SQL: SQLRouteFidelity},
 	{Name: "record_event", Purpose: "§6 THE write: idempotency + dedup tie-break + retention", SQL: SQLRecordEvent},
 	{Name: "first_received_at", Purpose: "§5.3 duplicate reports the first receipt", SQL: SQLFirstReceivedAt},
@@ -165,10 +184,12 @@ func principalStatusTx(ctx context.Context, tx *sql.Tx, tenantID, deviceID, cred
 		deviceRev   sql.NullTime
 		credRev     sql.NullTime
 		expires     sql.NullTime
+		credType    sql.NullString
+		thumbprint  sql.NullString
 	)
 	err := tx.QueryRowContext(ctx, SQLPrincipalStatus, tenantID, deviceID, credentialID).
 		Scan(&st.TenantStatus, &st.IngestEnabled, &st.TenantRegion,
-			&deviceKnown, &deviceRev, &credKnown, &expires, &credRev)
+			&deviceKnown, &deviceRev, &credKnown, &expires, &credRev, &credType, &thumbprint)
 	if err == sql.ErrNoRows {
 		return PrincipalStatus{}, nil
 	}
@@ -189,7 +210,33 @@ func principalStatusTx(ctx context.Context, tx *sql.Tx, tenantID, deviceID, cred
 	if expires.Valid {
 		st.CredentialExpiry = expires.Time
 	}
+	st.CredentialType = credType.String
+	st.PublicKeyThumbprint = thumbprint.String
 	return st, nil
+}
+
+// DPoPReplaySeen implements Store. Eligibility is decided by the database's own PRIMARY KEY
+// (tenant_id, jti): the insert conflicts if and only if the jti is already inside its window, so
+// the outcome does not depend on application-side state or on a prior SELECT. Expired rows are
+// swept opportunistically in the same transaction.
+func (s *SQLStore) DPoPReplaySeen(ctx context.Context, tenantID, jti string, expiresAt time.Time) (bool, error) {
+	var replay bool
+	err := s.withTenant(ctx, tenantID, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, SQLDPoPReplaySweep, tenantID); err != nil {
+			return fmt.Errorf("store: sweep dpop replay: %w", err)
+		}
+		res, err := tx.ExecContext(ctx, SQLDPoPReplayInsert, tenantID, jti, expiresAt)
+		if err != nil {
+			return fmt.Errorf("store: record dpop replay: %w", err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("store: dpop replay rows affected: %w", err)
+		}
+		replay = n == 0
+		return nil
+	})
+	return replay, err
 }
 
 func (s *SQLStore) withTenant(ctx context.Context, tenantID string, fn func(tx *sql.Tx) error) error {

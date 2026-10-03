@@ -250,7 +250,7 @@
         "docs/adr/0012-erasure-deletes-events-and-destroys-content-keys.md",
         "docs/adr/0015-suspension-is-a-human-decision-and-usage-is-metered-forward.md"
       ],
-      "notes": "The schema and its 47 assertions were executed against a real server as the runtime roles, not as a superuser."
+      "notes": "The schema and its 54 assertions were executed against a real server as the runtime roles, not as a superuser."
     },
     {
       "id": "device-spool",
@@ -410,7 +410,7 @@
     {
       "id": "T2",
       "subject": "Stand up the PostgreSQL schema and prove its invariants",
-      "description": "Run db/schema.sql then db/invariants.test.sql against a real PostgreSQL 16 server as the runtime roles. The 47 assertions are the acceptance criteria.",
+      "description": "Run db/schema.sql then db/invariants.test.sql against a real PostgreSQL 16 server as the runtime roles. The 54 assertions are the acceptance criteria.",
       "status": "completed",
       "dependsOn": [],
       "componentIds": [
@@ -421,7 +421,7 @@
       ],
       "owner": "dbuilder",
       "order": 2,
-      "completionNote": "Database: 45 distinct assertions (T1..T45) pass against a real PostgreSQL 17.11 server as the runtime roles, with four negative controls proving the assertions can fail. `db` is a gate in tools/accept.mjs."
+      "completionNote": "Database: 54 distinct assertions (T1..T54) pass against a real PostgreSQL 17.11 server as the runtime roles, with negative controls proving the assertions can fail. `db` is a gate in tools/accept.mjs."
     },
     {
       "id": "T3",
@@ -544,7 +544,7 @@
       "emoji": "ðŸ—„ï¸",
       "purpose": "Owns the schema, the row-level security policies and the invariants that prove them.",
       "taskId": "T2",
-      "task": "Apply db/schema.sql and db/invariants.test.sql to a real PostgreSQL 16 server and make all 47 assertions hold as the runtime roles - never as a superuser, which would bypass RLS and prove nothing.",
+      "task": "Apply db/schema.sql and db/invariants.test.sql to a real PostgreSQL 16 server and make all 54 assertions hold as the runtime roles - never as a superuser, which would bypass RLS and prove nothing.",
       "componentIds": [
         "database",
         "device-spool"

@@ -61,6 +61,23 @@ func psqlContainer(t *testing.T) string {
 	return ""
 }
 
+// liveTableHasColumn reports whether the live server has a column, so an evidence test can report
+// "awaiting the schema change" rather than fail on a lab container provisioned before it.
+func liveTableHasColumn(t *testing.T, container, table, column string) bool {
+	t.Helper()
+	out := strings.TrimSpace(runPSQL(t, container,
+		"SELECT count(*) FROM information_schema.columns WHERE table_schema = 'ops' AND table_name = "+
+			q(table)+" AND column_name = "+q(column)+";"))
+	return out == "1"
+}
+
+// liveTableExists reports whether an ops table is present on the live server.
+func liveTableExists(t *testing.T, container, table string) bool {
+	t.Helper()
+	out := strings.TrimSpace(runPSQL(t, container, "SELECT to_regclass('ops."+table+"') IS NOT NULL;"))
+	return out == "t"
+}
+
 // containerReady probes one container for the schema this test needs.
 func containerReady(t *testing.T, container string) bool {
 	t.Helper()

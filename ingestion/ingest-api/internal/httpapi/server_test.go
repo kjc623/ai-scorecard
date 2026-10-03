@@ -373,6 +373,13 @@ func TestAuthFailuresMapToTheirStatusAndCode(t *testing.T) {
 		{"unknown tenant", auth.ErrUnknownTenant, 403, "unknown_tenant"},
 		{"tenant suspended", auth.ErrTenantSuspended, 403, "unknown_tenant"},
 		{"region mismatch", auth.ErrRegionMismatch, 403, "region_mismatch"},
+		// ADR 0020's new failures all land on §7's closed revoked_device code, but with their own
+		// stage-naming message; the code is asserted here, the message by inspection.
+		{"bad access token", auth.ErrBadAccessToken, 401, "revoked_device"},
+		{"bad proof", auth.ErrBadProof, 401, "revoked_device"},
+		{"replayed jti", auth.ErrReplay, 401, "revoked_device"},
+		{"thumbprint mismatch", auth.ErrThumbprintMismatch, 401, "revoked_device"},
+		{"credential type mismatch", auth.ErrCredentialTypeMismatch, 401, "revoked_device"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

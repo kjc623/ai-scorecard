@@ -95,26 +95,26 @@ const (
 // StageResult records one pipeline stage's outcome, so a degraded answer names the stage that
 // degraded instead of being an unattributed failure.
 type StageResult struct {
-	Stage     string    `json:"stage"` // rules | validators | model | parse
-	Ran       bool      `json:"ran"`
-	Failed    bool      `json:"failed"`
-	Detail    Detail    `json:"detail,omitempty"`
-	Err       string    `json:"error,omitempty"`
+	Stage     string        `json:"stage"` // rules | validators | model | parse
+	Ran       bool          `json:"ran"`
+	Failed    bool          `json:"failed"`
+	Detail    Detail        `json:"detail,omitempty"`
+	Err       string        `json:"error,omitempty"`
 	Duration  time.Duration `json:"duration_ms"`
-	Truncated bool      `json:"truncated,omitempty"` // a stage that hit its own budget
+	Truncated bool          `json:"truncated,omitempty"` // a stage that hit its own budget
 }
 
 // ClassifyResponse is the classifier's answer. A failed stage is named; the response never
 // reports a confident label after a stage failed, and never reports `degraded` for a
 // classification that completed.
 type ClassifyResponse struct {
-	Labels            []Label            `json:"labels"`
-	ClassifierVersion string             `json:"classifier_version"`
-	Confidence        Confidence         `json:"confidence"`
-	Excerpt           *Excerpt           `json:"content_excerpt,omitempty"`
-	Stages            []StageResult      `json:"stages,omitempty"`
-	Counters          map[string]uint64  `json:"counters,omitempty"`
-	VerdictShadowed   bool               `json:"shadowed,omitempty"` // release state `shadow`: recorded, not enforced
+	Labels            []Label           `json:"labels"`
+	ClassifierVersion string            `json:"classifier_version"`
+	Confidence        Confidence        `json:"confidence"`
+	Excerpt           *Excerpt          `json:"content_excerpt,omitempty"`
+	Stages            []StageResult     `json:"stages,omitempty"`
+	Counters          map[string]uint64 `json:"counters,omitempty"`
+	VerdictShadowed   bool              `json:"shadowed,omitempty"` // release state `shadow`: recorded, not enforced
 }
 
 // Validate enforces the cross-field rules a response must satisfy regardless of what the

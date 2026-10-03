@@ -26,6 +26,10 @@ const SAC = /\bSAC_[A-Z0-9_]+\b/g;
 const SERVICES = [
   { app: 'ingest-api', cmdDir: 'ingestion/ingest-api/cmd/ingest-api', dockerfile: 'ingestion/ingest-api/Dockerfile', composeService: 'ingest-api' },
   { app: 'content-vault', cmdDir: 'vault/content-vault/cmd/content-vault', dockerfile: 'vault/content-vault/Dockerfile', composeService: 'content-vault' },
+  // control-api is the device-facing control plane ADR 0020 adds (POST /v1/enrol, POST /v1/token).
+  // Listing it is what makes its vocabulary answerable to azure/main.bicep and to the auth lab's
+  // compose file; its infra_agreement_test.go asserts the same property from inside the module.
+  { app: 'control-api', cmdDir: 'control/control-api/cmd/control-api', dockerfile: 'control/control-api/Dockerfile', composeService: 'control-api' },
   // query-api is Node, so it has no cmd/ directory: the environment it reads lives in one module.
   // Listing it is what makes the deployment's names and the service's names answerable to each
   // other. Until it was listed, azure/main.bicep passed SAC_PG_HOST and SAC_CONTENT_VAULT_URL to a
@@ -59,6 +63,15 @@ const EXTENSIONS = {
     SAC_TLS_CERT_PEM: 'gap (F5): the server certificate for the module keyVaultEnv to inject; every app in azure/main.bicep has keyVaultEnv: [] today',
     SAC_TLS_KEY_PEM: 'gap (F5): the server private key — see SAC_TLS_CERT_PEM',
     SAC_TLS_CLIENT_CA_PEM: 'gap (F5): the CA that must have signed the device certificates — see SAC_TLS_CERT_PEM',
+    // The ADR 0020 device-authentication vocabulary. The binary reads all of it; a deployment that
+    // serves a production mode must pass it, and azure/main.bicep passes none of it yet. The auth
+    // lab passes them, but rule B deliberately does not count the lab as the deployment, so they are
+    // gaps here and not silently satisfied by localdev.
+    SAC_AUTH_MODES: 'gap: the production authenticator modes to serve (x509,dpop). Unset infers from the material present; a deployment should name them so a mode cannot be enabled by accident',
+    SAC_TLS_CLIENT_CERT_HEADER: 'gap: the edge-forwarded certificate header. A deployment behind Application Gateway must set it to X-Client-Cert, or the forwarded x509 path is disabled',
+    SAC_DPOP_TOKEN_PUBLIC_PEM: 'gap: the access-token verification key (PEM text or a readable PEM file). The deployment passes no token material yet',
+    SAC_DPOP_ISSUER: 'gap: the DPoP access token `iss` the origin requires. The deployment passes none yet',
+    SAC_DPOP_AUDIENCE: 'gap: the DPoP access token `aud` the origin requires. The deployment passes none yet',
   },
   'content-vault': {
     SAC_HTTP_ADDR: 'image: a container binds 0.0.0.0',
@@ -87,6 +100,23 @@ const EXTENSIONS = {
      */
     SAC_PG_STATEMENT_TIMEOUT_MS: 'shared with the migration job, which also reads it: §12.3\'s server-side statement budget',
     SAC_PG_LOCK_TIMEOUT_MS: 'shared with the migration job, which also reads it: a blocked read must be distinguishable from an expensive one',
+    // Pre-existing, unrelated to ADR 0020: query-api reads this name and nothing passed it, so the
+    // checker was red before the auth lab existed. It is an image-level default, like the two
+    // ceilings above: a container platform has no field to pass a value in, and a deployment that
+    // wants a different global pool sets it.
+    SAC_MAX_CONNECTIONS: 'image: 40 is the global statement-pool cap from §12.3 (master doc Q12); a deployment that wants a different ceiling sets it',
+  },
+  'control-api': {
+    SAC_HTTP_ADDR: 'image: a container binds 0.0.0.0, and the Bicep passes no command/args',
+    SAC_STORE: 'image: the store mode this build can actually serve (memory)',
+    SAC_CREDENTIAL_TTL: 'image: the default life of an issued device credential',
+    SAC_ENROLMENT_TOKEN_TTL: 'image: the default life an operator-minted enrolment token would carry; the request path only verifies tokens the MDM profile delivered',
+    SAC_REGION: 'gap: §12 region pinning is inert until the deployment passes the region',
+    SAC_CA_CERT_PEM: 'gap (ADR 0020 decision 3): the LocalCA certificate as PEM text, for the module keyVaultEnv to inject; every app in azure/main.bicep has keyVaultEnv: [] today',
+    SAC_CA_KEY_PEM: 'gap (ADR 0020 decision 3): the LocalCA private key — see SAC_CA_CERT_PEM',
+    SAC_TOKEN_ISSUER: 'gap (§5.2): the `iss` of issued access tokens; the deployment passes none',
+    SAC_TOKEN_AUDIENCE: 'gap (§5.2): the `aud` of issued access tokens — see SAC_TOKEN_ISSUER',
+    SAC_DPOP_TOKEN_KEY_PEM: 'gap: the access-token signing key. The binary refuses to start without it; no deployment injects it yet',
   },
 };
 
@@ -150,7 +180,29 @@ function namesInDockerfileEnv(rel) {
   return out;
 }
 
-/** SAC_* names the lab compose file sets, per compose service. */
+/**
+ * SAC_* names the lab compose files set, per compose service, merged across files.
+ *
+ * There are two lab compose files: the default memory lab (docker-compose.yml) and the opt-in auth
+ * lab (authlab.compose.yaml). Both name their services after the app they configure — there is an
+ * `ingest-api` in each — so a service's names are the union of its blocks. A service that sets no
+ * SAC_* name (postgres, schema, edge, the seed) is simply absent, and the per-app lookup then finds
+ * nothing, which is correct: those blocks configure no service vocabulary.
+ */
+function namesInComposeFiles(files) {
+  const out = new Map();
+  for (const rel of files) {
+    if (!existsSync(join(ROOT, rel))) continue;
+    for (const [name, names] of namesInCompose(rel)) {
+      const merged = out.get(name) ?? new Set();
+      for (const n of names) merged.add(n);
+      out.set(name, merged);
+    }
+  }
+  return out;
+}
+
+/** SAC_* names one lab compose file sets, per compose service. */
 function namesInCompose(rel) {
   const text = read(rel);
   const out = new Map();
@@ -158,7 +210,15 @@ function namesInCompose(rel) {
   const marks = [...text.matchAll(serviceRE)].map((m) => ({ name: m[1], at: m.index }));
   marks.forEach((mark, i) => {
     const end = i + 1 < marks.length ? marks[i + 1].at : text.length;
-    const body = text.slice(mark.at, end);
+    // Comment lines are documentation, not configuration. The control-api block explains its
+    // neighbour's vocabulary in a comment; counting that prose as control-api's settings would
+    // attribute ingest-api's names to the wrong service. The Dockerfile ENV parser above ignores
+    // comments for the same reason.
+    const body = text
+      .slice(mark.at, end)
+      .split('\n')
+      .map((line) => (line.trimStart().startsWith('#') ? '' : line))
+      .join('\n');
     const names = new Set((body.match(SAC) ?? []));
     if (names.size) out.set(mark.name, names);
   });
@@ -190,7 +250,10 @@ const notes = [];
 const bicep = namesInBicep('azure/main.bicep');
 if (bicep.size === 0) problems.push('azure/main.bicep: no container app env names found; the parser needs revisiting');
 
-const compose = existsSync(join(ROOT, 'localdev/docker-compose.yml')) ? namesInCompose('localdev/docker-compose.yml') : new Map();
+const compose = namesInComposeFiles([
+  'localdev/docker-compose.yml',
+  'localdev/authlab.compose.yaml',
+]);
 
 console.log('configuration vocabulary across artifacts\n');
 console.log(`${'app'.padEnd(15)} ${'bicep'.padEnd(7)} ${'binary'.padEnd(7)} ${'image'.padEnd(7)} lab`);

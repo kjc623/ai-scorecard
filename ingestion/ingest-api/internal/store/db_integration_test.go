@@ -169,6 +169,13 @@ func TestLiveWeakDedupKeyMatchesTheGoMirror(t *testing.T) {
 // against the test double. Column order follows the statement's own SELECT list.
 func TestLivePrincipalStatusRunsTheStatement(t *testing.T) {
 	container := psqlContainer(t)
+	// ADR 0020 §4 added credential_type and public_key_thumbprint to its SELECT. A lab container
+	// provisioned before that change cannot PREPARE the statement at all, so this is reported as
+	// awaiting the schema rather than asserted as a failure of the statement text.
+	if !liveTableHasColumn(t, container, "device_credential", "credential_type") ||
+		!liveTableHasColumn(t, container, "device_credential", "public_key_thumbprint") {
+		t.Skip("the live ops.device_credential predates ADR 0020's credential_type/public_key_thumbprint; SQLPrincipalStatus is awaiting the schema change")
+	}
 	const credential = "44444444-4444-4444-8444-444444444444"
 
 	script := "BEGIN;\n" +
@@ -182,8 +189,8 @@ func TestLivePrincipalStatusRunsTheStatement(t *testing.T) {
 		t.Fatalf("expected one row from SQLPrincipalStatus, got %d:\n%s", len(out), strings.Join(out, "\n"))
 	}
 	parts := strings.Split(out[0], "|")
-	if len(parts) != 8 {
-		t.Fatalf("expected 8 columns, got %d: %q", len(parts), out[0])
+	if len(parts) != 10 {
+		t.Fatalf("expected 10 columns, got %d: %q", len(parts), out[0])
 	}
 	if parts[0] != "active" {
 		t.Errorf("status = %q, want active", parts[0])
@@ -209,6 +216,14 @@ func TestLivePrincipalStatusRunsTheStatement(t *testing.T) {
 	if parts[7] != "" {
 		t.Errorf("credential_revoked_at = %q, want NULL", parts[7])
 	}
+	// ADR 0020 §4: the mode and the single transport binding are resolved with the status so the
+	// authenticator can compare them without a second read.
+	if parts[8] != "x509" {
+		t.Errorf("credential_type = %q, want x509 (the seeded default)", parts[8])
+	}
+	if parts[9] != "sha256-test-thumbprint" {
+		t.Errorf("public_key_thumbprint = %q, want the seeded binding", parts[9])
+	}
 
 	// A revoked credential must resolve as revoked rather than as unknown, because the two produce
 	// different operator actions.
@@ -223,8 +238,58 @@ func TestLivePrincipalStatusRunsTheStatement(t *testing.T) {
 		t.Fatalf("expected one row, got %d:\n%s", len(out), strings.Join(out, "\n"))
 	}
 	parts = strings.Split(out[0], "|")
-	if len(parts) == 8 && parts[7] == "" {
+	if len(parts) == 10 && parts[7] == "" {
 		t.Error("a revoked credential reported credential_revoked_at = NULL")
+	}
+}
+
+// TestLiveDPoPReplayIsOneShot executes SQLDPoPReplayInsert and SQLDPoPReplaySweep against the real
+// table: the PRIMARY KEY (tenant_id, jti) is what makes a second presentation a no-op, and the
+// sweep is what keeps the window bounded. The result is read back as rows-affected rather than by a
+// prior SELECT, which is the mechanism store.DPoPReplaySeen depends on.
+func TestLiveDPoPReplayIsOneShot(t *testing.T) {
+	container := psqlContainer(t)
+	if !liveTableExists(t, container, "dpop_replay") {
+		t.Skip("the live server predates ADR 0020's ops.dpop_replay; the replay statement is awaiting the schema change")
+	}
+	const credential = "77777777-7777-4777-8777-777777777777"
+	const jti = "proof-jti-live-1"
+	expiry := time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339)
+
+	script := "BEGIN;\n" +
+		seedSQL(ladder.TenantID, ladder.DeviceID, credential) +
+		"PREPARE ins AS " + SQLDPoPReplayInsert + ";\n" +
+		"PREPARE sweep AS " + SQLDPoPReplaySweep + ";\n" +
+		"EXECUTE ins(" + q(ladder.TenantID) + ", " + q(jti) + ", " + q(expiry) + "::timestamptz);\n" +
+		"SELECT 'first|' || count(*) FROM ops.dpop_replay WHERE tenant_id = " + q(ladder.TenantID) + ";\n" +
+		// The same jti again: ON CONFLICT DO NOTHING inserts nothing.
+		"EXECUTE ins(" + q(ladder.TenantID) + ", " + q(jti) + ", " + q(expiry) + "::timestamptz);\n" +
+		"SELECT 'second|' || count(*) FROM ops.dpop_replay WHERE tenant_id = " + q(ladder.TenantID) + ";\n" +
+		"ROLLBACK;\n"
+
+	out := strings.Join(lines(runPSQL(t, container, script)), "\n")
+	if !strings.Contains(out, "first|1") {
+		t.Errorf("the first jti presentation wrote no row:\n%s", out)
+	}
+	if !strings.Contains(out, "second|1") {
+		t.Errorf("a replayed jti inserted a second row; the primary key is not enforcing the window:\n%s", out)
+	}
+
+	// A row whose expires_at has passed is swept, so the same jti may legitimately recur.
+	past := time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+	script = "BEGIN;\n" +
+		seedSQL(ladder.TenantID, ladder.DeviceID, credential) +
+		"INSERT INTO ops.dpop_replay (tenant_id, jti, seen_at, expires_at) VALUES (" +
+		q(ladder.TenantID) + ", " + q(jti) + ", now() - interval '10 minutes', " + q(past) + "::timestamptz);\n" +
+		"PREPARE ins2 AS " + SQLDPoPReplayInsert + ";\n" +
+		"PREPARE sweep2 AS " + SQLDPoPReplaySweep + ";\n" +
+		"EXECUTE sweep2(" + q(ladder.TenantID) + ");\n" +
+		"EXECUTE ins2(" + q(ladder.TenantID) + ", " + q(jti) + ", " + q(expiry) + "::timestamptz);\n" +
+		"SELECT 'after|' || count(*) FROM ops.dpop_replay WHERE tenant_id = " + q(ladder.TenantID) + ";\n" +
+		"ROLLBACK;\n"
+	out = strings.Join(lines(runPSQL(t, container, script)), "\n")
+	if !strings.Contains(out, "after|1") {
+		t.Errorf("an expired jti was not forgotten and re-recorded:\n%s", out)
 	}
 }
 

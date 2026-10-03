@@ -6,7 +6,7 @@ The server store, and the only one. SQLite is the *device* spool and nothing els
 | Path | What it is |
 |---|---|
 | [`schema.sql`](schema.sql) | The whole schema: DDL, roles, grants, row-level security, triggers, functions, seed data |
-| [`invariants.test.sql`](invariants.test.sql) | 47 assertions that the schema's properties actually hold |
+| [`invariants.test.sql`](invariants.test.sql) | 54 assertions that the schema's properties actually hold |
 | [`tools/`](tools/) | The checkers, the live-server runner, and the log tally |
 | [`evidence/`](evidence/) | Captured runs and their README. The README is tracked; the raw logs are not |
 

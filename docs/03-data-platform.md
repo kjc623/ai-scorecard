@@ -385,7 +385,7 @@ psql -v ON_ERROR_STOP=1 -f database/invariants.test.sql
 
 [database/invariants.test.sql](../database/invariants.test.sql) runs as the runtime roles, not as a superuser,
 because a superuser bypasses row-level security and would therefore prove nothing about it. The
-recorded run was against PostgreSQL 17, the local lab's version. The 47 assertions cover:
+recorded run was against PostgreSQL 17, the local lab's version. The 54 assertions cover:
 
 | Group | What it proves |
 |---|---|
@@ -403,6 +403,8 @@ recorded run was against PostgreSQL 17, the local lab's version. The 47 assertio
 | T36–T38 | An equal-rank exact observation adopts a weak-only row and the adopted row is no longer flagged low; the quarantine reason vocabulary is pinned |
 | T39–T43 | Each kind refuses every field the contract forbids it and still accepts a valid record; an M0 record refuses every content-derived field, including `confidence` |
 | T44–T47 | A retrieval grant is single-use, whole and not self-approved; grant and classifier-release digests are lowercase sha256 or refused |
+| T48–T51 | The device-credential mode boundary (ADR 0020 §4): a duplicate `(tenant_id, hardware_identity_hash)` is refused while a NULL identity is allowed; a `dpop` credential must carry a JWK and an `x509` one need not; a repeated `(tenant_id, jti)` is refused and swept once expired |
+| T52–T54 | The enrolment token (ADR 0020 §3, §5.1): its stored hash has one sha256 spelling and is unique per tenant; it cannot expire before issue and can be marked used once; forced RLS hides one tenant's tokens from another |
 
 What these tests do **not** prove: performance at scale, behaviour under concurrency beyond the
 advisory lock in the audit chain, and the plpgsql bodies of functions that no test exercises. The

@@ -1622,6 +1622,238 @@ END $$;
 
 
 -- =====================================================================================
+-- T48-T51  Device credentials: X.509 or DPoP, and the jti replay window (ADR 0020 §4)
+-- =====================================================================================
+-- ADR 0020 §4 makes the credential mode a property of the row -- an X.509 certificate or an
+-- RFC 9449 DPoP key -- and makes hardware_identity_hash the per-tenant enrolment idempotency
+-- key. These assertions run as the runtime roles that write each table: sac_control for
+-- enrolment, sac_ingest for the replay window. Running them as a superuser would exercise the
+-- shape of the tables and nothing about whether the runtime can reach them.
+
+SET ROLE sac_control;
+SET app.tenant_id = '11111111-1111-7111-8111-111111111111';
+
+DO $$
+DECLARE
+  n int;
+BEGIN
+  -- T48: a hardware identity is unique per tenant, and the partial index is what enforces it.
+  -- The first insert must succeed, the duplicate must be refused, and a NULL identity must stay
+  -- unconstrained -- a plain UNIQUE would have passed the first two but failed the third.
+  INSERT INTO ops.device (tenant_id, device_id, os, hardware_identity_hash)
+  VALUES ('11111111-1111-7111-8111-111111111111',
+          'aaaaaaaa-0000-7000-8000-0000000000f1', 'windows', 'hwid-t48');
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN
+    RAISE EXCEPTION 'FAIL T48 the first device with a hardware identity hash was not accepted';
+  END IF;
+
+  BEGIN
+    INSERT INTO ops.device (tenant_id, device_id, os, hardware_identity_hash)
+    VALUES ('11111111-1111-7111-8111-111111111111',
+            'aaaaaaaa-0000-7000-8000-0000000000f2', 'windows', 'hwid-t48');
+    RAISE EXCEPTION 'FAIL T48 a duplicate (tenant_id, hardware_identity_hash) was accepted';
+  EXCEPTION WHEN unique_violation THEN
+    NULL;  -- expected: device_hardware_identity_uniq refuses the duplicate
+  END;
+
+  -- Positive control for the partial predicate: a second device with no hardware identity is
+  -- still allowed, so uniqueness was not smuggled in as a blanket rule over NULLs.
+  INSERT INTO ops.device (tenant_id, device_id, os, hardware_identity_hash)
+  VALUES ('11111111-1111-7111-8111-111111111111',
+          'aaaaaaaa-0000-7000-8000-0000000000f3', 'windows', NULL);
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN
+    RAISE EXCEPTION 'FAIL T48 a device with a NULL hardware identity was refused, so the partial predicate is wrong';
+  END IF;
+
+  RAISE NOTICE 'PASS T48 duplicate (tenant_id, hardware_identity_hash) refused; NULL identities remain unconstrained';
+END $$;
+
+DO $$
+DECLARE
+  n int;
+BEGIN
+  -- T49 negative: a dpop credential without its JWK is unverifiable, so the CHECK refuses it.
+  BEGIN
+    INSERT INTO ops.device_credential (tenant_id, credential_id, device_id, credential_type,
+                                       public_key_thumbprint, expires_at)
+    VALUES ('11111111-1111-7111-8111-111111111111',
+            'dddddddd-0000-7000-8000-000000000001',
+            'aaaaaaaa-0000-7000-8000-000000000001',
+            'dpop', 'thumb-dpop-no-jwk', now() + interval '30 days');
+    RAISE EXCEPTION 'FAIL T49 a dpop credential with NULL public_key_jwk was accepted';
+  EXCEPTION WHEN check_violation THEN
+    NULL;  -- expected: credential_dpop_requires_jwk
+  END;
+
+  -- Positive control: the same dpop row WITH a JWK is accepted, so the CHECK refuses the missing
+  -- key rather than the mode.
+  INSERT INTO ops.device_credential (tenant_id, credential_id, device_id, credential_type,
+                                     public_key_thumbprint, public_key_jwk, expires_at)
+  VALUES ('11111111-1111-7111-8111-111111111111',
+          'dddddddd-0000-7000-8000-000000000002',
+          'aaaaaaaa-0000-7000-8000-000000000001',
+          'dpop', 'thumb-dpop-with-jwk',
+          '{"kty":"EC","crv":"P-256","x":"test-x","y":"test-y"}'::jsonb,
+          now() + interval '30 days');
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN
+    RAISE EXCEPTION 'FAIL T49 a dpop credential carrying a JWK was refused, so the CHECK rejects the mode rather than the missing key';
+  END IF;
+  RAISE NOTICE 'PASS T49 dpop credential without a JWK is refused; with a JWK it is accepted';
+END $$;
+
+DO $$
+DECLARE
+  n int;
+BEGIN
+  -- T50: an x509 credential need not carry a JWK -- the certificate carries the key -- so a NULL
+  -- public_key_jwk is accepted. This is the positive half of the mode-dependent CHECK.
+  INSERT INTO ops.device_credential (tenant_id, credential_id, device_id, credential_type,
+                                     public_key_thumbprint, expires_at)
+  VALUES ('11111111-1111-7111-8111-111111111111',
+          'dddddddd-0000-7000-8000-000000000003',
+          'aaaaaaaa-0000-7000-8000-000000000001',
+          'x509', 'thumb-x509-no-jwk', now() + interval '30 days');
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN
+    RAISE EXCEPTION 'FAIL T50 an x509 credential with NULL public_key_jwk was not accepted';
+  END IF;
+  RAISE NOTICE 'PASS T50 x509 credential with NULL public_key_jwk is accepted';
+END $$;
+
+SET ROLE sac_ingest;
+SET app.tenant_id = '11111111-1111-7111-8111-111111111111';
+
+DO $$
+DECLARE
+  n int;
+  v_tenant constant uuid := '11111111-1111-7111-8111-111111111111';
+BEGIN
+  -- T51: the jti replay window is keyed (tenant_id, jti), so the same proof cannot be recorded
+  -- twice. The first insert is recorded; a second, plain insert is refused by the primary key;
+  -- and the ingest path's INSERT .. ON CONFLICT DO NOTHING turns that refusal into a no-op, which
+  -- is what lets a replay be rejected without aborting the batch.
+  INSERT INTO ops.dpop_replay (tenant_id, jti, expires_at)
+  VALUES (v_tenant, 'jti-t51', now() + interval '5 minutes');
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN
+    RAISE EXCEPTION 'FAIL T51 the first jti was not recorded (% rows)', n;
+  END IF;
+
+  BEGIN
+    INSERT INTO ops.dpop_replay (tenant_id, jti, expires_at)
+    VALUES (v_tenant, 'jti-t51', now() + interval '5 minutes');
+    RAISE EXCEPTION 'FAIL T51 the same (tenant_id, jti) was accepted a second time';
+  EXCEPTION WHEN unique_violation THEN
+    NULL;  -- expected: the tenant-leading primary key refuses the replay
+  END;
+
+  INSERT INTO ops.dpop_replay (tenant_id, jti, expires_at)
+  VALUES (v_tenant, 'jti-t51', now() + interval '5 minutes')
+  ON CONFLICT (tenant_id, jti) DO NOTHING;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 0 THEN
+    RAISE EXCEPTION 'FAIL T51 ON CONFLICT DO NOTHING inserted the replay (% rows)', n;
+  END IF;
+
+  -- The sweep is a granted capability: the runtime role must be able to delete an expired row.
+  -- seen_at is set explicitly so the row is a genuinely expired window (seen before it expired),
+  -- not an inverted one that the expensive CHECK would rightly refuse.
+  INSERT INTO ops.dpop_replay (tenant_id, jti, seen_at, expires_at)
+  VALUES (v_tenant, 'jti-t51-expired', now() - interval '2 minutes', now() - interval '1 minute');
+  DELETE FROM ops.dpop_replay
+   WHERE tenant_id = v_tenant AND expires_at < now();
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN
+    RAISE EXCEPTION 'FAIL T51 the expired-jti sweep deleted % rows, expected 1', n;
+  END IF;
+
+  RAISE NOTICE 'PASS T51 a repeated (tenant_id, jti) is refused, is a no-op under ON CONFLICT DO NOTHING, and the expired row can be swept';
+END $$;
+
+-- =====================================================================================
+-- T52-T54  Enrolment tokens: single-use, sha256-hashed, tenant-isolated (ADR 0020 §3, §5.1)
+-- =====================================================================================
+-- The bootstrap credential the MDM delivers. Only its SHA-256 hash is stored; it is single-use
+-- (used_at closes it) and per-tenant unique. These run as sac_control, the role that writes it,
+-- so the grants are exercised alongside the shape.
+
+SET ROLE sac_control;
+SET app.tenant_id = '11111111-1111-7111-8111-111111111111';
+
+DO $$
+DECLARE
+  n int;
+  v_tenant constant uuid := '11111111-1111-7111-8111-111111111111';
+  v_hash constant text := 'sha256:' || repeat('ab', 32);
+BEGIN
+  -- T52: the hash has exactly one spelling (sha256: + 64 lowercase hex), and a token is unique
+  -- per tenant. A malformed hash is refused; the same (tenant_id, token_hash) cannot be stored
+  -- twice. A token with no tenant or no expiry is refused by NOT NULL.
+  INSERT INTO ops.enrolment_token (tenant_id, token_hash, hardware_identity_hash, expires_at)
+  VALUES (v_tenant, v_hash, 'hwid-t52', now() + interval '1 hour');
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN RAISE EXCEPTION 'FAIL T52 a well-formed enrolment token was not accepted'; END IF;
+
+  BEGIN
+    INSERT INTO ops.enrolment_token (tenant_id, token_hash, expires_at)
+    VALUES (v_tenant, 'sha256:' || repeat('AB', 32), now() + interval '1 hour');
+    RAISE EXCEPTION 'FAIL T52 an uppercase-hex token hash was accepted; the hash has one spelling';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+
+  BEGIN
+    INSERT INTO ops.enrolment_token (tenant_id, token_hash, expires_at)
+    VALUES (v_tenant, v_hash, now() + interval '1 hour');
+    RAISE EXCEPTION 'FAIL T52 a duplicate (tenant_id, token_hash) was accepted';
+  EXCEPTION WHEN unique_violation THEN NULL; END;
+
+  RAISE NOTICE 'PASS T52 an enrolment token hash is sha256-shaped and unique per tenant';
+END $$;
+
+DO $$
+DECLARE
+  n int;
+  v_tenant constant uuid := '11111111-1111-7111-8111-111111111111';
+BEGIN
+  -- T53: a token cannot expire before it was issued, and it is single-use: used_at is the only
+  -- mutation the request path performs and it settles the token.
+  BEGIN
+    INSERT INTO ops.enrolment_token (tenant_id, token_hash, issued_at, expires_at)
+    VALUES (v_tenant, 'sha256:' || repeat('cd', 32), now(), now() - interval '1 minute');
+    RAISE EXCEPTION 'FAIL T53 a token expiring before it was issued was accepted';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+
+  INSERT INTO ops.enrolment_token (tenant_id, token_hash, expires_at)
+  VALUES (v_tenant, 'sha256:' || repeat('ef', 32), now() + interval '1 hour');
+  UPDATE ops.enrolment_token SET used_at = now()
+   WHERE tenant_id = v_tenant AND token_hash = 'sha256:' || repeat('ef', 32);
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN RAISE EXCEPTION 'FAIL T53 marking a token used updated % rows, expected 1', n; END IF;
+
+  RAISE NOTICE 'PASS T53 a token cannot expire before issue and can be marked used once';
+END $$;
+
+SET ROLE sac_control;
+SET app.tenant_id = '22222222-2222-7222-8222-222222222222';
+
+DO $$
+DECLARE
+  n int;
+BEGIN
+  -- T54: forced RLS isolates tokens. Tenant B holds the same sac_control privilege and still sees
+  -- none of tenant A's tokens; the policy is the same fail-closed one every tenant table uses.
+  SELECT count(*) INTO n FROM ops.enrolment_token
+   WHERE tenant_id = '11111111-1111-7111-8111-111111111111';
+  IF n <> 0 THEN RAISE EXCEPTION 'FAIL T54 tenant B sees % of tenant A''s enrolment tokens', n; END IF;
+  RAISE NOTICE 'PASS T54 enrolment tokens are isolated by forced row-level security';
+END $$;
+
+RESET ROLE;
+
+
+-- =====================================================================================
 -- Report
 -- =====================================================================================
 
