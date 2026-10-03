@@ -44,7 +44,7 @@ param tags object = {}
 // A lab sets them false. Nothing else about the composition changes.
 // ---------------------------------------------------------------------------------------------
 
-@description('Deploy Front Door Premium and its WAF policy. False in the lab: the edge is the largest single line in the bill, and a lab is reached over the VNet instead.')
+@description('Deploy the edge: Front Door Premium + WAF (analyst) and Application Gateway WAF_v2 + WAF (device). False in the lab: the two edges are the largest fixed lines in the bill (Front Door ~$330/month, Application Gateway ~$321/month), and a lab is reached over the VNet instead.')
 param deployEdge bool = true
 
 @description('Deploy the static web app that hosts the dashboard. False in the lab: the dashboard is a static file that opens from disk (apps/dashboard/index.html).')
@@ -119,6 +119,12 @@ param registryGeoReplicaLocation string = ''
 @description('Static Web App custom domain for the dashboard. Empty in dev.')
 param dashboardCustomDomain string = ''
 
+@description('The public device hostname that resolves to Application Gateway (ADR 0020). Empty when the edge is not deployed (lab).')
+param deviceFqdn string = ''
+
+@description('Key Vault secret id of the device FQDN TLS certificate. Supplied at deploy time from Key Vault, never in a parameter file (§5.1); empty when the edge is not deployed (lab).')
+param deviceTlsCertKeyVaultSecretId string = ''
+
 @description('Entra ID client id for dashboard authentication. A public client identifier, not a credential.')
 param dashboardEntraClientId string = ''
 
@@ -187,6 +193,13 @@ resource identityMigration 'Microsoft.ManagedIdentity/userAssignedIdentities@202
   tags: tags
 }
 
+@description('The Application Gateway runs as this identity to read its TLS certificate from Key Vault. §5.1: every component runs as a user-assigned identity and the grant is the security boundary.')
+resource identityGateway 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: '${baseName}-id-gateway'
+  location: location
+  tags: tags
+}
+
 // ---------------------------------------------------------------------------------------------
 // Platform
 
@@ -243,6 +256,11 @@ module keyVault 'modules/keyvault.bicep' = {
         name: 'ingest-api'
         principalId: identityIngest.properties.principalId
         roleDefinitionId: 'cryptoServiceEncryption'
+      }
+      {
+        name: 'application-gateway'
+        principalId: identityGateway.properties.principalId
+        roleDefinitionId: 'secretsUser'
       }
     ]
     // Unwrap is held by exactly one identity: content-vault (C15, D7). This one-line list is the whole
@@ -554,9 +572,9 @@ module migrationJob 'modules/container-app-job.bicep' = {
 // ---------------------------------------------------------------------------------------------
 // Edge, dashboard, monitoring and budget
 
-// The edge pair is conditional on deployEdge. Front Door and its WAF are one decision, not two:
-// the WAF policy exists only to be attached to the profile, so deploying one without the other is
-// never a state anyone wants. False in the lab, where the base fee alone exceeds the whole lab.
+// The edge pair is conditional on deployEdge. Front Door (analyst) and its WAF are one decision, and
+// Application Gateway (device) and its WAF are the other. False in the lab, where the two base fees
+// alone exceed the whole lab.
 module waf 'modules/waf.bicep' = if (deployEdge) {
   name: 'waf'
   params: {
@@ -565,17 +583,39 @@ module waf 'modules/waf.bicep' = if (deployEdge) {
   }
 }
 
+// Analyst edge: Front Door + Private Link, /analyst/* -> query-api. The device /v1/* routes moved to
+// Application Gateway below (ADR 0020 decision 1).
 module frontDoor 'modules/frontdoor.bicep' = if (deployEdge) {
   name: 'frontdoor'
   params: {
     wafPolicyId: waf.outputs.wafPolicyId
     environmentId: containerAppsEnv.outputs.environmentId
-    environmentFqdn: ingestApp.outputs.fqdn
+    environmentFqdn: queryApp.outputs.fqdn
     originHostHeaders: {
-      'ingest-api': ingestApp.outputs.fqdn
-      'control-api': controlApp.outputs.fqdn
       'query-api': queryApp.outputs.fqdn
     }
+    tags: tags
+  }
+}
+
+// Device edge: Application Gateway WAF_v2, passthrough client auth, /v1/* -> ingest-api/control-api.
+// The backend pool is the internal Container Apps static IP, with per-app Host headers, and the
+// origin lock NSG (network.bicep) admits only this subnet to the environment on the device path.
+module applicationGateway 'modules/application-gateway.bicep' = if (deployEdge) {
+  name: 'application-gateway'
+  params: {
+    location: location
+    baseName: baseName
+    gatewaySubnetId: network.outputs.gatewaySubnetId
+    deviceFqdn: deviceFqdn
+    sslCertificateKeyVaultSecretId: deviceTlsCertKeyVaultSecretId
+    gatewayIdentityId: identityGateway.id
+    backendStaticIp: containerAppsEnv.outputs.staticIp
+    backendHostNames: {
+      ingest: ingestApp.outputs.fqdn
+      control: controlApp.outputs.fqdn
+    }
+    wafMode: wafMode
     tags: tags
   }
 }
@@ -624,8 +664,11 @@ module budget 'modules/budget.bicep' = {
 // as a value instead of a comment; the CI policy scan (infra/pipelines/policy-scan.yml) fails the
 // build if it is ever external, and infra/tools/check-infra.mjs asserts it statically.
 
-@description('The one public hostname in the deployment. Everything else is private or internal. Empty when deployEdge is false, which is what the lab does — a lab is reached over the VNet, not the internet.')
+@description('The public hostname analysts resolve (Front Door). The device FQDN resolves to Application Gateway instead (ADR 0020). Everything else is private or internal. Empty when deployEdge is false, which is what the lab does — a lab is reached over the VNet, not the internet.')
 output frontDoorHostName string = deployEdge ? frontDoor.outputs.endpointHostName : ''
+
+@description('The public IP address devices reach — the only public device endpoint (docs/05 §3.5). Empty when deployEdge is false.')
+output applicationGatewayIp string = deployEdge ? applicationGateway.outputs.deviceEndpointIp : ''
 
 @description('content-vault ingress mode. Must be "internal": it has no public endpoint and no Front Door route (C15, D7).')
 output contentVaultIngress string = contentVaultApp.outputs.ingressMode
@@ -651,12 +694,13 @@ output identities object = {
   aggregator: identityAggregator.id
   reconciler: identityReconciler.id
   migration: identityMigration.id
+  gateway: identityGateway.id
 }
 
 @description('Whether the Managed HSM pool was deployed. Per-contract only (§2, §11.6).')
 output managedHsmDeployed bool = deployManagedHsm && length(hsmAdministratorObjectIds) == 3 ? managedHsm.outputs.?deployed ?? false : false
 
-@description('Whether the edge (Front Door + WAF) was deployed. False in the lab, where the base fee exceeds the whole environment.')
+@description('Whether the edge (Front Door + Application Gateway and their WAF policies) was deployed. False in the lab, where the base fees exceed the whole environment.')
 output edgeDeployed bool = deployEdge
 
 @description('Whether the dashboard was deployed as a Static Web App. False in the lab: the dashboard is a static file.')

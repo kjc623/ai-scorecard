@@ -104,13 +104,33 @@ The checker has no dependencies and never makes a network call. It reads `azure/
 
 | Path | What it is |
 |---|---|
-| `main.bicep` | The one composition every environment deploys: modules, identity bindings, the two architectural assertions stated in the clear, and the `deployEdge` / `deployDashboard` / `deployExports` switches (all `true` by default) that let a lab omit Front Door and the WAF, the Static Web App, and the export account |
+| `main.bicep` | The one composition every environment deploys: modules, identity bindings, the two architectural assertions stated in the clear, and the `deployEdge` / `deployDashboard` / `deployExports` switches (all `true` by default) that let a lab omit the two edges (Front Door + Application Gateway), the Static Web App, and the export account |
 | `modules/` | One resource family per module, matching §3.3's layout exactly |
+| `modules/application-gateway.bicep` | The public device edge: `WAF_v2`, dedicated subnet, public IP, HTTPS listener for the device FQDN, SSL profile in client-auth **passthrough** (a certificate is requested, never required), a rewrite that forwards the presented certificate as `X-Client-Cert` plus `X-Forwarded-Proto`/`Host`, a backend pool to the internal Container Apps static IP with per-app Host headers, and health probes (ADR 0020 decision 1) |
 | `params/` | `dev`, `staging`, `prod.eastus`: the only place an environment differs (§3.2). `lab` is the architecture-fidelity lab: the same composition with the three `deploy*` switches off |
 | `pipelines/` | `infra.yml` (deploy), `drift.yml` (scheduled `what-if`), `policy-scan.yml` (the properties that must never regress). GitHub Actions workflow definitions; nothing in this repository triggers them — see `pipelines/README.md` |
 | `inventory.json` | Every §2 inventory row mapped to the module that implements it; §2.2's deliberately-absent list with the resource types that must never appear |
 | `cost-model.md` | §11's arithmetic recomputed from its own unit prices, with the disagreements stated as findings |
 | `tools/` | The zero-dependency checker and its suite |
+
+## The device edge and its local stand-in
+
+ADR 0020 decision 1 splits the two audiences across two edges: **Application Gateway** is the public
+device ingress (the device FQDN), and **Front Door** is the analyst ingress. `modules/application-gateway.bicep`
+is kept behaviourally aligned with `localdev/edge/main.go`, the Docker stand-in that has been proven
+end to end in the lab:
+
+| Behaviour | localdev/edge | application-gateway.bicep |
+|---|---|---|
+| Terminate TLS, request a client cert without requiring one | `tls.RequestClientCert` | `sslProfiles[].clientAuthConfiguration.verifyClientAuthMode: 'Passthrough'` |
+| Forward the presented cert as PEM | `peerCertPEM` + `url.QueryEscape` → `X-Client-Cert` | rewrite `X-Client-Cert = {var_client_certificate}` |
+| `X-Forwarded-Proto` / `X-Forwarded-Host` for the DPoP `htu` | `pr.Out.Header.Set(...)` | rewrite `X-Forwarded-Proto = https`, `X-Forwarded-Host = {var_host}` |
+| Route table | `/v1/events → ingest`, others → control | path map: `/v1/events/* → ingest`, default → control |
+
+The client-certificate header encoding is an **assumption to verify on a real subscription**: the
+gateway produces URL-encoded PEM, but `ingestion/ingest-api/internal/auth.parseCertificateChain`
+accepts raw PEM or percent-encoded PEM (`url.QueryUnescape`), so the origin does not depend on the
+exact form.
 
 ## The inventory diff against docs/05 §2
 

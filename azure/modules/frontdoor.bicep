@@ -1,15 +1,16 @@
 // frontdoor.bicep — Front Door Premium, the endpoint, the Private Link origin group and the routes
 // (docs/05-platform-delivery.md §2, §2.1, §6).
 //
-// This is the only public surface in the deployment. Two things are deliberate:
+// Front Door is the **analyst** edge only (ADR 0020 decision 1). The device /v1/* routes moved to
+// Application Gateway (modules/application-gateway.bicep); this module carries the analyst surface
+// (/analyst/* -> query-api). Two things are deliberate:
 //
 //   - the origin group reaches the Container Apps environment over **Private Link**, so the
 //     environment stays internal and the apps never accept a public connection (§2.1);
 //   - there is **no route to content-vault**. It has no Front Door route and no public endpoint, by
 //     construction (C15, D7), and the checker fails the build if the string appears in this file.
 //
-// The five device-facing endpoints of master §5.1 are the /v1/* routes onto ingest-api and
-// control-api; analyst traffic reaches query-api through /analyst/*, authenticated by Entra ID.
+// Analyst traffic reaches query-api through /analyst/*, authenticated by Entra ID.
 
 @description('Front Door profile SKU. Premium is required for Private Link origins; the value is a parameter so the cost model and the composition state it once.')
 @allowed(['Premium_AzureFrontDoor', 'Standard_AzureFrontDoor'])
@@ -27,7 +28,7 @@ param environmentFqdn string
 @description('Origin host headers, keyed by app name. Backends validate the Host header, so the route decides which app answers.')
 param originHostHeaders object
 
-@description('Health probe path for the origin group. Shared by all apps because all expose it (§10.2).')
+@description('Health probe path for the origin group. query-api exposes it (§10.2).')
 param healthProbePath string = '/healthz'
 
 @description('Health probe interval in seconds. Short enough that a failed revision is removed before a flush arrives.')
@@ -51,7 +52,7 @@ resource profile 'Microsoft.Cdn/profiles@2023-05-01' = {
 }
 
 resource endpoint 'Microsoft.Cdn/profiles/afdEndpoints@2023-05-01' = {
-  name: '${profile.name}/device-api'
+  name: '${profile.name}/analyst'
   location: 'global'
   tags: tags
   properties: {
@@ -87,7 +88,7 @@ resource origin 'Microsoft.Cdn/profiles/originGroups/origins@2023-05-01' = {
   name: '${profile.name}/container-apps/container-apps-internal'
   properties: {
     hostName: environmentFqdn
-    originHostHeader: originHostHeaders['ingest-api']
+    originHostHeader: originHostHeaders['query-api']
     httpPort: 80
     httpsPort: 443
     priority: 1
@@ -101,35 +102,10 @@ resource origin 'Microsoft.Cdn/profiles/originGroups/origins@2023-05-01' = {
   ]
 }
 
-// The device-facing surface: the five endpoints of master §5.1, all on ingest-api and control-api.
-// A route per endpoint rather than a catch-all, so an unlisted path is a 404 at the edge rather
-// than a surprise inside a service.
-resource deviceRoute 'Microsoft.Cdn/profiles/afdEndpoints/routes@2023-05-01' = {
-  name: '${profile.name}/device-api/device-v1'
-  properties: {
-    originGroup: {
-      id: originGroup.id
-    }
-    supportedProtocols: [
-      'Https'
-    ]
-    patternsToMatch: [
-      '/v1/*'
-    ]
-    forwardingProtocol: 'HttpsOnly'
-    linkToDefaultDomain: 'Enabled'
-    httpsRedirect: 'Enabled'
-    enabledState: routesEnabled ? 'Enabled' : 'Disabled'
-  }
-  dependsOn: [
-    origin
-  ]
-}
-
 // Analyst entry. Entra ID authentication is enforced by the app as well as here; the dashboard is
-// the only client, and §2.1 is explicit that analyst traffic uses the same path as devices.
+// the only client.
 resource analystRoute 'Microsoft.Cdn/profiles/afdEndpoints/routes@2023-05-01' = {
-  name: '${profile.name}/device-api/analyst'
+  name: '${profile.name}/analyst/analyst'
   properties: {
     originGroup: {
       id: originGroup.id
@@ -174,7 +150,6 @@ resource securityPolicy 'Microsoft.Cdn/profiles/securityPolicies@2023-05-01' = {
     }
   }
   dependsOn: [
-    deviceRoute
     analystRoute
   ]
 }
@@ -182,7 +157,7 @@ resource securityPolicy 'Microsoft.Cdn/profiles/securityPolicies@2023-05-01' = {
 @description('Resource id of the Front Door profile.')
 output profileId string = profile.id
 
-@description('The public hostname devices and analysts resolve. The only public surface in the deployment.')
+@description('The public hostname analysts resolve. The device FQDN resolves to Application Gateway instead (ADR 0020).')
 output endpointHostName string = endpoint.properties.hostName
 
 @description('The origin group id, so monitoring.bicep can alert on origin health.')

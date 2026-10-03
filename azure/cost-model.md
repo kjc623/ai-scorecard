@@ -31,6 +31,8 @@ live price list.**
     "frontDoorBasePerMonth": 330,
     "frontDoorPer10kRequests": 0.012,
     "frontDoorEgressGib": 0.085,
+    "applicationGatewayWafV2FixedPerHour": 0.44,
+    "applicationGatewayCapacityUnitHour": 0.014,
     "staticWebAppPerMonth": 9,
     "keyVaultPer10kOps": 0.03,
     "logAnalyticsPerGib": 2.76,
@@ -72,6 +74,16 @@ live price list.**
       "total": 382.18
     },
     {
+      "name": "Application Gateway WAF_v2",
+      "docLabel": "Application Gateway WAF_v2 (device ingress; base + capacity units)",
+      "derivation": "one gateway fixed 730 h at $0.44/h + ~2 capacity units at $0.014/CU-h over 730 h (a passthrough listener at this traffic uses few capacity units)",
+      "terms": [
+        { "unit": "applicationGatewayWafV2FixedPerHour", "quantity": 730 },
+        { "unit": "applicationGatewayCapacityUnitHour", "quantity": 1460 }
+      ],
+      "total": 341.64
+    },
+    {
       "name": "Static Web App",
       "docLabel": "Static Web App",
       "derivation": "one Standard static site",
@@ -109,14 +121,14 @@ live price list.**
       "total": 0.74
     }
   ],
-  "subtotal": 826.66,
+  "subtotal": 1168.30,
   "sharedRegional": {
     "derivation": "docs/05 §11.3: Container Apps environment ~$50 + ACR Premium and geo-replication ~$60 + workspace overhead ~$25 + budgets and diagnostics ~$10",
     "total": 145,
     "perTenantAt100": 1.45,
     "perTenantAt20": 7.25
   },
-  "estimatePerTenantPerMonth": { "low": 828, "high": 840 },
+  "estimatePerTenantPerMonth": { "low": 1170, "high": 1180 },
   "m3Addition": {
     "derivation": "docs/05 §11.4: attachment ciphertext at 50–500 GB/year, plus ~$3 of grant, retrieval and log operations",
     "blobHot12MonthRetention": { "low": 0.92, "high": 9.20 },
@@ -129,8 +141,15 @@ live price list.**
       "id": "FD-SHARED-OR-PER-TENANT",
       "section": "§2 inventory, §11.2, §11.3, §11.6",
       "affectsLines": ["Front Door Premium"],
-      "statement": "§11.2 charges the $330 Front Door Premium base per tenant, and §11.6 leans on it ('$330, or 40% of the tenant … the reason adding tenants is accretive'), but §2 describes one regional environment per residency region with resources shared across all tenants in it, and §11.3's shared-regional list does not mention Front Door. This deployment has exactly ONE Front Door profile per regional environment (main.bicep instantiates frontdoor.bicep once), so the base is a regional fixed cost, not a per-tenant one.",
-      "impact": "If the base is shared, the per-tenant figure is $826.66 - $330 + $1.45 shared allocation = about $498 at 100 tenants, not $830–840. The document's own 'ASSUMPTION' that its figure is 'materially above the $300–700/month band quoted in master §1.4' is then wrong: at 100 tenants the model lands inside that band, and the master's correction from ≈$300–700 to ≈$830–840 is only correct if each tenant gets its own Front Door profile. Either §2 must say the profile is per tenant or §11.2/§11.6 must move the base into §11.3."
+      "statement": "§11.2 charges the $330 Front Door Premium base per tenant, but §2 describes one regional environment per residency region with resources shared across all tenants in it, and §11.1 prices the base 'per profile per region'. This deployment has exactly ONE Front Door profile per regional environment (main.bicep instantiates frontdoor.bicep once), so the base is a regional fixed cost, not a per-tenant one. §11.2's own 'Under review' note and azure/COST-FINDING.md already record this contradiction as unresolved.",
+      "impact": "If the base is shared, the per-tenant figure drops from the §11.2 subtotal by $330: ≈$839 plus its allocated 1/n share at 100 tenants, not $1,170–1,180. Either §2 must say the profile is per tenant or §11.2/§11.6 must move the base into §11.3. The model reproduces the per-tenant footing and records, not resolves, the contradiction (COST-FINDING.md: 'recorded, not decided')."
+    },
+    {
+      "id": "AGW-SHARED-OR-PER-TENANT",
+      "section": "§2 inventory, §11.2, §11.3, §11.6",
+      "affectsLines": ["Application Gateway WAF_v2"],
+      "statement": "§11.2 charges the Application Gateway WAF_v2 fixed base ($321/month, plus capacity units) per tenant, but §2 describes one regional environment per residency region and §11.3 states 'ADR 0020 adds Application Gateway WAF_v2 as another region-shared component'. This deployment has exactly ONE gateway per regional environment (main.bicep instantiates application-gateway.bicep once), so the fixed base is a regional cost, not a per-tenant one — the same ambiguity COST-FINDING.md records for Front Door.",
+      "impact": "If the gateway fixed base is shared, the per-tenant figure drops by ≈$321 plus its allocated 1/n share; §11.2's 'Under review' note already states the added $341 is an upper bound on the per-tenant share until §11.3's allocation question is decided. The model reproduces the per-tenant footing and records, not resolves, the contradiction."
     },
     {
       "id": "KV-HSM-KEY-PRICE",
@@ -167,19 +186,23 @@ live price list.**
 ## What this model says, and what it does not
 
 **The lines reconcile.** Every line reproduces the document's figure within the one-dollar rounding
-the document itself uses, and the subtotal lands at **$826.66** against the document's **$828**
-(a $1.34 difference from rounding seven lines to whole dollars). The document's estimate of
-**$830–840** per tenant per month therefore follows from §11.2's own arithmetic plus the $1–9 shared
-allocation and $1–3 unmodelled growth it names.
+the document itself uses, and the subtotal lands at **$1,168.30** against the document's **$1,169**
+(a $0.70 difference from rounding eight lines to whole dollars). The document's estimate of
+**≈$1,170–1,180** per tenant per month therefore follows from §11.2's own arithmetic plus the $1–9
+shared allocation and $1–3 unmodelled growth it names. ADR 0020's Application Gateway line is the
+addition: one `WAF_v2` gateway at ≈$321/month fixed plus ≈$20 of capacity units, the same
+per-tenant footing the document uses (and the same shared-versus-per-tenant ambiguity it flags as
+"under review").
 
-**Two findings change the number, and one of them changes the master document's correction.**
+**Two findings change the number, and both edges share the same unresolved question.**
 
-1. **Front Door's $330 base is regional in this deployment, not per-tenant** (`FD-SHARED-OR-PER-TENANT`).
-   The architecture in `main.bicep` creates one profile per regional environment, shared by every
-   tenant in the region — which is what §2 describes and what §11.3's "allocated rather than charged"
-   list implies, but not what §11.2's per-tenant table charges. At 100 tenants the per-tenant figure
-   is **≈$498**, not $830–840, and the master document's correction from ≈$300–700 to ≈$830–840 is
-   only right if each tenant receives its own Front Door profile.
+1. **The two edge bases are regional in this deployment, not per-tenant**
+   (`FD-SHARED-OR-PER-TENANT`, `AGW-SHARED-OR-PER-TENANT`). `main.bicep` creates one Front Door
+   profile and one Application Gateway per regional environment, shared by every tenant in the region
+   — which is what §2 describes and what §11.3's "allocated rather than charged" list implies, but not
+   what §11.2's per-tenant table charges. §11.2's own "Under review" note and `azure/COST-FINDING.md`
+   record this as unresolved; the model reproduces the per-tenant footing and records, not resolves,
+   the contradiction (COST-FINDING.md: "recorded, not decided").
 2. **The Key Vault key charge has no unit price** (`KV-HSM-KEY-PRICE`). Reproducing the document's $2
    for 30 HSM-backed keys hides a missing rate; at a $5/key/month shape the line is $150 and the
    estimate rises by about $147.

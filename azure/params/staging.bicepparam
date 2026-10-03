@@ -34,6 +34,9 @@ param ciphertextRedundancy = 'ZRS'
 param wafMode = 'Prevention'
 param logRetentionDays = 90
 
+// The device edge (Application Gateway) public hostname. Placeholder until a real DNS name exists.
+param deviceFqdn = 'device.staging.sac.example.com'
+
 param deployManagedHsm = false
 
 param registryLoginServer = 'sacstagingeastusacr.azurecr.io'

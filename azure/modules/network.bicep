@@ -27,6 +27,9 @@ param privateEndpointSubnetPrefix string = '10.40.8.0/24'
 @description('DNS resolver subnet prefix, used by the private DNS resolution path (Q12).')
 param dnsResolverSubnetPrefix string = '10.40.9.0/24'
 
+@description('Application Gateway subnet prefix. A dedicated /24 for the device edge; Application Gateway requires a subnet no other resource shares (ADR 0020 decision 1).')
+param gatewaySubnetPrefix string = '10.40.10.0/24'
+
 @description('Private DNS zone names to create and link to this VNet, one per PaaS family in §2.')
 param privateDnsZones array = [
   'privatelink.postgres.database.azure.com'
@@ -57,6 +60,9 @@ resource vnet 'Microsoft.Network/virtualNetworks@2023-09-01' = {
         name: 'container-apps'
         properties: {
           addressPrefix: containerAppsSubnetPrefix
+          networkSecurityGroup: {
+            id: nsgContainerApps.id
+          }
           delegations: [
             {
               name: 'Microsoft.App/environments'
@@ -80,6 +86,12 @@ resource vnet 'Microsoft.Network/virtualNetworks@2023-09-01' = {
           addressPrefix: dnsResolverSubnetPrefix
         }
       }
+      {
+        name: 'application-gateway'
+        properties: {
+          addressPrefix: gatewaySubnetPrefix
+        }
+      }
     ]
   }
 }
@@ -101,6 +113,61 @@ resource nsgPrivateEndpoints 'Microsoft.Network/networkSecurityGroups@2023-09-01
           protocol: 'Tcp'
           sourceAddressPrefix: containerAppsSubnetPrefix
           destinationAddressPrefix: privateEndpointSubnetPrefix
+          destinationPortRange: '443'
+        }
+      }
+      {
+        name: 'deny-internet-inbound'
+        properties: {
+          priority: 4000
+          direction: 'Inbound'
+          access: 'Deny'
+          protocol: '*'
+          sourceAddressPrefix: 'Internet'
+          destinationAddressPrefix: '*'
+          destinationPortRange: '*'
+        }
+      }
+    ]
+  }
+}
+
+// The origin lock (ADR 0020 decision 2): a forwarded client certificate is only trustworthy when the
+// origin is reachable solely through the edge. This NSG on the Container Apps delegated subnet admits
+// exactly two inbound sources — the Application Gateway subnet (the device path) and the
+// private-endpoint subnet (the analyst path through Front Door's Private Link origin) — and refuses
+// everything else, so "reachable from the internet" is not a state the environment can be put into.
+//
+// NOT VERIFIED: an NSG on a delegated subnet must be reconciled with Container Apps' own NSG
+// requirements on a real deployment (the environment's management and health traffic). The rules
+// below are the origin lock; a deployment must confirm they do not also block the environment.
+resource nsgContainerApps 'Microsoft.Network/networkSecurityGroups@2023-09-01' = {
+  name: '${baseName}-nsg-container-apps'
+  location: location
+  tags: tags
+  properties: {
+    securityRules: [
+      {
+        name: 'allow-gateway-inbound'
+        properties: {
+          priority: 100
+          direction: 'Inbound'
+          access: 'Allow'
+          protocol: 'Tcp'
+          sourceAddressPrefix: gatewaySubnetPrefix
+          destinationAddressPrefix: containerAppsSubnetPrefix
+          destinationPortRange: '443'
+        }
+      }
+      {
+        name: 'allow-private-link-inbound'
+        properties: {
+          priority: 110
+          direction: 'Inbound'
+          access: 'Allow'
+          protocol: 'Tcp'
+          sourceAddressPrefix: privateEndpointSubnetPrefix
+          destinationAddressPrefix: containerAppsSubnetPrefix
           destinationPortRange: '443'
         }
       }
@@ -146,6 +213,9 @@ output vnetId string = vnet.id
 
 @description('Resource id of the Container Apps infrastructure subnet.')
 output containerAppsSubnetId string = '${vnet.id}/subnets/container-apps'
+
+@description('Resource id of the Application Gateway subnet.')
+output gatewaySubnetId string = '${vnet.id}/subnets/application-gateway'
 
 @description('Resource id of the private-endpoint subnet.')
 output privateEndpointSubnetId string = '${vnet.id}/subnets/private-endpoints'

@@ -37,6 +37,9 @@ param ciphertextRedundancy = 'RA-GRS'
 param wafMode = 'Prevention'
 param logRetentionDays = 90
 
+// The device edge (Application Gateway) public hostname. Placeholder until a real DNS name exists.
+param deviceFqdn = 'device.sac.example.com'
+
 // Per-contract only: the HSM pool is ~4× the rest of a tenant, and the three administrators are
 // named in the contract that requires it (§2, §5.3). Default false; a contract turns it on.
 param deployManagedHsm = false

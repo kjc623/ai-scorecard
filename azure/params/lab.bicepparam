@@ -29,11 +29,14 @@ param tags = {
 // ---------------------------------------------------------------------------------------------
 // Scope: the four switches that make this a lab rather than a deployment.
 //
-//   deployEdge      false — Front Door Premium ($330/month base) plus its WAF. The largest single
-//                           line in the bill and worth more than the whole lab; a lab is reached
-//                           over the VNet. CONSEQUENCE: the lab CANNOT test edge routing, the WAF
-//                           managed rule set, rate limiting, or a Private Link origin. That is
-//                           stated in docs/lab/LAB-COST.md §6 rather than left to be discovered.
+//   deployEdge      false — the two edges and their WAFs: Front Door Premium ($330/month base) for
+//                           analysts and Application Gateway WAF_v2 (~$321/month base) for devices.
+//                           The two largest fixed lines in the bill and worth more than the whole
+//                           lab; a lab is reached over the VNet instead, with localdev/edge standing
+//                           in for Application Gateway. CONSEQUENCE: the lab CANNOT test the real
+//                           edges' routing, the WAF managed rule set, rate limiting, or a Private
+//                           Link origin. That is stated in docs/lab/LAB-COST.md §6 rather than left
+//                           to be discovered.
 //   deployDashboard false — the dashboard is a static file (apps/dashboard/index.html). A Static
 //                           Web App is for delivering it, which a lab does by opening the file.
 //   deployExports   false — the second storage account for customer-facing columnar exports. No

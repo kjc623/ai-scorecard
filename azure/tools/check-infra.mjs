@@ -263,6 +263,18 @@ const MUST = [
     message: 'Front Door Premium must reach origins over Private Link (§2 inventory)' },
   { rel: 'modules/waf.bicep', property: /mode\s*:\s*(param\.)?\w*wafMode|mode\s*:\s*'Prevention'/,
     message: 'the WAF mode must come from a parameter and default to Prevention in production (§3.2)' },
+  { rel: 'modules/application-gateway.bicep', property: /verifyClientAuthMode\s*:\s*'Passthrough'/,
+    message: 'the device gateway must request a client certificate in passthrough mode, not require one (ADR 0020 decision 1)' },
+  { rel: 'modules/application-gateway.bicep', property: /headerName\s*:\s*'X-Client-Cert'/,
+    message: 'the device gateway must forward the client certificate in X-Client-Cert (ADR 0020 decision 2)' },
+  { rel: 'modules/application-gateway.bicep', property: /\{var_client_certificate\}/,
+    message: 'the X-Client-Cert rewrite must use the {var_client_certificate} server variable' },
+  { rel: 'modules/application-gateway.bicep', property: /headerName\s*:\s*'X-Forwarded-Host'/,
+    message: 'the device gateway must set X-Forwarded-Host so the origin’s DPoP htu matches the signed URL' },
+  { rel: 'modules/application-gateway.bicep', property: /ipAddress\s*:\s*backendStaticIp/,
+    message: 'the device gateway backend pool must be the internal Container Apps static IP, not a public hostname (§2.1)' },
+  { rel: 'modules/application-gateway.bicep', property: /'WAF_v2'/,
+    message: 'the device gateway SKU must be WAF_v2 (§2 inventory)' },
 ];
 
 export function checkArchitecturalProperties(files) {
@@ -297,6 +309,13 @@ export function checkArchitecturalProperties(files) {
   if (fd && /content[-_]?vault/i.test(stripComments(fd.text))) {
     findings.push(finding('content-vault-route', 'modules/frontdoor.bicep', 1,
       'Front Door references content-vault; it has no Front Door route and no public endpoint (C15, D7)'));
+  }
+
+  // ADR 0020 decision 1: Front Door is the analyst edge only. The device /v1/* routes moved to
+  // Application Gateway, so a /v1/* route here means the two edges overlap on the device surface.
+  if (fd && /patternsToMatch\s*:[\s\S]*?\/v1\/\*/.test(stripComments(fd.text))) {
+    findings.push(finding('frontdoor-device-route', 'modules/frontdoor.bicep', 1,
+      'Front Door must not route /v1/*; device routes are on Application Gateway (ADR 0020 decision 1)'));
   }
 
   // No firewall rule resource anywhere: the server additionally has no firewall rules at all, so
@@ -386,7 +405,8 @@ export function checkInventory(files, docText, inventory) {
     'network.bicep', 'private-endpoints.bicep', 'log-analytics.bicep', 'registry.bicep',
     'postgres.bicep', 'storage-ciphertext.bicep', 'storage-exports.bicep', 'keyvault.bicep',
     'managed-hsm.bicep', 'container-apps-env.bicep', 'container-app.bicep', 'container-app-job.bicep',
-    'frontdoor.bicep', 'waf.bicep', 'static-web-app.bicep', 'monitoring.bicep', 'budget.bicep',
+    'application-gateway.bicep', 'frontdoor.bicep', 'waf.bicep', 'static-web-app.bicep',
+    'monitoring.bicep', 'budget.bicep',
   ];
   const onDisk = files.filter((f) => f.rel.startsWith('modules/')).map((f) => f.rel.slice('modules/'.length));
   for (const mod of layout) {

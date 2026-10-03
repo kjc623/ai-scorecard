@@ -70,6 +70,7 @@ test('the §3.3 module layout is complete', () => {
     'modules/container-apps-env.bicep',
     'modules/container-app.bicep',
     'modules/container-app-job.bicep',
+    'modules/application-gateway.bicep',
     'modules/frontdoor.bicep',
     'modules/waf.bicep',
     'modules/static-web-app.bicep',
@@ -96,10 +97,17 @@ test('Front Door has no route to content-vault', () => {
   const fd = byRel.get('modules/frontdoor.bicep').text;
   assert.doesNotMatch(stripComments(fd), /content[-_]?vault/i, 'Front Door must not reference content-vault (C15, D7)');
   const routes = fd.match(/patternsToMatch:\s*\[[\s\S]*?\]/g) ?? [];
-  assert.ok(routes.length >= 2, 'the device and analyst routes must both exist');
+  assert.ok(routes.length >= 1, 'the analyst route must exist');
   for (const route of routes) {
     assert.doesNotMatch(route, /content[-_]?vault/i);
   }
+});
+
+test('Front Door is the analyst edge only; device routes moved to Application Gateway (ADR 0020)', () => {
+  const fd = byRel.get('modules/frontdoor.bicep').text;
+  assert.doesNotMatch(stripComments(fd), /patternsToMatch:\s*\[[\s\S]*?\/v1\/\*/, 'Front Door must not route /v1/* (ADR 0020 decision 1)');
+  assert.match(stripComments(fd), /patternsToMatch:\s*\[[\s\S]*?\/analyst\/\*/, 'Front Door must route /analyst/*');
+  assert.match(stripComments(fd), /originHostHeaders\['query-api'\]/, 'the Front Door origin host header must target query-api');
 });
 
 test('content-vault has no public endpoint anywhere in the composition', () => {
@@ -140,6 +148,33 @@ test('the Container Apps environment uses an internal load balancer', () => {
   const env = byRel.get('modules/container-apps-env.bicep').text;
   assert.match(env, /internal\s*:\s*internalLoadBalancer/, 'the environment LB must be internal');
   assert.match(env, /param internalLoadBalancer bool = true/, 'internalLoadBalancer must default to true');
+});
+
+test('Application Gateway is the device edge: passthrough auth, X-Client-Cert rewrite, internal backend', () => {
+  const agw = byRel.get('modules/application-gateway.bicep').text;
+  assert.match(agw, /verifyClientAuthMode\s*:\s*'Passthrough'/, 'client auth must be passthrough, never strict');
+  assert.match(agw, /verifyClientCertIssuerDN\s*:\s*false/, 'the gateway must not require a trusted issuer DN');
+  assert.match(agw, /headerName\s*:\s*'X-Client-Cert'/, 'the client cert must be forwarded as X-Client-Cert');
+  assert.match(agw, /\{var_client_certificate\}/, 'the rewrite must use the client_certificate server variable');
+  assert.match(agw, /headerName\s*:\s*'X-Forwarded-Proto'/, 'X-Forwarded-Proto must be set');
+  assert.match(agw, /headerValue\s*:\s*'https'/, 'X-Forwarded-Proto must be https');
+  assert.match(agw, /headerName\s*:\s*'X-Forwarded-Host'/, 'X-Forwarded-Host must be set');
+  assert.match(agw, /ipAddress\s*:\s*backendStaticIp/, 'the backend pool must be the internal Container Apps static IP');
+  assert.match(agw, /'WAF_v2'/, 'the device gateway must be WAF_v2');
+  assert.match(agw, /hostName\s*:\s*deviceFqdn/, 'the listener must bind the device FQDN');
+  // The client-certificate encoding is an ASSUMPTION to verify on a real subscription; the module
+  // must record that the origin accepts raw or percent-encoded PEM (url.QueryUnescape), so it does
+  // not depend on the exact form.
+  assert.match(agw, /QueryUnescape/, 'the module must document the encoding assumption against the origin');
+});
+
+test('the origin-lock NSG admits only the gateway subnet and the private-endpoint subnet', () => {
+  const net = byRel.get('modules/network.bicep').text;
+  assert.match(net, /name: 'application-gateway'/, 'network.bicep must declare the Application Gateway subnet');
+  assert.match(net, /gatewaySubnetId/, 'network.bicep must output the gateway subnet id');
+  assert.match(net, /nsgContainerApps/, 'the origin-lock NSG must exist on the container-apps subnet');
+  assert.match(net, /sourceAddressPrefix: gatewaySubnetPrefix/, 'the device path (gateway subnet) must be admitted');
+  assert.match(net, /sourceAddressPrefix: privateEndpointSubnetPrefix/, 'the analyst path (private-link subnet) must be admitted');
 });
 
 test('unwrap is held by exactly one identity, and it is content-vault', () => {
@@ -372,7 +407,7 @@ test('a cost line that disagrees with the document by more than a dollar fails',
 
 test('a subtotal beyond the declared rounding budget fails', () => {
   const text = readFileSync(join(INFRA_ROOT, 'cost-model.md'), 'utf8');
-  const broken = text.replace('"subtotal": 826.66', '"subtotal": 700.00');
+  const broken = text.replace('"subtotal": 1168.30', '"subtotal": 700.00');
   const findings = checkCostModel(broken, docText);
   assert.ok(findings.some((f) => f.rule === 'cost-model' && /subtotal/.test(f.message)));
 });
@@ -387,10 +422,11 @@ test('a documented finding without the fields that make it checkable fails', () 
   assert.ok(findings.some((f) => f.rule === 'cost-model' && /missing "impact"/.test(f.message)));
 });
 
-test('the two material findings are present and reference real lines', () => {
+test('the material findings are present and reference real lines', () => {
   const model = parseCostModel(readFileSync(join(INFRA_ROOT, 'cost-model.md'), 'utf8'));
   const ids = model.findings.map((f) => f.id);
   assert.ok(ids.includes('FD-SHARED-OR-PER-TENANT'), 'the Front Door sharing finding is the one that changes the master document’s correction');
+  assert.ok(ids.includes('AGW-SHARED-OR-PER-TENANT'), 'ADR 0020 adds the same sharing ambiguity for Application Gateway');
   assert.ok(ids.includes('KV-HSM-KEY-PRICE'), 'the missing Key Vault key unit price must be recorded');
   for (const f of model.findings) {
     for (const line of f.affectsLines ?? []) {
