@@ -21,6 +21,9 @@ release.
 | [proxy/loopback/](proxy/README.md) | `proxy.loopback` — the broker that holds a local inference server's port, forwards to the relocated upstream and observes the plaintext bodies passing through it. |
 | [detect/](detect/README.md) | `proc.detect` — the process and model detector: the cheapest provider, the only one that fails open by doing nothing. |
 | [classifierlink/](classifierlink/README.md) | The capture-core side of the local socket to `classifier-host`, and the failure contract that keeps a classifier outage from failing a submission. |
+| [drain/](drain/README.md) | The device-to-cloud drain (ADR 0020): enrolment, the DPoP/x509 transport, batching, settling and backoff. |
+| [credential/](credential/README.md) | The sealed per-device credential at rest: the issued leaf (or registered DPoP key) plus the never-exported private key. |
+| [dpop/](dpop/README.md) | The device side of the compact-JWS contract (RFC 7515 ES256, RFC 9449 DPoP). |
 | [cmd/capture-core/](cmd/capture-core/README.md) | The binary: flags, subcommands, service deployment, and the self test that is the endpoint's end-to-end evidence. |
 
 ## How a submission flows
@@ -59,8 +62,11 @@ those are Go module paths, not directories, and nothing here redefines their sha
   lives in the verified bundle, and with no valid bundle the device is at M0.
 - **No `cli.shim`.** Modes E (CLI) and G are unrouted: the step exists in §3.5's order and is
   recorded as skipped, so the route has no coverage row rather than a healthy-looking empty one.
-- **No ingest client.** Nothing in this module sends to a server yet: the shutdown drain reports what
-  is still spooled and stops at its deadline. The health channel is written to a file, not POSTed.
+- **Ingest client is opt-in.** With `--device-endpoint` unset (the default) nothing is sent to a
+  server and the shutdown drain reports what is still spooled. With it set, `drain/` enrols the
+  device (or loads the sealed credential), obtains a DPoP token or presents the x509 leaf, and POSTs
+  `POST /v1/events` batches oldest-first with full-jitter backoff. The health channel is still
+  written to a file, not POSTed.
 - **No M3 content store.** An M3 observation is refused rather than emitted without the content it
   says it holds; the local store and grant-bound retrieval are not implemented here.
 - **No platform facilities wired.** The system proxy, the OS trust store and DPAPI/Keychain key
@@ -68,8 +74,11 @@ those are Go module paths, not directories, and nothing here redefines their sha
   named detail instead of health. Process enumeration is an interface in `detect` with one partial
   implementation: `--proc-detect` wires a Windows `tasklist` enumerator that sees image names and
   PIDs only, and on any other platform the route is not started.
-- **No enrolment.** The docs' `capture-core` holds a per-device certificate (§13.1); this binary takes
-  its identity from flags, and credential issuance, storage and rotation are elsewhere.
+- **Enrolment is real, identity is still flags.** The device generates its keypair, POSTs
+  `POST /v1/enrol` (a PKCS#10 CSR in `x509` mode, the public JWK plus a proof in `dpop` mode), and
+  seals the issued credential beside the spool. The envelope identity (`--tenant-id`, `--device-id`)
+  remains configuration; the credential's hardware-identity seed is `--mdm-id` when set, and falls
+  back to hashing the device identity (an ASSUMPTION, not a hardware binding).
 
 Deployment, the full flag list and the self test's assertions are in
 [cmd/capture-core/README.md](cmd/capture-core/README.md).

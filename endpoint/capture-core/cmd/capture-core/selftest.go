@@ -111,6 +111,24 @@ func runSelftest(cfg Config, log *slog.Logger) error {
 	cfg.ClassifierAddress = classAddr
 	st.section("classifier host", fmt.Sprintf("fake host on %s — %s (real protocol framing, fixed labels; the real host command is in the README)", classAddr, classTransport))
 
+	// The device-to-cloud drain, wired to a fake ingest peer over real TLS (ADR 0020): the
+	// selftest's stand-in for the cloud. dpop mode needs no CA to issue a device certificate. The
+	// background drain poll is lengthened so the drain does not race the collection assertions; the
+	// shutdown drain (StepDrainSpool) does the delivery, deterministically.
+	ingest, err := startFakeIngest(log, work, cfg.DeviceID, cfg.TenantID)
+	if err != nil {
+		return err
+	}
+	defer ingest.close()
+	cfg.DeviceEndpoint = ingest.baseURL()
+	cfg.AuthMode = "dpop"
+	cfg.CredentialFile = filepath.Join(work, "credential.sealed")
+	cfg.EnrolmentToken = "selftest-enrolment-token"
+	cfg.CAFile = ingest.caFile
+	cfg.MDMID = "selftest-device"
+	cfg.DrainInterval = time.Hour
+	st.section("ingest peer", fmt.Sprintf("fake device cloud on %s (dpop; the drain will enrol, fetch a token, and POST /v1/events)", cfg.DeviceEndpoint))
+
 	// Resolved configuration, printed before anything starts.
 	st.section("resolved configuration")
 	if err := printConfig(cfg, slogLogger{log}); err != nil {
@@ -261,6 +279,10 @@ func runSelftest(cfg Config, log *slog.Logger) error {
 	st.section("shutdown (§3.5)")
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancelShutdown()
+	spooledBefore, err := svc.peekSpool(1000)
+	if err != nil {
+		st.failf("counting the spool before shutdown: %v", err)
+	}
 	if err := svc.Stop(shutdownCtx); err != nil {
 		st.failf("shutdown: %v", err)
 	}
@@ -273,6 +295,16 @@ func runSelftest(cfg Config, log *slog.Logger) error {
 	}
 	fmt.Fprintf(st.out, "  full recorded order: %s\n", strings.Join(order, " > "))
 	st.check(portIsFree(heldPort), "port %d is free after shutdown", heldPort)
+
+	// The drain delivered every spooled observation to the fake ingest peer, oldest-first. The
+	// shutdown drain is the deterministic flush (the background poll was lengthened above).
+	if cfg.DeviceEndpoint != "" {
+		received := ingest.receivedEvents()
+		st.check(ingest.receivedBatches() >= 1, "the drain POSTed at least one /v1/events batch to the ingest peer")
+		st.check(received == len(spooledBefore) && len(spooledBefore) > 0,
+			"the drain delivered all %d spooled observations (the ingest peer received %d)", len(spooledBefore), received)
+		st.check(svc.drainer.Status().Enrolled, "the drain enrolled against the ingest peer")
+	}
 
 	// The health file, if a writer was configured, must contain the same shape.
 	if cfg.HealthFile != "" {

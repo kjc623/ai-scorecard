@@ -17,7 +17,9 @@ import (
 	"github.com/shadow-ai-capture/device/canon"
 	"github.com/shadow-ai-capture/device/capture-core/classifierlink"
 	"github.com/shadow-ai-capture/device/capture-core/core"
+	"github.com/shadow-ai-capture/device/capture-core/credential"
 	"github.com/shadow-ai-capture/device/capture-core/detect"
+	"github.com/shadow-ai-capture/device/capture-core/drain"
 	"github.com/shadow-ai-capture/device/capture-core/policy"
 	"github.com/shadow-ai-capture/device/capture-core/proxy/loopback"
 	"github.com/shadow-ai-capture/device/capture-core/proxy/tlsproxy"
@@ -44,6 +46,7 @@ type service struct {
 	broker  *loopback.Broker
 	tlsProv *tlsproxy.Provider
 	detect  *detect.Provider
+	drainer *drain.Drainer
 
 	health *healthChannel
 
@@ -210,15 +213,64 @@ func (s *service) Start(ctx context.Context) error {
 		_ = s.sup.Shutdown(context.Background())
 		return err
 	}
+	if err := s.startDrainer(ctx); err != nil {
+		// Not fatal: a drainer that cannot start leaves observations spooled, which is the honest
+		// degraded state (reported in the health snapshot), never a silent drop.
+		s.log.Warn("drainer not started; observations stay spooled", "error", err)
+	}
 	s.health.Start(ctx)
 	s.log.Info("capture-core started", "order", s.sup.Order())
 	return nil
+}
+
+// startDrainer builds and starts the device-to-cloud drainer when --device-endpoint is set. The
+// spool is already open at this point (the supervisor opened it), so the credential's key provider
+// can read the spool key the drain shares with the spool.
+func (s *service) startDrainer(ctx context.Context) error {
+	if strings.TrimSpace(s.cfg.DeviceEndpoint) == "" {
+		return nil
+	}
+	keys, err := capturespool.NewFileKeyProvider(s.cfg.SpoolKey, s.cfg.SpoolDir)
+	if err != nil {
+		return fmt.Errorf("drain: key provider: %w", err)
+	}
+	creds, err := credential.Open(s.cfg.CredentialFile, keys)
+	if err != nil {
+		return fmt.Errorf("drain: credential store: %w", err)
+	}
+	d, err := drain.New(drain.Config{
+		Endpoint:       s.cfg.DeviceEndpoint,
+		AuthMode:       protocol.AuthMode(s.cfg.AuthMode),
+		EnrolmentToken: s.cfg.EnrolmentToken,
+		CAFile:         s.cfg.CAFile,
+		TenantID:       s.cfg.TenantID,
+		DeviceID:       s.cfg.DeviceID,
+		MDMID:          s.cfg.MDMID,
+		AgentVersion:   version,
+		BackoffBase:    s.cfg.BackoffBase,
+		BackoffCap:     s.cfg.BackoffCap,
+		DrainInterval:  s.cfg.DrainInterval,
+		Expire:         s.spool.Expire,
+	}, s.spool.store, creds, slogLogger{s.log}, time.Now)
+	if err != nil {
+		return fmt.Errorf("drain: %w", err)
+	}
+	s.drainer = d
+	s.spool.mu.Lock()
+	s.spool.drain = d
+	s.spool.mu.Unlock()
+	return d.Start(ctx)
 }
 
 // Stop runs the shutdown column and releases the spool. The supervisor releases the loopback port
 // before anything else (§3.5 step 2, E14).
 func (s *service) Stop(ctx context.Context) error {
 	s.health.Stop()
+	if s.drainer != nil {
+		// End the background loop before the supervisor's bounded shutdown drain, so the final
+		// drain is the only thing sending.
+		_ = s.drainer.Stop(ctx)
+	}
 	err := s.sup.Shutdown(ctx)
 	closeErr := s.spool.Close()
 	s.log.Info("capture-core stopped", "order", s.sup.Order())
@@ -238,6 +290,10 @@ type spoolHolder struct {
 
 	mu sync.Mutex
 	sp *capturespool.Spool
+
+	// drain is the device-to-cloud drainer, wired after the service starts. It is nil when the
+	// drain is disabled (no --device-endpoint), in which case Drain reports what is still spooled.
+	drain *drain.Drainer
 }
 
 func (h *spoolHolder) Open(ctx context.Context) error {
@@ -280,17 +336,46 @@ func (h *spoolHolder) Stats() protocol.SpoolStats {
 	return h.sp.Stats()
 }
 
+// store returns the spool as protocol.Store, for the drainer. It is resolved lazily because the
+// spool is opened by the supervisor, not by the drainer's construction.
+func (h *spoolHolder) store() (protocol.Store, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.sp == nil {
+		return nil, errors.New("spool is not open")
+	}
+	return h.sp, nil
+}
+
+// Expire applies device-side retention through the concrete spool, which is not part of
+// protocol.Store but is what drops records past their retention deadline (counted, never silent).
+func (h *spoolHolder) Expire(now time.Time) (int, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.sp == nil {
+		return 0, errors.New("spool is not open")
+	}
+	return h.sp.Expire(now)
+}
+
 // Drain is §3.5 step 3: bounded, and every record it cannot deliver is counted rather than
-// silently discarded. The ingest client is not part of this binary (the transport is a separate
-// component), so the drain reports what is still pending and stops at the deadline.
+// silently discarded. When a drainer is wired it drives the real device-to-cloud path; otherwise
+// the drain reports what is still pending and stops at the deadline.
 func (h *spoolHolder) Drain(ctx context.Context, deadline time.Time) (core.DrainResult, error) {
 	h.mu.Lock()
+	d := h.drain
 	sp := h.sp
 	h.mu.Unlock()
-	if sp == nil {
-		return core.DrainResult{}, errors.New("spool is not open")
+
+	if d != nil {
+		res, err := d.Drain(ctx, deadline)
+		return core.DrainResult{Delivered: res.Delivered, Dropped: res.Rejected, Err: err}, nil
 	}
+
 	res := core.DrainResult{}
+	if sp == nil {
+		return res, errors.New("spool is not open")
+	}
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():

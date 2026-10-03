@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,6 +51,18 @@ type Config struct {
 
 	// Native messaging.
 	AttachmentCap int64
+
+	// Device-to-cloud drain (ADR 0020). Empty DeviceEndpoint means the drain is disabled: the
+	// shutdown drain reports what is still spooled and stops at its deadline, exactly as before.
+	DeviceEndpoint string
+	AuthMode       string // "x509" | "dpop"; empty when the drain is disabled
+	CredentialFile string // path to the sealed device credential
+	EnrolmentToken string // single-use bootstrap token for POST /v1/enrol
+	CAFile         string // PEM CA set the edge is pinned to (empty = system roots)
+	MDMID          string // MDM-delivered device identifier, the preferred hardware-identity seed
+	BackoffBase    time.Duration
+	BackoffCap     time.Duration
+	DrainInterval  time.Duration // background drain poll interval (default 1s; the selftest lengthens it)
 
 	// Modes and misc.
 	WorkDir string
@@ -100,7 +113,62 @@ func (c Config) validate(mode runMode) error {
 	if c.AttachmentCap <= 0 {
 		return errors.New("--attachment-cap must be positive")
 	}
+	if err := c.validateDrain(); err != nil {
+		return err
+	}
 	return nil
+}
+
+// validateDrain checks the device-to-cloud drain configuration. An empty --device-endpoint means
+// the drain is disabled and nothing else is required; a non-empty one must be a usable https URL
+// with a credential file, a closed auth mode, and sane backoff bounds.
+func (c Config) validateDrain() error {
+	if strings.TrimSpace(c.DeviceEndpoint) == "" {
+		return nil
+	}
+	u, err := url.Parse(c.DeviceEndpoint)
+	if err != nil || u.Scheme != "https" || u.Host == "" {
+		return fmt.Errorf("--device-endpoint %q must be an https URL with a host", c.DeviceEndpoint)
+	}
+	switch c.AuthMode {
+	case "x509", "dpop":
+	default:
+		return fmt.Errorf("--auth-mode %q must be x509 or dpop", c.AuthMode)
+	}
+	if strings.TrimSpace(c.CredentialFile) == "" {
+		return errors.New("--credential-file is required when --device-endpoint is set: the issued credential has nowhere to be sealed")
+	}
+	if strings.TrimSpace(c.SpoolDir) != "" {
+		if absCred, err := filepath.Abs(c.CredentialFile); err == nil {
+			if absSpool, err := filepath.Abs(c.SpoolDir); err == nil && withinDir(absSpool, absCred) {
+				return errors.New("--credential-file must not be inside --spool-dir: a credential beside the spool it shares a key with is not sealing at rest")
+			}
+		}
+	}
+	if c.BackoffBase <= 0 {
+		return errors.New("--backoff-base must be positive")
+	}
+	if c.BackoffCap <= 0 {
+		return errors.New("--backoff-cap must be positive")
+	}
+	if c.BackoffBase > c.BackoffCap {
+		return fmt.Errorf("--backoff-base %s exceeds --backoff-cap %s", c.BackoffBase, c.BackoffCap)
+	}
+	return nil
+}
+
+// withinDir reports whether path is inside dir (or equal to it), comparing cleaned absolute paths.
+func withinDir(dir, path string) bool {
+	dir = filepath.Clean(dir)
+	path = filepath.Clean(path)
+	if strings.EqualFold(dir, path) {
+		return true
+	}
+	rel, err := filepath.Rel(dir, path)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
 
 // resolvedPolicy is the bundle as the agent will enforce it, plus the resolution of the modes an
@@ -345,6 +413,12 @@ func printConfig(cfg Config, logger loggerLike) error {
 	}
 	fmt.Printf("native messaging: 4-byte little-endian length prefix on stdin/stdout (Chromium's framing, NOT protocol's local-socket framing)\n")
 	fmt.Printf("health channel:  file=%q interval=%s\n", cfg.HealthFile, cfg.HealthInterval)
+	if strings.TrimSpace(cfg.DeviceEndpoint) == "" {
+		fmt.Printf("device drain:    disabled (no --device-endpoint); the shutdown drain reports what is still spooled\n")
+	} else {
+		fmt.Printf("device drain:    endpoint=%s auth=%s credential=%q ca=%q backoff=%s..%s\n",
+			cfg.DeviceEndpoint, cfg.AuthMode, cfg.CredentialFile, cfg.CAFile, cfg.BackoffBase, cfg.BackoffCap)
+	}
 	fmt.Printf("local content:   M3 content store is not configured on this host; an M3 observation is refused rather than emitted without its content\n")
 	_ = logger
 	return nil

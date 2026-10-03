@@ -85,6 +85,7 @@ assembled into a partial file.
 | `--drain-deadline` | the bound on the shutdown drain (§3.5 step 3) |
 | `--health-file`, `--health-interval` | the health channel, appended as JSON lines |
 | `--attachment-cap` | the policy cap on one attachment manifest, checked before any byte moves |
+| `--device-endpoint`, `--auth-mode`, `--credential-file`, `--enrolment-token`, `--ca-file`, `--mdm-id`, `--backoff-base`, `--backoff-cap` | the device-to-cloud drain (ADR 0020): the ingress base URL, `x509`\|`dpop`, the sealed-credential path, the one-shot enrolment token, the pinned CA set, the MDM device id (hardware-identity seed), and the retry backoff bounds. An empty `--device-endpoint` disables the drain |
 | `--print-config`, `--dry-run` | `--print-config` resolves and validates everything, prints it and exits; `--dry-run` builds the service graph, starts nothing (no §3.5 step runs), prints one health snapshot and waits for the stop signal |
 | `--work-dir`, `--keep-work-dir` | the selftest work directory (default OS temp, removed on exit, success or failure) |
 | `--log-format`, `--log-level` | `json` (default) or `text`; `debug`, `info`, `warn`, `error` |
@@ -124,13 +125,16 @@ trust-store entry, no scheduled task.
 - **`proc.detect` is partial.** The only enumerator on this host is `tasklist`, which gives an image
   name and a PID: no modules, no listening sockets, no compute signature. It can match the candidate
   rule and emit daily rollups, but never evidence of use, so it never emits a `model_detection`.
-- **No ingest client.** Nothing in this binary sends anything to a server: the drain step reports what
-  is still spooled and stops at its deadline. The health channel is written to a file, not POSTed.
+- **No ingest client.** With `--device-endpoint` unset (the default) nothing is sent to a server: the
+  drain step reports what is still spooled and stops at its deadline. With it set, the drain is the
+  real ADR 0020 device-to-cloud path (enrol, DPoP token or x509 leaf, batched `POST /v1/events`).
+  The health channel is still written to a file, not POSTed.
 - **No M3 content store.** An M3 observation is refused rather than emitted without the content it
   says it holds; `content-vault` is a server-side component.
-- **No enrolment.** The docs' `capture-core` holds a per-device certificate (§13.1); this binary takes
-  its identity from flags, and credential issuance, storage and rotation are not implemented here.
-
+- **Enrolment is opt-in.** With `--device-endpoint` set, the drain enrols on first start (a PKCS#10
+  CSR in `x509` mode, the public JWK plus a proof in `dpop` mode) and seals the issued credential
+  beside the spool; the envelope identity is still the flags. Rotation (§2.2's 60/90-day overlap) is
+  a control-api concern and is not implemented here.
 ## The self test
 
 `--selftest` is the acceptance evidence and exits non-zero on any failed assertion. It signs a

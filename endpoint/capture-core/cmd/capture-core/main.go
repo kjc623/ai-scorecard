@@ -128,6 +128,16 @@ func parseFlags(args []string) (Config, runMode, error) {
 	// Attachment transport (native messaging, §3.4).
 	fs.Int64Var(&cfg.AttachmentCap, "attachment-cap", cfg.AttachmentCap, "policy cap for one attachment manifest, checked BEFORE any byte moves")
 
+	// Device-to-cloud drain (ADR 0020). An empty --device-endpoint disables the drain.
+	fs.StringVar(&cfg.DeviceEndpoint, "device-endpoint", cfg.DeviceEndpoint, "device ingress base URL, e.g. https://ingest.eu.example.com; empty disables the drain")
+	fs.StringVar(&cfg.AuthMode, "auth-mode", cfg.AuthMode, "device credential mode for the drain: x509 | dpop")
+	fs.StringVar(&cfg.CredentialFile, "credential-file", cfg.CredentialFile, "path to the sealed device credential (issued by POST /v1/enrol)")
+	fs.StringVar(&cfg.EnrolmentToken, "enrolment-token", cfg.EnrolmentToken, "single-use bootstrap token for POST /v1/enrol")
+	fs.StringVar(&cfg.CAFile, "ca-file", cfg.CAFile, "PEM CA set the edge is pinned to; empty uses the system root set")
+	fs.StringVar(&cfg.MDMID, "mdm-id", cfg.MDMID, "MDM-delivered device identifier (the preferred hardware-identity seed)")
+	fs.DurationVar(&cfg.BackoffBase, "backoff-base", cfg.BackoffBase, "drain retry backoff base (full jitter)")
+	fs.DurationVar(&cfg.BackoffCap, "backoff-cap", cfg.BackoffCap, "drain retry backoff cap")
+
 	// Modes.
 	fs.BoolVar(&mode.showVersion, "version", false, "print version and exit")
 	fs.BoolVar(&mode.printConfig, "print-config", false, "resolve the bundle and print the effective configuration, then exit")
@@ -176,6 +186,9 @@ func defaultConfig() Config {
 		DrainDeadline:      30 * time.Second,
 		HealthInterval:     30 * time.Second,
 		AttachmentCap:      64 << 20, // protocol.MaxAttachmentBytes: the transport ceiling, overridable by policy
+		BackoffBase:        time.Second,
+		BackoffCap:         300 * time.Second,
+		DrainInterval:      time.Second,
 		// WorkDir is deliberately empty: the selftest defaults to the OS temp directory so a run
 		// never writes artifacts into the source tree. --work-dir overrides it, and
 		// --keep-work-dir leaves the directory behind for inspection.

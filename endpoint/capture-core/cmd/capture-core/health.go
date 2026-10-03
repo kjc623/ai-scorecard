@@ -93,6 +93,7 @@ type healthSnapshot struct {
 	Reports        []protocol.HealthReport `json:"reports"`
 	Extension      *protocol.HealthReport  `json:"extension,omitempty"`
 	Spool          protocol.SpoolStats     `json:"spool"`
+	Drain          *drainStatus            `json:"drain,omitempty"`
 	NamedGaps      []string                `json:"named_gaps,omitempty"`
 	// LoopbackPortConflicts is the sticky half of §6.2 rule 5: how many times a port was found held
 	// by another process since start. The provider's *state* is present-tense (a recovered port is
@@ -106,6 +107,18 @@ type classifierStatus struct {
 	Connected         bool   `json:"connected"`
 	ClassifierVersion string `json:"classifier_version"`
 	DegradedDetail    string `json:"degraded_detail,omitempty"`
+}
+
+// drainStatus is the device-to-cloud drain's health surface: the same state + error_code (detail)
+// vocabulary the coverage rows use, so a failing drain is visible rather than silent (C23/C25). It
+// is part of the device-level health document, not a provider row, because the drain is a transport
+// rather than a collection route.
+type drainStatus struct {
+	State       protocol.CollectorState `json:"state"`
+	Detail      protocol.Detail         `json:"detail,omitempty"`
+	LastSuccess *time.Time              `json:"last_success_at,omitempty"`
+	Endpoint    string                  `json:"endpoint,omitempty"`
+	Enrolled    bool                    `json:"enrolled"`
 }
 
 // Snapshot renders the current health. It never blocks on a provider: Health() is required to be
@@ -146,6 +159,20 @@ func (h *healthChannel) Snapshot() healthSnapshot {
 		Extension: ext,
 		Spool:     h.svc.sink.Stats(),
 		Note:      "per-provider rows are protocol.HealthReport; the device-level row and the spool counters are carried here because protocol has no device-level type",
+	}
+	if h.svc.drainer != nil {
+		st := h.svc.drainer.Status()
+		ds := &drainStatus{
+			State:    st.State,
+			Detail:   st.Detail,
+			Endpoint: st.Endpoint,
+			Enrolled: st.Enrolled,
+		}
+		if !st.LastSuccess.IsZero() {
+			t := st.LastSuccess
+			ds.LastSuccess = &t
+		}
+		snap.Drain = ds
 	}
 	if h.svc.detect == nil {
 		snap.NamedGaps = append(snap.NamedGaps, "proc.detect: no coverage row (provider not started on this host)")
