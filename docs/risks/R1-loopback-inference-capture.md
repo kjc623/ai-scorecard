@@ -6,7 +6,8 @@ validation" and which E13 flags as an unvalidated hypothesis.
 
 This is a measurement, not a design essay. It reports what was observed, what the observation
 does **not** cover, and one defect it found. Where a claim rests on a stand-in, it says so in
-the same sentence as the claim.
+the same sentence as the claim. The defect (§6) was fixed in the component after the measurement;
+the transcript in §4 is the run that found it and has not been re-run against the fix.
 
 ---
 
@@ -165,53 +166,64 @@ below reports it in full rather than burying it in a green run.
 | a | The client's request is captured by the broker and forwarded | **PASS, with a caveat** | The body is byte-identical (same sha256 at the upstream). Method and path are preserved. The pipeline receives an observation with the same bytes and the C1 extraction returns the user-authored text. **Caveat, stated plainly: the request is not forwarded byte-identically as a whole request.** Go's HTTP writer re-serialises it: `Host` is rewritten to the upstream address and `User-Agent: Go-http-client/1.1` is added. Any claim of literal whole-message byte-identity would be false; what matters for capture and for `content_digest` — the body and the method/path — is preserved. |
 | b | A killed broker releases the port and the client is refused, not hung | **PASS** | Real `TerminateProcess` of a real child; 2 ms later the client gets `WSAECONNREFUSED` (typed errno, not a message match); another process can bind the port immediately. No hang, and no "listening but broken" state. |
 | c | A port held by another process → `tampered`/`port_held_by_other`, never fought for | **PASS** | With a *live* upstream reachable (so a refusal to bind can only be about the holder), the broker reports `tampered`/`port_held_by_other`, coverage `held=0`, and the holder process keeps the port and keeps answering. It does not kill, displace or even briefly bind the port. |
-| c2 | After the holder dies, the broker recovers | **PASS (recovery) / see finding** | It re-binds within 1.01 s (the configured cool-down) and serves a request through the port. Its *health row* does not follow — §6. |
+| c2 | After the holder dies, the broker recovers | **PASS (recovery) / see finding** | It re-binds within 1.01 s (the configured cool-down) and serves a request through the port. In this run its *health row* did not follow — §6, fixed since. |
 | d | After the upstream moves, the broker stays released and reports `degraded`/`upstream_unreachable` | **PASS** | Released 159 ms after the upstream moved (two consecutive missed probes), port refused, `degraded`/`upstream_unreachable`, coverage `held=0 reachable=0`, stable 300 ms later (not flapping). |
 | d2 | The broker follows a relocation through policy | **PASS** | A bundle naming the new upstream port returns it to `HOLDING` in 11 ms and requests flow again. This is §6.1's "ports are per-tool bundle entries" working as data rather than as guesswork. |
 | e | A repeated-failure sequence reaches cool-down rather than a bind/release loop | **PASS** | Attempts at +0, +400 ms, +900 ms, then a 3.3 s gap; `degraded`/`cooling_down` from +1.22 s. The claimed port was never held at any point during the sequence (0 successful connections) and is free afterwards — so "never holds a port it cannot serve" (E14) held under the exact condition that would break it. |
 
-## 6. Finding: the `tampered` row does not clear when the conflict ends
+## 6. Finding: the `tampered` row did not clear when the conflict ended (fixed since)
 
 **What was observed.** The port conflict in claim (c) ends — the holder process is killed —
 and the broker **recovers correctly**: within 1.01 s it re-binds the port, and a client request
 then flows through it to the upstream (`coverage: configured=1 held=1 upstream_reachable=1`,
 `counters: emitted=1 observed=1`). Its health row nevertheless still reports
-`state=tampered detail=port_held_by_other`, and keeps reporting it.
+`state=tampered detail=port_held_by_other`, and kept reporting it.
 
 **Why it matters.** `protocol.CollectorState`'s own documentation says `tampered` "is the
 tamper signal and the only state that raises a security finding rather than an operations
-one". A device that recovers from an ordinary port conflict therefore raises a permanent
-security finding, and its health row contradicts its coverage row about the same port: one
-says the port is held and reachable, the other says it was taken by another process.
-`docs/01-collectors.md` §6.4's gate 3 requires that "port state matches §6.2's machine in every
-case"; this case does not.
+one". At the revision under test a device that recovered from an ordinary port conflict
+therefore raised a permanent security finding, and its health row contradicted its coverage row
+about the same port: one said the port was held and reachable, the other said it was taken by
+another process. `docs/01-collectors.md` §6.4's gate 3 requires that "port state matches §6.2's
+machine in every case"; at that revision this case did not.
 
-**Mechanism, with file:line** (revision under test, `endpoint/capture-core` at 2026-10-02
-14:35):
+**Mechanism, with file:line** (behaviour of the revision under test, `endpoint/capture-core` at
+2026-10-02 14:35; the line numbers locate the same code in the current files):
 
-- `proxy/loopback/machine.go:205` sets `m.tampered = true` on `EvPortHeldByOther` from
-  `BINDING`. The only place it is cleared is `machine.go:166`, inside the `EvPolicyChanged`
-  branch; `machine.go:143-262`'s other transitions (notably `RELEASED`/`ORPHAN` +
-  `EvPreflightOK` → `ActBind` at 176-177, and `BINDING` + `EvBindOK` → `HOLDING` at 195-198)
-  never clear it.
-- `proxy/loopback/broker.go:267` collects `tampered` and `broker.go:282-283` returns
+- `proxy/loopback/machine.go:222-223` sets `m.tampered = true` on `EvPortHeldByOther` from
+  `BINDING`. At the revision under test the only place it was cleared was the `EvPolicyChanged`
+  branch (`machine.go:174-179`); the other transitions of `Apply` (notably `RELEASED`/`ORPHAN` +
+  `EvPreflightOK` → `ActBind` at 189-191, and `BINDING` + `EvBindOK` → `HOLDING` at 208-216)
+  did not clear it.
+- `proxy/loopback/broker.go:267-268` collects `tampered` and `broker.go:282-283` returns
   `StateTampered` **before** the `held > 0 && held == reachable` case at line 284, so a port
-  that is genuinely held and serving is still reported as tampered.
-- The runner does re-check after `CoolDown` (`broker.go:586`) and re-binds if the port is free
-  — which is why the port recovers while the row does not.
+  that was genuinely held and serving was still reported as tampered while the flag stayed set.
+- The runner does re-check after `CoolDown` (`broker.go:604`) and re-binds if the port is free
+  — which is why the port recovered while the row did not.
 
-**Not fixed, deliberately.** This harness lives in `docs/risks/` and may not touch a component's
+**Resolution, as built.** The component now clears the flag on a successful bind:
+`machine.go:208-216` sets `m.tampered = false` (line 215) on `BINDING` + `EvBindOK`, so `tampered`
+is present-tense and a recovered, serving port no longer raises a security finding
+(`Machine.Tampered`, `machine.go:104-113`, states the rule and cites this measurement). The
+history is kept separately rather than lost: each conflict increments `ConflictCount`
+(`machine.go:115-118`, incremented at 224). Two tests now drive the conflict to its end and
+re-read the row — `TestMachine_6_2_RecoveredConflictIsNotTampered` (`machine_test.go:158`) and
+`TestBroker_6_2_RecoveredPortConflictIsNotTamperedAndCoverageAgrees` (`broker_test.go:419`). The
+harness itself has not been re-run against the fixed code, so §4's transcript still shows the
+finding.
+
+**Not fixed by the harness, deliberately.** This harness lives in `docs/risks/` and may not touch a component's
 files. Two plausible fixes are the component owner's call, and they are different products:
 either clear `tampered` when the broker next binds the port successfully (the row follows
 reality, and the historical conflict is lost), or keep the conflict visible as a *sticky
 detail* on an otherwise honest row (reality plus history, at the cost of a new field). I did
-not pick between them.
+not pick between them; the component owner's choice is the resolution above.
 
-**How it was found.** Only because the harness asked a question a unit test does not: after the
-conflict ends, does the health row follow the port? The existing suite covers the tampered
-state itself (`TestBroker_6_2_PortHeldByOtherIsTamperedAndNeverFoughtFor`) and the release
-rules (`TestMachine_6_2_Rule4_ProcessDeathIsARelease`), but nothing drives the conflict to its
-end and re-reads the health row.
+**How it was found.** Only because the harness asked a question the unit tests of the time did
+not: after the conflict ends, does the health row follow the port? The suite then covered the
+tampered state itself (`TestBroker_6_2_PortHeldByOtherIsTamperedAndNeverFoughtFor`) and the release
+rules (`TestMachine_6_2_Rule4_ProcessDeathIsARelease`), but nothing drove the conflict to its
+end and re-read the health row. The two tests named in the resolution above now do.
 
 ## 7. The five §6.4 checks this host cannot validate
 
@@ -307,7 +319,7 @@ guesswork.
 **What remains unvalidated.** Checks 1, 2 and 4 in full, the reboot and upgrade halves of
 check 3, and the per-client half of check 5. All of them need something this host does not
 have: a real vendor tool, a real vendor client, an installer, and a reboot. The one thing this
-measurement *does* add to check 3 is a failure: the recovery case (§6).
+measurement *did* add to check 3 was a failure: the recovery case (§6), fixed since.
 
 **Does anything here change the conclusion for mode F?** No — and it is important to be precise
 about why. §6.4's own consequence is: "If checks 1–2 fail for a tool, that tool is not in mode
@@ -320,10 +332,11 @@ because no tool was tested. So:
   `detection_only` via `proc.detect` — which is a configuration change, not an architectural
   one, exactly as §6.4 says.
 - **The broker should not ship as enabled-by-default either**, for a reason independent of the
-  vendor checks: the stale `tampered` row (§6) means check 3's "port state matches §6.2's
-  machine in every case" is not met today. A device that recovers from a port conflict would
-  raise a permanent security finding. That is a defect to route before any port entry is
-  switched on, not a reason to abandon the design.
+  vendor checks: check 3's "port state matches §6.2's machine in every case" is not yet met in
+  full. At the time of this run the cause was the stale `tampered` row (§6), under which a device
+  that recovered from a port conflict raised a permanent security finding. That defect is fixed
+  (`machine.go:215`), but the fixed case has not been re-measured here and the reboot and upgrade
+  halves of check 3 remain unvalidated.
 - **Server-side relocation is the strategy this host can speak to**, and it behaves correctly
   end to end. Client-side redirect rests entirely on check 2, which nothing here supports: the
   measurement shows only that a client arriving at a released port is refused quickly, not that

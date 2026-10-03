@@ -37,8 +37,8 @@ cd contracts/generated/go; go build ./...; gofmt -l envelope/envelope.go
 ```
 
 Zero dependencies: the generator and the suite use only the Node standard library, and the Go package
-imports only `bytes`, `encoding/json`, `fmt`, `regexp` and `strings`. Neither needs the network, which
-this host does not have.
+imports only `bytes`, `encoding/json`, `fmt`, `regexp` and `strings`. Neither needs the network; the
+Go command above sets `GOPROXY=off` by choice, so a build cannot quietly start depending on a download.
 
 `node --test contracts/tools/` reaches the suite through `contracts/tools/index.js`: Node 22 treats a
 positional test path as a glob or a file, not as a directory, so without that entry point the directory
@@ -58,7 +58,7 @@ server-assigned `received_at`) and, inside `kind: prompt`, one variant per colle
 | `DevicePromptM2`, `StoredPromptM2` | as M1 plus `content_excerpt` | window, detection basis |
 | `DevicePromptM3`, `StoredPromptM3` | as M1 | `content_excerpt`, window, detection basis |
 | `DeviceUsageRollup`, `StoredUsageRollup` | `window_start`, `window_end`, `submission_count`, `bytes_total` | digest, labels, classifier version, excerpt, attachments, policy decision, `size_bytes`, detection basis |
-| `DeviceModelDetection`, `StoredModelDetection` | `detection_basis` | digest, labels, classifier version, excerpt, attachments, policy decision, `size_bytes`, `window_start` |
+| `DeviceModelDetection`, `StoredModelDetection` | `detection_basis` | digest, labels, classifier version, excerpt, attachments, policy decision, `size_bytes`, window |
 
 `direction` is pinned per kind (`egress` for prompts, `none` for the other two), `kind` per variant, and
 `collection_mode` per prompt variant.
@@ -97,12 +97,11 @@ server-assigned `received_at`) and, inside `kind: prompt`, one variant per colle
 These are recorded rather than resolved here, because the schema is the source of truth and editing it
 is a contract change, not a generator change.
 
-1. **`model_detection` permits three window fields.** Its branch forbids `window_start` but not
-   `window_end`, `submission_count` or `bytes_total`, so those are emitted as optional on
-   `DeviceModelDetection` / `StoredModelDetection`. ADR 0010's table says `model_detection` must not
-   carry window fields at all, and `prompt` does forbid all four. If the intent is that they are
-   forbidden, the schema's `not.anyOf` list needs those three names; regenerating then tightens the
-   types automatically.
+1. **`model_detection` carries no window.** Its branch forbids all four window fields
+   (`window_start`, `window_end`, `submission_count`, `bytes_total`), as `prompt` does, so none of
+   them appears on `DeviceModelDetection` / `StoredModelDetection`. The decision is
+   [ADR 0018](../../docs/adr/0018-model-detection-carries-no-window.md); this one is settled, not
+   ambiguous.
 2. **`usage_rollup` permits `confidence`** (and `model_detection` too): it is not in either branch's
    forbidden list, so it is optional. That may be deliberate, since confidence is not content-derived.
 3. **`received_at` is only forbidden, never required, by `deviceSubmission`.** Because a field cannot be

@@ -5,7 +5,7 @@ Every entry: the exact command, what it returned, and what it does and does not 
 deliberately narrow — it records only checks the Lead ran, so the integration verifier's independent
 report (`.integration/REPORT.md`) stays a separate document.
 
-Generated: 2026-10-02 · Build round 2
+Started: 2026-10-02, build round 2 · Entries run through round 10, each marked with its round
 
 ---
 
@@ -49,7 +49,7 @@ promotes `merge_confidence` off `low`.
 ## L3. The full database invariant suite, re-run by the Lead
 
 ```
-powershell -NoProfile -ExecutionPolicy Bypass -File db\tools\run-invariants.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File database\tools\run-invariants.ps1
 ```
 
 ```
@@ -78,8 +78,8 @@ Two caveats this log must carry:
   negative control (a failing run reports `error_lines=1`, not 2). `tools/accept.mjs` still judges the
   database gate on the TALLY line rather than the exit code, deliberately: a gate that trusts an exit
   code it has seen lie once is a gate that will lie again.
-- **Version substitution.** The deployment target is PostgreSQL 16 (ADR 0002); 17.11 is what is
-  locally available with no network. Every construct used has a minimum version ≤13, which is an
+- **Version substitution.** The deployment target is PostgreSQL 16 (ADR 0002); 17.11 is what was
+  locally available, with no network, when this was run. Every construct used has a minimum version ≤13, which is an
   argument, not a run, and it is recorded as such rather than being presented as verification.
 
 ## L6. The six invariants, checked mechanically (round 2)
@@ -265,7 +265,7 @@ Two of these closed this round, and neither closed by assertion:
 ## L12. The canonicalisation contract now exists (round 3)
 
 `endpoint/canon` implements `sac-canon-1` step C3 (NFC) in pure Go with no external dependency, tables
-generated from Node's ICU because the UCD cannot be downloaded. Its evidence is the strongest
+generated from Node's ICU because the UCD could not be downloaded at the time. Its evidence is the strongest
 verification pattern in this repository: **four independent equivalence checks**, not one.
 
 - Live Node over a 3,376-case corpus, byte for byte: agree.
@@ -279,7 +279,7 @@ and reverted — blocking rule removed → 3 tests fail; quick check disabled �
 zeroed → 3 fail.
 
 Two limits it states rather than hides: browser ICU is NOT verified (Chrome and Edge ship their own
-ICU builds; the oracle script is the mechanism, but no browser is installed here), and canonically
+ICU builds; the oracle script is the mechanism, but it was not run in a browser this round), and canonically
 indecomposable text — CJK, emoji, most of the SMP — is covered only as *already NFC*, because it is
 NFC-invariant.
 
@@ -417,7 +417,8 @@ every Go package, so the gate would go red on a host that cannot fetch it. Ruled
 behind a **build tag** (`sac_sql_driver`), so the default build keeps no third-party `require` and CI
 is unchanged, while a tagged build and a tagged integration test can use the real driver anywhere a
 cache or a network exists. That keeps "may the gate carry a third-party dependency?" as a decision
-rather than an accident.
+rather than an accident. As implemented for `ingest-api`, `go.mod` does carry the pgx `require`
+line; it is inert in the default build because only `sqlpg/`, compiled under the tag, imports it.
 
 ## L20. The browser half is now verified in a real browser (round 8)
 
@@ -574,7 +575,22 @@ does that install.
 
 ---
 
-## What is NOT verified at this point
+## What was NOT verified during round 3
+
+This list was written during round 3 and is kept as written. Later entries in this file close
+several of its items, and they are the current statement where the two differ:
+
+- the endpoint runs as a process, and its native-messaging host runs as child processes — L15, L23;
+- the browser half runs in a real browser (Edge), including a connected native channel and a real
+  user-selected file; inline blocking is still not observable — L20, L23;
+- `azure/tools` and `database/tools` have suites the package harness runs (`check-infra.test.mjs`;
+  `check-schema.test.mjs` and `tally-log.test.mjs`), and the packages gate reports none missing — L15;
+- the `content` encoding seam is fixed and held by `endpoint/integration` — L9;
+- the NFC normaliser exists as `endpoint/canon` — L12;
+- `ingest-api`'s `database/sql` plumbing is executed by the tagged `sqlpg` test (L19's ruling;
+  `localdev/evidence/04-sql-driver.log`). `content-vault` still has no driver.
+
+Still as stated below: no cloud, no PostgreSQL 16 run, and no `go test -race` (no C compiler).
 
 - **No endpoint has ever run as an endpoint.** There is no `capture-core` service binary, no
   native-messaging host binary, no browser, and no installed root CA. `endpoint/integration` wires the

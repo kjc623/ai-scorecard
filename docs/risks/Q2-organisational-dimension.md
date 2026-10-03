@@ -15,12 +15,12 @@ The dimension is **not missing**. It is built and plumbed end to end, with one g
 
 | Fact | Evidence |
 |---|---|
-| `ops.user_dim` exists with `department`, `population`, `manager_ref`, `status`, `synced_at` | live catalog; `database/schema.sql:306` |
+| `ops.user_dim` exists with `department`, `population`, `manager_ref`, `status`, `synced_at` | live catalog; `database/schema.sql:320` |
 | The pre-aggregated read path exists: `mart.agg_org_period` keyed by `department` | live catalog; `database/schema.sql` mart section |
 | The query API serves it: `mart.agg_org_period` is a registered DSL source with a `department` dimension | `query/query-api/src/registry.js:354,365` |
 | The dashboard can render Q3 today | the source is registered, so no dashboard gap exists for it |
 | Unmapped users are handled deliberately: `agg_org_period` is "empty when `department IS NULL`; unmapped users reported, never dropped" | `docs/04-dashboard-and-query.md:591` |
-| The mapping to a real person is the sensitive artefact and is protected accordingly: `directory_object_id_enc` is encrypted, is the only column that maps `user_ref` to a person, and is **never exported** | `database/schema.sql:318`; `docs/04-dashboard-and-query.md:963` |
+| The mapping to a real person is the sensitive artefact and is protected accordingly: `directory_object_id_enc` is encrypted, is the only column that maps `user_ref` to a person, and is **never exported** | `database/schema.sql:332`; `docs/04-dashboard-and-query.md:963` |
 
 ## The actual finding: nothing populates it
 
@@ -30,8 +30,8 @@ a declaration, a grant, a comment or a read:
 - `database/schema.sql` — the table, its comment, its entry in the row-level-security table list, and three
   `GRANT`s.
 - `query/query-api/src/registry.js:11` — listed as a source.
-- `endpoint/capture-core/core/envelope.go:426` — a comment saying the wire never carries a directory
-  identifier.
+- `endpoint/capture-core/core/envelope.go:79` — the wire's `user_ref` field. The file carries the
+  pseudonymous reference and has no directory identifier and no reference to the table.
 - `docs/04-dashboard-and-query.md:157,262` — "requires the Q2 directory sync", "synchronised from the
   customer's directory (Entra ID by default)".
 
@@ -59,7 +59,7 @@ data state rather than a missing component**. That is the finding worth recordin
 2. **`control-api` owns it**, because that is where enrolment, policy and device identity already
    live, and because a directory sync is a control-plane action with a credential — not something
    the ingest path or a device should be able to reach. `ops.user_dim` already grants `INSERT,
-   UPDATE` to the role that will own it (`database/schema.sql:1922`).
+   UPDATE` to the role that will own it (`database/schema.sql:1942`).
 3. **Absence is a state, not an error, and it must be visible.** A tenant with no sync has an empty
    dimension; Q3 then renders "not answerable with current data" rather than an empty chart, exactly
    as §591's "unmapped users reported, never dropped" requires for the partial case. The dashboard

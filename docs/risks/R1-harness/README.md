@@ -6,8 +6,10 @@ instead of believed.
 
 ```
 cd docs/risks/R1-harness
-go test ./...          # or: go run .
+go run .               # every claim;  go run . a|b|c|d|e for one
 ```
+
+The directory holds no `_test.go` files, so `go run .` is what exercises it.
 
 | File | What it is |
 |---|---|

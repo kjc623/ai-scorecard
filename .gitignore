@@ -48,6 +48,14 @@ db/evidence/*.log
 .integration/verify-all-*.json
 .integration/accept-*.json
 
+# Local lab overrides (LAB_*_PORT) and the MCP gateway token written by
+# localdev/harness/mcp-gateway.mjs. Machine-specific, and the token is a credential.
+localdev/.env
+
+# Local Obsidian vault. Its plugin state (obsidian-local-rest-api/data.json) holds the vault's
+# API key and private keys — a credential, never a source deliverable.
+obsidian_vault/
+
 # Editor / OS
 .DS_Store
 Thumbs.db

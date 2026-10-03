@@ -1,7 +1,7 @@
 # localdev — the $0.00 development lab (Part A of docs/lab/LAB-COST.md §1)
 
-PostgreSQL with `database/schema.sql` applied, both Go services in containers, and a smoke test that proves
-they serve. No Azure, no credentials, no cost.
+PostgreSQL with `database/schema.sql` applied, the three services in containers, and a smoke test that
+proves they serve. No Azure, no credentials, no cost.
 
 This directory exists because **the services could not be run in a container at all** before it: no
 Dockerfiles existed (F1), both binaries bound loopback on ports the deployment does not probe (F2), the
@@ -14,22 +14,72 @@ node localdev/run.mjs       # up + smoke test + report; leaves the lab running
 node localdev/run.mjs --down
 ```
 
-`run.mjs` prints every check and exits non-zero if any fails. On this host all thirteen pass:
+`run.mjs` prints every check and exits non-zero if any fails. On a fresh volume all eighteen pass:
 
 ```
+lab: ingest-api http://127.0.0.1:8080, content-vault http://127.0.0.1:8081, query-api http://127.0.0.1:8082
   ok   ingest-api /healthz — 200
   ok   ingest-api /readyz — 200 {"status":"ready"}
   ok   content-vault /healthz — 200
   ok   content-vault /readyz — 200 {"status":"ready","key_backend":"local-software","store":"memory"}
   ok   database/schema.sql applied (ingest tables) — 4 tables
   ok   ref.route_fidelity seeded — 7 routes
-  ok   200 with two accepted results — status 200, accepted 2
-  ok   one logical submission for two observations — 1 submission_id(s)
-  ok   dedup_tier recomputed at ingest — tiers T,T
+  ok   two routes are accepted, or recognised as the submission already recorded — status 200, accepted 2, duplicate 0, rejected 0
+  ok   every event has a submission_id, and they are the same one — 1 submission_id(s)
+  ok   neither observation is rejected, and both reach one logical submission — outcomes accepted,accepted
   ok   409 duplicate_batch — 409 duplicate_batch
   ok   200 with a per-event rejection, not a batch failure — status 200
   ok   reason mode_violation with the offending pointer — mode_violation /events/0/content_digest
+  ok   query-api /healthz — 200
+  ok   query-api /readyz — 200 {"status":"ready","role":"sac_query"}
+  ok   a read with no tenant is refused, and reaches no database — 403 unauthorised_role
+  ok   POST /v1/query answers with a §13 envelope — status 200, result_state not_yet_covered
+  ok   the answer carries freshness and coverage, so a number never travels without its state — freshness=true coverage=true
+  ok   a request that tries to speak SQL is refused — 400 prohibited_field
 ```
+
+On a rerun against the same volume the two routes are reported `duplicate` rather than `accepted`,
+which is also a pass.
+
+## Addresses and ports
+
+There are two ways to reach a service, and which one applies depends on where the caller runs. The
+table at the top of `docker-compose.yml` is where these are decided; this is a copy for reading.
+
+| Service | From a container on the `scorecard` network | From the host (default) | Host port variable |
+|---|---|---|---|
+| `postgres` | `postgres:5432` | `localhost:5432` | `LAB_PG_PORT` |
+| `ingest-api` | `http://ingest-api:8080` | `http://localhost:8080` | `LAB_INGEST_PORT` |
+| `content-vault` | `http://content-vault:8080` | `http://localhost:8081` | `LAB_VAULT_PORT` |
+| `query-api` | `http://query-api:8080` | `http://localhost:8082` | `LAB_QUERY_PORT` |
+
+**On the host**, the right-hand ports are defaults. Set the variable in the environment or in
+`localdev/.env` to move one (`LAB_QUERY_PORT=18082 node localdev/run.mjs`). Nothing else needs
+editing: `run.mjs` asks `docker compose port` which port was published.
+
+**From another container**, join the network and use the service names. The published host ports do
+not exist there:
+
+```yaml
+services:
+  my-tool:
+    networks: [scorecard]
+    environment:
+      LAB_INGEST_URL: http://ingest-api:8080
+      LAB_VAULT_URL: http://content-vault:8080
+      LAB_QUERY_URL: http://query-api:8080
+networks:
+  scorecard:
+    external: true
+```
+
+With those three set, `node localdev/run.mjs --no-up` smokes the lab from inside the network. The two
+database checks run `psql` inside the `postgres` container, so they need the docker CLI and report
+that they did not run when it is absent; the sixteen HTTP checks need nothing but Node.
+
+These variables are named `LAB_*`, not `SAC_*`, on purpose: `SAC_*` is the deployment's vocabulary,
+and `localdev/tools/check-config-agreement.mjs` fails on any `SAC_*` name in the compose file that a
+binary does not read.
 
 ## What is in it
 
@@ -49,10 +99,11 @@ not. `query/query-api/src/http/` is that transport, and `query/query-api/Dockerf
 lab cannot start a service that has no entry point, which is why the read path was missing from this
 table rather than merely unwired.
 
-**Not in it, deliberately.** Blob storage (azurite and minio are both cached here, but content-vault
-performs no blob I/O in this build — it holds wrapped keys, and ciphertext goes device-to-blob under a
-grant, so a fake blob account would prove nothing), the dashboard (a static file), and the device tier
-(runs on the host). docs/lab/LAB-COST.md §6 lists what that leaves untestable.
+**Not in it, deliberately.** Blob storage (content-vault performs no blob I/O in this build — it holds
+wrapped keys, and ciphertext goes device-to-blob under a grant, so a fake blob account would prove
+nothing), the dashboard (a static file), and the device tier (runs on the host). That leaves the blob
+path, a real certificate authority and a real cloud KMS untestable here; docs/lab/LAB-COST.md §6 says
+which platform properties the Azure half (Part B) can and cannot test.
 
 **One thing the lab cannot show, stated rather than implied.** `query-api` runs here with
 `SAC_DEV_TRUST_PRINCIPAL=1`, which accepts a development header in place of the authenticated
@@ -64,9 +115,9 @@ schema; it does not prove who is allowed to ask.
 
 | File | What it does |
 |---|---|
-| `build.mjs` | Cross-compiles the Go services and builds all three lab images. `--skip-docker` compiles only; `--production` prints the commands a networked host would run instead |
+| `build.mjs` | Cross-compiles the two Go services and builds all three lab images. `--skip-docker` compiles only; `--production` prints the commands a networked host would run instead |
 | `run.mjs` | Up, smoke test, report. Leaves the lab running; `--down` tears it down with the volume; `--no-up` smokes against something already running |
-| `docker-compose.yml` | The four containers and their wiring. There is no `build:` stanza on purpose — see "The offline constraints" |
+| `docker-compose.yml` | The five containers, their addresses and their wiring. There is no `build:` stanza on purpose — see "The build constraints" |
 | `tools/check-config-agreement.mjs` | **The checker that keeps the configuration honest.** It parses the `SAC_*` names out of `azure/main.bicep`, each service's own source and its Dockerfile, and fails the build when the deployment passes a name a binary never reads, or a binary reads a name nothing accounts for |
 
 That last one is worth knowing about even if you never run the lab. It is the reason a name in
@@ -90,25 +141,31 @@ image cannot accidentally trust a header. There is no secret anywhere in this di
 PostgreSQL password is a throwaway for a container on the host's loopback, and the lab's tenant,
 device and key material are fixtures.
 
-## The offline constraints, stated
+## The build constraints, stated
 
-* **No Go toolchain image is cached**, so the Dockerfiles' `build` stages cannot run here. The `lab`
-  stage of each Dockerfile packages a binary compiled by `localdev/build.mjs` on the *host*, which is why
-  the lab works at all offline. `node localdev/build.mjs --production` prints the two commands a networked
-  host runs instead.
+* **The lab images are built without a Go toolchain image and without a network.** The `lab` stage of
+  each Go Dockerfile packages a binary compiled by `localdev/build.mjs` on the *host* (with
+  `GOPROXY=off`), so the Dockerfiles' `build` stages — which need a golang image and a module proxy —
+  are never run by the lab, and the compose file has no `build:` stanza. That is what lets the lab be
+  built on a host that has neither. `node localdev/build.mjs --production` prints the three commands,
+  one per service, that build the `production` stage instead.
 * **The host is Windows and the container is Linux**, so the build cross-compiles (`GOOS=linux`,
   `CGO_ENABLED=0`). With cgo off there is no cross toolchain to install, and the resulting static
   binary runs in alpine and in distroless/static alike.
-* **The document says PostgreSQL 16; this uses 17.** The only PostgreSQL image cached here is
-  `postgres:17-alpine`, and the schema applies to it unmodified — that is the same engine T2 verified
-  the invariants against. On a host with a network, `postgres:16-alpine` is a one-word change.
+* **The document says PostgreSQL 16; this uses 17.** The compose file names `postgres:17-alpine`, and
+  the schema applies to it unmodified — that is the same engine T2 verified the invariants against.
+  `postgres:16-alpine` is a one-word change in `docker-compose.yml`.
 
 ## Configuration: one vocabulary, five artifacts
 
-Every setting is settable by a flag and by an environment variable, **and a flag wins**. Precedence is
+Most settings are settable by a flag and by an environment variable, **and a flag wins**. Precedence is
 decided by asking the flag package which flags were passed, so an explicitly empty `--region ""` is a
 request rather than an absence. The environment names are the deployment's names: the `SAC_*` variables
-`azure/main.bicep` passes.
+`azure/main.bicep` passes. A few settings have only one spelling: `--pg-port`, `--dsn`, `--driver` and
+the `-dev-*` test flags have no environment variable, and `SAC_APPINSIGHTS` and `SAC_INTERNAL_ONLY`
+have no flag. The table lists the settings the lab and the deployment set; the binaries also read
+`SAC_KEYVAULT_URI` (content-vault) and `SAC_TLS_CERT_PEM` / `SAC_TLS_KEY_PEM` / `SAC_TLS_CLIENT_CA_PEM`
+(ingest-api).
 
 | Setting | Flag | Environment | Set by |
 |---|---|---|---|
@@ -142,8 +199,8 @@ checker's extension table and printed on every run rather than quietly tolerated
 node localdev/tools/check-config-agreement.mjs
 ```
 
-It reads `azure/main.bicep`, both services' Go sources, both Dockerfiles and this directory's compose
-file, and fails if:
+It reads `azure/main.bicep`, the two Go services' sources, `query-api`'s `src/http/config.js`, all three
+Dockerfiles and this directory's compose file, and fails if:
 
 * a name the deployment passes is not read by the service it is passed to (F3);
 * a name a binary reads is accounted for by neither the deployment, the image, nor the extension table;
@@ -157,7 +214,7 @@ breaking a name on purpose: the checker reported it from three directions at onc
 ## What is not fixed
 
 **Three PostgreSQL servers, three ports, and none of them knows about the others.** This lab publishes
-PostgreSQL on host `5432`. `database/tools/run-invariants.ps1` starts its *own* throwaway server on
+PostgreSQL on host `5432` by default (`LAB_PG_PORT` moves it). `database/tools/run-invariants.ps1` starts its *own* throwaway server on
 `55434` by default — moved there from `55432` precisely because `55432` is where an earlier ad-hoc
 `shadowpg` fixture lived, and a full acceptance run failed with `docker run failed for image
 postgres:17-alpine` when the two collided. `query/query-api`'s integration tests reach whichever of
@@ -170,7 +227,7 @@ But they do collide, and the failure is worth recognising:
 - the invariants runner fails with `docker run failed for image postgres:17-alpine` if its port is
   taken. Move it: `-Port 55435`, or stop whatever holds it;
 - this lab fails with `Bind for 0.0.0.0:5432 failed: port is already allocated` if anything else holds
-  `5432`. Nothing in the repository does by default;
+  `5432`. Nothing in the repository does by default, and `LAB_PG_PORT` moves the lab off it;
 - `query/query-api`'s integration tests authenticate with the **lab's** credential and therefore
   prefer the lab container by name. A container they cannot authenticate to is skipped, not failed —
   see `test/helpers.mjs`, where that preference is the fix for seven integration tests that reported
@@ -193,11 +250,13 @@ image whose `SAC_STORE=sql` works, and the compose file's services would move fr
 without another change.
 
 **A deployment still cannot authenticate devices.** The origin must see the device certificate (§2.1),
-and `azure/modules/container-app.bicep` probes with `scheme: 'HTTP'` on the same port a TLS listener
-would use, with no volume mount and no `command`/`args`. Making the container *reachable and probeable*
-is done; making a real deployment *authenticated* needs a decision in `azure/` (HTTPS/TCP probes, a
-second port for probes, or an explicit edge-forwarded-certificate mode) — that is a trust-model
-decision, reported rather than taken.
+and `azure/modules/container-app.bicep` probes over HTTP by default (`probeScheme`, which
+`azure/main.bicep` never sets to `HTTPS`) on the same port a TLS listener would use, with no volume
+mount and no `command`/`args`, and every app's `keyVaultEnv` is empty, so no certificate reaches the
+container. Making the container *reachable and probeable* is done; making a real deployment
+*authenticated* needs a decision in `azure/` (delivering the certificate material and switching the
+probe to HTTPS, a second port for probes, or an explicit edge-forwarded-certificate mode) — that is a
+trust-model decision, reported rather than taken.
 
 **Per-event `readyz` depth.** `ingest-api`'s readiness asks the store to read `ref.route_fidelity`, a
 real query once the SQL mode exists. `content-vault`'s asks whether the configured key backend is

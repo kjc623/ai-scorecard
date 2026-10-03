@@ -21,11 +21,11 @@ go build -o bin\capture-core.exe ./cmd/capture-core
 Or from the repository root:
 `powershell -NoProfile -ExecutionPolicy Bypass -File endpoint\capture-core\run.ps1 -Selftest`.
 
-## Subcommands
+## Modes
 
 | Invocation | What it does |
 |---|---|
-| `run` (default) | The service: load policy, open the spool, start providers in §3.5 order. |
+| no mode flag (default) | The service: load policy, open the spool, start providers in §3.5 order. There is no positional subcommand: any positional argument, including a literal `run`, is refused. |
 | `--print-config` | Resolve the bundle and print the effective configuration, including the resolved mode per tool and the axes that produced it, then exit. |
 | `--native-host` | The native-messaging host on stdin/stdout, as Chromium launches it. |
 | `--native-frames DIR` | Feed the golden frames in `DIR` through the real native-messaging framing and dispatch, then exit. |
@@ -36,7 +36,7 @@ Exactly one mode may be selected; the flag set refuses a combination.
 
 ## What runs, and in what order
 
-`run` drives `core.Supervisor`, which encodes §3.5 literally and records every step it performs:
+The service drives `core.Supervisor`, which encodes §3.5 literally and records every step it performs:
 
 | §3.5 startup | What the binary does |
 |---|---|
@@ -85,7 +85,7 @@ assembled into a partial file.
 | `--drain-deadline` | the bound on the shutdown drain (§3.5 step 3) |
 | `--health-file`, `--health-interval` | the health channel, appended as JSON lines |
 | `--attachment-cap` | the policy cap on one attachment manifest, checked before any byte moves |
-| `--print-config`, `--dry-run` | resolve and validate everything and print it; `--dry-run` starts nothing |
+| `--print-config`, `--dry-run` | `--print-config` resolves and validates everything, prints it and exits; `--dry-run` builds the service graph, starts nothing (no §3.5 step runs), prints one health snapshot and waits for the stop signal |
 | `--work-dir`, `--keep-work-dir` | the selftest work directory (default OS temp, removed on exit, success or failure) |
 | `--log-format`, `--log-level` | `json` (default) or `text`; `debug`, `info`, `warn`, `error` |
 
@@ -107,11 +107,14 @@ trust-store entry, no scheduled task.
 
 ## What is NOT VERIFIED on this host
 
-- **No browser.** Chromium is not installed, so the native-messaging host has never been launched by
-  a real browser. What *is* verified is the byte-level framing and the child-process model: the
-  selftest starts this binary as a separate process with real Chromium frames on its stdin, twice —
-  once with the classifier host up (six acks, `confidence: medium`) and once with it down (six acks,
-  `confidence: degraded`, exit 0).
+- **No browser in the selftest.** `--selftest` never launches a browser. What it verifies is the
+  byte-level framing and the child-process model: it starts this binary as a separate process with
+  real Chromium frames on its stdin, twice — once with the classifier host up (all six frames
+  answered with an ack or a typed refusal, at least one ack, and no rules-only fallback in the
+  child's log) and once with it down (the same six answers, the rules-only fallback logged, exit 0).
+  The launch by a real Chromium browser is evidenced outside this module:
+  `extension/tools/in-browser-check.mjs` loads the extension into Edge with this binary registered
+  as the native host, and `extension/tools/in-browser-check.evidence.txt` records the round trip.
 - **No real system proxy and no real trust store.** Those are behind the interfaces in
   `proxy/tlsproxy` and this build wires none of them: `proxy.tls` therefore reports
   `degraded detail=tls_probe_failed`, and is exercised by its own package tests only.
@@ -135,12 +138,14 @@ throwaway bundle, starts a relocated "inference server" and a fake classifier ho
 framing, then drives the real service: the six golden frames from
 `endpoint/integration/testdata/native/` through the real native-messaging framing, a mode query, a
 policy sync, an extension health row, an over-cap observation, and a frame after the classifier host
-stops. It asserts the recorded startup order; that every health row validates as
+stops. It prints the recorded startup order and asserts that every health row validates as
 `protocol.HealthReport`; that every spooled record passes the contract's mode branch, an M0 record
 carries no content-derived field, a degraded record says `confidence: degraded`, and the spool
 directory holds no plaintext prompt bytes; and that the loopback port was released **first** and is
-free afterwards. It then starts this binary again in `--native-host` mode as a child process, twice
-(classifier up, then down), and decodes the frames it answers.
+free afterwards. It also starts this binary again in `--native-host` mode as a child process, twice —
+once while the classifier host is up, before it is stopped, and once after shutdown with it down —
+and decodes the frames it answers.
 
-Everything it prints comes from the production code paths. The only stand-ins are the two peers a
-browser and a signed classifier release would provide, and the output names them.
+Everything it prints comes from the production code paths. The only stand-ins are the peers the
+host cannot provide — the relocated "inference server", the frames a browser would send and the
+classifier host a signed release would provide — and the output names them.

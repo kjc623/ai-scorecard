@@ -24,6 +24,12 @@ Two properties carry the decision, and neither is about volume:
 **SQLite in WAL mode** is the device-side spool, encrypted at the application layer, and is never a
 server store.
 
+**As built.** PostgreSQL 16 is the deployment target the infrastructure pins; the local lab and the
+recorded schema verification ran on PostgreSQL 17, to which the schema applies unmodified. The device
+spool is not SQLite: `endpoint/capture-spool` is an append-only, encrypted segment log behind the
+`protocol.Store` interface, which a SQLite-backed store could satisfy without changing a caller. See
+[endpoint/capture-spool/README.md](../../endpoint/capture-spool/README.md).
+
 Supabase is rejected. Not because it is bad — it is managed PostgreSQL with an attached product surface
 — but because every requirement above is a plain PostgreSQL feature, and the attached surface is
 procurement friction in a 500–5,000-employee buyer segment while changing nothing about region pinning or
@@ -47,8 +53,10 @@ key custody.
 
 Easier: forced row-level security, custom roles per component, point-in-time recovery, private
 networking, a chosen region, and per-tenant keys held outside the database are all available without
-inventing anything. No extension is required — `sha256()` and `gen_random_uuid()` are built in, so the
-audit hash chain works on a stock instance and the `pgcrypto` question in master doc Q12 disappears.
+inventing anything. `sha256()` and `gen_random_uuid()` are built in, so the audit hash chain works on a
+stock instance and the `pgcrypto` question in master doc Q12 disappears. The only extensions the schema
+needs are `pg_trgm` and `btree_gin`, both for the content search index of
+[ADR 0014](0014-content-search-is-a-per-tenant-capability.md).
 
 Harder: connection management needs a pooler in front of the service tier, and long-running aggregations
 need direct connections so they cannot occupy the pool.

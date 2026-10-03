@@ -38,7 +38,7 @@ the wire contract from [contracts/](../contracts/README.md) and the device vocab
 ## State, stated plainly
 
 The device-to-cloud transport does not exist yet: `capture-core` spools observations and nothing sends
-them to a server ([README.md](../README.md) "Known state"). So this is a verified server with no
+them to a server ([README.md](../README.md) "What is built, and what is not"). So this is a verified server with no
 production client. The whole-batch replay guard is per-process, the SQL plumbing is exercised only
 under the `sac_sql_driver` build tag, and the dedup fixture that keeps the in-memory double honest is
 explained in [ingest-api/README.md](ingest-api/README.md#not-verified).

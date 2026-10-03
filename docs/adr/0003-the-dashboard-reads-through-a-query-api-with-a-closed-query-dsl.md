@@ -30,6 +30,11 @@ always comes from the authenticated session and never from the request body.
 The DSL is closed because the alternative is a SQL parser with an allowlist, which is a well-known way
 to ship an injection.
 
+**As built.** `query-api` is plain JavaScript on Node.js's own `node:http`, with no framework and no
+dependencies — not TypeScript and not Fastify — and the dashboard is plain JavaScript as well. The
+closed DSL and its compilation to parameterised SQL are as decided. Neither imports the TypeScript types
+generated from the wire contract.
+
 ## Alternatives considered
 
 - **Direct database connections from the dashboard with row-level security.** Rejected: it satisfies

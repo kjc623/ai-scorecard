@@ -17,7 +17,7 @@ psql -v ON_ERROR_STOP=1 -f database/schema.sql && psql -v ON_ERROR_STOP=1 -f dat
 |---|---|
 | `database/schema.sql` (current: + `ops.retrieval_grant`, single-use trigger, RLS, grants, two digest CHECKs; seam note corrected) | `5A3153B3EB85A4B7…` (full hash in the run logs) |
 | `database/invariants.test.sql` (current, T1..T47) | `DC6A488F59C9EDB0…` |
-| `database/tools/check-schema.mjs` (current, 73 checks) | `5694C92085F93DED…` |
+| `database/tools/check-schema.mjs` (current) | `3F5A9DA9255C84B4…` |
 | `database/tools/tally-log.mjs` (the harness's tally, tested) | `070E633B3F38F5E6…` |
 | `database/schema.sql` with `classifier_release_digest_is_sha256` weakened (negative control, run 16) | `3F9967501A9E0D05713221D0D8D5B216DB36E5D42D9AB57A46B5C66937533D9B` |
 | `database/schema.sql` with `retrieval_grant_raw_digest_is_sha256` removed (negative control, run 15) | `ECD86AF13D139FDBB6248F81724F1951C171751DDF742ED78661EC0217A1B630` |
@@ -42,14 +42,15 @@ that were reviewed.
 | | |
 |---|---|
 | Server | PostgreSQL **17.11** on x86_64-pc-linux-musl |
-| Image | `postgres:17-alpine` — the only `postgres:*` image cached locally |
-| Container | **`shadowpg-invariants`**, port 55432 (settled name; the earlier scratch container `shadowpg` was removed) |
-| Network | none; nothing was downloaded |
+| Image | `postgres:17-alpine` — the only `postgres:*` image cached locally when these runs were captured |
+| Container | **`shadowpg-invariants`**, port 55432 for these runs — the runner's default is now `55434` (settled name; the earlier scratch container `shadowpg` was removed) |
+| Network | none used; nothing was downloaded |
 | Client | `psql` from the same image, over the container's unix socket |
 | Target (ADR 0002) | Azure Database for **PostgreSQL 16** Flexible Server |
 
 **Version deviation.** The deployment target is 16; this run is on 17.11, because no PostgreSQL
-16 binary, service, cluster or image exists on this host and there is no network to obtain one.
+16 binary, service, cluster or image existed on this host when the runs were captured and none was
+downloaded.
 The deviation is recorded, not hidden, and equivalence is **not** claimed:
 
 - Every version-sensitive construct in `database/schema.sql` has a minimum version at or below 13 —
@@ -229,7 +230,9 @@ keep reading.
 `ref.collector`, `ref.data_class`, `ref.route_fidelity`, `ref.rule`, `ref.retention_class` and
 `ref.classifier_release` carry no policy. Verified rather than taken on trust: `docker` catalog
 query shows exactly those six lacking RLS, **none of them has a `tenant_id` column**, no table
-*outside* `ref` lacks RLS, and the counts are 37 tables / 31 RLS-enabled-and-forced.
+*outside* `ref` lacks RLS, and the counts were 37 tables / 31 RLS-enabled-and-forced at that
+measurement. `ops.retrieval_grant` was added afterwards: `database/schema.sql` now declares 38
+tables, 32 of them RLS-enabled-and-forced.
 
 The framing is right, and the reason is worth stating: each is shared vocabulary (a class
 taxonomy, a route-fidelity ranking, a collector registry, a retention-class default, a rule
@@ -392,8 +395,9 @@ direction this schema avoids:
   generated bundles for `EqualFold` and for `toLowerCase()` applied to a digest. Result: **the only
   two digest comparisons in the repository were the two that were wrong, and both are now exact.**
   Every other case-insensitive comparison is legitimate and none is digest-shaped — an algorithm
-  identifier (`capture-core/policy/verify.go`, case-insensitive by JWS convention), a Windows path
-  comparison (`capture-spool/keys.go`, where the platform's semantics require it), tenant UUIDs,
+  identifier (`endpoint/capture-core/policy/verify.go`, case-insensitive by JWS convention), a
+  Windows path comparison (`endpoint/capture-spool/keys.go`, where the platform's semantics require
+  it), tenant UUIDs,
   and dropping the words and/or/not from a search expression. So "is it elsewhere?" has an answer
   rather than an assumption.
 
@@ -435,16 +439,19 @@ down to one because an owner answered. That is the lifecycle the check is built 
 `artifact_digest` is the worked example — including the part after the answer, where the constraint
 made a seam gap visible enough that the other side closed it too.
 
-**The documents are stale again.** The checker reads the claims out of the documents themselves
-rather than trusting a constant: they say 42 (README.md ×2, `.cockpit/project.json` ×3,
-`docs/00-architecture.md`, `docs/03-data-platform.md`) against a file that contains 43. The
-earlier 27s in `docs/00` and `docs/03` are gone. Fix the prose, not the file; the checker reports
-this as a `WARN` (documentation drift), not a structural failure.
+**The documents went stale when T43 was added.** The checker reads the claims out of the documents
+themselves rather than trusting a constant: at that point they said 42 (README.md ×2,
+`.cockpit/project.json` ×3, `docs/00-architecture.md`, `docs/03-data-platform.md`) against a file
+that contained 43. The earlier 27s in `docs/00` and `docs/03` were gone. The file now contains 47.
+Fix the prose, not the file; the checker reports any such drift as a `WARN` (documentation drift),
+not a structural failure.
 
 Other stale counts in `.cockpit/project.json` (component `database`), measured from the live
-catalog: it claimed 34 tables, 3 views and 28 RLS policies; the server holds **37 tables,
-4 views and 31 policies**, with **31/31** RLS-enabled and **31/31** RLS-forced. No tenant-scoped
-table lacks a policy.
+catalog at the same point: it claimed 34 tables, 3 views and 28 RLS policies; the server held
+**37 tables, 4 views and 31 policies**, with **31/31** RLS-enabled and **31/31** RLS-forced. No
+tenant-scoped table lacked a policy. With `ops.retrieval_grant`, `database/schema.sql` now declares
+38 tables, 4 views and 32 `tenant_isolation` policies — 31 from the `tenant_tables` loop plus
+`ops.tenant`'s own.
 
 ## Who ran as what
 
@@ -468,7 +475,8 @@ cannot be loaded by one.
 
 ## Not verified
 
-- **PostgreSQL 16.** No 16 image, binary or service exists on this host; no network.
+- **PostgreSQL 16.** No 16 image, binary or service existed on this host when these runs were
+  captured, and none was pulled; no run on 16 is recorded here.
 - **Azure Database for PostgreSQL Flexible Server.** A stock local container, not the managed
   service: no `azure_pg_admin`, no managed-service extension allow-list enforcement.
 - **Concurrency.** The invariants are asserted sequentially. Two devices racing on the same dedup
@@ -484,10 +492,10 @@ cannot be loaded by one.
 `database/evidence/01-schema-apply.log` and `database/evidence/02-invariants-run.log` existed at the start of
 this session, from an earlier session, and the Lead asked that they be preserved. **They were
 overwritten before that instruction arrived**, by a `Remove-Item db\evidence\*.log` issued to
-clear what looked like scratch output from my own first run.
+clear what looked like scratch output from my own first run (the directory was named `db/` then).
 
-They were not recoverable: `database/evidence/` is untracked in git and `*.log` is in `.gitignore`, so
-no committed copy exists. This is a process error, recorded here rather than quietly omitted.
+They were not recoverable: the logs in `database/evidence/` are untracked in git — only this README
+is tracked — and `*.log` is in `.gitignore`, so no committed copy exists. This is a process error, recorded here rather than quietly omitted.
 
 What replaces them is not a reconstruction: runs A, D and F are fresh executions against a real
 server with the hashes above, and they agree with what the Lead reported of the lost log
@@ -516,15 +524,17 @@ ignore its exit code.
 ## Container naming
 
 **`shadowpg-invariants`** is the pinned name for this workstream and the only container the database
-work creates; it publishes port 55432 and is what `database/tools/run-invariants.ps1` creates and reuses.
+work creates; it published port 55432 for the runs recorded here — the runner's default is now
+`55434` — and is what `database/tools/run-invariants.ps1` creates and reuses.
 The scratch containers used for the negative controls (`sac-bugcheck`, `sac-bugcheck2`,
 `sac-negctl`, `sac-harness-negative`, `sac-grant*`, `sac-conf`, `sac-t43`, `sac-kinds*`, `sac-crel*`,
 `sac-digest`, `sac-neg`) were destroyed after their logs were captured, and the original manual
 container `shadowpg` was removed once the harness owned the name.
 
 **The `sac-lab-*` containers are not mine.** `sac-lab-postgres-1`, `sac-lab-schema-1`,
-`sac-lab-ingest-api-1` and `sac-lab-content-vault-1` are another workstream's integration lab
-(images `sac/ingest-api:lab` and `sac/content-vault:lab`), so they are left running. If a verifier
+`sac-lab-ingest-api-1`, `sac-lab-content-vault-1` and `sac-lab-query-api-1` are another workstream's
+integration lab (images `sac/ingest-api:lab`, `sac/content-vault:lab` and `sac/query-api:lab`), so
+they are left running. If a verifier
 is hunting for stray containers, these are deliberate and belong to someone else — the database
 work has exactly one.
 

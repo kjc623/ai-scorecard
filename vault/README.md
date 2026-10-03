@@ -25,10 +25,10 @@ tier permits, and delete that index by row when erasure cannot reach it with a k
   grant decision and then write ciphertext straight to blob storage; browsers reach content through
   query-api. The binary refuses a non-loopback bind without an explicit acknowledgement, and the
   acknowledgement is not a substitute for locking the origin to those two callers.
-- **It never holds a KEK it could export.** The key interface is five methods wide and has no
+- **It never holds a KEK it could export.** The key interface is six methods wide and has no
   `GetKey`/`ExportKey`/`ListKeys`; a test asserts the method set, because an interface that cannot
   express the request is the only version of "the KEK never leaves the key store" a reviewer can check.
-- **It does no blob I/O.** No blob store exists offline, so `Redeem` returns the object's reference and
+- **It does no blob I/O.** This build has no blob client, so `Redeem` returns the object's reference and
   digests, and bytes only if the binary wires `FetchBlob`. A deployment returns a short-lived storage
   URL instead.
 - **It has no working cloud KMS.** `--key-backend kms` refuses to start unless an operator
@@ -37,7 +37,8 @@ tier permits, and delete that index by row when erasure cannot reach it with a k
 
 ## State, stated plainly
 
-The service is Go on the standard library only, and no PostgreSQL wire driver is fetchable offline, so
+The service is Go on the standard library only: its module carries no PostgreSQL driver (ingest-api
+has one behind a build tag; content-vault does not), so
 `--store sql` refuses to start and the SQL lives as statement text verified against the live schema by a
 harness. [content-vault/README.md](content-vault/README.md) carries the grant matrix, the key hierarchy
 as built, and the full "not verified" list — including the one host-specific reason the Go integration

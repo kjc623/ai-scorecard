@@ -12,7 +12,7 @@ boundaries to design against rather than problems to solve.
 honour system proxy settings." Chromium and Electron clients do; many native applications do not. Closing
 that gap requires a kernel driver, and brief §5.5 makes that commercially expensive in this segment: the
 product will not qualify for Microsoft's security-vendor allowlist (E21), EV certificates no longer
-bypass SmartScreen (E19/E20), and a component that installs a root certificate and intermediates TLS
+bypass SmartScreen (E20), and a component that installs a root certificate and intermediates TLS
 already resembles malware to other endpoint security products (E22). A kernel driver makes all three
 worse and adds the largest possible blast radius to the component that already has the largest one.
 

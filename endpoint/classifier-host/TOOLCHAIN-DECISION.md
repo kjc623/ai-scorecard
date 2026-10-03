@@ -1,12 +1,14 @@
 # O1 — Toolchain and key-backend decision (offline build host)
 
-**Status:** decided by the Lead, 2026-10-02 · **Supersedes nothing** · **Amends:** `docs/00-architecture.md` §4.1
-and `docs/01-collectors.md` §9.1 for the classifier host only.
+**Status:** decided by the Lead, 2026-10-02 · **Supersedes nothing** · the classifier-language decision is
+recorded as [ADR 0016](../../docs/adr/0016-the-classifier-host-is-one-go-source-built-for-native-and-js-wasm.md),
+and `docs/00-architecture.md` §4.1 and `docs/01-collectors.md` §9.1 state Go and point at it.
 
-This file exists because two decisions in the design package assume a machine that can fetch things, and
-this build host cannot.
+This file exists because two decisions in the design package assumed a machine that can fetch things, and
+on 2026-10-02 this build host could not. The host has outbound network now; it still has no C compiler, so
+cgo is unavailable, and the repository's gates still set `GOPROXY=off` by choice.
 
-## 1. What the host actually is (measured, not assumed)
+## 1. What the host was when this was decided (measured, not assumed)
 
 | Fact | Evidence |
 |---|---|
@@ -19,8 +21,8 @@ this build host cannot.
 
 ## 2. Decision — classifier host language
 
-`docs/00-architecture.md` §4.1 and `docs/01-collectors.md` §9.1 choose **Rust, one source compiled to
-native and `wasm32`**. That toolchain does not exist here and cannot be installed.
+`docs/00-architecture.md` §4.1 and `docs/01-collectors.md` §9.1 originally chose **Rust, one source compiled
+to native and `wasm32`**. That toolchain did not exist on the host and could not be installed.
 
 **Decided: build the classifier host in Go, one source compiled to two targets** —
 `GOOS=windows|darwin GOARCH=amd64|arm64` for the native host, and `GOOS=js GOARCH=wasm` for the in-page
@@ -40,9 +42,9 @@ What this preserves from §9.1, which is why it is an acceptable substitute rath
 
 What it costs, stated plainly:
 
-- ADR-worthy deviation: the design package names Rust in two documents. This file is a decision record,
-  not an ADR; the Lead must raise an ADR amendment if the classifier is kept in Go after this build round
-  (a Rust toolchain on a networked build host would let §9.1 be honoured literally).
+- ADR-worthy deviation: the design package named Rust in two documents. The classifier is kept in Go, so
+  the deviation is recorded as ADR 0016 and both documents now state Go; the ADR's revisit trigger is a
+  build host with `rustup` together with a wasm load cost that threatens the interactive budget.
 - Go's `js/wasm` runtime is roughly 2.5 MB of wasm for a trivial program; the extension's inline path
   loads it once. The 300 ms interactive budget must be measured against the real module, and
   `endpoint/classifier-host` is required to publish that measurement rather than assume it.
@@ -54,14 +56,15 @@ What it costs, stated plainly:
 | Question | Decision | Consequence |
 |---|---|---|
 | Content-vault key backend | `KeyWrapper` interface with a **local AES-256-GCM software implementation** (tests and local dev) and an **explicitly unimplemented** Azure Key Vault / Managed HSM backend whose interface documents what the cloud must provide. | Any claim that the cloud path works is false on this host. `vault/content-vault` must report it as NOT VERIFIED. |
-| Device spool storage | Append-only segment log with a storage abstraction. SQLite (ADR 0002) is the documented choice and remains the target; no SQLite driver is fetchable offline and cgo is unavailable. | The deviation is recorded in the package doc and must be reported, never silently presented as SQLite. |
-| Database schema proof | Real-server execution is the acceptance criterion and is currently **blocked** (no server, no image, no network). Fallback is a static structural checker plus a runnable harness (`database/tools/run-invariants.ps1`). | The 27 assertions are **NOT VERIFIED against a real server** until the harness is run where a server exists. A static checker is not a substitute and must not be reported as one. |
+| Device spool storage | Append-only segment log with a storage abstraction. SQLite (ADR 0002) is the documented choice and remains the target; no SQLite driver could be fetched when this was decided, the builds run with `GOPROXY=off`, and cgo is unavailable (a pure-Go driver is fetchable when the module proxy is enabled). | The deviation is recorded in the package doc and must be reported, never silently presented as SQLite. |
+| Database schema proof | Real-server execution is the acceptance criterion and was **blocked** when this was decided (no server, no image, no network). Fallback is a static structural checker plus a runnable harness (`database/tools/run-invariants.ps1`). | The 27 assertions are **NOT VERIFIED against a real server** until the harness is run where a server exists. A static checker is not a substitute and must not be reported as one. |
 | Infrastructure | Bicep plus a static checker; never deployed. | Deployment is NOT VERIFIED; the exact human command and preconditions are named in `azure/`. |
 
 ## 4. What every agent on this host must do
 
-1. **Zero external dependencies.** Go stdlib only, Node stdlib only. `GOPROXY=off`.
-2. **Go commands** need this prefix (dot-sourcing `.tools\env.ps1` is blocked by execution policy):
+1. **Zero external dependencies.** Go stdlib only, Node stdlib only. `GOPROXY=off`, by choice.
+2. **Go commands** use this prefix, with `$PWD` at the repository root where `.tools\` lives (dot-sourcing
+   `.tools\env.ps1` is blocked by execution policy):
    `$env:GOCACHE="$PWD\.tools\gocache"; $env:GOPROXY="off"; $env:GOTOOLCHAIN="local"; $env:GOFLAGS="-mod=mod"`
 3. **Tests run offline**: `node --test <dir>` for JS, `go test ./...` for Go.
 4. **Never claim a check passed that was not run**, and never present a stand-in as the real thing

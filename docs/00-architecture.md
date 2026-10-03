@@ -127,8 +127,8 @@ base fee and the database instance are the drivers, not data volume, so the cost
 flat per tenant and the product's economics improve with tenant count rather than with usage.
 Second, the **attachment tier is not the cost problem** — at 500 GB/year and a 12-month hot
 retention it is single-digit dollars per month. It is a *breach-surface* and *lifecycle* problem,
-which is why [04-dashboard-and-query](04-dashboard-and-query.md) §4.3 treats the per-tenant content
-budget as a governance control rather than a cost control. Managed HSM is the one genuine cost
+which is why the per-tenant content budget (`ops.tenant.content_budget_bytes_per_day`) is a governance
+control rather than a cost control. Managed HSM is the one genuine cost
 outlier at roughly $3,360/month, about four times everything else combined, so it is offered
 per-contract and not as a regional default.
 
@@ -336,7 +336,7 @@ gateway — and worth stating explicitly because it is the first thing many team
         aggregator (job) ──► mart aggregates
                  │
                  ▼
-           query-api (TypeScript) ──► dashboard (React)
+           query-api (Node.js) ──► dashboard (JavaScript)
 ```
 
 One privileged background service per device — **Capture Core** — hosts several independent capture
@@ -357,8 +357,8 @@ be operated by a team of two.
 
 **Makes hard.** Two device processes to sign, ship and update on two platforms. A root certificate
 and system proxy configuration have to be deployed and kept working across two trust-store models
-(E7) and two browser policies. Coverage becomes mandatory measurement work, because with nine
-providers the number of partial-failure states is large. The egress proxy retains the largest blast
+(E7) and two browser policies. Coverage becomes mandatory measurement work, because with five
+collection paths spread across nine usage modes the number of partial-failure states is large. The egress proxy retains the largest blast
 radius in the product.
 
 **Cost to operate.** Moderate. The endpoint tier is where the operational burden lives: update rings,
@@ -433,23 +433,24 @@ pretending".
 
 | Component | Where | Language | Why this language |
 |---|---|---|---|
-| `capture-extension` | Device, browser | **TypeScript**, Manifest V3 | The only option in a Chromium sandbox; MV3 APIs are JS/TS |
+| `capture-extension` | Device, browser | **JavaScript** (ES modules), Manifest V3 | The only option in a Chromium sandbox; MV3 APIs are JavaScript. No dependencies |
 | `capture-core` | Device, privileged service | **Go** | One static binary per platform; `net/http` + `crypto/tls` give a complete interception stack; pure-Go process enumeration on both platforms avoids cgo and therefore avoids a per-architecture build matrix; trivial cross-compilation; cheap concurrency for proxy + spool + policy polling |
 | `classifier-host` | Device, sandboxed process | **Go** → native **and** `js/wasm` | One source compiled to both the native host and the extension's in-page copy, so rules and model cannot drift between them. **Amended by [ADR 0016](adr/0016-the-classifier-host-is-one-go-source-built-for-native-and-js-wasm.md):** §9.1's requirement is byte-identical labels from one source, not a particular language, and the constraints that decided it — no outbound network, no Rust toolchain, Go present and building both targets offline — were not in play when this row was first written |
 | Egress proxy provider, loopback broker, process detector, CLI shim | Inside `capture-core` | **Go** | Same binary; each is a package with its own start/stop/health contract |
 | Document parser | Device, child process | **Go**, spawned by `classifier-host` | Highest-risk code in the product (R8); isolated in a child with a memory cap and hard timeout so a parser exploit cannot reach model weights or spool keys. Same language as its parent, per [ADR 0016](adr/0016-the-classifier-host-is-one-go-source-built-for-native-and-js-wasm.md) |
-| `ingest-api` | Azure Container Apps | **Go** | Shares generated types with the desktop collector; validation and idempotent write path |
+| `ingest-api` | Azure Container Apps | **Go** | Consumes the same contract-generated Go types as the desktop collector; validation and idempotent write path |
 | `control-api` | Azure Container Apps | **Go** | Enrolment, policy signing, health, grant decisions |
 | `content-vault` | Azure Container Apps, **internal ingress only** | **Go** | The only component holding Key Vault unwrap rights; must not be reachable from devices or browsers |
 | `aggregator`, `reconciler` | Azure Container Apps Jobs | **Go** + SQL | Rollups and expiry are set-based SQL; Go is the scheduler and the transaction boundary |
-| `query-api` | Azure Container Apps | **TypeScript** / Node (Fastify) | Shares generated types with the dashboard; the query layer is where the request-shape logic lives |
-| `dashboard` | Azure Static Web Apps | **TypeScript** / React | Static SPA behind Entra ID |
+| `query-api` | Azure Container Apps | **JavaScript** on Node.js (`node:http`, no framework, no dependencies) | Same language as the dashboard, so the closed query vocabulary is one shape on both sides; the query layer is where the request-shape logic lives |
+| `dashboard` | Azure Static Web Apps | **JavaScript** (ES modules, no framework) | Static SPA behind Entra ID |
 | Infrastructure | — | **Bicep** | Azure-native, no state file to secure; Terraform is a reasonable substitute if the team is already multi-cloud |
-| Server database | — | **PostgreSQL 16**, Azure Database for PostgreSQL Flexible Server | See below |
-| Local spool | Device | **SQLite** (WAL), application-level encryption | Bounded, transactional, crash-safe, no server |
+| Server database | — | **PostgreSQL 16**, Azure Database for PostgreSQL Flexible Server | See below. 16 is the deployment target the infrastructure pins; the local lab and the recorded verification (§5.5) ran on PostgreSQL 17 |
+| Local spool | Device | **SQLite** (WAL), application-level encryption | Bounded, transactional, crash-safe, no server. **As built:** `endpoint/capture-spool` is an append-only, AEAD-encrypted segment log behind the `protocol.Store` interface, not SQLite — see [endpoint/capture-spool/README.md](../endpoint/capture-spool/README.md) |
 
 **Database answer, stated plainly** because it was an explicit question: **PostgreSQL**, not SQLite
-and not Supabase, for the server. SQLite is correct *on the device* as the spool and wrong on the
+and not Supabase, for the server. SQLite is the design's choice *on the device* as the spool (the
+spool as built is a segment log that meets the same contract; see the row above) and wrong on the
 server — it has no network protocol, no row-level security, no concurrent writer model and no
 managed backup/PITR. Supabase is a managed Postgres with an attached product surface we neither need
 nor want in enterprise procurement; the real requirements (forced row-level security, custom roles,
@@ -518,7 +519,7 @@ enough to identify one, writes an audit row in the same transaction that serves 
 |---|---|---|
 | Device credential | Its own tenant's policy bundle; its own grant decisions | Any other device's data; any content key not minted for its own grant |
 | `ingest-api` role | Nothing but its own write path | Content, keys — no `SELECT` on content tables |
-| `control-api` role | Tenant config, device state, grant metadata | Prompt content, unwrapped keys |
+| `control-api` role | Tenant config, device state, grant metadata | Prompt content, stored keys — it has no grant on `ops.content_object` and no unwrap right. Object keys are minted and wrapped by `content-vault` |
 | `content-vault` role | Wrapped keys, ciphertext blobs | Any user-facing endpoint; it has internal ingress only |
 | `query-api` role | Events, labels, aggregates, findings, audit | Unwrapped keys; it must call `content-vault` for content |
 | Analyst (Entra ID) | Aggregate dashboards; subject-level data with an audit trail; content only through an approved, case-referenced path | Cross-tenant anything (row-level security, enforced by the database) |
@@ -672,7 +673,8 @@ things it did not previously carry. See ADR 0015.
   identifier** — so it is not personal data and an erasure neither touches it nor changes it. This
   exists because billing and erasure genuinely conflict: brief §3.4 requires stored counts to *fall*
   when a subject is erased, and the invoice must not. A usage figure derived from `ingest.submission`
-  would silently understate the bill after every erasure.
+  would silently understate the bill after every erasure. **As built:** the table and its grants exist,
+  but nothing writes it yet — neither `ingest-api` nor `ingest.record_event()` increments the ledger.
 - **`ops.subscription` holds the basis and the period and no price.** The chosen basis is flat per
   tenant plus per enrolled device; keeping it as data means changing what is metered is a row change
   rather than a release. The system produces billable usage; invoicing lives elsewhere.
@@ -715,15 +717,20 @@ authenticate, version and keep compatible with clients on machines nobody contro
 | 4 | `POST /v1/health` | device → cloud | Upserted collector state: state, version, permissions, last success, spool depth, dropped count (C23, D5) |
 | 5 | `POST /v1/content/grant` → `PUT <blob>` | device → cloud | Request a grant for one event; on approval returns a single-object upload credential and key material (C14) |
 
-Retrieval and export are analyst-facing and live on `query-api`; they are specified in
-[04-dashboard-and-query](04-dashboard-and-query.md). The grant state machine, denial reasons and
+Retrieval and export are analyst-facing and are reached through `query-api`; they are specified in
+[04-dashboard-and-query](04-dashboard-and-query.md). The retrieval endpoint itself
+(`POST /v1/content/retrieval`) is served by `content-vault` on its internal ingress. **As built:**
+`query-api` serves `POST /v1/query` and its probes only, and does not yet forward retrieval or export. The grant state machine, denial reasons and
 upload credential scoping are in [02-ingest-and-transport](02-ingest-and-transport.md).
 
 ### 5.2 The event envelope
 
 The full contract is [contracts/event-envelope.schema.json](../contracts/event-envelope.schema.json)
 (JSON Schema 2020-12), from which TypeScript and Go types are generated so the extension, the capture
-core, the ingest API and the query layer cannot disagree about the wire format.
+core, the ingest API and the query layer cannot disagree about the wire format. **As built:** the Go
+types are consumed by `endpoint/protocol` and `ingest-api`. The TypeScript types are generated but have
+no consumer, because the extension, `query-api` and the dashboard are plain JavaScript; the extension
+instead carries a transcription of the `endpoint/protocol` vocabulary that its contract test checks.
 
 Common core, required on every `kind` — the brief's §4.1 fields, with two deliberate changes:
 
@@ -742,7 +749,7 @@ Per-`kind` required fields:
 
 | `kind` | Additional required fields | Emitted by |
 |---|---|---|
-| `prompt` | `tool_fingerprint`, `content_digest`, `size_bytes`, `labels`, `classifier_version`, `policy_decision`, `direction: egress` | Every provider that observes a submission (A–H) |
+| `prompt` | `tool_fingerprint`, `size_bytes`, `policy_decision`, `direction: egress` at every mode; at M1 and above also `content_digest`, `labels`, `classifier_version` and `confidence`, all four of which are forbidden at M0; `content_excerpt` at M2 only | Every provider that observes a submission (A–H) |
 | `usage_rollup` | `tool_fingerprint`, `window_start`, `window_end`, `submission_count`, `bytes_total` | Providers observing non-submission activity; daily per device per tool. This is the **only** exit for process-level observation (R7) |
 | `model_detection` | `tool_fingerprint`, `detection_basis` | Mode I. Says a model ran; carries no prompt, because none is reachable |
 
@@ -759,7 +766,8 @@ time-bucket width and the route-fidelity ranking are specified in
 
 Four schemas in one PostgreSQL database.
 
-**`ingest` — immutable observations.** Two tables, because one is not enough to answer R9 honestly:
+**`ingest` — immutable observations.** Four tables. Two hold the events, because one is not enough to
+answer R9 honestly; the third is the quarantine and the fourth is the content search index:
 
 - `ingest.observation` — one row per *observation*, keyed `(tenant_id, event_id)`. Append-only.
   Two routes observing one submission produce two rows here.
@@ -770,6 +778,8 @@ Four schemas in one PostgreSQL database.
   content-stripped copy of the envelope, with a short TTL. This satisfies §4.3's "diagnosable from the
   server side without access to the device" without storing content the customer did not ask us to
   keep. A check constraint makes it structurally impossible to put content in it.
+- `ingest.search_text` — the content search index of D6: prompt bodies for `full_text` tenants and
+  attachment filenames, written and read only by `content-vault`, and cascading from its submission.
 
 **The dedup ladder is two-tier, and this is a correction to an earlier draft.** §4.1 derives
 `dedup_key` from tenant, device, tool, a normalised content digest and a time bucket — but §1.1
@@ -793,9 +803,9 @@ away. `kind` is part of the weak key because rollups and detections carry no siz
 they would collapse into each other, fabricating a record that corresponds to nothing.
 
 **`ops` — configuration, lifecycle, evidence and commercial state.** Tenant (including the two
-enforcement gates of D9), device, device credential, collector state, policy bundle, tool fingerprint
-with per-tenant sanctioned state, notice acknowledgement, retention policy, hold, audit, grant, content
-object, finding review, erasure receipt, reconciliation run, aggregate watermark, coverage snapshot,
+enforcement gates of D9), the user directory dimension, device, device credential, collector state,
+policy bundle, tool fingerprint with per-tenant sanctioned state, notice acknowledgement, retention
+policy, hold, audit, grant, retrieval grant, content object, finding review, erasure receipt, reconciliation run, aggregate watermark, coverage snapshot,
 subscription, and the usage ledger. Full DDL in [database/schema.sql](../database/schema.sql).
 
 **`mart` — derived and rebuildable.** Tool/label/user/organisation/device aggregates and findings.
@@ -835,6 +845,10 @@ describe content that has no stored object at all: `not_captured` at M0 and M1, 
 before any grant. A row in `ops.content_object` exists only once something has actually been uploaded,
 so its own state is the narrower `uploaded | shredded`.
 
+**As built:** nothing sets `content_state` to `local_only`. `ingest.record_event()` inserts every
+submission with the default `not_captured`, the envelope carries no content-state marker (ADR 0017), and
+no service writes the column, so the `local_only` state is defined in the schema and not yet reached.
+
 `shredded` carries a reason (`retention_expired`, `erasure`, `hold_released`, `tenant_offboarded`) so
 that C17's explicit "no longer available" can say *why* rather than just *no*. `not_captured` and
 `local_only` are kept apart from `shredded` because "we never had it" and "we had it and destroyed it"
@@ -843,7 +857,7 @@ are different answers to give a customer, and a system that cannot tell them apa
 ### 5.5 How the data model was verified
 
 A schema that has only been read is a claim, not a fact. [database/schema.sql](../database/schema.sql) was executed
-against a real PostgreSQL server and [database/invariants.test.sql](../database/invariants.test.sql) asserts its
+against a real PostgreSQL 17 server — the local lab's version; the deployment target is 16 — and [database/invariants.test.sql](../database/invariants.test.sql) asserts its
 properties as the runtime roles rather than as a superuser, because a superuser bypasses row-level
 security and would therefore prove nothing about it:
 
@@ -889,7 +903,7 @@ so it can run in parallel with steps 0–7 without blocking them.
 
 ## 7. Open questions
 
-Each with an owner and a way to close it. Items Q1–Q5 change the design; Q6–Q13 change parameters or
+Each with an owner and a way to close it. Items Q1–Q5 change the design; Q6–Q17 change parameters or
 scope within it.
 
 | # | Question | Owner | How to close it | Impact if unresolved |
@@ -905,7 +919,7 @@ scope within it.
 | Q9 | Whether the second approver for retrieval is a customer-side role or a vendor-side role, and for which tenants | Product + security | Decide per deployment model; the API carries the field either way | C16 is not satisfiable in an emergency path if the approver is unavailable |
 | Q10 | Hold semantics under a conflicting erasure request | Product + legal | Define precedence explicitly and record it in the audit trail | Two requirements pull opposite ways; silence produces inconsistent operator behaviour |
 | Q11 | Whether the customer-side content exporter is in scope for v1 | Product | Decide whether v1 export is metadata-and-labels only (recommended) or includes content | Content export under customer-held keys needs a component inside the customer's environment |
-| Q12 | Azure platform facts: **`pg_trgm` and `btree_gin` must both be on the Flexible Server allow-list in every target region**, or content search cannot be provisioned; also the instance connection ceiling. `pgcrypto` and `pg_partman` are no longer needed — `sha256()` and `gen_random_uuid()` are built in | Platform | Check the extension allow-list and tier limits against the target region before provisioning | Content search cannot be provisioned where the extensions are unavailable, which would make ADR 0014 undeliverable in that region |
+| Q12 | Azure platform facts: **`pg_trgm` and `btree_gin` must both be on the Flexible Server allow-list in every target region**, or content search cannot be provisioned; also the instance connection ceiling. The server's own allow-list parameter (`azure.extensions`) is set to both in `azure/modules/postgres.bicep`; what remains open is their availability in each target region. `pgcrypto` and `pg_partman` are no longer needed — `sha256()` and `gen_random_uuid()` are built in | Platform | Check the extension allow-list and tier limits against the target region before provisioning | Content search cannot be provisioned where the extensions are unavailable, which would make ADR 0014 undeliverable in that region |
 | Q13 | Whether the browser-agent surfaces (mode C) can be captured above best-effort | Collection lead | Instrument the failure rate on the leading browser-agent UIs (R5) | Mode C stays best-effort, which the brief already permits |
 | Q14 | **Make `ingest.observation` reference its `ingest.submission`,** so that erasure and retention cascade instead of relying on both tables being deleted by the same predicate. Today the observation is written before the submission exists and is immutable, so no foreign key can be set — the reconciler carries a check for orphans instead | Data platform | Reorder `ingest.record_event` to resolve the submission first, add the foreign key with `ON DELETE CASCADE`, and accept that `observation_count` becomes a derived value the reconciler recomputes (it already is) | An erasure that removes a submission but misses its observations would leave labels and digests behind after the customer has a deletion receipt — the exact failure the receipt exists to rule out. The check detects it; only the constraint prevents it |
 | Q15 | **Whether on-device distributed search is needed** for tenants who require customer-held keys *and* prompt-content search, since no current tier serves both | Product | Ask the customers who require customer-held keys whether filename search is sufficient | Those tenants get `attachment_names` at best, and `full_text` is unavailable to them by construction rather than by policy |

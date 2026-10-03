@@ -41,24 +41,32 @@ What *is* hard on this tier is not volume. It is four things:
 
 ## 2. The storage decision
 
-**PostgreSQL 16**, Azure Database for PostgreSQL Flexible Server. Not SQLite, not Supabase.
+**PostgreSQL 16**, Azure Database for PostgreSQL Flexible Server. Not SQLite, not Supabase. 16 is the
+deployment target the infrastructure pins; the local lab and the recorded verification of §10 ran on
+PostgreSQL 17, to which the schema applies unmodified.
 
 | Option | Verdict | Reason |
 |---|---|---|
 | **PostgreSQL 16** | **chosen** | Forced row-level security, custom roles, per-tenant keys alongside the data, point-in-time recovery, private networking, a chosen region. Every one of those is a stated requirement, and all of them are plain PostgreSQL features |
-| SQLite (server) | rejected | No network protocol, no row-level security, single-writer concurrency, no managed backup or PITR. It is the right choice *on the device* as the spool and the wrong one here |
+| SQLite (server) | rejected | No network protocol, no row-level security, single-writer concurrency, no managed backup or PITR. It is the design's choice *on the device* as the spool and the wrong one here. **As built**, the device spool is not SQLite either: `endpoint/capture-spool` is an append-only encrypted segment log behind `protocol.Store` (see [endpoint/capture-spool/README.md](../endpoint/capture-spool/README.md)) |
 | Supabase | rejected | A managed Postgres with an attached product surface. The requirements are Postgres features; the extra surface is procurement friction in this buyer segment, and it does not change the region or key-custody story |
 
 **ASSUMPTION:** Flexible Server is acceptable to buyers who require customer-held keys, because the
 key custody decision (master doc D6) is about Key Vault and the customer's own HSM rather than about
 where the rows live.
 
-### 2.1 No extensions are required
+### 2.1 Two extensions are required, both for the search index
 
-`sha256()` is built into PostgreSQL 11+ and `gen_random_uuid()` into 13+. The audit hash chain and
-every surrogate key therefore work on a stock instance, which removes the `pgcrypto` question from
-master doc Q12 entirely. `pg_partman` would only matter if partitioning were introduced (§12), and it
-is not in the v1 path.
+`pg_trgm` and `btree_gin`, and nothing else. Both exist only for the content search index of §13:
+`pg_trgm` for substring and fuzzy matching over attachment filenames, `btree_gin` so that a GIN index
+can lead with `tenant_id`. [database/schema.sql](../database/schema.sql) creates both, and the server's
+`azure.extensions` allow-list parameter names both; their availability in each target region is master
+doc Q12.
+
+Everything else runs on a stock instance. `sha256()` is built into PostgreSQL 11+ and
+`gen_random_uuid()` into 13+, so the audit hash chain and every surrogate key need no extension, which
+removes the `pgcrypto` question from master doc Q12 entirely. `pg_partman` would only matter if
+partitioning were introduced (§11), and it is not in the v1 path.
 
 ### 2.2 Instance sizing
 
@@ -67,7 +75,7 @@ is not in the v1 path.
 | SKU | `D2ds_v5` general purpose, zone-redundant HA | The database is the system of record. `B2s` is cheaper and adequate on throughput, and is rejected because a burstable instance credits its way into trouble under a fleet-wide backfill |
 | Storage | 128 GB, autogrow on | Four years of a full tenant is under 40 GB of events; the headroom is for indices, bloat between vacuums, and `ingest.rejected` |
 | PITR | 35 days | Brief §3.4's expiry obligations are met in the live system; PITR exists for operational recovery, not as a retention mechanism |
-| Connections | PgBouncer in transaction mode in front of the app tier | Every runtime connects through it. Long-running aggregations use a dedicated direct connection so a pool cannot be held hostage by a 20-minute rollup |
+| Connections | PgBouncer in transaction mode in front of the app tier | Every runtime connects through it. Long-running aggregations use a dedicated direct connection so a pool cannot be held hostage by a 20-minute rollup. **As built:** no PgBouncer is provisioned or configured anywhere in `azure/` or the local lab, and `query-api` carries its own in-process connection pool |
 
 ---
 
@@ -78,8 +86,8 @@ Four schemas, and the split is deliberate:
 | Schema | Contents | Mutability |
 |---|---|---|
 | `ref` | Data classes, classifier releases, rule metadata, route fidelity, collectors, retention classes | Shared, not tenant-scoped, no RLS |
-| `ops` | Tenants (including the two enforcement gates and the collection/search ceilings), devices, credentials, collector state, policy, tools, notice acknowledgements, retention policy, holds, audit, grants, content objects, finding review, erasure receipts, reconciliation, watermarks, coverage, **subscription and the usage ledger** | Mutable configuration and append-only evidence; the usage ledger is forward-written and never recomputed |
-| `ingest` | `observation`, `submission`, `rejected` | Immutable except whole-row retention expiry |
+| `ops` | Tenants (including the two enforcement gates and the collection/search ceilings), the user directory dimension, devices, credentials, collector state, policy, tools, notice acknowledgements, retention policy, holds, audit, grants, retrieval grants, content objects, finding review, erasure receipts, reconciliation, watermarks, coverage, **subscription and the usage ledger** | Mutable configuration and append-only evidence; the usage ledger is forward-written and never recomputed |
+| `ingest` | `observation`, `submission`, `rejected`, and the content search index `search_text` (§13) | Immutable except whole-row retention expiry; a submission is folded in place as further routes report it (§4) |
 | `mart` | Aggregates, findings, views | Derived. Droppable and rebuildable |
 
 **The rule that shapes the split: nothing in `mart` holds human workflow state.** A finding's review
@@ -215,11 +223,14 @@ freshness field is what keeps the two honest.
 Brief C34: "Time-based expiry for events and for content, enforced by at least two independent
 mechanisms that are periodically reconciled against each other. Do not trust a single deletion path."
 
+Mechanisms 1 and 2 below are that pair. Mechanism 3 is key destruction, which is not time-based expiry
+but is reconciled alongside them.
+
 | # | Mechanism | Applies to | How it works | Who runs it |
 |---|---|---|---|---|
 | 1 | Row expiry | `ingest.observation`, `ingest.submission`, `ingest.rejected` | Delete rows where `expires_at < now()`, skipping any covered by an active hold. Sets `sac.retention_delete = on` for the transaction, which is the only way past the append-only trigger | `reconciler` job (Go), `sac_ops` role |
 | 2 | Blob lifecycle | Content ciphertext in Azure Blob Storage | An Azure lifecycle management rule deletes blobs by age **without consulting the database at all** | The storage account |
-| 3 | Key destruction | Content objects whose tenant is offboarded or whose data is subject-erased | Deletes `ops.content_object.wrapped_dek`; the ciphertext becomes undecryptable even if it still exists | `reconciler` job, `sac_vault` role |
+| 3 | Key destruction | Content objects whose tenant is offboarded or whose data is subject-erased | In one statement, sets `ops.content_object.state = 'shredded'` with its reason and timestamp and overwrites `wrapped_dek` with a single zero byte — the column is `NOT NULL`, and a value that can open nothing is the stored form of "the key is gone". The ciphertext becomes undecryptable even if it still exists | `content-vault` (`POST /v1/content/shred`), `sac_vault` role |
 
 Mechanism 2 is independent by construction: it is a rule in the storage account that does not know or
 care what the database thinks. That is exactly what makes it a useful control and exactly why it must
@@ -228,14 +239,14 @@ be reconciled — the two can disagree in either direction.
 ### 6.1 Reconciliation
 
 `ops.reconciliation_run` records each run and its findings; drift is **recorded and alerted, never
-auto-corrected**. Four checks:
+auto-corrected**. Six checks:
 
 | Check | Drift means |
 |---|---|
 | Blobs past `expires_at` still present | Mechanism 2 has not run, or the lifecycle rule is misconfigured |
 | `ops.content_object` rows whose blob is absent | Mechanism 2 ran ahead of mechanism 1, or a blob was deleted out of band |
 | `state = 'shredded'` rows whose blob still exists | The key was destroyed but the ciphertext was not removed. Not a confidentiality failure, but the receipt claimed removal |
-| `wrapped_dek` present on a row past `expires_at` | Mechanism 3 did not run for that object |
+| A usable `wrapped_dek` (anything but the zero-byte tombstone) on a row past `expires_at` | Mechanism 3 did not run for that object |
 | **Observations whose submission no longer exists** | A deletion path removed one side of a submission and not the other. `ingest.search_text` cascades from the submission, but `ingest.observation` has **no foreign key** to it — the observation is written first and is immutable, so the link cannot be set at insert time. This check is what stands in for the constraint that cannot exist, and it must be able to fail rather than being a formality |
 | `observation_count` disagreeing with the row count in `ingest.observation` | Two concurrent retries of the same `event_id`: the loser of the insert race may still have incremented the counter. The value is derived and the reconciler recomputes it, which is precisely why it is a reporting number and never a count of submissions |
 
@@ -345,7 +356,9 @@ This distinction is a product promise and must be stated precisely:
   D6 makes key destruction the mechanism behind customer-held keys, and a mechanism that could be
   undone by restoring a backup would be worthless.
 - **Local-only content on a device that is wiped** — gone. `ingest.submission.content_state` says
-  `local_only`, which is the system correctly reporting that it never held the content.
+  `local_only`, which is the system correctly reporting that it never held the content. **As built:**
+  nothing sets `local_only` — every submission is inserted as `not_captured` and no service writes the
+  column — so such a row reads `not_captured` today.
 
 ### 9.2 The restore gate
 
@@ -372,7 +385,7 @@ psql -v ON_ERROR_STOP=1 -f database/invariants.test.sql
 
 [database/invariants.test.sql](../database/invariants.test.sql) runs as the runtime roles, not as a superuser,
 because a superuser bypasses row-level security and would therefore prove nothing about it. The
-47 assertions cover:
+recorded run was against PostgreSQL 17, the local lab's version. The 47 assertions cover:
 
 | Group | What it proves |
 |---|---|
@@ -385,6 +398,11 @@ because a superuser bypasses row-level security and would therefore prove nothin
 | T16–T18 | The audit hash chain links consecutive rows, and both UPDATE and DELETE are refused |
 | T19–T21 | Observations cannot be updated in place or deleted outside the retention path; quarantine refuses stored content |
 | T22–T24 | A shredded object requires a reason; an unattributed sanction decision is refused; a newly discovered tool defaults to `unknown`, not `unsanctioned` |
+| T28–T32 | Content search: `full_text` with customer-held keys is refused; a search tier without the collection ceiling it needs is refused; index rows are written and matched; erasing a submission removes its index entries in the same transaction |
+| T33–T35 | Commercial state: a gate closure without attribution is refused; the usage ledger is unchanged by an erasure; the suspension-impact view reports enrolled devices and spooled events |
+| T36–T38 | An equal-rank exact observation adopts a weak-only row and the adopted row is no longer flagged low; the quarantine reason vocabulary is pinned |
+| T39–T43 | Each kind refuses every field the contract forbids it and still accepts a valid record; an M0 record refuses every content-derived field, including `confidence` |
+| T44–T47 | A retrieval grant is single-use, whole and not self-approved; grant and classifier-release digests are lowercase sha256 or refused |
 
 What these tests do **not** prove: performance at scale, behaviour under concurrency beyond the
 advisory lock in the audit chain, and the plpgsql bodies of functions that no test exercises. The
@@ -418,7 +436,7 @@ which strengthens rather than replaces §6.
 | A separate search cluster | Prompt text is ~4.4 GB/year per tenant. A second copy of plaintext content in another system would widen the breach surface, add a second retention path to reconcile, and cost more than the rest of the tenant combined. The index is `ingest.search_text` in this database; see §13 |
 | A message broker | Aggregation is a scheduled set-based recompute (C28), not a stream. A broker would add a component, a failure mode and a consistency question to solve a problem that recomputation already solves |
 | Attachment **content** in the index | `ingest.search_text` holds prompt bodies and attachment **filenames**. Indexing attachment bytes is the 50–500 GB/year tier in brief §3.1, with its own cost and breach surface, and it is a separate decision (ADR 0014) |
-| A second copy of the envelope as `jsonb` | The wire contract is closed (`additionalProperties: false`), so every field is a real column and a blob copy would only be a way for the two to disagree |
+| A second copy of the envelope as `jsonb` | The wire contract is closed (`additionalProperties: false`), so every field is a real column — with one exception, `attachments`, whose store-side home is `ingest.search_text` — and a blob copy would only be a way for the two to disagree |
 | Partitioning, row-level compression tuning, and columnar storage | Nothing at this volume justifies them; see §11 for the trigger that changes that |
 
 ---
@@ -529,7 +547,7 @@ tidiness, it is the resolution of a direct conflict between two requirements:
 
 | Requirement | Wants |
 |---|---|
-| Brief §3.4 — subject erasure removes data, and §7 above makes aggregates *replace* their bucket so a count can fall | Stored counts go **down** when a subject is erased |
+| Brief §3.4 — subject erasure removes data, and §5.1 above makes aggregates *replace* their bucket so a count can fall | Stored counts go **down** when a subject is erased |
 | The invoice | The bill must **not** move when a subject is erased — the tenant consumed the service |
 
 A usage figure derived from `ingest.submission` would silently understate the invoice after every
@@ -537,7 +555,14 @@ erasure, and nobody would notice until a customer asked why their usage graph ha
 tenant could reduce their bill by exercising erasure rights.
 
 So `ingest-api` increments the ledger in the same transaction that accepts the events. A retried batch
-adds nothing (duplicates are rejected before the counter moves); an erasure subtracts nothing. Test T34
+adds nothing (duplicates are rejected before the counter moves); an erasure subtracts nothing.
+
+**As built:** that increment is not implemented. The table, its constraints and the grants that would
+let `sac_ingest` write it exist, but `ingest-api` issues no statement against `ops.usage_daily` and
+`ingest.record_event()` does not touch it, so the ledger is empty until a row is inserted by hand. T34
+inserts its own ledger row for exactly that reason.
+
+Test T34
 in [invariants.test.sql](../database/invariants.test.sql) asserts exactly this: it erases every submission and
 observation for a tenant and confirms the ledger is unchanged.
 

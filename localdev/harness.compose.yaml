@@ -1,0 +1,68 @@
+# Coding harnesses, as containers on the lab's network.
+#
+# Each service here is one harness. It sees the repository at /workspace and reaches the lab by
+# service name (the left-hand column of the table in docker-compose.yml). The lab must be up first,
+# because the `scorecard` network belongs to it:
+#
+#     node localdev/run.mjs
+#     node localdev/harness/mcp-gateway.mjs          # in its own terminal; optional, for MCP
+#     docker compose -f localdev/harness.compose.yaml run --rm pi
+#
+# Adding a harness is a Dockerfile under localdev/harness/<name>/ and one service below.
+#
+# Docker: the host's docker socket is mounted, so a harness can inspect, restart and exec into the
+# lab's containers — and every other container on this machine. That is a deliberate grant.
+#
+# MCP: the Docker Desktop MCP gateway runs on the host and is reached at MCP_GATEWAY_URL, with the
+# token mcp-gateway.mjs writes to localdev/.env (which compose reads from beside this file).
+#
+# Credentials: provider keys are passed through from the host's environment when they are set, and
+# are never written to a file here. A login done inside the harness persists in its home volume.
+
+name: sac-harness
+
+x-harness: &harness
+  working_dir: /workspace
+  networks: [scorecard]
+  stdin_open: true
+  tty: true
+  # The socket is root:root 0660 inside a container, and a harness does not run as root.
+  group_add: ["0"]
+  environment: &harness-env
+    # The lab, as seen from inside its network. localdev/run.mjs --no-up reads the three URLs.
+    LAB_INGEST_URL: http://ingest-api:8080
+    LAB_VAULT_URL: http://content-vault:8080
+    LAB_QUERY_URL: http://query-api:8080
+    PGHOST: postgres
+    PGDATABASE: shadow
+    PGUSER: postgres
+    PGPASSWORD: sac-lab-only
+    # The gateway on the host, and the loopback address the entrypoint forwards it to: the gateway
+    # only answers requests addressed to localhost.
+    MCP_GATEWAY_UPSTREAM: host.docker.internal:8811
+    MCP_GATEWAY_URL: http://localhost:8811/mcp
+    MCP_GATEWAY_AUTH_TOKEN: ${MCP_GATEWAY_AUTH_TOKEN:-}
+    ANTHROPIC_API_KEY:
+    OPENAI_API_KEY:
+    GEMINI_API_KEY:
+    OPENROUTER_API_KEY:
+
+services:
+  pi:
+    <<: *harness
+    build:
+      context: harness/pi
+    image: sac/harness-pi
+    volumes:
+      - ..:/workspace
+      - pi-home:/home/node/.pi
+      - pi-cache:/cache
+      - /var/run/docker.sock:/var/run/docker.sock
+
+networks:
+  scorecard:
+    external: true
+
+volumes:
+  pi-home:
+  pi-cache:

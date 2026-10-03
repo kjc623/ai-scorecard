@@ -34,17 +34,17 @@ node tools/probe.mjs                # drive every screen through the built page 
 
 | File | What it owns |
 |---|---|
-| `src/vocab.js` | The client's mirror of the closed DSL: sources, dimensions, measures, operators, templates, result states, state pairs. `test/parity.test.mjs` asserts it equals the read path's registry name for name. |
+| `src/vocab.js` | The client's mirror of the closed DSL: sources, dimensions, measures, operators, templates, result states, state pairs. `test/parity.test.mjs` is written to compare it with the read path's registry name for name, but it imports that registry from `services/query-api/src/`, which does not exist (the registry is at `query/query-api/src/`), so today its comparisons skip rather than run. |
 | `src/dsl.js` | The typed builder. It can only construct a query the API admits, and it refuses the rest locally with the same codes the API would use. |
 | `src/questions.js` | The ten questions of §3 as request builders. |
 | `src/transport.js` | **The one data layer.** `createQueryApi({transport})` plus `stubTransport`, `httpTransport` and `collectPages`. Nothing else in this package performs I/O. |
-| `src/fixtures.js` | Canned envelopes for every result state, and the seventeen scenarios the gallery switches between. |
+| `src/fixtures.js` | Canned envelopes for every result state, and the twelve scenarios the gallery switches between. |
 | `src/states.js` | What an envelope *means*: the never-collapse rules, the banners, the coverage and freshness sentences. `measureOf()` is the only way to obtain a value. |
 | `src/views.js` | View models for Posture, the ten questions, and the refusal screen. |
 | `src/unavailable.js` | Everything this API cannot express, rendered as rows with the reason and the missing source. |
 | `src/render.js` | View models to HTML. Pure; every API string is escaped. |
 | `src/app.js` | Hash routing, the screen table of §11.2, and `boot()`. |
-| `index.template.html` to `index.html` | The shell; the generated single-file page. |
+| `tools/index.template.html` to `index.html` | The shell; the generated single-file page. |
 
 ## The one behaviour to understand first
 

@@ -42,6 +42,8 @@ the contract does not define while still compiling on both sides.
 
 ## Consumers
 
-`endpoint/protocol` and `extension/` are the producers; `ingestion/ingest-api` and the database are
-the consumers. When you change the schema you are changing all of them, which is why the change
+The endpoint is the producer: `endpoint/capture-core` mints the envelope, using the
+`endpoint/protocol` vocabulary. `extension/` does not mint envelopes — it hands `capture-core`
+protocol observation messages — but its fields feed the envelope. `ingestion/ingest-api` and the
+database are the consumers. When you change the schema you are changing all of them, which is why the change
 starts here rather than in any one of them.

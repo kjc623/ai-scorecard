@@ -1,6 +1,6 @@
 # Shadow AI Capture — Dashboard and Query Layer
 
-**Status:** proposed · **Component:** `query-api` (TypeScript/Node, Fastify) + `content-vault` (Go, internal ingress — search and retrieval) + `dashboard` (React SPA) · **Data class:** regulated personal data (GDPR/CCPA)
+**Status:** proposed · **Component:** `query-api` (plain JavaScript on Node, `node:http`, zero dependencies) + `content-vault` (Go, internal ingress — search and retrieval) + `dashboard` (plain ES modules, HTML and CSS; no framework) · **Data class:** regulated personal data (GDPR/CCPA)
 
 The analyst-facing read path: how the ten questions in brief §3.6 become cheap queries, and the rules
 that keep the read side honest and auditable. Master doc §5.3 cites **§3 of this document** as the
@@ -58,7 +58,7 @@ construction and retention (`03-data-platform.md`).
 
 | Aspect | Decision | Source |
 |---|---|---|
-| Runtime | TypeScript / Node on Fastify, Azure Container Apps | master doc §4.1 |
+| Runtime | Plain JavaScript (ESM with JSDoc types) on Node 22, `node:http`, zero dependencies, no build step; Azure Container Apps | `query/query-api/README.md` |
 | Database role | `sac_query`: `SELECT` on `ingest`/`mart`/most of `ops`, `INSERT`+`SELECT` on `ops.audit`, `SELECT`+`INSERT`+`UPDATE` on `ops.finding_review`, **no** `SELECT` on `ops.content_object` and **none** on `ingest.search_text`; `sac_vault` holds the only read of the index | `database/schema.sql` §10 |
 | Analyst auth | Entra ID (OIDC, authorization-code + PKCE) against the customer's tenant; the dashboard is a static SPA behind it | master doc §4.1, brief §3.3 |
 | Tenant binding | Session creation resolves the Entra tenant to exactly one `ops.tenant.tenant_id`; the connection sets `app.tenant_id` before any statement runs | `ops.current_tenant()`, RLS policies |
@@ -105,8 +105,9 @@ what was read* in different hands.
 
 ### 2.3 Response envelope and versioning
 
-Queries are `POST /v1/query` (the filter is a structured body); single resources (`/v1/submissions/{id}`,
-`/v1/findings/{id}`) are `GET`. One envelope for everything:
+Every read is `POST /v1/query` (the filter is a structured body). A single record is the
+`q9_event_detail` template over the same endpoint, not a `GET` resource route; the service's whole HTTP
+surface is `/healthz`, `/readyz` and `POST /v1/query`. One envelope for everything:
 
 ```json
 { "api_version": "1", "query_version": "1", "result_state": "ok", "data": [ ... ],
@@ -152,23 +153,29 @@ never fragments.
 | Dimensions | Source |
 |---|---|
 | `bucket` (hour, day, week, month) | `mart.agg_*_period.bucket_start` / `bucket_size` |
-| `tool`, `class`, `severity`, `rule`, `action`, `mode`, `route`, `content_state`, `detection_basis`, `review_state` | columns of the same name in `ingest.submission`, `mart.finding`, `mart.agg_class_period`, `ops.finding_review` |
+| `tool`, `sanctioned_state`, `class`, `severity`, `classifier_version`, `rule`, `action`, `mode`, `route`, `content_state`, `detection_basis`, `merge_confidence`, `confidence`, `decided_locally`, `review_state` | columns of the same name in `mart.v_tool_usage`, `mart.agg_*_period`, `ingest.submission`, `mart.v_finding` |
 | `subject` | `user_ref` |
 | `department`, `population`, `manager` | `ops.user_dim` (requires the Q2 directory sync) |
-| `device_os`, `managed_state`, `region`, `collector`, `collector_state` | `ops.device`, `ops.collector_state`, `mart.agg_device_period` |
+| `device`, `device_os`, `managed_state`, `region`, `liveness`, `collector`, `collector_state` | `mart.v_device_liveness` joined to `ops.collector_state`; `mart.agg_device_period` |
+| `snapshot_day`, `gap_reason`, `observed`, `expected` | `ops.coverage_snapshot` |
+| `actor_type`, `actor`, `object_type`, `case` | `ops.audit` |
 
-**Measures:** `submissions`, `users`, `bytes_total`, `blocked`, `warned`, `logged`, `max_score`,
-`tools_used`, `healthy_days`, `degraded_days`, `absent_days`, `tampered_days`, `spool_dropped`,
-`observation_count`, `low_merge_confidence_count`, `distinct_devices` — each a column that exists in
-§4's tables. A measure that is not precomputed is not offered.
+A dimension is offered only on the sources that carry its column; the per-source table is
+`query/query-api/DSL.md` §2.2, compiled from the frozen registry in `query/query-api/src/registry.js`.
+
+**Measures:** `submissions`, `users`, `bytes_total`, `blocked`, `warned`, `logged`, `detections`,
+`rollup_events`, `degraded_events`, `max_score`, `tools_used`, `block_events`, `healthy_days`,
+`degraded_days`, `absent_days`, `tampered_days`, `spool_dropped` — each a column that exists in §4's
+tables. A measure that is not precomputed is not offered; `observation_count` is a filter-only column
+on `ingest.submission`, not a measure.
 
 **Filters:** `eq`, `ne`, `in`, `not_in`, `lt`, `lte`, `gt`, `gte`, `between`, `starts_with` (tool
-fingerprints only), `is_null` (`department`'s absence is a fact worth filtering on). **Grouping:** ≤ 3
+fingerprints only, and only on aggregate sources), `is_null` (`department`'s absence is a fact worth filtering on). **Grouping:** ≤ 3
 dimensions plus one bucket. **Ordering:** only on a listed measure or a grouped dimension, always with
 a deterministic tie-break on the remaining grouping keys — an ordering that is not total is a
 pagination bug waiting to happen. **Bucketing:** `hour` and `day` are native (the `bucket_size`
 constraint admits exactly those); `week` (ISO, Monday) and `month` are **read-side reductions over day
-rows**, still aggregate-only (C27), and reported in `freshness`.
+rows**, still aggregate-only (C27), and reported in `meta.applied_bucket`.
 
 **Prohibited, and enforced by shape:**
 
@@ -197,13 +204,13 @@ hundreds); U = AI-active users (≤ 4,000); D = departments (tens).
 
 | # | Question (brief §3.6, verbatim) | Primary read path | Required key or index | Expected cost (p95) | Pagination / bucketing |
 |---|---|---|---|---|---|
-| 1 | Which AI tools are in use, ranked, over time? | `mart.v_tool_usage` over `mart.agg_tool_period` | PK `(tenant, bucket_start, bucket_size, tool)` | 1 day: T rows; 1 year ≈ 73k rows reduced in-query | Day native; week/month reduced; top-N per bucket; ≤ 400 points |
+| 1 | Which AI tools are in use, ranked, over time? | `mart.v_tool_usage` over `mart.agg_tool_period` | PK `(tenant, bucket_start, bucket_size, tool)` | 1 day: T rows; 1 year ≈ 73k rows reduced in-query | Day native; week/month reduced; top-N per bucket (**as built:** not implemented — `limit` truncates whole buckets); ≤ 400 points |
 | 2 | Which are unsanctioned, and who is using them? | `mart.v_tool_usage` → `mart.agg_tool_user_period` | PK + `(tenant, tool, bucket_start DESC, bucket_size)` | ≤ 7-day window unless scoped; ≤ few thousand rows | Cursor `(bucket_start DESC, tool, subject)`; 50/500 |
 | 3 | How much is usage growing, per team? | `mart.agg_org_period` (**empty until Q2**) | PK + `(tenant, department, bucket_start DESC)` | D·T·buckets; capped at 2,000 cells | Day/week/month; `not_yet_covered` pre-sync |
-| 4 | What classes of sensitive data are going into AI? | `mart.agg_class_period` | PK `(tenant, bucket_start, bucket_size, class, tool, severity)` | ≈ 7·T rows/day | Day/week/month; label fan-out reported, never summed as submissions |
+| 4 | What classes of sensitive data are going into AI? | `mart.agg_class_period` | PK `(tenant, bucket_start, bucket_size, class, tool, severity, classifier_version)` | ≈ 7·T rows/day | Day/week/month; label fan-out reported, never summed as submissions |
 | 5 | Which specific submissions hit a policy rule? | `mart.v_finding`; **+ content search (§15)** to narrow it | PK + `(tenant, detected_at DESC, submission_id)` | Cursor page ≤ 500; review join tiny | Cursor `(detected_at DESC, submission_id DESC, rule_id)` |
 | 6 | Has a given person's usage changed, or spiked? | `mart.agg_user_period` + bounded `ingest.submission` check | `(tenant, user_ref, bucket_start DESC, bucket_size)` — **new** | ≤ 400 buckets; flush check ≤ low thousands of rows | Own baseline only; window-bounded; no cursor |
-| 7 | What is the state of every device's collection? | `mart.v_device_liveness` ⋈ `ops.collector_state` ⋈ `ops.coverage_snapshot` | `ops.device (tenant, last_seen_at)`, `ops.collector_state (tenant, state)`, partial `ops.coverage_snapshot (tenant, snapshot_day) WHERE NOT observed` | ≤ 30k rows (5,000 × 6 collectors) | Cursor `(device_id)`; 50/500 |
+| 7 | What is the state of every device's collection? | `mart.v_device_liveness` ⋈ `ops.collector_state`; `ops.coverage_snapshot` as its own source | `ops.device (tenant, last_seen_at)`, `ops.collector_state (tenant, state)`, partial `ops.coverage_snapshot (tenant, snapshot_day) WHERE NOT observed` | ≤ 30k rows (5,000 × 6 collectors) | Cursor `(device_id, collector)`; 50/500 |
 | 8 | What happened in this window, for this tool or person? | `ingest.submission`; **+ content search (§15)** to narrow it | `(tenant, received_at DESC, submission_id)`; `(tenant, user_ref, received_at DESC)`; `(tenant, tool, received_at DESC)`; GIN on `labels` | 1 day ≈ 12k rows; window capped at 31 days | Cursor only; 50/500; no unbounded reads (C29) |
 | 9 | What exactly was sent? | **Search-then-retrieve**: candidates from `ingest.search_text` (§15), then `ingest.submission` + `ingest.observation` + `content_state`; full content via §8 | PK `(tenant, submission_id)`, `UNIQUE (tenant, dedup_key)`, `observation (tenant, dedup_key)`; `search_text_tsv_gin`, `search_text_name_trgm` | Search page ≤ 200 hits, then O(1) + O(routes) | Single record; search cursor `(rank DESC, received_at DESC, submission_id DESC)`; 50/200 |
 | 10 | What has been accessed, and by whom? | `ops.audit` (append-only, hash-chained) | PK + `(tenant, occurred_at DESC, audit_seq DESC)`, `(tenant, object_type, object_id)` | ~36k rows/tenant/year; page ≤ 500 | Cursor `(occurred_at DESC, audit_seq DESC)` |
@@ -213,7 +220,7 @@ search-then-retrieve**: a search narrows to candidate events and returns bounded
 content of one of them still goes through §8's approved path (§3.9). **Q5 and Q8 gain a text predicate
 over the same bounded list they already served** — the search returns the matching events, and the
 finding or activity view is read over that set — which is why both are marked above. **Q10 gains a new
-action to display** (`content_search`) rather than a new read path. No aggregate row changes: search
+action to display** (`content.search`) rather than a new read path. No aggregate row changes: search
 never feeds a measure into Q1–Q4, Q7 or Q10, and it is not a measure itself. For a tenant at
 `content_search = 'disabled'` the mapping is exactly what it was before the capability existed, which
 is what a tier rather than a global switch means.
@@ -226,8 +233,9 @@ is what a tier rather than a global switch means.
   `unsanctioned`.
 - **Key and cost.** The primary key serves the range scan; ranking sorts T rows. One day is T rows; a
   year at 200 tools is ≈ 73k rows reduced to 12 monthly points — tens of ms against §8's 2 s budget.
-- **Bucketing.** Day native; week/month reduced read-side and named in `freshness`; series ≤ 400
-  points, auto-coarsened beyond.
+- **Bucketing.** Day native; week/month reduced read-side and named in `meta.applied_bucket`; series
+  ≤ 400 points — auto-coarsened beyond when the server chose the bucket, refused as `query_too_broad`
+  naming the bucket that fits when the caller pinned one.
 - **Ranking honesty.** Rank is by `submissions` with a deterministic tie-break and is never presented
   as a sanction signal; sanctioned state is present-tense configuration joined at read time, so the UI
   labels it "current policy state".
@@ -278,7 +286,8 @@ is what a tier rather than a global switch means.
 ### 3.4 Q4 — What classes of sensitive data are going into AI?
 
 - **Read path and cost.** `mart.agg_class_period` keyed `(tenant, bucket_start, bucket_size,
-  class_code, tool_fingerprint, severity)` with `submissions`, `users`, `max_score` — ≈ 7 classes × T
+  class_code, tool_fingerprint, severity, classifier_version)` with `submissions`, `users`,
+  `max_score`, `degraded_events` — ≈ 7 classes × T
   tools per bucket, the smallest aggregate in the system.
 - **Label fan-out is pinned in the API, not discovered by an analyst.** `submissions` counts
   submissions *carrying that class*, so one submission with three labels contributes to three rows;
@@ -339,8 +348,10 @@ is what a tier rather than a global switch means.
 
 - **Read path.** `mart.v_device_liveness` (liveness `reporting` · `stale` · `never_reported` ·
   `revoked`, stale at 24 h) ⋈ `ops.collector_state` (state `healthy` · `degraded` · `absent` ·
-  `tampered`, permissions, `spool_depth`, `spool_dropped_total`, `last_success_at`) ⋈
-  `ops.coverage_snapshot` (expected, observed, `gap_reason`), with `mart.agg_device_period` for history.
+  `tampered`, permissions, `spool_depth`, `spool_dropped_total`, `last_success_at`), with
+  `mart.agg_device_period` for history. `ops.coverage_snapshot` (expected, observed, `gap_reason`) is
+  read as its own source rather than joined: it is one row per device per collector per **day**, so a
+  join without a `snapshot_day` predicate would multiply every device row by the days in the window.
 - **Key and cost.** PK for per-device lookup; add `(tenant, last_seen_at)` for silence ordering,
   `(tenant, state)` for current degradation, and the partial index on `coverage_snapshot` for the gap
   list. ≤ 5,000 devices × 6 collectors = 30k rows; the not-reporting list is a filtered fraction.
@@ -352,7 +363,8 @@ is what a tier rather than a global switch means.
   unmanaged remainder is not in `ops.device` and is not measurable from inside the product (brief §5.5
   plans 70–85% management coverage; R11 makes the gap an output). Every figure renders as "of N
   enrolled devices", and no fleet-wide percentage is shown that the product cannot compute.
-- **Pagination.** Cursor on `device_id`; 50/500. Sorting by silence duration or dropped total is a
+- **Pagination.** Cursor on `(device_id, collector)` — the row grain after the collector join, so the
+  key is total; 50/500. Sorting by silence duration or dropped total is a
   bounded sort over the filtered set.
 
 ### 3.8 Q8 — What happened in this window, for this tool or person?
@@ -446,8 +458,12 @@ is what a tier rather than a global switch means.
 
 ### 3.11 Indexes this document requires
 
-`database/schema.sql` defines primary keys and deliberately no secondary indexes; the read paths above need
-these, all tenant-leading (C32). The one text index in the system is `ingest.search_text`'s, created
+Beyond primary keys, `database/schema.sql` defines five indexes: two partial unique indexes on
+`ingest.submission` (`submission_exact_key_uniq`, `submission_weak_key_uniq`) and the three search
+indexes created with `ingest.search_text`. The read paths above additionally need the ones below, all
+tenant-leading (C32). **As built:** none of the indexes listed below is created by
+`database/schema.sql` yet; they are required by this design, and `query-api` names them as the indexes
+its sources depend on (`query/query-api/DSL.md` §2.1). The one text index in the system is `ingest.search_text`'s, created
 with its table (§15.2) and readable by one role this component does not hold — it is not one of these,
 and no path in this list can reach it.
 
@@ -486,7 +502,7 @@ this section is served by them, and no role in §2.2 except the vault may use th
 |---|---|---|---|
 | `mart.agg_tool_period` | `(tenant_id, bucket_start, bucket_size, tool_fingerprint)` | bucket, tool | Q1, part of Q2 |
 | `mart.agg_tool_user_period` | `(…, tool_fingerprint, user_ref)` | bucket, tool, subject | Q2 |
-| `mart.agg_class_period` | `(…, class_code, tool_fingerprint, severity)` | bucket, class, tool, severity | Q4 |
+| `mart.agg_class_period` | `(…, class_code, tool_fingerprint, severity, classifier_version)` | bucket, class, tool, severity, classifier version | Q4 |
 | `mart.agg_org_period` | `(…, department, tool_fingerprint, population)` | bucket, department, population, tool | Q3 |
 | `mart.agg_user_period` | `(…, user_ref)` | bucket, subject | Q6 |
 | `mart.agg_device_period` | `(…, device_id, collector)` | bucket, device, collector | Q7 |
@@ -592,9 +608,10 @@ The other five use the same skeleton with a different grouping; conflict targets
 | `agg_user_period` | `ingest.submission` by `user_ref` | Carries no score, rank or efficiency measure (brief §1.2) |
 | `agg_device_period` | `ops.collector_state` daily snapshot | Four state counts as separate columns (brief §3.2); `spool_dropped` carries C22's undercount |
 
-The prompt selector is the `EXISTS` above: `ingest.submission` has no `kind` column, and `usage_rollup`
-and `model_detection` envelopes also become submissions. Joining through `ingest.observation` on
-`(tenant_id, dedup_key)` keeps rollup volumes out of submission counts — adding a rollup's
+`usage_rollup` and `model_detection` envelopes also become submissions, so every aggregate selects
+prompts explicitly. `ingest.submission.kind` — denormalised from the winning observation (§4.6) — is
+that selector, `s.kind = 'prompt'`; the `EXISTS` above, through `ingest.observation` on
+`(tenant_id, dedup_key)`, is the equivalent semi-join. Either keeps rollup volumes out of submission counts — adding a rollup's
 `submission_count` into a count of submissions is exactly the inflated number R9 exists to prevent.
 
 ### 4.5 Freshness watermark, and how the dashboard shows it
@@ -643,11 +660,13 @@ and *as it is served* — not afterwards, not in a batch, not best-effort.
 ### 5.1 Mechanism
 
 The audit row is written **in the same transaction that serves the rows**, before the rows are read,
-and the response is emitted only after that transaction commits:
+and the response is emitted only after that transaction commits. The one exception is §5.2's small-cell
+trigger: the cells' distinct-subject counts exist only once the cells do, so that row is written after
+the read — still in the same transaction, and still before anything is served.
 
 ```sql
+SELECT set_config('app.tenant_id', $1, false);  -- from the authenticated session, never the body
 BEGIN;
-SET LOCAL app.tenant_id = $1;          -- from the authenticated session, never the body
 INSERT INTO ops.audit (tenant_id, actor_type, actor_id, action, object_type, object_id,
                        subject_ref, case_reference, detail)
 VALUES (ops.current_tenant(), 'user', $2, $3, $4, $5, $6, $7, $8::jsonb);
@@ -655,6 +674,11 @@ VALUES (ops.current_tenant(), 'user', $2, $3, $4, $5, $6, $7, $8::jsonb);
 COMMIT;                                 -- only now does the API write the response body
 ```
 
+- **The tenant is bound, never interpolated, and cleared on release.** `SET LOCAL` is a utility
+  statement and takes no bind parameter, so the setting is made with
+  `set_config('app.tenant_id', $1, false)`. That is session-scoped, so the pool resets it before a
+  connection is reused, and a connection whose reset fails is closed rather than returned
+  (`query/query-api/src/http/pool.js`).
 - **Fail closed.** If the audit insert fails for any reason — permission, chain trigger, disk — the
   transaction aborts, the read returns `503 audit_unavailable`, and **zero rows are served**. A read
   that cannot be proved to have happened does not happen.
@@ -775,9 +799,9 @@ Brief §3.6 requires **cursor pagination only** and forbids unbounded result set
 | Event list (Q8) | `(received_at DESC, submission_id DESC)` |
 | Finding list (Q5) | `(detected_at DESC, submission_id DESC, rule_id ASC)` |
 | Audit list (Q10) | `(occurred_at DESC, audit_seq DESC)` |
-| Device list (Q7) | `(device_id ASC)` |
+| Device list (Q7) | `(device_id ASC, collector ASC)` |
 | Subject-by-tool (Q2) | `(bucket_start DESC, tool_fingerprint ASC, user_ref ASC)` |
-| Aggregate series (Q1–Q4, Q6) | `(bucket_start DESC, <grouping keys> ASC)` |
+| Aggregate series (Q1–Q4, Q6) | `(bucket_start DESC, <caller's order terms>, <grouping keys> ASC)` |
 | Content search (§15.3) | `(rank DESC, received_at DESC, submission_id DESC)` |
 
 Every key ends in columns unique for the tenant, so the ordering is **total**: two rows can never
@@ -838,7 +862,7 @@ erasure can differ — correct, because the aggregate has been told to forget, a
 |---|---|---|---|
 | Event, finding, audit, device lists | 50 | 500 | `query_too_broad`, bound stated |
 | Aggregate response | — | 2,000 cells | `query_too_broad`, naming the coarser bucket that fits |
-| Time series | — | 400 points | Auto-coarsened, applied bucket named in `freshness` |
+| Time series | — | 400 points | Auto-coarsened when the server chose the bucket, applied bucket named in `meta.applied_bucket`; `query_too_broad` naming the bucket that fits when the caller pinned one |
 | Response body | — | 8 MB | `query_too_broad`; never silent truncation |
 
 ---
@@ -860,7 +884,7 @@ Question 9 is the one question that touches content, through exactly one route.
 4. **The audit entry is written before content is returned.** `query-api`, which has no `SELECT` on
    `ops.content_object` and so cannot see a wrapped key even in principle, calls `content-vault` with
    the case reference and approval evidence. `content-vault` writes the audit row
-   (`action = content_reveal`, with object, `subject_ref`, `case_reference`) and commits it **before**
+   (`action = content.reveal`, with object, `subject_ref`, `case_reference`) and commits it **before**
    unwrapping the data key; if that insert fails, the failure is returned and no content is released.
 5. **Content is returned once**, as a single-object short-lived read; re-reading requires a new approved
    request, separately audited.
@@ -1159,10 +1183,15 @@ output of the collecting path, which is what R11 asks for.
 | Event / finding list | 5 s | 500 rows | Cursor-paged, window ≤ 31 days |
 | Single record | 3 s | 1 | |
 | Content search | 5 s | 200 hits, ≤ 480 snippet characters per hit | Executes in `content-vault`; a narrowing predicate is mandatory; the coverage count runs over the same predicate |
-| Audit read | 5 s | 500 rows | |
+| Audit read | 5 s | 500 rows | Window ≤ 366 days |
 | Operational / device | 5 s | 500 rows | |
 | Export planning | 10 s | — | Planning only; the export is a job |
 | Subject export | 60 s per stage | — | A job with its own state machine (§10) |
+
+**As built:** the per-class timeouts are carried on each compiled query as
+`meta.statement_timeout_ms` but are not applied per statement. What bounds a statement today is one
+session-level `statement_timeout`, set when the connection starts — 10 s by default
+(`SAC_PG_STATEMENT_TIMEOUT_MS`).
 
 ### 12.2 The cost guard: rejection, not degradation
 
@@ -1196,8 +1225,14 @@ output of the collecting path, which is what R11 asks for.
   `idle_in_transaction_session_timeout` bounds a client that vanishes mid-transaction; a disconnect
   issues a driver-level cancel. Because subject-level responses are not streamed (§5.1), a cancelled
   read has served nothing — the property that makes cancellation safe here.
-- **Pathological examples and their answers:** a four-year, day-bucketed, tenant-wide trend →
-  `query_too_broad`, suggests week or month; a `user_ref` prefix search across all users →
+- **As built:** admission is one process-wide gate — 8 concurrent requests and a queue of 32
+  (`SAC_MAX_CONCURRENCY`, `SAC_MAX_QUEUE`), `busy` (429) beyond it — keyed by neither tenant nor user,
+  so the per-tenant and per-user limits above are not yet enforced separately. The pool is capped at
+  40 connections (`SAC_MAX_CONNECTIONS`). `idle_in_transaction_session_timeout` is not set, and
+  per-shape shedding is not implemented.
+- **Pathological examples and their answers:** a four-year, tenant-wide trend with the caller
+  pinning `day` → `query_too_broad`, suggests week or month (with no bucket supplied the server
+  coarsens instead, §7.5); a `user_ref` prefix search across all users →
   `unsupported_query_shape` (`starts_with` is permitted only on `tool`); a filter combination with no
   covering index → `unsupported_query_shape` with the fix; a multi-select of 500 events for content
   retrieval → `unsupported_query_shape`, because retrieval is per event (C14); a text match with no
@@ -1251,6 +1286,11 @@ reports a clean bill of health while collecting nothing is worse than no product
 The API resolves it: if no retention run and no erasure receipt covers the window in which the record
 would have been received, the answer is `not_found`; if one does, the answer is `no_longer_available`
 with the reason and the receipt. A bare 404 for a purged record would be the merge C17 forbids.
+**As built:** only the erasure half is checkable — `ops.erasure_receipt` exists and is consulted, but
+`database/schema.sql` has no retention-run ledger, so a record purged by retention expiry cannot be
+told from one that never existed. That case returns `not_found` carrying
+`detail.retention_evidence: "no_ledger_in_schema"`, and `purge_window_unknown: true` when the request
+gave no `received_at_hint`, rather than guessing.
 
 **No metric without its state.** A response carrying `data` must carry `freshness` and `coverage`; there
 is no code path that returns one without the others. Encoding that in the envelope is deliberate — a UI
@@ -1401,6 +1441,8 @@ does not touch.
 
 `POST /v1/content-search`, a separate endpoint from `/v1/query`, because it is a different kind of read:
 bounded text matching over a table this component cannot see, executed by the component that can.
+**As built:** `query-api` does not serve this route yet; it rejects a text predicate on `/v1/query`
+with an error that names it.
 
 **What an analyst types** is a match expression, in one of three forms:
 
@@ -1478,7 +1520,7 @@ and it is stated as one rather than as a routing detail.
 
 **Every search is audited, in the transaction that serves it.** A search reads subject-level data — a
 prompt, or a filename that names a person's document — so §5.2's rule applies with no k-test and no
-exception: the audit row (`action = content_search`) is written **before** the query executes, in the
+exception: the audit row (`action = content.search`) is written **before** the query executes, in the
 same transaction, and results are emitted only after that transaction commits. The entry carries the
 terms, the scopes, the tier, the actor, the result count and the snippet count. If the insert fails the
 search fails closed with `audit_unavailable` and **zero hits are served**.

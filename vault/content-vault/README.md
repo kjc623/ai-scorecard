@@ -5,7 +5,8 @@ and [docs/02-ingest-and-transport.md §10–11](../../docs/02-ingest-and-transpo
 component that can unwrap a content key (master **D7**). It is what makes **INV-1** true: content
 crosses the network only on a per-event grant.
 
-Go, standard library only. No PostgreSQL wire driver is fetchable offline (ADR 0016), so the SQL lives
+Go, standard library only. This module carries no PostgreSQL driver (ingest-api has `pgx` behind a
+build tag; content-vault does not), so `--store sql` refuses to start, the SQL lives
 as statement text in one file, and `tools/live-schema-check.ps1` executes that same text against the
 live schema: 20 statements prepared, the ADR 0014 pair and the tier/mode rule exercised, and the
 content-object lifecycle and retrieval-grant put/claim/trigger path run inside rolled-back
@@ -91,8 +92,9 @@ operator), `substring` and `fuzzy` (filenames only, served by the partial trigra
 
 ## The HTTP surface and identity
 
-One surface, **internal ingress only**: `POST /v1/content/object`, `/finalise`, `/retrieval`, `/redeem`,
-`/shred`, `/rotate`, `/content-search`, plus `GET /healthz`. The device-facing routes (`/v1/events`,
+One surface, **internal ingress only**: `POST /v1/content/object`, `/v1/content/object/finalise`,
+`/v1/content/retrieval`, `/v1/content/redeem`, `/v1/content/shred`, `/v1/content/rotate` and
+`/v1/content-search`, plus `GET /healthz`. The device-facing routes (`/v1/events`,
 `/v1/content/grant`, the content upload) and the analyst routes (`/v1/query`, `/v1/policy`, `/v1/enrol`)
 return **404** — a test asserts it, because "nobody would add that route" ages badly. `--addr` refuses a
 non-loopback bind without an explicit acknowledgement, and the acknowledgement is not a substitute for
@@ -117,7 +119,8 @@ go build ./... && go vet ./... && go test ./... -count=1
 pwsh -File tools/live-schema-check.ps1   # needs the docker client and the PostgreSQL container
 ```
 
-`go test ./...` runs 46 test functions across five packages: the grant matrix and its concurrency case,
+`go test ./...` runs 46 test functions across six packages: the binary's configuration and
+deployment-agreement tests, the grant matrix and its concurrency case,
 rotation, erasure, tenant-key destruction, retention expiry, the search-tier and ADR 0014 refusals,
 audit-before-serve by call ordering, fail-closed on a broken audit path, the key hierarchy (AAD binding,
 versions, destruction, persistence, the unimplemented KMS and the interface's method set), the HTTP
@@ -127,13 +130,13 @@ surface including the edge-route rejection, and [vaultinvariants/](vaultinvarian
 
 1. **Any cloud KMS, and blob storage.** `--key-backend kms` refuses to start without an explicit
    acknowledgement, and every method of `KMSKeyWrapper` returns `ErrNotImplemented`: nothing here has
-   been exercised against Azure Key Vault or Managed HSM, because there is no network, no SDK and no
-   credential on this host (TOOLCHAIN-DECISION.md §3). Modes 2 and 3 are *interfaces and refusals*, not
-   working code. Blob storage is the same shape: there is no blob store offline, so `Redeem` returns the
+   been exercised against Azure Key Vault or Managed HSM, because this build carries no cloud SDK and
+   holds no credential for either. Modes 2 and 3 are *interfaces and refusals*, not
+   working code. Blob storage is the same shape: this build has no blob client, so `Redeem` returns the
    object's reference and digests, and bytes only if the binary wires `Options.FetchBlob`. The
    *authorisation* is identical either way; the *serving* half is a stand-in.
-2. **The `database/sql` plumbing.** `SQLStore` is written against the real schema, but no PostgreSQL wire
-   driver is fetchable offline, so the statements are verified as *text* against the live database by the
+2. **The `database/sql` plumbing.** `SQLStore` is written against the real schema, but this module
+   carries no PostgreSQL driver, so the statements are verified as *text* against the live database by the
    harness above rather than through the driver. `--store sql` refuses to start in this build, and nothing
    in `cmd/content-vault` constructs `SQLStore`. The Go test that runs those statements in-process skips
    *on this host* with the exact reason — the file sandbox denies a child process the Docker named pipe

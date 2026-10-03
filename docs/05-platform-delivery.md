@@ -56,29 +56,31 @@ the resources marked region-shared are deployed once per region, the rest are sh
 |---|---|---|
 | **Front Door Premium** + WAF policy | Premium; WAF in Prevention, managed rule set plus custom rules | Premium is required for Private Link origins, which is what keeps Container Apps off the public internet; Standard cannot use Private Link. WAF must block at the edge, not in the app, because `ingest-api` accepts traffic from machines the vendor does not control. Public entry for `/v1/enrol`, `/v1/policy`, `/v1/events`, `/v1/health`, `/v1/content/grant`, and analyst entry to `query-api` |
 | **Container Apps environment** | Consumption-only, no workload profiles, VNet-injected, internal load balancer | Peak demand is ~50–500 events/s during a fleet flush (master §1.4) against ~0.14 events/s steady. Consumption costs nothing when idle, which is most of the day; a dedicated workload profile would bill for idle capacity. Network boundary for all four apps |
-| **Container App `ingest-api`** | Min 2, max 20; 0.5 vCPU / 1 GiB; HTTP/1.1 + HTTP/2; external via Private Link origin | Two replicas is the availability floor for 99.9% (brief §8); the ceiling covers a flush storm, which is bursty by nature. Validates and writes; it never decrypts |
+| **Container App `ingest-api`** | Min 2, max 20; 0.5 vCPU / 1 GiB; HTTP/2 ingress transport (`transport: 'http2'`, as on every app); external via Private Link origin | Two replicas is the availability floor for 99.9% (brief §8); the ceiling covers a flush storm, which is bursty by nature. Validates and writes; it never decrypts |
 | **Container App `control-api`** | Min 2, max 10; 0.5 vCPU / 1 GiB | Enrolment, policy signing, health upsert, grant decisions. Policy signing is CPU-cheap — it signs a bundle, not an event |
 | **Container App `content-vault`** | Min 1, max 4; 1 vCPU / 2 GiB; **internal ingress only** | The only component that can unwrap content keys (C15, D7), and internal ingress is the structural control: neither devices nor browsers can reach it. Larger memory because it streams ciphertext |
 | **Container App `query-api`** | Min 2, max 10; 0.5 vCPU / 1 GiB | Serves the dashboard and the export path; scales on request concurrency and reads aggregates, so it is I/O-light |
 | **Container Apps Job `aggregator`** | Scheduled (cron), one replica, manual start available | Recomputes each bucket from `ingest.submission` over a lookback window and **replaces** it (C27, C28). One replica is correct: the job is set-based SQL and concurrency would contend on the same buckets |
 | **Container Apps Job `reconciler`** | Scheduled (cron), one replica | The second and independent expiry mechanism, the drift detector between the two (C34), and dedup/route reconciliation (R9) |
-| **Azure Database for PostgreSQL Flexible Server** 16 | General Purpose `D2ds_v5`, 2 vCores / 8 GiB, **zone-redundant HA**, 128 GiB, PITR 35 days, `publicNetworkAccess = Disabled` | Master §1.4: four years of a full tenant is under 18M rows and 40 GB, so one well-indexed relational database suffices and v1 does not partition (D2). Burstable is rejected in production because the aggregator's set-based scans would exhaust credits and stall ingest freshness. Zone-redundant HA is the availability floor; geo-redundant backup answers regional failure (§12). Hosts `ingest`, `ops`, `mart`, `ref` (master §5.3) |
-| **Storage account — ciphertext** | GPv3, **RA-GRS**, versioning on, soft delete 30 days, lifecycle per §12, no public blob access, no shared-key access | Holds M3 attachment ciphertext; the vendor stores ciphertext only (C15). Shared-key access is disabled because every access path is a managed identity. Referenced by `ops.content_object` |
-| **Storage account — exports** | GPv3, ZRS, lifecycle to cool at 30 days | The scheduled columnar export to the customer's own storage (C31, Q11). A separate account because its retention and access model is the customer's, not the product's |
+| **Container Apps Job `migration`** | Scheduled trigger used only as a placeholder (annual cron); started manually by the pipeline; one replica; its own identity | Schema migrations (§3.4). A third instantiation of the job module with a different identity class (§5.4) |
+| **Azure Database for PostgreSQL Flexible Server** 16 | General Purpose `D2ds_v5`, 2 vCores / 8 GiB, **zone-redundant HA**, 128 GiB, PITR 35 days, `publicNetworkAccess = Disabled`, VNet-injected into a delegated subnet (no private endpoint) | Master §1.4: four years of a full tenant is under 18M rows and 40 GB, so one well-indexed relational database suffices and v1 does not partition (D2). Burstable is rejected in production because the aggregator's set-based scans would exhaust credits and stall ingest freshness. Zone-redundant HA is the availability floor; geo-redundant backup answers regional failure (§12). Hosts `ingest`, `ops`, `mart`, `ref` (master §5.3) |
+| **Storage account — ciphertext** | StorageV2 (general-purpose v2), **RA-GRS**, versioning on, soft delete 30 days, lifecycle per §12, no public blob access, no shared-key access | Holds M3 attachment ciphertext; the vendor stores ciphertext only (C15). Shared-key access is disabled because every access path is a managed identity. Referenced by `ops.content_object` |
+| **Storage account — exports** | StorageV2 (general-purpose v2), ZRS, lifecycle to cool at 30 days | The scheduled columnar export to the customer's own storage (C31, Q11). A separate account because its retention and access model is the customer's, not the product's |
 | **Key Vault** | Premium (HSM-backed keys, FIPS 140-2 Level 2), RBAC authorization, purge protection, soft delete 90 days, private endpoint | Per-tenant KEKs wrapping per-object content keys, TLS certificates, policy-bundle signing keys (C15, C33). Premium rather than Standard because KEKs must be HSM-backed |
 | **Managed HSM** | One pool, 2-of-3 quorum, only where a contract requires it | Brief §3.3 requires customer-held keys for some buyers, and "the vendor cannot read content at all" is a contractual statement that wants FIPS 140-2 Level 3 and a quorum the vendor alone cannot satisfy. At ~$4.6/hour it is **per-contract, not per-region-by-default** |
 | **Static Web App — dashboard** | Standard | Standard is required for a custom domain with a managed certificate and for Entra ID authentication on the app; the dashboard is static (master §4.1) |
 | **Container Registry** | Premium, private endpoint, geo-replication to the paired region | Images are pulled over Private Link; geo-replication is what makes regional failover a redeploy rather than a rebuild (§12) |
 | **Log Analytics workspace** + Application Insights | Pay-as-you-go, 90-day interactive retention, 12-month archive, workspace-based App Insights | 90 days interactive covers an incident's investigation window; the archive covers the audit and reconciliation questions that arrive later. Serves SLO computation, alerts and the §14 evidence |
-| **VNet, subnets, private endpoints, Private DNS zones** | One VNet; delegated Container Apps subnet, private-endpoint subnet, DNS resolver; one endpoint per PaaS resource (PostgreSQL, both storage accounts, Key Vault, Managed HSM, ACR, Log Analytics); zones linked to the VNet | VNet injection is what makes `content-vault`'s internal-only ingress meaningful, and linked private DNS zones are what stop resolution falling back to a public answer (Q12's connection ceiling is a separate concern) |
-| **Azure Monitor alerts, action groups, budgets** | Metric and log-search alerts; one action group per severity; budgets per subscription and resource group | The alert set in §10.3 is only real if it pages someone, and the attachment tier is the only unbounded cost (brief §3.1) — a cost-anomaly alert is cheaper than a monthly surprise |
+| **VNet, subnets, private endpoints, Private DNS zones** | One VNet; delegated Container Apps subnet, private-endpoint subnet, a subnet reserved for a DNS resolver (no resolver resource is declared in it); one private endpoint per PaaS resource that takes one (both storage accounts, Key Vault, Managed HSM, ACR, Log Analytics); PostgreSQL joins the VNet by delegated-subnet injection instead of a private endpoint; zones linked to the VNet | VNet injection is what makes `content-vault`'s internal-only ingress meaningful, and linked private DNS zones are what stop resolution falling back to a public answer (Q12's connection ceiling is a separate concern) |
+| **Azure Monitor alerts, action groups, budgets** | Scheduled-query (log-search) alerts; one action group per severity; one budget per environment, scoped to its resource group | The alert set in §10.3 is only real if it pages someone, and the attachment tier is the only unbounded cost (brief §3.1) — a cost-anomaly alert is cheaper than a monthly surprise |
 
 ### 2.1 Networking, stated once
 
 Inbound: device or browser → Front Door Premium (public 443, the only public surface) → WAF →
 Private Link origin → Container Apps environment (internal LB). Analyst traffic reaches `query-api`
 through the same path, authenticated by Entra ID. Egress: container apps → subnet → private endpoint →
-PaaS. No container app holds a public IP; no PaaS resource accepts a public connection; the PostgreSQL
+PaaS, except PostgreSQL, which is reached at its VNet-injected address in a delegated subnet rather than
+through a private endpoint. No container app holds a public IP; no PaaS resource accepts a public connection; the PostgreSQL
 server additionally has no firewall rules at all, so "reachable from the internet" is not a
 configuration state it can be put into.
 
@@ -90,7 +92,7 @@ configuration state it can be put into.
 | **Search cluster** (Azure AI Search, Elastic) | Rejected on volume rather than on principle: prompt text is ~4.4 GB/year per tenant, so `ingest.search_text` in the existing PostgreSQL instance serves the requirement (ADR 0014). A second copy of plaintext content in another system would widen the breach surface, add a second retention path to reconcile, and cost more than the rest of the tenant combined. **New provisioning dependency:** that table needs the `pg_trgm` and `btree_gin` extensions, so both must be confirmed on the Flexible Server allow-list for each target region before provisioning (master doc Q12). Consequence: content search is capped by what one PostgreSQL instance can index, which at this volume is not a constraint |
 | **Data warehouse / columnar store** (Synapse, Databricks, Fabric) | 5–9 GB/year of events (brief §3.1); a warehouse would cost more per month than the entire tenant, to query 4.4M rows a year. Consequence: heavy analytical questions are answered by the export path, not in-product |
 | **Read replica** | Aggregate queries read `mart`, which is small and precomputed, and one primary is the source of truth; a replica adds a second consistency model to explain. Consequence: dashboard reads share the primary — revisit if `mart` latency degrades (§10.3 alert) |
-| **Kubernetes / AKS** | Four small Go/Node services and two jobs do not justify a cluster, a node-pool rotation policy or a CNI plugin to patch. Consequence: less control over node-level tuning, accepted |
+| **Kubernetes / AKS** | Four small Go/Node services and three jobs do not justify a cluster, a node-pool rotation policy or a CNI plugin to patch. Consequence: less control over node-level tuning, accepted |
 | **Kernel-mode or host-based inspection infrastructure** | Forbidden by the design (D3, C9). Consequence: E8's coverage boundary is a product feature, measured per provider (§10.2) |
 | **Reserved capacity or savings plan** | Not in v1: reservations are a pricing decision taken once the fleet is real, and every figure in §11 is list price with no committed-use discount. Consequence: cost is 20–40% higher than it needs to be. Stated, not hidden |
 | **A broker for policy distribution** | Policy is a signed, versioned, ETag-able document (C10) served by `control-api`; a device polling a URL is the whole mechanism. Consequence: the poll interval is the kill switch's latency (§9.5) |
@@ -125,14 +127,22 @@ environments, otherwise a staging deploy can reach production keys.
 
 The module templates are identical in every environment; only the parameter file differs. Parameterised:
 region (one each for dev and staging; one per residency region in production); container app min/max
-replicas (1/2 dev, 2/5 staging, per §2 in production); PostgreSQL SKU, storage, HA and PITR days (`B2s`,
-32 GiB, no HA, 7 d / production SKU, 64 GiB, no HA, 14 d / `D2ds_v5`, 128 GiB, zone-redundant, 35 d);
-Key Vault versus Managed HSM (vault only in dev and staging; HSM per contract in production); blob
-redundancy and lifecycle (LRS and aggressive expiry / ZRS, production-shaped / RA-GRS, §12 lifecycle);
-WAF mode (Detection / Prevention without custom rate limits / Prevention with full custom rules); Log
-Analytics sampling and retention (10% traces, 30 d / 10% traces, 90 d / 10% traces, 90 d plus a 12-month
-archive); alert routing (none / non-paging channel / on-call, §10.3); and ring assignment (n/a / internal
-ring 0 / the full ladder, §9.2).
+replicas (1/2 dev; 2/5 staging for `ingest-api` and 2/10 for `control-api` and `query-api`, whose ceiling
+the composition sets to 10 everywhere outside dev; per §2 in production); PostgreSQL SKU, storage, HA and
+PITR days (`B2s`, 32 GiB, no HA, 7 d / production SKU, 64 GiB, no HA, 14 d / `D2ds_v5`, 128 GiB,
+zone-redundant, 35 d); Key Vault versus Managed HSM (vault only in dev and staging; HSM per contract in
+production); ciphertext blob redundancy (LRS / ZRS / RA-GRS); WAF mode (Detection / Prevention /
+Prevention — the mode is the only WAF parameter the composition passes, so the managed rule set and the
+custom rules, including the per-client rate limit, are declared identically in every environment); Log
+Analytics sampling and retention (10% traces, 30 d, no archive / 10% traces, 90 d plus a 12-month
+archive / the same); alert routing (none / non-paging channel / on-call, §10.3); and ring assignment
+(n/a / internal ring 0 / the full ladder, §9.2).
+
+The composition also carries three deployment-scope switches — `deployEdge` (Front Door and its WAF),
+`deployDashboard` (the Static Web App) and `deployExports` (the exports storage account) — each
+defaulting to true. `params/lab.bicepparam` sets all three false, so the lab is a parameter file over
+the same composition rather than a second one; it is the one case in which the resource set, and not
+only the sizing, differs by parameter file.
 
 **Never parameterised:** table names and schemas; the event envelope contract; signing algorithm and
 key purposes; tenant isolation and row-level security; the set of environment variables a service
@@ -140,22 +150,28 @@ validates at boot.
 
 ### 3.3 Bicep layout and module boundaries
 
-Master §4.1 fixes Bicep. One composition per environment, modules that own one resource family each,
-and **no module reaches into another module's resources with `existing`** — all wiring happens in the
-composition file, so a module's inputs are visible in one place.
+Master §4.1 fixes Bicep. One composition, instantiated per environment by its parameter file; modules
+that own one resource family each; and **no module reaches into another module's resources with
+`existing`** — wiring happens in the composition file, so a module's inputs are visible in one place.
+The one piece of wiring that is not in the composition is the private endpoint of the Key Vault, the
+registry and the two storage accounts: each of those modules instantiates `private-endpoints.bicep` for
+its own resource, and the composition calls that module directly only for Log Analytics and Managed HSM.
 
 ```
 azure/
-  main.bicep                     composition; environment-specific, thin
+  main.bicep                     the composition; one file for every environment, thin
   modules/
-    network.bicep                VNet, subnets, NSGs, private DNS zones, peerings
-    private-endpoints.bicep      one private endpoint + DNS link per PaaS resource
+    network.bicep                VNet, subnets (incl. one reserved for a DNS resolver), one NSG,
+                                 private DNS zones and their VNet links
+    private-endpoints.bicep      one private endpoint + DNS zone group per target
     log-analytics.bicep          workspace, App Insights, diagnostic settings, retention
-    registry.bicep               ACR Premium, geo-replication, private endpoint
-    postgres.bicep               Flexible Server, databases, schemas, roles, parameters, HA, PITR
-    storage-ciphertext.bicep     GPv3, RA-GRS, versioning, lifecycle, no shared-key access
-    storage-exports.bicep        GPv3, ZRS, lifecycle
-    keyvault.bicep               vault, purge protection, RBAC role assignments
+    registry.bicep               ACR Premium, optional geo-replication, its private endpoint
+    postgres.bicep               Flexible Server (VNet-injected), databases, server parameters, HA,
+                                 PITR; schemas and roles are created by migrations, not here
+    storage-ciphertext.bicep     StorageV2, RA-GRS, versioning, lifecycle, no shared-key access,
+                                 its private endpoint
+    storage-exports.bicep        StorageV2, ZRS, lifecycle, its private endpoint
+    keyvault.bicep               vault, purge protection, RBAC role assignments, its private endpoint
     managed-hsm.bicep            conditional: only instantiated for HSM tenants
     container-apps-env.bicep     environment, VNet injection, internal LB, log destination
     container-app.bicep          one app: identity, secrets refs, probes, scale rules
@@ -163,12 +179,14 @@ azure/
     frontdoor.bicep              profile, endpoint, origin group, Private Link origin, routes
     waf.bicep                    policy, managed rule set, custom rules, rate limits
     static-web-app.bicep         dashboard, custom domain, auth config
-    monitoring.bicep             alert rules, action groups, SLO definitions, workbooks
-    budget.bicep                 budgets and cost-anomaly alerts
+    monitoring.bicep             action groups and scheduled-query alert rules (the §10.3 set)
+    budget.bicep                 one budget, scoped to the environment's resource group
   params/
-    dev.bicepparam  staging.bicepparam  prod.<region>.bicepparam
+    dev.bicepparam  staging.bicepparam  prod.<region>.bicepparam  lab.bicepparam
   pipelines/
     infra.yml  drift.yml  policy-scan.yml
+  tools/
+    check-infra.mjs  check-infra.test.mjs  index.mjs    the static checker the pipelines run
 ```
 
 Module boundaries follow **trust and lifecycle**, not nouns:
@@ -185,7 +203,10 @@ are the thing that gets reviewed, not the vault.
 Migrations are a separate pipeline with a separate identity (§5.4), because "can deploy code" and "can
 alter the schema" are different privileges. **Ordering:** the migration runs as a Container Apps Job
 *before* the new revision receives traffic — a migration that cannot run before the new code is a
-migration that is wrong. **Compatibility:** every migration must be compatible with the **N-1 application
+migration that is wrong. **As built:** `azure/pipelines/infra.yml` has the two steps in the other
+order — its `deploy` job runs `az deployment group create` first and starts the `migration` job, and
+waits for it, afterwards — and the apps run in single-revision mode (§4.4), so the pipeline as written
+does not hold a new revision back from traffic until the migration has finished. **Compatibility:** every migration must be compatible with the **N-1 application
 version**, because revision rollback (§4.4) returns traffic to N-1 without reverting the schema; that is
 the mechanical reason migrations are additive-first (expand, backfill, contract) rather than a style
 preference. **Never reverted:** there are no down-migrations — a defective migration is fixed forward or
@@ -209,6 +230,15 @@ resource with `publicNetworkAccess` enabled; no storage account with shared-key 
 purge protection. These are the invariants whose failure is a security event rather than a configuration
 event.
 
+**As built:** only the first mechanism exists. `azure/pipelines/drift.yml` runs the nightly `what-if`
+for dev, staging and production; on a drift-class diff it fails the job with an error annotation and
+uploads the report as a build artefact kept for 90 days. It does not itself page anyone or post to a
+channel — paging depends on whatever is attached to a failed run. The hourly resource-graph assertions
+are not implemented; `azure/README.md` ("Gaps") and `azure/pipelines/README.md` record that. The static
+checker in `azure/tools/` asserts the same properties against the templates on every pull request that
+touches `azure/`,
+which covers what is declared and not what is deployed.
+
 Portal changes are permitted only during a declared incident, and must be reverted by pull request
 within 24 hours. A portal change that is not reverted becomes drift on the next nightly run and pages
 someone, which is the intended outcome.
@@ -224,7 +254,7 @@ gates, different blast radii, and different rollback semantics.
 
 | Pipeline | Artefact | Trigger | Gates | Rollback |
 |---|---|---|---|---|
-| **Server tier** | Container images for the four apps and two jobs; Bicep for infrastructure | Merge to `main`; manual promotion | §4.2 | Revision rollback (traffic) or image pin; infrastructure by prior parameter-file commit |
+| **Server tier** | Container images for the four apps and three jobs (aggregator, reconciler, migration); Bicep for infrastructure | Merge to `main`; manual promotion | §4.2 | Revision rollback (traffic) or image pin; infrastructure by prior parameter-file commit |
 | **Classifier artefacts** | Rules bundle, model artefact, evaluation report — signed content, **not** code | Manual, on a candidate tag | §4.3 | Promote the previous release; no code ships (§9.5, C20) |
 | **Browser extension** | Signed MV3 package for Chrome and Edge | Manual, on a candidate tag | §4.2 plus store review; store is the delivery channel | Version pin and `max_version` policy; the previous version cannot be un-published (§6.3) |
 | **Desktop agent** | MSI (Windows) and signed PKG (macOS) for `capture-core` + `classifier-host` + parser | Manual, on a candidate tag | §4.2 plus ring promotion (§9.2) | Ring-level supersedence to the previous MSI/PKG; atomic install rollback on the device (§9.4) |
@@ -241,7 +271,8 @@ staleness check:
    A non-empty diff **fails the build**, with the instruction to re-run generation. This is the check
    that stops a field being added in one language and forgotten in another — the failure mode that
    produces a collector emitting a field the server silently drops.
-3. **Fixture validation gate.** A fixture corpus (`contracts/fixtures/`) holds at least one valid
+3. **Fixture validation gate.** A fixture corpus (`contracts/fixtures/` — not in the repository yet:
+   `contracts/` holds the schema, `generated/` and `tools/` only) holds at least one valid
    example per `kind` × `collection_mode` combination, plus deliberately invalid ones: an M0 record
    carrying `labels` or `content_digest` (evidence the device read content it was not permitted to
    read — §5.2 of the schema), an M3 record carrying `content_excerpt` (content in the envelope, which
@@ -293,6 +324,12 @@ revision at 0% traffic → 10% → 50% → 100%, with automatic return to the pr
 or p95 latency regresses beyond the staging baseline at any step. Deployment identity is a workload-
 federated CI identity (§5.2), scoped per environment.
 
+**As built:** the staged shift is not implemented. `azure/modules/container-app.bicep` sets
+`activeRevisionsMode: 'Single'` with `latestRevision: true` at weight 100, so a new revision takes all
+traffic as it becomes active and no previous revision is kept to return to. `azure/pipelines/` holds
+the infrastructure, drift and policy-scan pipelines only; no pipeline there promotes an application
+revision or weights traffic.
+
 ### 4.5 Where human approval is required
 
 | Change | Approver | Why human |
@@ -320,12 +357,20 @@ no unwrap. `control-api` holds the `ops` configuration, device-state and grant r
 policy-bundle signing key; it cannot read prompt content or an unwrapped key. `content-vault` holds
 **unwrap and wrap** on per-tenant KEKs and blob read on ciphertext, and it has no user-facing endpoint at
 all. `query-api` holds `SELECT` on `mart`, on a filtered view of `ingest` and on the audit surface, and
-reaches content only by calling `content-vault`. `aggregator` and `reconciler` hold roles scoped to `mart`
-write and to the reconciliation surface, and nothing else. `migration` holds DDL on all four schemas, is
+reaches content only by calling `content-vault`. `aggregator` and `reconciler` run as separate managed
+identities and share one database role, `sac_ops`, which holds `mart` write, the reconciliation and
+retention surface — including `DELETE` on `ingest.observation` and `ingest.submission` and row access to
+`ops.content_object` for expiry — and no unwrap. `migration` holds DDL on all four schemas, is
 assumed only by the migration job, and cannot be assumed by an app. **CI deploys under a workload-federated
 identity with no secret at all**, scoped to resource-group deployment and ACR push, with no Key Vault or
 database data-plane access. A human operator is an Entra ID principal with PIM-eligible roles and, by
 default, infrastructure metadata only — no content, under customer-held key mode (master §4.3).
+
+**As built:** `control-api`'s **sign** right is not yet assigned. Its only Key Vault assignment in
+`azure/main.bicep` (lines 237–241) is the `secretsUser` operational role (*Key Vault Secrets User*),
+which is a secrets-read role and carries no key-signing permission. The composition assigns Key Vault
+roles only; the database and blob grants above are left to the migration and to role-assignment
+tooling outside the template.
 
 Every connection to PostgreSQL is Entra-token authenticated, so **no database password exists**. Row-level
 security is forced on every table with every application role non-owner and without `BYPASSRLS`; the tenant
@@ -357,6 +402,16 @@ policy signing, TLS) with no key serving two purposes; per-tenant KEK naming tha
 identifier so a key inventory can be reconciled against the tenant table; and a CI policy assertion that
 fails the build if any principal other than `content-vault` holds unwrap on a KEK.
 
+**As built:** the declared assignments do not yet meet the "exactly one identity" rule. Alongside
+`content-vault`'s `Key Vault Crypto User`, `azure/main.bicep` (lines 242–246) assigns `ingest-api`'s
+identity the `cryptoServiceEncryption` operational role at vault scope, which
+`azure/modules/keyvault.bicep` (lines 47 and 96) resolves to `Key Vault Crypto Service Encryption
+User`. That built-in role's data actions are understood to include key wrap and unwrap; the role
+definition is not in the repository and has not been confirmed against a subscription. The CI
+assertion (`azure/pipelines/policy-scan.yml`, `separation-of-duties`) inspects only
+`unwrapPrincipalIds`, so it passes with this assignment in place. The rule stands; the assignment is
+what has to change.
+
 **Customer-held keys.** Where a customer supplies the key material, the tenant's KEK lives in Managed
 HSM under a key policy whose quorum the vendor cannot satisfy alone. Destroying it destroys the
 ciphertext (brief §4.4, C15) — see §12.5, which states exactly what is and is not recoverable
@@ -376,6 +431,12 @@ the duration of a migration job.
 environment variable whose value is a credential.** Container Apps environment variables reference Key
 Vault; a secret in a plaintext environment variable reaches Log Analytics through revision logs, which
 is a far wider audience than the secret's blast radius.
+
+**As built:** the module supports Key Vault references (`keyVaultEnv` in
+`azure/modules/container-app.bicep`), and no app uses one: every app in `azure/main.bicep` passes
+`keyVaultEnv: []`, and the environment variables it does pass are non-secret coordinates. The
+consequence is recorded in ADR 0019: `ingest-api` needs its TLS certificate, key and device-CA bundle
+delivered this way, so a deployed container today "cannot authenticate a device".
 
 ---
 
@@ -459,7 +520,7 @@ anything else**, because an uninstall that leaves the port bound leaves the user
 remove the root CA from the correct store and **verify removal** — a root left behind is a trust decision
 the customer did not consent to keep; (5) remove the browser extension through the same enterprise policy
 that installed it (the vendor cannot remove it; the customer's policy does) and clear the extension's
-stored state; (6) delete local state — spool database, cached policy bundles, cached classifier content,
+stored state; (6) delete local state — the spool directory (its segment log, counter file and lock), cached policy bundles, cached classifier content,
 logs; (7) remove the service or LaunchDaemon and the binaries, leaving no scheduled task, launch agent,
 firewall rule or Event Log source registration behind.
 
@@ -673,8 +734,9 @@ shipping code**, and an expired code-signing certificate never blocks fixing a c
 Each installer version installs side-by-side into a versioned directory, switches the service registration
 to the new version as the last step, and verifies by self-test before declaring success. Failure at any
 step switches back to the previous version, which is still on disk and still registered as the fallback.
-The spool schema is forward-compatible for N-1 and N, so a rolled-back binary can read the spool it
-inherited; a spool it cannot read is a spool it must report as unreadable rather than silently discard,
+The spool's on-disk format — an append-only segment log of AES-256-GCM-sealed frames
+(`endpoint/capture-spool`), not a database with a schema — must stay readable across N-1 and N, so a
+rolled-back binary can read the spool it inherited; a spool it cannot read is a spool it must report as unreadable rather than silently discard,
 because **no collection path may fail into a state that reports success** (C25).
 
 Uninstall is not the rollback path. Rollback keeps the product installed at a previous version;
@@ -739,7 +801,7 @@ All targets are brief §8 unless stated. Measurement windows are 28-day rolling.
 | Event visible in query layer | <60 s from receipt | `received_at` to recomputed aggregate bucket (`mart` watermark). This is a **freshness** SLO and it is what keeps a stale dashboard honest — master §4.4 requires aggregation lag to be visible, not hidden |
 | Dashboard aggregate query | <2 s p95 | `query-api` per route template, served only from `mart`. C27: when this regresses, it is almost always because something began scanning `ingest` |
 | Content retrieval once granted | <30 s | End-to-end, grant issued to content streamed to the analyst — because the components in between are a chain and the customer experiences the chain |
-| **Devices reporting** | **≥95% of enrolled devices within 24 h** | Device liveness job over `ops.collector_state`. **ASSUMPTION:** the brief sets no target here. *Justification:* brief §5.5's 70–85% management coverage is a *planning* figure for the population the customer can manage at all, while devices that are enrolled and then go silent are a signal the vendor owns. An operational guardrail, **not a contractual promise** (§14) |
+| **Devices reporting** | **≥95% of enrolled devices within 24 h** | Device liveness from `ops.device.last_seen_at`, as derived by the `mart.v_device_liveness` view (`reporting` / `stale` after 24 h / `never_reported` / `revoked`). **ASSUMPTION:** the brief sets no target here. *Justification:* brief §5.5's 70–85% management coverage is a *planning* figure for the population the customer can manage at all, while devices that are enrolled and then go silent are a signal the vendor owns. An operational guardrail, **not a contractual promise** (§14) |
 
 ### 10.2 The signals that matter more than uptime
 
@@ -891,6 +953,12 @@ Blob (events + ops, ~40 GiB hot)                      ≈ $1
 
 **Per-tenant monthly estimate, M1 default:**
 
+> **Under review.** The Front Door Premium base is charged per tenant here although §11.1 prices it per
+> profile per region and §2 describes the inventory as shared by all tenants in a region;
+> `azure/COST-FINDING.md` records that contradiction and the two possible resolutions. The PostgreSQL
+> line is charged per tenant on the same footing, against the same §2 statement. The figures below, and
+> those in §11.4–§11.6 that derive from them, stand unreconciled until that is decided.
+
 | Line | M1 (default) |
 |---|---|
 | Container apps + jobs (incl. 2 migrations/month) | $27 |
@@ -987,7 +1055,9 @@ therefore the single most important cost control in the product**, and it is a p
 infrastructure.
 
 **ASSUMPTION:** the default per-tenant content budget is **100 GB of stored ciphertext**, enforced as a
-ceiling on grants. *Justification:* brief §3.1's attachment range is 50–500 GB/year; a 100 GB ceiling
+ceiling on grants. The schema's budget mechanism is a different unit: `ops.tenant.content_budget_bytes_per_day`,
+a per-tenant ceiling on content bytes accepted **per day**, defaulting to 0. A stored-volume ceiling of
+the kind assumed here is therefore not a column that exists today; the daily intake rate is. *Justification:* brief §3.1's attachment range is 50–500 GB/year; a 100 GB ceiling
 admits a year at the low end and roughly a quarter at the high end, which is the range in which a
 customer can still answer "what exactly was sent" for a recent investigation. The specific number is
 Q6's to set; the mechanism is what this document is specifying, and Q6 must close before the first M3
@@ -1032,7 +1102,7 @@ product's cost actually is.
 | **Residency regions** | +$145 baseline and +$392 per tenant per additional region | Region count is a product decision (Q1), not a tuning decision |
 | **Managed HSM** | +$3,360 per pool, ~4× the entire rest of the tenant | Per-contract only. If a customer's requirement can be met with Key Vault Premium in a dedicated vault, the saving exceeds everything else in this table combined |
 | **Log Analytics verbosity** | $14 at M1 with sampling; ×5–10 without | Sampling, retention tiering and log-level discipline (§10.4). Grows with verbosity, not with traffic, so it is entirely under the vendor's control |
-| **Front Door base fee** | $330, or 40% of the tenant, before a single request | Fixed and unavoidable in this design. It is the reason the fixed tenant cost is where it is, and the reason adding tenants is accretive |
+| **Front Door base fee** | $330, or 40% of the tenant, before a single request (under review per `azure/COST-FINDING.md`: the base is per profile per region) | Fixed and unavoidable in this design. It is the reason the fixed tenant cost is where it is, and the reason adding tenants is accretive |
 | **Event volume growth** | 10× traffic adds ~$55–70 | Only relevant if the brief's constraints are violated (C9 forbids per-keystroke capture). Not a lever; a boundary condition |
 | **Reservations or savings plan** | 20–40% off compute lines, i.e. ~$80–160 per tenant | Deliberately not taken in v1 (§2.2). Becomes available once the fleet is real |
 
@@ -1053,7 +1123,7 @@ product's cost actually is.
 | Configuration and audit (`ops`) | ≤5 min | 60 min | Rides the same PostgreSQL PITR. Audit entries are append-only and are the one table whose loss has a compliance consequence rather than an operational one |
 | Dashboard | n/a | 30 min | Static, redeployable from the registry's geo-replica |
 | Classifier content | 0 | 5 min | Signed content served by `control-api` from storage; devices fall back to their last verified bundle and never to an unsigned one (C10) |
-| **Attachment content whose key was destroyed** | **Not applicable** | **Never** | §12.5. This is by design (D1, D6, C15) |
+| **Attachment content whose key was destroyed** | **Not applicable** | **Never** | §12.5. This is by design (D1, C15). For a `full_text` tenant the search index is a separate plaintext-derived copy that key destruction does not reach; it is removed by row deletion (06-security §6.4) |
 
 The reasoning behind the two numbers worth defending:
 
@@ -1211,7 +1281,7 @@ failure mode the brief's §5.5 warnings exist to prevent.
 | "Zero-touch macOS deployment" | It is true for the components, and **never** for Screen Recording permission (E16). Nothing depends on it, and the enrolment experience must be described accurately |
 | "Your users will see no prompts during rollout" | SmartScreen reputation accrues over weeks (E20). Pilot users **will** see "unrecognised application" prompts, and the engagement must say so before the first install |
 | "No security-tool interference" | The interceptor resembles a man-in-the-middle pattern to other endpoint products (E22, R4). The honest promise is the exclusion artefact, the bake period, and a named support path |
-| "Content search" | D6 is permanent. Searching content is the customer's Parquet export, in the customer's storage, under the customer's keys (C31) |
+| "Content search" as a universal feature, or alongside "we cannot read your content" | Content search is a per-tenant capability (ADR 0014, which supersedes ADR 0008; 06-security §6). `full_text` makes prompt text vendor-readable, requires M3, and cannot be stored together with customer-held keys; a customer-held tenant gets `attachment_names` at most, and for anything more its route is the Parquet export, in the customer's storage, under the customer's keys (C31). Promise the tier the tenant's custody mode admits, with that consequence stated |
 | "Deletion from backups on request" | Backups cannot be selectively edited. The promise is the §12.5 wording: immediate in the live system, complete in backups within the retention window, and enforced on any restore |
 | "Nothing is ever lost" | Spool overflow drops oldest and **counts it** (C22). The promise is that an undercount is always visible, which is a stronger and truer statement |
 | "An outage costs you no data" | True up to the spool's capacity, which is a stated number in hours (§12.4). Beyond it, data is dropped and counted |

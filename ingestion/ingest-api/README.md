@@ -17,7 +17,8 @@ per-event outcome is the contract. Batch-level failures use §5's common envelop
 
 | Status | When | `code` |
 |---|---|---|
-| 400 | batch shape, `event_count` mismatch, unsupported batch version, an element that is not an object or has no `event_id`, or any method but POST | `schema_violation`, `unsupported_schema_version` |
+| 400 | batch shape, `event_count` mismatch, unsupported batch version, or an element that is not an object or has no `event_id` | `schema_violation`, `unsupported_schema_version` |
+| 405 | any method but POST (the response carries `Allow: POST`) | `schema_violation` |
 | 400 | fewer than 1 or more than 500 events (§5.3 lists the count under 400; §7 calls it `oversize`) | `oversize` |
 | 413 | body over 8 MiB compressed / 32 MiB decompressed, or one envelope over 256 KiB | `oversize` |
 | 401 | no, bad, expired or revoked credential | `revoked_device` |
@@ -50,8 +51,8 @@ deliberate exception is a JSON *decode* failure, which returns `encoding/json`'s
 One transaction per batch. The write is exactly `SELECT event_outcome, event_submission_id FROM
 ingest.record_event($1::jsonb, $2::timestamptz)`: `$1` is the envelope **as the device sent it** (never
 re-marshalled), `$2` is the batch's single receive time, and it returns `inserted` | `merged` |
-`duplicate`. `internal/store/sql.go` holds every statement as a constant, and `sql_integration_test.go`
-PREPAREs and EXECUTEs those exact strings against a live PostgreSQL 17, so what is verified is the text,
+`duplicate`. `internal/store/sql.go` holds every statement as a constant, and `db_integration_test.go`
+(through the helpers in `psql_test.go`) PREPAREs and EXECUTEs those exact strings against a live PostgreSQL 17, so what is verified is the text,
 not a paraphrase. The order is: set the transaction-local RLS tenant; re-check the credential **before
 commit** (§2.3, so a revocation between admission and commit writes nothing); one `record_event()` call
 per accepted event in request order; for a `duplicate` read back the first receipt, for a `merged` read
@@ -88,9 +89,12 @@ checks the other direction across the seam: every code this service emits is one
 
 ## Configuration and containers
 
-Every setting is settable by a flag and by an environment variable, and **a flag wins** — precedence is
+Where a setting has both a flag and an environment variable, **a flag wins** — precedence is
 decided by asking the flag package which flags were passed, so `--region ""` is a request rather than an
-absence. The names are the deployment's names, and the agreement is asserted rather than assumed:
+absence. Not every setting has both: `SAC_BLOB_CIPHERTEXT_ENDPOINT` and `SAC_APPINSIGHTS` are
+environment-only, the `SAC_TLS_*_PEM` variables carry PEM text while the `--tls-*` flags take file
+paths, and `--dsn`, `--driver`, `--pg-port`, `--replay-window`, `--shutdown-grace`, `--verify-dedup-key`
+and the `--dev-*` flags have no environment variable. The names are the deployment's names, and the agreement is asserted rather than assumed:
 [`cmd/ingest-api/infra_agreement_test.go`](cmd/ingest-api/infra_agreement_test.go) fails if a name is
 passed to something that never reads it or read without being accounted for, and
 `node localdev/tools/check-config-agreement.mjs` adds both Dockerfiles and the lab compose file. Three
@@ -103,7 +107,8 @@ container stages and why `/readyz` exists are in [cmd/ingest-api/README.md](cmd/
 
 ## Running the checks
 
-No network access and no `go get` (`GOPROXY=off`), so PostgreSQL is reached through `docker exec psql`:
+The gates run with `GOPROXY=off` by choice and the default build carries no PostgreSQL driver, so the
+live checks reach PostgreSQL through `docker exec psql`:
 `go build ./... ; go vet ./... ; gofmt -l . ; go test ./... -count=1`, plus
 `go test ./internal/store -run TestLive -v -count=1` for the ladder, the key mirror and the quarantine
 against a live server. The `TestLive*` cases need a running PostgreSQL 17 with `database/schema.sql`
@@ -133,15 +138,17 @@ boundary (`TestWriteBatchIsOneTransaction`); and the mirror plus adoption
    error mapping, the §2.3 revocation re-check — and the tagged binary has run against the lab's database
    with events landing in `ingest.observation`. Unproven: **concurrency** (the memory store is
    mutex-serialised; the database path relies on unique constraints and row locks) and any server but the
-   lab's. `pgx` v5.11.0 is in this host's cache, but the acceptance harness points `GOMODCACHE` at an
-   empty directory — hence the tag rather than a dependency the default build needs.
+   lab's. `pgx` v5.11.0 is required by `go.mod`, but the gates run with `GOPROXY=off` and their own
+   `GOMODCACHE` (`.tools/gopath/pkg/mod`) — hence the tag rather than a dependency the default build
+   needs.
 2. **`duplicate_batch` is a per-process window**, so with more than one instance a cross-instance replay
    degrades to per-event `duplicate` outcomes — correct for the data, wrong only for the diagnosis (§6).
    Relatedly, **mTLS is tested against a generated CA**, not real CA material or the edge, and the region
    check is a string comparison against `ops.tenant.residency_region`.
-3. **§4.2 canonicalisation has no NFC**, because `golang.org/x/text/unicode/norm` cannot be fetched
-   offline, so `dedup.DefaultCanonical` uses the identity normaliser. It is off the request path — the
-   wire carries the finished `content_digest` — and the gap is tracked at `endpoint/canon/`.
+3. **§4.2 canonicalisation has no NFC in this service**: `dedup.DefaultCanonical` uses the identity
+   normaliser, because the standard library has none and this module imports neither
+   `golang.org/x/text/unicode/norm` nor the repository's own NFC implementation, `endpoint/canon/`. It
+   is off the request path — the wire carries the finished `content_digest`.
 4. **Interpretations made where the documents leave room**, each also in a code comment: an element of
    `events` that is not a JSON object, or has no usable `event_id`, is a batch-level 400 (a per-event
    result is keyed by `event_id`); the count outside 1–500 is 400 with code `oversize` while body/envelope

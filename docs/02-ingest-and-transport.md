@@ -85,7 +85,7 @@ Per-device credentials are also what make every write attributable, which §9, �
 | **Re-image** | Re-enrolment with the same hardware identity returns the **existing** `device_id` and a fresh certificate; no duplicate device row is created | C11; brief §4.2 |
 | **Rotate** | At 60 days of a 90-day life, the device re-enrols authenticated with its **current** credential and receives a replacement. Old and new are both accepted for a 7-day overlap, so a failed rotation never locks a device out | **ASSUMPTION:** duration and overlap are operational parameters, not measured. Front Door's two-CA allowance makes overlap the natural choice |
 | **Expiry watch** | The server knows every `not_after` it issued. A daily job alarms on credentials inside 14 days with no rotation, and the device reports `credential_not_after` in health (§9) | C24; avoids the E19-class known-date outage |
-| **Revoke** | An operator marks the credential `revoked` in `ops.device_credential`. The **origin** checks status on every request — no cache, because the volume is 0.14 events/s mean and ≤500 events/s worst case (master §1.4), which a point lookup absorbs | brief §4.2 "a revoked device is rejected and marked accordingly" |
+| **Revoke** | An operator sets `revoked_at` (with a reason) on the credential in `ops.device_credential`, or on the device in `ops.device`. The **origin** checks status on every request — no cache, because the volume is 0.14 events/s mean and ≤500 events/s worst case (master §1.4), which a point lookup absorbs | brief §4.2 "a revoked device is rejected and marked accordingly" |
 | **Emergency (tenant-wide)** | Replacing the tenant's CA bundle at the edge invalidates every certificate that tenant's CA issued. It is a manual, audited, two-person action with an obvious blast radius | Appendix B (CA certs are uploaded manually, no auto-rotation) |
 
 **Revocation is not erasure.** A revoked device's already-ingested observations remain subject to the
@@ -131,7 +131,7 @@ produces anything the device can upload with.
  provider observes submission
    │
    ├─ policy match (rule id, class, severity)          ── content held locally;
-   │                                                      object state = local_only
+   │                                                      content state = local_only
    ▼
  [requested] ── POST /v1/content/grant ──► [evaluating] ── inputs: mode, budget,
    │   (event_id, mode, digest, size)          │          retention class, case ref
@@ -148,24 +148,34 @@ produces anything the device can upload with.
    │  no PUT before T                 │        grant id in metadata        │
    └──────────────► [expired] ────────┴── mismatch / no live grant ──► object deleted
                                                                           │
-                          denied / expired ⇒ object state returns to local_only
+                          denied / expired ⇒ content state stays local_only
 ```
 
-**Grant states** (`ops.grant.state`, a closed enum):
+**Grant decisions** (`ops.grant.decision`, a closed enum). The bracketed labels in the diagram are steps
+of the flow; the stored values are these five:
 
-| State | Meaning | Exits to |
+| `decision` | Meaning | Exits to |
 |---|---|---|
-| `requested` | Decision in flight for one `event_id` | `granted`, `denied` |
-| `granted` | Decision recorded; upload URL, object key and wrapped key issued; `expires_at` set | `uploaded`, `expired`, `void` |
-| `denied` | Terminal, with one of the four reasons (§10.2). Content stays on the device | terminal |
-| `uploaded` | Object verified by the finaliser: correct size, matching raw digest, grant id in metadata | `void` only via erasure/retention (the object, not the grant) |
-| `expired` | `expires_at` passed with no verified object. Staged bytes deleted; object state returns to `local_only` | terminal |
-| `void` | Invalidated before completion: credential revoked, tenant suspended, digest mismatch, or a second write attempted | terminal |
+| `pending` | Decision in flight for one `event_id` (the diagram's *requested* and *evaluating*) | `granted`, `denied` |
+| `granted` | Decision recorded; upload URL and object key issued; `upload_expires_at` set | `expired`, `voided`; a verified upload leaves the grant `granted` and creates the object row |
+| `denied` | Terminal, with one of the four reasons in `denial_reason` (§10.2) — a denial without a reason is refused by a check constraint. Content stays on the device | terminal |
+| `expired` | `upload_expires_at` passed with no verified object. Staged bytes deleted | terminal |
+| `voided` | Invalidated before completion: credential revoked, tenant suspended, digest mismatch, or a second write attempted | terminal |
 
-`ops.content_object.state` (`not_captured · local_only · uploaded · shredded`, master §5.4) is a
-*different* axis and is never collapsed into the grant state: a grant may be `denied` while the object
-is `local_only`, and `expired` returns the object to `local_only` rather than to `not_captured` — the
-device still holds the content and the distinction is exactly the one brief §3.2 forbids merging.
+There is no `uploaded` grant decision. A verified upload — correct size, matching raw digest, grant id in
+metadata — is recorded as a row in `ops.content_object`, which exists only once something has actually
+been uploaded and whose own `state` is the narrower `uploaded · shredded`.
+
+The four-value content state (`not_captured · local_only · uploaded · shredded`, master §5.4) lives on
+`ingest.submission.content_state`. It is a *different* axis and is never collapsed into the grant
+decision: a grant may be `denied` while the content is `local_only`, and an `expired` grant leaves it
+`local_only` rather than `not_captured` — the device still holds the content and the distinction is
+exactly the one brief §3.2 forbids merging.
+
+**As built:** nothing in the repository sets `content_state` to `local_only`. `ingest.record_event()`
+inserts every submission with the column default `not_captured`, the envelope carries no content-state
+marker ([ADR 0017](adr/0017-the-m3-content-state-marker-is-device-local.md)), and no service writes the
+column, so the `local_only` transitions above are design that is not implemented.
 
 ---
 
@@ -204,7 +214,7 @@ every one of the following, all of which are the *same* submission:
 Raw-byte hashing therefore does not deduplicate; it produces one logical submission per route per
 retry, which is precisely the inflation R9 warns about. Deduplication must be computed over a
 **canonical form derived from the user-authored content**, and the derivation must be identical in a Go
-proxy parsing a provider's JSON body and a TypeScript extension reading a DOM node.
+proxy parsing a provider's JSON body and a JavaScript extension reading a DOM node.
 
 ### 4.2 The canonical form
 
@@ -283,76 +293,83 @@ reintroducing the disagreement the key exists to remove.
 scheduler stall between the two observations). No measurement exists yet; Q3's conformance test
 produces it, and the reconciliation report (§4.5) measures the residual directly.
 
-Two mitigations make the narrow-side risk bounded rather than probabilistic-and-forgotten. A straddled
-pair is repaired by the daily reconciler: same tenant, device, tool, `kind`, prompt digest and adjacent
-buckets with different routes is an identity-proving match, so the later row is marked `superseded_by`
-the earlier one — nothing is deleted, the merge is idempotent and re-runnable, and `mart` excludes
-superseded rows. The wide-side risk is bounded by the bucket and surfaced: a second observation of
-identical content from the *same* route inside one bucket is indistinguishable from a duplicate, so it
-is flagged `possible_undercount` on the submission rather than silently merged (§4.4).
+Two mitigations are designed to make the narrow-side risk bounded rather than
+probabilistic-and-forgotten. A straddled pair is to be repaired by the daily reconciler: same tenant,
+device, tool, `kind`, content digest and adjacent buckets with different routes is an identity-proving
+match, so the later row is marked as superseded by the earlier one — nothing is deleted, the merge is
+idempotent and re-runnable, and `mart` excludes superseded rows. The wide-side risk is bounded by the
+bucket and is to be surfaced: a second observation of identical content from the *same* route inside
+one bucket is indistinguishable from a duplicate, so it is flagged as a possible undercount on the
+submission rather than silently merged (§4.4).
+
+**As built:** `ingest.submission` has no supersession column and no possible-undercount flag, and the
+reconciler is not implemented. A straddled pair therefore remains two submission rows, and a same-route
+repeat inside one bucket folds into the existing row, raising `observation_count` and nothing else.
 
 ### 4.4 Route fidelity ranking
 
 Fidelity is **what a route can prove about the submission**, not how much ground it covers. Coverage is
 reported separately (C23, R11) and is not a fidelity property.
 
+**Lower rank wins.** The rank is `ref.route_fidelity.fidelity_rank`, unique per route.
+
 | Route | Brief §2 modes | Rank | Why this rank |
 |---|---|---|---|
-| `ext.page_context` | A, B, C | **90** | Reads the composition surface and the attachment **file objects** before the request is constructed. The only route that can digest attachment *contents* at all (E3), and the only one that sees the user-authored payload before any client-side serialisation. |
-| `ext.web_request` | A, B, C | **80** | The exact serialised body the browser sent (E2). Prompt text is exact; attachments are filenames only (E3), so it cannot produce a full Tier-T form for attachment-bearing submissions. Requires provider-specific body parsing. |
-| `proxy.loopback` | F | **70** | Plaintext HTTP on loopback with nothing to decrypt (E11), so the body is unambiguous. Below the extension routes because it observes an API call rather than a composition surface: client-assembled context and inlined attachment text are indistinguishable from typed text at this vantage point. |
-| `proxy.tls` | D, E, G, H | **60** | The same body class as loopback, but reached through interception, so the plaintext is a reconstruction whose availability depends on trust-store and QUIC configuration (E6, E7). Authoritative for the runtimes no extension can reach. |
-| `cli.shim` | E, G | **50** | Instruments the shell environment (E9, E10) and often sees structured tool arguments rather than a serialised body, but a tool that ignores the environment is invisible, and what it observes can be arguments rather than the payload. |
-| `ext.dom` | A, B, C | **40** | The rendered compose surface: text is reliable, attachments are chips (name and size), and browser-agent and canvas surfaces may render outside normal DOM structure (R5). Broad and cheap; the weakest content-capable route. |
-| `proc.detect` | I | **10** | Establishes that a model ran and nothing more: the schema forbids `content_digest` on `model_detection`. It cannot participate in content-derived identity at all and appears here only to keep the ranking total. |
+| `ext.page_context` | A, B, C | **10** | Reads the composition surface and the attachment **file objects** before the request is constructed. The only route that can digest attachment *contents* at all (E3), and the only one that sees the user-authored payload before any client-side serialisation. The canonical source: it sees what the user composed, not what the transport did with it. |
+| `cli.shim` | E, G | **20** | Call-site capture from the managed shell environment (E9, E10): structured tool arguments rather than a parsed HTTP body, so no reconstruction is involved. A tool that ignores the environment is invisible, but that is a coverage fact, not a fidelity one. |
+| `proxy.loopback` | F | **30** | Plaintext HTTP on loopback with nothing to decrypt and no framing to guess (E11), so the body is unambiguous. It observes an API call rather than a composition surface: client-assembled context and inlined attachment text are indistinguishable from typed text at this vantage point. Coverage is narrow. |
+| `ext.web_request` | A, B, C | **40** | The exact serialised body the browser sent (E2). Accurate for the wire form, which may differ from the composed form in encoding and whitespace; attachments are filenames only (E3). Requires provider-specific body parsing. |
+| `proxy.tls` | D, E, G, H | **50** | The same body class as loopback, but reached through interception, so the prompt is reconstructed from a provider-specific serialisation and its availability depends on trust-store and QUIC configuration (E6, E7). Authoritative for the runtimes no extension can reach. |
+| `ext.dom` | A, B, C | **60** | The rendered compose surface, used where the request is not observable: attachments are chips (name and size), and browser-agent and canvas surfaces may render outside normal DOM structure (R5). Broad and cheap; the weakest content-capable route. |
+| `proc.detect` | I | **70** | Establishes that a model ran and nothing more: the schema forbids `content_digest` on `model_detection`, and the row is stored with `yields_content = false`. It cannot participate in content-derived identity at all and appears here only to keep the ranking total. |
 
-Ranks are stored in `ref.route_fidelity` (master §5.3), not compiled into services.
+Ranks are stored in `ref.route_fidelity` (`source`, `fidelity_rank`, `yields_content`; master §5.3),
+not compiled into services.
 
-**Material tier and the total order.** Rank alone is not enough, because a route that cannot read
-attachment bytes (E3) must never outrank one that can, whatever their ranks. Every observation
-therefore carries a single stored integer:
+**The stored comparison is the route rank alone.** `ingest.submission.winning_fidelity` is the
+`fidelity_rank` of `winning_source`, denormalised so the write path can compare without a join. The
+material tier of §4.5 is not folded into it: tier separation is done by the keys instead. A record
+without a content digest can only ever match a submission row that has no exact key (§4.5), so a
+surrogate observation can never win a field on a row a content-reading route has already identified.
+`kind` is part of both keys, so observations of different kinds never contend.
 
-```
-fidelity = tier_rank × 1000 + route_rank
-tier_rank: 4 = Tier R   (rollup window — compared only with other rollups)
-           3 = Tier T-A (text + all attachment content digests, or no attachments)
-           2 = Tier T-B (text, one or more attachments unreadable ⇒ "~")
-           1 = Tier S   (no canonical text; surrogate material only)
-           0 = Tier D   (detection: no payload at all)
-```
+**As built:** `ingest-api` also carries a composite ordering (`tier_rank × 1000 + route_rank`, with
+equal values broken by the smallest `event_id`) in `internal/dedup` as `Fidelity` and `Beats`. Nothing
+in the request path uses it; the merge decision is the store's.
 
-`kind` is part of both keys, so observations of different kinds never contend and tier ranks are only
-ever compared within one kind.
+**The rule on collision.** Where two observations resolve to the same submission row:
 
-**The rule on collision.** Where two observations resolve to the same merge key:
-
-1. The higher `fidelity` wins the contested fields — `content_digest`, `labels`, `classifier_version`,
-   `confidence`, `policy_decision`, `winning_event_id`, and the submission's `dedup_key`.
+1. The strictly lower `fidelity_rank` wins the contested fields — `content_digest`, `labels`,
+   `classifier_version`, `confidence`, `collection_mode`, `size_bytes` — and becomes `winning_source`.
+   Fields are replaced wholesale and never blended, because a blend of two observations would
+   correspond to neither.
 2. The logical record records **every** route that observed it, in `observed_routes`, and counts every
    observation in `observation_count`. Both survive in `ingest.observation`, which is append-only.
 3. The count is one logical submission. It is neither inflated by the extra route nor reduced by
    dropping the losing observation — the loser's route set is the evidence that a blind spot on one
    route was covered by another, which is what a customer challenging coverage is asking about.
-4. Equal `fidelity` is broken deterministically by the lexicographically smallest `event_id`, so the
-   result does not depend on arrival order.
+4. At equal rank — which, ranks being unique, means the same route again — the first-seen observation
+   stays the winner.
 
-**Merge is commutative and associative.** Winner fields are a maximum over `fidelity`; routes are a set
-union; the observation count is a sum. Any arrival order produces the same submission row, which is
-what makes retries, out-of-order delivery and idempotent backfill free (C28) and testable (a conformance
-test replays a recorded two-route pair in both orders and asserts byte-identical rows).
+**Winner selection does not depend on arrival order across routes.** The winning fields are those of
+the lowest-ranked route that observed the submission; routes are a set union; the observation count is
+a sum. That is what makes retries, out-of-order delivery and idempotent backfill free (C28). The fields
+that are not contested — `policy_action`, `policy_rule_id`, `decided_locally` and `received_at` — are
+set by the first observation to arrive and are not rewritten by a later one.
 
 **A later-arriving lower-fidelity observation** changes no winning field. It appends its route to
-`observed_routes`, increments `observation_count`, and — if its route is already present with the same
-bucket and prompt digest — increments `same_route_observation_count` and sets
-`possible_undercount = true`, because a genuine second submission of identical content inside one
-bucket cannot be distinguished from a duplicate and the system says so instead of guessing.
+`observed_routes` if it is not already there and increments `observation_count`. A genuine second
+submission of identical content from the same route inside one bucket cannot be distinguished from a
+duplicate, and is absorbed the same way (§4.3).
 
-**A later-arriving higher-fidelity observation upgrades the record in place**: winning fields are
-replaced, `dedup_key` is upgraded to the stronger form, `fidelity` is raised, `upgraded_at` is set and
-`upgrade_count` increments. The submission keeps a **surrogate `submission_id` minted at first insert
-and never changed**, so findings and analyst review state (`ops.finding_review`, keyed by finding) are
-not orphaned by an upgrade. `mart` is recomputed from `ingest` over a lookback window (master §4.2 step
-10), so an upgrade is absorbed by the next aggregation run rather than requiring a repair.
+**A later-arriving higher-fidelity observation upgrades the record in place**: the contested fields are
+replaced and `winning_source` and `winning_fidelity` move to the better route. A row that had no exact
+key adopts the arriving observation's `dedup_key` together with its `content_digest`, and its
+`merge_confidence` is promoted to `high` (§4.5). The submission keeps a **surrogate `submission_id`
+minted at first insert and never changed**, so findings and analyst review state (`ops.finding_review`,
+keyed by `(tenant_id, submission_id, rule_id)`) are not orphaned by an upgrade. `mart` is recomputed
+from `ingest` over a lookback window (master §4.2 step 10), so an upgrade is absorbed by the next
+aggregation run rather than requiring a repair.
 
 ### 4.5 The unreconcilable case
 
@@ -408,57 +425,71 @@ frozen — so ingest recomputes it and stores it as `ingest.observation.dedup_ti
 | `kind = prompt`, `content_digest` present, one or more attachments unreadable (E3) | `T`-B |
 | `kind = prompt`, no `content_digest` (M0, or a route that could not read text) | `S` |
 
-**The store-enforced merge key.** Because Tier T-A and Tier T-B observations of one submission compute
-different `dedup_key` values (one carries `sha256:…` for the attachment, the other `~`), the
-submission row also carries a second, coarser key computed from material every content-reading route
-has:
+**The store-enforced merge keys.** `ingest.submission` carries two keys, and the store decides which one
+an observation is filed under:
+
+- **Exact key** — `dedup_key`, the device's value, kept only when `kind = prompt` and a `content_digest`
+  is present (Tier T). Nullable on the submission.
+- **Weak key** — `dedup_weak_key`, derived **on the server** by `ingest.weak_dedup_key()` so that two
+  collectors written independently produce identical values. Not null on every submission:
 
 ```
-dedup_weak_key = sha256("sac-l1" ␟ tenant ␟ device ␟ tool ␟ kind ␟ bucket_start ␟ tier ␟ ladder_material)
-ladder_material(T) = prompt_digest   = sha256("sac-canon-1" ␟ "T" ␟ text ␟ "END")
-ladder_material(S) = route ␟ decimal(size_bytes) ␟ names_digest
-ladder_material(R) = window_start ␟ window_end
-ladder_material(D) = detection_basis
+dedup_weak_key = "sha256:" + hex(sha256(tenant | device | tool | kind | floor(occurred_at / 300 s) | size_bytes))
+                 fields joined by "|"; size_bytes is 0 when the record carries none
 ```
 
-**Invariant:** `dedup_key` determines `dedup_weak_key`. Two observations with equal `dedup_key` always
-have equal `dedup_weak_key`, so the two unique indexes can never disagree, and the coarser key can be
-used as the single conflict target for every merge.
+It is the brief §4.1 formula with the digest term replaced by the payload size. `kind` is in it because
+rollups and detections carry no size at all: without it a `usage_rollup` and a `model_detection` for the
+same tool in the same bucket would collapse into one record, which would be a fabrication rather than a
+merge.
+
+Two partial unique indexes enforce the ladder, and the asymmetry is the point: `(tenant_id, dedup_key)`
+is unique among rows that **have** an exact key, and `(tenant_id, dedup_weak_key)` is unique only among
+rows that have **none**. The two cover disjoint sets of rows, so they can never disagree. Exact keys
+never merge with each other, so two confident but different digests stay two rows; the weak key binds
+only rows with no exact key, so it can never pull a confident row into a merge it does not belong in.
 
 **Merge policy — what may collapse and what may not.**
 
-| Match | Merge? | Confidence | Rationale |
+| Match | Merge? | `merge_confidence` | Rationale |
 |---|---|---|---|
-| Tier T-A ↔ Tier T-A | Yes | `high` | Identical canonical form: same text, same attachment bytes |
-| Tier T-A ↔ Tier T-B | Yes, on the text ladder | `medium` | The text is provably identical; only attachment-byte availability differs, and the higher tier wins the fields |
-| Tier S ↔ Tier T-A, T-B, R or D | **No auto-merge** | — | A Tier-S observation has no text to compare, so the material cannot prove identity. Both are stored, both are counted, and the pair is listed for reconciliation |
-| Tier R ↔ Tier R, same device, tool and window | Yes, **replacing** `submission_count` and `bytes_total` rather than accumulating them | `high` | A rollup describes a period, so a re-sent window supersedes its predecessor — aggregates are upserts, never increments (C28). This is the one place a merge overwrites a number, and it is why the losing observation's own counts are kept on its immutable row |
-| Tier S ↔ Tier S, **same route**, same surrogate material, same bucket | Yes | `low` | One route cannot observe one observation stream twice, so this is a repeat; flagged `possible_undercount` |
-| Tier D ↔ Tier D, same device, tool, bucket and `detection_basis` | Yes | `medium` | The fact recorded is "a model ran", which is per device, tool and bucket, not per invocation |
+| Exact ↔ exact, equal `dedup_key` | Yes | `high` | Identical canonical form in the same bucket: same text, same attachment material |
+| Exact ↔ exact, different `dedup_key` (including Tier T-A ↔ Tier T-B) | **No** | `high` on each row | Two confident digests that differ stay two rows — canonicalisation divergence is a defect that must be visible rather than something the database papers over |
+| Exact arriving on a weak-only row with the same weak key | Yes — the row is **adopted** and takes the exact key and its digest | promoted to `high` | This is what stops a submission seen at M0 by one route and with content by another from counting twice. Same device, tool, kind, bucket and size |
+| Weak ↔ weak, same weak key (any routes) | Yes | `low` | Two routes that could not read content agree on device, tool, kind, bucket and size. The residual uncertainty stays flagged on the row |
+| Weak arriving when only an exact row exists | **No** — a new weak-only row | `low` | The weak lookup matches only rows with no exact key. Both are stored, both are counted, and the pair is a reconciliation candidate |
+| `usage_rollup` ↔ `usage_rollup`, same device, tool and bucket | Yes | `low` | A re-sent rollup folds into one logical row. The submission carries no `submission_count` or `bytes_total`; each rollup's own counts stay on its immutable observation row |
+| `model_detection` ↔ `model_detection`, same device, tool and bucket | Yes | `low` | The fact recorded is "a model ran", which is per device, tool and bucket, not per invocation. `detection_basis` is not part of the weak key |
 
-Tier dominates rank: a Tier-S observation can never win a contested field, whatever its route's rank.
+`merge_confidence` has two values, `high` and `low`: a row is `low` for exactly as long as it has no
+exact key.
+
+**As built:** the text ladder that would merge a Tier T-A and a Tier T-B observation of one submission
+— a coarser key over the canonical prompt text alone — is not implemented. The store has no
+prompt-digest column, so the two observations compute different `dedup_key` values (one carries
+`sha256:…` for the attachment, the other `~`) and remain two submissions.
 
 **Two invariants hold the line.**
 
 - **I2a — never discarded.** Every accepted observation is a row in `ingest.observation`, append-only.
   No merge deletes, no path reports `duplicate` for an `event_id` that was not previously accepted, and
   an observation with non-reconcilable material is stored and counted even when it cannot be merged.
-- **I2b — never silently merged.** A merge happens only through one of the named ladder keys above,
+- **I2b — never silently merged.** A merge happens only through one of the two named keys above,
   derived from stated material. Where identity is not proven, the system stores both, reports both, and
   refuses to guess.
 
-**The reconciliation report.** The scheduled `reconciler` emits one line per tenant per day, and the
-dashboard shows it next to any count it affects:
+**The reconciliation report.** The scheduled `reconciler` emits one line per tenant per day, recorded in
+`ops.reconciliation_run.checks`, and the dashboard shows it next to any count it affects:
 
 ```
 reconciliation(tenant, day) =
   observations_total, submissions_total, merged_pairs,
-  merged_medium, merged_low, non_reconcilable_observations, same_route_repeats,
-  bucket_straddle_superseded, unexplained_delta, candidate_pairs[]
+  merged_low, non_reconcilable_observations, same_route_repeats,
+  unexplained_delta, candidate_pairs[]
 ```
 
-- `observations_total − submissions_total` must be fully explained by `merged_pairs`, `merged_medium`,
-  `merged_low` and `bucket_straddle_superseded`.
+- `observations_total − submissions_total` must be fully explained by `merged_pairs`, `merged_low` and
+  `same_route_repeats`.
 - Anything left over appears as **"N observations with non-reconcilable digests"**, with a drill-down
   listing `event_id`, route, tier, device, tool and bucket for each — a Tier-S canvas-UI observation
   beside a Tier-T proxy observation of the same action, for example.
@@ -500,7 +531,7 @@ rate limited with `retry_after_s`; `503` unavailable with `retry_after_s`. Bodie
 | Request | `{ schema_version, enrolment_token?, csr (PKCS#10 PEM), device: { os, os_version, agent_version, mdm_id?, hardware_identity_hash }, claimed_region? }` — no hostname, no username, no directory identifiers |
 | Response | `200` `{ device_id, tenant_id, region, reenrolled: bool, credential: { cert_pem, not_after }, policy_etag, schema_version, server_time }` |
 | Errors | `400` schema violation; `401` bad bootstrap credential; `403` `revoked_device` (a revoked device may **not** re-enrol into a fresh identity — revocation is not bypassable by re-imaging), tenant inactive; `409` the hardware identity already belongs to another tenant; `410` enrolment token expired |
-| Idempotency | Store-enforced unique on `(tenant_id, hardware_identity_hash)`. Re-enrolment returns the **existing** `device_id` with `reenrolled: true` and HTTP 200, never a duplicate row (C11) |
+| Idempotency | Store-enforced unique on `(tenant_id, hardware_identity_hash)`. Re-enrolment returns the **existing** `device_id` with `reenrolled: true` and HTTP 200, never a duplicate row (C11). **As built:** `ops.device` has no hardware-identity column and no such unique constraint (its key is `(tenant_id, device_id)`), and `control-api` is not implemented, so this requirement is not yet enforced anywhere |
 | Versioning | `schema_version` admitted from the advertised set; the credential format is versioned by the CSR's signature algorithm, not by the path |
 | **ASSUMPTION:** | The enrolment profile (service FQDN, bootstrap CA set, token) is delivered by MDM. The master doc assumes MDM delivery of trust and proxy configuration (D4); this reuses that channel rather than inventing one |
 
@@ -561,9 +592,9 @@ stored row keeps its first-accepted value, because a retry is not a second recei
 | Request | Per-collector state: `state`, `version`, `last_success_at`, permission state per required permission, spool depth and dropped count (C22), `policy_bundle_version`, `signature_ok`, `clock_offset_ms`, `credential_not_after`, `kill_switch_state` |
 | Response | `200` `{ acked_at, server_time, next_report_after_s }` — cadence is server-driven so the fleet can be slowed without shipping code |
 | Errors | `400`, `401`, `403`, `413`, `429` (health is throttled harder than events: one row per device, so there is no value in high frequency) |
-| Idempotency | Upsert on `(tenant_id, device_id)`, guarded so a stale report cannot overwrite a newer one: `WHERE excluded.reported_at > existing.reported_at`. Replays are free and harmless |
+| Idempotency | Upsert into `ops.collector_state` on `(tenant_id, device_id, collector)` — one row per device per collector — guarded so a stale report cannot overwrite a newer one: `WHERE excluded.last_report_at > existing.last_report_at`. Replays are free and harmless |
 | Versioning | `schema_version` admitted from the advertised set; the per-collector array is open within a version so a new collector can report without a schema change — a new collector is *additive*, while a new field on the envelope is not (§5 versioning rules) |
-| **ASSUMPTION:** | Report interval 15 min per device; minimum accepted interval 60 s. D5's arithmetic (hourly health across 5,000 devices is ~44M rows/year, ten times the prompt events) holds a fortiori at any interval, because the channel is an upsert and stores one row per device |
+| **ASSUMPTION:** | Report interval 15 min per device; minimum accepted interval 60 s. D5's arithmetic (hourly health across 5,000 devices is ~44M rows/year, ten times the prompt events) holds a fortiori at any interval, because the channel is an upsert and stores one row per device per collector |
 
 ### 5.5 `POST /v1/content/grant` — control-api, then `PUT` to blob storage
 
@@ -582,64 +613,45 @@ stored row keeps its first-accepted value, because a retry is not a second recei
 
 ## 6. The write path and idempotency
 
-Three tables in `ingest`, one of which carries no content:
+Four tables in `ingest`. Three are on this write path, and one of those carries no content; the fourth,
+`ingest.search_text`, is the content search index, written by `content-vault` and specified in
+[03-data-platform](03-data-platform.md) §13:
 
 | Table | Key | Role |
 |---|---|---|
 | `ingest.observation` | `(tenant_id, event_id)` | One row per **observation**, append-only. Two routes observing one submission produce two rows. This is the idempotency surface |
-| `ingest.submission` | `(tenant_id, dedup_key)`, plus store-enforced unique `(tenant_id, dedup_weak_key)` | One row per **logical submission**, upserted with the fidelity tie-break, carrying `observed_routes`. `mart` aggregates are derived from this table, so a count is never inflated by overlapping routes (R9) |
-| `ingest.rejected` | `(tenant_id, rejected_id)` with TTL | Quarantine for validation failures: error report, field-presence map, content-stripped envelope (§7) |
+| `ingest.submission` | `(tenant_id, submission_id)`, plus two store-enforced partial unique indexes: `(tenant_id, dedup_key)` where an exact key is present, `(tenant_id, dedup_weak_key)` where it is not | One row per **logical submission**, folded with the fidelity tie-break, carrying `observed_routes`. `mart` aggregates are derived from this table, so a count is never inflated by overlapping routes (R9) |
+| `ingest.rejected` | `(tenant_id, rejected_id)` with TTL | Quarantine for validation failures: rejection detail, field-presence map, content-stripped envelope (§7) |
 
 **Transaction boundary.** One transaction per batch. Validation (§7) is performed entirely in memory
-before the transaction opens, so the transaction contains only writes:
+before the transaction opens, so the transaction contains only writes. The service sets the session
+tenant (`app.tenant_id`, transaction-local) and then:
 
 1. Credential status re-checked inside the transaction (§2.3) — a revocation between admission and
    commit rejects the whole batch with nothing written.
-2. `INSERT INTO ingest.observation … ON CONFLICT (tenant_id, event_id) DO NOTHING RETURNING observation_id`
-   — no row returned means this `event_id` was already accepted, and the outcome is `duplicate`. This is
-   brief §4.3's "idempotency is per event key and enforced by the store": it is a unique constraint, not
-   a prior `SELECT`.
-3. The submission upsert, whose conflict target is the ladder key so that a Tier T-A observation and a
-   Tier T-B observation of one submission land on the same row:
-
-```sql
-INSERT INTO ingest.submission (
-  submission_id, tenant_id, dedup_weak_key, dedup_key, device_id, tool_fingerprint,
-  bucket_start, prompt_digest, content_digest, winning_event_id, observed_routes,
-  observation_count, same_route_observation_count, merge_confidence, fidelity,
-  first_seen_at, last_seen_at)
-VALUES (…)
-ON CONFLICT (tenant_id, dedup_weak_key) DO UPDATE SET
-  dedup_key        = excluded.dedup_key,
-  content_digest   = excluded.content_digest,
-  winning_event_id = excluded.winning_event_id,
-  fidelity         = excluded.fidelity,
-  merge_confidence = CASE WHEN excluded.fidelity > ingest.submission.fidelity
-                          THEN excluded.merge_confidence ELSE ingest.submission.merge_confidence END,
-  upgraded_at      = now(),
-  upgrade_count    = ingest.submission.upgrade_count + 1
-WHERE excluded.fidelity > ingest.submission.fidelity;
-```
-
-4. Route recording runs **unconditionally**, because a lower-fidelity observation that loses the
-   tie-break must still be recorded as a route that saw the submission (§4.4). The guard above cannot
-   be the only statement:
-
-```sql
-UPDATE ingest.submission
-   SET observed_routes = (SELECT array_agg(DISTINCT r ORDER BY r)
-                            FROM unnest(ingest.submission.observed_routes || ARRAY[$route]::text[]) r),
-       observation_count = ingest.submission.observation_count + 1,
-       same_route_observation_count = ingest.submission.same_route_observation_count
-                                      + CASE WHEN $route = ANY(ingest.submission.observed_routes) THEN 1 ELSE 0 END,
-       possible_undercount = ingest.submission.possible_undercount
-                             OR ($route = ANY(ingest.submission.observed_routes)
-                                 AND ingest.submission.prompt_digest = $prompt_digest),
-       last_seen_at = $received_at
- WHERE tenant_id = $tenant AND dedup_weak_key = $weak_key;
-```
-
-5. `INSERT INTO ingest.rejected …` for each rejected event, in the same transaction.
+2. One call to `ingest.record_event(envelope jsonb, received_at timestamptz)` per accepted event, in
+   request order. **The write is not implemented in the service.** The function owns idempotency, the
+   dedup decision, the fidelity tie-break and the retention date, so the transport layer cannot
+   implement the tie-break differently from the storage layer
+   ([ADR 0001](adr/0001-one-validating-write-path-collectors-hold-no-database-credential.md),
+   [03-data-platform](03-data-platform.md) §4). Inside it:
+   - `INSERT INTO ingest.observation … ON CONFLICT (tenant_id, event_id) DO NOTHING`. A row count of
+     zero means this `event_id` was already accepted, and the outcome is `duplicate`. This is brief
+     §4.3's "idempotency is per event key and enforced by the store": it is a unique constraint, not a
+     prior `SELECT`.
+   - The submission is resolved in order: an existing row with this observation's exact `dedup_key`;
+     failing that, an existing row with the same `dedup_weak_key` and **no** exact key, which is
+     adopted; failing that, a new row with a fresh `submission_id`.
+   - On a match the row is updated unconditionally for route recording — `observed_routes` gains the
+     route, `observation_count` increments, the occurrence window widens and `expires_at` only ever
+     extends — and the contested fields are replaced only when the arriving route's `fidelity_rank` is
+     strictly lower than `winning_fidelity` (§4.4). A lower-fidelity observation that loses the
+     tie-break is therefore still recorded as a route that saw the submission.
+   - It returns `inserted`, `merged` or `duplicate` with the `submission_id`.
+3. The service reads back what the store decided rather than forming a second opinion: the first
+   `received_at` for a duplicate, and `winning_source` for a merge, which is what `won_fields` reports.
+4. `INSERT INTO ingest.rejected …` for each rejected event that has a quarantine code (§7), in the same
+   transaction.
 
 A write error aborts the batch and is retryable; a validation error is a per-event outcome and never
 aborts the batch. The device therefore never observes a partial commit: either the batch committed and
@@ -653,8 +665,9 @@ counts. Duplicates are **counted and reported**, never silently dropped and neve
 
 **Idempotency is enforced by the store, not by a check in application code** (brief §4.3, C12). No
 service reads-then-writes to decide whether an event is new: the unique constraint on
-`(tenant_id, event_id)` decides receipt, and the ladder constraint decides merging. The two cannot
-disagree, because `dedup_key` determines `dedup_weak_key` (§4.5). The only check-then-act in the design
+`(tenant_id, event_id)` decides receipt, and the two partial unique indexes on the submission bound
+merging. Those two cannot disagree, because they cover disjoint sets of rows (§4.5). The only
+check-then-act in the design
 is the `duplicate_batch` guard, and a race there is benign — both racers fall through to the event-key
 constraint and both events report as duplicates, which is the correct answer anyway.
 
@@ -686,23 +699,29 @@ the write transaction (§6). The reason codes are a **closed set**; a new code i
 
 **§4.3's diagnosability requirement without storing content.** brief §4.3 requires "per-reason rejection
 detail, so an agent defect is diagnosable from the server side without access to the device". That is
-`ingest.rejected`, and it holds exactly three things:
+`ingest.rejected`, and beside the device, the receive time and the expiry it holds exactly three things:
 
-| Field | Content | Why it is safe |
+| Column | Content | Why it is safe |
 |---|---|---|
-| `error_report` | Reason code, JSON Pointer, violated constraint, expected/actual **shape** only (type, pattern, enum) | Never echoes the offending value, which could be content |
-| `presence_map` | The sorted list of field **names** present on the rejected envelope, plus the ones required and missing | Field names are contract vocabulary, not content |
-| `envelope_stripped` | The envelope with `content_excerpt` removed entirely, and `content_digest` retained only if it matches the schema pattern. Labels, timestamps, identifiers and the declared mode are kept | Derived data and identifiers, no prompt text and no attachment bytes |
+| `reason_code` + `detail` | Reason code, JSON Pointer, violated constraint, expected/actual **shape** only (type, pattern, enum) | Never echoes the offending value, which could be content |
+| `field_presence` | The sorted list of field **names** present on the rejected envelope, plus the ones required and missing | Field names are contract vocabulary, not content |
+| `envelope_redacted` | The envelope with `content_excerpt`, `content_digest` and `attachments` removed entirely. Timestamps, identifiers and the declared mode are kept | Identifiers and dimensions only: no prompt text, no attachment bytes, no filename and no digest. Two check constraints refuse a row whose redacted envelope carries any of those keys, so the rule does not depend on the caller |
+
+`reason_code` carries the wire vocabulary above with two exceptions and three additions. `tenant_mismatch`
+is never quarantined, because a cross-tenant body has no honest tenant to file the row under, and
+`duplicate_batch` is batch-level and has no per-event envelope. Three storage-only codes have no wire
+equivalent: `malformed_json`, `dedup_key_mismatch` and `internal_error`.
 
 Consequences, stated so they are not discovered later: an operator can see *which* field failed, on
 *which* device, agent version and collector, and can reproduce the defect from a synthetic record —
 without the server ever holding the content that caused it. `content_excerpt` is never stored here even
 at M2, because the excerpt is content and the quarantine exists to diagnose a defect, not to keep a copy.
 
-**ASSUMPTION:** `ingest.rejected` TTL is 30 days, configurable per tenant, and is not suspended by
-holds (a hold protects collected data, and this table holds no collected content). Thirty days spans a
-release cycle plus a deployment ring, which is the interval over which an agent defect is actually
-diagnosed. Reads of `ingest.rejected` resolve to a subject and therefore write an audit entry as they
+**ASSUMPTION:** `ingest.rejected` TTL is 14 days and is not suspended by holds (a hold protects
+collected data, and this table holds no collected content). The value is the `quarantine` row of
+`ref.retention_class` — a policy setting read at write time, not a constant in the service, which falls
+back to 30 days only if that row is missing. It is meant to be long enough to diagnose a collector
+defect and short enough not to accumulate. Reads of `ingest.rejected` resolve to a subject and therefore write an audit entry as they
 are served (C30).
 
 ---
@@ -735,8 +754,9 @@ prompt events the product exists to collect, and exactly the failure brief §3.1
 per-process telemetry is emitted raw … it will dominate the entire system"). Health is also
 *current-state* information: nobody asks what a device's spool depth was at 03:00 last Tuesday, and
 answering it is not worth an unbounded data category. So `POST /v1/health` upserts one row per device
-into `ops.collector_state`, per-collector detail alongside it (C23), and only a daily per-device rollup
-enters `mart`.
+per collector into `ops.collector_state`, keyed `(tenant_id, device_id, collector)` (C23,
+[ADR 0011](adr/0011-collector-health-is-a-keyed-operational-channel-not-an-event-stream.md)), and only
+a daily per-device rollup enters `mart`, as `mart.agg_device_period`.
 
 **Fields reported.** Device: `reported_at`, `agent_version`, `clock_offset_ms`, `credential_not_after`,
 `policy_bundle_version`, `signature_ok`, `kill_switch_state`, spool `depth_events`, `spool_bytes`,
@@ -745,30 +765,33 @@ enters `mart`.
 (granted/denied/not-applicable), and any named coverage gap (E8's "detect the failure, exclude the
 process, and record that coverage was not achieved").
 
+The per-collector fields are columns of `ops.collector_state`: `state`, `version`, `permissions`,
+`last_success_at`, `last_report_at`, `spool_depth`, `spool_capacity`, `spool_dropped_total` and
+`error_code`. The device-level fields have no dedicated column; the row's `detail` JSON document is the
+only place the schema can carry them.
+
 **Two facts, never merged.** brief §3.2 forbids merging `healthy`/`degraded`/`absent`/`tampered`, and
 there are two independent ways a device can be unhealthy: it *said so*, or it *stopped talking*. Storing
-one merged enum would destroy the distinction, so the row keeps both and derives the display state:
+one merged enum would destroy the distinction, so the two facts live in two places:
 
-| Column | Values | Populated by |
+| Where | Values | Populated by |
 |---|---|---|
-| `reported_state` | `healthy · degraded · tampered` | The device's own report (C24: tamper is **reported**, never inferred from absent events) |
-| `liveness` | `current · stale · absent` | The server-side liveness job, comparing `last_seen_at` to now |
-| `state` | `healthy · degraded · absent · tampered` | Derived, never set directly, so master §5.4's four-value column stays meaningful and testable |
+| `ops.collector_state.state` | `healthy · degraded · absent · tampered` | The device's own report, per collector (C24: tamper is **reported**, never inferred from absent events) |
+| `mart.v_device_liveness.liveness` | `revoked · never_reported · stale · reporting` | Derived at read time from `ops.device`: `revoked_at`, then `last_seen_at` compared to now |
 
 **How a device that has stopped reporting becomes a record rather than an absence.** A device row exists
-from enrolment, so silence is always a row that has gone quiet, never a missing row. The liveness job
-runs on a schedule, and for any device whose `last_seen_at` is older than **3× the report interval**
-(45 min at 15 min cadence) sets `liveness = stale`; beyond **24 h** it sets `liveness = absent` and the
-derived `state = absent`, while leaving `reported_state` and the last reported fields intact and marked
-as of their timestamp. The dashboard's answer to brief §3.6 question 7 — "the state of every device's
-collection, including devices not reporting" — is then a count over rows, not an inference from an empty
-event list. Two carve-outs: a device marked `revoked` keeps that cause and is never rewritten to
-`absent` (§2.3), and a device whose last report was `tampered` keeps `reported_state = tampered` while
-`liveness` moves to `absent`, so the operator sees "it reported tampering, then stopped" rather than
-losing one of the two facts.
+from enrolment, so silence is always a row that has gone quiet, never a missing row. The liveness view
+reports a device that has never been heard from as `never_reported` and one whose `last_seen_at` is
+older than **24 h** as `stale`, while the last reported `ops.collector_state` rows stay intact and
+marked as of their `last_report_at`. The dashboard's answer to brief §3.6 question 7 — "the state of
+every device's collection, including devices not reporting" — is then a count over rows, not an
+inference from an empty event list. Two properties follow from keeping the facts apart: a revoked
+device reads `revoked` and is never rewritten to `stale` (§2.3), and a device whose last report was
+`tampered` keeps `state = tampered` on its collector row while its liveness moves to `stale`, so the
+operator sees "it reported tampering, then stopped" rather than losing one of the two facts.
 
-**ASSUMPTION:** stale at 45 min, absent at 24 h. These are chosen to be visible within one working day
-without alarming on a laptop that is simply shut overnight; both are server-side parameters and
+**ASSUMPTION:** stale at 24 h. The threshold is chosen to be visible within one working day without
+alarming on a laptop that is simply shut overnight; it is a server-side parameter, held in the view, and
 adjustable without a device release.
 
 ---
@@ -815,9 +838,12 @@ user-delegation credential rather than a storage account key.
 
 ### 10.4 Key material
 
-Per object: a random 256-bit AES-GCM key, generated for that grant, returned to the device in the
-plaintext `key.object_key_b64` field of the grant response and stored server-side **only** in its
-wrapped form. The object key is wrapped by the per-tenant key (C15), and where the customer supplies
+Per object: a random 256-bit AES-GCM key, minted and wrapped by `content-vault` for that grant
+([ADR 0006](adr/0006-content-is-ciphertext-under-per-object-keys-wrapped-by-a-per-tenant-key.md)).
+`control-api` makes the decision and relays the vault's answer; it mints no key, holds no unwrap right
+and has no grant on `ops.content_object`. The key is returned to the device in the plaintext
+`key.object_key_b64` field of the grant response and stored server-side **only** in its wrapped form, in
+`ops.content_object.wrapped_dek`, written when the finaliser records the verified object. The object key is wrapped by the per-tenant key (C15), and where the customer supplies
 that key it lives in Key Vault / Managed HSM under their control: destroying it destroys the content,
 which is how tenant offboarding and customer-held-key mode shred content (D1). The plaintext object key
 in the response is not a disclosure to the device — the device already holds the plaintext it is about
@@ -849,12 +875,19 @@ object the system will keep.
 
 ## 11. Content retrieval
 
-The analyst path lives on `query-api` (master §5.1) and is specified here only at the transport and
-authorisation level; the dashboard's shapes are in [04-dashboard-and-query](04-dashboard-and-query.md).
+The analyst path is reached through `query-api` (master §5.1) and is specified here only at the
+transport and authorisation level; the dashboard's shapes are in
+[04-dashboard-and-query](04-dashboard-and-query.md). The retrieval endpoint itself is served by
+`content-vault`, on its internal-only ingress.
+
+**As built:** `content-vault` serves `POST /v1/content/retrieval` and `POST /v1/content/redeem`.
+`query-api` serves `POST /v1/query` and its two probes and nothing else: it is configured with the
+vault's address but does not yet forward a retrieval, so the analyst-facing half of this path is not
+implemented.
 
 | Step | Requirement | Source |
 |---|---|---|
-| Request | `POST /v1/content/retrieval` with `event_id`, `case_reference`, `justification`, and `second_approver` | C16; brief §4.4 |
+| Request | `POST /v1/content/retrieval` with `event_id`, `case_reference`, `justification`, and `second_approver`, recorded as a single-use row in `ops.retrieval_grant` | C16; brief §4.4 |
 | Authentication | Entra ID; tenant from the token, never the body; forced row-level security | master §4.3 |
 | Four eyes | A **second approver distinct from the requester** must be recorded on the request. Q9 leaves open whether that is a customer-side or vendor-side role and for which tenants; the field is required either way so the API does not change when Q9 closes | C16; Q9 |
 | **Audit before serve** | The audit entry — actor, time, case reference, second approver, event, object, outcome — is written and **committed before any content byte is read**. If the fetch then fails, the entry stands. The asymmetry is deliberate: recording an access that returned nothing is safe; serving content with no record is not | C16; C30; brief §3.6 |
@@ -894,7 +927,7 @@ all.
 | Failure | Device behaviour | Operator-visible signal |
 |---|---|---|
 | **TLS failure** (handshake refused, untrusted chain, pinning mismatch, protocol below 1.3, clock so far off that the credential is not yet valid or already expired) | Do not retry in a loop: back off, record locally, report `tls_failure` with the peer's TLS alert in the next health report | mTLS failure metrics at the edge (§2.1) break down by SNI and error; `collector_state = degraded` fleet-wide if it is a CA or clock problem. Distinguish "our CA rotated and the device is stale" from "this device's clock is wrong" |
-| **Clock skew beyond tolerance** | Events continue to be accepted; the device reports `clock_offset_ms`; the bucket is unaffected because it is device-relative (§4.3) | Per-device skew in `ops.collector_state`, reported and never normalised away (C26). A skew large enough to break certificate validity windows shows up first as a TLS failure |
+| **Clock skew beyond tolerance** | Events continue to be accepted; the device reports `clock_offset_ms`; the bucket is unaffected because it is device-relative (§4.3) | Per-device skew from the health report, reported and never normalised away (C26); `ops.collector_state` has no dedicated skew column, so the row's `detail` document is the only place the schema can hold it. A skew large enough to break certificate validity windows shows up first as a TLS failure |
 | **Partial batch accepted** | Cannot happen by contract: per-event outcomes are the response, and the transaction is all-or-nothing (§6). The device acts on each event's outcome independently — `accepted` is removed, `duplicate` is removed, `rejected` is recorded and removed, retryable failures stay | `counts` per batch in ingest metrics; a rising `rejected` share per reason code, per agent version |
 | **Gateway timeout after commit** | The device does not know whether the batch landed. It re-sends **with a new `batch_id`**; the event-key constraint makes every already-committed event return `duplicate` and the rest `accepted`. No local state is discarded on a timeout | Duplicate-to-accepted ratio in ingest metrics; a spike means a gateway or timeout-configuration problem, not data loss |
 | **Duplicate batch replay** (same `batch_id` twice) | Whole batch rejected `duplicate_batch`; the device mints a fresh `batch_id` and re-sends, receiving exact per-event outcomes | Batch-level rejections counted by code; a single device repeating this is a defective agent, many devices are a spool-drain bug |
@@ -906,17 +939,18 @@ all.
 
 ## Appendix A — Store-side fields this document requires
 
-The wire contract is frozen; these live only in the database and must appear in
-[database/schema.sql](../database/schema.sql) for §4 and §6 to be implementable as written.
+The wire contract is frozen; these live only in the database, in
+[database/schema.sql](../database/schema.sql), which is the authority for their shape.
 
 | Location | Field | Purpose |
 |---|---|---|
-| `ingest.observation` | `dedup_weak_key`, `dedup_tier`, `prompt_digest`, `fidelity`, `route`, `route_rank`, `batch_id`, `received_at` | Merge target, tier provenance, deterministic tie-break, replay detection |
-| `ingest.submission` | `submission_id` (surrogate, immutable), `dedup_weak_key` (unique with `tenant_id`), `dedup_key` (unique with `tenant_id`), `observed_routes[]`, `observation_count`, `same_route_observation_count`, `possible_undercount`, `merge_confidence`, `fidelity`, `upgraded_at`, `upgrade_count`, `superseded_by` | The two-table model's logical row, its explainability, and the straddle repair (§4.3) |
-| `ingest.rejected` | `error_report`, `presence_map`, `envelope_stripped`, `expires_at` | §7, with TTL |
-| `ref.route_fidelity` | `route`, `route_rank`, `tier_rank`, `fidelity` formula | §4.4, referenced by the master doc §5.3 |
-| `ops.grant` | `state`, `reason`, `object_key_wrapped`, `key_id`, `expires_at`, `consumed_at` | §3, §10 |
-| `ops.content_object` | `state` (`not_captured · local_only · uploaded · shredded`), `shred_reason`, `raw_digest`, `receipt_ref` | §3, §11 |
+| `ingest.observation` | `received_at`, `ingested_at`, `expires_at`, beside one column per envelope field (`source` is the route) | The immutable record of what each route saw, with its materialised retention. The observation carries no merge key of its own beyond the device's `dedup_key` |
+| `ingest.submission` | `submission_id` (surrogate, immutable), `dedup_key` (nullable; unique with `tenant_id` where present), `dedup_weak_key` (unique with `tenant_id` where `dedup_key` is null), `winning_source`, `winning_fidelity`, `observed_routes[]`, `observation_count`, `merge_confidence` (`high · low`), `content_state`, `shredded_reason` | The two-table model's logical row and its explainability |
+| `ingest.rejected` | `reason_code`, `detail`, `field_presence`, `envelope_redacted`, `expires_at` | §7, with TTL |
+| `ref.route_fidelity` | `source`, `fidelity_rank` (lower wins), `yields_content` | §4.4, referenced by the master doc §5.3 |
+| `ops.grant` | `decision`, `denial_reason`, `object_id`, `upload_expires_at`, `case_reference`, `approved_by` | §3, §10 |
+| `ops.content_object` | `state` (`uploaded · shredded`), `shredded_reason`, `shredded_at`, `ciphertext_sha256` (the upload's `raw_digest`), `wrapped_dek`, `kek_id`, `kek_version` | §3, §10, §11 |
+| `ops.retrieval_grant` | `principal`, `case_reference`, `second_approver`, `raw_digest`, `expires_at`, `used_at`, `used_by` | §11: the single-use redemption record |
 
 ## Appendix B — Platform facts relied on
 
@@ -949,10 +983,10 @@ account key exists anywhere in the flow.
 | A5 | Enrolment profile (FQDN, bootstrap CA set, token) is delivered by MDM | §5.1 |
 | A6 | Batch caps: 8 MiB compressed, 32 MiB decompressed, 256 KiB per envelope | §5.3 |
 | A7 | Health report interval 15 min; minimum accepted interval 60 s | §5.4 |
-| A8 | `ingest.rejected` TTL 30 days, configurable, not suspended by holds | §7 |
+| A8 | `ingest.rejected` TTL 14 days (the `quarantine` retention class), not suspended by holds | §7 |
 | A9 | Retry backoff base 1 s, factor 2, cap 300 s, full jitter | §8 |
 | A10 | Default spool cap 250 MB per device, configurable per tenant | §8 |
 | A11 | Clock-skew flag threshold ±300 s, reporting only | §8 |
-| A12 | Liveness: stale at 45 min, absent at 24 h | §9 |
+| A12 | Liveness: stale at 24 h | §9 |
 | A13 | Grant TTL ≤15 min, single object, single write | §10.3 |
 | A14 | Rate-limit values are operational parameters set with the first deployment | §12 |

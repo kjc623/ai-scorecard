@@ -12,6 +12,11 @@ document alone. Nothing in this report was fixed by me: findings go to the Lead,
 
 Generated: 2026-10-02, build round 2. Evidence directory: `.integration/`.
 
+Everything below describes the repository as it stood at round 2, including every statement that a
+component "does not exist", that Chromium is not installed, and every `file:line` citation.
+`query/dashboard`, `vault/content-vault` and `azure/` have all landed since, and the three harness
+defects in §5.1–§5.3 are fixed in `tools/`; each of those sections says where.
+
 ---
 
 ## 0. What the five tools prove, and what they do not
@@ -328,21 +333,30 @@ BLOCKED because `query/dashboard` does not exist.
 same way. Root cause is a component defect (§5.4), but the harness turns it into "the acceptance
 command hangs forever" instead of "one package failed".
 
+**Resolved since:** every package now runs under a hard budget and `TIMEOUT` is its own status
+(`tools/verify-all.mjs:31`, `:226-259`).
+
 ### 5.2 `check-vocab.mjs` treats a missing file as a pass — **FAIL (confirmed, by construction)**
 
 `tools/check-vocab.mjs:128-131` records `ABSENT` and `continue`s when either the Go or the JS file is
 missing; findings stay empty and the script exits 0 with "No vocabulary drift". A deleted consumer is
-therefore a green gate. Today no vocabulary is ABSENT (output shows all 8 `agree`), so this is a
-latent hole, not a live false pass.
+therefore a green gate. At round 2 no vocabulary was ABSENT (output shows all 8 `agree`), so this was
+a latent hole, not a live false pass.
+
+**Resolved since:** a missing file is now recorded as a `consumer-absent` finding, and any finding
+makes the script exit non-zero (`tools/check-vocab.mjs:128-137`, `:225`).
 
 ### 5.3 `verify-all.mjs` cannot see `contracts/tools` — **FAIL (confirmed by code + discovery rule)**
 
-`findNodeTests` (lines 89-105) matches `*.test.{mjs,cjs,js}` only. `contracts/tools/verify.mjs` does
+`findNodeTests` (lines 89-105 at round 2; now 133-149) matches `*.test.{mjs,cjs,js}` only. `contracts/tools/verify.mjs` does
 not match, so the package reports `MISSING` ("no *.test.{mjs,cjs,js} under contracts/tools") once the
 run completes. The task-1 acceptance command (`node --test contracts/tools/`, which works through
 `contracts/tools/index.js`) is not the same discovery path. Fix is either a one-line
 `contracts/tools/verify.test.mjs` shim (my scope, if the Lead wants it) or a harness rule for the
 documented `verify.mjs` name (Lead's scope).
+
+**Resolved since:** a package with no `*.test.*` file is now run through its `index.{mjs,cjs,js}`
+entry (`tools/verify-all.mjs:176-182`, `:207`), which is how `contracts/tools` is reached.
 
 ### 5.4 `endpoint/capture-core` hangs the gate — **FAIL (confirmed defect, component)**
 
@@ -438,7 +452,7 @@ This section is deliberately the one that grows.
   verdict does not exist.
 - **Byte-level seam round trips not done:** capture-core <-> classifier-host framing and version
   handshake (§1b); capture-core <-> ingest-api batch shape (§1c). Both are read, not exercised.
-- **No browser, no real device, no cloud.** Chromium is not installed; nothing was exercised in a
+- **No browser, no real device, no cloud.** Chromium was not installed at round 2; nothing was exercised in a
   real extension host, over a real native-messaging pipe, or against Azure/KMS/Blob. Any claim that
   depends on those is unverified by construction.
 - **`query/dashboard`, `vault/content-vault`, `azure` do not exist**, so INV-1 and INV-3 (dashboard)
@@ -478,7 +492,7 @@ This section is deliberately the one that grows.
 | 2 | `model_detection` window fields: contract forbids all four; the DB CHECK forbids only `window_start`, and omits `classifier_version`, `content_excerpt`, `attachments` from the forbidden set | `contracts/event-envelope.schema.json` model_detection branch vs `database/schema.sql:793` | The store's second line of defence is weaker than the contract; a gap in service validation would store a shape the contract refuses | open, owner is database/ |
 | 3 | `BuildEnvelope` passes window fields for any kind; the contract now forbids them on detections | `endpoint/capture-core/core/envelope.go:154-157` vs the model_detection branch (ADR 0018) | Latent producer hole; caught at ingest instead of at mint | **confirmed, latent** (§6.3) |
 | 4 | Health derives from "a positive observation", but `MarkSuccess` fires on a degraded one | `endpoint/capture-core/core/pipeline.go:498` vs `pipeline.go:228-229` and `core/health.go:5-9` | A row built from `LastSuccess` alone could read healthy for a route whose classifier failed | open, latent (nothing reads it yet) |
-| 5 | `verify-all.mjs` cannot discover `contracts/tools/verify.mjs` | `tools/verify-all.mjs:89-105` vs task-1's required file name | A passing package would report MISSING once the run completes | open (§5.3) |
-| 6 | `check-vocab.mjs` reports a missing file as `ABSENT` and still exits 0 | `tools/check-vocab.mjs:128-131` | A deleted consumer is a green gate | open, latent (§5.2) |
+| 5 | `verify-all.mjs` cannot discover `contracts/tools/verify.mjs` | `tools/verify-all.mjs:89-105` vs task-1's required file name | A passing package would report MISSING once the run completes | resolved since — `tools/verify-all.mjs:176-182` (§5.3) |
+| 6 | `check-vocab.mjs` reports a missing file as `ABSENT` and still exits 0 | `tools/check-vocab.mjs:128-131` | A deleted consumer is a green gate | resolved since — `tools/check-vocab.mjs:128-137` (§5.2) |
 | 7 | INV-3b's tool reports "typed error" while counting any throw | `tools/check-invariants.mjs:141` (`catch { errored++ }`) | Overstated evidence; the underlying behaviour is correct (my probe confirms real `QueryError`s) | informational |
 | 8 | `duration_ms` is a Go `time.Duration` (nanoseconds on the wire) while the same file warns about exactly that for `budget_ms` | `endpoint/protocol/classifier.go:103` vs `classifier.go:44-46` | Trap for the first non-Go consumer of `stages[].duration_ms`; none exists today | informational |

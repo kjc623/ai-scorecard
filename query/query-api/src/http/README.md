@@ -43,7 +43,9 @@ reports a busy service as unready.
 
 Concurrency is bounded and the queue is bounded, per §12.3. Beyond both, a request is answered
 `429 busy` immediately rather than queued — unbounded queueing turns one tenant's pathological query
-into every tenant's latency. `createGate()` is exported and separately tested.
+into every tenant's latency. `createGate()` is exported and separately tested. The `429` is the
+gate's: a refusal from the pool itself (no connection free and its wait queue full, or none freed
+within its wait) is not a `QueryError`, so `renderError()` answers it with the generic `500`.
 
 ## Running it
 

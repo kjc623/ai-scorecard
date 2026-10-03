@@ -7,7 +7,7 @@ parameter.
 | Module | Resource family |
 |---|---|
 | `network.bicep` | The virtual network, subnets and private DNS zones |
-| `private-endpoints.bicep` | Private endpoints for every data service |
+| `private-endpoints.bicep` | Private endpoints for the PaaS resources that take one (storage, Key Vault, the registry, Log Analytics, Managed HSM); PostgreSQL is VNet-injected instead |
 | `postgres.bicep` | Azure Database for PostgreSQL Flexible Server, private-only, no firewall rules |
 | `storage-ciphertext.bicep` | The blob account holding content ciphertext |
 | `storage-exports.bicep` | The blob account holding scheduled exports |
@@ -30,10 +30,12 @@ parameter.
 exists in prose is a property that regresses:
 
 - **`content-vault` is instantiated with internal ingress only and no Front Door route.** It is the
-  only component that can unwrap content, and it must not be reachable from the internet. A CI policy
-  check fails the build if its ingress ever becomes external.
-- **The PostgreSQL server has no public path and no firewall rules.** Its private endpoint is the only
-  way in.
+  only component that can unwrap content, and it must not be reachable from the internet. The static
+  checker in `../tools/` and the policy scan defined in `../pipelines/policy-scan.yml` both fail if
+  its ingress ever becomes external.
+- **The PostgreSQL server has no public path and no firewall rules.** It is injected into a delegated
+  subnet of the virtual network (`delegatedSubnetResourceId`), not placed behind a private endpoint,
+  and that subnet is the only way in.
 
 ## Reading order
 

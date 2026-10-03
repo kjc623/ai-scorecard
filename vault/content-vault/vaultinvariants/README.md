@@ -18,9 +18,10 @@ would have caught it.
   (`grant_already_used`), and an expired grant fails with `grant_expired`.
 - **The authorised path reports unavailability rather than empty success.** Where content is gone, the
   caller gets the §11 `no_longer_available` result and a reason, never a silent success with no bytes.
-- **Search is refused when custody makes it impossible.** A `customer_held` tenant with `full_text` is
-  refused at the service boundary, so a dropped database constraint or a bypassed migration cannot turn
-  the vault into an indexer.
+- **Search is refused for a tenant that is not configured for it.** The fixture tenant is vendor-held
+  with content search `disabled`; a `Search` against it is refused at the service boundary with a
+  closed denial reason. The `customer_held` with `full_text` pair (`key_custody_search_conflict`) is
+  not constructed here — it is exercised in `internal/vault`'s own tests.
 
 Every refusal is asserted to carry a reason from the closed vocabulary rather than a generic error,
 because a refusal that cannot be grouped is a refusal nobody can count.

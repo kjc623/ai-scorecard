@@ -31,7 +31,7 @@ service cannot admit a record the store should reject:
 
 | Kind | Carries | Must not carry |
 |---|---|---|
-| `prompt` | tool, digest, size, labels, classifier version, policy decision | window fields, detection basis |
+| `prompt` | tool, size, policy decision; at M1 and above also digest, labels, classifier version and confidence, which are forbidden at M0 | window fields, detection basis |
 | `usage_rollup` | window start/end, submission count, bytes total | digest, labels, policy decision, size |
 | `model_detection` | detection basis | digest, labels, policy decision, size, window |
 
@@ -67,7 +67,9 @@ Harder: adding a kind is a contract change requiring a `schema_version` bump and
 release. That friction is deliberate.
 
 We now maintain: the contract, its generated TypeScript and Go types, and a conformance test suite —
-because the same schema now gates two collectors, two services and the dashboard.
+because the same schema now gates two collectors, two services and the dashboard. **As built:** the Go
+types are consumed by `endpoint/protocol` and `ingest-api`; the TypeScript types are generated and have
+no consumer, because the extension, `query-api` and the dashboard are plain JavaScript.
 
 Revisit if: the union grows past four or five kinds, at which point the common core is probably carrying
 too little and the kinds should become separate records on separate paths.

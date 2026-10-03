@@ -57,9 +57,12 @@ Frames were restored and the suite re-run green afterwards in both cases.
 
 ## What is deliberately NOT covered
 
-- **No browser.** Chromium is not installed, so the `chrome.*` surface, native-messaging host
-  registration, and the inline warn/block path are unverified — the extension's own suite covers
-  their logic against a fake adapter, which is a different claim.
+- **No browser.** Nothing here launches one, so this module says nothing about the `chrome.*`
+  surface, native-messaging host registration, or the inline warn/block path. The extension's own
+  suite covers their logic against a fake adapter, and `extension/tools/in-browser-check.mjs` drives
+  a real Chromium browser (Edge) with `capture-core` registered as the native host — its record is
+  `extension/tools/in-browser-check.evidence.txt`, where the blocking path is still marked not
+  observable.
 - **No server.** Draining the spool to `ingest-api` is a separate seam with its own evidence;
   nothing here asserts that a batch the device would send is accepted.
 - **No real platform facilities.** Process enumeration, the system proxy, the OS trust store and

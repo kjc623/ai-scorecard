@@ -9,7 +9,7 @@ Date: 2026-10-02
 
 `docs/01-collectors.md` §11.3's mode table describes M3's emission as "M1 fields, **no excerpt** (the schema
 forbids it at M3), and a **local content-state marker**", and the flow diagram above it says the envelope
-"notes only that content is held locally". `docs/00-architecture.md` §5.2 repeats the phrase.
+"notes only that content is held locally". `docs/00-architecture.md` §4.2 (step 5) repeats the phrase.
 
 The contract does not have such a field. `contracts/event-envelope.schema.json` defines the envelope as a
 discriminated union with `additionalProperties: false` and a closed kind registry, so there is nowhere for a

@@ -3,7 +3,8 @@
 Nineteen records. Each states the context, the decision, the alternatives that were actually
 considered, and the consequences — including what becomes harder and what would change the decision.
 
-All are `proposed`. None has been reviewed outside this package.
+Eighteen are `proposed` and one, 0008, is superseded by 0014. None has been reviewed outside this
+package.
 
 **This file is the index.** When a subsystem document and a record disagree, the record is the
 decision and the document is the explanation. The subsystem documents are listed in
@@ -12,15 +13,15 @@ decision and the document is the explanation. The subsystem documents are listed
 | # | Decision | Status |
 | --- | --- | --- |
 | [0001](0001-one-validating-write-path-collectors-hold-no-database-credential.md) | Every event enters through one validating ingest path; no collector holds a database credential | proposed |
-| [0002](0002-postgresql-is-the-server-store-sqlite-is-only-the-device-spool.md) | PostgreSQL is the server data store; SQLite is only the device-side spool | proposed |
+| [0002](0002-postgresql-is-the-server-store-sqlite-is-only-the-device-spool.md) | PostgreSQL is the server data store; SQLite is only the device-side spool (as built, the spool is an append-only encrypted segment log, not SQLite — see [endpoint/capture-spool/README.md](../../endpoint/capture-spool/README.md)) | proposed |
 | [0003](0003-the-dashboard-reads-through-a-query-api-with-a-closed-query-dsl.md) | The dashboard reads through a query API with a closed query DSL | proposed |
 | [0004](0004-observations-are-immutable-and-the-closed-envelope-is-the-record.md) | Observations are immutable, and the closed envelope **is** the normalised record | proposed |
 | [0005](0005-every-device-holds-its-own-revocable-credential-bound-to-transport.md) | Every device holds its own revocable credential, bound to its transport | proposed |
-| [0006](0006-content-is-ciphertext-under-per-object-keys-wrapped-by-a-per-tenant-key.md) | Content is ciphertext under per-object keys wrapped by a per-tenant key | proposed |
+| [0006](0006-content-is-ciphertext-under-per-object-keys-wrapped-by-a-per-tenant-key.md) | Content is stored only as ciphertext under per-object keys wrapped by a per-tenant key | proposed |
 | [0007](0007-tenant-residency-is-pinned-and-fails-closed-at-ingest.md) | Tenant residency is pinned and fails closed at ingest | proposed |
 | [0008](0008-no-server-side-content-search-in-any-key-mode.md) | ~~There is no server-side full-text search over content, in any key mode~~ | **superseded by 0014** |
 | [0009](0009-events-are-not-partitioned-at-v1-volume.md) | Events are not partitioned at v1 volume; tenant leads every key and index | proposed |
-| [0010](0010-the-envelope-is-a-discriminated-union-with-a-closed-kind-registry.md) | The envelope is a discriminated union on `kind`, with a closed kind registry | proposed |
+| [0010](0010-the-envelope-is-a-discriminated-union-with-a-closed-kind-registry.md) | The event envelope is a discriminated union on `kind`, with a closed kind registry | proposed |
 | [0011](0011-collector-health-is-a-keyed-operational-channel-not-an-event-stream.md) | Collector health is a keyed operational channel, not an event stream | proposed |
 | [0012](0012-erasure-deletes-events-and-destroys-content-keys.md) | Erasure deletes events and destroys content keys; receipts state what survived | proposed |
 | [0013](0013-no-kernel-driver-and-no-apple-entitlement-in-v1.md) | No kernel-mode component and no Apple restricted entitlement in v1 | proposed |
@@ -28,7 +29,7 @@ decision and the document is the explanation. The subsystem documents are listed
 | [0015](0015-suspension-is-a-human-decision-and-usage-is-metered-forward.md) | Suspension is a human decision with two separate gates, and usage is metered forward | proposed |
 | [0016](0016-the-classifier-host-is-one-go-source-built-for-native-and-js-wasm.md) | The classifier host is one Go source built for native and `js/wasm` | proposed |
 | [0017](0017-the-m3-content-state-marker-is-device-local.md) | The M3 content-state marker is device-local and never enters the envelope | proposed |
-| [0018](0018-model-detection-carries-no-window.md) | `model_detection` carries no window, and a kind's branch is exhaustive over the other kinds' fields | proposed |
+| [0018](0018-model-detection-carries-no-window.md) | `model_detection` carries no window, and the contract's kind branches are exhaustive | proposed |
 | [0019](0019-the-origin-validates-the-device-certificate-itself.md) | The origin validates the device certificate itself; the edge is a filter | proposed |
 
 Nineteen records. One is superseded, and the supersession is the most consequential edit in the set:
@@ -58,8 +59,8 @@ If only three are read, read these:
 
 ## Records that amend earlier ones
 
-This package supersedes an earlier design produced before the brief was available (see
-`archive/pre-brief-generic-collector/`), which described a different product. Where a decision survived
+This package supersedes an earlier design produced before the brief was available, which described a
+different product and is not kept in this repository. Where a decision survived
 re-derivation it is marked as superseding its predecessor:
 
 | This record | Supersedes | What changed |

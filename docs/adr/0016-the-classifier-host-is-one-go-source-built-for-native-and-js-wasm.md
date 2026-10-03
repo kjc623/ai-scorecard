@@ -20,7 +20,8 @@ the build host, not assumed:
 2. **There is no Rust toolchain and it cannot be installed.** `rustc`, `cargo`, `%USERPROFILE%\.cargo`,
    `%USERPROFILE%\.rustup` and `C:\Program Files\Rust*` are all absent; `rustup` is a download.
 3. **Go is present and builds both targets offline.** Go 1.27.0 produced a native binary and, with
-   `GOOS=js GOARCH=wasm`, a 2.5 MB wasm module, both from the same source, with no network.
+   `GOOS=js GOARCH=wasm`, a wasm module, both from the same source, with no network. The classifier
+   module measures 6,345,103 bytes (about 6.3 MB; `endpoint/classifier-host/reports/wasm-size.txt`).
 4. **The requirement §9.1 exists to protect is still live.** The extension's WASM copy makes the
    synchronous inline warn/block decision inside the 300 ms interactive budget
    ([01-collectors.md §7.4](../01-collectors.md)), and the native host is authoritative for the envelope's
@@ -74,7 +75,7 @@ demonstrable rather than aspirational. One language covers the whole device tier
 classifier), which removes a toolchain from the build and release path and from the endpoint's signing
 surface.
 
-**Harder.** Go's `js/wasm` runtime is roughly 2.5 MB for a trivial program, and the extension loads it
+**Harder.** Go's `js/wasm` output is large — the classifier module is about 6.3 MB — and the extension loads it
 once before the first inline decision; the 300 ms budget must therefore be measured against the real
 module with the real rules corpus, and that measurement is part of the component's acceptance rather than a
 footnote. Go's wasm target also has no direct Chrome-API access, so the classifier's inputs and outputs
@@ -84,7 +85,7 @@ form.
 **We now maintain.** A second target's build in CI, and the equivalence test that keeps the two honest —
 which is the same obligation §9.1 already created, now with a toolchain that exists here.
 
-**Revisit if:** a build host with `rustup` is available and the 2.5 MB wasm runtime plus its load cost
+**Revisit if:** a build host with `rustup` is available and the 6.3 MB wasm module plus its load cost
 threatens the 300 ms interactive budget — in that case Rust may be revisited on measurement rather than on
 preference, and this record is superseded rather than quietly ignored. This record does not change
 `endpoint/protocol`, the rules DSL, the release states, or the parser-child isolation: none of them depends

@@ -12,6 +12,14 @@
 //   node localdev/run.mjs            # up (if needed) + smoke + report, leaves the lab running
 //   node localdev/run.mjs --down     # tear the lab down and remove the volume
 //   node localdev/run.mjs --no-up    # smoke against something already running
+//
+// Addresses come from localdev/docker-compose.yml, not from this file:
+//   * on the host, the published ports are asked of `docker compose port`, so LAB_*_PORT
+//     overrides are followed without a second edit;
+//   * inside the lab's network, set LAB_INGEST_URL / LAB_VAULT_URL / LAB_QUERY_URL to the service
+//     addresses (http://ingest-api:8080 and so on) and use --no-up.
+// The two database checks run psql inside the postgres container, so they need the docker CLI on
+// either side.
 
 import { spawnSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
@@ -31,9 +39,11 @@ const DEVICE = '22222222-2222-2222-2222-222222222222';
 const DIGEST = 'sha256:' + 'a'.repeat(64);
 const KEY = 'sha256:' + 'b'.repeat(64);
 
-const INGEST = 'http://127.0.0.1:8080';
-const VAULT = 'http://127.0.0.1:8081';
-const QUERY = 'http://127.0.0.1:8082';
+// Where the three services answer. Resolved after the lab is up (see baseUrl): there is no port
+// number in this file, because the compose file is the one place that decides them.
+let INGEST;
+let VAULT;
+let QUERY;
 
 /**
  * One well-formed DSL document for the read path.
@@ -64,18 +74,39 @@ function check(name, ok, detail) {
 
 function compose(args, opts = {}) {
   const res = spawnSync('docker', [...COMPOSE, ...args], { encoding: 'utf8', env: ENV, cwd: ROOT, ...opts });
-  return { code: res.status, out: `${res.stdout ?? ''}${res.stderr ?? ''}` };
+  return { code: res.status, out: `${res.stdout ?? ''}${res.stderr ?? ''}`, stdout: res.stdout ?? '' };
+}
+
+/**
+ * The base URL of one service, from whichever side of the container boundary this runs on.
+ *
+ * An explicit URL wins: a process inside the lab's network (a container attached to `scorecard`)
+ * reaches a service by name on its container port — LAB_INGEST_URL=http://ingest-api:8080 — and the
+ * published host port means nothing there. Otherwise the answer comes from `docker compose port`,
+ * which reports the host port actually bound, so an override of LAB_*_PORT needs no second edit.
+ */
+function baseUrl(envName, service) {
+  const explicit = process.env[envName];
+  if (explicit) return explicit.replace(/\/+$/, '');
+  const r = compose(['port', service, '8080']);
+  const m = /:(\d+)\s*$/.exec(r.stdout.trim());
+  if (r.code !== 0 || !m) {
+    console.error(`lab: cannot find the published port of ${service} (${r.out.trim() || 'no output'}).`);
+    console.error(`lab: is the lab up? Or set ${envName} to the service's base URL.`);
+    process.exit(1);
+  }
+  return `http://127.0.0.1:${m[1]}`;
 }
 
 function psql(sql) {
-  const res = spawnSync('docker', ['exec', 'sac-lab-postgres-1', 'psql', '-U', 'postgres', '-d', 'shadow', '-Atc', sql], {
-    encoding: 'utf8',
-    env: ENV,
-  });
-  return (res.stdout ?? '').trim();
+  // By service, not by container name: compose owns the name it gives the container.
+  const r = compose(['exec', '-T', 'postgres', 'psql', '-U', 'postgres', '-d', 'shadow', '-Atc', sql]);
+  // A check that could not run says so, instead of failing on an empty string that reads like a count.
+  if (r.code !== 0) return `(psql did not run: ${r.code === null ? 'no docker CLI here' : r.out.trim()})`;
+  return r.stdout.trim();
 }
 
-/** One prompt envelope, shaped exactly as device/protocol and the contract require. */
+/** One prompt envelope, shaped exactly as endpoint/protocol and the contract require. */
 function prompt({ eventId, source, mode, digest = DIGEST, key = KEY, occurredAt = '2026-10-02T14:00:00Z' }) {
   const base = {
     schema_version: '1.0',
@@ -149,7 +180,12 @@ if (!NO_UP) {
   }
 }
 
-console.log('\nprobes (the paths infra/modules/container-app.bicep uses):');
+INGEST = baseUrl('LAB_INGEST_URL', 'ingest-api');
+VAULT = baseUrl('LAB_VAULT_URL', 'content-vault');
+QUERY = baseUrl('LAB_QUERY_URL', 'query-api');
+console.log(`lab: ingest-api ${INGEST}, content-vault ${VAULT}, query-api ${QUERY}`);
+
+console.log('\nprobes (the paths azure/modules/container-app.bicep uses):');
 const ingestUp = await waitFor(`${INGEST}/healthz`);
 check('ingest-api /healthz', ingestUp, ingestUp ? '200' : 'no answer within 40s');
 if (ingestUp) {
@@ -166,7 +202,7 @@ if (vaultUp) {
 
 console.log('\nthe database the compose file built:');
 const tables = psql("select count(*) from information_schema.tables where table_schema='ingest';");
-check('db/schema.sql applied (ingest tables)', tables === '4', `${tables} tables`);
+check('database/schema.sql applied (ingest tables)', tables === '4', `${tables} tables`);
 const routes = psql('select count(*) from ref.route_fidelity;');
 check('ref.route_fidelity seeded', routes === '7', `${routes} routes`);
 
@@ -292,4 +328,5 @@ if (queryUp) {
 
 console.log(`\n${failures === 0 ? 'lab: all checks passed' : `lab: ${failures} check(s) FAILED`}`);
 console.log('lab: left running. Logs: docker compose -f localdev/docker-compose.yml logs -f');
-console.log('lab: tear down with: node localdev/run.mjs --down');process.exit(failures === 0 ? 0 : 1);
+console.log('lab: tear down with: node localdev/run.mjs --down');
+process.exit(failures === 0 ? 0 : 1);

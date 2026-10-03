@@ -11,10 +11,11 @@ package was verified against SQLite, and nothing here claims to be.
 ## 1. The SQLite deviation, stated plainly
 
 docs/01-collectors.md §12 and ADR 0002 name **SQLite in WAL mode** as the device store.
-**This package does not use SQLite and does not claim to.** There is no SQLite driver
-available on this offline host: `modernc.org/sqlite` cannot be fetched with `GOPROXY=off`,
-and cgo plus a C toolchain is not present either (`go test -race` fails with
-`-race requires cgo`, which shows the same absence).
+**This package does not use SQLite and does not claim to.** No SQLite driver was available
+when this was built and run: the host had no network access then, `modernc.org/sqlite`
+cannot be fetched with `GOPROXY=off` (which the builds still set), and cgo plus a C toolchain
+is not present either (`go test -race` fails with `-race requires cgo`, which shows the same
+absence).
 
 The spool is therefore a **single-writer append-only segment log** with application-level
 AEAD encryption per record, in the spool directory. The queue-level interface it satisfies —
@@ -46,7 +47,7 @@ What SQLite would have supplied, and what this package supplies instead:
 | `keys.go` | `KeyProvider`, in-memory and file providers, the DPAPI/Keychain seam. |
 | `lock.go`, `lock_windows.go` (`LockFileEx`), `lock_flock.go`, `lock_other.go` | The single-writer lock. |
 | `errors.go` | `ErrCorrupt`, `ErrTornTail`, `ErrWriterActive`, `ErrPoisoned`, `ErrClosed`, `CorruptError`, `EntryError`. |
-| `*_test.go` | 37 test functions (plus subtests, and one `TestMain`) — see §5. |
+| `*_test.go` | 34 test functions (plus subtests, and one `TestMain`) — see §5. |
 
 ## 3. The storage abstraction, and why this one
 
@@ -130,7 +131,7 @@ linux exit=0
 ```
 
 Full raw output: `test-output.txt` (99 lines, reproduced below). The suite was also run twice
-in one process (`go test -count=2 ./...` → `ok … 4.752s`) to check that the four
+in one process (`go test -count=2 ./...` → `ok … 4.752s`) to check that the five
 killed-process tests are not timing-flaky.
 
 ```
@@ -266,7 +267,7 @@ What the test asserts after reopening:
 - A subsequent `Append` succeeds, and a second reopen shows `TornBytes == 0` and depth 6:
   recovery **truncated** the torn tail rather than leaving it for the next append to follow.
 
-Three further killed-process tests, all passing:
+Four further killed-process tests, all passing:
 
 - `TestCrashAfterMarkInFlightReturnsRecordsToPending` — killed after `MarkInFlight`; on
   reopen `Recovery.InFlightResetToPending == 5`, every record is pending again with
@@ -312,7 +313,7 @@ directions on this host.
 
 ## 8. What is NOT verified
 
-- **SQLite.** Not used, not available, not tested. §1.
+- **SQLite.** Not used, not available at the time of this run, not tested. §1.
 - **Power loss.** The crash tests kill a process. Data already handed to the kernel survives a
   process kill through the page cache; surviving a power cut needs the `fsync` the default
   configuration issues per frame (`Config.SyncEvery: 1`) — that is implemented and reviewed
@@ -327,7 +328,7 @@ directions on this host.
   handled (truncate the partial frame, otherwise poison the log and refuse further appends)
   and that path is unit-testable, but it was not exercised against a genuinely full volume.
 - **The race detector.** `go test -race` cannot run: `-race requires cgo`, and there is no C
-  toolchain on this offline host. `TestConcurrentCallersAreSerialised` (8 writers + 4 readers
+  toolchain on this host. `TestConcurrentCallersAreSerialised` (8 writers + 4 readers
   concurrently, exact counts asserted) is the closest available check, not a substitute.
 - **macOS and Linux execution.** Both targets compile (`GOOS=darwin`, `GOOS=linux`), but only
   the Windows `LockFileEx` path was executed. `lock_flock.go` is reviewed, not run.

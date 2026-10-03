@@ -7,7 +7,8 @@
 ## 0. What is not verified, stated first
 
 Every number in this document is a **list-price estimate**. It was not retrieved from Azure, not
-checked against the pricing calculator, and not confirmed by an invoice, because this host has:
+checked against the pricing calculator, and not confirmed by an invoice, because when it was written
+this host had:
 
 * **no Azure subscription,**
 * **no `az` CLI,**
@@ -55,7 +56,9 @@ price tags.
 PostgreSQL 16 in a container (the same engine, applied to `database/schema.sql` unmodified), the two Go
 services in the only store mode they currently support, the dashboard as the static file it is, and
 the device tier where it already lives: on this Windows host. Docker is available here; that is the
-whole footprint.
+whole footprint. As built in `localdev/`, it is `postgres:17-alpine` with the schema applied
+unmodified, three services in containers (`ingest-api`, `content-vault`, `query-api`), and no blob
+service.
 
 **Part A is not a consolation prize.** It is what you will use on the two evenings a week, and it is
 the only place where the browser tier and the device tier can be tested together today, because the
@@ -82,10 +85,11 @@ a command rather than a budget.
 
 ### The three prerequisites that block Part B from running the services *today*
 
-This is the most important thing in the document, and it is not about cost. **No Azure
-configuration, at any price, can currently put `ingest-api` or `content-vault` in front of
+This is the most important thing in the document, and it is not about cost. **When this was written,
+no Azure configuration, at any price, could put `ingest-api` or `content-vault` in front of
 PostgreSQL.** Not because of the infrastructure — because of four gaps in the repository, all
-verified by reading the files (§9):
+verified by reading the files (§9). The list below is the state at that time; three of the four
+have since been closed in `localdev/` and the services, and §9 records the current state of each:
 
 1. **There are no Dockerfiles anywhere in the tree.** The "services run as containers" requirement
    has no artifact yet.
@@ -127,7 +131,7 @@ Straight from the task, because a cheap lab that cannot run the architecture is 
 | 2 | **Services as containers, `content-vault` internal-only** | `modules/container-app.bicep` **unchanged**; `ingress: 'internal'` for content-vault, and the environment keeps `internalLoadBalancer: true` so the property holds at the environment level as well as the app level. | $0 for the environment; ≈$3.44 of compute, covered by Container Apps' monthly free grant |
 | 3 | **Identity and secrets stay real** | Seven user-assigned managed identities, Key Vault with RBAC authorisation, purge protection and 90-day soft delete, **no credential in the repository**. The lab's one deviation is the vault SKU (Standard, not Premium) — §6.4 and §8. | $0.15/month + $0 for the identities |
 | 4 | **Blob for ciphertext, private** | `modules/storage-ciphertext.bicep` **unchanged**: `allowBlobPublicAccess: false`, `allowSharedKeyAccess: false`, `publicNetworkAccess: 'Disabled'`, plus **a private endpoint** — which is not optional here, because with public network access disabled and no endpoint the account has no reachable path at all. | $7.30/month (the endpoint) + $0.12 (storage) |
-| 5 | **The endpoint side** | **Nothing Azure-side is required.** The agent runs on this Windows host; the extension needs Chromium, which is not installed (a local prerequisite, not an Azure one). The lab's job is the server side plus one enrolled device — and with an internal load balancer, a device outside the VNet cannot reach `ingest-api`, which is why §7.6 offers an explicitly-labelled "open mode". | $0.00 |
+| 5 | **The endpoint side** | **Nothing Azure-side is required.** The agent runs on this Windows host; the extension needs a Chromium-family browser that loads an unpacked extension (a local prerequisite, not an Azure one — Edge does, and it is what the browser gate in `tools/accept.mjs` uses). The lab's job is the server side plus one enrolled device — and with an internal load balancer, a device outside the VNet cannot reach `ingest-api`, which is why §7.6 offers an explicitly-labelled "open mode". | $0.00 |
 
 ---
 
@@ -137,11 +141,11 @@ Straight from the task, because a cheap lab that cannot run the architecture is 
 
 | Item | What runs | Cost |
 |---|---|---|
-| PostgreSQL 16 | `postgres:16` container, `database/schema.sql` applied unmodified, `database/invariants.test.sql` run as the runtime roles | $0.00 |
-| Ciphertext store | Azurite (blob emulator) or a local directory behind the same interface | $0.00 |
+| PostgreSQL | A PostgreSQL container with `database/schema.sql` applied unmodified, and `database/invariants.test.sql` run as the runtime roles. As built: `postgres:17-alpine` (`localdev/docker-compose.yml`); `postgres:16-alpine` is a one-word change | $0.00 |
+| Ciphertext store | None, as built: `localdev/` runs no blob service, because `content-vault` performs no blob I/O in this build and an emulator would prove nothing about the real account | $0.00 |
 | Services | `ingest-api` and `content-vault` built from `cmd/`, run with `-store memory` — the only mode this build supports (§1) | $0.00 |
 | Read path | `query/query-api` (Node, zero dependencies) + `query/dashboard` opened as the static file it is | $0.00 |
-| Device tier | The Windows host + Chromium for the extension (**prerequisite: Chromium is not installed**) | $0.00 |
+| Device tier | The Windows host + a Chromium-family browser for the extension (**prerequisite: one that loads an unpacked extension — Edge does**) | $0.00 |
 | **Total** | | **$0.00** |
 
 ### 3.2 Part B — the Azure fidelity lab, itemised
@@ -270,9 +274,9 @@ parameter names in `azure/`, and `<...>` marks a value you supply.
 ```powershell
 az group create -n sac-lab-run -l eastus
 
-# The lab subset. Preferred: azure/main.bicep with the three `deploy*` flags off (see §5.1),
-# which needs the six-line change to main.bicep. Until that lands, this command cannot be run
-# as a subset, and deploying main.bicep as-is costs ≈$674/month (§7.7).
+# The lab subset: azure/main.bicep with the three `deploy*` flags off (see §5.1), which is what
+# azure/params/lab.bicepparam sets. Deploying main.bicep with dev.bicepparam instead costs
+# ≈$674/month (§7.7).
 az deployment group create `
   -g sac-lab-run `
   -f azure/main.bicep `
@@ -383,11 +387,11 @@ differences are parameter values, except where a note says otherwise.
 | `modules/managed-hsm.bicep` | **Drop** | $3,358/month, per-contract only. |
 | `main.bicep` | **Parameterise, do not fork** — see §5.1 | A parallel composition drifts within a month; a `deploy*` flag does not. |
 
-### 5.1 The one change this document asks of `azure/` (reported, not made)
+### 5.1 The one change this document asked of `azure/`
 
-`main.bicep` has no way to omit Front Door, the WAF, the dashboard or the export account — only
-`deployManagedHsm` is conditional. A lab therefore needs either a **second composition**, which
-drifts, or **three booleans in the existing one**:
+When this was written, `main.bicep` had no way to omit Front Door, the WAF, the dashboard or the
+export account — only `deployManagedHsm` was conditional. A lab therefore needed either a **second
+composition**, which drifts, or **three booleans in the existing one**:
 
 ```bicep
 @description('Deploy the edge: Front Door Premium + WAF. true in every served environment; false only in a lab.')
@@ -406,7 +410,9 @@ turns this document's §3.2 table into `azure/params/lab.bicepparam` — one par
 tree, and `azure/tools/check-infra.mjs` keeps checking everything that matters (it asserts the
 content-vault ingress and the private-only settings, which the lab does not touch).
 
-I did not make this change: my write scope is `docs/lab/` only. It is finding **F9** in §9.
+I did not make this change: my write scope is `docs/lab/` only. It is finding **F9** in §9. The
+change is now in place: `azure/main.bicep` declares `deployEdge`, `deployDashboard` and
+`deployExports` (all defaulting to `true`), and `azure/params/lab.bicepparam` sets them to `false`.
 
 ---
 
@@ -436,7 +442,7 @@ unstated half is how someone concludes "it works" from evidence that never cover
 | **Zone-redundant HA / failover** | **No** | `Disabled` in the lab. **[AWAIT]** Burstable may not support zone-redundant HA at all; if it does, enabling it roughly doubles line 1a. |
 | **Managed HSM, quorum, customer-held keys** | **No** | $3,358/month and per-contract. |
 | **Scale-out, concurrency limits, p95 under load** | **No** | One replica, no load generator: the lab tests correctness, never capacity. |
-| **The device tier** | **Locally, not in Azure** | The agent runs on the Windows host; **Chromium is not installed**. With an internal load balancer, a device outside the VNet cannot reach `ingest-api` — see §7.6. |
+| **The device tier** | **Locally, not in Azure** | The agent runs on the Windows host, and the extension runs in Edge there. With an internal load balancer, a device outside the VNet cannot reach `ingest-api` — see §7.6. |
 
 ### 6.1 The honest summary
 
@@ -598,25 +604,31 @@ promoting anything:
 
 ## 9. Findings to report (each needs a decision or an `azure/` change I may not make)
 
+Each finding is stated as it stood when this document was written. Where the repository has since
+changed, the finding ends with its current state.
+
 | # | Finding | Evidence |
 |---|---|---|
-| **F1** | **No Dockerfiles exist anywhere in the repository.** "The services run as containers" has no artifact yet. | `Get-ChildItem -Recurse -Filter Dockerfile*` → nothing |
-| **F2** | **`container-app.bicep` cannot pass a command or arguments**, and both Go services are configured by **flags**, not environment variables. `targetPort` is 8080; `ingest-api` defaults to `127.0.0.1:8443` and `content-vault` to `127.0.0.1:8090` and **refuses a non-loopback bind** without `--allow-non-loopback`. A container built from these binaries would bind loopback on the wrong port and be unreachable. | `container-app.bicep` params; `{ingestion,vault}/*/cmd/*/main.go` flag definitions; `checkBindAddress` |
-| **F3** | **`main.bicep` passes environment variables no binary reads** (`SAC_PG_HOST`, `SAC_ROLE`, `SAC_BLOB_CIPHERTEXT_ENDPOINT`, `SAC_KEYVAULT_URI`, `SAC_APPINSIGHTS`). content-vault reads `CONTENT_VAULT_KMS_ENDPOINT`, `CONTENT_VAULT_KMS_MODE`, `CONTENT_VAULT_SCOPE_TIERS`; ingest-api reads nothing. | `main.bicep` env blocks; `grep SAC_` over `{ingestion,vault}/**/*.go` |
-| **F4** | **Neither service can talk to PostgreSQL or Key Vault.** No driver is compiled in (`sql.Register` absent; no pgx/lib/pq in either `go.mod`) and both refuse the SQL store; `--key-backend kms` is unimplemented and refuses to start. So **no Azure configuration, at any price, currently runs these services against the database or the vault.** | `content-vault/cmd/content-vault/main.go` (`--store sql`, `--key-backend kms` error paths) |
+| **F1** | **No Dockerfiles existed anywhere in the repository.** "The services run as containers" had no artifact. **Now closed:** `ingestion/ingest-api/Dockerfile`, `vault/content-vault/Dockerfile` and `query/query-api/Dockerfile`. | at the time, `Get-ChildItem -Recurse -Filter Dockerfile*` → nothing |
+| **F2** | **`container-app.bicep` cannot pass a command or arguments**, and both Go services are configured by **flags**, not environment variables. `targetPort` is 8080; `ingest-api` defaults to `127.0.0.1:8443` and `content-vault` to `127.0.0.1:8090` and **refuses a non-loopback bind** without `--allow-non-loopback`. A container built from these binaries would bind loopback on the wrong port and be unreachable. **Now closed on the service side:** both binaries read their settings from `SAC_*` environment variables as well as flags, and the images set `SAC_HTTP_ADDR=0.0.0.0:8080`. `container-app.bicep` still has no `command`/`args` parameter. | `container-app.bicep` params; `{ingestion,vault}/*/cmd/*/main.go` flag definitions; `checkBindAddress` |
+| **F3** | **`main.bicep` passes environment variables no binary reads** (`SAC_PG_HOST`, `SAC_ROLE`, `SAC_BLOB_CIPHERTEXT_ENDPOINT`, `SAC_KEYVAULT_URI`, `SAC_APPINSIGHTS`). content-vault reads `CONTENT_VAULT_KMS_ENDPOINT`, `CONTENT_VAULT_KMS_MODE`, `CONTENT_VAULT_SCOPE_TIERS`; ingest-api reads nothing. **Now closed:** each service reads the `SAC_*` names the deployment passes to it, and `localdev/tools/check-config-agreement.mjs` checks that they keep agreeing. | `main.bicep` env blocks; `grep SAC_` over `{ingestion,vault}/**/*.go` |
+| **F4** | **Neither service can talk to PostgreSQL or Key Vault.** No driver is compiled in (`sql.Register` absent; no pgx/lib/pq in either `go.mod`) and both refuse the SQL store; `--key-backend kms` is unimplemented and refuses to start. So **no Azure configuration, at any price, currently runs these services against the database or the vault.** **Partly closed:** `ingest-api` now carries the pgx driver behind the `sac_sql_driver` build tag (`ingestion/ingest-api/sqlpg/`); its default build, and `content-vault` in any build, still refuse `--store sql`, and `--key-backend kms` is still unimplemented. | `content-vault/cmd/content-vault/main.go` (`--store sql`, `--key-backend kms` error paths) |
 | **F5** | **`postgres.bicep` creates no Entra administrator**, while setting `passwordAuth: 'Disabled'`. The server has no usable credential until `az postgres flexible-server ad-admin create` runs, and nothing in the repository runs it — so the migration job that applies `database/schema.sql` could not connect either. | `postgres.bicep` `authConfig` (no `administrators` child resource) |
 | **F6** | **Idle replicas bill.** `main.bicep` pins `apiMinReplicas`/`vaultMaxReplicas` floors of 1–2 while `docs/05` §2 says "Consumption costs nothing when idle". At `prod` defaults that is 4 vCPU + 8 GiB continuously ≈ **$315/month**; at `dev` defaults 2.5 vCPU + 5 GiB ≈ **$197/month**; against §11.2's $27 Container Apps line. **Needs invoice verification** — Container Apps billing granularity is the one behaviour I cannot check here. *This is not the Front Door question.* | `docs/05` §2 lines 58–62; `azure/params/*.bicepparam`; §11.1 unit prices |
 | **F7** | **§11.3's "~$50 Container Apps environment" contradicts §2's "Consumption-only, no workload profiles"** (no fixed fee). The lab's total swings by $50/month on which is right. | `azure/cost-model.md` §11.3; `docs/05` §2 |
 | **F8** | **The aggregator and reconciler do not exist.** The freshness watermark, the drift panel and the erasure flow are untestable in *any* environment, lab or production. | no `aggregator`/`reconciler` source anywhere in the tree |
-| **F9** | **`main.bicep` needs three `deploy*` booleans** (§5.1) so the lab is a parameter file rather than a second composition. Six lines. | `main.bicep` — only `deployManagedHsm` is conditional |
-| **F10** | **Chromium is not installed on this host**, so the extension half of the endpoint tier cannot be tested at all until it is. | local prerequisite, not an Azure one |
+| **F9** | **`main.bicep` needs three `deploy*` booleans** (§5.1) so the lab is a parameter file rather than a second composition. Six lines. **Now closed:** `main.bicep` declares `deployEdge`, `deployDashboard` and `deployExports`, and `azure/params/lab.bicepparam` turns them off. | at the time, `main.bicep` — only `deployManagedHsm` was conditional |
+| **F10** | **Chromium was not installed on this host**, so the extension half of the endpoint tier could not be tested. **Now closed:** Edge loads the unpacked extension, and the browser gate in `tools/accept.mjs` runs it there. | local prerequisite, not an Azure one |
 
 ---
 
 ## 10. Appendix — the shape of the lab parameter file
 
-Not created here (write scope is `docs/lab/`), and shown so the change is reviewable. Every value is
-a module or composition parameter that already exists, except the three `deploy*` flags of §5.1.
+Not created by this document (write scope is `docs/lab/`), and shown so the change is reviewable.
+The file now exists as `azure/params/lab.bicepparam`, and it is the authority where the two differ:
+it sets `vaultMaxReplicas = 1`, `registryLoginServer = 'saclabeastusacr.azurecr.io'`,
+`costCenter: 'platform-engineering'`, `wafMode = 'Detection'`, and empty `alertEmails` and
+`alertWebhooks` objects. Every value is a module or composition parameter of `azure/main.bicep`.
 
 ```bicep
 using '../main.bicep'

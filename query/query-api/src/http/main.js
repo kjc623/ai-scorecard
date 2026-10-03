@@ -117,7 +117,7 @@ export async function main(env = process.env, { startClient } = {}) {
   }
 
   installSignalHandlers(service, log);
-  return { service, client, address, cfg };
+  return { service, pool, address, cfg };
 }
 
 // Only run when executed, so importing this file for a test does not start a listener.

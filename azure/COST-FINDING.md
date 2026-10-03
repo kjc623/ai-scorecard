@@ -88,9 +88,12 @@ documents say while this file records why it may be wrong by a factor of ~1.7.
 
 Two consequences, so the open question does not become invisible:
 
-1. **Every cost figure in this repository is now marked as under review**, including those quoted in
-   `README.md` and `docs/00-architecture.md` �1.4. A commercial decision should not be taken on
-   �$830�840 until �11.1 and �11.2 are made to agree.
+1. **The per-tenant figure is under review, and only one document says so where it quotes it.**
+   `docs/lab/LAB-COST.md` marks the production figure as under review (§0, §3.5, §4.5), and
+   `azure/cost-model.md` carries the contradiction as finding `FD-SHARED-OR-PER-TENANT`. `README.md`
+   and `docs/README.md` say only that all cost figures are estimates to be re-baselined, and
+   `docs/00-architecture.md` §1.4 and `docs/05-platform-delivery.md` carry no such marking. A
+   commercial decision should not be taken on ≈$830–840 until §11.1 and §11.2 are made to agree.
 2. **A lab-cost task exists (task-23, `docs/lab/LAB-COST.md`)** which is explicitly told not to inherit
    this conclusion as fact. The lab is the near-term need; the production number can wait for a real
    quote, which is the only thing that will settle it.

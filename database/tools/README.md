@@ -33,6 +33,7 @@ node database/tools/check-schema.mjs
 node --test database/tools/
 ```
 
-The runner's default host port is `55434`; it holds that server open for inspection on failure, and
-says so. If something else already holds the port it fails with a clear message rather than silently
-testing nothing — `localdev/README.md` explains the port layout and why it is not shared.
+The runner's default host port is `55434`; it leaves that server running for inspection after every
+run, pass or fail, and says so. If something else already holds the port it stops with
+`docker run failed for image …` rather than silently testing nothing — `localdev/README.md` explains
+the port layout and why it is not shared.

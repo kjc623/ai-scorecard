@@ -8,7 +8,6 @@ Retained for the reasoning, which ADR 0014 does not discard: brief §3.5's mutua
 not a preference. What changed is the response to it — a per-tenant choice rather than a global refusal.
 Do not implement anything from this record.
 
-Status: proposed
 Date: 2026-10-02
 
 Resolves: brief risk **R10**, which the brief requires to be decided "before anyone builds a content

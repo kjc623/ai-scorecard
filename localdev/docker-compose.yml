@@ -1,29 +1,45 @@
-# The $0.00 development lab (docs/localdev/LAB-COST.md §1, Part A), as one command.
+# The $0.00 development lab (docs/lab/LAB-COST.md §1, Part A), as one command.
 #
-# What it brings up:
-#   postgres     PostgreSQL 17 with database/schema.sql applied, unmodified. The document says 16; the only
-#                PostgreSQL image cached on this host is 17-alpine, and the schema applies to it
-#                unmodified (that is the same engine and version T2 verified the invariants on). On a
-#                host with a network, `postgres:16-alpine` is a one-word change.
-#   schema       a one-shot psql that applies database/schema.sql and exits. Everything else waits for it
-#                to *complete successfully*, so a schema error stops the lab instead of leaving a
-#                half-built database for a service to fail against later.
-#   ingest-api   the lab image, on 0.0.0.0:8080, answering /healthz and /readyz.
-#   content-vault the lab image, on 0.0.0.0:8080 inside the container, published as 8081.
+# What it brings up, and where each service answers. This table is the one place the addresses are
+# decided; localdev/run.mjs and localdev/README.md read from it rather than repeating it.
+#
+#   service        from a container on the network   from the host (default)   host port variable
+#   postgres       postgres:5432                     localhost:5432            LAB_PG_PORT
+#   ingest-api     http://ingest-api:8080            http://localhost:8080     LAB_INGEST_PORT
+#   content-vault  http://content-vault:8080         http://localhost:8081     LAB_VAULT_PORT
+#   query-api      http://query-api:8080             http://localhost:8082     LAB_QUERY_PORT
+#   schema         a one-shot psql that applies database/schema.sql and exits; nothing connects to it
+#
+#   * Every service listens on its own fixed port INSIDE its container (8080 for the three APIs).
+#     Only the host side is configurable: set the variable, or put it in localdev/.env.
+#   * The network is named `scorecard` so a container that is not in this file can join it
+#     (`networks: { scorecard: { external: true } }`) and use the left-hand addresses. The published
+#     host ports mean nothing from inside the network.
+#   * `schema` is idempotent, and everything else waits for it to *complete successfully*, so a
+#     schema error stops the lab instead of leaving a half-built database for a service to fail
+#     against later.
+#   * PostgreSQL is 17 where docs/lab/LAB-COST.md says 16: the schema applies to it unmodified (the
+#     same engine and version T2 verified the invariants on), and `postgres:16-alpine` is a one-word
+#     change.
 #
 # What it does NOT bring up, and why:
-#   * blob storage (azurite/minio are both cached) — content-vault performs no blob I/O in this build
-#     (it holds wrapped keys; ciphertext goes straight from device to blob under a grant), so a fake
-#     blob account would prove nothing. docs/localdev/LAB-COST.md §6 lists that as untestable here.
+#   * blob storage — content-vault performs no blob I/O in this build (it holds wrapped keys;
+#     ciphertext goes straight from device to blob under a grant), so a fake blob account would
+#     prove nothing. docs/lab/LAB-COST.md §6 lists that as untestable here.
 #   * the dashboard and the device tier — they run on the host, not in this file.
-#   * anything with a real credential. There is no secret in this file: see "Credentials" in README.
+#   * anything with a real credential. There is no secret in this file: see "The credential the lab
+#     uses" in localdev/README.md.
 #
-# Requires the images from `node localdev/build.mjs`, which cross-compiles the two binaries and packages
-# them with `docker build --target lab`. There is no `build:` stanza here on purpose: the Dockerfiles'
-# `build` stages need a golang image this host does not have, and a compose file that cannot build is
-# worse than one that says where images come from.
+# Requires the images from `node localdev/build.mjs`, which cross-compiles the two Go binaries and
+# packages all three services with `docker build --target lab`. There is no `build:` stanza here on
+# purpose: the Go Dockerfiles' `build` stages need a golang image, and the lab is meant to run on a
+# host that has neither that image nor a network.
 
 name: sac-lab
+
+networks:
+  default:
+    name: scorecard
 
 services:
   postgres:
@@ -32,11 +48,12 @@ services:
       # A throwaway credential for a container that listens on the host's loopback and holds nothing
       # but the lab's own schema. It is not a secret and is not used by anything else; a deployed
       # PostgreSQL on this architecture authenticates a managed identity and passes no password
-      # (infra/main.bicep passes none, and §5.4 forbids one in a plaintext variable).
+      # (azure/main.bicep passes none, and §5.4 forbids one in a plaintext variable).
       POSTGRES_PASSWORD: sac-lab-only
       POSTGRES_DB: shadow
     ports:
-      - "5432:5432"
+      # host:container. The host side is a default — see the table at the top of this file.
+      - "${LAB_PG_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d shadow"]
       interval: 2s
@@ -84,10 +101,10 @@ services:
       schema:
         condition: service_completed_successfully
     ports:
-      - "8080:8080"
+      - "${LAB_INGEST_PORT:-8080}:8080"
     environment:
       # The deployment's own vocabulary, which is the point of the lab: the names
-      # infra/main.bicep passes are read by the binary here too.
+      # azure/main.bicep passes are read by the binary here too.
       SAC_ROLE: ingest-api
       SAC_PG_HOST: postgres
       SAC_PG_DATABASE: shadow
@@ -111,7 +128,7 @@ services:
       schema:
         condition: service_completed_successfully
     ports:
-      - "8081:8080"
+      - "${LAB_VAULT_PORT:-8081}:8080"
     environment:
       SAC_ROLE: content-vault
       SAC_PG_HOST: postgres
@@ -129,7 +146,7 @@ services:
     ports:
       # 8082 on the host, 8080 in the container: the same layout ingest-api and content-vault use, so
       # a reader learns one convention rather than three.
-      - "8082:8080"
+      - "${LAB_QUERY_PORT:-8082}:8080"
     environment:
       SAC_ROLE: sac_query
       SAC_PG_HOST: postgres
@@ -147,7 +164,7 @@ services:
       # off HERE and only here. It is spelled out rather than defaulted: config.js refuses a value it
       # does not recognise, and 'disable' is the only way to get plaintext.
       SAC_PG_SSLMODE: disable
-      # TEST ONLY, and the same escape hatch ingest-api uses below: there is no authenticated session
+      # TEST ONLY, and the same escape hatch ingest-api uses above: there is no authenticated session
       # yet, so a development header stands in for it. Off unless set, and a real deployment sets
       # neither this nor the header.
       SAC_DEV_TRUST_PRINCIPAL: "1"

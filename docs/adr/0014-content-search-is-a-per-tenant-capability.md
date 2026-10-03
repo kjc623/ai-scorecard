@@ -42,7 +42,9 @@ made once, per tenant, at onboarding — which is what "cannot be retrofitted" d
 
 **Storage:** `ingest.search_text`, one row per searchable unit — the prompt body and each attachment
 filename — with a generated `tsvector` column, a GIN index that leads with `tenant_id`, and a partial
-trigram index for filenames. Both extensions are on the Azure Flexible Server allow-list.
+trigram index for filenames. It needs two extensions, `pg_trgm` and `btree_gin`; the server's
+`azure.extensions` allow-list parameter is set to both in `azure/modules/postgres.bicep`, and their
+availability in each target region is still to be confirmed (master doc Q12).
 
 **Search executes in `content-vault`, not `query-api`.** The vault already holds the only unwrap rights
 and has internal-only ingress. `query-api` calls it and is not granted `SELECT` on the index, so the

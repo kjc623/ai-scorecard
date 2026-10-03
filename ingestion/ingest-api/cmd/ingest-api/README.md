@@ -41,11 +41,11 @@ for; `node localdev/tools/check-config-agreement.mjs` adds both Dockerfiles and 
 | contract schema | `--schema` | `SAC_SCHEMA` |
 | route ranking | `--routes-file` | `SAC_ROUTES_FILE` |
 | region | `--region` | `SAC_REGION` |
-| blob endpoint (unused) | `--blob-ciphertext-endpoint` | `SAC_BLOB_CIPHERTEXT_ENDPOINT` |
+| blob endpoint (unused) | — | `SAC_BLOB_CIPHERTEXT_ENDPOINT` |
 | telemetry | — | `SAC_APPINSIGHTS` |
 | server certificate / key / client CA | `--tls-cert`, `--tls-key`, `--tls-client-ca` | `SAC_TLS_CERT_PEM`, `SAC_TLS_KEY_PEM`, `SAC_TLS_CLIENT_CA_PEM` |
 
-Two entries are deliberately inert. `SAC_BLOB_CIPHERTEXT_ENDPOINT` is read, validated and reported
+Three entries are deliberately inert. `SAC_BLOB_CIPHERTEXT_ENDPOINT` is read, validated and reported
 unused, because the ingest path performs no blob I/O and a deployment parameter nobody reads is worse
 than one read and declared inert. `SAC_APPINSIGHTS` is read, validated and never logged: it is a
 credential, and this build exports no telemetry to it. `--region` is passed by nobody today, so §12

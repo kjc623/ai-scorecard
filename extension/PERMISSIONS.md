@@ -5,8 +5,9 @@
 discovered in a review". This file is that justification. The manifest carries no comments, because
 JSON does not admit them and Chrome rejects a manifest that carries extra keys.
 
-Every entry below names the module that uses it. `contract.test.mjs` asserts that this list is
-exactly the manifest's list, so a permission cannot be added without a justification appearing here.
+Every entry below names where it is used. `contract.test.mjs` asserts that the manifest's
+`permissions` are exactly the six listed here, against a list written in the test; it does not read
+this file, so keeping the table in step with the manifest is a manual edit.
 
 ---
 
@@ -17,12 +18,14 @@ exactly the manifest's list, so a permission cannot be added without a justifica
 | `webRequest` | `src/registration.js`, `src/chrome-adapter.js` | The observation layer of §7.1. The extension must see every request the browser makes, on every host, because a curated destination list cannot find a tool nobody enumerated (E5, C7). It is read-only: the extension observes, it does not rewrite. |
 | `webRequestBlocking` | `src/registration.js`, `src/enforce.js` | §7.4/E1. Chromium removed this from ordinary extensions; a **policy-installed** extension retains it, which is what makes inline warn/block possible while a request is still pending. It is used for exactly one thing: returning `{cancel: true}` after a locally decided `blocked` rule has matched. A request that is not blocked is never delayed beyond the inline decision, and no request is ever modified. |
 | `nativeMessaging` | `src/native.js` | §3.4/A2. Native messaging is the only supported channel from an MV3 extension to a privileged process, and it is bidirectional — which is what lets the inline decision use policy the extension already holds instead of a round trip. Observations leave through this channel and nowhere else. |
-| `scripting` | `manifest.json` content-script declaration | §7.3 needs a content script in the page's isolated world, because a `File` object exists nowhere else. Declared statically rather than injected, so the drop listener is installed before the page's own scripts run. |
+| `scripting` | No module calls `chrome.scripting` | §7.3 needs a content script in the page's isolated world, because a `File` object exists nowhere else. That script is declared statically in `manifest.json` (`content_scripts`) rather than injected, so the permission is declared but has no call site in this package. |
 | `tabs` | `src/chrome-adapter.js` (`warnUser`) | §7.4's `warned` decision must be *rendered before the request proceeds*, which means reaching the tab that made the request. Used to send the confirmation and to resolve the active tab when the request carries none. The extension reads no tab content through it. |
 | `alarms` | `background/service-worker.js` | An MV3 service worker is killed aggressively. The health report (§4.3, §15.2) and the policy poll (§11.3) must happen on a schedule rather than only when traffic happens, or a device that is idle would report nothing and a mode change would not take effect until the next request. |
 
 **Deliberately absent:** `storage` (local, sync or session) — §7.1: "the extension holds nothing
-durable"; nothing here persists. `cookies`, `history`, `bookmarks`, `downloads`, `management`,
+durable"; nothing here persists. `src/chrome-adapter.js` does contain a guarded accessor over
+`chrome.storage.session`, but no module calls it, and the manifest does not request the permission.
+`cookies`, `history`, `bookmarks`, `downloads`, `management`,
 `clipboardRead`, `debugger` — no module uses them and no requirement asks for them.
 `declarativeNetRequest` — it cannot express a decision that depends on the body, which is what §7.4
 requires.
@@ -35,9 +38,11 @@ requires.
 
 **The compensating controls, stated here rather than left implicit**, because the breadth is real:
 
-1. **Nothing leaves the process except matched observations.** The §8.2 predicate runs locally and a
-   negative match is counted, never emitted (§7.3). On the wire there is only ever an envelope the
-   contract admits.
+1. **No request is reported unless it matched.** The §8.2 predicate runs locally and a negative
+   match is counted, never emitted (§7.3). What leaves the process goes to `capture-core` over the
+   native channel as `endpoint/protocol` messages: matched observations, attachment frames for
+   them, the health report and the policy sync. The extension does not mint envelopes;
+   `capture-core` builds the contract envelope from the observation.
 2. **No body is ever written to extension storage**, because the extension has no durable storage
    (see above). Undeliverable observations sit in a bounded in-memory queue (§3.4).
 3. **At M0 a destination's body is never read at all.** The body-bearing `webRequest` listener is not
@@ -52,9 +57,11 @@ requires.
 ## `web_accessible_resources`
 
 The content script's own ES modules are listed so that its dynamic imports resolve. Without the
-declaration the content script fails to load in Chromium. The listed files are logic modules only —
-no entry point, no manifest, no test file — and the list is asserted by `contract.test.mjs` to be
-exactly what the content script imports.
+declaration the content script fails to load in Chromium. The list is `content/content-script.js` —
+the module `content-boot.js` imports, which holds the content-script wiring — and the `src/` modules
+it reaches; no manifest and no test file. `contract.test.mjs` asserts that every file
+`content-boot.js` loads by URL, and each of the six `src/` modules, is in the list. It checks
+inclusion, not that the list contains nothing else.
 
 ## `content_scripts`
 

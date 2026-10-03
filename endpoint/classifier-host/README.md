@@ -5,7 +5,7 @@ of the §10 document-parsing child: one Go source built for two targets — the 
 the extension's in-page copy (`GOOS=js GOARCH=wasm`). It exists so rules and model cannot drift
 between the two places a verdict is produced, and so the classifier never sees who is being
 classified. [ADR 0016](../../docs/adr/0016-the-classifier-host-is-one-go-source-built-for-native-and-js-wasm.md)
-made the language Go on this offline host; [TOOLCHAIN-DECISION.md](TOOLCHAIN-DECISION.md) records what
+made the language Go, decided when the build host had no network and no Rust toolchain; [TOOLCHAIN-DECISION.md](TOOLCHAIN-DECISION.md) records what
 that preserves and what it costs.
 
 The pipeline runs normalise, rules, validators, model, and the output is labels plus a confidence
@@ -28,10 +28,11 @@ or route field, and a compile-time guard keeps it that way.
 
 ## Build, test, measure
 
-The build host is offline: standard library only, `GOPROXY=off`.
+The build is offline by choice: standard library only, `GOPROXY=off`.
 
 ```powershell
-$env:GOCACHE="$PWD\.tools\gocache"; $env:GOPROXY="off"; $env:GOTOOLCHAIN="local"; $env:GOFLAGS="-mod=mod"
+# from endpoint/classifier-host
+$env:GOCACHE="$PWD\..\..\.tools\gocache"; $env:GOPROXY="off"; $env:GOTOOLCHAIN="local"; $env:GOFLAGS="-mod=mod"
 go test ./...                                   # builds both targets and runs the suite
 go build -o classifier-host.exe ./cmd/classifier-host
 $env:GOOS="js"; $env:GOARCH="wasm"; go build -o classifier-host.wasm ./cmd/classifier-host
@@ -43,15 +44,23 @@ Remove-Item Env:GOOS; Remove-Item Env:GOARCH
 [MEASUREMENTS.md](MEASUREMENTS.md), which is the full record. `endpoint/protocol` comes in through a
 local `replace`, and `tools/wasm_exec.js` is a verbatim copy of Go 1.27's shim.
 
+The resident host is started with `serve`, which takes a signed release directory and the
+release-signing public key. The transport defaults to `stdio` on Windows and `unix` elsewhere;
+`unix` and `tcp` need `--addr`:
+
+```powershell
+.\classifier-host.exe serve --release DIR --pubkey HEX --transport unix --addr PATH
+```
+
 ## Measured (2026-10-02, Windows, Go 1.27.0, Node 22.23.1)
 
 - **§9.1 equivalence: executed and passing.** 20 corpus cases, 13 with labels, 2 degraded,
   byte-identical output (8,142 bytes) from `windows/amd64` and `js/wasm`.
 - **§9.4 budget: within on both targets.** Native stage p95 — normalise 0.003 ms, rules 0.134 ms,
-  validators 0.001 ms, model 0.006 ms — against a 105 ms sum of shares; wasm 0.022 / 0.548 / 0.005 /
-  0.031 ms against 150 ms. Whole classification p95: 0.144 ms native, 0.592 ms wasm. `reports/` is
+  validators 0.001 ms, model 0.005 ms — against a 95 ms sum of shares; wasm 0.019 / 0.565 / 0.004 /
+  0.029 ms against 150 ms. Whole classification p95: 0.144 ms native, 0.608 ms wasm. `reports/` is
   authoritative, and `measure` fails loudly if a stage leaves its share.
-- **js/wasm module: 6,344,880 bytes**, compile and instantiate 12.4–14.1 ms — well over ADR 0016's
+- **js/wasm module: 6,345,103 bytes**, compile and instantiate 12.3–12.8 ms — well over ADR 0016's
   ~2.5 MB estimate for a *trivial* program, comfortably inside the 300 ms interactive budget.
 - **§10 hostile documents, all bounded, the parent survives every one:** a bomb to
   `parser_output_cap`; 5000-deep JSON to `parser_failed`; 8 MiB and over-cap declarations refused
@@ -120,21 +129,21 @@ dying, so the parent derives a residency cap from any job cap it sets.
 §9–§10 do not settle these; each is implemented one way and named here rather than left implicit. The
 numbering is stable — MEASUREMENTS.md cites items 1, 7, 8 and 15.
 
-1. **Unicode normalisation is a documented subset, not NFKC.** `golang.org/x/text` is not fetchable offline, so `norm` folds width forms, Unicode spaces, zero-width and format characters, and line endings. Because §9.2 makes normalisation part of the dedup contract, ingest must adopt this subset or the two must be reconciled — **open**.
+1. **Unicode normalisation is a documented subset, not NFKC.** The build is standard-library only with `GOPROXY=off`, so `golang.org/x/text` is not a dependency (it is fetchable when the module proxy is enabled), and `norm` folds width forms, Unicode spaces, zero-width and format characters, and line endings. Because §9.2 makes normalisation part of the dedup contract, ingest must adopt this subset or the two must be reconciled — **open**.
 2. **§9.4's "emit labels found" versus the protocol's degraded shape.** A degraded response carries none; the labels found are kept in `Verdict.PartialLabels` plus counters. **Open** if the audit trail is expected to carry them.
 3. **Label-set merge.** Two rules producing one class combine keyed by class, highest score wins, and the count suppressed is recorded.
 4. **Confidence bands.** Rules+validators is `high`; model-only is `medium` at ≥ 0.85 and `low` below; a completed run that found nothing is `high`.
 5. **Stage names.** `rules | validators | model | parse` is documented; the pipeline also records `normalise`, `release` and `mode`. The field is a free string, so nothing breaks, but the set is **open**.
 6. **Rule "family".** An optional `family` field defaults to the class; families evaluate in declaration order and a budget stop happens at a rule boundary inside the family.
 7. **Windows named-pipe transport is NOT IMPLEMENTED.** Windows serves over stdio, macOS over a Unix-domain socket, tests over loopback TCP; a hand-rolled `CreateNamedPipe` adapter is the remaining work.
-8. **macOS residency monitoring is NOT IMPLEMENTED.** No `/proc`, no offline libproc binding, so the child is bounded by timeout and hard kill only and the result says the memory cap is not active.
+8. **macOS residency monitoring is NOT IMPLEMENTED.** No `/proc`, no libproc binding in the standard library, so the child is bounded by timeout and hard kill only and the result says the memory cap is not active.
 9. **`go test -race` is NOT VERIFIED**: `-race` needs cgo and there is no C compiler. Concurrency is covered by `TestClassifyIsSafeForConcurrentUse`, which is not a substitute for the race detector.
 10. **The model artefact is a development fixture** — a small hand-written linear scorer. What is proven is the mechanism: digest-verified load, integer scoring, deterministic across targets, skippable when missing or unverified.
 11. **PDF is not parseable.** The standard library has no PDF parser; `.docx/.xlsx/.pptx/.odt/.ods`, `.gz`, JSON, XML, CSV and text are. A PDF returns `unsupported_media_type`, degrades, and adds a per-format coverage row.
 12. **Request digest versus host digest.** The host computes and returns its own digest and *counts* a disagreement without degrading, because that is a dedup-contract defect rather than a classification failure. **Open**: which side is authoritative.
 13. **Deferred parses.** For a document over the inline threshold (64 KiB default) the synchronous answer is degraded with `parse_deferred` set; producing the real labels later is `capture-core`'s async path.
 14. **The enforcement half of a verdict has no home in `endpoint/protocol`** — see the release-states section. **Open** if the Lead prefers a protocol-level frame type.
-15. **The wasm module is 6.34 MB against ADR 0016's ~2.5 MB estimate.** The cost that matters is ≈13 ms to compile and instantiate against a 300 ms budget, so the ADR's revisit trigger is not met; trimming the in-page build is available work if the extension measures worse.
+15. **The wasm module is 6.35 MB against ADR 0016's ~2.5 MB estimate.** The cost that matters is ≈12–13 ms to compile and instantiate against a 300 ms budget, so the ADR's revisit trigger is not met; trimming the in-page build is available work if the extension measures worse.
 16. **A resident shadow release doubles classification work per request**, and the shadow run is not separately budgeted or counted in the p95.
 17. **`ClassifyRequest.ReleaseID` is refused, not honoured.** A caller never selects a release; policy does, so a mismatching value is a degraded refusal (`release_load_failed`).
 18. **The parser child's test hooks are shipped.** `CLASSIFIER_HOST_TESTHOOK_{ALLOC_MB,SLEEP_MS,EXIT,GARBAGE}` can only make the child *less* well behaved; deleting them would mean the §10 tests no longer exercise the shipped child.

@@ -24,7 +24,7 @@ documentation. Statements the schema does not yet have are emitted commented out
    boot, so a typo in a deployment parameter is a startup failure rather than a first-request failure.
 3. Picks the key backend. `local` uses `keys.NewLocal()`, or `keys.OpenLocal(file)` with `--key-file`.
    `kms` **refuses to start** unless `--allow-unimplemented-kms` was passed, naming the backend, the
-   endpoint and the reason (no network, no cloud SDK). A deployment must not report a KMS it does not
+   endpoint and the reason (the backend is not implemented in this build). A deployment must not report a KMS it does not
    have, so the refusal is the feature.
 4. Refuses `--store sql` with the driver, the DSN it would have used and the evidence that does exist —
    "the one thing this must never do is start in memory and let a deployment believe it is persisting".
@@ -58,8 +58,9 @@ source, and `localdev/tools/check-config-agreement.mjs` adds both Dockerfiles an
 
 `SAC_KEYVAULT_URI` supersedes `CONTENT_VAULT_KMS_ENDPOINT` for the `kms` backend; the
 `CONTENT_VAULT_*` variables are inputs from the control plane (scope tiers, KMS mode) rather than
-deployment parameters, which is why they keep those names. `SAC_BLOB_CIPHERTEXT_ENDPOINT` and
-`SAC_APPINSIGHTS` are read, validated and then reported unused: this build performs no blob I/O and
+deployment parameters, which is why they keep those names. `SAC_BLOB_CIPHERTEXT_ENDPOINT` is
+read, validated as a URL and then reported unused; `SAC_APPINSIGHTS` is read and reported unused
+without being validated, and its value is never logged. This build performs no blob I/O and
 exports no telemetry, and saying so beats leaving a deployment to assume otherwise.
 
 ## Probes

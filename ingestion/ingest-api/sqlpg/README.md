@@ -7,12 +7,13 @@ production path still uses a real driver.
 
 ## Why a build tag
 
-The offline host cannot fetch modules (`GOPROXY=off`) and the acceptance harness runs every Go package
-with `GOMODCACHE` pointed at an empty directory. A dependency the default build needs would turn the
-packages gate red on a clean machine. So the driver is imported only under `sac_sql_driver`, and that
+The gates run with `GOPROXY=off` by choice, so nothing is fetched during a gate run, and the acceptance
+harness runs every Go package with `GOMODCACHE` pointed at its own directory (`.tools/gopath/pkg/mod`).
+A dependency the default build needs would turn the packages gate red on a machine whose cache does not
+hold it. So the driver is imported only under `sac_sql_driver`, and that
 tag is never set by the default build, the gate, or the lab images. The `require` lines in `go.mod` are
-inert without the tag: module-graph pruning means an unused requirement is never loaded, which is what
-the packages gate passing on an empty module cache demonstrates.
+inert without the tag: module-graph pruning means an unused requirement is never loaded, so the default
+build needs nothing from the module cache.
 
 The two commands, and the difference between them:
 

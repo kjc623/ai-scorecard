@@ -1,10 +1,9 @@
 # `src/pg/` — the PostgreSQL wire client
 
 A complete PostgreSQL client in plain Node, with no dependencies. It is the only database driver in
-this repository that is neither `psql` nor a build-tagged Go driver, and that is a constraint rather
-than a preference: **there is no external dependency anywhere in this tree and no network to fetch
-one**, so `pg` is not available and writing the protocol is the only way for the service to read the
-database at all.
+this repository that is neither `psql` nor a build-tagged Go driver, and that is a rule rather
+than a preference: **there is no external dependency anywhere in this tree**, so `pg` is not used
+and the service reads the database by speaking the protocol itself.
 
 | File | Responsibility |
 |---|---|

@@ -21,7 +21,7 @@ the code, not a second copy of the design.
 | [integration/](integration/README.md) | Test-only module that wires the pieces together for real, because every component suite only proves the component against its own fakes. |
 
 `capture-extension` is the fourth device process and lives in [extension/](../extension), outside
-this tree: it is TypeScript and Manifest V3, and it is the only component that can see browser
+this tree: it is plain JavaScript (ES modules) and Manifest V3, and it is the only component that can see browser
 internals. Its seam with `capture-core` is `protocol/native.go`.
 
 ## How the parts compose
@@ -44,7 +44,9 @@ enforcing — the previous one stays in force, or the device runs at M0 with non
 
 ## Build and test
 
-Go commands on this host need the offline prefix and no network:
+Go commands run with the offline prefix. The modules depend on the standard library and on each
+other only, and the repository's gates set `GOPROXY=off` by choice, so no build reaches the network.
+With `$PWD` at the repository root (where `.tools\` lives):
 
 ```powershell
 $env:GOCACHE="$PWD\.tools\gocache"; $env:GOPROXY="off"; $env:GOTOOLCHAIN="local"; $env:GOFLAGS="-mod=mod"
@@ -68,12 +70,15 @@ end-to-end run.
   capability is missing the component reports `degraded` with a named detail instead of claiming
   health.
 - **SQLite.** [ADR 0002](../docs/adr/0002-postgresql-is-the-server-store-sqlite-is-only-the-device-spool.md)
-  names SQLite in WAL mode for the device spool; no SQLite driver is fetchable on this offline host,
-  so the spool is an append-only segment log behind the same `protocol.Store` interface. The
-  deviation is stated in [capture-spool/doc.go](capture-spool/doc.go) and is not presented as SQLite.
+  names SQLite in WAL mode for the device spool. The spool was written without network access and
+  the builds run with `GOPROXY=off`, so no SQLite driver is a dependency, and cgo is unavailable
+  (the build host has no C compiler); the spool is an append-only segment log behind the same
+  `protocol.Store` interface. A pure-Go driver is fetchable when the module proxy is enabled and
+  could satisfy that interface later. The deviation is stated in
+  [capture-spool/doc.go](capture-spool/doc.go) and is not presented as SQLite.
 - **Rust, and the language change that replaced it.** [ADR 0016](../docs/adr/0016-the-classifier-host-is-one-go-source-built-for-native-and-js-wasm.md)
   makes the classifier host one Go source compiled to native and `js/wasm`, because §9.1's requirement is
-  byte-identical labels from one source rather than a particular language — and there is no Rust toolchain
-  on this host and no network to fetch one. The decision is recorded; the files that stated the original
+  byte-identical labels from one source rather than a particular language — and when it was decided the build
+  host had no Rust toolchain and no network to fetch one. The decision is recorded; the files that stated the original
   choice ([docs/00 §4.1](../docs/00-architecture.md), [docs/01 §3.1 and §9.1](../docs/01-collectors.md))
   were corrected to point at it.

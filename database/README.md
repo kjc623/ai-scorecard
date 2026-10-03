@@ -29,8 +29,8 @@ therefore prove nothing about it:
 powershell -NoProfile -ExecutionPolicy Bypass -File database/tools/run-invariants.ps1
 ```
 
-That starts a throwaway server, applies `schema.sql`, runs `invariants.test.sql`, and reports the
-assertion tally. It is gate 8 of `node tools/accept.mjs`. The assertions cover the collection-mode
+That starts — or reuses — the `shadowpg-invariants` container, applies `schema.sql`, runs
+`invariants.test.sql`, and reports the assertion tally. The container is left running afterwards. It is gate 8 of `node tools/accept.mjs`. The assertions cover the collection-mode
 boundary, tenant isolation (including fail-closed behaviour with no tenant set), the two-tier dedup
 ladder, the policy ceiling, the audit hash chain, append-only enforcement, retention materialisation,
 and the states the brief says must never be merged.

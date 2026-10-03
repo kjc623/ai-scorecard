@@ -16,8 +16,10 @@ this document had to make that `docs/04` left open — read it before filing a b
 
 ## 1. Two ways to ask
 
-Both are `POST /v1/query`. Both go through the same validate → guard → compile pipeline, so a
-template cannot express anything a document cannot.
+Both are `POST /v1/query`. Nine of the ten templates expand to a closed document and go through the
+same validate → guard → compile pipeline, so they cannot express anything a document cannot. The
+exception is `q9_event_detail`: a single-record read with its own fixed statements, which has no
+document form and bypasses that pipeline — its two parameters are checked by the template itself.
 
 **1a. A named template** — the ten questions of §3, pre-shaped server-side:
 
@@ -65,11 +67,11 @@ rejected. A parameter the template does not declare is an error, not a no-op.
 | `cursor` | string | opaque; echo it back verbatim (§7) |
 | `rollup` | boolean | adds a published total row; mutually exclusive with `cursor` |
 
-Anything else is `unsupported_query_shape / unknown_key`. Ten keys are rejected **by name** because
-their presence is an attempt rather than a typo:
+Anything else is `unsupported_query_shape / unknown_key`. Twenty-two keys are rejected **by name**
+because their presence is an attempt rather than a typo:
 
-* `sql`, `raw`, `where`, `expression`, `order_by`, `filter_sql`, `having`, `select`, `from`, `join`
-  → `prohibited_field`
+* `sql`, `raw`, `where`, `expression`, `order_by`, `filter_sql`, `having`, `select`, `from`, `join`,
+  `group_by` → `prohibited_field` (eleven keys)
 * `tenant_id`, `tenant` → `tenant_in_request`. **The tenant comes from the authenticated session
   and never from the request.** A request carrying one is rejected, not ignored: silently dropping
   it would turn an attempted cross-tenant read into an uneventful success.
@@ -195,7 +197,7 @@ Every template declares exactly these parameters; anything else is an error.
 | Template | Source | Parameters | Notes |
 |---|---|---|---|
 | `q1_tools_ranked` | `mart.v_tool_usage` | `window`, `bucket`, `limit`, `tool`, `sanctioned_state` | rank by `submissions`, tie-break `tool`; `sanctioned_state` NULL renders as `unknown`, never as `unsanctioned` |
-| `q2_unsanctioned_users` | `mart.agg_tool_user_period` | `window`, `bucket`, `limit`, `tool`, `subject` | subject-bearing → audited, server-side cursor; > 7 days unscoped is refused |
+| `q2_unsanctioned_users` | `mart.agg_tool_user_period` | `window`, `bucket`, `limit`, `tool`, `subject` | subject-bearing → audited; not cursor-paged (no `cursor` parameter — one response bounded by `limit`, default and maximum 500); > 7 days unscoped is refused |
 | `q3_team_growth` | `mart.agg_org_period` | `window`, `bucket`, `limit`, `department`, `population` | carries the `unmapped` residual in `meta.extras.org_coverage`; `not_yet_covered` before the directory sync |
 | `q4_class_mix` | `mart.agg_class_period` | `window`, `bucket`, `limit`, `dimensions`, `class`, `severity` | `dimensions` ⊆ `{class, tool, severity, classifier_version}`, ≤ 3; default `[class, severity]` |
 | `q5_findings` | `mart.v_finding` | `window`, `limit`, `cursor`, `severity`, `rule`, `review_state`, `subject`, `tool`, `class` | review state `open` means nobody has looked |
@@ -220,7 +222,8 @@ Every template declares exactly these parameters; anything else is an error.
             "newer_events_exist": true },
   "freshness": { "aggregate": "mart.agg_tool_period", "bucket_size": "day", "last_run_at": "…",
                  "last_complete_bucket": "…", "lag_seconds": 168, "state": "fresh" },
-  "coverage": { "window": ["2026-09-03","2026-10-02"], "devices_reporting": 4180,
+  "coverage": { "window": { "from": "2026-09-03T00:00:00.000Z", "to": "2026-10-02T00:00:00.000Z" },
+                "devices_reporting": 4180,
                 "devices_enrolled": 4620, "gap_reasons": {"not_enrolled": 440}, "state": "partial" },
   "suppression": { "k": 5, "suppressed_cells": 2, "subject_count_basis": "lower_bound" },
   "audit": { "entry_id": "8123", "written_at": "2026-10-02T11:05:01Z" },
@@ -270,11 +273,11 @@ not a number", and the client must render the difference.
 | `not_found` | 404 | no such record, and no purge covers its window | "No such record" |
 | `unsupported_query_shape` | 400 | filter combination not servable | the fix, named |
 | `query_too_broad` | 400 | over budget or over a cap | the coarser bucket / narrower window that fits |
-| `cursor_expired` | 400 | expired, mismatched, or from another query or tenant | restart from page one, told why |
-| `audit_unavailable` | 503 | the audit row could not be committed | **no data at all** |
-| `busy` | 429 | shed by concurrency | retry hint |
+| `cursor_expired` | 400 | a signed token that is expired, mismatched, or from another query or tenant; an unknown or expired server-side id (§7 lists what the server-side path refuses differently) | restart from page one, told why |
+| `audit_unavailable` | 503 | the audit row could not be committed — or any other database error inside the read's transaction (a statement timeout included), which rolls the whole read back | **no data at all** |
+| `busy` | 429 | shed by the concurrency gate (its queue is full), or the request exceeded its time budget | retry hint |
 | `unauthorised_role` | 403 | the role cannot make this read | which role is needed |
-| `audit_chain_broken` | 500 | a page's hash links do not verify | an integrity alert, not a list |
+| `audit_chain_broken` | 500 | a page's hash links do not verify. The transport also answers with this state, and `error.code: internal_error`, for any error it does not recognise — a connection-pool refusal included | an integrity alert, not a list |
 | `not_captured` / `not_retrievable` / `key_unavailable` | 200 / 200 / 503 | content states of §8.2 | as §13 |
 
 Error body:
@@ -316,9 +319,16 @@ A rejection never carries `data`, `freshness` or `coverage` — there is no numb
   one.
 * Two encodings, and the client cannot tell which it received: a signed self-contained token (no
   subject reference in the ordering key) or an opaque server-side id (ordering key contains
-  `subject`). Both expire after **15 minutes**.
-* Every failure — expired, unknown, tampered, another tenant, another query, a changed ordering key
-  after a deploy — is `cursor_expired` (400). Restart from page one; do not retry with an offset.
+  `subject`). Both expire after **15 minutes**. Only list reads return a `page` block, and no list
+  source orders by `subject`, so the service issues signed tokens only; it is also started without
+  a server-side cursor store.
+* Every failure of a signed token — expired, unknown, tampered, another tenant, another query, a
+  changed ordering key after a deploy — is `cursor_expired` (400). On the server-side path an
+  unknown or expired id is `cursor_expired` too, but an id issued for a different query
+  (`cursor_mismatch`) or a different session (`cursor_tenant_mismatch`), a signed-looking token
+  offered where a server-side id is required, and a service with no cursor store configured are
+  refused as `unsupported_query_shape` (400). In every case: restart from page one; do not retry
+  with an offset.
 * `page.snapshot_upper_bound` freezes the window at first page: everything after page one carries
   `received_at <= upper`, so an insert cannot shift a boundary and a row can be neither seen twice
   nor skipped. `page.newer_events_exist` announces that rows arrived since the snapshot rather than
@@ -335,17 +345,19 @@ A rejection never carries `data`, `freshness` or `coverage` — there is no numb
 |---|---|---|
 | Aggregate cells | 2,000 | `query_too_broad` naming the coarser bucket that fits |
 | Aggregate page | ≤ 2,000 | a paged aggregate is bounded by its page; the estimate is disclosed in `meta.guard` |
-| List rows | 50 default, 500 max | `query_too_broad` with the bound |
+| List rows | 50 default, 500 max | `query_too_broad` with the bound on a document; a template `limit` above the template's own cap is `unsupported_query_shape / cost_estimate_exceeded` |
 | Event/finding window | 31 days | `query_too_broad` |
 | Audit window | 366 days | `query_too_broad` |
 | Coverage window | 366 days | `query_too_broad` |
 | Subject-grouped window | 7 days unless narrowed by a tool or subject filter | `query_too_broad` naming the narrowing |
-| Time series | 400 points | auto-coarsened when the server chose the bucket; refused, naming the bucket that fits, when the caller pinned one |
+| Time series | 400 points | auto-coarsened when the server chose the bucket (a document sent with no `bucket`); refused, naming the bucket that fits, when the document or a template set one |
 | Response body | 8 MB | `query_too_broad` |
-| Statement timeout | aggregate 3 s, list/audit/operational 5 s, single 3 s | server-side `statement_timeout` |
+| Statement timeout | the session's `statement_timeout`, from `SAC_PG_STATEMENT_TIMEOUT_MS` (default 10 s) | set on the connection at startup; an overrun rolls the read back |
 
-Statement timeouts, row caps and `SET LOCAL` are applied by the executor from
-`meta.statement_timeout_ms`; the compiled statement itself carries only `SELECT`.
+The per-class budgets — aggregate 3 s, list/audit/operational 5 s — are reported in
+`meta.statement_timeout_ms` and are **metadata only**: the executor issues no `SET LOCAL`, so the
+timeout in force is the connection's own. The row cap is the bound `LIMIT` of the compiled
+statement, which is a single `SELECT`.
 
 ### 8.2 When a read is audited (§5)
 
@@ -395,15 +407,19 @@ disagree with the choice rather than discover it.
 7. **The Q7 cursor is `(device_id, collector)`, not `(device_id)`.** §7.1 gives a device-only key,
    but the row grain after the collector join is `(device, collector)`; a device-only key is not
    total and the keyset page would be inexact.
-8. **The Q2 cursor and the 2,000-cell cap.** §12.1 caps an aggregate read at 2,000 cells; §3.2
+8. **Q2 and the 2,000-cell cap.** §12.1 caps an aggregate read at 2,000 cells; §3.2
    requires Q2 to be cursor-paged at 50/500. Both cannot hold unless the cap applies to the
-   *response*. So: an aggregate with a page size is bounded by its page, an aggregate without one
-   must fit 2,000 cells, and the estimate is disclosed in `meta.guard.estimated_cells`.
+   *response*. So: an aggregate with a `limit` is bounded by that limit, an aggregate without one
+   must fit 2,000 cells, and the estimate is disclosed in `meta.guard.estimated_cells`. Cursor
+   paging of Q2 itself is **not implemented**: the template takes no `cursor`, an aggregate
+   response carries no `page` block, and the template's `limit` is capped at 500 rows.
 9. **Auto-coarsening versus refusal.** §7.5 and §3.1 say a series beyond 400 points is
    auto-coarsened and the applied bucket named in `freshness`; §12.3 says a four-year day-bucketed
    trend is `query_too_broad` suggesting week or month. Both are honoured by asking who chose the
    resolution: a **server-chosen** bucket (the caller sent none) is auto-coarsened and reported; a
-   **caller-pinned** bucket that cannot fit is refused with `fix.coarser_bucket`.
+   **caller-pinned** bucket that cannot fit is refused with `fix.coarser_bucket`. Every aggregate
+   template writes a bucket into the document it expands to (`day` when the caller gives none), and
+   that counts as pinned — so auto-coarsening applies only to a document sent with no `bucket`.
 10. **Ordering precedence.** §2.4 says ordering is on a measure or a grouped dimension "always with
     a deterministic tie-break on the remaining grouping keys"; §7.1 gives the aggregate-series key
     as `(bucket_start DESC, <grouping keys> ASC)`. Implemented as: bucket DESC first, then the

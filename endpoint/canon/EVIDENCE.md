@@ -32,7 +32,7 @@ disagrees with the recorded oracle.
 
 ## 2. How the tables were obtained without network access
 
-Nothing is transcribed from a Unicode data file. Every table is derived by *observing*
+The host had no network access when this was run, and the build still sets `GOPROXY=off`. Nothing is transcribed from a Unicode data file. Every table is derived by *observing*
 `String.prototype.normalize` on this host, and every derivation is re-checked against the
 same oracle before it is written; the generator exits non-zero if any check fails.
 
@@ -286,8 +286,8 @@ normaliser is really installed and which Unicode version it hashed with.
   between "a Go implementation and a JavaScript one". The JavaScript side verified here is
   Node 22.23.1 with ICU 78.2; Chrome, Edge and Safari ship their own ICU builds. The mechanism
   to check a browser is the same corpus (`testdata/corpus.json` plus
-  `gen/nfc_oracle.mjs`), but it has not been run in a browser on this host — no browser is
-  installed here.
+  `gen/nfc_oracle.mjs`), but it has not been run in a browser on this host. (A Chromium
+  browser, Edge, is installed; the corpus has simply not been driven through it.)
 - **End-to-end digest agreement with the extension.** This package proves NFC agrees with the
   JavaScript implementation on this host; it does not prove that the extension's C1/C2/C4–C9
   steps produce the same canonical string. That is the verifier's cross-component check, not

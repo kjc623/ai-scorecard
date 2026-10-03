@@ -180,6 +180,14 @@ connection as the final arbiter.** An internal caller that could name a tenant o
 cross-tenant read primitive with no device, no browser and no user behind it — which is why §13
 invariant 24 tests the grant set rather than the service's good behaviour.
 
+**As built:** B13 is not yet carried over mTLS. `azure/main.bicep` (line 469) gives `query-api` the
+vault's address as `http://…`, `azure/modules/container-apps-env.bicep` (lines 47–50) leaves
+environment peer mTLS disabled, and the vault reads the caller's service, subject and tenant from
+request headers that it trusts only because its ingress is internal
+(`vault/content-vault/internal/auth/auth.go`). The vault's SQL path is written to set the session tenant
+inside every transaction, so row-level security remains the final arbiter; the mTLS assertion of the caller is the
+part that is not in place (§5.2).
+
 Three boundaries the design deliberately does **not** create: no central plaintext inspection point
 (Alternative A must decrypt before it can decide, which brief §1.2 forbids); no device-to-`content-vault`
 path (D7 — internal ingress only); and no content index outside `content-vault`'s read path. The third
@@ -265,9 +273,9 @@ where a mitigation is expensive, this list justifies it.
 | **A7** | **The audit log** | Both an evidence asset and a targeting asset: it shows who retrieved content, for which case, and when; it locates retention holes and holds; and its integrity is what makes §11's attestations worth anything. Read access to it is read access to the investigation. **Under D6′ it also records every search query and every term searched**, so it now names the subjects an analyst was curious about as well as the ones they opened. *`ops.audit`, append-only and hash-chained* |
 | **A8** | **Collection-mode and search-tier configuration, and its change history** | An attacker who can lower a scope's mode *creates* the breach surface rather than exploiting it: raising a scope from M1 to M3 causes content to be requested and kept, and **raising `content_search` to `full_text` converts retained content into a queryable corpus** (§10.6). C4 requires attribution of every change, and §11.6 requires the search-tier change specifically to be attestable. *`ops.tenant.ceiling_mode`, `ops.tenant.content_search`, `ops.policy_bundle.scope_matrix`, plus an audit entry per change* |
 | **A9** | **Device credentials and the enrolment path** | A credential valid for an active device is a channel into that tenant's ingest; a compromised enrolment path is how an attacker obtains one. *`ops.device`, `ops.device_credential`* |
-| **A10** | **Local spool contents** | Up to the spool cap of classifications and, at M2, excerpts — on a device that may be lost. Ranked below A1 only because it is bounded, and because at M3 it holds content the server has not been granted. *Encrypted SQLite on the device (§5.4)* |
+| **A10** | **Local spool contents** | Up to the spool cap of classifications and, at M2, excerpts — on a device that may be lost. Ranked below A1 only because it is bounded, and because at M3 it holds content the server has not been granted. *An append-only segment log on the device, each record sealed with AES-256-GCM (`endpoint/capture-spool`, §5.4)* |
 | **A11** | **The enterprise root CA and the interception path** | Not a data asset but a *capability* asset, and the largest blast radius in the product (master doc §5.5). Whoever controls the interceptor reads everything it intercepts; §9 is about nothing else. *Device trust store; non-exportable private key in the platform key store* |
-| **A12** | **Classifier releases and rule definitions** | The ability to push a classifier change is the ability to change what the product reports, or to make it block. C20 requires non-enforcing evaluation first and instant reversal. *`ref.classifier_release` state machine: `shadow` → `enforcing` → `rolled_back`* |
+| **A12** | **Classifier releases and rule definitions** | The ability to push a classifier change is the ability to change what the product reports, or to make it block. C20 requires non-enforcing evaluation first and instant reversal. *`ref.classifier_release` state machine: `shadow` → `enforcing` → `rolled_back`, with `retired` as the fourth state the table admits* |
 | **A13** | **The reconciliation drift record and coverage gaps** | Where the system records "coverage was not achieved". Attacking it converts a visible gap into a silent one — A4 by a slower route. Under D6′ it is also where index-expiry drift surfaces, so degrading it hides both coverage and retention failures. *`ops.reconciliation_run`, `ops.coverage_snapshot.gap_reason`* |
 
 Two consequences that are easy to get backwards. **A4 is not an availability problem:** a path that
@@ -324,6 +332,18 @@ a connection proving possession of the device's private key, and where that key 
 hardware-backed, exfiltrating the credential file yields an unusable secret. Where it is not
 hardware-backed, §14.1 A2 records the honest position.
 
+**As built:** `ingest-api` binds a request to the certificate presented on its connection, but not
+by comparing a public-key thumbprint. It takes the device from the certificate's subject CN and the
+tenant from a subject OU, derives `credential_id` as a deterministic UUID over the certificate's DER
+bytes (`ingestion/ingest-api/internal/auth/auth.go:121-141`), and looks the credential up in
+`ops.device_credential` by that `credential_id` (`ingestion/ingest-api/internal/store/sql.go:40-54`).
+`ops.device_credential.public_key_thumbprint` exists in the schema and is not read on the ingest
+path. The listener requires TLS 1.3 and a verified client certificate
+(`ingestion/ingest-api/cmd/ingest-api/tlsmaterial.go`), but the declared deployment cannot supply
+it with TLS material: every app in `azure/main.bicep` passes `keyVaultEnv: []`. ADR 0019 records
+that gap — a deployed container "cannot authenticate a device" — and decides that the origin
+terminates TLS and validates the device certificate itself.
+
 ### 4.3 What revocation does to in-flight work
 
 Ambiguity here is where data leaks, so the behaviour is defined against work already in progress.
@@ -341,7 +361,7 @@ Revocation is a security operation, so it is an audited one.
 
 ### 4.4 Services — no shared secrets, no borrowed privilege
 
-Every service carries a **system-assigned managed identity**. There is no database password anywhere,
+Every service carries a **user-assigned managed identity**. There is no database password anywhere,
 so there is no password to rotate, leak, commit or find in configuration. Each service has its own
 identity and its own database role. The schema names them: `sac_owner` (owns every object, never used
 at runtime), `sac_migrator` (DDL only, the sole role holding `BYPASSRLS`, and no runtime service is a
@@ -349,11 +369,11 @@ member of it), and one runtime role per component.
 
 | Service | Role | May | Structurally cannot |
 |---|---|---|---|
-| `ingest-api` | `sac_ingest` | Insert observations; select/update device and credential state; insert audit and health | Select content or wrapped keys; **any** Key Vault unwrap right |
+| `ingest-api` | `sac_ingest` | Insert observations and rejections; insert and update submissions and the usage ledger; read-only `SELECT` on tenant, device, credential and retention state; insert audit. Collector health is written by `sac_control`, not here | Select content or wrapped keys; **any** Key Vault unwrap right |
 | `control-api` | `sac_control` | Tenant and policy configuration, device state, grant decisions, policy signing; column-scoped read of submission metadata | Prompt content; unwrapped keys |
 | `content-vault` | `sac_vault` | Wrapped keys, ciphertext objects, grant state, **and the full-text index over prompt text and attachment names — it is the only role granted `SELECT` on `ingest.search_text`.** **The only unwrap right in the system** | Any user-facing endpoint — internal ingress only (D7) |
 | `query-api` | `sac_query` | Events, labels, aggregates, findings, audit; calls `content-vault` for content **and for search** | Unwrapped keys; it is not granted `SELECT` on `ops.content_object` **or on `ingest.search_text`** at all |
-| `aggregator`, `reconciler` | `sac_ops` | Rollups, expiry, erasure mechanics, drift detection | Content decryption; unwrap |
+| `aggregator`, `reconciler` | `sac_ops` (one database role shared by both jobs) | Rollups, expiry, erasure mechanics, drift detection — including `DELETE` on `ingest.observation` and `ingest.submission` and row access to `ops.content_object` and `ops.grant` for expiry | Content decryption; unwrap |
 | Dashboard | Static SPA + Entra ID | `query-api` only | Database, Blob, Key Vault |
 | CI/CD | Federated workload identity, no stored secret | Deploy artefacts and migrations | Runtime data; key material |
 
@@ -363,6 +383,15 @@ must not become a content breach), and **`query-api` has no unwrap right** (it s
 audience, so it must ask `content-vault`, keeping the authorization decision and its audit obligation
 in one place). The search feature was built without weakening either: `query-api` sends a query and
 receives bounded snippets, and the index is not a table `query-api` can address at all.
+
+**As built:** the first separation is not met by the declared Key Vault role assignments.
+`azure/main.bicep` (lines 242–246) assigns `ingest-api`'s identity the `cryptoServiceEncryption`
+operational role at vault scope, which `azure/modules/keyvault.bicep` (lines 47 and 96) resolves to
+the built-in *Key Vault Crypto Service Encryption User* role. That role's data actions are
+understood to include key wrap and unwrap; the role definition itself is not in the repository and
+has not been confirmed against a subscription. The CI assertion in
+`azure/pipelines/policy-scan.yml` inspects only `unwrapPrincipalIds`, so it does not see this
+assignment. The requirement stands as written; the assignment is what has to change.
 
 ### 4.5 Database roles and privileged access
 
@@ -415,6 +444,15 @@ fails the product's core requirement.
 TLS 1.3 with forward secrecy on every hop: device to edge, service to service, service to PostgreSQL,
 analyst browser to `query-api`.
 
+**As built:** the requirement is not met on the one service-to-service hop the deployment declares.
+`query-api` is given `content-vault`'s address as `http://…` (`azure/main.bicep`, line 469);
+peer mTLS is disabled on the Container Apps environment (`azure/modules/container-apps-env.bicep`,
+lines 47–50); and the vault binary serves plain HTTP (`vault/content-vault/cmd/content-vault/main.go`,
+`ListenAndServe`) and trusts identity headers set by its ingress
+(`vault/content-vault/internal/auth/auth.go`). On the device hop, `ingest-api` requires TLS 1.3 and a
+verified client certificate when it is given TLS material, and the deployment does not yet give it
+any (§4.2, ADR 0019).
+
 | Protected | Against |
 |---|---|
 | The envelope batch in transit (identity, labels, digest, dimensions) | Passive observation on the customer's network or any intermediate network |
@@ -465,8 +503,8 @@ has not been granted, so it is the one place on the device where the product's d
 
 | Layer | Mechanism | Protects against |
 |---|---|---|
-| Database encryption | Application-level encryption of spool contents; the file is never a plaintext store | Offline disk analysis, file carving, backup capture, casual inspection |
-| Key wrapping | The spool key is wrapped by the platform key store — DPAPI at machine scope on Windows, the System keychain on macOS — so the key is not stored beside the data | Copying the spool file to another machine and opening it there |
+| Record encryption | The spool is an append-only segment log (`endpoint/capture-spool`), not a database: each record is one frame sealed with AES-256-GCM under the spool key, with the frame header as additional authenticated data; the file is never a plaintext store | Offline disk analysis, file carving, backup capture, casual inspection |
+| Key wrapping | The spool key is wrapped by the platform key store — DPAPI scoped to the service account on Windows, Keychain on macOS (01-collectors §12) — so the key is not stored beside the data. **As built:** `endpoint/capture-spool/keys.go` ships only an in-memory and a file key provider, both reporting `Sealed() == false`, and makes no DPAPI or Keychain call; what the code enforces today is that the key file may not live inside the spool directory | Copying the spool file to another machine and opening it there |
 | Bounds | A configured cap; on overflow the **oldest** entries are dropped and a counter is incremented (`ops.collector_state.spool_dropped_total`) | Unbounded local retention, which would be the largest uncontrolled copy of the data in the system |
 | Lifecycle | Entries purged once acknowledged; a revoked or stopped device retains rather than discards, so an investigation can recover what it saw (§4.3) | Loss of evidence after an incident |
 
@@ -482,7 +520,7 @@ D3 and D4 and is recorded in §12.
 | `content_digest` | SHA-256 over normalised content, `sha256:<64 lowercase hex>` | Required at M1 and above, absent at M0; format fixed by the contract (`$defs.sha256`) |
 | `dedup_key` | SHA-256 over tenant, device, tool, the normalised content digest and a time bucket | Brief §4.1's derivation. At M0 the device cannot read content, so it is derived from a time bucket and size instead and **dedup is correspondingly weaker** — the contract says so explicitly |
 | Audit chaining | A per-tenant hash chain over audit rows (`prev_hash`, `row_hash`), with the chain head anchored periodically to write-once storage | §8 T5. The anchor is what turns a self-consistency check into tamper evidence |
-| Spool integrity | A digest per spooled batch, verified before send | Detects local tampering between capture and transmission |
+| Spool integrity | Per-frame authentication: every spool frame is AES-256-GCM-sealed with its header as additional authenticated data, and a complete frame that fails authentication makes the spool refuse to open (`endpoint/capture-spool`) | Detects local tampering between capture and transmission |
 
 **The honest caveat about an unkeyed digest.** A plain SHA-256 of content is not confidential. For
 guessable content — "the Q3 layoff list", a short prompt, a document already public — anyone holding
@@ -510,7 +548,8 @@ oversight, and neither can be fixed without giving up the feature it serves.
 ### 5.6 The search index is plaintext-derived, and searchable encryption does not fix it
 
 **What the index is.** `ingest.search_text` stores `prompt_body` and `attachment_name` units as
-**plaintext `text`** with a generated `tsv` and GIN indexes over both, in the same PostgreSQL instance as
+**plaintext `text`** with a generated `tsv`, a GIN index over `tsv` and a partial trigram GIN index
+over `body` for `attachment_name` rows only, in the same PostgreSQL instance as
 the metadata (§6.3). It is encrypted at rest by the platform's storage encryption and by nothing else:
 there is no application-level encryption, no per-tenant key, and no unwrap in the read path. Anyone who
 can execute a `SELECT` against that table reads prompt text for the tenant. Exactly one role can
@@ -609,8 +648,11 @@ storage boundary), §4.4 (content arrives only under a grant) and §3.5 (search 
 able to read).
 
 **ASSUMPTION:** §14.1 A11 — that a `full_text` tenant must also carry an M3 ceiling on the searched
-scope. The ADR states the capability requirement as "M3 for the scope"; whether the schema should assert
-it as a table constraint alongside the custody rule, or leave it to policy signing, is not stated.
+scope. The ADR states the capability requirement as "M3 for the scope", and the schema resolves the
+tenant-level half as a table constraint alongside the custody rule:
+`tenant_search_tier_requires_collection_mode` on `ops.tenant` admits `full_text` only with
+`ceiling_mode = 'm3'` and `attachment_names` only with a ceiling above M0. The per-scope half stays
+with the signed bundle's narrowing (§6.3).
 
 ### 6.2 The three custody modes
 
@@ -668,7 +710,8 @@ does not hold.
 (tenant_id, submission_id, unit_kind, unit_index, body, tsv, created_at, expires_at)
     unit_kind IN ('prompt_body','attachment_name')
     tsv        generated column over body
-    GIN on tsv;  GIN gin_trgm_ops on body
+    GIN on (tenant_id, tsv)
+    GIN on (tenant_id, body gin_trgm_ops) WHERE unit_kind = 'attachment_name'
 ```
 
 | Property | Value, and why |
@@ -897,8 +940,9 @@ drops a policy, a table is created without one, or a role acquires `BYPASSRLS`, 
 become *visible*; the KEK layer fails never, because it is arithmetic, and when it holds, rows become
 *unreadable*. Neither layer is claimed sufficient. **ASSUMPTION:** §14.1 A1 — the per-tenant KEK is
 mandatory for every tenant in every custody mode, including mode 1; without it, layer two does not
-exist for vendor-managed tenants. The schema enforces the related rule that a KEK must exist before a
-ceiling that permits content: `CHECK (ceiling_mode IN ('m0','m1') OR kek_id IS NOT NULL)`.
+exist for vendor-managed tenants. The schema enforces the related rule that a KEK must exist before
+the ceiling reaches M3, the mode at which content is stored:
+`CHECK (ceiling_mode <> 'm3' OR kek_id IS NOT NULL)`. An M2 tenant may therefore have no KEK.
 
 **The second layer has a hole, and D6′ is what puts it there.** The KEK layer holds for
 `ops.content_object` because those rows are ciphertext. **`ingest.search_text` stores plaintext**, so a
@@ -926,7 +970,7 @@ decision, and the isolation properties above hold identically with or without it
 **A second deviation is now in view and it is not nil.** The index is tenant-scoped and tenant-leading,
 which satisfies C32 in form. But it is the first tenant-scoped table whose confidentiality does not rest
 on a key, and D6′ does not partition or otherwise segregate it per tenant either — it is one table with
-one GIN index per column, shared across tenants under RLS. **ASSUMPTION:** §14.1 A13 — that per-tenant or
+two GIN indexes, shared across tenants under RLS. **ASSUMPTION:** §14.1 A13 — that per-tenant or
 per-tier partitioning of `ingest.search_text` is a later optimisation rather than a v1 requirement. The
 reason to state it is that partitioning would give back a *layout* layer of separation, and the reason not
 to require it now is that the honest exposure is one shared table plus one policy layer, which is easier
@@ -1420,7 +1464,7 @@ violation is a defect, not a finding to be risk-accepted case by case.
 
 | # | Invariant | How it is asserted |
 |---|---|---|
-| 1 | **No service other than `content-vault` can call key-store unwrap** (A3, §5.3) | Key-store access-policy inspection, plus a negative test from every other service identity |
+| 1 | **No service other than `content-vault` can call key-store unwrap** (A3, §5.3) | Key-store access-policy inspection, plus a negative test from every other service identity. **As built:** the declared assignments do not yet satisfy this — `azure/main.bicep` gives `ingest-api` the *Key Vault Crypto Service Encryption User* role (§4.4) |
 | 2 | **`content-vault` has no user-facing endpoint and is unreachable from a device or a browser** (D7) | Reachability tests from each device class and from the internet |
 | 3 | **A grant authorizes exactly one object** | A second upload under a grant is refused, and the refusal leaves no orphaned object attached to an event |
 | 4 | **No plaintext-derived material is persisted beyond the object ciphertext and `ingest.search_text`** — no extracted text, thumbnail, embedding, or any *other* index (§6.3) | Schema inspection against the expected object set, plus a test that destroying a tenant KEK makes every content **object** path return `no_longer_available` with a reason, never an empty result (C17). **This invariant was narrowed by D6′ and the narrowing is deliberate:** the search index is a permitted exception, enumerated by name and only at `full_text`, so any *additional* plaintext-derived store remains a defect. The test that a destroyed KEK makes content unreachable must now assert what it is actually testing — the object path — and must **not** be allowed to imply that all content became unreadable, because for a `full_text` tenant the index is still there (§12 R15) |
@@ -1460,7 +1504,7 @@ Every **ASSUMPTION** in this document, so none is buried in a table.
 
 | # | Assumption | Why, and how it is resolved |
 |---|---|---|
-| A1 | The per-tenant KEK is mandatory for every tenant in every custody mode, including mode 1 | §7.2 depends on it: without a per-tenant key the second isolation layer does not exist for vendor-managed tenants. **derived from** C33 ("per-tenant encryption keys"); the schema enforces the related rule with `CHECK (ceiling_mode IN ('m0','m1') OR kek_id IS NOT NULL)` |
+| A1 | The per-tenant KEK is mandatory for every tenant in every custody mode, including mode 1 | §7.2 depends on it: without a per-tenant key the second isolation layer does not exist for vendor-managed tenants. **derived from** C33 ("per-tenant encryption keys"); the schema enforces the related rule with `CHECK (ceiling_mode <> 'm3' OR kek_id IS NOT NULL)`, so the KEK is mandatory from M3 and an M2 tenant may have none |
 | A2 | The per-device private key is hardware-backed and non-exportable wherever the platform supplies a TPM or Secure Enclave, and §4.2's transport binding relies on that where available | The master document names no hardware-key abstraction; the stronger property is claimed only where the platform supplies it. Where it does not, the residual is ordinary: a stolen key file is a usable credential until revoked |
 | A3 | Mode 3 is reached through a standard key-management interface over mutual TLS, with the customer's HSM as custodian | Brief §3.3 requires customer-held keys but names no protocol, and the master document assumes Azure-native services (S1). A customer-side HSM is where S1 does not hold, so the integration point is named (§6.2) |
 | A4 | The per-tenant KEK uses the shortest key-store recovery window consistent with the customer's backup policy, and the actual window is disclosed in the erasure receipt | §6.4: soft-delete or purge protection means "destroyed" has a bounded delay before "unrecoverable". A receipt claiming immediate destruction and being wrong is worse than one stating the window and being right. **D6′ adds a boundary to what the window governs**: it applies to content objects, and index rows are removed by deletion rather than by this window (§11.4) |
@@ -1470,7 +1514,7 @@ Every **ASSUMPTION** in this document, so none is buried in a table.
 | A8 | Whether a customer-side content exporter is in v1 is unresolved, and §6.5 assumes it is not | Master doc Q11. Assuming it *is* in scope would assume a component inside the customer's environment that this document cannot specify |
 | A9 | The device never holds the unwrapped per-tenant KEK; the server-side unwrap is the only path | **derived from** brief §4.4's "per-object encryption keys wrapped by a per-tenant key" and C14's per-event grant: the object key is delivered per grant, so the tenant KEK has no reason to be on the device, and placing it there would give every device a tenant-wide decrypt capability |
 | A10 | Security-relevant retention decisions (audit retention, hold precedence, export retention) are recorded as configuration rather than compiled into code | C35 requires holds with a visible scope and their own expiry, and Q10 leaves hold-versus-erasure precedence open. Configuration keeps an unresolved question reversible. **Now includes index retention**, because `ingest.search_text.expires_at` is a fourth retention input alongside the event TTL, the content TTL and holds |
-| A11 | A `full_text` tenant must also carry an M3 ceiling on the searched scope | §6.1: the index can only hold content that crossed under a grant, so `full_text` over an M1 or M2 tenant is empty rather than dangerous. The ADR states "M3 for the scope" as a capability requirement; whether the schema asserts it as a check constraint alongside the custody rule, or policy signing enforces it, is not stated. **Resolving it in the schema would be the safer reading**, because it makes the empty-index case unrepresentable rather than merely useless |
+| A11 | A `full_text` tenant must also carry an M3 ceiling on the searched scope | §6.1: the index can only hold content that crossed under a grant, so `full_text` over an M1 or M2 tenant is empty rather than dangerous. The ADR states "M3 for the scope" as a capability requirement. **The schema resolves the tenant-level half**: the `tenant_search_tier_requires_collection_mode` check constraint on `ops.tenant` admits `full_text` only with `ceiling_mode = 'm3'` (and `attachment_names` only above M0), which makes the empty-index case unrepresentable rather than merely useless. The per-scope half is enforced by the bundle's narrowing at signing |
 | A12 | `ingest.search_text` is not additionally encrypted at rest under a vendor-held key | §7.2. Such encryption would raise the cost of a stolen backup or a restored replica (§8 T14) and would not change the vendor-readability conclusion, since the vendor holds the key. Recorded as an assumption because the ADR states no position. **derived from** §6.6's conclusion that no key construction changes the guarantee for a `full_text` tenant |
 | A13 | Per-tenant or per-tier partitioning of `ingest.search_text` is a later optimisation, not a v1 requirement | §7.3, §8 T16, §12 R16. Partitioning would restore a layout layer of separation that the index currently lacks and would narrow cross-tenant side channels. It is deferred because D2 already defers partitioning for the event table and because a half-partitioned design is harder to reason about than a clearly-stated single table. **The revisit trigger is a second data-bearing store in the same table or any cross-tenant statistics structure** |
 | A14 | Exclusion of `ingest.search_text` from backups, replicas and statement logs is achievable by configuration rather than requiring a separate store | §8 T14. The ADR specifies the table, its columns and its indexes and says nothing about the platform services around it. If configuration cannot deliver the exclusion, this becomes a design change rather than an assumption, because the alternative — the index present in every restored copy — is the copy-escape path that matters most for a plaintext asset |

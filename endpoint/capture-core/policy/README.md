@@ -52,8 +52,10 @@ pins the mapping; `TestBundle_InterceptsIsAScopeNotADiscoveryMechanism` pins the
 
 ## What it deliberately does not do
 
-- **No signing and no key custody.** Bundles are signed elsewhere; this package verifies against a
-  pinned Ed25519 public key it is given.
+- **No key custody and no production signing path.** The package verifies against a pinned Ed25519
+  public key it is given. `Sign` exists as the inverse of `Open` — the selftest and the tests use it
+  to mint bundles with a throwaway key — but the package holds no private key and nothing in the
+  agent signs a bundle it will enforce.
 - **No polling loop.** Applying a bundle is a call; the schedule, the fetch and the retry live in the
   binary and the health channel.
 - **No partial acceptance.** A bundle is accepted whole or not at all, and validation rejects what the

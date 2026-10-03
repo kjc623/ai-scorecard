@@ -1,13 +1,14 @@
 # azure/ — the Azure delivery of docs/05-platform-delivery.md
 
-This directory is the deployment as code: one Bicep composition per environment, modules that own one
-resource family each, parameter files that carry everything an environment may differ on, three
-pipelines, and a static checker that validates the whole thing **without an Azure subscription**.
+This directory is the deployment as code: one Bicep composition (`main.bicep`) shared by every
+environment, modules that own one resource family each, parameter files that carry everything an
+environment may differ on, three pipelines, and a static checker that validates the whole thing
+**without an Azure subscription**.
 
 ## Deployment is NOT VERIFIED
 
-Nothing in this directory has ever been deployed. There is no Azure subscription, no `az` CLI, no
-Bicep compiler and no network on the machine where it was written, so:
+Nothing in this directory has ever been deployed. There is no Azure subscription, no `az` CLI and no
+Bicep compiler on the machine where it was written, so:
 
 - the Bicep has **not** been compiled, so a syntax error or a wrong resource property is a real
   possibility;
@@ -22,8 +23,8 @@ Bicep compiler and no network on the machine where it was written, so:
 described, no region or SKU is hard-coded outside a parameter file, no secret is in the repository,
 the private-only properties are declared as such, content-vault is internal-only with no Front Door
 route, the database has no public path and no firewall rules, and every row of the document's §2
-inventory is implemented. Those checks run in `node --test azure/tools/` and they fail the build when
-a property regresses.
+inventory is implemented. Those checks run in `node --test azure/tools/index.mjs` and they fail when a
+property regresses.
 
 ### The exact commands a human would run
 
@@ -78,7 +79,7 @@ az network private-endpoint-connection list --id <container-apps-environment-id>
 After a deployment, the properties that only exist at runtime are asserted by the hourly resource-graph
 queries in §3.5 (no PaaS resource with public network access, no storage account with shared-key access,
 content-vault ingress internal, every container app with a user-assigned identity, every vault with
-purge protection). Those queries are not in this directory yet: `azure/pipelines/drift.yml` runs the
+purge protection). Those queries are not in this directory yet: `azure/pipelines/drift.yml` defines the
 `what-if` half, and the resource-graph half is a documented gap (see "Gaps" below).
 
 ## How to check the infrastructure without Azure
@@ -89,7 +90,7 @@ node --test azure/tools/check-infra.test.mjs   # the same suite, named directly
 node azure/tools/check-infra.mjs         # the same checks as a report, exit 1 on a finding
 ```
 
-Both invocations above were run and pass on Node 22.23.1 (Windows). `node --test azure/tools/` — the
+The invocations above were run and pass on Node 22.23.1 (Windows). `node --test azure/tools/` — the
 directory form — resolves the directory as a module on this Node build and fails with
 `MODULE_NOT_FOUND` before running anything, which is why `index.mjs` exists and is named explicitly
 here; `tools/verify-all.mjs` discovers `check-infra.test.mjs` by name and reports `azure/tools` PASS.
@@ -103,10 +104,10 @@ The checker has no dependencies and never makes a network call. It reads `azure/
 
 | Path | What it is |
 |---|---|
-| `main.bicep` | The composition: modules, identity bindings, and the two architectural assertions stated in the clear |
+| `main.bicep` | The one composition every environment deploys: modules, identity bindings, the two architectural assertions stated in the clear, and the `deployEdge` / `deployDashboard` / `deployExports` switches (all `true` by default) that let a lab omit Front Door and the WAF, the Static Web App, and the export account |
 | `modules/` | One resource family per module, matching §3.3's layout exactly |
-| `params/` | `dev`, `staging`, `prod.eastus`: the only place an environment differs (§3.2) |
-| `pipelines/` | `infra.yml` (deploy), `drift.yml` (nightly `what-if`), `policy-scan.yml` (the properties that must never regress) |
+| `params/` | `dev`, `staging`, `prod.eastus`: the only place an environment differs (§3.2). `lab` is the architecture-fidelity lab: the same composition with the three `deploy*` switches off |
+| `pipelines/` | `infra.yml` (deploy), `drift.yml` (scheduled `what-if`), `policy-scan.yml` (the properties that must never regress). GitHub Actions workflow definitions; nothing in this repository triggers them — see `pipelines/README.md` |
 | `inventory.json` | Every §2 inventory row mapped to the module that implements it; §2.2's deliberately-absent list with the resource types that must never appear |
 | `cost-model.md` | §11's arithmetic recomputed from its own unit prices, with the disagreements stated as findings |
 | `tools/` | The zero-dependency checker and its suite |
@@ -126,7 +127,7 @@ checker diffs in both directions, so the state is not a claim in prose:
 
 ## Gaps, stated rather than implied
 
-1. **The hourly resource-graph assertions of §3.5 are not implemented.** `drift.yml` runs the nightly
+1. **The hourly resource-graph assertions of §3.5 are not implemented.** `drift.yml` defines the nightly
    `what-if`; the resource-graph queries (the ones that catch a portal change after the fact) need an
    Azure connection and are a documented gap.
 2. **No environment has been deployed**, so nothing in this directory has been observed against a real

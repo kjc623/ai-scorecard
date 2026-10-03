@@ -18,9 +18,11 @@ changes, the lab deploys the change.
 
 ## The cost model, and its disclaimer
 
-`LAB-COST.md` §6 lists what the lab leaves untestable — blob storage, a real certificate authority, a
-real cloud KMS, and anything that requires the Azure control plane. Those are not oversights; a fake
-blob account would prove nothing about the real one, which is why `localdev/` has none either.
+`LAB-COST.md` §6 goes through the architecture property by property and says which ones the Azure lab
+(Part B) can test, which it can test only partly, and which it cannot — the edge, key rotation, HSM
+custody, scale, and the services' own database and key-vault paths. The local lab (Part A) has no
+blob service, no real certificate authority and no real cloud KMS. Those are not oversights; a fake
+blob account would prove nothing about the real one, which is why `localdev/` has none.
 
 All figures in this directory are estimates at Azure East US list price, pay-as-you-go, as of
 2 October 2026, and must be re-baselined before any commercial commitment. A contradiction inside the

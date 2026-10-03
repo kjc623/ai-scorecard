@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // One vocabulary, five artifacts, one check.
 //
-// The deployment (infra/main.bicep) and the binaries declare the same environment vocabulary in
+// The deployment (azure/main.bicep) and the binaries declare the same environment vocabulary in
 // different files. Nothing but a test keeps them equal, and this seam was found rotted twice by hand
 // before this existed — once as SAC_PG_HOST and friends being passed to a process that read no
 // environment at all, and once as the two services reading CONTENT_VAULT_* while the deployment passed
@@ -46,7 +46,7 @@ const SERVICES = [
  * Two kinds, and they are different things:
  *   image — the image sets it, because Container Apps configures by environment and this deployment's
  *           Bicep has no command/args parameter to pass a value in;
- *   gap   — the name belongs to the deployment and infra/main.bicep does not pass it yet. Listed so it
+ *   gap   — the name belongs to the deployment and azure/main.bicep does not pass it yet. Listed so it
  *           is visible, never so it is forgotten.
  */
 const EXTENSIONS = {
@@ -56,7 +56,7 @@ const EXTENSIONS = {
     SAC_SCHEMA: 'image: the contract schema at a path a container can read',
     SAC_ROUTES_FILE: 'image: ref.route_fidelity shipped as data (§4.4), never compiled in',
     SAC_REGION: 'gap: §12 region pinning is inert until the deployment passes the region',
-    SAC_TLS_CERT_PEM: 'gap (F5): the server certificate for the module keyVaultEnv to inject; every app in infra/main.bicep has keyVaultEnv: [] today',
+    SAC_TLS_CERT_PEM: 'gap (F5): the server certificate for the module keyVaultEnv to inject; every app in azure/main.bicep has keyVaultEnv: [] today',
     SAC_TLS_KEY_PEM: 'gap (F5): the server private key — see SAC_TLS_CERT_PEM',
     SAC_TLS_CLIENT_CA_PEM: 'gap (F5): the CA that must have signed the device certificates — see SAC_TLS_CERT_PEM',
   },
@@ -212,7 +212,7 @@ for (const svc of SERVICES) {
   // A. Everything the deployment passes must be read by the binary. This is the F3 defect.
   for (const name of bicepNames) {
     if (!binaryNames.has(name)) {
-      problems.push(`${svc.app}: infra/main.bicep passes ${name} and the binary never reads it`);
+      problems.push(`${svc.app}: azure/main.bicep passes ${name} and the binary never reads it`);
     }
   }
 
@@ -248,7 +248,7 @@ for (const svc of SERVICES) {
 const served = new Set(SERVICES.map((s) => s.app));
 const unserved = [...bicep.keys()].filter((app) => !served.has(app));
 if (unserved.length) {
-  notes.push(`declared in infra/main.bicep with no binary in this repository yet: ${unserved.join(', ')}`);
+  notes.push(`declared in azure/main.bicep with no binary in this repository yet: ${unserved.join(', ')}`);
 }
 
 console.log('');

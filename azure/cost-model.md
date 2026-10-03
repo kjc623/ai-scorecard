@@ -9,7 +9,7 @@ document's own §11.2 table. A figure that does not reconcile fails `node --test
 agreement, no reservations, no savings plan — exactly §11.1's basis. The unit prices are the
 document's; they are **estimates, not measurements**, and they must be re-baselined against the Azure
 pricing calculator before any commercial commitment. Nothing in this file was retrieved from Azure:
-there is no subscription and no network on the build host, so **no price here is verified against the
+there is no subscription, and no price was looked up, so **no price here is verified against the
 live price list.**
 
 **Sizing.** §11.1's M1 default: 5,000 devices, ~4,000 AI-active users, ~12,000 submission events/day.

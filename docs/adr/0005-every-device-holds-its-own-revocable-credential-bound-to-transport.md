@@ -22,6 +22,10 @@ Every device completes a one-shot mutually authenticated enrolment and receives 
 and identity. Enrolment is idempotent on a hardware-derived device key: re-imaging a machine returns the
 existing `device_id` and rotates the credential rather than minting a second device.
 
+**As built.** The schema does not yet carry that key: `ops.device` has no hardware-identity column and
+no uniqueness constraint beyond `(tenant_id, device_id)`, and the enrolment service is not implemented,
+so the idempotency above is a requirement nothing enforces today.
+
 Credentials are per-device, time-bounded (90 days, rotated at 60, seven-day overlap) and bound to a
 client certificate on the transport, so a stolen token alone is not sufficient to impersonate a device.
 

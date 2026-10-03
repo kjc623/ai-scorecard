@@ -54,13 +54,16 @@ power loss are different guarantees, and the package states which one it proves.
 
 Every frame is authenticated with its header as additional authenticated data, so a modified byte, a
 swapped frame, a truncated body or a frame replayed under a different sequence number fails to open.
-A complete frame that fails authentication is reported as `ErrCorrupt` and `Open` fails; only a
-*physically incomplete* trailing frame, which cannot have been a valid record, is discarded.
+A complete frame that fails authentication is reported as `ErrCorrupt` and, under the default
+`CorruptFail` policy, `Open` fails; only a *physically incomplete* trailing frame, which cannot have
+been a valid record, is discarded. A caller may instead set `Config.OnCorrupt = CorruptQuarantine`,
+which renames the damaged file aside, continues with what is readable and reports the loss —
+`capture-core` opens the spool that way.
 
 ## Evidence
 
-[EVIDENCE.md](EVIDENCE.md) carries the full run. Headlines: 33 test functions plus subtests as recorded
-there (the tree now has 34 `Test*` functions); a real kill-mid-write crash suite including a crash
+[EVIDENCE.md](EVIDENCE.md) carries the full run. Headlines: 34 `Test*` functions plus subtests and one
+`TestMain`; a real kill-mid-write crash suite including a crash
 between the counter fold and the segment unlink (the drop is counted exactly once); a bound that
 evicts oldest exactly and never evicts in-flight records; and a crypto suite covering
 plaintext-absence, wrong key, reordering, duplication, tamper and counter-file tamper.
@@ -78,5 +81,5 @@ Lead defined it.
 - **No delivery.** Draining to `ingest-api` is the core's job; this package never opens a socket.
 - **No key management.** `KeyProvider` is the seam where DPAPI/Keychain sealing belongs; the shipped
   file provider protects the key with filesystem ACLs only.
-- **No SQLite, and no claim of it.** When a driver is available, the interface is the contract to
+- **No SQLite, and no claim of it.** If a driver is adopted, the interface is the contract to
   satisfy — not the segment-log internals.

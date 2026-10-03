@@ -9,7 +9,7 @@ by `go test .`.
 | Fact | Value |
 |---|---|
 | Host | Windows, `windows/amd64` (`[System.Environment]::OSVersion` 10.0.26200) |
-| Go | `go1.27.0` (offline: `GOPROXY=off`, `GOTOOLCHAIN=local`, stdlib only) |
+| Go | `go1.27.0` (run offline: `GOPROXY=off`, `GOTOOLCHAIN=local`, stdlib only) |
 | Node | `v22.23.1` |
 | wasm runtime shim | `$(go env GOROOT)\lib\wasm\wasm_exec.js`, Go 1.27.0 |
 | Corpus | [`testdata/corpus.json`](testdata/corpus.json) — 20 cases, 200 iterations per case |
@@ -61,15 +61,17 @@ Nearest-rank p95 over every stage observation of the whole run (20 cases × 200 
 
 | Stage | §9.4 native share | measured native p95 | §9.4 wasm share | measured wasm p95 |
 |---|---|---|---|---|
-| normalise | 5 ms | **0.003 ms** | 10 ms | **0.022 ms** |
-| rules | 20 ms | **0.134 ms** | 35 ms | **0.548 ms** |
-| validators | 10 ms | **0.001 ms** | 15 ms | **0.005 ms** |
-| model | 60 ms | **0.006 ms** | 90 ms | **0.031 ms** |
-| **sum of stage p95** | 105 ms / 150 ms target | **0.144 ms** | 150 ms / 150 ms target | **0.605 ms** |
-| whole classification | — | p50 0.018 / p95 0.144 / max 1.11 ms | — | p50 0.082 / p95 0.592 / max 7.03 ms |
+| normalise | 5 ms | **0.003 ms** | 10 ms | **0.019 ms** |
+| rules | 20 ms | **0.134 ms** | 35 ms | **0.565 ms** |
+| validators | 10 ms | **0.001 ms** | 15 ms | **0.004 ms** |
+| model | 60 ms | **0.005 ms** | 90 ms | **0.029 ms** |
+| **sum of stage p95** | 95 ms / 150 ms target | **0.143 ms** | 150 ms / 150 ms target | **0.617 ms** |
+| whole classification | — | p50 0.017 / p95 0.144 / max 0.754 ms | — | p50 0.079 / p95 0.608 / max 5.89 ms |
 
-(Run-to-run variation between full runs is a few percent: an earlier run measured native rules
-p95 0.136 ms and wasm 0.596 ms; the machine-readable originals in `reports/` are authoritative.)
+(Run-to-run variation between full runs is a few percent: other runs measured native rules
+p95 0.136 ms and wasm 0.548 and 0.596 ms. The figures above are the ones committed in `reports/`,
+which holds the machine-readable originals and is authoritative; `go test .` rewrites those files
+on every run, so a fresh run will differ from this table by the same few percent.)
 
 Every stage is inside its share and every sum is inside the interactive target. `measure` fails
 loudly if a stage leaves its share, and `measure_test.go` re-asserts it from the reports, so this
@@ -83,17 +85,17 @@ prompt-sized bodies under the shipped caps (1 MiB input, 1 MiB text, 20 000 mode
 ## js/wasm module size and load cost
 
 ```
-module_bytes=6344880
-compile_and_instantiate_ms=12.4 .. 14.1
-run_ms=39.5 .. 44.5  (all 20 corpus cases, inside the module)
+module_bytes=6345103
+compile_and_instantiate_ms=12.1 .. 12.5
+run_ms=36.1 .. 37.6  (all 20 corpus cases, inside the module)
 target=js/wasm
 go=go1.27.0
 ```
 
 ADR 0016 estimated "roughly 2.5 MB of wasm for a trivial program" and made the interactive budget
-(300 ms for the inline warn/block path) the revisit trigger. The shipped module is **6.34 MB** —
+(300 ms for the inline warn/block path) the revisit trigger. The shipped module is **6.35 MB** —
 repo's own note is that a real program is bigger than a trivial one — and the load cost that
-matters is **≈13 ms to compile and instantiate**, which does not threaten the budget on this host.
+matters is **≈12–13 ms to compile and instantiate**, which does not threaten the budget on this host.
 Reported as a finding rather than a footnote (README open decision 15).
 
 ## §10 — hostile documents, end to end
@@ -163,9 +165,9 @@ Cross-compilation (ADR 0016's target list), all exit 0: `windows/amd64`, `window
   Concurrency is covered by `TestClassifyIsSafeForConcurrentUse` (16 goroutines × 50
   classifications, every response validated) and by the bounded-fan-out test, but that is not the
   race detector.
-- **macOS residency monitoring**: no `/proc`, no offline libproc binding; the parser child there is
+- **macOS residency monitoring**: no `/proc`, no libproc binding in the standard library; the parser child there is
   bounded by timeout and hard kill only, and the result says the memory cap is not active
   (README open decision 8).
 - **Windows named-pipe transport**: not implemented; Windows serves over stdio
   (README open decision 7).
-- **Full NFKC normalisation**: not available offline (README open decision 1).
+- **Full NFKC normalisation**: not in the stdlib-only, `GOPROXY=off` build (README open decision 1).

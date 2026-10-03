@@ -16,7 +16,8 @@ Brief §4.1 fixes the event envelope field by field, and brief §4.3 requires va
 versioned schema". A versioned, closed record changes the architecture in two ways:
 
 - There is no untyped remainder to normalise. The envelope *is* the normalised record; every field is a
-  column.
+  column, with one exception: `attachments` has no column on `ingest.observation`, and its store-side
+  home is `ingest.search_text`.
 - Reprocessing becomes a migration rather than a re-derivation, because the raw form is already
   structured and already validated.
 
@@ -55,9 +56,10 @@ Easier: the audit story is simple, because the event history cannot be rewritten
 superuser disabling a trigger. Aggregates are provably derived. The retention path is explicit and
 greppable rather than distributed across update statements.
 
-Harder: a defect in a collector cannot be fixed retroactively in stored rows; it produces a new
-observation with a corrected `collector_version`, and the reconciliation report explains the
-discontinuity. Storage is not reclaimed until expiry, because there is no compaction by update.
+Harder: a defect in a collector cannot be fixed retroactively in stored rows; the corrected collector
+produces new observations, and the reconciliation report explains the discontinuity. The envelope
+carries no collector version — that is reported through the health channel, as
+`ops.collector_state.version`. Storage is not reclaimed until expiry, because there is no compaction by update.
 
 We now maintain: a trigger that blocks mutation, and a documented escape hatch
 (`sac.retention_delete`) whose only legitimate caller is the reconciler.

@@ -40,8 +40,10 @@ presenting an unasked question as a negative answer.
 ## Health
 
 - With no enumerator it refuses to start — a route with no way to observe is not started at all.
-- A partial enumerator degrades to `enumeration_partial` **and emits nothing**, because a rollup
-  built on a partial sample would be a fabricated count.
+- A cycle whose enumeration fails degrades to `enumeration_partial` **and emits nothing**, because a
+  rollup built on a failed sample would be a fabricated count.
+- An empty seed set degrades to `signature_set_stale`: no signatures is not a licence to detect
+  everything.
 - A cycle that misses its window leaves the provider `absent` rather than stale-healthy.
 - After `Stop` it is never healthy, and `Stop` is idempotent.
 

@@ -9,9 +9,10 @@ how content is interpreted before it leaves the machine, and how the device repo
 [00-architecture](00-architecture.md) (**the master doc**) fixes component names, the envelope, the data model
 and D1–D8; this document does not re-litigate any of it. Citations are `§5.2` / `R4` (brief), `C25` / `D4`
 (master doc), `[master §4.4]`. Anything else is an **ASSUMPTION**, labelled at the point of use and listed in
-§18. Names frozen by [contracts/event-envelope.schema.json](../contracts/event-envelope.schema.json):
-`capture-extension`, `capture-core`, `classifier-host`, the parser child, and the routes `ext.web_request`,
-`ext.page_context`, `ext.dom`, `proxy.tls`, `proxy.loopback`, `proc.detect`, `cli.shim`.
+§18. Component names — `capture-extension`, `capture-core`, `classifier-host`, the parser child — are the
+master doc's. [contracts/event-envelope.schema.json](../contracts/event-envelope.schema.json) freezes only
+the seven routes: `ext.web_request`, `ext.page_context`, `ext.dom`, `proxy.tls`, `proxy.loopback`,
+`proc.detect`, `cli.shim`.
 
 ---
 
@@ -94,10 +95,10 @@ no rule matches, nothing is blocked, everything is reported — and is never ren
 
 | Process | Language / form ([master §4.1]) | Runs as | Hosts | May touch | Must never touch |
 |---|---|---|---|---|---|
-| `capture-extension` | TypeScript, MV3, policy-installed in Chrome and Edge (E23) | Browser process, per profile | Modes A, B, C observation; inline warn/block (E1) | Request metadata and bodies (E2); `File` objects in page context (E3); its own storage | Filesystem outside its storage; sockets; process lists; the spool file; the CA private key |
+| `capture-extension` | Plain JavaScript (ES modules, no build step), MV3, policy-installed in Chrome and Edge (E23) | Browser process, per profile | Modes A, B, C observation; inline warn/block (E1) | Request metadata and bodies (E2); `File` objects in page context (E3); its own storage | Filesystem outside its storage; sockets; process lists; the spool file; the CA private key |
 | `capture-core` | Go, one static binary per platform, privileged service | `LocalSystem` (Windows); LaunchDaemon (macOS) | `proxy.tls`, `proxy.loopback`, `proc.detect`, `cli.shim`; policy engine; spool; ingest client | System proxy configuration; the root CA's public certificate and sealed key; loopback sockets; process enumeration; the spool | Document parsing (R8); document byte buffers; any cloud endpoint but the five in [master §5.1] |
 | `classifier-host` | Go, native **and** `js/wasm` from one source ([ADR 0016](adr/0016-the-classifier-host-is-one-go-source-built-for-native-and-js-wasm.md)) | Child of `capture-core`, sandboxed | Rules → validators → model (brief §6); the same core compiled into the extension | Bytes handed over by a provider; signed release artefacts | Sockets; the spool; the CA key; process enumeration; spawning anything but the parser child |
-| parser child | Go, separate executable | Child of `classifier-host`, one per document | One document at a time | The single document buffer it was given | Everything else: no network, no spool, no keys, no second document |
+| parser child | Go; the `parse-child` subcommand of the one `classifier-host` binary, run as its own process | Child of `classifier-host`, one per document | One document at a time | The single document buffer it was given | Everything else: no network, no spool, no keys, no second document |
 
 ### 3.2 Why the extension cannot be merged into `capture-core`
 
@@ -147,7 +148,10 @@ on connect** marks `classifier-host` `degraded` on mismatch and falls back to ru
 timeout, killed, and restarted with backoff; "no answer" is `degraded`, never "no labels found". The
 extension's WASM copy makes the synchronous inline decision and the native host is authoritative for the
 envelope's labels, both from one Go source ([ADR 0016](adr/0016-the-classifier-host-is-one-go-source-built-for-native-and-js-wasm.md)), with a divergence test asserting byte-identical
-labels over a fixed corpus. **`classifier-host` → parser child** is a process spawn with a parent-enforced cap
+labels over a fixed corpus. **As built:** the extension does not load the `js/wasm` build — its shape
+predicate and inline decision are JavaScript (`extension/src/predicate.js`, `extension/src/enforce.js`) —
+and the `js/wasm` target exists only in `endpoint/classifier-host`, where the equivalence test runs it
+under Node. **`classifier-host` → parser child** is a process spawn with a parent-enforced cap
 and timeout (§10).
 
 ### 3.5 Lifecycle and ordering
@@ -262,6 +266,10 @@ closed `detail` vocabulary of §4.4–§4.6 so a coverage report can group by ca
 depth and `spool_dropped_total` are first-class columns because C22 requires the drop counter to be reported,
 not buried. That leaves one device-side obligation worth stating: the collector name must come from
 `ref.collector`, so a provider cannot invent a name for a coverage path the reporting layer does not know.
+**As built:** the device does not meet this yet. `capture-core` reports each provider under its route
+name (`proxy.tls`, `proxy.loopback`, `proc.detect`) and the extension as `capture-extension`, while
+`ref.collector` holds `capture_extension`, `egress_proxy`, `loopback_broker`, `cli_shim`,
+`process_detector` and `classifier_host`; O4's conformance check is what closes the gap.
 
 ### 4.4 `proc.detect` — process and model detector
 
@@ -273,7 +281,7 @@ discipline:
 
 | Observation | Output | Never output |
 |---|---|---|
-| Evidence a local model ran — an inference-runtime process with a listening local socket, **or** a loaded inference-runtime module with sustained compute | One `kind: model_detection` with `detection_basis` from the schema's closed set (`process_scan`, `module_signature`) | Anything per-cycle |
+| Evidence a local model ran — an inference-runtime process with a listening local socket, **or** a loaded inference-runtime module with sustained compute | One `kind: model_detection` with `detection_basis` from the schema's closed set (`process_scan`, `endpoint_security`, `etw`, `module_signature`), of which this provider's mechanisms are `process_scan` and `module_signature` | Anything per-cycle |
 | A candidate AI application active in a window where no provider recorded a submission | **One `kind: usage_rollup` per device, per tool, per day** | Per-process, per-exec, per-request or per-cycle records |
 | Process identity for attributing another provider's event | A field on that envelope | Its own record |
 
@@ -313,7 +321,9 @@ stack, ignoring environment variables, or pinning certificates is detected by it
 being seen running (§5.6) and recorded as a named gap — a coverage failure, never a broken client. Coverage
 row: environment applied to N shells, M processes inherited it, K candidates bypassed it, bypasses attributed
 per client so one incompatible tool is visible instead of averaged away. It **fails open by passing every
-command through untouched**.
+command through untouched**. **As built:** no provider implements `cli.shim` yet — the route exists in the
+closed vocabulary and in §3.5's startup order, and it has no coverage row rather than a healthy-looking
+empty one (`endpoint/README.md`).
 
 ### 4.6 Provider summary
 
@@ -610,7 +620,7 @@ while emission stays narrow — separate layers, not a slogan.
 | Layer | Breadth | Mechanism |
 |---|---|---|
 | Observation | Every host the browser visits, under a deployment-controlled host permission | `webRequest` listeners, `onBeforeRequest` with `requestBody` |
-| Classification | Every observed request | The §8.2 shape predicate, in the WASM classifier |
+| Classification | Every observed request | The §8.2 shape predicate, in the WASM classifier (**as built:** JavaScript, `extension/src/predicate.js`) |
 | Emission | Only matches whose effective mode permits what was read | Envelope construction in `capture-core` |
 | Storage | The extension holds nothing durable | Observations delivered over native messaging |
 
@@ -727,7 +737,7 @@ two routes yields one value — otherwise dedup fails, since `dedup_key` include
 | 3 | Request body shape family | All routes | Yes | The structural signature of a generative request (§8.2) — member names and nesting, not values |
 | 4 | Response contract shape | Proxy and extension (status, content type, streaming framing) | Yes | Separates a generative endpoint from a look-alike on the same origin |
 | 5 | Process identity | `proc.detect`; proxy attribution | No — but it is the same tool across routes, so it feeds the same fingerprint | Image path, code-signature subject, product metadata |
-| 6 | TLS ClientHello fingerprint | Proxy only | Yes where the client is the tool itself | Separates a desktop app from a browser on the same host. **ASSUMPTION (A9):** one of six signals, so deprecation degrades precision rather than breaking the fingerprint |
+| 6 | TLS ClientHello fingerprint | Proxy only | Yes where the client is the tool itself | Separates a desktop app from a browser on the same host. **ASSUMPTION (A9):** one of seven signals, so deprecation degrades precision rather than breaking the fingerprint |
 | 7 | Tenant-declared hints | Signed bundle | Yes | A tenant can pin a fingerprint to a name for their reporting (C8); this changes the *label*, never the fingerprint |
 
 `tool_fingerprint = "tf1:" + base32(SHA-256(canonical(signal_vector)))` — a versioned prefix so the derivation
@@ -816,8 +826,16 @@ which language could deliver it here.
 | Document parsing | **Delegated to the child process** (§10) | **Unavailable.** The extension may not parse a document; it sends bytes to the core, which routes them to the parser |
 | Threads / SIMD | Available | No shared-memory threading; SIMD per browser support |
 
-[Master §7] Q4 states the open measurement: whether the model meets 150 ms p95 inside a WASM sandbox is
-unmeasured. §9.4's ladder is the contingency, and it changes the placement of one stage rather than the
+**As built:** the extension does not load the `js/wasm` copy; the build exists in
+`endpoint/classifier-host` and the extension's inline path is JavaScript (§3.4).
+
+[Master §7] Q4 asks whether the model meets 150 ms p95 inside a WASM sandbox. It has a first
+measurement, not an answer: on `windows/amd64`, over a 20-case corpus with the development rule set and
+the development model artefact (`dev-artefact-1`), whole-classification p95 is well under 1 ms for both
+the native build and the `js/wasm` build, every stage inside its §9.4 share
+(`endpoint/classifier-host/reports/latency-summary.md`, `MEASUREMENTS.md`). The `js/wasm` figure was taken
+under Node, not inside a browser extension, and not with a production model, so Q4 stays open for that
+case. §9.4's ladder is the contingency, and it changes the placement of one stage rather than the
 architecture.
 
 ### 9.2 Pipeline: rules → validators → model
@@ -827,7 +845,7 @@ fuzzy classes").
 
 ```
 bytes ─► normalise ─► RULES ──────► VALIDATORS ──────► MODEL ──────► label set
-         (§9.3)      regex and      checksums and      fuzzy classes  + confidence
+         (below)     regex and      checksums and      fuzzy classes  + confidence
                      context        structure          (customer_pii, + classifier
                      predicates     verification       source_code,   version
                                                         legal, health)
@@ -1145,6 +1163,14 @@ acknowledgement record itself lives in the control plane.
 The spool is the device's only durable store, bounded, encrypted and crash-safe (C22; [master §4.1]'s
 SQLite/WAL choice). One writer (`capture-core`), and the bound is enforced on write, not on a timer.
 
+**As built:** `endpoint/capture-spool` is not SQLite. It is a single-writer, append-only segment log with
+AES-256-GCM per record, behind the `protocol.Store` interface (`endpoint/protocol/spool.go`). The table
+below is the record's shape, not a physical schema, and the WAL and transaction guarantees of §12.2 are
+supplied by frame-atomic appends, truncation of an incomplete trailing frame on recovery, and tombstone
+frames for state changes and drops. The DPAPI/Keychain wrapping below is an interface with no wired
+implementation: the shipped key provider protects the key file with filesystem ACLs only. See
+[endpoint/capture-spool/README.md](../endpoint/capture-spool/README.md).
+
 ```sql
 CREATE TABLE spool_event (
   event_id         TEXT PRIMARY KEY,       -- uuid, minted by the provider
@@ -1154,10 +1180,10 @@ CREATE TABLE spool_event (
   collection_mode  TEXT NOT NULL,
   tool_fingerprint TEXT NOT NULL,
   occurred_at      TEXT NOT NULL,          -- device clock (RFC3339)
-  mono_offset_ms   INTEGER NOT NULL,       -- monotonic ordering, survives clock changes (C26)
+  monotonic_offset_ms INTEGER NOT NULL,    -- monotonic ordering, survives clock changes (C26)
   seq              INTEGER NOT NULL,       -- spool-local insertion order; the drop-oldest axis
   envelope         BLOB NOT NULL,          -- the deviceSubmission record, encrypted
-  state            TEXT NOT NULL,          -- pending | in_flight | sent | rejected_terminal
+  state            TEXT NOT NULL,          -- pending | in_flight | delivered | rejected | dropped
   attempts         INTEGER NOT NULL DEFAULT 0,
   bytes            INTEGER NOT NULL,
   expires_at       TEXT NOT NULL           -- local retention, enforced independently of the network
@@ -1259,7 +1285,7 @@ device inventory with the actor who revoked it.
 produces a **`304`** and no re-download (brief §4.2, C10). Contents are the brief's list — classifier version,
 collection mode per scope, retention class, destination allowlist, spool bounds, feature state per collector —
 plus, here, the classifier release state (§9.6), the provider kill switch (§5.5), the interception enumeration
-(§5.1), the loopback port map (§6.1), and the shape-predicate parameters (§8.2). Verification stops at the
+(§5.1), the loopback port map (§6), and the shape-predicate parameters (§8.2). Verification stops at the
 first failure:
 
 ```
@@ -1487,6 +1513,14 @@ plus a periodic liveness handshake); `bundle_signature_invalid` / `bundle_versio
 `spool_integrity`. An absence of events is ambiguous; each of these is a positive signal, reported within one
 reporting interval of detection.
 
+**As built:** a health report is validated against the closed `protocol.Detail` vocabulary
+(`endpoint/protocol/envelope.go`), which carries `port_held_by_other` and the `bundle_*` causes from this
+list. `service_stopped`, `proxy_config_altered`, `root_untrusted`, `shim_removed`, `extension_disabled`,
+`spool_integrity` and §12.2's `spool_reinitialised` are not in it, so they cannot be reported until they
+are added. The vocabulary also carries causes this document does not otherwise name:
+`enforcement_unavailable` (the extension can observe but not cancel a request), `mode_violation`,
+`content_over_cap`, `undecodable_content` and `version_mismatch`.
+
 ---
 
 ## 16. What is not captured, and why
@@ -1551,7 +1585,7 @@ upgrade — each with its consequence for the product's numbers.
 | A6 | Certificate Transparency is not a constraint on a locally trusted CA, so clients accept minted leaves | A reviewer will ask; if a client ever requires SCTs, this provider's reach shrinks and the coverage row shows it |
 | A7 | Connection-refused is the least-bad signal during a broker release window | Keeps `RELEASED` unambiguous, which §6.2's invariants depend on; a listening-but-erroring socket would look healthy to a watchdog |
 | A8 | The upstream preflight path is per-tool configuration in the bundle | Invoking a generation endpoint to test health would consume the user's resources and could itself be observed as usage |
-| A9 | A TLS ClientHello fingerprint is usable as one of six fingerprint signals | One input among six, so its deprecation degrades precision rather than breaking the fingerprint |
+| A9 | A TLS ClientHello fingerprint is usable as one of seven fingerprint signals | One input among seven, so its deprecation degrades precision rather than breaking the fingerprint |
 | A10 | `tf1:` plus a base32 SHA-256 fits the envelope's 128-character `tool_fingerprint` field | A schema-bounded field with an unbounded encoding is a defect waiting to be written |
 | A11 | The parser child's confinement uses a job object (Windows) / sandbox profile (macOS) | The requirement is "no filesystem path to key material", which these satisfy; the specific primitive is an implementation choice |
 | A12 | Parser memory cap, timeout and output cap are finite parameters (tens of MB, low hundreds of ms, low MB) | Only the *shape* is a design requirement (R8); the values belong to the resource budget (§8) and R8's test plan |
@@ -1574,7 +1608,7 @@ Distinct from [master §7]'s list: what must close for *this* document to be imp
 | # | Item | Owner | Closes by | If unresolved |
 |---|---|---|---|---|
 | O1 | R1 lab validation against §6.4's acceptance criteria | Endpoint lead | The five checks against the customer-relevant tool set, both platforms | Mode F ships as `detection_only`; no architectural change ([master §4.6]) |
-| O2 | Q4 — whether the WASM classifier meets 150 ms p95 in the extension | Classification lead | Benchmarking rules-only, rules+model and model-on-worker against recorded traffic | The model moves to the native host, or labels arrive on a follow-up record; either changes §9.4's ladder, not its structure |
+| O2 | Q4 — whether the WASM classifier meets 150 ms p95 in the extension. Measured under Node with the development rules and model artefact (§9.1); not yet measured in a browser or with a production model | Classification lead | Benchmarking rules-only, rules+model and model-on-worker against recorded traffic | The model moves to the native host, or labels arrive on a follow-up record; either changes §9.4's ladder, not its structure |
 | O3 | The class-prior map's initial content per tool family (A14) | Classification lead with product | Enumerating the classes each supported tool family plausibly carries, plus the tenant default | Resolution falls back to the tenant default — conservative, but coarser than the brief's per-class intent |
 | O4 | Keeping the device's provider names identical to `ref.collector` as providers are added (§4.3) | Collection lead with data platform lead | A conformance check that every `Name()` a provider can report exists in `ref.collector`, run in CI | A renamed or added provider reports health the coverage report cannot attribute, which is the R11 failure arriving through a naming change |
 | O5 | The dynamic-promotion window length and re-probe cadence (§5.1) | Endpoint lead | Measuring the false-promotion rate during the bake period | Either novel tools stay invisible (too narrow) or more plaintext than necessary is decrypted (too wide) |

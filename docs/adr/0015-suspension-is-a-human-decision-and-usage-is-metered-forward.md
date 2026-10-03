@@ -19,7 +19,7 @@ system and into the process — which means the system's obligation changes from
 **making the decision informed and recorded**.
 
 **Second, billing and erasure pull in opposite directions.** Brief §3.4 requires subject erasure to
-remove data, and [03-data-platform](../03-data-platform.md) §7 leans on that deliberately: aggregates
+remove data, and [03-data-platform](../03-data-platform.md) §5.1 leans on that deliberately: aggregates
 *replace* their bucket rather than incrementing, precisely so an erasure can decrease a count. Billing
 wants the opposite — the tenant consumed the service, and the invoice must not fall because a data
 subject exercised a right. Any usage figure derived from `ingest.submission` silently understates the
@@ -53,6 +53,10 @@ accepted events, content bytes added, and an end-of-day device snapshot. It carr
 reference and no device identifier**, so it is not personal data and a subject erasure neither touches
 it nor changes what it says. `ingest-api` increments it in the same transaction that stores the events,
 so a retried batch adds nothing (duplicates are rejected) and an erasure subtracts nothing.
+
+**As built.** The ledger table, its constraints and the grants for `sac_ingest` exist, but the increment
+is not implemented: `ingest-api` issues no statement against `ops.usage_daily` and
+`ingest.record_event()` does not touch it. Nothing writes the ledger today.
 
 Device counts are snapshotted daily rather than read live, because "how many devices in March" is a
 question about March and a device removed in April must not change the answer.

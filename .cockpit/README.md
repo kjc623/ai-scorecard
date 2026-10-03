@@ -42,8 +42,9 @@ manifest or walking the tree.
 
 ## Planning actions — the one place it writes
 
-The cockpit is read-only with respect to your files. It can, however, do two
-things to the shared team task board, and only those two:
+The cockpit is read-only with respect to your files. The panel can, however, do
+two things to the shared team task board, through the host's three actions
+(`create_task`, `update_task`, `send_message`) and only those:
 
 | Where | Action | What it does |
 | --- | --- | --- |
@@ -71,7 +72,8 @@ cockpit to be restarted"* rather than rendering a button that would fail.
 ## The manifest
 
 The cockpit reads `.cockpit/project.json` in the workspace root (it also looks
-for `project.cockpit.json` and `cockpit.project.json`). Without a manifest it
+for `project.cockpit.json`, `cockpit.project.json` and `cockpit.json`, in that
+order). Without a manifest it
 still renders the real workspace tree, and says the manifest is missing.
 
 The schema is [`.cockpit/schema/manifest-v1.schema.json`](schema/manifest-v1.schema.json).
@@ -144,7 +146,7 @@ The plugin lives in this workspace at `.cockpit/` and is installed into a DSH
 profile as a local file dependency:
 
 ```sh
-dsh plugin --profile desktop add file:C:/Users/kyle/Downloads/architecture/.cockpit
+dsh plugin --profile desktop add file:C:/architecture/.cockpit
 ```
 
 `add file:` **copies** the directory into the profile, so the install is a
@@ -186,7 +188,7 @@ at" is never a guess. Two sessions in two directories get two different projects
 
 ```sh
 # 1. move it
-move C:\Users\kyle\Downloads\architecture\.cockpit  C:\Tools\dsh-project-cockpit
+move C:\architecture\.cockpit  C:\Tools\dsh-project-cockpit
 
 # 2. re-point the profile at the new address (DSH closed)
 #    or simply:  dsh plugin --profile desktop add file:C:/Tools/dsh-project-cockpit
@@ -208,9 +210,9 @@ Three things to know:
   harness's `app.asar`** — so a moved copy is self-sufficient. The plugin itself
   never reads this directory.
 - **The manifest moves with the *project*, not with the tool.** `.cockpit/project.json`
-  was written for the Shadow AI Capture package and claims `.cockpit` as one of
-  its components; once the package moves out, drop the `design-tooling` component
-  from that manifest. Each project you use the cockpit on gets its own
+  was written for the Shadow AI Capture package and describes that package only —
+  no component in it claims `.cockpit` — so it stays behind at the project's root
+  when the package moves out. Each project you use the cockpit on gets its own
   `.cockpit/project.json` at its root.
 - **The suite skips rather than fails where its fixture is gone.** A dozen checks
   read the project this package was built beside; move the package and they report
@@ -272,7 +274,7 @@ imports to the shell's frozen module table and refusing anything not in it.
 | `test/run.mjs` | Manifest validation, cycle detection, overlap detection, path resolution, and a real scan of this workspace. |
 | `test/bundle.mjs` | The built bundle registers with the shell correctly — the sidebar id equals the panel key, no default export (which would drop `inject`), no undeclared module requests. |
 | `test/panel.mjs` | What the panel renders, from real index shapes: the project, the layers, the edges, the absent paths, the roster against a live team, the board action in each of its states, and the failure states. |
-| `test/host.mjs` | The host half mounts, registers its route and tool, and every view — including all four planning actions and their refusals — answers with the right data. |
+| `test/host.mjs` | The host half mounts, registers its route and tool, and every view — including the three planning actions and their refusals — answers with the right data. |
 | `test/composition.mjs` | The **shell's own** client-module scanner accepts the package. It imports `ClientModuleRegistry` from the shipped `@deepseek-ai/dsh-client-modules`, feeds it this profile's loader rows, and asserts a composed row with a resolvable bundle, the right module id, and a valid revision. This is the check that distinguishes "my manifest looks right" from "the host composes it". |
 
 `test/composition.mjs` reads the installed profile, so it is specific to a

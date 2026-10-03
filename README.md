@@ -72,8 +72,8 @@ node localdev/build.mjs     # build the images
 node localdev/run.mjs       # up, smoke test, report
 ```
 
-[`localdev/README.md`](localdev/README.md) covers the CPU architecture, the ports, and the one
-credential the lab uses.
+[`localdev/README.md`](localdev/README.md) covers the addresses and ports, the build constraints, and
+the one credential the lab uses.
 
 ## The design record
 

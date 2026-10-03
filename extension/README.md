@@ -17,8 +17,9 @@ node --test 'extension/**/*.test.mjs'
 cd extension; node --test      # discovery from the package
 ```
 
-All three run the same suite. Chromium and a native messaging host are **not** required and are
-**not** installed here.
+The glob form and discovery from the package run every `*.test.mjs` file. The bare-directory form
+runs what `run-tests.mjs` imports, which is every test file except `test/native-host.test.mjs`.
+Chromium and a native messaging host are **not** required and are **not** installed here.
 
 ## Layout
 
@@ -45,8 +46,10 @@ tools/
   native-host.ps1          Writes the two HKCU registry values that point at it. No elevation needed.
   make-extension-key.mjs   Regenerates the identity pair whose public half is the manifest's `key`.
 src/
-  adapter.js               THE SEAM. Names the whole assumed chrome.* surface. Every other module
-                           takes an adapter; nothing else calls chrome.* (`contract.test.mjs` greps).
+  adapter.js               THE SEAM. Names the whole assumed chrome.* surface. Every other module in
+                           `src/` takes an adapter (`contract.test.mjs` greps `src/`, the service
+                           worker and `content/content-script.js`). `content/content-boot.js` is the
+                           exception: it calls `chrome.runtime` directly and that grep does not cover it.
   chrome-adapter.js        Builds a browser adapter, and a content-script adapter, from `chrome`.
   messages.js              Transcription of endpoint/protocol's vocabulary + the base64 content encoder.
   codec.js                 Bytes, strict-UTF-8 decode, base64, SHA-256.
@@ -62,8 +65,8 @@ src/
   tool-fingerprint.js      §8.1's tf1: fingerprint from the route-independent signal vector.
   attachments/files.js     Page-context File registry (metadata at selection, bytes at send).
   attachments/sender.js    Manifest-then-chunks transfer, refusal before any byte.
-test/                      The suite, no browser required. Run it with `node --test`, not the
-                           directory form — see below.
+test/                      The suite, no browser required. Run it with one of the commands above;
+                           `node --test extension` works only through `run-tests.mjs` — see below.
 test-support/              Fake chrome, fake capture-core, harness, fixtures. Not tests themselves.
 ```
 
@@ -98,8 +101,9 @@ payload is a contract-shaped envelope with no `received_at`.
 On Node 22.23.1 a positional argument to `--test` is treated as a *file*, not a directory to search,
 so `node --test extension` would try to load the directory as a module and fail with
 `Cannot find module`. Node resolves a directory argument through `package.json`'s `main`, so
-`run-tests.mjs` is what that documented command loads; it imports the real suite and contains no
-tests of its own. Verified on this host: the bare-directory form fails identically in an empty
+`run-tests.mjs` is what that documented command loads; it imports `contract.test.mjs` and the files
+under `test/` by name (all of them except `test/native-host.test.mjs`) and contains no tests of its
+own. Verified on this host: the bare-directory form fails identically in an empty
 scratch directory, so it is a Node behaviour rather than a property of this package.
 
 ## The assumed `chrome.*` surface
@@ -112,12 +116,21 @@ chrome.webRequest.onBeforeRequest.addListener(fn, filter, ["blocking","requestBo
 chrome.webRequest.onBeforeRequest.removeListener(fn)                                  M0 lane removal
 chrome.webRequest.onCompleted.addListener(fn, filter)
 chrome.runtime.connectNative(application)      chrome.runtime.lastError
-chrome.runtime.onMessage / sendMessage / getURL
+chrome.runtime.onMessage / sendMessage / getURL / id
 chrome.tabs.sendMessage / chrome.tabs.query
 chrome.alarms.create / onAlarm
+chrome.permissions.contains({permissions: ["webRequestBlocking"]})                    the capability check
+chrome.storage.session.get / set                                                      guarded; no caller
 ```
 
-Not used: `declarativeNetRequest`, any storage, any analytics, any remote code.
+`"blocking"` is passed only when `chrome.permissions.contains` reports the grant is held; without it
+the same lanes register with `[]` and `["requestBody"]`.
+
+`chrome-adapter.js` exposes a `session` accessor over `chrome.storage.session`, guarded so that it
+does nothing when the API is absent. No module calls it, and the manifest declares no `storage`
+permission, so nothing is stored.
+
+Not used: `declarativeNetRequest`, `chrome.storage.local` or `sync`, any analytics, any remote code.
 
 ## What has been verified in a real browser, and what has not
 
@@ -149,7 +162,8 @@ the same, but the engine difference is stated rather than glossed over.
 Two modes, because they assert opposite halves of the same requirement. With **no host registered**,
 §3.4/INV-6 requires `absent` + `degraded` and a page that still works. With a host registered **before
 launch** (`--with-native-host`), the same requirement is `connected`, and only then can the real §7.3
-attachment path be driven end to end. `tools/accept.mjs` runs both.
+attachment path be driven end to end. The repository-root [`tools/accept.mjs`](../tools/accept.mjs)
+runs both.
 
 | # | Property | How it is observed |
 |---|---|---|
@@ -332,7 +346,9 @@ choice this implementation had to make:
 
 1. **Where the §8.2 weights live.** The document fixes the evidence and the asymmetry (recall over
    precision) but not the numbers. `predicate.js` exports `SIGNAL_WEIGHT` and `DEFAULT_THRESHOLD`
-   (0.8) as data, and the numbers are a calibration, not a specification — a bundle can override them.
+   (0.8) as data, and the numbers are a calibration, not a specification. A bundle override is not
+   wired: `predicateRequest()` accepts a threshold argument, but `pipeline.js` never passes one, the
+   weights are a frozen constant, and the policy cache carries neither.
 2. **The 300 ms budget against a human.** §7.4's 300 ms bounds *reaching a verdict*. A `warned` rule
    then waits for a person, who does not answer inside 300 ms, so treating the two as one number
    would make `warned` behaviourally identical to fail-open and the schema's `warned` action
@@ -360,9 +376,11 @@ choice this implementation had to make:
    described the original — a content-identity break that would propagate into `dedup_key` and into
    what the classifier sees. `observationBody()` is the single encoder, so a call site cannot get it
    wrong; `test/content-roundtrip.test.mjs` proves it against the real Go type.
-8. **`enforcement: observation_only` has no `Detail` in the protocol's closed vocabulary.** The
-   browser can revoke `webRequestBlocking` from an otherwise valid install (it does so for every
-   unpacked load), which leaves observation working and §7.4's ability to cancel gone. `endpoint/protocol`
-   has no member for "this install cannot enforce", so the extension reports it as an extension-side
-   field on the health report and counts it as `enforcement_unavailable` rather than inventing a
-   `Detail`. **A protocol decision, not an implementation one** — raised for the Lead.
+8. **How an install that cannot enforce is reported.** The browser can revoke `webRequestBlocking`
+   from an otherwise valid install (it does so for every unpacked load), which leaves observation
+   working and §7.4's ability to cancel gone. `endpoint/protocol` names that state in its closed
+   `Detail` vocabulary as `enforcement_unavailable` (`DetailEnforcementUnavailable`), and the
+   extension uses it: the health report carries it as `detail`, with `state: degraded`, counts it
+   under `errors_by_code`, and also carries the extension-side field `enforcement: observation_only`.
+   `HealthReport` has one `detail`, so when the channel is also absent the enforcement capability
+   takes precedence there and the channel is carried by `core`.

@@ -16,11 +16,12 @@ The only read path for the dashboard: a **closed query DSL** compiled server-sid
 
 ## Runtime, and why this is plain JavaScript
 
-Node 22, **zero dependencies**, offline: no `npm install`, no TypeScript compiler, no framework.
+Node 22, **zero dependencies**: nothing to `npm install`, no TypeScript compiler, no framework.
 The package is therefore runnable **ESM JavaScript with JSDoc type annotations** rather than
 TypeScript. The PostgreSQL driver is **injected** into `executePlan` (anything with
-`query(text, params)`, `begin`, `commit`, `rollback`) rather than bundled, which is also what makes
-the fail-closed path testable without a server.
+`query(text, params)`, `begin`, `commit`, `rollback`) rather than imported by the pipeline, which
+is also what makes the fail-closed path testable without a server. The driver the service injects
+is the package's own `src/pg/`.
 
 The package ships **two entry points into the same pipeline**:
 
@@ -41,6 +42,15 @@ status, so the transport repeats the pipeline's decision rather than inventing a
 | `src/http/server.js` | `/healthz`, `/readyz` and `POST /v1/query`, plus the body ceiling, the concurrency gate and the error rendering |
 | `src/http/pool.js` | Per-request connections, and the **mandatory tenant reset** on release |
 | `src/http/main.js` | Resolve config, prove the database, listen, drain on `SIGTERM` |
+
+Three of the names `src/http/config.js` reads bound how much the service does at once. Each is an
+integer; a value outside its range is a refusal to start.
+
+| Variable | Default | Range | What it bounds |
+|---|---|---|---|
+| `SAC_MAX_CONCURRENCY` | `8` | 1–1000 | Reads the gate in `server.js` admits at the same time |
+| `SAC_MAX_QUEUE` | `32` | 0–10000 | Requests that may wait at the gate before the next one is answered `429 busy`; also the pool's wait-queue bound |
+| `SAC_MAX_CONNECTIONS` | `40` | 1–1000 | The hard ceiling on connections the pool in `pool.js` opens |
 
 Two properties of that layer are load-bearing and easy to get wrong:
 
@@ -68,7 +78,7 @@ deployment refuses every read with `403` until it exists. `localdev/` runs the s
 | `src/compile.js` | DSL to parameterised SQL. Identifiers are resolved from the registry; values only ever become `$n`. |
 | `src/guard.js` | §12's cost guard: rejection, not degradation, before the statement runs. |
 | `src/suppress.js` | §6 k-suppression and complementary suppression; a suppressed cell is never a zero. |
-| `src/cursor.js` | §7 cursors: signed self-contained tokens, opaque server-side ids, `cursor_expired` for every failure. |
+| `src/cursor.js` | §7 cursors: signed self-contained tokens, opaque server-side ids, `cursor_expired` for every failure of a signed token (DSL.md §7 lists what the server-side path refuses as `unsupported_query_shape`). |
 | `src/audit.js` | §5 audit-on-read: the decision, the parameterised insert, and in-SQL hash-chain verification. |
 | `src/envelope.js` | §2.3's envelope, §4.5 freshness, §11.3 coverage; a data-bearing response cannot omit its state. |
 | `src/blocks.js` | the side reads: watermark, coverage, `newer_events_exist`, the class total, the unmapped residual, the flush check, Q9's detail. |
@@ -105,7 +115,7 @@ the skip says which. A skip is not a pass.
 | The ten questions are answerable | `test/templates.test.mjs`, and the same ten shapes in `test/snapshots/compiled-sql.json`. |
 | Nothing is served unaudited | `test/audit-plan.test.mjs`: a failing audit insert serves zero rows and returns `503 audit_unavailable`. |
 | The service reaches a real database | `test/pg-client.test.mjs` speaks the wire protocol to PostgreSQL, including SCRAM-SHA-256, bound parameters and SQLSTATE surfacing. |
-| The transport cannot be talked into a wrong answer | `test/http-server.test.mjs` and `test/pool.test.mjs`: the tenant is refused when unestablished, the tenant is bound rather than interpolated, the tenant is cleared before a connection is reused, and a shed request is answered `429 busy` rather than queued for ever. |
+| The transport cannot be talked into a wrong answer | `test/http-server.test.mjs` and `test/pool.test.mjs`: the tenant is refused when unestablished, the tenant is bound rather than interpolated, the tenant is cleared before a connection is reused, and a request shed by the gate is answered `429 busy` rather than queued for ever. A refusal from the pool itself is not mapped to `busy`; it is rendered as the generic `500`. |
 
 ## What is in `test/`
 

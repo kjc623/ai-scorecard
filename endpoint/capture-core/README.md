@@ -40,7 +40,7 @@ with a named reason rather than being reported as "nothing found".
 
 ## Build and test
 
-From `endpoint/capture-core`, with the offline prefix the host requires:
+From `endpoint/capture-core`, with the offline prefix the repository's gates use:
 
 ```powershell
 $env:GOCACHE="$PWD\..\..\.tools\gocache"; $env:GOPROXY="off"; $env:GOTOOLCHAIN="local"; $env:GOFLAGS="-mod=mod"
@@ -63,9 +63,11 @@ those are Go module paths, not directories, and nothing here redefines their sha
   is still spooled and stops at its deadline. The health channel is written to a file, not POSTed.
 - **No M3 content store.** An M3 observation is refused rather than emitted without the content it
   says it holds; the local store and grant-bound retrieval are not implemented here.
-- **No platform facilities wired.** The system proxy, the OS trust store, DPAPI/Keychain key sealing
-  and process enumeration are interfaces in `core`, `proxy/tlsproxy` and `detect`; this build wires
-  none of them and the affected providers report `degraded` with a named detail instead of health.
+- **No platform facilities wired.** The system proxy, the OS trust store and DPAPI/Keychain key
+  sealing are interfaces; this build wires none of them, so `proxy.tls` reports `degraded` with a
+  named detail instead of health. Process enumeration is an interface in `detect` with one partial
+  implementation: `--proc-detect` wires a Windows `tasklist` enumerator that sees image names and
+  PIDs only, and on any other platform the route is not started.
 - **No enrolment.** The docs' `capture-core` holds a per-device certificate (§13.1); this binary takes
   its identity from flags, and credential issuance, storage and rotation are elsewhere.
 
