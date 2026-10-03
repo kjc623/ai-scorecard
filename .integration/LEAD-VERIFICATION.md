@@ -9,11 +9,11 @@ Generated: 2026-10-02 · Build round 2
 
 ---
 
-## L1. `device/protocol` — the seam every device component consumes
+## L1. `endpoint/protocol` — the seam every device component consumes
 
 ```
 $env:GOCACHE="$PWD\.tools\gocache"; $env:GOPROXY="off"; $env:GOTOOLCHAIN="local"; $env:GOFLAGS="-mod=mod"
-cd device/protocol ; go vet ./... ; go test ./...
+cd endpoint/protocol ; go vet ./... ; go test ./...
 ```
 
 `go vet` clean; `go test` → `ok`, **22 test functions pass**.
@@ -60,14 +60,14 @@ TALLY pass=39 fail=0 distinct_ids=37
 ```
 
 **37 distinct assertions passed at that point (T1–T37) against PostgreSQL 17.11**, applied by
-`db/schema.sql` and asserted as the runtime roles rather than as a superuser — which is the whole
+`database/schema.sql` and asserted as the runtime roles rather than as a superuser — which is the whole
 point, since a superuser bypasses row-level security and would prove nothing. T36/T37 are the new
 equal-rank adopt assertions from L2.
 
 The suite has since grown to **38 distinct assertions (T1–T38)**, all passing, after the reason-code
 alignment added a mapping test. The count is now stated consistently in README.md,
-.cockpit/project.json, docs/00-architecture.md, docs/03-data-platform.md and db/invariants.test.sql —
-it had been 27 in two documents the earlier correction never reached, which `db/tools/check-schema.mjs`
+.cockpit/project.json, docs/00-architecture.md, docs/03-data-platform.md and database/invariants.test.sql —
+it had been 27 in two documents the earlier correction never reached, which `database/tools/check-schema.mjs`
 now detects mechanically by parsing the documents rather than trusting a number written by hand.
 
 Two caveats this log must carry:
@@ -101,7 +101,7 @@ were the same mistake: a check that looks for a pattern instead of the property.
   (`ref.collector`, `ref.data_class`, `ref.route_fidelity`, `ref.rule`, `ref.retention_class`,
   `ref.classifier_release`) — which is the distinction that makes the check mean something, since a
   policy on those would compare a column that does not exist.
-- **INV-3b first flagged `services/query-api/src/compile.js:121`** (`select.push(\`__ord_${t.by}\`)`)
+- **INV-3b first flagged `query/query-api/src/compile.js:121`** (`select.push(\`__ord_${t.by}\`)`)
   as SQL interpolation. A static check cannot tell an allow-listed identifier from an injection, so
   the check now drives the compiler with five hostile values across three query shapes in a child
   process: **15 of 15 rejected with a typed error, 0 reached SQL text**. The finding stands as a line
@@ -127,7 +127,7 @@ rewrite of the reason-code CHECK silently dropped `revoked_device`, and the beha
 passed anyway — because the same misunderstanding was in the code and in the test's expected list. A
 test written from the same misunderstanding as the code confirms the misunderstanding. What caught it
 was a static check comparing the CHECK against two independent artefacts: the wire enum parsed out of
-`device/protocol/batch.go` and the codes `store.QuarantineReason` can actually emit.
+`endpoint/protocol/batch.go` and the codes `store.QuarantineReason` can actually emit.
 
 The generalisation, which is why it belongs in this log rather than in a commit message: **a
 component's own suite can only ever confirm its author's model of the world.** Every check in
@@ -142,11 +142,11 @@ node tools/accept.mjs
 ```
 
 Nine of thirteen packages pass, zero fail, with the three absences named rather than skipped:
-`contracts/tools` (12 tests), `apps/capture-extension`, `services/query-api` (150 tests),
-`device/protocol` (22), `device/capture-core` (111), `device/capture-spool` (33),
-`device/classifier-host` (88), `services/ingest-api` (156), `contracts/generated` (build is the
-assertion, reported `BLDOK` so it is not miscounted as "no suite"). Missing: `apps/dashboard`,
-`db/tools`, `infra/tools`. `services/content-vault` is no longer missing — it has a module and no
+`contracts/tools` (12 tests), `extension`, `query/query-api` (150 tests),
+`endpoint/protocol` (22), `endpoint/capture-core` (111), `endpoint/capture-spool` (33),
+`endpoint/classifier-host` (88), `ingestion/ingest-api` (156), `contracts/generated` (build is the
+assertion, reported `BLDOK` so it is not miscounted as "no suite"). Missing: `query/dashboard`,
+`database/tools`, `azure/tools`. `vault/content-vault` is no longer missing — it has a module and no
 suite yet, reported `NOTS`.
 
 Every structural gate passes: contract codegen drift, seam field check, vocabulary drift, the six
@@ -184,8 +184,8 @@ node tools/check-seams.mjs
 
 Derives the field vocabulary from `contracts/event-envelope.schema.json` (27 core fields, 13 required, 3
 kinds, 4 modes, 7 routes; M0 forbids 6 content-derived fields) and checks every component that declares
-envelope-shaped fields. Current verdict: clean for `device/protocol`, `device/capture-core`,
-`device/capture-spool`; three components declare none and carry a documented reason — classifier-host
+envelope-shaped fields. Current verdict: clean for `endpoint/protocol`, `endpoint/capture-core`,
+`endpoint/capture-spool`; three components declare none and carry a documented reason — classifier-host
 (bytes → labels, no identity by design §3.3), capture-extension (emits observations; capture-core mints the
 envelope §3.4), ingest-api (validates against the schema at runtime rather than declaring types).
 
@@ -196,20 +196,20 @@ Does **not** prove: nesting, optionality or types across a seam. Behavioural fix
 ## L9. The cross-component device harness (round 3)
 
 ```
-node tools/verify-all.mjs      # device/integration is one of its packages
-cd device/integration && go test ./... -count=1
+node tools/verify-all.mjs      # endpoint/integration is one of its packages
+cd endpoint/integration && go test ./... -count=1
 ```
 
 Every device component had its own suite, and every one of those suites tested the component
 **against its own fakes**. None could show the pieces compose, and that gap was not theoretical: the
-extension sent observation content as raw text while `device/protocol` declared it `[]byte`, so text
+extension sent observation content as raw text while `endpoint/protocol` declared it `[]byte`, so text
 failed to decode outright and text that happened to *be* valid base64 decoded silently to different
 bytes than the user typed, while the digest covered the original. Both sides' suites were green —
 each was testing its own assumption.
 
-`device/integration/` imports capture-core, capture-spool and protocol and is the only place they
+`endpoint/integration/` imports capture-core, capture-spool and protocol and is the only place they
 are wired together. The golden frames are generated by
-`apps/capture-extension/tools/emit-frames.mjs` using **the extension's own** `observationBody()` and
+`extension/tools/emit-frames.mjs` using **the extension's own** `observationBody()` and
 `frame()`, so what the harness reads is what the extension produces, not a fixture that agrees with
 the Go types by construction.
 
@@ -236,11 +236,11 @@ cannot prove.
 packages: 14   pass: 11   fail: 0   missing: 2   no-tests: 1   timeouts: 0
 ```
 
-Passing: `contracts/tools`, `apps/capture-extension`, `apps/dashboard`, `services/query-api`,
-`device/protocol`, `device/integration`, `device/capture-core`, `device/capture-spool`,
-`device/classifier-host`, `services/ingest-api`; `contracts/generated` reports `BLDOK` (a build is
-its assertion). Missing: `db/tools` (its checker is a script, not a suite — a harness gap, mine) and
-`infra/tools`. `services/content-vault` has a module and no suite yet.
+Passing: `contracts/tools`, `extension`, `query/dashboard`, `query/query-api`,
+`endpoint/protocol`, `endpoint/integration`, `endpoint/capture-core`, `endpoint/capture-spool`,
+`endpoint/classifier-host`, `ingestion/ingest-api`; `contracts/generated` reports `BLDOK` (a build is
+its assertion). Missing: `database/tools` (its checker is a script, not a suite — a harness gap, mine) and
+`azure/tools`. `vault/content-vault` has a module and no suite yet.
 
 ## L11. All seven invariants pass, none blocked (round 3)
 
@@ -252,7 +252,7 @@ Two of these closed this round, and neither closed by assertion:
 
 - **INV-1 (content crosses only on a per-event grant)** was PARTIAL with a note that a component
   should not be the only witness to the invariant it implements. It is now driven by a Lead-owned
-  external suite, `services/content-vault/vaultinvariants/`, against the real service: a fabricated
+  external suite, `vault/content-vault/vaultinvariants/`, against the real service: a fabricated
   grant is refused with a closed reason; a grant for event A does not produce event B; another
   principal cannot redeem it; an expired grant is refused; a second redemption is refused; and the
   granted path reports **unavailability with a reason rather than an empty success** — an empty
@@ -264,7 +264,7 @@ Two of these closed this round, and neither closed by assertion:
 
 ## L12. The canonicalisation contract now exists (round 3)
 
-`device/canon` implements `sac-canon-1` step C3 (NFC) in pure Go with no external dependency, tables
+`endpoint/canon` implements `sac-canon-1` step C3 (NFC) in pure Go with no external dependency, tables
 generated from Node's ICU because the UCD cannot be downloaded. Its evidence is the strongest
 verification pattern in this repository: **four independent equivalence checks**, not one.
 
@@ -296,9 +296,9 @@ was reported PASS after running one file. The numbers were the tell — and nobo
 
 | Package | Reported | Actually |
 |---|---|---|
-| `apps/capture-extension` | PASS (17 tests, 0.1s) | 193 tests, 32s |
-| `apps/dashboard` | PASS (0.1s) | 100 tests |
-| `services/query-api` | PASS (0.1s) | 150 tests |
+| `extension` | PASS (17 tests, 0.1s) | 193 tests, 32s |
+| `query/dashboard` | PASS (0.1s) | 100 tests |
+| `query/query-api` | PASS (0.1s) | 150 tests |
 
 443 tests were being replaced by 3, and the gate said PASS. This is the fifth harness defect this
 project has produced and by far the worst, because every other one failed loudly. It was found by the
@@ -311,7 +311,7 @@ packages execute their full suites and still pass.
 
 ## L14. Cost-model contradiction (round 3, unresolved by design)
 
-`infra/COST-FINDING.md` records a contradiction the infrastructure checker found by recomputing
+`azure/COST-FINDING.md` records a contradiction the infrastructure checker found by recomputing
 docs/05 §11 from its own unit prices, which I then verified against the document:
 **§11.1's table prices Front Door's $330 base "per profile per region", while §11.2 charges it per
 tenant and §11.6 calls it "40% of the tenant"**. §11.3's list of shared regional costs does not include
@@ -338,7 +338,7 @@ node tools/accept.mjs
 ```
 
 The `endpoint` gate is new and it is the one that changes what "green" means here. Every other gate
-tests a component or a seam; this one builds `device/capture-core/cmd/capture-core` and runs
+tests a component or a seam; this one builds `endpoint/capture-core/cmd/capture-core` and runs
 `--selftest`, which drives the **assembled** agent: the literal §3.5 startup and shutdown order
 (loopback released first, the port free afterwards), six real extension frames through the real
 framing, the native-messaging host as **two separate child processes** (one with the classifier host
@@ -379,7 +379,7 @@ story around it; the owner had the stack trace.
 ## L18. The lab runs, and the deployment cannot authenticate a device (round 7)
 
 ```
-node lab/run.mjs        # 13 checks: both probes on both services, schema applied, a two-route
+node localdev/run.mjs        # 13 checks: both probes on both services, schema applied, a two-route
                         # batch collapsing to one submission, duplicate_batch on replay, and M0
                         # mode_violation — passing from a cold start with the volume removed
 ```
@@ -391,7 +391,7 @@ authentication: supply -tls-cert, -tls-key and -tls-client-ca, or -dev-trust-pri
 test"* — which is the right behaviour and which also names the gap below.
 
 **The finding that matters: the deployment can make a service reachable but not authenticated.**
-`infra/modules/container-app.bicep` probes `scheme: 'HTTP'` on the serving port, while §2.1 requires
+`azure/modules/container-app.bicep` probes `scheme: 'HTTP'` on the serving port, while §2.1 requires
 the origin to receive the **device certificate**. There is no certificate mount, no `command`/`args`
 to pass the flags, and an HTTP probe cannot succeed against a port that requires TLS. So a deployed
 container would be probeable and would refuse every device request — correctly, and the refusal is
@@ -427,7 +427,7 @@ Chrome Stable refuses `--load-extension` entirely** (`extension_service.cc:423 -
 not allowed in Google Chrome, ignoring`), while **Edge 154 loads the extension and runs it**.
 
 ```
-node apps/capture-extension/tools/in-browser-check.mjs
+node extension/tools/in-browser-check.mjs
   4 pass, 0 fail, 1 NOT-OBSERVABLE
 ```
 
@@ -437,7 +437,7 @@ I reproduced this myself, and it is now gate 8 of `tools/accept.mjs`.
 |---|---|---|
 | 1. The extension loads and its MV3 worker registers | PASS | CDP `Target.getTargets` lists `chrome-extension://ileppbadl…/background/service-worker.js` — the **browser** asserting an MV3 worker is registered, not the extension reporting on itself |
 | 2. The `webRequest` listener observes a real request | PASS | the extension's own §4.3 `observed` counter went 0 → 2 for a real POST to a loopback server, read out of the service worker over CDP |
-| 3. M0 produces an observation with no content field | PASS | a real `chrome.webRequest` body, classified and emitted with `has_content=false` and no `content` key — the same property `device/integration` proves in Go, now with a browser's body |
+| 3. M0 produces an observation with no content field | PASS | a real `chrome.webRequest` body, classified and emitted with `has_content=false` and no `content` key — the same property `endpoint/integration` proves in Go, now with a browser's body |
 | 4. An absent native channel degrades, not breaks | PASS | `capture-core` **absent** + extension **degraded**, the page's request completed `200`, and the queue held the observation in memory. §3.4 and §7.4's fail-open, observed for the first time |
 | 5. A blocked request is cancelled *and* recorded | **NOT-OBSERVABLE** | the browser said, verbatim: *"webRequestBlocking is only allowed for extensions that are installed using ExtensionInstallForcelist"*. The manifest declares it and a policy-installed extension keeps it; the **unpacked load** is what revokes it |
 
@@ -485,21 +485,110 @@ is wrong.
 
 ---
 
+## L22. The content script never executed in any browser (round 10)
+
+The single most serious defect found in this project, and it was invisible to every one of the
+extension's 200+ tests. `content/content-script.js` opened with three static `import` statements and the
+manifest declared it as a content script. **Chromium loads a declared content script as a classic
+script, and a content script cannot be an ES module** — `content_scripts` has no `type` field, and
+adding one changes nothing (verified: the same error survived it). In every browser the file died on
+its first line:
+
+```
+Uncaught SyntaxError: Cannot use import statement outside a module
+  source: chrome-extension://ebdiaplaignnfokkkoekjkdajlopdfkk/content/content-script.js
+```
+
+What that meant, and what the message does not say: no listener was ever registered, so the service
+worker's `capture_upload_check` had no receiver at all — `"Could not establish connection. Receiving
+end does not exist."` — and the whole §7.3 attachment path was dead. Attachment capture had never once
+executed in a browser, in any build, while the suite reported green.
+
+The generalisation is L8's, one level up. L8: *a component's own suite can only confirm its author's
+model*. This is sharper: **a test that imports a file cannot see a defect in how the file is loaded.**
+Every test in `test/` imports `content-script.js` the ordinary way, so the module was exercised
+thousands of times and never loaded the way a browser loads it. What found it was a gate that asks a
+browser to run the thing and then sends it a message.
+
+Fixed as `content/content-boot.js` (classic, no static import, registers its listener synchronously on
+the first turn so nothing at `document_start` is dropped, reaches the modules by dynamic `import()`)
+plus `content-script.js` staying a module for the suite. `contract.test.mjs` now asserts the shape, so
+the silent failure cannot return without a red test.
+
+Two things follow for the rest of the project. First, `web_accessible_resources` is load-bearing for
+this component and was not: a dynamically imported extension file that is not listed is refused, which
+the browser also reports as a fetch failure rather than as a missing permission. Second, this is the
+first defect that only a *browser* could find — which is the argument for the browser gate, made
+concretely rather than by principle.
+
+## L23. Two unverified claims are now verified, and one of them needed a launcher (round 10)
+
+```
+node extension/tools/in-browser-check.mjs                     # absent host:  4 pass, 0 fail, 2 not observable
+node extension/tools/in-browser-check.mjs --with-native-host  # connected host: 6 pass, 0 fail, 1 not observable
+node tools/accept.mjs                                                      # 7 pass, 0 fail, 1 skipped (db: no Docker)
+```
+
+Both modes are now gate 8, and `accept.mjs` fails if either mode reports a different number of checks
+than expected — a mode that silently stops running half its checks is a failure, not a smaller number.
+
+**Check 6 (a connected native channel) is verified for the first time.** `capture-core --native-host`
+has existed since round 6; what was missing was a registration. Two obstacles, both closed without
+elevation:
+
+- **No stable extension id.** An unpacked extension's id comes from its checkout path, so
+  `allowed_origins` had nothing to name. `manifest.json` now carries a pinned `key`
+  (`tools/make-extension-key.mjs` regenerates it); the id is `ebdiaplaignnfokkkoekjkdajlopdfkk` for
+  everyone, and Edge confirms it.
+- **Nothing wrote the registry.** `tools/native-host.mjs` writes the host manifest and computes the
+  pinned id; `tools/native-host.ps1` writes two `HKCU` values. The gate installs before launch and
+  unregisters afterwards.
+
+Two findings inside that, both worth keeping:
+
+1. **The registration must precede the browser.** Chromium resolves the host manifest when the
+   connection is requested, and `native.js` cools down for 5 s after a failure, so a host registered
+   mid-run is invisible to that run. The first version of the check registered it mid-run and reported
+   a correct FAIL against a mechanism that would have worked.
+2. **A native host cannot be given arguments, so the endpoint needs a launcher.** Chromium launches the
+   host with **no arguments** and a host manifest has no field for them. `capture-core` refuses to
+   start without `--spool-dir` (§3.5 step 2), so pointing `path` at the bare binary yields a host that
+   exits immediately — reported by the browser as `Can't find manifest for native messaging host`,
+   which names the wrong problem entirely. The manifest's `path` is a generated `.cmd` launcher; the
+   binary is `_executable`. **The production installer must do the same**, and that is a deployment
+   requirement this round discovered rather than assumed.
+
+**Check 7 (a real user-selected `File`) is verified for the first time.** A real `File` is attached to
+the page's input; the content script resolves it through its own registry and the production
+`capture_upload_send` message drives the real chunked transfer. The digest `sender.js` computes over
+the bytes it read matches one computed independently over the bytes the page attached — so the bytes
+came from the user's file. Two earlier versions of this check "proved" something that was not the
+claim, and both are recorded in the extension README: a fresh registry holds no `File`, and a
+CDP-created isolated world is blank — Chromium's own content script is not in it, and `chrome.runtime`
+is not even defined there.
+
+**Still not observable: check 5.** An unpacked load revokes `webRequestBlocking` whatever the manifest
+declares, and it needs either an elevated policy install or a signed `.crx`. It is reported as
+NOT-OBSERVABLE with the browser's own words, and no report should claim blocking works until a human
+does that install.
+
+---
+
 ## What is NOT verified at this point
 
 - **No endpoint has ever run as an endpoint.** There is no `capture-core` service binary, no
-  native-messaging host binary, no browser, and no installed root CA. `device/integration` wires the
+  native-messaging host binary, no browser, and no installed root CA. `endpoint/integration` wires the
   libraries together in one process; it starts no service, binds no port, and installs nothing. That
   is the largest single gap between this repository and a deployable product.
 - **The browser half is the least-verified surface in the project.** The extension's own suite
-  reports green, and the native-messaging seam is now driven from the outside by `device/integration`
+  reports green, and the native-messaging seam is now driven from the outside by `endpoint/integration`
   with negative controls — but `chrome.*` behaviour, native-messaging host registration, the inline
   warn/block path and attachment capture from a live page have never executed. Chromium is not
   installed. The extension owner still has `worker.test.mjs` cases open and a README outstanding.
-- **`infra` is mid-flight.** Its own suite is failing on a self-check about the not-verified
+- **`azure` is mid-flight.** Its own suite is failing on a self-check about the not-verified
   statement, which is what a component's suite is for. Until it is green, the `packages` gate cannot
   be green, and the deployment remains the one artefact nobody has attempted to render runnable.
-- **`db/tools` has no suite** for the acceptance harness to run. Its checker is invoked by the
+- **`database/tools` has no suite** for the acceptance harness to run. Its checker is invoked by the
   database gate itself, so the work is checked — but it is reported MISSING by the package harness,
   and a component that cannot be run by the acceptance command is one step away from being skipped.
 - **No browser, no device, no cloud.** Chromium is not installed; there is no Azure subscription, no
@@ -511,7 +600,7 @@ is wrong.
   (9 tests) and `cli.shim` does not. One route out of seven is unimplemented, and its §3.5 ordering
   slot is covered only by a recording fake.
 - **The `content` encoding seam was broken** when the verifier found it: the extension sent raw text
-  where `device/protocol` declares `[]byte` (base64). Text payloads failed to decode outright, and
+  where `endpoint/protocol` declares `[]byte` (base64). Text payloads failed to decode outright, and
   text that happened to be valid base64 decoded *silently to different bytes than the user typed*
   while the digest was computed over the original — a content-identity break. The fix is in flight on
   the extension side; it is not verified here until the round-trip test runs.
@@ -521,7 +610,7 @@ is wrong.
   rather than by the race detector, in both the spool and the classifier host.
 - **The NFC normaliser does not exist yet** (task-15). Until it does, C3 is unimplemented, and the
   ruled behaviour is that a device without it emits the *weak* dedup key with `confidence: degraded`
-  — an honest visible undercount rather than a silent one. `services/ingest-api`'s canonicaliser is
+  — an honest visible undercount rather than a silent one. `ingestion/ingest-api`'s canonicaliser is
   likewise identity-based and off the request path.
 - **The database's `database/sql` plumbing is unexecuted**: no PostgreSQL wire driver exists offline,
   so only the statement text (run against the live schema) and the stored procedure's semantics are

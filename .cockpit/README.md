@@ -104,7 +104,7 @@ The shape, in brief:
     "id": "T3", "subject": "…", "description": "…",
     "status": "pending | in_progress | completed | blocked",
     "dependsOn": ["T1"], "componentIds": ["ingest-api"],
-    "writeScopes": ["services/ingest-api"], "owner": "ingestor"
+    "writeScopes": ["ingestion/ingest-api"], "owner": "ingestor"
   }],
   "agents": [{
     "id": "ingestor",              // must match the DSH teammate name exactly
@@ -113,7 +113,7 @@ The shape, in brief:
     "task": "The statement handed to this agent, verbatim.",
     "componentIds": ["ingest-api"],
     "readPaths": ["docs/02-ingest-and-transport.md"],  // context it is given
-    "writeScopes": ["services/ingest-api"]             // what it may modify
+    "writeScopes": ["ingestion/ingest-api"]             // what it may modify
   }],
   "invariants": [{
     "id": "INV-1", "statement": "…",

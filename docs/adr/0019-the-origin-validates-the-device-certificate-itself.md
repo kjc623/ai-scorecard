@@ -21,14 +21,14 @@ infrastructure have not caught up with:
 
 Three facts about the build make this a live decision rather than a restatement:
 
-1. **The binary does the right thing already.** `services/ingest-api` serves TLS with
+1. **The binary does the right thing already.** `ingestion/ingest-api` serves TLS with
    `RequireAndVerifyClientCert`, validates the chain against `--tls-client-ca`, and re-checks the
    per-device credential status *inside the write transaction* (§2.3). With no TLS material and no dev
    flag it **refuses to start** rather than serving unauthenticated — observed directly:
    `refusing to serve without device authentication: supply -tls-cert, -tls-key and -tls-client-ca, or
    -dev-trust-principal for a local test`.
-2. **The deployment cannot supply that material.** Every app in `infra/main.bicep` passes
-   `keyVaultEnv: []`, and `infra/modules/container-app.bicep` probes `scheme: 'HTTP'` on the serving
+2. **The deployment cannot supply that material.** Every app in `azure/main.bicep` passes
+   `keyVaultEnv: []`, and `azure/modules/container-app.bicep` probes `scheme: 'HTTP'` on the serving
    port. So a deployed container is reachable and probeable and **cannot authenticate a device**.
 3. **Two mechanisms could satisfy §2.1, and they are not equivalent.**
 
@@ -97,7 +97,7 @@ whether Container Apps accepts a privately-issued server certificate on a probe 
 it is the first thing to check on a real subscription.
 
 **We now maintain.** The requirement that the origin is unreachable except through the edge, as a
-deployment property rather than a note. It is already asserted in `infra/` for the vault and the
+deployment property rather than a note. It is already asserted in `azure/` for the vault and the
 database; device authentication now depends on it too.
 
 **Revisit if:** a real subscription shows that end-to-end TLS through Front Door is not achievable with

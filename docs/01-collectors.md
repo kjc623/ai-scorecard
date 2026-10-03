@@ -96,8 +96,8 @@ no rule matches, nothing is blocked, everything is reported — and is never ren
 |---|---|---|---|---|---|
 | `capture-extension` | TypeScript, MV3, policy-installed in Chrome and Edge (E23) | Browser process, per profile | Modes A, B, C observation; inline warn/block (E1) | Request metadata and bodies (E2); `File` objects in page context (E3); its own storage | Filesystem outside its storage; sockets; process lists; the spool file; the CA private key |
 | `capture-core` | Go, one static binary per platform, privileged service | `LocalSystem` (Windows); LaunchDaemon (macOS) | `proxy.tls`, `proxy.loopback`, `proc.detect`, `cli.shim`; policy engine; spool; ingest client | System proxy configuration; the root CA's public certificate and sealed key; loopback sockets; process enumeration; the spool | Document parsing (R8); document byte buffers; any cloud endpoint but the five in [master §5.1] |
-| `classifier-host` | Rust, native **and** `wasm32` from one source | Child of `capture-core`, sandboxed | Rules → validators → model (brief §6); the same core compiled into the extension | Bytes handed over by a provider; signed release artefacts | Sockets; the spool; the CA key; process enumeration; spawning anything but the parser child |
-| parser child | Rust, separate executable | Child of `classifier-host`, one per document | One document at a time | The single document buffer it was given | Everything else: no network, no spool, no keys, no second document |
+| `classifier-host` | Go, native **and** `js/wasm` from one source ([ADR 0016](adr/0016-the-classifier-host-is-one-go-source-built-for-native-and-js-wasm.md)) | Child of `capture-core`, sandboxed | Rules → validators → model (brief §6); the same core compiled into the extension | Bytes handed over by a provider; signed release artefacts | Sockets; the spool; the CA key; process enumeration; spawning anything but the parser child |
+| parser child | Go, separate executable | Child of `classifier-host`, one per document | One document at a time | The single document buffer it was given | Everything else: no network, no spool, no keys, no second document |
 
 ### 3.2 Why the extension cannot be merged into `capture-core`
 
@@ -146,7 +146,7 @@ on connect** marks `classifier-host` `degraded` on mismatch and falls back to ru
 `confidence: degraded`, never failing the submission (C21). A hung or crashed host is detected by request
 timeout, killed, and restarted with backoff; "no answer" is `degraded`, never "no labels found". The
 extension's WASM copy makes the synchronous inline decision and the native host is authoritative for the
-envelope's labels, both from one Rust source ([master §4.1]), with a divergence test asserting byte-identical
+envelope's labels, both from one Go source ([ADR 0016](adr/0016-the-classifier-host-is-one-go-source-built-for-native-and-js-wasm.md)), with a divergence test asserting byte-identical
 labels over a fixed corpus. **`classifier-host` → parser child** is a process spawn with a parent-enforced cap
 and timeout (§10).
 
@@ -254,7 +254,7 @@ high-cardinality-stream problem one level down.
 operator: an observation lost before the spool and one evicted from it are different failures with different
 fixes, and brief §3.2's "states that must never be merged" applies to counters too.
 
-**How this lands in the schema.** [db/schema.sql](../db/schema.sql) already keys `ops.collector_state` by
+**How this lands in the schema.** [database/schema.sql](../database/schema.sql) already keys `ops.collector_state` by
 `(tenant_id, device_id, collector)`, so per-provider attribution is structural rather than something this
 document has to invent; the row also carries `state`, `version`, `permissions`, `last_success_at`, `error_code`
 and a `detail` jsonb. The counter map above is carried in `detail.counters`, and `error_code` carries the
@@ -802,11 +802,14 @@ sanctioned state — the envelope carries `tool_fingerprint`, and the state live
 
 ### 9.1 One source, two targets
 
-Rust compiled to both a native child process and `wasm32` for the extension ([master §4.1]), because **two
+Go compiled to both a native child process and `js/wasm` for the extension, per
+[ADR 0016](adr/0016-the-classifier-host-is-one-go-source-built-for-native-and-js-wasm.md), because **two
 implementations of a classifier drift**, and drift between what the extension decides inline and what the
-native host records would mean the product's own audit trail disagrees with its own enforcement.
+native host records would mean the product's own audit trail disagrees with its own enforcement. The
+requirement is the shared source, not the language: ADR 0016 records the four constraints that decided
+which language could deliver it here.
 
-| Capability | Native | `wasm32` in the extension |
+| Capability | Native | `js/wasm` in the extension |
 |---|---|---|
 | Rules, validators | Full | Full |
 | Statistical model | Full | Full, on a worker within the extension's memory ceiling — exactly Q4's open question |
@@ -902,8 +905,10 @@ reversible instantly (C20, brief §6). The mechanism is that rules are **signed 
   interactive path — and freeze the user's own submission: a denial-of-service vector against the user,
   delivered by the product, triggered by content the user pasted. In the native host the same input is a
   per-device CPU burn and a classification timeout. Both are unacceptable, and the fix is structural: **the
-  engine cannot backtrack, so the attack does not exist**. [Master §4.1] gives the same rationale for choosing
-  Rust; this is the mechanism.
+  engine cannot backtrack, so the attack does not exist**. Go's `regexp` is RE2-style and has no
+  backtracking engine at all, so the property holds by construction rather than by a pattern-authoring
+  rule; this is the mechanism, and [ADR 0016](adr/0016-the-classifier-host-is-one-go-source-built-for-native-and-js-wasm.md)
+  is where the language was decided.
 - **Bounded.** Rule count, matches per rule and pattern length are capped at load time; a signed release that
   violates them is rejected, reported, and the previous release retained (§9.6's retention rule applied to
   classifier data).

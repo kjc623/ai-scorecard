@@ -33,30 +33,30 @@ const PER_PACKAGE_TIMEOUT_MS = Number(valueOf('--timeout-ms') ?? 180_000);
 /** Every package the build round is required to produce, whether or not it exists yet. */
 const PACKAGES = [
   { kind: 'node', dir: 'contracts/tools' },
-  { kind: 'node', dir: 'apps/capture-extension' },
-  { kind: 'node', dir: 'apps/dashboard' },
-  { kind: 'node', dir: 'services/query-api' },
-  { kind: 'node', dir: 'db/tools' },
-  { kind: 'node', dir: 'infra/tools' },
-  { kind: 'go', dir: 'device/protocol', args: ['./...'] },
+  { kind: 'node', dir: 'extension' },
+  { kind: 'node', dir: 'query/dashboard' },
+  { kind: 'node', dir: 'query/query-api' },
+  { kind: 'node', dir: 'database/tools' },
+  { kind: 'node', dir: 'azure/tools' },
+  { kind: 'go', dir: 'endpoint/protocol', args: ['./...'] },
   // The canonicalisation contract (docs/02 §4, `sac-canon-1` step C3). One source verified against
   // Node's ICU over the whole corpus, all 1.1M code points, and every non-starter pair.
-  { kind: 'go', dir: 'device/canon', args: ['./...'] },
+  { kind: 'go', dir: 'endpoint/canon', args: ['./...'] },
   // The cross-component harness: it imports capture-core, capture-spool and protocol, and drives a
   // real extension frame through them. It is the only place the device pieces are wired together -
   // each component's own suite proves it against its own fakes, which cannot show that they compose.
-  { kind: 'go', dir: 'device/integration', args: ['./...'] },
-  { kind: 'go', dir: 'device/capture-core', args: ['./...'] },
-  { kind: 'go', dir: 'device/capture-spool', args: ['./...'] },
-  { kind: 'go', dir: 'device/classifier-host', args: ['./...'] },
-  { kind: 'go', dir: 'services/ingest-api', args: ['./...'] },
-  { kind: 'go', dir: 'services/content-vault', args: ['./...'] },
+  { kind: 'go', dir: 'endpoint/integration', args: ['./...'] },
+  { kind: 'go', dir: 'endpoint/capture-core', args: ['./...'] },
+  { kind: 'go', dir: 'endpoint/capture-spool', args: ['./...'] },
+  { kind: 'go', dir: 'endpoint/classifier-host', args: ['./...'] },
+  { kind: 'go', dir: 'ingestion/ingest-api', args: ['./...'] },
+  { kind: 'go', dir: 'vault/content-vault', args: ['./...'] },
   // Lead-owned external invariant tests for the vault: INV-1 says content crosses only on a
   // per-event grant, and a component should not be the only witness to the invariant it implements.
   // It lives inside the vault's module (an external test package, not a second module), so the
   // directory is named without a label override - the label is what the harness reports, and the
   // path is what go needs.
-  { kind: 'go', dir: 'services/content-vault/vaultinvariants', args: ['./...'] },
+  { kind: 'go', dir: 'vault/content-vault/vaultinvariants', args: ['./...'] },
   // Contracts' generated Go types are compiled, not tested: a build is the assertion, and the
   // codegen suite in contracts/tools is what checks their content. Marking this one NO-TESTS would
   // be true but misleading - nothing here is *supposed* to have a suite.
@@ -75,10 +75,10 @@ const GO_ENV = {
   // Keep every runner's temporary files inside the workspace. The file sandbox permits writes here
   // and denies them in the platform temp directory, so a test that calls os.MkdirTemp or
   // fs.mkdtemp fails with "Access is denied" for a reason that has nothing to do with the code -
-  // which is exactly what happened to TestDiscoverWalksUp in services/ingest-api, and it looked
+  // which is exactly what happened to TestDiscoverWalksUp in ingestion/ingest-api, and it looked
   // like a component defect until the message was read carefully.
   // Deliberately NOT under .tools/ either: a component test that walks up from its temp dir looking
-  // for a repository marker (services/ingest-api's TestDiscoverWalksUp does exactly that) would find
+  // for a repository marker (ingestion/ingest-api's TestDiscoverWalksUp does exactly that) would find
   // this repo's marker in an ancestor and change its own verdict. .testtmp/ is a workspace-root
   // sibling of the repo's content, so it is writable under the sandbox and contains no marker.
   TMP: join(ROOT, '.testtmp'),
@@ -230,7 +230,7 @@ function run(pkg) {
     // An earlier version of this line read `['--test-timeout', T, ...cmdArgs.slice(1)]`, which
     // dropped `--test` entirely: the remaining paths became process.argv, Node ran the first file
     // as the entry module, and every multi-file Node package was reported PASS after running one
-    // file. `apps/capture-extension` showed 17 tests instead of 193 and the gate said PASS, which
+    // file. `extension` showed 17 tests instead of 193 and the gate said PASS, which
     // is the worst possible failure mode for an acceptance harness. The flag is inserted, never
     // substituted.
     cmdArgs = [cmdArgs[0], '--test-timeout', String(PER_PACKAGE_TIMEOUT_MS), ...cmdArgs.slice(1)];

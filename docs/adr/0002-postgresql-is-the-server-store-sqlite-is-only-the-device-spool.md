@@ -54,7 +54,7 @@ Harder: connection management needs a pooler in front of the service tier, and l
 need direct connections so they cannot occupy the pool.
 
 We now maintain: schema migrations gated in CI, and a role and grant model
-([db/schema.sql](../../db/schema.sql) §10) that has to be extended deliberately whenever a table is added
+([database/schema.sql](../../database/schema.sql) §10) that has to be extended deliberately whenever a table is added
 — default privileges are revoked precisely so a new table is invisible until someone grants on purpose.
 
 Revisit if: ingestion volume grows by two orders of magnitude — which would mean per-keystroke or

@@ -120,9 +120,9 @@ function tree(name) {
  * component cannot take this checker down with it.
  */
 function runQueryApiProbe() {
-  const dir = join(ROOT, 'services', 'query-api');
+  const dir = join(ROOT, 'query', 'query-api');
   const entry = join(dir, 'src', 'compile.js');
-  if (!existsSync(entry)) return { ok: false, detail: 'services/query-api/src/compile.js does not exist' };
+  if (!existsSync(entry)) return { ok: false, detail: 'query/query-api/src/compile.js does not exist' };
   const script = `
 import { compile } from ${JSON.stringify(fileUrl(entry))};
 const hostile = ['x; DROP TABLE ops.tenant--', 'tool_fingerprint) UNION SELECT 1--', 'occurred_at--', '1;SELECT', '"; --'];
@@ -175,7 +175,7 @@ const record = (inv, title, status, detail, extra = {}) =>
 // psql, for instance) - that would need a runtime trace.
 // ---------------------------------------------------------------------------------------------
 {
-  const files = [...tree('device'), ...tree('apps')];
+  const files = [...tree('endpoint'), ...tree('extension')];
   const driverRe = /\b(pgx|lib\/pq|database\/sql|jackc\/pgx|postgres|pq\.Open|sql\.Open)\b/;
   const dsnRe = /(postgres(-ql)?:\/\/|host=.*(password|user)=|PGPASSWORD|DATABASE_URL|connectionstring)/i;
   const credRe = /\b(db_password|dbPassword|db_credential|database_password)\b/;
@@ -217,11 +217,11 @@ const record = (inv, title, status, detail, extra = {}) =>
 // below plus query-api's own hostile-input corpus.
 // ---------------------------------------------------------------------------------------------
 {
-  const dash = tree('apps/dashboard');
+  const dash = tree('query/dashboard');
   const sqlRe = /\b(SELECT\s+[\w*]|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|FROM\s+(ops|mart|ingest|ref)\.)/i;
   const driverRe = /\b(pg|pgx|postgres|mysql|sqlite|database\/sql)\b/;
   if (dash.length === 0) {
-    record('INV-3', 'The browser never speaks SQL (dashboard)', 'BLOCKED', 'apps/dashboard does not exist yet');
+    record('INV-3', 'The browser never speaks SQL (dashboard)', 'BLOCKED', 'query/dashboard does not exist yet');
   } else {
     const sqlHits = scan(dash, sqlRe);
     const driverHits = scan(dash, driverRe);
@@ -243,9 +243,9 @@ const record = (inv, title, status, detail, extra = {}) =>
 // Does NOT prove: the parameterisation is correct for every operator - that is the test corpus.
 // ---------------------------------------------------------------------------------------------
 {
-  const qa = tree('services/query-api');
+  const qa = tree('query/query-api');
   if (qa.length === 0) {
-    record('INV-3b', 'query-api binds values as parameters', 'BLOCKED', 'services/query-api does not exist yet');
+    record('INV-3b', 'query-api binds values as parameters', 'BLOCKED', 'query/query-api does not exist yet');
   } else {
     const sqlFiles = qa.filter((f) => /\.(mjs|cjs|js|ts|go)$/.test(f));
     // An interpolation inside a SQL-ish string is the shape this looks for: ${...} or string
@@ -284,9 +284,9 @@ const record = (inv, title, status, detail, extra = {}) =>
 // Does NOT prove: the runtime never mutates a payload through a raw file handle.
 // ---------------------------------------------------------------------------------------------
 {
-  const spool = tree('device/capture-spool');
+  const spool = tree('endpoint/capture-spool');
   if (spool.length === 0) {
-    record('INV-4', 'Spooled observations are append-only', 'BLOCKED', 'device/capture-spool does not exist yet');
+    record('INV-4', 'Spooled observations are append-only', 'BLOCKED', 'endpoint/capture-spool does not exist yet');
   } else {
     const go = spool.filter((f) => /\.go$/.test(f) && !/_test\.go$/.test(f));
     const mutateRe = /\bfunc\s*\([^)]*\)\s*(Update|SetPayload|Rewrite|ReplaceEntry)\s*\(/;
@@ -309,9 +309,9 @@ const record = (inv, title, status, detail, extra = {}) =>
 // invariant suite are for, and both must be re-run when a table is added.
 // ---------------------------------------------------------------------------------------------
 {
-  const schema = join(ROOT, 'db', 'schema.sql');
+  const schema = join(ROOT, 'database', 'schema.sql');
   if (!existsSync(schema)) {
-    record('INV-5', 'Isolation is structural in the schema', 'BLOCKED', 'db/schema.sql does not exist');
+    record('INV-5', 'Isolation is structural in the schema', 'BLOCKED', 'database/schema.sql does not exist');
   } else {
     const body = readFileSync(schema, 'utf8');
     const enabled = (body.match(/ENABLE ROW LEVEL SECURITY/gi) ?? []).length;
@@ -369,7 +369,7 @@ const record = (inv, title, status, detail, extra = {}) =>
         'INV-5',
         'Isolation is structural in the schema',
         'PARTIAL',
-        `DDL declares ${enabled} ENABLE, ${forced} FORCE and ${policies} literal policies, but no live server answered (${live.why}); because most policies are created in a DO loop, the text count is a lower bound rather than the property. Run db/tools/run-invariants.ps1 for the real proof.`,
+        `DDL declares ${enabled} ENABLE, ${forced} FORCE and ${policies} literal policies, but no live server answered (${live.why}); because most policies are created in a DO loop, the text count is a lower bound rather than the property. Run database/tools/run-invariants.ps1 for the real proof.`,
         { counts: { enabled, forced, policies } },
       );
     }
@@ -384,9 +384,9 @@ const record = (inv, title, status, detail, extra = {}) =>
 // behavioural test, which the verifier is expected to drive.
 // ---------------------------------------------------------------------------------------------
 {
-  const proto = join(ROOT, 'device', 'protocol', 'envelope.go');
+  const proto = join(ROOT, 'endpoint', 'protocol', 'envelope.go');
   if (!existsSync(proto)) {
-    record('INV-6', 'Coverage states are honest and closed', 'BLOCKED', 'device/protocol/envelope.go does not exist');
+    record('INV-6', 'Coverage states are honest and closed', 'BLOCKED', 'endpoint/protocol/envelope.go does not exist');
   } else {
     const body = readFileSync(proto, 'utf8');
     const states = ['StateHealthy', 'StateDegraded', 'StateAbsent', 'StateTampered'].filter((s) =>
@@ -408,7 +408,7 @@ const record = (inv, title, status, detail, extra = {}) =>
 // ---------------------------------------------------------------------------------------------
 // INV-1 - Content stays put: the only content-egress path is a per-event grant.
 // Proves: (a) the vault exposes exactly one content-producing operation, `Redeem`, and no route that
-// returns content without one; (b) the Lead-owned external suite services/content-vault/vaultinvariants
+// returns content without one; (b) the Lead-owned external suite vault/content-vault/vaultinvariants
 // drives that gate against the real service - a fabricated grant is refused, a grant for event A does
 // not produce event B, another principal cannot redeem it, an expired grant is refused, and a second
 // redemption is refused - each with a reason from the closed vocabulary.
@@ -416,10 +416,10 @@ const record = (inv, title, status, detail, extra = {}) =>
 // backends, which the component's own suite owns. Those stay in the not-verified list.
 // ---------------------------------------------------------------------------------------------
 {
-  const vault = tree('services/content-vault');
-  const invariantsSuite = join(ROOT, 'services', 'content-vault', 'vaultinvariants', 'invariants_test.go');
+  const vault = tree('vault/content-vault');
+  const invariantsSuite = join(ROOT, 'vault', 'content-vault', 'vaultinvariants', 'invariants_test.go');
   if (vault.length === 0) {
-    record('INV-1', 'Content crosses only on a per-event grant', 'BLOCKED', 'services/content-vault does not exist yet');
+    record('INV-1', 'Content crosses only on a per-event grant', 'BLOCKED', 'vault/content-vault does not exist yet');
   } else if (!existsSync(invariantsSuite)) {
     record(
       'INV-1',
@@ -441,7 +441,7 @@ const record = (inv, title, status, detail, extra = {}) =>
       TEMP: join(ROOT, '.testtmp'),
     };
     const r = spawnSync('go', ['test', './vaultinvariants/', '-count=1', '-timeout', '60s'], {
-      cwd: join(ROOT, 'services', 'content-vault'),
+      cwd: join(ROOT, 'vault', 'content-vault'),
       env: goEnv,
       encoding: 'utf8',
       maxBuffer: 8 * 1024 * 1024,

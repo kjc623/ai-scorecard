@@ -7,6 +7,6 @@ require (
 	github.com/shadow-ai-capture/device/protocol v0.0.0
 )
 
-replace github.com/shadow-ai-capture/device/capture-spool => ../../../device/capture-spool
+replace github.com/shadow-ai-capture/device/capture-spool => ../../../endpoint/capture-spool
 
-replace github.com/shadow-ai-capture/device/protocol => ../../../device/protocol
+replace github.com/shadow-ai-capture/device/protocol => ../../../endpoint/protocol

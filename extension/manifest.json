@@ -1,0 +1,51 @@
+{
+  "manifest_version": 3,
+  "name": "Shadow AI Capture",
+  "version": "1",
+  "description": "Observe generative-AI submissions and report matched observations to capture-core. Policy-installed; requests are never changed.",
+  "minimum_chrome_version": "110",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxgjCHMt6wGivUwkODN5jjIMWwA8uNvvmxpxQ6Honu0IPbO75pl5WubkQSFFsNYyNpp37HWjwyOuGy9TYqVcyG2NcoPDxP9XyAgiFNXBqq98n7rEZYJ2mbJiPtArogugwowWVYieukQobAipiUZ1311bG78evbo+gEECC8y5GGNjGyS6C1DzEAkOyCJhwIUaAcX6Uk85PE1SFHwsyGvymbfO4xrNZ/4qh0aFlxy67ggH4L6VFaUDf3kO9MJqM5jvamUWVSH1GQGfntv8vwdnwb72Lrp4qvswXvTEiJcpJS6Ur1WHZKhXPBtvX5Pwf75vqlY1M92GuyFMhIxcTfcBYMQIDAQAB",
+  "background": {
+    "service_worker": "background/service-worker.js",
+    "type": "module"
+  },
+  "permissions": [
+    "webRequest",
+    "webRequestBlocking",
+    "nativeMessaging",
+    "scripting",
+    "tabs",
+    "alarms"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content/content-boot.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "content/content-script.js",
+        "src/adapter.js",
+        "src/chrome-adapter.js",
+        "src/codec.js",
+        "src/messages.js",
+        "src/attachments/files.js",
+        "src/attachments/sender.js"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ]
+}

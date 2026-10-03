@@ -18,11 +18,11 @@ is most likely to mistake for facts:
 
 | Mark | Means |
 |---|---|
-| **[§11.1]** | The unit price is taken from `infra/cost-model.md`'s own unit-price table, which is itself an estimate on the basis "Azure list prices, East US, pay-as-you-go, no discounts". Arithmetic on an estimate is still an estimate. |
+| **[§11.1]** | The unit price is taken from `azure/cost-model.md`'s own unit-price table, which is itself an estimate on the basis "Azure list prices, East US, pay-as-you-go, no discounts". Arithmetic on an estimate is still an estimate. |
 | **[EST]** | The unit price is *not* in this repository. It is my estimate from general Azure list pricing, and it is labelled so it can be wrong in a reviewable way. The two that matter most are the PostgreSQL B1ms compute rate and the Private Link endpoint rate. |
 | **[AWAIT]** | A claim about Azure **behaviour** (billing granularity, an auto-restart, a free-tier inclusion) which is stated as published and **must be confirmed on a real subscription before anyone relies on it**. |
 
-**I do not inherit `infra/COST-FINDING.md`'s conclusion.** That file records a contradiction about
+**I do not inherit `azure/COST-FINDING.md`'s conclusion.** That file records a contradiction about
 whether Front Door's $330 base is per tenant or per region, and the user's answer was "record and
 move on". Nothing here depends on which reading wins: **the lab deletes Front Door entirely**, so
 the question does not arise in the lab's arithmetic. Where this document touches the production
@@ -52,7 +52,7 @@ price tags.
 
 ### Part A — the development lab: your own machine. **$0.00/month.**
 
-PostgreSQL 16 in a container (the same engine, applied to `db/schema.sql` unmodified), the two Go
+PostgreSQL 16 in a container (the same engine, applied to `database/schema.sql` unmodified), the two Go
 services in the only store mode they currently support, the dashboard as the static file it is, and
 the device tier where it already lives: on this Windows host. Docker is available here; that is the
 whole footprint.
@@ -63,7 +63,7 @@ Azure shape deliberately has no public path to either.
 
 ### Part B — the architecture-fidelity lab: **≈$32/month if left running, ≈$1.04/day if used, $0 while deleted.**
 
-A parameterised subset of `infra/`: real PostgreSQL Flexible Server 16 with `publicNetworkAccess`
+A parameterised subset of `azure/`: real PostgreSQL Flexible Server 16 with `publicNetworkAccess`
 Disabled, the VNet-injected Container Apps environment with its internal load balancer, three
 container apps with `content-vault` on **internal ingress**, managed identities, Key Vault, and a
 **private** blob account reached over a private endpoint. Deployed on demand, deleted after the
@@ -123,7 +123,7 @@ Straight from the task, because a cheap lab that cannot run the architecture is 
 
 | # | Requirement | How the recommended lab keeps it | What it costs |
 |---|---|---|---|
-| 1 | **PostgreSQL 16 Flexible Server**, `db/schema.sql` unmodified, `db/invariants.test.sql` passing | `modules/postgres.bicep` **unchanged**, with `majorVersion: '16'`, Burstable B1ms, `publicNetworkAccess: Disabled` (hard-coded in the module). No SQLite, no Cosmos, no other major version — those are not this system. | $16.09/month |
+| 1 | **PostgreSQL 16 Flexible Server**, `database/schema.sql` unmodified, `database/invariants.test.sql` passing | `modules/postgres.bicep` **unchanged**, with `majorVersion: '16'`, Burstable B1ms, `publicNetworkAccess: Disabled` (hard-coded in the module). No SQLite, no Cosmos, no other major version — those are not this system. | $16.09/month |
 | 2 | **Services as containers, `content-vault` internal-only** | `modules/container-app.bicep` **unchanged**; `ingress: 'internal'` for content-vault, and the environment keeps `internalLoadBalancer: true` so the property holds at the environment level as well as the app level. | $0 for the environment; ≈$3.44 of compute, covered by Container Apps' monthly free grant |
 | 3 | **Identity and secrets stay real** | Seven user-assigned managed identities, Key Vault with RBAC authorisation, purge protection and 90-day soft delete, **no credential in the repository**. The lab's one deviation is the vault SKU (Standard, not Premium) — §6.4 and §8. | $0.15/month + $0 for the identities |
 | 4 | **Blob for ciphertext, private** | `modules/storage-ciphertext.bicep` **unchanged**: `allowBlobPublicAccess: false`, `allowSharedKeyAccess: false`, `publicNetworkAccess: 'Disabled'`, plus **a private endpoint** — which is not optional here, because with public network access disabled and no endpoint the account has no reachable path at all. | $7.30/month (the endpoint) + $0.12 (storage) |
@@ -137,20 +137,20 @@ Straight from the task, because a cheap lab that cannot run the architecture is 
 
 | Item | What runs | Cost |
 |---|---|---|
-| PostgreSQL 16 | `postgres:16` container, `db/schema.sql` applied unmodified, `db/invariants.test.sql` run as the runtime roles | $0.00 |
+| PostgreSQL 16 | `postgres:16` container, `database/schema.sql` applied unmodified, `database/invariants.test.sql` run as the runtime roles | $0.00 |
 | Ciphertext store | Azurite (blob emulator) or a local directory behind the same interface | $0.00 |
 | Services | `ingest-api` and `content-vault` built from `cmd/`, run with `-store memory` — the only mode this build supports (§1) | $0.00 |
-| Read path | `services/query-api` (Node, zero dependencies) + `apps/dashboard` opened as the static file it is | $0.00 |
+| Read path | `query/query-api` (Node, zero dependencies) + `query/dashboard` opened as the static file it is | $0.00 |
 | Device tier | The Windows host + Chromium for the extension (**prerequisite: Chromium is not installed**) | $0.00 |
 | **Total** | | **$0.00** |
 
 ### 3.2 Part B — the Azure fidelity lab, itemised
 
 Basis: **East US, pay-as-you-go, no discounts, 730 hours in a month**, the same basis as
-`infra/cost-model.md`. The lab deletes: Front Door, WAF, the Static Web App, the export storage
+`azure/cost-model.md`. The lab deletes: Front Door, WAF, the Static Web App, the export storage
 account, Managed HSM, and 16 of the 18 alerts.
 
-| # | Resource (the `infra/` module that creates it) | Lab specification | Unit price | Monthly |
+| # | Resource (the `azure/` module that creates it) | Lab specification | Unit price | Monthly |
 |---|---|---|---|---|
 | 1a | **PostgreSQL Flexible Server** compute (`postgres.bicep`) | Burstable **B1ms**, 1 vCPU / 2 GiB, HA Disabled | $0.0170/hour **[EST]** | **$12.41** |
 | 1b | PostgreSQL storage | 32 GiB provisioned | $0.115/GiB-month **[§11.1]** | **$3.68** |
@@ -206,7 +206,7 @@ sentence in this section, and it is why §4 recommends deletion.
 ### 3.4 The four uncertainties in this table
 
 1. **The Container Apps environment: $0 or $50?** `docs/05` §2 says "Consumption-only, no workload
-   profiles", and a Consumption environment has no fixed charge. `infra/cost-model.md` §11.3 carries
+   profiles", and a Consumption environment has no fixed charge. `azure/cost-model.md` §11.3 carries
    "Container Apps environment ~$50" as a shared-regional cost. One of those is a real charge and the
    other is an allocation. **If $50 is real, add it and the lab is ≈$82/month.** This is the largest
    single swing in the document and it is settled by one invoice line.
@@ -225,7 +225,7 @@ sentence in this section, and it is why §4 recommends deletion.
 
 | Unit | Value | Source |
 |---|---|---|
-| Container Apps active vCPU-hour | $0.0864 | `infra/cost-model.md` §11.1 **[§11.1]** |
+| Container Apps active vCPU-hour | $0.0864 | `azure/cost-model.md` §11.1 **[§11.1]** |
 | Container Apps active GiB-hour | $0.0108 | **[§11.1]** |
 | Container Apps per million requests | $0.40 | **[§11.1]** |
 | PostgreSQL D2ds_v5 hour (production reference only) | $0.252 | **[§11.1]** |
@@ -263,20 +263,20 @@ is not a better stop command; it is **deletion**, which has no timer.
 ### 4.3 The discipline, and its exact commands
 
 All commands are **unverified** — no `az` CLI on this host. They are written against the module and
-parameter names in `infra/`, and `<...>` marks a value you supply.
+parameter names in `azure/`, and `<...>` marks a value you supply.
 
 **Deploy (≈10–15 minutes, plus a first image push):**
 
 ```powershell
 az group create -n sac-lab-run -l eastus
 
-# The lab subset. Preferred: infra/main.bicep with the three `deploy*` flags off (see §5.1),
+# The lab subset. Preferred: azure/main.bicep with the three `deploy*` flags off (see §5.1),
 # which needs the six-line change to main.bicep. Until that lands, this command cannot be run
 # as a subset, and deploying main.bicep as-is costs ≈$674/month (§7.7).
 az deployment group create `
   -g sac-lab-run `
-  -f infra/main.bicep `
-  -p infra/params/lab.bicepparam
+  -f azure/main.bicep `
+  -p azure/params/lab.bicepparam
 ```
 
 **Grant yourself database access — required, because the module creates no administrator:**
@@ -291,8 +291,8 @@ az postgres flexible-server ad-admin create `
 # Inside the VNet only — see §4.4:
 $env:PGPASSWORD = az account get-access-token --resource-type oss-rdbms --query accessToken -o tsv
 psql "host=sac-lab-pg.postgres.database.azure.com dbname=sac user=sac-lab-admin sslmode=require" `
-     -f db/schema.sql -v ON_ERROR_STOP=1
-psql "... same ..." -f db/invariants.test.sql -v ON_ERROR_STOP=1
+     -f database/schema.sql -v ON_ERROR_STOP=1
+psql "... same ..." -f database/invariants.test.sql -v ON_ERROR_STOP=1
 ```
 
 **Tear down — the recommended discipline, $0 floor:**
@@ -324,9 +324,9 @@ in cost order:
 
 | Way in | Cost | What it gives you |
 |---|---|---|
-| **A Container Apps Job** (reuse `container-app-job.bicep`) running a `postgres:16` image with `db/*.sql` baked in | ≈$0.03/month | the schema apply, the invariant suite, `psql` as the runtime roles, and an Entra-token connection — **from inside the VNet, over the same path the services use**. This is the recommended answer. |
+| **A Container Apps Job** (reuse `container-app-job.bicep`) running a `postgres:16` image with `database/*.sql` baked in | ≈$0.03/month | the schema apply, the invariant suite, `psql` as the runtime roles, and an Entra-token connection — **from inside the VNet, over the same path the services use**. This is the recommended answer. |
 | **A shell container app** (`minReplicas: 0`) + `az containerapp exec` | ≈$0.09/hour while you are in it | an interactive prompt inside the environment |
-| **A B1s jump VM** in the VNet | ≈$16/month (VM $7.59 **[EST]** + OS disk ≈$4.80 **[EST]** + public IP ≈$3.65 **[EST]**) | a place to run the device agent and a browser against the APIs. **Lab-only**: `Microsoft.Compute/virtualMachines` is on `infra/inventory.json`'s deliberately-absent list for production. |
+| **A B1s jump VM** in the VNet | ≈$16/month (VM $7.59 **[EST]** + OS disk ≈$4.80 **[EST]** + public IP ≈$3.65 **[EST]**) | a place to run the device agent and a browser against the APIs. **Lab-only**: `Microsoft.Compute/virtualMachines` is on `azure/inventory.json`'s deliberately-absent list for production. |
 
 Not offered: **Azure Bastion** (≈$140–265/month depending on SKU **[EST]** — several times the whole
 lab) and a **VPN Gateway** (≈$13–30/month **[EST]** for the entry SKUs, plus setup). Both are correct
@@ -348,21 +348,21 @@ The recommended lab is **21× cheaper than deploying the `dev` parameter file**,
 not PostgreSQL. It is Front Door ($330/month) and the replica floors (≈$315/month at production's
 replica minimums, ≈$197 at dev's) — see §9 F6.
 
-The `prod` row needs its scope stated, because it is not the number in `infra/cost-model.md`: it is
+The `prod` row needs its scope stated, because it is not the number in `azure/cost-model.md`: it is
 **what one deployment of the production parameter file costs to run**, with no tenants in it —
 dominated by the zone-redundant database pair ($392), Front Door ($331) and always-on replicas
 ($315). The per-tenant figure the repository quotes is a different question (allocation of shared
 regional costs across tenants) and it is under review for reasons recorded in
-`infra/COST-FINDING.md`, which §0 explains I do not inherit.
+`azure/COST-FINDING.md`, which §0 explains I do not inherit.
 
 ---
 
-## 5. Reuse, replace, drop — against `infra/` module by module
+## 5. Reuse, replace, drop — against `azure/` module by module
 
 The lab is a **parameterised subset**, not a fork. Every module below is imported unchanged; the
 differences are parameter values, except where a note says otherwise.
 
-| `infra/` module | Lab | Why |
+| `azure/` module | Lab | Why |
 |---|---|---|
 | `modules/network.bicep` | **Reuse**, `privateDnsZones` reduced from 8 to 3 | Required: both `container-apps-env` and `postgres` need a subnet. A VNet is free; 3 zones cost $1.50 instead of $4.00. |
 | `modules/log-analytics.bicep` | **Reuse**, `retentionInDays: 30`, `archiveRetentionInDays: 0`, **`dailyQuotaGb: 1`** | The daily cap is what turns a logging defect into a cost anomaly instead of a monthly surprise. |
@@ -383,7 +383,7 @@ differences are parameter values, except where a note says otherwise.
 | `modules/managed-hsm.bicep` | **Drop** | $3,358/month, per-contract only. |
 | `main.bicep` | **Parameterise, do not fork** — see §5.1 | A parallel composition drifts within a month; a `deploy*` flag does not. |
 
-### 5.1 The one change this document asks of `infra/` (reported, not made)
+### 5.1 The one change this document asks of `azure/` (reported, not made)
 
 `main.bicep` has no way to omit Front Door, the WAF, the dashboard or the export account — only
 `deployManagedHsm` is conditional. A lab therefore needs either a **second composition**, which
@@ -402,8 +402,8 @@ param deployExports bool = true
 
 with `module frontDoor ... = if (deployEdge) { ... }`, the same for `waf`, `static-web-app` and
 `storage-exports`, and `frontDoorHostName` becoming conditional. **That is the whole change**, and it
-turns this document's §3.2 table into `infra/params/lab.bicepparam` — one parameter file, no second
-tree, and `infra/tools/check-infra.mjs` keeps checking everything that matters (it asserts the
+turns this document's §3.2 table into `azure/params/lab.bicepparam` — one parameter file, no second
+tree, and `azure/tools/check-infra.mjs` keeps checking everything that matters (it asserts the
 content-vault ingress and the private-only settings, which the lab does not touch).
 
 I did not make this change: my write scope is `docs/lab/` only. It is finding **F9** in §9.
@@ -417,8 +417,8 @@ unstated half is how someone concludes "it works" from evidence that never cover
 
 | Architecture property | Testable in Part B? | Why / what is missing |
 |---|---|---|
-| `db/schema.sql` applies unmodified on PostgreSQL 16 | **Yes** | Real Flexible Server 16 with `azure.extensions: PG_TRGM,BTREE_GIN`, `row_security: on`, `lock_timeout`, `statement_timeout` — the parameters `postgres.bicep` sets. Requires the Entra-admin step (§4.3), which the module omits. |
-| `db/invariants.test.sql` passes | **Yes** | Run as the job (§4.4). This is the highest-value thing the Azure lab buys, because it is the one claim that a container cannot fully make. |
+| `database/schema.sql` applies unmodified on PostgreSQL 16 | **Yes** | Real Flexible Server 16 with `azure.extensions: PG_TRGM,BTREE_GIN`, `row_security: on`, `lock_timeout`, `statement_timeout` — the parameters `postgres.bicep` sets. Requires the Entra-admin step (§4.3), which the module omits. |
+| `database/invariants.test.sql` passes | **Yes** | Run as the job (§4.4). This is the highest-value thing the Azure lab buys, because it is the one claim that a container cannot fully make. |
 | **RLS as the runtime roles** (`sac_ingest`, `sac_query`, `sac_ops`, `sac_vault`) | **Yes** | The roles are created by the schema; the job's `psql` can `SET ROLE` and prove the predicate, the grants and the `FORCE ROW LEVEL SECURITY` behaviour on the managed service. This is the test that matters most and it needs a real server. |
 | Entra ID authentication to PostgreSQL | **Yes** | `passwordAuth: 'Disabled'` is hard-coded in `postgres.bicep`, so the lab *must* use a token — the real path, not a password shortcut. |
 | **Internal-only ingress for `content-vault`** | **Yes**, at both levels | `ingress: 'internal'` is asserted by the module, and the lab keeps `internalLoadBalancer: true`, so the environment-level property holds too. **No path from outside the VNet exists for any app**, which is the fidelity that §7.6 would trade away. |
@@ -442,7 +442,7 @@ unstated half is how someone concludes "it works" from evidence that never cover
 
 **The lab proves:** the schema and its invariants on the real managed service; RLS and the grant
 model as the runtime roles; Entra authentication; the private blob path; the internal-only ingress of
-the one component that can unwrap content; that the deployment is reproducible from `infra/`.
+the one component that can unwrap content; that the deployment is reproducible from `azure/`.
 
 **The lab does not prove:** anything about the edge (Front Door, WAF, rate limiting, private
 origins); anything about scale or latency; key rotation; HSM custody; and — today — anything about
@@ -474,7 +474,7 @@ the platform.**
 
 The container is $0 and is the **same engine**: PostgreSQL 16, `pg_trgm` and `btree_gin` available,
 `gen_random_uuid()`, `sha256()`, generated `tsvector` columns, `ALTER DEFAULT PRIVILEGES`, partial
-unique indexes, `FORCE ROW LEVEL SECURITY` — everything `db/schema.sql` needs, applied unmodified,
+unique indexes, `FORCE ROW LEVEL SECURITY` — everything `database/schema.sql` needs, applied unmodified,
 invariants included. That is why Part A is credible.
 
 What a container **cannot** test is the part that is Azure rather than PostgreSQL: `azure.extensions`
@@ -488,7 +488,7 @@ properties.
 
 App Service's Free tier exists ($0), and Azure Static Web Apps' Free tier is the production-shaped
 answer if a hosted dashboard is ever wanted (production uses Standard, $9/month **[§11.1]**). For the
-lab it is a step that tests nothing: `apps/dashboard/index.html` opens from the filesystem with no
+lab it is a step that tests nothing: `query/dashboard/index.html` opens from the filesystem with no
 build step and no server, and the API it would call is internal to the VNet anyway. **Rejected** —
 with the note that the Static Web App module is already parameterised for `Free`, so a hosted
 dashboard is a parameter change on the day it is needed.
@@ -542,10 +542,10 @@ document**, so it is the first thing to check and I could not check it.
 
 ## 8. Migration path: lab to production without re-architecting
 
-**What stays identical**, which is the whole reason to reuse `infra/` instead of forking it:
+**What stays identical**, which is the whole reason to reuse `azure/` instead of forking it:
 
 * every module — the same files that are deployed in the lab are deployed in production;
-* `db/schema.sql` and the migration path, unmodified;
+* `database/schema.sql` and the migration path, unmodified;
 * the container images and the identity-per-service model;
 * the ingress modes: `content-vault` internal, the rest external-via-Private-Link-origin;
 * the private-only posture of PostgreSQL and blob storage, which the lab never relaxes;
@@ -583,7 +583,7 @@ promoting anything:
    production cost model's Container Apps figure look 10× smaller than the deployment implies
    (§9 F6).
 5. **`internalLoadBalancer: false`** (open mode only). This is the one deviation that silently
-   changes a security property rather than a cost one, and `infra/tools/check-infra.mjs` asserts the
+   changes a security property rather than a cost one, and `azure/tools/check-infra.mjs` asserts the
    production value is `true`. Never promote a parameter file that sets it false.
 6. **A hand-edited firewall rule or a `publicNetworkAccess` flipped for convenience.**
    `postgres.bicep` and `storage-ciphertext.bicep` hard-code the private values precisely so this
@@ -591,22 +591,22 @@ promoting anything:
    If someone does it in the portal, the lab stops being evidence for the architecture — which is a
    statement about the lab's *conclusions*, not about the deployment.
 7. **The lab parameter file itself.** It must never be the file a production deployment runs from.
-   Name it `lab.bicepparam`, keep it in `infra/params/`, and let the `deploy*` flags default to
+   Name it `lab.bicepparam`, keep it in `azure/params/`, and let the `deploy*` flags default to
    `true` so a lab is opt-in rather than a production deployment being opt-out.
 
 ---
 
-## 9. Findings to report (each needs a decision or an `infra/` change I may not make)
+## 9. Findings to report (each needs a decision or an `azure/` change I may not make)
 
 | # | Finding | Evidence |
 |---|---|---|
 | **F1** | **No Dockerfiles exist anywhere in the repository.** "The services run as containers" has no artifact yet. | `Get-ChildItem -Recurse -Filter Dockerfile*` → nothing |
-| **F2** | **`container-app.bicep` cannot pass a command or arguments**, and both Go services are configured by **flags**, not environment variables. `targetPort` is 8080; `ingest-api` defaults to `127.0.0.1:8443` and `content-vault` to `127.0.0.1:8090` and **refuses a non-loopback bind** without `--allow-non-loopback`. A container built from these binaries would bind loopback on the wrong port and be unreachable. | `container-app.bicep` params; `services/*/cmd/*/main.go` flag definitions; `checkBindAddress` |
-| **F3** | **`main.bicep` passes environment variables no binary reads** (`SAC_PG_HOST`, `SAC_ROLE`, `SAC_BLOB_CIPHERTEXT_ENDPOINT`, `SAC_KEYVAULT_URI`, `SAC_APPINSIGHTS`). content-vault reads `CONTENT_VAULT_KMS_ENDPOINT`, `CONTENT_VAULT_KMS_MODE`, `CONTENT_VAULT_SCOPE_TIERS`; ingest-api reads nothing. | `main.bicep` env blocks; `grep SAC_` over `services/**/*.go` |
+| **F2** | **`container-app.bicep` cannot pass a command or arguments**, and both Go services are configured by **flags**, not environment variables. `targetPort` is 8080; `ingest-api` defaults to `127.0.0.1:8443` and `content-vault` to `127.0.0.1:8090` and **refuses a non-loopback bind** without `--allow-non-loopback`. A container built from these binaries would bind loopback on the wrong port and be unreachable. | `container-app.bicep` params; `{ingestion,vault}/*/cmd/*/main.go` flag definitions; `checkBindAddress` |
+| **F3** | **`main.bicep` passes environment variables no binary reads** (`SAC_PG_HOST`, `SAC_ROLE`, `SAC_BLOB_CIPHERTEXT_ENDPOINT`, `SAC_KEYVAULT_URI`, `SAC_APPINSIGHTS`). content-vault reads `CONTENT_VAULT_KMS_ENDPOINT`, `CONTENT_VAULT_KMS_MODE`, `CONTENT_VAULT_SCOPE_TIERS`; ingest-api reads nothing. | `main.bicep` env blocks; `grep SAC_` over `{ingestion,vault}/**/*.go` |
 | **F4** | **Neither service can talk to PostgreSQL or Key Vault.** No driver is compiled in (`sql.Register` absent; no pgx/lib/pq in either `go.mod`) and both refuse the SQL store; `--key-backend kms` is unimplemented and refuses to start. So **no Azure configuration, at any price, currently runs these services against the database or the vault.** | `content-vault/cmd/content-vault/main.go` (`--store sql`, `--key-backend kms` error paths) |
-| **F5** | **`postgres.bicep` creates no Entra administrator**, while setting `passwordAuth: 'Disabled'`. The server has no usable credential until `az postgres flexible-server ad-admin create` runs, and nothing in the repository runs it — so the migration job that applies `db/schema.sql` could not connect either. | `postgres.bicep` `authConfig` (no `administrators` child resource) |
-| **F6** | **Idle replicas bill.** `main.bicep` pins `apiMinReplicas`/`vaultMaxReplicas` floors of 1–2 while `docs/05` §2 says "Consumption costs nothing when idle". At `prod` defaults that is 4 vCPU + 8 GiB continuously ≈ **$315/month**; at `dev` defaults 2.5 vCPU + 5 GiB ≈ **$197/month**; against §11.2's $27 Container Apps line. **Needs invoice verification** — Container Apps billing granularity is the one behaviour I cannot check here. *This is not the Front Door question.* | `docs/05` §2 lines 58–62; `infra/params/*.bicepparam`; §11.1 unit prices |
-| **F7** | **§11.3's "~$50 Container Apps environment" contradicts §2's "Consumption-only, no workload profiles"** (no fixed fee). The lab's total swings by $50/month on which is right. | `infra/cost-model.md` §11.3; `docs/05` §2 |
+| **F5** | **`postgres.bicep` creates no Entra administrator**, while setting `passwordAuth: 'Disabled'`. The server has no usable credential until `az postgres flexible-server ad-admin create` runs, and nothing in the repository runs it — so the migration job that applies `database/schema.sql` could not connect either. | `postgres.bicep` `authConfig` (no `administrators` child resource) |
+| **F6** | **Idle replicas bill.** `main.bicep` pins `apiMinReplicas`/`vaultMaxReplicas` floors of 1–2 while `docs/05` §2 says "Consumption costs nothing when idle". At `prod` defaults that is 4 vCPU + 8 GiB continuously ≈ **$315/month**; at `dev` defaults 2.5 vCPU + 5 GiB ≈ **$197/month**; against §11.2's $27 Container Apps line. **Needs invoice verification** — Container Apps billing granularity is the one behaviour I cannot check here. *This is not the Front Door question.* | `docs/05` §2 lines 58–62; `azure/params/*.bicepparam`; §11.1 unit prices |
+| **F7** | **§11.3's "~$50 Container Apps environment" contradicts §2's "Consumption-only, no workload profiles"** (no fixed fee). The lab's total swings by $50/month on which is right. | `azure/cost-model.md` §11.3; `docs/05` §2 |
 | **F8** | **The aggregator and reconciler do not exist.** The freshness watermark, the drift panel and the erasure flow are untestable in *any* environment, lab or production. | no `aggregator`/`reconciler` source anywhere in the tree |
 | **F9** | **`main.bicep` needs three `deploy*` booleans** (§5.1) so the lab is a parameter file rather than a second composition. Six lines. | `main.bicep` — only `deployManagedHsm` is conditional |
 | **F10** | **Chromium is not installed on this host**, so the extension half of the endpoint tier cannot be tested at all until it is. | local prerequisite, not an Azure one |
@@ -674,14 +674,14 @@ because they cannot be checked here.
 
 | Claim | File |
 |---|---|
-| Module parameter surfaces, ingress modes, private-only settings, compile-time defaults | `infra/modules/*.bicep` (17 modules) |
-| Composition, identities, replica floors, env blocks, Front Door route set | `infra/main.bicep` |
-| Deployment parameters, the dev/prod ladder | `infra/params/dev.bicepparam`, `staging.bicepparam`, `prod.eastus.bicepparam` |
-| The §2 resource inventory, module-to-row mapping, deliberately-absent resources | `infra/inventory.json` |
-| Unit prices, the recomputation, the findings | `infra/cost-model.md` |
-| The Front Door contradiction (**not** inherited as fact) | `infra/COST-FINDING.md` |
-| Service flags, store modes, key backends, bind guards, env variables | `services/ingest-api/cmd/ingest-api/main.go`, `services/content-vault/cmd/content-vault/main.go`, `services/*/go.mod` |
-| The read path and the dashboard the lab serves | `services/query-api/`, `apps/dashboard/` |
-| Schema and invariants the lab must run unmodified | `db/schema.sql`, `db/invariants.test.sql` |
+| Module parameter surfaces, ingress modes, private-only settings, compile-time defaults | `azure/modules/*.bicep` (17 modules) |
+| Composition, identities, replica floors, env blocks, Front Door route set | `azure/main.bicep` |
+| Deployment parameters, the dev/prod ladder | `azure/params/dev.bicepparam`, `staging.bicepparam`, `prod.eastus.bicepparam` |
+| The §2 resource inventory, module-to-row mapping, deliberately-absent resources | `azure/inventory.json` |
+| Unit prices, the recomputation, the findings | `azure/cost-model.md` |
+| The Front Door contradiction (**not** inherited as fact) | `azure/COST-FINDING.md` |
+| Service flags, store modes, key backends, bind guards, env variables | `ingestion/ingest-api/cmd/ingest-api/main.go`, `vault/content-vault/cmd/content-vault/main.go`, `{ingestion,vault}/*/go.mod` |
+| The read path and the dashboard the lab serves | `query/query-api/`, `query/dashboard/` |
+| Schema and invariants the lab must run unmodified | `database/schema.sql`, `database/invariants.test.sql` |
 | Consumed-only environment, replica floors, the "costs nothing when idle" claim, the private-origin requirement | `docs/05-platform-delivery.md` §2 |
 | The data the dashboard shows and the states it must keep | `docs/04-dashboard-and-query.md` |

@@ -5,7 +5,7 @@
     "summary": "Records what employees send to generative AI tools from company-managed devices, and makes it queryable - with content interpreted on the device by default and crossing the network only on an explicit per-event grant.",
     "stage": "design",
     "docsRoot": "docs",
-    "testCommand": "psql -v ON_ERROR_STOP=1 -f db/schema.sql && psql -v ON_ERROR_STOP=1 -f db/invariants.test.sql",
+    "testCommand": "psql -v ON_ERROR_STOP=1 -f database/schema.sql && psql -v ON_ERROR_STOP=1 -f database/invariants.test.sql",
     "runCommand": ""
   },
   "components": [
@@ -16,11 +16,11 @@
       "layer": "device",
       "language": "TypeScript",
       "runtime": "Chromium MV3 (Chrome + Edge)",
-      "status": "built",
+      "status": "done",
       "summary": "Web-request and request-body inspection in the browser: wide observation, narrow emission, inline warn/block.",
       "dependsOn": [],
       "paths": [
-        "apps/capture-extension"
+        "extension"
       ],
       "docs": [
         "docs/01-collectors.md"
@@ -35,11 +35,11 @@
       "layer": "device",
       "language": "Go",
       "runtime": "one static binary per platform, MSI/PKG",
-      "status": "built",
+      "status": "done",
       "summary": "Egress proxy provider, loopback inference broker, process and model detector, CLI trust shim, policy engine, and the encrypted bounded spool.",
       "dependsOn": [],
       "paths": [
-        "device/capture-core"
+        "endpoint/capture-core"
       ],
       "docs": [
         "docs/01-collectors.md"
@@ -54,13 +54,13 @@
       "layer": "device",
       "language": "Rust",
       "runtime": "native and wasm32 from one source",
-      "status": "built",
+      "status": "done",
       "summary": "Rules, then validators, then a model; document parsing in a child process. Decides what the event means without the content leaving the machine.",
       "dependsOn": [
         "capture-core"
       ],
       "paths": [
-        "device/classifier-host"
+        "endpoint/classifier-host"
       ],
       "docs": [
         "docs/01-collectors.md"
@@ -75,7 +75,7 @@
       "layer": "contract",
       "language": "JSON Schema 2020-12",
       "runtime": "generates TypeScript and Go types",
-      "status": "built",
+      "status": "done",
       "summary": "The single wire contract. A discriminated union with a closed kind registry; observations are immutable and the envelope is the record.",
       "dependsOn": [],
       "paths": [
@@ -99,13 +99,13 @@
       "layer": "backend",
       "language": "Go",
       "runtime": "Azure Container Apps",
-      "status": "built",
+      "status": "done",
       "summary": "Events only, no keys. Owns device authentication, idempotency, the dedup tie-break and the rejection reason codes.",
       "dependsOn": [
         "envelope-contract"
       ],
       "paths": [
-        "services/ingest-api"
+        "ingestion/ingest-api"
       ],
       "docs": [
         "docs/02-ingest-and-transport.md"
@@ -141,13 +141,13 @@
       "layer": "backend",
       "language": "Go",
       "runtime": "internal ingress only",
-      "status": "built",
+      "status": "done",
       "summary": "The only component that can unwrap content keys. Retrieval and, at full_text, the content search index.",
       "dependsOn": [
         "control-api"
       ],
       "paths": [
-        "services/content-vault"
+        "vault/content-vault"
       ],
       "docs": [
         "docs/06-security-and-threat-model.md"
@@ -165,13 +165,13 @@
       "layer": "backend",
       "language": "TypeScript",
       "runtime": "Node on Azure Container Apps",
-      "status": "built",
+      "status": "done",
       "summary": "The browser never speaks SQL: a closed query DSL compiles to parameterised queries, with audit-on-read and k-suppression.",
       "dependsOn": [
         "database"
       ],
       "paths": [
-        "services/query-api"
+        "query/query-api"
       ],
       "docs": [
         "docs/04-dashboard-and-query.md"
@@ -188,13 +188,13 @@
       "layer": "presentation",
       "language": "TypeScript",
       "runtime": "React, static",
-      "status": "built",
+      "status": "done",
       "summary": "The ten questions, answered from aggregates, with cursor pagination and an export path.",
       "dependsOn": [
         "query-api"
       ],
       "paths": [
-        "apps/dashboard"
+        "query/dashboard"
       ],
       "docs": [
         "docs/04-dashboard-and-query.md"
@@ -228,16 +228,16 @@
       "layer": "data",
       "language": "SQL",
       "runtime": "Azure Database for PostgreSQL 16 Flexible Server",
-      "status": "built",
-      "summary": "37 tables, 4 views and 31 row-level security policies across ref, ops, ingest and mart schemas, with roles, triggers, functions and seed data (counts measured from the live catalog).",
+      "status": "done",
+      "summary": "38 tables, 4 views and 31 row-level security policies across ref, ops, ingest and mart schemas, with roles, triggers, functions and seed data. Table and view counts are from database/schema.sql; the policy count is the live catalog (check-schema.mjs INV-5), because the DDL creates 2 literally and the rest in a DO loop - a text count of the DDL is a lower bound, not the property.",
       "dependsOn": [
         "envelope-contract"
       ],
       "paths": [
-        "db/schema.sql",
-        "db/invariants.test.sql",
-        "db/tools",
-        "db/evidence"
+        "database/schema.sql",
+        "database/invariants.test.sql",
+        "database/tools",
+        "database/evidence"
       ],
       "docs": [
         "docs/03-data-platform.md"
@@ -259,14 +259,14 @@
       "layer": "data",
       "language": "SQL",
       "runtime": "SQLite (WAL), application-level encryption",
-      "status": "built",
+      "status": "done",
       "summary": "A bounded, encrypted, on-device queue. SQLite is the device store and nothing else.",
       "dependsOn": [
         "capture-core",
         "envelope-contract"
       ],
       "paths": [
-        "device/capture-spool"
+        "endpoint/capture-spool"
       ],
       "docs": [
         "docs/01-collectors.md"
@@ -283,7 +283,7 @@
       "layer": "platform",
       "language": "Bicep",
       "runtime": "Azure",
-      "status": "built",
+      "status": "done",
       "summary": "Front Door Premium + WAF, Private Link, environments, endpoint distribution and signing, update rings, SLOs and the cost model.",
       "dependsOn": [
         "ingest-api",
@@ -293,7 +293,7 @@
         "database"
       ],
       "paths": [
-        "infra"
+        "azure"
       ],
       "docs": [
         "docs/05-platform-delivery.md"
@@ -308,7 +308,7 @@
       "layer": "documentation",
       "language": "Markdown",
       "runtime": "",
-      "status": "built",
+      "status": "done",
       "summary": "The master document, six subsystem documents, fifteen ADRs, the wire contract and the database - with every constraint traced to the brief.",
       "dependsOn": [
         "envelope-contract",
@@ -333,11 +333,11 @@
       "layer": "device",
       "language": "Go",
       "runtime": "shared package",
-      "status": "built",
+      "status": "done",
       "summary": "The device-side seam: native-messaging frames, length-prefixed IPC, the spool record, and the batch shapes for POST /v1/events. Consumed by capture-core, the spool and the extension; it is where the closed vocabularies live.",
       "dependsOn": [],
       "paths": [
-        "device/protocol"
+        "endpoint/protocol"
       ],
       "docs": [
         "docs/01-collectors.md",
@@ -353,11 +353,11 @@
       "layer": "device",
       "language": "Go",
       "runtime": "shared package, tables generated from ICU",
-      "status": "built",
-      "summary": "The canonicalisation contract (docs/02 §4, `sac-canon-1`) step C3 in pure Go. Agrees with Node ICU over the whole corpus, every code point and every non-starter pair.",
+      "status": "done",
+      "summary": "The canonicalisation contract (docs/02 Â§4, `sac-canon-1`) step C3 in pure Go. Agrees with Node ICU over the whole corpus, every code point and every non-starter pair.",
       "dependsOn": [],
       "paths": [
-        "device/canon"
+        "endpoint/canon"
       ],
       "docs": [
         "docs/02-ingest-and-transport.md"
@@ -372,7 +372,7 @@
       "layer": "device",
       "language": "Go",
       "runtime": "test-only module",
-      "status": "built",
+      "status": "done",
       "summary": "The only place the device components are wired together: it drives a real extension frame through the real protocol types, the pipeline and the spool. Its golden frames are generated by the extension own encoder.",
       "dependsOn": [
         "device-protocol",
@@ -381,7 +381,7 @@
         "capture-extension"
       ],
       "paths": [
-        "device/integration"
+        "endpoint/integration"
       ],
       "docs": [
         "docs/01-collectors.md"
@@ -395,7 +395,7 @@
       "id": "T1",
       "subject": "Generate TypeScript and Go types from the envelope contract",
       "description": "The contract exists; nothing consumes it yet. Every other component depends on this shape being stable and generated rather than hand-copied.",
-      "status": "done",
+      "status": "completed",
       "dependsOn": [],
       "componentIds": [
         "envelope-contract"
@@ -411,13 +411,13 @@
       "id": "T2",
       "subject": "Stand up the PostgreSQL schema and prove its invariants",
       "description": "Run db/schema.sql then db/invariants.test.sql against a real PostgreSQL 16 server as the runtime roles. The 47 assertions are the acceptance criteria.",
-      "status": "done",
+      "status": "completed",
       "dependsOn": [],
       "componentIds": [
         "database"
       ],
       "writeScopes": [
-        "db"
+        "database"
       ],
       "owner": "dbuilder",
       "order": 2,
@@ -427,7 +427,7 @@
       "id": "T3",
       "subject": "Implement the ingest write path and the two-tier dedup ladder",
       "description": "ingest.record_event() owns idempotency, the dedup tie-break and retention, enforced by partial unique indices per docs/02-ingest-and-transport.md section 4.",
-      "status": "done",
+      "status": "completed",
       "dependsOn": [
         "T1",
         "T2"
@@ -436,17 +436,17 @@
         "ingest-api"
       ],
       "writeScopes": [
-        "services/ingest-api"
+        "ingestion/ingest-api"
       ],
       "owner": "ingestor",
       "order": 3,
-      "completionNote": "Ingest: 169 tests, and the §4 ladder executed against the live stored procedure `ingest.record_event($1::jsonb, $2::timestamptz)`. The database/sql plumbing is NOT VERIFIED — no PG wire driver exists offline."
+      "completionNote": "Ingest: 169 tests, and the Â§4 ladder executed against the live stored procedure `ingest.record_event($1::jsonb, $2::timestamptz)`. The database/sql plumbing is NOT VERIFIED â€” no PG wire driver exists offline."
     },
     {
       "id": "T4",
       "subject": "Implement the closed query DSL and the read path",
       "description": "The browser must never speak SQL. A closed DSL compiles to parameterised queries, with audit-on-read and k-suppression, per ADR 0003.",
-      "status": "done",
+      "status": "completed",
       "dependsOn": [
         "T2"
       ],
@@ -455,8 +455,8 @@
         "dashboard"
       ],
       "writeScopes": [
-        "services/query-api",
-        "apps/dashboard"
+        "query/query-api",
+        "query/dashboard"
       ],
       "owner": "reader",
       "order": 4,
@@ -466,7 +466,7 @@
       "id": "T5",
       "subject": "Implement the content vault key hierarchy and grant-bound retrieval",
       "description": "Per-object content keys wrapped by a per-tenant key; the only component that can unwrap. Grant issuance is per event and recorded.",
-      "status": "done",
+      "status": "completed",
       "dependsOn": [
         "T3"
       ],
@@ -474,7 +474,7 @@
         "content-vault"
       ],
       "writeScopes": [
-        "services/content-vault"
+        "vault/content-vault"
       ],
       "owner": "vaultkeeper",
       "order": 5,
@@ -484,7 +484,7 @@
       "id": "T6",
       "subject": "Validate local-inference capture, which gates build step 8",
       "description": "Brief risk R1. A validation task, not a design task: measure whether the loopback inference broker sees what the design assumes it sees on both operating systems.",
-      "status": "done",
+      "status": "completed",
       "dependsOn": [],
       "componentIds": [
         "capture-core",
@@ -495,13 +495,13 @@
       ],
       "owner": "prober",
       "order": 6,
-      "completionNote": "R1 measured with a runnable harness against the REAL loopback broker (docs/risks/R1-harness/, 7 claim verdicts, three runs identical). What remains unvalidated is stated there without softening: relocation through a real vendor tool, a real client resolving a substitute port, and behaviour across a reboot are NOT VALIDATED for any tool, so no port-set entry should ship enabled on the strength of this document — mode F stays detection_only per tool until a real lab result exists."
+      "completionNote": "R1 measured with a runnable harness against the REAL loopback broker (docs/risks/R1-harness/, 7 claim verdicts, three runs identical). What remains unvalidated is stated there without softening: relocation through a real vendor tool, a real client resolving a substitute port, and behaviour across a reboot are NOT VALIDATED for any tool, so no port-set entry should ship enabled on the strength of this document â€” mode F stays detection_only per tool until a real lab result exists."
     },
     {
       "id": "T7",
       "subject": "Resolve the organisational dimension, without which three headline questions cannot be answered",
       "description": "Brief risk Q2. Decide where the org dimension comes from and record it, then amend the affected read paths.",
-      "status": "done",
+      "status": "completed",
       "dependsOn": [
         "T2"
       ],
@@ -514,14 +514,14 @@
       ],
       "owner": "prober",
       "order": 7,
-      "completionNote": "Q2 answered in docs/risks/Q2-organisational-dimension.md. The finding is not what the task assumed: ops.user_dim, mart.agg_org_period and the query-api dimension are all built and plumbed, and NOTHING writes user_dim — services/control-api does not exist. An empty Q3 therefore renders as a data state rather than a missing component, which is the part worth knowing."
+      "completionNote": "Q2 answered in docs/risks/Q2-organisational-dimension.md. The finding is not what the task assumed: ops.user_dim, mart.agg_org_period and the query-api dimension are all built and plumbed, and NOTHING writes user_dim â€” control-api does not exist. An empty Q3 therefore renders as a data state rather than a missing component, which is the part worth knowing."
     }
   ],
   "agents": [
     {
       "id": "contractor",
       "role": "Contract owner",
-      "emoji": "📜",
+      "emoji": "ðŸ“œ",
       "purpose": "Keeps the wire contract the single source of shape, and generates the language bindings from it.",
       "taskId": "T1",
       "task": "Generate TypeScript and Go types from contracts/event-envelope.schema.json. Do not hand-edit generated output, and do not widen the closed kind registry without an ADR.",
@@ -541,7 +541,7 @@
     {
       "id": "dbuilder",
       "role": "Data engineer",
-      "emoji": "🗄️",
+      "emoji": "ðŸ—„ï¸",
       "purpose": "Owns the schema, the row-level security policies and the invariants that prove them.",
       "taskId": "T2",
       "task": "Apply db/schema.sql and db/invariants.test.sql to a real PostgreSQL 16 server and make all 47 assertions hold as the runtime roles - never as a superuser, which would bypass RLS and prove nothing.",
@@ -555,7 +555,7 @@
         "docs/adr/0007-tenant-residency-is-pinned-and-fails-closed-at-ingest.md"
       ],
       "writeScopes": [
-        "db"
+        "database"
       ],
       "model": "",
       "notes": "Residency is pinned and fails closed at ingest; the schema is where that is enforced."
@@ -563,7 +563,7 @@
     {
       "id": "ingestor",
       "role": "Backend engineer - write path",
-      "emoji": "📥",
+      "emoji": "ðŸ“¥",
       "purpose": "Builds the one validating write path and the dedup ladder behind it.",
       "taskId": "T3",
       "task": "Implement ingest-api and ingest.record_event(): device authentication, idempotency, the two-tier dedup tie-break, retention and the rejection reason codes. Collectors must end up holding no database credential.",
@@ -576,7 +576,7 @@
         "docs/adr/0001-one-validating-write-path-collectors-hold-no-database-credential.md"
       ],
       "writeScopes": [
-        "services/ingest-api"
+        "ingestion/ingest-api"
       ],
       "model": "",
       "notes": "The normative dedup specification is docs/02-ingest-and-transport.md section 4."
@@ -584,7 +584,7 @@
     {
       "id": "reader",
       "role": "Backend engineer - read path",
-      "emoji": "🔎",
+      "emoji": "ðŸ”Ž",
       "purpose": "Builds the closed query DSL and the dashboard read path.",
       "taskId": "T4",
       "task": "Implement query-api's closed query DSL compiling to parameterised queries, with audit-on-read and k-suppression, then the dashboard that asks it the ten questions.",
@@ -595,11 +595,11 @@
       "readPaths": [
         "docs/04-dashboard-and-query.md",
         "docs/adr/0003-the-dashboard-reads-through-a-query-api-with-a-closed-query-dsl.md",
-        "db/schema.sql"
+        "database/schema.sql"
       ],
       "writeScopes": [
-        "services/query-api",
-        "apps/dashboard"
+        "query/query-api",
+        "query/dashboard"
       ],
       "model": "",
       "notes": "The browser never speaks SQL - the DSL is closed, not escaped."
@@ -607,7 +607,7 @@
     {
       "id": "vaultkeeper",
       "role": "Security engineer",
-      "emoji": "🔐",
+      "emoji": "ðŸ”",
       "purpose": "Owns the key hierarchy and the only component permitted to unwrap content.",
       "taskId": "T5",
       "task": "Implement content-vault: per-object content keys wrapped by a per-tenant key, internal ingress only, and retrieval bound to a recorded per-event grant. Content is ciphertext at rest and the vault is the only unwrapper.",
@@ -620,7 +620,7 @@
         "docs/adr/0014-content-search-is-a-per-tenant-capability.md"
       ],
       "writeScopes": [
-        "services/content-vault"
+        "vault/content-vault"
       ],
       "model": "",
       "notes": "The mutually exclusive pair - customer-held keys with server-side content search - is a database check constraint, not a policy note."
@@ -628,7 +628,7 @@
     {
       "id": "prober",
       "role": "Validation engineer",
-      "emoji": "🧪",
+      "emoji": "ðŸ§ª",
       "purpose": "Closes the three brief risks that are validation tasks rather than design tasks.",
       "taskId": "T6",
       "task": "Measure whether the loopback inference broker captures local model traffic as the design assumes, on both operating systems, and record the answer with the evidence. Then close Q2 (the organisational dimension).",

@@ -5,7 +5,7 @@ paths, and the **normative deduplication specification in §4** · **Read with:*
 [00-architecture](00-architecture.md) (the master document) ·
 [01-collectors](01-collectors.md) · [03-data-platform](03-data-platform.md) ·
 [04-dashboard-and-query](04-dashboard-and-query.md) · [06-security-and-threat-model](06-security-and-threat-model.md) ·
-[db/schema.sql](../db/schema.sql) · [contracts/event-envelope.schema.json](../contracts/event-envelope.schema.json)
+[database/schema.sql](../database/schema.sql) · [contracts/event-envelope.schema.json](../contracts/event-envelope.schema.json)
 
 Requirement references are the brief's own (`brief §4.3`, `R9`) or the master document's decisions and
 constraints (`D5`, `C12`, `E3`, `Q3`). Anything the brief does not say is marked **ASSUMPTION** and
@@ -907,7 +907,7 @@ all.
 ## Appendix A — Store-side fields this document requires
 
 The wire contract is frozen; these live only in the database and must appear in
-[db/schema.sql](../db/schema.sql) for §4 and §6 to be implementable as written.
+[database/schema.sql](../database/schema.sql) for §4 and §6 to be implementable as written.
 
 | Location | Field | Purpose |
 |---|---|---|

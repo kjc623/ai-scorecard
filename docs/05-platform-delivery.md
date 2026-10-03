@@ -145,7 +145,7 @@ and **no module reaches into another module's resources with `existing`** — al
 composition file, so a module's inputs are visible in one place.
 
 ```
-infra/
+azure/
   main.bicep                     composition; environment-specific, thin
   modules/
     network.bicep                VNet, subnets, NSGs, private DNS zones, peerings

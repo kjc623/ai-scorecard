@@ -12,7 +12,7 @@ the same sentence as the claim.
 
 ## 1. What the subject is, and what it is not
 
-The **broker is real**: the harness drives `device/capture-core/proxy/loopback` exactly as
+The **broker is real**: the harness drives `endpoint/capture-core/proxy/loopback` exactly as
 `capture-core` will — `loopback.New`, `Start`, `Health`, `Coverage`, `ApplyPolicy`, `Stop` —
 with real TCP sockets on `127.0.0.1`. Nothing about the broker's behaviour below is simulated
 or re-implemented.
@@ -49,7 +49,7 @@ recovery latency (1.013 s / 1.014 s / 1.015 s) differ — `R1-harness/stability.
 ## 3. What the harness does that a unit test cannot
 
 Three of these claims need conditions a single-process test does not create, so the harness
-uses the pattern from `device/capture-spool`: it re-executes its own binary as a child.
+uses the pattern from `endpoint/capture-spool`: it re-executes its own binary as a child.
 
 - **A real process kill.** Claim (b) runs the broker in a child process and kills it with the
   platform's uncatchable kill — `TerminateProcess` on Windows, `SIGKILL` on POSIX. No deferred
@@ -186,7 +186,7 @@ says the port is held and reachable, the other says it was taken by another proc
 `docs/01-collectors.md` §6.4's gate 3 requires that "port state matches §6.2's machine in every
 case"; this case does not.
 
-**Mechanism, with file:line** (revision under test, `device/capture-core` at 2026-10-02
+**Mechanism, with file:line** (revision under test, `endpoint/capture-core` at 2026-10-02
 14:35):
 
 - `proxy/loopback/machine.go:205` sets `m.tampered = true` on `EvPortHeldByOther` from
@@ -270,7 +270,7 @@ throughout; the health row must match the port's actual state at every sample.
 ### Check 4 — "Uninstall restores the original configuration exactly" (pass = byte-identical configuration, port free)
 
 **NOT VALIDATED, and not this component's half.** The broker holds no vendor configuration
-file and writes none: `policy.LoopbackPort.OriginalPort` (`device/capture-core/policy/bundle.go:74`)
+file and writes none: `policy.LoopbackPort.OriginalPort` (`endpoint/capture-core/policy/bundle.go:74`)
 records the pre-relocation value so uninstall *can* restore it, but nothing in the harness
 exercises restoration, and there is nothing on this host to restore.
 

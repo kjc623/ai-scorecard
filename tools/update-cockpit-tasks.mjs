@@ -24,31 +24,31 @@ const CHECK = process.argv.includes('--check');
 /** What each declared task's real state is, and what proves it. */
 const STATE = {
   T1: {
-    status: 'done',
-    note: 'Contracts T1: 12 tests; `node contracts/tools/generate.mjs --check` fails on drift; the generated Go bindings compile and are consumed by services/ingest-api.',
+    status: 'completed',
+    note: 'Contracts T1: 12 tests; `node contracts/tools/generate.mjs --check` fails on drift; the generated Go bindings compile and are consumed by ingestion/ingest-api.',
   },
   T2: {
-    status: 'done',
+    status: 'completed',
     note: 'Database: 45 distinct assertions (T1..T45) pass against a real PostgreSQL 17.11 server as the runtime roles, with four negative controls proving the assertions can fail. `db` is a gate in tools/accept.mjs.',
   },
   T3: {
-    status: 'done',
+    status: 'completed',
     note: 'Ingest: 169 tests, and the §4 ladder executed against the live stored procedure `ingest.record_event($1::jsonb, $2::timestamptz)`. The database/sql plumbing is NOT VERIFIED — no PG wire driver exists offline.',
   },
   T4: {
-    status: 'done',
-    note: 'Read path: query-api 150 tests, 63 compiled statements executed against the live schema, and 15 hostile inputs all rejected with typed errors; apps/dashboard 100 tests with a 204-render probe. The browser never speaks SQL (INV-3 passes as a static check over 23 files).',
+    status: 'completed',
+    note: 'Read path: query-api 150 tests, 63 compiled statements executed against the live schema, and 15 hostile inputs all rejected with typed errors; query/dashboard 100 tests with a 204-render probe. The browser never speaks SQL (INV-3 passes as a static check over 23 files).',
   },
   T5: {
-    status: 'done',
+    status: 'completed',
     note: 'Content vault: 38 component tests plus the Lead-owned `vaultinvariants` external suite with zero skips, driving the grant matrix against the real service. No cloud KMS has been exercised.',
   },
   T6: {
-    status: 'done',
+    status: 'completed',
     note: 'R1 measured with a runnable harness against the REAL loopback broker (docs/risks/R1-harness/, 7 claim verdicts, three runs identical). What remains unvalidated is stated there without softening: relocation through a real vendor tool, a real client resolving a substitute port, and behaviour across a reboot are NOT VALIDATED for any tool, so no port-set entry should ship enabled on the strength of this document — mode F stays detection_only per tool until a real lab result exists.',
   },
   T7: {
-    status: 'done',
+    status: 'completed',
     note: 'Q2 answered in docs/risks/Q2-organisational-dimension.md. The finding is not what the task assumed: ops.user_dim, mart.agg_org_period and the query-api dimension are all built and plumbed, and NOTHING writes user_dim — services/control-api does not exist. An empty Q3 therefore renders as a data state rather than a missing component, which is the part worth knowing.',
   },
 };

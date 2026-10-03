@@ -37,7 +37,7 @@ search over content, in any key mode" — which the product owner reversed on cu
 **ADR 0014 supersedes ADR 0008**. The reversal is the largest single change to this document, because
 D6's justification was cryptographic: §6 is re-derived around D6′ rather than D6 with softened wording,
 §5.6 states the position on searchable encryption, and §12 lists what the product gave up.
-[db/schema.sql](../db/schema.sql) implements the isolation and audit controls described here; where
+[database/schema.sql](../database/schema.sql) implements the isolation and audit controls described here; where
 this document and the schema disagree, the schema is wrong and must change.
 
 ### 1.2 Method

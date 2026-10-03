@@ -36,7 +36,7 @@ the resident native host, and `GOOS=js GOARCH=wasm` for the in-page copy, loaded
 Everything §9.1 and §9.2 require of the component is unchanged and remains the acceptance criteria:
 
 - **Byte-identical labels across the two targets** over a fixed corpus, asserted by a test in
-  `device/classifier-host`, not by convention.
+  `endpoint/classifier-host`, not by convention.
 - Rules → validators → model, with each stage's budget measured rather than asserted, and a stage that
   exceeds it producing `confidence: degraded` rather than a failed submission (C21).
 - The rules DSL stays **data** evaluated by an interpreter with a closed operator set; a rule cannot
@@ -44,7 +44,7 @@ Everything §9.1 and §9.2 require of the component is unchanged and remains the
 - The parser child keeps its parent-enforced cap, timeout and hard kill, and still receives exactly one
   document buffer.
 - The classifier still receives **bytes and nothing else**: no tool identity, no `user_ref`, no
-  destination ([01-collectors.md §3.3](../01-collectors.md)). `device/protocol` makes that structural — the
+  destination ([01-collectors.md §3.3](../01-collectors.md)). `endpoint/protocol` makes that structural — the
   request type has no field that can carry identity, and a compile-time guard fails the build if one is
   added.
 
@@ -87,5 +87,5 @@ which is the same obligation §9.1 already created, now with a toolchain that ex
 **Revisit if:** a build host with `rustup` is available and the 2.5 MB wasm runtime plus its load cost
 threatens the 300 ms interactive budget — in that case Rust may be revisited on measurement rather than on
 preference, and this record is superseded rather than quietly ignored. This record does not change
-`device/protocol`, the rules DSL, the release states, or the parser-child isolation: none of them depends
+`endpoint/protocol`, the rules DSL, the release states, or the parser-child isolation: none of them depends
 on the language.

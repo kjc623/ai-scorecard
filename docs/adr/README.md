@@ -5,6 +5,10 @@ considered, and the consequences — including what becomes harder and what woul
 
 All are `proposed`. None has been reviewed outside this package.
 
+**This file is the index.** When a subsystem document and a record disagree, the record is the
+decision and the document is the explanation. The subsystem documents are listed in
+[`../README.md`](../README.md).
+
 | # | Decision | Status |
 | --- | --- | --- |
 | [0001](0001-one-validating-write-path-collectors-hold-no-database-credential.md) | Every event enters through one validating ingest path; no collector holds a database credential | proposed |

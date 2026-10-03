@@ -1,0 +1,156 @@
+# The $0.00 development lab (docs/localdev/LAB-COST.md §1, Part A), as one command.
+#
+# What it brings up:
+#   postgres     PostgreSQL 17 with database/schema.sql applied, unmodified. The document says 16; the only
+#                PostgreSQL image cached on this host is 17-alpine, and the schema applies to it
+#                unmodified (that is the same engine and version T2 verified the invariants on). On a
+#                host with a network, `postgres:16-alpine` is a one-word change.
+#   schema       a one-shot psql that applies database/schema.sql and exits. Everything else waits for it
+#                to *complete successfully*, so a schema error stops the lab instead of leaving a
+#                half-built database for a service to fail against later.
+#   ingest-api   the lab image, on 0.0.0.0:8080, answering /healthz and /readyz.
+#   content-vault the lab image, on 0.0.0.0:8080 inside the container, published as 8081.
+#
+# What it does NOT bring up, and why:
+#   * blob storage (azurite/minio are both cached) — content-vault performs no blob I/O in this build
+#     (it holds wrapped keys; ciphertext goes straight from device to blob under a grant), so a fake
+#     blob account would prove nothing. docs/localdev/LAB-COST.md §6 lists that as untestable here.
+#   * the dashboard and the device tier — they run on the host, not in this file.
+#   * anything with a real credential. There is no secret in this file: see "Credentials" in README.
+#
+# Requires the images from `node localdev/build.mjs`, which cross-compiles the two binaries and packages
+# them with `docker build --target lab`. There is no `build:` stanza here on purpose: the Dockerfiles'
+# `build` stages need a golang image this host does not have, and a compose file that cannot build is
+# worse than one that says where images come from.
+
+name: sac-lab
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      # A throwaway credential for a container that listens on the host's loopback and holds nothing
+      # but the lab's own schema. It is not a secret and is not used by anything else; a deployed
+      # PostgreSQL on this architecture authenticates a managed identity and passes no password
+      # (infra/main.bicep passes none, and §5.4 forbids one in a plaintext variable).
+      POSTGRES_PASSWORD: sac-lab-only
+      POSTGRES_DB: shadow
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d shadow"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 2s
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  schema:
+    image: postgres:17-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: postgres
+      PGDATABASE: shadow
+      PGPASSWORD: sac-lab-only
+    volumes:
+      # The file itself, not a copy: the lab must exercise the schema the repository ships.
+      - ../database/schema.sql:/schema/schema.sql:ro
+    # Idempotent on purpose. database/schema.sql starts with `CREATE SCHEMA ref;`, so applying it twice
+    # fails — and a lab you cannot start twice in a row is a lab nobody uses. The guard is a check
+    # for the schema, not for a marker file, so it is correct after a partially-applied run too.
+    # ON_ERROR_STOP so a failing statement fails this container, and therefore the lab, instead of
+    # leaving a half-built database for a service to fail against later.
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -e
+        if [ "$$(psql -Atc "select 1 from information_schema.schemata where schema_name='ingest'")" = "1" ]; then
+          echo "schema: already applied (schema 'ingest' exists); nothing to do"
+          exit 0
+        fi
+        echo "schema: applying database/schema.sql"
+        psql -v ON_ERROR_STOP=1 -f /schema/schema.sql
+        echo "schema: applied"
+    restart: "no"
+
+  ingest-api:
+    image: sac/ingest-api:lab
+    depends_on:
+      schema:
+        condition: service_completed_successfully
+    ports:
+      - "8080:8080"
+    environment:
+      # The deployment's own vocabulary, which is the point of the lab: the names
+      # infra/main.bicep passes are read by the binary here too.
+      SAC_ROLE: ingest-api
+      SAC_PG_HOST: postgres
+      SAC_PG_DATABASE: shadow
+      # SAC_HTTP_ADDR, SAC_STORE, SAC_SCHEMA and SAC_ROUTES_FILE come from the image, because a
+      # container platform configures by environment and cannot mount a repository path.
+    # TEST ONLY. Two things are needed to accept a batch with no certificate authority in sight:
+    # -dev-trust-principal replaces the device credential with two headers, and -dev-seed-principal
+    # registers the principal those headers name. Both are refused in a real deployment (and
+    # -dev-trust-principal is mutually exclusive with -tls-client-ca). See localdev/README.md "The
+    # credential the lab uses".
+    command:
+      - --store
+      - memory
+      - -dev-trust-principal
+      - -dev-seed-principal
+      - 11111111-1111-1111-1111-111111111111:22222222-2222-2222-2222-222222222222
+
+  content-vault:
+    image: sac/content-vault:lab
+    depends_on:
+      schema:
+        condition: service_completed_successfully
+    ports:
+      - "8081:8080"
+    environment:
+      SAC_ROLE: content-vault
+      SAC_PG_HOST: postgres
+      SAC_PG_DATABASE: shadow
+      # SAC_INTERNAL_ONLY=true is set by the image: it is the deployment's statement that this app has
+      # internal ingress, which is what the binary accepts in place of --allow-non-loopback.
+
+  # query-api — the one read path, and the reason this file was extended: it had no server and no
+  # image at all, so "run the whole stack locally" could not be true without it.
+  query-api:
+    image: sac/query-api:lab
+    depends_on:
+      schema:
+        condition: service_completed_successfully
+    ports:
+      # 8082 on the host, 8080 in the container: the same layout ingest-api and content-vault use, so
+      # a reader learns one convention rather than three.
+      - "8082:8080"
+    environment:
+      SAC_ROLE: sac_query
+      SAC_PG_HOST: postgres
+      SAC_PG_DATABASE: shadow
+      # The lab connects as `postgres`, and that is a deliberate, named deviation: database/schema.sql
+      # creates `sac_query` NOLOGIN (line 83), because a deployed PostgreSQL authenticates a managed
+      # identity and maps it to the role. The lab has no identity provider, so it logs in as the
+      # superuser exactly as ingest-api and content-vault already do here. What it does NOT do is
+      # excuse the role's grants: SAC_ROLE=sac_query is what the service reports and what the
+      # deployment passes, and the grant matrix itself is verified by database/tools/run-invariants.ps1
+      # as the real runtime roles — which is the check that means something.
+      SAC_PG_USER: postgres
+      SAC_PG_PASSWORD: sac-lab-only
+      # A container has no certificate authority chain for the lab's own server, so TLS is explicitly
+      # off HERE and only here. It is spelled out rather than defaulted: config.js refuses a value it
+      # does not recognise, and 'disable' is the only way to get plaintext.
+      SAC_PG_SSLMODE: disable
+      # TEST ONLY, and the same escape hatch ingest-api uses below: there is no authenticated session
+      # yet, so a development header stands in for it. Off unless set, and a real deployment sets
+      # neither this nor the header.
+      SAC_DEV_TRUST_PRINCIPAL: "1"
+
+volumes:
+  pgdata:

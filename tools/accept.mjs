@@ -97,10 +97,10 @@ const GATES = [
     decides:
       'The assembled endpoint does not run: the §3.5 startup/shutdown order, the native-messaging host, the spool, M0 handling or the coverage rows are broken when wired together. Every other gate tests components; this one tests the binary.',
     run: () => {
-      const dir = join(ROOT, 'device', 'capture-core');
+      const dir = join(ROOT, 'endpoint', 'capture-core');
       const exe = join(dir, 'bin', process.platform === 'win32' ? 'capture-core.exe' : 'capture-core');
       if (!existsSync(join(dir, 'cmd', 'capture-core'))) {
-        return { status: 'SKIPPED', why: 'device/capture-core/cmd/capture-core does not exist yet' };
+        return { status: 'SKIPPED', why: 'endpoint/capture-core/cmd/capture-core does not exist yet' };
       }
       const env = {
         ...process.env,
@@ -145,11 +145,11 @@ const GATES = [
   },
   {
     id: 'browser',
-    title: 'The browser half in a real Chromium (apps/capture-extension/tools/in-browser-check.mjs)',
+    title: 'The browser half in a real Chromium, in both native-channel modes (extension/tools/in-browser-check.mjs)',
     decides:
-      'The extension does not load as a browser extension, its webRequest listener never fires, M0 reads content it should not, or an absent native channel breaks the page instead of degrading. This is the only gate that runs the extension inside a browser.',
+      'The extension does not load as a browser extension, its webRequest listener never fires, M0 reads content it should not, a registered native host never connects, a real user-selected File is not read, or an absent native channel breaks the page instead of degrading. This is the only gate that runs the extension inside a browser.',
     run: () => {
-      const script = join(ROOT, 'apps', 'capture-extension', 'tools', 'in-browser-check.mjs');
+      const script = join(ROOT, 'extension', 'tools', 'in-browser-check.mjs');
       if (!existsSync(script)) return { status: 'SKIPPED', why: 'the in-browser check does not exist yet' };
       // The check needs a Chromium-family browser that will load an unpacked extension. Edge does;
       // Google Chrome Stable refuses --load-extension outright (verified), so this looks for either
@@ -163,34 +163,69 @@ const GATES = [
       if (!browser) {
         return { status: 'SKIPPED', why: 'no Chromium-family browser found at the usual Windows paths' };
       }
-      const r = spawnSync(process.execPath, [script], {
-        cwd: join(ROOT, 'apps', 'capture-extension'),
-        env: { ...process.env, SAC_BROWSER: browser },
-        encoding: 'utf8',
-        maxBuffer: 32 * 1024 * 1024,
-        timeout: 300_000,
-      });
-      const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
-      if (r.status !== 0) {
-        return { status: 'FAIL', detail: `the in-browser check exited ${r.status}:\n${tail(out, 30)}` };
+      const cwd = join(ROOT, 'extension');
+      const runMode = (args) =>
+        spawnSync(process.execPath, [script, ...args], {
+          cwd,
+          env: { ...process.env, SAC_BROWSER: browser },
+          encoding: 'utf8',
+          maxBuffer: 32 * 1024 * 1024,
+          timeout: 600_000,
+        });
+      // Two modes, because they assert opposite halves of the same requirement and neither is
+      // sufficient alone. With no host registered, §3.4/INV-6 requires `absent` + `degraded` and a
+      // page that still works. With a host registered *before launch* (a host registered afterwards
+      // is invisible to the running browser), the same requirement is `connected`, and only then can
+      // the real §7.3 attachment path be driven end to end. The connected mode registers the host
+      // itself and removes it again.
+      const modes = [
+        { name: 'absent host', args: [], counts: ['4', '2'] },
+        { name: 'connected host', args: ['--with-native-host'], counts: ['6', '1'] },
+      ];
+      const results = [];
+      for (const mode of modes) {
+        const r = runMode(mode.args);
+        const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+        if (r.status !== 0) {
+          return {
+            status: 'FAIL',
+            detail: `the in-browser check failed in the "${mode.name}" mode (exit ${r.status}):\n${tail(out, 30)}`,
+          };
+        }
+        // Count summary rows only: the same strings appear in the per-check detail and in the
+        // "NOT VERIFIED BY THIS RUN" list, so a plain match over-counts.
+        const pass = (out.match(/^\s*PASS\s+check/gm) ?? []).length;
+        const notObservable = (out.match(/^\s*NOT-OBSERVABLE\s+check/gm) ?? []).length;
+        const fail = (out.match(/^\s*FAIL\s+check/gm) ?? []).length;
+        if (fail > 0) {
+          return { status: 'FAIL', detail: `the "${mode.name}" mode reported ${fail} failing check(s):\n${tail(out, 30)}` };
+        }
+        // The expected shape of each mode, so a mode that silently stops running half its checks is
+        // a failure rather than a smaller number nobody reads.
+        const [wantPass, wantNotObservable] = mode.counts;
+        if (String(pass) !== wantPass || String(notObservable) !== wantNotObservable) {
+          return {
+            status: 'FAIL',
+            detail: `the "${mode.name}" mode reported ${pass} pass / ${notObservable} not-observable, expected ${wantPass} / ${wantNotObservable}:\n${tail(out, 30)}`,
+          };
+        }
+        results.push({ mode: mode.name, pass, notObservable });
       }
-      const pass = (out.match(/^\s*PASS\s/gm) ?? []).length;
-      // Count the summary rows only: the string also appears in the per-check detail and in the
-      // "NOT VERIFIED BY THIS RUN" list, so a plain match over-counts.
-      const notObservable = (out.match(/^\s*NOT-OBSERVABLE\s+check/gm) ?? []).length;
+      const pass = results.reduce((n, r) => n + r.pass, 0);
+      const notObservable = results.reduce((n, r) => n + r.notObservable, 0);
       return {
         status: 'PASS',
-        detail: `${pass} check(s) passed in a real browser, ${notObservable} honestly not observable (blocking needs a policy install). Browser: ${browser.split('\\\\').pop()}.`,
+        detail: `${pass} check(s) passed in a real browser across two modes (${results.map((r) => `${r.mode}: ${r.pass} pass`).join(', ')}), ${notObservable} honestly not observable (blocking needs a policy install). Browser: ${browser.split('\\\\').pop()}.`,
       };
     },
   },
   {
     id: 'db',
-    title: 'Database invariants against a real server (db/tools/run-invariants.ps1)',
+    title: 'Database invariants against a real server (database/tools/run-invariants.ps1)',
     decides: 'The schema asserts its own properties, as the runtime roles, on PostgreSQL.',
     run: () => {
-      const script = join(ROOT, 'db', 'tools', 'run-invariants.ps1');
-      if (!existsSync(script)) return { status: 'SKIPPED', why: 'db/tools/run-invariants.ps1 does not exist yet' };
+      const script = join(ROOT, 'database', 'tools', 'run-invariants.ps1');
+      if (!existsSync(script)) return { status: 'SKIPPED', why: 'database/tools/run-invariants.ps1 does not exist yet' };
       if (!dockerUp()) return { status: 'SKIPPED', why: 'no Docker daemon; a real server needs one on this host' };
       const r = spawnSync(
         'powershell',

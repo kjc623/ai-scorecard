@@ -1,7 +1,0 @@
-module_bytes=6345054
-compile_and_instantiate_ms=11.830
-run_ms=37.425
-corpus=classifier-equivalence-v1
-cases=20
-target=js/wasm
-go=go1.27.0

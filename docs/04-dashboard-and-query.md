@@ -10,7 +10,7 @@ Sources, cited throughout: the engineering brief (`§1.1`, `§3.1`, `§3.5`, `§
 `C16`, `C30`, `R10`), `docs/00-architecture.md` (`D6`, as revised by
 [ADR 0014](adr/0014-content-search-is-a-per-tenant-capability.md), which supersedes ADR 0008),
 `docs/06-security-and-threat-model.md` (`§6.3`, `§6.5`) for the index's security position,
-`contracts/event-envelope.schema.json`, and `db/schema.sql`, whose object names are used verbatim.
+`contracts/event-envelope.schema.json`, and `database/schema.sql`, whose object names are used verbatim.
 Every parameter not fixed by one of those carries an explicit **ASSUMPTION:** label with a one-line
 justification, indexed in §16.
 
@@ -59,10 +59,10 @@ construction and retention (`03-data-platform.md`).
 | Aspect | Decision | Source |
 |---|---|---|
 | Runtime | TypeScript / Node on Fastify, Azure Container Apps | master doc §4.1 |
-| Database role | `sac_query`: `SELECT` on `ingest`/`mart`/most of `ops`, `INSERT`+`SELECT` on `ops.audit`, `SELECT`+`INSERT`+`UPDATE` on `ops.finding_review`, **no** `SELECT` on `ops.content_object` and **none** on `ingest.search_text`; `sac_vault` holds the only read of the index | `db/schema.sql` §10 |
+| Database role | `sac_query`: `SELECT` on `ingest`/`mart`/most of `ops`, `INSERT`+`SELECT` on `ops.audit`, `SELECT`+`INSERT`+`UPDATE` on `ops.finding_review`, **no** `SELECT` on `ops.content_object` and **none** on `ingest.search_text`; `sac_vault` holds the only read of the index | `database/schema.sql` §10 |
 | Analyst auth | Entra ID (OIDC, authorization-code + PKCE) against the customer's tenant; the dashboard is a static SPA behind it | master doc §4.1, brief §3.3 |
 | Tenant binding | Session creation resolves the Entra tenant to exactly one `ops.tenant.tenant_id`; the connection sets `app.tenant_id` before any statement runs | `ops.current_tenant()`, RLS policies |
-| Fail-closed default | A session with no tenant set reads **zero rows** — the RLS predicate compares against `NULL` and yields `NULL` | `db/schema.sql` §3, C32 |
+| Fail-closed default | A session with no tenant set reads **zero rows** — the RLS predicate compares against `NULL` and yields `NULL` | `database/schema.sql` §3, C32 |
 
 **The tenant comes from the authenticated session and never from the request body.** A request
 carrying a `tenant_id` anywhere — body, query string, filter — is **rejected as a validation error, not
@@ -446,7 +446,7 @@ is what a tier rather than a global switch means.
 
 ### 3.11 Indexes this document requires
 
-`db/schema.sql` defines primary keys and deliberately no secondary indexes; the read paths above need
+`database/schema.sql` defines primary keys and deliberately no secondary indexes; the read paths above need
 these, all tenant-leading (C32). The one text index in the system is `ingest.search_text`'s, created
 with its table (§15.2) and readable by one role this component does not hold — it is not one of these,
 and no path in this list can reach it.
@@ -537,7 +537,7 @@ recomputes exactly those buckets with the statements below **inside the same tra
 the count in `ops.erasure_receipt.removed_counts`. Erasure and its effect on the numbers commit
 together, so no analyst can see a deleted person still contributing to a total. The same transaction
 also removes the subject's `ingest.search_text` rows — the index entry cascades with the submission row
-it belongs to (`db/schema.sql`: the `search_text` foreign key is `ON DELETE CASCADE`), so there is no
+it belongs to (`database/schema.sql`: the `search_text` foreign key is `ON DELETE CASCADE`), so there is no
 second deletion path to forget — and the count goes in the receipt. An erased prompt that stayed
 searchable would be an erasure that did not erase (§15.5).
 
@@ -614,9 +614,9 @@ inversion of C25. Brief §8's 60-second target is met on the event and finding p
 `ingest.submission` directly and see a row as soon as its ingest transaction commits; the aggregate
 paths are bounded by the cadence and say so.
 
-### 4.6 Changes this document requires to `db/schema.sql`
+### 4.6 Changes this document requires to `database/schema.sql`
 
-**Four gaps this document identified in an earlier revision have since landed in `db/schema.sql`.** They
+**Four gaps this document identified in an earlier revision have since landed in `database/schema.sql`.** They
 are kept here, resolved, because the reasoning is what justified them — the first three are additive
 columns on rebuildable `mart` or a denormalised copy in `ingest`, and the fourth is a one-line grant.
 **None changed the event envelope** — `contracts/event-envelope.schema.json` gained only the attachment
@@ -1321,7 +1321,7 @@ customer has to be told before turning it on.
 combination every other enforcement point would have to remember:
 
 ```sql
--- ops.tenant, db/schema.sql
+-- ops.tenant, database/schema.sql
 content_search text NOT NULL DEFAULT 'disabled'
   CHECK (content_search IN ('disabled','attachment_names','full_text')),
 CONSTRAINT tenant_full_text_search_requires_vendor_readable_content
@@ -1352,7 +1352,7 @@ never accept server-side search over prompts.
 One row per searchable unit — the prompt body, and one row per attachment filename:
 
 ```sql
--- ingest.search_text, db/schema.sql (abridged; the comments there carry the reasoning)
+-- ingest.search_text, database/schema.sql (abridged; the comments there carry the reasoning)
 (tenant_id, submission_id, unit_kind, unit_index, body, tsv, created_at, expires_at)
   unit_kind  IN ('prompt_body','attachment_name')   -- unit_index 0 for the body, 0..n per filename
   body       text NOT NULL CHECK (length(body) BETWEEN 1 AND 65536)
@@ -1377,7 +1377,7 @@ Four details are contractual rather than incidental:
   are the right tool for filenames. A trigram index over every prompt body would be large for no benefit,
   so substring and fuzzy matching are served for `attachment_name` units — the `attachment_names` tier —
   and term matching serves everything else. Both extensions (`pg_trgm` for the trigram operator class,
-  `btree_gin` so a GIN index can lead with `tenant_id`) are declared by `db/schema.sql`, and their
+  `btree_gin` so a GIN index can lead with `tenant_id`) are declared by `database/schema.sql`, and their
   availability per target region is master doc Q12's platform check.
 - **What is not in the table, and why that is a rule rather than an omission.** Attachment *contents* —
   the 50–500 GB/year tier of brief §3.1 — are not indexed in v1: different cost, different breach
@@ -1386,7 +1386,7 @@ Four details are contractual rather than incidental:
   over redacted text (§3.9). Content digests are not searchable: a digest lookup that returned text
   would be a confirmation oracle (06 §5.5), which is also why digests stay out of the export (§9.4).
 - **Who writes it.** `content-vault`, and only `content-vault` — `sac_vault` holds the sole grant on the
-  table, and `sac_query` holds none (`db/schema.sql` §10). A unit exists only for content that reached
+  table, and `sac_query` holds none (`database/schema.sql` §10). A unit exists only for content that reached
   the server under C14's per-event grant path: the index adds no device egress and no collection mode of
   its own (06 §6.3). `prompt_body` units exist where M3 is in force for the scope; `attachment_name`
   units exist from M1.
@@ -1581,4 +1581,4 @@ they are the parameters the brief leaves open.
 [ADR 0014](adr/0014-content-search-is-a-per-tenant-capability.md) ·
 [06-security-and-threat-model](06-security-and-threat-model.md) §6.3, §10.5, §11.3 ·
 [02-ingest-and-transport](02-ingest-and-transport.md) · [03-data-platform](03-data-platform.md) ·
-[db/schema.sql](../db/schema.sql) · [contracts/event-envelope.schema.json](../contracts/event-envelope.schema.json)
+[database/schema.sql](../database/schema.sql) · [contracts/event-envelope.schema.json](../contracts/event-envelope.schema.json)

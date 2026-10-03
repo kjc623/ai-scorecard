@@ -4,7 +4,7 @@ How the cloud-side data is stored, retained, erased and recovered. This document
 tier; the device-side spool is in [01-collectors](01-collectors.md) §12, the write path that feeds
 this store is in [02-ingest-and-transport](02-ingest-and-transport.md) §6, the read paths over it are
 in [04-dashboard-and-query](04-dashboard-and-query.md) §3, and the full DDL is
-[db/schema.sql](../db/schema.sql).
+[database/schema.sql](../database/schema.sql).
 
 ---
 
@@ -126,7 +126,7 @@ can never drag a confident one into a merge it does not belong in.
 `kind` is part of the weak key because rollups and detections carry no payload size at all; without
 it, a `usage_rollup` and a `model_detection` for the same tool in the same bucket would collide and
 produce a record corresponding to nothing. This was found by test, not by reading: T27 in
-[db/invariants.test.sql](../db/invariants.test.sql).
+[database/invariants.test.sql](../database/invariants.test.sql).
 
 ---
 
@@ -163,7 +163,7 @@ function once per envelope, then report the returned outcome.
 Every aggregate in `mart` is written with `INSERT … ON CONFLICT DO UPDATE` that **replaces** the
 bucket. Brief C28 states the rule directly — "aggregates are upserts, never increments" — because
 devices go offline and flush in bursts, so late-arriving events are the normal case. The primary keys
-the upserts conflict on are in [db/schema.sql](../db/schema.sql); the statements themselves are in
+the upserts conflict on are in [database/schema.sql](../database/schema.sql); the statements themselves are in
 [04-dashboard-and-query](04-dashboard-and-query.md) §4.
 
 ### 5.1 Why replace rather than increment
@@ -366,11 +366,11 @@ Skipping step 2 is how a system that deletes data correctly ends up restoring it
 A schema that has only been read is a claim. Two artefacts make this one checkable:
 
 ```
-psql -v ON_ERROR_STOP=1 -f db/schema.sql
-psql -v ON_ERROR_STOP=1 -f db/invariants.test.sql
+psql -v ON_ERROR_STOP=1 -f database/schema.sql
+psql -v ON_ERROR_STOP=1 -f database/invariants.test.sql
 ```
 
-[db/invariants.test.sql](../db/invariants.test.sql) runs as the runtime roles, not as a superuser,
+[database/invariants.test.sql](../database/invariants.test.sql) runs as the runtime roles, not as a superuser,
 because a superuser bypasses row-level security and would therefore prove nothing about it. The
 47 assertions cover:
 
@@ -538,7 +538,7 @@ tenant could reduce their bill by exercising erasure rights.
 
 So `ingest-api` increments the ledger in the same transaction that accepts the events. A retried batch
 adds nothing (duplicates are rejected before the counter moves); an erasure subtracts nothing. Test T34
-in [invariants.test.sql](../db/invariants.test.sql) asserts exactly this: it erases every submission and
+in [invariants.test.sql](../database/invariants.test.sql) asserts exactly this: it erases every submission and
 observation for a tenant and confirms the ledger is unchanged.
 
 `content_bytes_added` is recorded even though nothing bills on it, because content is the only unbounded

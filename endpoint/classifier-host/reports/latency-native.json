@@ -1,0 +1,59 @@
+{
+  "target": "windows/amd64",
+  "version": "0.1.0-dev",
+  "corpus": "C:/Users/kyle/Downloads/architecture/endpoint/classifier-host/testdata/corpus.json",
+  "cases": 20,
+  "iterations": 200,
+  "budget_ms": {
+    "model": 60,
+    "normalise": 5,
+    "rules": 20,
+    "total": 150,
+    "validators": 10
+  },
+  "stages": {
+    "mode": {
+      "count": 200,
+      "p50_ms": 0,
+      "p95_ms": 0,
+      "max_ms": 0
+    },
+    "model": {
+      "count": 3800,
+      "p50_ms": 0.0023,
+      "p95_ms": 0.0054,
+      "max_ms": 0.4473
+    },
+    "normalise": {
+      "count": 3800,
+      "p50_ms": 0.0006,
+      "p95_ms": 0.0027,
+      "max_ms": 0.1014
+    },
+    "rules": {
+      "count": 3800,
+      "p50_ms": 0.0121,
+      "p95_ms": 0.1342,
+      "max_ms": 0.6503
+    },
+    "validators": {
+      "count": 3800,
+      "p50_ms": 0.0003,
+      "p95_ms": 0.0006,
+      "max_ms": 0.0168
+    }
+  },
+  "total": {
+    "count": 4000,
+    "p50_ms": 0.017,
+    "p95_ms": 0.1441,
+    "max_ms": 0.754
+  },
+  "sum_stage_p95_ms": 0.1429,
+  "within_budget": true,
+  "notes": [
+    "p95 is nearest-rank over every stage observation of the whole run, not per corpus case",
+    "stage shares are docs/01-collectors.md §9.4's columns for this target",
+    "this measurement includes neither module load nor wasm instantiation; see reports/wasm-size.txt for the load cost"
+  ]
+}

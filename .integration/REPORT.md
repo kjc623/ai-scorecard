@@ -1,8 +1,8 @@
 # Independent integration verification (task-14)
 
 Verifier: contractor (owner of `contracts/` only). This report covers the components I did **not**
-author: `device/capture-core`, `device/capture-spool`, `device/classifier-host`,
-`apps/capture-extension`, `services/ingest-api`, `services/query-api`, plus the seams between them.
+author: `endpoint/capture-core`, `endpoint/capture-spool`, `endpoint/classifier-host`,
+`extension`, `ingestion/ingest-api`, `query/query-api`, plus the seams between them.
 `contracts/` is covered only where a consumer shows it working (see §1e) — the Lead reviews the
 contract itself.
 
@@ -23,8 +23,8 @@ where my own checks had to go.
 |---|---|---|
 | `tools/accept.mjs` | Runs 6 gates and gives one exit code; a gate that cannot run is SKIPPED with a reason; the DB gate is judged on its TALLY line, not the runner's exit code. | That the six invariants hold: `check-invariants` exits 0 with INV-1 and INV-3 BLOCKED, so "[PASS] invariants" in this output means "no FAIL", not "all six verified". Also inherits the two holes below. |
 | `tools/verify-all.mjs` | Each declared package's own suite runs; `MISSING` (no directory/go.mod) and `NO-TESTS` are failures, not passes; a root `go.work` is a failure. | Nothing about cross-component fit. Discovered Node tests must be named `*.test.{mjs,cjs,js}`, so `contracts/tools/verify.mjs` is invisible to it (§1e). It has **no per-package timeout** (§5.1) — one hanging package blocks the entire run. |
-| `tools/check-seams.mjs` | Envelope field names in 6 components against the schema, with an explicit allow-list for non-envelope seam fields; `received_at` on a device is a finding; a component naming no contract field must carry a documented reason. | Field names only: not nesting, not optionality, **not types/encodings**. The allow-list can mask drift (e.g. `digest` is allow-listed for `device/protocol` although the contract's name is `content_digest`). Test files are excluded. Only names sharing a first token with a contract field are flagged as near-misses. Non-envelope seams (native frames, classifier request/response, batch) are not compared at all. |
-| `tools/check-vocab.mjs` | 8 closed vocabularies compared **by value** between `device/protocol` (Go) and `apps/capture-extension` (JS); a value missing on either side is a finding. | Only values, not names. A file that does not exist is reported `ABSENT` and **exits 0** (§5.2). Only the extension is compared; no other consumer, and no vocabulary a component re-derives at runtime. JS extraction only reads single-quoted keys in a plain exported object literal. |
+| `tools/check-seams.mjs` | Envelope field names in 6 components against the schema, with an explicit allow-list for non-envelope seam fields; `received_at` on a device is a finding; a component naming no contract field must carry a documented reason. | Field names only: not nesting, not optionality, **not types/encodings**. The allow-list can mask drift (e.g. `digest` is allow-listed for `endpoint/protocol` although the contract's name is `content_digest`). Test files are excluded. Only names sharing a first token with a contract field are flagged as near-misses. Non-envelope seams (native frames, classifier request/response, batch) are not compared at all. |
+| `tools/check-vocab.mjs` | 8 closed vocabularies compared **by value** between `endpoint/protocol` (Go) and `extension` (JS); a value missing on either side is a finding. | Only values, not names. A file that does not exist is reported `ABSENT` and **exits 0** (§5.2). Only the extension is compared; no other consumer, and no vocabulary a component re-derives at runtime. JS extraction only reads single-quoted keys in a plain exported object literal. |
 | `tools/check-invariants.mjs` | INV-2 by grep; INV-3b by a hostile-input probe plus an interpolation scan; INV-4 by a mutating-method grep on the spool; INV-5 by asking the live PostgreSQL catalog (not the DDL); INV-6 by the presence of the four states and the counters; INV-1/INV-3 report BLOCKED when their component is absent. | INV-6's own footer says it: state names existing is not "a dead path reports absent". INV-4's grep does not prove no raw-handle rewrite. INV-2's grep does not prove a device never reaches a database another way. INV-1/INV-3 cannot be verified at all yet. |
 
 Generalisation from the Lead's L8 (a test that agrees with the bug): none of these five compare a
@@ -36,17 +36,17 @@ component against the *other side's real bytes*. That is where §1 and §2 looke
 
 | Gate | My command | My result | Lead's log | Reconciled? |
 |---|---|---|---|---|
-| seams | `node tools/check-seams.mjs` | clean, 6 components, 7-26 contract fields each, `apps/capture-extension` 0 with a documented reason, exit 0 | L7 "6 components ... no findings" | yes |
+| seams | `node tools/check-seams.mjs` | clean, 6 components, 7-26 contract fields each, `extension` 0 with a documented reason, exit 0 | L7 "6 components ... no findings" | yes |
 | vocab | `node tools/check-vocab.mjs` | 8 vocabularies `agree` (13/7/7/4/3/7/4/32 values), exit 0 | L7 "8 vocabularies ... no drift" | yes |
 | invariants | `node tools/check-invariants.mjs` | INV-2 PASS, INV-3 BLOCKED, INV-3b PASS (15/15 rejected), INV-4 PASS, INV-5 PASS (live catalog 31+31), INV-6 PASS, INV-1 BLOCKED; exit 0 | L6 same six verdicts | yes, with the caveat that "PASS" for INV-6 is state-name presence only, and the tool exits 0 while two invariants are BLOCKED |
 | contract drift | `node contracts/tools/generate.mjs --check` | match, exit 0 (also after my ADR 0018 change) | gate 2 of accept.mjs, "passes" | yes |
-| packages | per-package with `go test -timeout 90s ./...` / `node --test` | see the table in §5.5; **`device/capture-core` hangs** | L4 "capture-core compiles with core tests passing" | **no — L4 is contradicted by §6.1** |
+| packages | per-package with `go test -timeout 90s ./...` / `node --test` | see the table in §5.5; **`endpoint/capture-core` hangs** | L4 "capture-core compiles with core tests passing" | **no — L4 is contradicted by §6.1** |
 | accept | `node tools/accept.mjs` | never returned (>45 min, `packages` gate stuck in capture-core) | not claimed to have been re-run | n/a |
 | accept, hanging gate skipped | `node tools/accept.mjs --skip packages` | contract, seams, vocab, invariants, **db all PASS**; 5 pass / 0 fail / 1 skipped; exit 0, verdict "NOT a complete acceptance: gates above were skipped" | L3 DB suite | yes — and the DB suite has grown: **43 distinct assertions, 45 PASS notices, 0 failures** (L3 records 37, then 38) |
 
 Notes on the Lead's log, checked rather than accepted:
 
-- **L1 (device/protocol 22 tests)** — reproduced as part of the per-package run: `ok` (0.29s).
+- **L1 (endpoint/protocol 22 tests)** — reproduced as part of the per-package run: `ok` (0.29s).
 - **L3 (DB suite, 37 then 38 assertions, judged on TALLY)** — I did not re-run the database suite this round (see §7). The reasoning recorded in L3 for judging on TALLY rather than the exit code is sound and is what `accept.mjs` does.
 - **L6's two corrections** (INV-5 via the live catalog, INV-3b via a runtime probe) are visible in the tool and are the right shape: both replaced a text pattern with a property. The INV-3b probe's wording ("rejected with a typed error") is stronger than its evidence — it counts any throw; my own probe (§4) confirms the throws really are `QueryError`s with a reason from the closed set, so the claim is true, just not verified by the tool.
 - **L8 (the test that agrees with the bug)** — the native `content` defect in §1a is the same class one level up: both sides' tests agree with their own model and no test compares the JSON one side writes with the type the other side declares.
@@ -59,14 +59,14 @@ Notes on the Lead's log, checked rather than accepted:
 
 **Defect:** `content` is encoded as base64 by the Go seam type but as raw text by the extension.
 
-- Go: `device/protocol/native.go:87` — `Content []byte \`json:"content,omitempty"\``; `encoding/json`
+- Go: `endpoint/protocol/native.go:87` — `Content []byte \`json:"content,omitempty"\``; `encoding/json`
   decodes a JSON string into `[]byte` as base64.
-- JS: `apps/capture-extension/src/pipeline.js:137,158` — `contentText = body.decode.text` for
+- JS: `extension/src/pipeline.js:137,158` — `contentText = body.decode.text` for
   non-binary payloads and `content: contentText` on the wire; only the binary case base64-encodes
   (`base64Of`, line 575).
-- The convention is documented in the same tree: `apps/capture-extension/src/attachments/sender.js:187`
+- The convention is documented in the same tree: `extension/src/attachments/sender.js:187`
   — "encoding/json marshals []byte as base64, so the frame carries base64 too".
-- No Go consumer parses `ObservationMessage` yet (grep: only `device/protocol` and its tests, plus the
+- No Go consumer parses `ObservationMessage` yet (grep: only `endpoint/protocol` and its tests, plus the
   extension's own `contract.test.mjs` which reads the Go source text). So the defect is **latent**, and
   the first core-side parser will hit it.
 
@@ -95,7 +95,7 @@ Blast radius: every M1+ text observation. Two failure modes — an outright deco
 substitution of different bytes while `content_digest` still digests the original, which breaks the
 canonical digest (dedup key, `content_digest` evidence) for that record.
 
-Why no suite catches it: `apps/capture-extension/contract.test.mjs:163-176` compares
+Why no suite catches it: `extension/contract.test.mjs:163-176` compares
 `json:"name"` fields only; `test-support/fake-core.mjs` checks presence; `native.test.mjs` uses
 `content: 'hi'`; `protocol_test.go` builds Go structs directly. Names agree, types do not — exactly
 the class `check-seams` states it cannot see.
@@ -108,7 +108,7 @@ the class `check-seams` states it cannot see.
 Both sides are Go structs in one module family, so JSON field names cross via `protocol.ClassifyRequest`
 / `ClassifyResponse` and `parser.Header`. Static read: `ClassifyRequest` carries `content`, `mode`,
 `media_type`, `content_digest`, `release_id`, `budget_ms` and no identity field, with a package-init
-guard (`device/protocol/classifier.go:205-221`) that panics if `json.Marshal` ever yields one of
+guard (`endpoint/protocol/classifier.go:205-221`) that panics if `json.Marshal` ever yields one of
 `IdentityFieldNames` (line 197-200). `classifier-host/parser/parser.go:145` names its private
 parent-child header field `digest` while `classify/host.go:51` names its own `content_digest` — both
 are Go-struct-to-Go-struct (no JSON across a language boundary), so this is a naming inconsistency,
@@ -119,7 +119,7 @@ PASS, and it is listed in §7.
 
 ### 1c. capture-core <-> ingest-api batch shape — **PARTIAL**
 
-`device/protocol/batch.go` declares the batch and per-event result shapes; `services/ingest-api`
+`endpoint/protocol/batch.go` declares the batch and per-event result shapes; `ingestion/ingest-api`
 validates against the schema at runtime and consumes the generated types
 (`internal/contract/envelope.go:12,62`). `node tools/check-seams.mjs` reports 21 contract fields named
 in that tree and no findings. Not yet done: a byte-level batch diff (device JSON -> ingest-api
@@ -127,17 +127,17 @@ decoder). Verdict PARTIAL; listed in §7.
 
 ### 1d. ingest-api <-> query-api <-> dashboard — **BLOCKED**
 
-`apps/dashboard` does not exist, so the dashboard half of this seam cannot be checked
+`query/dashboard` does not exist, so the dashboard half of this seam cannot be checked
 (`check-invariants` INV-3 reports BLOCKED for the same reason). query-api reads the mart tables with
 SQL rather than envelopes, so there is no envelope seam between ingest-api and query-api to diff.
 
 ### 1e. All components against contracts/generated — **PASS (as consumption)**
 
-- `node tools/check-seams.mjs` -> clean for all 6 components; `apps/capture-extension` names 0
+- `node tools/check-seams.mjs` -> clean for all 6 components; `extension` names 0
   contract fields and carries a documented reason.
-- The Go consumer path is real: `services/ingest-api/internal/contract/envelope.go:62` calls
+- The Go consumer path is real: `ingestion/ingest-api/internal/contract/envelope.go:62` calls
   `envelope.DecodeDeviceSubmission`, so a renamed or retyped generated field breaks that build. I ran
-  `cd services/ingest-api && go build ./...` after my own contract change (ADR 0018) -> EXIT=0.
+  `cd ingestion/ingest-api && go build ./...` after my own contract change (ADR 0018) -> EXIT=0.
 - `node contracts/tools/generate.mjs --check` -> match, EXIT=0; `node --test contracts/tools/` ->
   12/12 pass.
 - Hole found: `tools/verify-all.mjs` looks for `*.test.{mjs,cjs,js}` under `contracts/tools`, and my
@@ -217,17 +217,17 @@ is why §3 exists.
 
 ### INV-1 (content crosses only on a per-event grant) — **BLOCKED**
 
-`services/content-vault` does not exist. `check-invariants` reports BLOCKED and names the fact that 4
+`vault/content-vault` does not exist. `check-invariants` reports BLOCKED and names the fact that 4
 device-side files mention a grant — a mention is not an enforced egress path. My own check confirms
 the missing half: there is no server-side vault component to hold content, so "upload everything is
 unreachable" cannot be demonstrated. Correct verdict today: **not yet implementable**, not PASS.
 
 ### INV-3 (the dashboard cannot produce SQL) — **BLOCKED for the dashboard; INV-3b PASS for query-api**
 
-- Dashboard: `apps/dashboard` does not exist -> BLOCKED (nothing to feed hostile input to).
+- Dashboard: `query/dashboard` does not exist -> BLOCKED (nothing to feed hostile input to).
 - query-api: reproduced `check-invariants`' probe -> 15 hostile values across three query shapes, all
   rejected with a typed error, 0 reached SQL text. I additionally ran my own probe with different
-  payloads (§4). The one static interpolation site is `services/query-api/src/compile.js:121`
+  payloads (§4). The one static interpolation site is `query/query-api/src/compile.js:121`
   (`select.push(\`__ord_${t.by}\`)`), an ORDER BY identifier; a static check cannot tell an
   allow-listed identifier from an injection, which is why the runtime probe is the verdict.
 
@@ -315,7 +315,7 @@ INV-3b probe: no hostile value reached SQL text and every identifier payload was
 Two things this adds beyond the existing gate: the value-position property is now checked at all, and
 the rejections are checked to be the project's own `QueryError` (`reason` in the closed `REASON` set,
 `result_state` in §13's table) rather than "something threw". The dashboard half of INV-3 remains
-BLOCKED because `apps/dashboard` does not exist.
+BLOCKED because `query/dashboard` does not exist.
 
 ---
 
@@ -324,7 +324,7 @@ BLOCKED because `apps/dashboard` does not exist.
 ### 5.1 `verify-all.mjs` has no per-package timeout — **FAIL (confirmed)**
 
 `node tools/accept.mjs` never returned on my run: `packages` -> `verify-all.mjs` -> `go test ./...` in
-`device/capture-core` hung for >45 minutes with no output. Two concurrent accept runs were stuck the
+`endpoint/capture-core` hung for >45 minutes with no output. Two concurrent accept runs were stuck the
 same way. Root cause is a component defect (§5.4), but the harness turns it into "the acceptance
 command hangs forever" instead of "one package failed".
 
@@ -344,7 +344,7 @@ run completes. The task-1 acceptance command (`node --test contracts/tools/`, wh
 `contracts/tools/verify.test.mjs` shim (my scope, if the Lead wants it) or a harness rule for the
 documented `verify.mjs` name (Lead's scope).
 
-### 5.4 `device/capture-core` hangs the gate — **FAIL (confirmed defect, component)**
+### 5.4 `endpoint/capture-core` hangs the gate — **FAIL (confirmed defect, component)**
 
 See §6.1.
 
@@ -358,15 +358,15 @@ cd <package>; go test -timeout 90s ./...
 
 | Package | Command | Result |
 |---|---|---|
-| `device/protocol` | `go test -timeout 90s ./...` | **PASS** (`ok`, 0.29s) |
-| `device/capture-core` | `go test -timeout 90s ./...` | **FAIL** — `core`, `dedup`, `policy`, `proxy/loopback` all `ok`; `proxy/tlsproxy` hangs (§6.1) |
-| `device/capture-spool` | `go test -timeout 90s ./...` | **PASS** (`ok`, 2.7s; includes the in-package crash tests) |
-| `device/classifier-host` | `go test -timeout 90s ./...` | **PASS** (root, `classify`, `model` all `ok`, 5.7s) — the 5 compile errors in `parser/parser.go` recorded in L4 are fixed |
-| `services/ingest-api` | `go test -timeout 90s ./...` | **PASS** (all internal packages `ok`) |
+| `endpoint/protocol` | `go test -timeout 90s ./...` | **PASS** (`ok`, 0.29s) |
+| `endpoint/capture-core` | `go test -timeout 90s ./...` | **FAIL** — `core`, `dedup`, `policy`, `proxy/loopback` all `ok`; `proxy/tlsproxy` hangs (§6.1) |
+| `endpoint/capture-spool` | `go test -timeout 90s ./...` | **PASS** (`ok`, 2.7s; includes the in-package crash tests) |
+| `endpoint/classifier-host` | `go test -timeout 90s ./...` | **PASS** (root, `classify`, `model` all `ok`, 5.7s) — the 5 compile errors in `parser/parser.go` recorded in L4 are fixed |
+| `ingestion/ingest-api` | `go test -timeout 90s ./...` | **PASS** (all internal packages `ok`) |
 | `contracts/generated/go` | `go build ./...` | **PASS** (build only, by design) |
 
-Not run by me in this round: `apps/capture-extension` (node), `services/query-api` (node),
-`db/tools`, `apps/dashboard`, `infra/tools`, `services/content-vault`. The last three do not exist.
+Not run by me in this round: `extension` (node), `query/query-api` (node),
+`database/tools`, `query/dashboard`, `azure/tools`, `vault/content-vault`. The last three do not exist.
 The database suite **was** re-run through `node tools/accept.mjs --skip packages` (43 distinct
 assertions, 0 failures). This is why §7 keeps a "not verified" line for each of the others.
 
@@ -376,14 +376,14 @@ assertions, 0 failures). This is why §7 keeps a "not verified" line for each of
 
 ### 6.1 Self-deadlock in the TLS proxy `Start()` — **CONFIRMED, critical**
 
-`device/capture-core/proxy/tlsproxy/provider.go`: `Start()` locks `p.mu` at line 266 and calls
+`endpoint/capture-core/proxy/tlsproxy/provider.go`: `Start()` locks `p.mu` at line 266 and calls
 `p.probe(ctx)` at line 267; `probe()` calls `p.ListenAddr()` at line 294, which locks `p.mu` again at
 line 194. `sync.Mutex` is not reentrant, so `Start` blocks forever.
 
 Reproduction:
 
 ```
-cd device/capture-core
+cd endpoint/capture-core
 go test -run TestTLS_5_3_InterceptsEligibleDestination -timeout 15s ./proxy/tlsproxy/
 ```
 
@@ -406,7 +406,7 @@ See §1a.
 ### 6.3 Latent producer hole, model_detection window fields — **CONFIRMED, latent**
 
 After ADR 0018 the contract forbids `window_end`, `submission_count` and `bytes_total` on
-`model_detection`. `device/capture-core/core/envelope.go:120` (`BuildEnvelope`) refuses
+`model_detection`. `endpoint/capture-core/core/envelope.go:120` (`BuildEnvelope`) refuses
 content-derived fields for non-prompt kinds (lines 135-137) but copies `WindowStart`, `WindowEnd`,
 `SubmissionCount`, `BytesTotal` for **any** kind (lines 154-157). No caller sets them for a detection
 today (the only test that sets them is a `usage_rollup`, `pipeline_test.go:608`), so nothing
@@ -422,10 +422,10 @@ is cited instead.
 
 | Question | Verdict | Evidence |
 |---|---|---|
-| Does any component read content at M0? | **No, by construction** | `device/capture-core/core/pipeline.go:506-520` — `readContent` is documented and used as *the single call site* of `ContentReader.Read`, and it refuses when `!mode.ReadsContent()`. `core/envelope.go:132-137` refuses content-derived fields at M0 before an envelope is minted. `device/protocol/classifier.go:184-193` refuses a classify request carrying content in a mode that forbids reading. The extension's `modeReadsContent` (`src/messages.js:82-84`) treats an absent/unknown mode as "do not read". |
-| Does the classifier receive tool identity, `user_ref` or destination? | **No** | `device/protocol/classifier.go:22-51` — `ClassifyRequest` has `content`, `mode`, `media_type`, `content_digest`, `release_id`, `budget_ms` and no identity field; `:197-200` names the forbidden set; `:205-221` marshals an empty request at package init and panics if any of those names appears. `core/pipeline.go:548-562` builds the request from bytes, mode, media type and digest only. |
-| Does anything write to the spool other than capture-core? | **No — and the extension cannot reach it at all** | The only package that opens the spool is `device/capture-spool` (`spool.go:180` `Open`); consumers hold the `protocol.Store` interface (`device/protocol/spool.go:151`, `core/pipeline.go:56-67`). `apps/capture-extension/src` imports no filesystem module and never names a spool path (grep: the 9 `spool` mentions are all prose/comment or the `spool_unwritable` detail value); `src/queue.js:4-18` states the buffer is in memory and bounded because "the extension cannot read the spool". |
-| Does the vault appear on a public route? | **BLOCKED** | `services/content-vault` does not exist and neither does `infra/`, so there is no vault deployment to inspect. Same verdict as INV-1. |
+| Does any component read content at M0? | **No, by construction** | `endpoint/capture-core/core/pipeline.go:506-520` — `readContent` is documented and used as *the single call site* of `ContentReader.Read`, and it refuses when `!mode.ReadsContent()`. `core/envelope.go:132-137` refuses content-derived fields at M0 before an envelope is minted. `endpoint/protocol/classifier.go:184-193` refuses a classify request carrying content in a mode that forbids reading. The extension's `modeReadsContent` (`src/messages.js:82-84`) treats an absent/unknown mode as "do not read". |
+| Does the classifier receive tool identity, `user_ref` or destination? | **No** | `endpoint/protocol/classifier.go:22-51` — `ClassifyRequest` has `content`, `mode`, `media_type`, `content_digest`, `release_id`, `budget_ms` and no identity field; `:197-200` names the forbidden set; `:205-221` marshals an empty request at package init and panics if any of those names appears. `core/pipeline.go:548-562` builds the request from bytes, mode, media type and digest only. |
+| Does anything write to the spool other than capture-core? | **No — and the extension cannot reach it at all** | The only package that opens the spool is `endpoint/capture-spool` (`spool.go:180` `Open`); consumers hold the `protocol.Store` interface (`endpoint/protocol/spool.go:151`, `core/pipeline.go:56-67`). `extension/src` imports no filesystem module and never names a spool path (grep: the 9 `spool` mentions are all prose/comment or the `spool_unwritable` detail value); `src/queue.js:4-18` states the buffer is in memory and bounded because "the extension cannot read the spool". |
+| Does the vault appear on a public route? | **BLOCKED** | `vault/content-vault` does not exist and neither does `azure/`, so there is no vault deployment to inspect. Same verdict as INV-1. |
 
 ---
 
@@ -441,7 +441,7 @@ This section is deliberately the one that grows.
 - **No browser, no real device, no cloud.** Chromium is not installed; nothing was exercised in a
   real extension host, over a real native-messaging pipe, or against Azure/KMS/Blob. Any claim that
   depends on those is unverified by construction.
-- **`apps/dashboard`, `services/content-vault`, `infra` do not exist**, so INV-1 and INV-3 (dashboard)
+- **`query/dashboard`, `vault/content-vault`, `azure` do not exist**, so INV-1 and INV-3 (dashboard)
   are BLOCKED, not pass. Same for the ingest-api <-> query-api <-> dashboard envelope seam.
 - **INV-4's ingest side** (append-only in the database) is the DB suite's T17/T18/T19/T20, judged by
   the TALLY line; I re-read the runner but did not re-run the database suite myself in this round.
@@ -452,8 +452,8 @@ This section is deliberately the one that grows.
   literals, so a switch to double quotes or a computed key would silently reduce its coverage (it
   would report `consumer-group-missing`, which does fail — but a partially-parsed group could pass
   with fewer values).
-- **Not re-run in this round:** `apps/capture-extension`'s suite and `services/query-api`'s suite
-  (node), and `apps/dashboard` / `services/content-vault` / `infra` (absent). A package I did not run
+- **Not re-run in this round:** `extension`'s suite and `query/query-api`'s suite
+  (node), and `query/dashboard` / `vault/content-vault` / `azure` (absent). A package I did not run
   is not covered by this report, whatever its owner says about it. The database suite was re-run
   (`node tools/accept.mjs --skip packages` -> 43 distinct assertions, 0 failures) but judged, as the
   Lead's log argues, on its TALLY line rather than its exit code.
@@ -464,7 +464,7 @@ This section is deliberately the one that grows.
   boundary, not a defect); `StageResult.Duration`'s `duration_ms` JSON name (a `time.Duration`
   marshals as nanoseconds, which the same file warns about for `budget_ms` — **no JSON consumer of
   that field exists yet**, so it is a trap for the first non-Go reader rather than a live defect).
-- **`services/ingest-api`'s runtime behaviour** (the write path, idempotency, per-event outcomes) was
+- **`ingestion/ingest-api`'s runtime behaviour** (the write path, idempotency, per-event outcomes) was
   not exercised against a live database by me; its package tests pass, and the database-side
   invariants are the DB suite's.
 
@@ -474,11 +474,11 @@ This section is deliberately the one that grows.
 
 | # | Disagreement | Citations | Blast radius | Status |
 |---|---|---|---|---|
-| 1 | Observation `content` is raw text on one side and base64 (`[]byte`) on the other | `apps/capture-extension/src/pipeline.js:137,158` vs `device/protocol/native.go:87` (convention at `attachments/sender.js:187`) | Content identity: every M1+ text observation; digest/dedup break | **confirmed** (§1a) |
-| 2 | `model_detection` window fields: contract forbids all four; the DB CHECK forbids only `window_start`, and omits `classifier_version`, `content_excerpt`, `attachments` from the forbidden set | `contracts/event-envelope.schema.json` model_detection branch vs `db/schema.sql:793` | The store's second line of defence is weaker than the contract; a gap in service validation would store a shape the contract refuses | open, owner is db/ |
-| 3 | `BuildEnvelope` passes window fields for any kind; the contract now forbids them on detections | `device/capture-core/core/envelope.go:154-157` vs the model_detection branch (ADR 0018) | Latent producer hole; caught at ingest instead of at mint | **confirmed, latent** (§6.3) |
-| 4 | Health derives from "a positive observation", but `MarkSuccess` fires on a degraded one | `device/capture-core/core/pipeline.go:498` vs `pipeline.go:228-229` and `core/health.go:5-9` | A row built from `LastSuccess` alone could read healthy for a route whose classifier failed | open, latent (nothing reads it yet) |
+| 1 | Observation `content` is raw text on one side and base64 (`[]byte`) on the other | `extension/src/pipeline.js:137,158` vs `endpoint/protocol/native.go:87` (convention at `attachments/sender.js:187`) | Content identity: every M1+ text observation; digest/dedup break | **confirmed** (§1a) |
+| 2 | `model_detection` window fields: contract forbids all four; the DB CHECK forbids only `window_start`, and omits `classifier_version`, `content_excerpt`, `attachments` from the forbidden set | `contracts/event-envelope.schema.json` model_detection branch vs `database/schema.sql:793` | The store's second line of defence is weaker than the contract; a gap in service validation would store a shape the contract refuses | open, owner is database/ |
+| 3 | `BuildEnvelope` passes window fields for any kind; the contract now forbids them on detections | `endpoint/capture-core/core/envelope.go:154-157` vs the model_detection branch (ADR 0018) | Latent producer hole; caught at ingest instead of at mint | **confirmed, latent** (§6.3) |
+| 4 | Health derives from "a positive observation", but `MarkSuccess` fires on a degraded one | `endpoint/capture-core/core/pipeline.go:498` vs `pipeline.go:228-229` and `core/health.go:5-9` | A row built from `LastSuccess` alone could read healthy for a route whose classifier failed | open, latent (nothing reads it yet) |
 | 5 | `verify-all.mjs` cannot discover `contracts/tools/verify.mjs` | `tools/verify-all.mjs:89-105` vs task-1's required file name | A passing package would report MISSING once the run completes | open (§5.3) |
 | 6 | `check-vocab.mjs` reports a missing file as `ABSENT` and still exits 0 | `tools/check-vocab.mjs:128-131` | A deleted consumer is a green gate | open, latent (§5.2) |
 | 7 | INV-3b's tool reports "typed error" while counting any throw | `tools/check-invariants.mjs:141` (`catch { errored++ }`) | Overstated evidence; the underlying behaviour is correct (my probe confirms real `QueryError`s) | informational |
-| 8 | `duration_ms` is a Go `time.Duration` (nanoseconds on the wire) while the same file warns about exactly that for `budget_ms` | `device/protocol/classifier.go:103` vs `classifier.go:44-46` | Trap for the first non-Go consumer of `stages[].duration_ms`; none exists today | informational |
+| 8 | `duration_ms` is a Go `time.Duration` (nanoseconds on the wire) while the same file warns about exactly that for `budget_ms` | `endpoint/protocol/classifier.go:103` vs `classifier.go:44-46` | Trap for the first non-Go consumer of `stages[].duration_ms`; none exists today | informational |

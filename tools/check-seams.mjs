@@ -42,8 +42,8 @@ const SCHEMA = join(ROOT, 'contracts', 'event-envelope.schema.json');
  */
 const COMPONENTS = [
   {
-    name: 'device/protocol',
-    dir: 'device/protocol',
+    name: 'endpoint/protocol',
+    dir: 'endpoint/protocol',
     seamExtras: {
       // POST /v1/events batch envelope, docs/02-ingest-and-transport.md §5.3
       device_sent_at: 'batch envelope',
@@ -148,8 +148,8 @@ const COMPONENTS = [
     },
   },
   {
-    name: 'device/capture-core',
-    dir: 'device/capture-core',
+    name: 'endpoint/capture-core',
+    dir: 'endpoint/capture-core',
     seamExtras: {
       // policy bundle, docs/01-collectors.md §13.2 - signed policy data, not an envelope
       tenant_hosts: 'policy bundle',
@@ -212,8 +212,8 @@ const COMPONENTS = [
     },
   },
   {
-    name: 'device/capture-spool',
-    dir: 'device/capture-spool',
+    name: 'endpoint/capture-spool',
+    dir: 'endpoint/capture-spool',
     seamExtras: {
       payload: 'spool record (opaque envelope bytes)',
       depth: 'spool stats',
@@ -233,8 +233,8 @@ const COMPONENTS = [
     },
   },
   {
-    name: 'device/classifier-host',
-    dir: 'device/classifier-host',
+    name: 'endpoint/classifier-host',
+    dir: 'endpoint/classifier-host',
     // It legitimately never names an envelope field: docs/01-collectors.md §3.3 gives it bytes
     // and returns labels, deliberately with no identity and no envelope. Verified rather than
     // assumed - if it ever starts naming envelope fields, that is the finding.
@@ -267,8 +267,8 @@ const COMPONENTS = [
     },
   },
   {
-    name: 'services/ingest-api',
-    dir: 'services/ingest-api',
+    name: 'ingestion/ingest-api',
+    dir: 'ingestion/ingest-api',
     // The one validating write path reads field names out of the contract file at runtime rather
     // than declaring them in Go (no generated types had landed when it was written), so it names
     // no envelope field literally. That is reported to the Lead as an integration risk rather
@@ -302,8 +302,8 @@ const COMPONENTS = [
     },
   },
   {
-    name: 'apps/capture-extension',
-    dir: 'apps/capture-extension',
+    name: 'extension',
+    dir: 'extension',
     // The extension receives web-request records and emits an ObservationMessage over native
     // messaging; capture-core mints the envelope, so the extension never names an envelope field.
     envelopeBearingNote:
@@ -514,7 +514,7 @@ function main() {
     }
 
     // 2. A server-assigned field named by a device-side component.
-    if (component.name.startsWith('device/') || component.name.startsWith('apps/')) {
+    if (component.name.startsWith('endpoint/') || component.name === 'extension') {
       for (const f of schema.storedOnly) {
         const places = hits.get(f);
         if (!places) continue;

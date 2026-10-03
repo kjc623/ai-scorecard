@@ -13,7 +13,7 @@ Everything here derives from *Shadow AI Capture — Product Requirements & Engin
 Companion documents: [01-collectors](01-collectors.md) · [02-ingest-and-transport](02-ingest-and-transport.md) ·
 [03-data-platform](03-data-platform.md) · [04-dashboard-and-query](04-dashboard-and-query.md) ·
 [05-platform-delivery](05-platform-delivery.md) · [06-security-and-threat-model](06-security-and-threat-model.md) ·
-[db/schema.sql](../db/schema.sql) · [contracts/event-envelope.schema.json](../contracts/event-envelope.schema.json)
+[database/schema.sql](../database/schema.sql) · [contracts/event-envelope.schema.json](../contracts/event-envelope.schema.json)
 
 ---
 
@@ -435,9 +435,9 @@ pretending".
 |---|---|---|---|
 | `capture-extension` | Device, browser | **TypeScript**, Manifest V3 | The only option in a Chromium sandbox; MV3 APIs are JS/TS |
 | `capture-core` | Device, privileged service | **Go** | One static binary per platform; `net/http` + `crypto/tls` give a complete interception stack; pure-Go process enumeration on both platforms avoids cgo and therefore avoids a per-architecture build matrix; trivial cross-compilation; cheap concurrency for proxy + spool + policy polling |
-| `classifier-host` | Device, sandboxed process | **Rust** → native **and** `wasm32` | One source compiled to both the native service and the extension, so rules and model cannot drift between them; linear-time regex by construction, so attacker-controlled prompt text cannot cause catastrophic backtracking (a denial-of-service vector in a JS `RegExp` implementation) |
+| `classifier-host` | Device, sandboxed process | **Go** → native **and** `js/wasm` | One source compiled to both the native host and the extension's in-page copy, so rules and model cannot drift between them. **Amended by [ADR 0016](adr/0016-the-classifier-host-is-one-go-source-built-for-native-and-js-wasm.md):** §9.1's requirement is byte-identical labels from one source, not a particular language, and the constraints that decided it — no outbound network, no Rust toolchain, Go present and building both targets offline — were not in play when this row was first written |
 | Egress proxy provider, loopback broker, process detector, CLI shim | Inside `capture-core` | **Go** | Same binary; each is a package with its own start/stop/health contract |
-| Document parser | Device, child process | **Rust**, spawned by `classifier-host` | Highest-risk code in the product (R8); isolated in a child with a memory cap and hard timeout so a parser exploit cannot reach model weights or spool keys |
+| Document parser | Device, child process | **Go**, spawned by `classifier-host` | Highest-risk code in the product (R8); isolated in a child with a memory cap and hard timeout so a parser exploit cannot reach model weights or spool keys. Same language as its parent, per [ADR 0016](adr/0016-the-classifier-host-is-one-go-source-built-for-native-and-js-wasm.md) |
 | `ingest-api` | Azure Container Apps | **Go** | Shares generated types with the desktop collector; validation and idempotent write path |
 | `control-api` | Azure Container Apps | **Go** | Enrolment, policy signing, health, grant decisions |
 | `content-vault` | Azure Container Apps, **internal ingress only** | **Go** | The only component holding Key Vault unwrap rights; must not be reachable from devices or browsers |
@@ -796,7 +796,7 @@ they would collapse into each other, fabricating a record that corresponds to no
 enforcement gates of D9), device, device credential, collector state, policy bundle, tool fingerprint
 with per-tenant sanctioned state, notice acknowledgement, retention policy, hold, audit, grant, content
 object, finding review, erasure receipt, reconciliation run, aggregate watermark, coverage snapshot,
-subscription, and the usage ledger. Full DDL in [db/schema.sql](../db/schema.sql).
+subscription, and the usage ledger. Full DDL in [database/schema.sql](../database/schema.sql).
 
 **`mart` — derived and rebuildable.** Tool/label/user/organisation/device aggregates and findings.
 Nothing in `mart` holds human workflow state: review decisions live in `ops.finding_review` keyed by
@@ -842,14 +842,14 @@ are different answers to give a customer, and a system that cannot tell them apa
 
 ### 5.5 How the data model was verified
 
-A schema that has only been read is a claim, not a fact. [db/schema.sql](../db/schema.sql) was executed
-against a real PostgreSQL server and [db/invariants.test.sql](../db/invariants.test.sql) asserts its
+A schema that has only been read is a claim, not a fact. [database/schema.sql](../database/schema.sql) was executed
+against a real PostgreSQL server and [database/invariants.test.sql](../database/invariants.test.sql) asserts its
 properties as the runtime roles rather than as a superuser, because a superuser bypasses row-level
 security and would therefore prove nothing about it:
 
 ```
-psql -v ON_ERROR_STOP=1 -f db/schema.sql
-psql -v ON_ERROR_STOP=1 -f db/invariants.test.sql
+psql -v ON_ERROR_STOP=1 -f database/schema.sql
+psql -v ON_ERROR_STOP=1 -f database/invariants.test.sql
 ```
 
 47 assertions covering the mode boundary, the tenant-isolation guarantee, the dedup ladder,
@@ -868,7 +868,7 @@ it.*
 
 | # | Milestone | What runs at the end | Why here |
 |---|---|---|---|
-| 0 | **Contracts and schema** — envelope JSON Schema, dedup normalisation spec, mode semantics, `db/schema.sql`, generated TS and Go types, conformance tests | A schema and a contract test suite; nothing collects yet | Every component depends on the wire format. Getting this wrong is the most expensive error available, and it is the one the product cannot retrofit |
+| 0 | **Contracts and schema** — envelope JSON Schema, dedup normalisation spec, mode semantics, `database/schema.sql`, generated TS and Go types, conformance tests | A schema and a contract test suite; nothing collects yet | Every component depends on the wire format. Getting this wrong is the most expensive error available, and it is the one the product cannot retrofit |
 | 1 | **Cloud spine with a synthetic emitter** — ingest, control, storage, aggregator, query API, dashboard, one synthetic device | An end-to-end pipeline answering all ten §3.6 questions from generated data, deployed by CI | Proves the whole server tier and the query shapes with zero endpoint risk. If the ten questions cannot be answered here, no collector will fix that |
 | 2 | **Browser extension, M0 then M1** — Chromium only; `webRequest` observation; rules classifier; spool; enrolment; policy | Real classification of real prompts on real machines, with no elevated privilege and no certificate | The highest-value, lowest-privilege mechanism, and the one where content is most reliably obtainable (E1–E3) |
 | 3 | **Honesty layer** — health, coverage snapshots, tamper signals, spool-drop counters, drift and skew reporting, device liveness | A dashboard that reports what is *not* being collected | C22–C25 and R11 are properties, not features. Building them after the collectors means retrofitting truth into a system designed to look successful |
