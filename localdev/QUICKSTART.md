@@ -47,6 +47,31 @@ docker compose -f localdev/harness.compose.yaml run --rm pi
 Pi opens in `/workspace`, which is this repository. Inside Pi, `/mcp` shows whether the gateway is
 connected.
 
+## Start OpenCode in Fedora
+
+The Fedora harness joins the same `scorecard` network and has the same workspace, Docker socket,
+lab environment variables and MCP gateway forwarding. Build it once, then start OpenCode with:
+
+```powershell
+docker compose -f localdev/harness.compose.yaml build opencode
+docker compose -f localdev/harness.compose.yaml run --rm opencode
+```
+
+OpenCode's Docker MCP entry is installed on first start. Its configuration and provider login persist
+in the `opencode-home` volume. To open a Fedora shell instead, run:
+
+```powershell
+docker compose -f localdev/harness.compose.yaml run --rm opencode bash
+```
+
+To use DeepSeek, set its API key in the same PowerShell session before starting OpenCode. Compose
+passes this host variable into the container; keep the key out of the Compose file:
+
+```powershell
+$env:DEEPSEEK_API_KEY = "your-api-key"
+docker compose -f localdev/harness.compose.yaml run --rm opencode
+```
+
 ## What the harness can reach
 
 | Thing | Address from inside the harness |
@@ -56,7 +81,7 @@ connected.
 | `query-api` | `http://query-api:8080` (`$LAB_QUERY_URL`) |
 | PostgreSQL | plain `psql` works; the `PG*` variables are set |
 | Docker | `docker ps`, `docker logs`, `docker compose ... exec` — the host's engine, all containers |
-| MCP gateway | `http://localhost:8811/mcp`, already in Pi's `mcp.json` |
+| MCP gateway | `http://localhost:8811/mcp`, configured for Pi and OpenCode |
 
 From the host the services are on `localhost:8080`, `8081` and `8082`, and PostgreSQL on `5432`.
 
@@ -103,6 +128,7 @@ its login stays in the `pi-home` volume.
 | `localdev/docker-compose.yml` | The lab: services, ports, the `scorecard` network |
 | `localdev/harness.compose.yaml` | The harness containers that join the lab's network |
 | `localdev/harness/pi/` | The Pi image: Dockerfile, entrypoint, MCP config |
+| `localdev/harness/fedora/` | The Fedora image: Dockerfile, entrypoint, OpenCode MCP config |
 | `localdev/harness/mcp-gateway.mjs` | Starts the Docker Desktop MCP gateway for the harnesses |
 | `localdev/.env` | The gateway token and any `LAB_*_PORT` overrides. Not in git; do not delete it while the gateway is running |
 | `localdev/README.md` | How the lab works, in detail |

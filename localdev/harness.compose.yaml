@@ -46,6 +46,7 @@ x-harness: &harness
     OPENAI_API_KEY:
     GEMINI_API_KEY:
     OPENROUTER_API_KEY:
+    DEEPSEEK_API_KEY:
 
 services:
   pi:
@@ -58,6 +59,16 @@ services:
       - pi-home:/home/node/.pi
       - pi-cache:/cache
       - /var/run/docker.sock:/var/run/docker.sock
+  opencode:
+    <<: *harness
+    build:
+      context: harness/fedora
+    image: sac/harness-opencode
+    volumes:
+      - ..:/workspace
+      - opencode-home:/home/opencode
+      - opencode-cache:/cache
+      - /var/run/docker.sock:/var/run/docker.sock
 
 networks:
   scorecard:
@@ -66,3 +77,5 @@ networks:
 volumes:
   pi-home:
   pi-cache:
+  opencode-home:
+  opencode-cache:
