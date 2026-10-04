@@ -156,6 +156,9 @@ export const DETAIL = Object.freeze({
   SHIM_PROFILE_MISSING: 'shim_profile_missing',
   SHIM_CA_BUNDLE_UNREADABLE: 'shim_ca_bundle_unreadable',
   SHIM_NOT_INHERITED: 'shim_not_inherited',
+  // A drain-configured device with no issued credential yet: refuse to mint rather than stamp a
+  // placeholder identity the write path will reject.
+  IDENTITY_UNRESOLVED: 'identity_unresolved',
 });
 
 export const DETAILS = Object.freeze(Object.values(DETAIL).filter(Boolean));

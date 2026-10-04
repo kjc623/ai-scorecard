@@ -210,6 +210,12 @@ const (
 	DetailShimProfileMissing     Detail = "shim_profile_missing"
 	DetailShimCABundleUnreadable Detail = "shim_ca_bundle_unreadable"
 	DetailShimNotInherited       Detail = "shim_not_inherited"
+
+	// Identity. A drain-configured device whose credential has not been issued yet must refuse to
+	// mint an envelope rather than stamp a placeholder identity the write path will reject
+	// (tenant_mismatch). The state is named so the coverage row distinguishes "no credential yet"
+	// from "nothing observed".
+	DetailIdentityUnresolved Detail = "identity_unresolved"
 )
 
 // AllDetails is the closed vocabulary, for validation and for a coverage report that needs to
@@ -230,6 +236,7 @@ var AllDetails = [...]Detail{
 	DetailCredentialExpired,
 	DetailTrustInstallFailed, DetailTrustVerifyFailed,
 	DetailShimProfileMissing, DetailShimCABundleUnreadable, DetailShimNotInherited,
+	DetailIdentityUnresolved,
 }
 
 // Valid reports whether the detail is in the closed vocabulary. An empty detail is valid: a
