@@ -85,6 +85,18 @@ const GATES = [
     run: () => runNode(['tools/check-vocab.mjs']),
   },
   {
+    id: 'installer',
+    title: 'The development installer agrees with the agent, the schema and itself (installer/verify.mjs)',
+    decides:
+      'A configuration variable maps to a capture-core flag that does not exist, the Windows/macOS/Linux renderings disagree about the flag set, the committed generated output drifted from installer/manifest.mjs, or the flags the installer emits are rejected by the real binary. The generated output is checked for drift the way the wire contract is.',
+    run: () => {
+      if (!existsSync(join(ROOT, 'installer', 'manifest.mjs'))) {
+        return { status: 'SKIPPED', why: 'installer/manifest.mjs does not exist yet' };
+      }
+      return runNode(['installer/verify.mjs']);
+    },
+  },
+  {
     id: 'invariants',
     title: 'The six declared invariants, plus the mechanical half of INV-3 and a query-DSL runtime probe',
     decides:

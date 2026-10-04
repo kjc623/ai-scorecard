@@ -341,7 +341,7 @@ CREATE TABLE ops.device (
   -- device without the store holding an identifier that is personal data in its own right.
   -- NULL is permitted: a device may enrol without supplying one.
   hardware_identity_hash text,
-  os               text NOT NULL CHECK (os IN ('windows','macos')),
+  os               text NOT NULL CHECK (os IN ('windows','macos','linux')),
   os_version       text,
   mdm_id           text,
   managed_state    text NOT NULL DEFAULT 'unknown' CHECK (managed_state IN ('managed','unmanaged','unknown')),

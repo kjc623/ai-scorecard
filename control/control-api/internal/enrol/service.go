@@ -116,9 +116,14 @@ func (s *Service) Enrol(ctx context.Context, in Input) (protocol.EnrolmentRespon
 		return protocol.EnrolmentResponse{}, apierr.New(400, apierr.CodeSchemaViolation,
 			"mode must be one of x509 or dpop")
 	}
-	if req.Device.OS != "windows" && req.Device.OS != "macos" {
+	// The closed OS set, kept in step with the ops.device CHECK constraint. Linux is a supported
+	// endpoint platform, not a development accommodation: the agent builds and runs there, and the
+	// enrolment vocabulary names it explicitly so a typo still fails here rather than in the schema.
+	switch req.Device.OS {
+	case "windows", "macos", "linux":
+	default:
 		return protocol.EnrolmentResponse{}, apierr.New(400, apierr.CodeSchemaViolation,
-			"device.os must be windows or macos")
+			"device.os must be windows, macos or linux")
 	}
 
 	var (

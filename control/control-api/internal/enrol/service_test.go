@@ -201,6 +201,41 @@ func TestX509EnrolmentIssuesAVerifiableLeaf(t *testing.T) {
 	}
 }
 
+// TestLinuxEnrolmentIsAccepted pins the third endpoint platform in the closed OS set. Linux is a
+// supported deployment target (database/schema.sql admits it), so the service must not refuse it;
+// this would have caught the constraint and the validator drifting apart.
+func TestLinuxEnrolmentIsAccepted(t *testing.T) {
+	r := newRig(t, activeTenant(tenantA, regionA), regionA)
+	token := r.addToken(t, tenantA)
+	req, _, err := x509Request(token, "hw-linux")
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Device.OS = "linux"
+	req.Device.OSVersion = "6.11.0"
+	resp, err := r.svc.Enrol(context.Background(), enrol.Input{Request: req, HTM: "POST", HTU: htu})
+	if err != nil {
+		t.Fatalf("Enrol(linux): %v", err)
+	}
+	if !store.IsUUID(resp.DeviceID) {
+		t.Fatalf("device_id %q is not a uuid", resp.DeviceID)
+	}
+}
+
+// TestUnknownOSIsRefused keeps the set closed: a value outside it is still a schema violation.
+func TestUnknownOSIsRefused(t *testing.T) {
+	r := newRig(t, activeTenant(tenantA, regionA), regionA)
+	token := r.addToken(t, tenantA)
+	req, _, err := x509Request(token, "hw-unknown")
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Device.OS = "solaris"
+	if _, err := r.svc.Enrol(context.Background(), enrol.Input{Request: req, HTM: "POST", HTU: htu}); err == nil {
+		t.Fatal("an unknown device.os was accepted")
+	}
+}
+
 // TestDPoPEnrolmentStoresTheJWKAndThumbprint is the dpop half: the registered public key is stored
 // and public_key_thumbprint is its RFC 7638 value.
 func TestDPoPEnrolmentStoresTheJWKAndThumbprint(t *testing.T) {

@@ -1,0 +1,9 @@
+#!/bin/sh
+# installer/macos/scripts/preinstall - stop any running daemon before the payload is replaced.
+set -eu
+LABEL=com.shadowaicapture.capture-core
+PLIST="/Library/LaunchDaemons/${LABEL}.plist"
+if [ -f "$PLIST" ]; then
+  launchctl bootout system "$PLIST" 2>/dev/null || launchctl unload "$PLIST" 2>/dev/null || true
+fi
+exit 0

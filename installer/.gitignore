@@ -1,0 +1,7 @@
+# Build output and the local lab. Never committed.
+.stage/
+.lab/
+dist/
+
+# The generated platform artefacts under generated/ ARE committed on purpose: they are the
+# "--check"-able output of installer/manifest.mjs, the way contracts/generated is for the contract.
