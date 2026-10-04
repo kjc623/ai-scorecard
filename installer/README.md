@@ -120,7 +120,10 @@ only header-based dev principals the agent does not send.
 Use the MSI instead when you want the installed-service shape:
 
 ```
-dotnet tool install --global wix        # once
+# WiX, one of:
+#   a) standalone CLI, no .NET SDK: install wix-cli-x64.msi from
+#      https://github.com/wixtoolset/wix/releases   (v5.0.2 asset: wix-cli-x64.msi)
+#   b) .NET tool, needs the .NET SDK 6+:  dotnet tool install --global wix
 pwsh installer/windows/Build-Msi.ps1 -ConfigFile installer/profiles/lab-host.env
 msiexec /i installer/dist/ShadowAICapture.msi /qn
 ```

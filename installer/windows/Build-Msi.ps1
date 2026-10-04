@@ -57,11 +57,14 @@ $msi = Join-Path $out "ShadowAICapture.msi"
 if (-not $wix) {
   Write-Host ""
   Write-Host "Build-Msi.ps1: no WiX compiler found - this host cannot build an MSI." -ForegroundColor Yellow
-  Write-Host "On a Windows host with the WiX v4/v5 .NET tool (dotnet tool install --global wix), run:"
+  Write-Host "Install WiX one of two ways, then re-run this script:"
+  Write-Host "  1) standalone CLI, no .NET SDK: install wix-cli-x64.msi from"
+  Write-Host "     https://github.com/wixtoolset/wix/releases  (v5.0.2 asset: wix-cli-x64.msi)"
+  Write-Host "  2) .NET tool, needs the .NET SDK 6+:  dotnet tool install --global wix"
+  Write-Host "Then, with 'wix' on PATH:"
   Write-Host ""
   Write-Host "  node installer/build.mjs --os windows --arch amd64"
-  Write-Host "  $wix = 'wix'"
-  Write-Host "  & $wix build installer/generated/windows/ShadowAICapture.wxs -arch x64 ``"
+  Write-Host "  wix build installer/generated/windows/ShadowAICapture.wxs -arch x64 ``"
   Write-Host "      -d StageDir='$Stage' -d SacArgs='$sacArgs' -o '$msi'"
   Write-Host ""
   exit 1
