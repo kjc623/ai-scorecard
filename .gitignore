@@ -76,3 +76,13 @@ Thumbs.db
 # Path-anchored patterns, not basenames: a stray copy anywhere else should not be ignored silently.
 extension/tools/extension-key.pem
 extension/tools/extension-key.pub.der
+
+# Local Ensemble runbook: host-specific container names, ports, and patch notes
+# for the OpenCode agent-team setup. Useful on this machine, not a deliverable.
+# (Workspace is mounted as /architecture on the host -> /architecture/ensemble.)
+ensemble/
+
+# Local OpenCode/Fedora/Pi agent harness: host-specific container names, ports and MCP wiring for
+# the agent-team setup. Useful on this machine, not a deliverable. The files stay on disk; they are
+# no longer tracked, so a local edit to an entrypoint no longer shows up as repository drift.
+localdev/harness/
