@@ -69,18 +69,18 @@ The result of step 5, on a working tree, is:
 
 ## The artefacts
 
-**Windows.** `installer/windows/Build-Msi.ps1 -ConfigFile installer/profiles/lab.env` composes the
-service argv from the profile and runs WiX over `generated/windows/ShadowAICapture.wxs`. capture-core
-is registered as a `LocalSystem` service whose arguments are `--service --service-name
-ShadowAICapture` followed by the device argv in the public property `SAC_ARGS`. `--service` makes the
-agent implement the SCM contract itself (it is otherwise a console application), so no external
-service wrapper (NSSM/WinSW) is needed. The service is registered with `Start="auto"` but is **not
-started during install** (a start failure would abort and roll back the whole install); start it with
-`sc.exe start ShadowAICapture` or at the next boot. The documented MDM shape is Intune passing
-command-line properties to `msiexec`, and `SAC_ARGS` is overridable at install time. The WiX source is authored to
-the contract the Linux installer already satisfies, but it is **NOT VERIFIED**: there is no Windows
-and no WiX on the host this was written on, so the script prints the exact commands it would run and
-exits non-zero rather than pretending.
+**Windows.** `installer/windows/Build-Msi.ps1 -ConfigFile installer/profiles/lab.env` stages the
+profile and runs WiX over `generated/windows/ShadowAICapture.wxs`. capture-core is registered as a
+`LocalSystem` service whose arguments are `--service --service-name ShadowAICapture --config-file
+C:\ProgramData\ShadowAICapture\capture-core.env`. `--service` makes the agent implement the SCM
+contract itself (it is otherwise a console application), so no external wrapper (NSSM/WinSW) is
+needed; the MSI installs the enrolment profile as that file, so reconfiguration is a file edit rather
+than an MSI rebuild and the command line carries no secret. The service is registered with
+`Start="auto"` but is **not started during install** (a start failure would abort and roll back the
+whole install); start it with `sc.exe start ShadowAICapture` or at the next boot. The WiX source is
+authored to the contract the Linux installer already satisfies, but it is **NOT VERIFIED**: there is
+no Windows and no WiX on the host this was written on, so the script prints the exact commands it
+would run and exits non-zero rather than pretending.
 
 **macOS.** `installer/macos/build-pkg.sh` stages `/usr/local/opt`, the LaunchDaemon plist and a
 postinstall that seeds the config once and loads the daemon. **NOT VERIFIED** for the same reason:
@@ -94,9 +94,11 @@ worse than one that stops.
 
 ## How the agent knows where to send data
 
-`capture-core` resolves flags and nothing else, so the configuration file is turned into argv by a
-generated wrapper (`capture-core-run`) on Linux/macOS, and into `SAC_ARGS` on Windows. The one flag
-that decides the destination is `--device-endpoint`, the regional Application Gateway FQDN. The
+`capture-core` reads the enrolment profile directly with `--config-file` (a `KEY=VALUE` file in the
+same `SAC_*` vocabulary the manifest lists), so the flag names live in one place and a secret or a
+path with spaces needs no quoting. The generated wrapper on Linux/macOS and the Windows service both
+just point the agent at that file. The one flag that decides the destination is `--device-endpoint`,
+the regional Application Gateway FQDN. The
 per-tenant binding is not in the artefact: the MDM delivers the FQDN, the credential mode
 (`x509`/`dpop`), the pinned CA set and a short-lived, single-use enrolment token as the **enrolment
 profile** ([docs/05 §6.2](../docs/05-platform-delivery.md)). The device calls `POST /v1/enrol`, and

@@ -3,9 +3,10 @@
   Build a development ShadowAICapture.msi from a staged Windows payload.
 
 .DESCRIPTION
-  The Windows half of the platform contract (docs/05-platform-delivery.md §6.1). It composes the
-  service argv from a config file using the same manifest as the Linux and macOS installers, then
-  runs the WiX v4 compiler over installer/generated/windows/ShadowAICapture.wxs.
+  The Windows half of the platform contract (docs/05-platform-delivery.md §6.1). It stages the
+  enrolment profile (capture-core.env) and runs the WiX v4+ compiler over
+  installer/generated/windows/ShadowAICapture.wxs, which installs it and registers the service that
+  reads it via --config-file.
 
   NOT VERIFIED ON THIS HOST: there is no Windows, no WiX and no signtool on the machine this was
   written on. With no `wix` on PATH the script prints the exact commands it would run and exits
@@ -39,16 +40,17 @@ foreach ($f in @("bin\capture-core.exe", "bin\classifier-host.exe", "bin\capture
   }
 }
 
-# The argv baked in as the SAC_ARGS default. A config file is optional: without one the MSI ships
-# with an empty argv and the operator passes SAC_ARGS at install time.
-$sacArgs = ""
-if ($ConfigFile -ne "") {
-  $cfg = (Resolve-Path (Join-Path $Root $ConfigFile)).Path
-  $sacArgs = (& node (Join-Path $Root "installer/render.mjs") --args $cfg --os windows) | Out-String
-  $sacArgs = $sacArgs.Trim()
-  Write-Host "SAC_ARGS default (from $ConfigFile):"
-  Write-Host "  $sacArgs"
+# The endpoint configuration. The MSI installs etc\capture-core.env and the service reads it via
+# --config-file, so the profile is a file, not a command line: a path or secret with spaces needs no
+# quoting, and it is the same file the console wrapper (capture-core-run.cmd) reads. With -ConfigFile
+# it is that profile; otherwise the example template is installed as the starting point.
+$configSource = if ($ConfigFile -ne "") {
+  (Resolve-Path (Join-Path $Root $ConfigFile)).Path
+} else {
+  Join-Path $Stage 'etc\capture-core.env.example'
 }
+Copy-Item -Force $configSource (Join-Path $Stage 'etc\capture-core.env')
+Write-Host "installs configuration from: $configSource"
 
 # Find the WiX CLI three ways, because `dotnet tool install --global wix` puts wix.exe in
 # %USERPROFILE%\.dotnet\tools, which is not always on the PATH of the shell that runs this script.
@@ -75,15 +77,10 @@ if (-not $wix) {
   Write-Host ""
   Write-Host "  node installer/build.mjs --os windows --arch amd64"
   Write-Host "  wix build installer/generated/windows/ShadowAICapture.wxs -arch x64 ``"
-  Write-Host "      -d StageDir='$Stage' -d SacArgs='$sacArgs' -o '$msi'"
+  Write-Host "      -d StageDir='$Stage' -o '$msi'"
   Write-Host ""
   exit 1
 }
-
-# The preprocessor value is substituted into the XML attribute Value="$(var.SacArgs)", so a raw
-# double quote would close the attribute and a raw '&' or '<' would not parse. XML-encode the argv
-# first; the XML parser decodes it back to the quotes a Windows service argv needs for paths.
-$sacArgsPre = $sacArgs -replace '&', '&amp;' -replace '<', '&lt;' -replace '>', '&gt;' -replace '"', '&quot;'
 
 # An argument array (splatted) keeps values that contain spaces as one argument on every PowerShell.
 $wixArgs = @(
@@ -92,7 +89,7 @@ $wixArgs = @(
   '-arch', 'x64'
 )
 if ($EulaId -ne '') { $wixArgs += @('-acceptEula', $EulaId) }
-$wixArgs += @('-d', "StageDir=$Stage", '-d', "SacArgs=$sacArgsPre", '-o', $msi)
+$wixArgs += @('-d', "StageDir=$Stage", '-o', $msi)
 $buildOut = & $wix @wixArgs 2>&1
 $buildCode = $LASTEXITCODE
 $buildOut | ForEach-Object { Write-Host $_ }

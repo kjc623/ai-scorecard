@@ -14,7 +14,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { CONFIG, LAYOUT, PAYLOAD, PRODUCT, configFor, expandDefault } from './manifest.mjs';
+import { CONFIG, LAYOUT, PRODUCT, configFor, expandDefault } from './manifest.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = join(ROOT, 'installer', 'generated');
@@ -109,15 +109,15 @@ function envExample() {
 }
 
 /**
- * The POSIX wrapper. capture-core resolves flags and nothing else, so the config file must become
- * argv. Go bool flags must be `--flag=value` (the flag package does not consume a separate token),
- * which is the one line worth getting right on all three platforms.
+ * The POSIX wrapper. It no longer maps the profile to flags itself: the agent reads the file with
+ * --config-file, so the flag names live in one place (capture-core) instead of three, and a path or
+ * secret with spaces needs no quoting.
  */
 function shWrapper(layout) {
-  const lines = [
+  return [
     '#!/bin/sh',
     comment(GENERATED_BY),
-    comment('Source the enrolment profile and exec capture-core with the flags it resolves.'),
+    comment('Exec capture-core with the enrolment profile (the agent reads it via --config-file).'),
     'set -eu',
     '',
     `CONFIG="\${SAC_CONFIG_FILE:-${layout.configFile}}"`,
@@ -125,8 +125,6 @@ function shWrapper(layout) {
     '  echo "capture-core-run: configuration file $CONFIG not found" >&2',
     '  exit 1',
     'fi',
-    '# shellcheck source=/dev/null',
-    '. "$CONFIG"',
     '',
     `BIN="\${SAC_BINDIR:-${layout.bindir}}/capture-core"`,
     'if [ ! -x "$BIN" ]; then',
@@ -134,44 +132,28 @@ function shWrapper(layout) {
     '  exit 1',
     'fi',
     '',
-    'set --',
-  ];
-  for (const c of configFor('linux')) {
-    if (c.kind === 'bool') {
-      lines.push(`[ -n "\${${c.env}:-}" ] && set -- "$@" "${c.flag}=\${${c.env}}"`);
-    } else {
-      lines.push(`[ -n "\${${c.env}:-}" ] && set -- "$@" ${c.flag} "\${${c.env}}"`);
-    }
-  }
-  lines.push('', 'exec "$BIN" "$@"', '');
-  return lines.join('\n');
+    'exec "$BIN" --config-file "$CONFIG"',
+    '',
+  ].join('\n');
 }
 
-/** The Windows console helper, for a foreground run while developing. The service uses SAC_ARGS. */
+/** The Windows console helper, for a foreground run. The service uses the same file via --config-file. */
 function cmdWrapper(layout) {
-  const lines = [
+  return [
     '@echo off',
     'rem ' + GENERATED_BY,
-    'rem Source the enrolment profile and exec capture-core with the flags it resolves.',
-    'setlocal enableextensions enabledelayedexpansion',
+    'rem Exec capture-core with the enrolment profile (the agent reads it via --config-file).',
+    'setlocal enableextensions',
     `set "CONFIG=%SAC_CONFIG_FILE%"`,
     `if not defined CONFIG set "CONFIG=${layout.configFile}"`,
     'if not exist "%CONFIG%" (',
     '  echo capture-core-run: configuration file %CONFIG% not found 1>&2',
     '  exit /b 1',
     ')',
-    'for /f "usebackq tokens=1,* delims==" %%A in (`findstr /b /v "#" "%CONFIG%"`) do set "%%A=%%B"',
-    'set "ARGS="',
-  ];
-  for (const c of configFor('windows')) {
-    if (c.kind === 'bool') {
-      lines.push(`if defined ${c.env} set "ARGS=!ARGS! ${c.flag}=!${c.env}!"`);
-    } else {
-      lines.push(`if defined ${c.env} set "ARGS=!ARGS! ${c.flag} "!${c.env}!""`);
-    }
-  }
-  lines.push(`"${layout.bindir}\\capture-core.exe" %ARGS%`, 'exit /b %ERRORLEVEL%', '');
-  return lines.join('\n');
+    `"${layout.bindir}\\capture-core.exe" --config-file "%CONFIG%"`,
+    'exit /b %ERRORLEVEL%',
+    '',
+  ].join('\n');
 }
 
 /** The systemd unit. Restart-on-failure with a start limit, per cmd/capture-core/README.md §3.5. */
@@ -257,33 +239,30 @@ function launchdPlist(layout) {
  * no Windows on the host this was written on; Build-Msi.ps1 says so and refuses to pretend.
  */
 function wixSource(layout) {
-  // capture-core.exe is installed by the service component below: a ServiceInstall must live in a
-  // component whose KeyPath is the executable, so including it in the payload loop as well would
-  // install the same file twice (and, because the payload loop targeted INSTALLFOLDER while the
-  // service targets BINFOLDER, in two places).
-  const payloadComponents = PAYLOAD.filter((p) => p.name !== 'capture-core');
-  // The stage filename is platform-specific: executables get `.exe`, the console wrapper is `.cmd`,
-  // and the env template keeps its name. `bin`/`etc` is the stage subdirectory the file lives in.
-  const stageName = (p) => (p.name === 'capture-core-run' ? 'capture-core-run.cmd' : p.exe ? `${p.name}.exe` : p.name);
-  const stageDir = (p) => (p.dest === 'etc' ? 'etc' : 'bin');
-  const render = payloadComponents.map((p) => {
-    const dir = p.dest === 'etc' ? 'CONFIGFOLDER' : 'BINFOLDER';
-    return [
-      `      <Component Id="Cmp_${p.name.replace(/[^A-Za-z0-9]/g, '_')}" Directory="${dir}" Guid="*">`,
-      `        <File Id="Fil_${p.name.replace(/[^A-Za-z0-9]/g, '_')}" Source="$(var.StageDir)\\${stageDir(p)}\\${stageName(p)}" KeyPath="yes" />`,
+  const component = (id, dir, sub, file) =>
+    [
+      `      <Component Id="Cmp_${id}" Directory="${dir}" Guid="*">`,
+      `        <File Id="Fil_${id}" Source="$(var.StageDir)\\${sub}\\${file}" KeyPath="yes" />`,
       '      </Component>',
     ].join('\n');
-  }).join('\n');
+  const binComponents = [
+    component('classifier_host', 'BINFOLDER', 'bin', 'classifier-host.exe'),
+    component('capture_core_run', 'BINFOLDER', 'bin', 'capture-core-run.cmd'),
+  ].join('\n');
+  const configComponent = component('capture_core_config', 'CONFIGFOLDER', 'etc', 'capture-core.env');
+  const componentRefs = ['Cmp_Service', 'Cmp_classifier_host', 'Cmp_capture_core_run', 'Cmp_capture_core_config']
+    .map((id) => `      <ComponentRef Id="${id}" />`)
+    .join('\n');
 
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!-- ' + GENERATED_BY + ' -->',
     '<!--',
-    '  Development MSI source (docs/05-platform-delivery.md §6.1). It carries code only; the',
-    '  per-tenant enrolment profile is delivered by the customer MDM. The service argv is the public',
-    '  property SAC_ARGS; pass it on the msiexec command line, or let Build-Msi.ps1 compose it from a',
-    '  config file. (An XML comment cannot contain a double hyphen, so the example argv lives in',
-    '  installer/README.md instead of here.)',
+    '  Development MSI source (docs/05-platform-delivery.md section 6.1). It installs the binaries, the',
+    '  console wrapper and the enrolment profile (capture-core.env). The Windows service runs',
+    '  capture-core in service mode and reads that file through the config-file flag, so no command',
+    '  line is built from the profile and a path or secret with spaces needs no quoting. (An XML',
+    '  comment cannot contain a double hyphen; keep it out of comments here.)',
     '-->',
     '<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">',
     `  <Package Name="${PRODUCT.displayName}" Manufacturer="${PRODUCT.manufacturer}"`,
@@ -294,8 +273,6 @@ function wixSource(layout) {
     '',
     '    <Property Id="ARPNOMODIFY" Value="1" />',
     '    <Property Id="ARPNOREPAIR" Value="1" />',
-    '    <!-- The whole device argv, composed from a config file by Build-Msi.ps1 and overridable at install. -->',
-    '    <Property Id="SAC_ARGS" Value="$(var.SacArgs)" Secure="yes" />',
     '',
     '    <StandardDirectory Id="ProgramFiles64Folder">',
     '      <Directory Id="INSTALLFOLDER" Name="ShadowAICapture">',
@@ -310,23 +287,25 @@ function wixSource(layout) {
     '    </StandardDirectory>',
     '',
     '    <DirectoryRef Id="BINFOLDER">',
-    render,
+    binComponents,
     `      <Component Id="Cmp_Service" Directory="BINFOLDER" Guid="*">`,
     '        <File Id="Fil_ServiceExe" Source="$(var.StageDir)\\bin\\capture-core.exe" KeyPath="yes" />',
     '        <ServiceInstall Id="SvcCaptureCore" Name="ShadowAICapture" DisplayName="Shadow AI Capture"',
     '                        Description="Observes AI submissions on this device and drains them to the tenant ingress."',
     '                        Type="ownProcess" Start="auto" ErrorControl="normal" Account="LocalSystem"',
-    '                        Arguments="--service --service-name ShadowAICapture [SAC_ARGS]" />',
+    '                        Arguments="--service --service-name ShadowAICapture --config-file C:\\ProgramData\\ShadowAICapture\\capture-core.env" />',
     '        <!-- Register with Start="auto" (starts at boot) but do NOT start during install: a service',
     '             that fails to start would abort the whole install transaction and roll the files back,',
     '             leaving nothing to diagnose. Start it with: sc.exe start ShadowAICapture -->',
     '        <ServiceControl Id="SvcCaptureCoreControl" Name="ShadowAICapture" Stop="both" Remove="uninstall" Wait="yes" />',
     '      </Component>',
     '    </DirectoryRef>',
+    '    <DirectoryRef Id="CONFIGFOLDER">',
+    configComponent,
+    '    </DirectoryRef>',
     '',
     '    <Feature Id="Main" Title="Shadow AI Capture" Level="1">',
-    '      <ComponentRef Id="Cmp_Service" />',
-    payloadComponents.map((p) => `      <ComponentRef Id="Cmp_${p.name.replace(/[^A-Za-z0-9]/g, '_')}" />`).join('\n'),
+    componentRefs,
     '    </Feature>',
     '  </Package>',
     '</Wix>',

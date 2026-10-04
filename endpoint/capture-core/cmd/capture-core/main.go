@@ -89,6 +89,17 @@ type runMode struct {
 func parseFlags(args []string) (Config, runMode, error) {
 	cfg := defaultConfig()
 	var mode runMode
+	var configFile string
+
+	// A --config-file profile contributes flags before the command line, so a flag the operator also
+	// passed wins. (The Windows service is configured entirely by such a file; see service_windows.go.)
+	if path := prescanFlagValue(args, "config-file"); path != "" {
+		fileArgs, err := configArgsFromFile(path)
+		if err != nil {
+			return cfg, mode, err
+		}
+		args = append(fileArgs, args...)
+	}
 
 	fs := flag.NewFlagSet("capture-core", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -147,6 +158,9 @@ func parseFlags(args []string) (Config, runMode, error) {
 	fs.BoolVar(&mode.selftest, "selftest", false, "run the end-to-end self test (service, golden frames, health, shutdown) and exit non-zero on failure")
 	fs.BoolVar(&mode.nativeHost, "native-host", false, "run the native-messaging host on stdin/stdout")
 	fs.StringVar(&mode.nativeFrames, "native-frames", "", "directory of golden frame case files to run through the real native-messaging framing, then exit")
+	// A KEY=VALUE profile in the SAC_* vocabulary. It supplies flags; an explicitly passed flag wins.
+	fs.StringVar(&configFile, "config-file", "", "read a KEY=VALUE SAC_* configuration file (installer/manifest.mjs is the catalogue); command-line flags win")
+
 	// Windows service. --service is accepted on every platform so the flag set is one shape; a
 	// non-Windows binary refuses it at run time rather than at parse time.
 	fs.BoolVar(&mode.service, "service", false, "run under the Windows Service Control Manager (Windows only)")

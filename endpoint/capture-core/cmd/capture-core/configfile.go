@@ -1,0 +1,104 @@
+package main
+
+import (
+	"bufio"
+	"fmt"
+	"os"
+	"strings"
+)
+
+// configEnvFlags maps the SAC_* names in the enrolment profile to the capture-core flag each one
+// sets. It is the same catalogue installer/manifest.mjs declares, and installer/verify.mjs fails if
+// the two disagree. --config-file reads a file in this vocabulary, so a Windows service can be
+// configured by a file the MSI installs instead of by a command line built from it: paths with
+// spaces are safe, and reconfiguration is a file edit rather than an MSI rebuild.
+var configEnvFlags = map[string]string{
+	"SAC_TENANT_ID":          "--tenant-id",
+	"SAC_DEVICE_ID":          "--device-id",
+	"SAC_USER_REF":           "--user-ref",
+	"SAC_POPULATION":         "--population",
+	"SAC_SPOOL_DIR":          "--spool-dir",
+	"SAC_SPOOL_KEY":          "--spool-key",
+	"SAC_SPOOL_BOUNDS":       "--spool-bounds",
+	"SAC_RETENTION":          "--retention",
+	"SAC_HEALTH_FILE":        "--health-file",
+	"SAC_BUNDLE":             "--bundle",
+	"SAC_POLICY_KEY":         "--policy-key",
+	"SAC_POLICY_KEY_ID":      "--policy-key-id",
+	"SAC_CLASSIFIER_ADDRESS": "--classifier-address",
+	"SAC_CLASSIFIER_BUDGET":  "--classifier-budget",
+	"SAC_PROXY_TLS":          "--proxy-tls",
+	"SAC_PROXY_TLS_LISTEN":   "--proxy-tls-listen",
+	"SAC_PROXY_TLS_CANARY":   "--proxy-tls-canary",
+	"SAC_PROXY_LOOPBACK":     "--proxy-loopback",
+	"SAC_PROC_DETECT":        "--proc-detect",
+	"SAC_DRAIN_DEADLINE":     "--drain-deadline",
+	"SAC_ATTACHMENT_CAP":     "--attachment-cap",
+	"SAC_DEVICE_ENDPOINT":    "--device-endpoint",
+	"SAC_AUTH_MODE":          "--auth-mode",
+	"SAC_CREDENTIAL_FILE":    "--credential-file",
+	"SAC_ENROLMENT_TOKEN":    "--enrolment-token",
+	"SAC_CA_FILE":            "--ca-file",
+	"SAC_MDM_ID":             "--mdm-id",
+	"SAC_BACKOFF_BASE":       "--backoff-base",
+	"SAC_BACKOFF_CAP":        "--backoff-cap",
+	"SAC_LOG_LEVEL":          "--log-level",
+	"SAC_LOG_FORMAT":         "--log-format",
+}
+
+// configArgsFromFile reads a KEY=VALUE profile and returns the equivalent flag list. Blank lines and
+// lines starting with '#' are ignored. An unknown key is an error rather than a silent no-op, so a
+// typo cannot look configured; the value is everything after the first '=', taken as-is so a secret
+// or a path with spaces needs no quoting.
+func configArgsFromFile(path string) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("config file: %w", err)
+	}
+	defer f.Close()
+
+	var out []string
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	line := 0
+	for sc.Scan() {
+		line++
+		s := strings.TrimSpace(sc.Text()) // also strips a trailing CR from a CRLF file
+		if s == "" || strings.HasPrefix(s, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(s, "=")
+		if !ok {
+			return nil, fmt.Errorf("config file %s:%d: line is not KEY=VALUE", path, line)
+		}
+		flag, known := configEnvFlags[strings.TrimSpace(key)]
+		if !known {
+			return nil, fmt.Errorf("config file %s:%d: unknown key %q", path, line, strings.TrimSpace(key))
+		}
+		out = append(out, flag, value)
+	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("config file: %w", err)
+	}
+	return out, nil
+}
+
+// prescanFlagValue finds a flag's value before the flag set is built, so --config-file can be read
+// and its flags placed ahead of the command line (which then wins on any duplicate). It understands
+// --name value, --name=value and the single-dash spellings.
+func prescanFlagValue(args []string, name string) string {
+	for i, a := range args {
+		for _, prefix := range []string{"--", "-"} {
+			if a == prefix+name {
+				if i+1 < len(args) {
+					return args[i+1]
+				}
+				return ""
+			}
+			if strings.HasPrefix(a, prefix+name+"=") {
+				return strings.TrimPrefix(a, prefix+name+"=")
+			}
+		}
+	}
+	return ""
+}

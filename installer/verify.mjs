@@ -84,22 +84,25 @@ const cmdWrapper = readFileSync(join(ROOT, 'installer/generated/windows/capture-
 const wxs = readFileSync(join(ROOT, 'installer/generated/windows/ShadowAICapture.wxs'), 'utf8');
 const envExample = readFileSync(join(ROOT, 'installer/generated/capture-core.env.example'), 'utf8');
 
-function flagsIn(text) {
-  return new Set([...text.matchAll(/--([a-z0-9-]+)/g)].map((m) => m[1]));
-}
-function sameSet(a, b) {
-  return a.size === b.size && [...a].every((x) => b.has(x));
-}
-const linuxExpected = new Set(configFor('linux').map((c) => c.flag.replace(/^--/, '')));
-const winExpected = new Set(configFor('windows').map((c) => c.flag.replace(/^--/, '')));
-check('the Linux wrapper carries exactly the Linux flag set', sameSet(flagsIn(linuxWrapper), linuxExpected), `${flagsIn(linuxWrapper).size} flags`);
-check('the Windows console wrapper carries exactly the Windows flag set', sameSet(flagsIn(cmdWrapper), winExpected), `${flagsIn(cmdWrapper).size} flags`);
+check('the Linux wrapper execs capture-core with --config-file', /--config-file/.test(linuxWrapper));
+check('the Windows console wrapper execs capture-core with --config-file', /--config-file/.test(cmdWrapper));
 check(
-  'the WiX source registers the service in --service mode with the SAC_ARGS argv',
-  /ServiceInstall[\s\S]*Arguments="--service[^"]*\[SAC_ARGS\]"/.test(wxs),
-  'ServiceInstall Arguments should start --service and end [SAC_ARGS]',
+  'the WiX source registers the service in --service mode reading the config file',
+  /ServiceInstall[\s\S]*Arguments="--service[^"]*--config-file[^"]*capture-core\.env"/.test(wxs),
+  'ServiceInstall Arguments should be --service ... --config-file ...capture-core.env',
 );
-check('the WiX default argv is a build-time variable, overridable at install', wxs.includes('$(var.SacArgs)') && wxs.includes('Id="SAC_ARGS"'));
+
+// The agent owns the SAC_* -> flag catalogue now (--config-file), so the manifest must not drift
+// from it: the installer gate fails if either side lists a name the other does not.
+const configGo = readFileSync(join(ROOT, 'endpoint/capture-core/cmd/capture-core/configfile.go'), 'utf8');
+const goCatalogue = new Map([...configGo.matchAll(/"(SAC_[A-Z0-9_]+)"\s*:\s*"(--[a-z0-9-]+)"/g)].map((m) => [m[1], m[2]]));
+const catalogueDrift = CONFIG.filter((c) => goCatalogue.get(c.env) !== c.flag).map((c) => `${c.env}->${c.flag}`);
+const catalogueExtra = [...goCatalogue.keys()].filter((k) => !CONFIG.some((c) => c.env === k));
+check(
+  'the agent config-file catalogue matches the installer manifest',
+  catalogueDrift.length === 0 && catalogueExtra.length === 0,
+  [...catalogueDrift, ...catalogueExtra].join(', ') || `${goCatalogue.size} variables`,
+);
 const missingEnv = CONFIG.filter((c) => !envExample.includes(`${c.env}=`));
 check('the generated env example carries every variable', missingEnv.length === 0, missingEnv.map((c) => c.env).join(', ') || `${CONFIG.length} variables`);
 const hasSh = spawnSync('sh', ['-c', 'true']).status === 0;

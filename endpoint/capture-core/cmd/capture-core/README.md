@@ -86,6 +86,7 @@ assembled into a partial file.
 | `--health-file`, `--health-interval` | the health channel, appended as JSON lines |
 | `--attachment-cap` | the policy cap on one attachment manifest, checked before any byte moves |
 | `--device-endpoint`, `--auth-mode`, `--credential-file`, `--enrolment-token`, `--ca-file`, `--mdm-id`, `--backoff-base`, `--backoff-cap` | the device-to-cloud drain (ADR 0020): the ingress base URL, `x509`\|`dpop`, the sealed-credential path, the one-shot enrolment token, the pinned CA set, the MDM device id (hardware-identity seed), and the retry backoff bounds. An empty `--device-endpoint` disables the drain |
+| `--config-file` | read a `KEY=VALUE` profile in the `SAC_*` vocabulary (`installer/manifest.mjs` is the catalogue); it supplies flags and an explicitly passed flag wins. The platform wrappers and the Windows service use it, so configuration is a file rather than a command line and a secret or a path with spaces needs no quoting |
 | `--print-config`, `--dry-run` | `--print-config` resolves and validates everything, prints it and exits; `--dry-run` builds the service graph, starts nothing (no §3.5 step runs), prints one health snapshot and waits for the stop signal |
 | `--work-dir`, `--keep-work-dir` | the selftest work directory (default OS temp, removed on exit, success or failure) |
 | `--log-format`, `--log-level` | `json` (default) or `text`; `debug`, `info`, `warn`, `error` |
@@ -97,7 +98,10 @@ implements the SCM contract directly (`service_windows.go` — a `SERVICE_TABLE_
 control handler), reports `START_PENDING` and then `RUNNING` only once the agent graph is up, and
 shuts down in §3.5 order on a stop or shutdown control. The installer registers it as a
 **LocalSystem** service (the trust store and system proxy are machine scope) with automatic start,
-so no external wrapper (NSSM/WinSW) is required. Recovery / restart-on-failure is the SCM's action;
+so no external wrapper (NSSM/WinSW) is required. It is configured by a file, not a command line: the
+installer puts the enrolment profile at `%ProgramData%\ShadowAICapture\capture-core.env` and the
+service points at it with `--config-file`, so a secret or a path with spaces needs no quoting and
+reconfiguration is a file edit plus a service restart. Recovery / restart-on-failure is the SCM's action;
 no recovery action may restart in a tight loop, because §3.5 requires a crash loop to stop and report
 `absent` with the loop count. Without `--service` the binary is a console application that runs in the
 foreground and stops on Ctrl-C. `--service` is Windows-only: a non-Windows binary refuses it with a
