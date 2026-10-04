@@ -417,6 +417,11 @@ func (b *Bundle) Validate() error {
 	if b.Interception.ProxyListen != "" && !validHostPort(b.Interception.ProxyListen) {
 		return fmt.Errorf("policy: interception proxy_listen %q is not a usable host:port", b.Interception.ProxyListen)
 	}
+	// A malformed canary is not a rejection of interception, but it silently degrades the §5.2
+	// probe, so the bundle that names it must be well formed rather than fail at probe time.
+	if b.Interception.ProxyCanary != "" && !validHostPort(b.Interception.ProxyCanary) {
+		return fmt.Errorf("policy: interception proxy_canary %q is not a usable host:port", b.Interception.ProxyCanary)
+	}
 	if b.CLIShim.ProxyAddr != "" && !validHostPort(b.CLIShim.ProxyAddr) {
 		return fmt.Errorf("policy: cli_shim proxy_addr %q is not a usable host:port", b.CLIShim.ProxyAddr)
 	}

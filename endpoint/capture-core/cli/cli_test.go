@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"os"
 	"os/exec"
@@ -465,5 +466,26 @@ func TestNameAndSequence(t *testing.T) {
 	seq := p.Sequence()
 	if len(seq) == 0 || seq[0] != "write:ca-bundle" {
 		t.Fatalf("unexpected sequence: %v", seq)
+	}
+}
+
+// A Node bootstrap path with a space cannot be expressed in NODE_OPTIONS (Node splits on
+// whitespace and does not quote), so Start must refuse it rather than write a profile whose
+// require hook silently fails to load.
+func TestStartRefusesNodeBootstrapPathWithWhitespace(t *testing.T) {
+	root := testRootPEM(t)
+	dir := filepath.Join(t.TempDir(), "has space")
+	p := New(Config{
+		ManagedDir:  dir,
+		ProxyAddr:   "127.0.0.1:8843",
+		NodeRequire: true,
+		RootCAPEM:   root,
+		Clock:       time.Now,
+	})
+	if err := p.Start(context.Background()); err == nil {
+		t.Fatal("Start accepted a Node bootstrap path containing whitespace")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "ca-bundle.pem")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a failed Start left the CA bundle behind: %v", err)
 	}
 }

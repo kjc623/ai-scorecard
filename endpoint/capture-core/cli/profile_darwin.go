@@ -19,8 +19,10 @@ const (
 	zshenvEnd   = "# <<< sac-shim-end"
 )
 
-// defaultManagedDir is the machine-scope directory for the shim's files.
-func defaultManagedDir() string { return "/Library/Application Support/shadow-ai-capture" }
+// defaultManagedDir is the machine-scope directory for the shim's files. It deliberately has no
+// spaces: the Node bootstrap is wired through NODE_OPTIONS, whose parser splits on whitespace and
+// does not support quoting a path (so /Library/Application Support would break the require hook).
+func defaultManagedDir() string { return "/var/db/shadow-ai-capture" }
 
 // defaultProfilePath is the managed profile inside ManagedDir, sourced from /etc/zshenv.
 func defaultProfilePath(dir string) string {

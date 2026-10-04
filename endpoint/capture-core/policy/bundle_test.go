@@ -101,9 +101,17 @@ func TestBundle_ValidateProxyAndCLIShim(t *testing.T) {
 	// Accept: a well-formed proxy listen address and shim target with a closed-set runtime list.
 	b := testBundle("42")
 	b.Interception.ProxyListen = "127.0.0.1:8843"
+	b.Interception.ProxyCanary = "api.anthropic.com:443"
 	b.CLIShim = CLIShimPolicy{Enabled: true, ProxyAddr: "127.0.0.1:8843", Runtimes: []string{"go", "node", "python"}}
 	if err := b.Validate(); err != nil {
 		t.Fatalf("a well-formed proxy/shim was rejected: %v", err)
+	}
+
+	// Reject: a proxy_canary that is not host:port (it would silently degrade the §5.2 probe).
+	badCanary := testBundle("42")
+	badCanary.Interception.ProxyCanary = "no-port-here"
+	if err := badCanary.Validate(); err == nil {
+		t.Fatal("a malformed proxy_canary was accepted")
 	}
 
 	// Reject: a proxy_listen that is not host:port.

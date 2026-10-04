@@ -455,7 +455,17 @@ func (p *Provider) ApplyPolicy(b policy.Bundle) error {
 		}
 		p.step("systemproxy.Restore")
 	}
-	// 3. then report absent detail=killed (the health row reads p.killed).
+	// 3. then remove the trusted root (§5.2: removal is as reliable as installation). The kill
+	// switch is exactly when a device must stop trusting the interception authority, so leaving
+	// the root behind would contradict the property. The manager is idempotent enough to report a
+	// benign remove error, which is logged and not escalated.
+	if p.cfg.TrustRoot != nil {
+		if err := p.cfg.TrustRoot.Remove(context.Background()); err != nil {
+			p.cfg.Log.Printf("tlsproxy: kill switch could not remove the trusted root: %v", err)
+		}
+		p.step("trustroot.Remove")
+	}
+	// 4. then report absent detail=killed (the health row reads p.killed).
 	p.step("health:absent:" + string(protocol.DetailKilled))
 	return nil
 }

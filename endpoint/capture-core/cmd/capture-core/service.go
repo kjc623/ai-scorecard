@@ -129,6 +129,14 @@ func newService(ctx context.Context, cfg Config, log *slog.Logger) (*service, er
 	if err != nil {
 		return nil, err
 	}
+	// A CA certificate without its key can be trusted and exported (the shim) but cannot mint
+	// leaves, so it is not an interceptor CA. The bundle carries only the public root by design:
+	// the private half is delivered as --ca-key. Any feature that needs a working interception
+	// root must have the full pair, or it would point clients at a proxy that cannot serve them.
+	caPair := len(caCertPEM) > 0 && len(caKeyPEM) > 0
+	if (cfg.TrustInstall || cfg.CLIShim) && !caPair {
+		return nil, errors.New("--trust-install and --cli-shim need the full per-device CA key pair: set --ca-key plus --ca-cert (or a bundle carrying interception.root_ca_pem); a bundle root without its key cannot mint leaves")
+	}
 	if cfg.TrustInstall {
 		s.trustMgr = trust.New(trust.Config{
 			OS:    trust.HostOS(),
@@ -153,8 +161,12 @@ func newService(ctx context.Context, cfg Config, log *slog.Logger) (*service, er
 			CanaryHost: canaryHost(canary),
 			CanaryPort: canaryPort(canary),
 			BodyCap:    bodyCapFrom(s.currentBundle()),
-			CACertPEM:  caCertPEM,
-			CAKeyPEM:   caKeyPEM,
+		}
+		// Pass the pair only when it is complete; with no pair the provider mints an ephemeral CA
+		// (the pre-existing behaviour). Passing a cert without a key would make it refuse to start.
+		if caPair {
+			tlsCfg.CACertPEM = caCertPEM
+			tlsCfg.CAKeyPEM = caKeyPEM
 		}
 		if s.trustMgr != nil {
 			tlsCfg.TrustRoot = s.trustMgr

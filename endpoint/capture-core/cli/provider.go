@@ -194,6 +194,15 @@ func (p *Provider) Start(ctx context.Context) error {
 	}
 	p.mu.Unlock()
 
+	// Node's NODE_OPTIONS parser splits on whitespace and does not support quoting a value, so a
+	// bootstrap path with a space would be silently mangled into a failed require (and Node may
+	// refuse to start). Refuse the configuration with a named cause instead of writing a profile
+	// that cannot work.
+	if p.cfg.NodeRequire && strings.ContainsAny(p.paths.node, " \t") {
+		p.counters.Add(protocol.CounterErrors)
+		return fmt.Errorf("cli: NODE_OPTIONS cannot express the Node bootstrap path %q because it contains whitespace; choose a --shim-dir without spaces or disable node_require", p.paths.node)
+	}
+
 	ok := false
 	defer func() {
 		if !ok {

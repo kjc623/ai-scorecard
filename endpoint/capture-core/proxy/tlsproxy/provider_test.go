@@ -64,9 +64,15 @@ func (s *recProxy) sequence() []string {
 	return append([]string(nil), s.steps...)
 }
 
-type fakeTrust struct{ installed []byte }
+type fakeTrust struct {
+	installed []byte
+	removes   int
+}
 
-func (t *fakeTrust) Remove(context.Context) error { return nil }
+func (t *fakeTrust) Remove(context.Context) error {
+	t.removes++
+	return nil
+}
 func (t *fakeTrust) Install(_ context.Context, der []byte) error {
 	t.installed = append([]byte(nil), der...)
 	return nil
@@ -532,9 +538,10 @@ func TestTLS_5_5_KillSwitchStopsEnforcementBeforeRestoringTheProxy(t *testing.T)
 		// True would mean the listener is still intercepting when the system proxy is restored.
 		return p.ListenAddr() != ""
 	}
+	trustRoot := &fakeTrust{}
 	p = newProviderForTest(t, Config{
 		Listen: "127.0.0.1:0", Bundles: func() *policy.Bundle { return bundleIntercepting(upPort) },
-		Pipeline: &fakePipeline{mode: protocol.ModeM1}, SystemProxy: sysProxy,
+		Pipeline: &fakePipeline{mode: protocol.ModeM1}, SystemProxy: sysProxy, TrustRoot: trustRoot,
 		UpstreamRoots: upstreamPool(upstream), CanaryHost: "127.0.0.1", CanaryPort: upPort,
 	})
 	if err := p.Start(context.Background()); err != nil {
@@ -561,11 +568,15 @@ func TestTLS_5_5_KillSwitchStopsEnforcementBeforeRestoringTheProxy(t *testing.T)
 	want := []string{
 		"stop_interception:kill_switch", // 1 stop enforcement and interception first
 		"systemproxy.Restore",           // 2 then restore the system proxy
-		"health:absent:killed",          // 3 then report absent detail=killed
+		"trustroot.Remove",              // 3 then stop trusting our interception authority (§5.2)
+		"health:absent:killed",          // 4 then report absent detail=killed
 	}
 	got := p.Sequence()
 	if strings.Join(got, " > ") != strings.Join(want, " > ") {
 		t.Fatalf("§5.5 ordering\ngot:  %v\nwant: %v", got, want)
+	}
+	if trustRoot.removes != 1 {
+		t.Fatalf("§5.2: the kill switch called TrustRoot.Remove %d times, want 1 (removal as reliable as installation)", trustRoot.removes)
 	}
 	if open, recorded := sysProxy.openAtRest["listener_open"]; recorded && open {
 		t.Fatal("§5.5: the system proxy was restored while interception was still listening — the exact ordering that breaks egress")

@@ -394,6 +394,17 @@ func TestVerifyWindows(t *testing.T) {
 		}
 		assertSlice(t, r.last(), wantArgv)
 	})
+	t.Run("present-space-separated", func(t *testing.T) {
+		// certutil prints a thumbprint spaced ("e6 c4 aa 7a ...") as well as contiguous; a raw
+		// substring match read that as absent and made health permanently degraded.
+		spaced := strings.Join(strings.Split(sha1hex, ""), " ")
+		r := &fakeRunner{fn: func(string, []string) (string, error) { return "Cert Hash(sha1): " + spaced, nil }}
+		m := New(Config{OS: OSWindows, Runner: r})
+		ok, err := m.Verify(context.Background(), der)
+		if err != nil || !ok {
+			t.Fatalf("verify = %v, %v; want true, nil for space-separated output", ok, err)
+		}
+	})
 	t.Run("absent", func(t *testing.T) {
 		r := &fakeRunner{fn: func(string, []string) (string, error) { return "", nil }}
 		m := New(Config{OS: OSWindows, Runner: r})
@@ -470,7 +481,22 @@ func TestRemoveDarwin(t *testing.T) {
 	if err := m.Remove(ctx); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
+	// The trust setting is removed first (add-trusted-cert's inverse), then the keychain item,
+	// then the absence check. The removal temp is staged and cleaned.
+	var removedPath string
+	for _, c := range r.all() {
+		if len(c) >= 2 && c[1] == "remove-trusted-cert" {
+			removedPath = c[len(c)-1]
+		}
+	}
+	if removedPath == "" {
+		t.Fatal("remove-trusted-cert was never invoked; the admin trust setting would be left behind")
+	}
+	if _, err := os.Stat(removedPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("removal temp was not cleaned up: %v", err)
+	}
 	assertCalls(t, r.all(), [][]string{
+		{"security", "remove-trusted-cert", "-d", removedPath},
 		{"security", "delete-certificate", "-Z", sha1hex, keychain},
 		{"security", "find-certificate", "-a", "-c", cert.Subject.CommonName, "-Z", keychain},
 	})

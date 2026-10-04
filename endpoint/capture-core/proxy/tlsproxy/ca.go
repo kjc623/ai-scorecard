@@ -19,10 +19,15 @@ import (
 // in a test: the fake in this package's tests is an in-process AEAD, and the real implementations
 // are NOT VERIFIED here.
 //
-// The CA private key is never written to disk in the clear: the only form that leaves this
+// The CA private key is never written to disk **by this package**: the only form that leaves this
 // process is Seal's output, and nothing in this package writes it anywhere. That is §3.3's "a CA
 // key is an interception capability": escrowing it turns a per-device liability into a
 // fleet-wide one.
+//
+// A deployment that pins a CA pair across restarts (cmd/sac-bundle + --ca-key) persists the key
+// itself, as a 0600 file when no platform keystore is configured — the same file-key-provider
+// deviation §14.3 records for the spool key, reported unsealed rather than implying protection the
+// build does not have. DPAPI/Keychain sealing is not wired yet.
 type Sealer interface {
 	Seal(plaintext []byte) ([]byte, error)
 	Open(sealed []byte) ([]byte, error)

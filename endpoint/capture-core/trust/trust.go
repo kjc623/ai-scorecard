@@ -25,6 +25,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"unicode"
 )
 
 // OS names a target operating system. It is a value so tests can force a platform.
@@ -201,6 +202,9 @@ func (m *Manager) installLinux(ctx context.Context, certDER []byte, cert *x509.C
 			return fmt.Errorf("trust: linux: update-ca-certificates failed (%v), and writing %s to the pki ca-trust store (%s): %w", err, fallback, linuxFallbackDir, wErr)
 		}
 		if _, exErr := m.runner().Run(ctx, "update-ca-trust", "extract"); exErr != nil {
+			// Do not orphan the anchors file in a store that was never activated: Remove keys off
+			// the recorded state, and a file left behind with no recorded install cannot be removed.
+			_ = os.Remove(fallback)
 			return fmt.Errorf("trust: linux: update-ca-certificates failed (%v), and update-ca-trust extract in the pki ca-trust store failed: %w", err, exErr)
 		}
 		m.setInstalled(certDER, cert, sha256hex, sha1hex, fallback, true)
@@ -289,7 +293,7 @@ func (m *Manager) verifyDarwin(ctx context.Context, certDER []byte) (bool, error
 		// security exits non-zero when no matching certificate is found; that is "absent".
 		return false, nil
 	}
-	return strings.Contains(strings.ToUpper(out), sha1hex), nil
+	return containsFingerprint(out, sha1hex), nil
 }
 
 func (m *Manager) verifyWindows(ctx context.Context, certDER []byte) (bool, error) {
@@ -299,7 +303,7 @@ func (m *Manager) verifyWindows(ctx context.Context, certDER []byte) (bool, erro
 		// certutil exits non-zero when no certificate matches; that is "absent".
 		return false, nil
 	}
-	return strings.Contains(strings.ToUpper(out), sha1hex), nil
+	return containsFingerprint(out, sha1hex), nil
 }
 
 // Remove removes the last installed root CA. It returns an error when nothing was installed or
@@ -352,11 +356,26 @@ func (m *Manager) removeDarwin(ctx context.Context) error {
 		m.mu.Unlock()
 		return fmt.Errorf("trust: darwin: nothing installed to remove")
 	}
+	der := append([]byte(nil), m.der...)
 	sha1hex, cn, keychain := m.sha1, m.cn, m.cfg.Keychain
 	m.mu.Unlock()
 
+	// add-trusted-cert created a trust-settings entry in addition to the keychain item, so the
+	// documented inverse is remove-trusted-cert. delete-certificate alone leaves the trust entry
+	// (and a reinstall can then behave as if the root were still trusted), so both run. A failure
+	// of either is logged: the find-certificate check below is what decides whether removal
+	// succeeded, and "no trust setting / no keychain item" is a non-zero exit, not a failure.
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	if tmp, cleanup, err := stageTemp(m.cfg.TempDir, "sac-ca-*.pem", pemBytes); err != nil {
+		return fmt.Errorf("trust: darwin: staging certificate to %s for removal: %w", m.cfg.TempDir, err)
+	} else {
+		defer cleanup()
+		if _, err := m.runner().Run(ctx, "security", "remove-trusted-cert", "-d", tmp); err != nil {
+			m.cfg.Logf("trust: darwin: remove-trusted-cert (no trust setting to remove?): %v", err)
+		}
+	}
 	if _, err := m.runner().Run(ctx, "security", "delete-certificate", "-Z", sha1hex, keychain); err != nil {
-		return fmt.Errorf("trust: darwin: deleting certificate %s from keychain %s: %w", sha1hex, keychain, err)
+		m.cfg.Logf("trust: darwin: delete-certificate (already absent?): %v", err)
 	}
 	out, err := m.runner().Run(ctx, "security", "find-certificate", "-a", "-c", cn, "-Z", keychain)
 	if err != nil {
@@ -365,7 +384,7 @@ func (m *Manager) removeDarwin(ctx context.Context) error {
 		m.cfg.Logf("trust: removed %s root CA", m.cfg.OS)
 		return nil
 	}
-	if strings.Contains(strings.ToUpper(out), sha1hex) {
+	if containsFingerprint(out, sha1hex) {
 		return fmt.Errorf("trust: darwin: certificate %s still present in keychain %s after removal", sha1hex, keychain)
 	}
 	m.clear()
@@ -392,7 +411,7 @@ func (m *Manager) removeWindows(ctx context.Context) error {
 		m.cfg.Logf("trust: removed %s root CA", m.cfg.OS)
 		return nil
 	}
-	if strings.Contains(strings.ToUpper(out), sha1hex) {
+	if containsFingerprint(out, sha1hex) {
 		return fmt.Errorf("trust: windows: certificate %s still present in the %s store after removal", sha1hex, m.windowsStore())
 	}
 	m.clear()
@@ -499,6 +518,22 @@ func fingerprints(der []byte) (sha256hex, sha1hex string) {
 	// SHA-1 here is not used for security: it is the certificate identifier that macOS `security`
 	// and Windows `certutil` use to address a cert in the store.
 	return hex.EncodeToString(s256[:]), strings.ToUpper(hex.EncodeToString(s1[:]))
+}
+
+// containsFingerprint reports whether a platform tool's output names this certificate. `certutil`
+// prints a thumbprint spaced ("e6 c4 aa 7a …") as well as contiguous, so whitespace and ':' are
+// stripped before the comparison. Trusting a raw substring here was a false-negative on Windows:
+// Verify read as absent after a successful install, and Remove read as absent while the cert was
+// still in the store.
+func containsFingerprint(out, hexhash string) bool {
+	want := strings.ToUpper(hexhash)
+	compact := strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) || r == ':' {
+			return -1
+		}
+		return unicode.ToUpper(r)
+	}, out)
+	return strings.Contains(compact, want)
 }
 
 func writeFile(path string, data []byte) error {
