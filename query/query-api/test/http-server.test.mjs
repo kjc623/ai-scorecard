@@ -325,3 +325,36 @@ async function waitFor(predicate, timeoutMs = 5000) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }
+
+// ---------------------------------------------------------------------------------------------
+// A search hit says who, where and which tool
+// ---------------------------------------------------------------------------------------------
+
+test('a content search hit carries the person, the device and the tool of its submission', async (t) => {
+  const id = '06f2b95e-def2-42ea-824b-926d74b59b97';
+  const client = fakeClient({ rows: [{ submission_id: id, subject: 'u_4f21', tool: 'claude_code', device: '35beae1b-e366-465a-8517-58df42c88bdc' }] });
+  const contentForwarder = {
+    async handle() {
+      return { status: 200, body: { state: 'available', hits: [{ submission_id: id, snippet: 'the <em>capital</em>', rank: 1 }, { submission_id: 'not-a-uuid', snippet: 'x', rank: 0 }], truncated: false } };
+    },
+  };
+  const { base } = await withServer(t, { client, contentForwarder });
+  const res = await fetch(`${base}/v1/content-search`, { method: 'POST', headers: asTenant(), body: JSON.stringify({ query: 'capital' }) });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.deepEqual(body.hits[0], { submission_id: id, snippet: 'the <em>capital</em>', rank: 1, subject: 'u_4f21', tool: 'claude_code', device: '35beae1b-e366-465a-8517-58df42c88bdc' });
+  assert.deepEqual(body.hits[1], { submission_id: 'not-a-uuid', snippet: 'x', rank: 0 }, 'a hit with no submission row is served as the vault sent it');
+  const lookup = client.calls.query.find((q) => q.text.includes('ingest.submission'));
+  assert.deepEqual(lookup.params, [TENANT, id], 'the lookup is tenant-scoped and its ids are a bound parameter');
+  assert.ok(client.calls.query.some((q) => q.text.includes('app.tenant_id')), 'the tenant is set on the session first');
+});
+
+test('a search still answers when its hits cannot be described', async (t) => {
+  const id = '06f2b95e-def2-42ea-824b-926d74b59b97';
+  const client = fakeClient({ failOn: 'ingest.submission' });
+  const contentForwarder = { async handle() { return { status: 200, body: { state: 'available', hits: [{ submission_id: id, snippet: 's', rank: 1 }], truncated: false } }; } };
+  const { base } = await withServer(t, { client, contentForwarder });
+  const res = await fetch(`${base}/v1/content-search`, { method: 'POST', headers: asTenant(), body: JSON.stringify({ query: 's' }) });
+  assert.equal(res.status, 200);
+  assert.deepEqual((await res.json()).hits, [{ submission_id: id, snippet: 's', rank: 1 }]);
+});

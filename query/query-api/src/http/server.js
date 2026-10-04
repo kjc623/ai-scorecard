@@ -23,6 +23,8 @@ import { plan, executePlan } from '../plan.js';
 import { RESULT_STATES } from '../errors.js';
 import { CONTENT_PATHS, createContentForwarder } from './content.js';
 
+const HIT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /** The two paths azure/modules/container-app.bicep probes, and the one read path docs/04 §5 names. */
 export const PATHS = Object.freeze({
   LIVENESS: '/healthz',
@@ -453,9 +455,53 @@ export function createHandler({
     }
     try {
       const answer = await forwarder.handle(path, principal, body);
+      if (path === CONTENT_PATHS.SEARCH && answer.status === 200 && Array.isArray(answer.body?.hits)) {
+        answer.body.hits = await describeHits(principal, answer.body.hits);
+      }
       sendJson(res, answer.status, answer.body);
     } finally {
       gate.release();
+    }
+  }
+
+  /**
+   * Who and where each search hit is: the person, the device and the tool of its submission.
+   *
+   * The vault answers a search with a submission and a fragment, because that is all it knows.
+   * The submission's metadata is this service's to read (ingest.submission, under the tenant's
+   * row-level security), and a hit an analyst cannot place is one they must open to understand.
+   * The search itself is already audited by the vault; this adds no content. A lookup that fails
+   * leaves the hits as the vault served them.
+   */
+  async function describeHits(principal, hits) {
+    const ids = [...new Set(hits.map((h) => h?.submission_id).filter((id) => typeof id === 'string' && HIT_ID.test(id)))];
+    if (ids.length === 0) return hits;
+    let conn = null;
+    try {
+      conn = await source.acquire();
+      await source.useTenant(conn, principal.tenant);
+      const result = await conn.query(
+        `SELECT s.submission_id::text AS submission_id, s.user_ref AS subject, s.tool_fingerprint AS tool, s.device_id::text AS device
+           FROM ingest.submission s
+          WHERE s.tenant_id = $1::uuid AND s.submission_id = ANY(string_to_array($2::text, ',')::uuid[])`,
+        [principal.tenant, ids.join(',')],
+      );
+      const known = new Map((result?.rows ?? []).map((row) => [row.submission_id, row]));
+      return hits.map((hit) => {
+        const row = known.get(hit.submission_id);
+        return row ? { ...hit, subject: row.subject ?? null, tool: row.tool ?? null, device: row.device ?? null } : hit;
+      });
+    } catch (error) {
+      log?.warn?.(`query-api: search hits could not be described: ${error?.message ?? error}`);
+      return hits;
+    } finally {
+      if (conn) {
+        try {
+          await source.release(conn);
+        } catch (error) {
+          log?.warn?.(`query-api: could not return a connection to the pool: ${error?.message ?? error}`);
+        }
+      }
     }
   }
 
