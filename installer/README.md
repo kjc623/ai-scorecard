@@ -74,8 +74,10 @@ service argv from the profile and runs WiX over `generated/windows/ShadowAICaptu
 is registered as a `LocalSystem` service whose arguments are `--service --service-name
 ShadowAICapture` followed by the device argv in the public property `SAC_ARGS`. `--service` makes the
 agent implement the SCM contract itself (it is otherwise a console application), so no external
-service wrapper (NSSM/WinSW) is needed. The documented MDM shape is Intune passing command-line
-properties to `msiexec`, and `SAC_ARGS` is overridable at install time. The WiX source is authored to
+service wrapper (NSSM/WinSW) is needed. The service is registered with `Start="auto"` but is **not
+started during install** (a start failure would abort and roll back the whole install); start it with
+`sc.exe start ShadowAICapture` or at the next boot. The documented MDM shape is Intune passing
+command-line properties to `msiexec`, and `SAC_ARGS` is overridable at install time. The WiX source is authored to
 the contract the Linux installer already satisfies, but it is **NOT VERIFIED**: there is no Windows
 and no WiX on the host this was written on, so the script prints the exact commands it would run and
 exits non-zero rather than pretending.

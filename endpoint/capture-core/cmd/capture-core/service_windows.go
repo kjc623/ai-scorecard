@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -102,7 +104,17 @@ func runAsService(cfg Config, log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("service name %q is not encodable: %w", cfg.ServiceName, err)
 	}
+
+	// A service has no console, so stderr goes nowhere and a start failure is invisible apart from
+	// SCM error 1920 and a rolled-back install. Log to a file beside the health file so the failure
+	// is readable afterwards.
+	if f, err := openServiceLog(cfg); err == nil {
+		defer f.Close()
+		log = slog.New(slog.NewJSONHandler(f, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	}
+
 	host = serviceHost{cfg: cfg, log: log, namePtr: namePtr}
+	log.Info("service host starting", "name", cfg.ServiceName, "endpoint", cfg.DeviceEndpoint)
 
 	table := []serviceTableEntry{
 		{ServiceName: namePtr, ServiceProc: syscall.NewCallback(serviceMain)},
@@ -182,6 +194,20 @@ func serviceControlHandler(control, eventType, eventData, context uintptr) uintp
 		}
 	}
 	return noError
+}
+
+// openServiceLog opens the file the service logs to. It lives beside the configured health file, so
+// it lands in the agent's own state directory, and falls back to the temp directory when no health
+// file is configured.
+func openServiceLog(cfg Config) (*os.File, error) {
+	dir := os.TempDir()
+	if cfg.HealthFile != "" {
+		dir = filepath.Dir(cfg.HealthFile)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	return os.OpenFile(filepath.Join(dir, "service.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 }
 
 // stopWaitHint is the bounded time the graceful shutdown may take (runServiceContext allows

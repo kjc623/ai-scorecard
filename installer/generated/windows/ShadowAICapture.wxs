@@ -47,7 +47,10 @@
                         Description="Observes AI submissions on this device and drains them to the tenant ingress."
                         Type="ownProcess" Start="auto" ErrorControl="normal" Account="LocalSystem"
                         Arguments="--service --service-name ShadowAICapture [SAC_ARGS]" />
-        <ServiceControl Id="SvcCaptureCoreControl" Name="ShadowAICapture" Start="install" Stop="both" Remove="uninstall" Wait="yes" />
+        <!-- Register with Start="auto" (starts at boot) but do NOT start during install: a service
+             that fails to start would abort the whole install transaction and roll the files back,
+             leaving nothing to diagnose. Start it with: sc.exe start ShadowAICapture -->
+        <ServiceControl Id="SvcCaptureCoreControl" Name="ShadowAICapture" Stop="both" Remove="uninstall" Wait="yes" />
       </Component>
     </DirectoryRef>
 
