@@ -69,6 +69,13 @@ type Config struct {
 	// Sealer is the platform key protection for the CA key. nil is reported, not hidden.
 	Sealer Sealer
 
+	// CACertPEM and CAKeyPEM load a pre-existing device CA instead of minting one at start. They
+	// must be set together; exactly one is a configuration error, never a silent generated
+	// fallback. This is the path an offline generator (cmd/sac-bundle) uses to hand the proxy the
+	// same per-device root the device already trusts.
+	CACertPEM []byte
+	CAKeyPEM  []byte
+
 	// CanaryHost/CanaryPort is the end-to-end probe destination. Healthy requires a successful
 	// handshake through a minted leaf against it (§5.2, §5.6); without one the provider reports
 	// `tls_probe_failed` rather than claiming health on the strength of a successful file write.
@@ -199,6 +206,21 @@ func (p *Provider) ListenAddr() string {
 	return p.ln.Addr().String()
 }
 
+// buildCA produces the device CA: a configured PEM pair when supplied, otherwise a freshly minted
+// per-device CA. Exactly one of the pair is refused rather than silently generating a fallback,
+// because a proxy running a CA the device does not trust must not claim to intercept.
+func (p *Provider) buildCA(deviceID string) (*CA, error) {
+	haveCert, haveKey := len(p.cfg.CACertPEM) > 0, len(p.cfg.CAKeyPEM) > 0
+	switch {
+	case haveCert && haveKey:
+		return NewCAFromPEM(p.cfg.CACertPEM, p.cfg.CAKeyPEM, p.cfg.Clock())
+	case haveCert || haveKey:
+		return nil, fmt.Errorf("tlsproxy: CA certificate and key must be supplied together; refusing a silent generated fallback")
+	default:
+		return NewCA(deviceID, p.cfg.Sealer, p.cfg.Clock())
+	}
+}
+
 // Start mints the device CA, binds the proxy, optionally installs the CA public certificate and
 // points the system proxy at itself, then runs the end-to-end probe. It never fails because
 // interception is unavailable: it reports `degraded` and keeps the user's traffic direct.
@@ -212,7 +234,7 @@ func (p *Provider) Start(ctx context.Context) error {
 	deviceID := p.cfg.Agent.DeviceID
 	p.mu.Unlock()
 
-	ca, err := NewCA(deviceID, p.cfg.Sealer, p.cfg.Clock())
+	ca, err := p.buildCA(deviceID)
 	if err != nil {
 		// Without a CA there is no interception. That is a degraded provider, not a failed
 		// startup: the user's traffic must not be pointed at a proxy that cannot serve.

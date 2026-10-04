@@ -9,10 +9,15 @@
 package policy
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"net"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -57,6 +62,21 @@ type Interception struct {
 	// PromotionWindowSeconds is A5's bounded, device-local dynamic promotion window. Zero
 	// disables promotion.
 	PromotionWindowSeconds int `json:"promotion_window_seconds,omitempty"`
+
+	// RootCAPEM is the per-device root CA the intercepting proxy mints leaves under, carried in
+	// the signed bundle so an offline provisioned device is told which root to trust and to hand
+	// the proxy (§4.5, §14). It is the public half; the private half never leaves the generator.
+	RootCAPEM string `json:"root_ca_pem,omitempty"`
+
+	// RootCAFingerprint is the lowercase-hex sha256 of RootCAPEM's DER, so the device can check
+	// the right root is installed before trusting it.
+	RootCAFingerprint string `json:"root_ca_fingerprint,omitempty"`
+
+	// ProxyListen is the loopback address the proxy binds; the CLI shim points runtimes at it.
+	ProxyListen string `json:"proxy_listen,omitempty"`
+
+	// ProxyCanary is the end-to-end probe destination (host:port) the proxy handshakes against.
+	ProxyCanary string `json:"proxy_canary,omitempty"`
 }
 
 // LoopbackPort is one row of §6's port map: which tool, which port the broker holds, where
@@ -129,6 +149,31 @@ type ArtefactRef struct {
 	Digest string `json:"digest"`
 }
 
+// CLIShimPolicy is §14's CLI trust shim configuration: it points the managed runtimes at the
+// proxy and the per-device root CA, so command-line tooling is intercepted the same way browser
+// traffic is, without a per-tool install step. It is bundle data, so the shim's target proxy and
+// its runtime coverage are changed by a bundle rather than a release.
+type CLIShimPolicy struct {
+	Enabled bool `json:"enabled,omitempty"`
+
+	// ProxyAddr is the loopback proxy the shim injects into managed runtimes.
+	ProxyAddr string `json:"proxy_addr,omitempty"`
+
+	// ManagedDir is the shim's managed directory, when the shim materialises its own profile
+	// rather than editing the user's in place.
+	ManagedDir string `json:"managed_dir,omitempty"`
+
+	// Runtimes are the managed runtimes; a closed subset of {go, node, python}.
+	Runtimes []string `json:"runtimes,omitempty"`
+
+	// NoProxy lists destinations the shim must never route through the proxy.
+	NoProxy []string `json:"no_proxy,omitempty"`
+
+	// NodeRequire turns on the node require hook for runtime injection rather than environment
+	// variables alone.
+	NodeRequire bool `json:"node_require,omitempty"`
+}
+
 // Bundle is the device-side view of the signed policy bundle: the brief's list —
 // classifier version, collection mode per scope, retention class, destination allowlist,
 // spool bounds, feature state per collector — plus §13.2's additions.
@@ -167,6 +212,7 @@ type Bundle struct {
 	Spool          SpoolBounds       `json:"spool"`
 	ShapePredicate ShapePredicate    `json:"shape_predicate"`
 	Classifier     ClassifierRelease `json:"classifier"`
+	CLIShim        CLIShimPolicy     `json:"cli_shim"`
 	Artefacts      []ArtefactRef     `json:"artefacts,omitempty"`
 }
 
@@ -356,6 +402,31 @@ func (b *Bundle) Validate() error {
 	if b.Interception.PromotionWindowSeconds < 0 {
 		return fmt.Errorf("policy: promotion window is negative")
 	}
+	if b.Interception.RootCAPEM != "" || b.Interception.RootCAFingerprint != "" {
+		der, err := rootCADER(b.Interception.RootCAPEM)
+		if err != nil {
+			return err
+		}
+		if b.Interception.RootCAFingerprint != "" {
+			want := sha256hex(der)
+			if b.Interception.RootCAFingerprint != want {
+				return fmt.Errorf("policy: interception root_ca_fingerprint %q does not match the sha256 of root_ca_pem (%q)", b.Interception.RootCAFingerprint, want)
+			}
+		}
+	}
+	if b.Interception.ProxyListen != "" && !validHostPort(b.Interception.ProxyListen) {
+		return fmt.Errorf("policy: interception proxy_listen %q is not a usable host:port", b.Interception.ProxyListen)
+	}
+	if b.CLIShim.ProxyAddr != "" && !validHostPort(b.CLIShim.ProxyAddr) {
+		return fmt.Errorf("policy: cli_shim proxy_addr %q is not a usable host:port", b.CLIShim.ProxyAddr)
+	}
+	for _, r := range b.CLIShim.Runtimes {
+		switch r {
+		case "go", "node", "python":
+		default:
+			return fmt.Errorf("policy: cli_shim names runtime %q outside the set {go,node,python}", r)
+		}
+	}
 	for _, p := range b.Loopback.Ports {
 		if strings.TrimSpace(p.ToolFingerprint) == "" {
 			return fmt.Errorf("policy: loopback port entry has no tool fingerprint")
@@ -420,6 +491,59 @@ func validMode(where string, m protocol.CollectionMode) error {
 
 func validPort(p int) bool {
 	return p > 0 && p <= 65535 && net.JoinHostPort("127.0.0.1", fmt.Sprint(p)) != ""
+}
+
+// validHostPort reports whether hp is a usable host:port: a non-empty host and a TCP port in
+// range. net.SplitHostPort also accepts a bracketed IPv6 literal.
+func validHostPort(hp string) bool {
+	host, portStr, err := net.SplitHostPort(hp)
+	if err != nil {
+		return false
+	}
+	if strings.TrimSpace(host) == "" {
+		return false
+	}
+	port, err := strconv.Atoi(portStr)
+	return err == nil && port > 0 && port <= 65535
+}
+
+// sha256hex is the lowercase-hex sha256 used for the root CA fingerprint.
+func sha256hex(b []byte) string {
+	sum := sha256.Sum256(b)
+	return fmt.Sprintf("%x", sum[:])
+}
+
+// rootCADER parses RootCAPEM strictly: exactly one PEM x509 certificate, nothing else. It returns
+// the DER, which the fingerprint rule checks against.
+func rootCADER(pemData string) ([]byte, error) {
+	rest := []byte(pemData)
+	var der []byte
+	blocks := 0
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		blocks++
+		if block.Type != "CERTIFICATE" {
+			return nil, fmt.Errorf("policy: root_ca_pem block %d is %q, not a certificate", blocks, block.Type)
+		}
+		der = block.Bytes
+	}
+	if blocks == 0 {
+		return nil, fmt.Errorf("policy: root_ca_pem carries no PEM certificate")
+	}
+	if blocks > 1 {
+		return nil, fmt.Errorf("policy: root_ca_pem carries %d certificates; exactly one is required", blocks)
+	}
+	if len(bytes.TrimSpace(rest)) != 0 {
+		return nil, fmt.Errorf("policy: root_ca_pem has trailing data after the certificate")
+	}
+	if _, err := x509.ParseCertificate(der); err != nil {
+		return nil, fmt.Errorf("policy: root_ca_pem is not a parseable x509 certificate: %w", err)
+	}
+	return der, nil
 }
 
 // decode parses a bundle payload strictly. Unknown fields are an error: a device that does
