@@ -62,6 +62,39 @@ if (ARGS_IDX !== -1) {
   process.exit(0);
 }
 
+/**
+ * The complete-profile mode. A profile may be a partial override (the lab one names the endpoint,
+ * the CA and the token but not the install-layout paths). capture-core resolves only what the file
+ * contains, so the installer must write a COMPLETE file: this merges the profile over the platform
+ * defaults from the manifest and prints every key as KEY=VALUE.
+ *
+ *   node installer/render.mjs --env [FILE] --os windows
+ */
+const ENV_IDX = ARGS.indexOf('--env');
+if (ENV_IDX !== -1) {
+  const candidate = ARGS[ENV_IDX + 1];
+  const file = candidate && !candidate.startsWith('--') ? candidate : '';
+  const os = valueOf('--os', 'linux');
+  if (!LAYOUT[os]) {
+    console.error(`render.mjs --env: --os must be one of ${Object.keys(LAYOUT).join(', ')}`);
+    process.exit(2);
+  }
+  const values = {};
+  if (file) {
+    for (const line of readFileSync(file, 'utf8').split('\n')) {
+      const m = /^([A-Z0-9_]+)=(.*)$/.exec(line.trim());
+      if (m) values[m[1]] = m[2];
+    }
+  }
+  const lines = [`# ${PRODUCT.displayName} enrolment profile (complete; profile merged over the ${os} defaults).`];
+  for (const c of configFor(os)) {
+    const v = c.env in values ? values[c.env] : expandDefault(c, LAYOUT[os]);
+    lines.push(`${c.env}=${v}`);
+  }
+  process.stdout.write(lines.join('\n') + '\n');
+  process.exit(0);
+}
+
 if (LIST) {
   for (const c of CONFIG) {
     const req = c.required ? ' required' : '';

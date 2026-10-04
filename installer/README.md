@@ -74,8 +74,9 @@ profile and runs WiX over `generated/windows/ShadowAICapture.wxs`. capture-core 
 `LocalSystem` service whose arguments are `--service --service-name ShadowAICapture --config-file
 C:\ProgramData\ShadowAICapture\capture-core.env`. `--service` makes the agent implement the SCM
 contract itself (it is otherwise a console application), so no external wrapper (NSSM/WinSW) is
-needed; the MSI installs the enrolment profile as that file, so reconfiguration is a file edit rather
-than an MSI rebuild and the command line carries no secret. The service is registered with
+needed; the MSI installs the enrolment profile as that file **merged over the platform defaults**
+(`render.mjs --env`, so the file is complete and capture-core resolves only what it contains), which
+makes reconfiguration a file edit rather than an MSI rebuild and keeps the command line secret-free. The service is registered with
 `Start="auto"` but is **not started during install** (a start failure would abort and roll back the
 whole install); start it with `sc.exe start ShadowAICapture` or at the next boot. The WiX source is
 authored to the contract the Linux installer already satisfies, but it is **NOT VERIFIED**: there is

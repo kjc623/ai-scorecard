@@ -42,15 +42,16 @@ foreach ($f in @("bin\capture-core.exe", "bin\classifier-host.exe", "bin\capture
 
 # The endpoint configuration. The MSI installs etc\capture-core.env and the service reads it via
 # --config-file, so the profile is a file, not a command line: a path or secret with spaces needs no
-# quoting, and it is the same file the console wrapper (capture-core-run.cmd) reads. With -ConfigFile
-# it is that profile; otherwise the example template is installed as the starting point.
-$configSource = if ($ConfigFile -ne "") {
-  (Resolve-Path (Join-Path $Root $ConfigFile)).Path
-} else {
-  Join-Path $Stage 'etc\capture-core.env.example'
+# quoting, and it is the same file the console wrapper (capture-core-run.cmd) reads. The file must be
+# COMPLETE (capture-core resolves only what it contains), so render.mjs --env merges the profile over
+# the windows defaults; with no -ConfigFile the defaults alone are written.
+$envArgs = @('--env', '--os', 'windows')
+if ($ConfigFile -ne "") {
+  $envArgs = @('--env', (Resolve-Path (Join-Path $Root $ConfigFile)).Path, '--os', 'windows')
 }
-Copy-Item -Force $configSource (Join-Path $Stage 'etc\capture-core.env')
-Write-Host "installs configuration from: $configSource"
+$envText = (& node (Join-Path $Root 'installer/render.mjs') @envArgs) | Out-String
+Set-Content -Path (Join-Path $Stage 'etc\capture-core.env') -Value $envText -Encoding ascii
+Write-Host "installed capture-core.env ($($envText.Trim().Split("`n").Count) keys; profile merged over windows defaults)"
 
 # Find the WiX CLI three ways, because `dotnet tool install --global wix` puts wix.exe in
 # %USERPROFILE%\.dotnet\tools, which is not always on the PATH of the shell that runs this script.
