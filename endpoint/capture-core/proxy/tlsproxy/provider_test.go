@@ -716,3 +716,61 @@ func (f *fakeSealer) Open(sealed []byte) ([]byte, error) {
 	}
 	return out, nil
 }
+
+// ---- §5.2 trust-store installation -----------------------------------------------------------
+
+// fakeVerifyingTrust records an install and then answers the store read-back. A store that does
+// not confirm the certificate is the silent-wrong-store case §5.2 warns about, so it must surface
+// as a named degraded cause rather than a healthy row.
+type fakeVerifyingTrust struct {
+	fakeTrust
+	ok  bool
+	err error
+}
+
+func (t *fakeVerifyingTrust) Verify(context.Context, []byte) (bool, error) { return t.ok, t.err }
+
+// fakeFailingTrust fails the install itself.
+type fakeFailingTrust struct{}
+
+func (fakeFailingTrust) Remove(context.Context) error { return nil }
+func (fakeFailingTrust) Install(context.Context, []byte) error {
+	return fmt.Errorf("store is read-only")
+}
+
+// §5.2: the end-to-end probe uses the in-process pool, so it can succeed even when the OS store
+// was never touched. The store verification is what makes that silent failure visible in health.
+func TestTLS_5_2_TrustStoreFailureIsNamedInHealth(t *testing.T) {
+	canaryPort := freePort(t)
+	bundle := bundleIntercepting(canaryPort)
+
+	p := newProviderForTest(t, Config{
+		Listen:     "127.0.0.1:0",
+		Bundles:    func() *policy.Bundle { return bundle },
+		Pipeline:   &fakePipeline{mode: protocol.ModeM1},
+		TrustRoot:  &fakeVerifyingTrust{ok: false},
+		CanaryHost: "127.0.0.1",
+		CanaryPort: canaryPort,
+	})
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if h := p.Health(); h.State != protocol.StateDegraded || h.Detail != protocol.DetailTrustVerifyFailed {
+		t.Fatalf("health = %s/%s, want degraded/%s", h.State, h.Detail, protocol.DetailTrustVerifyFailed)
+	}
+
+	p2 := newProviderForTest(t, Config{
+		Listen:     "127.0.0.1:0",
+		Bundles:    func() *policy.Bundle { return bundle },
+		Pipeline:   &fakePipeline{mode: protocol.ModeM1},
+		TrustRoot:  fakeFailingTrust{},
+		CanaryHost: "127.0.0.1",
+		CanaryPort: canaryPort,
+	})
+	if err := p2.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if h := p2.Health(); h.State != protocol.StateDegraded || h.Detail != protocol.DetailTrustInstallFailed {
+		t.Fatalf("health = %s/%s, want degraded/%s", h.State, h.Detail, protocol.DetailTrustInstallFailed)
+	}
+}

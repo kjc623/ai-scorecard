@@ -300,12 +300,37 @@ func (p *Provider) Start(ctx context.Context) error {
 }
 
 func (p *Provider) installTrustRoot(ctx context.Context, ca *CA) error {
-	if tr, ok := p.cfg.TrustRoot.(interface {
+	tr, ok := p.cfg.TrustRoot.(interface {
 		Install(context.Context, []byte) error
-	}); ok {
-		return tr.Install(ctx, ca.DER())
+	})
+	if !ok {
+		p.setDetail(protocol.DetailTrustInstallFailed)
+		return fmt.Errorf("tlsproxy: configured trust root cannot install a certificate")
 	}
-	return fmt.Errorf("tlsproxy: configured trust root cannot install a certificate")
+	der := ca.DER()
+	if err := tr.Install(ctx, der); err != nil {
+		// A write that did not happen is a named degraded cause, never a silent health claim:
+		// §5.2's wrong store fails silently, so the failure has to reach the coverage row.
+		p.setDetail(protocol.DetailTrustInstallFailed)
+		return err
+	}
+	// When the trust root can read the store back, verify the certificate is actually there. The
+	// end-to-end probe below exercises the interceptor, but a probe through the in-process pool
+	// would succeed even if the OS store were never touched, so the store itself is verified here.
+	if v, ok := p.cfg.TrustRoot.(interface {
+		Verify(context.Context, []byte) (bool, error)
+	}); ok {
+		installed, verr := v.Verify(ctx, der)
+		if verr != nil {
+			p.setDetail(protocol.DetailTrustVerifyFailed)
+			return verr
+		}
+		if !installed {
+			p.setDetail(protocol.DetailTrustVerifyFailed)
+			return fmt.Errorf("tlsproxy: the device CA was not found in the OS trust store after install")
+		}
+	}
+	return nil
 }
 
 // probe completes a real TLS handshake through a minted leaf against the canary destination.
