@@ -39,7 +39,8 @@ status, so the transport repeats the pipeline's decision rather than inventing a
 | File | Responsibility |
 |---|---|
 | `src/http/config.js` | The deployment's `SAC_*` vocabulary in one place. Fails closed on anything it does not recognise; there is no "prefer" TLS mode, because a silent fallback to plaintext is a downgrade rather than a mode |
-| `src/http/server.js` | `/healthz`, `/readyz` and `POST /v1/query`, plus the body ceiling, the concurrency gate and the error rendering |
+| `src/http/server.js` | `/healthz`, `/readyz` and `POST /v1/query`, plus the body ceiling, the concurrency gate and the error rendering. It also routes the two content reads to `content.js` |
+| `src/http/content.js` | `POST /v1/content-search` and `POST /v1/content/retrieval`, forwarded to `content-vault`. It decides nothing about content |
 | `src/http/pool.js` | Per-request connections, and the **mandatory tenant reset** on release |
 | `src/http/main.js` | Resolve config, prove the database, listen, drain on `SIGTERM` |
 
@@ -67,6 +68,35 @@ Two properties of that layer are load-bearing and easy to get wrong:
 The authenticated session is **not built yet**: no Entra principal is resolved to a tenant, so a
 deployment refuses every read with `403` until it exists. `localdev/` runs the service with
 `SAC_DEV_TRUST_PRINCIPAL=1`, the same explicit escape hatch `ingestion/ingest-api` uses.
+
+### The two content reads
+
+This service cannot see content: it has no `SELECT` on `ops.content_object` or `ingest.search_text` and
+no unwrap right. `src/http/content.js` forwards two requests to `content-vault` on its internal
+ingress, as the service `query-api`, with the tenant and the actor taken from the session and never
+from the body:
+
+| Route | Body | What happens |
+|---|---|---|
+| `POST /v1/content-search` | `{ query, limit? }` | Forwarded as the vault's `terms` search for the configured scope. Answers `{ state: "available", hits: [{ submission_id, snippet, rank }], truncated }` |
+| `POST /v1/content/retrieval` | `{ event_ids, case_reference, second_approver, justification }` | Runs the vault's two steps, retrieval then redemption, for the first of the events that has a stored object. Answers `{ state: "available", event_id, grant_id, raw_digest, content }`, or the vault's `no_longer_available` result with its reason |
+
+A refusal carries the vault's own reason code and status. `event_ids` are the observations of the
+submission the analyst is looking at, which the record read already returned; the stored object is held
+against one of them and this service cannot look up which, so it asks the vault about each until one
+is not `no_content_object`. Every attempt is a request the vault audits. Both routes share the
+concurrency gate with `/v1/query`.
+
+| Variable | What it is |
+|---|---|
+| `SAC_CONTENT_VAULT_URL` | The vault's internal base URL. Empty: both routes answer `503 content_vault_not_configured` |
+| `SAC_CONTENT_SEARCH_SCOPE` | The search scope asked of the vault. The vault must name it with a tier, or the search is refused `search_tier_not_in_scope` |
+
+Three things are as built rather than as designed. The retrieved content is returned **in this
+service's response body**, where docs/02 §11 has the vault mint a short-lived retrieval URL so content
+never transits here; the vault does not mint one yet. The search answer carries no index-coverage
+block. And nothing in this service checks the caller's role before forwarding: with no session, every
+development principal may search and retrieve.
 
 ## Layout
 
@@ -115,6 +145,7 @@ the skip says which. A skip is not a pass.
 | The ten questions are answerable | `test/templates.test.mjs`, and the same ten shapes in `test/snapshots/compiled-sql.json`. |
 | Nothing is served unaudited | `test/audit-plan.test.mjs`: a failing audit insert serves zero rows and returns `503 audit_unavailable`. |
 | The service reaches a real database | `test/pg-client.test.mjs` speaks the wire protocol to PostgreSQL, including SCRAM-SHA-256, bound parameters and SQLSTATE surfacing. |
+| The content forwarder adds identity and decides nothing | `test/content-forward.test.mjs`, against a vault double: the principal and scope come from the session and configuration and not the body, a retrieval is the vault's two steps in order, the vault's refusal is carried through and nothing is redeemed after one, and a malformed request never reaches the vault. The routes in `server.js` have no test of their own; they were exercised through the dashboard in the local auth lab. |
 | The transport cannot be talked into a wrong answer | `test/http-server.test.mjs` and `test/pool.test.mjs`: the tenant is refused when unestablished, the tenant is bound rather than interpolated, the tenant is cleared before a connection is reused, and a request shed by the gate is answered `429 busy` rather than queued for ever. A refusal from the pool itself is not mapped to `busy`; it is rendered as the generic `500`. |
 
 ## What is in `test/`
@@ -132,6 +163,7 @@ the skip says which. A skip is not a pass.
 | `pg-client.test.mjs` | The wire client: framing and SCRAM without a server; types and transactions against one |
 | `http-server.test.mjs` | The transport over a real socket, with a fake driver |
 | `pool.test.mjs` | Concurrency, and the tenant reset that makes connection reuse safe |
+| `content-forward.test.mjs` | The two content reads, against a vault double |
 | `snapshots.test.mjs` | That the committed compiled-SQL snapshot has not drifted |
 | `helpers.mjs` | Shared fixtures, container discovery, and the skip logic that distinguishes "no server" from "no schema" |
 

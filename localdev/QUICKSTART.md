@@ -98,11 +98,37 @@ docker compose -f localdev/harness.compose.yaml run --rm pi pi mcp list
 docker compose -f localdev/harness.compose.yaml run --rm pi node localdev/run.mjs --no-up
 ```
 
+## The device-auth lab, the dashboard and an installed agent
+
+The lab above is the default one. The device-auth lab is a second, separate stack: the one a real
+endpoint agent enrols against, with the content vault and the dashboard. After a reboot, bring it
+back with:
+
+```powershell
+docker compose -f localdev/authlab.compose.yaml up -d
+```
+
+Use that command, not `node localdev/run.mjs --auth`, to restart it. `run.mjs --auth` is for the first
+start or a wiped lab: it regenerates the lab's development CA every time, which orphans an agent
+already installed on this machine until its MSI is rebuilt (`node installer/lab-msi.mjs`) and
+reinstalled.
+
+| Thing | Address |
+|---|---|
+| Dashboard (events, prompt-text search, content retrieval) | <http://127.0.0.1:8787/explore.html?transport=live> |
+| Edge, where the agent sends | `https://127.0.0.1:8443` |
+| PostgreSQL | `localhost:55435` |
+| Table browser (optional) | <http://127.0.0.1:8089>, after `docker compose -f localdev/dbview.compose.yaml up -d` |
+
+The installed agent is a Windows service and starts by itself at boot (`sc.exe query ShadowAICapture`).
+It holds what it captures until the lab is back; delivery after a lab outage was not tested.
+
 ## Shutting down
 
 ```powershell
 docker compose -f localdev/docker-compose.yml stop    # stop the lab, keep the database
 node localdev/run.mjs --down                          # or: remove the lab AND its database volume
+docker compose -f localdev/authlab.compose.yaml stop  # stop the device-auth lab, keep its database
 ```
 
 Stop the gateway with Ctrl+C in its window. Exit Pi normally; its container is removed on exit and
@@ -126,6 +152,8 @@ its login stays in the `pi-home` volume.
 | File | What it is |
 |---|---|
 | `localdev/docker-compose.yml` | The lab: services, ports, the `scorecard` network |
+| `localdev/authlab.compose.yaml` | The device-auth lab: its own PostgreSQL, the SQL-mode services, the edge, the content vault, and the dashboard |
+| `localdev/dbview.compose.yaml` | The optional read-only table browser over the device-auth lab's database |
 | `localdev/harness.compose.yaml` | The harness containers that join the lab's network |
 | `localdev/harness/pi/` | The Pi image: Dockerfile, entrypoint, MCP config |
 | `localdev/harness/fedora/` | The Fedora image: Dockerfile, entrypoint, OpenCode MCP config |

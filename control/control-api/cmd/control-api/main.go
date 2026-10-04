@@ -26,6 +26,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/shadow-ai-capture/control-api/internal/content"
 	"github.com/shadow-ai-capture/control-api/internal/dpop"
 	"github.com/shadow-ai-capture/control-api/internal/enrol"
 	"github.com/shadow-ai-capture/control-api/internal/httpapi"
@@ -66,7 +67,15 @@ type options struct {
 	enrolmentTokenTTL time.Duration
 	credentialTTL     time.Duration
 	shutdownGraceful  time.Duration
+	vaultURL          string
 }
+
+// EnvVaultURL and EnvUploadSigningKey configure the content grant path (docs/02 §5.5, §10). The
+// signing key is a secret shared with the storage layer, so it has no flag.
+const (
+	EnvVaultURL         = "SAC_VAULT_URL"
+	EnvUploadSigningKey = "SAC_UPLOAD_SIGNING_KEY"
+)
 
 func run() error {
 	var o options
@@ -91,6 +100,8 @@ func run() error {
 	flag.DurationVar(&o.credentialTTL, "credential-ttl", 90*24*time.Hour,
 		"life of an issued device credential (env "+EnvCredentialTTL+")")
 	flag.DurationVar(&o.shutdownGraceful, "shutdown-grace", 10*time.Second, "graceful shutdown grace period")
+	flag.StringVar(&o.vaultURL, "vault-url", os.Getenv(EnvVaultURL),
+		"content-vault base URL on its internal ingress (env "+EnvVaultURL+"); empty disables content grants")
 	flag.Parse()
 
 	passed := visited(flag.CommandLine)
@@ -148,6 +159,7 @@ func run() error {
 	}
 
 	var st store.Store
+	var contentDB *sql.DB
 	switch o.storeKind {
 	case "memory":
 		st = store.NewMemory()
@@ -171,6 +183,7 @@ func run() error {
 		db.SetMaxOpenConns(16)
 		db.SetConnMaxIdleTime(5 * time.Minute)
 		st = store.NewSQL(db)
+		contentDB = db
 		logger.Info("serving from PostgreSQL", "driver", driver, "dsn", redactDSN(dsn))
 	default:
 		return fmt.Errorf("unknown -store %q (want memory or sql)", o.storeKind)
@@ -201,6 +214,30 @@ func run() error {
 	}
 
 	srv := httpapi.New(enrolSvc, tokenSvc, verifier, st, logger)
+
+	// The content grant path needs all three of: a vault to mint the object key, a database to
+	// decide against, and the key the storage layer verifies an upload URL with. Without any one of
+	// them the route answers 503; it never decides a grant nothing could honour.
+	switch signingKey := os.Getenv(EnvUploadSigningKey); {
+	case o.vaultURL == "":
+		logger.Info("content grants are disabled: no vault URL is configured", "env", EnvVaultURL)
+	case contentDB == nil:
+		logger.Warn("content grants are disabled: they are decided against the database, and this process runs the in-memory store")
+	case signingKey == "":
+		return fmt.Errorf("refusing to start with %s set but no %s: an upload URL nobody can verify is an upload path with no decision behind it", EnvVaultURL, EnvUploadSigningKey)
+	default:
+		if err := checkURL(EnvVaultURL, o.vaultURL); err != nil {
+			return err
+		}
+		contentSvc, err := content.New(content.NewSQL(contentDB), content.NewHTTPVault(o.vaultURL), content.Config{
+			UploadSigningKey: []byte(signingKey),
+		})
+		if err != nil {
+			return err
+		}
+		srv.Content = contentSvc
+		logger.Info("content grants enabled", "vault", o.vaultURL)
+	}
 	// The store probe behind /readyz: reading ops.tenant is a real query in SQL mode and a real state
 	// check in memory mode. An unknown tenant is a healthy database, so only a transport error fails.
 	ready := func(ctx context.Context) error {

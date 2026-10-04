@@ -5,12 +5,15 @@ and [docs/02-ingest-and-transport.md §10–11](../../docs/02-ingest-and-transpo
 component that can unwrap a content key (master **D7**). It is what makes **INV-1** true: content
 crosses the network only on a per-event grant.
 
-Go, standard library only. This module carries no PostgreSQL driver (ingest-api has `pgx` behind a
-build tag; content-vault does not), so `--store sql` refuses to start, the SQL lives
-as statement text in one file, and `tools/live-schema-check.ps1` executes that same text against the
-live schema: 20 statements prepared, the ADR 0014 pair and the tier/mode rule exercised, and the
-content-object lifecycle and retrieval-grant put/claim/trigger path run inside rolled-back
-transactions. The vault itself never reads a blob and never stores a KEK.
+Go, standard library only in the default build. That build carries no PostgreSQL driver, so
+`--store sql` refuses to start in it; the SQL lives as statement text in one file, and
+`tools/live-schema-check.ps1` executes that same text against the live schema: 20 statements prepared,
+the ADR 0014 pair and the tier/mode rule exercised, and the content-object lifecycle and
+retrieval-grant put/claim/trigger path run inside rolled-back transactions. A build with the
+`sac_sql_driver` tag links `pgx` (`cmd/content-vault/driver_tagged.go`, the same arrangement as
+ingest-api and control-api) and serves from PostgreSQL. The vault never stores a KEK. It reads a stored
+object only when it is given a ciphertext endpoint, for two purposes: to open it for an approved
+redemption, and to index its text when the tenant's tier is `full_text`.
 
 ## The key hierarchy as built
 
@@ -30,7 +33,9 @@ nonce (§6.4 point 3); and `vault.Service` is the only caller of `Unwrap`, in a 
 ingress only.
 
 `keys.LocalKeyWrapper` (AES-256-GCM software, in memory or a 0600 file) is what tests and local
-development use. `keys.KMSKeyWrapper` is **explicitly unimplemented**: every method returns
+development use. With `--key-file`, a KEK the service creates on a tenant's first wrap is written to
+that file before the wrapped key is returned, so a restart does not orphan the objects wrapped under
+it; a failed write fails the prepare. `keys.KMSKeyWrapper` is **explicitly unimplemented**: every method returns
 `ErrNotImplemented`, `Health()` says so, and the binary refuses to start with `--key-backend kms` unless
 the operator passes `--allow-unimplemented-kms`. Its doc comment is the specification of what Azure Key
 Vault / Managed HSM must provide — `wrapKey`/`unwrapKey` with the AAD inside the wrapped plaintext,
@@ -80,6 +85,15 @@ offboarding path. After erasure the read path reports `no_longer_available` with
 second erasure is idempotent and writes no second receipt. `search_text` is written only for units the
 tenant's tier permits, and a unit that is not permitted is **reported** rather than silently dropped.
 
+Who supplies the text: the finaliser holds only ciphertext, so a finalise that carries no index units
+is indexed by the vault itself when the tenant's tier is `full_text`, a ciphertext endpoint is
+configured and the object names a submission. It unwraps the key, reads and opens the stored object,
+and writes the text as the submission's `prompt_body` unit, capped at 200,000 characters. An object
+that cannot be read or opened is reported as a refused unit and logged; it never fails the finalise,
+because the object is stored and retrievable whether or not it could be indexed. Objects finalised
+before the tier or the endpoint was set are not indexed afterwards — there is no re-index operation —
+and attachment names are not indexed by this path.
+
 `opts.tenant`'s custody/search pair is a database constraint, and the service refuses the same
 combinations independently — a dropped constraint, a bypassed migration or a stale replica must not turn
 the vault into an indexer: `full_text` with `customer_held` is `key_custody_search_conflict`; `full_text`
@@ -119,12 +133,15 @@ go build ./... && go vet ./... && go test ./... -count=1
 pwsh -File tools/live-schema-check.ps1   # needs the docker client and the PostgreSQL container
 ```
 
-`go test ./...` runs 46 test functions across six packages: the binary's configuration and
+`go test ./...` runs 47 test functions across six packages: the binary's configuration and
 deployment-agreement tests, the grant matrix and its concurrency case,
 rotation, erasure, tenant-key destruction, retention expiry, the search-tier and ADR 0014 refusals,
 audit-before-serve by call ordering, fail-closed on a broken audit path, the key hierarchy (AAD binding,
 versions, destruction, persistence, the unimplemented KMS and the interface's method set), the HTTP
-surface including the edge-route rejection, and [vaultinvariants/](vaultinvariants/README.md).
+surface including the edge-route rejection, and [vaultinvariants/](vaultinvariants/README.md), which
+now also asserts that a redemption returns the content the device sealed and refuses a stored object
+that is not the bytes that were finalised. Indexing at finalise and key-file persistence on first wrap
+have no test: both were exercised only in the local auth lab.
 
 ## NOT VERIFIED, and why
 
@@ -132,13 +149,17 @@ surface including the edge-route rejection, and [vaultinvariants/](vaultinvarian
    acknowledgement, and every method of `KMSKeyWrapper` returns `ErrNotImplemented`: nothing here has
    been exercised against Azure Key Vault or Managed HSM, because this build carries no cloud SDK and
    holds no credential for either. Modes 2 and 3 are *interfaces and refusals*, not
-   working code. Blob storage is the same shape: this build has no blob client, so `Redeem` returns the
-   object's reference and digests, and bytes only if the binary wires `Options.FetchBlob`. The
-   *authorisation* is identical either way; the *serving* half is a stand-in.
-2. **The `database/sql` plumbing.** `SQLStore` is written against the real schema, but this module
-   carries no PostgreSQL driver, so the statements are verified as *text* against the live database by the
-   harness above rather than through the driver. `--store sql` refuses to start in this build, and nothing
-   in `cmd/content-vault` constructs `SQLStore`. The Go test that runs those statements in-process skips
+   working code. Blob storage is the same shape: this build has no blob client and mints no retrieval
+   URL. With `--blob-ciphertext-endpoint` set, `Redeem` reads the stored object from it with a plain
+   GET, checks it against the recorded digest, opens it with the object key it just unwrapped
+   (`protocol.OpenContent`) and returns the content; without it, `Redeem` returns the object's
+   reference and digests and no bytes. The *authorisation* is identical either way; the *serving*
+   half is a stand-in, exercised against the local lab's `contentlab` and against no storage account.
+2. **The `database/sql` plumbing in the default build.** `SQLStore` is written against the real schema.
+   The default build carries no PostgreSQL driver and `--store sql` refuses to start in it; a build with
+   the `sac_sql_driver` tag links pgx (`cmd/content-vault/driver_tagged.go`) and serves from PostgreSQL,
+   which is how the local auth lab runs it (prepare, finalise, retrieval and redeem against the live
+   schema, as the database owner). The Go test that runs those statements in-process skips
    *on this host* with the exact reason — the file sandbox denies a child process the Docker named pipe
    (`npipe:////./pipe/dockerDesktopLinuxEngine`) — and runs on a machine without that restriction.
 3. **The retrieval-grant SQL path is verified as text.** `ops.retrieval_grant` landed with the two CHECKs

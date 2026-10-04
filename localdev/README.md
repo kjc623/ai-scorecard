@@ -99,11 +99,13 @@ not. `query/query-api/src/http/` is that transport, and `query/query-api/Dockerf
 lab cannot start a service that has no entry point, which is why the read path was missing from this
 table rather than merely unwired.
 
-**Not in it, deliberately.** Blob storage (content-vault performs no blob I/O in this build — it holds
-wrapped keys, and ciphertext goes device-to-blob under a grant, so a fake blob account would prove
-nothing), the dashboard (a static file), and the device tier (runs on the host). That leaves the blob
-path, a real certificate authority and a real cloud KMS untestable here; docs/lab/LAB-COST.md §6 says
-which platform properties the Azure half (Part B) can and cannot test.
+**Not in it, deliberately.** Blob storage, the dashboard, and the device tier (which runs on the host).
+The default lab's content-vault runs on the in-memory store, which holds no tenants, so it serves its
+probes and refuses every content call. The content path — a grant, an upload, an approved retrieval —
+runs in the [device-auth lab](#the-device-auth-lab-opt-in) instead, which adds a storage stand-in and
+the dashboard. A real storage account, a real certificate authority and a real cloud KMS remain
+untestable here; docs/lab/LAB-COST.md §6 says which platform properties the Azure half (Part B) can
+and cannot test.
 
 **One thing the lab cannot show, stated rather than implied.** `query-api` runs here with
 `SAC_DEV_TRUST_PRINCIPAL=1`, which accepts a development header in place of the authenticated
@@ -115,11 +117,13 @@ schema; it does not prove who is allowed to ask.
 
 | File | What it does |
 |---|---|
-| `build.mjs` | Cross-compiles the Go services and builds the lab images. `--auth` also compiles the two services with `-tags sac_sql_driver` for the device-auth lab; `--skip-docker` compiles only; `--production` prints the commands a networked host would run instead |
+| `build.mjs` | Cross-compiles the Go services and builds the lab images, including `contentlab` and the dashboard. `--auth` also compiles `ingest-api`, `control-api` and `content-vault` with `-tags sac_sql_driver` for the device-auth lab; `--skip-docker` compiles only; `--production` prints the commands a networked host would run instead |
 | `run.mjs` | Up, smoke test, report. Leaves the lab running; `--down` tears it down with the volume; `--no-up` smokes against something already running; `--auth` runs the opt-in device-auth lab against `authlab.compose.yaml` |
 | `docker-compose.yml` | The five containers, their addresses and their wiring. There is no `build:` stanza on purpose — see "The build constraints" |
-| `authlab.compose.yaml` | The opt-in device-auth lab: PostgreSQL with the real schema, `control-api` and `ingest-api` in `sql` mode, and the `edge` gateway stand-in. Driven by `run.mjs --auth` |
-| `edge/` | A standard-library Go program that simulates Application Gateway: TLS 1.3, an optional client certificate forwarded as `X-Client-Cert`, and `X-Forwarded-Proto`/`Host`. It imports no service package and is the same path a deployment uses |
+| `authlab.compose.yaml` | The opt-in device-auth lab: PostgreSQL with the real schema; `control-api`, `ingest-api` and `content-vault` in `sql` mode; the `edge` gateway stand-in; `contentlab`; and `query-api` with the dashboard in front of it. Driven by `run.mjs --auth`, or by `docker compose` directly once the PKI volume exists |
+| `edge/` | A standard-library Go program that simulates Application Gateway: TLS 1.3, an optional client certificate forwarded as `X-Client-Cert`, and `X-Forwarded-Proto`/`Host`. It imports no service package and is the same path a deployment uses. With `--content-url` it also forwards `/v1/content/upload` to the storage stand-in, which is a lab arrangement: in Azure a granted device writes straight to Blob storage |
+| `contentlab/` | A standard-library Go program that stands in for ciphertext storage in the device-auth lab: it verifies the signed upload URL, stores one object per grant, reports the upload to `control-api`'s finaliser, and serves the stored ciphertext back to the vault. It has no page and is not published |
+| `dbview.compose.yaml` | An optional read-only table browser (pgweb) over the device-auth lab's database, on <http://127.0.0.1:8089>. It connects as the database owner, so it sees every tenant; it is a lab tool, not a read path |
 | `authlab/` | The host-side tool `run.mjs --auth` builds and runs: it generates the development PKI (fresh every run, into `.authlab/`) and drives both auth modes end to end through the edge |
 | `tools/check-config-agreement.mjs` | **The checker that keeps the configuration honest.** It parses the `SAC_*` names out of `azure/main.bicep`, each service's own source and its Dockerfile, and fails the build when the deployment passes a name a binary never reads, or a binary reads a name nothing accounts for |
 
@@ -177,10 +181,51 @@ The edge answers on `https://localhost:8443` (`LAB_EDGE_PORT`), PostgreSQL on `l
 access-token key are generated fresh into `localdev/.authlab/` on every run, and that directory is
 gitignored.
 
+**`run.mjs --auth` regenerates that PKI every time it runs.** A device installed on the host
+(`installer/lab-msi.mjs`) pins the previous CA and holds a leaf the new one did not sign, so it is
+orphaned: rebuild and reinstall its MSI afterwards. To restart or update the lab's services without
+that, use compose directly, which reuses the PKI volume:
+
+```
+docker compose -f localdev/authlab.compose.yaml up -d
+```
+
+On the Windows host this was last run on, `run.mjs --auth` brought every service up healthy and then
+failed its smoke step with `exec /pki/authlab: no such file or directory`. That failure was not
+investigated; the three smoke bullets above were not re-proven in that run.
+
+### The content path and the dashboard
+
+The device-auth lab also runs the M3 content path (docs/02 §3, §10, §11) and the analyst's page:
+
+| Container | Reachable at | What it is |
+|---|---|---|
+| `content-vault` | not published | the tagged build, on the same database, with its development KEK in a file on its own volume and `contentlab` as its ciphertext endpoint. Search scope `lab` is named `full_text` |
+| `contentlab` | not published | the storage stand-in (see [The files](#the-files)) |
+| `query-api` | not published | the read path, trusting the development principal header, with the vault behind it |
+| `dashboard` | <http://127.0.0.1:8787/explore.html?transport=live> (`LAB_DASHBOARD_PORT`) | the Explore page: events, prompt-text search, and retrieval of an uploaded prompt. Its server names the tenant and the analyst (`LAB_ANALYST`, default `analyst@lab.test`) |
+
+`control-api` is given the vault's address and the upload signing key, and the edge is given
+`--content-url`. What this proved, with a Windows device installed from the lab MSI at M3: a prompt
+typed into Claude Code was held on the device, granted, sealed and uploaded through the edge; the
+finaliser recorded it; and the dashboard found it by its words and showed the typed text after a
+retrieval the vault approved and audited. What it does not prove: the upload URL is HMAC-signed for
+this stand-in, not a storage SAS; every service connects as the database owner, so the `sac_*` role
+grants and row-level security are not exercised; the analyst is a development principal; and the second
+approver is a name the analyst types, which the vault only requires to differ from the analyst.
+
+The lab tenant must be raised to M3 before content is granted: `node installer/seed.mjs --ceiling m3`
+sets the ceiling, a `kek_id` (a schema constraint at M3), a content budget and the `full_text` search
+tier. `installer/lab-msi.mjs` does this for the mode it builds. `run.mjs --auth` itself seeds the
+tenant at `m1` and leaves an existing row alone.
+
+`docker compose -f localdev/dbview.compose.yaml up -d` adds a read-only table browser on
+<http://127.0.0.1:8089> for looking at the rows directly.
+
 ### The module-cache precondition
 
-`build.mjs --auth` compiles the two services with `-tags sac_sql_driver`, which is the only thing that
-links `github.com/jackc/pgx/v5` into them, and it runs with `GOPROXY=off`. The tagged build therefore
+`build.mjs --auth` compiles `ingest-api`, `control-api` and `content-vault` with `-tags sac_sql_driver`,
+which is the only thing that links `github.com/jackc/pgx/v5` into them, and it runs with `GOPROXY=off`. The tagged build therefore
 needs `pgx` (v5.11.0) already in the host module cache; a host without it fails the tagged compile and
 leaves the default lab untouched, because the tag is opt-in. This is the same constraint that keeps
 the default lab in `memory` mode (see "What is not fixed"): the acceptance gates run every Go package
@@ -221,17 +266,20 @@ have no flag. The table lists the settings the lab and the deployment set; the b
 | database host | `--pg-host` | `SAC_PG_HOST` | **deployment** |
 | database name | `--pg-database` | `SAC_PG_DATABASE` | **deployment** |
 | identity | `--role` | `SAC_ROLE` | **deployment** |
-| blob endpoint | `--blob-ciphertext-endpoint` | `SAC_BLOB_CIPHERTEXT_ENDPOINT` | **deployment** (read, validated, reported unused — see below) |
+| blob endpoint | `--blob-ciphertext-endpoint` | `SAC_BLOB_CIPHERTEXT_ENDPOINT` | **deployment** (ingest-api: read, validated, reported unused; content-vault: read with a plain GET — see below) |
 | telemetry | — | `SAC_APPINSIGHTS` | **deployment** (read, validated, never logged, not exported to) |
 | region | `--region` | `SAC_REGION` | **nobody yet** — see the gap below |
 | key backend | `--key-backend` | `SAC_KEY_BACKEND` | image (`local`) |
 | internal ingress | (n/a) | `SAC_INTERNAL_ONLY` | **deployment**; also the vault's acknowledgement for a non-loopback bind |
 | non-loopback ack | `--allow-non-loopback` | `SAC_ALLOW_NON_LOOPBACK` | image/laptop spelling of the same statement |
 
-Two of those deserve their own sentence. `SAC_BLOB_CIPHERTEXT_ENDPOINT` and `SAC_APPINSIGHTS` are
-passed by the deployment to processes that do not use them: the endpoint is validated at boot and the
-startup log says plainly that no blob I/O happens, and a connection string nobody exports to is
-reported as configured. Reading a parameter and saying it is unused is honest; leaving it unread is
+Two of those deserve their own sentence. `SAC_APPINSIGHTS` is passed by the deployment to processes
+that do not use it: a connection string nobody exports to is reported as configured.
+`SAC_BLOB_CIPHERTEXT_ENDPOINT` is validated at boot by both services. ingest-api's startup log says
+plainly that it performs no blob I/O. content-vault, when it is set, reads a stored object from it with
+an unauthenticated GET to serve an approved redemption and to index a `full_text` tenant's content, and
+its startup log says that too: this works against the lab's storage stand-in and would not against a
+storage account. Reading a parameter and saying what is done with it is honest; leaving it unread is
 what F3 was.
 
 **The one known gap** is `SAC_REGION`: the binary refuses a tenant pinned to another region (§12), and
@@ -280,7 +328,10 @@ But they do collide, and the failure is worth recognising:
 
 Neither failure is silent, and each names the port or the container — which is the part worth having.
 
-**F4 — no PostgreSQL driver.** `--store sql` refuses to start in both services, and the refusal names
+**F4 — no PostgreSQL driver in the default build.** This is about the default (untagged) build, which
+the default lab runs; the device-auth lab runs `ingest-api`, `control-api` and `content-vault` built
+with `-tags sac_sql_driver`, which do serve from PostgreSQL. In the default build `--store sql` refuses
+to start in the Go services, and the refusal names
 the driver (`github.com/jackc/pgx/v5/stdlib`), the variables it read, what *is* verified (every
 statement, executed against a live PostgreSQL by the live-schema tests) and the exact commands a
 networked host runs. It does **not** fall back to memory, and no driver is vendored that this host

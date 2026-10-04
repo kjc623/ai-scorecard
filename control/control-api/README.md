@@ -1,9 +1,10 @@
-# control-api — device enrolment and DPoP token issuance
+# control-api — device enrolment, DPoP token issuance and content grants
 
 The device-facing control plane ([ADR 0020](../../docs/adr/0020-device-transport-is-application-gateway-with-a-pluggable-authenticator.md)
 decisions 3 and 4; [docs/02-ingest-and-transport.md](../../docs/02-ingest-and-transport.md) §5.1,
-§5.2). It turns a bootstrap credential into a per-device credential and a device credential into a
-short-lived, sender-constrained access token. Go, standard library only in the default build.
+§5.2, §5.5, §10). It turns a bootstrap credential into a per-device credential and a device credential
+into a short-lived, sender-constrained access token, and it decides whether one event's content may be
+uploaded. Go, standard library only in the default build.
 
 ## The endpoints, exactly
 
@@ -29,6 +30,36 @@ whose `sub` is `device_id` and whose `tenant_id` names the tenant the credential
 header is a proof bound to `htm`/`htu` with a `jti`. Both are verified against the registered
 credential and the proof key must equal the registered key. The issued
 access token is DPoP-bound and carries no bearer fallback. `token_type` is always `DPoP`.
+
+**`POST /v1/content/grant`** takes `protocol.ContentGrantRequest` and answers with
+`protocol.ContentGrantResponse` (`endpoint/protocol/content.go`). The device authenticates with its
+current credential — the forwarded certificate for `x509`, or the access token plus a DPoP proof for
+`dpop` — and the tenant and device come from that credential, never the body. The decision
+(`internal/content`) reads server-side state only:
+
+| Outcome | When |
+|---|---|
+| `404 unknown_event` | the device has no such observation; another device's event is not found |
+| `422 mode_violation` | the event is not an M3 prompt, so there is no content to upload |
+| `409 grant_consumed` | the submission's content is already `uploaded` or `shredded` |
+| `413 oversize` | the declared object is over the per-object cap (64 MiB) |
+| `200` `denied` | `mode_not_permitted` (tenant ceiling below M3), `retention_expired`, or `over_budget` (`content_budget_bytes_per_day`, which defaults to 0) |
+| `200` `granted` | one upload URL, the object key content-vault minted, and the metadata headers the device repeats on the upload |
+
+A denial is terminal for the event and is returned again on a repeat request; a live grant is returned
+again with the same `grant_id` and upload URL. The upload URL is signed with a key shared with the
+storage layer (one object, one grant, an expiry of at most 15 minutes) — it is **not** a storage
+user-delegation SAS, which this build does not mint. The first grant request for an event moves the
+submission's `content_state` to `local_only`. The route answers 503 unless a vault URL, the SQL store
+and the signing key are all configured.
+
+**`POST /internal/v1/content/finalise`** is the finaliser (§10.4), called by the storage layer when an
+upload lands and authenticated by an HMAC of the body under the same signing key. It is not a device
+route and the edge does not forward it. The object is promoted only if the grant is live and names
+this object and event, the bytes the store measured are the bytes the device declared, and the event
+has no content yet; then content-vault records the object, the submission moves to `uploaded`, and the
+bytes are added to `ops.usage_daily.content_bytes_added`. A mismatch voids the grant and answers 422,
+which tells the storage layer to delete the staged bytes.
 
 `/healthz` and `/readyz` are deployment infrastructure, not device APIs. `/readyz` opens a store
 transaction and reads `ops.tenant`, so a broken database answers 503 while liveness stays a restart
@@ -61,8 +92,9 @@ Where a setting has both a flag and an environment variable, **a flag wins**. De
 `SAC_*`: `SAC_ROLE`, `SAC_PG_HOST`, `SAC_PG_DATABASE`, `SAC_KEYVAULT_URI` and `SAC_APPINSIGHTS` are
 passed by `azure/main.bicep`; `SAC_HTTP_ADDR`, `SAC_STORE`, `SAC_CREDENTIAL_TTL` and
 `SAC_ENROLMENT_TOKEN_TTL` are image defaults; `SAC_REGION`, `SAC_CA_CERT_PEM`, `SAC_CA_KEY_PEM`,
-`SAC_TOKEN_ISSUER`, `SAC_TOKEN_AUDIENCE` and `SAC_DPOP_TOKEN_KEY_PEM` are documented deployment gaps
-(the binary reads them, no deployment passes them yet).
+`SAC_TOKEN_ISSUER`, `SAC_TOKEN_AUDIENCE`, `SAC_DPOP_TOKEN_KEY_PEM`, `SAC_VAULT_URL` and
+`SAC_UPLOAD_SIGNING_KEY` are documented deployment gaps (the binary reads them, no deployment passes
+them yet; the local auth lab does).
 [`cmd/control-api/infra_agreement_test.go`](cmd/control-api/infra_agreement_test.go) fails if the two
 directions disagree.
 
@@ -93,7 +125,16 @@ is the reuse.
 2. **`/v1/policy` and `/v1/health`** are named in §5.2 and §5.4 and are not implemented here. The
    policy bundle has no writer in this build, which is why `ops.policy_bundle.signed_digest` remains
    the schema checker's one excused digest column — this service does not write that table.
-3. **Content grants (§5.5, §10)** are not implemented.
+3. **Content grants (§5.5, §10) are built for the lab, not for a deployment.** What differs from the
+   design: `not_policy_relevant` is never produced, because the tenant retention criteria it is decided
+   on have no stored form, so every M3 event is treated as relevant; `410` is not returned — a request
+   after an expired grant is decided afresh, and no job sweeps expired or voided grants; the upload
+   credential is an HMAC-signed URL, not a SAS; and the grant path needs three database grants the
+   schema does not give `sac_control` (a read of `ingest.observation`, the update of
+   `ingest.submission.content_state`, and the write of `ops.usage_daily`). The lab connects as the
+   database owner, so none of the three is exercised there. Content grants have only a SQL store: under
+   `-store memory` they are disabled. There is no unique index on `(tenant_id, event_id)` for live
+   grants, so two concurrent first requests for one event could both be granted.
 4. **The enrolment token is minted out of band.** The request path verifies and redeems a token; the
    MDM provisioning path that mints one (`enrol.MintEnrolmentToken` is the primitive) is not wired to
    an operator surface.
@@ -129,4 +170,9 @@ is single-use; the region mismatch fails closed); `internal/token` (a verifiable
 bound to the proof's key; a bad assertion, a bad proof and a wrong `htu` are
 refused); `internal/httpapi` (the endpoints and the common error envelope end to end, including
 re-enrolment with an access token); `internal/signer` (a fresh CA per call, a verifiable client leaf,
-and the Key Vault refusal); and `internal/store/memory.go` mirrors the SQL the tagged test executes.
+and the Key Vault refusal); `internal/content` (a granted decision, the three refusals, the three
+denials and that a denial is terminal and mints no key, and the finaliser's digest, object and
+second-write rejections, all against a fake store and a fake vault); and `internal/store/memory.go`
+mirrors the SQL the tagged test executes. The grant path's SQL (`internal/content/sql.go`) and its HTTP
+handlers have no test of their own: they were exercised end to end in the local auth lab, with a
+Windows device at M3, and by nothing else.

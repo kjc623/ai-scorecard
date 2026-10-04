@@ -1,12 +1,14 @@
 # `src/http/` — the service surface
 
 The transport that turns the library next door into something a container can run. It answers the
-two paths the deployment probes and the one read path the dashboard calls.
+two paths the deployment probes and the one read path the dashboard calls, and forwards the two
+content reads the dashboard's Explore page makes.
 
 | File | Responsibility |
 |---|---|
 | `config.js` | The deployment's `SAC_*` vocabulary in one place, resolved once at startup |
-| `server.js` | The three routes, the body ceiling, the concurrency gate, and error rendering |
+| `server.js` | The three routes, the body ceiling, the concurrency gate, and error rendering; and the dispatch of the two content routes |
+| `content.js` | `POST /v1/content-search` and `POST /v1/content/retrieval`, forwarded to `content-vault` |
 | `pool.js` | Borrowing a connection per request, and clearing its tenant before reuse |
 | `main.js` | The entry point: resolve config, prove the database, listen, drain on `SIGTERM` |
 
@@ -19,6 +21,15 @@ repeats the pipeline's decision instead of forming a second opinion about it.
 
 That matters more than it sounds: two places deciding what an error means is two places that can
 disagree, and the one a client sees would be whichever ran last.
+
+The same holds for content, one step further out. `content.js` does not decide whether content may be
+searched or read: it establishes who is asking from the session, never from the body, and forwards the
+request to `content-vault`, which owns the search tier, the four-eyes rule, the single-use grant and
+the audit row. A refusal is the vault's, carried through with its reason code. What this layer adds to
+a retrieval is the sequence — the vault's retrieval request, then the redemption of the grant it
+returns — and the relay of the content the vault serves, in the response body. That last part is as
+built, not as designed: docs/02 §11 has content leave the vault by a short-lived URL so it never
+transits this service.
 
 ## Three things that are easy to get wrong here
 

@@ -21,6 +21,7 @@ import { createServer } from 'node:http';
 import { QueryError } from '../errors.js';
 import { plan, executePlan } from '../plan.js';
 import { RESULT_STATES } from '../errors.js';
+import { CONTENT_PATHS, createContentForwarder } from './content.js';
 
 /** The two paths azure/modules/container-app.bicep probes, and the one read path docs/04 §5 names. */
 export const PATHS = Object.freeze({
@@ -271,6 +272,7 @@ export function createHandler({
   requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
   gate = createGate({ maxConcurrency: cfg?.limits?.maxConcurrency ?? 8, maxQueue: cfg?.limits?.maxQueue ?? 32 }),
   out = null,
+  contentForwarder = null,
 } = {}) {
   if (!cfg) throw new Error('createHandler needs a configuration');
   const source = connectionSource({ pool, client, log });
@@ -421,11 +423,48 @@ export function createHandler({
     }
   }
 
+  const forwarder = contentForwarder ?? createContentForwarder({ vaultUrl: cfg.contentVaultUrl, scope: cfg.contentSearchScope, log });
+
+  /**
+   * The two content reads (content.js). They are forwarded, never answered here: this service
+   * establishes who is asking and the vault decides everything else. They share the concurrency
+   * gate with /v1/query so a slow vault cannot exhaust the process.
+   */
+  async function content(req, res, path) {
+    const principal = principalOf(req, cfg);
+    if (!principal) {
+      sendJson(res, 403, { state: 'refused', error: { code: 'role', message: 'no tenant was established for this request' } });
+      return;
+    }
+    let body;
+    try {
+      const raw = await readBody(req);
+      body = raw.trim() === '' ? {} : JSON.parse(raw);
+    } catch (error) {
+      const status = error instanceof HttpError ? error.status : 400;
+      sendJson(res, status, { state: 'refused', error: { code: status === 413 ? 'body_too_large' : 'malformed_document', message: 'the request body could not be read as JSON' } });
+      return;
+    }
+    try {
+      await gate.acquire();
+    } catch {
+      sendJson(res, 429, { state: 'refused', error: { code: 'busy', message: 'the service is at its concurrency limit; retry shortly' } });
+      return;
+    }
+    try {
+      const answer = await forwarder.handle(path, principal, body);
+      sendJson(res, answer.status, answer.body);
+    } finally {
+      gate.release();
+    }
+  }
+
   return function handler(req, res) {
     const url = req.url ?? '/';
     if (req.method === 'GET' && url.split('?')[0] === PATHS.LIVENESS) return liveness(res);
     if (req.method === 'GET' && url.split('?')[0] === PATHS.READINESS) return void readiness(res);
     if (req.method === 'POST' && url.split('?')[0] === PATHS.QUERY) return void query(req, res);
+    if (req.method === 'POST' && Object.values(CONTENT_PATHS).includes(url.split('?')[0])) return void content(req, res, url.split('?')[0]);
 
     if (url.split('?')[0] === PATHS.QUERY || url.split('?')[0] === PATHS.LIVENESS || url.split('?')[0] === PATHS.READINESS) {
       res.writeHead(405, { 'content-type': 'application/json; charset=utf-8', allow: 'GET, POST' });

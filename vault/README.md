@@ -28,18 +28,23 @@ tier permits, and delete that index by row when erasure cannot reach it with a k
 - **It never holds a KEK it could export.** The key interface is six methods wide and has no
   `GetKey`/`ExportKey`/`ListKeys`; a test asserts the method set, because an interface that cannot
   express the request is the only version of "the KEK never leaves the key store" a reviewer can check.
-- **It does no blob I/O.** This build has no blob client, so `Redeem` returns the object's reference and
-  digests, and bytes only if the binary wires `FetchBlob`. A deployment returns a short-lived storage
-  URL instead.
+- **It has no blob client and mints no retrieval URL.** A deployment returns a short-lived storage URL;
+  this build does not. Given `--blob-ciphertext-endpoint` it reads a stored object from that endpoint
+  with a plain GET, checks it against the recorded digest, opens it with the object key and returns
+  the content in the response; without it, `Redeem` returns the object's reference and digests and no
+  bytes. That read is a development stand-in, exercised against the local lab's storage stand-in and
+  against no storage account.
 - **It has no working cloud KMS.** `--key-backend kms` refuses to start unless an operator
   acknowledges that the backend is unimplemented, and every method of the KMS wrapper returns
   `ErrNotImplemented`. Modes 2 and 3 are interfaces and refusals, not working code.
 
 ## State, stated plainly
 
-The service is Go on the standard library only: its module carries no PostgreSQL driver (ingest-api
-has one behind a build tag; content-vault does not), so
-`--store sql` refuses to start and the SQL lives as statement text verified against the live schema by a
-harness. [content-vault/README.md](content-vault/README.md) carries the grant matrix, the key hierarchy
-as built, and the full "not verified" list — including the one host-specific reason the Go integration
-test skips here.
+The service is Go on the standard library only in its default build, where `--store sql` refuses to
+start and the SQL is statement text verified against the live schema by a harness. A build with the
+`sac_sql_driver` tag links a PostgreSQL driver, as ingest-api and control-api do, and serves from the
+database; that is how the local auth lab runs it, where the whole content path — a device upload under
+a grant, the object recorded and indexed, an approved retrieval returning the content — has been run
+end to end. [content-vault/README.md](content-vault/README.md) carries the grant matrix, the key
+hierarchy as built, and the full "not verified" list — including the one host-specific reason the Go
+integration test skips here.

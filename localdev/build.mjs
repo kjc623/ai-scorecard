@@ -79,6 +79,9 @@ const IMAGES = [
   // edge is the Application Gateway stand-in: a standard-library-only program with its own tiny
   // image, so the lab can prove the forwarded-certificate contract without a real gateway.
   { name: 'edge', dir: 'localdev/edge', pkg: '.', kind: 'go' },
+  // contentlab is the stand-in for ciphertext storage and the analyst's retrieval page, which is
+  // what lets the auth lab run the M3 content path end to end (docs/02 §10, §11).
+  { name: 'contentlab', dir: 'localdev/contentlab', pkg: '.', kind: 'go' },
 ];
 
 // Binaries that run on the host, not in a container. authlab generates the dev PKI and drives the
@@ -107,6 +110,16 @@ const SQL_IMAGES = [
     image: 'sac/control-api:lab-auth',
     dockerfile: 'control/control-api/Dockerfile',
   },
+  // The vault serves from the same database in the auth lab: an object a device uploads has to be
+  // found again by the analyst's retrieval, and by the vault after a restart.
+  {
+    name: 'content-vault',
+    dir: 'vault/content-vault',
+    pkg: './cmd/content-vault',
+    binary: 'vault/content-vault/bin/content-vault-sql',
+    image: 'sac/content-vault:lab-auth',
+    dockerfile: 'vault/content-vault/Dockerfile',
+  },
 ];
 
 // Images with no host-compiled binary: a plain Dockerfile built at package time. The schema image
@@ -114,6 +127,9 @@ const SQL_IMAGES = [
 // daemons that replace a single-file bind with an empty directory (which one did).
 const PLAIN_IMAGES = [
   { name: 'schema', dockerfile: 'localdev/schema/Dockerfile' },
+  // The analyst's page. It has no build step and no dependencies; the image carries the source and
+  // the small server that forwards its three endpoints to query-api.
+  { name: 'dashboard', dockerfile: 'query/dashboard/Dockerfile' },
 ];
 
 function run(cmd, args, opts = {}) {

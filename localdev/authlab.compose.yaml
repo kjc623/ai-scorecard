@@ -93,6 +93,14 @@ services:
       - sac-authlab
       - --token-audience
       - shadow-ingest
+      # The content grant path (docs/02 §5.5, §10): control-api decides, and asks the vault for the
+      # object key of a granted upload.
+      - --vault-url
+      - http://content-vault:8080
+    environment:
+      # Signs the upload URL a granted device writes to; contentlab holds the other copy. A lab
+      # literal, like the database password above.
+      SAC_UPLOAD_SIGNING_KEY: sac-lab-only-upload-signing-key
     volumes:
       # A named volume, populated before `up` by run.mjs from the sac/authlab-pki:lab image, rather
       # than a host-path bind: some Docker daemons present a bind as an empty stub, which is why the
@@ -104,6 +112,93 @@ services:
       timeout: 3s
       retries: 20
       start_period: 3s
+
+  # content-vault — the only component that can unwrap a content key. It mints the object key for a
+  # granted upload, records the finalised object, and serves an approved retrieval. Not published
+  # and not routed by the edge: internal ingress only (D7). It serves from the same database, keeps
+  # its development KEK in a file on its own volume so a restart does not orphan stored content,
+  # and reads stored ciphertext from contentlab.
+  content-vault:
+    image: sac/content-vault:lab-auth
+    depends_on:
+      schema:
+        condition: service_completed_successfully
+    # Root only so the key file can be written to a fresh named volume; the image's own user cannot.
+    user: "0:0"
+    command:
+      - serve
+      - --store
+      - sql
+      - --dsn
+      - postgres://postgres:sac-lab-only@postgres:5432/shadow?sslmode=disable
+      - --key-file
+      - /keys/local-kek.json
+      - --blob-ciphertext-endpoint
+      - http://contentlab:8080/blob
+    environment:
+      # The search scope the lab's policy names, and its tier. A tenant's full_text tier is only a
+      # ceiling: a scope nobody names carries disabled (docs/06 §6.3).
+      CONTENT_VAULT_SCOPE_TIERS: lab=full_text
+    volumes:
+      - authvaultkeys:/keys
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8080/healthz"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
+
+  # contentlab — the stand-in for ciphertext storage: the edge forwards a granted upload to it, it
+  # reports the upload to control-api's finaliser, and the vault reads the stored object back for
+  # an approved retrieval. Not published: it has no page. Content is read in the dashboard.
+  contentlab:
+    image: sac/contentlab:lab
+    command:
+      - --control-url
+      - http://control-api:8080
+    environment:
+      SAC_UPLOAD_SIGNING_KEY: sac-lab-only-upload-signing-key
+    volumes:
+      - authcontent:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8080/healthz"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
+
+  # query-api — the read path, and the only way a browser reaches content: it forwards the two
+  # content reads to content-vault under its own identity. The authenticated session is not built,
+  # so it trusts the development principal header the dashboard's server adds. Not published.
+  query-api:
+    image: sac/query-api:lab
+    depends_on:
+      schema:
+        condition: service_completed_successfully
+    environment:
+      SAC_PG_HOST: postgres
+      SAC_PG_DATABASE: shadow
+      SAC_PG_USER: postgres
+      SAC_PG_PASSWORD: sac-lab-only
+      SAC_PG_SSLMODE: disable
+      SAC_DEV_TRUST_PRINCIPAL: "1"
+      SAC_CONTENT_VAULT_URL: http://content-vault:8080
+      SAC_CONTENT_SEARCH_SCOPE: lab
+
+  # dashboard — the analyst's one page: http://127.0.0.1:8787/explore.html?transport=live. Events,
+  # findings, devices and the audit trail come from query-api; prompt-text search and approved
+  # content retrieval go through query-api to content-vault. Its server names the tenant and the
+  # analyst (a development stand-in for the session); the page chooses neither.
+  dashboard:
+    image: sac/dashboard:lab
+    depends_on:
+      - query-api
+    environment:
+      SAC_QUERY_API_URL: http://query-api:8080
+      SAC_DEV_TENANT: 11111111-1111-1111-1111-111111111111
+      SAC_DEV_ACTOR: ${LAB_ANALYST:-analyst@lab.test}
+    ports:
+      - "127.0.0.1:${LAB_DASHBOARD_PORT:-8787}:8787"
 
   # ingest-api — the write path. It re-verifies every credential against ops.* and the same CA the
   # edge forwards from, so a certificate the dev CA did not sign is refused here and not trusted by
@@ -167,6 +262,8 @@ services:
       - http://control-api:8080
       - --ingest-url
       - http://ingest-api:8080
+      - --content-url
+      - http://contentlab:8080
     volumes:
       # A named volume, populated before `up` by run.mjs from the sac/authlab-pki:lab image, rather
       # than a host-path bind: some Docker daemons present a bind as an empty stub, which is why the
@@ -181,6 +278,10 @@ services:
 
 volumes:
   authpgdata:
+  # The vault's development KEK and the stored ciphertext. Both go with `--down`, together with
+  # the database that references them.
+  authvaultkeys:
+  authcontent:
   # Populated before `up` by run.mjs --auth from sac/authlab-pki:lab (which bakes localdev/.authlab
   # in with a build-time COPY), then mounted read-only into the three services. Pinned so run.mjs
   # can target it without guessing the compose project prefix.

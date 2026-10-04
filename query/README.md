@@ -5,8 +5,8 @@ answers.
 
 | Directory | What it is |
 |---|---|
-| [`query-api/`](query-api/) | The only read path. A closed query DSL compiled server-side to parameterised SQL, plus the HTTP service that serves it |
-| [`dashboard/`](dashboard/) | The web application the ten questions are answered in |
+| [`query-api/`](query-api/) | The only read path. A closed query DSL compiled server-side to parameterised SQL, plus the HTTP service that serves it. The same service forwards the two content reads to `content-vault`, which it cannot answer itself |
+| [`dashboard/`](dashboard/) | The web application the ten questions are answered in, and the Explore page, where an analyst searches prompt text and retrieves an event's content |
 
 ## Why it is two directories and not one
 
@@ -39,6 +39,16 @@ frontend.
 7. The response is one envelope carrying the data *and* its freshness, coverage and suppression
    state — a number never travels without the conditions it was measured under.
 
+## Content is a different path
+
+No query returns content, and the DSL has no text predicate. Prompt-text search and approved content
+retrieval are two separate requests (`POST /v1/content-search`, `POST /v1/content/retrieval`) that
+`query-api` forwards to `content-vault` under its own identity, adding who is asking from the session.
+The vault decides everything — the search tier, the case reference and second approver, the single-use
+grant, the audit row written first — and is the only component that can open content. The dashboard's
+Explore page is the surface for both. As built, the retrieved content is relayed in `query-api`'s
+response body, where the design has the vault mint a short-lived retrieval URL instead.
+
 ## Where the specification lives
 
 [`docs/04-dashboard-and-query.md`](../docs/04-dashboard-and-query.md) is the specification; the
@@ -49,4 +59,6 @@ document is long and section-numbered, and both directories cite it by section.
 
 `localdev/` brings up `query-api` against a real PostgreSQL with the schema applied, and runs a
 closed-DSL query end to end as one of its checks. The dashboard is a static application and is served
-by its own tooling.
+by its own tooling. The local auth lab (`localdev/authlab.compose.yaml`) runs both together, with the
+content vault behind `query-api`, and serves the Explore page at
+<http://127.0.0.1:8787/explore.html?transport=live>.

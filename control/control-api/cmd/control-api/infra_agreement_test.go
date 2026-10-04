@@ -148,6 +148,8 @@ func TestEveryReadNameIsEitherPassedOrDocumented(t *testing.T) {
 		EnvTokenIssuer:     "§5.2: the access token's `iss`. The binary has a default only when configured; the deployment passes none",
 		EnvTokenAudience:   "§5.2: the access token's `aud` — see " + EnvTokenIssuer,
 		EnvDPoPTokenKeyPEM: "the access-token signing key. The binary refuses to start without it; infra/main.bicep has keyVaultEnv: [] today, so no deployment injects it yet",
+		EnvVaultURL:         "docs/02 §5.5: content-vault's internal address, which control-api asks for an object key when it grants an upload. infra/main.bicep passes none, so content grants are disabled in Azure until it does",
+		EnvUploadSigningKey: "docs/02 §10.3: the key the storage layer verifies an upload URL with. In Azure the upload credential is a storage user-delegation SAS instead, which this build does not mint — see " + EnvVaultURL,
 	}
 
 	var undocumented []string
