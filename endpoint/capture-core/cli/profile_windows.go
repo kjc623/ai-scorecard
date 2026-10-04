@@ -16,14 +16,8 @@ func defaultManagedDir() string { return `C:\ProgramData\shadow-ai-capture` }
 // what Windows shells actually inherit, set via `setx /M` below (§14.1).
 func defaultProfilePath(dir string) string { return filepath.Join(dir, "shim.cmd") }
 
-// defaultLauncherPath is the generated launcher that sets the environment and runs Claude Code.
-func defaultLauncherPath(dir string) string { return filepath.Join(dir, "claude-sac.cmd") }
-
 // renderProfile is a batch profile on Windows.
 func renderProfile(vars []envVar) string { return renderCmd(vars) }
-
-// renderLauncher is the batch launcher on Windows.
-func renderLauncher(vars []envVar) []byte { return []byte(renderCmdLauncher(vars)) }
 
 // installPlatform sets each variable in the machine environment via `setx /M`. A failure
 // here is degraded, not fatal: the managed files are written, and the missing machine

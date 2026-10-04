@@ -4,7 +4,6 @@ package cli
 
 import (
 	"context"
-	"path/filepath"
 
 	"github.com/shadow-ai-capture/device/protocol"
 )
@@ -17,11 +16,7 @@ func defaultManagedDir() string { return "/etc/shadow-ai-capture" }
 
 func defaultProfilePath(string) string { return "/etc/profile.d/shadow-ai-capture.sh" }
 
-func defaultLauncherPath(dir string) string { return filepath.Join(dir, "claude-sac") }
-
 func renderProfile(vars []envVar) string { return renderShellProfile(vars) }
-
-func renderLauncher(vars []envVar) []byte { return []byte(renderPOSIXLauncher(vars)) }
 
 func (p *Provider) installPlatform(ctx context.Context, rp resolvedPaths, vars []envVar) error {
 	_ = ctx

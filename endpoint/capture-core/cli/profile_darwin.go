@@ -5,7 +5,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 
 	"github.com/shadow-ai-capture/device/protocol"
 )
@@ -30,14 +29,8 @@ func defaultProfilePath(dir string) string {
 	return dir + "/shadow-ai-capture.sh"
 }
 
-// defaultLauncherPath is the generated launcher that sets the environment and runs Claude Code.
-func defaultLauncherPath(dir string) string { return filepath.Join(dir, "claude-sac") }
-
 // renderProfile is the POSIX shell profile on macOS.
 func renderProfile(vars []envVar) string { return renderShellProfile(vars) }
-
-// renderLauncher is the POSIX launcher on macOS.
-func renderLauncher(vars []envVar) []byte { return []byte(renderPOSIXLauncher(vars)) }
 
 // installPlatform appends a marker-guarded `source` line to /etc/zshenv via the Runner.
 // Failure is degraded, not fatal: the managed files are already written, and a missing

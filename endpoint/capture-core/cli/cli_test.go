@@ -145,17 +145,6 @@ func TestStartWritesFilesWithContentAndPermissions(t *testing.T) {
 		}
 	}
 
-	// Launcher: sets the same environment and execs claude, so capture does not depend on the
-	// machine environment reaching the agent's shell.
-	launcherPath := filepath.Join(cfg.ManagedDir, "claude-sac")
-	if got := fileMode(t, launcherPath); got != 0o755 {
-		t.Fatalf("launcher mode = %o, want 0755", got)
-	}
-	launcher, _ := os.ReadFile(launcherPath)
-	if !strings.Contains(string(launcher), "exec claude \"$@\"") {
-		t.Fatalf("launcher does not exec claude:\n%s", launcher)
-	}
-
 	// Env file (Linux): KEY=VALUE lines.
 	env, err := os.ReadFile(cfg.EnvFile)
 	if err != nil {
@@ -437,9 +426,9 @@ func TestCounters(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	// emitted: ca bundle + profile + launcher + env file = 4 on Linux.
-	if got := p.Counters().Cumulative()[protocol.CounterEmitted]; got != 4 {
-		t.Fatalf("emitted = %d, want 4", got)
+	// emitted: ca bundle + profile + env file = 3 on Linux.
+	if got := p.Counters().Cumulative()[protocol.CounterEmitted]; got != 3 {
+		t.Fatalf("emitted = %d, want 3", got)
 	}
 
 	// One healthy check: observed increments, dropped stays zero.

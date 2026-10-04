@@ -19,10 +19,6 @@ Its two jobs, per §4.5's table:
 - a managed profile exporting `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` (both cases),
   `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`,
   `NODE_USE_ENV_PROXY=1`, and (when `node_require`) `NODE_OPTIONS=--require <node-proxy.cjs>`;
-- a **launcher** (`claude-sac` / `claude-sac.cmd`) that sets the same environment and execs
-  `claude`. This is what guarantees capture: a coding agent started from an IDE, from a
-  freshly-opened shell, or from Explorer does not depend on the machine environment having been
-  re-read after `setx /M`;
 - on Linux a machine-environment file beside the profile; on macOS a marker-guarded loader line in
   `/etc/zshenv`; on Windows a `shim.cmd` and `setx /M` for each variable (a non-admin failure is
   degraded, not fatal);
@@ -32,11 +28,17 @@ Its two jobs, per §4.5's table:
   the device CA already reaches Node through `NODE_EXTRA_CA_CERTS` and replacing the trust store
   would break the public destinations the proxy blind-tunnels.
 
-**Two client paths, both covered.** Claude Code (and the Anthropic SDK) use global `fetch`, which
-does **not** read `HTTP(S)_PROXY` below Node 24 — hence `NODE_USE_ENV_PROXY=1` on Node 24+, and
-Claude Code's own `HTTPS_PROXY` support on older runtimes. Clients using the `http`/`https` stack are
-covered by the `--require` bootstrap. `endpoint/testlab` exercises both an `https.get` client and a
-`fetch` client, plus the launcher, end to end.
+**Two client paths, both covered, and neither requires the user to change how they launch a
+tool.** The shim is transparent: it configures the *machine/user environment* and the OS trust
+store (in production these are delivered by MDM/GPO — docs/05 §6), so the user opens a terminal and
+runs `claude` as usual, and a new login session inherits the proxy and CA. Claude Code's `fetch`
+path is covered on Node 24+ by `NODE_USE_ENV_PROXY` and on older runtimes by Claude Code's own
+`HTTPS_PROXY` support; clients using the `http`/`https` stack are covered by the `--require`
+bootstrap. `endpoint/testlab` exercises both from a plain login shell, with no wrapper and no manual
+export. (As with any environment change, a process that was already running when the shim started
+does not pick it up until it is restarted; that is standard for env-based configuration, and the
+health row's `shim_not_inherited` detail exists so a missing inheritance is visible rather than
+silent.)
 
 The files are staged under the bundle's `cli_shim.managed_dir`, the `--shim-dir` flag, or a per-OS
 default. Start is transactional: a failure removes everything it wrote, because a half-written

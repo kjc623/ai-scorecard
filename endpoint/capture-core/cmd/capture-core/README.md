@@ -132,24 +132,20 @@ C:\architecture\bin\sac-bundle.exe --out C:\ProgramData\ShadowAICapture\bundle `
 
 ## Capturing Claude Code
 
-With `--cli-shim`, the shim writes a launcher — `<shim-dir>/claude-sac` on Linux/macOS,
-`<shim-dir>\claude-sac.cmd` on Windows — that sets `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` (both
-cases), `NODE_EXTRA_CA_CERTS`, `NODE_USE_ENV_PROXY=1` and, when the bundle sets it, the
-`NODE_OPTIONS=--require node-proxy.cjs` bootstrap, then execs `claude`. **Launch Claude Code through
-the launcher**, not directly, so capture does not depend on `setx /M` having reached the shell:
+Capture is **transparent**. With `--cli-shim`, the shim configures the machine/user environment
+(`HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` in both cases, `NODE_EXTRA_CA_CERTS`, `NODE_USE_ENV_PROXY=1`,
+and — when the bundle sets it — the `NODE_OPTIONS=--require node-proxy.cjs` bootstrap) and the OS
+trust store. In a real deployment the environment and trust configuration are delivered by the
+customer's MDM/Group Policy ([docs/05 §6](../../../../docs/05-platform-delivery.md)); the user opens
+a terminal and runs `claude` exactly as before. There is no vendor wrapper to launch and no
+per-command change.
 
-```sh
-/var/db/shadow-ai-capture/claude-sac        # macOS (or the --shim-dir)
-/etc/shadow-ai-capture/claude-sac           # Linux
-```
-```powershell
-C:\ProgramData\ShadowAICapture\shim\claude-sac.cmd
-```
-
-Then confirm capture in the health file: the `proxy.tls` row's `observed`/`emitted` counters climb
-for `api.anthropic.com`. If they do not, the agent is not routing through the proxy — check that it
-was started from the launcher (or a new shell that inherited the machine environment), that
-`api.anthropic.com` is in the bundle's interception scope, and that the proxy is listening.
+Confirm capture in the health file: after a prompt, the `proxy.tls` row's `observed`/`emitted`
+counters climb for `api.anthropic.com`. If they do not, the agent did not inherit the environment —
+check that the terminal/session was started after the shim ran (`setx /M` and shell profiles apply
+to *new* processes), that `api.anthropic.com` is in the bundle's interception scope, and that the
+proxy is listening. A process that was already running when the shim started will not pick the
+environment up until it restarts.
 
 ## Running it as a service
 

@@ -166,36 +166,30 @@ async function runLab() {
   // Capture the DER base64 body for the removal check.
   const caBody = deviceRun(`openssl x509 -in ${caPath} -outform DER | base64 | tr -d '\\n'`).out.trim();
 
-  // (c) The Node https path: a plain https client routed through the proxy by the shim's
-  //     NODE_OPTIONS bootstrap, trusting the minted leaf via NODE_EXTRA_CA_CERTS.
-  console.log('\n(c) Node https path through the shim:');
-  const nodeScript = '. /etc/profile.d/shadow-ai-capture.sh\nnode /app/scripts/node-request.mjs';
-  r = deviceRun(nodeScript);
+  // (c) The Node https path, from a login shell exactly as a user would: /etc/profile.d is sourced
+  //     by the shell, so the agent inherits the proxy/CA with no wrapper and no manual export.
+  console.log('\n(c) Node https path from a login shell (no wrapper):');
+  r = deviceRun('node /app/scripts/node-request.mjs');
   const intercepted = /peerIssuer Shadow AI Capture Device CA/.test(r.out);
   check('node https.get returns 200', r.code === 0 && /statusCode 200/.test(r.out), r.out.trim().replace(/\n/g, ' | '));
   check('node request was intercepted (peer leaf minted by the device CA)', intercepted, r.out.trim().replace(/\n/g, ' | '));
 
-  // (c2) The fetch path, which is what Claude Code's SDK uses. Node 24 honours NODE_USE_ENV_PROXY
-  //      from the shim profile. A 200 proves interception: the upstream CA is not in Node's
-  //      bundled roots, so a direct connection would fail verification.
-  console.log('\n(c2) Node fetch path (the Claude Code SDK path):');
-  r = deviceRun('. /etc/profile.d/shadow-ai-capture.sh\nnode /app/scripts/node-fetch-request.mjs');
+  // (c2) The fetch path, which is what Claude Code's SDK uses, from the same transparent shell.
+  //      Node 24 honours NODE_USE_ENV_PROXY. A 200 proves interception: the upstream CA is not in
+  //      Node's bundled roots, so a direct connection would fail verification.
+  console.log('\n(c2) Node fetch path from a login shell (the Claude Code SDK path):');
+  r = deviceRun('node /app/scripts/node-fetch-request.mjs');
   check('node fetch returns 200 through the proxy', r.code === 0 && /statusCode 200/.test(r.out), r.out.trim().replace(/\n/g, ' | '));
 
-  // (c3) The generated launcher sets the environment and execs the agent. Run it with a stub
-  //      `claude` on PATH and assert the proxy variables reach the child.
-  console.log('\n(c3) launcher (claude-sac):');
-  const launcher = deviceRun(
-    'mkdir -p /tmp/stub\n' +
-    'printf \'#!/bin/sh\\nenv | grep -E "^(HTTPS_PROXY|NODE_USE_ENV_PROXY|NODE_EXTRA_CA_CERTS)=" | sort\\n\' > /tmp/stub/claude\n' +
-    'chmod +x /tmp/stub/claude\n' +
-    'PATH="/tmp/stub:$PATH" /state/shim/claude-sac',
-  );
-  check('the launcher exports the proxy/CA environment to the agent',
-    /HTTPS_PROXY=http:\/\/127\.0\.0\.1:8843/.test(launcher.out) &&
-    /NODE_USE_ENV_PROXY=1/.test(launcher.out) &&
-    /NODE_EXTRA_CA_CERTS=/.test(launcher.out),
-    launcher.out.trim().replace(/\n/g, ' | '));
+  // (c3) The transparency property itself: a new login shell inherits the proxy and CA
+  //      environment without the user doing anything.
+  console.log('\n(c3) login-shell environment (no wrapper, no manual export):');
+  const loginEnv = deviceRun('env').out;
+  check('a new login shell inherits the proxy and CA environment',
+    /HTTPS_PROXY=http:\/\/127\.0\.0\.1:8843/.test(loginEnv) &&
+    /NODE_USE_ENV_PROXY=1/.test(loginEnv) &&
+    /NODE_EXTRA_CA_CERTS=/.test(loginEnv),
+    loginEnv.split('\n').filter((l) => /^(HTTPS_PROXY|NODE_USE_ENV_PROXY|NODE_EXTRA_CA_CERTS)=/.test(l)).join(' | '));
 
 
   // (d) The health channel records the interception and a healthy shim row.
