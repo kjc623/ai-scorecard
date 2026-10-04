@@ -1,0 +1,469 @@
+package cli
+
+import (
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/shadow-ai-capture/device/capture-core/core"
+	"github.com/shadow-ai-capture/device/capture-core/policy"
+	"github.com/shadow-ai-capture/device/protocol"
+)
+
+// The constructed provider satisfies the core contract; this is a compile-time assertion,
+// not a runtime check, so a refactor that drops a method fails the build rather than a test.
+var _ core.Provider = New(Config{})
+
+// ---- fakes --------------------------------------------------------------------------------
+
+type fakeRunner struct {
+	mu    sync.Mutex
+	calls [][]string
+	out   string
+	err   error
+}
+
+func (r *fakeRunner) Run(_ context.Context, name string, args ...string) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, append([]string{name}, args...))
+	return r.out, r.err
+}
+
+func (r *fakeRunner) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.calls)
+}
+
+// ---- helpers ------------------------------------------------------------------------------
+
+// testRootPEM mints a real self-signed root CA and returns it as PEM, so the CA-bundle
+// parse check is exercised against a certificate produced exactly as production would.
+func testRootPEM(t *testing.T) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("key: %v", err)
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		t.Fatalf("serial: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: "Shadow AI Capture Device CA test", Organization: []string{"Shadow AI Capture"}},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
+// testConfig returns a Config wired entirely into a fresh temp directory, so no test ever
+// touches /etc or the OS trust store.
+func testConfig(t *testing.T, root []byte) Config {
+	t.Helper()
+	dir := t.TempDir()
+	return Config{
+		ManagedDir:        dir,
+		CABundlePath:      filepath.Join(dir, "ca-bundle.pem"),
+		ProfilePath:       filepath.Join(dir, "profile.sh"),
+		EnvFile:           filepath.Join(dir, "env"),
+		NodeBootstrapPath: filepath.Join(dir, "node-proxy.cjs"),
+		ProxyAddr:         "127.0.0.1:8080",
+		NoProxy:           []string{"localhost", "127.0.0.1"},
+		RootCAPEM:         root,
+	}
+}
+
+func fileMode(t *testing.T, path string) os.FileMode {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	return info.Mode().Perm()
+}
+
+// ---- tests --------------------------------------------------------------------------------
+
+func TestStartWritesFilesWithContentAndPermissions(t *testing.T) {
+	root := testRootPEM(t)
+	cfg := testConfig(t, root)
+	p := New(cfg)
+
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// CA bundle: the root, mode 0600.
+	if got := fileMode(t, cfg.CABundlePath); got != 0o600 {
+		t.Fatalf("CA bundle mode = %o, want 0600", got)
+	}
+	if got, _ := os.ReadFile(cfg.CABundlePath); string(got) != string(root) {
+		t.Fatalf("CA bundle content does not equal the root PEM")
+	}
+
+	// Profile: shell exports, mode 0644, all seven variables.
+	if got := fileMode(t, cfg.ProfilePath); got != 0o644 {
+		t.Fatalf("profile mode = %o, want 0644", got)
+	}
+	profile, _ := os.ReadFile(cfg.ProfilePath)
+	for _, want := range []string{
+		"export HTTP_PROXY='http://127.0.0.1:8080'",
+		"export HTTPS_PROXY='http://127.0.0.1:8080'",
+		"export NO_PROXY='localhost,127.0.0.1'",
+		"export NODE_EXTRA_CA_CERTS='" + cfg.CABundlePath + "'",
+		"export SSL_CERT_FILE='" + cfg.CABundlePath + "'",
+		"export REQUESTS_CA_BUNDLE='" + cfg.CABundlePath + "'",
+		"export CURL_CA_BUNDLE='" + cfg.CABundlePath + "'",
+	} {
+		if !strings.Contains(string(profile), want) {
+			t.Fatalf("profile missing %q\n---\n%s", want, profile)
+		}
+	}
+
+	// Env file (Linux): KEY=VALUE lines.
+	env, err := os.ReadFile(cfg.EnvFile)
+	if err != nil {
+		t.Fatalf("env file: %v", err)
+	}
+	for _, want := range []string{
+		"HTTP_PROXY=http://127.0.0.1:8080",
+		"NODE_EXTRA_CA_CERTS=" + cfg.CABundlePath,
+	} {
+		if !strings.Contains(string(env), want) {
+			t.Fatalf("env file missing %q\n---\n%s", want, env)
+		}
+	}
+}
+
+func TestCABundleContainsTheRoot(t *testing.T) {
+	root := testRootPEM(t)
+	cfg := testConfig(t, root)
+	p := New(cfg)
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	data, err := os.ReadFile(cfg.CABundlePath)
+	if err != nil {
+		t.Fatalf("read bundle: %v", err)
+	}
+	if !bundleContainsRoot(data, root) {
+		t.Fatalf("bundle does not contain the root cert")
+	}
+
+	// Health must be healthy: profile, bundle and (no probe) inherited-skip all pass.
+	h := p.Health()
+	if h.State != protocol.StateHealthy {
+		t.Fatalf("state = %s, want healthy (detail=%s)", h.State, h.Detail)
+	}
+}
+
+func TestHealthDegradedWhenRootEmpty(t *testing.T) {
+	cfg := testConfig(t, nil) // no root
+	p := New(cfg)
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	h := p.Health()
+	if h.State != protocol.StateDegraded {
+		t.Fatalf("state = %s, want degraded", h.State)
+	}
+	if h.Detail != protocol.DetailShimCABundleUnreadable {
+		t.Fatalf("detail = %s, want shim_ca_bundle_unreadable", h.Detail)
+	}
+}
+
+func TestHealthDegradedWhenBundleUnreadable(t *testing.T) {
+	root := testRootPEM(t)
+	cfg := testConfig(t, root)
+	p := New(cfg)
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if err := os.WriteFile(cfg.CABundlePath, []byte("not a pem"), 0o600); err != nil {
+		t.Fatalf("corrupt bundle: %v", err)
+	}
+
+	h := p.Health()
+	if h.State != protocol.StateDegraded {
+		t.Fatalf("state = %s, want degraded", h.State)
+	}
+	if h.Detail != protocol.DetailShimCABundleUnreadable {
+		t.Fatalf("detail = %s, want shim_ca_bundle_unreadable", h.Detail)
+	}
+}
+
+func TestHealthDegradedWhenProfileRemoved(t *testing.T) {
+	root := testRootPEM(t)
+	cfg := testConfig(t, root)
+	p := New(cfg)
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if err := os.Remove(cfg.ProfilePath); err != nil {
+		t.Fatalf("remove profile: %v", err)
+	}
+
+	h := p.Health()
+	if h.State != protocol.StateDegraded {
+		t.Fatalf("state = %s, want degraded", h.State)
+	}
+	if h.Detail != protocol.DetailShimProfileMissing {
+		t.Fatalf("detail = %s, want shim_profile_missing", h.Detail)
+	}
+}
+
+func TestHealthEnvProbe(t *testing.T) {
+	root := testRootPEM(t)
+
+	t.Run("inherited", func(t *testing.T) {
+		cfg := testConfig(t, root)
+		cfg.EnvProbe = func(context.Context) (map[string]string, error) {
+			return map[string]string{
+				"NODE_EXTRA_CA_CERTS": cfg.CABundlePath,
+				"HTTPS_PROXY":         "http://127.0.0.1:8080",
+			}, nil
+		}
+		p := New(cfg)
+		if err := p.Start(context.Background()); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if h := p.Health(); h.State != protocol.StateHealthy {
+			t.Fatalf("state = %s, want healthy (detail=%s)", h.State, h.Detail)
+		}
+	})
+
+	t.Run("not inherited", func(t *testing.T) {
+		cfg := testConfig(t, root)
+		cfg.EnvProbe = func(context.Context) (map[string]string, error) {
+			return map[string]string{}, nil // child saw nothing
+		}
+		p := New(cfg)
+		if err := p.Start(context.Background()); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		h := p.Health()
+		if h.State != protocol.StateDegraded || h.Detail != protocol.DetailShimNotInherited {
+			t.Fatalf("state/detail = %s/%s, want degraded/shim_not_inherited", h.State, h.Detail)
+		}
+	})
+
+	t.Run("nil probe skipped", func(t *testing.T) {
+		cfg := testConfig(t, root)
+		cfg.EnvProbe = nil
+		p := New(cfg)
+		if err := p.Start(context.Background()); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if h := p.Health(); h.State != protocol.StateHealthy {
+			t.Fatalf("state = %s, want healthy (nil probe must not fail health)", h.State)
+		}
+	})
+}
+
+func TestKillSwitchRemovesFilesAndReportsAbsentKilled(t *testing.T) {
+	root := testRootPEM(t)
+	cfg := testConfig(t, root)
+	p := New(cfg)
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	b := &policy.Bundle{
+		Version:     "1",
+		EffectiveAt: time.Unix(1_700_000_000, 0),
+		KillSwitches: []policy.KillSwitch{{
+			Provider:    protocol.RouteProxyTLS, // proxy.tls disable must also stop the shim
+			Mode:        policy.KillDisable,
+			EffectiveAt: time.Unix(1_700_000_000, 0),
+			ReasonCode:  "test",
+		}},
+	}
+	if err := p.ApplyPolicy(*b); err != nil {
+		t.Fatalf("ApplyPolicy: %v", err)
+	}
+
+	if _, err := os.Stat(cfg.ProfilePath); !os.IsNotExist(err) {
+		t.Fatalf("profile still present after kill switch")
+	}
+	if _, err := os.Stat(cfg.CABundlePath); !os.IsNotExist(err) {
+		t.Fatalf("CA bundle still present after kill switch")
+	}
+
+	h := p.Health()
+	if h.State != protocol.StateAbsent || h.Detail != protocol.DetailKilled {
+		t.Fatalf("state/detail = %s/%s, want absent/killed", h.State, h.Detail)
+	}
+}
+
+func TestKillSwitchCLIShimRoute(t *testing.T) {
+	root := testRootPEM(t)
+	cfg := testConfig(t, root)
+	p := New(cfg)
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	b := &policy.Bundle{
+		Version:     "1",
+		EffectiveAt: time.Unix(1_700_000_000, 0),
+		KillSwitches: []policy.KillSwitch{{
+			Provider:    protocol.RouteCLIShim,
+			Mode:        policy.KillDisable,
+			EffectiveAt: time.Unix(1_700_000_000, 0),
+			ReasonCode:  "test",
+		}},
+	}
+	if err := p.ApplyPolicy(*b); err != nil {
+		t.Fatalf("ApplyPolicy: %v", err)
+	}
+	if h := p.Health(); h.State != protocol.StateAbsent || h.Detail != protocol.DetailKilled {
+		t.Fatalf("state/detail = %s/%s, want absent/killed", h.State, h.Detail)
+	}
+}
+
+func TestNodeProxyScript(t *testing.T) {
+	root := testRootPEM(t)
+	cfg := testConfig(t, root)
+	cfg.NodeRequire = true
+	p := New(cfg)
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	script, err := os.ReadFile(cfg.NodeBootstrapPath)
+	if err != nil {
+		t.Fatalf("read node bootstrap: %v", err)
+	}
+	if !strings.Contains(string(script), "createConnection") {
+		t.Fatalf("node bootstrap lacks createConnection")
+	}
+	if !strings.Contains(string(script), "CONNECT") {
+		t.Fatalf("node bootstrap lacks CONNECT")
+	}
+	if !strings.Contains(string(script), "https.globalAgent") {
+		t.Fatalf("node bootstrap does not install the global agent")
+	}
+
+	// The profile must wire the bootstrap through NODE_OPTIONS.
+	profile, _ := os.ReadFile(cfg.ProfilePath)
+	if !strings.Contains(string(profile), "NODE_OPTIONS='--require "+cfg.NodeBootstrapPath+"'") {
+		t.Fatalf("profile does not wire NODE_OPTIONS\n---\n%s", profile)
+	}
+
+	// When Node is present, the file must parse as JavaScript.
+	if node, err := exec.LookPath("node"); err == nil {
+		if out, err := exec.Command(node, "--check", cfg.NodeBootstrapPath).CombinedOutput(); err != nil {
+			t.Fatalf("node --check failed: %v\n%s", err, out)
+		}
+	}
+}
+
+func TestStartStopIdempotent(t *testing.T) {
+	root := testRootPEM(t)
+	cfg := testConfig(t, root)
+	p := New(cfg)
+
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("first Start: %v", err)
+	}
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("second Start: %v", err)
+	}
+	if _, err := os.Stat(cfg.ProfilePath); err != nil {
+		t.Fatalf("profile missing after double Start: %v", err)
+	}
+
+	if err := p.Stop(context.Background()); err != nil {
+		t.Fatalf("first Stop: %v", err)
+	}
+	if err := p.Stop(context.Background()); err != nil {
+		t.Fatalf("second Stop: %v", err)
+	}
+	for _, f := range []string{cfg.ProfilePath, cfg.CABundlePath, cfg.EnvFile} {
+		if _, err := os.Stat(f); !os.IsNotExist(err) {
+			t.Fatalf("%s still present after Stop", f)
+		}
+	}
+	if h := p.Health(); h.State != protocol.StateAbsent {
+		t.Fatalf("state after Stop = %s, want absent", h.State)
+	}
+}
+
+func TestCounters(t *testing.T) {
+	root := testRootPEM(t)
+	cfg := testConfig(t, root)
+	p := New(cfg)
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// emitted: ca bundle + profile + env file = 3 on Linux.
+	if got := p.Counters().Cumulative()[protocol.CounterEmitted]; got != 3 {
+		t.Fatalf("emitted = %d, want 3", got)
+	}
+
+	// One healthy check: observed increments, dropped stays zero.
+	_ = p.Health()
+	_ = p.Health()
+	cum := p.Counters().Cumulative()
+	if cum[protocol.CounterObserved] != 2 {
+		t.Fatalf("observed = %d, want 2", cum[protocol.CounterObserved])
+	}
+	if cum[protocol.CounterDropped] != 0 {
+		t.Fatalf("dropped = %d, want 0", cum[protocol.CounterDropped])
+	}
+	if cum[protocol.CounterNotCooperative] != 0 {
+		t.Fatalf("not_cooperative = %d, want 0", cum[protocol.CounterNotCooperative])
+	}
+
+	// Remove the profile: the next check drops.
+	if err := os.Remove(cfg.ProfilePath); err != nil {
+		t.Fatalf("remove profile: %v", err)
+	}
+	_ = p.Health()
+	if got := p.Counters().Cumulative()[protocol.CounterDropped]; got != 1 {
+		t.Fatalf("dropped = %d, want 1", got)
+	}
+}
+
+func TestNameAndSequence(t *testing.T) {
+	root := testRootPEM(t)
+	cfg := testConfig(t, root)
+	p := New(cfg)
+	if p.Name() != protocol.RouteCLIShim {
+		t.Fatalf("Name() = %s, want cli.shim", p.Name())
+	}
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	seq := p.Sequence()
+	if len(seq) == 0 || seq[0] != "write:ca-bundle" {
+		t.Fatalf("unexpected sequence: %v", seq)
+	}
+}

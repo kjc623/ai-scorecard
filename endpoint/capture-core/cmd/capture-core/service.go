@@ -23,6 +23,7 @@ import (
 	"github.com/shadow-ai-capture/device/capture-core/policy"
 	"github.com/shadow-ai-capture/device/capture-core/proxy/loopback"
 	"github.com/shadow-ai-capture/device/capture-core/proxy/tlsproxy"
+	"github.com/shadow-ai-capture/device/capture-core/trust"
 	capturespool "github.com/shadow-ai-capture/device/capture-spool"
 	"github.com/shadow-ai-capture/device/protocol"
 )
@@ -47,6 +48,11 @@ type service struct {
 	tlsProv *tlsproxy.Provider
 	detect  *detect.Provider
 	drainer *drain.Drainer
+
+	// trustMgr is the platform trust store seam. It is non-nil only when --trust-install is
+	// set; the same instance is handed to proxy.tls (to install) and to the supervisor (to
+	// remove), so the cert removed is the cert installed.
+	trustMgr *trust.Manager
 
 	health *healthChannel
 
@@ -113,20 +119,46 @@ func newService(ctx context.Context, cfg Config, log *slog.Logger) (*service, er
 	s.host = &classifierHostController{cfg: cfg, log: log}
 	s.host.onReady = func(c *classifierlink.Client) { pipe.Classifier = c }
 
+	// The device CA and the platform trust store. A pinned CA pair (or the bundle's public root)
+	// keeps the trusted root stable across restarts; with neither, proxy.tls mints an ephemeral
+	// one, which is the pre-existing behaviour. --trust-install is the only thing that writes the
+	// OS store (§5.2: the wrong store fails silently, so installing is opt-in and the end-to-end
+	// probe is what reports health, never the write returning nil).
+	caCertPEM, caKeyPEM, err := deviceCAPEM(cfg, s.currentBundle())
+	if err != nil {
+		return nil, err
+	}
+	if cfg.TrustInstall {
+		s.trustMgr = trust.New(trust.Config{
+			OS:    trust.HostOS(),
+			Store: trustStoreName(cfg.TrustStore),
+			Logf:  func(f string, a ...any) { log.Warn(fmt.Sprintf(f, a...)) },
+		})
+	} else if cfg.TrustRemoveOnStop {
+		log.Warn("--trust-remove-on-stop is set but --trust-install is not; there is no installed root to remove")
+	}
+
 	// Providers. Each one owns its own coverage row and its own failure mode.
 	if cfg.EnableTLS {
-		tlsProv := tlsproxy.New(tlsproxy.Config{
-			Listen:     cfg.TLSListen,
+		canary := tlsCanary(cfg, s.currentBundle())
+		tlsCfg := tlsproxy.Config{
+			Listen:     tlsListen(cfg, s.currentBundle()),
 			Bundles:    s.currentBundle,
 			Pipeline:   pipe,
 			Decide:     defaultDecision,
 			Agent:      cfg.scopeQuery(""),
 			Log:        logf,
 			Clock:      time.Now,
-			CanaryHost: canaryHost(cfg.TLSCanary),
-			CanaryPort: canaryPort(cfg.TLSCanary),
+			CanaryHost: canaryHost(canary),
+			CanaryPort: canaryPort(canary),
 			BodyCap:    bodyCapFrom(s.currentBundle()),
-		})
+			CACertPEM:  caCertPEM,
+			CAKeyPEM:   caKeyPEM,
+		}
+		if s.trustMgr != nil {
+			tlsCfg.TrustRoot = s.trustMgr
+		}
+		tlsProv := tlsproxy.New(tlsCfg)
 		s.tlsProv = tlsProv
 		if err := s.reg.Add(tlsProv); err != nil {
 			return nil, err
@@ -182,10 +214,14 @@ func newService(ctx context.Context, cfg Config, log *slog.Logger) (*service, er
 		sup.Loopback = s.broker
 	}
 	sup.DrainDeadline = cfg.DrainDeadline
-	// No system proxy and no trust store on this host: those are platform facilities behind
-	// interfaces, and the binary deliberately does not install them (they are NOT VERIFIED).
+	// No system proxy on this host: it is a platform facility behind an interface, and the
+	// binary deliberately does not write it. The trust store IS wired when --trust-install is
+	// set, so the same manager that installed the root removes it.
 	sup.SystemProxy = nil
-	sup.TrustRoot = nil
+	if s.trustMgr != nil {
+		sup.TrustRoot = s.trustMgr
+	}
+	sup.RemoveTrustRoot = cfg.TrustRemoveOnStop
 	s.sup = sup
 
 	s.health = newHealthChannel(cfg, log, s)
@@ -575,6 +611,63 @@ func bodyCapFrom(b *policy.Bundle) int64 {
 		return 4 << 20
 	}
 	return b.Interception.BodyCapBytes
+}
+
+// deviceCAPEM resolves the per-device CA pair: --ca-cert/--ca-key when set, otherwise the
+// bundle's public root. A key with no certificate is an error (proxy.tls refuses a partial pair
+// too); no certificate and no key means "mint an ephemeral CA", which is the pre-existing path.
+func deviceCAPEM(cfg Config, b *policy.Bundle) (certPEM, keyPEM []byte, err error) {
+	if cfg.CACertFile != "" {
+		certPEM, err = os.ReadFile(cfg.CACertFile)
+		if err != nil {
+			return nil, nil, fmt.Errorf("reading --ca-cert: %w", err)
+		}
+	} else if b != nil && strings.TrimSpace(b.Interception.RootCAPEM) != "" {
+		certPEM = []byte(b.Interception.RootCAPEM)
+	}
+	if cfg.CAKeyFile != "" {
+		keyPEM, err = os.ReadFile(cfg.CAKeyFile)
+		if err != nil {
+			return nil, nil, fmt.Errorf("reading --ca-key: %w", err)
+		}
+	}
+	if len(keyPEM) > 0 && len(certPEM) == 0 {
+		return nil, nil, errors.New("--ca-key is set but no CA certificate is available; set --ca-cert or use a bundle carrying interception.root_ca_pem")
+	}
+	return certPEM, keyPEM, nil
+}
+
+// tlsListen is the flag when it was set away from the default; otherwise the bundle's
+// interception.proxy_listen, so the signed bundle can pin the port the enrolment profile routes
+// CLI clients to.
+func tlsListen(cfg Config, b *policy.Bundle) string {
+	if cfg.TLSListen != defaultTLSListen {
+		return cfg.TLSListen
+	}
+	if b != nil && strings.TrimSpace(b.Interception.ProxyListen) != "" {
+		return b.Interception.ProxyListen
+	}
+	return cfg.TLSListen
+}
+
+// tlsCanary is the flag when set, otherwise the bundle's interception.proxy_canary. Empty means
+// the probe cannot run and proxy.tls reports degraded rather than healthy (§5.6).
+func tlsCanary(cfg Config, b *policy.Bundle) string {
+	if strings.TrimSpace(cfg.TLSCanary) != "" {
+		return cfg.TLSCanary
+	}
+	if b != nil {
+		return b.Interception.ProxyCanary
+	}
+	return ""
+}
+
+// trustStoreName maps the configuration vocabulary onto the trust package's Windows store name.
+func trustStoreName(s string) string {
+	if s == "enterprise" {
+		return "enterprise"
+	}
+	return "Root"
 }
 
 func newEventID() string {

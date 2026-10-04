@@ -14,6 +14,11 @@ import (
 	"github.com/shadow-ai-capture/device/capture-core/policy"
 )
 
+// defaultTLSListen is the "ask the OS for a port" default. A service pins a real port in its
+// enrolment profile; a test leaves this and gets an ephemeral one. It is a named constant because
+// the bundle's interception.proxy_listen only applies when the flag was left at this value.
+const defaultTLSListen = "127.0.0.1:0"
+
 // Config is everything the binary resolves before it starts anything. Every field is either a flag
 // or a value read from the signed bundle; none of it is policy the binary invents, and none of it
 // has a default that widens what the agent may do.
@@ -432,6 +437,13 @@ func printConfig(cfg Config, logger loggerLike) error {
 
 	fmt.Printf("providers:       proxy.tls=%v (listen %s, canary %q) proxy.loopback=%v proc.detect=%v\n",
 		cfg.EnableTLS, cfg.TLSListen, cfg.TLSCanary, cfg.EnableLoopback, cfg.EnableProcDetect)
+	if cfg.TrustInstall {
+		fmt.Printf("trust:           install=true store=%s remove_on_stop=%v ca_cert=%q ca_key=%q\n",
+			cfg.TrustStore, cfg.TrustRemoveOnStop, cfg.CACertFile, cfg.CAKeyFile)
+	} else {
+		fmt.Printf("trust:           install=false (the OS trust store is not touched; §5.2)\n")
+	}
+	fmt.Printf("cli.shim:        enabled=%v dir=%q\n", cfg.CLIShim, cfg.ShimDir)
 	if !cfg.EnableProcDetect {
 		fmt.Printf("named gap:       proc.detect is not started; the route has no coverage row and §4.4 detection does not run\n")
 	}

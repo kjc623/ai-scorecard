@@ -211,7 +211,7 @@ func defaultConfig() Config {
 		PolicyKeyID:        "policy-key-1",
 		ClassifierBudget:   2 * time.Second,
 		EnableTLS:          true,
-		TLSListen:          "127.0.0.1:0",
+		TLSListen:          defaultTLSListen,
 		EnableLoopback:     true,
 		DrainDeadline:      30 * time.Second,
 		HealthInterval:     30 * time.Second,
