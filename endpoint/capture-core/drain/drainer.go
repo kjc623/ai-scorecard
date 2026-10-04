@@ -323,7 +323,11 @@ func (d *Drainer) Drain(ctx context.Context, deadline time.Time) (Result, error)
 			return res, err
 		}
 		if d.cfg.Expire != nil {
-			_, _ = d.cfg.Expire(d.clock())
+			if n, err := d.cfg.Expire(d.clock()); err != nil {
+				d.log.Printf("drain: retention sweep failed: %v", err)
+			} else if n > 0 {
+				d.log.Printf("drain: retention dropped %d expired record(s) (occurred_at + retention is in the past)", n)
+			}
 		}
 
 		entries, err := store.Peek(protocol.MaxBatchEvents)
