@@ -33,7 +33,7 @@ const KEEP = ARGS.includes('--keep');
 // static Linux binary that runs in alpine without a cross toolchain.
 const GO_ENV = {
   ...process.env,
-  GOCACHE: '/workspace/.tools/gocache',
+  GOCACHE: process.env.GOCACHE || resolve(ROOT, '..', '..', '.tools', 'gocache'),
   GOPROXY: 'off',
   GOTOOLCHAIN: 'local',
   GOFLAGS: '-mod=mod',
@@ -213,11 +213,12 @@ if (DOWN) {
 }
 
 const exitCode = await runLab();
-if (exitCode === 0 && !KEEP) {
+// Tear down on failure too, so a red run cannot leave the PKI volume (which holds the upstream CA
+// key) or any container behind. --keep is the explicit opt-in for inspecting a failed run.
+if (!KEEP) {
   console.log('\ntestlab: tearing down (volume included) …');
   console.log(compose(['down', '-v']).out.trim());
-}
-if (exitCode === 0 && KEEP) {
+} else {
   console.log('\ntestlab: left running. Logs: docker compose -f endpoint/testlab/compose.yaml logs -f device');
   console.log('testlab: tear down with: node endpoint/testlab/run.mjs --down');
 }

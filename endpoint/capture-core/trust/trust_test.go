@@ -423,6 +423,18 @@ func TestVerifyWindows(t *testing.T) {
 			t.Fatalf("verify = %v, %v; want false, nil", ok, err)
 		}
 	})
+	t.Run("different-fingerprint-is-absent", func(t *testing.T) {
+		other := strings.Repeat("AB", 20)
+		if other == sha1hex {
+			t.Fatal("test fixture collides with the certificate's own fingerprint")
+		}
+		r := &fakeRunner{fn: func(string, []string) (string, error) { return "Cert Hash(sha1): " + other, nil }}
+		m := New(Config{OS: OSWindows, Runner: r})
+		ok, err := m.Verify(context.Background(), der)
+		if err != nil || ok {
+			t.Fatalf("verify = %v, %v; want false, nil for a different certificate", ok, err)
+		}
+	})
 }
 
 func TestRemoveLinux(t *testing.T) {

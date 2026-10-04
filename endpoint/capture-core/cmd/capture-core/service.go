@@ -129,10 +129,10 @@ func newService(ctx context.Context, cfg Config, log *slog.Logger) (*service, er
 	if err != nil {
 		return nil, err
 	}
-	// A CA certificate without its key can be trusted and exported (the shim) but cannot mint
-	// leaves, so it is not an interceptor CA. The bundle carries only the public root by design:
-	// the private half is delivered as --ca-key. Any feature that needs a working interception
-	// root must have the full pair, or it would point clients at a proxy that cannot serve them.
+	// The signed bundle carries only the public root by design; the private half is delivered as
+	// --ca-key. A certificate with no key is not an interceptor CA — it cannot mint leaves — so the
+	// features that point clients at the proxy or install the root (--cli-shim, --trust-install)
+	// need the full pair, or they would advertise a proxy that cannot serve those clients.
 	caPair := len(caCertPEM) > 0 && len(caKeyPEM) > 0
 	if (cfg.TrustInstall || cfg.CLIShim) && !caPair {
 		return nil, errors.New("--trust-install and --cli-shim need the full per-device CA key pair: set --ca-key plus --ca-cert (or a bundle carrying interception.root_ca_pem); a bundle root without its key cannot mint leaves")
@@ -167,6 +167,8 @@ func newService(ctx context.Context, cfg Config, log *slog.Logger) (*service, er
 		if caPair {
 			tlsCfg.CACertPEM = caCertPEM
 			tlsCfg.CAKeyPEM = caKeyPEM
+		} else if len(caCertPEM) > 0 {
+			log.Warn("a bundle root CA is configured but no --ca-key is present; proxy.tls will mint an ephemeral CA that no client trusts (set --ca-key to pin the device CA)")
 		}
 		if s.trustMgr != nil {
 			tlsCfg.TrustRoot = s.trustMgr

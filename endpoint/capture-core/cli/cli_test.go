@@ -489,3 +489,54 @@ func TestStartRefusesNodeBootstrapPathWithWhitespace(t *testing.T) {
 		t.Errorf("a failed Start left the CA bundle behind: %v", err)
 	}
 }
+
+// A kill switch in the bundle already in force at startup must suppress the shim before it writes
+// anything: the supervisor applies policy before providers start, so Start must not clear the
+// killed flag and reinstall the profile.
+func TestStartSuppressedByInitialKillSwitch(t *testing.T) {
+	cfg := testConfig(t, testRootPEM(t))
+	p := New(cfg)
+	ks := policy.Bundle{
+		Version:     "1",
+		EffectiveAt: time.Unix(1, 0),
+		KillSwitches: []policy.KillSwitch{{
+			Provider: protocol.RouteProxyTLS, Mode: policy.KillDisable,
+			EffectiveAt: time.Unix(1, 0), ReasonCode: "fleet_regression",
+		}},
+	}
+	if err := p.ApplyPolicy(ks); err != nil {
+		t.Fatalf("ApplyPolicy: %v", err)
+	}
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := os.Stat(cfg.CABundlePath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the shim wrote the CA bundle despite the kill switch: %v", err)
+	}
+	if h := p.Health(); h.State != protocol.StateAbsent || h.Detail != protocol.DetailKilled {
+		t.Fatalf("health = %s/%s, want absent/killed", h.State, h.Detail)
+	}
+}
+
+// A future-dated kill switch must not fire before EffectiveAt.
+func TestFutureKillSwitchDoesNotFireEarly(t *testing.T) {
+	cfg := testConfig(t, testRootPEM(t))
+	p := New(cfg)
+	ks := policy.Bundle{
+		Version:     "1",
+		EffectiveAt: time.Unix(1, 0),
+		KillSwitches: []policy.KillSwitch{{
+			Provider: protocol.RouteProxyTLS, Mode: policy.KillDisable,
+			EffectiveAt: time.Now().Add(time.Hour), ReasonCode: "scheduled",
+		}},
+	}
+	if err := p.ApplyPolicy(ks); err != nil {
+		t.Fatalf("ApplyPolicy: %v", err)
+	}
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := os.Stat(cfg.CABundlePath); err != nil {
+		t.Errorf("a future-dated kill switch suppressed the shim early: %v", err)
+	}
+}

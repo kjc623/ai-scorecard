@@ -230,15 +230,26 @@ func (p *Provider) Start(ctx context.Context) error {
 		p.mu.Unlock()
 		return nil
 	}
-	p.started = true
-	deviceID := p.cfg.Agent.DeviceID
+	// A kill switch in the bundle already in force at startup must suppress the provider before it
+	// ever binds or installs a root. The supervisor applies the bundle at step 1, before any
+	// provider starts, so without this check the switch would be recorded and then ignored: Start
+	// would bind, install the CA and intercept while Health reported absent/killed.
+	if p.killSwitchActive() {
+		p.started = true
+		p.killed = true
+		p.mu.Unlock()
+		p.step("start:suppressed_by_kill_switch")
+		return nil
+	}
 	p.mu.Unlock()
 
+	deviceID := p.cfg.Agent.DeviceID
 	ca, err := p.buildCA(deviceID)
 	if err != nil {
 		// Without a CA there is no interception. That is a degraded provider, not a failed
 		// startup: the user's traffic must not be pointed at a proxy that cannot serve.
 		p.mu.Lock()
+		p.started = true
 		p.probeOK = false
 		p.mu.Unlock()
 		return fmt.Errorf("tlsproxy: device CA unavailable, interception disabled: %w", err)
@@ -290,6 +301,7 @@ func (p *Provider) Start(ctx context.Context) error {
 	// called outside the lock: a self-deadlock here would hang startup forever.
 	ok := p.probe(ctx)
 	p.mu.Lock()
+	p.started = true
 	p.probeOK = ok
 	p.mu.Unlock()
 	if !ok {
@@ -297,6 +309,25 @@ func (p *Provider) Start(ctx context.Context) error {
 	}
 	_ = ctx
 	return nil
+}
+
+// killSwitchActive reports whether the bundle in force carries a kill switch for proxy.tls that is
+// in effect now. A future-dated switch does not fire early: EffectiveAt is when the fleet operator
+// asked enforcement to stop, and the bundle carries it so a poll can be scheduled rather than
+// acted on immediately.
+func (p *Provider) killSwitchActive() bool {
+	b := p.bundle()
+	if b == nil {
+		return false
+	}
+	ks, ok := b.KillSwitchFor(protocol.RouteProxyTLS)
+	if !ok || ks.Mode != policy.KillDisable {
+		return false
+	}
+	if !ks.EffectiveAt.IsZero() && ks.EffectiveAt.After(p.cfg.Clock()) {
+		return false
+	}
+	return true
 }
 
 func (p *Provider) installTrustRoot(ctx context.Context, ca *CA) error {
@@ -437,6 +468,9 @@ func (p *Provider) ApplyPolicy(b policy.Bundle) error {
 	ks, ok := b.KillSwitchFor(protocol.RouteProxyTLS)
 	if !ok || ks.Mode != policy.KillDisable {
 		return nil
+	}
+	if !ks.EffectiveAt.IsZero() && ks.EffectiveAt.After(p.cfg.Clock()) {
+		return nil // future-dated: in force at EffectiveAt, not before
 	}
 	p.mu.Lock()
 	already := p.killed

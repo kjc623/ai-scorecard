@@ -785,3 +785,48 @@ func TestTLS_5_2_TrustStoreFailureIsNamedInHealth(t *testing.T) {
 		t.Fatalf("health = %s/%s, want degraded/%s", h.State, h.Detail, protocol.DetailTrustInstallFailed)
 	}
 }
+
+// §5.5: a kill switch in the bundle already in force when the provider starts must suppress it
+// before it binds or installs a root. The supervisor applies the bundle before any provider
+// starts, so a switch that is only honored in ApplyPolicy would be silently defeated at startup.
+func TestTLS_5_5_KillSwitchInInitialBundleSuppressesStart(t *testing.T) {
+	canaryPort := freePort(t)
+	b := bundleIntercepting(canaryPort)
+	ksAt := time.Unix(1_600_000_000, 0)
+	b.KillSwitches = []policy.KillSwitch{{
+		Provider: protocol.RouteProxyTLS, Mode: policy.KillDisable,
+		EffectiveAt: ksAt, ReasonCode: "fleet_regression",
+	}}
+	trust := &fakeTrust{}
+	p := newProviderForTest(t, Config{
+		Listen: "127.0.0.1:0", Bundles: func() *policy.Bundle { return b },
+		Pipeline: &fakePipeline{mode: protocol.ModeM1}, TrustRoot: trust,
+		CanaryHost: "127.0.0.1", CanaryPort: canaryPort,
+	})
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if p.ListenAddr() != "" {
+		t.Fatal("the proxy bound despite a kill switch in the initial bundle")
+	}
+	if h := p.Health(); h.State != protocol.StateAbsent || h.Detail != protocol.DetailKilled {
+		t.Fatalf("health = %s/%s, want absent/killed", h.State, h.Detail)
+	}
+	if len(trust.installed) != 0 {
+		t.Fatal("the trust root was installed despite the kill switch")
+	}
+}
+
+// §5.5: EffectiveAt is when the operator asked enforcement to stop; a future-dated switch must not
+// fire early.
+func TestTLS_5_5_FutureKillSwitchDoesNotFireEarly(t *testing.T) {
+	b := bundleIntercepting(443)
+	b.KillSwitches = []policy.KillSwitch{{
+		Provider: protocol.RouteProxyTLS, Mode: policy.KillDisable,
+		EffectiveAt: time.Now().Add(time.Hour), ReasonCode: "scheduled",
+	}}
+	p := New(Config{Bundles: func() *policy.Bundle { return b }, Clock: time.Now})
+	if p.killSwitchActive() {
+		t.Fatal("a future-dated kill switch fired early")
+	}
+}

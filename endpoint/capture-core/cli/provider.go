@@ -192,6 +192,15 @@ func (p *Provider) Start(ctx context.Context) error {
 		p.mu.Unlock()
 		return nil
 	}
+	// A kill switch in the bundle already in force at startup must suppress the shim before it
+	// writes anything. The supervisor applies the bundle before providers start, so without this
+	// check the switch would be recorded and then ignored while the profile was still installed.
+	if p.killed {
+		p.started = true
+		p.mu.Unlock()
+		p.step("start:suppressed_by_kill_switch")
+		return nil
+	}
 	p.mu.Unlock()
 
 	// Node's NODE_OPTIONS parser splits on whitespace and does not support quoting a value, so a
@@ -255,7 +264,6 @@ func (p *Provider) Start(ctx context.Context) error {
 	p.mu.Lock()
 	p.started = true
 	p.stopped = false
-	p.killed = false
 	p.lastSuccess = time.Time{}
 	p.mu.Unlock()
 
@@ -308,7 +316,7 @@ func (p *Provider) managedFiles() []string {
 // proxy.tls removes the shim's files and reports absent detail=killed, because the proxy
 // it feeds has stopped enforcing.
 func (p *Provider) ApplyPolicy(b policy.Bundle) error {
-	if !killSwitchActive(b) {
+	if !p.killSwitchActive(b) {
 		return nil
 	}
 	p.mu.Lock()
@@ -324,10 +332,14 @@ func (p *Provider) ApplyPolicy(b policy.Bundle) error {
 	return nil
 }
 
-func killSwitchActive(b policy.Bundle) bool {
+// killSwitchActive reports whether b carries a kill switch for cli.shim or proxy.tls that is in
+// force now. A future-dated switch does not fire early.
+func (p *Provider) killSwitchActive(b policy.Bundle) bool {
 	for _, r := range []protocol.Route{protocol.RouteCLIShim, protocol.RouteProxyTLS} {
 		if ks, ok := b.KillSwitchFor(r); ok && ks.Mode == policy.KillDisable {
-			return true
+			if ks.EffectiveAt.IsZero() || !ks.EffectiveAt.After(p.cfg.Clock()) {
+				return true
+			}
 		}
 	}
 	return false
