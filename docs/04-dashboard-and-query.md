@@ -891,6 +891,18 @@ Question 9 is the one question that touches content, through exactly one route.
 6. **Under a hold** (C35), content that would have expired is still retrievable and the record shows
    that the hold is why — a hold that silently extends retention is indistinguishable from a bug.
 
+**As built:** steps 1, 2, 4 and 5 run in the local auth lab, from the dashboard's Explore page. Its event
+panel offers the request when `content_state` is `uploaded`; `query-api` forwards
+`POST /v1/content/retrieval` to `content-vault`, which records the request, commits the audit rows
+(`content_retrieval_requested`, `_granted`, `_redeemed`, or `_refused`) before anything is read, issues a
+single-use grant and redeems it. Four things differ from the flow above. **Step 3 is not a decision:** the
+second approver is a name recorded on the request, which the vault requires to differ from the requester;
+no second person approves, and there is no `approval_pending` state. The roles of §4 are not enforced,
+because the requester is a development principal rather than an authenticated session. The content is
+relayed in `query-api`'s response body, because the vault does not mint a retrieval URL yet. And holds
+(step 6) are not consulted. The page shows what the user typed apart from the rest of the capture, and
+drops retrieved content when the event is closed.
+
 ### 8.2 Result states
 
 | State | When | What it says |
@@ -1441,8 +1453,13 @@ does not touch.
 
 `POST /v1/content-search`, a separate endpoint from `/v1/query`, because it is a different kind of read:
 bounded text matching over a table this component cannot see, executed by the component that can.
-**As built:** `query-api` does not serve this route yet; it rejects a text predicate on `/v1/query`
-with an error that names it.
+**As built:** `query-api` serves this route as a forwarder (`src/http/content.js`): it adds the session's
+principal and a configured scope and passes the request to `content-vault`, which executes and audits it.
+It still rejects a text predicate on `/v1/query` with an error that names this endpoint. Only the
+term-or-phrase form is forwarded; the substring and fuzzy filename forms are not, and the device uploads
+no attachments to index. The response carries hits (`submission_id`, `snippet`, `rank`) and `truncated`,
+and **no index-coverage block**. The dashboard's Explore page is the surface: a prompt-text search box
+whose matches open the event they belong to.
 
 **What an analyst types** is a match expression, in one of three forms:
 

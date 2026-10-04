@@ -151,7 +151,12 @@ envelope's labels, both from one Go source ([ADR 0016](adr/0016-the-classifier-h
 labels over a fixed corpus. **As built:** the extension does not load the `js/wasm` build — its shape
 predicate and inline decision are JavaScript (`extension/src/predicate.js`, `extension/src/enforce.js`) —
 and the `js/wasm` target exists only in `endpoint/classifier-host`, where the equivalence test runs it
-under Node. **`classifier-host` → parser child** is a process spawn with a parent-enforced cap
+under Node. On Windows there is no named pipe: `classifier-host` has no named-pipe listener, so
+`capture-core` spawns it as a child and speaks the same frames on its stdin and stdout
+(`--classifier-release`/`--classifier-pubkey`), re-spawning it on the next request after a failure rather
+than with backoff. `capture-core` accepts the host's answer as the verdict frame the host writes (the
+response under `response`) as well as a bare response; before that every answer failed validation and
+was recorded as rules-only. **`classifier-host` → parser child** is a process spawn with a parent-enforced cap
 and timeout (§10).
 
 ### 3.5 Lifecycle and ordering
@@ -329,9 +334,12 @@ stack, ignoring environment variables, or pinning certificates is detected by it
 being seen running (§5.6) and recorded as a named gap — a coverage failure, never a broken client. Coverage
 row: environment applied to N shells, M processes inherited it, K candidates bypassed it, bypasses attributed
 per client so one incompatible tool is visible instead of averaged away. It **fails open by passing every
-command through untouched**. **As built:** no provider implements `cli.shim` yet — the route exists in the
-closed vocabulary and in §3.5's startup order, and it has no coverage row rather than a healthy-looking
-empty one (`endpoint/README.md`).
+command through untouched**. **As built:** `endpoint/capture-core/cli` implements the provider, enabled with `--cli-shim`. On Windows it
+writes the managed files and sets the machine environment (`setx /M`) when the agent runs as the
+installed service, and removes both on stop; its CA bundle carries the device root plus the roots in the
+machine's ROOT store, because the bundle variables replace a runtime's trust list and the proxy
+blind-tunnels everything it does not intercept. The "a child inherited it" check has no probe wired, so
+that counter is skipped rather than reported as passed, and bypass attribution per client is not built.
 
 ### 4.6 Provider summary
 
@@ -1137,6 +1145,12 @@ evidence that it does: the server learns content exists when a per-event grant i
 arrives. The marker lives beside the content it describes, in the device's local store, and the device's
 coverage row may report held-content *counts*.
 
+**As built:** the local content store exists (`endpoint/capture-core/contentstore`) and is opt-in: with
+`--content-dir`/`--content-key` an M3 prompt's content is sealed there, keyed by event, with its grant
+state; without them an M3 observation is refused rather than emitted. What is held is the prompt text
+where the route identified the user-authored segment, and the request body as observed where it did not;
+attachment bytes are not held. Held-content counts are not yet surfaced in a coverage row.
+
 "Why can't the system be put into an upload-everything state?" has five candidate answers and none of them
 works:
 
@@ -1354,6 +1368,16 @@ swallowed; on grant expiry mid-upload the object is refused, the grant is void, 
 returns to `local_only`, with no silent retry ([master §4.4]). The store-and-forward queue for content is
 **separate from the event spool** and separately bounded, so backpressure on content never evicts events, and
 vice versa.
+
+**As built:** the device half runs end to end against the local auth lab on Windows. Once an M3 event is
+delivered, the drain asks `control-api` for a grant for that event, seals the content under the object key
+the grant carries (AES-256-GCM, event id as additional data) and makes the one upload; a denial is recorded
+with its reason and leaves the content on the device until local retention removes it; anything else is
+retried with backoff. Differences from the paragraph above: the request carries no case reference
+(docs/02 §5.5 gives the device none to send); an expired grant is not reported as void — the next request
+is simply decided again; the content store is separate from the spool but has no byte bound of its own,
+only local retention; and the upload credential is a signed URL to the lab's storage stand-in, not a
+storage SAS.
 
 ---
 

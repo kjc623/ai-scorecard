@@ -186,7 +186,11 @@ environment peer mTLS disabled, and the vault reads the caller's service, subjec
 request headers that it trusts only because its ingress is internal
 (`vault/content-vault/internal/auth/auth.go`). The vault's SQL path is written to set the session tenant
 inside every transaction, so row-level security remains the final arbiter; the mTLS assertion of the caller is the
-part that is not in place (§5.2).
+part that is not in place (§5.2). B13 is now exercised: `query-api` forwards content search and approved
+retrieval to the vault with those headers, naming the tenant and subject it took from its own session —
+which today is a development principal header, not an authenticated one. The vault does not restrict
+routes by calling service, so any of its three allowed callers may call any route. In the local auth lab
+the vault connects to the database as the owner, so row-level security is not exercised there.
 
 Three boundaries the design deliberately does **not** create: no central plaintext inspection point
 (Alternative A must decrypt before it can decide, which brief §1.2 forbids); no device-to-`content-vault`
@@ -377,6 +381,17 @@ member of it), and one runtime role per component.
 | Dashboard | Static SPA + Entra ID | `query-api` only | Database, Blob, Key Vault |
 | CI/CD | Federated workload identity, no stored secret | Deploy artefacts and migrations | Runtime data; key material |
 
+**As built:** the content path the table describes now runs — `control-api` decides grants and finalises
+uploads, `content-vault` mints and wraps object keys, records objects, writes the index row and serves
+approved retrievals, and `query-api` forwards search and retrieval to it — but the role separation above
+has been exercised only as code, not as database identities. The local auth lab connects every service
+as the database owner, so neither row-level security nor these grants is tested there. Three statements
+`control-api` now issues need grants `database/schema.sql` does not give `sac_control`: a read of
+`ingest.observation` (to check the event is that device's), the `content_state` update on
+`ingest.submission`, and the write to `ops.usage_daily`. `sac_vault` likewise has only `SELECT` on
+`ops.erasure_receipt`, which the vault's shred path inserts into. The key store in the lab is the vault's
+file-backed development KEK, not Key Vault.
+
 Two separations are load-bearing and are asserted in §13: **`ingest-api` has no unwrap right** (it
 accepts attacker-influenced input at the highest volume in the system, so a memory-safety bug there
 must not become a content breach), and **`query-api` has no unwrap right** (it serves the widest
@@ -455,7 +470,11 @@ lines 47–50); and the vault binary serves plain HTTP (`vault/content-vault/cmd
 (`vault/content-vault/internal/auth/auth.go`). On the device hop, `ingest-api` enforces TLS 1.3 with a
 verified client certificate when it terminates TLS itself, and otherwise authenticates the
 edge-forwarded certificate or DPoP; the deployment supplies the material for none of these yet (§4.2,
-ADR 0019).
+ADR 0019). The content path adds two more internal hops with the same shape, neither declared in
+`azure/` yet: `control-api` → `content-vault` (the object key for a granted upload, and the finalise),
+over plain HTTP with the same trusted headers; and the storage layer's finalise call to `control-api`,
+authenticated by an HMAC over the body under a key the two share. In the local lab the vault also reads
+stored ciphertext back with an unauthenticated GET, which is a stand-in for a storage credential.
 
 | Protected | Against |
 |---|---|

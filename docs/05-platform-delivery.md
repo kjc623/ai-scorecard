@@ -481,6 +481,31 @@ failure that looks like a network problem to the user and like coverage to the v
 **QUIC is disabled by policy and UDP 443 is blocked at egress** (E6). Browser policy alone is
 insufficient, and the product must not depend on a client honouring a setting it may ignore.
 
+**As built:** a development `ShadowAICapture.msi` exists and has been installed on one Windows 11
+host ([installer/README.md](../installer/README.md)). It is unsigned and it is not an Intune package:
+no `.intunewin`, no requirement or detection rules, no MDM. What it does establish is the shape of the
+artefact. `capture-core` is registered as a `LocalSystem` service that implements the SCM contract
+itself and reads its configuration from a file; `classifier-host` is installed beside it and run by it
+as a child process; a full uninstall removes the service, both directories, the machine environment
+entries and the trusted root. It departs from the table above in four ways, each for the lab and none
+by design:
+
+- **The enrolment profile travels in the MSI.** `installer/lab-msi.mjs` stands in for the MDM, so the
+  profile, the signed policy bundle, the device CA pair and a single-use enrolment token are installer
+  payload. In a deployment none of them is.
+- **Classifier content is installer payload too**, contrary to the paragraph above: the signed release
+  is a directory the MSI installs, because `control-api` does not yet deliver signed content.
+- **Trust and proxy configuration is done by the agent, not by a configuration profile.** The service
+  installs its root into Local Machine → Trusted Root and writes the proxy and CA variables into the
+  machine environment itself. The WinHTTP/WinINET system proxy is not set and QUIC is not disabled, so
+  only clients that honour the environment variables are captured; a browser is not.
+- **The document parser and the spool directory ACL are not separate payload items.** The parser is a
+  mode of the `classifier-host` binary, and the state directory is created by the service with the
+  ACLs `%ProgramData%` gives it; no ACL is set by the installer.
+
+The macOS PKG source and the Linux package exist as the manifest renders them; the PKG has never been
+built, and the Linux install is exercised in a container rather than under `systemd`.
+
 ### 6.2 Enrolment, and what the user sees
 
 One-shot enrolment (brief §4.2, C11). The credential is either an `x509` certificate or an RFC 9449
@@ -541,6 +566,16 @@ launch agent, unit file, firewall rule or Event Log source registration behind.
 
 **Verification is a post-uninstall script that reports, as data, that steps 2–4 and 6–7 left nothing
 behind.** An uninstall nobody verified is an uninstall nobody can promise.
+
+**As built:** on Windows the development MSI's uninstall stops the service, which removes the CLI shim
+files and the machine environment entries it set and removes the root from the store it installed it
+into (the lab profile sets remove-on-stop), then removes the service and binaries and deletes
+`%ProgramData%\ShadowAICapture` whole: spool, sealed credential, held M3 content, logs. An upgrade
+keeps that directory. This was checked once, by hand, on one host, by looking for the service, the two
+directories, the environment entries and the root afterwards. There is no post-uninstall verification
+script, no erasure receipt for discarded local content, and no drain-or-discard choice: the spool is
+discarded after the bounded shutdown drain. Steps (3) system proxy and (5) extension do not apply,
+because this build sets no system proxy and installs no extension.
 
 ---
 

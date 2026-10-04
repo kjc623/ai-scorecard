@@ -720,7 +720,12 @@ authenticate, version and keep compatible with clients on machines nobody contro
 Retrieval and export are analyst-facing and are reached through `query-api`; they are specified in
 [04-dashboard-and-query](04-dashboard-and-query.md). The retrieval endpoint itself
 (`POST /v1/content/retrieval`) is served by `content-vault` on its internal ingress. **As built:**
-`query-api` serves `POST /v1/query` and its probes only, and does not yet forward retrieval or export. The grant state machine, denial reasons and
+`query-api` forwards `POST /v1/content/retrieval` and `POST /v1/content-search` to `content-vault` under
+the session's principal, and the dashboard's Explore page uses both; export is not built. The retrieval
+URL is not minted yet, so the content the vault opens is relayed in `query-api`'s response body, and the
+principal is a development header rather than an Entra session. Row 5 exists too: `control-api` serves
+`POST /v1/content/grant`, and `capture-core` requests the grant and makes the upload (exercised end to
+end in the local auth lab, where the upload target is a storage stand-in and not Blob storage). The grant state machine, denial reasons and
 upload credential scoping are in [02-ingest-and-transport](02-ingest-and-transport.md).
 
 ### 5.2 The event envelope
@@ -845,9 +850,11 @@ describe content that has no stored object at all: `not_captured` at M0 and M1, 
 before any grant. A row in `ops.content_object` exists only once something has actually been uploaded,
 so its own state is the narrower `uploaded | shredded`.
 
-**As built:** nothing sets `content_state` to `local_only`. `ingest.record_event()` inserts every
-submission with the default `not_captured`, the envelope carries no content-state marker (ADR 0017), and
-no service writes the column, so the `local_only` state is defined in the schema and not yet reached.
+**As built:** `ingest.record_event()` inserts every submission with the default `not_captured`, and the
+envelope carries no content-state marker (ADR 0017). `control-api` moves a submission to `local_only`
+when its device first asks for a content grant — the request is the server's evidence that content is
+held — and to `uploaded` when a verified upload is finalised. An M3 submission whose device has not yet
+asked therefore still reads `not_captured`. Nothing writes `shredded` on the submission yet.
 
 `shredded` carries a reason (`retention_expired`, `erasure`, `hold_released`, `tenant_offboarded`) so
 that C17's explicit "no longer available" can say *why* rather than just *no*. `not_captured` and

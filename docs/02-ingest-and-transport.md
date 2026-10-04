@@ -188,10 +188,20 @@ decision: a grant may be `denied` while the content is `local_only`, and an `exp
 `local_only` rather than `not_captured` — the device still holds the content and the distinction is
 exactly the one brief §3.2 forbids merging.
 
-**As built:** nothing in the repository sets `content_state` to `local_only`. `ingest.record_event()`
-inserts every submission with the column default `not_captured`, the envelope carries no content-state
-marker ([ADR 0017](adr/0017-the-m3-content-state-marker-is-device-local.md)), and no service writes the
-column, so the `local_only` transitions above are design that is not implemented.
+**As built:** the device half and the decision half exist and run end to end in the local auth lab.
+`capture-core` holds M3 content in a sealed local store (`contentstore`), asks for a grant once the
+event is delivered, seals the object under the key the grant carries and makes the one upload.
+`control-api` decides (`internal/content`), and its finaliser verifies the upload's size and declared
+digest against the live grant before `content-vault` records the object. `ingest.record_event()` still
+inserts every submission as `not_captured` and the envelope carries no content-state marker
+([ADR 0017](adr/0017-the-m3-content-state-marker-is-device-local.md)); `control-api` moves the
+submission to `local_only` when the device first asks for a grant — the request is the evidence that
+content is held — and to `uploaded` when an upload is finalised. Three things differ from the design
+above and are named rather than hidden: an `expired` or `voided` grant is not swept by a job (a new
+request simply decides again, and a digest mismatch voids the grant at finalise); the staged-object
+store is the lab's `contentlab`, not Blob storage; and these writes need database grants the schema
+does not yet give `sac_control` (a read of `ingest.observation`, the `content_state` update, and the
+`ops.usage_daily` write), which the lab does not exercise because it connects as the database owner.
 
 ---
 
@@ -630,6 +640,7 @@ stored row keeps its first-accepted value, because a retry is not a second recei
 | Idempotency | Unique on `(tenant_id, event_id)` for live grants: a repeat request while a grant is live returns the same `grant_id` and the same upload URL. A grant is **single-use** — one object, one write — so a second upload attempt is refused by the storage layer and by the finaliser (§10) |
 | Versioning | As common rules. The upload URL is opaque and must be used verbatim; its shape is not part of the contract |
 | Denial is not an error | A denial is a successful decision about a well-formed request and returns `200` with `state: "denied"`. Returning 4xx would inflate device error rates, confuse retry logic, and hide the one number the operator most needs to see: the denial reason mix |
+| **As built:** | `control-api` serves the endpoint (`internal/content`, wire types in `endpoint/protocol/content.go`). It decides `mode_not_permitted`, `retention_expired` and `over_budget`; **`not_policy_relevant` is never produced**, because the tenant retention criteria it is decided on have no stored form, so every M3 event is treated as relevant. `410` is not returned: a request after an expired grant is decided afresh. The upload credential is a URL signed with a key shared with the storage layer (one object, one grant, an expiry of at most 15 minutes), not a storage user-delegation SAS; the object key and its wrapped form come from `content-vault`, and the response's `upload.headers` carry the wrapped key so the finaliser can record it. Disabled unless a vault URL and the signing key are configured |
 
 ### 5.6 `POST /v1/token` — control-api
 
@@ -920,9 +931,16 @@ transport and authorisation level; the dashboard's shapes are in
 `content-vault`, on its internal-only ingress.
 
 **As built:** `content-vault` serves `POST /v1/content/retrieval` and `POST /v1/content/redeem`.
-`query-api` serves `POST /v1/query` and its two probes and nothing else: it is configured with the
-vault's address but does not yet forward a retrieval, so the analyst-facing half of this path is not
-implemented.
+`query-api` forwards the analyst's side of it (`src/http/content.js`): `POST /v1/content/retrieval`
+runs the vault's two steps for one event under the session's principal, and `POST /v1/content-search`
+forwards a prompt-text search. It decides nothing; the four-eyes rule, the single-use grant, the search
+tier and the audit rows are the vault's. The dashboard's Explore page is the surface for both. Three
+things differ from the table below. Redemption does not mint a retrieval URL: when the vault is given a
+ciphertext endpoint it reads the stored object, checks it against the recorded digest, opens it with
+the unwrapped object key and returns the content, which `query-api` relays in its response body.
+Authentication is the development principal header, because the Entra session is not built. And the
+second approver is a name recorded on the request, which the vault requires to differ from the
+requester; no second person approves anything yet.
 
 | Step | Requirement | Source |
 |---|---|---|
