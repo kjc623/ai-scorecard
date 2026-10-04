@@ -600,6 +600,13 @@ ON CONFLICT (tenant_id, bucket_start, bucket_size, tool_fingerprint) DO UPDATE
 
 The other five use the same skeleton with a different grouping; conflict targets are §4.1's keys.
 
+**As built:** all five statements live in `aggregation/aggregator` (`internal/rollup`), together with
+the watermark upsert. The bucket size is a closed set (`hour`, `day`) that selects frozen SQL
+fragments rather than being concatenated into them, and the aggregate statements take three
+parameters: the tenant and the half-open window bounds. `mart.agg_org_period` writes the empty string
+for a NULL `ops.user_dim.population`, because the aggregate's primary key makes the column NOT NULL;
+the read side treats it as unmapped.
+
 | Target | Source | Notes |
 |---|---|---|
 | `agg_tool_user_period` | `ingest.submission` by (tool, user_ref) | Subject-bearing; suppressed below k (§6) |

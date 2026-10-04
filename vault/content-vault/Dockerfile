@@ -34,6 +34,10 @@ ENV CGO_ENABLED=0 \
 WORKDIR /src
 
 COPY vault/content-vault/ ./vault/content-vault/
+# The module's go.mod has `replace github.com/shadow-ai-capture/device/protocol => ../../endpoint/protocol`
+# and internal/store imports it for the collection-mode vocabulary, so the build stage needs the
+# directory in the context exactly as ingest-api and control-api already carry it.
+COPY endpoint/protocol/ ./endpoint/protocol/
 COPY contracts/ ./contracts/
 
 WORKDIR /src/vault/content-vault

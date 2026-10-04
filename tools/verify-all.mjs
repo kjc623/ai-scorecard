@@ -55,6 +55,10 @@ const PACKAGES = [
   // like every other service's (ADR 0020).
   { kind: 'go', dir: 'control/control-api', args: ['./...'] },
   { kind: 'go', dir: 'vault/content-vault', args: ['./...'] },
+  // aggregator — the scheduled mart rollup (docs/03 §5, docs/04 §4). Its own module, because it
+  // is a job rather than a request-serving component, and it needs the pgx driver only under the
+  // sac_sql_driver tag exactly as the three services above do.
+  { kind: 'go', dir: 'aggregation/aggregator', args: ['./...'] },
   // Lead-owned external invariant tests for the vault: INV-1 says content crosses only on a
   // per-event grant, and a component should not be the only witness to the invariant it implements.
   // It lives inside the vault's module (an external test package, not a second module), so the

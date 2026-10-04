@@ -120,6 +120,17 @@ const SQL_IMAGES = [
     image: 'sac/content-vault:lab-auth',
     dockerfile: 'vault/content-vault/Dockerfile',
   },
+  // The aggregator is the scheduled mart rollup: it needs the real database, so it is a tagged
+  // build like control-api and ingest-api. Everything the dashboard's aggregate pages read comes
+  // from what it writes.
+  {
+    name: 'aggregator',
+    dir: 'aggregation/aggregator',
+    pkg: './cmd/aggregator',
+    binary: 'aggregation/aggregator/bin/aggregator',
+    image: 'sac/aggregator:lab-auth',
+    dockerfile: 'aggregation/aggregator/Dockerfile',
+  },
 ];
 
 // Images with no host-compiled binary: a plain Dockerfile built at package time. The schema image

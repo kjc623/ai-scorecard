@@ -2212,9 +2212,9 @@ INSERT INTO ref.classifier_release (release_version, ruleset_version, model_vers
 --     choice per tenant and enforcing the incompatible combination as unrepresentable, rather
 --     than by refusing the capability to everyone.
 --
---   * No aggregate refresh logic here. The upsert statements live in the aggregator job and
---     are specified in docs/04-dashboard-and-query.md §4. This file provides the primary keys
---     they conflict on, which is the part that has to be stable.
+--   * No aggregate refresh logic here. The upsert statements live in the aggregator job
+--     (aggregation/aggregator) and are specified in docs/04-dashboard-and-query.md §4. This file
+--     provides the primary keys they conflict on, which is the part that has to be stable.
 --
 --   * No deletion of content objects from Blob Storage. The database records the intent and
 --     the receipt; the reconciler performs it. Brief C34's second independent mechanism is a

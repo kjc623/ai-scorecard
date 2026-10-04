@@ -170,6 +170,29 @@ services:
       retries: 20
       start_period: 3s
 
+  # aggregator — the scheduled mart rollup. It reads ingest.*, writes the mart.* usage aggregates
+  # and their ops.aggregate_watermark rows, and serves only /healthz. Not published: it has no page
+  # and nothing but the database talks to it. A short interval so the dashboard's aggregate pages
+  # fill in seconds after the lab is started.
+  aggregator:
+    image: sac/aggregator:lab-auth
+    depends_on:
+      schema:
+        condition: service_completed_successfully
+    command:
+      - --store
+      - sql
+      - --dsn
+      - postgres://postgres:sac-lab-only@postgres:5432/shadow?sslmode=disable
+      - --interval
+      - 30s
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8080/healthz"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
   # query-api — the read path, and the only way a browser reaches content: it forwards the two
   # content reads to content-vault under its own identity. The authenticated session is not built,
   # so it trusts the development principal header the dashboard's server adds. Not published.

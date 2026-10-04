@@ -216,6 +216,20 @@ the event list, with aggregates lagging by up to one cadence and always reportin
 The brief's target is met by the direct `ingest.submission` read path, not by the aggregates, and the
 freshness field is what keeps the two honest.
 
+**As built:** the job is `aggregation/aggregator`, a Go module run as its own container in
+`localdev/authlab.compose.yaml` on a 30-second interval (5 minutes remains the default outside the
+lab). It recomputes both the hour and the day bucket every pass, with the lookbacks above, and writes
+one `ops.aggregate_watermark` row per `(tenant, aggregate, bucket_size)` after each statement. It
+enumerates `ops.tenant` (`status <> 'closed'`), sets `app.tenant_id` per tenant, and commits one
+tenant's buckets in one transaction. Two deviations worth stating: the aggregate statements select
+prompts by the denormalised `ingest.submission.kind = 'prompt'` rather than by a semi-join on
+`ingest.observation`, because `kind` was added for exactly that purpose (§4.6); and
+`mart.agg_class_period.severity` falls back to `ref.data_class.default_severity` when a label names
+no `ref.rule` row, because a label need not carry a rule and dropping such a label would report no
+sensitive data where the classifier found some. `mart.agg_device_period` is deliberately not written
+here: it rolls up `ops.collector_state`, not the event tables, and belongs to the device-liveness
+work.
+
 ---
 
 ## 6. Retention: two independent mechanisms, reconciled
