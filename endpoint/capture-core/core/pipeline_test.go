@@ -687,6 +687,8 @@ func TestPipelineUnresolvedRefusesToMint(t *testing.T) {
 	}
 	p.Normalizer = dedup.IdentityNFC{}
 	p.Bundles = func() *policy.Bundle { return m0Bundle() }
+	// A drain-configured device demands an issued identity.
+	p.RequireIdentity(true)
 
 	obs := Observation{
 		Route:           protocol.RouteProxyTLS,
@@ -695,6 +697,7 @@ func TestPipelineUnresolvedRefusesToMint(t *testing.T) {
 		OccurredAt:      time.Unix(1_700_000_000, 0),
 		SizeBytes:       10,
 		Decision:        &protocol.Decision{RuleID: "r", Action: protocol.ActionLogged},
+		Content:         &tripwireReader{t: t}, // the gate must refuse BEFORE the content is read
 	}
 
 	out, err := p.Process(context.Background(), obs)

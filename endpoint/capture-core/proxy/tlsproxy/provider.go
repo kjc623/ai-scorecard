@@ -790,6 +790,11 @@ func (p *Provider) observe(req *http.Request, counted int64, buf *bodyBuffer, re
 	}
 	out, err := p.cfg.Pipeline.Process(context.Background(), obs)
 	switch {
+	case out.Reason == core.ReasonIdentityUnresolved:
+		// Fail-closed for identity: the request is carried, the envelope is not minted, and the
+		// coverage row says so with the named detail rather than claiming healthy.
+		p.counters.Add(protocol.CounterErrors)
+		p.setDetail(protocol.DetailIdentityUnresolved)
 	case err != nil:
 		// Spool unavailable or full: carry the request (already carried) and count the loss.
 		p.counters.Add(protocol.CounterDropped)

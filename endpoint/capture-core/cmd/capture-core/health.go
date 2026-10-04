@@ -134,12 +134,12 @@ func (h *healthChannel) Snapshot() healthSnapshot {
 		policyVersion = b.Version
 	}
 
-	// The device identity is the resolved one (credential when a drain is configured, the flags for
-	// a local/offline run). The flags are only a display fallback when the identity is unresolved.
+	// The device identity is the issued one (credential when a drain is configured, the flags for
+	// a local/offline run). The flags are only a display fallback when no identity is issued yet.
 	var id core.Identity
-	idResolved := false
+	issued := false
 	if h.svc.pipe != nil {
-		id, idResolved = h.svc.pipe.Identity()
+		id, issued = h.svc.pipe.Identity()
 	}
 	deviceID := id.DeviceID
 	if deviceID == "" {
@@ -147,7 +147,7 @@ func (h *healthChannel) Snapshot() healthSnapshot {
 	}
 	identitySource := "local"
 	if strings.TrimSpace(h.cfg.DeviceEndpoint) != "" {
-		if idResolved {
+		if issued {
 			identitySource = "credential"
 		} else {
 			identitySource = "unresolved"

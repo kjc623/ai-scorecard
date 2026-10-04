@@ -230,9 +230,16 @@ func (r *portRunner) observe(ctx context.Context, req *http.Request, counted int
 
 	out, err := b.cfg.Pipeline.Process(ctx, obs)
 	switch {
+	case out.Reason == core.ReasonIdentityUnresolved:
+		// Fail-closed for identity: the request is forwarded, the envelope is not minted, and the
+		// coverage row reports degraded with the named detail rather than claiming healthy.
+		b.setIdentityDetail(protocol.DetailIdentityUnresolved)
+		b.counters.Add(protocol.CounterErrors)
 	case err != nil:
+		b.setIdentityDetail(protocol.DetailNone)
 		b.counters.Add(protocol.CounterDropped)
 	case out.Emitted:
+		b.setIdentityDetail(protocol.DetailNone)
 		b.counters.Add(protocol.CounterEmitted)
 	}
 }

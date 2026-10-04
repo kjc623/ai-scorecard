@@ -122,6 +122,11 @@ type Broker struct {
 
 	lastOKMu sync.Mutex
 	lastOK   time.Time
+
+	// identityDetail records the last identity-refusal signal from the pipeline, so a
+	// drain-configured broker whose identity is not yet issued reports degraded (identity_unresolved)
+	// rather than claiming healthy while refusing to mint.
+	identityDetail protocol.Detail
 }
 
 // New returns a broker. It is not started: Start performs the first preflight attempt for
@@ -247,11 +252,18 @@ func (b *Broker) Health() core.Health {
 	b.mu.Lock()
 	runners := append([]*portRunner(nil), b.runners...)
 	started, stopped := b.started, b.stopped
+	identityDetail := b.identityDetail
 	b.mu.Unlock()
 
 	lastOK := b.lastSuccess()
 	if !started || stopped || len(runners) == 0 {
 		return b.counters.Snapshot(protocol.StateAbsent, protocol.DetailNone, b.startedAt, lastOK)
+	}
+
+	// Identity refusal is a degraded state, never healthy: a broker whose pipeline refuses to mint
+	// (identity not yet issued) must not report healthy while dropping every observation.
+	if identityDetail != protocol.DetailNone {
+		return b.counters.Snapshot(protocol.StateDegraded, identityDetail, b.startedAt, lastOK)
 	}
 
 	var held, reachable, tampered, cooling int
@@ -397,6 +409,14 @@ func (b *Broker) markSuccess(t time.Time) {
 
 func (b *Broker) setLastFail(d protocol.Detail) {
 	_ = d // recorded through the runners' details; kept for the no-ports case
+}
+
+// setIdentityDetail records (or clears) the pipeline's identity-refusal signal, surfaced in Health
+// so the broker does not report healthy while refusing to mint.
+func (b *Broker) setIdentityDetail(d protocol.Detail) {
+	b.mu.Lock()
+	b.identityDetail = d
+	b.mu.Unlock()
 }
 
 func firstNonEmpty(a, b protocol.Detail) protocol.Detail {

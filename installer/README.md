@@ -141,14 +141,16 @@ msiexec /i installer/dist/ShadowAICapture.msi /qn
 
 ## Two gaps this makes visible
 
-1. **The agent stamps its envelopes from `--device-id`, but the server mints `device_id`.** Enrolment
-   mints the device, and `capture-core` does not adopt the value the server returned, so its envelope
-   `device_id` disagrees with the credential the write path authenticates. `dev.mjs` works around
-   this the only way configuration can: it enrols first, reads the minted `device_id` from
-   `ops.device`, aligns the flag, and *then* spools anything. The real fix is for the agent to take
-   its identity from the issued credential. Until then, an operator must pin `--device-id` to what
-   enrolment returned, and a batch minted before alignment is correctly rejected by
-   `ingest-api` as `schema_violation` on `/device_id` ([docs/02 §5.3](../docs/02-ingest-and-transport.md)).
+1. **RESOLVED — the agent now adopts the issued credential as its envelope identity.** Enrolment
+   mints the device, and `capture-core` takes its `tenant_id`/`device_id` from the sealed credential
+   (loaded at startup, or a bounded synchronous enrolment on first start) rather than the flags. The
+   write path authenticates the credential, so the envelope identity and the credential can no longer
+   disagree. `--device-id`/`--tenant-id` are demoted to a local/offline fallback (required only with
+   no `--device-endpoint`); when they are present alongside a credential and disagree, the mismatch is
+   logged and the credential wins. `dev.mjs` no longer reads the minted `device_id` back out of
+   `ops.device` and rewrites the flag — it relies on the adopted credential. A record minted by an
+   older build under the flag identity is quarantined at drain (rejected, reason `stale_identity`),
+   never delivered.
 2. **The lab runs the device inside the lab network, not on the host.** Some Docker daemons publish
    ports the host shell cannot reach, and present a host bind mount as an empty directory. `dev.mjs`
    therefore streams the payload to the daemon as a build context and shares state through a named

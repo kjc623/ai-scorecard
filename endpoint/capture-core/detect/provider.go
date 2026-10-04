@@ -438,6 +438,10 @@ func (p *Provider) emitDetection(ctx context.Context, tool, basis string, proc P
 	p.detected[key] = true
 	p.mu.Unlock()
 
+	if p.refuseIfUnresolved() {
+		return
+	}
+
 	res := p.cfg.Pipeline.ResolveMode(core.ScopeQuery{
 		ToolFingerprint: tool,
 		Population:      p.cfg.Agent.Population,
@@ -484,6 +488,10 @@ func (p *Provider) emitRollup(ctx context.Context, tool string, now time.Time) {
 	}
 	p.rolled[key] = true
 	p.mu.Unlock()
+
+	if p.refuseIfUnresolved() {
+		return
+	}
 
 	start := now.Truncate(p.cfg.RollupWindow)
 	end := start.Add(p.cfg.RollupWindow)
@@ -585,6 +593,19 @@ func (p *Provider) identityOrAgent() Identity {
 	id := p.identity
 	p.mu.Unlock()
 	return id
+}
+
+// refuseIfUnresolved reports whether the provider has no issued identity and, if so, records the
+// identity_unresolved detail (so the coverage row degrades rather than claiming healthy) and
+// returns true — the caller must not emit.
+func (p *Provider) refuseIfUnresolved() bool {
+	if p.identityOrAgent().TenantID != "" {
+		return false
+	}
+	p.mu.Lock()
+	p.lastDetail = protocol.DetailIdentityUnresolved
+	p.mu.Unlock()
+	return true
 }
 
 // Describe renders the coverage row for a log line or a health detail.

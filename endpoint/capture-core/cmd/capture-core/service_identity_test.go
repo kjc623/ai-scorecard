@@ -178,3 +178,57 @@ func TestResolveIdentityUnresolvedOffline(t *testing.T) {
 		t.Fatalf("Process err = %v, want ErrIdentityUnresolved", err)
 	}
 }
+
+// TestResolveIdentitySynchronousEnrol proves the first-run path: with no sealed credential and a
+// reachable edge, resolveIdentity performs a bounded synchronous enrolment and installs the issued
+// identity before any provider starts.
+func TestResolveIdentitySynchronousEnrol(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "spool.key")
+	spoolDir := filepath.Join(dir, "spool")
+	credFile := filepath.Join(dir, "credential.sealed")
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	fi, err := startFakeIngest(log, dir, "issued-device", "issued-tenant")
+	if err != nil {
+		t.Fatalf("startFakeIngest: %v", err)
+	}
+	defer fi.close()
+
+	pipe, err := core.NewPipeline(stubSink{}, time.Now, func() string { return "evt" })
+	if err != nil {
+		t.Fatalf("NewPipeline: %v", err)
+	}
+	s := &service{
+		cfg: Config{
+			DeviceEndpoint: fi.baseURL(),
+			AuthMode:       "dpop",
+			CAFile:         fi.caFile,
+			CredentialFile: credFile,
+			SpoolKey:       keyPath,
+			SpoolDir:       spoolDir,
+			EnrolmentToken: "tok-123",
+			TenantID:       "flag-tenant",
+			DeviceID:       "flag-device",
+			UserRef:        "flag-user",
+			MDMID:          "mdm-9",
+			BackoffBase:    time.Second,
+			BackoffCap:     time.Second,
+			DrainInterval:  time.Second,
+		},
+		pipe:  pipe,
+		spool: &spoolHolder{cfg: Config{SpoolKey: keyPath, SpoolDir: spoolDir}},
+		log:   log,
+	}
+
+	if err := s.resolveIdentity(context.Background()); err != nil {
+		t.Fatalf("resolveIdentity: %v", err)
+	}
+	id, ok := pipe.Identity()
+	if !ok {
+		t.Fatal("identity not issued after synchronous enrolment")
+	}
+	if id.TenantID != "issued-tenant" || id.DeviceID != "issued-device" {
+		t.Fatalf("identity = %+v, want the issued (issued-tenant, issued-device), not the flags", id)
+	}
+}

@@ -332,6 +332,9 @@ func (r identityResolver) Resolve(ctx context.Context) error { return r.s.resolv
 //   - no credential: bounded synchronous enrolment; on failure the identity stays unresolved and
 //     the pipeline refuses to mint (fail-closed) while the background drain retries.
 func (s *service) resolveIdentity(ctx context.Context) error {
+	// A drain-configured device demands an issued credential; a local/offline run does not.
+	s.pipe.RequireIdentity(strings.TrimSpace(s.cfg.DeviceEndpoint) != "")
+
 	if strings.TrimSpace(s.cfg.DeviceEndpoint) == "" {
 		id := s.cfg.identity()
 		s.pipe.SetIdentity(id)
@@ -341,19 +344,15 @@ func (s *service) resolveIdentity(ctx context.Context) error {
 		return nil
 	}
 	if err := s.ensureDrainer(); err != nil {
-		s.pipe.SetIdentityUnresolved()
-		if s.detect != nil {
-			s.detect.SetIdentity(detect.Identity{})
-		}
+		// Identity stays unissued (required=true, issued=false); the pipeline refuses to mint and
+		// the background drain is not available to retry, so this is a hard failure of startup.
 		return err
 	}
 	bounded, cancel := context.WithTimeout(ctx, enrolStartupTimeout)
 	defer cancel()
 	if !s.drainer.EnsureEnrolled(bounded) {
-		s.pipe.SetIdentityUnresolved()
-		if s.detect != nil {
-			s.detect.SetIdentity(detect.Identity{})
-		}
+		// Fail-open: providers still start; the pipeline refuses to mint until the background
+		// drainer enrols and its OnEnrolled installs the identity.
 		return errors.New("drain: bounded synchronous enrolment did not produce an identity")
 	}
 	// OnEnrolled already installed the identity (setCredential -> adoptIssuedIdentity -> OnEnrolled).

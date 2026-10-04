@@ -193,33 +193,42 @@ type Pipeline struct {
 
 // identityHolder is the race-free holder for the envelope identity. It is resolved by the startup
 // identity step (or a later enrolment) on a different goroutine than the providers that mint
-// envelopes, so a bare field would race. The resolved flag is separate from the identity so an
-// offline drain (no credential, enrolment failed) is distinguishable from "no identity": the
-// pipeline refuses to mint rather than stamping a placeholder.
+// envelopes, so a bare field would race. `required` records whether the run demands an issued
+// credential (a drain-configured device); `issued` records whether one has been installed. A
+// required-but-not-issued holder is the fail-closed state: the pipeline refuses to mint rather than
+// stamping a placeholder.
 type identityHolder struct {
 	mu       sync.RWMutex
 	id       Identity
-	resolved bool
+	issued   bool
+	required bool
 }
 
 func (h *identityHolder) set(id Identity) {
 	h.mu.Lock()
 	h.id = id
-	h.resolved = true
+	h.issued = true
 	h.mu.Unlock()
 }
 
-func (h *identityHolder) markUnresolved() {
+func (h *identityHolder) require(b bool) {
 	h.mu.Lock()
-	h.id = Identity{}
-	h.resolved = false
+	h.required = b
 	h.mu.Unlock()
+}
+
+// snapshot returns id, issued and required under one lock, so a single observation's scope, envelope
+// and dedup key see one consistent identity and one consistent gate decision.
+func (h *identityHolder) snapshot() (Identity, bool, bool) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.id, h.issued, h.required
 }
 
 func (h *identityHolder) get() (Identity, bool) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	return h.id, h.resolved
+	return h.id, h.issued
 }
 
 // NewPipeline returns a pipeline. Sink must be non-nil: a pipeline with nowhere to write
@@ -257,24 +266,23 @@ var ErrIdentityUnresolved = errors.New("core: identity is unresolved; refusing t
 // group the failure rather than reporting it as a generic error.
 const ReasonIdentityUnresolved = "identity_unresolved"
 
-// SetIdentity installs the resolved envelope identity. It is the seam the drain uses: enrolment
-// mints device_id (and tenant_id/region) server-side, and the write path validates an envelope's
+// SetIdentity installs the issued envelope identity. It is the seam the drain uses: enrolment mints
+// device_id (and tenant_id/region) server-side, and the write path validates an envelope's
 // tenant_id/device_id against the issued credential, so the flags supplied at construction are only
 // the no-drain/local fallback. Safe to call concurrently with Process and EmitEnvelope.
 func (p *Pipeline) SetIdentity(id Identity) { p.identity.set(id) }
 
-// SetIdentityUnresolved clears the identity and marks it unresolved, so the pipeline refuses to
-// mint until a later SetIdentity resolves it. This is the state a drain-configured device enters
-// when its bounded synchronous enrolment failed and it must start without an identity.
-func (p *Pipeline) SetIdentityUnresolved() { p.identity.markUnresolved() }
+// RequireIdentity records whether this run demands an issued credential. When required and no
+// identity has been issued yet, Process/EmitEnvelope refuse to mint (ErrIdentityUnresolved) rather
+// than stamping a placeholder — fail-open for traffic, fail-closed for identity.
+func (p *Pipeline) RequireIdentity(required bool) { p.identity.require(required) }
 
-// Identity returns the current identity and whether it is resolved.
+// Identity returns the current issued identity and whether one has been issued.
 func (p *Pipeline) Identity() (Identity, bool) { return p.identity.get() }
 
-// currentIdentity returns the identity to stamp, and whether it is resolved, under the same lock
-// SetIdentity uses. It exists so a provider minting an envelope sees either the resolved identity or
-// an unresolved refusal, never a torn value.
-func (p *Pipeline) currentIdentity() (Identity, bool) { return p.identity.get() }
+// currentIdentity returns the issued identity snapshot (id, issued, required) under one lock, so a
+// provider minting an envelope sees one consistent identity and one consistent gate decision.
+func (p *Pipeline) currentIdentity() (Identity, bool, bool) { return p.identity.snapshot() }
 
 // Counters returns the counter set for a route, creating it on first use.
 func (p *Pipeline) Counters(route protocol.Route) *CounterSet {
@@ -323,7 +331,7 @@ func (p *Pipeline) ContentState() (objects int, bytes int64) {
 // are only the no-drain/local fallback. An unresolved identity resolves against an empty device,
 // which yields M0 (and Process/EmitEnvelope then refuses to mint).
 func (p *Pipeline) ResolveMode(q ScopeQuery) Resolution {
-	id, _ := p.currentIdentity()
+	id, _, _ := p.currentIdentity()
 	return p.resolveWith(q, id)
 }
 
@@ -355,14 +363,7 @@ func (p *Pipeline) Process(ctx context.Context, obs Observation) (Outcome, error
 	c := p.Counters(obs.Route)
 	c.Add(protocol.CounterObserved)
 
-	id, ok := p.currentIdentity()
-	if !ok {
-		// Fail-closed for identity: carry the request (fail-open for traffic), refuse to mint
-		// rather than stamping a placeholder. One snapshot per observation keeps scope, envelope
-		// and dedup key from disagreeing.
-		c.Add(protocol.CounterErrors)
-		return Outcome{Route: obs.Route, Mode: protocol.ModeM0, Reason: ReasonIdentityUnresolved}, ErrIdentityUnresolved
-	}
+	id, issued, required := p.currentIdentity()
 	res := p.resolveWith(ScopeQuery{
 		ToolFingerprint: obs.ToolFingerprint,
 		Population:      obs.Population,
@@ -370,6 +371,15 @@ func (p *Pipeline) Process(ctx context.Context, obs Observation) (Outcome, error
 	out := Outcome{Route: obs.Route, Mode: res.Mode, Reason: ReasonEmitted}
 	if !obs.Kind.Valid() {
 		return out, fmt.Errorf("core: observation has kind %q outside the closed registry", obs.Kind)
+	}
+
+	// The identity gate runs AFTER mode resolution and BEFORE any content read: a drain-configured
+	// device that has not yet enrolled resolves M0 and refuses to mint, so it never stamps a
+	// placeholder and never reads content it cannot attribute. Fail-open for the user's traffic,
+	// fail-closed for identity.
+	if required && !issued {
+		c.Add(protocol.CounterErrors)
+		return Outcome{Route: obs.Route, Mode: res.Mode, Degraded: true, Reason: ReasonIdentityUnresolved}, ErrIdentityUnresolved
 	}
 
 	eventID := p.NewID()
@@ -542,10 +552,10 @@ func (p *Pipeline) EmitEnvelope(ctx context.Context, in EnvelopeInput) (Outcome,
 		in.EventID = p.NewID()
 	}
 	if in.Identity == (Identity{}) {
-		id, ok := p.currentIdentity()
-		if !ok {
+		id, issued, required := p.currentIdentity()
+		if required && !issued {
 			c.Add(protocol.CounterErrors)
-			return Outcome{Route: in.Route, Mode: in.Mode, Reason: ReasonIdentityUnresolved}, ErrIdentityUnresolved
+			return Outcome{Route: in.Route, Mode: in.Mode, Degraded: true, Reason: ReasonIdentityUnresolved}, ErrIdentityUnresolved
 		}
 		in.Identity = id
 	}
