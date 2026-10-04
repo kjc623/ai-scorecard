@@ -46,7 +46,7 @@
         <ServiceInstall Id="SvcCaptureCore" Name="ShadowAICapture" DisplayName="Shadow AI Capture"
                         Description="Observes AI submissions on this device and drains them to the tenant ingress."
                         Type="ownProcess" Start="auto" ErrorControl="normal" Account="LocalSystem"
-                        Arguments="[SAC_ARGS]" />
+                        Arguments="--service --service-name ShadowAICapture [SAC_ARGS]" />
         <ServiceControl Id="SvcCaptureCoreControl" Name="ShadowAICapture" Start="install" Stop="both" Remove="uninstall" Wait="yes" />
       </Component>
     </DirectoryRef>

@@ -250,10 +250,11 @@ function launchdPlist(layout) {
 
 /**
  * The WiX v4 source. It installs the payload and registers capture-core as a LocalSystem service
- * whose Arguments are the single public property SAC_ARGS. That is the documented MDM shape: Intune
- * passes command-line properties to msiexec, and the service manager holds the resolved argv. It is
- * NOT VERIFIED - there is no WiX and no Windows on the host this was written on; Build-Msi.ps1 says
- * so and refuses to pretend.
+ * whose Arguments are `--service --service-name ShadowAICapture` followed by the whole device argv
+ * in the public property SAC_ARGS. capture-core implements the SCM contract itself in `--service`
+ * mode (cmd/capture-core/service_windows.go), so no external wrapper (NSSM/WinSW) is needed; a
+ * console program registered directly would fail to start. It is NOT VERIFIED - there is no WiX and
+ * no Windows on the host this was written on; Build-Msi.ps1 says so and refuses to pretend.
  */
 function wixSource(layout) {
   // capture-core.exe is installed by the service component below: a ServiceInstall must live in a
@@ -315,7 +316,7 @@ function wixSource(layout) {
     '        <ServiceInstall Id="SvcCaptureCore" Name="ShadowAICapture" DisplayName="Shadow AI Capture"',
     '                        Description="Observes AI submissions on this device and drains them to the tenant ingress."',
     '                        Type="ownProcess" Start="auto" ErrorControl="normal" Account="LocalSystem"',
-    '                        Arguments="[SAC_ARGS]" />',
+    '                        Arguments="--service --service-name ShadowAICapture [SAC_ARGS]" />',
     '        <ServiceControl Id="SvcCaptureCoreControl" Name="ShadowAICapture" Start="install" Stop="both" Remove="uninstall" Wait="yes" />',
     '      </Component>',
     '    </DirectoryRef>',

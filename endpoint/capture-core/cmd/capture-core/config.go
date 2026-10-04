@@ -66,6 +66,9 @@ type Config struct {
 
 	// Modes and misc.
 	WorkDir string
+	// ServiceName is the Windows service name used with --service. It must match the name the
+	// installer registered: the SCM dispatcher table and the control handler are keyed by it.
+	ServiceName string
 
 	// KeepWorkDir leaves the selftest's work directory in place for inspection. The default is to
 	// remove it: a self test leaves the tree as it found it, including on the failure path.

@@ -94,7 +94,11 @@ const linuxExpected = new Set(configFor('linux').map((c) => c.flag.replace(/^--/
 const winExpected = new Set(configFor('windows').map((c) => c.flag.replace(/^--/, '')));
 check('the Linux wrapper carries exactly the Linux flag set', sameSet(flagsIn(linuxWrapper), linuxExpected), `${flagsIn(linuxWrapper).size} flags`);
 check('the Windows console wrapper carries exactly the Windows flag set', sameSet(flagsIn(cmdWrapper), winExpected), `${flagsIn(cmdWrapper).size} flags`);
-check('the WiX source registers the service with the SAC_ARGS argv', /ServiceInstall[\s\S]*Arguments="\[SAC_ARGS\]"/.test(wxs), 'ServiceInstall Arguments="[SAC_ARGS]"');
+check(
+  'the WiX source registers the service in --service mode with the SAC_ARGS argv',
+  /ServiceInstall[\s\S]*Arguments="--service[^"]*\[SAC_ARGS\]"/.test(wxs),
+  'ServiceInstall Arguments should start --service and end [SAC_ARGS]',
+);
 check('the WiX default argv is a build-time variable, overridable at install', wxs.includes('$(var.SacArgs)') && wxs.includes('Id="SAC_ARGS"'));
 const missingEnv = CONFIG.filter((c) => !envExample.includes(`${c.env}=`));
 check('the generated env example carries every variable', missingEnv.length === 0, missingEnv.map((c) => c.env).join(', ') || `${CONFIG.length} variables`);

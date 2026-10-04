@@ -207,9 +207,13 @@ func TestLink_Addresses(t *testing.T) {
 	if (Address{Network: "unix", Path: ""}).Valid() {
 		t.Fatal("an empty path was accepted")
 	}
-	win := DefaultAddress("C:/ProgramData/ShadowAICapture", "classifier-host")
-	if win.Network != "pipe" {
+	win := addressFor("windows", "C:/ProgramData/ShadowAICapture", "classifier-host")
+	if win.Network != "pipe" || win.Path != `\\.\pipe\classifier-host` {
 		t.Fatalf("windows address = %+v, want a named pipe", win)
+	}
+	nix := addressFor("linux", "/var/lib/shadow-ai-capture", "classifier-host")
+	if nix.Network != "unix" || nix.Path != "/var/lib/shadow-ai-capture/classifier-host" {
+		t.Fatalf("linux address = %+v, want a unix socket", nix)
 	}
 }
 

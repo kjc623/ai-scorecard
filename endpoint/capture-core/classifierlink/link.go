@@ -70,7 +70,14 @@ func isLoopbackAddr(hostport string) bool {
 
 // DefaultAddress returns the platform's address for a service directory and host name.
 func DefaultAddress(serviceDir, name string) Address {
-	if runtime.GOOS == "windows" {
+	return addressFor(runtime.GOOS, serviceDir, name)
+}
+
+// addressFor is the platform decision, separated from runtime.GOOS so it can be asserted for both
+// platforms on any host: a test of DefaultAddress alone could only ever check the host it ran on,
+// which is how the Windows assertion silently became a false failure on Linux.
+func addressFor(goos, serviceDir, name string) Address {
+	if goos == "windows" {
 		return Address{Network: "pipe", Path: `\\.\pipe\` + name}
 	}
 	return Address{Network: "unix", Path: strings.TrimRight(serviceDir, "/") + "/" + name}

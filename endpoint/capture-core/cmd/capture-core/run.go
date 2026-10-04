@@ -15,13 +15,23 @@ import (
 func runService(cfg Config, log *slog.Logger) error {
 	ctx, cancel := signalContext()
 	defer cancel()
+	return runServiceContext(ctx, cfg, log, nil)
+}
 
+// runServiceContext builds and runs the agent graph until ctx is cancelled, then shuts down in
+// §3.5's order. onStarted, when non-nil, runs once the graph is up: the Windows service host uses
+// it to report SERVICE_RUNNING only after the agent is actually running, so a start failure is a
+// failed start rather than a service that reports healthy and exits.
+func runServiceContext(ctx context.Context, cfg Config, log *slog.Logger, onStarted func()) error {
 	svc, err := newService(ctx, cfg, log)
 	if err != nil {
 		return err
 	}
 	if err := svc.Start(ctx); err != nil {
 		return err
+	}
+	if onStarted != nil {
+		onStarted()
 	}
 
 	// One health snapshot at startup, on stderr, so an operator sees which rows are in the path

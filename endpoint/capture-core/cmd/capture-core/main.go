@@ -69,6 +69,8 @@ func run() error {
 		// binary and the same service graph: the browser's messages go through the same pipeline
 		// as a proxy's observations.
 		return runNativeHost(cfg, logger)
+	case mode.service:
+		return runAsService(cfg, logger)
 	default:
 		return runService(cfg, logger)
 	}
@@ -81,6 +83,7 @@ type runMode struct {
 	selftest     bool
 	nativeHost   bool
 	nativeFrames string
+	service      bool
 }
 
 func parseFlags(args []string) (Config, runMode, error) {
@@ -144,6 +147,10 @@ func parseFlags(args []string) (Config, runMode, error) {
 	fs.BoolVar(&mode.selftest, "selftest", false, "run the end-to-end self test (service, golden frames, health, shutdown) and exit non-zero on failure")
 	fs.BoolVar(&mode.nativeHost, "native-host", false, "run the native-messaging host on stdin/stdout")
 	fs.StringVar(&mode.nativeFrames, "native-frames", "", "directory of golden frame case files to run through the real native-messaging framing, then exit")
+	// Windows service. --service is accepted on every platform so the flag set is one shape; a
+	// non-Windows binary refuses it at run time rather than at parse time.
+	fs.BoolVar(&mode.service, "service", false, "run under the Windows Service Control Manager (Windows only)")
+	fs.StringVar(&cfg.ServiceName, "service-name", cfg.ServiceName, "the Windows service name to host (with --service); must match the installer's registration")
 	fs.StringVar(&cfg.WorkDir, "work-dir", cfg.WorkDir, "work directory for --selftest (default: the OS temp directory; wiped per run)")
 	fs.BoolVar(&cfg.KeepWorkDir, "keep-work-dir", cfg.KeepWorkDir, "leave the --selftest work directory behind for inspection (default: remove it, including after a failure)")
 	fs.StringVar(&cfg.LogFormat, "log-format", cfg.LogFormat, "log format: json | text")
@@ -158,13 +165,13 @@ func parseFlags(args []string) (Config, runMode, error) {
 	}
 
 	selected := 0
-	for _, on := range []bool{mode.showVersion, mode.printConfig, mode.selftest, mode.nativeHost, mode.nativeFrames != ""} {
+	for _, on := range []bool{mode.showVersion, mode.printConfig, mode.selftest, mode.nativeHost, mode.nativeFrames != "", mode.service} {
 		if on {
 			selected++
 		}
 	}
 	if selected > 1 {
-		return cfg, mode, errors.New("choose one of --version, --print-config, --selftest, --native-host, --native-frames")
+		return cfg, mode, errors.New("choose one of --version, --print-config, --selftest, --native-host, --native-frames, --service")
 	}
 	if err := cfg.validate(mode); err != nil {
 		return cfg, mode, err
@@ -192,9 +199,11 @@ func defaultConfig() Config {
 		// WorkDir is deliberately empty: the selftest defaults to the OS temp directory so a run
 		// never writes artifacts into the source tree. --work-dir overrides it, and
 		// --keep-work-dir leaves the directory behind for inspection.
-		WorkDir:   "",
-		LogFormat: "json",
-		LogLevel:  "info",
+		WorkDir: "",
+		// ServiceName is the name the installer registers; the SCM dispatch table is keyed by it.
+		ServiceName: "ShadowAICapture",
+		LogFormat:   "json",
+		LogLevel:    "info",
 	}
 }
 

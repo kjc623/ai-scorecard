@@ -92,12 +92,16 @@ assembled into a partial file.
 
 ## Running it as a service
 
-**Windows.** The binary is a console application that runs in the foreground and stops on Ctrl-C or
-the service manager's stop. To install it as a service, use a wrapper the operator already trusts
-(`sc.exe` with a service host, NSSM, or a WinSW XML) with **LocalSystem** (the trust store and system
-proxy are machine-scope), automatic start, and restart-on-failure with backoff — which is §3.5's
-crash policy at the service-manager layer. No recovery action may restart in a tight loop: §3.5
-requires a crash loop to stop and report `absent` with the loop count.
+**Windows.** `capture-core --service` hosts the process under the Service Control Manager itself: it
+implements the SCM contract directly (`service_windows.go` — a `SERVICE_TABLE_ENTRY` dispatcher and a
+control handler), reports `START_PENDING` and then `RUNNING` only once the agent graph is up, and
+shuts down in §3.5 order on a stop or shutdown control. The installer registers it as a
+**LocalSystem** service (the trust store and system proxy are machine scope) with automatic start,
+so no external wrapper (NSSM/WinSW) is required. Recovery / restart-on-failure is the SCM's action;
+no recovery action may restart in a tight loop, because §3.5 requires a crash loop to stop and report
+`absent` with the loop count. Without `--service` the binary is a console application that runs in the
+foreground and stops on Ctrl-C. `--service` is Windows-only: a non-Windows binary refuses it with a
+clear error.
 
 **Linux/macOS.** A systemd unit or a LaunchDaemon with the same argv, `Restart=on-failure`,
 `RestartSec` ≥ 5s. Nothing in the binary forks or daemonises: it expects to be the supervised process
