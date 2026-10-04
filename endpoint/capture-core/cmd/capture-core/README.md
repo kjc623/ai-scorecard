@@ -44,9 +44,9 @@ The service drives `core.Supervisor`, which encodes §3.5 literally and records 
 | 1 bundle, verified | `policy.Store.Apply` over the file named by `--bundle`, verified under the pinned `--policy-key`. A failure retains the previous bundle, or falls to **M0** with none (§13.3) — it never widens. |
 | 2 spool opened | `capture-spool` with a key file **outside** the spool directory, bounded and encrypted at rest. If it cannot open, no provider starts. |
 | 3 `proc.detect` | only with `--proc-detect`; see the enumeration gap below |
-| 4 `cli.shim` | not implemented (see gaps) |
+| 4 `cli.shim` | with `--cli-shim`: writes the managed CA bundle and shell profile from the bundle's `cli_shim` block and `interception.root_ca_pem`; no ports |
 | 5 classifier-host | `classifierlink` connects to `--classifier-address` and completes the version handshake |
-| 6 `proxy.tls` | listens on `--proxy-tls-listen`; the system proxy is pointed at it only if a `SystemProxy` is wired, which this build does not do |
+| 6 `proxy.tls` | listens on `--proxy-tls-listen` (or the bundle's `interception.proxy_listen`); with `--trust-install` it installs the device CA from `--ca-cert`/`--ca-key` (or the bundle root) into the OS store; the system proxy is pointed at it only if a `SystemProxy` is wired, which this build does not do |
 | 7 `proxy.loopback` | binds the bundle's port map **last**, and only after its own upstream preflight succeeds |
 
 Shutdown reverses it: **the loopback port is released first** (E14), then the proxy stops enforcing,
@@ -83,6 +83,9 @@ assembled into a partial file.
 | `--classifier-address`, `--classifier-budget` | `unix:PATH`, `pipe:NAME`, or `tcp:127.0.0.1:PORT` (loopback only), and the per-classification budget. Empty address means rules-only, `confidence: degraded` |
 | `--proxy-tls`, `--proxy-tls-listen`, `--proxy-tls-canary` | the interceptor; without a canary it reports `degraded detail=tls_probe_failed` rather than healthy |
 | `--proxy-loopback`, `--proc-detect` | the other two providers |
+| `--trust-install`, `--trust-store`, `--trust-remove-on-stop` | install the per-device CA into the OS trust store (`root` or Windows `enterprise`), and remove it on shutdown. Off by default: the wrong store fails silently, so installing is opt-in |
+| `--ca-cert`, `--ca-key` | pin the per-device CA pair so the trusted root is stable across restarts; `--ca-cert` may be omitted when the bundle carries `interception.root_ca_pem`. With neither, `proxy.tls` mints an ephemeral CA |
+| `--cli-shim`, `--shim-dir` | run `cli.shim` and choose where it writes the CA bundle, profile and Node bootstrap |
 | `--drain-deadline` | the bound on the shutdown drain (§3.5 step 3) |
 | `--health-file`, `--health-interval` | the health channel, appended as JSON lines |
 | `--attachment-cap` | the policy cap on one attachment manifest, checked before any byte moves |
@@ -92,6 +95,25 @@ assembled into a partial file.
 | `--print-config`, `--dry-run` | `--print-config` resolves and validates everything, prints it and exits; `--dry-run` builds the service graph, starts nothing (no §3.5 step runs), prints one health snapshot and waits for the stop signal |
 | `--work-dir`, `--keep-work-dir` | the selftest work directory (default OS temp, removed on exit, success or failure) |
 | `--log-format`, `--log-level` | `json` (default) or `text`; `debug`, `info`, `warn`, `error` |
+
+## Minting the policy bundle and the device CA
+
+`cmd/sac-bundle` is the operator-facing generator. It mints the per-device CA, scopes `proxy.tls`,
+embeds the CA public cert and the `cli_shim` block, and signs the bundle:
+
+```sh
+go run ./cmd/sac-bundle \
+  --out /etc/shadow-ai-capture/bundle \
+  --device-id 22222222-2222-4222-8222-222222222222 \
+  --hosts api.anthropic.com,api.openai.com \
+  --listen 127.0.0.1:8843 --canary api.anthropic.com:443 \
+  --runtimes go,node,python --tenant-default m1
+```
+
+It writes `bundle.json` (signed), `ca.pem`, `ca.key` (0600) and `policy-key.pub`, and prints the
+`--bundle` / `--policy-key` / `--ca-cert` / `--ca-key` / `--trust-install` / `--cli-shim` mapping.
+`--ca-key`/`--ca-cert` load an existing key pair instead of generating one; `--policy-priv` signs
+with an existing Ed25519 key. The device never signs a bundle it enforces.
 
 ## Running it as a service
 
@@ -114,7 +136,9 @@ clear error.
 and exits non-zero only when it refuses to start.
 
 **Nothing is installed by this repository or by `--selftest`.** No service, no system proxy, no
-trust-store entry, no scheduled task.
+scheduled task. The **only** exception is an explicit `--trust-install` (or the equivalent
+`SAC_TRUST_INSTALL=true` in the enrolment profile), which installs the per-device CA the enrolment
+profile points at and, with `--trust-remove-on-stop`, removes it again.
 
 ## What is NOT VERIFIED on this host
 
@@ -126,12 +150,16 @@ trust-store entry, no scheduled task.
   The launch by a real Chromium browser is evidenced outside this module:
   `extension/tools/in-browser-check.mjs` loads the extension into Edge with this binary registered
   as the native host, and `extension/tools/in-browser-check.evidence.txt` records the round trip.
-- **No real system proxy and no real trust store.** Those are behind the interfaces in
-  `proxy/tlsproxy` and this build wires none of them: `proxy.tls` therefore reports
-  `degraded detail=tls_probe_failed`, and is exercised by its own package tests only.
+- **No real system proxy.** It is behind the `core.SystemProxy` interface and this build wires no
+  implementation, so `proxy.tls` is not pointed at automatically. The **trust store is wired**:
+  `--trust-install` drives `trust/` on linux/darwin/windows, with the Windows and macOS command
+  paths covered by unit tests and the Linux path exercised for real by `endpoint/testlab/`.
 - **No DPAPI/Keychain sealing.** The spool key is a file protected by filesystem ACLs; the platform
-  wrapping described in §12 is a `KeyProvider` implementation that does not exist yet.
-- **No `cli.shim`.** The route has no provider, so it has no coverage row.
+  wrapping described in §12 is a `KeyProvider` implementation that does not exist yet, and the pinned
+  CA key is a `0600` file that reports unsealed rather than implying protection it does not have.
+- **`cli.shim` has no environment probe wired here.** The provider and its three checks exist; the
+  "a child inherited it" check is skipped unless an `EnvProbe` is supplied, and the gap is named
+  rather than reported as passed.
 - **`proc.detect` is partial.** The only enumerator on this host is `tasklist`, which gives an image
   name and a PID: no modules, no listening sockets, no compute signature. It can match the candidate
   rule and emit daily rollups, but never evidence of use, so it never emits a `model_detection`.

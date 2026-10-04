@@ -9,22 +9,28 @@ The design and its reasons are in [docs/01-collectors.md](../docs/01-collectors.
 choices are in [docs/00-architecture.md §4.1](../docs/00-architecture.md). This file is the map of
 the code, not a second copy of the design.
 
-## Next: collecting Claude Code prompts
+## Collecting Claude Code prompts
 
-The delivery path is built (service → enrol → spool → drain → `POST /v1/events`); nothing is captured
-yet because no provider is enabled and there is no policy. To collect prompts from Claude Code — a CLI
-speaking HTTPS to `api.anthropic.com`:
+The delivery path is built (service → enrol → spool → drain → `POST /v1/events`) and the trust/CA
+half is now built too, so a CLI speaking HTTPS to `api.anthropic.com` is captured end to end:
 
-1. **Build a signed policy bundle** that scopes `proxy.tls` to the generative hosts, carries the local
-   root CA, and names the classifier. This is the missing component: with no bundle the device is at
-   M0 and the interceptor is unconfigured. (There is no operator-facing bundle generator; `--selftest`
-   signs a throwaway one.)
-2. **Turn the interceptor on**: `SAC_PROXY_TLS=true` with a fixed `SAC_PROXY_TLS_LISTEN` port.
-3. **Route the CLI to it**: point Claude Code's proxy at that port.
-4. **Trust the CA**: the bundle's root CA in the machine trust store (or `NODE_EXTRA_CA_CERTS` for the
-   Node-based CLI), or the intercepted handshake fails.
+1. **Mint a signed policy bundle** with `endpoint/capture-core/cmd/sac-bundle`. It generates the
+   per-device CA (`ca.pem` / `ca.key`), scopes `proxy.tls` to the generative hosts, embeds the root
+   CA public cert and the `cli_shim` block, names the classifier release, and signs with an Ed25519
+   policy key. `--selftest` still signs a throwaway bundle for its own evidence run.
+2. **Turn the interceptor on**: `SAC_PROXY_TLS=true` with a fixed `SAC_PROXY_TLS_LISTEN` port (the
+   bundle's `interception.proxy_listen` is the default when the flag is left alone).
+3. **Trust the CA**: `SAC_TRUST_INSTALL=true` installs `ca.pem` into the store the platform honours
+   (`trust/`), and `SAC_CA_CERT`/`SAC_CA_KEY` pin the CA so the trusted root is stable across
+   restarts. `proxy.tls` verifies with the end-to-end canary probe, never on the strength of a file
+   write. `SAC_TRUST_REMOVE_ON_STOP=true` removes it on uninstall or kill switch.
+4. **Route the CLI to it**: `SAC_CLI_SHIM=true` writes the managed profile and CA bundle
+   (`NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, proxy variables,
+   and the Node CONNECT bootstrap) so Go, Node and Python CLIs launched from a shell inherit both.
 
-Steps 2–4 are configuration; step 1 is the work.
+The remaining deployment work is operator-side: an MDM deliverer for the bundle and CA pair, and the
+signed artefact. `endpoint/testlab/` runs the whole chain on Linux in a container and asserts the
+trust store, interception and the shim end to end.
 
 ## What is here
 
@@ -91,16 +97,18 @@ end-to-end run.
 ## What is deliberately not here
 
 - **The browser half.** Chromium APIs are unavailable outside Chromium; see [extension/](../extension).
-- **`cli.shim`.** The route exists in the closed route vocabulary and in §3.5's startup order, but
-  no provider implements it, so it has no coverage row rather than a healthy-looking empty one.
+- **`cli.shim` is opt-in.** The provider is built ([capture-core/cli/](capture-core/cli/README.md))
+  and runs in §3.5's step 4 when the enrolment profile sets `--cli-shim`; with no root CA it reports
+  `degraded` with a named cause rather than a healthy-looking empty row.
 - **The server tier.** `ingest-api`, `control-api` and `content-vault` live in
   [ingestion/](../ingestion), [control/](../control) and [vault/](../vault). What *is* here is the
   device half of the write path — [`capture-core/drain/`](capture-core/drain/README.md) — which is
   opt-in and delivers to `POST /v1/events`; the device holds no database credential.
-- **Platform facilities.** The system proxy, the OS trust store, DPAPI/Keychain key sealing and a
-  full process enumerator are interfaces with no wired implementation in this build. Where a
-  capability is missing the component reports `degraded` with a named detail instead of claiming
-  health.
+- **Platform facilities are partly wired.** The OS trust store is wired
+  ([capture-core/trust/](capture-core/trust/README.md)) when `--trust-install` is set, and removal is
+  as reliable as installation. The **system proxy**, **DPAPI/Keychain key sealing** and a full
+  **process enumerator** are still interfaces with no wired implementation. Where a capability is
+  missing the component reports `degraded` with a named detail instead of claiming health.
 - **SQLite.** [ADR 0002](../docs/adr/0002-postgresql-is-the-server-store-sqlite-is-only-the-device-spool.md)
   names SQLite in WAL mode for the device spool. The spool was written without network access and
   the builds run with `GOPROXY=off`, so no SQLite driver is a dependency, and cgo is unavailable

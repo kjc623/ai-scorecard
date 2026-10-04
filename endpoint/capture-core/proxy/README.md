@@ -67,11 +67,13 @@ Its tests: `TestBroker_6_2_NeverBoundWithoutServingUpstream`,
 
 ## What is deliberately not here
 
-- **No platform facilities.** `core.SystemProxy`, `core.TrustRoot` and the CA `Sealer` are interfaces;
-  this build wires none of them, so `proxy.tls` reports `degraded detail=tls_probe_failed` rather than
-  health, and the interceptor itself is exercised with in-process root pools.
-- **No `cli.shim`.** Modes E (CLI) and G are unrouted, so nothing sets the proxy environment per
-  runtime and nothing injects an added CA bundle path.
+- **The trust root is wired; the system proxy and key sealer are not.** `core.TrustRoot` is satisfied
+  by `capture-core/trust` when `--trust-install` is set, so the per-device CA is installed into the
+  store the platform honours and removed on uninstall; `core.SystemProxy` and the CA `Sealer` are
+  still interfaces with no implementation, so `proxy.tls` is exercised with in-process root pools and
+  reports `degraded detail=tls_probe_failed` until a canary is configured and the probe passes.
+- **`cli.shim` is a sibling.** It lives in [../cli/](../cli/README.md) and configures the proxy
+  environment and CA bundle per runtime; it is not part of this package and holds no ports.
 - **No document parsing.** Content that needs parsing belongs to `classifier-host`'s isolated child,
   never to a provider holding a live connection.
 - **No content retention.** Neither provider writes content anywhere; the envelope carries a digest,
