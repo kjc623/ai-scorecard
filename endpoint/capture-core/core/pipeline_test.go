@@ -764,3 +764,29 @@ func TestPipelineUsageRollupCarriesNoContentFields(t *testing.T) {
 		t.Fatalf("direction = %s, want \"none\" for a rollup", env["direction"])
 	}
 }
+
+// A partially-populated identity (empty tenant/device, non-empty user_ref) must not bypass the
+// fail-closed gate on a drain run: BuildEnvelope's field policy checks presence, not emptiness.
+func TestPipelineEmitEnvelopePartialIdentityDoesNotBypassTheGate(t *testing.T) {
+	sink := &recordingSink{}
+	p, err := NewPipeline(sink, time.Now, func() string { return "evt-1" })
+	if err != nil {
+		t.Fatalf("NewPipeline: %v", err)
+	}
+	p.RequireIdentity(true)
+
+	_, err = p.EmitEnvelope(context.Background(), EnvelopeInput{
+		Kind:            protocol.KindUsageRollup,
+		Route:           protocol.RouteProcDetect,
+		Mode:            protocol.ModeM1,
+		ToolFingerprint: "tool",
+		OccurredAt:      time.Unix(1_700_000_000, 0),
+		Identity:        Identity{UserRef: "user-x"}, // empty tenant/device
+	})
+	if !errors.Is(err, ErrIdentityUnresolved) {
+		t.Fatalf("EmitEnvelope err = %v, want ErrIdentityUnresolved (a partial identity bypassed the gate)", err)
+	}
+	if len(sink.entries) != 0 {
+		t.Fatalf("the sink holds %d entries, want 0", len(sink.entries))
+	}
+}

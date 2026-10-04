@@ -393,3 +393,30 @@ func TestDetect_EmitFailureCountsDroppedAndKeepsObserving(t *testing.T) {
 		t.Fatalf("health = %s/%s: a spool failure is the spool's coverage gap, not this provider's absence", h.State, h.Detail)
 	}
 }
+
+// Regression for the identity-refusal ordering: a cycle that cannot emit because no identity was
+// issued must NOT consume the tool/day cap, or the tool stays silent for the rest of the day after
+// enrolment succeeds.
+func TestDetect_4_4_UnresolvedIdentityDoesNotConsumeTheDayCap(t *testing.T) {
+	emit := &fakeEmitter{mode: protocol.ModeM1}
+	p := New(Config{
+		Enumerator: fixedEnumerator(),
+		Bundles:    func() *policy.Bundle { return seedBundle() },
+		Pipeline:   emit,
+		Agent:      core.ScopeQuery{UserRef: "user-1"}, // no tenant/device: unresolved
+		Log:        testLogger{t},
+		Clock:      func() time.Time { return time.Unix(1_700_000_000, 0) },
+	})
+	now := time.Unix(1_700_000_000, 0)
+
+	p.emitDetection(context.Background(), "ollama_local", "process_scan", ProcessInfo{}, now)
+	if n := len(emit.kinds()); n != 0 {
+		t.Fatalf("emitted %d envelope(s) with no issued identity", n)
+	}
+
+	p.SetIdentity(Identity{TenantID: "tenant-1", DeviceID: "device-1"})
+	p.emitDetection(context.Background(), "ollama_local", "process_scan", ProcessInfo{}, now)
+	if n := len(emit.byKind(protocol.KindModelDetection)); n != 1 {
+		t.Fatalf("model_detection count = %d after enrolment; the refused cycle consumed the day-cap", n)
+	}
+}

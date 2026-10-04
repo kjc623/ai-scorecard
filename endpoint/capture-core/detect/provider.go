@@ -430,6 +430,12 @@ func (p *Provider) emitDetection(ctx context.Context, tool, basis string, proc P
 		return
 	}
 	key := tool + "|" + dayOf(now)
+	// The identity refusal must come before the day-cap is marked: a cycle that cannot emit
+	// (no issued identity yet) must leave no trace, or the tool/day is suppressed forever after
+	// enrolment succeeds. `refuseIfUnresolved` takes p.mu, so it is called before the lock below.
+	if p.refuseIfUnresolved() {
+		return
+	}
 	p.mu.Lock()
 	if p.detected[key] {
 		p.mu.Unlock()
@@ -437,10 +443,6 @@ func (p *Provider) emitDetection(ctx context.Context, tool, basis string, proc P
 	}
 	p.detected[key] = true
 	p.mu.Unlock()
-
-	if p.refuseIfUnresolved() {
-		return
-	}
 
 	res := p.cfg.Pipeline.ResolveMode(core.ScopeQuery{
 		ToolFingerprint: tool,
@@ -481,6 +483,10 @@ func (p *Provider) emitRollup(ctx context.Context, tool string, now time.Time) {
 		return
 	}
 	key := tool + "|" + dayOf(now)
+	// Refuse before the day-cap is marked, for the same reason as emitDetection.
+	if p.refuseIfUnresolved() {
+		return
+	}
 	p.mu.Lock()
 	if p.rolled[key] {
 		p.mu.Unlock()
@@ -488,10 +494,6 @@ func (p *Provider) emitRollup(ctx context.Context, tool string, now time.Time) {
 	}
 	p.rolled[key] = true
 	p.mu.Unlock()
-
-	if p.refuseIfUnresolved() {
-		return
-	}
 
 	start := now.Truncate(p.cfg.RollupWindow)
 	end := start.Add(p.cfg.RollupWindow)

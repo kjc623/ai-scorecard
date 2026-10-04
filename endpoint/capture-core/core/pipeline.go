@@ -375,9 +375,10 @@ func (p *Pipeline) Process(ctx context.Context, obs Observation) (Outcome, error
 
 	// The identity gate runs AFTER mode resolution and BEFORE any content read: a drain-configured
 	// device that has not yet enrolled resolves M0 and refuses to mint, so it never stamps a
-	// placeholder and never reads content it cannot attribute. Fail-open for the user's traffic,
-	// fail-closed for identity.
-	if required && !issued {
+	// placeholder and never reads content it cannot attribute. An empty identity is refused with the
+	// named reason here, rather than falling through to the generic dedup.Key error. Fail-open for
+	// the user's traffic, fail-closed for identity.
+	if (required && !issued) || id.TenantID == "" {
 		c.Add(protocol.CounterErrors)
 		return Outcome{Route: obs.Route, Mode: res.Mode, Degraded: true, Reason: ReasonIdentityUnresolved}, ErrIdentityUnresolved
 	}
@@ -551,13 +552,27 @@ func (p *Pipeline) EmitEnvelope(ctx context.Context, in EnvelopeInput) (Outcome,
 	if in.EventID == "" {
 		in.EventID = p.NewID()
 	}
-	if in.Identity == (Identity{}) {
+	if in.Identity.TenantID == "" || in.Identity.DeviceID == "" {
 		id, issued, required := p.currentIdentity()
 		if required && !issued {
 			c.Add(protocol.CounterErrors)
 			return Outcome{Route: in.Route, Mode: in.Mode, Degraded: true, Reason: ReasonIdentityUnresolved}, ErrIdentityUnresolved
 		}
-		in.Identity = id
+		if in.Identity == (Identity{}) {
+			in.Identity = id
+		} else {
+			// Complete a partially-populated identity from the issued one; BuildEnvelope's field
+			// policy checks presence, not emptiness, so an empty tenant/device must not reach it.
+			if in.Identity.TenantID == "" {
+				in.Identity.TenantID = id.TenantID
+			}
+			if in.Identity.DeviceID == "" {
+				in.Identity.DeviceID = id.DeviceID
+			}
+			if in.Identity.UserRef == "" {
+				in.Identity.UserRef = id.UserRef
+			}
+		}
 	}
 	return p.finish(ctx, c, Observation{Route: in.Route, Kind: in.Kind}, in, out)
 }
