@@ -110,6 +110,14 @@ const plist = readFileSync(join(ROOT, 'installer/generated/macos/com.shadowaicap
 check('the LaunchDaemon runs the generated wrapper', plist.includes(`${LAYOUT.darwin.bindir}/capture-core-run`));
 check('the systemd unit runs the generated wrapper', readFileSync(join(ROOT, 'installer/generated/linux/shadow-ai-capture.service'), 'utf8').includes(`${LAYOUT.linux.bindir}/capture-core-run`));
 
+// An XML comment may not contain `--` or end with `-`. WiX and the plist parser both reject it, and
+// a stray example command in a header comment is exactly how that happened once (WIX0104).
+for (const rel of ['installer/generated/windows/ShadowAICapture.wxs', 'installer/generated/macos/com.shadowaicapture.capture-core.plist']) {
+  const text = readFileSync(join(ROOT, rel), 'utf8');
+  const bad = [...text.matchAll(/<!--([\s\S]*?)-->/g)].filter((m) => m[1].includes('--') || m[1].endsWith('-'));
+  check(`${rel} XML comments are valid (no '--', no trailing '-')`, bad.length === 0, bad.map((m) => JSON.stringify(m[1].trim().slice(0, 40))).join(', '));
+}
+
 // ---------------------------------------------------------------------------------------------
 // 4. Generated output is a function of the manifest
 
