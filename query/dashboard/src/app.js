@@ -175,7 +175,20 @@ export function parseHash(hash) {
   return { id, scenario: id === 'gallery' ? parts[1] : undefined, preset: filters.preset, filters };
 }
 
-const NAV_ITEMS = SCREENS.map((s) => ({ id: s.id, label: s.label, question: s.question }));
+/** How the navigation groups the screens. Every screen is in exactly one group. */
+const NAV_GROUPS = Object.freeze([
+  ['Overview', ['posture']],
+  ['Usage', ['tools', 'unsanctioned', 'classes', 'teams', 'person']],
+  ['Review', ['findings', 'activity', 'event']],
+  ['Collection', ['devices', 'degraded', 'audit']],
+  ['Not served', ['search', 'exports', 'settings', 'unavailable']],
+  ['Development', ['gallery']],
+]);
+
+const NAV_ITEMS = NAV_GROUPS.flatMap(([group, ids]) => ids.map((id) => {
+  const s = SCREENS.find((screen) => screen.id === id);
+  return { id: s.id, label: s.label, question: s.question, group };
+}));
 
 /**
  * Boot the dashboard into a document. The only function in this package that touches the DOM.
@@ -211,7 +224,16 @@ export async function boot({ document, scenario = 'realistic', api } = {}) {
   // The handler returns the render promise. A browser ignores a listener's return value, so this
   // costs nothing there; it means a test can await a navigation and read the finished page rather
   // than racing it.
-  document.addEventListener('hashchange', render);
+  // A browser fires hashchange on the window, not the document.
+  (document.defaultView ?? document).addEventListener('hashchange', render);
+  // The person screen's one input: put the reference in the address, which is what renders it.
+  document.addEventListener('submit', (event) => {
+    const form = event.target;
+    if (form?.dataset?.screen !== 'person') return;
+    event.preventDefault();
+    const subject = form.elements.subject.value.trim();
+    if (subject) document.location.hash = `#person?subject=${encodeURIComponent(subject)}`;
+  });
   await render();
 
   return { render, dashboard };

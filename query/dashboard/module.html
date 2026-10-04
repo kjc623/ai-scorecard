@@ -7,33 +7,37 @@
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<header class="app-head">
-  <div class="app-head-main">
-    <h1>Shadow AI Capture</h1>
-    <p class="tagline">The instrument's health first. A number is never shown without its coverage and its age.</p>
+<div class="shell">
+  <aside class="side">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <h1>Shadow AI Capture</h1>
+    </div>
+    <a class="btn-primary" href="explore.html">Search events</a>
+    <nav id="nav" class="nav" aria-label="Screens"></nav>
+    <p class="side-meta">
+      <span>stub transport</span>
+      <span>closed query DSL</span>
+      <span>query_version 1</span>
+      <span>ES modules</span>
+    </p>
+  </aside>
+
+  <div class="content">
+    <main id="app" class="app" aria-live="polite">
+      <p class="loading">Loading the dashboard…</p>
+    </main>
+
+    <footer class="app-foot">
+      <p>
+        This is the module entry: it loads <code>src/*.js</code> over http, which is what a browser
+        requires for real ES module imports. For a page that opens straight from disk, use
+        <a href="index.html">index.html</a>. See <a href="#unavailable">what we cannot show</a> for the
+        panels this API has no endpoint for.
+      </p>
+    </footer>
   </div>
-  <div class="app-head-meta">
-    <span class="badge">query_version 1</span>
-    <span class="badge">closed query DSL</span>
-    <span class="badge badge-stub">stub transport</span>
-    <span class="badge">ES modules</span>
-  </div>
-</header>
-
-<nav id="nav" class="nav" aria-label="Screens"></nav>
-
-<main id="app" class="app" aria-live="polite">
-  <p class="loading">Loading the dashboard…</p>
-</main>
-
-<footer class="app-foot">
-  <p>
-    This is the module entry: it loads <code>src/*.js</code> over http, which is what a browser
-    requires for real ES module imports. For a page that opens straight from disk, use
-    <a href="index.html">index.html</a>. See <a href="#unavailable">what we cannot show</a> for the
-    panels this API has no endpoint for.
-  </p>
-</footer>
+</div>
 
 <script type="module">
   import { boot } from './src/app.js';

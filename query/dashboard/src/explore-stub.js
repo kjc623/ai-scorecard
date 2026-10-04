@@ -1,0 +1,450 @@
+// explore-stub.js — a sample-data transport for the Explore page.
+//
+// The stub in fixtures.js answers every request for a question with the same three rows, which is
+// right for a state gallery and useless for a search: a filter that changes nothing cannot be seen
+// to work. This transport holds a few hundred generated rows and answers the four list templates
+// and the record template the way the API would: it applies the window and every filter, pages
+// with a cursor that is bound to the query it was issued for, and ends an iteration only with
+// `next_cursor: null`.
+//
+// Everything it returns is invented, and the page labels it as sample data. It is seeded from a
+// constant, so the same request at the same `now` gives the same rows and a test can assert them.
+//
+// It speaks only the envelope: nothing here is a query, and nothing reaches a network.
+
+import { stubTransport } from './transport.js';
+import { freshness, coverage, STATE_ENVELOPES } from './fixtures.js';
+
+const SAMPLE_EVENT_COUNT = 137;
+const SAMPLE_SPAN_MS = 30 * 86_400_000;
+const SAMPLE_CURSOR_TTL_MS = 15 * 60_000;
+
+/** What the sample-state control can force, so every state of the page can be looked at. */
+export const EXPLORE_SCENARIOS = Object.freeze({
+  realistic: 'Realistic mix',
+  empty: 'Nothing found',
+  too_broad: 'Refused: too broad',
+  busy: 'Busy (429)',
+  audit_unavailable: 'Audit unavailable',
+  cursor_expired: 'Cursor expires on page two',
+  destroyed: 'Record destroyed',
+});
+
+export const EXPLORE_SCENARIO_NAMES = Object.freeze(Object.keys(EXPLORE_SCENARIOS));
+
+const SAMPLE_TOOLS = Object.freeze([
+  'chatgpt_web', 'chatgpt_web', 'chatgpt_web', 'claude_web', 'claude_web', 'copilot_chat', 'copilot_chat',
+  'gemini_web', 'perplexity_web', 'cursor_ide', 'shadow_llm_gateway',
+]);
+const SAMPLE_DEPARTMENTS = Object.freeze(['Engineering', 'Finance', 'Legal', 'Customer Success', 'Sales', 'People']);
+const SAMPLE_CLASSES = Object.freeze(['customer_pii', 'source_code', 'credential', 'payment_card', 'legal_commercial', 'government_id', 'health']);
+const SAMPLE_RULES = Object.freeze({
+  payment_card: Object.freeze({ rule: 'PCI_PAN_PATTERN', rule_title: 'Payment card number in prompt', severity: 'critical' }),
+  credential: Object.freeze({ rule: 'SECRET_API_KEY', rule_title: 'API key or access token', severity: 'critical' }),
+  government_id: Object.freeze({ rule: 'GOV_ID_NUMBER', rule_title: 'Government identifier', severity: 'high' }),
+  customer_pii: Object.freeze({ rule: 'PII_CUSTOMER_RECORD', rule_title: 'Customer personal data', severity: 'high' }),
+  source_code: Object.freeze({ rule: 'SRC_INTERNAL_REPO', rule_title: 'Proprietary source code', severity: 'high' }),
+  health: Object.freeze({ rule: 'PHI_CLINICAL_TERM', rule_title: 'Health information', severity: 'high' }),
+  legal_commercial: Object.freeze({ rule: 'LEGAL_CONTRACT_TERMS', rule_title: 'Contract or commercial terms', severity: 'medium' }),
+});
+const SAMPLE_ANALYSTS = Object.freeze(['r.okafor@customer.example', 'm.lindqvist@customer.example', 'd.haddad@customer.example']);
+
+/** mulberry32: small, seedable, and good enough to spread sample rows. */
+function sampleRng(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function sampleHex(value, width) {
+  return (value >>> 0).toString(16).padStart(width, '0').slice(-width);
+}
+
+/** A canonical version-4-shaped uuid from two small integers. */
+function sampleUuid(space, index) {
+  const a = Math.imul(index + 1, 2654435761) >>> 0;
+  const b = Math.imul(index + 7, 40503) >>> 0;
+  return `${sampleHex(a, 8)}-${sampleHex(space, 4)}-4${sampleHex(b, 3)}-9${sampleHex(a >>> 12, 3)}-${sampleHex(b, 4)}${sampleHex(a ^ b, 8)}`;
+}
+
+function sampleIso(ms) {
+  return new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+/**
+ * Build the sample corpus, anchored at `now` so the window presets always have something in them.
+ *
+ * @param {Date} now
+ */
+export function buildExploreSample(now) {
+  const rand = sampleRng(0x5ac0ffee);
+  const pick = (list) => list[Math.floor(rand() * list.length)];
+  const end = now.getTime() - 4 * 60_000;
+
+  const people = Array.from({ length: 23 }, (_, i) => Object.freeze({
+    subject: `u_${sampleHex(Math.imul(i + 3, 48271), 4)}`,
+    department: SAMPLE_DEPARTMENTS[i % SAMPLE_DEPARTMENTS.length],
+    device: sampleUuid(0xd0, i % 14),
+  }));
+
+  const events = [];
+  let cursorMs = end;
+  for (let i = 0; i < SAMPLE_EVENT_COUNT; i += 1) {
+    cursorMs -= Math.floor(rand() * 2 * (SAMPLE_SPAN_MS / SAMPLE_EVENT_COUNT)) + 1000;
+    const person = pick(people);
+    const tool = pick(SAMPLE_TOOLS);
+    const roll = rand();
+    const mode = roll < 0.15 ? 'm0' : roll < 0.55 ? 'm1' : roll < 0.85 ? 'm2' : 'm3';
+    const detectionOnly = mode === 'm0';
+    const classified = !detectionOnly && rand() < 0.55;
+    const labels = detectionOnly ? null : classified
+      ? [{ class: pick(SAMPLE_CLASSES), score: Math.round((0.55 + rand() * 0.44) * 100) / 100 }]
+      : [];
+    if (labels && labels.length === 1 && rand() < 0.2) {
+      const second = pick(SAMPLE_CLASSES);
+      if (second !== labels[0].class) labels.push({ class: second, score: Math.round((0.5 + rand() * 0.4) * 100) / 100 });
+    }
+    const strong = labels && labels.some((l) => l.score >= 0.8);
+    const actionRoll = rand();
+    const action = detectionOnly ? null : strong ? (actionRoll < 0.3 ? 'blocked' : actionRoll < 0.7 ? 'warned' : 'logged') : 'logged';
+    const contentState = mode === 'm2' ? 'local_only' : mode === 'm3' ? (rand() < 0.15 ? 'shredded' : 'uploaded') : 'not_captured';
+    const lateFlush = rand() < 0.06;
+    const occurred = lateFlush ? cursorMs - Math.floor((1 + rand() * 8) * 86_400_000) : cursorMs - Math.floor(2000 + rand() * 240_000);
+    const routes = detectionOnly ? ['proc.detect'] : rand() < 0.35 ? ['ext.page_context', 'proxy.tls'] : [rand() < 0.7 ? 'ext.page_context' : 'proxy.tls'];
+    events.push(Object.freeze({
+      submission_id: sampleUuid(0xe0, i),
+      received_at: sampleIso(cursorMs),
+      first_occurred_at: sampleIso(occurred),
+      last_occurred_at: sampleIso(occurred + Math.floor(rand() * 180_000)),
+      subject: person.subject,
+      tool,
+      device: person.device,
+      department: person.department,
+      mode,
+      action,
+      content_state: contentState,
+      route: routes[0],
+      detection_basis: detectionOnly ? 'model_detection' : rand() < 0.08 ? 'usage_rollup' : 'prompt',
+      merge_confidence: rand() < 0.08 ? 'low' : 'high',
+      confidence: detectionOnly ? null : rand() < 0.07 ? 'degraded' : strong ? 'high' : 'medium',
+      observation_count: routes.length,
+      size_bytes: detectionOnly ? null : Math.floor(180 + rand() * 9200),
+      labels: labels ? Object.freeze(labels.map((l) => Object.freeze(l))) : null,
+      observed_routes: Object.freeze(routes),
+    }));
+  }
+
+  const findings = [];
+  for (const event of events) {
+    if (!event.labels || event.action === null) continue;
+    for (const label of event.labels) {
+      if (label.score < 0.7) continue;
+      const rule = SAMPLE_RULES[label.class];
+      const reviewRoll = rand();
+      findings.push(Object.freeze({
+        submission_id: event.submission_id,
+        detected_at: sampleIso(Date.parse(event.received_at) + 1000),
+        rule: rule.rule,
+        rule_title: rule.rule_title,
+        class: label.class,
+        severity: rule.severity,
+        subject: event.subject,
+        tool: event.tool,
+        mode: event.mode,
+        review_state: reviewRoll < 0.6 ? 'open' : reviewRoll < 0.8 ? 'disputed' : 'confirmed',
+        decided_locally: event.mode !== 'm3',
+      }));
+    }
+  }
+
+  const devices = [];
+  for (let i = 0; i < 14; i += 1) {
+    const device = sampleUuid(0xd0, i);
+    const os = i % 3 === 0 ? 'macos' : 'windows';
+    const region = i % 4 === 0 ? 'us' : 'eu';
+    if (i === 11) {
+      devices.push(Object.freeze({ device, device_os: os, managed_state: 'unmanaged', region, liveness: 'never_reported', collector: null, collector_state: null, spool_depth: null, spool_dropped_total: null, last_seen_at: null }));
+      continue;
+    }
+    const liveness = i === 5 ? 'stale' : i === 9 ? 'revoked' : 'reporting';
+    const seen = liveness === 'reporting' ? end - Math.floor(rand() * 600_000) : end - Math.floor((2 + rand() * 16) * 86_400_000);
+    for (const collector of ['capture_core', 'capture_extension']) {
+      const state = liveness === 'revoked' ? 'absent' : liveness === 'stale' ? 'degraded' : i === 2 && collector === 'capture_extension' ? 'tampered' : 'healthy';
+      devices.push(Object.freeze({
+        device,
+        device_os: os,
+        managed_state: i === 7 ? 'unknown' : 'managed',
+        region,
+        liveness,
+        collector,
+        collector_state: state,
+        spool_depth: state === 'degraded' ? Math.floor(200 + rand() * 900) : 0,
+        spool_dropped_total: liveness === 'revoked' ? 4412 : 0,
+        last_seen_at: sampleIso(seen),
+      }));
+    }
+  }
+  devices.sort((a, b) => (a.device === b.device ? String(a.collector).localeCompare(String(b.collector)) : a.device.localeCompare(b.device)));
+
+  const audit = [];
+  let auditMs = end;
+  for (let i = 0; i < 44; i += 1) {
+    auditMs -= Math.floor(rand() * 2 * (SAMPLE_SPAN_MS / 44)) + 1000;
+    const kind = rand();
+    const event = pick(events);
+    const record = kind < 0.3;
+    const action = record ? 'query.record' : kind < 0.65 ? 'query.events' : kind < 0.85 ? 'query.findings' : 'audit.read';
+    audit.push(Object.freeze({
+      audit_seq: 8200 - i,
+      occurred_at: sampleIso(auditMs),
+      actor_type: 'user',
+      actor: pick(SAMPLE_ANALYSTS),
+      action,
+      object_type: action === 'audit.read' ? 'ops.audit' : action === 'query.findings' ? 'mart.v_finding' : 'ingest.submission',
+      object_id: record ? event.submission_id : null,
+      subject: action === 'audit.read' ? null : event.subject,
+      case: record && rand() < 0.6 ? `CASE-2026-${100 + Math.floor(rand() * 60)}` : null,
+      detail: Object.freeze(record ? {} : { filters: action === 'audit.read' ? [] : ['subject'] }),
+      prev_hash: sampleHex(Math.imul(8199 - i, 2246822519), 8),
+      row_hash: sampleHex(Math.imul(8200 - i, 2246822519), 8),
+    }));
+  }
+
+  return Object.freeze({
+    events: Object.freeze(events),
+    findings: Object.freeze(findings),
+    devices: Object.freeze(devices),
+    audit: Object.freeze(audit),
+  });
+}
+
+/** Template name to the rows it reads, the clock its window bounds, and whether the read is audited. */
+const SAMPLE_LISTS = Object.freeze({
+  q8_activity: Object.freeze({ rows: 'events', clock: 'received_at', source: 'ingest.submission', audited: true }),
+  q5_findings: Object.freeze({ rows: 'findings', clock: 'detected_at', source: 'mart.v_finding', audited: true }),
+  q7_devices: Object.freeze({ rows: 'devices', clock: null, source: 'mart.v_device_liveness', audited: false }),
+  q10_audit_trail: Object.freeze({ rows: 'audit', clock: 'occurred_at', source: 'ops.audit', audited: true }),
+});
+
+const SAMPLE_NON_FILTERS = Object.freeze(['window', 'limit', 'cursor']);
+
+function sampleMatches(row, name, value) {
+  // On an event, `class` is a predicate over the labels; on a finding it is a column.
+  if (name === 'class' && 'labels' in row) return Array.isArray(row.labels) && row.labels.some((l) => l.class === value);
+  return row[name] === value;
+}
+
+function sampleEnvelope(resultState, body) {
+  return Object.freeze({ api_version: '1', query_version: '1', result_state: resultState, ...body });
+}
+
+function sampleObservations(event) {
+  return event.observed_routes.map((route, i) => Object.freeze({
+    observation_event_id: `obs_${event.submission_id.slice(0, 8)}_${i + 1}`,
+    observation_source: route,
+    observation_kind: event.detection_basis,
+    direction: event.detection_basis === 'model_detection' ? 'none' : 'egress',
+    observation_occurred_at: i === 0 ? event.first_occurred_at : event.last_occurred_at,
+    observation_size_bytes: event.size_bytes,
+  }));
+}
+
+const SAMPLE_PROMPTS = Object.freeze([
+  'Summarise the Q4 revenue deck for the board in five bullet points.',
+  'Rewrite this customer complaint reply so it sounds less defensive.',
+  'Why does this function return undefined when the list is empty?',
+  'Draft an email to the supplier about the late delivery of the March order.',
+  'Explain the indemnity clause in this contract in plain English.',
+  'Turn these meeting notes into action items with owners and dates.',
+  'What is the capital of Australia?',
+  'Write a SQL query that finds customers with no orders in the last 90 days.',
+]);
+
+/** What the sample person typed for an event. Invented, and stable for a given event. */
+function sampleTyped(event) {
+  const n = parseInt(event.submission_id.slice(0, 8), 16);
+  return SAMPLE_PROMPTS[n % SAMPLE_PROMPTS.length];
+}
+
+/** Everything the sample device captured: the typed text inside the context a client adds. */
+function sampleCapture(event) {
+  return `<system-reminder>\nSample client context for ${event.tool}. A real client adds its own instructions here.\n</system-reminder>\n${sampleTyped(event)}`;
+}
+
+/**
+ * The sample transport.
+ *
+ * @param {object} [input]
+ * @param {() => Date} [input.now]
+ * @param {string} [input.scenario]  one of EXPLORE_SCENARIO_NAMES
+ * @param {number} [input.latencyMs] a pause before each answer, so a loading state can be seen
+ */
+export function createExploreStub({ now = () => new Date(), scenario = 'realistic', latencyMs = 0 } = {}) {
+  let current = EXPLORE_SCENARIO_NAMES.includes(scenario) ? scenario : 'realistic';
+  const sample = buildExploreSample(now());
+  const cursors = new Map();
+  let cursorSerial = 0;
+  let auditSerial = 8200;
+
+  const freshFor = (source) => freshness({ aggregate: source, last_run_at: sampleIso(now().getTime() - 180_000), last_complete_bucket: sampleIso(now().getTime() - 240_000) });
+  const audited = () => {
+    auditSerial += 1;
+    return Object.freeze({ entry_id: String(auditSerial), written_at: sampleIso(now().getTime()) });
+  };
+
+  function listReply(body) {
+    const spec = SAMPLE_LISTS[body.template];
+    const params = body.params ?? {};
+    if (current === 'busy') return STATE_ENVELOPES.busy;
+    if (current === 'audit_unavailable' && spec.audited) return STATE_ENVELOPES.audit_unavailable;
+    if (current === 'too_broad' && spec.clock) {
+      return sampleEnvelope('query_too_broad', {
+        error: { code: 'window_too_wide', message: 'A list read is bounded to a 31-day window.', fixable: true, detail: { max_days: 31 } },
+      });
+    }
+
+    const queryKey = JSON.stringify(Object.entries(params).filter(([name]) => name !== 'cursor').sort());
+    let offset = 0;
+    if (typeof params.cursor === 'string') {
+      const held = cursors.get(params.cursor);
+      cursors.delete(params.cursor);
+      if (current === 'cursor_expired' || !held || held.queryKey !== queryKey || held.expires < now().getTime()) return STATE_ENVELOPES.cursor_expired;
+      offset = held.offset;
+    }
+
+    let rows = current === 'empty' ? [] : sample[spec.rows];
+    if (spec.clock && params.window) {
+      const from = Date.parse(params.window.from);
+      const to = Date.parse(params.window.to);
+      rows = rows.filter((row) => {
+        const at = Date.parse(row[spec.clock]);
+        return at >= from && at < to;
+      });
+    }
+    for (const [name, value] of Object.entries(params)) {
+      if (SAMPLE_NON_FILTERS.includes(name)) continue;
+      rows = rows.filter((row) => sampleMatches(row, name, value));
+    }
+
+    const limit = typeof params.limit === 'number' ? params.limit : 50;
+    const slice = rows.slice(offset, offset + limit);
+    let nextCursor = null;
+    if (offset + limit < rows.length) {
+      cursorSerial += 1;
+      nextCursor = `sample.${cursorSerial}.${sampleHex(Math.imul(cursorSerial, 2654435761), 8)}`;
+      cursors.set(nextCursor, { offset: offset + limit, queryKey, expires: now().getTime() + SAMPLE_CURSOR_TTL_MS });
+    }
+    const covered = current === 'empty' ? coverage() : coverage({ state: 'partial' });
+    // No rows on partial coverage is not "nothing happened": the absence is a floor too.
+    const resultState = rows.length > 0 ? 'ok' : covered.state === 'partial' ? 'coverage_degraded' : 'empty';
+    return sampleEnvelope(resultState, {
+      data: slice,
+      page: Object.freeze({
+        returned: slice.length,
+        next_cursor: nextCursor,
+        snapshot_upper_bound: sampleIso(now().getTime()),
+        newer_events_exist: false,
+      }),
+      freshness: freshFor(spec.source),
+      coverage: covered,
+      ...(spec.audited ? { audit: audited() } : {}),
+      meta: { source: spec.source, kind: 'list' },
+    });
+  }
+
+  function recordReply(body) {
+    if (current === 'busy') return STATE_ENVELOPES.busy;
+    if (current === 'audit_unavailable') return STATE_ENVELOPES.audit_unavailable;
+    if (current === 'destroyed') return STATE_ENVELOPES.no_longer_available;
+    const event = sample.events.find((row) => row.submission_id === body.params?.submission_id);
+    if (!event) return STATE_ENVELOPES.not_found;
+    return sampleEnvelope('ok', {
+      data: [event, ...sampleObservations(event)],
+      freshness: freshFor('ingest.submission'),
+      coverage: coverage({ state: 'partial' }),
+      audit: audited(),
+      meta: { source: 'ingest.submission', kind: 'record', content_state: event.content_state },
+    });
+  }
+
+  const inner = stubTransport({
+    routes: [
+      { match: (body) => Boolean(SAMPLE_LISTS[body?.template]), reply: listReply },
+      { match: (body) => body?.template === 'q9_event_detail', reply: recordReply },
+    ],
+    fallback: STATE_ENVELOPES.refused_shape,
+  });
+
+  // ── the content reads: prompt-text search and approved retrieval, over the same sample ──────
+  //
+  // Only an event whose content was uploaded has anything to find or retrieve, exactly as in the
+  // product. The refusals are the vault's own reasons, so the page's handling of them can be seen.
+
+  const pause = async () => {
+    if (latencyMs > 0) await new Promise((resolve) => { setTimeout(resolve, latencyMs); });
+  };
+  const contentRefusal = (code, message) => Object.freeze({ state: 'refused', error: Object.freeze({ code, message }) });
+  const uploaded = () => (current === 'empty' ? [] : sample.events.filter((event) => event.content_state === 'uploaded'));
+
+  async function searchContent(body) {
+    await pause();
+    if (current === 'busy') return contentRefusal('busy', 'The service is at its concurrency limit; retry shortly.');
+    if (current === 'audit_unavailable') return contentRefusal('audit_unavailable', 'The search audit row could not be committed, so the search fails closed.');
+    const words = String(body?.query ?? '').toLowerCase().split(/[^a-z0-9_]+/).filter(Boolean);
+    if (words.length === 0) return contentRefusal('search_disabled', 'An empty search is refused rather than returning the whole index.');
+    const hits = [];
+    for (const event of uploaded()) {
+      const typed = sampleTyped(event);
+      const lower = typed.toLowerCase();
+      if (!words.every((word) => lower.includes(word))) continue;
+      const snippet = typed.replace(new RegExp(`\\b(${words.join('|')})\\b`, 'gi'), '<em>$1</em>');
+      hits.push(Object.freeze({ submission_id: event.submission_id, snippet, rank: 1 }));
+    }
+    const limit = typeof body?.limit === 'number' ? body.limit : 20;
+    return Object.freeze({ state: 'available', hits: Object.freeze(hits.slice(0, limit)), truncated: hits.length > limit });
+  }
+
+  async function retrieveContent(body) {
+    await pause();
+    if (current === 'busy') return contentRefusal('busy', 'The service is at its concurrency limit; retry shortly.');
+    if (current === 'audit_unavailable') return contentRefusal('audit_unavailable', 'The audit row could not be committed, so no content is served.');
+    if (!String(body?.case_reference ?? '').trim()) return contentRefusal('case_reference_required', 'A full-content retrieval needs a case reference.');
+    if (!String(body?.second_approver ?? '').trim()) return contentRefusal('second_approver_required', 'A full-content retrieval needs a second approver.');
+    const ids = Array.isArray(body?.event_ids) ? body.event_ids : [];
+    const event = sample.events.find((row) => sampleObservations(row).some((o) => ids.includes(o.observation_event_id)));
+    if (!event || (event.content_state !== 'uploaded' && event.content_state !== 'shredded')) {
+      return contentRefusal('no_content_object', 'No content object is stored for this event.');
+    }
+    if (event.content_state === 'shredded' || current === 'destroyed') {
+      return Object.freeze({ state: 'no_longer_available', reason: 'retention_expired', receipt_ref: 'rcpt_sample_0001' });
+    }
+    return Object.freeze({
+      state: 'available',
+      event_id: ids[0],
+      grant_id: sampleUuid(0x9a, sample.events.indexOf(event)),
+      raw_digest: `sha256:${sampleHex(Math.imul(sample.events.indexOf(event) + 1, 2246822519), 8).repeat(8)}`,
+      content: sampleCapture(event),
+    });
+  }
+
+  return Object.freeze({
+    content: Object.freeze({ search: searchContent, retrieve: retrieveContent }),
+    async send(body) {
+      if (latencyMs > 0) await new Promise((resolve) => { setTimeout(resolve, latencyMs); });
+      return inner.send(body);
+    },
+    setScenario(name) {
+      if (EXPLORE_SCENARIO_NAMES.includes(name)) current = name;
+      return current;
+    },
+    scenario() {
+      return current;
+    },
+    sample,
+  });
+}

@@ -31,7 +31,7 @@ export function renderValue(value) {
     case 'number':
       return `<span class="v-number">${escapeHtml(value.text ?? formatCount(value.value))}</span>`;
     case 'floor':
-      return `<span class="v-floor" title="A floor: ${escapeHtml(String(value.suppressedCells ?? 0))} cell(s) suppressed">≥ ${escapeHtml(value.text ?? formatCount(value.value))}</span>`;
+      return `<span class="v-floor" title="A floor: ${escapeHtml(String(value.suppressedCells ?? 0))} cell(s) suppressed">≥ ${escapeHtml(String(value.text ?? formatCount(value.value)).replace(/^≥\s*/, ''))}</span>`;
     case 'suppressed':
       return `<span class="v-suppressed" title="Fewer than k = ${escapeHtml(String(value.k ?? 5))} distinct subjects">suppressed<span class="v-k">k=${escapeHtml(String(value.k ?? 5))}</span></span>`;
     case 'vocab':
@@ -144,7 +144,11 @@ export function renderStrip({ coverage, freshness }) {
 }
 
 export function renderNeeds(view) {
-  return `<section class="needs"><h2>${escapeHtml(view.title)}</h2><p>${escapeHtml(view.subtitle ?? 'This screen needs an input before it can ask its question.')}</p></section>`;
+  // The person screen is the one input a reader can type: there is no list of people to pick from.
+  const form = view.id === 'person'
+    ? '<form class="needs-form" data-screen="person"><input name="subject" type="text" aria-label="User reference" placeholder="u_4f21" autocomplete="off" spellcheck="false" required><button type="submit">Show</button></form>'
+    : '';
+  return `<section class="needs"><h2>${escapeHtml(view.title)}</h2><p>${escapeHtml(view.subtitle ?? 'This screen needs an input before it can ask its question.')}</p>${form}</section>`;
 }
 
 /** A whole screen. `shell` carries the strip, which no screen may omit. */
@@ -165,12 +169,23 @@ export function renderScreen(view, shell = {}) {
   return `${renderStrip(shell)}<article class="screen">${header}${banners}${tiles}${series}${tables}${notes}</article>`;
 }
 
+/** The navigation, as the contents of the page's nav element: items under their group headings. */
 export function renderNav(items, current) {
-  return `<nav class="nav">${items.map((item) => {
-    const active = item.id === current ? ' class="active" aria-current="page"' : '';
-    const q = item.question ? `<span class="nav-q">Q${escapeHtml(String(item.question))}</span>` : '';
-    return `<a href="#${escapeHtml(item.id)}"${active}>${q}${escapeHtml(item.label)}</a>`;
-  }).join('')}</nav>`;
+  const groups = new Map();
+  for (const item of items) {
+    const key = item.group ?? '';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  }
+  return [...groups].map(([group, members]) => {
+    const head = group ? `<p class="nav-head">${escapeHtml(group)}</p>` : '';
+    const links = members.map((item) => {
+      const active = item.id === current ? ' class="active" aria-current="page"' : '';
+      const q = item.question ? `<span class="nav-q">Q${escapeHtml(String(item.question))}</span>` : '';
+      return `<a href="#${escapeHtml(item.id)}"${active}><span>${escapeHtml(item.label)}</span>${q}</a>`;
+    }).join('');
+    return `<div class="nav-group">${head}${links}</div>`;
+  }).join('');
 }
 
 /** The state gallery: pick a scenario, see every screen render it. */

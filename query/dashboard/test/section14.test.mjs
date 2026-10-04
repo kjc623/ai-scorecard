@@ -338,13 +338,16 @@ test('INV-3 no file in this package contains a statement or a database driver', 
   assert.deepEqual(hits, [], 'the dashboard tree must contain no statement and no driver');
 });
 
-test('INV-3 the only endpoint in this package is the query endpoint', () => {
+test('INV-3 the only endpoints in this package are the query endpoint and the two content reads', () => {
+  // The query endpoint takes a closed query document and never returns content. The two content
+  // reads are the approved path (docs/04 §15.3, docs/02 §11): forwarded to content-vault, which
+  // decides and audits. Anything else named here would be a fourth way to reach data.
   const files = sourceFiles();
-  const endpoint = ['/v1/', 'query'].join('');
+  const allowed = [['/v1/', 'query'], ['/v1/', 'content-search'], ['/v1/', 'content/retrieval']].map((parts) => parts.join(''));
   const others = files.map((rel) => readFileSync(join(ROOT, rel), 'utf8')).join('\n');
-  const urls = [...others.matchAll(/['"](\/v1\/[a-z-]+)['"]/g)].map((m) => m[1]);
-  assert.ok(urls.length > 0, 'the query endpoint is named somewhere');
-  for (const url of urls) assert.equal(url, endpoint, `only ${endpoint} may be called`);
+  const urls = [...others.matchAll(/['"](\/v1\/[a-z/-]+)['"]/g)].map((m) => m[1]);
+  assert.ok(urls.includes(allowed[0]), 'the query endpoint is named somewhere');
+  for (const url of urls) assert.ok(allowed.includes(url), `${url} is not one of ${allowed.join(', ')}`);
 });
 
 test('INV-3 the fetch global is reachable from exactly one module of the application', () => {

@@ -27,7 +27,7 @@ export const GAPS = Object.freeze([
     screen: 'search',
     title: 'Content search (Q9, first half)',
     needs: 'POST /v1/content-search, executed by content-vault over ingest.search_text, returning bounded snippets with an index-coverage block.',
-    consequence: 'An analyst cannot search prompt text or attachment filenames from this dashboard at all. The DSL has no text predicate by design, and this API does not expose the search endpoint the document specifies. Nothing here renders as "no matches" — there is no search to return them.',
+    consequence: 'An analyst cannot search prompt text or attachment filenames from these screens: the DSL has no text predicate by design, so nothing here renders as "no matches". The Explore page does carry a prompt-text search, which goes to the content vault through its own endpoint; it returns snippets with no index-coverage block, and it does not search attachment filenames.',
     severity: 'absent',
   }),
   Object.freeze({
@@ -35,7 +35,7 @@ export const GAPS = Object.freeze([
     screen: 'event',
     title: 'Approved content retrieval (§8)',
     needs: 'Retrieval request, second approval, audit-first reveal, and a content-vault call.',
-    consequence: 'Event detail shows metadata and the content_state answer. An analyst cannot raise, approve or reveal content here, and a screenshot cannot be mistaken for one that did.',
+    consequence: 'Event detail on this screen shows metadata and the content_state answer, and a screenshot of it cannot be mistaken for one that revealed content. The Explore page carries the retrieval: its event panel takes a case reference and a second approver and shows content only after the content vault approves and audits the read. The second approver is named by the requester; nothing yet makes that person approve.',
     severity: 'absent',
   }),
   Object.freeze({

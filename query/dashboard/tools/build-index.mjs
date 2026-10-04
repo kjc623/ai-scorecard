@@ -47,6 +47,41 @@ const PUBLIC_NAMES = Object.freeze([
   'QUESTIONS', 'buildDocument', 'buildTemplate', 'GAPS',
 ]);
 
+/** A page this tool generates: its module graph, what it exports, and how it starts. */
+const INDEX_PAGE = Object.freeze({
+  order: MODULE_ORDER,
+  publicNames: PUBLIC_NAMES,
+  bootCall: "boot({ document, scenario: 'realistic' });",
+  template: TEMPLATE_PATH,
+});
+
+/** explore.html: the search page. It shares the data layer and carries only the modules it uses. */
+export const EXPLORE_PATH = join(ROOT, 'explore.html');
+export const EXPLORE_MODULE_ORDER = Object.freeze([
+  'vocab.js',
+  'format.js',
+  'states.js',
+  'dsl.js',
+  'transport.js',
+  'fixtures.js',
+  'questions.js',
+  'views.js',
+  'render.js',
+  'explore-model.js',
+  'explore-stub.js',
+  'explore-render.js',
+  'explore-app.js',
+]);
+const EXPLORE_PAGE = Object.freeze({
+  order: EXPLORE_MODULE_ORDER,
+  publicNames: Object.freeze([
+    'bootExplore', 'createExplorer', 'createExploreStub', 'createQueryApi', 'readState',
+    'EXPLORE_DATASETS', 'parseExploreQuery', 'renderExploreResults', 'renderExploreDetail',
+  ]),
+  bootCall: 'bootExplore({ document });',
+  template: join(HERE, 'explore.template.html'),
+});
+
 /** Strip the module syntax and return the body, plus the top-level names it declares. */
 function stripModule(source, name) {
   let body = source;
@@ -69,10 +104,10 @@ function stripModule(source, name) {
 }
 
 /** The inlined module body. Throws on a name collision, because concatenation has no scopes. */
-export function buildInlineModule() {
+export function buildInlineModule(page = INDEX_PAGE) {
   const seen = new Map();
   const parts = [];
-  for (const name of MODULE_ORDER) {
+  for (const name of page.order) {
     const path = join(ROOT, 'src', name);
     if (!existsSync(path)) throw new Error(`src/${name} is missing.`);
     const { body, names } = stripModule(readFileSync(path, 'utf8'), name);
@@ -84,7 +119,7 @@ export function buildInlineModule() {
     }
     parts.push(`// ─── src/${name} ${'─'.repeat(Math.max(0, 62 - name.length))}\n${body.trim()}\n`);
   }
-  const missing = PUBLIC_NAMES.filter((n) => !seen.has(n));
+  const missing = page.publicNames.filter((n) => !seen.has(n));
   if (missing.length > 0) throw new Error(`the epilogue exports names no module declares: ${missing.join(', ')}`);
 
   return [
@@ -98,38 +133,56 @@ export function buildInlineModule() {
     'function __boot() {',
     '  if (__booted) return;',
     '  __booted = true;',
-    "  boot({ document, scenario: 'realistic' });",
+    `  ${page.bootCall}`,
     '}',
     "if (typeof document !== 'undefined') {",
     "  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', __boot);",
     '  else __boot();',
     '}',
     '',
-    `export { ${PUBLIC_NAMES.join(', ')} };`,
+    `export { ${page.publicNames.join(', ')} };`,
     '',
   ].join('\n');
 }
 
-export function buildIndexHtml() {
-  const template = readFileSync(TEMPLATE_PATH, 'utf8');
+function buildPageHtml(page) {
+  const template = readFileSync(page.template, 'utf8');
   const marker = '<!--__INLINE_MODULE__-->';
-  if (!template.includes(marker)) throw new Error('tools/index.template.html has no <!--__INLINE_MODULE__--> marker.');
-  const script = `<script type="module">\n${buildInlineModule()}</script>`;
-  return template.replace(marker, script);
+  if (!template.includes(marker)) throw new Error(`${page.template} has no <!--__INLINE_MODULE__--> marker.`);
+  const script = `<script type="module">\n${buildInlineModule(page)}</script>`;
+  // A function replacement, so a `$` in the inlined source is never read as a replacement pattern.
+  return template.replace(marker, () => script);
+}
+
+export function buildIndexHtml() {
+  return buildPageHtml(INDEX_PAGE);
+}
+
+export function buildExploreHtml() {
+  return buildPageHtml(EXPLORE_PAGE);
 }
 
 const invokedDirectly = process.argv[1]?.endsWith('build-index.mjs') ?? false;
 if (invokedDirectly) {
-  const html = buildIndexHtml();
+  const pages = [
+    { name: 'index.html', path: INDEX_PATH, html: buildIndexHtml(), modules: MODULE_ORDER.length },
+    { name: 'explore.html', path: EXPLORE_PATH, html: buildExploreHtml(), modules: EXPLORE_MODULE_ORDER.length },
+  ];
   if (process.argv.includes('--check')) {
-    const current = existsSync(INDEX_PATH) ? readFileSync(INDEX_PATH, 'utf8').replace(/\r\n/g, '\n') : '';
-    if (current !== html) {
-      console.error('index.html is stale: run `node tools/build-index.mjs` from apps/dashboard.');
-      process.exit(1);
+    let stale = false;
+    for (const page of pages) {
+      const current = existsSync(page.path) ? readFileSync(page.path, 'utf8').replace(/\r\n/g, '\n') : '';
+      if (current !== page.html) {
+        console.error(`${page.name} is stale: run \`node tools/build-index.mjs\` from query/dashboard.`);
+        stale = true;
+      } else {
+        console.log(`${page.name} is in sync (${page.html.length} bytes, ${page.modules} modules inlined)`);
+      }
     }
-    console.log(`index.html is in sync (${html.length} bytes, ${MODULE_ORDER.length} modules inlined)`);
-    process.exit(0);
+    process.exit(stale ? 1 : 0);
   }
-  writeFileSync(INDEX_PATH, html);
-  console.log(`wrote index.html (${html.length} bytes, ${MODULE_ORDER.length} modules inlined)`);
+  for (const page of pages) {
+    writeFileSync(page.path, page.html);
+    console.log(`wrote ${page.name} (${page.html.length} bytes, ${page.modules} modules inlined)`);
+  }
 }

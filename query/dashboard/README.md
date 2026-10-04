@@ -12,8 +12,16 @@ Zero dependencies. No build step for the application. Plain ES modules, HTML and
 |---|---|---|
 | `index.html` | open the file directly | The whole app in one inline module, so `file://` works. This is the one to look at. |
 | `module.html` | `node tools/serve.mjs` to <http://127.0.0.1:8787/module.html> | The ES-module entry: real `import`s, which a browser only allows over http. |
+| `explore.html` | open the file directly | The search page: one query bar and filter rail over the four list reads (events, findings, devices, audit trail), with a detail panel for the row you click. Generated the same way as `index.html`. |
 
-Both run against the **stub transport** by default, so every state is visible with no server, no
+`explore.html` runs on its own sample transport (`src/explore-stub.js`), which applies the window
+and every filter and pages with a real cursor, so a search can be seen to work. The page state is
+in the address (`#events?window=d30&action=blocked&open=<id>`). A query term it cannot place, free
+text included, blocks the search and says why; nothing is dropped. Its modules are
+`src/explore-model.js` (datasets, query parsing, requests), `src/explore-app.js` (controller and
+boot), `src/explore-render.js` and `explore.css`; `test/explore.test.mjs` pins it.
+
+`index.html` and `module.html` run against the **stub transport** by default, so every state is visible with no server, no
 session and no database. The navigation bar's last item, *State gallery*, forces one result state
 across every screen: fresh, stale, degraded coverage, not-yet-covered, all-suppressed, refused,
 cursor-expired, audit-unavailable, busy, chain-broken.
@@ -29,6 +37,151 @@ node tools/build-index.mjs          # regenerate index.html after editing src/
 node tools/build-index.mjs --check  # what the test runs
 node tools/probe.mjs                # drive every screen through the built page and print a table
 ```
+
+## Starting Explore
+
+Explore has two modes. The mode is chosen by the address, and the top bar says which one is on.
+
+| Mode | Address | Top bar shows | Data |
+|---|---|---|---|
+| Sample | `explore.html` | "Sample data, state" and a dropdown | Generated in the browser by `src/explore-stub.js`. Needs nothing else running. |
+| Live | `explore.html?transport=live` | "Live query API" | `POST /v1/query` on the page's own origin, forwarded to a real `query-api`. |
+
+### Sample mode
+
+Any of these works:
+
+```bash
+# 1. no server: open the file
+start explore.html                       # Windows; `open` on macOS, `xdg-open` on Linux
+
+# 2. the package's own server
+node tools/serve.mjs                     # http://127.0.0.1:8787/explore.html
+
+# 3. a container (build context is the repository root)
+docker build -f query/dashboard/Dockerfile -t sac-dashboard .
+docker run -d --name sac-dashboard -p 127.0.0.1:8787:8787 sac-dashboard
+```
+
+The dropdown in the top bar forces the states a healthy sample never reaches: nothing found, refused
+as too broad, busy, audit unavailable, a cursor that expires on page two, and a destroyed record.
+
+### Content on the Explore page
+
+Explore carries the two content reads, so an analyst does not leave the page to read a prompt:
+
+- **Search prompt text** (the second box under the filter query) asks the content vault for prompts
+  containing the words given, and shows a fragment per match. It is not a filter of the list: it is
+  a separate, audited read, and opening a match opens that event.
+- **Retrieve content** is in an event's detail panel when its content state is `uploaded`. It takes
+  a case reference, a second approver and a justification, and the vault decides. What comes back is
+  shown two ways: *what the user typed*, and, collapsed beneath it, *everything captured for the
+  request* (a client such as Claude Code wraps the typed text in its own context, resends the
+  conversation, and sends telemetry nobody typed). Retrieved content is held only while that event
+  stays open.
+
+Both go to their own endpoints on the page's origin (`/v1/content-search`, `/v1/content/retrieval`),
+which `query-api` forwards to `content-vault`; neither is a query, and no query returns content. In
+sample mode they run against the sample transport. The split of typed text from client context is
+display logic in `src/explore-model.js` (`exploreUserInput`): it knows Claude Code's
+`<system-reminder>` blocks and the Anthropic message format, and shows any other capture whole.
+
+The analyst is whoever the session says is asking, which today is the development principal
+`tools/serve.mjs` names. The second approver is a name the requester types: the vault refuses the
+requester's own name, but nothing yet makes the second person approve.
+
+### Live mode
+
+The local auth lab runs this for you: `docker compose -f localdev/authlab.compose.yaml up -d` starts
+a `query-api` and this dashboard beside the lab's services, reading the lab tenant, and serves
+<http://127.0.0.1:8787/explore.html?transport=live>. The rest of this section is how that works and
+how to run it by hand against another tenant.
+
+The browser never chooses a tenant. `tools/serve.mjs` forwards the query endpoint and the two
+content endpoints to the `query-api` named by `--api` (or `SAC_QUERY_API_URL`) and adds the
+development principal headers itself, from `SAC_DEV_TENANT` and `SAC_DEV_ACTOR`. This is a
+development forwarder: it works only against a `query-api` started with `SAC_DEV_TRUST_PRINCIPAL=1`,
+and it stands in for the authenticated session, which is not built. The content reads also need that
+`query-api` to be given the vault (`SAC_CONTENT_VAULT_URL`, and `SAC_CONTENT_SEARCH_SCOPE` for search).
+
+```bash
+SAC_DEV_TENANT=<tenant uuid> node tools/serve.mjs --api http://127.0.0.1:8083
+# then open http://127.0.0.1:8787/explore.html?transport=live
+```
+
+**Which database has anything in it.** The default lab (`node localdev/run.mjs`) starts its
+`ingest-api` with `--store memory`, so events posted to port 8080 never reach PostgreSQL and the
+`query-api` on port 8082 reads an empty database. Events only land in a database through the auth
+lab, whose `ingest-api` uses the SQL store. The auth lab has no `query-api` of its own, so one is
+started beside it. From the repository root:
+
+```bash
+# 1. the auth lab: its own PostgreSQL, control-api, ingest-api and the edge on :8443
+node localdev/build.mjs --auth
+node localdev/run.mjs --auth
+
+# 2. sample events, sent the way devices send them (enrol, token, DPoP-signed batches)
+node localdev/tools/simulate-devices.mjs            # prints the tenant id it used
+
+# 3. a query-api reading the auth lab's database
+docker run -d --name sac-authlab-query-api --network scorecard-authlab \
+  -p 127.0.0.1:8083:8080 \
+  -e SAC_PG_HOST=postgres -e SAC_PG_DATABASE=shadow \
+  -e SAC_PG_USER=postgres -e SAC_PG_PASSWORD=sac-lab-only -e SAC_PG_SSLMODE=disable \
+  -e SAC_DEV_TRUST_PRINCIPAL=1 sac/query-api:lab
+
+# 4. the dashboard, forwarding to it as the simulator's tenant
+docker build -f query/dashboard/Dockerfile -t sac-dashboard .
+docker run -d --name sac-dashboard --network scorecard-authlab \
+  -p 127.0.0.1:8787:8787 \
+  -e SAC_QUERY_API_URL=http://sac-authlab-query-api:8080 \
+  -e SAC_DEV_TENANT=5a3c0de0-7e57-4a11-9000-0000000d3a01 \
+  -e SAC_DEV_ACTOR=you@lab sac-dashboard
+
+# open http://127.0.0.1:8787/explore.html?transport=live
+```
+
+`5a3c0de0-7e57-4a11-9000-0000000d3a01` is the simulator's default tenant; pass `--tenant` to it to
+use another.
+
+**If Events says "Read not served / audit_unavailable".** The tenant the dashboard reads as does
+not exist in the database, so the audit row a read must write fails its foreign key and the API
+serves nothing. The usual cause is that the auth lab was recreated, which empties its database.
+Run step 2 again; the dashboard and the `query-api` container do not need restarting.
+
+**After editing `src/` or `explore.css`:** run `node tools/build-index.mjs`, then rebuild and restart
+the `sac-dashboard` container. The page does not refresh itself; it reads when you search.
+
+## Built in Explore, not wired up
+
+Each of these is on the page and works against the sample transport. Against the live API it is
+empty or inert, for the reason given. None is faked in live mode.
+
+| On the page | What live mode shows | What is missing |
+|---|---|---|
+| **Findings** tab, its filters, and the finding block in the detail panel | "Not yet covered", zero rows | Findings are derived into `mart.finding` by the aggregator, which is not built. |
+| **Coverage and freshness strip** | "Coverage not yet measured (no snapshot)" and an unknown age | Coverage snapshots and aggregate watermarks are also the aggregator's. |
+| **Devices**: collector, collector state, last seen, dropped; the liveness and collector-state filters | Every device is `never_reported` with no collector | Collector health is reported to a control-plane endpoint that is not built. A device that has only sent events has no health row. |
+| **Devices**: managed state and region | `unknown` and "not recorded" on devices enrolled by the simulator | Enrolment through the lab does not set them. |
+| **Department** filter and the department line in the detail panel | The filter matches nothing | Department comes from the directory sync into `ops.user_dim`. Nothing populates it. |
+| **Content** filter values `local_only`, `uploaded`, `shredded`, and their answers in the detail panel | `uploaded` for a device collecting at M3 in the auth lab, where retrieval works; otherwise `not_captured` | `shredded` needs the erasure path. Events sent by the simulator carry no content. |
+| **Free text in the query bar** | Refused with the reason, in both modes, pointing at the prompt-text search | There is no text predicate on `/v1/query` by design. Text is searched in its own box. |
+| **Prompt-text search** | Matches only prompts uploaded since the vault began indexing | Attachment filenames are not searched, and there is no index-coverage block saying how much of the window is indexed. |
+| **The session** | A development principal added by `tools/serve.mjs` | The authenticated session that maps a signed-in person to one tenant. Until it exists, live mode is a lab arrangement only. |
+
+Checked against the live API in a browser: the Events list, the `action` filter, the event detail
+panel, the Devices list and the Audit trail (which fills with the dashboard's own reads); and, in
+the auth lab with a device at M3, a prompt-text search, opening its match, and retrieving that
+event's content. **Not
+checked live:** "Load next page", the other filters, the refusal states from the sample dropdown,
+light mode, and narrow screens. `tools/serve.mjs`'s forwarder and
+`localdev/tools/simulate-devices.mjs` have no tests.
+
+One known mismatch outside Explore: the API's single-record answer is one row per observation with
+the store's column names (`user_ref`, `tool_fingerprint`, `collection_mode`, `policy_action`), while
+`src/fixtures.js` models it as a head row followed by observation rows. Explore reads both shapes.
+The *Event detail* screen in `index.html` still assumes the fixture shape and has not been run
+against the live API.
 
 ## Layout
 
