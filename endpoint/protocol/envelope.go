@@ -199,6 +199,17 @@ const (
 	// cannot be renewed without a fresh enrolment token; naming the cause keeps the drain from
 	// failing silently on a 401 forever.
 	DetailCredentialExpired Detail = "credential_expired"
+
+	// Trust/CA installation and the CLI trust shim (docs/01-collectors.md §4.5, §5.2, §14).
+	// Installing the per-device root CA into the wrong store fails silently, so the install and
+	// its verification are separate reportable causes rather than one "ok". The shim's three
+	// checks — profile present, CA bundle parses and carries the root, environment inherited —
+	// each have a name, because a coverage state with no name is what §15.2 forbids.
+	DetailTrustInstallFailed     Detail = "trust_install_failed"
+	DetailTrustVerifyFailed      Detail = "trust_verify_failed"
+	DetailShimProfileMissing     Detail = "shim_profile_missing"
+	DetailShimCABundleUnreadable Detail = "shim_ca_bundle_unreadable"
+	DetailShimNotInherited       Detail = "shim_not_inherited"
 )
 
 // AllDetails is the closed vocabulary, for validation and for a coverage report that needs to
@@ -217,6 +228,8 @@ var AllDetails = [...]Detail{
 	DetailContentOverCap, DetailUndecodableContent,
 	DetailVersionMismatch, DetailModeViolation, DetailEnforcementUnavailable,
 	DetailCredentialExpired,
+	DetailTrustInstallFailed, DetailTrustVerifyFailed,
+	DetailShimProfileMissing, DetailShimCABundleUnreadable, DetailShimNotInherited,
 }
 
 // Valid reports whether the detail is in the closed vocabulary. An empty detail is valid: a

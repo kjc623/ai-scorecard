@@ -146,6 +146,16 @@ export const DETAIL = Object.freeze({
   UNDECODABLE_CONTENT: 'undecodable_content',
   VERSION_MISMATCH: 'version_mismatch',
   MODE_VIOLATION: 'mode_violation',
+  // ADR 0020: an x509 device leaf past its NotAfter cannot authenticate and cannot be renewed
+  // without a fresh enrolment token, so the cause has a name rather than a silent 401 loop.
+  CREDENTIAL_EXPIRED: 'credential_expired',
+  // Trust/CA and the CLI trust shim (§4.5, §5.2, §14): the install and its verification are
+  // separate causes because the wrong store fails silently, and each shim check has a name.
+  TRUST_INSTALL_FAILED: 'trust_install_failed',
+  TRUST_VERIFY_FAILED: 'trust_verify_failed',
+  SHIM_PROFILE_MISSING: 'shim_profile_missing',
+  SHIM_CA_BUNDLE_UNREADABLE: 'shim_ca_bundle_unreadable',
+  SHIM_NOT_INHERITED: 'shim_not_inherited',
 });
 
 export const DETAILS = Object.freeze(Object.values(DETAIL).filter(Boolean));
