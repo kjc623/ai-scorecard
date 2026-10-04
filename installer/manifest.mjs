@@ -112,6 +112,17 @@ export const CONFIG = [
   { env: 'SAC_DRAIN_DEADLINE', flag: '--drain-deadline', kind: 'duration', default: '30s', desc: 'bounded spool drain at shutdown' },
   { env: 'SAC_ATTACHMENT_CAP', flag: '--attachment-cap', kind: 'int', default: '67108864', desc: 'policy cap for one attachment manifest, checked before any byte moves' },
 
+  // Trust/CA and the CLI trust shim (docs/01 §4.5, §5.2, §14). TrustInstall defaults false: the
+  // agent never touches the OS trust store unless the enrolment profile asks it to, because the
+  // wrong store fails silently (E7).
+  { env: 'SAC_TRUST_INSTALL', flag: '--trust-install', kind: 'bool', default: 'false', desc: 'install the per-device root CA into the platform trust store' },
+  { env: 'SAC_TRUST_STORE', flag: '--trust-store', kind: 'enum', values: ['root', 'enterprise'], default: 'root', desc: 'Windows trust store; other platforms ignore it' },
+  { env: 'SAC_TRUST_REMOVE_ON_STOP', flag: '--trust-remove-on-stop', kind: 'bool', default: 'false', desc: 'remove the root CA on shutdown (uninstall or kill switch)' },
+  { env: 'SAC_CA_KEY', flag: '--ca-key', kind: 'path', default: '', desc: 'per-device CA private key PEM (0600); empty generates an ephemeral CA' },
+  { env: 'SAC_CA_CERT', flag: '--ca-cert', kind: 'path', default: '', desc: "per-device CA public cert PEM; empty uses the bundle's interception.root_ca_pem" },
+  { env: 'SAC_CLI_SHIM', flag: '--cli-shim', kind: 'bool', default: 'false', desc: 'run cli.shim (managed shell trust/proxy environment for CLI runtimes)' },
+  { env: 'SAC_SHIM_DIR', flag: '--shim-dir', kind: 'path', default: '', desc: 'directory cli.shim writes the CA bundle and profile into; empty uses a platform default' },
+
   // Device-to-cloud drain (ADR 0020). Empty SAC_DEVICE_ENDPOINT disables it.
   { env: 'SAC_DEVICE_ENDPOINT', flag: '--device-endpoint', kind: 'url', default: '', desc: 'device ingress base URL, e.g. https://ingest.eu.example.com; empty disables the drain' },
   { env: 'SAC_AUTH_MODE', flag: '--auth-mode', kind: 'enum', values: ['x509', 'dpop'], default: '', desc: 'device credential mode for the drain' },

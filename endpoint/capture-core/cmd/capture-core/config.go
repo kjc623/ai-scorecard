@@ -45,6 +45,19 @@ type Config struct {
 	EnableProcDetect bool
 	DrainDeadline    time.Duration
 
+	// Trust/CA and the CLI trust shim (docs/01-collectors.md §4.5, §5.2, §14).
+	// TrustInstall defaults false: the agent never touches the OS trust store unless the
+	// enrolment profile asks it to (§5.2's wrong-store rule makes a silent install worse than
+	// none). CAKeyFile/CACertFile pin the per-device CA so it survives a restart and the trust
+	// entry stays valid; with neither, the interceptor generates an ephemeral CA as before.
+	TrustInstall      bool
+	TrustStore        string // windows: root | enterprise
+	TrustRemoveOnStop bool
+	CAKeyFile         string
+	CACertFile        string
+	CLIShim           bool
+	ShimDir           string
+
 	// Health channel.
 	HealthFile     string
 	HealthInterval time.Duration
@@ -118,6 +131,11 @@ func (c Config) validate(mode runMode) error {
 	}
 	if err := c.validateDrain(); err != nil {
 		return err
+	}
+	switch c.TrustStore {
+	case "", "root", "enterprise":
+	default:
+		return fmt.Errorf("--trust-store %q must be root or enterprise", c.TrustStore)
 	}
 	return nil
 }

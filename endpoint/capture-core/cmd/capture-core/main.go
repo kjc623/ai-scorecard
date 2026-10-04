@@ -135,6 +135,15 @@ func parseFlags(args []string) (Config, runMode, error) {
 	fs.BoolVar(&cfg.EnableProcDetect, "proc-detect", cfg.EnableProcDetect, "run proc.detect (needs an enumerator; without one the route is reported as a named gap)")
 	fs.DurationVar(&cfg.DrainDeadline, "drain-deadline", cfg.DrainDeadline, "bounded spool drain at shutdown (§3.5 step 3)")
 
+	// Trust/CA and the CLI trust shim (§4.5, §5.2, §14).
+	fs.BoolVar(&cfg.TrustInstall, "trust-install", cfg.TrustInstall, "install the per-device root CA into the platform trust store (default false: never touch the store unless asked)")
+	fs.StringVar(&cfg.TrustStore, "trust-store", cfg.TrustStore, "Windows trust store: root | enterprise (other platforms ignore it)")
+	fs.BoolVar(&cfg.TrustRemoveOnStop, "trust-remove-on-stop", cfg.TrustRemoveOnStop, "remove the root CA on shutdown (uninstall or kill switch)")
+	fs.StringVar(&cfg.CAKeyFile, "ca-key", cfg.CAKeyFile, "per-device CA private key PEM (0600); empty generates an ephemeral CA")
+	fs.StringVar(&cfg.CACertFile, "ca-cert", cfg.CACertFile, "per-device CA public cert PEM; empty uses the bundle's interception.root_ca_pem")
+	fs.BoolVar(&cfg.CLIShim, "cli-shim", cfg.CLIShim, "run cli.shim (managed shell trust/proxy environment for CLI runtimes)")
+	fs.StringVar(&cfg.ShimDir, "shim-dir", cfg.ShimDir, "directory cli.shim writes the CA bundle and profile into; empty uses a platform default")
+
 	// Health channel.
 	fs.StringVar(&cfg.HealthFile, "health-file", cfg.HealthFile, "append the health channel to this file as JSON lines (empty disables the writer)")
 	fs.DurationVar(&cfg.HealthInterval, "health-interval", cfg.HealthInterval, "health channel interval")
@@ -216,8 +225,10 @@ func defaultConfig() Config {
 		WorkDir: "",
 		// ServiceName is the name the installer registers; the SCM dispatch table is keyed by it.
 		ServiceName: "ShadowAICapture",
-		LogFormat:   "json",
-		LogLevel:    "info",
+		// TrustStore is the Windows store name; other platforms ignore it.
+		TrustStore: "root",
+		LogFormat:  "json",
+		LogLevel:   "info",
 	}
 }
 
