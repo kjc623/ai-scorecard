@@ -34,17 +34,14 @@
     </StandardDirectory>
 
     <DirectoryRef Id="BINFOLDER">
-      <Component Id="Cmp_capture_core" Directory="INSTALLFOLDER" Guid="*">
-        <File Id="Fil_capture_core" Source="$(var.StageDir)\bin\capture-core.exe" KeyPath="yes" />
-      </Component>
-      <Component Id="Cmp_classifier_host" Directory="INSTALLFOLDER" Guid="*">
+      <Component Id="Cmp_classifier_host" Directory="BINFOLDER" Guid="*">
         <File Id="Fil_classifier_host" Source="$(var.StageDir)\bin\classifier-host.exe" KeyPath="yes" />
       </Component>
-      <Component Id="Cmp_capture_core_run" Directory="INSTALLFOLDER" Guid="*">
-        <File Id="Fil_capture_core_run" Source="$(var.StageDir)\bin\capture-core-run.exe" KeyPath="yes" />
+      <Component Id="Cmp_capture_core_run" Directory="BINFOLDER" Guid="*">
+        <File Id="Fil_capture_core_run" Source="$(var.StageDir)\bin\capture-core-run.cmd" KeyPath="yes" />
       </Component>
       <Component Id="Cmp_capture_core_env_example" Directory="CONFIGFOLDER" Guid="*">
-        <File Id="Fil_capture_core_env_example" Source="$(var.StageDir)\bin\capture-core.env.example" KeyPath="yes" />
+        <File Id="Fil_capture_core_env_example" Source="$(var.StageDir)\etc\capture-core.env.example" KeyPath="yes" />
       </Component>
       <Component Id="Cmp_Service" Directory="BINFOLDER" Guid="*">
         <File Id="Fil_ServiceExe" Source="$(var.StageDir)\bin\capture-core.exe" KeyPath="yes" />
@@ -58,7 +55,6 @@
 
     <Feature Id="Main" Title="Shadow AI Capture" Level="1">
       <ComponentRef Id="Cmp_Service" />
-      <ComponentRef Id="Cmp_capture_core" />
       <ComponentRef Id="Cmp_classifier_host" />
       <ComponentRef Id="Cmp_capture_core_run" />
       <ComponentRef Id="Cmp_capture_core_env_example" />

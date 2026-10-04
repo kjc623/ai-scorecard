@@ -256,12 +256,20 @@ function launchdPlist(layout) {
  * so and refuses to pretend.
  */
 function wixSource(layout) {
-  const render = PAYLOAD.map((p) => {
-    const name = p.exe ? `${p.name}.exe` : p.name;
-    const dir = p.dest === 'etc' ? 'CONFIGFOLDER' : 'INSTALLFOLDER';
+  // capture-core.exe is installed by the service component below: a ServiceInstall must live in a
+  // component whose KeyPath is the executable, so including it in the payload loop as well would
+  // install the same file twice (and, because the payload loop targeted INSTALLFOLDER while the
+  // service targets BINFOLDER, in two places).
+  const payloadComponents = PAYLOAD.filter((p) => p.name !== 'capture-core');
+  // The stage filename is platform-specific: executables get `.exe`, the console wrapper is `.cmd`,
+  // and the env template keeps its name. `bin`/`etc` is the stage subdirectory the file lives in.
+  const stageName = (p) => (p.name === 'capture-core-run' ? 'capture-core-run.cmd' : p.exe ? `${p.name}.exe` : p.name);
+  const stageDir = (p) => (p.dest === 'etc' ? 'etc' : 'bin');
+  const render = payloadComponents.map((p) => {
+    const dir = p.dest === 'etc' ? 'CONFIGFOLDER' : 'BINFOLDER';
     return [
       `      <Component Id="Cmp_${p.name.replace(/[^A-Za-z0-9]/g, '_')}" Directory="${dir}" Guid="*">`,
-      `        <File Id="Fil_${p.name.replace(/[^A-Za-z0-9]/g, '_')}" Source="$(var.StageDir)\\bin\\${name}" KeyPath="yes" />`,
+      `        <File Id="Fil_${p.name.replace(/[^A-Za-z0-9]/g, '_')}" Source="$(var.StageDir)\\${stageDir(p)}\\${stageName(p)}" KeyPath="yes" />`,
       '      </Component>',
     ].join('\n');
   }).join('\n');
@@ -316,7 +324,7 @@ function wixSource(layout) {
     '',
     '    <Feature Id="Main" Title="Shadow AI Capture" Level="1">',
     '      <ComponentRef Id="Cmp_Service" />',
-    PAYLOAD.map((p) => `      <ComponentRef Id="Cmp_${p.name.replace(/[^A-Za-z0-9]/g, '_')}" />`).join('\n'),
+    payloadComponents.map((p) => `      <ComponentRef Id="Cmp_${p.name.replace(/[^A-Za-z0-9]/g, '_')}" />`).join('\n'),
     '    </Feature>',
     '  </Package>',
     '</Wix>',

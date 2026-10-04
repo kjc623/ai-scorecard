@@ -127,9 +127,12 @@ export const CONFIG = [
   { env: 'SAC_LOG_FORMAT', flag: '--log-format', kind: 'enum', values: ['json', 'text'], default: 'json', desc: 'log format' },
 ];
 
-/** Replace the layout placeholders an entry's default may carry. */
+/** Replace the layout placeholders an entry's default may carry, in the layout's native separators. */
 export function expandDefault(entry, layout) {
-  return String(entry.default).replace('<statedir>', layout.statedir);
+  const value = String(entry.default).replace('<statedir>', layout.statedir);
+  // The defaults are written with forward slashes (`<statedir>/spool`); a Windows layout expands to
+  // `C:\ProgramData\...`, so normalise the separators once here rather than emitting a mixed path.
+  return layout.statedir.includes('\\') ? value.replace(/\//g, '\\') : value;
 }
 
 /** The flags a wrapper renders, in CONFIG order. Secrets default to empty and are never required. */
