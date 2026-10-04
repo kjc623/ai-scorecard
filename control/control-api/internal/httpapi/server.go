@@ -33,6 +33,7 @@ import (
 	"github.com/shadow-ai-capture/control-api/internal/content"
 	"github.com/shadow-ai-capture/control-api/internal/dpop"
 	"github.com/shadow-ai-capture/control-api/internal/enrol"
+	"github.com/shadow-ai-capture/control-api/internal/health"
 	"github.com/shadow-ai-capture/control-api/internal/store"
 	"github.com/shadow-ai-capture/control-api/internal/token"
 )
@@ -53,6 +54,10 @@ type Server struct {
 	// Content is the grant path (§5.5, §10). Nil when the deployment has no content vault to ask:
 	// the routes then answer 503 rather than deciding a grant nothing could honour.
 	Content *content.Service
+
+	// Health is the health channel (§5.4). Nil only in a build or test that does not wire it; the
+	// route then answers 503 rather than silently dropping a report.
+	Health *health.Service
 }
 
 // New builds a server.
@@ -68,6 +73,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/enrol", s.handleEnrol)
 	mux.HandleFunc("/v1/token", s.handleToken)
+	mux.HandleFunc("/v1/health", s.handleHealth)
 	mux.HandleFunc("/v1/content/grant", s.handleContentGrant)
 	// Not a device route: the edge does not forward it. The storage layer calls it when an upload
 	// lands, and authenticates with the upload signing key.
@@ -141,6 +147,42 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, err)
 		return
 	}
+	s.writeJSON(w, http.StatusOK, resp)
+}
+
+// handleHealth is POST /v1/health (§5.4). The device authenticates with its current credential; the
+// tenant and device come from that credential, never from the body.
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		s.writeError(w, apierr.New(http.StatusMethodNotAllowed, apierr.CodeInvalidRequest, "POST is required"))
+		return
+	}
+	if s.Health == nil {
+		s.writeError(w, apierr.New(http.StatusServiceUnavailable, apierr.CodeUnavailable, "the health channel is not configured on this deployment"))
+		return
+	}
+	body, ok := s.readBody(w, r)
+	if !ok {
+		return
+	}
+	var req protocol.HealthRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		s.writeError(w, apierr.New(400, apierr.CodeSchemaViolation, "the health body is not valid JSON"))
+		return
+	}
+	cur, err := s.resolveCurrent(r)
+	if err != nil {
+		s.writeError(w, err)
+		return
+	}
+	resp, err := s.Health.Report(r.Context(), cur.TenantID, cur.DeviceID, req)
+	if err != nil {
+		s.writeError(w, err)
+		return
+	}
+	s.Logger.Info("control: health report recorded", "tenant", cur.TenantID, "device", cur.DeviceID,
+		"collectors", len(req.Collectors))
 	s.writeJSON(w, http.StatusOK, resp)
 }
 

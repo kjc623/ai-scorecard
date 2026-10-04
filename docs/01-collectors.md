@@ -279,10 +279,14 @@ closed `detail` vocabulary of §4.4–§4.6 so a coverage report can group by ca
 depth and `spool_dropped_total` are first-class columns because C22 requires the drop counter to be reported,
 not buried. That leaves one device-side obligation worth stating: the collector name must come from
 `ref.collector`, so a provider cannot invent a name for a coverage path the reporting layer does not know.
-**As built:** the device does not meet this yet. `capture-core` reports each provider under its route
-name (`proxy.tls`, `proxy.loopback`, `proc.detect`) and the extension as `capture-extension`, while
-`ref.collector` holds `capture_extension`, `egress_proxy`, `loopback_broker`, `cli_shim`,
-`process_detector` and `classifier_host`; O4's conformance check is what closes the gap.
+**As built:** the health channel (`cmd/capture-core/health.go`) maps each provider's route to its
+`ref.collector` code before sending — `proxy.tls` → `egress_proxy`, `proxy.loopback` →
+`loopback_broker`, `proc.detect` → `process_detector`, `cli.shim` → `cli_shim`, the browser routes and
+the extension → `capture_extension` — and adds a `classifier_host` row from the classifier status.
+The mapping closes the gap between the route vocabulary and `ref.collector`; the server still refuses
+a name outside `ref.collector`, so an unmapped route is a visible refusal rather than a coverage row
+nobody can interpret. What remains is O4's data-driven conformance check, which would read the
+mapping from `ref.collector` rather than this table.
 
 ### 4.4 `proc.detect` — process and model detector
 

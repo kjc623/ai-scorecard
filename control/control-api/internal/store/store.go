@@ -133,7 +133,29 @@ var (
 	ErrCredentialUnknown = errors.New("store: device credential unknown")
 	ErrCredentialRevoked = errors.New("store: device credential revoked")
 	ErrCredentialExpired = errors.New("store: device credential expired")
+	// ErrUnknownCollector is a report naming a collector ref.collector does not hold. It is a
+	// validation failure, not an infrastructure one: the report is refused rather than stored under
+	// a coverage path nobody can interpret (docs/01 §4.3).
+	ErrUnknownCollector = errors.New("store: collector unknown")
 )
+
+// CollectorState is one collector's health row as the health channel reports it (docs/02 §5.4).
+// State is the closed healthy|degraded|absent|tampered; Detail is the closed error-code vocabulary
+// carried to ops.collector_state.error_code; the rest is the row's own shape. SpoolDepth,
+// SpoolCapacity and SpoolDroppedTotal are device-level in the report but per-collector rows in the
+// schema, so the caller repeats them.
+type CollectorState struct {
+	Collector         string
+	State             string
+	Version           string
+	Permissions       json.RawMessage
+	LastSuccess       *time.Time
+	SpoolDepth        *int64
+	SpoolCapacity     *int64
+	SpoolDroppedTotal int64
+	ErrorCode         string
+	Detail            json.RawMessage
+}
 
 // Store is the persistence seam.
 type Store interface {
@@ -159,6 +181,11 @@ type Store interface {
 	DeviceCredentialByDevice(ctx context.Context, tenantID, deviceID string) (Credential, error)
 	// MarkEnrolmentTokenUsed settles a token after a successful enrolment (§5.1, single-use).
 	MarkEnrolmentTokenUsed(ctx context.Context, tenantID, tokenHash string, at time.Time) error
+	// RecordHealth upserts one ops.collector_state row per report and stamps the device's
+	// last_seen_at, in one transaction (§5.4 step 4, docs/04 §3.7). A report naming a collector not
+	// in ref.collector returns ErrUnknownCollector and writes nothing. The per-collector guard means
+	// a stale report never overwrites a newer one, so a retry or an out-of-order replay is harmless.
+	RecordHealth(ctx context.Context, tenantID, deviceID string, at time.Time, reports []CollectorState) error
 	// Close releases resources.
 	Close() error
 }

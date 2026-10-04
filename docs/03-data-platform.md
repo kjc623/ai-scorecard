@@ -226,9 +226,14 @@ prompts by the denormalised `ingest.submission.kind = 'prompt'` rather than by a
 `ingest.observation`, because `kind` was added for exactly that purpose (§4.6); and
 `mart.agg_class_period.severity` falls back to `ref.data_class.default_severity` when a label names
 no `ref.rule` row, because a label need not carry a rule and dropping such a label would report no
-sensitive data where the classifier found some. `mart.agg_device_period` is deliberately not written
-here: it rolls up `ops.collector_state`, not the event tables, and belongs to the device-liveness
-work.
+sensitive data where the classifier found some. The same transaction also writes the fleet coverage
+fact, `ops.coverage_snapshot`: one row per enrolled (non-revoked) device per `ref.collector` per day
+in a trailing window (default 7 days), with `expected` always true and `observed` true when that
+collector reported `healthy` or `degraded` on that day. `observed` is monotonic within a day, because
+`ops.collector_state` is current state rather than history and a later run must not erase a past day's
+answer (docs/04 §11.3). `mart.agg_device_period` is still deliberately not written here: it is a
+per-collector per-day rollup of `ops.collector_state`, and the Devices answer is served from
+`mart.v_device_liveness`; writing it is left to a later device-liveness change.
 
 ---
 

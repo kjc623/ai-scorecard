@@ -273,7 +273,7 @@ func parseKeyed(out string) map[string]string {
 }
 
 func isKnownKey(k string) bool {
-	for _, prefix := range []string{"baseline_", "idempotent_", "late_", "hour_"} {
+	for _, prefix := range []string{"baseline_", "idempotent_", "late_", "hour_", "coverage_", "liveness_"} {
 		if strings.HasPrefix(k, prefix) {
 			return true
 		}

@@ -11,12 +11,15 @@
 // a device presents once. localdev/run.mjs --auth seeds the same two things the same way.
 //
 // WHAT THIS CANNOT PRODUCE, because the device path does not produce it:
-//   * findings and every mart.* aggregate come from the aggregator, which is not built;
+//   * findings and every mart.* aggregate come from the aggregator; usage aggregates are written by
+//     it, and so is ops.coverage_snapshot;
 //   * department and population come from the directory sync into ops.user_dim;
-//   * collector health comes from the control plane's health endpoint, which is not built;
 //   * `uploaded` content needs a grant and the vault. Every event here stays `not_captured`.
 //   * received_at is stamped by the server, so every event is received "now". Device clocks are
 //     the only thing a device controls, and a few are set days back to look like a spool flush.
+//
+// WHAT IT DOES PRODUCE NOW: collector health. It posts a /v1/health report per device after the
+// events, so ops.collector_state is populated and the coverage snapshot has something to observe.
 //
 // The content is invented. Excerpts are short redacted strings, never real data.
 //
@@ -142,6 +145,32 @@ async function sendBatch(device, events) {
     event_count: events.length,
     events,
   }, { Authorization: `DPoP ${token}`, DPoP: dpopProof(device, '/v1/events', token) });
+}
+
+// The health channel: POST /v1/health, one keyed upsert per device per collector (docs/02 §5.4).
+// It carries the collector names from ref.collector, not the route names, because the coverage
+// tables key on the collector and the server refuses a name the vocabulary does not hold. One
+// device is deliberately degraded so the dashboard has a degraded collector to show.
+const COLLECTORS = ['capture_extension', 'egress_proxy', 'loopback_broker', 'cli_shim', 'process_detector', 'classifier_host'];
+
+async function sendHealth(device) {
+  const token = await accessToken(device);
+  const collector = (name) => ({
+    collector: name,
+    state: device.index === 1 && name === 'egress_proxy' ? 'degraded' : 'healthy',
+    detail: device.index === 1 && name === 'egress_proxy' ? 'client_pinned' : undefined,
+    version: 'simulate-devices/1',
+    counters: { observed: 0, emitted: 0, skipped_not_generative: 0, blind_tunnelled: 0, not_cooperative: 0, dropped: 0, errors: 0 },
+  });
+  return post('/v1/health', {
+    schema_version: '1.0',
+    reported_at: iso(Date.now()),
+    agent_version: 'simulate-devices/1',
+    policy_bundle_version: 'sim-lab',
+    signature_ok: true,
+    spool: { depth_events: 0, capacity_events: 25000, dropped_total: 0, rejected_total: 0 },
+    collectors: COLLECTORS.map(collector),
+  }, { Authorization: `DPoP ${token}`, DPoP: dpopProof(device, '/v1/health', token) });
 }
 
 // ── what the simulated people do ────────────────────────────────────────────────────────────
@@ -310,5 +339,15 @@ for (const [device, queue] of queues) {
 console.log(`  sent ${made} observations in ${totals.batches} batches through ${EDGE}/v1/events`);
 console.log(`  server said: accepted ${totals.accepted}, duplicate ${totals.duplicate}, rejected ${totals.rejected}`);
 for (const [reason, count] of reasons) console.log(`    rejected ${count}: ${reason}`);
-console.log(`  in the database for this tenant: ${psql(`select count(*) from ingest.submission where tenant_id = '${TENANT}'`)} submissions, ${psql(`select count(*) from ingest.observation where tenant_id = '${TENANT}'`)} observations, ${psql(`select count(*) from ops.device where tenant_id = '${TENANT}'`)} devices`);
+
+// Heartbeat every device, so an idle device is reporting and the coverage snapshot has something to
+// observe (docs/02 §5.4, docs/04 §3.7).
+let healthOk = 0;
+for (const device of devices) {
+  const res = await sendHealth(device);
+  if (res.status !== 200) throw new Error(`health from device ${device.index}: ${res.status} ${res.text.slice(0, 300)}`);
+  healthOk += 1;
+}
+console.log(`  posted ${healthOk} health reports through ${EDGE}/v1/health (${COLLECTORS.length} collectors each)`);
+console.log(`  in the database for this tenant: ${psql(`select count(*) from ingest.submission where tenant_id = '${TENANT}'`)} submissions, ${psql(`select count(*) from ingest.observation where tenant_id = '${TENANT}'`)} observations, ${psql(`select count(*) from ops.device where tenant_id = '${TENANT}'`)} devices, ${psql(`select count(*) from ops.collector_state where tenant_id = '${TENANT}'`)} collector-state rows`);
 if (totals.rejected > 0) process.exitCode = 1;

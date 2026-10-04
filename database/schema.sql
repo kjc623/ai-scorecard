@@ -367,6 +367,11 @@ CREATE UNIQUE INDEX device_hardware_identity_uniq
 COMMENT ON COLUMN ops.device.hardware_identity_hash IS
   'Per-device enrolment idempotency key (brief C11, A17): a hash of the hardware identity, so re-enrolment after a re-image returns the existing device_id rather than creating a second row. Uniqueness is per tenant and is enforced by the device_hardware_identity_uniq partial index, not by a UNIQUE constraint, because the column is nullable and PostgreSQL permits unlimited NULLs in a UNIQUE constraint, which would silently weaken the guard.';
 
+-- Brief §3.6 question 7 and docs/04 §3.11: the silent-device list and the coverage block both order
+-- or filter on last_seen_at, and both run tenant-scoped. Tenant-leading, so the policy predicate is
+-- served by the index rather than applied after a scan (C32).
+CREATE INDEX device_by_last_seen ON ops.device (tenant_id, last_seen_at);
+
 -- Brief C11: enrolment is one-shot and mutually authenticated, re-enrolment after re-imaging
 -- is idempotent and returns the existing identity. Brief §4.2: a revoked device is rejected
 -- and marked accordingly. ADR 0020 §4: the credential may be an X.509 certificate or an
@@ -504,6 +509,11 @@ CREATE TABLE ops.collector_state (
 
 COMMENT ON COLUMN ops.collector_state.spool_dropped_total IS
   'Monotonic count of events dropped because the local spool was full. Brief C22 requires the counter to be reported, so that an undercount is visible to the operator. Silent data loss is the failure this column exists to prevent.';
+
+-- docs/04 §3.11: the current-degradation read (`ops.collector_state (tenant_id, state)`) is how the
+-- Devices and Degraded-collection screens find every collector reporting a state, without reading
+-- every device's rows.
+CREATE INDEX collector_state_by_state ON ops.collector_state (tenant_id, state);
 
 -- The signed policy bundle. Brief C10 requires signature verification failure to retain the
 -- previous bundle and never fall back to unsigned or empty; bundle_version is what makes
@@ -833,6 +843,11 @@ CREATE TABLE ops.coverage_snapshot (
 
 COMMENT ON COLUMN ops.coverage_snapshot.gap_reason IS
   'Why a collector that was expected did not report. Constrained to a closed vocabulary: "we do not know why we are blind here" must be recorded as `unknown`, not left blank, because blank and unknown look identical on a dashboard and mean different things.';
+
+-- docs/04 §3.11: the gap list reads only the rows where a collector was expected and did not report,
+-- so the partial index is the one that serves it. The primary key already serves a per-day read.
+CREATE INDEX coverage_snapshot_unobserved
+  ON ops.coverage_snapshot (tenant_id, snapshot_day) WHERE NOT observed;
 
 
 -- =====================================================================================
@@ -2034,6 +2049,11 @@ CREATE POLICY tenant_isolation ON ops.tenant
 -- ingest-api
 GRANT SELECT ON ref.data_class, ref.route_fidelity, ref.collector, ref.classifier_release, ref.retention_class TO sac_ingest;
 GRANT SELECT ON ops.tenant, ops.device, ops.device_credential, ops.retention_policy TO sac_ingest;
+-- Accepting a batch is the device's activity, so ingest-api stamps last_seen_at in the same
+-- transaction that accepts it (docs/04 §3.7, docs/01-collectors.md §14.5). The grant is
+-- column-level and one-way: an activity stamp must not become a way for the write path to change a
+-- device's identity, os or revocation.
+GRANT UPDATE (last_seen_at) ON ops.device TO sac_ingest;
 -- The usage ledger is incremented by the component that accepts the events, in the same
 -- transaction, because a billing counter that could commit without its data -- or data without
 -- its counter -- would be wrong in a way nobody notices until an invoice is disputed.

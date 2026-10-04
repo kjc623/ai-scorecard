@@ -366,6 +366,13 @@ is what a tier rather than a global switch means.
 - **Pagination.** Cursor on `(device_id, collector)` — the row grain after the collector join, so the
   key is total; 50/500. Sorting by silence duration or dropped total is a
   bounded sort over the filtered set.
+- **The list is cursor-paged, so the page is not the fleet.** A card that counts only the loaded page
+  while another uses the server's fleet figure describes two different populations. The device read
+  therefore also returns **fleet-wide counts by status** (`reporting` · `degraded` · `stale` ·
+  `never_reported` · `tampered` · `revoked`) from the enrolled denominator, and both cards are computed
+  from it. **As built:** the companion statement is `meta.extras.device_status`, added by `q7_devices`
+  (`query/query-api/src/blocks.js`), and `query/dashboard/src/views.js` reads it. The buckets match the
+  row status function exactly, so a count and a row cannot disagree about what a device is.
 
 ### 3.8 Q8 — What happened in this window, for this tool or person?
 
@@ -1162,15 +1169,30 @@ violate, so it is designed as a lookup rather than as a leaderboard with the sor
 
 ### 11.3 Coverage and freshness are never buried
 
-Coverage renders as a persistent strip on every screen: devices reporting of devices enrolled, expected
-vs observed collectors, and the `gap_reason` breakdown (`not_enrolled`, `not_managed`,
+Coverage is said by a **banner under the page title** — devices reporting of devices enrolled,
+expected vs observed collectors, and the `gap_reason` breakdown (`not_enrolled`, `not_managed`,
 `client_bypassed_proxy`, `pinned_certificate`, `permission_denied`, `process_excluded`, `tampered`,
-`unknown`). `unknown` shows as a reason, not a blank — blank and unknown look identical on a dashboard
-and mean different things. Freshness renders **inside each metric tile** (`updated 3 min ago · complete
-to 10:00`), never only in a tooltip; because the API always returns the `freshness` block, a tile cannot
-render without it unless the UI discards data it was given. Where a window has no coverage the chart
-renders `not_yet_covered` hatching rather than a zero line, and a trend spanning a coverage gap renders
-the gap as a break in the series.
+`unknown`). `unknown` shows as a reason, not a blank — blank and unknown look identical on a
+dashboard and mean different things. Freshness renders **inside each metric tile** (`updated 3 min
+ago · complete to 10:00`), never only in a tooltip; because the API always returns the `freshness`
+block, a tile cannot render without it unless the UI discards data it was given. Where a window has
+no coverage the chart renders `not_yet_covered` hatching rather than a zero line, and a trend
+spanning a coverage gap renders the gap as a break in the series.
+
+**The product decision, recorded:** the persistent coverage-and-freshness strip was removed from the
+dashboard, and degraded coverage is said by the banner under the page title. This section is the
+design of record for the banner only; the strip is not built and is not to be reintroduced.
+
+**As built:** `ops.coverage_snapshot` is written by the aggregation job
+(`aggregation/aggregator/internal/rollup`), one row per enrolled (non-revoked) device per
+`ref.collector` per day, in the same run and transaction as the usage aggregates (docs/03 §5).
+`expected` is true for every device × collector in the fleet; `observed` is true when that collector
+reported `healthy` or `degraded` on that day (from `ops.collector_state.last_report_at`), and the
+`gap_reason` names `tampered` when that is what the collector said and `unknown` otherwise. Because
+`ops.collector_state` is current state rather than history, `observed` is **monotonic within a day**:
+a later run that reads a fresher `last_report_at` cannot rewrite an earlier day's answer back to
+"not observed". The read's default coverage window is the **current UTC day** when the query has no
+window of its own, so the Devices and Overview banners describe today rather than yesterday.
 
 ### 11.4 "Devices not reporting" and "degraded collection"
 

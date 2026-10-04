@@ -78,6 +78,50 @@ export function coverageStatement(window) {
 }
 
 /**
+ * §3.7: the device list is cursor-paged, so the "Need attention" card cannot count only the loaded
+ * page while the fleet card uses the server's figure — the two would describe different
+ * populations. This companion read returns the fleet-wide counts by status, from the enrolled
+ * (non-revoked) denominator, so both cards are computed from the same population.
+ *
+ * The buckets match devicesView's `deviceStatus` precedence exactly (revoked, tampered,
+ * never_reported, stale, reporting-or-degraded), so a count and a row cannot disagree about what a
+ * device is.
+ */
+export function deviceStatusStatement() {
+  return Object.freeze({
+    id: 'device_status',
+    text: [
+      'WITH base AS (',
+      '  SELECT d.device_id, d.revoked_at, d.last_seen_at,',
+      "         coalesce(bool_or(cs.state = 'tampered'), false) AS has_tampered,",
+      "         coalesce(bool_or(cs.state = 'degraded'), false) AS has_degraded",
+      '    FROM ops.device d',
+      '    LEFT JOIN ops.collector_state cs',
+      '      ON cs.tenant_id = d.tenant_id AND cs.device_id = d.device_id',
+      '   WHERE d.tenant_id = ops.current_tenant()',
+      '   GROUP BY d.device_id, d.revoked_at, d.last_seen_at)',
+      'SELECT',
+      '  count(*) FILTER (WHERE revoked_at IS NULL) AS devices_enrolled,',
+      '  count(*) FILTER (WHERE revoked_at IS NOT NULL) AS revoked,',
+      '  count(*) FILTER (WHERE revoked_at IS NULL AND NOT has_tampered',
+      '                   AND last_seen_at IS NULL) AS never_reported,',
+      '  count(*) FILTER (WHERE revoked_at IS NULL AND NOT has_tampered',
+      '                   AND last_seen_at IS NOT NULL',
+      "                   AND last_seen_at <= now() - interval '24 hours') AS stale,",
+      '  count(*) FILTER (WHERE revoked_at IS NULL AND NOT has_tampered',
+      "                   AND last_seen_at > now() - interval '24 hours'",
+      '                   AND has_degraded) AS degraded,',
+      '  count(*) FILTER (WHERE revoked_at IS NULL AND has_tampered) AS tampered,',
+      '  count(*) FILTER (WHERE revoked_at IS NULL AND NOT has_tampered',
+      "                   AND last_seen_at > now() - interval '24 hours'",
+      '                   AND NOT has_degraded) AS reporting',
+      '  FROM base',
+    ].join('\n'),
+    params: Object.freeze([]),
+  });
+}
+
+/**
  * §7.3: "`newer_events_exist` (a bounded `EXISTS` on the same index) says rows have arrived since
  * the snapshot, so a consistent-but-stale page is not mistaken for the whole truth."
  *

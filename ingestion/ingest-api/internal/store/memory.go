@@ -33,6 +33,9 @@ type Memory struct {
 	replay         map[string]time.Time
 	defaultTTLDays int
 	now            func() time.Time
+	// lastSeen mirrors ops.device.last_seen_at, the device-activity stamp the write path makes
+	// (docs/04 §3.7). It is monotonic, like the SQL statement.
+	lastSeen map[string]time.Time
 }
 
 type memoryObservation struct {
@@ -105,6 +108,7 @@ func NewMemory(ranks RouteTable) *Memory {
 		replay:         map[string]time.Time{},
 		defaultTTLDays: 90,
 		now:            time.Now,
+		lastSeen:       map[string]time.Time{},
 	}
 }
 
@@ -237,7 +241,24 @@ func (m *Memory) WriteBatch(ctx context.Context, w BatchWrite) (BatchResult, err
 		})
 	}
 
+	// Device activity (§3.7), monotonic, in the same "transaction" as the events.
+	if w.DeviceID != "" {
+		key := w.TenantID + "|" + w.DeviceID
+		if prev, ok := m.lastSeen[key]; !ok || prev.Before(w.ReceivedAt) {
+			m.lastSeen[key] = w.ReceivedAt
+		}
+	}
+
 	return BatchResult{Outcomes: outcomes}, nil
+}
+
+// LastSeenAt returns the stamped device activity, for tests and the local run. It mirrors
+// ops.device.last_seen_at.
+func (m *Memory) LastSeenAt(tenantID, deviceID string) (time.Time, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.lastSeen[tenantID+"|"+deviceID]
+	return t, ok
 }
 
 // recordEventLocked transliterates ingest.record_event().
@@ -484,6 +505,7 @@ type memorySnapshot struct {
 	observations map[string]*memoryObservation
 	submissions  map[string]*memorySubmission
 	quarantine   []memoryRejection
+	lastSeen     map[string]time.Time
 }
 
 func (m *Memory) clone() memorySnapshot {
@@ -503,13 +525,18 @@ func (m *Memory) clone() memorySnapshot {
 		subs[k] = &c
 	}
 	q := append([]memoryRejection(nil), m.quarantine...)
-	return memorySnapshot{observations: obs, submissions: subs, quarantine: q}
+	seen := make(map[string]time.Time, len(m.lastSeen))
+	for k, v := range m.lastSeen {
+		seen[k] = v
+	}
+	return memorySnapshot{observations: obs, submissions: subs, quarantine: q, lastSeen: seen}
 }
 
 func (m *Memory) restore(s memorySnapshot) {
 	m.observations = s.observations
 	m.submissions = s.submissions
 	m.quarantine = s.quarantine
+	m.lastSeen = s.lastSeen
 }
 
 func containsString(list []string, s string) bool {

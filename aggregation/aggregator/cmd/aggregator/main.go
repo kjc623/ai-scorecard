@@ -43,15 +43,16 @@ func (s *stringList) Set(v string) error {
 }
 
 type options struct {
-	storeKind    string
-	dsn          string
-	driver       string
-	interval     time.Duration
-	dayLookback  int
-	hourLookback int
-	tenants      stringList
-	once         bool
-	addr         string
+	storeKind        string
+	dsn              string
+	driver           string
+	interval         time.Duration
+	dayLookback      int
+	hourLookback     int
+	coverageLookback int
+	tenants          stringList
+	once             bool
+	addr             string
 }
 
 func run() error {
@@ -62,6 +63,7 @@ func run() error {
 	flag.DurationVar(&o.interval, "interval", envDuration("SAC_INTERVAL", 5*time.Minute), "how often every tenant is recomputed (env SAC_INTERVAL)")
 	flag.IntVar(&o.dayLookback, "day-lookback", envInt("SAC_DAY_LOOKBACK", 7), "trailing day buckets recomputed each run (env SAC_DAY_LOOKBACK)")
 	flag.IntVar(&o.hourLookback, "hour-lookback", envInt("SAC_HOUR_LOOKBACK", 48), "trailing hour buckets recomputed each run (env SAC_HOUR_LOOKBACK)")
+	flag.IntVar(&o.coverageLookback, "coverage-lookback", envInt("SAC_COVERAGE_LOOKBACK", 7), "trailing coverage days recomputed each run (env SAC_COVERAGE_LOOKBACK)")
 	flag.Var(&o.tenants, "tenant", "roll up only this tenant; repeatable. Default: every tenant the session can see")
 	flag.BoolVar(&o.once, "once", false, "run one pass and exit (for a lab check or a scheduled job)")
 	flag.StringVar(&o.addr, "addr", envOr("SAC_HTTP_ADDR", "127.0.0.1:8080"), "health listen address (env SAC_HTTP_ADDR)")
@@ -75,6 +77,9 @@ func run() error {
 	}
 	if o.dayLookback < 1 || o.hourLookback < 1 {
 		return fmt.Errorf("lookbacks must be at least 1 bucket (day=%d hour=%d)", o.dayLookback, o.hourLookback)
+	}
+	if o.coverageLookback < 1 {
+		return fmt.Errorf("coverage-lookback must be at least 1 day, got %d", o.coverageLookback)
 	}
 	if o.dsn == "" {
 		return errors.New("a database DSN is required: pass -dsn or set SAC_PG_DSN")
@@ -100,10 +105,11 @@ func run() error {
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	runner := &rollup.Runner{
-		DB:           db,
-		DayLookback:  o.dayLookback,
-		HourLookback: o.hourLookback,
-		Log:          logger,
+		DB:                  db,
+		DayLookback:         o.dayLookback,
+		HourLookback:        o.hourLookback,
+		CoverageDayLookback: o.coverageLookback,
+		Log:                 logger,
 	}
 
 	if o.once {

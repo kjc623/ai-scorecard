@@ -14,6 +14,7 @@ import { BUCKETS } from './registry.js';
 import { REASON, unsupported } from './errors.js';
 import {
   classTotalStatement,
+  deviceStatusStatement,
   erasureEvidenceStatement,
   flushCheckStatement,
   orgCoverageStatement,
@@ -373,6 +374,9 @@ export const TEMPLATES = Object.freeze({
           'The denominator is the enrolled fleet and is stated, never implied (§3.7).',
           'docs/04 §3.7 names a three-way join with ops.coverage_snapshot; that table is read as its own source because a per-day snapshot would multiply device rows by the number of days in the window.',
         ],
+        // Fleet-wide counts by liveness, so the Devices cards describe the same population as the
+        // list's cursor page (docs/04 §3.7). Returned as meta.extras.device_status.
+        extras: [() => deviceStatusStatement()],
       };
     },
   },

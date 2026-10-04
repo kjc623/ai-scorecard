@@ -844,6 +844,29 @@ operator sees "it reported tampering, then stopped" rather than losing one of th
 alarming on a laptop that is simply shut overnight; it is a server-side parameter, held in the view, and
 adjustable without a device release.
 
+**As built.** `POST /v1/health` is served by `control-api` (`internal/health`, `internal/httpapi`): it
+authenticates the device credential, validates the collector vocabulary against `ref.collector`, and
+upserts `ops.collector_state` keyed `(tenant, device, collector)` in one transaction with the device's
+`last_seen_at`. The stale-report guard is the `ON CONFLICT ... DO UPDATE ... WHERE
+last_report_at < EXCLUDED.last_report_at`, so a retry or an out-of-order replay is a no-op rather than a
+regression. The device-level fields the schema has no column for (`agent_version`, `clock_offset_ms`,
+`policy_bundle_version`, `signature_ok`, `kill_switch_state`, `credential_not_after`, the counters and
+the spool bytes) travel in the row's `detail` jsonb; `state`, `version`, `permissions`,
+`last_success_at`, `spool_depth`, `spool_capacity`, `spool_dropped_total` and `error_code` are columns.
+
+The device reports collector names, not route names, and **maps each route to its `ref.collector`
+code** in the agent before sending (`proxy.tls` → `egress_proxy`, `proxy.loopback` →
+`loopback_broker`, `proc.detect` → `process_detector`, the browser routes → `capture_extension`); a
+name outside that vocabulary is refused, so §4.3's "the collector name must come from `ref.collector`"
+holds on the wire. The classifier host is a component rather than a collection route and reports its
+own row. The heartbeat is sent on the agent's existing health-channel interval even when the spool is
+empty, which is the point of the channel: an idle device reports rather than merely stopping.
+
+The batch path is also a device-activity signal. `ingest-api` stamps `ops.device.last_seen_at` (only
+forward, never backwards) in the same transaction that accepts a batch, so a streaming device is
+`reporting` without waiting for a health report. The two writers cannot disagree about liveness: the
+stamp is monotonic in both.
+
 ---
 
 ## 10. Grant issuance and content upload

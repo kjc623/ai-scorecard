@@ -530,9 +530,14 @@
         "id": "coverage",
         "text": "SELECT\n  (SELECT count(*) FROM ops.device d\n    WHERE d.tenant_id = ops.current_tenant() AND d.revoked_at IS NULL) AS devices_enrolled,\n  (SELECT count(*) FROM ops.device d\n    WHERE d.tenant_id = ops.current_tenant() AND d.revoked_at IS NULL\n      AND d.last_seen_at > now() - interval '24 hours') AS devices_reporting,\n  (SELECT count(*) FROM ops.coverage_snapshot v\n    WHERE v.tenant_id = ops.current_tenant()\n      AND v.snapshot_day >= $1::date AND v.snapshot_day < $2::date\n      AND v.expected) AS expected_collector_days,\n  (SELECT count(*) FROM ops.coverage_snapshot v\n    WHERE v.tenant_id = ops.current_tenant()\n      AND v.snapshot_day >= $1::date AND v.snapshot_day < $2::date\n      AND v.observed) AS observed_collector_days,\n  (SELECT coalesce(jsonb_object_agg(g.gap_reason, g.n), '{}'::jsonb)\n     FROM (SELECT coalesce(v.gap_reason, 'unknown') AS gap_reason, count(*) AS n\n             FROM ops.coverage_snapshot v\n            WHERE v.tenant_id = ops.current_tenant()\n              AND v.snapshot_day >= $1::date AND v.snapshot_day < $2::date\n              AND NOT v.observed\n            GROUP BY 1) g) AS gap_reasons",
         "params": [
-          "2026-10-01",
-          "2026-10-02"
+          "2026-10-02",
+          "2026-10-03"
         ]
+      },
+      {
+        "id": "device_status",
+        "text": "WITH base AS (\n  SELECT d.device_id, d.revoked_at, d.last_seen_at,\n         coalesce(bool_or(cs.state = 'tampered'), false) AS has_tampered,\n         coalesce(bool_or(cs.state = 'degraded'), false) AS has_degraded\n    FROM ops.device d\n    LEFT JOIN ops.collector_state cs\n      ON cs.tenant_id = d.tenant_id AND cs.device_id = d.device_id\n   WHERE d.tenant_id = ops.current_tenant()\n   GROUP BY d.device_id, d.revoked_at, d.last_seen_at)\nSELECT\n  count(*) FILTER (WHERE revoked_at IS NULL) AS devices_enrolled,\n  count(*) FILTER (WHERE revoked_at IS NOT NULL) AS revoked,\n  count(*) FILTER (WHERE revoked_at IS NULL AND NOT has_tampered\n                   AND last_seen_at IS NULL) AS never_reported,\n  count(*) FILTER (WHERE revoked_at IS NULL AND NOT has_tampered\n                   AND last_seen_at IS NOT NULL\n                   AND last_seen_at <= now() - interval '24 hours') AS stale,\n  count(*) FILTER (WHERE revoked_at IS NULL AND NOT has_tampered\n                   AND last_seen_at > now() - interval '24 hours'\n                   AND has_degraded) AS degraded,\n  count(*) FILTER (WHERE revoked_at IS NULL AND has_tampered) AS tampered,\n  count(*) FILTER (WHERE revoked_at IS NULL AND NOT has_tampered\n                   AND last_seen_at > now() - interval '24 hours'\n                   AND NOT has_degraded) AS reporting\n  FROM base",
+        "params": []
       }
     ],
     "meta": {
@@ -660,8 +665,8 @@
         "id": "coverage",
         "text": "SELECT\n  (SELECT count(*) FROM ops.device d\n    WHERE d.tenant_id = ops.current_tenant() AND d.revoked_at IS NULL) AS devices_enrolled,\n  (SELECT count(*) FROM ops.device d\n    WHERE d.tenant_id = ops.current_tenant() AND d.revoked_at IS NULL\n      AND d.last_seen_at > now() - interval '24 hours') AS devices_reporting,\n  (SELECT count(*) FROM ops.coverage_snapshot v\n    WHERE v.tenant_id = ops.current_tenant()\n      AND v.snapshot_day >= $1::date AND v.snapshot_day < $2::date\n      AND v.expected) AS expected_collector_days,\n  (SELECT count(*) FROM ops.coverage_snapshot v\n    WHERE v.tenant_id = ops.current_tenant()\n      AND v.snapshot_day >= $1::date AND v.snapshot_day < $2::date\n      AND v.observed) AS observed_collector_days,\n  (SELECT coalesce(jsonb_object_agg(g.gap_reason, g.n), '{}'::jsonb)\n     FROM (SELECT coalesce(v.gap_reason, 'unknown') AS gap_reason, count(*) AS n\n             FROM ops.coverage_snapshot v\n            WHERE v.tenant_id = ops.current_tenant()\n              AND v.snapshot_day >= $1::date AND v.snapshot_day < $2::date\n              AND NOT v.observed\n            GROUP BY 1) g) AS gap_reasons",
         "params": [
-          "2026-10-01",
-          "2026-10-02"
+          "2026-10-02",
+          "2026-10-03"
         ]
       }
     ],
@@ -1535,8 +1540,8 @@
         "id": "coverage",
         "text": "SELECT\n  (SELECT count(*) FROM ops.device d\n    WHERE d.tenant_id = ops.current_tenant() AND d.revoked_at IS NULL) AS devices_enrolled,\n  (SELECT count(*) FROM ops.device d\n    WHERE d.tenant_id = ops.current_tenant() AND d.revoked_at IS NULL\n      AND d.last_seen_at > now() - interval '24 hours') AS devices_reporting,\n  (SELECT count(*) FROM ops.coverage_snapshot v\n    WHERE v.tenant_id = ops.current_tenant()\n      AND v.snapshot_day >= $1::date AND v.snapshot_day < $2::date\n      AND v.expected) AS expected_collector_days,\n  (SELECT count(*) FROM ops.coverage_snapshot v\n    WHERE v.tenant_id = ops.current_tenant()\n      AND v.snapshot_day >= $1::date AND v.snapshot_day < $2::date\n      AND v.observed) AS observed_collector_days,\n  (SELECT coalesce(jsonb_object_agg(g.gap_reason, g.n), '{}'::jsonb)\n     FROM (SELECT coalesce(v.gap_reason, 'unknown') AS gap_reason, count(*) AS n\n             FROM ops.coverage_snapshot v\n            WHERE v.tenant_id = ops.current_tenant()\n              AND v.snapshot_day >= $1::date AND v.snapshot_day < $2::date\n              AND NOT v.observed\n            GROUP BY 1) g) AS gap_reasons",
         "params": [
-          "2026-10-01",
-          "2026-10-02"
+          "2026-10-02",
+          "2026-10-03"
         ]
       }
     ],

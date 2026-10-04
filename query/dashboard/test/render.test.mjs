@@ -140,6 +140,37 @@ test('the devices screen says the fleet, what needs attention, and each device i
   assert.ok(windowsOnly.tables[0].rows.every(({ row }) => row.device_os === 'windows'));
 });
 
+// docs/04 §3.7: the fleet card and "Need attention" must describe the same population. When the read
+// returns fleet-wide counts by status (meta.extras.device_status), both cards use it; the loaded
+// page is never the denominator.
+test('the two Devices cards agree when the read returns fleet-wide counts by status', async () => {
+  const state = readState(envelope('ok', {
+    data: [
+      { device: 'd1', liveness: 'reporting', collector: 'egress_proxy', collector_state: 'healthy', last_seen_at: '2026-10-04T11:00:00Z' },
+      { device: 'd2', liveness: 'stale', collector: null, collector_state: null, last_seen_at: '2026-09-29T02:11:00Z' },
+    ],
+    freshness: FRESH,
+    coverage: PARTIAL,
+    meta: {
+      source: 'mart.v_device_liveness',
+      extras: {
+        device_status: [{
+          devices_enrolled: 10, reporting: 6, never_reported: 2, stale: 1, degraded: 1, tampered: 0, revoked: 3,
+        }],
+      },
+    },
+  }));
+  const view = devicesView(state);
+  assert.equal(view.tiles[0].value.text, '10');
+  assert.deepEqual(view.tiles[0].split.map((p) => [p.label, p.count]), [['Reporting', 6], ['Not reporting', 4]]);
+  assert.equal(view.tiles[1].value.text, '4');
+  assert.equal(
+    view.tiles[1].value.text,
+    view.tiles[0].split.find((p) => p.label === 'Not reporting').count.toLocaleString('en-US'),
+    'need attention and not-reporting must be the same population',
+  );
+});
+
 test('the catalogue screen renders every gap with its reason, and the no-api screens render theirs', () => {
   const catalogue = renderScreen(unavailableView(), SHELL);
   for (const needle of ['Content search', 'Exports', 'Settings', 'Rejected-envelope', 'Anchored chain head']) {

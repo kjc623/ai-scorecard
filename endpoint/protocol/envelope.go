@@ -319,7 +319,7 @@ const MaxAttachmentBytes = 64 << 20
 // HealthReport is what a component sends on the health channel. It is carried on
 // POST /v1/health, upserted by key, and never as an event stream.
 type HealthReport struct {
-	DeviceID    string             `json:"device_id"`
+	DeviceID    string             `json:"device_id,omitempty"`
 	Collector   string             `json:"collector"`
 	State       CollectorState     `json:"state"`
 	Detail      Detail             `json:"detail,omitempty"`
@@ -327,6 +327,10 @@ type HealthReport struct {
 	Since       time.Time          `json:"since"`
 	Counters    map[Counter]uint64 `json:"counters"`
 	Version     string             `json:"version,omitempty"`
+	// Permissions is the per-required-permission state docs/02 §5.4 asks for
+	// (granted | denied | not-applicable). It is not part of the closed counter set: a permission is
+	// a capability an operator must see, not a throughput count.
+	Permissions map[string]string `json:"permissions,omitempty"`
 }
 
 // NewHealthReport returns a report with every counter present, so a missing counter is

@@ -29,6 +29,7 @@ import (
 	"github.com/shadow-ai-capture/control-api/internal/content"
 	"github.com/shadow-ai-capture/control-api/internal/dpop"
 	"github.com/shadow-ai-capture/control-api/internal/enrol"
+	"github.com/shadow-ai-capture/control-api/internal/health"
 	"github.com/shadow-ai-capture/control-api/internal/httpapi"
 	"github.com/shadow-ai-capture/control-api/internal/jose"
 	"github.com/shadow-ai-capture/control-api/internal/signer"
@@ -214,6 +215,14 @@ func run() error {
 	}
 
 	srv := httpapi.New(enrolSvc, tokenSvc, verifier, st, logger)
+
+	// The health channel (§5.4). It is always wired: a device that reports is an operational fact,
+	// and a route that answers 503 while a device believes it reported would be a coverage lie.
+	healthSvc, err := health.New(st, health.Config{})
+	if err != nil {
+		return err
+	}
+	srv.Health = healthSvc
 
 	// The content grant path needs all three of: a vault to mint the object key, a database to
 	// decide against, and the key the storage layer verifies an upload URL with. Without any one of

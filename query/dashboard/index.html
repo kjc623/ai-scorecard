@@ -2547,17 +2547,27 @@ function devicesView(state, { filters = {}, now = new Date(), exploreHref = 'exp
   const present = (key) => [...new Set([...all.map((row) => row[key] ?? 'unknown'), ...(chosen[key] ? [chosen[key]] : [])])]
     .sort().map((value) => [value, DEVICE_LABELS[value] ?? value]);
 
-  // The fleet figure is the server's when it sent one. Without it, only the listed devices are counted, and the card says so.
+  // The fleet figures come from the server when it sent them. `device_status` is the fleet-wide
+  // count by status (docs/04 §3.7), so "Need attention" and the fleet card describe the same
+  // population; without it, only the listed page is counted and the card says so.
   const cov = state.coverage ?? null;
   const fleet = typeof cov?.devices_enrolled === 'number' && typeof cov?.devices_reporting === 'number';
-  const total = fleet ? cov.devices_enrolled : all.length;
-  const reporting = fleet ? cov.devices_reporting : all.length - needsAttention.length;
+  const status = state.meta?.extras?.device_status?.[0] ?? null;
+  const num = (v) => (typeof v === 'number' ? v : Number(v));
+  const hasStatus = status && Number.isFinite(num(status.devices_enrolled));
+  const total = hasStatus ? num(status.devices_enrolled) : (fleet ? cov.devices_enrolled : all.length);
+  const attention = hasStatus
+    ? num(status.stale) + num(status.never_reported) + num(status.degraded) + num(status.tampered)
+    : needsAttention.length;
+  const reporting = hasStatus
+    ? total - attention
+    : (fleet ? cov.devices_reporting : all.length - needsAttention.length);
 
   return screen('devices', 'Devices', null, 'mart.v_device_liveness', {
     subtitle: null,
     tiles: Object.freeze([
       Object.freeze({
-        label: fleet ? 'Devices enrolled' : 'Devices listed',
+        label: hasStatus || fleet ? 'Devices enrolled' : 'Devices listed',
         value: { kind: 'number', text: formatCount(total) },
         note: null,
         split: Object.freeze([
@@ -2567,9 +2577,9 @@ function devicesView(state, { filters = {}, now = new Date(), exploreHref = 'exp
       }),
       Object.freeze({
         label: 'Need attention',
-        value: { kind: 'number', text: formatCount(needsAttention.length) },
-        note: needsAttention.length > 0 ? 'Show them' : 'Every listed device is reporting',
-        href: needsAttention.length > 0 ? href({ status: 'attention' }) : null,
+        value: { kind: 'number', text: formatCount(attention) },
+        note: attention > 0 ? 'Show them' : 'Every enrolled device is reporting',
+        href: attention > 0 ? href({ status: 'attention' }) : null,
       }),
     ]),
     filters: Object.freeze([

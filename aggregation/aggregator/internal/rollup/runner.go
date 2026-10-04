@@ -17,6 +17,8 @@ type Runner struct {
 	DB           *sql.DB
 	DayLookback  int
 	HourLookback int
+	// CoverageDayLookback is the trailing window of coverage days recomputed each run. Zero uses 7.
+	CoverageDayLookback int
 	// Now is injectable so a test can pin the window. It defaults to time.Now.
 	Now func() time.Time
 	Log *slog.Logger
@@ -115,6 +117,14 @@ func (r *Runner) RunTenant(ctx context.Context, tenant string) (TenantReport, er
 			report.Rows[aggregate.Name+" "+bucketSize] = written
 		}
 	}
+
+	// Coverage is a daily fact rather than a bucket aggregate, but it is written by the same run for
+	// the same reason: a fact nothing recomputes is a fact that quietly stops being true (R11).
+	coverageRows, err := r.runCoverage(ctx, tx, tenant, now)
+	if err != nil {
+		return report, err
+	}
+	report.Rows[CoverageSnapshotName] = coverageRows
 
 	if err := tx.Commit(); err != nil {
 		return report, fmt.Errorf("rollup: commit tenant %s: %w", tenant, err)
