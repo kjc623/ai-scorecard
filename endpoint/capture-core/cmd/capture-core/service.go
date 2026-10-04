@@ -256,6 +256,7 @@ func (s *service) startDrainer(ctx context.Context) error {
 		return fmt.Errorf("drain: %w", err)
 	}
 	s.drainer = d
+	s.log.Info("drain configured", "endpoint", s.cfg.DeviceEndpoint, "auth_mode", s.cfg.AuthMode, "credential_loaded", d.Status().Enrolled)
 	s.spool.mu.Lock()
 	s.spool.drain = d
 	s.spool.mu.Unlock()

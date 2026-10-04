@@ -138,9 +138,9 @@ func New(cfg Config, store StoreFunc, creds *credential.Store, log Logger, clock
 		// A wired drainer starts degraded, never absent: `absent` claims there is no coverage
 		// when the drain is in fact configured and simply not yet proven to work (C25). The
 		// first success flips it to healthy.
-		state:   protocol.StateDegraded,
-		detail:  protocol.DetailUpstreamUnreachable,
-		stopCh:  make(chan struct{}),
+		state:  protocol.StateDegraded,
+		detail: protocol.DetailUpstreamUnreachable,
+		stopCh: make(chan struct{}),
 	}
 	if creds != nil {
 		if cred, err := creds.Load(); err == nil {
@@ -297,6 +297,14 @@ func (d *Drainer) credentialExpired(c *credential.Credential) bool {
 // with backoff while the deadline holds), and settle each record from its outcome.
 func (d *Drainer) Drain(ctx context.Context, deadline time.Time) (Result, error) {
 	var res Result
+	// A drain that sends nothing is otherwise silent: a service has no console, and --native-frames
+	// prints only the frames. One line per pass says what left the spool and why it stopped.
+	defer func() {
+		d.mu.Lock()
+		state, detail := d.state, d.detail
+		d.mu.Unlock()
+		d.log.Printf("drain: pass delivered=%d rejected=%d empty=%v state=%s detail=%s", res.Delivered, res.Rejected, res.Empty, state, detail)
+	}()
 	for {
 		if !d.clock().Before(deadline) {
 			break
@@ -306,6 +314,7 @@ func (d *Drainer) Drain(ctx context.Context, deadline time.Time) (Result, error)
 		key := d.key
 		d.mu.Unlock()
 		if cred == nil {
+			d.log.Printf("drain: not enrolled; the spool is retained and nothing is sent")
 			return res, errors.New("drain: not enrolled")
 		}
 
