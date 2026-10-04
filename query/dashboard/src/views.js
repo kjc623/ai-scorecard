@@ -55,7 +55,7 @@ export function measureTile(label, state, measure, formatter = formatCount) {
   }
   if (total.kind === 'floor') {
     return tile(label, { kind: 'floor', text: `≥ ${formatter(total.value)}` },
-      `${total.suppressedCells} cell(s) suppressed: this is a floor, not a total.`);
+      `Floor · ${total.suppressedCells} suppressed`);
   }
   return tile(label, { kind: 'absent', text: '—' }, 'This measure is not carried by any returned cell.');
 }
@@ -155,87 +155,98 @@ function screen(id, title, question, source, body) {
 // Posture — the landing screen (§11.1)
 // ---------------------------------------------------------------------------------------------
 
+/** A state that carries nothing, for a panel whose read did not come back. */
+const NOTHING = Object.freeze({ data: Object.freeze([]), banners: Object.freeze([]), meta: Object.freeze({}) });
+
+/** A table with a link to the screen that shows the whole of it. */
+function linked(table, href) {
+  return Object.freeze({ ...table, href });
+}
+
+function reportingTile(cov) {
+  return tile('Devices reporting', cov?.devices_reporting === null || cov?.devices_reporting === undefined
+    ? { kind: 'absent', text: '—' }
+    : { kind: 'number', text: formatCount(cov.devices_reporting) },
+  cov?.devices_enrolled === null || cov?.devices_enrolled === undefined
+    ? 'The enrolled denominator is unavailable: no fleet figure is shown without it.'
+    : `of ${formatCount(cov.devices_enrolled)} enrolled devices`);
+}
+
 /**
- * Posture is the landing page, not "top tools": the health of the instrument comes before any
- * instrument reading, because a ranked list whose denominator is unknown is the most confident
- * looking and least trustworthy screen in the product.
+ * The landing page: a summary of what the other screens hold. Usage, data classes and findings
+ * each come from their own question; one that did not come back leaves its panel empty. The
+ * devices reporting tile keeps the enrolled denominator beside every figure here.
  *
  * @param {object} input
- * @param {object} input.devices   view state for the device list
+ * @param {object} input.devices    view state for the device list (it carries coverage)
+ * @param {object} [input.tools]    view state for tool usage
+ * @param {object} [input.classes]  view state for the data-class mix
+ * @param {object} [input.findings] view state for findings
  * @param {object} [input.coverage] a coverage block, when the device read did not carry one
- * @param {ReadonlyArray<object>} [input.watermarks] one per aggregate the other screens rely on
  */
-export function postureView({ devices, coverage, watermarks = [] }) {
+export function postureView({ devices, tools = null, classes = null, findings = null, coverage }) {
   const cov = devices?.coverage ?? coverage ?? null;
-  const byLiveness = new Map();
-  for (const row of devices?.data ?? []) {
-    const key = row.liveness ?? 'unknown';
-    byLiveness.set(key, (byLiveness.get(key) ?? 0) + 1);
+  const usage = tools ?? NOTHING;
+  const open = (findings?.data ?? []).filter((row) => row.review_state === 'open').length;
+
+  // The same warning arrives with each read; it is said once.
+  const banners = [];
+  const said = new Set();
+  for (const state of [devices, tools, classes, findings]) {
+    for (const banner of state?.banners ?? []) {
+      const key = `${banner.level}|${banner.title}|${banner.text}`;
+      if (said.has(key)) continue;
+      said.add(key);
+      banners.push(banner);
+    }
   }
-  const notReporting = (devices?.data ?? []).filter((row) => row.liveness && row.liveness !== 'reporting');
-  const dropped = (devices?.data ?? []).reduce((sum, row) => sum + (typeof row.spool_dropped_total === 'number' ? row.spool_dropped_total : 0), 0);
 
-  const gaps = Object.entries(cov?.gap_reasons ?? {}).map(([reason, count]) => Object.freeze({ reason, count }));
-  const coverageTiles = [
-    tile('Devices reporting', cov?.devices_reporting === null || cov?.devices_reporting === undefined
-      ? { kind: 'absent', text: '—' }
-      : { kind: 'number', text: formatCount(cov.devices_reporting) },
-    cov?.devices_enrolled === null || cov?.devices_enrolled === undefined
-      ? 'The enrolled denominator is unavailable: no fleet figure is shown without it.'
-      : `of ${formatCount(cov.devices_enrolled)} enrolled devices`),
-    tile('Coverage state', { kind: 'vocab', text: cov?.state ?? 'unknown' }, null),
-    tile('Gaps', { kind: 'number', text: formatCount(gaps.reduce((a, g) => a + g.count, 0)) }, `${gaps.length} categor${gaps.length === 1 ? 'y' : 'ies'}`),
-  ];
-
-  return screen('posture', 'Posture', null, devices?.meta?.source ?? 'mart.v_device_liveness', {
-    subtitle: 'Coverage, freshness and the gaps the product can see. Every other screen is read through this one.',
-    tiles: Object.freeze(coverageTiles),
+  return screen('posture', 'Overview', null, null, {
+    subtitle: null,
+    tiles: Object.freeze([
+      measureTile('Submissions', usage, 'submissions'),
+      measureTile('People (lower bound)', usage, 'users'),
+      tile('Open findings', findings ? { kind: 'number', text: formatCount(open) } : { kind: 'absent', text: '—' }, findings ? 'In the latest page' : null),
+      reportingTile(cov),
+    ]),
+    series: Object.freeze(tools ? [seriesFrom(tools, { measure: 'submissions', title: 'Submissions over time' })] : []),
     tables: Object.freeze([
-      tableFrom(devices ?? { data: [] }, {
-        title: 'Devices not reporting',
+      linked(tableFrom(usage, {
+        title: 'Tools',
         columns: [
-          column('device', 'Device'),
-          column('device_os', 'OS', 'vocab'),
-          column('managed_state', 'Managed', 'vocab'),
-          column('liveness', 'Liveness', 'vocab'),
-          column('collector_state', 'Collector', 'vocab'),
-          column('last_seen_at', 'Last seen', 'instant'),
-          column('spool_dropped_total', 'Dropped', 'count'),
+          column('tool', 'Tool'),
+          column('sanctioned_state', 'Sanction', 'vocab'),
+          column('submissions', 'Submissions', 'measure'),
+          column('users', 'People', 'measure'),
+          column('blocked', 'Blocked', 'measure'),
         ],
-        emptyText: 'No device is silent in this page.',
-      }),
-      Object.freeze({
-        title: 'Coverage gaps by reason',
-        columns: Object.freeze([column('reason', 'Reason', 'vocab'), column('count', 'Collector-days', 'count')]),
-        rows: Object.freeze(gaps.map((g) => Object.freeze({ row: g, vocab: { gap_reason: g.reason }, suppressed: false }))),
-        emptyText: 'No gaps recorded for this window.',
-        suppressedCells: 0,
-      }),
-      Object.freeze({
-        title: 'Aggregate watermarks',
-        columns: Object.freeze([
-          column('aggregate', 'Aggregate'),
-          column('last_run_at', 'Last run', 'instant'),
-          column('last_complete_bucket', 'Complete to', 'instant'),
-          column('lag_seconds', 'Lag', 'seconds'),
-          column('state', 'State', 'vocab'),
-        ]),
-        rows: Object.freeze(watermarks.map((w) => Object.freeze({ row: w, vocab: { state: w.state }, suppressed: false }))),
-        emptyText: 'No watermark has been read yet.',
-        suppressedCells: 0,
+        emptyText: 'No tool was in use in this window.',
+      }), '#tools'),
+      linked(tableFrom(classes ?? NOTHING, {
+        title: 'Data classes',
+        columns: [
+          column('class', 'Class', 'vocab'),
+          column('severity', 'Severity', 'vocab'),
+          column('tool', 'Tool'),
+          column('submissions', 'Submissions carrying it', 'measure'),
+        ],
+        emptyText: 'No sensitive data was classified in this window.',
+      }), '#tools?view=classes'),
+      tableFrom(findings ?? NOTHING, {
+        title: 'Findings',
+        columns: [
+          column('detected_at', 'Detected', 'instant'),
+          column('severity', 'Severity', 'vocab'),
+          column('rule_title', 'Rule'),
+          column('subject', 'Person'),
+          column('tool', 'Tool'),
+          column('review_state', 'Review', 'vocab'),
+        ],
+        emptyText: 'No finding was raised in this window.',
       }),
     ]),
-    series: Object.freeze([]),
-    extras: Object.freeze({
-      livenessCounts: Object.freeze([...byLiveness.entries()].map(([state, count]) => Object.freeze({ state, count }))),
-      notReportingCount: notReporting.length,
-      spoolDroppedTotal: dropped,
-      legend: Object.freeze(['reporting', 'stale', 'never_reported', 'revoked']),
-    }),
-    ...shared(devices ?? { data: [], banners: Object.freeze([]), meta: {} }, [
-      'An absence of events is ambiguous; a health signal is not. A silent device is a row produced by the server, not a gap an analyst must notice.',
-      'A revoked device is not a quiet one: revoked, stale, never_reported and reporting are four facts.',
-    ]),
+    banners: Object.freeze(banners),
+    notes: shared(devices ?? NOTHING).notes,
   });
 }
 
@@ -353,7 +364,7 @@ export function classesView(state) {
   if (classTotal !== null) {
     notes.push(`The non-additive total for the same window is ${formatCount(classTotal)} submissions, from a different source: class rows fan out and must not be summed as submissions.`);
   }
-  return screen('classes', 'Classes', TEMPLATES.q4_class_mix.title, 'mart.agg_class_period', {
+  return screen('classes', 'Data classes', TEMPLATES.q4_class_mix.title, 'mart.agg_class_period', {
     subtitle: 'Sensitive-data classes, with the classifier health that produced them.',
     tiles: Object.freeze([
       measureTile('Class-carrying submissions (fan-out)', state, 'submissions'),
@@ -459,8 +470,9 @@ export function personView(state, { subject }) {
   if (flush) {
     notes.push(`${formatCount(flush.rows_in_window)} rows for this person in the window, ${formatCount(flush.late_flush_rows)} received more than an hour after they occurred: a spool flush spikes received time, not behaviour.`);
   }
-  return screen('person', 'Person', TEMPLATES.q6_subject_series.title, 'mart.agg_user_period', {
-    subtitle: `A lookup for ${subject}: this person's own baseline, never a peer comparison.`,
+  return screen('person', 'Users', null, 'mart.agg_user_period', {
+    subtitle: null,
+    search: Object.freeze({ value: subject }),
     tiles: Object.freeze([
       measureTile('Submissions', state, 'submissions'),
       measureTile('Tools used', state, 'tools_used'),
@@ -488,50 +500,128 @@ export function personView(state, { subject }) {
   });
 }
 
-export function devicesView(state) {
-  const counts = new Map();
-  for (const row of state.data) {
-    const liveness = row.liveness ?? 'unknown';
-    const key = `${liveness}/${row.collector_state ?? 'no-collector'}`;
-    counts.set(key, (counts.get(key) ?? 0) + 1);
-  }
-  const dropped = state.data.reduce((sum, row) => sum + (typeof row.spool_dropped_total === 'number' ? row.spool_dropped_total : 0), 0);
-  return screen('devices', 'Devices', TEMPLATES.q7_devices.title, 'mart.v_device_liveness', {
-    subtitle: 'Every device, including the ones that are not reporting: silence is a row produced by the server.',
+/** One device's state in the words a customer uses. The key keeps the vocabulary value's colour. */
+function deviceStatus(row) {
+  if (row.liveness === 'revoked') return { key: 'revoked', text: 'Revoked' };
+  if (row.collector_state === 'tampered') return { key: 'tampered', text: 'Tampered' };
+  if (row.liveness === 'never_reported') return { key: 'never_reported', text: 'Never checked in' };
+  if (row.liveness === 'stale') return { key: 'stale', text: row.last_seen_at ? `Quiet since ${formatInstant(row.last_seen_at).slice(0, 10)}` : 'Quiet' };
+  if (row.liveness === 'reporting') return row.collector_state === 'degraded' ? { key: 'degraded', text: 'Degraded' } : { key: 'reporting', text: 'Reporting' };
+  return { key: 'unknown', text: 'Unknown' };
+}
+
+/** How long ago an instant was, in the coarsest unit that is still true. */
+function ago(iso, now) {
+  const ms = now.getTime() - Date.parse(iso);
+  if (!Number.isFinite(ms) || ms < 0) return formatInstant(iso);
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return 'Just now';
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours} h ago`;
+  return `${Math.floor(hours / 24)} days ago`;
+}
+
+const DEVICE_LABELS = Object.freeze({ windows: 'Windows', macos: 'macOS', linux: 'Linux', managed: 'Managed', unmanaged: 'Unmanaged', unknown: 'Unknown' });
+
+/**
+ * Devices, as a customer reads them: how much of the fleet is reporting, which devices need
+ * attention, and one row per device that says its state in plain words and opens its activity.
+ *
+ * @param {object} state view state for the device list
+ * @param {object} [options]
+ * @param {object} [options.filters]    status (attention | reporting), device_os, managed_state
+ * @param {Date}   [options.now]        for "last seen"
+ * @param {string} [options.exploreHref] the search page, which lists one device's events
+ */
+export function devicesView(state, { filters = {}, now = new Date(), exploreHref = 'explore.html' } = {}) {
+  const all = state.data.map((row) => {
+    const status = deviceStatus(row);
+    return {
+      ...row,
+      status: status.key,
+      status_text: status.text,
+      last_seen_at_ago: row.last_seen_at ? ago(row.last_seen_at, now) : null,
+      activity: row.device ? `${exploreHref}#events?device=${encodeURIComponent(String(row.device))}` : null,
+    };
+  });
+  const needsAttention = all.filter((row) => row.status !== 'reporting');
+
+  const chosen = {
+    status: filters.status === 'attention' || filters.status === 'reporting' ? filters.status : '',
+    device_os: filters.device_os ?? '',
+    managed_state: filters.managed_state ?? '',
+  };
+  const rows = all.filter((row) => (
+    (chosen.status === '' || (chosen.status === 'reporting') === (row.status === 'reporting'))
+    && (chosen.device_os === '' || (row.device_os ?? 'unknown') === chosen.device_os)
+    && (chosen.managed_state === '' || (row.managed_state ?? 'unknown') === chosen.managed_state)
+  ));
+
+  // Each filter is a row of links, so a filtered list has an address.
+  const href = (change) => {
+    const query = new URLSearchParams(Object.entries({ ...chosen, ...change }).filter(([, value]) => value !== '')).toString();
+    return `#devices${query ? `?${query}` : ''}`;
+  };
+  const filter = (label, key, values) => Object.freeze({
+    label,
+    current: chosen[key],
+    items: Object.freeze([{ id: '', label: 'All', href: href({ [key]: '' }) },
+      ...values.map(([id, text]) => ({ id, label: text, href: href({ [key]: id }) }))]),
+  });
+  const present = (key) => [...new Set([...all.map((row) => row[key] ?? 'unknown'), ...(chosen[key] ? [chosen[key]] : [])])]
+    .sort().map((value) => [value, DEVICE_LABELS[value] ?? value]);
+
+  // The fleet figure is the server's when it sent one. Without it, only the listed devices are counted, and the card says so.
+  const cov = state.coverage ?? null;
+  const fleet = typeof cov?.devices_enrolled === 'number' && typeof cov?.devices_reporting === 'number';
+  const total = fleet ? cov.devices_enrolled : all.length;
+  const reporting = fleet ? cov.devices_reporting : all.length - needsAttention.length;
+
+  return screen('devices', 'Devices', null, 'mart.v_device_liveness', {
+    subtitle: null,
     tiles: Object.freeze([
-      tile('Devices in page', { kind: 'number', text: formatCount(state.data.length) }, null),
-      tile('Not reporting', { kind: 'number', text: formatCount(state.data.filter((r) => r.liveness && r.liveness !== 'reporting').length) }, 'Stale, never reported or revoked — three different facts.'),
-      tile('Spool dropped (page)', { kind: 'number', text: formatCount(dropped) }, 'Events the device dropped because its spool was full: a visible undercount.'),
-      tile('Coverage', { kind: 'vocab', text: state.coverage?.state ?? 'unknown' }, state.coverageText?.text ?? null),
-    ]),
-    tables: Object.freeze([
-      tableFrom(state, {
-        title: 'Devices',
-        columns: [
-          column('device', 'Device'),
-          column('device_os', 'OS', 'vocab'),
-          column('managed_state', 'Managed', 'vocab'),
-          column('liveness', 'Liveness', 'vocab'),
-          column('collector', 'Collector', 'vocab'),
-          column('collector_state', 'State', 'vocab'),
-          column('last_seen_at', 'Last seen', 'instant'),
-          column('spool_depth', 'Spool depth', 'count'),
-          column('spool_dropped_total', 'Dropped', 'count'),
-        ],
-        emptyText: 'No device matched this filter.',
+      Object.freeze({
+        label: fleet ? 'Devices enrolled' : 'Devices listed',
+        value: { kind: 'number', text: formatCount(total) },
+        note: null,
+        split: Object.freeze([
+          Object.freeze({ key: 'reporting', label: 'Reporting', count: reporting }),
+          Object.freeze({ key: 'never_reported', label: 'Not reporting', count: Math.max(0, total - reporting) }),
+        ]),
       }),
       Object.freeze({
-        title: 'Liveness × collector state',
-        columns: Object.freeze([column('pair', 'State pair', 'vocab'), column('count', 'Devices', 'count')]),
-        rows: Object.freeze([...counts.entries()].map(([pair, count]) => Object.freeze({ row: { pair, count }, vocab: {}, suppressed: false }))),
-        emptyText: 'No devices.',
-        suppressedCells: 0,
+        label: 'Need attention',
+        value: { kind: 'number', text: formatCount(needsAttention.length) },
+        note: needsAttention.length > 0 ? 'Show them' : 'Every listed device is reporting',
+        href: needsAttention.length > 0 ? href({ status: 'attention' }) : null,
+      }),
+    ]),
+    filters: Object.freeze([
+      filter('Status', 'status', [['attention', 'Needs attention'], ['reporting', 'Reporting']]),
+      filter('OS', 'device_os', present('device_os')),
+      filter('Management', 'managed_state', present('managed_state')),
+    ]),
+    tables: Object.freeze([
+      Object.freeze({
+        ...tableFrom({ data: rows }, {
+          title: 'Devices',
+          columns: [
+            column('device', 'Device'),
+            column('status', 'Status', 'status'),
+            column('last_seen_at', 'Last seen', 'ago'),
+            column('device_os', 'OS', 'vocab'),
+            column('managed_state', 'Management', 'vocab'),
+            Object.freeze({ key: 'activity', label: '', kind: 'link', linkLabel: 'View activity' }),
+          ],
+          emptyText: 'No device matches these filters.',
+        }),
+        breakdowns: false,
       }),
     ]),
     series: Object.freeze([]),
     ...shared(state, [
-      'Four liveness values stay distinct, and no health is inferred from silence.',
-      'The denominator is the enrolled fleet. No fleet-wide percentage is shown that the product cannot compute.',
+      'Reporting, quiet, never checked in and revoked are four different facts, and none is inferred from silence.',
     ]),
   });
 }
@@ -578,7 +668,7 @@ export function eventView(state) {
   const contentAnswer = {
     not_captured: 'Content was never read at this mode. Labels, digest, size and the policy action are all there is — and there is no index entry either.',
     local_only: 'Content was taken and remains on the device. It is not retrievable in v1: grants are device-initiated and there is no device-facing pull endpoint.',
-    uploaded: 'Content is stored. Reaching it needs an approved, case-referenced, second-approved retrieval; this screen shows metadata only.',
+    uploaded: 'Content is stored. Open the event in Search to read the prompt; this screen shows metadata only.',
     shredded: 'The content existed and has been destroyed. The reason and the receipt are the answer.',
   }[contentState] ?? 'Unknown content state.';
   return screen('event', 'Event detail', TEMPLATES.q9_event_detail.title, 'ingest.submission', {
@@ -627,14 +717,15 @@ function renderable(value) {
 }
 
 /** A screen for a question that needs a parameter the analyst has not supplied yet. */
-export function needsInputView({ id, title, question, hint }) {
+export function needsInputView({ id, title, question, hint, search = null }) {
   return Object.freeze({
     id,
     title,
     question,
     source: null,
     sourceLabel: null,
-    subtitle: hint,
+    subtitle: search ? null : hint,
+    search,
     needsInput: true,
     tiles: Object.freeze([]),
     tables: Object.freeze([]),

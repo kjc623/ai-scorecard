@@ -9,31 +9,28 @@
 <body>
 <div class="shell">
   <aside class="side">
-    <div class="brand">
-      <span class="brand-mark" aria-hidden="true"></span>
-      <h1>Shadow AI Capture</h1>
+    <div class="side-inner">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <h1>Shadow AI Capture</h1>
+        <button type="button" id="menu" class="menu" aria-label="Menu"><span></span><span></span></button>
+      </div>
+      <nav id="nav" class="nav" aria-label="Screens"></nav>
+      <div class="side-foot">
+        <div class="seg seg-small" id="source" role="group" aria-label="Data source"></div>
+        <button type="button" id="theme" class="icon-btn" aria-label="Switch between light and dark" title="Light or dark">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/></svg>
+        </button>
+      </div>
     </div>
-    <a class="btn-primary" href="explore.html">Search events</a>
-    <nav id="nav" class="nav" aria-label="Screens"></nav>
-    <p class="side-meta">
-      <span>stub transport</span>
-      <span>closed query DSL</span>
-      <span>query_version 1</span>
-    </p>
   </aside>
 
   <div class="content">
     <main id="app" class="app" aria-live="polite">
       <p class="loading">Loading the dashboard…</p>
     </main>
-
     <footer class="app-foot">
-      <p>
-        The instrument's health first: a number is never shown without its coverage and its age.
-        Every panel is read through one closed query DSL. There is no database connection in this
-        page, no SQL, and no way to ask it a question the API does not admit. Where the API cannot
-        answer, this dashboard says so — see <a href="#unavailable">what we cannot show</a>.
-      </p>
+      <p><a href="#unavailable">Known gaps</a></p>
     </footer>
   </div>
 </div>
@@ -1728,8 +1725,7 @@ function createStubTransport(scenario = 'realistic') {
 // scenarios.js — the switchable stub behind the preview.
 //
 // One transport whose scenario can change at runtime, so the state gallery works without
-// re-creating the dashboard (which would throw away the persistent coverage strip — the thing the
-// gallery exists to show).
+// re-creating the dashboard.
 //
 // In production this file is not used at all: `boot({api})` takes a real api over httpTransport.
 
@@ -2034,7 +2030,7 @@ function measureTile(label, state, measure, formatter = formatCount) {
   }
   if (total.kind === 'floor') {
     return tile(label, { kind: 'floor', text: `≥ ${formatter(total.value)}` },
-      `${total.suppressedCells} cell(s) suppressed: this is a floor, not a total.`);
+      `Floor · ${total.suppressedCells} suppressed`);
   }
   return tile(label, { kind: 'absent', text: '—' }, 'This measure is not carried by any returned cell.');
 }
@@ -2134,87 +2130,98 @@ function screen(id, title, question, source, body) {
 // Posture — the landing screen (§11.1)
 // ---------------------------------------------------------------------------------------------
 
+/** A state that carries nothing, for a panel whose read did not come back. */
+const NOTHING = Object.freeze({ data: Object.freeze([]), banners: Object.freeze([]), meta: Object.freeze({}) });
+
+/** A table with a link to the screen that shows the whole of it. */
+function linked(table, href) {
+  return Object.freeze({ ...table, href });
+}
+
+function reportingTile(cov) {
+  return tile('Devices reporting', cov?.devices_reporting === null || cov?.devices_reporting === undefined
+    ? { kind: 'absent', text: '—' }
+    : { kind: 'number', text: formatCount(cov.devices_reporting) },
+  cov?.devices_enrolled === null || cov?.devices_enrolled === undefined
+    ? 'The enrolled denominator is unavailable: no fleet figure is shown without it.'
+    : `of ${formatCount(cov.devices_enrolled)} enrolled devices`);
+}
+
 /**
- * Posture is the landing page, not "top tools": the health of the instrument comes before any
- * instrument reading, because a ranked list whose denominator is unknown is the most confident
- * looking and least trustworthy screen in the product.
+ * The landing page: a summary of what the other screens hold. Usage, data classes and findings
+ * each come from their own question; one that did not come back leaves its panel empty. The
+ * devices reporting tile keeps the enrolled denominator beside every figure here.
  *
  * @param {object} input
- * @param {object} input.devices   view state for the device list
+ * @param {object} input.devices    view state for the device list (it carries coverage)
+ * @param {object} [input.tools]    view state for tool usage
+ * @param {object} [input.classes]  view state for the data-class mix
+ * @param {object} [input.findings] view state for findings
  * @param {object} [input.coverage] a coverage block, when the device read did not carry one
- * @param {ReadonlyArray<object>} [input.watermarks] one per aggregate the other screens rely on
  */
-function postureView({ devices, coverage, watermarks = [] }) {
+function postureView({ devices, tools = null, classes = null, findings = null, coverage }) {
   const cov = devices?.coverage ?? coverage ?? null;
-  const byLiveness = new Map();
-  for (const row of devices?.data ?? []) {
-    const key = row.liveness ?? 'unknown';
-    byLiveness.set(key, (byLiveness.get(key) ?? 0) + 1);
+  const usage = tools ?? NOTHING;
+  const open = (findings?.data ?? []).filter((row) => row.review_state === 'open').length;
+
+  // The same warning arrives with each read; it is said once.
+  const banners = [];
+  const said = new Set();
+  for (const state of [devices, tools, classes, findings]) {
+    for (const banner of state?.banners ?? []) {
+      const key = `${banner.level}|${banner.title}|${banner.text}`;
+      if (said.has(key)) continue;
+      said.add(key);
+      banners.push(banner);
+    }
   }
-  const notReporting = (devices?.data ?? []).filter((row) => row.liveness && row.liveness !== 'reporting');
-  const dropped = (devices?.data ?? []).reduce((sum, row) => sum + (typeof row.spool_dropped_total === 'number' ? row.spool_dropped_total : 0), 0);
 
-  const gaps = Object.entries(cov?.gap_reasons ?? {}).map(([reason, count]) => Object.freeze({ reason, count }));
-  const coverageTiles = [
-    tile('Devices reporting', cov?.devices_reporting === null || cov?.devices_reporting === undefined
-      ? { kind: 'absent', text: '—' }
-      : { kind: 'number', text: formatCount(cov.devices_reporting) },
-    cov?.devices_enrolled === null || cov?.devices_enrolled === undefined
-      ? 'The enrolled denominator is unavailable: no fleet figure is shown without it.'
-      : `of ${formatCount(cov.devices_enrolled)} enrolled devices`),
-    tile('Coverage state', { kind: 'vocab', text: cov?.state ?? 'unknown' }, null),
-    tile('Gaps', { kind: 'number', text: formatCount(gaps.reduce((a, g) => a + g.count, 0)) }, `${gaps.length} categor${gaps.length === 1 ? 'y' : 'ies'}`),
-  ];
-
-  return screen('posture', 'Posture', null, devices?.meta?.source ?? 'mart.v_device_liveness', {
-    subtitle: 'Coverage, freshness and the gaps the product can see. Every other screen is read through this one.',
-    tiles: Object.freeze(coverageTiles),
+  return screen('posture', 'Overview', null, null, {
+    subtitle: null,
+    tiles: Object.freeze([
+      measureTile('Submissions', usage, 'submissions'),
+      measureTile('People (lower bound)', usage, 'users'),
+      tile('Open findings', findings ? { kind: 'number', text: formatCount(open) } : { kind: 'absent', text: '—' }, findings ? 'In the latest page' : null),
+      reportingTile(cov),
+    ]),
+    series: Object.freeze(tools ? [seriesFrom(tools, { measure: 'submissions', title: 'Submissions over time' })] : []),
     tables: Object.freeze([
-      tableFrom(devices ?? { data: [] }, {
-        title: 'Devices not reporting',
+      linked(tableFrom(usage, {
+        title: 'Tools',
         columns: [
-          column('device', 'Device'),
-          column('device_os', 'OS', 'vocab'),
-          column('managed_state', 'Managed', 'vocab'),
-          column('liveness', 'Liveness', 'vocab'),
-          column('collector_state', 'Collector', 'vocab'),
-          column('last_seen_at', 'Last seen', 'instant'),
-          column('spool_dropped_total', 'Dropped', 'count'),
+          column('tool', 'Tool'),
+          column('sanctioned_state', 'Sanction', 'vocab'),
+          column('submissions', 'Submissions', 'measure'),
+          column('users', 'People', 'measure'),
+          column('blocked', 'Blocked', 'measure'),
         ],
-        emptyText: 'No device is silent in this page.',
-      }),
-      Object.freeze({
-        title: 'Coverage gaps by reason',
-        columns: Object.freeze([column('reason', 'Reason', 'vocab'), column('count', 'Collector-days', 'count')]),
-        rows: Object.freeze(gaps.map((g) => Object.freeze({ row: g, vocab: { gap_reason: g.reason }, suppressed: false }))),
-        emptyText: 'No gaps recorded for this window.',
-        suppressedCells: 0,
-      }),
-      Object.freeze({
-        title: 'Aggregate watermarks',
-        columns: Object.freeze([
-          column('aggregate', 'Aggregate'),
-          column('last_run_at', 'Last run', 'instant'),
-          column('last_complete_bucket', 'Complete to', 'instant'),
-          column('lag_seconds', 'Lag', 'seconds'),
-          column('state', 'State', 'vocab'),
-        ]),
-        rows: Object.freeze(watermarks.map((w) => Object.freeze({ row: w, vocab: { state: w.state }, suppressed: false }))),
-        emptyText: 'No watermark has been read yet.',
-        suppressedCells: 0,
+        emptyText: 'No tool was in use in this window.',
+      }), '#tools'),
+      linked(tableFrom(classes ?? NOTHING, {
+        title: 'Data classes',
+        columns: [
+          column('class', 'Class', 'vocab'),
+          column('severity', 'Severity', 'vocab'),
+          column('tool', 'Tool'),
+          column('submissions', 'Submissions carrying it', 'measure'),
+        ],
+        emptyText: 'No sensitive data was classified in this window.',
+      }), '#tools?view=classes'),
+      tableFrom(findings ?? NOTHING, {
+        title: 'Findings',
+        columns: [
+          column('detected_at', 'Detected', 'instant'),
+          column('severity', 'Severity', 'vocab'),
+          column('rule_title', 'Rule'),
+          column('subject', 'Person'),
+          column('tool', 'Tool'),
+          column('review_state', 'Review', 'vocab'),
+        ],
+        emptyText: 'No finding was raised in this window.',
       }),
     ]),
-    series: Object.freeze([]),
-    extras: Object.freeze({
-      livenessCounts: Object.freeze([...byLiveness.entries()].map(([state, count]) => Object.freeze({ state, count }))),
-      notReportingCount: notReporting.length,
-      spoolDroppedTotal: dropped,
-      legend: Object.freeze(['reporting', 'stale', 'never_reported', 'revoked']),
-    }),
-    ...shared(devices ?? { data: [], banners: Object.freeze([]), meta: {} }, [
-      'An absence of events is ambiguous; a health signal is not. A silent device is a row produced by the server, not a gap an analyst must notice.',
-      'A revoked device is not a quiet one: revoked, stale, never_reported and reporting are four facts.',
-    ]),
+    banners: Object.freeze(banners),
+    notes: shared(devices ?? NOTHING).notes,
   });
 }
 
@@ -2332,7 +2339,7 @@ function classesView(state) {
   if (classTotal !== null) {
     notes.push(`The non-additive total for the same window is ${formatCount(classTotal)} submissions, from a different source: class rows fan out and must not be summed as submissions.`);
   }
-  return screen('classes', 'Classes', TEMPLATES.q4_class_mix.title, 'mart.agg_class_period', {
+  return screen('classes', 'Data classes', TEMPLATES.q4_class_mix.title, 'mart.agg_class_period', {
     subtitle: 'Sensitive-data classes, with the classifier health that produced them.',
     tiles: Object.freeze([
       measureTile('Class-carrying submissions (fan-out)', state, 'submissions'),
@@ -2438,8 +2445,9 @@ function personView(state, { subject }) {
   if (flush) {
     notes.push(`${formatCount(flush.rows_in_window)} rows for this person in the window, ${formatCount(flush.late_flush_rows)} received more than an hour after they occurred: a spool flush spikes received time, not behaviour.`);
   }
-  return screen('person', 'Person', TEMPLATES.q6_subject_series.title, 'mart.agg_user_period', {
-    subtitle: `A lookup for ${subject}: this person's own baseline, never a peer comparison.`,
+  return screen('person', 'Users', null, 'mart.agg_user_period', {
+    subtitle: null,
+    search: Object.freeze({ value: subject }),
     tiles: Object.freeze([
       measureTile('Submissions', state, 'submissions'),
       measureTile('Tools used', state, 'tools_used'),
@@ -2467,50 +2475,128 @@ function personView(state, { subject }) {
   });
 }
 
-function devicesView(state) {
-  const counts = new Map();
-  for (const row of state.data) {
-    const liveness = row.liveness ?? 'unknown';
-    const key = `${liveness}/${row.collector_state ?? 'no-collector'}`;
-    counts.set(key, (counts.get(key) ?? 0) + 1);
-  }
-  const dropped = state.data.reduce((sum, row) => sum + (typeof row.spool_dropped_total === 'number' ? row.spool_dropped_total : 0), 0);
-  return screen('devices', 'Devices', TEMPLATES.q7_devices.title, 'mart.v_device_liveness', {
-    subtitle: 'Every device, including the ones that are not reporting: silence is a row produced by the server.',
+/** One device's state in the words a customer uses. The key keeps the vocabulary value's colour. */
+function deviceStatus(row) {
+  if (row.liveness === 'revoked') return { key: 'revoked', text: 'Revoked' };
+  if (row.collector_state === 'tampered') return { key: 'tampered', text: 'Tampered' };
+  if (row.liveness === 'never_reported') return { key: 'never_reported', text: 'Never checked in' };
+  if (row.liveness === 'stale') return { key: 'stale', text: row.last_seen_at ? `Quiet since ${formatInstant(row.last_seen_at).slice(0, 10)}` : 'Quiet' };
+  if (row.liveness === 'reporting') return row.collector_state === 'degraded' ? { key: 'degraded', text: 'Degraded' } : { key: 'reporting', text: 'Reporting' };
+  return { key: 'unknown', text: 'Unknown' };
+}
+
+/** How long ago an instant was, in the coarsest unit that is still true. */
+function ago(iso, now) {
+  const ms = now.getTime() - Date.parse(iso);
+  if (!Number.isFinite(ms) || ms < 0) return formatInstant(iso);
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return 'Just now';
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours} h ago`;
+  return `${Math.floor(hours / 24)} days ago`;
+}
+
+const DEVICE_LABELS = Object.freeze({ windows: 'Windows', macos: 'macOS', linux: 'Linux', managed: 'Managed', unmanaged: 'Unmanaged', unknown: 'Unknown' });
+
+/**
+ * Devices, as a customer reads them: how much of the fleet is reporting, which devices need
+ * attention, and one row per device that says its state in plain words and opens its activity.
+ *
+ * @param {object} state view state for the device list
+ * @param {object} [options]
+ * @param {object} [options.filters]    status (attention | reporting), device_os, managed_state
+ * @param {Date}   [options.now]        for "last seen"
+ * @param {string} [options.exploreHref] the search page, which lists one device's events
+ */
+function devicesView(state, { filters = {}, now = new Date(), exploreHref = 'explore.html' } = {}) {
+  const all = state.data.map((row) => {
+    const status = deviceStatus(row);
+    return {
+      ...row,
+      status: status.key,
+      status_text: status.text,
+      last_seen_at_ago: row.last_seen_at ? ago(row.last_seen_at, now) : null,
+      activity: row.device ? `${exploreHref}#events?device=${encodeURIComponent(String(row.device))}` : null,
+    };
+  });
+  const needsAttention = all.filter((row) => row.status !== 'reporting');
+
+  const chosen = {
+    status: filters.status === 'attention' || filters.status === 'reporting' ? filters.status : '',
+    device_os: filters.device_os ?? '',
+    managed_state: filters.managed_state ?? '',
+  };
+  const rows = all.filter((row) => (
+    (chosen.status === '' || (chosen.status === 'reporting') === (row.status === 'reporting'))
+    && (chosen.device_os === '' || (row.device_os ?? 'unknown') === chosen.device_os)
+    && (chosen.managed_state === '' || (row.managed_state ?? 'unknown') === chosen.managed_state)
+  ));
+
+  // Each filter is a row of links, so a filtered list has an address.
+  const href = (change) => {
+    const query = new URLSearchParams(Object.entries({ ...chosen, ...change }).filter(([, value]) => value !== '')).toString();
+    return `#devices${query ? `?${query}` : ''}`;
+  };
+  const filter = (label, key, values) => Object.freeze({
+    label,
+    current: chosen[key],
+    items: Object.freeze([{ id: '', label: 'All', href: href({ [key]: '' }) },
+      ...values.map(([id, text]) => ({ id, label: text, href: href({ [key]: id }) }))]),
+  });
+  const present = (key) => [...new Set([...all.map((row) => row[key] ?? 'unknown'), ...(chosen[key] ? [chosen[key]] : [])])]
+    .sort().map((value) => [value, DEVICE_LABELS[value] ?? value]);
+
+  // The fleet figure is the server's when it sent one. Without it, only the listed devices are counted, and the card says so.
+  const cov = state.coverage ?? null;
+  const fleet = typeof cov?.devices_enrolled === 'number' && typeof cov?.devices_reporting === 'number';
+  const total = fleet ? cov.devices_enrolled : all.length;
+  const reporting = fleet ? cov.devices_reporting : all.length - needsAttention.length;
+
+  return screen('devices', 'Devices', null, 'mart.v_device_liveness', {
+    subtitle: null,
     tiles: Object.freeze([
-      tile('Devices in page', { kind: 'number', text: formatCount(state.data.length) }, null),
-      tile('Not reporting', { kind: 'number', text: formatCount(state.data.filter((r) => r.liveness && r.liveness !== 'reporting').length) }, 'Stale, never reported or revoked — three different facts.'),
-      tile('Spool dropped (page)', { kind: 'number', text: formatCount(dropped) }, 'Events the device dropped because its spool was full: a visible undercount.'),
-      tile('Coverage', { kind: 'vocab', text: state.coverage?.state ?? 'unknown' }, state.coverageText?.text ?? null),
-    ]),
-    tables: Object.freeze([
-      tableFrom(state, {
-        title: 'Devices',
-        columns: [
-          column('device', 'Device'),
-          column('device_os', 'OS', 'vocab'),
-          column('managed_state', 'Managed', 'vocab'),
-          column('liveness', 'Liveness', 'vocab'),
-          column('collector', 'Collector', 'vocab'),
-          column('collector_state', 'State', 'vocab'),
-          column('last_seen_at', 'Last seen', 'instant'),
-          column('spool_depth', 'Spool depth', 'count'),
-          column('spool_dropped_total', 'Dropped', 'count'),
-        ],
-        emptyText: 'No device matched this filter.',
+      Object.freeze({
+        label: fleet ? 'Devices enrolled' : 'Devices listed',
+        value: { kind: 'number', text: formatCount(total) },
+        note: null,
+        split: Object.freeze([
+          Object.freeze({ key: 'reporting', label: 'Reporting', count: reporting }),
+          Object.freeze({ key: 'never_reported', label: 'Not reporting', count: Math.max(0, total - reporting) }),
+        ]),
       }),
       Object.freeze({
-        title: 'Liveness × collector state',
-        columns: Object.freeze([column('pair', 'State pair', 'vocab'), column('count', 'Devices', 'count')]),
-        rows: Object.freeze([...counts.entries()].map(([pair, count]) => Object.freeze({ row: { pair, count }, vocab: {}, suppressed: false }))),
-        emptyText: 'No devices.',
-        suppressedCells: 0,
+        label: 'Need attention',
+        value: { kind: 'number', text: formatCount(needsAttention.length) },
+        note: needsAttention.length > 0 ? 'Show them' : 'Every listed device is reporting',
+        href: needsAttention.length > 0 ? href({ status: 'attention' }) : null,
+      }),
+    ]),
+    filters: Object.freeze([
+      filter('Status', 'status', [['attention', 'Needs attention'], ['reporting', 'Reporting']]),
+      filter('OS', 'device_os', present('device_os')),
+      filter('Management', 'managed_state', present('managed_state')),
+    ]),
+    tables: Object.freeze([
+      Object.freeze({
+        ...tableFrom({ data: rows }, {
+          title: 'Devices',
+          columns: [
+            column('device', 'Device'),
+            column('status', 'Status', 'status'),
+            column('last_seen_at', 'Last seen', 'ago'),
+            column('device_os', 'OS', 'vocab'),
+            column('managed_state', 'Management', 'vocab'),
+            Object.freeze({ key: 'activity', label: '', kind: 'link', linkLabel: 'View activity' }),
+          ],
+          emptyText: 'No device matches these filters.',
+        }),
+        breakdowns: false,
       }),
     ]),
     series: Object.freeze([]),
     ...shared(state, [
-      'Four liveness values stay distinct, and no health is inferred from silence.',
-      'The denominator is the enrolled fleet. No fleet-wide percentage is shown that the product cannot compute.',
+      'Reporting, quiet, never checked in and revoked are four different facts, and none is inferred from silence.',
     ]),
   });
 }
@@ -2557,7 +2643,7 @@ function eventView(state) {
   const contentAnswer = {
     not_captured: 'Content was never read at this mode. Labels, digest, size and the policy action are all there is — and there is no index entry either.',
     local_only: 'Content was taken and remains on the device. It is not retrievable in v1: grants are device-initiated and there is no device-facing pull endpoint.',
-    uploaded: 'Content is stored. Reaching it needs an approved, case-referenced, second-approved retrieval; this screen shows metadata only.',
+    uploaded: 'Content is stored. Open the event in Search to read the prompt; this screen shows metadata only.',
     shredded: 'The content existed and has been destroyed. The reason and the receipt are the answer.',
   }[contentState] ?? 'Unknown content state.';
   return screen('event', 'Event detail', TEMPLATES.q9_event_detail.title, 'ingest.submission', {
@@ -2606,14 +2692,15 @@ function renderable(value) {
 }
 
 /** A screen for a question that needs a parameter the analyst has not supplied yet. */
-function needsInputView({ id, title, question, hint }) {
+function needsInputView({ id, title, question, hint, search = null }) {
   return Object.freeze({
     id,
     title,
     question,
     source: null,
     sourceLabel: null,
-    subtitle: hint,
+    subtitle: search ? null : hint,
+    search,
     needsInput: true,
     tiles: Object.freeze([]),
     tables: Object.freeze([]),
@@ -2815,75 +2902,6 @@ function gapsFor(screenId) {
   return screenId ? GAPS.filter((g) => g.screen === screenId) : GAPS;
 }
 
-/**
- * Degraded collection (§11.4). The signals the API can support are shown; the ones it cannot are
- * listed with the reason, in the same panel, so a gap cannot be read as a healthy zero.
- *
- * @param {object} input
- * @param {object} input.devices view state for the device list (collector states, spool counters)
- */
-function degradedCollectionView({ devices }) {
-  const counts = new Map();
-  for (const row of devices.data) {
-    const key = row.collector_state ?? 'not_reported';
-    counts.set(key, (counts.get(key) ?? 0) + 1);
-  }
-  const spoolDepth = devices.data.reduce((sum, row) => sum + (typeof row.spool_depth === 'number' ? row.spool_depth : 0), 0);
-  const dropped = devices.data.reduce((sum, row) => sum + (typeof row.spool_dropped_total === 'number' ? row.spool_dropped_total : 0), 0);
-
-  const available = [
-    { signal: 'Collector state counts', source: 'mart.v_device_liveness', detail: [...counts.entries()].map(([state, n]) => `${state}: ${n}`).join(', ') || 'no rows' },
-    { signal: 'Spool depth on devices', source: 'mart.v_device_liveness', detail: `${spoolDepth} events held on the devices in this page` },
-    { signal: 'Events already dropped (C22)', source: 'mart.v_device_liveness', detail: `${dropped} dropped because a spool was full — a visible undercount` },
-    { signal: 'Coverage gaps by reason', source: 'ops.coverage_snapshot', detail: devices.coverageText?.text ?? 'no coverage block' },
-  ];
-  const unavailable = GAPS.filter((g) => g.screen === 'degraded');
-
-  return Object.freeze({
-    id: 'degraded',
-    title: 'Degraded collection',
-    question: null,
-    source: 'mart.v_device_liveness',
-    sourceLabel: 'Devices and collector state',
-    subtitle: 'Everything the collection paths report about themselves — and, in the same panel, what this API cannot report.',
-    tiles: Object.freeze([
-      { label: 'Devices in page', value: { kind: 'number', text: String(devices.data.length) }, note: null },
-      { label: 'Spool depth (page)', value: { kind: 'number', text: String(spoolDepth) }, note: 'Events waiting on the devices in this page.' },
-      { label: 'Dropped (page)', value: { kind: 'number', text: String(dropped) }, note: 'Reported, never inferred: silent data loss is the failure this counter prevents.' },
-      { label: 'Coverage', value: { kind: 'vocab', text: devices.coverage?.state ?? 'unknown' }, note: devices.coverageText?.text ?? null },
-    ]),
-    tables: Object.freeze([
-      {
-        title: 'Signals this API supports',
-        columns: Object.freeze([
-          { key: 'signal', label: 'Signal' },
-          { key: 'source', label: 'Source' },
-          { key: 'detail', label: 'Value' },
-        ]),
-        rows: Object.freeze(available.map((row) => Object.freeze({ row, vocab: {}, suppressed: false }))),
-        emptyText: 'No device rows.',
-        suppressedCells: 0,
-      },
-      {
-        title: 'Signals this API does not expose',
-        columns: Object.freeze([
-          { key: 'title', label: 'Missing signal' },
-          { key: 'needs', label: 'What would be needed' },
-          { key: 'consequence', label: 'Consequence' },
-        ]),
-        rows: Object.freeze(unavailable.map((row) => Object.freeze({ row, vocab: {}, suppressed: false }))),
-        emptyText: 'Nothing is missing.',
-        suppressedCells: 0,
-      },
-    ]),
-    series: Object.freeze([]),
-    banners: devices.banners,
-    notes: Object.freeze([
-      'A panel that is absent because the API cannot answer looks identical to a panel that is absent because nothing happened. This screen exists so that the difference is visible.',
-    ]),
-  });
-}
-
 /** The whole catalogue, as a screen. */
 function unavailableView() {
   return Object.freeze({
@@ -2997,18 +3015,29 @@ function renderValue(value) {
   }
 }
 
-function renderCell(row, column) {
+const MEASURE_KINDS = Object.freeze(['measure', 'measure-bytes', 'measure-score', 'count']);
+
+/**
+ * A data bar behind a number: the same value, drawn. It is scaled to the largest publishable
+ * value in its column, so a suppressed cell has no length to read off.
+ */
+function dataBar(raw, max) {
+  if (!(max > 0) || !(Number(raw) > 0)) return '';
+  return `<span class="cell-bar" style="--w:${Math.max(2, Math.round((Number(raw) / max) * 100))}" aria-hidden="true"></span>`;
+}
+
+function renderCell(row, column, max = 0) {
   const { key, kind } = column;
   const raw = row[key];
   if (kind === 'measure' || kind === 'measure-bytes' || kind === 'measure-score') {
     if (row.result_state === 'suppressed') return renderValue({ kind: 'suppressed', k: row.k });
     if (raw === null || raw === undefined) return renderValue({ kind: 'absent' });
-    if (kind === 'measure-bytes') return `<span class="v-number">${escapeHtml(formatBytes(Number(raw)))}</span>`;
+    if (kind === 'measure-bytes') return `${dataBar(raw, max)}<span class="v-number">${escapeHtml(formatBytes(Number(raw)))}</span>`;
     if (kind === 'measure-score') return `<span class="v-number">${escapeHtml(formatScore(Number(raw)))}</span>`;
-    return `<span class="v-number">${escapeHtml(formatCount(Number(raw)))}</span>`;
+    return `${dataBar(raw, max)}<span class="v-number">${escapeHtml(formatCount(Number(raw)))}</span>`;
   }
   if (kind === 'count') {
-    return raw === null || raw === undefined ? renderValue({ kind: 'absent' }) : `<span class="v-number">${escapeHtml(formatCount(Number(raw)))}</span>`;
+    return raw === null || raw === undefined ? renderValue({ kind: 'absent' }) : `${dataBar(raw, max)}<span class="v-number">${escapeHtml(formatCount(Number(raw)))}</span>`;
   }
   if (kind === 'instant') {
     return raw ? `<span class="v-time">${escapeHtml(formatInstant(raw))}</span>` : renderValue({ kind: 'absent' });
@@ -3021,30 +3050,88 @@ function renderCell(row, column) {
   if (kind === 'seconds') {
     return raw === null || raw === undefined ? renderValue({ kind: 'absent' }) : `<span class="v-number">${escapeHtml(formatCount(Number(raw)))} s</span>`;
   }
+  if (kind === 'status') {
+    // A state said in plain words. The vocabulary value it stands for stays in the markup.
+    const value = String(raw ?? 'unknown');
+    return `<span class="v-vocab v-vocab-${escapeHtml(value.replace(/[^a-z_]/gi, ''))}" title="${escapeHtml(value)}">${escapeHtml(row[`${key}_text`] ?? value)}</span>`;
+  }
+  if (kind === 'ago') {
+    return raw
+      ? `<span class="v-text" title="${escapeHtml(formatInstant(raw))}">${escapeHtml(row[`${key}_ago`] ?? formatInstant(raw))}</span>`
+      : '<span class="v-absent">Never</span>';
+  }
+  if (kind === 'link') {
+    return raw ? `<a class="cell-link" href="${escapeHtml(String(raw))}">${escapeHtml(column.linkLabel ?? 'Open')}</a>` : '';
+  }
   if (kind === 'vocab') {
     // A vocabulary value is rendered even when it is a value people forget: `unknown` and
     // `never_reported` are answers, and a blank would be indistinguishable from a missing field.
     return raw === null || raw === undefined ? '<span class="v-vocab v-vocab-unknown">unknown</span>' : renderValue({ kind: 'vocab', text: raw });
   }
   if (raw === null || raw === undefined) return renderValue({ kind: 'absent' });
+  // A person reference opens that person's series: the one screen that takes it.
+  if (key === 'subject') return `<a class="cell-link" href="#person?subject=${encodeURIComponent(String(raw))}">${escapeHtml(String(raw))}</a>`;
   return `<span class="v-text">${escapeHtml(String(raw))}</span>`;
 }
 
+/**
+ * How the rows on screen split across a vocabulary column, drawn as one segmented bar. It counts
+ * the rows this response carried and says so; it is a picture of the table beneath it, not a
+ * figure for the fleet.
+ */
+function renderBreakdowns(table) {
+  if (table.rows.length < 2) return '';
+  const blocks = [];
+  for (const column of table.columns) {
+    if (column.kind !== 'vocab' || blocks.length >= 3) continue;
+    const counts = new Map();
+    for (const { row } of table.rows) {
+      const value = row[column.key] === null || row[column.key] === undefined ? 'unknown' : String(row[column.key]);
+      counts.set(value, (counts.get(value) ?? 0) + 1);
+    }
+    if (counts.size < 2 || counts.size > 6) continue;
+    const parts = [...counts].sort((a, b) => b[1] - a[1]);
+    const cls = (value) => `v-vocab-${escapeHtml(value.replace(/[^a-z_]/gi, ''))}`;
+    blocks.push(
+      `<div class="dist"><span class="dist-label">${escapeHtml(column.label)}</span>`
+      + `<div class="dist-bar" role="img" aria-label="${escapeHtml(parts.map(([v, n]) => `${v}: ${n}`).join(', '))}">`
+      + parts.map(([value, n], i) => `<span class="dist-seg dist-c${i} ${cls(value)}" style="flex-grow:${n}" title="${escapeHtml(value)}: ${n} of ${table.rows.length} rows shown"></span>`).join('')
+      + '</div><ul class="dist-legend">'
+      + parts.map(([value, n], i) => `<li><span class="dist-dot dist-c${i} ${cls(value)}" aria-hidden="true"></span>${escapeHtml(value)}<span class="dist-n">${n}</span></li>`).join('')
+      + '</ul></div>',
+    );
+  }
+  return blocks.length > 0 ? `<div class="dists">${blocks.join('')}</div>` : '';
+}
+
 function renderTable(table) {
-  const head = table.columns.map((c) => `<th scope="col">${escapeHtml(c.label)}</th>`).join('');
+  const numeric = (c) => MEASURE_KINDS.includes(c.kind);
+  const maxima = new Map(table.columns.filter(numeric).map((c) => [
+    c.key,
+    Math.max(0, ...table.rows.map(({ row }) => (row.result_state === 'suppressed' ? 0 : Number(row[c.key]) || 0))),
+  ]));
+  const head = table.columns.map((c) => `<th scope="col"${numeric(c) ? ' class="num"' : ''}>${escapeHtml(c.label)}</th>`).join('');
   const body = table.rows.map(({ row }) => {
-    const cls = row.result_state === 'suppressed' ? ' class="row-suppressed"' : '';
-    const cells = table.columns.map((c) => `<td>${renderCell(row, c)}</td>`).join('');
-    return `<tr${cls}>${cells}</tr>`;
+    const cells = table.columns.map((c) => `<td${numeric(c) ? ' class="num"' : ''}>${renderCell(row, c, maxima.get(c.key))}</td>`).join('');
+    if (row.result_state === 'suppressed') return `<tr class="row-suppressed">${cells}</tr>`;
+    // A row that names a submission opens it: the event screen is reached from a row, not typed.
+    if (typeof row.submission_id === 'string' && row.submission_id !== '') {
+      const hint = row.received_at ? `&received_at_hint=${encodeURIComponent(row.received_at)}` : '';
+      return `<tr class="row-link" tabindex="0" data-href="#event?submission_id=${encodeURIComponent(row.submission_id)}${hint}">${cells}</tr>`;
+    }
+    return `<tr>${cells}</tr>`;
   }).join('');
   const empty = table.rows.length === 0
     ? `<tr class="row-empty"><td colspan="${table.columns.length}">${escapeHtml(table.emptyText ?? 'No rows.')}</td></tr>`
     : '';
   const note = table.suppressedCells > 0
-    ? `<p class="table-note">${escapeHtml(String(table.suppressedCells))} suppressed cell(s) in this table: a hatched cell means there was something and the number is withheld, never that the value is zero.</p>`
+    ? `<p class="table-note"><span class="legend-swatch" aria-hidden="true"></span>${escapeHtml(String(table.suppressedCells))} suppressed<span class="sr"> cell(s) in this table: a hatched cell means there was something and the number is withheld, never that the value is zero.</span></p>`
     : '';
-  return `<section class="table-block"><h3>${escapeHtml(table.title)}</h3>`
-    + `<table><thead><tr>${head}</tr></thead><tbody>${body}${empty}</tbody></table>${note}</section>`;
+  const count = table.rows.length > 0 ? `<span class="block-count">${table.rows.length}</span>` : '';
+  const more = table.href ? `<a class="block-link" href="${escapeHtml(table.href)}">View all</a>` : '';
+  return `<section class="table-block card"><div class="card-core"><header class="block-head"><h3>${escapeHtml(table.title)}</h3>${count}${note}${more}</header>`
+    + (table.breakdowns === false ? '' : renderBreakdowns(table))
+    + `<div class="table-scroll"><table><thead><tr>${head}</tr></thead><tbody>${body}${empty}</tbody></table></div></div></section>`;
 }
 
 /**
@@ -3054,24 +3141,25 @@ function renderTable(table) {
  */
 function renderSeries(series) {
   if (!series) return '';
-  if (series.unavailable) {
-    return `<section class="series-block"><h3>${escapeHtml(series.title)}</h3>`
-      + `<p class="series-unavailable">No chart: ${escapeHtml(series.reason)}</p></section>`;
-  }
-  if (series.points.length === 0) {
-    return `<section class="series-block"><h3>${escapeHtml(series.title)}</h3><p class="series-unavailable">No points.</p></section>`;
-  }
+  const open = (inner) => `<section class="series-block card"><div class="card-core"><header class="block-head"><h3>${escapeHtml(series.title)}</h3></header>${inner}</div></section>`;
+  if (series.unavailable) return open(`<p class="series-unavailable">No chart: ${escapeHtml(series.reason)}</p>`);
+  if (series.points.length === 0) return open('<p class="series-unavailable">No points.</p>');
   const max = Math.max(1, ...series.points.map((p) => (p.value.kind === 'number' || p.value.kind === 'floor' ? p.value.value : 0)));
-  const bars = series.points.map((p) => {
+  const bars = series.points.map((p, i) => {
     const label = formatInstant(p.bucket).slice(0, 10) || 'total';
+    const delay = `--i:${Math.min(i, 24)}`;
     if (p.value.kind === 'floor') {
-      return `<div class="bar bar-floor" title="${escapeHtml(label)}: ≥ ${escapeHtml(formatCount(p.value.value))} (${escapeHtml(String(p.value.suppressedCells))} suppressed)"><span class="bar-fill" style="height:100%"></span><span class="bar-label">${escapeHtml(label.slice(5))}</span></div>`;
+      return `<div class="bar bar-floor" style="${delay}" tabindex="0" data-tip="${escapeHtml(label)} · ≥ ${escapeHtml(formatCount(p.value.value))} (${escapeHtml(String(p.value.suppressedCells))} suppressed)"><span class="bar-fill" style="--h:100"></span><span class="bar-label">${escapeHtml(label.slice(5))}</span></div>`;
     }
     const height = Math.max(1, Math.round((p.value.value / max) * 100));
-    return `<div class="bar" title="${escapeHtml(label)}: ${escapeHtml(formatCount(p.value.value))}"><span class="bar-fill" style="height:${height}%"></span><span class="bar-label">${escapeHtml(label.slice(5))}</span></div>`;
+    return `<div class="bar" style="${delay}" tabindex="0" data-tip="${escapeHtml(label)} · ${escapeHtml(formatCount(p.value.value))}"><span class="bar-fill" style="--h:${height}"></span><span class="bar-label">${escapeHtml(label.slice(5))}</span></div>`;
   }).join('');
-  return `<section class="series-block"><h3>${escapeHtml(series.title)}</h3><div class="bars">${bars}</div>`
-    + `<p class="series-note">Scale tops out at ${escapeHtml(formatCount(max))}. Hatched columns are floors, not zeroes.</p></section>`;
+  const hasFloor = series.points.some((p) => p.value.kind === 'floor');
+  const axis = `<div class="axis" aria-hidden="true"><span>${escapeHtml(formatCount(max))}</span><span>${escapeHtml(formatCount(Math.round(max / 2)))}</span><span>0</span></div>`;
+  return open(
+    `<div class="chart">${axis}<div class="bars${series.points.length <= 3 ? ' bars-few' : ''}">${bars}</div></div>`
+    + (hasFloor ? '<p class="series-note"><span class="legend-swatch" aria-hidden="true"></span>Hatched columns are floors, not zeroes.</p>' : ''),
+  );
 }
 
 function renderBanner(banner) {
@@ -3079,67 +3167,133 @@ function renderBanner(banner) {
     + `<strong>${escapeHtml(banner.title)}</strong><span>${escapeHtml(banner.text)}</span></div>`;
 }
 
-function renderTile(t) {
-  return `<div class="tile"><span class="tile-label">${escapeHtml(t.label)}</span>`
-    + `<span class="tile-value">${renderValue(t.value)}</span>`
-    + (t.note ? `<span class="tile-note">${escapeHtml(t.note)}</span>` : '')
-    + '</div>';
+/** A tile's two-part split: one bar and its two counts, sized by the counts themselves. */
+function renderSplit(split) {
+  if (!Array.isArray(split) || split.length === 0) return '';
+  return '<div class="dist-bar tile-split" aria-hidden="true">'
+    + split.map((part) => `<span class="dist-seg v-vocab-${escapeHtml(part.key)}" style="flex-grow:${Math.max(0, Number(part.count) || 0)}"></span>`).join('')
+    + '</div><ul class="dist-legend">'
+    + split.map((part) => `<li><span class="dist-dot v-vocab-${escapeHtml(part.key)}" aria-hidden="true"></span>${escapeHtml(part.label)}<span class="dist-n">${escapeHtml(formatCount(part.count))}</span></li>`).join('')
+    + '</ul>';
 }
 
-/** The persistent coverage strip (§11.3): on every screen, with the enrolled denominator. */
-function renderStrip({ coverage, freshness }) {
-  const cov = coverageText(coverage);
-  const fresh = freshnessText(freshness);
-  const gaps = (cov.gaps ?? []).map((g) => `<span class="gap gap-${escapeHtml(g.reason)}">${escapeHtml(g.reason)}: ${escapeHtml(formatCount(g.count))}</span>`).join('');
-  return `<div class="strip strip-${escapeHtml(cov.state ?? 'unknown')}" role="status">`
-    + `<span class="strip-item strip-coverage"><strong>Coverage</strong> ${escapeHtml(cov.text)}</span>`
-    + `<span class="strip-item strip-freshness state-${escapeHtml(fresh.state)}"><strong>Freshness</strong> ${escapeHtml(fresh.text)}</span>`
-    + (gaps ? `<span class="strip-gaps">${gaps}</span>` : '')
-    + '</div>';
+function renderTile(t) {
+  const tag = t.href ? 'a' : 'div';
+  return `<${tag} class="tile card${t.href ? ' tile-link' : ''}"${t.href ? ` href="${escapeHtml(t.href)}"` : ''}><div class="card-core"><span class="tile-label">${escapeHtml(t.label)}</span>`
+    + `<span class="tile-value">${renderValue(t.value)}</span>`
+    + renderSplit(t.split)
+    + (t.note ? `<span class="tile-note">${escapeHtml(t.note)}</span>` : '')
+    + `</div></${tag}>`;
 }
 
 function renderNeeds(view) {
-  // The person screen is the one input a reader can type: there is no list of people to pick from.
-  const form = view.id === 'person'
-    ? '<form class="needs-form" data-screen="person"><input name="subject" type="text" aria-label="User reference" placeholder="u_4f21" autocomplete="off" spellcheck="false" required><button type="submit">Show</button></form>'
-    : '';
-  return `<section class="needs"><h2>${escapeHtml(view.title)}</h2><p>${escapeHtml(view.subtitle ?? 'This screen needs an input before it can ask its question.')}</p>${form}</section>`;
+  return `<section class="needs"><h2>${escapeHtml(view.title)}</h2><p>${escapeHtml(view.subtitle ?? 'This screen needs an input before it can ask its question.')}</p></section>`;
 }
 
-/** A whole screen. `shell` carries the strip, which no screen may omit. */
+/**
+ * The Users search bar. It is the one input a reader can type: there is no list of people to pick
+ * from, so a person is reached by reference and shown on the same screen.
+ */
+function renderSearch(search) {
+  if (!search) return '';
+  return '<form class="needs-form search-form" data-screen="person" role="search">'
+    + `<input name="subject" type="search" aria-label="User reference" placeholder="Enter a user reference, such as u_4f21" value="${escapeHtml(search.value ?? '')}" autocomplete="off" spellcheck="false">`
+    + '<button type="submit">Search</button></form>';
+}
+
+/** A screen's filters: one labelled row of links each, above the table they narrow. */
+function renderFilters(filters) {
+  if (!Array.isArray(filters) || filters.length === 0) return '';
+  return `<div class="filter-bar">${filters.map((f) => (
+    `<div class="filter"><span class="filter-label">${escapeHtml(f.label)}</span>${renderPresets(f, f.label)}</div>`
+  )).join('')}</div>`;
+}
+
+/** A segmented control of links: the window presets, or a screen's own switch. The choice is in the address. */
+function renderPresets(presets, label = 'Window') {
+  if (!presets || !Array.isArray(presets.items) || presets.items.length === 0) return '';
+  return `<div class="seg" role="group" aria-label="${escapeHtml(presets.label ?? label)}">${presets.items.map((p) => (
+    `<a class="seg-item" href="${escapeHtml(p.href)}"${p.id === presets.current ? ' aria-current="true"' : ''}>${escapeHtml(p.label)}</a>`
+  )).join('')}</div>`;
+}
+
+/** A whole screen. Degraded coverage and stale data are said by the banners under the title. */
 function renderScreen(view, shell = {}) {
-  if (view.needsInput) return renderNeeds(view);
+  if (view.needsInput && !view.search) return renderNeeds(view);
   const banners = (view.banners ?? []).map(renderBanner).join('');
   const tiles = (view.tiles ?? []).length > 0 ? `<div class="tiles">${view.tiles.map(renderTile).join('')}</div>` : '';
   const tables = (view.tables ?? []).map(renderTable).join('');
+  const filters = renderFilters(view.filters);
   const series = (view.series ?? []).map(renderSeries).join('');
+  // The reading notes are one click away rather than under every table: they matter, and they are
+  // the same on every visit.
   const notes = (view.notes ?? []).length > 0
-    ? `<section class="notes"><h3>How to read this</h3><ul>${view.notes.map((n) => `<li>${escapeHtml(n)}</li>`).join('')}</ul></section>`
+    ? `<details class="notes"><summary>About this data<span class="notes-count">${view.notes.length}</span></summary><ul>${view.notes.map((n) => `<li>${escapeHtml(n)}</li>`).join('')}</ul></details>`
     : '';
-  const header = `<header class="screen-head"><h2>${escapeHtml(view.title)}</h2>`
+  const header = '<header class="screen-head"><div class="screen-title">'
+    + (shell.eyebrow ? `<span class="eyebrow">${escapeHtml(shell.eyebrow)}</span>` : '')
+    + `<h2>${escapeHtml(view.title)}</h2>`
     + (view.question ? `<p class="question">${escapeHtml(view.question)}</p>` : '')
     + (view.subtitle ? `<p class="subtitle">${escapeHtml(view.subtitle)}</p>` : '')
-    + (view.sourceLabel ? `<p class="source">Source: <code>${escapeHtml(view.sourceLabel)}</code></p>` : '')
-    + '</header>';
-  return `${renderStrip(shell)}<article class="screen">${header}${banners}${tiles}${series}${tables}${notes}</article>`;
+    + '</div><div class="screen-tools"><div class="screen-switches">'
+    + renderPresets(shell.switch)
+    + renderPresets(shell.presets)
+    + '</div>'
+    + (view.sourceLabel ? `<p class="source" title="Where this screen reads from">Source <code>${escapeHtml(view.sourceLabel)}</code></p>` : '')
+    + '</div></header>';
+  return `<article class="screen">${header}${renderSearch(view.search)}${banners}${tiles}${series}${filters}${tables}${notes}</article>`;
 }
 
-/** The navigation, as the contents of the page's nav element: items under their group headings. */
-function renderNav(items, current) {
+/** Thin-line icons for the navigation: one stroke weight, no fills. */
+const NAV_ICONS = Object.freeze({
+  overview: '<circle cx="12" cy="12" r="8.5"/><path d="M12 12 16.5 8"/><path d="M12 3.5v2M20.5 12h-2M5.5 12h-2"/>',
+  search: '<circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/>',
+  usage: '<path d="M4 19.5V10M9.5 19.5v-15M15 19.5v-7M20.5 19.5V7"/>',
+  review: '<path d="M5 4.5h14v12H9l-4 3z"/><path d="M9 9h6M9 12.5h4"/>',
+  collection: '<rect x="4" y="5" width="16" height="11" rx="1.5"/><path d="M9 20h6M12 16v4"/>',
+  governance: '<path d="M12 3.5 5 6.5v5c0 4.3 2.9 7.4 7 9 4.1-1.6 7-4.7 7-9v-5z"/><path d="m9.2 12 2 2 3.6-4"/>',
+  unavailable: '<circle cx="12" cy="12" r="8.5"/><path d="M6 18 18 6"/>',
+  developer: '<path d="m8.5 8-4 4 4 4M15.5 8l4 4-4 4M13.5 5.5l-3 13"/>',
+});
+
+function navIcon(name) {
+  const body = NAV_ICONS[name];
+  return body ? `<svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>` : '';
+}
+
+/**
+ * The navigation, as the contents of the page's nav element. An item with no group is a top-level
+ * link; the rest sit under their group, which folds. A group holding the current screen is open,
+ * so the reader is never somewhere the navigation does not show.
+ */
+function renderNav(items, current, options = {}) {
+  const collapsed = new Set(options.collapsed ?? []);
+  const link = (item, nested) => {
+    const active = item.id === current ? ' class="active" aria-current="page"' : '';
+    const title = item.question ? ` title="Question ${escapeHtml(String(item.question))}"` : '';
+    return `<a href="${escapeHtml(item.href ?? `#${item.id}`)}"${active}${title}>${nested ? '' : navIcon(item.icon)}<span>${escapeHtml(item.label)}</span></a>`;
+  };
+  const out = [];
   const groups = new Map();
   for (const item of items) {
-    const key = item.group ?? '';
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(item);
+    if (!item.group) {
+      out.push({ html: link(item, false) });
+      continue;
+    }
+    if (!groups.has(item.group)) {
+      const entry = { group: item.group, icon: item.groupIcon, members: [] };
+      groups.set(item.group, entry);
+      out.push(entry);
+    }
+    groups.get(item.group).members.push(item);
   }
-  return [...groups].map(([group, members]) => {
-    const head = group ? `<p class="nav-head">${escapeHtml(group)}</p>` : '';
-    const links = members.map((item) => {
-      const active = item.id === current ? ' class="active" aria-current="page"' : '';
-      const q = item.question ? `<span class="nav-q">Q${escapeHtml(String(item.question))}</span>` : '';
-      return `<a href="#${escapeHtml(item.id)}"${active}><span>${escapeHtml(item.label)}</span>${q}</a>`;
-    }).join('');
-    return `<div class="nav-group">${head}${links}</div>`;
+  return out.map((entry) => {
+    if (entry.html) return entry.html;
+    const holdsCurrent = entry.members.some((m) => m.id === current);
+    const open = holdsCurrent || !collapsed.has(entry.group);
+    return `<details class="nav-group" data-group="${escapeHtml(entry.group)}"${open ? ' open' : ''}>`
+      + `<summary>${navIcon(entry.icon)}<span>${escapeHtml(entry.group)}</span><svg class="nav-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></summary>`
+      + `<div class="nav-items">${entry.members.map((m) => link(m, true)).join('')}</div></details>`;
   }).join('');
 }
 
@@ -3158,6 +3312,137 @@ function renderGapReasons(coverage) {
     const count = present[reason];
     return `<li class="${count === undefined ? 'gap-none' : 'gap-some'}">${escapeHtml(reason)}: ${count === undefined ? 'none recorded' : escapeHtml(formatCount(count))}</li>`;
   }).join('')}</ul>`;
+}
+
+// ─── src/shell.js ──────────────────────────────────────────────────────
+// shell.js — what every page of the dashboard shares around its content: the navigation's
+// shape, the reader's stored preferences, and the controls in the navigation panel.
+//
+// The dashboard (app.js) and the Explore page (explore-app.js) both boot through this, so the
+// sidebar is one thing: the same groups, the same folding, the same theme and data-source switch.
+
+/**
+ * The navigation: five destinations, with the three usage screens under one group. Every other
+ * screen is reached from a row, a switch on one of these, or the footer.
+ */
+const NAV_GROUPS = Object.freeze([
+  { group: null, icon: 'overview', ids: ['posture'], labels: { posture: 'Overview' } },
+  { group: 'Usage', icon: 'usage', ids: ['tools', 'teams', 'person'], labels: { tools: 'Tools & data classes', teams: 'Teams', person: 'Users' } },
+  { group: null, icon: 'collection', ids: ['devices'], labels: { devices: 'Devices' } },
+  { group: null, icon: 'governance', ids: ['audit'], labels: { audit: 'Audit trail' } },
+]);
+
+const NAV_FOLDED = Object.freeze(NAV_GROUPS.filter((g) => g.folded).map((g) => g.group));
+
+/**
+ * The navigation as renderNav takes it. `page` prefixes each screen link, so a sibling page links
+ * back into the dashboard; the Explore page sits second, as a top-level link, on both.
+ */
+function shellNavItems({ page = '', query = '', questionOf = () => null } = {}) {
+  const items = NAV_GROUPS.flatMap(({ group, icon, ids, labels }) => ids.map((id) => ({
+    id, label: labels[id], question: questionOf(id), group, icon, groupIcon: icon, href: `${page}#${id}`,
+  })));
+  return [
+    items[0],
+    { id: 'explore', label: 'Search', href: `explore.html${query}`, icon: 'search', group: null },
+    ...items.slice(1),
+  ];
+}
+
+/** The group a screen sits under, for the eyebrow above its title. */
+function groupOf(screenId) {
+  return NAV_GROUPS.find((g) => g.ids.includes(screenId))?.group ?? null;
+}
+
+/** Local preferences. Storage can be unavailable (a private window, a file:// page): then nothing is kept. */
+function readPref(document, key, fallback) {
+  try {
+    return document.defaultView?.localStorage?.getItem(key) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writePref(document, key, value) {
+  try {
+    document.defaultView?.localStorage?.setItem(key, value);
+  } catch {
+    // Not kept. The page still works.
+  }
+}
+
+/**
+ * The shell's own controls: which navigation groups are folded, the theme, the data-source switch,
+ * the mobile menu, and a row that opens the record it names. Every lookup is optional, so a test
+ * document with none of these elements boots the same way.
+ */
+function wireShell({ document, live, collapsed }) {
+  const el = (id) => (typeof document.getElementById === 'function' ? document.getElementById(id) : null);
+  const html = document.documentElement;
+
+  // Theme: follow the system unless the reader chose. The choice is the only thing stored.
+  const theme = readPref(document, 'sac.theme', '');
+  if (html?.dataset && (theme === 'light' || theme === 'dark')) html.dataset.theme = theme;
+
+  const source = el('source');
+  if (source) {
+    source.innerHTML = `<a class="seg-item" href="${live ? '.' : '#'}"${live ? '' : ' aria-current="true"'} data-source="sample">Sample</a>`
+      + `<a class="seg-item" href="${live ? '#' : '?transport=live'}"${live ? ' aria-current="true"' : ''} data-source="live">Live</a>`;
+  }
+
+  if (typeof document.addEventListener !== 'function') return;
+
+  // A folded group stays folded across screens and visits.
+  document.addEventListener('toggle', (event) => {
+    const group = event.target?.dataset?.group;
+    if (!group) return;
+    if (event.target.open) collapsed.delete(group);
+    else collapsed.add(group);
+    writePref(document, 'sac.nav.collapsed', [...collapsed].join('|'));
+  }, true);
+
+  document.addEventListener('click', (event) => {
+    const target = event.target;
+    if (typeof target?.closest !== 'function') return;
+    if (target.closest('#theme')) {
+      const dark = html.dataset.theme
+        ? html.dataset.theme === 'dark'
+        : document.defaultView?.matchMedia?.('(prefers-color-scheme: dark)').matches;
+      html.dataset.theme = dark ? 'light' : 'dark';
+      writePref(document, 'sac.theme', html.dataset.theme);
+      return;
+    }
+    if (target.closest('#menu')) {
+      document.body.classList.toggle('menu-open');
+      return;
+    }
+    // Choosing a destination closes the mobile menu.
+    if (target.closest('.nav a')) document.body.classList.remove('menu-open');
+    const sourceLink = target.closest('[data-source]');
+    if (sourceLink && sourceLink.getAttribute('aria-current') !== 'true') {
+      // Switching data source reloads the page on the same screen.
+      event.preventDefault();
+      const base = document.location.pathname;
+      document.location.assign(`${base}${sourceLink.dataset.source === 'live' ? '?transport=live' : ''}${document.location.hash}`);
+      return;
+    }
+    const row = target.closest('tr[data-href]');
+    if (row && !target.closest('a, button')) document.location.hash = row.dataset.href;
+  });
+
+  document.addEventListener('keydown', (event) => {
+    const row = event.target?.closest?.('tr[data-href]');
+    if (row && (event.key === 'Enter' || event.key === ' ')) {
+      event.preventDefault();
+      document.location.hash = row.dataset.href;
+    }
+    if (event.key === 'Escape') document.body?.classList?.remove('menu-open');
+  });
+}
+
+/** The navigation groups the reader has folded; the rarely needed ones start folded. */
+function readCollapsed(document) {
+  return new Set(String(readPref(document, 'sac.nav.collapsed', NAV_FOLDED.join('|'))).split('|').filter(Boolean));
 }
 
 // ─── src/app.js ────────────────────────────────────────────────────────
@@ -3179,26 +3464,46 @@ function renderGapReasons(coverage) {
 
 
 
-/** The information architecture of docs/04 §11.2, in the order a reader moves through it. */
+
+/**
+ * The screens. Five are in the navigation; the event detail, the catalogue of gaps and the state
+ * gallery are reached by a link or an address. What used to be separate screens for unsanctioned
+ * use, data classes and degraded collection are now a switch on Usage and on Devices.
+ */
 const SCREENS = Object.freeze([
-  Object.freeze({ id: 'posture', label: 'Posture', question: null, kind: 'posture' }),
+  Object.freeze({ id: 'posture', label: 'Overview', question: null, kind: 'posture' }),
   Object.freeze({ id: 'tools', label: 'Tools', question: 1, kind: 'answer', questionId: 'q1_tools_ranked' }),
-  Object.freeze({ id: 'unsanctioned', label: 'Unsanctioned', question: 2, kind: 'answer', questionId: 'q2_unsanctioned_users' }),
-  Object.freeze({ id: 'classes', label: 'Classes', question: 4, kind: 'answer', questionId: 'q4_class_mix' }),
   Object.freeze({ id: 'teams', label: 'Teams', question: 3, kind: 'answer', questionId: 'q3_team_growth' }),
-  Object.freeze({ id: 'person', label: 'Person', question: 6, kind: 'input', questionId: 'q6_subject_series' }),
-  Object.freeze({ id: 'findings', label: 'Findings', question: 5, kind: 'answer', questionId: 'q5_findings' }),
-  Object.freeze({ id: 'activity', label: 'Activity', question: 8, kind: 'answer', questionId: 'q8_activity' }),
-  Object.freeze({ id: 'event', label: 'Event detail', question: 9, kind: 'input', questionId: 'q9_event_detail' }),
-  Object.freeze({ id: 'search', label: 'Content search', question: null, kind: 'no-api' }),
+  Object.freeze({ id: 'person', label: 'Users', question: 6, kind: 'input', questionId: 'q6_subject_series' }),
   Object.freeze({ id: 'devices', label: 'Devices', question: 7, kind: 'answer', questionId: 'q7_devices' }),
-  Object.freeze({ id: 'degraded', label: 'Degraded collection', question: null, kind: 'degraded' }),
   Object.freeze({ id: 'audit', label: 'Audit', question: 10, kind: 'answer', questionId: 'q10_audit_trail' }),
-  Object.freeze({ id: 'exports', label: 'Exports', question: null, kind: 'no-api' }),
-  Object.freeze({ id: 'settings', label: 'Settings', question: null, kind: 'no-api' }),
+  Object.freeze({ id: 'event', label: 'Event detail', question: 9, kind: 'input', questionId: 'q9_event_detail' }),
   Object.freeze({ id: 'unavailable', label: 'What we cannot show', question: null, kind: 'catalogue' }),
   Object.freeze({ id: 'gallery', label: 'State gallery', question: null, kind: 'gallery' }),
 ]);
+
+/** What the Usage screen can show: each is its own question, switched in place. */
+const USAGE_MODES = Object.freeze({
+  tools: Object.freeze({ label: 'Tools', questionId: 'q1_tools_ranked', view: toolsView }),
+  classes: Object.freeze({ label: 'Data classes', questionId: 'q4_class_mix', view: classesView }),
+  unsanctioned: Object.freeze({ label: 'Unsanctioned', questionId: 'q2_unsanctioned_users', view: unsanctionedView }),
+});
+
+function usageMode(filters) {
+  return USAGE_MODES[filters?.view] ? filters.view : 'tools';
+}
+
+/** Addresses of screens that were merged into another, so an old link still lands somewhere true. */
+const SCREEN_ALIASES = Object.freeze({
+  unsanctioned: Object.freeze({ id: 'tools', filters: Object.freeze({ view: 'unsanctioned' }) }),
+  classes: Object.freeze({ id: 'tools', filters: Object.freeze({ view: 'classes' }) }),
+  degraded: Object.freeze({ id: 'devices', filters: Object.freeze({ status: 'attention' }) }),
+});
+
+function resolveScreen(id, filters = {}) {
+  const alias = SCREEN_ALIASES[id];
+  return alias ? { id: alias.id, filters: { ...filters, ...alias.filters } } : { id, filters };
+}
 
 const SCREEN_IDS = Object.freeze(SCREENS.map((s) => s.id));
 
@@ -3219,8 +3524,8 @@ function refusalFrom(error, { title = 'Read refused' } = {}) {
  * @param {ReturnType<typeof createQueryApi>} input.api
  * @param {Date} [input.now]
  */
-function createDashboard({ api, now = () => new Date() }) {
-  /** The strip is persistent, so the last coverage and freshness blocks seen are kept. */
+function createDashboard({ api, now = () => new Date(), exploreHref = 'explore.html' }) {
+  /** The last coverage and freshness blocks seen are kept, for a screen that reads nothing itself. */
   const observed = { coverage: null, freshness: null, watermarks: new Map() };
 
   function remember(state) {
@@ -3249,18 +3554,36 @@ function createDashboard({ api, now = () => new Date() }) {
    * Load one screen. Returns `{view, shell}`; never throws for an API-level problem, because a
    * refusal is a state to render rather than a crash.
    */
-  async function load(screenId, params = {}) {
-    const screen = SCREENS.find((s) => s.id === screenId) ?? SCREENS[0];
+  async function load(screenId, given = {}) {
+    const resolved = resolveScreen(screenId, given.filters ?? {});
+    const params = { ...given, filters: resolved.filters };
+    const screen = SCREENS.find((s) => s.id === resolved.id) ?? SCREENS[0];
     const ctx = context({ preset: params.preset ?? 'd7', filters: params.filters ?? {}, now: now() });
     try {
       switch (screen.kind) {
         case 'posture': {
           const devices = await ask('q7_devices', context({ preset: ctx.preset, limit: 500, filters: params.filters ?? {}, now: now() }));
-          return { view: postureView({ devices, watermarks: [...observed.watermarks.values()] }), shell: shell() };
+          // The summary reads three more questions. One that fails leaves its panel empty rather
+          // than taking the page down.
+          const part = async (questionId) => {
+            try {
+              return await ask(questionId, ctx);
+            } catch {
+              return null;
+            }
+          };
+          const tools = await part('q1_tools_ranked');
+          const classes = await part('q4_class_mix');
+          const findings = await part('q5_findings');
+          return { view: postureView({ devices, tools, classes, findings }), shell: shell() };
         }
         case 'answer': {
           if (screen.questionId === 'q6_subject_series' || screen.questionId === 'q9_event_detail') {
             return { view: needsInputView({ id: screen.id, title: screen.label, question: null, hint: 'This screen needs an identifier from another screen.' }), shell: shell() };
+          }
+          if (screen.id === 'tools') {
+            const mode = USAGE_MODES[usageMode(params.filters)];
+            return { view: mode.view(await ask(mode.questionId, ctx)), shell: shell() };
           }
           const state = await ask(screen.questionId, ctx);
           return { view: viewFor(screen.id, state, params), shell: shell() };
@@ -3268,32 +3591,17 @@ function createDashboard({ api, now = () => new Date() }) {
         case 'input': {
           if (screen.id === 'person') {
             const subject = params.filters?.subject;
-            if (!subject) return { view: needsInputView({ id: 'person', title: 'Person', question: null, hint: 'Enter a user reference. There is no screen that lists people.' }), shell: shell() };
+            if (!subject) return { view: needsInputView({ id: 'person', title: 'Users', question: null, hint: null, search: Object.freeze({ value: '' }) }), shell: shell() };
             const state = await ask('q6_subject_series', context({ preset: ctx.preset, filters: { subject }, now: now() }));
             return { view: personView(state, { subject }), shell: shell() };
           }
           const submissionId = params.filters?.submission_id;
-          if (!submissionId) return { view: needsInputView({ id: 'event', title: 'Event detail', question: null, hint: 'Reached from a finding or an activity row.' }), shell: shell() };
+          if (!submissionId) return { view: needsInputView({ id: 'event', title: 'Event detail', question: null, hint: 'Reached from a row that names a submission.' }), shell: shell() };
           const state = await ask('q9_event_detail', context({ filters: { submission_id: submissionId, received_at_hint: params.filters?.received_at_hint }, now: now() }));
           return { view: eventView(state), shell: shell() };
         }
-        case 'degraded': {
-          const devices = await ask('q7_devices', context({ preset: ctx.preset, limit: 500, filters: params.filters ?? {}, now: now() }));
-          return { view: degradedCollectionView({ devices }), shell: shell() };
-        }
         case 'catalogue':
           return { view: unavailableView(), shell: shell() };
-        case 'no-api':
-          return {
-            view: noApiView({
-              id: screen.id,
-              title: screen.label,
-              subtitle: screen.id === 'search'
-                ? 'Text search runs in content-vault against an index this component cannot read, through an endpoint this API does not expose.'
-                : 'This screen has no endpoint behind it in the query API.',
-            }),
-            shell: shell(),
-          };
         case 'gallery':
         default:
           return { view: null, shell: shell(), gallery: true };
@@ -3305,17 +3613,11 @@ function createDashboard({ api, now = () => new Date() }) {
 
   function viewFor(screenId, state, params) {
     switch (screenId) {
-      case 'tools': return toolsView(state);
-      case 'unsanctioned': return unsanctionedView(state);
-      case 'classes': return classesView(state);
       case 'teams': return teamsView(state);
-      case 'findings': return findingsView(state);
-      case 'activity': return activityView(state);
-      case 'devices': return devicesView(state);
+      case 'devices': return devicesView(state, { filters: params.filters ?? {}, now: now(), exploreHref });
       case 'audit': return state.resultState === 'audit_chain_broken' ? refusalView(state, { title: 'Audit' }) : auditView(state);
       default: return refusalView(state, { title: screenId });
     }
-    void params;
   }
 
   return Object.freeze({ load, observed, screenIds: SCREEN_IDS });
@@ -3333,20 +3635,40 @@ function parseHash(hash) {
   return { id, scenario: id === 'gallery' ? parts[1] : undefined, preset: filters.preset, filters };
 }
 
-/** How the navigation groups the screens. Every screen is in exactly one group. */
-const NAV_GROUPS = Object.freeze([
-  ['Overview', ['posture']],
-  ['Usage', ['tools', 'unsanctioned', 'classes', 'teams', 'person']],
-  ['Review', ['findings', 'activity', 'event']],
-  ['Collection', ['devices', 'degraded', 'audit']],
-  ['Not served', ['search', 'exports', 'settings', 'unavailable']],
-  ['Development', ['gallery']],
-]);
+/** The navigation of shell.js, with each screen's question number for its tooltip. */
+const NAV_ITEMS = shellNavItems({ questionOf: (id) => SCREENS.find((s) => s.id === id)?.question ?? null });
 
-const NAV_ITEMS = NAV_GROUPS.flatMap(([group, ids]) => ids.map((id) => {
-  const s = SCREENS.find((screen) => screen.id === id);
-  return { id: s.id, label: s.label, question: s.question, group };
-}));
+/** Screens whose question takes a time window, and the windows offered. */
+const WINDOWED_KINDS = Object.freeze(['answer', 'input']);
+const UNWINDOWED_SCREENS = Object.freeze(['devices', 'event']);
+const PRESET_LABELS = Object.freeze({ h24: '24h', d7: '7d', d30: '30d', d90: '90d' });
+
+/** The window switcher for a screen: each preset is a link that keeps the other parameters. */
+function presetsFor(screen, preset, filters) {
+  if (!WINDOWED_KINDS.includes(screen.kind) || UNWINDOWED_SCREENS.includes(screen.id)) return null;
+  const current = PRESET_LABELS[preset] ? preset : 'd7';
+  const items = Object.entries(PRESET_LABELS).map(([id, label]) => {
+    const params = new URLSearchParams({ ...filters, preset: id });
+    return { id, label, href: `#${screen.id}?${params.toString()}` };
+  });
+  return { current, items };
+}
+
+/** The switch a screen carries beside its window: what Usage shows. */
+function switchFor(screen, preset, filters) {
+  const link = (extra) => {
+    const query = new URLSearchParams({ ...(PRESET_LABELS[preset] ? { preset } : {}), ...extra }).toString();
+    return `#${screen.id}${query ? `?${query}` : ''}`;
+  };
+  if (screen.id === 'tools') {
+    return {
+      label: 'Show',
+      current: usageMode(filters),
+      items: Object.entries(USAGE_MODES).map(([id, mode]) => ({ id, label: mode.label, href: link(id === 'tools' ? {} : { view: id }) })),
+    };
+  }
+  return null;
+}
 
 /**
  * Boot the dashboard into a document. The only function in this package that touches the DOM.
@@ -3359,25 +3681,53 @@ const NAV_ITEMS = NAV_GROUPS.flatMap(([group, ids]) => ids.map((id) => {
 async function boot({ document, scenario = 'realistic', api } = {}) {
   const root = document.getElementById('app');
   const nav = document.getElementById('nav');
-  // One dashboard for the whole session, so the coverage strip persists across navigation: the
-  // strip is a property of the shell, not of a screen.
-  const stubs = api ? null : scenarioTransport(scenario);
-  const active = api ?? createQueryApi({ transport: stubs });
-  const dashboard = createDashboard({ api: active });
+  // `?transport=live` reads the real query API through the endpoint on the page's own origin,
+  // exactly as the Explore page does. Without it the page runs on canned envelopes and says so.
+  const live = !api && new URLSearchParams(document.location.search ?? '').get('transport') === 'live';
+  // One dashboard for the whole session, so the last coverage read carries across navigation.
+  const stubs = api || live ? null : scenarioTransport(scenario);
+  const active = api ?? createQueryApi({ transport: live ? httpTransport() : stubs });
+  const query = live ? '?transport=live' : '';
+  const dashboard = createDashboard({ api: active, exploreHref: `explore.html${query}` });
+  // The Explore page is a sibling page, not a screen: it is linked from the top of the navigation
+  // and carries the same data source.
+  const navItems = NAV_ITEMS.map((item) => (item.id === 'explore' ? { ...item, href: `explore.html${query}` } : item));
+  const collapsed = readCollapsed(document);
+
+  let paintedNav = null;
+  let paintedScreen = null;
 
   async function render() {
-    const { id, scenario: routeScenario, preset, filters } = parseHash(document.location.hash);
+    const { id: routeId, scenario: routeScenario, preset, filters: routeFilters } = parseHash(document.location.hash);
+    const { id, filters } = resolveScreen(routeId, routeFilters);
     if (routeScenario && stubs && typeof stubs.setScenario === 'function') stubs.setScenario(routeScenario);
     const screen = SCREENS.find((s) => s.id === id) ?? SCREENS[0];
-    nav.innerHTML = renderNav(NAV_ITEMS, screen.id);
+    // The navigation is repainted only when it changes, so its groups do not re-open on every click.
+    const navHtml = renderNav(navItems, screen.id, { collapsed: [...collapsed] });
+    if (navHtml !== paintedNav) {
+      paintedNav = navHtml;
+      nav.innerHTML = navHtml;
+    }
+    // A change within a screen (a filter, a window, a search) updates it in place: no entrance
+    // is replayed, and the search box keeps the focus it had.
+    const sameScreen = screen.id === paintedScreen;
+    // Moving to another screen swaps the content with a short fade; only the first load arrives in full.
+    root.classList?.toggle('switched', !sameScreen && paintedScreen !== null);
+    paintedScreen = screen.id;
+    root.classList?.toggle('same-screen', sameScreen);
+    const typing = sameScreen && document.activeElement?.name === 'subject';
     const { view, shell, gallery } = await dashboard.load(screen.id, { preset, filters });
     if (gallery) {
       root.innerHTML = renderGallery(SCENARIO_NAMES.map((name) => ({ id: name, label: SCENARIOS[name].label })), stubs ? stubs.scenario() : 'live')
         + `<p class="gallery-hint">Scenario in force: <strong>${stubs ? stubs.label() : 'live API'}</strong>. Pick another, then visit any screen.</p>`;
       return;
     }
-    root.innerHTML = renderScreen(view, shell);
+    const { preset: _preset, ...others } = filters;
+    root.innerHTML = renderScreen(view, { ...shell, eyebrow: groupOf(screen.id), switch: switchFor(screen, preset, others), presets: presetsFor(screen, preset, others) });
+    if (typing) root.querySelector?.('input[name="subject"]')?.focus();
   }
+
+  wireShell({ document, live, collapsed });
 
   // The handler returns the render promise. A browser ignores a listener's return value, so this
   // costs nothing there; it means a test can await a navigation and read the finished page rather
@@ -3390,7 +3740,7 @@ async function boot({ document, scenario = 'realistic', api } = {}) {
     if (form?.dataset?.screen !== 'person') return;
     event.preventDefault();
     const subject = form.elements.subject.value.trim();
-    if (subject) document.location.hash = `#person?subject=${encodeURIComponent(subject)}`;
+    document.location.hash = subject ? `#person?subject=${encodeURIComponent(subject)}` : '#person';
   });
   await render();
 

@@ -48,7 +48,7 @@ test('the inline module loads and renders every screen against the stub', async 
   const doc = fakeDocument('#posture');
   const { render } = await mod.boot({ document: doc, scenario: 'realistic' });
   await render();
-  assert.match(doc.html('app'), /Posture/);
+  assert.match(doc.html('app'), /Overview/);
   assert.match(doc.html('app'), /Devices reporting/);
   assert.match(doc.html('nav'), /Tools/);
   for (const screen of SCREENS) {
@@ -92,22 +92,22 @@ test('the inline module renders a refusal as a screen rather than a blank', asyn
   assert.match(html, /coarsen the bucket to week/);
 });
 
-test('the persistent strip survives navigation: coverage is a property of the shell', async () => {
+test('coverage is stated on each screen across navigation', async () => {
   const mod = await importInlineModule();
   const doc = fakeDocument('#devices');
   const { render } = await mod.boot({ document: doc, scenario: 'realistic' });
   await render();
   assert.match(doc.html('app'), /of 4,620 enrolled devices reporting/);
   await doc.navigate('#tools');
-  assert.match(doc.html('app'), /enrolled devices reporting/, 'the strip is still there on the next screen');
+  assert.match(doc.html('app'), /enrolled devices reporting/, 'coverage is still stated on the next screen');
 });
 
-test('an unknown hash falls back to Posture rather than to a blank page', async () => {
+test('an unknown hash falls back to the Overview rather than to a blank page', async () => {
   const mod = await importInlineModule();
   const doc = fakeDocument('#not-a-screen');
   const { render } = await mod.boot({ document: doc, scenario: 'realistic' });
   await render();
-  assert.match(doc.html('app'), /Posture/);
+  assert.match(doc.html('app'), /Overview/);
 });
 
 test('a person route with no subject asks for one instead of listing people', async () => {

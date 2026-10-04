@@ -403,7 +403,7 @@ export function createExploreStub({ now = () => new Date(), scenario = 'realisti
       const lower = typed.toLowerCase();
       if (!words.every((word) => lower.includes(word))) continue;
       const snippet = typed.replace(new RegExp(`\\b(${words.join('|')})\\b`, 'gi'), '<em>$1</em>');
-      hits.push(Object.freeze({ submission_id: event.submission_id, snippet, rank: 1 }));
+      hits.push(Object.freeze({ submission_id: event.submission_id, snippet, rank: 1, subject: event.subject ?? null, device: event.device ?? null, tool: event.tool ?? null }));
     }
     const limit = typeof body?.limit === 'number' ? body.limit : 20;
     return Object.freeze({ state: 'available', hits: Object.freeze(hits.slice(0, limit)), truncated: hits.length > limit });
@@ -413,8 +413,6 @@ export function createExploreStub({ now = () => new Date(), scenario = 'realisti
     await pause();
     if (current === 'busy') return contentRefusal('busy', 'The service is at its concurrency limit; retry shortly.');
     if (current === 'audit_unavailable') return contentRefusal('audit_unavailable', 'The audit row could not be committed, so no content is served.');
-    if (!String(body?.case_reference ?? '').trim()) return contentRefusal('case_reference_required', 'A full-content retrieval needs a case reference.');
-    if (!String(body?.second_approver ?? '').trim()) return contentRefusal('second_approver_required', 'A full-content retrieval needs a second approver.');
     const ids = Array.isArray(body?.event_ids) ? body.event_ids : [];
     const event = sample.events.find((row) => sampleObservations(row).some((o) => ids.includes(o.observation_event_id)));
     if (!event || (event.content_state !== 'uploaded' && event.content_state !== 'shredded')) {

@@ -160,7 +160,6 @@ empty or inert, for the reason given. None is faked in live mode.
 | On the page | What live mode shows | What is missing |
 |---|---|---|
 | **Findings** tab, its filters, and the finding block in the detail panel | "Not yet covered", zero rows | Findings are derived into `mart.finding` by the aggregator, which is not built. |
-| **Coverage and freshness strip** | "Coverage not yet measured (no snapshot)" and an unknown age | Coverage snapshots and aggregate watermarks are also the aggregator's. |
 | **Devices**: collector, collector state, last seen, dropped; the liveness and collector-state filters | Every device is `never_reported` with no collector | Collector health is reported to a control-plane endpoint that is not built. A device that has only sent events has no health row. |
 | **Devices**: managed state and region | `unknown` and "not recorded" on devices enrolled by the simulator | Enrolment through the lab does not set them. |
 | **Department** filter and the department line in the detail panel | The filter matches nothing | Department comes from the directory sync into `ops.user_dim`. Nothing populates it. |
@@ -196,8 +195,29 @@ against the live API.
 | `src/views.js` | View models for Posture, the ten questions, and the refusal screen. |
 | `src/unavailable.js` | Everything this API cannot express, rendered as rows with the reason and the missing source. |
 | `src/render.js` | View models to HTML. Pure; every API string is escaped. |
+| `src/shell.js` | What every page shares around its content: how the navigation nests the screens (`NAV_GROUPS`), the stored preferences (theme, folded groups), and the navigation panel's controls (Sample/Live, theme, mobile menu, a table row that opens its record). The dashboard and Explore both boot through it. |
 | `src/app.js` | Hash routing, the screen table of §11.2, and `boot()`. |
 | `tools/index.template.html` to `index.html` | The shell; the generated single-file page. |
+| `styles.css`, `explore.css` | The design tokens, shell and components; then what only the search page needs. `explore.html` loads both, in that order. |
+
+### The shell and its conventions
+
+- **Navigation** has five destinations: Overview, Search (`explore.html`), Usage (Tools & data
+  classes, Teams, Users), Devices and Audit trail. Screens that were merged are a switch on the
+  screen that absorbed them: Usage shows Tools, Data classes or Unsanctioned (`#tools?view=…`), and
+  Devices lists all or problems only (`#devices?show=problems`). The old addresses `#classes`,
+  `#unsanctioned` and `#degraded` still resolve. Event detail (`#event`), Known gaps
+  (`#unavailable`, linked from the footer) and the state gallery (`#gallery`) are not in the
+  navigation. The theme and which groups are folded are the only things kept in `localStorage`.
+- **Sample / Live** in the navigation panel switches `?transport=live` on the current page and
+  keeps the screen. Links between the dashboard and Explore carry the same choice.
+- **Charts are drawn from the response only.** Bar sizes are written as unitless custom properties
+  (`--w`, `--h`), and the coverage ring prints no figure, because the page must never show a fleet
+  percentage (`test/section14.test.mjs`). The segmented breakdown above a table counts the rows
+  shown, and says so in its tooltip.
+- **Reading notes** sit behind "About this data" at the foot of a screen instead of under every
+  table. A row that names a submission opens its Event detail on click or Enter.
+- **No remote assets.** Fonts are a system stack; nothing is fetched from another host.
 
 ## The one behaviour to understand first
 

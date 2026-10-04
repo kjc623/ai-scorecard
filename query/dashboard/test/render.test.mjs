@@ -3,10 +3,10 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { renderScreen, renderValue, renderStrip, renderTable, renderSeries, escapeHtml } from '../src/render.js';
+import { renderScreen, renderValue, renderTable, renderSeries, escapeHtml } from '../src/render.js';
 import { readState } from '../src/states.js';
-import { postureView, devicesView, classesView, teamsView, toolsView, activityView, auditView, toolsView as tv } from '../src/views.js';
-import { degradedCollectionView, unavailableView, noApiView } from '../src/unavailable.js';
+import { devicesView, classesView, teamsView, toolsView, activityView, auditView, toolsView as tv } from '../src/views.js';
+import { unavailableView, noApiView } from '../src/unavailable.js';
 import { STATE_ENVELOPES, SCENARIO_NAMES, SCENARIOS } from '../src/fixtures.js';
 import { createDashboard, SCREENS, refusalFrom } from '../src/app.js';
 import { createQueryApi } from '../src/transport.js';
@@ -31,7 +31,6 @@ test('every documented result state renders without throwing, and none renders a
     };
     const html = renderScreen(view, SHELL);
     assert.ok(html.length > 200, `${name} rendered something`);
-    assert.ok(/<div class="strip/.test(html), `${name} carries the strip`);
     if (state.isRefusal) assert.ok(state.banners.length > 0, `${name} explains itself`);
   }
 });
@@ -42,17 +41,6 @@ test('a refusal screen names the state, the code and the fix', () => {
   assert.ok(/query_too_broad/.test(html));
   assert.ok(/coarsen the bucket to week/.test(html));
   assert.equal(state.rowCount, 0);
-});
-
-test('the coverage strip distinguishes complete, partial and not-yet-covered', () => {
-  const complete = renderStrip({ coverage: COMPLETE, freshness: FRESH });
-  const partial = renderStrip({ coverage: PARTIAL, freshness: FRESH });
-  const blind = renderStrip({ coverage: { state: 'not_yet_covered', reason: 'no_coverage_snapshot' }, freshness: FRESH });
-  assert.match(complete, /strip-complete/);
-  assert.match(partial, /strip-partial/);
-  assert.match(blind, /strip-not_yet_covered/);
-  assert.equal(new Set([complete, partial, blind]).size, 3);
-  for (const html of [complete, partial, blind]) assert.ok(!/class="v-number"/.test(html) || /4620|4180/.test(html));
 });
 
 test('a suppressed cell and a zero render into different markup on the same table', () => {
@@ -70,8 +58,8 @@ test('a suppressed cell and a zero render into different markup on the same tabl
     rows: state.data.map((row) => ({ row, vocab: {}, suppressed: row.result_state === 'suppressed' })),
     emptyText: 'none', suppressedCells: 1,
   });
-  assert.match(html, /<td><span class="v-number">900<\/span><\/td>/);
-  assert.match(html, /<td><span class="v-number">0<\/span><\/td>/);
+  assert.match(html, /<td class="num"><span class="cell-bar"[^>]*><\/span><span class="v-number">900<\/span><\/td>/);
+  assert.match(html, /<td class="num"><span class="v-number">0<\/span><\/td>/, 'a zero is a number, and draws no bar');
   assert.match(html, /v-suppressed[^>]*>suppressed<span class="v-k">k=5/);
   const suppressedCell = /<tr class="row-suppressed">.*?<\/tr>/s.exec(html)[0];
   assert.ok(!/>0</.test(suppressedCell), 'the suppressed row contains no zero');
@@ -83,7 +71,7 @@ test('the tile for a floored total says it is a floor, and the tile for an all-s
   const submissions = rows.find((t) => t.label === 'Submissions');
   assert.equal(submissions.value.kind, 'floor');
   assert.match(submissions.value.text, /≥ 10/);
-  assert.match(submissions.note, /floor, not a total/);
+  assert.match(submissions.note, /^Floor · 1 suppressed$/);
 
   const all = readState(envelope('ok', { data: [{ result_state: 'suppressed', k: 5 }], freshness: FRESH, coverage: COMPLETE, suppression: { k: 5, suppressed_cells: 1 } }));
   assert.equal(toolsView(all).tiles.find((t) => t.label === 'Submissions').value.kind, 'suppressed');
@@ -107,32 +95,49 @@ test('a series refuses to exist for an event source and renders hatched floors w
   assert.match(html, /Hatched columns are floors, not zeroes/);
 });
 
-test('the posture screen leads with coverage, freshness and the devices that are not reporting', async () => {
+test('the overview summarises usage, data classes and findings beside the enrolled denominator', async () => {
   const dashboard = dashboardFor();
   const { view } = await dashboard.load('posture', {});
   assert.equal(view.id, 'posture');
-  assert.equal(view.tiles[0].label, 'Devices reporting');
-  assert.match(view.tiles[0].note, /of 4,620 enrolled devices/);
-  assert.equal(view.tables[0].title, 'Devices not reporting');
-  assert.ok(view.notes.some((n) => /absence of events is ambiguous/.test(n)));
-  const html = renderScreen(view, SHELL);
-  assert.ok(/never_reported/.test(html) && /revoked/.test(html) && /stale/.test(html));
+  assert.equal(view.title, 'Overview');
+  assert.deepEqual(view.tiles.map((t) => t.label), ['Submissions', 'People (lower bound)', 'Open findings', 'Devices reporting']);
+  assert.match(view.tiles[3].note, /of 4,620 enrolled devices/);
+  assert.deepEqual(view.tables.map((t) => t.title), ['Tools', 'Data classes', 'Findings']);
+  assert.equal(view.tables[0].href, '#tools');
+  const titles = view.banners.map((b) => b.title);
+  assert.equal(new Set(titles).size, titles.length, 'a warning every read carries is said once');
 });
 
-test('the degraded-collection screen renders what is available and lists what is not, in one panel', () => {
-  const devices = readState(envelope('ok', { data: [
-    { device: 'd1', liveness: 'reporting', collector_state: 'healthy', spool_depth: 0, spool_dropped_total: 0 },
-    { device: 'd2', liveness: 'stale', collector_state: 'degraded', spool_depth: 812, spool_dropped_total: 4412 },
-  ], freshness: FRESH, coverage: PARTIAL, meta: { source: 'mart.v_device_liveness' } }));
-  const view = degradedCollectionView({ devices });
-  assert.equal(view.tables.length, 2);
-  assert.equal(view.tables[0].title, 'Signals this API supports');
-  assert.equal(view.tables[1].title, 'Signals this API does not expose');
-  assert.ok(view.tables[1].rows.length >= 4, 'the missing signals are listed, not omitted');
+test('merged screens are a switch on the screen that absorbed them, and old addresses still resolve', async () => {
+  const dashboard = dashboardFor();
+  assert.equal((await dashboard.load('tools', { filters: { view: 'classes' } })).view.id, 'classes');
+  assert.equal((await dashboard.load('tools', { filters: { view: 'unsanctioned' } })).view.id, 'unsanctioned');
+  assert.equal((await dashboard.load('classes', {})).view.id, 'classes');
+  const all = (await dashboard.load('devices', {})).view;
+  const attention = (await dashboard.load('degraded', {})).view;
+  assert.equal(attention.id, 'devices');
+  assert.ok(attention.tables[0].rows.length < all.tables[0].rows.length);
+  assert.ok(attention.tables[0].rows.every(({ row }) => row.status !== 'reporting'));
+});
+
+test('the devices screen says the fleet, what needs attention, and each device in plain words', async () => {
+  const dashboard = dashboardFor();
+  const { view } = await dashboard.load('devices', {});
+  assert.deepEqual(view.tiles.map((x) => x.label), ['Devices enrolled', 'Need attention']);
+  assert.equal(view.tiles[0].value.text, '4,620');
+  assert.deepEqual(view.tiles[0].split.map((p) => [p.label, p.count]), [['Reporting', 4180], ['Not reporting', 440]]);
+  assert.equal(view.tiles[1].href, '#devices?status=attention');
+  assert.deepEqual(view.tables.map((x) => x.title), ['Devices']);
+  assert.deepEqual(view.tables[0].columns.map((c) => c.label), ['Device', 'Status', 'Last seen', 'OS', 'Management', '']);
+  assert.deepEqual(view.filters.map((f) => f.label), ['Status', 'OS', 'Management']);
   const html = renderScreen(view, SHELL);
-  assert.ok(/rejected-envelope histogram|Rejected-envelope/.test(html));
-  assert.ok(/Reconciliation drift/.test(html));
-  assert.ok(/812/.test(html), 'the spool depth that IS available is shown');
+  assert.match(html, /Never checked in/);
+  assert.match(html, /Quiet since 2026-09-29/);
+  assert.match(html, /days ago/);
+  assert.match(html, /href="explore\.html#events\?device=/);
+  assert.ok(!/Spool|watermark|Collector/i.test(html), 'pipeline internals are not on this screen');
+  const windowsOnly = (await dashboard.load('devices', { filters: { device_os: 'windows' } })).view;
+  assert.ok(windowsOnly.tables[0].rows.every(({ row }) => row.device_os === 'windows'));
 });
 
 test('the catalogue screen renders every gap with its reason, and the no-api screens render theirs', () => {
@@ -189,12 +194,11 @@ test('the acceptance run: every scenario renders every screen without throwing',
       if (gallery) continue;
       const html = renderScreen(view, shell);
       assert.ok(typeof html === 'string' && html.length > 0, `${scenario}/${screen.id} rendered`);
-      assert.ok(/<div class="strip/.test(html) || view.needsInput, `${scenario}/${screen.id} carries the strip`);
       rendered.push(`${scenario}/${screen.id}`);
     }
   }
   assert.equal(rendered.length, SCENARIO_NAMES.length * (SCREENS.length - 1), 'every scenario × every screen');
-  assert.ok(rendered.length >= 180, `expected a broad matrix, got ${rendered.length}`);
+  assert.ok(rendered.length >= 90, `expected a broad matrix, got ${rendered.length}`);
 });
 
 test('every scenario has a label and is reachable from the gallery', () => {

@@ -93,7 +93,7 @@ test('§14.3 no query path returns content, and event detail shows metadata plus
   for (const forbidden of ['content_excerpt', 'prompt_text', 'attachment_body', 'ciphertext', 'wrapped_dek', 'plaintext']) {
     assert.ok(!html.includes(forbidden), `event detail must not render ${forbidden}`);
   }
-  assert.ok(/approved, case-referenced, second-approved retrieval/.test(html), 'the uploaded state names the approved path');
+  assert.ok(/Open the event in Search to read the prompt/.test(html), 'the uploaded state says where the prompt is read');
 });
 
 test('§14.3 each content_state is a different answer, and all four are rendered', () => {
@@ -145,14 +145,14 @@ test('§14.5 the exports screen renders no link and no download affordance', () 
 
 // ── §14 item 6: no aggregate without its freshness and coverage state ────────────────────────
 
-test('§14.6 every screen renders the coverage and freshness strip', async () => {
+test('§14.6 a screen read under partial coverage says so, with the enrolled denominator', async () => {
   const dashboard = dashboardFor();
   for (const screen of SCREENS) {
     const { view, shell, gallery } = await dashboard.load(screen.id, { filters: { submission_id: '11111111-2222-4333-8444-555555555551', subject: 'u_1' } });
-    if (gallery || !view || view.needsInput) continue;
+    if (gallery || !view || view.needsInput || screen.kind !== 'answer' || screen.id === 'audit') continue; // the audit trail is not a fleet figure
     const html = renderScreen(view, shell);
-    assert.ok(/<div class="strip/.test(html), `${screen.id} must render the strip`);
-    assert.ok(/Coverage/.test(html) && /Freshness/.test(html), `${screen.id} strip must name both`);
+    assert.ok(/Coverage is partial/.test(html), `${screen.id} must say coverage is partial`);
+    assert.ok(/4,180 of 4,620 enrolled devices reporting/.test(html), `${screen.id} must carry the denominator`);
   }
 });
 

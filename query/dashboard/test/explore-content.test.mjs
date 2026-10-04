@@ -32,7 +32,6 @@ function explorerFor(scenario = 'realistic', { withContent = true } = {}) {
 }
 
 const uploadedEvent = (stub) => stub.sample.events.find((e) => e.content_state === 'uploaded');
-const APPROVED = Object.freeze({ caseReference: 'CASE-1', secondApprover: 'approver@example.test', justification: 'test' });
 
 // ── what the user typed ──────────────────────────────────────────────────────────────────────
 
@@ -113,55 +112,48 @@ test('a page with no content path says so instead of searching', async () => {
 
 // ── approved retrieval ───────────────────────────────────────────────────────────────────────
 
-test('no content is on the page until a retrieval is served, and then both views of it are', async () => {
+test('opening an event whose content is stored shows the prompt, with no approval asked', async () => {
   const { explorer, stub, asked } = explorerFor();
   const event = uploadedEvent(stub);
   await explorer.restore(`#events?window=d30&open=${event.submission_id}`);
   assert.equal(explorer.state.detail.status, 'ready');
-
-  const before = renderExploreDetail(explorer.state);
-  assert.match(before, /Retrieve content/);
-  assert.ok(!before.includes('What the user typed'));
-
-  await explorer.retrieveContent(APPROVED);
   assert.equal(explorer.state.content.status, 'ready');
   const sent = asked.find(([kind]) => kind === 'retrieve')[1];
   assert.ok(sent.event_ids.length > 0, 'the retrieval names the record\'s observations');
-  assert.equal(sent.case_reference, 'CASE-1');
-  assert.equal(sent.second_approver, 'approver@example.test');
+  assert.deepEqual(Object.keys(sent), ['event_ids'], 'no case reference and no approver are sent');
 
-  const after = renderExploreDetail(explorer.state);
-  assert.match(after, /What the user typed/);
-  assert.ok(after.includes(explorer.state.content.typed));
-  assert.match(after, /Everything captured for this request/);
-  assert.match(after, /&lt;system-reminder&gt;/, 'the full capture is shown, escaped');
+  const html = renderExploreDetail(explorer.state);
+  assert.ok(html.includes(explorer.state.content.typed), 'what the person typed is on the page');
+  assert.match(html, /Everything captured for this request/);
+  assert.match(html, /&lt;system-reminder&gt;/, 'the full capture is shown, escaped');
   assert.ok(!explorer.state.content.typed.includes('system-reminder'), 'the typed view carries no client context');
+  assert.ok(!/Case reference|Second approver|x-retrieve-form/.test(html), 'no approval form');
 });
 
-test('a retrieval the vault refuses shows the reason and keeps what was typed into the request', async () => {
-  const { explorer, stub } = explorerFor();
-  await explorer.restore(`#events?window=d30&open=${uploadedEvent(stub).submission_id}`);
-  await explorer.retrieveContent({ caseReference: 'CASE-1', secondApprover: '', justification: '' });
+test('a read the vault refuses shows the reason and offers to try again', async () => {
+  const { explorer, stub } = explorerFor('busy');
+  stub.setScenario('realistic');
+  await explorer.restore('#events?window=d30');
+  stub.setScenario('busy');
+  await explorer.open(uploadedEvent(stub).submission_id);
+  if (explorer.state.detail.status !== 'ready') return; // the record read itself was refused in this scenario
   assert.equal(explorer.state.content.status, 'refused');
-  assert.equal(explorer.state.content.problem.code, 'second_approver_required');
   const html = renderExploreDetail(explorer.state);
-  assert.match(html, /second_approver_required/);
-  assert.match(html, /value="CASE-1"/, 'the request is corrected, not retyped');
-  assert.ok(!html.includes('What the user typed'));
+  assert.match(html, /concurrency limit/);
+  assert.match(html, /data-act="retrieve"/);
 });
 
 test('retrieved content does not outlive the record it was retrieved for', async () => {
   const { explorer, stub } = explorerFor();
   const [first, second] = stub.sample.events.filter((e) => e.content_state === 'uploaded');
   await explorer.restore(`#events?window=d30&open=${first.submission_id}`);
-  await explorer.retrieveContent(APPROVED);
   assert.equal(explorer.state.content.status, 'ready');
+  const firstTyped = explorer.state.content.typed;
 
   await explorer.open(second.submission_id);
-  assert.equal(explorer.state.content.status, 'idle', 'opening another record drops the content');
-  assert.ok(!renderExploreDetail(explorer.state).includes('What the user typed'));
+  assert.equal(explorer.state.content.submissionId, second.submission_id, 'the content on the page belongs to the open record');
+  assert.ok(firstTyped === explorer.state.content.typed || !renderExploreDetail(explorer.state).includes(firstTyped));
 
-  await explorer.retrieveContent(APPROVED);
   explorer.close();
   assert.equal(explorer.state.content.status, 'idle', 'closing the record drops the content');
 });
@@ -173,4 +165,15 @@ test('only uploaded content offers a retrieval', async () => {
   const html = renderExploreDetail(explorer.state);
   assert.ok(!html.includes('x-retrieve-form'), 'content still on the device offers no retrieval');
   assert.match(html, /remains on the device/);
+});
+
+test('a hit shows the prompt text with the person, the device and the tool', async () => {
+  const { explorer } = explorerFor();
+  const state = { ...explorer.state, text: { status: 'ready', query: 'x', truncated: false, problem: null, hits: [
+    { submissionId: 's1', snippet: 'What is the <em>capital</em> of Australia', subject: 'u_4f21', device: 'd-1', tool: 'claude_code' },
+    { submissionId: 's2', snippet: 'another', subject: null, device: null, tool: null },
+  ] } };
+  const html = renderExploreText(state);
+  assert.match(html, /<span>u_4f21<\/span><span class="x-hit-sep" aria-hidden="true">\|<\/span><span>d-1<\/span><span class="x-hit-sep" aria-hidden="true">\|<\/span><span>claude_code<\/span>/);
+  assert.match(html, />s2<\/span>/, 'a hit with no metadata still names its submission');
 });

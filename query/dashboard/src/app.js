@@ -8,39 +8,59 @@
 // so a test can drive every screen against the stub transport without a browser. `boot()` is the
 // only function that touches a document.
 
-import { createQueryApi } from './transport.js';
+import { createQueryApi, httpTransport } from './transport.js';
 import { scenarioTransport } from './scenarios.js';
 import { readState } from './states.js';
 import { QUESTIONS, context } from './questions.js';
 import {
-  postureView, toolsView, unsanctionedView, teamsView, classesView, findingsView,
-  personView, devicesView, activityView, eventView, auditView, refusalView,
+  postureView, toolsView, unsanctionedView, teamsView, classesView,
+  personView, devicesView, eventView, auditView, refusalView,
   needsInputView,
 } from './views.js';
-import { degradedCollectionView, noApiView, unavailableView } from './unavailable.js';
+import { unavailableView } from './unavailable.js';
 import { renderScreen, renderNav, renderGallery } from './render.js';
+import { shellNavItems, groupOf, readCollapsed, wireShell } from './shell.js';
 import { SCENARIOS, SCENARIO_NAMES } from './fixtures.js';
 
-/** The information architecture of docs/04 §11.2, in the order a reader moves through it. */
+/**
+ * The screens. Five are in the navigation; the event detail, the catalogue of gaps and the state
+ * gallery are reached by a link or an address. What used to be separate screens for unsanctioned
+ * use, data classes and degraded collection are now a switch on Usage and on Devices.
+ */
 export const SCREENS = Object.freeze([
-  Object.freeze({ id: 'posture', label: 'Posture', question: null, kind: 'posture' }),
+  Object.freeze({ id: 'posture', label: 'Overview', question: null, kind: 'posture' }),
   Object.freeze({ id: 'tools', label: 'Tools', question: 1, kind: 'answer', questionId: 'q1_tools_ranked' }),
-  Object.freeze({ id: 'unsanctioned', label: 'Unsanctioned', question: 2, kind: 'answer', questionId: 'q2_unsanctioned_users' }),
-  Object.freeze({ id: 'classes', label: 'Classes', question: 4, kind: 'answer', questionId: 'q4_class_mix' }),
   Object.freeze({ id: 'teams', label: 'Teams', question: 3, kind: 'answer', questionId: 'q3_team_growth' }),
-  Object.freeze({ id: 'person', label: 'Person', question: 6, kind: 'input', questionId: 'q6_subject_series' }),
-  Object.freeze({ id: 'findings', label: 'Findings', question: 5, kind: 'answer', questionId: 'q5_findings' }),
-  Object.freeze({ id: 'activity', label: 'Activity', question: 8, kind: 'answer', questionId: 'q8_activity' }),
-  Object.freeze({ id: 'event', label: 'Event detail', question: 9, kind: 'input', questionId: 'q9_event_detail' }),
-  Object.freeze({ id: 'search', label: 'Content search', question: null, kind: 'no-api' }),
+  Object.freeze({ id: 'person', label: 'Users', question: 6, kind: 'input', questionId: 'q6_subject_series' }),
   Object.freeze({ id: 'devices', label: 'Devices', question: 7, kind: 'answer', questionId: 'q7_devices' }),
-  Object.freeze({ id: 'degraded', label: 'Degraded collection', question: null, kind: 'degraded' }),
   Object.freeze({ id: 'audit', label: 'Audit', question: 10, kind: 'answer', questionId: 'q10_audit_trail' }),
-  Object.freeze({ id: 'exports', label: 'Exports', question: null, kind: 'no-api' }),
-  Object.freeze({ id: 'settings', label: 'Settings', question: null, kind: 'no-api' }),
+  Object.freeze({ id: 'event', label: 'Event detail', question: 9, kind: 'input', questionId: 'q9_event_detail' }),
   Object.freeze({ id: 'unavailable', label: 'What we cannot show', question: null, kind: 'catalogue' }),
   Object.freeze({ id: 'gallery', label: 'State gallery', question: null, kind: 'gallery' }),
 ]);
+
+/** What the Usage screen can show: each is its own question, switched in place. */
+const USAGE_MODES = Object.freeze({
+  tools: Object.freeze({ label: 'Tools', questionId: 'q1_tools_ranked', view: toolsView }),
+  classes: Object.freeze({ label: 'Data classes', questionId: 'q4_class_mix', view: classesView }),
+  unsanctioned: Object.freeze({ label: 'Unsanctioned', questionId: 'q2_unsanctioned_users', view: unsanctionedView }),
+});
+
+function usageMode(filters) {
+  return USAGE_MODES[filters?.view] ? filters.view : 'tools';
+}
+
+/** Addresses of screens that were merged into another, so an old link still lands somewhere true. */
+const SCREEN_ALIASES = Object.freeze({
+  unsanctioned: Object.freeze({ id: 'tools', filters: Object.freeze({ view: 'unsanctioned' }) }),
+  classes: Object.freeze({ id: 'tools', filters: Object.freeze({ view: 'classes' }) }),
+  degraded: Object.freeze({ id: 'devices', filters: Object.freeze({ status: 'attention' }) }),
+});
+
+function resolveScreen(id, filters = {}) {
+  const alias = SCREEN_ALIASES[id];
+  return alias ? { id: alias.id, filters: { ...filters, ...alias.filters } } : { id, filters };
+}
 
 export const SCREEN_IDS = Object.freeze(SCREENS.map((s) => s.id));
 
@@ -61,8 +81,8 @@ export function refusalFrom(error, { title = 'Read refused' } = {}) {
  * @param {ReturnType<typeof createQueryApi>} input.api
  * @param {Date} [input.now]
  */
-export function createDashboard({ api, now = () => new Date() }) {
-  /** The strip is persistent, so the last coverage and freshness blocks seen are kept. */
+export function createDashboard({ api, now = () => new Date(), exploreHref = 'explore.html' }) {
+  /** The last coverage and freshness blocks seen are kept, for a screen that reads nothing itself. */
   const observed = { coverage: null, freshness: null, watermarks: new Map() };
 
   function remember(state) {
@@ -91,18 +111,36 @@ export function createDashboard({ api, now = () => new Date() }) {
    * Load one screen. Returns `{view, shell}`; never throws for an API-level problem, because a
    * refusal is a state to render rather than a crash.
    */
-  async function load(screenId, params = {}) {
-    const screen = SCREENS.find((s) => s.id === screenId) ?? SCREENS[0];
+  async function load(screenId, given = {}) {
+    const resolved = resolveScreen(screenId, given.filters ?? {});
+    const params = { ...given, filters: resolved.filters };
+    const screen = SCREENS.find((s) => s.id === resolved.id) ?? SCREENS[0];
     const ctx = context({ preset: params.preset ?? 'd7', filters: params.filters ?? {}, now: now() });
     try {
       switch (screen.kind) {
         case 'posture': {
           const devices = await ask('q7_devices', context({ preset: ctx.preset, limit: 500, filters: params.filters ?? {}, now: now() }));
-          return { view: postureView({ devices, watermarks: [...observed.watermarks.values()] }), shell: shell() };
+          // The summary reads three more questions. One that fails leaves its panel empty rather
+          // than taking the page down.
+          const part = async (questionId) => {
+            try {
+              return await ask(questionId, ctx);
+            } catch {
+              return null;
+            }
+          };
+          const tools = await part('q1_tools_ranked');
+          const classes = await part('q4_class_mix');
+          const findings = await part('q5_findings');
+          return { view: postureView({ devices, tools, classes, findings }), shell: shell() };
         }
         case 'answer': {
           if (screen.questionId === 'q6_subject_series' || screen.questionId === 'q9_event_detail') {
             return { view: needsInputView({ id: screen.id, title: screen.label, question: null, hint: 'This screen needs an identifier from another screen.' }), shell: shell() };
+          }
+          if (screen.id === 'tools') {
+            const mode = USAGE_MODES[usageMode(params.filters)];
+            return { view: mode.view(await ask(mode.questionId, ctx)), shell: shell() };
           }
           const state = await ask(screen.questionId, ctx);
           return { view: viewFor(screen.id, state, params), shell: shell() };
@@ -110,32 +148,17 @@ export function createDashboard({ api, now = () => new Date() }) {
         case 'input': {
           if (screen.id === 'person') {
             const subject = params.filters?.subject;
-            if (!subject) return { view: needsInputView({ id: 'person', title: 'Person', question: null, hint: 'Enter a user reference. There is no screen that lists people.' }), shell: shell() };
+            if (!subject) return { view: needsInputView({ id: 'person', title: 'Users', question: null, hint: null, search: Object.freeze({ value: '' }) }), shell: shell() };
             const state = await ask('q6_subject_series', context({ preset: ctx.preset, filters: { subject }, now: now() }));
             return { view: personView(state, { subject }), shell: shell() };
           }
           const submissionId = params.filters?.submission_id;
-          if (!submissionId) return { view: needsInputView({ id: 'event', title: 'Event detail', question: null, hint: 'Reached from a finding or an activity row.' }), shell: shell() };
+          if (!submissionId) return { view: needsInputView({ id: 'event', title: 'Event detail', question: null, hint: 'Reached from a row that names a submission.' }), shell: shell() };
           const state = await ask('q9_event_detail', context({ filters: { submission_id: submissionId, received_at_hint: params.filters?.received_at_hint }, now: now() }));
           return { view: eventView(state), shell: shell() };
         }
-        case 'degraded': {
-          const devices = await ask('q7_devices', context({ preset: ctx.preset, limit: 500, filters: params.filters ?? {}, now: now() }));
-          return { view: degradedCollectionView({ devices }), shell: shell() };
-        }
         case 'catalogue':
           return { view: unavailableView(), shell: shell() };
-        case 'no-api':
-          return {
-            view: noApiView({
-              id: screen.id,
-              title: screen.label,
-              subtitle: screen.id === 'search'
-                ? 'Text search runs in content-vault against an index this component cannot read, through an endpoint this API does not expose.'
-                : 'This screen has no endpoint behind it in the query API.',
-            }),
-            shell: shell(),
-          };
         case 'gallery':
         default:
           return { view: null, shell: shell(), gallery: true };
@@ -147,17 +170,11 @@ export function createDashboard({ api, now = () => new Date() }) {
 
   function viewFor(screenId, state, params) {
     switch (screenId) {
-      case 'tools': return toolsView(state);
-      case 'unsanctioned': return unsanctionedView(state);
-      case 'classes': return classesView(state);
       case 'teams': return teamsView(state);
-      case 'findings': return findingsView(state);
-      case 'activity': return activityView(state);
-      case 'devices': return devicesView(state);
+      case 'devices': return devicesView(state, { filters: params.filters ?? {}, now: now(), exploreHref });
       case 'audit': return state.resultState === 'audit_chain_broken' ? refusalView(state, { title: 'Audit' }) : auditView(state);
       default: return refusalView(state, { title: screenId });
     }
-    void params;
   }
 
   return Object.freeze({ load, observed, screenIds: SCREEN_IDS });
@@ -175,20 +192,40 @@ export function parseHash(hash) {
   return { id, scenario: id === 'gallery' ? parts[1] : undefined, preset: filters.preset, filters };
 }
 
-/** How the navigation groups the screens. Every screen is in exactly one group. */
-const NAV_GROUPS = Object.freeze([
-  ['Overview', ['posture']],
-  ['Usage', ['tools', 'unsanctioned', 'classes', 'teams', 'person']],
-  ['Review', ['findings', 'activity', 'event']],
-  ['Collection', ['devices', 'degraded', 'audit']],
-  ['Not served', ['search', 'exports', 'settings', 'unavailable']],
-  ['Development', ['gallery']],
-]);
+/** The navigation of shell.js, with each screen's question number for its tooltip. */
+const NAV_ITEMS = shellNavItems({ questionOf: (id) => SCREENS.find((s) => s.id === id)?.question ?? null });
 
-const NAV_ITEMS = NAV_GROUPS.flatMap(([group, ids]) => ids.map((id) => {
-  const s = SCREENS.find((screen) => screen.id === id);
-  return { id: s.id, label: s.label, question: s.question, group };
-}));
+/** Screens whose question takes a time window, and the windows offered. */
+const WINDOWED_KINDS = Object.freeze(['answer', 'input']);
+const UNWINDOWED_SCREENS = Object.freeze(['devices', 'event']);
+const PRESET_LABELS = Object.freeze({ h24: '24h', d7: '7d', d30: '30d', d90: '90d' });
+
+/** The window switcher for a screen: each preset is a link that keeps the other parameters. */
+function presetsFor(screen, preset, filters) {
+  if (!WINDOWED_KINDS.includes(screen.kind) || UNWINDOWED_SCREENS.includes(screen.id)) return null;
+  const current = PRESET_LABELS[preset] ? preset : 'd7';
+  const items = Object.entries(PRESET_LABELS).map(([id, label]) => {
+    const params = new URLSearchParams({ ...filters, preset: id });
+    return { id, label, href: `#${screen.id}?${params.toString()}` };
+  });
+  return { current, items };
+}
+
+/** The switch a screen carries beside its window: what Usage shows. */
+function switchFor(screen, preset, filters) {
+  const link = (extra) => {
+    const query = new URLSearchParams({ ...(PRESET_LABELS[preset] ? { preset } : {}), ...extra }).toString();
+    return `#${screen.id}${query ? `?${query}` : ''}`;
+  };
+  if (screen.id === 'tools') {
+    return {
+      label: 'Show',
+      current: usageMode(filters),
+      items: Object.entries(USAGE_MODES).map(([id, mode]) => ({ id, label: mode.label, href: link(id === 'tools' ? {} : { view: id }) })),
+    };
+  }
+  return null;
+}
 
 /**
  * Boot the dashboard into a document. The only function in this package that touches the DOM.
@@ -201,25 +238,53 @@ const NAV_ITEMS = NAV_GROUPS.flatMap(([group, ids]) => ids.map((id) => {
 export async function boot({ document, scenario = 'realistic', api } = {}) {
   const root = document.getElementById('app');
   const nav = document.getElementById('nav');
-  // One dashboard for the whole session, so the coverage strip persists across navigation: the
-  // strip is a property of the shell, not of a screen.
-  const stubs = api ? null : scenarioTransport(scenario);
-  const active = api ?? createQueryApi({ transport: stubs });
-  const dashboard = createDashboard({ api: active });
+  // `?transport=live` reads the real query API through the endpoint on the page's own origin,
+  // exactly as the Explore page does. Without it the page runs on canned envelopes and says so.
+  const live = !api && new URLSearchParams(document.location.search ?? '').get('transport') === 'live';
+  // One dashboard for the whole session, so the last coverage read carries across navigation.
+  const stubs = api || live ? null : scenarioTransport(scenario);
+  const active = api ?? createQueryApi({ transport: live ? httpTransport() : stubs });
+  const query = live ? '?transport=live' : '';
+  const dashboard = createDashboard({ api: active, exploreHref: `explore.html${query}` });
+  // The Explore page is a sibling page, not a screen: it is linked from the top of the navigation
+  // and carries the same data source.
+  const navItems = NAV_ITEMS.map((item) => (item.id === 'explore' ? { ...item, href: `explore.html${query}` } : item));
+  const collapsed = readCollapsed(document);
+
+  let paintedNav = null;
+  let paintedScreen = null;
 
   async function render() {
-    const { id, scenario: routeScenario, preset, filters } = parseHash(document.location.hash);
+    const { id: routeId, scenario: routeScenario, preset, filters: routeFilters } = parseHash(document.location.hash);
+    const { id, filters } = resolveScreen(routeId, routeFilters);
     if (routeScenario && stubs && typeof stubs.setScenario === 'function') stubs.setScenario(routeScenario);
     const screen = SCREENS.find((s) => s.id === id) ?? SCREENS[0];
-    nav.innerHTML = renderNav(NAV_ITEMS, screen.id);
+    // The navigation is repainted only when it changes, so its groups do not re-open on every click.
+    const navHtml = renderNav(navItems, screen.id, { collapsed: [...collapsed] });
+    if (navHtml !== paintedNav) {
+      paintedNav = navHtml;
+      nav.innerHTML = navHtml;
+    }
+    // A change within a screen (a filter, a window, a search) updates it in place: no entrance
+    // is replayed, and the search box keeps the focus it had.
+    const sameScreen = screen.id === paintedScreen;
+    // Moving to another screen swaps the content with a short fade; only the first load arrives in full.
+    root.classList?.toggle('switched', !sameScreen && paintedScreen !== null);
+    paintedScreen = screen.id;
+    root.classList?.toggle('same-screen', sameScreen);
+    const typing = sameScreen && document.activeElement?.name === 'subject';
     const { view, shell, gallery } = await dashboard.load(screen.id, { preset, filters });
     if (gallery) {
       root.innerHTML = renderGallery(SCENARIO_NAMES.map((name) => ({ id: name, label: SCENARIOS[name].label })), stubs ? stubs.scenario() : 'live')
         + `<p class="gallery-hint">Scenario in force: <strong>${stubs ? stubs.label() : 'live API'}</strong>. Pick another, then visit any screen.</p>`;
       return;
     }
-    root.innerHTML = renderScreen(view, shell);
+    const { preset: _preset, ...others } = filters;
+    root.innerHTML = renderScreen(view, { ...shell, eyebrow: groupOf(screen.id), switch: switchFor(screen, preset, others), presets: presetsFor(screen, preset, others) });
+    if (typing) root.querySelector?.('input[name="subject"]')?.focus();
   }
+
+  wireShell({ document, live, collapsed });
 
   // The handler returns the render promise. A browser ignores a listener's return value, so this
   // costs nothing there; it means a test can await a navigation and read the finished page rather
@@ -232,7 +297,7 @@ export async function boot({ document, scenario = 'realistic', api } = {}) {
     if (form?.dataset?.screen !== 'person') return;
     event.preventDefault();
     const subject = form.elements.subject.value.trim();
-    if (subject) document.location.hash = `#person?subject=${encodeURIComponent(subject)}`;
+    document.location.hash = subject ? `#person?subject=${encodeURIComponent(subject)}` : '#person';
   });
   await render();
 

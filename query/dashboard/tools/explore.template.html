@@ -3,65 +3,73 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Explore | Shadow AI Capture</title>
+<title>Search | Shadow AI Capture</title>
+<link rel="stylesheet" href="styles.css">
 <link rel="stylesheet" href="explore.css">
 </head>
 <body>
-<header class="x-top">
-  <div class="x-brand">
-    <span class="x-brand-name">Shadow AI Capture</span>
-    <h1>Explore</h1>
-  </div>
-  <div class="x-top-side">
-    <div class="x-sample" id="x-sample">
-      <label for="x-scenario">Sample data, state</label>
-      <select id="x-scenario" class="x-select"></select>
+<div class="shell">
+  <aside class="side">
+    <div class="side-inner">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <h1>Shadow AI Capture</h1>
+        <button type="button" id="menu" class="menu" aria-label="Menu"><span></span><span></span></button>
+      </div>
+      <nav id="nav" class="nav" aria-label="Screens"></nav>
+      <div class="side-foot">
+        <div class="seg seg-small" id="source" role="group" aria-label="Data source"></div>
+        <button type="button" id="theme" class="icon-btn" aria-label="Switch between light and dark" title="Light or dark">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/></svg>
+        </button>
+      </div>
     </div>
-    <span class="x-live" id="x-live" hidden>Live query API</span>
-    <a class="x-top-link" href="index.html">All screens</a>
+  </aside>
+
+  <div class="content">
+    <div class="app x-app">
+      <main class="x-main" id="x-page">
+        <header class="screen-head">
+          <div class="screen-title">
+            <h2>Search</h2>
+          </div>
+          <div class="screen-tools">
+            <div class="x-sample" id="x-sample">
+              <label for="x-scenario">Sample state</label>
+              <select id="x-scenario" class="x-select"></select>
+            </div>
+          </div>
+        </header>
+
+        <form id="x-text-form" class="x-searchbar" autocomplete="off" role="search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>
+          <input id="x-text-query" class="x-searchbar-input" type="search" spellcheck="false"
+                 placeholder="Search prompt text" aria-label="Search prompt text" aria-describedby="x-text">
+          <button type="submit" class="x-btn x-btn-primary">Search</button>
+        </form>
+
+        <div class="x-toolbar">
+          <div class="x-seg" id="x-datasets" role="group" aria-label="What to list"></div>
+          <div class="x-seg" id="x-window" role="group" aria-label="Window"></div>
+          <div class="x-filters" id="x-rail" role="group" aria-label="Filters"></div>
+        </div>
+        <div id="x-problems" role="alert"></div>
+
+        <div class="x-body" id="x-body">
+          <section class="x-results" aria-label="Results">
+            <div id="x-text" aria-live="polite"></div>
+            <div id="x-summary" class="x-summary" aria-live="polite"></div>
+            <div id="x-results" class="x-results-body"></div>
+          </section>
+          <aside class="x-detail" id="x-detail" aria-labelledby="x-detail-title" hidden></aside>
+        </div>
+      </main>
+    </div>
+    <footer class="app-foot">
+      <p><a href="index.html#unavailable">Known gaps</a></p>
+    </footer>
   </div>
-</header>
-
-<div id="x-strip"></div>
-
-<main class="x-main">
-  <section class="x-search" aria-label="Search">
-    <div class="x-seg" id="x-datasets" role="group" aria-label="What to search"></div>
-    <form id="x-form" class="x-form" autocomplete="off">
-      <div class="x-form-query">
-        <label class="x-label" for="x-query">Filter query</label>
-        <input id="x-query" class="x-input x-query" type="text" spellcheck="false" autocapitalize="off"
-               placeholder="tool:claude_web action:blocked" aria-describedby="x-problems">
-      </div>
-      <div class="x-form-window">
-        <span class="x-label" id="x-window-label">Window</span>
-        <div class="x-seg" id="x-window" role="group" aria-labelledby="x-window-label"></div>
-      </div>
-      <button type="submit" class="x-btn x-btn-primary">Search</button>
-    </form>
-    <div class="x-suggest" id="x-suggest"></div>
-    <div id="x-problems" role="alert"></div>
-    <form id="x-text-form" class="x-form x-text-form" autocomplete="off">
-      <div class="x-form-query">
-        <label class="x-label" for="x-text-query">Search prompt text</label>
-        <input id="x-text-query" class="x-input" type="text" spellcheck="false"
-               placeholder="words from a prompt, or &quot;an exact phrase&quot;" aria-describedby="x-text">
-      </div>
-      <button type="submit" class="x-btn">Search text</button>
-    </form>
-    <div id="x-text" aria-live="polite"></div>
-  </section>
-
-  <div class="x-body" id="x-body">
-    <button type="button" class="x-btn x-btn-quiet x-rail-toggle" data-act="rail">Filters</button>
-    <aside class="x-rail" id="x-rail" aria-label="Filters"></aside>
-    <section class="x-results" aria-label="Results">
-      <div id="x-summary" class="x-summary" aria-live="polite"></div>
-      <div id="x-results" class="x-results-body"></div>
-    </section>
-    <aside class="x-detail" id="x-detail" aria-labelledby="x-detail-title" hidden></aside>
-  </div>
-</main>
+</div>
 
 <!--
   explore.html is generated by tools/build-index.mjs: the module graph from src/ is inlined below as

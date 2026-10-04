@@ -2,7 +2,6 @@
 //
 // Every string that came from the API is escaped. The honesty rules the rest of the dashboard
 // keeps are kept here the same way:
-//   * the coverage and freshness strip is on the page whenever a result is (§11.3);
 //   * both clocks are shown and the device clock is marked as possibly skewed (§14 item 10);
 //   * a missing value says what is missing ("none", "unknown", "not classified") and is never a
 //     blank, because a blank and an unknown look identical and mean different things;
@@ -91,27 +90,8 @@ export function renderExploreValue(row, column, { full = false } = {}) {
   }
 }
 
-/** The persistent strip: coverage with its denominator, and the age of what is being read. */
-export function renderExploreStrip(shell) {
-  if (!shell?.coverage && !shell?.freshness) {
-    return '<div class="x-strip x-strip-unknown" role="status"><span><strong>Coverage</strong> not read yet</span><span><strong>Freshness</strong> not read yet</span></div>';
-  }
-  const cov = coverageText(shell.coverage);
-  const fresh = freshnessText(shell.freshness);
-  const floor = cov.state === 'partial'
-    ? '<span class="x-strip-note">Partial coverage: a list here is a floor, not everything that happened.</span>'
-    : '';
-  const gaps = (cov.gaps ?? []).map((g) => `<span class="x-gap">${escapeHtml(g.reason)} ${escapeHtml(formatCount(g.count))}</span>`).join('');
-  return `<div class="x-strip x-strip-${escapeHtml(cov.state)}" role="status">`
-    + `<span><strong>Coverage</strong> ${escapeHtml(cov.text)}</span>`
-    + (gaps ? `<span class="x-gaps">${gaps}</span>` : '')
-    + `<span class="x-fresh-${escapeHtml(fresh.state)}"><strong>Freshness</strong> ${escapeHtml(fresh.text)}</span>`
-    + floor
-    + '</div>';
-}
-
 export function renderExploreDatasets(state) {
-  return EXPLORE_DATASET_IDS.map((id) => {
+  return EXPLORE_DATASET_IDS.filter((id) => id !== 'audit').map((id) => {
     const on = id === state.dataset;
     return `<button type="button" class="x-seg-item" data-act="dataset" data-dataset="${id}" aria-pressed="${on}">${escapeHtml(EXPLORE_DATASETS[id].label)}</button>`;
   }).join('');
@@ -143,26 +123,24 @@ export function renderExploreProblems(state) {
   return `<div class="x-problems"><p class="x-problems-head">Not searched. Nothing is dropped from a query, so fix ${state.problems.length === 1 ? 'this' : 'these'} first:</p><ul>${items}</ul></div>`;
 }
 
-/** The filter rail: the same closed filters as the query bar, one control per field. */
+/** The filters, as one row: a list for a field with known values, a short text field otherwise. */
 export function renderExploreRail(state) {
   const dataset = EXPLORE_DATASETS[state.dataset];
   const active = dataset.fields.filter((f) => state.filters[f.name]).length;
   const fields = dataset.fields.map((field) => {
     const value = state.filters[field.name] ?? '';
     const id = `x-f-${field.name}`;
+    const on = value ? ' x-filter-on' : '';
     if (field.values) {
-      const options = field.values.map((v) => (
-        `<button type="button" class="x-opt" data-act="toggle" data-field="${field.name}" data-value="${escapeHtml(v)}" aria-pressed="${v === value}">${escapeHtml(v)}</button>`
+      const values = field.values.includes(value) || !value ? field.values : [...field.values, value];
+      const options = values.map((v) => (
+        `<option value="${escapeHtml(v)}"${v === value ? ' selected' : ''}>${v === value ? `${escapeHtml(field.label)}: ` : ''}${escapeHtml(v)}</option>`
       )).join('');
-      return `<div class="x-field" role="group" aria-labelledby="${id}"><span class="x-label" id="${id}">${escapeHtml(field.label)}</span><div class="x-opts">${options}</div></div>`;
+      return `<select class="x-select x-filter${on}" id="${id}" data-field="${field.name}" aria-label="${escapeHtml(field.label)}"><option value="">${escapeHtml(field.label)}</option>${options}</select>`;
     }
-    return `<div class="x-field"><label class="x-label" for="${id}">${escapeHtml(field.label)}</label>`
-      + `<input class="x-input" id="${id}" type="text" data-field="${field.name}" value="${escapeHtml(value)}" autocomplete="off" spellcheck="false" aria-describedby="${id}-hint">`
-      + `<span class="x-hint" id="${id}-hint">${escapeHtml(field.hint ?? '')}</span></div>`;
+    return `<input class="x-input x-filter${on}" id="${id}" type="text" data-field="${field.name}" value="${escapeHtml(value)}" autocomplete="off" spellcheck="false" placeholder="${escapeHtml(field.label)}" aria-label="${escapeHtml(field.label)}" title="${escapeHtml(field.hint ?? field.label)}">`;
   }).join('');
-  return `<div class="x-rail-head"><h2>Filters</h2>`
-    + (active > 0 ? `<button type="button" class="x-link" data-act="clear">Clear ${active}</button>` : '')
-    + `</div>${fields}`;
+  return fields + (active > 0 ? `<button type="button" class="x-link" data-act="clear">Clear ${active}</button>` : '');
 }
 
 function exploreNoun(dataset, count) {
@@ -177,9 +155,7 @@ export function renderExploreSummary(state) {
   const more = Boolean(state.result.page?.next_cursor);
   const parts = [
     `<strong>${escapeHtml(formatCount(state.rows.length))} ${escapeHtml(exploreNoun(dataset, state.rows.length))}</strong> loaded${more ? ', more available' : ''}`,
-    escapeHtml(dataset.ordering),
   ];
-  if (state.result.page?.snapshot_upper_bound) parts.push(`Snapshot at ${escapeHtml(formatInstant(state.result.page.snapshot_upper_bound))}`);
   if (state.result.audit?.entry_id) parts.push(`Audited read, entry ${escapeHtml(state.result.audit.entry_id)}`);
   const newer = state.result.page?.newer_events_exist
     ? '<button type="button" class="x-link" data-act="run">Newer rows have arrived. Search again</button>'
@@ -287,6 +263,13 @@ function exploreContentProblem(problem) {
     + (problem?.code ? `<p class="x-state-code">${escapeHtml(problem.code)}</p>` : '') + '</div>';
 }
 
+/** Who typed a matching prompt, on which device, into which tool. A part the answer lacks is left out. */
+function exploreHitMeta(hit) {
+  const parts = [hit.subject, hit.device, hit.tool].filter((part) => typeof part === 'string' && part !== '');
+  if (parts.length === 0) return `<span class="x-mono x-sub">${escapeHtml(hit.submissionId)}</span>`;
+  return `<span class="x-hit-meta x-mono">${parts.map((part) => `<span>${escapeHtml(part)}</span>`).join('<span class="x-hit-sep" aria-hidden="true">|</span>')}</span>`;
+}
+
 /**
  * The prompt-text search: its hits, or why there are none. It sits apart from the list because it
  * is a different read. A hit is a fragment and a reference; opening it reads the event.
@@ -294,62 +277,55 @@ function exploreContentProblem(problem) {
 export function renderExploreText(state) {
   const text = state.text;
   if (text.status === 'idle') return '';
-  const head = `<div class="x-text-head"><h2>Prompt text matching <span class="x-mono">${escapeHtml(text.query)}</span></h2>`
-    + '<button type="button" class="x-btn x-btn-quiet" data-act="text-clear">Clear</button></div>';
+  const head = `<div class="x-text-head"><h2>Prompts containing <span class="x-mono">${escapeHtml(text.query)}</span></h2>`
+    + '<button type="button" class="x-btn x-btn-quiet" data-act="text-clear">Back to the list</button></div>';
   if (text.status === 'loading') return `<div class="x-text-panel" aria-busy="true">${head}<p class="x-sub" role="status">Searching</p></div>`;
   if (text.status === 'refused') return `<div class="x-text-panel">${head}${exploreContentProblem(text.problem)}</div>`;
   if (text.hits.length === 0) {
-    return `<div class="x-text-panel">${head}<p class="x-sub">No uploaded prompt contains every one of those words. Only content a device uploaded is indexed; an event whose content is still on the device cannot be found this way.</p></div>`;
+    return `<div class="x-text-panel">${head}<p class="x-sub">No uploaded prompt contains every one of those words.</p></div>`;
   }
   const rows = text.hits.map((hit) => {
     // The fragment is escaped whole; only the search's own highlight marks are put back.
     const snippet = escapeHtml(hit.snippet).replaceAll('&lt;em&gt;', '<em>').replaceAll('&lt;/em&gt;', '</em>');
     return `<li><button type="button" class="x-hit" data-act="hit" data-submission="${escapeHtml(hit.submissionId)}" aria-pressed="${hit.submissionId === state.detail.submissionId}">`
-      + `<span class="x-hit-snippet">${snippet}</span><span class="x-mono x-sub">${escapeHtml(hit.submissionId)}</span></button></li>`;
+      + `<span class="x-hit-snippet">${snippet}</span>${exploreHitMeta(hit)}</button></li>`;
   }).join('');
   return `<div class="x-text-panel">${head}<ul class="x-hits">${rows}</ul>`
-    + `<p class="x-sub">A match is a short fragment. Open one to see the event, and retrieve its content there to read the whole prompt.${text.truncated ? ' More prompts match than are shown; add a word to narrow it.' : ''} The search itself is audited.</p></div>`;
+    + (text.truncated ? '<p class="x-sub">More prompts match than are shown; add a word to narrow it.</p>' : '') + '</div>';
 }
 
 /**
- * What the content state permits, for the open record. Content is only ever shown after an
- * approved retrieval, for this record, and it is dropped when the record is closed.
+ * What the content state permits, for the open record. Stored content is read when the record is
+ * opened and shown here: what the person typed first, the whole capture behind a disclosure. It is
+ * dropped when the record is closed.
  */
 function exploreContent(state, contentState, note) {
   const content = state.content;
   const chip = `<p>${exploreChip('content_state', contentState)}</p>`;
-  if (contentState !== 'uploaded') return `<section class="x-content"><h3>Content</h3>${chip}<p>${escapeHtml(note)}</p></section>`;
+  if (contentState !== 'uploaded') return `<section class="x-content"><h3>Prompt</h3>${chip}<p>${escapeHtml(note)}</p></section>`;
   if (!state.contentAvailable) {
-    return `<section class="x-content"><h3>Content</h3>${chip}<p>${escapeHtml(note)}</p><p class="x-sub">This page has no content path behind it, so it cannot be retrieved here.</p></section>`;
+    return `<section class="x-content"><h3>Prompt</h3>${chip}<p class="x-sub">This page has no content path behind it, so the prompt cannot be read here.</p></section>`;
   }
 
   if (content.status === 'ready') {
     const typed = content.typed
       ? `<pre class="x-pre x-typed">${escapeHtml(content.typed)}</pre>`
-      : `<p class="x-absent">Nothing: this capture is ${escapeHtml({ prompt: 'a prompt', internal: 'client telemetry, with nothing a person typed', other: 'a request with no user message' }[content.kind] ?? 'not a prompt')}.</p>`;
-    return `<section class="x-content"><h3>Content</h3>${chip}`
-      + `<h4>What the user typed</h4>${typed}`
+      : `<p class="x-absent">Nothing typed: this capture is ${escapeHtml({ prompt: 'a prompt', internal: 'client telemetry', other: 'a request with no user message' }[content.kind] ?? 'not a prompt')}.</p>`;
+    return `<section class="x-content"><h3>Prompt</h3>${typed}`
       + `<details class="x-capture"><summary>Everything captured for this request (${escapeHtml(formatBytes(content.bytes))})</summary><pre class="x-pre">${escapeHtml(content.full)}</pre></details>`
-      + `<p class="x-audit">Retrieved through the content vault under a single-use grant${content.grantId ? ` <span class="x-mono">${escapeHtml(content.grantId)}</span>` : ''}, which is now used. The retrieval is in the audit trail.</p>`
-      + '<button type="button" class="x-btn x-btn-quiet" data-act="hide-content">Put content away</button></section>';
+      + '</section>';
   }
   if (content.status === 'gone') {
-    return `<section class="x-content"><h3>Content</h3>${chip}<div class="x-content-problem"><p>The content is no longer available${content.gone?.reason ? `: ${escapeHtml(content.gone.reason)}` : ''}.</p>`
+    return `<section class="x-content"><h3>Prompt</h3>${chip}<div class="x-content-problem"><p>The content is no longer available${content.gone?.reason ? `: ${escapeHtml(content.gone.reason)}` : ''}.</p>`
       + (content.gone?.receipt ? `<p class="x-state-code">receipt ${escapeHtml(content.gone.receipt)}</p>` : '') + '</div></section>';
   }
-
-  const busy = content.status === 'loading';
-  const form = content.form;
-  const input = (name, label, value, placeholder) => `<label class="x-label" for="x-retrieve-${name}">${label}</label>`
-    + `<input class="x-input" id="x-retrieve-${name}" name="${name}" type="text" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}"${busy ? ' disabled' : ''}>`;
-  return `<section class="x-content"><h3>Content</h3>${chip}<p>Content is stored. Reading it needs a case reference and a second approver, and the content vault decides.</p>`
-    + (content.status === 'refused' ? exploreContentProblem(content.problem) : '')
-    + '<form id="x-retrieve-form" class="x-retrieve" autocomplete="off">'
-    + input('case_reference', 'Case reference', form.caseReference, 'CASE-2026-0001')
-    + input('second_approver', 'Second approver', form.secondApprover, 'someone other than you')
-    + input('justification', 'Justification', form.justification, 'why this content is needed')
-    + `<button type="submit" class="x-btn x-btn-primary"${busy ? ' disabled' : ''}>${busy ? 'Retrieving' : 'Retrieve content'}</button>`
-    + '</form><p class="x-sub">The request, the approver and the read are each written to the audit trail before anything is shown.</p></section>';
+  if (content.status === 'refused') {
+    return `<section class="x-content"><h3>Prompt</h3>${exploreContentProblem(content.problem)}`
+      + '<button type="button" class="x-btn" data-act="retrieve">Try again</button></section>';
+  }
+  return '<section class="x-content" aria-busy="true"><h3>Prompt</h3>'
+    + '<div class="x-detail-skel" aria-hidden="true"><span class="x-skel" style="width:82%"></span><span class="x-skel" style="width:58%"></span></div>'
+    + '<p class="x-sr" role="status">Reading the prompt</p></section>';
 }
 
 /** One submission, read on its own (Q9): metadata, both clocks, routes, and the content answer. */

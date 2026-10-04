@@ -16,7 +16,7 @@ import {
 import { createExploreStub, buildExploreSample } from '../src/explore-stub.js';
 import { createExplorer } from '../src/explore-app.js';
 import {
-  renderExploreStrip, renderExploreResults, renderExploreDetail, renderExploreRail, renderExploreProblems, renderExploreSummary,
+  renderExploreResults, renderExploreDetail, renderExploreRail, renderExploreProblems, renderExploreSummary,
 } from '../src/explore-render.js';
 import { createQueryApi } from '../src/transport.js';
 import { TEMPLATES } from '../src/vocab.js';
@@ -221,16 +221,6 @@ test('nothing found on partial coverage is not reported as "no data"', async () 
   assert.match(renderExploreResults(adequate.explorer.state), /We looked, coverage was adequate/);
 });
 
-test('§14.6 the strip names coverage with its denominator and freshness with its age', async () => {
-  const { explorer } = explorerFor();
-  assert.match(renderExploreStrip(explorer.state.shell), /not read yet/);
-  await explorer.restore('#events');
-  const html = renderExploreStrip(explorer.state.shell);
-  assert.match(html, /4,180 of 4,620 enrolled devices reporting/);
-  assert.match(html, /Freshness<\/strong> Updated 180 s ago/);
-  assert.match(html, /a floor, not everything that happened/);
-});
-
 test('§14.10 both clocks are shown and the device clock is marked', async () => {
   const { explorer } = explorerFor();
   await explorer.restore('#events?window=d30');
@@ -267,7 +257,7 @@ test('opening an event re-reads the one record and shows what its content state 
   assert.equal(last.params.submission_id, row.submission_id);
   assert.equal(explorer.state.detail.status, 'ready');
   const html = renderExploreDetail(explorer.state);
-  assert.match(html, /approved, case-referenced, second-approved retrieval/);
+  assert.match(html, /no content path behind it/, 'with no content path, the page says the prompt cannot be read');
   assert.match(html, /Observation routes/);
   assert.match(html, /audited read: entry/);
   assert.ok(html.includes(row.submission_id), 'the id is shown in full');

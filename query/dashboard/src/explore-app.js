@@ -14,20 +14,23 @@
 //   * an answer that arrives after a newer search began is discarded.
 
 import { createQueryApi, httpTransport, createContentApi, httpContentTransport } from './transport.js';
+import { renderNav } from './render.js';
+import { shellNavItems, readCollapsed, wireShell } from './shell.js';
 import { windowFor } from './dsl.js';
 import { readState } from './states.js';
 import {
   EXPLORE_DATASETS, EXPLORE_DEFAULT_DATASET, exploreDataset, exploreWindowPreset,
-  parseExploreQuery, formatExploreQuery, checkExploreFilter, suggestExploreTerms, applyExploreSuggestion,
+  parseExploreQuery, formatExploreQuery, checkExploreFilter,
   buildExploreRequest, buildExploreRecordRequest, encodeExploreHash, decodeExploreHash, exploreUserInput,
 } from './explore-model.js';
 import { createExploreStub, EXPLORE_SCENARIOS, EXPLORE_SCENARIO_NAMES } from './explore-stub.js';
 import {
-  renderExploreStrip, renderExploreDatasets, renderExploreWindow, renderExploreSuggestions,
+  renderExploreDatasets, renderExploreWindow,
   renderExploreProblems, renderExploreRail, renderExploreSummary, renderExploreResults, renderExploreDetail,
   renderExploreText,
 } from './explore-render.js';
 import { escapeHtml } from './render.js';
+import { eventView } from './views.js';
 
 const DETAIL_CLOSED = Object.freeze({ status: 'closed', key: null, row: null, record: null, submissionId: null });
 
@@ -36,7 +39,6 @@ const TEXT_IDLE = Object.freeze({ status: 'idle', query: '', hits: Object.freeze
 /** The content of the open record: nothing retrieved. Content is never held past the record it belongs to. */
 const CONTENT_IDLE = Object.freeze({
   status: 'idle', submissionId: null, problem: null, gone: null, typed: '', kind: null, full: '', bytes: 0, grantId: null,
-  form: Object.freeze({ caseReference: '', secondApprover: '', justification: '' }),
 });
 
 /** The event ids of a record's observations: what a retrieval names. */
@@ -243,6 +245,8 @@ export function createExplorer({ api, content = null, now = () => new Date(), on
       detail: Object.freeze({ status: served ? 'ready' : 'refused', key, row, record, submissionId }),
       shell: shellAfter(record),
     });
+    // An event whose content is stored shows it: opening the record is asking to read it.
+    if (served && content && String(eventView(record).tiles[0]?.value?.text) === 'uploaded') await retrieveContent();
     return state;
   }
 
@@ -277,7 +281,10 @@ export function createExplorer({ api, content = null, now = () => new Date(), on
     set({
       text: Object.freeze({
         status: 'ready', query: text, problem: null,
-        hits: Object.freeze((answer.hits ?? []).map((h) => Object.freeze({ submissionId: String(h.submission_id), snippet: String(h.snippet ?? '') }))),
+        hits: Object.freeze((answer.hits ?? []).map((h) => Object.freeze({
+          submissionId: String(h.submission_id), snippet: String(h.snippet ?? ''),
+          subject: h.subject ?? null, device: h.device ?? null, tool: h.tool ?? null,
+        }))),
         truncated: Boolean(answer.truncated),
       }),
     });
@@ -300,25 +307,18 @@ export function createExplorer({ api, content = null, now = () => new Date(), on
    * Retrieve the content of the open record (docs/02 §11). The case reference and the second
    * approver go to the vault, which decides; a refusal comes back with its reason and is shown.
    */
-  async function retrieveContent({ caseReference = '', secondApprover = '', justification = '' } = {}) {
+  async function retrieveContent() {
     const detail = state.detail;
     if (detail.status !== 'ready' || !detail.submissionId || !detail.record) return state;
     const submissionId = detail.submissionId;
     const seq = ++contentSeq;
-    // What was typed into the request is kept, so a refusal can be corrected rather than retyped.
-    const form = Object.freeze({ caseReference: String(caseReference), secondApprover: String(secondApprover), justification: String(justification) });
-    const base = { ...CONTENT_IDLE, submissionId, form };
+    const base = { ...CONTENT_IDLE, submissionId };
     if (!content) {
       set({ content: Object.freeze({ ...base, status: 'refused', problem: Object.freeze({ code: 'no_content_path', message: 'This page has no content path behind it.' }) }) });
       return state;
     }
     set({ content: Object.freeze({ ...base, status: 'loading' }) });
-    const answer = await content.retrieve({
-      event_ids: exploreEventIds(detail.record),
-      case_reference: String(caseReference).trim(),
-      second_approver: String(secondApprover).trim(),
-      justification: String(justification).trim(),
-    });
+    const answer = await content.retrieve({ event_ids: exploreEventIds(detail.record) });
     if (seq !== contentSeq || state.detail.submissionId !== submissionId) return state;
     if (answer.state === 'available' && typeof answer.content === 'string') {
       const split = exploreUserInput(answer.content);
@@ -392,23 +392,23 @@ export function createExplorer({ api, content = null, now = () => new Date(), on
 export async function bootExplore({ document, api: given, content: givenContent } = {}) {
   const el = (id) => document.getElementById(id);
   const live = new URLSearchParams(document.location.search).get('transport') === 'live';
+  // The same navigation panel as the dashboard: its links lead back to the screens, on the same
+  // data source this page reads.
+  const shellQuery = live ? '?transport=live' : '';
+  const collapsed = readCollapsed(document);
+  const nav = el('nav');
+  if (nav) nav.innerHTML = renderNav(shellNavItems({ page: `index.html${shellQuery}`, query: shellQuery }), 'explore', { collapsed: [...collapsed] });
+  wireShell({ document, live, collapsed });
   const api = given ?? (live ? createQueryApi({ transport: httpTransport() }) : null);
   const stub = api ? null : createExploreStub({ latencyMs: 220 });
   // The content reads follow the same choice as the query read: the page's own origin when live,
   // the sample when not. A caller that passes its own api passes its own content path, or none.
   const content = givenContent
     ?? (given ? null : createContentApi({ transport: live ? httpContentTransport() : stub.content }));
-  const input = el('x-query');
   const textInput = el('x-text-query');
-  let suggestion = null;
   let lastHash = null;
 
   const explorer = createExplorer({ api: api ?? createQueryApi({ transport: stub }), content, onChange: paint });
-
-  function paintSuggestions() {
-    suggestion = suggestExploreTerms(input.value, input.selectionStart ?? input.value.length, EXPLORE_DATASETS[explorer.state.dataset]);
-    el('x-suggest').innerHTML = renderExploreSuggestions(suggestion);
-  }
 
   /** Replace a region only when its markup changed, so an untouched region keeps its focus. */
   const painted = new Map();
@@ -436,7 +436,6 @@ export async function bootExplore({ document, api: given, content: givenContent 
 
   function paint(state) {
     const mark = focusMark();
-    put('x-strip', renderExploreStrip(state.shell));
     put('x-datasets', renderExploreDatasets(state));
     put('x-window', renderExploreWindow(state));
     put('x-problems', renderExploreProblems(state));
@@ -448,9 +447,8 @@ export async function bootExplore({ document, api: given, content: givenContent 
     put('x-detail', renderExploreDetail(state));
     el('x-detail').hidden = state.detail.status === 'closed';
     el('x-body').classList.toggle('x-has-detail', state.detail.status !== 'closed');
-    // The query bar is only rewritten when it is not being typed in.
-    if (document.activeElement !== input && input.value !== state.queryText) input.value = state.queryText;
-    paintSuggestions();
+    // A prompt-text search takes over the results; the list and its filters come back when it is cleared.
+    el('x-page').classList.toggle('x-text-active', state.text.status !== 'idle');
     restoreFocus(mark);
     const next = explorer.hash();
     if (next !== lastHash) {
@@ -481,31 +479,10 @@ export async function bootExplore({ document, api: given, content: givenContent 
     if (row) row.focus();
   }
 
-  el('x-form').addEventListener('submit', (event) => {
-    event.preventDefault();
-    explorer.setQuery(input.value);
-  });
   el('x-text-form').addEventListener('submit', (event) => {
     event.preventDefault();
     explorer.searchText(textInput.value);
   });
-  // The retrieval request lives inside the detail panel, which is repainted, so it is caught here.
-  document.addEventListener('submit', (event) => {
-    if (event.target.id !== 'x-retrieve-form') return;
-    event.preventDefault();
-    const value = (name) => event.target.elements[name]?.value ?? '';
-    explorer.retrieveContent({
-      caseReference: value('case_reference'),
-      secondApprover: value('second_approver'),
-      justification: value('justification'),
-    });
-  });
-  input.addEventListener('input', paintSuggestions);
-  input.addEventListener('click', paintSuggestions);
-  input.addEventListener('keyup', (event) => {
-    if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') paintSuggestions();
-  });
-
   document.addEventListener('click', (event) => {
     const target = event.target.closest('[data-act]');
     if (!target) return;
@@ -528,18 +505,10 @@ export async function bootExplore({ document, api: given, content: givenContent 
     } else if (act === 'text-clear') {
       textInput.value = '';
       explorer.clearText();
-    } else if (act === 'hide-content') explorer.hideContent();
-    else if (act === 'rail') el('x-body').classList.toggle('x-rail-open');
-    else if (act === 'suggest' && suggestion) {
-      const applied = applyExploreSuggestion(input.value, suggestion, suggestion.items[Number(target.dataset.index)]);
-      input.value = applied.text;
-      input.focus();
-      input.setSelectionRange(applied.caret, applied.caret);
-      paintSuggestions();
-    }
+    } else if (act === 'retrieve') explorer.retrieveContent();
   });
 
-  // A free-text filter in the rail is applied when it is committed, not on every keystroke.
+  // A filter is applied when it is committed: a choice from a list, or Enter in a text field.
   el('x-rail').addEventListener('change', (event) => {
     const field = event.target.dataset?.field;
     if (field) explorer.setFilter(field, event.target.value);
@@ -573,7 +542,6 @@ export async function bootExplore({ document, api: given, content: givenContent 
     });
   } else {
     el('x-sample').hidden = true;
-    el('x-live').hidden = false;
   }
 
   document.defaultView.addEventListener('hashchange', () => {
