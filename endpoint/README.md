@@ -9,6 +9,23 @@ The design and its reasons are in [docs/01-collectors.md](../docs/01-collectors.
 choices are in [docs/00-architecture.md §4.1](../docs/00-architecture.md). This file is the map of
 the code, not a second copy of the design.
 
+## Next: collecting Claude Code prompts
+
+The delivery path is built (service → enrol → spool → drain → `POST /v1/events`); nothing is captured
+yet because no provider is enabled and there is no policy. To collect prompts from Claude Code — a CLI
+speaking HTTPS to `api.anthropic.com`:
+
+1. **Build a signed policy bundle** that scopes `proxy.tls` to the generative hosts, carries the local
+   root CA, and names the classifier. This is the missing component: with no bundle the device is at
+   M0 and the interceptor is unconfigured. (There is no operator-facing bundle generator; `--selftest`
+   signs a throwaway one.)
+2. **Turn the interceptor on**: `SAC_PROXY_TLS=true` with a fixed `SAC_PROXY_TLS_LISTEN` port.
+3. **Route the CLI to it**: point Claude Code's proxy at that port.
+4. **Trust the CA**: the bundle's root CA in the machine trust store (or `NODE_EXTRA_CA_CERTS` for the
+   Node-based CLI), or the intercepted handshake fails.
+
+Steps 2–4 are configuration; step 1 is the work.
+
 ## What is here
 
 | Directory | What it is |
