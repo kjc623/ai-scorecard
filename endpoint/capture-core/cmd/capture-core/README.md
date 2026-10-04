@@ -115,6 +115,21 @@ It writes `bundle.json` (signed), `ca.pem`, `ca.key` (0600) and `policy-key.pub`
 `--ca-key`/`--ca-cert` load an existing key pair instead of generating one; `--policy-priv` signs
 with an existing Ed25519 key. The device never signs a bundle it enforces.
 
+On Windows the same tool is a `.exe`, and PowerShell needs backticks (not `\`) to continue a line,
+and a quoted value where a placeholder would be read as redirection:
+
+```powershell
+go build -o C:\architecture\bin\sac-bundle.exe   ./cmd/sac-bundle
+go build -o C:\architecture\bin\capture-core.exe ./cmd/capture-core
+
+C:\architecture\bin\sac-bundle.exe --out C:\ProgramData\ShadowAICapture\bundle `
+  --device-id 22222222-2222-4222-8222-222222222222 `
+  --hosts api.anthropic.com `
+  --listen 127.0.0.1:8843 `
+  --canary api.anthropic.com:443 `
+  --shim-managed-dir C:\ProgramData\ShadowAICapture\shim
+```
+
 ## Running it as a service
 
 **Windows.** `capture-core --service` hosts the process under the Service Control Manager itself: it
