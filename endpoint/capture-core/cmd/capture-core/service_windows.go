@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -43,8 +44,16 @@ const (
 	// errorExceptionInService is what the SCM sees when the handler itself fails.
 	errorExceptionInService = 1064
 
+	// startWaitHint is how long the SCM is told a start may take. The agent graph comes up quickly;
+	// a failure reports STOPPED with a non-zero exit code rather than waiting the whole hint.
+	startWaitHint = 30000
+
 	noError = 0
 )
+
+// shutdownGrace is how long the process allows between the SCM's stop control and the last moment
+// the status handle is valid: runServiceContext's own bound is DrainDeadline + this.
+const shutdownGrace = 15 * time.Second
 
 // serviceStatus mirrors the Win32 SERVICE_STATUS structure field for field.
 type serviceStatus struct {
@@ -79,9 +88,8 @@ type serviceHost struct {
 	namePtr *uint16
 	handle  syscall.Handle
 
-	mu       sync.Mutex
-	cancel   context.CancelFunc
-	stopOnce sync.Once
+	mu     sync.Mutex
+	cancel context.CancelFunc
 }
 
 var host serviceHost
@@ -114,6 +122,15 @@ func runAsService(cfg Config, log *slog.Logger) error {
 // START_PENDING, registers the control handler, reports RUNNING only once the agent graph is up,
 // then reports STOP_PENDING and STOPPED around the graceful shutdown.
 func serviceMain(argc uint32, argv **uint16) uintptr {
+	// Establish the cancellation path BEFORE the control handler is registered. The handler is live
+	// the instant RegisterServiceCtrlHandlerExW returns, so a STOP/SHUTDOWN delivered in that window
+	// would otherwise read a nil cancel and be lost. context.CancelFunc is idempotent, so no
+	// sync.Once is needed (and a Once would permanently swallow a lost control).
+	ctx, cancel := context.WithCancel(context.Background())
+	host.mu.Lock()
+	host.cancel = cancel
+	host.mu.Unlock()
+
 	handle, _, callErr := procRegisterServiceCtrlHandlerExW.Call(
 		uintptr(unsafe.Pointer(host.namePtr)),
 		syscall.NewCallback(serviceControlHandler),
@@ -121,26 +138,31 @@ func serviceMain(argc uint32, argv **uint16) uintptr {
 	)
 	if handle == 0 {
 		host.log.Error("RegisterServiceCtrlHandlerEx failed", "error", callErr)
+		cancel()
 		return errorExceptionInService
 	}
 	host.handle = syscall.Handle(handle)
 
-	setStatus(serviceStateStartPending, 0, 30000)
+	setStatus(serviceStateStartPending, 0, startWaitHint)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	host.mu.Lock()
-	host.cancel = cancel
-	host.mu.Unlock()
-
-	onRunning := func() { setStatus(serviceStateRunning, serviceAcceptStop|serviceAcceptShutdown, 0) }
-	err := runServiceContext(ctx, host.cfg, host.log, onRunning)
+	// If a STOP/SHUTDOWN arrived before the status handle existed to report through, ctx is already
+	// cancelled and there is nothing to start.
+	var runErr error
+	if ctx.Err() == nil {
+		onRunning := func() { setStatus(serviceStateRunning, serviceAcceptStop|serviceAcceptShutdown, 0) }
+		runErr = runServiceContext(ctx, host.cfg, host.log, onRunning)
+	}
 	cancel()
 
-	if err != nil {
-		host.log.Error("service run failed", "error", err)
+	if runErr != nil {
+		host.log.Error("service run failed", "error", runErr)
 	}
-	setStatus(serviceStateStopPending, 0, 5000)
-	setStatus(serviceStateStopped, 0, 0)
+	// Report STOP_PENDING again in case the control handler could not (it ran before the status
+	// handle existed), then STOPPED. The WaitHint is the real bounded shutdown budget, so the SCM
+	// does not treat a slow spool drain as a hang; a run error is reported as a non-zero exit code
+	// rather than as a clean stop.
+	setStatusExit(serviceStateStopPending, 0, host.stopWaitHint(), noError)
+	setStatusExit(serviceStateStopped, 0, 0, exitCodeFor(runErr))
 	return noError
 }
 
@@ -149,21 +171,45 @@ func serviceMain(argc uint32, argv **uint16) uintptr {
 func serviceControlHandler(control, eventType, eventData, context uintptr) uintptr {
 	switch uint32(control) {
 	case serviceControlStop, serviceControlShutdown:
-		host.stopOnce.Do(func() {
-			host.mu.Lock()
-			cancel := host.cancel
-			host.mu.Unlock()
-			if cancel != nil {
-				cancel()
-			}
-		})
+		// Report STOP_PENDING before cancelling, so the SCM sees the shutdown in progress for its
+		// whole duration rather than only at the end.
+		setStatus(serviceStateStopPending, 0, host.stopWaitHint())
+		host.mu.Lock()
+		cancel := host.cancel
+		host.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
 	}
 	return noError
 }
 
-// setStatus reports the service state to the SCM. A zero handle means the handler is not registered
-// yet (or has been torn down) and there is nobody to report to.
+// stopWaitHint is the bounded time the graceful shutdown may take (runServiceContext allows
+// DrainDeadline + shutdownGrace). A service that outlives its WaitHint is treated as hung.
+func (h *serviceHost) stopWaitHint() uint32 {
+	d := h.cfg.DrainDeadline + shutdownGrace
+	if d <= 0 {
+		d = 30*time.Second + shutdownGrace
+	}
+	return uint32(d.Milliseconds())
+}
+
+// exitCodeFor maps a run error onto the SCM exit code, so a failed start is a failed start.
+func exitCodeFor(err error) uint32 {
+	if err != nil {
+		return errorExceptionInService
+	}
+	return noError
+}
+
+// setStatus reports the service state to the SCM with a clean exit code.
 func setStatus(state, accepted, waitHint uint32) {
+	setStatusExit(state, accepted, waitHint, noError)
+}
+
+// setStatusExit reports the service state to the SCM. A zero handle means the handler is not
+// registered yet (or has been torn down) and there is nobody to report to.
+func setStatusExit(state, accepted, waitHint, win32ExitCode uint32) {
 	if host.handle == 0 {
 		return
 	}
@@ -171,7 +217,7 @@ func setStatus(state, accepted, waitHint uint32) {
 		ServiceType:      serviceWin32OwnProcess,
 		CurrentState:     state,
 		ControlsAccepted: accepted,
-		Win32ExitCode:    noError,
+		Win32ExitCode:    win32ExitCode,
 		WaitHint:         waitHint,
 	}
 	procSetServiceStatus.Call(uintptr(host.handle), uintptr(unsafe.Pointer(&st)))
