@@ -378,6 +378,7 @@ func printConfig(cfg Config, logger loggerLike) error {
 	fmt.Printf("identity:        tenant=%s device=%s user=%s population=%q\n", cfg.TenantID, cfg.DeviceID, cfg.UserRef, cfg.Population)
 	fmt.Printf("spool:           dir=%s key=%s bounds=%s retention=%s\n", cfg.SpoolDir, cfg.SpoolKey, cfg.SpoolBoundsProfile, cfg.Retention)
 
+	var inForce *policy.Bundle
 	if cfg.BundlePath == "" {
 		fmt.Printf("policy:          no bundle configured -> M0 (metadata only, no content read; §13.3 rule 5)\n")
 	} else {
@@ -391,6 +392,7 @@ func printConfig(cfg Config, logger loggerLike) error {
 			fmt.Printf("policy error:    %v\n", result.Err)
 		}
 		if b := store.InForce(); b != nil {
+			inForce = b
 			fmt.Printf("policy version:  %s effective_at=%s actor=%s\n", b.Version, b.EffectiveAt.UTC().Format(time.RFC3339), b.Actor)
 			fmt.Printf("tenant default:  %s\n", b.TenantDefault)
 			fmt.Printf("classifier:      release=%s state=%s\n", b.Classifier.ReleaseID, b.Classifier.State)
@@ -436,7 +438,7 @@ func printConfig(cfg Config, logger loggerLike) error {
 	}
 
 	fmt.Printf("providers:       proxy.tls=%v (listen %s, canary %q) proxy.loopback=%v proc.detect=%v\n",
-		cfg.EnableTLS, cfg.TLSListen, cfg.TLSCanary, cfg.EnableLoopback, cfg.EnableProcDetect)
+		cfg.EnableTLS, tlsListen(cfg, inForce), tlsCanary(cfg, inForce), cfg.EnableLoopback, cfg.EnableProcDetect)
 	if cfg.TrustInstall {
 		fmt.Printf("trust:           install=true store=%s remove_on_stop=%v ca_cert=%q ca_key=%q\n",
 			cfg.TrustStore, cfg.TrustRemoveOnStop, cfg.CACertFile, cfg.CAKeyFile)

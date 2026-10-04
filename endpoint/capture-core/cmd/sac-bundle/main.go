@@ -321,12 +321,17 @@ func summaryJSON(o options, pub ed25519.PublicKey, generatedKey bool) map[string
 	}
 	flags := map[string]string{
 		"--bundle":           files["bundle.json"],
-		"--ca-key":           files["ca.key"],
 		"--policy-key":       hex.EncodeToString(pub),
 		"--policy-key-id":    o.policyKeyID,
+		"--ca-cert":          files["ca.pem"],
+		"--ca-key":           files["ca.key"],
 		"--proxy-tls-listen": o.listen,
-		"--trust-install":    files["ca.pem"],
-		"--cli-shim":         o.proxyAddr,
+		"--trust-install":    "true",
+		"--cli-shim":         "true",
+		"--shim-dir":         filepath.Join(o.out, "shim"),
+	}
+	if o.canary != "" {
+		flags["--proxy-tls-canary"] = o.canary
 	}
 	if o.classifier != "" {
 		flags["--classifier-address"] = o.classifier
