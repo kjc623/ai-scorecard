@@ -73,13 +73,10 @@ Linux path for real, which is the one platform a Linux host can actually mutate 
 
 ## Notes and residual gaps
 
-* **`cli_shim.node_require` is re-signed in.** `sac-bundle` signs the policy bundle but has no
-  `--node-require` flag, and `cli.shim` only writes `node-proxy.cjs` + `NODE_OPTIONS` when the bundle
-  sets `cli_shim.node_require`. The device entrypoint therefore runs
-  [`scripts/enable-node-require.mjs`](scripts/enable-node-require.mjs), which sets the field and
-  re-signs the bundle under a fresh Ed25519 policy key, rewriting `policy-key.pub` to match. The
-  bundle still verifies through `capture-core`'s own `policy.NewVerifier`/`NewStore` chain
-  (`outcome=accepted`). This is a lab wiring step, not a change to `capture-core` source.
+* **`cli_shim.node_require` comes from the generator.** `sac-bundle --node-require` (default true)
+  makes the bundle carry `cli_shim.node_require`, so `cli.shim` writes `node-proxy.cjs` and sets
+  `NODE_OPTIONS=--require`. `--shim-managed-dir /state/shim` pins the managed directory the bundle
+  names, matching `--shim-dir`.
 * **No classifier host.** The lab runs rules-only (no `--classifier-address`), so after the first
   *classified* (POST) observation `proxy.tls` honestly reports `degraded` with
   `detail=classifier_unavailable` (§4.2: it never claims healthy while a named capability is

@@ -14,7 +14,8 @@ set -eu
 cp /pki/upstream-ca.crt /usr/local/share/ca-certificates/upstream-ca.crt
 update-ca-certificates
 
-# 2. Mint the device CA and the signed policy bundle.
+# 2. Mint the device CA and the signed policy bundle. --node-require makes the bundle carry
+#    cli_shim.node_require, which is what makes cli.shim write node-proxy.cjs and NODE_OPTIONS.
 mkdir -p /state/bundle
 /app/bin/sac-bundle \
   --out /state/bundle \
@@ -24,14 +25,11 @@ mkdir -p /state/bundle
   --canary api.anthropic.test:443 \
   --proxy-addr 127.0.0.1:8843 \
   --runtimes go,node,python \
+  --shim-managed-dir /state/shim \
+  --node-require \
   --tenant-default m1
 
-# 3. Enable cli_shim.node_require. sac-bundle has no --node-require flag, and cli.shim only writes
-#    node-proxy.cjs + NODE_OPTIONS when the bundle sets it. Re-sign the bundle under a fresh policy
-#    key and rewrite policy-key.pub to match.
-node /app/scripts/enable-node-require.mjs /state/bundle
-
-# 4. Start the agent in the background. The flags are exactly the enrolment profile shape, with the
+# 3. Start the agent in the background. The flags are exactly the enrolment profile shape, with the
 #    appliance's own /state as the spool/shim/bundle/health directory.
 /app/bin/capture-core \
   --tenant-id 11111111-1111-4111-8111-111111111111 \
@@ -61,7 +59,7 @@ CAPTURE_PID=$!
 echo "$CAPTURE_PID" > /state/capture-core.pid
 echo "device: capture-core started (pid=$CAPTURE_PID)"
 
-# 5. Wait for capture-core to exit (the driver sends SIGTERM for the trust-removal check), then hold
+# 4. Wait for capture-core to exit (the driver sends SIGTERM for the trust-removal check), then hold
 #    the container alive so the driver can exec the removal assertions against it.
 wait "$CAPTURE_PID" || true
 echo "device: capture-core exited; holding the container open for the driver"
