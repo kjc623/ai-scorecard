@@ -46,9 +46,13 @@ if ($ConfigFile -ne "") {
   Write-Host "  $sacArgs"
 }
 
+# Find the WiX CLI three ways, because `dotnet tool install --global wix` puts wix.exe in
+# %USERPROFILE%\.dotnet\tools, which is not always on the PATH of the shell that runs this script.
 $wix = $null
 if ($WixExe -ne "") { $wix = $WixExe }
-elseif (Get-Command wix -ErrorAction SilentlyContinue) { $wix = "wix" }
+elseif (Get-Command wix -ErrorAction SilentlyContinue) { $wix = 'wix' }
+elseif (Test-Path (Join-Path $env:USERPROFILE '.dotnet\tools\wix.exe')) { $wix = Join-Path $env:USERPROFILE '.dotnet\tools\wix.exe' }
+elseif (Test-Path (Join-Path $env:USERPROFILE '.dotnet\tools\wix')) { $wix = Join-Path $env:USERPROFILE '.dotnet\tools\wix' }
 
 $out = Join-Path $Root $OutDir
 New-Item -ItemType Directory -Force -Path $out | Out-Null
@@ -60,8 +64,10 @@ if (-not $wix) {
   Write-Host "Install WiX one of two ways, then re-run this script:"
   Write-Host "  1) standalone CLI, no .NET SDK: install wix-cli-x64.msi from"
   Write-Host "     https://github.com/wixtoolset/wix/releases  (v5.0.2 asset: wix-cli-x64.msi)"
-  Write-Host "  2) .NET tool, needs the .NET SDK 6+:  dotnet tool install --global wix"
-  Write-Host "Then, with 'wix' on PATH:"
+  Write-Host "  2) .NET tool: 'dotnet tool install --global wix' -- needs the .NET SDK 6+;"
+  Write-Host "     check with 'dotnet --list-sdks' (an empty list means only a runtime is installed)."
+  Write-Host "     The tool lands in %USERPROFILE%\.dotnet\tools; this script looks there when 'wix' is not on PATH."
+  Write-Host "Then build:"
   Write-Host ""
   Write-Host "  node installer/build.mjs --os windows --arch amd64"
   Write-Host "  wix build installer/generated/windows/ShadowAICapture.wxs -arch x64 ``"
