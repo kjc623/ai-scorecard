@@ -24,7 +24,9 @@ output, a `--check` that fails on drift.
 | [`render.mjs`](render.mjs) | Generates every platform artefact from the manifest. `--check` fails on drift; `--args FILE` renders a config file into the exact flag list; `--list` prints the catalogue. |
 | [`build.mjs`](build.mjs) | Compiles `capture-core` and `classifier-host` for a target and stages `installer/.stage/<os>-<arch>/` with a SHA-256 manifest. |
 | [`verify.mjs`](verify.mjs) | The installer's gate: flags exist (parsed from `main.go`, not from this manifest), the three platforms agree, generated output has not drifted, and the real binary parses the generated argv. |
-| [`dev.mjs`](dev.mjs) | Installs into a prefix and drives the installed agent through the auth lab: enrol against the real `control-api`, drain the spool through the edge, and read the rows back out of `ingest.*`. |
+| [`dev.mjs`](dev.mjs) | Runs the agent **inside** the lab network: install into a prefix, enrol against the real `control-api`, drain the spool through the edge, and read the rows back out of `ingest.*`. For daemons whose published ports the calling host cannot reach. |
+| [`dev-host.mjs`](dev-host.mjs) | Runs the agent **on the host** against the host-published auth lab (Docker Desktop on Windows/macOS): seeds a token, enrols, aligns `--device-id` with the value the server mints, feeds the golden frames, and verifies the rows. `--print-only` resolves the config and stops. |
+| [`seed.mjs`](seed.mjs) | Mints and seeds one single-use enrolment token in the auth lab and prints only the token. `localdev/run.mjs --auth` mints its own and discards them, so a host-run device has none. |
 | [`generated/`](generated) | The committed, `--check`-able render: env template, `capture-core-run` (sh and `.cmd`), systemd unit, LaunchDaemon plist, WiX `.wxs`. |
 | [`linux/`](linux) | `install.sh` / `uninstall.sh` — the two-mode installer (system or rootless `--prefix`). |
 | [`macos/`](macos) | `build-pkg.sh` and the `preinstall` / `postinstall` scripts. |
@@ -50,7 +52,8 @@ node installer/verify.mjs
 node installer/dev.mjs --no-lab --prefix /tmp/sac
 
 # 5. Install and drive the whole path against the local auth lab (needs Docker)
-node installer/dev.mjs
+node installer/dev.mjs            # agent inside the lab network
+node installer/dev-host.mjs       # agent on the host, against the host-published edge
 ```
 
 The result of step 5, on a working tree, is:
@@ -95,6 +98,35 @@ profile** ([docs/05 §6.2](../docs/05-platform-delivery.md)). The device calls `
 the **server** resolves the tenant from the token or the credential — never from the request body —
 and returns `device_id`, `tenant_id` and `region`. The credential names the FQDN (SAN in `x509`, token
 audience in `dpop`), and the region pin fails closed.
+
+## Running on the host against the lab
+
+On a machine where Docker Desktop runs the lab (a Windows host, typically), the published edge is
+reachable at `127.0.0.1`, so the agent can run as an ordinary host process rather than inside the lab
+network:
+
+```
+node localdev/build.mjs --auth
+node localdev/run.mjs --auth          # leaves the auth lab running
+node installer/dev-host.mjs           # x509; add --auth-mode dpop for DPoP
+```
+
+`dev-host.mjs` builds the host payload, seeds a token, runs the enrol pass, reads the server-minted
+`device_id` out of `ops.device`, rewrites `--device-id`, feeds the golden frames, and checks
+`ingest.observation`. It expects the **auth** lab, not the default memory lab: the endpoint enrols, so
+it needs `control-api` and the edge, and the default lab's `ingest-api` has no `/v1/enrol` and accepts
+only header-based dev principals the agent does not send.
+
+Use the MSI instead when you want the installed-service shape:
+
+```
+dotnet tool install --global wix        # once
+pwsh installer/windows/Build-Msi.ps1 -ConfigFile installer/profiles/lab-host.env
+msiexec /i installer/dist/ShadowAICapture.msi /qn
+```
+
+`profiles/lab-host.env` is the host-facing profile (edge at `127.0.0.1`, native paths);
+`node installer/seed.mjs` prints the token to paste in.
 
 ## Two gaps this makes visible
 
