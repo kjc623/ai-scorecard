@@ -57,24 +57,26 @@ func Run(args []string, stdout, stderr io.Writer) int {
 // options is the resolved flag set. It is separated from the flag plumbing so generate is testable
 // without re-parsing strings.
 type options struct {
-	out           string
-	deviceID      string
-	hosts         []string
-	tenantHosts   []string
-	ports         []int
-	classifier    string
-	caKeyPath     string
-	caCertPath    string
-	policyPriv    string // hex-encoded ed25519 private key; empty means generate
-	policyKeyID   string
-	listen        string
-	canary        string
-	proxyAddr     string
-	runtimes      []string
-	noProxy       []string
-	tenantDefault string
-	toolModes     map[string]protocol.CollectionMode
-	version       string
+	out            string
+	deviceID       string
+	hosts          []string
+	tenantHosts    []string
+	ports          []int
+	classifier     string
+	caKeyPath      string
+	caCertPath     string
+	policyPriv     string // hex-encoded ed25519 private key; empty means generate
+	policyKeyID    string
+	listen         string
+	canary         string
+	proxyAddr      string
+	runtimes       []string
+	noProxy        []string
+	nodeRequire    bool
+	shimManagedDir string
+	tenantDefault  string
+	toolModes      map[string]protocol.CollectionMode
+	version        string
 }
 
 // toolModesValue parses repeatable --tool-mode fingerprint=mode flags and refuses a mode outside
@@ -107,6 +109,7 @@ func parseArgs(args []string, stderr io.Writer) (options, error) {
 		policyKeyID:   "policy-key-1",
 		listen:        "127.0.0.1:8843",
 		runtimes:      []string{"go", "node", "python"},
+		nodeRequire:   true,
 		tenantDefault: "m1",
 		version:       "1",
 		toolModes:     map[string]protocol.CollectionMode{},
@@ -132,6 +135,8 @@ func parseArgs(args []string, stderr io.Writer) (options, error) {
 	fs.StringVar(&proxyAddr, "proxy-addr", "", "CLI shim proxy address (default: --listen)")
 	fs.StringVar(&runtimesCSV, "runtimes", strings.Join(o.runtimes, ","), "comma-separated CLI shim runtimes, subset of go,node,python")
 	fs.StringVar(&noProxyCSV, "no-proxy", "", "comma-separated no_proxy entries for the CLI shim")
+	fs.BoolVar(&o.nodeRequire, "node-require", o.nodeRequire, "write the Node CONNECT bootstrap and set NODE_OPTIONS=--require in the shim profile")
+	fs.StringVar(&o.shimManagedDir, "shim-managed-dir", "", "cli.shim managed directory (bundle cli_shim.managed_dir); empty uses the platform default")
 	fs.StringVar(&o.tenantDefault, "tenant-default", o.tenantDefault, "tenant default collection mode (m0..m3)")
 	fs.Var(toolModes, "tool-mode", "fingerprint=mode override (repeatable)")
 	fs.StringVar(&o.version, "version", o.version, "bundle version")
@@ -226,10 +231,12 @@ func generate(o options, stdout io.Writer) error {
 			ProxyCanary:       o.canary,
 		},
 		CLIShim: policy.CLIShimPolicy{
-			Enabled:   true,
-			ProxyAddr: o.proxyAddr,
-			Runtimes:  o.runtimes,
-			NoProxy:   o.noProxy,
+			Enabled:     true,
+			ProxyAddr:   o.proxyAddr,
+			ManagedDir:  o.shimManagedDir,
+			Runtimes:    o.runtimes,
+			NoProxy:     o.noProxy,
+			NodeRequire: o.nodeRequire,
 		},
 		Classifier: policy.ClassifierRelease{ReleaseID: "sac-bundle", State: policy.ReleaseEnforcing},
 	}
