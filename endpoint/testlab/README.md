@@ -71,6 +71,12 @@ constructions are **unit-tested** in `endpoint/capture-core/trust/` (the `Runner
 exact argv without touching a real store), but they are **not run here**: this lab exercises the
 Linux path for real, which is the one platform a Linux host can actually mutate the trust store of.
 
+**Windows smoke-test caveat.** Windows `curl.exe` uses Schannel, which checks revocation and fails
+closed with `CRYPT_E_NO_REVOCATION_CHECK` for a locally trusted per-device CA that publishes no
+CRL/OCSP. Pass `curl.exe --ssl-no-revoke` (or set the equivalent revocation policy in the client).
+That is a client revocation setting, not a proxy or trust-store failure. Also avoid PowerShell
+mangling the JSON body: write it to a file and use `--data-binary "@body.json"`.
+
 ## Notes and residual gaps
 
 * **`cli_shim.node_require` comes from the generator.** `sac-bundle --node-require` (default true)
