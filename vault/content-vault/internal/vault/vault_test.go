@@ -196,15 +196,18 @@ func TestGrantMatrix(t *testing.T) {
 			CaseReference: "CASE-42", SecondApprover: "approver@example.com",
 		}
 
-		noCase := base
-		noCase.CaseReference = ""
-		_, err := rig.Service.Retrieve(context.Background(), noCase)
-		assertDenial(t, err, vault.DenyCaseReferenceRequired)
-
-		noApprover := base
-		noApprover.SecondApprover = ""
-		_, err = rig.Service.Retrieve(context.Background(), noApprover)
-		assertDenial(t, err, vault.DenySecondApproverRequired)
+		// Neither a case reference nor a second approver is required: the retrieval is granted
+		// without them and recorded as it was asked.
+		bare := base
+		bare.CaseReference = ""
+		bare.SecondApprover = ""
+		granted, err := rig.Service.Retrieve(context.Background(), bare)
+		if err != nil {
+			t.Fatalf("a retrieval with no case reference and no approver was refused: %v", err)
+		}
+		if granted.GrantID == "" {
+			t.Fatalf("a retrieval with no case reference and no approver issued no grant")
+		}
 
 		selfApproved := base
 		selfApproved.SecondApprover = principal

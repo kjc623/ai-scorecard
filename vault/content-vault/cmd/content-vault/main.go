@@ -216,6 +216,24 @@ func runServe(args []string) int {
 	}
 	h := httpapi.New(svc, auth.NewHeaderAuthenticator("query-api", "control-api", "ops"), logger)
 
+	// CONTENT_VAULT_REINDEX_TENANTS names tenants whose prompt index is rebuilt from their stored
+	// objects at start, after a change to what is indexed. It runs beside serving and is safe to
+	// repeat: each row is rewritten from the object it belongs to.
+	for _, tenantID := range strings.Split(os.Getenv("CONTENT_VAULT_REINDEX_TENANTS"), ",") {
+		tenantID = strings.TrimSpace(tenantID)
+		if tenantID == "" {
+			continue
+		}
+		go func() {
+			indexed, cleared, failed, err := svc.ReindexTenant(context.Background(), tenantID)
+			if err != nil {
+				logger.Warn("content-vault: reindex did not run", "tenant", tenantID, "error", err)
+				return
+			}
+			logger.Info("content-vault: reindexed", "tenant", tenantID, "indexed", indexed, "cleared", cleared, "failed", failed)
+		}()
+	}
+
 	if err := checkBindAddress(*addr, acknowledged); err != nil {
 		return fatalf("%v", err)
 	}

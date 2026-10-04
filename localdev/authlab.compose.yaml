@@ -139,6 +139,9 @@ services:
       # The search scope the lab's policy names, and its tier. A tenant's full_text tier is only a
       # ceiling: a scope nobody names carries disabled (docs/06 §6.3).
       CONTENT_VAULT_SCOPE_TIERS: lab=full_text
+      # The lab tenant's prompt index is rebuilt from its stored objects at every start, so a change
+      # to what the vault indexes reaches the prompts already stored. It is safe to repeat.
+      CONTENT_VAULT_REINDEX_TENANTS: 11111111-1111-1111-1111-111111111111
     volumes:
       - authvaultkeys:/keys
     healthcheck:

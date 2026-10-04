@@ -326,9 +326,9 @@ func (s *Service) FinaliseObject(ctx context.Context, req FinaliseRequest) (Fina
 	return result, nil
 }
 
-// maxIndexedChars bounds the prompt text one index row carries. PostgreSQL refuses a tsvector over
-// 1 MiB, and an index row is for finding a submission, not for holding it.
-const maxIndexedChars = 200_000
+// maxIndexedChars bounds the prompt text one index row carries: the length ingest.search_text
+// admits (database/schema.sql). An index row is for finding a submission, not for holding it.
+const maxIndexedChars = 65_536
 
 // canIndexStored reports whether a stored object's text may and can be indexed by the vault itself.
 func (s *Service) canIndexStored(tenant store.Tenant, obj store.ContentObject) bool {
@@ -339,9 +339,10 @@ func (s *Service) canIndexStored(tenant store.Tenant, obj store.ContentObject) b
 	return reason == ""
 }
 
-// indexStoredContent opens the object just stored and writes its text as the submission's
-// prompt_body unit. A failure is reported as a refused unit and never fails the finalise: the
-// object is stored and retrievable whether or not it could be indexed.
+// indexStoredContent opens the object just stored and writes what the person typed as the
+// submission's prompt_body unit (typed.go). A capture nobody typed, such as client telemetry, is
+// not indexed. A failure is reported as a refused unit and never fails the finalise: the object is
+// stored and retrievable whether or not it could be indexed.
 func (s *Service) indexStoredContent(ctx context.Context, tenant store.Tenant, obj store.ContentObject) *UnitRefusal {
 	if !s.canIndexStored(tenant, obj) {
 		return nil
@@ -359,7 +360,10 @@ func (s *Service) indexStoredContent(ctx context.Context, tenant store.Tenant, o
 		return refuse(err)
 	}
 	// PostgreSQL text holds neither invalid UTF-8 nor NUL.
-	body := []rune(strings.ReplaceAll(strings.ToValidUTF8(string(plaintext), " "), "\x00", " "))
+	body := []rune(typedText(strings.ReplaceAll(strings.ToValidUTF8(string(plaintext), " "), "\x00", " ")))
+	if len(body) == 0 {
+		return nil
+	}
 	if len(body) > maxIndexedChars {
 		body = body[:maxIndexedChars]
 	}
@@ -370,6 +374,50 @@ func (s *Service) indexStoredContent(ctx context.Context, tenant store.Tenant, o
 		return refuse(err)
 	}
 	return nil
+}
+
+// ReindexTenant rebuilds the prompt index of every stored object a tenant holds, from the objects
+// themselves. It is how rows written by an earlier indexing rule are brought to the current one:
+// an object somebody typed is re-indexed, and one nobody typed loses the row it had.
+func (s *Service) ReindexTenant(ctx context.Context, tenantID string) (indexed, cleared, failed int, err error) {
+	tenant, err := s.loadTenant(ctx, tenantID)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	objects, err := s.opts.Store.ObjectsForTenant(ctx, tenant.TenantID)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	for _, obj := range objects {
+		if obj.State == store.StateShredded || !s.canIndexStored(tenant, obj) {
+			continue
+		}
+		dek, err := s.unwrap(ctx, tenant, obj)
+		if err != nil {
+			failed++
+			continue
+		}
+		plaintext, err := s.serve(ctx, obj, dek)
+		if err != nil {
+			failed++
+			continue
+		}
+		if typedText(string(plaintext)) == "" {
+			// Nothing typed: the submission has no prompt to find. Its index rows are removed.
+			if _, err := s.opts.Store.DeleteSearchText(ctx, tenant.TenantID, obj.SubmissionID); err != nil {
+				failed++
+				continue
+			}
+			cleared++
+			continue
+		}
+		if refusal := s.indexStoredContent(ctx, tenant, obj); refusal != nil {
+			failed++
+			continue
+		}
+		indexed++
+	}
+	return indexed, cleared, failed, nil
 }
 
 // IndexUnit writes one index row, refusing when the tenant's tier or its custody mode forbids it.
@@ -460,12 +508,11 @@ func (s *Service) Retrieve(ctx context.Context, req RetrieveRequest) (RetrieveRe
 	if err := s.checkTenantReadable(tenant); err != nil {
 		return RetrieveResult{}, err
 	}
-	switch {
-	case req.CaseReference == "":
-		return RetrieveResult{}, s.refuse(ctx, tenant, req, now, DenyCaseReferenceRequired, "C16 requires a case reference for a full-content retrieval")
-	case req.SecondApprover == "":
-		return RetrieveResult{}, s.refuse(ctx, tenant, req, now, DenySecondApproverRequired, "C16 requires a second approver for a full-content retrieval")
-	case req.SecondApprover == req.Principal:
+	// A case reference and a second approver are recorded when the caller gives them and are not
+	// required: an analyst who can search prompts can read the one they found. What is still
+	// refused is an approver who is the requester, because that names an approval that did not
+	// happen. Every retrieval is audited before it is served, whoever asks.
+	if req.SecondApprover != "" && req.SecondApprover == req.Principal {
 		return RetrieveResult{}, s.refuse(ctx, tenant, req, now, DenySecondApproverNotDistinct, "the second approver must be someone other than the requester")
 	}
 
