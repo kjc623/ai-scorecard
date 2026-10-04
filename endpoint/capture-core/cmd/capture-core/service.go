@@ -16,6 +16,7 @@ import (
 
 	"github.com/shadow-ai-capture/device/canon"
 	"github.com/shadow-ai-capture/device/capture-core/classifierlink"
+	"github.com/shadow-ai-capture/device/capture-core/cli"
 	"github.com/shadow-ai-capture/device/capture-core/core"
 	"github.com/shadow-ai-capture/device/capture-core/credential"
 	"github.com/shadow-ai-capture/device/capture-core/detect"
@@ -197,6 +198,34 @@ func newService(ctx context.Context, cfg Config, log *slog.Logger) (*service, er
 			if err := s.reg.Add(dp); err != nil {
 				return nil, err
 			}
+		}
+	}
+
+	// cli.shim (step 4 of §3.5): files and environment only, no ports. It needs the device root
+	// CA from the signed bundle (or --ca-cert) and the proxy address the bundle pins, because it
+	// runs before proxy.tls binds. Without a root it still starts and reports degraded — a shim
+	// with no CA to install is a named coverage gap, never a silent healthy row.
+	if cfg.CLIShim {
+		if len(caCertPEM) == 0 {
+			log.Warn("cli.shim is enabled but no device root CA is available (set --ca-cert or a bundle with interception.root_ca_pem); the shim will report degraded")
+		}
+		shimCfg := cli.Config{
+			ManagedDir: cfg.ShimDir,
+			ProxyAddr:  shimProxyAddr(cfg, s.currentBundle()),
+			RootCAPEM:  caCertPEM,
+			Log:        logf,
+			Clock:      time.Now,
+		}
+		if b := s.currentBundle(); b != nil {
+			shimCfg.NoProxy = b.CLIShim.NoProxy
+			shimCfg.Runtimes = b.CLIShim.Runtimes
+			shimCfg.NodeRequire = b.CLIShim.NodeRequire
+			if strings.TrimSpace(shimCfg.ManagedDir) == "" {
+				shimCfg.ManagedDir = b.CLIShim.ManagedDir
+			}
+		}
+		if err := s.reg.Add(cli.New(shimCfg)); err != nil {
+			return nil, err
 		}
 	}
 
@@ -668,6 +697,22 @@ func trustStoreName(s string) string {
 		return "enterprise"
 	}
 	return "Root"
+}
+
+// shimProxyAddr is the address cli.shim exports: the bundle's cli_shim.proxy_addr, else the
+// bundle's interception.proxy_listen, else the flag when it was set. Empty means the address is
+// not known yet, which the shim reports as an incomplete environment rather than guessing.
+func shimProxyAddr(cfg Config, b *policy.Bundle) string {
+	if b != nil && strings.TrimSpace(b.CLIShim.ProxyAddr) != "" {
+		return b.CLIShim.ProxyAddr
+	}
+	if b != nil && strings.TrimSpace(b.Interception.ProxyListen) != "" {
+		return b.Interception.ProxyListen
+	}
+	if cfg.TLSListen != defaultTLSListen {
+		return cfg.TLSListen
+	}
+	return ""
 }
 
 func newEventID() string {
