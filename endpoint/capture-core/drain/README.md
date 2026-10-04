@@ -14,6 +14,9 @@ record from the per-event outcome.
   envelope; each event is settled `delivered`/`rejected` via `protocol.Outcome.SettleState`.
 - **Backoff** (`backoff.go`): exponential with full jitter, `duplicate_batch` re-sent under a fresh
   batch id, terminal rejections retain the spool.
+- **Retention**: before each pass the drainer drops records past `occurred_at + retention` and logs
+  the count. Without that log a device (or a test fixture) whose observations predate the retention
+  window delivers nothing and looks identical to an empty spool.
 
 The drainer holds no counter of its own; its accounting is the spool's `Stats`, and its health is a
 `degraded`/`healthy` status with a closed `protocol.Detail` error code surfaced in the device-level

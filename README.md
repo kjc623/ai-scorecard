@@ -40,14 +40,15 @@ Every one of those has its own README explaining what is inside and how it works
 Sixteen of the seventeen components have code, though `control-api` is partial — enrolment and the
 DPoP token endpoint are built ([ADR 0020](docs/adr/0020-device-transport-is-application-gateway-with-a-pluggable-authenticator.md)),
 while policy, health and grants are not. The one with none is `aggregator` (the scheduled job that
-keeps the dashboard's aggregates fresh). One gap is the Azure transport: there is **no Application
-Gateway module in [`azure/`](azure/) yet**, so a deployed device has no configured edge to enrol
-against. Another is not a missing component but a missing wire: **`capture-core` spools observations
-and nothing sends them to a server yet** — the production device-to-cloud drain is not built, so the
-endpoint half of the path still ends at the spool. What *is* proven is the server side: the opt-in
-auth lab (`node localdev/build.mjs --auth && node localdev/run.mjs --auth`) drives a real device
-client through an Application Gateway stand-in to enrol (`x509` or `dpop`), obtain a DPoP-bound token
-and deliver a batch that lands in the real schema.
+keeps the dashboard's aggregates fresh). The Azure transport is written but not deployed:
+[`azure/modules/application-gateway.bicep`](azure/modules/application-gateway.bicep) is the device
+ingress, and no subscription has run it. The device-to-cloud path is built and proven locally:
+`capture-core --service` enrols (`x509` or `dpop`), spools, and drains batches to `POST /v1/events`,
+and the opt-in auth lab (`node localdev/run.mjs --auth`) drives that through an Application Gateway
+stand-in into the real schema. The development installer ([`installer/`](installer/)) builds the
+Windows MSI, macOS PKG and Linux package that carry it; the MSI installs a Windows service the binary
+hosts itself (`--service`). Still absent for a real deployment: the MDM-delivered per-tenant
+enrolment profile, a signed policy bundle, the trust/proxy configuration, and a signed artefact.
 
 The browser half is verified in a real browser: Edge loads the extension, its listener observes real
 requests, M0 carries no content, a registered native host produces a genuinely connected channel, and

@@ -14,7 +14,7 @@ the code, not a second copy of the design.
 | Directory | What it is |
 |---|---|
 | [protocol/](protocol/README.md) | The device-side wire and IPC contract, owned by the Lead. Envelope, frames, spool records, native messaging, batch shapes. No component redefines these shapes. |
-| [capture-core/](capture-core/README.md) | The privileged agent: providers, mode resolution, envelope minting, policy store, spool wiring, and the native-messaging host. One static Go binary per platform. |
+| [capture-core/](capture-core/README.md) | The privileged agent: providers, mode resolution, envelope minting, policy store, spool wiring, the native-messaging host, and the device-to-cloud drain. One static Go binary per platform; on Windows it hosts the service itself (`--service`). |
 | [capture-spool/](capture-spool/README.md) | The only durable store on the device: bounded, encrypted at rest, append-only, single-writer. Implements `protocol.Store`. |
 | [classifier-host/](classifier-host/README.md) | Rules, validators and model over bytes handed to it, compiled from one Go source to native and `js/wasm`, with document parsing in an isolated child. |
 | [canon/](canon/README.md) | Unicode NFC — step C3 of the `sac-canon-1` contract — with tables generated from and checked against Node's ICU. |
@@ -23,6 +23,11 @@ the code, not a second copy of the design.
 `capture-extension` is the fourth device process and lives in [extension/](../extension), outside
 this tree: it is plain JavaScript (ES modules) and Manifest V3, and it is the only component that can see browser
 internals. Its seam with `capture-core` is `protocol/native.go`.
+
+Distribution is in [installer/](../installer): a Windows MSI, a macOS PKG and a Linux package, all
+driven from one manifest. The Windows MSI registers `capture-core` as a service it hosts itself
+(`--service`, the SCM contract implemented in the binary), configured by a file. This tree is the
+code those artefacts install.
 
 ## How the parts compose
 
@@ -37,6 +42,14 @@ From there the pipeline computes the route's dedup keys (`dedup`), classifies co
 permits (`classifierlink` to `classifier-host`), mints an envelope that the contract's closed schema
 will accept, and appends it to the spool. The spool holds exactly the bytes the device will
 eventually send, and nothing in it parses them.
+
+The spool is not the end of the path. [`capture-core/drain/`](capture-core/drain/README.md) reads it
+oldest-first and delivers batches to the tenant's ingest API over the ADR 0020 transport — `x509`
+mTLS or DPoP — so a device enrols once, holds one revocable credential, and settles every record
+from the API's per-event outcome. It is **opt-in** (`--device-endpoint`): with no endpoint the spool
+*is* the endpoint and the shutdown drain reports what is still in it. The ingest service itself lives
+in [ingestion/](../ingestion), not here; the device never holds a database credential
+([ADR 0001](../docs/adr/0001-one-validating-write-path-collectors-hold-no-database-credential.md)).
 
 Policy is data: a signed bundle decides interception scope, loopback port maps, per-tool modes, the
 body cap and the kill switch. A bundle that fails verification never changes what the device is
@@ -63,8 +76,10 @@ end-to-end run.
 - **The browser half.** Chromium APIs are unavailable outside Chromium; see [extension/](../extension).
 - **`cli.shim`.** The route exists in the closed route vocabulary and in §3.5's startup order, but
   no provider implements it, so it has no coverage row rather than a healthy-looking empty one.
-- **`ingest-api`, `control-api` and `content-vault`.** Nothing in this tree sends to a server yet:
-  the spool fills and the drain step reports what is still in it. The cloud tier is elsewhere.
+- **The server tier.** `ingest-api`, `control-api` and `content-vault` live in
+  [ingestion/](../ingestion), [control/](../control) and [vault/](../vault). What *is* here is the
+  device half of the write path — [`capture-core/drain/`](capture-core/drain/README.md) — which is
+  opt-in and delivers to `POST /v1/events`; the device holds no database credential.
 - **Platform facilities.** The system proxy, the OS trust store, DPAPI/Keychain key sealing and a
   full process enumerator are interfaces with no wired implementation in this build. Where a
   capability is missing the component reports `degraded` with a named detail instead of claiming

@@ -2,7 +2,7 @@
 
 This is the service [docs/01-collectors.md §3.1](../../../../docs/01-collectors.md) calls `capture-core`:
 one binary that hosts `proxy.tls`, `proxy.loopback`, `proc.detect`, the policy engine, the spool, the
-classifier link and the browser's native-messaging host.
+classifier link, the browser's native-messaging host and the device-to-cloud drain.
 
 It exists as a `cmd` package because it must wire and drive components without acquiring opinions of
 its own. §4.1's provider contract, §11.2's mode gate, §13.2's bundle verification and §3.5's ordering
@@ -30,6 +30,7 @@ Or from the repository root:
 | `--native-host` | The native-messaging host on stdin/stdout, as Chromium launches it. |
 | `--native-frames DIR` | Feed the golden frames in `DIR` through the real native-messaging framing and dispatch, then exit. |
 | `--selftest` | The end-to-end evidence run: service, frames, health, shutdown; non-zero on any failed assertion. |
+| `--service` | Host the process under the Windows Service Control Manager (Windows only); see "Running it as a service". |
 | `--version` | Version, the local framing version, and the native-messaging framing. |
 
 Exactly one mode may be selected; the flag set refuses a combination.
@@ -87,6 +88,7 @@ assembled into a partial file.
 | `--attachment-cap` | the policy cap on one attachment manifest, checked before any byte moves |
 | `--device-endpoint`, `--auth-mode`, `--credential-file`, `--enrolment-token`, `--ca-file`, `--mdm-id`, `--backoff-base`, `--backoff-cap` | the device-to-cloud drain (ADR 0020): the ingress base URL, `x509`\|`dpop`, the sealed-credential path, the one-shot enrolment token, the pinned CA set, the MDM device id (hardware-identity seed), and the retry backoff bounds. An empty `--device-endpoint` disables the drain |
 | `--config-file` | read a `KEY=VALUE` profile in the `SAC_*` vocabulary (`installer/manifest.mjs` is the catalogue); it supplies flags and an explicitly passed flag wins. The platform wrappers and the Windows service use it, so configuration is a file rather than a command line and a secret or a path with spaces needs no quoting |
+| `--service`, `--service-name` | host the process under the Windows SCM (`--service`) and the registered service name to host (default `ShadowAICapture`). Windows only; see "Running it as a service" |
 | `--print-config`, `--dry-run` | `--print-config` resolves and validates everything, prints it and exits; `--dry-run` builds the service graph, starts nothing (no §3.5 step runs), prints one health snapshot and waits for the stop signal |
 | `--work-dir`, `--keep-work-dir` | the selftest work directory (default OS temp, removed on exit, success or failure) |
 | `--log-format`, `--log-level` | `json` (default) or `text`; `debug`, `info`, `warn`, `error` |
@@ -133,10 +135,11 @@ trust-store entry, no scheduled task.
 - **`proc.detect` is partial.** The only enumerator on this host is `tasklist`, which gives an image
   name and a PID: no modules, no listening sockets, no compute signature. It can match the candidate
   rule and emit daily rollups, but never evidence of use, so it never emits a `model_detection`.
-- **No ingest client.** With `--device-endpoint` unset (the default) nothing is sent to a server: the
-  drain step reports what is still spooled and stops at its deadline. With it set, the drain is the
-  real ADR 0020 device-to-cloud path (enrol, DPoP token or x509 leaf, batched `POST /v1/events`).
-  The health channel is still written to a file, not POSTed.
+- **The drain is opt-in, and the health channel is still file-only.** With `--device-endpoint` unset
+  (the default) nothing is sent to a server: the drain step reports what is still spooled and stops
+  at its deadline. With it set, the drain is the real ADR 0020 device-to-cloud path (enrol, DPoP
+  token or x509 leaf, batched `POST /v1/events`), proven end-to-end against the local auth lab.
+  Health is written to a file, not `POST /v1/health`.
 - **No M3 content store.** An M3 observation is refused rather than emitted without the content it
   says it holds; `content-vault` is a server-side component.
 - **Enrolment is opt-in.** With `--device-endpoint` set, the drain enrols on first start (a PKCS#10

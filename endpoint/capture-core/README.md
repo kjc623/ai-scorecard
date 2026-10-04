@@ -2,7 +2,8 @@
 
 `capture-core` is the privileged device process of
 [docs/01-collectors.md §3.1](../../docs/01-collectors.md): one static Go binary per platform that
-hosts the collection providers, the policy engine, the spool and the browser's native-messaging host.
+hosts the collection providers, the policy engine, the spool, the browser's native-messaging host and
+the device-to-cloud drain. On Windows the same binary hosts the service itself (`--service`).
 
 Its job is to **wire** components. §4.1's provider contract, §11.2's mode gate, §13.2's bundle
 verification and §3.5's startup and shutdown order all live in the packages below; the binary
@@ -62,11 +63,13 @@ those are Go module paths, not directories, and nothing here redefines their sha
   lives in the verified bundle, and with no valid bundle the device is at M0.
 - **No `cli.shim`.** Modes E (CLI) and G are unrouted: the step exists in §3.5's order and is
   recorded as skipped, so the route has no coverage row rather than a healthy-looking empty one.
-- **Ingest client is opt-in.** With `--device-endpoint` unset (the default) nothing is sent to a
-  server and the shutdown drain reports what is still spooled. With it set, `drain/` enrols the
-  device (or loads the sealed credential), obtains a DPoP token or presents the x509 leaf, and POSTs
-  `POST /v1/events` batches oldest-first with full-jitter backoff. The health channel is still
-  written to a file, not POSTed.
+- **The device-to-cloud drain is opt-in, and the health channel is still file-only.** With
+  `--device-endpoint` unset (the default) nothing is sent to a server and the shutdown drain reports
+  what is still spooled. With it set, [drain/](drain/README.md) enrols the device (or loads the
+  sealed credential), obtains a DPoP token or presents the x509 leaf, and POSTs `/v1/events` batches
+  oldest-first with full-jitter backoff, settling each record from the per-event outcome. This path
+  is proven end-to-end against the local auth lab; health is still a file, not `POST /v1/health`,
+  which `control-api` does not yet serve.
 - **No M3 content store.** An M3 observation is refused rather than emitted without the content it
   says it holds; the local store and grant-bound retrieval are not implemented here.
 - **No platform facilities wired.** The system proxy, the OS trust store and DPAPI/Keychain key
