@@ -103,6 +103,10 @@ check(
   catalogueDrift.length === 0 && catalogueExtra.length === 0,
   [...catalogueDrift, ...catalogueExtra].join(', ') || `${goCatalogue.size} variables`,
 );
+const goBools = new Set([...configGo.matchAll(/"(SAC_[A-Z0-9_]+)"\s*:\s*true/g)].map((m) => m[1]));
+const manifestBools = new Set(CONFIG.filter((c) => c.kind === 'bool').map((c) => c.env));
+const boolDrift = [...manifestBools].filter((e) => !goBools.has(e)).concat([...goBools].filter((e) => !manifestBools.has(e)));
+check('the agent config-file bool set matches the manifest', boolDrift.length === 0, boolDrift.join(', ') || `${goBools.size} bools`);
 const missingEnv = CONFIG.filter((c) => !envExample.includes(`${c.env}=`));
 check('the generated env example carries every variable', missingEnv.length === 0, missingEnv.map((c) => c.env).join(', ') || `${CONFIG.length} variables`);
 const hasSh = spawnSync('sh', ['-c', 'true']).status === 0;

@@ -46,6 +46,14 @@ var configEnvFlags = map[string]string{
 	"SAC_LOG_FORMAT":         "--log-format",
 }
 
+// configBoolEnv is the subset of configEnvFlags whose flag is a Go bool. installer/verify.mjs fails
+// if this set and the manifest's `kind: bool` entries disagree.
+var configBoolEnv = map[string]bool{
+	"SAC_PROXY_TLS":      true,
+	"SAC_PROXY_LOOPBACK": true,
+	"SAC_PROC_DETECT":    true,
+}
+
 // configArgsFromFile reads a KEY=VALUE profile and returns the equivalent flag list. Blank lines and
 // lines starting with '#' are ignored. An unknown key is an error rather than a silent no-op, so a
 // typo cannot look configured; the value is everything after the first '=', taken as-is so a secret
@@ -71,11 +79,18 @@ func configArgsFromFile(path string) ([]string, error) {
 		if !ok {
 			return nil, fmt.Errorf("config file %s:%d: line is not KEY=VALUE", path, line)
 		}
-		flag, known := configEnvFlags[strings.TrimSpace(key)]
+		trimmed := strings.TrimSpace(key)
+		flag, known := configEnvFlags[trimmed]
 		if !known {
-			return nil, fmt.Errorf("config file %s:%d: unknown key %q", path, line, strings.TrimSpace(key))
+			return nil, fmt.Errorf("config file %s:%d: unknown key %q", path, line, trimmed)
 		}
-		out = append(out, flag, value)
+		// A Go bool flag does not consume a separate token, so it must be one `--flag=value` argument;
+		// `--flag value` would leave the value as a positional argument and fail the parse.
+		if configBoolEnv[trimmed] {
+			out = append(out, flag+"="+value)
+		} else {
+			out = append(out, flag, value)
+		}
 	}
 	if err := sc.Err(); err != nil {
 		return nil, fmt.Errorf("config file: %w", err)

@@ -27,7 +27,7 @@ func TestConfigArgsFromFile(t *testing.T) {
 	joined := strings.Join(args, "\x00")
 	for _, want := range []string{
 		"--tenant-id\x0011111111-1111-4111-8111-111111111111",
-		"--proxy-tls\x00false",
+		"--proxy-tls=false", // a bool must be one --flag=value argument, not `--flag value`
 		"--ca-file\x00C:\\pki\\dev ca.crt",
 	} {
 		if !strings.Contains(joined, want) {
