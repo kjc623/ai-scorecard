@@ -22,7 +22,11 @@ param(
   [string]$ConfigFile = "",
   [string]$WixExe = "",
   [string]$SignTool = "",
-  [string]$SignCert = ""
+  [string]$SignCert = "",
+  # WiX v7 requires accepting the Open Source Maintenance Fee EULA before it will build (WIX7015).
+  # Pass -EulaId wix7 for an automated build, or run 'wix eula accept wix7' once per user instead.
+  # This script does not accept the EULA on your behalf.
+  [string]$EulaId = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -76,12 +80,25 @@ if (-not $wix) {
   exit 1
 }
 
-& $wix build (Join-Path $Root "installer/generated/windows/ShadowAICapture.wxs") `
-  -arch x64 `
-  -d "StageDir=$Stage" `
-  -d "SacArgs=$sacArgs" `
-  -o $msi
-if ($LASTEXITCODE -ne 0) { throw "wix build failed with exit code $LASTEXITCODE" }
+# The preprocessor value is substituted into the XML attribute Value="$(var.SacArgs)", so a raw
+# double quote would close the attribute and a raw '&' or '<' would not parse. XML-encode the argv
+# first; the XML parser decodes it back to the quotes a Windows service argv needs for paths.
+$sacArgsPre = $sacArgs -replace '&', '&amp;' -replace '<', '&lt;' -replace '>', '&gt;' -replace '"', '&quot;'
+
+# An argument array (splatted) keeps values that contain spaces as one argument on every PowerShell.
+$wixArgs = @(
+  'build',
+  (Join-Path $Root 'installer/generated/windows/ShadowAICapture.wxs'),
+  '-arch', 'x64'
+)
+if ($EulaId -ne '') { $wixArgs += @('-acceptEula', $EulaId) }
+$wixArgs += @('-d', "StageDir=$Stage", '-d', "SacArgs=$sacArgsPre", '-o', $msi)
+$buildOut = & $wix @wixArgs 2>&1
+$buildCode = $LASTEXITCODE
+$buildOut | ForEach-Object { Write-Host $_ }
+if ($buildCode -ne 0) {
+  throw "wix build failed with exit code $buildCode`n$($buildOut | Out-String)"
+}
 Write-Host "built $msi"
 
 if ($SignTool -ne "" -and $SignCert -ne "") {
