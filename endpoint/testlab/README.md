@@ -36,12 +36,13 @@ GOOS=linux GOARCH=amd64 go build -o ../testlab/build/sac-bundle ./cmd/sac-bundle
 ## What the lab is
 
 Three services share one image, `sac/testlab-endpoint:dev` (`node:24-alpine` + `ca-certificates curl
-openssl bash`, with `build/` at `/app/bin` and `scripts/` at `/app/scripts`):
+openssl bash`, with `build/` at `/app/bin`, `scripts/` at `/app/scripts`, and the **real Claude Code
+terminal CLI** installed globally via `npm i -g @anthropic-ai/claude-code --allow-scripts=…`):
 
 | service | what it does |
 |---|---|
 | `pki` | a one-shot that mints the **upstream** CA and a server cert for `api.anthropic.test` into the `/pki` named volume (the device CA itself is minted separately, by `sac-bundle` inside the device container). |
-| `upstream` | a Node `https` server on `0.0.0.0:443` presenting `/pki/upstream-server.crt\|key`, network-aliased `api.anthropic.test`. It returns `200 {"ok":true}` for `/v1/messages` and `/healthz`. |
+| `upstream` | a Node `https` server on `0.0.0.0:443` presenting `/pki/upstream-server.crt\|key`, network-aliased `api.anthropic.test`. It answers the Anthropic Messages surface (`POST/GET /v1/messages`, `POST /v1/messages/count_tokens`) with an Anthropic-shaped response — an SSE stream when `stream:true`, a JSON document otherwise — and logs every request (method, url, user-agent, api key) to `docker compose logs upstream`, which is how `run.mjs` proves the *real* CLI reached here. |
 | `device` | the appliance. Its entrypoint installs the upstream CA into the OS trust store (so `proxy.tls` trusts the upstream it re-originates to), runs `sac-bundle`, and starts `capture-core` with the trust/CA/shim/provider flags. |
 
 The device's entrypoint and the exact `capture-core` argv are in
@@ -65,6 +66,16 @@ The device's entrypoint and the exact `capture-core` argv are in
   fail verification.
 * **(c3) transparency** — `sh -lc env` (a new login shell) contains `HTTPS_PROXY`,
   `NODE_USE_ENV_PROXY` and `NODE_EXTRA_CA_CERTS` with nothing the user did.
+* **(d2) the real Claude Code CLI** — `claude -p "hello"` run inside the device from a login shell
+  (which sources `/etc/profile.d`) with `ANTHROPIC_API_KEY=sk-ant-test` and
+  `ANTHROPIC_BASE_URL=https://api.anthropic.test`, so the actual coding agent targets the fake
+  upstream. `--bare --permission-prompts none --tools ""` keeps it fully headless and tool-free.
+  This is the proof that the *real* CLI — not a curl or a synthetic fetch — is captured by
+  `proxy.tls`: it asserts the CLI exits `0` and prints the upstream's response, that the `proxy.tls`
+  `observed`/`emitted` counters advance for its request, that the spool gains a non-empty segment,
+  that the `cli.shim` row stays `healthy`, and that the upstream log contains the CLI's own
+  `user-agent=claude-cli/2.1.289` on `POST /v1/messages`. It also prints `claude --version` and
+  `node -v`.
 * **(d) health** — the health channel's `proxy.tls` row reports `observed>=1` and `emitted>=1`, and
   the `cli.shim` row reports `state=healthy`.
 * **(e) spool** — the spool directory holds a non-empty segment.
@@ -103,3 +114,16 @@ mangling the JSON body: write it to a file and use `--data-binary "@body.json"`.
 * **Generated material is never committed.** The upstream PKI lives in a named volume, and the device
   CA/key and the spool live inside the device container; `build/` (the host-compiled binaries) is
   gitignored.
+* **Claude Code 2.1.289 is a native binary, not Node.** `npm i -g @anthropic-ai/claude-code`
+  installs the npm wrapper plus a platform-native optional dependency (`…-linux-x64-musl` on
+  alpine); the postinstall copies that self-contained ~240MB ELF binary over `bin/claude.exe`. It is
+  a Bun-based binary, so `NODE_OPTIONS`/`NODE_EXTRA_CA_CERTS`/`NODE_USE_ENV_PROXY` do **not** apply to
+  it. The lab therefore proves that the real CLI is captured by the parts of the shim that do apply:
+  it honours `HTTPS_PROXY` from the process env itself (no `~/.claude/settings.json` needed), and it
+  trusts the device CA through the OS trust store (`--trust-install`) **or** `SSL_CERT_FILE`
+  (either alone suffices; both are set here). It proxies *all* HTTPS — including `api.anthropic.com`
+  telemetry — through `HTTPS_PROXY`, so nothing is bypassed.
+* **The image build needs npm network access.** The Go binaries compile offline (`GOPROXY=off`), but
+  the `npm i -g @anthropic-ai/claude-code` step in the `Dockerfile` downloads the npm wrapper plus
+  the ~240MB native binary from the registry. If the build runs air-gapped, that layer fails; the
+  offline fallback is the SDK/fetch path already exercised by checks **(c)/(c2)**.

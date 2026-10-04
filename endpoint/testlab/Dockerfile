@@ -21,6 +21,15 @@ FROM node:24-alpine
 
 RUN apk add --no-cache ca-certificates curl openssl bash
 
+# The REAL Claude Code terminal CLI, so the lab proves a real coding agent — not a synthetic fetch
+# or curl — is captured by proxy.tls. `npm i -g @anthropic-ai/claude-code` installs the npm wrapper
+# plus a platform-native optional dependency (linux-x64-musl here); the postinstall copies that
+# self-contained native ELF binary over bin/claude.exe. `--allow-scripts=…` runs the postinstall,
+# which npm 11 otherwise blocks. The result is a ~240MB native binary (Bun-based), NOT a Node
+# process, so NODE_OPTIONS/NODE_EXTRA_CA_CERTS/NODE_USE_ENV_PROXY do not apply to it: it honours
+# HTTPS_PROXY itself and trusts the device CA via the system/SSL_CERT_FILE path the shim sets.
+RUN npm i -g @anthropic-ai/claude-code --allow-scripts=@anthropic-ai/claude-code
+
 COPY build/ /app/bin/
 COPY scripts/ /app/scripts/
 RUN chmod +x /app/scripts/*.sh

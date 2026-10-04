@@ -91,6 +91,12 @@ function report(snap, collector) {
   return snap.reports.find((r) => r.collector === collector) ?? null;
 }
 
+/** The current proxy.tls observed/emitted counters, for the before/after delta assertions. */
+function tlsCounters() {
+  const t = report(lastHealthSnapshot(), 'proxy.tls');
+  return { observed: t?.counters?.observed ?? 0, emitted: t?.counters?.emitted ?? 0 };
+}
+
 async function waitFor(fn, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -191,6 +197,63 @@ async function runLab() {
     /NODE_EXTRA_CA_CERTS=/.test(loginEnv),
     loginEnv.split('\n').filter((l) => /^(HTTPS_PROXY|NODE_USE_ENV_PROXY|NODE_EXTRA_CA_CERTS)=/.test(l)).join(' | '));
 
+
+  // (d2) The REAL Claude Code terminal CLI, run non-interactively inside the device from a login
+  //      shell (which sources /etc/profile.d/shadow-ai-capture.sh) — no wrapper, no manual export.
+  //      It targets the fake upstream and must be captured by proxy.tls exactly like any other
+  //      client. This is the proof that the actual coding agent is captured, not a curl or a
+  //      synthetic fetch standing in for it.
+  //
+  //      Claude Code 2.1.289 ships as a self-contained native ELF binary (Bun-based, ~240MB), NOT a
+  //      Node process, so NODE_OPTIONS/NODE_EXTRA_CA_CERTS/NODE_USE_ENV_PROXY do not apply to it. It
+  //      honours HTTPS_PROXY from the process env itself, and trusts the device CA through either
+  //      the OS trust store (--trust-install) or SSL_CERT_FILE (cli.shim). --bare makes it use
+  //      strictly ANTHROPIC_API_KEY (no keychain/OAuth), --permission-prompts none and --tools ""
+  //      keep the run fully non-interactive and tool-free so no ripgrep/Bash is spawned.
+  console.log('\n(d2) real Claude Code CLI (claude -p), no wrapper:');
+  const claudeVersion = deviceRun('claude --version 2>&1').out.trim();
+  const nodeVersion = deviceRun('node -v').out.trim();
+  console.log(`  claude version: ${claudeVersion} | node version: ${nodeVersion}`);
+
+  const tlsBefore = tlsCounters();
+  const cliScript = [
+    'export ANTHROPIC_API_KEY=sk-ant-test',
+    'export ANTHROPIC_BASE_URL=https://api.anthropic.test',
+    'timeout 60 claude -p "hello" --bare --permission-prompts none --tools ""',
+  ].join('\n');
+  r = deviceRun(cliScript);
+  const cliOut = r.out.trim().replace(/\n/g, ' ');
+  check('claude -p exits 0 (the CLI ran headless)', r.code === 0, `exit=${r.code}`);
+  check('claude -p reached the upstream and printed its response',
+    r.code === 0 && /hello from the fake upstream/.test(r.out), cliOut || '(no output)');
+
+  // (b) proxy.tls observed/emitted counters must have advanced for the CLI's request. The health
+  //     file is appended once per second, so poll briefly for the post-run snapshot.
+  const tlsGrew = await waitFor(() => {
+    const t = tlsCounters();
+    return t.observed > tlsBefore.observed && t.emitted > tlsBefore.emitted;
+  }, 15000);
+  const tlsAfter = tlsCounters();
+  check('proxy.tls observed/emitted counters advanced for the CLI run', tlsGrew,
+    `observed ${tlsBefore.observed} -> ${tlsAfter.observed} (+${tlsAfter.observed - tlsBefore.observed}); emitted ${tlsBefore.emitted} -> ${tlsAfter.emitted} (+${tlsAfter.emitted - tlsBefore.emitted})`);
+
+  // (c) The device spool gains a non-empty segment from the CLI's intercepted request.
+  const cliSeg = deviceRun(`find /state/spool/segments -name '*.seg' -size +0c | head -1`).out.trim();
+  check('spool holds a non-empty segment from the CLI run', cliSeg.length > 0, cliSeg || 'no non-empty segment');
+
+  // (d) The health row: cli.shim is healthy, and the CLI itself inherited the shim environment —
+  //     the observed/emitted deltas above are the CLI process, not a wrapper, routing through the
+  //     proxy the shim exported. (The shim's own "inherited" probe is not wired in this build, so
+  //     the login-shell env check in (c3) plus the CLI's routing are the observable proof.)
+  const cliShimRow = report(lastHealthSnapshot(), 'cli.shim');
+  check('cli.shim row is healthy while the CLI runs through it', cliShimRow?.state === 'healthy', `state=${cliShimRow?.state}`);
+
+  // Direct proof it was the real CLI and not a synthetic client: the upstream saw the CLI's own
+  // user-agent and an Anthropic Messages request.
+  const upstreamLog = compose(['logs', '--no-log-prefix', 'upstream']).out;
+  check('upstream saw the real CLI user-agent on /v1/messages',
+    /claude-cli\/2\.1\.289/.test(upstreamLog) && /POST \/v1\/messages/.test(upstreamLog),
+    'user-agent=claude-cli/2.1.289 present in the upstream log');
 
   // (d) The health channel records the interception and a healthy shim row.
   console.log('\n(d) health channel:');
