@@ -3,8 +3,10 @@ package cli
 // nodeProxyScript is the stdlib-only Node bootstrap the shim writes when NodeRequire is
 // set. Node does not honour HTTP_PROXY/HTTPS_PROXY by default, so a plain environment
 // routes its requests direct and proxy.tls never sees them (§4.5). This script installs
-// an https.Agent subclass whose createConnection CONNECTs through HTTPS_PROXY and wraps
-// the socket with tls.connect({servername, ca}), then makes it the global agent.
+// an https.Agent subclass whose createConnection CONNECTs through HTTPS_PROXY, then makes
+// it the global agent. It deliberately does not pass a "ca" option: the device CA reaches
+// Node through NODE_EXTRA_CA_CERTS, and replacing the store would break public destinations
+// the proxy blind-tunnels.
 //
 // It fails open: with no proxy configured it defers to the stock Agent, and it is loaded
 // once via NODE_OPTIONS=--require. It is stdlib-only on purpose — nothing here is fetched
@@ -12,15 +14,19 @@ package cli
 const nodeProxyScript = `// Shadow AI Capture — Node runtime shim (cli.shim).
 //
 // Node's HTTP stack ignores HTTP_PROXY/HTTPS_PROXY, so this bootstrap installs an
-// https.Agent that CONNECTs through the configured proxy and trusts the device CA bundle,
-// then makes it the global agent. Loaded via NODE_OPTIONS=--require. Stdlib only; fail
-// open (no proxy configured -> the stock agent).
+// https.Agent that CONNECTs through the configured proxy, then makes it the global agent.
+// Loaded via NODE_OPTIONS=--require. Stdlib only; fail open (no proxy configured -> the
+// stock agent).
+//
+// The device CA is trusted through NODE_EXTRA_CA_CERTS, which the managed profile sets and
+// Node reads at startup. This agent deliberately does NOT pass a "ca" option: doing so would
+// replace the whole trust store with the device CA and break every destination the proxy
+// blind-tunnels (its certificate is signed by a public CA).
 'use strict';
 
 const https = require('https');
 const tls = require('tls');
 const net = require('net');
-const fs = require('fs');
 
 function proxyTarget() {
   const raw = process.env.HTTPS_PROXY || process.env.https_proxy ||
@@ -38,29 +44,16 @@ function proxyTarget() {
   }
 }
 
-function caBundle() {
-  const path = process.env.NODE_EXTRA_CA_CERTS || process.env.SSL_CERT_FILE;
-  if (!path) return undefined;
-  try {
-    return fs.readFileSync(path);
-  } catch (_) {
-    return undefined;
-  }
-}
-
 const PROXY = proxyTarget();
-const CA = caBundle();
 
 class ShadowProxyAgent extends https.Agent {
   constructor(options) {
     super(options);
     this._proxy = PROXY;
-    this._ca = CA;
   }
 
   createConnection(options, callback) {
     const proxy = this._proxy;
-    const ca = this._ca;
 
     // Fail open: with no proxy configured, behave like the default agent.
     if (!proxy) {
@@ -96,7 +89,6 @@ class ShadowProxyAgent extends https.Agent {
       const tlsSocket = tls.connect({
         socket: socket,
         servername: options.servername || options.host,
-        ca: ca,
       });
       if (rest.length > 0) tlsSocket.unshift(rest);
       callback(null, tlsSocket);

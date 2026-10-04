@@ -23,8 +23,10 @@ Its two jobs, per §4.5's table:
   degraded, not fatal);
 - when the bundle sets `cli_shim.node_require`, a stdlib-only `node-proxy.cjs` and
   `NODE_OPTIONS=--require <path>`. The bootstrap subclasses `https.Agent` so `createConnection`
-  issues a CONNECT to the proxy and wraps the tunnel with `tls.connect({servername, ca})`; that is
-  the "explicit proxy configuration Node's HTTP stack needs".
+  issues a CONNECT to the proxy; it does **not** pass a `ca` option, because the device CA already
+  reaches Node through `NODE_EXTRA_CA_CERTS` and replacing the trust store would break the public
+  destinations the proxy blind-tunnels. That is the "explicit proxy configuration Node's HTTP stack
+  needs".
 
 The files are staged under the bundle's `cli_shim.managed_dir`, the `--shim-dir` flag, or a per-OS
 default. Start is transactional: a failure removes everything it wrote, because a half-written
