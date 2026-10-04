@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"os"
 	"path/filepath"
@@ -193,5 +194,51 @@ func TestRun_LoadsExistingCA(t *testing.T) {
 	loadedBlk, _ := pem.Decode(caCert)
 	if outBlk == nil || loadedBlk == nil || !bytes.Equal(outBlk.Bytes, loadedBlk.Bytes) {
 		t.Fatal("output ca.pem does not match the loaded certificate")
+	}
+}
+
+// Re-minting a bundle into the same --out directory while reusing the same CA must work: keeping
+// the CA and changing only the collection mode is the normal operator path ("raise this tenant to
+// m2"), and the CA files must be left byte-for-byte intact.
+func TestRun_ReusesCAInPlace(t *testing.T) {
+	dir := t.TempDir()
+	var out, errb bytes.Buffer
+	if code := Run([]string{"--out", dir, "--tenant-default", "m1"}, &out, &errb); code != 0 {
+		t.Fatalf("seed Run: %s", errb.String())
+	}
+	cert, _ := os.ReadFile(filepath.Join(dir, "ca.pem"))
+	key, _ := os.ReadFile(filepath.Join(dir, "ca.key"))
+
+	var out2, err2 bytes.Buffer
+	code := Run([]string{
+		"--out", dir,
+		"--ca-cert", filepath.Join(dir, "ca.pem"),
+		"--ca-key", filepath.Join(dir, "ca.key"),
+		"--tenant-default", "m2",
+	}, &out2, &err2)
+	if code != 0 {
+		t.Fatalf("in-place re-mint failed: %s", err2.String())
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "ca.pem")); !bytes.Equal(got, cert) {
+		t.Fatal("ca.pem changed during an in-place re-mint")
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "ca.key")); !bytes.Equal(got, key) {
+		t.Fatal("ca.key changed during an in-place re-mint")
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, "bundle.json"))
+	if err != nil {
+		t.Fatalf("read bundle: %v", err)
+	}
+	var sb struct {
+		Payload struct {
+			TenantDefault string `json:"tenant_default_mode"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(raw, &sb); err != nil {
+		t.Fatalf("bundle is not JSON: %v", err)
+	}
+	if sb.Payload.TenantDefault != "m2" {
+		t.Fatalf("tenant_default_mode = %q, want m2", sb.Payload.TenantDefault)
 	}
 }

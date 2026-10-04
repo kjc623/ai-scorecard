@@ -203,11 +203,15 @@ func generate(o options, stdout io.Writer) error {
 		return err
 	}
 
-	if err := os.WriteFile(filepath.Join(o.out, "ca.pem"), certPEM, 0o600); err != nil {
-		return fmt.Errorf("writing ca.pem: %w", err)
+	if !sameFile(o.caCertPath, filepath.Join(o.out, "ca.pem")) {
+		if err := os.WriteFile(filepath.Join(o.out, "ca.pem"), certPEM, 0o600); err != nil {
+			return fmt.Errorf("writing ca.pem: %w", err)
+		}
 	}
-	if err := os.WriteFile(filepath.Join(o.out, "ca.key"), keyPEM, 0o600); err != nil {
-		return fmt.Errorf("writing ca.key: %w", err)
+	if !sameFile(o.caKeyPath, filepath.Join(o.out, "ca.key")) {
+		if err := os.WriteFile(filepath.Join(o.out, "ca.key"), keyPEM, 0o600); err != nil {
+			return fmt.Errorf("writing ca.key: %w", err)
+		}
 	}
 	if generatedKey {
 		if err := os.WriteFile(filepath.Join(o.out, "policy-key.pub"), []byte(hex.EncodeToString(pub)), 0o600); err != nil {
@@ -269,12 +273,6 @@ func loadOrMintCA(o options, now time.Time) (*tlsproxy.CA, error) {
 		if err != nil {
 			return nil, fmt.Errorf("reading --ca-key: %w", err)
 		}
-		if err := guardNotSame(o.caCertPath, filepath.Join(o.out, "ca.pem"), "--ca-cert"); err != nil {
-			return nil, err
-		}
-		if err := guardNotSame(o.caKeyPath, filepath.Join(o.out, "ca.key"), "--ca-key"); err != nil {
-			return nil, err
-		}
 		return tlsproxy.NewCAFromPEM(certPEM, keyPEM, now)
 	case haveCert || haveKey:
 		return nil, fmt.Errorf("--ca-cert and --ca-key must be supplied together (or neither, to generate)")
@@ -283,13 +281,18 @@ func loadOrMintCA(o options, now time.Time) (*tlsproxy.CA, error) {
 	}
 }
 
-func guardNotSame(inPath, outPath, flagName string) error {
-	absIn, errIn := filepath.Abs(inPath)
-	absOut, errOut := filepath.Abs(outPath)
-	if errIn == nil && errOut == nil && filepath.Clean(absIn) == filepath.Clean(absOut) {
-		return fmt.Errorf("%s %q is the output path %q; refusing to overwrite an input", flagName, inPath, outPath)
+// sameFile reports whether two paths name the same file, so the generator can reuse a CA in place
+// (re-minting a bundle with a different mode) without rewriting the input it just read.
+func sameFile(a, b string) bool {
+	if a == "" {
+		return false
 	}
-	return nil
+	absA, errA := filepath.Abs(a)
+	absB, errB := filepath.Abs(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	return filepath.Clean(absA) == filepath.Clean(absB)
 }
 
 // loadOrMintPolicyKey returns the signing key: the supplied --policy-priv, or a freshly generated
