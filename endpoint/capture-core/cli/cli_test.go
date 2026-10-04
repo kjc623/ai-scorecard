@@ -124,7 +124,7 @@ func TestStartWritesFilesWithContentAndPermissions(t *testing.T) {
 		t.Fatalf("CA bundle content does not equal the root PEM")
 	}
 
-	// Profile: shell exports, mode 0644, all seven variables.
+	// Profile: shell exports, mode 0644, both cases of the proxy vars plus the CA vars.
 	if got := fileMode(t, cfg.ProfilePath); got != 0o644 {
 		t.Fatalf("profile mode = %o, want 0644", got)
 	}
@@ -132,15 +132,28 @@ func TestStartWritesFilesWithContentAndPermissions(t *testing.T) {
 	for _, want := range []string{
 		"export HTTP_PROXY='http://127.0.0.1:8080'",
 		"export HTTPS_PROXY='http://127.0.0.1:8080'",
-		"export NO_PROXY='localhost,127.0.0.1'",
+		"export http_proxy='http://127.0.0.1:8080'",
+		"export NO_PROXY='localhost,127.0.0.1,::1'",
 		"export NODE_EXTRA_CA_CERTS='" + cfg.CABundlePath + "'",
 		"export SSL_CERT_FILE='" + cfg.CABundlePath + "'",
 		"export REQUESTS_CA_BUNDLE='" + cfg.CABundlePath + "'",
 		"export CURL_CA_BUNDLE='" + cfg.CABundlePath + "'",
+		"export NODE_USE_ENV_PROXY='1'",
 	} {
 		if !strings.Contains(string(profile), want) {
 			t.Fatalf("profile missing %q\n---\n%s", want, profile)
 		}
+	}
+
+	// Launcher: sets the same environment and execs claude, so capture does not depend on the
+	// machine environment reaching the agent's shell.
+	launcherPath := filepath.Join(cfg.ManagedDir, "claude-sac")
+	if got := fileMode(t, launcherPath); got != 0o755 {
+		t.Fatalf("launcher mode = %o, want 0755", got)
+	}
+	launcher, _ := os.ReadFile(launcherPath)
+	if !strings.Contains(string(launcher), "exec claude \"$@\"") {
+		t.Fatalf("launcher does not exec claude:\n%s", launcher)
 	}
 
 	// Env file (Linux): KEY=VALUE lines.
@@ -424,9 +437,9 @@ func TestCounters(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	// emitted: ca bundle + profile + env file = 3 on Linux.
-	if got := p.Counters().Cumulative()[protocol.CounterEmitted]; got != 3 {
-		t.Fatalf("emitted = %d, want 3", got)
+	// emitted: ca bundle + profile + launcher + env file = 4 on Linux.
+	if got := p.Counters().Cumulative()[protocol.CounterEmitted]; got != 4 {
+		t.Fatalf("emitted = %d, want 4", got)
 	}
 
 	// One healthy check: observed increments, dropped stays zero.

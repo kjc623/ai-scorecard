@@ -9,8 +9,11 @@ appliance-style device, and proves — with a real HTTPS client and **no `--inse
    (`/usr/local/share/ca-certificates/sac-device-ca.crt` + `update-ca-certificates`), the client
    trusts the minted leaf through the *system* store, and `--trust-remove-on-stop` removes it again;
 3. **cli.shim** works: `/etc/profile.d/shadow-ai-capture.sh` exports the proxy and CA-bundle
-   variables, and the Node runtime is routed through the proxy by the shim's `NODE_OPTIONS=--require
-   node-proxy.cjs` bootstrap, trusting the device CA via `NODE_EXTRA_CA_CERTS`.
+   variables (both cases, plus `NODE_USE_ENV_PROXY=1`), the `https` runtime is routed through the
+   proxy by the shim's `NODE_OPTIONS=--require node-proxy.cjs` bootstrap, the **`fetch`** runtime
+   (the path Claude Code's SDK uses) is routed by `NODE_USE_ENV_PROXY`, both trust the device CA via
+   `NODE_EXTRA_CA_CERTS`, and the generated `claude-sac` launcher hands the same environment to the
+   agent it execs.
 
 ## Run it
 
@@ -33,7 +36,7 @@ GOOS=linux GOARCH=amd64 go build -o ../testlab/build/sac-bundle ./cmd/sac-bundle
 
 ## What the lab is
 
-Three services share one image, `sac/testlab-endpoint:dev` (`node:22-alpine` + `ca-certificates curl
+Three services share one image, `sac/testlab-endpoint:dev` (`node:24-alpine` + `ca-certificates curl
 openssl bash`, with `build/` at `/app/bin` and `scripts/` at `/app/scripts`):
 
 | service | what it does |
@@ -52,11 +55,16 @@ The device's entrypoint and the exact `capture-core` argv are in
   `200` with **no `--insecure`**: the system trust store proves the device CA was installed.
 * **(b) OS trust** — `/usr/local/share/ca-certificates/sac-device-ca.crt` exists and its subject is
   trusted in `/etc/ssl/certs/ca-certificates.crt` (asserted with `openssl verify -CAfile`).
-* **(c) Node** — `node scripts/node-request.mjs` after sourcing the profile: a plain `https.get`
-  routed through the proxy by the shim's `NODE_OPTIONS` bootstrap, trusting the device CA via
-  `NODE_EXTRA_CA_CERTS`. The script also prints the peer certificate's issuer, so the check asserts
-  the leaf was minted by the device CA (i.e. the request was genuinely intercepted, not a direct
-  connection that happened to succeed).
+* **(c) Node `https`** — `node scripts/node-request.mjs` after sourcing the profile: a plain
+  `https.get` routed through the proxy by the shim's `NODE_OPTIONS` bootstrap, trusting the device CA
+  via `NODE_EXTRA_CA_CERTS`. The script also prints the peer certificate's issuer, so the check
+  asserts the leaf was minted by the device CA (i.e. the request was genuinely intercepted, not a
+  direct connection that happened to succeed).
+* **(c2) Node `fetch`** — `node scripts/node-fetch-request.mjs`, the path Claude Code's SDK uses.
+  Node 24 honours `NODE_USE_ENV_PROXY=1` from the profile. A `200` proves interception: the upstream
+  CA is not in Node's bundled roots, so a direct connection would fail verification.
+* **(c3) launcher** — the generated `claude-sac` is run with a stub `claude` on `PATH`; the check
+  asserts the child received `HTTPS_PROXY`, `NODE_USE_ENV_PROXY` and `NODE_EXTRA_CA_CERTS`.
 * **(d) health** — the health channel's `proxy.tls` row reports `observed>=1` and `emitted>=1`, and
   the `cli.shim` row reports `state=healthy`.
 * **(e) spool** — the spool directory holds a non-empty segment.

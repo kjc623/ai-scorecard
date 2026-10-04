@@ -46,6 +46,22 @@ function proxyTarget() {
 
 const PROXY = proxyTarget();
 
+// noProxyMatch honours NO_PROXY/no_proxy so loopback and the proxy itself are never sent
+// through the proxy (a client reaching 127.0.0.1 would otherwise loop or fail).
+function noProxyMatch(host) {
+  const raw = process.env.NO_PROXY || process.env.no_proxy || '';
+  if (!raw) return false;
+  const h = String(host || '').toLowerCase();
+  for (const entry of raw.split(/[,\s]+/)) {
+    const p = entry.trim().toLowerCase();
+    if (!p) continue;
+    if (p === '*') return true;
+    const bare = p.startsWith('.') ? p.slice(1) : p;
+    if (h === bare || h.endsWith('.' + bare)) return true;
+  }
+  return false;
+}
+
 class ShadowProxyAgent extends https.Agent {
   constructor(options) {
     super(options);
@@ -55,8 +71,8 @@ class ShadowProxyAgent extends https.Agent {
   createConnection(options, callback) {
     const proxy = this._proxy;
 
-    // Fail open: with no proxy configured, behave like the default agent.
-    if (!proxy) {
+    // Fail open: with no proxy configured, or a NO_PROXY match, behave like the default agent.
+    if (!proxy || noProxyMatch(options.host)) {
       return super.createConnection(options, callback);
     }
 

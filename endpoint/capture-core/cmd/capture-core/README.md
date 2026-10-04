@@ -130,6 +130,27 @@ C:\architecture\bin\sac-bundle.exe --out C:\ProgramData\ShadowAICapture\bundle `
   --shim-managed-dir C:\ProgramData\ShadowAICapture\shim
 ```
 
+## Capturing Claude Code
+
+With `--cli-shim`, the shim writes a launcher — `<shim-dir>/claude-sac` on Linux/macOS,
+`<shim-dir>\claude-sac.cmd` on Windows — that sets `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` (both
+cases), `NODE_EXTRA_CA_CERTS`, `NODE_USE_ENV_PROXY=1` and, when the bundle sets it, the
+`NODE_OPTIONS=--require node-proxy.cjs` bootstrap, then execs `claude`. **Launch Claude Code through
+the launcher**, not directly, so capture does not depend on `setx /M` having reached the shell:
+
+```sh
+/var/db/shadow-ai-capture/claude-sac        # macOS (or the --shim-dir)
+/etc/shadow-ai-capture/claude-sac           # Linux
+```
+```powershell
+C:\ProgramData\ShadowAICapture\shim\claude-sac.cmd
+```
+
+Then confirm capture in the health file: the `proxy.tls` row's `observed`/`emitted` counters climb
+for `api.anthropic.com`. If they do not, the agent is not routing through the proxy — check that it
+was started from the launcher (or a new shell that inherited the machine environment), that
+`api.anthropic.com` is in the bundle's interception scope, and that the proxy is listening.
+
 ## Running it as a service
 
 **Windows.** `capture-core --service` hosts the process under the Service Control Manager itself: it

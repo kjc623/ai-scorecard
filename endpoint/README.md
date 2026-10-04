@@ -25,8 +25,12 @@ half is now built too, so a CLI speaking HTTPS to `api.anthropic.com` is capture
    restarts. `proxy.tls` verifies with the end-to-end canary probe, never on the strength of a file
    write. `SAC_TRUST_REMOVE_ON_STOP=true` removes it on uninstall or kill switch.
 4. **Route the CLI to it**: `SAC_CLI_SHIM=true` writes the managed profile and CA bundle
-   (`NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, proxy variables,
-   and the Node CONNECT bootstrap) so Go, Node and Python CLIs launched from a shell inherit both.
+   (`NODE_EXTRA_CA_CERTS`, `NODE_USE_ENV_PROXY=1`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`,
+   `CURL_CA_BUNDLE`, both cases of the proxy variables, and the Node CONNECT bootstrap) and a
+   **launcher** (`claude-sac` / `claude-sac.cmd`) that sets that environment and execs `claude`, so
+   capture does not depend on the machine environment being re-read after `setx /M`. Claude Code's
+   `fetch` path is covered on Node 24+ by `NODE_USE_ENV_PROXY` and on older runtimes by Claude Code's
+   own `HTTPS_PROXY` support; the `https` path is covered by the bootstrap.
 
 The remaining deployment work is operator-side: an MDM deliverer for the bundle and CA pair, and the
 signed artefact. `endpoint/testlab/` runs the whole chain on Linux in a container and asserts the
