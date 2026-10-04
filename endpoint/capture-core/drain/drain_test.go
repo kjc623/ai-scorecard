@@ -423,6 +423,53 @@ func TestDrainTerminalRetainsSpool(t *testing.T) {
 	}
 }
 
+func TestDrainMalformedSuccessBodyDegrades(t *testing.T) {
+	store := newMemStore()
+	if _, err := store.Append(testEnvelope(t, "evt-mal")); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	// A 200 whose body is not a valid events response is a non-*apiError from sendBatch. The
+	// drainer must not panic on the nil *apiError; it degrades and retains the record.
+	d, _ := newTestDrainer(t, func() (protocol.Store, error) { return store, nil }, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("this is not json"))
+	})
+	if _, err := d.Drain(context.Background(), time.Now().Add(250*time.Millisecond)); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if st := d.Status(); st.State != protocol.StateDegraded || st.Detail != protocol.DetailUpstreamFailure {
+		t.Fatalf("status = %+v, want degraded/upstream_failure", st)
+	}
+	if store.state(1) != protocol.SpoolPending {
+		t.Fatalf("entry state = %s, want pending (retained)", store.state(1))
+	}
+}
+
+func TestCredentialExpired(t *testing.T) {
+	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	d := &Drainer{clock: func() time.Time { return now }}
+
+	if d.credentialExpired(nil) {
+		t.Fatal("a nil credential reported expired")
+	}
+	if d.credentialExpired(&credential.Credential{Mode: protocol.AuthModeDPoP}) {
+		t.Fatal("a DPoP credential (which has no NotAfter) reported expired")
+	}
+	if d.credentialExpired(&credential.Credential{Mode: protocol.AuthModeX509}) {
+		t.Fatal("an x509 credential with no NotAfter reported expired")
+	}
+	if d.credentialExpired(&credential.Credential{Mode: protocol.AuthModeX509, NotAfter: now.Add(time.Hour)}) {
+		t.Fatal("an x509 credential valid for another hour reported expired")
+	}
+	if !d.credentialExpired(&credential.Credential{Mode: protocol.AuthModeX509, NotAfter: now}) {
+		t.Fatal("an x509 credential at its NotAfter reported not expired")
+	}
+	if !d.credentialExpired(&credential.Credential{Mode: protocol.AuthModeX509, NotAfter: now.Add(-time.Second)}) {
+		t.Fatal("an x509 credential past its NotAfter reported not expired")
+	}
+}
+
 func TestDrainEmptyIsNoop(t *testing.T) {
 	store := newMemStore()
 	d, _ := newTestDrainer(t, func() (protocol.Store, error) { return store, nil }, func(w http.ResponseWriter, r *http.Request) {

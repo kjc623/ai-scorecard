@@ -194,6 +194,11 @@ const (
 	// that cannot enforce must say so rather than reporting `healthy` while inspection is silently
 	// wider than enforcement.
 	DetailEnforcementUnavailable Detail = "enforcement_unavailable"
+
+	// Device credential (ADR 0020). An x509 leaf past its NotAfter cannot authenticate, and it
+	// cannot be renewed without a fresh enrolment token; naming the cause keeps the drain from
+	// failing silently on a 401 forever.
+	DetailCredentialExpired Detail = "credential_expired"
 )
 
 // AllDetails is the closed vocabulary, for validation and for a coverage report that needs to
@@ -211,6 +216,7 @@ var AllDetails = [...]Detail{
 	DetailBundleVersionRegression, DetailBundleArtefactMissing,
 	DetailContentOverCap, DetailUndecodableContent,
 	DetailVersionMismatch, DetailModeViolation, DetailEnforcementUnavailable,
+	DetailCredentialExpired,
 }
 
 // Valid reports whether the detail is in the closed vocabulary. An empty detail is valid: a

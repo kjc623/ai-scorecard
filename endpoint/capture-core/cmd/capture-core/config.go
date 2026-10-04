@@ -130,6 +130,9 @@ func (c Config) validateDrain() error {
 	if err != nil || u.Scheme != "https" || u.Host == "" {
 		return fmt.Errorf("--device-endpoint %q must be an https URL with a host", c.DeviceEndpoint)
 	}
+	if u.Path != "" && u.Path != "/" {
+		return fmt.Errorf("--device-endpoint %q must not carry a path: the gateway route map and the DPoP htu are the bare host", c.DeviceEndpoint)
+	}
 	switch c.AuthMode {
 	case "x509", "dpop":
 	default:

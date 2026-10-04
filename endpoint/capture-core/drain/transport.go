@@ -192,6 +192,7 @@ func (d *Drainer) enrol(ctx context.Context, hwid string) (*credential.Credentia
 		Device: protocol.DeviceInfo{
 			OS:                   runtime.GOOS,
 			AgentVersion:         d.cfg.AgentVersion,
+			MDMID:                d.cfg.MDMID,
 			HardwareIdentityHash: hwid,
 		},
 	}

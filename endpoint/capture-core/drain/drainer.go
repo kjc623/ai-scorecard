@@ -135,7 +135,11 @@ func New(cfg Config, store StoreFunc, creds *credential.Store, log Logger, clock
 		log:     log,
 		clock:   clock,
 		backoff: Backoff{Base: cfg.BackoffBase, Cap: cfg.BackoffCap},
-		state:   protocol.StateAbsent,
+		// A wired drainer starts degraded, never absent: `absent` claims there is no coverage
+		// when the drain is in fact configured and simply not yet proven to work (C25). The
+		// first success flips it to healthy.
+		state:   protocol.StateDegraded,
+		detail:  protocol.DetailUpstreamUnreachable,
 		stopCh:  make(chan struct{}),
 	}
 	if creds != nil {
@@ -210,16 +214,33 @@ func (d *Drainer) run(ctx context.Context) {
 func (d *Drainer) ready(ctx context.Context) bool {
 	d.mu.Lock()
 	enrolled := d.enrolled
+	current := d.cred
 	d.mu.Unlock()
-	if enrolled {
+
+	expired := d.credentialExpired(current)
+	if enrolled && !expired {
 		return true
 	}
 	if d.cfg.EnrolmentToken == "" {
-		d.setStatus(protocol.StateDegraded, protocol.DetailUpstreamUnreachable)
-		d.log.Printf("drain: no credential and no enrolment token; the device cannot reach the ingest path")
+		detail := protocol.DetailUpstreamUnreachable
+		if expired {
+			// An expired leaf cannot authenticate and cannot be renewed without a token: say so
+			// rather than retrying a request that will 401 forever.
+			detail = protocol.DetailCredentialExpired
+		}
+		d.setStatus(protocol.StateDegraded, detail)
+		d.log.Printf("drain: no usable credential and no enrolment token; the device cannot reach the ingest path")
 		return false
 	}
+	if expired {
+		d.log.Printf("drain: x509 credential expired (NotAfter %s); re-enrolling", current.NotAfter)
+	}
 	hwid := HardwareIdentityHash(d.cfg.TenantID, d.cfg.DeviceID, d.cfg.MDMID)
+	// A re-enrolment of an expired credential reuses the hardware-identity hash it was first
+	// issued under, so the edge returns the existing device_id instead of minting a duplicate.
+	if expired && current != nil && current.HardwareIdentityHash != "" {
+		hwid = current.HardwareIdentityHash
+	}
 	cred, err := d.enrol(ctx, hwid)
 	if err != nil {
 		d.setStatus(protocol.StateDegraded, detailForErr(err))
@@ -256,6 +277,20 @@ func (d *Drainer) setCredential(c *credential.Credential) error {
 	d.enrolled = true
 	d.mu.Unlock()
 	return nil
+}
+
+// credentialExpired reports whether an x509 credential has passed its NotAfter. A DPoP
+// credential carries no NotAfter (its key does not expire; only the short-lived access token
+// does), so it never expires here. A zero NotAfter is treated as "no expiry" rather than as
+// "expired at the epoch".
+func (d *Drainer) credentialExpired(c *credential.Credential) bool {
+	if c == nil || c.Mode != protocol.AuthModeX509 {
+		return false
+	}
+	if c.NotAfter.IsZero() {
+		return false
+	}
+	return !d.clock().Before(c.NotAfter)
 }
 
 // Drain runs one bounded pass: peek oldest-first, reject over-cap envelopes, batch, send (retrying
@@ -337,7 +372,21 @@ func (d *Drainer) Drain(ctx context.Context, deadline time.Time) (Result, error)
 				break
 			}
 			ae, ok := err.(*apiError)
-			if ok && ae.Retryable() {
+			if !ok {
+				// A non-*apiError from sendBatch is not a classified §7 rejection: a 200 whose
+				// body will not parse or validate, or a local credential/proof failure. It must
+				// not be dereferenced as an *apiError; release the in-flight batch, surface the
+				// failure, and keep draining.
+				d.release(store, bb.seqs, string(protocol.DetailUpstreamFailure))
+				d.setStatus(protocol.StateDegraded, protocol.DetailUpstreamFailure)
+				d.log.Printf("drain: sending batch failed: %v", err)
+				if !d.sleepUntil(ctx, deadline, d.backoff.Delay(attempt)) {
+					return res, nil // deadline or stop: records are released, retried next open
+				}
+				attempt++
+				continue
+			}
+			if ae.Retryable() {
 				if ae.code == protocol.ReasonDuplicateBatch {
 					newBB, berr := buildBatch(bb.entries, d.clock())
 					if berr != nil {
