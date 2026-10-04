@@ -161,12 +161,19 @@ STARTUP (capture-core)                        SHUTDOWN (capture-core)
  1 load bundle, verify signature               1 provider.Stop all; proxy stops enforcing first
    (else retain previous, or M0 — §13.3)       2 RELEASE THE LOOPBACK PORT (§6.2) before anything else
  2 open and unlock the spool, enforce bound    3 drain spool to ingest, bounded by a deadline
- 3 start proc.detect (no ports, no trust)      4 restore the system proxy to its pre-install value
- 4 start cli.shim (files only, no ports)       5 unbind 80/443; remove the trusted root if the kill
- 5 start classifier-host (idle)                   switch or an uninstall asks for it
- 6 start proxy.tls, then point the system      6 stop classifier-host, then exit
+ 3 resolve the device identity: load the       4 restore the system proxy to its pre-install value
+   sealed credential, or — with no credential  5 unbind 80/443; remove the trusted root if the kill
+   and a drain configured — a bounded             switch or an uninstall asks for it
+   synchronous enrolment; otherwise the flags  6 stop classifier-host, then exit
+   (a local/offline run). If unresolved, the
+   pipeline refuses to mint (§4.2 identity
+   rule) until the background drain enrols.
+ 4 start proc.detect (no ports, no trust)
+ 5 start cli.shim (files only, no ports)
+ 6 start classifier-host (idle)
+ 7 start proxy.tls, then point the system
    proxy at it
- 7 start proxy.loopback LAST, and only after
+ 8 start proxy.loopback LAST, and only after
    its upstream preflight succeeds (§6.3)
 ```
 
@@ -175,6 +182,7 @@ STARTUP (capture-core)                        SHUTDOWN (capture-core)
 | Broker binds **last** on startup, releases **first** on shutdown | §6.2/E14: a broker holding the port without a serving upstream breaks the user's local AI; no other provider can cause user-visible harm by starting early |
 | The system proxy points at the proxy only once it is listening | A proxy configured before it binds turns every request on the machine into a connection failure |
 | The spool opens before any provider starts | A provider with nowhere to write must either drop silently (forbidden, C22) or block (forbidden, brief §6) |
+| The device identity resolves before any provider starts | An envelope is never minted with a placeholder: with a drain configured the issued credential is the identity, and until it exists the pipeline refuses to mint rather than stamping the flags |
 | `proc.detect` starts first and stops last | Cheapest provider, and the one that produces the tamper signal when something stops the others (C24) |
 | Nothing uninstalls while the spool holds undelivered events without recording it | The dropped count for an uninstall is an operator-visible fact, not a silent truncation (§12.2) |
 
