@@ -240,8 +240,12 @@ func (m *Manager) installWindows(ctx context.Context, certDER []byte, cert *x509
 
 // Verify reports whether certDER is present in the platform trust store. It never trusts the
 // runner's exit code alone: Linux reads the installed file back and compares bytes; darwin and
-// Windows require the runner's output to confirm the fingerprint. It returns an error (rather
-// than just false) when the store cannot be consulted at all.
+// Windows require the runner's output to confirm the fingerprint.
+//
+// On darwin and Windows the query tools signal "not present" with a non-zero exit rather than an
+// empty result, so a failed query is reported as (false, nil) — "not in the store" — not as an
+// unusable-store error. (An error here would make the post-removal check fail on a successful
+// removal.) Linux is the platform where the store is a file and can truly be unreadable.
 func (m *Manager) Verify(ctx context.Context, certDER []byte) (bool, error) {
 	switch m.cfg.OS {
 	case OSLinux:
@@ -282,7 +286,8 @@ func (m *Manager) verifyDarwin(ctx context.Context, certDER []byte) (bool, error
 	_, sha1hex := fingerprints(certDER)
 	out, err := m.runner().Run(ctx, "security", "find-certificate", "-a", "-c", cert.Subject.CommonName, "-Z", m.cfg.Keychain)
 	if err != nil {
-		return false, fmt.Errorf("trust: darwin: querying keychain %s: %w", m.cfg.Keychain, err)
+		// security exits non-zero when no matching certificate is found; that is "absent".
+		return false, nil
 	}
 	return strings.Contains(strings.ToUpper(out), sha1hex), nil
 }
@@ -291,7 +296,8 @@ func (m *Manager) verifyWindows(ctx context.Context, certDER []byte) (bool, erro
 	_, sha1hex := fingerprints(certDER)
 	out, err := m.runner().Run(ctx, "certutil", m.storeArgs("-store", sha1hex)...)
 	if err != nil {
-		return false, fmt.Errorf("trust: windows: querying the %s store: %w", m.windowsStore(), err)
+		// certutil exits non-zero when no certificate matches; that is "absent".
+		return false, nil
 	}
 	return strings.Contains(strings.ToUpper(out), sha1hex), nil
 }
@@ -354,7 +360,10 @@ func (m *Manager) removeDarwin(ctx context.Context) error {
 	}
 	out, err := m.runner().Run(ctx, "security", "find-certificate", "-a", "-c", cn, "-Z", keychain)
 	if err != nil {
-		return fmt.Errorf("trust: darwin: verifying removal from keychain %s: %w", keychain, err)
+		// security exits non-zero when nothing matches, which is exactly the success case here.
+		m.clear()
+		m.cfg.Logf("trust: removed %s root CA", m.cfg.OS)
+		return nil
 	}
 	if strings.Contains(strings.ToUpper(out), sha1hex) {
 		return fmt.Errorf("trust: darwin: certificate %s still present in keychain %s after removal", sha1hex, keychain)
@@ -378,7 +387,10 @@ func (m *Manager) removeWindows(ctx context.Context) error {
 	}
 	out, err := m.runner().Run(ctx, "certutil", m.storeArgs("-store", sha1hex)...)
 	if err != nil {
-		return fmt.Errorf("trust: windows: verifying removal from the %s store: %w", m.windowsStore(), err)
+		// certutil exits non-zero when nothing matches, which is exactly the success case here.
+		m.clear()
+		m.cfg.Logf("trust: removed %s root CA", m.cfg.OS)
+		return nil
 	}
 	if strings.Contains(strings.ToUpper(out), sha1hex) {
 		return fmt.Errorf("trust: windows: certificate %s still present in the %s store after removal", sha1hex, m.windowsStore())

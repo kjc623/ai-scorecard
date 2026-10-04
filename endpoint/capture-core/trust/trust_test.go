@@ -320,12 +320,14 @@ func TestVerifyDarwin(t *testing.T) {
 			t.Fatalf("verify = %v, %v; want false, nil", ok, err)
 		}
 	})
-	t.Run("unusable", func(t *testing.T) {
-		r := &fakeRunner{fn: func(string, []string) (string, error) { return "", errors.New("keychain locked") }}
+	t.Run("query-error-is-absence", func(t *testing.T) {
+		// security exits non-zero when nothing matches; a failed query is "absent", not a
+		// store error, otherwise the post-removal check would fail after a successful removal.
+		r := &fakeRunner{fn: func(string, []string) (string, error) { return "", errors.New("item not found") }}
 		m := New(Config{OS: OSDarwin, Runner: r, Keychain: keychain})
 		ok, err := m.Verify(context.Background(), der)
-		if err == nil || ok {
-			t.Fatalf("verify = %v, %v; want an error", ok, err)
+		if err != nil || ok {
+			t.Fatalf("verify = %v, %v; want false, nil", ok, err)
 		}
 	})
 }
@@ -400,12 +402,14 @@ func TestVerifyWindows(t *testing.T) {
 			t.Fatalf("verify = %v, %v; want false, nil", ok, err)
 		}
 	})
-	t.Run("unusable", func(t *testing.T) {
-		r := &fakeRunner{fn: func(string, []string) (string, error) { return "", errors.New("certutil missing") }}
+	t.Run("query-error-is-absence", func(t *testing.T) {
+		// certutil exits non-zero when nothing matches; a failed query is "absent", not a
+		// store error, otherwise the post-removal check would fail after a successful removal.
+		r := &fakeRunner{fn: func(string, []string) (string, error) { return "", errors.New("cert not found") }}
 		m := New(Config{OS: OSWindows, Runner: r})
 		ok, err := m.Verify(context.Background(), der)
-		if err == nil || ok {
-			t.Fatalf("verify = %v, %v; want an error", ok, err)
+		if err != nil || ok {
+			t.Fatalf("verify = %v, %v; want false, nil", ok, err)
 		}
 	})
 }

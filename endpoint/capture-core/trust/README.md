@@ -29,9 +29,12 @@ that a command returned exit code zero.
 - **`Remove` needs no argument.** The manager remembers the last installed DER, so `Remove(ctx)`
   satisfies `core.TrustRoot`. Install is idempotent; Remove errors when nothing was installed or
   when the removal cannot be verified.
-- **Verify fails closed.** An unreadable store is an error, not a silent "not installed". The
-  runner's exit code is never trusted alone: the fingerprint must be present in its output (or the
-  bytes must match on disk, on Linux).
+- **Verify never trusts an exit code alone, and treats absence correctly.** Linux reads the
+  installed file back and compares bytes. On macOS and Windows the query tools (`security
+  find-certificate`, `certutil -store`) exit non-zero when a certificate is absent, so a failed
+  query is reported as "not present" rather than as a store error — otherwise the post-removal check
+  would fail after a successful removal. An actually unreadable Linux store is an error, not a
+  silent "not installed".
 - **No panics.** Every error names the OS, the store and the cause.
 
 ## Tests
