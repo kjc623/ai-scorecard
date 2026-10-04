@@ -527,7 +527,13 @@ func (p *Pipeline) Process(ctx context.Context, obs Observation) (Outcome, error
 				out.Reason = ReasonInvalidEnvelope
 				return out, errors.New("core: M3 observation but no local content store is configured; refusing rather than emitting an M3 record whose content does not exist")
 			}
-			if err := p.Content.Put(ctx, eventID, body, dedup.BucketStart(obs.OccurredAt).Add(p.Retention)); err != nil {
+			// What is held is the prompt text where the route could identify the user-authored
+			// segment, and the body as observed where it could not.
+			held := body
+			if xerr == nil && text != "" {
+				held = []byte(text)
+			}
+			if err := p.Content.Put(ctx, eventID, held, dedup.BucketStart(obs.OccurredAt).Add(p.Retention)); err != nil {
 				// A failed local write is a named gap, not a silent one: the event still goes,
 				// with the classifier's output, because dropping it would lose the metadata
 				// too. The content state is reported through the provider's health counters.

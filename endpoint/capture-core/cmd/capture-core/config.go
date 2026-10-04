@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -41,6 +42,15 @@ type Config struct {
 	// Classifier host (§3.4).
 	ClassifierAddress string
 	ClassifierBudget  time.Duration
+	// ClassifierRelease/ClassifierPubkey make the agent run the classifier host itself, as a child
+	// on stdio, when no ClassifierAddress names a host someone else runs.
+	ClassifierRelease string
+	ClassifierPubkey  string
+
+	// The M3 local content store (§11.3). Empty ContentDir means the device holds no content, and
+	// an M3 observation is refused rather than emitted without the content it says it holds.
+	ContentDir string
+	ContentKey string
 
 	// Providers.
 	EnableTLS        bool
@@ -130,6 +140,12 @@ func (c Config) validate(mode runMode) error {
 		if _, err := hex.DecodeString(strings.TrimSpace(c.PolicyKey)); err != nil {
 			return fmt.Errorf("--policy-key must be hex-encoded Ed25519 public key bytes: %w", err)
 		}
+	}
+	if (c.ClassifierRelease == "") != (c.ClassifierPubkey == "") {
+		return errors.New("--classifier-release and --classifier-pubkey go together: a release with no pinned key cannot be verified, and a key with no release verifies nothing")
+	}
+	if (c.ContentDir == "") != (c.ContentKey == "") {
+		return errors.New("--content-dir and --content-key go together: held content is sealed, and the key must live outside the directory it seals")
 	}
 	if mode.nativeFrames != "" {
 		if st, err := os.Stat(mode.nativeFrames); err != nil || !st.IsDir() {
@@ -281,6 +297,19 @@ func classifierAddress(s string) (classifierlinkAddress, error) {
 }
 
 var errNoClassifierAddress = errors.New("no classifier address configured")
+
+// classifierHostExe is the classifier host the installer lays down beside this binary.
+func classifierHostExe() string {
+	name := "classifier-host"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return name
+	}
+	return filepath.Join(filepath.Dir(self), name)
+}
 
 // workDirFor returns the selftest's work directory, resolved against the process's working
 // directory so it never lands in a system temp path the sandbox may deny.
@@ -437,7 +466,9 @@ func printConfig(cfg Config, logger loggerLike) error {
 		}
 	}
 
-	if cfg.ClassifierAddress == "" {
+	if cfg.ClassifierAddress == "" && cfg.ClassifierRelease != "" {
+		fmt.Printf("classifier host: child on stdio exe=%s release=%s budget=%s\n", classifierHostExe(), cfg.ClassifierRelease, cfg.ClassifierBudget)
+	} else if cfg.ClassifierAddress == "" {
 		fmt.Printf("classifier host: none configured -> rules-only with confidence=degraded (§3.4)\n")
 	} else {
 		addr, err := classifierAddress(cfg.ClassifierAddress)

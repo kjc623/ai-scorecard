@@ -17,6 +17,7 @@ import (
 	"github.com/shadow-ai-capture/device/canon"
 	"github.com/shadow-ai-capture/device/capture-core/classifierlink"
 	"github.com/shadow-ai-capture/device/capture-core/cli"
+	"github.com/shadow-ai-capture/device/capture-core/contentstore"
 	"github.com/shadow-ai-capture/device/capture-core/core"
 	"github.com/shadow-ai-capture/device/capture-core/credential"
 	"github.com/shadow-ai-capture/device/capture-core/detect"
@@ -44,6 +45,7 @@ type service struct {
 	spool   *spoolHolder
 	sink    *lazySink
 	pipe    *core.Pipeline
+	content *contentstore.Store
 	host    *classifierHostController
 	broker  *loopback.Broker
 	tlsProv *tlsproxy.Provider
@@ -120,6 +122,16 @@ func newService(ctx context.Context, cfg Config, log *slog.Logger) (*service, er
 	// normaliser the pipeline degrades and refuses to claim a Tier-T key; here there is one, so
 	// canonical digests are real.
 	pipe.Normalizer = canon.Normalizer{}
+	if cfg.ContentDir != "" {
+		// M3: content is held here, keyed by event, until a per-event grant uploads it or local
+		// retention removes it.
+		cs, err := contentstore.Open(cfg.ContentDir, cfg.ContentKey, time.Now)
+		if err != nil {
+			return nil, err
+		}
+		s.content = cs
+		pipe.Content = cs
+	}
 	s.pipe = pipe
 
 	// The classifier host (§3.4). An unconfigured or unavailable host degrades to rules-only with
@@ -238,6 +250,7 @@ func newService(ctx context.Context, cfg Config, log *slog.Logger) (*service, er
 			ManagedDir: cfg.ShimDir,
 			ProxyAddr:  shimProxyAddr(cfg, s.currentBundle()),
 			RootCAPEM:  caCertPEM,
+			Runner:     trust.ExecRunner{},
 			Log:        logf,
 			Clock:      time.Now,
 		}
@@ -376,7 +389,13 @@ func (s *service) ensureDrainer() error {
 	if err != nil {
 		return fmt.Errorf("drain: credential store: %w", err)
 	}
+	// Assign only a real store: a typed-nil interface is not nil.
+	var content drain.ContentSource
+	if s.content != nil {
+		content = s.content
+	}
 	d, err := drain.New(drain.Config{
+		Content:        content,
 		Endpoint:       s.cfg.DeviceEndpoint,
 		AuthMode:       protocol.AuthMode(s.cfg.AuthMode),
 		EnrolmentToken: s.cfg.EnrolmentToken,
@@ -633,14 +652,29 @@ type classifierHostController struct {
 }
 
 func (c *classifierHostController) Start(ctx context.Context) error {
-	addr, err := classifierAddress(c.cfg.ClassifierAddress)
-	if err != nil {
-		c.log.Warn("no classifier host configured; classification degrades to rules-only", "reason", err)
-		return nil
-	}
-	client, err := classifierlink.New(classifierlink.Address{Network: addr.Network, Path: addr.Path}, "capture-core/"+version, c.cfg.ClassifierBudget)
-	if err != nil {
-		return err
+	var client *classifierlink.Client
+	if strings.TrimSpace(c.cfg.ClassifierAddress) == "" && c.cfg.ClassifierRelease != "" {
+		// No host to dial: run the one installed beside this binary, as a child on stdio.
+		exe := classifierHostExe()
+		cl, err := classifierlink.New(classifierlink.Address{Network: "stdio", Path: exe}, "capture-core/"+version, c.cfg.ClassifierBudget)
+		if err != nil {
+			return err
+		}
+		cl.SetDialer(classifierlink.ChildDialer(exe, []string{
+			"serve", "--release", c.cfg.ClassifierRelease, "--pubkey", c.cfg.ClassifierPubkey, "--transport", "stdio",
+		}, os.Stderr))
+		client = cl
+	} else {
+		addr, err := classifierAddress(c.cfg.ClassifierAddress)
+		if err != nil {
+			c.log.Warn("no classifier host configured; classification degrades to rules-only", "reason", err)
+			return nil
+		}
+		cl, err := classifierlink.New(classifierlink.Address{Network: addr.Network, Path: addr.Path}, "capture-core/"+version, c.cfg.ClassifierBudget)
+		if err != nil {
+			return err
+		}
+		client = cl
 	}
 	c.client = client
 	if c.onReady != nil {

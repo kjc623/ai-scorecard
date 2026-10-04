@@ -52,6 +52,17 @@ release-signing public key. The transport defaults to `stdio` on Windows and `un
 .\classifier-host.exe serve --release DIR --pubkey HEX --transport unix --addr PATH
 ```
 
+Nobody starts it by hand on a device. `capture-core` runs it as a child on stdio when its profile
+names a release (`--classifier-release`, `--classifier-pubkey`): the core starts this binary from
+beside its own, speaks the §3.4 frames on its stdin and stdout, and the host exits when its stdin
+closes. That is how the installed Windows service runs it, and it is the only way `serve` has been
+run outside the tests.
+
+`serve` used to panic at startup on every transport: it passed a nil parent to
+`signal.NotifyContext`, which Go 1.27 rejects. The tests drive `classify.Server` directly and never
+reached that line, so the suite was green over a binary that could not serve. It now uses
+`context.Background()`; there is still no test that starts the `serve` subcommand.
+
 ## Measured (2026-10-02, Windows, Go 1.27.0, Node 22.23.1)
 
 - **§9.1 equivalence: executed and passing.** 20 corpus cases, 13 with labels, 2 degraded,
@@ -135,14 +146,14 @@ numbering is stable — MEASUREMENTS.md cites items 1, 7, 8 and 15.
 4. **Confidence bands.** Rules+validators is `high`; model-only is `medium` at ≥ 0.85 and `low` below; a completed run that found nothing is `high`.
 5. **Stage names.** `rules | validators | model | parse` is documented; the pipeline also records `normalise`, `release` and `mode`. The field is a free string, so nothing breaks, but the set is **open**.
 6. **Rule "family".** An optional `family` field defaults to the class; families evaluate in declaration order and a budget stop happens at a rule boundary inside the family.
-7. **Windows named-pipe transport is NOT IMPLEMENTED.** Windows serves over stdio, macOS over a Unix-domain socket, tests over loopback TCP; a hand-rolled `CreateNamedPipe` adapter is the remaining work.
+7. **Windows named-pipe transport is NOT IMPLEMENTED.** Windows serves over stdio as a child of `capture-core` (which is implemented on the core's side in `classifierlink/child.go` and runs in the installed service), macOS over a Unix-domain socket, tests over loopback TCP; a hand-rolled `CreateNamedPipe` adapter is the remaining work, and it is what §3.4 names for Windows. The stdio child has no supervisor: the core re-spawns a dead host on the next request, with no backoff and no crash-loop limit.
 8. **macOS residency monitoring is NOT IMPLEMENTED.** No `/proc`, no libproc binding in the standard library, so the child is bounded by timeout and hard kill only and the result says the memory cap is not active.
 9. **`go test -race` is NOT VERIFIED**: `-race` needs cgo and there is no C compiler. Concurrency is covered by `TestClassifyIsSafeForConcurrentUse`, which is not a substitute for the race detector.
 10. **The model artefact is a development fixture** — a small hand-written linear scorer. What is proven is the mechanism: digest-verified load, integer scoring, deterministic across targets, skippable when missing or unverified.
 11. **PDF is not parseable.** The standard library has no PDF parser; `.docx/.xlsx/.pptx/.odt/.ods`, `.gz`, JSON, XML, CSV and text are. A PDF returns `unsupported_media_type`, degrades, and adds a per-format coverage row.
 12. **Request digest versus host digest.** The host computes and returns its own digest and *counts* a disagreement without degrading, because that is a dedup-contract defect rather than a classification failure. **Open**: which side is authoritative.
 13. **Deferred parses.** For a document over the inline threshold (64 KiB default) the synchronous answer is degraded with `parse_deferred` set; producing the real labels later is `capture-core`'s async path.
-14. **The enforcement half of a verdict has no home in `endpoint/protocol`** — see the release-states section. **Open** if the Lead prefers a protocol-level frame type.
+14. **The enforcement half of a verdict has no home in `endpoint/protocol`** — see the release-states section. **Open** if the Lead prefers a protocol-level frame type. Until then the mismatch is absorbed on the core's side: `classifierlink` accepts the verdict wrapper and takes the response under `response`, and nothing reads `action`/`rule_id`/`shadowed`. Before it accepted the wrapper, every answer from this host failed the core's validation and was recorded as `version_mismatch`.
 15. **The wasm module is 6.35 MB against ADR 0016's ~2.5 MB estimate.** The cost that matters is ≈12–13 ms to compile and instantiate against a 300 ms budget, so the ADR's revisit trigger is not met; trimming the in-page build is available work if the extension measures worse.
 16. **A resident shadow release doubles classification work per request**, and the shadow run is not separately budgeted or counted in the p95.
 17. **`ClassifyRequest.ReleaseID` is refused, not honoured.** A caller never selects a release; policy does, so a mismatching value is a degraded refusal (`release_load_failed`).

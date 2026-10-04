@@ -102,6 +102,13 @@ export const CONFIG = [
   // Classifier host.
   { env: 'SAC_CLASSIFIER_ADDRESS', flag: '--classifier-address', kind: 'string', default: '', desc: 'transport:path of the classifier host; empty means rules-only' },
   { env: 'SAC_CLASSIFIER_BUDGET', flag: '--classifier-budget', kind: 'duration', default: '2s', desc: 'budget for one classification' },
+  { env: 'SAC_CLASSIFIER_RELEASE', flag: '--classifier-release', kind: 'path', default: '', desc: 'signed classifier release directory; with no SAC_CLASSIFIER_ADDRESS the agent runs the installed classifier-host as a child' },
+  { env: 'SAC_CLASSIFIER_PUBKEY', flag: '--classifier-pubkey', kind: 'string', default: '', desc: 'hex-encoded Ed25519 public key the classifier release must verify under' },
+
+  // The M3 local content store (docs/01 §11.3). Empty by default: a device holds content only when
+  // its enrolment profile gives it somewhere to hold it.
+  { env: 'SAC_CONTENT_DIR', flag: '--content-dir', kind: 'path', default: '', desc: 'M3 local content store; empty means the device holds no content and refuses M3 observations' },
+  { env: 'SAC_CONTENT_KEY', flag: '--content-key', kind: 'path', default: '', desc: 'key file the content store is sealed under; must be OUTSIDE SAC_CONTENT_DIR' },
 
   // Providers.
   { env: 'SAC_PROXY_TLS', flag: '--proxy-tls', kind: 'bool', default: 'true', desc: 'run proxy.tls (the egress interceptor)' },

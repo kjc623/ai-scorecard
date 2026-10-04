@@ -22,6 +22,7 @@ as stored records; core to `ingest-api` as an HTTPS batch.
 | `native.go` | Chromium native messaging: one JSON object with a `type` discriminator, attachment bytes chunked behind a manifest so an oversized upload is refused before transfer. |
 | `batch.go` | `POST /v1/events` request and response shapes, and the batch caps (1–500 events, 8 MiB compressed, 32 MiB decompressed, 256 KiB per envelope). |
 | `auth.go` | The device-authentication and enrolment vocabulary: the closed `x509`/`dpop` `AuthMode` set with its refusal-by-default check, the `X-Client-Cert`/`DPoP`/`Authorization` header names, `POST /v1/enrol` request and response, the `hardware_identity_hash` idempotency key, the issued-credential shape, and the RFC 7517 JWK subset with its RFC 7638 thumbprint (ADR 0020). |
+| `content.go` | The M3 content grant ([docs/02 §5.5, §10](../../docs/02-ingest-and-transport.md)): `POST /v1/content/grant` request and response, the `X-Sac-*` upload metadata headers, the grant path's three reason codes, and the sealed-object format — `SealContent` / `OpenContent` (AES-256-GCM, nonce prepended, the event id as additional data) and `RawDigest`. |
 
 ## Two properties the shapes enforce
 
@@ -33,6 +34,13 @@ counter names and ingest reason codes.
 **The mode gates content.** `CollectionMode.ReadsContent()` is false for M0 and for the empty string,
 and every content path consults it before touching bytes. A `ClassifyRequest` carrying content at M0
 is a defect the classifier rejects, not something it quietly ignores.
+
+`content.go` is here, rather than in the drain, for the same reason the envelope registries are:
+three components must agree on it and none may fork it. The device seals an object, `control-api`
+relays the key and names the upload headers, and `content-vault` opens the object for an approved
+retrieval. The sealed format having one implementation is what lets the vault check the stored
+bytes against `RawDigest` and open them with the key it unwrapped. The event id is the additional
+data so that an object served against a different event fails to open.
 
 The envelope stays `json.RawMessage` on purpose: the spool must persist exactly the bytes the device
 will send, and `ingest-api` validates those same bytes against the schema. A second Go struct here
@@ -59,4 +67,6 @@ truncated payloads, the closed vocabularies, the batch envelope rules, the spool
 two structural claims above: a `ClassifyRequest` cannot carry identity, and it refuses content at M0.
 `auth_test.go` covers the closed `AuthMode` set, the header and version constants, enrolment
 request/response round trips, the token-type refusal, and `JWK.Thumbprint` against the RFC 7638 §3.1
-vector and the RFC 7515 Appendix A.3 EC key.
+vector and the RFC 7515 Appendix A.3 EC key. `content.go` has no test in this package: the sealed
+format's round trip, and the refusal of a substituted object, are asserted where it is opened, in
+`vault/content-vault/vaultinvariants/serve_test.go`.

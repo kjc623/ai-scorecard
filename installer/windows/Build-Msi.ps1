@@ -8,9 +8,12 @@
   installer/generated/windows/ShadowAICapture.wxs, which installs it and registers the service that
   reads it via --config-file.
 
-  NOT VERIFIED ON THIS HOST: there is no Windows, no WiX and no signtool on the machine this was
-  written on. With no `wix` on PATH the script prints the exact commands it would run and exits
-  non-zero, rather than pretending to have produced an artefact.
+  With no `wix` on PATH the script prints the exact commands it would run and exits non-zero,
+  rather than pretending to have produced an artefact. Signing (-SignTool/-SignCert) is NOT
+  VERIFIED: no build host has had a code-signing certificate.
+
+  For the local lab, do not call this directly: `node installer/lab-msi.mjs` mints the profile and
+  the files it points at, and passes them here.
 
 .EXAMPLE
   node installer/build.mjs --os windows --arch amd64
@@ -21,6 +24,12 @@ param(
   [string]$StageDir = "installer/.stage/windows-amd64",
   [string]$OutDir = "installer/dist",
   [string]$ConfigFile = "",
+  # The files the profile points at (signed policy bundle, device CA, classifier release, pinned
+  # edge CA). Installed, tree preserved, under C:\ProgramData\ShadowAICapture\profile.
+  [string]$ProfileDir = "",
+  # The profile carries a new enrolment token for a server that does not know the credential an
+  # earlier install sealed: clear the agent's state on install so the device enrols again.
+  [switch]$FreshEnrolment,
   [string]$WixExe = "",
   [string]$SignTool = "",
   [string]$SignCert = "",
@@ -52,6 +61,17 @@ if ($ConfigFile -ne "") {
 $envText = (& node (Join-Path $Root 'installer/render.mjs') @envArgs) | Out-String
 Set-Content -Path (Join-Path $Stage 'etc\capture-core.env') -Value $envText -Encoding ascii
 Write-Host "installed capture-core.env ($($envText.Trim().Split("`n").Count) keys; profile merged over windows defaults)"
+
+# The profile directory is staged fresh every build, so a file dropped from the profile is dropped
+# from the MSI. The WiX source harvests it with a wildcard, which needs at least one file.
+$stageProfile = Join-Path $Stage 'profile'
+if (Test-Path $stageProfile) { Remove-Item -Recurse -Force $stageProfile }
+New-Item -ItemType Directory -Force -Path $stageProfile | Out-Null
+if ($ProfileDir -ne "") {
+  Copy-Item -Recurse -Force (Join-Path (Resolve-Path (Join-Path $Root $ProfileDir)).Path '*') $stageProfile
+}
+Set-Content -Path (Join-Path $stageProfile 'README.txt') -Encoding ascii -Value "The files capture-core.env points at. Delivered with the enrolment profile; do not edit."
+Write-Host "staged profile directory ($((Get-ChildItem -Recurse -File $stageProfile).Count) files)"
 
 # Find the WiX CLI three ways, because `dotnet tool install --global wix` puts wix.exe in
 # %USERPROFILE%\.dotnet\tools, which is not always on the PATH of the shell that runs this script.
@@ -90,6 +110,7 @@ $wixArgs = @(
   '-arch', 'x64'
 )
 if ($EulaId -ne '') { $wixArgs += @('-acceptEula', $EulaId) }
+if ($FreshEnrolment) { $wixArgs += @('-d', 'FreshEnrolment=1') }
 $wixArgs += @('-d', "StageDir=$Stage", '-o', $msi)
 $buildOut = & $wix @wixArgs 2>&1
 $buildCode = $LASTEXITCODE

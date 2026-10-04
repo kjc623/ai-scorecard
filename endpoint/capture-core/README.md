@@ -24,7 +24,8 @@ release.
 | [cli/](cli/README.md) | `cli.shim` — the managed shell trust/proxy environment that makes CLI runtimes (Go, Node, Python) visible to `proxy.tls`. |
 | [detect/](detect/README.md) | `proc.detect` — the process and model detector: the cheapest provider, the only one that fails open by doing nothing. |
 | [classifierlink/](classifierlink/README.md) | The capture-core side of the local socket to `classifier-host`, and the failure contract that keeps a classifier outage from failing a submission. |
-| [drain/](drain/README.md) | The device-to-cloud drain (ADR 0020): enrolment, the DPoP/x509 transport, batching, settling and backoff. |
+| [drain/](drain/README.md) | The device-to-cloud drain (ADR 0020): enrolment, the DPoP/x509 transport, batching, settling and backoff, and the M3 content path (grant request, seal, upload). |
+| [contentstore/](contentstore/README.md) | The M3 local content store: content sealed at rest, keyed by event, with the grant state of each held object. |
 | [credential/](credential/README.md) | The sealed per-device credential at rest: the issued leaf (or registered DPoP key) plus the never-exported private key. |
 | [dpop/](dpop/README.md) | The device side of the compact-JWS contract (RFC 7515 ES256, RFC 9449 DPoP). |
 | [cmd/capture-core/](cmd/capture-core/README.md) | The binary: flags, subcommands, service deployment, and the self test that is the endpoint's end-to-end evidence. |
@@ -43,6 +44,11 @@ digest through `dedup` (wire `canon` in as the normaliser), mints an envelope th
 will accept, and appends it to the spool. Every step that degrades — an unavailable classifier, an
 extraction failure, an over-cap body, a missing canonicaliser — is recorded as `confidence: degraded`
 with a named reason rather than being reported as "nothing found".
+
+At M3 the pipeline also hands the content to `contentstore` before the envelope is minted: the
+prompt text where the route's extractor could identify the user-authored segment, and the body as
+observed where it could not. The envelope carries none of it. `drain` later asks the server for a
+grant, per event, once that event has been delivered.
 
 ## Build and test
 
@@ -74,8 +80,17 @@ those are Go module paths, not directories, and nothing here redefines their sha
   oldest-first with full-jitter backoff, settling each record from the per-event outcome. This path
   is proven end-to-end against the local auth lab; health is still a file, not `POST /v1/health`,
   which `control-api` does not yet serve.
-- **No M3 content store.** An M3 observation is refused rather than emitted without the content it
-  says it holds; the local store and grant-bound retrieval are not implemented here.
+- **The M3 content store is opt-in.** With `--content-dir` and `--content-key` set, M3 content is
+  held in [contentstore/](contentstore/README.md) and uploaded under a per-event grant by
+  [drain/](drain/README.md); this was run end to end against the local auth lab on Windows with
+  `x509` credentials. Without the two flags an M3 observation is still refused rather than emitted
+  without the content it says it holds. Attachments are not held, and the grant path has not been
+  run with a `dpop` credential.
+- **The classifier host is run, not managed.** With `--classifier-release` and
+  `--classifier-pubkey` and no `--classifier-address`, the agent starts the `classifier-host` beside
+  its own executable as a child on stdio and re-spawns it on the next request after it dies. There
+  is no backoff and no crash-loop limit on that re-spawn; §3.5's supervisor policy for the host is
+  not implemented.
 - **Platform facilities are partly wired.** The **OS trust store is wired** through `trust/` when
   `--trust-install` is set: `proxy.tls` installs the per-device CA (from `--ca-cert`/`--ca-key` or
   the bundle's `interception.root_ca_pem`), and the supervisor removes it when

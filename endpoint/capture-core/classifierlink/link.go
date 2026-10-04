@@ -51,6 +51,9 @@ func (a Address) Valid() bool {
 		return strings.TrimSpace(a.Path) != ""
 	case "tcp":
 		return isLoopbackAddr(a.Path)
+	case "stdio":
+		// Path is the host executable; the connection is made by ChildDialer, not by Dial.
+		return strings.TrimSpace(a.Path) != ""
 	default:
 		return false
 	}
@@ -107,6 +110,8 @@ func Dial(ctx context.Context, addr Address) (net.Conn, error) {
 			return nil, fmt.Errorf("classifierlink: opening %s: %w", addr.Path, err)
 		}
 		return pipeConn{File: f}, nil
+	case "stdio":
+		return nil, fmt.Errorf("classifierlink: a stdio host is spawned, not dialled; set ChildDialer for %s", addr.Path)
 	default:
 		return nil, fmt.Errorf("classifierlink: network %q is not dialable", addr.Network)
 	}
@@ -285,7 +290,7 @@ func (c *Client) Classify(ctx context.Context, req protocol.ClassifyRequest) (pr
 			return
 		}
 		_ = cn.SetDeadline(time.Time{})
-		readErr = json.Unmarshal(raw, &resp)
+		readErr = decodeClassifyFrame(raw, &resp)
 	}()
 
 	select {
@@ -313,6 +318,23 @@ func (c *Client) Classify(ctx context.Context, req protocol.ClassifyRequest) (pr
 		return c.rulesOnlyFallback(), nil
 	}
 	return resp, nil
+}
+
+// decodeClassifyFrame reads the host's answer. classifier-host frames a verdict — the response
+// under `response`, with the enforcement half alongside — while a bare ClassifyResponse is what
+// protocol defines; both are accepted, and only the response is taken.
+func decodeClassifyFrame(raw []byte, resp *protocol.ClassifyResponse) error {
+	var verdict struct {
+		Response *protocol.ClassifyResponse `json:"response"`
+	}
+	if err := json.Unmarshal(raw, &verdict); err != nil {
+		return err
+	}
+	if verdict.Response != nil {
+		*resp = *verdict.Response
+		return nil
+	}
+	return json.Unmarshal(raw, resp)
 }
 
 // reset drops the resident connection so the next call re-dials. A host that crashed is

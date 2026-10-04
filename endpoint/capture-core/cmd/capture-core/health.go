@@ -205,7 +205,7 @@ func (h *healthChannel) Snapshot() healthSnapshot {
 	if !h.cfg.EnableTLS {
 		snap.NamedGaps = append(snap.NamedGaps, "proxy.tls: no coverage row (provider disabled by configuration)")
 	}
-	if h.cfg.ClassifierAddress == "" {
+	if h.cfg.ClassifierAddress == "" && h.cfg.ClassifierRelease == "" {
 		snap.NamedGaps = append(snap.NamedGaps, "classifier-host: rules-only fallback, confidence=degraded on every classified event")
 	}
 	if !h.cfg.EnableLoopback {

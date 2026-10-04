@@ -126,6 +126,10 @@ func parseFlags(args []string) (Config, runMode, error) {
 	// Classifier host (§3.4).
 	fs.StringVar(&cfg.ClassifierAddress, "classifier-address", cfg.ClassifierAddress, "classifier host address as transport:path, e.g. unix:/run/sac/classifier.sock or pipe:\\\\.\\pipe\\sac-classifier; empty means rules-only")
 	fs.DurationVar(&cfg.ClassifierBudget, "classifier-budget", cfg.ClassifierBudget, "budget for one classification")
+	fs.StringVar(&cfg.ClassifierRelease, "classifier-release", cfg.ClassifierRelease, "signed classifier release directory; with no --classifier-address the agent runs the classifier-host beside it as a child on stdio")
+	fs.StringVar(&cfg.ContentDir, "content-dir", cfg.ContentDir, "M3 local content store directory; empty means the device holds no content and refuses M3 observations")
+	fs.StringVar(&cfg.ContentKey, "content-key", cfg.ContentKey, "key file the content store is sealed under; must be OUTSIDE --content-dir")
+	fs.StringVar(&cfg.ClassifierPubkey, "classifier-pubkey", cfg.ClassifierPubkey, "hex-encoded Ed25519 public key the classifier release must verify under")
 
 	// Providers.
 	fs.BoolVar(&cfg.EnableTLS, "proxy-tls", cfg.EnableTLS, "run proxy.tls (the egress interceptor)")
