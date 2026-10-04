@@ -89,7 +89,7 @@ The design came first and is still the place to start for *why*:
 | If you want to know… | Read |
 |---|---|
 | The whole design, the alternatives and why this one won | [`docs/00-architecture.md`](docs/00-architecture.md) |
-| How nine usage modes get captured on two operating systems | [`docs/01-collectors.md`](docs/01-collectors.md) |
+| How nine usage modes get captured on three operating systems | [`docs/01-collectors.md`](docs/01-collectors.md) |
 | How data reaches the cloud, and the normative dedup specification | [`docs/02-ingest-and-transport.md`](docs/02-ingest-and-transport.md) |
 | The data model, retention, erasure and recovery | [`docs/03-data-platform.md`](docs/03-data-platform.md) |
 | How the ten questions become queries | [`docs/04-dashboard-and-query.md`](docs/04-dashboard-and-query.md) |

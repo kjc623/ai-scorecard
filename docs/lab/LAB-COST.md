@@ -55,8 +55,9 @@ price tags.
 
 PostgreSQL 16 in a container (the same engine, applied to `database/schema.sql` unmodified), the two Go
 services in the only store mode they currently support, the dashboard as the static file it is, and
-the device tier where it already lives: on this Windows host. Docker is available here; that is the
-whole footprint. As built in `localdev/`, it is `postgres:17-alpine` with the schema applied
+the device tier where it already lives: on this development host (Windows, or Linux, where
+`installer/dev.mjs` installs the agent and drives it through the in-lab edge). Docker is available here;
+that is the whole footprint. As built in `localdev/`, it is `postgres:17-alpine` with the schema applied
 unmodified, three services in containers (`ingest-api`, `content-vault`, `query-api`), and no blob
 service.
 
@@ -131,7 +132,7 @@ Straight from the task, because a cheap lab that cannot run the architecture is 
 | 2 | **Services as containers, `content-vault` internal-only** | `modules/container-app.bicep` **unchanged**; `ingress: 'internal'` for content-vault, and the environment keeps `internalLoadBalancer: true` so the property holds at the environment level as well as the app level. | $0 for the environment; ≈$3.44 of compute, covered by Container Apps' monthly free grant |
 | 3 | **Identity and secrets stay real** | Seven user-assigned managed identities, Key Vault with RBAC authorisation, purge protection and 90-day soft delete, **no credential in the repository**. The lab's one deviation is the vault SKU (Standard, not Premium) — §6.4 and §8. | $0.15/month + $0 for the identities |
 | 4 | **Blob for ciphertext, private** | `modules/storage-ciphertext.bicep` **unchanged**: `allowBlobPublicAccess: false`, `allowSharedKeyAccess: false`, `publicNetworkAccess: 'Disabled'`, plus **a private endpoint** — which is not optional here, because with public network access disabled and no endpoint the account has no reachable path at all. | $7.30/month (the endpoint) + $0.12 (storage) |
-| 5 | **The endpoint side** | **Nothing Azure-side is required.** The agent runs on this Windows host; the extension needs a Chromium-family browser that loads an unpacked extension (a local prerequisite, not an Azure one — Edge does, and it is what the browser gate in `tools/accept.mjs` uses). The lab's job is the server side plus one enrolled device — and with an internal load balancer, a device outside the VNet cannot reach `ingest-api`, which is why §7.6 offers an explicitly-labelled "open mode". | $0.00 |
+| 5 | **The endpoint side** | **Nothing Azure-side is required.** The agent runs on the development host — Windows, or Linux, where `installer/dev.mjs` installs it and drives it through the in-lab edge — and the extension needs a Chromium-family browser that loads an unpacked extension (a local prerequisite, not an Azure one — Edge does, and it is what the browser gate in `tools/accept.mjs` uses). The lab's job is the server side plus one enrolled device — and with an internal load balancer, a device outside the VNet cannot reach `ingest-api`, which is why §7.6 offers an explicitly-labelled "open mode". | $0.00 |
 
 ---
 
@@ -145,7 +146,7 @@ Straight from the task, because a cheap lab that cannot run the architecture is 
 | Ciphertext store | None, as built: `localdev/` runs no blob service, because `content-vault` performs no blob I/O in this build and an emulator would prove nothing about the real account | $0.00 |
 | Services | `ingest-api` and `content-vault` built from `cmd/`, run with `-store memory` — the only mode this build supports (§1) | $0.00 |
 | Read path | `query/query-api` (Node, zero dependencies) + `query/dashboard` opened as the static file it is | $0.00 |
-| Device tier | The Windows host + a Chromium-family browser for the extension (**prerequisite: one that loads an unpacked extension — Edge does**) | $0.00 |
+| Device tier | The development host (Windows, or Linux via `installer/dev.mjs`) + a Chromium-family browser for the extension (**prerequisite: one that loads an unpacked extension — Edge does**) | $0.00 |
 | **Total** | | **$0.00** |
 
 ### 3.2 Part B — the Azure fidelity lab, itemised
@@ -442,7 +443,7 @@ unstated half is how someone concludes "it works" from evidence that never cover
 | **Zone-redundant HA / failover** | **No** | `Disabled` in the lab. **[AWAIT]** Burstable may not support zone-redundant HA at all; if it does, enabling it roughly doubles line 1a. |
 | **Managed HSM, quorum, customer-held keys** | **No** | $3,358/month and per-contract. |
 | **Scale-out, concurrency limits, p95 under load** | **No** | One replica, no load generator: the lab tests correctness, never capacity. |
-| **The device tier** | **Locally, not in Azure** | The agent runs on the Windows host, and the extension runs in Edge there. With an internal load balancer, a device outside the VNet cannot reach `ingest-api` — see §7.6. |
+| **The device tier** | **Locally, not in Azure** | The agent runs on the development host (Windows, or Linux via `installer/dev.mjs`), and the extension runs in Edge there. With an internal load balancer, a device outside the VNet cannot reach `ingest-api` — see §7.6. |
 
 ### 6.1 The honest summary
 

@@ -57,9 +57,10 @@ If only three are read, read these:
   enforced as a check constraint rather than avoided by refusing the feature.
 - **0009** is the only deliberate deviation from a literal requirement in the brief (C32's "every
   partition"). It records why, and the trigger that reverses it.
-- **0013** removes two schedule blockers — Apple's restricted entitlements and a Windows kernel driver —
-  by showing that v1 needs neither. It is the largest schedule de-risk in the package, and the cost is
-  stated in the same record: coverage is lower, and the product has to say so.
+- **0013** removes the kernel-component and restricted-entitlement blockers on all three endpoint
+  platforms — Apple's restricted entitlements on macOS, a kernel driver on Windows, and an eBPF/TC hook on
+  Linux — by showing that v1 needs none of them. It is the largest schedule de-risk in the package, and
+  the cost is stated in the same record: coverage is lower, and the product has to say so.
 
 ## Records that amend earlier ones
 

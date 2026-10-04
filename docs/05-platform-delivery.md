@@ -266,7 +266,7 @@ gates, different blast radii, and different rollback semantics.
 | **Server tier** | Container images for the four apps and three jobs (aggregator, reconciler, migration); Bicep for infrastructure | Merge to `main`; manual promotion | §4.2 | Revision rollback (traffic) or image pin; infrastructure by prior parameter-file commit |
 | **Classifier artefacts** | Rules bundle, model artefact, evaluation report — signed content, **not** code | Manual, on a candidate tag | §4.3 | Promote the previous release; no code ships (§9.5, C20) |
 | **Browser extension** | Signed MV3 package for Chrome and Edge | Manual, on a candidate tag | §4.2 plus store review; store is the delivery channel | Version pin and `max_version` policy; the previous version cannot be un-published (§6.3) |
-| **Desktop agent** | MSI (Windows) and signed PKG (macOS) for `capture-core` + `classifier-host` + parser | Manual, on a candidate tag | §4.2 plus ring promotion (§9.2) | Ring-level supersedence to the previous MSI/PKG; atomic install rollback on the device (§9.4) |
+| **Desktop agent** | MSI (Windows), signed PKG (macOS), and a signed Linux package for `capture-core` + `classifier-host` + parser | Manual, on a candidate tag | §4.2 plus ring promotion (§9.2) | Ring-level supersedence to the previous MSI/PKG/package; atomic install rollback on the device (§9.4) |
 
 ### 4.2 The contract-generation step, shared by everything
 
@@ -463,8 +463,9 @@ than to pretend it away.
 |---|---|---|---|
 | `ShadowAICapture.msi` | Windows x64, Windows 10 21H2+ | `capture-core` service, `classifier-host`, document parser, CLI trust shim files, spool directory ACL, uninstall entries | Intune Win32 app (`.intunewin`), requirement rules on OS version and architecture, detection rule on product code **and version** |
 | `ShadowAICapture.pkg` | macOS 13+ | LaunchDaemon (`capture-core`), `classifier-host`, parser, shim profile fragment | Jamf Pro policy, scoped to a smart group |
+| Linux package | Linux, x86-64 and arm64 (userland service) | `capture-core` service, `classifier-host`, parser, spool directory ACL, `systemd` unit | The customer's configuration management (Puppet/Ansible/Chef) or an OS package repository. `installer/linux/install.sh` is the reference layout |
 | `capture-extension` | Chromium MV3 | Observation, page-context attachment read, inline warn/block | **Enterprise policy force-install**, one policy per browser: Chrome and Edge `ExtensionSettings`. Firefox and Safari are out of scope (brief §5.5, E23) |
-| Trust and proxy configuration | Both | macOS: root CA into the **System** keychain with Always Trust, proxy settings, shell profile fragment — delivered as a Jamf configuration profile. Windows: root CA into **Local Machine → Trusted Root** (or the Enterprise/GPO store), WinHTTP/WinINET proxy, QUIC disabled — delivered as an Intune configuration profile or Group Policy | The customer's MDM. **Not** installer payload |
+| Trust and proxy configuration | All | macOS: root CA into the **System** keychain with Always Trust, proxy settings, shell profile fragment — delivered as a Jamf configuration profile. Windows: root CA into **Local Machine → Trusted Root** (or the Enterprise/GPO store), WinHTTP/WinINET proxy, QUIC disabled — delivered as an Intune configuration profile or Group Policy. Linux: root CA into the system trust store, proxy via the environment, QUIC disabled — delivered by the same configuration management that installs the package | The customer's MDM or configuration management. **Not** installer payload |
 
 **Classifier content is deliberately not an installer payload**: rules, models and localised strings are
 delivered as signed content by `control-api` (§9.5, C20), which is what lets a classifier be fixed without
@@ -472,9 +473,10 @@ a release and without an MDM round trip.
 
 **Root certificates are honoured only from specific stores, and installing into the wrong store fails
 silently** (E7). Windows: Local Machine → Trusted Root, or the Enterprise/Group Policy trust stores.
-macOS: Default or System keychain with "Always Trust". Both platforms are verified by a **post-install
-self-test** that reports success or failure as data — the alternative is a silent TLS failure that looks
-like a network problem to the user and like coverage to the vendor.
+macOS: Default or System keychain with "Always Trust". Linux: the system trust store installed by
+`update-ca-certificates` or the distribution's `p11-kit` module. All platforms are verified by a
+**post-install self-test** that reports success or failure as data — the alternative is a silent TLS
+failure that looks like a network problem to the user and like coverage to the vendor.
 
 **QUIC is disabled by policy and UDP 443 is blocked at egress** (E6). Browser policy alone is
 insufficient, and the product must not depend on a client honouring a setting it may ignore.
@@ -484,17 +486,19 @@ insufficient, and the product must not depend on a client honouring a setting it
 One-shot enrolment (brief §4.2, C11). The credential is either an `x509` certificate or an RFC 9449
 `dpop` key — **a certificate is no longer mandatory**, so an MDM/PKI is optional rather than a hard
 prerequisite (ADR 0020). Re-imaging returns the existing identity rather than creating a duplicate. The
-user-visible part of deployment is deliberately small on Windows and larger on macOS, because **M0 → M1
-is a permission boundary** (C2): M0 requires no content access, and M1 requires reading prompts and
-attachments.
+user-visible part of deployment is deliberately small on Windows and on Linux and larger on macOS,
+because **M0 → M1 is a permission boundary** (C2): M0 requires no content access, and M1 requires reading
+prompts and attachments.
 
-**M0 requires no content permission on either platform** — a service install on Windows, a LaunchDaemon
-install on macOS. That is the whole enrolment experience at M0. **M1 and above are a permission
-boundary** (C2): on Windows nothing changes beyond the service install, because the service reads what it
-is already entitled to read and any gap appears as a coverage gap; on macOS, Files-and-Folders and Full
-Disk Access are pre-granted where the platform allows it (E17), and **Screen Recording can never be
-pre-granted by MDM** (E16) — so no mechanism may depend on it, and the post-install self-test reports its
-absence as a degraded capability rather than as an enrolment failure.
+**M0 requires no content permission on any platform** — a service install on Windows, a `systemd` unit on
+Linux, a LaunchDaemon install on macOS. That is the whole enrolment experience at M0. **M1 and above are a
+permission boundary** (C2): on Windows and Linux nothing changes beyond the service install, because the
+service reads what it is already entitled to read and any gap appears as a coverage gap; on macOS,
+Files-and-Folders and Full Disk Access are pre-granted where the platform allows it (E17), and **Screen
+Recording can never be pre-granted by MDM** (E16) — so no mechanism may depend on it, and the post-install
+self-test reports its absence as a degraded capability rather than as an enrolment failure. Linux has no
+per-application permission gate equivalent to macOS TCC: root reads what root can read, so an M1 gap on a
+file the service cannot reach is a coverage gap, never a denial.
 
 The policy bundle is signed, versioned and `304`-able, and a signature verification failure retains the
 previous bundle and raises an error — never a fallback to unsigned or empty policy (C10). If there is no
@@ -523,7 +527,7 @@ Uninstall must be a complete reversal of what the product did to a machine, in t
 installation, and it must be tested as a first-class path — because the product's failure mode on some
 paths is *breaking the user's machine*, not losing a data point (E14).
 
-Ordered removal, identical on both platforms: (1) stop accepting new observations and drain or discard
+Ordered removal, identical on every platform: (1) stop accepting new observations and drain or discard
 the spool per tenant policy — **discard is the default**, and retained local content is deleted with the
 deletion reported as an erasure receipt (C34, brief §3.4); (2) **release the loopback port before
 anything else**, because an uninstall that leaves the port bound leaves the user's local AI broken (E14);
@@ -532,8 +536,8 @@ remove the root CA from the correct store and **verify removal** — a root left
 the customer did not consent to keep; (5) remove the browser extension through the same enterprise policy
 that installed it (the vendor cannot remove it; the customer's policy does) and clear the extension's
 stored state; (6) delete local state — the spool directory (its segment log, counter file and lock), cached policy bundles, cached classifier content,
-logs; (7) remove the service or LaunchDaemon and the binaries, leaving no scheduled task, launch agent,
-firewall rule or Event Log source registration behind.
+logs; (7) remove the service, LaunchDaemon or `systemd` unit and the binaries, leaving no scheduled task,
+launch agent, unit file, firewall rule or Event Log source registration behind.
 
 **Verification is a post-uninstall script that reports, as data, that steps 2–4 and 6–7 left nothing
 behind.** An uninstall nobody verified is an uninstall nobody can promise.
@@ -551,7 +555,10 @@ prevents has a known date and a fleet-wide consequence.
 **Windows MSI and binaries** sign with Authenticode, the key held in an HSM or a managed signing service —
 never as a file, which is both a policy violation and a compromise waiting to happen. **macOS PKG and
 binaries** sign with Developer ID Application and Developer ID Installer; notarisation is a separate
-credential with its own lifetime. **The browser extension** is signed by the store publisher, plus the
+credential with its own lifetime. **The Linux package and its repository metadata** sign with the
+distribution's packaging key (GPG for APT/RPM); Linux is therefore the one endpoint platform that is
+**not** governed by the 460-day Authenticode/notarisation clock, though the packaging key has its own
+inventory, overlap and rotation policy in §7.2. **The browser extension** is signed by the store publisher, plus the
 vendor's own content-signing key, which is what makes remote control possible without a store round trip
 (§6.3). **Content** — rules, models, policy — uses a separate key with a separate rotation and a separate
 lifetime, because content must outlive code certificates and a content update must never be blocked by a
@@ -584,15 +591,16 @@ a clean machine.
 State it plainly, because it is the single largest scheduled risk in the delivery plan:
 
 > **An expired code-signing certificate is a fleet-wide outage with a known date** (brief §5.5).
-> On that date the vendor cannot sign a new Windows MSI, a new macOS PKG, or a new extension package.
-> There is no workaround, no exception, and no vendor-side appeal.
+> On that date the vendor cannot sign a new Windows MSI, a new macOS PKG, a new Linux package, or a new
+> extension package. There is no workaround, no exception, and no vendor-side appeal. (The Linux
+> packaging key is not the 460-day certificate, but an expired key blocks a new package just the same.)
 
 What exactly breaks, and what does not — the distinction is operationally important:
 
 | Still works after expiry | Stops dead after expiry |
 |---|---|
 | The installed fleet keeps running | Shipping a new desktop-agent version — **including a fix for a defect that is breaking customers** |
-| A **timestamped** previously-signed artefact remains trusted | Shipping a Windows MSI, macOS PKG or extension package of any kind |
+| A **timestamped** previously-signed artefact remains trusted | Shipping a Windows MSI, macOS PKG, Linux package or extension package of any kind |
 | Content updates: policy bundles, rules, models (separate key, §7.1) | Any hotfix delivered as a binary |
 | Server-side changes (no endpoint signing involved) | Onboarding a new macOS installation whose PKG is not already stapled and trusted |
 | Kill-switch and shadow-mode changes (server-side, §9.5) | Rolling back to a *re-signed* build, if the rollback path requires re-signing |
@@ -695,8 +703,8 @@ hold a population back without the vendor losing the ability to ship.
 
 | Ring | Population | Size | Soak | Promotion criteria | Halt criteria |
 |---|---|---|---|---|---|
-| **Ring 0 — internal** | Vendor's own machines, both platforms | ~50 devices | 72 h | Install and uninstall clean; self-test green on both platforms; no crash; proxy trust verified | Any install failure; any uninstall failure; any crash loop |
-| **Ring 1 — design partners** | IT/volunteer populations at 2–3 customers, including macOS | 100–500 devices | 7 d | Health reporting ≥ 98% of ring; spool drop count unchanged from baseline; coverage per provider unchanged; no EDR escalation attributable to the update | Reporting below 95%; any provider's coverage down more than 20% relative; a new EDR false positive |
+| **Ring 0 — internal** | Vendor's own machines, all supported platforms | ~50 devices | 72 h | Install and uninstall clean; self-test green on all supported platforms; no crash; proxy trust verified | Any install failure; any uninstall failure; any crash loop |
+| **Ring 1 — design partners** | IT/volunteer populations at 2–3 customers, including macOS and Linux | 100–500 devices | 7 d | Health reporting ≥ 98% of ring; spool drop count unchanged from baseline; coverage per provider unchanged; no EDR escalation attributable to the update | Reporting below 95%; any provider's coverage down more than 20% relative; a new EDR false positive |
 | **Ring 2 — pilot tenants** | Named pilot groups | 500–2,000 devices | 7 d | Same as ring 1, plus classification latency p95 within budget (≤150 ms) and no rise in degraded-classifier share | As ring 1, plus any rise in `degraded` share above the §10.3 threshold |
 | **Ring 3 — general fleet** | All remaining devices, per tenant, subject to tenant-held groups | remainder | — | Ring 2 criteria sustained for a full week | Automatic halt on any §9.2 signal |
 | **Ring H — hold** | Devices pinned to a known-good version | any size | n/a | n/a | Never auto-promoted. Devices land here on repeated failure rather than being retried forever |
@@ -1265,7 +1273,7 @@ gap.
 
 | # | Question | Closing evidence required | Why it blocks |
 |---|---|---|---|
-| **R1 / Q5** | Local-inference capture is unvalidated against real tools (brief §5.3, §9) | Lab report against the tools customers actually run, both platforms: which servers can be moved off default ports, which clients resolve a substitute, and the port-release behaviour under crash, kill and repeated failure | Mode F's failure mode breaks the user's local AI (E14). If it is not validated, mode F ships as detection-only — **and that changes a capability claim**, so it cannot be validated after go-live |
+| **R1 / Q5** | Local-inference capture is unvalidated against real tools (brief §5.3, §9) | Lab report against the tools customers actually run, on all supported platforms (Linux is a new target and is not yet measured): which servers can be moved off default ports, which clients resolve a substitute, and the port-release behaviour under crash, kill and repeated failure | Mode F's failure mode breaks the user's local AI (E14). If it is not validated, mode F ships as detection-only — **and that changes a capability claim**, so it cannot be validated after go-live |
 | **Q1** | Data residency | A written answer per design-partner tenant, and evidence that the region is enforced at ingest with a fail-closed check | The region column and the check are cheap now (master §7). Discovering the requirement after the data model is fixed is the expensive version |
 | **Q2** | The organisational dimension | Either a directory sync (Entra ID default) proven against a real tenant, or an explicit written scope-out | Questions 2, 3 and 8 of brief §3.6 cannot be answered without it. Scope-out must be in the contract, not in a footnote |
 | R3 | Accessibility pre-granting may be changing | Confirmation against current platform documentation on a supervised test fleet | No v1 mechanism depends on it (D4), but any coverage claim that implies it must not be made |
@@ -1282,9 +1290,9 @@ gap.
 | Honesty layer | A dashboard that reports coverage, spool drops, degraded-classifier share, devices not reporting, dedup drift and aggregate freshness — **demonstrated on a fleet with deliberately broken providers**, not on a healthy one (C22–C25, R11) |
 | SLO instrumentation | §10.1's SLOs live with 28 days of history, and every §10.3 alert fired at least once in a test, with the customer-meaning text reviewed |
 | Identity | A demonstrated attempt by `ingest-api`'s identity to unwrap a KEK that **fails**, and the CI assertion that only `content-vault` holds unwrap (§5.3) |
-| Endpoint distribution | MSI and PKG installed, self-tested and cleanly uninstalled on both platforms on the internal ring, with the uninstall verification script's output as evidence (§6.4) |
+| Endpoint distribution | MSI, PKG and Linux package installed, self-tested and cleanly uninstalled on all supported platforms on the internal ring, with the uninstall verification script's output as evidence (§6.4) |
 | Extension | Force-installed by policy on Chrome and Edge at one customer, with the `max_version` pin exercised at least once (§6.3) |
-| Signing | Rotation pipeline dry-run completed for both platforms; credential inventory populated with 90/60/30/14-day alerts proven by test; **timestamping verified on an artefact whose certificate has been allowed to lapse in staging** (§7.2) |
+| Signing | Rotation pipeline dry-run completed for the Windows and macOS certificates and for the Linux packaging key; credential inventory populated with 90/60/30/14-day alerts proven by test; **timestamping verified on an artefact whose certificate has been allowed to lapse in staging** (§7.2) |
 | Reputation | Exclusion artefact shipped as a versioned deliverable and accepted by at least one customer's EDR review; a written pilot-expectations script handed to at least one customer's helpdesk (§8.2) |
 | Update safety | A ring promotion performed and **automatically halted** by an injected regression (crash and coverage variants), with rollback completed and timed (§9.2, §9.4) |
 | Kill switch | Activated and reversed in production during a rehearsal, with the fleet-wide latency measured rather than assumed (§9.5) |

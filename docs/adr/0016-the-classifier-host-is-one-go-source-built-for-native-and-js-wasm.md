@@ -30,8 +30,8 @@ the build host, not assumed:
 
 ## Decision
 
-**The classifier host is Go, one source, compiled twice:** `GOOS=windows|darwin GOARCH=amd64|arm64` for
-the resident native host, and `GOOS=js GOARCH=wasm` for the in-page copy, loaded through Go's own
+**The classifier host is Go, one source, compiled twice:** `GOOS=windows|darwin|linux GOARCH=amd64|arm64`
+for the resident native host, and `GOOS=js GOARCH=wasm` for the in-page copy, loaded through Go's own
 `wasm_exec.js` runtime shim.
 
 Everything §9.1 and §9.2 require of the component is unchanged and remains the acceptance criteria:

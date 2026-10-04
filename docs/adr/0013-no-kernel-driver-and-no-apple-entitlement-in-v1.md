@@ -20,6 +20,13 @@ worse and adds the largest possible blast radius to the component that already h
 refused. Brief R2 names them a schedule gate. The intuitive reading is that macOS collection is blocked
 until Apple approves something.
 
+**Linux.** Linux is a supported endpoint platform. The same E8 boundary applies — a client that ignores
+the system proxy and the `http_proxy`/`https_proxy` environment is not reached by a userspace proxy — and
+the kernel facility that would close it is an **eBPF/TC hook** rather than a Windows WFP callout or an
+Apple entitlement. It carries the same blast radius, the same review burden, and the same question of
+whether a customer's security tooling treats it as an agent of interception, so v1 declines it for the
+same reasons and treats it as a later coverage upgrade.
+
 That reading is wrong for this design, and it is worth stating why in an ADR, because the difference
 between "blocked on Apple" and "not blocked on Apple" is the difference between a launch date and a
 queue position.
@@ -62,6 +69,10 @@ it, and mode C is best-effort by design.
   payload read"), so it cannot improve content coverage at all.
 - **A Network Extension content filter as a dependency.** Rejected for the same schedule reason. It is a
   genuine coverage improvement and is filed for, but not waited on.
+- **An eBPF/TC hook on Linux.** Rejected for v1 on the same blast-radius and review grounds as the
+  Windows kernel filter. It is the correct Linux coverage upgrade if measured coverage proves
+  unacceptable, and it needs no third-party approval — which is why it is a candidate for a later release
+  rather than a schedule risk.
 
 ## Consequences
 

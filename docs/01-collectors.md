@@ -20,8 +20,8 @@ the seven routes: `ext.web_request`, `ext.page_context`, `ext.dom`, `proxy.tls`,
 
 The device tier: four processes on a managed endpoint, the four capture providers they host, how each of brief
 §2's nine modes is reached, how content is classified and gated on-device, how events are buffered and
-authenticated, how the device reports its own coverage. Windows and macOS, Chromium-only for browser surfaces
-(E23). Not covered: ingest, storage, aggregation, query ([02](02-ingest-and-transport.md),
+authenticated, how the device reports its own coverage. Windows, macOS and Linux, Chromium-only for browser
+surfaces (E23). Not covered: ingest, storage, aggregation, query ([02](02-ingest-and-transport.md),
 [03](03-data-platform.md)); analyst surfaces ([04](04-dashboard-and-query.md)); deployment mechanics beyond
 the device-side contracts they must satisfy ([05](05-platform-delivery.md)). Legal and privacy review is out
 of scope (brief scope note); the functional requirements supporting it — per-tenant ceiling, mode-change
@@ -96,7 +96,7 @@ no rule matches, nothing is blocked, everything is reported — and is never ren
 | Process | Language / form ([master §4.1]) | Runs as | Hosts | May touch | Must never touch |
 |---|---|---|---|---|---|
 | `capture-extension` | Plain JavaScript (ES modules, no build step), MV3, policy-installed in Chrome and Edge (E23) | Browser process, per profile | Modes A, B, C observation; inline warn/block (E1) | Request metadata and bodies (E2); `File` objects in page context (E3); its own storage | Filesystem outside its storage; sockets; process lists; the spool file; the CA private key |
-| `capture-core` | Go, one static binary per platform, privileged service | `LocalSystem` (Windows); LaunchDaemon (macOS) | `proxy.tls`, `proxy.loopback`, `proc.detect`, `cli.shim`; policy engine; spool; ingest client | System proxy configuration; the root CA's public certificate and sealed key; loopback sockets; process enumeration; the spool | Document parsing (R8); document byte buffers; any cloud endpoint but the five in [master §5.1] |
+| `capture-core` | Go, one static binary per platform, privileged service | `LocalSystem` (Windows); LaunchDaemon (macOS); `systemd` unit (Linux) | `proxy.tls`, `proxy.loopback`, `proc.detect`, `cli.shim`; policy engine; spool; ingest client | System proxy configuration; the root CA's public certificate and sealed key; loopback sockets; process enumeration; the spool | Document parsing (R8); document byte buffers; any cloud endpoint but the five in [master §5.1] |
 | `classifier-host` | Go, native **and** `js/wasm` from one source ([ADR 0016](adr/0016-the-classifier-host-is-one-go-source-built-for-native-and-js-wasm.md)) | Child of `capture-core`, sandboxed | Rules → validators → model (brief §6); the same core compiled into the extension | Bytes handed over by a provider; signed release artefacts | Sockets; the spool; the CA key; process enumeration; spawning anything but the parser child |
 | parser child | Go; the `parse-child` subcommand of the one `classifier-host` binary, run as its own process | Child of `classifier-host`, one per document | One document at a time | The single document buffer it was given | Everything else: no network, no spool, no keys, no second document |
 
@@ -141,7 +141,7 @@ the bound is enforced. A failed connect is reported as `capture-core` `absent` *
 `degraded`, never as "no observations".
 
 **`capture-core` ↔ `classifier-host`: a local socket** — Unix domain socket under the service's directory on
-macOS, named pipe on Windows; request/response, length-prefixed, with a protocol version byte. The host is
+macOS and Linux, named pipe on Windows; request/response, length-prefixed, with a protocol version byte. The host is
 spawned with the core and stays resident, keeping spawn cost off the interactive path. A **version handshake
 on connect** marks `classifier-host` `degraded` on mismatch and falls back to rules-only with
 `confidence: degraded`, never failing the submission (C21). A hung or crashed host is detected by request
@@ -370,7 +370,8 @@ E6/E7 establish the conditions under which interception works and do not say whe
 generation means a stolen key covers only that device's minted leaves, and there is no vendor-held key that
 could be compelled to mint a certificate for a customer's hostname. The public certificate goes into the store
 the platform actually honours (E7): Windows, Local Machine → Trusted Root or the Enterprise store; macOS, the
-Default or System keychain with *Always Trust* (§14). **The wrong store fails silently (E7)**, so installation
+Default or System keychain with *Always Trust*; Linux, the system trust store (`/etc/ssl/certs` /
+`update-ca-certificates`, or the distribution's `p11-kit` trust module) (§14). **The wrong store fails silently (E7)**, so installation
 is verified by completing a real handshake against a destination whose leaf we minted, with failure reporting
 `degraded` and `detail=tls_probe_failed` — the provider never reports `healthy` on the strength of a
 successful file write. The private key is sealed at rest with platform key protection (A1) and readable only by
@@ -591,7 +592,7 @@ capability the brief has not established. The validation gates this provider shi
 
 | # | Check | Pass condition |
 |---|---|---|
-| 1 | Each customer-relevant tool can be relocated by its own supported configuration, both platforms | Relocation survives a service restart and a machine reboot |
+| 1 | Each customer-relevant tool can be relocated by its own supported configuration, on every endpoint platform | Relocation survives a service restart and a machine reboot |
 | 2 | Each customer-relevant client resolves the relocated port, configured explicitly and when discovering the server | Requests arrive at the relocated server without manual intervention |
 | 3 | The broker holds the default port across a reboot, a crash of either side, and an upgrade | Port state matches §6.2's machine in every case |
 | 4 | Uninstall restores the original configuration exactly | Byte-identical configuration, port free |
@@ -996,7 +997,7 @@ assumed compromisable, so nothing valuable may be reachable from it.**
 |---|---|
 | Placement | A child of `classifier-host`, one per document, spawned for the parse and reaped after it |
 | Lifetime | Bounded: one document, one process, so a parser state bug is not cross-document |
-| Privileges | The least the platform allows: no network, no service rights, no access to the spool directory, the CA key, the credential store or the policy bundle. macOS: a restricted sandbox profile; Windows: a job object with a low-integrity token. **ASSUMPTION (A11):** the primitives are implementation choices; the requirement is that the child has no filesystem path to key material, verifiable by inspection |
+| Privileges | The least the platform allows: no network, no service rights, no access to the spool directory, the CA key, the credential store or the policy bundle. macOS: a restricted sandbox profile; Windows: a job object with a low-integrity token; Linux: an unprivileged dedicated user in a new mount and network namespace, with a `seccomp` filter and a `cgroup` memory limit. **ASSUMPTION (A11):** the primitives are implementation choices; the requirement is that the child has no filesystem path to key material, verifiable by inspection |
 | Input | Document bytes over a pipe. The child has no path to the file's location and never opens a file itself, so it cannot be pointed at an unrelated document |
 | Output | Extracted text, offsets, a status code — never a path, a handle or a command |
 | Concurrency | Bounded fan-out, so many attachments cannot become a memory-exhaustion event |
@@ -1004,7 +1005,7 @@ assumed compromisable, so nothing valuable may be reachable from it.**
 
 Both limits are enforced **by the parent**, because a limit a child enforces on itself is not a limit. A
 parent-imposed **memory cap** (job object on Windows; an address-space limit plus residency monitoring on
-macOS) kills the child on breach, emits the event with `confidence: degraded` and `detail=parser_memory`, and
+macOS; a `cgroup` memory limit on Linux) kills the child on breach, emits the event with `confidence: degraded` and `detail=parser_memory`, and
 does **not** retry the document. A parent-imposed **hard timeout**, well inside the interactive budget and
 generous enough for legitimate large documents, kills it with `detail=parser_timeout`. An **output cap** bounds
 the result size accepted, truncating and recording `degraded`, so a 500-page document does not become a
@@ -1196,9 +1197,12 @@ brief requires the buffer encrypted at rest (C22), and a device whose disk encry
 directory is readable by another local user, must not expose metadata or M2 excerpts. Each row's `envelope` is
 sealed with an AEAD under a per-device spool key. **Key wrapping (DPAPI / Keychain).** The spool key is a random
 per-device key wrapped by the platform's key protection — DPAPI scoped to the service account on Windows,
-Keychain on macOS. **ASSUMPTION (A1):** these are the wrapping mechanism, because the brief requires encryption
-at rest (C22) and per-object keys (C15) but names no mechanism, and they are the only facilities that work
-unattended on a managed endpoint. The key is not derivable from the file, so copying the spool off the device
+Keychain on macOS, and on Linux the kernel keyring or a TPM-backed secret (`systemd-creds` / a sealed
+credential) where the distribution provides one. **ASSUMPTION (A1):** these are the wrapping mechanism, because
+the brief requires encryption at rest (C22) and per-object keys (C15) but names no mechanism, and they are the
+only facilities that work unattended on a managed endpoint; on Linux, where a secure wrapping store is not
+guaranteed, the fallback is the file key provider with restrictive permissions, reporting `Sealed() == false`
+rather than implying protection that is not there. The key is not derivable from the file, so copying the spool off the device
 yields ciphertext, and it is not escrowed or recoverable by the vendor, so destroying the wrapping material
 makes the spool unreadable — the correct outcome, and data loss confined to undelivered metadata. Uninstall
 destroys the key as well as the file. **What is not in the spool:** at M3, prompt text and attachment bytes do
@@ -1402,20 +1406,48 @@ Files-and-Folders can be pre-granted (E17), but no v1 mechanism depends on Acces
 warns that silent pre-granting of it may be changing; where it would help, it is an enhancement behind a
 capability check.
 
-### 14.3 Cross-platform summary
+### 14.3 Linux
 
-| Concern | Windows | macOS |
+Linux is a supported endpoint platform, not a development host. The mechanisms differ from the two managed
+desktop platforms because Linux is configured by **the customer's configuration management** (Puppet, Ansible,
+Chef) or a distribution package repository rather than by an MDM, and because the platform has no unified
+permission gate equivalent to macOS TCC.
+
+| Concern | Design | Source |
 |---|---|---|
-| Trust store | Local Machine → Trusted Root / Enterprise (E7) | System or Default keychain, Always Trust (E7) |
-| Trust delivery | Installer plus machine policy | Configuration profile |
-| System proxy | Machine policy (WinHTTP/WinINET) | Configuration profile |
-| QUIC | Browser policy **and** UDP/443 egress block (E6) | Browser policy; whether the egress block is equally expressible by profile is **an open item** (O6), since brief §5.2 states it only for the Windows case |
-| Service | Windows service, `LocalSystem`, restrictive ACL | LaunchDaemon |
-| Kernel component | None (D3) | None (D4) |
-| Restricted entitlements | n/a | **None required in v1** (D4) |
-| Key wrapping | DPAPI | Keychain |
-| Browsers | Chrome + Edge, separate policies (E23) | Chrome (E23) |
-| Shell environment (E/G) | Machine-level environment plus a profile script | A daemon-delivered profile script plus path entries. **ASSUMPTION (A19):** exact file locations are deployment details; the requirement is a per-machine configuration every shell inherits, which is E10's lever |
+| Root trust | The root CA's certificate into the system trust store — `/etc/ssl/certs` via `update-ca-certificates`, or the distribution's `p11-kit` trust module — delivered by the same configuration management that installs the package | E7, brief §5.2 |
+| System proxy | `http_proxy` / `https_proxy` / `no_proxy` in the machine environment plus the desktop proxy settings (GNOME/KDE) where a desktop is present; the provider confirms the *effective* proxy, not merely that a setting was written | §5.6, brief §5.2 |
+| QUIC | Browser policy **and** a `nftables`/`iptables` UDP/443 egress rule; the desktop proxy setting alone is not sufficient for the same reason it is not on Windows (E6) | E6, brief §5.2 |
+| Service | `capture-core` as a `systemd` unit running as root (the trust store and system proxy are machine scope), `Restart=on-failure` with a `StartLimitBurst` so a crash loop stops and reports `absent` rather than restarting forever | §3.5 |
+| Kernel component | **None in v1.** No eBPF program, no netfilter hook and no `LD_PRELOAD` interposition: interception is the userspace proxy reached through the system proxy, exactly as on the other two platforms. Linux *could* reach past E8 with eBPF and is a candidate for a later coverage upgrade, not a dependency | D3 (the same decision) |
+| Process enumeration | Unprivileged `/proc` and netlink enumeration of processes, sockets and (where readable) modules; `proc.detect` gains no privilege and no tracepoint. A hardened `ptrace_scope` narrows what is observable, reported as a named detail rather than as health | [master §4.1], D3 |
+| Key protection | The kernel keyring or a TPM-backed secret (`systemd-creds`) where the distribution provides one; otherwise the file key provider with restrictive permissions, which reports `Sealed() == false` rather than implying protection it does not have | A1, C22 |
+| Parser child | A dedicated unprivileged user in new mount and network namespaces, a `seccomp` filter, and a `cgroup` memory limit | §10 |
+| Code signing | A GPG-signed package or repository metadata (APT/RPM), not Authenticode. Linux packaging is therefore **not** subject to the 460-day code-signing clock of §7.1; the repository key has its own rotation policy | E19, §7 |
+| Extension deployment | Chrome, Edge and Chromium via managed policy files (`/etc/opt/chrome/policies/managed`, `/etc/opt/edge/policies/managed`), or the distribution's policy package | E23 |
+| Shell environment (E/G) | A profile fragment under `/etc/profile.d` plus a machine environment file, so a per-machine configuration every shell inherits | E10, A19 |
+
+**What Linux does not change.** The coverage boundary is the same shape as Windows: an application that ignores
+the system proxy and its environment is unreachable without a kernel facility, so it is a named coverage gap and
+a candidate for a later eBPF upgrade (D3), never a silent "nothing found". And the permission model is
+different in the customer's favour and against precision: the service is root and can read what root can read,
+with no per-application prompt, so an M1 gap appears as a coverage gap rather than as a denial.
+
+### 14.4 Cross-platform summary
+
+| Concern | Windows | macOS | Linux |
+|---|---|---|---|
+| Trust store | Local Machine → Trusted Root / Enterprise (E7) | System or Default keychain, Always Trust (E7) | System trust store via `update-ca-certificates` / `p11-kit` (E7) |
+| Trust delivery | Installer plus machine policy | Configuration profile | Configuration management / package |
+| System proxy | Machine policy (WinHTTP/WinINET) | Configuration profile | Environment plus desktop proxy settings |
+| QUIC | Browser policy **and** UDP/443 egress block (E6) | Browser policy; whether the egress block is equally expressible by profile is **an open item** (O6), since brief §5.2 states it only for the Windows case | Browser policy **and** `nftables`/`iptables` UDP/443 egress rule |
+| Service | Windows service, `LocalSystem`, restrictive ACL | LaunchDaemon | `systemd` unit, root, start limit |
+| Kernel component | None (D3) | None (D4) | None in v1; eBPF is a later coverage upgrade (D3) |
+| Restricted entitlements | n/a | **None required in v1** (D4) | n/a |
+| Key wrapping | DPAPI | Keychain | Kernel keyring / TPM (`systemd-creds`), else file provider reporting unsealed |
+| Browsers | Chrome + Edge, separate policies (E23) | Chrome (E23) | Chrome + Edge + Chromium via managed policy |
+| Shell environment (E/G) | Machine-level environment plus a profile script | A daemon-delivered profile script plus path entries. **ASSUMPTION (A19):** exact file locations are deployment details; the requirement is a per-machine configuration every shell inherits, which is E10's lever | `/etc/profile.d` fragment plus a machine environment file |
+| Code signing | Authenticode, 460-day clock (§7.1) | Developer ID + notarisation, 460-day clock (§7.1) | GPG-signed package / repository metadata; not subject to the 460-day clock |
 
 ---
 
@@ -1577,7 +1609,7 @@ upgrade — each with its consequence for the product's numbers.
 
 | # | Assumption | Justification |
 |---|---|---|
-| A1 | Platform key-protection facilities (DPAPI, Keychain) wrap the spool key, CA key and device credential | The brief requires encryption at rest (C22) and per-object keys (C15) but names no mechanism, and these are the only facilities that work unattended on a managed endpoint |
+| A1 | Platform key-protection facilities (DPAPI, Keychain, or on Linux the kernel keyring / a TPM-backed secret) wrap the spool key, CA key and device credential | The brief requires encryption at rest (C22) and per-object keys (C15) but names no mechanism, and these are the only facilities that work unattended on a managed endpoint; where Linux offers none, the file provider is used and reports `Sealed() == false` |
 | A2 | Native messaging is the extension→core transport, with chunking for attachment bytes | MV3 offers no other supported channel from an extension to a privileged process, and the size ceiling is a browser fact the design must respect |
 | A3 | A per-device root CA mints short-lived leaf certificates | The brief requires interception of enumerated destinations without saying where the key lives; per-device generation minimises the blast radius of key theft and removes a vendor-held interception capability |
 | A4 | Agent-driven submissions (mode C) are attributed to the device's signed-in `user_ref` | The device cannot observe who authored text typed into an agent's runtime |
@@ -1587,7 +1619,7 @@ upgrade — each with its consequence for the product's numbers.
 | A8 | The upstream preflight path is per-tool configuration in the bundle | Invoking a generation endpoint to test health would consume the user's resources and could itself be observed as usage |
 | A9 | A TLS ClientHello fingerprint is usable as one of seven fingerprint signals | One input among seven, so its deprecation degrades precision rather than breaking the fingerprint |
 | A10 | `tf1:` plus a base32 SHA-256 fits the envelope's 128-character `tool_fingerprint` field | A schema-bounded field with an unbounded encoding is a defect waiting to be written |
-| A11 | The parser child's confinement uses a job object (Windows) / sandbox profile (macOS) | The requirement is "no filesystem path to key material", which these satisfy; the specific primitive is an implementation choice |
+| A11 | The parser child's confinement uses a job object (Windows) / sandbox profile (macOS) / namespaces + `seccomp` + `cgroup` (Linux) | The requirement is "no filesystem path to key material", which these satisfy; the specific primitive is an implementation choice |
 | A12 | Parser memory cap, timeout and output cap are finite parameters (tens of MB, low hundreds of ms, low MB) | Only the *shape* is a design requirement (R8); the values belong to the resource budget (§8) and R8's test plan |
 | A13 | Large attachments are parsed off the interactive path, labels correcting the event afterwards | A large PDF cannot be parsed inside 150 ms; blocking on it would make the product perceptible, and always-degrading would lose exactly the content the product exists to classify |
 | A14 | A class-prior map resolves the data-class scoping axis before content is read | The brief makes data class both a scope dimension and a classifier output without ordering them; priors plus a ceiling is the only ordering satisfying C3 and "before content is read" together |
@@ -1607,7 +1639,7 @@ Distinct from [master §7]'s list: what must close for *this* document to be imp
 
 | # | Item | Owner | Closes by | If unresolved |
 |---|---|---|---|---|
-| O1 | R1 lab validation against §6.4's acceptance criteria | Endpoint lead | The five checks against the customer-relevant tool set, both platforms | Mode F ships as `detection_only`; no architectural change ([master §4.6]) |
+| O1 | R1 lab validation against §6.4's acceptance criteria | Endpoint lead | The five checks against the customer-relevant tool set, on each endpoint platform; Linux is a new target and is not yet measured | Mode F ships as `detection_only`; no architectural change ([master §4.6]) |
 | O2 | Q4 — whether the WASM classifier meets 150 ms p95 in the extension. Measured under Node with the development rules and model artefact (§9.1); not yet measured in a browser or with a production model | Classification lead | Benchmarking rules-only, rules+model and model-on-worker against recorded traffic | The model moves to the native host, or labels arrive on a follow-up record; either changes §9.4's ladder, not its structure |
 | O3 | The class-prior map's initial content per tool family (A14) | Classification lead with product | Enumerating the classes each supported tool family plausibly carries, plus the tenant default | Resolution falls back to the tenant default — conservative, but coarser than the brief's per-class intent |
 | O4 | Keeping the device's provider names identical to `ref.collector` as providers are added (§4.3) | Collection lead with data platform lead | A conformance check that every `Name()` a provider can report exists in `ref.collector`, run in CI | A renamed or added provider reports health the coverage report cannot attribute, which is the R11 failure arriving through a naming change |

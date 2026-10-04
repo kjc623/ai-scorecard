@@ -11,7 +11,7 @@ READMEs in this repository link into them by section rather than restating them.
 | Document | What it answers |
 |---|---|
 | [`00-architecture.md`](00-architecture.md) | **The master document.** The problem, the constraints with their sources, three structural alternatives, the recommendation, the main and failure paths, the interfaces, the build order, the open questions and the risk register. Start here |
-| [`01-collectors.md`](01-collectors.md) | How nine usage modes get captured on two operating systems, and the device-side components that do it |
+| [`01-collectors.md`](01-collectors.md) | How nine usage modes get captured on three operating systems, and the device-side components that do it |
 | [`02-ingest-and-transport.md`](02-ingest-and-transport.md) | How data reaches the cloud. Contains the **normative dedup specification** in §4 — the tie-break rules other components are implemented against |
 | [`03-data-platform.md`](03-data-platform.md) | The data model, the two independent retention mechanisms and their reconciliation, erasure and receipts, backup and DR |
 | [`04-dashboard-and-query.md`](04-dashboard-and-query.md) | How the ten questions become queries: the closed DSL, aggregates, audit-on-read, k-suppression, cursor pagination |

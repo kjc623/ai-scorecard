@@ -34,7 +34,7 @@
       "kind": "device-agent",
       "layer": "device",
       "language": "Go",
-      "runtime": "one static binary per platform, MSI/PKG",
+      "runtime": "one static binary per platform, MSI / PKG / Linux package",
       "status": "done",
       "summary": "Egress proxy provider, loopback inference broker, process and model detector, CLI trust shim, policy engine, and the encrypted bounded spool.",
       "dependsOn": [],
@@ -483,7 +483,7 @@
     {
       "id": "T6",
       "subject": "Validate local-inference capture, which gates build step 8",
-      "description": "Brief risk R1. A validation task, not a design task: measure whether the loopback inference broker sees what the design assumes it sees on both operating systems.",
+      "description": "Brief risk R1. A validation task, not a design task: measure whether the loopback inference broker sees what the design assumes it sees on the endpoint operating systems (the measurement is Windows-only; macOS and Linux are not covered).",
       "status": "completed",
       "dependsOn": [],
       "componentIds": [
@@ -631,7 +631,7 @@
       "emoji": "ðŸ§ª",
       "purpose": "Closes the three brief risks that are validation tasks rather than design tasks.",
       "taskId": "T6",
-      "task": "Measure whether the loopback inference broker captures local model traffic as the design assumes, on both operating systems, and record the answer with the evidence. Then close Q2 (the organisational dimension).",
+      "task": "Measure whether the loopback inference broker captures local model traffic as the design assumes, on the endpoint operating systems, and record the answer with the evidence. Then close Q2 (the organisational dimension).",
       "componentIds": [
         "capture-core",
         "classifier-host"

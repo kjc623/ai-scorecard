@@ -230,12 +230,12 @@ end and re-read the health row. The two tests named in the resolution above now 
 §6.4 lists five checks that gate the provider shipping. This is where R1's value actually is,
 so each one is stated in terms of what was and was not observed.
 
-### Check 1 — "Each customer-relevant tool can be relocated by its own supported configuration, both platforms" (pass = survives a service restart and a machine reboot)
+### Check 1 — "Each customer-relevant tool can be relocated by its own supported configuration, on every endpoint platform" (pass = survives a service restart and a machine reboot)
 
 **NOT VALIDATED. Nothing in this document bears on it.** The harness relocated *its own*
 server by stopping it and starting it on another port. That is a demonstration that the broker
 copes with a relocated upstream; it is not evidence that Ollama, LM Studio, llama.cpp, vLLM or
-anything else can be moved by its own documented configuration, on Windows *and* macOS, or that
+anything else can be moved by its own documented configuration, on Windows, macOS *or* Linux, or that
 such a move survives a restart of the tool or a reboot of the machine. E13 is exactly this
 hypothesis and it remains open.
 
@@ -351,7 +351,8 @@ because no tool was tested. So:
 - No vendor client was used; nothing shows any real client resolving a substitute port.
 - No reboot, no service upgrade, no uninstall, no installer.
 - The "upstream" and "client" are stand-ins written for this harness (§1).
-- One host, one platform (Windows), one machine: nothing here speaks to macOS.
+- One host, one platform (Windows), one machine: nothing here speaks to macOS or Linux. Linux is a
+  supported endpoint platform and is a target for this validation, but it is not measured here.
 - No vendor default port was bound, so the measurements say nothing about 11434/1234/8080
   specifically — by design, and it also means the port numbers in the transcript are
   meaningless outside it.
