@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/shadow-ai-capture/device/capture-core/core"
 	"github.com/shadow-ai-capture/device/protocol"
 )
 
@@ -84,6 +86,7 @@ func (h *healthChannel) SetExtensionReport(rep protocol.HealthReport) {
 // describes (master §4.4) has no wire type in protocol yet.
 type healthSnapshot struct {
 	DeviceID       string                  `json:"device_id"`
+	IdentitySource string                  `json:"identity_source"`
 	AgentVersion   string                  `json:"agent_version"`
 	GeneratedAt    time.Time               `json:"generated_at"`
 	PolicyVersion  string                  `json:"policy_version,omitempty"`
@@ -130,7 +133,28 @@ func (h *healthChannel) Snapshot() healthSnapshot {
 	if b := h.svc.currentBundle(); b != nil {
 		policyVersion = b.Version
 	}
-	reports, errs := h.svc.reg.Reports(h.cfg.DeviceID, policyVersion)
+
+	// The device identity is the resolved one (credential when a drain is configured, the flags for
+	// a local/offline run). The flags are only a display fallback when the identity is unresolved.
+	var id core.Identity
+	idResolved := false
+	if h.svc.pipe != nil {
+		id, idResolved = h.svc.pipe.Identity()
+	}
+	deviceID := id.DeviceID
+	if deviceID == "" {
+		deviceID = h.cfg.DeviceID
+	}
+	identitySource := "local"
+	if strings.TrimSpace(h.cfg.DeviceEndpoint) != "" {
+		if idResolved {
+			identitySource = "credential"
+		} else {
+			identitySource = "unresolved"
+		}
+	}
+
+	reports, errs := h.svc.reg.Reports(deviceID, policyVersion)
 	for _, err := range errs {
 		h.log.Warn("a health row did not validate; it is sent anyway", "error", err)
 	}
@@ -144,8 +168,9 @@ func (h *healthChannel) Snapshot() healthSnapshot {
 
 	connected, classVersion, detail := h.svc.host.status()
 	snap := healthSnapshot{
-		DeviceID:      h.cfg.DeviceID,
-		AgentVersion:  version,
+		DeviceID:       deviceID,
+		IdentitySource: identitySource,
+		AgentVersion:   version,
 		GeneratedAt:   time.Now().UTC(),
 		PolicyVersion: policyVersion,
 		PolicyOutcome: outcome,

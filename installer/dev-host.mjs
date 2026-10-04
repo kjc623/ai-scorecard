@@ -17,10 +17,9 @@
 //   node localdev/run.mjs --auth
 //   node installer/dev-host.mjs
 //
-// It automates the two steps that are easy to get wrong by hand: minting a single-use enrolment
-// token (installer/seed.mjs), and aligning --device-id with the device_id the server mints - the
-// agent stamps envelopes from the flag while control-api mints the value, so an unaligned run is
-// rejected as schema_violation on /device_id.
+// It automates the step that is easy to get wrong by hand: minting a single-use enrolment token
+// (installer/seed.mjs). The device identity no longer needs aligning: capture-core adopts the
+// issued credential as its envelope identity, so --device-id stays a local/no-drain fallback only.
 
 import { spawn, spawnSync } from 'node:child_process';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
@@ -120,11 +119,8 @@ if (!deviceId) {
 }
 check('ops.device carries the enrolled device', true, `device_id=${deviceId}`);
 
-if (deviceId !== config.SAC_DEVICE_ID) {
-  console.log(`\ndev-host: aligning --device-id ${config.SAC_DEVICE_ID} -> ${deviceId} (the agent stamps envelopes from flags)`);
-  config.SAC_DEVICE_ID = deviceId;
-  writeConfig(config, configFile);
-}
+// No --device-id alignment here: capture-core adopts the issued credential as its envelope identity,
+// so the placeholder --device-id is only a local/no-drain fallback and is never stamped on a drain run.
 
 // ---------------------------------------------------------------------------------------------
 // 6. Feed the golden frames and drain them.

@@ -106,7 +106,14 @@ func newService(ctx context.Context, cfg Config, log *slog.Logger) (*service, er
 	if err != nil {
 		return nil, err
 	}
-	pipe.Identity = cfg.identity()
+	// Identity is only the flags for a local/offline run (no --device-endpoint): nothing is ever
+	// sent to a server, so the flags are the identity. With a drain configured the identity is left
+	// unresolved and installed by the supervisor's resolve_device_identity step (before any provider
+	// starts), from the sealed credential or a bounded synchronous enrolment. A placeholder flag is
+	// never used for a drain run.
+	if strings.TrimSpace(cfg.DeviceEndpoint) == "" {
+		pipe.SetIdentity(cfg.identity())
+	}
 	pipe.Bundles = s.currentBundle
 	pipe.Retention = retention
 	// C3 comes from device/canon, generated from Node's ICU and checked against it. With no
@@ -207,7 +214,11 @@ func newService(ctx context.Context, cfg Config, log *slog.Logger) (*service, er
 				Log:        logf,
 				Clock:      time.Now,
 			})
-			dp.SetIdentity(detect.Identity{TenantID: cfg.TenantID, DeviceID: cfg.DeviceID})
+			// Only the local/offline run stamps the flags; a drain run leaves proc.detect without an
+			// identity until resolve_device_identity installs the issued (or unresolved) one.
+			if strings.TrimSpace(cfg.DeviceEndpoint) == "" {
+				dp.SetIdentity(detect.Identity{TenantID: cfg.TenantID, DeviceID: cfg.DeviceID})
+			}
 			s.detect = dp
 			if err := s.reg.Add(dp); err != nil {
 				return nil, err
@@ -250,6 +261,7 @@ func newService(ctx context.Context, cfg Config, log *slog.Logger) (*service, er
 	}
 	sup.Policy = &policyLoader{store: store, path: cfg.BundlePath, reg: s.reg, result: &s.result, log: log}
 	sup.Spool = s.spool
+	sup.Identity = identityResolver{s}
 	sup.ClassifierHost = s.host
 	// Assign only a real provider: a typed-nil interface is not nil, and calling Release on it
 	// would panic the shutdown path (E14 is the path that must never fail).
@@ -302,11 +314,59 @@ func (s *service) Start(ctx context.Context) error {
 	return nil
 }
 
-// startDrainer builds and starts the device-to-cloud drainer when --device-endpoint is set. The
-// spool is already open at this point (the supervisor opened it), so the credential's key provider
-// can read the spool key the drain shares with the spool.
-func (s *service) startDrainer(ctx context.Context) error {
+// identityResolver is the core.IdentityResolver the supervisor runs between open_spool and the
+// first provider, so the envelope identity is in place before anything can mint.
+type identityResolver struct{ s *service }
+
+// enrolStartupTimeout bounds the synchronous enrolment a drain-configured device performs before
+// providers start. One enrol attempt fits comfortably; a longer outage is retried by the
+// background drain loop rather than blocking startup.
+const enrolStartupTimeout = 30 * time.Second
+
+func (r identityResolver) Resolve(ctx context.Context) error { return r.s.resolveIdentity(ctx) }
+
+// resolveIdentity installs the envelope identity before providers start:
+//   - no --device-endpoint: the flags are the identity (local/offline, nothing is ever sent);
+//   - a sealed credential exists: load it and adopt its server-minted tenant_id/device_id (the
+//     flags are validated: a disagreement is logged and the credential wins);
+//   - no credential: bounded synchronous enrolment; on failure the identity stays unresolved and
+//     the pipeline refuses to mint (fail-closed) while the background drain retries.
+func (s *service) resolveIdentity(ctx context.Context) error {
 	if strings.TrimSpace(s.cfg.DeviceEndpoint) == "" {
+		id := s.cfg.identity()
+		s.pipe.SetIdentity(id)
+		if s.detect != nil {
+			s.detect.SetIdentity(detect.Identity{TenantID: id.TenantID, DeviceID: id.DeviceID})
+		}
+		return nil
+	}
+	if err := s.ensureDrainer(); err != nil {
+		s.pipe.SetIdentityUnresolved()
+		if s.detect != nil {
+			s.detect.SetIdentity(detect.Identity{})
+		}
+		return err
+	}
+	bounded, cancel := context.WithTimeout(ctx, enrolStartupTimeout)
+	defer cancel()
+	if !s.drainer.EnsureEnrolled(bounded) {
+		s.pipe.SetIdentityUnresolved()
+		if s.detect != nil {
+			s.detect.SetIdentity(detect.Identity{})
+		}
+		return errors.New("drain: bounded synchronous enrolment did not produce an identity")
+	}
+	// OnEnrolled already installed the identity (setCredential -> adoptIssuedIdentity -> OnEnrolled).
+	return nil
+}
+
+// ensureDrainer builds the device-to-cloud drainer (credential store + drain.New) and wires it into
+// the service and the spool. It is idempotent and runs before providers start, so the startup
+// identity resolution can load or enrol without starting the background loop. The spool is already
+// open at this point, so the credential's key provider can read the spool key the drain shares with
+// the spool.
+func (s *service) ensureDrainer() error {
+	if strings.TrimSpace(s.cfg.DeviceEndpoint) == "" || s.drainer != nil {
 		return nil
 	}
 	keys, err := capturespool.NewFileKeyProvider(s.cfg.SpoolKey, s.cfg.SpoolDir)
@@ -330,6 +390,15 @@ func (s *service) startDrainer(ctx context.Context) error {
 		BackoffCap:     s.cfg.BackoffCap,
 		DrainInterval:  s.cfg.DrainInterval,
 		Expire:         s.spool.Expire,
+		// Adopt the server-minted identity once the issued credential is in hand (loaded, first
+		// enrol, or re-enrol), so envelopes carry the tenant_id/device_id the write path
+		// authenticates. UserRef is not issued by the server, so it stays the flag value.
+		OnEnrolled: func(c *credential.Credential) {
+			s.pipe.SetIdentity(core.Identity{TenantID: c.TenantID, DeviceID: c.DeviceID, UserRef: s.cfg.UserRef})
+			if s.detect != nil {
+				s.detect.SetIdentity(detect.Identity{TenantID: c.TenantID, DeviceID: c.DeviceID})
+			}
+		},
 	}, s.spool.store, creds, slogLogger{s.log}, time.Now)
 	if err != nil {
 		return fmt.Errorf("drain: %w", err)
@@ -339,7 +408,19 @@ func (s *service) startDrainer(ctx context.Context) error {
 	s.spool.mu.Lock()
 	s.spool.drain = d
 	s.spool.mu.Unlock()
-	return d.Start(ctx)
+	return nil
+}
+
+// startDrainer starts the drainer's background loop. ensureDrainer must have run first (it does,
+// from the supervisor's resolve_device_identity step).
+func (s *service) startDrainer(ctx context.Context) error {
+	if strings.TrimSpace(s.cfg.DeviceEndpoint) == "" {
+		return nil
+	}
+	if err := s.ensureDrainer(); err != nil {
+		return err
+	}
+	return s.drainer.Start(ctx)
 }
 
 // Stop runs the shutdown column and releases the spool. The supervisor releases the loopback port

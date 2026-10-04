@@ -577,15 +577,13 @@ func (p *Provider) SetIdentity(id Identity) {
 	p.identity = id
 }
 
-// identityOrAgent prefers the explicit identity and falls back to the scope agent's device id,
-// which is what a single-tenant test wiring uses.
+// identityOrAgent returns the explicit identity. There is no flags fallback: an empty identity is
+// refused by the emitter (the dedup key requires a tenant), so a provider with no resolved identity
+// emits nothing rather than emitting something mis-attributed to the --tenant-id/--device-id flags.
 func (p *Provider) identityOrAgent() Identity {
 	p.mu.Lock()
 	id := p.identity
 	p.mu.Unlock()
-	if id.TenantID == "" {
-		id = Identity{TenantID: p.cfg.Agent.DeviceID, DeviceID: p.cfg.Agent.DeviceID}
-	}
 	return id
 }
 

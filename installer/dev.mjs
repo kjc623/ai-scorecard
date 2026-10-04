@@ -22,11 +22,10 @@
 //     mount: the same daemons present a host path the daemon cannot see as an empty directory. The
 //     context is streamed by the client, so it always arrives.
 //
-// It also exercises a real gap in the current agent, and says so rather than hiding it: control-api
-// mints the device_id server-side, while capture-core stamps its envelopes from --device-id. The
-// installer therefore enrols first, reads the minted device_id back out of ops.device, aligns the
-// config, and only then spools anything. Without that alignment the drain would deliver batches the
-// write path correctly rejects with `schema_violation` on /device_id (docs/02 §5.3 identity rule).
+// It also proves the identity fix: control-api mints device_id server-side and capture-core adopts
+// the issued credential as its envelope identity, so the installer no longer has to read the minted
+// device_id back out of ops.device and align --device-id. The placeholder --device-id is left as a
+// no-drain/local fallback only; the drain's first start enrols and stamps the issued identity.
 
 import { spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
@@ -169,10 +168,8 @@ if (!deviceRow.deviceId) {
 check('ops.device carries the enrolled device', true, `device_id=${deviceRow.deviceId} region=${deviceRow.region}`);
 check('the device is in the seeded tenant', deviceRow.tenantId === LAB_TENANT, deviceRow.tenantId);
 
-if (deviceRow.deviceId !== labConfig.SAC_DEVICE_ID) {
-  console.log(`\ndev: aligning --device-id ${labConfig.SAC_DEVICE_ID} -> ${deviceRow.deviceId} (the agent stamps envelopes from flags)`);
-  labConfig.SAC_DEVICE_ID = deviceRow.deviceId;
-}
+// No --device-id alignment here: capture-core adopts the issued credential as its envelope identity,
+// so the placeholder --device-id is only a local/no-drain fallback and is never stamped on a drain run.
 
 // ---------------------------------------------------------------------------------------------
 // 5. Populate the spool from the golden frames and drain it. The shutdown drain is the flush.

@@ -43,6 +43,7 @@ The service drives `core.Supervisor`, which encodes §3.5 literally and records 
 |---|---|
 | 1 bundle, verified | `policy.Store.Apply` over the file named by `--bundle`, verified under the pinned `--policy-key`. A failure retains the previous bundle, or falls to **M0** with none (§13.3) — it never widens. |
 | 2 spool opened | `capture-spool` with a key file **outside** the spool directory, bounded and encrypted at rest. If it cannot open, no provider starts. |
+| 2b identity resolved | load the sealed credential if present and adopt its server-minted `tenant_id`/`device_id` (a disagreement with the flags is logged and the credential wins); with no credential and a drain configured, a bounded synchronous enrolment obtains it. An offline device leaves the identity unresolved and the pipeline refuses to mint rather than stamping the flags. |
 | 3 `proc.detect` | only with `--proc-detect`; see the enumeration gap below |
 | 4 `cli.shim` | with `--cli-shim`: writes the managed CA bundle and shell profile from the bundle's `cli_shim` block and `interception.root_ca_pem`; no ports |
 | 5 classifier-host | `classifierlink` connects to `--classifier-address` and completes the version handshake |

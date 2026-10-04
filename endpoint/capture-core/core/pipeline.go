@@ -153,9 +153,13 @@ const (
 // Pipeline resolves the mode, applies it before content is read, mints the envelope and
 // writes it through the spool.
 type Pipeline struct {
-	Identity Identity
-	Clock    func() time.Time
-	NewID    func() string
+	// identity is the race-free holder for the identity the pipeline stamps on envelopes. It is
+	// resolved by the startup identity step (or a later enrolment) and read once per observation,
+	// so scope, envelope and dedup key can never disagree.
+	identity identityHolder
+
+	Clock func() time.Time
+	NewID func() string
 
 	// Bundles returns the bundle currently in force; nil means "none", which resolves to M0.
 	Bundles func() *policy.Bundle
@@ -187,6 +191,37 @@ type Pipeline struct {
 	startedAt time.Time
 }
 
+// identityHolder is the race-free holder for the envelope identity. It is resolved by the startup
+// identity step (or a later enrolment) on a different goroutine than the providers that mint
+// envelopes, so a bare field would race. The resolved flag is separate from the identity so an
+// offline drain (no credential, enrolment failed) is distinguishable from "no identity": the
+// pipeline refuses to mint rather than stamping a placeholder.
+type identityHolder struct {
+	mu       sync.RWMutex
+	id       Identity
+	resolved bool
+}
+
+func (h *identityHolder) set(id Identity) {
+	h.mu.Lock()
+	h.id = id
+	h.resolved = true
+	h.mu.Unlock()
+}
+
+func (h *identityHolder) markUnresolved() {
+	h.mu.Lock()
+	h.id = Identity{}
+	h.resolved = false
+	h.mu.Unlock()
+}
+
+func (h *identityHolder) get() (Identity, bool) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.id, h.resolved
+}
+
 // NewPipeline returns a pipeline. Sink must be non-nil: a pipeline with nowhere to write
 // would either drop silently (forbidden, C22) or block (forbidden).
 func NewPipeline(sink Sink, clock func() time.Time, newID func() string) (*Pipeline, error) {
@@ -212,6 +247,34 @@ func NewPipeline(sink Sink, clock func() time.Time, newID func() string) (*Pipel
 		startedAt:      clock(),
 	}, nil
 }
+
+// ErrIdentityUnresolved is returned when a provider asks the pipeline to mint an envelope but no
+// identity has been resolved (a drain-configured device that has not enrolled). It is the
+// fail-closed half of §3.5: traffic is carried (fail-open) but never attributed to a placeholder.
+var ErrIdentityUnresolved = errors.New("core: identity is unresolved; refusing to mint an envelope without an issued identity")
+
+// ReasonIdentityUnresolved is the outcome reason a refused mint carries, so a coverage row can
+// group the failure rather than reporting it as a generic error.
+const ReasonIdentityUnresolved = "identity_unresolved"
+
+// SetIdentity installs the resolved envelope identity. It is the seam the drain uses: enrolment
+// mints device_id (and tenant_id/region) server-side, and the write path validates an envelope's
+// tenant_id/device_id against the issued credential, so the flags supplied at construction are only
+// the no-drain/local fallback. Safe to call concurrently with Process and EmitEnvelope.
+func (p *Pipeline) SetIdentity(id Identity) { p.identity.set(id) }
+
+// SetIdentityUnresolved clears the identity and marks it unresolved, so the pipeline refuses to
+// mint until a later SetIdentity resolves it. This is the state a drain-configured device enters
+// when its bounded synchronous enrolment failed and it must start without an identity.
+func (p *Pipeline) SetIdentityUnresolved() { p.identity.markUnresolved() }
+
+// Identity returns the current identity and whether it is resolved.
+func (p *Pipeline) Identity() (Identity, bool) { return p.identity.get() }
+
+// currentIdentity returns the identity to stamp, and whether it is resolved, under the same lock
+// SetIdentity uses. It exists so a provider minting an envelope sees either the resolved identity or
+// an unresolved refusal, never a torn value.
+func (p *Pipeline) currentIdentity() (Identity, bool) { return p.identity.get() }
 
 // Counters returns the counter set for a route, creating it on first use.
 func (p *Pipeline) Counters(route protocol.Route) *CounterSet {
@@ -254,11 +317,25 @@ func (p *Pipeline) ContentState() (objects int, bytes int64) {
 // ResolveMode is how a provider asks for the effective mode *before* it reads anything. The
 // loopback broker uses it to decide whether to buffer a request body while it streams it to
 // the upstream; at M0 the answer is no, and the body is forwarded without being retained.
+//
+// The resolved identity is injected into the scope query here, so every provider resolves scope
+// against the same identity the pipeline stamps — never against the construction-time flags, which
+// are only the no-drain/local fallback. An unresolved identity resolves against an empty device,
+// which yields M0 (and Process/EmitEnvelope then refuses to mint).
 func (p *Pipeline) ResolveMode(q ScopeQuery) Resolution {
+	id, _ := p.currentIdentity()
+	return p.resolveWith(q, id)
+}
+
+// resolveWith resolves scope for an already-snapshotted identity, so a single observation's scope,
+// envelope and dedup key all use the same identity value.
+func (p *Pipeline) resolveWith(q ScopeQuery, id Identity) Resolution {
 	var b *policy.Bundle
 	if p.Bundles != nil {
 		b = p.Bundles()
 	}
+	q.DeviceID = id.DeviceID
+	q.UserRef = id.UserRef
 	return Resolve(b, q)
 }
 
@@ -278,12 +355,18 @@ func (p *Pipeline) Process(ctx context.Context, obs Observation) (Outcome, error
 	c := p.Counters(obs.Route)
 	c.Add(protocol.CounterObserved)
 
-	res := p.ResolveMode(ScopeQuery{
+	id, ok := p.currentIdentity()
+	if !ok {
+		// Fail-closed for identity: carry the request (fail-open for traffic), refuse to mint
+		// rather than stamping a placeholder. One snapshot per observation keeps scope, envelope
+		// and dedup key from disagreeing.
+		c.Add(protocol.CounterErrors)
+		return Outcome{Route: obs.Route, Mode: protocol.ModeM0, Reason: ReasonIdentityUnresolved}, ErrIdentityUnresolved
+	}
+	res := p.resolveWith(ScopeQuery{
 		ToolFingerprint: obs.ToolFingerprint,
 		Population:      obs.Population,
-		DeviceID:        p.Identity.DeviceID,
-		UserRef:         p.Identity.UserRef,
-	})
+	}, id)
 	out := Outcome{Route: obs.Route, Mode: res.Mode, Reason: ReasonEmitted}
 	if !obs.Kind.Valid() {
 		return out, fmt.Errorf("core: observation has kind %q outside the closed registry", obs.Kind)
@@ -291,7 +374,7 @@ func (p *Pipeline) Process(ctx context.Context, obs Observation) (Outcome, error
 
 	eventID := p.NewID()
 	in := EnvelopeInput{
-		Identity:          p.Identity,
+		Identity:          id,
 		EventID:           eventID,
 		Kind:              obs.Kind,
 		Route:             obs.Route,
@@ -310,7 +393,7 @@ func (p *Pipeline) Process(ctx context.Context, obs Observation) (Outcome, error
 			// M0. The content reader is not called, not dereferenced, not hashed. The dedup
 			// key is the weaker payload-shape surrogate, and that weakness is reported
 			// (§4.5) rather than hidden.
-			key, err := dedup.SurrogateKey(p.Identity.TenantID, p.Identity.DeviceID, obs.ToolFingerprint,
+			key, err := dedup.SurrogateKey(id.TenantID, id.DeviceID, obs.ToolFingerprint,
 				string(obs.Kind), obs.OccurredAt, size, obs.Attachments, p.Normalizer)
 			if err != nil {
 				c.Add(protocol.CounterErrors)
@@ -374,7 +457,7 @@ func (p *Pipeline) Process(ctx context.Context, obs Observation) (Outcome, error
 			c.Add(protocol.CounterErrors)
 		}
 
-		key, err := p.dedupKey(tier, obs, digest, size, atts)
+		key, err := p.dedupKey(id, tier, obs, digest, size, atts)
 		if err != nil {
 			c.Add(protocol.CounterErrors)
 			return out, err
@@ -459,7 +542,12 @@ func (p *Pipeline) EmitEnvelope(ctx context.Context, in EnvelopeInput) (Outcome,
 		in.EventID = p.NewID()
 	}
 	if in.Identity == (Identity{}) {
-		in.Identity = p.Identity
+		id, ok := p.currentIdentity()
+		if !ok {
+			c.Add(protocol.CounterErrors)
+			return Outcome{Route: in.Route, Mode: in.Mode, Reason: ReasonIdentityUnresolved}, ErrIdentityUnresolved
+		}
+		in.Identity = id
 	}
 	return p.finish(ctx, c, Observation{Route: in.Route, Kind: in.Kind}, in, out)
 }
@@ -540,12 +628,12 @@ func (p *Pipeline) extract(obs Observation, body []byte) (string, []dedup.Attach
 	return text, atts, nil
 }
 
-func (p *Pipeline) dedupKey(tier string, obs Observation, digest string, size int64, atts []dedup.Attachment) (string, error) {
+func (p *Pipeline) dedupKey(id Identity, tier string, obs Observation, digest string, size int64, atts []dedup.Attachment) (string, error) {
 	switch tier {
 	case dedup.TierT:
-		return dedup.ContentKey(p.Identity.TenantID, p.Identity.DeviceID, obs.ToolFingerprint, string(obs.Kind), obs.OccurredAt, digest)
+		return dedup.ContentKey(id.TenantID, id.DeviceID, obs.ToolFingerprint, string(obs.Kind), obs.OccurredAt, digest)
 	default:
-		return dedup.SurrogateKey(p.Identity.TenantID, p.Identity.DeviceID, obs.ToolFingerprint, string(obs.Kind), obs.OccurredAt, size, atts, p.Normalizer)
+		return dedup.SurrogateKey(id.TenantID, id.DeviceID, obs.ToolFingerprint, string(obs.Kind), obs.OccurredAt, size, atts, p.Normalizer)
 	}
 }
 

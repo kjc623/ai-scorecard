@@ -85,11 +85,15 @@ those are Go module paths, not directories, and nothing here redefines their sha
   enumeration is an interface in `detect` with one partial implementation: `--proc-detect` wires a
   Windows `tasklist` enumerator that sees image names and PIDs only, and on any other platform the
   route is not started.
-- **Enrolment is real, identity is still flags.** The device generates its keypair, POSTs
-  `POST /v1/enrol` (a PKCS#10 CSR in `x509` mode, the public JWK plus a proof in `dpop` mode), and
-  seals the issued credential beside the spool. The envelope identity (`--tenant-id`, `--device-id`)
-  remains configuration; the credential's hardware-identity seed is `--mdm-id` when set, and falls
-  back to hashing the device identity (an ASSUMPTION, not a hardware binding).
+- **Enrolment is real, and the envelope identity now follows it.** The device generates its keypair,
+  POSTs `POST /v1/enrol` (a PKCS#10 CSR in `x509` mode, the public JWK plus a proof in `dpop` mode),
+  and seals the issued credential beside the spool. When the drain enrols (or loads a sealed
+  credential) it adopts the server-minted `tenant_id`/`device_id` for envelope minting, so a batch
+  is stamped with the identity the write path authenticates instead of the `--tenant-id`/
+  `--device-id` flags. The flags remain the fallback when there is no `--device-endpoint`, and a
+  disagreement between the flags and the issued identity is logged, never silently ignored. The
+  credential's hardware-identity seed is `--mdm-id` when set, and falls back to hashing the device
+  identity (an ASSUMPTION, not a hardware binding).
 
 Deployment, the full flag list and the self test's assertions are in
 [cmd/capture-core/README.md](cmd/capture-core/README.md).

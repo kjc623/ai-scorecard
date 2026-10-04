@@ -31,6 +31,11 @@ type nopLogger struct{}
 
 func (nopLogger) Printf(string, ...any) {}
 
+// reasonStaleIdentity is the spool settle reason for a record minted under a different identity
+// than the current credential. It is a drain-local name (the protocol reason set has no such code)
+// so a pre-fix spool is quarantined with a visible reason rather than delivered-and-rejected.
+const reasonStaleIdentity = "stale_identity"
+
 // StoreFunc supplies the spool at drain time. The spool is opened by the supervisor after the
 // drainer is constructed, so the drainer resolves it lazily.
 type StoreFunc func() (protocol.Store, error)
@@ -59,6 +64,14 @@ type Config struct {
 	// Expire, when non-nil, is called before each pass to drop records past their device retention
 	// deadline through the concrete spool's Expire (which is not part of protocol.Store).
 	Expire func(now time.Time) (int, error)
+
+	// OnEnrolled, when non-nil, is called each time the drainer adopts an issued credential (a
+	// stored one loaded at construction, a first enrolment, or a re-enrolment). It receives the
+	// issued credential, so the caller can adopt the server-minted identity for envelope minting —
+	// the write path validates an envelope's tenant_id/device_id against the credential, so the
+	// --tenant-id/--device-id flags are only the no-drain/local fallback and a disagreement is
+	// logged rather than ignored.
+	OnEnrolled func(*credential.Credential)
 }
 
 // Result is what one bounded drain pass achieved.
@@ -209,6 +222,13 @@ func (d *Drainer) run(ctx context.Context) {
 	}
 }
 
+// EnsureEnrolled runs the credential acquisition path synchronously (load the sealed credential if
+// present, else enrol) and reports whether the drainer holds a usable credential. It is the seam the
+// startup identity resolution uses to obtain the issued identity before providers start, without
+// starting the background loop. Enrolment failure is recorded as a degraded status and can be
+// retried later by the background loop.
+func (d *Drainer) EnsureEnrolled(ctx context.Context) bool { return d.ready(ctx) }
+
 // ready reports whether the drainer holds a usable credential, enrolling first when it does not.
 // Enrolment failure is recorded as a degraded status and retried with backoff by the loop.
 func (d *Drainer) ready(ctx context.Context) bool {
@@ -276,7 +296,24 @@ func (d *Drainer) setCredential(c *credential.Credential) error {
 	d.key = key
 	d.enrolled = true
 	d.mu.Unlock()
+	d.adoptIssuedIdentity(c)
 	return nil
+}
+
+// adoptIssuedIdentity records that the drainer now holds an issued credential, adopting the
+// server-minted identity for envelope minting. The flags are only the no-drain/local fallback, so
+// a disagreement with the issued value is logged — never silently ignored — and the caller is told
+// (via OnEnrolled) to adopt the issued credential. This runs on load, first enrol and re-enrol.
+func (d *Drainer) adoptIssuedIdentity(c *credential.Credential) {
+	if d.cfg.TenantID != "" && c.TenantID != d.cfg.TenantID {
+		d.log.Printf("drain: issued tenant_id %q differs from --tenant-id flag %q; adopting the issued value", c.TenantID, d.cfg.TenantID)
+	}
+	if d.cfg.DeviceID != "" && c.DeviceID != d.cfg.DeviceID {
+		d.log.Printf("drain: issued device_id %q differs from --device-id flag %q; adopting the issued value", c.DeviceID, d.cfg.DeviceID)
+	}
+	if d.cfg.OnEnrolled != nil {
+		d.cfg.OnEnrolled(c)
+	}
 }
 
 // credentialExpired reports whether an x509 credential has passed its NotAfter. A DPoP
@@ -347,9 +384,24 @@ func (d *Drainer) Drain(ctx context.Context, deadline time.Time) (Result, error)
 				} else {
 					res.Rejected++
 				}
-			} else {
-				sendable = append(sendable, e)
+				continue
 			}
+			// A record minted under a different identity (a pre-fix spool stamped from the flags)
+			// must not be delivered: its tenant_id/device_id would be rejected by the write path, and
+			// it cannot be re-stamped safely (the identity-derived dedup key cannot be recomputed for
+			// an M0 record). Quarantine it with a named reason so it is counted, never silently
+			// resent, and never silently dropped.
+			if cred != nil {
+				if tenantID, deviceID := envelopeIdentity(e.Payload); (cred.TenantID != "" && tenantID != cred.TenantID) || (cred.DeviceID != "" && deviceID != cred.DeviceID) {
+					if err := store.Settle(e.Seq, protocol.SpoolRejected, string(reasonStaleIdentity)); err != nil {
+						d.log.Printf("drain: quarantining stale-identity entry %d: %v", e.Seq, err)
+					} else {
+						res.Rejected++
+					}
+					continue
+				}
+			}
+			sendable = append(sendable, e)
 		}
 		if len(sendable) == 0 {
 			continue

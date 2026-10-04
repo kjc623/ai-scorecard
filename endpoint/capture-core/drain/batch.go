@@ -91,6 +91,17 @@ func payloads(entries []protocol.Entry) []json.RawMessage {
 	return out
 }
 
+// envelopeIdentity extracts the tenant_id/device_id an already-minted envelope carries, so the drain
+// can refuse to deliver a record minted under a different identity than the current credential.
+func envelopeIdentity(payload []byte) (tenantID, deviceID string) {
+	var env struct {
+		TenantID string `json:"tenant_id"`
+		DeviceID string `json:"device_id"`
+	}
+	_ = json.Unmarshal(payload, &env)
+	return env.TenantID, env.DeviceID
+}
+
 func gzipBatch(b *protocol.EventBatch) ([]byte, error) {
 	raw, err := json.Marshal(b)
 	if err != nil {

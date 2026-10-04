@@ -108,11 +108,16 @@ func (c Config) validate(mode runMode) error {
 		if strings.TrimSpace(c.SpoolKey) == "" {
 			return errors.New("--spool-key is required: the spool never generates a key inside its own directory (§12)")
 		}
-		if strings.TrimSpace(c.DeviceID) == "" {
-			return errors.New("--device-id is required: every envelope carries a device id and health is keyed by it")
-		}
-		if strings.TrimSpace(c.TenantID) == "" {
-			return errors.New("--tenant-id is required: a device with no tenant cannot attribute an observation")
+		// The flags are the identity only for a local/offline run (no --device-endpoint): with a
+		// drain configured the sealed credential (or a bounded enrolment) is authoritative, and the
+		// flags are a validated assertion rather than a requirement.
+		if strings.TrimSpace(c.DeviceEndpoint) == "" {
+			if strings.TrimSpace(c.DeviceID) == "" {
+				return errors.New("--device-id is required for a local run (no --device-endpoint): every envelope carries a device id and health is keyed by it")
+			}
+			if strings.TrimSpace(c.TenantID) == "" {
+				return errors.New("--tenant-id is required for a local run (no --device-endpoint): a device with no tenant cannot attribute an observation")
+			}
 		}
 		if _, err := time.ParseDuration(c.Retention); err != nil {
 			return fmt.Errorf("--retention %q: %w", c.Retention, err)
@@ -375,7 +380,13 @@ func modeOfTool(b *policy.Bundle, q core.ScopeQuery) core.Resolution {
 // agent do" question answered without side effects.
 func printConfig(cfg Config, logger loggerLike) error {
 	fmt.Printf("capture-core %s\n", version)
-	fmt.Printf("identity:        tenant=%s device=%s user=%s population=%q\n", cfg.TenantID, cfg.DeviceID, cfg.UserRef, cfg.Population)
+	// The flags are the identity only for a local/offline run. With a drain configured the sealed
+	// credential (or a bounded enrolment) is authoritative and the flags are a validated assertion.
+	identitySource := "local"
+	if strings.TrimSpace(cfg.DeviceEndpoint) != "" {
+		identitySource = "credential"
+	}
+	fmt.Printf("identity:        tenant=%s device=%s user=%s population=%q source=%s\n", cfg.TenantID, cfg.DeviceID, cfg.UserRef, cfg.Population, identitySource)
 	fmt.Printf("spool:           dir=%s key=%s bounds=%s retention=%s\n", cfg.SpoolDir, cfg.SpoolKey, cfg.SpoolBoundsProfile, cfg.Retention)
 
 	var inForce *policy.Bundle

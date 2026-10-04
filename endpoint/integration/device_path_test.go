@@ -119,7 +119,7 @@ func newPipeline(t *testing.T, sp *capturespool.Spool, cl *recordingClassifier, 
 	if err != nil {
 		t.Fatalf("new pipeline: %v", err)
 	}
-	p.Identity = core.Identity{TenantID: testTenant, DeviceID: testDevice, UserRef: testUser}
+	p.SetIdentity(core.Identity{TenantID: testTenant, DeviceID: testDevice, UserRef: testUser})
 	p.Bundles = func() *policy.Bundle { return bundleWith(mode) }
 	p.Classifier = cl
 	p.Retention = 24 * time.Hour
@@ -304,7 +304,7 @@ func TestDevicePath_SpoolRefusalIsReportedNotSwallowed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new pipeline: %v", err)
 	}
-	p.Identity = core.Identity{TenantID: testTenant, DeviceID: testDevice, UserRef: testUser}
+	p.SetIdentity(core.Identity{TenantID: testTenant, DeviceID: testDevice, UserRef: testUser})
 	p.Bundles = func() *policy.Bundle { return bundleWith(protocol.ModeM1) }
 	p.Classifier = cl
 	// A normaliser is deliberately NOT installed, which is also the state of the shipped device

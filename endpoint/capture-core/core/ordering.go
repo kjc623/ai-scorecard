@@ -17,6 +17,7 @@ import (
 const (
 	StepLoadBundle          = "load_bundle_verify_signature"
 	StepOpenSpool           = "open_and_unlock_spool"
+	StepResolveIdentity     = "resolve_device_identity"
 	StepStartProcDetect     = "start_proc.detect"
 	StepStartCLIShim        = "start_cli.shim"
 	StepStartClassifierHost = "start_classifier_host"
@@ -39,7 +40,7 @@ const (
 // StartupOrder is §3.5's startup column, as data.
 func StartupOrder() []string {
 	return []string{
-		StepLoadBundle, StepOpenSpool, StepStartProcDetect, StepStartCLIShim,
+		StepLoadBundle, StepOpenSpool, StepResolveIdentity, StepStartProcDetect, StepStartCLIShim,
 		StepStartClassifierHost, StepStartProxyTLS, StepPointSystemProxy, StepStartProxyLoopback,
 	}
 }
@@ -79,6 +80,15 @@ type SpoolController interface {
 	Stats() protocol.SpoolStats
 	Drain(ctx context.Context, deadline time.Time) (DrainResult, error)
 	Close() error
+}
+
+// IdentityResolver resolves the envelope identity before any provider starts. It is the drain's
+// job: load the sealed credential if present, else enrol synchronously (bounded) when a drain is
+// configured. A nil resolver means the identity already installed on the pipeline stands (a
+// no-drain/local run). Resolve must be concurrency-safe and idempotent; its failure leaves the
+// identity unresolved, which makes the pipeline refuse to mint rather than stamping a placeholder.
+type IdentityResolver interface {
+	Resolve(ctx context.Context) error
 }
 
 // ClassifierHostController supervises the classifier child process. A hung or crashed host is
@@ -123,6 +133,7 @@ type Supervisor struct {
 	Registry       *Registry
 	Policy         PolicyLoader
 	Spool          SpoolController
+	Identity       IdentityResolver
 	ClassifierHost ClassifierHostController
 	SystemProxy    SystemProxy
 	TrustRoot      TrustRoot
@@ -198,6 +209,17 @@ func (s *Supervisor) Startup(ctx context.Context) error {
 	if s.Spool != nil {
 		if err := s.Spool.Open(ctx); err != nil {
 			return fmt.Errorf("core: spool did not open, so no provider may start (a provider with nowhere to write must not run): %w", err)
+		}
+	}
+
+	// 2b. resolve the envelope identity before any provider starts. The spool had to open first: the
+	// sealed credential unseals under the spool key. A failure is not fatal by design — the pipeline
+	// refuses to mint while the identity is unresolved, and the drain retries enrolment in the
+	// background — but it is logged, never silent.
+	s.record(StepResolveIdentity)
+	if s.Identity != nil {
+		if err := s.Identity.Resolve(ctx); err != nil {
+			s.Log.Printf("core: identity unresolved; providers start but will refuse to mint until enrolment succeeds: %v", err)
 		}
 	}
 

@@ -133,7 +133,7 @@ func newTestPipeline(t *testing.T, sink Sink, bundle *policy.Bundle) *Pipeline {
 	if err != nil {
 		t.Fatalf("NewPipeline: %v", err)
 	}
-	p.Identity = Identity{TenantID: "tenant-1", DeviceID: "device-1", UserRef: "user-1"}
+	p.SetIdentity(Identity{TenantID: "tenant-1", DeviceID: "device-1", UserRef: "user-1"})
 	p.Bundles = func() *policy.Bundle { return bundle }
 	p.Normalizer = dedup.IdentityNFC{}
 	return p
@@ -627,6 +627,98 @@ func TestPipelineExtractionFailureDegradesToTheSurrogateTier(t *testing.T) {
 	}
 	if sink.last().DedupKey != wantKey {
 		t.Fatalf("dedup key = %q, want the Tier S surrogate %q", sink.last().DedupKey, wantKey)
+	}
+}
+
+// TestPipelineSetIdentityAdoptsIssuedIdentity proves the seam the drain uses: before SetIdentity
+// the pipeline stamps the construction-time flags (the fallback when there is no drain), and after
+// SetIdentity it stamps the server-minted identity.
+func TestPipelineSetIdentityAdoptsIssuedIdentity(t *testing.T) {
+	sink := &recordingSink{}
+	p := newTestPipeline(t, sink, m0Bundle())
+
+	processM0 := func() (tenantID, deviceID string) {
+		t.Helper()
+		size := int64(10)
+		out, err := p.Process(context.Background(), Observation{
+			Route:           protocol.RouteProxyTLS,
+			Kind:            protocol.KindPrompt,
+			ToolFingerprint: "tool",
+			OccurredAt:      time.Unix(1_700_000_000, 0),
+			SizeBytes:       size,
+			Decision:        &protocol.Decision{RuleID: "r", Action: protocol.ActionLogged},
+		})
+		if err != nil {
+			t.Fatalf("Process: %v", err)
+		}
+		if !out.Emitted {
+			t.Fatalf("not emitted: %+v", out)
+		}
+		var env struct {
+			TenantID string `json:"tenant_id"`
+			DeviceID string `json:"device_id"`
+		}
+		if err := json.Unmarshal(sink.last().Payload, &env); err != nil {
+			t.Fatalf("envelope: %v", err)
+		}
+		return env.TenantID, env.DeviceID
+	}
+
+	// No drain (no SetIdentity): the flags are the identity.
+	if tenantID, deviceID := processM0(); tenantID != "tenant-1" || deviceID != "device-1" {
+		t.Fatalf("before SetIdentity, envelope identity = (%q, %q), want flags (tenant-1, device-1)", tenantID, deviceID)
+	}
+
+	// Enrolment completes: the issued identity is adopted.
+	p.SetIdentity(Identity{TenantID: "issued-tenant", DeviceID: "issued-device", UserRef: "user-1"})
+	if tenantID, deviceID := processM0(); tenantID != "issued-tenant" || deviceID != "issued-device" {
+		t.Fatalf("after SetIdentity, envelope identity = (%q, %q), want issued (issued-tenant, issued-device)", tenantID, deviceID)
+	}
+}
+
+// TestPipelineUnresolvedRefusesToMint proves the fail-closed half of §3.5: a pipeline with no
+// resolved identity refuses to mint rather than stamping a placeholder, and resumes once identity is
+// resolved.
+func TestPipelineUnresolvedRefusesToMint(t *testing.T) {
+	sink := &recordingSink{}
+	p, err := NewPipeline(sink, time.Now, func() string { return "evt-1" })
+	if err != nil {
+		t.Fatalf("NewPipeline: %v", err)
+	}
+	p.Normalizer = dedup.IdentityNFC{}
+	p.Bundles = func() *policy.Bundle { return m0Bundle() }
+
+	obs := Observation{
+		Route:           protocol.RouteProxyTLS,
+		Kind:            protocol.KindPrompt,
+		ToolFingerprint: "tool",
+		OccurredAt:      time.Unix(1_700_000_000, 0),
+		SizeBytes:       10,
+		Decision:        &protocol.Decision{RuleID: "r", Action: protocol.ActionLogged},
+	}
+
+	out, err := p.Process(context.Background(), obs)
+	if !errors.Is(err, ErrIdentityUnresolved) {
+		t.Fatalf("err = %v, want ErrIdentityUnresolved", err)
+	}
+	if out.Emitted {
+		t.Fatal("an unresolved pipeline emitted an envelope")
+	}
+	if out.Reason != ReasonIdentityUnresolved {
+		t.Fatalf("reason = %q, want %q", out.Reason, ReasonIdentityUnresolved)
+	}
+	if len(sink.entries) != 0 {
+		t.Fatalf("the sink holds %d entries, want 0", len(sink.entries))
+	}
+
+	// Resolving the identity resumes minting.
+	p.SetIdentity(Identity{TenantID: "tenant-1", DeviceID: "device-1", UserRef: "user-1"})
+	out, err = p.Process(context.Background(), obs)
+	if err != nil {
+		t.Fatalf("Process after resolve: %v", err)
+	}
+	if !out.Emitted {
+		t.Fatalf("not emitted after identity resolved: %+v", out)
 	}
 }
 
