@@ -59,6 +59,7 @@ type EventContext struct {
 	// has no such observation, which is what makes another device's event a 404.
 	Found          bool
 	Kind           string
+	PromptKind     string
 	CollectionMode string
 	ExpiresAt      time.Time
 	SubmissionID   string
@@ -111,10 +112,13 @@ type PreparedKey struct {
 // StoredObject is what the finaliser tells the vault to record.
 type StoredObject struct {
 	ObjectID, SubmissionID, EventID string
-	BlobPath, CiphertextSHA256      string
-	PlaintextSizeBytes              int64
-	WrappedDEK, KEKID, KEKVersion   string
-	ExpiresAt                       time.Time
+	// PromptKind is the device's request-kind decision (protocol.PromptKind), carried so the
+	// vault knows not to index a client-generated request. Empty reads as unknown.
+	PromptKind                    string
+	BlobPath, CiphertextSHA256    string
+	PlaintextSizeBytes            int64
+	WrappedDEK, KEKID, KEKVersion string
+	ExpiresAt                     time.Time
 }
 
 // Vault is content-vault, seen from the one component allowed to ask it for an object key.
@@ -347,7 +351,8 @@ func (s *Service) Finalise(ctx context.Context, r UploadReport) (string, error) 
 	}
 	if err := s.vault.Finalise(ctx, r.TenantID, "device:"+g.DeviceID, StoredObject{
 		ObjectID: g.ObjectID, SubmissionID: ec.SubmissionID, EventID: g.EventID,
-		BlobPath: r.BlobPath, CiphertextSHA256: r.RawDigest, PlaintextSizeBytes: r.PlaintextSizeBytes,
+		PromptKind: ec.PromptKind,
+		BlobPath:   r.BlobPath, CiphertextSHA256: r.RawDigest, PlaintextSizeBytes: r.PlaintextSizeBytes,
 		WrappedDEK: r.WrappedKeyB64, KEKID: r.KeyID, KEKVersion: r.KeyVersion, ExpiresAt: ec.ExpiresAt,
 	}); err != nil {
 		return "", fmt.Errorf("content: vault finalise: %w", err)

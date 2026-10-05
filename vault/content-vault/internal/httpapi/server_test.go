@@ -289,6 +289,48 @@ func TestMalformedBodiesAreTransportErrorsNotContentRefusals(t *testing.T) {
 	}
 }
 
+// TestFinaliseDecodesPromptKind: the prompt_kind field crosses the internal HTTP boundary and is
+// decoded, so a client_generated finalise indexes no prompt_body unit while a user one does.
+func TestFinaliseDecodesPromptKind(t *testing.T) {
+	tiers := map[string]store.SearchTier{"tool:chatgpt": store.SearchFullText}
+	ts, _ := server(t, testrig.Options{
+		Tenants:    []store.Tenant{testrig.Tenant(func(tn *store.Tenant) { tn.ContentSearch = store.SearchFullText })},
+		ScopeTiers: tiers,
+	})
+
+	finalise := func(objectID, promptKind string) float64 {
+		status, body := post(t, ts, "/v1/content/object", `{
+			"object_id": "`+objectID+`", "submission_id": "`+testrig.SubmissionA+`",
+			"event_id": "`+testrig.EventA+`", "retention_class": "standard"}`)
+		if status != http.StatusOK {
+			t.Fatalf("prepare returned %d (%v)", status, body)
+		}
+		wrapped := body["wrapped_dek_b64"].(string)
+		kekID := body["kek_id"].(string)
+		kekVersion := body["kek_version"].(string)
+
+		digest := "sha256:" + strings.Repeat("ab", 32)
+		status, body = post(t, ts, "/v1/content/object/finalise", `{
+			"object_id": "`+objectID+`", "submission_id": "`+testrig.SubmissionA+`",
+			"event_id": "`+testrig.EventA+`", "blob_path": "tenants/x/objects/`+objectID+`",
+			"ciphertext_sha256": "`+digest+`", "plaintext_size_bytes": 4096,
+			"wrapped_dek_b64": "`+wrapped+`", "kek_id": "`+kekID+`", "kek_version": "`+kekVersion+`",
+			"retention_class": "standard", "prompt_kind": "`+promptKind+`",
+			"index_units": [{"unit_kind": "prompt_body", "unit_index": 0, "body": "what is the capital of Australia"}]}`)
+		if status != http.StatusOK {
+			t.Fatalf("finalise returned %d (%v)", status, body)
+		}
+		return body["indexed"].(float64)
+	}
+
+	if got := finalise(testrig.ObjectA, "client_generated"); got != 0 {
+		t.Errorf("client_generated finalise indexed %v units, want 0", got)
+	}
+	if got := finalise(testrig.ObjectB, "user"); got != 1 {
+		t.Errorf("user finalise indexed %v units, want 1", got)
+	}
+}
+
 // TestHealthReportsTheKeyBackendHonestly: an operator must be able to see that this build is not
 // running a cloud KMS, and that the surface is internal.
 func TestHealthReportsTheKeyBackendHonestly(t *testing.T) {

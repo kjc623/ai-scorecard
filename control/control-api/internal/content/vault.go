@@ -58,6 +58,7 @@ func (v *HTTPVault) Finalise(ctx context.Context, tenantID, subject string, obj 
 	req := map[string]any{
 		"object_id":            obj.ObjectID,
 		"event_id":             obj.EventID,
+		"prompt_kind":          obj.PromptKind,
 		"blob_path":            obj.BlobPath,
 		"ciphertext_sha256":    obj.CiphertextSHA256,
 		"plaintext_size_bytes": obj.PlaintextSizeBytes,

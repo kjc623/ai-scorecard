@@ -218,6 +218,11 @@ type FinaliseRequest struct {
 	RetentionClass string
 	ExpiresAt      time.Time
 
+	// PromptKind is the device's request-kind decision (protocol.PromptKind, task 08). A
+	// client_generated request has no prompt text to find, so it is never indexed; any other
+	// value, including an absent one (which reads as unknown), is indexed as before.
+	PromptKind protocol.PromptKind
+
 	// IndexUnits are the searchable units that arrived with this content. A unit the tenant's tier
 	// does not permit is refused *and reported*, never silently dropped: the caller learns which
 	// units it failed to index and why.
@@ -274,7 +279,8 @@ func (s *Service) FinaliseObject(ctx context.Context, req FinaliseRequest) (Fina
 		EventID: req.EventID, BlobPath: req.BlobPath, CiphertextSHA256: req.CiphertextSHA256,
 		PlaintextSizeBytes: req.PlaintextSizeBytes, WrappedDEK: req.WrappedDEK,
 		KEKID: req.KEKID, KEKVersion: req.KEKVersion, RetentionClass: req.RetentionClass,
-		State: store.StateUploaded, CreatedAt: now, ExpiresAt: req.ExpiresAt,
+		PromptKind: req.PromptKind,
+		State:      store.StateUploaded, CreatedAt: now, ExpiresAt: req.ExpiresAt,
 	}
 	if err := s.opts.Store.PutContentObject(ctx, obj); err != nil {
 		return FinaliseResult{}, err
@@ -282,6 +288,12 @@ func (s *Service) FinaliseObject(ctx context.Context, req FinaliseRequest) (Fina
 
 	result := FinaliseResult{ObjectID: req.ObjectID, KEKID: req.KEKID, KEKVersion: req.KEKVersion}
 	for _, unit := range req.IndexUnits {
+		// A client-generated request is never indexed for prompt text (task 08): the decision was
+		// made on the device, and the vault honours it rather than re-deriving it. It is skipped,
+		// not refused — there is nothing wrong with the unit, it is just not prompt text.
+		if req.PromptKind == protocol.PromptKindClientGenerated && unit.UnitKind == store.UnitPromptBody {
+			continue
+		}
 		reason, detail := s.indexPermitted(tenant, unit.UnitKind)
 		if reason != "" {
 			result.Refused = append(result.Refused, UnitRefusal{UnitKind: unit.UnitKind, UnitIndex: unit.UnitIndex, Reason: reason, Detail: detail})
@@ -304,6 +316,7 @@ func (s *Service) FinaliseObject(ctx context.Context, req FinaliseRequest) (Fina
 		// The finaliser has only ciphertext, so it cannot supply the prompt text. Where the tenant's
 		// tier permits a full-text index and a blob store is wired, the vault — the one component
 		// that can open the object — indexes it as it stores it (docs/03 §"content-vault does both").
+		// A client-generated request is skipped by canIndexStored, so nothing is derived for it.
 		if refusal := s.indexStoredContent(ctx, tenant, obj); refusal != nil {
 			result.Refused = append(result.Refused, *refusal)
 		} else if s.canIndexStored(tenant, obj) {
@@ -333,6 +346,12 @@ const maxIndexedChars = 65_536
 // canIndexStored reports whether a stored object's text may and can be indexed by the vault itself.
 func (s *Service) canIndexStored(tenant store.Tenant, obj store.ContentObject) bool {
 	if s.opts.FetchBlob == nil || obj.SubmissionID == "" || tenant.ContentSearch != store.SearchFullText {
+		return false
+	}
+	// A client-generated request is never indexed (task 08). The decision is made on the device
+	// and carried here as the object's prompt kind, so the vault never re-derives prompt text from
+	// a request nobody typed.
+	if obj.PromptKind == protocol.PromptKindClientGenerated {
 		return false
 	}
 	reason, _ := s.indexPermitted(tenant, store.UnitPromptBody)
@@ -389,7 +408,20 @@ func (s *Service) ReindexTenant(ctx context.Context, tenantID string) (indexed, 
 		return 0, 0, 0, err
 	}
 	for _, obj := range objects {
-		if obj.State == store.StateShredded || !s.canIndexStored(tenant, obj) {
+		if obj.State == store.StateShredded {
+			continue
+		}
+		// A client-generated request has no prompt text to find, so its index rows are removed and
+		// it is not re-indexed (task 08). An earlier rule may have written a row; this one must not.
+		if obj.PromptKind == protocol.PromptKindClientGenerated {
+			if _, err := s.opts.Store.DeleteSearchText(ctx, tenant.TenantID, obj.SubmissionID); err != nil {
+				failed++
+				continue
+			}
+			cleared++
+			continue
+		}
+		if !s.canIndexStored(tenant, obj) {
 			continue
 		}
 		dek, err := s.unwrap(ctx, tenant, obj)

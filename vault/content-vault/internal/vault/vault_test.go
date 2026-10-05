@@ -7,6 +7,7 @@ import (
 	"crypto/cipher"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/shadow-ai-capture/content-vault/internal/store"
 	"github.com/shadow-ai-capture/content-vault/internal/testrig"
 	"github.com/shadow-ai-capture/content-vault/internal/vault"
+	"github.com/shadow-ai-capture/device/protocol"
 )
 
 // encryptWithDEK is the device's half of the hierarchy: AES-256-GCM under the per-object data key.
@@ -770,6 +772,184 @@ func TestSearchTierRefusals(t *testing.T) {
 			}
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------------------
+// Client-generated requests are never indexed (task 08)
+// ---------------------------------------------------------------------------------------
+
+// TestClientGeneratedIsNeverIndexed: a client_generated submission writes no prompt_body search
+// unit, whichever path would otherwise produce one, while a user submission still does. The kind
+// is decided on the device; the vault honours it rather than re-deriving typed text, which is
+// exactly the failure the task exists to stop (a client titling request quotes the user's prompt
+// in a user-role message, so typedText alone cannot tell them apart).
+func TestClientGeneratedIsNeverIndexed(t *testing.T) {
+	ctx := context.Background()
+	tiers := map[string]store.SearchTier{"tool:chatgpt": store.SearchFullText}
+
+	t.Run("a caller-supplied prompt_body unit is dropped for client_generated", func(t *testing.T) {
+		rig := testrig.New(t, testrig.Options{Tenants: []store.Tenant{testrig.Tenant(FullText())}, ScopeTiers: tiers})
+		res, err := rig.Service.FinaliseObject(ctx, vault.FinaliseRequest{
+			TenantID: testrig.TenantID, ObjectID: testrig.ObjectA, SubmissionID: testrig.SubmissionA,
+			EventID: testrig.EventA, BlobPath: "b", CiphertextSHA256: "sha256:" + strings.Repeat("a", 64),
+			WrappedDEK: []byte{1, 2, 3}, KEKID: "k", KEKVersion: "1",
+			PromptKind: protocol.PromptKindClientGenerated,
+			IndexUnits: []vault.IndexUnit{{UnitKind: store.UnitPromptBody, Body: "what is the capital of Australia"}},
+		})
+		if err != nil {
+			t.Fatalf("finalise: %v", err)
+		}
+		if res.Indexed != 0 {
+			t.Fatalf("client_generated indexed %d units, want 0", res.Indexed)
+		}
+		assertNoPromptHit(t, rig, "capital")
+	})
+
+	t.Run("a caller-supplied prompt_body unit is kept for a user prompt", func(t *testing.T) {
+		rig := testrig.New(t, testrig.Options{Tenants: []store.Tenant{testrig.Tenant(FullText())}, ScopeTiers: tiers})
+		res, err := rig.Service.FinaliseObject(ctx, vault.FinaliseRequest{
+			TenantID: testrig.TenantID, ObjectID: testrig.ObjectA, SubmissionID: testrig.SubmissionA,
+			EventID: testrig.EventA, BlobPath: "b", CiphertextSHA256: "sha256:" + strings.Repeat("a", 64),
+			WrappedDEK: []byte{1, 2, 3}, KEKID: "k", KEKVersion: "1",
+			PromptKind: protocol.PromptKindUser,
+			IndexUnits: []vault.IndexUnit{{UnitKind: store.UnitPromptBody, Body: "what is the capital of Australia"}},
+		})
+		if err != nil {
+			t.Fatalf("finalise: %v", err)
+		}
+		if res.Indexed != 1 {
+			t.Fatalf("user prompt indexed %d units, want 1", res.Indexed)
+		}
+		assertPromptHit(t, rig, "capital")
+	})
+
+	t.Run("a derived prompt_body is omitted for client_generated", func(t *testing.T) {
+		blobs := map[string][]byte{}
+		rig := testrig.New(t, testrig.Options{
+			Tenants:    []store.Tenant{testrig.Tenant(FullText())},
+			ScopeTiers: tiers,
+			FetchBlob:  func(path string) ([]byte, error) { return blobs[path], nil },
+		})
+		res := finaliseSealed(t, rig, blobs, testrig.ObjectA, testrig.SubmissionA, testrig.EventA, protocol.PromptKindClientGenerated)
+		if res.Indexed != 0 {
+			t.Fatalf("client_generated derived %d units, want 0", res.Indexed)
+		}
+		assertNoPromptHit(t, rig, "capital")
+	})
+
+	t.Run("a derived prompt_body is kept for a user prompt", func(t *testing.T) {
+		blobs := map[string][]byte{}
+		rig := testrig.New(t, testrig.Options{
+			Tenants:    []store.Tenant{testrig.Tenant(FullText())},
+			ScopeTiers: tiers,
+			FetchBlob:  func(path string) ([]byte, error) { return blobs[path], nil },
+		})
+		res := finaliseSealed(t, rig, blobs, testrig.ObjectA, testrig.SubmissionA, testrig.EventA, protocol.PromptKindUser)
+		if res.Indexed != 1 {
+			t.Fatalf("user prompt derived %d units, want 1", res.Indexed)
+		}
+		assertPromptHit(t, rig, "capital")
+	})
+}
+
+// TestReindexTenantClearsClientGenerated: a reindex brings rows written by an earlier indexing rule
+// to the current one — a client_generated object loses the prompt_body row it had, and a user
+// object keeps (or regains) its own.
+func TestReindexTenantClearsClientGenerated(t *testing.T) {
+	ctx := context.Background()
+	blobs := map[string][]byte{}
+	rig := testrig.New(t, testrig.Options{
+		Tenants:    []store.Tenant{testrig.Tenant(FullText())},
+		ScopeTiers: map[string]store.SearchTier{"tool:chatgpt": store.SearchFullText},
+		FetchBlob:  func(path string) ([]byte, error) { return blobs[path], nil },
+	})
+
+	// A client_generated object whose prompt_body row was written by an earlier rule.
+	clientRes := finaliseSealed(t, rig, blobs, testrig.ObjectA, testrig.SubmissionA, testrig.EventA, protocol.PromptKindUser)
+	if clientRes.Indexed != 1 {
+		t.Fatalf("setup: user prompt derived %d units, want 1", clientRes.Indexed)
+	}
+	// Flip the object's kind to client_generated as a reindex would see it after the device
+	// decision landed, then rewrite the row directly so the reindex has a stale index to clear.
+	obj, err := rig.Memory.ContentObject(ctx, testrig.TenantID, testrig.ObjectA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obj.PromptKind = protocol.PromptKindClientGenerated
+	if err := rig.Memory.PutContentObject(ctx, obj); err != nil {
+		t.Fatal(err)
+	}
+	assertPromptHit(t, rig, "capital")
+
+	indexed, cleared, failed, err := rig.Service.ReindexTenant(ctx, testrig.TenantID)
+	if err != nil {
+		t.Fatalf("reindex: %v", err)
+	}
+	if indexed != 0 || cleared != 1 || failed != 0 {
+		t.Fatalf("reindex = indexed %d, cleared %d, failed %d; want 0/1/0", indexed, cleared, failed)
+	}
+	assertNoPromptHit(t, rig, "capital")
+}
+
+// finaliseSealed walks prepare → seal → finalise for one object whose content carries a typed turn,
+// returning the finalise result. The sealed bytes go into blobs, which the rig's FetchBlob reads.
+func finaliseSealed(t *testing.T, rig *testrig.Rig, blobs map[string][]byte, objectID, submissionID, eventID string, kind protocol.PromptKind) vault.FinaliseResult {
+	t.Helper()
+	ctx := context.Background()
+	prep, err := rig.Service.PrepareObject(ctx, vault.PrepareRequest{
+		TenantID: testrig.TenantID, ObjectID: objectID, SubmissionID: submissionID, EventID: eventID,
+		RetentionClass: "content", ExpiresAt: rig.Clock.T.Add(90 * 24 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	plaintext := []byte(`{"messages":[{"role":"user","content":"what is the capital of Australia"}]}`)
+	sealed, err := protocol.SealContent(prep.DEK, eventID, plaintext)
+	if err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	blobPath := "objects/" + objectID
+	blobs[blobPath] = sealed
+	res, err := rig.Service.FinaliseObject(ctx, vault.FinaliseRequest{
+		TenantID: testrig.TenantID, ObjectID: objectID, SubmissionID: submissionID, EventID: eventID,
+		BlobPath: blobPath, CiphertextSHA256: protocol.RawDigest(sealed), PlaintextSizeBytes: int64(len(plaintext)),
+		WrappedDEK: prep.WrappedDEK, KEKID: prep.KEKID, KEKVersion: prep.KEKVersion,
+		RetentionClass: "content", ExpiresAt: rig.Clock.T.Add(90 * 24 * time.Hour),
+		PromptKind: kind,
+	})
+	if err != nil {
+		t.Fatalf("finalise: %v", err)
+	}
+	return res
+}
+
+// assertPromptHit fails unless a full-text search for query finds exactly one prompt_body hit.
+func assertPromptHit(t *testing.T, rig *testrig.Rig, query string) {
+	t.Helper()
+	hits := searchHits(t, rig, query)
+	if len(hits) != 1 || hits[0].UnitKind != store.UnitPromptBody {
+		t.Fatalf("search for %q returned %+v; want one prompt_body hit", query, hits)
+	}
+}
+
+// assertNoPromptHit fails if a full-text search for query finds anything at all.
+func assertNoPromptHit(t *testing.T, rig *testrig.Rig, query string) {
+	t.Helper()
+	if hits := searchHits(t, rig, query); len(hits) != 0 {
+		t.Fatalf("search for %q returned %+v; want no hits", query, hits)
+	}
+}
+
+func searchHits(t *testing.T, rig *testrig.Rig, query string) []store.SearchHit {
+	t.Helper()
+	res, err := rig.Service.Search(context.Background(), vault.SearchRequest{
+		TenantID: testrig.TenantID, Principal: "a@example.com", Scope: "tool:chatgpt",
+		Form: store.FormTerms, Query: query,
+	})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	return res.Hits
 }
 
 // ---------------------------------------------------------------------------------------

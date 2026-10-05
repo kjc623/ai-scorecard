@@ -93,10 +93,15 @@ type Tenant struct {
 // ContentObject is ops.content_object: the wrapped DEK beside the blob reference, never the
 // ciphertext itself (§5.3).
 type ContentObject struct {
-	TenantID           string
-	ObjectID           string
-	SubmissionID       string
-	EventID            string
+	TenantID     string
+	ObjectID     string
+	SubmissionID string
+	EventID      string
+	// PromptKind is the device's request-kind decision (protocol.PromptKind), carried so a
+	// reindex can keep a client-generated request out of the search index. It is not a column in
+	// ops.content_object; the memory store keeps it and the SQL store leaves it empty, which reads
+	// as unknown.
+	PromptKind         protocol.PromptKind
 	BlobPath           string
 	CiphertextSHA256   string
 	PlaintextSizeBytes int64

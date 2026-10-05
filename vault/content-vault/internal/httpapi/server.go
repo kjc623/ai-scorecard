@@ -33,6 +33,7 @@ import (
 	"github.com/shadow-ai-capture/content-vault/internal/auth"
 	"github.com/shadow-ai-capture/content-vault/internal/store"
 	"github.com/shadow-ai-capture/content-vault/internal/vault"
+	"github.com/shadow-ai-capture/device/protocol"
 )
 
 // Server is the HTTP surface.
@@ -123,6 +124,7 @@ type finaliseRequestJSON struct {
 	ObjectID           string          `json:"object_id"`
 	SubmissionID       string          `json:"submission_id"`
 	EventID            string          `json:"event_id"`
+	PromptKind         string          `json:"prompt_kind"`
 	BlobPath           string          `json:"blob_path"`
 	CiphertextSHA256   string          `json:"ciphertext_sha256"`
 	PlaintextSizeBytes int64           `json:"plaintext_size_bytes"`
@@ -228,7 +230,7 @@ func (s *Server) handleFinalise(w http.ResponseWriter, r *http.Request, p auth.P
 		EventID: req.EventID, BlobPath: req.BlobPath, CiphertextSHA256: req.CiphertextSHA256,
 		PlaintextSizeBytes: req.PlaintextSizeBytes, WrappedDEK: wrapped, KEKID: req.KEKID,
 		KEKVersion: req.KEKVersion, RetentionClass: req.RetentionClass, ExpiresAt: req.ExpiresAt,
-		IndexUnits: units,
+		PromptKind: protocol.PromptKind(req.PromptKind), IndexUnits: units,
 	})
 	if err != nil {
 		s.writeVaultError(w, err)
