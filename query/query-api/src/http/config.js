@@ -27,6 +27,7 @@ export const ENV = Object.freeze({
   PG_PASSWORD: 'SAC_PG_PASSWORD',
   PG_SSLMODE: 'SAC_PG_SSLMODE',
   CONTENT_VAULT_URL: 'SAC_CONTENT_VAULT_URL',
+  CONTENT_SEARCH_SCOPE: 'SAC_CONTENT_SEARCH_SCOPE',
   APPINSIGHTS: 'SAC_APPINSIGHTS',
   STATEMENT_TIMEOUT_MS: 'SAC_PG_STATEMENT_TIMEOUT_MS',
   LOCK_TIMEOUT_MS: 'SAC_PG_LOCK_TIMEOUT_MS',
@@ -144,6 +145,9 @@ export function loadConfig(env = process.env) {
       configured: pgHost !== '' && pgDatabase !== '',
     }),
     contentVaultUrl: text(env, ENV.CONTENT_VAULT_URL),
+    // The search scope asked of the vault. The signed policy bundle names scopes and their search
+    // tiers; a scope the vault is not told about carries `disabled` (docs/06 §6.3).
+    contentSearchScope: text(env, ENV.CONTENT_SEARCH_SCOPE),
     appInsights: text(env, ENV.APPINSIGHTS),
     /**
      * Development-only principal trust.

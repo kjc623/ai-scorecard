@@ -70,6 +70,14 @@ export {
   suppressionBlock,
 } from './envelope.js';
 export {
+  REVIEW_STATES,
+  FINDING_REVIEW_ACTION,
+  validateReviewRequest,
+  FINDING_FOR_REVIEW_SQL,
+  UPSERT_REVIEW_SQL,
+  findingReviewAuditStatement,
+} from './review.js';
+export {
   classTotalStatement,
   coverageStatement,
   erasureEvidenceStatement,

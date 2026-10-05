@@ -148,7 +148,14 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 200,
-          "description": "Pseudonymous subject reference, stable per tenant. Resolved to a person only through ops.user_dim, which is populated from the customer's directory. The wire format never carries a name, email or directory object id."
+          "description": "Pseudonymous subject reference, stable per tenant. This remains the join key for policy scope, dedup, aggregates, k-suppression and audit. It is not the display name; see subject_name."
+        },
+
+        "subject_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "The human-readable account name of the person at the moment of submission, when the tenant's device_identity setting is 'clear'. Optional: a device that cannot attribute the observation to a person (a background process, a headless host) omits it, and the read falls back to user_ref. This field reverses the earlier pseudonymous-only wire position (docs/04 A8, docs/06 A6) at the owner's direction; it is carried only when the setting permits."
         },
 
         "tool_fingerprint": {

@@ -1,7 +1,8 @@
 # cmd/control-api — the binary
 
-`main.go` parses configuration, selects the certificate signer and the store, wires the two services
-and serves `/v1/enrol`, `/v1/token`, `/healthz` and `/readyz`.
+`main.go` parses configuration, selects the certificate signer and the store, wires the services and
+serves `/v1/enrol`, `/v1/token`, `/v1/content/grant`, `/internal/v1/content/finalise`, `/healthz` and
+`/readyz`.
 
 ## Flags and environment
 
@@ -22,8 +23,18 @@ so `--region ""` is a request rather than an absence.
 | Credential life | `--credential-ttl` | `SAC_CREDENTIAL_TTL` | default 2160h (90 days) |
 | Token life | — | `SAC_ENROLMENT_TOKEN_TTL` | operator-minting primitive only |
 | SANs | `--sans` | — | comma-separated DNS names / IPs |
+| Content vault | `--vault-url` | `SAC_VAULT_URL` | content-vault's internal base URL; empty disables content grants |
+| Upload signing key | — | `SAC_UPLOAD_SIGNING_KEY` | signs the upload URL and authenticates the finalise call; at least 16 bytes; a secret, so no flag |
 | Key Vault | — | `SAC_KEYVAULT_URI` | selects the KeyVaultSigner, which refuses clearly |
 | Telemetry | — | `SAC_APPINSIGHTS` | read, validated, never logged, not exported |
+
+## When content grants are on
+
+The grant path needs three things: a vault to mint the object key (`--vault-url`), a database to decide
+against (`--store sql`), and the upload signing key. With no vault URL it is disabled and says so at
+startup; with the in-memory store it is disabled with a warning; with a vault URL and the SQL store but
+no signing key the binary **refuses to start**, because an upload URL nobody can verify is an upload
+path with no decision behind it. Disabled, both content routes answer 503.
 
 ## Why there are two probes
 

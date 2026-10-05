@@ -304,6 +304,7 @@ func runSelftest(cfg Config, log *slog.Logger) error {
 		st.check(received == len(spooledBefore) && len(spooledBefore) > 0,
 			"the drain delivered all %d spooled observations (the ingest peer received %d)", len(spooledBefore), received)
 		st.check(svc.drainer.Status().Enrolled, "the drain enrolled against the ingest peer")
+		st.check(ingest.receivedHealth() >= 1, "the health channel POSTed a /v1/health heartbeat to the ingest peer")
 	}
 
 	// The health file, if a writer was configured, must contain the same shape.

@@ -49,6 +49,11 @@ has to be chosen before content is read, which is what the class-prior map exist
   unnormalised digest as the versioned `sac-canon-1` value.
 - A refused spool write is counted and carries the request, because a provider with nowhere to write
   must not drop silently.
+- At M3 the content goes to the `ContentStore` and never into the envelope. What is handed over is
+  the prompt text where the route's extractor identified the user-authored segment, and the body as
+  observed where it did not. With no store configured the observation is refused, because an M3
+  record whose content does not exist is a false claim; a store that fails to write is a degraded
+  outcome (`content_store_unwritable`) and the event still goes.
 
 ## Ordering
 
@@ -71,7 +76,8 @@ The suite is organised around the claims above, not around coverage: `TestPipeli
 
 - **No policy.** It resolves what the bundle says; it never decides what the bundle should say.
 - **No persistence or transport.** The spool is behind a narrow `Sink` interface that
-  `protocol.Store` satisfies, and nothing here dials, listens or writes a file.
+  `protocol.Store` satisfies, the M3 content store is behind `ContentStore` (one method, `Put`),
+  and nothing here dials, listens or writes a file.
 - **No platform code.** The system proxy, trust root and process enumeration are interfaces; the
   implementations, and their absence in this build, are the providers' problem.
 - **No restart, no backoff, no service management.** Those belong to the supervisor and the platform

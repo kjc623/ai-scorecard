@@ -33,13 +33,36 @@ if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tena
   process.exit(2);
 }
 
+// --ceiling raises (or lowers) the tenant's collection ceiling. The tenant row is otherwise left as
+// it is, because the lab's own smoke seeds it at m1. At m3 the tenant must name a KEK (a schema
+// constraint) and needs a content budget, without which every content grant is denied over_budget.
+const ceiling = valueOf('--ceiling', '');
+if (ceiling !== '' && !['m0', 'm1', 'm2', 'm3'].includes(ceiling)) {
+  console.error(`seed.mjs: --ceiling must be one of m0, m1, m2, m3 (got ${ceiling})`);
+  process.exit(2);
+}
+const CONTENT_BUDGET_BYTES_PER_DAY = 1024 * 1024 * 1024;
+
 const token = `sac1.${tenant}.${randomBytes(32).toString('base64url')}`;
 const hash = 'sha256:' + createHash('sha256').update(token).digest('hex');
+
+const raiseCeiling =
+  ceiling === 'm3'
+    ? `UPDATE ops.tenant
+   SET ceiling_mode = 'm3',
+       kek_id = coalesce(kek_id, 'lab-kek-' || tenant_id::text),
+       content_search = 'full_text',
+       content_budget_bytes_per_day = greatest(content_budget_bytes_per_day, ${CONTENT_BUDGET_BYTES_PER_DAY})
+ WHERE tenant_id = '${tenant}';`
+    : ceiling !== ''
+      ? `UPDATE ops.tenant SET ceiling_mode = '${ceiling}' WHERE tenant_id = '${tenant}';`
+      : '';
 
 const sql = `
 INSERT INTO ops.tenant (tenant_id, name, status, residency_region, key_custody, ceiling_mode)
   VALUES ('${tenant}', 'installer-dev', 'active', 'authlab-region', 'vendor', 'm1')
   ON CONFLICT (tenant_id) DO NOTHING;
+${raiseCeiling}
 INSERT INTO ops.enrolment_token (tenant_id, token_hash, expires_at)
   VALUES ('${tenant}', '${hash}', now() + interval '${Number(hours)} hours')
   ON CONFLICT DO NOTHING;

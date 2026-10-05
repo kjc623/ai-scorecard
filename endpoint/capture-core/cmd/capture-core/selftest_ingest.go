@@ -39,6 +39,7 @@ type fakeIngest struct {
 	tokens   int
 	batches  int
 	events   int
+	health   int
 }
 
 // startFakeIngest generates a throwaway CA + server leaf, writes the CA to a file, and serves the
@@ -64,6 +65,7 @@ func startFakeIngest(log *slog.Logger, work, deviceID, tenantID string) (*fakeIn
 	mux.HandleFunc("/v1/enrol", fi.handleEnrol)
 	mux.HandleFunc("/v1/token", fi.handleToken)
 	mux.HandleFunc("/v1/events", fi.handleEvents)
+	mux.HandleFunc("/v1/health", fi.handleHealth)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -103,6 +105,32 @@ func (f *fakeIngest) receivedBatches() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.batches
+}
+
+func (f *fakeIngest) receivedHealth() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.health
+}
+
+// handleHealth is the peer's POST /v1/health. It validates the body as the real endpoint would, so
+// the selftest asserts the heartbeat's shape rather than only its arrival.
+func (f *fakeIngest) handleHealth(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	var req protocol.HealthRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, "bad health body", http.StatusBadRequest)
+		return
+	}
+	if err := req.Validate(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	f.mu.Lock()
+	f.health++
+	f.mu.Unlock()
+	now := time.Now().UTC()
+	writeIngestJSON(w, http.StatusOK, protocol.HealthResponse{AckedAt: now, ServerTime: now, NextReportAfterS: 900})
 }
 
 func (f *fakeIngest) handleEnrol(w http.ResponseWriter, r *http.Request) {

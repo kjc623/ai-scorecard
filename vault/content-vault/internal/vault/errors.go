@@ -49,8 +49,6 @@ const (
 	DenyGrantEventMismatch        DenialReason = "grant_event_mismatch"
 	DenyGrantPrincipalMismatch    DenialReason = "grant_principal_mismatch"
 	DenyNoContentObject           DenialReason = "no_content_object"
-	DenyCaseReferenceRequired     DenialReason = "case_reference_required"
-	DenySecondApproverRequired    DenialReason = "second_approver_required"
 	DenySecondApproverNotDistinct DenialReason = "second_approver_not_distinct"
 	DenyAuditUnavailable          DenialReason = "audit_unavailable"
 	DenyTenantNotPermitted        DenialReason = "tenant_not_permitted"
@@ -70,8 +68,8 @@ const (
 var AllDenialReasons = []DenialReason{
 	DenyRetentionExpired, DenyNotPolicyRelevant, DenyOverBudget, DenyModeNotPermitted,
 	DenyGrantRequired, DenyGrantExpired, DenyGrantAlreadyUsed, DenyGrantEventMismatch,
-	DenyGrantPrincipalMismatch, DenyNoContentObject, DenyCaseReferenceRequired,
-	DenySecondApproverRequired, DenySecondApproverNotDistinct, DenyAuditUnavailable,
+	DenyGrantPrincipalMismatch, DenyNoContentObject,
+	DenySecondApproverNotDistinct, DenyAuditUnavailable,
 	DenyTenantNotPermitted, DenyRetrievalDisabled, DenyKeyCustodySearchConflict,
 	DenySearchTierRequiresM3, DenySearchDisabled, DenySearchTierNotInScope,
 	DenySearchUnitNotPermitted, DenyCustodyModeUnsupported, DenyIndexUnitNotPermitted,

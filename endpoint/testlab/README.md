@@ -90,6 +90,21 @@ constructions are **unit-tested** in `endpoint/capture-core/trust/` (the `Runner
 exact argv without touching a real store), but they are **not run here**: this lab exercises the
 Linux path for real, which is the one platform a Linux host can actually mutate the trust store of.
 
+**Windows is exercised elsewhere, for real.** The lab MSI ([installer/README.md](../../installer/README.md),
+`node installer/lab-msi.mjs`) installs the agent as a service on a Windows 11 host with
+`--trust-install`, `--trust-remove-on-stop` and `--cli-shim` set. There the device root was
+installed into the machine `Root` store when the service started, the machine environment carried
+the proxy and CA variables, the real Claude Code CLI was intercepted from a new process, and after
+an uninstall the root, the variables and the files were gone. That is one host and a manual run,
+not a repeatable lab like this one: nothing asserts it in CI. It also showed two things this lab
+cannot, because here every client reaches only the intercepted upstream: the Windows shim was
+never setting the machine environment (no command runner was wired), and a CA bundle holding only
+the device root breaks every out-of-scope destination for runtimes that read `SSL_CERT_FILE` or
+`REQUESTS_CA_BUNDLE`. Both are described in [capture-core/cli/README.md](../capture-core/cli/README.md).
+
+**macOS is still unit tests only.** Nothing has run `security add-trusted-cert`, the `/etc/zshenv`
+loader line, or the PKG.
+
 **Windows smoke-test caveat.** Windows `curl.exe` uses Schannel, which checks revocation and fails
 closed with `CRYPT_E_NO_REVOCATION_CHECK` for a locally trusted per-device CA that publishes no
 CRL/OCSP. Pass `curl.exe --ssl-no-revoke` (or set the equivalent revocation policy in the client).

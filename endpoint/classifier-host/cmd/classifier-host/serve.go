@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -47,7 +48,7 @@ func runServe(args []string) int {
 	}
 	srv := classify.NewServer(r.host)
 
-	ctx, stop := signal.NotifyContext(nil, os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	switch *transport {

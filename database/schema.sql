@@ -248,6 +248,14 @@ CREATE TABLE ops.tenant (
   content_search               text NOT NULL DEFAULT 'disabled'
                                  CHECK (content_search IN ('disabled','attachment_names','full_text')),
   content_budget_bytes_per_day bigint NOT NULL DEFAULT 0 CHECK (content_budget_bytes_per_day >= 0),
+  -- The device-identity setting (backlog/04-device-identity). 'clear' means the device sends, and
+  -- the read returns, the machine's hostname and the submitting account name; 'hashed' means the
+  -- device sends only the hostname hash and no account name. ON by default, at the owner's
+  -- direction: this deliberately reverses the earlier "pseudonymous on the wire" position, and the
+  -- reasoning, the opt-out and the ADR that supersedes docs/04 A8 and docs/06 A6 are recorded in
+  -- backlog/04-device-identity/DECISIONS.md and docs/adr.
+  device_identity              text NOT NULL DEFAULT 'clear'
+                                 CHECK (device_identity IN ('clear','hashed')),
   directory_source             text,
   -- The two enforcement gates, deliberately separate from the commercial lifecycle in `status`.
   --
@@ -335,6 +343,10 @@ COMMENT ON COLUMN ops.user_dim.directory_object_id_enc IS
 CREATE TABLE ops.device (
   tenant_id        uuid NOT NULL REFERENCES ops.tenant(tenant_id),
   device_id        uuid NOT NULL,
+  -- The clear machine name, present only while the tenant's device_identity is 'clear'; when it is
+  -- 'hashed' the device sends hostname_hash instead and this stays NULL. Both columns exist so the
+  -- setting is a real per-tenant choice rather than a one-way door (backlog/04-device-identity).
+  hostname         text,
   hostname_hash    text,
   -- The stable, privacy-preserving idempotency key for enrolment (brief C11, master doc A17).
   -- A hash rather than the raw hardware identifier, so re-enrolment can recognise a returning
@@ -343,8 +355,21 @@ CREATE TABLE ops.device (
   hardware_identity_hash text,
   os               text NOT NULL CHECK (os IN ('windows','macos','linux')),
   os_version       text,
+  -- Reported by the device at enrolment and on each heartbeat. agent_version is the reporting build;
+  -- collection_mode is the effective base mode the device resolved from the signed bundle for its
+  -- own scope (see DECISIONS.md D4). Both are current-state facts, overwritten on each report.
+  agent_version    text,
   mdm_id           text,
   managed_state    text NOT NULL DEFAULT 'unknown' CHECK (managed_state IN ('managed','unmanaged','unknown')),
+  -- Reported by the device, because there is no MDM resolver in this build. The meaning of each value
+  -- and the mapping to a managed/unmanaged/unknown vocabulary live in docs/06.
+  collection_mode  text CHECK (collection_mode IN ('m0','m1','m2','m3')),
+  -- The person most recently active on the device, maintained monotonically by the ingest acceptance
+  -- path as last_seen_at is. last_user_ref is the pseudonymous key; last_subject_name is the clear
+  -- account name from the same submission, present only while device_identity is 'clear'. Keeping
+  -- these on the device row lets the Devices read return a user without a per-read subject join.
+  last_user_ref     text,
+  last_subject_name text,
   residency_region text,
   enrolled_at      timestamptz NOT NULL DEFAULT now(),
   revoked_at       timestamptz,
@@ -353,6 +378,15 @@ CREATE TABLE ops.device (
   last_seen_at     timestamptz,
   PRIMARY KEY (tenant_id, device_id)
 );
+
+COMMENT ON COLUMN ops.device.hostname IS
+  'The clear machine name, when the tenant''s device_identity is ''clear''. NULL when the setting is ''hashed'', in which case hostname_hash carries the device-supplied hash and no clear name is stored. The reversal of the earlier hash-only design is recorded in backlog/04-device-identity/DECISIONS.md and the accompanying ADR.';
+
+COMMENT ON COLUMN ops.device.collection_mode IS
+  'The effective base collection mode the device resolved from the signed bundle for its own scope: the device override when the bundle names this device, otherwise the tenant default. Per-tool, per-population and per-class modes can be narrower and are not reflected here; this is the blanket coverage the device applies where no narrower scope does (DECISIONS.md D4).';
+
+COMMENT ON COLUMN ops.device.last_subject_name IS
+  'The clear account name from the device''s most recent submission, present only while device_identity is ''clear''. It exists so the Devices list can name the user as-of the last submission without a subject join on every read; it is the reason the Devices read is subject-level and audited (docs/04 section 5.2).';
 
 -- Brief C11: re-enrolment after a re-image is idempotent and returns the existing identity, so a
 -- hardware identity may appear at most once per tenant. A plain UNIQUE constraint is the wrong
@@ -366,6 +400,11 @@ CREATE UNIQUE INDEX device_hardware_identity_uniq
 
 COMMENT ON COLUMN ops.device.hardware_identity_hash IS
   'Per-device enrolment idempotency key (brief C11, A17): a hash of the hardware identity, so re-enrolment after a re-image returns the existing device_id rather than creating a second row. Uniqueness is per tenant and is enforced by the device_hardware_identity_uniq partial index, not by a UNIQUE constraint, because the column is nullable and PostgreSQL permits unlimited NULLs in a UNIQUE constraint, which would silently weaken the guard.';
+
+-- Brief §3.6 question 7 and docs/04 §3.11: the silent-device list and the coverage block both order
+-- or filter on last_seen_at, and both run tenant-scoped. Tenant-leading, so the policy predicate is
+-- served by the index rather than applied after a scan (C32).
+CREATE INDEX device_by_last_seen ON ops.device (tenant_id, last_seen_at);
 
 -- Brief C11: enrolment is one-shot and mutually authenticated, re-enrolment after re-imaging
 -- is idempotent and returns the existing identity. Brief §4.2: a revoked device is rejected
@@ -504,6 +543,11 @@ CREATE TABLE ops.collector_state (
 
 COMMENT ON COLUMN ops.collector_state.spool_dropped_total IS
   'Monotonic count of events dropped because the local spool was full. Brief C22 requires the counter to be reported, so that an undercount is visible to the operator. Silent data loss is the failure this column exists to prevent.';
+
+-- docs/04 §3.11: the current-degradation read (`ops.collector_state (tenant_id, state)`) is how the
+-- Devices and Degraded-collection screens find every collector reporting a state, without reading
+-- every device's rows.
+CREATE INDEX collector_state_by_state ON ops.collector_state (tenant_id, state);
 
 -- The signed policy bundle. Brief C10 requires signature verification failure to retain the
 -- previous bundle and never fall back to unsigned or empty; bundle_version is what makes
@@ -834,6 +878,11 @@ CREATE TABLE ops.coverage_snapshot (
 COMMENT ON COLUMN ops.coverage_snapshot.gap_reason IS
   'Why a collector that was expected did not report. Constrained to a closed vocabulary: "we do not know why we are blind here" must be recorded as `unknown`, not left blank, because blank and unknown look identical on a dashboard and mean different things.';
 
+-- docs/04 §3.11: the gap list reads only the rows where a collector was expected and did not report,
+-- so the partial index is the one that serves it. The primary key already serves a per-day read.
+CREATE INDEX coverage_snapshot_unobserved
+  ON ops.coverage_snapshot (tenant_id, snapshot_day) WHERE NOT observed;
+
 
 -- =====================================================================================
 -- 5b. Commercial state: what is owed, and on what basis
@@ -923,6 +972,11 @@ CREATE TABLE ingest.observation (
   event_id          uuid NOT NULL,
   device_id         uuid NOT NULL,
   user_ref          text NOT NULL,
+  -- The clear account name at submission time, present only while the tenant's device_identity is
+  -- 'clear' and only when the device could attribute the observation to a person. NULL is a real
+  -- answer (a background process, a headless host, a hashed tenant) and the read falls back to
+  -- user_ref; it is never a placeholder for "unknown person".
+  subject_name      text,
   tool_fingerprint  text NOT NULL,
   direction         text NOT NULL CHECK (direction IN ('egress','ingress','none')),
   kind              text NOT NULL CHECK (kind IN ('prompt','usage_rollup','model_detection')),
@@ -1079,6 +1133,11 @@ CREATE TABLE ingest.submission (
   kind               text NOT NULL CHECK (kind IN ('prompt','usage_rollup','model_detection')),
   device_id          uuid NOT NULL,
   user_ref           text NOT NULL,
+  -- The clear account name at submission time; see ingest.observation.subject_name. A submission
+  -- merged from several routes keeps the name of the winning (highest-fidelity) observation, which
+  -- is the same route whose content-bearing fields win, so the name and the content always describe
+  -- the same observation.
+  subject_name       text,
   tool_fingerprint   text NOT NULL,
   first_occurred_at  timestamptz NOT NULL,
   last_occurred_at   timestamptz NOT NULL,
@@ -1260,12 +1319,18 @@ CREATE INDEX search_text_expiry
 -- Findings: submissions that matched a rule. The key is the natural key rather than a
 -- surrogate id, so that rebuilding mart from ingest produces identical rows and therefore
 -- cannot orphan a review decision held in ops.finding_review.
+--
+-- A finding records the match, not the rule's attributes. class_code, severity and title are
+-- present-tense configuration read from ref.rule at query time (mart.v_finding below), so a
+-- customer editing a rule sees the change on every finding that names it. That follows the product
+-- decision recorded in backlog/03-findings/DECISIONS.md: the customer authors the rules and wants
+-- their current definition to govern. It is the opposite of mart.agg_tool_period's treatment of
+-- sanctioned state, deliberately: findings are a match log read by an analyst, aggregates are a
+-- reconstructed history.
 CREATE TABLE mart.finding (
   tenant_id        uuid NOT NULL REFERENCES ops.tenant(tenant_id),
   submission_id    uuid NOT NULL,
   rule_id          text NOT NULL REFERENCES ref.rule(rule_id),
-  class_code       text NOT NULL REFERENCES ref.data_class(class_code),
-  severity         text NOT NULL CHECK (severity IN ('low','medium','high','critical')),
   detected_at      timestamptz NOT NULL,
   decided_locally  boolean NOT NULL,
   collection_mode  text NOT NULL CHECK (collection_mode IN ('m0','m1','m2','m3')),
@@ -1274,7 +1339,7 @@ CREATE TABLE mart.finding (
 );
 
 COMMENT ON TABLE mart.finding IS
-  'Derived. Review state is NOT here -- it is in ops.finding_review, keyed by the same natural key, so that DROP and rebuild of this schema cannot destroy an analyst''s judgement.';
+  'Derived. Review state is NOT here -- it is in ops.finding_review, keyed by the same natural key, so that DROP and rebuild of this schema cannot destroy an analyst''s judgement. class_code, severity and title come from the current ref.rule row at read time, not from a snapshot.';
 
 -- Aggregates. Every one of these is written with INSERT .. ON CONFLICT DO UPDATE that REPLACES
 -- the bucket, never increments it: brief C28, "aggregates are upserts, never increments",
@@ -1396,8 +1461,14 @@ CREATE VIEW mart.v_device_liveness
 WITH (security_invoker = true) AS
 SELECT d.tenant_id,
        d.device_id,
+       d.hostname,
        d.os,
+       d.os_version,
+       d.agent_version,
        d.managed_state,
+       d.collection_mode,
+       d.last_user_ref,
+       d.last_subject_name,
        d.enrolled_at,
        d.revoked_at,
        d.last_seen_at,
@@ -1412,7 +1483,7 @@ SELECT d.tenant_id,
   FROM ops.device d;
 
 COMMENT ON VIEW mart.v_device_liveness IS
-  'Turns an absence of events into an explicit state. `stale` and `never_reported` are different facts and are not merged, and neither is `revoked`: a device that was deliberately removed is not a device that has gone quiet.';
+  'Turns an absence of events into an explicit state. `stale` and `never_reported` are different facts and are not merged, and neither is `revoked`: a device that was deliberately removed is not a device that has gone quiet. It also carries the device identity fields the Devices page shows (hostname, agent_version, collection_mode, managed_state) and the most-recent user (last_user_ref, last_subject_name), which makes a read of it subject-level: docs/04 §5.2 audits any query that returns a subject reference, so this view''s reads are audited as served.';
 
 -- Sanctioned state joined to aggregates, because the state is present-tense configuration
 -- rather than a property of the event (see the note on mart.agg_tool_period).
@@ -1438,15 +1509,19 @@ SELECT a.tenant_id,
 COMMENT ON VIEW mart.v_tool_usage IS
   'Brief §3.6 questions 1 and 2. LEFT JOIN, not INNER: a tool with no ops.tool row must still appear, reporting sanctioned_state as NULL, so that the read layer can render it as `unknown` rather than dropping it. Brief C8 forbids conflating unknown with prohibited, and silently omitting the row would be a third kind of wrong.';
 
--- Findings joined to review state, defaulting to open.
+-- Findings joined to the current rule definition and to review state (defaulting to open).
+--
+-- class_code and severity are read from ref.rule, not from mart.finding: they are present-tense
+-- configuration. A rule edit therefore shows on every finding that names it. That is the owner's
+-- decision (backlog/03-findings/DECISIONS.md); the title was always read from ref.rule this way.
 CREATE VIEW mart.v_finding
 WITH (security_invoker = true) AS
 SELECT f.tenant_id,
        f.submission_id,
        f.rule_id,
        r.title        AS rule_title,
-       f.class_code,
-       f.severity,
+       r.class_code,
+       r.severity,
        f.detected_at,
        f.decided_locally,
        f.collection_mode,
@@ -1466,7 +1541,7 @@ SELECT f.tenant_id,
    AND fr.rule_id = f.rule_id;
 
 COMMENT ON VIEW mart.v_finding IS
-  'Brief §3.6 question 5: filtered list with severity and review state. coalesce to open is a rendering of "nobody has reviewed this", not an assertion that it was reviewed and found unremarkable.';
+  'Brief §3.6 question 5: filtered list with severity and review state. class_code, severity and title are present-tense (ref.rule), so a rule edit shows on every finding that names it; the review coalesce to open is a rendering of "nobody has reviewed this", not an assertion that it was reviewed and found unremarkable.';
 
 -- What a human needs to see before deciding to close a gate.
 --
@@ -1756,6 +1831,7 @@ DECLARE
   v_is_exact      boolean;
   v_exact         text;
   v_weak          text;
+  v_subject_name  text;
 BEGIN
   SELECT f.fidelity_rank INTO v_fidelity FROM ref.route_fidelity f WHERE f.source = v_source;
   IF v_fidelity IS NULL THEN
@@ -1775,11 +1851,18 @@ BEGIN
                                       p_envelope->>'tool_fingerprint', v_kind, v_occurred,
                                       (p_envelope->>'size_bytes')::bigint);
 
+  -- The clear account name is stored only for a tenant whose identity setting is 'clear'. The
+  -- server is authoritative: a stale device that still sends a name to a 'hashed' tenant has it
+  -- dropped here, so the setting is a real storage control and not a display filter (ADR 0021).
+  SELECT CASE WHEN t.device_identity = 'clear' THEN nullif(p_envelope->>'subject_name', '') END
+    INTO v_subject_name
+    FROM ops.tenant t WHERE t.tenant_id = v_tenant;
+
   -- Step 1: record the observation. ON CONFLICT DO NOTHING is what makes a retry free
   -- (brief C12: idempotency enforced by the store, not by a check in code). The primary key
   -- is (tenant_id, event_id), so a replayed batch inserts nothing and reports duplicates.
   INSERT INTO ingest.observation (
-    tenant_id, event_id, device_id, user_ref, tool_fingerprint, direction, kind,
+    tenant_id, event_id, device_id, user_ref, subject_name, tool_fingerprint, direction, kind,
     occurred_at, received_at, monotonic_offset_ms, source, confidence, collection_mode,
     size_bytes, content_digest, labels, classifier_version, content_excerpt, policy_decision,
     window_start, window_end, submission_count, bytes_total, detection_basis,
@@ -1790,6 +1873,7 @@ BEGIN
     v_event_id,
     (p_envelope->>'device_id')::uuid,
     p_envelope->>'user_ref',
+    v_subject_name,
     p_envelope->>'tool_fingerprint',
     p_envelope->>'direction',
     v_kind,
@@ -1833,6 +1917,16 @@ BEGIN
     RETURN QUERY SELECT 'duplicate'::text, v_sub_id;
     RETURN;
   END IF;
+
+  -- The most recent user, for the Devices read. Guarded like last_seen_at so an out-of-order batch
+  -- (a spool flush, a retry) cannot move the device's user backwards; the clear name is gated by the
+  -- tenant setting as v_subject_name above already is (ADR 0021).
+  UPDATE ops.device
+     SET last_user_ref     = p_envelope->>'user_ref',
+         last_subject_name = v_subject_name
+   WHERE tenant_id = v_tenant
+     AND device_id = (p_envelope->>'device_id')::uuid
+     AND (last_seen_at IS NULL OR last_seen_at <= p_received_at);
 
   -- Step 2: fold the observation into the logical submission. Three cases, in order:
   --
@@ -1906,6 +2000,13 @@ BEGIN
                                      ELSE coalesce(s.content_digest,
                                                    CASE WHEN v_is_exact THEN p_envelope->>'content_digest' END) END,
            labels             = CASE WHEN v_fidelity < s.winning_fidelity THEN p_envelope->'labels' ELSE s.labels END,
+           -- The name travels with the winning observation like the other per-observation fields,
+           -- except that a route which could not attribute a person does not erase a name an earlier
+           -- route did supply: coalesce keeps the first known name. A name is not content, so it is
+           -- safe to combine across two observations of the same submission, which is one person.
+           subject_name       = CASE WHEN v_fidelity < s.winning_fidelity
+                                     THEN v_subject_name
+                                     ELSE coalesce(s.subject_name, v_subject_name) END,
            classifier_version = CASE WHEN v_fidelity < s.winning_fidelity THEN p_envelope->>'classifier_version' ELSE s.classifier_version END,
            confidence         = CASE WHEN v_fidelity < s.winning_fidelity THEN p_envelope->>'confidence' ELSE s.confidence END,
            -- A row that still has no exact key is the honest lower bound on that count, so it
@@ -1926,8 +2027,8 @@ BEGIN
   END IF;
 
   INSERT INTO ingest.submission (
-    tenant_id, submission_id, dedup_key, dedup_weak_key, kind, device_id, user_ref, tool_fingerprint,
-    first_occurred_at, last_occurred_at, received_at, collection_mode, size_bytes,
+    tenant_id, submission_id, dedup_key, dedup_weak_key, kind, device_id, user_ref, subject_name,
+    tool_fingerprint, first_occurred_at, last_occurred_at, received_at, collection_mode, size_bytes,
     content_digest, labels, classifier_version, confidence, policy_action, policy_rule_id,
     decided_locally, winning_source, winning_fidelity, observed_routes, observation_count,
     merge_confidence, expires_at
@@ -1940,6 +2041,7 @@ BEGIN
     v_kind,
     (p_envelope->>'device_id')::uuid,
     p_envelope->>'user_ref',
+    v_subject_name,
     p_envelope->>'tool_fingerprint',
     v_occurred, v_occurred, p_received_at, v_mode,
     (p_envelope->>'size_bytes')::bigint,
@@ -2034,6 +2136,14 @@ CREATE POLICY tenant_isolation ON ops.tenant
 -- ingest-api
 GRANT SELECT ON ref.data_class, ref.route_fidelity, ref.collector, ref.classifier_release, ref.retention_class TO sac_ingest;
 GRANT SELECT ON ops.tenant, ops.device, ops.device_credential, ops.retention_policy TO sac_ingest;
+-- Accepting a batch is the device's activity, so ingest-api stamps last_seen_at in the same
+-- transaction that accepts it (docs/04 §3.7, docs/01-collectors.md §14.5). The grant is
+-- column-level and one-way: an activity stamp must not become a way for the write path to change a
+-- device's identity, os or revocation. last_user_ref and last_subject_name are the same fact for the
+-- person (the most recent submission's user), so the Devices read can name the user without a
+-- subject join; they are still identity columns in the sense that matters -- the write path can set
+-- these three timestamps-of-activity fields and nothing else about the device.
+GRANT UPDATE (last_seen_at, last_user_ref, last_subject_name) ON ops.device TO sac_ingest;
 -- The usage ledger is incremented by the component that accepts the events, in the same
 -- transaction, because a billing counter that could commit without its data -- or data without
 -- its counter -- would be wrong in a way nobody notices until an invoice is disputed.
@@ -2191,6 +2301,22 @@ INSERT INTO ref.classifier_release (release_version, ruleset_version, model_vers
   ('2026.01.0-shadow', 'rules-2026.01.0', 'model-2026.01.0', 'sha256:0000000000000000000000000000000000000000000000000000000000000000', 'shadow',
    'Seed row. Every new classifier release starts in shadow: labels are recorded but nothing is blocked, which is how brief §6''s "evaluated in a non-enforcing mode before they take effect" is satisfied. Replace with the real first release before any tenant is onboarded.');
 
+-- Rule metadata for the rules the device classifier publishes today (endpoint/classifier-host's
+-- dev ruleset and the lab device's rules file). Only a label naming one of these raises a finding:
+-- mart.finding.rule_id is a foreign key here, and inventing a rule the classifier never published
+-- would assert a detection that did not happen. The wording and severities match the dashboard's
+-- own sample vocabulary (query/dashboard/src/explore-stub.js), so the seeded catalogue and the
+-- preview agree. A tenant-specific ruleset is a later task (the policy-bundle writer).
+INSERT INTO ref.rule (rule_id, class_code, detector_kind, severity, title, description, introduced_in) VALUES
+  ('PCI_PAN_PATTERN',       'payment_card',     'deterministic', 'critical', 'Payment card number in prompt',   'A card-number-shaped run of digits whose Luhn checksum holds and which is not preceded by "test".',       '2026.01.0-shadow'),
+  ('PAYMENT_CARD_PAN',      'payment_card',     'deterministic', 'critical', 'Payment card number in prompt',   'Card-number pattern validated by Luhn, as published by the endpoint classifier. Alias of the rule above under its wire id.', '2026.01.0-shadow'),
+  ('SECRET_API_KEY',        'credential',       'deterministic', 'critical', 'API key or access token',         'A credential-shaped string: private-key headers and provider key prefixes.',                             '2026.01.0-shadow'),
+  ('GOV_ID_NUMBER',         'government_id',    'deterministic', 'high',     'Government identifier',           'A national identifier or tax number matching a jurisdiction rule set.',                                   '2026.01.0-shadow'),
+  ('PII_CUSTOMER_RECORD',   'customer_pii',     'deterministic', 'high',     'Customer personal data',          'Names, addresses or contact details identifying a customer.',                                             '2026.01.0-shadow'),
+  ('SRC_INTERNAL_REPO',     'source_code',      'deterministic', 'high',     'Proprietary source code',         'Source declarations or repository detail indicating proprietary implementation.',                          '2026.01.0-shadow'),
+  ('PHI_CLINICAL_TERM',     'health',           'deterministic', 'high',     'Health information',              'Clinical vocabulary and anything suggesting a medical condition.',                                        '2026.01.0-shadow'),
+  ('LEGAL_CONTRACT_TERMS',  'legal_commercial', 'deterministic', 'medium',   'Contract or commercial terms',    'Contractual or commercially sensitive language.',                                                         '2026.01.0-shadow');
+
 
 -- =====================================================================================
 -- 12. Closing notes
@@ -2212,9 +2338,9 @@ INSERT INTO ref.classifier_release (release_version, ruleset_version, model_vers
 --     choice per tenant and enforcing the incompatible combination as unrepresentable, rather
 --     than by refusing the capability to everyone.
 --
---   * No aggregate refresh logic here. The upsert statements live in the aggregator job and
---     are specified in docs/04-dashboard-and-query.md §4. This file provides the primary keys
---     they conflict on, which is the part that has to be stable.
+--   * No aggregate refresh logic here. The upsert statements live in the aggregator job
+--     (aggregation/aggregator) and are specified in docs/04-dashboard-and-query.md §4. This file
+--     provides the primary keys they conflict on, which is the part that has to be stable.
 --
 --   * No deletion of content objects from Blob Storage. The database records the intent and
 --     the receipt; the reconciler performs it. Brief C34's second independent mechanism is a

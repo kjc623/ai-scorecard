@@ -115,6 +115,10 @@ func parseFlags(args []string) (Config, runMode, error) {
 	fs.StringVar(&cfg.TenantID, "tenant-id", cfg.TenantID, "tenant id stamped on every envelope (from enrolment, §13.1)")
 	fs.StringVar(&cfg.DeviceID, "device-id", cfg.DeviceID, "device id stamped on every envelope")
 	fs.StringVar(&cfg.UserRef, "user-ref", cfg.UserRef, "pseudonymous subject reference (never a name or e-mail)")
+	fs.StringVar(&cfg.Hostname, "hostname", cfg.Hostname, "clear machine name reported to the control plane; empty resolves the OS hostname (ADR 0021)")
+	fs.StringVar(&cfg.SubjectName, "subject-name", cfg.SubjectName, "clear account name stamped on each submission; empty resolves the OS user (ADR 0021)")
+	fs.StringVar(&cfg.ManagedState, "managed-state", cfg.ManagedState, "whether the device is under MDM: managed | unmanaged | unknown (default unknown; no MDM resolver in this build)")
+	fs.StringVar(&cfg.DeviceIdentity, "device-identity", cfg.DeviceIdentity, "tenant identity setting to act on: clear | hashed (default clear; the server restates and may change it)")
 	fs.StringVar(&cfg.Population, "population", cfg.Population, "user population for scope resolution (may be empty)")
 	fs.StringVar(&cfg.Retention, "retention", cfg.Retention, "device-side retention for spooled observations (e.g. 720h)")
 
@@ -126,6 +130,10 @@ func parseFlags(args []string) (Config, runMode, error) {
 	// Classifier host (§3.4).
 	fs.StringVar(&cfg.ClassifierAddress, "classifier-address", cfg.ClassifierAddress, "classifier host address as transport:path, e.g. unix:/run/sac/classifier.sock or pipe:\\\\.\\pipe\\sac-classifier; empty means rules-only")
 	fs.DurationVar(&cfg.ClassifierBudget, "classifier-budget", cfg.ClassifierBudget, "budget for one classification")
+	fs.StringVar(&cfg.ClassifierRelease, "classifier-release", cfg.ClassifierRelease, "signed classifier release directory; with no --classifier-address the agent runs the classifier-host beside it as a child on stdio")
+	fs.StringVar(&cfg.ContentDir, "content-dir", cfg.ContentDir, "M3 local content store directory; empty means the device holds no content and refuses M3 observations")
+	fs.StringVar(&cfg.ContentKey, "content-key", cfg.ContentKey, "key file the content store is sealed under; must be OUTSIDE --content-dir")
+	fs.StringVar(&cfg.ClassifierPubkey, "classifier-pubkey", cfg.ClassifierPubkey, "hex-encoded Ed25519 public key the classifier release must verify under")
 
 	// Providers.
 	fs.BoolVar(&cfg.EnableTLS, "proxy-tls", cfg.EnableTLS, "run proxy.tls (the egress interceptor)")

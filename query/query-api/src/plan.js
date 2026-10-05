@@ -76,6 +76,7 @@ const SIDE_READ_IDS = Object.freeze([
   'org_coverage',
   'submission_detail',
   'erasure_evidence',
+  'device_status',
 ]);
 
 /**
@@ -134,7 +135,7 @@ export function plan(request, ctx = {}) {
   if (watermark) {
     sideReads.push(freshnessStatement(watermark, compiled.meta.native_bucket_size ?? 'day'));
   }
-  sideReads.push(coverageStatement(query.window ?? { from: dayAgoIso(now), to: now.toISOString() }));
+  sideReads.push(coverageStatement(query.window ?? currentDayWindow(now)));
   if (source.time && query.window) {
     sideReads.push(newerEventsStatement(source, resolvedCursor.snapshotUpper));
   }
@@ -215,7 +216,7 @@ function planSingle(expansion, ctx, now) {
     detail: Object.freeze({ source: 'ingest.submission', kind: 'single_record', template: expansion.name }),
   });
   const sideReads = [
-    coverageStatement({ from: dayAgoIso(now), to: now.toISOString() }),
+    coverageStatement(currentDayWindow(now)),
   ];
   return Object.freeze({
     ok: true,
@@ -636,8 +637,16 @@ function toDate(value) {
   return value instanceof Date ? value : new Date(value);
 }
 
-function dayAgoIso(now) {
-  return new Date(now.getTime() - 86_400_000).toISOString();
+/**
+ * The coverage window a read with no window of its own uses: the current UTC day, as a half-open
+ * [day start, next day start) date range. Coverage is a per-day fact and the device read is
+ * current-state, so the question it answers is "what is happening today", not "what happened
+ * yesterday". A date range whose end is the next midnight keeps the end exclusive and the query
+ * servable by the primary key.
+ */
+function currentDayWindow(now) {
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  return { from: start.toISOString(), to: new Date(start.getTime() + 86_400_000).toISOString() };
 }
 
 export { submissionDetailStatement, erasureEvidenceStatement };

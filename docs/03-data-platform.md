@@ -216,6 +216,25 @@ the event list, with aggregates lagging by up to one cadence and always reportin
 The brief's target is met by the direct `ingest.submission` read path, not by the aggregates, and the
 freshness field is what keeps the two honest.
 
+**As built:** the job is `aggregation/aggregator`, a Go module run as its own container in
+`localdev/authlab.compose.yaml` on a 30-second interval (5 minutes remains the default outside the
+lab). It recomputes both the hour and the day bucket every pass, with the lookbacks above, and writes
+one `ops.aggregate_watermark` row per `(tenant, aggregate, bucket_size)` after each statement. It
+enumerates `ops.tenant` (`status <> 'closed'`), sets `app.tenant_id` per tenant, and commits one
+tenant's buckets in one transaction. Two deviations worth stating: the aggregate statements select
+prompts by the denormalised `ingest.submission.kind = 'prompt'` rather than by a semi-join on
+`ingest.observation`, because `kind` was added for exactly that purpose (§4.6); and
+`mart.agg_class_period.severity` falls back to `ref.data_class.default_severity` when a label names
+no `ref.rule` row, because a label need not carry a rule and dropping such a label would report no
+sensitive data where the classifier found some. The same transaction also writes the fleet coverage
+fact, `ops.coverage_snapshot`: one row per enrolled (non-revoked) device per `ref.collector` per day
+in a trailing window (default 7 days), with `expected` always true and `observed` true when that
+collector reported `healthy` or `degraded` on that day. `observed` is monotonic within a day, because
+`ops.collector_state` is current state rather than history and a later run must not erase a past day's
+answer (docs/04 §11.3). `mart.agg_device_period` is still deliberately not written here: it is a
+per-collector per-day rollup of `ops.collector_state`, and the Devices answer is served from
+`mart.v_device_liveness`; writing it is left to a later device-liveness change.
+
 ---
 
 ## 6. Retention: two independent mechanisms, reconciled
@@ -357,8 +376,9 @@ This distinction is a product promise and must be stated precisely:
   undone by restoring a backup would be worthless.
 - **Local-only content on a device that is wiped** — gone. `ingest.submission.content_state` says
   `local_only`, which is the system correctly reporting that it never held the content. **As built:**
-  nothing sets `local_only` — every submission is inserted as `not_captured` and no service writes the
-  column — so such a row reads `not_captured` today.
+  a submission is inserted as `not_captured` and becomes `local_only` only when its device asks
+  `control-api` for a content grant (and `uploaded` when the upload is finalised), so a device wiped
+  before it ever asked leaves a row that reads `not_captured`.
 
 ### 9.2 The restore gate
 
@@ -485,6 +505,13 @@ would be large for no benefit.
 
 **`content-vault` does both.** It writes index rows when it stores content, and it executes searches when
 `query-api` asks. `query-api` is **not** granted `SELECT` on this table.
+
+**As built:** both halves run in the local auth lab. When the vault finalises an object for a `full_text`
+tenant it reads the stored ciphertext back, opens it with the object key and writes one `prompt_body`
+row (bounded to 200,000 characters); a failure to index is reported as a refused unit and does not fail
+the finalise. `attachment_name` rows are not written, because the device does not upload attachments.
+`query-api` forwards `POST /v1/content-search` to the vault. Content uploaded before a tenant was raised
+to `full_text` is not indexed retroactively.
 
 That is deliberate. The alternative — letting the query tier read an index of plaintext prompt content —
 would quietly retire the invariant that exactly one component can read content, which is the property the

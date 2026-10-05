@@ -225,7 +225,8 @@ func (p *Provider) Start(ctx context.Context) error {
 	// 1. The CA bundle, mode 0600 (the only file that needs to be readable by the runtime
 	// but not world-writable; it holds public certificates, but the mode is the contract).
 	if len(p.cfg.RootCAPEM) > 0 {
-		if err := writeFile(p.paths.cabundle, p.cfg.RootCAPEM, 0o600); err != nil {
+		bundle := append(append([]byte(nil), p.cfg.RootCAPEM...), systemRootsPEM()...)
+		if err := writeFile(p.paths.cabundle, bundle, 0o600); err != nil {
 			p.counters.Add(protocol.CounterErrors)
 			p.logf("cli: writing CA bundle %s: %v", p.paths.cabundle, err)
 			return fmt.Errorf("cli: writing CA bundle: %w", err)

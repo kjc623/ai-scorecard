@@ -56,6 +56,7 @@ type options struct {
 	clientCA      string
 	controlURL    string
 	ingestURL     string
+	contentURL    string
 	shutdownGrace time.Duration
 }
 
@@ -78,6 +79,8 @@ func run() error {
 	flag.StringVar(&o.clientCA, "client-ca", "", "CA chain sent in the TLS certificate request and forwarded as the trust hint (PEM)")
 	flag.StringVar(&o.controlURL, "control-url", "http://control-api:8080", "control-api base URL")
 	flag.StringVar(&o.ingestURL, "ingest-url", "http://ingest-api:8080", "ingest-api base URL")
+	flag.StringVar(&o.contentURL, "content-url", "",
+		"ciphertext storage base URL; a granted content upload is forwarded to it. Empty means the lab has no content path and an upload is a 404")
 	flag.DurationVar(&o.shutdownGrace, "shutdown-grace", 10*time.Second, "graceful shutdown grace period")
 	flag.Parse()
 
@@ -123,6 +126,17 @@ func run() error {
 	proxies := map[string]*httputil.ReverseProxy{
 		control.String(): newProxy(control),
 		ingest.String():  newProxy(ingest),
+	}
+	if o.contentURL != "" {
+		// In Azure a granted device writes straight to Blob storage (docs/02 §10.3); the lab has no
+		// storage account, so the upload URL control-api issues points back here and the edge
+		// forwards it to the storage stand-in. The URL's signature is the credential, checked there.
+		contentStore, err := url.Parse(o.contentURL)
+		if err != nil {
+			return fmt.Errorf("parse --content-url: %w", err)
+		}
+		routes = append(routes, route{prefix: "/v1/content/upload", target: contentStore})
+		proxies[contentStore.String()] = newProxy(contentStore)
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))

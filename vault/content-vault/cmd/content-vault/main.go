@@ -18,9 +18,11 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -162,10 +164,27 @@ func runServe(args []string) int {
 		return fatalf("unknown --key-backend %q (want local or kms)", *backend)
 	}
 
-	if *storeKind != "memory" {
-		if *storeKind != "sql" {
-			return fatalf("unknown --store %q (want memory or sql)", *storeKind)
+	var st store.Store = store.NewMemory()
+	if *storeKind != "memory" && *storeKind != "sql" {
+		return fatalf("unknown --store %q (want memory or sql)", *storeKind)
+	}
+	if *storeKind == "sql" && defaultDriverName != "" {
+		// A build carrying a driver (the sac_sql_driver tag) serves from PostgreSQL.
+		databaseDSN := *dsn
+		if databaseDSN == "" {
+			databaseDSN = postgresDSN(*pgHost, *pgPort, *pgDatabase, *role)
 		}
+		if databaseDSN == "" {
+			return fatalf("--store sql needs --dsn, or %s to build one from", EnvPGHost)
+		}
+		db, err := sql.Open(defaultDriverName, databaseDSN)
+		if err != nil {
+			return fatalf("opening the database with driver %q: %v", defaultDriverName, err)
+		}
+		db.SetMaxOpenConns(16)
+		db.SetConnMaxIdleTime(5 * time.Minute)
+		st = store.NewSQL(db)
+	} else if *storeKind == "sql" {
 		// The SQL store needs a registered database/sql driver, and no PostgreSQL driver is
 		// fetchable offline (ADR 0016). Saying which driver, which variables and which evidence
 		// exists is the difference between a refusal and a dead end; the one thing this must never
@@ -186,15 +205,34 @@ func runServe(args []string) int {
 	}
 
 	svc, err := vault.New(vault.Options{
-		Store:      store.NewMemory(),
+		Store:      st,
 		Keys:       kw,
 		Logger:     logger,
 		ScopeTiers: scopeTiersFromEnv(),
+		FetchBlob:  blobFetcher(*blobEndpoint),
 	})
 	if err != nil {
 		return fatalf("%v", err)
 	}
 	h := httpapi.New(svc, auth.NewHeaderAuthenticator("query-api", "control-api", "ops"), logger)
+
+	// CONTENT_VAULT_REINDEX_TENANTS names tenants whose prompt index is rebuilt from their stored
+	// objects at start, after a change to what is indexed. It runs beside serving and is safe to
+	// repeat: each row is rewritten from the object it belongs to.
+	for _, tenantID := range strings.Split(os.Getenv("CONTENT_VAULT_REINDEX_TENANTS"), ",") {
+		tenantID = strings.TrimSpace(tenantID)
+		if tenantID == "" {
+			continue
+		}
+		go func() {
+			indexed, cleared, failed, err := svc.ReindexTenant(context.Background(), tenantID)
+			if err != nil {
+				logger.Warn("content-vault: reindex did not run", "tenant", tenantID, "error", err)
+				return
+			}
+			logger.Info("content-vault: reindexed", "tenant", tenantID, "indexed", indexed, "cleared", cleared, "failed", failed)
+		}()
+	}
 
 	if err := checkBindAddress(*addr, acknowledged); err != nil {
 		return fatalf("%v", err)
@@ -216,15 +254,44 @@ func runServe(args []string) int {
 		"blob_ciphertext_endpoint_configured", *blobEndpoint != "",
 		"appinsights_configured", appInsights != "")
 	if *blobEndpoint != "" {
-		// Stated rather than implied: the deployment passes this endpoint and this build performs no
-		// blob I/O. It is validated at boot so a typo fails now, and reported so nobody assumes it is
-		// in use.
-		slog.Warn("SAC_BLOB_CIPHERTEXT_ENDPOINT is set but this build performs no blob I/O; the endpoint is validated and recorded, not used")
+		// Stated rather than implied: an approved redemption reads the object from this endpoint
+		// with a plain GET and opens it here. That is the offline stand-in for §11's short-lived
+		// retrieval URL, and it presents no storage credential: it works against a store on the
+		// internal network, not against a storage account.
+		slog.Warn("SAC_BLOB_CIPHERTEXT_ENDPOINT is set: approved redemptions read the stored object from it with an unauthenticated GET and return the opened content (development stand-in for the retrieval URL)")
 	}
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fatalf("serving: %v", err)
 	}
 	return 0
+}
+
+// defaultDriverName is the database/sql driver this binary carries. The default build carries none
+// and leaves it empty; the sac_sql_driver build sets it (driver_tagged.go).
+var defaultDriverName = ""
+
+// maxBlobBytes bounds one stored object read for a redemption.
+const maxBlobBytes = 64<<20 + 1024
+
+// blobFetcher reads a stored object from the ciphertext endpoint. An empty endpoint means no blob
+// store is configured, and a redemption then reports the authorisation without bytes.
+func blobFetcher(endpoint string) func(string) ([]byte, error) {
+	if endpoint == "" {
+		return nil
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	base := strings.TrimRight(endpoint, "/")
+	return func(blobPath string) ([]byte, error) {
+		resp, err := client.Get(base + "/" + strings.TrimLeft(blobPath, "/"))
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("blob store answered %d for %s", resp.StatusCode, blobPath)
+		}
+		return io.ReadAll(io.LimitReader(resp.Body, maxBlobBytes))
+	}
 }
 
 // checkBindAddress refuses a non-loopback bind without an explicit acknowledgement.

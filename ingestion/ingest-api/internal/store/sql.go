@@ -108,6 +108,16 @@ VALUES ($1::uuid, $2::uuid, $3::timestamptz, $4::text, $5::jsonb, $6::jsonb, $7:
         $3::timestamptz + make_interval(days => COALESCE(
             (SELECT rc.default_ttl_days FROM ref.retention_class rc
               WHERE rc.retention_class = 'quarantine'), 30)))`
+
+	// SQLTouchDevice stamps the device's last activity in the same transaction that accepts its
+	// batch. It is monotonic: a batch that arrives out of order (a spool flush, a retry) must not
+	// move last_seen_at backwards and make a live device look quiet. This is the device-activity
+	// half of docs/04 §3.7; per-collector state is the health channel's job (docs/02 §5.4), and
+	// both facts feed mart.v_device_liveness.
+	SQLTouchDevice = `UPDATE ops.device
+   SET last_seen_at = $3::timestamptz
+ WHERE tenant_id = $1::uuid AND device_id = $2::uuid
+   AND (last_seen_at IS NULL OR last_seen_at < $3::timestamptz)`
 )
 
 // Statement pairs a statement with what it is for, so the set can be listed and executed by name.
@@ -128,6 +138,7 @@ var Statements = []Statement{
 	{Name: "first_received_at", Purpose: "§5.3 duplicate reports the first receipt", SQL: SQLFirstReceivedAt},
 	{Name: "submission_winner", Purpose: "§4.4 read back the winning route for won_fields", SQL: SQLSubmissionWinner},
 	{Name: "insert_rejected", Purpose: "§7 quarantine a validation failure in the same transaction", SQL: SQLInsertRejected},
+	{Name: "touch_device", Purpose: "docs/04 §3.7 stamp device activity when a batch is accepted", SQL: SQLTouchDevice},
 }
 
 // SQLStore is the database/sql implementation.
@@ -336,6 +347,15 @@ func (s *SQLStore) WriteBatch(ctx context.Context, w BatchWrite) (BatchResult, e
 			if _, err := tx.ExecContext(ctx, SQLInsertRejected,
 				w.TenantID, device, w.ReceivedAt, code, string(detail), string(presence), string(redacted)); err != nil {
 				return fmt.Errorf("store: insert rejected (%s): %w", code, err)
+			}
+		}
+
+		// 4. Device activity (§3.7). The device reaching the write path is what makes it alive; the
+		//    stamp is in the same transaction as the events, so a rolled-back batch does not leave a
+		//    device looking seen when nothing was accepted.
+		if w.DeviceID != "" {
+			if _, err := tx.ExecContext(ctx, SQLTouchDevice, w.TenantID, w.DeviceID, w.ReceivedAt); err != nil {
+				return fmt.Errorf("store: touch device last_seen_at: %w", err)
 			}
 		}
 

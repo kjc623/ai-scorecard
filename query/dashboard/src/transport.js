@@ -9,14 +9,14 @@
 //   * `httpTransport({fetchImpl, url})` — a real POST of the same body to `/v1/query`.
 //
 // `test/section14.test.mjs` asserts that no other file in this package calls `fetch`, builds a
-// URL, or names any endpoint other than QUERY_ENDPOINT: the browser has exactly one way to reach
-// data, and it is a closed query document.
+// URL, or names any endpoint other than the three in vocab.js: the browser reaches data through a
+// closed query document, and reaches content only through the two reads content-vault decides.
 //
 // Pagination lives here too, because it is a property of the transport rather than of a screen:
 // a page is only finished when `next_cursor` is null. A short page is NOT the end — rows deleted
 // underneath an iteration make a page shorter, and stopping on that would truncate the answer.
 
-import { QUERY_ENDPOINT, RESULT_STATES } from './vocab.js';
+import { QUERY_ENDPOINT, CONTENT_SEARCH_ENDPOINT, CONTENT_RETRIEVAL_ENDPOINT, RESULT_STATES } from './vocab.js';
 
 /** An error the transport produced, carrying the same shape as an API refusal. */
 export class TransportError extends Error {
@@ -142,6 +142,59 @@ export function httpTransport({ url = QUERY_ENDPOINT, fetchImpl, headers } = {})
       // renderer handles "the answer is not a number" and "the request failed" the same way.
       return envelope;
     },
+  });
+}
+
+/**
+ * The content reads: prompt-text search and approved retrieval.
+ *
+ * They are not queries. A query document cannot name content, and these two requests go to their
+ * own endpoints, which query-api forwards to content-vault. The answer is the vault's: either
+ * `state: "available"` with the result, a state that says the content is gone, or a refusal with
+ * the vault's own reason. This wrapper makes every outcome one of those three shapes, so a screen
+ * never has to tell a network failure from a refusal by catching an exception.
+ *
+ * @param {object} input
+ * @param {{search: (body: object) => Promise<object>, retrieve: (body: object) => Promise<object>}} input.transport
+ */
+export function createContentApi({ transport }) {
+  if (!transport || typeof transport.search !== 'function' || typeof transport.retrieve !== 'function') {
+    throw new TypeError('createContentApi needs a transport with search(body) and retrieve(body).');
+  }
+  async function ask(send, body) {
+    try {
+      const answer = await send(body);
+      if (answer && typeof answer === 'object' && typeof answer.state === 'string') return answer;
+      return { state: 'refused', error: { code: 'malformed_answer', message: 'The response was not a content answer; refusing to render it as one.' } };
+    } catch (error) {
+      return { state: 'refused', error: { code: 'transport_unavailable', message: String(error?.message ?? error) } };
+    }
+  }
+  return Object.freeze({
+    search: (body) => ask(transport.search, body),
+    retrieve: (body) => ask(transport.retrieve, body),
+  });
+}
+
+/** The real content transport: one POST per read, to the page's own origin. */
+export function httpContentTransport({ fetchImpl } = {}) {
+  const doFetch = fetchImpl ?? (typeof fetch === 'function' ? fetch.bind(globalThis) : null);
+  if (!doFetch) {
+    throw new TransportError({ result_state: 'busy', error: { code: 'no_fetch', message: 'This environment has no fetch implementation.' } }, { network: true });
+  }
+  const post = async (url, body) => {
+    const response = await doFetch(url, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    // A refusal is a body too, and it carries the vault's reason.
+    return response.json();
+  };
+  return Object.freeze({
+    search: (body) => post(CONTENT_SEARCH_ENDPOINT, body),
+    retrieve: (body) => post(CONTENT_RETRIEVAL_ENDPOINT, body),
   });
 }
 

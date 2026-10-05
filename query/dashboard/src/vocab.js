@@ -12,8 +12,17 @@
 export const QUERY_VERSION = '1';
 export const API_VERSION = '1';
 
-/** The single endpoint this client may call. `test/section14.test.mjs` asserts it is the only one. */
+/**
+ * The endpoints this client may call. `test/section14.test.mjs` asserts there are no others.
+ *
+ * The query endpoint takes a closed query document and never returns content. The two content
+ * reads are the approved path docs/04 §15.3 and docs/02 §11 describe: query-api forwards them to
+ * content-vault, which decides, audits before it serves, and is the only component that can open
+ * content. Neither takes a query document, and neither is reachable through the DSL.
+ */
 export const QUERY_ENDPOINT = '/v1/query';
+export const CONTENT_SEARCH_ENDPOINT = '/v1/content-search';
+export const CONTENT_RETRIEVAL_ENDPOINT = '/v1/content/retrieval';
 
 /** k, the small-cell floor. A cell below it arrives suppressed and is never a number. */
 export const K = 5;

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/shadow-ai-capture/device/protocol"
@@ -299,6 +300,16 @@ func (s *Service) FinaliseObject(ctx context.Context, req FinaliseRequest) (Fina
 		}
 		result.Indexed++
 	}
+	if len(req.IndexUnits) == 0 {
+		// The finaliser has only ciphertext, so it cannot supply the prompt text. Where the tenant's
+		// tier permits a full-text index and a blob store is wired, the vault — the one component
+		// that can open the object — indexes it as it stores it (docs/03 §"content-vault does both").
+		if refusal := s.indexStoredContent(ctx, tenant, obj); refusal != nil {
+			result.Refused = append(result.Refused, *refusal)
+		} else if s.canIndexStored(tenant, obj) {
+			result.Indexed++
+		}
+	}
 
 	if err := s.audit(ctx, store.AuditEntry{
 		TenantID: tenant.TenantID, ActorType: "service", ActorID: "content-vault",
@@ -313,6 +324,100 @@ func (s *Service) FinaliseObject(ctx context.Context, req FinaliseRequest) (Fina
 		return result, err
 	}
 	return result, nil
+}
+
+// maxIndexedChars bounds the prompt text one index row carries: the length ingest.search_text
+// admits (database/schema.sql). An index row is for finding a submission, not for holding it.
+const maxIndexedChars = 65_536
+
+// canIndexStored reports whether a stored object's text may and can be indexed by the vault itself.
+func (s *Service) canIndexStored(tenant store.Tenant, obj store.ContentObject) bool {
+	if s.opts.FetchBlob == nil || obj.SubmissionID == "" || tenant.ContentSearch != store.SearchFullText {
+		return false
+	}
+	reason, _ := s.indexPermitted(tenant, store.UnitPromptBody)
+	return reason == ""
+}
+
+// indexStoredContent opens the object just stored and writes what the person typed as the
+// submission's prompt_body unit (typed.go). A capture nobody typed, such as client telemetry, is
+// not indexed. A failure is reported as a refused unit and never fails the finalise: the object is
+// stored and retrievable whether or not it could be indexed.
+func (s *Service) indexStoredContent(ctx context.Context, tenant store.Tenant, obj store.ContentObject) *UnitRefusal {
+	if !s.canIndexStored(tenant, obj) {
+		return nil
+	}
+	refuse := func(err error) *UnitRefusal {
+		s.opts.Logger.Warn("vault: stored object was not indexed", "object", obj.ObjectID, "error", err)
+		return &UnitRefusal{UnitKind: store.UnitPromptBody, Reason: DenyIndexUnitNotPermitted, Detail: err.Error()}
+	}
+	dek, err := s.unwrap(ctx, tenant, obj)
+	if err != nil {
+		return refuse(err)
+	}
+	plaintext, err := s.serve(ctx, obj, dek)
+	if err != nil {
+		return refuse(err)
+	}
+	// PostgreSQL text holds neither invalid UTF-8 nor NUL.
+	body := []rune(typedText(strings.ReplaceAll(strings.ToValidUTF8(string(plaintext), " "), "\x00", " ")))
+	if len(body) == 0 {
+		return nil
+	}
+	if len(body) > maxIndexedChars {
+		body = body[:maxIndexedChars]
+	}
+	if err := s.opts.Store.PutSearchUnit(ctx, store.SearchUnit{
+		TenantID: tenant.TenantID, SubmissionID: obj.SubmissionID, UnitKind: store.UnitPromptBody,
+		UnitIndex: 0, Body: string(body), ExpiresAt: obj.ExpiresAt,
+	}); err != nil {
+		return refuse(err)
+	}
+	return nil
+}
+
+// ReindexTenant rebuilds the prompt index of every stored object a tenant holds, from the objects
+// themselves. It is how rows written by an earlier indexing rule are brought to the current one:
+// an object somebody typed is re-indexed, and one nobody typed loses the row it had.
+func (s *Service) ReindexTenant(ctx context.Context, tenantID string) (indexed, cleared, failed int, err error) {
+	tenant, err := s.loadTenant(ctx, tenantID)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	objects, err := s.opts.Store.ObjectsForTenant(ctx, tenant.TenantID)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	for _, obj := range objects {
+		if obj.State == store.StateShredded || !s.canIndexStored(tenant, obj) {
+			continue
+		}
+		dek, err := s.unwrap(ctx, tenant, obj)
+		if err != nil {
+			failed++
+			continue
+		}
+		plaintext, err := s.serve(ctx, obj, dek)
+		if err != nil {
+			failed++
+			continue
+		}
+		if typedText(string(plaintext)) == "" {
+			// Nothing typed: the submission has no prompt to find. Its index rows are removed.
+			if _, err := s.opts.Store.DeleteSearchText(ctx, tenant.TenantID, obj.SubmissionID); err != nil {
+				failed++
+				continue
+			}
+			cleared++
+			continue
+		}
+		if refusal := s.indexStoredContent(ctx, tenant, obj); refusal != nil {
+			failed++
+			continue
+		}
+		indexed++
+	}
+	return indexed, cleared, failed, nil
 }
 
 // IndexUnit writes one index row, refusing when the tenant's tier or its custody mode forbids it.
@@ -403,12 +508,11 @@ func (s *Service) Retrieve(ctx context.Context, req RetrieveRequest) (RetrieveRe
 	if err := s.checkTenantReadable(tenant); err != nil {
 		return RetrieveResult{}, err
 	}
-	switch {
-	case req.CaseReference == "":
-		return RetrieveResult{}, s.refuse(ctx, tenant, req, now, DenyCaseReferenceRequired, "C16 requires a case reference for a full-content retrieval")
-	case req.SecondApprover == "":
-		return RetrieveResult{}, s.refuse(ctx, tenant, req, now, DenySecondApproverRequired, "C16 requires a second approver for a full-content retrieval")
-	case req.SecondApprover == req.Principal:
+	// A case reference and a second approver are recorded when the caller gives them and are not
+	// required: an analyst who can search prompts can read the one they found. What is still
+	// refused is an approver who is the requester, because that names an approval that did not
+	// happen. Every retrieval is audited before it is served, whoever asks.
+	if req.SecondApprover != "" && req.SecondApprover == req.Principal {
 		return RetrieveResult{}, s.refuse(ctx, tenant, req, now, DenySecondApproverNotDistinct, "the second approver must be someone other than the requester")
 	}
 
@@ -601,7 +705,7 @@ func (s *Service) Redeem(ctx context.Context, req RedeemRequest) (RedeemResult, 
 		return RedeemResult{}, Denialf(DenyAuditUnavailable, "the redemption audit row could not be committed, so no content is served: %v", err)
 	}
 
-	standIn, err := s.serve(ctx, obj)
+	standIn, err := s.serve(ctx, obj, dek)
 	if err != nil {
 		return RedeemResult{}, err
 	}
@@ -615,13 +719,29 @@ func (s *Service) Redeem(ctx context.Context, req RedeemRequest) (RedeemResult, 
 // serve produces the bytes for an authorised read. In a deployment this is a storage call that the
 // vault does not make; here it is the one place the offline build stands in for blob storage, and
 // it is named so nobody mistakes it for the real path.
-func (s *Service) serve(_ context.Context, obj store.ContentObject) ([]byte, error) {
+//
+// The stored object is what the device sealed under the object key (protocol.SealContent), so the
+// bytes are checked against the digest the finaliser recorded and then opened with the key this
+// call just unwrapped. Ciphertext is never returned as if it were content: an object that is not
+// the recorded bytes, or does not open, is an error.
+func (s *Service) serve(_ context.Context, obj store.ContentObject, dek []byte) ([]byte, error) {
 	if s.opts.FetchBlob == nil {
 		// No blob store is configured: report the authorisation as granted and the bytes as
 		// unavailable from this component, rather than inventing content.
 		return nil, nil
 	}
-	return s.opts.FetchBlob(obj.BlobPath)
+	sealed, err := s.opts.FetchBlob(obj.BlobPath)
+	if err != nil {
+		return nil, fmt.Errorf("vault: reading the stored object: %w", err)
+	}
+	if got := protocol.RawDigest(sealed); got != obj.CiphertextSHA256 {
+		return nil, fmt.Errorf("vault: the stored object is not the bytes that were finalised (digest %s, recorded %s)", got, obj.CiphertextSHA256)
+	}
+	plaintext, err := protocol.OpenContent(dek, obj.EventID, sealed)
+	if err != nil {
+		return nil, fmt.Errorf("vault: the stored object does not open under its key: %w", err)
+	}
+	return plaintext, nil
 }
 
 // ---------------------------------------------------------------------------------------
@@ -944,6 +1064,11 @@ type provisioner interface {
 	EnsureKEK(kekID string) (string, error)
 }
 
+// persister is a key backend that keeps its keys in a file it must be told to write.
+type persister interface {
+	Persist() error
+}
+
 // wrapForObject seals a DEK, provisioning the local backend's key on first use. The retry exists
 // because a fresh deployment (and every test fixture) has a tenant row naming a KEK that the local
 // store has never seen; the alternative — requiring a separate provisioning step before the first
@@ -963,6 +1088,13 @@ func (s *Service) wrapForObject(ctx context.Context, tenant store.Tenant, aad ke
 		}
 		if _, perr := p.EnsureKEK(tenant.KEKID); perr != nil {
 			return keys.Wrapped{}, fmt.Errorf("vault: provisioning KEK %q: %w", tenant.KEKID, perr)
+		}
+		// A key that exists only in memory is lost at the next restart, and every object wrapped
+		// under it with it. A file-backed store must hold the key before the first wrap is issued.
+		if ps, ok := s.opts.Keys.(persister); ok {
+			if perr := ps.Persist(); perr != nil {
+				return keys.Wrapped{}, fmt.Errorf("vault: persisting the new KEK %q: %w", tenant.KEKID, perr)
+			}
 		}
 		return s.opts.Keys.Wrap(ctx, tenant.KEKID, aad, dek)
 	case errors.Is(err, keys.ErrNotImplemented):

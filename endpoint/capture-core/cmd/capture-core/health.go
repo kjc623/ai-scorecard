@@ -31,22 +31,63 @@ type healthChannel struct {
 	writes    int
 	lastErr   error
 	lastAt    time.Time
+	// deviceIdentity is the tenant setting the device currently acts on (ADR 0021). It starts from
+	// configuration (default 'clear') and is refreshed from each authenticated response, so a tenant
+	// that flips the setting moves the device without a reinstall.
+	deviceIdentity protocol.DeviceIdentity
+	// publishes counts successful report POSTs and lastPublishErr is the most recent failure, so the
+	// snapshot can say whether the heartbeat is reaching the control plane (C23/C25).
+	publishes      int
+	lastPublishAt  time.Time
+	lastPublishErr error
 
 	stop chan struct{}
 	wg   sync.WaitGroup
 }
 
 func newHealthChannel(cfg Config, log *slog.Logger, svc *service) *healthChannel {
-	return &healthChannel{cfg: cfg, log: log, svc: svc, stop: make(chan struct{})}
+	return &healthChannel{cfg: cfg, log: log, svc: svc, deviceIdentity: cfg.deviceIdentityMode(), stop: make(chan struct{})}
+}
+
+// currentDeviceIdentity is the setting the device acts on.
+func (h *healthChannel) currentDeviceIdentity() protocol.DeviceIdentity {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.deviceIdentity.Valid() {
+		return h.deviceIdentity
+	}
+	return protocol.DeviceIdentityClear
+}
+
+// adoptDeviceIdentity records a setting the server stated. An empty or invalid value is ignored: an
+// older server that does not state one must not silently change the device's posture.
+func (h *healthChannel) adoptDeviceIdentity(id protocol.DeviceIdentity) {
+	if !id.Valid() {
+		return
+	}
+	h.mu.Lock()
+	h.deviceIdentity = id
+	h.mu.Unlock()
+}
+
+// canPublish reports whether a heartbeat can be sent: it needs a configured device endpoint (a
+// drainer) to send to. A local/offline run writes only the health file.
+func (h *healthChannel) canPublish() bool {
+	return h.svc != nil && h.svc.drainer != nil
 }
 
 func (h *healthChannel) Start(ctx context.Context) {
-	if h.cfg.HealthFile == "" {
+	// The ticker runs when there is anywhere to put the snapshot — a file, a control plane, or both.
+	// Starting it unconditionally would spend a goroutine on a local run with health disabled.
+	if h.cfg.HealthFile == "" && !h.canPublish() {
 		return
 	}
 	h.wg.Add(1)
 	go func() {
 		defer h.wg.Done()
+		// One report at startup, so a device that has just come up is visible before the first
+		// interval elapses. It is best-effort: a failure is recorded and the loop retries.
+		h.tick(ctx)
 		t := time.NewTicker(h.cfg.HealthInterval)
 		defer t.Stop()
 		for {
@@ -54,13 +95,58 @@ func (h *healthChannel) Start(ctx context.Context) {
 			case <-h.stop:
 				return
 			case <-t.C:
-				if err := h.write(); err != nil {
-					h.log.Warn("health channel write failed", "error", err)
-				}
+				h.tick(ctx)
 			}
 		}
 	}()
 }
+
+// tick writes the snapshot wherever it is configured to go: the local health file, the control
+// plane's POST /v1/health, or both. One failing does not skip the other.
+func (h *healthChannel) tick(ctx context.Context) {
+	if h.cfg.HealthFile != "" {
+		if err := h.write(); err != nil {
+			h.log.Warn("health channel write failed", "error", err)
+		}
+	}
+	if h.canPublish() {
+		h.publish(ctx)
+	}
+}
+
+// publish sends one heartbeat. It is the endpoint half of docs/04 §3.7: an idle device that still
+// reports is `reporting`, not mistaken for a dead one.
+func (h *healthChannel) publish(ctx context.Context) {
+	req := h.healthRequest()
+	if len(req.Collectors) == 0 {
+		// A device with no coverage rows has nothing to report; posting an empty report would be
+		// refused by the server, so say so locally rather than manufacture an error.
+		h.log.Warn("health: no collector rows to report; heartbeat skipped")
+		return
+	}
+	callCtx, cancel := context.WithTimeout(ctx, healthPublishTimeout)
+	defer cancel()
+	resp, err := h.svc.drainer.ReportHealth(callCtx, req)
+	if err != nil {
+		h.mu.Lock()
+		h.lastPublishErr = err
+		h.mu.Unlock()
+		h.log.Warn("health: heartbeat not delivered", "error", err)
+		return
+	}
+	// The response restates the tenant's device-identity setting; adopting it is how a device that
+	// enrolled under one setting learns the tenant changed it (ADR 0021).
+	h.adoptDeviceIdentity(resp.DeviceIdentity)
+	h.mu.Lock()
+	h.publishes++
+	h.lastPublishAt = time.Now()
+	h.lastPublishErr = nil
+	h.mu.Unlock()
+}
+
+// healthPublishTimeout bounds one heartbeat. The drainer's own HTTP client has a 20 s timeout; a
+// shorter deadline here keeps a slow control plane from delaying the next tick.
+const healthPublishTimeout = 15 * time.Second
 
 func (h *healthChannel) Stop() {
 	select {
@@ -88,6 +174,13 @@ type healthSnapshot struct {
 	DeviceID       string                  `json:"device_id"`
 	IdentitySource string                  `json:"identity_source"`
 	AgentVersion   string                  `json:"agent_version"`
+	// Device identity (ADR 0021). Hostname and SubjectName are present only while the tenant's
+	// device_identity is 'clear'; ManagedState and CollectionMode are always reported.
+	Hostname       string                  `json:"hostname,omitempty"`
+	SubjectName    string                  `json:"subject_name,omitempty"`
+	ManagedState   string                  `json:"managed_state,omitempty"`
+	CollectionMode string                  `json:"collection_mode,omitempty"`
+	DeviceIdentity string                  `json:"device_identity,omitempty"`
 	GeneratedAt    time.Time               `json:"generated_at"`
 	PolicyVersion  string                  `json:"policy_version,omitempty"`
 	PolicyOutcome  string                  `json:"policy_outcome"`
@@ -104,6 +197,11 @@ type healthSnapshot struct {
 	// where the history lives — visible without mislabelling a working port.
 	LoopbackPortConflicts int    `json:"loopback_port_conflicts,omitempty"`
 	Note                  string `json:"note"`
+	// Heartbeat reporting state: whether the periodic POST /v1/health is reaching the control plane.
+	// It is device-level and has no schema column, so it travels in the health document (docs/02 §9).
+	HeartbeatPublished int       `json:"heartbeat_published,omitempty"`
+	LastHeartbeatAt    time.Time `json:"last_heartbeat_at,omitempty"`
+	LastHeartbeatError string    `json:"last_heartbeat_error,omitempty"`
 }
 
 type classifierStatus struct {
@@ -167,14 +265,25 @@ func (h *healthChannel) Snapshot() healthSnapshot {
 	}
 
 	connected, classVersion, detail := h.svc.host.status()
+	identity := h.currentDeviceIdentity()
+	hostname, subjectName := "", ""
+	if identity == protocol.DeviceIdentityClear {
+		hostname = h.cfg.resolvedHostname()
+		subjectName = h.cfg.resolvedSubjectName()
+	}
 	snap := healthSnapshot{
 		DeviceID:       deviceID,
 		IdentitySource: identitySource,
 		AgentVersion:   version,
-		GeneratedAt:   time.Now().UTC(),
-		PolicyVersion: policyVersion,
-		PolicyOutcome: outcome,
-		PolicyCause:   cause,
+		Hostname:       hostname,
+		SubjectName:    subjectName,
+		ManagedState:   string(h.cfg.managedState()),
+		CollectionMode: string(h.baseMode(deviceID)),
+		DeviceIdentity: string(identity),
+		GeneratedAt:    time.Now().UTC(),
+		PolicyVersion:  policyVersion,
+		PolicyOutcome:  outcome,
+		PolicyCause:    cause,
 		Classification: classifierStatus{
 			Connected:         connected,
 			ClassifierVersion: classVersion,
@@ -205,7 +314,7 @@ func (h *healthChannel) Snapshot() healthSnapshot {
 	if !h.cfg.EnableTLS {
 		snap.NamedGaps = append(snap.NamedGaps, "proxy.tls: no coverage row (provider disabled by configuration)")
 	}
-	if h.cfg.ClassifierAddress == "" {
+	if h.cfg.ClassifierAddress == "" && h.cfg.ClassifierRelease == "" {
 		snap.NamedGaps = append(snap.NamedGaps, "classifier-host: rules-only fallback, confidence=degraded on every classified event")
 	}
 	if !h.cfg.EnableLoopback {
@@ -214,7 +323,124 @@ func (h *healthChannel) Snapshot() healthSnapshot {
 	if h.svc.broker != nil {
 		snap.LoopbackPortConflicts = h.svc.broker.PortConflicts()
 	}
+	h.mu.Lock()
+	snap.HeartbeatPublished = h.publishes
+	if !h.lastPublishAt.IsZero() {
+		snap.LastHeartbeatAt = h.lastPublishAt
+	}
+	if h.lastPublishErr != nil {
+		snap.LastHeartbeatError = h.lastPublishErr.Error()
+	}
+	h.mu.Unlock()
 	return snap
+}
+
+// collectorCodeByRoute maps a collection route onto the ref.collector code the coverage tables key
+// on (docs/01 §4.3's "the collector name must come from ref.collector"). Routes name what was
+// observed; collectors name the component that observed it, and the browser routes share the one
+// extension collector.
+var collectorCodeByRoute = map[string]string{
+	"ext.web_request":  "capture_extension",
+	"ext.page_context": "capture_extension",
+	"ext.dom":          "capture_extension",
+	"proxy.tls":        "egress_proxy",
+	"proxy.loopback":   "loopback_broker",
+	"cli.shim":         "cli_shim",
+	"proc.detect":      "process_detector",
+}
+
+// collectorCode normalises a route name or an extension-style name to the ref.collector code.
+func collectorCode(name string) string {
+	if code, ok := collectorCodeByRoute[name]; ok {
+		return code
+	}
+	return strings.ReplaceAll(name, "-", "_")
+}
+
+// baseMode is the effective base collection mode for the device: the device's own override when the
+// signed bundle names it, otherwise the tenant default (backlog/04-device-identity/DECISIONS.md D4).
+// It deliberately does not run full scope resolution: with no tool or population, Resolve would fold
+// in the class priors and the notice gate for an unnamed user, which is not what "the mode in force
+// on the device" means.
+func (h *healthChannel) baseMode(deviceID string) protocol.CollectionMode {
+	b := h.svc.currentBundle()
+	if b == nil {
+		return ""
+	}
+	if m, ok := b.DeviceModes[deviceID]; ok && m.Valid() {
+		return m
+	}
+	if b.TenantDefault.Valid() {
+		return b.TenantDefault
+	}
+	return ""
+}
+
+// healthRequest renders the protocol.HealthRequest the control plane's POST /v1/health accepts. The
+// collector names are canonicalised to ref.collector codes; a report naming a route the coverage
+// layer does not know would be refused by the server (docs/01 §4.3).
+func (h *healthChannel) healthRequest() protocol.HealthRequest {
+	snap := h.Snapshot()
+	seen := map[string]bool{}
+	collectors := make([]protocol.HealthReport, 0, len(snap.Reports)+1)
+	add := func(reps []protocol.HealthReport) {
+		for _, rep := range reps {
+			code := collectorCode(rep.Collector)
+			if seen[code] {
+				continue
+			}
+			seen[code] = true
+			rep.Collector = code
+			// The device is the authenticated principal; carrying it per collector inside the
+			// report would be a second, redundant identity claim (docs/02 §5.4).
+			rep.DeviceID = ""
+			collectors = append(collectors, rep)
+		}
+	}
+	add(snap.Reports)
+	if snap.Extension != nil {
+		add([]protocol.HealthReport{*snap.Extension})
+	}
+	// classifier-host is a component rather than a collection route, and ref.collector knows it, so
+	// it reports its own coverage row (docs/01 §4.6: it is "reported separately because C23 and C25
+	// apply to it too"). A device with no host reports degraded, which is the truth the coverage
+	// layer should see.
+	add([]protocol.HealthReport{classifierReport(snap)})
+
+	req := protocol.HealthRequest{
+		SchemaVersion:       protocol.HealthSchemaVersion,
+		ReportedAt:          snap.GeneratedAt,
+		AgentVersion:        snap.AgentVersion,
+		Hostname:            snap.Hostname,
+		CollectionMode:      snap.CollectionMode,
+		ManagedState:        snap.ManagedState,
+		PolicyBundleVersion: snap.PolicyVersion,
+		Spool: protocol.SpoolHealth{
+			DepthEvents:   int64(snap.Spool.Depth),
+			SpoolBytes:    snap.Spool.UsedBytes,
+			DroppedTotal:  snap.Spool.DroppedTotal,
+			RejectedTotal: snap.Spool.RejectedTotal,
+		},
+		Collectors: collectors,
+	}
+	if !snap.Spool.OldestSpooledAt.IsZero() {
+		t := snap.Spool.OldestSpooledAt
+		req.Spool.OldestSpooledAt = &t
+	}
+	return req
+}
+
+// classifierReport turns the classifier-host status into a coverage row. `connected` is the same
+// positive observation the health document carries, so the row cannot claim more than the document.
+func classifierReport(snap healthSnapshot) protocol.HealthReport {
+	state := protocol.StateDegraded
+	if snap.Classification.Connected {
+		state = protocol.StateHealthy
+	}
+	rep := protocol.NewHealthReport("", "classifier_host", snap.Classification.ClassifierVersion, snap.GeneratedAt)
+	rep.State = state
+	rep.Detail = protocol.Detail(snap.Classification.DegradedDetail)
+	return rep
 }
 
 // write appends one JSON line to the health file.

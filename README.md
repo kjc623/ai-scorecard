@@ -23,7 +23,7 @@ it constrains almost every other decision here.
 | [`extension/`](extension/) | The browser extension: Chromium MV3, wide observation, narrow emission, inline warn/block |
 | [`endpoint/`](endpoint/) | The desktop agent: the capture core, its encrypted spool, the classifier host, the device protocol package, and the NFC canonicaliser |
 | [`ingestion/`](ingestion/) | The API devices POST events to. The one write path |
-| [`control/`](control/) | The control plane: device enrolment and the DPoP token endpoint (`control-api`) |
+| [`control/`](control/) | The control plane: device enrolment, the DPoP token endpoint and the per-event content grant (`control-api`) |
 | [`vault/`](vault/) | The content vault — the only component that can unwrap content keys |
 | [`query/`](query/) | The read path: the closed query DSL and the dashboard the ten questions are answered in |
 | [`database/`](database/) | The PostgreSQL schema, its assertions, and the tools that check both |
@@ -37,9 +37,9 @@ Every one of those has its own README explaining what is inside and how it works
 
 ## What is built, and what is not
 
-Sixteen of the seventeen components have code, though `control-api` is partial — enrolment and the
-DPoP token endpoint are built ([ADR 0020](docs/adr/0020-device-transport-is-application-gateway-with-a-pluggable-authenticator.md)),
-while policy, health and grants are not. The one with none is `aggregator` (the scheduled job that
+Sixteen of the seventeen components have code, though `control-api` is partial — enrolment, the
+DPoP token endpoint ([ADR 0020](docs/adr/0020-device-transport-is-application-gateway-with-a-pluggable-authenticator.md))
+and the content grant with its finaliser are built, while policy and health are not. The one with none is `aggregator` (the scheduled job that
 keeps the dashboard's aggregates fresh). The Azure transport is written but not deployed:
 [`azure/modules/application-gateway.bicep`](azure/modules/application-gateway.bicep) is the device
 ingress, and no subscription has run it. The device-to-cloud path is built and proven locally:
@@ -48,7 +48,17 @@ and the opt-in auth lab (`node localdev/run.mjs --auth`) drives that through an 
 stand-in into the real schema. The development installer ([`installer/`](installer/)) builds the
 Windows MSI, macOS PKG and Linux package that carry it; the MSI installs a Windows service the binary
 hosts itself (`--service`). Still absent for a real deployment: the MDM-delivered per-tenant
-enrolment profile, a signed policy bundle, the trust/proxy configuration, and a signed artefact.
+enrolment profile, a signed policy bundle, the trust/proxy configuration, and a signed artefact. For
+the local lab, `installer/lab-msi.mjs` stands in for the MDM and builds an MSI that carries all of
+those, unsigned.
+
+The content path is built and proven in that lab, on a Windows host: at M3 the agent holds a prompt
+locally, asks `control-api` for a per-event grant, and uploads the sealed content; `content-vault`
+records it; and an analyst finds it by its text and retrieves it on the dashboard's Explore page,
+through `query-api` and the vault's case-reference and second-approver check. What stands in for the
+real thing there: the storage account (a lab service and a signed URL instead of Blob storage and a
+SAS), the session (a development principal instead of a signed-in analyst), and the second approval
+(a name the requester types, which the vault only requires to be someone else).
 
 The browser half is verified in a real browser: Edge loads the extension, its listener observes real
 requests, M0 carries no content, a registered native host produces a genuinely connected channel, and
@@ -81,7 +91,8 @@ node localdev/run.mjs       # up, smoke test, report
 ```
 
 [`localdev/README.md`](localdev/README.md) covers the addresses and ports, the build constraints, and
-the one credential the lab uses.
+the one credential the lab uses. It also covers the opt-in device-auth lab, which is the one a real
+endpoint agent enrols against and the one that serves the dashboard on live data.
 
 ## The design record
 

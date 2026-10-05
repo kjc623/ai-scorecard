@@ -27,7 +27,7 @@ export const GAPS = Object.freeze([
     screen: 'search',
     title: 'Content search (Q9, first half)',
     needs: 'POST /v1/content-search, executed by content-vault over ingest.search_text, returning bounded snippets with an index-coverage block.',
-    consequence: 'An analyst cannot search prompt text or attachment filenames from this dashboard at all. The DSL has no text predicate by design, and this API does not expose the search endpoint the document specifies. Nothing here renders as "no matches" — there is no search to return them.',
+    consequence: 'An analyst cannot search prompt text or attachment filenames from these screens: the DSL has no text predicate by design, so nothing here renders as "no matches". The Explore page does carry a prompt-text search, which goes to the content vault through its own endpoint; it returns snippets with no index-coverage block, and it does not search attachment filenames.',
     severity: 'absent',
   }),
   Object.freeze({
@@ -35,7 +35,7 @@ export const GAPS = Object.freeze([
     screen: 'event',
     title: 'Approved content retrieval (§8)',
     needs: 'Retrieval request, second approval, audit-first reveal, and a content-vault call.',
-    consequence: 'Event detail shows metadata and the content_state answer. An analyst cannot raise, approve or reveal content here, and a screenshot cannot be mistaken for one that did.',
+    consequence: 'Event detail on this screen shows metadata and the content_state answer, and a screenshot of it cannot be mistaken for one that revealed content. The Explore page carries the retrieval: its event panel takes a case reference and a second approver and shows content only after the content vault approves and audits the read. The second approver is named by the requester; nothing yet makes that person approve.',
     severity: 'absent',
   }),
   Object.freeze({
@@ -133,75 +133,6 @@ export const GAP_IDS = Object.freeze(GAPS.map((g) => g.id));
 /** The rows the "what this dashboard cannot show" screen renders. */
 export function gapsFor(screenId) {
   return screenId ? GAPS.filter((g) => g.screen === screenId) : GAPS;
-}
-
-/**
- * Degraded collection (§11.4). The signals the API can support are shown; the ones it cannot are
- * listed with the reason, in the same panel, so a gap cannot be read as a healthy zero.
- *
- * @param {object} input
- * @param {object} input.devices view state for the device list (collector states, spool counters)
- */
-export function degradedCollectionView({ devices }) {
-  const counts = new Map();
-  for (const row of devices.data) {
-    const key = row.collector_state ?? 'not_reported';
-    counts.set(key, (counts.get(key) ?? 0) + 1);
-  }
-  const spoolDepth = devices.data.reduce((sum, row) => sum + (typeof row.spool_depth === 'number' ? row.spool_depth : 0), 0);
-  const dropped = devices.data.reduce((sum, row) => sum + (typeof row.spool_dropped_total === 'number' ? row.spool_dropped_total : 0), 0);
-
-  const available = [
-    { signal: 'Collector state counts', source: 'mart.v_device_liveness', detail: [...counts.entries()].map(([state, n]) => `${state}: ${n}`).join(', ') || 'no rows' },
-    { signal: 'Spool depth on devices', source: 'mart.v_device_liveness', detail: `${spoolDepth} events held on the devices in this page` },
-    { signal: 'Events already dropped (C22)', source: 'mart.v_device_liveness', detail: `${dropped} dropped because a spool was full — a visible undercount` },
-    { signal: 'Coverage gaps by reason', source: 'ops.coverage_snapshot', detail: devices.coverageText?.text ?? 'no coverage block' },
-  ];
-  const unavailable = GAPS.filter((g) => g.screen === 'degraded');
-
-  return Object.freeze({
-    id: 'degraded',
-    title: 'Degraded collection',
-    question: null,
-    source: 'mart.v_device_liveness',
-    sourceLabel: 'Devices and collector state',
-    subtitle: 'Everything the collection paths report about themselves — and, in the same panel, what this API cannot report.',
-    tiles: Object.freeze([
-      { label: 'Devices in page', value: { kind: 'number', text: String(devices.data.length) }, note: null },
-      { label: 'Spool depth (page)', value: { kind: 'number', text: String(spoolDepth) }, note: 'Events waiting on the devices in this page.' },
-      { label: 'Dropped (page)', value: { kind: 'number', text: String(dropped) }, note: 'Reported, never inferred: silent data loss is the failure this counter prevents.' },
-      { label: 'Coverage', value: { kind: 'vocab', text: devices.coverage?.state ?? 'unknown' }, note: devices.coverageText?.text ?? null },
-    ]),
-    tables: Object.freeze([
-      {
-        title: 'Signals this API supports',
-        columns: Object.freeze([
-          { key: 'signal', label: 'Signal' },
-          { key: 'source', label: 'Source' },
-          { key: 'detail', label: 'Value' },
-        ]),
-        rows: Object.freeze(available.map((row) => Object.freeze({ row, vocab: {}, suppressed: false }))),
-        emptyText: 'No device rows.',
-        suppressedCells: 0,
-      },
-      {
-        title: 'Signals this API does not expose',
-        columns: Object.freeze([
-          { key: 'title', label: 'Missing signal' },
-          { key: 'needs', label: 'What would be needed' },
-          { key: 'consequence', label: 'Consequence' },
-        ]),
-        rows: Object.freeze(unavailable.map((row) => Object.freeze({ row, vocab: {}, suppressed: false }))),
-        emptyText: 'Nothing is missing.',
-        suppressedCells: 0,
-      },
-    ]),
-    series: Object.freeze([]),
-    banners: devices.banners,
-    notes: Object.freeze([
-      'A panel that is absent because the API cannot answer looks identical to a panel that is absent because nothing happened. This screen exists so that the difference is visible.',
-    ]),
-  });
 }
 
 /** The whole catalogue, as a screen. */

@@ -209,6 +209,8 @@ const COLLECTOR_CARD = { cardinality: 6, cardinalitySource: 'db/schema.sql seeds
 const COLLECTOR_STATE_CARD = { cardinality: 4, cardinalitySource: 'db/schema.sql CHECK state IN (healthy,degraded,absent,tampered)' };
 const LIVENESS_CARD = { cardinality: 4, cardinalitySource: 'mart.v_device_liveness CASE yields reporting,stale,never_reported,revoked' };
 const MANAGED_CARD = { cardinality: 3, cardinalitySource: 'db/schema.sql CHECK managed_state IN (managed,unmanaged,unknown)' };
+const HOSTNAME_CARD = { cardinality: 5000, cardinalitySource: 'one hostname per device; docs/04 §3 sizing "<= 5,000 devices"' };
+const AGENT_VERSION_CARD = { cardinality: 100, cardinalitySource: 'ASSUMPTION: a bounded number of agent builds across a fleet' };
 const OS_CARD = { cardinality: 2, cardinalitySource: 'db/schema.sql CHECK os IN (windows,macos)' };
 const GAP_CARD = { cardinality: 8, cardinalitySource: 'db/schema.sql CHECK gap_reason enumerates 8 values' };
 const SANCTIONED_CARD = { cardinality: 3, cardinalitySource: 'db/schema.sql CHECK sanctioned_state IN (sanctioned,unsanctioned,unknown)' };
@@ -538,10 +540,17 @@ export const SOURCES = Object.freeze({
     bucket: null,
     dimensions: Object.freeze({
       device: dim('device', 'd.device_id', 'uuid', { ...DEVICE_CARD }),
+      hostname: dim('hostname', 'd.hostname', 'text', { nullable: true, ...HOSTNAME_CARD }),
+      agent_version: dim('agent_version', 'd.agent_version', 'text', { nullable: true, ...AGENT_VERSION_CARD }),
       device_os: dim('device_os', 'd.os', 'text', { ...OS_CARD, values: ['windows', 'macos'] }),
       managed_state: dim('managed_state', 'd.managed_state', 'text', {
         ...MANAGED_CARD,
         values: ['managed', 'unmanaged', 'unknown'],
+      }),
+      collection_mode: dim('collection_mode', 'd.collection_mode', 'text', {
+        ...MODE_CARD,
+        nullable: true,
+        values: ['m0', 'm1', 'm2', 'm3'],
       }),
       region: dim('region', 'dd.residency_region', 'text', {
         nullable: true,
@@ -572,7 +581,7 @@ export const SOURCES = Object.freeze({
     ]),
     subjectCount: null,
     kSuppression: false,
-    subjectBearing: false,
+    subjectBearing: true,
     requiresSubjectScope: false,
     indexes: Object.freeze([
       'ops.device PK (tenant_id, device_id), docs/04 §3.11 (tenant_id, last_seen_at)',
@@ -598,8 +607,14 @@ export const SOURCES = Object.freeze({
      */
     listSelect: Object.freeze([
       'd.device_id AS "device"',
+      'd.hostname AS "hostname"',
       'd.os AS "device_os"',
+      'd.os_version AS "os_version"',
+      'd.agent_version AS "agent_version"',
       'd.managed_state AS "managed_state"',
+      'd.collection_mode AS "collection_mode"',
+      'd.last_user_ref AS "user_ref"',
+      'd.last_subject_name AS "subject_name"',
       "CASE WHEN d.revoked_at IS NOT NULL THEN 'revoked' WHEN d.last_seen_at IS NULL THEN 'never_reported' WHEN d.last_seen_at < now() - interval '24 hours' THEN 'stale' ELSE 'reporting' END AS \"liveness\"",
       'cs.collector AS "collector"',
       'cs.state AS "collector_state"',
@@ -614,6 +629,8 @@ export const SOURCES = Object.freeze({
       'cs.error_code AS error_code',
     ]),
     columns: Object.freeze({
+      user_ref: dim('user_ref', 'd.last_user_ref', 'text', { nullable: true, cardinalitySource: 'the pseudonymous ref of the most recent submission' }),
+      subject_name: dim('subject_name', 'd.last_subject_name', 'text', { nullable: true, cardinalitySource: 'the clear account name of the most recent submission' }),
       enrolled_at: dim('enrolled_at', 'd.enrolled_at', 'timestamp', { cardinalitySource: 'device timeline' }),
       last_seen_at: dim('last_seen_at', 'd.last_seen_at', 'timestamp', { nullable: true, cardinalitySource: 'device timeline' }),
       revoked_at: dim('revoked_at', 'd.revoked_at', 'timestamp', { nullable: true, cardinalitySource: 'device timeline' }),
@@ -862,7 +879,6 @@ export const SOURCES = Object.freeze({
     requiresSubjectScope: false,
     indexes: Object.freeze([
       'docs/04 §3.11 mart.finding (tenant_id, detected_at DESC, submission_id)',
-      'docs/04 §3.11 mart.finding (tenant_id, severity, detected_at DESC)',
       'mart.finding PK (tenant_id, submission_id, rule_id)',
     ]),
     listSelect: Object.freeze([
@@ -888,7 +904,7 @@ export const SOURCES = Object.freeze({
     }),
     warnings: Object.freeze([
       'review_state comes from the view as coalesce(ops.finding_review.review_state, \'open\'). `open` means nobody has looked; it is not "reviewed and unremarkable" (docs/04 §3.5).',
-      'severity is as-of-detection, materialised on mart.finding: reclassifying a rule does not relabel history (§3.5).',
+      'severity and class are present-tense: mart.v_finding reads them from the current ref.rule row, so editing a rule shows on every finding that names it (backlog/03-findings/DECISIONS.md).',
     ]),
   }),
 

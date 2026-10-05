@@ -21,8 +21,11 @@ changes, the lab deploys the change.
 `LAB-COST.md` §6 goes through the architecture property by property and says which ones the Azure lab
 (Part B) can test, which it can test only partly, and which it cannot — the edge, key rotation, HSM
 custody, scale, and the services' own database and key-vault paths. The local lab (Part A) has no
-blob service, no real certificate authority and no real cloud KMS. Those are not oversights; a fake
-blob account would prove nothing about the real one, which is why `localdev/` has none.
+real blob service, no real certificate authority and no real cloud KMS. Its opt-in device-auth lab
+does run the content path end to end, with a storage stand-in (`localdev/contentlab`) that takes the
+one upload a grant permits and serves the ciphertext back to the vault. That proves the grant, the
+finaliser, the key handling and the approved retrieval; it proves nothing about a storage account,
+whose single-object write credential the stand-in replaces with a signed URL.
 
 All figures in this directory are estimates at Azure East US list price, pay-as-you-go, as of
 2 October 2026, and must be re-baselined before any commercial commitment. A contradiction inside the

@@ -1,0 +1,32 @@
+# localdev/dbview.compose.yaml - a browser view of the auth lab's database.
+#
+#   docker compose -f localdev/dbview.compose.yaml up -d      # http://127.0.0.1:8089
+#   docker compose -f localdev/dbview.compose.yaml down
+#
+# pgweb over the lab's PostgreSQL: browse every table (ingest.observation, ingest.rejected,
+# ops.device, ...), filter and sort rows, run SQL, export CSV/JSON. It joins the auth lab's network,
+# so the lab must be up first (node localdev/run.mjs --auth), and it reconnects by itself when the
+# lab is restarted.
+#
+# This is a lab tool, not the product's read path. It connects as the `postgres` superuser, which
+# bypasses the tenant row-level security the product's own read path (query-api, the dashboard's
+# Explore page) is held to, so it shows every tenant's rows. The connection is read-only and the
+# port is published on loopback only. Move the port with LAB_DBVIEW_PORT.
+
+name: sac-dbview
+
+networks:
+  authlab:
+    name: scorecard-authlab
+    external: true
+
+services:
+  dbview:
+    image: sosedoff/pgweb:0.16.2
+    command: ["pgweb", "--bind=0.0.0.0", "--listen=8081", "--readonly"]
+    environment:
+      PGWEB_DATABASE_URL: postgres://postgres:sac-lab-only@postgres:5432/shadow?sslmode=disable
+    ports:
+      - "127.0.0.1:${LAB_DBVIEW_PORT:-8089}:8081"
+    networks: [authlab]
+    restart: unless-stopped

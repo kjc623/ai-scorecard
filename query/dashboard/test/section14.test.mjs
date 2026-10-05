@@ -93,7 +93,7 @@ test('§14.3 no query path returns content, and event detail shows metadata plus
   for (const forbidden of ['content_excerpt', 'prompt_text', 'attachment_body', 'ciphertext', 'wrapped_dek', 'plaintext']) {
     assert.ok(!html.includes(forbidden), `event detail must not render ${forbidden}`);
   }
-  assert.ok(/approved, case-referenced, second-approved retrieval/.test(html), 'the uploaded state names the approved path');
+  assert.ok(/Open the event in Search to read the prompt/.test(html), 'the uploaded state says where the prompt is read');
 });
 
 test('§14.3 each content_state is a different answer, and all four are rendered', () => {
@@ -145,14 +145,14 @@ test('§14.5 the exports screen renders no link and no download affordance', () 
 
 // ── §14 item 6: no aggregate without its freshness and coverage state ────────────────────────
 
-test('§14.6 every screen renders the coverage and freshness strip', async () => {
+test('§14.6 a screen read under partial coverage says so, with the enrolled denominator', async () => {
   const dashboard = dashboardFor();
   for (const screen of SCREENS) {
     const { view, shell, gallery } = await dashboard.load(screen.id, { filters: { submission_id: '11111111-2222-4333-8444-555555555551', subject: 'u_1' } });
-    if (gallery || !view || view.needsInput) continue;
+    if (gallery || !view || view.needsInput || screen.kind !== 'answer' || screen.id === 'audit') continue; // the audit trail is not a fleet figure
     const html = renderScreen(view, shell);
-    assert.ok(/<div class="strip/.test(html), `${screen.id} must render the strip`);
-    assert.ok(/Coverage/.test(html) && /Freshness/.test(html), `${screen.id} strip must name both`);
+    assert.ok(/Coverage is partial/.test(html), `${screen.id} must say coverage is partial`);
+    assert.ok(/4,180 of 4,620 enrolled devices reporting/.test(html), `${screen.id} must carry the denominator`);
   }
 });
 
@@ -338,13 +338,16 @@ test('INV-3 no file in this package contains a statement or a database driver', 
   assert.deepEqual(hits, [], 'the dashboard tree must contain no statement and no driver');
 });
 
-test('INV-3 the only endpoint in this package is the query endpoint', () => {
+test('INV-3 the only endpoints in this package are the query endpoint and the two content reads', () => {
+  // The query endpoint takes a closed query document and never returns content. The two content
+  // reads are the approved path (docs/04 §15.3, docs/02 §11): forwarded to content-vault, which
+  // decides and audits. Anything else named here would be a fourth way to reach data.
   const files = sourceFiles();
-  const endpoint = ['/v1/', 'query'].join('');
+  const allowed = [['/v1/', 'query'], ['/v1/', 'content-search'], ['/v1/', 'content/retrieval']].map((parts) => parts.join(''));
   const others = files.map((rel) => readFileSync(join(ROOT, rel), 'utf8')).join('\n');
-  const urls = [...others.matchAll(/['"](\/v1\/[a-z-]+)['"]/g)].map((m) => m[1]);
-  assert.ok(urls.length > 0, 'the query endpoint is named somewhere');
-  for (const url of urls) assert.equal(url, endpoint, `only ${endpoint} may be called`);
+  const urls = [...others.matchAll(/['"](\/v1\/[a-z/-]+)['"]/g)].map((m) => m[1]);
+  assert.ok(urls.includes(allowed[0]), 'the query endpoint is named somewhere');
+  for (const url of urls) assert.ok(allowed.includes(url), `${url} is not one of ${allowed.join(', ')}`);
 });
 
 test('INV-3 the fetch global is reachable from exactly one module of the application', () => {

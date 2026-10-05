@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/shadow-ai-capture/device/protocol"
 )
 
 // Memory is the in-memory Store used by the service tests and by a local run. Every branch below is
@@ -22,19 +24,59 @@ type Memory struct {
 	creds     map[string]Credential
 	liveCred  map[string]string
 	now       func() time.Time
+	// collectors is the ref.collector vocabulary; collectorState and lastSeen mirror
+	// ops.collector_state and ops.device.last_seen_at for the health channel. collectorReportAt is
+	// the stored last_report_at, which the stale-report guard compares against.
+	collectors        map[string]bool
+	collectorState    map[string]CollectorState
+	collectorReportAt map[string]time.Time
+	lastSeen          map[string]time.Time
+}
+
+// seededCollectors is the ref.collector seed in database/schema.sql. A test may override it with
+// SetCollectors; the default keeps the double honest about what the schema holds.
+var seededCollectors = map[string]bool{
+	"capture_extension": true, "egress_proxy": true, "loopback_broker": true,
+	"cli_shim": true, "process_detector": true, "classifier_host": true,
 }
 
 // NewMemory builds an empty in-memory store.
 func NewMemory() *Memory {
-	return &Memory{
-		tenants:   map[string]Tenant{},
-		tokens:    map[string]EnrolmentToken{},
-		devices:   map[string]Device{},
-		hwidIndex: map[string]string{},
-		creds:     map[string]Credential{},
-		liveCred:  map[string]string{},
-		now:       time.Now,
+	collectors := make(map[string]bool, len(seededCollectors))
+	for code := range seededCollectors {
+		collectors[code] = true
 	}
+	return &Memory{
+		tenants:           map[string]Tenant{},
+		tokens:            map[string]EnrolmentToken{},
+		devices:           map[string]Device{},
+		hwidIndex:         map[string]string{},
+		creds:             map[string]Credential{},
+		liveCred:          map[string]string{},
+		now:               time.Now,
+		collectors:        collectors,
+		collectorState:    map[string]CollectorState{},
+		collectorReportAt: map[string]time.Time{},
+		lastSeen:          map[string]time.Time{},
+	}
+}
+
+// SetCollectors replaces the collector vocabulary, for a test that wants to drive the unknown-name
+// refusal.
+func (m *Memory) SetCollectors(codes ...string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.collectors = map[string]bool{}
+	for _, c := range codes {
+		m.collectors[c] = true
+	}
+}
+
+// AddCollector registers one collector in the vocabulary.
+func (m *Memory) AddCollector(code string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.collectors[code] = true
 }
 
 // SetNow overrides the clock so tests can drive token expiry and device enrolment timestamps
@@ -266,6 +308,88 @@ func (m *Memory) MarkEnrolmentTokenUsed(_ context.Context, tenantID, tokenHash s
 	t.UsedAt = &at
 	m.tokens[key] = t
 	return nil
+}
+
+// RecordHealth implements Store, mirroring the SQL transaction: validate the collector vocabulary,
+// upsert each row if it is newer, and stamp last_seen_at monotonically. The whole call is under one
+// lock, so a partly-invalid report changes nothing.
+func (m *Memory) RecordHealth(_ context.Context, tenantID, deviceID string, at time.Time, reports []CollectorState, dev DeviceHealth) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, r := range reports {
+		if !m.collectors[r.Collector] {
+			return fmt.Errorf("%w: %q", ErrUnknownCollector, r.Collector)
+		}
+	}
+	for _, r := range reports {
+		key := collectorKey(tenantID, deviceID, r.Collector)
+		if prev, ok := m.collectorReportAt[key]; ok && !prev.Before(at) {
+			continue // a stale or equal report never overwrites a newer one
+		}
+		m.collectorState[key] = r
+		m.collectorReportAt[key] = at
+	}
+	seenKey := deviceKey(tenantID, deviceID)
+	fresh := true
+	if prev, ok := m.lastSeen[seenKey]; ok && !prev.Before(at) {
+		fresh = false
+	} else {
+		m.lastSeen[seenKey] = at
+	}
+	// Device identity fields are applied only for a fresh report, matching the SQL guard, and the
+	// clear hostname is gated on the tenant's setting so the double mirrors the server's authority.
+	if fresh {
+		if d, ok := m.devices[seenKey]; ok {
+			identity := protocol.DeviceIdentityClear
+			if t, ok := m.tenants[tenantID]; ok && t.DeviceIdentity != "" {
+				identity = t.DeviceIdentity
+			}
+			if identity == protocol.DeviceIdentityHashed {
+				if dev.HostnameHash != "" {
+					d.HostnameHash = dev.HostnameHash
+				}
+			} else if dev.Hostname != "" {
+				d.Hostname = dev.Hostname
+			}
+			if dev.AgentVersion != "" {
+				d.AgentVersion = dev.AgentVersion
+			}
+			if dev.ManagedState != "" {
+				d.ManagedState = dev.ManagedState
+			}
+			// collection_mode has no field on Device; the read path reads it from the column.
+			m.devices[seenKey] = d
+		}
+	}
+	return nil
+}
+
+// CollectorStateAt returns the stored health row, for tests.
+func (m *Memory) CollectorStateAt(tenantID, deviceID, collector string) (CollectorState, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.collectorState[collectorKey(tenantID, deviceID, collector)]
+	return r, ok
+}
+
+// CollectorReportAt returns the row's last_report_at, for tests.
+func (m *Memory) CollectorReportAt(tenantID, deviceID, collector string) (time.Time, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.collectorReportAt[collectorKey(tenantID, deviceID, collector)]
+	return t, ok
+}
+
+// DeviceLastSeenAt returns the stamped device activity, for tests.
+func (m *Memory) DeviceLastSeenAt(tenantID, deviceID string) (time.Time, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.lastSeen[deviceKey(tenantID, deviceID)]
+	return t, ok
+}
+
+func collectorKey(tenantID, deviceID, collector string) string {
+	return tenantID + "|" + deviceID + "|" + collector
 }
 
 func tokenKey(tenantID, hash string) string { return tenantID + "|" + hash }

@@ -33,16 +33,29 @@ half is now built too, so a CLI speaking HTTPS to `api.anthropic.com` is capture
    bootstrap. In production the environment and trust configuration are delivered by MDM/GPO
    ([docs/05 §6](../docs/05-platform-delivery.md)).
 
+5. **Classify, without a second service**: `SAC_CLASSIFIER_RELEASE` and `SAC_CLASSIFIER_PUBKEY` make
+   the agent run the `classifier-host` installed beside it as a child on stdio, loading that signed
+   release. With neither these nor `SAC_CLASSIFIER_ADDRESS`, classification is rules-only and every
+   classified event says `confidence: degraded`.
+6. **Hold content, at M3 only**: `SAC_CONTENT_DIR` and `SAC_CONTENT_KEY` give the agent a sealed
+   local content store. An M3 prompt's text is held there, and once its event is delivered the drain
+   asks `control-api` for a per-event grant and makes the one upload the grant permits
+   ([docs/02 §3, §10](../docs/02-ingest-and-transport.md)). Without them an M3 observation is refused.
+
 The remaining deployment work is operator-side: an MDM deliverer for the bundle and CA pair, and the
-signed artefact. `endpoint/testlab/` runs the whole chain on Linux in a container and asserts the
-trust store, interception and the shim end to end.
+signed artefact. `endpoint/testlab/` runs interception, trust and the shim on Linux in a container.
+On Windows the whole chain above runs from one install: `node installer/lab-msi.mjs` plays the MDM's
+part for the local auth lab and builds an MSI that installs the service with all six steps
+configured ([installer/README.md](../installer/README.md)). That path was exercised on Windows 11
+with the real Claude Code CLI: prompts were captured, classified, delivered, uploaded under a grant
+and read back through `content-vault`.
 
 ## What is here
 
 | Directory | What it is |
 |---|---|
 | [protocol/](protocol/README.md) | The device-side wire and IPC contract, owned by the Lead. Envelope, frames, spool records, native messaging, batch shapes. No component redefines these shapes. |
-| [capture-core/](capture-core/README.md) | The privileged agent: providers, mode resolution, envelope minting, policy store, spool wiring, the native-messaging host, and the device-to-cloud drain. One static Go binary per platform; on Windows it hosts the service itself (`--service`). |
+| [capture-core/](capture-core/README.md) | The privileged agent: providers, mode resolution, envelope minting, policy store, spool wiring, the native-messaging host, the M3 local content store, and the device-to-cloud drain. One static Go binary per platform; on Windows it hosts the service itself (`--service`). |
 | [capture-spool/](capture-spool/README.md) | The only durable store on the device: bounded, encrypted at rest, append-only, single-writer. Implements `protocol.Store`. |
 | [classifier-host/](classifier-host/README.md) | Rules, validators and model over bytes handed to it, compiled from one Go source to native and `js/wasm`, with document parsing in an isolated child. |
 | [canon/](canon/README.md) | Unicode NFC — step C3 of the `sac-canon-1` contract — with tables generated from and checked against Node's ICU. |
@@ -79,6 +92,13 @@ from the API's per-event outcome. It is **opt-in** (`--device-endpoint`): with n
 in [ingestion/](../ingestion), not here; the device never holds a database credential
 ([ADR 0001](../docs/adr/0001-one-validating-write-path-collectors-hold-no-database-credential.md)).
 
+Content takes a different path from events, and only at M3. The envelope never carries prompt text
+at any mode. An M3 prompt's content is sealed into
+[`capture-core/contentstore/`](capture-core/contentstore/README.md) and stays on the device; the
+drain requests a grant for it only after its event has been delivered, because a grant is decided
+about an event the server already has. A granted object is sealed under the key the grant carries
+and written once; a denied one stays local until retention removes it.
+
 Policy is data: a signed bundle decides interception scope, loopback port maps, per-tool modes, the
 body cap and the kill switch. A bundle that fails verification never changes what the device is
 enforcing — the previous one stays in force, or the device runs at M0 with none.
@@ -108,7 +128,8 @@ end-to-end run.
 - **The server tier.** `ingest-api`, `control-api` and `content-vault` live in
   [ingestion/](../ingestion), [control/](../control) and [vault/](../vault). What *is* here is the
   device half of the write path — [`capture-core/drain/`](capture-core/drain/README.md) — which is
-  opt-in and delivers to `POST /v1/events`; the device holds no database credential.
+  opt-in, delivers events to `POST /v1/events`, and at M3 requests content grants from
+  `POST /v1/content/grant`; the device holds no database credential and never talks to the vault.
 - **Platform facilities are partly wired.** The OS trust store is wired
   ([capture-core/trust/](capture-core/trust/README.md)) when `--trust-install` is set, and removal is
   as reliable as installation. The **system proxy**, **DPAPI/Keychain key sealing** and a full

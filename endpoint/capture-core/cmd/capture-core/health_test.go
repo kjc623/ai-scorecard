@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -51,5 +53,58 @@ func TestHealthSnapshotSurfacesDrainDegraded(t *testing.T) {
 	}
 	if snap.Drain.Detail != protocol.DetailUpstreamUnreachable {
 		t.Fatalf("drain error_code = %q, want %q", snap.Drain.Detail, protocol.DetailUpstreamUnreachable)
+	}
+}
+
+// fakeProvider is a registry entry whose only job is to carry a route and a health row.
+type fakeProvider struct {
+	route protocol.Route
+	state protocol.CollectorState
+}
+
+func (p fakeProvider) Name() protocol.Route        { return p.route }
+func (p fakeProvider) Start(context.Context) error { return nil }
+func (p fakeProvider) Stop(context.Context) error  { return nil }
+func (p fakeProvider) Health() core.Health {
+	return core.Healthy(protocol.DetailNone, time.Now(), time.Now(), nil)
+}
+func (p fakeProvider) ApplyPolicy(policy.Bundle) error { return nil }
+
+// docs/01 §4.3: the collector name must come from ref.collector, so the health request cannot carry
+// a raw route name. This pins the mapping for the one route that differs most visibly.
+func TestHealthRequestMapsRoutesToCollectorCodes(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	reg := core.NewRegistry(time.Now, nil)
+	if err := reg.Add(fakeProvider{route: protocol.RouteProxyTLS}); err != nil {
+		t.Fatalf("reg.Add: %v", err)
+	}
+	reg.StartAll(context.Background())
+
+	svc := &service{
+		cfg:    Config{DeviceID: "device-1"},
+		log:    logger,
+		reg:    reg,
+		host:   &classifierHostController{},
+		sink:   &lazySink{spool: &spoolHolder{}},
+		result: policy.Result{},
+	}
+	hc := newHealthChannel(Config{DeviceID: "device-1"}, logger, svc)
+	req := hc.healthRequest()
+	if err := req.Validate(); err != nil {
+		t.Fatalf("built health request is invalid: %v", err)
+	}
+
+	names := map[string]bool{}
+	for _, c := range req.Collectors {
+		names[c.Collector] = true
+		if strings.Contains(c.Collector, ".") || strings.Contains(c.Collector, "-") {
+			t.Errorf("collector %q is not a ref.collector code", c.Collector)
+		}
+	}
+	if !names["egress_proxy"] {
+		t.Errorf("proxy.tls did not map to egress_proxy: %v", names)
+	}
+	if !names["classifier_host"] {
+		t.Errorf("classifier-host did not report a coverage row: %v", names)
 	}
 }

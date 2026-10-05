@@ -23,14 +23,17 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/shadow-ai-capture/device/protocol"
 
 	"github.com/shadow-ai-capture/control-api/internal/apierr"
+	"github.com/shadow-ai-capture/control-api/internal/content"
 	"github.com/shadow-ai-capture/control-api/internal/dpop"
 	"github.com/shadow-ai-capture/control-api/internal/enrol"
+	"github.com/shadow-ai-capture/control-api/internal/health"
 	"github.com/shadow-ai-capture/control-api/internal/store"
 	"github.com/shadow-ai-capture/control-api/internal/token"
 )
@@ -47,6 +50,14 @@ type Server struct {
 	Store    store.Store
 	Logger   *slog.Logger
 	Now      func() time.Time
+
+	// Content is the grant path (§5.5, §10). Nil when the deployment has no content vault to ask:
+	// the routes then answer 503 rather than deciding a grant nothing could honour.
+	Content *content.Service
+
+	// Health is the health channel (§5.4). Nil only in a build or test that does not wire it; the
+	// route then answers 503 rather than silently dropping a report.
+	Health *health.Service
 }
 
 // New builds a server.
@@ -62,6 +73,11 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/enrol", s.handleEnrol)
 	mux.HandleFunc("/v1/token", s.handleToken)
+	mux.HandleFunc("/v1/health", s.handleHealth)
+	mux.HandleFunc("/v1/content/grant", s.handleContentGrant)
+	// Not a device route: the edge does not forward it. The storage layer calls it when an upload
+	// lands, and authenticates with the upload signing key.
+	mux.HandleFunc("/internal/v1/content/finalise", s.handleContentFinalise)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -134,6 +150,135 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, resp)
 }
 
+// handleHealth is POST /v1/health (§5.4). The device authenticates with its current credential; the
+// tenant and device come from that credential, never from the body.
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		s.writeError(w, apierr.New(http.StatusMethodNotAllowed, apierr.CodeInvalidRequest, "POST is required"))
+		return
+	}
+	if s.Health == nil {
+		s.writeError(w, apierr.New(http.StatusServiceUnavailable, apierr.CodeUnavailable, "the health channel is not configured on this deployment"))
+		return
+	}
+	body, ok := s.readBody(w, r)
+	if !ok {
+		return
+	}
+	var req protocol.HealthRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		s.writeError(w, apierr.New(400, apierr.CodeSchemaViolation, "the health body is not valid JSON"))
+		return
+	}
+	cur, err := s.resolveCurrent(r)
+	if err != nil {
+		s.writeError(w, err)
+		return
+	}
+	resp, err := s.Health.Report(r.Context(), cur.TenantID, cur.DeviceID, req)
+	if err != nil {
+		s.writeError(w, err)
+		return
+	}
+	s.Logger.Info("control: health report recorded", "tenant", cur.TenantID, "device", cur.DeviceID,
+		"collectors", len(req.Collectors))
+	s.writeJSON(w, http.StatusOK, resp)
+}
+
+// handleContentGrant is POST /v1/content/grant (§5.5). The device authenticates with its current
+// credential; the tenant and device come from that credential, never from the body.
+func (s *Server) handleContentGrant(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		s.writeError(w, apierr.New(http.StatusMethodNotAllowed, apierr.CodeInvalidRequest, "POST is required"))
+		return
+	}
+	if s.Content == nil {
+		s.writeError(w, apierr.New(http.StatusServiceUnavailable, apierr.CodeUnavailable, "content grants are not configured on this deployment"))
+		return
+	}
+	body, ok := s.readBody(w, r)
+	if !ok {
+		return
+	}
+	var req protocol.ContentGrantRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		s.writeError(w, apierr.New(400, apierr.CodeSchemaViolation, "the grant body is not valid JSON"))
+		return
+	}
+	cur, err := s.resolveCurrent(r)
+	if err != nil {
+		s.writeError(w, err)
+		return
+	}
+	resp, err := s.Content.Decide(r.Context(), cur.TenantID, cur.DeviceID, req, publicBase(r))
+	if err != nil {
+		s.writeError(w, err)
+		return
+	}
+	s.Logger.Info("control: content grant decided", "tenant", cur.TenantID, "device", cur.DeviceID,
+		"event", req.EventID, "state", resp.State, "reason", resp.Reason)
+	s.writeJSON(w, http.StatusOK, resp)
+}
+
+// handleContentFinalise is the finaliser's entry point (§10.4): the storage layer reports an
+// upload, and the object is promoted only if it matches a live grant and its declared digest. A
+// rejection is a 422, which tells the storage layer to delete the staged bytes.
+func (s *Server) handleContentFinalise(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		s.writeError(w, apierr.New(http.StatusMethodNotAllowed, apierr.CodeInvalidRequest, "POST is required"))
+		return
+	}
+	if s.Content == nil {
+		s.writeError(w, apierr.New(http.StatusServiceUnavailable, apierr.CodeUnavailable, "content grants are not configured on this deployment"))
+		return
+	}
+	body, ok := s.readBody(w, r)
+	if !ok {
+		return
+	}
+	if !s.Content.VerifyBody(body, r.Header.Get("X-Sac-Upload-Signature")) {
+		s.writeError(w, apierr.New(http.StatusUnauthorized, apierr.CodeInvalidRequest, "the finalise call is not signed by the storage layer"))
+		return
+	}
+	var report content.UploadReport
+	if err := json.Unmarshal(body, &report); err != nil {
+		s.writeError(w, apierr.New(400, apierr.CodeSchemaViolation, "the finalise body is not valid JSON"))
+		return
+	}
+	submissionID, err := s.Content.Finalise(r.Context(), report)
+	if err != nil {
+		if errors.Is(err, content.ErrUploadRejected) {
+			s.Logger.Warn("control: upload rejected", "grant", report.GrantID, "object", report.ObjectID, "error", err)
+			s.writeError(w, apierr.New(http.StatusUnprocessableEntity, apierr.CodeInvalidRequest, "the upload does not match a live grant"))
+			return
+		}
+		s.writeError(w, apierr.Internal(err))
+		return
+	}
+	s.Logger.Info("control: content object stored", "tenant", report.TenantID, "event", report.EventID,
+		"object", report.ObjectID, "bytes", report.SizeBytes)
+	s.writeJSON(w, http.StatusOK, map[string]string{"state": "uploaded", "object_id": report.ObjectID, "submission_id": submissionID})
+}
+
+// publicBase is the scheme and host the device reached this service on, as the edge reports it.
+func publicBase(r *http.Request) string {
+	scheme := r.Header.Get("X-Forwarded-Proto")
+	if scheme == "" {
+		scheme = "https"
+		if r.TLS == nil {
+			scheme = "http"
+		}
+	}
+	host := r.Header.Get("X-Forwarded-Host")
+	if host == "" {
+		host = r.Host
+	}
+	return scheme + "://" + host
+}
+
 // readBody enforces the size cap and returns the bytes. It answers the caller itself on failure.
 func (s *Server) readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 	r.Body = http.MaxBytesReader(w, r.Body, MaxBodyBytes)
@@ -177,6 +322,11 @@ func (s *Server) clientCertificate(r *http.Request) *x509.Certificate {
 	header := r.Header.Get(protocol.HeaderClientCert)
 	if header == "" {
 		return nil
+	}
+	// The edge percent-encodes the PEM so it survives as one header value; a gateway that forwards
+	// it raw is accepted as it is.
+	if unescaped, err := url.QueryUnescape(header); err == nil && strings.Contains(unescaped, "-----BEGIN") {
+		header = unescaped
 	}
 	// The edge forwards the certificate as PEM; the first CERTIFICATE block is the leaf.
 	for {

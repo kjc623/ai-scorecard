@@ -1,8 +1,7 @@
 // scenarios.js — the switchable stub behind the preview.
 //
 // One transport whose scenario can change at runtime, so the state gallery works without
-// re-creating the dashboard (which would throw away the persistent coverage strip — the thing the
-// gallery exists to show).
+// re-creating the dashboard.
 //
 // In production this file is not used at all: `boot({api})` takes a real api over httpTransport.
 

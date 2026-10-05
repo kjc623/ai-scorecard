@@ -15,13 +15,18 @@ Its two jobs, per §4.5's table:
 
 ## What it writes
 
-- a CA bundle from the bundle's `interception.root_ca_pem` (mode 0600);
+- a CA bundle from the bundle's `interception.root_ca_pem` (mode 0600). On Windows the device root
+  is followed by every certificate in the machine's `ROOT` store (`roots_windows.go`); see "The
+  bundle replaces a trust list" below;
 - a managed profile exporting `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` (both cases),
   `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`,
   `NODE_USE_ENV_PROXY=1`, and (when `node_require`) `NODE_OPTIONS=--require <node-proxy.cjs>`;
 - on Linux a machine-environment file beside the profile; on macOS a marker-guarded loader line in
   `/etc/zshenv`; on Windows a `shim.cmd` and `setx /M` for each variable (a non-admin failure is
-  degraded, not fatal);
+  degraded, not fatal), deleted again from the machine environment when the provider stops. The
+  binary wires `trust.ExecRunner` as the command runner; before it did, the service logged "no
+  runner configured; machine environment not set", wrote the files, and no process ever inherited
+  them;
 - when the bundle sets `cli_shim.node_require`, a stdlib-only `node-proxy.cjs` and
   `NODE_OPTIONS=--require <path>`. The bootstrap subclasses `https.Agent` so `createConnection`
   issues a CONNECT to the proxy and honours `NO_PROXY`; it does **not** pass a `ca` option, because
@@ -39,6 +44,27 @@ export. (As with any environment change, a process that was already running when
 does not pick it up until it is restarted; that is standard for env-based configuration, and the
 health row's `shim_not_inherited` detail exists so a missing inheritance is visible rather than
 silent.)
+
+## The bundle replaces a trust list
+
+`NODE_EXTRA_CA_CERTS` adds to a runtime's roots. `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE` and
+`CURL_CA_BUNDLE` **replace** them. The proxy intercepts only the destinations in scope and
+blind-tunnels everything else with its real certificate, so a bundle holding the device root alone
+makes every out-of-scope HTTPS request fail verification in any runtime that reads one of those
+three. On Windows that was observed: with the machine environment set, Python `requests` could not
+reach `pypi.org` (and so neither could `pip`), while the intercepted host worked.
+
+So on Windows the bundle is the device root followed by the machine `ROOT` store, read through
+`CertOpenSystemStore`. With that, `requests` reached an out-of-scope host and the intercepted one.
+Two limits, both stated rather than hidden. Windows fetches rarely-used roots on demand, so the
+store holds the roots present now, not every root Windows would trust; a destination under a root
+the machine has never needed will still fail in those runtimes until something else pulls it in.
+And the bundle is written when the provider starts, so a root added later is not in it until the
+service restarts.
+
+On Linux and macOS the bundle is still the device root alone. `endpoint/testlab` does not show the
+problem because everything its clients reach is the intercepted upstream; the same replacement
+applies there to an out-of-scope destination and is not fixed.
 
 The files are staged under the bundle's `cli_shim.managed_dir`, the `--shim-dir` flag, or a per-OS
 default. Start is transactional: a failure removes everything it wrote, because a half-written
@@ -67,3 +93,9 @@ never touched by this provider — `trust` owns that.
 degraded causes, the environment-inherited check, the kill switch removing files and reporting
 `absent/killed`, `Start`/`Stop` idempotence, the Node bootstrap's shape, and the counters. A
 compile-time assertion pins `*Provider` to `core.Provider`.
+
+Three of these fail on Windows and did before the Windows work above:
+`TestStartWritesFilesWithContentAndPermissions` (asserts a POSIX `0600` mode), `TestNodeProxyScript`
+and `TestCounters` (both assert the Linux profile shape). `roots_windows.go` has no unit test: it
+reads the real machine store, and its evidence is the installed service on Windows 11, where the
+bundle held 58 certificates.

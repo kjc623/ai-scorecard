@@ -70,11 +70,13 @@ ignored**: silently dropping it would turn an attempted cross-tenant read into a
 while rejecting it makes the attempt an auditable failure. Enforcement is structural (forced row-level
 security, tenant leading every primary key), so a bug in the query layer cannot cross tenants.
 
-**Names are not resolved in v1.** The dashboard shows `user_ref` plus `department`, `population` and
-`manager_ref` from `ops.user_dim`; `directory_object_id_enc` exists so that subject export and erasure
-can resolve a person, and is deliberately not a naming facility. **ASSUMPTION:** the brief is silent on
-how an analyst learns which person a `user_ref` is; keeping names out of the store and out of our logs
-is the conservative reading, with name resolution a documented follow-on.
+**Names are shown where the tenant asks for them (ADR 0021).** The dashboard shows `user_ref` plus
+`department`, `population` and `manager_ref` from `ops.user_dim`; `directory_object_id_enc` exists so
+that subject export and erasure can resolve a person. As of ADR 0021 a tenant may also set
+`ops.tenant.device_identity = 'clear'`, which stores and shows the device hostname and the clear
+account name at submission time, alongside `user_ref`. The setting defaults to `clear`; a tenant that
+sets it to `hashed` stores only a hostname hash and no name, and the read falls back to `user_ref`.
+The earlier "no names in the store" position (assumption A8) is superseded by that record.
 
 ### 2.2 Authorisation roles
 
@@ -306,18 +308,22 @@ is what a tier rather than a global switch means.
 
 ### 3.5 Q5 — Which specific submissions hit a policy rule?
 
-- **Read path.** `mart.v_finding` — `mart.finding` ⋈ `ref.rule` (title) ⋈ `ingest.submission` ⋈
-  `ops.finding_review`, review state defaulting to `open`.
+- **Read path.** `mart.v_finding` — `mart.finding` ⋈ `ref.rule` (title, class, severity — present-tense)
+  ⋈ `ingest.submission` ⋈ `ops.finding_review`, review state defaulting to `open`.
 - **Key and cost.** The natural key `(tenant, submission_id, rule_id)` is why rebuilding `mart` cannot
   orphan an analyst's judgement, but it is not a time index: add `(tenant, detected_at DESC,
-  submission_id DESC)` and `(tenant, severity, detected_at DESC)`. The source feed is served by the
-  partial index `ingest.submission (tenant, received_at DESC) WHERE policy_action <> 'logged'`. A
-  cursor page is ≤ 500 rows; the review join is on a small table.
+  submission_id DESC)`. The source feed is served by the partial index `ingest.submission (tenant,
+  received_at DESC) WHERE policy_action <> 'logged'`. A cursor page is ≤ 500 rows; the review join is
+  on a small table.
 - **Pagination.** Cursor `(detected_at DESC, submission_id DESC, rule_id ASC)` — all three columns,
   because `(submission_id, rule_id)` is what is unique.
-- **Severity is as-of-detection.** `mart.finding.severity` is materialised when the finding is raised,
-  so reclassifying a rule in `ref.rule` does not retroactively relabel history: a customer asking why
-  something was treated as critical last month gets the answer that was true last month.
+- **Severity and class are present-tense.** `mart.finding` stores the match — `(submission, rule,
+  detected_at, decided_locally, collection_mode)` — and `mart.v_finding` reads `class_code`, `severity`
+  and `title` from the current `ref.rule` row. The customer authors the rules and wants their current
+  definition to govern, so editing a rule shows on every finding that names it
+  (`backlog/03-findings/DECISIONS.md`). This is a deliberate departure from the earlier as-of-detection
+  stance and from the way `mart.agg_tool_period` leaves `ops.tool` state to read time: findings are a
+  match log an analyst triages, not a reconstructed history.
 - **Review state is never defaulted silently.** `open` means nobody has looked, not "reviewed and
   unremarkable"; the three values stay distinct (brief §3.2).
 
@@ -366,6 +372,13 @@ is what a tier rather than a global switch means.
 - **Pagination.** Cursor on `(device_id, collector)` — the row grain after the collector join, so the
   key is total; 50/500. Sorting by silence duration or dropped total is a
   bounded sort over the filtered set.
+- **The list is cursor-paged, so the page is not the fleet.** A card that counts only the loaded page
+  while another uses the server's fleet figure describes two different populations. The device read
+  therefore also returns **fleet-wide counts by status** (`reporting` · `degraded` · `stale` ·
+  `never_reported` · `tampered` · `revoked`) from the enrolled denominator, and both cards are computed
+  from it. **As built:** the companion statement is `meta.extras.device_status`, added by `q7_devices`
+  (`query/query-api/src/blocks.js`), and `query/dashboard/src/views.js` reads it. The buckets match the
+  row status function exactly, so a count and a row cannot disagree about what a device is.
 
 ### 3.8 Q8 — What happened in this window, for this tool or person?
 
@@ -482,9 +495,9 @@ CREATE INDEX audit_by_time           ON ops.audit (tenant_id, occurred_at DESC, 
 
 Plus `ops.device (tenant_id, last_seen_at)`, `ops.collector_state (tenant_id, state)`,
 `ops.coverage_snapshot (tenant_id, snapshot_day) WHERE NOT observed`, `ops.user_dim (tenant_id,
-department)`, `mart.finding (tenant_id, detected_at DESC, submission_id)`, `mart.finding (tenant_id,
-severity, detected_at DESC)`, `mart.agg_tool_user_period (tenant_id, tool_fingerprint, bucket_start
-DESC, bucket_size)`, `mart.agg_org_period (tenant_id, department, bucket_start DESC)`, and
+department)`, `mart.finding (tenant_id, detected_at DESC, submission_id)`,
+`mart.agg_tool_user_period (tenant_id, tool_fingerprint, bucket_start DESC, bucket_size)`,
+`mart.agg_org_period (tenant_id, department, bucket_start DESC)`, and
 `ops.audit (tenant_id, object_type, object_id)`.
 
 The search indexes — `search_text_tsv_gin (tenant_id, tsv)`,
@@ -506,7 +519,7 @@ this section is served by them, and no role in §2.2 except the vault may use th
 | `mart.agg_org_period` | `(…, department, tool_fingerprint, population)` | bucket, department, population, tool | Q3 |
 | `mart.agg_user_period` | `(…, user_ref)` | bucket, subject | Q6 |
 | `mart.agg_device_period` | `(…, device_id, collector)` | bucket, device, collector | Q7 |
-| `mart.finding` | `(tenant_id, submission_id, rule_id)` | finding, not an aggregate | Q5 |
+| `mart.finding` | `(tenant_id, submission_id, rule_id)` | finding (a match), not an aggregate; class/severity/title come from present-tense `ref.rule` at read time | Q5 |
 
 Nothing in `mart` holds workflow state — review decisions live in `ops.finding_review` under the same
 natural key, so a rebuild cannot destroy an analyst's judgement — and sanctioned state is joined at
@@ -600,6 +613,13 @@ ON CONFLICT (tenant_id, bucket_start, bucket_size, tool_fingerprint) DO UPDATE
 
 The other five use the same skeleton with a different grouping; conflict targets are §4.1's keys.
 
+**As built:** all five statements live in `aggregation/aggregator` (`internal/rollup`), together with
+the watermark upsert. The bucket size is a closed set (`hour`, `day`) that selects frozen SQL
+fragments rather than being concatenated into them, and the aggregate statements take three
+parameters: the tenant and the half-open window bounds. `mart.agg_org_period` writes the empty string
+for a NULL `ops.user_dim.population`, because the aggregate's primary key makes the column NOT NULL;
+the read side treats it as unmapped.
+
 | Target | Source | Notes |
 |---|---|---|
 | `agg_tool_user_period` | `ingest.submission` by (tool, user_ref) | Subject-bearing; suppressed below k (§6) |
@@ -627,9 +647,11 @@ brief sets a < 60 s visibility target for an event and < 2 s for a query, but no
 bound; three missed runs is where a number stops being a measurement and becomes history, and the state
 is displayed either way. A stale aggregate is **never** silently recomputed on the read path: reading
 through to raw events to "fix" it would violate C27 and would hide the aggregator's failure — the exact
-inversion of C25. Brief §8's 60-second target is met on the event and finding paths, which read
-`ingest.submission` directly and see a row as soon as its ingest transaction commits; the aggregate
-paths are bounded by the cadence and say so.
+inversion of C25. Brief §8's 60-second target is met on the event path, which reads
+`ingest.submission` directly and sees a row as soon as its ingest transaction commits. The finding
+path is derived: `mart.finding` is written by the aggregator's findings pass over the same trailing
+window (backlog/03-findings), so a finding appears within one cadence of the event, like every other
+`mart` read. The aggregate and finding paths are bounded by the cadence and say so.
 
 ### 4.6 Changes this document requires to `database/schema.sql`
 
@@ -695,7 +717,7 @@ COMMIT;                                 -- only now does the API write the respo
 | Trigger | Why |
 |---|---|
 | Any query that **filters on** `user_ref` | Asking about a person is the act being recorded, whatever comes back |
-| Any query that **returns** `user_ref` | The response identifies a subject |
+| Any query that **returns** `user_ref` (or the clear `subject_name`) | The response identifies a subject. As of ADR 0021 the device read returns the most recent user, so Devices is subject-level and audited |
 | Any single-submission or single-finding detail read | The row belongs to a person; the detail view is the most sensitive read in the product |
 | **Any aggregate whose scope resolves to fewer than k distinct subjects** — **k = 5** | A small cell *is* the subjects in it: with the org chart in hand, a cell a handful of people wide is a per-person fact. Five is the conventional small-cell floor and is below typical team size at this customer scale, so it does not blunt the product. Full rationale in §6.2; the schema anticipates the rule for `mart.agg_class_period` |
 | Any content retrieval (request, approval, reveal) | C16; the audit is written before content is returned |
@@ -704,8 +726,10 @@ COMMIT;                                 -- only now does the API write the respo
 | Any export run | One row per run, not per row (§5.3) |
 
 **Not** subject-level, and therefore not audited: tool- and class-level aggregates whose cells resolve
-to k or more subjects, device and coverage state, retention and hold lists, reference data. An audit
+to k or more subjects, coverage state, retention and hold lists, reference data. An audit
 log that records the ordinary dashboard is noise, and noise is how a real access goes unnoticed.
+(The device read was in this list until ADR 0021 made it return the device's most recent user; it is
+now subject-level, as the table above says.)
 
 The k-check costs nothing extra: §6 already computes each cell's distinct-subject count to decide
 suppression, so the same value decides the audit trigger. **The audit decision is made before
@@ -890,6 +914,18 @@ Question 9 is the one question that touches content, through exactly one route.
    request, separately audited.
 6. **Under a hold** (C35), content that would have expired is still retrievable and the record shows
    that the hold is why — a hold that silently extends retention is indistinguishable from a bug.
+
+**As built:** steps 1, 2, 4 and 5 run in the local auth lab, from the dashboard's Explore page. Its event
+panel offers the request when `content_state` is `uploaded`; `query-api` forwards
+`POST /v1/content/retrieval` to `content-vault`, which records the request, commits the audit rows
+(`content_retrieval_requested`, `_granted`, `_redeemed`, or `_refused`) before anything is read, issues a
+single-use grant and redeems it. Four things differ from the flow above. **Step 3 is not a decision:** the
+second approver is a name recorded on the request, which the vault requires to differ from the requester;
+no second person approves, and there is no `approval_pending` state. The roles of §4 are not enforced,
+because the requester is a development principal rather than an authenticated session. The content is
+relayed in `query-api`'s response body, because the vault does not mint a retrieval URL yet. And holds
+(step 6) are not consulted. The page shows what the user typed apart from the rest of the capture, and
+drops retrieved content when the event is closed.
 
 ### 8.2 Result states
 
@@ -1143,15 +1179,30 @@ violate, so it is designed as a lookup rather than as a leaderboard with the sor
 
 ### 11.3 Coverage and freshness are never buried
 
-Coverage renders as a persistent strip on every screen: devices reporting of devices enrolled, expected
-vs observed collectors, and the `gap_reason` breakdown (`not_enrolled`, `not_managed`,
+Coverage is said by a **banner under the page title** — devices reporting of devices enrolled,
+expected vs observed collectors, and the `gap_reason` breakdown (`not_enrolled`, `not_managed`,
 `client_bypassed_proxy`, `pinned_certificate`, `permission_denied`, `process_excluded`, `tampered`,
-`unknown`). `unknown` shows as a reason, not a blank — blank and unknown look identical on a dashboard
-and mean different things. Freshness renders **inside each metric tile** (`updated 3 min ago · complete
-to 10:00`), never only in a tooltip; because the API always returns the `freshness` block, a tile cannot
-render without it unless the UI discards data it was given. Where a window has no coverage the chart
-renders `not_yet_covered` hatching rather than a zero line, and a trend spanning a coverage gap renders
-the gap as a break in the series.
+`unknown`). `unknown` shows as a reason, not a blank — blank and unknown look identical on a
+dashboard and mean different things. Freshness renders **inside each metric tile** (`updated 3 min
+ago · complete to 10:00`), never only in a tooltip; because the API always returns the `freshness`
+block, a tile cannot render without it unless the UI discards data it was given. Where a window has
+no coverage the chart renders `not_yet_covered` hatching rather than a zero line, and a trend
+spanning a coverage gap renders the gap as a break in the series.
+
+**The product decision, recorded:** the persistent coverage-and-freshness strip was removed from the
+dashboard, and degraded coverage is said by the banner under the page title. This section is the
+design of record for the banner only; the strip is not built and is not to be reintroduced.
+
+**As built:** `ops.coverage_snapshot` is written by the aggregation job
+(`aggregation/aggregator/internal/rollup`), one row per enrolled (non-revoked) device per
+`ref.collector` per day, in the same run and transaction as the usage aggregates (docs/03 §5).
+`expected` is true for every device × collector in the fleet; `observed` is true when that collector
+reported `healthy` or `degraded` on that day (from `ops.collector_state.last_report_at`), and the
+`gap_reason` names `tampered` when that is what the collector said and `unknown` otherwise. Because
+`ops.collector_state` is current state rather than history, `observed` is **monotonic within a day**:
+a later run that reads a fresher `last_report_at` cannot rewrite an earlier day's answer back to
+"not observed". The read's default coverage window is the **current UTC day** when the query has no
+window of its own, so the Devices and Overview banners describe today rather than yesterday.
 
 ### 11.4 "Devices not reporting" and "degraded collection"
 
@@ -1159,7 +1210,10 @@ the gap as a break in the series.
 `ops.collector_state`, sorted by silence duration and `spool_dropped_total`. Its four liveness states
 stay distinct, and its central claim is C24's: an absence of events is ambiguous, a health signal is
 not. A device that has gone silent is a **row produced by the server**, not a gap an analyst must
-notice.
+notice. As of ADR 0021 each row is named by its hostname (the UUID on hover) and carries the user
+most recently active on it, the agent version and the effective collection mode, so a device is
+identified by something an operator recognises. Because the row names a user it is subject-level and
+the read is audited (§5.2).
 
 **Degraded collection** collects everything the collection paths report about themselves: per-collector
 state counts, spool depth and dropped totals (C22's visible undercount), the `degraded`-confidence share
@@ -1441,8 +1495,13 @@ does not touch.
 
 `POST /v1/content-search`, a separate endpoint from `/v1/query`, because it is a different kind of read:
 bounded text matching over a table this component cannot see, executed by the component that can.
-**As built:** `query-api` does not serve this route yet; it rejects a text predicate on `/v1/query`
-with an error that names it.
+**As built:** `query-api` serves this route as a forwarder (`src/http/content.js`): it adds the session's
+principal and a configured scope and passes the request to `content-vault`, which executes and audits it.
+It still rejects a text predicate on `/v1/query` with an error that names this endpoint. Only the
+term-or-phrase form is forwarded; the substring and fuzzy filename forms are not, and the device uploads
+no attachments to index. The response carries hits (`submission_id`, `snippet`, `rank`) and `truncated`,
+and **no index-coverage block**. The dashboard's Explore page is the surface: a prompt-text search box
+whose matches open the event they belong to.
 
 **What an analyst types** is a match expression, in one of three forms:
 
@@ -1480,7 +1539,7 @@ structural rather than conveniences:
   "coverage": { "submissions_in_scope": 412, "indexed": 399,
                 "not_indexed": { "not_captured": 6, "local_only": 0, "shredded": 7 } },
   "freshness": { "source": "ingest.search_text", "last_unit_at": "…", "state": "fresh" },
-  "data": [ { "submission_id": "…", "received_at": "…", "user_ref": "…", "tool": "claude_web",
+  "data": [ { "submission_id": "…", "received_at": "…", "user_ref": "…", "subject_name": "…", "hostname": "…", "tool": "claude_web",
               "unit_kind": "prompt_body", "rank": 0.0812,
               "fragments": [ { "offset": 412, "text": "…the wire transfer instruction…" } ] } ],
   "audit": { "entry_id": "…", "written_at": "…" } }
@@ -1607,7 +1666,7 @@ they are the parameters the brief leaves open.
 | A5 | Spike: ≥ 14 observed buckets, value > median + 4·MAD and ≥ 3× median | The brief says "changed or spiked" without defining it; median/MAD resists the flush day a mean would absorb |
 | A6 | Subject export p95 ≤ 4 h, hard bound 24 h; second approver only when content is included | §4.5 requires a bounded time without a number; the bound holds because subjects have hundreds-to-thousands of rows (D1) |
 | A7 | Export destination is Azure Blob in v1, behind a storage-writer interface | The brief says "the customer's own storage" without a cloud; the platform is Azure (S1) |
-| A8 | The dashboard displays `user_ref`, not personal names | The brief is silent; the encrypted directory id exists for export/erasure resolution, not naming |
+| A8 | ~~The dashboard displays `user_ref`, not personal names~~ **superseded by ADR 0021**: the dashboard shows a clear hostname and account name when the tenant's `device_identity` is `clear`, and `user_ref` otherwise | The brief is silent; the owner directed the reversal in ADR 0021, which keeps a `hashed` opt-out |
 | A9 | Reading `ops.audit` writes one audit row per query and is not re-audited | C30 says "every read of subject-level data"; a one-level per-query rule is the only terminating reading |
 | A10 | The M2 excerpt is part of the event record, not gated by the retrieval workflow | Brief §1.1 puts the excerpt on the wire at M2 by default; gating it would make M2 self-contradictory |
 | A11 | The < 30 s retrieval target runs from second approval to first byte | §8's "once granted" is the only measurable reading; approval latency is reported separately |

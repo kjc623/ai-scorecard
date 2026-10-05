@@ -319,3 +319,34 @@ func TestMemoryDPoPReplaySeen(t *testing.T) {
 		t.Fatalf("expired presentation = %v, %v; want false, nil", again, err)
 	}
 }
+
+// TestBatchStampsDeviceLastSeenMonotonically holds docs/04 §3.7: accepting a batch is what makes a
+// device alive, and an out-of-order batch (a spool flush, a retry) must not move last_seen_at
+// backwards and make a live device look quiet.
+func TestBatchStampsDeviceLastSeenMonotonically(t *testing.T) {
+	m := activeMemory(t)
+
+	newer := ladder.Prompt(ladder.PromptSpec{
+		EventID: ladder.DeterministicUUID(21), Tool: "seen-tool", OccurredAt: "2026-10-02T16:00:00Z",
+		Source: "ext.web_request", Mode: "m0", SizeBytes: 10, DedupKey: ladder.Hash('9'),
+	})
+	write(t, m, newer, "2026-10-02T16:00:05Z")
+	stamped, ok := m.LastSeenAt(ladder.TenantID, ladder.DeviceID)
+	if !ok {
+		t.Fatal("last_seen_at was not stamped by an accepted batch")
+	}
+	want := time.Date(2026, 10, 2, 16, 0, 5, 0, time.UTC)
+	if !stamped.Equal(want) {
+		t.Fatalf("last_seen_at = %s, want %s", stamped, want)
+	}
+
+	older := ladder.Prompt(ladder.PromptSpec{
+		EventID: ladder.DeterministicUUID(22), Tool: "seen-tool", OccurredAt: "2026-10-02T15:00:00Z",
+		Source: "ext.web_request", Mode: "m0", SizeBytes: 11, DedupKey: ladder.Hash('8'),
+	})
+	write(t, m, older, "2026-10-02T15:00:01Z")
+	after, _ := m.LastSeenAt(ladder.TenantID, ladder.DeviceID)
+	if !after.Equal(want) {
+		t.Fatalf("an older batch moved last_seen_at to %s, want it to stay %s", after, want)
+	}
+}

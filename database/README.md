@@ -19,6 +19,14 @@ conventional — forced row-level security on every tenant-scoped table, tenant-
 per-tenant content keys as an independent second layer. The full model is
 [docs/03-data-platform.md](../docs/03-data-platform.md).
 
+**A known gap in the grants.** `control-api`'s content grant path (docs/02 §5.5, §10) reads
+`ingest.observation`, updates `ingest.submission.content_state` and writes
+`ops.usage_daily.content_bytes_added`. `schema.sql` grants `sac_control` none of the three, so that
+path cannot run as its runtime role yet. It has only been run in the local device-auth lab, where every
+service connects as the database owner — which also means row-level security was not exercised there.
+`ops.grant` has no unique index on `(tenant_id, event_id)` for live grants, which docs/02 §5.5
+specifies.
+
 ## How it is verified
 
 The schema is not a claim. It is applied to a real PostgreSQL server and its properties are asserted

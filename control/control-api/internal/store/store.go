@@ -26,12 +26,14 @@ import (
 	"github.com/shadow-ai-capture/device/protocol"
 )
 
-// Tenant is the slice of ops.tenant the control path decides on.
+// Tenant is the slice of ops.tenant the control path decides on. DeviceIdentity is the tenant's
+// identity setting (ADR 0021): it is returned to the device and gates what the server stores.
 type Tenant struct {
 	TenantID        string
 	Status          string
 	IngestEnabled   bool
 	ResidencyRegion string
+	DeviceIdentity  protocol.DeviceIdentity
 }
 
 // Active reports whether the tenant may enrol or obtain a token. A suspended or closed tenant is
@@ -74,8 +76,15 @@ type Device struct {
 	MDMID                string
 	HardwareIdentityHash string
 	ResidencyRegion      string
-	EnrolledAt           time.Time
-	RevokedAt            *time.Time
+	// Device identity (ADR 0021). Hostname is the clear name and HostnameHash the hashed one; which
+	// is populated is decided by the tenant's device_identity setting. AgentVersion and ManagedState
+	// are reported by the device.
+	Hostname     string
+	HostnameHash string
+	AgentVersion string
+	ManagedState string
+	EnrolledAt   time.Time
+	RevokedAt    *time.Time
 }
 
 // Credential is the slice of ops.device_credential the control path writes and reads. Type is the
@@ -133,7 +142,41 @@ var (
 	ErrCredentialUnknown = errors.New("store: device credential unknown")
 	ErrCredentialRevoked = errors.New("store: device credential revoked")
 	ErrCredentialExpired = errors.New("store: device credential expired")
+	// ErrUnknownCollector is a report naming a collector ref.collector does not hold. It is a
+	// validation failure, not an infrastructure one: the report is refused rather than stored under
+	// a coverage path nobody can interpret (docs/01 §4.3).
+	ErrUnknownCollector = errors.New("store: collector unknown")
 )
+
+// CollectorState is one collector's health row as the health channel reports it (docs/02 §5.4).
+// State is the closed healthy|degraded|absent|tampered; Detail is the closed error-code vocabulary
+// carried to ops.collector_state.error_code; the rest is the row's own shape. SpoolDepth,
+// SpoolCapacity and SpoolDroppedTotal are device-level in the report but per-collector rows in the
+// schema, so the caller repeats them.
+type CollectorState struct {
+	Collector         string
+	State             string
+	Version           string
+	Permissions       json.RawMessage
+	LastSuccess       *time.Time
+	SpoolDepth        *int64
+	SpoolCapacity     *int64
+	SpoolDroppedTotal int64
+	ErrorCode         string
+	Detail            json.RawMessage
+}
+
+// DeviceHealth is the device-level part of one health report (ADR 0021). Empty fields are left
+// unchanged. The clear Hostname is applied only when the tenant's device_identity is 'clear' and
+// HostnameHash only when it is 'hashed', which the caller resolves; HostnameHash exists so a
+// 'hashed' tenant still records a device-supplied hash rather than losing the value.
+type DeviceHealth struct {
+	Hostname       string
+	HostnameHash   string
+	AgentVersion   string
+	CollectionMode string
+	ManagedState   string
+}
 
 // Store is the persistence seam.
 type Store interface {
@@ -159,6 +202,12 @@ type Store interface {
 	DeviceCredentialByDevice(ctx context.Context, tenantID, deviceID string) (Credential, error)
 	// MarkEnrolmentTokenUsed settles a token after a successful enrolment (§5.1, single-use).
 	MarkEnrolmentTokenUsed(ctx context.Context, tenantID, tokenHash string, at time.Time) error
+	// RecordHealth upserts one ops.collector_state row per report, updates the device-level identity
+	// fields it was given, and stamps the device's last_seen_at, in one transaction (§5.4 step 4,
+	// docs/04 §3.7). A report naming a collector not in ref.collector returns ErrUnknownCollector
+	// and writes nothing. The per-collector guard means a stale report never overwrites a newer one,
+	// so a retry or an out-of-order replay is harmless.
+	RecordHealth(ctx context.Context, tenantID, deviceID string, at time.Time, reports []CollectorState, dev DeviceHealth) error
 	// Close releases resources.
 	Close() error
 }

@@ -53,6 +53,12 @@ type Config struct {
 	DeviceID     string
 	MDMID        string
 	AgentVersion string
+	// Hostname is the clear machine name, sent at enrolment only while the tenant's device_identity
+	// is 'clear'; the caller empties it when the setting is 'hashed' (ADR 0021). HostnameHash is the
+	// hashed form, sent instead when the setting is 'hashed'. ManagedState is the agent's report.
+	Hostname     string
+	HostnameHash string
+	ManagedState string
 
 	BackoffBase time.Duration
 	BackoffCap  time.Duration
@@ -72,6 +78,10 @@ type Config struct {
 	// --tenant-id/--device-id flags are only the no-drain/local fallback and a disagreement is
 	// logged rather than ignored.
 	OnEnrolled func(*credential.Credential)
+
+	// Content, when non-nil, is the M3 local content store: delivered M3 events become grant
+	// requests, and a granted one is uploaded (docs/02 §10). Nil means the device holds no content.
+	Content ContentSource
 }
 
 // Result is what one bounded drain pass achieved.
@@ -367,6 +377,10 @@ func (d *Drainer) Drain(ctx context.Context, deadline time.Time) (Result, error)
 			}
 		}
 
+		// Content rides the same pass as events, after them: an event delivered by the previous
+		// iteration is requestable in this one.
+		d.contentPass(ctx, deadline)
+
 		entries, err := store.Peek(protocol.MaxBatchEvents)
 		if err != nil {
 			return res, err
@@ -507,6 +521,7 @@ func (d *Drainer) settle(store protocol.Store, bb *builtBatch, resp *protocol.Ev
 		case protocol.SpoolDelivered:
 			if err := store.Settle(seq, protocol.SpoolDelivered, ""); err == nil {
 				res.Delivered++
+				d.noteDelivered(bb.entries[i].Payload)
 			}
 		case protocol.SpoolRejected:
 			if err := store.Settle(seq, protocol.SpoolRejected, string(r.Reason)); err == nil {

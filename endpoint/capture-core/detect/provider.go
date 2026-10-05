@@ -457,7 +457,7 @@ func (p *Provider) emitDetection(ctx context.Context, tool, basis string, proc P
 		return
 	}
 	_, err = p.cfg.Pipeline.EmitEnvelope(ctx, core.EnvelopeInput{
-		Identity:          core.Identity{TenantID: p.tenant(), DeviceID: p.device(), UserRef: p.cfg.Agent.UserRef},
+		Identity:          core.Identity{TenantID: p.tenant(), DeviceID: p.device(), UserRef: p.cfg.Agent.UserRef, SubjectName: p.cfg.Agent.SubjectName},
 		Kind:              protocol.KindModelDetection,
 		Route:             protocol.RouteProcDetect,
 		Mode:              res.Mode,
@@ -511,7 +511,7 @@ func (p *Provider) emitRollup(ctx context.Context, tool string, now time.Time) {
 	}
 	bytesTotal := int64(0)
 	_, err = p.cfg.Pipeline.EmitEnvelope(ctx, core.EnvelopeInput{
-		Identity:          core.Identity{TenantID: p.tenant(), DeviceID: p.device(), UserRef: p.cfg.Agent.UserRef},
+		Identity:          core.Identity{TenantID: p.tenant(), DeviceID: p.device(), UserRef: p.cfg.Agent.UserRef, SubjectName: p.cfg.Agent.SubjectName},
 		Kind:              protocol.KindUsageRollup,
 		Route:             protocol.RouteProcDetect,
 		Mode:              res.Mode,

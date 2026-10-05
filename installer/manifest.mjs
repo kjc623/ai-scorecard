@@ -87,6 +87,10 @@ export const CONFIG = [
   { env: 'SAC_TENANT_ID', flag: '--tenant-id', kind: 'string', default: '', required: true, mustFill: true, desc: 'tenant stamped on every envelope (from enrolment, docs/01 §13.1)' },
   { env: 'SAC_DEVICE_ID', flag: '--device-id', kind: 'string', default: '', required: true, mustFill: true, desc: 'device stamped on every envelope; must match the issued credential' },
   { env: 'SAC_USER_REF', flag: '--user-ref', kind: 'string', default: 'device-user', desc: 'pseudonymous subject reference, never a name or e-mail' },
+  { env: 'SAC_HOSTNAME', flag: '--hostname', kind: 'string', default: '', desc: 'clear machine name; empty resolves the OS hostname (ADR 0021)' },
+  { env: 'SAC_SUBJECT_NAME', flag: '--subject-name', kind: 'string', default: '', desc: 'clear account name on each submission; empty resolves the OS user (ADR 0021)' },
+  { env: 'SAC_MANAGED_STATE', flag: '--managed-state', kind: 'enum', values: ['managed', 'unmanaged', 'unknown'], default: 'unknown', desc: 'whether the device is under MDM; no resolver in this build, so it is the agent report' },
+  { env: 'SAC_DEVICE_IDENTITY', flag: '--device-identity', kind: 'enum', values: ['clear', 'hashed'], default: 'clear', desc: "tenant identity setting to act on; 'hashed' sends no clear hostname or name (ADR 0021)" },
   { env: 'SAC_POPULATION', flag: '--population', kind: 'string', default: '', desc: 'user population for scope resolution (may be empty)' },
   { env: 'SAC_SPOOL_DIR', flag: '--spool-dir', kind: 'path', default: '<statedir>/spool', required: true, desc: "the agent's only durable store; opened before any provider starts" },
   { env: 'SAC_SPOOL_KEY', flag: '--spool-key', kind: 'path', default: '<statedir>/spool.key', required: true, desc: 'spool key file; must be OUTSIDE the spool directory' },
@@ -102,6 +106,13 @@ export const CONFIG = [
   // Classifier host.
   { env: 'SAC_CLASSIFIER_ADDRESS', flag: '--classifier-address', kind: 'string', default: '', desc: 'transport:path of the classifier host; empty means rules-only' },
   { env: 'SAC_CLASSIFIER_BUDGET', flag: '--classifier-budget', kind: 'duration', default: '2s', desc: 'budget for one classification' },
+  { env: 'SAC_CLASSIFIER_RELEASE', flag: '--classifier-release', kind: 'path', default: '', desc: 'signed classifier release directory; with no SAC_CLASSIFIER_ADDRESS the agent runs the installed classifier-host as a child' },
+  { env: 'SAC_CLASSIFIER_PUBKEY', flag: '--classifier-pubkey', kind: 'string', default: '', desc: 'hex-encoded Ed25519 public key the classifier release must verify under' },
+
+  // The M3 local content store (docs/01 §11.3). Empty by default: a device holds content only when
+  // its enrolment profile gives it somewhere to hold it.
+  { env: 'SAC_CONTENT_DIR', flag: '--content-dir', kind: 'path', default: '', desc: 'M3 local content store; empty means the device holds no content and refuses M3 observations' },
+  { env: 'SAC_CONTENT_KEY', flag: '--content-key', kind: 'path', default: '', desc: 'key file the content store is sealed under; must be OUTSIDE SAC_CONTENT_DIR' },
 
   // Providers.
   { env: 'SAC_PROXY_TLS', flag: '--proxy-tls', kind: 'bool', default: 'true', desc: 'run proxy.tls (the egress interceptor)' },

@@ -46,7 +46,7 @@ The service drives `core.Supervisor`, which encodes §3.5 literally and records 
 | 2b identity resolved | load the sealed credential if present and adopt its server-minted `tenant_id`/`device_id` (a disagreement with the flags is logged and the credential wins); with no credential and a drain configured, a bounded synchronous enrolment obtains it. An offline device leaves the identity unresolved and the pipeline refuses to mint rather than stamping the flags. |
 | 3 `proc.detect` | only with `--proc-detect`; see the enumeration gap below |
 | 4 `cli.shim` | with `--cli-shim`: writes the managed CA bundle and shell profile from the bundle's `cli_shim` block and `interception.root_ca_pem`; no ports |
-| 5 classifier-host | `classifierlink` connects to `--classifier-address` and completes the version handshake |
+| 5 classifier-host | `classifierlink` connects to `--classifier-address` and completes the version handshake; or, with `--classifier-release` and no address, starts the `classifier-host` beside this binary as a child on stdio and handshakes with that |
 | 6 `proxy.tls` | listens on `--proxy-tls-listen` (or the bundle's `interception.proxy_listen`); with `--trust-install` it installs the device CA from `--ca-cert`/`--ca-key` (or the bundle root) into the OS store; the system proxy is pointed at it only if a `SystemProxy` is wired, which this build does not do |
 | 7 `proxy.loopback` | binds the bundle's port map **last**, and only after its own upstream preflight succeeds |
 
@@ -78,10 +78,12 @@ assembled into a partial file.
 | Flag | Meaning |
 |---|---|
 | `--spool-dir`, `--spool-key`, `--spool-bounds` | the spool, its key file (must be outside the spool directory), and the bound profile |
-| `--tenant-id`, `--device-id`, `--user-ref`, `--population` | the enrolled identity stamped on every envelope and the population used for scope resolution |
+| `--tenant-id`, `--device-id`, `--user-ref`, `--population` | the identity and the population used for scope resolution. With `--device-endpoint` set, `tenant_id` and `device_id` on every envelope come from the issued credential and these two flags are only checked against it; with no endpoint they are the identity |
 | `--retention` | device-side retention for spooled observations (default `720h`) |
 | `--bundle`, `--policy-key`, `--policy-key-id` | the signed bundle and the pinned Ed25519 key; omit the bundle to run at M0 |
-| `--classifier-address`, `--classifier-budget` | `unix:PATH`, `pipe:NAME`, or `tcp:127.0.0.1:PORT` (loopback only), and the per-classification budget. Empty address means rules-only, `confidence: degraded` |
+| `--classifier-release`, `--classifier-pubkey` | with no `--classifier-address`, run the `classifier-host` installed beside this binary as a child on stdio, loading this signed release under this key |
+| `--content-dir`, `--content-key` | the M3 local content store and the key file it is sealed under (which must be outside the directory). Empty means the device holds no content and refuses M3 observations |
+| `--classifier-address`, `--classifier-budget` | `unix:PATH`, `pipe:NAME`, or `tcp:127.0.0.1:PORT` (loopback only), and the per-classification budget. An empty address with no `--classifier-release` means rules-only, `confidence: degraded` |
 | `--proxy-tls`, `--proxy-tls-listen`, `--proxy-tls-canary` | the interceptor; without a canary it reports `degraded detail=tls_probe_failed` rather than healthy |
 | `--proxy-loopback`, `--proc-detect` | the other two providers |
 | `--trust-install`, `--trust-store`, `--trust-remove-on-stop` | install the per-device CA into the OS trust store (`root` or Windows `enterprise`), and remove it on shutdown. Off by default: the wrong store fails silently, so installing is opt-in |
@@ -148,6 +150,22 @@ to *new* processes), that `api.anthropic.com` is in the bundle's interception sc
 proxy is listening. A process that was already running when the shim started will not pick the
 environment up until it restarts.
 
+This was run for real on Windows 11 through the installed service. The Claude Code CLI there is a
+native binary, not Node: it honours `HTTPS_PROXY` itself and trusts the device CA through
+`NODE_EXTRA_CA_CERTS` or the OS store. One prompt is several requests — the message itself, smaller
+side requests, and telemetry batches to the same host — and each is an observation, so one prompt
+is several events. The route's extractor finds the user-authored text in some of them and not in
+others; the ones it cannot read are emitted `confidence: degraded` and, at M3, hold the request
+body as observed.
+
+The machine environment is not scoped to AI tools. Every process started after the shim runs sends
+its HTTPS through the proxy, which blind-tunnels whatever is outside the interception scope, and
+every runtime that reads `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE` or `CURL_CA_BUNDLE` takes its trust
+list from the shim's bundle. That is why the bundle on Windows carries the machine's roots as well
+as the device root ([cli/README.md](../../cli/README.md)). With the service installed, Node `fetch`
+and `https`, `curl.exe`, `git`, Python `urllib` and Python `requests` were each checked against a
+host outside the scope and worked.
+
 ## Running it as a service
 
 **Windows.** `capture-core --service` hosts the process under the Service Control Manager itself: it
@@ -158,7 +176,12 @@ shuts down in §3.5 order on a stop or shutdown control. The installer registers
 so no external wrapper (NSSM/WinSW) is required. It is configured by a file, not a command line: the
 installer puts the enrolment profile at `%ProgramData%\ShadowAICapture\capture-core.env` and the
 service points at it with `--config-file`, so a secret or a path with spaces needs no quoting and
-reconfiguration is a file edit plus a service restart. Recovery / restart-on-failure is the SCM's action;
+reconfiguration is a file edit plus a service restart. The installer starts the service at the end of
+the install and at every boot. Under the SCM there is no console, so the log goes to `service.log`
+beside the health file, and the startup health snapshot that a console run prints is not written
+(the log says so). The `classifier-host` child, when there is one, is started by this process and
+ends with it; `cli.shim`'s `setx /M` and the trust install run as LocalSystem, which is what lets
+them write machine scope. Recovery / restart-on-failure is the SCM's action;
 no recovery action may restart in a tight loop, because §3.5 requires a crash loop to stop and report
 `absent` with the loop count. Without `--service` the binary is a console application that runs in the
 foreground and stops on Ctrl-C. `--service` is Windows-only: a non-Windows binary refuses it with a
@@ -168,10 +191,12 @@ clear error.
 `RestartSec` ≥ 5s. Nothing in the binary forks or daemonises: it expects to be the supervised process
 and exits non-zero only when it refuses to start.
 
-**Nothing is installed by this repository or by `--selftest`.** No service, no system proxy, no
-scheduled task. The **only** exception is an explicit `--trust-install` (or the equivalent
-`SAC_TRUST_INSTALL=true` in the enrolment profile), which installs the per-device CA the enrolment
-profile points at and, with `--trust-remove-on-stop`, removes it again.
+**Nothing is installed by building or by `--selftest`.** No service, no system proxy, no scheduled
+task. Two things change a machine, and both are asked for explicitly. `--trust-install` (or
+`SAC_TRUST_INSTALL=true` in the enrolment profile) installs the per-device CA the profile points at
+and, with `--trust-remove-on-stop`, removes it again. `--cli-shim` on Windows writes the proxy and
+CA variables into the machine environment and deletes them when the provider stops. The installer
+under [installer/](../../../../installer/README.md) is what registers a service.
 
 ## What is NOT VERIFIED on this host
 
@@ -185,8 +210,10 @@ profile points at and, with `--trust-remove-on-stop`, removes it again.
   as the native host, and `extension/tools/in-browser-check.evidence.txt` records the round trip.
 - **No real system proxy.** It is behind the `core.SystemProxy` interface and this build wires no
   implementation, so `proxy.tls` is not pointed at automatically. The **trust store is wired**:
-  `--trust-install` drives `trust/` on linux/darwin/windows, with the Windows and macOS command
-  paths covered by unit tests and the Linux path exercised for real by `endpoint/testlab/`.
+  `--trust-install` drives `trust/` on linux/darwin/windows. The Linux path is exercised for real by
+  `endpoint/testlab/`, and the Windows path by the installed lab MSI on Windows 11 (the root is
+  installed when the service starts and gone after an uninstall). The macOS command path is covered
+  by unit tests only.
 - **No DPAPI/Keychain sealing.** The spool key is a file protected by filesystem ACLs; the platform
   wrapping described in §12 is a `KeyProvider` implementation that does not exist yet, and the pinned
   CA key is a `0600` file that reports unsealed rather than implying protection it does not have.
@@ -201,12 +228,30 @@ profile points at and, with `--trust-remove-on-stop`, removes it again.
   at its deadline. With it set, the drain is the real ADR 0020 device-to-cloud path (enrol, DPoP
   token or x509 leaf, batched `POST /v1/events`), proven end-to-end against the local auth lab.
   Health is written to a file, not `POST /v1/health`.
-- **No M3 content store.** An M3 observation is refused rather than emitted without the content it
-  says it holds; `content-vault` is a server-side component.
+- **The M3 content store is opt-in.** With `--content-dir`/`--content-key` set, an M3 prompt's content
+  is held in a sealed local store (`contentstore`), and once its event is delivered the drain asks
+  `control-api` for a per-event grant, seals the object under the key the grant carries and makes the
+  one upload (docs/02 §3, §10) — proven end to end against the local auth lab on Windows. A denial
+  leaves the content on the device until local retention removes it. Without the two flags an M3
+  observation is still refused rather than emitted without the content it says it holds. What is held
+  is the prompt text where the route could identify the user-authored segment, and the request body
+  as observed where it could not. Attachments are not held.
+  It was run with an `x509` credential; the `dpop` branch of the grant request is written and has not
+  been run.
+- **The classifier child has no supervisor.** With `--classifier-release` the agent starts
+  `classifier-host` on stdio and re-spawns it on the next request after it dies, with no backoff and
+  no crash-loop limit. It was run through the installed Windows service with the development rules
+  release; nothing was measured about its latency there.
 - **Enrolment is opt-in.** With `--device-endpoint` set, the drain enrols on first start (a PKCS#10
   CSR in `x509` mode, the public JWK plus a proof in `dpop` mode) and seals the issued credential
-  beside the spool; the envelope identity is still the flags. Rotation (§2.2's 60/90-day overlap) is
-  a control-api concern and is not implemented here.
+  beside the spool. The envelope identity is the issued one: until a credential exists the pipeline
+  refuses to mint (`identity_unresolved`) rather than stamping the flags. Rotation (§2.2's 60/90-day
+  overlap) is a control-api concern and is not implemented here.
+- **Five tests fail on Windows, and did before the content and installer work.** Three in `cli`
+  (`TestStartWritesFilesWithContentAndPermissions`, `TestNodeProxyScript`, `TestCounters`), one in
+  `cmd/sac-bundle` (`TestRun_ProducesVerifiableBundle`) and one in `trust`
+  (`TestVerifyLinuxUnusableStore`). They assert POSIX file modes and Linux-only behaviour.
+
 ## The self test
 
 `--selftest` is the acceptance evidence and exits non-zero on any failed assertion. It signs a
