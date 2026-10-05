@@ -2,6 +2,7 @@ package main
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -94,5 +95,70 @@ func TestValidateDrainAuthMode(t *testing.T) {
 		if err := cfg.validateDrain(); err == nil {
 			t.Fatalf("auth mode %q was accepted", mode)
 		}
+	}
+}
+
+func TestValidateBootstrapCredentials(t *testing.T) {
+	cfg := validDrainConfig(t)
+	cfg.EnrolmentToken, cfg.DeploymentKey = "sac1.tenant.secret", "sacdk_secret"
+	if err := cfg.validateDrain(); err == nil || !strings.Contains(err.Error(), "exactly one") {
+		t.Fatalf("a token and a deployment key together = %v, want a refusal", err)
+	}
+	cfg = validDrainConfig(t)
+	cfg.DeploymentKey = "sacdk_secret"
+	if err := cfg.validateDrain(); err != nil {
+		t.Fatalf("a deployment key alone was refused: %v", err)
+	}
+	cfg = Config{DeploymentKey: "sacdk_secret"}
+	if err := cfg.validateDrain(); err == nil {
+		t.Fatal("a deployment key with no device endpoint was accepted")
+	}
+}
+
+// With no --bundle the bundle is fetched, which needs an endpoint; the old rule that the two flags
+// go together still holds for a device that has nowhere to fetch from.
+func TestValidatePolicyKeyWithoutBundle(t *testing.T) {
+	base := Config{SpoolDir: "s", SpoolKey: "k", Retention: "1h", AttachmentCap: 1, TenantID: "t", DeviceID: "d"}
+	cfg := base
+	cfg.PolicyKey = strings.Repeat("ab", 32)
+	if err := cfg.validate(runMode{}); err == nil {
+		t.Fatal("a policy key with no bundle and no endpoint was accepted")
+	}
+	cfg = base
+	cfg.BundlePath = "bundle.json"
+	if err := cfg.validate(runMode{}); err == nil {
+		t.Fatal("a bundle with no policy key was accepted")
+	}
+	cfg = validDrainConfig(t)
+	cfg.SpoolKey, cfg.Retention, cfg.AttachmentCap = "k", "1h", 1
+	cfg.PolicyKey = strings.Repeat("ab", 32)
+	if err := cfg.validate(runMode{}); err != nil {
+		t.Fatalf("a policy key with an endpoint and no bundle was refused: %v", err)
+	}
+	if !cfg.fetchesPolicy() {
+		t.Fatal("the bundle is not fetched with a key, an endpoint and no --bundle")
+	}
+}
+
+func TestGeneratesDeviceCAOnlyWhenNoPairIsConfigured(t *testing.T) {
+	cfg := validDrainConfig(t)
+	if cfg.generatesDeviceCA() {
+		t.Fatal("a CA is generated although nothing trusts it")
+	}
+	cfg.TrustInstall = true
+	if !cfg.generatesDeviceCA() {
+		t.Fatal("trust install with no CA pair does not generate the device CA")
+	}
+	cfg.CACertFile, cfg.CAKeyFile = "ca.pem", "ca.key"
+	if cfg.generatesDeviceCA() {
+		t.Fatal("a configured CA pair (the lab profile) was replaced by a generated one")
+	}
+	local := Config{CLIShim: true}
+	if local.generatesDeviceCA() {
+		t.Fatal("a local run with no state directory generates a CA")
+	}
+	local.StateDir = t.TempDir()
+	if !local.generatesDeviceCA() {
+		t.Fatal("an explicit --state-dir does not hold a generated CA")
 	}
 }

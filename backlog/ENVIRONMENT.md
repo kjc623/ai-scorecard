@@ -42,7 +42,7 @@ Simulated data goes in the sample tenant and nowhere else:
   degraded collector, a quiet device, an empty state. A row you need that the simulator cannot
   produce, you may write into the sample tenant with `psql`.
 - Observe it with the full address:
-  `node query/dashboard/tools/observe.mjs 'http://dashboard-sample:8787/index.html?transport=live#tools'`.
+  `node query/dashboard/tools/observe.mjs 'http://dashboard-sample:8787/index.html?transport=live#tools' --sign-in viewer.sample@lab.test`.
 
 The owner's tenant is live, and the owner looks at it. Do not change it by any route: not with
 `psql`, not with simulated traffic, and not through the product's own writes (a sanction decision,
@@ -89,10 +89,12 @@ or a script says "the lab" and means that one, it does not mean yours.
   `node query/dashboard/tools/observe.mjs 'index.html?transport=live#devices' --expect Reporting`.
   A bare path like that one opens the owner's dashboard; give the full address for the sample
   tenant's. Quote the address. The header of the script documents `--expect`, `--absent` and `--click`.
-- The dashboards now require a session (task 11). Add `--sign-in <account>`, e.g.
-  `--sign-in reader@lab.test` for the owner's tenant or `--sign-in viewer.sample@lab.test` for the
-  sample's; the lab identity provider at `http://oidc:8080` lists the accounts and their roles, and an
-  unauthenticated browser is redirected to it.
+- The dashboards require a session. The sample tenant's accounts sign in through the lab's stand-in
+  identity provider (`http://oidc:8080`, email domain `lab.test`): add `--sign-in <account>`, e.g.
+  `--sign-in viewer.sample@lab.test` (also `analyst.`, `reader.`, `admin.sample@lab.test`). The
+  owner's tenant has no identity connection until the owner onboards it, so no lab account signs in
+  to it. `node query/dashboard/tools/lab-session.mjs <account> --dashboard <url>` prints a session
+  cookie for `observe.mjs --session` or `curl -b`.
 - This is how a claim about what a page shows is checked. A POST to the dashboard's `/v1/query`
   forwarder shows that the data is there; it does not show that the page renders it.
 - The script loads, waits, clicks and reads. If a clause needs more (typing into a field, a
@@ -109,7 +111,7 @@ or a script says "the lab" and means that one, it does not mean yours.
 ## Tests
 
 - Node packages: `node --test` inside the package directory (`query/dashboard`, `query/query-api`).
-  Do not pass a directory argument.
+  Do not pass a directory argument. `query/query-api` needs `npm ci` once.
 - Go modules: `go test ./...` inside each module you touched. The modules build offline on the host
   with `GOFLAGS=-mod=mod GOPROXY=off`; if a build here wants to download a module, stop and report it
   rather than adding or upgrading a dependency.

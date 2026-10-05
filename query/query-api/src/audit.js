@@ -171,11 +171,16 @@ export function auditDetail(validated, context = {}) {
  * The parameterised audit insert. Ten of the eleven columns are parameters; the tenant is
  * `ops.current_tenant()` and cannot be anything else.
  *
+ * `sessionId` is the product token's `sid`. ops.audit has no column for it, so it rides in
+ * `detail` as `sid`: enough to tie a row to the sign-in that wrote it (control-api audits the
+ * session under the same id), and absent when there was no token, as in the development lab.
+ *
  * @param {AuditDecision} decision
- * @param {{actorId:string, actorType?:string, subjectRef?:string|null, caseReference?:string|null, detail:object, objectId?:string|null}} input
+ * @param {{actorId:string, actorType?:string, subjectRef?:string|null, caseReference?:string|null, detail:object, objectId?:string|null, sessionId?:string|null}} input
  * @returns {{text:string, params:ReadonlyArray<unknown>, id:string}}
  */
 export function auditStatement(decision, input) {
+  const detail = input.sessionId ? { ...(input.detail ?? {}), sid: input.sessionId } : (input.detail ?? {});
   const params = [
     input.actorType ?? 'user',
     input.actorId,
@@ -184,7 +189,7 @@ export function auditStatement(decision, input) {
     input.objectId ?? null,
     input.subjectRef ?? null,
     input.caseReference ?? null,
-    JSON.stringify(input.detail ?? {}),
+    JSON.stringify(detail),
   ];
   const text = [
     'INSERT INTO ops.audit (tenant_id, actor_type, actor_id, action, object_type, object_id,',

@@ -24,7 +24,7 @@ import (
 type stubSink struct{}
 
 func (stubSink) Append(e protocol.Entry) (protocol.Entry, error) { return e, nil }
-func (stubSink) Stats() protocol.SpoolStats                       { return protocol.SpoolStats{} }
+func (stubSink) Stats() protocol.SpoolStats                      { return protocol.SpoolStats{} }
 
 func testPrivateKeyPEM(t *testing.T) string {
 	t.Helper()
@@ -112,7 +112,7 @@ func TestResolveIdentityNoDrainUsesFlags(t *testing.T) {
 		t.Fatalf("NewPipeline: %v", err)
 	}
 	s := &service{
-		cfg: Config{TenantID: "flag-tenant", DeviceID: "flag-device", UserRef: "flag-user"},
+		cfg:  Config{TenantID: "flag-tenant", DeviceID: "flag-device", UserRef: "flag-user"},
 		pipe: pipe,
 		log:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}

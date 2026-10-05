@@ -1,84 +1,98 @@
-// serve.mjs — the dashboard's own server: static files, the OIDC session, and the forwarder.
+// serve.mjs — the dashboard's own server: the pages, sign-in, and the forwarders behind them.
 //
-// WHAT CHANGED IN TASK 11. This server used to invent a principal for every request: it added
-// x-sac-dev-tenant / x-sac-dev-actor from SAC_DEV_TENANT / SAC_DEV_ACTOR, and query-api
-// trusted them because SAC_DEV_TRUST_PRINCIPAL=1. That made every audit row
-// `analyst@lab.test` and let anyone who reached the Search page read stored prompts.
+// WHAT IT IS NOW. A thin backend-for-frontend over control-api's identity service (the shared
+// contract, §3 and §6). control-api is the relying party for every customer identity provider,
+// keeps the session and mints short-lived product access tokens; this server only
 //
-// With SAC_OIDC_ISSUER set, this is now a real OpenID Connect client (authorization code +
-// PKCE, see session.mjs). The browser holds one opaque cookie; the access token lives here,
-// on the server, and is forwarded to query-api in the Authorization header. query-api
-// verifies that token for itself, so the tenant and roles are read from a signed token and
-// never from a header the client can write.
+//   * runs the sign-in pages: /signin, then /signin/start asks control-api to begin (by work email,
+//     by "Sign in with Microsoft", or with an onboarding invite) and sends the browser to the
+//     provider; /callback hands the code back to control-api and sets the session cookie;
+//     /signout revokes the session;
+//   * holds the product token per session in memory (session.mjs), re-minted through
+//     /internal/v1/auth/token shortly before it expires. The session lives in control-api, so any
+//     instance can serve any session;
+//   * forwards /v1/* to query-api and /admin/v1/* to control-api with
+//     `Authorization: Bearer <product token>`, and never the cookie; /onboard/* goes to control-api
+//     untouched, because the invite in it is the credential and there is no session yet;
+//   * refuses a state-changing /v1 or /admin/v1 request that did not come from this origin.
 //
-// STATIC FILES ARE BEHIND THE SESSION. index.html is sample mode and is opened from the
-// filesystem, and that is untouched; but the served dashboard refuses an unauthenticated
-// request rather than rendering a page that would then fail every read. The one deliberate
-// exception is the minted retrieval URL: it is a capability, it carries no caller identity,
-// and it is the single path this server forwards straight to content-vault (docs/02 §11).
+// The browser holds one opaque HttpOnly cookie and never a token. Every page and every read needs
+// the session, except the sign-in pages and their two stylesheets, /onboard/*, and the minted
+// retrieval URL, which is a single-use capability forwarded straight to content-vault so that
+// content never transits query-api (docs/02 §11).
 //
-//   node tools/serve.mjs            # http://127.0.0.1:8787/
-//   node tools/serve.mjs --port 9000
-//   node tools/serve.mjs --host 0.0.0.0   # inside a container
-//   node tools/serve.mjs --api http://127.0.0.1:8082   # also forward the query endpoint
+// WITHOUT SAC_CONTROL_URL this is the development principal, exactly as before: every forwarded
+// request carries x-sac-dev-tenant / x-sac-dev-actor (SAC_DEV_TENANT, SAC_DEV_ACTOR), which only a
+// query-api started with SAC_DEV_TRUST_PRINCIPAL=1 accepts. It is the memory lab's arrangement,
+// said out loud at startup and on the sign-in page.
 //
-// Zero dependencies: node:http, node:fs and node:crypto only. It serves this directory and
-// nothing else.
+//   node tools/serve.mjs                          # http://127.0.0.1:8787/
+//   node tools/serve.mjs --port 9000 --host 0.0.0.0
+//   node tools/serve.mjs --api http://127.0.0.1:8082
+//
+// Environment: SAC_CONTROL_URL, SAC_INTERNAL_TOKEN, SAC_PUBLIC_URL, SAC_QUERY_API_URL,
+// SAC_CONTENT_VAULT_URL, SAC_DASHBOARD_TENANT; development only: SAC_DEV_TENANT, SAC_DEV_ACTOR.
+// The README's "Running the server" table says what each does.
+//
+// Zero dependencies: node:http, node:fs, node:stream and fetch.
 
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
-import { extname, join, normalize, resolve, sep } from 'node:path';
-import { dirname } from 'node:path';
+import { extname, join, normalize, resolve, sep, dirname } from 'node:path';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 
 import {
-  createOidcClient,
-  createSessionStore,
-  pagesFor,
-  pkce,
-  nonce as makeNonce,
-  principalFromClaims,
+  SIGNIN_COOKIE,
+  canAny,
+  createIdentityClient,
+  createTokenCache,
+  decodeAttempt,
+  encodeAttempt,
+  isStateChanging,
+  pagesForRoles,
+  primaryRole,
+  principalFrom,
   readCookie,
+  safeNext,
+  sameOriginRequest,
   sessionCookie,
+  signinCookie,
+  withoutOwnCookies,
 } from './session.mjs';
+import { renderSigninPage, signinMessage } from './signin-page.mjs';
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const PORT = Number(process.argv[process.argv.indexOf('--port') + 1]) || 8787;
-// Loopback unless told otherwise: a container has to listen on all interfaces to be published.
-const HOST = process.argv.includes('--host') ? process.argv[process.argv.indexOf('--host') + 1] : '127.0.0.1';
+const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-const API = (process.argv.includes('--api') ? process.argv[process.argv.indexOf('--api') + 1] : process.env.SAC_QUERY_API_URL ?? '').replace(/\/$/, '');
-// The vault, reached directly for a minted retrieval URL. This is the one forwarded path that
-// deliberately bypasses query-api, because content must never transit query-api (docs/02 §11).
-const VAULT = (process.env.SAC_CONTENT_VAULT_URL ?? '').replace(/\/$/, '');
-
-// The authenticated session. With no issuer this server falls back to the development
-// principal, which is the memory lab's arrangement and is said out loud at startup.
-const OIDC_ISSUER = (process.env.SAC_OIDC_ISSUER ?? '').replace(/\/$/, '');
-const AUTH_REQUIRED = OIDC_ISSUER !== '';
-const OIDC_CLIENT_ID = process.env.SAC_OIDC_CLIENT_ID ?? 'sac-dashboard';
-const OIDC_CLIENT_SECRET = process.env.SAC_OIDC_CLIENT_SECRET ?? '';
-const OIDC_REDIRECT_URL = process.env.SAC_OIDC_REDIRECT_URL ?? '';
-const OIDC_SCOPE = process.env.SAC_OIDC_SCOPES ?? 'openid profile email';
-const COOKIE_SECURE = process.env.SAC_COOKIE_SECURE === '1';
-// In development mode these stand in for the session, exactly as before.
-const DEV_TENANT = process.env.SAC_DEV_TENANT ?? '';
-const DEV_ACTOR = process.env.SAC_DEV_ACTOR ?? 'dashboard-dev';
-// The tenant each dashboard is pinned to is NOT read here: it comes from the token. This is
-// an optional extra guard so the sample dashboard cannot show the owner's tenant even if a
-// sign-in is misdirected. Empty means unpinned.
-const PINNED_TENANT = (process.env.SAC_DASHBOARD_TENANT ?? '').trim().toLowerCase();
-
-const QUERY_PATH = '/v1/query';
 const CONTENT_RETRIEVAL_PATH = '/v1/content/retrieval';
-// The two content reads the Explore page makes. They are forwarded exactly as the query is: to
-// query-api, which establishes who is asking and forwards them to the content vault.
-const FORWARDED_PATHS = Object.freeze([QUERY_PATH, '/v1/content-search', CONTENT_RETRIEVAL_PATH]);
-// A minted retrieval URL is GET /v1/content/retrieval/<tenant>/<grant>; the POST above has no
-// trailing segment and is untouched.
+// A minted retrieval URL is GET /v1/content/retrieval/<tenant>/<grant>; the POST that mints it has
+// no trailing segment and goes to query-api like every other /v1 request.
 const RETRIEVAL_PREFIX = `${CONTENT_RETRIEVAL_PATH}/`;
 const MAX_BODY_BYTES = 256 * 1024;
-const LOGIN_ATTEMPT_MS = 5 * 60_000;
+/** Where a signed-in person lands when nothing else was asked for: the live dashboard. */
+const LIVE_HOME = '/index.html?transport=live';
+/** The sign-in page's own assets. Everything else served from disk needs a session. */
+const PUBLIC_ASSETS = new Set(['/styles.css', '/signin.css']);
+/** What this server serves from disk: the pages, their stylesheets, and the modules module.html imports. */
+const SERVABLE = /^\/(?:[\w.-]+\.(?:html|css)|src\/[\w.-]+\.js)$/;
+/** An opaque session id must be a valid cookie value (RFC 6265 cookie-octet) before it is set as one. */
+const COOKIE_OCTETS = /^[\x21\x23-\x2B\x2D-\x3A\x3C-\x5B\x5D-\x7E]{16,1024}$/;
+const RELAYED_HEADERS = Object.freeze(['content-type', 'content-disposition', 'content-length', 'etag', 'last-modified', 'retry-after']);
+/**
+ * control-api's identity refusals (contract §3, and the codes its identity service adds), each to
+ * the page that says it. The page shows control-api's own code beside ours when they differ. Any
+ * other code is a generic failure, shown with its code.
+ */
+const IDENTITY_REFUSALS = new Map([
+  ['no_sso_connection', 'no_sso_connection'], ['tenant_not_onboarded', 'tenant_not_onboarded'],
+  ['onboarding_incomplete', 'tenant_not_onboarded'], ['no_role', 'no_role'], ['connection_disabled', 'connection_disabled'],
+  ['user_deactivated', 'user_deactivated'],
+  ['attempt_unknown', 'signin_expired'], ['attempt_expired', 'signin_expired'], ['state_mismatch', 'signin_expired'],
+  ['invite_unknown', 'invite_invalid'], ['invite_used', 'invite_invalid'], ['invite_expired', 'invite_invalid'],
+  ['provider_unavailable', 'unavailable'], ['unavailable', 'unavailable'],
+]);
+const HOP_BY_HOP = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade', 'host', 'content-length', 'accept-encoding']);
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -86,273 +100,518 @@ const TYPES = {
   '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
-  '.md': 'text/markdown; charset=utf-8',
 };
 
-const oidc = AUTH_REQUIRED
-  ? createOidcClient({ issuer: OIDC_ISSUER, clientId: OIDC_CLIENT_ID, clientSecret: OIDC_CLIENT_SECRET, redirectUri: OIDC_REDIRECT_URL || undefined, scope: OIDC_SCOPE })
-  : null;
-const sessions = createSessionStore();
-/** In-flight sign-ins: state -> the PKCE verifier, nonce and return path. */
-const signIns = new Map();
-
-/** Refuse anything that escapes the served directory. */
-function safeJoin(root, requestPath) {
-  const decoded = decodeURIComponent(requestPath.split('?')[0]);
-  const candidate = normalize(join(root, decoded));
-  if (!candidate.startsWith(root + sep) && candidate !== root) return null;
-  return candidate;
-}
-
-function refuse(response, status, resultState, code, message, extraHeaders = {}) {
-  response.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...extraHeaders });
-  response.end(JSON.stringify({ api_version: '1', query_version: '1', result_state: resultState, error: { code, message } }));
-}
-
-function requestUrl(request) {
-  return new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
-}
-
-/** The redirect_uri the issuer sends the browser back to. Configured, or from the request host. */
-function redirectUriOf(request) {
-  if (OIDC_REDIRECT_URL) return OIDC_REDIRECT_URL;
-  const proto = request.headers['x-forwarded-proto'] ?? 'http';
-  const host = request.headers.host ?? `${HOST}:${PORT}`;
-  return `${proto}://${host}/callback`;
-}
-
-/** The live session for a request, or null. */
-function sessionOf(request) {
-  if (!AUTH_REQUIRED) {
-    return { actor: DEV_ACTOR, tenant: DEV_TENANT, role: 'dev', roles: ['dev'], accessToken: null, dev: true };
-  }
-  const id = readCookie(request.headers.cookie);
-  if (!id) return null;
-  const s = sessions.get(id);
-  if (!s) return null;
-  if (PINNED_TENANT && s.tenant !== PINNED_TENANT) return null;
-  return s;
-}
-
-// -------------------------------------------------------------------------------------------
-// The sign-in flow
-// -------------------------------------------------------------------------------------------
-
-async function handleLogin(request, response) {
-  if (!AUTH_REQUIRED) {
-    // Development mode has no sign-in; return the browser to where it was headed.
-    const url = requestUrl(request);
-    response.writeHead(302, { location: url.searchParams.get('next') || '/', 'cache-control': 'no-store' });
-    response.end();
-    return;
-  }
-  const url = requestUrl(request);
-  const state = Buffer.from(cryptoRandom()).toString('base64url');
-  const { verifier, challenge } = pkce();
-  const n = makeNonce();
-  const next = url.searchParams.get('next') || '/';
-  // `hint` is the lab stand-in's account chooser. A real provider shows its own sign-in page
-  // and ignores it; it is never a credential.
-  const hint = url.searchParams.get('hint') || '';
-  const redirectUri = redirectUriOf(request);
-  signIns.set(state, { verifier, nonce: n, next, hint, redirectUri, expiresAt: Date.now() + LOGIN_ATTEMPT_MS });
-  const authorize = await oidc.authorizeUrl({ state, nonce: n, codeChallenge: challenge, loginHint: hint, redirectUri });
-  response.writeHead(302, { location: authorize, 'cache-control': 'no-store' });
-  response.end();
-}
-
-async function handleCallback(request, response) {
-  if (!AUTH_REQUIRED) return refuse(response, 404, 'not_found', 'not_found', 'no sign-in is configured');
-  const url = requestUrl(request);
-  const state = url.searchParams.get('state');
-  const code = url.searchParams.get('code');
-  const attempt = signIns.get(state);
-  signIns.delete(state);
-  if (!attempt || Date.now() > attempt.expiresAt) {
-    return refuse(response, 400, 'unsupported_query_shape', 'bad_sign_in', 'the sign-in attempt is unknown or has expired');
-  }
-  if (url.searchParams.get('error')) {
-    return refuse(response, 400, 'unsupported_query_shape', 'sign_in_refused', String(url.searchParams.get('error_description') ?? url.searchParams.get('error')));
-  }
-  if (!code) return refuse(response, 400, 'unsupported_query_shape', 'bad_sign_in', 'the callback carried no code');
-  try {
-    const tokens = await oidc.exchange({ code, codeVerifier: attempt.verifier, redirectUri: attempt.redirectUri });
-    const claims = await oidc.verifyIdToken(tokens.id_token, { nonce: attempt.nonce });
-    const principal = principalFromClaims(claims);
-    const id = sessions.create({ ...principal, accessToken: tokens.access_token, idToken: tokens.id_token });
-    response.writeHead(302, { location: attempt.next || '/', 'set-cookie': sessionCookie(id, { secure: COOKIE_SECURE }), 'cache-control': 'no-store' });
-    response.end();
-  } catch (error) {
-    refuse(response, 502, 'unauthorised_role', 'sign_in_failed', `the sign-in could not be completed: ${error?.message ?? error}`);
-  }
-}
-
-function handleLogout(request, response) {
-  const id = readCookie(request.headers.cookie);
-  if (id) sessions.destroy(id);
-  response.writeHead(302, { location: '/login', 'set-cookie': sessionCookie('', { maxAgeSec: 0, secure: COOKIE_SECURE }), 'cache-control': 'no-store' });
-  response.end();
-}
-
-// -------------------------------------------------------------------------------------------
-// Forwarding
-// -------------------------------------------------------------------------------------------
-
-/** Forward one request to the configured query-api and relay its answer and status unchanged. */
-async function forwardQuery(request, response, path, session) {
-  if (!API) {
-    refuse(response, 503, 'busy', 'no_api_configured', 'This server was started without --api, so there is no query API behind it.');
-    return;
-  }
-  const chunks = [];
-  let size = 0;
-  for await (const chunk of request) {
-    size += chunk.length;
-    if (size > MAX_BODY_BYTES) {
-      refuse(response, 413, 'query_too_broad', 'body_too_large', 'The request body is larger than this forwarder accepts.');
-      return;
-    }
-    chunks.push(chunk);
-  }
-  // The session is the credential. A real session forwards the access token, which query-api
-  // verifies; the development fallback forwards the lab header behind its flag.
-  const authHeaders = session?.accessToken
-    ? { authorization: `Bearer ${session.accessToken}` }
-    : session?.dev && DEV_TENANT
-      ? { 'x-sac-dev-tenant': DEV_TENANT, 'x-sac-dev-actor': DEV_ACTOR }
-      : {};
-  try {
-    const upstream = await fetch(`${API}${path}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', ...authHeaders },
-      body: Buffer.concat(chunks),
-    });
-    const body = Buffer.from(await upstream.arrayBuffer());
-    response.writeHead(upstream.status, { 'content-type': upstream.headers.get('content-type') ?? 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-    response.end(body);
-  } catch (error) {
-    refuse(response, 503, 'busy', 'api_unreachable', `The query API at ${API} could not be reached: ${error?.cause?.code ?? error?.message ?? error}`);
-  }
+/** The configuration, from the command line and the environment. */
+export function configFromEnv(argv = process.argv, env = process.env) {
+  const flag = (name) => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : undefined);
+  const publicUrl = String(env.SAC_PUBLIC_URL ?? '').trim().replace(/\/$/, '');
+  return {
+    root: PACKAGE_ROOT,
+    port: Number(flag('--port')) || 8787,
+    // Loopback unless told otherwise: a container has to listen on all interfaces to be published.
+    host: flag('--host') ?? '127.0.0.1',
+    queryApiUrl: String(flag('--api') ?? env.SAC_QUERY_API_URL ?? '').replace(/\/$/, ''),
+    vaultUrl: String(env.SAC_CONTENT_VAULT_URL ?? '').replace(/\/$/, ''),
+    controlUrl: String(env.SAC_CONTROL_URL ?? '').trim().replace(/\/$/, ''),
+    internalToken: String(env.SAC_INTERNAL_TOKEN ?? '').trim(),
+    publicUrl,
+    cookieSecure: env.SAC_COOKIE_SECURE === '1' || publicUrl.startsWith('https:'),
+    // Not where the tenant comes from (the token says that): an extra guard, so the sample dashboard
+    // cannot show the owner's tenant even if a sign-in is misdirected. Empty means unpinned.
+    pinnedTenant: String(env.SAC_DASHBOARD_TENANT ?? '').trim().toLowerCase(),
+    devTenant: env.SAC_DEV_TENANT ?? '',
+    devActor: env.SAC_DEV_ACTOR ?? 'dashboard-dev',
+  };
 }
 
 /**
- * Forward one minted retrieval URL straight to the vault. It is the browser's direct read of
- * granted content: the URL carries the single-use grant, so no principal header is added and no
- * content passes through query-api. This is the one route exempt from the session.
+ * Build the server. It is returned unstarted, so a test can listen on port 0 against a fake
+ * control-api and query-api.
+ *
+ * @param {ReturnType<typeof configFromEnv> & {fetchImpl?: typeof fetch, now?: () => number, log?: Console}} config
  */
-async function forwardRetrieval(request, response, target) {
-  if (!VAULT) {
-    refuse(response, 503, 'busy', 'no_vault_configured', 'This server was started without SAC_CONTENT_VAULT_URL, so a retrieval URL cannot be redeemed.');
-    return;
+export function createDashboardServer(config) {
+  const cfg = { root: PACKAGE_ROOT, queryApiUrl: '', vaultUrl: '', controlUrl: '', internalToken: '', publicUrl: '', cookieSecure: false, pinnedTenant: '', devTenant: '', devActor: 'dashboard-dev', ...config };
+  const fetchImpl = cfg.fetchImpl ?? globalThis.fetch;
+  const log = cfg.log ?? console;
+  if (cfg.controlUrl && !cfg.internalToken) {
+    throw new Error('SAC_CONTROL_URL is set but SAC_INTERNAL_TOKEN is not: the dashboard cannot call control-api\'s identity service without it.');
   }
-  try {
-    const upstream = await fetch(`${VAULT}${target}`);
-    const body = Buffer.from(await upstream.arrayBuffer());
-    response.writeHead(upstream.status, {
-      'content-type': upstream.headers.get('content-type') ?? 'application/octet-stream',
-      'cache-control': 'no-store',
+  const identity = cfg.controlUrl ? createIdentityClient({ baseUrl: cfg.controlUrl, internalToken: cfg.internalToken, fetchImpl }) : null;
+  const tokens = identity ? createTokenCache({ identity, now: cfg.now }) : null;
+  const publicOrigin = cfg.publicUrl ? new URL(cfg.publicUrl).origin : '';
+  const secure = Boolean(cfg.cookieSecure);
+  const devPrincipal = identity ? null : Object.freeze({ actor: cfg.devActor, tenant: cfg.devTenant });
+
+  // ------------------------------------------------------------------------------------------
+  // Small helpers
+  // ------------------------------------------------------------------------------------------
+
+  function requestUrl(req) {
+    return new URL(req.url ?? '/', 'http://dashboard.invalid');
+  }
+
+  function protoOf(req) {
+    return String(req.headers['x-forwarded-proto'] ?? '').split(',')[0].trim() || 'http';
+  }
+
+  /** The origins a same-origin request may name: the configured public URL, and the address this request reached. */
+  function allowedOrigins(req) {
+    const list = [];
+    if (publicOrigin) list.push(publicOrigin);
+    if (req.headers.host) list.push(`${protoOf(req)}://${req.headers.host}`);
+    return list;
+  }
+
+  /** The redirect_uri the provider sends the browser back to. */
+  function redirectUriOf(req) {
+    const origin = publicOrigin || `${protoOf(req)}://${req.headers.host ?? `${cfg.host ?? '127.0.0.1'}:${cfg.port ?? 8787}`}`;
+    return `${origin}/callback`;
+  }
+
+  function page(res, status, html, extra = {}) {
+    res.writeHead(status, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', ...extra });
+    res.end(html);
+  }
+
+  function signinPage(res, code, { next = '/', email = '', detail = null, extra = {}, status = null } = {}) {
+    page(res, status ?? (code ? signinMessage(code).status : 200), renderSigninPage({ code, detail, next, email, identity: Boolean(identity), dev: devPrincipal }), extra);
+  }
+
+  function redirect(res, location, extra = {}) {
+    res.writeHead(302, { location, 'cache-control': 'no-store', ...extra });
+    res.end();
+  }
+
+  function json(res, status, body) {
+    res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    res.end(JSON.stringify(body));
+  }
+
+  /**
+   * A refusal on a /v1 path. It carries both answer shapes the page reads — a query envelope's
+   * `result_state` and a content answer's `state` — so either transport renders it as a refusal.
+   */
+  function refuseV1(res, status, code, message, resultState = 'unauthorised_role') {
+    json(res, status, { api_version: '1', query_version: '1', result_state: resultState, state: 'refused', error: { code, message } });
+  }
+
+  function refuseAdmin(res, status, code, message) {
+    json(res, status, { error: code, message });
+  }
+
+  async function readBody(req) {
+    const chunks = [];
+    let size = 0;
+    for await (const chunk of req) {
+      size += chunk.length;
+      if (size > MAX_BODY_BYTES) return null;
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks);
+  }
+
+  const clearSession = () => sessionCookie('', { maxAgeSec: 0, secure });
+  const clearSignin = () => signinCookie('', { maxAgeSec: 0, secure });
+
+  // ------------------------------------------------------------------------------------------
+  // The session
+  // ------------------------------------------------------------------------------------------
+
+  /** Who is asking: `{ ok: true, session }` or `{ ok: false, reason }`. */
+  async function sessionOf(req) {
+    if (!identity) {
+      return { ok: true, session: Object.freeze({ dev: true, actor: cfg.devActor, tenant: cfg.devTenant, roles: Object.freeze(['dev']), role: 'dev', idp: null, token: null }) };
+    }
+    const id = readCookie(req.headers.cookie);
+    if (!id) return { ok: false, reason: 'no_session' };
+    const got = await tokens.get(id);
+    if (!got.ok) return got;
+    if (cfg.pinnedTenant && got.principal.tenant !== cfg.pinnedTenant) return { ok: false, reason: 'wrong_tenant' };
+    return { ok: true, session: Object.freeze({ id, dev: false, token: got.token, ...got.principal, role: primaryRole(got.principal.roles) }) };
+  }
+
+  function isApiPath(path) {
+    return path.startsWith('/v1/') || path.startsWith('/admin/v1/') || path === '/session';
+  }
+
+  /** No session: an API call is refused with JSON, a page is sent to sign in and returned afterwards. */
+  function unauthenticated(req, res, url, reason) {
+    const path = url.pathname;
+    const ended = reason === 'session_ended' || reason === 'wrong_tenant';
+    const extra = ended ? { 'set-cookie': clearSession() } : {};
+    if (isApiPath(path)) {
+      const unavailable = reason === 'identity_unavailable';
+      const status = unavailable ? 503 : reason === 'wrong_tenant' ? 403 : 401;
+      const code = unavailable ? 'identity_unavailable' : reason;
+      const message = unavailable ? 'The sign-in service cannot be reached; the session could not be checked.' : 'No signed-in session. Sign in at /signin.';
+      if (extra['set-cookie']) res.setHeader('set-cookie', extra['set-cookie']);
+      if (path.startsWith('/v1/')) return refuseV1(res, status, code, message, unavailable ? 'busy' : 'unauthorised_role');
+      return refuseAdmin(res, status, code, message);
+    }
+    if (reason === 'identity_unavailable') return signinPage(res, 'unavailable');
+    if (reason === 'wrong_tenant') return signinPage(res, 'wrong_tenant', { extra });
+    const next = safeNext(`${url.pathname}${url.search}`);
+    const notice = reason === 'session_ended' ? '&notice=session_ended' : '';
+    return redirect(res, `/signin?next=${encodeURIComponent(next)}${notice}`, extra);
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // Sign-in
+  // ------------------------------------------------------------------------------------------
+
+  function handleSignin(req, res, url) {
+    const next = safeNext(url.searchParams.get('next') ?? '/');
+    // Only our own notices are taken from the address; an error is never, so a link cannot make
+    // this page say something it did not decide.
+    const notice = ['signed_out', 'session_ended'].includes(url.searchParams.get('notice')) ? url.searchParams.get('notice') : null;
+    signinPage(res, notice, { next });
+  }
+
+  async function handleSigninStart(req, res, url) {
+    if (!identity) return redirect(res, safeNext(url.searchParams.get('next') ?? '/'));
+    let params = url.searchParams;
+    if (req.method === 'POST') {
+      if (!sameOriginRequest(req.headers, allowedOrigins(req))) return signinPage(res, 'signin_failed', { detail: 'cross_site_request', status: 403 });
+      const body = await readBody(req);
+      if (body === null) return signinPage(res, 'signin_failed');
+      params = new URLSearchParams(body.toString('utf8'));
+    } else if (req.method !== 'GET') {
+      res.writeHead(405, { allow: 'GET, POST' }).end();
+      return undefined;
+    }
+    const next = safeNext(params.get('next') ?? '/');
+    const email = String(params.get('email') ?? '').trim();
+    // "entra" is the Microsoft button; "oidc" arrives with an invite from control-api's onboarding.
+    const provider = ['entra', 'oidc'].includes(params.get('provider')) ? params.get('provider') : null;
+    const invite = String(params.get('invite') ?? '').trim();
+    if (!email && !provider && !invite) return signinPage(res, 'email_required', { next });
+    if (email && !/^[^\s@]{1,64}@[^\s@]+\.[^\s@]{2,}$/.test(email)) return signinPage(res, 'email_required', { next, email });
+
+    const answer = await identity.begin({ email: email || null, provider, invite: invite || null, redirectUri: redirectUriOf(req) });
+    if (!answer.ok) {
+      if (answer.status === 0) return signinPage(res, 'unavailable', { next, email });
+      const known = IDENTITY_REFUSALS.get(answer.error) ?? 'signin_failed';
+      return signinPage(res, known, { next, email, detail: known === answer.error ? null : answer.error });
+    }
+    const attempt = answer.body?.attempt;
+    const authorize = answer.body?.authorize_url;
+    let target = null;
+    try {
+      target = new URL(String(authorize));
+    } catch {
+      target = null;
+    }
+    if (typeof attempt !== 'string' || attempt === '' || !target || !/^https?:$/.test(target.protocol)) {
+      log.warn?.('dashboard: control-api began a sign-in without a usable attempt or authorize_url');
+      return signinPage(res, 'signin_failed', { next, email });
+    }
+    return redirect(res, target.href, { 'set-cookie': signinCookie(encodeAttempt({ attempt, next }), { secure }), 'referrer-policy': 'no-referrer' });
+  }
+
+  async function handleCallback(req, res, url) {
+    if (!identity) return redirect(res, '/');
+    const extra = { 'set-cookie': clearSignin(), 'referrer-policy': 'no-referrer' };
+    const attempt = decodeAttempt(readCookie(req.headers.cookie, SIGNIN_COOKIE));
+    const providerError = url.searchParams.get('error');
+    if (providerError) return signinPage(res, 'idp_refused', { next: attempt?.next ?? '/', detail: providerError, extra });
+    if (!attempt) return signinPage(res, 'signin_expired', { extra });
+    const code = url.searchParams.get('code');
+    const state = url.searchParams.get('state');
+    if (!code || !state) return signinPage(res, 'signin_failed', { next: attempt.next, detail: 'missing_code', extra });
+
+    const answer = await identity.complete({ attempt: attempt.attempt, code, state });
+    if (!answer.ok) {
+      if (answer.status === 0) return signinPage(res, 'unavailable', { next: attempt.next, extra });
+      const known = IDENTITY_REFUSALS.get(answer.error) ?? 'signin_failed';
+      return signinPage(res, known, { next: attempt.next, detail: known === answer.error ? null : answer.error, extra });
+    }
+    const session = answer.body?.session;
+    const principal = principalFrom(answer.body?.principal);
+    if (typeof session !== 'string' || !COOKIE_OCTETS.test(session) || !principal) {
+      if (typeof session === 'string' && session !== '') await identity.revoke(session);
+      log.warn?.('dashboard: control-api completed a sign-in with an unusable session or principal; it was revoked');
+      return signinPage(res, principal || typeof answer.body?.principal !== 'object' ? 'signin_failed' : 'no_role', { next: attempt.next, extra });
+    }
+    if (cfg.pinnedTenant && principal.tenant !== cfg.pinnedTenant) {
+      await identity.revoke(session);
+      return signinPage(res, 'wrong_tenant', { extra });
+    }
+    tokens.seed(session, answer.body);
+    const next = attempt.next === '/' ? LIVE_HOME : attempt.next;
+    return redirect(res, next, { 'set-cookie': [sessionCookie(session, { secure }), clearSignin()], 'referrer-policy': 'no-referrer' });
+  }
+
+  async function handleSignout(req, res) {
+    // A sign-out link followed from another site is refused; a typed address or this page's own
+    // button is not. Signing someone out is not a theft, but it should still be their choice.
+    const site = String(req.headers['sec-fetch-site'] ?? '');
+    if (site && site !== 'none' && !sameOriginRequest(req.headers, allowedOrigins(req))) {
+      return signinPage(res, 'signin_failed', { detail: 'cross_site_request', status: 403 });
+    }
+    const id = readCookie(req.headers.cookie);
+    if (id && identity) {
+      tokens.drop(id);
+      const revoked = await identity.revoke(id);
+      if (!revoked.ok) log.warn?.(`dashboard: revoking a session at sign-out failed (${revoked.error}); the cookie is cleared regardless`);
+    }
+    return redirect(res, '/signin?notice=signed_out', { 'set-cookie': clearSession() });
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // Forwarding
+  // ------------------------------------------------------------------------------------------
+
+  /** The response headers a forwarded API answer keeps: what describes the body, and our own x-sac-*. */
+  function relayedHeaders(upstream) {
+    const headers = { 'cache-control': 'no-store' };
+    const encoded = upstream.headers.has('content-encoding');
+    for (const name of RELAYED_HEADERS) {
+      if (name === 'content-length' && encoded) continue;
+      const value = upstream.headers.get(name);
+      if (value !== null) headers[name] = value;
+    }
+    for (const [name, value] of upstream.headers) if (name.startsWith('x-sac-')) headers[name] = value;
+    return headers;
+  }
+
+  async function relayBody(req, res, upstream) {
+    if (!upstream.body || req.method === 'HEAD') {
+      res.end();
+      return;
+    }
+    try {
+      await pipeline(Readable.fromWeb(upstream.body), res);
+    } catch {
+      res.destroy();
+    }
+  }
+
+  /**
+   * Forward one API request. The caller's cookie and Authorization header are not sent: the only
+   * credential upstream sees is the one this server attaches.
+   */
+  async function forwardApi(req, res, { base, target, auth, timeoutMs, refuse, name }) {
+    let body;
+    if (!['GET', 'HEAD'].includes(req.method)) {
+      body = await readBody(req);
+      if (body === null) return refuse(res, 413, 'body_too_large', 'The request body is larger than this server forwards.');
+    }
+    const headers = { 'accept-encoding': 'identity', ...auth };
+    for (const h of ['content-type', 'accept', 'accept-language', 'if-none-match', 'if-match', 'x-request-id']) {
+      if (req.headers[h]) headers[h] = req.headers[h];
+    }
+    let upstream;
+    try {
+      upstream = await fetchImpl(`${base}${target}`, { method: req.method, headers, body, redirect: 'manual', signal: AbortSignal.timeout(timeoutMs) });
+    } catch (error) {
+      const timedOut = error?.name === 'TimeoutError';
+      log.warn?.(`dashboard: ${name} ${timedOut ? 'timed out' : 'could not be reached'} (${error?.cause?.code ?? error?.name ?? 'error'})`);
+      return refuse(res, timedOut ? 504 : 503, timedOut ? 'upstream_timeout' : 'upstream_unreachable', `The ${name} ${timedOut ? 'did not answer in time' : 'could not be reached'}.`);
+    }
+    res.writeHead(upstream.status, relayedHeaders(upstream));
+    return relayBody(req, res, upstream);
+  }
+
+  /**
+   * Forward one onboarding request to control-api, untouched: method, path, query, body, its
+   * headers and cookies, and its answer — status, Location and Set-Cookie included. The only
+   * things removed are hop-by-hop headers and this server's own cookies; nothing is added.
+   */
+  async function forwardOnboard(req, res, url) {
+    if (!cfg.controlUrl) return page(res, 404, renderSigninPage({ code: 'signin_failed', detail: 'no_control_api', identity: false, dev: devPrincipal }));
+    const headers = { 'accept-encoding': 'identity', 'x-forwarded-host': String(req.headers.host ?? ''), 'x-forwarded-proto': protoOf(req) };
+    for (const [name, value] of Object.entries(req.headers)) {
+      if (HOP_BY_HOP.has(name) || name === 'cookie') continue;
+      headers[name] = Array.isArray(value) ? value.join(', ') : value;
+    }
+    const cookies = withoutOwnCookies(req.headers.cookie);
+    if (cookies) headers.cookie = cookies;
+    let body;
+    if (!['GET', 'HEAD'].includes(req.method)) {
+      body = await readBody(req);
+      if (body === null) return page(res, 413, renderSigninPage({ code: 'signin_failed', detail: 'body_too_large', identity: Boolean(identity), dev: devPrincipal }));
+    }
+    let upstream;
+    try {
+      upstream = await fetchImpl(`${cfg.controlUrl}${url.pathname}${url.search}`, { method: req.method, headers, body, redirect: 'manual', signal: AbortSignal.timeout(30_000) });
+    } catch {
+      return signinPage(res, 'unavailable');
+    }
+    const out = {};
+    const encoded = upstream.headers.has('content-encoding');
+    for (const [name, value] of upstream.headers) {
+      if (HOP_BY_HOP.has(name) && name !== 'content-length') continue;
+      if (name === 'set-cookie' || (encoded && (name === 'content-encoding' || name === 'content-length'))) continue;
+      out[name] = value;
+    }
+    const setCookies = typeof upstream.headers.getSetCookie === 'function' ? upstream.headers.getSetCookie() : [];
+    if (setCookies.length > 0) out['set-cookie'] = setCookies;
+    res.writeHead(upstream.status, out);
+    return relayBody(req, res, upstream);
+  }
+
+  /** Forward one minted retrieval URL straight to the vault: the grant is the capability, so no principal is added. */
+  async function forwardRetrieval(req, res, target) {
+    if (!cfg.vaultUrl) return refuseV1(res, 503, 'no_vault_configured', 'This server was started without SAC_CONTENT_VAULT_URL, so a retrieval URL cannot be redeemed.', 'busy');
+    let upstream;
+    try {
+      upstream = await fetchImpl(`${cfg.vaultUrl}${target}`, { headers: { 'accept-encoding': 'identity' }, signal: AbortSignal.timeout(60_000) });
+    } catch {
+      return refuseV1(res, 503, 'vault_unreachable', 'The content vault could not be reached.', 'busy');
+    }
+    res.writeHead(upstream.status, { 'content-type': upstream.headers.get('content-type') ?? 'application/octet-stream', 'cache-control': 'no-store' });
+    return relayBody(req, res, upstream);
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // Static files
+  // ------------------------------------------------------------------------------------------
+
+  async function serveStatic(req, res, path) {
+    if (!SERVABLE.test(path)) {
+      res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }).end('not found');
+      return;
+    }
+    let candidate = null;
+    try {
+      candidate = normalize(join(cfg.root, decodeURIComponent(path)));
+    } catch {
+      candidate = null;
+    }
+    if (!candidate || !candidate.startsWith(cfg.root + sep)) {
+      res.writeHead(403).end('forbidden');
+      return;
+    }
+    try {
+      const info = await stat(candidate);
+      if (!info.isFile()) throw new Error('not a file');
+      const body = await readFile(candidate);
+      res.writeHead(200, { 'content-type': TYPES[extname(candidate)] ?? 'application/octet-stream', 'cache-control': 'no-store' });
+      res.end(req.method === 'HEAD' ? undefined : body);
+    } catch {
+      res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }).end('not found');
+    }
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // The router
+  // ------------------------------------------------------------------------------------------
+
+  async function route(req, res) {
+    const url = requestUrl(req);
+    const path = url.pathname;
+    // Every answer: no framing by another site, no sniffing, and no path or query leaked onward.
+    res.setHeader('x-frame-options', 'DENY');
+    res.setHeader('x-content-type-options', 'nosniff');
+    res.setHeader('referrer-policy', 'same-origin');
+
+    if (path === '/healthz') return json(res, 200, { status: 'ok', auth: identity ? 'control-api' : 'development' });
+    if (path === '/signin') return handleSignin(req, res, url);
+    if (path === '/signin/start') return handleSigninStart(req, res, url);
+    if (path === '/callback') return handleCallback(req, res, url);
+    if (path === '/signout' || path === '/logout') return handleSignout(req, res);
+    if (path === '/login') {
+      // The task-11 address, kept so an old link still lands on sign-in, and control-api's
+      // onboarding default: it hands the browser here with ?invite=&provider= to begin the
+      // activating sign-in, which /signin/start does.
+      const start = new URLSearchParams();
+      for (const name of ['invite', 'provider']) if (url.searchParams.get(name)) start.set(name, url.searchParams.get(name));
+      if (url.searchParams.get('hint')) start.set('email', url.searchParams.get('hint'));
+      start.set('next', safeNext(url.searchParams.get('next') ?? '/'));
+      return redirect(res, start.has('invite') || start.has('provider') || start.has('email') ? `/signin/start?${start}` : `/signin?next=${encodeURIComponent(start.get('next'))}`);
+    }
+    if (path === '/onboard' || path.startsWith('/onboard/')) return forwardOnboard(req, res, url);
+    if (path.startsWith(RETRIEVAL_PREFIX)) {
+      if (req.method !== 'GET') return void res.writeHead(405, { allow: 'GET' }).end();
+      return forwardRetrieval(req, res, `${path}${url.search}`);
+    }
+    if (PUBLIC_ASSETS.has(path)) return serveStatic(req, res, path);
+
+    const who = await sessionOf(req);
+    if (!who.ok) return unauthenticated(req, res, url, who.reason);
+    const session = who.session;
+
+    // Who the page is, so the navigation can hide what the roles cannot use. Not a credential.
+    if (path === '/session') {
+      return json(res, 200, { actor: session.actor, tenant: session.tenant, idp: session.idp, role: session.role, roles: session.roles, pages: pagesForRoles(session.roles), dev: session.dev });
+    }
+
+    const api = path.startsWith('/v1/');
+    const admin = path.startsWith('/admin/v1/');
+    if ((api || admin) && isStateChanging(req.method) && !sameOriginRequest(req.headers, allowedOrigins(req))) {
+      const message = 'A change must come from this dashboard\'s own pages.';
+      return api ? refuseV1(res, 403, 'cross_site_request', message) : refuseAdmin(res, 403, 'cross_site_request', message);
+    }
+    if (api) {
+      if (!cfg.queryApiUrl) return refuseV1(res, 503, 'no_api_configured', 'This server was started without a query API behind it.', 'busy');
+      const auth = session.dev
+        ? (cfg.devTenant ? { 'x-sac-dev-tenant': cfg.devTenant, 'x-sac-dev-actor': cfg.devActor } : {})
+        : { authorization: `Bearer ${session.token}` };
+      const refuse = (r, s, c, m) => refuseV1(r, s, c, m, s === 413 ? 'query_too_broad' : 'busy');
+      return forwardApi(req, res, { base: cfg.queryApiUrl, target: `${path}${url.search}`, auth, timeoutMs: 60_000, refuse, name: 'query API' });
+    }
+    if (admin) {
+      if (session.dev) return refuseAdmin(res, 503, 'no_control_api', 'The development principal has no admin API; start this server with SAC_CONTROL_URL.');
+      // control-api checks the role on the token; this keeps a non-admin's request from leaving at all.
+      if (!canAny(session.roles, 'settings')) return refuseAdmin(res, 403, 'forbidden', 'Only an admin can use these settings.');
+      return forwardApi(req, res, { base: cfg.controlUrl, target: `${path}${url.search}`, auth: { authorization: `Bearer ${session.token}` }, timeoutMs: 120_000, refuse: refuseAdmin, name: 'admin API' });
+    }
+
+    // The Search page is where content is reachable; a role that may not search is not served it.
+    if ((path === '/explore.html' || path === '/explore') && !canAny(session.roles, 'search')) {
+      return signinPage(res, 'not_permitted');
+    }
+    if (path === '/') {
+      if (!session.dev) return redirect(res, LIVE_HOME);
+      return serveStatic(req, res, '/module.html');
+    }
+    if (path === '/explore') return serveStatic(req, res, '/explore.html');
+    return serveStatic(req, res, path);
+  }
+
+  const server = createServer((req, res) => {
+    route(req, res).catch((error) => {
+      // The reason goes to the server's log; the person gets a sentence.
+      log.error?.(`dashboard: ${req.method} ${requestUrl(req).pathname} failed: ${error?.message ?? error}`);
+      if (res.headersSent) return void res.destroy();
+      if (isApiPath(requestUrl(req).pathname)) return void json(res, 500, { error: 'internal_error', message: 'The dashboard server could not complete this request.' });
+      return void signinPage(res, 'signin_failed');
     });
-    response.end(body);
-  } catch (error) {
-    refuse(response, 503, 'busy', 'vault_unreachable', `The content vault at ${VAULT} could not be reached: ${error?.cause?.code ?? error?.message ?? error}`);
-  }
+  });
+  server.identityMode = identity ? 'control-api' : 'development';
+  return server;
 }
 
-// -------------------------------------------------------------------------------------------
-// The router
-// -------------------------------------------------------------------------------------------
-
-const server = createServer(async (request, response) => {
-  const url = requestUrl(request);
-  const path = url.pathname;
-
-  if (path === '/healthz') {
-    response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-    response.end(JSON.stringify({ status: 'ok', auth: AUTH_REQUIRED ? 'oidc' : 'development' }));
-    return;
-  }
-  if (path === '/login') return void handleLogin(request, response).catch((error) => refuse(response, 502, 'busy', 'sign_in_failed', String(error?.message ?? error)));
-  if (path === '/callback') return void handleCallback(request, response).catch((error) => refuse(response, 502, 'busy', 'sign_in_failed', String(error?.message ?? error)));
-  if (path === '/logout') return handleLogout(request, response);
-
-  // The minted retrieval URL is a capability and carries no caller identity: it is the one
-  // unauthenticated path, by design (docs/02 §11, the product's single deliberate exception).
-  if (path.startsWith(RETRIEVAL_PREFIX)) {
-    if (request.method !== 'GET') {
-      response.writeHead(405, { allow: 'GET' }).end();
-      return;
-    }
-    await forwardRetrieval(request, response, request.url ?? path);
-    return;
-  }
-
-  const session = sessionOf(request);
-
-  // The session endpoint tells the page who it is, so the navigation can hide what the role
-  // cannot use. It is not a credential and carries no token.
-  if (path === '/session') {
-    if (!session) return refuse(response, 401, 'unauthorised_role', 'role', 'no signed-in session');
-    response.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-    response.end(JSON.stringify({ actor: session.actor, tenant: session.tenant, role: session.role, roles: session.roles, pages: pagesFor(session.role) }));
-    return;
-  }
-
-  if (!session) {
-    // An API request is refused; a page request is sent to sign in and returned afterwards.
-    if (path.startsWith('/v1/')) {
-      refuse(response, 401, 'unauthorised_role', 'role', 'no signed-in session');
-      return;
-    }
-    response.writeHead(302, { location: `/login?next=${encodeURIComponent(request.url ?? '/')}`, 'cache-control': 'no-store' });
-    response.end();
-    return;
-  }
-
-  if (FORWARDED_PATHS.includes(path)) {
-    if (request.method !== 'POST') {
-      response.writeHead(405, { allow: 'POST' }).end();
-      return;
-    }
-    await forwardQuery(request, response, path, session);
-    return;
-  }
-
-  // The Search page is where content is reachable; a role that may not search is not served it.
-  if ((path === '/explore.html' || path === '/explore') && AUTH_REQUIRED && !(session.roles ?? []).some((r) => pagesFor(r)?.includes('explore'))) {
-    refuse(response, 403, 'unauthorised_role', 'role', 'this role may not open the Search page');
-    return;
-  }
-
-  const target = safeJoin(ROOT, request.url === '/' ? '/module.html' : request.url ?? '/');
-  if (!target) {
-    response.writeHead(403).end('forbidden');
-    return;
-  }
+// Started as a program, not imported by a test. Windows may spell the drive letter either way.
+const samePath = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
+const invokedDirectly = process.argv[1] ? samePath(resolve(process.argv[1]), fileURLToPath(import.meta.url)) : false;
+if (invokedDirectly) {
+  const cfg = configFromEnv();
+  let server;
   try {
-    const info = await stat(target);
-    const file = info.isDirectory() ? join(target, 'index.html') : target;
-    const body = await readFile(file);
-    response.writeHead(200, { 'content-type': TYPES[extname(file)] ?? 'application/octet-stream', 'cache-control': 'no-store' });
-    response.end(body);
-  } catch {
-    response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
-    response.end('not found');
+    server = createDashboardServer(cfg);
+  } catch (error) {
+    console.error(`dashboard: ${error.message}`);
+    process.exit(1);
   }
-});
-
-// A random state value for the authorization request. Kept local so this file needs no crypto
-// import beyond what session.mjs already uses.
-function cryptoRandom() {
-  // eslint-disable-next-line global-require
-  return globalThis.crypto.getRandomValues(new Uint8Array(16));
+  server.listen(cfg.port, cfg.host, () => {
+    const base = `http://${cfg.host}:${cfg.port}`;
+    console.log(`dashboard:  ${base}/index.html?transport=live   (sample data: ${base}/index.html)`);
+    console.log(`search:     ${base}/explore.html?transport=live`);
+    if (cfg.controlUrl) {
+      console.log(`sign-in:    ${base}/signin, through control-api at ${cfg.controlUrl}; pages and /v1, /admin/v1 need a session`);
+      console.log(`            redirect URI ${cfg.publicUrl ? `${cfg.publicUrl}/callback` : '<the address the browser used>/callback'}; cookies ${cfg.cookieSecure ? 'Secure' : 'not Secure (http)'}`);
+      // The Host header is the lab's answer for two dashboards on two ports. A deployment names its
+      // address, so the redirect URI is not whatever a request claims and can be registered.
+      if (!cfg.publicUrl) console.log('            SAC_PUBLIC_URL is not set: the redirect URI follows the request\'s Host header. Set it in any deployment.');
+    } else {
+      console.log('sign-in:    NOT configured (no SAC_CONTROL_URL). Every forwarded request carries the development principal header; it is a lab arrangement, not authentication.');
+    }
+    if (cfg.queryApiUrl) console.log(`query API:  /v1/* is forwarded to ${cfg.queryApiUrl}${cfg.controlUrl ? '' : cfg.devTenant ? `, as tenant ${cfg.devTenant}` : ''}`);
+    if (cfg.controlUrl) console.log(`admin API:  /admin/v1/* and /onboard/* are forwarded to ${cfg.controlUrl}`);
+    if (cfg.vaultUrl) console.log(`content:    minted retrieval URLs go straight to ${cfg.vaultUrl} (never through query-api)`);
+    console.log('index.html needs no server: open the file directly.');
+  });
 }
-
-server.listen(PORT, HOST, () => {
-  console.log(`dashboard (ES-module entry): http://${HOST}:${PORT}/module.html`);
-  console.log(`explore (search page):        http://${HOST}:${PORT}/explore.html`);
-  console.log('index.html needs no server: open the file directly.');
-  if (AUTH_REQUIRED) console.log(`sign-in: ${OIDC_ISSUER} (client ${OIDC_CLIENT_ID}); static files and /v1/* need a session`);
-  else console.log('sign-in: NOT configured. This server is adding a development principal header; it is a lab arrangement, not authentication.');
-  if (API) console.log(`live data: http://${HOST}:${PORT}/explore.html?transport=live  (forwarding to ${API}${DEV_TENANT ? `, tenant ${DEV_TENANT}` : ''})`);
-  if (VAULT) console.log(`content retrieval: minted vault URLs are forwarded straight to ${VAULT} (never through query-api)`);
-});

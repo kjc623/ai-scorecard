@@ -41,6 +41,11 @@ type Credential struct {
 	// tenant chose; an empty value means the server did not state one.
 	DeviceIdentity protocol.DeviceIdentity `json:"device_identity,omitempty"`
 
+	// UserRefKey is the tenant's user-reference key as the enrolment response carried it
+	// (base64url, unpadded; contract §4). It is sealed with the credential because it is issued with
+	// it and a restart must derive the same user_ref; empty means the server issued none.
+	UserRefKey string `json:"user_ref_key,omitempty"`
+
 	// PrivateKey is the EC private key in PEM "EC PRIVATE KEY" form. It never leaves the device.
 	PrivateKey string `json:"private_key"`
 

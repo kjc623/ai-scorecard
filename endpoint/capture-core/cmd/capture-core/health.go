@@ -135,8 +135,9 @@ func (h *healthChannel) publish(ctx context.Context) {
 		return
 	}
 	// The response restates the tenant's device-identity setting; adopting it is how a device that
-	// enrolled under one setting learns the tenant changed it (ADR 0021).
-	h.adoptDeviceIdentity(resp.DeviceIdentity)
+	// enrolled under one setting learns the tenant changed it (ADR 0021), and the service re-stamps
+	// the envelope identity so the clear name follows the setting from the next observation on.
+	h.svc.adoptDeviceIdentity(resp.DeviceIdentity)
 	h.mu.Lock()
 	h.publishes++
 	h.lastPublishAt = time.Now()
@@ -171,20 +172,26 @@ func (h *healthChannel) SetExtensionReport(rep protocol.HealthReport) {
 // protocol.HealthReport; the envelope is this binary's, because the device-level row the document
 // describes (master §4.4) has no wire type in protocol yet.
 type healthSnapshot struct {
-	DeviceID       string                  `json:"device_id"`
-	IdentitySource string                  `json:"identity_source"`
-	AgentVersion   string                  `json:"agent_version"`
+	DeviceID       string `json:"device_id"`
+	IdentitySource string `json:"identity_source"`
+	AgentVersion   string `json:"agent_version"`
 	// Device identity (ADR 0021). Hostname and SubjectName are present only while the tenant's
 	// device_identity is 'clear'; ManagedState and CollectionMode are always reported.
-	Hostname       string                  `json:"hostname,omitempty"`
-	SubjectName    string                  `json:"subject_name,omitempty"`
-	ManagedState   string                  `json:"managed_state,omitempty"`
-	CollectionMode string                  `json:"collection_mode,omitempty"`
-	DeviceIdentity string                  `json:"device_identity,omitempty"`
-	GeneratedAt    time.Time               `json:"generated_at"`
-	PolicyVersion  string                  `json:"policy_version,omitempty"`
-	PolicyOutcome  string                  `json:"policy_outcome"`
-	PolicyCause    string                  `json:"policy_cause,omitempty"`
+	Hostname       string `json:"hostname,omitempty"`
+	SubjectName    string `json:"subject_name,omitempty"`
+	ManagedState   string `json:"managed_state,omitempty"`
+	CollectionMode string `json:"collection_mode,omitempty"`
+	DeviceIdentity string `json:"device_identity,omitempty"`
+	// UserRefSource says where the current user_ref came from: configured, upn, oid, acct, or
+	// unattributed (contract §4). The ref itself is pseudonymous and is not repeated here.
+	UserRefSource string    `json:"user_ref_source,omitempty"`
+	GeneratedAt   time.Time `json:"generated_at"`
+	PolicyVersion string    `json:"policy_version,omitempty"`
+	PolicyOutcome string    `json:"policy_outcome"`
+	PolicyCause   string    `json:"policy_cause,omitempty"`
+	// PolicyFetch is the GET /v1/policy poller's state, when the bundle is fetched rather than
+	// configured.
+	PolicyFetch    *policySyncStatus       `json:"policy_fetch,omitempty"`
 	Classification classifierStatus        `json:"classifier"`
 	Reports        []protocol.HealthReport `json:"reports"`
 	Extension      *protocol.HealthReport  `json:"extension,omitempty"`
@@ -226,8 +233,9 @@ type drainStatus struct {
 // non-blocking, and the counters are read from the health channel only — never as events (§4.3).
 func (h *healthChannel) Snapshot() healthSnapshot {
 	policyVersion := ""
-	outcome := string(h.svc.result.Outcome)
-	cause := string(h.svc.result.Cause)
+	res := h.svc.policyResult()
+	outcome := string(res.Outcome)
+	cause := string(res.Cause)
 	if b := h.svc.currentBundle(); b != nil {
 		policyVersion = b.Version
 	}
@@ -266,10 +274,12 @@ func (h *healthChannel) Snapshot() healthSnapshot {
 
 	connected, classVersion, detail := h.svc.host.status()
 	identity := h.currentDeviceIdentity()
-	hostname, subjectName := "", ""
+	_, subjectName, userRefSource := h.svc.personIdentity()
+	hostname := ""
 	if identity == protocol.DeviceIdentityClear {
 		hostname = h.cfg.resolvedHostname()
-		subjectName = h.cfg.resolvedSubjectName()
+	} else {
+		subjectName = ""
 	}
 	snap := healthSnapshot{
 		DeviceID:       deviceID,
@@ -277,9 +287,10 @@ func (h *healthChannel) Snapshot() healthSnapshot {
 		AgentVersion:   version,
 		Hostname:       hostname,
 		SubjectName:    subjectName,
-		ManagedState:   string(h.cfg.managedState()),
+		ManagedState:   string(h.svc.managedState()),
 		CollectionMode: string(h.baseMode(deviceID)),
 		DeviceIdentity: string(identity),
+		UserRefSource:  userRefSource,
 		GeneratedAt:    time.Now().UTC(),
 		PolicyVersion:  policyVersion,
 		PolicyOutcome:  outcome,
@@ -307,6 +318,10 @@ func (h *healthChannel) Snapshot() healthSnapshot {
 			ds.LastSuccess = &t
 		}
 		snap.Drain = ds
+	}
+	if h.svc.policySync != nil {
+		st := h.svc.policySync.Status()
+		snap.PolicyFetch = &st
 	}
 	if h.svc.detect == nil {
 		snap.NamedGaps = append(snap.NamedGaps, "proc.detect: no coverage row (provider not started on this host)")

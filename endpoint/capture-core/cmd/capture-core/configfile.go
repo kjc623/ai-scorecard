@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -53,6 +54,8 @@ var configEnvFlags = map[string]string{
 	"SAC_AUTH_MODE":            "--auth-mode",
 	"SAC_CREDENTIAL_FILE":      "--credential-file",
 	"SAC_ENROLMENT_TOKEN":      "--enrolment-token",
+	"SAC_DEPLOYMENT_KEY":       "--deployment-key",
+	"SAC_STATE_DIR":            "--state-dir",
 	"SAC_CA_FILE":              "--ca-file",
 	"SAC_MDM_ID":               "--mdm-id",
 	"SAC_BACKOFF_BASE":         "--backoff-base",
@@ -78,8 +81,13 @@ var configBoolEnv = map[string]bool{
 // or a path with spaces needs no quoting.
 func configArgsFromFile(path string) ([]string, error) {
 	f, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		// The service is started with the vendor's file and the tenant's file; the tenant's is the
+		// one an install can lack, and an operator reading this must know which file to supply.
+		return nil, fmt.Errorf("config file %s does not exist: every --config-file must be present (the tenant file is %s, delivered beside the MSI)", path, tenantConfigName)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("config file: %w", err)
+		return nil, fmt.Errorf("config file %s: %w", path, err)
 	}
 	defer f.Close()
 
@@ -111,27 +119,59 @@ func configArgsFromFile(path string) ([]string, error) {
 		}
 	}
 	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("config file: %w", err)
+		return nil, fmt.Errorf("config file %s: %w", path, err)
 	}
 	return out, nil
 }
 
-// prescanFlagValue finds a flag's value before the flag set is built, so --config-file can be read
-// and its flags placed ahead of the command line (which then wins on any duplicate). It understands
-// --name value, --name=value and the single-dash spellings.
-func prescanFlagValue(args []string, name string) string {
-	for i, a := range args {
+// tenantConfigName is the tenant file a deployment package carries beside the generic MSI
+// (contract §5). It is named here only so a missing-file error can say what to supply.
+const tenantConfigName = "ShadowAICapture.tenant.env"
+
+// configArgsFromFiles reads each profile in order and concatenates their flags. The flag set keeps
+// the last value it parses for a flag, so a later file wins over an earlier one: the vendor's
+// generic capture-core.env first, the tenant's file after it.
+func configArgsFromFiles(paths []string) ([]string, error) {
+	var out []string
+	for _, p := range paths {
+		args, err := configArgsFromFile(p)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, args...)
+	}
+	return out, nil
+}
+
+// prescanFlagValues finds every value of a repeatable flag, in order, before the flag set is built,
+// so --config-file profiles can be read and their flags placed ahead of the command line (which then
+// wins on any duplicate). It understands --name value, --name=value and the single-dash spellings.
+func prescanFlagValues(args []string, name string) []string {
+	var out []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			break
+		}
 		for _, prefix := range []string{"--", "-"} {
 			if a == prefix+name {
 				if i+1 < len(args) {
-					return args[i+1]
+					out = append(out, args[i+1])
+					i++
 				}
-				return ""
+				break
 			}
 			if strings.HasPrefix(a, prefix+name+"=") {
-				return strings.TrimPrefix(a, prefix+name+"=")
+				out = append(out, strings.TrimPrefix(a, prefix+name+"="))
+				break
 			}
 		}
 	}
-	return ""
+	return out
 }
+
+// stringList is a repeatable string flag.
+type stringList []string
+
+func (l *stringList) String() string     { return strings.Join(*l, ",") }
+func (l *stringList) Set(v string) error { *l = append(*l, v); return nil }

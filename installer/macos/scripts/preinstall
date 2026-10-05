@@ -1,8 +1,20 @@
 #!/bin/sh
-# installer/macos/scripts/preinstall - stop any running daemon before the payload is replaced.
+# installer/macos/scripts/preinstall - refuse an install with no tenant configuration, then stop any
+# running daemon before the payload is replaced.
 set -eu
 LABEL=com.shadowaicapture.capture-core
 PLIST="/Library/LaunchDaemons/${LABEL}.plist"
+CONFIGDIR=/usr/local/etc/shadow-ai-capture
+
+# The tenant package puts ShadowAICapture.tenant.env beside the .pkg ($1 is the package path).
+# Checked here, before anything is laid down, because a pkg cannot roll its payload back: the same
+# rule as the Windows MSI, and the reason lands in /var/log/install.log.
+PKG_DIR=$(dirname "${1:-/nonexistent/pkg}")
+if [ ! -f "$PKG_DIR/ShadowAICapture.tenant.env" ] && [ ! -f "$CONFIGDIR/tenant.env" ]; then
+  echo "preinstall: ShadowAICapture.tenant.env was not found beside the package in $PKG_DIR and this Mac has no tenant configuration installed; deploy the package together with it." >&2
+  exit 1
+fi
+
 if [ -f "$PLIST" ]; then
   launchctl bootout system "$PLIST" 2>/dev/null || launchctl unload "$PLIST" 2>/dev/null || true
 fi

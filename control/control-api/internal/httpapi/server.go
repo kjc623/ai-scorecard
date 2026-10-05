@@ -31,9 +31,11 @@ import (
 
 	"github.com/shadow-ai-capture/control-api/internal/apierr"
 	"github.com/shadow-ai-capture/control-api/internal/content"
+	"github.com/shadow-ai-capture/control-api/internal/deploy"
 	"github.com/shadow-ai-capture/control-api/internal/dpop"
 	"github.com/shadow-ai-capture/control-api/internal/enrol"
 	"github.com/shadow-ai-capture/control-api/internal/health"
+	"github.com/shadow-ai-capture/control-api/internal/policyserve"
 	"github.com/shadow-ai-capture/control-api/internal/store"
 	"github.com/shadow-ai-capture/control-api/internal/token"
 )
@@ -58,6 +60,19 @@ type Server struct {
 	// Health is the health channel (§5.4). Nil only in a build or test that does not wire it; the
 	// route then answers 503 rather than silently dropping a report.
 	Health *health.Service
+
+	// Policy serves GET /v1/policy (§5.2). Nil when no policy signing key is configured: the route
+	// answers 503, and a device keeps the bundle it has (or stays at M0) rather than reading an
+	// absence as permission.
+	Policy *policyserve.Service
+
+	// Admin is the deployment admin API (/admin/v1/*), reached only from the dashboard's server
+	// with a product access token. The device edge never forwards /admin/*.
+	Admin *deploy.Handler
+
+	// SCIM is the provisioning endpoint a customer's identity provider pushes to (/scim/v2). Nil
+	// when the deployment has no directory key to seal what it would store.
+	SCIM http.Handler
 }
 
 // New builds a server.
@@ -74,7 +89,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/enrol", s.handleEnrol)
 	mux.HandleFunc("/v1/token", s.handleToken)
 	mux.HandleFunc("/v1/health", s.handleHealth)
+	mux.HandleFunc("/v1/policy", s.handlePolicy)
 	mux.HandleFunc("/v1/content/grant", s.handleContentGrant)
+	mux.Handle("/scim/v2", http.HandlerFunc(s.handleSCIM))
+	mux.Handle("/scim/v2/", http.HandlerFunc(s.handleSCIM))
+	if s.Admin != nil {
+		s.Admin.Register(mux)
+	}
 	// Not a device route: the edge does not forward it. The storage layer calls it when an upload
 	// lands, and authenticates with the upload signing key.
 	mux.HandleFunc("/internal/v1/content/finalise", s.handleContentFinalise)
@@ -152,6 +173,34 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 
 // handleHealth is POST /v1/health (§5.4). The device authenticates with its current credential; the
 // tenant and device come from that credential, never from the body.
+// handlePolicy is GET /v1/policy (§5.2). The device authenticates exactly as it does for health:
+// tenant and device come from the presented credential, never from the request.
+func (s *Server) handlePolicy(w http.ResponseWriter, r *http.Request) {
+	if s.Policy == nil {
+		s.writeError(w, apierr.New(http.StatusServiceUnavailable, apierr.CodeUnavailable, "policy delivery is not configured on this deployment"))
+		return
+	}
+	s.Policy.Handler(func(r *http.Request) (string, string, error) {
+		cur, err := s.resolveCurrent(r)
+		if err != nil {
+			return "", "", err
+		}
+		return cur.TenantID, cur.DeviceID, nil
+	}).ServeHTTP(w, r)
+}
+
+// handleSCIM hands /scim/v2 to the provisioning endpoint, or answers in SCIM's own error schema so
+// an identity provider's connection test reports the real reason.
+func (s *Server) handleSCIM(w http.ResponseWriter, r *http.Request) {
+	if s.SCIM != nil {
+		s.SCIM.ServeHTTP(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "application/scim+json")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_, _ = io.WriteString(w, `{"schemas":["urn:ietf:params:scim:api:messages:2.0:Error"],"status":"503","detail":"SCIM provisioning is not configured on this deployment"}`)
+}
+
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)

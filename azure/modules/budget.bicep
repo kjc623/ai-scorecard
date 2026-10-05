@@ -15,8 +15,8 @@ param amount int
 @allowed(['Monthly', 'Quarterly', 'Annually'])
 param timeGrain string = 'Monthly'
 
-@description('Forecast-based notification thresholds as fractions of the budget, e.g. [0.5, 0.8, 1.0]. Each becomes an actual-spend alert and a forecast alert.')
-param thresholds array = [0.5, 0.8, 1.0]
+@description('Notification thresholds as percentages of the budget, e.g. [50, 80, 100]. Each becomes an actual-spend alert and a forecast alert. Whole percentages because Bicep has no fractional literal.')
+param thresholds array = [50, 80, 100]
 
 @description('Email recipients for budget notifications. Empty in dev, where a budget is a record rather than an alert.')
 param contactEmails array = []
@@ -26,6 +26,9 @@ param resourceGroupFilter string
 
 @description('Whether to alert when the forecast exceeds the budget, not only when actual spend does. On: by the time actual spend crosses, the month is already lost.')
 param alertOnForecast bool = true
+
+@description('First day of the budget period, yyyy-MM-01. Defaults to the current month at deployment: utcNow is allowed only as a parameter default, and a redeploy re-states the same budget.')
+param startDate string = utcNow('yyyy-MM-01')
 
 @description('Tags applied to the budget resource.')
 param tags object = {}
@@ -38,8 +41,8 @@ resource budget 'Microsoft.Consumption/budgets@2023-11-01' = {
     amount: amount
     timeGrain: timeGrain
     timePeriod: {
-      startDate: dateTimeFromEpoch(utcNow('yyyy-MM-01'))
-      endDate: dateTimeAdd(utcNow('yyyy-MM-01'), 'P10Y')
+      startDate: startDate
+      endDate: dateTimeAdd(startDate, 'P10Y')
     }
     filter: {
       dimensions: {
@@ -52,20 +55,20 @@ resource budget 'Microsoft.Consumption/budgets@2023-11-01' = {
     }
     notifications: union(
       reduce(thresholds, {}, (acc, t) => union(acc, {
-        'actual-${string(int(t * 100))}': {
+        'actual-${t}': {
           enabled: true
           operator: 'GreaterThan'
-          threshold: t * 100
+          threshold: t
           contactEmails: contactEmails
           contactRoles: []
           thresholdType: 'Actual'
         }
       })),
       alertOnForecast ? reduce(thresholds, {}, (acc, t) => union(acc, {
-        'forecast-${string(int(t * 100))}': {
+        'forecast-${t}': {
           enabled: true
           operator: 'GreaterThan'
-          threshold: t * 100
+          threshold: t
           contactEmails: contactEmails
           contactRoles: []
           thresholdType: 'Forecasted'

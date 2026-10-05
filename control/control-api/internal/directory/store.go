@@ -33,7 +33,9 @@ type Store interface {
 	// UpsertUser inserts or refreshes one person keyed by (tenant, user_ref). It never deletes.
 	UpsertUser(ctx context.Context, tenantID string, row Row) error
 	// RetireMissing marks every existing row whose user_ref is absent from present as inactive.
-	// It returns how many rows changed. It never deletes and never touches the other columns.
+	// It returns how many rows changed. It never deletes and never touches the other columns, and it
+	// leaves a row SCIM provisioned alone: a file that does not name a person the customer's
+	// identity provider pushed is not evidence that the person left.
 	RetireMissing(ctx context.Context, tenantID string, present []string) (int64, error)
 }
 

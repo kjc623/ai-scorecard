@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Search | Shadow AI Capture</title>
+<link rel="icon" href="data:,">
 <link rel="stylesheet" href="styles.css">
 <link rel="stylesheet" href="explore.css">
 </head>
@@ -17,6 +18,7 @@
         <button type="button" id="menu" class="menu" aria-label="Menu"><span></span><span></span></button>
       </div>
       <nav id="nav" class="nav" aria-label="Screens"></nav>
+      <div class="who" id="who"></div>
       <div class="side-foot">
         <div class="seg seg-small" id="source" role="group" aria-label="Data source"></div>
         <button type="button" id="theme" class="icon-btn" aria-label="Switch between light and dark" title="Light or dark">
@@ -107,6 +109,18 @@ const API_VERSION = '1';
 const QUERY_ENDPOINT = '/v1/query';
 const CONTENT_SEARCH_ENDPOINT = '/v1/content-search';
 const CONTENT_RETRIEVAL_ENDPOINT = '/v1/content/retrieval';
+
+/**
+ * The admin API behind Settings → Deployment (contract §5). It is control-api's, not the read
+ * path's: the dashboard server forwards /admin/v1/* there with the session's product token, and
+ * control-api checks the admin role and audits every write with the real actor. These are the
+ * only writes this client makes. A key or token id is appended as /<id>/revoke.
+ */
+const ADMIN_DEPLOYMENT_ENDPOINT = '/admin/v1/deployment';
+const ADMIN_PACKAGE_ENDPOINT = '/admin/v1/deployment/package';
+const ADMIN_VERIFICATION_ENDPOINT = '/admin/v1/deployment/verification';
+const ADMIN_KEYS_ENDPOINT = '/admin/v1/deployment/keys';
+const ADMIN_SCIM_TOKENS_ENDPOINT = '/admin/v1/scim/tokens';
 
 /** k, the small-cell floor. A cell below it arrives suppressed and is never a number. */
 const K = 5;
@@ -1093,8 +1107,10 @@ function estimatedPoints(window, bucket) {
 //   * `httpTransport({fetchImpl, url})` — a real POST of the same body to `/v1/query`.
 //
 // `test/section14.test.mjs` asserts that no other file in this package calls `fetch`, builds a
-// URL, or names any endpoint other than the three in vocab.js: the browser reaches data through a
-// closed query document, and reaches content only through the two reads content-vault decides.
+// URL, or names any endpoint other than the ones in vocab.js: the browser reaches data through a
+// closed query document, reaches content only through the two reads content-vault decides, and
+// changes configuration only through control-api's admin API (`createAdminApi`, Settings →
+// Deployment), which checks the admin role and audits each write.
 //
 // Pagination lives here too, because it is a property of the transport rather than of a screen:
 // a page is only finished when `next_cursor` is null. A short page is NOT the end — rows deleted
@@ -1326,6 +1342,182 @@ function httpContentTransport({ fetchImpl } = {}) {
     search: (body) => post(CONTENT_SEARCH_ENDPOINT, body),
     retrieve: (body) => post(CONTENT_RETRIEVAL_ENDPOINT, body),
     readUrl: get,
+  });
+}
+
+/**
+ * The admin API behind Settings → Deployment (vocab.js names its endpoints). Not a read path: it
+ * is control-api's, reached through the dashboard server with the session's product token, and its
+ * writes are the only ones this client makes. Every answer is a value, as with the content reads:
+ * `{state: 'available', …}` or `{state: 'done'}` on success, `{state: 'refused', status, error}`
+ * otherwise, so the page never tells a network failure from a refusal by catching an exception.
+ *
+ * @param {object} input
+ * @param {{request: (spec: {method: string, path: string, body?: object, expect?: 'json'|'file'}) => Promise<{status: number, body?: any, file?: object}>}} input.transport
+ */
+function createAdminApi({ transport }) {
+  if (!transport || typeof transport.request !== 'function') {
+    throw new TypeError('createAdminApi needs a transport with request(spec).');
+  }
+  async function call(spec) {
+    try {
+      return await transport.request(spec);
+    } catch (error) {
+      return { status: 0, body: { error: 'transport_unavailable', message: String(error?.message ?? error) } };
+    }
+  }
+  const ok = (status) => status >= 200 && status < 300;
+  const refused = (answer) => ({ state: 'refused', status: answer.status, error: adminErrorOf(answer.body, answer.status) });
+  const done = async (spec) => {
+    const answer = await call(spec);
+    return ok(answer.status) ? { state: 'done' } : refused(answer);
+  };
+  const revokePath = (base, id) => `${base}/${encodeURIComponent(String(id))}/revoke`;
+
+  return Object.freeze({
+    async deployment() {
+      const answer = await call({ method: 'GET', path: ADMIN_DEPLOYMENT_ENDPOINT });
+      if (!ok(answer.status) || !answer.body || typeof answer.body !== 'object') return refused(answer);
+      return { state: 'available', data: normaliseDeployment(answer.body) };
+    },
+    setVerification(value) {
+      return done({ method: 'PUT', path: ADMIN_VERIFICATION_ENDPOINT, body: { device_verification: value } });
+    },
+    async downloadPackage({ format, label }) {
+      const body = label ? { format, label } : { format };
+      const answer = await call({ method: 'POST', path: ADMIN_PACKAGE_ENDPOINT, body, expect: 'file' });
+      if (!ok(answer.status) || !answer.file) return refused(answer);
+      return { state: 'available', file: answer.file };
+    },
+    revokeKey(keyId) {
+      return done({ method: 'POST', path: revokePath(ADMIN_KEYS_ENDPOINT, keyId) });
+    },
+    async createScimToken(label) {
+      const answer = await call({ method: 'POST', path: ADMIN_SCIM_TOKENS_ENDPOINT, body: { label } });
+      if (!ok(answer.status) || typeof answer.body?.token !== 'string' || answer.body.token === '') return refused(answer);
+      return { state: 'available', token_id: answer.body.token_id ?? null, token: answer.body.token, base_url: answer.body.base_url ?? null };
+    },
+    revokeScimToken(tokenId) {
+      return done({ method: 'POST', path: revokePath(ADMIN_SCIM_TOKENS_ENDPOINT, tokenId) });
+    },
+  });
+}
+
+/** An admin refusal's code and sentence, whichever of the two error spellings the server used. */
+function adminErrorOf(body, status) {
+  const code = typeof body?.error === 'string' ? body.error : body?.error?.code;
+  const message = typeof body?.message === 'string' ? body.message : body?.error?.message;
+  const fallback = status === 0 ? 'The admin API could not be reached.'
+    : status === 401 ? 'There is no signed-in session.'
+      : status === 403 ? 'Your role cannot use these settings.'
+        : `The admin API answered ${status}.`;
+  return Object.freeze({ code: typeof code === 'string' && code !== '' ? code : `http_${status}`, message: message || fallback });
+}
+
+const nullableNumber = (value) => (typeof value === 'number' && Number.isFinite(value) ? value : null);
+const nullableText = (value) => (typeof value === 'string' && value !== '' ? value : null);
+
+/**
+ * The deployment read, with every field present: a value the server did not send is null, never a
+ * zero or an empty string, because "not reported" and "none" are different answers.
+ */
+function normaliseDeployment(body) {
+  const connection = body.connection && typeof body.connection === 'object'
+    ? Object.freeze({
+      provider: nullableText(body.connection.provider),
+      status: nullableText(body.connection.status),
+      entra_tenant_id: nullableText(body.connection.entra_tenant_id),
+      issuer: nullableText(body.connection.issuer),
+    })
+    : null;
+  const keys = (Array.isArray(body.deployment_keys) ? body.deployment_keys : []).filter((k) => k && typeof k === 'object').map((k) => Object.freeze({
+    key_id: String(k.key_id ?? ''), label: nullableText(k.label), created_at: nullableText(k.created_at), created_by: nullableText(k.created_by),
+    expires_at: nullableText(k.expires_at), revoked_at: nullableText(k.revoked_at),
+    enrolment_count: nullableNumber(k.enrolment_count), last_used_at: nullableText(k.last_used_at),
+  }));
+  const scim = body.scim && typeof body.scim === 'object' ? body.scim : {};
+  const tokens = (Array.isArray(scim.tokens) ? scim.tokens : []).filter((t) => t && typeof t === 'object').map((t) => Object.freeze({
+    token_id: String(t.token_id ?? ''), label: nullableText(t.label), created_at: nullableText(t.created_at), revoked_at: nullableText(t.revoked_at),
+  }));
+  const devices = body.devices && typeof body.devices === 'object' ? body.devices : {};
+  const release = body.release && typeof body.release === 'object'
+    ? Object.freeze({ version: nullableText(body.release.version), product_code: nullableText(body.release.product_code) })
+    : null;
+  return Object.freeze({
+    connection,
+    device_verification: body.device_verification === 'intune' ? 'intune' : 'none',
+    deployment_keys: Object.freeze(keys),
+    scim: Object.freeze({
+      tokens: Object.freeze(tokens), base_url: nullableText(scim.base_url),
+      users: nullableNumber(scim.users), groups: nullableNumber(scim.groups), last_provisioned_at: nullableText(scim.last_provisioned_at),
+    }),
+    devices: Object.freeze({ enrolled: nullableNumber(devices.enrolled), last_enrolled_at: nullableText(devices.last_enrolled_at) }),
+    release,
+  });
+}
+
+/**
+ * The file name a download is saved under, from Content-Disposition. Only the last path segment
+ * is kept, so a server cannot name a file outside the browser's download folder.
+ */
+function filenameFromDisposition(header) {
+  if (typeof header !== 'string' || header === '') return null;
+  let name = null;
+  const extended = /filename\*\s*=\s*(?:UTF-8|utf-8)''([^;]+)/.exec(header);
+  if (extended) {
+    try {
+      name = decodeURIComponent(extended[1].trim());
+    } catch {
+      name = null;
+    }
+  }
+  if (!name) {
+    const plain = /filename\s*=\s*(?:"([^"]*)"|([^;\s]+))/.exec(header);
+    name = plain ? (plain[1] ?? plain[2]) : null;
+  }
+  if (!name) return null;
+  const base = name.split(/[\\/]/).pop().replace(/[\u0000-\u001f"<>|:*?]/g, '').trim().slice(0, 128);
+  return base === '' || base === '.' || base === '..' ? null : base;
+}
+
+/** The real admin transport: JSON in and out on the page's own origin, and one binary download. */
+function httpAdminTransport({ fetchImpl } = {}) {
+  const doFetch = fetchImpl ?? (typeof fetch === 'function' ? fetch.bind(globalThis) : null);
+  if (!doFetch) {
+    throw new TransportError({ result_state: 'busy', error: { code: 'no_fetch', message: 'This environment has no fetch implementation.' } }, { network: true });
+  }
+  return Object.freeze({
+    async request({ method, path, body, expect = 'json' }) {
+      const response = await doFetch(path, {
+        method,
+        credentials: 'same-origin',
+        headers: { accept: expect === 'file' ? '*/*' : 'application/json', ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      if (expect === 'file' && response.ok) {
+        // The deployment key a package carries, when the server names it (x-sac-*); otherwise the
+        // page works it out from the key list, which gained exactly one key.
+        return {
+          status: response.status,
+          file: {
+            data: await response.blob(),
+            filename: filenameFromDisposition(response.headers.get('content-disposition')),
+            contentType: response.headers.get('content-type'),
+            keyId: response.headers.get('x-sac-deployment-key-id'),
+            keyLabel: response.headers.get('x-sac-deployment-key-label'),
+          },
+        };
+      }
+      let parsed = null;
+      if (response.status !== 204) {
+        try {
+          parsed = await response.json();
+        } catch {
+          parsed = null;
+        }
+      }
+      return { status: response.status, body: parsed };
+    },
   });
 }
 
@@ -3147,6 +3339,7 @@ const NAV_ICONS = Object.freeze({
   governance: '<path d="M12 3.5 5 6.5v5c0 4.3 2.9 7.4 7 9 4.1-1.6 7-4.7 7-9v-5z"/><path d="m9.2 12 2 2 3.6-4"/>',
   unavailable: '<circle cx="12" cy="12" r="8.5"/><path d="M6 18 18 6"/>',
   developer: '<path d="m8.5 8-4 4 4 4M15.5 8l4 4-4 4M13.5 5.5l-3 13"/>',
+  settings: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
 });
 
 function navIcon(name) {
@@ -3212,17 +3405,21 @@ function renderGapReasons(coverage) {
 // shape, the reader's stored preferences, and the controls in the navigation panel.
 //
 // The dashboard (app.js) and the Explore page (explore-app.js) both boot through this, so the
-// sidebar is one thing: the same groups, the same folding, the same theme and data-source switch.
+// sidebar is one thing: the same groups, the same folding, the same theme and data-source switch,
+// and the same line saying who is signed in, with its sign-out button.
+
 
 /**
- * The navigation: five destinations, with the three usage screens under one group. Every other
- * screen is reached from a row, a switch on one of these, or the footer.
+ * The navigation: six destinations, with the three usage screens under one group and the admin's
+ * settings under another. Every other screen is reached from a row, a switch on one of these, or
+ * the footer. A signed-in role sees only the items it may use (session.js).
  */
 const NAV_GROUPS = Object.freeze([
   { group: null, icon: 'overview', ids: ['posture'], labels: { posture: 'Overview' } },
   { group: 'Usage', icon: 'usage', ids: ['tools', 'teams', 'person'], labels: { tools: 'Tools & data classes', teams: 'Teams', person: 'Users' } },
   { group: null, icon: 'collection', ids: ['devices'], labels: { devices: 'Devices' } },
   { group: null, icon: 'governance', ids: ['audit'], labels: { audit: 'Audit trail' } },
+  { group: 'Settings', icon: 'settings', ids: ['deployment'], labels: { deployment: 'Deployment' } },
 ]);
 
 const NAV_FOLDED = Object.freeze(NAV_GROUPS.filter((g) => g.folded).map((g) => g.group));
@@ -3247,6 +3444,24 @@ function groupOf(screenId) {
   return NAV_GROUPS.find((g) => g.ids.includes(screenId))?.group ?? null;
 }
 
+const ROLE_LABELS = Object.freeze({ viewer: 'Viewer', analyst: 'Analyst', content_reader: 'Content reader', admin: 'Admin' });
+
+/**
+ * Who is signed in, for the navigation panel: the actor, their roles, and a sign-out button that
+ * POSTs to the page's own server. Sample mode has no session and shows nothing; the lab's
+ * development principal says that it is one and has nothing to sign out of.
+ */
+function renderWho(session) {
+  if (!session || typeof session !== 'object') return '';
+  if (session.dev) {
+    return `<p class="who-text"><span class="who-name">Development principal</span><span class="who-role">${escapeHtml(session.actor ?? '')}</span></p>`;
+  }
+  const roles = (Array.isArray(session.roles) ? session.roles : []).map((r) => ROLE_LABELS[r] ?? r).join(', ');
+  return `<p class="who-text"><span class="who-name" title="${escapeHtml(session.actor ?? '')}">${escapeHtml(session.actor ?? '')}</span>`
+    + `<span class="who-role">${escapeHtml(roles)}</span></p>`
+    + '<form class="who-form" method="post" action="/signout"><button type="submit" class="who-out">Sign out</button></form>';
+}
+
 /** Local preferences. Storage can be unavailable (a private window, a file:// page): then nothing is kept. */
 function readPref(document, key, fallback) {
   try {
@@ -3265,13 +3480,16 @@ function writePref(document, key, value) {
 }
 
 /**
- * The shell's own controls: which navigation groups are folded, the theme, the data-source switch,
- * the mobile menu, and a row that opens the record it names. Every lookup is optional, so a test
+ * The shell's own controls: who is signed in, which navigation groups are folded, the theme, the
+ * data-source switch, the mobile menu, and a row that opens the record it names. Every lookup is optional, so a test
  * document with none of these elements boots the same way.
  */
-function wireShell({ document, live, collapsed }) {
+function wireShell({ document, live, collapsed, session = null }) {
   const el = (id) => (typeof document.getElementById === 'function' ? document.getElementById(id) : null);
   const html = document.documentElement;
+
+  const who = el('who');
+  if (who) who.innerHTML = renderWho(session);
 
   // Theme: follow the system unless the reader chose. The choice is the only thing stored.
   const theme = readPref(document, 'sac.theme', '');
@@ -3342,7 +3560,7 @@ function readCollapsed(document) {
 // session.js — what the navigation hides for a signed-in role.
 //
 // The page never holds a token and never reads one: its server does, and it answers GET /session
-// with the actor, the tenant and the page ids the role may open (tools/session.mjs decides those
+// with the actor, the tenant and the page ids the roles may open (tools/session.mjs decides those
 // server-side, so the rule lives in one place). The fetch itself lives in transport.js, the
 // package's one network seam; this module is the pure part — the decision about which nav items
 // survive it.
@@ -3362,6 +3580,11 @@ function allowedPageIds(session) {
 function filterNavItems(items, allowed) {
   if (!allowed) return items;
   return items.filter((item) => allowed.has(item.id));
+}
+
+/** May a page be opened? The same rule as the navigation, for an address typed or linked directly. */
+function mayOpen(allowed, pageId) {
+  return !allowed || allowed.has(pageId);
 }
 
 // ─── src/explore-model.js ──────────────────────────────────────────────
@@ -5380,8 +5603,8 @@ function createExplorer({ api, content = null, now = () => new Date(), onChange 
  * Boot the page into a document. With no `api` it runs on the sample transport and says so.
  *
  * `explore.html?transport=live` reads the real query API instead, through the one endpoint on the
- * page's own origin. The page sends no tenant and no credential: whatever serves the page
- * establishes the session (in the lab, tools/serve.mjs adds the development principal).
+ * page's own origin. The page sends no tenant and no credential: its server (tools/serve.mjs)
+ * attaches the session's product token, or the development principal in the memory lab.
  *
  * @param {object} input
  * @param {Document} input.document
@@ -5400,7 +5623,7 @@ async function bootExplore({ document, api: given, content: givenContent } = {})
   const session = await loadSession();
   const allowed = allowedPageIds(session);
   if (nav) nav.innerHTML = renderNav(filterNavItems(shellNavItems({ page: `index.html${shellQuery}`, query: shellQuery }), allowed), 'explore', { collapsed: [...collapsed] });
-  wireShell({ document, live, collapsed });
+  wireShell({ document, live, collapsed, session });
   const api = given ?? (live ? createQueryApi({ transport: httpTransport() }) : null);
   const stub = api ? null : createExploreStub({ latencyMs: 220 });
   // The content reads follow the same choice as the query read: the page's own origin when live,

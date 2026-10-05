@@ -1,7 +1,7 @@
 {
   "target": "js/wasm",
   "version": "0.1.0-dev",
-  "corpus": "C:/Users/kyle/Downloads/architecture/endpoint/classifier-host/testdata/corpus.json",
+  "corpus": "C:/architecture/endpoint/classifier-host/testdata/corpus.json",
   "cases": 20,
   "iterations": 200,
   "budget_ms": {
@@ -21,35 +21,35 @@
     "model": {
       "count": 3800,
       "p50_ms": 0.010752,
-      "p95_ms": 0.02816,
+      "p95_ms": 0.028928,
       "max_ms": 3.451136
     },
     "normalise": {
       "count": 3800,
-      "p50_ms": 0.00384,
+      "p50_ms": 0.003584,
       "p95_ms": 0.0192,
-      "max_ms": 3.36
+      "max_ms": 3.267584
     },
     "rules": {
       "count": 3800,
-      "p50_ms": 0.052224,
-      "p95_ms": 0.554752,
-      "max_ms": 2.196992
+      "p50_ms": 0.05376,
+      "p95_ms": 0.577536,
+      "max_ms": 1.845248
     },
     "validators": {
       "count": 3800,
-      "p50_ms": 0.001792,
+      "p50_ms": 0.002048,
       "p95_ms": 0.004352,
-      "max_ms": 0.308224
+      "max_ms": 0.869888
     }
   },
   "total": {
     "count": 4000,
-    "p50_ms": 0.078592,
-    "p95_ms": 0.60032,
-    "max_ms": 5.961472
+    "p50_ms": 0.08064,
+    "p95_ms": 0.624128,
+    "max_ms": 6.14784
   },
-  "sum_stage_p95_ms": 0.606464,
+  "sum_stage_p95_ms": 0.630016,
   "within_budget": true,
   "notes": [
     "p95 is nearest-rank over every stage observation of the whole run, not per corpus case",

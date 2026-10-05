@@ -24,6 +24,18 @@ export const QUERY_ENDPOINT = '/v1/query';
 export const CONTENT_SEARCH_ENDPOINT = '/v1/content-search';
 export const CONTENT_RETRIEVAL_ENDPOINT = '/v1/content/retrieval';
 
+/**
+ * The admin API behind Settings → Deployment (contract §5). It is control-api's, not the read
+ * path's: the dashboard server forwards /admin/v1/* there with the session's product token, and
+ * control-api checks the admin role and audits every write with the real actor. These are the
+ * only writes this client makes. A key or token id is appended as /<id>/revoke.
+ */
+export const ADMIN_DEPLOYMENT_ENDPOINT = '/admin/v1/deployment';
+export const ADMIN_PACKAGE_ENDPOINT = '/admin/v1/deployment/package';
+export const ADMIN_VERIFICATION_ENDPOINT = '/admin/v1/deployment/verification';
+export const ADMIN_KEYS_ENDPOINT = '/admin/v1/deployment/keys';
+export const ADMIN_SCIM_TOKENS_ENDPOINT = '/admin/v1/scim/tokens';
+
 /** k, the small-cell floor. A cell below it arrives suppressed and is never a number. */
 export const K = 5;
 

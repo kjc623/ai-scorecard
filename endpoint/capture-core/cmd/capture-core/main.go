@@ -89,12 +89,14 @@ type runMode struct {
 func parseFlags(args []string) (Config, runMode, error) {
 	cfg := defaultConfig()
 	var mode runMode
-	var configFile string
+	var configFiles stringList
 
-	// A --config-file profile contributes flags before the command line, so a flag the operator also
-	// passed wins. (The Windows service is configured entirely by such a file; see service_windows.go.)
-	if path := prescanFlagValue(args, "config-file"); path != "" {
-		fileArgs, err := configArgsFromFile(path)
+	// --config-file profiles contribute flags before the command line, in the order given, so a later
+	// file wins over an earlier one and a flag the operator also passed wins over both. The Windows
+	// service is configured entirely by two such files: the vendor's generic capture-core.env, then
+	// the tenant's file from the deployment package (contract §5).
+	if paths := prescanFlagValues(args, "config-file"); len(paths) > 0 {
+		fileArgs, err := configArgsFromFiles(paths)
 		if err != nil {
 			return cfg, mode, err
 		}
@@ -114,10 +116,10 @@ func parseFlags(args []string) (Config, runMode, error) {
 	fs.StringVar(&cfg.SpoolBoundsProfile, "spool-bounds", cfg.SpoolBoundsProfile, "spool bound profile: default | dev")
 	fs.StringVar(&cfg.TenantID, "tenant-id", cfg.TenantID, "tenant id stamped on every envelope (from enrolment, §13.1)")
 	fs.StringVar(&cfg.DeviceID, "device-id", cfg.DeviceID, "device id stamped on every envelope")
-	fs.StringVar(&cfg.UserRef, "user-ref", cfg.UserRef, "pseudonymous subject reference (never a name or e-mail)")
+	fs.StringVar(&cfg.UserRef, "user-ref", cfg.UserRef, "pseudonymous subject reference (never a name or e-mail); empty derives it from the console user under the tenant's key")
 	fs.StringVar(&cfg.Hostname, "hostname", cfg.Hostname, "clear machine name reported to the control plane; empty resolves the OS hostname (ADR 0021)")
-	fs.StringVar(&cfg.SubjectName, "subject-name", cfg.SubjectName, "clear account name stamped on each submission; empty resolves the OS user (ADR 0021)")
-	fs.StringVar(&cfg.ManagedState, "managed-state", cfg.ManagedState, "whether the device is under MDM: managed | unmanaged | unknown (default unknown; no MDM resolver in this build)")
+	fs.StringVar(&cfg.SubjectName, "subject-name", cfg.SubjectName, "clear account name stamped on each submission; empty resolves the console user's UPN, else DOMAIN\\user (ADR 0021)")
+	fs.StringVar(&cfg.ManagedState, "managed-state", cfg.ManagedState, "whether the device is under MDM: managed | unmanaged | unknown; empty reports managed when an Intune enrolment is found, else unknown")
 	fs.StringVar(&cfg.DeviceIdentity, "device-identity", cfg.DeviceIdentity, "tenant identity setting to act on: clear | hashed (default clear; the server restates and may change it)")
 	fs.StringVar(&cfg.Population, "population", cfg.Population, "user population for scope resolution (may be empty)")
 	fs.StringVar(&cfg.Retention, "retention", cfg.Retention, "device-side retention for spooled observations (e.g. 720h)")
@@ -164,6 +166,8 @@ func parseFlags(args []string) (Config, runMode, error) {
 	fs.StringVar(&cfg.AuthMode, "auth-mode", cfg.AuthMode, "device credential mode for the drain: x509 | dpop")
 	fs.StringVar(&cfg.CredentialFile, "credential-file", cfg.CredentialFile, "path to the sealed device credential (issued by POST /v1/enrol)")
 	fs.StringVar(&cfg.EnrolmentToken, "enrolment-token", cfg.EnrolmentToken, "single-use bootstrap token for POST /v1/enrol")
+	fs.StringVar(&cfg.DeploymentKey, "deployment-key", cfg.DeploymentKey, "the tenant's reusable deployment key for POST /v1/enrol (from the tenant package); exclusive with --enrolment-token")
+	fs.StringVar(&cfg.StateDir, "state-dir", cfg.StateDir, "where the agent keeps what it fetches or generates (the cached policy bundle, the per-device CA); empty uses the --credential-file directory")
 	fs.StringVar(&cfg.CAFile, "ca-file", cfg.CAFile, "PEM CA set the edge is pinned to; empty uses the system root set")
 	fs.StringVar(&cfg.MDMID, "mdm-id", cfg.MDMID, "MDM-delivered device identifier (the preferred hardware-identity seed)")
 	fs.DurationVar(&cfg.BackoffBase, "backoff-base", cfg.BackoffBase, "drain retry backoff base (full jitter)")
@@ -175,8 +179,9 @@ func parseFlags(args []string) (Config, runMode, error) {
 	fs.BoolVar(&mode.selftest, "selftest", false, "run the end-to-end self test (service, golden frames, health, shutdown) and exit non-zero on failure")
 	fs.BoolVar(&mode.nativeHost, "native-host", false, "run the native-messaging host on stdin/stdout")
 	fs.StringVar(&mode.nativeFrames, "native-frames", "", "directory of golden frame case files to run through the real native-messaging framing, then exit")
-	// A KEY=VALUE profile in the SAC_* vocabulary. It supplies flags; an explicitly passed flag wins.
-	fs.StringVar(&configFile, "config-file", "", "read a KEY=VALUE SAC_* configuration file (installer/manifest.mjs is the catalogue); command-line flags win")
+	// KEY=VALUE profiles in the SAC_* vocabulary, read by prescanFlagValues above; registered here so
+	// the flag set accepts them. A later file wins over an earlier one; an explicitly passed flag wins.
+	fs.Var(&configFiles, "config-file", "read a KEY=VALUE SAC_* configuration file (installer/manifest.mjs is the catalogue); repeatable, a later file wins, command-line flags win over all")
 
 	// Windows service. --service is accepted on every platform so the flag set is one shape; a
 	// non-Windows binary refuses it at run time rather than at parse time.

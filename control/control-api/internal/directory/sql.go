@@ -8,14 +8,14 @@ import (
 )
 
 // =====================================================================================
-// Every SQL statement the directory sync issues, in one file.
+// Every SQL statement this package issues (the lab sync and the user_ref key), in one file.
 // =====================================================================================
 //
 // The same rule control-api's store holds applies here: one place for SQL, so the seam with
 // database/schema.sql is reviewable in one screen and the live test can execute the text against a
 // real PostgreSQL without going through a Go driver. Every statement is tenant-scoped, and the
-// session tenant is set before any other statement; ops.user_dim is under forced row-level
-// security, so a session with no tenant writes nothing.
+// session tenant is set before any other statement; ops.user_dim and ops.tenant are under forced
+// row-level security, so a session with no tenant reads and writes nothing.
 
 const (
 	// SQLDirectorySetTenant sets the row-level-security session tenant transaction-locally.
@@ -45,13 +45,30 @@ ON CONFLICT (tenant_id, user_ref) DO UPDATE
 
 	// SQLRetireDirectoryUsers marks a row inactive when the directory no longer returns it. It never
 	// deletes and never clears the attributes: history stays attributable to the person who left.
-	// $1 tenant, $2 the user_refs the source did return.
+	// A row whose user_ref is a SCIM user's canonical ref is not the file's to retire: SCIM owns
+	// that person's status (internal/scim). $1 tenant, $2 the user_refs the source did return.
 	SQLRetireDirectoryUsers = `
-UPDATE ops.user_dim
+UPDATE ops.user_dim ud
    SET status = 'inactive'
+ WHERE ud.tenant_id = $1::uuid
+   AND ud.status <> 'inactive'
+   AND NOT (ud.user_ref = ANY($2::text[]))
+   AND NOT EXISTS (SELECT 1 FROM ops.scim_user su
+                    WHERE su.tenant_id = ud.tenant_id AND su.user_ref = ud.user_ref)`
+
+	// SQLSealedUserRefKey reads the tenant's sealed user-reference key; NULL until first minted.
+	// $1 tenant.
+	SQLSealedUserRefKey = `SELECT user_ref_key_enc FROM ops.tenant WHERE tenant_id = $1::uuid`
+
+	// SQLInitUserRefKey stores a proposed key only where none is stored, and returns the stored one.
+	// Under READ COMMITTED a second concurrent writer blocks on the first's row lock, then re-reads
+	// the committed row, so COALESCE keeps the first key and both callers get it back: the race is
+	// decided by the database, not by the callers. $1 tenant, $2 the sealed proposal.
+	SQLInitUserRefKey = `
+UPDATE ops.tenant
+   SET user_ref_key_enc = COALESCE(user_ref_key_enc, $2::bytea)
  WHERE tenant_id = $1::uuid
-   AND status <> 'inactive'
-   AND NOT (user_ref = ANY($2::text[]))`
+RETURNING user_ref_key_enc`
 )
 
 // DirectoryStatement pairs a statement with what it is for, so the set can be listed and executed
@@ -68,6 +85,8 @@ var DirectoryStatements = []DirectoryStatement{
 	{Name: "device_identity", Purpose: "ADR 0021 display-name gate", SQL: SQLDirectoryDeviceIdentity},
 	{Name: "upsert_user", Purpose: "insert/refresh one ops.user_dim row", SQL: SQLUpsertDirectoryUser},
 	{Name: "retire_user", Purpose: "mark a departed user inactive (never delete)", SQL: SQLRetireDirectoryUsers},
+	{Name: "sealed_user_ref_key", Purpose: "read the tenant's sealed user_ref key", SQL: SQLSealedUserRefKey},
+	{Name: "init_user_ref_key", Purpose: "mint the tenant's user_ref key once, race-safe", SQL: SQLInitUserRefKey},
 }
 
 // SQLStore is the database/sql Store. NewSQL takes an already-open *sql.DB; the driver is
@@ -125,6 +144,38 @@ func (s *SQLStore) RetireMissing(ctx context.Context, tenantID string, present [
 		return 0, fmt.Errorf("directory: retire missing: %w", err)
 	}
 	return changed, nil
+}
+
+// SealedUserRefKey implements UserRefKeyStore.
+func (s *SQLStore) SealedUserRefKey(ctx context.Context, tenantID string) ([]byte, error) {
+	var sealed []byte
+	err := s.withTenant(ctx, tenantID, func(tx *sql.Tx) error {
+		err := tx.QueryRowContext(ctx, SQLSealedUserRefKey, tenantID).Scan(&sealed)
+		if err == sql.ErrNoRows {
+			return ErrUnknownTenant
+		}
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return sealed, nil
+}
+
+// InitUserRefKey implements UserRefKeyStore.
+func (s *SQLStore) InitUserRefKey(ctx context.Context, tenantID string, sealed []byte) ([]byte, error) {
+	var stored []byte
+	err := s.withTenant(ctx, tenantID, func(tx *sql.Tx) error {
+		err := tx.QueryRowContext(ctx, SQLInitUserRefKey, tenantID, sealed).Scan(&stored)
+		if err == sql.ErrNoRows {
+			return ErrUnknownTenant
+		}
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return stored, nil
 }
 
 func (s *SQLStore) withTenant(ctx context.Context, tenantID string, fn func(tx *sql.Tx) error) error {

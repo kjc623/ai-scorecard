@@ -498,8 +498,8 @@ export function createExplorer({ api, content = null, now = () => new Date(), on
  * Boot the page into a document. With no `api` it runs on the sample transport and says so.
  *
  * `explore.html?transport=live` reads the real query API instead, through the one endpoint on the
- * page's own origin. The page sends no tenant and no credential: whatever serves the page
- * establishes the session (in the lab, tools/serve.mjs adds the development principal).
+ * page's own origin. The page sends no tenant and no credential: its server (tools/serve.mjs)
+ * attaches the session's product token, or the development principal in the memory lab.
  *
  * @param {object} input
  * @param {Document} input.document
@@ -518,7 +518,7 @@ export async function bootExplore({ document, api: given, content: givenContent 
   const session = await loadSession();
   const allowed = allowedPageIds(session);
   if (nav) nav.innerHTML = renderNav(filterNavItems(shellNavItems({ page: `index.html${shellQuery}`, query: shellQuery }), allowed), 'explore', { collapsed: [...collapsed] });
-  wireShell({ document, live, collapsed });
+  wireShell({ document, live, collapsed, session });
   const api = given ?? (live ? createQueryApi({ transport: httpTransport() }) : null);
   const stub = api ? null : createExploreStub({ latencyMs: 220 });
   // The content reads follow the same choice as the query read: the page's own origin when live,

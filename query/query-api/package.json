@@ -17,6 +17,8 @@
     "snapshot": "node tools/snapshot.mjs",
     "snapshot:check": "node tools/snapshot.mjs --check"
   },
-  "dependencies": {},
+  "dependencies": {
+    "jose": "6.2.12"
+  },
   "devDependencies": {}
 }

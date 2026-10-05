@@ -7,11 +7,13 @@ environment may differ on, three pipelines, and a static checker that validates 
 
 ## Deployment is NOT VERIFIED
 
-Nothing in this directory has ever been deployed. There is no Azure subscription, no `az` CLI and no
-Bicep compiler on the machine where it was written, so:
+Nothing in this directory has ever been deployed. There is no Azure subscription, so:
 
-- the Bicep has **not** been compiled, so a syntax error or a wrong resource property is a real
-  possibility;
+- the Bicep **compiles** (`az bicep build --file azure/main.bicep`, Bicep CLI 0.47.16, 2026-10-05: no
+  errors, 35 warnings). Compiling fixed six modules that had never compiled. The warnings that remain
+  include property names the type definitions do not know (`verifyClientAuthMode` on the gateway,
+  `requestBodyInspectLimitInKB` on the WAF policy, `authConfig` on the unused Static Web App module),
+  so a wrong resource property is still a real possibility until a `validate` runs against Azure;
 - no resource has been created, so no `what-if` output, no idempotency check and no `existing`-resource
   behaviour has been observed;
 - the prices in `cost-model.md` have **not** been checked against the Azure pricing calculator;
@@ -46,6 +48,26 @@ Preconditions, all of which must hold before the commands mean anything:
    proves nothing.
 5. The container images named by `imageTag` already exist in the registry — the platform pulls over the
    registry's private endpoint, and a missing image is a failed revision, not a failed deployment.
+
+Before the first deployment, create the four identity secrets control-api and the dashboard read
+from the environment's Key Vault (`<baseName>-kv`). Values are generated, never committed, and the
+directory key and the policy key must be kept: losing the first makes every sealed column unreadable,
+and the second's public half is the trust anchor shipped in the agent MSI.
+
+```powershell
+$kv = 'sac-prod-eastus-kv'
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out session.key   # product tokens (ES256)
+openssl genpkey -algorithm ED25519 -out policy.key                                 # signed policy bundles
+az keyvault secret set --vault-name $kv --name sac-session-signing-key --file session.key
+az keyvault secret set --vault-name $kv --name sac-policy-signing-key --file policy.key
+az keyvault secret set --vault-name $kv --name sac-internal-token --value (openssl rand -base64 32)
+az keyvault secret set --vault-name $kv --name sac-directory-key --value (openssl rand -base64 32)
+Remove-Item session.key, policy.key
+```
+
+After it, add control-api's managed identity as a federated credential on the vendor's multi-tenant
+Entra app, from the `entraFederatedCredential` output (the command is in the comment above that
+output in `main.bicep`). Until it exists, control-api cannot authenticate as the app, so neither an Entra sign-in nor the Intune check works; OIDC customers are unaffected.
 
 ```powershell
 # 1. The resource group and the environment-level checks the template cannot do itself.

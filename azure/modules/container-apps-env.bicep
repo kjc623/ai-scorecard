@@ -58,5 +58,8 @@ output environmentId string = environment.id
 @description('The environment’s static IP. Internal, and the §3.5 resource-graph assertion confirms it is not public.')
 output staticIp string = environment.properties.staticIp
 
+@description('The environment default domain. An app with external ingress answers at <app>.<defaultDomain> (inside the VNet, since the load balancer is internal), so the composition can name an app address before the app exists -- control-api is told its own token issuer this way.')
+output defaultDomain string = environment.properties.defaultDomain
+
 @description('The internal load balancer property, echoed so the composition can assert it rather than trust the default.')
 output internalIngress bool = internalLoadBalancer

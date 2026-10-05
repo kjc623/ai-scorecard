@@ -144,6 +144,9 @@ func TestEveryReadNameIsEitherPassedOrDocumented(t *testing.T) {
 		EnvAllowNonLoopback:   "the image-level spelling of the acknowledgement; a deployment states the same fact as SAC_INTERNAL_ONLY=true",
 		EnvBlobReadCredential: "lab only: the shared bearer the storage stand-in checks; a deployment uses SAC_BLOB_IDENTITY=managed and stores no secret",
 		EnvRetrievalURLBase:   "gap: the origin a browser reaches a minted retrieval URL on; a deployment behind an ingress sets it, the lab resolves a path",
+		EnvAuthIssuer:         "gap: control-api's token issuer (contract §2). A deployment must set it, or the vault trusts X-Sac-* headers alone; azure/main.bicep passes none yet",
+		EnvAuthAudience:       "image: sac-vault, the vault's audience in the product token",
+		EnvAuthJWKSURL:        "image: {issuer}/.well-known/jwks.json unless the issuer publishes its keys elsewhere",
 	}
 
 	var undocumented []string

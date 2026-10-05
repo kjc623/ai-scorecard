@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
@@ -17,20 +16,17 @@ import (
 	"github.com/shadow-ai-capture/control-api/internal/directory"
 )
 
-// sync-directory is the scheduled directory synchronisation (docs/03 §3.3, docs/04 §3.3; the Q2
-// decision record). It lives in the control-api binary and image because the architecture assigns
-// directory work to the control plane, and it shares the role's existing grant on ops.user_dim.
+// sync-directory loads a directory export into ops.user_dim (docs/03 §3.3, docs/04 §3.3; the Q2
+// decision record). It is the lab's path: it gives the sample tenant's simulated people a department
+// without an identity provider. A customer's people arrive through SCIM, pushed by their identity
+// provider to /scim/v2 (internal/scim); there is no pull from Microsoft Graph, because the product's
+// Entra application asks for no directory-read permission.
 //
-// The command is an operator or scheduler entry point, not a device route: the HTTP service knows
-// nothing about it. It runs once and exits, or on --interval until stopped. Entra ID is the first
-// provider; the file provider is the lab's offline source and the path for a customer whose
-// directory is not Entra.
-//
-//	control-api sync-directory --store sql --dsn "$SAC_PG_DSN" \
-//	  --provider entra --entra-tenant "$TENANT" --entra-client-id "$ID" --entra-client-secret "$SECRET"
+// The command is an operator entry point, not a device route: the HTTP service knows nothing about
+// it. It runs once and exits, or on --interval until stopped.
 //
 //	control-api sync-directory --store sql --dsn "$SAC_PG_DSN" \
-//	  --provider file --file backlog/06-directory-sync/sample-directory.json --tenant "$SAMPLE"
+//	  --file backlog/06-directory-sync/sample-directory.json --tenant "$SAMPLE"
 //
 // The directory key (SAC_DIRECTORY_KEY, base64, 32 bytes) seals directory_object_id_enc. It is a
 // deployment secret with no default: without it the command refuses, because writing an unsealed
@@ -41,9 +37,6 @@ func runSyncDirectory(args []string) error {
 		storeKind, dsn, driver, pgHost, pgPort, pgDatabase, role string
 		provider, filePath                                       string
 		tenants                                                  stringList
-		entraTenant, entraClientID, entraClientSecret            string
-		userRefAttribute, populationAttribute                    string
-		loginBase, graphBase                                     string
 		keyBase64, keyFile                                       string
 		interval                                                 time.Duration
 	)
@@ -54,16 +47,9 @@ func runSyncDirectory(args []string) error {
 	fs.StringVar(&pgPort, "pg-port", "5432", "database port")
 	fs.StringVar(&pgDatabase, "pg-database", "shadow", "database name")
 	fs.StringVar(&role, "role", "control-api", "the identity this process runs as")
-	fs.StringVar(&provider, "provider", "file", "directory provider: file | entra")
-	fs.StringVar(&filePath, "file", "", "JSON directory export (with --provider file)")
+	fs.StringVar(&provider, "provider", "file", "directory provider: file (the only one; identity providers push through SCIM)")
+	fs.StringVar(&filePath, "file", "", "JSON directory export")
 	fs.Var(&tenants, "tenant", "sync only this tenant; repeatable. Default: every tenant the session can see")
-	fs.StringVar(&entraTenant, "entra-tenant", "", "Entra ID tenant id or domain (with --provider entra)")
-	fs.StringVar(&entraClientID, "entra-client-id", "", "registered application (client) id")
-	fs.StringVar(&entraClientSecret, "entra-client-secret", os.Getenv("SAC_ENTRA_CLIENT_SECRET"), "registered application client secret (env SAC_ENTRA_CLIENT_SECRET)")
-	fs.StringVar(&userRefAttribute, "entra-user-ref-attribute", "onPremisesSamAccountName", "directory attribute whose value is the device's --user-ref")
-	fs.StringVar(&populationAttribute, "entra-population-attribute", "", "directory attribute copied to ops.user_dim.population")
-	fs.StringVar(&loginBase, "entra-login-base", "", "override the Microsoft login base URL (tests only)")
-	fs.StringVar(&graphBase, "entra-graph-base", "", "override the Graph base URL (tests only)")
 	fs.StringVar(&keyBase64, "directory-key", os.Getenv("SAC_DIRECTORY_KEY"), "base64 32-byte key sealing directory_object_id_enc (env SAC_DIRECTORY_KEY)")
 	fs.StringVar(&keyFile, "directory-key-file", "", "file holding the base64 directory key")
 	fs.DurationVar(&interval, "interval", 0, "run every interval instead of once (0 = run once and exit)")
@@ -100,15 +86,7 @@ func runSyncDirectory(args []string) error {
 		return err
 	}
 
-	source, err := buildDirectorySource(provider, filePath, graphSourceConfig{
-		TenantID:            entraTenant,
-		ClientID:            entraClientID,
-		ClientSecret:        entraClientSecret,
-		UserRefAttribute:    userRefAttribute,
-		PopulationAttribute: populationAttribute,
-		LoginBaseURL:        loginBase,
-		GraphBaseURL:        graphBase,
-	})
+	source, err := buildDirectorySource(provider, filePath)
 	if err != nil {
 		return err
 	}
@@ -186,44 +164,26 @@ func resolveDirectoryKey(encoded, file string) ([]byte, error) {
 		}
 		encoded = strings.TrimSpace(string(raw))
 	}
-	if encoded == "" {
+	if strings.TrimSpace(encoded) == "" {
 		return nil, fmt.Errorf("no directory key: set SAC_DIRECTORY_KEY or --directory-key to a base64 32-byte value (it seals ops.user_dim.directory_object_id_enc)")
 	}
-	key, err := base64.StdEncoding.DecodeString(strings.TrimSpace(encoded))
-	if err != nil {
-		return nil, fmt.Errorf("directory key is not valid base64: %w", err)
-	}
-	return key, nil
+	return directory.DecodeKey(encoded)
 }
 
-// graphSourceConfig is the CLI's slice of the Entra provider's settings.
-type graphSourceConfig struct {
-	TenantID, ClientID, ClientSecret      string
-	UserRefAttribute, PopulationAttribute string
-	LoginBaseURL, GraphBaseURL            string
-}
-
-// buildDirectorySource selects the provider. The two providers are chosen at the command line rather
-// than guessed, so a missing secret is a clear error and never a silent fallback to a file.
-func buildDirectorySource(provider, filePath string, g graphSourceConfig) (directory.Source, error) {
+// buildDirectorySource selects the provider. The file is the only one left: --provider stays so the
+// lab's existing command lines keep working, and the old entra value is refused with the reason
+// rather than ignored.
+func buildDirectorySource(provider, filePath string) (directory.Source, error) {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "file":
+	case "file", "":
 		if filePath == "" {
-			return nil, fmt.Errorf("--provider file needs --file")
+			return nil, fmt.Errorf("sync-directory needs --file")
 		}
 		return directory.NewFileSource(filePath), nil
 	case "entra":
-		return &directory.GraphSource{
-			TenantID:            g.TenantID,
-			ClientID:            g.ClientID,
-			ClientSecret:        g.ClientSecret,
-			UserRefAttribute:    g.UserRefAttribute,
-			PopulationAttribute: g.PopulationAttribute,
-			LoginBaseURL:        g.LoginBaseURL,
-			GraphBaseURL:        g.GraphBaseURL,
-		}, nil
+		return nil, fmt.Errorf("--provider entra was removed: an Entra tenant provisions people through SCIM (/scim/v2), and the product's Entra application holds no directory-read permission")
 	default:
-		return nil, fmt.Errorf("unknown --provider %q (want file or entra)", provider)
+		return nil, fmt.Errorf("unknown --provider %q (want file)", provider)
 	}
 }
 

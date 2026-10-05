@@ -63,6 +63,55 @@ const (
 	EnvAppInsights = "SAC_APPINSIGHTS"
 )
 
+// The enterprise surface (enterprise.go): the product's identity service, SCIM, deployment keys,
+// policy delivery and the admin API. Each part is off until its settings are present, and says so
+// at startup, so a deployment never half-runs one silently.
+const (
+	// EnvAuthIssuer turns on the identity service: the exact `iss` of product access tokens, which
+	// query-api and content-vault pin too.
+	EnvAuthIssuer = "SAC_AUTH_ISSUER"
+	// EnvSessionSigningKeyFile is the P-256 key that signs product access tokens (several PEM blocks
+	// publish rotation keys). It is not the device token key.
+	EnvSessionSigningKeyFile = "SAC_SESSION_SIGNING_KEY_FILE"
+	// EnvInternalToken authenticates the dashboard's server on /internal/v1/auth/*.
+	EnvInternalToken = "SAC_INTERNAL_TOKEN"
+	// EnvPublicURL is the browser-facing origin: redirect URIs, onboarding links, SCIM base URL.
+	EnvPublicURL = "SAC_PUBLIC_URL"
+	// EnvPublicDeviceEndpoint is the device edge written into every tenant package.
+	EnvPublicDeviceEndpoint = "SAC_PUBLIC_DEVICE_ENDPOINT"
+	// EnvDirectoryKey seals every *_enc column and derives the tenant user-reference keys.
+	EnvDirectoryKey = "SAC_DIRECTORY_KEY"
+	// EnvAuthAllowInsecureIdP admits http issuers and private addresses: the lab's stand-in only.
+	EnvAuthAllowInsecureIdP = "SAC_AUTH_ALLOW_INSECURE_IDP"
+	// EnvAuthRedirectURIs is the exact set of redirect URIs sign-in accepts (comma-separated).
+	EnvAuthRedirectURIs = "SAC_AUTH_REDIRECT_URIS"
+	// EnvAuthTokenTTL is the product token life, clamped to ten minutes.
+	EnvAuthTokenTTL = "SAC_AUTH_TOKEN_TTL"
+	// The vendor's multi-tenant Entra app, read by internal/entraapp. Exactly one credential:
+	// a federated managed identity (preferred), a certificate, or a secret (lab only).
+	EnvEntraClientID     = "SAC_ENTRA_CLIENT_ID"
+	EnvEntraClientSecret = "SAC_ENTRA_CLIENT_SECRET"
+	EnvEntraCertFile     = "SAC_ENTRA_CERT_FILE"
+	EnvEntraFIC          = "SAC_ENTRA_FIC"
+	EnvEntraMIClientID   = "SAC_ENTRA_MI_CLIENT_ID"
+	EnvEntraLoginBase    = "SAC_ENTRA_LOGIN_BASE"
+	// EnvGraphURL points the Intune check at a Graph stand-in; empty is Microsoft Graph.
+	EnvGraphURL = "SAC_GRAPH_URL"
+	// EnvPolicySigningKeyFile signs policy bundles; its public half is the vendor trust anchor the
+	// generic MSI pins. EnvPolicySigningKeyID must equal the key id the MSI pins.
+	EnvPolicySigningKeyFile = "SAC_POLICY_SIGNING_KEY_FILE"
+	EnvPolicySigningKeyID   = "SAC_POLICY_SIGNING_KEY_ID"
+	EnvPolicyRecheck        = "SAC_POLICY_RECHECK"
+	// EnvAgentReleaseDir holds the generic ShadowAICapture.msi and its release.json.
+	EnvAgentReleaseDir = "SAC_AGENT_RELEASE_DIR"
+	// Deployment-key limits: life (0 = no expiry; revocation is the control) and per-key rate.
+	EnvDeploymentKeyTTL   = "SAC_DEPLOYMENT_KEY_TTL"
+	EnvDeploymentKeyRate  = "SAC_DEPLOYMENT_KEY_RATE"
+	EnvDeploymentKeyBurst = "SAC_DEPLOYMENT_KEY_BURST"
+	// EnvSCIMPopulationAttribute names the SCIM attribute copied to ops.user_dim.population.
+	EnvSCIMPopulationAttribute = "SAC_SCIM_POPULATION_ATTRIBUTE"
+)
+
 // flagSet records which flags the operator passed.
 type flagSet map[string]bool
 

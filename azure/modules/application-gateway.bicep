@@ -337,6 +337,24 @@ resource gateway 'Microsoft.Network/applicationGateways@2023-09-01' = {
             id: resourceId('Microsoft.Network/applicationGateways/backendHttpSettingsCollection', gatewayName, 'control-api-http')
           }
           pathRules: [
+            // The device's signed-policy fetch (docs/02 §5.2) is control-api's, which the default
+            // already says. It is named anyway because a device now depends on it after every
+            // enrolment: a later change to the default must not be able to drop it silently.
+            {
+              name: 'policy-to-control'
+              properties: {
+                paths: [
+                  '/v1/policy'
+                  '/v1/policy/*'
+                ]
+                backendAddressPool: {
+                  id: resourceId('Microsoft.Network/applicationGateways/backendAddressPools', gatewayName, 'container-apps')
+                }
+                backendHttpSettings: {
+                  id: resourceId('Microsoft.Network/applicationGateways/backendHttpSettingsCollection', gatewayName, 'control-api-http')
+                }
+              }
+            }
             {
               name: 'events-to-ingest'
               properties: {

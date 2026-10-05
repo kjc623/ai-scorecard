@@ -1,4 +1,4 @@
-// build-index.mjs — inline the module graph into apps/dashboard/index.html.
+// build-index.mjs — inline the module graph into index.html and explore.html.
 //
 // WHY THIS EXISTS. Browsers refuse an external ES module fetch from a `file://` page: the module
 // request is cross-origin from origin `null`, so `<script type="module" src="./src/app.js">` fails
@@ -38,6 +38,8 @@ export const MODULE_ORDER = Object.freeze([
   'render.js',
   'shell.js',
   'session.js',
+  'deployment.js',
+  'deployment-render.js',
   'app.js',
 ]);
 
@@ -47,6 +49,7 @@ const PUBLIC_NAMES = Object.freeze([
   'readState', 'measureOf', 'isSuppressed', 'sumMeasure', 'renderScreen', 'renderValue',
   'createQueryApi', 'createStubTransport', 'scenarioTransport', 'SCENARIO_NAMES',
   'QUESTIONS', 'buildDocument', 'buildTemplate', 'GAPS',
+  'createDeployment', 'renderDeployment', 'createAdminApi',
 ]);
 
 /** A page this tool generates: its module graph, what it exports, and how it starts. */

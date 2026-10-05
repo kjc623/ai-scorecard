@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/shadow-ai-capture/content-vault/internal/auth"
 	"github.com/shadow-ai-capture/content-vault/internal/keys"
 )
 
@@ -174,5 +175,40 @@ func TestPostgresDSNCarriesNoPassword(t *testing.T) {
 	want := "postgres://content-vault@pg.example.internal:5432/shadow?sslmode=require"
 	if got != want {
 		t.Errorf("postgresDSN = %q, want %q", got, want)
+	}
+}
+
+// TestTheIssuerChoosesTheAuthenticator: with SAC_AUTH_ISSUER the vault verifies the person's token
+// itself, with the contract's defaults; without it, the header-trust lab authenticator is the one
+// wired; and an audience or JWKS URL with no issuer is a refusal to start, not a silent no-op.
+func TestTheIssuerChoosesTheAuthenticator(t *testing.T) {
+	a, v, err := buildAuthenticator("http://control-api:8080", "", "")
+	if err != nil {
+		t.Fatalf("issuer only: %v", err)
+	}
+	if _, ok := a.(*auth.TokenAuthenticator); !ok {
+		t.Fatalf("issuer set: authenticator %T, want *auth.TokenAuthenticator", a)
+	}
+	if v.Audience != "sac-vault" || v.JWKSURL != "http://control-api:8080/.well-known/jwks.json" {
+		t.Fatalf("defaults: audience %q jwks %q", v.Audience, v.JWKSURL)
+	}
+
+	a, v, err = buildAuthenticator("", "", "")
+	if err != nil || v != nil {
+		t.Fatalf("no issuer: verifier %v err %v", v, err)
+	}
+	if _, ok := a.(*auth.HeaderAuthenticator); !ok {
+		t.Fatalf("no issuer: authenticator %T, want the header authenticator", a)
+	}
+
+	for name, in := range map[string][3]string{
+		"audience alone":   {"", "sac-vault", ""},
+		"jwks alone":       {"", "", "http://control-api:8080/keys"},
+		"issuer not a url": {"control-api", "", ""},
+		"jwks not a url":   {"http://control-api:8080", "", "keys"},
+	} {
+		if _, _, err := buildAuthenticator(in[0], in[1], in[2]); err == nil {
+			t.Errorf("%s: started, want a refusal", name)
+		}
 	}
 }

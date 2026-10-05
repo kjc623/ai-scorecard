@@ -63,6 +63,14 @@ const LeafTTL = 12 * time.Hour
 // NewCA mints a per-device CA. The key is generated here and never leaves the process in the
 // clear; when a Sealer is supplied, the sealed form is retained for the platform to store.
 func NewCA(deviceID string, sealer Sealer, now time.Time) (*CA, error) {
+	// Three calendar months: the life of a CA minted for one run or one lab bundle.
+	return NewCAValidFor(deviceID, sealer, now, now.AddDate(0, 3, 0).Sub(now))
+}
+
+// NewCAValidFor mints a per-device CA valid for validity. A CA the device keeps across restarts is
+// installed in the trust store once and reused, so it lives longer than one minted per run; it is
+// still per device, so its life bounds only that device's exposure.
+func NewCAValidFor(deviceID string, sealer Sealer, now time.Time, validity time.Duration) (*CA, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("tlsproxy: generating device CA key: %w", err)
@@ -78,7 +86,7 @@ func NewCA(deviceID string, sealer Sealer, now time.Time) (*CA, error) {
 			Organization: []string{"Shadow AI Capture"},
 		},
 		NotBefore:             now.Add(-time.Hour), // tolerate a small clock skew at install
-		NotAfter:              now.AddDate(0, 3, 0),
+		NotAfter:              now.Add(validity),
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
 		BasicConstraintsValid: true,
 		IsCA:                  true,

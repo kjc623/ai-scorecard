@@ -85,6 +85,11 @@ type Device struct {
 	ManagedState string
 	EnrolledAt   time.Time
 	RevokedAt    *time.Time
+	// IntuneDeviceID is the Intune managed-device id a deployment-key enrolment was verified
+	// against (contract §5). Only the verified path writes it, never the device's own claim, and it
+	// is unique per tenant: one Intune device is one product device. It is read and written by the
+	// DeploymentStore statements only, so the token path does not depend on the column.
+	IntuneDeviceID string
 }
 
 // Credential is the slice of ops.device_credential the control path writes and reads. Type is the

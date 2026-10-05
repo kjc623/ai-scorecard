@@ -1,35 +1,44 @@
-// session.mjs — the dashboard's OIDC session, kept out of serve.mjs so it can be tested.
+// session.mjs — the dashboard server's side of sign-in, kept out of serve.mjs so it can be tested.
 //
-// WHY THIS EXISTS. Until task 11 the dashboard's server invented a principal: it added
-// x-sac-dev-tenant / x-sac-dev-actor to every forwarded request, and query-api trusted them
-// because SAC_DEV_TRUST_PRINCIPAL=1. That is a lab arrangement, not a sign-in: a header is
-// something the caller writes. This module implements the real flow the design names
-// (docs/04 §2.1, docs/06 §4.1): authorization code + PKCE against the customer's identity
-// provider, an id_token verified for real, and an opaque server-side session.
+// WHY THIS IS SMALL NOW. Task 11 built an OpenID Connect client in this file: the dashboard was the
+// relying party for one identity provider and forwarded that provider's access token. That cannot
+// serve "any customer IdP" — a Google or Okta access token is opaque or not meant for us — so
+// control-api became the product's one identity service (the shared contract, §3 and §6). It is
+// the relying party for every customer IdP, keeps the server-side session, and mints short-lived
+// product access tokens that query-api, content-vault and control-api's admin API all verify.
 //
-// The session lives on the server. The browser holds one opaque cookie and never a token,
-// so a script on the page cannot read a bearer or a tenant. The access token is kept
-// server-side and forwarded to query-api, which verifies it for itself — this server is a
-// client, not an authority.
+// What is left here is a thin backend-for-frontend:
+//   * an identity client for control-api's internal API (begin, complete, token, revoke), called
+//     with the shared internal bearer and never reachable from a browser;
+//   * a per-session cache of the product access token, refreshed through /internal/v1/auth/token
+//     shortly before it expires. The session lives in control-api, so any instance of this server
+//     can serve any session: a cache miss is a refresh, never a sign-out;
+//   * the cookies (the opaque session id, and the sign-in attempt while the browser is at the IdP),
+//     the same-origin check that stands in for a CSRF token, and the role-to-page map the
+//     navigation is hidden by.
 //
-// Zero dependencies, like the rest of the dashboard package: node:crypto verifies the RS256
-// signature and builds a key from a JWK, so the whole flow is base64url, one JWKS fetch and
-// one crypto.verify.
+// The browser holds one opaque cookie and never a token. Zero dependencies: node:crypto only.
 
-import { createHash, createPublicKey, randomBytes, verify as cryptoVerify } from 'node:crypto';
+import { createHash } from 'node:crypto';
 
 /** The analyst-app roles, mirroring query-api's roles.js. Two copies because the packages are
- *  separately deployable and zero-dependency; a drift is caught by the report, not a build. */
+ *  separately deployable and zero-dependency; a drift is caught by the report, not a build. `dev`
+ *  is the lab's development principal (SAC_DEV_TRUST_PRINCIPAL), which carries every capability
+ *  there and so is offered every page here. A product token can never name it. */
 export const ROLE_CAPABILITIES = Object.freeze({
   viewer: Object.freeze(['aggregate', 'device']),
   analyst: Object.freeze(['aggregate', 'device', 'subject', 'search']),
   content_reader: Object.freeze(['aggregate', 'device', 'subject', 'search', 'content']),
   admin: Object.freeze(['aggregate', 'audit', 'settings', 'export', 'sanction']),
+  dev: Object.freeze(['aggregate', 'device', 'subject', 'search', 'content', 'audit', 'settings', 'export', 'sanction']),
 });
 
+/** The roles a product token may carry. `dev` is not one of them. */
+export const PRODUCT_ROLES = Object.freeze(['viewer', 'analyst', 'content_reader', 'admin']);
+
 /**
- * The navigation a role may see. The dashboard's own hiding is defence in depth: query-api
- * refuses the reads anyway, and this decides what is offered.
+ * The navigation a role may see. The dashboard's own hiding is defence in depth: query-api and
+ * control-api refuse the reads and writes anyway, and this decides what is offered.
  */
 const PAGE_CAPABILITY = Object.freeze({
   posture: 'aggregate',
@@ -39,6 +48,7 @@ const PAGE_CAPABILITY = Object.freeze({
   devices: 'device',
   audit: 'audit',
   explore: 'search',
+  deployment: 'settings',
 });
 
 const ALWAYS_VISIBLE = Object.freeze(['posture', 'tools', 'teams']);
@@ -53,241 +63,233 @@ export function can(role, capability) {
   return capabilitiesFor(role).includes(capability);
 }
 
+/** Does any of a set of roles carry a capability? A person can hold several. */
+export function canAny(roles, capability) {
+  return (roles ?? []).some((role) => can(role, capability));
+}
+
 /** The page ids a role may open. `null` (no session) means "show everything", the sample mode. */
 export function pagesFor(role) {
   if (!role) return null;
+  return pagesForRoles([role]);
+}
+
+/** The page ids a set of roles may open: the union, because the roles are not a ladder. */
+export function pagesForRoles(roles) {
+  if (!Array.isArray(roles) || roles.length === 0) return null;
   const pages = Object.entries(PAGE_CAPABILITY)
-    .filter(([, capability]) => can(role, capability))
+    .filter(([, capability]) => canAny(roles, capability))
     .map(([page]) => page);
   return [...new Set([...ALWAYS_VISIBLE, ...pages])];
 }
 
-// -------------------------------------------------------------------------------------------
-// The session store
-// -------------------------------------------------------------------------------------------
+/** The role the navigation is labelled by: the one with the most capabilities. query-api checks the full set. */
+export function primaryRole(roles) {
+  return (roles ?? []).slice().sort((a, b) => capabilitiesFor(b).length - capabilitiesFor(a).length)[0] ?? null;
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /**
- * An in-memory session store. A restart drops every session, which is the right posture for
- * an opaque server-side session: the alternative is persisting tokens to disk.
- *
- * @param {object} [opts]
- * @param {number} [opts.ttlMs] idle-independent lifetime
- * @param {() => number} [opts.now]
- * @param {() => string} [opts.random]
+ * The principal control-api returned, checked rather than trusted blindly: a tenant that is not a
+ * uuid or a principal with no product role is not a session this server will hold. control-api
+ * refuses a person with no role itself (`no_role`); this is the same rule kept at the edge.
  */
-export function createSessionStore({ ttlMs = 8 * 3600_000, now = () => Date.now(), random = () => randomBytes(32).toString('base64url') } = {}) {
-  const sessions = new Map();
-  function prune(t) {
-    for (const [id, s] of sessions) if (s.expiresAt <= t) sessions.delete(id);
-  }
-  return {
-    /** Create a session from the verified claims and the tokens; returns the opaque id. */
-    create({ actor, tenant, role, roles, accessToken, idToken }) {
-      const id = random();
-      const at = now();
-      sessions.set(id, { id, actor, tenant, role, roles: roles ?? [role], accessToken, idToken: idToken ?? null, expiresAt: at + ttlMs });
-      return id;
-    },
-    /** The live session for an id, or null. Expired entries are forgotten, not returned. */
-    get(id) {
-      const s = sessions.get(id);
-      if (!s) return null;
-      if (s.expiresAt <= now()) {
-        sessions.delete(id);
-        return null;
-      }
-      return s;
-    },
-    destroy(id) {
-      sessions.delete(id);
-    },
-    get size() {
-      prune(now());
-      return sessions.size;
-    },
-  };
+export function principalFrom(raw) {
+  const tenant = String(raw?.tenant ?? '').trim().toLowerCase();
+  if (!UUID.test(tenant)) return null;
+  const roles = (Array.isArray(raw?.roles) ? raw.roles : []).filter((r) => PRODUCT_ROLES.includes(r));
+  if (roles.length === 0) return null;
+  const actor = String(raw?.actor ?? '').trim();
+  if (actor === '') return null;
+  const idp = raw?.idp === 'entra' || raw?.idp === 'oidc' ? raw.idp : null;
+  return Object.freeze({ tenant, actor, roles: Object.freeze([...new Set(roles)]), idp });
 }
 
 // -------------------------------------------------------------------------------------------
-// PKCE and the JWKS
-// -------------------------------------------------------------------------------------------
-
-const base64url = (buf) => Buffer.from(buf).toString('base64url');
-
-/** A PKCE verifier and its S256 challenge (RFC 7636). */
-export function pkce() {
-  const verifier = base64url(randomBytes(32));
-  const challenge = base64url(createHash('sha256').update(verifier).digest());
-  return { verifier, challenge };
-}
-
-/** A per-attempt nonce, so a replayed id_token cannot open a session. */
-export function nonce() {
-  return base64url(randomBytes(16));
-}
-
-function decodeSegment(segment) {
-  if (typeof segment !== 'string' || segment === '') throw new Error('empty JWT segment');
-  return Buffer.from(segment.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
-}
-
-export function decodeJwt(token) {
-  const parts = String(token).split('.');
-  if (parts.length !== 3) throw new Error('a JWT has three dot-separated segments');
-  return {
-    header: JSON.parse(decodeSegment(parts[0]).toString('utf8')),
-    payload: JSON.parse(decodeSegment(parts[1]).toString('utf8')),
-    signingInput: `${parts[0]}.${parts[1]}`,
-    signature: decodeSegment(parts[2]),
-  };
-}
-
-/**
- * Verify one RS256 JWT. The dashboard checks the id_token it just received from the token
- * endpoint; a wrong signature, issuer, audience, expiry or nonce is a refusal.
- */
-export function verifyJwt(token, { issuer, audience, keys, nonce: expectedNonce = null, now = () => Date.now() }) {
-  const { header, payload, signingInput, signature } = decodeJwt(token);
-  if (header.alg !== 'RS256') throw new Error(`unsupported token alg ${JSON.stringify(header.alg)}`);
-  const jwk = (keys ?? []).find((k) => !header.kid || k.kid === header.kid) ?? (keys ?? [])[0];
-  if (!jwk) throw new Error('the issuer published no key');
-  const key = createPublicKey({ key: jwk, format: 'jwk' });
-  if (!cryptoVerify('RSA-SHA256', Buffer.from(signingInput, 'utf8'), key, signature)) throw new Error('the token signature does not verify');
-  const seconds = Math.floor(now() / 1000);
-  if (payload.iss !== issuer) throw new Error('the token issuer is not the configured issuer');
-  const audiences = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
-  if (!audiences.includes(audience)) throw new Error('the token audience does not name this client');
-  if (typeof payload.exp !== 'number' || payload.exp + 60 < seconds) throw new Error('the token has expired');
-  if (expectedNonce !== null && payload.nonce !== expectedNonce) throw new Error('the token nonce does not match this sign-in');
-  return payload;
-}
-
-// -------------------------------------------------------------------------------------------
-// The OIDC client
+// control-api's internal identity API
 // -------------------------------------------------------------------------------------------
 
 /**
- * A small authorization-code client. Discovery, a JWKS cache, the authorize URL, the token
- * exchange, and id_token verification.
+ * A client for control-api's internal identity API (contract §3). Every answer is a value, never a
+ * throw: `{ ok: true, status, body }` or `{ ok: false, status, error }`, where status 0 and error
+ * `identity_unreachable` mean the service could not be reached. The server turns each into a
+ * page or a JSON refusal; nothing here decides what a person reads.
  *
  * @param {object} input
- * @param {string} input.issuer
- * @param {string} input.clientId
- * @param {string} [input.clientSecret]
- * @param {string} input.redirectUri
- * @param {string} [input.scope]
+ * @param {string} input.baseUrl         SAC_CONTROL_URL
+ * @param {string} input.internalToken   SAC_INTERNAL_TOKEN, the shared bearer for /internal/*
  * @param {typeof fetch} [input.fetchImpl]
- * @param {() => number} [input.now]
+ * @param {number} [input.timeoutMs]
  */
-export function createOidcClient({ issuer, clientId, clientSecret = '', redirectUri, scope = 'openid profile email', fetchImpl = globalThis.fetch, now = () => Date.now() } = {}) {
-  const base = String(issuer).replace(/\/$/, '');
-  let metadata = null;
-  let jwks = null;
-  let jwksAt = 0;
+export function createIdentityClient({ baseUrl, internalToken, fetchImpl = globalThis.fetch, timeoutMs = 10_000 } = {}) {
+  const base = String(baseUrl ?? '').replace(/\/$/, '');
+  if (base === '') throw new Error('createIdentityClient needs the control-api base URL');
+  if (!internalToken) throw new Error('createIdentityClient needs the internal bearer token');
 
-  async function discover() {
-    if (metadata) return metadata;
-    const res = await fetchImpl(`${base}/.well-known/openid-configuration`);
-    if (!res?.ok) throw new Error(`discovery at ${base} returned ${res?.status ?? 'no status'}`);
-    metadata = await res.json();
-    return metadata;
-  }
-
-  async function keys(force = false) {
-    if (!force && jwks && now() - jwksAt < 5 * 60_000) return jwks;
-    const m = await discover();
-    const res = await fetchImpl(m.jwks_uri ?? `${base}/jwks`);
-    if (!res?.ok) throw new Error(`JWKS fetch returned ${res?.status ?? 'no status'}`);
-    const body = await res.json();
-    if (!Array.isArray(body?.keys) || body.keys.length === 0) throw new Error('the issuer published no keys');
-    jwks = body.keys;
-    jwksAt = now();
-    return jwks;
+  async function call(path, body) {
+    let res;
+    try {
+      res = await fetchImpl(`${base}${path}`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${internalToken}`, 'content-type': 'application/json', accept: 'application/json', 'accept-encoding': 'identity' },
+        body: JSON.stringify(body),
+        redirect: 'manual',
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch {
+      return { ok: false, status: 0, error: 'identity_unreachable' };
+    }
+    let parsed = null;
+    if (res.status !== 204) {
+      try {
+        parsed = await res.json();
+      } catch {
+        parsed = null;
+      }
+    }
+    if (res.ok) return { ok: true, status: res.status, body: parsed ?? {} };
+    const code = typeof parsed?.error === 'string' ? parsed.error : parsed?.error?.code;
+    return { ok: false, status: res.status, error: typeof code === 'string' && /^[a-z_]{1,64}$/.test(code) ? code : 'identity_error' };
   }
 
   return Object.freeze({
-    get issuer() {
-      return base;
+    /** Start a sign-in. Exactly what the person chose: an email to discover by, Microsoft, or an invite. */
+    begin({ email, provider, invite, redirectUri }) {
+      const body = { redirect_uri: redirectUri };
+      if (email) body.email = email;
+      if (provider) body.provider = provider;
+      if (invite) body.invite = invite;
+      return call('/internal/v1/auth/begin', body);
     },
-    get clientId() {
-      return clientId;
+    complete({ attempt, code, state }) {
+      return call('/internal/v1/auth/complete', { attempt, code, state });
     },
-    async authorizeUrl({ state, nonce: nonceValue, codeChallenge, loginHint = '', redirectUri: redirect = redirectUri }) {
-      const m = await discover();
-      const url = new URL(m.authorization_endpoint ?? `${base}/authorize`);
-      url.searchParams.set('response_type', 'code');
-      url.searchParams.set('client_id', clientId);
-      url.searchParams.set('redirect_uri', redirect);
-      url.searchParams.set('scope', scope);
-      url.searchParams.set('state', state);
-      url.searchParams.set('nonce', nonceValue);
-      url.searchParams.set('code_challenge', codeChallenge);
-      url.searchParams.set('code_challenge_method', 'S256');
-      if (loginHint) url.searchParams.set('login_hint', loginHint);
-      return url.toString();
+    token(session) {
+      return call('/internal/v1/auth/token', { session });
     },
-    /** Exchange a code. A public client sends no secret; a confidential client does. */
-    async exchange({ code, codeVerifier, redirectUri: redirect = redirectUri }) {
-      const m = await discover();
-      const form = new URLSearchParams({
-        grant_type: 'authorization_code',
-        code,
-        redirect_uri: redirect,
-        client_id: clientId,
-        code_verifier: codeVerifier,
-      });
-      if (clientSecret) form.set('client_secret', clientSecret);
-      const res = await fetchImpl(m.token_endpoint ?? `${base}/token`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/x-www-form-urlencoded' },
-        body: form.toString(),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res?.ok) throw new Error(body.error_description ?? body.error ?? `the token endpoint returned ${res?.status}`);
-      if (!body.access_token || !body.id_token) throw new Error('the token endpoint returned no tokens');
-      return body;
-    },
-    /** Verify the id_token and return the session facts, or throw. */
-    async verifyIdToken(idToken, { nonce: expectedNonce } = {}) {
-      const header = decodeJwt(idToken).header;
-      let current = await keys();
-      if (header.kid && !current.some((k) => k.kid === header.kid)) current = await keys(true);
-      const claims = verifyJwt(idToken, { issuer: base, audience: clientId, keys: current, nonce: expectedNonce, now });
-      return claims;
+    revoke(session) {
+      return call('/internal/v1/auth/revoke', { session });
     },
   });
 }
 
-/**
- * Turn verified token claims into the session facts. The tenant must be a uuid and the role a
- * known one; a sign-in that names neither is refused rather than guessed.
- */
-export function principalFromClaims(claims, { tenantClaim = 'sac_tenant', rolesClaim = 'roles' } = {}) {
-  const tenant = String(claims?.[tenantClaim] ?? '').trim().toLowerCase();
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(tenant)) {
-    throw new Error(`the token names no tenant in claim ${tenantClaim}`);
-  }
-  const raw = claims?.[rolesClaim];
-  const roles = (Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : []).filter((r) => ROLE_CAPABILITIES[r]);
-  if (roles.length === 0) throw new Error(`the token names no known role in claim ${rolesClaim}`);
-  const actor = String(claims.preferred_username ?? claims.email ?? claims.sub ?? '').trim();
-  if (actor === '') throw new Error('the token names no actor');
-  // The most capable role decides what the navigation offers; query-api checks the full set.
-  const role = roles.slice().sort((a, b) => capabilitiesFor(b).length - capabilitiesFor(a).length)[0];
-  return { actor, tenant, role, roles };
+// -------------------------------------------------------------------------------------------
+// The product-token cache
+// -------------------------------------------------------------------------------------------
+
+/** The cache key for a session id. The id itself is a credential and is not kept as a key. */
+export function sessionKey(session) {
+  return createHash('sha256').update(String(session)).digest('hex');
 }
 
-/** A cookie header value for one session id. HttpOnly and SameSite, and Secure when told. */
-export function sessionCookie(id, { name = 'sac_session', maxAgeSec = 8 * 3600, secure = false } = {}) {
-  return `${name}=${id}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAgeSec}${secure ? '; Secure' : ''}`;
+/**
+ * A short in-memory cache of the product access token per session. A token is used until it is
+ * within `refreshBeforeMs` of expiring, then re-minted through /internal/v1/auth/token; concurrent
+ * requests for one session share a single refresh. If control-api cannot be reached, a token that
+ * has not yet expired is still used, because it is still valid; an expired one is not.
+ *
+ * @param {object} input
+ * @param {ReturnType<typeof createIdentityClient>} input.identity
+ * @param {() => number} [input.now]
+ * @param {number} [input.refreshBeforeMs]
+ * @param {number} [input.maxEntries]
+ */
+export function createTokenCache({ identity, now = () => Date.now(), refreshBeforeMs = 60_000, maxEntries = 5000 } = {}) {
+  const entries = new Map();
+  const inflight = new Map();
+
+  function store(key, { access_token: token, expires_in: expiresIn, principal: raw }) {
+    const principal = principalFrom(raw);
+    if (typeof token !== 'string' || token === '' || !principal) return null;
+    const seconds = Number.isFinite(Number(expiresIn)) ? Math.max(0, Number(expiresIn)) : 0;
+    const entry = Object.freeze({ token, principal, expiresAt: now() + seconds * 1000 });
+    entries.delete(key);
+    entries.set(key, entry);
+    if (entries.size > maxEntries) {
+      const t = now();
+      for (const [k, e] of entries) if (e.expiresAt <= t) entries.delete(k);
+      // Still over: drop the least recently stored. A dropped session is re-minted on its next request.
+      while (entries.size > maxEntries) entries.delete(entries.keys().next().value);
+    }
+    return entry;
+  }
+
+  async function refresh(session, key) {
+    const previous = entries.get(key);
+    const answer = await identity.token(session);
+    if (answer.ok) {
+      const entry = store(key, answer.body);
+      return entry ? { ok: true, token: entry.token, principal: entry.principal } : { ok: false, reason: 'session_ended' };
+    }
+    if (answer.status === 401 || answer.status === 403 || answer.status === 404) {
+      entries.delete(key);
+      return { ok: false, reason: 'session_ended' };
+    }
+    if (previous && previous.expiresAt > now()) return { ok: true, token: previous.token, principal: previous.principal };
+    return { ok: false, reason: 'identity_unavailable' };
+  }
+
+  return Object.freeze({
+    /** Hold the token that came back with a completed sign-in, so the first page costs no refresh. */
+    seed(session, body) {
+      return store(sessionKey(session), body) !== null;
+    },
+    /** The product token and principal for a session, or why there is none. */
+    async get(session) {
+      if (!session) return { ok: false, reason: 'no_session' };
+      const key = sessionKey(session);
+      const entry = entries.get(key);
+      if (entry && entry.expiresAt - now() > refreshBeforeMs) return { ok: true, token: entry.token, principal: entry.principal };
+      if (!inflight.has(key)) {
+        inflight.set(key, refresh(session, key).finally(() => inflight.delete(key)));
+      }
+      return inflight.get(key);
+    },
+    drop(session) {
+      entries.delete(sessionKey(session));
+    },
+    get size() {
+      return entries.size;
+    },
+  });
+}
+
+// -------------------------------------------------------------------------------------------
+// Cookies
+// -------------------------------------------------------------------------------------------
+
+export const SESSION_COOKIE = 'sac_session';
+export const SIGNIN_COOKIE = 'sac_signin';
+/** control-api's session max age (contract §3). The server-side session decides; this only stops a browser keeping a dead id. */
+export const SESSION_MAX_AGE_SEC = 8 * 3600;
+/** control-api holds a sign-in attempt for ten minutes. */
+export const SIGNIN_MAX_AGE_SEC = 10 * 60;
+
+/** A Set-Cookie value. HttpOnly and SameSite=Lax always; Secure when the public URL is https. */
+export function cookieHeader(name, value, { path = '/', maxAgeSec, secure = false } = {}) {
+  const parts = [`${name}=${value}`, 'HttpOnly', 'SameSite=Lax', `Path=${path}`];
+  if (maxAgeSec !== undefined) parts.push(`Max-Age=${Math.max(0, Math.floor(maxAgeSec))}`);
+  if (secure) parts.push('Secure');
+  return parts.join('; ');
+}
+
+/** The session cookie for one opaque id. Lax so the IdP's redirect back to /callback carries it. */
+export function sessionCookie(id, { maxAgeSec = SESSION_MAX_AGE_SEC, secure = false } = {}) {
+  return cookieHeader(SESSION_COOKIE, id, { path: '/', maxAgeSec, secure });
+}
+
+/** The sign-in attempt cookie: sent only to /callback, gone after ten minutes. */
+export function signinCookie(value, { maxAgeSec = SIGNIN_MAX_AGE_SEC, secure = false } = {}) {
+  return cookieHeader(SIGNIN_COOKIE, value, { path: '/callback', maxAgeSec, secure });
 }
 
 /** The cookie value of `name`, or null. */
-export function readCookie(header, name = 'sac_session') {
+export function readCookie(header, name = SESSION_COOKIE) {
   if (typeof header !== 'string' || header === '') return null;
   for (const part of header.split(';')) {
     const [k, ...rest] = part.trim().split('=');
-    if (k === name) return rest.join('=');
+    if (k === name) return rest.join('=') || null;
   }
   return null;
 }
@@ -301,4 +303,70 @@ export function parseCookies(header) {
     if (idx > 0) out[part.slice(0, idx).trim()] = part.slice(idx + 1).trim();
   }
   return out;
+}
+
+/** A Cookie header with this server's own cookies removed, for a request forwarded elsewhere. */
+export function withoutOwnCookies(header) {
+  if (typeof header !== 'string' || header === '') return '';
+  return header.split(';').map((p) => p.trim()).filter((p) => p !== '' && !p.startsWith(`${SESSION_COOKIE}=`) && !p.startsWith(`${SIGNIN_COOKIE}=`)).join('; ');
+}
+
+/**
+ * The attempt cookie's value: the opaque attempt id and where to return afterwards. Kept in the
+ * browser rather than in this process, so the instance that receives /callback need not be the
+ * one that began the sign-in.
+ */
+export function encodeAttempt({ attempt, next }) {
+  return Buffer.from(JSON.stringify({ a: String(attempt), n: safeNext(next) })).toString('base64url');
+}
+
+export function decodeAttempt(value) {
+  if (typeof value !== 'string' || value === '' || value.length > 4096) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8'));
+    if (typeof parsed?.a !== 'string' || parsed.a === '') return null;
+    return { attempt: parsed.a, next: safeNext(parsed.n) };
+  } catch {
+    return null;
+  }
+}
+
+/** Where a sign-in may return to: a path on this origin, never another host. */
+export function safeNext(value, fallback = '/') {
+  if (typeof value !== 'string' || value.length > 2048) return fallback;
+  if (!value.startsWith('/') || value.startsWith('//') || value.startsWith('/\\')) return fallback;
+  if (/[\u0000-\u001f\\]/.test(value)) return fallback;
+  return value;
+}
+
+// -------------------------------------------------------------------------------------------
+// The same-origin check (CSRF)
+// -------------------------------------------------------------------------------------------
+
+/**
+ * Is a state-changing request from this dashboard's own pages? The session cookie is SameSite=Lax,
+ * which already keeps it off a cross-site POST in current browsers; this is the explicit check
+ * beside it. A browser says where a request came from in Sec-Fetch-Site (all current engines) or,
+ * failing that, Origin; either one naming another site is a refusal. A request with neither
+ * header is not a browser's cross-site request (every browser sends Origin on one), so it passes:
+ * that is curl or a test, which carries no victim's cookie.
+ *
+ * @param {Record<string, string|string[]|undefined>} headers
+ * @param {ReadonlyArray<string>} allowedOrigins the public URL's origin and the request's own
+ */
+export function sameOriginRequest(headers, allowedOrigins) {
+  const site = headerValue(headers['sec-fetch-site']);
+  if (site) return site === 'same-origin';
+  const origin = headerValue(headers.origin);
+  if (origin) return allowedOrigins.includes(origin);
+  return true;
+}
+
+function headerValue(value) {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+/** Is this method one that changes something? GET and HEAD do not, by contract. */
+export function isStateChanging(method) {
+  return !['GET', 'HEAD', 'OPTIONS'].includes(String(method ?? 'GET').toUpperCase());
 }

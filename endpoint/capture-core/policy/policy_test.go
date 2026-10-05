@@ -380,3 +380,26 @@ func TestNewStore_RefusesToExistWithoutAVerifier(t *testing.T) {
 		t.Fatal("a store without a verifier would make unverified bundles enforceable")
 	}
 }
+
+// A server that states the tenant has no bundle (GET /v1/policy 404) takes the device to M0, and
+// the version check starts again from nothing: the next bundle the tenant mints is accepted even
+// though its version cannot be ordered against a bundle that no longer exists.
+func TestStore_WithdrawFallsToM0(t *testing.T) {
+	v, priv := newKeyPair(t, "policy-key-1")
+	store, _ := NewStore(v, okResolver)
+	raw, _ := Sign("policy-key-1", priv, testBundle("10"))
+	if res := store.Apply(raw); res.Outcome != OutcomeAccepted {
+		t.Fatalf("apply = %+v", res)
+	}
+	res := store.Withdraw()
+	if res.Outcome != OutcomeFellToM0 || res.Err != nil {
+		t.Fatalf("withdraw = %+v, want fell_to_m0 with no error", res)
+	}
+	if store.InForce() != nil || store.InForceRaw() != nil {
+		t.Fatal("a bundle is still in force after the server withdrew it")
+	}
+	again, _ := Sign("policy-key-1", priv, testBundle("1"))
+	if res := store.Apply(again); res.Outcome != OutcomeAccepted {
+		t.Fatalf("apply after withdraw = %+v", res)
+	}
+}

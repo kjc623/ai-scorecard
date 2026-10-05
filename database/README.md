@@ -6,7 +6,7 @@ The server store, and the only one. SQLite is the *device* spool and nothing els
 | Path | What it is |
 |---|---|
 | [`schema.sql`](schema.sql) | The whole schema: DDL, roles, grants, row-level security, triggers, functions, seed data |
-| [`invariants.test.sql`](invariants.test.sql) | 54 assertions that the schema's properties actually hold |
+| [`invariants.test.sql`](invariants.test.sql) | 68 assertions that the schema's properties actually hold |
 | [`tools/`](tools/) | The checkers, the live-server runner, and the log tally |
 | [`evidence/`](evidence/) | Captured runs and their README. The README is tracked; the raw logs are not |
 
@@ -18,6 +18,16 @@ and `mart` (the aggregates the dashboard reads). Tenant isolation is structural 
 conventional — forced row-level security on every tenant-scoped table, tenant-leading keys, and
 per-tenant content keys as an independent second layer. The full model is
 [docs/03-data-platform.md](../docs/03-data-platform.md).
+
+**The one cross-tenant read is a function, not a grant.** Sign-in, SCIM and onboarding must find a
+tenant before they can set `app.tenant_id` (which tenant is this issuer, whose session is this cookie).
+Those lookups are seven `SECURITY DEFINER` functions in section 5c, owned by `sac_resolver` -- a NOLOGIN
+role with no members whose only reach is SELECT on five tables through a SELECT-only policy -- with
+`search_path` pinned and EXECUTE granted to `sac_control` alone. They return only what may be used (an
+active connection, a live session, an unrevoked token). `ops.auth_signin` is the one table with no
+tenant; it is forced with a policy for `sac_control` only. T55-T68 exercise all of it as the runtime
+roles, and `tools/check-schema.mjs` refuses a definer that is executable by PUBLIC or owned by any
+other kind of role.
 
 **A known gap in the grants.** `control-api`'s content grant path (docs/02 §5.5, §10) reads
 `ingest.observation`, updates `ingest.submission.content_state` and writes

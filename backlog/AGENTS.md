@@ -71,7 +71,7 @@ Paths are relative to the repository root (`/workspace` inside the OpenCode harn
 | `ingestion/ingest-api/` | Accepts device batches (Go) |
 | `control/control-api/` | Enrolment, policy bundle, content grants (Go) |
 | `vault/content-vault/` | Stores, indexes and serves prompt content (Go) |
-| `query/query-api/` | The closed read API (Node, no dependencies); `src/registry.js` lists every source it serves |
+| `query/query-api/` | The closed read API (Node, one dependency: `jose`, for verifying the product token); `src/registry.js` lists every source it serves |
 | `query/dashboard/` | The web app (zero-dependency ES modules); `README.md` explains its layout |
 | `database/schema.sql` | The whole schema, with comments that state intent |
 | `contracts/` | The device envelope contract and its generated code |

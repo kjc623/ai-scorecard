@@ -77,9 +77,9 @@
       "note": "Conditional: instantiated only for a tenant contract that requires vendor-blind key custody."
     },
     {
-      "row": "Static Web App — dashboard",
-      "modules": ["modules/static-web-app.bicep"],
-      "note": "Standard: custom domain with a managed certificate and Entra ID authentication."
+      "row": "Container App `dashboard`",
+      "modules": ["modules/container-app.bicep"],
+      "note": "The pages and the sign-in BFF (session held server-side, product token forwarded to query-api and control-api). Replaces the Static Web App, whose own sign-in would be a second, unconnected path; modules/static-web-app.bicep is no longer instantiated."
     },
     {
       "row": "Container Registry",

@@ -67,6 +67,7 @@ func usage() {
 
   serve       --addr HOST:PORT [--key-backend local|kms] [--key-file FILE]
               [--allow-non-loopback] [--allow-unimplemented-kms]
+              [--auth-issuer URL [--auth-audience sac-vault] [--auth-jwks-url URL]]
   schema-sql  [--out FILE]
   version
 
@@ -99,6 +100,9 @@ func runServe(args []string) int {
 	pgHost := fs.String("pg-host", "", "database host (env "+EnvPGHost+"); used to build the DSN, not a password")
 	pgPort := fs.String("pg-port", "5432", "database port; the deployment passes no port, so it stays a flag")
 	pgDatabase := fs.String("pg-database", "shadow", "database name (env "+EnvPGDatabase+")")
+	authIssuer := fs.String("auth-issuer", "", "the product access token issuer, control-api (env "+EnvAuthIssuer+"); empty trusts X-Sac-* headers alone (lab only)")
+	authAudience := fs.String("auth-audience", "", "the vault's audience in the token (env "+EnvAuthAudience+"); default "+auth.DefaultAudience)
+	authJWKSURL := fs.String("auth-jwks-url", "", "the issuer's JWKS (env "+EnvAuthJWKSURL+"); default {issuer}/.well-known/jwks.json")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -117,6 +121,9 @@ func runServe(args []string) int {
 	*pgHost = passed.str("pg-host", *pgHost, EnvPGHost, "")
 	*pgDatabase = passed.str("pg-database", *pgDatabase, EnvPGDatabase, "shadow")
 	*allowNonLoopback = passed.boolean("allow-non-loopback", *allowNonLoopback, EnvAllowNonLoopback, false)
+	*authIssuer = passed.str("auth-issuer", *authIssuer, EnvAuthIssuer, "")
+	*authAudience = passed.str("auth-audience", *authAudience, EnvAuthAudience, "")
+	*authJWKSURL = passed.str("auth-jwks-url", *authJWKSURL, EnvAuthJWKSURL, "")
 	appInsights := os.Getenv(EnvAppInsights)
 
 	// A non-loopback bind needs an acknowledgement from the operator or from the deployment. The
@@ -140,6 +147,10 @@ func runServe(args []string) int {
 	}
 	if *blobIdentity != "static" && *blobIdentity != "managed" {
 		return fatalf("unknown --blob-identity %q (want static or managed)", *blobIdentity)
+	}
+	authenticator, verifier, err := buildAuthenticator(*authIssuer, *authAudience, *authJWKSURL)
+	if err != nil {
+		return fatalf("%v", err)
 	}
 	// A storage endpoint with no credential is the unauthenticated read this task exists to remove,
 	// so it is a startup failure rather than a warning: a deployment names its managed identity, and
@@ -249,7 +260,7 @@ func runServe(args []string) int {
 	if err != nil {
 		return fatalf("%v", err)
 	}
-	h := httpapi.New(svc, auth.NewHeaderAuthenticator("query-api", "control-api", "ops"), logger)
+	h := httpapi.New(svc, authenticator, logger)
 
 	// CONTENT_VAULT_REINDEX_TENANTS names tenants whose prompt index is rebuilt from their stored
 	// objects at start, after a change to what is indexed. It runs beside serving and is safe to
@@ -289,6 +300,16 @@ func runServe(args []string) int {
 		"blob_ciphertext_endpoint_configured", *blobEndpoint != "", "blob_identity", *blobIdentity,
 		"retrieval_url_base_configured", *retrievalURLBase != "",
 		"appinsights_configured", appInsights != "")
+	if verifier != nil {
+		slog.Info("content-vault: human routes verify the product access token",
+			"issuer", verifier.Issuer, "audience", verifier.Audience, "jwks", verifier.JWKSURL, "alg", auth.TokenAlg)
+	} else {
+		// Said as loudly as a log can: this is the absence of person-level authentication. Any
+		// caller the ingress lets through names its own tenant, subject and roles.
+		slog.Warn("content-vault: NO TOKEN ISSUER (" + EnvAuthIssuer + " unset) — tenant, subject and roles on every route " +
+			"are read from X-Sac-* headers and trusted because the ingress is internal. This is the lab arrangement; " +
+			"a deployment must set " + EnvAuthIssuer + " so the vault verifies the person's token itself.")
+	}
 	if *blobEndpoint != "" && *blobIdentity == "static" {
 		// Stated rather than implied: the lab's storage stand-in checks this bearer and no more.
 		// A deployment sets SAC_BLOB_IDENTITY=managed, and the read then carries the container

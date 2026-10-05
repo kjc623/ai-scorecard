@@ -87,6 +87,7 @@ const SIDE_READ_IDS = Object.freeze([
  * @param {string} [ctx.tenant]        the authenticated session's tenant (never from the body)
  * @param {string} [ctx.actorId]
  * @param {string} [ctx.caseReference]
+ * @param {string|null} [ctx.sessionId]  the token's `sid`, carried into the audit row's detail
  * @param {Date|string} [ctx.now]
  * @param {string} [ctx.snapshotUpper]
  * @param {object} [ctx.cursorStore]   the server-side resume store (cursor.js)
@@ -125,6 +126,7 @@ export function plan(request, ctx = {}) {
     ? [auditStatement(decision, {
       actorId: ctx.actorId ?? 'unknown',
       caseReference: ctx.caseReference ?? null,
+      sessionId: ctx.sessionId ?? null,
       subjectRef: subjectRefOf(query),
       detail: auditDetail({ query, source }, { coarsened: guarded.coarsened }),
     })]
@@ -215,6 +217,7 @@ function planSingle(expansion, ctx, now) {
   const auditStatementBuilt = auditStatement(decision, {
     actorId: ctx.actorId ?? 'unknown',
     caseReference: ctx.caseReference ?? null,
+    sessionId: ctx.sessionId ?? null,
     subjectRef: ctx.subjectRef ?? null,
     detail: Object.freeze({ source: 'ingest.submission', kind: 'single_record', template: expansion.name }),
   });
@@ -369,6 +372,7 @@ export async function executePlan(planResult, ctx = {}) {
         const statement = auditStatement(planResult.audit.decision, {
           actorId: ctx.actorId ?? 'unknown',
           caseReference: ctx.caseReference ?? null,
+          sessionId: ctx.sessionId ?? null,
           subjectRef: planResult.audit.subjectRef,
           detail: auditDetail({ query: planResult.query, source: planResult.source }, { rows: (readResult.rows ?? []).length }),
         });

@@ -137,7 +137,9 @@ resource diagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' 
 output vaultId string = vault.id
 
 @description('The vault URI services use for Key Vault references. A URI is not a credential: the caller still needs a role assignment, and every caller is a managed identity.')
-output vaultUri string = vault.properties.vaultUri
+// Built from the vault name rather than read back from properties.vaultUri, which the resource type
+// declares as possibly null; the DNS suffix comes from the cloud, so this is right in every cloud.
+output vaultUri string = 'https://${vault.name}${environment().suffixes.keyvaultDns}/'
 
 @description('Whether purge protection is on. The §3.5 resource-graph assertion reads this back from Azure; the composition reads it here.')
 output purgeProtectionEnabled bool = enablePurgeProtection

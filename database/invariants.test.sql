@@ -1859,6 +1859,444 @@ RESET ROLE;
 
 
 -- =====================================================================================
+-- T55-T68  Identity, provisioning and deployment (backlog/11-sign-in-and-roles)
+-- =====================================================================================
+-- The tables control-api keeps as the identity service, the pre-tenant lookups that are the only
+-- reads crossing tenants, and record_event's alias resolution. Fixtures are written here as the
+-- superuser, in both tenants, so each isolation assertion has rows on both sides to tell apart; every
+-- assertion then runs as a runtime role. The lookups are exercised with NO tenant set, which is the
+-- state they exist for, and they run as sac_resolver, which is not a superuser -- so a pass here is
+-- the resolver policies working, not row-level security being bypassed.
+
+INSERT INTO ops.identity_connection (connection_id, tenant_id, provider, entra_tenant_id, issuer, client_id,
+                                     status, activated_at, activated_by)
+VALUES
+  ('f0000000-0000-4000-8000-00000000a001', :ta, 'entra', 'a0a0a0a0-0000-4000-8000-0000000000a1', NULL, NULL,
+   'active', now(), 'first-admin@a.example'),
+  ('f0000000-0000-4000-8000-00000000a002', :ta, 'oidc', NULL, 'https://idp.a.example/disabled', 'client-a',
+   'disabled', now(), 'first-admin@a.example'),
+  ('f0000000-0000-4000-8000-00000000b001', :tb, 'oidc', NULL, 'https://idp.b.example', 'client-b',
+   'active', now(), 'first-admin@b.example'),
+  ('f0000000-0000-4000-8000-00000000b002', :tb, 'entra', 'b0b0b0b0-0000-4000-8000-0000000000b1', NULL, NULL,
+   'pending', NULL, NULL);
+
+INSERT INTO ops.tenant_email_domain (domain, tenant_id, created_by)
+VALUES ('a.example', :ta, 'vendor'), ('b.example', :tb, 'vendor');
+
+INSERT INTO ops.onboarding_invite (tenant_id, token_hash, created_by, created_at, expires_at, used_at, used_by)
+VALUES
+  (:ta, 'sha256:' || repeat('a1', 32), 'vendor', now(), now() + interval '7 days', NULL, NULL),
+  (:ta, 'sha256:' || repeat('a2', 32), 'vendor', now(), now() + interval '7 days', now(), 'first-admin@a.example'),
+  (:ta, 'sha256:' || repeat('a3', 32), 'vendor', now() - interval '9 days', now() - interval '2 days', NULL, NULL),
+  (:tb, 'sha256:' || repeat('b1', 32), 'vendor', now(), now() + interval '7 days', NULL, NULL);
+
+INSERT INTO ops.role_grant (tenant_id, connection_id, subject, role, granted_by)
+VALUES (:ta, 'f0000000-0000-4000-8000-00000000a001', 'oid-a', 'admin', 'onboarding'),
+       (:tb, 'f0000000-0000-4000-8000-00000000b001', 'sub-b', 'viewer', 'onboarding');
+
+INSERT INTO ops.auth_session (session_hash, tenant_id, connection_id, subject, actor, roles,
+                              created_at, expires_at, revoked_at)
+VALUES
+  (sha256('\x73657373612d6c697665'::bytea), :ta, 'f0000000-0000-4000-8000-00000000a001', 'oid-a', 'ada@a.example',
+   ARRAY['admin'], now(), now() + interval '8 hours', NULL),
+  (sha256('\x73657373612d7265766f6b6564'::bytea), :ta, 'f0000000-0000-4000-8000-00000000a001', 'oid-a', 'ada@a.example',
+   ARRAY['admin'], now(), now() + interval '8 hours', now()),
+  (sha256('\x73657373612d65787069726564'::bytea), :ta, 'f0000000-0000-4000-8000-00000000a001', 'oid-a', 'ada@a.example',
+   ARRAY['viewer'], now() - interval '9 hours', now() - interval '1 hour', NULL),
+  (sha256('\x73657373622d6c697665'::bytea), :tb, 'f0000000-0000-4000-8000-00000000b001', 'sub-b', 'bo@b.example',
+   ARRAY['viewer','analyst'], now(), now() + interval '8 hours', NULL);
+
+INSERT INTO ops.scim_token (tenant_id, token_hash, label, created_by, revoked_at)
+VALUES (:ta, 'sha256:' || repeat('c1', 32), 'entra provisioning', 'ada@a.example', NULL),
+       (:ta, 'sha256:' || repeat('c2', 32), 'old', 'ada@a.example', now()),
+       (:tb, 'sha256:' || repeat('c3', 32), 'okta provisioning', 'bo@b.example', NULL);
+
+INSERT INTO ops.scim_user (tenant_id, scim_id, user_name_hash, resource_enc, user_ref)
+VALUES (:ta, 'c0000000-0000-4000-8000-00000000000a', sha256('\x61'::bytea), '\x00'::bytea, 'u_' || repeat('a', 32)),
+       (:tb, 'c0000000-0000-4000-8000-00000000000b', sha256('\x62'::bytea), '\x00'::bytea, 'u_' || repeat('b', 32));
+
+INSERT INTO ops.scim_group (tenant_id, scim_id, display_name)
+VALUES (:ta, 'd0000000-0000-4000-8000-00000000000a', 'Finance'),
+       (:tb, 'd0000000-0000-4000-8000-00000000000b', 'Engineering');
+
+INSERT INTO ops.scim_group_member (tenant_id, group_id, user_id)
+VALUES (:ta, 'd0000000-0000-4000-8000-00000000000a', 'c0000000-0000-4000-8000-00000000000a'),
+       (:tb, 'd0000000-0000-4000-8000-00000000000b', 'c0000000-0000-4000-8000-00000000000b');
+
+-- The same device-derived ref is an alias in BOTH tenants, to different people, so T64 can show the
+-- resolution never crosses tenants.
+INSERT INTO ops.user_ref_alias (tenant_id, alias_ref, user_ref)
+VALUES (:ta, 'u_' || repeat('1', 32), 'u_' || repeat('a', 32)),
+       (:tb, 'u_' || repeat('1', 32), 'u_' || repeat('b', 32));
+
+INSERT INTO ops.deployment_key (tenant_id, key_hash, label, created_by)
+VALUES (:ta, 'sha256:' || repeat('d1', 32), 'intune package', 'ada@a.example'),
+       (:tb, 'sha256:' || repeat('d2', 32), 'zip package', 'bo@b.example');
+
+SET ROLE sac_control;
+SET app.tenant_id = '22222222-2222-7222-8222-222222222222';
+
+DO $$
+DECLARE
+  t text;
+  n_other int;
+  n_own int;
+  n_none int;
+  tables text[] := ARRAY['ops.identity_connection', 'ops.tenant_email_domain', 'ops.onboarding_invite',
+                         'ops.role_grant', 'ops.auth_session', 'ops.scim_token', 'ops.scim_user',
+                         'ops.scim_group', 'ops.scim_group_member', 'ops.user_ref_alias',
+                         'ops.deployment_key'];
+BEGIN
+  -- T55: forced RLS isolates every new tenant-scoped table. Tenant B, holding sac_control's full
+  -- grant, sees its own rows (so the assertion is not vacuous) and none of tenant A's; with no
+  -- tenant set it sees nothing at all, which is the fail-closed half.
+  FOREACH t IN ARRAY tables LOOP
+    EXECUTE format('SELECT count(*) FROM %s WHERE tenant_id = %L', t, '11111111-1111-7111-8111-111111111111') INTO n_other;
+    EXECUTE format('SELECT count(*) FROM %s', t) INTO n_own;
+    IF n_other <> 0 THEN
+      RAISE EXCEPTION 'FAIL T55 tenant B sees % of tenant A''s rows in %', n_other, t;
+    END IF;
+    IF n_own = 0 THEN
+      RAISE EXCEPTION 'FAIL T55 tenant B sees none of its own rows in %; the isolation check would be vacuous', t;
+    END IF;
+  END LOOP;
+
+  PERFORM set_config('app.tenant_id', '', false);
+  FOREACH t IN ARRAY tables LOOP
+    EXECUTE format('SELECT count(*) FROM %s', t) INTO n_none;
+    IF n_none <> 0 THEN
+      RAISE EXCEPTION 'FAIL T55 with no tenant set, % rows of % are visible', n_none, t;
+    END IF;
+  END LOOP;
+
+  RAISE NOTICE 'PASS T55 all 11 identity/provisioning/deployment tables are isolated by forced RLS, and fail closed with no tenant';
+END $$;
+
+-- The pre-tenant lookups run with no tenant set: that is the state they exist for.
+SET app.tenant_id = '';
+
+DO $$
+DECLARE
+  n int;
+  v_tenant uuid;
+BEGIN
+  -- T56: an Entra tid resolves to its connection only while that connection is active. The tid is
+  -- matched case-insensitively (a token spells it lower-case; the column is constrained to it).
+  SELECT count(*) INTO n FROM ops.identity_connection_for_entra('A0A0A0A0-0000-4000-8000-0000000000A1');
+  IF n <> 1 THEN RAISE EXCEPTION 'FAIL T56 the active Entra connection did not resolve (% rows)', n; END IF;
+  SELECT tenant_id INTO v_tenant FROM ops.identity_connection_for_entra('a0a0a0a0-0000-4000-8000-0000000000a1');
+  IF v_tenant <> '11111111-1111-7111-8111-111111111111' THEN
+    RAISE EXCEPTION 'FAIL T56 the Entra tid resolved to tenant %', v_tenant;
+  END IF;
+  SELECT count(*) INTO n FROM ops.identity_connection_for_entra('b0b0b0b0-0000-4000-8000-0000000000b1');
+  IF n <> 0 THEN RAISE EXCEPTION 'FAIL T56 a PENDING Entra connection resolved for sign-in'; END IF;
+  RAISE NOTICE 'PASS T56 identity_connection_for_entra returns only an active connection, with no tenant set';
+
+  -- T57: an OIDC issuer resolves exactly and only while active; by id returns any status, because
+  -- onboarding completes through a pending connection.
+  SELECT count(*) INTO n FROM ops.identity_connection_for_issuer('https://idp.b.example');
+  IF n <> 1 THEN RAISE EXCEPTION 'FAIL T57 the active issuer did not resolve (% rows)', n; END IF;
+  SELECT count(*) INTO n FROM ops.identity_connection_for_issuer('https://idp.b.example/');
+  IF n <> 0 THEN RAISE EXCEPTION 'FAIL T57 a different spelling of the issuer resolved; the comparison must be exact'; END IF;
+  SELECT count(*) INTO n FROM ops.identity_connection_for_issuer('https://idp.a.example/disabled');
+  IF n <> 0 THEN RAISE EXCEPTION 'FAIL T57 a DISABLED OIDC connection resolved for sign-in'; END IF;
+  SELECT count(*) INTO n FROM ops.identity_connection_by_id('f0000000-0000-4000-8000-00000000a002');
+  IF n <> 1 THEN RAISE EXCEPTION 'FAIL T57 identity_connection_by_id did not return a disabled connection'; END IF;
+  RAISE NOTICE 'PASS T57 identity_connection_for_issuer is exact and active-only; identity_connection_by_id returns any status';
+
+  -- T58: the email domain names the tenant, case-insensitively; an unknown domain names none.
+  IF ops.tenant_for_email_domain('A.Example') IS DISTINCT FROM '11111111-1111-7111-8111-111111111111'::uuid THEN
+    RAISE EXCEPTION 'FAIL T58 a.example did not resolve to tenant A';
+  END IF;
+  IF ops.tenant_for_email_domain('unknown.example') IS NOT NULL THEN
+    RAISE EXCEPTION 'FAIL T58 an unknown domain resolved to a tenant';
+  END IF;
+  RAISE NOTICE 'PASS T58 tenant_for_email_domain maps a domain to its one tenant and an unknown domain to none';
+
+  -- T59: an invite resolves while it is unused and unexpired, and not after.
+  SELECT count(*) INTO n FROM ops.onboarding_invite_by_hash('sha256:' || repeat('a1', 32));
+  IF n <> 1 THEN RAISE EXCEPTION 'FAIL T59 an unused, unexpired invite did not resolve'; END IF;
+  SELECT count(*) INTO n FROM ops.onboarding_invite_by_hash('sha256:' || repeat('a2', 32));
+  IF n <> 0 THEN RAISE EXCEPTION 'FAIL T59 a USED invite resolved; it could onboard a second admin'; END IF;
+  SELECT count(*) INTO n FROM ops.onboarding_invite_by_hash('sha256:' || repeat('a3', 32));
+  IF n <> 0 THEN RAISE EXCEPTION 'FAIL T59 an EXPIRED invite resolved'; END IF;
+  RAISE NOTICE 'PASS T59 onboarding_invite_by_hash returns only an unused, unexpired invite';
+
+  -- T60: a session resolves while live, and not once revoked or expired.
+  SELECT count(*) INTO n FROM ops.auth_session_by_hash(sha256('\x73657373612d6c697665'::bytea));
+  IF n <> 1 THEN RAISE EXCEPTION 'FAIL T60 a live session did not resolve'; END IF;
+  SELECT count(*) INTO n FROM ops.auth_session_by_hash(sha256('\x73657373612d7265766f6b6564'::bytea));
+  IF n <> 0 THEN RAISE EXCEPTION 'FAIL T60 a REVOKED session resolved'; END IF;
+  SELECT count(*) INTO n FROM ops.auth_session_by_hash(sha256('\x73657373612d65787069726564'::bytea));
+  IF n <> 0 THEN RAISE EXCEPTION 'FAIL T60 an EXPIRED session resolved'; END IF;
+  RAISE NOTICE 'PASS T60 auth_session_by_hash returns only an unrevoked, unexpired session';
+
+  -- T61: a SCIM bearer names its tenant until it is revoked.
+  IF ops.tenant_for_scim_token('sha256:' || repeat('c1', 32)) IS DISTINCT FROM '11111111-1111-7111-8111-111111111111'::uuid THEN
+    RAISE EXCEPTION 'FAIL T61 a live SCIM token did not resolve to tenant A';
+  END IF;
+  IF ops.tenant_for_scim_token('sha256:' || repeat('c2', 32)) IS NOT NULL THEN
+    RAISE EXCEPTION 'FAIL T61 a REVOKED SCIM token still names a tenant';
+  END IF;
+  RAISE NOTICE 'PASS T61 tenant_for_scim_token resolves only an unrevoked token';
+END $$;
+
+-- T62: the lookups cross tenants, so no role but sac_control may call them, and the pre-tenant
+-- sign-in table is sac_control's alone.
+SET ROLE sac_query;
+
+DO $$
+DECLARE
+  fn text;
+  calls text[] := ARRAY[
+    'SELECT ops.tenant_for_email_domain(''a.example'')',
+    'SELECT ops.tenant_for_scim_token(''x'')',
+    'SELECT count(*) FROM ops.identity_connection_for_entra(''x'')',
+    'SELECT count(*) FROM ops.identity_connection_for_issuer(''x'')',
+    'SELECT count(*) FROM ops.identity_connection_by_id(gen_random_uuid())',
+    'SELECT count(*) FROM ops.onboarding_invite_by_hash(''x'')',
+    'SELECT count(*) FROM ops.auth_session_by_hash(''\x00''::bytea)'];
+BEGIN
+  FOREACH fn IN ARRAY calls LOOP
+    BEGIN
+      EXECUTE fn;
+      RAISE EXCEPTION 'FAIL T62 sac_query could run a pre-tenant lookup: %', fn;
+    EXCEPTION WHEN insufficient_privilege THEN NULL;
+    END;
+  END LOOP;
+  BEGIN
+    PERFORM count(*) FROM ops.auth_signin;
+    RAISE EXCEPTION 'FAIL T62 sac_query could read ops.auth_signin';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+  END;
+  RAISE NOTICE 'PASS T62 the seven pre-tenant lookups and ops.auth_signin are refused to sac_query';
+END $$;
+
+SET ROLE sac_control;
+SET app.tenant_id = '';
+
+DO $$
+DECLARE
+  n int;
+BEGIN
+  -- ... and are usable by sac_control, the one role that drives a sign-in.
+  INSERT INTO ops.auth_signin (attempt_hash, state, nonce, redirect_uri, expires_at)
+  VALUES (sha256('\x617474656d7074'::bytea), 'state', 'nonce', 'https://app.example/callback', now() + interval '10 minutes');
+  SELECT count(*) INTO n FROM ops.auth_signin WHERE attempt_hash = sha256('\x617474656d7074'::bytea);
+  IF n <> 1 THEN RAISE EXCEPTION 'FAIL T62 sac_control cannot read back its own sign-in attempt'; END IF;
+  DELETE FROM ops.auth_signin WHERE attempt_hash = sha256('\x617474656d7074'::bytea);
+  RAISE NOTICE 'PASS T62 (cont.) sac_control writes, reads and sweeps ops.auth_signin with no tenant set';
+END $$;
+
+SET ROLE sac_control;
+SET app.tenant_id = '11111111-1111-7111-8111-111111111111';
+
+DO $$
+BEGIN
+  -- T63: the connection's shape. Each refusal below is a mapping that would let the wrong party
+  -- decide a tenant, or a grant that silently grants nothing.
+  BEGIN
+    INSERT INTO ops.identity_connection (tenant_id, provider, entra_tenant_id)
+    VALUES ('11111111-1111-7111-8111-111111111111', 'entra', 'A0A0A0A0-0000-4000-8000-0000000000FF');
+    RAISE EXCEPTION 'FAIL T63 an upper-case Entra tid was accepted; the mapping key has one spelling';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+
+  BEGIN
+    INSERT INTO ops.identity_connection (tenant_id, provider, issuer)
+    VALUES ('11111111-1111-7111-8111-111111111111', 'oidc', 'https://idp.a.example/no-client');
+    RAISE EXCEPTION 'FAIL T63 an OIDC connection without a client id was accepted';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+
+  BEGIN
+    INSERT INTO ops.identity_connection (tenant_id, provider, issuer, client_id, status)
+    VALUES ('11111111-1111-7111-8111-111111111111', 'oidc', 'https://idp.a.example/unattributed', 'c', 'active');
+    RAISE EXCEPTION 'FAIL T63 an active connection with no activated_at/activated_by was accepted';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+
+  BEGIN
+    INSERT INTO ops.identity_connection (tenant_id, provider, issuer, client_id, role_map)
+    VALUES ('11111111-1111-7111-8111-111111111111', 'oidc', 'https://idp.a.example/badmap', 'c',
+            '{"SAC-Admins": "superuser"}'::jsonb);
+    RAISE EXCEPTION 'FAIL T63 a role_map onto a role the product does not have was accepted';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+
+  BEGIN
+    INSERT INTO ops.identity_connection (tenant_id, provider, entra_tenant_id, client_id)
+    VALUES ('11111111-1111-7111-8111-111111111111', 'entra', 'a0a0a0a0-0000-4000-8000-0000000000fe', 'own-app');
+    RAISE EXCEPTION 'FAIL T63 an Entra connection carrying its own client id was accepted; Entra uses the vendor app';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+
+  -- The issuer and the Entra tid are unique across the database: tenant A cannot claim tenant B's.
+  BEGIN
+    INSERT INTO ops.identity_connection (tenant_id, provider, issuer, client_id)
+    VALUES ('11111111-1111-7111-8111-111111111111', 'oidc', 'https://idp.b.example', 'client-a2');
+    RAISE EXCEPTION 'FAIL T63 a second tenant claimed an issuer that already maps to tenant B';
+  EXCEPTION WHEN unique_violation THEN NULL; END;
+
+  INSERT INTO ops.identity_connection (tenant_id, provider, issuer, client_id, role_map)
+  VALUES ('11111111-1111-7111-8111-111111111111', 'oidc', 'https://idp.a.example/ok', 'c',
+          '{"SAC-Admins": "admin", "SAC-Readers": "content_reader"}'::jsonb);
+
+  RAISE NOTICE 'PASS T63 a connection''s mapping keys are canonical and unique, activation is attributed, and role_map names only product roles';
+END $$;
+
+DO $$
+BEGIN
+  -- T64: a session always carries at least one product role: "no role" is a refusal, not a session.
+  BEGIN
+    INSERT INTO ops.auth_session (session_hash, tenant_id, connection_id, subject, actor, roles, expires_at)
+    VALUES (sha256('\x6e6f2d726f6c65'::bytea), '11111111-1111-7111-8111-111111111111',
+            'f0000000-0000-4000-8000-00000000a001', 'oid-x', 'x@a.example', ARRAY[]::text[], now() + interval '1 hour');
+    RAISE EXCEPTION 'FAIL T64 a session with no role was accepted';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+
+  BEGIN
+    INSERT INTO ops.auth_session (session_hash, tenant_id, connection_id, subject, actor, roles, expires_at)
+    VALUES (sha256('\x6465762d726f6c65'::bytea), '11111111-1111-7111-8111-111111111111',
+            'f0000000-0000-4000-8000-00000000a001', 'oid-x', 'x@a.example', ARRAY['dev'], now() + interval '1 hour');
+    RAISE EXCEPTION 'FAIL T64 a session carrying the lab-only dev role was accepted';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+
+  BEGIN
+    INSERT INTO ops.auth_session (session_hash, tenant_id, connection_id, subject, actor, roles, expires_at)
+    VALUES ('\x00112233'::bytea, '11111111-1111-7111-8111-111111111111',
+            'f0000000-0000-4000-8000-00000000a001', 'oid-x', 'x@a.example', ARRAY['viewer'], now() + interval '1 hour');
+    RAISE EXCEPTION 'FAIL T64 a session keyed by something other than a sha256 was accepted';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+
+  -- A session cannot point at another tenant's connection.
+  BEGIN
+    INSERT INTO ops.auth_session (session_hash, tenant_id, connection_id, subject, actor, roles, expires_at)
+    VALUES (sha256('\x63726f7373'::bytea), '11111111-1111-7111-8111-111111111111',
+            'f0000000-0000-4000-8000-00000000b001', 'sub-b', 'bo@b.example', ARRAY['viewer'], now() + interval '1 hour');
+    RAISE EXCEPTION 'FAIL T64 a tenant A session referencing tenant B''s connection was accepted';
+  EXCEPTION WHEN foreign_key_violation THEN NULL; END;
+
+  RAISE NOTICE 'PASS T64 a session holds one or more product roles, is keyed by a sha256, and names its own tenant''s connection';
+END $$;
+
+DO $$
+DECLARE
+  v_env bytea := convert_to('{"key_id":"policy-key-1","algorithm":"ed25519","payload":{},"signature":""}', 'UTF8');
+BEGIN
+  -- T65: the policy bundle's digest is the sha256 of the bytes served, when they are stored.
+  BEGIN
+    INSERT INTO ops.policy_bundle (tenant_id, bundle_version, scope_matrix, classifier_release,
+                                   retention_class, signature_kid, signed_digest, created_by, signed_envelope)
+    VALUES ('11111111-1111-7111-8111-111111111111', 100, '{"default": "m1"}'::jsonb, 'test-2026.01',
+            'standard', 'policy-key-1', 'sha256:' || repeat('00', 32), 'control-api', v_env);
+    RAISE EXCEPTION 'FAIL T65 a bundle whose digest does not name its envelope was accepted';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+
+  INSERT INTO ops.policy_bundle (tenant_id, bundle_version, scope_matrix, classifier_release,
+                                 retention_class, signature_kid, signed_digest, created_by, signed_envelope)
+  VALUES ('11111111-1111-7111-8111-111111111111', 100, '{"default": "m1"}'::jsonb, 'test-2026.01',
+          'standard', 'policy-key-1', 'sha256:' || encode(sha256(v_env), 'hex'), 'control-api', v_env);
+
+  RAISE NOTICE 'PASS T65 a stored policy envelope and its signed_digest cannot disagree';
+END $$;
+
+DO $$
+BEGIN
+  -- T66: the sign-in email domain is the vendor's mapping, one tenant per domain, in one spelling.
+  BEGIN
+    INSERT INTO ops.tenant_email_domain (domain, tenant_id) VALUES ('Upper.Example', '11111111-1111-7111-8111-111111111111');
+    RAISE EXCEPTION 'FAIL T66 an upper-case email domain was accepted';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+  BEGIN
+    INSERT INTO ops.tenant_email_domain (domain, tenant_id) VALUES ('b.example', '11111111-1111-7111-8111-111111111111');
+    RAISE EXCEPTION 'FAIL T66 tenant A claimed tenant B''s email domain';
+  EXCEPTION WHEN unique_violation THEN NULL; END;
+  RAISE NOTICE 'PASS T66 an email domain is lower-case and maps to exactly one tenant';
+END $$;
+
+DO $$
+BEGIN
+  -- T67: one Intune device is one product device in a tenant. A second device claiming the same
+  -- verified Intune id is refused, which is what makes a re-image return the existing device.
+  UPDATE ops.device SET intune_device_id = 'intune-0001'
+   WHERE tenant_id = '11111111-1111-7111-8111-111111111111' AND device_id = 'aaaaaaaa-0000-7000-8000-000000000001';
+  INSERT INTO ops.device (tenant_id, device_id, os, managed_state)
+  VALUES ('11111111-1111-7111-8111-111111111111', 'aaaaaaaa-0000-7000-8000-0000000000f7', 'windows', 'managed');
+  BEGIN
+    UPDATE ops.device SET intune_device_id = 'intune-0001'
+     WHERE tenant_id = '11111111-1111-7111-8111-111111111111' AND device_id = 'aaaaaaaa-0000-7000-8000-0000000000f7';
+    RAISE EXCEPTION 'FAIL T67 two devices in one tenant were bound to the same Intune device id';
+  EXCEPTION WHEN unique_violation THEN NULL; END;
+  RAISE NOTICE 'PASS T67 an Intune device id binds to at most one device per tenant';
+END $$;
+
+-- T68: record_event stores the canonical person. Run as sac_ingest, the role ingest-api uses, so
+-- the alias read is the grant and the policy, not a superuser's view.
+SET ROLE sac_ingest;
+SET app.tenant_id = '11111111-1111-7111-8111-111111111111';
+
+DO $$
+DECLARE
+  r record;
+  v_obs text;
+  v_sub text;
+  v_dev text;
+  v_alias constant text := 'u_' || repeat('1', 32);
+  v_canonical constant text := 'u_' || repeat('a', 32);
+  v_unknown constant text := 'u_' || repeat('2', 32);
+BEGIN
+  SELECT * INTO r FROM ingest.record_event(jsonb_build_object(
+    'schema_version', '1.0',
+    'event_id', 'e0000000-0000-7000-8000-0000000000a1',
+    'tenant_id', '11111111-1111-7111-8111-111111111111',
+    'device_id', 'aaaaaaaa-0000-7000-8000-000000000001',
+    'user_ref', v_alias,
+    'tool_fingerprint', 'probe-alias-1',
+    'direction', 'none', 'kind', 'model_detection',
+    'occurred_at', '2026-10-05T10:00:00Z',
+    'monotonic_offset_ms', 1,
+    'source', 'proc.detect', 'collection_mode', 'm0',
+    'detection_basis', 'process_scan',
+    'dedup_key', 'sha256:' || repeat('e1', 32)
+  ), now() + interval '1 hour');
+
+  SELECT o.user_ref INTO v_obs FROM ingest.observation o
+   WHERE o.tenant_id = '11111111-1111-7111-8111-111111111111' AND o.event_id = 'e0000000-0000-7000-8000-0000000000a1';
+  SELECT s.user_ref INTO v_sub FROM ingest.submission s
+   WHERE s.tenant_id = '11111111-1111-7111-8111-111111111111' AND s.submission_id = r.event_submission_id;
+  SELECT d.last_user_ref INTO v_dev FROM ops.device d
+   WHERE d.tenant_id = '11111111-1111-7111-8111-111111111111' AND d.device_id = 'aaaaaaaa-0000-7000-8000-000000000001';
+  IF v_obs IS DISTINCT FROM v_canonical OR v_sub IS DISTINCT FROM v_canonical OR v_dev IS DISTINCT FROM v_canonical THEN
+    RAISE EXCEPTION 'FAIL T68 an aliased ref was stored as observation=% submission=% device=%, expected % (tenant A''s canonical, not tenant B''s)',
+      v_obs, v_sub, v_dev, v_canonical;
+  END IF;
+
+  SELECT * INTO r FROM ingest.record_event(jsonb_build_object(
+    'schema_version', '1.0',
+    'event_id', 'e0000000-0000-7000-8000-0000000000a2',
+    'tenant_id', '11111111-1111-7111-8111-111111111111',
+    'device_id', 'aaaaaaaa-0000-7000-8000-000000000001',
+    'user_ref', v_unknown,
+    'tool_fingerprint', 'probe-alias-2',
+    'direction', 'none', 'kind', 'model_detection',
+    'occurred_at', '2026-10-05T10:00:00Z',
+    'monotonic_offset_ms', 2,
+    'source', 'proc.detect', 'collection_mode', 'm0',
+    'detection_basis', 'process_scan',
+    'dedup_key', 'sha256:' || repeat('e2', 32)
+  ), now() + interval '2 hours');
+
+  SELECT o.user_ref INTO v_obs FROM ingest.observation o
+   WHERE o.tenant_id = '11111111-1111-7111-8111-111111111111' AND o.event_id = 'e0000000-0000-7000-8000-0000000000a2';
+  SELECT s.user_ref INTO v_sub FROM ingest.submission s
+   WHERE s.tenant_id = '11111111-1111-7111-8111-111111111111' AND s.submission_id = r.event_submission_id;
+  IF v_obs IS DISTINCT FROM v_unknown OR v_sub IS DISTINCT FROM v_unknown THEN
+    RAISE EXCEPTION 'FAIL T68 a ref with no alias was rewritten: observation=% submission=%, expected %', v_obs, v_sub, v_unknown;
+  END IF;
+
+  RAISE NOTICE 'PASS T68 record_event stores an aliased ref as the tenant''s canonical ref and an unknown ref as sent';
+END $$;
+
+RESET ROLE;
+
+
+-- =====================================================================================
 -- Report
 -- =====================================================================================
 

@@ -1,0 +1,74 @@
+/* signin.css — the sign-in page and its error pages.
+ *
+ * Loaded after styles.css and served without a session, like styles.css itself. It takes every
+ * colour, font and curve from the tokens there, so the first page a person sees is the same product
+ * as the rest: the warm ground and its two glows, a panel set into a tray, one serif for the title.
+ * The Microsoft button follows Microsoft's own sign-in button guidance (logo, wording, neutral
+ * colours) rather than the dashboard's accent, because people recognise it by that look.
+ */
+
+.si {
+  position: relative; z-index: 1;
+  width: min(440px, 100%); margin: 0 auto; padding: max(8vh, 32px) 16px 48px;
+  display: grid; gap: 18px;
+}
+.si-brand { justify-content: center; padding: 0 0 8px; }
+.si-brand h1 { flex: none; font-size: 14.5px; }
+
+.si-card .card-core { padding: 30px 30px 28px; display: grid; gap: 14px; }
+.si-card h2 { margin: 0; font: 400 40px/1.04 var(--serif); letter-spacing: -0.025em; color: var(--ink); }
+.si-lead { margin: -4px 0 4px; color: var(--ink-soft); }
+.si-card .banner { display: grid; gap: 4px; }
+.si-code { font: 11px/1.6 var(--mono); opacity: .8; }
+
+.si-form { display: grid; gap: 8px; margin: 0; }
+.si-label { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .1em; color: var(--ink-soft); }
+.si-input {
+  height: 42px; padding: 0 14px; width: 100%; font: 14px var(--sans); color: var(--ink);
+  background: var(--sunken); border: 1px solid transparent; border-radius: 12px;
+  transition: border-color .35s var(--ease), background .35s var(--ease);
+}
+.si-input::placeholder { color: var(--ink-faint); }
+.si-input:hover { border-color: var(--line-strong); }
+.si-input:focus { background: var(--panel); border-color: var(--accent); outline: none; }
+
+.si-btn, .si-ms {
+  display: inline-flex; align-items: center; justify-content: center; gap: 12px;
+  height: 42px; padding: 0 18px; width: 100%; cursor: pointer; text-decoration: none;
+  border-radius: 12px; font: 600 14px var(--sans);
+  transition: opacity .3s var(--ease), transform .3s var(--ease), border-color .3s var(--ease);
+}
+.si-btn { border: 0; background: var(--ink); color: var(--on-ink); }
+.si-btn:hover { opacity: .88; }
+.si-btn:active, .si-ms:active { transform: scale(.985); }
+.si-btn-link { width: fit-content; }
+
+/* Microsoft's button: white, a grey hairline, grey text, the four squares. Dark: #2f2f2f, white text. */
+.si-ms { background: #ffffff; color: #5e5e5e; border: 1px solid #8c8c8c; font-family: "Segoe UI", var(--sans); }
+.si-ms:hover { border-color: #5e5e5e; }
+.si-ms-logo { width: 21px; height: 21px; flex: none; }
+@media (prefers-color-scheme: dark) {
+  .si-ms { background: #2f2f2f; color: #ffffff; border-color: #2f2f2f; }
+  .si-ms:hover { border-color: #8c8c8c; }
+}
+
+.si-or { display: flex; align-items: center; gap: 12px; color: var(--ink-faint); font-size: 12px; margin: 4px 0; }
+.si-or::before, .si-or::after { content: ""; flex: 1 1 auto; height: 1px; background: var(--line); }
+.si-hint { margin: 2px 0 0; font-size: 12.5px; color: var(--ink-soft); }
+.si-foot { margin: 0; text-align: center; font-size: 12.5px; color: var(--ink-faint); }
+
+.si-dev .card-core { padding: 22px 24px; display: grid; gap: 10px; }
+.si-dev h3 { margin: 0; font-size: 14.5px; font-weight: 600; color: var(--ink); }
+.si-dev p { margin: 0; font-size: 13px; color: var(--ink-soft); }
+.si-facts { display: grid; gap: 4px; margin: 0; font-size: 13px; }
+.si-facts > div { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 8px; }
+.si-facts dt { color: var(--ink-soft); }
+.si-facts dd { margin: 0; overflow-wrap: anywhere; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .si > * { animation: rise .8s var(--ease) both; }
+  .si > :nth-child(2) { animation-delay: .05s; }
+  .si > :nth-child(3) { animation-delay: .1s; }
+}
+.si-btn-quiet { background: transparent; color: var(--text); border: 1px solid var(--line-strong); }
+.si-btn-quiet:hover { opacity: 1; border-color: var(--ink-soft); }

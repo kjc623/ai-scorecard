@@ -20,6 +20,12 @@
 // "The module-cache precondition" in localdev/README.md. It is opt-in so a host without the cache
 // can still build and run the default lab.
 //
+// `--auth` also generates the auth lab's identity material into localdev/.authlab-identity/ (the
+// session and policy signing keys, the internal token, the directory key, the stand-in IdP's client
+// secret) when it is missing, keeps it when it is not, and packages it with the sample tenant's seed
+// as sac/authlab-identity:lab. See localdev/identity/identity.mjs for what each file is and why it is
+// kept across builds.
+//
 // Usage:
 //   node localdev/build.mjs                 # compile + build the default lab images
 //   node localdev/build.mjs --auth          # also build the tagged SQL images for the auth lab
@@ -30,6 +36,8 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { ensureLabIdentity } from './identity/identity.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const ARGS = process.argv.slice(2);
@@ -204,6 +212,15 @@ if (AUTH) {
   for (const s of SQL_IMAGES) {
     compileGo({ name: `${s.name} (sac_sql_driver)`, dir: s.dir, pkg: s.pkg, out: join(ROOT, s.binary), tags: 'sac_sql_driver' });
   }
+
+  // The identity material: generated when missing, kept when present, and the seed re-sealed. Before
+  // the docker step, because sac/authlab-identity:lab copies the directory in.
+  const identity = ensureLabIdentity(join(ROOT, 'localdev', '.authlab-identity'));
+  console.log(`identity: ${identity.created.length ? `generated ${identity.created.join(', ')}` : 'kept the existing material'} in localdev/.authlab-identity; seed re-sealed`);
+
+  // control-api serves tenant packages from the generic release the installer builds here. The
+  // directory may be empty until it does; it exists so the compose bind mount has a source.
+  mkdirSync(join(ROOT, 'installer', 'dist', 'release'), { recursive: true });
 }
 
 console.log('');
@@ -232,6 +249,13 @@ for (const s of PLAIN_IMAGES) {
     '-t', `sac/${s.name}:lab`,
     '.',
   ], { cwd: ROOT });
+  console.log(out.split('\n').filter((l) => /DONE|naming to|ERROR/.test(l)).slice(-1)[0]?.trim() ?? 'ok');
+}
+// The auth lab's identity step: the material generated above and the sample tenant's seed, baked in
+// with a build-time COPY like the schema and PKI images (see localdev/identity/Dockerfile).
+if (AUTH) {
+  process.stdout.write('docker build sac/authlab-identity:lab … ');
+  const out = run('docker', ['build', '-f', join('localdev', 'identity', 'Dockerfile'), '-t', 'sac/authlab-identity:lab', '.'], { cwd: ROOT });
   console.log(out.split('\n').filter((l) => /DONE|naming to|ERROR/.test(l)).slice(-1)[0]?.trim() ?? 'ok');
 }
 for (const s of SQL_IMAGES) {

@@ -167,6 +167,22 @@ expectCaught(
   'rls.loop.using-session-tenant',
 );
 
+expectCaught(
+  'rls: the pre-tenant sign-in table losing its policy is caught',
+  'database/schema.sql',
+  (s) => s.replace('CREATE POLICY control_plane_only ON ops.auth_signin TO sac_control',
+    'CREATE POLICY control_plane_only ON ops.auth_signin_moved TO sac_control'),
+  'rls.pre-tenant.ops.auth_signin.policy',
+);
+
+expectCaught(
+  'rls: a pre-tenant table that grows a tenant_id is caught, because it then belongs in the loop',
+  'database/schema.sql',
+  (s) => s.replace('  connection_id      uuid REFERENCES ops.identity_connection(connection_id),',
+    '  tenant_id          uuid,\n  connection_id      uuid REFERENCES ops.identity_connection(connection_id),'),
+  'rls.pre-tenant.ops.auth_signin.has-no-tenant',
+);
+
 // -------------------------------------------------------------------------------------
 // Dedup family
 // -------------------------------------------------------------------------------------
@@ -243,6 +259,28 @@ expectCaught(
   'database/schema.sql',
   (s) => `${s}\nCREATE FUNCTION ops.probe_definer() RETURNS void\nLANGUAGE plpgsql SECURITY DEFINER AS $$ BEGIN RETURN; END $$;\n`,
   'secdef.pinned-search-path',
+);
+
+expectCaught(
+  'secdef: a SECURITY DEFINER function left executable by PUBLIC is caught',
+  'database/schema.sql',
+  (s) => `${s}\nCREATE FUNCTION ops.probe_definer() RETURNS void\nLANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$ BEGIN RETURN; END $$;\nALTER FUNCTION ops.probe_definer() OWNER TO sac_resolver;\n`,
+  'secdef.execute-revoked-from-public',
+);
+
+expectCaught(
+  'secdef: a SECURITY DEFINER function owned by the BYPASSRLS migrator is caught',
+  'database/schema.sql',
+  (s) => s.replace('ALTER FUNCTION ops.tenant_for_scim_token(text)          OWNER TO sac_resolver;',
+    'ALTER FUNCTION ops.tenant_for_scim_token(text)          OWNER TO sac_migrator;'),
+  'secdef.owned-by-narrow-role',
+);
+
+expectCaught(
+  'secdef: a SECURITY DEFINER function left with the role that applied the schema is caught',
+  'database/schema.sql',
+  (s) => s.replace('ALTER FUNCTION ops.auth_session_by_hash(bytea)          OWNER TO sac_resolver;\n', ''),
+  'secdef.owned-by-narrow-role',
 );
 
 // -------------------------------------------------------------------------------------
@@ -346,11 +384,11 @@ expectCaught(
 );
 
 expectCaught(
-  'digests: an exemption that is no longer needed is caught, so the excused list cannot rot',
+  'digests: the policy-bundle digest CHECK cannot be dropped now that the table has a writer',
   'database/schema.sql',
   (s) => s.replace(
-    /^(\s*signed_digest\s+text NOT NULL)(,)$/m,
-    "$1 CHECK (signed_digest ~ '^sha256:[0-9a-f]{64}$')$2",
+    "  CONSTRAINT policy_bundle_digest_is_sha256\n    CHECK (signed_digest ~ '^sha256:[0-9a-f]{64}$'),",
+    '  CONSTRAINT policy_bundle_digest_is_sha256\n    CHECK (length(signed_digest) > 0),',
   ),
   'digest.every-column-format-checked-or-excused',
 );
@@ -364,31 +402,6 @@ expectCaught(
   ),
   'digest.every-column-format-checked-or-excused',
 );
-
-// The one excused column is excused because nothing writes its table yet. That reason has to be
-// checkable, or the exemption outlives it. This test creates a writer and expects the check to
-// notice -- so the exemption cannot survive becoming false.
-test('digests: the excused column\'s justification is checked, so the exemption expires by itself', () => {
-  const writer = q(root, 'ingestion/ingest-api/internal/probe/policy_writer.go');
-  mkdirSync(dirname(writer), { recursive: true });
-
-  // Before: no writer anywhere in the fixture, so the exemption stands.
-  assert.equal(runChecker().checks.get('digest.excused-column-still-has-no-writer')?.status, 'PASS',
-    'the fixture has no writer, so the exemption should hold');
-
-  writeFileSync(writer, 'package probe\n\nconst stmt = `INSERT INTO ops.policy_bundle (tenant_id) VALUES ($1)`\n');
-  try {
-    const r = runChecker();
-    assert.equal(r.code, 1, 'a writer appearing must fail the run, not just warn');
-    const hit = r.checks.get('digest.excused-column-still-has-no-writer');
-    assert.equal(hit?.status, 'FAIL');
-    assert.match(hit.detail, /EXPIRED/, 'the failure must say the exemption expired, not merely that something changed');
-    assert.match(hit.detail, /policy_writer\.go/, 'the failure must name the writer');
-    assert.match(hit.detail, /verify\.go/, 'the failure must point at the consumer whose shape to take');
-  } finally {
-    rmSync(writer, { force: true });
-  }
-});
 
 // -------------------------------------------------------------------------------------
 // Documentation drift: a WARNING, and it must clear when the prose is fixed

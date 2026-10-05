@@ -55,11 +55,11 @@ the resources marked region-shared are deployed once per region, the rest are sh
 | Resource | SKU / tier | Why this tier (and which master §4.1 component it hosts) |
 |---|---|---|
 | **Application Gateway `WAF_v2`** + WAF policy | `WAF_v2`; WAF in Prevention, managed rule set plus custom rules; listener in **passthrough** mode | The public device ingress (ADR 0020 decision 1). GA client-certificate authentication; it terminates the device TLS connection and reaches the internal Container Apps environment over the VNet. Passthrough forwards the client certificate and the origin authenticates; strict mode is optional for certificate-only tenants. WAF must block at the edge, not in the app, because `ingest-api` accepts traffic from machines the vendor does not control. Public entry for `/v1/enrol`, `/v1/token`, `/v1/policy`, `/v1/events`, `/v1/health`, `/v1/content/grant` |
-| **Front Door Premium** + WAF policy | Premium; WAF in Prevention, managed rule set plus custom rules | **Analyst ingress only** (ADR 0020 decision 1). Premium is required for the Private Link origin that keeps Container Apps off the public internet; Standard cannot use Private Link. Analyst entry to `query-api` |
-| **Container Apps environment** | Consumption-only, no workload profiles, VNet-injected, internal load balancer | Peak demand is ~50–500 events/s during a fleet flush (master §1.4) against ~0.14 events/s steady. Consumption costs nothing when idle, which is most of the day; a dedicated workload profile would bill for idle capacity. Network boundary for all four apps |
+| **Front Door Premium** + WAF policy | Premium; WAF in Prevention, managed rule set plus custom rules | **Browser and identity-provider ingress only** (ADR 0020 decision 1). Premium is required for the Private Link origin that keeps Container Apps off the public internet; Standard cannot use Private Link. Routes: `/analyst/*` → `query-api`; `/scim/v2/*`, `/onboard/*`, `/.well-known/*` → `control-api` (a customer's SCIM client, the one-time onboarding pages, the product token issuer's JWKS); everything else → the `dashboard` server. No route reaches `content-vault` |
+| **Container Apps environment** | Consumption-only, no workload profiles, VNet-injected, internal load balancer | Peak demand is ~50–500 events/s during a fleet flush (master §1.4) against ~0.14 events/s steady. Consumption costs nothing when idle, which is most of the day; a dedicated workload profile would bill for idle capacity. Network boundary for all five apps |
 | **Container App `ingest-api`** | Min 2, max 20; 0.5 vCPU / 1 GiB; HTTP/2 ingress transport (`transport: 'http2'`, as on every app); external via Private Link origin | Two replicas is the availability floor for 99.9% (brief §8); the ceiling covers a flush storm, which is bursty by nature. Validates and writes; it never decrypts |
-| **Container App `control-api`** | Min 2, max 10; 0.5 vCPU / 1 GiB | Enrolment, policy signing, health upsert, grant decisions. Policy signing is CPU-cheap — it signs a bundle, not an event |
-| **Container App `content-vault`** | Min 1, max 4; 1 vCPU / 2 GiB; **internal ingress only** | The only component that can unwrap content keys (C15, D7), and internal ingress is the structural control: neither devices nor browsers can reach it. Larger memory because it streams ciphertext |
+| **Container App `control-api`** | Min 2, max 10; 0.5 vCPU / 1 GiB | Enrolment, policy signing, health upsert, grant decisions, and the product's identity service: sign-in for every customer identity provider, sessions, product access tokens, onboarding, SCIM provisioning and the admin API ([06](06-security-and-threat-model.md) §4.1). Policy signing is CPU-cheap — it signs a bundle, not an event. Its managed identity is also the credential of the vendor's Entra application, as a federated identity credential (the composition's `entraFederatedCredential` output), so no Entra secret is stored |
+| **Container App `content-vault`** | Min 1, max 4; 1 vCPU / 2 GiB; **internal ingress only** | The only component that can unwrap content keys (C15, D7), and internal ingress is the structural control: neither devices nor browsers can reach it. Larger memory because it streams ciphertext. Its identity holds Storage Blob Data Reader on the ciphertext account, which is how it reads stored ciphertext to serve a retrieval |
 | **Container App `query-api`** | Min 2, max 10; 0.5 vCPU / 1 GiB | Serves the dashboard and the export path; scales on request concurrency and reads aggregates, so it is I/O-light |
 | **Container Apps Job `aggregator`** | Scheduled (cron), one replica, manual start available | Recomputes each bucket from `ingest.submission` over a lookback window and **replaces** it (C27, C28). One replica is correct: the job is set-based SQL and concurrency would contend on the same buckets |
 | **Container Apps Job `reconciler`** | Scheduled (cron), one replica | The second and independent expiry mechanism, the drift detector between the two (C34), and dedup/route reconciliation (R9) |
@@ -67,9 +67,9 @@ the resources marked region-shared are deployed once per region, the rest are sh
 | **Azure Database for PostgreSQL Flexible Server** 16 | General Purpose `D2ds_v5`, 2 vCores / 8 GiB, **zone-redundant HA**, 128 GiB, PITR 35 days, `publicNetworkAccess = Disabled`, VNet-injected into a delegated subnet (no private endpoint) | Master §1.4: four years of a full tenant is under 18M rows and 40 GB, so one well-indexed relational database suffices and v1 does not partition (D2). Burstable is rejected in production because the aggregator's set-based scans would exhaust credits and stall ingest freshness. Zone-redundant HA is the availability floor; geo-redundant backup answers regional failure (§12). Hosts `ingest`, `ops`, `mart`, `ref` (master §5.3) |
 | **Storage account — ciphertext** | StorageV2 (general-purpose v2), **RA-GRS**, versioning on, soft delete 30 days, lifecycle per §12, no public blob access, no shared-key access | Holds M3 attachment ciphertext; the vendor stores ciphertext only (C15). Shared-key access is disabled because every access path is a managed identity. Referenced by `ops.content_object` |
 | **Storage account — exports** | StorageV2 (general-purpose v2), ZRS, lifecycle to cool at 30 days | The scheduled columnar export to the customer's own storage (C31, Q11). A separate account because its retention and access model is the customer's, not the product's |
-| **Key Vault** | Premium (HSM-backed keys, FIPS 140-2 Level 2), RBAC authorization, purge protection, soft delete 90 days, private endpoint | Per-tenant KEKs wrapping per-object content keys, TLS certificates, policy-bundle signing keys (C15, C33). Premium rather than Standard because KEKs must be HSM-backed |
+| **Key Vault** | Premium (HSM-backed keys, FIPS 140-2 Level 2), RBAC authorization, purge protection, soft delete 90 days, private endpoint | Per-tenant KEKs wrapping per-object content keys, TLS certificates, policy-bundle signing keys (C15, C33), and the identity service's secrets: the session-signing and policy-signing keys (mounted into `control-api` as files), the directory key that seals identity and directory columns, and the internal token the `dashboard` server presents to `control-api`. Premium rather than Standard because KEKs must be HSM-backed |
 | **Managed HSM** | One pool, 2-of-3 quorum, only where a contract requires it | Brief §3.3 requires customer-held keys for some buyers, and "the vendor cannot read content at all" is a contractual statement that wants FIPS 140-2 Level 3 and a quorum the vendor alone cannot satisfy. At ~$4.6/hour it is **per-contract, not per-region-by-default** |
-| **Static Web App — dashboard** | Standard | Standard is required for a custom domain with a managed certificate and for Entra ID authentication on the app; the dashboard is static (master §4.1) |
+| **Container App `dashboard`** | Min as the APIs, max 10 (2 in dev); 0.5 vCPU / 1 GiB | The pages and a thin server that holds the sign-in session, signs people in through `control-api`, and forwards `/v1/*` to `query-api`, `/admin/v1/*` to `control-api` and a minted retrieval URL to `content-vault`, inside the environment. It replaces the Static Web App the design first named: a static host holds no session and cannot reach an internal app, and its own Entra sign-in would be a second, unconnected sign-in path. Its identity reads one Key Vault secret (the internal token) and holds no database role and no content key |
 | **Container Registry** | Premium, private endpoint, geo-replication to the paired region | Images are pulled over Private Link; geo-replication is what makes regional failover a redeploy rather than a rebuild (§12) |
 | **Log Analytics workspace** + Application Insights | Pay-as-you-go, 90-day interactive retention, 12-month archive, workspace-based App Insights | 90 days interactive covers an incident's investigation window; the archive covers the audit and reconciliation questions that arrive later. Serves SLO computation, alerts and the §14 evidence |
 | **VNet, subnets, private endpoints, Private DNS zones** | One VNet; delegated Container Apps subnet, private-endpoint subnet, a subnet reserved for a DNS resolver (no resolver resource is declared in it); one private endpoint per PaaS resource that takes one (both storage accounts, Key Vault, Managed HSM, ACR, Log Analytics); PostgreSQL joins the VNet by delegated-subnet injection instead of a private endpoint; zones linked to the VNet | VNet injection is what makes `content-vault`'s internal-only ingress meaningful, and linked private DNS zones are what stop resolution falling back to a public answer (Q12's connection ceiling is a separate concern) |
@@ -79,7 +79,8 @@ the resources marked region-shared are deployed once per region, the rest are sh
 
 Inbound, devices: device → Application Gateway `WAF_v2` (public 443) → VNet → Container Apps
 environment (internal LB). Inbound, analysts: browser → Front Door Premium (public 443) → WAF →
-Private Link origin → Container Apps environment (internal LB), authenticated by Entra ID. The two
+Private Link origin → Container Apps environment (internal LB), authenticated by `control-api`'s
+sign-in against the customer's identity provider. The two
 audiences have two public edges, and neither reaches a container app directly: Application Gateway is
 the only public device endpoint, and Front Door is the only public analyst endpoint. Egress: container
 apps → subnet → private endpoint → PaaS, except PostgreSQL, which is reached at its VNet-injected
@@ -144,7 +145,7 @@ archive / the same); alert routing (none / non-paging channel / on-call, §10.3)
 (n/a / internal ring 0 / the full ladder, §9.2).
 
 The composition also carries three deployment-scope switches — `deployEdge` (the edge: Front Door and its
-WAF today, and the Application Gateway ADR 0020 adds), `deployDashboard` (the Static Web App) and
+WAF today, and the Application Gateway ADR 0020 adds), `deployDashboard` (the dashboard server) and
 `deployExports` (the exports storage account) — each defaulting to true. `params/lab.bicepparam` sets all three false, so the lab is a parameter file over
 the same composition rather than a second one; it is the one case in which the resource set, and not
 only the sizing, differs by parameter file.
@@ -185,7 +186,8 @@ azure/
                                  (ADR 0020; the module is not built yet)
     frontdoor.bicep              analyst profile, endpoint, origin group, Private Link origin, routes
     waf.bicep                    policy, managed rule set, custom rules, rate limits
-    static-web-app.bicep         dashboard, custom domain, auth config
+    static-web-app.bicep         no longer instantiated: the dashboard is a container app
+                                 (container-app.bicep) since sign-in moved to control-api
     monitoring.bicep             action groups and scheduled-query alert rules (the §10.3 set)
     budget.bicep                 one budget, scoped to the environment's resource group
   params/
@@ -198,8 +200,8 @@ azure/
 
 Module boundaries follow **trust and lifecycle**, not nouns:
 
-`container-app.bicep` is one module parameterised by identity, scale and ingress, because the four apps
-differ in exactly those and duplicating the module four times is how their identities drift.
+`container-app.bicep` is one module parameterised by identity, scale and ingress, because the five apps
+differ in exactly those and duplicating the module five times is how their identities drift.
 `content-vault`'s internal-only ingress is a **composition-level assertion**, not a default: every
 environment's composition file must pass `ingress: internal`, and a CI policy check fails the build if it
 is instantiated with external ingress (D7). Key material has its own module, because the key *policies*
@@ -376,10 +378,15 @@ database data-plane access. A human operator is an Entra ID principal with PIM-e
 default, infrastructure metadata only — no content, under customer-held key mode (master §4.3).
 
 **As built:** `control-api`'s **sign** right is not yet assigned. Its only Key Vault assignment in
-`azure/main.bicep` (lines 237–241) is the `secretsUser` operational role (*Key Vault Secrets User*),
-which is a secrets-read role and carries no key-signing permission. The composition assigns Key Vault
-roles only; the database and blob grants above are left to the migration and to role-assignment
-tooling outside the template.
+`azure/main.bicep` is the `secretsUser` operational role (*Key Vault Secrets User*), which is a
+secrets-read role and carries no key-signing permission; the policy-signing and session-signing keys
+reach it as Key Vault secrets mounted as files, not as keys it signs with in the vault. The composition
+assigns Key Vault roles and the vault's Storage Blob Data Reader on the ciphertext account; the database
+grants above are left to the migration. Two credentials are new with the identity service. The vendor's
+Entra application authenticates as `control-api`'s managed identity, presented as a federated identity
+credential, so no Entra secret exists. The `dashboard` server authenticates to `control-api`'s internal
+sign-in API with a shared secret held in Key Vault (`sac-internal-token`): a stored credential, and a
+stand-in until `control-api` verifies the dashboard's managed-identity token instead.
 
 Every connection to PostgreSQL is Entra-token authenticated, so **no database password exists**. Row-level
 security is forced on every table with every application role non-owner and without `BYPASSRLS`; the tenant
@@ -442,7 +449,9 @@ Vault; a secret in a plaintext environment variable reaches Log Analytics throug
 is a far wider audience than the secret's blast radius.
 
 **As built:** the module supports Key Vault references (`keyVaultEnv` in
-`azure/modules/container-app.bicep`), and no app uses one: every app in `azure/main.bicep` passes
+`azure/modules/container-app.bicep`) and secrets mounted as files (`keyVaultFiles`). `control-api` uses
+both — the internal token and the directory key as references, the session-signing and policy-signing
+keys as files — and the `dashboard` reads the internal token; every other app passes
 `keyVaultEnv: []`, and the environment variables it does pass are non-secret coordinates. The
 consequence is recorded in ADR 0019: `ingest-api` needs its TLS certificate, key and device-CA bundle
 delivered this way, so a deployed container today "cannot authenticate a device".
@@ -467,6 +476,21 @@ than to pretend it away.
 | `capture-extension` | Chromium MV3 | Observation, page-context attachment read, inline warn/block | **Enterprise policy force-install**, one policy per browser: Chrome and Edge `ExtensionSettings`. Firefox and Safari are out of scope (brief §5.5, E23) |
 | Trust and proxy configuration | All | macOS: root CA into the **System** keychain with Always Trust, proxy settings, shell profile fragment — delivered as a Jamf configuration profile. Windows: root CA into **Local Machine → Trusted Root** (or the Enterprise/GPO store), WinHTTP/WinINET proxy, QUIC disabled — delivered as an Intune configuration profile or Group Policy. Linux: root CA into the system trust store, proxy via the environment, QUIC disabled — delivered by the same configuration management that installs the package | The customer's MDM or configuration management. **Not** installer payload |
 
+**One MSI for every customer, and a tenant package around it.** The MSI is code only: it carries no
+tenant, no key and no token, takes no install parameters, and is the same file for every customer, so
+it can be signed once and its reputation built once (§8). What makes an install a customer's is one
+small file beside it, `ShadowAICapture.tenant.env`, holding exactly four values — the tenant id, the
+device endpoint, the tenant's **deployment key** and the credential mode (`dpop`). The customer's admin
+downloads the two together from **Settings → Deployment**, as an `.intunewin` for an Intune Win32 app or
+a `.zip` for Configuration Manager, Group Policy or another MDM, and each download mints a new
+deployment key, revocable from the same page. The install command is `msiexec /i ShadowAICapture.msi
+/qn` everywhere; the MSI copies the tenant file from the folder it runs from. Everything else a device
+needs that is tenant-specific arrives after enrolment from `control-api` (the policy bundle, the
+user-reference key), and everything vendor-wide (the policy-bundle trust anchor, the classifier release)
+is in the MSI. The package is a credential in the sense that whoever holds it can try to enrol a device,
+which is why a tenant whose devices Intune manages can also require each device to be one its Intune
+manages ([02](02-ingest-and-transport.md) §5.1).
+
 **Classifier content is deliberately not an installer payload**: rules, models and localised strings are
 delivered as signed content by `control-api` (§9.5, C20), which is what lets a classifier be fixed without
 a release and without an MDM round trip.
@@ -481,24 +505,40 @@ failure that looks like a network problem to the user and like coverage to the v
 **QUIC is disabled by policy and UDP 443 is blocked at egress** (E6). Browser policy alone is
 insufficient, and the product must not depend on a client honouring a setting it may ignore.
 
-**As built:** a development `ShadowAICapture.msi` exists and has been installed on one Windows 11
-host ([installer/README.md](../installer/README.md)). It is unsigned and it is not an Intune package:
-no `.intunewin`, no requirement or detection rules, no MDM. What it does establish is the shape of the
-artefact. `capture-core` is registered as a `LocalSystem` service that implements the SCM contract
-itself and reads its configuration from a file; `classifier-host` is installed beside it and run by it
-as a child process; a full uninstall removes the service, both directories, the machine environment
-entries and the trusted root. It departs from the table above in four ways, each for the lab and none
-by design:
+**As built:** `installer/release-msi.mjs` builds the generic `ShadowAICapture.msi` and reads
+`release.json` (product code, upgrade code, version, package code, digest, size, publisher, whether it
+is signed) back out of the built file rather than predicting it; `control-api` reads that folder
+(`SAC_AGENT_RELEASE_DIR`) to build each tenant package ([installer/README.md](../installer/README.md),
+which also holds the Intune, Configuration Manager and Group Policy steps). The MSI resolves its source
+folder, checks for the tenant file there or an installed one, and copies it to the profile folder; with
+neither it fails with exit 1603 before changing anything. An upgrade without a tenant file keeps the
+installed one. The service runs `capture-core` with two `--config-file` arguments, the vendor file and
+then the tenant file, the later winning. The signing step exists and is off by default; nothing has
+been signed. The `.intunewin` is built by `control-api` in Microsoft's Win32 content format (an
+encrypted inner `IntunePackage.intunewin` and its `Detection.xml`), so the admin need not run the
+Content Prep Tool; in Intune it is a Win32 app with install command `msiexec /i ShadowAICapture.msi /qn`,
+install behaviour System, and an MSI detection rule on the product code with version
+greater-than-or-equal, and a later release is added with supersedence and upgrades in place. The
+generic MSI has been built and inspected on the Windows build host but not installed there; the lab
+MSI below is what has been installed. `capture-core` is registered as a `LocalSystem` service that
+implements the SCM contract itself; `classifier-host` is installed beside it and run by it as a child
+process; a full uninstall removes the service, both directories (tenant file included), the machine
+environment entries and the trusted root. It departs from the table above in four ways:
 
-- **The enrolment profile travels in the MSI.** `installer/lab-msi.mjs` stands in for the MDM, so the
-  profile, the signed policy bundle, the device CA pair and a single-use enrolment token are installer
-  payload. In a deployment none of them is.
+- **The lab MSI carries more than a tenant package would.** `installer/lab-msi.mjs` builds the same
+  MSI with the lab profile's files added (a signed policy bundle, a device CA pair, the lab edge's CA)
+  and puts beside it a tenant file holding a full lab profile and a single-use enrolment token in place
+  of a deployment key. It stays double-clickable. A tenant package carries none of those: the device
+  fetches its bundle from `GET /v1/policy` and mints its own CA.
 - **Classifier content is installer payload too**, contrary to the paragraph above: the signed release
   is a directory the MSI installs, because `control-api` does not yet deliver signed content.
-- **Trust and proxy configuration is done by the agent, not by a configuration profile.** The service
-  installs its root into Local Machine → Trusted Root and writes the proxy and CA variables into the
-  machine environment itself. The WinHTTP/WinINET system proxy is not set and QUIC is not disabled, so
-  only clients that honour the environment variables are captured; a browser is not.
+- **Trust and proxy configuration is done by the agent, not by a configuration profile.** With no CA
+  configured (a tenant package configures none), the agent mints a per-device interception CA on first
+  start, keeps its key where only SYSTEM and Administrators can read it, and installs the root into
+  Local Machine → Trusted Root; a CA that was the same on every device would make one device's key
+  every device's interception capability. It writes the proxy and CA variables into the machine
+  environment itself. The WinHTTP/WinINET system proxy is not set and QUIC is not disabled, so only
+  clients that honour the environment variables are captured; a browser is not.
 - **The document parser and the spool directory ACL are not separate payload items.** The parser is a
   mode of the `classifier-host` binary, and the state directory is created by the service with the
   ACLs `%ProgramData%` gives it; no ACL is set by the installer.
@@ -514,6 +554,29 @@ prerequisite (ADR 0020). Re-imaging returns the existing identity rather than cr
 user-visible part of deployment is deliberately small on Windows and on Linux and larger on macOS,
 because **M0 → M1 is a permission boundary** (C2): M0 requires no content access, and M1 requires reading
 prompts and attachments.
+
+**What a packaged device does, with nobody at it.** The service starts, reads the deployment key from the
+tenant file and enrols with it ([02](02-ingest-and-transport.md) §5.1), stating the identifiers the
+operating system gives it — the Intune managed-device id, the Entra device id, the BIOS serial — which a
+tenant with Intune verification on checks against its own Intune through Microsoft Graph. Its hardware
+identity is seeded from the SMBIOS UUID and serial, so a re-imaged device returns as itself. The
+response carries the tenant's user-reference key, with which the device names the console user
+pseudonymously ([03](03-data-platform.md) §3.3). It then fetches its policy bundle from
+`GET /v1/policy`, verifies it under the vendor key the MSI pins, caches it, and polls for changes; until a
+verified bundle arrives it collects at M0. An Intune device is one product device, so a copied package
+cannot enrol a second identity behind a real device's identifiers; a refusal is visible to the admin in
+the audit trail.
+
+**Linking the customer's identity provider comes first.** The vendor creates the product tenant and
+issues a one-time onboarding link with the customer's email domains (`control-api tenant create`,
+`tenant invite --domain`). The customer's admin opens it and chooses Microsoft Entra ID (admin consent to
+the vendor's multi-tenant application, whose one Graph application permission is
+`DeviceManagementManagedDevices.Read.All`) or another OIDC provider (issuer, client id, secret); the
+first sign-in through that connection activates it and makes that person the tenant's admin
+([06](06-security-and-threat-model.md) §4.1). From then on the admin downloads packages, turns on the
+Intune check, and mints the SCIM token the identity provider provisions people with. In Entra that is a
+separate, non-gallery enterprise application pointed at the SCIM base URL, until the product is listed
+in the Entra application gallery; the setup maps `objectId` to `externalId`.
 
 **M0 requires no content permission on any platform** — a service install on Windows, a `systemd` unit on
 Linux, a LaunchDaemon install on macOS. That is the whole enrolment experience at M0. **M1 and above are a
@@ -567,11 +630,12 @@ launch agent, unit file, firewall rule or Event Log source registration behind.
 **Verification is a post-uninstall script that reports, as data, that steps 2–4 and 6–7 left nothing
 behind.** An uninstall nobody verified is an uninstall nobody can promise.
 
-**As built:** on Windows the development MSI's uninstall stops the service, which removes the CLI shim
+**As built:** on Windows the MSI's uninstall stops the service, which removes the CLI shim
 files and the machine environment entries it set and removes the root from the store it installed it
-into (the lab profile sets remove-on-stop), then removes the service and binaries and deletes
-`%ProgramData%\ShadowAICapture` whole: spool, sealed credential, held M3 content, logs. An upgrade
-keeps that directory. This was checked once, by hand, on one host, by looking for the service, the two
+into (the generic vendor file and the lab profile both set remove-on-stop), then removes the service and
+binaries and deletes `%ProgramData%\ShadowAICapture` whole: spool, sealed credential, the per-device CA,
+the cached policy bundle, held M3 content, the tenant file, logs. An upgrade keeps that directory, and
+with it the tenant file and the device's enrolment. This was checked once, by hand, on one host, by looking for the service, the two
 directories, the environment entries and the root afterwards. There is no post-uninstall verification
 script, no erasure receipt for discarded local content, and no drain-or-discard choice: the spool is
 discarded after the bounded shutdown drain. Steps (3) system proxy and (5) extension do not apply,
@@ -1310,7 +1374,7 @@ gap.
 |---|---|---|---|
 | **R1 / Q5** | Local-inference capture is unvalidated against real tools (brief §5.3, §9) | Lab report against the tools customers actually run, on all supported platforms (Linux is a new target and is not yet measured): which servers can be moved off default ports, which clients resolve a substitute, and the port-release behaviour under crash, kill and repeated failure | Mode F's failure mode breaks the user's local AI (E14). If it is not validated, mode F ships as detection-only — **and that changes a capability claim**, so it cannot be validated after go-live |
 | **Q1** | Data residency | A written answer per design-partner tenant, and evidence that the region is enforced at ingest with a fail-closed check | The region column and the check are cheap now (master §7). Discovering the requirement after the data model is fixed is the expensive version |
-| **Q2** | The organisational dimension | Either a directory sync (Entra ID default) proven against a real tenant, or an explicit written scope-out | Questions 2, 3 and 8 of brief §3.6 cannot be answered without it. Scope-out must be in the contract, not in a footnote |
+| **Q2** | The organisational dimension | Either SCIM provisioning from the customer's identity provider proven against a real tenant, or an explicit written scope-out | Questions 2, 3 and 8 of brief §3.6 cannot be answered without it. Scope-out must be in the contract, not in a footnote |
 | R3 | Accessibility pre-granting may be changing | Confirmation against current platform documentation on a supervised test fleet | No v1 mechanism depends on it (D4), but any coverage claim that implies it must not be made |
 | R2 | Apple restricted entitlements | Filed applications, with the acknowledgement that v1 needs none | Schedule dependency, not a technical one — but the coverage upgrade timeline depends on it |
 | R6 / Q7 | Classifier precision on real prompts | Evaluation set built from consented pilot data, with per-class precision and recall reported, and thresholds set from it | A noisy classifier makes the product worse than no product (brief §9) |

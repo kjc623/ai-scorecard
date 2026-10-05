@@ -8,7 +8,7 @@
 // so a test can drive every screen against the stub transport without a browser. `boot()` is the
 // only function that touches a document.
 
-import { createQueryApi, httpTransport, loadSession } from './transport.js';
+import { createQueryApi, httpTransport, loadSession, createAdminApi, httpAdminTransport } from './transport.js';
 import { scenarioTransport } from './scenarios.js';
 import { readState } from './states.js';
 import { QUESTIONS, context } from './questions.js';
@@ -20,7 +20,9 @@ import {
 import { unavailableView } from './unavailable.js';
 import { renderScreen, renderNav, renderGallery } from './render.js';
 import { shellNavItems, groupOf, readCollapsed, wireShell } from './shell.js';
-import { allowedPageIds, filterNavItems } from './session.js';
+import { allowedPageIds, filterNavItems, mayOpen } from './session.js';
+import { createDeployment, sampleAdminTransport } from './deployment.js';
+import { renderDeployment } from './deployment-render.js';
 import { SCENARIOS, SCENARIO_NAMES } from './fixtures.js';
 
 /**
@@ -35,6 +37,9 @@ export const SCREENS = Object.freeze([
   Object.freeze({ id: 'person', label: 'Users', question: 6, kind: 'input', questionId: 'q6_subject_series' }),
   Object.freeze({ id: 'devices', label: 'Devices', question: 7, kind: 'answer', questionId: 'q7_devices' }),
   Object.freeze({ id: 'audit', label: 'Audit', question: 10, kind: 'answer', questionId: 'q10_audit_trail' }),
+  // Settings → Deployment reads and writes control-api's admin API, not the query API: it has no
+  // question and no envelope, and boot() hands it to its own controller (deployment.js).
+  Object.freeze({ id: 'deployment', label: 'Deployment', question: null, kind: 'admin' }),
   Object.freeze({ id: 'event', label: 'Event detail', question: 9, kind: 'input', questionId: 'q9_event_detail' }),
   Object.freeze({ id: 'unavailable', label: 'What we cannot show', question: null, kind: 'catalogue' }),
   Object.freeze({ id: 'gallery', label: 'State gallery', question: null, kind: 'gallery' }),
@@ -160,6 +165,8 @@ export function createDashboard({ api, now = () => new Date(), exploreHref = 'ex
         }
         case 'catalogue':
           return { view: unavailableView(), shell: shell() };
+        case 'admin':
+          return { view: null, shell: shell(), admin: true };
         case 'gallery':
         default:
           return { view: null, shell: shell(), gallery: true };
@@ -228,6 +235,36 @@ function switchFor(screen, preset, filters) {
   return null;
 }
 
+/** A screen the signed-in roles cannot use, said rather than attempted: the server refuses it anyway. */
+function notPermittedView(screen) {
+  return needsInputView({ id: screen.id, title: screen.label, question: null, hint: 'Your role cannot use this page. The navigation shows the pages it can.' });
+}
+
+/**
+ * Hand a downloaded package to the browser as a file. The data is a Blob from the admin API; an
+ * object URL and a click on a download link is how a page saves one without a navigation.
+ */
+function saveDownload(document, data, filename) {
+  const view = document.defaultView;
+  if (!view?.URL?.createObjectURL || typeof document.createElement !== 'function') throw new Error('this browser cannot save a file from the page');
+  const blob = data instanceof view.Blob ? data : new view.Blob([data]);
+  const href = view.URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = href;
+  link.download = filename;
+  link.hidden = true;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  view.setTimeout(() => view.URL.revokeObjectURL(href), 60_000);
+}
+
+function copyToClipboard(document, text) {
+  const clipboard = document.defaultView?.navigator?.clipboard;
+  if (!clipboard?.writeText) return Promise.reject(new Error('no clipboard'));
+  return clipboard.writeText(text);
+}
+
 /**
  * Boot the dashboard into a document. The only function in this package that touches the DOM.
  *
@@ -235,8 +272,10 @@ function switchFor(screen, preset, filters) {
  * @param {Document} input.document
  * @param {string} [input.scenario] one of SCENARIO_NAMES; ignored when `api` is supplied
  * @param {object} [input.api]      a real api, e.g. over httpTransport
+ * @param {object} [input.admin]    an admin api (createAdminApi); the sample's or the page origin's otherwise
+ * @param {object|null} [input.session] who is signed in, as GET /session answers; read from the server otherwise
  */
-export async function boot({ document, scenario = 'realistic', api } = {}) {
+export async function boot({ document, scenario = 'realistic', api, admin, session: givenSession } = {}) {
   const root = document.getElementById('app');
   const nav = document.getElementById('nav');
   // `?transport=live` reads the real query API through the endpoint on the page's own origin,
@@ -245,18 +284,37 @@ export async function boot({ document, scenario = 'realistic', api } = {}) {
   // One dashboard for the whole session, so the last coverage read carries across navigation.
   const stubs = api || live ? null : scenarioTransport(scenario);
   const active = api ?? createQueryApi({ transport: live ? httpTransport() : stubs });
+  // Settings → Deployment follows the same choice: the admin API on the page's own origin when
+  // live, a sample that builds no package when not.
+  const adminApi = admin ?? createAdminApi({ transport: live ? httpAdminTransport() : sampleAdminTransport() });
   const query = live ? '?transport=live' : '';
   const dashboard = createDashboard({ api: active, exploreHref: `explore.html${query}` });
   // The Explore page is a sibling page, not a screen: it is linked from the top of the navigation
   // and carries the same data source. A signed-in role may see fewer pages than the shell names;
-  // the server says which, and query-api refuses the reads behind the rest.
-  const session = await loadSession();
+  // the server says which, and query-api and control-api refuse what lies behind the rest.
+  const session = givenSession !== undefined ? givenSession : await loadSession();
   const allowed = allowedPageIds(session);
   const navItems = filterNavItems(NAV_ITEMS.map((item) => (item.id === 'explore' ? { ...item, href: `explore.html${query}` } : item)), allowed);
+  const navIds = new Set(NAV_ITEMS.map((item) => item.id));
   const collapsed = readCollapsed(document);
 
   let paintedNav = null;
   let paintedScreen = null;
+  let deployment = null;
+
+  function paintDeployment(state) {
+    if (paintedScreen === 'deployment') root.innerHTML = renderDeployment(state, { eyebrow: groupOf('deployment') });
+  }
+
+  function deploymentController() {
+    deployment ??= createDeployment({
+      admin: adminApi,
+      onChange: paintDeployment,
+      save: (data, filename) => saveDownload(document, data, filename),
+      copy: (text) => copyToClipboard(document, text),
+    });
+    return deployment;
+  }
 
   async function render() {
     const { id: routeId, scenario: routeScenario, preset, filters: routeFilters } = parseHash(document.location.hash);
@@ -274,8 +332,20 @@ export async function boot({ document, scenario = 'realistic', api } = {}) {
     const sameScreen = screen.id === paintedScreen;
     // Moving to another screen swaps the content with a short fade; only the first load arrives in full.
     root.classList?.toggle('switched', !sameScreen && paintedScreen !== null);
+    // Leaving Deployment takes the one-time SCIM token with it.
+    if (!sameScreen && paintedScreen === 'deployment') deployment?.leave();
     paintedScreen = screen.id;
     root.classList?.toggle('same-screen', sameScreen);
+    if (navIds.has(screen.id) && !mayOpen(allowed, screen.id)) {
+      root.innerHTML = renderScreen(notPermittedView(screen), {});
+      return;
+    }
+    if (screen.kind === 'admin') {
+      const controller = deploymentController();
+      paintDeployment(controller.state);
+      if (!sameScreen || controller.state.status !== 'ready') await controller.load();
+      return;
+    }
     const typing = sameScreen && document.activeElement?.name === 'subject';
     const { view, shell, gallery } = await dashboard.load(screen.id, { preset, filters });
     if (gallery) {
@@ -288,22 +358,39 @@ export async function boot({ document, scenario = 'realistic', api } = {}) {
     if (typing) root.querySelector?.('input[name="subject"]')?.focus();
   }
 
-  wireShell({ document, live, collapsed });
+  wireShell({ document, live, collapsed, session });
 
   // The handler returns the render promise. A browser ignores a listener's return value, so this
   // costs nothing there; it means a test can await a navigation and read the finished page rather
   // than racing it.
   // A browser fires hashchange on the window, not the document.
   (document.defaultView ?? document).addEventListener('hashchange', render);
-  // The person screen's one input: put the reference in the address, which is what renders it.
   document.addEventListener('submit', (event) => {
     const form = event.target;
+    // Deployment's forms act through their buttons; Enter in the token label creates the token.
+    if (form?.dataset?.depForm !== undefined) {
+      event.preventDefault();
+      if (deployment && form.dataset.depForm !== 'none') deployment.act({ dep: form.dataset.depForm });
+      return;
+    }
+    // The person screen's one input: put the reference in the address, which is what renders it.
     if (form?.dataset?.screen !== 'person') return;
     event.preventDefault();
     const subject = form.elements.subject.value.trim();
     document.location.hash = subject ? `#person?subject=${encodeURIComponent(subject)}` : '#person';
   });
+  // Deployment's buttons name their action in data-dep; what is typed into a label is kept as it is typed.
+  document.addEventListener('click', (event) => {
+    const target = event.target?.closest?.('[data-dep]');
+    if (!target || !deployment || target.disabled) return;
+    event.preventDefault();
+    deployment.act({ ...target.dataset });
+  });
+  document.addEventListener('input', (event) => {
+    const field = event.target?.dataset?.depDraft;
+    if (field && deployment) deployment.setDraft(field, event.target.value);
+  });
   await render();
 
-  return { render, dashboard };
+  return { render, dashboard, deployment: () => deployment };
 }

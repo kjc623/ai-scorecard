@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Shadow AI Capture — dashboard</title>
+<link rel="icon" href="data:,">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -16,6 +17,7 @@
         <button type="button" id="menu" class="menu" aria-label="Menu"><span></span><span></span></button>
       </div>
       <nav id="nav" class="nav" aria-label="Screens"></nav>
+      <div class="who" id="who"></div>
       <div class="side-foot">
         <div class="seg seg-small" id="source" role="group" aria-label="Data source"></div>
         <button type="button" id="theme" class="icon-btn" aria-label="Switch between light and dark" title="Light or dark">
@@ -71,6 +73,18 @@ const API_VERSION = '1';
 const QUERY_ENDPOINT = '/v1/query';
 const CONTENT_SEARCH_ENDPOINT = '/v1/content-search';
 const CONTENT_RETRIEVAL_ENDPOINT = '/v1/content/retrieval';
+
+/**
+ * The admin API behind Settings → Deployment (contract §5). It is control-api's, not the read
+ * path's: the dashboard server forwards /admin/v1/* there with the session's product token, and
+ * control-api checks the admin role and audits every write with the real actor. These are the
+ * only writes this client makes. A key or token id is appended as /<id>/revoke.
+ */
+const ADMIN_DEPLOYMENT_ENDPOINT = '/admin/v1/deployment';
+const ADMIN_PACKAGE_ENDPOINT = '/admin/v1/deployment/package';
+const ADMIN_VERIFICATION_ENDPOINT = '/admin/v1/deployment/verification';
+const ADMIN_KEYS_ENDPOINT = '/admin/v1/deployment/keys';
+const ADMIN_SCIM_TOKENS_ENDPOINT = '/admin/v1/scim/tokens';
 
 /** k, the small-cell floor. A cell below it arrives suppressed and is never a number. */
 const K = 5;
@@ -1057,8 +1071,10 @@ function estimatedPoints(window, bucket) {
 //   * `httpTransport({fetchImpl, url})` — a real POST of the same body to `/v1/query`.
 //
 // `test/section14.test.mjs` asserts that no other file in this package calls `fetch`, builds a
-// URL, or names any endpoint other than the three in vocab.js: the browser reaches data through a
-// closed query document, and reaches content only through the two reads content-vault decides.
+// URL, or names any endpoint other than the ones in vocab.js: the browser reaches data through a
+// closed query document, reaches content only through the two reads content-vault decides, and
+// changes configuration only through control-api's admin API (`createAdminApi`, Settings →
+// Deployment), which checks the admin role and audits each write.
 //
 // Pagination lives here too, because it is a property of the transport rather than of a screen:
 // a page is only finished when `next_cursor` is null. A short page is NOT the end — rows deleted
@@ -1290,6 +1306,182 @@ function httpContentTransport({ fetchImpl } = {}) {
     search: (body) => post(CONTENT_SEARCH_ENDPOINT, body),
     retrieve: (body) => post(CONTENT_RETRIEVAL_ENDPOINT, body),
     readUrl: get,
+  });
+}
+
+/**
+ * The admin API behind Settings → Deployment (vocab.js names its endpoints). Not a read path: it
+ * is control-api's, reached through the dashboard server with the session's product token, and its
+ * writes are the only ones this client makes. Every answer is a value, as with the content reads:
+ * `{state: 'available', …}` or `{state: 'done'}` on success, `{state: 'refused', status, error}`
+ * otherwise, so the page never tells a network failure from a refusal by catching an exception.
+ *
+ * @param {object} input
+ * @param {{request: (spec: {method: string, path: string, body?: object, expect?: 'json'|'file'}) => Promise<{status: number, body?: any, file?: object}>}} input.transport
+ */
+function createAdminApi({ transport }) {
+  if (!transport || typeof transport.request !== 'function') {
+    throw new TypeError('createAdminApi needs a transport with request(spec).');
+  }
+  async function call(spec) {
+    try {
+      return await transport.request(spec);
+    } catch (error) {
+      return { status: 0, body: { error: 'transport_unavailable', message: String(error?.message ?? error) } };
+    }
+  }
+  const ok = (status) => status >= 200 && status < 300;
+  const refused = (answer) => ({ state: 'refused', status: answer.status, error: adminErrorOf(answer.body, answer.status) });
+  const done = async (spec) => {
+    const answer = await call(spec);
+    return ok(answer.status) ? { state: 'done' } : refused(answer);
+  };
+  const revokePath = (base, id) => `${base}/${encodeURIComponent(String(id))}/revoke`;
+
+  return Object.freeze({
+    async deployment() {
+      const answer = await call({ method: 'GET', path: ADMIN_DEPLOYMENT_ENDPOINT });
+      if (!ok(answer.status) || !answer.body || typeof answer.body !== 'object') return refused(answer);
+      return { state: 'available', data: normaliseDeployment(answer.body) };
+    },
+    setVerification(value) {
+      return done({ method: 'PUT', path: ADMIN_VERIFICATION_ENDPOINT, body: { device_verification: value } });
+    },
+    async downloadPackage({ format, label }) {
+      const body = label ? { format, label } : { format };
+      const answer = await call({ method: 'POST', path: ADMIN_PACKAGE_ENDPOINT, body, expect: 'file' });
+      if (!ok(answer.status) || !answer.file) return refused(answer);
+      return { state: 'available', file: answer.file };
+    },
+    revokeKey(keyId) {
+      return done({ method: 'POST', path: revokePath(ADMIN_KEYS_ENDPOINT, keyId) });
+    },
+    async createScimToken(label) {
+      const answer = await call({ method: 'POST', path: ADMIN_SCIM_TOKENS_ENDPOINT, body: { label } });
+      if (!ok(answer.status) || typeof answer.body?.token !== 'string' || answer.body.token === '') return refused(answer);
+      return { state: 'available', token_id: answer.body.token_id ?? null, token: answer.body.token, base_url: answer.body.base_url ?? null };
+    },
+    revokeScimToken(tokenId) {
+      return done({ method: 'POST', path: revokePath(ADMIN_SCIM_TOKENS_ENDPOINT, tokenId) });
+    },
+  });
+}
+
+/** An admin refusal's code and sentence, whichever of the two error spellings the server used. */
+function adminErrorOf(body, status) {
+  const code = typeof body?.error === 'string' ? body.error : body?.error?.code;
+  const message = typeof body?.message === 'string' ? body.message : body?.error?.message;
+  const fallback = status === 0 ? 'The admin API could not be reached.'
+    : status === 401 ? 'There is no signed-in session.'
+      : status === 403 ? 'Your role cannot use these settings.'
+        : `The admin API answered ${status}.`;
+  return Object.freeze({ code: typeof code === 'string' && code !== '' ? code : `http_${status}`, message: message || fallback });
+}
+
+const nullableNumber = (value) => (typeof value === 'number' && Number.isFinite(value) ? value : null);
+const nullableText = (value) => (typeof value === 'string' && value !== '' ? value : null);
+
+/**
+ * The deployment read, with every field present: a value the server did not send is null, never a
+ * zero or an empty string, because "not reported" and "none" are different answers.
+ */
+function normaliseDeployment(body) {
+  const connection = body.connection && typeof body.connection === 'object'
+    ? Object.freeze({
+      provider: nullableText(body.connection.provider),
+      status: nullableText(body.connection.status),
+      entra_tenant_id: nullableText(body.connection.entra_tenant_id),
+      issuer: nullableText(body.connection.issuer),
+    })
+    : null;
+  const keys = (Array.isArray(body.deployment_keys) ? body.deployment_keys : []).filter((k) => k && typeof k === 'object').map((k) => Object.freeze({
+    key_id: String(k.key_id ?? ''), label: nullableText(k.label), created_at: nullableText(k.created_at), created_by: nullableText(k.created_by),
+    expires_at: nullableText(k.expires_at), revoked_at: nullableText(k.revoked_at),
+    enrolment_count: nullableNumber(k.enrolment_count), last_used_at: nullableText(k.last_used_at),
+  }));
+  const scim = body.scim && typeof body.scim === 'object' ? body.scim : {};
+  const tokens = (Array.isArray(scim.tokens) ? scim.tokens : []).filter((t) => t && typeof t === 'object').map((t) => Object.freeze({
+    token_id: String(t.token_id ?? ''), label: nullableText(t.label), created_at: nullableText(t.created_at), revoked_at: nullableText(t.revoked_at),
+  }));
+  const devices = body.devices && typeof body.devices === 'object' ? body.devices : {};
+  const release = body.release && typeof body.release === 'object'
+    ? Object.freeze({ version: nullableText(body.release.version), product_code: nullableText(body.release.product_code) })
+    : null;
+  return Object.freeze({
+    connection,
+    device_verification: body.device_verification === 'intune' ? 'intune' : 'none',
+    deployment_keys: Object.freeze(keys),
+    scim: Object.freeze({
+      tokens: Object.freeze(tokens), base_url: nullableText(scim.base_url),
+      users: nullableNumber(scim.users), groups: nullableNumber(scim.groups), last_provisioned_at: nullableText(scim.last_provisioned_at),
+    }),
+    devices: Object.freeze({ enrolled: nullableNumber(devices.enrolled), last_enrolled_at: nullableText(devices.last_enrolled_at) }),
+    release,
+  });
+}
+
+/**
+ * The file name a download is saved under, from Content-Disposition. Only the last path segment
+ * is kept, so a server cannot name a file outside the browser's download folder.
+ */
+function filenameFromDisposition(header) {
+  if (typeof header !== 'string' || header === '') return null;
+  let name = null;
+  const extended = /filename\*\s*=\s*(?:UTF-8|utf-8)''([^;]+)/.exec(header);
+  if (extended) {
+    try {
+      name = decodeURIComponent(extended[1].trim());
+    } catch {
+      name = null;
+    }
+  }
+  if (!name) {
+    const plain = /filename\s*=\s*(?:"([^"]*)"|([^;\s]+))/.exec(header);
+    name = plain ? (plain[1] ?? plain[2]) : null;
+  }
+  if (!name) return null;
+  const base = name.split(/[\\/]/).pop().replace(/[\u0000-\u001f"<>|:*?]/g, '').trim().slice(0, 128);
+  return base === '' || base === '.' || base === '..' ? null : base;
+}
+
+/** The real admin transport: JSON in and out on the page's own origin, and one binary download. */
+function httpAdminTransport({ fetchImpl } = {}) {
+  const doFetch = fetchImpl ?? (typeof fetch === 'function' ? fetch.bind(globalThis) : null);
+  if (!doFetch) {
+    throw new TransportError({ result_state: 'busy', error: { code: 'no_fetch', message: 'This environment has no fetch implementation.' } }, { network: true });
+  }
+  return Object.freeze({
+    async request({ method, path, body, expect = 'json' }) {
+      const response = await doFetch(path, {
+        method,
+        credentials: 'same-origin',
+        headers: { accept: expect === 'file' ? '*/*' : 'application/json', ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      if (expect === 'file' && response.ok) {
+        // The deployment key a package carries, when the server names it (x-sac-*); otherwise the
+        // page works it out from the key list, which gained exactly one key.
+        return {
+          status: response.status,
+          file: {
+            data: await response.blob(),
+            filename: filenameFromDisposition(response.headers.get('content-disposition')),
+            contentType: response.headers.get('content-type'),
+            keyId: response.headers.get('x-sac-deployment-key-id'),
+            keyLabel: response.headers.get('x-sac-deployment-key-label'),
+          },
+        };
+      }
+      let parsed = null;
+      if (response.status !== 204) {
+        try {
+          parsed = await response.json();
+        } catch {
+          parsed = null;
+        }
+      }
+      return { status: response.status, body: parsed };
+    },
   });
 }
 
@@ -2897,9 +3089,9 @@ const GAPS = Object.freeze([
   Object.freeze({
     id: 'settings',
     screen: 'settings',
-    title: 'Settings: modes, retention, holds, directory sync',
-    needs: 'ops.tenant, ops.grant, ops.hold, ops.retention_policy and ops.policy_bundle as readable sources; none is registered in the DSL.',
-    consequence: 'A tenant admin cannot see or change configuration here. Reading configuration through a query DSL would also be the wrong shape: a change is an audited act, not a read.',
+    title: 'Settings: collection modes, retention, holds',
+    needs: 'An audited admin API in control-api for the tenant\'s collection mode, retention periods, holds and sanction decisions (backlog task 12), as Settings → Deployment already has for deployment.',
+    consequence: 'An admin can download the agent package, choose device verification and manage deployment keys and SCIM tokens under Settings → Deployment, but cannot see or change collection mode, retention or holds here. Reading configuration through the query DSL would be the wrong shape: a change is an audited act, not a read.',
     severity: 'absent',
   }),
   Object.freeze({
@@ -3357,6 +3549,7 @@ const NAV_ICONS = Object.freeze({
   governance: '<path d="M12 3.5 5 6.5v5c0 4.3 2.9 7.4 7 9 4.1-1.6 7-4.7 7-9v-5z"/><path d="m9.2 12 2 2 3.6-4"/>',
   unavailable: '<circle cx="12" cy="12" r="8.5"/><path d="M6 18 18 6"/>',
   developer: '<path d="m8.5 8-4 4 4 4M15.5 8l4 4-4 4M13.5 5.5l-3 13"/>',
+  settings: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
 });
 
 function navIcon(name) {
@@ -3422,17 +3615,21 @@ function renderGapReasons(coverage) {
 // shape, the reader's stored preferences, and the controls in the navigation panel.
 //
 // The dashboard (app.js) and the Explore page (explore-app.js) both boot through this, so the
-// sidebar is one thing: the same groups, the same folding, the same theme and data-source switch.
+// sidebar is one thing: the same groups, the same folding, the same theme and data-source switch,
+// and the same line saying who is signed in, with its sign-out button.
+
 
 /**
- * The navigation: five destinations, with the three usage screens under one group. Every other
- * screen is reached from a row, a switch on one of these, or the footer.
+ * The navigation: six destinations, with the three usage screens under one group and the admin's
+ * settings under another. Every other screen is reached from a row, a switch on one of these, or
+ * the footer. A signed-in role sees only the items it may use (session.js).
  */
 const NAV_GROUPS = Object.freeze([
   { group: null, icon: 'overview', ids: ['posture'], labels: { posture: 'Overview' } },
   { group: 'Usage', icon: 'usage', ids: ['tools', 'teams', 'person'], labels: { tools: 'Tools & data classes', teams: 'Teams', person: 'Users' } },
   { group: null, icon: 'collection', ids: ['devices'], labels: { devices: 'Devices' } },
   { group: null, icon: 'governance', ids: ['audit'], labels: { audit: 'Audit trail' } },
+  { group: 'Settings', icon: 'settings', ids: ['deployment'], labels: { deployment: 'Deployment' } },
 ]);
 
 const NAV_FOLDED = Object.freeze(NAV_GROUPS.filter((g) => g.folded).map((g) => g.group));
@@ -3457,6 +3654,24 @@ function groupOf(screenId) {
   return NAV_GROUPS.find((g) => g.ids.includes(screenId))?.group ?? null;
 }
 
+const ROLE_LABELS = Object.freeze({ viewer: 'Viewer', analyst: 'Analyst', content_reader: 'Content reader', admin: 'Admin' });
+
+/**
+ * Who is signed in, for the navigation panel: the actor, their roles, and a sign-out button that
+ * POSTs to the page's own server. Sample mode has no session and shows nothing; the lab's
+ * development principal says that it is one and has nothing to sign out of.
+ */
+function renderWho(session) {
+  if (!session || typeof session !== 'object') return '';
+  if (session.dev) {
+    return `<p class="who-text"><span class="who-name">Development principal</span><span class="who-role">${escapeHtml(session.actor ?? '')}</span></p>`;
+  }
+  const roles = (Array.isArray(session.roles) ? session.roles : []).map((r) => ROLE_LABELS[r] ?? r).join(', ');
+  return `<p class="who-text"><span class="who-name" title="${escapeHtml(session.actor ?? '')}">${escapeHtml(session.actor ?? '')}</span>`
+    + `<span class="who-role">${escapeHtml(roles)}</span></p>`
+    + '<form class="who-form" method="post" action="/signout"><button type="submit" class="who-out">Sign out</button></form>';
+}
+
 /** Local preferences. Storage can be unavailable (a private window, a file:// page): then nothing is kept. */
 function readPref(document, key, fallback) {
   try {
@@ -3475,13 +3690,16 @@ function writePref(document, key, value) {
 }
 
 /**
- * The shell's own controls: which navigation groups are folded, the theme, the data-source switch,
- * the mobile menu, and a row that opens the record it names. Every lookup is optional, so a test
+ * The shell's own controls: who is signed in, which navigation groups are folded, the theme, the
+ * data-source switch, the mobile menu, and a row that opens the record it names. Every lookup is optional, so a test
  * document with none of these elements boots the same way.
  */
-function wireShell({ document, live, collapsed }) {
+function wireShell({ document, live, collapsed, session = null }) {
   const el = (id) => (typeof document.getElementById === 'function' ? document.getElementById(id) : null);
   const html = document.documentElement;
+
+  const who = el('who');
+  if (who) who.innerHTML = renderWho(session);
 
   // Theme: follow the system unless the reader chose. The choice is the only thing stored.
   const theme = readPref(document, 'sac.theme', '');
@@ -3552,7 +3770,7 @@ function readCollapsed(document) {
 // session.js — what the navigation hides for a signed-in role.
 //
 // The page never holds a token and never reads one: its server does, and it answers GET /session
-// with the actor, the tenant and the page ids the role may open (tools/session.mjs decides those
+// with the actor, the tenant and the page ids the roles may open (tools/session.mjs decides those
 // server-side, so the rule lives in one place). The fetch itself lives in transport.js, the
 // package's one network seam; this module is the pure part — the decision about which nav items
 // survive it.
@@ -3572,6 +3790,672 @@ function allowedPageIds(session) {
 function filterNavItems(items, allowed) {
   if (!allowed) return items;
   return items.filter((item) => allowed.has(item.id));
+}
+
+/** May a page be opened? The same rule as the navigation, for an address typed or linked directly. */
+function mayOpen(allowed, pageId) {
+  return !allowed || allowed.has(pageId);
+}
+
+// ─── src/deployment.js ─────────────────────────────────────────────────
+// deployment.js — Settings → Deployment: the state of the page and every action on it.
+//
+// The page an admin uses to get the capture agent onto their devices (contract §5): which identity
+// provider is linked, whether a device must also be managed by Intune, a tenant package to download
+// (which mints a deployment key), the keys minted so far, and the SCIM endpoint and tokens that keep
+// people in sync. Every read and write goes through the admin api (transport.js), which control-api
+// answers for an admin only and audits with the real actor.
+//
+// Split the way the Explore page is: `createDeployment` is DOM-free — it holds the state, makes the
+// calls, and tells a listener when the state changed — so a test can drive the page without a
+// browser. Saving a file and writing to the clipboard are handed in by boot(), the only DOM code.
+//
+// The SCIM token is the one secret this page ever holds. It lives in this controller's memory from
+// the moment control-api returns it until the admin dismisses it or leaves the page; it is never
+// stored, never re-read (the server keeps only its hash), and never rendered again.
+
+/** The two package formats, as the admin API names them, and the file name used if the server sends none. */
+const DEPLOYMENT_FORMATS = Object.freeze({
+  intunewin: Object.freeze({ id: 'intunewin', label: 'Intune package (.intunewin)', fallbackName: 'ShadowAICapture.intunewin' }),
+  zip: Object.freeze({ id: 'zip', label: 'Package (.zip)', fallbackName: 'ShadowAICapture.zip' }),
+});
+
+const DEP_IDLE = Object.freeze({
+  verification: Object.freeze({ pending: null, problem: null }),
+  download: Object.freeze({ pending: null, problem: null, last: null }),
+  keys: Object.freeze({ confirm: null, pending: null, problem: null }),
+  scim: Object.freeze({ pending: false, problem: null, created: null }),
+  tokens: Object.freeze({ confirm: null, pending: null, problem: null }),
+  copied: null,
+});
+
+/** Intune verification is offered only when an Entra connection is active: the check runs in that tenant. */
+function verificationAvailable(data) {
+  return data?.connection?.provider === 'entra' && data.connection.status === 'active';
+}
+
+/** A key's state, from its timestamps. Revoked is not expired, and neither is merged into the other. */
+function deploymentKeyState(key, now = new Date()) {
+  if (key.revoked_at) return 'revoked';
+  if (key.expires_at && Date.parse(key.expires_at) <= now.getTime()) return 'expired';
+  return 'active';
+}
+
+/**
+ * The page's behaviour over one admin api.
+ *
+ * @param {object} input
+ * @param {ReturnType<import('./transport.js').createAdminApi>} input.admin
+ * @param {(state: object) => void} [input.onChange]
+ * @param {(data: any, filename: string) => void} [input.save]   hands a downloaded package to the browser
+ * @param {(text: string) => Promise<void>} [input.copy]         writes to the clipboard
+ * @param {() => Date} [input.now]
+ */
+function createDeployment({ admin, onChange = () => {}, save = () => {}, copy = null, now = () => new Date() }) {
+  let state = Object.freeze({
+    status: 'idle', data: null, problem: null, refreshProblem: null,
+    ...DEP_IDLE,
+    drafts: Object.freeze({ packageLabel: '', scimLabel: '' }),
+  });
+  let loadSeq = 0;
+
+  function set(patch) {
+    state = Object.freeze({ ...state, ...patch });
+    onChange(state);
+  }
+
+  /**
+   * Read the page. The first read shows the loading state; a read after an action keeps what is on
+   * screen and only says so if it failed, so a refresh never blanks the page an admin is using.
+   */
+  async function load({ quiet = false } = {}) {
+    const seq = ++loadSeq;
+    const keep = quiet && state.data !== null;
+    if (!keep) set({ status: 'loading', problem: null, refreshProblem: null });
+    const answer = await admin.deployment();
+    if (seq !== loadSeq) return state;
+    if (answer.state === 'available') {
+      set({ status: 'ready', data: answer.data, problem: null, refreshProblem: null });
+    } else if (keep) {
+      set({ refreshProblem: answer.error });
+    } else {
+      set({ status: 'refused', problem: Object.freeze({ ...answer.error, status: answer.status }), data: null });
+    }
+    return state;
+  }
+
+  async function setVerification(value) {
+    if (!['none', 'intune'].includes(value) || state.status !== 'ready' || state.verification.pending) return state;
+    if (state.data.device_verification === value) return state;
+    if (value === 'intune' && !verificationAvailable(state.data)) return state;
+    set({ verification: Object.freeze({ pending: value, problem: null }) });
+    const answer = await admin.setVerification(value);
+    if (answer.state !== 'done') {
+      set({ verification: Object.freeze({ pending: null, problem: answer.error }) });
+      return state;
+    }
+    set({ verification: DEP_IDLE.verification });
+    return load({ quiet: true });
+  }
+
+  /**
+   * Download a tenant package. Each download mints a new deployment key inside the package, so the
+   * page says which key this one carries: the server's x-sac-deployment-key-* header when it sends
+   * one, else the one key that was not in the list before the download.
+   */
+  async function download(format) {
+    const spec = DEPLOYMENT_FORMATS[format];
+    if (!spec || state.status !== 'ready' || state.download.pending) return state;
+    const label = state.drafts.packageLabel.trim();
+    const before = new Set(state.data.deployment_keys.map((k) => k.key_id));
+    set({ download: Object.freeze({ pending: format, problem: null, last: null }) });
+    const answer = await admin.downloadPackage({ format, label: label || undefined });
+    if (answer.state !== 'available') {
+      set({ download: Object.freeze({ pending: null, problem: answer.error, last: null }) });
+      return state;
+    }
+    const filename = answer.file.filename || spec.fallbackName;
+    let saveProblem = null;
+    try {
+      save(answer.file.data, filename);
+    } catch (error) {
+      saveProblem = Object.freeze({ code: 'save_failed', message: `The package was built but the browser did not save it: ${error?.message ?? error}` });
+    }
+    set({ drafts: Object.freeze({ ...state.drafts, packageLabel: '' }) });
+    await load({ quiet: true });
+    const keys = state.data?.deployment_keys ?? [];
+    let key = answer.file.keyId ? keys.find((k) => k.key_id === answer.file.keyId) ?? null : null;
+    if (!key) {
+      const fresh = keys.filter((k) => !before.has(k.key_id));
+      if (fresh.length === 1) key = fresh[0];
+    }
+    const keyLabel = answer.file.keyLabel || key?.label || label || null;
+    set({
+      download: Object.freeze({
+        pending: null, problem: saveProblem,
+        last: Object.freeze({ format, filename, keyLabel, keyId: key?.key_id ?? answer.file.keyId ?? null }),
+      }),
+    });
+    return state;
+  }
+
+  function askRevokeKey(keyId) {
+    set({ keys: Object.freeze({ confirm: keyId, pending: null, problem: null }) });
+    return state;
+  }
+
+  async function revokeKey(keyId) {
+    if (state.keys.pending) return state;
+    set({ keys: Object.freeze({ confirm: null, pending: keyId, problem: null }) });
+    const answer = await admin.revokeKey(keyId);
+    if (answer.state !== 'done') {
+      set({ keys: Object.freeze({ confirm: null, pending: null, problem: answer.error }) });
+      return state;
+    }
+    set({ keys: DEP_IDLE.keys });
+    return load({ quiet: true });
+  }
+
+  /** Create a SCIM token. Its value is shown once, here, and nowhere else. */
+  async function createScimToken() {
+    if (state.status !== 'ready' || state.scim.pending) return state;
+    const label = state.drafts.scimLabel.trim();
+    if (label === '') {
+      set({ scim: Object.freeze({ pending: false, problem: Object.freeze({ code: 'label_required', message: 'Give the token a label, such as the identity provider that will use it.' }), created: state.scim.created }) });
+      return state;
+    }
+    set({ scim: Object.freeze({ pending: true, problem: null, created: null }), copied: null });
+    const answer = await admin.createScimToken(label);
+    if (answer.state !== 'available') {
+      set({ scim: Object.freeze({ pending: false, problem: answer.error, created: null }) });
+      return state;
+    }
+    set({
+      scim: Object.freeze({ pending: false, problem: null, created: Object.freeze({ token_id: answer.token_id, token: answer.token, label, base_url: answer.base_url }) }),
+      drafts: Object.freeze({ ...state.drafts, scimLabel: '' }),
+    });
+    return load({ quiet: true });
+  }
+
+  /** Put the one-time token away. After this the page cannot show it again. */
+  function dismissToken() {
+    set({ scim: Object.freeze({ ...state.scim, created: null }), copied: null });
+    return state;
+  }
+
+  function askRevokeToken(tokenId) {
+    set({ tokens: Object.freeze({ confirm: tokenId, pending: null, problem: null }) });
+    return state;
+  }
+
+  async function revokeToken(tokenId) {
+    if (state.tokens.pending) return state;
+    set({ tokens: Object.freeze({ confirm: null, pending: tokenId, problem: null }) });
+    const answer = await admin.revokeScimToken(tokenId);
+    if (answer.state !== 'done') {
+      set({ tokens: Object.freeze({ confirm: null, pending: null, problem: answer.error }) });
+      return state;
+    }
+    set({ tokens: DEP_IDLE.tokens });
+    return load({ quiet: true });
+  }
+
+  /** Copy the one-time token or the SCIM base URL. A browser that refuses says so, and the text stays selectable. */
+  async function copyValue(what) {
+    const text = what === 'token' ? state.scim.created?.token : what === 'base_url' ? (state.data?.scim.base_url ?? state.scim.created?.base_url) : null;
+    if (!text) return state;
+    try {
+      if (!copy) throw new Error('no clipboard');
+      await copy(text);
+      set({ copied: Object.freeze({ what, ok: true }) });
+    } catch {
+      set({ copied: Object.freeze({ what, ok: false }) });
+    }
+    return state;
+  }
+
+  /** What is being typed into a label field. Kept without a repaint, so typing never loses focus. */
+  function setDraft(name, value) {
+    if (!['packageLabel', 'scimLabel'].includes(name)) return;
+    state = Object.freeze({ ...state, drafts: Object.freeze({ ...state.drafts, [name]: String(value ?? '').slice(0, 120) }) });
+  }
+
+  /** Leaving the page: the one-time token and any half-made choice go with it. */
+  function leave() {
+    if (state.scim.created || state.keys.confirm || state.tokens.confirm || state.copied) {
+      state = Object.freeze({ ...state, scim: Object.freeze({ ...state.scim, created: null }), keys: DEP_IDLE.keys, tokens: DEP_IDLE.tokens, copied: null });
+    }
+  }
+
+  /** One entry point for the page's buttons: `data-dep` names the action, the other data-* its argument. */
+  function act(dataset = {}) {
+    switch (dataset.dep) {
+      case 'retry': return load();
+      case 'verification': return setVerification(dataset.value);
+      case 'download': return download(dataset.format);
+      case 'revoke-key': return Promise.resolve(askRevokeKey(dataset.id));
+      case 'confirm-revoke-key': return revokeKey(dataset.id);
+      case 'cancel-revoke-key': return Promise.resolve(askRevokeKey(null));
+      case 'create-token': return createScimToken();
+      case 'dismiss-token': return Promise.resolve(dismissToken());
+      case 'copy': return copyValue(dataset.what);
+      case 'revoke-token': return Promise.resolve(askRevokeToken(dataset.id));
+      case 'confirm-revoke-token': return revokeToken(dataset.id);
+      case 'cancel-revoke-token': return Promise.resolve(askRevokeToken(null));
+      default: return Promise.resolve(state);
+    }
+  }
+
+  return Object.freeze({
+    get state() { return state; },
+    load, setVerification, download, askRevokeKey, revokeKey, createScimToken, dismissToken,
+    askRevokeToken, revokeToken, copyValue, setDraft, leave, act, now,
+  });
+}
+
+// -------------------------------------------------------------------------------------------
+// The sample: what index.html shows with no server
+// -------------------------------------------------------------------------------------------
+
+/**
+ * A sample admin transport, so the page renders from the filesystem like every other screen. It
+ * keeps its own small state, so a revocation or a verification change can be seen to work. It
+ * builds no package: a download is refused and says why, rather than saving a file that is not an
+ * installer. Its SCIM token says it is a sample.
+ */
+function sampleAdminTransport() {
+  // The SCIM base URL is control-api's, published at the dashboard's own address. The sample has
+  // no address when opened from disk, so there it is "not reported" rather than an invented host.
+  const origin = typeof location !== 'undefined' && /^https?:$/.test(location.protocol ?? '') ? location.origin : null;
+  const data = {
+    connection: { provider: 'entra', status: 'active', entra_tenant_id: '3f9a1c52-6d0e-4b7a-9c11-5e2d8a7b4c90', issuer: null },
+    device_verification: 'none',
+    deployment_keys: [
+      { key_id: 'b1d6c0a4-0001-4000-8000-000000000001', label: 'Intune, all laptops', created_at: '2026-09-02T09:14:00Z', created_by: 'it.admin@example.com', expires_at: null, revoked_at: null, enrolment_count: 312, last_used_at: '2026-10-01T08:51:00Z' },
+      { key_id: 'b1d6c0a4-0001-4000-8000-000000000002', label: 'Pilot group (zip)', created_at: '2026-08-11T15:02:00Z', created_by: 'it.admin@example.com', expires_at: null, revoked_at: '2026-09-02T09:20:00Z', enrolment_count: 41, last_used_at: '2026-08-30T17:40:00Z' },
+      { key_id: 'b1d6c0a4-0001-4000-8000-000000000003', label: 'Kiosks', created_at: '2026-09-20T11:30:00Z', created_by: 'desk.lead@example.com', expires_at: null, revoked_at: null, enrolment_count: 0, last_used_at: null },
+    ],
+    scim: {
+      tokens: [
+        { token_id: 'c2e7d1b5-0002-4000-8000-000000000001', label: 'Entra provisioning', created_at: '2026-09-02T09:40:00Z', revoked_at: null },
+        { token_id: 'c2e7d1b5-0002-4000-8000-000000000002', label: 'First attempt', created_at: '2026-09-01T16:05:00Z', revoked_at: '2026-09-02T09:41:00Z' },
+      ],
+      base_url: origin ? `${origin}/scim/v2` : null, users: 412, groups: 18, last_provisioned_at: '2026-10-01T09:00:00Z',
+    },
+    devices: { enrolled: 353, last_enrolled_at: '2026-10-01T08:51:00Z' },
+    release: { version: '1.4.0', product_code: '{6F1C2B9E-3A4D-4E57-9B21-0C8D7E6F5A41}' },
+  };
+  let serial = 0;
+  const copyOf = () => JSON.parse(JSON.stringify(data));
+  const at = () => new Date().toISOString();
+  return Object.freeze({
+    async request({ method, path, body }) {
+      const revoke = /\/(keys|tokens)\/([^/]+)\/revoke$/.exec(path);
+      if (method === 'GET' && /\/deployment$/.test(path)) return { status: 200, body: copyOf() };
+      if (method === 'PUT' && /\/verification$/.test(path)) {
+        data.device_verification = body?.device_verification === 'intune' ? 'intune' : 'none';
+        return { status: 204 };
+      }
+      if (method === 'POST' && /\/package$/.test(path)) {
+        return { status: 501, body: { error: 'sample_mode', message: 'This is sample data, so no package is built. Open the live dashboard as an admin to download one.' } };
+      }
+      if (method === 'POST' && revoke) {
+        const list = revoke[1] === 'keys' ? data.deployment_keys : data.scim.tokens;
+        const item = list.find((x) => (x.key_id ?? x.token_id) === decodeURIComponent(revoke[2]));
+        if (!item) return { status: 404, body: { error: 'not_found', message: 'No such key in the sample.' } };
+        item.revoked_at = item.revoked_at ?? at();
+        return { status: 204 };
+      }
+      if (method === 'POST' && /\/scim\/tokens$/.test(path)) {
+        serial += 1;
+        const tokenId = `c2e7d1b5-0002-4000-8000-${String(100 + serial).padStart(12, '0')}`;
+        data.scim.tokens.unshift({ token_id: tokenId, label: String(body?.label ?? ''), created_at: at(), revoked_at: null });
+        return { status: 201, body: { token_id: tokenId, token: `sacscim_SAMPLE-ONLY-NOT-A-TOKEN-${serial}`, base_url: data.scim.base_url } };
+      }
+      return { status: 404, body: { error: 'not_found', message: 'The sample has no answer for this request.' } };
+    },
+  });
+}
+
+// ─── src/deployment-render.js ──────────────────────────────────────────
+// deployment-render.js — Settings → Deployment, state to HTML. Pure: no DOM, no I/O, no state.
+//
+// The same honesty rules as every other screen: a count the server did not send is "not reported",
+// never 0; a revoked key is not an expired one; nothing is a share of the fleet, and the key count is
+// shown with its denominator. Every string from the API is escaped. The setup steps are short and
+// say only what this product needs; they are not a copy of Microsoft's documentation.
+
+
+
+
+const DEP_INSTALL_COMMAND = 'msiexec /i ShadowAICapture.msi /qn';
+
+function depInstant(iso, absent = 'never') {
+  return iso ? `<span class="v-time" title="${escapeHtml(iso)}">${escapeHtml(formatInstant(iso))}</span>` : `<span class="v-absent">${escapeHtml(absent)}</span>`;
+}
+
+function depChip(value) {
+  const text = String(value ?? 'unknown');
+  return `<span class="v-vocab v-vocab-${escapeHtml(text.replace(/[^a-z_]/gi, ''))}">${escapeHtml(text)}</span>`;
+}
+
+function depProblem(problem, lead = 'Not done.') {
+  if (!problem) return '';
+  return `<p class="dp-problem" role="alert"><strong>${escapeHtml(lead)}</strong> ${escapeHtml(problem.message ?? '')}`
+    + (problem.code ? ` <code>${escapeHtml(problem.code)}</code>` : '') + '</p>';
+}
+
+function depButton(label, data, { kind = '', disabled = false, small = false, type = 'button' } = {}) {
+  const attrs = Object.entries(data).map(([k, v]) => ` data-${k}="${escapeHtml(v)}"`).join('');
+  const cls = ['btn', kind ? `btn-${kind}` : '', small ? 'btn-small' : ''].filter(Boolean).join(' ');
+  return `<button type="${type}" class="${cls}"${attrs}${disabled ? ' disabled' : ''}>${escapeHtml(label)}</button>`;
+}
+
+function depCard(title, body, { extra = '', wide = false, id = '' } = {}) {
+  return `<section class="card dp-card${wide ? ' dp-wide' : ''}"${id ? ` id="${id}"` : ''}><div class="card-core">`
+    + `<header class="block-head"><h3>${escapeHtml(title)}</h3>${extra}</header>`
+    + `<div class="dp-body">${body}</div></div></section>`;
+}
+
+function depHeader(eyebrow) {
+  return '<header class="screen-head"><div class="screen-title">'
+    + (eyebrow ? `<span class="eyebrow">${escapeHtml(eyebrow)}</span>` : '')
+    + '<h2>Deployment</h2>'
+    + '<p class="question">Put the capture agent on your organisation\'s Windows devices, and keep people in sync from your identity provider.</p>'
+    + '</div></header>';
+}
+
+// ---------------------------------------------------------------------------------------------
+// States before the data
+// ---------------------------------------------------------------------------------------------
+
+function depSkeleton() {
+  const lines = (widths) => widths.map((w) => `<span class="dp-skel" style="width:${w}%"></span>`).join('');
+  const tile = (w) => `<div class="tile card"><div class="card-core">${lines([42, w])}</div></div>`;
+  const card = (widths) => `<section class="card dp-card"><div class="card-core"><div class="dp-body dp-skels">${lines(widths)}</div></div></section>`;
+  return `<p class="sr" role="status">Loading the deployment settings…</p><div class="tiles" aria-hidden="true">${tile(30)}${tile(55)}${tile(40)}${tile(35)}</div>`
+    + `<div class="dp-grid" aria-hidden="true">${card([36, 78, 64])}${card([44, 70, 58])}</div>`
+    + `<div aria-hidden="true">${card([30, 92, 84, 61])}</div>`;
+}
+
+function depRefused(problem) {
+  const status = problem?.status;
+  const title = status === 401 ? 'Your session has ended'
+    : status === 403 ? 'Only an admin can open the deployment settings'
+      : status === 0 ? 'The admin API could not be reached'
+        : 'The deployment settings could not be read';
+  const text = status === 401 ? 'Sign in again to continue.'
+    : status === 403 ? 'Your role does not include deployment. Ask an admin of your organisation.'
+      : problem?.message ?? 'Nothing was read.';
+  const action = status === 401
+    ? '<a class="btn" href="/signin">Sign in again</a>'
+    : status === 403 ? '' : depButton('Try again', { dep: 'retry' });
+  return '<section class="card dp-card"><div class="card-core dp-state" role="alert">'
+    + `<h3>${escapeHtml(title)}</h3><p>${escapeHtml(text)}</p>`
+    + (problem?.code ? `<p class="dp-code">${escapeHtml(problem.code)}${status ? ` · ${escapeHtml(String(status))}` : ''}</p>` : '')
+    + (action ? `<div class="dp-actions">${action}</div>` : '')
+    + '</div></section>';
+}
+
+// ---------------------------------------------------------------------------------------------
+// The sections
+// ---------------------------------------------------------------------------------------------
+
+function depTiles(data, now) {
+  const keys = data.deployment_keys;
+  const states = keys.map((k) => deploymentKeyState(k, now));
+  const active = states.filter((s) => s === 'active').length;
+  const revoked = states.filter((s) => s === 'revoked').length;
+  const expired = states.filter((s) => s === 'expired').length;
+  const number = (n) => (n === null ? { kind: 'absent' } : { kind: 'number', value: n, text: formatCount(n) });
+  const tiles = [
+    {
+      label: 'Devices enrolled', value: number(data.devices.enrolled),
+      note: data.devices.enrolled === null ? 'not reported by the server' : data.devices.last_enrolled_at ? `last enrolled ${formatInstant(data.devices.last_enrolled_at)}` : 'none enrolled yet',
+    },
+    {
+      label: 'Active deployment keys',
+      value: keys.length === 0 ? { kind: 'number', value: 0, text: '0' } : { kind: 'number', value: active, text: `${formatCount(active)} of ${formatCount(keys.length)}` },
+      note: keys.length === 0 ? 'none created yet' : [`${formatCount(revoked)} revoked`, expired > 0 ? `${formatCount(expired)} expired` : null].filter(Boolean).join(' · '),
+    },
+    {
+      label: 'People provisioned', value: number(data.scim.users),
+      note: data.scim.users === null ? 'not reported by the server'
+        : `${data.scim.groups === null ? 'groups not reported' : `${formatCount(data.scim.groups)} group${data.scim.groups === 1 ? '' : 's'}`} · ${data.scim.last_provisioned_at ? `last ${formatInstant(data.scim.last_provisioned_at)}` : 'never provisioned'}`,
+    },
+    {
+      label: 'Agent release', value: data.release?.version ? { kind: 'number', value: 0, text: data.release.version } : { kind: 'absent' },
+      note: data.release?.product_code ? `product code ${data.release.product_code}` : 'not reported by the server',
+    },
+  ];
+  return `<div class="tiles">${tiles.map(renderTile).join('')}</div>`;
+}
+
+function depSignIn(data) {
+  const c = data.connection;
+  if (!c) {
+    return depCard('Sign-in', '<p class="dp-empty">No identity provider is linked yet. It is linked from the onboarding link your vendor sent: the person who opens it chooses Microsoft Entra ID or another OpenID Connect provider and signs in once.</p>');
+  }
+  const provider = c.provider === 'entra' ? 'Microsoft Entra ID' : c.provider === 'oidc' ? 'OpenID Connect provider' : 'unknown';
+  const where = c.provider === 'entra'
+    ? `<div><dt>Entra tenant</dt><dd>${c.entra_tenant_id ? `<code>${escapeHtml(c.entra_tenant_id)}</code>` : '<span class="v-absent">not reported</span>'}</dd></div>`
+    : `<div><dt>Issuer</dt><dd>${c.issuer ? `<code>${escapeHtml(c.issuer)}</code>` : '<span class="v-absent">not reported</span>'}</dd></div>`;
+  const sentence = c.status === 'active' ? 'People in your organisation sign in through it.'
+    : c.status === 'pending' ? 'Linked, not yet active: the first sign-in through it, by the person who opened the onboarding link, activates it.'
+      : c.status === 'disabled' ? 'Turned off: nobody can sign in through it.'
+        : 'Its state was not reported.';
+  return depCard('Sign-in', `<dl class="dp-kv"><div><dt>Provider</dt><dd>${escapeHtml(provider)}</dd></div>${where}<div><dt>Status</dt><dd>${depChip(c.status ?? 'unknown')}</dd></div></dl>`
+    + `<p class="dp-note">${escapeHtml(sentence)}</p>`);
+}
+
+function depVerification(state) {
+  const data = state.data;
+  const available = verificationAvailable(data);
+  const current = data.device_verification;
+  const pending = state.verification.pending;
+  const option = (value, label, disabled) => `<button type="button" class="seg-item" data-dep="verification" data-value="${value}" aria-pressed="${current === value}"${disabled ? ' disabled' : ''}>${escapeHtml(label)}</button>`;
+  const sentence = pending ? 'Saving…'
+    : !available ? 'Intune verification needs an active Microsoft Entra ID connection, because the check runs in your Entra tenant.'
+      : current === 'intune' ? 'A device enrols only with a deployment key, and only if your Intune manages it with a matching serial number.'
+        : 'A device enrols with the deployment key in its package. With Intune on, your Intune must also manage it.';
+  return depCard('Device verification', `<div class="seg dp-seg" role="group" aria-label="Device verification">`
+    + option('none', 'Deployment key only', Boolean(pending))
+    + option('intune', 'Key and Intune', Boolean(pending) || !available)
+    + '</div>'
+    + `<p class="dp-note"${pending ? ' role="status"' : ''}>${escapeHtml(sentence)}</p>`
+    + depProblem(state.verification.problem, 'Not changed.'));
+}
+
+function depHowTo(data) {
+  const code = data.release?.product_code ?? '{product code}';
+  const version = data.release?.version ?? 'the release version';
+  const unknown = !data.release?.product_code || !data.release?.version
+    ? '<p class="dp-note">The server did not report the release, so the product code and version are shown as placeholders. README.txt in the .zip package carries both.</p>'
+    : '';
+  return '<details class="dp-howto"><summary>Deploy with Microsoft Intune</summary><ol class="dp-steps">'
+    + '<li>In the Microsoft Intune admin center, go to <b>Apps</b> → <b>Windows</b> → <b>Add</b> and choose <b>Windows app (Win32)</b>.</li>'
+    + '<li>Select the downloaded <code>.intunewin</code> file as the app package file.</li>'
+    + `<li>Install command: <code>${escapeHtml(DEP_INSTALL_COMMAND)}</code>. Install behavior: <b>System</b>.</li>`
+    + `<li>Uninstall command: <code>msiexec /x ${escapeHtml(code)} /qn</code></li>`
+    + `<li>Detection rule: rule type <b>MSI</b>, product code <code>${escapeHtml(code)}</code>, with the product version check on: greater than or equal to <code>${escapeHtml(version)}</code>.</li>`
+    + '<li>Assign the app as <b>Required</b> to the device groups that should run the agent.</li>'
+    + '</ol>' + unknown + '</details>'
+    + '<details class="dp-howto"><summary>Deploy with Configuration Manager, Group Policy or another tool</summary><ol class="dp-steps">'
+    + '<li>Unzip the <code>.zip</code> package and keep <code>ShadowAICapture.msi</code> and <code>ShadowAICapture.tenant.env</code> in the same folder: the installer reads the tenant file from beside itself.</li>'
+    + `<li>Run <code>${escapeHtml(DEP_INSTALL_COMMAND)}</code> from that folder as SYSTEM or an administrator.</li>`
+    + `<li>Detect the installation by the MSI product code <code>${escapeHtml(code)}</code> and version <code>${escapeHtml(version)}</code>. The README.txt in the package says the same.</li>`
+    + '</ol></details>';
+}
+
+function depDownload(state) {
+  const data = state.data;
+  const d = state.download;
+  const busy = Boolean(d.pending);
+  const status = d.pending
+    ? `<p class="dp-note" role="status">Building the ${escapeHtml(DEPLOYMENT_FORMATS[d.pending]?.label ?? 'package')}…</p>`
+    : d.last
+      ? `<p class="dp-done" role="status">Saved <strong>${escapeHtml(d.last.filename)}</strong>. ${d.last.keyLabel
+        ? `It carries the deployment key <strong>“${escapeHtml(d.last.keyLabel)}”</strong>.`
+        : 'It carries a new deployment key, listed below.'}</p>`
+      : '';
+  const body = '<p>Each download is a package for your organisation: the agent installer (<code>ShadowAICapture.msi</code>) and, beside it, <code>ShadowAICapture.tenant.env</code>, which says where to enrol and carries a new deployment key. Revoke a key below to stop new enrolments from the packages that carry it.</p>'
+    + '<form class="dp-form" data-dep-form="none" autocomplete="off">'
+    + '<label class="dp-label" for="dp-package-label">Label for the new deployment key <span class="dp-optional">optional</span></label>'
+    + `<input class="dp-input" id="dp-package-label" maxlength="120" data-dep-draft="packageLabel" placeholder="For example: Intune, all laptops" value="${escapeHtml(state.drafts.packageLabel)}">`
+    + '<div class="dp-actions">'
+    + depButton('Download Intune package (.intunewin)', { dep: 'download', format: 'intunewin' }, { kind: 'primary', disabled: busy })
+    + depButton('Download package (.zip)', { dep: 'download', format: 'zip' }, { disabled: busy })
+    + '</div></form>'
+    + status
+    + depProblem(d.problem, 'No package was saved.')
+    + depHowTo(data);
+  const release = data.release?.version ? `<span class="table-note">release ${escapeHtml(data.release.version)}</span>` : '';
+  return depCard('Download the agent', body, { extra: release, wide: true });
+}
+
+function depKeyAction(key, state, now) {
+  if (deploymentKeyState(key, now) !== 'active') return '';
+  if (state.keys.pending === key.key_id) return '<span class="dp-sub" role="status">Revoking…</span>';
+  if (state.keys.confirm === key.key_id) {
+    return '<span class="dp-confirm">Stop new enrolments with this key? '
+      + depButton('Revoke', { dep: 'confirm-revoke-key', id: key.key_id }, { kind: 'danger', small: true })
+      + depButton('Cancel', { dep: 'cancel-revoke-key' }, { kind: 'quiet', small: true }) + '</span>';
+  }
+  return depButton('Revoke', { dep: 'revoke-key', id: key.key_id }, { small: true, disabled: Boolean(state.keys.pending) });
+}
+
+function depKeys(state, now) {
+  const keys = state.data.deployment_keys;
+  const active = keys.filter((k) => deploymentKeyState(k, now) === 'active').length;
+  const rows = keys.map((k) => {
+    const keyState = deploymentKeyState(k, now);
+    const expires = keyState === 'active' && k.expires_at ? `<span class="dp-sub">expires ${escapeHtml(formatInstant(k.expires_at))}</span>` : '';
+    return '<tr>'
+      + `<td>${k.label ? `<span class="v-text">${escapeHtml(k.label)}</span>` : '<span class="v-absent">no label</span>'}</td>`
+      + `<td>${depInstant(k.created_at, 'not reported')}</td>`
+      + `<td>${k.created_by ? `<span class="v-text">${escapeHtml(k.created_by)}</span>` : '<span class="v-absent">not reported</span>'}</td>`
+      + `<td class="num">${k.enrolment_count === null ? '<span class="v-absent">not reported</span>' : `<span class="v-number">${escapeHtml(formatCount(k.enrolment_count))}</span>`}</td>`
+      + `<td>${depInstant(k.last_used_at)}</td>`
+      + `<td>${depChip(keyState)}${expires}</td>`
+      + `<td class="dp-action">${depKeyAction(k, state, now)}</td>`
+      + '</tr>';
+  }).join('');
+  const empty = keys.length === 0 ? '<tr class="row-empty"><td colspan="7">No deployment keys yet. Downloading a package creates one.</td></tr>' : '';
+  const count = keys.length > 0 ? `<span class="block-count">${keys.length}</span><p class="table-note">${escapeHtml(formatCount(active))} of ${escapeHtml(formatCount(keys.length))} active</p>` : '';
+  return `<section class="table-block card" id="dp-keys"><div class="card-core"><header class="block-head"><h3>Deployment keys</h3>${count}</header>`
+    + '<div class="table-scroll"><table><thead><tr><th scope="col">Label</th><th scope="col">Created</th><th scope="col">Created by</th><th scope="col" class="num">Enrolments</th><th scope="col">Last used</th><th scope="col">State</th><th scope="col"><span class="sr">Action</span></th></tr></thead>'
+    + `<tbody>${rows}${empty}</tbody></table></div>`
+    + (state.keys.problem ? `<div class="dp-body">${depProblem(state.keys.problem, 'Not revoked.')}</div>` : '')
+    + '</div></section>';
+}
+
+function depCopied(state, what) {
+  if (state.copied?.what !== what) return '';
+  return state.copied.ok
+    ? '<span class="dp-copied" role="status">Copied</span>'
+    : '<span class="dp-copied dp-copied-no" role="status">This browser did not allow copying: select the text and copy it.</span>';
+}
+
+function depSecret(state) {
+  const created = state.scim.created;
+  if (!created) return '';
+  return '<div class="dp-secret">'
+    + '<p><strong>Copy this token now. It will not be shown again.</strong> Shadow AI Capture keeps only a hash of it. If it is lost, create another and revoke this one.</p>'
+    + '<div class="dp-secret-row">'
+    + `<input class="dp-input dp-mono" id="dp-token" readonly aria-label="The new SCIM token, ${escapeHtml(created.label)}" value="${escapeHtml(created.token)}">`
+    + depButton('Copy token', { dep: 'copy', what: 'token' }, { kind: 'primary' })
+    + '</div>'
+    + depCopied(state, 'token')
+    + `<div class="dp-actions">${depButton('I have copied it', { dep: 'dismiss-token' }, { kind: 'quiet' })}</div>`
+    + '</div>';
+}
+
+function depTokenAction(token, state) {
+  if (token.revoked_at) return '';
+  if (state.tokens.pending === token.token_id) return '<span class="dp-sub" role="status">Revoking…</span>';
+  if (state.tokens.confirm === token.token_id) {
+    return '<span class="dp-confirm">Stop provisioning with this token? '
+      + depButton('Revoke', { dep: 'confirm-revoke-token', id: token.token_id }, { kind: 'danger', small: true })
+      + depButton('Cancel', { dep: 'cancel-revoke-token' }, { kind: 'quiet', small: true }) + '</span>';
+  }
+  return depButton('Revoke', { dep: 'revoke-token', id: token.token_id }, { small: true, disabled: Boolean(state.tokens.pending) });
+}
+
+function depScim(state) {
+  const scim = state.data.scim;
+  const baseUrl = scim.base_url ?? state.scim.created?.base_url ?? null;
+  const tokens = scim.tokens;
+  const live = tokens.filter((t) => !t.revoked_at).length;
+  const count = (n) => (n === null ? '<span class="v-absent">not reported</span>' : `<span class="v-number">${escapeHtml(formatCount(n))}</span>`);
+  const kv = '<dl class="dp-kv">'
+    + `<div><dt>SCIM base URL</dt><dd>${baseUrl ? `<code class="dp-url">${escapeHtml(baseUrl)}</code> ${depButton('Copy', { dep: 'copy', what: 'base_url' }, { small: true })} ${depCopied(state, 'base_url')}` : '<span class="v-absent">not reported</span>'}</dd></div>`
+    + `<div><dt>Users provisioned</dt><dd>${count(scim.users)}</dd></div>`
+    + `<div><dt>Groups</dt><dd>${count(scim.groups)}</dd></div>`
+    + `<div><dt>Last provisioned</dt><dd>${depInstant(scim.last_provisioned_at)}</dd></div>`
+    + '</dl>';
+  const form = '<form class="dp-form dp-inline" data-dep-form="create-token" autocomplete="off">'
+    + '<label class="dp-label" for="dp-scim-label">New token label</label>'
+    + '<div class="dp-inline-row">'
+    + `<input class="dp-input" id="dp-scim-label" maxlength="120" data-dep-draft="scimLabel" placeholder="For example: Entra provisioning" value="${escapeHtml(state.drafts.scimLabel)}">`
+    + depButton(state.scim.pending ? 'Creating…' : 'Create token', { dep: 'create-token' }, { disabled: state.scim.pending })
+    + '</div></form>';
+  const rows = tokens.map((t) => '<tr>'
+    + `<td>${t.label ? `<span class="v-text">${escapeHtml(t.label)}</span>` : '<span class="v-absent">no label</span>'}</td>`
+    + `<td>${depInstant(t.created_at, 'not reported')}</td>`
+    + `<td>${depChip(t.revoked_at ? 'revoked' : 'active')}${t.revoked_at ? `<span class="dp-sub">${escapeHtml(formatInstant(t.revoked_at))}</span>` : ''}</td>`
+    + `<td class="dp-action">${depTokenAction(t, state)}</td>`
+    + '</tr>').join('');
+  const empty = tokens.length === 0 ? '<tr class="row-empty"><td colspan="4">No SCIM tokens. Create one for your identity provider\'s provisioning settings.</td></tr>' : '';
+  const table = '<div class="dp-subhead"><h4>Tokens</h4>'
+    + (tokens.length > 0 ? `<span class="table-note">${escapeHtml(formatCount(live))} of ${escapeHtml(formatCount(tokens.length))} active</span>` : '') + '</div>'
+    + '<div class="table-scroll dp-flush"><table><thead><tr><th scope="col">Label</th><th scope="col">Created</th><th scope="col">State</th><th scope="col"><span class="sr">Action</span></th></tr></thead>'
+    + `<tbody>${rows}${empty}</tbody></table></div>`;
+  const howto = '<details class="dp-howto"><summary>Set up provisioning in Microsoft Entra ID</summary><ol class="dp-steps">'
+    + '<li>In the Microsoft Entra admin center, open <b>Enterprise applications</b>, choose <b>New application</b>, then <b>Create your own application</b> and <b>Integrate any other application you don\'t find in the gallery</b>; name it, for example, Shadow AI Capture provisioning. Sign-in keeps using the Shadow AI Capture application you consented to: Entra does not provision through an application added by consent.</li>'
+    + '<li>In the new application, open <b>Provisioning</b> and set the provisioning mode to <b>Automatic</b>.</li>'
+    + '<li>Tenant URL: the SCIM base URL above. Secret token: a token created here. Choose <b>Test connection</b>, then save.</li>'
+    + '<li>Under <b>Mappings</b>, open the user mapping and map <code>objectId</code> to <code>externalId</code>, so a person a device knows by their Entra object id is matched to their directory entry.</li>'
+    + '<li>Assign the users or groups to provision, then turn provisioning on.</li>'
+    + '</ol></details>'
+    + '<details class="dp-howto"><summary>Other identity providers</summary><p>Any SCIM 2.0 client works: the base URL above, with a token created here as its bearer token. <code>userName</code> is the person\'s sign-in name, their UPN or email address.</p></details>';
+  const body = '<p>People and groups are kept in sync by your identity provider over SCIM 2.0. It is the only way people reach this product\'s directory.</p>'
+    + kv + depSecret(state) + form
+    + depProblem(state.scim.problem, 'No token was created.')
+    + table
+    + depProblem(state.tokens.problem, 'Not revoked.')
+    + howto;
+  return depCard('User provisioning (SCIM)', body, { wide: true, id: 'dp-scim' });
+}
+
+const DEP_NOTES = Object.freeze([
+  'Every change on this page is written to the audit trail under your name.',
+  'A deployment key lets a device enrol into your organisation. It does not let anyone read data.',
+  'The counts are what the server reports for your organisation. None is a share of your fleet: the product does not know how many devices you have that it has not seen.',
+]);
+
+/**
+ * The whole page for one state.
+ *
+ * @param {object} state  createDeployment().state
+ * @param {object} [options]
+ * @param {string|null} [options.eyebrow]
+ * @param {Date} [options.now]
+ */
+function renderDeployment(state, { eyebrow = 'Settings', now = new Date() } = {}) {
+  const head = depHeader(eyebrow);
+  if (state.status === 'idle' || state.status === 'loading') return `<article class="screen dp" aria-busy="true">${head}${depSkeleton()}</article>`;
+  if (state.status === 'refused' || !state.data) return `<article class="screen dp">${head}${depRefused(state.problem)}</article>`;
+  const refresh = state.refreshProblem
+    ? `<div class="banner banner-warning" role="status"><strong>Not refreshed</strong><span>${escapeHtml(state.refreshProblem.message ?? '')} What is shown is from the last read.</span></div>`
+    : '';
+  const notes = `<details class="notes"><summary>About these settings<span class="notes-count">${DEP_NOTES.length}</span></summary><ul>${DEP_NOTES.map((n) => `<li>${escapeHtml(n)}</li>`).join('')}</ul></details>`;
+  return `<article class="screen dp">${head}${refresh}${depTiles(state.data, now)}`
+    + `<div class="dp-grid">${depSignIn(state.data)}${depVerification(state)}</div>`
+    + depDownload(state)
+    + depKeys(state, now)
+    + depScim(state)
+    + notes
+    + '</article>';
 }
 
 // ─── src/app.js ────────────────────────────────────────────────────────
@@ -3595,6 +4479,8 @@ function filterNavItems(items, allowed) {
 
 
 
+
+
 /**
  * The screens. Five are in the navigation; the event detail, the catalogue of gaps and the state
  * gallery are reached by a link or an address. What used to be separate screens for unsanctioned
@@ -3607,6 +4493,9 @@ const SCREENS = Object.freeze([
   Object.freeze({ id: 'person', label: 'Users', question: 6, kind: 'input', questionId: 'q6_subject_series' }),
   Object.freeze({ id: 'devices', label: 'Devices', question: 7, kind: 'answer', questionId: 'q7_devices' }),
   Object.freeze({ id: 'audit', label: 'Audit', question: 10, kind: 'answer', questionId: 'q10_audit_trail' }),
+  // Settings → Deployment reads and writes control-api's admin API, not the query API: it has no
+  // question and no envelope, and boot() hands it to its own controller (deployment.js).
+  Object.freeze({ id: 'deployment', label: 'Deployment', question: null, kind: 'admin' }),
   Object.freeze({ id: 'event', label: 'Event detail', question: 9, kind: 'input', questionId: 'q9_event_detail' }),
   Object.freeze({ id: 'unavailable', label: 'What we cannot show', question: null, kind: 'catalogue' }),
   Object.freeze({ id: 'gallery', label: 'State gallery', question: null, kind: 'gallery' }),
@@ -3732,6 +4621,8 @@ function createDashboard({ api, now = () => new Date(), exploreHref = 'explore.h
         }
         case 'catalogue':
           return { view: unavailableView(), shell: shell() };
+        case 'admin':
+          return { view: null, shell: shell(), admin: true };
         case 'gallery':
         default:
           return { view: null, shell: shell(), gallery: true };
@@ -3800,6 +4691,36 @@ function switchFor(screen, preset, filters) {
   return null;
 }
 
+/** A screen the signed-in roles cannot use, said rather than attempted: the server refuses it anyway. */
+function notPermittedView(screen) {
+  return needsInputView({ id: screen.id, title: screen.label, question: null, hint: 'Your role cannot use this page. The navigation shows the pages it can.' });
+}
+
+/**
+ * Hand a downloaded package to the browser as a file. The data is a Blob from the admin API; an
+ * object URL and a click on a download link is how a page saves one without a navigation.
+ */
+function saveDownload(document, data, filename) {
+  const view = document.defaultView;
+  if (!view?.URL?.createObjectURL || typeof document.createElement !== 'function') throw new Error('this browser cannot save a file from the page');
+  const blob = data instanceof view.Blob ? data : new view.Blob([data]);
+  const href = view.URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = href;
+  link.download = filename;
+  link.hidden = true;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  view.setTimeout(() => view.URL.revokeObjectURL(href), 60_000);
+}
+
+function copyToClipboard(document, text) {
+  const clipboard = document.defaultView?.navigator?.clipboard;
+  if (!clipboard?.writeText) return Promise.reject(new Error('no clipboard'));
+  return clipboard.writeText(text);
+}
+
 /**
  * Boot the dashboard into a document. The only function in this package that touches the DOM.
  *
@@ -3807,8 +4728,10 @@ function switchFor(screen, preset, filters) {
  * @param {Document} input.document
  * @param {string} [input.scenario] one of SCENARIO_NAMES; ignored when `api` is supplied
  * @param {object} [input.api]      a real api, e.g. over httpTransport
+ * @param {object} [input.admin]    an admin api (createAdminApi); the sample's or the page origin's otherwise
+ * @param {object|null} [input.session] who is signed in, as GET /session answers; read from the server otherwise
  */
-async function boot({ document, scenario = 'realistic', api } = {}) {
+async function boot({ document, scenario = 'realistic', api, admin, session: givenSession } = {}) {
   const root = document.getElementById('app');
   const nav = document.getElementById('nav');
   // `?transport=live` reads the real query API through the endpoint on the page's own origin,
@@ -3817,18 +4740,37 @@ async function boot({ document, scenario = 'realistic', api } = {}) {
   // One dashboard for the whole session, so the last coverage read carries across navigation.
   const stubs = api || live ? null : scenarioTransport(scenario);
   const active = api ?? createQueryApi({ transport: live ? httpTransport() : stubs });
+  // Settings → Deployment follows the same choice: the admin API on the page's own origin when
+  // live, a sample that builds no package when not.
+  const adminApi = admin ?? createAdminApi({ transport: live ? httpAdminTransport() : sampleAdminTransport() });
   const query = live ? '?transport=live' : '';
   const dashboard = createDashboard({ api: active, exploreHref: `explore.html${query}` });
   // The Explore page is a sibling page, not a screen: it is linked from the top of the navigation
   // and carries the same data source. A signed-in role may see fewer pages than the shell names;
-  // the server says which, and query-api refuses the reads behind the rest.
-  const session = await loadSession();
+  // the server says which, and query-api and control-api refuse what lies behind the rest.
+  const session = givenSession !== undefined ? givenSession : await loadSession();
   const allowed = allowedPageIds(session);
   const navItems = filterNavItems(NAV_ITEMS.map((item) => (item.id === 'explore' ? { ...item, href: `explore.html${query}` } : item)), allowed);
+  const navIds = new Set(NAV_ITEMS.map((item) => item.id));
   const collapsed = readCollapsed(document);
 
   let paintedNav = null;
   let paintedScreen = null;
+  let deployment = null;
+
+  function paintDeployment(state) {
+    if (paintedScreen === 'deployment') root.innerHTML = renderDeployment(state, { eyebrow: groupOf('deployment') });
+  }
+
+  function deploymentController() {
+    deployment ??= createDeployment({
+      admin: adminApi,
+      onChange: paintDeployment,
+      save: (data, filename) => saveDownload(document, data, filename),
+      copy: (text) => copyToClipboard(document, text),
+    });
+    return deployment;
+  }
 
   async function render() {
     const { id: routeId, scenario: routeScenario, preset, filters: routeFilters } = parseHash(document.location.hash);
@@ -3846,8 +4788,20 @@ async function boot({ document, scenario = 'realistic', api } = {}) {
     const sameScreen = screen.id === paintedScreen;
     // Moving to another screen swaps the content with a short fade; only the first load arrives in full.
     root.classList?.toggle('switched', !sameScreen && paintedScreen !== null);
+    // Leaving Deployment takes the one-time SCIM token with it.
+    if (!sameScreen && paintedScreen === 'deployment') deployment?.leave();
     paintedScreen = screen.id;
     root.classList?.toggle('same-screen', sameScreen);
+    if (navIds.has(screen.id) && !mayOpen(allowed, screen.id)) {
+      root.innerHTML = renderScreen(notPermittedView(screen), {});
+      return;
+    }
+    if (screen.kind === 'admin') {
+      const controller = deploymentController();
+      paintDeployment(controller.state);
+      if (!sameScreen || controller.state.status !== 'ready') await controller.load();
+      return;
+    }
     const typing = sameScreen && document.activeElement?.name === 'subject';
     const { view, shell, gallery } = await dashboard.load(screen.id, { preset, filters });
     if (gallery) {
@@ -3860,24 +4814,41 @@ async function boot({ document, scenario = 'realistic', api } = {}) {
     if (typing) root.querySelector?.('input[name="subject"]')?.focus();
   }
 
-  wireShell({ document, live, collapsed });
+  wireShell({ document, live, collapsed, session });
 
   // The handler returns the render promise. A browser ignores a listener's return value, so this
   // costs nothing there; it means a test can await a navigation and read the finished page rather
   // than racing it.
   // A browser fires hashchange on the window, not the document.
   (document.defaultView ?? document).addEventListener('hashchange', render);
-  // The person screen's one input: put the reference in the address, which is what renders it.
   document.addEventListener('submit', (event) => {
     const form = event.target;
+    // Deployment's forms act through their buttons; Enter in the token label creates the token.
+    if (form?.dataset?.depForm !== undefined) {
+      event.preventDefault();
+      if (deployment && form.dataset.depForm !== 'none') deployment.act({ dep: form.dataset.depForm });
+      return;
+    }
+    // The person screen's one input: put the reference in the address, which is what renders it.
     if (form?.dataset?.screen !== 'person') return;
     event.preventDefault();
     const subject = form.elements.subject.value.trim();
     document.location.hash = subject ? `#person?subject=${encodeURIComponent(subject)}` : '#person';
   });
+  // Deployment's buttons name their action in data-dep; what is typed into a label is kept as it is typed.
+  document.addEventListener('click', (event) => {
+    const target = event.target?.closest?.('[data-dep]');
+    if (!target || !deployment || target.disabled) return;
+    event.preventDefault();
+    deployment.act({ ...target.dataset });
+  });
+  document.addEventListener('input', (event) => {
+    const field = event.target?.dataset?.depDraft;
+    if (field && deployment) deployment.setDraft(field, event.target.value);
+  });
   await render();
 
-  return { render, dashboard };
+  return { render, dashboard, deployment: () => deployment };
 }
 
 // ─── epilogue ─────────────────────────────────────────────────────────────────
@@ -3892,7 +4863,7 @@ if (typeof document !== 'undefined') {
   else __boot();
 }
 
-export { boot, createDashboard, parseHash, SCREENS, SCREEN_IDS, readState, measureOf, isSuppressed, sumMeasure, renderScreen, renderValue, createQueryApi, createStubTransport, scenarioTransport, SCENARIO_NAMES, QUESTIONS, buildDocument, buildTemplate, GAPS };
+export { boot, createDashboard, parseHash, SCREENS, SCREEN_IDS, readState, measureOf, isSuppressed, sumMeasure, renderScreen, renderValue, createQueryApi, createStubTransport, scenarioTransport, SCENARIO_NAMES, QUESTIONS, buildDocument, buildTemplate, GAPS, createDeployment, renderDeployment, createAdminApi };
 </script>
 </body>
 </html>

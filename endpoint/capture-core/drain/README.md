@@ -8,7 +8,19 @@ time and only under a grant.
 - **Transport** (`transport.go`): x509 mTLS from the issued leaf, or DPoP-signed requests
   (`Authorization: DPoP …` + a per-request proof), pinned to the `--ca-file` CA set with TLS 1.3.
 - **Enrolment** (`POST /v1/enrol`): a generated keypair plus a PKCS#10 CSR (`x509`) or the public JWK
-  with a proof of possession (`dpop`); the issued credential is sealed by `credential/`.
+  with a proof of possession (`dpop`); the issued credential, and the tenant's `user_ref_key` when
+  the response carries one, are sealed by `credential/`. The bootstrap credential is exactly one of
+  the lab's single-use `EnrolmentToken` or a tenant package's reusable `DeploymentKey` (contract
+  §5); the key also renews an expired x509 leaf, which a spent token cannot. Each attempt re-reads
+  the `Attestation` (Intune, Entra and serial, from `hostinfo/`) and omits it when the system states
+  none. The idempotency key (`hardware_identity_hash`) is seeded by a configured `MDMID` first (the
+  lab profiles, so their hash is unchanged), then by `HardwareSeed`, then by the configured device
+  id: with none of them every device of a tenant would share one hash.
+- **Policy** (`policy.go`, `FetchPolicy`): `GET /v1/policy` with the same credential as
+  `/v1/health` and `If-None-Match`. It returns the signed envelope from `protocol.PolicyResponse`
+  byte for byte and never verifies it (the caller's `policy.Store` does). `304` and a `404` carrying
+  the §5 error envelope are answers; a bare `404` (a route nobody serves), a refusal or an outage is
+  an error, so only the server's own statement can take a device to M0.
 - **Token** (`POST /v1/token`, dpop only): a signed assertion exchanged for a short-lived,
   sender-constrained access token, cached and refreshed before expiry.
 - **Batch/settle** (`batch.go`): 1–500 events, 8 MiB gzip / 32 MiB decompressed / 256 KiB per

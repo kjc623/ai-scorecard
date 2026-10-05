@@ -129,14 +129,36 @@ func (m ManagedState) Valid() bool {
 // agnostic: an x509 device carries a CSR, a dpop device carries its public JWK, and the unused
 // field is omitted. It carries a hostname and (via DeviceInfo) a managed state; it does not carry
 // a subject name, which rides on each event, not on enrolment.
+//
+// A first enrolment presents exactly one bootstrap credential: EnrolmentToken, the short-lived
+// single-use token the lab mints per device, or DeploymentKey, the reusable per-tenant key a
+// customer's deployment package carries, since an MDM such as Intune delivers one package to every
+// device and cannot hand each its own token. A deployment key alone is a shared secret, so a tenant
+// may require Attestation as well: the identifiers the device's MDM enrolment gave it, which the
+// server checks against the customer's MDM before it issues a credential.
 type EnrolmentRequest struct {
-	SchemaVersion  string     `json:"schema_version"`
-	EnrolmentToken string     `json:"enrolment_token,omitempty"`
-	Mode           AuthMode   `json:"mode"`
-	CSR            string     `json:"csr,omitempty"`
-	JWK            *JWK       `json:"jwk,omitempty"`
-	Device         DeviceInfo `json:"device"`
-	ClaimedRegion  string     `json:"claimed_region,omitempty"`
+	SchemaVersion  string             `json:"schema_version"`
+	EnrolmentToken string             `json:"enrolment_token,omitempty"`
+	DeploymentKey  string             `json:"deployment_key,omitempty"`
+	Mode           AuthMode           `json:"mode"`
+	CSR            string             `json:"csr,omitempty"`
+	JWK            *JWK               `json:"jwk,omitempty"`
+	Device         DeviceInfo         `json:"device"`
+	Attestation    *DeviceAttestation `json:"attestation,omitempty"`
+	ClaimedRegion  string             `json:"claimed_region,omitempty"`
+}
+
+// DeviceAttestation is what the device can say about its own management, read from the operating
+// system rather than configured. None of it is secret; its value is that the server can look each
+// identifier up in the customer's MDM and refuse a device the customer does not manage. Empty
+// fields are absent facts, never guesses: a device that is not Intune-enrolled sends no Intune id.
+type DeviceAttestation struct {
+	// IntuneDeviceID is the Intune managed-device id (Windows: the enrolment's EntDMID).
+	IntuneDeviceID string `json:"intune_device_id,omitempty"`
+	// EntraDeviceID is the Microsoft Entra device object's deviceId, from the device's join state.
+	EntraDeviceID string `json:"entra_device_id,omitempty"`
+	// SerialNumber is the hardware serial the MDM inventories, compared case-insensitively.
+	SerialNumber string `json:"serial_number,omitempty"`
 }
 
 // IssuedCredential is the credential half of the enrolment response. In x509 mode it is a leaf
@@ -165,7 +187,12 @@ type EnrolmentResponse struct {
 	// DeviceIdentity is the tenant's identity setting, so a device learns whether to send clear
 	// values (ADR 0021). Empty means the server did not state one and the device keeps its default.
 	DeviceIdentity DeviceIdentity `json:"device_identity,omitempty"`
-	ServerTime     time.Time      `json:"server_time"`
+	// UserRefKey is the tenant's user-reference key, base64url without padding (32 bytes). The
+	// device derives each person's pseudonymous user_ref with it (DeriveUserRef), and the
+	// directory side derives the same value from what the customer's identity provider sends, so
+	// the two meet without either sending a name. Empty means the device keeps a configured ref.
+	UserRefKey string    `json:"user_ref_key,omitempty"`
+	ServerTime time.Time `json:"server_time"`
 }
 
 // JWK is the RFC 7517 public-key subset the DPoP mode uses. E and N carry an RSA modulus and

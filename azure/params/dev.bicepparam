@@ -37,6 +37,10 @@ param logRetentionDays = 30
 // The device edge (Application Gateway) public hostname. Placeholder until a real DNS name exists.
 param deviceFqdn = 'device.dev.sac.example.com'
 
+// The browser and identity-provider edge (Front Door custom domain): sign-in callbacks, onboarding
+// links and the SCIM base URL are built on it. Placeholder until a real DNS name exists.
+param publicUrl = 'https://app.dev.sac.example.com'
+
 // Dev never deploys the HSM pool, and never has three administrators to give it.
 param deployManagedHsm = false
 

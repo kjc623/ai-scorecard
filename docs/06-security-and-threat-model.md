@@ -107,8 +107,9 @@ for `customer_held` and why §6.2 says the mode 2 unwrap record is no longer a c
 
 **The customer's directory is authoritative for one thing only.** Questions 2, 3 and 8 of brief §3.6
 need department, population and manager, which are unobservable on the endpoint and come from the
-customer's directory (master doc §5.3, Q2). It supplies that mapping and nothing else, and is not an
-authentication path for the product's own access control, which is Entra ID (§4.1).
+customer's directory (master doc §5.3, Q2). It supplies that mapping and one thing more: a person it
+deactivates loses their product session (§4.1). It is not itself an authentication path; sign-in is the
+customer's identity provider, through `control-api` (§4.1).
 
 **The customer's own storage is outside the vendor's control.** The scheduled export (brief §3.6) lands
 in storage the customer owns, under keys the customer holds, indexed by the customer's tooling (C31).
@@ -155,13 +156,15 @@ Direction is from the vendor's perspective: **in** = toward the vendor's cloud.
 | B4 | Device ↔ cloud (grant) | One grant request per event; on approval a single-object upload credential and key material (C14) | both | Per-event, single-use, one object. No bulk path, which is why C5 holds structurally |
 | B5 | Device → Blob (content) | Ciphertext of one object, at M3, only under a grant | out | Encrypted on the device with the object key; plaintext key never reaches Blob |
 | B6 | Delivery channel → device | Signed installer, signed update manifest; content separate from code | in | Signed manifests, ring deployment with automatic halt, atomic install with rollback (C36) |
-| B7 | Customer directory → cloud | Org dimension for a `user_ref`: department, population, manager (master doc §5.3, Q2) | in | Read-only sync by a workload identity; pseudonymous key only. **As built (backlog/06):** `control-api sync-directory` reads Entra ID through Graph (application client credentials) or a JSON export, and writes `ops.user_dim`; `directory_object_id_enc` is sealed with AES-256-GCM under a per-tenant key, and the clear display name is stored only while `device_identity = 'clear'` |
+| B7 | Customer directory → cloud | Org dimension for a `user_ref`: department, population, manager (master doc §5.3, Q2) | in | Pushed by the customer's identity provider over **SCIM 2.0** to `control-api` (`/scim/v2`), authenticated by a per-tenant `sacscim_` bearer stored only as its hash and revocable by the tenant's admin; the tenant is the one the database resolves for that bearer, never one the provider names. Nothing is pulled: the product's Entra application holds no directory-read permission. **As built:** the provisioned resource is stored sealed, with keyed hashes for the provider's lookups and no clear identifier; each person is keyed by a canonical `user_ref` fixed at creation, with aliases for renames and object ids (03 §3.3); a deprovisioned person is retired, never deleted; `directory_object_id_enc` is sealed with AES-256-GCM under a per-tenant key, and the clear display name is stored only while `device_identity = 'clear'`. The lab's file import (`control-api sync-directory`) remains for the sample tenant |
 | B8 | Cloud → customer storage | Scheduled Parquet export (C31); metadata and labels only (§5.5) | out | Customer-owned storage, customer-held keys, no recall (§2.1) |
-| B9 | Analyst browser → `query-api` | Filters, drill-downs, case-referenced retrieval, **search queries and their snippets**, exports | both | Entra ID role claim; tenant from the token only; every subject-level read audits as it is served (C30), **including every search, which commits its audit row in the same transaction or returns nothing** (§6.3) |
+| B9 | Analyst browser → `dashboard` server → `query-api` | Filters, drill-downs, content retrieval, **search queries and their snippets**, exports | both | The browser holds only an opaque session cookie; the `dashboard` server forwards each read with the person's product access token, minted by `control-api` (§4.1); roles and tenant from that token only; state-changing requests must be same-origin; every subject-level read audits as it is served (C30), with the token's session id in the audit detail, **including every search, which commits its audit row in the same transaction or returns nothing** (§6.3) |
 | B10 | Vendor operator → Azure control plane | ARM/Bicep, Key Vault operations, database configuration | both | Just-in-time elevation, approval, ticket reference, no standing access (§4.5) |
 | B11 | Device network path | Intercepted flows to enumerated destinations only; everything else blind-tunnelled | local | Destination allowlist scoped by signed policy; fail-open; server-side kill switch (§9) |
 | B12 | Customer HSM / vault → `content-vault` | One unwrap of a per-tenant key, over federated identity | in | Customer-controlled key; customer-visible audit of the unwrap (§6.2) |
 | B13 | `query-api` → `content-vault` (search) | A search query — terms, time bounds, scope filters — and back the matching submission ids, match counts and **bounded highlighted snippets** (§6.3) | local | Internal-only ingress (D7); `query-api` has no `SELECT` on `ingest.search_text`; only the vault can read the index; the audit row commits in the same transaction as the results or neither is served |
+| B14 | Customer identity provider ↔ `control-api` (sign-in) | Authorization requests out; an authorization code and an `id_token` naming the person, their roles and (Entra) their tenant back; for Entra onboarding, the admin-consent result | both | `control-api` is the only relying party: PKCE, state and nonce generated and held server-side for ten minutes; the `id_token` verified against the provider's keys with an exact issuer and audience; the product tenant decided by `control-api`'s own mapping, never by a claim (§4.1). Provider tokens never leave `control-api`; a refresh token is stored sealed |
+| B15 | `control-api` → Microsoft Graph (Intune check) | One managed-device lookup per deployment-key enrolment of an Intune-verified tenant: the device's Intune id out; its serial, Entra device id and management state back | both | The vendor app's app-only token in the customer's own Entra tenant, with `DeviceManagementManagedDevices.Read.All` as the only Graph application permission the product holds; the app authenticates as `control-api`'s managed identity through a federated credential, so no secret exists (02 §5.1) |
 
 **Boundary B13 is new, and it is the one the reversal creates.** It is the first flow in which
 **content text derived from a search query crosses a service boundary**, and it is the reason §6.3
@@ -172,7 +175,7 @@ full text — but it is content, it is unbounded in *volume* across queries, and
 
 **It also creates the only path in the design where the tenant-scoping of a *system* service matters.**
 `query-api` composes the request and `content-vault` composes the query, so the tenant must be carried
-across an internal hop that has no Entra ID token and no device credential of its own. The rule is the
+across an internal hop that has no device credential of its own. The rule is the
 one §4.1 and §7.1 already set for the external boundary, applied internally: **the tenant on B13 is the
 one from the authenticated session, it is asserted over mTLS by the calling service's managed identity
 and re-derived by the vault rather than trusted, and the vault applies row-level security to its own
@@ -186,11 +189,14 @@ environment peer mTLS disabled, and the vault reads the caller's service, subjec
 request headers that it trusts only because its ingress is internal
 (`vault/content-vault/internal/auth/auth.go`). The vault's SQL path is written to set the session tenant
 inside every transaction, so row-level security remains the final arbiter; the mTLS assertion of the caller is the
-part that is not in place (§5.2). B13 is now exercised: `query-api` forwards content search and approved
-retrieval to the vault with those headers, naming the tenant, subject and **roles** it took from its own
-session — which as of task 11 is an OIDC token verified against the issuer's JWKS, not a development
-principal header. The vault now restricts the two browser-facing routes by role (`analyst` or
-`content_reader` for search, `content_reader` for retrieval), re-checking what its caller asserted. The
+part that is not in place (§5.2). B13 is now exercised, and the person is no longer only asserted:
+`query-api` forwards content search and retrieval to the vault with the person's own product access
+token as the bearer, and the vault **verifies that token itself** (issuer, audience `sac-vault`, ES256,
+lifetime) and takes the tenant, subject and roles from it, refusing an `X-Sac-Tenant`, `X-Sac-Subject` or
+`X-Sac-Roles` header that disagrees (`403 principal_mismatch`). The headers alone are trusted only when
+no token issuer is configured, which is the lab, and the vault says so loudly at startup. The vault
+restricts the two browser-facing routes by role (`analyst` or `content_reader` for search,
+`content_reader` for retrieval), re-checking the token's roles rather than its caller's word. The
 vault does not otherwise restrict routes by calling service, so any of its three allowed callers may call a
 route. In the local auth lab
 the vault connects to the database as the owner, so row-level security is not exercised there.
@@ -276,7 +282,7 @@ where a mitigation is expensive, this list justifies it.
 | **A3** | **The content key tuple** — object data keys, per-tenant KEK, customer HSM | Reading one wrapped object key is equivalent to reading the object; reading a tenant KEK is equivalent to reading every object in that tenant. *Key Vault / Managed HSM (modes 1–2) or the customer's HSM (mode 3); wrapped keys in `ops.content_object.wrapped_dek`* |
 | **A4** | **The ability to report clean while collecting nothing** | Brief §7: *"a security product that reports a clean bill of health while collecting nothing is worse than no product."* Ranked above the labels and the identity map because it is the only asset whose **compromise is invisible in the product's own output** — every dashboard stays green while the customer is blind, and the customer cannot detect it by reading the console. *The health and coverage path end to end: `ops.collector_state`, `ops.coverage_snapshot`, `mart.v_device_liveness`, the drop counter, release and kill-switch state* |
 | **A5** | **The classification label set and policy decision** | A label is not "some sensitive data". `payment_card` against a named tool at a known time, aggregated by department, reveals what an organisation is *doing*: which teams handle cardholder data, which are in a legal matter, which write health-adjacent code. The labels reconstruct a map of activity with no content at all. *`ingest.submission`, `mart.agg_*`* |
-| **A6** | **The mapping from `user_ref` to a real person** | It turns anonymous behavioural records into an employee-monitoring dossier, and it is the join key that makes A5 attributable. In the schema it is one encrypted column. *`ops.user_dim.directory_object_id_enc`, synchronised from the customer's directory (Q2); `user_ref` itself is pseudonymous on the wire*. **As built (backlog/06):** the sync exists and fills `ops.user_dim`; the identifier is sealed with AES-256-GCM under a per-tenant key, and the directory display name beside it is stored and shown only while `device_identity = 'clear'`, so a `hashed` tenant keeps the pseudonymous path |
+| **A6** | **The mapping from `user_ref` to a real person** | It turns anonymous behavioural records into an employee-monitoring dossier, and it is the join key that makes A5 attributable. In the schema it is one encrypted column. *`ops.user_dim.directory_object_id_enc`, provisioned from the customer's directory by SCIM (Q2); `user_ref` itself is pseudonymous on the wire*. **As built:** `user_ref` is a keyed derivation, `HMAC-SHA256` under a per-tenant key over the person's UPN (else Entra object id, else account name), computed the same way by the device and by `control-api`'s SCIM endpoint, so the two meet without a name crossing the event path (03 §3.3). The SCIM resource and `directory_object_id_enc` are sealed with AES-256-GCM under a per-tenant key, and the directory display name is stored and shown only while `device_identity = 'clear'`, so a `hashed` tenant keeps the pseudonymous path. **The residual, stated exactly:** the derivation key is issued to every enrolled device in its enrolment response, because the device must compute the ref. So a `user_ref` is a pseudonym against an outsider who obtains the store, not against an insider with a device: anyone holding an enrolled device's key and a list of the organisation's UPNs can recompute every person's ref and attribute the records. The key is per tenant, so it says nothing about another tenant's people |
 | **A7** | **The audit log** | Both an evidence asset and a targeting asset: it shows who retrieved content, for which case, and when; it locates retention holes and holds; and its integrity is what makes §11's attestations worth anything. Read access to it is read access to the investigation. **Under D6′ it also records every search query and every term searched**, so it now names the subjects an analyst was curious about as well as the ones they opened. *`ops.audit`, append-only and hash-chained* |
 | **A8** | **Collection-mode and search-tier configuration, and its change history** | An attacker who can lower a scope's mode *creates* the breach surface rather than exploiting it: raising a scope from M1 to M3 causes content to be requested and kept, and **raising `content_search` to `full_text` converts retained content into a queryable corpus** (§10.6). C4 requires attribution of every change, and §11.6 requires the search-tier change specifically to be attestable. *`ops.tenant.ceiling_mode`, `ops.tenant.content_search`, `ops.policy_bundle.scope_matrix`, plus an audit entry per change* |
 | **A9** | **Device credentials and the enrolment path** | A credential valid for an active device is a channel into that tenant's ingest; a compromised enrolment path is how an attacker obtains one. *`ops.device`, `ops.device_credential`* |
@@ -305,13 +311,33 @@ controls while A2 is plaintext at rest. §8 T13–T16 and §10.5 are the consequ
 
 ## 4. Identity and access
 
-### 4.1 Humans — Entra ID
+### 4.1 Humans — the customer's identity provider, through `control-api`
 
-Analysts, approvers, tenant administrators and auditors authenticate to Entra ID. There is no local
-account, no shared analyst login and no separate password store.
+Analysts and tenant administrators authenticate to their own organisation's identity provider:
+Microsoft Entra ID, through the vendor's multi-tenant application, or any OpenID Connect provider (Okta,
+Ping, Google, ADFS…) the customer connected at onboarding. There is no local account, no shared analyst
+login and no separate password store.
 
+- **One relying party, one token issuer.** `control-api` is the OIDC relying party for every customer
+  provider. It generates PKCE, state and nonce and holds them server-side for ten minutes, redeems the
+  code, verifies the `id_token`, resolves tenant, actor and roles, keeps the session, and mints a
+  short-lived **product access token** (ES256 under a dedicated session-signing key, at most ten
+  minutes, audiences `sac-query`, `sac-vault` and `sac-control`, claims `sac_tenant`, `actor`, `roles`,
+  `idp` and `sid`; JWKS at `/.well-known/jwks.json`). `query-api`, `content-vault` and `control-api`'s
+  admin API verify only that token, against one issuer and one JWKS. A provider's own tokens never leave
+  `control-api`: an Okta or Google access token is opaque or not meant for us, so forwarding provider
+  tokens could never have worked for "any provider".
+- **The tenant comes from our mapping, never from a claim.** For Entra the token's issuer must be
+  `https://login.microsoftonline.com/{tid}/v2.0` for the token's own `tid`, and that `tid` must map to
+  an active connection; for any other provider the connection is found by the email domain the vendor
+  registered for the tenant and pinned to its exact issuer and client id. Downstream, `sac_tenant` is a
+  token claim, never read from a body, query string or header; §7 makes this mechanical at the
+  database.
 - **Role claims, never query parameters.** Roles are `viewer`, `analyst`, `content_reader`,
-  `admin`, enforced per endpoint in `query-api` and again in `content-vault`. This is the four-role
+  `admin`, mapped at sign-in from the provider's roles claim through the connection's role map and
+  united with grants recorded in `ops.role_grant`; a person with no role is refused, never defaulted.
+  They are enforced per endpoint in `query-api`, again in `content-vault`, and in the admin API
+  (`401` with no valid token, `403` for a role that does not admit the request). This is the four-role
   set reconciled with the product owner for task 11 (docs/04 §2.2); it differs from the original
   five-role list here. `approver` is gone because the product removed the second-approver step on
   content retrieval, which was the only thing that role did; `auditor` and the design's
@@ -319,19 +345,38 @@ account, no shared analyst login and no separate password store.
   `content_reader` additionally opens one event's stored content. **The former §14.1 A7 question**
   (whether the approver is customer-side or vendor-side) is closed by removing the role, not
   answered.
-- **The tenant comes from the token.** `tenant_id` is a claim, never read from a body, query string or
-  header. §7 makes this mechanical at the database.
-- **Phishing-resistant authentication for privileged roles**, multi-factor for all humans. The
-  dashboard is a static SPA behind Entra ID; the browser holds tokens, never database credentials and
-  never content keys.
-- **Human revocation is near-real-time**, because content retrieval and export are high-consequence
-  and a long-lived access token would make "revoked" a fiction for its lifetime.
+- **A customer is created by the vendor and linked by its admin.** The vendor creates the product
+  tenant and a one-time onboarding link (stored as a hash) carrying the email domains the vendor knows
+  are the customer's; a customer never claims a domain, because a domain decides which tenant a work
+  email signs in to. The admin chooses Entra (admin consent, with the round trip bound to the invite and
+  to a cookie in the same browser, and proved by obtaining an app-only token in the consenting tenant)
+  or another provider (issuer, client id, secret, validated by discovery). The connection is created
+  pending and becomes active only when a real sign-in through it succeeds, which also makes that person
+  the tenant's first admin and spends the invite.
+- **Phishing-resistant authentication for privileged roles**, multi-factor for all humans, enforced
+  by the customer's identity provider, since the product holds no password. The browser holds an
+  opaque, HttpOnly session cookie — never a token, a database credential or a content key; the
+  `dashboard` server exchanges the cookie for a product token and forwards it.
+- **Human revocation takes effect within one token lifetime.** Sessions are server-side
+  (`ops.auth_session`, keyed by the hash of the opaque id; eight hours at most, one hour idle). Every
+  re-mint re-checks that the connection is still active and that SCIM has not deactivated the person,
+  and exercises the provider's refresh token at most every 30 minutes; any failure ends the session.
+  A sign-out revokes it. So a deactivated person, a disabled connection or a revoked session stops
+  working within ten minutes, the product token's ceiling. Every sign-in, every refusal in a tenant
+  already known, and every session end is audited, and the token's `sid` rides in the audit detail of
+  the reads it authorised.
+
+**As built**, with one stated stand-in: the `dashboard` server authenticates to `control-api`'s
+internal sign-in API with a shared secret (`SAC_INTERNAL_TOKEN`, held in Key Vault), not yet with its
+managed identity. Whoever holds that secret can call the internal API, though a product token still
+needs a live session id or a provider's authorization code. The lab's stand-in provider is an ordinary OIDC
+connection for the sample tenant; the owner's tenant has none until the owner onboards.
 
 ### 4.2 Devices — per-device revocable credentials with transport binding
 
 | Property | Mechanism | Source |
 |---|---|---|
-| Enrolment | One-shot; the device generates a key pair whose private key is hardware-backed where the platform supplies a TPM or Secure Enclave. It submits a PKCS#10 CSR (`x509`) or a public JWK and a proof of possession (`dpop`); the bootstrap credential is a short-lived, single-use enrolment token | Brief §4.2; ADR 0020 |
+| Enrolment | One-shot; the device generates a key pair whose private key is hardware-backed where the platform supplies a TPM or Secure Enclave. It submits a PKCS#10 CSR (`x509`) or a public JWK and a proof of possession (`dpop`); the bootstrap credential is a short-lived, single-use enrolment token (the lab) or the tenant's reusable **deployment key** from its package — a shared secret, so it is stored only as a hash, revocable, optionally expiring and rate-limited per key, and for an Intune-verified tenant accepted only with identifiers that name a device the customer's own Intune manages, one product device per Intune device (02 §5.1) | Brief §4.2; ADR 0020 |
 | Re-enrolment | Idempotent after re-imaging: returns the existing identity rather than creating a duplicate | C11 |
 | Identity | **Revocable per device.** A revoked device is rejected and marked accordingly | Brief §4.2 |
 | Transport binding | One seam with three modes (ADR 0020 decision 2). `x509`: the certificate presented on the connection or forwarded by the edge in `X-Client-Cert` is re-validated against the trust bundle, and its **SHA-256 SPKI thumbprint** must equal `ops.device_credential.public_key_thumbprint`. `dpop`: the token's `cnf.jkt` and the per-request proof must equal the same `public_key_thumbprint` (RFC 7638), with the proof's `jti` refused on replay. `dev`: no cryptography, refused unless explicitly acknowledged at startup | **derived from** brief §4.2's "mutually authenticated" plus "revocable per device" — a bearer token alone would be replayable from any host and would make revocation a race |
@@ -350,9 +395,9 @@ one transport-binding comparison against `ops.device_credential.public_key_thumb
 (`internal/auth/binding.go`), where `x509` uses SHA-256 over the certificate SPKI and `dpop` the RFC
 7638 JWK thumbprint. `control-api` serves `POST /v1/enrol` for both modes and `POST /v1/token`, and the
 schema carries `credential_type`, `public_key_jwk`, `ops.enrolment_token` and `ops.dpop_replay`. What is
-**not** deployed is the Azure wiring: Front Door is still the declared edge, there is no Application
-Gateway module, and every app in `azure/main.bicep` passes `keyVaultEnv: []` — so a deployed container
-cannot yet authenticate a device (ADR 0019, ADR 0020). The device-auth lab proves the seam through a
+**not** deployed is the rest of the Azure wiring: the Application Gateway module exists, but
+`ingest-api` in `azure/main.bicep` still passes `keyVaultEnv: []` — so a deployed container cannot yet
+authenticate a device (ADR 0019, ADR 0020). The device-auth lab proves the seam through a
 simulated Application Gateway; Azure is the part that is not built.
 
 ### 4.3 What revocation does to in-flight work
@@ -365,7 +410,9 @@ Master doc §4.4 fixes it; the security reading is:
 | Batch in transit | Rejected `401`. The device stops sending and **retains** the spool rather than discarding it | Discarding would destroy evidence of a compromise; retaining preserves what the device observed for an investigator |
 | Grant issued, upload not started | The single-object, short-lived upload credential is void rather than retried; the event's content state returns to `local_only` | A revoked device must not be able to complete a content upload |
 | Upload in progress | Refused at the object endpoint; ciphertext already written for a void grant is not attached to the event and is treated as orphaned | A partial upload must not become a readable object |
-| Analyst session | Access and refresh tokens revoked; in-flight queries abandoned at the next authorization check | A half-served result set is not a served result set |
+| Analyst session | The server-side session is revoked (sign-out, eight hours, an hour idle, a disabled connection, a failed provider refresh) and its sealed refresh token with it; no new product token is minted for it. **As built:** a product token already minted is not itself revocable — verifiers check its signature and lifetime, not the session — so it is honoured until it expires, at most ten minutes; the dashboard holds it server-side and drops it when `control-api` reports the session ended | A half-served result set is not a served result set, and a ten-minute ceiling is the bound on the exception |
+| Person deactivated in the identity provider | SCIM sets them inactive; the next re-mint for any of their sessions ends it, and a new sign-in is refused (`user_deactivated`) | The customer's own joiner-mover-leaver process is the revocation, with no second list to keep in step |
+| Deployment key revoked | Refused for every new enrolment (`401 deployment_key_revoked`). Devices already enrolled keep their own per-device credentials, which are revoked one by one | The key is a bootstrap secret, not a device identity: revoking it stops a leaked package, not the fleet it already enrolled |
 | Device state | Marked `revoked`, with **the actor who revoked it** and the time (`ops.device.revoked_by`) | C4's attribution rule applies to revocation as much as to mode changes |
 
 Revocation is a security operation, so it is an audited one.
@@ -381,11 +428,11 @@ member of it), and one runtime role per component.
 | Service | Role | May | Structurally cannot |
 |---|---|---|---|
 | `ingest-api` | `sac_ingest` | Insert observations and rejections; insert and update submissions and the usage ledger; read-only `SELECT` on tenant, device, credential and retention state; insert audit. Collector health is written by `sac_control`, not here | Select content or wrapped keys; **any** Key Vault unwrap right |
-| `control-api` | `sac_control` | Tenant and policy configuration, device state, grant decisions, policy signing; column-scoped read of submission metadata | Prompt content; unwrapped keys |
+| `control-api` | `sac_control` | Tenant and policy configuration, device state, grant decisions, policy signing; column-scoped read of submission metadata; the identity service's tables (connections, sessions, role grants, invites, SCIM-provisioned people, deployment keys) and the seven pre-tenant lookups, definer functions owned by the member-less `sac_resolver` that return only an active connection, a live session, an unused invite or an unrevoked token (03 §3.3) | Prompt content; unwrapped keys; any pre-tenant read beyond those seven exact-key questions |
 | `content-vault` | `sac_vault` | Wrapped keys, ciphertext objects, grant state, **and the full-text index over prompt text and attachment names — it is the only role granted `SELECT` on `ingest.search_text`.** A **column-scoped** read of `ingest.submission` (person, tool, device, mode, received time, content state) so a filtered search is composed against the index without giving `query-api` the index. **The only unwrap right in the system** | Any user-facing endpoint — internal ingress only (D7) |
 | `query-api` | `sac_query` | Events, labels, aggregates, findings, audit; calls `content-vault` for content **and for search** | Unwrapped keys; it is not granted `SELECT` on `ops.content_object` **or on `ingest.search_text`** at all |
 | `aggregator`, `reconciler` | `sac_ops` (one database role shared by both jobs) | Rollups, expiry, erasure mechanics, drift detection — including `DELETE` on `ingest.observation` and `ingest.submission` and row access to `ops.content_object` and `ops.grant` for expiry | Content decryption; unwrap |
-| Dashboard | Static SPA + Entra ID | `query-api` only | Database, Blob, Key Vault |
+| `dashboard` server | Its own managed identity; no database role | Hold the sign-in session cookie; exchange it with `control-api` for a product token; forward reads to `query-api`, admin calls to `control-api` and a minted retrieval URL to the vault; read one Key Vault secret, the internal token | Database, Blob, content keys; a provider's own tokens, which never leave `control-api` |
 | CI/CD | Federated workload identity, no stored secret | Deploy artefacts and migrations | Runtime data; key material |
 
 **As built:** the content path the table describes now runs — `control-api` decides grants and finalises
@@ -969,8 +1016,8 @@ migration or maintenance path running as the owner reads everything, which C32's
 not permit. **Application roles are non-owners without `BYPASSRLS`:** only `sac_migrator` holds it, it
 does DDL only, and no runtime service is a member of it — `BYPASSRLS` is the one attribute that
 converts a structural control back into a conventional one. **The tenant comes from the authenticated
-session, never from the request body:** it is derived from the device credential (B1) or the Entra
-token claim (B9) and set on the session inside the same transaction that runs the query, never
+session, never from the request body:** it is derived from the device credential (B1) or the product
+access token's `sac_tenant` (B9) and set on the session inside the same transaction that runs the query, never
 supplied by the caller. And **a session with no tenant set reads zero rows, not all rows:**
 `ops.current_tenant()` returns `NULL` when unset, `tenant_id = NULL` is `NULL`, and a policy that is
 not true excludes the row — the correct fail-closed default, and one that must be tested explicitly,

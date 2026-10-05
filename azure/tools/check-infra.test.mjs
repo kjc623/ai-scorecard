@@ -107,18 +107,61 @@ test('Front Door is the analyst edge only; device routes moved to Application Ga
   const fd = byRel.get('modules/frontdoor.bicep').text;
   assert.doesNotMatch(stripComments(fd), /patternsToMatch:\s*\[[\s\S]*?\/v1\/\*/, 'Front Door must not route /v1/* (ADR 0020 decision 1)');
   assert.match(stripComments(fd), /patternsToMatch:\s*\[[\s\S]*?\/analyst\/\*/, 'Front Door must route /analyst/*');
-  assert.match(stripComments(fd), /originHostHeaders\['query-api'\]/, 'the Front Door origin host header must target query-api');
+  // One origin group per routed app, in a fixed order: query-api first, so the analyst route names it.
+  assert.match(stripComments(fd), /routedApps = concat\(\['query-api', 'control-api'\]/, 'query-api and control-api are the first two routed apps');
+  const analyst = stripComments(fd).match(/resource analystRoute[\s\S]*?\n\}/);
+  assert.ok(analyst, 'the analyst route resource must exist');
+  assert.match(analyst[0], /originGroups\[0\]\.id/, 'the analyst route must target query-api');
+});
+
+// Contract §0/§3: the identity service's public surface is control-api's, on the browser/IdP edge.
+test('Front Door routes SCIM, onboarding and the issuer documents to control-api, and nothing else there', () => {
+  const fd = stripComments(byRel.get('modules/frontdoor.bicep').text);
+  const identity = fd.match(/resource identityRoute[\s\S]*?\n\}/);
+  assert.ok(identity, 'the identity route resource must exist');
+  assert.match(identity[0], /originGroups\[1\]\.id/, 'the identity route must target control-api');
+  for (const p of ['/scim/v2/*', '/onboard/*', '/.well-known/*']) {
+    assert.ok(identity[0].includes(`'${p}'`), `the identity route must match ${p}`);
+  }
+  assert.doesNotMatch(identity[0], /'\/v1\//, 'no device path rides on the identity route');
 });
 
 test('content-vault has no public endpoint anywhere in the composition', () => {
   const main = byRel.get('main.bicep').text;
   const vaultBlocks = [...main.matchAll(/module\s+\w*content\w*vault\w*[\s\S]*?\n\}/gi)];
   assert.equal(vaultBlocks.length, 1, 'exactly one content-vault instantiation');
-  for (const dir of ['frontdoor.bicep', 'static-web-app.bicep']) {
+  for (const dir of ['frontdoor.bicep', 'static-web-app.bicep', 'application-gateway.bicep']) {
     assert.doesNotMatch(stripComments(byRel.get(`modules/${dir}`).text), /content[-_]?vault/i, `${dir} must not reach content-vault`);
   }
-  // The URL is handed only to query-api, and it is an internal FQDN, not a Front Door hostname.
-  assert.match(main, /SAC_CONTENT_VAULT_URL',\s*value:\s*'http:\/\/\$\{contentVaultApp\.outputs\.fqdn\}/);
+  // The URL is an internal FQDN, never a Front Door hostname, and it is handed only to the two apps
+  // inside the environment that call the vault: query-api (search, minting) and the dashboard server
+  // (forwarding a minted retrieval URL, which is how a browser reaches content without an edge route).
+  const holders = [...main.matchAll(/module\s+(\w+)\s+'[^']*container-app\.bicep'[\s\S]*?\n\}/g)]
+    .filter((m) => /SAC_CONTENT_VAULT_URL/.test(m[0])).map((m) => m[1]).sort();
+  assert.deepEqual(holders, ['dashboardApp', 'queryApp']);
+  for (const m of main.matchAll(/SAC_CONTENT_VAULT_URL',\s*value:\s*'([^']*)'/g)) {
+    assert.equal(m[1], 'https://${contentVaultApp.outputs.fqdn}');
+  }
+});
+
+// OWNER-TODO task 10: the vault reads ciphertext as its own identity, so that identity needs the read.
+test('the vault identity, and only it, holds Storage Blob Data Reader on the ciphertext account', () => {
+  const main = byRel.get('main.bicep').text;
+  const ct = byRel.get('modules/storage-ciphertext.bicep').text;
+  assert.match(ct, /2a2b9908-6ea1-4ae2-8e65-a410df84e7d1/, 'the role is Storage Blob Data Reader');
+  assert.match(ct, /scope:\s*account/, 'the grant is scoped to the ciphertext account');
+  const readers = main.match(/blobReaderPrincipalIds:\s*\[([\s\S]*?)\]/);
+  assert.ok(readers, 'main.bicep must pass the readers');
+  assert.deepEqual(readers[1].match(/identity\w+/g), ['identityVault']);
+});
+
+// Contract §5: a device fetches its signed policy after enrolment; the device edge names that route.
+test('the device edge routes /v1/policy to control-api explicitly', () => {
+  const ag = stripComments(byRel.get('modules/application-gateway.bicep').text);
+  const rule = ag.match(/name: 'policy-to-control'[\s\S]*?backendHttpSettingsCollection', gatewayName, '([\w-]+)'/);
+  assert.ok(rule, 'a policy path rule must exist');
+  assert.equal(rule[1], 'control-api-http');
+  assert.match(rule[0], /'\/v1\/policy'/);
 });
 
 test('the database is not reachable from outside the VNet', () => {

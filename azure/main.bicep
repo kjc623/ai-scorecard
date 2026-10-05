@@ -47,7 +47,7 @@ param tags object = {}
 @description('Deploy the edge: Front Door Premium + WAF (analyst) and Application Gateway WAF_v2 + WAF (device). False in the lab: the two edges are the largest fixed lines in the bill (Front Door ~$330/month, Application Gateway ~$321/month), and a lab is reached over the VNet instead.')
 param deployEdge bool = true
 
-@description('Deploy the static web app that hosts the dashboard. False in the lab: the dashboard is a static file that opens from disk (apps/dashboard/index.html).')
+@description('Deploy the dashboard server: the pages, the sign-in and session (a thin client of control-api), and the forwarding of reads, admin calls and minted retrieval URLs to the apps behind it. False in the lab, which is reached over the VNet without a browser front end.')
 param deployDashboard bool = true
 
 @description('Deploy the second storage account used for customer-facing columnar exports. False in the lab: exports are a delivery feature, not something a lab exercises.')
@@ -116,17 +116,20 @@ param registryLoginServer string
 @description('Paired region for Container Registry geo-replication, e.g. centralus for eastus. Empty disables replication: geo-replication is what makes regional failover a redeploy rather than a rebuild (§12.1), and the paired region is a per-environment decision, which is why it is parameterised rather than written into the module.')
 param registryGeoReplicaLocation string = ''
 
-@description('Static Web App custom domain for the dashboard. Empty in dev.')
-param dashboardCustomDomain string = ''
-
 @description('The public device hostname that resolves to Application Gateway (ADR 0020). Empty when the edge is not deployed (lab).')
 param deviceFqdn string = ''
 
 @description('Key Vault secret id of the device FQDN TLS certificate. Supplied at deploy time from Key Vault, never in a parameter file (§5.1); empty when the edge is not deployed (lab).')
 param deviceTlsCertKeyVaultSecretId string = ''
 
-@description('Entra ID client id for dashboard authentication. A public client identifier, not a credential.')
-param dashboardEntraClientId string = ''
+@description('The public HTTPS origin of the Front Door edge, e.g. https://app.sac.example.com: where browsers load the dashboard, where a sign-in returns (<origin>/callback), the onboarding links control-api prints (<origin>/onboard/...) and the SCIM base URL a customer gives its identity provider (<origin>/scim/v2). A custom domain on Front Door; empty in the lab, which has no public edge.')
+param publicUrl string = ''
+
+@description('Client id of the vendor multi-tenant Entra application: sign-in for every Entra customer and the app-only Graph call that checks a device is Intune-managed (contract §3, §5). A public identifier, not a credential; empty until the application is registered.')
+param entraAppClientId string = ''
+
+@description('Where control-api finds the generic agent release a tenant package wraps (ShadowAICapture.msi and release.json). A path in the control-api image, put there by the release pipeline, so the release a deployment serves is the one its image digest names rather than whatever a share holds that day.')
+param agentReleaseDir string = '/opt/sac/agent-release'
 
 @description('Alert email recipients per severity.')
 param alertEmails object = {
@@ -189,6 +192,13 @@ resource identityReconciler 'Microsoft.ManagedIdentity/userAssignedIdentities@20
 @description('DDL only, assumed by the migration job for the duration of a migration and by nothing else (§5.4). It cannot be assumed by an app.')
 resource identityMigration 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: '${baseName}-id-migration'
+  location: location
+  tags: tags
+}
+
+@description('The dashboard server runs as this identity. Its one grant is reading the internal token it presents to control-api from Key Vault; it holds no database role and no content key.')
+resource identityDashboard 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: '${baseName}-id-dashboard'
   location: location
   tags: tags
 }
@@ -262,6 +272,12 @@ module keyVault 'modules/keyvault.bicep' = {
         principalId: identityGateway.properties.principalId
         roleDefinitionId: 'secretsUser'
       }
+      // The internal token it presents on /internal/v1/auth/* (see controlApp).
+      {
+        name: 'dashboard'
+        principalId: identityDashboard.properties.principalId
+        roleDefinitionId: 'secretsUser'
+      }
     ]
     // Unwrap is held by exactly one identity: content-vault (C15, D7). This one-line list is the whole
     // separation of duties, which is why the checker asserts no other principal appears here.
@@ -282,6 +298,11 @@ module ciphertext 'modules/storage-ciphertext.bicep' = {
     privateEndpointSubnetId: network.outputs.privateEndpointSubnetId
     privateDnsZoneIds: network.outputs.privateDnsZoneIds
     logAnalyticsWorkspaceId: logAnalytics.outputs.workspaceId
+    // The vault reads ciphertext back for a retrieval as itself (SAC_BLOB_IDENTITY=managed); this is
+    // that read, and the only role on the account. Uploads arrive under a per-object grant instead.
+    blobReaderPrincipalIds: [
+      identityVault.properties.principalId
+    ]
     tags: tags
   }
 }
@@ -377,7 +398,17 @@ module platformPrivateEndpoints 'modules/private-endpoints.bicep' = {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The four services. They differ in identity, scale and ingress, and in nothing else (§3.3).
+// The services. They differ in identity, scale and ingress, and in nothing else (§3.3).
+
+// The product access-token issuer (contract §2): control-api, at the address the apps inside the
+// environment reach it. query-api, the vault and the dashboard compare `iss` to this exactly and fetch
+// the JWKS from it. Derived from the environment's domain rather than read from controlApp's output,
+// because control-api is told its own issuer and a module cannot take its own output.
+var productTokenIssuer = 'https://control-api.${containerAppsEnv.outputs.defaultDomain}'
+
+// Key Vault secrets the services read by reference. The owner creates them before the first deploy
+// (azure/README.md); nothing here holds a value.
+var keyVaultSecretsUri = '${keyVault.outputs.vaultUri}secrets'
 
 module ingestApp 'modules/container-app.bicep' = {
   name: 'ingest-api'
@@ -427,8 +458,40 @@ module controlApp 'modules/container-app.bicep' = {
       { name: 'SAC_PG_DATABASE', value: postgresDatabases[0] }
       { name: 'SAC_KEYVAULT_URI', value: keyVault.outputs.vaultUri }
       { name: 'SAC_APPINSIGHTS', value: logAnalytics.outputs.appInsightsConnectionString }
+      // The identity service (contract §2, §3): the issuer it signs product tokens as, and the public
+      // origin its onboarding pages, sign-in callbacks and SCIM base URL are built on.
+      { name: 'SAC_AUTH_ISSUER', value: productTokenIssuer }
+      { name: 'SAC_PUBLIC_URL', value: publicUrl }
+      // The session-signing key (P-256, never the device token key) and the vendor policy key, as
+      // files from Key Vault; see keyVaultFiles below.
+      { name: 'SAC_SESSION_SIGNING_KEY_FILE', value: '/mnt/secrets/sac-session-signing-key' }
+      { name: 'SAC_POLICY_SIGNING_KEY_FILE', value: '/mnt/secrets/sac-policy-signing-key' }
+      // Tenant packages (contract §5): the generic release they wrap, and the device endpoint they
+      // tell a device to enrol against -- the Application Gateway's hostname.
+      { name: 'SAC_AGENT_RELEASE_DIR', value: agentReleaseDir }
+      { name: 'SAC_PUBLIC_DEVICE_ENDPOINT', value: deviceFqdn == '' ? '' : 'https://${deviceFqdn}' }
+      // The vendor multi-tenant Entra app, for sign-in and for the app-only Graph call of the Intune
+      // check. No client secret: control-api presents this identity's own token as the client
+      // assertion (a federated credential on the app; see the entraFederatedCredential output).
+      { name: 'SAC_ENTRA_CLIENT_ID', value: entraAppClientId }
+      { name: 'SAC_ENTRA_FIC', value: 'managed' }
+      // Which user-assigned identity to ask the Container Apps identity endpoint for: the app could
+      // hold more than one, and the federated credential trusts exactly this one.
+      { name: 'AZURE_CLIENT_ID', value: identityControl.properties.clientId }
     ]
-    keyVaultEnv: []
+    keyVaultEnv: [
+      // The shared secret the dashboard server presents on /internal/v1/auth/*. A stand-in for
+      // service identity: production should replace it with the dashboard's managed identity token
+      // verified by control-api, so there is no shared secret to rotate or leak.
+      { name: 'SAC_INTERNAL_TOKEN', keyVaultUrl: '${keyVaultSecretsUri}/sac-internal-token', identity: identityControl.id }
+      // Seals every *_enc column (OIDC client secrets, SCIM resources, tenants' user-reference keys).
+      // Losing it makes those unreadable, and the user-reference keys cannot be re-provisioned.
+      { name: 'SAC_DIRECTORY_KEY', keyVaultUrl: '${keyVaultSecretsUri}/sac-directory-key', identity: identityControl.id }
+    ]
+    keyVaultFiles: [
+      { secretName: 'sac-session-signing-key', keyVaultUrl: '${keyVaultSecretsUri}/sac-session-signing-key', identity: identityControl.id }
+      { secretName: 'sac-policy-signing-key', keyVaultUrl: '${keyVaultSecretsUri}/sac-policy-signing-key', identity: identityControl.id }
+    ]
     tags: tags
   }
 }
@@ -457,12 +520,20 @@ module contentVaultApp 'modules/container-app.bicep' = {
       { name: 'SAC_PG_DATABASE', value: postgresDatabases[0] }
       { name: 'SAC_BLOB_CIPHERTEXT_ENDPOINT', value: ciphertext.outputs.blobEndpoint }
       // The vault reads ciphertext as itself: an AAD access token from the instance metadata service
-      // for its user-assigned identity, never a storage key (docs/06 §5.4). The identity still needs
-      // Storage Blob Data Reader on the ciphertext account; that assignment is not in this file yet.
+      // for its user-assigned identity, never a storage key (docs/06 §5.4). The ciphertext module
+      // grants that identity Storage Blob Data Reader on the account (blobReaderPrincipalIds above).
       { name: 'SAC_BLOB_IDENTITY', value: 'managed' }
       { name: 'SAC_KEYVAULT_URI', value: keyVault.outputs.vaultUri }
       { name: 'SAC_INTERNAL_ONLY', value: 'true' }
       { name: 'SAC_APPINSIGHTS', value: logAnalytics.outputs.appInsightsConnectionString }
+      // The vault verifies the product token query-api forwards on a content request itself
+      // (contract §2), so a forged tenant or role header is refused here too.
+      { name: 'SAC_AUTH_ISSUER', value: productTokenIssuer }
+      { name: 'SAC_AUTH_AUDIENCE', value: 'sac-vault' }
+      // A minted retrieval URL is built on the public origin: the browser fetches it from the dashboard
+      // server, which forwards that one path to the vault inside the environment. The vault keeps
+      // internal ingress; no edge has a route to it.
+      { name: 'SAC_RETRIEVAL_URL_BASE', value: publicUrl }
     ]
     keyVaultEnv: []
     tags: tags
@@ -488,10 +559,52 @@ module queryApp 'modules/container-app.bicep' = {
       { name: 'SAC_ROLE', value: 'query-api' }
       { name: 'SAC_PG_HOST', value: postgres.outputs.serverFqdn }
       { name: 'SAC_PG_DATABASE', value: postgresDatabases[0] }
-      { name: 'SAC_CONTENT_VAULT_URL', value: 'http://${contentVaultApp.outputs.fqdn}' }
+      // https: the app's ingress refuses plain HTTP (allowInsecure: false) with a redirect, which a
+      // forwarded POST does not survive.
+      { name: 'SAC_CONTENT_VAULT_URL', value: 'https://${contentVaultApp.outputs.fqdn}' }
       { name: 'SAC_APPINSIGHTS', value: logAnalytics.outputs.appInsightsConnectionString }
+      // Only product access tokens are accepted: one issuer, one JWKS, whatever provider signed the
+      // person in (contract §2).
+      { name: 'SAC_AUTH_ISSUER', value: productTokenIssuer }
+      { name: 'SAC_AUTH_AUDIENCE', value: 'sac-query' }
     ]
     keyVaultEnv: []
+    tags: tags
+  }
+}
+
+// The dashboard server (contract §6): the pages, the sign-in and the server-side session as a thin
+// client of control-api, and the one place a browser's requests are forwarded from -- /v1/* to
+// query-api and /admin/v1/* to control-api with the product token, and a minted retrieval URL to the
+// vault inside the environment. A static host could do none of this: it holds no session and cannot
+// reach an internal app, which is why it replaces the Static Web App the analyst page used to be.
+module dashboardApp 'modules/container-app.bicep' = if (deployDashboard) {
+  name: 'dashboard'
+  params: {
+    location: location
+    appName: 'dashboard'
+    environmentId: containerAppsEnv.outputs.environmentId
+    userAssignedIdentityId: identityDashboard.id
+    ingress: 'external'
+    targetPort: 8787
+    cpu: '0.5'
+    memory: '1Gi'
+    minReplicas: apiMinReplicas
+    maxReplicas: environment == 'dev' ? 2 : 10
+    image: '${registryLoginServer}/dashboard:${imageTag}'
+    registryLoginServer: registryLoginServer
+    // The server answers /healthz only; it has no dependency of its own to be not-ready on.
+    readinessPath: '/healthz'
+    env: [
+      { name: 'SAC_QUERY_API_URL', value: 'https://${queryApp.outputs.fqdn}' }
+      { name: 'SAC_CONTROL_URL', value: 'https://${controlApp.outputs.fqdn}' }
+      { name: 'SAC_CONTENT_VAULT_URL', value: 'https://${contentVaultApp.outputs.fqdn}' }
+      { name: 'SAC_PUBLIC_URL', value: publicUrl }
+    ]
+    keyVaultEnv: [
+      // See controlApp: the same secret, until service identity replaces it.
+      { name: 'SAC_INTERNAL_TOKEN', keyVaultUrl: '${keyVaultSecretsUri}/sac-internal-token', identity: identityDashboard.id }
+    ]
     tags: tags
   }
 }
@@ -587,17 +700,23 @@ module waf 'modules/waf.bicep' = if (deployEdge) {
   }
 }
 
-// Analyst edge: Front Door + Private Link, /analyst/* -> query-api. The device /v1/* routes moved to
-// Application Gateway below (ADR 0020 decision 1).
+// Browser and identity-provider edge: Front Door + Private Link. /analyst/* -> query-api;
+// /scim/v2/*, /onboard/*, /.well-known/* -> control-api; everything else -> the dashboard server when
+// it is deployed. No route reaches content-vault: a minted retrieval URL is answered by the dashboard
+// server inside the environment. The device /v1/* routes are on Application Gateway below (ADR 0020
+// decision 1).
 module frontDoor 'modules/frontdoor.bicep' = if (deployEdge) {
   name: 'frontdoor'
   params: {
     wafPolicyId: waf.outputs.wafPolicyId
     environmentId: containerAppsEnv.outputs.environmentId
-    environmentFqdn: queryApp.outputs.fqdn
-    originHostHeaders: {
+    privateLinkLocation: location
+    originHostHeaders: union({
       'query-api': queryApp.outputs.fqdn
-    }
+      'control-api': controlApp.outputs.fqdn
+    }, deployDashboard ? {
+      dashboard: dashboardApp.?outputs.fqdn ?? ''
+    } : {})
     tags: tags
   }
 }
@@ -624,18 +743,9 @@ module applicationGateway 'modules/application-gateway.bicep' = if (deployEdge) 
   }
 }
 
-// Conditional on deployDashboard: the dashboard is a static file that opens from disk
-// (apps/dashboard/index.html), so a lab reaches it without a Static Web App.
-module dashboard 'modules/static-web-app.bicep' = if (deployDashboard) {
-  name: 'static-web-app'
-  params: {
-    location: location
-    baseName: baseName
-    customDomain: dashboardCustomDomain
-    entraClientId: dashboardEntraClientId
-    tags: tags
-  }
-}
+// modules/static-web-app.bicep is no longer instantiated. The dashboard is the dashboardApp server
+// above (contract §6): sign-in is control-api's, as the relying party for every customer provider, and
+// a static host with its own Entra sign-in would be a second, unconnected sign-in path.
 
 module monitoring 'modules/monitoring.bicep' = {
   name: 'monitoring'
@@ -699,6 +809,7 @@ output identities object = {
   reconciler: identityReconciler.id
   migration: identityMigration.id
   gateway: identityGateway.id
+  dashboard: identityDashboard.id
 }
 
 @description('Whether the Managed HSM pool was deployed. Per-contract only (§2, §11.6).')
@@ -707,7 +818,7 @@ output managedHsmDeployed bool = deployManagedHsm && length(hsmAdministratorObje
 @description('Whether the edge (Front Door + Application Gateway and their WAF policies) was deployed. False in the lab, where the base fees exceed the whole environment.')
 output edgeDeployed bool = deployEdge
 
-@description('Whether the dashboard was deployed as a Static Web App. False in the lab: the dashboard is a static file.')
+@description('Whether the dashboard server was deployed. False in the lab, which has no browser front end.')
 output dashboardDeployed bool = deployDashboard
 
 @description('Whether the export storage account was deployed.')
@@ -715,3 +826,37 @@ output exportsDeployed bool = deployExports
 
 @description('How many §10.3 alerts are live. §10.3 has 18 rows; a smaller number is a gap the deployment states rather than hides.')
 output alertCount int = monitoring.outputs.alertCount
+
+// The vendor multi-tenant Entra app trusts control-api's managed identity as a federated credential,
+// so the app-only Graph call of the Intune check (contract §3, §5; SAC_ENTRA_FIC=managed) needs no
+// client secret anywhere. This file does not use the Microsoft Graph Bicep extension, so the
+// credential is not deployed here: the owner adds it once per environment, on the app registration,
+// from this output --
+//
+//   az ad app federated-credential create --id <entraAppClientId> --parameters '{
+//     "name": "<baseName>-control-api",
+//     "issuer": "<entraFederatedCredential.issuer>",
+//     "subject": "<entraFederatedCredential.subject>",
+//     "audiences": ["api://AzureADTokenExchange"],
+//     "description": "control-api presents its managed identity token as the client assertion"
+//   }'
+//
+// or, in the portal: App registrations > the app > Certificates & secrets > Federated credentials >
+// Add credential > scenario "Managed identity" > the identity <baseName>-id-control. The app must be in
+// this deployment's tenant (a managed identity can only be trusted by an app in its own tenant). The
+// one Graph application permission, DeviceManagementManagedDevices.Read.All, is granted by each
+// customer's admin consent at onboarding; the app asks for no other application permission.
+@description('What the owner sets on the vendor multi-tenant Entra app registration: a federated credential with this issuer, subject (the control-api identity object id) and audience. See the comment above for the exact command.')
+output entraFederatedCredential object = {
+  issuer: '${az.environment().authentication.loginEndpoint}${tenant().tenantId}/v2.0'
+  subject: identityControl.properties.principalId
+  audiences: [
+    'api://AzureADTokenExchange'
+  ]
+  managedIdentityClientId: identityControl.properties.clientId
+  managedIdentityPrincipalId: identityControl.properties.principalId
+  appClientId: entraAppClientId
+}
+
+@description('The product access-token issuer control-api signs as and query-api and the vault verify (contract §2). The dashboard server verifies none: it holds the session and forwards the token.')
+output productTokenIssuer string = productTokenIssuer

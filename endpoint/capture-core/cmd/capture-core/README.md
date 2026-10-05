@@ -41,13 +41,13 @@ The service drives `core.Supervisor`, which encodes §3.5 literally and records 
 
 | §3.5 startup | What the binary does |
 |---|---|
-| 1 bundle, verified | `policy.Store.Apply` over the file named by `--bundle`, verified under the pinned `--policy-key`. A failure retains the previous bundle, or falls to **M0** with none (§13.3) — it never widens. |
+| 1 bundle, verified | `policy.Store.Apply` over the file named by `--bundle`, or, with no `--bundle`, over the last bundle fetched from `GET /v1/policy` and cached in the state directory; either is verified under the pinned `--policy-key`. A failure retains the previous bundle, or falls to **M0** with none (§13.3) — it never widens. |
 | 2 spool opened | `capture-spool` with a key file **outside** the spool directory, bounded and encrypted at rest. If it cannot open, no provider starts. |
-| 2b identity resolved | load the sealed credential if present and adopt its server-minted `tenant_id`/`device_id` (a disagreement with the flags is logged and the credential wins); with no credential and a drain configured, a bounded synchronous enrolment obtains it. An offline device leaves the identity unresolved and the pipeline refuses to mint rather than stamping the flags. |
+| 2b identity resolved | load the sealed credential if present and adopt its server-minted `tenant_id`/`device_id` (a disagreement with the flags is logged and the credential wins); with no credential and a drain configured, a bounded synchronous enrolment (single-use token, or the tenant's deployment key plus the attestation) obtains it. The console user is read and `user_ref` derived. With no `--bundle`, the tenant's bundle is fetched here, inside the same bound, before any provider starts. An offline device leaves the identity unresolved and the pipeline refuses to mint rather than stamping the flags. |
 | 3 `proc.detect` | only with `--proc-detect`; see the enumeration gap below |
 | 4 `cli.shim` | with `--cli-shim`: writes the managed CA bundle and shell profile from the bundle's `cli_shim` block and `interception.root_ca_pem`; no ports |
 | 5 classifier-host | `classifierlink` connects to `--classifier-address` and completes the version handshake; or, with `--classifier-release` and no address, starts the `classifier-host` beside this binary as a child on stdio and handshakes with that |
-| 6 `proxy.tls` | listens on `--proxy-tls-listen` (or the bundle's `interception.proxy_listen`); with `--trust-install` it installs the device CA from `--ca-cert`/`--ca-key` (or the bundle root) into the OS store; the system proxy is pointed at it only if a `SystemProxy` is wired, which this build does not do |
+| 6 `proxy.tls` | listens on `--proxy-tls-listen` (or the bundle's `interception.proxy_listen`); with `--trust-install` it installs the device CA from `--ca-cert`/`--ca-key` (or, with no pair configured, the CA the device generated for itself; see "The per-device CA") into the OS store; the system proxy is pointed at it only if a `SystemProxy` is wired, which this build does not do |
 | 7 `proxy.loopback` | binds the bundle's port map **last**, and only after its own upstream preflight succeeds |
 
 Shutdown reverses it: **the loopback port is released first** (E14), then the proxy stops enforcing,
@@ -78,22 +78,24 @@ assembled into a partial file.
 | Flag | Meaning |
 |---|---|
 | `--spool-dir`, `--spool-key`, `--spool-bounds` | the spool, its key file (must be outside the spool directory), and the bound profile |
-| `--tenant-id`, `--device-id`, `--user-ref`, `--population` | the identity and the population used for scope resolution. With `--device-endpoint` set, `tenant_id` and `device_id` on every envelope come from the issued credential and these two flags are only checked against it; with no endpoint they are the identity |
+| `--tenant-id`, `--device-id`, `--user-ref`, `--population` | the identity and the population used for scope resolution. With `--device-endpoint` set, `tenant_id` and `device_id` on every envelope come from the issued credential, `--device-id` is not needed, and both are only checked against it; with no endpoint they are the identity. `--user-ref`, when set, wins over the reference derived from the console user |
+| `--subject-name`, `--managed-state`, `--hostname` | overrides for what the device reports (ADR 0021). Empty: the console user's UPN (else `DOMAIN\user`), `managed` when an Intune enrolment is found (else `unknown`), and the OS hostname |
 | `--retention` | device-side retention for spooled observations (default `720h`) |
-| `--bundle`, `--policy-key`, `--policy-key-id` | the signed bundle and the pinned Ed25519 key; omit the bundle to run at M0 |
+| `--bundle`, `--policy-key`, `--policy-key-id` | the signed bundle and the pinned Ed25519 key. With no `--bundle`, a key and a `--device-endpoint`, the bundle is fetched from `GET /v1/policy`; with no key it is not fetched and the device runs at M0 |
 | `--classifier-release`, `--classifier-pubkey` | with no `--classifier-address`, run the `classifier-host` installed beside this binary as a child on stdio, loading this signed release under this key |
 | `--content-dir`, `--content-key` | the M3 local content store and the key file it is sealed under (which must be outside the directory). Empty means the device holds no content and refuses M3 observations |
 | `--classifier-address`, `--classifier-budget` | `unix:PATH`, `pipe:NAME`, or `tcp:127.0.0.1:PORT` (loopback only), and the per-classification budget. An empty address with no `--classifier-release` means rules-only, `confidence: degraded` |
 | `--proxy-tls`, `--proxy-tls-listen`, `--proxy-tls-canary` | the interceptor; without a canary it reports `degraded detail=tls_probe_failed` rather than healthy |
 | `--proxy-loopback`, `--proc-detect` | the other two providers |
 | `--trust-install`, `--trust-store`, `--trust-remove-on-stop` | install the per-device CA into the OS trust store (`root` or Windows `enterprise`), and remove it on shutdown. Off by default: the wrong store fails silently, so installing is opt-in |
-| `--ca-cert`, `--ca-key` | pin the per-device CA pair so the trusted root is stable across restarts; `--ca-cert` may be omitted when the bundle carries `interception.root_ca_pem`. With neither, `proxy.tls` mints an ephemeral CA |
+| `--ca-cert`, `--ca-key` | pin the per-device CA pair so the trusted root is stable across restarts; `--ca-cert` may be omitted when the bundle carries `interception.root_ca_pem`. With neither and `--trust-install` or `--cli-shim`, the device generates and keeps its own pair in the state directory; with neither and nothing trusting the root, `proxy.tls` mints an ephemeral CA |
 | `--cli-shim`, `--shim-dir` | run `cli.shim` and choose where it writes the CA bundle, profile and Node bootstrap |
 | `--drain-deadline` | the bound on the shutdown drain (§3.5 step 3) |
 | `--health-file`, `--health-interval` | the health channel, appended as JSON lines |
 | `--attachment-cap` | the policy cap on one attachment manifest, checked before any byte moves |
-| `--device-endpoint`, `--auth-mode`, `--credential-file`, `--enrolment-token`, `--ca-file`, `--mdm-id`, `--backoff-base`, `--backoff-cap` | the device-to-cloud drain (ADR 0020): the ingress base URL, `x509`\|`dpop`, the sealed-credential path, the one-shot enrolment token, the pinned CA set, the MDM device id (hardware-identity seed), and the retry backoff bounds. An empty `--device-endpoint` disables the drain |
-| `--config-file` | read a `KEY=VALUE` profile in the `SAC_*` vocabulary (`installer/manifest.mjs` is the catalogue); it supplies flags and an explicitly passed flag wins. The platform wrappers and the Windows service use it, so configuration is a file rather than a command line and a secret or a path with spaces needs no quoting |
+| `--device-endpoint`, `--auth-mode`, `--credential-file`, `--enrolment-token`, `--deployment-key`, `--ca-file`, `--mdm-id`, `--backoff-base`, `--backoff-cap` | the device-to-cloud drain (ADR 0020): the ingress base URL, `x509`\|`dpop`, the sealed-credential path, the bootstrap credential — the lab's one-shot enrolment token or the tenant package's reusable deployment key (`SAC_DEPLOYMENT_KEY`), exactly one — the pinned CA set (empty: the system roots), the MDM device id (hardware-identity seed; empty: the SMBIOS UUID and serial), and the retry backoff bounds. An empty `--device-endpoint` disables the drain |
+| `--state-dir` | where the agent keeps what it fetches or generates: `policy\bundle.json` (+ `.etag`) and `device-ca\ca.pem`/`ca.key`. Empty: the directory of `--credential-file` |
+| `--config-file` | read a `KEY=VALUE` profile in the `SAC_*` vocabulary (`installer/manifest.mjs` is the catalogue); repeatable, a later file wins over an earlier one, and an explicitly passed flag wins over all. A missing file is an error naming its path. The Windows service is started with the vendor's `capture-core.env` and then the tenant's file, so configuration is files rather than a command line and a secret or a path with spaces needs no quoting |
 | `--service`, `--service-name` | host the process under the Windows SCM (`--service`) and the registered service name to host (default `ShadowAICapture`). Windows only; see "Running it as a service" |
 | `--print-config`, `--dry-run` | `--print-config` resolves and validates everything, prints it and exits; `--dry-run` builds the service graph, starts nothing (no §3.5 step runs), prints one health snapshot and waits for the stop signal |
 | `--work-dir`, `--keep-work-dir` | the selftest work directory (default OS temp, removed on exit, success or failure) |
@@ -173,9 +175,10 @@ implements the SCM contract directly (`service_windows.go` — a `SERVICE_TABLE_
 control handler), reports `START_PENDING` and then `RUNNING` only once the agent graph is up, and
 shuts down in §3.5 order on a stop or shutdown control. The installer registers it as a
 **LocalSystem** service (the trust store and system proxy are machine scope) with automatic start,
-so no external wrapper (NSSM/WinSW) is required. It is configured by a file, not a command line: the
-installer puts the enrolment profile at `%ProgramData%\ShadowAICapture\capture-core.env` and the
-service points at it with `--config-file`, so a secret or a path with spaces needs no quoting and
+so no external wrapper (NSSM/WinSW) is required. It is configured by files, not a command line: the
+lab MSI puts its enrolment profile at `%ProgramData%\ShadowAICapture\capture-core.env`, and the
+generic MSI adds the tenant's `tenant.env` after it (`--config-file capture-core.env --config-file
+tenant.env`, the later file winning), so a secret or a path with spaces needs no quoting and
 reconfiguration is a file edit plus a service restart. The installer starts the service at the end of
 the install and at every boot. Under the SCM there is no console, so the log goes to `service.log`
 beside the health file, and the startup health snapshot that a console run prints is not written
@@ -197,6 +200,28 @@ task. Two things change a machine, and both are asked for explicitly. `--trust-i
 and, with `--trust-remove-on-stop`, removes it again. `--cli-shim` on Windows writes the proxy and
 CA variables into the machine environment and deletes them when the provider stops. The installer
 under [installer/](../../../../installer/README.md) is what registers a service.
+
+## A tenant-packaged device
+
+The generic MSI carries no tenant data; the tenant's package adds four keys (`SAC_TENANT_ID`,
+`SAC_DEVICE_ENDPOINT`, `SAC_DEPLOYMENT_KEY`, `SAC_AUTH_MODE`). Everything else a device needs it
+reads, fetches or makes:
+
+- **Device id**: minted by the server at enrolment. No `SAC_DEVICE_ID` is configured; the
+  idempotency key is seeded from the hardware, so a re-image returns the same device and two
+  devices never share one.
+- **Attestation and managed state**: read from Windows at each enrolment ([hostinfo/](../../hostinfo/README.md)).
+- **Policy**: `GET /v1/policy` after enrolment, verified under the vendor's `SAC_POLICY_KEY`. On a
+  first boot the enrolment and the fetch happen while the service is built (one 30 s bound shared
+  with the identity step), because `proxy.tls`, `cli.shim` and the body cap take values from the
+  bundle when they are built; a device that is offline then starts at M0 and takes them at its next
+  restart, while `proxy.loopback` and the kill switches follow every fetch. Polling is every 15
+  minutes unless the server sends `Cache-Control: max-age` or `Retry-After`; failures retry from one
+  minute, doubling. The poller's state is `policy_fetch` in the health document.
+- **user_ref**: derived from the console user under the `user_ref_key` the enrolment response
+  carries, sealed with the credential. `user_ref_source` in the health document says which kind.
+- **Interception CA**: generated on first start (see the flag table) when `SAC_TRUST_INSTALL` or
+  `SAC_CLI_SHIM` is set and no pair is configured.
 
 ## What is NOT VERIFIED on this host
 
@@ -247,6 +272,11 @@ under [installer/](../../../../installer/README.md) is what registers a service.
   beside the spool. The envelope identity is the issued one: until a credential exists the pipeline
   refuses to mint (`identity_unresolved`) rather than stamping the flags. Rotation (§2.2's 60/90-day
   overlap) is a control-api concern and is not implemented here.
+- **The enterprise path has not run on an enrolled device.** Deployment-key enrolment, the policy
+  fetch, the cache and the per-device CA run against a fake device cloud in
+  `enterprise_test.go`; the Windows readers ran on a build host that is neither Intune-enrolled nor
+  Entra-joined, and not as LocalSystem, so the Intune and Entra ids, a cached UPN and the console
+  query under the service account have not been seen.
 - **Five tests fail on Windows, and did before the content and installer work.** Three in `cli`
   (`TestStartWritesFilesWithContentAndPermissions`, `TestNodeProxyScript`, `TestCounters`), one in
   `cmd/sac-bundle` (`TestRun_ProducesVerifiableBundle`) and one in `trust`

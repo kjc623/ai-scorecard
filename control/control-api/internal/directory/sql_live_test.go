@@ -3,11 +3,14 @@
 package directory
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -161,5 +164,117 @@ func TestSQLStoreSyncsRetiresAndLeavesUnmapped(t *testing.T) {
 	}
 	if display.Valid {
 		t.Fatalf("a hashed tenant stored display name %q", display.String)
+	}
+}
+
+// TestSQLUserRefKeyMintsOnceUnderARace drives two first callers through the real conditional write:
+// the barrier makes both read "no key" before either writes, so only the database decides, and both
+// must come back with the key it kept.
+func TestSQLUserRefKeyMintsOnceUnderARace(t *testing.T) {
+	db := openLive(t)
+	ctx := context.Background()
+	tenant := fmt.Sprintf("00000000-0000-4000-8001-%012d", time.Now().UnixNano()%1_000_000_000_000)
+	if _, err := db.ExecContext(ctx, `INSERT INTO ops.tenant
+	  (tenant_id, name, status, residency_region, key_custody, ceiling_mode, content_search)
+	  VALUES ($1::uuid, 'user-ref-key-live', 'active', 'eu-west', 'vendor', 'm1', 'disabled')`, tenant); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.ExecContext(context.Background(), `DELETE FROM ops.tenant WHERE tenant_id = $1::uuid`, tenant)
+	})
+
+	store := &sqlBarrierKeyStore{inner: NewSQL(db)}
+	store.arrived.Add(2)
+	var keys [2][]byte
+	var errs [2]error
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		ks, err := NewUserRefKeys(store, testCipher(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			keys[i], errs[i] = ks.Key(ctx, tenant)
+		}(i)
+	}
+	wg.Wait()
+	if errs[0] != nil || errs[1] != nil {
+		t.Fatalf("Key: %v / %v", errs[0], errs[1])
+	}
+	if !bytes.Equal(keys[0], keys[1]) {
+		t.Fatal("two first callers ended with different keys")
+	}
+	var sealed []byte
+	if err := db.QueryRowContext(ctx, `SELECT user_ref_key_enc FROM ops.tenant WHERE tenant_id = $1::uuid`, tenant).Scan(&sealed); err != nil {
+		t.Fatal(err)
+	}
+	if opened, err := testCipher(t).OpenBytes(tenant, sealed); err != nil || !bytes.Equal(opened, keys[0]) {
+		t.Fatalf("the stored key is not the returned one: %v", err)
+	}
+	if _, err := (&UserRefKeys{store: NewSQL(db), cipher: testCipher(t)}).Key(ctx, "00000000-0000-4000-8001-999999999999"); !errors.Is(err, ErrUnknownTenant) {
+		t.Fatalf("unknown tenant = %v", err)
+	}
+}
+
+type sqlBarrierKeyStore struct {
+	inner   *SQLStore
+	arrived sync.WaitGroup
+}
+
+func (b *sqlBarrierKeyStore) SealedUserRefKey(ctx context.Context, tenantID string) ([]byte, error) {
+	sealed, err := b.inner.SealedUserRefKey(ctx, tenantID)
+	b.arrived.Done()
+	b.arrived.Wait()
+	return sealed, err
+}
+
+func (b *sqlBarrierKeyStore) InitUserRefKey(ctx context.Context, tenantID string, sealed []byte) ([]byte, error) {
+	return b.inner.InitUserRefKey(ctx, tenantID, sealed)
+}
+
+// TestSQLRetireLeavesSCIMPeopleAlone: a file that does not name a person SCIM provisioned is not
+// evidence that they left, so the file sync's retirement must skip them.
+func TestSQLRetireLeavesSCIMPeopleAlone(t *testing.T) {
+	db := openLive(t)
+	ctx := context.Background()
+	tenant := fmt.Sprintf("00000000-0000-4000-8003-%012d", time.Now().UnixNano()%1_000_000_000_000)
+	scimRef := "u_" + strings.Repeat("ab", 16)
+	if _, err := db.ExecContext(ctx, `INSERT INTO ops.tenant
+	  (tenant_id, name, status, residency_region, key_custody, ceiling_mode, content_search)
+	  VALUES ($1::uuid, 'directory-scim-live', 'active', 'eu-west', 'vendor', 'm1', 'disabled')`, tenant); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+	t.Cleanup(func() {
+		for _, q := range []string{
+			`DELETE FROM ops.scim_user WHERE tenant_id = $1::uuid`,
+			`DELETE FROM ops.user_dim WHERE tenant_id = $1::uuid`,
+			`DELETE FROM ops.tenant WHERE tenant_id = $1::uuid`,
+		} {
+			_, _ = db.ExecContext(context.Background(), q, tenant)
+		}
+	})
+	if _, err := db.ExecContext(ctx, `INSERT INTO ops.scim_user (tenant_id, user_name_hash, resource_enc, user_ref)
+	  VALUES ($1::uuid, $2, '\x00'::bytea, $3)`, tenant, bytes.Repeat([]byte{1}, 32), scimRef); err != nil {
+		t.Fatalf("seed scim user: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO ops.user_dim (tenant_id, user_ref, department, status)
+	  VALUES ($1::uuid, $2, 'Engineering', 'active')`, tenant, scimRef); err != nil {
+		t.Fatalf("seed user_dim: %v", err)
+	}
+	syncer := &Syncer{Source: sliceSource{name: "live", users: []User{
+		{UserRef: "u_file_only", DirectoryID: "dir-f", Department: "Legal", Status: StatusActive},
+	}}, Store: NewSQL(db), Cipher: testCipher(t)}
+	res, err := syncer.Sync(ctx, tenant)
+	if err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if res.Retired != 0 {
+		t.Fatalf("the file sync retired %d rows; the SCIM person is not the file's to retire", res.Retired)
+	}
+	var status string
+	if err := db.QueryRowContext(ctx, `SELECT status FROM ops.user_dim WHERE tenant_id = $1::uuid AND user_ref = $2`, tenant, scimRef).Scan(&status); err != nil || status != "active" {
+		t.Fatalf("SCIM person status = %s, %v", status, err)
 	}
 }

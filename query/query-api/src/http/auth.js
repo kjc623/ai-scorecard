@@ -1,146 +1,185 @@
-// auth.js — the authenticated session, from a signed token.
+// auth.js — the authenticated session, from the product's own access token.
 //
 // WHY THIS FILE EXISTS. Until task 11 the only trusted source of a tenant was a development
 // header (`x-sac-dev-tenant`) accepted behind SAC_DEV_TRUST_PRINCIPAL=1. That is a lab
-// arrangement, not authentication: a header is something the caller writes. This module
-// replaces it with the thing the design named (docs/04 §2.1, docs/06 §4.1): an OpenID
-// Connect session, where the tenant, the actor and the roles arrive inside an RS256-signed
-// token and are read from nothing else.
+// arrangement, not authentication: a header is something the caller writes. Task 11 replaced it
+// with a token from the customer's identity provider; the enterprise onboarding change replaced
+// THAT with the product's own access token, because a customer IdP's access token is opaque or
+// not meant for us (Google, Okta), so verifying it here could never work for "any IdP".
 //
-// It is deliberately small and dependency-free, like the rest of this service. Node's
-// `crypto` verifies an RSA signature and builds a public key from a JWK, so the whole flow
-// is base64url decoding, a JWKS fetch, and one `crypto.verify`. Adding a JWT library would
-// break the offline, zero-dependency constraint for a function this size.
+// One issuer, one JWKS. control-api is the relying party for every customer IdP; it resolves the
+// tenant, the actor and the roles from OUR mapping, keeps the server-side session, and mints a
+// short-lived ES256 token (contract §2). This module verifies that token and nothing else.
+//
+// Why a library here, in a package that otherwise has none. JOSE verification is a classic
+// source of authentication bypasses (alg confusion, `crit` ignored, a JWK built from attacker
+// input, a kid-miss turned into a JWKS fetch storm). `jose` is zero-dependency, audited, and
+// does each of those correctly; a hand-rolled ES256 verifier would be a second, untested copy
+// of the same logic at the one boundary where a bug is a cross-tenant read.
 //
 // What is verified, and why each matters:
-//   - the signature, against the issuer's JWKS (the key is selected by `kid`);
-//   - `alg` is RS256, from an allow-list, so `alg: none` or an HMAC confusion cannot pass;
-//   - `iss` equals the configured issuer exactly;
-//   - `aud` contains the configured audience, so a token minted for a different API is refused;
-//   - `exp` and `nbf` with a small clock tolerance.
-// The tenant claim must be a UUID and the roles claim a list of known role names, because a
-// token with no tenant or no role is refused rather than defaulted — the fail-closed rule of
-// docs/04 §2.1.
+//   - the token is a compact JWS of bounded size, so a megabyte header is refused unparsed;
+//   - `alg` is ES256 and only ES256, so `none`, an HMAC confusion or RS256 cannot pass;
+//   - `typ` is `at+jwt` and `kid` is named, as the issuer's header always carries them;
+//   - an unrecognised `crit` parameter is refused (jose implements RFC 7515 §4.1.11);
+//   - the key comes only from the configured JWKS (an embedded `jwk`/`jku`/`x5u` is never used),
+//     and a kid the cache does not hold triggers at most one refetch per cooldown;
+//   - `iss` equals the configured issuer exactly and `aud` names this service;
+//   - `exp`, `nbf` and `iat` with 60 s of leeway, and the token is no older than ten minutes —
+//     the contract's lifetime cap, so a revoked session cannot outlive it here;
+//   - the tenant is a uuid, the actor is named, and at least one role is a product role.
+// A token that is signed but names no tenant or no known role is refused, never defaulted —
+// the fail-closed rule of docs/04 §2.1.
 
-import { createPublicKey, verify as cryptoVerify } from 'node:crypto';
+import { createRemoteJWKSet, customFetch, decodeProtectedHeader, jwtVerify } from 'jose';
 import { isKnownRole } from '../roles.js';
 
+/** The one signature algorithm the product issuer uses (contract §2). */
+export const TOKEN_ALG = 'ES256';
+/** RFC 9068's media type for a JWT access token; the issuer's header carries it. */
+export const TOKEN_TYP = 'at+jwt';
+/** This service's own audience. The issuer names all three verifiers in one token. */
+export const DEFAULT_AUDIENCE = 'sac-query';
+/** Clock leeway for exp, nbf and iat. The contract allows at most 60 s. */
+export const CLOCK_TOLERANCE_SEC = 60;
+/** The contract caps a token at ten minutes; one older than that is refused whatever its exp says. */
+export const MAX_TOKEN_AGE_SEC = 600;
+/** A product token is a few hundred bytes. Anything near this is not one, and is not parsed. */
+export const MAX_TOKEN_BYTES = 8 * 1024;
+/** How long a fetched JWKS is used before it is refreshed. */
+const JWKS_CACHE_MAX_AGE_MS = 10 * 60_000;
+/**
+ * The shortest gap between two JWKS fetches caused by an unknown kid. A rotation is picked up
+ * within this window; a stream of forged kids cannot turn into a stream of fetches.
+ */
+const JWKS_COOLDOWN_MS = 30_000;
+const JWKS_TIMEOUT_MS = 5_000;
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-/** A few seconds of tolerance for a token minted on a clock a moment ahead of ours. */
-const CLOCK_TOLERANCE_SEC = 60;
-/** How long a fetched JWKS is trusted before a refetch. */
-const JWKS_TTL_MS = 5 * 60_000;
+const COMPACT_JWS = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+/** The session id is a hex prefix of the session hash, for audit correlation only. */
+const SESSION_ID = /^[0-9a-f]{8,64}$/i;
+const MAX_ACTOR = 256;
+// eslint-disable-next-line no-control-regex
+const CONTROL = /[\u0000-\u001f\u007f]/;
 
-/** base64url -> Buffer, rejecting a segment that is not base64url. */
-export function decodeSegment(segment) {
-  if (typeof segment !== 'string' || segment === '') throw new Error('empty JWT segment');
-  return Buffer.from(segment.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
-}
-
-/** The unverified header and payload, for choosing a key and reading claims. Never trusted alone. */
-export function decodeJwt(token) {
-  if (typeof token !== 'string') throw new Error('token is not a string');
-  const parts = token.split('.');
-  if (parts.length !== 3) throw new Error('a JWT has three dot-separated segments');
-  const header = JSON.parse(decodeSegment(parts[0]).toString('utf8'));
-  const payload = JSON.parse(decodeSegment(parts[1]).toString('utf8'));
-  return { header, payload, signingInput: `${parts[0]}.${parts[1]}`, signature: decodeSegment(parts[2]) };
+/** `{issuer}/.well-known/jwks.json`, the contract's default JWKS location. */
+export function defaultJwksUrl(issuer) {
+  return `${String(issuer).replace(/\/+$/, '')}/.well-known/jwks.json`;
 }
 
 /**
- * Verify one RS256 JWT against a set of JWKs.
+ * The session facts a verified claim set carries, or a thrown refusal.
  *
- * @param {string} token
- * @param {object} opts
- * @param {string} opts.issuer
- * @param {string} opts.audience
- * @param {ReadonlyArray<object>} opts.keys  JWKs from the issuer
- * @param {() => Date} [opts.now]
- * @returns {object} the verified payload
+ * Exported so the claim rules are testable without a signature; it is never called on claims
+ * that have not been verified.
  */
-export function verifyJwt(token, { issuer, audience, keys, now = () => new Date() }) {
-  const { header, payload, signingInput, signature } = decodeJwt(token);
-  if (header.alg !== 'RS256') throw new Error(`unsupported token alg ${JSON.stringify(header.alg)}; only RS256 is accepted`);
-  const jwk = (keys ?? []).find((k) => !header.kid || k.kid === header.kid) ?? (keys ?? [])[0];
-  if (!jwk) throw new Error('the issuer published no key for this token');
-  if (jwk.kty !== 'RSA') throw new Error(`the issuer key is ${JSON.stringify(jwk.kty)}, not RSA`);
-  let key;
-  try {
-    key = createPublicKey({ key: jwk, format: 'jwk' });
-  } catch (error) {
-    throw new Error(`the issuer key is not a usable JWK: ${error.message}`);
-  }
-  const ok = cryptoVerify('RSA-SHA256', Buffer.from(signingInput, 'utf8'), key, signature);
-  if (!ok) throw new Error('the token signature does not verify');
+export function sessionFromClaims(claims) {
+  const tenant = typeof claims.sac_tenant === 'string' ? claims.sac_tenant.trim().toLowerCase() : '';
+  if (!UUID.test(tenant)) throw new Error('the token\'s sac_tenant claim is not a tenant uuid');
 
-  const seconds = Math.floor(now().getTime() / 1000);
-  if (payload.iss !== issuer) throw new Error(`token issuer ${JSON.stringify(payload.iss)} is not ${JSON.stringify(issuer)}`);
-  const audiences = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
-  if (!audiences.includes(audience)) throw new Error(`token audience ${JSON.stringify(payload.aud)} does not name ${JSON.stringify(audience)}`);
-  if (typeof payload.exp !== 'number' || payload.exp + CLOCK_TOLERANCE_SEC < seconds) throw new Error('the token has expired');
-  if (typeof payload.nbf === 'number' && payload.nbf - CLOCK_TOLERANCE_SEC > seconds) throw new Error('the token is not valid yet');
-  return payload;
-}
-
-/**
- * A tiny JWKS cache: fetch once, reuse, and refetch only when a token names a key the cache
- * does not hold (a rotation) or the TTL has passed. A failed refetch does not empty the cache.
- */
-export function createJwksCache({ jwksUrl, fetchImpl = globalThis.fetch, now = () => Date.now(), ttlMs = JWKS_TTL_MS } = {}) {
-  let keys = null;
-  let fetchedAt = 0;
-  async function load(force = false) {
-    if (!force && keys && now() - fetchedAt < ttlMs) return keys;
-    const res = await fetchImpl(jwksUrl);
-    if (!res?.ok) throw new Error(`JWKS fetch from ${jwksUrl} returned ${res?.status ?? 'no status'}`);
-    const body = await res.json();
-    if (!Array.isArray(body?.keys) || body.keys.length === 0) throw new Error(`JWKS at ${jwksUrl} carried no keys`);
-    keys = body.keys;
-    fetchedAt = now();
-    return keys;
+  const actor = typeof claims.actor === 'string' ? claims.actor.trim() : '';
+  if (actor === '' || actor.length > MAX_ACTOR || CONTROL.test(actor)) {
+    throw new Error('the token\'s actor claim is missing or not a printable name');
   }
+  const subject = typeof claims.sub === 'string' ? claims.sub.trim() : '';
+  if (subject === '') throw new Error('the token names no subject');
+
+  // A role this service does not know is dropped rather than refused: a newer issuer may name a
+  // role a verifier has not learnt yet. A token left with no known role is refused outright.
+  const roles = Array.isArray(claims.roles) ? [...new Set(claims.roles.filter(isKnownRole))] : [];
+  if (roles.length === 0) throw new Error('the token\'s roles claim names no product role');
+
+  // The session id only correlates audit rows with the session that wrote them, so a malformed one
+  // is dropped rather than allowed to refuse a read.
+  const sessionId = typeof claims.sid === 'string' && SESSION_ID.test(claims.sid) ? claims.sid.toLowerCase() : null;
   return {
-    async keyFor(kid) {
-      const current = await load();
-      if (!kid || current.some((k) => k.kid === kid)) return current;
-      // The token names a key we do not hold. One forced refetch, then give up: a key that an
-      // issuer does not publish is a forgery, not a lag.
-      return load(true);
-    },
-    /** Test seam: drop the cache. */
-    clear() {
-      keys = null;
-      fetchedAt = 0;
-    },
+    tenant,
+    actorId: actor,
+    subject,
+    roles,
+    sessionId,
+    idp: claims.idp === 'entra' || claims.idp === 'oidc' ? claims.idp : null,
+    caseReference: null,
   };
 }
 
+/** One line for the log: jose's machine code when it has one, never the token. */
+function reasonOf(error) {
+  const code = typeof error?.code === 'string' ? `${error.code}: ` : '';
+  return `${code}${error?.message ?? error}`;
+}
+
 /**
- * Build the token verifier from configuration. `enabled` is false when no issuer is
- * configured, which is the memory-lab case: then the development principal is the only path,
- * and only behind its own flag.
+ * Build the token verifier from configuration. `enabled` is false when no issuer is configured,
+ * which is the memory-lab case: then the development principal is the only path, and only behind
+ * its own flag.
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.issuer]      exact `iss`; empty disables the token path
+ * @param {string} [opts.audience]    this service's audience
+ * @param {string} [opts.jwksUrl]     defaults to {issuer}/.well-known/jwks.json
+ * @param {typeof fetch} [opts.fetchImpl]  test seam for the JWKS fetch
+ * @param {() => Date} [opts.now]     test seam for the claim clock
+ * @param {number} [opts.cooldownMs]  test seam for the kid-miss refetch interval
  */
-export function createVerifier({ issuer = '', audience = '', jwksUrl = '', tenantClaim = 'sac_tenant', rolesClaim = 'roles', fetchImpl = globalThis.fetch, now = () => new Date() } = {}) {
-  if (!issuer || !audience) {
-    return Object.freeze({ enabled: false, async verify() { throw new Error('no issuer is configured'); } });
+export function createVerifier({
+  issuer = '',
+  audience = DEFAULT_AUDIENCE,
+  jwksUrl = '',
+  fetchImpl = null,
+  now = () => new Date(),
+  cooldownMs = JWKS_COOLDOWN_MS,
+} = {}) {
+  if (!issuer) {
+    return Object.freeze({ enabled: false, async verify() { throw new Error('no token issuer is configured'); } });
   }
-  const keys = createJwksCache({ jwksUrl: jwksUrl || `${issuer.replace(/\/$/, '')}/jwks`, fetchImpl, now: () => now().getTime() });
+  const keys = createRemoteJWKSet(new URL(jwksUrl || defaultJwksUrl(issuer)), {
+    cacheMaxAge: JWKS_CACHE_MAX_AGE_MS,
+    cooldownDuration: cooldownMs,
+    timeoutDuration: JWKS_TIMEOUT_MS,
+    ...(fetchImpl ? { [customFetch]: fetchImpl } : {}),
+  });
+
   return Object.freeze({
     enabled: true,
+    issuer,
+    audience,
     /**
-     * Verify a token and turn it into the session facts, or throw. A token that is signed but
-     * names no tenant or no known role is refused here, not defaulted.
+     * Verify a token and turn it into the session facts, or throw an Error whose message is safe
+     * to log. The token itself never appears in a message.
      */
     async verify(token) {
-      const claims = verifyJwt(token, { issuer, audience, keys: await keys.keyFor(decodeJwt(token).header.kid), now });
-      const tenant = String(claims[tenantClaim] ?? '').trim().toLowerCase();
-      if (!UUID.test(tenant)) throw new Error(`token claim ${JSON.stringify(tenantClaim)} is not a tenant uuid`);
-      const rawRoles = claims[rolesClaim];
-      const roles = (Array.isArray(rawRoles) ? rawRoles : typeof rawRoles === 'string' ? [rawRoles] : []).filter(isKnownRole);
-      if (roles.length === 0) throw new Error(`token claim ${JSON.stringify(rolesClaim)} names no known role`);
-      const actorId = String(claims.preferred_username ?? claims.email ?? claims.sub ?? '').trim();
-      if (actorId === '') throw new Error('the token names no actor');
-      return { tenant, actorId, roles, subject: String(claims.sub ?? actorId), caseReference: null };
+      if (typeof token !== 'string' || token.length > MAX_TOKEN_BYTES || !COMPACT_JWS.test(token)) {
+        throw new Error('the bearer is not a compact JWS of a plausible size');
+      }
+      let header;
+      try {
+        header = decodeProtectedHeader(token);
+      } catch (error) {
+        throw new Error(`the token header is unreadable: ${reasonOf(error)}`);
+      }
+      // Checked before the key lookup, so a token naming no key (or the wrong algorithm) never
+      // causes a JWKS fetch.
+      if (header.alg !== TOKEN_ALG) throw new Error(`token alg ${JSON.stringify(header.alg)} is not ${TOKEN_ALG}`);
+      if (typeof header.kid !== 'string' || header.kid === '') throw new Error('the token header names no kid');
+
+      let claims;
+      try {
+        ({ payload: claims } = await jwtVerify(token, keys, {
+          issuer,
+          audience,
+          algorithms: [TOKEN_ALG],
+          typ: TOKEN_TYP,
+          clockTolerance: CLOCK_TOLERANCE_SEC,
+          maxTokenAge: MAX_TOKEN_AGE_SEC,
+          requiredClaims: ['exp', 'iat', 'sub'],
+          currentDate: now(),
+        }));
+      } catch (error) {
+        throw new Error(`the token was refused: ${reasonOf(error)}`);
+      }
+      return sessionFromClaims(claims);
     },
   });
 }

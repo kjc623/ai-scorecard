@@ -20,7 +20,7 @@ param managedRuleSetType string = 'Microsoft_DefaultRuleSet'
 @maxValue(1000000)
 param rateLimitPerMinute int = 20000
 
-@description('Custom rule exclusions: [{ matchVariable, operator, selector, ruleSet, ruleGroup }]. Every entry is a false-positive fix and must name the alert it closes (§10.3).')
+@description('False-positive exclusions: [{ ruleGroup, ruleId, alert }], each disabling one managed rule in the default rule set. Every entry is a false-positive fix and must name the alert it closes (§10.3).')
 param exclusions array = []
 
 @description('Whether to enable bot protection. On in production; the customer’s devices are not browsers and must not be classified as bots, which is why the exclusion list exists.')
@@ -28,6 +28,21 @@ param enableBotProtection bool = true
 
 @description('Tags applied to the policy.')
 param tags object = {}
+
+// False-positive exclusions are rule-group overrides on the default rule set: each entry disables one
+// managed rule (logging instead) and names the alert it closes, so a reviewer sees each one with its
+// reason. They are part of this one policy -- a second resource with the policy's name would replace
+// the policy, not amend it.
+var exclusionOverrides = [for ex in exclusions: {
+  ruleGroupName: ex.ruleGroup
+  rules: [
+    {
+      ruleId: ex.ruleId
+      enabledState: 'Disabled'
+      action: 'Log'
+    }
+  ]
+}]
 
 resource wafPolicy 'Microsoft.Network/frontDoorWebApplicationFirewallPolicies@2024-02-01' = {
   name: 'waf-policy'
@@ -52,7 +67,7 @@ resource wafPolicy 'Microsoft.Network/frontDoorWebApplicationFirewallPolicies@20
           ruleSetType: managedRuleSetType
           ruleSetVersion: managedRuleSetVersion
           ruleSetAction: 'Block'
-          ruleGroupOverrides: []
+          ruleGroupOverrides: exclusionOverrides
         }
       ], enableBotProtection ? [
         {
@@ -127,46 +142,6 @@ resource wafPolicy 'Microsoft.Network/frontDoorWebApplicationFirewallPolicies@20
     }
   }
 }
-
-// False-positive exclusions live in their own child resource so a reviewer sees each one with the
-// alert it closes, rather than as an opaque list inside the policy.
-resource exclusionRules 'Microsoft.Network/frontDoorWebApplicationFirewallPolicies@2024-02-01' = [for (ex, i) in exclusions: {
-  name: 'waf-policy'
-  location: 'global'
-  tags: tags
-  sku: {
-    name: 'Premium_AzureFrontDoor'
-  }
-  properties: {
-    policySettings: {
-      enabledState: 'Enabled'
-      mode: wafMode
-    }
-    managedRules: {
-      managedRuleSets: [
-        {
-          ruleSetType: managedRuleSetType
-          ruleSetVersion: managedRuleSetVersion
-          ruleGroupOverrides: [
-            {
-              ruleGroupName: ex.ruleGroup
-              rules: [
-                {
-                  ruleId: ex.ruleId
-                  enabledState: 'Disabled'
-                  action: 'Log'
-                }
-              ]
-            }
-          ]
-        }
-      ]
-    }
-  }
-  dependsOn: [
-    wafPolicy
-  ]
-}]
 
 @description('Resource id of the WAF policy, for the Front Door security policy association.')
 output wafPolicyId string = wafPolicy.id

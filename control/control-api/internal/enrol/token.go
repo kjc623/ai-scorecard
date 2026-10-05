@@ -63,3 +63,43 @@ func HashEnrolmentToken(plaintext string) string {
 	sum := sha256.Sum256([]byte(plaintext))
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
+
+// The deployment-key format (contract §1, §5): the enrolment token's spelling with its own prefix,
+// `sacdk_<tenant uuid>.<256-bit base64url secret>`. The tenant is in the clear for the token's
+// reason, so the RLS session is set before the key's row is read. Unlike a token it is reusable and
+// long-lived, because one customer package carries it to every device; what bounds it is
+// revocation, an optional expiry, a per-key rate limit and, for an Intune tenant, the MDM check.
+const deploymentKeyPrefix = "sacdk_"
+
+// MintDeploymentKey returns a fresh plaintext deployment key for a tenant. The plaintext goes into
+// one package and is never stored or logged.
+func MintDeploymentKey(tenantID string) (string, error) {
+	if !store.IsUUID(tenantID) {
+		return "", fmt.Errorf("enrol: tenant %q is not a uuid", tenantID)
+	}
+	var secret [tokenSecretBytes]byte
+	if _, err := rand.Read(secret[:]); err != nil {
+		return "", fmt.Errorf("enrol: no entropy for a deployment key: %w", err)
+	}
+	return deploymentKeyPrefix + strings.ToLower(tenantID) + "." + base64.RawURLEncoding.EncodeToString(secret[:]), nil
+}
+
+// ParseDeploymentKey extracts the tenant from a plaintext deployment key, validating its shape only.
+func ParseDeploymentKey(plaintext string) (string, error) {
+	rest, ok := strings.CutPrefix(plaintext, deploymentKeyPrefix)
+	if !ok {
+		return "", ErrMalformedToken
+	}
+	tenantID, secretPart, ok := strings.Cut(rest, ".")
+	if !ok || !store.IsUUID(tenantID) {
+		return "", fmt.Errorf("%w: tenant segment is not a uuid", ErrMalformedToken)
+	}
+	secret, err := base64.RawURLEncoding.DecodeString(secretPart)
+	if err != nil || len(secret) < tokenSecretBytes {
+		return "", fmt.Errorf("%w: secret segment is not a 256-bit base64url value", ErrMalformedToken)
+	}
+	return tenantID, nil
+}
+
+// HashDeploymentKey is the stored form of a deployment key, in the enrolment token's spelling.
+func HashDeploymentKey(plaintext string) string { return HashEnrolmentToken(plaintext) }

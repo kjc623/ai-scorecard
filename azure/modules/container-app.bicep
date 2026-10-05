@@ -54,8 +54,11 @@ param registryLoginServer string
 @description('Non-secret environment variables. Credentials are never placed here: a secret in a plaintext environment variable reaches Log Analytics through revision logs (§5.4).')
 param env array = []
 
-@description('Key Vault-backed environment variables: [{ name, keyVaultUrl, identity }]. This is the only credential-shaped input the module accepts, and it is a reference, not a value.')
+@description('Key Vault-backed environment variables: [{ name, keyVaultUrl, identity }]. This is a credential-shaped input, and it is a reference, not a value. name is the environment variable; the Container Apps secret behind it is the same name lower-cased with hyphens, because a secret name may not hold an underscore or a capital.')
 param keyVaultEnv array = []
+
+@description('Key Vault-backed files: [{ secretName, keyVaultUrl, identity }], each mounted read-only at /mnt/secrets/<secretName>. For key material a service takes as a file path (a PEM) rather than as an environment variable. The other credential-shaped input, and also a reference, not a value.')
+param keyVaultFiles array = []
 
 @description('HTTP concurrency target for the scale rule. A flush arrives as a burst of batches, so concurrency rather than CPU is the trigger.')
 param concurrencyTarget int = 40
@@ -72,6 +75,28 @@ param probeScheme string = 'HTTP'
 
 @description('Tags applied to the app.')
 param tags object = {}
+
+// One Container Apps secret per Key Vault reference, and what reads it: an environment variable for
+// keyVaultEnv, a file under /mnt/secrets for keyVaultFiles. Variables rather than inline
+// for-expressions, because a for-expression is not allowed inside concat().
+var envSecrets = [for kv in keyVaultEnv: {
+  name: toLower(replace(kv.name, '_', '-'))
+  keyVaultUrl: kv.keyVaultUrl
+  identity: kv.identity
+}]
+var fileSecrets = [for f in keyVaultFiles: {
+  name: f.secretName
+  keyVaultUrl: f.keyVaultUrl
+  identity: f.identity
+}]
+var secretEnv = [for kv in keyVaultEnv: {
+  name: kv.name
+  secretRef: toLower(replace(kv.name, '_', '-'))
+}]
+var secretFileItems = [for f in keyVaultFiles: {
+  secretRef: f.secretName
+  path: f.secretName
+}]
 
 resource app 'Microsoft.App/containerApps@2024-03-01' = {
   name: appName
@@ -107,13 +132,17 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
           identity: userAssignedIdentityId
         }
       ]
-      secrets: [for kv in keyVaultEnv: {
-        name: kv.name
-        keyVaultUrl: kv.keyVaultUrl
-        identity: kv.identity
-      }]
+      secrets: concat(envSecrets, fileSecrets)
     }
     template: {
+      // The secret volume exists only when a file is asked for, so an app with none has no mount.
+      volumes: empty(keyVaultFiles) ? [] : [
+        {
+          name: 'secrets'
+          storageType: 'Secret'
+          secrets: secretFileItems
+        }
+      ]
       containers: [
         {
           name: appName
@@ -122,30 +151,39 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
             cpu: json(cpu)
             memory: memory
           }
-          env: concat(env, [for (kv, i) in keyVaultEnv: {
-            name: kv.name
-            secretRef: kv.name
-          }])
-          livenessProbe: {
-            httpGet: {
-              path: livenessPath
-              port: targetPort
-              scheme: probeScheme
+          env: concat(env, secretEnv)
+          volumeMounts: empty(keyVaultFiles) ? [] : [
+            {
+              volumeName: 'secrets'
+              mountPath: '/mnt/secrets'
             }
-            initialDelaySeconds: 5
-            periodSeconds: 10
-            failureThreshold: 3
-          }
-          readinessProbe: {
-            httpGet: {
-              path: readinessPath
-              port: targetPort
-              scheme: probeScheme
+          ]
+          // Container Apps takes probes as one list with a type each; liveness and readiness stay
+          // distinct paths for the reason readinessPath gives.
+          probes: [
+            {
+              type: 'Liveness'
+              httpGet: {
+                path: livenessPath
+                port: targetPort
+                scheme: probeScheme
+              }
+              initialDelaySeconds: 5
+              periodSeconds: 10
+              failureThreshold: 3
             }
-            initialDelaySeconds: 3
-            periodSeconds: 5
-            failureThreshold: 3
-          }
+            {
+              type: 'Readiness'
+              httpGet: {
+                path: readinessPath
+                port: targetPort
+                scheme: probeScheme
+              }
+              initialDelaySeconds: 3
+              periodSeconds: 5
+              failureThreshold: 3
+            }
+          ]
         }
       ]
       scale: {

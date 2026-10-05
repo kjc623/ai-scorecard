@@ -48,6 +48,15 @@ func main() {
 		}
 		return
 	}
+	// `tenant create` and `tenant invite` are the vendor's onboarding commands (tenant.go): they
+	// write a tenant and a one-time invite, and need only the database.
+	if len(os.Args) > 1 && os.Args[1] == "tenant" {
+		if err := runTenant(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "control-api tenant:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "control-api:", err)
 		os.Exit(1)
@@ -201,10 +210,20 @@ func run() error {
 	}
 	defer st.Close()
 
+	ent, err := wireEnterprise(st, contentDB, logger)
+	if err != nil {
+		return err
+	}
 	enrolSvc, err := enrol.New(st, sg, enrol.Config{
 		Region:        o.region,
 		CredentialTTL: o.credentialTTL,
 		ProofSkew:     dpop.DefaultSkew,
+		Deployment:    ent.deployment,
+		Intune:        ent.intune,
+		UserRefKeys:   ent.userRefKeys,
+		PolicyETag:    ent.policyETag,
+		KeyRate:       ent.keyRate,
+		KeyBurst:      ent.keyBurst,
 	})
 	if err != nil {
 		return err
@@ -233,6 +252,7 @@ func run() error {
 		return err
 	}
 	srv.Health = healthSvc
+	srv.Policy, srv.Admin, srv.SCIM = ent.policy, ent.admin, ent.scim
 
 	// The content grant path needs all three of: a vault to mint the object key, a database to
 	// decide against, and the key the storage layer verifies an upload URL with. Without any one of
@@ -268,7 +288,7 @@ func run() error {
 	}
 	httpServer := &http.Server{
 		Addr:              o.addr,
-		Handler:           withProbes(srv.Handler(), ready, logger),
+		Handler:           withProbes(ent.handler(srv.Handler()), ready, logger),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       90 * time.Second,
 	}

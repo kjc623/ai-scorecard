@@ -31,6 +31,8 @@ type Memory struct {
 	collectorState    map[string]CollectorState
 	collectorReportAt map[string]time.Time
 	lastSeen          map[string]time.Time
+	// dep mirrors the deployment and policy tables (memory_deployment.go).
+	dep deploymentTables
 }
 
 // seededCollectors is the ref.collector seed in database/schema.sql. A test may override it with
@@ -58,6 +60,7 @@ func NewMemory() *Memory {
 		collectorState:    map[string]CollectorState{},
 		collectorReportAt: map[string]time.Time{},
 		lastSeen:          map[string]time.Time{},
+		dep:               newDeploymentTables(),
 	}
 }
 
@@ -232,6 +235,13 @@ func (m *Memory) UpsertDevice(_ context.Context, d Device) (Device, error) {
 		}
 	} else if d.EnrolledAt.IsZero() {
 		d.EnrolledAt = m.now()
+	}
+	if existing, ok := m.devices[key]; ok {
+		// The Intune binding is written only by SetDeviceIntuneID, as the SQL upsert never touches
+		// the column.
+		d.IntuneDeviceID = existing.IntuneDeviceID
+	} else {
+		d.IntuneDeviceID = ""
 	}
 	m.devices[key] = d
 	if d.HardwareIdentityHash != "" {

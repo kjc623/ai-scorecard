@@ -395,6 +395,21 @@ func (s *Store) Apply(raw []byte) Result {
 	return Result{Outcome: OutcomeAccepted, Version: b.Version, Severity: SeverityInfo}
 }
 
+// Withdraw takes the bundle out of force because the server stated, over the device's
+// authenticated channel, that the tenant has none (docs/02 §5.2: GET /v1/policy 404). The device
+// is then at M0. It is the one change of state that does not need a verified bundle, and it is
+// safe for the reason Apply's rule exists: M0 is the floor, so withdrawing can only narrow what the
+// device does, never widen it.
+func (s *Store) Withdraw() Result {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.inForce = nil
+	s.inForceRaw = nil
+	s.failures = 0
+	s.lastCause = CauseAccepted
+	return Result{Outcome: OutcomeFellToM0, Severity: SeverityWarning}
+}
+
 // PollBackoff is §13.3 rule 7: repeated failures back the polling off so a fleet-wide signing
 // problem does not become a request storm. The bundle stays in force throughout.
 func (s *Store) PollBackoff(base time.Duration) time.Duration {

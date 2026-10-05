@@ -12,17 +12,22 @@
 //   3. the committed generated output is a function of the manifest (render --check);
 //   4. the flags the installer produces are accepted by the real binary: a staged capture-core is
 //      run with a representative argv and `--print-config`, and the resolved identity and drain are
-//      read back from its output.
+//      read back from its output;
+//   5. the generic package carries no tenant data: the vendor-wide file has no tenant, lab or secret
+//      key, the WiX source copies the tenant file rather than installing one, and (on Windows, when
+//      installer/dist/release holds a build) the built MSI agrees, read back out of the package.
 //
-// A check that cannot run (no stage) is reported SKIPPED with its reason, never as a pass.
+// A check that cannot run (no stage, no release build, not Windows) is reported SKIPPED with its
+// reason, never as a pass.
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { CONFIG, LAYOUT, PRODUCT, configFor, expandDefault } from './manifest.mjs';
+import { CONFIG, LAYOUT, PRODUCT, TENANT_PACKAGE, configFor, expandDefault, genericProfile } from './manifest.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const NO_EXEC = process.argv.includes('--no-exec');
@@ -87,9 +92,9 @@ const envExample = readFileSync(join(ROOT, 'installer/generated/capture-core.env
 check('the Linux wrapper execs capture-core with --config-file', /--config-file/.test(linuxWrapper));
 check('the Windows console wrapper execs capture-core with --config-file', /--config-file/.test(cmdWrapper));
 check(
-  'the WiX source registers the service in --service mode reading the config file',
-  /ServiceInstall[\s\S]*Arguments="--service[^"]*--config-file[^"]*capture-core\.env"/.test(wxs),
-  'ServiceInstall Arguments should be --service ... --config-file ...capture-core.env',
+  'the WiX source registers the service in --service mode reading the vendor file, then the tenant file',
+  /ServiceInstall[\s\S]*Arguments="--service[^"]*--config-file &quot;\[PROFILEFOLDER\]capture-core\.env&quot; --config-file &quot;\[PROFILEFOLDER\]tenant\.env&quot;"/.test(wxs),
+  'ServiceInstall Arguments should be --service ... --config-file <profile>capture-core.env --config-file <profile>tenant.env',
 );
 
 // The agent owns the SAC_* -> flag catalogue now (--config-file), so the manifest must not drift
@@ -171,6 +176,126 @@ if (NO_EXEC) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// 6. The generic package carries no tenant data
+
+const byEnv = new Map(CONFIG.map((c) => [c.env, c]));
+const dk = byEnv.get('SAC_DEPLOYMENT_KEY');
+check(
+  'the catalogue carries SAC_DEPLOYMENT_KEY as a secret from the tenant package',
+  Boolean(dk && dk.flag === '--deployment-key' && dk.secret && dk.scope === 'tenant'),
+  dk ? `${dk.env}->${dk.flag}` : 'missing',
+);
+const pkgMissing = TENANT_PACKAGE.keys.filter((k) => !byEnv.has(k));
+check('every tenant-package key is in the catalogue', pkgMissing.length === 0, pkgMissing.join(', ') || TENANT_PACKAGE.keys.join(', '));
+const strayTenant = CONFIG.filter((c) => c.scope === 'tenant' && !TENANT_PACKAGE.keys.includes(c.env)).map((c) => c.env);
+check('every tenant-scope variable travels in the tenant package', strayTenant.length === 0, strayTenant.join(', ') || 'none outside it');
+const LAB_ONLY = ['SAC_USER_REF', 'SAC_DEVICE_ID', 'SAC_ENROLMENT_TOKEN', 'SAC_BUNDLE', 'SAC_CA_KEY', 'SAC_CA_CERT', 'SAC_CA_FILE'];
+const notLab = LAB_ONLY.filter((e) => byEnv.get(e)?.scope !== 'lab');
+check('the lab-only overrides are marked lab, so no generic file or package carries them', notLab.length === 0, notLab.join(', ') || LAB_ONLY.join(', '));
+const tenantKeysInGeneric = (pairs) =>
+  pairs.filter(([k]) => ['tenant', 'lab'].includes(byEnv.get(k)?.scope) || byEnv.get(k)?.secret).map(([k]) => k);
+for (const os of Object.keys(LAYOUT)) {
+  const pairs = genericProfile(os, { SAC_POLICY_KEY: '0'.repeat(64), SAC_CLASSIFIER_PUBKEY: '0'.repeat(64) });
+  const leaked = tenantKeysInGeneric(pairs);
+  check(`the generic ${os} file carries no tenant, lab or secret key`, leaked.length === 0, leaked.join(', ') || `${pairs.length} vendor keys`);
+}
+const tenantExample = readFileSync(join(ROOT, 'installer/generated', `${TENANT_PACKAGE.fileName}.example`), 'utf8');
+const exampleKeys = [...tenantExample.matchAll(/^([A-Z0-9_]+)=/gm)].map((m) => m[1]);
+check('the tenant package example carries exactly the package keys', exampleKeys.join(',') === TENANT_PACKAGE.keys.join(','), exampleKeys.join(', '));
+
+check(
+  'the WiX source copies the tenant file from the folder the MSI runs from',
+  /<CopyFile[^>]*SourceProperty="TENANTENV_DIR"[^>]*SourceName="ShadowAICapture\.tenant\.env"[^>]*DestinationDirectory="PROFILEFOLDER"[^>]*DestinationName="tenant\.env"/.test(wxs),
+);
+check(
+  '  that folder is resolved for a first install or an upgrade, never for a removal',
+  /<ResolveSource After="CostInitialize" Condition="NOT Installed" \/>/.test(wxs) &&
+    /<SetProperty Id="TENANTENV_DIR" Value="\[SourceDir\]" After="ResolveSource" Sequence="execute" Condition="NOT Installed" \/>/.test(wxs),
+);
+check(
+  '  a missing tenant file fails the install before anything changes',
+  /<CustomAction Id="CheckTenantConfig"[^>]*Execute="immediate" Return="check"/.test(wxs) && /<Custom Action="CheckTenantConfig" After="CostFinalize" Condition="NOT Installed" \/>/.test(wxs),
+);
+const wxsGeneric = wxs.replace(/<\?ifdef (ProfileExtras|FreshEnrolment) \?>[\s\S]*?<\?endif \?>/g, '');
+check(
+  '  the generic build installs no tenant file and no lab profile files',
+  !/<File [^>]*tenant\.env/i.test(wxsGeneric) && !/profile\\\*\*/.test(wxsGeneric),
+);
+
+// The built release MSI, read back out of the package (Windows Installer's own COM object).
+const releaseDir = join(ROOT, 'installer', 'dist', 'release');
+const releaseMsi = join(releaseDir, 'ShadowAICapture.msi');
+const MSI_CHECK = 'the built generic MSI carries no tenant data';
+if (process.platform !== 'win32') {
+  check(MSI_CHECK, 'SKIP', 'not Windows');
+} else if (!existsSync(releaseMsi)) {
+  check(MSI_CHECK, 'SKIP', 'no release build; run node installer/release-msi.mjs');
+} else {
+  const info = readMsiInfo(releaseMsi, ['File', 'MoveFile', 'ServiceInstall']);
+  const names = info.tables.File.map((f) => f.FileName.split('|').pop().toLowerCase());
+  const shipped = names.filter((n) => n === 'tenant.env' || n === TENANT_PACKAGE.fileName.toLowerCase() || ['bundle.json', 'ca.key', 'ca.pem', 'edge-ca.crt'].includes(n));
+  check(MSI_CHECK, shipped.length === 0, shipped.join(', ') || `${names.length} files, none a tenant or lab profile file`);
+  const move = info.tables.MoveFile.find((m) => m.SourceName === TENANT_PACKAGE.fileName);
+  check(
+    '  its MoveFile row copies the tenant file from TENANTENV_DIR into the profile folder',
+    Boolean(move && move.SourceFolder === 'TENANTENV_DIR' && move.DestFolder === 'PROFILEFOLDER' && move.DestName === 'tenant.env' && move.Options === '0'),
+    move ? `${move.SourceFolder}\\${move.SourceName} -> ${move.DestFolder}\\${move.DestName}` : 'missing',
+  );
+  const svc = info.tables.ServiceInstall[0]?.Arguments ?? '';
+  check('  its service reads capture-core.env, then tenant.env', /--config-file "\[PROFILEFOLDER\]capture-core\.env" --config-file "\[PROFILEFOLDER\]tenant\.env"/.test(svc), svc);
+  const releaseJson = join(releaseDir, 'release.json');
+  if (existsSync(releaseJson)) {
+    const rj = JSON.parse(readFileSync(releaseJson, 'utf8'));
+    const sha = createHash('sha256').update(readFileSync(releaseMsi)).digest('hex');
+    check(
+      '  release.json describes this MSI',
+      rj.product_code === info.product_code && rj.upgrade_code === info.upgrade_code && rj.version === info.version && rj.package_code === info.package_code && rj.sha256 === sha && rj.size === statSync(releaseMsi).size,
+      `${rj.product_code} ${rj.version}`,
+    );
+    check('  its UpgradeCode is the manifest\'s', (info.upgrade_code ?? '').toUpperCase() === `{${PRODUCT.upgradeCode}}`, info.upgrade_code);
+  } else {
+    check('  release.json describes this MSI', false, 'release.json missing beside the MSI');
+  }
+  // An administrative install unpacks the files without installing or registering anything.
+  const image = mkdtempSync(join(tmpdir(), 'sac-msi-admin-'));
+  const admin = spawnSync('msiexec', ['/a', releaseMsi, '/qn', `TARGETDIR=${image}`], { encoding: 'utf8', windowsVerbatimArguments: false });
+  const genericFile = findFile(image, 'capture-core.env');
+  if (admin.status !== 0 || !genericFile) {
+    check('  the installed vendor file has no tenant, lab or secret key', false, `msiexec /a exit ${admin.status}; capture-core.env ${genericFile ? 'found' : 'not found'}`);
+  } else {
+    const pairs = [...readFileSync(genericFile, 'utf8').matchAll(/^([A-Z0-9_]+)=(.*)$/gm)].map((m) => [m[1], m[2].trim()]);
+    const leaked = tenantKeysInGeneric(pairs);
+    const anchored = pairs.find(([k]) => k === 'SAC_POLICY_KEY')?.[1] ?? '';
+    check('  the installed vendor file has no tenant, lab or secret key', leaked.length === 0, leaked.join(', ') || `${pairs.length} vendor keys`);
+    check('  the installed vendor file pins a policy trust anchor', /^[0-9a-f]{64}$/.test(anchored), anchored || 'SAC_POLICY_KEY empty');
+  }
+  rmSync(image, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------------------------------------
+
+function readMsiInfo(msi, tables) {
+  const res = spawnSync(
+    'powershell',
+    ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(ROOT, 'installer', 'windows', 'Read-MsiInfo.ps1'), '-Path', msi, '-Table', tables.join(',')],
+    { encoding: 'utf8' },
+  );
+  if (res.status !== 0) throw new Error(`Read-MsiInfo.ps1 failed: ${res.stderr}`);
+  return JSON.parse(res.stdout);
+}
+
+function findFile(dir, name) {
+  for (const entry of readdirSync(dir)) {
+    const p = join(dir, entry);
+    if (statSync(p).isDirectory()) {
+      const hit = findFile(p, name);
+      if (hit) return hit;
+    } else if (entry.toLowerCase() === name) {
+      return p;
+    }
+  }
+  return null;
+}
 
 function run(cmd, args) {
   const res = spawnSync(cmd, args, { encoding: 'utf8' });

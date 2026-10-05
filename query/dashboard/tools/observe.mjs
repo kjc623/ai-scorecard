@@ -25,9 +25,14 @@
 //                   in order. A selector that matches nothing is exit 1.
 // --fill <css>=<v>  set a field's value and dispatch input/change events, before any --click. Use
 //                   for a clause that needs text typed into a form. Repeatable, in order.
-// --sign-in <user>  sign in before loading the address, through the issuer's login_hint (the lab
-//                   stand-in's account chooser). The page is then loaded with the session cookie
-//                   the server set. Use it for any clause about what a signed-in role sees.
+// --sign-in <user>  sign in before loading the address, the way a person does: the dashboard's
+//                   /signin/start with the work email, control-api's begin, the identity provider,
+//                   /callback. The lab stand-in IdP picks the account from login_hint (control-api
+//                   passes the email on as one); if it shows its account chooser instead, the
+//                   account's link is clicked. The page then loads with the session cookie the
+//                   server set. Use it for any clause about what a signed-in role sees.
+// --session <id>    load the page with this sac_session cookie instead, e.g. one printed by
+//                   tools/lab-session.mjs. Either way the header says who the session is.
 // --out <dir>       default .integration/observe/ at the repository root (ignored by git: a
 //                   screenshot of live data carries names and prompts).
 //
@@ -78,7 +83,7 @@ const EXPECT_TIMEOUT_MS = 15000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function parseArgs(argv) {
-  const opts = { target: null, out: join(REPO, '.integration', 'observe'), expect: [], absent: [], click: [], fill: [], signIn: null, width: 1440, height: 900 };
+  const opts = { target: null, out: join(REPO, '.integration', 'observe'), expect: [], absent: [], click: [], fill: [], signIn: null, session: null, width: 1440, height: 900 };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const value = () => {
@@ -91,6 +96,7 @@ function parseArgs(argv) {
     else if (a === '--click') opts.click.push(value());
     else if (a === '--fill') opts.fill.push(value());
     else if (a === '--sign-in') opts.signIn = value();
+    else if (a === '--session') opts.session = value();
     else if (a === '--width') opts.width = Number(value());
     else if (a === '--height') opts.height = Number(value());
     else if (a.startsWith('--')) throw new Error(`unknown option ${a}`);
@@ -214,6 +220,12 @@ async function main() {
     const consoleErrors = [];
     const failedRequests = [];
     const otherHosts = new Set();
+    // The identity provider a --sign-in passes through is not something the dashboard loaded: what
+    // another host serves while the sign-in is under way is listed on its own line, so the
+    // other-host and failed-request counts still describe the dashboard.
+    const signInHops = new Set();
+    let signingIn = Boolean(opts.signIn);
+    const elsewhere = (href) => /^https?:/.test(href ?? '') && new URL(href).host !== url.host;
     // The page's own data requests, by method and path. This is what shows that a retrieval URL
     // was fetched from its own origin rather than a query carrying content.
     const dataRequests = new Set();
@@ -227,18 +239,18 @@ async function main() {
         lastActivity = Date.now();
         if (/^https?:/.test(p.request.url)) {
           const sent = new URL(p.request.url);
-          if (sent.host !== url.host) otherHosts.add(sent.host);
+          if (sent.host !== url.host) (signingIn ? signInHops : otherHosts).add(sent.host);
           else if (sent.pathname.startsWith('/v1/')) dataRequests.add(`${p.request.method} ${sent.pathname}`);
         }
       } else if (msg.method === 'Network.responseReceived') {
-        if (p.response.status >= 400) failedRequests.push(`${p.response.status} ${p.response.url}`);
+        if (p.response.status >= 400 && !(signingIn && elsewhere(p.response.url))) failedRequests.push(`${p.response.status} ${p.response.url}`);
       } else if (msg.method === 'Network.loadingFinished') {
         inflight.delete(p.requestId);
         lastActivity = Date.now();
       } else if (msg.method === 'Network.loadingFailed') {
         inflight.delete(p.requestId);
         lastActivity = Date.now();
-        if (!p.canceled) failedRequests.push(`${p.errorText} ${requestUrl.get(p.requestId) ?? ''}`.trim());
+        if (!p.canceled && !(signingIn && elsewhere(requestUrl.get(p.requestId)))) failedRequests.push(`${p.errorText} ${requestUrl.get(p.requestId) ?? ''}`.trim());
       } else if (msg.method === 'Runtime.consoleAPICalled' && p.type === 'error') {
         consoleErrors.push(p.args.map((a) => a.value ?? a.description ?? '').join(' '));
       } else if (msg.method === 'Runtime.exceptionThrown') {
@@ -269,19 +281,38 @@ async function main() {
     await send('Runtime.enable');
     await send('Emulation.setDeviceMetricsOverride', { width: opts.width, height: opts.height, deviceScaleFactor: 1, mobile: false });
 
-    // Signing in first, when asked: the login route redirects to the issuer, the issuer back to
-    // /callback, and the server sets its session cookie and returns the browser to `next`. The
-    // target page then loads with the cookie, exactly as it does for a person.
+    // Signing in first, when asked: /signin/start asks control-api to begin with the work email
+    // and redirects to the identity provider, the provider back to /callback, and the server sets
+    // its session cookie and returns the browser to `next`. The target page then loads with the
+    // cookie, exactly as it does for a person. A given session id is set as the cookie instead.
     let initialUrl = url.href;
+    if (opts.session) {
+      await send('Network.setCookie', { name: 'sac_session', value: opts.session, url: `${url.origin}/`, httpOnly: true, sameSite: 'Lax' });
+    }
     if (opts.signIn) {
-      const login = new URL('/login', url.origin);
-      login.searchParams.set('hint', opts.signIn);
-      login.searchParams.set('next', `${url.pathname}${url.search}${url.hash}`);
-      initialUrl = login.href;
+      const start = new URL('/signin/start', url.origin);
+      start.searchParams.set('email', opts.signIn);
+      start.searchParams.set('next', `${url.pathname}${url.search}${url.hash}`);
+      initialUrl = start.href;
     }
     const nav = await send('Page.navigate', { url: initialUrl });
     if (nav.errorText) throw new Error(`could not load ${initialUrl}: ${nav.errorText}`);
     let settled = await settle();
+    if (opts.signIn) {
+      // The stand-in's account chooser, if it asked: choose the account as a person would.
+      const at = new URL(await evaluate('document.location.href'));
+      if (at.origin !== url.origin) {
+        const chose = await evaluate(`(() => { const a = [...document.querySelectorAll('a')].find((x) => x.textContent.trim().toLowerCase() === ${JSON.stringify(opts.signIn.toLowerCase())}); if (!a) return false; a.click(); return true; })()`);
+        if (chose) {
+          lastActivity = Date.now();
+          settled = (await settle()) && settled;
+        }
+      }
+      const back = new URL(await evaluate('document.location.href'));
+      signingIn = false;
+      if (back.origin !== url.origin) failures.push(`--sign-in ${opts.signIn}: the sign-in stopped at ${back.origin}${back.pathname}, not on the dashboard`);
+      else if (back.pathname.startsWith('/signin') || back.pathname === '/callback') failures.push(`--sign-in ${opts.signIn}: the dashboard refused the sign-in (${back.pathname}); the page text says why`);
+    }
 
     // A field the clause needs typed into. The value is set through the native input setter and an
     // `input` event is dispatched, so a page listening for `input` (as the dashboard's search bar
@@ -334,6 +365,23 @@ async function main() {
       if (text.includes(t)) failures.push(`--absent ${JSON.stringify(t)}: it is visible`);
     }
 
+    // Who the page was served to: the session cookie the browser holds, asked of the dashboard from
+    // here rather than from the page, so the check adds no request to the page's own record.
+    let sessionLine = 'none';
+    if (/^https?:$/.test(url.protocol)) {
+      const { cookies } = await send('Network.getCookies', { urls: [`${url.origin}/`] });
+      const sid = cookies.find((c) => c.name === 'sac_session')?.value;
+      if (sid) {
+        try {
+          const res = await fetch(new URL('/session', url.origin), { headers: { cookie: `sac_session=${sid}` } });
+          const who = res.ok ? await res.json() : null;
+          sessionLine = who ? `${who.actor} (${(who.roles ?? []).join(', ')}), tenant ${who.tenant}` : `cookie refused (${res.status})`;
+        } catch (error) {
+          sessionLine = `could not ask /session: ${error?.cause?.code ?? error?.message}`;
+        }
+      }
+    }
+
     const title = await evaluate('document.title');
     const finalUrl = await evaluate('document.location.href');
     const html = await evaluate('document.documentElement.outerHTML');
@@ -352,7 +400,8 @@ async function main() {
     const header = [
       `address:             ${finalUrl}`,
       `title:               ${title}`,
-      `signed in as:        ${opts.signIn ?? 'not signed in'}`,
+      `signed in as:        ${opts.signIn ?? (opts.session ? 'a given session cookie' : 'not signed in')}`,
+      `session:             ${sessionLine}`,
       `observed at:         ${new Date().toISOString()}`,
       `browser:             ${cdp.browser}, ${opts.width}x${opts.height}`,
       `settled:             ${settled ? 'yes' : `no (requests still open after ${SETTLE_TIMEOUT_MS / 1000} s)`}`,
@@ -361,6 +410,7 @@ async function main() {
       `console errors:      ${list(consoleErrors)}`,
       `failed requests:     ${list(failedRequests)}`,
       `other-host requests: ${list([...otherHosts])}`,
+      ...(opts.signIn ? [`sign-in went via:    ${signInHops.size === 0 ? 'no other host' : [...signInHops].join(', ')}`] : []),
       `data requests:       ${list([...dataRequests])}`,
       `checks:              ${failures.length === 0 ? `${opts.expect.length + opts.absent.length + opts.click.length + opts.fill.length} held` : `FAILED\n${failures.map((s) => `    ${s}`).join('\n')}`}`,
       `screenshot:          ${stem}.png`,

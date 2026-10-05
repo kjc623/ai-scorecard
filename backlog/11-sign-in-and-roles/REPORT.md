@@ -1,5 +1,9 @@
 # Task 11 — Sign-in and roles: report
 
+> Sections 1–7 are the first pass. §8, the enterprise onboarding and deployment pass the owner asked
+> for on 2026-10-05, replaces its sign-in design (the dashboard no longer talks to an IdP itself;
+> query-api and the vault no longer read `SAC_OIDC_*`) and adds a schema migration.
+
 Branch `backlog/11-sign-in-and-roles`, cut from `backlog/10-content-retrieval-path` at
 `b9286e3`. No schema change, so no migration. The lab was rebuilt and restarted
 (`node localdev/build.mjs --auth`, then `docker compose -f localdev/authlab.compose.yaml up -d
@@ -105,3 +109,107 @@ Used: task 09 (the search the vault composes), task 10 (the retrieval URL and it
   `localdev/tools/check-config-agreement.mjs` gained the OIDC vocabulary; `query/dashboard/README.md`,
   `query/query-api/README.md`, `docs/04`, `docs/06` updated as in §6.
 - Browser artefacts under `.integration/observe/` named in §1 (not committed).
+
+## 8. Enterprise onboarding and deployment (second pass)
+
+Asked by the owner in session, not by a brief: a true enterprise enrolment and installation path for
+customers on Microsoft Entra ID and Intune, with no MSI flags, that also works for customers who do
+not use Entra. Owner decisions: vendor creates the tenant and the customer's admin links it; any OIDC
+provider (found by email domain) plus Entra; users by SCIM only (no `User.Read.All`); people keyed by
+UPN and Entra object id; devices by a per-tenant deployment key plus an Intune check where the tenant
+asks for it; a tenant-specific package (`.intunewin` / `.zip`) around one generic MSI; MSI unsigned
+for now with the signing step built.
+
+### 8.1 Verdict (device-auth lab, sample tenant `5a3c0de0-…`; files under `.integration/observe/`)
+
+| Clause | Verdict | Evidence |
+|---|---|---|
+| An unauthenticated page is sent to sign-in; the sign-in page offers Microsoft and work email | met | `2026-10-05T18-43-41-672Z-index-html-transport-live.txt` and the `/signin` observation at 18-43-31 (0 console errors, 0 other-host requests) |
+| Sign-in through a customer OIDC provider; tenant decided by our mapping; role from the IdP | met | viewer, analyst, content reader and admin each signed in via the stand-in (issuer `http://oidc:8080` → sample tenant): `18-45-22-322Z`, `18-45-36-727Z`, `18-45-39-645Z`, `18-45-41-903Z` |
+| Roles enforced: a viewer has no Search, Audit or Deployment and is refused them by address; a content reader opens an event | met | `18-45-22-322Z` (3 absences held), `18-45-32-175Z`, `18-45-34-349Z` (403 refusal page), `18-45-39-645Z` |
+| A cross-site state change is refused; an unknown email domain is refused plainly; sign-out ends the session | met | `curl` POST `/v1/query` with `Origin: https://evil.test` and a valid session → 403; `18-46-08-839Z` (`no_sso_connection`); `18-46-06-636Z` (`/signin?notice=signed_out`) |
+| Settings → Deployment: connection, verification, packages, keys, a SCIM token shown once | met | `18-45-41-903Z`, `18-46-00-501Z` (download, minted key named), `18-46-03-875Z` ("will not be shown again") |
+| A tenant package holds the generic MSI and only the four tenant keys | met | downloaded `.zip`: `ShadowAICapture.tenant.env` holds `SAC_TENANT_ID`, `SAC_DEVICE_ENDPOINT`, `SAC_DEPLOYMENT_KEY`, `SAC_AUTH_MODE` only; the MSI's sha256 equals `release.json` (`33e7f9e1…`); `.intunewin` 200, 5,190,658 bytes |
+| A device enrols with the package's deployment key and fetches signed policy | met by substitute | the real Linux `capture-core` in a container on the lab network, configured from the downloaded package's tenant file plus lab overrides (edge address, dev CA, trust/proxy off), stood in for a Windows device: enrolled `05e56e01-…` (dpop), `policy: new bundle in force version=1791226080`, cache written. Server: the key's `enrolment_count` is 1, an `ops.device` row, `device.enrol` and `policy_bundle.publish` audit rows. A Windows device through Intune is the owner's check |
+| SCIM from an Entra-shaped client: create, rename, deactivate | met | through the edge with a `sacscim_` token: 401 without it; create, `op: "Replace"` rename and `"active": "False"` → success; DB: one canonical ref, 3 aliases (old UPN, new UPN, object id), department Research, `inactive`; audit `scim.user.*` as `scim:<token>` |
+| Entra admin consent, Entra sign-in, the Intune check, Intune accepting the `.intunewin`, a Windows install from a package | owner | needs a real Entra/Intune tenant and a clean VM: the `OWNER-TODO.md` lines tagged "(11, enterprise)" |
+| The owner's tenant is not changed | met | still 1373 submissions and 0 identity connections after the migration and every check |
+
+### 8.2 For the owner
+
+The lines tagged "(11, enterprise)" in `OWNER-TODO.md`: register the vendor Entra app; onboard your
+own Entra tenant as the test customer (`control-api tenant create`, then `tenant invite`); set up
+SCIM (a separate non-gallery Entra app until a gallery listing); apply
+`backlog/11-sign-in-and-roles/MIGRATION.sql` to any other database; the Key Vault secrets;
+publisher verification; rebuild the lab MSI on the new path; the Intune, device, clean-VM and SCIM
+checks; and two questions (how you sign in to port 8787 now, and whether to keep the Azure
+dashboard container app).
+
+### 8.3 Decisions
+
+- **control-api is the one identity service.** It is the relying party for every customer IdP and
+  mints ES256 product tokens (≤ 10 min); query-api, the vault and control-api's admin API verify only
+  those. Forwarding customer access tokens cannot work for Google or Okta, so the first pass's design
+  was replaced. Sessions live in `ops.auth_session`, so any dashboard instance serves any session.
+- **The product tenant comes from our mapping** (Entra `tid`, OIDC `iss`, a vendor-set email
+  domain), never from a claim; an Entra token's issuer must be its own tid's.
+- **`user_ref`** is `protocol.DeriveUserRef` (an HMAC under a per-tenant key issued at enrolment). The
+  device prefers the console user's UPN; SCIM fixes the canonical ref at creation and aliases the
+  rest; `ingest.record_event` stores the canonical ref. This replaces task 06's
+  `onPremisesSamAccountName` mapping.
+- **The audit chain's read was granted** (`SELECT (tenant_id, audit_seq, row_hash)` to the roles that
+  insert audit rows). Every service's audit insert failed under its real role before; the lab hid it
+  by connecting as a superuser. Three agents found it independently.
+- **query-api has one dependency, `jose`** (pinned, itself dependency-free), for token verification.
+  The vault and control-api verify with the Go standard library.
+- **Lab:** the stand-in IdP serves the sample tenant only (one issuer maps to one tenant), so port 8787
+  has no sign-in until the owner decides (`OWNER-TODO.md`, Answer).
+
+### 8.4 Not finished, not verified
+
+Not run anywhere: real Entra consent and sign-in, the Intune Graph check against Intune, Intune
+accepting the `.intunewin`, a Windows install from a package, attestation on an Intune-enrolled or
+hybrid-joined device, and an Azure deployment of the Bicep (it compiles). Known gaps are the
+`FOLLOWUPS.md` rows tagged "11 (enterprise)", including: an admin-only user's Overview shows two
+refusal panels (role design); the deployment-key rate limit is per process; the Intune check is an
+inventory match, not proof of possession; the internal token is a shared secret.
+
+### 8.5 Downstream impact
+
+`FOLLOWUPS.md`: four brief rows (12 twice: the bundle writer now exists and Settings → Deployment
+exists; 13: the SCIM, alias and session tables in subject export and erasure; 06: SCIM replaces the
+Graph pull) and eleven deferred rows.
+
+### 8.6 What was built
+
+On top of the first pass (`4d2e7f2`), same branch. `endpoint/protocol`: deployment key, attestation,
+`user_ref_key`, `DeriveUserRef`, the policy response. `control-api`: `session`, `identity`, `onboard`,
+`entraapp`, `scim`, `deploy`, `intune`, `policyserve`; enrolment by deployment key; `tenant create` and
+`tenant invite`; wiring in `cmd/control-api/enterprise.go`; the Entra Graph user pull removed.
+`query-api` and `content-vault`: product-token verification. `query/dashboard`: a BFF over control-api,
+sign-in pages, Settings → Deployment, role-shaped navigation, sessions in `observe.mjs`.
+`endpoint/capture-core`: layered config, key enrolment with attestation, console-user `user_ref`,
+policy fetch and cache, a per-device CA, hardware-seeded identity. `installer`: the generic flagless
+MSI, `release-msi.mjs`, the signing step (off), the lab MSI on the same path. `database`: the contract
+tables, `sac_resolver` lookups, alias resolution in `record_event`, two grants. `localdev`: identity
+material and seed, edge routes, compose. `azure`: routes, the federated-credential output, Key Vault
+secrets, a dashboard container app, the blob reader; the composition now compiles.
+
+### 8.7 Evidence
+
+- Schema from empty, and `MIGRATION.sql` twice on HEAD's schema: exit 0; invariants 68/68 on both.
+  As `sac_control` and `sac_ingest`: audit inserts chain per tenant, the catalogue is readable, audit
+  contents stay unreadable. Applied to the lab with `docker exec -i sac-authlab-postgres-1 psql -U
+  postgres -d shadow -v ON_ERROR_STOP=1 < backlog/11-sign-in-and-roles/MIGRATION.sql`, then `node
+  localdev/build.mjs --auth`, the dashboard image, `node installer/release-msi.mjs` and `docker compose
+  -f localdev/authlab.compose.yaml up -d`. The CA volume was untouched.
+- Suites: control-api 167 top-level PASS, 0 FAIL (baseline 32); query-api 276 tests, 268 pass, 8 skip,
+  0 fail with the lab up (baseline 214/199/15/0); dashboard 219/213/6/0 (baseline 145/139/6/0);
+  content-vault 80 (48); capture-core 299/0 on Linux (the endpoint agent's run) and 298/5 on this
+  Windows host, where the 5 predate this work (`trust` confirmed failing at HEAD in a scratch worktree).
+- `node tools/accept.mjs` on Windows: contract, vocab, invariants, endpoint, browser and db pass;
+  `seams` is the baseline finding; `installer` passes in full on Linux (`node:22-alpine`) and its MSI
+  checks pass on Windows; `packages` fails only on the pre-existing Windows `trust` test.
+- `node localdev/tools/check-config-agreement.mjs`: ok. Lab compose additions in this pass:
+  `SAC_AUTH_ALLOW_INSECURE_IDP=1` and `SAC_AUTH_REDIRECT_URIS` on control-api; without the first,
+  control-api's outbound guard refuses the stand-in IdP's private address and sign-in fails.

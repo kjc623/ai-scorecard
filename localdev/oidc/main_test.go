@@ -50,7 +50,7 @@ func getJSON(t *testing.T, ts *httptest.Server, path string) map[string]any {
 }
 
 // TestDiscoveryAndJWKS: a client discovers the endpoints and finds one RS256 key, which is what
-// query-api and the dashboard fetch to verify a token.
+// control-api, the relying party, fetches to verify an id_token.
 func TestDiscoveryAndJWKS(t *testing.T) {
 	ts := httptest.NewServer(testServer(t).Handler())
 	defer ts.Close()
@@ -180,6 +180,86 @@ func decodePayload(t *testing.T, token string) map[string]any {
 		t.Fatalf("payload is not JSON: %v", err)
 	}
 	return out
+}
+
+// TestConfidentialClient: as an upstream provider the stand-in has one confidential client,
+// control-api. Discovery says how to authenticate, both RFC 6749 §2.3.1 forms work, a wrong secret
+// or another client id is refused, and the id_token carries what the relying party takes the
+// actor from.
+func TestConfidentialClient(t *testing.T) {
+	s := testServer(t)
+	s.cfg.clientID, s.cfg.clientSecret = "sac-control", "lab-secret"
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	d := getJSON(t, ts, "/.well-known/openid-configuration")
+	methods, _ := d["token_endpoint_auth_methods_supported"].([]any)
+	if len(methods) != 2 || methods[0] != "client_secret_post" || methods[1] != "client_secret_basic" {
+		t.Fatalf("discovery must offer both secret forms, got %v", d["token_endpoint_auth_methods_supported"])
+	}
+
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	verifier := base64.RawURLEncoding.EncodeToString([]byte("another-verifier-long-enough-for-it"))
+	sum := sha256.Sum256([]byte(verifier))
+	code := func() string {
+		t.Helper()
+		res, err := client.Get(ts.URL + "/authorize?" + url.Values{
+			"response_type": {"code"}, "client_id": {"sac-control"}, "redirect_uri": {"http://control/callback"},
+			"nonce": {"n"}, "code_challenge": {base64.RawURLEncoding.EncodeToString(sum[:])},
+			"code_challenge_method": {"S256"}, "login_hint": {"reader@lab.test"},
+		}.Encode())
+		if err != nil {
+			t.Fatalf("authorize: %v", err)
+		}
+		res.Body.Close()
+		loc, _ := url.Parse(res.Header.Get("Location"))
+		return loc.Query().Get("code")
+	}
+	exchange := func(form url.Values, user, pass string) *http.Response {
+		t.Helper()
+		form.Set("grant_type", "authorization_code")
+		form.Set("redirect_uri", "http://control/callback")
+		form.Set("code_verifier", verifier)
+		form.Set("code", code())
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/token", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		if user != "" {
+			req.SetBasicAuth(url.QueryEscape(user), url.QueryEscape(pass))
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("token: %v", err)
+		}
+		return res
+	}
+
+	for name, c := range map[string]struct {
+		form       url.Values
+		user, pass string
+		want       int
+	}{
+		"post":           {url.Values{"client_id": {"sac-control"}, "client_secret": {"lab-secret"}}, "", "", http.StatusOK},
+		"basic":          {url.Values{}, "sac-control", "lab-secret", http.StatusOK},
+		"wrong secret":   {url.Values{"client_id": {"sac-control"}, "client_secret": {"nope"}}, "", "", http.StatusUnauthorized},
+		"no secret":      {url.Values{"client_id": {"sac-control"}}, "", "", http.StatusUnauthorized},
+		"another client": {url.Values{}, "sac-dashboard", "lab-secret", http.StatusUnauthorized},
+	} {
+		res := exchange(c.form, c.user, c.pass)
+		var body map[string]any
+		json.NewDecoder(res.Body).Decode(&body)
+		res.Body.Close()
+		if res.StatusCode != c.want {
+			t.Fatalf("%s: token returned %d (%v), want %d", name, res.StatusCode, body, c.want)
+		}
+		if c.want != http.StatusOK {
+			continue
+		}
+		claims := decodePayload(t, body["id_token"].(string))
+		if claims["aud"] != "sac-control" || claims["email"] != "reader@lab.test" ||
+			claims["email_verified"] != true || claims["preferred_username"] != "reader@lab.test" {
+			t.Fatalf("%s: id_token claims wrong: %v", name, claims)
+		}
+	}
 }
 
 // TestUsersFromEnvRejectsAnIncompleteDirectory so a misconfigured lab fails at start.

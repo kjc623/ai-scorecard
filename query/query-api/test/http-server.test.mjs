@@ -14,6 +14,9 @@ import assert from 'node:assert/strict';
 
 import { loadConfig } from '../src/http/config.js';
 import { createQueryServer, createGate, PATHS, MAX_BODY_BYTES } from '../src/http/server.js';
+import { createVerifier } from '../src/http/auth.js';
+import { createContentForwarder, CONTENT_PATHS } from '../src/http/content.js';
+import { createTestIssuer } from './helpers.mjs';
 
 /** The tenant under test. A missing or body-supplied tenant is a different test's business. */
 const TENANT = '00000000-0000-4000-8000-0000000000aa';
@@ -119,16 +122,18 @@ test('readiness answers 503 when the database does not answer, and does not leak
 // Who is asking
 // ---------------------------------------------------------------------------------------------
 
-test('a read with no established tenant is refused 403, and says so rather than guessing', async (t) => {
+test('a read with no established tenant is refused 401, and says so rather than guessing', async (t) => {
   const { base, client } = await withServer(t);
   const res = await fetch(`${base}${PATHS.QUERY}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ query_version: '1', source: 'mart.v_tool_usage', bucket: 'day', dimensions: ['tool'], measures: ['submissions'], filters: [], window: { from: '2026-09-01T00:00:00Z', to: '2026-09-08T00:00:00Z' } }),
   });
-  assert.equal(res.status, 403);
+  assert.equal(res.status, 401);
+  assert.match(res.headers.get('www-authenticate') ?? '', /^Bearer realm="sac-query"$/);
   const body = await res.json();
   assert.equal(body.result_state, 'unauthorised_role');
+  assert.equal(body.error.code, 'unauthenticated');
   assert.equal(client.calls.query.length, 0, 'an unauthorised read must not reach the database');
 });
 
@@ -160,7 +165,7 @@ test('with development trust off, the header is ignored and the read is refused'
     headers: asTenant(),
     body: JSON.stringify({ query_version: '1', source: 'mart.v_tool_usage', bucket: 'day', dimensions: ['tool'], measures: ['submissions'], filters: [], window: { from: '2026-09-01T00:00:00Z', to: '2026-09-08T00:00:00Z' } }),
   });
-  assert.equal(res.status, 403);
+  assert.equal(res.status, 401);
   assert.match((await res.json()).error.message, /no signed-in session/);
 });
 
@@ -171,7 +176,7 @@ test('a tenant in the request body is refused as a validation error, not honoure
     headers: asTenant(),
     body: JSON.stringify({ query_version: '1', tenant_id: TENANT, source: 'mart.v_tool_usage', bucket: 'day', dimensions: ['tool'], measures: ['submissions'], filters: [] }),
   });
-  assert.equal(res.status, 403, 'no session, so the request is refused before its shape is judged');
+  assert.equal(res.status, 401, 'no session, so the request is refused before its shape is judged');
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -465,7 +470,7 @@ test('review_state is only confirmed or disputed; open is not an action', async 
   assert.equal((await res.json()).error.code, 'type_mismatch');
 });
 
-test('a review with no established tenant is refused 403 and never reaches the database', async (t) => {
+test('a review with no established tenant is refused 401 and never reaches the database', async (t) => {
   const client = reviewClient();
   const { base } = await withServer(t, { client });
   const res = await fetch(`${base}${PATHS.FINDING_REVIEW}`, {
@@ -473,7 +478,7 @@ test('a review with no established tenant is refused 403 and never reaches the d
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ submission_id: REVIEW_SUBMISSION, rule_id: 'PAYMENT_CARD_PAN', review_state: 'confirmed' }),
   });
-  assert.equal(res.status, 403);
+  assert.equal(res.status, 401);
   assert.equal((await res.json()).result_state, 'unauthorised_role');
   assert.equal(client.calls.query.length, 0);
 });
@@ -548,7 +553,7 @@ test('a tenant in a sanction body is refused as a validation error, not honoured
   assert.equal(client.calls.query.length, 0, 'a rejected body must not reach the database');
 });
 
-test('a sanction with no established tenant is refused 403 and never reaches the database', async (t) => {
+test('a sanction with no established tenant is refused 401 and never reaches the database', async (t) => {
   const client = sanctionClient();
   const { base } = await withServer(t, { client });
   const res = await fetch(`${base}${PATHS.TOOL_SANCTION}`, {
@@ -556,7 +561,7 @@ test('a sanction with no established tenant is refused 403 and never reaches the
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ tool_fingerprint: TOOL_FP, sanctioned_state: 'sanctioned' }),
   });
-  assert.equal(res.status, 403);
+  assert.equal(res.status, 401);
   assert.equal((await res.json()).result_state, 'unauthorised_role');
   assert.equal(client.calls.query.length, 0);
 });
@@ -627,7 +632,7 @@ test('a verified token establishes the tenant, actor and roles, and the tenant c
       return { tenant: TENANT, actorId: 'reader@lab.test', subject: 'sub-1', roles: ['viewer'], caseReference: null };
     },
   };
-  const { base, client } = await withServer(t, { cfg: testConfig({ SAC_DEV_TRUST_PRINCIPAL: '', SAC_OIDC_ISSUER: 'https://idp.test', SAC_OIDC_AUDIENCE: 'sac-query-api' }), verifier, client: { ...fakeClient(), async query(text, params) { seen.push({ text, params }); return { rows: [], rowCount: 0, fields: [] }; } } });
+  const { base, client } = await withServer(t, { cfg: testConfig({ SAC_DEV_TRUST_PRINCIPAL: '', SAC_AUTH_ISSUER: 'https://control-api.test' }), verifier, client: { ...fakeClient(), async query(text, params) { seen.push({ text, params }); return { rows: [], rowCount: 0, fields: [] }; } } });
   const res = await fetch(`${base}${PATHS.QUERY}`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer signed.token.value' }, body: JSON.stringify(AGGREGATE) });
   assert.equal(res.status, 200, 'the aggregate read is served for the viewer token');
   const setTenant = seen.find((c) => /set_config\('app\.tenant_id'/.test(c.text));
@@ -639,8 +644,181 @@ test('a verified token establishes the tenant, actor and roles, and the tenant c
 test('an invalid bearer token is refused even with development trust off', async (t) => {
   const verifier = { enabled: true, async verify() { throw new Error('nope'); } };
   const client = fakeClient();
-  const { base } = await withServer(t, { cfg: testConfig({ SAC_DEV_TRUST_PRINCIPAL: '', SAC_OIDC_ISSUER: 'https://idp.test', SAC_OIDC_AUDIENCE: 'sac-query-api' }), verifier, client });
+  const { base } = await withServer(t, { cfg: testConfig({ SAC_DEV_TRUST_PRINCIPAL: '', SAC_AUTH_ISSUER: 'https://control-api.test' }), verifier, client });
   const res = await fetch(`${base}${PATHS.QUERY}`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer forged' }, body: JSON.stringify(AGGREGATE) });
-  assert.equal(res.status, 403);
+  assert.equal(res.status, 401);
+  assert.match(res.headers.get('www-authenticate') ?? '', /error="invalid_token"/);
   assert.equal(client.calls.query.length, 0);
+});
+
+// ---------------------------------------------------------------------------------------------
+// The product access token, end to end (contract §2): real ES256 tokens through the real verifier
+// ---------------------------------------------------------------------------------------------
+
+const REVIEW_BODY = { submission_id: REVIEW_SUBMISSION, rule_id: 'PAYMENT_CARD_PAN', review_state: 'confirmed' };
+const SANCTION_BODY = { tool_fingerprint: TOOL_FP, sanctioned_state: 'sanctioned' };
+const RETRIEVAL_EVENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+
+/**
+ * Every route class, the body that reaches its role gate, and the roles that may pass it. The
+ * table IS the role design (docs/04 §2.2): a change to a role's reach is a change here.
+ */
+const ROUTE_CLASSES = [
+  { name: 'aggregate read', path: PATHS.QUERY, body: AGGREGATE, allowed: ['viewer', 'analyst', 'content_reader', 'admin'] },
+  { name: 'device read', path: PATHS.QUERY, body: DEVICES, allowed: ['viewer', 'analyst', 'content_reader'] },
+  { name: 'subject-level read', path: PATHS.QUERY, body: EVENTS, allowed: ['analyst', 'content_reader'] },
+  { name: 'audit trail read', path: PATHS.QUERY, body: AUDIT, allowed: ['admin'] },
+  { name: 'finding review write', path: PATHS.FINDING_REVIEW, body: REVIEW_BODY, allowed: ['analyst', 'content_reader'] },
+  { name: 'tool sanction write', path: PATHS.TOOL_SANCTION, body: SANCTION_BODY, allowed: ['admin'] },
+  { name: 'prompt-text search', path: CONTENT_PATHS.SEARCH, body: { query: 'capital' }, allowed: ['analyst', 'content_reader'] },
+  { name: 'content retrieval mint', path: CONTENT_PATHS.RETRIEVAL, body: { event_ids: [RETRIEVAL_EVENT] }, allowed: ['content_reader'] },
+];
+
+/** A client that lets each write's statements succeed, so an allowed write is a 200. */
+function writesClient() {
+  const review = reviewClient();
+  const sanction = sanctionClient();
+  const calls = { query: [] };
+  return {
+    calls,
+    async connect() {},
+    async query(text, params) {
+      calls.query.push({ text, params });
+      if (text.includes('ops.tool')) return sanction.query(text, params);
+      return review.query(text, params);
+    },
+    async begin() {},
+    async commit() {},
+    async rollback() {},
+    async close() {},
+  };
+}
+
+/** A vault double that records what it was sent and answers both content routes. */
+function vaultDouble() {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    const path = new URL(url).pathname;
+    calls.push({ path, headers: { ...init.headers } });
+    const json = path === '/v1/content-search'
+      ? { state: 'available', hits: [], truncated: false }
+      : { state: 'available', grant_id: 'g-1', raw_digest: 'sha256:x', expires_at: '2026-10-05T00:05:00Z', retrieval_url: `/v1/content/retrieval/${TENANT}/g-1` };
+    return { status: 200, json: async () => json };
+  };
+  return { calls, forwarder: createContentForwarder({ vaultUrl: 'http://vault.internal:8080', scope: 'lab', fetchImpl, log: null }) };
+}
+
+async function withTokenServer(t, { devTrust = false, client = writesClient() } = {}) {
+  const issuer = createTestIssuer();
+  const verifier = createVerifier({ issuer: issuer.issuer, fetchImpl: issuer.fetchImpl });
+  const vault = vaultDouble();
+  const cfg = testConfig({ SAC_DEV_TRUST_PRINCIPAL: devTrust ? '1' : '', SAC_AUTH_ISSUER: issuer.issuer });
+  const { base } = await withServer(t, { cfg, verifier, client, contentForwarder: vault.forwarder });
+  const call = (path, body, headers = {}) => fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
+  return { issuer, vault, client, call };
+}
+
+test('every role boundary holds on every route class, from a verified ES256 token', async (t) => {
+  const { issuer, call } = await withTokenServer(t);
+  for (const role of ['viewer', 'analyst', 'content_reader', 'admin']) {
+    const bearer = { authorization: `Bearer ${issuer.mint({ roles: [role] })}` };
+    for (const route of ROUTE_CLASSES) {
+      const res = await call(route.path, route.body, bearer);
+      const body = await res.json();
+      if (route.allowed.includes(role)) {
+        assert.equal(res.status, 200, `${role} must be served the ${route.name} (got ${JSON.stringify(body.error)})`);
+      } else {
+        assert.equal(res.status, 403, `${role} must be refused the ${route.name}`);
+        assert.equal(body.error?.code, 'role', `${role} on ${route.name} is a role refusal, not some other failure`);
+      }
+    }
+  }
+});
+
+test('a token carrying several roles has the union of their reach', async (t) => {
+  const { issuer, call } = await withTokenServer(t);
+  const bearer = { authorization: `Bearer ${issuer.mint({ roles: ['viewer', 'admin'] })}` };
+  assert.equal((await call(PATHS.QUERY, DEVICES, bearer)).status, 200, 'device list via viewer');
+  assert.equal((await call(PATHS.TOOL_SANCTION, SANCTION_BODY, bearer)).status, 200, 'sanction via admin');
+  assert.equal((await call(PATHS.QUERY, EVENTS, bearer)).status, 403, 'neither carries subject-level reads');
+});
+
+test('without a session every route class answers 401 and touches nothing', async (t) => {
+  const { issuer, vault, client, call } = await withTokenServer(t);
+  const presented = [
+    {},
+    { authorization: `Bearer ${issuer.mint({ iss: 'http://elsewhere' })}` },
+    { authorization: `Bearer ${issuer.mint({ roles: ['superuser'] })}` },
+    // The development header is not a session when the flag is off.
+    { 'x-sac-dev-tenant': TENANT, 'x-sac-dev-role': 'admin' },
+  ];
+  for (const headers of presented) {
+    for (const route of ROUTE_CLASSES) {
+      const res = await call(route.path, route.body, headers);
+      assert.equal(res.status, 401, `${route.name} with ${Object.keys(headers).join(',') || 'nothing'} must be 401`);
+      assert.equal((await res.json()).error.code, 'unauthenticated');
+      assert.ok(res.headers.get('www-authenticate')?.startsWith('Bearer'), 'the 401 carries the bearer challenge');
+    }
+  }
+  assert.equal(client.calls.query.length, 0, 'no unauthenticated request reached the database');
+  assert.equal(vault.calls.length, 0, 'or the vault');
+});
+
+test("a content request forwards the caller's own bearer to the vault, beside headers that agree with it", async (t) => {
+  const { issuer, vault, call } = await withTokenServer(t);
+  const token = issuer.mint({ roles: ['content_reader', 'superuser'], actor: 'reader@lab.test' });
+  assert.equal((await call(CONTENT_PATHS.SEARCH, { query: 'capital' }, { authorization: `Bearer ${token}` })).status, 200);
+  assert.equal((await call(CONTENT_PATHS.RETRIEVAL, { event_ids: [RETRIEVAL_EVENT] }, { authorization: `Bearer ${token}` })).status, 200);
+  assert.equal(vault.calls.length, 2);
+  for (const sent of vault.calls) {
+    assert.equal(sent.headers.authorization, `Bearer ${token}`, `${sent.path} carries the same token`);
+    assert.equal(sent.headers['x-sac-tenant'], TENANT);
+    assert.equal(sent.headers['x-sac-subject'], 'reader@lab.test');
+    assert.equal(sent.headers['x-sac-roles'], 'content_reader', 'the roles header names only what the token granted');
+    assert.equal(sent.headers['x-sac-service'], 'query-api');
+  }
+});
+
+test("the token's sid is written into the audit row of a read and of a write", async (t) => {
+  const { issuer, client, call } = await withTokenServer(t);
+  const analyst = { authorization: `Bearer ${issuer.mint({ roles: ['analyst'], sid: 'ABCDEF0123456789' })}` };
+  assert.equal((await call(PATHS.QUERY, EVENTS, analyst)).status, 200);
+  assert.equal((await call(PATHS.FINDING_REVIEW, REVIEW_BODY, analyst)).status, 200);
+  const audits = client.calls.query.filter((c) => c.text.includes('INSERT INTO ops.audit'));
+  assert.equal(audits.length, 2, 'the subject-level read and the review each wrote one audit row');
+  for (const audit of audits) {
+    assert.equal(audit.params[1], 'reader@lab.test', "the actor is the token's actor");
+    assert.equal(JSON.parse(audit.params[7]).sid, 'abcdef0123456789', 'detail carries the session id');
+  }
+});
+
+test('with development trust on, a token still wins, and a refused token never falls through to the header', async (t) => {
+  const { issuer, client, call } = await withTokenServer(t, { devTrust: true, client: fakeClient() });
+  const other = '00000000-0000-4000-8000-0000000000bb';
+  const devHeaders = { 'x-sac-dev-tenant': other, 'x-sac-dev-role': 'admin' };
+
+  const res = await call(PATHS.QUERY, AGGREGATE, { ...devHeaders, authorization: `Bearer ${issuer.mint({ roles: ['viewer'] })}` });
+  assert.equal(res.status, 200);
+  const setTenant = client.calls.query.find((c) => /set_config\('app\.tenant_id'/.test(c.text));
+  assert.deepEqual(setTenant.params, [TENANT], "the token's tenant, not the header's");
+
+  const before = client.calls.query.length;
+  const refused = await call(PATHS.QUERY, AGGREGATE, { ...devHeaders, authorization: `Bearer ${issuer.mint({ exp: 1, iat: 0 })}` });
+  assert.equal(refused.status, 401, 'an expired token is a refusal even beside a trusted header');
+  assert.equal(client.calls.query.length, before);
+});
+
+test('the development header path is unchanged: no token, the flag on, the header names tenant and role', async (t) => {
+  const vault = vaultDouble();
+  const { base, client } = await withServer(t, { contentForwarder: vault.forwarder });
+  const res = await fetch(`${base}${CONTENT_PATHS.SEARCH}`, { method: 'POST', headers: asRole('analyst', { 'x-sac-dev-actor': 'analyst@lab.test' }), body: JSON.stringify({ query: 'capital' }) });
+  assert.equal(res.status, 200);
+  assert.equal(vault.calls[0].headers.authorization, undefined, 'a development principal has no token to forward');
+  assert.equal(vault.calls[0].headers['x-sac-tenant'], TENANT);
+  assert.equal(vault.calls[0].headers['x-sac-roles'], 'analyst');
+  // Absent a role header, the escape hatch still carries every capability, and writes no sid.
+  assert.equal((await fetch(`${base}${PATHS.QUERY}`, { method: 'POST', headers: asTenant(), body: JSON.stringify(EVENTS) })).status, 200);
+  const audit = client.calls.query.find((c) => c.text.includes('INSERT INTO ops.audit'));
+  assert.ok(audit, 'the subject-level read was audited');
+  assert.equal('sid' in JSON.parse(audit.params[7]), false, 'no token, no sid');
 });

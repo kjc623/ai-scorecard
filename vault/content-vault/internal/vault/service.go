@@ -530,6 +530,18 @@ type RetrieveRequest struct {
 	CaseReference  string
 	SecondApprover string
 	Justification  string
+	// SessionID is the product token's `sid`, recorded in each audit row so a read can be tied to
+	// the sign-in that made it. Empty when the caller had no token (the header-trust lab).
+	SessionID string
+}
+
+// withSession adds the session id to an audit row's detail when there is one. ops.audit has no
+// column for it, and query-api records it under the same key, so one search finds both halves.
+func withSession(detail map[string]any, sessionID string) map[string]any {
+	if sessionID != "" {
+		detail["sid"] = sessionID
+	}
+	return detail
 }
 
 // RetrieveResult is a scheduled retrieval: the caller gets a grant id, an expiry and a single-use
@@ -574,11 +586,11 @@ func (s *Service) Retrieve(ctx context.Context, req RetrieveRequest) (RetrieveRe
 		TenantID: tenant.TenantID, ActorType: "user", ActorID: req.Principal,
 		Action: ActionRetrievalRequested, ObjectType: "event", ObjectID: req.EventID,
 		CaseReference: req.CaseReference,
-		Detail: map[string]any{
+		Detail: withSession(map[string]any{
 			"second_approver": req.SecondApprover,
 			"justification":   req.Justification,
 			"outcome":         "pending",
-		},
+		}, req.SessionID),
 		OccurredAt: now,
 	}); err != nil {
 		return RetrieveResult{}, Denialf(DenyAuditUnavailable, "the retrieval audit row could not be committed, so the read fails closed: %v", err)
@@ -629,10 +641,10 @@ func (s *Service) Retrieve(ctx context.Context, req RetrieveRequest) (RetrieveRe
 		TenantID: tenant.TenantID, ActorType: "user", ActorID: req.Principal,
 		Action: ActionRetrievalGranted, ObjectType: "content_object", ObjectID: obj.ObjectID,
 		CaseReference: req.CaseReference,
-		Detail: map[string]any{
+		Detail: withSession(map[string]any{
 			"grant_id": grantID, "second_approver": req.SecondApprover,
 			"expires_at": grant.ExpiresAt.Format(time.RFC3339), "raw_digest": obj.CiphertextSHA256,
-		},
+		}, req.SessionID),
 		OccurredAt: now,
 	}); err != nil {
 		return RetrieveResult{}, Denialf(DenyAuditUnavailable, "the grant could not be recorded in the audit trail: %v", err)
@@ -1243,7 +1255,7 @@ func (s *Service) refuse(ctx context.Context, tenant store.Tenant, req RetrieveR
 		TenantID: tenant.TenantID, ActorType: "user", ActorID: req.Principal,
 		Action: ActionRetrievalRefused, ObjectType: "event", ObjectID: req.EventID,
 		CaseReference: req.CaseReference,
-		Detail:        map[string]any{"reason": string(reason), "detail": detail, "outcome": "refused"},
+		Detail:        withSession(map[string]any{"reason": string(reason), "detail": detail, "outcome": "refused"}, req.SessionID),
 		OccurredAt:    now,
 	})
 	return Denialf(reason, "%s", detail)
@@ -1260,10 +1272,10 @@ func (s *Service) unavailableWithReceipt(ctx context.Context, tenant store.Tenan
 		TenantID: tenant.TenantID, ActorType: "user", ActorID: req.Principal,
 		Action: ActionRetrievalRefused, ObjectType: "content_object", ObjectID: obj.ObjectID,
 		CaseReference: req.CaseReference,
-		Detail: map[string]any{
+		Detail: withSession(map[string]any{
 			"reason": string(reason), "detail": detail, "outcome": "no_longer_available",
 			"receipt_ref": receipt,
-		},
+		}, req.SessionID),
 		OccurredAt: now,
 	})
 	return &Unavailable{Reason: reason, ReceiptRef: receipt, Detail: detail}

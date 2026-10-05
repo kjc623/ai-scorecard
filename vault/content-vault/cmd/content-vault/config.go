@@ -8,6 +8,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/shadow-ai-capture/content-vault/internal/auth"
 )
 
 // Configuration: one vocabulary, two sources.
@@ -65,7 +67,37 @@ const (
 	// EnvAppInsights is the Application Insights connection string. A credential: read only to
 	// report whether it is configured, never logged.
 	EnvAppInsights = "SAC_APPINSIGHTS"
+	// EnvAuthIssuer is the product access token's issuer (control-api, contract §2). Set, the human
+	// routes verify the bearer query-api forwards; empty, the vault trusts X-Sac-* headers alone,
+	// which is the lab arrangement and is logged as such.
+	EnvAuthIssuer = "SAC_AUTH_ISSUER"
+	// EnvAuthAudience is the vault's audience in that token; sac-vault unless set.
+	EnvAuthAudience = "SAC_AUTH_AUDIENCE"
+	// EnvAuthJWKSURL is where the issuer's keys are; {issuer}/.well-known/jwks.json unless set.
+	EnvAuthJWKSURL = "SAC_AUTH_JWKS_URL"
 )
+
+// buildAuthenticator chooses how a request's caller is established. The allowed services are the
+// closed set of internal callers either way; what changes with an issuer is where the person comes
+// from. An audience or JWKS URL with no issuer is refused rather than ignored: it is a deployment
+// that believes it verifies tokens and does not.
+func buildAuthenticator(issuer, audience, jwksURL string) (auth.Authenticator, *auth.TokenVerifier, error) {
+	headers := auth.NewHeaderAuthenticator("query-api", "control-api", "ops")
+	if issuer == "" {
+		if audience != "" || jwksURL != "" {
+			return nil, nil, fmt.Errorf("%s is required when %s or %s is set: a token is verified against the issuer that minted it", EnvAuthIssuer, EnvAuthAudience, EnvAuthJWKSURL)
+		}
+		return headers, nil, nil
+	}
+	if err := checkURL(EnvAuthIssuer, issuer); err != nil {
+		return nil, nil, err
+	}
+	if err := checkURL(EnvAuthJWKSURL, jwksURL); err != nil {
+		return nil, nil, err
+	}
+	v := auth.NewTokenVerifier(issuer, audience, jwksURL)
+	return &auth.TokenAuthenticator{Headers: headers, Verifier: v}, v, nil
+}
 
 // flagSet records which flags the operator passed.
 type flagSet map[string]bool

@@ -457,7 +457,7 @@ func (p *Provider) emitDetection(ctx context.Context, tool, basis string, proc P
 		return
 	}
 	_, err = p.cfg.Pipeline.EmitEnvelope(ctx, core.EnvelopeInput{
-		Identity:          core.Identity{TenantID: p.tenant(), DeviceID: p.device(), UserRef: p.cfg.Agent.UserRef, SubjectName: p.cfg.Agent.SubjectName},
+		Identity:          p.envelopeIdentity(),
 		Kind:              protocol.KindModelDetection,
 		Route:             protocol.RouteProcDetect,
 		Mode:              res.Mode,
@@ -511,7 +511,7 @@ func (p *Provider) emitRollup(ctx context.Context, tool string, now time.Time) {
 	}
 	bytesTotal := int64(0)
 	_, err = p.cfg.Pipeline.EmitEnvelope(ctx, core.EnvelopeInput{
-		Identity:          core.Identity{TenantID: p.tenant(), DeviceID: p.device(), UserRef: p.cfg.Agent.UserRef, SubjectName: p.cfg.Agent.SubjectName},
+		Identity:          p.envelopeIdentity(),
 		Kind:              protocol.KindUsageRollup,
 		Route:             protocol.RouteProcDetect,
 		Mode:              res.Mode,
@@ -577,6 +577,20 @@ func (p *Provider) CoverageRow() Coverage {
 type Identity struct {
 	TenantID string
 	DeviceID string
+	// UserRef and SubjectName are the person the agent currently resolves at the device. When
+	// UserRef is set the pair wins over Agent's, which are only the configured values.
+	UserRef     string
+	SubjectName string
+}
+
+// envelopeIdentity is what a record is stamped with: the enrolled device and the person resolved
+// when it is minted, else the configured person.
+func (p *Provider) envelopeIdentity() core.Identity {
+	id := p.identityOrAgent()
+	if id.UserRef == "" {
+		id.UserRef, id.SubjectName = p.cfg.Agent.UserRef, p.cfg.Agent.SubjectName
+	}
+	return core.Identity{TenantID: id.TenantID, DeviceID: id.DeviceID, UserRef: id.UserRef, SubjectName: id.SubjectName}
 }
 
 // SetIdentity installs the device identity. It must be called before Start; a provider with no

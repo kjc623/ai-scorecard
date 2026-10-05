@@ -60,9 +60,10 @@ type options struct {
 	shutdownGrace time.Duration
 }
 
-// route maps a device-facing path prefix to the service that owns it. The list mirrors
+// route maps a public path prefix to the service that owns it. The device prefixes mirror
 // docs/02-ingest-and-transport.md §5: enrolment and tokens are control-api's, events are
-// ingest-api's, and the policy/health/grant surface is control-api's. It is a table rather than a
+// ingest-api's, and the policy/health/grant surface is control-api's; the identity prefixes (SCIM,
+// onboarding, the issuer's well-known documents) are control-api's too. It is a table rather than a
 // hand-written mux so a reader can see the whole mapping at once.
 type route struct {
 	prefix string
@@ -117,10 +118,19 @@ func run() error {
 	routes := []route{
 		{prefix: "/v1/enrol", target: control},
 		{prefix: "/v1/token", target: control},
+		// The signed policy bundle a device fetches after enrolment (docs/02 §5.2), authenticated by
+		// its device credential like /v1/health.
 		{prefix: "/v1/policy", target: control},
 		{prefix: "/v1/health", target: control},
 		{prefix: "/v1/content/grant", target: control},
 		{prefix: "/v1/events", target: ingest},
+		// The lab has one public edge, so it also stands in for the public routes Azure puts on the
+		// analyst edge (azure/main.bicep): a customer IdP's SCIM client, the one-time onboarding pages
+		// and the product token issuer's discovery and JWKS. Each authenticates on its own -- a SCIM
+		// bearer, the invite token, nothing secret -- so the edge only routes them.
+		{prefix: "/scim/v2", target: control},
+		{prefix: "/onboard", target: control},
+		{prefix: "/.well-known", target: control},
 	}
 
 	proxies := map[string]*httputil.ReverseProxy{

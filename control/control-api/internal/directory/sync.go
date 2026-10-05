@@ -8,8 +8,9 @@ import (
 )
 
 // Syncer is one sync pass over one tenant. It is deliberately not itself a Store or a Source: the
-// three pieces are injected, so the same logic runs against Entra in production and a file in the
-// lab, and against a fake store in tests.
+// three pieces are injected, so the same logic runs against the lab's file and against a fake store
+// in tests. A customer's people arrive through SCIM instead (internal/scim), which writes the same
+// ops.user_dim columns one person at a time; RetireMissing leaves those rows alone.
 type Syncer struct {
 	Source Source
 	Store  Store
@@ -31,8 +32,8 @@ func (s *Syncer) now() time.Time {
 // the only sense the data supports: rows are upserted per user_ref and never truncated and
 // reinserted, so a person's row and its history survive every run. A user the source omits is
 // retired rather than deleted. A read that returns no users at all is refused rather than acted on,
-// because retiring every row from an empty read would turn a misconfigured customer secret into a
-// silent data loss; the same rule is why a partial Graph page is an error and not a short list.
+// because retiring every row from an empty read would turn a wrong file path or an empty export into
+// a silent data loss; for the same reason a Source must fail on a partial read, never shorten it.
 func (s *Syncer) Sync(ctx context.Context, tenantID string) (Result, error) {
 	if s.Source == nil || s.Store == nil || s.Cipher == nil {
 		return Result{}, fmt.Errorf("directory: syncer needs a source, a store and a cipher")

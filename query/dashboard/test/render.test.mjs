@@ -252,14 +252,17 @@ test('the acceptance run: every scenario renders every screen without throwing',
   for (const scenario of SCENARIO_NAMES) {
     const dashboard = dashboardFor(scenario);
     for (const screen of SCREENS) {
-      const { view, shell, gallery } = await dashboard.load(screen.id, { filters: { submission_id: '11111111-2222-4333-8444-555555555551', subject: 'u_1' } });
-      if (gallery) continue;
+      const { view, shell, gallery, admin } = await dashboard.load(screen.id, { filters: { submission_id: '11111111-2222-4333-8444-555555555551', subject: 'u_1' } });
+      // The gallery and Settings → Deployment are not query screens: the gallery picks a scenario,
+      // and Deployment reads the admin API through its own controller (test/deployment.test.mjs).
+      if (gallery || admin) continue;
       const html = renderScreen(view, shell);
       assert.ok(typeof html === 'string' && html.length > 0, `${scenario}/${screen.id} rendered`);
       rendered.push(`${scenario}/${screen.id}`);
     }
   }
-  assert.equal(rendered.length, SCENARIO_NAMES.length * (SCREENS.length - 1), 'every scenario × every screen');
+  const queryScreens = SCREENS.filter((s) => s.kind !== 'gallery' && s.kind !== 'admin').length;
+  assert.equal(rendered.length, SCENARIO_NAMES.length * queryScreens, 'every scenario × every query screen');
   assert.ok(rendered.length >= 90, `expected a broad matrix, got ${rendered.length}`);
 });
 

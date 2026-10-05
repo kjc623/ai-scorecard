@@ -47,11 +47,23 @@ type Config struct {
 	Endpoint       string
 	AuthMode       protocol.AuthMode
 	EnrolmentToken string
-	CAFile         string
+	// DeploymentKey is the reusable per-tenant bootstrap credential a customer's deployment package
+	// carries (contract §5). A device presents it or EnrolmentToken, never both. Because it is
+	// reusable it also renews an expired x509 credential, which a spent single-use token cannot.
+	DeploymentKey string
+	CAFile        string
 
-	TenantID     string
-	DeviceID     string
-	MDMID        string
+	TenantID string
+	DeviceID string
+	MDMID    string
+	// HardwareSeed is what the operating system states about the hardware (hostinfo.Facts), the
+	// idempotency seed when no MDMID is configured. Without either the seed falls back to DeviceID,
+	// and with none of the three every device of a tenant would share one hash.
+	HardwareSeed string
+	// Attestation, when non-nil, is called at each enrolment for what the device can say about its
+	// own management; the server checks it against the customer's MDM. Nil, or a nil result, sends
+	// none.
+	Attestation  func() *protocol.DeviceAttestation
 	AgentVersion string
 	// Hostname is the clear machine name, sent at enrolment only while the tenant's device_identity
 	// is 'clear'; the caller empties it when the setting is 'hashed' (ADR 0021). HostnameHash is the
@@ -136,6 +148,9 @@ func New(cfg Config, store StoreFunc, creds *credential.Store, log Logger, clock
 	}
 	if !cfg.AuthMode.Valid() {
 		return nil, fmt.Errorf("drain: auth mode %q outside the closed set {x509,dpop}", cfg.AuthMode)
+	}
+	if cfg.EnrolmentToken != "" && cfg.DeploymentKey != "" {
+		return nil, errors.New("drain: an enrolment token and a deployment key are both configured; a device presents exactly one bootstrap credential")
 	}
 	if log == nil {
 		log = nopLogger{}
@@ -251,7 +266,7 @@ func (d *Drainer) ready(ctx context.Context) bool {
 	if enrolled && !expired {
 		return true
 	}
-	if d.cfg.EnrolmentToken == "" {
+	if d.cfg.EnrolmentToken == "" && d.cfg.DeploymentKey == "" {
 		detail := protocol.DetailUpstreamUnreachable
 		if expired {
 			// An expired leaf cannot authenticate and cannot be renewed without a token: say so
@@ -259,13 +274,13 @@ func (d *Drainer) ready(ctx context.Context) bool {
 			detail = protocol.DetailCredentialExpired
 		}
 		d.setStatus(protocol.StateDegraded, detail)
-		d.log.Printf("drain: no usable credential and no enrolment token; the device cannot reach the ingest path")
+		d.log.Printf("drain: no usable credential and no enrolment token or deployment key; the device cannot reach the ingest path")
 		return false
 	}
 	if expired {
 		d.log.Printf("drain: x509 credential expired (NotAfter %s); re-enrolling", current.NotAfter)
 	}
-	hwid := HardwareIdentityHash(d.cfg.TenantID, d.cfg.DeviceID, d.cfg.MDMID)
+	hwid := d.hardwareIdentity()
 	// A re-enrolment of an expired credential reuses the hardware-identity hash it was first
 	// issued under, so the edge returns the existing device_id instead of minting a duplicate.
 	if expired && current != nil && current.HardwareIdentityHash != "" {
@@ -618,13 +633,25 @@ func detailForErr(err error) protocol.Detail {
 	return protocol.DetailUpstreamFailure
 }
 
+// hardwareIdentity is the idempotency key this device enrols under: a configured MDM id first (the
+// lab profiles set one, so their hash is unchanged), then what the hardware states, then the
+// configured device id.
+func (d *Drainer) hardwareIdentity() string {
+	seed := d.cfg.MDMID
+	if seed == "" {
+		seed = d.cfg.HardwareSeed
+	}
+	return HardwareIdentityHash(d.cfg.TenantID, d.cfg.DeviceID, seed)
+}
+
 // HardwareIdentityHash derives the per-tenant enrolment idempotency key (C11). The preferred seed is
-// the MDM-delivered device identifier (mdmID); when none is supplied it falls back to hashing the
-// tenant and device identity, which is stable across re-enrolment of the same configured device but
-// is NOT a hardware binding.
+// the MDM-delivered device identifier or the hardware's own (mdmID); when none is supplied it falls
+// back to hashing the tenant and device identity, which is stable across re-enrolment of the same
+// configured device but is NOT a hardware binding.
 //
-// ASSUMPTION: the fallback does not survive a re-image that assigns a new device identity, so an MDM
-// id should be supplied wherever the platform delivers one.
+// ASSUMPTION: the fallback does not survive a re-image that assigns a new device identity, and with
+// no device id configured it is the same for every device of a tenant, so a seed should be supplied
+// wherever the platform states one.
 func HardwareIdentityHash(tenantID, deviceID, mdmID string) string {
 	seed := mdmID
 	if seed == "" {

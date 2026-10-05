@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"os/user"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -38,10 +37,11 @@ type Config struct {
 	Retention          string
 
 	// Device identity (ADR 0021). Hostname and SubjectName are the clear identity fields; empty
-	// means "resolve from the operating system". ManagedState is the agent's report, because there
-	// is no MDM resolver in this build. DeviceIdentity is the tenant setting the device acts on:
-	// 'clear' sends the hostname and subject name, 'hashed' sends neither. It defaults to 'clear'
-	// (the product default) and is refreshed from the server's enrolment and health responses.
+	// means "resolve from the operating system" (the console user, for the name). ManagedState is
+	// an override: empty reports 'managed' when an Intune enrolment is found, else 'unknown'.
+	// DeviceIdentity is the tenant setting the device acts on: 'clear' sends the hostname and
+	// subject name, 'hashed' sends neither. It defaults to 'clear' (the product default) and is
+	// refreshed from the server's enrolment and health responses.
 	Hostname       string
 	SubjectName    string
 	ManagedState   string
@@ -99,11 +99,17 @@ type Config struct {
 	AuthMode       string // "x509" | "dpop"; empty when the drain is disabled
 	CredentialFile string // path to the sealed device credential
 	EnrolmentToken string // single-use bootstrap token for POST /v1/enrol
-	CAFile         string // PEM CA set the edge is pinned to (empty = system roots)
-	MDMID          string // MDM-delivered device identifier, the preferred hardware-identity seed
-	BackoffBase    time.Duration
-	BackoffCap     time.Duration
-	DrainInterval  time.Duration // background drain poll interval (default 1s; the selftest lengthens it)
+	// DeploymentKey is the tenant's reusable bootstrap credential from the deployment package
+	// (contract §5); exactly one of it and EnrolmentToken is presented.
+	DeploymentKey string
+	// StateDir holds what the agent fetches or generates for itself: the cached policy bundle and
+	// the per-device CA. Empty means the directory of CredentialFile.
+	StateDir      string
+	CAFile        string // PEM CA set the edge is pinned to (empty = system roots)
+	MDMID         string // MDM-delivered device identifier, the preferred hardware-identity seed
+	BackoffBase   time.Duration
+	BackoffCap    time.Duration
+	DrainInterval time.Duration // background drain poll interval (default 1s; the selftest lengthens it)
 
 	// Modes and misc.
 	WorkDir string
@@ -146,8 +152,13 @@ func (c Config) validate(mode runMode) error {
 			return fmt.Errorf("--retention %q: %w", c.Retention, err)
 		}
 	}
-	if (c.BundlePath == "") != (c.PolicyKey == "") {
-		return errors.New("--bundle and --policy-key go together: a bundle with no pinned key cannot be verified, and a key with no bundle verifies nothing")
+	if c.BundlePath != "" && c.PolicyKey == "" {
+		return errors.New("--bundle needs --policy-key: a bundle with no pinned key cannot be verified")
+	}
+	// With no --bundle the bundle is fetched from GET /v1/policy, which needs a device endpoint to
+	// fetch from; without one a pinned key verifies nothing.
+	if c.PolicyKey != "" && c.BundlePath == "" && strings.TrimSpace(c.DeviceEndpoint) == "" {
+		return errors.New("--policy-key with no --bundle needs --device-endpoint: the bundle is then fetched from GET /v1/policy, and without an endpoint the key verifies nothing")
 	}
 	if c.PolicyKey != "" {
 		if _, err := hex.DecodeString(strings.TrimSpace(c.PolicyKey)); err != nil {
@@ -183,7 +194,13 @@ func (c Config) validate(mode runMode) error {
 // the drain is disabled and nothing else is required; a non-empty one must be a usable https URL
 // with a credential file, a closed auth mode, and sane backoff bounds.
 func (c Config) validateDrain() error {
+	if strings.TrimSpace(c.EnrolmentToken) != "" && strings.TrimSpace(c.DeploymentKey) != "" {
+		return errors.New("--enrolment-token and --deployment-key are both set: a device presents exactly one bootstrap credential (the lab's single-use token, or the tenant package's deployment key)")
+	}
 	if strings.TrimSpace(c.DeviceEndpoint) == "" {
+		if strings.TrimSpace(c.DeploymentKey) != "" {
+			return errors.New("--deployment-key needs --device-endpoint: there is nowhere to enrol")
+		}
 		return nil
 	}
 	u, err := url.Parse(c.DeviceEndpoint)
@@ -278,27 +295,51 @@ func spoolBounds(profile string) (int64, int) {
 	}
 }
 
-// buildIdentity is the enrolment result the agent stamps on envelopes. On a real device it comes
-// from §13.1's enrolment; here it is configuration, and an empty tenant is refused by validate.
-// SubjectName is present only while the device-identity setting is 'clear' (ADR 0021).
-func (c Config) identity() core.Identity {
-	return core.Identity{
-		TenantID:    c.TenantID,
-		DeviceID:    c.DeviceID,
-		UserRef:     c.UserRef,
-		SubjectName: c.clearSubjectName(),
+// stateDir is where the agent keeps what it fetches or generates for itself, or empty when there
+// is nowhere: --state-dir, else the directory the sealed credential lives in.
+func (c Config) stateDir() string {
+	if d := strings.TrimSpace(c.StateDir); d != "" {
+		return d
 	}
+	if strings.TrimSpace(c.DeviceEndpoint) != "" && strings.TrimSpace(c.CredentialFile) != "" {
+		return filepath.Dir(c.CredentialFile)
+	}
+	return ""
 }
 
-// clearSubjectName is the account name to stamp on envelopes, or empty when the device-identity
-// setting is 'hashed'. The setting gates what the device sends; control-api is authoritative and
-// drops a clear value a stale device still sends, so the two layers agree.
-func (c Config) clearSubjectName() string {
-	if c.deviceIdentityMode() != protocol.DeviceIdentityClear {
-		return ""
-	}
-	return c.resolvedSubjectName()
+// fetchesPolicy reports whether the bundle comes from GET /v1/policy: no --bundle is configured, a
+// pinned key can verify what is fetched, and there is an endpoint to fetch from. A device with no
+// key never fetches, because it could not verify the answer, and stays at M0.
+func (c Config) fetchesPolicy() bool {
+	return c.BundlePath == "" && strings.TrimSpace(c.PolicyKey) != "" && strings.TrimSpace(c.DeviceEndpoint) != ""
 }
+
+// generatesDeviceCA reports whether the per-device CA is the agent's own: something must trust the
+// interception root (the OS store or the CLI shim) and no CA pair is configured. The pair is then
+// generated on first start under the state directory and reused, so the trusted root survives a
+// restart and its key never leaves the device.
+func (c Config) generatesDeviceCA() bool {
+	return (c.TrustInstall || c.CLIShim) && c.CACertFile == "" && c.CAKeyFile == "" && c.stateDir() != ""
+}
+
+// identity is the local run's envelope identity: the flags, with the configured person. A drain
+// run's identity is the issued one, installed by the service once enrolment resolves it.
+func (c Config) identity() core.Identity {
+	userRef := c.UserRef
+	if strings.TrimSpace(userRef) == "" {
+		userRef = unattributedUserRef
+	}
+	subject := ""
+	if c.deviceIdentityMode() == protocol.DeviceIdentityClear {
+		subject = strings.TrimSpace(c.SubjectName)
+	}
+	return core.Identity{TenantID: c.TenantID, DeviceID: c.DeviceID, UserRef: userRef, SubjectName: subject}
+}
+
+// unattributedUserRef is the user_ref of an observation no person can be named for: nobody is at
+// the console, or the tenant has not issued the key a person's reference is derived under. The
+// envelope requires a user_ref, and this one is visibly not a person's (a derived one is "u_…").
+const unattributedUserRef = "unattributed"
 
 // deviceIdentityMode is the setting the device acts on, defaulting to 'clear' (the product default)
 // when nothing configured one. Anything other than the exact 'hashed' value is treated as clear and
@@ -346,26 +387,9 @@ func (c Config) hostnameHash() string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// resolvedSubjectName is the clear account name: the configured value, else the OS user, else a
-// conventional environment variable. It is the machine's interactive account, not proof of which
-// process opened a given connection; the report says so plainly.
-func (c Config) resolvedSubjectName() string {
-	if n := strings.TrimSpace(c.SubjectName); n != "" {
-		return n
-	}
-	if u, err := user.Current(); err == nil && strings.TrimSpace(u.Username) != "" {
-		return strings.TrimSpace(u.Username)
-	}
-	for _, k := range []string{"USERNAME", "USER", "LOGNAME"} {
-		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
-// managedState is the agent's report, defaulting to 'unknown' because there is no MDM resolver in
-// this build and 'unknown' is not 'unmanaged'.
+// managedState is the configured report, else 'unknown': without an MDM finding nobody established
+// that the device is unmanaged. The service reports 'managed' instead when it finds an Intune
+// enrolment (resolvedManagedState).
 func (c Config) managedState() protocol.ManagedState {
 	if m := protocol.ManagedState(strings.TrimSpace(c.ManagedState)); m.Valid() {
 		return m
@@ -373,14 +397,33 @@ func (c Config) managedState() protocol.ManagedState {
 	return protocol.ManagedStateUnknown
 }
 
+// resolvedManagedState is what the device reports: a configured value wins (an operator who knows
+// better), else 'managed' when the operating system shows an Intune enrolment, else 'unknown' — the
+// absence of Intune is not evidence of no management (ConfigMgr, GPO or another MDM may manage it).
+func (c Config) resolvedManagedState(intuneEnrolled bool) protocol.ManagedState {
+	if m := protocol.ManagedState(strings.TrimSpace(c.ManagedState)); m.Valid() {
+		return m
+	}
+	if intuneEnrolled {
+		return protocol.ManagedStateManaged
+	}
+	return protocol.ManagedStateUnknown
+}
+
+// scopeQuery is the construction-time scope query a provider carries. The pipeline replaces its
+// device and user with the resolved identity at resolution time, so only the configured values
+// belong here.
 func (c Config) scopeQuery(tool string) core.ScopeQuery {
-	return core.ScopeQuery{
+	q := core.ScopeQuery{
 		ToolFingerprint: tool,
 		Population:      c.Population,
 		DeviceID:        c.DeviceID,
 		UserRef:         c.UserRef,
-		SubjectName:     c.clearSubjectName(),
 	}
+	if c.deviceIdentityMode() == protocol.DeviceIdentityClear {
+		q.SubjectName = strings.TrimSpace(c.SubjectName)
+	}
+	return q
 }
 
 // classifierAddress parses "transport:path" into the address device/protocol expects. It is
@@ -522,8 +565,18 @@ func printConfig(cfg Config, logger loggerLike) error {
 	fmt.Printf("spool:           dir=%s key=%s bounds=%s retention=%s\n", cfg.SpoolDir, cfg.SpoolKey, cfg.SpoolBoundsProfile, cfg.Retention)
 
 	var inForce *policy.Bundle
-	if cfg.BundlePath == "" {
+	if cfg.fetchesPolicy() {
+		cache := policyCache{dir: filepath.Join(cfg.stateDir(), policyCacheDir)}
+		state := "none cached yet -> M0 until the first verified fetch"
+		if raw, _, err := cache.load(); err == nil && len(raw) > 0 {
+			state = fmt.Sprintf("cached at %s (verified again at start)", cache.bundlePath())
+		}
+		fmt.Printf("policy:          fetched from GET /v1/policy after enrolment, verified under key-id=%s; %s\n", cfg.PolicyKeyID, state)
+	} else if cfg.BundlePath == "" {
 		fmt.Printf("policy:          no bundle configured -> M0 (metadata only, no content read; §13.3 rule 5)\n")
+		if strings.TrimSpace(cfg.DeviceEndpoint) != "" {
+			fmt.Printf("policy:          GET /v1/policy is not polled: no --policy-key to verify a fetched bundle with\n")
+		}
 	} else {
 		store, result, err := loadPolicy(cfg, policy.ArtefactResolverFunc(func(policy.ArtefactRef) error { return nil }))
 		if err != nil {
@@ -584,6 +637,14 @@ func printConfig(cfg Config, logger loggerLike) error {
 
 	fmt.Printf("providers:       proxy.tls=%v (listen %s, canary %q) proxy.loopback=%v proc.detect=%v\n",
 		cfg.EnableTLS, tlsListen(cfg, inForce), tlsCanary(cfg, inForce), cfg.EnableLoopback, cfg.EnableProcDetect)
+	if cfg.generatesDeviceCA() {
+		dir := filepath.Join(cfg.stateDir(), deviceCADir)
+		state := "generated on first start"
+		if _, err := os.Stat(filepath.Join(dir, deviceCACertFile)); err == nil {
+			state = "present (reused)"
+		}
+		fmt.Printf("device CA:       per-device, kept in %s, key readable by SYSTEM and Administrators only: %s\n", dir, state)
+	}
 	if cfg.TrustInstall {
 		fmt.Printf("trust:           install=true store=%s remove_on_stop=%v ca_cert=%q ca_key=%q\n",
 			cfg.TrustStore, cfg.TrustRemoveOnStop, cfg.CACertFile, cfg.CAKeyFile)
@@ -601,6 +662,25 @@ func printConfig(cfg Config, logger loggerLike) error {
 	} else {
 		fmt.Printf("device drain:    endpoint=%s auth=%s credential=%q ca=%q backoff=%s..%s\n",
 			cfg.DeviceEndpoint, cfg.AuthMode, cfg.CredentialFile, cfg.CAFile, cfg.BackoffBase, cfg.BackoffCap)
+		bootstrap := "none (a sealed credential must already exist)"
+		switch {
+		case strings.TrimSpace(cfg.DeploymentKey) != "":
+			bootstrap = "the tenant's deployment key (set; not printed)"
+		case strings.TrimSpace(cfg.EnrolmentToken) != "":
+			bootstrap = "a single-use enrolment token (set; not printed)"
+		}
+		fmt.Printf("enrolment:       %s\n", bootstrap)
+		facts := collectHostFacts()
+		fmt.Printf("attestation:     intune_device_id=%q entra_device_id=%q serial_number=%q managed_state=%s\n",
+			facts.Attestation.IntuneDeviceID, facts.Attestation.EntraDeviceID, facts.Attestation.SerialNumber, cfg.resolvedManagedState(facts.Managed()))
+		for _, n := range facts.Notes {
+			fmt.Printf("attestation:     note: %s\n", n)
+		}
+	}
+	if strings.TrimSpace(cfg.UserRef) != "" {
+		fmt.Printf("user_ref:        configured (%s); wins over the console user\n", cfg.UserRef)
+	} else {
+		fmt.Printf("user_ref:        derived from the console user (upn, else Entra object id, else DOMAIN\\user) under the tenant's key from enrolment; %q when nobody is signed in\n", unattributedUserRef)
 	}
 	fmt.Printf("local content:   M3 content store is not configured on this host; an M3 observation is refused rather than emitted without its content\n")
 	_ = logger

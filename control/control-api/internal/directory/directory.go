@@ -1,14 +1,14 @@
-// Package directory synchronises a customer's directory into ops.user_dim, the organisational
-// dimension three of the dashboard's questions need (docs/03 §3.3, docs/04 §3.3; the open question
-// Q2 in docs/risks/Q2-organisational-dimension.md).
+// Package directory holds what the organisational dimension (ops.user_dim; docs/03 §3.3, docs/04
+// §3.3, Q2 in docs/risks/Q2-organisational-dimension.md) needs on the control plane: the Cipher that
+// seals every `*_enc` column, the tenant's user-reference key (UserRefKeys), and the lab's offline
+// synchroniser.
 //
-// It is host-agnostic on purpose: a Source produces people and a Store persists them, so the
-// Microsoft Entra provider and the lab's file source share one synchroniser and one set of tests.
-// The join key is the endpoint's own user reference. `ops.user_dim` is keyed by `user_ref`, the
-// value capture-core was configured with (`--user-ref`), and a provider maps a directory identity
-// onto it. The mapping is stated at the Source: for Entra it is a configurable directory attribute
-// whose value equals the device's `user_ref`, and for the file source it is the file's `user_ref`
-// field.
+// A customer's people reach the product through SCIM, pushed by their identity provider
+// (internal/scim), for any provider: the Entra application asks for no directory-read permission, so
+// there is no pull from Microsoft Graph here. What remains in this package of the original pull is
+// the file Source and the Syncer, which the lab uses to give the sample tenant's simulated people a
+// department without an identity provider. In that path the join key is explicit: each file entry
+// names the user_ref the device simulator sends.
 //
 // The synchroniser never deletes. A user the source no longer returns is retired (status
 // 'inactive'), because history stays attributable to a person who has left (the task's first

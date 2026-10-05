@@ -1,16 +1,28 @@
-// frontdoor.bicep — Front Door Premium, the endpoint, the Private Link origin group and the routes
+// frontdoor.bicep — Front Door Premium, the endpoint, the Private Link origin groups and the routes
 // (docs/05-platform-delivery.md §2, §2.1, §6).
 //
-// Front Door is the **analyst** edge only (ADR 0020 decision 1). The device /v1/* routes moved to
-// Application Gateway (modules/application-gateway.bicep); this module carries the analyst surface
-// (/analyst/* -> query-api). Two things are deliberate:
+// Front Door is the **browser and identity-provider** edge (ADR 0020 decision 1). The device /v1/*
+// routes are on Application Gateway (modules/application-gateway.bicep). This module carries:
 //
-//   - the origin group reaches the Container Apps environment over **Private Link**, so the
-//     environment stays internal and the apps never accept a public connection (§2.1);
-//   - there is **no route to content-vault**. It has no Front Door route and no public endpoint, by
-//     construction (C15, D7), and the checker fails the build if the string appears in this file.
+//   /analyst/*                                -> query-api (the original analyst route)
+//   /scim/v2/*, /onboard/*, /.well-known/*    -> control-api: a customer IdP's SCIM client, the
+//                                                vendor's one-time onboarding pages, and the product
+//                                                token issuer's discovery document and JWKS
+//   /* (when the dashboard is deployed)       -> the dashboard server: the pages, the sign-in and the
+//                                                session, and its forwarding of /v1/*, /admin/v1/*
+//                                                and a minted retrieval URL to the apps behind it
 //
-// Analyst traffic reaches query-api through /analyst/*, authenticated by Entra ID.
+// Two things are deliberate:
+//
+//   - every origin is reached over **Private Link** into the internal Container Apps environment, so
+//     the apps never accept a public connection (§2.1);
+//   - there is **no route to the content vault**. A browser's minted retrieval URL is answered by the
+//     dashboard server, which forwards that one path to the vault inside the environment; the vault
+//     keeps internal ingress and no edge reaches it (C15, D7). The checker fails the build if the
+//     vault's name appears in this file outside a comment.
+//
+// Each route is spelled out rather than generated from a list, so a reviewer can read the public
+// surface here and the checker can match it.
 
 @description('Front Door profile SKU. Premium is required for Private Link origins; the value is a parameter so the cost model and the composition state it once.')
 @allowed(['Premium_AzureFrontDoor', 'Standard_AzureFrontDoor'])
@@ -22,13 +34,13 @@ param wafPolicyId string
 @description('Resource id of the internal Container Apps environment, reached as a Private Link origin. It is an origin, never a public hostname.')
 param environmentId string
 
-@description('The Container Apps environment’s internal FQDN, from container-apps-env.bicep. Front Door resolves it through the private endpoint.')
-param environmentFqdn string
+@description('Region of the Container Apps environment, which is where its private link service lives.')
+param privateLinkLocation string
 
-@description('Origin host headers, keyed by app name. Backends validate the Host header, so the route decides which app answers.')
+@description('Origin host headers, keyed by app name: query-api and control-api always, dashboard when the dashboard server is deployed. Backends validate the Host header, so the route decides which app answers.')
 param originHostHeaders object
 
-@description('Health probe path for the origin group. query-api exposes it (§10.2).')
+@description('Health probe path for the origin groups. Every routed app exposes it (§10.2).')
 param healthProbePath string = '/healthz'
 
 @description('Health probe interval in seconds. Short enough that a failed revision is removed before a flush arrives.')
@@ -42,6 +54,11 @@ param routesEnabled bool = true
 @description('Tags applied to every resource.')
 param tags object = {}
 
+var routeDashboard = contains(originHostHeaders, 'dashboard')
+
+// The apps Front Door has an origin for. The vault is not one of them, by construction.
+var routedApps = concat(['query-api', 'control-api'], routeDashboard ? ['dashboard'] : [])
+
 resource profile 'Microsoft.Cdn/profiles@2023-05-01' = {
   name: 'afd-profile'
   location: 'global'
@@ -52,7 +69,8 @@ resource profile 'Microsoft.Cdn/profiles@2023-05-01' = {
 }
 
 resource endpoint 'Microsoft.Cdn/profiles/afdEndpoints@2023-05-01' = {
-  name: '${profile.name}/analyst'
+  parent: profile
+  name: 'analyst'
   location: 'global'
   tags: tags
   properties: {
@@ -60,11 +78,11 @@ resource endpoint 'Microsoft.Cdn/profiles/afdEndpoints@2023-05-01' = {
   }
 }
 
-// One origin group with a Private Link origin. Premium is what makes this possible; with Standard,
-// the origin would be a public hostname and §2.1's "no container app holds a public IP" would be
-// false.
-resource originGroup 'Microsoft.Cdn/profiles/originGroups@2023-05-01' = {
-  name: '${profile.name}/container-apps'
+// One origin group per app, so each route names exactly one app and a probe failure on one app
+// cannot take another's traffic away.
+resource originGroups 'Microsoft.Cdn/profiles/originGroups@2023-05-01' = [for app in routedApps: {
+  parent: profile
+  name: app
   properties: {
     loadBalancingSettings: {
       sampleSize: 4
@@ -73,42 +91,45 @@ resource originGroup 'Microsoft.Cdn/profiles/originGroups@2023-05-01' = {
     }
     healthProbeSettings: {
       probePath: healthProbePath
-      probeRequestType: 'HEAD'
+      probeRequestType: 'GET'
       probeProtocol: 'Https'
       probeIntervalInSeconds: healthProbeIntervalSeconds
     }
     sessionAffinityState: 'Disabled'
   }
-  dependsOn: [
-    endpoint
-  ]
-}
+}]
 
-resource origin 'Microsoft.Cdn/profiles/originGroups/origins@2023-05-01' = {
-  name: '${profile.name}/container-apps/container-apps-internal'
+// Premium is what makes a Private Link origin possible; with Standard, the origin would be a public
+// hostname and §2.1's "no container app holds a public IP" would be false.
+resource origins 'Microsoft.Cdn/profiles/originGroups/origins@2023-05-01' = [for (app, i) in routedApps: {
+  parent: originGroups[i]
+  name: '${app}-private-link'
   properties: {
-    hostName: environmentFqdn
-    originHostHeader: originHostHeaders['query-api']
+    hostName: originHostHeaders[app]
+    originHostHeader: originHostHeaders[app]
     httpPort: 80
     httpsPort: 443
     priority: 1
     weight: 1000
-    enabled: true
-    privateLinkAlias: environmentId
-    privateLinkApprovalMessage: 'Front Door private-link origin for the internal Container Apps environment.'
+    enabledState: 'Enabled'
+    sharedPrivateLinkResource: {
+      privateLink: {
+        id: environmentId
+      }
+      groupId: 'managedEnvironments'
+      privateLinkLocation: privateLinkLocation
+      requestMessage: 'Front Door private-link origin for the internal Container Apps environment.'
+    }
   }
-  dependsOn: [
-    originGroup
-  ]
-}
+}]
 
-// Analyst entry. Entra ID authentication is enforced by the app as well as here; the dashboard is
-// the only client.
+// Analyst entry: the original query-api route.
 resource analystRoute 'Microsoft.Cdn/profiles/afdEndpoints/routes@2023-05-01' = {
-  name: '${profile.name}/analyst/analyst'
+  parent: endpoint
+  name: 'analyst'
   properties: {
     originGroup: {
-      id: originGroup.id
+      id: originGroups[0].id
     }
     supportedProtocols: [
       'Https'
@@ -122,13 +143,67 @@ resource analystRoute 'Microsoft.Cdn/profiles/afdEndpoints/routes@2023-05-01' = 
     enabledState: routesEnabled ? 'Enabled' : 'Disabled'
   }
   dependsOn: [
-    origin
+    origins
+  ]
+}
+
+// The identity service's public surface. SCIM is called by the customer's provisioning service
+// (Entra, Okta, ...), not by a browser, so it is not behind the dashboard; each path authenticates
+// itself (a SCIM bearer, the invite token, nothing secret for the issuer documents).
+resource identityRoute 'Microsoft.Cdn/profiles/afdEndpoints/routes@2023-05-01' = {
+  parent: endpoint
+  name: 'identity'
+  properties: {
+    originGroup: {
+      id: originGroups[1].id
+    }
+    supportedProtocols: [
+      'Https'
+    ]
+    patternsToMatch: [
+      '/scim/v2/*'
+      '/onboard/*'
+      '/.well-known/*'
+    ]
+    forwardingProtocol: 'HttpsOnly'
+    linkToDefaultDomain: 'Enabled'
+    httpsRedirect: 'Enabled'
+    enabledState: routesEnabled ? 'Enabled' : 'Disabled'
+  }
+  dependsOn: [
+    origins
+  ]
+}
+
+// Everything else is the dashboard server. More specific patterns above win, so this route never
+// takes SCIM, onboarding or the analyst path from their owners.
+resource webRoute 'Microsoft.Cdn/profiles/afdEndpoints/routes@2023-05-01' = if (routeDashboard) {
+  parent: endpoint
+  name: 'web'
+  properties: {
+    originGroup: {
+      id: originGroups[length(routedApps) - 1].id
+    }
+    supportedProtocols: [
+      'Https'
+    ]
+    patternsToMatch: [
+      '/*'
+    ]
+    forwardingProtocol: 'HttpsOnly'
+    linkToDefaultDomain: 'Enabled'
+    httpsRedirect: 'Enabled'
+    enabledState: routesEnabled ? 'Enabled' : 'Disabled'
+  }
+  dependsOn: [
+    origins
   ]
 }
 
 // WAF is associated with the endpoint through a security policy, so no route can exist without it.
 resource securityPolicy 'Microsoft.Cdn/profiles/securityPolicies@2023-05-01' = {
-  name: '${profile.name}/waf'
+  parent: profile
+  name: 'waf'
   properties: {
     parameters: {
       type: 'WebApplicationFirewall'
@@ -151,14 +226,15 @@ resource securityPolicy 'Microsoft.Cdn/profiles/securityPolicies@2023-05-01' = {
   }
   dependsOn: [
     analystRoute
+    identityRoute
   ]
 }
 
 @description('Resource id of the Front Door profile.')
 output profileId string = profile.id
 
-@description('The public hostname analysts resolve. The device FQDN resolves to Application Gateway instead (ADR 0020).')
+@description('The public hostname browsers and identity providers resolve. The device FQDN resolves to Application Gateway instead (ADR 0020).')
 output endpointHostName string = endpoint.properties.hostName
 
-@description('The origin group id, so monitoring.bicep can alert on origin health.')
-output originGroupId string = originGroup.id
+@description('The query-api origin group id, so monitoring.bicep can alert on the analyst origin\'s health.')
+output originGroupId string = originGroups[0].id

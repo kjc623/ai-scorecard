@@ -1,15 +1,15 @@
 in-browser-check — proving the browser half in a real Chromium browser
-date:     2026-10-03T17:49:34.900Z
+date:     2026-10-05T18:40:33.407Z
 node:     v22.23.1
-package:  C:\Users\kyle\Downloads\architecture\extension
+package:  C:\architecture\extension
 
 browser:  C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe
 
 native host: registered before launch
 
 browser:  Edg/154.0.4258.53
-cdp port: 49241
-origin:   http://127.0.0.1:49240
+cdp port: 50862
+origin:   http://127.0.0.1:50861
 
 [PASS] check 1: the extension loads and its MV3 service worker registers
         CDP Target.getTargets lists the service worker target: chrome-extension://ebdiaplaignnfokkkoekjkdajlopdfkk/background/service-worker.js
@@ -20,7 +20,7 @@ origin:   http://127.0.0.1:49240
         manifest/permission errors in the browser log: none
 
 [PASS] check 2: the webRequest listener observes a real request
-        observed went 0 → 2 for a real POST to http://127.0.0.1:49240/v1/chat/completions
+        observed went 0 → 2 for a real POST to http://127.0.0.1:50861/v1/chat/completions
         proxy signal: the extension's own §4.3 counters, read from the service worker through CDP.
         Sound because the counter is incremented inside the registered listener and nowhere else,
         so a non-zero value means chrome.webRequest delivered the event to our handler in this browser.
@@ -60,9 +60,9 @@ origin:   http://127.0.0.1:49240
         the extension reached the real endpoint: core=connected state=degraded, and the endpoint's own health channel recorded the round trip
         the channel is `connected` only after a message round-trips (native.js markAnswered), so this
         is not "a port object was handed out": called
-        health report: {"device_id":"unbound","collector":"capture_extension","state":"degraded","detail":"enforcement_unavailable","since":"2026-10-03T17:49:35.767Z","counters":{"observed":2,"emitted":1,"skipped_not_generative":1,"blind_tunnelled":0,"not_cooperative":0,"dropped":0,"errors":3},"version":"0.1.0","last_success_at":"2026-10-03T17:49:35.947Z","window":{"observed":0,"emitted":0,"skipped_not_generative":0,"blind_tunnelled":0,"not_cooperative":0,"dropped":0,"errors":0},"errors_by_code":{"enforcement_unavailable":1,"evaluation_error":2},"queue":{"depth":0,"capacity":200,"dropped_total":0,"dropped_bytes_total":0,"dropped_by_kind":{},"enqueued_total":1,"delivered_total":1,"depth_bytes":0},"core":"connected","policy":{"version":null,"present":false,"stale":false},"enforcement":"observation_only"}
-        endpoint health row: (the host wrote no row yet)
-        host state dir: C:\Users\kyle\Downloads\architecture\.tools\tmp\capture-native-host\state
+        health report: {"device_id":"unbound","collector":"capture_extension","state":"degraded","detail":"enforcement_unavailable","since":"2026-10-05T18:40:34.299Z","counters":{"observed":2,"emitted":1,"skipped_not_generative":1,"blind_tunnelled":0,"not_cooperative":0,"dropped":0,"errors":3},"version":"0.1.0","last_success_at":"2026-10-05T18:40:34.489Z","window":{"observed":0,"emitted":0,"skipped_not_generative":0,"blind_tunnelled":0,"not_cooperative":0,"dropped":0,"errors":0},"errors_by_code":{"enforcement_unavailable":1,"evaluation_error":2},"queue":{"depth":0,"capacity":200,"dropped_total":0,"dropped_bytes_total":0,"dropped_by_kind":{},"enqueued_total":1,"delivered_total":1,"depth_bytes":0},"core":"connected","policy":{"version":null,"present":false,"stale":false},"enforcement":"observation_only"}
+        endpoint health row: {"device_id":"dev-in-browser-check","identity_source":"local","agent_version":"0.1.0-dev","hostname":"DESKTOP-M9U19QS","subject_name":"DESKTOP-M9U19QS\\kyle","managed_state":"unknown","device_identity":"clear","user_ref_source":"configured","generated_at":"2026-10-05T18:40:34.3912788Z","policy_outcome":"","classifier":{"connected":false,"classifier_version":"rules-only","degraded_detail":"classifier_unavailable"},"reports":[{"device_id":"dev-in-browser-check","collector":"proxy.tls","state":"degraded","detail":"tls_probe_failed","since":"2026-10-05T14:40:34.3577784-04:00","counters":{"blind_tunnelled":0,"dropped":0,"emitted":0,"errors":0,"not_cooperative":0,"observed":0,"skipped_not_generative":0}},{"device_id":"dev-in-browser-check","collector":"proxy.loopback","state":"absent","since":"2026-10-05T14:40:34.3577784-04:00","counters":{"blind_tunnelled":0,"dropped":0,"emitted":0,"errors":0,"not_cooperative":0,"observed":0,"skipped_not_generative":0}}],"spool":{"spool_depth":24,"spool_dropped_total":0,"spool_rejected_total":0,"spool_delivered_total":0,"oldest_spooled_at":"2026-10-03T12:43:56.0019676Z","encryption_key_sealed":false,"bound_bytes":26214400,"used_bytes":25616},"named_gaps":["proc.detect: no coverage row (provider not started on this host)","classifier-host: rules-only fallback, confidence=degraded on every classified event"],"note":"per-provider rows are protocol.HealthReport; the device-level row and the spool counters are carried here because protocol has no device-level type","last_heartbeat_at":"0001-01-01T00:00:00Z"}
+        host state dir: C:\architecture\.tools\tmp\capture-native-host\state
         the host is registered under HKCU only; `--uninstall` removes exactly what this run created.
 
 [PASS] check 7: a real user-selected File is read, transferred and acknowledged

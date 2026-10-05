@@ -17,9 +17,9 @@
 // Exit codes: 0 all structural checks passed, 1 one or more failed, 2 the checker could not run.
 // =====================================================================================
 
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, extname, join, relative, resolve, sep } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -157,6 +157,31 @@ if (arrMatch) {
     'FORCE appears in the loop and for ops.tenant');
 }
 
+// Pre-tenant tables: rows that exist before their tenant is known, so they have no tenant_id and
+// cannot join the loop, whose policy compares one. ops.auth_signin is the only one: a sign-in begun
+// with "Sign in with Microsoft" learns its tenant from the provider's answer. Such a table is still
+// ENABLED and FORCED with an explicit policy, so "every table outside ref is under RLS" keeps no
+// exception a reviewer cannot see -- and a pre-tenant table that grows a tenant_id is caught,
+// because then it belongs in the loop.
+const PRE_TENANT_TABLES = ['ops.auth_signin'];
+
+for (const table of PRE_TENANT_TABLES) {
+  const esc = table.replace('.', '\\.');
+  const body = schemaCode.match(new RegExp(`CREATE TABLE\\s+${esc}\\s*\\(([\\s\\S]*?)\\n\\);`));
+  check(`rls.pre-tenant.${table}.forced`,
+    new RegExp(`ALTER TABLE ${esc} ENABLE ROW LEVEL SECURITY`).test(schemaCode) &&
+    new RegExp(`ALTER TABLE ${esc} FORCE ROW LEVEL SECURITY`).test(schemaCode),
+    `${table} has RLS enabled and forced`);
+  check(`rls.pre-tenant.${table}.policy`, new RegExp(`CREATE POLICY\\s+\\w+\\s+ON\\s+${esc}\\b`).test(schemaCode),
+    `${table} has an explicit policy`);
+  check(`rls.pre-tenant.${table}.has-no-tenant`, Boolean(body) && !/^\s*tenant_id\s/m.test(body[1]),
+    body
+      ? (/^\s*tenant_id\s/m.test(body[1])
+        ? `${table} has a tenant_id column, so it belongs in the tenant_tables loop, not the pre-tenant list`
+        : `${table} has no tenant_id column, which is why it is outside the loop`)
+      : `${table} is listed as pre-tenant but is not created in schema.sql`);
+}
+
 // Every table outside `ref` must be covered by the RLS set, so a tenant-scoped table added later
 // cannot quietly ship without a policy. `ref` is the deliberate exception: six tables of shared
 // vocabulary (classifier_release, collector, data_class, retention_class, route_fidelity, rule),
@@ -167,7 +192,7 @@ if (arrMatch) {
   const created = [...schemaCode.matchAll(/CREATE TABLE\s+([a-z_]+)\.([a-z_]+)/g)]
     .map((m) => `${m[1]}.${m[2]}`);
   const nonRef = [...new Set(created.filter((t) => !t.startsWith('ref.')))];
-  const rlsCovered = new Set([...tenantTables, 'ops.tenant']);
+  const rlsCovered = new Set([...tenantTables, 'ops.tenant', ...PRE_TENANT_TABLES]);
 
   const missing = nonRef.filter((t) => !rlsCovered.has(t));   // created outside ref, no policy
   const extra = [...rlsCovered].filter((t) => !created.includes(t)); // policy for a table that is gone
@@ -226,22 +251,15 @@ if (arrMatch) {
 // whole purpose is to be verified against. ops.retrieval_grant.raw_digest was exactly that, found
 // while checking content-vault's claim that it copies ops.content_object.ciphertext_sha256.
 //
-// One column is EXCUSED rather than tightened. The reason is NOT "nobody has told us the format" --
-// it is that **nothing writes ops.policy_bundle in this build**: the service directories hold only content-vault,
-// ingest-api and query-api, there is no control-api on disk, and no code in the repository writes
-// the table. Adding a restriction on a guess is the direction this schema deliberately avoids (the
-// same reasoning that keeps the M2 excerpt a permission rather than a requirement), and a column
-// with no writer has no shape to constrain.
-//
-// That is a measurement, not an assumption, and it is checked: see
-// digest.excused-column-still-has-no-writer below, which fails the moment a writer appears. An
-// exemption that can outlive its reason is a hole; this one cannot.
-//
-// ref.classifier_release.artifact_digest was excused here until its producer stated the format and
-// supplied the evidence (hex.EncodeToString, so lowercase by construction, plus the seed row and
-// every fixture already in that shape); it is constrained now and the excused list shrank with it.
-// That is the intended lifecycle for an exemption: a placeholder for an answer, not a hole.
-const DIGEST_COLUMNS_EXCUSED = ['ops.policy_bundle.signed_digest'];
+// The excused list is empty. Two columns went through it, and both left it the intended way: a
+// placeholder for an answer, not a hole. ref.classifier_release.artifact_digest was excused until its
+// producer stated the format (hex.EncodeToString, lowercase by construction). ops.policy_bundle
+// .signed_digest was excused while nothing wrote its table -- a measurement this file checked, so the
+// exemption could not outlive it -- and is constrained in the change that gave the table a writer
+// (control-api's policy endpoint), as the sha256 of the signed envelope it serves. An entry added
+// here later must say what would end it; the stale-exemption half of the check below enforces that
+// it ends.
+const DIGEST_COLUMNS_EXCUSED = [];
 
 {
   // Each `CREATE TABLE` block, so a column can be attributed to its table.
@@ -271,7 +289,9 @@ const DIGEST_COLUMNS_EXCUSED = ['ops.policy_bundle.signed_digest'];
     notExcused.length || staleExemptions.length
       ? `${notExcused.length ? `digest columns with no sha256 format CHECK and no recorded exemption: [${notExcused.join(', ')}]` : ''}` +
         `${staleExemptions.length ? `${notExcused.length ? '; ' : ''}exemptions recorded for columns that no longer need one: [${staleExemptions.join(', ')}]` : ''}`
-      : `all ${digestish.length} digest-shaped columns carry a sha256 format CHECK, except the ${DIGEST_COLUMNS_EXCUSED.length} recorded as excused: ${DIGEST_COLUMNS_EXCUSED.join(', ')}`);
+      : DIGEST_COLUMNS_EXCUSED.length === 0
+        ? `all ${digestish.length} digest-shaped columns carry a sha256 format CHECK; none is excused`
+        : `all ${digestish.length} digest-shaped columns carry a sha256 format CHECK, except the ${DIGEST_COLUMNS_EXCUSED.length} recorded as excused: ${DIGEST_COLUMNS_EXCUSED.join(', ')}`);
 }
 
 // WHAT THIS SECTION DELIBERATELY DOES NOT CHECK, so the next reader does not add it back.
@@ -294,53 +314,6 @@ const DIGEST_COLUMNS_EXCUSED = ['ops.policy_bundle.signed_digest'];
 // exact, and no other. So the property is bounded and stated rather than assumed: if a third one
 // appears, the guard is a test in the package that owns it, and this comment is the pointer to
 // where the question was already answered.
-
-// THE ONE EXCUSED COLUMN'S JUSTIFICATION IS ASSERTED, SO THE EXEMPTION EXPIRES BY ITSELF.
-//
-// ops.policy_bundle.signed_digest is excused because NO COMPONENT WRITES ops.policy_bundle IN THIS
-// BUILD -- not because its format is unknown. That is a measurement (the service directories hold only
-// content-vault, ingest-api and query-api; no control-api on disk; no code writes the table), and
-// it is a stronger justification than "nobody has told us yet" precisely because it can be checked
-// and because it stops being true on its own.
-//
-// So it is checked. The moment a writer appears, the reason for the exemption is gone and this
-// fails, naming the writer and pointing at the consumer's shape. An exemption whose precondition is
-// unverified is a hole that waits for someone to notice; this one cannot outlive its reason.
-const POLICY_BUNDLE_WRITE = /(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+ops\.policy_bundle\b/i;
-
-{
-  const CODE_EXT = new Set(['.go', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.rs', '.cs', '.py', '.ps1']);
-  // Skipped because they are not authored source: version control, vendored packages, local tool
-  // state, the schema itself, captured run output, and generated artefacts.
-  const SKIP_DIR = new Set(['.git', 'node_modules', '.tools', 'database', 'evidence', '.integration', 'generated', 'dist', 'build']);
-
-  const writers = [];
-  const walk = (dir) => {
-    let entries;
-    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
-    for (const entry of entries) {
-      const full = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (!SKIP_DIR.has(entry.name)) walk(full);
-        continue;
-      }
-      if (!CODE_EXT.has(extname(entry.name))) continue;
-      let text;
-      try { text = readFileSync(full, 'utf8'); } catch { continue; }
-      text.split(/\r?\n/).forEach((line, i) => {
-        if (POLICY_BUNDLE_WRITE.test(line)) {
-          writers.push(`${relative(REPO, full).split(sep).join('/')}:${i + 1}`);
-        }
-      });
-    }
-  };
-  walk(REPO);
-
-  check('digest.excused-column-still-has-no-writer', writers.length === 0,
-    writers.length === 0
-      ? 'ops.policy_bundle has no writer in this build, so excusing signed_digest is a measurement rather than an assumption'
-      : `a component now writes ops.policy_bundle (${writers.slice(0, 3).join(', ')}${writers.length > 3 ? `, +${writers.length - 3} more` : ''}), so the exemption recorded for ops.policy_bundle.signed_digest has EXPIRED: constrain the column in the same change that lands the writer, and take the format from the consumer at endpoint/capture-core/policy/verify.go rather than inventing one`);
-}
 
 // -------------------------------------------------------------------------------------
 // 3. Append-only / tamper-evidence triggers
@@ -381,13 +354,15 @@ const POLICY_BUNDLE_WRITE = /(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+ops\.polic
 // 4. Roles and least privilege
 // -------------------------------------------------------------------------------------
 
-const EXPECTED_ROLES = ['sac_owner', 'sac_migrator', 'sac_ingest', 'sac_control', 'sac_vault', 'sac_query', 'sac_ops'];
+// sac_resolver is not a component: it owns the pre-tenant lookup functions and nothing else
+// (schema.sql section 5c).
+const EXPECTED_ROLES = ['sac_owner', 'sac_migrator', 'sac_ingest', 'sac_control', 'sac_vault', 'sac_query', 'sac_ops', 'sac_resolver'];
 const RUNTIME_ROLES = ['sac_ingest', 'sac_control', 'sac_vault', 'sac_query', 'sac_ops'];
 
 {
   const missing = EXPECTED_ROLES.filter((r) => !new RegExp(`CREATE ROLE\\s+${r}\\b`).test(schemaCode));
   check('roles.all-present', missing.length === 0,
-    missing.length ? `missing roles: ${missing.join(', ')}` : `all 7 roles created: ${EXPECTED_ROLES.join(', ')}`);
+    missing.length ? `missing roles: ${missing.join(', ')}` : `all ${EXPECTED_ROLES.length} roles created: ${EXPECTED_ROLES.join(', ')}`);
 
   // No role may log in: the process authenticates as a service, not as a database principal
   // that can be reused from a laptop. Only sac_migrator may bypass RLS, and only because DDL
@@ -493,6 +468,36 @@ const grants = [...schemaCode.matchAll(/GRANT\s+([\s\S]*?)\s+ON\s+([\s\S]*?)\s+T
       : secdef.length === 0
         ? 'no SECURITY DEFINER functions exist (check is satisfied vacuously; it will bite if one is added)'
         : `all ${secdef.length} SECURITY DEFINER functions pin search_path`);
+
+  // A definer body runs with its owner's rights, which makes two more things part of its contract.
+  // PUBLIC can execute a function unless that is revoked, so every definer is revoked from PUBLIC
+  // before it is granted to anyone. And the owner bounds what the body can reach: a NOLOGIN role that
+  // neither bypasses RLS nor is a runtime role, whose reach is a grant a reviewer can read
+  // (sac_resolver and its SELECT-only policies). A definer left with whoever applied the schema
+  // runs as the table owner -- a superuser in the lab -- and that would hide what it can read.
+  const revoked = new Set();
+  for (const m of schemaCode.matchAll(/REVOKE\s+EXECUTE\s+ON\s+FUNCTION\s+([\s\S]*?)\s+FROM\s+PUBLIC\s*;/g)) {
+    for (const f of m[1].matchAll(/([a-z_]+\.[a-z_]+)\s*\(/g)) revoked.add(f[1]);
+  }
+  const executableByPublic = secdef.filter((d) => !revoked.has(d.name));
+  check('secdef.execute-revoked-from-public', executableByPublic.length === 0,
+    executableByPublic.length
+      ? `SECURITY DEFINER functions still executable by PUBLIC: ${executableByPublic.map((d) => d.sig).join(', ')}`
+      : `all ${secdef.length} SECURITY DEFINER functions have EXECUTE revoked from PUBLIC`);
+
+  const owners = new Map(
+    [...schemaCode.matchAll(/ALTER FUNCTION\s+([a-z_]+\.[a-z_]+)\s*\([^)]*\)\s+OWNER TO\s+(\w+)\s*;/g)]
+      .map(([, fn, role]) => [fn, role]));
+  const roleTails = new Map([...schemaCode.matchAll(/CREATE ROLE\s+(\w+)([^;]*);/g)].map(([, n, t]) => [n, t]));
+  const badOwner = secdef.filter((d) => {
+    const owner = owners.get(d.name);
+    const tail = owner ? roleTails.get(owner) : undefined;
+    return tail === undefined || /\b(BYPASSRLS|SUPERUSER|LOGIN)\b/.test(tail) || RUNTIME_ROLES.includes(owner);
+  });
+  check('secdef.owned-by-narrow-role', badOwner.length === 0,
+    badOwner.length
+      ? `SECURITY DEFINER functions not owned by a NOLOGIN, non-bypass, non-runtime role: ${badOwner.map((d) => `${d.name} (owner ${owners.get(d.name) ?? 'the applying role'})`).join(', ')}`
+      : `all ${secdef.length} SECURITY DEFINER functions are owned by ${[...new Set(secdef.map((d) => owners.get(d.name)))].join(', ') || 'no role'}`);
 
   // The write path must be invoker-rights, because RLS is the isolation mechanism and a
   // SECURITY DEFINER write path would silently bypass it.

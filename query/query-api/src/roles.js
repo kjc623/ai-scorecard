@@ -1,9 +1,10 @@
 // roles.js — the closed set of analyst-app roles and what each may read.
 //
-// The role names are the app-role claims the session's token carries (docs/04 §2.2, docs/06
-// §4.1). The set is deliberately small: the design's six-role list was reconciled with the
-// product owner before task 11 was built, and the reconciliation is recorded in this task's
-// REPORT.md. The short version:
+// The role names are the `roles` claim of the product access token control-api mints (docs/04
+// §2.2, docs/06 §4.1); control-api maps each customer IdP's own role values onto these names, so
+// this file never sees an IdP's spelling. The set is deliberately small: the design's six-role
+// list was reconciled with the product owner before task 11 was built, and the reconciliation is
+// recorded in that task's REPORT.md. The short version:
 //
 //   viewer          aggregates and the device list — no events, no findings, no people page,
 //                   no content. (The owner ruled that the device list, with the user it now

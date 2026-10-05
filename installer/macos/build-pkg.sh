@@ -13,7 +13,9 @@
 #   /usr/local/opt/shadow-ai-capture/bin/{capture-core,classifier-host,capture-core-run}
 #   /usr/local/etc/shadow-ai-capture/capture-core.env.example
 #   /Library/LaunchDaemons/com.shadowaicapture.capture-core.plist
-# The per-tenant profile is delivered by the customer's Jamf configuration profile, not the PKG.
+# The PKG carries no tenant data. The tenant package puts ShadowAICapture.tenant.env beside it;
+# preinstall refuses an install with neither that nor an installed tenant.env, and postinstall copies
+# it to /usr/local/etc/shadow-ai-capture/tenant.env, the same rule as the Windows MSI.
 set -eu
 
 STAGE=""; OUT="installer/dist"; CONFIG_SRC=""; SIGN=""; VERSION="0.1.0"

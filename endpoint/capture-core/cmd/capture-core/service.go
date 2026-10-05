@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -59,6 +60,33 @@ type service struct {
 
 	health *healthChannel
 
+	// policyMu guards result, which the poller writes while the health channel reads it.
+	policyMu sync.Mutex
+	// policySync polls GET /v1/policy when no bundle is configured; nil otherwise. policyNext is
+	// when the poller's first fetch is due after the synchronous one at startup.
+	policySync *policySync
+	policyNext time.Duration
+
+	// people is the console user observations are attributed to (contract §4).
+	people *people
+	// managed is the managed state the device reports, settled once the attestation is read.
+	managed protocol.ManagedState
+
+	// idMu guards the issued identity and the device-identity setting, which enrolment, the health
+	// response and the console-user watcher each update on their own goroutine.
+	idMu         sync.Mutex
+	issued       bool
+	issuedTenant string
+	issuedDevice string
+	identityMode protocol.DeviceIdentity
+
+	// startupDeadline is the one bound on enrolment and the first fetch at startup.
+	startupDeadline time.Time
+
+	// bgStop ends the console-user watcher and the policy poller.
+	bgStop chan struct{}
+	bgWG   sync.WaitGroup
+
 	startedAt time.Time
 	runErr    chan error
 }
@@ -69,21 +97,38 @@ type service struct {
 func newService(ctx context.Context, cfg Config, log *slog.Logger) (*service, error) {
 	logf := slogLogger{log}
 
-	s := &service{cfg: cfg, log: log, logf: logf, reg: core.NewRegistry(time.Now, logf), startedAt: time.Now()}
+	s := &service{cfg: cfg, log: log, logf: logf, reg: core.NewRegistry(time.Now, logf), startedAt: time.Now(),
+		people: newPeople(userSources()), managed: cfg.managedState(), identityMode: cfg.deviceIdentityMode(),
+		bgStop: make(chan struct{})}
 
 	// Policy first: it decides what the providers are allowed to do, and it must be in force before
 	// any provider starts (§3.5 step 1).
-	store, result, err := loadPolicy(cfg, policy.ArtefactResolverFunc(func(ref policy.ArtefactRef) error {
+	refs := policy.ArtefactResolverFunc(func(ref policy.ArtefactRef) error {
 		if _, err := os.Stat(ref.Path); err != nil {
 			return fmt.Errorf("artefact %s (%s): %w", ref.Name, ref.Path, err)
 		}
 		return nil
-	}))
-	if err != nil {
-		// A missing or unreadable bundle is not fatal: with no previous bundle the agent runs at
-		// M0, which reads no content. It is reported, never silently widened.
-		log.Warn("policy bundle unavailable; running at M0", "path", cfg.BundlePath, "error", err)
-		store, result = nil, policy.Result{Outcome: policy.OutcomeFellToM0, Cause: policy.CauseSchemaInvalid, Err: err}
+	})
+	var (
+		store  *policy.Store
+		result policy.Result
+		err    error
+	)
+	switch {
+	case cfg.fetchesPolicy():
+		// No bundle is configured: the tenant's comes from GET /v1/policy. The last verified one,
+		// when there is one, is put in force now, so a restart enforces it before the network
+		// answers; it is verified again like any other bundle.
+		if store, result, err = openFetchedPolicy(cfg, refs, log); err != nil {
+			return nil, err
+		}
+	case cfg.BundlePath != "":
+		if store, result, err = loadPolicy(cfg, refs); err != nil {
+			// A missing or unreadable bundle is not fatal: with no previous bundle the agent runs at
+			// M0, which reads no content. It is reported, never silently widened.
+			log.Warn("policy bundle unavailable; running at M0", "path", cfg.BundlePath, "error", err)
+			store, result = nil, policy.Result{Outcome: policy.OutcomeFellToM0, Cause: policy.CauseSchemaInvalid, Err: err}
+		}
 	}
 	s.store = store
 	s.result = result
@@ -134,6 +179,15 @@ func newService(ctx context.Context, cfg Config, log *slog.Logger) (*service, er
 	}
 	s.pipe = pipe
 
+	// A first boot of a tenant-packaged device has no bundle yet, and the providers below take
+	// their listen address, CLI shim settings and body cap from the bundle when they are built.
+	// Enrolling and fetching now, within the startup bound, builds them under the tenant's policy
+	// instead of under M0 until the next restart. Offline, the device starts at M0 and the poller
+	// fetches later.
+	if cfg.fetchesPolicy() && s.currentBundle() == nil && !cfg.DryRun {
+		s.bootstrapPolicy(ctx)
+	}
+
 	// The classifier host (§3.4). An unconfigured or unavailable host degrades to rules-only with
 	// confidence: degraded, and never fails the submission.
 	s.host = &classifierHostController{cfg: cfg, log: log}
@@ -147,6 +201,25 @@ func newService(ctx context.Context, cfg Config, log *slog.Logger) (*service, er
 	caCertPEM, caKeyPEM, err := deviceCAPEM(cfg, s.currentBundle())
 	if err != nil {
 		return nil, err
+	}
+	if cfg.generatesDeviceCA() {
+		// No pair is configured and something must trust the root: the device's own CA, minted
+		// on first start and reused after. A bundle-carried root is the public half of a key this
+		// device does not hold, so the device's own pair replaces it.
+		dir := filepath.Join(cfg.stateDir(), deviceCADir)
+		label := cfg.DeviceID
+		if label == "" {
+			label = cfg.resolvedHostname()
+		}
+		cert, key, created, err := ensureDeviceCA(dir, label, time.Now())
+		if err != nil {
+			return nil, fmt.Errorf("per-device CA in %s: %w", dir, err)
+		}
+		if len(caCertPEM) > 0 && !bytes.Equal(caCertPEM, cert) {
+			log.Warn("the bundle names a root CA whose key this device does not hold; the device's own CA is used")
+		}
+		caCertPEM, caKeyPEM = cert, key
+		log.Info("per-device CA ready", "dir", dir, "created", created)
 	}
 	// The signed bundle carries only the public root by design; the private half is delivered as
 	// --ca-key. A certificate with no key is not an interceptor CA — it cannot mint leaves — so the
@@ -272,7 +345,21 @@ func newService(ctx context.Context, cfg Config, log *slog.Logger) (*service, er
 	if err != nil {
 		return nil, err
 	}
-	sup.Policy = &policyLoader{store: store, path: cfg.BundlePath, reg: s.reg, result: &s.result, log: log}
+	loader := &policyLoader{store: store, reg: s.reg, record: s.setPolicyResult, log: log}
+	switch {
+	case cfg.fetchesPolicy():
+		cache := policyCache{dir: filepath.Join(cfg.stateDir(), policyCacheDir)}
+		loader.read = func() ([]byte, error) {
+			raw, _, err := cache.load()
+			if errors.Is(err, os.ErrNotExist) {
+				return nil, nil
+			}
+			return raw, err
+		}
+	case cfg.BundlePath != "":
+		loader.read = func() ([]byte, error) { return os.ReadFile(cfg.BundlePath) }
+	}
+	sup.Policy = loader
 	sup.Spool = s.spool
 	sup.Identity = identityResolver{s}
 	sup.ClassifierHost = s.host
@@ -293,6 +380,9 @@ func newService(ctx context.Context, cfg Config, log *slog.Logger) (*service, er
 	s.sup = sup
 
 	s.health = newHealthChannel(cfg, log, s)
+	// A credential loaded (or issued) while the graph was built may already have stated the
+	// tenant's setting; the health channel starts from it rather than from the configured default.
+	s.health.adoptDeviceIdentity(s.currentDeviceIdentity())
 	return s, nil
 }
 
@@ -322,6 +412,19 @@ func (s *service) Start(ctx context.Context) error {
 		// degraded state (reported in the health snapshot), never a silent drop.
 		s.log.Warn("drainer not started; observations stay spooled", "error", err)
 	}
+	if s.policySync != nil {
+		first := s.policyNext
+		if first <= 0 {
+			// No fetch succeeded at startup (offline, or enrolment pending): try again soon.
+			first = policyRetryFloor
+		}
+		s.policySync.Start(ctx, first)
+	}
+	s.bgWG.Add(1)
+	go func() {
+		defer s.bgWG.Done()
+		s.watchPeople(ctx, s.bgStop)
+	}()
 	s.health.Start(ctx)
 	s.log.Info("capture-core started", "order", s.sup.Order())
 	return nil
@@ -347,13 +450,11 @@ func (r identityResolver) Resolve(ctx context.Context) error { return r.s.resolv
 func (s *service) resolveIdentity(ctx context.Context) error {
 	// A drain-configured device demands an issued credential; a local/offline run does not.
 	s.pipe.RequireIdentity(strings.TrimSpace(s.cfg.DeviceEndpoint) != "")
+	// The person is read before anything can mint, so the first observation is attributed.
+	s.people.refresh()
 
 	if strings.TrimSpace(s.cfg.DeviceEndpoint) == "" {
-		id := s.cfg.identity()
-		s.pipe.SetIdentity(id)
-		if s.detect != nil {
-			s.detect.SetIdentity(detect.Identity{TenantID: id.TenantID, DeviceID: id.DeviceID})
-		}
+		s.publishIdentity()
 		return nil
 	}
 	if err := s.ensureDrainer(); err != nil {
@@ -361,15 +462,117 @@ func (s *service) resolveIdentity(ctx context.Context) error {
 		// the background drain is not available to retry, so this is a hard failure of startup.
 		return err
 	}
-	bounded, cancel := context.WithTimeout(ctx, enrolStartupTimeout)
+	bounded, cancel := s.startupBound(ctx)
 	defer cancel()
 	if !s.drainer.EnsureEnrolled(bounded) {
 		// Fail-open: providers still start; the pipeline refuses to mint until the background
 		// drainer enrols and its OnEnrolled installs the identity.
 		return errors.New("drain: bounded synchronous enrolment did not produce an identity")
 	}
-	// OnEnrolled already installed the identity (setCredential -> adoptIssuedIdentity -> OnEnrolled).
+	// OnEnrolled installed the identity (setCredential -> adoptIssuedIdentity -> OnEnrolled); it is
+	// published again because proc.detect may have been built after that ran.
+	s.publishIdentity()
+	if s.policySync != nil && s.policyNext <= 0 {
+		// The tenant's bundle is fetched before the providers start, inside the same bound, so they
+		// start under it rather than at M0 for a poll interval.
+		s.policyNext = s.policySync.once(bounded)
+	}
 	return nil
+}
+
+// startupBound bounds enrolment and the first policy fetch at startup by one deadline, set by
+// whichever startup step asks first, so an offline first boot waits once rather than once per step
+// (the Windows service reports RUNNING only after both).
+func (s *service) startupBound(ctx context.Context) (context.Context, context.CancelFunc) {
+	if s.startupDeadline.IsZero() {
+		s.startupDeadline = time.Now().Add(enrolStartupTimeout)
+	}
+	return context.WithDeadline(ctx, s.startupDeadline)
+}
+
+// bootstrapPolicy enrols and fetches the tenant's first bundle while the service is being built
+// (see newService). Its failures are logged and left to the startup step and the poller.
+func (s *service) bootstrapPolicy(ctx context.Context) {
+	if err := s.ensureDrainer(); err != nil {
+		s.log.Warn("policy: cannot fetch the first bundle before startup", "error", err)
+		return
+	}
+	bounded, cancel := s.startupBound(ctx)
+	defer cancel()
+	if !s.drainer.EnsureEnrolled(bounded) {
+		s.log.Warn("policy: not enrolled yet; the device starts at M0 and fetches its bundle once enrolled")
+		return
+	}
+	if s.policySync != nil {
+		s.policyNext = s.policySync.once(bounded)
+	}
+}
+
+// openFetchedPolicy builds the store a fetched bundle is verified into and puts the cached bundle
+// in force when one verifies. A configured key that cannot be parsed is a configuration error.
+func openFetchedPolicy(cfg Config, refs policy.ArtefactResolver, log *slog.Logger) (*policy.Store, policy.Result, error) {
+	pub, err := hex.DecodeString(strings.TrimSpace(cfg.PolicyKey))
+	if err != nil {
+		return nil, policy.Result{}, fmt.Errorf("decoding --policy-key: %w", err)
+	}
+	verifier, err := policy.NewVerifier(cfg.PolicyKeyID, pub)
+	if err != nil {
+		return nil, policy.Result{}, err
+	}
+	store, err := policy.NewStore(verifier, refs)
+	if err != nil {
+		return nil, policy.Result{}, err
+	}
+	cache := policyCache{dir: filepath.Join(cfg.stateDir(), policyCacheDir)}
+	raw, _, err := cache.load()
+	if err != nil {
+		log.Info("policy: no bundle cached yet; M0 (metadata only) until the first verified fetch", "cache", cache.bundlePath())
+		return store, policy.Result{Outcome: policy.OutcomeFellToM0}, nil
+	}
+	res := store.Apply(raw)
+	if res.Err != nil {
+		log.Warn("policy: the cached bundle does not verify; M0 until the next verified fetch", "cause", res.Cause, "error", res.Err)
+	}
+	return store, res, nil
+}
+
+// setPolicyResult records the outcome of the latest bundle load or fetch, for the health channel.
+func (s *service) setPolicyResult(res policy.Result) {
+	s.policyMu.Lock()
+	s.result = res
+	s.policyMu.Unlock()
+}
+
+func (s *service) policyResult() policy.Result {
+	s.policyMu.Lock()
+	defer s.policyMu.Unlock()
+	return s.result
+}
+
+// policyFetched records a fetch result and applies a newly accepted bundle to the providers, as the
+// supervisor's loader does for a configured one: a diff, never a restart.
+func (s *service) policyFetched(res policy.Result) {
+	s.setPolicyResult(res)
+	if res.Err != nil || res.Outcome != policy.OutcomeAccepted || s.store == nil || s.reg == nil {
+		return
+	}
+	if b := s.store.InForce(); b != nil {
+		for _, applied := range s.reg.ApplyPolicy(*b) {
+			if applied.Err != nil {
+				s.log.Warn("provider could not apply the bundle", "provider", applied.Route, "error", applied.Err)
+			}
+		}
+	}
+}
+
+// managedState is the managed state the device reports now.
+func (s *service) managedState() protocol.ManagedState {
+	s.idMu.Lock()
+	defer s.idMu.Unlock()
+	if s.managed.Valid() {
+		return s.managed
+	}
+	return s.cfg.managedState()
 }
 
 // ensureDrainer builds the device-to-cloud drainer (credential store + drain.New) and wires it into
@@ -394,47 +597,60 @@ func (s *service) ensureDrainer() error {
 	if s.content != nil {
 		content = s.content
 	}
+	// What the operating system says about the device: the hardware seed for the idempotency key,
+	// whether an Intune enrolment makes it managed, and (re-read at each enrolment) the attestation
+	// the server checks against the customer's MDM.
+	facts := collectHostFacts()
+	for _, n := range facts.Notes {
+		s.log.Info("attestation: " + n)
+	}
+	s.idMu.Lock()
+	s.managed = s.cfg.resolvedManagedState(facts.Managed())
+	s.idMu.Unlock()
 	d, err := drain.New(drain.Config{
 		Content:        content,
 		Endpoint:       s.cfg.DeviceEndpoint,
 		AuthMode:       protocol.AuthMode(s.cfg.AuthMode),
 		EnrolmentToken: s.cfg.EnrolmentToken,
+		DeploymentKey:  s.cfg.DeploymentKey,
 		CAFile:         s.cfg.CAFile,
 		TenantID:       s.cfg.TenantID,
 		DeviceID:       s.cfg.DeviceID,
 		MDMID:          s.cfg.MDMID,
+		HardwareSeed:   facts.HardwareSeed(),
+		Attestation:    func() *protocol.DeviceAttestation { return collectHostFacts().AttestationOrNil() },
 		AgentVersion:   version,
 		Hostname:       s.cfg.clearHostname(),
 		HostnameHash:   s.cfg.hostnameHash(),
-		ManagedState:   string(s.cfg.managedState()),
+		ManagedState:   string(s.managedState()),
 		BackoffBase:    s.cfg.BackoffBase,
 		BackoffCap:     s.cfg.BackoffCap,
 		DrainInterval:  s.cfg.DrainInterval,
 		Expire:         s.spool.Expire,
 		// Adopt the server-minted identity once the issued credential is in hand (loaded, first
 		// enrol, or re-enrol), so envelopes carry the tenant_id/device_id the write path
-		// authenticates. UserRef is not issued by the server, so it stays the flag value.
+		// authenticates, and the tenant's user_ref key, so the person is referenced the way the
+		// directory references them.
 		OnEnrolled: func(c *credential.Credential) {
-			// The issued credential may restate the tenant's device-identity setting (ADR 0021).
-			// Adopt it for this process and gate the clear account name on it, so a device that
-			// enrolled under 'hashed' stops stamping a name immediately.
-			if c.DeviceIdentity.Valid() {
-				s.health.adoptDeviceIdentity(c.DeviceIdentity)
+			// The issued credential may restate the tenant's device-identity setting (ADR 0021),
+			// which gates the clear name from the next observation on.
+			s.adoptDeviceIdentity(c.DeviceIdentity)
+			if _, err := s.people.setKey(c.UserRefKey); err != nil {
+				s.log.Warn("the issued user_ref_key is unusable; observations stay unattributed unless SAC_USER_REF is set", "error", err)
 			}
-			subjectName := s.cfg.clearSubjectName()
-			if c.DeviceIdentity.Valid() && c.DeviceIdentity != protocol.DeviceIdentityClear {
-				subjectName = ""
-			}
-			s.pipe.SetIdentity(core.Identity{TenantID: c.TenantID, DeviceID: c.DeviceID, UserRef: s.cfg.UserRef, SubjectName: subjectName})
-			if s.detect != nil {
-				s.detect.SetIdentity(detect.Identity{TenantID: c.TenantID, DeviceID: c.DeviceID})
-			}
+			s.idMu.Lock()
+			s.issued, s.issuedTenant, s.issuedDevice = true, c.TenantID, c.DeviceID
+			s.idMu.Unlock()
+			s.publishIdentity()
 		},
 	}, s.spool.store, creds, slogLogger{s.log}, time.Now)
 	if err != nil {
 		return fmt.Errorf("drain: %w", err)
 	}
 	s.drainer = d
+	if s.cfg.fetchesPolicy() && s.store != nil {
+		s.policySync = newPolicySync(s.store, policyCache{dir: filepath.Join(s.cfg.stateDir(), policyCacheDir)}, d, s.policyFetched, s.log)
+	}
 	s.log.Info("drain configured", "endpoint", s.cfg.DeviceEndpoint, "auth_mode", s.cfg.AuthMode, "credential_loaded", d.Status().Enrolled)
 	s.spool.mu.Lock()
 	s.spool.drain = d
@@ -458,6 +674,17 @@ func (s *service) startDrainer(ctx context.Context) error {
 // before anything else (§3.5 step 2, E14).
 func (s *service) Stop(ctx context.Context) error {
 	s.health.Stop()
+	if s.bgStop != nil {
+		select {
+		case <-s.bgStop:
+		default:
+			close(s.bgStop)
+		}
+		s.bgWG.Wait()
+	}
+	if s.policySync != nil {
+		s.policySync.Stop()
+	}
 	if s.drainer != nil {
 		// End the background loop before the supervisor's bounded shutdown drain, so the final
 		// drain is the only thing sending.
@@ -624,23 +851,28 @@ func reportsLoss(rec capturespool.Recovery) bool {
 // Policy: the supervisor's loader applies the bundle to the registry as a diff, never a restart.
 
 type policyLoader struct {
-	store  *policy.Store
-	path   string
+	store *policy.Store
+	// read returns the bundle to apply: the configured --bundle file, or the cached fetched bundle.
+	// Nil, or nil bytes, means there is none (M0, already reported).
+	read   func() ([]byte, error)
 	reg    *core.Registry
-	result *policy.Result
+	record func(policy.Result)
 	log    *slog.Logger
 }
 
 func (p *policyLoader) Load(ctx context.Context) error {
-	if p.store == nil || p.path == "" {
+	if p.store == nil || p.read == nil {
 		return nil // no bundle configured: M0, already reported
 	}
-	raw, err := os.ReadFile(p.path)
+	raw, err := p.read()
 	if err != nil {
 		return err
 	}
+	if raw == nil {
+		return nil
+	}
 	res := p.store.Apply(raw)
-	*p.result = res
+	p.record(res)
 	if res.Err != nil {
 		// §13.3: the previous bundle stays in force (or M0 with none). The error is reported and
 		// the agent keeps collecting what it is permitted to collect.

@@ -104,11 +104,9 @@ export async function main(env = process.env, { startClient } = {}) {
     pool,
     log,
     verifier: createVerifier({
-      issuer: cfg.oidc.issuer,
-      audience: cfg.oidc.audience,
-      jwksUrl: cfg.oidc.jwksUrl,
-      tenantClaim: cfg.oidc.tenantClaim,
-      rolesClaim: cfg.oidc.rolesClaim,
+      issuer: cfg.auth.issuer,
+      audience: cfg.auth.audience,
+      jwksUrl: cfg.auth.jwksUrl,
     }),
   });
   let address;
@@ -124,10 +122,18 @@ export async function main(env = process.env, { startClient } = {}) {
     `query-api: listening on ${cfg.http.host}:${cfg.http.port} as ${cfg.role} ` +
       `(${redactedDsn(cfg)}); probes ${PATHS.LIVENESS} ${PATHS.READINESS}, read path ${PATHS.QUERY}`,
   );
-  if (cfg.oidc.enabled) {
-    log.info(`query-api: verifying sessions from ${cfg.oidc.issuer} for audience ${cfg.oidc.audience}`);
+  if (cfg.auth.enabled) {
+    log.info(`query-api: verifying product tokens from ${cfg.auth.issuer} (ES256, audience ${cfg.auth.audience}, keys ${cfg.auth.jwksUrl})`);
   } else if (!cfg.devTrustPrincipal) {
-    log.info('query-api: no identity provider is configured, so every read returns 403 by design');
+    log.info('query-api: no token issuer is configured, so every read returns 401 by design');
+  }
+  if (cfg.devTrustPrincipal) {
+    // Said loudly, because it is the absence of authentication: any caller that can reach this
+    // port may name its own tenant. It is a lab arrangement and nothing else.
+    log.warn(
+      'query-api: SAC_DEV_TRUST_PRINCIPAL=1 — a request without a bearer token is trusted on the ' +
+        'x-sac-dev-tenant header. This is the lab escape hatch and must be off in a deployment.',
+    );
   }
 
   installSignalHandlers(service, log);

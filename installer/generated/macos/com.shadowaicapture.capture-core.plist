@@ -13,6 +13,8 @@
   <dict>
     <key>SAC_CONFIG_FILE</key>
     <string>/usr/local/etc/shadow-ai-capture/capture-core.env</string>
+    <key>SAC_TENANT_FILE</key>
+    <string>/usr/local/etc/shadow-ai-capture/tenant.env</string>
     <key>SAC_BINDIR</key>
     <string>/usr/local/opt/shadow-ai-capture/bin</string>
   </dict>

@@ -120,9 +120,20 @@ One surface, **internal ingress only**: `POST /v1/content/object`, `/v1/content/
 `/v1/content/grant`, the content upload) and the analyst routes (`/v1/query`, `/v1/policy`, `/v1/enrol`)
 return **404** — a test asserts it, because "nobody would add that route" ages badly. `--addr` refuses a
 non-loopback bind without an explicit acknowledgement, and the acknowledgement is not a substitute for
-locking the origin to query-api and control-api (docs/02 §12). Identity comes from `internal/auth`: the
-header authenticator trusts the headers **only** because the ingress authenticates the peer and strips
-any inbound copy, and every missing fact is a refusal — no anonymous principal, no default tenant.
+locking the origin to query-api and control-api (docs/02 §12). Identity comes from `internal/auth`, and
+every missing fact is a refusal — no anonymous principal, no default tenant. With `SAC_AUTH_ISSUER` set
+(control-api, contract §2) the person on the two human routes (`/v1/content/retrieval`,
+`/v1/content-search`) is the **product access token** query-api forwards as `Authorization: Bearer`,
+verified here with the standard library: ES256 only, `typ` `at+jwt`, exact `iss`, `aud` containing
+`sac-vault` (`SAC_AUTH_AUDIENCE`), 60 s leeway, no older than ten minutes, keys from
+`SAC_AUTH_JWKS_URL` (default `{issuer}/.well-known/jwks.json`, cached ten minutes, a kid miss refetching
+at most once per 30 s). An `X-Sac-Tenant`, `X-Sac-Subject` or `X-Sac-Roles` header that disagrees with
+the token is refused `403 principal_mismatch`; a human route with no token is `401`; roles never come
+from a header. Service callers acting for no person (control-api, ops) still authenticate by
+`X-Sac-Service` as the ingress set it. With no issuer the vault trusts the headers alone — **only**
+because the ingress authenticates the peer and strips any inbound copy — and says so in a startup
+warning; that is the lab arrangement. The minted retrieval URL's redemption needs no identity under
+either: the single-use grant is the credential (task 10).
 
 `GET /readyz` is added by the binary, not the service handler: `azure/modules/container-app.bicep`
 probes both `/healthz` and `/readyz`, and before this the second path did not exist, so a container from

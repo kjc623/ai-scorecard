@@ -82,6 +82,10 @@ CREATE ROLE sac_control   NOLOGIN;   -- control-api
 CREATE ROLE sac_vault     NOLOGIN;   -- content-vault, internal ingress only
 CREATE ROLE sac_query     NOLOGIN;   -- query-api
 CREATE ROLE sac_ops       NOLOGIN;   -- aggregator and reconciler jobs
+-- Not a component: the owner of the pre-tenant lookup functions in section 5c, and nothing else. It
+-- never logs in and has no members, so the cross-tenant read it holds is reachable only through
+-- those function bodies.
+CREATE ROLE sac_resolver  NOLOGIN;
 
 GRANT USAGE ON SCHEMA ref    TO sac_ingest, sac_control, sac_vault, sac_query, sac_ops;
 GRANT USAGE ON SCHEMA ops    TO sac_ingest, sac_control, sac_vault, sac_query, sac_ops;
@@ -282,6 +286,18 @@ CREATE TABLE ops.tenant (
   device_identity              text NOT NULL DEFAULT 'clear'
                                  CHECK (device_identity IN ('clear','hashed')),
   directory_source             text,
+  -- The tenant's user-reference key: 32 random bytes, sealed under the tenant's directory key, from
+  -- which every device and the SCIM endpoint derive the same pseudonymous user_ref for one person
+  -- (endpoint/protocol.DeriveUserRef). NULL until control-api first needs it. Losing it cannot be
+  -- repaired by re-provisioning, because every enrolled device holds a copy and derives with it.
+  user_ref_key_enc             bytea,
+  -- Whether enrolment also requires the device to be one Intune manages (contract §5). 'intune' is
+  -- meaningful only while the tenant has an active Entra connection to ask Graph through; control-api
+  -- refuses the setting otherwise, because a cross-table rule here would also have to fire when the
+  -- connection is later disabled, and refusing enrolment then is the safe direction anyway.
+  device_verification          text NOT NULL DEFAULT 'none'
+                                 CONSTRAINT tenant_device_verification_known
+                                 CHECK (device_verification IN ('none','intune')),
   -- The two enforcement gates, deliberately separate from the commercial lifecycle in `status`.
   --
   -- The product owner's rule is that nothing is automated: a human decides. That makes the
@@ -394,6 +410,11 @@ CREATE TABLE ops.device (
   -- own scope (see DECISIONS.md D4). Both are current-state facts, overwritten on each report.
   agent_version    text,
   mdm_id           text,
+  -- The Intune managed-device id Graph confirmed at enrolment, for a tenant whose
+  -- device_verification is 'intune'. Separate from mdm_id, which is whatever the device reports
+  -- about itself: this one was verified against the customer's Intune, so it is the identity a
+  -- re-imaged machine is recognised by (contract §5).
+  intune_device_id text,
   managed_state    text NOT NULL DEFAULT 'unknown' CHECK (managed_state IN ('managed','unmanaged','unknown')),
   -- Reported by the device, because there is no MDM resolver in this build. The meaning of each value
   -- and the mapping to a managed/unmanaged/unknown vocabulary live in docs/06.
@@ -434,6 +455,14 @@ CREATE UNIQUE INDEX device_hardware_identity_uniq
 
 COMMENT ON COLUMN ops.device.hardware_identity_hash IS
   'Per-device enrolment idempotency key (brief C11, A17): a hash of the hardware identity, so re-enrolment after a re-image returns the existing device_id rather than creating a second row. Uniqueness is per tenant and is enforced by the device_hardware_identity_uniq partial index, not by a UNIQUE constraint, because the column is nullable and PostgreSQL permits unlimited NULLs in a UNIQUE constraint, which would silently weaken the guard.';
+
+-- One Intune device is one product device: a re-imaged machine that Intune still knows returns its
+-- existing device_id instead of enrolling a second time. Partial for the same reason as the
+-- hardware identity above: devices enrolled without Intune verification carry NULL, and a UNIQUE
+-- constraint would enforce nothing for them while reading as if it did.
+CREATE UNIQUE INDEX device_intune_device_uniq
+  ON ops.device (tenant_id, intune_device_id)
+  WHERE intune_device_id IS NOT NULL;
 
 -- Brief §3.6 question 7 and docs/04 §3.11: the silent-device list and the coverage block both order
 -- or filter on last_seen_at, and both run tenant-scoped. Tenant-leading, so the policy predicate is
@@ -597,10 +626,26 @@ CREATE TABLE ops.policy_bundle (
   feature_state      jsonb NOT NULL DEFAULT '{}'::jsonb,
   signature_kid      text NOT NULL,
   signed_digest      text NOT NULL,
+  -- The exact bytes GET /v1/policy serves: the Ed25519 envelope endpoint/capture-core/policy
+  -- verifies ({key_id, algorithm, payload, signature}). Stored rather than re-signed per request so
+  -- every device that fetches one version receives byte-identical policy, and so the ETag a device
+  -- caches names those bytes. NULL on a row written before control-api served the bundle.
+  signed_envelope    bytea,
   effective_from     timestamptz NOT NULL DEFAULT now(),
   created_by         text NOT NULL,
   created_at         timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (tenant_id, bundle_version)
+  PRIMARY KEY (tenant_id, bundle_version),
+  -- The digest names the bundle in the one spelling the repository uses for digests. It was excused
+  -- from that rule only while nothing wrote this table (database/tools/check-schema.mjs); control-api
+  -- now does, so the exemption expired with this change rather than outliving its reason.
+  CONSTRAINT policy_bundle_digest_is_sha256
+    CHECK (signed_digest ~ '^sha256:[0-9a-f]{64}$'),
+  -- When the served bytes are stored, the digest is theirs. The device has no digest field to compare
+  -- (it verifies the signature), so this is what keeps the ETag and the audit trail's bundle identity
+  -- from describing bytes other than the ones that were served.
+  CONSTRAINT policy_bundle_digest_names_envelope
+    CHECK (signed_envelope IS NULL
+           OR signed_digest = 'sha256:' || encode(sha256(signed_envelope), 'hex'))
 );
 
 COMMENT ON COLUMN ops.policy_bundle.scope_matrix IS
@@ -998,6 +1043,402 @@ COMMENT ON TABLE ops.usage_daily IS
 
 COMMENT ON COLUMN ops.usage_daily.devices_enrolled IS
   'Snapshot at end of day. Recorded daily rather than read live from ops.device, because "how many devices in March" is a question about March and a device removed in April must not change the answer.';
+
+
+-- =====================================================================================
+-- 5c. Identity, provisioning and deployment (backlog/11-sign-in-and-roles)
+-- =====================================================================================
+-- control-api is the product's identity service: the relying party for every customer identity
+-- provider, the keeper of the server-side session, the SCIM endpoint and the source of each
+-- tenant's device package. The tables below are its state.
+--
+-- Two rules shape all of them:
+--
+--   * The product tenant is decided by OUR mapping -- an Entra `tid`, an OIDC `iss` or an email
+--     domain, each unique across the whole database -- and never by a claim the customer's provider
+--     chooses. A token that names a tenant is only as trustworthy as whoever can configure the
+--     provider, and that is the customer.
+--   * A handful of lookups happen before any tenant is known: "which tenant is this issuer?", "whose
+--     session is this cookie?". Those are the only reads that cross tenants, so they are not grants
+--     on the tables. They are the SECURITY DEFINER functions after the tables, each answering one
+--     exact-key question, owned by a role that can do nothing else (sac_resolver). Every other read
+--     and write here runs under the same forced row-level security as the rest of the file.
+--
+-- The global lookup keys (entra_tenant_id, issuer, domain, the token and session hashes) do not
+-- lead with tenant_id, because finding the tenant is what they are for. Every per-tenant listing has
+-- a tenant-leading index of its own (brief C32).
+--
+-- Credentials are stored as hashes (sha256:<hex>, the enrolment-token spelling) or sealed
+-- (`*_enc`: AES-256-GCM under the tenant's key derived from SAC_DIRECTORY_KEY, the scheme of
+-- control/control-api/internal/directory.Cipher). A database read is never a credential.
+
+-- One identity provider connection per row. A tenant normally has one; the unique lookup keys are
+-- what make a second tenant claiming the same Entra tenant or issuer unrepresentable.
+CREATE TABLE ops.identity_connection (
+  connection_id     uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id         uuid NOT NULL REFERENCES ops.tenant(tenant_id),
+  provider          text NOT NULL CHECK (provider IN ('entra','oidc')),
+  -- The customer's Entra directory id, lower-case, exactly as a token's `tid` spells it. The issuer
+  -- of an Entra token is derived from it (https://login.microsoftonline.com/{tid}/v2.0), so it is
+  -- the mapping key and there is no issuer to store.
+  entra_tenant_id   text UNIQUE
+                      CONSTRAINT identity_connection_entra_tenant_is_uuid
+                      CHECK (entra_tenant_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
+  -- The exact `iss` an OIDC provider signs. Compared byte for byte: normalising a trailing slash or
+  -- a case would let two spellings map to two tenants, or one spelling be accepted for another.
+  issuer            text UNIQUE,
+  -- An OIDC client registered in the customer's provider. Entra uses the vendor's one multi-tenant
+  -- application, so an Entra row carries neither.
+  client_id         text,
+  client_secret_enc bytea,
+  scopes            text NOT NULL DEFAULT 'openid profile email',
+  roles_claim       text NOT NULL DEFAULT 'roles',
+  -- {"<provider value>": "<product role>"}. Empty means the provider already emits product role
+  -- names. A user whose values map to no role is refused, never defaulted (contract §3).
+  role_map          jsonb NOT NULL DEFAULT '{}'::jsonb,
+  status            text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','active','disabled')),
+  created_at        timestamptz NOT NULL DEFAULT now(),
+  activated_at      timestamptz,
+  activated_by      text,
+  -- Composite key for the session and grant foreign keys, so a row in one tenant cannot point at
+  -- another tenant's connection.
+  UNIQUE (tenant_id, connection_id),
+  CONSTRAINT identity_connection_entra_has_tid
+    CHECK ((provider = 'entra') = (entra_tenant_id IS NOT NULL)),
+  CONSTRAINT identity_connection_oidc_has_issuer_and_client
+    CHECK ((provider = 'oidc') = (issuer IS NOT NULL AND client_id IS NOT NULL)),
+  CONSTRAINT identity_connection_credentials_only_for_oidc
+    CHECK (provider = 'oidc' OR (client_id IS NULL AND client_secret_enc IS NULL)),
+  -- Activation is what lets a provider sign people into a tenant, so it is attributed like a gate
+  -- closure is: an active connection always names who activated it and when.
+  CONSTRAINT identity_connection_activation_attributed
+    CHECK (status <> 'active' OR (activated_at IS NOT NULL AND activated_by IS NOT NULL)),
+  -- A mapping onto a role the product does not have would be a grant that silently grants nothing.
+  CONSTRAINT identity_connection_role_map_names_product_roles
+    CHECK (jsonb_typeof(role_map) = 'object'
+           AND NOT jsonb_path_exists(role_map,
+             '$.* ? (!(@ == "viewer" || @ == "analyst" || @ == "content_reader" || @ == "admin"))'))
+);
+
+COMMENT ON TABLE ops.identity_connection IS
+  'A customer identity provider linked to a tenant: Entra (keyed by the customer''s directory id) or any OIDC provider (keyed by its exact issuer). Both keys are unique across the database, so the provider cannot choose the tenant; the mapping is the product''s. pending until the customer''s first admin completes one sign-in through it.';
+
+COMMENT ON COLUMN ops.identity_connection.client_secret_enc IS
+  'The OIDC client secret, sealed under the tenant''s directory-derived key. NULL for Entra, which authenticates as the vendor''s application.';
+
+-- Email domains for sign-in discovery: "you@contoso.com" -> the tenant whose connection signs you
+-- in. Set by the vendor when it creates the onboarding invite, never claimed by the customer: a
+-- domain a customer could claim is a sign-in page another customer's staff could be steered to.
+CREATE TABLE ops.tenant_email_domain (
+  domain      text PRIMARY KEY
+                CONSTRAINT tenant_email_domain_is_lower_hostname
+                CHECK (domain = lower(domain)
+                       AND domain ~ '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'),
+  tenant_id   uuid NOT NULL REFERENCES ops.tenant(tenant_id),
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  created_by  text
+);
+
+CREATE INDEX tenant_email_domain_by_tenant ON ops.tenant_email_domain (tenant_id);
+
+-- The one-time onboarding link the vendor issues. The token carries the tenant id in clear (as an
+-- enrolment token does) and only its hash is stored. Single use: used_at and used_by are set
+-- together when the first admin's sign-in activates the connection.
+CREATE TABLE ops.onboarding_invite (
+  invite_id   uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id   uuid NOT NULL REFERENCES ops.tenant(tenant_id),
+  token_hash  text NOT NULL UNIQUE
+                CONSTRAINT onboarding_invite_hash_is_sha256
+                CHECK (token_hash ~ '^sha256:[0-9a-f]{64}$'),
+  created_by  text NOT NULL,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  expires_at  timestamptz NOT NULL,
+  used_at     timestamptz,
+  used_by     text,
+  CONSTRAINT onboarding_invite_expiry_after_issue CHECK (expires_at > created_at),
+  CONSTRAINT onboarding_invite_use_is_whole CHECK ((used_at IS NULL) = (used_by IS NULL))
+);
+
+CREATE INDEX onboarding_invite_by_tenant ON ops.onboarding_invite (tenant_id, created_at);
+
+-- Roles granted to one person by the product rather than by the provider's claim: the first admin
+-- at onboarding, and any grant an admin makes. The effective roles are the role_map of the claim
+-- united with these rows. Keyed by the provider's subject (Entra: `oid`), which, unlike an email
+-- address, a provider never reassigns to someone else.
+CREATE TABLE ops.role_grant (
+  tenant_id      uuid NOT NULL REFERENCES ops.tenant(tenant_id),
+  connection_id  uuid NOT NULL,
+  subject        text NOT NULL,
+  role           text NOT NULL CHECK (role IN ('viewer','analyst','content_reader','admin')),
+  granted_by     text NOT NULL,
+  granted_at     timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, connection_id, subject, role),
+  FOREIGN KEY (tenant_id, connection_id) REFERENCES ops.identity_connection(tenant_id, connection_id)
+);
+
+-- The server-side session behind the dashboard's cookie. The cookie value is never stored, only its
+-- sha256, so a database read cannot be replayed as a session. roles is resolved at sign-in and is
+-- never empty: a person with no role is refused, not given a session with nothing in it.
+CREATE TABLE ops.auth_session (
+  session_hash          bytea PRIMARY KEY
+                          CONSTRAINT auth_session_hash_is_sha256
+                          CHECK (octet_length(session_hash) = 32),
+  tenant_id             uuid NOT NULL REFERENCES ops.tenant(tenant_id),
+  connection_id         uuid NOT NULL,
+  subject               text NOT NULL,
+  actor                 text NOT NULL,
+  roles                 text[] NOT NULL
+                          CONSTRAINT auth_session_roles_are_product_roles
+                          CHECK (cardinality(roles) >= 1
+                                 AND roles <@ ARRAY['viewer','analyst','content_reader','admin']::text[]),
+  -- The person's canonical directory ref when SCIM knows them, so deactivating them in the provider
+  -- ends this session at the next token refresh (contract §3).
+  user_ref              text,
+  idp_refresh_token_enc bytea,
+  -- When the provider refresh token was last exercised. The refresh runs at most every 30 minutes,
+  -- and a failed one ends the session; without a timestamp "at most" would be a guess.
+  idp_refreshed_at      timestamptz,
+  created_at            timestamptz NOT NULL DEFAULT now(),
+  last_seen_at          timestamptz NOT NULL DEFAULT now(),
+  expires_at            timestamptz NOT NULL,
+  revoked_at            timestamptz,
+  FOREIGN KEY (tenant_id, connection_id) REFERENCES ops.identity_connection(tenant_id, connection_id),
+  CONSTRAINT auth_session_expiry_after_creation CHECK (expires_at > created_at)
+);
+
+CREATE INDEX auth_session_by_user_ref ON ops.auth_session (tenant_id, user_ref) WHERE revoked_at IS NULL;
+CREATE INDEX auth_session_expiry ON ops.auth_session (tenant_id, expires_at);
+
+-- A sign-in attempt between /auth/begin and /auth/complete: the PKCE verifier, state and nonce
+-- control-api generated, for ten minutes. It is the one table here with no tenant, because an
+-- attempt that starts with "Sign in with Microsoft" does not know its tenant until the provider
+-- answers. Row-level security still applies: only sac_control has a policy, so no other role can
+-- see an attempt even if a grant were added by mistake.
+CREATE TABLE ops.auth_signin (
+  attempt_hash       bytea PRIMARY KEY
+                       CONSTRAINT auth_signin_hash_is_sha256
+                       CHECK (octet_length(attempt_hash) = 32),
+  connection_id      uuid REFERENCES ops.identity_connection(connection_id),
+  state              text,
+  nonce              text,
+  code_verifier_enc  bytea,
+  redirect_uri       text,
+  invite_id          uuid REFERENCES ops.onboarding_invite(invite_id),
+  created_at         timestamptz NOT NULL DEFAULT now(),
+  expires_at         timestamptz NOT NULL,
+  CONSTRAINT auth_signin_expiry_after_creation CHECK (expires_at > created_at)
+);
+
+CREATE INDEX auth_signin_expiry ON ops.auth_signin (expires_at);
+
+-- The bearer an identity provider's SCIM client presents. Same spelling as an enrolment token
+-- (sacscim_ prefix, tenant id in clear, 256-bit tail), stored as its hash; revoked, never deleted,
+-- so the audit trail's token ids keep resolving.
+CREATE TABLE ops.scim_token (
+  token_id    uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id   uuid NOT NULL REFERENCES ops.tenant(tenant_id),
+  token_hash  text NOT NULL UNIQUE
+                CONSTRAINT scim_token_hash_is_sha256
+                CHECK (token_hash ~ '^sha256:[0-9a-f]{64}$'),
+  label       text,
+  created_by  text,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  revoked_at  timestamptz
+);
+
+CREATE INDEX scim_token_by_tenant ON ops.scim_token (tenant_id, created_at);
+
+-- A person as the identity provider last provisioned them. The resource itself is sealed: it holds
+-- names and addresses, and GET must return what was sent. Filters (`userName eq "…"`) are answered
+-- through keyed hashes, so a lookup never needs the plaintext and the table holds no clear identifier.
+CREATE TABLE ops.scim_user (
+  tenant_id         uuid NOT NULL REFERENCES ops.tenant(tenant_id),
+  scim_id           uuid NOT NULL DEFAULT gen_random_uuid(),
+  -- HMAC-SHA256(the tenant's user-reference key, lower(userName)); likewise for externalId.
+  user_name_hash    bytea NOT NULL CONSTRAINT scim_user_name_hash_is_hmac CHECK (octet_length(user_name_hash) = 32),
+  external_id_hash  bytea CONSTRAINT scim_user_external_id_hash_is_hmac CHECK (octet_length(external_id_hash) = 32),
+  resource_enc      bytea NOT NULL,
+  -- The canonical ref, DeriveUserRef(upn, userName) at creation and never changed afterwards: a
+  -- rename becomes an alias, so a person's history does not split at the rename.
+  user_ref          text NOT NULL CONSTRAINT scim_user_ref_is_derived CHECK (user_ref ~ '^u_[0-9a-f]{32}$'),
+  active            boolean NOT NULL DEFAULT true,
+  created_at        timestamptz NOT NULL DEFAULT now(),
+  updated_at        timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, scim_id),
+  UNIQUE (tenant_id, user_name_hash),
+  -- Two people sharing one canonical ref would merge their histories silently. A recycled userName
+  -- derives the ref of its previous owner, so this is reachable, and it must fail loudly.
+  UNIQUE (tenant_id, user_ref)
+);
+
+CREATE INDEX scim_user_by_external_id ON ops.scim_user (tenant_id, external_id_hash)
+  WHERE external_id_hash IS NOT NULL;
+
+-- Groups as provisioned. A group name is organisational, not personal, so it is stored in clear.
+CREATE TABLE ops.scim_group (
+  tenant_id     uuid NOT NULL REFERENCES ops.tenant(tenant_id),
+  scim_id       uuid NOT NULL DEFAULT gen_random_uuid(),
+  display_name  text NOT NULL,
+  external_id   text,
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  updated_at    timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, scim_id)
+);
+
+-- Membership dies with either side: a SCIM DELETE of a user or a group removes it in the same
+-- statement, so there is no second deletion path to forget.
+CREATE TABLE ops.scim_group_member (
+  tenant_id  uuid NOT NULL,
+  group_id   uuid NOT NULL,
+  user_id    uuid NOT NULL,
+  PRIMARY KEY (tenant_id, group_id, user_id),
+  FOREIGN KEY (tenant_id, group_id) REFERENCES ops.scim_group(tenant_id, scim_id) ON DELETE CASCADE,
+  FOREIGN KEY (tenant_id, user_id) REFERENCES ops.scim_user(tenant_id, scim_id) ON DELETE CASCADE
+);
+
+CREATE INDEX scim_group_member_by_user ON ops.scim_group_member (tenant_id, user_id);
+
+-- Device-derived ref -> canonical ref. A device derives a person's ref from whatever it can resolve
+-- (a UPN, an Entra object id, an account name), and a UPN changes on a rename, so one person reaches
+-- the server under several refs. ingest.record_event resolves through this table at write time, so
+-- every stored event already carries the canonical ref and no read has to join it. Rows are kept
+-- after the person is deprovisioned: an alias is what stops a later event from starting a second
+-- history for the same person.
+CREATE TABLE ops.user_ref_alias (
+  tenant_id   uuid NOT NULL REFERENCES ops.tenant(tenant_id),
+  alias_ref   text NOT NULL CONSTRAINT user_ref_alias_is_derived CHECK (alias_ref ~ '^u_[0-9a-f]{32}$'),
+  user_ref    text NOT NULL CONSTRAINT user_ref_alias_target_is_derived CHECK (user_ref ~ '^u_[0-9a-f]{32}$'),
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, alias_ref)
+);
+
+-- Subject export and erasure start from the canonical ref and need every alias of it.
+CREATE INDEX user_ref_alias_by_canonical ON ops.user_ref_alias (tenant_id, user_ref);
+
+-- A per-tenant key a device package carries (sacdk_ prefix, tenant id in clear), replacing the
+-- single-use enrolment token for fleet deployment: one key enrols many devices, so it is counted,
+-- revocable and optionally time-bounded rather than consumed. A new key is minted per package
+-- download, so revoking one leaked package leaves the others working.
+CREATE TABLE ops.deployment_key (
+  key_id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id        uuid NOT NULL REFERENCES ops.tenant(tenant_id),
+  key_hash         text NOT NULL UNIQUE
+                     CONSTRAINT deployment_key_hash_is_sha256
+                     CHECK (key_hash ~ '^sha256:[0-9a-f]{64}$'),
+  label            text NOT NULL,
+  created_by       text NOT NULL,
+  created_at       timestamptz NOT NULL DEFAULT now(),
+  expires_at       timestamptz,
+  revoked_at       timestamptz,
+  enrolment_count  bigint NOT NULL DEFAULT 0 CHECK (enrolment_count >= 0),
+  last_used_at     timestamptz,
+  CONSTRAINT deployment_key_expiry_after_creation CHECK (expires_at IS NULL OR expires_at > created_at)
+);
+
+CREATE INDEX deployment_key_by_tenant ON ops.deployment_key (tenant_id, created_at);
+
+COMMENT ON TABLE ops.deployment_key IS
+  'A per-tenant deployment key, stored only as its sha256. Many devices enrol with one key, so it is counted (enrolment_count, last_used_at) and revoked rather than consumed; for a tenant whose device_verification is intune, the key alone is not enough and Graph must confirm the device is managed.';
+
+-- The pre-tenant lookups. Each answers one exact-key question before control-api can set
+-- app.tenant_id, and returns only what may be used: an active connection, an unused invite, a live
+-- session, an unrevoked token. Filtering here rather than in the caller means a caller bug cannot
+-- resurrect a revoked session or sign in through a disabled connection.
+--
+-- How they cross tenants, stated because it is the one place in this file that does: they are
+-- SECURITY DEFINER and owned by sac_resolver (section 10), a NOLOGIN role with no members whose only
+-- privileges are SELECT on these five tables and a SELECT-only policy on each (section 9). Not the
+-- table owner, which is subject to the forced policies like everyone else, and not a BYPASSRLS
+-- role, which would let a definer body read any table. search_path is pinned and every name is
+-- schema-qualified, so a caller cannot substitute an object. EXECUTE is revoked from PUBLIC and
+-- granted to sac_control alone.
+CREATE FUNCTION ops.identity_connection_for_entra(p_entra_tenant text)
+RETURNS SETOF ops.identity_connection
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+  SELECT c.*
+    FROM ops.identity_connection c
+   WHERE c.provider = 'entra'
+     AND c.entra_tenant_id = lower(p_entra_tenant)
+     AND c.status = 'active'
+$$;
+
+COMMENT ON FUNCTION ops.identity_connection_for_entra(text) IS
+  'Pre-tenant: the ACTIVE Entra connection for a token''s tid, or nothing. A pending or disabled connection signs nobody in.';
+
+CREATE FUNCTION ops.identity_connection_for_issuer(p_issuer text)
+RETURNS SETOF ops.identity_connection
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+  SELECT c.*
+    FROM ops.identity_connection c
+   WHERE c.provider = 'oidc'
+     AND c.issuer = p_issuer
+     AND c.status = 'active'
+$$;
+
+COMMENT ON FUNCTION ops.identity_connection_for_issuer(text) IS
+  'Pre-tenant: the ACTIVE OIDC connection whose issuer is exactly p_issuer, or nothing. No normalisation: the issuer is compared as the provider signs it.';
+
+-- Any status, deliberately: onboarding signs the first admin in through a connection that is still
+-- pending, and the attempt row names the connection it began with.
+CREATE FUNCTION ops.identity_connection_by_id(p_connection uuid)
+RETURNS SETOF ops.identity_connection
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+  SELECT c.*
+    FROM ops.identity_connection c
+   WHERE c.connection_id = p_connection
+$$;
+
+COMMENT ON FUNCTION ops.identity_connection_by_id(uuid) IS
+  'Pre-tenant: one connection by id in any status, for completing a sign-in that began against it (onboarding completes through a pending one). The caller decides what each status permits.';
+
+CREATE FUNCTION ops.tenant_for_email_domain(p_domain text)
+RETURNS uuid
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+  SELECT d.tenant_id
+    FROM ops.tenant_email_domain d
+   WHERE d.domain = lower(p_domain)
+$$;
+
+COMMENT ON FUNCTION ops.tenant_for_email_domain(text) IS
+  'Pre-tenant: the tenant a sign-in email domain belongs to, or NULL. Only the tenant id: which connection signs the person in is then read under that tenant''s row-level security.';
+
+CREATE FUNCTION ops.onboarding_invite_by_hash(p_hash text)
+RETURNS SETOF ops.onboarding_invite
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+  SELECT i.*
+    FROM ops.onboarding_invite i
+   WHERE i.token_hash = p_hash
+     AND i.used_at IS NULL
+     AND i.expires_at > now()
+$$;
+
+COMMENT ON FUNCTION ops.onboarding_invite_by_hash(text) IS
+  'Pre-tenant: an onboarding invite that is still unused and unexpired, or nothing. A used invite does not resolve, so a forwarded link cannot onboard a second admin.';
+
+CREATE FUNCTION ops.auth_session_by_hash(p_hash bytea)
+RETURNS SETOF ops.auth_session
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+  SELECT s.*
+    FROM ops.auth_session s
+   WHERE s.session_hash = p_hash
+     AND s.revoked_at IS NULL
+     AND s.expires_at > now()
+$$;
+
+COMMENT ON FUNCTION ops.auth_session_by_hash(bytea) IS
+  'Pre-tenant: the live session behind a cookie (by the sha256 of its value), or nothing once it is revoked or past expires_at. The idle limit and SCIM deactivation are checked by the caller, which then holds the tenant.';
+
+CREATE FUNCTION ops.tenant_for_scim_token(p_hash text)
+RETURNS uuid
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+  SELECT t.tenant_id
+    FROM ops.scim_token t
+   WHERE t.token_hash = p_hash
+     AND t.revoked_at IS NULL
+$$;
+
+COMMENT ON FUNCTION ops.tenant_for_scim_token(text) IS
+  'Pre-tenant: the tenant an UNREVOKED SCIM bearer belongs to, or NULL. A revoked token resolves to nothing, so provisioning stops the moment an admin revokes it.';
 
 
 -- =====================================================================================
@@ -1775,6 +2216,13 @@ CREATE TRIGGER audit_chain_before_insert
   BEFORE INSERT ON ops.audit
   FOR EACH ROW EXECUTE FUNCTION ops.audit_chain();
 
+-- The trigger runs with the inserting role's rights and reads the previous row's hash, so every
+-- role that may INSERT an audit row needs to read exactly the three columns the chain reads. With
+-- INSERT alone the insert fails ("permission denied for table audit"), which only stayed hidden
+-- while the lab's services connected as a superuser. RLS still confines the read to the inserting
+-- session's own tenant, which is the tenant the row must carry anyway.
+GRANT SELECT (tenant_id, audit_seq, row_hash) ON ops.audit TO sac_ingest, sac_control, sac_vault, sac_ops;
+
 -- Append-only enforcement. UPDATE is blocked for every role including the owner, because
 -- nothing in this system legitimately rewrites history. DELETE is blocked too, except when
 -- the reconciler has explicitly declared that it is performing retention expiry -- so that
@@ -1920,6 +2368,7 @@ DECLARE
   v_exact         text;
   v_weak          text;
   v_subject_name  text;
+  v_user_ref      text;
 BEGIN
   SELECT f.fidelity_rank INTO v_fidelity FROM ref.route_fidelity f WHERE f.source = v_source;
   IF v_fidelity IS NULL THEN
@@ -1946,6 +2395,18 @@ BEGIN
     INTO v_subject_name
     FROM ops.tenant t WHERE t.tenant_id = v_tenant;
 
+  -- The person, as the directory knows them. A device derives user_ref from what it can resolve (a
+  -- UPN, an Entra object id, an account name), so one person can arrive under several refs; SCIM
+  -- records each of them as an alias of the canonical ref (section 5c). Resolving here, once, means
+  -- every stored row -- observation, submission, the device's last user -- carries the canonical
+  -- ref, and no aggregate, count of people or subject export has to know aliases exist. A ref with
+  -- no alias is stored as sent: a tenant without SCIM, or a person SCIM has not provisioned yet.
+  -- The dedup keys never include the person, so resolution cannot change what merges with what.
+  v_user_ref := coalesce(
+    (SELECT a.user_ref FROM ops.user_ref_alias a
+      WHERE a.tenant_id = v_tenant AND a.alias_ref = p_envelope->>'user_ref'),
+    p_envelope->>'user_ref');
+
   -- Step 1: record the observation. ON CONFLICT DO NOTHING is what makes a retry free
   -- (brief C12: idempotency enforced by the store, not by a check in code). The primary key
   -- is (tenant_id, event_id), so a replayed batch inserts nothing and reports duplicates.
@@ -1960,7 +2421,7 @@ BEGIN
     v_tenant,
     v_event_id,
     (p_envelope->>'device_id')::uuid,
-    p_envelope->>'user_ref',
+    v_user_ref,
     v_subject_name,
     p_envelope->>'tool_fingerprint',
     p_envelope->>'direction',
@@ -2011,7 +2472,7 @@ BEGIN
   -- (a spool flush, a retry) cannot move the device's user backwards; the clear name is gated by the
   -- tenant setting as v_subject_name above already is (ADR 0021).
   UPDATE ops.device
-     SET last_user_ref     = p_envelope->>'user_ref',
+     SET last_user_ref     = v_user_ref,
          last_subject_name = v_subject_name
    WHERE tenant_id = v_tenant
      AND device_id = (p_envelope->>'device_id')::uuid
@@ -2136,7 +2597,7 @@ BEGIN
     v_kind,
     nullif(p_envelope->>'prompt_kind', ''),
     (p_envelope->>'device_id')::uuid,
-    p_envelope->>'user_ref',
+    v_user_ref,
     v_subject_name,
     p_envelope->>'tool_fingerprint',
     v_occurred, v_occurred, p_received_at, v_mode,
@@ -2158,7 +2619,7 @@ BEGIN
 END $$;
 
 COMMENT ON FUNCTION ingest.record_event(jsonb, timestamptz) IS
-  'The single write path for events. Records the observation idempotently, then folds it into the logical submission using the fidelity tie-break, and returns the per-event outcome the batch response reports. Implements brief C12 (idempotency enforced by the store, not by a check in code) and R9 (no double-counting, and every count explainable from observed_routes and winning_source). Retention is materialised here from ops.retention_policy via ops.event_ttl_days.';
+  'The single write path for events. Records the observation idempotently, then folds it into the logical submission using the fidelity tie-break, and returns the per-event outcome the batch response reports. Implements brief C12 (idempotency enforced by the store, not by a check in code) and R9 (no double-counting, and every count explainable from observed_routes and winning_source). Retention is materialised here from ops.retention_policy via ops.event_ttl_days. The person is stored under their canonical ref, resolved through ops.user_ref_alias; a ref with no alias is stored as sent.';
 
 
 -- =====================================================================================
@@ -2187,6 +2648,9 @@ DECLARE
     'ops.finding_review',
     'ops.erasure_receipt', 'ops.reconciliation_run', 'ops.aggregate_watermark',
     'ops.coverage_snapshot', 'ops.subscription', 'ops.usage_daily',
+    'ops.identity_connection', 'ops.tenant_email_domain', 'ops.onboarding_invite',
+    'ops.role_grant', 'ops.auth_session', 'ops.scim_token', 'ops.scim_user', 'ops.scim_group',
+    'ops.scim_group_member', 'ops.user_ref_alias', 'ops.deployment_key',
     -- ingest
     'ingest.observation', 'ingest.submission', 'ingest.rejected', 'ingest.search_text',
     -- mart
@@ -2212,6 +2676,24 @@ ALTER TABLE ops.tenant FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON ops.tenant
   USING (tenant_id = ops.current_tenant())
   WITH CHECK (tenant_id = ops.current_tenant());
+
+-- The pre-tenant lookups of section 5c read as sac_resolver, which is subject to the policies above
+-- like any role. These SELECT-only policies are its whole reach: the five tables those functions
+-- answer from, never a write, and nothing a runtime role can use, because none is a member of it.
+CREATE POLICY pre_tenant_lookup ON ops.identity_connection FOR SELECT TO sac_resolver USING (true);
+CREATE POLICY pre_tenant_lookup ON ops.tenant_email_domain FOR SELECT TO sac_resolver USING (true);
+CREATE POLICY pre_tenant_lookup ON ops.onboarding_invite   FOR SELECT TO sac_resolver USING (true);
+CREATE POLICY pre_tenant_lookup ON ops.auth_session        FOR SELECT TO sac_resolver USING (true);
+CREATE POLICY pre_tenant_lookup ON ops.scim_token          FOR SELECT TO sac_resolver USING (true);
+
+-- ops.auth_signin has no tenant: an attempt begun with "Sign in with Microsoft" learns its tenant
+-- only from the provider's answer. It is still forced, with a policy for the one role that drives
+-- the sign-in, so a grant added to any other role by mistake still reads nothing.
+ALTER TABLE ops.auth_signin ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ops.auth_signin FORCE ROW LEVEL SECURITY;
+CREATE POLICY control_plane_only ON ops.auth_signin TO sac_control
+  USING (true)
+  WITH CHECK (true);
 
 -- Reference tables are shared across tenants, are not tenant-scoped, and hold no personal
 -- data, so they carry no policy. Anything tenant-specific derived from them lives in ops.
@@ -2253,6 +2735,10 @@ GRANT INSERT ON ingest.rejected TO sac_ingest;
 -- rewritten, and no other role is granted the table at all.
 GRANT SELECT, INSERT, DELETE ON ops.dpop_replay TO sac_ingest;
 GRANT INSERT ON ops.audit TO sac_ingest;
+-- record_event resolves a device-derived user_ref to the person's canonical one as it writes
+-- (section 5c). It runs with the caller's rights, so the read is a grant, and RLS keeps it to the
+-- batch's own tenant. Read-only: the aliases are control-api's, written from SCIM.
+GRANT SELECT ON ops.user_ref_alias TO sac_ingest;
 GRANT EXECUTE ON FUNCTION ingest.record_event(jsonb, timestamptz) TO sac_ingest;
 GRANT EXECUTE ON FUNCTION ops.current_tenant() TO sac_ingest;
 
@@ -2274,7 +2760,49 @@ GRANT SELECT, INSERT ON ops.erasure_receipt TO sac_control;
 GRANT INSERT ON ops.audit TO sac_control;
 GRANT SELECT ON ref.data_class, ref.route_fidelity, ref.collector, ref.classifier_release,
       ref.retention_class, ref.rule TO sac_control;
+-- The policy bundle's interception hosts come from the catalogue's TLS destinations (policyserve).
+GRANT SELECT ON ref.tool_catalogue TO sac_control;
 GRANT EXECUTE ON FUNCTION ops.current_tenant(), ops.mode_rank(text) TO sac_control;
+-- The identity service (section 5c). A credential the audit trail may name -- an invite, a SCIM
+-- token, a deployment key, a connection -- is revoked or disabled by a timestamp or a status, never
+-- deleted, so there is no DELETE on those. DELETE is granted only where removing the row is the
+-- operation: a role taken away, a domain the vendor withdraws, SCIM's DELETE of a user or a group
+-- (memberships cascade), and the sweep of expired sessions and sign-in attempts. Aliases are never
+-- deleted by control-api: one is what stops a later event from starting a second history for a
+-- person who was deprovisioned.
+GRANT SELECT, INSERT, UPDATE ON ops.identity_connection, ops.tenant_email_domain,
+      ops.onboarding_invite, ops.role_grant, ops.auth_session, ops.auth_signin, ops.scim_token,
+      ops.scim_user, ops.scim_group, ops.scim_group_member, ops.user_ref_alias, ops.deployment_key
+  TO sac_control;
+GRANT DELETE ON ops.tenant_email_domain, ops.role_grant, ops.auth_session, ops.auth_signin,
+      ops.scim_user, ops.scim_group, ops.scim_group_member
+  TO sac_control;
+
+-- The pre-tenant lookups run as sac_resolver (see section 5c for why). It reads exactly the five
+-- tables they answer from; its RLS reach is the SELECT-only pre_tenant_lookup policy on each.
+GRANT USAGE ON SCHEMA ops TO sac_resolver;
+GRANT SELECT ON ops.identity_connection, ops.tenant_email_domain, ops.onboarding_invite,
+      ops.auth_session, ops.scim_token
+  TO sac_resolver;
+ALTER FUNCTION ops.identity_connection_for_entra(text)  OWNER TO sac_resolver;
+ALTER FUNCTION ops.identity_connection_for_issuer(text) OWNER TO sac_resolver;
+ALTER FUNCTION ops.identity_connection_by_id(uuid)      OWNER TO sac_resolver;
+ALTER FUNCTION ops.tenant_for_email_domain(text)        OWNER TO sac_resolver;
+ALTER FUNCTION ops.onboarding_invite_by_hash(text)      OWNER TO sac_resolver;
+ALTER FUNCTION ops.auth_session_by_hash(bytea)          OWNER TO sac_resolver;
+ALTER FUNCTION ops.tenant_for_scim_token(text)          OWNER TO sac_resolver;
+-- A function is executable by PUBLIC unless revoked, and these cross tenants, so the default is
+-- taken away before the one grant is made.
+REVOKE EXECUTE ON FUNCTION ops.identity_connection_for_entra(text), ops.identity_connection_for_issuer(text),
+      ops.identity_connection_by_id(uuid), ops.tenant_for_email_domain(text),
+      ops.onboarding_invite_by_hash(text), ops.auth_session_by_hash(bytea),
+      ops.tenant_for_scim_token(text)
+  FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION ops.identity_connection_for_entra(text), ops.identity_connection_for_issuer(text),
+      ops.identity_connection_by_id(uuid), ops.tenant_for_email_domain(text),
+      ops.onboarding_invite_by_hash(text), ops.auth_session_by_hash(bytea),
+      ops.tenant_for_scim_token(text)
+  TO sac_control;
 
 -- content-vault: the only role that can read wrapped keys.
 GRANT SELECT, INSERT, UPDATE ON ops.content_object TO sac_vault;

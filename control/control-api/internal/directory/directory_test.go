@@ -3,11 +3,8 @@ package directory
 import (
 	"context"
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -257,85 +254,6 @@ func TestPgTextArrayEscapes(t *testing.T) {
 	if pgTextArray(nil) != "{}" {
 		t.Fatalf("pgTextArray(nil) = %s, want {}", pgTextArray(nil))
 	}
-}
-
-func TestGraphSourcePagesAndMapsTheConfiguredAttribute(t *testing.T) {
-	var server *httptest.Server
-	mux := http.NewServeMux()
-	mux.HandleFunc("/contoso.example/oauth2/v2.0/token", func(w http.ResponseWriter, r *http.Request) {
-		if err := r.ParseForm(); err != nil {
-			t.Errorf("parse token form: %v", err)
-		}
-		if r.Form.Get("grant_type") != "client_credentials" || r.Form.Get("client_secret") != "sekret" {
-			t.Errorf("token request = %v", r.Form)
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "tok", "expires_in": 3600})
-	})
-	mux.HandleFunc("/users", func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("authorization"); got != "Bearer tok" {
-			t.Errorf("authorization = %q, want Bearer tok", got)
-		}
-		if got := r.URL.Query().Get("$select"); !containsAll(got, "id", "displayName", "department", "employeeId") {
-			t.Errorf("$select = %q, missing a configured attribute", got)
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"value": []map[string]any{
-				{"id": "obj-1", "displayName": "One Person", "department": "Engineering", "employeeId": "e-1", "accountEnabled": true},
-				{"id": "obj-2", "displayName": "Two Person", "department": "Legal", "employeeId": "e-2", "accountEnabled": false},
-			},
-			"@odata.nextLink": server.URL + "/users-page-2",
-		})
-	})
-	mux.HandleFunc("/users-page-2", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"value": []map[string]any{
-				{"id": "obj-3", "displayName": "Three Person", "employeeId": "e-3", "accountEnabled": true},
-			},
-		})
-	})
-	server = httptest.NewServer(mux)
-	defer server.Close()
-
-	source := &GraphSource{
-		TenantID: "contoso.example", ClientID: "app", ClientSecret: "sekret",
-		UserRefAttribute: "employeeId", PopulationAttribute: "department",
-		LoginBaseURL: server.URL, GraphBaseURL: server.URL, HTTPClient: server.Client(),
-	}
-	users, err := source.List(context.Background())
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(users) != 3 {
-		t.Fatalf("users = %d, want 3 across two pages", len(users))
-	}
-	if users[0].UserRef != "e-1" || users[0].Department != "Engineering" || users[0].DisplayName != "One Person" {
-		t.Fatalf("first user = %+v", users[0])
-	}
-	if users[1].Status != StatusInactive {
-		t.Fatalf("disabled user status = %q, want inactive", users[1].Status)
-	}
-	if users[2].UserRef != "e-3" || users[2].Department != "" {
-		t.Fatalf("third user = %+v", users[2])
-	}
-	if got := source.Name(); got != "entra" {
-		t.Fatalf("Name = %q", got)
-	}
-}
-
-func TestGraphSourceRefusesAMissingSecret(t *testing.T) {
-	source := &GraphSource{TenantID: "t", ClientID: "c"}
-	if _, err := source.List(context.Background()); err == nil {
-		t.Fatal("a provider with no client secret started anyway")
-	}
-}
-
-func containsAll(haystack string, needles ...string) bool {
-	for _, n := range needles {
-		if !strings.Contains(haystack, n) {
-			return false
-		}
-	}
-	return true
 }
 
 // TestSyncerNeedsItsCollaborators is the guard against a nil collaborator reaching a nil deref at

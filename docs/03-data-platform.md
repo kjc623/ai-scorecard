@@ -86,7 +86,7 @@ Four schemas, and the split is deliberate:
 | Schema | Contents | Mutability |
 |---|---|---|
 | `ref` | Data classes, classifier releases, rule metadata, route fidelity, collectors, retention classes | Shared, not tenant-scoped, no RLS |
-| `ops` | Tenants (including the two enforcement gates and the collection/search ceilings), the user directory dimension, devices, credentials, collector state, policy, tools, notice acknowledgements, retention policy, holds, audit, grants, retrieval grants, content objects, finding review, erasure receipts, reconciliation, watermarks, coverage, **subscription and the usage ledger** | Mutable configuration and append-only evidence; the usage ledger is forward-written and never recomputed |
+| `ops` | Tenants (including the two enforcement gates and the collection/search ceilings), identity connections, sign-in sessions and role grants, SCIM-provisioned people and the user directory dimension, devices, deployment keys, credentials, collector state, policy, tools, notice acknowledgements, retention policy, holds, audit, grants, retrieval grants, content objects, finding review, erasure receipts, reconciliation, watermarks, coverage, **subscription and the usage ledger** | Mutable configuration and append-only evidence; the usage ledger is forward-written and never recomputed |
 | `ingest` | `observation`, `submission`, `rejected`, and the content search index `search_text` (§13) | Immutable except whole-row retention expiry; a submission is folded in place as further routes report it (§4) |
 | `mart` | Aggregates, findings, views | Derived. Droppable and rebuildable |
 
@@ -135,6 +135,55 @@ can never drag a confident one into a merge it does not belong in.
 it, a `usage_rollup` and a `model_detection` for the same tool in the same bucket would collide and
 produce a record corresponding to nothing. This was found by test, not by reading: T27 in
 [database/invariants.test.sql](../database/invariants.test.sql).
+
+### 3.3 People, and how a request finds its tenant
+
+**The user reference.** An event names its person by `user_ref`, a pseudonym the device and the
+directory side derive the same way, so a person's events and their directory row meet without either
+side sending a name ([06](06-security-and-threat-model.md) A6). The derivation is defined once, in
+`endpoint/protocol/userref.go`: `"u_" + hex(HMAC-SHA256(key, kind ":" lower(trim(value))))`, first 16
+bytes, with `kind` one of `upn`, `oid`, `acct`. The key is the tenant's: 32 random bytes sealed in
+`ops.tenant.user_ref_key_enc`, minted by `control-api` on first need and issued to each device in its
+enrolment response. The device derives from the interactive console user — the UPN when one resolves,
+else the Entra object id that a cloud account's `S-1-12-1-…` SID encodes, else `DOMAIN\user` as an
+`acct` ref that no directory row matches, which is the explicit unmapped series rather than a dropped
+person.
+
+**People arrive by SCIM.** The customer's identity provider pushes users and groups to `control-api`'s
+SCIM 2.0 endpoint (`/scim/v2`, authenticated by a per-tenant `sacscim_` bearer an admin mints). There is
+no pull from Microsoft Graph: the product's Entra application asks for no directory-read permission.
+A new SCIM user's canonical ref is `DeriveUserRef(upn, userName)`, **fixed at creation**; a rename never
+changes it, so a person's history does not split. `ops.scim_user` keeps the last-provisioned resource
+sealed, and answers the provider's `userName eq` and `externalId eq` filters through keyed hashes, so
+the table holds no clear identifier. `ops.user_dim` holds one row per canonical ref: the department from
+the enterprise extension, a population from one configured attribute (none by default), the display
+name only while the tenant's device identity is `clear`, the sealed `externalId` (else `userName`) as
+`directory_object_id_enc`, and the status from `active`. A SCIM `DELETE` retires the person — inactive,
+never removed — so their history stays attributable after they leave. Groups are stored; nothing maps
+them to roles yet. The lab keeps a file-based `control-api sync-directory` for the sample tenant.
+
+**Aliases.** One person reaches the server under several refs: a UPN that was renamed, or a device that
+could resolve only the object id. `ops.user_ref_alias` maps each device-derived ref to the canonical
+one — the upn-ref of every userName the person has held, and the oid-ref when `externalId` is a GUID
+(the setup tells Entra admins to map `objectId` to `externalId`). `ingest.record_event` stores
+`COALESCE(<alias's canonical ref>, <ref as sent>)`, so every stored event already carries the canonical
+ref and no read joins the alias table. A upn-ref belongs to whoever holds that userName now: when a
+userName is reused its alias moves to the new holder, who gets a canonical ref of their own, because
+`ops.scim_user` refuses two people sharing one. Aliases outlive deprovisioning, which is what stops a
+later event from starting a second history for the same person.
+
+**How a request finds its tenant.** Every read and write runs with `app.tenant_id` set and row-level
+security forced (§3, [06](06-security-and-threat-model.md) §4). A few questions must be answered
+*before* a tenant is known: which tenant an Entra `tid`, an OIDC issuer or an email domain belongs to;
+which session an opaque session id names; which tenant an invite or a SCIM bearer is for. Each is one
+exact-key `SECURITY DEFINER` function, owned by `sac_resolver` — a `NOLOGIN` role with no members whose
+only reach is a SELECT-only policy on the five tables those functions read — and executable by
+`sac_control` alone. Each returns only what may be used: an active connection, an unused and unexpired
+invite, a live session, an unrevoked token. A deployment key, a SCIM bearer and an invite carry the
+tenant id in clear beside a 256-bit secret and are stored only as a `sha256`; a deployment key is looked
+up inside the tenant session its clear prefix names, and a SCIM bearer's definer answer must name the
+same tenant as its prefix. The tenant an analyst acts in is never a claim the customer's
+identity provider chooses; it is `control-api`'s mapping ([06](06-security-and-threat-model.md) §4.1).
 
 ---
 
@@ -405,7 +454,7 @@ psql -v ON_ERROR_STOP=1 -f database/invariants.test.sql
 
 [database/invariants.test.sql](../database/invariants.test.sql) runs as the runtime roles, not as a superuser,
 because a superuser bypasses row-level security and would therefore prove nothing about it. The
-recorded run was against PostgreSQL 17, the local lab's version. The 54 assertions cover:
+recorded run was against PostgreSQL 17, the local lab's version. The 68 assertions cover:
 
 | Group | What it proves |
 |---|---|
@@ -425,6 +474,7 @@ recorded run was against PostgreSQL 17, the local lab's version. The 54 assertio
 | T44–T47 | A retrieval grant is single-use, whole and not self-approved; grant and classifier-release digests are lowercase sha256 or refused |
 | T48–T51 | The device-credential mode boundary (ADR 0020 §4): a duplicate `(tenant_id, hardware_identity_hash)` is refused while a NULL identity is allowed; a `dpop` credential must carry a JWK and an `x509` one need not; a repeated `(tenant_id, jti)` is refused and swept once expired |
 | T52–T54 | The enrolment token (ADR 0020 §3, §5.1): its stored hash has one sha256 spelling and is unique per tenant; it cannot expire before issue and can be marked used once; forced RLS hides one tenant's tokens from another |
+| T55–T68 | Identity, provisioning and deployment (§3.3): forced RLS isolates the eleven new tenant tables and fails closed with no tenant; each pre-tenant lookup returns only an active connection (exact issuer), an unused unexpired invite, a live session or an unrevoked SCIM token, and is refused to `sac_query`; connection keys are canonical and activation attributed; a session holds at least one product role; a stored policy envelope agrees with its digest; an email domain maps to one tenant; an Intune device id binds to one device per tenant; `record_event` stores an aliased ref as the canonical ref |
 
 What these tests do **not** prove: performance at scale, behaviour under concurrency beyond the
 advisory lock in the audit chain, and the plpgsql bodies of functions that no test exercises. The

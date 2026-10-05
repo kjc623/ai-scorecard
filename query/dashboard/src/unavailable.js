@@ -49,9 +49,9 @@ export const GAPS = Object.freeze([
   Object.freeze({
     id: 'settings',
     screen: 'settings',
-    title: 'Settings: modes, retention, holds, directory sync',
-    needs: 'ops.tenant, ops.grant, ops.hold, ops.retention_policy and ops.policy_bundle as readable sources; none is registered in the DSL.',
-    consequence: 'A tenant admin cannot see or change configuration here. Reading configuration through a query DSL would also be the wrong shape: a change is an audited act, not a read.',
+    title: 'Settings: collection modes, retention, holds',
+    needs: 'An audited admin API in control-api for the tenant\'s collection mode, retention periods, holds and sanction decisions (backlog task 12), as Settings → Deployment already has for deployment.',
+    consequence: 'An admin can download the agent package, choose device verification and manage deployment keys and SCIM tokens under Settings → Deployment, but cannot see or change collection mode, retention or holds here. Reading configuration through the query DSL would be the wrong shape: a change is an audited act, not a read.',
     severity: 'absent',
   }),
   Object.freeze({

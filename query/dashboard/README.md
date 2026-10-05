@@ -12,6 +12,7 @@ Zero dependencies. No build step for the application. Plain ES modules, HTML and
 |---|---|---|
 | `index.html` | open the file directly | The whole app in one inline module, so `file://` works. This is the one to look at. |
 | `module.html` | `node tools/serve.mjs` to <http://127.0.0.1:8787/module.html> | The ES-module entry: real `import`s, which a browser only allows over http. |
+| `/signin` | served by `tools/serve.mjs` | The sign-in page: "Sign in with Microsoft", or a work email that finds the organisation's own identity provider. See "Running the server". |
 | `explore.html` | open the file directly | The search page: one query bar and filter rail over the four list reads (events, findings, devices, audit trail), with a detail panel for the row you click. Generated the same way as `index.html`. |
 
 `explore.html` runs on its own sample transport (`src/explore-stub.js`), which applies the window
@@ -76,12 +77,12 @@ Explore carries the two content reads, so an analyst does not leave the page to 
   it is on: the Person, Tool, Device, Collection mode filters and the window switch narrow the prompt
   search too (the other rail filters still narrow the list only, and the page says so). Results page
   newest-first, 5, 10 or 20 per page.
-- **Retrieve content** is in an event's detail panel when its content state is `uploaded`. It takes
-  a case reference, a second approver and a justification, and the vault decides. What comes back is
-  shown two ways: *what the user typed*, and, collapsed beneath it, *everything captured for the
-  request* (a client such as Claude Code wraps the typed text in its own context, resends the
-  conversation, and sends telemetry nobody typed). Retrieved content is held only while that event
-  stays open.
+- **The stored prompt** is shown in an event's detail panel when its content state is `uploaded`:
+  opening the event is asking to read it, and the vault decides (a `content_reader` role). What
+  comes back is shown two ways: *what the user typed*, and, collapsed beneath it, *everything
+  captured for the request* (a client such as Claude Code wraps the typed text in its own context,
+  resends the conversation, and sends telemetry nobody typed). Retrieved content is held only while
+  that event stays open.
 
 The search and the retrieval request go to their own endpoints on the page's origin
 (`/v1/content-search`, `/v1/content/retrieval`), which `query-api` forwards to `content-vault`; neither
@@ -92,11 +93,10 @@ from its own origin, and the live server forwards it straight to `content-vault`
 display logic in `src/explore-model.js` (`exploreUserInput`): it knows Claude Code's
 `<system-reminder>` blocks and the Anthropic message format, and shows any other capture whole.
 
-The analyst is whoever the signed-in session says is asking: `tools/serve.mjs` runs the OIDC
-authorization-code flow (task 11), holds the access token server-side, and forwards it to `query-api`,
-which verifies it. The page holds only an opaque session cookie and the role decides which navigation
-items it is shown. The second approver is a name the requester types: the vault refuses the requester's
-own name, but nothing yet makes the second person approve.
+The analyst is whoever the signed-in session says is asking. The session is control-api's; the
+dashboard's server holds the short-lived product token it mints and forwards it to `query-api`, which
+verifies it, and on to `content-vault`. The page holds only an opaque session cookie, and the roles
+decide which navigation items it is shown ("Running the server").
 
 ### Live mode
 
@@ -105,15 +105,15 @@ a `query-api` and this dashboard beside the lab's services, reading the lab tena
 <http://127.0.0.1:8787/explore.html?transport=live>. The rest of this section is how that works and
 how to run it by hand against another tenant.
 
-The browser never chooses a tenant. In the auth lab, `tools/serve.mjs` runs the OIDC sign-in against
-`SAC_OIDC_ISSUER` (authorization code + PKCE, `tools/session.mjs`), holds the access token server-side,
-and forwards the query endpoint and the two content endpoints to the `query-api` named by `--api` (or
-`SAC_QUERY_API_URL`) with the token in the `Authorization` header. `query-api` verifies the token against
-the issuer's JWKS and reads the tenant and roles from it. A minted retrieval URL (`SAC_CONTENT_VAULT_URL`)
-goes straight to `content-vault`, because content must not transit query-api; it is the one path with no
-session, because the single-use grant is the capability. Without `SAC_OIDC_ISSUER` the server falls back
-to the development principal headers (`SAC_DEV_TENANT`, `SAC_DEV_ACTOR`) against a `query-api` started
-with `SAC_DEV_TRUST_PRINCIPAL=1`; that is the memory lab, not the deployment. The content reads also need
+The browser never chooses a tenant. With `SAC_CONTROL_URL` set, `tools/serve.mjs` signs people in
+through control-api's identity service and forwards every `/v1/*` request to the `query-api` named by
+`--api` (or `SAC_QUERY_API_URL`) with the session's product token in the `Authorization` header;
+`query-api` verifies it against control-api's JWKS and reads the tenant and roles from it ("Running
+the server" below). A minted retrieval URL (`SAC_CONTENT_VAULT_URL`) goes straight to
+`content-vault`, because content must not transit query-api; it is the one data path with no session,
+because the single-use grant is the capability. Without `SAC_CONTROL_URL` the server falls back to the
+development principal headers (`SAC_DEV_TENANT`, `SAC_DEV_ACTOR`) against a `query-api` started with
+`SAC_DEV_TRUST_PRINCIPAL=1`; that is the memory lab, not the deployment. The content reads also need
 `query-api` to be given the vault (`SAC_CONTENT_VAULT_URL`, and `SAC_CONTENT_SEARCH_SCOPE` for search).
 
 ```bash
@@ -164,6 +164,102 @@ Run step 2 again; the dashboard and the `query-api` container do not need restar
 **After editing `src/` or `explore.css`:** run `node tools/build-index.mjs`, then rebuild and restart
 the `sac-dashboard` container. The page does not refresh itself; it reads when you search.
 
+## Running the server
+
+`tools/serve.mjs` is a thin backend-for-frontend over control-api, which is the product's one
+identity service: the relying party for every customer identity provider (Microsoft Entra ID, or any
+OpenID Connect provider), the keeper of the session, and the issuer of short-lived product access
+tokens. This server holds no identity-provider secret and verifies no token itself.
+
+| Variable | What it does |
+|---|---|
+| `SAC_CONTROL_URL` | control-api. Its internal identity API (`/internal/v1/auth/begin`, `complete`, `token`, `revoke`), its admin API (`/admin/v1/*`) and its onboarding pages (`/onboard/*`). Unset: the development principal, below. |
+| `SAC_INTERNAL_TOKEN` | The bearer for `/internal/*`, shared with control-api. Required with `SAC_CONTROL_URL`; the server will not start without it. Never sent to a browser. |
+| `SAC_PUBLIC_URL` | The address people use, e.g. `https://shadow.example.com`. The redirect URI is `{SAC_PUBLIC_URL}/callback` (register it with Entra); cookies are `Secure` when it is https; it is an accepted `Origin`. Unset: the address the request arrived on. |
+| `SAC_QUERY_API_URL` (or `--api`) | query-api, for `/v1/*`. |
+| `SAC_CONTENT_VAULT_URL` | content-vault, for a minted retrieval URL only. |
+| `SAC_DASHBOARD_TENANT` | Optional: refuse (and revoke) a sign-in to any other tenant. The lab pins each of its two dashboards. |
+| `SAC_DEV_TENANT`, `SAC_DEV_ACTOR` | Development principal only (no `SAC_CONTROL_URL`). |
+| `SAC_COOKIE_SECURE=1` | Force `Secure` cookies behind a TLS proxy when `SAC_PUBLIC_URL` is not set. |
+
+What it serves:
+
+- **`/signin`** — "Sign in with Microsoft" (control-api begins with `provider: entra`) and *Work
+  email → Continue with SSO* (control-api finds the organisation's connection by the email's
+  domain). Plain HTML, no script, `styles.css` and `signin.css` only. **`/signin/start`** begins:
+  control-api answers with an attempt id and the provider's authorize URL; the attempt (and where to
+  return) goes in `sac_signin`, HttpOnly, SameSite=Lax, `Path=/callback`, ten minutes, and the
+  browser goes to the provider. An `invite` parameter is passed on, for the onboarding sign-in.
+- **`/callback`** — completes at control-api, sets `sac_session` (the opaque session id: HttpOnly,
+  SameSite=Lax, `Path=/`, 8 h, `Secure` on https) and returns to the page asked for, or the live
+  dashboard. `no_sso_connection`, `tenant_not_onboarded`, `no_role`, `connection_disabled`, a
+  deactivated account, a used or expired invite, a provider refusal, an expired attempt and an
+  unreachable control-api each get a sentence and a short code, never an exception.
+- **`/login`** — the task-11 address and control-api's onboarding hand-off: `?invite=&provider=` (or
+  `?hint=<email>`) goes on to `/signin/start`, anything else to `/signin`.
+- **`/signout`** — revokes the session at control-api and clears the cookie. The navigation panel's
+  *Sign out* button posts here.
+- **`/session`** — who the page is (actor, tenant, roles, and the page ids the roles may open). It
+  carries no token.
+- **`/v1/*`** to query-api and **`/admin/v1/*`** to control-api, with `Authorization: Bearer <product
+  token>`. The browser's cookie and any `Authorization` header it sent are not forwarded, and an
+  upstream `Set-Cookie` is not relayed. `/admin/v1/*` from a session with no `admin` role is refused
+  here and never sent.
+- **`/onboard/*`** to control-api untouched: no session is needed, no bearer is added, its redirects
+  and cookies come back as they are. Only `sac_session` and `sac_signin` are removed from the request.
+
+Every other page and read needs a session: a page without one is sent to `/signin?next=…`, an API
+call gets a 401 in JSON. The product token is cached per session in this process and re-minted
+through `/internal/v1/auth/token` a minute before it expires; a burst of requests shares one refresh,
+and since the session is control-api's, any instance serves any session. When control-api says the
+session has ended (sign-out, 8 h, an hour idle, or the person's SCIM `active` turned false), the
+cookie is cleared and the person signs in again.
+
+**Same-origin check.** A POST, PUT, PATCH or DELETE to `/v1/*` or `/admin/v1/*` must come from this
+dashboard's own pages: `Sec-Fetch-Site` must be `same-origin`, or, where a browser sends only
+`Origin`, it must be the public URL's or the request's own. A request with neither header (curl, a
+test) is not a browser's cross-site request and passes; it carries no one else's cookie.
+
+**The development principal.** Without `SAC_CONTROL_URL` every forwarded `/v1/*` request carries
+`x-sac-dev-tenant` / `x-sac-dev-actor`, which only a query-api started with
+`SAC_DEV_TRUST_PRINCIPAL=1` accepts. The sign-in page then offers only *Continue as the development
+principal*, there is no admin API, and the navigation shows every page.
+
+## Settings → Deployment
+
+`index.html#deployment`, under *Settings* in the navigation, for the `admin` role only (other roles
+are not shown it, are told so if they reach the address, and control-api refuses them anyway). It is
+control-api's admin API, through `src/deployment.js` (state and actions, DOM-free) and
+`src/deployment-render.js`:
+
+- **Sign-in**: the linked identity provider (Entra tenant id, or the OIDC issuer) and its state.
+- **Device verification**: deployment key only, or key and Intune. Intune is offered only with an
+  active Entra connection, and the page says why when it is not.
+- **Download the agent**: an optional label, then *Download Intune package (.intunewin)* or
+  *Download package (.zip)*. Each download mints a deployment key inside the package; the page says
+  which (the server's `x-sac-deployment-key-label` header, else the one key that is new). The
+  Intune and ConfigMgr/Group Policy steps are inline, with the release's product code and version.
+- **Deployment keys**: label, created, by, enrolments, last used, state (active, expired, revoked),
+  and *Revoke*, which asks first.
+- **User provisioning (SCIM)**: the base URL, users and groups provisioned, last provisioned, and the
+  tokens. A new token is shown once, in this page's memory only, with a copy button and a warning; it
+  is gone when dismissed or when the page is left, and no read returns it again. Entra setup steps
+  (map `objectId` to `externalId`) are inline.
+
+Counts are what control-api reports; one it does not send is "not reported", never 0, and none is a
+share of the fleet. In sample mode (no server) the page runs on `sampleAdminTransport`, which keeps
+its own state, refuses to build a package, and issues a token that says it is a sample.
+
+## Seeing it signed in
+
+`tools/observe.mjs --sign-in <account>` signs in the way a person does — `/signin/start` with the
+email, the provider, `/callback` — and then opens the address. Against the lab's stand-in provider
+the account is chosen by `login_hint` (or, if control-api does not pass the email on as one, by
+clicking it in the stand-in's account list). The header says which session the page was served to,
+and lists the provider separately from the other-host count. `--session <id>` uses a session cookie
+instead; `node tools/lab-session.mjs <account> --dashboard <url>` prints one, through the same path,
+for `observe.mjs` or `curl -b "sac_session=…"`.
+
 ## Built in Explore, not wired up
 
 Each of these is on the page and works against the sample transport. Against the live API it is
@@ -174,19 +270,20 @@ empty or inert, for the reason given. None is faked in live mode.
 | **Findings** tab, its filters, and the finding block in the detail panel | "Not yet covered", zero rows | Findings are derived into `mart.finding` by the aggregator, which is not built. |
 | **Devices**: collector, collector state, last seen, dropped; the liveness and collector-state filters | Every device is `never_reported` with no collector | Collector health is reported to a control-plane endpoint that is not built. A device that has only sent events has no health row. |
 | **Devices**: managed state and region | `unknown` and "not recorded" on devices enrolled by the simulator | Enrolment through the lab does not set them. |
-| **Department** filter and the department line in the detail panel | Matches rows once the tenant's directory has been synced | `ops.user_dim` is filled by `control-api sync-directory` (backlog/06); a tenant with no sync has no department to match, and the filter returns nothing. A user with no department is the explicit `unmapped` series on Teams. |
+| **Department** filter and the department line in the detail panel | Matches rows once the tenant's people have been provisioned | `ops.user_dim` is filled by SCIM, which the customer's identity provider pushes to control-api (`/scim/v2`), or in the lab's sample tenant by `control-api sync-directory` from a file; a tenant with neither has no department to match, and the filter returns nothing. A user with no department is the explicit `unmapped` series on Teams. |
 | **Content** filter values `local_only`, `uploaded`, `shredded`, and their answers in the detail panel | `uploaded` for a device collecting at M3 in the auth lab, where retrieval works; otherwise `not_captured` | `shredded` needs the erasure path. Events sent by the simulator carry no content. |
 | **Free text in the query bar** | Refused with the reason, in both modes, pointing at the prompt-text search | There is no text predicate on `/v1/query` by design. Text is searched in its own box. |
 | **Prompt-text search** | Matches only prompts uploaded since the vault began indexing | Attachment filenames are not searched, and there is no index-coverage block saying how much of the window is indexed. |
-| **The session** | A real OIDC sign-in (task 11): `tools/serve.mjs` runs authorization code + PKCE against `SAC_OIDC_ISSUER`, holds the access token server-side, and forwards it to `query-api`, which verifies it against the issuer's JWKS. The page holds one opaque cookie and the role hides the navigation it cannot use. Without `SAC_OIDC_ISSUER` the server falls back to the development principal header — the memory lab's arrangement, said out loud at startup. | A real customer identity provider is the owner's to configure; the lab uses `localdev/oidc`. |
+| **The session** | A real sign-in through control-api's identity service: `tools/serve.mjs` begins and completes it there, holds the product token server-side, and forwards it to `query-api` and control-api, which verify it. The page holds one opaque cookie and the roles hide the navigation they cannot use. Without `SAC_CONTROL_URL` the server falls back to the development principal header — the memory lab's arrangement, said out loud at startup and on the sign-in page. | A real customer identity provider is linked by the customer's admin through the onboarding link; the lab uses `localdev/oidc` as the sample tenant's provider. |
 
 Checked against the live API in a browser: the Events list, the `action` filter, the event detail
 panel, the Devices list and the Audit trail (which fills with the dashboard's own reads); and, in
 the auth lab with a device at M3, a prompt-text search, opening its match, and retrieving that
 event's content. **Not
 checked live:** "Load next page", the other filters, the refusal states from the sample dropdown,
-light mode, and narrow screens. `tools/serve.mjs`'s forwarder and
-`localdev/tools/simulate-devices.mjs` have no tests.
+light mode, and narrow screens. `tools/serve.mjs` (sign-in, forwarders, CSRF) is tested against a
+fake control-api and query-api in `test/bff.test.mjs`; `localdev/tools/simulate-devices.mjs` has no
+tests.
 
 One known mismatch outside Explore: the API's single-record answer is one row per observation with
 the store's column names (`user_ref`, `tool_fingerprint`, `collection_mode`, `policy_action`), while
@@ -207,15 +304,21 @@ against the live API.
 | `src/views.js` | View models for Posture, the ten questions, and the refusal screen. |
 | `src/unavailable.js` | Everything this API cannot express, rendered as rows with the reason and the missing source. |
 | `src/render.js` | View models to HTML. Pure; every API string is escaped. |
-| `src/shell.js` | What every page shares around its content: how the navigation nests the screens (`NAV_GROUPS`), the stored preferences (theme, folded groups), and the navigation panel's controls (Sample/Live, theme, mobile menu, a table row that opens its record). The dashboard and Explore both boot through it. |
+| `src/shell.js` | What every page shares around its content: how the navigation nests the screens (`NAV_GROUPS`), the stored preferences (theme, folded groups), and the navigation panel's controls (who is signed in and *Sign out*, Sample/Live, theme, mobile menu, a table row that opens its record). The dashboard and Explore both boot through it. |
+| `src/session.js` | Which navigation items a session keeps (`GET /session` names the page ids its roles may open). |
+| `src/deployment.js`, `src/deployment-render.js` | Settings → Deployment: its state and actions over the admin API (`createAdminApi` in `transport.js`), the sample admin transport, and the page's HTML. |
 | `src/app.js` | Hash routing, the screen table of §11.2, and `boot()`. |
+| `tools/serve.mjs`, `tools/session.mjs`, `tools/signin-page.mjs` | The server: sign-in over control-api, the product-token cache, cookies, the same-origin check, the forwarders, and the sign-in and refusal pages. |
+| `tools/observe.mjs`, `tools/lab-session.mjs` | A page in a real headless browser, signed in as a lab account; a lab session cookie over plain HTTP. |
 | `tools/index.template.html` to `index.html` | The shell; the generated single-file page. |
 | `styles.css`, `explore.css` | The design tokens, shell and components; then what only the search page needs. `explore.html` loads both, in that order. |
 
 ### The shell and its conventions
 
-- **Navigation** has five destinations: Overview, Search (`explore.html`), Usage (Tools & data
-  classes, Teams, Users), Devices and Audit trail. Screens that were merged are a switch on the
+- **Navigation** has six destinations: Overview, Search (`explore.html`), Usage (Tools & data
+  classes, Teams, Users), Devices, Audit trail and Settings (Deployment). A signed-in session is
+  shown only the destinations its roles may use: a viewer has no Search and no Users, only an admin
+  has Audit trail and Settings; query-api and control-api refuse the rest anyway. Screens that were merged are a switch on the
   screen that absorbed them: Usage shows Tools, Data classes or Unsanctioned (`#tools?view=…`), and
   Devices lists all or problems only (`#devices?show=problems`). The old addresses `#classes`,
   `#unsanctioned` and `#degraded` still resolve. Event detail (`#event`), Known gaps
@@ -256,7 +359,7 @@ no unrecognised filter silently ignored.
 ## Commands
 
 ```bash
-node --test test/              # 100 tests, offline
+node --test                    # offline; the server tests listen on loopback only
 node tools/build-index.mjs     # regenerate index.html
 node tools/probe.mjs           # render every screen through the built page
 node tools/serve.mjs           # serve module.html over http
@@ -279,7 +382,7 @@ where a gap belongs:
 | **Content search** (`/v1/content-search`) | The read path implements the structured DSL only; there is no search endpoint to call. No search UI is faked and nothing renders as "no matches". |
 | **Content retrieval** (§8) | Request, second approval, audit-first reveal: no endpoint. Event detail shows metadata and the `content_state` answer instead. |
 | **Exports** (§9, §10) | A job state machine, not a query. No link is rendered. |
-| **Settings** (modes, retention, holds, directory sync) | `ops.tenant`, `ops.grant`, `ops.hold`, `ops.policy_bundle` are not registered DSL sources — and a change is an audited act, not a read. |
+| **Settings** (modes, retention, holds) | Not built (task 12). Settings → Deployment is: deployment packages and keys, device verification, SCIM tokens, over control-api's audited admin API. |
 | **Degraded-collection signals** | `ingest.rejected` (rejected-envelope histogram), `ops.reconciliation_run` (drift) and per-device clock skew are not exposed. Collector state, spool depth and dropped totals *are*, and are shown. |
 | **Anchored chain head** | The API verifies a page's hash links but exposes no anchor record. |
 | **Window-wide low-merge-confidence share** | No aggregate carries it; the activity screen counts over the page it holds and labels the figure as page-local. |

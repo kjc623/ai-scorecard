@@ -99,7 +99,7 @@ RETURNING review_state, reviewed_by, reviewed_at`;
  * change to the record of what an analyst decided, so it is auditable on the same terms as a read
  * of the data it concerns.
  *
- * @param {{actorId:string, submissionId:string, ruleId:string, reviewState:string, note:string|null, subjectRef:string|null, caseReference:string|null}} input
+ * @param {{actorId:string, submissionId:string, ruleId:string, reviewState:string, note:string|null, subjectRef:string|null, caseReference:string|null, sessionId?:string|null}} input
  * @returns {{text:string, params:ReadonlyArray<unknown>, id:string}}
  */
 export function findingReviewAuditStatement(input) {
@@ -110,6 +110,7 @@ export function findingReviewAuditStatement(input) {
       objectId: input.submissionId,
       subjectRef: input.subjectRef,
       caseReference: input.caseReference,
+      sessionId: input.sessionId ?? null,
       detail: {
         rule_id: input.ruleId,
         review_state: input.reviewState,

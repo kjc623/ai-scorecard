@@ -3,10 +3,11 @@
 //
 // The exchange is mode-agnostic: an x509 device submits a PKCS#10 CSR, a dpop device submits its
 // public JWK and a proof of possession, and the private key never leaves the device. The tenant
-// always comes from the bootstrap token or the current credential, never from the request body
-// (§12); the region pin is checked here and fails closed; and hardware_identity_hash is the C11
-// idempotency key, so a re-image returns the existing device_id and a revoked device is refused a
-// fresh identity.
+// always comes from the bootstrap credential (a single-use enrolment token or a per-tenant
+// deployment key, deployment.go) or the current credential, never from the request body (§12); the
+// region pin is checked here and fails closed; and hardware_identity_hash is the C11 idempotency
+// key -- with a verified Intune device id ahead of it for an Intune tenant -- so a re-image returns
+// the existing device_id and a revoked device is refused a fresh identity.
 package enrol
 
 import (
@@ -25,6 +26,7 @@ import (
 
 	"github.com/shadow-ai-capture/control-api/internal/apierr"
 	"github.com/shadow-ai-capture/control-api/internal/dpop"
+	"github.com/shadow-ai-capture/control-api/internal/intune"
 	"github.com/shadow-ai-capture/control-api/internal/jose"
 	"github.com/shadow-ai-capture/control-api/internal/signer"
 	"github.com/shadow-ai-capture/control-api/internal/store"
@@ -40,13 +42,50 @@ type Config struct {
 	// ProofSkew bounds how far a proof's iat may be from the server clock.
 	ProofSkew time.Duration
 	Now       func() time.Time
+
+	// Deployment enables the deployment-key bootstrap (contract §5). Nil refuses a deployment_key
+	// with 401: a deployment that has not wired the key tables cannot be entered by sending one.
+	Deployment store.DeploymentStore
+	// Intune checks the devices of a tenant whose device_verification is 'intune'. Nil makes such
+	// an enrolment a 503 -- the check is required and cannot run -- and never lets it through.
+	Intune intune.Checker
+	// UserRefKeys supplies the tenant's user-reference key for the response. Nil omits it, and the
+	// device keeps whatever ref it is configured with.
+	UserRefKeys UserRefKeys
+	// PolicyETag, when set, names the tenant's current bundle version in the response so the device
+	// can skip its first policy GET. A failure leaves the field empty; it never fails an enrolment.
+	PolicyETag PolicyETagSource
+	// KeyRate is the sustained enrolments per second one deployment key may make and KeyBurst the
+	// bucket that absorbs a rollout wave. Zero takes the defaults; a negative KeyRate disables the
+	// limit. The bucket is per process, so N replicas admit N times the rate.
+	KeyRate  float64
+	KeyBurst int
 }
+
+// UserRefKeys hands out a tenant's 32-byte user-reference key, minting it on first need.
+type UserRefKeys interface {
+	Key(ctx context.Context, tenantID string) ([]byte, error)
+}
+
+// PolicyETagSource names the tenant's current policy bundle as GET /v1/policy's ETag would.
+type PolicyETagSource interface {
+	ETag(ctx context.Context, tenantID string) (string, error)
+}
+
+// The default per-key limit: a burst big enough for a rollout wave of a few hundred devices
+// checking in together, and a sustained rate well above any real fleet's enrolment rate while
+// bounding what a leaked key can do before it is revoked.
+const (
+	DefaultKeyRate  = 5.0
+	DefaultKeyBurst = 300
+)
 
 // Service is the enrolment path.
 type Service struct {
-	store  store.Store
-	signer signer.CertificateSigner
-	cfg    Config
+	store   store.Store
+	signer  signer.CertificateSigner
+	cfg     Config
+	limiter *keyLimiter
 }
 
 // New builds the service. It refuses a nil store or signer rather than discovering the absence on the
@@ -67,7 +106,13 @@ func New(st store.Store, sg signer.CertificateSigner, cfg Config) (*Service, err
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	return &Service{store: st, signer: sg, cfg: cfg}, nil
+	if cfg.KeyRate == 0 {
+		cfg.KeyRate = DefaultKeyRate
+	}
+	if cfg.KeyBurst <= 0 {
+		cfg.KeyBurst = DefaultKeyBurst
+	}
+	return &Service{store: st, signer: sg, cfg: cfg, limiter: newKeyLimiter(cfg.KeyRate, cfg.KeyBurst)}, nil
 }
 
 // Current is a device already authenticated by its existing credential, for a rotation re-enrolment.
@@ -82,7 +127,8 @@ type Current struct {
 	KeyThumbprint string
 }
 
-// Input is one /v1/enrol call. Exactly one of a body token or Current authenticates it.
+// Input is one /v1/enrol call. Exactly one of a body token, a body deployment key or Current
+// authenticates it.
 type Input struct {
 	Request protocol.EnrolmentRequest
 	// Current is set for a re-enrolment authenticated with the existing credential instead of a
@@ -126,14 +172,27 @@ func (s *Service) Enrol(ctx context.Context, in Input) (protocol.EnrolmentRespon
 			"device.os must be windows, macos or linux")
 	}
 
+	if req.EnrolmentToken != "" && req.DeploymentKey != "" {
+		return protocol.EnrolmentResponse{}, apierr.New(400, apierr.CodeSchemaViolation,
+			"present one bootstrap credential: an enrolment token or a deployment key, not both")
+	}
+
 	var (
 		tenant     store.Tenant
 		device     store.Device
 		tokenHash  string
 		reenrolled bool
+		keyUse     *deploymentUse
 	)
 
 	switch {
+	case req.DeploymentKey != "":
+		var err error
+		tenant, device, reenrolled, keyUse, err = s.deploymentBootstrap(ctx, req, now)
+		if err != nil {
+			return protocol.EnrolmentResponse{}, err
+		}
+
 	case req.EnrolmentToken != "":
 		t, err := s.resolveToken(ctx, req.EnrolmentToken, now)
 		if err != nil {
@@ -147,7 +206,7 @@ func (s *Service) Enrol(ctx context.Context, in Input) (protocol.EnrolmentRespon
 		if err != nil {
 			return protocol.EnrolmentResponse{}, err
 		}
-		device, reenrolled, err = s.reconcileDevice(ctx, tenant, req, now)
+		device, reenrolled, err = s.reconcileDevice(ctx, tenant, req, now, "")
 		if err != nil {
 			return protocol.EnrolmentResponse{}, err
 		}
@@ -178,6 +237,13 @@ func (s *Service) Enrol(ctx context.Context, in Input) (protocol.EnrolmentRespon
 			"an enrolment token or an existing device credential is required")
 	}
 
+	// The user-reference key is read before the credential is issued, so a key source that cannot
+	// answer leaves the device without a credential to retry from rather than with one and no key.
+	userRefKey, err := s.userRefKey(ctx, tenant.TenantID)
+	if err != nil {
+		return protocol.EnrolmentResponse{}, err
+	}
+
 	credential, err := s.issueCredential(ctx, tenant, device, req, in, now)
 	if err != nil {
 		return protocol.EnrolmentResponse{}, err
@@ -195,7 +261,30 @@ func (s *Service) Enrol(ctx context.Context, in Input) (protocol.EnrolmentRespon
 		}
 	}
 
-	return protocol.EnrolmentResponse{
+	// A deployment key is counted and the enrolment audited after the credential commit, for the
+	// token's reason: a failure here is a retry, and a retry is idempotent on the device identity.
+	if keyUse != nil {
+		if err := s.cfg.Deployment.RecordDeploymentEnrolment(ctx, tenant.TenantID, keyUse.keyID, now, store.AuditEntry{
+			TenantID:   tenant.TenantID,
+			ActorType:  store.ActorDevice,
+			ActorID:    device.DeviceID,
+			Action:     "device.enrol",
+			ObjectType: "device",
+			ObjectID:   device.DeviceID,
+			OccurredAt: now,
+			Detail: map[string]any{
+				"bootstrap":       "deployment_key",
+				"key_id":          keyUse.keyID,
+				"reenrolled":      reenrolled,
+				"verification":    keyUse.verification,
+				"credential_mode": string(req.Mode),
+			},
+		}); err != nil {
+			return protocol.EnrolmentResponse{}, apierr.Internal(fmt.Errorf("record deployment enrolment: %w", err))
+		}
+	}
+
+	resp := protocol.EnrolmentResponse{
 		SchemaVersion:  protocol.EnrolmentSchemaVersion,
 		DeviceID:       device.DeviceID,
 		TenantID:       tenant.TenantID,
@@ -203,8 +292,31 @@ func (s *Service) Enrol(ctx context.Context, in Input) (protocol.EnrolmentRespon
 		Reenrolled:     reenrolled,
 		Credential:     credential,
 		DeviceIdentity: tenant.DeviceIdentity,
+		UserRefKey:     userRefKey,
 		ServerTime:     now,
-	}, nil
+	}
+	if s.cfg.PolicyETag != nil {
+		if etag, err := s.cfg.PolicyETag.ETag(ctx, tenant.TenantID); err == nil {
+			resp.PolicyETag = etag
+		}
+	}
+	return resp, nil
+}
+
+// userRefKey reads the tenant's user-reference key as the response carries it: base64url, no
+// padding (protocol.DecodeUserRefKey is the device's inverse).
+func (s *Service) userRefKey(ctx context.Context, tenantID string) (string, error) {
+	if s.cfg.UserRefKeys == nil {
+		return "", nil
+	}
+	key, err := s.cfg.UserRefKeys.Key(ctx, tenantID)
+	if err != nil {
+		return "", apierr.Internal(fmt.Errorf("user_ref key: %w", err))
+	}
+	if len(key) != protocol.UserRefKeySize {
+		return "", apierr.Internal(fmt.Errorf("user_ref key is %d bytes, want %d", len(key), protocol.UserRefKeySize))
+	}
+	return base64.RawURLEncoding.EncodeToString(key), nil
 }
 
 // resolveToken validates the presented token and returns its row. The tenant comes from the token,
@@ -271,7 +383,59 @@ func (s *Service) checkTenant(ctx context.Context, tenantID string) (store.Tenan
 
 // reconcileDevice implements C11: a hardware identity already present in the tenant returns the
 // existing device, while a revoked device is refused rather than given a fresh identity.
-func (s *Service) reconcileDevice(ctx context.Context, tenant store.Tenant, req protocol.EnrolmentRequest, now time.Time) (store.Device, bool, error) {
+//
+// intuneID, when set, is an Intune managed-device id this request was verified against, and it is
+// the stronger key: one Intune device is one product device, so a device Intune already vouched
+// for is returned whatever hardware hash it now presents, and the binding is (re)written on the
+// device the request resolves to.
+func (s *Service) reconcileDevice(ctx context.Context, tenant store.Tenant, req protocol.EnrolmentRequest, now time.Time, intuneID string) (store.Device, bool, error) {
+	if intuneID == "" {
+		return s.reconcileByHardware(ctx, tenant, req, now)
+	}
+	existing, err := s.cfg.Deployment.FindDeviceByIntuneID(ctx, tenant.TenantID, intuneID)
+	switch {
+	case err == nil:
+		if existing.RevokedAt != nil {
+			return store.Device{}, false, apierr.New(403, apierr.CodeRevokedDevice,
+				"this device is revoked and cannot re-enrol; a revoked device does not get a fresh identity")
+		}
+		// The stored hardware identity stands. One the device row lacks is adopted only when no
+		// other device holds it, so this path can never trip the per-tenant hardware index.
+		if hwid := req.Device.HardwareIdentityHash; existing.HardwareIdentityHash == "" && hwid != "" {
+			if _, err := s.store.FindDeviceByHardwareIdentity(ctx, tenant.TenantID, hwid); errors.Is(err, store.ErrDeviceUnknown) {
+				existing.HardwareIdentityHash = hwid
+			} else if err != nil {
+				return store.Device{}, false, apierr.Internal(fmt.Errorf("find device: %w", err))
+			}
+		}
+		existing.OS = req.Device.OS
+		existing.OSVersion = req.Device.OSVersion
+		existing.MDMID = req.Device.MDMID
+		existing.ResidencyRegion = tenant.ResidencyRegion
+		applyEnrolmentIdentity(&existing, tenant, req.Device)
+		updated, err := s.store.UpsertDevice(ctx, existing)
+		if err != nil {
+			return store.Device{}, false, apierr.Internal(fmt.Errorf("update device: %w", err))
+		}
+		return updated, true, nil
+	case !errors.Is(err, store.ErrDeviceUnknown):
+		return store.Device{}, false, apierr.Internal(fmt.Errorf("find device by intune id: %w", err))
+	}
+	device, reenrolled, err := s.reconcileByHardware(ctx, tenant, req, now)
+	if err != nil {
+		return store.Device{}, false, err
+	}
+	// A device found by its hardware identity under a different Intune id was re-enrolled into
+	// Intune (a re-image): the new id replaces the old one on the same product device.
+	if err := s.cfg.Deployment.SetDeviceIntuneID(ctx, tenant.TenantID, device.DeviceID, intuneID); err != nil {
+		return store.Device{}, false, apierr.Internal(fmt.Errorf("bind intune id: %w", err))
+	}
+	device.IntuneDeviceID = intuneID
+	return device, reenrolled, nil
+}
+
+// reconcileByHardware is the hardware-identity half of C11.
+func (s *Service) reconcileByHardware(ctx context.Context, tenant store.Tenant, req protocol.EnrolmentRequest, now time.Time) (store.Device, bool, error) {
 	if hwid := req.Device.HardwareIdentityHash; hwid != "" {
 		existing, err := s.store.FindDeviceByHardwareIdentity(ctx, tenant.TenantID, hwid)
 		switch {

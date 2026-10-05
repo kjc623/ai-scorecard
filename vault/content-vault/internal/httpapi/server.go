@@ -25,6 +25,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -89,6 +90,12 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) guard(next func(http.ResponseWriter, *http.Request, auth.Principal, []byte)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, err := s.Auth.Authenticate(r)
+		if errors.Is(err, auth.ErrPrincipalConflict) {
+			// The caller is authenticated and contradicts itself: a refusal, not a request to
+			// sign in again.
+			s.writeTransportError(w, http.StatusForbidden, "principal_mismatch", err.Error())
+			return
+		}
 		if err != nil {
 			s.writeTransportError(w, http.StatusUnauthorized, "unauthenticated", err.Error())
 			return
@@ -107,8 +114,15 @@ func (s *Server) guard(next func(http.ResponseWriter, *http.Request, auth.Princi
 
 // requireRole refuses when the principal carries none of the allowed analyst-app roles. It is
 // checked here, in the component that returns content, as well as in query-api: a role assertion
-// that only the caller enforces is the caller's, not the vault's.
+// that only the caller enforces is the caller's, not the vault's. Under a token issuer a human
+// route also needs the person's verified token: a service caller with no token is told it is
+// unauthenticated, which is what it is.
 func (s *Server) requireRole(w http.ResponseWriter, p auth.Principal, allowed ...string) bool {
+	if sr, ok := s.Auth.(auth.SessionRequirer); ok && sr.SessionRequired() && !p.Session {
+		s.writeTransportError(w, http.StatusUnauthorized, "unauthenticated",
+			"this route serves a person and needs their session token, forwarded as Authorization: Bearer")
+		return false
+	}
 	if p.HasAnyRole(allowed...) {
 		return true
 	}
@@ -291,7 +305,7 @@ func (s *Server) handleRetrieval(w http.ResponseWriter, r *http.Request, p auth.
 	res, err := s.Vault.Retrieve(r.Context(), vault.RetrieveRequest{
 		TenantID: p.TenantID, EventID: req.EventID, Principal: p.Subject,
 		CaseReference: req.CaseReference, SecondApprover: req.SecondApprover,
-		Justification: req.Justification,
+		Justification: req.Justification, SessionID: p.SessionID,
 	})
 	if err != nil {
 		s.writeVaultError(w, err)
@@ -445,7 +459,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request, p auth.Pri
 	res, err := s.Vault.Search(r.Context(), vault.SearchRequest{
 		TenantID: p.TenantID, Principal: p.Subject, Scope: req.Scope,
 		Form: store.SearchForm(req.Form), Query: req.Query, Limit: req.Limit, CaseReference: req.CaseReference,
-		Cursor: req.Cursor,
+		Cursor: req.Cursor, SessionID: p.SessionID,
 		Filters: store.SearchFilters{
 			Subject: req.Subject, Tool: req.Tool, Device: req.Device, Mode: req.Mode,
 			ReceivedFrom: req.ReceivedFrom, ReceivedTo: req.ReceivedTo,

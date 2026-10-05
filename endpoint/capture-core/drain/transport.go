@@ -115,6 +115,28 @@ func (c *client) post(ctx context.Context, path string, body []byte, contentType
 	return resp.StatusCode, b, nil
 }
 
+// get sends a GET to path and returns the response with its body read (bounded), so a caller can
+// read the status, the headers and the body together. A transport-level error is returned as err.
+func (c *client) get(ctx context.Context, path string, headers map[string]string, hc *http.Client) (*http.Response, []byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	if err != nil {
+		return resp, nil, err
+	}
+	return resp, b, nil
+}
+
 // apiError is a parsed §5 error envelope, a transport-level failure, or a synthetic failure for a
 // status with no envelope.
 type apiError struct {
@@ -185,19 +207,31 @@ func (d *Drainer) enrol(ctx context.Context, hwid string) (*credential.Credentia
 		return nil, fmt.Errorf("drain: generating device key: %w", err)
 	}
 
+	// The attestation is read at each enrolment rather than once at start: an MDM enrolment or a
+	// join that completes after the agent started is then stated on the next attempt.
+	var attestation *protocol.DeviceAttestation
+	if d.cfg.Attestation != nil {
+		attestation = d.cfg.Attestation()
+	}
+	mdmID := d.cfg.MDMID
+	if mdmID == "" && attestation != nil {
+		mdmID = attestation.IntuneDeviceID
+	}
 	body := protocol.EnrolmentRequest{
 		SchemaVersion:  protocol.EnrolmentSchemaVersion,
 		EnrolmentToken: d.cfg.EnrolmentToken,
+		DeploymentKey:  d.cfg.DeploymentKey,
 		Mode:           d.cfg.AuthMode,
 		Device: protocol.DeviceInfo{
-			OS:                   runtime.GOOS,
+			OS:                   enrolmentOS(runtime.GOOS),
 			AgentVersion:         d.cfg.AgentVersion,
 			Hostname:             d.cfg.Hostname,
 			HostnameHash:         d.cfg.HostnameHash,
 			ManagedState:         d.cfg.ManagedState,
-			MDMID:                d.cfg.MDMID,
+			MDMID:                mdmID,
 			HardwareIdentityHash: hwid,
 		},
+		Attestation: attestation,
 	}
 
 	headers := map[string]string{}
@@ -255,6 +289,15 @@ func (d *Drainer) enrol(ctx context.Context, hwid string) (*credential.Credentia
 		DeviceIdentity:       resp.DeviceIdentity,
 		PrivateKey:           string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})),
 	}
+	if resp.UserRefKey != "" {
+		// A malformed key is dropped rather than failing the enrolment: the credential is still
+		// good, and the device keeps a configured user_ref until a later enrolment issues a key.
+		if _, err := protocol.DecodeUserRefKey(resp.UserRefKey); err != nil {
+			d.log.Printf("drain: enrolment response carries an unusable user_ref_key: %v", err)
+		} else {
+			c.UserRefKey = resp.UserRefKey
+		}
+	}
 	switch resp.Credential.Mode {
 	case protocol.AuthModeX509:
 		c.CertPEM = resp.Credential.CertPEM
@@ -267,6 +310,15 @@ func (d *Drainer) enrol(ctx context.Context, hwid string) (*credential.Credentia
 		return nil, fmt.Errorf("drain: issued credential is unusable: %w", err)
 	}
 	return c, nil
+}
+
+// enrolmentOS maps the Go platform name onto the enrolment vocabulary (windows, macos, linux), which
+// control-api checks against a closed set: Go's "darwin" is the platform the vocabulary calls macos.
+func enrolmentOS(goos string) string {
+	if goos == "darwin" {
+		return "macos"
+	}
+	return goos
 }
 
 // fetchToken performs POST /v1/token for the dpop mode: a signed assertion plus a proof of

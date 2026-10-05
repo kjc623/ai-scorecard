@@ -1,16 +1,23 @@
 // Command oidc is the local OpenID Connect stand-in the device-auth lab runs so tasks 11+
 // can exercise a real sign-in without a customer identity provider.
 //
+// Since the enterprise-onboarding change it plays a CUSTOMER's provider, upstream of the product:
+// control-api is its one confidential client (client_secret_post or client_secret_basic), and the
+// lab links it to the sample tenant as an ops.identity_connection by its issuer. Which tenant a
+// person lands in is control-api's mapping of this issuer, never a claim this fixture emits; the
+// sac_tenant claim below is left in only because nothing reads it any more.
+//
 // It is deliberately a stand-in, not a second authentication path, and it lives in localdev/
 // for the same reason the edge and contentlab do: nothing a service imports, no service has
 // an "if lab" branch. What it does provide is the real protocol shape the product is built
 // against:
 //
 //   - discovery at /.well-known/openid-configuration, a JWKS at /jwks, and RS256-signed
-//     id_token and access_token JWTs, so query-api verifies a signed token rather than
-//     trusting a header;
-//   - an authorization-code flow with PKCE (S256), so the dashboard holds a session and the
-//     browser never sees a tenant or a role it could choose;
+//     id_token and access_token JWTs, so control-api verifies a signed id_token (exact iss, aud =
+//     its client id, nonce) rather than trusting what a browser says;
+//   - an authorization-code flow with PKCE (S256) and a client secret, so control-api holds the
+//     session and the browser never sees a tenant or a role it could choose;
+//   - the claims a relying party reads for the actor: email (verified), preferred_username, sub;
 //   - a configurable directory of users, each with a shadow tenant and an app role, so the
 //     lab can sign in as a viewer, an analyst, a content reader or an admin.
 //
@@ -18,10 +25,8 @@
 // and no refresh tokens; it signs with a key generated fresh at every start (so a restart
 // invalidates every session), and it accepts any loopback redirect_uri. It is a lab fixture.
 //
-// The two claims the product reads are `roles` (an array of app-role names) and `sac_tenant`
-// (the shadow tenant UUID). A real Entra ID tenant supplies the first through app roles and
-// the second through a claims-mapping policy or a directory extension; the owner's hand-off
-// names that configuration.
+// The claim the product reads for roles is `roles` (an array), mapped through the connection's
+// role_map; this fixture emits product role names, so the lab's map is the identity map.
 package main
 
 import (
@@ -29,6 +34,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -217,7 +223,19 @@ func (s *server) handleDiscovery(w http.ResponseWriter, _ *http.Request) {
 		"scopes_supported":                      []string{"openid", "profile", "email"},
 		"code_challenge_methods_supported":      []string{"S256"},
 		"grant_types_supported":                 []string{"authorization_code"},
+		"token_endpoint_auth_methods_supported": s.tokenAuthMethods(),
+		"claims_supported": []string{"sub", "email", "email_verified", "name", "preferred_username",
+			"roles", "nonce"},
 	})
+}
+
+// tokenAuthMethods is what a client must present at /token: a secret, in either RFC 6749 §2.3.1
+// form, when one is configured (the lab's confidential client), otherwise nothing but PKCE.
+func (s *server) tokenAuthMethods() []string {
+	if s.cfg.clientSecret == "" {
+		return []string{"none"}
+	}
+	return []string{"client_secret_post", "client_secret_basic"}
 }
 
 func (s *server) handleJWKS(w http.ResponseWriter, _ *http.Request) {
@@ -301,7 +319,21 @@ func (s *server) handleToken(w http.ResponseWriter, r *http.Request) {
 		s.writeOAuthError(w, http.StatusBadRequest, "unsupported_grant_type", "only authorization_code is served")
 		return
 	}
-	if s.cfg.clientSecret != "" && r.PostForm.Get("client_secret") != s.cfg.clientSecret {
+	// Client authentication, either form RFC 6749 §2.3.1 allows. A relying party picks one from the
+	// discovery document; refusing the other would make the fixture stricter than real providers.
+	clientID, clientSecret, basic := r.BasicAuth()
+	if basic {
+		// The basic form URL-encodes each part before joining them with a colon.
+		clientID, _ = url.QueryUnescape(clientID)
+		clientSecret, _ = url.QueryUnescape(clientSecret)
+	} else {
+		clientID, clientSecret = r.PostForm.Get("client_id"), r.PostForm.Get("client_secret")
+	}
+	if clientID != "" && clientID != s.cfg.clientID {
+		s.writeOAuthError(w, http.StatusUnauthorized, "invalid_client", "unknown client_id")
+		return
+	}
+	if s.cfg.clientSecret != "" && subtle.ConstantTimeCompare([]byte(clientSecret), []byte(s.cfg.clientSecret)) != 1 {
 		s.writeOAuthError(w, http.StatusUnauthorized, "invalid_client", "client_secret does not match")
 		return
 	}
@@ -337,9 +369,12 @@ func (s *server) handleToken(w http.ResponseWriter, r *http.Request) {
 		s.writeOAuthError(w, http.StatusInternalServerError, "server_error", err.Error())
 		return
 	}
+	// The relying party takes the actor from email, then preferred_username, then sub; a directory
+	// fixture has verified every address it lists, so it says so rather than leaving the RP to guess.
 	idClaims := map[string]any{
 		"iss": s.cfg.issuer, "aud": s.cfg.clientID, "sub": entry.user.Sub,
-		"email": entry.user.Email, "name": entry.user.Name,
+		"email": entry.user.Email, "email_verified": entry.user.Email != "", "name": entry.user.Name,
+		"preferred_username": firstNonEmpty(entry.user.Email, entry.user.Sub),
 		"roles": []string{entry.user.Role}, "sac_tenant": entry.user.Tenant,
 		"iat": now.Unix(), "exp": now.Add(idTokenTTL).Unix(),
 	}
@@ -457,6 +492,15 @@ func (s *server) writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func randomToken(n int) string {

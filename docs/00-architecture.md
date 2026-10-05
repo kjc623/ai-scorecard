@@ -442,8 +442,8 @@ pretending".
 | `control-api` | Azure Container Apps | **Go** | Enrolment, policy signing, health, grant decisions |
 | `content-vault` | Azure Container Apps, **internal ingress only** | **Go** | The only component holding Key Vault unwrap rights; must not be reachable from devices or browsers |
 | `aggregator`, `reconciler` | Azure Container Apps Jobs | **Go** + SQL | Rollups and expiry are set-based SQL; Go is the scheduler and the transaction boundary |
-| `query-api` | Azure Container Apps | **JavaScript** on Node.js (`node:http`, no framework, no dependencies) | Same language as the dashboard, so the closed query vocabulary is one shape on both sides; the query layer is where the request-shape logic lives |
-| `dashboard` | Azure Static Web Apps | **JavaScript** (ES modules, no framework) | Static SPA behind Entra ID |
+| `query-api` | Azure Container Apps | **JavaScript** on Node.js (`node:http`, no framework; one dependency, `jose`, to verify the product access token) | Same language as the dashboard, so the closed query vocabulary is one shape on both sides; the query layer is where the request-shape logic lives |
+| `dashboard` | Azure Container Apps | **JavaScript** (ES modules, no framework) | The pages plus a thin server that holds the sign-in session and forwards reads and admin calls with a product access token; sign-in itself is `control-api`'s ([06](06-security-and-threat-model.md) §4.1) |
 | Infrastructure | — | **Bicep** | Azure-native, no state file to secure; Terraform is a reasonable substitute if the team is already multi-cloud |
 | Server database | — | **PostgreSQL 16**, Azure Database for PostgreSQL Flexible Server | See below. 16 is the deployment target the infrastructure pins; the local lab and the recorded verification (§5.5) ran on PostgreSQL 17 |
 | Local spool | Device | **SQLite** (WAL), application-level encryption | Bounded, transactional, crash-safe, no server. **As built:** `endpoint/capture-spool` is an append-only, AEAD-encrypted segment log behind the `protocol.Store` interface, not SQLite — see [endpoint/capture-spool/README.md](../endpoint/capture-spool/README.md) |
@@ -522,7 +522,7 @@ enough to identify one, writes an audit row in the same transaction that serves 
 | `control-api` role | Tenant config, device state, grant metadata | Prompt content, stored keys — it has no grant on `ops.content_object` and no unwrap right. Object keys are minted and wrapped by `content-vault` |
 | `content-vault` role | Wrapped keys, ciphertext blobs | Any user-facing endpoint; it has internal ingress only |
 | `query-api` role | Events, labels, aggregates, findings, audit | Unwrapped keys; it must call `content-vault` for content |
-| Analyst (Entra ID) | Aggregate dashboards; subject-level data with an audit trail; content only through an approved, case-referenced path | Cross-tenant anything (row-level security, enforced by the database) |
+| Analyst (signed in through the customer's identity provider: Entra ID or any OIDC provider) | Aggregate dashboards; subject-level data with an audit trail; content only through an approved, case-referenced path | Cross-tenant anything (row-level security, enforced by the database) |
 | Vendor operator | Infrastructure metadata | Content, under customer-held key mode |
 
 **Row-level security is forced, not merely enabled.** Every application role is a non-owner without
@@ -725,7 +725,8 @@ the session's principal, and the dashboard's Explore page uses both; export is n
 request mints a short-lived, single-use retrieval URL (`GET /v1/content/retrieval/{tenant}/{grant}`),
 which the browser fetches through the analyst web tier; `query-api` relays the URL and never the
 content, and the vault reads the stored ciphertext under its own storage identity. The
-principal is a development header rather than an Entra session. Row 5 exists too: `control-api` serves
+principal is the signed-in person's product access token, which `query-api` forwards and the vault
+verifies itself ([06](06-security-and-threat-model.md) §4.1). Row 5 exists too: `control-api` serves
 `POST /v1/content/grant`, and `capture-core` requests the grant and makes the upload (exercised end to
 end in the local auth lab, where the upload target is a storage stand-in and not Blob storage). The grant state machine, denial reasons and
 upload credential scoping are in [02-ingest-and-transport](02-ingest-and-transport.md).
@@ -831,8 +832,9 @@ One requirement the brief implies but does not state: question 3 asks "how much 
 **per team**", and questions 2 and 8 address people. The system therefore needs an organisational
 dimension — department, population, manager — which must be **synchronised from the customer's
 directory** (Entra ID, or their IdP), because it is not observable on the endpoint. That is an inbound
-data flow the brief does not describe, and it is listed as **Q2** in §7. Until it exists, aggregate
-grouping is by tool, class and user only.
+data flow the brief does not describe, and it is listed as **Q2** in §7. **As built:** the customer's
+identity provider pushes people to `control-api` by SCIM 2.0, which fills department and population;
+manager is not taken ([03-data-platform](03-data-platform.md) §3.3).
 
 ### 5.4 States that must never be merged
 
@@ -875,9 +877,9 @@ psql -v ON_ERROR_STOP=1 -f database/schema.sql
 psql -v ON_ERROR_STOP=1 -f database/invariants.test.sql
 ```
 
-54 assertions covering the mode boundary, the tenant-isolation guarantee, the dedup ladder,
+68 assertions covering the mode boundary, the tenant-isolation guarantee, the dedup ladder,
 the policy ceiling, the audit hash chain, append-only enforcement, retention materialisation, the
-device-credential mode boundary and the states that must not be merged. The tests are part of the deliverable rather than a one-off check
+device-credential mode boundary, the pre-tenant identity lookups and the states that must not be merged. The tests are part of the deliverable rather than a one-off check
 precisely because the properties they assert are the ones the product's credibility rests on.
 
 ---
@@ -918,7 +920,7 @@ scope within it.
 | # | Question | Owner | How to close it | Impact if unresolved |
 |---|---|---|---|---|
 | Q1 | **Data residency.** The brief does not state whether tenants require in-region storage or EU-only processing. **ASSUMPTION:** enterprise buyers in this segment will require it, so region is pinned per tenant and enforced at ingest | Product + legal | Ask the first three design-partner customers | Without an answer, either we over-build per-region deployments or we discover the requirement after the data model is fixed. A region column and a fail-closed check are cheap now and expensive later |
-| Q2 | **The organisational dimension.** Questions 2, 3 and 8 need department, population and manager, which are not observable on the endpoint and must come from the customer's directory | Product + integration | Define which directory is authoritative per tenant and how it is synced; Entra ID is the default | Three of the ten headline questions cannot be answered. Scope them out explicitly if no directory sync is available |
+| Q2 | **The organisational dimension.** Questions 2, 3 and 8 need department, population and manager, which are not observable on the endpoint and must come from the customer's directory | Product + integration | Define which directory is authoritative per tenant and how it is synced. **As built:** the customer's identity provider, whichever it is, provisions people by SCIM ([risks/Q2](risks/Q2-organisational-dimension.md)) | Three of the ten headline questions cannot be answered. Scope them out explicitly if no directory sync is available |
 | Q3 | **Dedup normalisation across routes.** Two routes must compute the same `dedup_key` from differently-shaped observations. Where a route cannot extract canonical text, the event must be marked rather than silently merged or dropped | Collection lead | Write the canonicalisation spec, then a conformance test with recorded traffic from the extension and the proxy for the same submission | R9 materialises as inflated or deflated counts that cannot be reconciled — the exact failure the brief says customers will challenge |
 | Q4 | **Classifier latency in the extension.** §8 allows 150 ms p95 on the interactive path. Whether the statistical model meets that inside a browser WASM sandbox is unmeasured | Classification lead | Benchmark rules-only, rules+small model, and rules+model-on-worker against recorded prompt traffic | If it misses, the model moves to the native host via native messaging, or runs asynchronously with the label arriving on a follow-up record. Either changes the interactive path |
 | Q5 | **Mode F port strategy (R1).** Claiming well-known ports assumes every tool can be moved off its default port and every client resolves the substitute | Endpoint lead | Lab validation against the tools customers actually run, on each endpoint platform — Linux is a new target and is not yet measured | Mode F drops to detection-only. This is the brief's own top risk and it is a validation task, not a design task |

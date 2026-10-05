@@ -2,17 +2,22 @@
 // shape, the reader's stored preferences, and the controls in the navigation panel.
 //
 // The dashboard (app.js) and the Explore page (explore-app.js) both boot through this, so the
-// sidebar is one thing: the same groups, the same folding, the same theme and data-source switch.
+// sidebar is one thing: the same groups, the same folding, the same theme and data-source switch,
+// and the same line saying who is signed in, with its sign-out button.
+
+import { escapeHtml } from './render.js';
 
 /**
- * The navigation: five destinations, with the three usage screens under one group. Every other
- * screen is reached from a row, a switch on one of these, or the footer.
+ * The navigation: six destinations, with the three usage screens under one group and the admin's
+ * settings under another. Every other screen is reached from a row, a switch on one of these, or
+ * the footer. A signed-in role sees only the items it may use (session.js).
  */
 export const NAV_GROUPS = Object.freeze([
   { group: null, icon: 'overview', ids: ['posture'], labels: { posture: 'Overview' } },
   { group: 'Usage', icon: 'usage', ids: ['tools', 'teams', 'person'], labels: { tools: 'Tools & data classes', teams: 'Teams', person: 'Users' } },
   { group: null, icon: 'collection', ids: ['devices'], labels: { devices: 'Devices' } },
   { group: null, icon: 'governance', ids: ['audit'], labels: { audit: 'Audit trail' } },
+  { group: 'Settings', icon: 'settings', ids: ['deployment'], labels: { deployment: 'Deployment' } },
 ]);
 
 const NAV_FOLDED = Object.freeze(NAV_GROUPS.filter((g) => g.folded).map((g) => g.group));
@@ -37,6 +42,24 @@ export function groupOf(screenId) {
   return NAV_GROUPS.find((g) => g.ids.includes(screenId))?.group ?? null;
 }
 
+const ROLE_LABELS = Object.freeze({ viewer: 'Viewer', analyst: 'Analyst', content_reader: 'Content reader', admin: 'Admin' });
+
+/**
+ * Who is signed in, for the navigation panel: the actor, their roles, and a sign-out button that
+ * POSTs to the page's own server. Sample mode has no session and shows nothing; the lab's
+ * development principal says that it is one and has nothing to sign out of.
+ */
+export function renderWho(session) {
+  if (!session || typeof session !== 'object') return '';
+  if (session.dev) {
+    return `<p class="who-text"><span class="who-name">Development principal</span><span class="who-role">${escapeHtml(session.actor ?? '')}</span></p>`;
+  }
+  const roles = (Array.isArray(session.roles) ? session.roles : []).map((r) => ROLE_LABELS[r] ?? r).join(', ');
+  return `<p class="who-text"><span class="who-name" title="${escapeHtml(session.actor ?? '')}">${escapeHtml(session.actor ?? '')}</span>`
+    + `<span class="who-role">${escapeHtml(roles)}</span></p>`
+    + '<form class="who-form" method="post" action="/signout"><button type="submit" class="who-out">Sign out</button></form>';
+}
+
 /** Local preferences. Storage can be unavailable (a private window, a file:// page): then nothing is kept. */
 export function readPref(document, key, fallback) {
   try {
@@ -55,13 +78,16 @@ export function writePref(document, key, value) {
 }
 
 /**
- * The shell's own controls: which navigation groups are folded, the theme, the data-source switch,
- * the mobile menu, and a row that opens the record it names. Every lookup is optional, so a test
+ * The shell's own controls: who is signed in, which navigation groups are folded, the theme, the
+ * data-source switch, the mobile menu, and a row that opens the record it names. Every lookup is optional, so a test
  * document with none of these elements boots the same way.
  */
-export function wireShell({ document, live, collapsed }) {
+export function wireShell({ document, live, collapsed, session = null }) {
   const el = (id) => (typeof document.getElementById === 'function' ? document.getElementById(id) : null);
   const html = document.documentElement;
+
+  const who = el('who');
+  if (who) who.innerHTML = renderWho(session);
 
   // Theme: follow the system unless the reader chose. The choice is the only thing stored.
   const theme = readPref(document, 'sac.theme', '');

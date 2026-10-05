@@ -1,6 +1,6 @@
 # Shadow AI Capture — Dashboard and Query Layer
 
-**Status:** proposed · **Component:** `query-api` (plain JavaScript on Node, `node:http`, zero dependencies) + `content-vault` (Go, internal ingress — search and retrieval) + `dashboard` (plain ES modules, HTML and CSS; no framework) · **Data class:** regulated personal data (GDPR/CCPA)
+**Status:** proposed · **Component:** `query-api` (plain JavaScript on Node, `node:http`, one dependency: `jose`) + `content-vault` (Go, internal ingress — search and retrieval) + `dashboard` (plain ES modules, HTML and CSS; no framework) · **Data class:** regulated personal data (GDPR/CCPA)
 
 The analyst-facing read path: how the ten questions in brief §3.6 become cheap queries, and the rules
 that keep the read side honest and auditable. Master doc §5.3 cites **§3 of this document** as the
@@ -58,10 +58,10 @@ construction and retention (`03-data-platform.md`).
 
 | Aspect | Decision | Source |
 |---|---|---|
-| Runtime | Plain JavaScript (ESM with JSDoc types) on Node 22, `node:http`, zero dependencies, no build step; Azure Container Apps | `query/query-api/README.md` |
+| Runtime | Plain JavaScript (ESM with JSDoc types) on Node 22, `node:http`, no build step; Azure Container Apps. One dependency, `jose`, to verify the product access token: JOSE verification is where a hand-rolled verifier becomes the authentication bypass (algorithm confusion, an ignored `crit`, an embedded key) | `query/query-api/README.md`, `src/http/auth.js` |
 | Database role | `sac_query`: `SELECT` on `ingest`/`mart`/most of `ops`, `INSERT`+`SELECT` on `ops.audit`, `SELECT`+`INSERT`+`UPDATE` on `ops.finding_review`, **no** `SELECT` on `ops.content_object` and **none** on `ingest.search_text`; `sac_vault` holds the only read of the index | `database/schema.sql` §10 |
-| Analyst auth | Entra ID (OIDC, authorization-code + PKCE) against the customer's tenant; the dashboard is a static SPA behind it | master doc §4.1, brief §3.3 |
-| Tenant binding | Session creation resolves the Entra tenant to exactly one `ops.tenant.tenant_id`; the connection sets `app.tenant_id` before any statement runs | `ops.current_tenant()`, RLS policies |
+| Analyst auth | The customer's identity provider — Microsoft Entra ID through the vendor's multi-tenant app, or any OpenID Connect provider the customer connected at onboarding — signs the person in to `control-api`, which is the relying party (authorization code + PKCE, with state and nonce held server-side), keeps the session and mints a short-lived ES256 **product access token**. `query-api` verifies only that token: issuer exact, audience `sac-query`, ES256 only, at most ten minutes old, keys from `control-api`'s JWKS. The dashboard's server holds the session cookie and forwards the token; the browser never holds one, and a customer IdP's own token never reaches `query-api` | [06](06-security-and-threat-model.md) §4.1, brief §3.3 |
+| Tenant binding | The token's `sac_tenant`, which `control-api` resolves from its own mapping — an Entra token's own `tid` to an active `ops.identity_connection`, or an OIDC connection found by the email domain the vendor registered for the tenant and pinned to its exact issuer and client id — never from a claim the provider chooses. The connection sets `app.tenant_id` before any statement runs | `ops.current_tenant()`, RLS policies, [03](03-data-platform.md) §3.3 |
 | Fail-closed default | A session with no tenant set reads **zero rows** — the RLS predicate compares against `NULL` and yields `NULL` | `database/schema.sql` §3, C32 |
 
 **The tenant comes from the authenticated session and never from the request body.** A request
@@ -80,15 +80,21 @@ The earlier "no names in the store" position (assumption A8) is superseded by th
 
 **As built (backlog/06):** `ops.user_dim.display_name` carries the directory's own display name, and
 the dashboard shows it **beside** the account name the device reports — the device name is
-as-of-submission, the directory name is current, and an analyst needs to tell the two apart. The
-sync writes no display name while `device_identity` is `hashed`, so the same opt-out that gates the
+as-of-submission, the directory name is current, and an analyst needs to tell the two apart. SCIM
+provisioning (§3.3) writes no display name while `device_identity` is `hashed`, so the same opt-out that gates the
 device's account name gates the directory's (the column is NULL and the read shows only `user_ref`).
 
 ### 2.2 Authorisation roles
 
-Entra app roles mapped to a closed set, enforced per endpoint in `query-api` and again in
-`content-vault`. Database roles are per *component*, so role checks are the application's job and
-tenant isolation is the database's.
+A closed set of four product roles. At sign-in `control-api` maps the provider's roles claim (Entra
+app roles, or the claim an OIDC connection names) through the connection's `role_map` (an empty map
+takes values that are already product role names), adds the
+person's grants in `ops.role_grant` (the onboarding admin's grant is the first), and refuses a person
+who ends with none (`no_role`), never defaulting one. The roles ride in the product token and are
+enforced per endpoint in `query-api`, again in `content-vault`, and in `control-api`'s admin API: no
+valid token is `401 unauthenticated`, a token whose roles do not admit the read is `403`. Database
+roles are per *component*, so role checks are the application's job and tenant isolation is the
+database's.
 
 The set was reconciled with the product owner for task 11 and differs from the six-role design that
 stood here (A16 below). The approval step on content retrieval was removed by product decision, which
@@ -99,7 +105,7 @@ retires the roles that existed to keep a requester and a second approver apart.
 | `viewer` | Aggregates and the device list | Events, findings, the per-person screen, content, the audit trail, configuration |
 | `analyst` | The viewer's reads, plus event and finding lists, the per-person screen, and prompt-text search (bounded snippets) | Full content; `ops.audit`; export configuration |
 | `content_reader` | The analyst's reads, plus opening one event's stored content | Configuration; the audit trail |
-| `admin` | Configuration, sanction decisions, exports, directory sync, and the audit trail | Subject-level events and findings; content |
+| `admin` | Configuration, sanction decisions, exports, the deployment page (agent packages, deployment keys, device verification, SCIM tokens), and the audit trail | Subject-level events and findings; content |
 | Vendor operator | Infrastructure metadata | Content, under every `key_custody` mode (master doc §4.3) |
 
 **The owner's reconciliation (task 11).** Four decisions, each deliberate. `viewer` sees the device
@@ -293,7 +299,7 @@ is what a tier rather than a global switch means.
   292k rows, over the 2,000-cell cap, so the query collapses `tool` or coarsens — §12 says which rather
   than letting a browser wait.
 - **The dependency, stated rather than assumed.** This question is answered **entirely** from
-  `ops.user_dim`, synchronised from the customer's directory (Entra ID by default) with `department`,
+  `ops.user_dim`, provisioned from the customer's directory (by SCIM, from any identity provider) with `department`,
   `population`, `manager_ref`, `status`, `synced_at`. That inbound flow is not described by the brief
   at all; it is **Q2** in master doc §7, and it is the only reason questions 2, 3 and 8 can name a team.
 - **What the answer degrades to before it exists.** `mart.agg_org_period` is **empty** for that tenant.
@@ -308,17 +314,20 @@ is what a tier rather than a global switch means.
   `coverage_degraded` with the sync age.
 - **Suppression.** Department cells below k distinct users are suppressed (§6): a two-person team's
   daily count is de facto personal data.
-- **As built (backlog/06).** The sync is `control-api sync-directory` — a subcommand of the control
-  plane, not a device route — with a Microsoft Entra ID provider (Graph, client credentials) and a
-  JSON file provider for the lab and for a non-Entra directory. It fills `ops.user_dim` keyed by the
-  endpoint's own `user_ref`, which is mapped from a configurable directory attribute
-  (`onPremisesSamAccountName` by default) whose value the device's `--user-ref` is set to. It is
-  idempotent, upserts per user and never truncates; a user the directory no longer returns is retired
-  (`status = 'inactive'`) rather than deleted, so history stays attributable; and a user with no
-  department is written with a NULL and counted in the explicit `unmapped` series. `department` and
-  `population` are read by the query layer; `directory_object_id_enc` is sealed with AES-256-GCM
-  under a per-tenant key. The Teams page surfaces the residual as its own **Unmapped user-days** tile
-  beside **Mapped user-days**, rather than only in a footnote.
+- **As built (backlog/06, then the sign-in change).** People reach `ops.user_dim` by **SCIM 2.0**,
+  pushed by the customer's identity provider — Entra ID or any other — to `control-api`'s `/scim/v2`
+  with a per-tenant bearer the admin mints on the deployment page. There is **no pull from Microsoft
+  Graph**: the Graph user source of backlog/06 was removed, because the product's Entra application
+  asks for no directory-read permission. A row is keyed by the person's canonical `user_ref`, the same
+  keyed derivation of the UPN the device makes, with aliases for renames and object ids, so events and
+  the directory meet without a configured `--user-ref` ([03](03-data-platform.md) §3.3). A person the
+  provider deprovisions is retired (`status = 'inactive'`) rather than deleted, so history stays
+  attributable, and a user with no department is written with a NULL and counted in the explicit
+  `unmapped` series. `department` and `population` are read by the query layer;
+  `directory_object_id_enc` is sealed with AES-256-GCM under a per-tenant key. The lab's file source
+  (`control-api sync-directory --file`) remains for the sample tenant. The Teams page surfaces the
+  residual as its own **Unmapped user-days** tile beside **Mapped user-days**, rather than only in a
+  footnote.
 
 ### 3.4 Q4 — What classes of sensitive data are going into AI?
 
@@ -1219,7 +1228,8 @@ requirement: the caveat is not a page, it is the frame.
 | Degraded collection | brief §7, R11 | `ops.collector_state`, `ingest.rejected`, `ops.reconciliation_run` | No | all |
 | Audit | Q10 | `ops.audit` | Yes | admin |
 | Exports | §9, §10 | watermarks, manifests | Yes | admin |
-| Settings | Modes, retention, holds, directory sync, destination | `ops.*` | No | admin |
+| Settings | Modes, retention, holds, destination | `ops.*` | No | admin |
+| Settings → Deployment | Which identity provider is linked; device verification (key only, or key and Intune); agent package download (`.intunewin` or `.zip`), each minting a deployment key; key revocation; SCIM tokens and provisioned counts | `control-api` `/admin/v1/deployment` | No | admin |
 
 **Person is a lookup, not a list.** It is reached from a finding, a case, a content search (§15), or a
 lookup for a known `user_ref`; there is no screen that enumerates people sorted by volume and no column
@@ -1274,6 +1284,25 @@ surviving their `expires_at`, which is how the third copy of content is kept ins
 reconciliation as the other two (§15.5) — and reconciliation drift
 (`ops.reconciliation_run.drift_found`, recorded and alerted rather than auto-corrected). Every item is an
 output of the collecting path, which is what R11 asks for.
+
+### 11.5 Sign-in, and navigation shaped by role
+
+**As built.** The dashboard is served by a thin server of its own (`query/dashboard/tools/serve.mjs`,
+a container app), because a static host can hold no session. Its `/signin` page offers **Sign in with
+Microsoft** and **Work email → Continue**, which finds the organisation's connection by the email's
+domain; both hand the browser to the provider through `control-api`'s internal sign-in API, and
+`/callback` completes there. The page then holds only `sac_session`, an opaque, HttpOnly cookie; the
+server exchanges it with `control-api` for a product access token of at most ten minutes, caches it per
+session, and forwards `/v1/*` to `query-api` and `/admin/v1/*` to `control-api` with it. A state-changing
+request must come from the dashboard's own origin. `/onboard/*` passes through to `control-api`
+untouched for a customer's first sign-in. When `control-api` says a session has ended — sign-out, eight
+hours, an hour idle, a disabled connection or the person deactivated by SCIM — the person signs in again.
+
+The navigation shows each person only the pages their roles can use, as the union over the roles they
+hold: `viewer` the aggregate pages and Devices, `analyst` and `content_reader` adding Person and
+Explore, `admin` the aggregate pages, Audit and Settings → Deployment. That is presentation; the server
+side refuses the read or write regardless (§2.2), and the dashboard's server refuses an `/admin/v1/*`
+call from a session without `admin` before forwarding it.
 
 ---
 

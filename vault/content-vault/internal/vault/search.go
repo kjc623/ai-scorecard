@@ -36,6 +36,8 @@ type SearchRequest struct {
 	Filters store.SearchFilters
 	// Cursor is the opaque position a later page resumes from. Empty is the first page.
 	Cursor string
+	// SessionID is the product token's `sid`, recorded in the audit row (see RetrieveRequest).
+	SessionID string
 }
 
 // SearchResult is bounded snippets plus the counts the audit row records.
@@ -133,6 +135,7 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (SearchResult, 
 	if f := filterDetail(req.Filters); len(f) > 0 {
 		detail["filters"] = f
 	}
+	withSession(detail, req.SessionID)
 	hits, err := s.opts.Store.SearchAudited(ctx, q, store.AuditEntry{
 		TenantID: tenant.TenantID, ActorType: "user", ActorID: req.Principal,
 		Action: ActionSearch, ObjectType: "search_text", ObjectID: req.Scope,

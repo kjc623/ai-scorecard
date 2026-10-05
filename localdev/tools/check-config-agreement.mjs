@@ -42,6 +42,18 @@ const SERVICES = [
     dockerfile: 'query/query-api/Dockerfile',
     composeService: 'query-api',
   },
+  // The dashboard server became a deployed app with task 11: the sign-in and session client of
+  // control-api, and the forwarder of reads, admin calls and minted retrieval URLs. It reads its
+  // environment as `env.SAC_*` in one function rather than through a table of constants, so it names
+  // the pattern that finds them.
+  {
+    app: 'dashboard',
+    cmdDir: 'query/dashboard/tools',
+    sources: ['query/dashboard/tools/serve.mjs'],
+    sourcePattern: /\benv\.(SAC_[A-Z0-9_]+)\b/g,
+    dockerfile: 'query/dashboard/Dockerfile',
+    composeService: 'dashboard',
+  },
 ];
 
 /**
@@ -79,7 +91,9 @@ const EXTENSIONS = {
     SAC_KEY_BACKEND: 'image: local, the only backend this build implements',
     SAC_ALLOW_NON_LOOPBACK: 'image: the image-level spelling of the internal-ingress acknowledgement',
     SAC_BLOB_READ_CREDENTIAL: 'lab only: the shared bearer the storage stand-in checks. A deployment uses SAC_BLOB_IDENTITY=managed instead',
-    SAC_RETRIEVAL_URL_BASE: 'gap: the origin a browser reaches a minted retrieval URL on; a deployment behind an ingress sets it, the lab resolves a path against the page\'s own origin',
+    // The product access token the vault verifies itself (contract §2); issuer and audience are
+    // passed, the JWKS address is derived from the issuer.
+    SAC_AUTH_JWKS_URL: 'image: <issuer>/.well-known/jwks.json unless a deployment publishes the JWKS elsewhere',
   },
   'query-api': {
     SAC_HTTP_ADDR: 'image: a container binds 0.0.0.0; the deployment has no command/args to pass one in',
@@ -111,14 +125,9 @@ const EXTENSIONS = {
     // azure/main.bicep passes none, so the checker was red before task 11. Named rather than
     // hidden, exactly as the list intends.
     SAC_CONTENT_SEARCH_SCOPE: 'gap: the signed policy bundle names search scopes; the deployment passes none, so a deployed vault search is disabled until it does',
-    // The authenticated session (task 11). The binary reads all five; the auth lab sets the
-    // issuer and audience, and azure/main.bicep passes none yet, so the deployment gaps stay
-    // visible rather than being satisfied by the lab.
-    SAC_OIDC_ISSUER: 'gap: the customer identity provider (Entra ID). A deployment sets it from its tenant; the auth lab sets it to the local OIDC stand-in',
-    SAC_OIDC_AUDIENCE: 'gap: the API audience a token must name. A deployment sets it; the auth lab sets it to sac-query-api',
-    SAC_OIDC_JWKS_URL: 'gap: the issuer JWKS endpoint; defaults to <issuer>/jwks',
-    SAC_OIDC_TENANT_CLAIM: 'image: sac_tenant, the signed claim that carries the shadow tenant uuid (a real tenant needs a claims-mapping policy)',
-    SAC_OIDC_ROLES_CLAIM: 'image: roles, the app-role claim the token carries',
+    // The product access token (contract §2) replaced the task-11 SAC_OIDC_* vocabulary: the
+    // deployment and the auth lab pass the issuer and the audience; the JWKS address is derived.
+    SAC_AUTH_JWKS_URL: 'image: <issuer>/.well-known/jwks.json unless a deployment publishes the JWKS elsewhere',
   },
   'control-api': {
     SAC_HTTP_ADDR: 'image: a container binds 0.0.0.0, and the Bicep passes no command/args',
@@ -135,6 +144,29 @@ const EXTENSIONS = {
     // azure/main.bicep passes none, so the checker was red before task 11.
     SAC_VAULT_URL: 'gap: the content-vault address control-api asks for a granted object\'s key; the deployment passes none',
     SAC_UPLOAD_SIGNING_KEY: 'gap: the key control-api and the storage layer share to authenticate an upload finalisation; the auth lab sets a literal, a deployment injects it from Key Vault',
+    // The vendor Entra app's other two credential forms (contract §3). The deployment authenticates
+    // as the app with its managed identity (SAC_ENTRA_FIC=managed), so it passes neither.
+    SAC_ENTRA_CLIENT_SECRET: 'lab only: a client secret for the vendor Entra app, for a lab pointed at a real Entra tenant. A deployment uses SAC_ENTRA_FIC=managed',
+    SAC_ENTRA_CERT_FILE: 'alternative: a certificate credential for the vendor Entra app. A deployment uses SAC_ENTRA_FIC=managed',
+    // Optional settings with safe defaults (cmd/control-api/infra_agreement_test.go names the same).
+    SAC_AUTH_ALLOW_INSECURE_IDP: 'lab only: admits the stand-in IdP\'s http issuer and private addresses; a deployment must never pass it',
+    SAC_AUTH_REDIRECT_URIS: 'optional: an explicit redirect allow-list; without it redirect URIs are built from SAC_PUBLIC_URL',
+    SAC_AUTH_TOKEN_TTL: 'image: product token life, default 5 minutes, clamped to 10',
+    SAC_ENTRA_MI_CLIENT_ID: 'optional: the managed identity the federated credential trusts; the deployment passes AZURE_CLIENT_ID, which is read when this is empty',
+    SAC_ENTRA_LOGIN_BASE: 'image: the Entra login host, public cloud by default; a sovereign cloud would set it',
+    SAC_GRAPH_URL: 'optional: points the Intune check at a Graph stand-in; empty is Microsoft Graph',
+    SAC_POLICY_SIGNING_KEY_ID: 'image: policy-key-1, the key id the generic MSI pins',
+    SAC_POLICY_RECHECK: 'image: how often the served bundle is recomposed, default 30s',
+    SAC_DEPLOYMENT_KEY_TTL: 'image: deployment keys do not expire by default; revocation is the control',
+    SAC_DEPLOYMENT_KEY_RATE: 'image: per-key enrolment rate, sized for a rollout wave',
+    SAC_DEPLOYMENT_KEY_BURST: 'image: per-key enrolment burst — see SAC_DEPLOYMENT_KEY_RATE',
+    SAC_SCIM_POPULATION_ATTRIBUTE: 'optional: the SCIM attribute copied to population; unset writes none',
+  },
+  'dashboard': {
+    SAC_COOKIE_SECURE: 'image: derived from SAC_PUBLIC_URL (an https origin sets Secure); set only to force it behind a proxy that rewrites the scheme',
+    SAC_DASHBOARD_TENANT: 'lab only: pins a lab dashboard to one tenant, so the sample dashboard cannot show the owner\'s tenant. A deployment serves every tenant from one origin',
+    SAC_DEV_TENANT: 'lab only: the development sign-in, off unless set; never in a deployment',
+    SAC_DEV_ACTOR: 'lab only: the development sign-in\'s actor name, with SAC_DEV_TENANT',
   },
 };
 
@@ -165,19 +197,19 @@ function namesInGoDir(relDir) {
  * rather than "any SAC_ mention": a name appearing only in a comment is documentation, and treating
  * it as read would make the checker agree with prose instead of with code.
  */
-function namesInJsFiles(files) {
+function namesInJsFiles(files, pattern = /:\s*'(SAC_[A-Z0-9_]+)'/g) {
   const out = new Set();
-  const jsEnv = /:\s*'(SAC_[A-Z0-9_]+)'/g;
   for (const rel of files) {
-    const text = read(rel);
-    for (const m of text.matchAll(jsEnv)) out.add(m[1]);
+    // A name in a comment is documentation here too, so comment lines are dropped first.
+    const text = read(rel).split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
+    for (const m of text.matchAll(pattern)) out.add(m[1]);
   }
   return out;
 }
 
 /** The names a service reads, whichever language it is written in. */
 function namesInService(svc) {
-  if (svc.sources) return namesInJsFiles(svc.sources);
+  if (svc.sources) return namesInJsFiles(svc.sources, svc.sourcePattern);
   return namesInGoDir(svc.cmdDir);
 }
 

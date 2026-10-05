@@ -107,7 +107,7 @@ RETURNING tool_fingerprint, display_name, sanctioned_state, decided_by, decided_
  * changes how every later read of the tool is judged, so it is auditable on the same terms as the
  * read it governs.
  *
- * @param {{actorId:string, toolFingerprint:string, sanctionedState:string, previousState:string, displayName:string|null, note:string|null, caseReference:string|null}} input
+ * @param {{actorId:string, toolFingerprint:string, sanctionedState:string, previousState:string, displayName:string|null, note:string|null, caseReference:string|null, sessionId?:string|null}} input
  * @returns {{text:string, params:ReadonlyArray<unknown>, id:string}}
  */
 export function toolSanctionAuditStatement(input) {
@@ -118,6 +118,7 @@ export function toolSanctionAuditStatement(input) {
       objectId: input.toolFingerprint,
       subjectRef: null,
       caseReference: input.caseReference,
+      sessionId: input.sessionId ?? null,
       detail: {
         sanctioned_state: input.sanctionedState,
         previous_state: input.previousState,

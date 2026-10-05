@@ -47,8 +47,14 @@ param privateDnsZoneIds object = {}
 @description('Resource id of the Log Analytics workspace for diagnostics. Empty skips diagnostics (dev).')
 param logAnalyticsWorkspaceId string = ''
 
+@description('Principal ids granted Storage Blob Data Reader on this account: the identity that reads ciphertext back for a retrieval, which is content-vault and nothing else. Read only: a device uploads under a per-object grant, never under a role.')
+param blobReaderPrincipalIds array = []
+
 @description('Tags applied to every resource.')
 param tags object = {}
+
+// Storage Blob Data Reader. Built-in role ids are the same in every tenant and cloud.
+var roleStorageBlobDataReader = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1')
 
 var accountName = toLower(take(replace('${baseName}ciphertext', '-', ''), 24))
 
@@ -192,6 +198,20 @@ resource diagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' 
     ]
   }
 }
+
+// The vault reads ciphertext as itself (SAC_BLOB_IDENTITY=managed): an AAD token for its user-assigned
+// identity, no account key (shared-key access is off). Without this grant a deployment's first
+// retrieval is refused by storage, so it is part of the account rather than a step someone remembers.
+resource blobReaderAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for (principalId, i) in blobReaderPrincipalIds: {
+  name: guid(account.id, principalId, 'blob-data-reader', string(i))
+  scope: account
+  properties: {
+    roleDefinitionId: roleStorageBlobDataReader
+    principalId: principalId
+    principalType: 'ServicePrincipal'
+    description: 'Ciphertext read-back for content retrieval. Read only; held by content-vault (D7).'
+  }
+}]
 
 @description('Resource id of the ciphertext account, for the content-vault identity’s role assignment.')
 output accountId string = account.id

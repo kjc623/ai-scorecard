@@ -12,8 +12,7 @@ sync exists.
 
 A directory sync that fills `ops.user_dim` per tenant with the pseudonymous user reference, the
 department, and the encrypted directory identifier the schema already provides for. Start with
-Microsoft Entra ID through Microsoft Graph, structured so a second provider can be added. For the
-lab, provide a file-based source so it runs offline.
+Microsoft Entra ID - the customer should be able to register the application, provision users/groups to it, and sync.
 
 ## Read first
 
@@ -35,8 +34,7 @@ lab, provide a file-based source so it runs offline.
 ## Raise, do not decide
 
 Whether the dashboard may show a display name for a user or must stay pseudonymous. Today it is
-pseudonymous by design. Put the question and the consequences of each answer to the owner, and
-build neither answer until it is given.
+pseudonymous but it should display a name.
 
 ## Done when
 

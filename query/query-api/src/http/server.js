@@ -104,7 +104,7 @@ function readBody(req, limit = MAX_BODY_BYTES) {
   });
 }
 
-function sendJson(res, status, body) {
+function sendJson(res, status, body, extraHeaders = null) {
   const text = JSON.stringify(body);
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
@@ -112,6 +112,7 @@ function sendJson(res, status, body) {
     // A query response is per-tenant and per-user. Nothing between here and the browser may keep it.
     'cache-control': 'no-store',
     'x-content-type-options': 'nosniff',
+    ...(extraHeaders ?? {}),
   });
   res.end(text);
 }
@@ -125,28 +126,42 @@ function sendJson(res, status, body) {
  *
  * Two sources, tried in order:
  *
- *   1. A bearer token, verified in auth.js against the configured issuer's JWKS. The tenant, the
- *      actor and the roles all come from the signed claims. This is the product path.
+ *   1. A bearer token: the product access token control-api mints, verified in auth.js against
+ *      the issuer's JWKS. The tenant, the actor and the roles all come from the signed claims.
+ *      This is the product path. A presented token that fails is a refusal, never a fall-through
+ *      to the development header.
  *   2. The development header, and only when SAC_DEV_TRUST_PRINCIPAL=1. It is the same explicit
  *      escape hatch the Go services use for a local run; it is named, it is off unless set, and
  *      the role it carries defaults to the lab-only `dev` role.
  *
- * Without either, every read is refused 403: a service that cannot establish who is asking must
- * not answer.
+ * Without either the request is refused 401: a service that cannot establish who is asking must
+ * not answer. `tokenRefused` says which of the two it was, for the WWW-Authenticate challenge.
+ *
+ * A principal from a token carries that token as a non-enumerable `bearer`, so the content
+ * forwarder can hand the vault the same credential (contract §2) and a log or a spread of the
+ * principal cannot carry it anywhere else.
  */
 async function principalOf(req, cfg, verifier, log) {
   if (verifier?.enabled) {
     const header = req.headers['authorization'];
-    if (typeof header === 'string' && /^Bearer\s+\S+/.test(header)) {
+    if (typeof header === 'string' && /^Bearer\s+\S+/i.test(header)) {
+      const token = header.replace(/^Bearer\s+/i, '').trim();
       try {
-        return await verifier.verify(header.replace(/^Bearer\s+/i, '').trim());
+        const principal = await verifier.verify(token);
+        return { principal: Object.defineProperty({ ...principal }, 'bearer', { value: token, enumerable: false }) };
       } catch (error) {
         // The token itself is never logged: it is a credential. The reason is.
         log?.warn?.(`query-api: a session token was refused: ${error?.message ?? error}`);
-        return null;
+        return { principal: null, tokenRefused: true };
       }
     }
   }
+  const principal = devPrincipalOf(req, cfg);
+  return { principal, tokenRefused: false };
+}
+
+/** The development principal, read exactly as task 11 left it. Null unless the flag is on. */
+function devPrincipalOf(req, cfg) {
   if (!cfg.devTrustPrincipal) return null;
   const tenant = req.headers['x-sac-dev-tenant'];
   if (typeof tenant !== 'string' || tenant.trim() === '') return null;
@@ -163,6 +178,7 @@ async function principalOf(req, cfg, verifier, log) {
     actorId: typeof actor === 'string' && actor.trim() !== '' ? actor.trim() : 'unknown',
     subject: typeof actor === 'string' && actor.trim() !== '' ? actor.trim() : 'unknown',
     roles: requested.length > 0 ? requested : [DEV_ROLE],
+    sessionId: null,
     caseReference: typeof caseRef === 'string' && caseRef.trim() !== '' ? caseRef.trim() : null,
   };
 }
@@ -176,17 +192,24 @@ function assertCapability(principal, capability, { path = null } = {}) {
   throw unauthorisedRole(`use ${capability}`, { role: principal.roles.join(','), path });
 }
 
-/** The body an unauthenticated request gets. Fail closed, and say which of the two reasons it was. */
-function unauthenticatedBody(cfg) {
-  return {
-    result_state: 'unauthorised_role',
-    error: {
-      code: 'role',
-      message: cfg.devTrustPrincipal
-        ? 'no tenant was established for this request'
-        : 'no signed-in session; sign in and present the bearer token',
-    },
-  };
+/**
+ * Answer a request that established no principal: 401, with the RFC 6750 challenge.
+ *
+ * The body keeps `unauthorised_role` as its state because the result-state vocabulary is closed and
+ * the dashboard refuses an unknown one; the code says what actually happened. A presented token
+ * that failed gets `invalid_token`, so a client can tell "sign in" from "your token is bad".
+ */
+function sendUnauthenticated(res, cfg, tokenRefused, { contentShape = false } = {}) {
+  const message = tokenRefused
+    ? 'the bearer token was refused; sign in again'
+    : cfg.devTrustPrincipal
+      ? 'no tenant was established for this request'
+      : 'no signed-in session; sign in and present the bearer token';
+  const challenge = tokenRefused ? 'Bearer realm="sac-query", error="invalid_token"' : 'Bearer realm="sac-query"';
+  const body = contentShape
+    ? { state: 'refused', error: { code: 'unauthenticated', message } }
+    : { result_state: 'unauthorised_role', error: { code: 'unauthenticated', message } };
+  sendJson(res, 401, body, { 'www-authenticate': challenge });
 }
 
 /**
@@ -384,11 +407,10 @@ export function createHandler({
 
   async function query(req, res) {
     const started = Date.now();
-    const principal = await principalOf(req, cfg, verifier, log);
+    const { principal, tokenRefused } = await principalOf(req, cfg, verifier, log);
     if (!principal) {
-      // Fail closed. A read path that cannot say who is asking does not answer, and it says which
-      // of the two reasons it was: no session, or a session that is not built yet.
-      sendJson(res, 403, unauthenticatedBody(cfg));
+      // Fail closed. A read path that cannot say who is asking does not answer.
+      sendUnauthenticated(res, cfg, tokenRefused);
       return;
     }
 
@@ -452,6 +474,8 @@ export function createHandler({
         client: conn,
         tenant: principal.tenant,
         actorId: principal.actorId,
+        // The issuer's session id, so an audit row can be tied to the sign-in that wrote it.
+        sessionId: principal.sessionId ?? null,
         caseReference: principal.caseReference,
         cursorStore,
         cursorKey,
@@ -491,9 +515,9 @@ export function createHandler({
    * judgement that was not recorded.
    */
   async function findingReview(req, res) {
-    const principal = await principalOf(req, cfg, verifier, log);
+    const { principal, tokenRefused } = await principalOf(req, cfg, verifier, log);
     if (!principal) {
-      sendJson(res, 403, unauthenticatedBody(cfg));
+      sendUnauthenticated(res, cfg, tokenRefused);
       return;
     }
     if (roleRefusal(res, principal, capabilityForEndpoint(PATHS.FINDING_REVIEW), PATHS.FINDING_REVIEW, log)) return;
@@ -559,6 +583,7 @@ export function createHandler({
         note: review.note,
         subjectRef,
         caseReference: principal.caseReference,
+        sessionId: principal.sessionId ?? null,
       });
       const auditRow = await conn.query(audit.text, audit.params);
       await conn.commit();
@@ -615,9 +640,9 @@ export function createHandler({
    * never served for a state change that was not recorded.
    */
   async function toolSanction(req, res) {
-    const principal = await principalOf(req, cfg, verifier, log);
+    const { principal, tokenRefused } = await principalOf(req, cfg, verifier, log);
     if (!principal) {
-      sendJson(res, 403, unauthenticatedBody(cfg));
+      sendUnauthenticated(res, cfg, tokenRefused);
       return;
     }
     if (roleRefusal(res, principal, capabilityForEndpoint(PATHS.TOOL_SANCTION), PATHS.TOOL_SANCTION, log)) return;
@@ -673,6 +698,7 @@ export function createHandler({
         displayName: sanction.displayName,
         note: sanction.note,
         caseReference: principal.caseReference,
+        sessionId: principal.sessionId ?? null,
       });
       const auditRow = await conn.query(audit.text, audit.params);
       await conn.commit();
@@ -729,9 +755,9 @@ export function createHandler({
    * gate with /v1/query so a slow vault cannot exhaust the process.
    */
   async function content(req, res, path) {
-    const principal = await principalOf(req, cfg, verifier, log);
+    const { principal, tokenRefused } = await principalOf(req, cfg, verifier, log);
     if (!principal) {
-      sendJson(res, 403, { state: 'refused', error: { code: 'role', message: 'no signed-in session for this request' } });
+      sendUnauthenticated(res, cfg, tokenRefused, { contentShape: true });
       return;
     }
     // The role gate sits on the request that mints a retrieval URL and on the search, before the

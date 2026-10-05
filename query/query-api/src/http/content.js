@@ -9,7 +9,11 @@
 // vault's answer; it decides nothing.
 //
 // What it adds is the one thing only this side knows: WHO is asking. The tenant and the actor come
-// from the session, never from the body, exactly as they do for /v1/query.
+// from the session, never from the body, exactly as they do for /v1/query. With a product token,
+// the caller's own `Authorization: Bearer` goes to the vault too (contract §2): the vault verifies
+// it itself and refuses headers that disagree with it, so it does not have to take this service's
+// word for who the person is. The X-Sac-* headers still travel, because the development lab has no
+// token and the vault's header mode reads them.
 //
 // A retrieval relays the vault's short-lived retrieval URL and never the content: the browser
 // fetches that URL from the analyst web tier, so no content byte transits this service (docs/02
@@ -65,6 +69,9 @@ export function createContentForwarder({ vaultUrl, scope = '', fetchImpl = globa
         // against the route; it is the component that returns content, so it does not rely on
         // its caller having enforced the role. It never reads a role from the browser.
         'x-sac-roles': (principal.roles ?? []).join(','),
+        // Only the token that produced this principal is forwarded (server.js attaches it as a
+        // non-enumerable property). A development principal has none, so none is sent.
+        ...(typeof principal.bearer === 'string' && principal.bearer !== '' ? { authorization: `Bearer ${principal.bearer}` } : {}),
       },
       body: JSON.stringify(body),
     });

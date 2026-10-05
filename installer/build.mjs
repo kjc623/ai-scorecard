@@ -4,6 +4,7 @@
 //   node installer/build.mjs --os linux                 # host-arch Linux payload
 //   node installer/build.mjs --os windows --arch amd64  # cross-compiled Windows payload
 //   node installer/build.mjs --os darwin  --arch arm64
+//   node installer/build.mjs --os windows --src DIR    # compile from an exported tree (e.g. git archive of a tag)
 //
 // The stage is the input every packager reads: the Windows WiX source, the macOS pkgbuild script
 // and the Linux install.sh all point at installer/.stage/<os>-<arch>/, so the binary a platform
@@ -34,6 +35,9 @@ const os = valueOf('--os', process.platform === 'win32' ? 'windows' : process.pl
 const arch = valueOf('--arch', process.arch === 'arm64' ? 'arm64' : 'amd64');
 const OUT = resolve(ROOT, valueOf('--out', join('installer', '.stage', `${os}-${arch}`)));
 const KEEP = ARGS.includes('--keep');
+// The tree the Go modules are compiled from: the working tree, or an export of a tagged release so a
+// release is built from exactly the source it names rather than from whatever is mid-edit.
+const SRC = resolve(ROOT, valueOf('--src', '.'));
 
 if (!LAYOUT[os]) {
   console.error(`installer/build.mjs: --os must be one of ${Object.keys(LAYOUT).join(', ')} (got ${os})`);
@@ -76,7 +80,7 @@ const built = [];
 for (const b of GO_BINARIES) {
   const out = join(OUT, 'bin', `${b.name}${EXE}`);
   process.stdout.write(`compile ${b.name} (${os}/${arch}) … `);
-  const res = run('go', ['build', '-trimpath', '-ldflags=-s -w', '-o', out, b.pkg], { cwd: join(ROOT, b.dir) });
+  const res = run('go', ['build', '-trimpath', '-ldflags=-s -w', '-o', out, b.pkg], { cwd: join(SRC, b.dir) });
   if (res !== 0) process.exit(res);
   console.log('ok');
   built.push(rel(out));
@@ -134,6 +138,7 @@ const manifest = {
   os,
   arch,
   generatedBy: 'installer/build.mjs',
+  source: SRC === ROOT ? 'working tree' : SRC,
   unsigned: true,
   layout: LAYOUT[os],
   files: files.map((f) => ({ path: rel(f), sha256: sha256(f), bytes: statSync(f).size })),

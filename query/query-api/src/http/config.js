@@ -34,14 +34,15 @@ export const ENV = Object.freeze({
   MAX_CONCURRENCY: 'SAC_MAX_CONCURRENCY',
   MAX_QUEUE: 'SAC_MAX_QUEUE',
   MAX_CONNECTIONS: 'SAC_MAX_CONNECTIONS',
-  // The authenticated session (task 11). The issuer is empty in the memory lab, where the
-  // development principal is the only path.
-  OIDC_ISSUER: 'SAC_OIDC_ISSUER',
-  OIDC_AUDIENCE: 'SAC_OIDC_AUDIENCE',
-  OIDC_JWKS_URL: 'SAC_OIDC_JWKS_URL',
-  OIDC_TENANT_CLAIM: 'SAC_OIDC_TENANT_CLAIM',
-  OIDC_ROLES_CLAIM: 'SAC_OIDC_ROLES_CLAIM',
+  // The product access token (contract §2): control-api is the one issuer. The issuer is empty in
+  // the memory lab, where the development principal is the only path.
+  AUTH_ISSUER: 'SAC_AUTH_ISSUER',
+  AUTH_AUDIENCE: 'SAC_AUTH_AUDIENCE',
+  AUTH_JWKS_URL: 'SAC_AUTH_JWKS_URL',
 });
+
+/** This service's audience in the product token (contract §2). */
+export const DEFAULT_AUTH_AUDIENCE = 'sac-query';
 
 /** A configuration error is a refusal to start, never a defaulted value. §12.3's fail-closed rule. */
 export class ConfigError extends Error {
@@ -82,6 +83,20 @@ function intOr(env, name, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER } =
   return n;
 }
 
+/** An http(s) URL with a host, or a refusal to start naming the variable. */
+function absoluteUrl(name, value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new ConfigError(`${name} is not a URL: ${JSON.stringify(value)}`);
+  }
+  if ((url.protocol !== 'https:' && url.protocol !== 'http:') || url.host === '') {
+    throw new ConfigError(`${name} must be an absolute http(s) URL; got ${JSON.stringify(value)}`);
+  }
+  return url;
+}
+
 /**
  * Split `host:port` / `:port` / `host` the way every service in this repository does.
  *
@@ -113,16 +128,18 @@ export function loadConfig(env = process.env) {
   const pgDatabase = text(env, ENV.PG_DATABASE);
   const role = text(env, ENV.ROLE) || DEFAULT_ROLE;
 
-  // The identity provider is all-or-nothing: a token's issuer and audience are checked
-  // together, and a service configured with one and not the other would refuse every token
-  // for a reason an operator could not see. Refusing to start says so instead.
-  const oidcIssuer = text(env, ENV.OIDC_ISSUER);
-  const oidcAudience = text(env, ENV.OIDC_AUDIENCE);
-  if (oidcIssuer && !oidcAudience) {
-    throw new ConfigError(`${ENV.OIDC_AUDIENCE} is required when ${ENV.OIDC_ISSUER} is set: a token is verified against the API it was minted for.`);
+  // The token issuer. The audience and JWKS location default from it, so the issuer alone turns the
+  // token path on. Either of the other two without it is a configuration that would verify nothing
+  // while looking as if it did, so it is a refusal to start rather than a silent no-op.
+  const authIssuer = text(env, ENV.AUTH_ISSUER);
+  const authAudience = text(env, ENV.AUTH_AUDIENCE);
+  const authJwksUrl = text(env, ENV.AUTH_JWKS_URL);
+  if (!authIssuer && (authAudience || authJwksUrl)) {
+    throw new ConfigError(`${ENV.AUTH_ISSUER} is required when ${authAudience ? ENV.AUTH_AUDIENCE : ENV.AUTH_JWKS_URL} is set: a token is verified against the issuer that minted it.`);
   }
-  if (!oidcIssuer && oidcAudience) {
-    throw new ConfigError(`${ENV.OIDC_ISSUER} is required when ${ENV.OIDC_AUDIENCE} is set.`);
+  if (authIssuer) {
+    absoluteUrl(ENV.AUTH_ISSUER, authIssuer);
+    if (authJwksUrl) absoluteUrl(ENV.AUTH_JWKS_URL, authJwksUrl);
   }
 
   const { host, port } = parseAddr(text(env, ENV.HTTP_ADDR));
@@ -169,28 +186,22 @@ export function loadConfig(env = process.env) {
     contentSearchScope: text(env, ENV.CONTENT_SEARCH_SCOPE),
     appInsights: text(env, ENV.APPINSIGHTS),
     /**
-     * The authenticated session's identity provider (task 11). Issuer and audience are both
-     * required together: a token has to be checked against the issuer it claims and the API it
-     * was minted for. With neither set the service has no token path and, unless the
-     * development flag is on, refuses every read.
+     * The product access token's issuer (control-api, contract §2). With no issuer the service has
+     * no token path and, unless the development flag is on, refuses every read.
      */
-    oidc: Object.freeze({
-      issuer: oidcIssuer,
-      audience: oidcAudience,
-      jwksUrl: text(env, ENV.OIDC_JWKS_URL),
-      tenantClaim: text(env, ENV.OIDC_TENANT_CLAIM) || 'sac_tenant',
-      rolesClaim: text(env, ENV.OIDC_ROLES_CLAIM) || 'roles',
-      get enabled() {
-        return this.issuer !== '';
-      },
+    auth: Object.freeze({
+      issuer: authIssuer,
+      audience: authIssuer ? authAudience || DEFAULT_AUTH_AUDIENCE : '',
+      jwksUrl: authIssuer ? authJwksUrl || `${authIssuer.replace(/\/+$/, '')}/.well-known/jwks.json` : '',
+      enabled: authIssuer !== '',
     }),
     /**
      * Development-only principal trust.
      *
      * The tenant a query runs as is never taken from the request body (REASON.TENANT_IN_REQUEST).
-     * In a deployment it comes from the authenticated session, which is not built yet — see the
-     * NOTE in server.js. This flag is the same escape hatch the Go services use for a local run
-     * (`-dev-trust-principal`); it is explicit, it is named, and it is off unless set.
+     * In a deployment it comes from the verified product token. This flag is the same escape hatch
+     * the Go services use for a local run (`-dev-trust-principal`); it is explicit, it is named,
+     * and it is off unless set.
      */
     devTrustPrincipal: text(env, ENV.DEV_TRUST_PRINCIPAL) === '1',
     limits: Object.freeze({

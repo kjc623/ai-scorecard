@@ -303,6 +303,7 @@ const NAV_ICONS = Object.freeze({
   governance: '<path d="M12 3.5 5 6.5v5c0 4.3 2.9 7.4 7 9 4.1-1.6 7-4.7 7-9v-5z"/><path d="m9.2 12 2 2 3.6-4"/>',
   unavailable: '<circle cx="12" cy="12" r="8.5"/><path d="M6 18 18 6"/>',
   developer: '<path d="m8.5 8-4 4 4 4M15.5 8l4 4-4 4M13.5 5.5l-3 13"/>',
+  settings: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
 });
 
 function navIcon(name) {

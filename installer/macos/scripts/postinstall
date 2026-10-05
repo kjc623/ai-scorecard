@@ -19,6 +19,14 @@ if [ ! -f "$CONFIGDIR/capture-core.env" ] && [ -f "$CONFIGDIR/capture-core.env.e
   chmod 600 "$CONFIGDIR/capture-core.env"
 fi
 
+# The tenant file beside the .pkg ($1 is the package path) becomes tenant.env, which the wrapper reads
+# after capture-core.env. A supplied one replaces an installed one; with none, the installed one is kept.
+PKG_DIR=$(dirname "${1:-/nonexistent/pkg}")
+if [ -f "$PKG_DIR/ShadowAICapture.tenant.env" ]; then
+  cp "$PKG_DIR/ShadowAICapture.tenant.env" "$CONFIGDIR/tenant.env"
+  chmod 600 "$CONFIGDIR/tenant.env"
+fi
+
 # Modern launchctl first, then the legacy verb for older systems.
 launchctl bootstrap system "$PLIST" 2>/dev/null || launchctl load -w "$PLIST" 2>/dev/null || true
 exit 0

@@ -55,7 +55,7 @@ param memory string = '2Gi'
 @description('Non-secret environment variables. Credentials arrive as Key Vault references, never as values (§5.4).')
 param env array = []
 
-@description('Key Vault-backed environment variables: [{ name, keyVaultUrl, identity }].')
+@description('Key Vault-backed environment variables: [{ name, keyVaultUrl, identity }]. name is the environment variable; the Container Apps secret behind it is the same name lower-cased with hyphens, because a secret name may not hold an underscore or a capital.')
 param keyVaultEnv array = []
 
 @description('Command args passed to the image entrypoint, so one image can host either job with an explicit argument rather than a second build.')
@@ -63,6 +63,19 @@ param args array = []
 
 @description('Tags applied to the job.')
 param tags object = {}
+
+// One secret per Key Vault reference, named the way Container Apps requires (lower-case, hyphens),
+// and the environment variable that reads it. Variables rather than inline for-expressions, because a
+// for-expression is not allowed inside concat().
+var secretRefs = [for kv in keyVaultEnv: {
+  name: toLower(replace(kv.name, '_', '-'))
+  keyVaultUrl: kv.keyVaultUrl
+  identity: kv.identity
+}]
+var secretEnv = [for kv in keyVaultEnv: {
+  name: kv.name
+  secretRef: toLower(replace(kv.name, '_', '-'))
+}]
 
 resource job 'Microsoft.App/jobs@2024-03-01' = {
   name: jobName
@@ -91,11 +104,7 @@ resource job 'Microsoft.App/jobs@2024-03-01' = {
           identity: userAssignedIdentityId
         }
       ]
-      secrets: [for kv in keyVaultEnv: {
-        name: kv.name
-        keyVaultUrl: kv.keyVaultUrl
-        identity: kv.identity
-      }]
+      secrets: secretRefs
     }
     template: {
       containers: [
@@ -107,10 +116,7 @@ resource job 'Microsoft.App/jobs@2024-03-01' = {
             cpu: json(cpu)
             memory: memory
           }
-          env: concat(env, [for kv in keyVaultEnv: {
-            name: kv.name
-            secretRef: kv.name
-          }])
+          env: concat(env, secretEnv)
         }
       ]
     }

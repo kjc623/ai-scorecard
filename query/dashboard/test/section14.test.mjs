@@ -14,7 +14,8 @@ import { renderScreen, renderValue, renderTable } from '../src/render.js';
 import { activityView, eventView, devicesView, unsanctionedView } from '../src/views.js';
 import { noApiView, unavailableView, GAPS, GAP_IDS } from '../src/unavailable.js';
 import { createDashboard, SCREENS } from '../src/app.js';
-import { createQueryApi } from '../src/transport.js';
+import { createQueryApi, createAdminApi } from '../src/transport.js';
+import { ADMIN_DEPLOYMENT_ENDPOINT, ADMIN_SCIM_TOKENS_ENDPOINT } from '../src/vocab.js';
 import { scenarioTransport } from '../src/scenarios.js';
 import { ACTIVITY_ROWS, DEVICE_ROWS } from '../src/fixtures.js';
 import { codeOnly, sourceFiles, ROOT, envelope, FRESH, COMPLETE, PARTIAL } from './helpers.mjs';
@@ -261,7 +262,7 @@ test('§14.11 a series is refused for any source that is not a precomputed aggre
 
 // ── §14 item 13: no configuration change without an audit entry ──────────────────────────────
 
-test('§14.13 this client performs no write of any kind', async () => {
+test('§14.13 the query path performs no write of any kind', async () => {
   const seen = [];
   const spy = createQueryApi({
     transport: {
@@ -277,7 +278,23 @@ test('§14.13 this client performs no write of any kind', async () => {
     assert.ok(body.query_version === '1', 'every request is a query document');
     assert.ok('template' in body || 'source' in body, 'and nothing else');
   }
-  assert.ok(GAP_IDS.includes('settings'), 'configuration is reported as not exposed, not implemented here');
+  assert.ok(GAP_IDS.includes('settings'), 'the settings not yet built (modes, retention, holds) are reported as not exposed');
+});
+
+test('§14.13 every write this client can make goes to control-api\'s admin API, which audits it', async () => {
+  // Settings → Deployment is the one place the dashboard changes anything. Each write is one of the
+  // admin endpoints vocab.js names; control-api checks the admin role and writes the audit row
+  // with the real actor (contract §5). Nothing else in the client sends a write.
+  const sent = [];
+  const admin = createAdminApi({ transport: { async request(spec) { sent.push(spec); return { status: 204, body: null }; } } });
+  await admin.setVerification('none');
+  await admin.downloadPackage({ format: 'zip' });
+  await admin.revokeKey('k');
+  await admin.createScimToken('label');
+  await admin.revokeScimToken('t');
+  const writes = sent.filter((s) => s.method !== 'GET');
+  assert.equal(writes.length, 5);
+  for (const w of writes) assert.ok(w.path.startsWith(ADMIN_DEPLOYMENT_ENDPOINT) || w.path.startsWith(ADMIN_SCIM_TOKENS_ENDPOINT), `${w.method} ${w.path}`);
 });
 
 // ── §14 item 14: no silence presented as coverage ────────────────────────────────────────────
@@ -338,15 +355,22 @@ test('INV-3 no file in this package contains a statement or a database driver', 
   assert.deepEqual(hits, [], 'the dashboard tree must contain no statement and no driver');
 });
 
-test('INV-3 the only endpoints in this package are the query endpoint and the two content reads', () => {
+test('INV-3 the only endpoints in this package are the query endpoint, the two content reads and the deployment admin API', () => {
   // The query endpoint takes a closed query document and never returns content. The two content
   // reads are the approved path (docs/04 §15.3, docs/02 §11): forwarded to content-vault, which
-  // decides and audits. Anything else named here would be a fourth way to reach data.
+  // decides and audits. The admin endpoints are Settings → Deployment's, control-api's, admin-only
+  // and audited (contract §5); they read configuration and never data. Anything else named here
+  // would be another way in.
   const files = sourceFiles();
-  const allowed = [['/v1/', 'query'], ['/v1/', 'content-search'], ['/v1/', 'content/retrieval']].map((parts) => parts.join(''));
+  const allowed = [
+    ['/v1/', 'query'], ['/v1/', 'content-search'], ['/v1/', 'content/retrieval'],
+    ['/admin/v1/', 'deployment'], ['/admin/v1/', 'deployment/package'], ['/admin/v1/', 'deployment/verification'],
+    ['/admin/v1/', 'deployment/keys'], ['/admin/v1/', 'scim/tokens'],
+  ].map((parts) => parts.join(''));
   const others = files.map((rel) => readFileSync(join(ROOT, rel), 'utf8')).join('\n');
-  const urls = [...others.matchAll(/['"](\/v1\/[a-z/-]+)['"]/g)].map((m) => m[1]);
+  const urls = [...others.matchAll(/['"](\/(?:admin\/)?v1\/[a-z/-]+)['"]/g)].map((m) => m[1]);
   assert.ok(urls.includes(allowed[0]), 'the query endpoint is named somewhere');
+  assert.ok(urls.includes(ADMIN_DEPLOYMENT_ENDPOINT), 'the admin endpoints are matched by this scan too');
   for (const url of urls) assert.ok(allowed.includes(url), `${url} is not one of ${allowed.join(', ')}`);
 });
 

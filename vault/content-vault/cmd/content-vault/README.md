@@ -66,6 +66,9 @@ source, and `localdev/tools/check-config-agreement.mjs` adds both Dockerfiles an
 | blob identity | `--blob-identity` | `SAC_BLOB_IDENTITY` (the image sets `static`; Azure passes `managed`) |
 | blob read credential | `--blob-credential` | `SAC_BLOB_READ_CREDENTIAL` (lab only) |
 | retrieval URL origin | `--retrieval-url-base` | `SAC_RETRIEVAL_URL_BASE` (empty mints a path) |
+| token issuer | `--auth-issuer` | `SAC_AUTH_ISSUER` (control-api; empty trusts `X-Sac-*` headers alone and logs a warning — lab only) |
+| token audience | `--auth-audience` | `SAC_AUTH_AUDIENCE` (default `sac-vault`; refused without an issuer) |
+| token keys | `--auth-jwks-url` | `SAC_AUTH_JWKS_URL` (default `{issuer}/.well-known/jwks.json`; refused without an issuer) |
 | internal ingress | — | `SAC_INTERNAL_ONLY` |
 | non-loopback acknowledgement | `--allow-non-loopback` | `SAC_ALLOW_NON_LOOPBACK` |
 | telemetry | — | `SAC_APPINSIGHTS` |

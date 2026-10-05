@@ -28,6 +28,7 @@ release.
 | [contentstore/](contentstore/README.md) | The M3 local content store: content sealed at rest, keyed by event, with the grant state of each held object. |
 | [credential/](credential/README.md) | The sealed per-device credential at rest: the issued leaf (or registered DPoP key) plus the never-exported private key. |
 | [dpop/](dpop/README.md) | The device side of the compact-JWS contract (RFC 7515 ES256, RFC 9449 DPoP). |
+| [hostinfo/](hostinfo/README.md) | What the operating system says: the MDM/Entra attestation, the hardware seed for the enrolment key, and the console user a `user_ref` is derived from. |
 | [cmd/capture-core/](cmd/capture-core/README.md) | The binary: flags, subcommands, service deployment, and the self test that is the endpoint's end-to-end evidence. |
 
 ## How a submission flows
@@ -68,7 +69,8 @@ those are Go module paths, not directories, and nothing here redefines their sha
 ## What it deliberately does not do
 
 - **No policy of its own.** No compiled-in host list, port map, threshold or mode. Everything policy
-  lives in the verified bundle, and with no valid bundle the device is at M0.
+  lives in the verified bundle — configured, or fetched and verified under the vendor's pinned key —
+  and with no valid bundle the device is at M0.
 - **`cli.shim` is routed but opt-in.** The route has a provider (`cli/`) and is started in §3.5's
   step 4 when the enrolment profile sets `--cli-shim`. It writes the CA bundle and managed profile
   that the bundle's `cli_shim` block and `interception.root_ca_pem` describe; with no root CA it
@@ -95,8 +97,9 @@ those are Go module paths, not directories, and nothing here redefines their sha
   `--trust-install` is set: `proxy.tls` installs the per-device CA (from `--ca-cert`/`--ca-key` or
   the bundle's `interception.root_ca_pem`), and the supervisor removes it when
   `--trust-remove-on-stop` is set. The **system proxy** is still an interface with no implementation,
-  and DPAPI/Keychain sealing of the CA key is still not wired — the pinned key is a `0600` file, and
-  the Linux path reports unsealed rather than implying protection it does not have. Process
+  and DPAPI/Keychain sealing of the CA key is still not wired — a pinned key is a `0600` file and a
+  generated one a file only SYSTEM and Administrators can read, and the Linux path reports unsealed
+  rather than implying protection it does not have. Process
   enumeration is an interface in `detect` with one partial implementation: `--proc-detect` wires a
   Windows `tasklist` enumerator that sees image names and PIDs only, and on any other platform the
   route is not started.
@@ -105,10 +108,30 @@ those are Go module paths, not directories, and nothing here redefines their sha
   and seals the issued credential beside the spool. When the drain enrols (or loads a sealed
   credential) it adopts the server-minted `tenant_id`/`device_id` for envelope minting, so a batch
   is stamped with the identity the write path authenticates instead of the `--tenant-id`/
-  `--device-id` flags. The flags remain the fallback when there is no `--device-endpoint`, and a
-  disagreement between the flags and the issued identity is logged, never silently ignored. The
-  credential's hardware-identity seed is `--mdm-id` when set, and falls back to hashing the device
-  identity (an ASSUMPTION, not a hardware binding).
+  `--device-id` flags. With a `--device-endpoint` no device id is configured at all: the flags are
+  only the identity of a local run, and a disagreement between them and the issued identity is
+  logged. The bootstrap credential is the lab's single-use `--enrolment-token` or a tenant
+  package's reusable `--deployment-key`, never both; with the key the device also sends the
+  attestation [hostinfo/](hostinfo/README.md) reads (Intune device id, Entra device id, serial) and
+  reports `managed` when an Intune enrolment is found. The hardware-identity seed is `--mdm-id` when
+  set (the lab profiles), else the SMBIOS UUID and serial, else `MachineGuid`; only with none of
+  them does it fall back to the device identity.
+- **The person is the console user, not the service account.** The service runs as LocalSystem, so
+  `user_ref` comes from the user signed in at the console (re-read every 15 s): derived under the
+  tenant's `user_ref_key` from enrolment from their UPN, else their Entra object id, else
+  `DOMAIN\user` (contract §4), and `unattributed` when nobody is signed in or no key was issued. A
+  configured `--user-ref` wins. In a `clear` tenant `subject_name` is the UPN, else `DOMAIN\user`.
+- **Policy is a file or a fetch.** With `--bundle` the bundle is that file (the lab). Without one,
+  and with `--policy-key` and a `--device-endpoint`, the device fetches its tenant's bundle from
+  `GET /v1/policy` after enrolment, verifies it under the pinned key, caches it in the state
+  directory, enforces the cache at the next start before the network answers, and polls with
+  `If-None-Match`. A bundle that does not verify never replaces the one in force; only the server's
+  `404 no_policy_bundle` withdraws it, to M0.
+- **The interception CA is per device.** A configured `--ca-cert`/`--ca-key` pair (the lab) is used
+  as before. With none, and `--trust-install` or `--cli-shim` set, the device mints its own CA on
+  first start in `<state-dir>\device-ca`, keeps the key under a protected DACL (SYSTEM,
+  Administrators and the service account only; `0600` elsewhere), reuses it across restarts,
+  renews it at a start within 60 days of expiry, and replaces a key file anyone else can read.
 
 Deployment, the full flag list and the self test's assertions are in
 [cmd/capture-core/README.md](cmd/capture-core/README.md).

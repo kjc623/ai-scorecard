@@ -4,20 +4,27 @@
 #   sudo installer/linux/install.sh --stage installer/.stage/linux-amd64
 #   installer/linux/install.sh --stage DIR --prefix "$HOME/.sac" --no-service   # rootless dev
 #
+# The tenant file: a tenant package puts ShadowAICapture.tenant.env beside this script (or pass
+# --tenant-env FILE); it is installed as tenant.env, which the wrapper reads after capture-core.env
+# so it wins. A supplied file replaces an installed one; with none, an installed one is kept; a
+# system install with neither (and no complete --config profile) stops before installing anything,
+# as the Windows MSI does.
+#
 # Two modes, one script:
 #   * system  (default, root): the layout docs/05-platform-delivery.md §6.1 describes - binaries
 #     under /opt, configuration under /etc, state under /var/lib - plus the systemd unit.
 #   * prefix  (--prefix DIR): a rootless layout for a developer machine, with no service manager.
 #     The wrapper still reads the config file; the caller points SAC_BINDIR/SAC_CONFIG_FILE at it.
 #
-# The script never writes a tenant, a token or a key: it installs the template and refuses to
-# overwrite an existing configuration, because an installer that silently resets a device's identity
-# is worse than one that stops.
+# The script never invents a tenant, a token or a key: it installs the template, copies only the
+# tenant file it is given, and refuses to overwrite an existing capture-core.env, because an installer
+# that silently resets a device's identity is worse than one that stops.
 set -eu
 
 STAGE=""
 PREFIX=""
 CONFIG_SRC=""
+TENANT_SRC=""
 NO_SERVICE=0
 NO_START=0
 
@@ -26,9 +33,10 @@ while [ $# -gt 0 ]; do
     --stage) STAGE="$2"; shift 2 ;;
     --prefix) PREFIX="$2"; shift 2 ;;
     --config) CONFIG_SRC="$2"; shift 2 ;;
+    --tenant-env) TENANT_SRC="$2"; shift 2 ;;
     --no-service) NO_SERVICE=1; shift ;;
     --no-start) NO_START=1; shift ;;
-    -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "install.sh: unknown argument $1" >&2; exit 2 ;;
   esac
 done
@@ -64,6 +72,22 @@ if [ "$MODE" = system ] && [ "$(id -u)" != 0 ]; then
   exit 1
 fi
 
+HERE=$(cd "$(dirname "$0")" && pwd)
+if [ -z "$TENANT_SRC" ] && [ -f "$HERE/ShadowAICapture.tenant.env" ]; then
+  TENANT_SRC="$HERE/ShadowAICapture.tenant.env"
+fi
+TENANT_DEST="$CONFIGDIR/tenant.env"
+if [ -n "$TENANT_SRC" ] && [ ! -f "$TENANT_SRC" ]; then
+  echo "install.sh: --tenant-env $TENANT_SRC does not exist" >&2
+  exit 1
+fi
+if [ "$MODE" = system ] && [ -z "$TENANT_SRC" ] && [ -z "$CONFIG_SRC" ] && [ ! -f "$TENANT_DEST" ]; then
+  echo "install.sh: ShadowAICapture.tenant.env was not found beside this script and this device has no" >&2
+  echo "  tenant configuration installed ($TENANT_DEST). Run it from the folder of the deployment package," >&2
+  echo "  or pass --tenant-env FILE. Nothing was installed." >&2
+  exit 1
+fi
+
 echo "install ($MODE):"
 mkdir -p "$BINDIR" "$CONFIGDIR" "$STATEDIR" "$LOGDIR" "$DATADIR"
 
@@ -94,6 +118,13 @@ elif [ -n "$CONFIG_SRC" ]; then
 else
   install_file "$STAGE/etc/capture-core.env.example" "$CONFIG_DEST" 0600
   echo "  config     $CONFIG_DEST (template; fill it in or deliver one with --config)"
+fi
+
+if [ -n "$TENANT_SRC" ]; then
+  install_file "$TENANT_SRC" "$TENANT_DEST" 0600
+  echo "  tenant     $TENANT_DEST (from $TENANT_SRC)"
+elif [ -f "$TENANT_DEST" ]; then
+  echo "  tenant     $TENANT_DEST (kept: already exists)"
 fi
 
 if [ "$SERVICE" -eq 1 ]; then

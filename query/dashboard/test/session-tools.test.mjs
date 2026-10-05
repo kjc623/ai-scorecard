@@ -1,61 +1,69 @@
-// session-tools.test.mjs — the dashboard's OIDC client and role-to-navigation map.
+// session-tools.test.mjs — the dashboard server's session helpers (tools/session.mjs).
 //
-// These are node-side helpers (tools/session.mjs), tested without a browser or the lab: a
-// key generated here signs the id_token, and a fake fetch stands in for the issuer's
-// discovery, JWKS and token endpoints. The role boundary the browser sees (which nav ids
-// survive) is derived from the same map query-api enforces.
+// Node-side, no browser and no lab: a fake fetch stands in for control-api's internal identity
+// API. The role boundary the browser sees (which nav ids survive) is derived from the same map
+// query-api enforces; the server-level behaviour (cookies on the wire, forwarding, CSRF) is in
+// test/bff.test.mjs.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash, generateKeyPairSync, sign as cryptoSign } from 'node:crypto';
 
 import {
   can,
+  canAny,
   capabilitiesFor,
-  createOidcClient,
-  createSessionStore,
+  cookieHeader,
+  createIdentityClient,
+  createTokenCache,
+  decodeAttempt,
+  encodeAttempt,
+  isStateChanging,
   pagesFor,
+  pagesForRoles,
   parseCookies,
-  pkce,
-  principalFromClaims,
+  primaryRole,
+  principalFrom,
   readCookie,
+  safeNext,
+  sameOriginRequest,
   sessionCookie,
-  verifyJwt,
+  sessionKey,
+  signinCookie,
+  withoutOwnCookies,
 } from '../tools/session.mjs';
 
-const b64url = (value) => Buffer.from(JSON.stringify(value)).toString('base64url');
-const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
-const JWK = { ...publicKey.export({ format: 'jwk' }), kid: 'k1', use: 'sig', alg: 'RS256' };
-const ISSUER = 'https://idp.lab.test';
-const CLIENT = 'sac-dashboard';
 const TENANT = '00000000-0000-4000-8000-0000000000aa';
-
-function idToken(claims, { kid = 'k1' } = {}) {
-  const header = b64url({ alg: 'RS256', typ: 'JWT', kid });
-  const payload = b64url(claims);
-  const input = `${header}.${payload}`;
-  return `${input}.${cryptoSign('RSA-SHA256', Buffer.from(input), privateKey).toString('base64url')}`;
-}
-
-function claims(overrides = {}) {
-  const now = Math.floor(Date.now() / 1000);
-  return { iss: ISSUER, aud: CLIENT, sub: 's1', email: 'viewer@lab.test', nonce: 'n1', roles: ['viewer'], sac_tenant: TENANT, iat: now, exp: now + 300, ...overrides };
-}
 
 // ---------------------------------------------------------------------------------------------
 // Roles to pages
 // ---------------------------------------------------------------------------------------------
 
 test('each role maps to the pages it may open', () => {
-  assert.deepEqual(pagesFor('viewer').sort(), ['devices', 'posture', 'tools', 'teams'].sort());
+  assert.deepEqual(pagesFor('viewer').sort(), ['devices', 'posture', 'teams', 'tools']);
   for (const role of ['analyst', 'content_reader']) {
     assert.ok(pagesFor(role).includes('person'), `${role} may open Users`);
     assert.ok(pagesFor(role).includes('explore'), `${role} may open Search`);
+    assert.equal(pagesFor(role).includes('deployment'), false, `${role} may not open Settings`);
   }
   assert.ok(pagesFor('admin').includes('audit'), 'admin reads the audit trail');
+  assert.ok(pagesFor('admin').includes('deployment'), 'admin opens Settings → Deployment');
   assert.equal(pagesFor('admin').includes('person'), false, 'admin reads no per-person page');
+  assert.equal(pagesFor('admin').includes('explore'), false, 'admin does not search prompt text');
   assert.equal(pagesFor('viewer').includes('audit'), false);
+  assert.equal(pagesFor('viewer').includes('explore'), false, 'a viewer is not offered Search');
   assert.equal(pagesFor(null), null, 'no session means the sample mode shows everything');
+});
+
+test('several roles open the union of their pages, because roles are not a ladder', () => {
+  const pages = pagesForRoles(['admin', 'content_reader']);
+  for (const id of ['audit', 'deployment', 'explore', 'person', 'devices']) assert.ok(pages.includes(id), id);
+  assert.equal(pagesForRoles([]), null);
+  assert.equal(primaryRole(['viewer', 'content_reader']), 'content_reader');
+});
+
+test('the lab development principal is offered every page, as query-api grants it every capability', () => {
+  const pages = pagesForRoles(['dev']);
+  for (const id of ['posture', 'tools', 'teams', 'person', 'devices', 'audit', 'explore', 'deployment']) assert.ok(pages.includes(id), id);
 });
 
 test('content_reader carries the content capability; analyst does not', () => {
@@ -63,96 +71,144 @@ test('content_reader carries the content capability; analyst does not', () => {
   assert.equal(can('analyst', 'content'), false);
   assert.equal(can('analyst', 'search'), true, 'search is an analyst capability');
   assert.equal(can('viewer', 'search'), false);
+  assert.equal(canAny(['viewer', 'admin'], 'settings'), true);
   assert.deepEqual(capabilitiesFor('nobody'), []);
 });
 
-// ---------------------------------------------------------------------------------------------
-// The session store and cookies
-// ---------------------------------------------------------------------------------------------
-
-test('a session is created, read, and can be destroyed; expired ones are forgotten', () => {
-  let clock = 1000;
-  const store = createSessionStore({ ttlMs: 100, now: () => clock, random: () => 'sid-1' });
-  const id = store.create({ actor: 'a@lab.test', tenant: TENANT, role: 'analyst', roles: ['analyst'], accessToken: 'at' });
-  assert.equal(id, 'sid-1');
-  assert.equal(store.get(id).actor, 'a@lab.test');
-  clock = 1200;
-  assert.equal(store.get(id), null, 'an expired session is not returned');
-  assert.equal(store.size, 0);
+test('a principal from control-api is checked: a uuid tenant, a product role and an actor', () => {
+  assert.deepEqual(principalFrom({ tenant: TENANT.toUpperCase(), actor: 'a@x.test', roles: ['viewer', 'superuser'], idp: 'oidc' }),
+    { tenant: TENANT, actor: 'a@x.test', roles: ['viewer'], idp: 'oidc' });
+  assert.equal(principalFrom({ tenant: 'not-a-uuid', actor: 'a', roles: ['viewer'] }), null);
+  assert.equal(principalFrom({ tenant: TENANT, actor: 'a', roles: ['dev'] }), null, 'a token can never carry the lab role');
+  assert.equal(principalFrom({ tenant: TENANT, actor: '', roles: ['viewer'] }), null);
 });
 
-test('the session cookie is opaque and httpOnly, and reads back', () => {
-  const header = sessionCookie('abc', { secure: true });
-  assert.match(header, /^sac_session=abc; HttpOnly; SameSite=Lax; Path=\/; Max-Age=\d+; Secure$/);
-  assert.equal(readCookie(`other=x; ${header}`), 'abc');
+// ---------------------------------------------------------------------------------------------
+// Cookies, the sign-in attempt, and where a sign-in may return to
+// ---------------------------------------------------------------------------------------------
+
+test('the session cookie is HttpOnly, SameSite=Lax, Path=/, and Secure only when asked', () => {
+  assert.equal(sessionCookie('abc'), 'sac_session=abc; HttpOnly; SameSite=Lax; Path=/; Max-Age=28800');
+  assert.match(sessionCookie('abc', { secure: true }), /; Secure$/);
+  assert.match(sessionCookie('', { maxAgeSec: 0 }), /^sac_session=; .*Max-Age=0/);
+  assert.equal(readCookie(`other=x; ${sessionCookie('abc')}`), 'abc');
   assert.deepEqual(parseCookies('a=1; b=2'), { a: '1', b: '2' });
   assert.equal(readCookie('nothing=1'), null);
 });
 
-// ---------------------------------------------------------------------------------------------
-// PKCE and id_token verification
-// ---------------------------------------------------------------------------------------------
-
-test('the PKCE challenge is the S256 hash of the verifier', () => {
-  const { verifier, challenge } = pkce();
-  assert.equal(challenge, createHash('sha256').update(verifier).digest('base64url'));
-  assert.notEqual(verifier.length, 0);
+test('the sign-in attempt cookie is sent only to /callback and lives ten minutes', () => {
+  assert.equal(signinCookie('v'), 'sac_signin=v; HttpOnly; SameSite=Lax; Path=/callback; Max-Age=600');
+  assert.equal(cookieHeader('n', 'v', { path: '/', secure: true }), 'n=v; HttpOnly; SameSite=Lax; Path=/; Secure');
 });
 
-test('verifyJwt checks signature, issuer, audience, expiry and nonce', () => {
-  const keys = [JWK];
-  assert.equal(verifyJwt(idToken(claims()), { issuer: ISSUER, audience: CLIENT, keys, nonce: 'n1' }).sub, 's1');
-  assert.throws(() => verifyJwt(idToken(claims({ iss: 'https://other' })), { issuer: ISSUER, audience: CLIENT, keys }), /issuer/);
-  assert.throws(() => verifyJwt(idToken(claims({ aud: 'other' })), { issuer: ISSUER, audience: CLIENT, keys }), /audience/);
-  assert.throws(() => verifyJwt(idToken(claims({ exp: 1 })), { issuer: ISSUER, audience: CLIENT, keys }), /expired/);
-  assert.throws(() => verifyJwt(idToken(claims()), { issuer: ISSUER, audience: CLIENT, keys, nonce: 'wrong' }), /nonce/);
+test('the attempt round-trips with its return path, and a foreign return path is replaced', () => {
+  assert.deepEqual(decodeAttempt(encodeAttempt({ attempt: 'att.1', next: '/index.html?transport=live#deployment' })), { attempt: 'att.1', next: '/index.html?transport=live#deployment' });
+  assert.equal(decodeAttempt(encodeAttempt({ attempt: 'a', next: 'https://evil.test/' })).next, '/');
+  assert.equal(decodeAttempt('not base64 json'), null);
+  assert.equal(decodeAttempt(null), null);
 });
 
-test('principalFromClaims refuses a token with no tenant or no known role', () => {
-  assert.deepEqual(principalFromClaims(claims({ roles: ['analyst'] })), { actor: 'viewer@lab.test', tenant: TENANT, role: 'analyst', roles: ['analyst'] });
-  assert.throws(() => principalFromClaims(claims({ sac_tenant: 'not-a-uuid' })), /tenant/);
-  assert.throws(() => principalFromClaims(claims({ roles: ['superuser'] })), /role/);
+test('safeNext keeps a path on this origin and nothing else', () => {
+  assert.equal(safeNext('/explore.html?transport=live'), '/explore.html?transport=live');
+  for (const bad of ['//evil.test/', '/\\evil.test', 'https://evil.test', 'javascript:alert(1)', '/a\u0000b', '']) assert.equal(safeNext(bad), '/', JSON.stringify(bad));
+});
+
+test('this server\'s own cookies are removed from a request forwarded elsewhere', () => {
+  assert.equal(withoutOwnCookies('sac_session=s; theirs=1; sac_signin=a; other=2'), 'theirs=1; other=2');
+  assert.equal(withoutOwnCookies(undefined), '');
+});
+
+test('the same-origin check refuses a cross-site browser request and lets a non-browser one through', () => {
+  const origins = ['https://dash.example.test', 'http://dashboard:8787'];
+  assert.equal(sameOriginRequest({ 'sec-fetch-site': 'same-origin' }, origins), true);
+  assert.equal(sameOriginRequest({ 'sec-fetch-site': 'cross-site', origin: 'https://dash.example.test' }, origins), false, 'Sec-Fetch-Site decides when present');
+  assert.equal(sameOriginRequest({ 'sec-fetch-site': 'same-site' }, origins), false, 'a sibling subdomain is another origin');
+  assert.equal(sameOriginRequest({ origin: 'https://evil.test' }, origins), false);
+  assert.equal(sameOriginRequest({ origin: 'null' }, origins), false);
+  assert.equal(sameOriginRequest({ origin: 'http://dashboard:8787' }, origins), true);
+  assert.equal(sameOriginRequest({}, origins), true, 'no browser signal: curl or a test, carrying no victim cookie');
+  assert.equal(isStateChanging('POST'), true);
+  assert.equal(isStateChanging('GET'), false);
 });
 
 // ---------------------------------------------------------------------------------------------
-// The OIDC client
+// The identity client and the token cache
 // ---------------------------------------------------------------------------------------------
 
-function fakeIssuer() {
-  const calls = { posts: [] };
+function fakeControl(handlers) {
+  const calls = [];
   const fetchImpl = async (url, options = {}) => {
-    if (url.endsWith('/.well-known/openid-configuration')) {
-      return { ok: true, status: 200, json: async () => ({ authorization_endpoint: `${ISSUER}/authorize`, token_endpoint: `${ISSUER}/token`, jwks_uri: `${ISSUER}/jwks` }) };
-    }
-    if (url.endsWith('/jwks')) return { ok: true, status: 200, json: async () => ({ keys: [JWK] }) };
-    if (url.endsWith('/token')) {
-      calls.posts.push({ url, body: options.body });
-      return { ok: true, status: 200, json: async () => ({ access_token: 'access-1', id_token: idToken(claims()), token_type: 'Bearer', expires_in: 900 }) };
-    }
-    throw new Error(`unexpected fetch ${url}`);
+    const path = new URL(url).pathname;
+    calls.push({ path, headers: options.headers, body: JSON.parse(options.body ?? '{}') });
+    const handler = handlers[path];
+    if (!handler) throw new Error(`unexpected ${path}`);
+    const [status, body] = await handler(JSON.parse(options.body ?? '{}'));
+    return new Response(status === 204 ? null : JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
   };
   return { fetchImpl, calls };
 }
 
-test('the authorize URL carries PKCE, state and nonce, and honours the lab login hint', async () => {
-  const { fetchImpl } = fakeIssuer();
-  const client = createOidcClient({ issuer: ISSUER, clientId: CLIENT, redirectUri: 'http://dash/callback', fetchImpl });
-  const url = new URL(await client.authorizeUrl({ state: 'st', nonce: 'no', codeChallenge: 'ch', loginHint: 'reader@lab.test' }));
-  assert.equal(url.searchParams.get('code_challenge_method'), 'S256');
-  assert.equal(url.searchParams.get('code_challenge'), 'ch');
-  assert.equal(url.searchParams.get('state'), 'st');
-  assert.equal(url.searchParams.get('nonce'), 'no');
-  assert.equal(url.searchParams.get('login_hint'), 'reader@lab.test');
-  assert.equal(url.searchParams.get('redirect_uri'), 'http://dash/callback');
+test('the identity client calls the four internal endpoints with the internal bearer', async () => {
+  const { fetchImpl, calls } = fakeControl({
+    '/internal/v1/auth/begin': () => [200, { attempt: 'at1', authorize_url: 'https://idp/authorize' }],
+    '/internal/v1/auth/complete': () => [403, { error: 'no_role' }],
+    '/internal/v1/auth/token': () => [401, { error: 'session_ended' }],
+    '/internal/v1/auth/revoke': () => [204, null],
+  });
+  const client = createIdentityClient({ baseUrl: 'http://control:8080/', internalToken: 'internal-secret', fetchImpl });
+  const begun = await client.begin({ email: 'a@x.test', redirectUri: 'http://dash/callback' });
+  assert.deepEqual(begun, { ok: true, status: 200, body: { attempt: 'at1', authorize_url: 'https://idp/authorize' } });
+  assert.deepEqual(calls[0].body, { redirect_uri: 'http://dash/callback', email: 'a@x.test' });
+  assert.equal(calls[0].headers.authorization, 'Bearer internal-secret');
+  assert.deepEqual(await client.complete({ attempt: 'at1', code: 'c', state: 's' }), { ok: false, status: 403, error: 'no_role' });
+  assert.deepEqual(await client.token('s1'), { ok: false, status: 401, error: 'session_ended' });
+  assert.equal((await client.revoke('s1')).ok, true);
+  assert.throws(() => createIdentityClient({ baseUrl: 'http://c', internalToken: '' }), /internal bearer/);
 });
 
-test('the token exchange posts the code and verifier, and verifyIdToken accepts the result', async () => {
-  const { fetchImpl, calls } = fakeIssuer();
-  const client = createOidcClient({ issuer: ISSUER, clientId: CLIENT, redirectUri: 'http://dash/callback', fetchImpl });
-  const tokens = await client.exchange({ code: 'the-code', codeVerifier: 'the-verifier' });
-  assert.equal(tokens.access_token, 'access-1');
-  assert.match(calls.posts[0].body, /code_verifier=the-verifier/);
-  const verified = await client.verifyIdToken(tokens.id_token, { nonce: 'n1' });
-  assert.equal(verified.sac_tenant, TENANT);
-  await assert.rejects(() => client.verifyIdToken(tokens.id_token, { nonce: 'wrong' }), /nonce/);
+test('an unreachable identity service is an answer, not a throw', async () => {
+  const client = createIdentityClient({ baseUrl: 'http://control', internalToken: 't', fetchImpl: async () => { throw new TypeError('fetch failed'); } });
+  assert.deepEqual(await client.token('s'), { ok: false, status: 0, error: 'identity_unreachable' });
+});
+
+test('the token cache serves a fresh token, refreshes before expiry, and shares one refresh between callers', async () => {
+  let clock = 1_000_000;
+  let minted = 0;
+  const identity = {
+    async token() {
+      minted += 1;
+      await new Promise((r) => setTimeout(r, 5));
+      return { ok: true, status: 200, body: { access_token: `t${minted}`, expires_in: 600, principal: { tenant: TENANT, actor: 'a@x.test', roles: ['analyst'] } } };
+    },
+  };
+  const cache = createTokenCache({ identity, now: () => clock, refreshBeforeMs: 60_000 });
+  assert.equal(cache.seed('sid', { access_token: 't0', expires_in: 600, principal: { tenant: TENANT, actor: 'a@x.test', roles: ['analyst'] } }), true);
+  assert.equal((await cache.get('sid')).token, 't0', 'the token from sign-in is used first');
+  assert.equal(minted, 0);
+  clock += 545_000; // 55 s before expiry: inside the refresh margin
+  const [a, b, c] = await Promise.all([cache.get('sid'), cache.get('sid'), cache.get('sid')]);
+  assert.equal(minted, 1, 'three requests, one refresh');
+  assert.deepEqual([a.token, b.token, c.token], ['t1', 't1', 't1']);
+  assert.equal((await cache.get('sid')).token, 't1', 'the refreshed token is cached');
+  assert.equal(minted, 1);
+});
+
+test('a session control-api has ended is dropped; an unreachable control-api does not end a still-valid token', async () => {
+  let clock = 0;
+  let answer = { ok: false, status: 0, error: 'identity_unreachable' };
+  const cache = createTokenCache({ identity: { token: async () => answer }, now: () => clock, refreshBeforeMs: 60_000 });
+  cache.seed('sid', { access_token: 't0', expires_in: 100, principal: { tenant: TENANT, actor: 'a', roles: ['viewer'] } });
+  const stillValid = await cache.get('sid');
+  assert.equal(stillValid.ok, true, 'within the refresh margin, unreachable: the unexpired token is used');
+  clock = 101_000;
+  assert.deepEqual(await cache.get('sid'), { ok: false, reason: 'identity_unavailable' }, 'expired and unreachable: no token');
+  answer = { ok: false, status: 401, error: 'session_ended' };
+  assert.deepEqual(await cache.get('sid'), { ok: false, reason: 'session_ended' });
+  assert.equal(cache.size, 0);
+  assert.deepEqual(await cache.get(null), { ok: false, reason: 'no_session' });
+});
+
+test('the cache is keyed by a hash of the session id, never the id itself', () => {
+  assert.match(sessionKey('secret-session'), /^[0-9a-f]{64}$/);
+  assert.notEqual(sessionKey('secret-session'), 'secret-session');
 });

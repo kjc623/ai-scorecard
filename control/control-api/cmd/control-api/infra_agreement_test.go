@@ -137,7 +137,7 @@ func TestEveryReadNameIsEitherPassedOrDocumented(t *testing.T) {
 	imageDefaults := map[string]string{
 		EnvHTTPAddr:          "the image sets the listen address: a container's loopback is unreachable, and infra/main.bicep has no command/args to pass one in",
 		EnvStore:             "the image sets the store mode; a deployment could override it once a driver exists",
-		EnvRole:              "the image sets the identity too, so a person can run the same binary locally",
+		EnvRole:              "the image sets the identity too, so a person can run the same binary locally; infra/main.bicep now passes it as well",
 		EnvCredentialTTL:     "the image sets the default credential life; a deployment could override it",
 		EnvEnrolmentTokenTTL: "the image sets the default token life; the request path only verifies tokens the MDM profile carried",
 	}
@@ -152,6 +152,25 @@ func TestEveryReadNameIsEitherPassedOrDocumented(t *testing.T) {
 		EnvUploadSigningKey: "docs/02 §10.3: the key the storage layer verifies an upload URL with. In Azure the upload credential is a storage user-delegation SAS instead, which this build does not mint — see " + EnvVaultURL,
 	}
 
+	// Settings with a safe default that a deployment sets only to tune or to choose another
+	// credential, and lab-only switches the Azure deployment must never pass.
+	optional := map[string]string{
+		EnvAuthTokenTTL:            "product token life; the default (5 minutes, clamped to 10) is what every verifier assumes",
+		EnvAuthRedirectURIs:        "an explicit redirect allow-list; without it redirect URIs are built from SAC_PUBLIC_URL",
+		EnvAuthAllowInsecureIdP:    "lab only: admits the stand-in's http issuer and private addresses. Azure must never pass it",
+		EnvDeploymentKeyTTL:        "deployment-key life; the default (no expiry) is deliberate: revocation is the control",
+		EnvDeploymentKeyRate:       "per-key enrolment rate; the default absorbs a rollout wave",
+		EnvDeploymentKeyBurst:      "per-key enrolment burst — see " + EnvDeploymentKeyRate,
+		EnvEntraClientSecret:       "lab only: a client secret for the Entra app. Azure uses the federated managed identity (SAC_ENTRA_FIC)",
+		EnvEntraCertFile:           "an alternative Entra app credential (certificate) for a deployment without a federated identity",
+		EnvEntraMIClientID:         "which user-assigned identity the federated credential trusts; Azure passes AZURE_CLIENT_ID, which entraapp reads when this is empty",
+		EnvEntraLoginBase:          "the Entra login host; the default is the public cloud (a sovereign cloud would set it)",
+		EnvGraphURL:                "the Graph host for the Intune check; set only to point at a stand-in",
+		EnvPolicyRecheck:           "how often the served bundle is recomposed; the default is 30 seconds",
+		EnvPolicySigningKeyID:      "the policy key id; the default policy-key-1 is the id the generic MSI pins",
+		EnvSCIMPopulationAttribute: "the SCIM attribute copied to population; unset writes none, which is the documented default",
+	}
+
 	var undocumented []string
 	for name := range read {
 		if passed[name] {
@@ -161,6 +180,9 @@ func TestEveryReadNameIsEitherPassedOrDocumented(t *testing.T) {
 			continue
 		}
 		if _, ok := deploymentGaps[name]; ok {
+			continue
+		}
+		if _, ok := optional[name]; ok {
 			continue
 		}
 		undocumented = append(undocumented, name)
@@ -181,8 +203,14 @@ func TestEveryReadNameIsEitherPassedOrDocumented(t *testing.T) {
 		t.Logf("DEPLOYMENT GAP: %s", g)
 	}
 	for name := range imageDefaults {
-		if passed[name] {
+		if passed[name] && name != EnvRole {
 			t.Logf("%s is now passed by infra/main.bicep as well as being an image default; the extension note is stale", name)
+		}
+	}
+	// A lab-only switch passed by the deployment would quietly weaken production.
+	for _, name := range []string{EnvAuthAllowInsecureIdP, EnvEntraClientSecret} {
+		if passed[name] {
+			t.Errorf("infra/main.bicep passes %s, a lab-only setting: %s", name, optional[name])
 		}
 	}
 }

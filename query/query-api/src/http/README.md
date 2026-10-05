@@ -7,7 +7,8 @@ content reads the dashboard's Explore page makes.
 | File | Responsibility |
 |---|---|
 | `config.js` | The deployment's `SAC_*` vocabulary in one place, resolved once at startup |
-| `server.js` | The three routes, the body ceiling, the concurrency gate, and error rendering; and the dispatch of the two content routes |
+| `auth.js` | Verifying the product access token control-api mints (ES256, through `jose`) into tenant, actor, roles and `sid` |
+| `server.js` | The routes, the body ceiling, the concurrency gate, and error rendering; who is asking (token, else the lab's development header), `401` without a session and `403` for a wrong role; and the dispatch of the two content routes |
 | `content.js` | `POST /v1/content-search` and `POST /v1/content/retrieval`, forwarded to `content-vault` |
 | `pool.js` | Borrowing a connection per request, and clearing its tenant before reuse |
 | `main.js` | The entry point: resolve config, prove the database, listen, drain on `SIGTERM` |
@@ -24,7 +25,8 @@ disagree, and the one a client sees would be whichever ran last.
 
 The same holds for content, one step further out. `content.js` does not decide whether content may be
 searched or read: it establishes who is asking from the session, never from the body, and forwards the
-request to `content-vault`, which owns the search tier, the four-eyes rule, the single-use grant and
+request — with the caller's own bearer token, which the vault verifies again — to `content-vault`,
+which owns the search tier, the single-use grant and
 the audit row. A refusal is the vault's, carried through with its reason code. A retrieval relays the
 vault's short-lived, single-use retrieval URL and no content byte: the browser fetches that URL from
 the vault through the analyst web tier, so content never transits this service (docs/02 §11).

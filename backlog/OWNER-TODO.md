@@ -9,13 +9,40 @@ Each line names the task that left it. The exact commands are in that task's `RE
 
 ## Run
 
-- [ ] **Point the dashboard's session at a real Microsoft Entra ID tenant** (task 11). Register an
-  application for the dashboard, define the four app roles (`viewer`, `analyst`, `content_reader`,
-  `admin`) and assign them, and make the token carry the shadow tenant uuid in a claim (default name
-  `sac_tenant`; override with `SAC_OIDC_TENANT_CLAIM`). Set on `query-api`: `SAC_OIDC_ISSUER` and
-  `SAC_OIDC_AUDIENCE` (the API audience). Set on each dashboard: `SAC_OIDC_ISSUER`, `SAC_OIDC_CLIENT_ID`,
-  `SAC_OIDC_CLIENT_SECRET` (a confidential client), and register `<dashboard-origin>/callback` as a
-  redirect URI. The lab's identity provider is a stand-in, not Entra. (11)
+- [ ] **Register the vendor's multi-tenant Microsoft Entra app** (replaces task 11's per-dashboard
+  app and its `SAC_OIDC_*` settings, which no longer exist). In your own tenant: App registrations →
+  New, "Accounts in any organizational directory (Multitenant)". Web redirect URIs
+  `{SAC_PUBLIC_URL}/callback` and `{SAC_PUBLIC_URL}/onboard/entra/callback` (Entra allows `http`
+  only for `localhost`). App roles `viewer`, `analyst`, `content_reader`, `admin` (value = name,
+  Users/Groups). API permissions: delegated `openid profile email offline_access`; application
+  `DeviceManagementManagedDevices.Read.All`; **not** `User.Read.All`. Credential: in Azure, a
+  federated credential for control-api's managed identity (`az bicep build` output
+  `entraFederatedCredential` has the values); in the lab, a client secret in
+  `SAC_ENTRA_CLIENT_SECRET`. Set `SAC_ENTRA_CLIENT_ID` on control-api. (11, enterprise)
+- [ ] **Onboard a customer tenant end to end** (your own Entra tenant is the test customer):
+  `control-api tenant create --name … --region … --key-custody vendor --ceiling m1`, then
+  `control-api tenant invite --tenant <id> --domain <your-domain>`; open the printed link as a
+  Global/Cloud Application Admin, consent, sign in once (you become that tenant's admin). In
+  Enterprise applications, set "Assignment required" and assign people to the four roles. The
+  owner's lab tenant is deliberately not linked to anything: linking it is a write to that tenant,
+  so it is yours to do. (11, enterprise)
+- [ ] **Set up SCIM for that tenant**: Settings → Deployment → SCIM → Create token (shown once);
+  in Entra create a *non-gallery* enterprise app "Shadow AI Capture provisioning" (an app added by
+  consent cannot provision until the product is in the gallery), Provisioning → Automatic, Tenant
+  URL `{SAC_PUBLIC_URL}/scim/v2`, the token, Test Connection; change the mapping `externalId` to
+  `objectId → externalId`; scope "assigned users and groups"; assign; start. Okta: same token,
+  header auth, `userName` = the Windows UPN. (11, enterprise)
+- [ ] **Apply the enterprise migration to any database other than the lab's**, after 09's:
+  `psql "$DSN" -v ON_ERROR_STOP=1 -f backlog/11-sign-in-and-roles/MIGRATION.sql`. Additive and
+  idempotent; it also grants the audit-chain read every service role needed (audit inserts failed
+  under the real roles before). (11, enterprise)
+- [ ] **Create the four Key Vault secrets and deploy**: internal token, directory key, session
+  signing key (P-256 PEM), policy signing key (Ed25519 PKCS#8 PEM); commands in `azure/README.md`.
+  Keep the policy key's public half: the generic MSI pins it (`installer/release-msi.mjs
+  --policy-key`). Losing the directory key loses every tenant's user-reference key. (11, enterprise)
+- [ ] **Apply for Microsoft publisher verification, and consider an Entra app gallery listing.**
+  Verification removes the "unverified" consent warning that some tenants block; a gallery listing
+  lets one enterprise app carry both sign-in and SCIM provisioning. (11, enterprise)
 - [ ] **Run task 00** before task 05, on a clean tree at the head of `main`. It expects
   `git status` to show nothing but its own changes. (review)
 - [ ] **Rebuild and reinstall the lab MSI on the Windows host**, from the head of the stack, with
@@ -47,21 +74,20 @@ Each line names the task that left it. The exact commands are in that task's `RE
   `node localdev/build.mjs --auth` (the lab services changed), then `node installer/lab-msi.mjs`,
   then `msiexec /i installer\dist\ShadowAICapture.msi`. The harness cannot build the MSI (the
   script refuses off Windows); task 08's report has the command. (08)
-- [ ] **Point the directory sync at a real Microsoft Entra ID tenant.** The harness has no Entra
-  tenant, so the Graph provider is the one path not exercised here. Register an application, grant
-  it `User.Read.All` (application permission), and run
-  `control-api sync-directory --store sql --dsn "$SAC_PG_DSN" --provider entra --entra-tenant <tenant>
-  --entra-client-id <id> --entra-client-secret <secret>
-  --entra-user-ref-attribute onPremisesSamAccountName --directory-key "$SAC_DIRECTORY_KEY"`.
-  The control-api binary carries the subcommand after `go build -tags sac_sql_driver`, and the
-  auth-lab image after `node localdev/build.mjs --auth`. (06)
+- [ ] **Point the directory sync at a real Microsoft Entra ID tenant.** Superseded: the Graph user
+  pull was removed (the Entra app no longer asks for `User.Read.All`); people now arrive by SCIM —
+  see "Set up SCIM" above. `sync-directory` remains for the lab's JSON file only. (06)
 - [ ] **Route the minted retrieval URL to the vault in any deployment**, and set
   `SAC_RETRIEVAL_URL_BASE`: the vault mints `GET /v1/content/retrieval/{tenant}/{grant}`, the browser
-  fetches it, and the analyst ingress (or the web tier) must forward that path to `content-vault`. The
-  lab's dashboard forwarder does; `azure/main.bicep` does not yet. (10)
+  fetches it, and the analyst ingress (or the web tier) must forward that path to `content-vault`.
+  Now in `azure/main.bicep` (through the new dashboard container app; the vault stays internal) —
+  deploy it to close this line. (10)
 - [ ] **Assign `Storage Blob Data Reader` on the ciphertext account to the vault's user-assigned
-  identity.** `azure/main.bicep` passes `SAC_BLOB_IDENTITY=managed`, and nothing grants the identity
-  the read, so a deployment's first retrieval would be refused. (10)
+  identity.** Now in `azure/main.bicep`'s ciphertext module — deploy it to close this line. (10)
+- [ ] **Rebuild the lab MSI on the new generic path and reinstall**: with the lab up,
+  `node installer/lab-msi.mjs`, then double-click `installer\dist\ShadowAICapture.msi` (the lab
+  tenant file sits beside it; that is the customer's copy path). This is a major upgrade of the
+  agent installed now. (11, enterprise)
 
 ## Verify
 
@@ -70,6 +96,27 @@ On the owner's dashboard, `http://127.0.0.1:8787`, with the real device.
 - [ ] The dashboard now asks you to sign in; sign in against the real Entra tenant, once as an
   analyst and once as an admin. Confirm the Audit trail names each person's own account, and that a
   viewer's navigation does not offer Search while a content reader's does. (11)
+- [ ] **Intune end to end** on a test device: Settings → Deployment → Download Intune package;
+  Intune → Apps → Windows → Windows app (Win32); install `msiexec /i "ShadowAICapture.msi" /qn`,
+  uninstall `msiexec /x {product code} /qn`, detection MSI product code + version ≥, x64,
+  Windows 10 21H2+; assign Required to a device group. Expect: Intune accepts the file (not
+  verified anywhere yet), the app installs and is detected, the key's enrolment count rises, the
+  device appears. With Device verification = Intune, a device not in Intune is refused
+  `device_not_managed`. (11, enterprise)
+- [ ] **On that device** (as admin): `capture-core --print-config --config-file
+  "C:\ProgramData\ShadowAICapture\profile\capture-core.env" --config-file
+  "C:\ProgramData\ShadowAICapture\profile\tenant.env"` shows the Intune device id, the
+  `dsregcmd /status` DeviceId and the BIOS serial; `health.jsonl` shows `user_ref_source=upn` and
+  the user's UPN; switching user changes it within ~15 s; `policy_fetch` goes `served` then
+  `not_modified`; `icacls …\device-ca\ca.key` shows only SYSTEM and Administrators. Repeat on a
+  hybrid-joined device. (11, enterprise)
+- [ ] **Clean-VM installer checks**: run the MSI from a package folder (installs, enrols); run it
+  alone from another folder (fails 1603, Error 1722 `CheckTenantConfig` in the log, nothing
+  installed); upgrade to a rebuilt `--version 0.1.1` with no tenant file (keeps it, same device id);
+  uninstall (service, folders, root CA and environment entries gone). (11, enterprise)
+- [ ] **SCIM from Entra**: provision one user with a department; their events appear under their
+  department on Teams; rename their UPN in Entra and confirm their history stays one person;
+  unassign them and confirm their dashboard session ends within ~10 minutes. (11, enterprise)
 
 - [ ] After sending prompts from the device: Tools shows tools with submission and people counts
   and a time chart; Users shows a series for `lab-user`; Data classes shows the classes seen; no
@@ -104,6 +151,15 @@ On the owner's dashboard, `http://127.0.0.1:8787`, with the real device.
 - [ ] **Which mode does the Devices "Mode" column show?** It was built on the agent's
   recommendation (the device's effective base mode) because the question was left open. Task 12
   displays the same value. (04)
+- [ ] **How do you sign in to your own lab tenant's dashboard (port 8787)?** The lab's stand-in
+  sign-in provider now serves only the sample tenant, so 8787 has no way in until your tenant is
+  linked. Options: link it to your real Entra tenant (the onboarding line above, with
+  `SAC_PUBLIC_URL=http://localhost:8787`); link it to a second stand-in provider; or run 8787 in
+  the development-principal mode it had before task 11. Each is a write to, or a weakening of, your
+  tenant, so it is yours to choose. (11, enterprise)
+- [ ] **Keep the Azure dashboard container app?** `azure/main.bicep` now runs the dashboard's server
+  (the sign-in BFF) as a container app and no longer instantiates the Static Web App, which would be
+  a second, unconnected sign-in path. (11, enterprise)
 - [ ] **Decide the fate of the internal `POST /v1/content/redeem`.** It still returns plaintext to an
   allowed service; the product path is the retrieval URL. Keep it as a service-to-service path or
   retire it. (10)
