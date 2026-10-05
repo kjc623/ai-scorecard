@@ -15,15 +15,20 @@ are *declared*; only a deployment proves they are *effective*.
 
 ---
 
-## The edge decision: Front Door **Standard** (non-Premium)
+## The edge decision: Front Door **Premium** (deployed), Standard as an optional cost lever
 
-Front Door Premium exists in this design for exactly one reason: the **Private Link origin** that keeps
-the Container Apps environment off the public internet (`docs/05-platform-delivery.md` §2.1; ADR 0020).
-**Standard cannot use a Private Link origin**, so choosing Standard changes the analyst edge from
-*Front Door → Private Link → private environment* to *Front Door → **public** container app FQDN*.
+**DECIDED: we deploy Front Door Premium for testing and production.** Premium is the only tier that can
+use a **Private Link origin**, which is what keeps the Container Apps environment off the public
+internet (`docs/05-platform-delivery.md` §2.1; ADR 0020). With Premium, no deviation is taken and the
+`azure/tools` invariant that the environment uses an internal load balancer holds. The Bicep is already
+in this shape (`azure/modules/frontdoor.bicep` defaults to `Premium_AzureFrontDoor`), so nothing in the
+templates changes.
 
-Every consequence below is a **pre-prod-only deviation that must never be promoted**. `docs/lab/LAB-COST.md`
-§7.6 names the mechanism ("open mode") and §8 lists it among the shortcuts that become defects if shipped.
+**Standard is a cost lever, not the chosen path.** It base-fees ~$295/month less, but it **cannot use a
+Private Link origin**, so it changes the analyst edge from *Front Door → Private Link → private
+environment* to *Front Door → **public** container app FQDN*. If it is ever adopted, every consequence
+below is a **pre-prod-only deviation that must never be promoted** (`docs/lab/LAB-COST.md` §7.6 names
+the mechanism, §8 lists it among must-not-ship shortcuts).
 
 | # | Consequence | Repository location to change |
 |---|---|---|
@@ -31,17 +36,14 @@ Every consequence below is a **pre-prod-only deviation that must never be promot
 | 2 | Front Door drops `sharedPrivateLinkResource`; origins become the apps' public FQDNs | `azure/modules/frontdoor.bicep` (origins, and `skuName`) |
 | 3 | WAF policy SKU must match: `Standard_AzureFrontDoor` | `azure/modules/waf.bicep` |
 | 4 | The "approve the Private Link connection" step **disappears** | this file, Phase 5 (was step 3) |
-| 5 | **A checked invariant now fails.** The suite asserts the environment uses an internal load balancer, which Standard's public origin contradicts | `azure/tools/check-infra.mjs`, `azure/tools/check-infra.test.mjs` |
+| 5 | **A checked invariant fails if Standard is adopted.** The suite asserts the environment uses an internal load balancer, which Standard's public origin contradicts | `azure/tools/check-infra.mjs`, `azure/tools/check-infra.test.mjs` |
 | 6 | Cost: the Front Door base falls from ~$330 to ~$35 per profile per month | `azure/cost-model.md` (`FD-SHARED-OR-PER-TENANT`) |
 
-**Point 5 is not cosmetic.** `azure/tools/check-infra.test.mjs` ("the Container Apps environment uses
-an internal load balancer") and `azure/tools/check-infra.mjs` were written to make the private-origin
-property un-regressable. A Standard-Front-Door pre-prod *intentionally* violates it. The parameter file
-for that environment must carry the deviation explicitly and the checker must be taught to allow it for
-that file — **not** have the failing test quietly deleted. Until the templates and the checker carry the
-deviation, `node --test azure/tools/index.mjs` is expected to fail for this environment.
-
-If a customer ever requires the private-origin property, move back to Premium; nothing else changes.
+**As long as Premium is deployed, none of the above applies** and `node --test azure/tools/index.mjs`
+passes: `azure/tools/check-infra.mjs` and `check-infra.test.mjs` assert the environment uses an internal
+load balancer, which Premium's Private Link origin satisfies. The moment Standard is adopted those
+assertions *intentionally* fail, and the preprod parameter file must carry the deviation and the checker
+must be taught to allow it for that file — **not** have the failing test quietly deleted.
 
 ---
 
@@ -78,7 +80,7 @@ If a customer ever requires the private-origin property, move back to Premium; n
 | Edge, dashboard, exports switches for a cheap lab | Pipelines are inert: no `.github/` directory |
 | Key Vault role separation enforced; Application Gateway API 2025-03-01 | Four+ Key Vault secrets and the Entra app do not exist |
 | Shape A product-issued x509 device auth wired end to end | No image build/push pipeline; `reconciler`/`migrations` images absent |
-| **Front Door Standard chosen** (see above; deviates from private origin) | `SAC_STORE=sql` unset; production images build without the SQL driver |
+| Front Door **Premium** chosen for testing (private origin holds) | `SAC_STORE=sql` unset; production images build without the SQL driver |
 
 ---
 
@@ -87,10 +89,11 @@ If a customer ever requires the private-origin property, move back to Premium; n
 1. **Residency region.** `az`/params assume `eastus`. One production environment per data-residency
    region; a second region is a second parameter file. *Repo: `azure/params/prod.<region>.bicepparam`,
    `docs/05` §3.1.*
-2. **Edge tier — DECIDED: Front Door Standard.** Accepts the public-origin deviation above, and the
-   loss of the "no container app holds a public IP" property, for ~$295/month less. *Repo:
-   `azure/modules/frontdoor.bicep`, `azure/modules/waf.bicep`, `azure/modules/container-apps-env.bicep`,
-   `docs/05` §2.1, `docs/lab/LAB-COST.md` §7.6/§8.*
+2. **Edge tier — DECIDED: Front Door Premium.** Keeps the Private Link origin and the "no container app
+   holds a public IP" property; no deviation. Standard (~$295/month less) remains an option and would
+   require the public-origin changes listed above. *Repo: `azure/modules/frontdoor.bicep`,
+   `azure/modules/waf.bicep`, `azure/modules/container-apps-env.bicep`, `docs/05` §2.1,
+   `docs/lab/LAB-COST.md` §7.6/§8.*
 3. **Shared or per-tenant edge.** The two base fees are built once per region by `main.bicep` but are
    charged per tenant in §11.2; the readings differ by ~1.7×. *Repo: `azure/COST-FINDING.md`,
    `azure/cost-model.md` `FD-SHARED-OR-PER-TENANT` / `AGW-SHARED-OR-PER-TENANT`.*
@@ -98,17 +101,18 @@ If a customer ever requires the private-origin property, move back to Premium; n
    confirm `validate`/`what-if`/deploy, delete. *Repo: `azure/params/lab.bicepparam`,
    `azure/params/dev.bicepparam`.*
 5. **DNS names.** `device.sac.example.com` / `app.sac.example.com` are placeholders. The device FQDN
-   needs a Key Vault certificate; the analyst FQDN is a Front Door custom domain (Standard can use a
-   Front Door managed certificate) and must match the Entra redirect URIs. *Repo: `azure/params/*`,
-   `azure/modules/application-gateway.bicep`.*
+   needs a Key Vault certificate; the analyst FQDN is a Front Door Premium custom domain (managed
+   certificates are available) and must match the Entra redirect URIs. *Repo: `azure/params/*`,
+   `azure/modules/application-gateway.bicep`, `azure/modules/frontdoor.bicep`.*
 
 ## Phase 1 — subscription prerequisites
 
-- [ ] Subscription, billing, and a region with the SKUs (`D2ds_v5` vCores, `WAF_v2`; **Front Door
-      Standard** is available far more broadly than Premium). *Repo: `azure/README.md` precondition 2.*
+- [ ] Subscription, billing, and a region with the SKUs (`D2ds_v5` vCores, `WAF_v2`, **Front Door
+      Premium** — less broadly available than Standard, so confirm it in the region). *Repo:
+      `azure/README.md` precondition 2.*
 - [ ] Register the resource providers listed in `README.md` precondition 2. *Repo: `azure/README.md`.*
-- [ ] Cost approval. Pre-prod with both edges: ~$700–1,100/month; Standard Front Door trims ~$295 of
-      that. *Repo: `azure/cost-model.md`, `azure/params/*.bicepparam` (`monthlyBudgetAmount`).*
+- [ ] Cost approval. Pre-prod with both edges: ~$700–1,100/month, Front Door Premium ~$330 of it. *Repo:
+      `azure/cost-model.md`, `azure/params/*.bicepparam` (`monthlyBudgetAmount`).*
 - [ ] A resource group per environment as the pipelines expect: `rg-sac-<env>-eastus`. *Repo:
       `azure/pipelines/infra.yml` (the `RG=` value).*
 
@@ -158,18 +162,20 @@ If a customer ever requires the private-origin property, move back to Premium; n
 - [ ] Add the federated credential from the `entraFederatedCredential` output. *Repo:
       `azure/main.bicep` (the `entraFederatedCredential` output comment has the command).*
 
-## Phase 5 — DNS, certificates, and the Standard-origin wiring
+## Phase 5 — DNS, certificates, and the edge origin
 
 - [ ] Device FQDN → a Key Vault certificate; pass `deviceTlsCertKeyVaultSecretId`. *Repo:
       `azure/modules/application-gateway.bicep`, `azure/main.bicep` (`deviceFqdn`,
       `deviceTlsCertKeyVaultSecretId`).*
-- [ ] Analyst FQDN → a Front Door **Standard** custom domain (managed certificate is available). Set
-      `publicUrl`. *Repo: `azure/modules/frontdoor.bicep`, `azure/main.bicep` (`publicUrl`).*
-- [ ] **Standard-only:** make the analyst origins public — the environment's
-      `internalLoadBalancer: false` and the Front Door origins pointing at the apps' public FQDNs, with
-      the WAF policy on `Standard_AzureFrontDoor`. *(Was "approve the Private Link connection"; under
-      Standard there is none.)* *Repo: `azure/modules/container-apps-env.bicep`,
-      `azure/modules/frontdoor.bicep`, `azure/modules/waf.bicep`.*
+- [ ] Analyst FQDN → a Front Door Premium custom domain. Set `publicUrl`. *Repo:
+      `azure/modules/frontdoor.bicep`, `azure/main.bicep` (`publicUrl`).*
+- [ ] After the deployment, **approve the Front Door Private Link connection** to the Container Apps
+      environment; it is created pending approval on purpose (`README.md` step 4). *Repo:
+      `azure/modules/frontdoor.bicep` (`sharedPrivateLinkResource`), `azure/main.bicep`.*
+- [ ] *(Only if Standard is adopted)* make the analyst origins public — environment
+      `internalLoadBalancer: false`, origins on the apps' public FQDNs, WAF policy
+      `Standard_AzureFrontDoor` — and skip the approval above. *Repo:
+      `azure/modules/container-apps-env.bicep`, `azure/modules/frontdoor.bicep`, `azure/modules/waf.bicep`.*
 
 ## Phase 6 — first deployment
 
@@ -180,7 +186,8 @@ If a customer ever requires the private-origin property, move back to Premium; n
    `azure/params/*.bicepparam` (`registryLoginServer`, `imageTag`).*
 
 Only step 3 creates resources; steps 1–2 are free and turn the compile warnings and `BCP318` notices
-into either "confirmed" or "a real error". Under Standard there is **no** Private Link approval step.
+into either "confirmed" or "a real error". Under Premium, follow Phase 5's Private Link approval; under
+Standard there is none.
 
 ## Phase 7 — schema
 
@@ -200,9 +207,10 @@ into either "confirmed" or "a real error". Under Standard there is **no** Privat
       `azure/modules/application-gateway.bicep`, `ingestion/ingest-api/internal/auth/`.*
 - [ ] `control-api` sign-in returns a session and a product token. *Repo:
       `control/control-api/internal/identity/`, `internal/session/`.*
-- [ ] **Standard-specific:** confirm the analyst origin is public and the WAF is in front of it — this
-      is the deviation, and it should be *verified as deviating*, not assumed private. *Repo:
-      `azure/modules/frontdoor.bicep`, `azure/modules/waf.bicep`, `azure/tools/check-infra.mjs`.*
+- [ ] **Edge:** the analyst origin is Private Link (Premium) and no container app exposes a public FQDN;
+      the `azure/tools` internal-LB invariant passes. *(If Standard is ever adopted, verify the
+      opposite — that the public origin is intentional.)* *Repo: `azure/modules/frontdoor.bicep`,
+      `azure/modules/container-apps-env.bicep`, `azure/tools/check-infra.mjs`.*
 - [ ] Log Analytics receives telemetry; the §10.3 alerts are live. *Repo: `azure/modules/monitoring.bicep`.*
 - [ ] Re-run `what-if`: the only remaining diff is expected/noise, not drift. *Repo:
       `azure/pipelines/drift.yml`.*
@@ -218,13 +226,13 @@ deviation** if the private-origin property is required in production. *Repo:
 
 ## Preflight checklist
 
-- [ ] Phase 0 decisions recorded (region, **Front Door Standard + deviation**, DNS, first milestone) — `azure/params/`, `docs/05` §2.1
+- [ ] Phase 0 decisions recorded (region, **Front Door Premium**, DNS, first milestone) — `azure/params/`, `docs/05` §2.1
 - [ ] Phase 1: subscription, providers, quotas, budgets, resource groups — `azure/README.md`
 - [ ] Phase 2: `SAC_STORE=sql` + tagged images; `reconciler`/`migrations` images; image pipeline; workflows installed — `azure/main.bicep`, `*/Dockerfile`, `azure/pipelines/`
 - [ ] Phase 3: federated deploy identity + separate push identity; GitHub vars — `azure/pipelines/infra.yml`
 - [ ] Phase 4: Key Vault secrets incl. device CA; Entra app + federated credential — `azure/README.md`, `azure/main.bicep`
-- [ ] Phase 5: DNS; device certificate; **Standard public origins + Standard WAF SKU** — `azure/modules/{frontdoor,waf,container-apps-env}.bicep`
-- [ ] **Checker taught the deviation** so the internal-LB assertion is scoped, not deleted — `azure/tools/check-infra.mjs`
+- [ ] Phase 5: DNS; device certificate; Front Door custom domain; approve the Private Link connection — `azure/modules/{frontdoor,waf}.bicep`
+- [ ] *(Standard only)* checker taught the deviation so the internal-LB assertion is scoped, not deleted — `azure/tools/check-infra.mjs`
 - [ ] `validate` and `what-if` reviewed; then `create` — `azure/README.md`
 - [ ] Phase 7 schema applied and invariants run in-VNet — `database/`
-- [ ] Phase 8 verification observed, including that the Standard origin is *public on purpose* — `azure/tools/`
+- [ ] Phase 8 verification observed, including the Private Link origin — `azure/tools/`
