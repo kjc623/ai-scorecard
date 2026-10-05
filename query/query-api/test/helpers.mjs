@@ -50,6 +50,10 @@ const CONTAINERS = ['shadowpg', 'shadowpg-invariants'];
  * sac-lab-only, POSTGRES_DB shadow), so the suite then failed 7 integration tests with
  * `password authentication failed for user "postgres"` — which reads as a client defect and was a
  * discovery defect. A container this suite cannot authenticate to is not its test target.
+ *
+ * In the OpenCode harness the only PostgreSQL is the device-auth lab's (`sac-authlab-postgres-1`,
+ * `backlog/ENVIRONMENT.md`); this helper does not name it, so the db-backed half of this suite skips
+ * here. It is reachable by `docker exec`, and `tool-catalogue.test.mjs` names it directly for that.
  */
 const LAB_CONTAINER = 'sac-lab-postgres-1';
 
@@ -62,6 +66,26 @@ export function findContainer() {
   if (names.includes(LAB_CONTAINER)) return LAB_CONTAINER;
   for (const preferred of CONTAINERS) if (names.includes(preferred)) return preferred;
   return names.find((n) => n.includes('shadow')) ?? null;
+}
+
+/** The device-auth lab's PostgreSQL, which the harness (`backlog/ENVIRONMENT.md`) actually runs. */
+const AUTH_LAB_CONTAINER = 'sac-authlab-postgres-1';
+
+/**
+ * The container the `docker exec`-based tests (db.test.mjs) should use.
+ *
+ * It differs from `findContainer()` on purpose. `pg-client.test.mjs` needs a HOST PORT it can open a
+ * TCP socket to, and the device-auth lab publishes Postgres on a random host port (55435 in the
+ * harness) that is not reachable from inside the harness container — so it must keep skipping there.
+ * The db suite talks through `docker exec`, which needs no published port, and the device-auth lab
+ * is the lab this backlog is observed on, so it runs against that one.
+ */
+export function findPsqlContainer() {
+  const listed = spawnSync('docker', ['ps', '--format', '{{.Names}}'], { encoding: 'utf8' });
+  if (listed.error || listed.status !== 0) return null;
+  const names = (listed.stdout ?? '').split('\n').map((s) => s.trim()).filter(Boolean);
+  if (names.includes(AUTH_LAB_CONTAINER)) return AUTH_LAB_CONTAINER;
+  return findContainer();
 }
 
 /**
@@ -91,8 +115,7 @@ export function hasSchema(container, { db = 'shadow', user = 'postgres' } = {}) 
  * container that is ready. A test that skipped without saying which of the two it was would hide the
  * difference between "you did not run the lab" and "you ran it against an empty database".
  */
-export function dbSkipReason() {
-  const container = findContainer();
+export function dbSkipReason(container = findPsqlContainer()) {
   if (!container) return 'no PostgreSQL container is running (tried shadowpg, shadowpg-invariants, *shadow*): this test SKIPS and is not a pass';
   if (!hasSchema(container)) {
     return `${container} is running but database/schema.sql has not been applied to it: this test SKIPS and is not a pass. Run: node localdev/build.mjs && node localdev/run.mjs`;

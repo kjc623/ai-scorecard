@@ -151,7 +151,10 @@ The window column is filterable under its own name (`received_at`, `detected_at`
 * Values are typed: timestamps must be ISO-8601 UTC (`2026-09-01T00:00:00Z`), dates `YYYY-MM-DD`,
   identifiers canonical uuids, strings ≤ 256 characters. Nested objects and arrays are not values.
 * `class` on `ingest.submission` is a **predicate**, not a dimension: `eq` only, compiled as
-  `labels @> jsonb_build_object('class', $n)` and served by the `labels` jsonb_path_ops GIN.
+  `labels @> jsonb_build_array(jsonb_build_object('class', $n))` and served by the `labels`
+  jsonb_path_ops GIN. `labels` is a jsonb **array** of `{class, score}`, so the operand is wrapped
+  in a one-element array: `array @> object` is false for every value and would silently match
+  nothing.
 
 ### 2.4 Buckets, grouping and ordering
 

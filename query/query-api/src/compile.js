@@ -397,7 +397,11 @@ function compileFilter(filter, source, bind) {
     if (filter.op !== 'eq') {
       throw unsupported(REASON.OPERATOR_NOT_APPLICABLE, `"${filter.field}" supports eq only on this source.`, { field: filter.field, operator: filter.op });
     }
-    return `${expr} @> jsonb_build_object('class', ${bind(filter.value)}${cast})`;
+    // `labels` is a jsonb ARRAY of {class, score} (contracts/event-envelope.schema.json
+    // $defs.label). `array @> object` is false for every value, because containment requires the
+    // same JSON type at the top level: the right operand must be a one-element ARRAY too, or the
+    // filter silently matches nothing. `jsonb_path_ops` serves this form unchanged.
+    return `${expr} @> jsonb_build_array(jsonb_build_object('class', ${bind(filter.value)}${cast}))`;
   }
 
   switch (filter.op) {
