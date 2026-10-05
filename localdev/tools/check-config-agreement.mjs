@@ -72,18 +72,19 @@ const EXTENSIONS = {
     SAC_SCHEMA: 'image: the contract schema at a path a container can read',
     SAC_ROUTES_FILE: 'image: ref.route_fidelity shipped as data (§4.4), never compiled in',
     SAC_REGION: 'gap: §12 region pinning is inert until the deployment passes the region',
-    SAC_TLS_CERT_PEM: 'gap (F5): the server certificate for the module keyVaultEnv to inject; every app in azure/main.bicep has keyVaultEnv: [] today',
-    SAC_TLS_KEY_PEM: 'gap (F5): the server private key — see SAC_TLS_CERT_PEM',
-    SAC_TLS_CLIENT_CA_PEM: 'gap (F5): the CA that must have signed the device certificates — see SAC_TLS_CERT_PEM',
-    // The ADR 0020 device-authentication vocabulary. The binary reads all of it; a deployment that
-    // serves a production mode must pass it, and azure/main.bicep passes none of it yet. The auth
-    // lab passes them, but rule B deliberately does not count the lab as the deployment, so they are
-    // gaps here and not silently satisfied by localdev.
-    SAC_AUTH_MODES: 'gap: the production authenticator modes to serve (x509,dpop). Unset infers from the material present; a deployment should name them so a mode cannot be enabled by accident',
-    SAC_TLS_CLIENT_CERT_HEADER: 'gap: the edge-forwarded certificate header. A deployment behind Application Gateway must set it to X-Client-Cert, or the forwarded x509 path is disabled',
-    SAC_DPOP_TOKEN_PUBLIC_PEM: 'gap: the access-token verification key (PEM text or a readable PEM file). The deployment passes no token material yet',
-    SAC_DPOP_ISSUER: 'gap: the DPoP access token `iss` the origin requires. The deployment passes none yet',
-    SAC_DPOP_AUDIENCE: 'gap: the DPoP access token `aud` the origin requires. The deployment passes none yet',
+    // The forwarded x509 path no longer needs a server key pair: Application Gateway terminates the
+    // device TLS handshake and the origin re-verifies the forwarded certificate against a CA bundle
+    // it now receives (SAC_TLS_CLIENT_CA_PEM, passed). A deployment that instead terminates client
+    // TLS at the origin (ADR 0019 mechanism A) would pass these two.
+    SAC_TLS_CERT_PEM: 'gap: the server certificate, only for an origin that terminates client TLS itself; the deployment uses the forwarded path',
+    SAC_TLS_KEY_PEM: 'gap: the server private key — see SAC_TLS_CERT_PEM',
+    // SAC_AUTH_MODES, SAC_TLS_CLIENT_CERT_HEADER and SAC_TLS_CLIENT_CA_PEM are no longer gaps:
+    // azure/main.bicep passes all three to the ingest-api app (the ADR 0020 forwarded x509 path).
+    // The DPoP half of ADR 0020 is still unwired — it needs the token key control-api signs with,
+    // and the issuer/audience it advertises.
+    SAC_DPOP_TOKEN_PUBLIC_PEM: 'gap: the access-token verification key; the deployment serves x509 only today',
+    SAC_DPOP_ISSUER: 'gap: the DPoP access token `iss` the origin would require',
+    SAC_DPOP_AUDIENCE: 'gap: the DPoP access token `aud` the origin would require',
   },
   'content-vault': {
     SAC_HTTP_ADDR: 'image: a container binds 0.0.0.0',
@@ -135,8 +136,9 @@ const EXTENSIONS = {
     SAC_CREDENTIAL_TTL: 'image: the default life of an issued device credential',
     SAC_ENROLMENT_TOKEN_TTL: 'image: the default life an operator-minted enrolment token would carry; the request path only verifies tokens the MDM profile delivered',
     SAC_REGION: 'gap: §12 region pinning is inert until the deployment passes the region',
-    SAC_CA_CERT_PEM: 'gap (ADR 0020 decision 3): the LocalCA certificate as PEM text, for the module keyVaultEnv to inject; every app in azure/main.bicep has keyVaultEnv: [] today',
-    SAC_CA_KEY_PEM: 'gap (ADR 0020 decision 3): the LocalCA private key — see SAC_CA_CERT_PEM',
+    // SAC_CA_CERT_PEM and SAC_CA_KEY_PEM are no longer gaps: azure/main.bicep passes both to the
+    // control-api app from the sac-device-ca-cert / sac-device-ca-key secrets (the product-issued
+    // x509 model). Removing them here means dropping them from the Bicep fails rule B, not silently.
     SAC_TOKEN_ISSUER: 'gap (§5.2): the `iss` of issued access tokens; the deployment passes none',
     SAC_TOKEN_AUDIENCE: 'gap (§5.2): the `aud` of issued access tokens — see SAC_TOKEN_ISSUER',
     SAC_DPOP_TOKEN_KEY_PEM: 'gap: the access-token signing key. The binary refuses to start without it; no deployment injects it yet',

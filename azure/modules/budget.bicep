@@ -30,12 +30,11 @@ param alertOnForecast bool = true
 @description('First day of the budget period, yyyy-MM-01. Defaults to the current month at deployment: utcNow is allowed only as a parameter default, and a redeploy re-states the same budget.')
 param startDate string = utcNow('yyyy-MM-01')
 
-@description('Tags applied to the budget resource.')
-param tags object = {}
-
+// No `tags` here: Microsoft.Consumption/budgets has no top-level tags property (the ARM schema
+// exposes only eTag, name, properties and scope). Tags for cost allocation live on the resources the
+// budget watches; the budget is scoped to the environment's resource group instead.
 resource budget 'Microsoft.Consumption/budgets@2023-11-01' = {
   name: '${baseName}-budget'
-  tags: tags
   properties: {
     category: 'Cost'
     amount: amount

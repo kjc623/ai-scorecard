@@ -262,10 +262,16 @@ module keyVault 'modules/keyvault.bicep' = {
         principalId: identityControl.properties.principalId
         roleDefinitionId: 'secretsUser'
       }
+      // ingest-api reads exactly one secret: the device CA bundle it re-verifies forwarded
+      // certificates against (SAC_TLS_CLIENT_CA_PEM). A **secrets-read** role, never a crypto role —
+      // `Key Vault Crypto Service Encryption User` includes key unwrap, so giving it to ingest-api
+      // would let a compromised ingest-api unwrap per-tenant KEKs, breaking the "unwrap is
+      // content-vault's alone" rule of §5.3/C15/D7. See docs/05 §5.3 and the separation-of-duties
+      // tests in azure/tools.
       {
         name: 'ingest-api'
         principalId: identityIngest.properties.principalId
-        roleDefinitionId: 'cryptoServiceEncryption'
+        roleDefinitionId: 'secretsUser'
       }
       {
         name: 'application-gateway'
@@ -431,8 +437,22 @@ module ingestApp 'modules/container-app.bicep' = {
       { name: 'SAC_PG_DATABASE', value: postgresDatabases[0] }
       { name: 'SAC_BLOB_CIPHERTEXT_ENDPOINT', value: ciphertext.outputs.blobEndpoint }
       { name: 'SAC_APPINSIGHTS', value: logAnalytics.outputs.appInsightsConnectionString }
+      // ADR 0020 decision 2: Application Gateway terminates the device TLS handshake and forwards
+      // the presented certificate in X-Client-Cert; the origin is the authority and re-verifies the
+      // chain. Naming the mode explicitly means a request cannot be admitted by inference, and the
+      // binary refuses to start if the CA bundle below is missing rather than serving an unverified
+      // chain. The forwarded path needs no server key pair, so ingest stays plaintext behind the
+      // origin lock and the module's HTTP probe remains correct (ADR 0019 mechanism B).
+      { name: 'SAC_AUTH_MODES', value: 'x509' }
+      { name: 'SAC_TLS_CLIENT_CERT_HEADER', value: 'X-Client-Cert' }
     ]
-    keyVaultEnv: []
+    keyVaultEnv: [
+      // The CA bundle that must have signed the device certificates (docs/02 §2.1). Read by the
+      // app's identity; the secret is public trust material, but Key Vault is how the deployment
+      // delivers it (there is no file mount used here). It must be the same CA control-api issues
+      // device leaves from, or every enrolment is refused here.
+      { name: 'SAC_TLS_CLIENT_CA_PEM', keyVaultUrl: '${keyVaultSecretsUri}/sac-device-ca-cert', identity: identityIngest.id }
+    ]
     tags: tags
   }
 }
@@ -487,6 +507,14 @@ module controlApp 'modules/container-app.bicep' = {
       // Seals every *_enc column (OIDC client secrets, SCIM resources, tenants' user-reference keys).
       // Losing it makes those unreadable, and the user-reference keys cannot be re-provisioned.
       { name: 'SAC_DIRECTORY_KEY', keyVaultUrl: '${keyVaultSecretsUri}/sac-directory-key', identity: identityControl.id }
+      // The device certificate authority (ADR 0020 decision 3, the product-issued model): the CA
+      // that signs x509 device leaves, and its private key. The same certificate is delivered to
+      // ingest-api as its device-CA trust bundle, which re-verifies the forwarded leaf against it, so
+      // the two must be the same CA or every enrolment is refused at the origin. The key never leaves
+      // Key Vault except into this app's secret reference; losing the pair means every enrolled
+      // device's credential can no longer be re-verified until it re-enrols.
+      { name: 'SAC_CA_CERT_PEM', keyVaultUrl: '${keyVaultSecretsUri}/sac-device-ca-cert', identity: identityControl.id }
+      { name: 'SAC_CA_KEY_PEM', keyVaultUrl: '${keyVaultSecretsUri}/sac-device-ca-key', identity: identityControl.id }
     ]
     keyVaultFiles: [
       { secretName: 'sac-session-signing-key', keyVaultUrl: '${keyVaultSecretsUri}/sac-session-signing-key', identity: identityControl.id }
@@ -767,7 +795,6 @@ module budget 'modules/budget.bicep' = {
     amount: monthlyBudgetAmount
     resourceGroupFilter: resourceGroup().id
     contactEmails: alertEmails.sev1
-    tags: tags
   }
 }
 

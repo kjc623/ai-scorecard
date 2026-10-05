@@ -418,15 +418,16 @@ policy signing, TLS) with no key serving two purposes; per-tenant KEK naming tha
 identifier so a key inventory can be reconciled against the tenant table; and a CI policy assertion that
 fails the build if any principal other than `content-vault` holds unwrap on a KEK.
 
-**As built:** the declared assignments do not yet meet the "exactly one identity" rule. Alongside
-`content-vault`'s `Key Vault Crypto User`, `azure/main.bicep` (lines 242–246) assigns `ingest-api`'s
-identity the `cryptoServiceEncryption` operational role at vault scope, which
-`azure/modules/keyvault.bicep` (lines 47 and 96) resolves to `Key Vault Crypto Service Encryption
-User`. That built-in role's data actions are understood to include key wrap and unwrap; the role
-definition is not in the repository and has not been confirmed against a subscription. The CI
-assertion (`azure/pipelines/policy-scan.yml`, `separation-of-duties`) inspects only
-`unwrapPrincipalIds`, so it passes with this assignment in place. The rule stands; the assignment is
-what has to change.
+**As built:** the assignment has been corrected. `azure/main.bicep` gives `ingest-api`'s identity the
+`secretsUser` operational role — it reads exactly one secret, the device CA bundle it re-verifies
+forwarded certificates against — and no crypto role. It no longer holds `cryptoServiceEncryption`,
+whose `Key Vault Crypto Service Encryption User` definition is understood to include key wrap and
+unwrap; a compromised `ingest-api` therefore cannot unwrap a per-tenant KEK. `content-vault` remains
+the only principal in `unwrapPrincipalIds`, and `azure/tools/check-infra.test.mjs` now asserts both
+that no operational assignment uses `cryptoServiceEncryption` and that `ingest-api` holds the
+secrets-read role it needs. The CI assertion (`azure/pipelines/policy-scan.yml`,
+`separation-of-duties`) still inspects only `unwrapPrincipalIds`; the static suite is the check that
+covers the operational path.
 
 **Customer-held keys.** Where a customer supplies the key material, the tenant's KEK lives in Managed
 HSM under a key policy whose quorum the vendor cannot satisfy alone. Destroying it destroys the
@@ -451,10 +452,18 @@ is a far wider audience than the secret's blast radius.
 **As built:** the module supports Key Vault references (`keyVaultEnv` in
 `azure/modules/container-app.bicep`) and secrets mounted as files (`keyVaultFiles`). `control-api` uses
 both — the internal token and the directory key as references, the session-signing and policy-signing
-keys as files — and the `dashboard` reads the internal token; every other app passes
-`keyVaultEnv: []`, and the environment variables it does pass are non-secret coordinates. The
-consequence is recorded in ADR 0019: `ingest-api` needs its TLS certificate, key and device-CA bundle
-delivered this way, so a deployed container today "cannot authenticate a device".
+keys as files — and the `dashboard` reads the internal token. `ingest-api` now reads the device CA
+bundle (`SAC_TLS_CLIENT_CA_PEM`, Key Vault secret `sac-device-ca-cert`), names its mode
+(`SAC_AUTH_MODES=x509`) and the edge-forwarded certificate header (`SAC_TLS_CLIENT_CERT_HEADER=
+X-Client-Cert`): the ADR 0020 forwarded path, where Application Gateway terminates the device TLS
+handshake and the origin re-verifies the forwarded chain. On the forwarded path the origin needs no
+server key pair, so `ingest-api` still serves plaintext behind the origin lock and the module's HTTP
+probe remains correct. `control-api` **signs** those leaves with the same CA: it reads the key pair as
+`SAC_CA_CERT_PEM` / `SAC_CA_KEY_PEM` from the `sac-device-ca-cert` / `sac-device-ca-key` secrets, so a
+device now completes enrolment end to end with no customer PKI. What remains unwired is the optional
+DPoP mode — its token key on `control-api` and the verification key on `ingest-api` — and the CA key is
+signed with in-process from a Key Vault secret rather than resident in an HSM (§5.3); the remaining app
+environment variables stay non-secret coordinates.
 
 ---
 

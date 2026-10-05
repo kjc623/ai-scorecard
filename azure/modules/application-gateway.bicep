@@ -130,7 +130,12 @@ resource wafPolicy 'Microsoft.Network/ApplicationGatewayWebApplicationFirewallPo
   }
 }
 
-resource gateway 'Microsoft.Network/applicationGateways@2023-09-01' = {
+// 2025-03-01, not an earlier version: `verifyClientAuthMode` (the passthrough listener above) is not
+// a property of ApplicationGatewayClientAuthConfiguration before this API version, so on an older
+// version the gateway would compile but the passthrough mode would be ignored at deploy time --
+// a silent failure of ADR 0020 decision 1. The minimum is documented at
+// https://learn.microsoft.com/azure/application-gateway/mutual-authentication-overview.
+resource gateway 'Microsoft.Network/applicationGateways@2025-03-01' = {
   name: gatewayName
   location: location
   tags: tags

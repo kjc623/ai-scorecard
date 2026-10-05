@@ -129,6 +129,12 @@ func (s *Server) handleEnrol(w http.ResponseWriter, r *http.Request) {
 		HTM:     r.Method,
 		HTU:     dpop.HTU(r),
 	}
+	if req.Mode == protocol.AuthModeX509 {
+		// ADR 0022: a customer-issued enrolment registers the certificate the device presented. The
+		// service decides from the tenant whether to use it (customer tenant) or the CSR (product
+		// tenant), so both are offered and only one is consumed.
+		in.ClientChain = s.clientCertificateChain(r)
+	}
 	if req.EnrolmentToken == "" {
 		// The resolver runs only after the service has validated the body, so a malformed body is a
 		// 400 even when no usable credential is presented.
@@ -362,6 +368,36 @@ func (s *Server) resolveCurrent(r *http.Request) (*enrol.Current, error) {
 	}
 	return nil, apierr.New(401, apierr.CodeRevokedDevice,
 		"a re-enrolment must present an enrolment token or the current device credential")
+}
+
+// clientCertificateChain reads the chain a request presented: the peer certificates of a direct-TLS
+// listener, or the chain the edge forwards as X-Client-Cert (leaf first). It is what an ADR 0022
+// customer-issued enrolment registers; the service verifies it, this only parses it.
+func (s *Server) clientCertificateChain(r *http.Request) []*x509.Certificate {
+	if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
+		return r.TLS.PeerCertificates
+	}
+	header := r.Header.Get(protocol.HeaderClientCert)
+	if header == "" {
+		return nil
+	}
+	if unescaped, err := url.QueryUnescape(header); err == nil && strings.Contains(unescaped, "-----BEGIN") {
+		header = unescaped
+	}
+	var out []*x509.Certificate
+	for {
+		block, rest := pem.Decode([]byte(header))
+		if block == nil {
+			break
+		}
+		if block.Type == "CERTIFICATE" {
+			if cert, err := x509.ParseCertificate(block.Bytes); err == nil {
+				out = append(out, cert)
+			}
+		}
+		header = string(rest)
+	}
+	return out
 }
 
 func (s *Server) clientCertificate(r *http.Request) *x509.Certificate {

@@ -154,20 +154,20 @@ func TestEveryReadNameIsEitherPassedOrDocumented(t *testing.T) {
 		EnvSchema:     "the image stores the contract schema at a path a container can read; the repository path does not exist inside one",
 		EnvRoutesFile: "same as SAC_SCHEMA: ref.route_fidelity is shipped in the image as data, never compiled in (§4.4)",
 	}
+	// EnvAuthModes, EnvTLSClientCertHeader and EnvTLSClientCAPEM are deliberately absent: the
+	// deployment now passes all three to this app (azure/main.bicep ingestApp), which is the ADR 0020
+	// forwarded x509 path. The entries that remain are real gaps, reported on every run.
 	deploymentGaps := map[string]string{
 		EnvRegion: "§12's region pinning: the binary refuses a tenant pinned to another region, but infra/main.bicep passes no region, so the check is inert in Azure until it does",
-		EnvTLSCertPEM: "F5: the server certificate as PEM text, for the module's keyVaultEnv to inject. No deployment passes it yet " +
-			"(every app in infra/main.bicep has keyVaultEnv: []), so the device-facing listener still cannot be given mTLS material in a container",
-		EnvTLSKeyPEM:      "F5: the server private key as PEM text — see " + EnvTLSCertPEM,
-		EnvTLSClientCAPEM: "F5: the CA that must have signed the device certificates, as PEM text — see " + EnvTLSCertPEM,
-		// ADR 0020 decision 2 adds the authenticator mode set and the DPoP material. infra/main.bicep
-		// passes none of them yet, so Azure still serves only the legacy inference; a deployment that
-		// wants DPoP must be given these by the Application Gateway slice before it is usable.
-		EnvAuthModes:           "ADR 0020: the x509,dpop mode list; infra/main.bicep does not pass it, so the binary infers x509 from the material present",
-		EnvTLSClientCertHeader: "ADR 0020: the edge-forwarded certificate header (Application Gateway X-Client-Cert); no deployment passes it yet",
-		EnvDPoPTokenPublicPEM:  "ADR 0020: the access-token signing public key; no deployment passes it yet",
-		EnvDPoPIssuer:          "ADR 0020: the access-token issuer; no deployment passes it yet — see " + EnvDPoPTokenPublicPEM,
-		EnvDPoPAudience:        "ADR 0020: the access-token audience; no deployment passes it yet — see " + EnvDPoPTokenPublicPEM,
+		// The forwarded path needs no server key pair, so only a deployment that terminates client
+		// TLS at the origin (ADR 0019 mechanism A) would pass these.
+		EnvTLSCertPEM: "the server certificate, only for an origin that terminates client TLS itself; the deployment uses the Application Gateway forwarded path",
+		EnvTLSKeyPEM:  "the server private key — see " + EnvTLSCertPEM,
+		// ADR 0020 decision 2's DPoP half: the deployment serves x509 only today, so these are still
+		// unwired. DPoP also needs control-api's token material before it is usable.
+		EnvDPoPTokenPublicPEM: "ADR 0020: the DPoP access-token verification key; the deployment serves x509 only today",
+		EnvDPoPIssuer:         "ADR 0020: the DPoP access token `iss` — see " + EnvDPoPTokenPublicPEM,
+		EnvDPoPAudience:       "ADR 0020: the DPoP access token `aud` — see " + EnvDPoPTokenPublicPEM,
 	}
 
 	var undocumented []string

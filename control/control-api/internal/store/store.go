@@ -34,7 +34,23 @@ type Tenant struct {
 	IngestEnabled   bool
 	ResidencyRegion string
 	DeviceIdentity  protocol.DeviceIdentity
+	// DeviceCAPEM is the tenant's device trust anchor (ADR 0022): the PEM bundle its device
+	// certificates must chain to. Empty means the tenant uses product-issued certificates (the
+	// signer path); non-empty means the customer's PKI/MDM issues them and this service registers
+	// and verifies rather than signs.
+	DeviceCAPEM string
 }
+
+// CredentialOrigin records who issued an x509 credential (ADR 0022). DPoP credentials are always
+// OriginProduct: the product registers the key it is shown.
+type CredentialOrigin string
+
+const (
+	// OriginProduct: control-api signed the leaf from the device's CSR (ADR 0020 decision 3).
+	OriginProduct CredentialOrigin = "product"
+	// OriginCustomer: the customer's PKI/MDM issued the certificate and this service registered it.
+	OriginCustomer CredentialOrigin = "customer"
+)
 
 // Active reports whether the tenant may enrol or obtain a token. A suspended or closed tenant is
 // refused; nothing here silently treats an unknown gate as open.
@@ -100,6 +116,7 @@ type Credential struct {
 	CredentialID        string
 	DeviceID            string
 	Type                protocol.AuthMode
+	Origin              CredentialOrigin
 	PublicKeyThumbprint string
 	PublicKeyJWK        json.RawMessage
 	IssuedAt            time.Time
@@ -125,6 +142,7 @@ type IssueCredential struct {
 	DeviceID            string
 	CredentialID        string
 	Type                protocol.AuthMode
+	Origin              CredentialOrigin
 	PublicKeyThumbprint string
 	PublicKeyJWK        json.RawMessage
 	IssuedAt            time.Time

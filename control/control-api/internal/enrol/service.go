@@ -146,6 +146,12 @@ type Input struct {
 	// against a different request.
 	HTM string
 	HTU string
+	// ClientChain is the certificate chain a customer-issued (ADR 0022) x509 enrolment presented on
+	// the transport: the leaf first, then any intermediates. It is set by the transport (the leaf in
+	// the TLS connection, or the chain Application Gateway forwards as X-Client-Cert); the service
+	// verifies it against the tenant's device trust anchor and never reads a private key. It is
+	// ignored for a product-issued tenant, whose leaf comes from the CSR.
+	ClientChain []*x509.Certificate
 }
 
 // Enrol performs the exchange and returns the credential.
@@ -569,6 +575,16 @@ func (s *Service) issueCredential(ctx context.Context, tenant store.Tenant, devi
 
 	switch req.Mode {
 	case protocol.AuthModeX509:
+		// ADR 0022: a tenant with a device trust anchor issues its own certificates, so this is a
+		// registration, not a signing. The certificate arrived on the transport (ClientChain); the CSR
+		// path is closed for such a tenant, because the two issuance models never mix in one request.
+		if tenant.DeviceCAPEM != "" {
+			if req.CSR != "" {
+				return protocol.IssuedCredential{}, apierr.New(400, apierr.CodeSchemaViolation,
+					"this tenant issues its own device certificates; do not send a csr")
+			}
+			return s.registerCustomerCertificate(ctx, tenant, device, in, now)
+		}
 		csr, err := parseCSR(req.CSR)
 		if err != nil {
 			return protocol.IssuedCredential{}, err
@@ -592,6 +608,7 @@ func (s *Service) issueCredential(ctx context.Context, tenant store.Tenant, devi
 			DeviceID:            device.DeviceID,
 			CredentialID:        credentialID,
 			Type:                protocol.AuthModeX509,
+			Origin:              store.OriginProduct,
 			PublicKeyThumbprint: spkiThumbprint(csr),
 			IssuedAt:            now,
 			ExpiresAt:           issued.NotAfter,
@@ -649,6 +666,7 @@ func (s *Service) issueCredential(ctx context.Context, tenant store.Tenant, devi
 			DeviceID:            device.DeviceID,
 			CredentialID:        credentialID,
 			Type:                protocol.AuthModeDPoP,
+			Origin:              store.OriginProduct,
 			PublicKeyThumbprint: thumbprint,
 			PublicKeyJWK:        jwkJSON,
 			IssuedAt:            now,
@@ -707,5 +725,73 @@ func parseCSR(pemText string) (*x509.CertificateRequest, error) {
 // certificate's SPKI.
 func spkiThumbprint(csr *x509.CertificateRequest) string {
 	sum := sha256.Sum256(csr.RawSubjectPublicKeyInfo)
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// registerCustomerCertificate is the ADR 0022 issuance model: the customer's PKI/MDM issued the
+// certificate and this service only registers and verifies it. The certificate is presented on the
+// transport and arrives as in.ClientChain; the private key never reaches this service, and the
+// signer is never invoked. The credential id and thumbprint are derived from the certificate, the
+// same values the authenticator recomputes from the forwarded leaf, so the two sides agree without
+// sharing state.
+func (s *Service) registerCustomerCertificate(ctx context.Context, tenant store.Tenant, device store.Device, in Input, now time.Time) (protocol.IssuedCredential, error) {
+	if len(in.ClientChain) == 0 {
+		return protocol.IssuedCredential{}, apierr.New(400, apierr.CodeInvalidClientCert,
+			"this tenant issues its own device certificates; present yours on the TLS connection (Application Gateway forwards it as X-Client-Cert)")
+	}
+	leaf, err := verifyClientCertificate(tenant.DeviceCAPEM, in.ClientChain, now)
+	if err != nil {
+		return protocol.IssuedCredential{}, err
+	}
+	if _, err := s.store.IssueCredential(ctx, store.IssueCredential{
+		TenantID:            tenant.TenantID,
+		DeviceID:            device.DeviceID,
+		CredentialID:        protocol.CredentialID(leaf.Raw),
+		Type:                protocol.AuthModeX509,
+		Origin:              store.OriginCustomer,
+		PublicKeyThumbprint: certSPKIThumbprint(leaf),
+		IssuedAt:            now,
+		ExpiresAt:           leaf.NotAfter,
+		RevokedAt:           now,
+	}); err != nil {
+		return protocol.IssuedCredential{}, apierr.Internal(fmt.Errorf("issue credential: %w", err))
+	}
+	// The device already holds the leaf and its key, so nothing is returned but the mode and the
+	// expiry: there is no certificate to hand back.
+	return protocol.IssuedCredential{Mode: protocol.AuthModeX509, NotAfter: leaf.NotAfter}, nil
+}
+
+// verifyClientCertificate verifies a presented device certificate chain against the tenant's device
+// trust anchor (ADR 0022). The anchor is the customer's issuing CA bundle; the leaf must carry the
+// clientAuth EKU and be inside its validity window. Possession of the private key is proven by the
+// TLS handshake the edge terminated; the origin re-verifies the chain, so a certificate that chains
+// to another tenant's CA is refused here.
+func verifyClientCertificate(anchorPEM string, chain []*x509.Certificate, now time.Time) (*x509.Certificate, error) {
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM([]byte(anchorPEM)) {
+		return nil, apierr.Internal(errors.New("the tenant's device_ca_pem holds no certificates"))
+	}
+	intermediates := x509.NewCertPool()
+	for _, c := range chain[1:] {
+		intermediates.AddCert(c)
+	}
+	leaf := chain[0]
+	if _, err := leaf.Verify(x509.VerifyOptions{
+		Roots:         roots,
+		Intermediates: intermediates,
+		CurrentTime:   now,
+		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}); err != nil {
+		return nil, apierr.New(401, apierr.CodeInvalidClientCert,
+			"the presented device certificate did not verify against this tenant's trust anchor")
+	}
+	return leaf, nil
+}
+
+// certSPKIThumbprint is the x509 transport binding computed from a presented certificate: SHA-256
+// over its SubjectPublicKeyInfo, base64url without padding. It is the same value ingest-api's
+// certificateSPKIThumbprint recomputes from the forwarded leaf.
+func certSPKIThumbprint(leaf *x509.Certificate) string {
+	sum := sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
 	return base64.RawURLEncoding.EncodeToString(sum[:])
 }

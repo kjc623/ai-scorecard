@@ -9,11 +9,18 @@ environment may differ on, three pipelines, and a static checker that validates 
 
 Nothing in this directory has ever been deployed. There is no Azure subscription, so:
 
-- the Bicep **compiles** (`az bicep build --file azure/main.bicep`, Bicep CLI 0.47.16, 2026-10-05: no
-  errors, 35 warnings). Compiling fixed six modules that had never compiled. The warnings that remain
-  include property names the type definitions do not know (`verifyClientAuthMode` on the gateway,
-  `requestBodyInspectLimitInKB` on the WAF policy, `authConfig` on the unused Static Web App module),
-  so a wrong resource property is still a real possibility until a `validate` runs against Azure;
+- the Bicep **compiles** (`az bicep build --file azure/main.bicep`, Bicep CLI 0.48.1, 2026-10-05: no
+  errors, 32 warnings). Compiling fixed six modules that had never compiled. Reconciling the warnings
+  found three real defects rather than type-definition noise: `verifyClientAuthMode` on the
+  Application Gateway is not a property of the client-auth configuration before API `2025-03-01`, so
+  on the old version the passthrough listener would have compiled but silently not applied (the
+  module now pins `2025-03-01`); `requestBodyInspectLimitInKB` is an **Application Gateway** WAF
+  setting and does not exist on Front Door's policy (removed); and `Microsoft.Consumption/budgets`
+  has no top-level `tags` property (removed). The warnings that remain are the linter's
+  (`use-parent-property`, `prefer-unquoted-property-names`, four unused parameters, three hardcoded
+  private-DNS suffixes) and five `BCP318` notices about conditionally deployed modules that a
+  reviewer can see are guarded by the same condition. A `validate` against a real subscription is
+  still what confirms the rest;
 - no resource has been created, so no `what-if` output, no idempotency check and no `existing`-resource
   behaviour has been observed;
 - the prices in `cost-model.md` have **not** been checked against the Azure pricing calculator;
@@ -50,9 +57,10 @@ Preconditions, all of which must hold before the commands mean anything:
    registry's private endpoint, and a missing image is a failed revision, not a failed deployment.
 
 Before the first deployment, create the four identity secrets control-api and the dashboard read
-from the environment's Key Vault (`<baseName>-kv`). Values are generated, never committed, and the
-directory key and the policy key must be kept: losing the first makes every sealed column unreadable,
-and the second's public half is the trust anchor shipped in the agent MSI.
+from the environment's Key Vault (`<baseName>-kv`), plus the device-trust secret the origin reads.
+Values are generated, never committed, and the directory key and the policy key must be kept: losing
+the first makes every sealed column unreadable, and the second's public half is the trust anchor
+shipped in the agent MSI.
 
 ```powershell
 $kv = 'sac-prod-eastus-kv'
@@ -63,6 +71,16 @@ az keyvault secret set --vault-name $kv --name sac-policy-signing-key --file pol
 az keyvault secret set --vault-name $kv --name sac-internal-token --value (openssl rand -base64 32)
 az keyvault secret set --vault-name $kv --name sac-directory-key --value (openssl rand -base64 32)
 Remove-Item session.key, policy.key
+
+# The product device certificate authority (ADR 0020 decision 3). control-api SIGNS x509 device leaves
+# with it (SAC_CA_CERT_PEM / SAC_CA_KEY_PEM) and ingest-api RE-VERIFIES the forwarded leaf against the
+# certificate (SAC_TLS_CLIENT_CA_PEM), so both sides must receive the same CA. Generate the pair once
+# and keep it: rotating the CA invalidates every enrolled credential until devices re-enrol.
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out device-ca.key
+openssl req -x509 -new -key device-ca.key -days 3650 -subj "/CN=Shadow AI Capture Device CA" -out device-ca.pem
+az keyvault secret set --vault-name $kv --name sac-device-ca-cert --file device-ca.pem
+az keyvault secret set --vault-name $kv --name sac-device-ca-key  --file device-ca.key
+Remove-Item device-ca.key, device-ca.pem
 ```
 
 After it, add control-api's managed identity as a federated credential on the vendor's multi-tenant
@@ -107,7 +125,7 @@ purge protection). Those queries are not in this directory yet: `azure/pipelines
 ## How to check the infrastructure without Azure
 
 ```powershell
-node --test azure/tools/index.mjs        # the suite: 38 checks
+node --test azure/tools/index.mjs        # the suite: 47 checks
 node --test azure/tools/check-infra.test.mjs   # the same suite, named directly
 node azure/tools/check-infra.mjs         # the same checks as a report, exit 1 on a finding
 ```

@@ -44,7 +44,9 @@ var exclusionOverrides = [for ex in exclusions: {
   ]
 }]
 
-resource wafPolicy 'Microsoft.Network/frontDoorWebApplicationFirewallPolicies@2024-02-01' = {
+// A typed API version (Bicep has no type index for 2024-09-01..2025-01-01 or 2025-04-01+, so those
+// would deploy unvalidated). 2025-03-01 is the newest version Bicep can check.
+resource wafPolicy 'Microsoft.Network/frontDoorWebApplicationFirewallPolicies@2025-03-01' = {
   name: 'waf-policy'
   location: 'global'
   tags: tags
@@ -56,7 +58,10 @@ resource wafPolicy 'Microsoft.Network/frontDoorWebApplicationFirewallPolicies@20
       enabledState: 'Enabled'
       mode: wafMode
       requestBodyCheck: 'Enabled'
-      requestBodyInspectLimitInKB: 128 // prompt bodies are inspected for shape, not retained; the limit bounds edge work
+      // No requestBodyInspectLimitInKB: that setting belongs to the Application Gateway WAF policy,
+      // not Front Door's. Front Door's policySettings has no body-size limit (the platform fixed it);
+      // body inspection is controlled by requestBodyCheck above. The previous key was silently
+      // accepted by no typed API version -- it would have been dropped (or failed) at deploy time.
       customBlockResponseStatusCode: 403
       customBlockResponseBody: null
       javascriptChallengeExpirationInMinutes: 30

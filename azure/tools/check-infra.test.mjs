@@ -211,6 +211,52 @@ test('Application Gateway is the device edge: passthrough auth, X-Client-Cert re
   assert.match(agw, /QueryUnescape/, 'the module must document the encoding assumption against the origin');
 });
 
+test('the Application Gateway runs an API version that supports passthrough client auth', () => {
+  const agw = byRel.get('modules/application-gateway.bicep').text;
+  const m = stripComments(agw).match(/applicationGateways@(\d{4}-\d{2}-\d{2})/);
+  assert.ok(m, 'the gateway resource must declare an applicationGateways API version');
+  // `verifyClientAuthMode` is not a property of ApplicationGatewayClientAuthConfiguration before
+  // 2025-03-01 (https://learn.microsoft.com/azure/application-gateway/mutual-authentication-overview).
+  // On an older version the template still compiles, but ARM does not apply the property, so the
+  // device edge silently stops being passthrough -- an ADR 0020 decision-1 failure with no build error.
+  assert.ok(m[1] >= '2025-03-01', `passthrough client auth needs API 2025-03-01 or later; found ${m[1]}`);
+});
+
+test('ingest-api is given the ADR 0020 device-authentication material', () => {
+  const main = byRel.get('main.bicep').text;
+  const block = main.match(/\nmodule\s+ingestApp[\s\S]*?\n\}/);
+  assert.ok(block, 'the composition must instantiate ingestApp');
+  const ingest = block[0];
+  // Without these the deployed binary refuses to start (its own checkAuthMaterial), which is the
+  // intended failure mode: better a container that will not serve than one that serves everyone.
+  assert.match(ingest, /name:\s*'SAC_AUTH_MODES'[\s\S]*?value:\s*'x509'/, 'ingest-api must name the x509 mode explicitly');
+  assert.match(ingest, /name:\s*'SAC_TLS_CLIENT_CERT_HEADER'[\s\S]*?value:\s*'X-Client-Cert'/, 'the header must match the Application Gateway rewrite');
+  assert.match(ingest, /SAC_TLS_CLIENT_CA_PEM[\s\S]*?sac-device-ca-cert/, 'the device CA bundle must be delivered by Key Vault reference');
+  assert.match(ingest, /keyVaultEnv:\s*\[/, 'the CA bundle arrives through keyVaultEnv, not a plaintext value');
+});
+
+test('control-api signs device leaves with the same CA ingest-api trusts (Shape A)', () => {
+  const main = byRel.get('main.bicep').text;
+  const control = main.match(/\nmodule\s+controlApp[\s\S]*?\n\}/);
+  assert.ok(control, 'the composition must instantiate controlApp');
+  // The product-issued x509 model: control-api holds the CA key pair (sign), ingest-api holds the
+  // certificate (verify). They must be the same CA, delivered from the same Key Vault secrets.
+  assert.match(control[0], /SAC_CA_CERT_PEM[\s\S]*?sac-device-ca-cert/, 'control-api must read the device CA certificate');
+  assert.match(control[0], /SAC_CA_KEY_PEM[\s\S]*?sac-device-ca-key/, 'control-api must read the device CA private key');
+  const ingest = main.match(/\nmodule\s+ingestApp[\s\S]*?\n\}/);
+  assert.ok(ingest, 'the composition must instantiate ingestApp');
+  assert.match(ingest[0], /SAC_TLS_CLIENT_CA_PEM[\s\S]*?sac-device-ca-cert/, 'ingest-api must trust the same device CA certificate');
+});
+
+test("Front Door's WAF policy does not set the Application-Gateway-only body limit", () => {
+  const waf = byRel.get('modules/waf.bicep').text;
+  // `requestBodyInspectLimitInKB` belongs to ApplicationGatewayWebApplicationFirewallPolicies, not
+  // FrontDoorWebApplicationFirewallPolicies; Front Door's PolicySettings has no such key and would
+  // drop it. Body inspection is controlled by requestBodyCheck.
+  assert.doesNotMatch(stripComments(waf), /requestBodyInspectLimitInKB/, 'Front Door has no configurable body-inspect limit');
+  assert.match(waf, /requestBodyCheck\s*:\s*'Enabled'/, 'body inspection must be enabled via requestBodyCheck');
+});
+
 test('the origin-lock NSG admits only the gateway subnet and the private-endpoint subnet', () => {
   const net = byRel.get('modules/network.bicep').text;
   assert.match(net, /name: 'application-gateway'/, 'network.bicep must declare the Application Gateway subnet');
@@ -229,6 +275,26 @@ test('unwrap is held by exactly one identity, and it is content-vault', () => {
   assert.match(ids[0], /identityVault\.properties\.principalId/);
   const vaultMod = byRel.get('modules/keyvault.bicep').text;
   assert.equal((stripComments(vaultMod).match(/roleKeyVaultCryptoUser/g) ?? []).length, 2, 'the unwrap role definition is used in one resource and one variable declaration');
+});
+
+test('no service holds a Key Vault operational role that includes unwrap', () => {
+  const main = byRel.get('main.bicep').text;
+  const block = main.match(/operationalRoleAssignments:\s*\[([\s\S]*?)unwrapPrincipalIds:/);
+  assert.ok(block, 'main.bicep must pass operationalRoleAssignments ahead of unwrapPrincipalIds');
+  // Key Vault Crypto Service Encryption User includes keys/wrap and keys/unwrap. The
+  // unwrapPrincipalIds test above cannot see it, because it inspects a different parameter -- yet
+  // granting it to a service other than content-vault is exactly the C15/D7 violation. ingest-api
+  // carried this assignment once; only `secretsUser` may appear on the operational path.
+  assert.doesNotMatch(stripComments(block[1]), /cryptoServiceEncryption/, 'the operational path may not grant a role that includes unwrap');
+});
+
+test('ingest-api holds a Key Vault secrets read for the device CA, and no crypto role', () => {
+  const main = byRel.get('main.bicep').text;
+  const block = main.match(/operationalRoleAssignments:\s*\[([\s\S]*?)unwrapPrincipalIds:/);
+  assert.ok(block, 'main.bicep must pass operationalRoleAssignments ahead of unwrapPrincipalIds');
+  const ops = stripComments(block[1]);
+  assert.match(ops, /name:\s*'ingest-api'[\s\S]*?roleDefinitionId:\s*'secretsUser'/, 'ingest-api needs a secrets read for SAC_TLS_CLIENT_CA_PEM');
+  assert.ok((ops.match(/roleDefinitionId:\s*'secretsUser'/g) ?? []).length >= 2, 'the read role is shared, not unique to one service');
 });
 
 // ---------------------------------------------------------------------------------------------

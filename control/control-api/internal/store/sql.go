@@ -31,7 +31,7 @@ const (
 	SQLSetTenant = `SELECT set_config('app.tenant_id', $1, true)`
 
 	// SQLTenant resolves the tenant's lifecycle state, pinned region and identity setting. $1 tenant.
-	SQLTenant = `SELECT status, ingest_enabled, residency_region, device_identity
+	SQLTenant = `SELECT status, ingest_enabled, residency_region, device_identity, device_ca_pem
   FROM ops.tenant
  WHERE tenant_id = $1::uuid`
 
@@ -97,14 +97,14 @@ UPDATE ops.device_credential
 	// public_key_thumbprint is the single binding for both modes ($6 is NULL for x509).
 	SQLInsertCredential = `
 INSERT INTO ops.device_credential (tenant_id, credential_id, device_id, credential_type,
-                                   public_key_thumbprint, public_key_jwk, issued_at, expires_at)
-VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6::jsonb, $7::timestamptz, $8::timestamptz)
-RETURNING tenant_id, credential_id, device_id, credential_type, public_key_thumbprint,
+                                   credential_origin, public_key_thumbprint, public_key_jwk, issued_at, expires_at)
+VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7::jsonb, $8::timestamptz, $9::timestamptz)
+RETURNING tenant_id, credential_id, device_id, credential_type, credential_origin, public_key_thumbprint,
           public_key_jwk, issued_at, expires_at, revoked_at`
 
 	// SQLDeviceCredential reads one credential by id.
 	SQLDeviceCredential = `
-SELECT tenant_id, credential_id, device_id, credential_type, public_key_thumbprint,
+SELECT tenant_id, credential_id, device_id, credential_type, credential_origin, public_key_thumbprint,
        public_key_jwk, issued_at, expires_at, revoked_at
   FROM ops.device_credential
  WHERE tenant_id = $1::uuid AND credential_id = $2::uuid`
@@ -112,7 +112,7 @@ SELECT tenant_id, credential_id, device_id, credential_type, public_key_thumbpri
 	// SQLDeviceCredentialByDevice reads the device's live credential: the one a re-enrolment or a
 	// token request authenticates against.
 	SQLDeviceCredentialByDevice = `
-SELECT tenant_id, credential_id, device_id, credential_type, public_key_thumbprint,
+SELECT tenant_id, credential_id, device_id, credential_type, credential_origin, public_key_thumbprint,
        public_key_jwk, issued_at, expires_at, revoked_at
   FROM ops.device_credential
  WHERE tenant_id = $1::uuid AND device_id = $2::uuid AND revoked_at IS NULL
@@ -165,9 +165,10 @@ func (s *SQLStore) Close() error { return s.db.Close() }
 // Tenant implements Store.
 func (s *SQLStore) Tenant(ctx context.Context, tenantID string) (Tenant, error) {
 	var t Tenant
+	var ca sql.NullString
 	err := s.withTenant(ctx, tenantID, func(tx *sql.Tx) error {
 		err := tx.QueryRowContext(ctx, SQLTenant, tenantID).
-			Scan(&t.Status, &t.IngestEnabled, &t.ResidencyRegion, &t.DeviceIdentity)
+			Scan(&t.Status, &t.IngestEnabled, &t.ResidencyRegion, &t.DeviceIdentity, &ca)
 		if err == sql.ErrNoRows {
 			return ErrUnknownTenant
 		}
@@ -175,6 +176,9 @@ func (s *SQLStore) Tenant(ctx context.Context, tenantID string) (Tenant, error) 
 			return fmt.Errorf("store: tenant: %w", err)
 		}
 		t.TenantID = tenantID
+		if ca.Valid {
+			t.DeviceCAPEM = ca.String
+		}
 		return nil
 	})
 	if err != nil {
@@ -297,7 +301,7 @@ func (s *SQLStore) IssueCredential(ctx context.Context, in IssueCredential) (Cre
 		}
 		var err error
 		out, err = scanCredential(tx.QueryRowContext(ctx, SQLInsertCredential,
-			in.TenantID, in.CredentialID, in.DeviceID, string(in.Type),
+			in.TenantID, in.CredentialID, in.DeviceID, string(in.Type), string(in.Origin),
 			in.PublicKeyThumbprint, jwk, in.IssuedAt, in.ExpiresAt))
 		if err != nil {
 			return fmt.Errorf("store: insert credential: %w", err)
@@ -378,14 +382,15 @@ type rowScanner interface {
 
 func scanCredential(row rowScanner) (Credential, error) {
 	var c Credential
-	var credType string
+	var credType, origin string
 	var jwk []byte
 	var revoked sql.NullTime
-	if err := row.Scan(&c.TenantID, &c.CredentialID, &c.DeviceID, &credType,
+	if err := row.Scan(&c.TenantID, &c.CredentialID, &c.DeviceID, &credType, &origin,
 		&c.PublicKeyThumbprint, &jwk, &c.IssuedAt, &c.ExpiresAt, &revoked); err != nil {
 		return Credential{}, err
 	}
 	c.Type = protocol.AuthMode(credType)
+	c.Origin = CredentialOrigin(origin)
 	if len(jwk) > 0 {
 		c.PublicKeyJWK = json.RawMessage(jwk)
 	}

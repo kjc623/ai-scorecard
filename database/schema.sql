@@ -298,6 +298,14 @@ CREATE TABLE ops.tenant (
   device_verification          text NOT NULL DEFAULT 'none'
                                  CONSTRAINT tenant_device_verification_known
                                  CHECK (device_verification IN ('none','intune')),
+  -- The tenant's device trust anchor (ADR 0022): the PEM bundle its DEVICE certificates must chain
+  -- to. NULL means the tenant uses product-issued certificates (control-api's CertificateSigner,
+  -- ADR 0020 decision 3). Non-NULL means the customer issues device certificates from its own
+  -- PKI/MDM -- Intune Cloud PKI, ADCS, Jamf -- and control-api only REGISTERS and VERIFIES them. It
+  -- is public trust material, not a secret, so it is not sealed; it is per tenant because each
+  -- customer's PKI has its own issuing CA. The origin re-verifies a forwarded certificate against
+  -- the anchor of the tenant the credential belongs to (section 5c's device-credential resolver).
+  device_ca_pem                text,
   -- The two enforcement gates, deliberately separate from the commercial lifecycle in `status`.
   --
   -- The product owner's rule is that nothing is automated: a human decides. That makes the
@@ -482,6 +490,13 @@ CREATE TABLE ops.device_credential (
   -- The mode is a property of the credential, not of the deployment, because one gateway serves
   -- a mixed fleet. Defaults to x509 so the existing certificate path is unchanged.
   credential_type      text NOT NULL DEFAULT 'x509' CHECK (credential_type IN ('x509','dpop')),
+  -- Who issued the credential, and therefore whether control-api's signer may ever be invoked for
+  -- it (ADR 0022). 'product': control-api signed a leaf from a device CSR. 'customer': the customer's
+  -- PKI/MDM issued the certificate and control-api only registered it. The distinction is recorded
+  -- rather than inferred per request, so an issuance path is never selected by what the wire happens
+  -- to carry. DPoP credentials are always 'product' (the product registers the key it is shown).
+  credential_origin    text NOT NULL DEFAULT 'product'
+                         CHECK (credential_origin IN ('product','customer')),
   -- The single transport-binding value for BOTH modes (ADR 0020 §4): SHA-256 over the certificate
   -- SPKI for x509, SHA-256 over the RFC 7638 JWK thumbprint for dpop. One column, not one per
   -- mode, so the authenticator compares the same field regardless of what the wire presented and
@@ -504,8 +519,23 @@ CREATE TABLE ops.device_credential (
     CHECK (credential_type <> 'dpop' OR public_key_jwk IS NOT NULL)
 );
 
+-- At most one LIVE credential per key, across all tenants (ADR 0022). A key belongs to one device,
+-- and the SPKI thumbprint is a SHA-256 over the public key, so this is safe; it is what lets the
+-- pre-tenant resolver below answer with a single row before the tenant is known. Revoked rows are
+-- exempt so history and rotation survive: IssueCredential revokes the previous row before inserting
+-- the new one in one transaction, so a re-registration with the same key never trips this.
+CREATE UNIQUE INDEX device_credential_live_thumbprint
+  ON ops.device_credential (public_key_thumbprint)
+  WHERE revoked_at IS NULL;
+
+COMMENT ON INDEX ops.device_credential_live_thumbprint IS
+  'One live credential per public key, tenant-wide. The pre-tenant credential resolver (section 5c) depends on this uniqueness; a second live row for one key would make authentication ambiguous.';
+
 COMMENT ON COLUMN ops.device_credential.credential_type IS
   'Which authenticator mode this credential belongs to (ADR 0020 §4): x509 for an X.509 client certificate verified against the configured trust bundle, dpop for an RFC 9449 device-held key. The mode is a property of the credential so a single gateway can serve a mixed fleet.';
+
+COMMENT ON COLUMN ops.device_credential.credential_origin IS
+  'Who issued the credential (ADR 0022): product = control-api signed a leaf from the device CSR; customer = the customer''s PKI/MDM issued the certificate and control-api only registered it. Recorded, never inferred, so the issuance path is explicit.';
 
 COMMENT ON COLUMN ops.device_credential.public_key_jwk IS
   'The registered public key of a DPoP credential, as an RFC 7517 JWK. NULL for x509, where the certificate carries the key; the credential_dpop_requires_jwk CHECK makes a dpop row without one unrepresentable.';
@@ -1347,11 +1377,13 @@ COMMENT ON TABLE ops.deployment_key IS
 --
 -- How they cross tenants, stated because it is the one place in this file that does: they are
 -- SECURITY DEFINER and owned by sac_resolver (section 10), a NOLOGIN role with no members whose only
--- privileges are SELECT on these five tables and a SELECT-only policy on each (section 9). Not the
--- table owner, which is subject to the forced policies like everyone else, and not a BYPASSRLS
--- role, which would let a definer body read any table. search_path is pinned and every name is
--- schema-qualified, so a caller cannot substitute an object. EXECUTE is revoked from PUBLIC and
--- granted to sac_control alone.
+-- privileges are SELECT on the tables they answer from and a SELECT-only policy on each (section 9).
+-- Not the table owner, which is subject to the forced policies like everyone else, and not a
+-- BYPASSRLS role, which would let a definer body read any table. search_path is pinned and every
+-- name is schema-qualified, so a caller cannot substitute an object. EXECUTE is revoked from PUBLIC
+-- and granted only to the roles that need it (sac_control for the identity lookups, and sac_control
+-- plus sac_ingest for the ADR 0022 device-credential resolver, which the origin that authenticates
+-- a forwarded certificate calls).
 CREATE FUNCTION ops.identity_connection_for_entra(p_entra_tenant text)
 RETURNS SETOF ops.identity_connection
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
@@ -1439,6 +1471,38 @@ $$;
 
 COMMENT ON FUNCTION ops.tenant_for_scim_token(text) IS
   'Pre-tenant: the tenant an UNREVOKED SCIM bearer belongs to, or NULL. A revoked token resolves to nothing, so provisioning stops the moment an admin revokes it.';
+
+-- The device credential a presented certificate resolves to, before the tenant is known (ADR 0022).
+-- A customer-issued certificate (Intune Cloud PKI, ADCS, Jamf) cannot carry the product's device_id
+-- and tenant as its subject the way a product-issued leaf does, so the origin cannot read the
+-- identity out of the subject. The certificate's SPKI thumbprint is the transport binding for both
+-- modes (ADR 0020 §4), and the partial unique index in section 5b makes it a key of a LIVE
+-- credential, so this answers with at most one row. The tenant's device trust anchor is returned
+-- alongside, so the caller verifies the chain against the tenant the credential belongs to rather
+-- than against a deployment-wide bundle -- a certificate from one customer's CA never validates
+-- against another's. Returns nothing for a revoked or unregistered credential: a certificate that
+-- was never registered at enrolment cannot authenticate. Expiry is returned, not filtered, so the
+-- caller can report an expired credential as expired rather than as unknown.
+CREATE FUNCTION ops.device_credential_for_thumbprint(p_thumbprint text)
+RETURNS TABLE (
+  tenant_id       uuid,
+  device_id       uuid,
+  credential_id   uuid,
+  credential_type text,
+  expires_at      timestamptz,
+  device_ca_pem   text
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+  SELECT c.tenant_id, c.device_id, c.credential_id, c.credential_type,
+         c.expires_at, t.device_ca_pem
+    FROM ops.device_credential c
+    JOIN ops.tenant t ON t.tenant_id = c.tenant_id
+   WHERE c.public_key_thumbprint = p_thumbprint
+     AND c.revoked_at IS NULL
+$$;
+
+COMMENT ON FUNCTION ops.device_credential_for_thumbprint(text) IS
+  'Pre-tenant (ADR 0022): the LIVE device credential for a certificate''s SPKI thumbprint, with the tenant''s device trust anchor. Returns nothing for a revoked or unregistered credential, so a certificate never registered at enrolment cannot authenticate. Expiry is returned for the caller to enforce.';
 
 
 -- =====================================================================================
@@ -2678,13 +2742,17 @@ CREATE POLICY tenant_isolation ON ops.tenant
   WITH CHECK (tenant_id = ops.current_tenant());
 
 -- The pre-tenant lookups of section 5c read as sac_resolver, which is subject to the policies above
--- like any role. These SELECT-only policies are its whole reach: the five tables those functions
--- answer from, never a write, and nothing a runtime role can use, because none is a member of it.
+-- like any role. These SELECT-only policies are its whole reach: the tables those functions answer
+-- from, never a write, and nothing a runtime role can use, because none is a member of it.
 CREATE POLICY pre_tenant_lookup ON ops.identity_connection FOR SELECT TO sac_resolver USING (true);
 CREATE POLICY pre_tenant_lookup ON ops.tenant_email_domain FOR SELECT TO sac_resolver USING (true);
 CREATE POLICY pre_tenant_lookup ON ops.onboarding_invite   FOR SELECT TO sac_resolver USING (true);
 CREATE POLICY pre_tenant_lookup ON ops.auth_session        FOR SELECT TO sac_resolver USING (true);
 CREATE POLICY pre_tenant_lookup ON ops.scim_token          FOR SELECT TO sac_resolver USING (true);
+-- ADR 0022: the device-credential resolver answers before the tenant is known, so it reads the
+-- credential and the tenant it belongs to across tenants, exactly like the five above.
+CREATE POLICY pre_tenant_lookup ON ops.device_credential   FOR SELECT TO sac_resolver USING (true);
+CREATE POLICY pre_tenant_lookup ON ops.tenant              FOR SELECT TO sac_resolver USING (true);
 
 -- ops.auth_signin has no tenant: an attempt begun with "Sign in with Microsoft" learns its tenant
 -- only from the provider's answer. It is still forced, with a policy for the one role that drives
@@ -2778,11 +2846,12 @@ GRANT DELETE ON ops.tenant_email_domain, ops.role_grant, ops.auth_session, ops.a
       ops.scim_user, ops.scim_group, ops.scim_group_member
   TO sac_control;
 
--- The pre-tenant lookups run as sac_resolver (see section 5c for why). It reads exactly the five
--- tables they answer from; its RLS reach is the SELECT-only pre_tenant_lookup policy on each.
+-- The pre-tenant lookups run as sac_resolver (see section 5c for why). It reads only the tables
+-- they answer from; its RLS reach is the SELECT-only pre_tenant_lookup policy on each.
 GRANT USAGE ON SCHEMA ops TO sac_resolver;
 GRANT SELECT ON ops.identity_connection, ops.tenant_email_domain, ops.onboarding_invite,
-      ops.auth_session, ops.scim_token
+      ops.auth_session, ops.scim_token,
+      ops.device_credential, ops.tenant
   TO sac_resolver;
 ALTER FUNCTION ops.identity_connection_for_entra(text)  OWNER TO sac_resolver;
 ALTER FUNCTION ops.identity_connection_for_issuer(text) OWNER TO sac_resolver;
@@ -2791,18 +2860,23 @@ ALTER FUNCTION ops.tenant_for_email_domain(text)        OWNER TO sac_resolver;
 ALTER FUNCTION ops.onboarding_invite_by_hash(text)      OWNER TO sac_resolver;
 ALTER FUNCTION ops.auth_session_by_hash(bytea)          OWNER TO sac_resolver;
 ALTER FUNCTION ops.tenant_for_scim_token(text)          OWNER TO sac_resolver;
+ALTER FUNCTION ops.device_credential_for_thumbprint(text) OWNER TO sac_resolver;
 -- A function is executable by PUBLIC unless revoked, and these cross tenants, so the default is
 -- taken away before the one grant is made.
 REVOKE EXECUTE ON FUNCTION ops.identity_connection_for_entra(text), ops.identity_connection_for_issuer(text),
       ops.identity_connection_by_id(uuid), ops.tenant_for_email_domain(text),
       ops.onboarding_invite_by_hash(text), ops.auth_session_by_hash(bytea),
-      ops.tenant_for_scim_token(text)
+      ops.tenant_for_scim_token(text), ops.device_credential_for_thumbprint(text)
   FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION ops.identity_connection_for_entra(text), ops.identity_connection_for_issuer(text),
       ops.identity_connection_by_id(uuid), ops.tenant_for_email_domain(text),
       ops.onboarding_invite_by_hash(text), ops.auth_session_by_hash(bytea),
       ops.tenant_for_scim_token(text)
   TO sac_control;
+-- ADR 0022: the device-credential resolver is called by the origin that authenticates a forwarded
+-- certificate, which is ingest-api (sac_ingest), not only control-api. It is the same pre-tenant
+-- pattern and the same grants discipline: revoked from PUBLIC, granted to the two roles that need it.
+GRANT EXECUTE ON FUNCTION ops.device_credential_for_thumbprint(text) TO sac_control, sac_ingest;
 
 -- content-vault: the only role that can read wrapped keys.
 GRANT SELECT, INSERT, UPDATE ON ops.content_object TO sac_vault;

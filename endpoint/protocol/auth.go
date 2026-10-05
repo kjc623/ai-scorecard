@@ -126,9 +126,13 @@ func (m ManagedState) Valid() bool {
 }
 
 // EnrolmentRequest is the /v1/enrol body (docs/02-ingest-and-transport.md §5.1). It is mode-
-// agnostic: an x509 device carries a CSR, a dpop device carries its public JWK, and the unused
-// field is omitted. It carries a hostname and (via DeviceInfo) a managed state; it does not carry
-// a subject name, which rides on each event, not on enrolment.
+// agnostic: a dpop device carries its public JWK, and an x509 device carries EITHER a CSR (the
+// product-issued model, ADR 0020 decision 3) OR no CSR, with its certificate presented on the
+// transport (the customer-issued model, ADR 0022, where the customer's PKI/MDM issued it and the
+// server registers rather than signs). Which x509 variant applies is the tenant's, resolved from
+// the bootstrap credential, so the request does not name it; the unused field is omitted. It carries
+// a hostname and (via DeviceInfo) a managed state; it does not carry a subject name, which rides on
+// each event, not on enrolment.
 //
 // A first enrolment presents exactly one bootstrap credential: EnrolmentToken, the short-lived
 // single-use token the lab mints per device, or DeploymentKey, the reusable per-tenant key a

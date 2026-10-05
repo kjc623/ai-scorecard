@@ -6,8 +6,10 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"math/big"
 	"testing"
 	"time"
 
@@ -481,5 +483,156 @@ func TestEnrolmentIdentitySettingGatesTheStoredHostname(t *testing.T) {
 				t.Errorf("stored agent_version = %q, want 1.4.2", dev.AgentVersion)
 			}
 		})
+	}
+}
+
+// newCustomerCA mints a stand-in for a customer's issuing CA (e.g. Intune Cloud PKI): a self-signed
+// CA certificate whose private key the product does NOT have. It is the tenant's trust anchor.
+func newCustomerCA(t *testing.T, now time.Time) (*x509.Certificate, *ecdsa.PrivateKey, string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate CA key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "Contoso Intune Cloud PKI Issuing CA"},
+		NotBefore:             now.Add(-time.Hour),
+		NotAfter:              now.Add(24 * 365 * time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create CA: %v", err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("parse CA: %v", err)
+	}
+	pemText := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	return cert, key, string(pemText)
+}
+
+// customerLeaf mints a device certificate the customer's CA issued: a clientAuth leaf whose subject
+// is the machine's MDM name, NOT a product device_id. That is the point of ADR 0022.
+func customerLeaf(t *testing.T, ca *x509.Certificate, caKey *ecdsa.PrivateKey, now time.Time) *x509.Certificate {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate leaf key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: `CONTOSO\LAPTOP-01`},
+		NotBefore:    now.Add(-time.Hour),
+		NotAfter:     now.Add(90 * 24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca, &key.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("create leaf: %v", err)
+	}
+	leaf, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("parse leaf: %v", err)
+	}
+	return leaf
+}
+
+// customerRequest is an x509 enrolment with NO csr: the model ADR 0022 adds.
+func customerRequest(token, hwid string) protocol.EnrolmentRequest {
+	return protocol.EnrolmentRequest{
+		SchemaVersion:  protocol.EnrolmentSchemaVersion,
+		EnrolmentToken: token,
+		Mode:           protocol.AuthModeX509,
+		Device: protocol.DeviceInfo{
+			OS: "windows", OSVersion: "11.0.26100", AgentVersion: "1.4.2", HardwareIdentityHash: hwid,
+		},
+	}
+}
+
+// TestCustomerIssuedCertificateIsRegisteredNotSigned is ADR 0022: a tenant whose devices are issued
+// certificates by the customer's PKI (Intune Cloud PKI) enrols by presenting one; control-api
+// verifies the chain against the tenant's anchor and registers it, and never signs.
+func TestCustomerIssuedCertificateIsRegisteredNotSigned(t *testing.T) {
+	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	ca, caKey, caPEM := newCustomerCA(t, now)
+	tenant := activeTenant(tenantA, regionA)
+	tenant.DeviceCAPEM = caPEM
+	r := newRig(t, tenant, regionA)
+	token := r.addToken(t, tenantA)
+	leaf := customerLeaf(t, ca, caKey, now)
+
+	resp, err := r.svc.Enrol(context.Background(), enrol.Input{
+		Request:     customerRequest(token, "hw-customer"),
+		ClientChain: []*x509.Certificate{leaf},
+	})
+	if err != nil {
+		t.Fatalf("Enrol: %v", err)
+	}
+	if resp.Credential.Mode != protocol.AuthModeX509 {
+		t.Fatalf("credential mode = %q, want x509", resp.Credential.Mode)
+	}
+	// The device already holds the leaf, so nothing is handed back.
+	if resp.Credential.CertPEM != "" || len(resp.Credential.ChainPEM) != 0 {
+		t.Errorf("a customer-issued enrolment returned a signed certificate it did not produce: %+v", resp.Credential)
+	}
+	if !resp.Credential.NotAfter.Equal(leaf.NotAfter) {
+		t.Errorf("not_after = %s, certificate says %s", resp.Credential.NotAfter, leaf.NotAfter)
+	}
+
+	creds := r.store.Credentials()
+	if len(creds) != 1 {
+		t.Fatalf("credentials = %d, want 1", len(creds))
+	}
+	c := creds[0]
+	if c.Type != protocol.AuthModeX509 || c.Origin != store.OriginCustomer {
+		t.Errorf("stored credential = %+v, want x509/customer", c)
+	}
+	if c.CredentialID != protocol.CredentialID(leaf.Raw) {
+		t.Errorf("credential id = %s, want the value derived from the presented certificate", c.CredentialID)
+	}
+	if c.PublicKeyThumbprint == "" || len(c.PublicKeyJWK) != 0 {
+		t.Errorf("stored credential = %+v, want a thumbprint and no jwk", c)
+	}
+}
+
+// TestCustomerTenantRefusesAMixedOrForeignCertificate keeps the two issuance models from mixing and
+// refuses a certificate another CA signed, whatever else the request is valid.
+func TestCustomerTenantRefusesAMixedOrForeignCertificate(t *testing.T) {
+	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	ca, caKey, caPEM := newCustomerCA(t, now)
+	otherCA, otherKey, _ := newCustomerCA(t, now)
+	tenant := activeTenant(tenantA, regionA)
+	tenant.DeviceCAPEM = caPEM
+	r := newRig(t, tenant, regionA)
+
+	// A CSR for a tenant that issues its own certificates is refused, naming the model.
+	req, _, err := x509Request(r.addToken(t, tenantA), "hw-mixed")
+	if err != nil {
+		t.Fatalf("x509Request: %v", err)
+	}
+	if _, err := r.svc.Enrol(context.Background(), enrol.Input{
+		Request: req, ClientChain: []*x509.Certificate{customerLeaf(t, ca, caKey, now)},
+	}); !isCode(err, apierr.CodeSchemaViolation) {
+		t.Fatalf("a customer-issued tenant accepted a csr: err = %v, want %s", err, apierr.CodeSchemaViolation)
+	}
+
+	// No certificate presented: refused, never silently signed by the product CA.
+	if _, err := r.svc.Enrol(context.Background(), enrol.Input{
+		Request: customerRequest(r.addToken(t, tenantA), "hw-nocert"),
+	}); !isCode(err, apierr.CodeInvalidClientCert) {
+		t.Fatalf("a customer-issued tenant enrolled with no certificate: err = %v, want %s", err, apierr.CodeInvalidClientCert)
+	}
+
+	// A certificate from a different CA does not chain to this tenant's anchor.
+	if _, err := r.svc.Enrol(context.Background(), enrol.Input{
+		Request:     customerRequest(r.addToken(t, tenantA), "hw-foreign"),
+		ClientChain: []*x509.Certificate{customerLeaf(t, otherCA, otherKey, now)},
+	}); !isCode(err, apierr.CodeInvalidClientCert) {
+		t.Fatalf("a certificate from another CA authenticated: err = %v, want %s", err, apierr.CodeInvalidClientCert)
 	}
 }

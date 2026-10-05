@@ -267,6 +267,7 @@ func (m *Memory) IssueCredential(_ context.Context, in IssueCredential) (Credent
 		CredentialID:        in.CredentialID,
 		DeviceID:            in.DeviceID,
 		Type:                in.Type,
+		Origin:              in.Origin,
 		PublicKeyThumbprint: in.PublicKeyThumbprint,
 		PublicKeyJWK:        append(json.RawMessage(nil), in.PublicKeyJWK...),
 		IssuedAt:            in.IssuedAt,

@@ -2041,8 +2041,9 @@ BEGIN
   RAISE NOTICE 'PASS T61 tenant_for_scim_token resolves only an unrevoked token';
 END $$;
 
--- T62: the lookups cross tenants, so no role but sac_control may call them, and the pre-tenant
--- sign-in table is sac_control's alone.
+-- T62: the lookups cross tenants, so only the roles that need them may call them (sac_control for
+-- the identity lookups, and sac_ingest as well for the ADR 0022 device-credential resolver -- tested
+-- from sac_query here, which has none), and the pre-tenant sign-in table is sac_control's alone.
 SET ROLE sac_query;
 
 DO $$
@@ -2055,7 +2056,8 @@ DECLARE
     'SELECT count(*) FROM ops.identity_connection_for_issuer(''x'')',
     'SELECT count(*) FROM ops.identity_connection_by_id(gen_random_uuid())',
     'SELECT count(*) FROM ops.onboarding_invite_by_hash(''x'')',
-    'SELECT count(*) FROM ops.auth_session_by_hash(''\x00''::bytea)'];
+    'SELECT count(*) FROM ops.auth_session_by_hash(''\x00''::bytea)',
+    'SELECT count(*) FROM ops.device_credential_for_thumbprint(''x'')'];
 BEGIN
   FOREACH fn IN ARRAY calls LOOP
     BEGIN
@@ -2069,7 +2071,7 @@ BEGIN
     RAISE EXCEPTION 'FAIL T62 sac_query could read ops.auth_signin';
   EXCEPTION WHEN insufficient_privilege THEN NULL;
   END;
-  RAISE NOTICE 'PASS T62 the seven pre-tenant lookups and ops.auth_signin are refused to sac_query';
+  RAISE NOTICE 'PASS T62 the eight pre-tenant lookups and ops.auth_signin are refused to sac_query';
 END $$;
 
 SET ROLE sac_control;
@@ -2086,6 +2088,22 @@ BEGIN
   IF n <> 1 THEN RAISE EXCEPTION 'FAIL T62 sac_control cannot read back its own sign-in attempt'; END IF;
   DELETE FROM ops.auth_signin WHERE attempt_hash = sha256('\x617474656d7074'::bytea);
   RAISE NOTICE 'PASS T62 (cont.) sac_control writes, reads and sweeps ops.auth_signin with no tenant set';
+END $$;
+
+-- The other side of T62 for the ADR 0022 resolver: unlike the identity lookups, the device-credential
+-- resolver must be callable by the origin that authenticates a forwarded certificate, which is
+-- sac_ingest. This proves the EXECUTE grant reaches it and that the definer body runs under
+-- sac_ingest with no tenant set, returning nothing for a key that was never registered.
+SET ROLE sac_ingest;
+SET app.tenant_id = '';
+
+DO $$
+DECLARE
+  n int;
+BEGIN
+  SELECT count(*) INTO n FROM ops.device_credential_for_thumbprint('not-a-registered-thumbprint');
+  IF n <> 0 THEN RAISE EXCEPTION 'FAIL T62 an unregistered thumbprint resolved to a live credential'; END IF;
+  RAISE NOTICE 'PASS T62 (cont.) sac_ingest may call the device-credential resolver, which returns nothing for an unregistered key';
 END $$;
 
 SET ROLE sac_control;

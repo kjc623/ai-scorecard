@@ -175,11 +175,14 @@ later event from starting a second history for the same person.
 **How a request finds its tenant.** Every read and write runs with `app.tenant_id` set and row-level
 security forced (§3, [06](06-security-and-threat-model.md) §4). A few questions must be answered
 *before* a tenant is known: which tenant an Entra `tid`, an OIDC issuer or an email domain belongs to;
-which session an opaque session id names; which tenant an invite or a SCIM bearer is for. Each is one
-exact-key `SECURITY DEFINER` function, owned by `sac_resolver` — a `NOLOGIN` role with no members whose
-only reach is a SELECT-only policy on the five tables those functions read — and executable by
-`sac_control` alone. Each returns only what may be used: an active connection, an unused and unexpired
-invite, a live session, an unrevoked token. A deployment key, a SCIM bearer and an invite carry the
+which session an opaque session id names; which tenant an invite or a SCIM bearer is for; and, for a
+customer-issued device certificate whose subject carries no product id, which credential and tenant a
+forwarded certificate is ([ADR 0022](adr/0022-customer-issued-device-certificates-are-registered-not-signed.md)).
+Each is one exact-key `SECURITY DEFINER` function, owned by `sac_resolver` — a `NOLOGIN` role with no
+members whose only reach is a SELECT-only policy on the tables those functions read — and executable
+only by the roles that need it (`sac_control`, and `sac_ingest` for the device-credential resolver).
+Each returns only what may be used: an active connection, an unused and unexpired invite, a live
+session, an unrevoked token, a live device credential. A deployment key, a SCIM bearer and an invite carry the
 tenant id in clear beside a 256-bit secret and are stored only as a `sha256`; a deployment key is looked
 up inside the tenant session its clear prefix names, and a SCIM bearer's definer answer must name the
 same tenant as its prefix. The tenant an analyst acts in is never a claim the customer's

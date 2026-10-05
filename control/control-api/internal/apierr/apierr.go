@@ -26,10 +26,13 @@ const (
 	CodeEnrolmentTokenExpired    = "enrolment_token_expired"
 	CodeEnrolmentTokenInvalid    = "enrolment_token_invalid"
 	CodeInvalidCSR               = "invalid_csr"
-	CodeInvalidProof             = "invalid_dpop_proof"
-	CodeInvalidAssertion         = "invalid_assertion"
-	CodeInvalidRequest           = "invalid_request"
-	CodeUnavailable              = "unavailable"
+	// CodeInvalidClientCert is a customer-issued (ADR 0022) enrolment whose presented certificate is
+	// missing, unreadable, or does not chain to the tenant's device trust anchor.
+	CodeInvalidClientCert = "invalid_client_certificate"
+	CodeInvalidProof      = "invalid_dpop_proof"
+	CodeInvalidAssertion  = "invalid_assertion"
+	CodeInvalidRequest    = "invalid_request"
+	CodeUnavailable       = "unavailable"
 
 	// The deployment-key bootstrap (contract §5). Each lifecycle failure is its own code, as the
 	// enrolment token's are, so an operator can tell a revoked key from an expired or a mistyped one.

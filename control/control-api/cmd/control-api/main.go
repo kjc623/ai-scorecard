@@ -318,19 +318,19 @@ func run() error {
 	return httpServer.Shutdown(ctx)
 }
 
-// loadSigner selects the certificate authority. A configured Key Vault URI selects the KeyVaultSigner,
-// which refuses clearly until this build carries a vault client; otherwise a LocalCA loads the
-// configured key pair or generates a fresh development one. The choice is stated at startup, never
-// made silently per request.
+// loadSigner selects the certificate authority.
+//
+// Precedence: an explicit CA key pair — the --ca-cert/--ca-key files on a laptop, or
+// SAC_CA_CERT_PEM/SAC_CA_KEY_PEM injected from Key Vault in a deployment — is the authority whenever
+// it is present. A deployment that placed a device CA key pair in Key Vault signs leaves with it here.
+// Only when NO CA material is supplied does a configured Key Vault URI select the KeyVaultSigner
+// (HSM-resident signing), which this build does not implement; and with neither, a fresh development
+// CA is generated in process. The choice is stated at startup, never made silently per request.
 func loadSigner(o options, keyVaultURI string, logger *slog.Logger) (signer.CertificateSigner, error) {
-	if keyVaultURI != "" {
-		logger.Warn("SAC_KEYVAULT_URI is set: certificate signing selects the Key Vault signer, which this build does not implement; a certificate enrolment will be refused until the vault client lands")
-		return &signer.KeyVaultSigner{VaultURI: keyVaultURI}, nil
+	if (o.caCertFile == "") != (o.caKeyFile == "") {
+		return nil, fmt.Errorf("LocalCA needs --ca-cert and --ca-key together, or neither")
 	}
 	var caCert, caKey []byte
-	if (o.caCertFile == "") != (o.caKeyFile == "") {
-		return nil, fmt.Errorf("LocalCA needs --ca-cert and --ca-key together, or neither to generate a development CA")
-	}
 	if o.caCertFile != "" {
 		var err error
 		if caCert, err = os.ReadFile(o.caCertFile); err != nil {
@@ -343,15 +343,28 @@ func loadSigner(o options, keyVaultURI string, logger *slog.Logger) (signer.Cert
 		caCert = []byte(os.Getenv(EnvCACertPEM))
 		caKey = []byte(os.Getenv(EnvCAKeyPEM))
 	}
-	sans := splitList(o.sans)
-	ca, err := signer.NewLocalCA(caCert, caKey, o.credentialTTL, sans)
-	if err != nil {
-		return nil, err
+	if (len(caCert) == 0) != (len(caKey) == 0) {
+		return nil, fmt.Errorf("%s and %s must be set together, or neither", EnvCACertPEM, EnvCAKeyPEM)
 	}
-	if len(caCert) == 0 {
+	switch {
+	case len(caCert) > 0:
+		ca, err := signer.NewLocalCA(caCert, caKey, o.credentialTTL, splitList(o.sans))
+		if err != nil {
+			return nil, err
+		}
+		logger.Info("device certificate authority configured", "source", "CA key pair (Key Vault secret or --ca-cert/--ca-key)")
+		return ca, nil
+	case keyVaultURI != "":
+		logger.Warn("SAC_KEYVAULT_URI is set and no CA key pair is configured: certificate signing selects the Key Vault signer, which this build does not implement; supply " + EnvCACertPEM + "/" + EnvCAKeyPEM + " or a certificate enrolment is refused")
+		return &signer.KeyVaultSigner{VaultURI: keyVaultURI}, nil
+	default:
+		ca, err := signer.NewLocalCA(nil, nil, o.credentialTTL, splitList(o.sans))
+		if err != nil {
+			return nil, err
+		}
 		logger.Warn("no CA material was configured: a fresh development CA was generated in process; every credential is invalid after a restart")
+		return ca, nil
 	}
-	return ca, nil
 }
 
 // pemValue accepts PEM text or a path to a PEM file, so the same flag works with an environment

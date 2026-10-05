@@ -141,13 +141,15 @@ func TestEveryReadNameIsEitherPassedOrDocumented(t *testing.T) {
 		EnvCredentialTTL:     "the image sets the default credential life; a deployment could override it",
 		EnvEnrolmentTokenTTL: "the image sets the default token life; the request path only verifies tokens the MDM profile carried",
 	}
+	// EnvCACertPEM and EnvCAKeyPEM are deliberately absent: the deployment now passes both to this app
+	// (azure/main.bicep controlApp, from the sac-device-ca-cert / sac-device-ca-key secrets), which is
+	// the product-issued x509 model. Removing them here means dropping them from the Bicep fails this
+	// test rather than passing silently.
 	deploymentGaps := map[string]string{
-		EnvRegion:          "§12's region pinning: the binary refuses a tenant pinned to another region, but infra/main.bicep passes no region, so the check is inert in Azure until it does",
-		EnvCACertPEM:       "ADR 0020 decision 3: the LocalCA certificate as PEM text, for the module's keyVaultEnv to inject. Every app in infra/main.bicep has keyVaultEnv: [] today, so a certificate-only deployment cannot yet supply a CA",
-		EnvCAKeyPEM:        "ADR 0020 decision 3: the LocalCA private key as PEM text — see " + EnvCACertPEM,
-		EnvTokenIssuer:     "§5.2: the access token's `iss`. The binary has a default only when configured; the deployment passes none",
-		EnvTokenAudience:   "§5.2: the access token's `aud` — see " + EnvTokenIssuer,
-		EnvDPoPTokenKeyPEM: "the access-token signing key. The binary refuses to start without it; infra/main.bicep has keyVaultEnv: [] today, so no deployment injects it yet",
+		EnvRegion:           "§12's region pinning: the binary refuses a tenant pinned to another region, but infra/main.bicep passes no region, so the check is inert in Azure until it does",
+		EnvTokenIssuer:      "§5.2: the access token's `iss`. The binary has a default only when configured; the deployment passes none",
+		EnvTokenAudience:    "§5.2: the access token's `aud` — see " + EnvTokenIssuer,
+		EnvDPoPTokenKeyPEM:  "the access-token signing key. The binary refuses to start without it; infra/main.bicep has keyVaultEnv: [] today, so no deployment injects it yet",
 		EnvVaultURL:         "docs/02 §5.5: content-vault's internal address, which control-api asks for an object key when it grants an upload. infra/main.bicep passes none, so content grants are disabled in Azure until it does",
 		EnvUploadSigningKey: "docs/02 §10.3: the key the storage layer verifies an upload URL with. In Azure the upload credential is a storage user-delegation SAS instead, which this build does not mint — see " + EnvVaultURL,
 	}
