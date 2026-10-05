@@ -6,148 +6,225 @@ first deployment, and the checks that say each phase is done. The exact `az` com
 `README.md` ("The exact commands a human would run"); this file does not repeat them, it says when to
 run them and what must be true first.
 
+**Each step names the repository location that implements it**, so a step is never a portal action with
+no file behind it. A step with no path is a subscription/account action that has no repository artefact.
+
 **Nothing here has been run.** There is no Azure subscription, so every step below is a plan, not an
-observation. The static suite (`node --test azure/tools/index.mjs`, 47 checks) proves the properties
+observation. The static suite (`node --test azure/tools/index.mjs`, **50 checks**) proves the properties
 are *declared*; only a deployment proves they are *effective*.
+
+---
+
+## The edge decision: Front Door **Standard** (non-Premium)
+
+Front Door Premium exists in this design for exactly one reason: the **Private Link origin** that keeps
+the Container Apps environment off the public internet (`docs/05-platform-delivery.md` §2.1; ADR 0020).
+**Standard cannot use a Private Link origin**, so choosing Standard changes the analyst edge from
+*Front Door → Private Link → private environment* to *Front Door → **public** container app FQDN*.
+
+Every consequence below is a **pre-prod-only deviation that must never be promoted**. `docs/lab/LAB-COST.md`
+§7.6 names the mechanism ("open mode") and §8 lists it among the shortcuts that become defects if shipped.
+
+| # | Consequence | Repository location to change |
+|---|---|---|
+| 1 | The environment must expose **public** endpoints (`internalLoadBalancer: false`) | `azure/modules/container-apps-env.bicep` |
+| 2 | Front Door drops `sharedPrivateLinkResource`; origins become the apps' public FQDNs | `azure/modules/frontdoor.bicep` (origins, and `skuName`) |
+| 3 | WAF policy SKU must match: `Standard_AzureFrontDoor` | `azure/modules/waf.bicep` |
+| 4 | The "approve the Private Link connection" step **disappears** | this file, Phase 5 (was step 3) |
+| 5 | **A checked invariant now fails.** The suite asserts the environment uses an internal load balancer, which Standard's public origin contradicts | `azure/tools/check-infra.mjs`, `azure/tools/check-infra.test.mjs` |
+| 6 | Cost: the Front Door base falls from ~$330 to ~$35 per profile per month | `azure/cost-model.md` (`FD-SHARED-OR-PER-TENANT`) |
+
+**Point 5 is not cosmetic.** `azure/tools/check-infra.test.mjs` ("the Container Apps environment uses
+an internal load balancer") and `azure/tools/check-infra.mjs` were written to make the private-origin
+property un-regressable. A Standard-Front-Door pre-prod *intentionally* violates it. The parameter file
+for that environment must carry the deviation explicitly and the checker must be taught to allow it for
+that file — **not** have the failing test quietly deleted. Until the templates and the checker carry the
+deviation, `node --test azure/tools/index.mjs` is expected to fail for this environment.
+
+If a customer ever requires the private-origin property, move back to Premium; nothing else changes.
+
+---
+
+## Repository map
+
+| Path | What lives there |
+|---|---|
+| `azure/main.bicep` | The one composition; all wiring and the `deployEdge` / `deployDashboard` / `deployExports` switches |
+| `azure/modules/` | One resource family per module (`frontdoor.bicep`, `waf.bicep`, `application-gateway.bicep`, `container-apps-env.bicep`, …) |
+| `azure/params/` | The per-environment parameter files (`dev`, `staging`, `prod.eastus`, `lab`) |
+| `azure/README.md` | The exact `az` commands and the static-vs-deployed distinction |
+| `azure/cost-model.md`, `azure/COST-FINDING.md` | The §11 arithmetic and its two unresolved findings |
+| `azure/pipelines/` | `infra.yml`, `drift.yml`, `policy-scan.yml` — inert until installed under `.github/workflows/` |
+| `azure/tools/` | The zero-dependency static checker and its suite |
+| `control/control-api/` | Enrolment, deployment keys, the Intune check, policy delivery, the device-certificate signer |
+| `ingestion/ingest-api/` | The device write path; device authentication |
+| `vault/content-vault/` | Ciphertext store; the only unwrap identity |
+| `query/query-api/`, `query/dashboard/` | The read API and the browser app (the dashboard server is the BFF) |
+| `database/schema.sql` | The whole schema; `invariants.test.sql` is its assertion suite |
+| `docs/05-platform-delivery.md` | The delivery design (environments, pipelines, identity, secrets) |
+| `docs/lab/LAB-COST.md` | The cheapest faithful Azure lab and the §8 do-not-promote list |
+| `installer/` | The MSI/PKG/Linux agent packages and the tenant-package mechanism |
+| `localdev/` | The local labs, including the device-auth lab and the config-vocabulary checker |
+| `tools/accept.mjs` | The repository acceptance gate |
+
+---
 
 ## The state on 2026-10-05
 
 | Ready | Not ready |
 |---|---|
 | Bicep composition, 15 modules, 4 parameter files | No subscription; nothing has ever been created |
-| 47 static checks (inventory, invariants, cost model) | No `validate`/`what-if` output has been seen |
+| 50 static checks (inventory, invariants, cost model) | No `validate`/`what-if` output has been seen |
 | Edge, dashboard, exports switches for a cheap lab | Pipelines are inert: no `.github/` directory |
-| Migration ordering fixed in `infra.yml`? **No** — see Phase 2 | No image build/push pipeline; two images have no source |
-| Key Vault role separation now enforced (2026-10-05) | Four Key Vault secrets and the Entra app do not exist |
-| Application Gateway API version now supports passthrough | No `SAC_PG_ADMIN_LOGIN` variable or federated identity |
+| Key Vault role separation enforced; Application Gateway API 2025-03-01 | Four+ Key Vault secrets and the Entra app do not exist |
+| Shape A product-issued x509 device auth wired end to end | No image build/push pipeline; `reconciler`/`migrations` images absent |
+| **Front Door Standard chosen** (see above; deviates from private origin) | `SAC_STORE=sql` unset; production images build without the SQL driver |
+
+---
 
 ## Phase 0 — decisions that must precede everything
 
-These are product/security decisions, not engineering ones. Changing them later is expensive; changing
-them after a production deployment is not possible without a migration.
-
 1. **Residency region.** `az`/params assume `eastus`. One production environment per data-residency
-   region; a second region is a second parameter file (`prod.<region>.bicepparam`). Q1 is still open.
-2. **Shared or per-tenant edge.** The Front Door and Application Gateway fixed bases (~$330 and ~$321
-   per month) are charged per tenant in `docs/05` §11.2 but are built once per region by `main.bicep`.
-   The two readings differ by roughly a factor of 1.7 on the headline per-tenant figure
-   (`COST-FINDING.md`, `cost-model.md` findings `FD-SHARED-OR-PER-TENANT` / `AGW-SHARED-OR-PER-TENANT`).
-   Decide before quoting a price.
-3. **First milestone.** Recommended: a throwaway resource group, deploy the `lab.bicepparam` shape
-   (edge/dashboard/exports off) or `dev`, confirm `validate`/`what-if`/deploy and then delete it. This
-   is the only way to close the `BCP318` notices and the Private Link / managed-identity / Container
-   Apps behaviours the static checker cannot reach. It costs a few dollars, not the `$12,000/month`
-   the production budget allows.
-4. **DNS names.** `device.sac.example.com` and `app.sac.example.com` are placeholders. Choose the real
-   names; the device FQDN needs a TLS certificate in Key Vault, the analyst FQDN needs a Front Door
-   custom domain and its validation record.
+   region; a second region is a second parameter file. *Repo: `azure/params/prod.<region>.bicepparam`,
+   `docs/05` §3.1.*
+2. **Edge tier — DECIDED: Front Door Standard.** Accepts the public-origin deviation above, and the
+   loss of the "no container app holds a public IP" property, for ~$295/month less. *Repo:
+   `azure/modules/frontdoor.bicep`, `azure/modules/waf.bicep`, `azure/modules/container-apps-env.bicep`,
+   `docs/05` §2.1, `docs/lab/LAB-COST.md` §7.6/§8.*
+3. **Shared or per-tenant edge.** The two base fees are built once per region by `main.bicep` but are
+   charged per tenant in §11.2; the readings differ by ~1.7×. *Repo: `azure/COST-FINDING.md`,
+   `azure/cost-model.md` `FD-SHARED-OR-PER-TENANT` / `AGW-SHARED-OR-PER-TENANT`.*
+4. **First milestone.** Recommended: a throwaway resource group, deploy the `lab` or `dev` shape,
+   confirm `validate`/`what-if`/deploy, delete. *Repo: `azure/params/lab.bicepparam`,
+   `azure/params/dev.bicepparam`.*
+5. **DNS names.** `device.sac.example.com` / `app.sac.example.com` are placeholders. The device FQDN
+   needs a Key Vault certificate; the analyst FQDN is a Front Door custom domain (Standard can use a
+   Front Door managed certificate) and must match the Entra redirect URIs. *Repo: `azure/params/*`,
+   `azure/modules/application-gateway.bicep`.*
 
 ## Phase 1 — subscription prerequisites
 
-- [ ] Subscription, billing, and a region with the SKUs available (`D2ds_v5` vCores, `WAF_v2`,
-      Front Door Premium are not available by default in every subscription/region).
-- [ ] Register the 12 resource providers listed in `README.md` precondition 2.
-- [ ] Cost approval for the target environment's budget (`params/*.bicepparam` set dev `$250`,
-      staging `$900`, prod `$12,000`). Managed HSM is per-contract at ~$3,358/month.
-- [ ] A resource group per environment, named as the pipelines expect:
-      `rg-sac-dev-eastus`, `rg-sac-staging-eastus`, `rg-sac-prod-eastus`.
+- [ ] Subscription, billing, and a region with the SKUs (`D2ds_v5` vCores, `WAF_v2`; **Front Door
+      Standard** is available far more broadly than Premium). *Repo: `azure/README.md` precondition 2.*
+- [ ] Register the resource providers listed in `README.md` precondition 2. *Repo: `azure/README.md`.*
+- [ ] Cost approval. Pre-prod with both edges: ~$700–1,100/month; Standard Front Door trims ~$295 of
+      that. *Repo: `azure/cost-model.md`, `azure/params/*.bicepparam` (`monthlyBudgetAmount`).*
+- [ ] A resource group per environment as the pipelines expect: `rg-sac-<env>-eastus`. *Repo:
+      `azure/pipelines/infra.yml` (the `RG=` value).*
 
 ## Phase 2 — repository blockers to fix before the first deploy
 
-1. **Two images have no source.** The composition names eight images
-   (`ingest-api`, `control-api`, `content-vault`, `query-api`, `dashboard`, `aggregator`, `reconciler`,
-   `migrations`); six have Dockerfiles. **`reconciler` and `migrations` have no command or Dockerfile
-   anywhere in the repository** — those jobs will fail to start even after everything else is correct.
-   Either build them or trim those two jobs from the first deployment.
-2. **No image build/push pipeline.** Nothing builds or pushes to the per-environment ACRs
-   (`sacdeveastusacr.azurecr.io`, …). `imageTag` must already exist in the registry or every revision
-   is a failed revision. `localdev/build.mjs` builds *lab* images only, and refuses off its host.
-3. **Pipelines are not installed.** `azure/pipelines/*.yml` are inert until copied to
-   `.github/workflows/`; GitHub will not run a workflow from any other path. Wired or not is a repo
-   decision (one source of truth vs. the current "stored beside the Bicep, installed by hand").
-4. **Migration before traffic.** `infra.yml` runs `az deployment group create` first and starts the
-   migration job afterwards; `docs/05` §3.4 requires the migration to run *before* the new revision
-   takes traffic. Doing that correctly also needs multi-revision mode — `container-app.bicep` is
-   `activeRevisionsMode: 'Single'`, so there is no revision to hold back and no canary (§4.4).
-5. **The device credential is product-issued (Shape A).** `control-api` signs x509 device leaves from
-   the CA in `sac-device-ca-cert` / `sac-device-ca-key`, and `ingest-api` re-verifies the forwarded
-   leaf against `sac-device-ca-cert`; both are now wired, so x509 enrolment works end to end with no
-   customer PKI. **They must be the same CA**, or every device is refused at the origin. The optional
-   DPoP mode is not wired (it needs `SAC_DPOP_TOKEN_KEY_PEM` on control-api and the verification key
-   on ingest). `control-api` signs with the CA key as a Key Vault secret in-process rather than in the
-   HSM — a deviation from §5.3's "sign in the vault" note, acceptable for a pre-prod and recorded here.
+1. **Services run in-memory.** `azure/main.bicep` never passes `SAC_STORE`, and every image defaults
+   `SAC_STORE=memory`; the production Dockerfiles also build **without** `-tags sac_sql_driver`, so
+   `-store sql` refuses (no driver linked). Without both, nothing persists. *Repo: `azure/main.bicep`
+   (app `env`), `control/control-api/Dockerfile`, `ingestion/ingest-api/Dockerfile`,
+   `vault/content-vault/Dockerfile`.*
+2. **Two images have no source.** The composition names eight; six have Dockerfiles. `reconciler` and
+   `migrations` have none, so the migration job cannot apply the schema. *Repo: `azure/main.bicep`
+   (job modules), `aggregation/aggregator/Dockerfile` and siblings.*
+3. **No image build/push pipeline.** `imageTag` must already exist in the ACR. *Repo:
+   `localdev/build.mjs` (lab images only), `azure/pipelines/` (no build pipeline).*
+4. **Pipelines are not installed** — inert until copied under `.github/workflows/`. *Repo:
+   `azure/pipelines/README.md`.*
+5. **Migration before traffic.** `infra.yml` runs the migration *after* the deploy; §3.4 requires
+   *before*, which also needs multi-revision mode. *Repo: `azure/pipelines/infra.yml`,
+   `azure/modules/container-app.bicep` (`activeRevisionsMode`).*
+6. **Device auth is product-issued x509 (Shape A).** control-api signs with the CA in
+   `sac-device-ca-cert`/`sac-device-ca-key`; ingest-api verifies the same certificate. *Repo:
+   `azure/main.bicep` (`ingestApp`/`controlApp`), `control/control-api/cmd/control-api/main.go`
+   (`loadSigner`), `control/control-api/internal/signer/`.*
 
 ## Phase 3 — deployment identities (no stored credential)
 
-- [ ] One **workload-federated deployment identity per environment**, subject-scoped to this
-      repository, branch pattern and GitHub environment (`.github` environment protection rules carry
-      the human approval for prod, §4.5). Its only rights are resource-group deployment.
-- [ ] A **separate ACR-push identity**. Pushing an image and deploying it are different privileges.
+- [ ] One **workload-federated deployment identity per environment**, scoped to repo/branch/environment.
+      *Repo: `azure/pipelines/infra.yml` (`azure/login@v2` OIDC block).*
+- [ ] A **separate ACR-push identity**. *Repo: `azure/pipelines/policy-scan.yml` (its note).*
 - [ ] Record `AZURE_DEPLOY_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`,
-      `SAC_PG_ADMIN_LOGIN` as GitHub `vars` per environment (never secrets — a login name is not a
-      credential, because `passwordAuth` is disabled).
+      `SAC_PG_ADMIN_LOGIN` as GitHub `vars`. *Repo: `azure/README.md` §"exact commands".*
 
 ## Phase 4 — secrets and the vendor identity
 
-- [ ] Create the four Key Vault secrets in `<baseName>-kv` (commands in `README.md`): the session
-      signing key (EC P-256), the policy signing key (Ed25519), the internal token, and the directory
-      key. **Keep the policy key's public half** — the agent MSI pins it — and never lose the
-      directory key, or every tenant's user-reference key is unreadable.
-- [ ] Create the **product device CA** as `sac-device-ca-cert` (the certificate) and `sac-device-ca-key`
-      (its private key). `control-api` signs device leaves with both; `ingest-api` re-verifies them with
-      the certificate. Generate once and keep the pair; rotating the CA invalidates every enrolled
-      credential until devices re-enrol.
-- [ ] Register the vendor multi-tenant Entra app (app roles `viewer`/`analyst`/`content_reader`/`admin`,
-      redirect URIs `{SAC_PUBLIC_URL}/callback` and `{SAC_PUBLIC_URL}/onboard/entra/callback`,
-      delegated `openid profile email offline_access`, application
-      `DeviceManagementManagedDevices.Read.All`). Set `entraAppClientId`.
-- [ ] Add the federated credential from the `entraFederatedCredential` output on that app, so
-      `control-api` authenticates as its managed identity with no secret. Until it exists, Entra
-      sign-in and the Intune check do not work; OIDC customers are unaffected.
+- [ ] Create the Key Vault secrets in `<baseName>-kv`: session signing key (EC P-256), policy signing
+      key (Ed25519), internal token, directory key. **Keep the policy key's public half** (the MSI pins
+      it); never lose the directory key. *Repo: `azure/README.md` (commands), `azure/main.bicep`
+      (`keyVaultEnv`/`keyVaultFiles` for `controlApp`).*
+- [ ] Create the **product device CA** `sac-device-ca-cert` + `sac-device-ca-key`. *Repo:
+      `azure/main.bicep` (`controlApp` `SAC_CA_CERT_PEM`/`SAC_CA_KEY_PEM`; `ingestApp`
+      `SAC_TLS_CLIENT_CA_PEM`), `control/control-api/internal/signer/localca.go`.*
+- [ ] Register the vendor multi-tenant Entra app (roles, redirect URIs, Graph
+      `DeviceManagementManagedDevices.Read.All`). Set `entraAppClientId`. *Repo:
+      `azure/main.bicep` (`SAC_ENTRA_CLIENT_ID`), `control/control-api/internal/entraapp/`,
+      `control/control-api/internal/intune/`.*
+- [ ] Add the federated credential from the `entraFederatedCredential` output. *Repo:
+      `azure/main.bicep` (the `entraFederatedCredential` output comment has the command).*
 
-## Phase 5 — DNS and certificates
+## Phase 5 — DNS, certificates, and the Standard-origin wiring
 
-- [ ] Device FQDN → a Key Vault certificate; pass `deviceTlsCertKeyVaultSecretId` at deploy time.
-- [ ] Analyst FQDN (Front Door custom domain) → validation TXT/CNAME; set `publicUrl`.
-- [ ] Approve the Front Door Private Link connection to the Container Apps environment after the
-      deployment; it is created pending approval on purpose (`README.md` step 4).
+- [ ] Device FQDN → a Key Vault certificate; pass `deviceTlsCertKeyVaultSecretId`. *Repo:
+      `azure/modules/application-gateway.bicep`, `azure/main.bicep` (`deviceFqdn`,
+      `deviceTlsCertKeyVaultSecretId`).*
+- [ ] Analyst FQDN → a Front Door **Standard** custom domain (managed certificate is available). Set
+      `publicUrl`. *Repo: `azure/modules/frontdoor.bicep`, `azure/main.bicep` (`publicUrl`).*
+- [ ] **Standard-only:** make the analyst origins public — the environment's
+      `internalLoadBalancer: false` and the Front Door origins pointing at the apps' public FQDNs, with
+      the WAF policy on `Standard_AzureFrontDoor`. *(Was "approve the Private Link connection"; under
+      Standard there is none.)* *Repo: `azure/modules/container-apps-env.bicep`,
+      `azure/modules/frontdoor.bicep`, `azure/modules/waf.bicep`.*
 
 ## Phase 6 — first deployment
 
-1. `az deployment group validate` (needs the Key Vault secrets to exist; see `README.md`).
-2. `az deployment group what-if` — always read the diff.
-3. `az deployment group create`.
-4. Push the images with the tag the params name, then redeploy (or let revisions pull) so the apps go
-   healthy.
+1. `az deployment group validate`. *Repo: `azure/README.md`; `azure/main.bicep`.*
+2. `az deployment group what-if` — always read the diff. *Repo: `azure/README.md`; `azure/pipelines/drift.yml` for the nightly classification.*
+3. `az deployment group create`. *Repo: `azure/README.md`; `azure/pipelines/infra.yml`.*
+4. Push images on the tag the params name, then redeploy so revisions go healthy. *Repo:
+   `azure/params/*.bicepparam` (`registryLoginServer`, `imageTag`).*
 
-Only step 3 creates resources; steps 1–2 are free and are what turn the 32 compile warnings and the
-`BCP318` notices into either "confirmed" or "a real error".
+Only step 3 creates resources; steps 1–2 are free and turn the compile warnings and `BCP318` notices
+into either "confirmed" or "a real error". Under Standard there is **no** Private Link approval step.
 
-## Phase 7 — verification (the part no static check can do)
+## Phase 7 — schema
 
-- [ ] Every container app reports ready; `content-vault` ingress is `internal`.
-- [ ] PostgreSQL accepts only the VNet path; no firewall rules; private DNS resolves.
-- [ ] `GET /v1/health` through Application Gateway; a device enrols against the device FQDN.
-- [ ] `control-api` sign-in returns a session and a product token.
-- [ ] The migration job ran and the schema matches `database/schema.sql`.
-- [ ] Log Analytics receives telemetry; the §10.3 alerts are live (`alertCount` output).
-- [ ] Re-run `az deployment group what-if`: the only remaining diff is expected/noise, not drift.
+- [ ] `postgres.bicep` creates no Entra administrator with `passwordAuth: Disabled`; create one, then
+      apply `database/schema.sql` from **inside the VNet** (Phase 2.2: there is no `migrations` image).
+      *Repo: `azure/modules/postgres.bicep`, `database/schema.sql`, `database/invariants.test.sql`.*
+- [ ] Run the invariant suite as the runtime roles to prove RLS. *Repo: `database/invariants.test.sql`,
+      `database/tools/`.*
 
-## Phase 8 — staging, then production
+## Phase 8 — verification (the part no static check can do)
 
-Staging is production-shaped with a full contract suite, migration rehearsal, a 500 events/s burst and
-a WAF false-positive pass (`docs/05` §3.1). Production adds the human approval gate and the staged
-traffic shift (§4.4) — which does not exist yet (Phase 2.4). After production: install `drift.yml` and
-close the resource-graph half of §3.5, which is still a documented gap.
+- [ ] Every container app reports ready; `content-vault` ingress is `internal`. *Repo:
+      `azure/main.bicep` (`contentVaultIngress` output), `azure/modules/container-app.bicep`.*
+- [ ] PostgreSQL accepts only the VNet path; no firewall rules. *Repo: `azure/modules/postgres.bicep`,
+      `azure/tools/check-infra.mjs`.*
+- [ ] `GET /v1/health` through Application Gateway; a device enrols against the device FQDN. *Repo:
+      `azure/modules/application-gateway.bicep`, `ingestion/ingest-api/internal/auth/`.*
+- [ ] `control-api` sign-in returns a session and a product token. *Repo:
+      `control/control-api/internal/identity/`, `internal/session/`.*
+- [ ] **Standard-specific:** confirm the analyst origin is public and the WAF is in front of it — this
+      is the deviation, and it should be *verified as deviating*, not assumed private. *Repo:
+      `azure/modules/frontdoor.bicep`, `azure/modules/waf.bicep`, `azure/tools/check-infra.mjs`.*
+- [ ] Log Analytics receives telemetry; the §10.3 alerts are live. *Repo: `azure/modules/monitoring.bicep`.*
+- [ ] Re-run `what-if`: the only remaining diff is expected/noise, not drift. *Repo:
+      `azure/pipelines/drift.yml`.*
+
+## Phase 9 — staging, then production
+
+Staging is production-shaped (contract suite, migration rehearsal, 500 events/s burst, WAF
+false-positive pass); production adds the human approval gate. **Neither may inherit the Standard-origin
+deviation** if the private-origin property is required in production. *Repo:
+`docs/05-platform-delivery.md` §3.1, §4.4, §4.5.*
+
+---
 
 ## Preflight checklist
 
-- [ ] Phase 0 decisions recorded (region, edge model, DNS, first milestone)
-- [ ] Phase 1: subscription, providers, quotas, budgets, resource groups
-- [ ] Phase 2: `reconciler`/`migrations` images exist; image pipeline; workflows installed; migration
-      ordering / revision mode decided
-- [ ] Phase 3: per-environment federated deploy identity + separate push identity; GitHub vars
-- [ ] Phase 4: four Key Vault secrets; Entra app + federated credential
-- [ ] Phase 5: DNS records and the device certificate
-- [ ] `validate` and `what-if` reviewed; then `create`
-- [ ] Phase 7 verification observed and recorded
+- [ ] Phase 0 decisions recorded (region, **Front Door Standard + deviation**, DNS, first milestone) — `azure/params/`, `docs/05` §2.1
+- [ ] Phase 1: subscription, providers, quotas, budgets, resource groups — `azure/README.md`
+- [ ] Phase 2: `SAC_STORE=sql` + tagged images; `reconciler`/`migrations` images; image pipeline; workflows installed — `azure/main.bicep`, `*/Dockerfile`, `azure/pipelines/`
+- [ ] Phase 3: federated deploy identity + separate push identity; GitHub vars — `azure/pipelines/infra.yml`
+- [ ] Phase 4: Key Vault secrets incl. device CA; Entra app + federated credential — `azure/README.md`, `azure/main.bicep`
+- [ ] Phase 5: DNS; device certificate; **Standard public origins + Standard WAF SKU** — `azure/modules/{frontdoor,waf,container-apps-env}.bicep`
+- [ ] **Checker taught the deviation** so the internal-LB assertion is scoped, not deleted — `azure/tools/check-infra.mjs`
+- [ ] `validate` and `what-if` reviewed; then `create` — `azure/README.md`
+- [ ] Phase 7 schema applied and invariants run in-VNet — `database/`
+- [ ] Phase 8 verification observed, including that the Standard origin is *public on purpose* — `azure/tools/`
