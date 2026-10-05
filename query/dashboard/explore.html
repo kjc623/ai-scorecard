@@ -222,7 +222,7 @@ const SOURCES = Object.freeze({
     kind: 'list',
     label: 'Events',
     dimensions: Object.freeze([
-      'subject', 'tool', 'device', 'mode', 'action', 'content_state', 'route',
+      'subject', 'tool', 'device', 'mode', 'prompt_kind', 'action', 'content_state', 'route',
       'detection_basis', 'merge_confidence', 'confidence', 'department', 'population', 'manager',
     ]),
     measures: Object.freeze([]),
@@ -306,7 +306,7 @@ const TEMPLATES = Object.freeze({
     title: 'What happened in this window, for this tool or person?',
     source: 'ingest.submission',
     screen: 'activity',
-    params: Object.freeze(['window', 'limit', 'cursor', 'subject', 'tool', 'device', 'class', 'content_state', 'action', 'mode', 'department']),
+    params: Object.freeze(['window', 'limit', 'cursor', 'subject', 'tool', 'device', 'class', 'content_state', 'action', 'mode', 'department', 'prompt_kind', 'prompt_kind_not']),
   }),
   q9_event_detail: Object.freeze({
     question: 9,
@@ -1927,6 +1927,8 @@ const QUESTIONS = Object.freeze({
       action: ctx.filters.action,
       mode: ctx.filters.mode,
       department: ctx.filters.department,
+      prompt_kind: ctx.filters.prompt_kind,
+      prompt_kind_not: ctx.filters.prompt_kind_not,
     })),
   },
 
@@ -3309,7 +3311,7 @@ const SEVERITIES = Object.freeze(['low', 'medium', 'high', 'critical']);
 const COLLECTION_MODES = Object.freeze(['m0', 'm1', 'm2', 'm3']);
 
 /** Hash keys that carry page state rather than a filter. No dataset has a field with these names. */
-const RESERVED_KEYS = Object.freeze(['window', 'open']);
+const RESERVED_KEYS = Object.freeze(['window', 'open', 'include']);
 
 /** The longest string value the API admits (DSL.md §2.3). */
 const MAX_VALUE_LENGTH = 256;
@@ -3362,6 +3364,7 @@ const EXPLORE_DATASETS = Object.freeze({
       exploreField('class', 'Data class', { values: DATA_CLASSES, closed: false }),
       exploreField('content_state', 'Content', { values: ['not_captured', 'local_only', 'uploaded', 'shredded'] }),
       exploreField('mode', 'Collection mode', { values: COLLECTION_MODES }),
+      exploreField('prompt_kind', 'Request kind', { values: ['user', 'client_generated', 'unknown'] }),
       exploreField('department', 'Department', { hint: 'As the directory spells it' }),
       exploreField('device', 'Device', { hint: 'A device id' }),
     ]),
@@ -3683,13 +3686,22 @@ function exploreWindows(dataset) {
  * @param {{from:string,to:string}|null} input.window
  * @param {string|null} [input.cursor]
  * @param {number} [input.limit]
+ * @param {boolean} [input.includeClientGenerated]
  */
-function buildExploreRequest({ dataset, filters, window, cursor = null, limit = 50 }) {
+function buildExploreRequest({ dataset, filters, window, cursor = null, limit = 50, includeClientGenerated = false }) {
+  // By default the event list hides the requests a client made for itself. The API models that as
+  // a `prompt_kind_not = 'client_generated'` predicate; the rail's toggle removes it. When the
+  // person has already named a prompt_kind, their choice governs and no predicate is added, so the
+  // two cannot contradict.
+  const effective = { ...filters };
+  if (dataset.id === 'events' && !includeClientGenerated && !effective.prompt_kind) {
+    effective.prompt_kind_not = 'client_generated';
+  }
   return QUESTIONS[dataset.questionId].request(context({
     ...(window ? { window } : {}),
     limit,
     cursor,
-    filters,
+    filters: effective,
   }));
 }
 
@@ -3701,13 +3713,14 @@ function buildExploreRecordRequest({ submissionId, receivedAtHint }) {
 }
 
 /** `#events?window=d7&tool=claude_web&open=<key>`: the whole page state, so a search can be linked. */
-function encodeExploreHash({ dataset, windowPreset, filters, open }) {
+function encodeExploreHash({ dataset, windowPreset, filters, open, includeClientGenerated = false }) {
   const params = new URLSearchParams();
   if (windowPreset && windowPreset !== dataset.defaultWindow) params.set('window', windowPreset);
   for (const field of dataset.fields) {
     const value = filters[field.name];
     if (typeof value === 'string' && value !== '') params.set(field.name, value);
   }
+  if (includeClientGenerated) params.set('include', '1');
   if (open) params.set('open', open);
   const query = params.toString();
   return `#${dataset.id}${query ? `?${query}` : ''}`;
@@ -3745,6 +3758,7 @@ function decodeExploreHash(hash) {
     filters: Object.freeze(filters),
     problems: Object.freeze(problems),
     open: params.get('open') || null,
+    includeClientGenerated: params.get('include') === '1',
   });
 }
 
@@ -3943,6 +3957,10 @@ function buildExploreSample(now) {
       device: person.device,
       department: person.department,
       mode,
+      // The sample does not model a device that decided the kind, so every event reads as
+      // 'unknown' (schema: NULL reads as 'unknown'). The list still honours the prompt_kind and
+      // prompt_kind_not predicates; a request for client_generated simply finds no rows.
+      prompt_kind: 'unknown',
       action,
       content_state: contentState,
       route: routes[0],
@@ -4053,7 +4071,15 @@ const SAMPLE_NON_FILTERS = Object.freeze(['window', 'limit', 'cursor']);
 function sampleMatches(row, name, value) {
   // On an event, `class` is a predicate over the labels; on a finding it is a column.
   if (name === 'class' && 'labels' in row) return Array.isArray(row.labels) && row.labels.some((l) => l.class === value);
+  // prompt_kind is an eq filter; prompt_kind_not is the ne filter the default-hide uses. NULL
+  // reads as 'unknown', exactly as the read layer coalesces it.
+  if (name === 'prompt_kind') return samplePromptKind(row) === value;
+  if (name === 'prompt_kind_not') return samplePromptKind(row) !== value;
   return row[name] === value;
+}
+
+function samplePromptKind(row) {
+  return row.prompt_kind ?? 'unknown';
 }
 
 function sampleEnvelope(resultState, body) {
@@ -4412,7 +4438,12 @@ function renderExploreRail(state) {
     }
     return `<input class="x-input x-filter${on}" id="${id}" type="text" data-field="${field.name}" value="${escapeHtml(value)}" autocomplete="off" spellcheck="false" placeholder="${escapeHtml(field.label)}" aria-label="${escapeHtml(field.label)}" title="${escapeHtml(field.hint ?? field.label)}">`;
   }).join('');
-  return fields + (active > 0 ? `<button type="button" class="x-link" data-act="clear">Clear ${active}</button>` : '');
+  // The event list hides the requests a client made for itself unless this toggle is on. It is a
+  // page setting, not a filter: it adds the `prompt_kind_not` predicate rather than a rail value.
+  const include = dataset.id === 'events'
+    ? `<button type="button" class="x-seg-item" data-act="include" aria-pressed="${state.includeClientGenerated}" title="Show requests the client made for itself — titling, summaries, telemetry — alongside what people typed">Include client-generated requests</button>`
+    : '';
+  return fields + include + (active > 0 ? `<button type="button" class="x-link" data-act="clear">Clear ${active}</button>` : '');
 }
 
 function exploreNoun(dataset, count) {
@@ -4786,6 +4817,7 @@ function createExplorer({ api, content = null, now = () => new Date(), onChange 
     dataset: first.id,
     windowPreset: first.defaultWindow,
     filters: Object.freeze({}),
+    includeClientGenerated: false,
     queryText: '',
     problems: Object.freeze([]),
     status: 'idle',
@@ -4847,6 +4879,7 @@ function createExplorer({ api, content = null, now = () => new Date(), onChange 
       dataset,
       filters: state.filters,
       window: state.windowPreset ? windowFor(state.windowPreset, now()) : null,
+      includeClientGenerated: state.includeClientGenerated,
     });
     set({ status: 'loading', rows: Object.freeze([]), result: null, loadingMore: false, moreProblem: null, detail: DETAIL_CLOSED });
     const result = await ask(() => buildExploreRequest(query));
@@ -4934,6 +4967,14 @@ function createExplorer({ api, content = null, now = () => new Date(), onChange 
     const next = exploreWindowPreset(dataset, preset);
     if (next === state.windowPreset) return Promise.resolve(state);
     set({ windowPreset: next });
+    return run();
+  }
+
+  /** Show or hide the requests a client made for itself. Off is the default and hides them. */
+  function setIncludeClientGenerated(value) {
+    const next = Boolean(value);
+    if (next === state.includeClientGenerated) return Promise.resolve(state);
+    set({ includeClientGenerated: next });
     return run();
   }
 
@@ -5067,6 +5108,7 @@ function createExplorer({ api, content = null, now = () => new Date(), onChange 
       dataset: decoded.dataset.id,
       windowPreset: decoded.windowPreset,
       filters: decoded.filters,
+      includeClientGenerated: decoded.includeClientGenerated,
       queryText: formatExploreQuery(decoded.filters, decoded.dataset),
       problems: decoded.problems,
     });
@@ -5082,12 +5124,13 @@ function createExplorer({ api, content = null, now = () => new Date(), onChange 
       windowPreset: state.windowPreset,
       filters: state.filters,
       open: state.detail.key,
+      includeClientGenerated: state.includeClientGenerated,
     });
   }
 
   return Object.freeze({
     get state() { return state; },
-    run, loadMore, setQuery, setFilter, clearFilters, setDataset, setWindow, open, close, restore, hash,
+    run, loadMore, setQuery, setFilter, clearFilters, setDataset, setWindow, setIncludeClientGenerated, open, close, restore, hash,
     searchText, clearText, openHit, retrieveContent, hideContent,
   });
 }
@@ -5203,6 +5246,7 @@ async function bootExplore({ document, api: given, content: givenContent } = {})
     const { act } = target.dataset;
     if (act === 'dataset') explorer.setDataset(target.dataset.dataset);
     else if (act === 'window') explorer.setWindow(target.dataset.window);
+    else if (act === 'include') explorer.setIncludeClientGenerated(target.getAttribute('aria-pressed') !== 'true');
     else if (act === 'toggle') {
       const on = target.getAttribute('aria-pressed') === 'true';
       explorer.setFilter(target.dataset.field, on ? '' : target.dataset.value);

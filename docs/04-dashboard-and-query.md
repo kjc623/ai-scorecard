@@ -435,6 +435,17 @@ is what a tier rather than a global switch means.
   canvas UIs, WebSocket-only observations — are marked individually and counted in the header ("N of M
   rows are low-confidence merges"). The schema keeps them rather than discarding them precisely so a
   customer sees that number instead of a quietly wrong one (R9).
+- **Client-generated requests are hidden by default.** Each event carries a `prompt_kind` — `user`
+  (text a person typed), `client_generated` (titling, summaries, telemetry a client made for itself)
+  or `unknown` (an M0 or pre-task-08 device that could not decide, or the rollup/detection kinds,
+  which carry none). The kind is decided on the device and read through `coalesce(prompt_kind,
+  'unknown')`. The event list's default hides client-generated requests with `prompt_kind_not =
+  client_generated`; the rail's *Include client-generated requests* toggle removes that predicate,
+  and `prompt_kind` is offered as an ordinary filter so a person can name the kind directly. When a
+  person has named a `prompt_kind` themselves, their choice governs and no `prompt_kind_not` is
+  added. `content-vault` does not build a search index for a `client_generated` submission (§15), so
+  prompt-text search never returns one; the dashboard's own text search needs no change to honour
+  that.
 
 ### 3.9 Q9 — What exactly was sent?
 

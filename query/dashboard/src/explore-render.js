@@ -146,7 +146,12 @@ export function renderExploreRail(state) {
     }
     return `<input class="x-input x-filter${on}" id="${id}" type="text" data-field="${field.name}" value="${escapeHtml(value)}" autocomplete="off" spellcheck="false" placeholder="${escapeHtml(field.label)}" aria-label="${escapeHtml(field.label)}" title="${escapeHtml(field.hint ?? field.label)}">`;
   }).join('');
-  return fields + (active > 0 ? `<button type="button" class="x-link" data-act="clear">Clear ${active}</button>` : '');
+  // The event list hides the requests a client made for itself unless this toggle is on. It is a
+  // page setting, not a filter: it adds the `prompt_kind_not` predicate rather than a rail value.
+  const include = dataset.id === 'events'
+    ? `<button type="button" class="x-seg-item" data-act="include" aria-pressed="${state.includeClientGenerated}" title="Show requests the client made for itself — titling, summaries, telemetry — alongside what people typed">Include client-generated requests</button>`
+    : '';
+  return fields + include + (active > 0 ? `<button type="button" class="x-link" data-act="clear">Clear ${active}</button>` : '');
 }
 
 function exploreNoun(dataset, count) {
