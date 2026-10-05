@@ -116,7 +116,7 @@ offered is `unknown_dimension` / `unknown_measure`, and the error lists what is 
 | `mart.agg_device_period` | `bucket`, `device`, `collector` | `healthy_days`, `degraded_days`, `absent_days`, `tampered_days`, `spool_dropped` |
 | `mart.v_device_liveness` | `device`, `device_os`, `managed_state`, `region`, `liveness`, `collector`, `collector_state` | — (a list) |
 | `ops.coverage_snapshot` | `snapshot_day`, `device`, `collector`, `gap_reason`, `observed`, `expected` | — |
-| `ingest.submission` | `subject`, `tool`, `device`, `mode`, `action`, `content_state`, `route`, `detection_basis`, `merge_confidence`, `confidence`, `department`, `population`, `manager` | — |
+| `ingest.submission` | `subject`, `tool`, `device`, `mode`, `action`, `content_state`, `route`, `detection_basis`, `prompt_kind`, `merge_confidence`, `confidence`, `department`, `population`, `manager` | — |
 | `mart.v_finding` | `severity`, `rule`, `class`, `subject`, `tool`, `review_state`, `mode`, `decided_locally` | — |
 | `ops.audit` | `actor_type`, `actor`, `action`, `object_type`, `subject`, `case` | — |
 
@@ -206,7 +206,7 @@ Every template declares exactly these parameters; anything else is an error.
 | `q5_findings` | `mart.v_finding` | `window`, `limit`, `cursor`, `severity`, `rule`, `review_state`, `subject`, `tool`, `class` | review state `open` means nobody has looked |
 | `q6_subject_series` | `mart.agg_user_period` | `subject` (**required**), `window`, `bucket`, `limit` | k-suppression exempt (§6.4); carries `meta.extras.flush_check` |
 | `q7_devices` | `mart.v_device_liveness` | `limit`, `cursor`, `liveness`, `collector_state`, `collector`, `device_os`, `managed_state`, `region` | **no window**; four liveness values stay distinct |
-| `q8_activity` | `ingest.submission` | `window`, `limit`, `cursor`, `subject`, `tool`, `device`, `class`, `content_state`, `action`, `mode`, `department` | window ≤ 31 days; both clocks returned |
+| `q8_activity` | `ingest.submission` | `window`, `limit`, `cursor`, `subject`, `tool`, `device`, `class`, `content_state`, `action`, `mode`, `department`, `prompt_kind`, `prompt_kind_not` | window ≤ 31 days; both clocks returned; `prompt_kind` includes only that kind and `prompt_kind_not` excludes it (the default-hide of `client_generated`); both filter through `coalesce(prompt_kind, 'unknown')` so a NULL row never drops |
 | `q9_event_detail` | `ingest.submission` | `submission_id` (**required**), `received_at_hint` | single record; response is `data: [row, …observations]` |
 | `q10_audit_trail` | `ops.audit` | `window`, `limit`, `cursor`, `actor`, `action`, `object_type`, `subject`, `case` | hash links verified in SQL before the page is returned |
 
@@ -479,6 +479,12 @@ disagree with the choice rather than discover it.
     one query document away, and the Q6 template would be the only thing standing in the way.
     `mart.agg_tool_user_period` (Q2, "who is using them") is deliberately *not* subject-scoped:
     the document asks that question per tool, and the 7-day and page-size rules bound it instead.
+22. **`prompt_kind` is an additive dimension on `ingest.submission`, compiled through
+    `coalesce(s.prompt_kind, 'unknown')`.** The task-08 request-kind column is nullable (the device
+    did not decide), so a plain `s.prompt_kind <> $` predicate would drop NULL rows and a
+    default-hide of `client_generated` would hide pre-decision rows too. The coalesce makes NULL
+    filter as `unknown` and keeps the `ne` operator from dropping them; `listSelect` still returns
+    the raw column, so a NULL row renders as `unknown` on the client rather than being rewritten.
 
 ---
 

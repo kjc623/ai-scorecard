@@ -202,6 +202,47 @@ test('the class filter matches a labelled event and composes with another filter
   assert.deepEqual(lines, ['class_only|1', 'class_and_action|1']);
 });
 
+test('prompt_kind_not excludes client_generated and keeps NULL rows', { skip: SKIP }, () => {
+  // The regression this pins: prompt_kind is nullable, and a bare `s.prompt_kind <> $` predicate
+  // would drop the NULL rows as well as the client_generated ones. The dimension compiles through
+  // coalesce(..., 'unknown'), so the default-hide of client_generated must keep a row the device
+  // did not decide about.
+  const read = plan(
+    { query_version: '1', template: 'q8_activity', params: { window: WINDOW, prompt_kind_not: 'client_generated', limit: 50 } },
+    { now: NOW, tenant: TENANT, actorId: 'db-test' },
+  ).statements.find((s) => s.id === 'read');
+  const script = [
+    tenantPrelude(),
+    `INSERT INTO ops.device (tenant_id, device_id, os, managed_state)
+       VALUES (ops.current_tenant(), '00000000-0000-4000-8000-0000000000d1', 'linux', 'managed');`,
+    `INSERT INTO ingest.submission
+       (tenant_id, submission_id, dedup_weak_key, kind, prompt_kind, device_id, user_ref, tool_fingerprint,
+        first_occurred_at, last_occurred_at, received_at, collection_mode, labels, policy_action,
+        winning_source, winning_fidelity, observed_routes, content_state, expires_at)
+       VALUES
+       (ops.current_tenant(), '00000000-0000-4000-8000-0000000000e1', 'sha256:' || repeat('a', 64), 'prompt', 'client_generated',
+        '00000000-0000-4000-8000-0000000000d1', 'user_ref_0001', 'tool_a',
+        '2026-09-02T00:00:00Z', '2026-09-02T00:00:00Z', '2026-09-02T00:00:00Z', 'm3',
+        NULL, 'logged', 'proxy.tls', 50, ARRAY['proxy.tls'], 'not_captured', '2026-12-01T00:00:00Z'),
+       (ops.current_tenant(), '00000000-0000-4000-8000-0000000000e2', 'sha256:' || repeat('b', 64), 'prompt', NULL,
+        '00000000-0000-4000-8000-0000000000d1', 'user_ref_0001', 'tool_a',
+        '2026-09-02T00:00:00Z', '2026-09-02T00:00:00Z', '2026-09-02T00:00:00Z', 'm3',
+        NULL, 'logged', 'proxy.tls', 50, ARRAY['proxy.tls'], 'not_captured', '2026-12-01T00:00:00Z'),
+       (ops.current_tenant(), '00000000-0000-4000-8000-0000000000e3', 'sha256:' || repeat('c', 64), 'prompt', 'user',
+        '00000000-0000-4000-8000-0000000000d1', 'user_ref_0001', 'tool_a',
+        '2026-09-02T00:00:00Z', '2026-09-02T00:00:00Z', '2026-09-02T00:00:00Z', 'm3',
+        NULL, 'logged', 'proxy.tls', 50, ARRAY['proxy.tls'], 'not_captured', '2026-12-01T00:00:00Z');`,
+    `SELECT coalesce(prompt_kind, '<null>') AS pk FROM (${bindForPsql(read.text, read.params)}) q ORDER BY pk;`,
+    'ROLLBACK;',
+  ].join('\n');
+  const result = psqlScript(container, script);
+  assert.equal(result.status, 0, `statement failed: ${(result.stderr ?? '').trim()}`);
+  // The outer query coalesces the NULL to '<null>', so the two surviving rows sort lexicographically
+  // ('<null>' before 'user'). client_generated is excluded by the ne filter and never appears.
+  const rows = (result.stdout ?? '').trim().split('\n').map((s) => s.trim()).filter(Boolean);
+  assert.deepEqual(rows, ['<null>', 'user']);
+});
+
 test('a bucket-size predicate actually discriminates: day and hour rows are not mixed', { skip: SKIP }, () => {
   const dayPlan = plan({ query_version: '1', source: 'mart.agg_tool_period', bucket: 'day', dimensions: ['tool'], measures: ['submissions'], filters: [], window: WINDOW, limit: 5 }, { now: NOW, tenant: TENANT, actorId: 'db-test' });
   const read = dayPlan.statements.find((s) => s.id === 'read');

@@ -175,6 +175,34 @@ test('q8 caps its window at 31 days and refuses an unbounded read', () => {
   assert.equal(error.detail.max_days, 31);
 });
 
+test('q8 filters on prompt_kind and prompt_kind_not, the not form default-hiding client_generated', () => {
+  const p = plan(
+    {
+      query_version: '1',
+      template: 'q8_activity',
+      params: { ...PARAMS.q8_activity, prompt_kind: 'user', prompt_kind_not: 'client_generated' },
+    },
+    { now: NOW },
+  );
+  const read = p.statements.find((s) => s.id === 'read');
+  // Both compile through the coalesce, so the `ne` form never drops a NULL row.
+  assert.ok(read.text.includes("coalesce(s.prompt_kind, 'unknown') = $"), 'prompt_kind must compile as an eq through the coalesce');
+  assert.ok(read.text.includes("coalesce(s.prompt_kind, 'unknown') <> $"), 'prompt_kind_not must compile as a ne through the coalesce');
+  assert.ok(read.params.includes('user'), 'prompt_kind value must be bound');
+  assert.ok(read.params.includes('client_generated'), 'prompt_kind_not value must be bound');
+});
+
+test('q8 refuses a prompt_kind outside the closed vocabulary', () => {
+  assert.equal(
+    rejection(() => plan({ query_version: '1', template: 'q8_activity', params: { ...PARAMS.q8_activity, prompt_kind: 'bogus' } }, { now: NOW })).reason,
+    'malformed_document',
+  );
+  assert.equal(
+    rejection(() => plan({ query_version: '1', template: 'q8_activity', params: { ...PARAMS.q8_activity, prompt_kind_not: 'bogus' } }, { now: NOW })).reason,
+    'malformed_document',
+  );
+});
+
 test('q9 is a single record read: submission and observations, audited first', () => {
   const p = plan({ query_version: '1', template: 'q9_event_detail', params: PARAMS.q9_event_detail }, { now: NOW });
   assert.equal(p.mode, 'single');

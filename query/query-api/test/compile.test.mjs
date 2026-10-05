@@ -199,6 +199,31 @@ test('the class predicate is array containment over labels, never a string conca
   assert.ok(!statement.text.includes('customer_pii'));
 });
 
+test('prompt_kind filters through coalesce, so a NULL row reads as unknown and ne does not drop it', () => {
+  const eqRead = read({
+    query_version: '1',
+    source: 'ingest.submission',
+    filters: [{ field: 'prompt_kind', op: 'eq', value: 'client_generated' }],
+    window: { ...baseDoc().window },
+    limit: 10,
+  });
+  assert.ok(eqRead.text.includes("coalesce(s.prompt_kind, 'unknown') = $"), 'eq must compile through the coalesce');
+  assert.ok(!eqRead.text.includes('client_generated'), 'the value stays bound');
+
+  const neRead = read({
+    query_version: '1',
+    source: 'ingest.submission',
+    filters: [{ field: 'prompt_kind', op: 'ne', value: 'client_generated' }],
+    window: { ...baseDoc().window },
+    limit: 10,
+  });
+  assert.ok(neRead.text.includes("coalesce(s.prompt_kind, 'unknown') <> $"), 'ne must compile through the coalesce');
+  // A bare `s.prompt_kind <> $` would drop NULL rows, so the default-hide of client_generated
+  // would hide every pre-decision row too. The coalesce is what prevents that.
+  assert.ok(!neRead.text.includes('s.prompt_kind <> $'), 'a bare <> over the nullable column drops NULL rows');
+  assert.ok(!neRead.text.includes('client_generated'), 'the value stays bound');
+});
+
 test('a keyset cursor becomes an expanded predicate over the mixed-direction total order', () => {
   const firstPage = plan(baseDoc({ limit: 2, order: [{ by: 'submissions', dir: 'desc' }] }), { now: NOW });
   const order = firstPage.meta.order.map((t) => t.by);

@@ -397,7 +397,7 @@ export const TEMPLATES = Object.freeze({
     title: 'What happened in this window, for this tool or person?',
     source: 'ingest.submission',
     kind: 'list',
-    params: ['window', 'limit', 'cursor', 'subject', 'tool', 'device', 'class', 'content_state', 'action', 'mode', 'department'],
+    params: ['window', 'limit', 'cursor', 'subject', 'tool', 'device', 'class', 'content_state', 'action', 'mode', 'department', 'prompt_kind', 'prompt_kind_not'],
     build(params) {
       return {
         document: {
@@ -413,6 +413,11 @@ export const TEMPLATES = Object.freeze({
             eq('action', oneOf(params, 'action', ['blocked', 'warned', 'logged'])),
             eq('mode', oneOf(params, 'mode', ['m0', 'm1', 'm2', 'm3'])),
             eq('department', optionalStr(params, 'department')),
+            // The request kind (task 08): `prompt_kind` includes only that kind, `prompt_kind_not`
+            // excludes it. The `ne` form is the dashboard's default-hide of client_generated, and
+            // the dimension compiles through coalesce(..., 'unknown') so it never drops a NULL row.
+            eq('prompt_kind', oneOf(params, 'prompt_kind', ['user', 'client_generated', 'unknown'])),
+            eq('prompt_kind', oneOf(params, 'prompt_kind_not', ['user', 'client_generated', 'unknown']), 'ne'),
           ]),
           window: windowOf(params),
           limit: limitOf(params, 50, 500),
