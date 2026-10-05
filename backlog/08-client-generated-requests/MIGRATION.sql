@@ -18,6 +18,14 @@ COMMENT ON COLUMN ingest.observation.prompt_kind IS
 COMMENT ON COLUMN ingest.submission.prompt_kind IS
   'The winning observation request kind (task 08), carried on the submission so the event list can filter without a semi-join on ingest.observation. NULL for the rollup and detection kinds and for a prompt folded from an M0 or pre-task-08 observation; the read layer treats NULL as unknown. content-vault does not build a search index for a client_generated submission, and Search hides them by default.';
 
+-- 1b. The request kind on the content object, so a content-vault reindex honours it without a
+--     grant on ingest.submission. Existing objects read as NULL/unknown, which is the honest
+--     answer: the kind was not stored before this migration.
+ALTER TABLE ops.content_object
+  ADD COLUMN IF NOT EXISTS prompt_kind text CHECK (prompt_kind IN ('user','client_generated','unknown'));
+COMMENT ON COLUMN ops.content_object.prompt_kind IS
+  'The device request kind for the submission this object holds (task 08): user | client_generated | unknown. It lives here, on the vault''s own table, so a reindex honours the kind without the vault needing a grant on ingest.submission. A client_generated object is stored and retrievable but never written to ingest.search_text.';
+
 -- 2. The mode/kind boundary constraints now include prompt_kind, so they are dropped and
 --    recreated. The bodies match database/schema.sql exactly; db/tools/check-schema.mjs keeps
 --    them equal to the contract forbid-lists.

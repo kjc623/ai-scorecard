@@ -56,10 +56,10 @@ SELECT tenant_id::text, name, status, key_custody, COALESCE(kek_id, ''), ceiling
 INSERT INTO ops.content_object (
     tenant_id, object_id, submission_id, event_id, blob_path, ciphertext_sha256,
     plaintext_size_bytes, wrapped_dek, kek_id, kek_version, retention_class, state,
-    created_at, expires_at)
+    created_at, expires_at, prompt_kind)
 VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::text, $6::text,
         $7::bigint, $8::bytea, $9::text, $10::text, $11::text, 'uploaded',
-        $12::timestamptz, $13::timestamptz)
+        $12::timestamptz, $13::timestamptz, nullif($14::text, ''))
 ON CONFLICT (tenant_id, object_id) DO UPDATE
    SET submission_id        = EXCLUDED.submission_id,
        event_id             = EXCLUDED.event_id,
@@ -71,7 +71,8 @@ ON CONFLICT (tenant_id, object_id) DO UPDATE
        kek_version          = EXCLUDED.kek_version,
        retention_class      = EXCLUDED.retention_class,
        state                = 'uploaded',
-       expires_at           = EXCLUDED.expires_at
+       expires_at           = EXCLUDED.expires_at,
+       prompt_kind          = EXCLUDED.prompt_kind
  WHERE ops.content_object.state <> 'shredded'
 RETURNING object_id::text`
 
@@ -79,7 +80,8 @@ RETURNING object_id::text`
 	SQLContentObject = `
 SELECT tenant_id::text, object_id::text, COALESCE(submission_id::text, ''), COALESCE(event_id::text, ''),
        blob_path, ciphertext_sha256, plaintext_size_bytes, wrapped_dek, kek_id, kek_version,
-       retention_class, state, COALESCE(shredded_reason, ''), created_at, expires_at, shredded_at
+       retention_class, state, COALESCE(shredded_reason, ''), created_at, expires_at, shredded_at,
+       COALESCE(prompt_kind, '')
   FROM ops.content_object
  WHERE tenant_id = $1::uuid AND object_id = $2::uuid`
 
@@ -88,7 +90,8 @@ SELECT tenant_id::text, object_id::text, COALESCE(submission_id::text, ''), COAL
 	SQLObjectForEvent = `
 SELECT tenant_id::text, object_id::text, COALESCE(submission_id::text, ''), COALESCE(event_id::text, ''),
        blob_path, ciphertext_sha256, plaintext_size_bytes, wrapped_dek, kek_id, kek_version,
-       retention_class, state, COALESCE(shredded_reason, ''), created_at, expires_at, shredded_at
+       retention_class, state, COALESCE(shredded_reason, ''), created_at, expires_at, shredded_at,
+       COALESCE(prompt_kind, '')
   FROM ops.content_object
  WHERE tenant_id = $1::uuid AND event_id = $2::uuid
  ORDER BY created_at DESC
@@ -99,7 +102,8 @@ SELECT tenant_id::text, object_id::text, COALESCE(submission_id::text, ''), COAL
 	SQLObjectsForTenant = `
 SELECT tenant_id::text, object_id::text, COALESCE(submission_id::text, ''), COALESCE(event_id::text, ''),
        blob_path, ciphertext_sha256, plaintext_size_bytes, wrapped_dek, kek_id, kek_version,
-       retention_class, state, COALESCE(shredded_reason, ''), created_at, expires_at, shredded_at
+       retention_class, state, COALESCE(shredded_reason, ''), created_at, expires_at, shredded_at,
+       COALESCE(prompt_kind, '')
   FROM ops.content_object
  WHERE tenant_id = $1::uuid AND state = 'uploaded'
  ORDER BY object_id`
@@ -370,7 +374,8 @@ func (s *SQLStore) PutContentObject(ctx context.Context, obj ContentObject) erro
 		err := tx.QueryRowContext(ctx, SQLPutContentObject,
 			obj.TenantID, obj.ObjectID, nullable(obj.SubmissionID), nullable(obj.EventID),
 			obj.BlobPath, obj.CiphertextSHA256, obj.PlaintextSizeBytes, obj.WrappedDEK,
-			obj.KEKID, obj.KEKVersion, obj.RetentionClass, obj.CreatedAt, nullTime(obj.ExpiresAt)).Scan(&id)
+			obj.KEKID, obj.KEKVersion, obj.RetentionClass, obj.CreatedAt, nullTime(obj.ExpiresAt),
+			string(obj.PromptKind)).Scan(&id)
 		if errors.Is(err, sql.ErrNoRows) {
 			// The conditional update matched no row: the object exists and is shredded.
 			return fmt.Errorf("store: object %s is shredded and cannot be rewritten", obj.ObjectID)
@@ -662,11 +667,14 @@ type rowScanner interface{ Scan(dest ...any) error }
 func scanObject(row rowScanner) (ContentObject, error) {
 	var obj ContentObject
 	var expires, shredded sql.NullTime
+	var promptKind string
 	if err := row.Scan(&obj.TenantID, &obj.ObjectID, &obj.SubmissionID, &obj.EventID, &obj.BlobPath,
 		&obj.CiphertextSHA256, &obj.PlaintextSizeBytes, &obj.WrappedDEK, &obj.KEKID, &obj.KEKVersion,
-		&obj.RetentionClass, &obj.State, &obj.ShreddedReason, &obj.CreatedAt, &expires, &shredded); err != nil {
+		&obj.RetentionClass, &obj.State, &obj.ShreddedReason, &obj.CreatedAt, &expires, &shredded,
+		&promptKind); err != nil {
 		return ContentObject{}, err
 	}
+	obj.PromptKind = protocol.PromptKind(promptKind)
 	if expires.Valid {
 		obj.ExpiresAt = expires.Time
 	}

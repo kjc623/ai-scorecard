@@ -811,6 +811,10 @@ CREATE TABLE ops.content_object (
   kek_id                text NOT NULL,
   kek_version           text NOT NULL,
   retention_class       text NOT NULL REFERENCES ref.retention_class(retention_class),
+  -- The device's request kind (task 08), carried onto the object so a reindex can honour it
+  -- without a grant on ingest.submission. NULL when the device did not decide, which reads as
+  -- 'unknown'. A 'client_generated' object has no prompt text to find and is never indexed.
+  prompt_kind           text CHECK (prompt_kind IN ('user','client_generated','unknown')),
   state                 text NOT NULL CHECK (state IN ('uploaded','shredded')),
   shredded_reason       text CHECK (shredded_reason IN ('retention_expired','erasure','hold_released','tenant_offboarded')),
   created_at            timestamptz NOT NULL DEFAULT now(),
@@ -823,6 +827,9 @@ CREATE TABLE ops.content_object (
 
 COMMENT ON COLUMN ops.content_object.wrapped_dek IS
   'The per-object data key, wrapped by the tenant key. Destroying the content means deleting this row and the blob; destroying the tenant key destroys every object of that tenant at once. That is the mechanism behind brief C15.';
+
+COMMENT ON COLUMN ops.content_object.prompt_kind IS
+  'The device''s request kind for the submission this object holds (task 08): user | client_generated | unknown. It lives here, on the vault''s own table, so a reindex honours the kind without the vault needing a grant on ingest.submission. A client_generated object is stored and retrievable but never written to ingest.search_text.';
 
 -- Review workflow for findings. Separate from mart.finding on purpose: mart is derived and
 -- rebuildable, so workflow state stored there would be destroyed by a rebuild.
