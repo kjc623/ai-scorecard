@@ -306,18 +306,22 @@ is what a tier rather than a global switch means.
 
 ### 3.5 Q5 — Which specific submissions hit a policy rule?
 
-- **Read path.** `mart.v_finding` — `mart.finding` ⋈ `ref.rule` (title) ⋈ `ingest.submission` ⋈
-  `ops.finding_review`, review state defaulting to `open`.
+- **Read path.** `mart.v_finding` — `mart.finding` ⋈ `ref.rule` (title, class, severity — present-tense)
+  ⋈ `ingest.submission` ⋈ `ops.finding_review`, review state defaulting to `open`.
 - **Key and cost.** The natural key `(tenant, submission_id, rule_id)` is why rebuilding `mart` cannot
   orphan an analyst's judgement, but it is not a time index: add `(tenant, detected_at DESC,
-  submission_id DESC)` and `(tenant, severity, detected_at DESC)`. The source feed is served by the
-  partial index `ingest.submission (tenant, received_at DESC) WHERE policy_action <> 'logged'`. A
-  cursor page is ≤ 500 rows; the review join is on a small table.
+  submission_id DESC)`. The source feed is served by the partial index `ingest.submission (tenant,
+  received_at DESC) WHERE policy_action <> 'logged'`. A cursor page is ≤ 500 rows; the review join is
+  on a small table.
 - **Pagination.** Cursor `(detected_at DESC, submission_id DESC, rule_id ASC)` — all three columns,
   because `(submission_id, rule_id)` is what is unique.
-- **Severity is as-of-detection.** `mart.finding.severity` is materialised when the finding is raised,
-  so reclassifying a rule in `ref.rule` does not retroactively relabel history: a customer asking why
-  something was treated as critical last month gets the answer that was true last month.
+- **Severity and class are present-tense.** `mart.finding` stores the match — `(submission, rule,
+  detected_at, decided_locally, collection_mode)` — and `mart.v_finding` reads `class_code`, `severity`
+  and `title` from the current `ref.rule` row. The customer authors the rules and wants their current
+  definition to govern, so editing a rule shows on every finding that names it
+  (`backlog/03-findings/DECISIONS.md`). This is a deliberate departure from the earlier as-of-detection
+  stance and from the way `mart.agg_tool_period` leaves `ops.tool` state to read time: findings are a
+  match log an analyst triages, not a reconstructed history.
 - **Review state is never defaulted silently.** `open` means nobody has looked, not "reviewed and
   unremarkable"; the three values stay distinct (brief §3.2).
 
@@ -489,9 +493,9 @@ CREATE INDEX audit_by_time           ON ops.audit (tenant_id, occurred_at DESC, 
 
 Plus `ops.device (tenant_id, last_seen_at)`, `ops.collector_state (tenant_id, state)`,
 `ops.coverage_snapshot (tenant_id, snapshot_day) WHERE NOT observed`, `ops.user_dim (tenant_id,
-department)`, `mart.finding (tenant_id, detected_at DESC, submission_id)`, `mart.finding (tenant_id,
-severity, detected_at DESC)`, `mart.agg_tool_user_period (tenant_id, tool_fingerprint, bucket_start
-DESC, bucket_size)`, `mart.agg_org_period (tenant_id, department, bucket_start DESC)`, and
+department)`, `mart.finding (tenant_id, detected_at DESC, submission_id)`,
+`mart.agg_tool_user_period (tenant_id, tool_fingerprint, bucket_start DESC, bucket_size)`,
+`mart.agg_org_period (tenant_id, department, bucket_start DESC)`, and
 `ops.audit (tenant_id, object_type, object_id)`.
 
 The search indexes — `search_text_tsv_gin (tenant_id, tsv)`,
@@ -513,7 +517,7 @@ this section is served by them, and no role in §2.2 except the vault may use th
 | `mart.agg_org_period` | `(…, department, tool_fingerprint, population)` | bucket, department, population, tool | Q3 |
 | `mart.agg_user_period` | `(…, user_ref)` | bucket, subject | Q6 |
 | `mart.agg_device_period` | `(…, device_id, collector)` | bucket, device, collector | Q7 |
-| `mart.finding` | `(tenant_id, submission_id, rule_id)` | finding, not an aggregate | Q5 |
+| `mart.finding` | `(tenant_id, submission_id, rule_id)` | finding (a match), not an aggregate; class/severity/title come from present-tense `ref.rule` at read time | Q5 |
 
 Nothing in `mart` holds workflow state — review decisions live in `ops.finding_review` under the same
 natural key, so a rebuild cannot destroy an analyst's judgement — and sanctioned state is joined at
@@ -641,9 +645,11 @@ brief sets a < 60 s visibility target for an event and < 2 s for a query, but no
 bound; three missed runs is where a number stops being a measurement and becomes history, and the state
 is displayed either way. A stale aggregate is **never** silently recomputed on the read path: reading
 through to raw events to "fix" it would violate C27 and would hide the aggregator's failure — the exact
-inversion of C25. Brief §8's 60-second target is met on the event and finding paths, which read
-`ingest.submission` directly and see a row as soon as its ingest transaction commits; the aggregate
-paths are bounded by the cadence and say so.
+inversion of C25. Brief §8's 60-second target is met on the event path, which reads
+`ingest.submission` directly and sees a row as soon as its ingest transaction commits. The finding
+path is derived: `mart.finding` is written by the aggregator's findings pass over the same trailing
+window (backlog/03-findings), so a finding appears within one cadence of the event, like every other
+`mart` read. The aggregate and finding paths are bounded by the cadence and say so.
 
 ### 4.6 Changes this document requires to `database/schema.sql`
 

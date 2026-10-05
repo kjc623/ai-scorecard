@@ -148,6 +148,68 @@ VALUES ('%s', 'rollup-hour', 'active', 'test-region', 'vendor', 'm1');`+"\n", it
 	}
 }
 
+// TestFindingsAgainstPostgreSQL is the database evidence for the findings pass. It proves the
+// behaviours the task names: a label naming a published rule raises exactly one finding; a label
+// naming an unpublished rule raises none; re-evaluating the window inserts nothing new; and
+// severity/class are read from the current ref.rule, so editing the rule changes the view without
+// touching the finding row.
+func TestFindingsAgainstPostgreSQL(t *testing.T) {
+	container := psqlContainer(t)
+
+	from := "2026-02-10T00:00:00Z"
+	to := "2026-02-11T00:00:00Z"
+
+	var b strings.Builder
+	b.WriteString("BEGIN;\n")
+	b.WriteString("SELECT set_config('app.tenant_id', '" + itTenant + "', true);\n")
+	fmt.Fprintf(&b, `INSERT INTO ops.tenant (tenant_id, name, status, residency_region, key_custody, ceiling_mode)
+VALUES ('%s', 'findings-integration', 'active', 'test-region', 'vendor', 'm1');`+"\n", itTenant)
+	fmt.Fprintf(&b, `INSERT INTO ops.device (tenant_id, device_id, os) VALUES ('%s', '%s', 'windows');`+"\n", itTenant, itDevice)
+
+	// One prompt matches a published rule; one names a rule no classifier release published.
+	recordEvent(&b, "2026-02-10T10:00:00Z", promptEnvelope(eventUUID(11), "userA", "toolA", "2026-02-10T10:00:00Z",
+		[]label{{Class: "customer_pii", Score: 0.9, Rule: "PII_CUSTOMER_RECORD"}}, "logged", "high", 10))
+	recordEvent(&b, "2026-02-10T11:00:00Z", promptEnvelope(eventUUID(12), "userA", "toolA", "2026-02-10T11:00:00Z",
+		[]label{{Class: "customer_pii", Score: 0.9, Rule: "NO_SUCH_RULE"}}, "logged", "high", 10))
+
+	runFindings(&b, from, to)
+	assertEQ(&b, "finding_count", `SELECT count(*)::text FROM mart.finding WHERE tenant_id='`+itTenant+`'`)
+	assertEQ(&b, "finding_rule", `SELECT rule_id FROM mart.finding WHERE tenant_id='`+itTenant+`'`)
+	assertEQ(&b, "finding_view", `SELECT severity||'|'||class_code FROM mart.v_finding WHERE tenant_id='`+itTenant+`'`)
+
+	// Re-evaluating the same window must not duplicate the finding.
+	runFindings(&b, from, to)
+	assertEQ(&b, "finding_after_rerun", `SELECT count(*)::text FROM mart.finding WHERE tenant_id='`+itTenant+`'`)
+
+	// Severity and class are present-tense: editing the rule changes the view without touching
+	// mart.finding. The edit is rolled back with the rest of the test.
+	b.WriteString(`UPDATE ref.rule SET severity='low', title='Edited title' WHERE rule_id='PII_CUSTOMER_RECORD';` + "\n")
+	assertEQ(&b, "finding_after_rule_edit", `SELECT severity||'|'||rule_title FROM mart.v_finding WHERE tenant_id='`+itTenant+`'`)
+	assertEQ(&b, "finding_row_untouched", `SELECT count(*)::text FROM mart.finding WHERE tenant_id='`+itTenant+`' AND rule_id='PII_CUSTOMER_RECORD'`)
+
+	b.WriteString("ROLLBACK;\n")
+
+	out := runPSQL(t, container, b.String())
+	got := parseKeyed(out)
+
+	want := map[string]string{
+		"finding_count":           "1",
+		"finding_rule":            "PII_CUSTOMER_RECORD",
+		"finding_view":            "high|customer_pii",
+		"finding_after_rerun":     "1",
+		"finding_after_rule_edit": "low|Edited title",
+		"finding_row_untouched":   "1",
+	}
+	for key, expected := range want {
+		if got[key] != expected {
+			t.Errorf("%s = %q, want %q", key, got[key], expected)
+		}
+	}
+	if t.Failed() {
+		t.Logf("--- psql output ---\n%s", out)
+	}
+}
+
 // --- helpers -----------------------------------------------------------------------------------
 
 type label struct {
@@ -236,6 +298,13 @@ func runAggregates(b *strings.Builder, bucketSize, from, to string, withWatermar
 	}
 }
 
+// runFindings renders the frozen findings statement as a PREPARE/EXECUTE pair, so the test
+// exercises the exact text the runner sends.
+func runFindings(b *strings.Builder, from, to string) {
+	fmt.Fprintf(b, "PREPARE findings_run AS %s;\n", FindingsSQL)
+	fmt.Fprintf(b, "EXECUTE findings_run('%s'::uuid, '%s'::timestamptz, '%s'::timestamptz);\nDEALLOCATE findings_run;\n", itTenant, from, to)
+}
+
 // assertEQ emits one labelled value so the Go side can compare without a psql failure aborting the
 // transaction before ROLLBACK.
 func assertEQ(b *strings.Builder, key, query string) {
@@ -273,7 +342,7 @@ func parseKeyed(out string) map[string]string {
 }
 
 func isKnownKey(k string) bool {
-	for _, prefix := range []string{"baseline_", "idempotent_", "late_", "hour_", "coverage_", "liveness_"} {
+	for _, prefix := range []string{"baseline_", "idempotent_", "late_", "hour_", "coverage_", "liveness_", "finding_"} {
 		if strings.HasPrefix(k, prefix) {
 			return true
 		}

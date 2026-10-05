@@ -1275,12 +1275,18 @@ CREATE INDEX search_text_expiry
 -- Findings: submissions that matched a rule. The key is the natural key rather than a
 -- surrogate id, so that rebuilding mart from ingest produces identical rows and therefore
 -- cannot orphan a review decision held in ops.finding_review.
+--
+-- A finding records the match, not the rule's attributes. class_code, severity and title are
+-- present-tense configuration read from ref.rule at query time (mart.v_finding below), so a
+-- customer editing a rule sees the change on every finding that names it. That follows the product
+-- decision recorded in backlog/03-findings/DECISIONS.md: the customer authors the rules and wants
+-- their current definition to govern. It is the opposite of mart.agg_tool_period's treatment of
+-- sanctioned state, deliberately: findings are a match log read by an analyst, aggregates are a
+-- reconstructed history.
 CREATE TABLE mart.finding (
   tenant_id        uuid NOT NULL REFERENCES ops.tenant(tenant_id),
   submission_id    uuid NOT NULL,
   rule_id          text NOT NULL REFERENCES ref.rule(rule_id),
-  class_code       text NOT NULL REFERENCES ref.data_class(class_code),
-  severity         text NOT NULL CHECK (severity IN ('low','medium','high','critical')),
   detected_at      timestamptz NOT NULL,
   decided_locally  boolean NOT NULL,
   collection_mode  text NOT NULL CHECK (collection_mode IN ('m0','m1','m2','m3')),
@@ -1289,7 +1295,7 @@ CREATE TABLE mart.finding (
 );
 
 COMMENT ON TABLE mart.finding IS
-  'Derived. Review state is NOT here -- it is in ops.finding_review, keyed by the same natural key, so that DROP and rebuild of this schema cannot destroy an analyst''s judgement.';
+  'Derived. Review state is NOT here -- it is in ops.finding_review, keyed by the same natural key, so that DROP and rebuild of this schema cannot destroy an analyst''s judgement. class_code, severity and title come from the current ref.rule row at read time, not from a snapshot.';
 
 -- Aggregates. Every one of these is written with INSERT .. ON CONFLICT DO UPDATE that REPLACES
 -- the bucket, never increments it: brief C28, "aggregates are upserts, never increments",
@@ -1453,15 +1459,19 @@ SELECT a.tenant_id,
 COMMENT ON VIEW mart.v_tool_usage IS
   'Brief §3.6 questions 1 and 2. LEFT JOIN, not INNER: a tool with no ops.tool row must still appear, reporting sanctioned_state as NULL, so that the read layer can render it as `unknown` rather than dropping it. Brief C8 forbids conflating unknown with prohibited, and silently omitting the row would be a third kind of wrong.';
 
--- Findings joined to review state, defaulting to open.
+-- Findings joined to the current rule definition and to review state (defaulting to open).
+--
+-- class_code and severity are read from ref.rule, not from mart.finding: they are present-tense
+-- configuration. A rule edit therefore shows on every finding that names it. That is the owner's
+-- decision (backlog/03-findings/DECISIONS.md); the title was always read from ref.rule this way.
 CREATE VIEW mart.v_finding
 WITH (security_invoker = true) AS
 SELECT f.tenant_id,
        f.submission_id,
        f.rule_id,
        r.title        AS rule_title,
-       f.class_code,
-       f.severity,
+       r.class_code,
+       r.severity,
        f.detected_at,
        f.decided_locally,
        f.collection_mode,
@@ -1481,7 +1491,7 @@ SELECT f.tenant_id,
    AND fr.rule_id = f.rule_id;
 
 COMMENT ON VIEW mart.v_finding IS
-  'Brief §3.6 question 5: filtered list with severity and review state. coalesce to open is a rendering of "nobody has reviewed this", not an assertion that it was reviewed and found unremarkable.';
+  'Brief §3.6 question 5: filtered list with severity and review state. class_code, severity and title are present-tense (ref.rule), so a rule edit shows on every finding that names it; the review coalesce to open is a rendering of "nobody has reviewed this", not an assertion that it was reviewed and found unremarkable.';
 
 -- What a human needs to see before deciding to close a gate.
 --
@@ -2210,6 +2220,22 @@ INSERT INTO ref.retention_class (retention_class, default_ttl_days, description)
 INSERT INTO ref.classifier_release (release_version, ruleset_version, model_version, artifact_digest, state, notes) VALUES
   ('2026.01.0-shadow', 'rules-2026.01.0', 'model-2026.01.0', 'sha256:0000000000000000000000000000000000000000000000000000000000000000', 'shadow',
    'Seed row. Every new classifier release starts in shadow: labels are recorded but nothing is blocked, which is how brief §6''s "evaluated in a non-enforcing mode before they take effect" is satisfied. Replace with the real first release before any tenant is onboarded.');
+
+-- Rule metadata for the rules the device classifier publishes today (endpoint/classifier-host's
+-- dev ruleset and the lab device's rules file). Only a label naming one of these raises a finding:
+-- mart.finding.rule_id is a foreign key here, and inventing a rule the classifier never published
+-- would assert a detection that did not happen. The wording and severities match the dashboard's
+-- own sample vocabulary (query/dashboard/src/explore-stub.js), so the seeded catalogue and the
+-- preview agree. A tenant-specific ruleset is a later task (the policy-bundle writer).
+INSERT INTO ref.rule (rule_id, class_code, detector_kind, severity, title, description, introduced_in) VALUES
+  ('PCI_PAN_PATTERN',       'payment_card',     'deterministic', 'critical', 'Payment card number in prompt',   'A card-number-shaped run of digits whose Luhn checksum holds and which is not preceded by "test".',       '2026.01.0-shadow'),
+  ('PAYMENT_CARD_PAN',      'payment_card',     'deterministic', 'critical', 'Payment card number in prompt',   'Card-number pattern validated by Luhn, as published by the endpoint classifier. Alias of the rule above under its wire id.', '2026.01.0-shadow'),
+  ('SECRET_API_KEY',        'credential',       'deterministic', 'critical', 'API key or access token',         'A credential-shaped string: private-key headers and provider key prefixes.',                             '2026.01.0-shadow'),
+  ('GOV_ID_NUMBER',         'government_id',    'deterministic', 'high',     'Government identifier',           'A national identifier or tax number matching a jurisdiction rule set.',                                   '2026.01.0-shadow'),
+  ('PII_CUSTOMER_RECORD',   'customer_pii',     'deterministic', 'high',     'Customer personal data',          'Names, addresses or contact details identifying a customer.',                                             '2026.01.0-shadow'),
+  ('SRC_INTERNAL_REPO',     'source_code',      'deterministic', 'high',     'Proprietary source code',         'Source declarations or repository detail indicating proprietary implementation.',                          '2026.01.0-shadow'),
+  ('PHI_CLINICAL_TERM',     'health',           'deterministic', 'high',     'Health information',              'Clinical vocabulary and anything suggesting a medical condition.',                                        '2026.01.0-shadow'),
+  ('LEGAL_CONTRACT_TERMS',  'legal_commercial', 'deterministic', 'medium',   'Contract or commercial terms',    'Contractual or commercially sensitive language.',                                                         '2026.01.0-shadow');
 
 
 -- =====================================================================================

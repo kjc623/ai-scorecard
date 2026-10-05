@@ -862,7 +862,6 @@ export const SOURCES = Object.freeze({
     requiresSubjectScope: false,
     indexes: Object.freeze([
       'docs/04 §3.11 mart.finding (tenant_id, detected_at DESC, submission_id)',
-      'docs/04 §3.11 mart.finding (tenant_id, severity, detected_at DESC)',
       'mart.finding PK (tenant_id, submission_id, rule_id)',
     ]),
     listSelect: Object.freeze([
@@ -888,7 +887,7 @@ export const SOURCES = Object.freeze({
     }),
     warnings: Object.freeze([
       'review_state comes from the view as coalesce(ops.finding_review.review_state, \'open\'). `open` means nobody has looked; it is not "reviewed and unremarkable" (docs/04 §3.5).',
-      'severity is as-of-detection, materialised on mart.finding: reclassifying a rule does not relabel history (§3.5).',
+      'severity and class are present-tense: mart.v_finding reads them from the current ref.rule row, so editing a rule shows on every finding that names it (backlog/03-findings/DECISIONS.md).',
     ]),
   }),
 

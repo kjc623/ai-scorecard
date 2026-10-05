@@ -118,6 +118,23 @@ func (r *Runner) RunTenant(ctx context.Context, tenant string) (TenantReport, er
 		}
 	}
 
+	// Findings are derived from the same ingest rows, in the same transaction, but they are not
+	// bucket aggregates: one pass over the trailing day window, insert-only. A rule the classifier
+	// did not publish raises nothing, and re-running the window inserts nothing new.
+	dayWindow, err := WindowFor(BucketDay, now, r.DayLookback)
+	if err != nil {
+		return report, err
+	}
+	findingsRes, err := tx.ExecContext(ctx, FindingsSQL, tenant, dayWindow.From, dayWindow.To)
+	if err != nil {
+		return report, fmt.Errorf("rollup: %s: %w", FindingName, err)
+	}
+	findingsWritten, err := findingsRes.RowsAffected()
+	if err != nil {
+		return report, fmt.Errorf("rollup: %s: rows affected: %w", FindingName, err)
+	}
+	report.Rows[FindingName] = findingsWritten
+
 	// Coverage is a daily fact rather than a bucket aggregate, but it is written by the same run for
 	// the same reason: a fact nothing recomputes is a fact that quietly stops being true (R11).
 	coverageRows, err := r.runCoverage(ctx, tx, tenant, now)

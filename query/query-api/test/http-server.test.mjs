@@ -358,3 +358,108 @@ test('a search still answers when its hits cannot be described', async (t) => {
   assert.equal(res.status, 200);
   assert.deepEqual((await res.json()).hits, [{ submission_id: id, snippet: 's', rank: 1 }]);
 });
+
+// ---------------------------------------------------------------------------------------------
+// Finding review — the one write this service accepts
+// ---------------------------------------------------------------------------------------------
+
+const REVIEW_SUBMISSION = '80385a3a-ed3d-4950-bd21-3606c6f97fc5';
+
+/** A client that knows the three review statements by their shape. */
+function reviewClient({ finding = { user_ref: 'u_4f21' }, saved = { review_state: 'confirmed', reviewed_by: 'analyst@lab.test', reviewed_at: new Date('2026-10-05T01:00:00Z') } } = {}) {
+  const calls = { query: [], began: 0, committed: 0, rolledBack: 0 };
+  return {
+    calls,
+    async connect() {},
+    async query(text, params) {
+      calls.query.push({ text, params });
+      if (text.includes('FROM mart.finding')) return { rows: finding ? [finding] : [], rowCount: finding ? 1 : 0, fields: [] };
+      if (text.includes('INSERT INTO ops.finding_review')) return { rows: saved ? [saved] : [], rowCount: saved ? 1 : 0, fields: [] };
+      if (text.includes('INSERT INTO ops.audit')) return { rows: [{ audit_seq: 42, occurred_at: new Date('2026-10-05T01:00:01Z') }], rowCount: 1, fields: [] };
+      return { rows: [], rowCount: 0, fields: [] };
+    },
+    async begin() { calls.began += 1; },
+    async commit() { calls.committed += 1; },
+    async rollback() { calls.rolledBack += 1; },
+    async close() {},
+  };
+}
+
+test('a valid review is stored and audited in one transaction, with the actor from the session', async (t) => {
+  const client = reviewClient();
+  const { base } = await withServer(t, { client });
+  const res = await fetch(`${base}${PATHS.FINDING_REVIEW}`, {
+    method: 'POST',
+    headers: asTenant({ 'x-sac-dev-actor': 'analyst@lab.test' }),
+    body: JSON.stringify({ submission_id: REVIEW_SUBMISSION, rule_id: 'PAYMENT_CARD_PAN', review_state: 'confirmed', note: 'real card number' }),
+  });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.result_state, 'ok');
+  assert.equal(body.data.review_state, 'confirmed');
+  assert.equal(body.audit.entry_id, '42', 'the audit entry id is returned so the write is traceable');
+
+  const upsert = client.calls.query.find((c) => c.text.includes('INSERT INTO ops.finding_review'));
+  assert.ok(upsert, 'the review must be written');
+  assert.deepEqual(upsert.params, [REVIEW_SUBMISSION, 'PAYMENT_CARD_PAN', 'confirmed', 'analyst@lab.test', 'real card number']);
+  assert.ok(upsert.text.includes('ops.current_tenant()'), 'the tenant is the session, never a parameter');
+  assert.equal(upsert.text.includes(TENANT), false, 'the tenant must never appear in the SQL text');
+
+  const audit = client.calls.query.find((c) => c.text.includes('INSERT INTO ops.audit'));
+  assert.ok(audit, 'the review must be audited');
+  assert.ok(audit.text.includes('ops.current_tenant()'), 'the audit row takes the tenant from the session too');
+  assert.equal(client.calls.committed, 1, 'review and audit commit together');
+  assert.equal(client.calls.rolledBack, 0);
+});
+
+test('reviewing a finding that does not exist is 404 and writes nothing', async (t) => {
+  const client = reviewClient({ finding: null });
+  const { base } = await withServer(t, { client });
+  const res = await fetch(`${base}${PATHS.FINDING_REVIEW}`, {
+    method: 'POST',
+    headers: asTenant(),
+    body: JSON.stringify({ submission_id: REVIEW_SUBMISSION, rule_id: 'PAYMENT_CARD_PAN', review_state: 'disputed' }),
+  });
+  assert.equal(res.status, 404);
+  assert.equal((await res.json()).result_state, 'not_found');
+  assert.equal(client.calls.query.some((c) => c.text.includes('INSERT INTO ops.finding_review')), false, 'no review without a finding');
+  assert.equal(client.calls.committed, 0);
+  assert.equal(client.calls.rolledBack, 1);
+});
+
+test('a tenant in a review body is refused as a validation error, not honoured', async (t) => {
+  const client = reviewClient();
+  const { base } = await withServer(t, { client });
+  const res = await fetch(`${base}${PATHS.FINDING_REVIEW}`, {
+    method: 'POST',
+    headers: asTenant(),
+    body: JSON.stringify({ submission_id: REVIEW_SUBMISSION, rule_id: 'PAYMENT_CARD_PAN', review_state: 'confirmed', tenant_id: TENANT }),
+  });
+  assert.equal(res.status, 400);
+  assert.equal((await res.json()).error.code, 'tenant_in_request');
+  assert.equal(client.calls.query.length, 0, 'a rejected body must not reach the database');
+});
+
+test('review_state is only confirmed or disputed; open is not an action', async (t) => {
+  const { base } = await withServer(t);
+  const res = await fetch(`${base}${PATHS.FINDING_REVIEW}`, {
+    method: 'POST',
+    headers: asTenant(),
+    body: JSON.stringify({ submission_id: REVIEW_SUBMISSION, rule_id: 'PAYMENT_CARD_PAN', review_state: 'open' }),
+  });
+  assert.equal(res.status, 400);
+  assert.equal((await res.json()).error.code, 'type_mismatch');
+});
+
+test('a review with no established tenant is refused 403 and never reaches the database', async (t) => {
+  const client = reviewClient();
+  const { base } = await withServer(t, { client });
+  const res = await fetch(`${base}${PATHS.FINDING_REVIEW}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ submission_id: REVIEW_SUBMISSION, rule_id: 'PAYMENT_CARD_PAN', review_state: 'confirmed' }),
+  });
+  assert.equal(res.status, 403);
+  assert.equal((await res.json()).result_state, 'unauthorised_role');
+  assert.equal(client.calls.query.length, 0);
+});

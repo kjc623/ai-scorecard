@@ -420,7 +420,7 @@ export function findingsView(state) {
     ]),
     series: Object.freeze([]),
     ...shared(state, [
-      'Severity is as-of-detection: reclassifying a rule today does not relabel this history.',
+      'Severity and class are present-tense: a rule edit shows on every finding that names it.',
       'Open means nobody has looked. It is not "reviewed and unremarkable".',
     ]),
   });

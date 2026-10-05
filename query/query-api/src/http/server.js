@@ -22,6 +22,7 @@ import { QueryError } from '../errors.js';
 import { plan, executePlan } from '../plan.js';
 import { RESULT_STATES } from '../errors.js';
 import { CONTENT_PATHS, createContentForwarder } from './content.js';
+import { validateReviewRequest, FINDING_FOR_REVIEW_SQL, UPSERT_REVIEW_SQL, findingReviewAuditStatement } from '../review.js';
 
 const HIT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -30,6 +31,7 @@ export const PATHS = Object.freeze({
   LIVENESS: '/healthz',
   READINESS: '/readyz',
   QUERY: '/v1/query',
+  FINDING_REVIEW: '/v1/finding-review',
 });
 
 /** §6.2: a request body larger than this is refused before it is parsed, not after. */
@@ -425,6 +427,137 @@ export function createHandler({
     }
   }
 
+  /**
+   * Finding review (review.js). The one WRITE this service accepts, and it is here because
+   * `sac_query` already holds INSERT+UPDATE on `ops.finding_review` and INSERT on `ops.audit`
+   * (db/schema.sql §10), and a review is meaningless except beside the read that shows it. The
+   * tenant is the session's and the reviewer is the authenticated principal; neither is read from
+   * the body. The review and its audit row commit together, so a response is never served for a
+   * judgement that was not recorded.
+   */
+  async function findingReview(req, res) {
+    const principal = principalOf(req, cfg);
+    if (!principal) {
+      sendJson(res, 403, {
+        result_state: 'unauthorised_role',
+        error: {
+          code: 'role',
+          message: cfg.devTrustPrincipal
+            ? 'no tenant was established for this request'
+            : 'the authenticated session is not built yet; this service refuses to guess a tenant',
+        },
+      });
+      return;
+    }
+
+    let body;
+    try {
+      const raw = await readBody(req);
+      body = raw.trim() === '' ? {} : JSON.parse(raw);
+    } catch (error) {
+      const rendered = renderError(error, log);
+      sendJson(res, rendered.status, rendered.body);
+      return;
+    }
+
+    let review;
+    try {
+      review = validateReviewRequest(body);
+    } catch (error) {
+      const rendered = renderError(error, log);
+      sendJson(res, rendered.status, rendered.body);
+      return;
+    }
+
+    try {
+      await gate.acquire();
+    } catch (error) {
+      const rendered = renderError(error, log);
+      sendJson(res, rendered.status, rendered.body);
+      return;
+    }
+
+    let conn = null;
+    try {
+      conn = await source.acquire();
+      await source.useTenant(conn, principal.tenant);
+      await conn.begin();
+
+      // The finding must exist for this tenant. Because the predicate is ops.current_tenant(), a
+      // submission id from another tenant is not found rather than found-and-refused.
+      const found = await conn.query(FINDING_FOR_REVIEW_SQL, [review.submissionId, review.ruleId]);
+      if (!found?.rows?.length) {
+        await conn.rollback();
+        sendJson(res, 404, {
+          result_state: 'not_found',
+          error: { code: 'no_such_finding', message: 'No finding with that submission and rule exists for this tenant.' },
+        });
+        return;
+      }
+      const subjectRef = found.rows[0].user_ref ?? null;
+
+      const saved = await conn.query(UPSERT_REVIEW_SQL, [
+        review.submissionId,
+        review.ruleId,
+        review.reviewState,
+        principal.actorId,
+        review.note,
+      ]);
+      const audit = findingReviewAuditStatement({
+        actorId: principal.actorId,
+        submissionId: review.submissionId,
+        ruleId: review.ruleId,
+        reviewState: review.reviewState,
+        note: review.note,
+        subjectRef,
+        caseReference: principal.caseReference,
+      });
+      const auditRow = await conn.query(audit.text, audit.params);
+      await conn.commit();
+
+      const row = saved?.rows?.[0] ?? {};
+      const auditEntry = auditRow?.rows?.[0] ?? null;
+      sendJson(res, 200, {
+        api_version: '1',
+        result_state: 'ok',
+        data: {
+          submission_id: review.submissionId,
+          rule_id: review.ruleId,
+          review_state: row.review_state ?? review.reviewState,
+          reviewed_by: row.reviewed_by ?? principal.actorId,
+          reviewed_at: row.reviewed_at instanceof Date ? row.reviewed_at.toISOString() : (row.reviewed_at ?? null),
+        },
+        ...(auditEntry
+          ? {
+              audit: {
+                entry_id: auditEntry.audit_seq === undefined ? null : String(auditEntry.audit_seq),
+                written_at: auditEntry.occurred_at instanceof Date ? auditEntry.occurred_at.toISOString() : (auditEntry.occurred_at ?? null),
+              },
+            }
+          : {}),
+      });
+    } catch (error) {
+      if (conn) {
+        try {
+          await conn.rollback();
+        } catch {
+          // A rollback failure must not mask the original error.
+        }
+      }
+      const rendered = renderError(error, log);
+      sendJson(res, rendered.status, rendered.body);
+    } finally {
+      if (conn) {
+        try {
+          await source.release(conn);
+        } catch (error) {
+          log?.warn?.(`query-api: could not return a connection to the pool: ${error?.message ?? error}`);
+        }
+      }
+      gate.release();
+    }
+  }
+
   const forwarder = contentForwarder ?? createContentForwarder({ vaultUrl: cfg.contentVaultUrl, scope: cfg.contentSearchScope, log });
 
   /**
@@ -510,9 +643,10 @@ export function createHandler({
     if (req.method === 'GET' && url.split('?')[0] === PATHS.LIVENESS) return liveness(res);
     if (req.method === 'GET' && url.split('?')[0] === PATHS.READINESS) return void readiness(res);
     if (req.method === 'POST' && url.split('?')[0] === PATHS.QUERY) return void query(req, res);
+    if (req.method === 'POST' && url.split('?')[0] === PATHS.FINDING_REVIEW) return void findingReview(req, res);
     if (req.method === 'POST' && Object.values(CONTENT_PATHS).includes(url.split('?')[0])) return void content(req, res, url.split('?')[0]);
 
-    if (url.split('?')[0] === PATHS.QUERY || url.split('?')[0] === PATHS.LIVENESS || url.split('?')[0] === PATHS.READINESS) {
+    if (url.split('?')[0] === PATHS.QUERY || url.split('?')[0] === PATHS.LIVENESS || url.split('?')[0] === PATHS.READINESS || url.split('?')[0] === PATHS.FINDING_REVIEW) {
       res.writeHead(405, { 'content-type': 'application/json; charset=utf-8', allow: 'GET, POST' });
       res.end(JSON.stringify({ result_state: 'not_found', error: { code: 'method_not_allowed', message: `${req.method} is not allowed on ${url}` } }));
       return;

@@ -352,3 +352,40 @@ SELECT $1, g.bucket_start, %[3]s, g.user_ref,
 ON CONFLICT (tenant_id, bucket_start, bucket_size, user_ref) DO UPDATE
   SET submissions = EXCLUDED.submissions, bytes_total = EXCLUDED.bytes_total,
       tools_used = EXCLUDED.tools_used, block_events = EXCLUDED.block_events`
+
+// FindingName is the derived table the findings pass writes. A finding is not a bucket aggregate:
+// it has no bucket_start and no ops.aggregate_watermark row, so it is deliberately kept out of
+// Aggregates() and computed once per tenant per run.
+const FindingName = "mart.finding"
+
+// FindingsSQL derives findings from classified prompt submissions for the half-open window
+// [$2, $3). A finding is raised when a prompt carries a label whose rule_id names a rule in
+// ref.rule. ref.rule is the server-side mirror of the ruleset the classifier publishes and
+// mart.finding.rule_id is its foreign key, so a rule the classifier never published raises nothing
+// rather than asserting a detection that did not happen.
+//
+// severity and class are deliberately NOT stored here: they are present-tense configuration read
+// from the current ref.rule row by mart.v_finding (backlog/03-findings/DECISIONS.md), so a customer
+// editing a rule sees the change on every finding that names it.
+//
+// ON CONFLICT DO NOTHING is what makes re-evaluation idempotent: running the same window twice
+// inserts nothing the second time, and a finding that already exists is never rewritten.
+//
+// The prompts CTE filters to arrays before jsonb_array_elements runs, because the lateral function
+// is evaluated per row and must never be handed a non-array.
+const FindingsSQL = `
+WITH prompts AS (
+  SELECT s.tenant_id, s.submission_id, s.received_at, s.decided_locally, s.collection_mode, s.labels
+    FROM ingest.submission s
+   WHERE s.tenant_id = $1
+     AND s.received_at >= $2 AND s.received_at < $3
+     AND s.kind = 'prompt'
+     AND s.labels IS NOT NULL AND jsonb_typeof(s.labels) = 'array'
+)
+INSERT INTO mart.finding (tenant_id, submission_id, rule_id, detected_at, decided_locally, collection_mode)
+SELECT DISTINCT p.tenant_id, p.submission_id, l.value->>'rule_id',
+       p.received_at, coalesce(p.decided_locally, false), p.collection_mode
+  FROM prompts p
+  CROSS JOIN LATERAL jsonb_array_elements(p.labels) AS l(value)
+  JOIN ref.rule r ON r.rule_id = l.value->>'rule_id'
+ON CONFLICT (tenant_id, submission_id, rule_id) DO NOTHING`
