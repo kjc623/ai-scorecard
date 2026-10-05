@@ -125,7 +125,7 @@ purge protection). Those queries are not in this directory yet: `azure/pipelines
 ## How to check the infrastructure without Azure
 
 ```powershell
-node --test azure/tools/index.mjs        # the suite: 47 checks
+node --test azure/tools/index.mjs        # the suite: 50 checks
 node --test azure/tools/check-infra.test.mjs   # the same suite, named directly
 node azure/tools/check-infra.mjs         # the same checks as a report, exit 1 on a finding
 ```

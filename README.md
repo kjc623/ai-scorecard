@@ -37,10 +37,11 @@ Every one of those has its own README explaining what is inside and how it works
 
 ## What is built, and what is not
 
-Sixteen of the seventeen components have code, though `control-api` is partial — enrolment, the
-DPoP token endpoint ([ADR 0020](docs/adr/0020-device-transport-is-application-gateway-with-a-pluggable-authenticator.md))
-and the content grant with its finaliser are built, while policy and health are not. The one with none is `aggregator` (the scheduled job that
-keeps the dashboard's aggregates fresh). The Azure transport is written but not deployed:
+Every component but one has code. `control-api`'s enrolment, the DPoP token endpoint
+([ADR 0020](docs/adr/0020-device-transport-is-application-gateway-with-a-pluggable-authenticator.md)),
+the content grant with its finaliser, policy delivery and the health channel are built; `aggregator`
+(the scheduled job that keeps the dashboard's aggregates fresh) now has code too. The one with none is
+`reconciler` (the second expiry mechanism and drift detector). The Azure transport is written but not deployed:
 [`azure/modules/application-gateway.bicep`](azure/modules/application-gateway.bicep) is the device
 ingress, and no subscription has run it. The device-to-cloud path is built and proven locally:
 `capture-core --service` enrols (`x509` or `dpop`), spools, and drains batches to `POST /v1/events`,
@@ -50,7 +51,8 @@ Windows MSI, macOS PKG and Linux package that carry it; the MSI installs a Windo
 hosts itself (`--service`). Still absent for a real deployment: the MDM-delivered per-tenant
 enrolment profile, a signed policy bundle, the trust/proxy configuration, and a signed artefact. For
 the local lab, `installer/lab-msi.mjs` stands in for the MDM and builds an MSI that carries all of
-those, unsigned.
+those, unsigned. The current pre-prod blockers and the ordered go-live sequence are tracked in
+[`azure/RUNBOOK.md`](azure/RUNBOOK.md).
 
 The content path is built and proven in that lab, on a Windows host: at M3 the agent holds a prompt
 locally, asks `control-api` for a per-event grant, and uploads the sealed content; `content-vault`
