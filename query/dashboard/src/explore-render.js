@@ -277,7 +277,9 @@ function exploreHitMeta(hit) {
   // The tool is named by its resolved display name when the read path supplied one; the raw
   // fingerprint is the fallback, so an unrecognised tool is still identifiable.
   const tool = typeof hit.tool_name === 'string' && hit.tool_name !== '' ? hit.tool_name : hit.tool;
-  const parts = [hit.subject, device, tool].filter((part) => typeof part === 'string' && part !== '');
+  // The account name the device reported, then the directory's own (current) display name beside it,
+  // so a stale as-of-submission name is distinguishable from the directory's. Either can be absent.
+  const parts = [hit.subject, hit.directory_name, device, tool].filter((part) => typeof part === 'string' && part !== '');
   if (parts.length === 0) return `<span class="x-mono x-sub">${escapeHtml(hit.submissionId)}</span>`;
   return `<span class="x-hit-meta x-mono">${parts.map((part) => `<span>${escapeHtml(part)}</span>`).join('<span class="x-hit-sep" aria-hidden="true">|</span>')}</span>`;
 }

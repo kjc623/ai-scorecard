@@ -357,6 +357,12 @@ CREATE TABLE ops.user_dim (
   department            text,
   population            text,
   manager_ref           text,
+  -- The directory's own display name for the person. Like the department it is a directory attribute
+  -- needed by the read, not the mapping to a person (that stays directory_object_id_enc). It is
+  -- written only while the tenant's device_identity is 'clear', so a tenant that opted out of clear
+  -- identities stores no directory name either (ADR 0021; the read then falls back to the account
+  -- name the device reports, then to user_ref).
+  display_name          text,
   status                text NOT NULL DEFAULT 'unknown' CHECK (status IN ('active','inactive','unknown')),
   synced_at             timestamptz,
   PRIMARY KEY (tenant_id, user_ref)
@@ -364,6 +370,9 @@ CREATE TABLE ops.user_dim (
 
 COMMENT ON COLUMN ops.user_dim.directory_object_id_enc IS
   'The directory identifier, encrypted. This is the only column that maps a pseudonymous user_ref to a real person, and it exists solely so that subject export and erasure can resolve one. Absent it, the wire format is pseudonymous end to end.';
+
+COMMENT ON COLUMN ops.user_dim.display_name IS
+  'The directory''s display name for the user_ref, shown beside the account name the device reports. It is not the mapping to a real person: that is directory_object_id_enc, which is encrypted and never exported. Written only while the tenant''s device_identity is ''clear''.';
 
 CREATE TABLE ops.device (
   tenant_id        uuid NOT NULL REFERENCES ops.tenant(tenant_id),

@@ -78,6 +78,12 @@ account name at submission time, alongside `user_ref`. The setting defaults to `
 sets it to `hashed` stores only a hostname hash and no name, and the read falls back to `user_ref`.
 The earlier "no names in the store" position (assumption A8) is superseded by that record.
 
+**As built (backlog/06):** `ops.user_dim.display_name` carries the directory's own display name, and
+the dashboard shows it **beside** the account name the device reports — the device name is
+as-of-submission, the directory name is current, and an analyst needs to tell the two apart. The
+sync writes no display name while `device_identity` is `hashed`, so the same opt-out that gates the
+device's account name gates the directory's (the column is NULL and the read shows only `user_ref`).
+
 ### 2.2 Authorisation roles
 
 Entra app roles mapped to a closed set, enforced per endpoint. Database roles are per *component*, so
@@ -299,6 +305,17 @@ is what a tier rather than a global switch means.
   `coverage_degraded` with the sync age.
 - **Suppression.** Department cells below k distinct users are suppressed (§6): a two-person team's
   daily count is de facto personal data.
+- **As built (backlog/06).** The sync is `control-api sync-directory` — a subcommand of the control
+  plane, not a device route — with a Microsoft Entra ID provider (Graph, client credentials) and a
+  JSON file provider for the lab and for a non-Entra directory. It fills `ops.user_dim` keyed by the
+  endpoint's own `user_ref`, which is mapped from a configurable directory attribute
+  (`onPremisesSamAccountName` by default) whose value the device's `--user-ref` is set to. It is
+  idempotent, upserts per user and never truncates; a user the directory no longer returns is retired
+  (`status = 'inactive'`) rather than deleted, so history stays attributable; and a user with no
+  department is written with a NULL and counted in the explicit `unmapped` series. `department` and
+  `population` are read by the query layer; `directory_object_id_enc` is sealed with AES-256-GCM
+  under a per-tenant key. The Teams page surfaces the residual as its own **Unmapped user-days** tile
+  beside **Mapped user-days**, rather than only in a footnote.
 
 ### 3.4 Q4 — What classes of sensitive data are going into AI?
 

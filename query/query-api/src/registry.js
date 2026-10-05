@@ -647,6 +647,12 @@ export const SOURCES = Object.freeze({
       'd.collection_mode AS "collection_mode"',
       'd.last_user_ref AS "user_ref"',
       'd.last_subject_name AS "subject_name"',
+      // The directory's own display name, current as of the last sync, resolved per row. It is a
+      // scalar subquery rather than a join because the devices list is a frozen column list and a
+      // join would only be emitted when a dimension happened to use it; this is one lookup on a
+      // page-sized list. NULL when there is no sync, no display name, or a 'hashed' tenant (the
+      // sync stores no clear name then). See ops.user_dim.display_name.
+      '(SELECT ud.display_name FROM ops.user_dim ud WHERE ud.tenant_id = d.tenant_id AND ud.user_ref = d.last_user_ref) AS "directory_name"',
       "CASE WHEN d.revoked_at IS NOT NULL THEN 'revoked' WHEN d.last_seen_at IS NULL THEN 'never_reported' WHEN d.last_seen_at < now() - interval '24 hours' THEN 'stale' ELSE 'reporting' END AS \"liveness\"",
       'cs.collector AS "collector"',
       'cs.state AS "collector_state"',

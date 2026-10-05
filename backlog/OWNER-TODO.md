@@ -23,6 +23,17 @@ Each line names the task that left it. The exact commands are in that task's `RE
   `psql "$DSN" -v ON_ERROR_STOP=1 -f backlog/05-tool-catalogue/MIGRATION.sql`. It creates
   `ref.tool_catalogue`, seeds it, adds `ops.tool_display_name()` and grants the sanction write.
   (05)
+- [ ] **Apply 06's directory migration to any database other than the lab's**, after 05's:
+  `psql "$DSN" -v ON_ERROR_STOP=1 -f backlog/06-directory-sync/MIGRATION.sql`. It adds
+  `ops.user_dim.display_name`; the lab's database already has it. (06)
+- [ ] **Point the directory sync at a real Microsoft Entra ID tenant.** The harness has no Entra
+  tenant, so the Graph provider is the one path not exercised here. Register an application, grant
+  it `User.Read.All` (application permission), and run
+  `control-api sync-directory --store sql --dsn "$SAC_PG_DSN" --provider entra --entra-tenant <tenant>
+  --entra-client-id <id> --entra-client-secret <secret>
+  --entra-user-ref-attribute onPremisesSamAccountName --directory-key "$SAC_DIRECTORY_KEY"`.
+  The control-api binary carries the subcommand after `go build -tags sac_sql_driver`, and the
+  auth-lab image after `node localdev/build.mjs --auth`. (06)
 
 ## Verify
 

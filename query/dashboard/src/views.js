@@ -318,9 +318,13 @@ export function unsanctionedView(state) {
 
 export function teamsView(state) {
   const org = state.meta?.extras?.org_coverage?.[0] ?? null;
+  // The residual is computed here rather than read from a column: mart.agg_org_period holds only
+  // users with a department, so "no department" is the difference between every user-day and the
+  // mapped ones. It is surfaced as its own tile, not only a footnote, because "never dropped" means
+  // visible on the page, not discoverable behind a disclosure (docs/04 §3.3).
+  const unmapped = org ? Math.max(0, (org.users_all ?? 0) - (org.users_mapped ?? 0)) : null;
   const notes = [];
   if (org) {
-    const unmapped = Math.max(0, (org.users_all ?? 0) - (org.users_mapped ?? 0));
     notes.push(
       `Unmapped people are an explicit series: ${formatCount(org.users_all)} user-days in the window, ${formatCount(org.users_mapped)} with a department, ${formatCount(unmapped)} without.`,
     );
@@ -332,6 +336,7 @@ export function teamsView(state) {
       measureTile('People (lower bound)', state, 'users'),
       tile('Teams in this page', { kind: 'number', text: formatCount(new Set(state.data.map((r) => r.department)).size) }, null),
       tile('Mapped user-days', org ? { kind: 'number', text: formatCount(org.users_mapped) } : { kind: 'absent', text: '—' }, org ? `of ${formatCount(org.users_all)}` : 'No directory coverage read came back with this page.'),
+      tile('Unmapped user-days', unmapped === null ? { kind: 'absent', text: '—' } : { kind: 'number', text: formatCount(unmapped) }, org ? `of ${formatCount(org.users_all)}` : 'No directory coverage read came back with this page.'),
     ]),
     tables: Object.freeze([
       tableFrom(state, {
@@ -544,9 +549,11 @@ export function devicesView(state, { filters = {}, now = new Date(), exploreHref
       last_seen_at_ago: row.last_seen_at ? ago(row.last_seen_at, now) : null,
       // The device name is the hostname, with the UUID kept for the hover and as the fallback. The
       // user is the clear account name of the most recent submission, with the pseudonymous ref as
-      // the fallback (ADR 0021). Both are present only when the tenant's identity setting is clear.
+      // the fallback (ADR 0021). directory_name is the directory's own current name, shown beside it
+      // when a sync has supplied one; both are absent for a 'hashed' tenant.
       device_name: row.hostname || null,
       user: row.subject_name ?? row.user_ref ?? null,
+      directory_name: row.directory_name ?? null,
       mode: row.collection_mode ?? null,
       activity: row.device ? `${exploreHref}#events?device=${encodeURIComponent(String(row.device))}` : null,
     };
@@ -625,6 +632,7 @@ export function devicesView(state, { filters = {}, now = new Date(), exploreHref
           columns: [
             column('device_name', 'Device', 'device-name'),
             column('user', 'User'),
+            column('directory_name', 'Directory name'),
             column('status', 'Status', 'status'),
             column('last_seen_at', 'Last seen', 'ago'),
             column('agent_version', 'Agent version'),

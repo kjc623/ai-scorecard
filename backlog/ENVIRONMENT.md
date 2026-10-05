@@ -16,7 +16,7 @@ The harness is on the network of **the device-auth lab** (`localdev/authlab.comp
 enrolled against and the one this backlog was observed on. Everything in it is reachable by
 service name:
 
-- Plain `psql` reaches its database (`postgres`, database `shadow`).
+- Plain `psql` reaches its database: `postgres://postgres:sac-lab-only@postgres:5432/shadow?sslmode=disable` (the password is a compose literal, not a secret). That DSN is what `SAC_PG_DSN` should carry for a Go service or tagged test run from the harness; the control-api/ingest-api tagged tests default to `127.0.0.1:5432`, which is not the lab, so they skip here.
 - `$LAB_QUERY_URL`, `$LAB_INGEST_URL` and `$LAB_VAULT_URL` are its `query-api`, `ingest-api` and
   `content-vault`. The device path is the edge, `https://edge:8443`, with the lab's own
   certificate.

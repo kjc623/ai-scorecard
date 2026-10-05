@@ -739,11 +739,14 @@ export function createHandler({
       await source.useTenant(conn, principal.tenant);
       const result = await conn.query(
         `SELECT s.submission_id::text AS submission_id, s.user_ref AS user_ref, s.subject_name AS subject_name,
+                ud.display_name AS directory_name,
                 s.tool_fingerprint AS tool, ops.tool_display_name(s.tool_fingerprint) AS tool_name,
                 s.device_id::text AS device, d.hostname AS hostname
            FROM ingest.submission s
            LEFT JOIN ops.device d
              ON d.tenant_id = s.tenant_id AND d.device_id = s.device_id
+           LEFT JOIN ops.user_dim ud
+             ON ud.tenant_id = s.tenant_id AND ud.user_ref = s.user_ref
           WHERE s.tenant_id = $1::uuid AND s.submission_id = ANY(string_to_array($2::text, ',')::uuid[])`,
         [principal.tenant, ids.join(',')],
       );
@@ -756,6 +759,10 @@ export function createHandler({
           // The clear name at submission time when there is one, else the pseudonymous ref, so a hit
           // is always attributable to something an analyst can act on (ADR 0021, docs/04 §15.3).
           subject: row.subject_name ?? row.user_ref ?? null,
+          // The directory's current display name, shown beside the account name the device reported
+          // so the analyst can tell a stale as-of-submission name from the directory's own. Both are
+          // gated by the same device_identity setting: the sync stores none for a 'hashed' tenant.
+          directory_name: row.directory_name ?? null,
           tool: row.tool ?? null,
           tool_name: row.tool_name ?? null,
           device: row.device ?? null,
