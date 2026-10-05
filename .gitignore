@@ -47,6 +47,9 @@ node_modules/
 db/evidence/*.log
 .integration/verify-all-*.json
 .integration/accept-*.json
+# What query/dashboard/tools/observe.mjs saw: screenshots and page text of live lab data, which
+# carry names and prompts.
+.integration/observe/
 
 # Local lab overrides (LAB_*_PORT) and the MCP gateway token written by
 # localdev/harness/mcp-gateway.mjs. Machine-specific, and the token is a credential.

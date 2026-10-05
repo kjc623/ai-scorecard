@@ -30,12 +30,21 @@ results, and results page.
 
 ## Propose before building
 
-Write the design into `DECISIONS.md` with the trade-off you chose. Two candidates: the vault accepts
+Put the design to the owner in a few lines, with the trade-off you chose. Two candidates: the vault accepts
 a bounded list of candidate submission ids from `query-api`; or filter metadata is denormalised into
 the index row at index time.
 
 ## Done when
 
-Searching "Australia" with the Person filter set returns only that person's prompts; the window
-switch applies; and more than 20 matches can be paged. The search stays audited, with the filters
-recorded. Tests in the vault, `query-api` and the dashboard.
+The agent verifies, on the device-auth lab, with each page observed in the browser:
+
+- Searching "Australia" with the Person filter set returns only that person's prompts. Stored
+  prompt content in the lab comes from one person, so also show that a different person returns
+  none.
+- The window switch applies to text results.
+- More than 20 matches can be paged. If the lab holds fewer than 21 matches for any term, say so
+  and show paging with a smaller page size.
+- The search is audited, with the filters recorded in the audit row.
+- Tests in the vault, `query-api` and the dashboard.
+
+The owner verifies: nothing. No clause needs the real device.

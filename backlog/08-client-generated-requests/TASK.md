@@ -41,7 +41,25 @@ downstream patches. The endpoint should decide this once.
 
 ## Done when
 
-The titling request no longer appears in prompt search; the capital-of-Australia event carries no
-`source_code` label; and a prompt that really contains source code or a card number is still
-labelled. Tests cover the kind decision and the classification input. The agent change needs a new
-build on the owner's machine: say in the report what the owner must run.
+The decision is made on the device, so the behaviour on real traffic can only be seen after the
+owner installs a new agent build. What the harness can show is that the decision is right for the
+request bodies the lab has already captured, and that everything downstream of the device honours
+the kind.
+
+The agent verifies:
+
+- Run through the endpoint's own code path in tests, a captured Claude Code titling request is
+  marked client-generated; the capital-of-Australia request is a user prompt and gets no
+  `source_code` label; and a prompt that really contains source code or a card number is still
+  labelled.
+- On the device-auth lab, an event carrying the client-generated kind, sent through the device
+  path into the sample tenant, is stored with its kind, can be filtered in `query-api`, is not indexed by the vault, and is
+  hidden in Search by default with a way to include it. Search is observed in the browser.
+- Tests cover the kind decision and the classification input.
+- The agent build for the owner's machine is produced, and the report says what the owner must run.
+
+The owner verifies, after installing the new build:
+
+- Searching prompt text for "Australia" no longer returns the titling request.
+- A new "What is the capital of Australia" prompt from Claude Code carries no `source_code` label.
+- A prompt containing a test card number is still labelled `payment_card`.

@@ -35,7 +35,18 @@ prompt. Do not reintroduce the approval.
 
 ## Done when
 
-In the lab the browser fetches content from the vault's retrieval URL; `query-api`'s response
-carries no content; the lab still works offline, with a storage stand-in that requires a
-credential; and the dashboard's Event drawer shows the prompt as it does today. Tests cover expiry,
-single use and a replayed URL.
+The agent verifies, on the device-auth lab:
+
+- Opening an event in Search, observed in the browser
+  (`node query/dashboard/tools/observe.mjs 'explore.html?transport=live#events' --click 'tr.x-row'`),
+  shows the prompt in the Event drawer as it does today.
+- The browser fetched that content from the vault's retrieval URL, and `query-api`'s response
+  carried no content.
+- The lab still works offline, with a storage stand-in that refuses a read without a credential.
+- Tests cover expiry, single use and a replayed URL.
+
+The owner verifies:
+
+- Nothing on the device. The vault reading real blob storage with its own identity needs a
+  deployment the harness does not have; say in the report what was and was not exercised against
+  `azure/`.

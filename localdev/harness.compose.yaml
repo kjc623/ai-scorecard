@@ -10,6 +10,15 @@
 #
 # Adding a harness is a Dockerfile under localdev/harness/<name>/ and one service below.
 #
+# The opencode harness is the exception to "the lab": it is on the device-auth lab's network
+# (`scorecard-authlab`, from localdev/authlab.compose.yaml) and not on `scorecard`, because that is
+# the lab the backlog is worked against. Both labs use the same service names and the same database
+# credentials, so a harness on both networks could not tell which `postgres` it had reached. For
+# opencode the addresses below therefore mean the device-auth lab, which must be up first:
+#
+#     docker compose -f localdev/authlab.compose.yaml up -d
+#     docker compose -f localdev/harness.compose.yaml run --rm opencode
+#
 # Docker: the host's docker socket is mounted, so a harness can inspect, restart and exec into the
 # lab's containers — and every other container on this machine. That is a deliberate grant.
 #
@@ -61,6 +70,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
   opencode:
     <<: *harness
+    networks: [scorecard-authlab]
     build:
       context: harness/fedora
     image: sac/harness-opencode
@@ -72,6 +82,8 @@ services:
 
 networks:
   scorecard:
+    external: true
+  scorecard-authlab:
     external: true
 
 volumes:

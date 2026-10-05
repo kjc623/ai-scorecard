@@ -39,6 +39,19 @@ An audited, admin-only API in `control-api`, and a Settings page in the dashboar
 
 ## Done when
 
-Changing the lab tenant from M3 to M1 in the page stops content upload from the lab device within
-one policy refresh, and changing it back resumes it, with both changes in the audit trail. Tests
-cover the refused combinations and the bundle contents.
+The agent verifies, on the device-auth lab:
+
+- Changing the sample tenant's mode in its Settings page, driven in the browser, is accepted, and
+  the page then shows the new requested mode. Changing it back does the same. Do not change a
+  setting in the owner's tenant; that change is the owner's check below.
+- After each change, the signed bundle a device is served carries the new mode.
+- Both changes are in the audit trail with actor, old value and new value.
+- A combination the database refuses is refused in the page with a clear message.
+- Tests cover the refused combinations and the bundle contents.
+
+The owner verifies, on the Windows device:
+
+- After changing the owner's tenant from M3 to M1 in the page, content upload stops within one
+  policy refresh, with no reinstall.
+- After the change back to M3, it resumes.
+- The Settings page shows the mode the device has actually applied.
