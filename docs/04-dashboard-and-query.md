@@ -966,7 +966,9 @@ single-use grant and redeems it. Four things differ from the flow above. **Step 
 second approver is a name recorded on the request, which the vault requires to differ from the requester;
 no second person approves, and there is no `approval_pending` state. The roles of §4 are not enforced,
 because the requester is a development principal rather than an authenticated session. The content is
-relayed in `query-api`'s response body, because the vault does not mint a retrieval URL yet. And holds
+served from the vault's single-use retrieval URL, which the browser fetches through the analyst web
+tier: `query-api` relays the URL and never the content, and the vault serves the bytes from the
+ciphertext it reads back under its own storage identity. And holds
 (step 6) are not consulted. The page shows what the user typed apart from the rest of the capture, and
 drops retrieved content when the event is closed.
 

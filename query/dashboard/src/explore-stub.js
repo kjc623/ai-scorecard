@@ -436,6 +436,10 @@ export function createExploreStub({ now = () => new Date(), scenario = 'realisti
     return Object.freeze({ state: 'available', hits: Object.freeze(page), truncated: next !== null, next_cursor: next });
   }
 
+  // The retrieval request mints a URL; the content is served only when that URL is fetched, and
+  // only once — the same single-use shape the vault has (docs/02 §11).
+  const pendingRetrievals = new Map();
+
   async function retrieveContent(body) {
     await pause();
     if (current === 'busy') return contentRefusal('busy', 'The service is at its concurrency limit; retry shortly.');
@@ -448,17 +452,27 @@ export function createExploreStub({ now = () => new Date(), scenario = 'realisti
     if (event.content_state === 'shredded' || current === 'destroyed') {
       return Object.freeze({ state: 'no_longer_available', reason: 'retention_expired', receipt_ref: 'rcpt_sample_0001' });
     }
+    const url = `stub://retrieval/${sampleUuid(0x9a, sample.events.indexOf(event))}`;
+    pendingRetrievals.set(url, sampleCapture(event));
     return Object.freeze({
       state: 'available',
       event_id: ids[0],
       grant_id: sampleUuid(0x9a, sample.events.indexOf(event)),
       raw_digest: `sha256:${sampleHex(Math.imul(sample.events.indexOf(event) + 1, 2246822519), 8).repeat(8)}`,
-      content: sampleCapture(event),
+      retrieval_url: url,
     });
   }
 
+  async function readRetrieval(url) {
+    await pause();
+    if (!pendingRetrievals.has(url)) return contentRefusal('grant_already_used', 'The retrieval URL was already redeemed.');
+    const content = pendingRetrievals.get(url);
+    pendingRetrievals.delete(url);
+    return Object.freeze({ state: 'available', content });
+  }
+
   return Object.freeze({
-    content: Object.freeze({ search: searchContent, retrieve: retrieveContent }),
+    content: Object.freeze({ search: searchContent, retrieve: retrieveContent, readUrl: readRetrieval }),
     async send(body) {
       if (latencyMs > 0) await new Promise((resolve) => { setTimeout(resolve, latencyMs); });
       return inner.send(body);

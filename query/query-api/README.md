@@ -79,7 +79,7 @@ from the body:
 | Route | Body | What happens |
 |---|---|---|
 | `POST /v1/content-search` | `{ query, limit?, cursor?, subject?, tool?, device?, mode?, window? }` | Forwarded as the vault's `terms` search for the configured scope, with the person, tool, device, mode and received-at window filters. Answers `{ state: "available", hits: [{ submission_id, snippet, rank }], truncated, next_cursor }`. It validates the filters here but decides nothing about content |
-| `POST /v1/content/retrieval` | `{ event_ids, case_reference, second_approver, justification }` | Runs the vault's two steps, retrieval then redemption, for the first of the events that has a stored object. Answers `{ state: "available", event_id, grant_id, raw_digest, content }`, or the vault's `no_longer_available` result with its reason |
+| `POST /v1/content/retrieval` | `{ event_ids, case_reference, second_approver, justification }` | Asks the vault to authorise one read for the first of the events that has a stored object. Answers `{ state: "available", event_id, grant_id, raw_digest, expires_at, retrieval_url }`, or the vault's `no_longer_available` result with its reason. The URL is the browser's to fetch; no content byte is relayed |
 
 A refusal carries the vault's own reason code and status. `event_ids` are the observations of the
 submission the analyst is looking at, which the record read already returned; the stored object is held
@@ -92,11 +92,11 @@ concurrency gate with `/v1/query`.
 | `SAC_CONTENT_VAULT_URL` | The vault's internal base URL. Empty: both routes answer `503 content_vault_not_configured` |
 | `SAC_CONTENT_SEARCH_SCOPE` | The search scope asked of the vault. The vault must name it with a tier, or the search is refused `search_tier_not_in_scope` |
 
-Three things are as built rather than as designed. The retrieved content is returned **in this
-service's response body**, where docs/02 §11 has the vault mint a short-lived retrieval URL so content
-never transits here; the vault does not mint one yet. The search answer carries no index-coverage
-block. And nothing in this service checks the caller's role before forwarding: with no session, every
-development principal may search and retrieve.
+Three things are as built rather than as designed. The retrieval request relays the vault's
+short-lived **single-use retrieval URL** and no content byte (docs/02 §11); the browser fetches that
+URL through the analyst web tier, and a deployment's ingress routes it to the vault. The search answer
+carries no index-coverage block. And nothing in this service checks the caller's role before
+forwarding: with no session, every development principal may search and retrieve.
 
 ## Layout
 
@@ -145,7 +145,7 @@ the skip says which. A skip is not a pass.
 | The ten questions are answerable | `test/templates.test.mjs`, and the same ten shapes in `test/snapshots/compiled-sql.json`. |
 | Nothing is served unaudited | `test/audit-plan.test.mjs`: a failing audit insert serves zero rows and returns `503 audit_unavailable`. |
 | The service reaches a real database | `test/pg-client.test.mjs` speaks the wire protocol to PostgreSQL, including SCRAM-SHA-256, bound parameters and SQLSTATE surfacing. |
-| The content forwarder adds identity and decides nothing | `test/content-forward.test.mjs`, against a vault double: the principal and scope come from the session and configuration and not the body, a retrieval is the vault's two steps in order, the vault's refusal is carried through and nothing is redeemed after one, and a malformed request never reaches the vault. The routes in `server.js` have no test of their own; they were exercised through the dashboard in the local auth lab. |
+| The content forwarder adds identity and decides nothing | `test/content-forward.test.mjs`, against a vault double: the principal and scope come from the session and configuration and not the body, a retrieval relays the vault's single-use URL and carries no content byte, the vault's refusal is carried through and mints no URL, and a malformed request never reaches the vault. The routes in `server.js` have no test of their own; they were exercised through the dashboard in the local auth lab. |
 | The transport cannot be talked into a wrong answer | `test/http-server.test.mjs` and `test/pool.test.mjs`: the tenant is refused when unestablished, the tenant is bound rather than interpolated, the tenant is cleared before a connection is reused, and a request shed by the gate is answered `429 busy` rather than queued for ever. A refusal from the pool itself is not mapped to `busy`; it is rendered as the generic `500`. |
 
 ## What is in `test/`

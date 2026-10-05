@@ -722,7 +722,9 @@ Retrieval and export are analyst-facing and are reached through `query-api`; the
 (`POST /v1/content/retrieval`) is served by `content-vault` on its internal ingress. **As built:**
 `query-api` forwards `POST /v1/content/retrieval` and `POST /v1/content-search` to `content-vault` under
 the session's principal, and the dashboard's Explore page uses both; export is not built. The retrieval
-URL is not minted yet, so the content the vault opens is relayed in `query-api`'s response body, and the
+request mints a short-lived, single-use retrieval URL (`GET /v1/content/retrieval/{tenant}/{grant}`),
+which the browser fetches through the analyst web tier; `query-api` relays the URL and never the
+content, and the vault reads the stored ciphertext under its own storage identity. The
 principal is a development header rather than an Entra session. Row 5 exists too: `control-api` serves
 `POST /v1/content/grant`, and `capture-core` requests the grant and makes the upload (exercised end to
 end in the local auth lab, where the upload target is a storage stand-in and not Blob storage). The grant state machine, denial reasons and

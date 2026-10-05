@@ -83,9 +83,12 @@ Explore carries the two content reads, so an analyst does not leave the page to 
   conversation, and sends telemetry nobody typed). Retrieved content is held only while that event
   stays open.
 
-Both go to their own endpoints on the page's origin (`/v1/content-search`, `/v1/content/retrieval`),
-which `query-api` forwards to `content-vault`; neither is a query, and no query returns content. In
-sample mode they run against the sample transport. The split of typed text from client context is
+The search and the retrieval request go to their own endpoints on the page's origin
+(`/v1/content-search`, `/v1/content/retrieval`), which `query-api` forwards to `content-vault`; neither
+is a query, and no query returns content. The retrieval request answers with a short-lived, single-use
+retrieval URL and no content: the page fetches that URL (`GET /v1/content/retrieval/<tenant>/<grant>`)
+from its own origin, and the live server forwards it straight to `content-vault`, never through
+`query-api`. In sample mode they run against the sample transport. The split of typed text from client context is
 display logic in `src/explore-model.js` (`exploreUserInput`): it knows Claude Code's
 `<system-reminder>` blocks and the Anthropic message format, and shows any other capture whole.
 
@@ -102,7 +105,9 @@ how to run it by hand against another tenant.
 
 The browser never chooses a tenant. `tools/serve.mjs` forwards the query endpoint and the two
 content endpoints to the `query-api` named by `--api` (or `SAC_QUERY_API_URL`) and adds the
-development principal headers itself, from `SAC_DEV_TENANT` and `SAC_DEV_ACTOR`. This is a
+development principal headers itself, from `SAC_DEV_TENANT` and `SAC_DEV_ACTOR`; a minted retrieval
+URL (`SAC_CONTENT_VAULT_URL`) goes straight to `content-vault`, because content must not transit
+query-api. This is a
 development forwarder: it works only against a `query-api` started with `SAC_DEV_TRUST_PRINCIPAL=1`,
 and it stands in for the authenticated session, which is not built. The content reads also need that
 `query-api` to be given the vault (`SAC_CONTENT_VAULT_URL`, and `SAC_CONTENT_SEARCH_SCOPE` for search).

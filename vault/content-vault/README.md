@@ -49,10 +49,11 @@ ciphertext and digest are byte-identical, so nothing was re-encrypted.
 
 ## The grant matrix
 
-A retrieval is two steps, both audited before they serve anything (docs/02 §11, §6.3). `Retrieve` takes
-C16's case reference plus a **distinct** second approver, commits the audit row *before* the object is
-read, then unwraps the DEK to prove the content is readable now: it returns a grant id, an expiry and
-the digest of the bytes that will be served — never content. `Redeem` applies the matrix and then serves.
+A retrieval is two steps, both audited before they serve anything (docs/02 §11, §6.3). `Retrieve`
+commits the audit row *before* the object is read, then unwraps the DEK to prove the content is
+readable now: it returns a grant id, an expiry, the digest of the bytes that will be served, and a
+single-use **retrieval URL** — never content. Fetching that URL (`RedeemURL`) applies the matrix and
+serves the bytes; the URL is the capability, so it needs no caller header.
 
 | Attempt | Refusal (closed set) |
 |---|---|
@@ -113,8 +114,9 @@ unreadable cursor is `search_cursor_invalid`; the filters are recorded in the se
 ## The HTTP surface and identity
 
 One surface, **internal ingress only**: `POST /v1/content/object`, `/v1/content/object/finalise`,
-`/v1/content/retrieval`, `/v1/content/redeem`, `/v1/content/shred`, `/v1/content/rotate` and
-`/v1/content-search`, plus `GET /healthz`. The device-facing routes (`/v1/events`,
+`/v1/content/retrieval` (which mints the single-use retrieval URL), `GET
+/v1/content/retrieval/{tenant}/{grant}` (which serves it), `/v1/content/redeem`, `/v1/content/shred`,
+`/v1/content/rotate` and `/v1/content-search`, plus `GET /healthz`. The device-facing routes (`/v1/events`,
 `/v1/content/grant`, the content upload) and the analyst routes (`/v1/query`, `/v1/policy`, `/v1/enrol`)
 return **404** — a test asserts it, because "nobody would add that route" ages badly. `--addr` refuses a
 non-loopback bind without an explicit acknowledgement, and the acknowledgement is not a substitute for
@@ -139,28 +141,33 @@ go build ./... && go vet ./... && go test ./... -count=1
 pwsh -File tools/live-schema-check.ps1   # needs the docker client and the PostgreSQL container
 ```
 
-`go test ./...` runs 47 test functions across six packages: the binary's configuration and
+`go test ./...` runs the module's tests across seven packages: the binary's configuration and
 deployment-agreement tests, the grant matrix and its concurrency case,
 rotation, erasure, tenant-key destruction, retention expiry, the search-tier and ADR 0014 refusals,
 audit-before-serve by call ordering, fail-closed on a broken audit path, the key hierarchy (AAD binding,
-versions, destruction, persistence, the unimplemented KMS and the interface's method set), the HTTP
-surface including the edge-route rejection, and [vaultinvariants/](vaultinvariants/README.md), which
+versions, destruction, persistence, the unimplemented KMS and the interface's method set), the blob
+reader (the credential it presents, the managed-identity token fetch and refresh, an unauthorized read
+and an absent object), the retrieval-URL matrix (minted, redeemed once, expired, replayed, and read
+through `Options.Blobs`), the HTTP surface including the edge-route rejection, and
+[vaultinvariants/](vaultinvariants/README.md), which
 now also asserts that a redemption returns the content the device sealed and refuses a stored object
 that is not the bytes that were finalised. Indexing at finalise and key-file persistence on first wrap
 have no test: both were exercised only in the local auth lab.
 
 ## NOT VERIFIED, and why
 
-1. **Any cloud KMS, and blob storage.** `--key-backend kms` refuses to start without an explicit
-   acknowledgement, and every method of `KMSKeyWrapper` returns `ErrNotImplemented`: nothing here has
-   been exercised against Azure Key Vault or Managed HSM, because this build carries no cloud SDK and
-   holds no credential for either. Modes 2 and 3 are *interfaces and refusals*, not
-   working code. Blob storage is the same shape: this build has no blob client and mints no retrieval
-   URL. With `--blob-ciphertext-endpoint` set, `Redeem` reads the stored object from it with a plain
-   GET, checks it against the recorded digest, opens it with the object key it just unwrapped
-   (`protocol.OpenContent`) and returns the content; without it, `Redeem` returns the object's
-   reference and digests and no bytes. The *authorisation* is identical either way; the *serving*
-   half is a stand-in, exercised against the local lab's `contentlab` and against no storage account.
+1. **Azure blob storage with a managed identity, and any cloud KMS.** `--key-backend kms` refuses to
+   start without an explicit acknowledgement, and every method of `KMSKeyWrapper` returns
+   `ErrNotImplemented`: nothing here has been exercised against Azure Key Vault or Managed HSM,
+   because this build carries no cloud SDK and holds no credential for either. Modes 2 and 3 are
+   *interfaces and refusals*, not working code. The blob reader is real code but the same shape: with
+   `--blob-identity managed` it fetches an AAD access token from the instance metadata service and
+   presents it on a Blob REST `GET`, and the token fetch and refresh are exercised against a fake IMDS
+   in `internal/blob`; **no request has been made to a storage account**, because this host has none
+   and no managed identity. What the lab exercises is `--blob-identity static`, a shared bearer the
+   local `contentlab` stand-in checks, together with the digest check and `protocol.OpenContent`. A
+   retrieval URL is minted and served end to end in the auth lab; the URL's `SAC_RETRIEVAL_URL_BASE`
+   origin is a deployment setting the lab leaves empty.
 2. **The `database/sql` plumbing in the default build.** `SQLStore` is written against the real schema.
    The default build carries no PostgreSQL driver and `--store sql` refuses to start in it; a build with
    the `sac_sql_driver` tag links pgx (`cmd/content-vault/driver_tagged.go`) and serves from PostgreSQL,

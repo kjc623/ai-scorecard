@@ -2,8 +2,8 @@
 //
 // query-api cannot see content and decides nothing about it. What it owns, and what is asserted
 // here, is that the vault is told WHO is asking from the session and never from the body, that the
-// vault's own refusal reaches the caller with its reason, and that a retrieval is the vault's two
-// steps in order.
+// vault's own refusal reaches the caller with its reason, and that a retrieval relays the vault's
+// single-use retrieval URL — never the content, which the browser fetches from the vault itself.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -74,19 +74,29 @@ test('an open window bound is left out rather than sent as an empty value', asyn
   assert.deepEqual(calls[0].body, { scope: 'lab', form: 'terms', query: 'x', limit: 20 });
 });
 
-test('a retrieval is the vault\'s two steps, and the content it serves is relayed as text', async () => {
-  const { calls, forwarder } = vault((path) => (path === '/v1/content/retrieval'
-    ? { json: { state: 'available', grant_id: 'g1', raw_digest: 'sha256:x' } }
-    : { json: { state: 'available', content_b64: Buffer.from('what was typed').toString('base64'), raw_digest: 'sha256:x' } }));
+test('a retrieval relays the vault\'s single-use URL and never the content', async () => {
+  const { calls, forwarder } = vault(() => ({ json: {
+    state: 'available', grant_id: 'g1', raw_digest: 'sha256:x', expires_at: '2026-10-05T12:05:00Z',
+    retrieval_url: '/v1/content/retrieval/11111111-1111-1111-1111-111111111111/g1',
+  } }));
   const answer = await forwarder.handle(CONTENT_PATHS.RETRIEVAL, PRINCIPAL, {
     event_ids: [EVENT_A], case_reference: 'CASE-1', second_approver: 'other@example.test', justification: 'why',
   });
   assert.equal(answer.status, 200);
   assert.equal(answer.body.state, 'available');
-  assert.equal(answer.body.content, 'what was typed');
-  assert.deepEqual(calls.map((c) => c.path), ['/v1/content/retrieval', '/v1/content/redeem']);
+  assert.equal(answer.body.retrieval_url, '/v1/content/retrieval/11111111-1111-1111-1111-111111111111/g1');
+  assert.ok(!('content' in answer.body), 'the answer carries no content byte');
+  assert.deepEqual(calls.map((c) => c.path), ['/v1/content/retrieval']);
   assert.deepEqual(calls[0].body, { event_id: EVENT_A, case_reference: 'CASE-1', second_approver: 'other@example.test', justification: 'why' });
-  assert.deepEqual(calls[1].body, { grant_id: 'g1', event_id: EVENT_A });
+});
+
+test('a vault that authorises a read but mints no URL is reported, not rendered as empty content', async () => {
+  const { forwarder } = vault(() => ({ json: { state: 'available', grant_id: 'g1' } }));
+  const answer = await forwarder.handle(CONTENT_PATHS.RETRIEVAL, PRINCIPAL, {
+    event_ids: [EVENT_A], case_reference: 'C', second_approver: 'o@example.test',
+  });
+  assert.equal(answer.status, 502);
+  assert.equal(answer.body.error.code, 'retrieval_url_missing');
 });
 
 test('the vault\'s refusal reaches the caller with its reason, and nothing is redeemed', async () => {
@@ -95,19 +105,18 @@ test('the vault\'s refusal reaches the caller with its reason, and nothing is re
   assert.equal(answer.status, 403);
   assert.equal(answer.body.error.code, 'second_approver_not_distinct');
   assert.match(answer.body.error.message, /someone other than the requester/);
-  assert.equal(calls.length, 1, 'a refused retrieval is not redeemed');
+  assert.equal(calls.length, 1, 'a refused retrieval mints no URL');
 });
 
 test('the object is held against one of a submission\'s events: the next is asked only when one has none', async () => {
   const { calls, forwarder } = vault((path, body) => {
     if (path === '/v1/content/retrieval' && body.event_id === EVENT_A) return { status: 403, json: { error: { code: 'no_content_object', detail: 'no object', closed: true } } };
-    if (path === '/v1/content/retrieval') return { json: { state: 'available', grant_id: 'g2' } };
-    return { json: { state: 'available', content_b64: Buffer.from('found').toString('base64') } };
+    return { json: { state: 'available', grant_id: 'g2', retrieval_url: '/v1/content/retrieval/t/g2' } };
   });
   const answer = await forwarder.handle(CONTENT_PATHS.RETRIEVAL, PRINCIPAL, { event_ids: [EVENT_A, EVENT_B], case_reference: 'C', second_approver: 'o@example.test' });
-  assert.equal(answer.body.content, 'found');
+  assert.equal(answer.body.retrieval_url, '/v1/content/retrieval/t/g2');
   assert.equal(answer.body.event_id, EVENT_B);
-  assert.deepEqual(calls.map((c) => c.body.event_id), [EVENT_A, EVENT_B, EVENT_B]);
+  assert.deepEqual(calls.map((c) => c.body.event_id), [EVENT_A, EVENT_B]);
 });
 
 test('content that is gone is a result with its reason, not an error', async () => {

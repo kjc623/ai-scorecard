@@ -35,10 +35,12 @@ documentation. Statements the schema does not yet have are emitted commented out
    thing this must never do is start in memory and let a deployment believe it is persisting".
 5. Builds the service with `CONTENT_VAULT_SCOPE_TIERS` (`scope=tier` pairs) as the signed bundle's
    per-scope search tiers, the header authenticator restricted to `query-api`, `control-api` and
-   `ops`, and, when `--blob-ciphertext-endpoint` is set, a reader that fetches a stored object from
-   `<endpoint>/<blob_path>` with a plain GET (64 MiB cap). The reader is what lets a redemption return
-   content and a `full_text` tenant's objects be indexed at finalise; it presents no storage
-   credential, and startup logs a warning saying so.
+   `ops`, and, when `--blob-ciphertext-endpoint` is set, a reader (`internal/blob`) that fetches a
+   stored object from `<endpoint>/<blob_path>` (64 MiB cap) presenting the credential
+   `--blob-identity` selects: a managed-identity access token from the instance metadata service
+   (`managed`), or a shared bearer (`static`, the lab's stand-in). A storage endpoint with no
+   credential is a startup refusal, not an anonymous read. The reader is what lets a minted retrieval
+   URL serve content and a `full_text` tenant's objects be indexed at finalise.
 6. Refuses a non-loopback bind unless `--allow-non-loopback` or `SAC_INTERNAL_ONLY=true` acknowledges
    it. Binding a non-loopback address would expose the only component that can unwrap content keys; the
    acknowledgement is the most a process can check about its own ingress, and it is **not** a substitute
@@ -61,6 +63,9 @@ source, and `localdev/tools/check-config-agreement.mjs` adds both Dockerfiles an
 | key backend | `--key-backend` | `SAC_KEY_BACKEND` (the image sets `local`) |
 | Key Vault URI | `--keyvault-uri` | `SAC_KEYVAULT_URI` |
 | blob endpoint | `--blob-ciphertext-endpoint` | `SAC_BLOB_CIPHERTEXT_ENDPOINT` |
+| blob identity | `--blob-identity` | `SAC_BLOB_IDENTITY` (the image sets `static`; Azure passes `managed`) |
+| blob read credential | `--blob-credential` | `SAC_BLOB_READ_CREDENTIAL` (lab only) |
+| retrieval URL origin | `--retrieval-url-base` | `SAC_RETRIEVAL_URL_BASE` (empty mints a path) |
 | internal ingress | — | `SAC_INTERNAL_ONLY` |
 | non-loopback acknowledgement | `--allow-non-loopback` | `SAC_ALLOW_NON_LOOPBACK` |
 | telemetry | — | `SAC_APPINSIGHTS` |
@@ -68,8 +73,8 @@ source, and `localdev/tools/check-config-agreement.mjs` adds both Dockerfiles an
 `SAC_KEYVAULT_URI` supersedes `CONTENT_VAULT_KMS_ENDPOINT` for the `kms` backend; the
 `CONTENT_VAULT_*` variables are inputs from the control plane (scope tiers, KMS mode) rather than
 deployment parameters, which is why they keep those names. `SAC_BLOB_CIPHERTEXT_ENDPOINT` is
-read, validated as a URL and used as described in step 5: an unauthenticated GET, which works against
-a store on the internal network and not against a storage account. `SAC_APPINSIGHTS` is read and
+read, validated as a URL and used as described in step 5: the read carries the credential the identity
+setting selects, and the lab's stand-in refuses a read without one. `SAC_APPINSIGHTS` is read and
 reported unused without being validated, and its value is never logged. This build exports no
 telemetry, and saying so beats leaving a deployment to assume otherwise.
 
@@ -86,5 +91,7 @@ build with an unreachable database reports ready.
 ## Not verified
 
 The `kms` backend is absent rather than untested in passing. The SQL store and the blob reader have
-been run only in the local auth lab (as the database owner, against the lab's storage stand-in); the
-full list is in [../../README.md](../../README.md#not-verified-and-why).
+been run only in the local auth lab (as the database owner, against the lab's storage stand-in with a
+static bearer); the managed-identity token fetch is unit-tested against a fake IMDS and no request has
+been made to a storage account. The full list is in
+[../../README.md](../../README.md#not-verified-and-why).

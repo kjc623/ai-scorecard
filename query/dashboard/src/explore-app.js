@@ -419,16 +419,28 @@ export function createExplorer({ api, content = null, now = () => new Date(), on
       return state;
     }
     set({ content: Object.freeze({ ...base, status: 'loading' }) });
+    // The retrieval request mints a single-use URL; the content itself is fetched from that URL,
+    // never from this answer (docs/02 §11). The vault audits both halves.
     const answer = await content.retrieve({ event_ids: exploreEventIds(detail.record) });
     if (seq !== contentSeq || state.detail.submissionId !== submissionId) return state;
-    if (answer.state === 'available' && typeof answer.content === 'string') {
-      const split = exploreUserInput(answer.content);
-      set({
-        content: Object.freeze({
-          ...base, status: 'ready', typed: split.typed, kind: split.kind, full: answer.content,
-          bytes: answer.content.length, grantId: answer.grant_id ?? null,
-        }),
-      });
+    if (answer.state === 'available' && typeof answer.retrieval_url === 'string' && answer.retrieval_url !== '') {
+      const fetched = await content.readUrl(answer.retrieval_url);
+      if (seq !== contentSeq || state.detail.submissionId !== submissionId) return state;
+      if (fetched.state === 'available' && typeof fetched.content === 'string') {
+        const split = exploreUserInput(fetched.content);
+        set({
+          content: Object.freeze({
+            ...base, status: 'ready', typed: split.typed, kind: split.kind, full: fetched.content,
+            bytes: fetched.content.length, grantId: answer.grant_id ?? null,
+          }),
+        });
+        return state;
+      }
+      if (fetched.state === 'no_longer_available') {
+        set({ content: Object.freeze({ ...base, status: 'gone', gone: Object.freeze({ state: fetched.state, reason: fetched.reason ?? null, receipt: fetched.receipt_ref ?? null }) }) });
+        return state;
+      }
+      set({ content: Object.freeze({ ...base, status: 'refused', problem: Object.freeze(fetched.error ?? { code: 'refused', message: 'The retrieval URL refused the read.' }) }) });
       return state;
     }
     if (answer.state === 'refused' || answer.error) {

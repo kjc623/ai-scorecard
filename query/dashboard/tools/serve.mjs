@@ -15,6 +15,11 @@
 // SAC_DEV_TENANT and SAC_DEV_ACTOR, and never by the browser: the tenant is not something a page
 // may choose. This is a development forwarder, not the deployed session, which is not built yet.
 //
+// WITH SAC_CONTENT_VAULT_URL it also serves a minted retrieval URL. The vault mints a same-origin
+// path (docs/02 §11), the browser fetches it from this origin, and this server forwards it straight
+// to the vault — never through query-api, which must not see a content byte. In a deployment the
+// analyst web tier or the ingress plays this part.
+//
 // Zero dependencies: node:http and node:fs only. It serves this directory and nothing else.
 
 import { createServer } from 'node:http';
@@ -29,12 +34,19 @@ const PORT = Number(process.argv[process.argv.indexOf('--port') + 1]) || 8787;
 const HOST = process.argv.includes('--host') ? process.argv[process.argv.indexOf('--host') + 1] : '127.0.0.1';
 
 const API = (process.argv.includes('--api') ? process.argv[process.argv.indexOf('--api') + 1] : process.env.SAC_QUERY_API_URL ?? '').replace(/\/$/, '');
+// The vault, reached directly for a minted retrieval URL. This is the one forwarded path that
+// deliberately bypasses query-api, because content must never transit query-api (docs/02 §11).
+const VAULT = (process.env.SAC_CONTENT_VAULT_URL ?? '').replace(/\/$/, '');
 const DEV_TENANT = process.env.SAC_DEV_TENANT ?? '';
 const DEV_ACTOR = process.env.SAC_DEV_ACTOR ?? 'dashboard-dev';
 const QUERY_PATH = '/v1/query';
+const CONTENT_RETRIEVAL_PATH = '/v1/content/retrieval';
 // The two content reads the Explore page makes. They are forwarded exactly as the query is: to
 // query-api, which establishes who is asking and forwards them to the content vault.
-const FORWARDED_PATHS = Object.freeze([QUERY_PATH, '/v1/content-search', '/v1/content/retrieval']);
+const FORWARDED_PATHS = Object.freeze([QUERY_PATH, '/v1/content-search', CONTENT_RETRIEVAL_PATH]);
+// A minted retrieval URL is GET /v1/content/retrieval/<tenant>/<grant>; the POST above has no
+// trailing segment and is untouched.
+const RETRIEVAL_PREFIX = `${CONTENT_RETRIEVAL_PATH}/`;
 const MAX_BODY_BYTES = 256 * 1024;
 
 const TYPES = {
@@ -92,8 +104,39 @@ async function forwardQuery(request, response, path) {
   }
 }
 
+/**
+ * Forward one minted retrieval URL straight to the vault. It is the browser's direct read of
+ * granted content: the URL carries the single-use grant, so no principal header is added and no
+ * content passes through query-api. A deployment's web tier or ingress stands in for this.
+ */
+async function forwardRetrieval(request, response, target) {
+  if (!VAULT) {
+    refuse(response, 503, 'busy', 'no_vault_configured', 'This server was started without SAC_CONTENT_VAULT_URL, so a retrieval URL cannot be redeemed.');
+    return;
+  }
+  try {
+    const upstream = await fetch(`${VAULT}${target}`);
+    const body = Buffer.from(await upstream.arrayBuffer());
+    response.writeHead(upstream.status, {
+      'content-type': upstream.headers.get('content-type') ?? 'application/octet-stream',
+      'cache-control': 'no-store',
+    });
+    response.end(body);
+  } catch (error) {
+    refuse(response, 503, 'busy', 'vault_unreachable', `The content vault at ${VAULT} could not be reached: ${error?.cause?.code ?? error?.message ?? error}`);
+  }
+}
+
 const server = createServer(async (request, response) => {
   const path = (request.url ?? '').split('?')[0];
+  if (path.startsWith(RETRIEVAL_PREFIX)) {
+    if (request.method !== 'GET') {
+      response.writeHead(405, { allow: 'GET' }).end();
+      return;
+    }
+    await forwardRetrieval(request, response, request.url ?? path);
+    return;
+  }
   if (FORWARDED_PATHS.includes(path)) {
     if (request.method !== 'POST') {
       response.writeHead(405, { allow: 'POST' }).end();
@@ -124,4 +167,5 @@ server.listen(PORT, HOST, () => {
   console.log(`explore (search page):        http://${HOST}:${PORT}/explore.html`);
   console.log('index.html needs no server: open the file directly.');
   if (API) console.log(`live data: http://${HOST}:${PORT}/explore.html?transport=live  (forwarding to ${API}, tenant ${DEV_TENANT || 'NOT SET'})`);
+  if (VAULT) console.log(`content retrieval: minted vault URLs are forwarded straight to ${VAULT} (never through query-api)`);
 });

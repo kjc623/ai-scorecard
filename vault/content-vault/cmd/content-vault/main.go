@@ -22,7 +22,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -31,6 +30,7 @@ import (
 	"time"
 
 	"github.com/shadow-ai-capture/content-vault/internal/auth"
+	"github.com/shadow-ai-capture/content-vault/internal/blob"
 	"github.com/shadow-ai-capture/content-vault/internal/httpapi"
 	"github.com/shadow-ai-capture/content-vault/internal/keys"
 	"github.com/shadow-ai-capture/content-vault/internal/store"
@@ -88,6 +88,9 @@ func runServe(args []string) int {
 	keyFile := fs.String("key-file", "", "local key file (development); empty means in-memory")
 	keyVaultURI := fs.String("keyvault-uri", "", "Key Vault URI the kms backend would call (env "+EnvKeyVaultURI+")")
 	blobEndpoint := fs.String("blob-ciphertext-endpoint", "", "private blob endpoint for ciphertext (env "+EnvBlobCiphertextEndpoint+")")
+	blobIdentity := fs.String("blob-identity", "static", "how the vault authenticates to blob storage: static | managed (env "+EnvBlobIdentity+")")
+	blobCredential := fs.String("blob-credential", "", "static storage bearer the lab stand-in checks (env "+EnvBlobReadCredential+")")
+	retrievalURLBase := fs.String("retrieval-url-base", "", "origin a browser reaches a minted retrieval URL on (env "+EnvRetrievalURLBase+")")
 	role := fs.String("role", "content-vault", "the identity this process runs as (env "+EnvRole+")")
 	allowNonLoopback := fs.Bool("allow-non-loopback", false, "acknowledge that this binds a non-loopback address (env "+EnvAllowNonLoopback+", or "+EnvInternalOnly+"=true from a deployment that has internal ingress)")
 	allowKMS := fs.Bool("allow-unimplemented-kms", false, "start with a cloud KMS backend this build has not implemented")
@@ -106,6 +109,9 @@ func runServe(args []string) int {
 	*backend = passed.str("key-backend", *backend, EnvKeyBackend, "local")
 	*keyVaultURI = passed.str("keyvault-uri", *keyVaultURI, EnvKeyVaultURI, "")
 	*blobEndpoint = passed.str("blob-ciphertext-endpoint", *blobEndpoint, EnvBlobCiphertextEndpoint, "")
+	*blobIdentity = passed.str("blob-identity", *blobIdentity, EnvBlobIdentity, "static")
+	*blobCredential = passed.str("blob-credential", *blobCredential, EnvBlobReadCredential, "")
+	*retrievalURLBase = passed.str("retrieval-url-base", *retrievalURLBase, EnvRetrievalURLBase, "")
 	*role = passed.str("role", *role, EnvRole, "content-vault")
 	*storeKind = passed.str("store", *storeKind, EnvStore, "memory")
 	*pgHost = passed.str("pg-host", *pgHost, EnvPGHost, "")
@@ -128,6 +134,18 @@ func runServe(args []string) int {
 	}
 	if err := checkURL(EnvBlobCiphertextEndpoint, *blobEndpoint); err != nil {
 		return fatalf("%v", err)
+	}
+	if err := checkURL(EnvRetrievalURLBase, *retrievalURLBase); err != nil {
+		return fatalf("%v", err)
+	}
+	if *blobIdentity != "static" && *blobIdentity != "managed" {
+		return fatalf("unknown --blob-identity %q (want static or managed)", *blobIdentity)
+	}
+	// A storage endpoint with no credential is the unauthenticated read this task exists to remove,
+	// so it is a startup failure rather than a warning: a deployment names its managed identity, and
+	// the lab passes the shared bearer its stand-in checks.
+	if *blobEndpoint != "" && *blobIdentity == "static" && strings.TrimSpace(*blobCredential) == "" {
+		return fatalf("--blob-ciphertext-endpoint is set but no storage credential is: pass --blob-credential (the lab stand-in) or --blob-identity managed")
 	}
 	if appInsights != "" {
 		// The deployment passes a connection string this build does not export to. Read, reported,
@@ -204,12 +222,29 @@ func runServe(args []string) int {
 			databaseDSN, EnvPGHost, *pgHost, EnvPGDatabase, *pgDatabase, EnvRole, *role, *dsn)
 	}
 
+	// The storage reader the deployment wires: the vault presents its identity on every read.
+	var blobs vault.BlobReader
+	if *blobEndpoint != "" {
+		var cred blob.Credential
+		if *blobIdentity == "managed" {
+			cred = &blob.ManagedIdentity{}
+		} else {
+			cred = blob.StaticBearer{Token: *blobCredential}
+		}
+		blobs = &blob.HTTPReader{
+			Endpoint: *blobEndpoint, Credential: cred,
+			Client: &http.Client{Timeout: 30 * time.Second}, MaxBytes: maxBlobBytes,
+		}
+	}
 	svc, err := vault.New(vault.Options{
 		Store:      st,
 		Keys:       kw,
 		Logger:     logger,
 		ScopeTiers: scopeTiersFromEnv(),
-		FetchBlob:  blobFetcher(*blobEndpoint),
+		Blobs:      blobs,
+		// The browser redeems the minted URL through the analyst web tier; this is the origin it
+		// is reached on, and empty leaves the URL a path the page resolves against its own.
+		RetrievalURLBase: *retrievalURLBase,
 	})
 	if err != nil {
 		return fatalf("%v", err)
@@ -251,14 +286,14 @@ func runServe(args []string) int {
 	slog.Info("content-vault listening",
 		"addr", *addr, "key_backend", string(kw.Kind()), "ingress", ingress, "role", *role,
 		"store", *storeKind, "non_loopback_acknowledged", acknowledged,
-		"blob_ciphertext_endpoint_configured", *blobEndpoint != "",
+		"blob_ciphertext_endpoint_configured", *blobEndpoint != "", "blob_identity", *blobIdentity,
+		"retrieval_url_base_configured", *retrievalURLBase != "",
 		"appinsights_configured", appInsights != "")
-	if *blobEndpoint != "" {
-		// Stated rather than implied: an approved redemption reads the object from this endpoint
-		// with a plain GET and opens it here. That is the offline stand-in for §11's short-lived
-		// retrieval URL, and it presents no storage credential: it works against a store on the
-		// internal network, not against a storage account.
-		slog.Warn("SAC_BLOB_CIPHERTEXT_ENDPOINT is set: approved redemptions read the stored object from it with an unauthenticated GET and return the opened content (development stand-in for the retrieval URL)")
+	if *blobEndpoint != "" && *blobIdentity == "static" {
+		// Stated rather than implied: the lab's storage stand-in checks this bearer and no more.
+		// A deployment sets SAC_BLOB_IDENTITY=managed, and the read then carries the container
+		// app's managed-identity token instead of a shared secret.
+		slog.Warn("SAC_BLOB_IDENTITY=static: storage reads carry a shared bearer meant for the lab stand-in, not a storage account")
 	}
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fatalf("serving: %v", err)
@@ -272,27 +307,6 @@ var defaultDriverName = ""
 
 // maxBlobBytes bounds one stored object read for a redemption.
 const maxBlobBytes = 64<<20 + 1024
-
-// blobFetcher reads a stored object from the ciphertext endpoint. An empty endpoint means no blob
-// store is configured, and a redemption then reports the authorisation without bytes.
-func blobFetcher(endpoint string) func(string) ([]byte, error) {
-	if endpoint == "" {
-		return nil
-	}
-	client := &http.Client{Timeout: 30 * time.Second}
-	base := strings.TrimRight(endpoint, "/")
-	return func(blobPath string) ([]byte, error) {
-		resp, err := client.Get(base + "/" + strings.TrimLeft(blobPath, "/"))
-		if err != nil {
-			return nil, err
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("blob store answered %d for %s", resp.StatusCode, blobPath)
-		}
-		return io.ReadAll(io.LimitReader(resp.Body, maxBlobBytes))
-	}
-}
 
 // checkBindAddress refuses a non-loopback bind without an explicit acknowledgement.
 func checkBindAddress(addr string, acknowledged bool) error {

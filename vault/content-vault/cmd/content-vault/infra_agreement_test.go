@@ -138,10 +138,12 @@ func TestEveryReadNameIsEitherPassedOrDocumented(t *testing.T) {
 	// SAC_ALLOW_NON_LOOPBACK is the image-level spelling of the same statement for a person running
 	// the binary directly.
 	extensions := map[string]string{
-		EnvHTTPAddr:         "the image sets the listen address: a container's loopback is unreachable",
-		EnvStore:            "the image sets the store mode",
-		EnvKeyBackend:       "the image sets the key backend; the deployment's key custody arrives through SAC_KEYVAULT_URI once the kms backend exists",
-		EnvAllowNonLoopback: "the image-level spelling of the acknowledgement; a deployment states the same fact as SAC_INTERNAL_ONLY=true",
+		EnvHTTPAddr:           "the image sets the listen address: a container's loopback is unreachable",
+		EnvStore:              "the image sets the store mode",
+		EnvKeyBackend:         "the image sets the key backend; the deployment's key custody arrives through SAC_KEYVAULT_URI once the kms backend exists",
+		EnvAllowNonLoopback:   "the image-level spelling of the acknowledgement; a deployment states the same fact as SAC_INTERNAL_ONLY=true",
+		EnvBlobReadCredential: "lab only: the shared bearer the storage stand-in checks; a deployment uses SAC_BLOB_IDENTITY=managed and stores no secret",
+		EnvRetrievalURLBase:   "gap: the origin a browser reaches a minted retrieval URL on; a deployment behind an ingress sets it, the lab resolves a path",
 	}
 
 	var undocumented []string

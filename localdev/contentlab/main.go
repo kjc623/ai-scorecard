@@ -10,8 +10,13 @@
 // It has no page of its own. An analyst reads content in the dashboard (query/dashboard, the
 // Explore page), which reaches the vault through query-api.
 //
-// It is a lab tool: the stored objects are readable by anything on the lab network, which is not
-// how a storage account works. They are ciphertext, and the keys are the vault's.
+// The read path stands in for one thing a real storage account does: it refuses a read that
+// presents no credential. The vault presents the bearer in SAC_BLOB_READ_CREDENTIAL, and a request
+// without it is 401 here exactly as an anonymous GET is against Azure Blob (docs/02 §11).
+//
+// It is a lab tool: the stored objects are readable by anything on the lab network that holds the
+// shared bearer, which is not how a storage account works. They are ciphertext, and the keys are
+// the vault's.
 package main
 
 import (
@@ -55,8 +60,12 @@ type server struct {
 	dataDir    string
 	controlURL string
 	key        []byte
-	log        *slog.Logger
-	http       *http.Client
+	// readCredential is the bearer the vault must present to read an object. Empty is refused at
+	// startup: a stand-in that serves ciphertext without a credential would let the anonymous read
+	// this task removes pass its own lab test.
+	readCredential []byte
+	log            *slog.Logger
+	http           *http.Client
 }
 
 func main() {
@@ -71,20 +80,27 @@ func main() {
 		log.Error("SAC_UPLOAD_SIGNING_KEY is required (at least 16 bytes): it is how an upload URL is verified")
 		os.Exit(1)
 	}
+	readCredential := os.Getenv("SAC_BLOB_READ_CREDENTIAL")
+	if len(readCredential) < 16 {
+		log.Error("SAC_BLOB_READ_CREDENTIAL is required (at least 16 bytes): the vault presents it and an uncredentialed read is refused")
+		os.Exit(1)
+	}
 	if err := os.MkdirAll(*dataDir, 0o700); err != nil {
 		log.Error("creating the data directory", "error", err)
 		os.Exit(1)
 	}
 	s := &server{
 		dataDir: *dataDir, controlURL: strings.TrimRight(*controlURL, "/"),
-		key: []byte(key), log: log, http: &http.Client{Timeout: 30 * time.Second},
+		key: []byte(key), readCredential: []byte(readCredential),
+		log: log, http: &http.Client{Timeout: 30 * time.Second},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("PUT /v1/content/upload/{object}", s.handleUpload)
 	mux.HandleFunc("GET /blob/{tenant}/{object}", s.handleBlob)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, `{"status":"ok"}`) })
 
-	log.Info("contentlab listening", "addr", *addr, "data_dir", *dataDir, "control", s.controlURL)
+	log.Info("contentlab listening", "addr", *addr, "data_dir", *dataDir, "control", s.controlURL,
+		"read_credential_required", true)
 	srv := &http.Server{Addr: *addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Error("serving", "error", err)
@@ -182,8 +198,15 @@ func (s *server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusCreated)
 }
 
-// handleBlob serves the stored ciphertext to the vault. The edge does not route it.
+// handleBlob serves the stored ciphertext to the vault, and only to a caller that presents the
+// credential. The edge does not route it. The read is named here rather than anonymous because a
+// real storage account refuses an anonymous GET, and the vault must present its identity to read.
 func (s *server) handleBlob(w http.ResponseWriter, r *http.Request) {
+	want := "Bearer " + string(s.readCredential)
+	if !hmac.Equal([]byte(r.Header.Get("Authorization")), []byte(want)) {
+		http.Error(w, "a storage credential is required", http.StatusUnauthorized)
+		return
+	}
 	tenantID, objectID := r.PathValue("tenant"), r.PathValue("object")
 	if !uuidPattern.MatchString(tenantID) || !uuidPattern.MatchString(objectID) {
 		http.NotFound(w, r)

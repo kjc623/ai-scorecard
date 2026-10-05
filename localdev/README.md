@@ -122,7 +122,7 @@ schema; it does not prove who is allowed to ask.
 | `docker-compose.yml` | The five containers, their addresses and their wiring. There is no `build:` stanza on purpose — see "The build constraints" |
 | `authlab.compose.yaml` | The opt-in device-auth lab: PostgreSQL with the real schema; `control-api`, `ingest-api` and `content-vault` in `sql` mode; the `edge` gateway stand-in; `contentlab`; the `aggregator` mart rollup job; and `query-api` with the dashboard in front of it. Driven by `run.mjs --auth`, or by `docker compose` directly once the PKI volume exists |
 | `edge/` | A standard-library Go program that simulates Application Gateway: TLS 1.3, an optional client certificate forwarded as `X-Client-Cert`, and `X-Forwarded-Proto`/`Host`. It imports no service package and is the same path a deployment uses. With `--content-url` it also forwards `/v1/content/upload` to the storage stand-in, which is a lab arrangement: in Azure a granted device writes straight to Blob storage |
-| `contentlab/` | A standard-library Go program that stands in for ciphertext storage in the device-auth lab: it verifies the signed upload URL, stores one object per grant, reports the upload to `control-api`'s finaliser, and serves the stored ciphertext back to the vault. It has no page and is not published |
+| `contentlab/` | A standard-library Go program that stands in for ciphertext storage in the device-auth lab: it verifies the signed upload URL, stores one object per grant, reports the upload to `control-api`'s finaliser, and serves the stored ciphertext back to a caller presenting the read credential (a read with none is refused). It has no page and is not published |
 | `dbview.compose.yaml` | An optional read-only table browser (pgweb) over the device-auth lab's database, on <http://127.0.0.1:8089>. It connects as the database owner, so it sees every tenant; it is a lab tool, not a read path |
 | `authlab/` | The host-side tool `run.mjs --auth` builds and runs: it generates the development PKI (fresh every run, into `.authlab/`) and drives both auth modes end to end through the edge |
 | `tools/check-config-agreement.mjs` | **The checker that keeps the configuration honest.** It parses the `SAC_*` names out of `azure/main.bicep`, each service's own source and its Dockerfile, and fails the build when the deployment passes a name a binary never reads, or a binary reads a name nothing accounts for |
@@ -266,7 +266,10 @@ have no flag. The table lists the settings the lab and the deployment set; the b
 | database host | `--pg-host` | `SAC_PG_HOST` | **deployment** |
 | database name | `--pg-database` | `SAC_PG_DATABASE` | **deployment** |
 | identity | `--role` | `SAC_ROLE` | **deployment** |
-| blob endpoint | `--blob-ciphertext-endpoint` | `SAC_BLOB_CIPHERTEXT_ENDPOINT` | **deployment** (ingest-api: read, validated, reported unused; content-vault: read with a plain GET — see below) |
+| blob endpoint | `--blob-ciphertext-endpoint` | `SAC_BLOB_CIPHERTEXT_ENDPOINT` | **deployment** (ingest-api: read, validated, reported unused; content-vault: read with a credential — see below) |
+| blob identity | `--blob-identity` | `SAC_BLOB_IDENTITY` | image (`static`); a deployment sets `managed` |
+| blob read credential | `--blob-credential` | `SAC_BLOB_READ_CREDENTIAL` | lab only; the storage stand-in checks it |
+| retrieval URL origin | `--retrieval-url-base` | `SAC_RETRIEVAL_URL_BASE` | gap; empty mints a path the page resolves against its own origin |
 | telemetry | — | `SAC_APPINSIGHTS` | **deployment** (read, validated, never logged, not exported to) |
 | region | `--region` | `SAC_REGION` | **nobody yet** — see the gap below |
 | key backend | `--key-backend` | `SAC_KEY_BACKEND` | image (`local`) |
@@ -277,10 +280,11 @@ Two of those deserve their own sentence. `SAC_APPINSIGHTS` is passed by the depl
 that do not use it: a connection string nobody exports to is reported as configured.
 `SAC_BLOB_CIPHERTEXT_ENDPOINT` is validated at boot by both services. ingest-api's startup log says
 plainly that it performs no blob I/O. content-vault, when it is set, reads a stored object from it with
-an unauthenticated GET to serve an approved redemption and to index a `full_text` tenant's content, and
-its startup log says that too: this works against the lab's storage stand-in and would not against a
-storage account. Reading a parameter and saying what is done with it is honest; leaving it unread is
-what F3 was.
+the credential `SAC_BLOB_IDENTITY` selects — a managed-identity access token in a deployment, the
+shared bearer `SAC_BLOB_READ_CREDENTIAL` in the lab — to serve a single-use retrieval URL and to index a
+`full_text` tenant's content. The lab's `contentlab` refuses a read with no credential, so the lab
+exercises the credential path rather than an anonymous one. Reading a parameter and saying what is done
+with it is honest; leaving it unread is what F3 was.
 
 **The one known gap** is `SAC_REGION`: the binary refuses a tenant pinned to another region (§12), and
 `azure/main.bicep` passes no region, so that check is inert in Azure today. It is listed in the
