@@ -47,6 +47,11 @@ type EnvelopeInput struct {
 	Route protocol.Route
 	Mode  protocol.CollectionMode
 
+	// PromptKind is the device's request-kind decision (task 08). Optional in the contract so a
+	// device that predates the field still validates, but a device that makes the decision always
+	// sets it for a prompt at M1 and above. It is request-shape metadata, not content-derived.
+	PromptKind protocol.PromptKind
+
 	ToolFingerprint   string
 	OccurredAt        time.Time
 	MonotonicOffsetMS int64
@@ -89,6 +94,7 @@ type envelopeWire struct {
 	ToolFingerprint   string                  `json:"tool_fingerprint"`
 	Direction         string                  `json:"direction"`
 	Kind              protocol.Kind           `json:"kind"`
+	PromptKind        protocol.PromptKind     `json:"prompt_kind,omitempty"`
 	OccurredAt        time.Time               `json:"occurred_at"`
 	MonotonicOffsetMS int64                   `json:"monotonic_offset_ms"`
 	Source            protocol.Route          `json:"source"`
@@ -138,6 +144,9 @@ func BuildEnvelope(in EnvelopeInput) ([]byte, error) {
 	if !in.Route.Valid() {
 		return nil, fmt.Errorf("core: envelope has route %q outside the closed vocabulary", in.Route)
 	}
+	if in.PromptKind != "" && !in.PromptKind.Valid() {
+		return nil, fmt.Errorf("core: envelope has prompt_kind %q outside the closed set", in.PromptKind)
+	}
 	// The contract caps subject_name at 200 characters. Refuse an over-long name here rather than
 	// emit a record ingest will reject: the device's job is never to send an invalid envelope.
 	if name := subjectName(in); len([]rune(name)) > 200 {
@@ -161,6 +170,7 @@ func BuildEnvelope(in EnvelopeInput) ([]byte, error) {
 		SubjectName:       subjectName(in),
 		ToolFingerprint:   in.ToolFingerprint,
 		Kind:              in.Kind,
+		PromptKind:        in.PromptKind,
 		OccurredAt:        in.OccurredAt.UTC(),
 		MonotonicOffsetMS: in.MonotonicOffsetMS,
 		Source:            in.Route,
@@ -263,6 +273,7 @@ var kindFieldPolicy = map[protocol.Kind]map[string]fieldRule{
 		"size_bytes":      fieldRequired, // available at every mode, including M0
 		"policy_decision": fieldRequired, // a tenant can block a tool without reading content
 		"subject_name":    fieldOptional, // ADR 0021: the clear account name, allowed at every kind/mode
+		"prompt_kind":     fieldOptional, // task 08: request-shape metadata, M1+ only (refined below)
 		"content_digest":  fieldOptional, "labels": fieldOptional, "classifier_version": fieldOptional,
 		"confidence": fieldOptional, "content_excerpt": fieldOptional, "attachments": fieldOptional,
 		"window_start": fieldForbidden, "window_end": fieldForbidden,
@@ -282,6 +293,7 @@ var kindFieldPolicy = map[protocol.Kind]map[string]fieldRule{
 		"subject_name":     fieldOptional,
 		"size_bytes":       fieldForbidden,
 		"policy_decision":  fieldForbidden,
+		"prompt_kind":      fieldForbidden,
 		"content_digest":   fieldForbidden, "labels": fieldForbidden, "classifier_version": fieldForbidden,
 		"confidence": fieldForbidden, "content_excerpt": fieldForbidden, "attachments": fieldForbidden,
 		"detection_basis": fieldForbidden,
@@ -296,6 +308,7 @@ var kindFieldPolicy = map[protocol.Kind]map[string]fieldRule{
 		"subject_name":    fieldOptional,
 		"size_bytes":      fieldForbidden,
 		"policy_decision": fieldForbidden,
+		"prompt_kind":     fieldForbidden,
 		"content_digest":  fieldForbidden, "labels": fieldForbidden, "classifier_version": fieldForbidden,
 		"confidence": fieldForbidden, "content_excerpt": fieldForbidden, "attachments": fieldForbidden,
 		"window_start": fieldForbidden, "window_end": fieldForbidden,
@@ -358,7 +371,9 @@ func isContentDerivedField(name string) bool {
 // classifier attribution, M2's excerpt, M3's forbidden excerpt.
 func checkPromptModeFields(mode protocol.CollectionMode, fields map[string]json.RawMessage) error {
 	if mode == protocol.ModeM0 {
-		for _, f := range []string{"content_digest", "labels", "classifier_version", "confidence", "content_excerpt", "attachments"} {
+		// prompt_kind is in this list because M0's closed list is device, user, tool, timestamp,
+		// size and destination: a metadata-only device read no body from which to decide one.
+		for _, f := range []string{"content_digest", "labels", "classifier_version", "confidence", "content_excerpt", "attachments", "prompt_kind"} {
 			if _, ok := fields[f]; ok {
 				return fmt.Errorf("%w: envelope carries %q with collection_mode=m0", ErrContentAtM0, f)
 			}

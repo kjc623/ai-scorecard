@@ -248,6 +248,60 @@ func TestEnvelope_M0RefusalIsNotAnOmission(t *testing.T) {
 	}
 }
 
+// TestEnvelope_PromptKindIsPromptOnlyAndM1Plus pins task 08's field policy: the request kind
+// rides on a prompt at M1 and above, and is refused on an M0 prompt (its closed list has no room
+// for it) and on the rollup and detection kinds.
+func TestEnvelope_PromptKindIsPromptOnlyAndM1Plus(t *testing.T) {
+	size := int64(4)
+	base := EnvelopeInput{
+		Identity:          Identity{TenantID: "t", DeviceID: "d", UserRef: "u"},
+		EventID:           "e",
+		Kind:              protocol.KindPrompt,
+		Route:             protocol.RouteProxyTLS,
+		Mode:              protocol.ModeM1,
+		ToolFingerprint:   "tool",
+		OccurredAt:        time.Unix(1_700_000_000, 0),
+		DedupKey:          "sha256:" + strings.Repeat("a", 64),
+		SizeBytes:         &size,
+		Decision:          &protocol.Decision{RuleID: "R", Action: protocol.ActionLogged},
+		ContentDigest:     "sha256:" + strings.Repeat("b", 64),
+		Labels:            []protocol.Label{},
+		ClassifierVersion: "rel-1",
+		Confidence:        protocol.ConfidenceHigh,
+		PromptKind:        protocol.PromptKindUser,
+	}
+	raw, err := BuildEnvelope(base)
+	if err != nil {
+		t.Fatalf("M1 prompt with prompt_kind: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := string(fields["prompt_kind"]); got != `"user"` {
+		t.Fatalf("prompt_kind = %s, want \"user\"", got)
+	}
+
+	m0 := base
+	m0.Mode = protocol.ModeM0
+	m0.ContentDigest, m0.Labels, m0.ClassifierVersion, m0.Confidence = "", nil, "", ""
+	if _, err := BuildEnvelope(m0); err == nil || !strings.Contains(err.Error(), "prompt_kind") {
+		t.Fatalf("M0 prompt with prompt_kind: err = %v, want a refusal naming prompt_kind", err)
+	}
+
+	rollup := base
+	rollup.Kind = protocol.KindUsageRollup
+	rollup.PromptKind = protocol.PromptKindUser
+	rollup.ContentDigest, rollup.Labels, rollup.ClassifierVersion, rollup.Confidence = "", nil, "", ""
+	rollup.SizeBytes, rollup.Decision = nil, nil
+	start, end := time.Unix(1_700_000_000, 0), time.Unix(1_700_003_600, 0)
+	count, total := 1, int64(4)
+	rollup.WindowStart, rollup.WindowEnd, rollup.SubmissionCount, rollup.BytesTotal = &start, &end, &count, &total
+	if _, err := BuildEnvelope(rollup); err == nil || !strings.Contains(err.Error(), "prompt_kind") {
+		t.Fatalf("rollup with prompt_kind: err = %v, want a refusal naming prompt_kind", err)
+	}
+}
+
 // The minted JSON must not carry a key the contract does not define, because the contract is
 // closed with additionalProperties:false.
 func TestEnvelope_NoUndecidedJSONKeys(t *testing.T) {

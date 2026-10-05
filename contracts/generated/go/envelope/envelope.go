@@ -29,12 +29,12 @@
 // Permitted by the schema but not required, so optional in the structs below:
 //   DevicePromptM0: subject_name
 //   StoredPromptM0: subject_name
-//   DevicePromptM1: subject_name, content_excerpt, attachments
-//   StoredPromptM1: subject_name, content_excerpt, attachments
-//   DevicePromptM2: subject_name, attachments
-//   StoredPromptM2: subject_name, attachments
-//   DevicePromptM3: subject_name, attachments
-//   StoredPromptM3: subject_name, attachments
+//   DevicePromptM1: subject_name, prompt_kind, content_excerpt, attachments
+//   StoredPromptM1: subject_name, prompt_kind, content_excerpt, attachments
+//   DevicePromptM2: subject_name, prompt_kind, attachments
+//   StoredPromptM2: subject_name, prompt_kind, attachments
+//   DevicePromptM3: subject_name, prompt_kind, attachments
+//   StoredPromptM3: subject_name, prompt_kind, attachments
 //   DeviceUsageRollup: subject_name, confidence
 //   StoredUsageRollup: subject_name, confidence
 //   DeviceModelDetection: subject_name, confidence
@@ -282,6 +282,37 @@ func AllDetectionBases() []DetectionBasis {
 	return []DetectionBasis{DetectionBasisProcessScan, DetectionBasisEndpointSecurity, DetectionBasisETW, DetectionBasisModuleSignature}
 }
 
+// PromptKind is the closed set from envelopeCore.prompt_kind. What kind of prompt this is, decided
+// on the device from the request shape, not from its meaning (task 08). 'user' is text a person
+// authored; 'client_generated' is a request the client made for itself (titling, summarisation,
+// telemetry, an injected system message) which quotes or carries no typed turn; 'unknown' is a
+// record whose device could not decide, and a record from a device that predates this field reads
+// back as 'unknown'. The device defaults to 'user' when unsure so nothing a person typed is
+// hidden. Present only for kind=prompt at M1 and above: a metadata-only M0 record read no body to
+// decide from, and the field is not part of M0's closed list.
+type PromptKind string
+
+const (
+	PromptKindUser            PromptKind = "user"
+	PromptKindClientGenerated PromptKind = "client_generated"
+	PromptKindUnknown         PromptKind = "unknown"
+)
+
+// Valid reports whether the value is inside the closed set. A value outside it is
+// refused rather than defaulted, which is what keeps the registry closed in practice.
+func (v PromptKind) Valid() bool {
+	switch v {
+	case PromptKindUser, PromptKindClientGenerated, PromptKindUnknown:
+		return true
+	}
+	return false
+}
+
+// AllPromptKinds returns the closed set in schema order.
+func AllPromptKinds() []PromptKind {
+	return []PromptKind{PromptKindUser, PromptKindClientGenerated, PromptKindUnknown}
+}
+
 // Label: One classification verdict. A label set, never a boolean and never a bare 'sensitive:
 // yes' (brief §6).
 type Label struct {
@@ -519,9 +550,9 @@ func (e EnvelopeCore) ValidateCore() error {
 // Required: the common core (direction, kind, collection_mode pinned), plus size_bytes,
 // policy_decision.
 // Permitted but not required: subject_name.
-// Must not carry, so absent from this struct: received_at, confidence, content_digest, labels,
-// classifier_version, content_excerpt, attachments, window_start, window_end, submission_count,
-// bytes_total, detection_basis.
+// Must not carry, so absent from this struct: received_at, prompt_kind, confidence,
+// content_digest, labels, classifier_version, content_excerpt, attachments, window_start,
+// window_end, submission_count, bytes_total, detection_basis.
 type DevicePromptM0 struct {
 	EnvelopeCore
 
@@ -572,7 +603,7 @@ func (e *DevicePromptM0) Validate() error {
 // Required: the common core (direction, kind, collection_mode pinned), plus received_at,
 // size_bytes, policy_decision.
 // Permitted but not required: subject_name.
-// Must not carry, so absent from this struct: confidence, content_digest, labels,
+// Must not carry, so absent from this struct: prompt_kind, confidence, content_digest, labels,
 // classifier_version, content_excerpt, attachments, window_start, window_end, submission_count,
 // bytes_total, detection_basis.
 type StoredPromptM0 struct {
@@ -628,13 +659,14 @@ func (e *StoredPromptM0) Validate() error {
 //
 // Required: the common core (direction, kind, collection_mode pinned), plus confidence,
 // size_bytes, content_digest, labels, classifier_version, policy_decision.
-// Permitted but not required: subject_name, content_excerpt, attachments.
+// Permitted but not required: subject_name, prompt_kind, content_excerpt, attachments.
 // Must not carry, so absent from this struct: received_at, window_start, window_end,
 // submission_count, bytes_total, detection_basis.
 type DevicePromptM1 struct {
 	EnvelopeCore
 
 	SubjectName       *string        `json:"subject_name,omitempty"`
+	PromptKind        *PromptKind    `json:"prompt_kind,omitempty"`
 	Confidence        Confidence     `json:"confidence"`
 	SizeBytes         int64          `json:"size_bytes"`
 	ContentDigest     Sha256         `json:"content_digest"`
@@ -671,6 +703,11 @@ func (e *DevicePromptM1) Validate() error {
 		}
 		if len((*e.SubjectName)) > 200 {
 			return fmt.Errorf("envelope: DevicePromptM1: subject_name must be at most 200 character(s), got %d", len((*e.SubjectName)))
+		}
+	}
+	if e.PromptKind != nil {
+		if !(*e.PromptKind).Valid() {
+			return fmt.Errorf("envelope: DevicePromptM1: prompt_kind is %q, which is outside the closed set", string((*e.PromptKind)))
 		}
 	}
 	if !e.Confidence.Valid() {
@@ -718,7 +755,7 @@ func (e *DevicePromptM1) Validate() error {
 //
 // Required: the common core (direction, kind, collection_mode pinned), plus received_at,
 // confidence, size_bytes, content_digest, labels, classifier_version, policy_decision.
-// Permitted but not required: subject_name, content_excerpt, attachments.
+// Permitted but not required: subject_name, prompt_kind, content_excerpt, attachments.
 // Must not carry, so absent from this struct: window_start, window_end, submission_count,
 // bytes_total, detection_basis.
 type StoredPromptM1 struct {
@@ -726,6 +763,7 @@ type StoredPromptM1 struct {
 
 	ReceivedAt        DateTime       `json:"received_at"`
 	SubjectName       *string        `json:"subject_name,omitempty"`
+	PromptKind        *PromptKind    `json:"prompt_kind,omitempty"`
 	Confidence        Confidence     `json:"confidence"`
 	SizeBytes         int64          `json:"size_bytes"`
 	ContentDigest     Sha256         `json:"content_digest"`
@@ -765,6 +803,11 @@ func (e *StoredPromptM1) Validate() error {
 		}
 		if len((*e.SubjectName)) > 200 {
 			return fmt.Errorf("envelope: StoredPromptM1: subject_name must be at most 200 character(s), got %d", len((*e.SubjectName)))
+		}
+	}
+	if e.PromptKind != nil {
+		if !(*e.PromptKind).Valid() {
+			return fmt.Errorf("envelope: StoredPromptM1: prompt_kind is %q, which is outside the closed set", string((*e.PromptKind)))
 		}
 	}
 	if !e.Confidence.Valid() {
@@ -812,13 +855,14 @@ func (e *StoredPromptM1) Validate() error {
 //
 // Required: the common core (direction, kind, collection_mode pinned), plus confidence,
 // size_bytes, content_digest, labels, classifier_version, content_excerpt, policy_decision.
-// Permitted but not required: subject_name, attachments.
+// Permitted but not required: subject_name, prompt_kind, attachments.
 // Must not carry, so absent from this struct: received_at, window_start, window_end,
 // submission_count, bytes_total, detection_basis.
 type DevicePromptM2 struct {
 	EnvelopeCore
 
 	SubjectName       *string        `json:"subject_name,omitempty"`
+	PromptKind        *PromptKind    `json:"prompt_kind,omitempty"`
 	Confidence        Confidence     `json:"confidence"`
 	SizeBytes         int64          `json:"size_bytes"`
 	ContentDigest     Sha256         `json:"content_digest"`
@@ -855,6 +899,11 @@ func (e *DevicePromptM2) Validate() error {
 		}
 		if len((*e.SubjectName)) > 200 {
 			return fmt.Errorf("envelope: DevicePromptM2: subject_name must be at most 200 character(s), got %d", len((*e.SubjectName)))
+		}
+	}
+	if e.PromptKind != nil {
+		if !(*e.PromptKind).Valid() {
+			return fmt.Errorf("envelope: DevicePromptM2: prompt_kind is %q, which is outside the closed set", string((*e.PromptKind)))
 		}
 	}
 	if !e.Confidence.Valid() {
@@ -901,7 +950,7 @@ func (e *DevicePromptM2) Validate() error {
 // Required: the common core (direction, kind, collection_mode pinned), plus received_at,
 // confidence, size_bytes, content_digest, labels, classifier_version, content_excerpt,
 // policy_decision.
-// Permitted but not required: subject_name, attachments.
+// Permitted but not required: subject_name, prompt_kind, attachments.
 // Must not carry, so absent from this struct: window_start, window_end, submission_count,
 // bytes_total, detection_basis.
 type StoredPromptM2 struct {
@@ -909,6 +958,7 @@ type StoredPromptM2 struct {
 
 	ReceivedAt        DateTime       `json:"received_at"`
 	SubjectName       *string        `json:"subject_name,omitempty"`
+	PromptKind        *PromptKind    `json:"prompt_kind,omitempty"`
 	Confidence        Confidence     `json:"confidence"`
 	SizeBytes         int64          `json:"size_bytes"`
 	ContentDigest     Sha256         `json:"content_digest"`
@@ -948,6 +998,11 @@ func (e *StoredPromptM2) Validate() error {
 		}
 		if len((*e.SubjectName)) > 200 {
 			return fmt.Errorf("envelope: StoredPromptM2: subject_name must be at most 200 character(s), got %d", len((*e.SubjectName)))
+		}
+	}
+	if e.PromptKind != nil {
+		if !(*e.PromptKind).Valid() {
+			return fmt.Errorf("envelope: StoredPromptM2: prompt_kind is %q, which is outside the closed set", string((*e.PromptKind)))
 		}
 	}
 	if !e.Confidence.Valid() {
@@ -993,13 +1048,14 @@ func (e *StoredPromptM2) Validate() error {
 //
 // Required: the common core (direction, kind, collection_mode pinned), plus confidence,
 // size_bytes, content_digest, labels, classifier_version, policy_decision.
-// Permitted but not required: subject_name, attachments.
+// Permitted but not required: subject_name, prompt_kind, attachments.
 // Must not carry, so absent from this struct: received_at, content_excerpt, window_start,
 // window_end, submission_count, bytes_total, detection_basis.
 type DevicePromptM3 struct {
 	EnvelopeCore
 
 	SubjectName       *string        `json:"subject_name,omitempty"`
+	PromptKind        *PromptKind    `json:"prompt_kind,omitempty"`
 	Confidence        Confidence     `json:"confidence"`
 	SizeBytes         int64          `json:"size_bytes"`
 	ContentDigest     Sha256         `json:"content_digest"`
@@ -1035,6 +1091,11 @@ func (e *DevicePromptM3) Validate() error {
 		}
 		if len((*e.SubjectName)) > 200 {
 			return fmt.Errorf("envelope: DevicePromptM3: subject_name must be at most 200 character(s), got %d", len((*e.SubjectName)))
+		}
+	}
+	if e.PromptKind != nil {
+		if !(*e.PromptKind).Valid() {
+			return fmt.Errorf("envelope: DevicePromptM3: prompt_kind is %q, which is outside the closed set", string((*e.PromptKind)))
 		}
 	}
 	if !e.Confidence.Valid() {
@@ -1077,7 +1138,7 @@ func (e *DevicePromptM3) Validate() error {
 //
 // Required: the common core (direction, kind, collection_mode pinned), plus received_at,
 // confidence, size_bytes, content_digest, labels, classifier_version, policy_decision.
-// Permitted but not required: subject_name, attachments.
+// Permitted but not required: subject_name, prompt_kind, attachments.
 // Must not carry, so absent from this struct: content_excerpt, window_start, window_end,
 // submission_count, bytes_total, detection_basis.
 type StoredPromptM3 struct {
@@ -1085,6 +1146,7 @@ type StoredPromptM3 struct {
 
 	ReceivedAt        DateTime       `json:"received_at"`
 	SubjectName       *string        `json:"subject_name,omitempty"`
+	PromptKind        *PromptKind    `json:"prompt_kind,omitempty"`
 	Confidence        Confidence     `json:"confidence"`
 	SizeBytes         int64          `json:"size_bytes"`
 	ContentDigest     Sha256         `json:"content_digest"`
@@ -1123,6 +1185,11 @@ func (e *StoredPromptM3) Validate() error {
 		}
 		if len((*e.SubjectName)) > 200 {
 			return fmt.Errorf("envelope: StoredPromptM3: subject_name must be at most 200 character(s), got %d", len((*e.SubjectName)))
+		}
+	}
+	if e.PromptKind != nil {
+		if !(*e.PromptKind).Valid() {
+			return fmt.Errorf("envelope: StoredPromptM3: prompt_kind is %q, which is outside the closed set", string((*e.PromptKind)))
 		}
 	}
 	if !e.Confidence.Valid() {
@@ -1166,8 +1233,9 @@ func (e *StoredPromptM3) Validate() error {
 // Required: the common core (direction, kind pinned), plus window_start, window_end,
 // submission_count, bytes_total.
 // Permitted but not required: subject_name, confidence.
-// Must not carry, so absent from this struct: received_at, size_bytes, content_digest, labels,
-// classifier_version, content_excerpt, attachments, policy_decision, detection_basis.
+// Must not carry, so absent from this struct: received_at, prompt_kind, size_bytes,
+// content_digest, labels, classifier_version, content_excerpt, attachments, policy_decision,
+// detection_basis.
 type DeviceUsageRollup struct {
 	EnvelopeCore
 
@@ -1229,7 +1297,7 @@ func (e *DeviceUsageRollup) Validate() error {
 // Required: the common core (direction, kind pinned), plus received_at, window_start, window_end,
 // submission_count, bytes_total.
 // Permitted but not required: subject_name, confidence.
-// Must not carry, so absent from this struct: size_bytes, content_digest, labels,
+// Must not carry, so absent from this struct: prompt_kind, size_bytes, content_digest, labels,
 // classifier_version, content_excerpt, attachments, policy_decision, detection_basis.
 type StoredUsageRollup struct {
 	EnvelopeCore
@@ -1295,9 +1363,9 @@ func (e *StoredUsageRollup) Validate() error {
 //
 // Required: the common core (direction, kind pinned), plus detection_basis.
 // Permitted but not required: subject_name, confidence.
-// Must not carry, so absent from this struct: received_at, size_bytes, content_digest, labels,
-// classifier_version, content_excerpt, attachments, policy_decision, window_start, window_end,
-// submission_count, bytes_total.
+// Must not carry, so absent from this struct: received_at, prompt_kind, size_bytes,
+// content_digest, labels, classifier_version, content_excerpt, attachments, policy_decision,
+// window_start, window_end, submission_count, bytes_total.
 type DeviceModelDetection struct {
 	EnvelopeCore
 
@@ -1346,7 +1414,7 @@ func (e *DeviceModelDetection) Validate() error {
 //
 // Required: the common core (direction, kind pinned), plus received_at, detection_basis.
 // Permitted but not required: subject_name, confidence.
-// Must not carry, so absent from this struct: size_bytes, content_digest, labels,
+// Must not carry, so absent from this struct: prompt_kind, size_bytes, content_digest, labels,
 // classifier_version, content_excerpt, attachments, policy_decision, window_start, window_end,
 // submission_count, bytes_total.
 type StoredModelDetection struct {
@@ -1417,8 +1485,9 @@ var requiredDevicePromptM0 = []string{
 
 // Fields DevicePromptM0 must not carry.
 var forbiddenDevicePromptM0 = []string{
-	"received_at", "confidence", "content_digest", "labels", "classifier_version", "content_excerpt",
-	"attachments", "window_start", "window_end", "submission_count", "bytes_total", "detection_basis",
+	"received_at", "prompt_kind", "confidence", "content_digest", "labels", "classifier_version",
+	"content_excerpt", "attachments", "window_start", "window_end", "submission_count", "bytes_total",
+	"detection_basis",
 }
 
 // Fields the schema requires of StoredPromptM0.
@@ -1430,8 +1499,8 @@ var requiredStoredPromptM0 = []string{
 
 // Fields StoredPromptM0 must not carry.
 var forbiddenStoredPromptM0 = []string{
-	"confidence", "content_digest", "labels", "classifier_version", "content_excerpt", "attachments",
-	"window_start", "window_end", "submission_count", "bytes_total", "detection_basis",
+	"prompt_kind", "confidence", "content_digest", "labels", "classifier_version", "content_excerpt",
+	"attachments", "window_start", "window_end", "submission_count", "bytes_total", "detection_basis",
 }
 
 // Fields the schema requires of DevicePromptM1.
@@ -1517,8 +1586,8 @@ var requiredDeviceUsageRollup = []string{
 
 // Fields DeviceUsageRollup must not carry.
 var forbiddenDeviceUsageRollup = []string{
-	"received_at", "size_bytes", "content_digest", "labels", "classifier_version", "content_excerpt",
-	"attachments", "policy_decision", "detection_basis",
+	"received_at", "prompt_kind", "size_bytes", "content_digest", "labels", "classifier_version",
+	"content_excerpt", "attachments", "policy_decision", "detection_basis",
 }
 
 // Fields the schema requires of StoredUsageRollup.
@@ -1530,8 +1599,8 @@ var requiredStoredUsageRollup = []string{
 
 // Fields StoredUsageRollup must not carry.
 var forbiddenStoredUsageRollup = []string{
-	"size_bytes", "content_digest", "labels", "classifier_version", "content_excerpt", "attachments",
-	"policy_decision", "detection_basis",
+	"prompt_kind", "size_bytes", "content_digest", "labels", "classifier_version", "content_excerpt",
+	"attachments", "policy_decision", "detection_basis",
 }
 
 // Fields the schema requires of DeviceModelDetection.
@@ -1542,8 +1611,9 @@ var requiredDeviceModelDetection = []string{
 
 // Fields DeviceModelDetection must not carry.
 var forbiddenDeviceModelDetection = []string{
-	"received_at", "size_bytes", "content_digest", "labels", "classifier_version", "content_excerpt",
-	"attachments", "policy_decision", "window_start", "window_end", "submission_count", "bytes_total",
+	"received_at", "prompt_kind", "size_bytes", "content_digest", "labels", "classifier_version",
+	"content_excerpt", "attachments", "policy_decision", "window_start", "window_end", "submission_count",
+	"bytes_total",
 }
 
 // Fields the schema requires of StoredModelDetection.
@@ -1555,8 +1625,8 @@ var requiredStoredModelDetection = []string{
 
 // Fields StoredModelDetection must not carry.
 var forbiddenStoredModelDetection = []string{
-	"size_bytes", "content_digest", "labels", "classifier_version", "content_excerpt", "attachments",
-	"policy_decision", "window_start", "window_end", "submission_count", "bytes_total",
+	"prompt_kind", "size_bytes", "content_digest", "labels", "classifier_version", "content_excerpt",
+	"attachments", "policy_decision", "window_start", "window_end", "submission_count", "bytes_total",
 }
 
 var ruleDevicePromptM0 = variantRule{

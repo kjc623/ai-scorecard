@@ -147,6 +147,24 @@ export const DETECTION_BASES = ["process_scan", "endpoint_security", "etw", "mod
 export type DetectionBasis = (typeof DETECTION_BASES)[number];
 
 /**
+ * The closed PromptKind set from envelopeCore.prompt_kind. What kind of prompt this is, decided on
+ * the device from the request shape, not from its meaning (task 08). 'user' is text a person
+ * authored; 'client_generated' is a request the client made for itself (titling, summarisation,
+ * telemetry, an injected system message) which quotes or carries no typed turn; 'unknown' is a
+ * record whose device could not decide, and a record from a device that predates this field reads
+ * back as 'unknown'. The device defaults to 'user' when unsure so nothing a person typed is
+ * hidden. Present only for kind=prompt at M1 and above: a metadata-only M0 record read no body to
+ * decide from, and the field is not part of M0's closed list.
+ */
+export const PROMPT_KINDS = ["user", "client_generated", "unknown"] as const;
+
+/**
+ * A member of PROMPT_KINDS: the union is derived from the runtime list, so a value
+ * cannot be added to the type without being added to the closed set.
+ */
+export type PromptKind = (typeof PROMPT_KINDS)[number];
+
+/**
  * Label: One classification verdict. A label set, never a boolean and never a bare 'sensitive:
  * yes' (brief §6).
  */
@@ -362,7 +380,7 @@ export interface EnvelopeCore {
  *
  * Permitted but not required: `subject_name`.
  *
- * Must not carry, so absent from this interface: `received_at`, `confidence`,
+ * Must not carry, so absent from this interface: `received_at`, `prompt_kind`, `confidence`,
  * `content_digest`, `labels`, `classifier_version`, `content_excerpt`, `attachments`,
  * `window_start`, `window_end`, `submission_count`, `bytes_total`, `detection_basis`.
  */
@@ -423,9 +441,9 @@ export interface DevicePromptM0 extends EnvelopeCore {
  *
  * Permitted but not required: `subject_name`.
  *
- * Must not carry, so absent from this interface: `confidence`, `content_digest`, `labels`,
- * `classifier_version`, `content_excerpt`, `attachments`, `window_start`, `window_end`,
- * `submission_count`, `bytes_total`, `detection_basis`.
+ * Must not carry, so absent from this interface: `prompt_kind`, `confidence`,
+ * `content_digest`, `labels`, `classifier_version`, `content_excerpt`, `attachments`,
+ * `window_start`, `window_end`, `submission_count`, `bytes_total`, `detection_basis`.
  */
 export interface StoredPromptM0 extends EnvelopeCore {
   /**
@@ -490,7 +508,7 @@ export interface StoredPromptM0 extends EnvelopeCore {
  * pinned), plus `confidence`, `size_bytes`, `content_digest`, `labels`, `classifier_version`,
  * `policy_decision`.
  *
- * Permitted but not required: `subject_name`, `content_excerpt`, `attachments`.
+ * Permitted but not required: `subject_name`, `prompt_kind`, `content_excerpt`, `attachments`.
  *
  * Must not carry, so absent from this interface: `received_at`, `window_start`, `window_end`,
  * `submission_count`, `bytes_total`, `detection_basis`.
@@ -532,6 +550,17 @@ export interface DevicePromptM1 extends EnvelopeCore {
    * @maxLength 200
    */
   readonly subject_name?: string;
+  /**
+   * What kind of prompt this is, decided on the device from the request shape, not from its meaning
+   * (task 08). 'user' is text a person authored; 'client_generated' is a request the client made for
+   * itself (titling, summarisation, telemetry, an injected system message) which quotes or carries
+   * no typed turn; 'unknown' is a record whose device could not decide, and a record from a device
+   * that predates this field reads back as 'unknown'. The device defaults to 'user' when unsure so
+   * nothing a person typed is hidden. Present only for kind=prompt at M1 and above: a metadata-only
+   * M0 record read no body to decide from, and the field is not part of M0's closed list.
+   * @enum "user" | "client_generated" | "unknown"
+   */
+  readonly prompt_kind?: PromptKind;
   /**
    * Overall classifier confidence band. 'degraded' means classification was attempted and did not
    * complete — the explicit signal required by brief §6 so that a failed classifier is never
@@ -588,7 +617,7 @@ export interface DevicePromptM1 extends EnvelopeCore {
  * pinned), plus `received_at`, `confidence`, `size_bytes`, `content_digest`, `labels`,
  * `classifier_version`, `policy_decision`.
  *
- * Permitted but not required: `subject_name`, `content_excerpt`, `attachments`.
+ * Permitted but not required: `subject_name`, `prompt_kind`, `content_excerpt`, `attachments`.
  *
  * Must not carry, so absent from this interface: `window_start`, `window_end`,
  * `submission_count`, `bytes_total`, `detection_basis`.
@@ -637,6 +666,17 @@ export interface StoredPromptM1 extends EnvelopeCore {
    * @maxLength 200
    */
   readonly subject_name?: string;
+  /**
+   * What kind of prompt this is, decided on the device from the request shape, not from its meaning
+   * (task 08). 'user' is text a person authored; 'client_generated' is a request the client made for
+   * itself (titling, summarisation, telemetry, an injected system message) which quotes or carries
+   * no typed turn; 'unknown' is a record whose device could not decide, and a record from a device
+   * that predates this field reads back as 'unknown'. The device defaults to 'user' when unsure so
+   * nothing a person typed is hidden. Present only for kind=prompt at M1 and above: a metadata-only
+   * M0 record read no body to decide from, and the field is not part of M0's closed list.
+   * @enum "user" | "client_generated" | "unknown"
+   */
+  readonly prompt_kind?: PromptKind;
   /**
    * Overall classifier confidence band. 'degraded' means classification was attempted and did not
    * complete — the explicit signal required by brief §6 so that a failed classifier is never
@@ -693,7 +733,7 @@ export interface StoredPromptM1 extends EnvelopeCore {
  * pinned), plus `confidence`, `size_bytes`, `content_digest`, `labels`, `classifier_version`,
  * `content_excerpt`, `policy_decision`.
  *
- * Permitted but not required: `subject_name`, `attachments`.
+ * Permitted but not required: `subject_name`, `prompt_kind`, `attachments`.
  *
  * Must not carry, so absent from this interface: `received_at`, `window_start`, `window_end`,
  * `submission_count`, `bytes_total`, `detection_basis`.
@@ -735,6 +775,17 @@ export interface DevicePromptM2 extends EnvelopeCore {
    * @maxLength 200
    */
   readonly subject_name?: string;
+  /**
+   * What kind of prompt this is, decided on the device from the request shape, not from its meaning
+   * (task 08). 'user' is text a person authored; 'client_generated' is a request the client made for
+   * itself (titling, summarisation, telemetry, an injected system message) which quotes or carries
+   * no typed turn; 'unknown' is a record whose device could not decide, and a record from a device
+   * that predates this field reads back as 'unknown'. The device defaults to 'user' when unsure so
+   * nothing a person typed is hidden. Present only for kind=prompt at M1 and above: a metadata-only
+   * M0 record read no body to decide from, and the field is not part of M0's closed list.
+   * @enum "user" | "client_generated" | "unknown"
+   */
+  readonly prompt_kind?: PromptKind;
   /**
    * Overall classifier confidence band. 'degraded' means classification was attempted and did not
    * complete — the explicit signal required by brief §6 so that a failed classifier is never
@@ -791,7 +842,7 @@ export interface DevicePromptM2 extends EnvelopeCore {
  * pinned), plus `received_at`, `confidence`, `size_bytes`, `content_digest`, `labels`,
  * `classifier_version`, `content_excerpt`, `policy_decision`.
  *
- * Permitted but not required: `subject_name`, `attachments`.
+ * Permitted but not required: `subject_name`, `prompt_kind`, `attachments`.
  *
  * Must not carry, so absent from this interface: `window_start`, `window_end`,
  * `submission_count`, `bytes_total`, `detection_basis`.
@@ -840,6 +891,17 @@ export interface StoredPromptM2 extends EnvelopeCore {
    * @maxLength 200
    */
   readonly subject_name?: string;
+  /**
+   * What kind of prompt this is, decided on the device from the request shape, not from its meaning
+   * (task 08). 'user' is text a person authored; 'client_generated' is a request the client made for
+   * itself (titling, summarisation, telemetry, an injected system message) which quotes or carries
+   * no typed turn; 'unknown' is a record whose device could not decide, and a record from a device
+   * that predates this field reads back as 'unknown'. The device defaults to 'user' when unsure so
+   * nothing a person typed is hidden. Present only for kind=prompt at M1 and above: a metadata-only
+   * M0 record read no body to decide from, and the field is not part of M0's closed list.
+   * @enum "user" | "client_generated" | "unknown"
+   */
+  readonly prompt_kind?: PromptKind;
   /**
    * Overall classifier confidence band. 'degraded' means classification was attempted and did not
    * complete — the explicit signal required by brief §6 so that a failed classifier is never
@@ -896,7 +958,7 @@ export interface StoredPromptM2 extends EnvelopeCore {
  * pinned), plus `confidence`, `size_bytes`, `content_digest`, `labels`, `classifier_version`,
  * `policy_decision`.
  *
- * Permitted but not required: `subject_name`, `attachments`.
+ * Permitted but not required: `subject_name`, `prompt_kind`, `attachments`.
  *
  * Must not carry, so absent from this interface: `received_at`, `content_excerpt`,
  * `window_start`, `window_end`, `submission_count`, `bytes_total`, `detection_basis`.
@@ -938,6 +1000,17 @@ export interface DevicePromptM3 extends EnvelopeCore {
    * @maxLength 200
    */
   readonly subject_name?: string;
+  /**
+   * What kind of prompt this is, decided on the device from the request shape, not from its meaning
+   * (task 08). 'user' is text a person authored; 'client_generated' is a request the client made for
+   * itself (titling, summarisation, telemetry, an injected system message) which quotes or carries
+   * no typed turn; 'unknown' is a record whose device could not decide, and a record from a device
+   * that predates this field reads back as 'unknown'. The device defaults to 'user' when unsure so
+   * nothing a person typed is hidden. Present only for kind=prompt at M1 and above: a metadata-only
+   * M0 record read no body to decide from, and the field is not part of M0's closed list.
+   * @enum "user" | "client_generated" | "unknown"
+   */
+  readonly prompt_kind?: PromptKind;
   /**
    * Overall classifier confidence band. 'degraded' means classification was attempted and did not
    * complete — the explicit signal required by brief §6 so that a failed classifier is never
@@ -990,7 +1063,7 @@ export interface DevicePromptM3 extends EnvelopeCore {
  * pinned), plus `received_at`, `confidence`, `size_bytes`, `content_digest`, `labels`,
  * `classifier_version`, `policy_decision`.
  *
- * Permitted but not required: `subject_name`, `attachments`.
+ * Permitted but not required: `subject_name`, `prompt_kind`, `attachments`.
  *
  * Must not carry, so absent from this interface: `content_excerpt`, `window_start`,
  * `window_end`, `submission_count`, `bytes_total`, `detection_basis`.
@@ -1039,6 +1112,17 @@ export interface StoredPromptM3 extends EnvelopeCore {
    * @maxLength 200
    */
   readonly subject_name?: string;
+  /**
+   * What kind of prompt this is, decided on the device from the request shape, not from its meaning
+   * (task 08). 'user' is text a person authored; 'client_generated' is a request the client made for
+   * itself (titling, summarisation, telemetry, an injected system message) which quotes or carries
+   * no typed turn; 'unknown' is a record whose device could not decide, and a record from a device
+   * that predates this field reads back as 'unknown'. The device defaults to 'user' when unsure so
+   * nothing a person typed is hidden. Present only for kind=prompt at M1 and above: a metadata-only
+   * M0 record read no body to decide from, and the field is not part of M0's closed list.
+   * @enum "user" | "client_generated" | "unknown"
+   */
+  readonly prompt_kind?: PromptKind;
   /**
    * Overall classifier confidence band. 'degraded' means classification was attempted and did not
    * complete — the explicit signal required by brief §6 so that a failed classifier is never
@@ -1092,7 +1176,7 @@ export interface StoredPromptM3 extends EnvelopeCore {
  *
  * Permitted but not required: `subject_name`, `confidence`.
  *
- * Must not carry, so absent from this interface: `received_at`, `size_bytes`,
+ * Must not carry, so absent from this interface: `received_at`, `prompt_kind`, `size_bytes`,
  * `content_digest`, `labels`, `classifier_version`, `content_excerpt`, `attachments`,
  * `policy_decision`, `detection_basis`.
  */
@@ -1162,9 +1246,9 @@ export interface DeviceUsageRollup extends EnvelopeCore {
  *
  * Permitted but not required: `subject_name`, `confidence`.
  *
- * Must not carry, so absent from this interface: `size_bytes`, `content_digest`, `labels`,
- * `classifier_version`, `content_excerpt`, `attachments`, `policy_decision`,
- * `detection_basis`.
+ * Must not carry, so absent from this interface: `prompt_kind`, `size_bytes`,
+ * `content_digest`, `labels`, `classifier_version`, `content_excerpt`, `attachments`,
+ * `policy_decision`, `detection_basis`.
  */
 export interface StoredUsageRollup extends EnvelopeCore {
   /**
@@ -1239,7 +1323,7 @@ export interface StoredUsageRollup extends EnvelopeCore {
  *
  * Permitted but not required: `subject_name`, `confidence`.
  *
- * Must not carry, so absent from this interface: `received_at`, `size_bytes`,
+ * Must not carry, so absent from this interface: `received_at`, `prompt_kind`, `size_bytes`,
  * `content_digest`, `labels`, `classifier_version`, `content_excerpt`, `attachments`,
  * `policy_decision`, `window_start`, `window_end`, `submission_count`, `bytes_total`.
  */
@@ -1296,9 +1380,9 @@ export interface DeviceModelDetection extends EnvelopeCore {
  *
  * Permitted but not required: `subject_name`, `confidence`.
  *
- * Must not carry, so absent from this interface: `size_bytes`, `content_digest`, `labels`,
- * `classifier_version`, `content_excerpt`, `attachments`, `policy_decision`, `window_start`,
- * `window_end`, `submission_count`, `bytes_total`.
+ * Must not carry, so absent from this interface: `prompt_kind`, `size_bytes`,
+ * `content_digest`, `labels`, `classifier_version`, `content_excerpt`, `attachments`,
+ * `policy_decision`, `window_start`, `window_end`, `submission_count`, `bytes_total`.
  */
 export interface StoredModelDetection extends EnvelopeCore {
   /**
