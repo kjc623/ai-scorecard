@@ -253,8 +253,8 @@ expectCaught(
   'kinds: a store constraint that stops forbidding a contract-forbidden field is caught',
   'database/schema.sql',
   (s) => s.replace(
-    '      AND window_start IS NULL AND window_end IS NULL AND submission_count IS NULL\n      AND bytes_total IS NULL))',
-    '      AND window_start IS NULL AND submission_count IS NULL\n      AND bytes_total IS NULL))',
+    '      AND window_start IS NULL AND window_end IS NULL AND submission_count IS NULL\n      AND bytes_total IS NULL AND prompt_kind IS NULL))',
+    '      AND window_end IS NULL AND submission_count IS NULL\n      AND bytes_total IS NULL AND prompt_kind IS NULL))',
   ),
   'kinds.observation_detection_shape.matches-contract',
 );
@@ -263,8 +263,8 @@ expectCaught(
   'kinds: the M0 constraint losing `confidence` again is caught',
   'database/schema.sql',
   (s) => s.replace(
-    '      AND confidence IS NULL AND content_excerpt IS NULL)),',
-    '      AND content_excerpt IS NULL)),',
+    '      AND confidence IS NULL AND content_excerpt IS NULL AND prompt_kind IS NULL)),',
+    '      AND content_excerpt IS NULL AND prompt_kind IS NULL)),',
   ),
   'kinds.observation_m0_carries_no_content.matches-contract',
 );
