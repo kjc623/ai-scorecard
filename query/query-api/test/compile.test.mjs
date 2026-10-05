@@ -184,7 +184,7 @@ test('a nullable ordering key is ordered through a sentinel and carried privatel
   assert.ok(c.text.includes('GROUP BY o.bucket_start, o.department, o.population, coalesce(o.population, chr(1))'));
 });
 
-test('the class predicate is jsonb containment over labels, never a string concatenation', () => {
+test('the class predicate is array containment over labels, never a string concatenation', () => {
   const statement = read({
     query_version: '1',
     source: 'ingest.submission',
@@ -192,7 +192,10 @@ test('the class predicate is jsonb containment over labels, never a string conca
     window: { ...baseDoc().window },
     limit: 10,
   });
-  assert.ok(statement.text.includes("s.labels @> jsonb_build_object('class', $"));
+  // `labels` is a jsonb array of {class, score}; containment needs both sides to be arrays. The
+  // object form (`labels @> jsonb_build_object(...)`) is false for every row and must not reappear.
+  assert.ok(statement.text.includes("s.labels @> jsonb_build_array(jsonb_build_object('class', $"));
+  assert.ok(!statement.text.includes("labels @> jsonb_build_object('class'"));
   assert.ok(!statement.text.includes('customer_pii'));
 });
 

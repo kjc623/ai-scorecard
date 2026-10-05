@@ -799,7 +799,9 @@ export const SOURCES = Object.freeze({
         startsWith: false,
         cardinality: 7,
         cardinalitySource: 'db/schema.sql seeds 7 ref.data_class rows',
-        // `labels @> {"class": $n}` is the only form jsonb_path_ops serves.
+        // `labels` is an array, so the value is wrapped in a one-element array too:
+        // `labels @> [{"class": $n}]`. An object operand always matches nothing. jsonb_path_ops
+        // serves this form.
         operators: Object.freeze(['eq']),
         sql: 's.labels',
         containment: true,

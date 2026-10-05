@@ -18,7 +18,7 @@ import assert from 'node:assert/strict';
 import { plan } from '../src/plan.js';
 import { SOURCES, SOURCE_IDS } from '../src/registry.js';
 import { TEMPLATES, TEMPLATE_NAMES } from '../src/templates.js';
-import { bindForPsql, dbSkipReason, findContainer, psqlScript, TENANT, tenantPrelude } from './helpers.mjs';
+import { bindForPsql, dbSkipReason, findPsqlContainer, psqlScript, TENANT, tenantPrelude } from './helpers.mjs';
 
 const WINDOW = { from: '2026-09-01T00:00:00Z', to: '2026-09-08T00:00:00Z' };
 const NOW = new Date('2026-10-02T12:00:00Z');
@@ -36,9 +36,9 @@ const TEMPLATE_PARAMS = Object.freeze({
   q10_audit_trail: { window: WINDOW, limit: 50 },
 });
 
-const container = findContainer();
+const container = findPsqlContainer();
 // The precondition is the SCHEMA, not a running container: see dbSkipReason.
-const SKIP = dbSkipReason();
+const SKIP = dbSkipReason(container);
 
 /** Every statement the package can produce that is meant to run. */
 function corpus() {
@@ -152,6 +152,54 @@ test('the audit chain recomputation column agrees with the stored row_hash', { s
   ].join('\n');
   const result = psqlScript(container, script);
   assert.equal(result.status, 0, `audit read failed: ${(result.stderr ?? '').trim()}`);
+});
+
+test('the class filter matches a labelled event and composes with another filter', { skip: SKIP }, () => {
+  // The regression this pins: `labels` is a jsonb ARRAY, so the old `labels @> jsonb_build_object(...)`
+  // form compared an array to an object and returned nothing for every value. The fixture rows have
+  // real entry-envelope label arrays; only the array-containment form may match them.
+  const classRead = plan(
+    { query_version: '1', source: 'ingest.submission', filters: [{ field: 'class', op: 'eq', value: 'payment_card' }], window: WINDOW, limit: 50 },
+    { now: NOW, tenant: TENANT, actorId: 'db-test' },
+  ).statements.find((s) => s.id === 'read');
+  const bothRead = plan(
+    {
+      query_version: '1',
+      source: 'ingest.submission',
+      filters: [{ field: 'class', op: 'eq', value: 'payment_card' }, { field: 'action', op: 'eq', value: 'logged' }],
+      window: WINDOW,
+      limit: 50,
+    },
+    { now: NOW, tenant: TENANT, actorId: 'db-test' },
+  ).statements.find((s) => s.id === 'read');
+  const script = [
+    tenantPrelude(),
+    `INSERT INTO ops.device (tenant_id, device_id, os, managed_state)
+       VALUES (ops.current_tenant(), '00000000-0000-4000-8000-0000000000d1', 'linux', 'managed');`,
+    `INSERT INTO ingest.submission
+       (tenant_id, submission_id, dedup_weak_key, kind, device_id, user_ref, tool_fingerprint,
+        first_occurred_at, last_occurred_at, received_at, collection_mode, labels, policy_action,
+        winning_source, winning_fidelity, observed_routes, content_state, expires_at)
+       VALUES
+       (ops.current_tenant(), '00000000-0000-4000-8000-0000000000e1', 'sha256:' || repeat('a', 64), 'prompt',
+        '00000000-0000-4000-8000-0000000000d1', 'user_ref_0001', 'tool_a',
+        '2026-09-02T00:00:00Z', '2026-09-02T00:00:00Z', '2026-09-02T00:00:00Z', 'm3',
+        jsonb_build_array(jsonb_build_object('class', 'payment_card', 'score', 0.9)), 'logged',
+        'proxy.tls', 50, ARRAY['proxy.tls'], 'not_captured', '2026-12-01T00:00:00Z'),
+       (ops.current_tenant(), '00000000-0000-4000-8000-0000000000e2', 'sha256:' || repeat('b', 64), 'prompt',
+        '00000000-0000-4000-8000-0000000000d1', 'user_ref_0001', 'tool_a',
+        '2026-09-02T00:00:00Z', '2026-09-02T00:00:00Z', '2026-09-02T00:00:00Z', 'm3',
+        jsonb_build_array(jsonb_build_object('class', 'source_code', 'score', 1)), 'blocked',
+        'proxy.tls', 50, ARRAY['proxy.tls'], 'not_captured', '2026-12-01T00:00:00Z');`,
+    `SELECT 'class_only', count(*) FROM (${bindForPsql(classRead.text, classRead.params)}) q;`,
+    `SELECT 'class_and_action', count(*) FROM (${bindForPsql(bothRead.text, bothRead.params)}) q;`,
+    'ROLLBACK;',
+  ].join('\n');
+  const result = psqlScript(container, script);
+  assert.equal(result.status, 0, `statement failed: ${(result.stderr ?? '').trim()}`);
+  // psql -tA prints "class_only|1" then "class_and_action|1".
+  const lines = (result.stdout ?? '').trim().split('\n').map((s) => s.trim()).filter(Boolean);
+  assert.deepEqual(lines, ['class_only|1', 'class_and_action|1']);
 });
 
 test('a bucket-size predicate actually discriminates: day and hour rows are not mixed', { skip: SKIP }, () => {
