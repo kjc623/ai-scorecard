@@ -1076,7 +1076,7 @@ DECLARE
   -- the contract's model_detection not.anyOf, minus attachments (no column on this table)
   forbids text[] := ARRAY['content_digest','labels','classifier_version','content_excerpt',
                           'policy_decision','size_bytes','window_start','window_end',
-                          'submission_count','bytes_total'];
+                          'submission_count','bytes_total','prompt_kind'];
   vals jsonb := jsonb_build_object(
     'content_digest', 'sha256:' || repeat('a1', 32),
     'labels', jsonb_build_array(jsonb_build_object('class','payment_card','score',0.5)),
@@ -1087,7 +1087,8 @@ DECLARE
     'window_start', '2026-11-01T00:00:00Z',
     'window_end', '2026-11-02T00:00:00Z',
     'submission_count', 1,
-    'bytes_total', 100);
+    'bytes_total', 100,
+    'prompt_kind', 'user');
   base jsonb;
   f text;
   n int;
@@ -1135,7 +1136,7 @@ DO $$
 DECLARE
   -- the contract's usage_rollup not.anyOf, minus attachments
   forbids text[] := ARRAY['content_digest','labels','classifier_version','content_excerpt',
-                          'policy_decision','size_bytes','detection_basis'];
+                          'policy_decision','size_bytes','detection_basis','prompt_kind'];
   vals jsonb := jsonb_build_object(
     'content_digest', 'sha256:' || repeat('a2', 32),
     'labels', jsonb_build_array(jsonb_build_object('class','payment_card','score',0.5)),
@@ -1143,7 +1144,8 @@ DECLARE
     'content_excerpt', 'minimised excerpt',
     'policy_decision', jsonb_build_object('rule_id','R','action','logged','decided_locally',true),
     'size_bytes', 100,
-    'detection_basis', 'process_scan');
+    'detection_basis', 'process_scan',
+    'prompt_kind', 'user');
   base jsonb;
   f text;
   n int;
@@ -1254,14 +1256,17 @@ END $$;
 
 DO $$
 DECLARE
-  -- the contract's M0 prompt not.anyOf, minus attachments. confidence was the missing one.
-  forbids text[] := ARRAY['content_digest','labels','classifier_version','confidence','content_excerpt'];
+  -- the contract's M0 prompt not.anyOf, minus attachments. prompt_kind is the newest: it is
+  -- request-shape metadata, not content, but M0's closed list has no room for it because a
+  -- metadata-only device read no body from which to decide one.
+  forbids text[] := ARRAY['content_digest','labels','classifier_version','confidence','content_excerpt','prompt_kind'];
   vals jsonb := jsonb_build_object(
     'content_digest','sha256:' || repeat('a4', 32),
     'labels', jsonb_build_array(jsonb_build_object('class','payment_card','score',0.9)),
     'classifier_version','test-2026.01',
     'confidence','high',
-    'content_excerpt','minimised excerpt');
+    'content_excerpt','minimised excerpt',
+    'prompt_kind','user');
   base jsonb;
   f text;
   n int;
@@ -1312,10 +1317,10 @@ END $$;
 --
 -- T42 covers this inside a loop, but this is the single field the schema owner most wants to see
 -- fail if someone reverts the constraint, so it gets an assertion whose PASS line and FAIL message
--- both name it. `confidence` was the last field added to observation_m0_carries_no_content and the
--- one the store was missing: it is a classifier output, so an M0 record carrying it is evidence the
--- collector read content it was not permitted to read, which is precisely what that constraint
--- exists to catch.
+-- both name it. `confidence` was the field the store was missing when this was written: it is a
+-- classifier output, so an M0 record carrying it is evidence the collector read content it was not
+-- permitted to read, which is precisely what that constraint exists to catch. (`prompt_kind` was
+-- added to the same constraint since, and is covered by T42.)
 DO $$
 DECLARE
   n int;

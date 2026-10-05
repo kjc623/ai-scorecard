@@ -23,8 +23,13 @@
 //
 // The content is invented. Excerpts are short redacted strings, never real data.
 //
+// A real endpoint decides prompt_kind on the device (task 08). The simulator fabricates it: normal
+// prompts are marked "user" and --client-generated N adds N submissions marked "client_generated",
+// so the "vault does not index it / Search hides it" behaviour can be observed on the lab.
+//
 //   node localdev/tools/simulate-devices.mjs                       # 10 devices, about 300 events
 //   node localdev/tools/simulate-devices.mjs --devices 4 --events 80
+//   node localdev/tools/simulate-devices.mjs --devices 2 --events 40 --client-generated 4
 //
 // Needs the auth lab up (node localdev/run.mjs --auth). Zero dependencies.
 
@@ -48,6 +53,11 @@ const TENANT = arg('tenant', '5a3c0de0-7e57-4a11-9000-0000000d3a01');
 const TENANT_NAME = arg('tenant-name', 'Northwind Freight (sample)');
 const DEVICE_COUNT = Number(arg('devices', '10'));
 const EVENT_TARGET = Number(arg('events', '300'));
+// A real endpoint decides the request kind on the device (task 08). The simulator fabricates the
+// field so the downstream can be observed on the lab: every prompt here is a person's, and this
+// many extra M1 submissions are marked client_generated, the way a device that saw a titling,
+// summarising or telemetry request would mark them.
+const CLIENT_GENERATED = Number(arg('client-generated', '0'));
 const PG_CONTAINER = arg('pg-container', 'sac-authlab-postgres-1');
 const CLASSIFIER = '2026.01.0-shadow';
 const SEP = '\u001f';
@@ -261,6 +271,7 @@ function prompt(device, user, occurredMs) {
     event.classifier_version = CLASSIFIER;
     event.policy_decision = { rule_id: found[0]?.rule ?? 'DEFAULT_LOG', action, decided_locally: true };
     event.dedup_key = key;
+    event.prompt_kind = 'user';
     if (mode === 'm2') {
       event.content_excerpt = found.length > 0
         ? { kind: 'redacted_window', text: found[0].excerpt, match_type: found[0].class, redaction_applied: true }
@@ -269,6 +280,28 @@ function prompt(device, user, occurredMs) {
     if (chance(0.12)) event.attachments = [{ name: pick(ATTACHMENTS), size_bytes: 2000 + Math.floor(Math.random() * 400_000) }];
     return event;
   });
+}
+
+/**
+ * A request the client made for itself: a titling or summarising call, not a person's prompt. The
+ * device marks it `client_generated`; it carries an empty label set (there is no authored text to
+ * classify) and high confidence, and it is never written to the search index.
+ */
+function clientGenerated(device, user, occurredMs) {
+  const tool = pick(TOOLS);
+  const source = tool === 'cursor_ide' ? 'cli.shim' : 'proxy.tls';
+  const size = 300 + Math.floor(Math.random() * 4000);
+  const digest = sha256(['sac-canon-1', 'T', `client generated ${randomUUID()}`, 'END'].join(SEP));
+  const event = core(device, user, tool, 'prompt', 'egress', occurredMs, source, 'm1');
+  event.size_bytes = size;
+  event.confidence = 'high';
+  event.content_digest = digest;
+  event.labels = [];
+  event.classifier_version = CLASSIFIER;
+  event.policy_decision = { rule_id: 'DEFAULT_LOG', action: 'logged', decided_locally: true };
+  event.dedup_key = dedupKey(device, tool, 'egress', 'prompt', occurredMs, 'T-A', digest);
+  event.prompt_kind = 'client_generated';
+  return [event];
 }
 
 function rollup(device, user, occurredMs) {
@@ -334,6 +367,16 @@ while (made < EVENT_TARGET) {
   queues.get(device).push(...events);
   made += events.length;
 }
+
+// The client-generated submissions the endpoint would have marked, sent through the same device
+// path so ingest, query-api and the dashboard can be observed honouring the kind. They carry a
+// fixed user_ref so a browser observation can name them unambiguously.
+for (let i = 0; i < CLIENT_GENERATED; i += 1) {
+  const { device } = pick(people);
+  queues.get(device).push(...clientGenerated(device, 'u_clientgen', now - i * 1000));
+  made += 1;
+}
+if (CLIENT_GENERATED > 0) console.log(`  marked ${CLIENT_GENERATED} extra submissions client_generated`);
 
 const totals = { accepted: 0, duplicate: 0, rejected: 0, batches: 0 };
 const reasons = new Map();

@@ -1000,6 +1000,27 @@ and no classifier ran, and the schema forbids `confidence` on an M0 prompt — c
 read content" with "we tried to read content and could not" would corrupt the one metric telling an operator
 whether the classifier works.
 
+### 9.8 What is classified, and what kind of request it is
+
+**The classifier is handed C1's output, not the captured body.** C1 ([02-ingest-and-transport](02-ingest-and-transport.md) §4.2)
+selects the user-authored segment; the bytes a person typed are what a rule or model may read. The captured
+body is wider than that: it carries the client's system prompt, tool definitions and the re-sent conversation.
+Classifying the whole body is what gave a plain question a `source_code` label taken from a tool schema, so
+the proxy and loopback routes hand over the segment C1 identified. Only when C1 cannot identify any authored
+boundary is the whole body handed over, and that record is already `confidence: degraded`.
+
+**Every prompt carries a `prompt_kind`.** Not all user-role traffic is a person's: Claude Code titles a
+session, summarises a turn, retries a cut-off response and streams telemetry by sending requests that carry
+its own instructions in a user-role message. The device decides the kind from request shape — the text C1
+identified, the absence of a typed turn, and the body's structure — and records it on the envelope
+(`prompt_kind`: `user` | `client_generated` | `unknown`). It is a shape judgement, never a meaning judgement,
+and the default is `user` so nothing a person typed is hidden. A `client_generated` request has no authored
+text, so it is not classified and can carry no label; it is stored and auditable, but `content-vault` does not
+build a prompt-text search index for it and Search hides it from the event list by default, with a control to
+include it. A device that predates the field sends nothing, which the read layer treats as `unknown`. The
+decision is made once, here; the vault, `query-api` and the dashboard each used to carry their own patch and
+no longer do.
+
 ---
 
 ## 10. Document parsing isolation

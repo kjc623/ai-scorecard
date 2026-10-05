@@ -415,6 +415,18 @@ function loadSchema() {
     }
   }
 
+  // Every closed enum's values are contract vocabulary, so a local name that happens to be one is
+  // not a misspelled envelope field: a proxy struct's upstream `prompt` field and a `case "prompt"`
+  // on the kind are both legitimate, and both read as near-misses of `prompt_kind` otherwise.
+  const enumValues = new Set();
+  (function walk(node) {
+    if (Array.isArray(node)) { node.forEach(walk); return; }
+    if (node && typeof node === 'object') {
+      for (const v of node.enum ?? []) if (typeof v === 'string') enumValues.add(v);
+      Object.values(node).forEach(walk);
+    }
+  })(raw);
+
   return {
     coreProps,
     coreRequired,
@@ -424,6 +436,7 @@ function loadSchema() {
     kinds: core.properties?.kind?.enum ?? [],
     modes: core.properties?.collection_mode?.enum ?? [],
     routes: defs.route?.enum ?? [],
+    enumValues,
   };
 }
 
@@ -516,6 +529,8 @@ function main() {
     const extras = component.seamExtras ?? {};
     for (const [field, places] of hits) {
       if (known.has(field) || extras[field]) continue;
+      // A contract enum value is contract vocabulary, not a field name that might be misspelled.
+      if (schema.enumValues.has(field)) continue;
       const near = nearContractField(field, envelopeFields);
       if (!near) continue;
       for (const place of places.slice(0, 2)) {

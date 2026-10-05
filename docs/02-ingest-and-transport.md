@@ -258,7 +258,20 @@ A route produces exactly two things: a text string (possibly empty) and an order
 | C5 | **Whitespace collapsing** | CRLF and CR → LF; then every run of whitespace (TAB, LF, U+0020, U+00A0, U+1680, U+2000–U+200A, U+2028, U+2029, U+202F, U+205F, U+3000) → a single U+0020; then trim leading and trailing whitespace. A compose box and a serialised body legitimately differ in trailing newlines and line endings; the digest is an identity, not a rendering. |
 | C6 | **No case folding, no stemming, no punctuation stripping** | These merge submissions that are not the same submission and reduce the record's evidentiary value. The digest identifies content; it does not measure similarity. |
 | C7 | **Attachment canonicalisation** | Per attachment: `name` = basename only, NFC, whitespace-collapsed, control-stripped, **not** case-folded, empty string when unknown; `media_type` = declared type lowercased with parameters (charset, boundary) removed, `application/octet-stream` when absent; `size_bytes` = exact octet count; `content_digest` = `sha256:` over the **raw attached octets** as the user selected them, or the literal `~` when the route is structurally unable to read the bytes (E3). The attachment records are then **sorted** by `(name, content_digest, size_bytes)`, because a multipart body's order and a page's file list order are not the same fact. |
-| C8 | **Exclude non-content material** | Never hashed: `event_id`, `tenant_id`, `device_id`, `user_ref`, `tool_fingerprint`, `direction`, `kind`, `occurred_at`, `received_at`, `monotonic_offset_ms`, `source`, `confidence`, `collection_mode`, `labels`, `classifier_version`, `policy_decision`, `content_excerpt`, HTTP method/path/query/framing/headers/cookies, multipart boundaries, JSON key order and escaping, compression, TLS record structure, retry counters and `batch_id`. Note the deliberate exclusion of the payload's byte size: escaping and framing make the same prompt 4096 bytes to one route and 4102 to another, so size is a *surrogate* input (§4.5) and never a Tier-T input. |
+| C8 | **Exclude non-content material** | Never hashed: `event_id`, `tenant_id`, `device_id`, `user_ref`, `tool_fingerprint`, `direction`, `kind`, `prompt_kind`, `occurred_at`, `received_at`, `monotonic_offset_ms`, `source`, `confidence`, `collection_mode`, `labels`, `classifier_version`, `policy_decision`, `content_excerpt`, HTTP method/path/query/framing/headers/cookies, multipart boundaries, JSON key order and escaping, compression, TLS record structure, retry counters and `batch_id`. Note the deliberate exclusion of the payload's byte size: escaping and framing make the same prompt 4096 bytes to one route and 4102 to another, so size is a *surrogate* input (§4.5) and never a Tier-T input. |
+
+**C1's output is also the classifier's input.** The device hands the classifier the segment C1 selected,
+not the whole captured body: the body additionally carries the client's system prompt, tool definitions and
+re-sent history, and classifying those gave a plain question a label taken from a tool schema. Only when C1
+cannot identify an authored boundary does the whole body go to the classifier, and that record is already
+`confidence: degraded`.
+
+**The device also records a `prompt_kind`.** Not every user-role message is a person's: clients send their
+own requests (titling, summarisation, telemetry) that carry instructions in a user-role turn. The device
+decides `user` | `client_generated` | `unknown` from request shape and C1's output, defaulting to `user`, and
+the envelope carries it. It is metadata about the shape of the request, not part of the canonical form, so it
+is excluded from the digest (C8). A `client_generated` submission is stored and auditable but is not indexed
+for prompt-text search; see [01-collectors](01-collectors.md) §9.8.
 
 **C9 — Digest input layout.** Fields are joined by U+001F INFORMATION SEPARATOR ONE, which C4
 guarantees cannot appear inside any field. The input is UTF-8; no length prefixes are needed because no
