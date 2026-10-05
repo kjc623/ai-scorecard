@@ -25,11 +25,9 @@ disagree, and the one a client sees would be whichever ran last.
 The same holds for content, one step further out. `content.js` does not decide whether content may be
 searched or read: it establishes who is asking from the session, never from the body, and forwards the
 request to `content-vault`, which owns the search tier, the four-eyes rule, the single-use grant and
-the audit row. A refusal is the vault's, carried through with its reason code. What this layer adds to
-a retrieval is the sequence — the vault's retrieval request, then the redemption of the grant it
-returns — and the relay of the content the vault serves, in the response body. That last part is as
-built, not as designed: docs/02 §11 has content leave the vault by a short-lived URL so it never
-transits this service.
+the audit row. A refusal is the vault's, carried through with its reason code. A retrieval relays the
+vault's short-lived, single-use retrieval URL and no content byte: the browser fetches that URL from
+the vault through the analyst web tier, so content never transits this service (docs/02 §11).
 
 ## Three things that are easy to get wrong here
 

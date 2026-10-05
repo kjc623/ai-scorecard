@@ -26,6 +26,7 @@ function explorerFor(scenario = 'realistic', { withContent = true } = {}) {
       transport: {
         search: (body) => { asked.push(['search', body]); return stub.content.search(body); },
         retrieve: (body) => { asked.push(['retrieve', body]); return stub.content.retrieve(body); },
+        readUrl: (url) => { asked.push(['readUrl', url]); return stub.content.readUrl(url); },
       },
     })
     : null;

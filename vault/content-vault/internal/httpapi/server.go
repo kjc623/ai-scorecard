@@ -28,6 +28,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"time"
 
 	"github.com/shadow-ai-capture/content-vault/internal/auth"
@@ -63,6 +64,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/content/object", s.guard(s.handlePrepare))
 	mux.HandleFunc("POST /v1/content/object/finalise", s.guard(s.handleFinalise))
 	mux.HandleFunc("POST /v1/content/retrieval", s.guard(s.handleRetrieval))
+	// The minted retrieval URL. It is deliberately not behind guard: the browser that fetches it
+	// holds no service identity, and the URL's single-use grant is the credential. This is the one
+	// route the analyst web tier forwards to the vault without query-api, so content never transits
+	// query-api's response body (docs/02 §11).
+	mux.HandleFunc("GET /v1/content/retrieval/{tenant}/{grant}", s.handleRedeemURL)
 	mux.HandleFunc("POST /v1/content/redeem", s.guard(s.handleRedeem))
 	mux.HandleFunc("POST /v1/content/shred", s.guard(s.handleShred))
 	mux.HandleFunc("POST /v1/content/rotate", s.guard(s.handleRotate))
@@ -272,10 +278,55 @@ func (s *Server) handleRetrieval(w http.ResponseWriter, r *http.Request, p auth.
 		s.writeVaultError(w, err)
 		return
 	}
+	// The grant and the URL that redeems it, never the content: the browser fetches the URL itself
+	// and query-api, which relays this answer, never sees a content byte (docs/02 §11).
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"state": "available", "grant_id": res.GrantID, "expires_at": res.ExpiresAt,
-		"raw_digest": res.RawDigest,
+		"raw_digest": res.RawDigest, "retrieval_url": res.RetrievalURL,
 	})
+}
+
+// uuidPath matches the two opaque identifiers a minted retrieval URL names. The URL is minted by
+// this service, so anything else is not one of ours: it is refused as a transport error rather than
+// allowed to reach the store as a malformed tenant.
+var uuidPath = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// handleRedeemURL serves the minted retrieval URL: the browser's direct read of granted content.
+// Success is the plaintext bytes, with the digest the grant promised; content that is gone keeps
+// §11's explicit result shape; a refusal keeps the vault's closed reason. Nothing here needs the
+// caller's name, because the grant is the capability.
+func (s *Server) handleRedeemURL(w http.ResponseWriter, r *http.Request) {
+	tenant, grant := r.PathValue("tenant"), r.PathValue("grant")
+	if !uuidPath.MatchString(tenant) || !uuidPath.MatchString(grant) {
+		s.writeTransportError(w, http.StatusBadRequest, "bad_request", "the retrieval URL does not name a tenant and a grant")
+		return
+	}
+	res, err := s.Vault.RedeemURL(r.Context(), tenant, grant)
+	if err != nil {
+		s.writeVaultError(w, err)
+		return
+	}
+	if res.State == "no_longer_available" {
+		// Content that is gone is a result, not an error (C17). A byte read cannot answer 200 with
+		// both bytes and a result, so the result carries the status the client checks.
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusGone)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"state": "no_longer_available", "reason": string(res.Reason), "receipt_ref": res.ReceiptRef,
+		})
+		return
+	}
+	if len(res.Plaintext) == 0 {
+		s.writeTransportError(w, http.StatusBadGateway, "content_not_served", "the vault authorised the read but served no content")
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Sac-Grant-Id", res.GrantID)
+	w.Header().Set("X-Sac-Raw-Digest", res.RawDigest)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(res.Plaintext)
 }
 
 func (s *Server) handleRedeem(w http.ResponseWriter, r *http.Request, p auth.Principal, body []byte) {

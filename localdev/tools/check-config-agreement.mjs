@@ -78,6 +78,8 @@ const EXTENSIONS = {
     SAC_STORE: 'image: the store mode this build can actually serve (memory)',
     SAC_KEY_BACKEND: 'image: local, the only backend this build implements',
     SAC_ALLOW_NON_LOOPBACK: 'image: the image-level spelling of the internal-ingress acknowledgement',
+    SAC_BLOB_READ_CREDENTIAL: 'lab only: the shared bearer the storage stand-in checks. A deployment uses SAC_BLOB_IDENTITY=managed instead',
+    SAC_RETRIEVAL_URL_BASE: 'gap: the origin a browser reaches a minted retrieval URL on; a deployment behind an ingress sets it, the lab resolves a path against the page\'s own origin',
   },
   'query-api': {
     SAC_HTTP_ADDR: 'image: a container binds 0.0.0.0; the deployment has no command/args to pass one in',

@@ -45,6 +45,16 @@ const (
 	EnvKeyVaultURI = "SAC_KEYVAULT_URI"
 	// EnvBlobCiphertextEndpoint is the private blob endpoint for ciphertext.
 	EnvBlobCiphertextEndpoint = "SAC_BLOB_CIPHERTEXT_ENDPOINT"
+	// EnvBlobIdentity selects how the vault authenticates to blob storage: static | managed. A
+	// deployment uses managed, so the read carries the container app's identity and no secret is
+	// stored; the lab uses static, a bearer its storage stand-in checks.
+	EnvBlobIdentity = "SAC_BLOB_IDENTITY"
+	// EnvBlobReadCredential is the lab's static storage bearer. It is read only when
+	// EnvBlobIdentity is static, and a deployment must leave it unset.
+	EnvBlobReadCredential = "SAC_BLOB_READ_CREDENTIAL"
+	// EnvRetrievalURLBase is the origin a browser reaches a minted retrieval URL on. Empty mints a
+	// path the caller resolves against the page's own origin.
+	EnvRetrievalURLBase = "SAC_RETRIEVAL_URL_BASE"
 	// EnvInternalOnly is the deployment's declaration that this app has internal ingress only. It is
 	// the honest acknowledgement for a non-loopback bind in a container: the deployment states the
 	// fact the flag asks the operator to assert.

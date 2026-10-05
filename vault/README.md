@@ -28,12 +28,13 @@ tier permits, and delete that index by row when erasure cannot reach it with a k
 - **It never holds a KEK it could export.** The key interface is six methods wide and has no
   `GetKey`/`ExportKey`/`ListKeys`; a test asserts the method set, because an interface that cannot
   express the request is the only version of "the KEK never leaves the key store" a reviewer can check.
-- **It has no blob client and mints no retrieval URL.** A deployment returns a short-lived storage URL;
-  this build does not. Given `--blob-ciphertext-endpoint` it reads a stored object from that endpoint
-  with a plain GET, checks it against the recorded digest, opens it with the object key and returns
-  the content in the response; without it, `Redeem` returns the object's reference and digests and no
-  bytes. That read is a development stand-in, exercised against the local lab's storage stand-in and
-  against no storage account.
+- **It reads blob storage with its own identity, and serves a read through a single-use retrieval
+  URL.** `POST /v1/content/retrieval` authorises one read and mints the URL; `GET
+  /v1/content/retrieval/{tenant}/{grant}` serves the bytes, and `query-api` relays only the URL. The
+  storage read carries a credential (a managed-identity token, or the lab's shared bearer), and an
+  object that is not the bytes that were finalised, or does not open, is never served as content.
+  What is **not** exercised against a real storage account is the managed-identity token fetch and the
+  Azure Blob request: this build carries no cloud SDK, so the lab uses its storage stand-in.
 - **It has no working cloud KMS.** `--key-backend kms` refuses to start unless an operator
   acknowledges that the backend is unimplemented, and every method of the KMS wrapper returns
   `ErrNotImplemented`. Modes 2 and 3 are interfaces and refusals, not working code.

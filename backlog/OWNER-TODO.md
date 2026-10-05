@@ -48,6 +48,13 @@ Each line names the task that left it. The exact commands are in that task's `RE
   --entra-user-ref-attribute onPremisesSamAccountName --directory-key "$SAC_DIRECTORY_KEY"`.
   The control-api binary carries the subcommand after `go build -tags sac_sql_driver`, and the
   auth-lab image after `node localdev/build.mjs --auth`. (06)
+- [ ] **Route the minted retrieval URL to the vault in any deployment**, and set
+  `SAC_RETRIEVAL_URL_BASE`: the vault mints `GET /v1/content/retrieval/{tenant}/{grant}`, the browser
+  fetches it, and the analyst ingress (or the web tier) must forward that path to `content-vault`. The
+  lab's dashboard forwarder does; `azure/main.bicep` does not yet. (10)
+- [ ] **Assign `Storage Blob Data Reader` on the ciphertext account to the vault's user-assigned
+  identity.** `azure/main.bicep` passes `SAC_BLOB_IDENTITY=managed`, and nothing grants the identity
+  the read, so a deployment's first retrieval would be refused. (10)
 
 ## Verify
 
@@ -70,6 +77,9 @@ On the owner's dashboard, `http://127.0.0.1:8787`, with the real device.
   with its raw fingerprint. Task 05 observed all four existing `tls_*` fingerprints resolving this
   way (three to Claude Code, one unrecognised); the new traffic proves the derivation is unchanged.
   (05)
+- [ ] Open a newly captured prompt in Search and confirm the drawer shows it: the browser fetches it
+  from `content-vault`'s single-use retrieval URL, not from `query-api`. Task 10 observed this with
+  the prompts already stored from the real device (a read only). (10)
 - [ ] After the task 08 reinstall, from a **new** Claude Code session: a new "What is the capital of
   Australia" prompt appears in Search with no `source_code` label, and a prompt containing a test
   card number is still labelled `payment_card`. Task 08 already proves the decision on the
@@ -83,6 +93,9 @@ On the owner's dashboard, `http://127.0.0.1:8787`, with the real device.
 - [ ] **Which mode does the Devices "Mode" column show?** It was built on the agent's
   recommendation (the device's effective base mode) because the question was left open. Task 12
   displays the same value. (04)
+- [ ] **Decide the fate of the internal `POST /v1/content/redeem`.** It still returns plaintext to an
+  allowed service; the product path is the retrieval URL. Keep it as a service-to-service path or
+  retire it. (10)
 - [ ] **Go through `FOLLOWUPS.md`.** Seven rows say a remaining brief is now wrong, in 06, 11, 12
   and 13; edit the brief or strike the row. One deferred item blocks task 12: nothing writes the
   signed policy bundle, and no task builds it. (review)

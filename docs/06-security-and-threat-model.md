@@ -477,8 +477,9 @@ edge-forwarded certificate or DPoP; the deployment supplies the material for non
 ADR 0019). The content path adds two more internal hops with the same shape, neither declared in
 `azure/` yet: `control-api` → `content-vault` (the object key for a granted upload, and the finalise),
 over plain HTTP with the same trusted headers; and the storage layer's finalise call to `control-api`,
-authenticated by an HMAC over the body under a key the two share. In the local lab the vault also reads
-stored ciphertext back with an unauthenticated GET, which is a stand-in for a storage credential.
+authenticated by an HMAC over the body under a key the two share. The vault now reads
+stored ciphertext back presenting a storage credential: a managed-identity access token in a
+deployment, and a shared bearer in the local lab, whose storage stand-in refuses a read without one.
 
 | Protected | Against |
 |---|---|

@@ -46,8 +46,9 @@ retrieval are two separate requests (`POST /v1/content-search`, `POST /v1/conten
 `query-api` forwards to `content-vault` under its own identity, adding who is asking from the session.
 The vault decides everything — the search tier, the case reference and second approver, the single-use
 grant, the audit row written first — and is the only component that can open content. The dashboard's
-Explore page is the surface for both. As built, the retrieved content is relayed in `query-api`'s
-response body, where the design has the vault mint a short-lived retrieval URL instead.
+Explore page is the surface for both. The retrieval request relays the vault's short-lived, single-use
+retrieval URL and no content: the browser fetches that URL from the vault through the analyst web tier,
+so content never transits `query-api`.
 
 ## Where the specification lives
 

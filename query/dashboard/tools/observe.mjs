@@ -32,8 +32,10 @@
 // is right; read the text. A console error or a failed request is reported in the header and is
 // not by itself a failure, because a degraded page is a state the dashboard renders on purpose.
 //
-// The header also counts requests to any host but the page's own. The dashboard loads nothing from
-// another host, so that count is 0 or something is wrong.
+// The header also counts requests to any host but the page's own, and lists the page's own `/v1/`
+// data requests by method and path, so a clause about how the page reached its data (a query, a
+// search, a minted retrieval URL) can be read off the run. The dashboard loads nothing from another
+// host, so that count is 0 or something is wrong.
 //
 // The browser is $SAC_BROWSER, else the first Chromium-family binary at a usual path. The harness
 // image installs Fedora's `chromium-headless`. The address is resolved against $SAC_DASHBOARD_URL,
@@ -208,6 +210,9 @@ async function main() {
     const consoleErrors = [];
     const failedRequests = [];
     const otherHosts = new Set();
+    // The page's own data requests, by method and path. This is what shows that a retrieval URL
+    // was fetched from its own origin rather than a query carrying content.
+    const dataRequests = new Set();
     let lastActivity = Date.now();
     cdp.on((msg) => {
       if (msg.sessionId !== sessionId) return;
@@ -216,7 +221,11 @@ async function main() {
         inflight.add(p.requestId);
         requestUrl.set(p.requestId, p.request.url);
         lastActivity = Date.now();
-        if (/^https?:/.test(p.request.url) && new URL(p.request.url).host !== url.host) otherHosts.add(new URL(p.request.url).host);
+        if (/^https?:/.test(p.request.url)) {
+          const sent = new URL(p.request.url);
+          if (sent.host !== url.host) otherHosts.add(sent.host);
+          else if (sent.pathname.startsWith('/v1/')) dataRequests.add(`${p.request.method} ${sent.pathname}`);
+        }
       } else if (msg.method === 'Network.responseReceived') {
         if (p.response.status >= 400) failedRequests.push(`${p.response.status} ${p.response.url}`);
       } else if (msg.method === 'Network.loadingFinished') {
@@ -337,6 +346,7 @@ async function main() {
       `console errors:      ${list(consoleErrors)}`,
       `failed requests:     ${list(failedRequests)}`,
       `other-host requests: ${list([...otherHosts])}`,
+      `data requests:       ${list([...dataRequests])}`,
       `checks:              ${failures.length === 0 ? `${opts.expect.length + opts.absent.length + opts.click.length + opts.fill.length} held` : `FAILED\n${failures.map((s) => `    ${s}`).join('\n')}`}`,
       `screenshot:          ${stem}.png`,
       `rendered DOM:        ${stem}.html`,

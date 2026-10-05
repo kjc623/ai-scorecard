@@ -146,20 +146,21 @@ export function httpTransport({ url = QUERY_ENDPOINT, fetchImpl, headers } = {})
 }
 
 /**
- * The content reads: prompt-text search and approved retrieval.
+ * The content reads: prompt-text search, the retrieval request, and the minted retrieval URL.
  *
- * They are not queries. A query document cannot name content, and these two requests go to their
- * own endpoints, which query-api forwards to content-vault. The answer is the vault's: either
- * `state: "available"` with the result, a state that says the content is gone, or a refusal with
- * the vault's own reason. This wrapper makes every outcome one of those three shapes, so a screen
- * never has to tell a network failure from a refusal by catching an exception.
+ * They are not queries. A query document cannot name content, and the two requests go to their own
+ * endpoints, which query-api forwards to content-vault. The retrieval request answers with a
+ * single-use URL, never the content (docs/02 §11): the browser then fetches that URL from the
+ * vault through the page's own web tier. Every answer is the vault's — `state: "available"` with a
+ * result, a state that says the content is gone, or a refusal with the vault's own reason — so a
+ * screen never has to tell a network failure from a refusal by catching an exception.
  *
  * @param {object} input
- * @param {{search: (body: object) => Promise<object>, retrieve: (body: object) => Promise<object>}} input.transport
+ * @param {{search: (body: object) => Promise<object>, retrieve: (body: object) => Promise<object>, readUrl: (url: string) => Promise<object>}} input.transport
  */
 export function createContentApi({ transport }) {
-  if (!transport || typeof transport.search !== 'function' || typeof transport.retrieve !== 'function') {
-    throw new TypeError('createContentApi needs a transport with search(body) and retrieve(body).');
+  if (!transport || typeof transport.search !== 'function' || typeof transport.retrieve !== 'function' || typeof transport.readUrl !== 'function') {
+    throw new TypeError('createContentApi needs a transport with search(body), retrieve(body) and readUrl(url).');
   }
   async function ask(send, body) {
     try {
@@ -170,13 +171,23 @@ export function createContentApi({ transport }) {
       return { state: 'refused', error: { code: 'transport_unavailable', message: String(error?.message ?? error) } };
     }
   }
+  async function readUrl(url) {
+    try {
+      const answer = await transport.readUrl(url);
+      if (answer && typeof answer === 'object' && typeof answer.state === 'string') return answer;
+      return { state: 'refused', error: { code: 'malformed_answer', message: 'The retrieval URL answer was not a content answer; refusing to render it as one.' } };
+    } catch (error) {
+      return { state: 'refused', error: { code: 'transport_unavailable', message: String(error?.message ?? error) } };
+    }
+  }
   return Object.freeze({
     search: (body) => ask(transport.search, body),
     retrieve: (body) => ask(transport.retrieve, body),
+    readUrl,
   });
 }
 
-/** The real content transport: one POST per read, to the page's own origin. */
+/** The real content transport: one POST per read, and one GET of a minted URL, on the page's own origin. */
 export function httpContentTransport({ fetchImpl } = {}) {
   const doFetch = fetchImpl ?? (typeof fetch === 'function' ? fetch.bind(globalThis) : null);
   if (!doFetch) {
@@ -192,9 +203,21 @@ export function httpContentTransport({ fetchImpl } = {}) {
     // A refusal is a body too, and it carries the vault's reason.
     return response.json();
   };
+  const get = async (url) => {
+    const response = await doFetch(url, { credentials: 'same-origin' });
+    if (response.ok) return { state: 'available', content: await response.text() };
+    // A byte read cannot answer 200 with both bytes and a result, so gone carries its own status.
+    let body = null;
+    try { body = await response.json(); } catch { body = null; }
+    if (body?.state === 'no_longer_available') {
+      return { state: 'no_longer_available', reason: body.reason ?? null, receipt_ref: body.receipt_ref ?? null };
+    }
+    return { state: 'refused', error: body?.error ?? { code: 'retrieval_failed', message: `the retrieval URL answered ${response.status}` } };
+  };
   return Object.freeze({
     search: (body) => post(CONTENT_SEARCH_ENDPOINT, body),
     retrieve: (body) => post(CONTENT_RETRIEVAL_ENDPOINT, body),
+    readUrl: get,
   });
 }
 

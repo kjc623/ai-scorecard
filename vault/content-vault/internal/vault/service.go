@@ -59,14 +59,30 @@ type Options struct {
 	MaxSnippetChars  int
 	FuzzyThreshold   float64
 
-	// FetchBlob is the stand-in for blob storage. In a deployment the vault never reads content
-	// bytes: it authorises a retrieval and the caller fetches the object from blob storage with a
-	// short-lived credential (docs/02 §11). On this offline host there is no blob store, so the
-	// binary may wire a function that returns the ciphertext it holds for local development and for
-	// the tests. When it is nil, an authorised read returns no bytes and says so.
+	// Blobs is the storage reader a deployment wires: the vault presents its own identity (a
+	// managed-identity access token) and reads the ciphertext itself (docs/02 §11, docs/06 §4.4).
+	// FetchBlob remains the tests' offline seam; Blobs wins when both are set.
+	Blobs BlobReader
+
+	// FetchBlob is the offline stand-in for blob storage. On this host there is no blob store, so
+	// the binary and the tests may wire a function that returns the ciphertext it holds. When it is
+	// nil, an authorised read returns no bytes and says so. It exists for tests and local
+	// development; a deployment wires Blobs so the read carries a storage credential.
 	FetchBlob func(blobPath string) ([]byte, error)
 
+	// RetrievalURLBase is the origin a browser reaches the vault on. The vault mints a
+	// same-origin-relative path when it is empty, which the caller resolves against the page's own
+	// origin; a deployment behind an ingress sets the absolute base so the URL is complete.
+	RetrievalURLBase string
+
 	Logger *slog.Logger
+}
+
+// BlobReader reads one stored object. It is separate from the store because the ciphertext and the
+// wrapped key live in different systems (docs/06 §5.3), and it takes a context because a
+// deployment's credential fetch and storage call both can.
+type BlobReader interface {
+	Get(ctx context.Context, blobPath string) ([]byte, error)
 }
 
 // Service is the vault.
@@ -345,7 +361,7 @@ const maxIndexedChars = 65_536
 
 // canIndexStored reports whether a stored object's text may and can be indexed by the vault itself.
 func (s *Service) canIndexStored(tenant store.Tenant, obj store.ContentObject) bool {
-	if s.opts.FetchBlob == nil || obj.SubmissionID == "" || tenant.ContentSearch != store.SearchFullText {
+	if (s.opts.Blobs == nil && s.opts.FetchBlob == nil) || obj.SubmissionID == "" || tenant.ContentSearch != store.SearchFullText {
 		return false
 	}
 	// A client-generated request is never indexed (task 08). The decision is made on the device
@@ -516,11 +532,15 @@ type RetrieveRequest struct {
 	Justification  string
 }
 
-// RetrieveResult is a scheduled retrieval: the caller gets a grant id and an expiry, not content.
+// RetrieveResult is a scheduled retrieval: the caller gets a grant id, an expiry and a single-use
+// retrieval URL, not content.
 type RetrieveResult struct {
 	State     string
 	GrantID   string
 	ExpiresAt time.Time
+	// RetrievalURL is where the granted content is served (docs/02 §11 "Serving"). It is the only
+	// thing the caller relays to the browser: query-api hands over the URL and never sees content.
+	RetrievalURL string
 	// RawDigest is the digest of the exact bytes the retrieval will return, so the analyst can
 	// verify what they were granted (docs/02 §11).
 	RawDigest string
@@ -617,7 +637,69 @@ func (s *Service) Retrieve(ctx context.Context, req RetrieveRequest) (RetrieveRe
 	}); err != nil {
 		return RetrieveResult{}, Denialf(DenyAuditUnavailable, "the grant could not be recorded in the audit trail: %v", err)
 	}
-	return RetrieveResult{State: "available", GrantID: grantID, ExpiresAt: grant.ExpiresAt, RawDigest: obj.CiphertextSHA256}, nil
+	return RetrieveResult{
+		State: "available", GrantID: grantID, ExpiresAt: grant.ExpiresAt,
+		RawDigest:    obj.CiphertextSHA256,
+		RetrievalURL: retrievalURLFor(s.opts.RetrievalURLBase, tenant.TenantID, grantID),
+	}, nil
+}
+
+// RetrievalPath is where a minted retrieval URL is served. It names the tenant and the grant, both
+// opaque identifiers; the grant is single-use and short-lived, so the URL is the capability §11
+// describes — the vault's redemption checks the grant and nothing else. The browser redeems it
+// through the analyst web tier, so content never transits query-api.
+const RetrievalPath = "/v1/content/retrieval/"
+
+// retrievalURLFor mints the URL for one grant. An empty base yields a path the caller resolves
+// against its own origin, which is how the lab's dashboard reaches the vault by service name.
+func retrievalURLFor(base, tenantID, grantID string) string {
+	path := RetrievalPath + tenantID + "/" + grantID
+	if strings.TrimSpace(base) == "" {
+		return path
+	}
+	return strings.TrimRight(base, "/") + path
+}
+
+// RedeemURL redeems a minted retrieval URL.
+//
+// The URL is the credential: it names the tenant and the grant, both opaque, and the grant is
+// single-use and short-lived. This is the one read path that authenticates by capability rather
+// than by a caller identity header, which is why the vault's ingress must not be published and why
+// the URL is bound to a grant rather than to a caller. Everything after that is the same matrix
+// Redeem applies: expiry, single use, retention, erasure, key availability, and audit before the
+// bytes leave.
+func (s *Service) RedeemURL(ctx context.Context, tenantID, grantID string) (RedeemResult, error) {
+	now := s.opts.Now().UTC()
+	tenant, err := s.loadTenant(ctx, tenantID)
+	if err != nil {
+		return RedeemResult{}, err
+	}
+	if err := s.checkTenantReadable(tenant); err != nil {
+		return RedeemResult{}, err
+	}
+	grant, err := s.opts.Store.RetrievalGrant(ctx, tenant.TenantID, grantID)
+	if err != nil {
+		if errors.Is(err, store.ErrGrantNotFound) {
+			return RedeemResult{}, Denialf(DenyGrantRequired, "no retrieval grant %s exists for this tenant", grantID)
+		}
+		return RedeemResult{}, err
+	}
+	if !now.Before(grant.ExpiresAt) {
+		return RedeemResult{}, Denialf(DenyGrantExpired, "the grant expired at %s", grant.ExpiresAt.Format(time.RFC3339))
+	}
+	if grant.Used() {
+		return RedeemResult{}, Denialf(DenyGrantAlreadyUsed, "the grant was redeemed at %s by %s", grant.UsedAt.Format(time.RFC3339), grant.UsedBy)
+	}
+	// The claim is the single-use mechanism, identical to Redeem's: a conditional write of
+	// `used_at IS NULL`, so two concurrent redemptions of one URL cannot both succeed.
+	claimed, err := s.opts.Store.ClaimRetrievalGrant(ctx, tenant.TenantID, grantID, grant.Principal, now)
+	if err != nil {
+		if errors.Is(err, store.ErrGrantAlreadyUsed) {
+			return RedeemResult{}, Denialf(DenyGrantAlreadyUsed, "the grant was consumed by a concurrent request")
+		}
+		return RedeemResult{}, err
+	}
+	return s.finishRedemption(ctx, tenant, claimed, claimed.Principal, now)
 }
 
 // RedeemRequest redeems a retrieval grant: this is the call that gets the content.
@@ -628,12 +710,11 @@ type RedeemRequest struct {
 	EventID   string
 }
 
-// RedeemResult carries the content. In this offline build the vault is the only component that can
-// produce the plaintext (there is no blob store and no SAS URL to mint), so it returns the bytes;
-// in a deployment the same authorisation would return a short-lived storage URL and the bytes
-// would come from blob storage without passing through the vault's response (docs/02 §11). The
-// authorisation decision — the part the grant matrix tests — is identical either way, and README.md
-// states which half is NOT VERIFIED.
+// RedeemResult carries the content the vault opened. Only the vault holds the key, so it is the
+// component that serves the plaintext; the caller reaches it through the single-use retrieval URL
+// `Retrieve` mints (docs/02 §11), and the bytes are read from blob storage with the vault's own
+// storage credential. The authorisation decision — the part the grant matrix tests — is unchanged
+// from the earlier offline build; what changed is that its result is a URL rather than a relay.
 type RedeemResult struct {
 	State            string
 	Reason           UnavailableReason
@@ -694,6 +775,13 @@ func (s *Service) Redeem(ctx context.Context, req RedeemRequest) (RedeemResult, 
 		return RedeemResult{}, err
 	}
 
+	return s.finishRedemption(ctx, tenant, claimed, req.Principal, now)
+}
+
+// finishRedemption reads, checks, audits and serves an already-claimed grant. It is the half
+// Redeem and RedeemURL share; they differ only in who the caller is and how the grant was chosen,
+// which is why the single-use claim is written by each of them before this runs.
+func (s *Service) finishRedemption(ctx context.Context, tenant store.Tenant, claimed store.RetrievalGrant, actor string, now time.Time) (RedeemResult, error) {
 	obj, err := s.opts.Store.ContentObject(ctx, tenant.TenantID, claimed.ObjectID)
 	if err != nil {
 		if errors.Is(err, store.ErrObjectNotFound) {
@@ -724,7 +812,7 @@ func (s *Service) Redeem(ctx context.Context, req RedeemRequest) (RedeemResult, 
 	// grant has already been consumed: a consumed grant that served nothing is recoverable, and
 	// content served with no record is not.
 	if err := s.audit(ctx, store.AuditEntry{
-		TenantID: tenant.TenantID, ActorType: "user", ActorID: req.Principal,
+		TenantID: tenant.TenantID, ActorType: "user", ActorID: actor,
 		Action: ActionRetrievalRedeemed, ObjectType: "content_object", ObjectID: obj.ObjectID,
 		CaseReference: claimed.CaseReference,
 		Detail: map[string]any{
@@ -737,14 +825,14 @@ func (s *Service) Redeem(ctx context.Context, req RedeemRequest) (RedeemResult, 
 		return RedeemResult{}, Denialf(DenyAuditUnavailable, "the redemption audit row could not be committed, so no content is served: %v", err)
 	}
 
-	standIn, err := s.serve(ctx, obj, dek)
+	plaintext, err := s.serve(ctx, obj, dek)
 	if err != nil {
 		return RedeemResult{}, err
 	}
 	return RedeemResult{
 		State: "available", GrantID: claimed.GrantID, EventID: claimed.EventID, BlobPath: obj.BlobPath,
 		RawDigest: obj.CiphertextSHA256, CiphertextSHA256: obj.CiphertextSHA256,
-		Plaintext: standIn, GrantExpiresAt: claimed.ExpiresAt,
+		Plaintext: plaintext, GrantExpiresAt: claimed.ExpiresAt,
 	}, nil
 }
 
@@ -756,15 +844,26 @@ func (s *Service) Redeem(ctx context.Context, req RedeemRequest) (RedeemResult, 
 // bytes are checked against the digest the finaliser recorded and then opened with the key this
 // call just unwrapped. Ciphertext is never returned as if it were content: an object that is not
 // the recorded bytes, or does not open, is an error.
-func (s *Service) serve(_ context.Context, obj store.ContentObject, dek []byte) ([]byte, error) {
-	if s.opts.FetchBlob == nil {
+func (s *Service) serve(ctx context.Context, obj store.ContentObject, dek []byte) ([]byte, error) {
+	var sealed []byte
+	switch {
+	case s.opts.Blobs != nil:
+		// The deployment path: the storage read carries the vault's own identity.
+		b, err := s.opts.Blobs.Get(ctx, obj.BlobPath)
+		if err != nil {
+			return nil, fmt.Errorf("vault: reading the stored object: %w", err)
+		}
+		sealed = b
+	case s.opts.FetchBlob != nil:
+		b, err := s.opts.FetchBlob(obj.BlobPath)
+		if err != nil {
+			return nil, fmt.Errorf("vault: reading the stored object: %w", err)
+		}
+		sealed = b
+	default:
 		// No blob store is configured: report the authorisation as granted and the bytes as
 		// unavailable from this component, rather than inventing content.
 		return nil, nil
-	}
-	sealed, err := s.opts.FetchBlob(obj.BlobPath)
-	if err != nil {
-		return nil, fmt.Errorf("vault: reading the stored object: %w", err)
 	}
 	if got := protocol.RawDigest(sealed); got != obj.CiphertextSHA256 {
 		return nil, fmt.Errorf("vault: the stored object is not the bytes that were finalised (digest %s, recorded %s)", got, obj.CiphertextSHA256)

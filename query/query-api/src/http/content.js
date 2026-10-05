@@ -11,9 +11,9 @@
 // What it adds is the one thing only this side knows: WHO is asking. The tenant and the actor come
 // from the session, never from the body, exactly as they do for /v1/query.
 //
-// AS BUILT, and different from docs/02 §11: a redemption returns the content in this response
-// body. The design has the vault mint a short-lived retrieval URL so content never transits
-// query-api; the vault does not mint one yet, so the bytes it returns are relayed.
+// A retrieval relays the vault's short-lived retrieval URL and never the content: the browser
+// fetches that URL from the analyst web tier, so no content byte transits this service (docs/02
+// §11). The URL is a capability; the grant it names is single-use and the vault audits the read.
 
 export const CONTENT_PATHS = Object.freeze({
   SEARCH: '/v1/content-search',
@@ -137,9 +137,9 @@ export function createContentForwarder({ vaultUrl, scope = '', fetchImpl = globa
   }
 
   /**
-   * POST /v1/content/retrieval: docs/02 §11's two steps in one request — the retrieval request
-   * that carries the case reference and the second approver, then the single-use redemption of the
-   * grant it returns.
+   * POST /v1/content/retrieval: the vault authorises one read and mints a single-use retrieval
+   * URL. This service relays the URL and nothing else; the browser redeems it directly through the
+   * analyst web tier, so content never passes through query-api's response body (docs/02 §11).
    *
    * `event_ids` are the observations of the submission the analyst is looking at (the record read
    * already returned them). A submission has one stored object, held against the event the device
@@ -168,22 +168,22 @@ export function createContentForwarder({ vaultUrl, scope = '', fetchImpl = globa
         // Content that is gone is a result, not an error (C17): the vault says why, with a receipt.
         return { status: 200, body: { state: granted.json?.state ?? 'no_longer_available', reason: granted.json?.reason ?? null, receipt_ref: granted.json?.receipt_ref ?? null } };
       }
-      const redeemed = await call('/v1/content/redeem', principal, { grant_id: granted.json.grant_id, event_id: eventId });
-      if (redeemed.status !== 200) return vaultRefusal('redemption', redeemed);
-      if (redeemed.json?.state !== 'available') {
-        return { status: 200, body: { state: redeemed.json?.state ?? 'no_longer_available', reason: redeemed.json?.reason ?? null, receipt_ref: redeemed.json?.receipt_ref ?? null } };
-      }
-      if (typeof redeemed.json.content_b64 !== 'string' || redeemed.json.content_b64 === '') {
-        return refusal(502, 'refused', 'content_not_served', 'the vault authorised the read but served no content');
+      if (typeof granted.json.retrieval_url !== 'string' || granted.json.retrieval_url === '') {
+        // The vault authorised the read but gave the browser nothing to fetch. Relaying an empty
+        // answer would look like content the analyst may not see; say which side failed instead.
+        return refusal(502, 'refused', 'retrieval_url_missing', 'the vault authorised the read but minted no retrieval URL');
       }
       return {
         status: 200,
         body: {
           state: 'available',
           event_id: eventId,
-          grant_id: granted.json.grant_id,
-          raw_digest: redeemed.json.raw_digest ?? granted.json.raw_digest ?? null,
-          content: Buffer.from(redeemed.json.content_b64, 'base64').toString('utf8'),
+          grant_id: granted.json.grant_id ?? null,
+          raw_digest: granted.json.raw_digest ?? null,
+          expires_at: granted.json.expires_at ?? null,
+          // The capability the browser redeems. It is opaque to this service, which must not and
+          // cannot read the content behind it.
+          retrieval_url: granted.json.retrieval_url,
         },
       };
     }

@@ -966,17 +966,20 @@ transport and authorisation level; the dashboard's shapes are in
 [04-dashboard-and-query](04-dashboard-and-query.md). The retrieval endpoint itself is served by
 `content-vault`, on its internal-only ingress.
 
-**As built:** `content-vault` serves `POST /v1/content/retrieval` and `POST /v1/content/redeem`.
-`query-api` forwards the analyst's side of it (`src/http/content.js`): `POST /v1/content/retrieval`
-runs the vault's two steps for one event under the session's principal, and `POST /v1/content-search`
+**As built:** `content-vault` serves `POST /v1/content/retrieval`, which authorises one read and mints
+a single-use retrieval URL, and `GET /v1/content/retrieval/{tenant}/{grant}`, which serves the content
+that URL names. `query-api` forwards the analyst's side of it (`src/http/content.js`):
+`POST /v1/content/retrieval` relays the minted URL and no content byte, and `POST /v1/content-search`
 forwards a prompt-text search. It decides nothing; the four-eyes rule, the single-use grant, the search
-tier and the audit rows are the vault's. The dashboard's Explore page is the surface for both. Three
-things differ from the table below. Redemption does not mint a retrieval URL: when the vault is given a
-ciphertext endpoint it reads the stored object, checks it against the recorded digest, opens it with
-the unwrapped object key and returns the content, which `query-api` relays in its response body.
-Authentication is the development principal header, because the Entra session is not built. And the
-second approver is a name recorded on the request, which the vault requires to differ from the
-requester; no second person approves anything yet.
+tier and the audit rows are the vault's. The dashboard's Explore page is the surface for both, and its
+web tier forwards the minted URL straight to the vault, so content never transits `query-api`. Two
+things differ from the table below. The vault reads the stored ciphertext itself from blob storage,
+presenting a storage credential: a managed-identity access token in a deployment, a shared bearer
+against the lab's stand-in, which refuses a read without one. And authentication of the retrieval
+request is the development principal header, because the Entra session is not built; the URL itself is
+the capability, and the grant it names is single-use and short-lived. The second approver is a name
+recorded on the request when the caller gives one — the vault refuses an approver who is the requester,
+but nothing requires a second person to approve.
 
 | Step | Requirement | Source |
 |---|---|---|

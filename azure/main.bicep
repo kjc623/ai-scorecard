@@ -456,6 +456,10 @@ module contentVaultApp 'modules/container-app.bicep' = {
       { name: 'SAC_PG_HOST', value: postgres.outputs.serverFqdn }
       { name: 'SAC_PG_DATABASE', value: postgresDatabases[0] }
       { name: 'SAC_BLOB_CIPHERTEXT_ENDPOINT', value: ciphertext.outputs.blobEndpoint }
+      // The vault reads ciphertext as itself: an AAD access token from the instance metadata service
+      // for its user-assigned identity, never a storage key (docs/06 §5.4). The identity still needs
+      // Storage Blob Data Reader on the ciphertext account; that assignment is not in this file yet.
+      { name: 'SAC_BLOB_IDENTITY', value: 'managed' }
       { name: 'SAC_KEYVAULT_URI', value: keyVault.outputs.vaultUri }
       { name: 'SAC_INTERNAL_ONLY', value: 'true' }
       { name: 'SAC_APPINSIGHTS', value: logAnalytics.outputs.appInsightsConnectionString }
