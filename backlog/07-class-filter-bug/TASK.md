@@ -31,5 +31,13 @@ say why in a way the page can show.
 
 ## Done when
 
-The class filter returns the matching events on live lab data, alone and combined with another
-filter, and a test pins the compiled predicate. The report gives the root cause in one paragraph.
+The agent verifies, on the device-auth lab, with each page observed in the browser:
+
+- `explore.html?transport=live#events?class=payment_card` lists the matching events from the lab's
+  existing data.
+- The class filter combined with another filter (`#events?class=payment_card&action=logged`)
+  returns the events matching both.
+- A test pins the compiled predicate.
+- The report gives the root cause in one paragraph.
+
+The owner verifies: nothing. No clause needs the real device.

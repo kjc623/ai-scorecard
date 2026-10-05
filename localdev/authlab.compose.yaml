@@ -226,6 +226,21 @@ services:
     ports:
       - "127.0.0.1:${LAB_DASHBOARD_PORT:-8787}:8787"
 
+  # dashboard-sample — the same pages over the same query-api, for the sample tenant that
+  # localdev/tools/simulate-devices.mjs writes to by default: http://127.0.0.1:8788. Simulated
+  # devices belong there and not in the tenant above, which holds what a real enrolled device sent;
+  # a fleet of invented devices beside one real one makes every count on the real page untrue.
+  dashboard-sample:
+    image: sac/dashboard:lab
+    depends_on:
+      - query-api
+    environment:
+      SAC_QUERY_API_URL: http://query-api:8080
+      SAC_DEV_TENANT: 5a3c0de0-7e57-4a11-9000-0000000d3a01
+      SAC_DEV_ACTOR: ${LAB_ANALYST:-analyst@lab.test}
+    ports:
+      - "127.0.0.1:${LAB_DASHBOARD_SAMPLE_PORT:-8788}:8787"
+
   # ingest-api — the write path. It re-verifies every credential against ops.* and the same CA the
   # edge forwards from, so a certificate the dev CA did not sign is refused here and not trusted by
   # the edge. The deployment vocabulary (SAC_AUTH_MODES, SAC_TLS_CLIENT_CERT_HEADER, SAC_DPOP_*) is

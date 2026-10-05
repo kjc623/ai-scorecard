@@ -35,9 +35,20 @@ lab, provide a file-based source so it runs offline.
 ## Raise, do not decide
 
 Whether the dashboard may show a display name for a user or must stay pseudonymous. Today it is
-pseudonymous by design. Write the question and the consequences of each answer into `DECISIONS.md`.
+pseudonymous by design. Put the question and the consequences of each answer to the owner, and
+build neither answer until it is given.
 
 ## Done when
 
-With the lab file source loaded, Teams shows usage by department with the unmapped series, and the
-Department filter in Search returns rows. Tests cover sync, retirement and the unmapped count.
+The agent verifies, on the device-auth lab, with each page observed in the browser:
+
+- With a lab file source for the sample tenant's simulated people loaded, that tenant's Teams page
+  shows usage by department with the unmapped series, and a department of fewer than five people
+  stays suppressed.
+- The Department filter in Search returns rows there.
+- Tests cover sync, retirement and the unmapped count.
+
+The owner verifies:
+
+- Nothing on the device. The sync against a real Entra ID tenant through Microsoft Graph needs a
+  tenant the harness does not have; say in the report what it needs to be pointed at one.

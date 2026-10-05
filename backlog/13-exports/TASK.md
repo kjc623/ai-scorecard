@@ -39,6 +39,17 @@ deleting them.
 
 ## Done when
 
-An events export downloads as CSV from the Search page and appears in the audit trail. A subject
-export for `lab-user` produces an archive containing that user's events and stored prompts. Tests
-cover size bounds, link expiry and role checks.
+The agent verifies, on the device-auth lab:
+
+- The Search page, observed in the browser, offers the export, and starting it there produces a
+  download link. The CSV fetched from that link holds the filtered events and no prompt content.
+- The export appears in the audit trail with the filters used.
+- A subject export for `lab-user`, in the owner's tenant, produces an archive containing that
+  user's events and stored prompts. An export reads; it changes nothing there.
+- If erasure is built, it is exercised on a simulated person in the sample tenant, and never on
+  `lab-user`.
+- Tests cover size bounds, link expiry and role checks.
+
+The owner verifies:
+
+- Clicking the export in a desktop browser saves the file.

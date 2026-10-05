@@ -29,6 +29,17 @@ empty, because `ops.tool` has no rows and nothing maps a fingerprint to a tool.
 
 ## Done when
 
-The lab's Claude Code traffic shows as "Claude Code" on Tools, in Search rows and in search results.
-Marking it unsanctioned through the API makes it appear in the Unsanctioned view with the people
-using it, subject to k-suppression. Tests cover resolution, the unknown case and the sanction write.
+The agent verifies, on the device-auth lab, with each page observed in the browser:
+
+- In the owner's tenant, the Claude Code traffic the lab device has already sent shows as "Claude
+  Code" on Tools, in Search rows and in search results.
+- A fingerprint the catalogue does not know shows as "Unrecognised tool", with the raw fingerprint
+  available.
+- In the sample tenant, marking a tool unsanctioned through the API makes it appear in the
+  Unsanctioned view with the people using it, and a tool used by fewer than five people stays
+  suppressed. Do not set a sanction decision in the owner's tenant.
+- Tests cover resolution, the unknown case and the sanction write.
+
+The owner verifies:
+
+- New Claude Code traffic from the Windows device resolves to the same name.

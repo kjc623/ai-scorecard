@@ -248,7 +248,12 @@ node --test test/              # 100 tests, offline
 node tools/build-index.mjs     # regenerate index.html
 node tools/probe.mjs           # render every screen through the built page
 node tools/serve.mjs           # serve module.html over http
+node tools/observe.mjs 'index.html?transport=live#devices'   # open one address in a headless browser
 ```
+
+`tools/observe.mjs` is the only one of these that runs a browser. It saves a screenshot, the text
+on the page and the rendered DOM under `.integration/observe/`, and its header says how to wait for
+text, click, and fail on text that should be absent.
 
 From the repository root, `node tools/verify-all.mjs` includes this package.
 

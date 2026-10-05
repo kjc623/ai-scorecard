@@ -31,7 +31,7 @@ the Search page can read any stored prompt.
 ## Raise before building
 
 The owner's starting proposal for roles is below. It is not the design's list. Reconcile it with
-`docs/06`, write the result into `DECISIONS.md`, and stop for confirmation.
+`docs/06`, put the result to the owner, and stop for confirmation.
 
 - viewer: aggregates only, no per-person data
 - analyst: events, findings, people
@@ -42,6 +42,15 @@ Session storage must not add a third-party dependency without saying so.
 
 ## Done when
 
-An unauthenticated request to the dashboard or to `/v1/query` is refused; a viewer cannot open
-Search or read content; a content reader can; and the audit trail shows each user's own identity.
-The lab runs with a local OIDC stand-in. Tests cover each role boundary on the server.
+The agent verifies, on the device-auth lab running a local OIDC stand-in:
+
+- An unauthenticated request to the dashboard or to `/v1/query` is refused.
+- Signed in as a viewer, Search cannot be opened and content cannot be read; signed in as a content
+  reader, both work. Each is observed in the browser, which means `tools/observe.mjs` has to be
+  able to carry a session; add that.
+- The audit trail shows each user's own identity.
+- Tests cover each role boundary on the server.
+
+The owner verifies:
+
+- Sign-in against a real Microsoft Entra ID tenant. Say in the report what configuration it needs.
