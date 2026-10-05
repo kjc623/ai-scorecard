@@ -74,6 +74,7 @@ export function createExplorer({ api, content = null, now = () => new Date(), on
     dataset: first.id,
     windowPreset: first.defaultWindow,
     filters: Object.freeze({}),
+    includeClientGenerated: false,
     queryText: '',
     problems: Object.freeze([]),
     status: 'idle',
@@ -135,6 +136,7 @@ export function createExplorer({ api, content = null, now = () => new Date(), on
       dataset,
       filters: state.filters,
       window: state.windowPreset ? windowFor(state.windowPreset, now()) : null,
+      includeClientGenerated: state.includeClientGenerated,
     });
     set({ status: 'loading', rows: Object.freeze([]), result: null, loadingMore: false, moreProblem: null, detail: DETAIL_CLOSED });
     const result = await ask(() => buildExploreRequest(query));
@@ -222,6 +224,14 @@ export function createExplorer({ api, content = null, now = () => new Date(), on
     const next = exploreWindowPreset(dataset, preset);
     if (next === state.windowPreset) return Promise.resolve(state);
     set({ windowPreset: next });
+    return run();
+  }
+
+  /** Show or hide the requests a client made for itself. Off is the default and hides them. */
+  function setIncludeClientGenerated(value) {
+    const next = Boolean(value);
+    if (next === state.includeClientGenerated) return Promise.resolve(state);
+    set({ includeClientGenerated: next });
     return run();
   }
 
@@ -355,6 +365,7 @@ export function createExplorer({ api, content = null, now = () => new Date(), on
       dataset: decoded.dataset.id,
       windowPreset: decoded.windowPreset,
       filters: decoded.filters,
+      includeClientGenerated: decoded.includeClientGenerated,
       queryText: formatExploreQuery(decoded.filters, decoded.dataset),
       problems: decoded.problems,
     });
@@ -370,12 +381,13 @@ export function createExplorer({ api, content = null, now = () => new Date(), on
       windowPreset: state.windowPreset,
       filters: state.filters,
       open: state.detail.key,
+      includeClientGenerated: state.includeClientGenerated,
     });
   }
 
   return Object.freeze({
     get state() { return state; },
-    run, loadMore, setQuery, setFilter, clearFilters, setDataset, setWindow, open, close, restore, hash,
+    run, loadMore, setQuery, setFilter, clearFilters, setDataset, setWindow, setIncludeClientGenerated, open, close, restore, hash,
     searchText, clearText, openHit, retrieveContent, hideContent,
   });
 }
@@ -491,6 +503,7 @@ export async function bootExplore({ document, api: given, content: givenContent 
     const { act } = target.dataset;
     if (act === 'dataset') explorer.setDataset(target.dataset.dataset);
     else if (act === 'window') explorer.setWindow(target.dataset.window);
+    else if (act === 'include') explorer.setIncludeClientGenerated(target.getAttribute('aria-pressed') !== 'true');
     else if (act === 'toggle') {
       const on = target.getAttribute('aria-pressed') === 'true';
       explorer.setFilter(target.dataset.field, on ? '' : target.dataset.value);

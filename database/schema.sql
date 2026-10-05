@@ -811,6 +811,10 @@ CREATE TABLE ops.content_object (
   kek_id                text NOT NULL,
   kek_version           text NOT NULL,
   retention_class       text NOT NULL REFERENCES ref.retention_class(retention_class),
+  -- The device's request kind (task 08), carried onto the object so a reindex can honour it
+  -- without a grant on ingest.submission. NULL when the device did not decide, which reads as
+  -- 'unknown'. A 'client_generated' object has no prompt text to find and is never indexed.
+  prompt_kind           text CHECK (prompt_kind IN ('user','client_generated','unknown')),
   state                 text NOT NULL CHECK (state IN ('uploaded','shredded')),
   shredded_reason       text CHECK (shredded_reason IN ('retention_expired','erasure','hold_released','tenant_offboarded')),
   created_at            timestamptz NOT NULL DEFAULT now(),
@@ -823,6 +827,9 @@ CREATE TABLE ops.content_object (
 
 COMMENT ON COLUMN ops.content_object.wrapped_dek IS
   'The per-object data key, wrapped by the tenant key. Destroying the content means deleting this row and the blob; destroying the tenant key destroys every object of that tenant at once. That is the mechanism behind brief C15.';
+
+COMMENT ON COLUMN ops.content_object.prompt_kind IS
+  'The device''s request kind for the submission this object holds (task 08): user | client_generated | unknown. It lives here, on the vault''s own table, so a reindex honours the kind without the vault needing a grant on ingest.submission. A client_generated object is stored and retrievable but never written to ingest.search_text.';
 
 -- Review workflow for findings. Separate from mart.finding on purpose: mart is derived and
 -- rebuildable, so workflow state stored there would be destroyed by a rebuild.
@@ -1014,6 +1021,12 @@ CREATE TABLE ingest.observation (
   tool_fingerprint  text NOT NULL,
   direction         text NOT NULL CHECK (direction IN ('egress','ingress','none')),
   kind              text NOT NULL CHECK (kind IN ('prompt','usage_rollup','model_detection')),
+  -- The device's decision about what kind of prompt this is (task 08): text a person typed
+  -- ('user'), a request the client made for itself ('client_generated'), or a device that could
+  -- not decide ('unknown'). It is request-shape metadata, not content-derived, so it is present
+  -- on a prompt at M1 and above; M0 read no body to decide from and the field is NULL there, and
+  -- it is NULL for the rollup and detection kinds. NULL is read as 'unknown' downstream.
+  prompt_kind       text CHECK (prompt_kind IN ('user','client_generated','unknown')),
   occurred_at       timestamptz NOT NULL,
   received_at       timestamptz NOT NULL,
   monotonic_offset_ms bigint NOT NULL CHECK (monotonic_offset_ms >= 0),
@@ -1056,10 +1069,14 @@ CREATE TABLE ingest.observation (
   -- envelope-level, and their store-side home is ingest.search_text, written by content-vault and
   -- keyed by submission. A CHECK on this table cannot see another table, so that field is
   -- enforced on the write path instead, and the checker is told to expect its absence here.
+  -- M0's closed list is device, user, tool, timestamp, size and destination, so the request kind
+  -- is not on it: a metadata-only device read no body from which to decide one. It is therefore
+  -- in the M0 forbid-list, and db/tools/check-schema.mjs keeps that list equal to the contract's
+  -- prompt:m0 branch.
   CONSTRAINT observation_m0_carries_no_content
     CHECK (collection_mode <> 'm0' OR (
       content_digest IS NULL AND labels IS NULL AND classifier_version IS NULL
-      AND confidence IS NULL AND content_excerpt IS NULL)),
+      AND confidence IS NULL AND content_excerpt IS NULL AND prompt_kind IS NULL)),
   CONSTRAINT observation_m1_plus_carries_labels
     CHECK (kind <> 'prompt' OR collection_mode = 'm0' OR (
       content_digest IS NOT NULL AND labels IS NOT NULL AND classifier_version IS NOT NULL
@@ -1095,14 +1112,14 @@ CREATE TABLE ingest.observation (
       AND submission_count IS NOT NULL AND bytes_total IS NOT NULL
       AND content_digest IS NULL AND labels IS NULL AND classifier_version IS NULL
       AND content_excerpt IS NULL AND policy_decision IS NULL AND size_bytes IS NULL
-      AND detection_basis IS NULL)),
+      AND detection_basis IS NULL AND prompt_kind IS NULL)),
   CONSTRAINT observation_detection_shape
     CHECK (kind <> 'model_detection' OR (
       direction = 'none' AND detection_basis IS NOT NULL
       AND content_digest IS NULL AND labels IS NULL AND classifier_version IS NULL
       AND content_excerpt IS NULL AND policy_decision IS NULL AND size_bytes IS NULL
       AND window_start IS NULL AND window_end IS NULL AND submission_count IS NULL
-      AND bytes_total IS NULL))
+      AND bytes_total IS NULL AND prompt_kind IS NULL))
 );
 
 COMMENT ON TABLE ingest.observation IS
@@ -1110,6 +1127,9 @@ COMMENT ON TABLE ingest.observation IS
 
 COMMENT ON COLUMN ingest.observation.expires_at IS
   'Computed at write time from ops.retention_policy, matched on the highest-severity class present in `labels` and falling back to the mode default. Materialised rather than computed at read time so that a later policy change does not silently retro-apply to data that was collected under a different promise.';
+
+COMMENT ON COLUMN ingest.observation.prompt_kind IS
+  'The device''s request kind (task 08): ''user'' for text a person authored, ''client_generated'' for a request the client made for itself (titling, summarisation, telemetry, an injected message), ''unknown'' when the device could not decide. Decided on the device from request shape, never from meaning; defaults to ''user'' when unsure so nothing a person typed is hidden. Present only for kind=prompt at M1 and above: M0 read no body and the field is not in its closed list. NULL reads as ''unknown''.';
 
 -- A server-derived weak dedup key, used when a route could not compute a canonical content
 -- digest. It is derived on the server rather than trusted from the device so that two
@@ -1165,6 +1185,11 @@ CREATE TABLE ingest.submission (
   -- here is cheaper than paying for it on every rollup. A submission is one kind: two
   -- observations of one submission observed the same thing.
   kind               text NOT NULL CHECK (kind IN ('prompt','usage_rollup','model_detection')),
+  -- The winning observation's request kind (task 08): 'user', 'client_generated' or 'unknown'.
+  -- NULL for the rollup and detection kinds and for a prompt folded from an M0 or pre-task-08
+  -- observation, which the read layer treats as 'unknown'. A client_generated submission is never
+  -- indexed for prompt-text search, so the kind gates the content index as well as the list filter.
+  prompt_kind        text CHECK (prompt_kind IS NULL OR (prompt_kind IN ('user','client_generated','unknown') AND kind = 'prompt')),
   device_id          uuid NOT NULL,
   user_ref           text NOT NULL,
   -- The clear account name at submission time; see ingest.observation.subject_name. A submission
@@ -1225,6 +1250,9 @@ COMMENT ON COLUMN ingest.submission.merge_confidence IS
 
 COMMENT ON COLUMN ingest.submission.expires_at IS
   'The row-level half of brief C34''s two independent expiry mechanisms. The other is the blob lifecycle rule for content objects, and the reconciler compares them.';
+
+COMMENT ON COLUMN ingest.submission.prompt_kind IS
+  'The winning observation''s request kind (task 08), carried on the submission so the event list can filter without a semi-join on ingest.observation. NULL for the rollup and detection kinds and for a prompt folded from an M0 or pre-task-08 observation; the read layer treats NULL as ''unknown''. content-vault does not build a search index for a ''client_generated'' submission, and Search hides them by default.';
 
 -- Quarantine for rejected envelopes. Brief §4.3 requires per-reason rejection detail "so an
 -- agent defect is diagnosable from the server side without access to the device" -- but the
@@ -1926,7 +1954,7 @@ BEGIN
     occurred_at, received_at, monotonic_offset_ms, source, confidence, collection_mode,
     size_bytes, content_digest, labels, classifier_version, content_excerpt, policy_decision,
     window_start, window_end, submission_count, bytes_total, detection_basis,
-    dedup_key, schema_version, expires_at
+    prompt_kind, dedup_key, schema_version, expires_at
   )
   VALUES (
     v_tenant,
@@ -1954,6 +1982,7 @@ BEGIN
     (p_envelope->>'submission_count')::bigint,
     (p_envelope->>'bytes_total')::bigint,
     p_envelope->>'detection_basis',
+    nullif(p_envelope->>'prompt_kind', ''),
     p_envelope->>'dedup_key',
     p_envelope->>'schema_version',
     p_received_at + make_interval(days => v_ttl)
@@ -2052,6 +2081,12 @@ BEGIN
            winning_source     = CASE WHEN v_fidelity < s.winning_fidelity THEN v_source ELSE s.winning_source END,
            winning_fidelity   = least(s.winning_fidelity, v_fidelity),
            collection_mode    = CASE WHEN v_fidelity < s.winning_fidelity THEN v_mode ELSE s.collection_mode END,
+           -- The request kind travels with the winning observation like collection_mode, except
+           -- that an observation which did not decide one does not erase a kind an earlier route
+           -- did supply: coalesce keeps the first known value.
+           prompt_kind        = CASE WHEN v_fidelity < s.winning_fidelity
+                                     THEN nullif(p_envelope->>'prompt_kind', '')
+                                     ELSE coalesce(s.prompt_kind, nullif(p_envelope->>'prompt_kind', '')) END,
            size_bytes         = CASE WHEN v_fidelity < s.winning_fidelity THEN (p_envelope->>'size_bytes')::bigint ELSE s.size_bytes END,
            -- Same coalesce discipline as dedup_key above: adopt the digest with the key, so the
            -- pair can never diverge. The strictly-better branch is unchanged.
@@ -2087,7 +2122,7 @@ BEGIN
   END IF;
 
   INSERT INTO ingest.submission (
-    tenant_id, submission_id, dedup_key, dedup_weak_key, kind, device_id, user_ref, subject_name,
+    tenant_id, submission_id, dedup_key, dedup_weak_key, kind, prompt_kind, device_id, user_ref, subject_name,
     tool_fingerprint, first_occurred_at, last_occurred_at, received_at, collection_mode, size_bytes,
     content_digest, labels, classifier_version, confidence, policy_action, policy_rule_id,
     decided_locally, winning_source, winning_fidelity, observed_routes, observation_count,
@@ -2099,6 +2134,7 @@ BEGIN
     CASE WHEN v_is_exact THEN v_exact END,
     v_weak,
     v_kind,
+    nullif(p_envelope->>'prompt_kind', ''),
     (p_envelope->>'device_id')::uuid,
     p_envelope->>'user_ref',
     v_subject_name,

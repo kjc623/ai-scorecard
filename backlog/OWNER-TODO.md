@@ -26,6 +26,15 @@ Each line names the task that left it. The exact commands are in that task's `RE
 - [ ] **Apply 06's directory migration to any database other than the lab's**, after 05's:
   `psql "$DSN" -v ON_ERROR_STOP=1 -f backlog/06-directory-sync/MIGRATION.sql`. It adds
   `ops.user_dim.display_name`; the lab's database already has it. (06)
+- [ ] **Apply 08's request-kind migration to any database other than the lab's**, after 06's:
+  `psql "$DSN" -v ON_ERROR_STOP=1 -f backlog/08-client-generated-requests/MIGRATION.sql`. It adds
+  `prompt_kind` to `ingest.observation`, `ingest.submission` and `ops.content_object`, extends the
+  three observation constraints, and replaces `ingest.record_event`. The lab's database already
+  has it. (08)
+- [ ] **Rebuild and reinstall the lab MSI for task 08**, on the Windows host, with the lab up:
+  `node localdev/build.mjs --auth` (the lab services changed), then `node installer/lab-msi.mjs`,
+  then `msiexec /i installer\dist\ShadowAICapture.msi`. The harness cannot build the MSI (the
+  script refuses off Windows); task 08's report has the command. (08)
 - [ ] **Point the directory sync at a real Microsoft Entra ID tenant.** The harness has no Entra
   tenant, so the Graph provider is the one path not exercised here. Register an application, grant
   it `User.Read.All` (application permission), and run
@@ -56,6 +65,13 @@ On the owner's dashboard, `http://127.0.0.1:8787`, with the real device.
   with its raw fingerprint. Task 05 observed all four existing `tls_*` fingerprints resolving this
   way (three to Claude Code, one unrecognised); the new traffic proves the derivation is unchanged.
   (05)
+- [ ] After the task 08 reinstall, from a **new** Claude Code session: a new "What is the capital of
+  Australia" prompt appears in Search with no `source_code` label, and a prompt containing a test
+  card number is still labelled `payment_card`. Task 08 already proves the decision on the
+  captured bodies in the endpoint's tests and the downstream in the sample tenant. A titling
+  request indexed *before* the fix stays searchable (its content object predates the kind), so
+  search for "Australia" can still return that older hit until retention removes it; the point to
+  check is that the new session's titling request does not appear. (08)
 
 ## Answer
 

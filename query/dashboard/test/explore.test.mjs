@@ -128,6 +128,21 @@ test('the devices read carries no window, and the others carry the one that was 
   assert.deepEqual(events.params.window, window);
 });
 
+test('the default events request hides client-generated requests, and the toggle drops the predicate', () => {
+  const window = { from: '2026-09-24T12:00:00.000Z', to: '2026-10-01T12:00:00.000Z' };
+  const hidden = buildExploreRequest({ dataset: EXPLORE_DATASETS.events, filters: {}, window });
+  assert.equal(hidden.params.prompt_kind_not, 'client_generated', 'hidden by default');
+  const shown = buildExploreRequest({ dataset: EXPLORE_DATASETS.events, filters: {}, window, includeClientGenerated: true });
+  assert.ok(!('prompt_kind_not' in shown.params), 'the toggle removes the predicate');
+  // A person's own prompt_kind choice governs, so the default-hide never contradicts it.
+  const named = buildExploreRequest({ dataset: EXPLORE_DATASETS.events, filters: { prompt_kind: 'client_generated' }, window });
+  assert.ok(!('prompt_kind_not' in named.params));
+  assert.equal(named.params.prompt_kind, 'client_generated');
+  // Other datasets are untouched.
+  const findings = buildExploreRequest({ dataset: EXPLORE_DATASETS.findings, filters: {}, window });
+  assert.ok(!('prompt_kind_not' in findings.params));
+});
+
 // ── the sample transport behaves like the API ────────────────────────────────────────────────
 
 test('the sample transport applies every filter and the window', async () => {
@@ -153,6 +168,14 @@ test('a narrower window returns no more rows than a wider one', async () => {
   assert.ok(day <= week && week > 0);
   const sample = buildExploreSample(NOW);
   assert.ok(sample.events.length > 100 && sample.findings.length > 10);
+});
+
+test('the sample transport honours prompt_kind and prompt_kind_not', async () => {
+  const { explorer } = explorerFor();
+  await explorer.restore('#events?window=d30&prompt_kind=client_generated');
+  assert.equal(explorer.state.rows.length, 0, 'no sample event is client_generated');
+  await explorer.restore('#events?window=d30&prompt_kind=unknown');
+  assert.ok(explorer.state.rows.length > 0, 'sample events read as unknown');
 });
 
 // ── paging ───────────────────────────────────────────────────────────────────────────────────
@@ -350,6 +373,33 @@ test('§14.15 a link carrying a filter this page does not know is refused, not b
   assert.equal(sent.length, 0);
   assert.equal(explorer.state.status, 'blocked');
   assert.equal(explorer.state.problems[0].code, 'unknown_field');
+});
+
+test('the include toggle round-trips in the address without being read as a filter', async () => {
+  const { explorer } = explorerFor();
+  await explorer.restore('#events?window=d30');
+  assert.equal(explorer.hash(), '#events?window=d30');
+  await explorer.setIncludeClientGenerated(true);
+  assert.equal(explorer.hash(), '#events?window=d30&include=1');
+  const decoded = decodeExploreHash(explorer.hash());
+  assert.equal(decoded.includeClientGenerated, true);
+  assert.deepEqual(decoded.problems, [], 'include is reserved page state, not an unknown filter');
+  await explorer.setIncludeClientGenerated(false);
+  assert.equal(explorer.hash(), '#events?window=d30');
+});
+
+test('the rail renders the include toggle for events, with the pressed state it is in', async () => {
+  const { explorer } = explorerFor();
+  await explorer.restore('#events?window=d30');
+  let html = renderExploreRail(explorer.state);
+  assert.match(html, /data-act="include"/);
+  assert.match(html, /Include client-generated requests/);
+  assert.match(html, /aria-pressed="false"/);
+  await explorer.setIncludeClientGenerated(true);
+  html = renderExploreRail(explorer.state);
+  assert.match(html, /aria-pressed="true"/);
+  await explorer.setDataset('findings');
+  assert.ok(!renderExploreRail(explorer.state).includes('data-act="include"'), 'only events offers the toggle');
 });
 
 test('switching dataset carries the filters both have and drops the rest by name', async () => {

@@ -197,6 +197,12 @@
 
         "source": { "$ref": "#/$defs/route" },
 
+        "prompt_kind": {
+          "type": "string",
+          "enum": ["user", "client_generated", "unknown"],
+          "description": "What kind of prompt this is, decided on the device from the request shape, not from its meaning (task 08). 'user' is text a person authored; 'client_generated' is a request the client made for itself (titling, summarisation, telemetry, an injected system message) which quotes or carries no typed turn; 'unknown' is a record whose device could not decide, and a record from a device that predates this field reads back as 'unknown'. The device defaults to 'user' when unsure so nothing a person typed is hidden. Present only for kind=prompt at M1 and above: a metadata-only M0 record read no body to decide from, and the field is not part of M0's closed list."
+        },
+
         "confidence": {
           "type": "string",
           "enum": ["high", "medium", "low", "degraded"],
@@ -306,7 +312,8 @@
                 { "required": ["policy_decision"] },
                 { "required": ["size_bytes"] },
                 { "required": ["attachments"] },
-                { "required": ["detection_basis"] }
+                { "required": ["detection_basis"] },
+                { "required": ["prompt_kind"] }
               ]
             }
           }
@@ -333,7 +340,8 @@
                 { "required": ["window_start"] },
                 { "required": ["window_end"] },
                 { "required": ["submission_count"] },
-                { "required": ["bytes_total"] }
+                { "required": ["bytes_total"] },
+                { "required": ["prompt_kind"] }
               ]
             }
           }
@@ -376,7 +384,8 @@
                 { "required": ["classifier_version"] },
                 { "required": ["confidence"] },
                 { "required": ["content_excerpt"] },
-                { "required": ["attachments"] }
+                { "required": ["attachments"] },
+                { "required": ["prompt_kind"] }
               ]
             }
           }

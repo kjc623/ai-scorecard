@@ -203,6 +203,7 @@ const ACTION_CARD = { cardinality: 3, cardinalitySource: 'db/schema.sql CHECK po
 const MODE_CARD = { cardinality: 4, cardinalitySource: 'db/schema.sql CHECK collection_mode IN (m0,m1,m2,m3)' };
 const CONTENT_STATE_CARD = { cardinality: 4, cardinalitySource: 'db/schema.sql CHECK content_state IN (not_captured,local_only,uploaded,shredded)' };
 const KIND_CARD = { cardinality: 3, cardinalitySource: 'db/schema.sql CHECK kind IN (prompt,usage_rollup,model_detection)' };
+const PROMPT_KIND_CARD = { cardinality: 3, cardinalitySource: 'db/schema.sql CHECK prompt_kind IN (user,client_generated,unknown)' };
 const REVIEW_CARD = { cardinality: 3, cardinalitySource: 'db/schema.sql CHECK review_state IN (open,disputed,confirmed)' };
 const ROUTE_CARD = { cardinality: 7, cardinalitySource: 'db/schema.sql seeds 7 ref.route_fidelity rows' };
 const COLLECTOR_CARD = { cardinality: 6, cardinalitySource: 'db/schema.sql seeds 6 ref.collector rows; docs/04 §3.7 "5,000 × 6 collectors"' };
@@ -762,6 +763,14 @@ export const SOURCES = Object.freeze({
         ...KIND_CARD,
         values: ['prompt', 'usage_rollup', 'model_detection'],
       }),
+      // The request kind (task 08). NULL means the device did not decide, so the dimension is
+      // compiled through coalesce(..., 'unknown'): a NULL row filters as `unknown`, and the `ne`
+      // operator (the dashboard's default-hide of client_generated) does not drop it. The raw
+      // column still travels in listSelect so a NULL row renders as `unknown` on the client.
+      prompt_kind: dim('prompt_kind', "coalesce(s.prompt_kind, 'unknown')", 'text', {
+        ...PROMPT_KIND_CARD,
+        values: ['user', 'client_generated', 'unknown'],
+      }),
       merge_confidence: dim('merge_confidence', 's.merge_confidence', 'text', {
         ...MERGE_CONF_CARD,
         values: ['high', 'low'],
@@ -853,6 +862,7 @@ export const SOURCES = Object.freeze({
       's.shredded_reason AS shredded_reason',
       's.winning_source AS "route"',
       's.kind AS "detection_basis"',
+      's.prompt_kind AS "prompt_kind"',
       's.merge_confidence AS "merge_confidence"',
       's.confidence AS "confidence"',
       's.observation_count AS observation_count',

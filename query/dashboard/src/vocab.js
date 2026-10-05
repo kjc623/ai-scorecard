@@ -138,7 +138,7 @@ export const SOURCES = Object.freeze({
     kind: 'list',
     label: 'Events',
     dimensions: Object.freeze([
-      'subject', 'tool', 'device', 'mode', 'action', 'content_state', 'route',
+      'subject', 'tool', 'device', 'mode', 'prompt_kind', 'action', 'content_state', 'route',
       'detection_basis', 'merge_confidence', 'confidence', 'department', 'population', 'manager',
     ]),
     measures: Object.freeze([]),
@@ -222,7 +222,7 @@ export const TEMPLATES = Object.freeze({
     title: 'What happened in this window, for this tool or person?',
     source: 'ingest.submission',
     screen: 'activity',
-    params: Object.freeze(['window', 'limit', 'cursor', 'subject', 'tool', 'device', 'class', 'content_state', 'action', 'mode', 'department']),
+    params: Object.freeze(['window', 'limit', 'cursor', 'subject', 'tool', 'device', 'class', 'content_state', 'action', 'mode', 'department', 'prompt_kind', 'prompt_kind_not']),
   }),
   q9_event_detail: Object.freeze({
     question: 9,

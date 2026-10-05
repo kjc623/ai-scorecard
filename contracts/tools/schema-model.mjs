@@ -38,6 +38,7 @@ const INLINE_ENUM_TYPES = {
   "envelopeCore.confidence": "Confidence",
   "envelopeCore.collection_mode": "CollectionMode",
   "envelopeCore.detection_basis": "DetectionBasis",
+  "envelopeCore.prompt_kind": "PromptKind",
   "policyDecision.action": "PolicyAction",
   "excerpt.kind": "ExcerptKind",
 };
@@ -52,6 +53,7 @@ const ENUM_ORDER = [
   "PolicyAction",
   "ExcerptKind",
   "DetectionBasis",
+  "PromptKind",
 ];
 
 // The two shapes the contract defines on top of the common core.

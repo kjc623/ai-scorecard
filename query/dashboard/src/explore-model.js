@@ -22,7 +22,7 @@ const SEVERITIES = Object.freeze(['low', 'medium', 'high', 'critical']);
 const COLLECTION_MODES = Object.freeze(['m0', 'm1', 'm2', 'm3']);
 
 /** Hash keys that carry page state rather than a filter. No dataset has a field with these names. */
-const RESERVED_KEYS = Object.freeze(['window', 'open']);
+const RESERVED_KEYS = Object.freeze(['window', 'open', 'include']);
 
 /** The longest string value the API admits (DSL.md §2.3). */
 const MAX_VALUE_LENGTH = 256;
@@ -75,6 +75,7 @@ export const EXPLORE_DATASETS = Object.freeze({
       exploreField('class', 'Data class', { values: DATA_CLASSES, closed: false }),
       exploreField('content_state', 'Content', { values: ['not_captured', 'local_only', 'uploaded', 'shredded'] }),
       exploreField('mode', 'Collection mode', { values: COLLECTION_MODES }),
+      exploreField('prompt_kind', 'Request kind', { values: ['user', 'client_generated', 'unknown'] }),
       exploreField('department', 'Department', { hint: 'As the directory spells it' }),
       exploreField('device', 'Device', { hint: 'A device id' }),
     ]),
@@ -396,13 +397,22 @@ export function exploreWindows(dataset) {
  * @param {{from:string,to:string}|null} input.window
  * @param {string|null} [input.cursor]
  * @param {number} [input.limit]
+ * @param {boolean} [input.includeClientGenerated]
  */
-export function buildExploreRequest({ dataset, filters, window, cursor = null, limit = 50 }) {
+export function buildExploreRequest({ dataset, filters, window, cursor = null, limit = 50, includeClientGenerated = false }) {
+  // By default the event list hides the requests a client made for itself. The API models that as
+  // a `prompt_kind_not = 'client_generated'` predicate; the rail's toggle removes it. When the
+  // person has already named a prompt_kind, their choice governs and no predicate is added, so the
+  // two cannot contradict.
+  const effective = { ...filters };
+  if (dataset.id === 'events' && !includeClientGenerated && !effective.prompt_kind) {
+    effective.prompt_kind_not = 'client_generated';
+  }
   return QUESTIONS[dataset.questionId].request(context({
     ...(window ? { window } : {}),
     limit,
     cursor,
-    filters,
+    filters: effective,
   }));
 }
 
@@ -414,13 +424,14 @@ export function buildExploreRecordRequest({ submissionId, receivedAtHint }) {
 }
 
 /** `#events?window=d7&tool=claude_web&open=<key>`: the whole page state, so a search can be linked. */
-export function encodeExploreHash({ dataset, windowPreset, filters, open }) {
+export function encodeExploreHash({ dataset, windowPreset, filters, open, includeClientGenerated = false }) {
   const params = new URLSearchParams();
   if (windowPreset && windowPreset !== dataset.defaultWindow) params.set('window', windowPreset);
   for (const field of dataset.fields) {
     const value = filters[field.name];
     if (typeof value === 'string' && value !== '') params.set(field.name, value);
   }
+  if (includeClientGenerated) params.set('include', '1');
   if (open) params.set('open', open);
   const query = params.toString();
   return `#${dataset.id}${query ? `?${query}` : ''}`;
@@ -458,6 +469,7 @@ export function decodeExploreHash(hash) {
     filters: Object.freeze(filters),
     problems: Object.freeze(problems),
     open: params.get('open') || null,
+    includeClientGenerated: params.get('include') === '1',
   });
 }
 

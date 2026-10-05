@@ -126,6 +126,10 @@ export function buildExploreSample(now) {
       device: person.device,
       department: person.department,
       mode,
+      // The sample does not model a device that decided the kind, so every event reads as
+      // 'unknown' (schema: NULL reads as 'unknown'). The list still honours the prompt_kind and
+      // prompt_kind_not predicates; a request for client_generated simply finds no rows.
+      prompt_kind: 'unknown',
       action,
       content_state: contentState,
       route: routes[0],
@@ -236,7 +240,15 @@ const SAMPLE_NON_FILTERS = Object.freeze(['window', 'limit', 'cursor']);
 function sampleMatches(row, name, value) {
   // On an event, `class` is a predicate over the labels; on a finding it is a column.
   if (name === 'class' && 'labels' in row) return Array.isArray(row.labels) && row.labels.some((l) => l.class === value);
+  // prompt_kind is an eq filter; prompt_kind_not is the ne filter the default-hide uses. NULL
+  // reads as 'unknown', exactly as the read layer coalesces it.
+  if (name === 'prompt_kind') return samplePromptKind(row) === value;
+  if (name === 'prompt_kind_not') return samplePromptKind(row) !== value;
   return row[name] === value;
+}
+
+function samplePromptKind(row) {
+  return row.prompt_kind ?? 'unknown';
 }
 
 function sampleEnvelope(resultState, body) {

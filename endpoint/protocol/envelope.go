@@ -33,6 +33,40 @@ const (
 	KindModelDetection Kind = "model_detection"
 )
 
+// PromptKind is the device's decision about what kind of prompt a captured request is
+// (contract `envelopeCore.prompt_kind`, task 08). It is request-shape metadata, decided on the
+// device from the payload and the text C1 extracted, never from the payload's meaning:
+//
+//   - PromptKindUser is text a person authored.
+//   - PromptKindClientGenerated is a request the client made for itself — titling, a summary,
+//     telemetry, an injected message — which carries no typed turn.
+//   - PromptKindUnknown is a record whose device could not decide. A device that predates the
+//     field sends nothing, and the read layer treats NULL as unknown.
+//
+// The default is PromptKindUser when unsure, so nothing a person typed is hidden.
+type PromptKind string
+
+const (
+	PromptKindUser            PromptKind = "user"
+	PromptKindClientGenerated PromptKind = "client_generated"
+	PromptKindUnknown         PromptKind = "unknown"
+)
+
+// Valid rejects anything outside the closed set rather than defaulting it: a default here would
+// silently reclassify a person's prompt as the client's own, which is the one failure the kind
+// exists to avoid.
+func (k PromptKind) Valid() bool {
+	switch k {
+	case PromptKindUser, PromptKindClientGenerated, PromptKindUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+// AllPromptKinds is the closed set, for validation and for a read layer that needs to enumerate it.
+var AllPromptKinds = [...]PromptKind{PromptKindUser, PromptKindClientGenerated, PromptKindUnknown}
+
 // Route is the closed collection-route vocabulary. Fidelity ranking per route lives in
 // ref.route_fidelity and decides the winner when two routes observe one submission.
 type Route string

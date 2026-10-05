@@ -2,8 +2,11 @@ package content
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -232,5 +235,65 @@ func TestFinalise(t *testing.T) {
 	}
 	if _, err := s.Finalise(context.Background(), report); !errors.Is(err, ErrUploadRejected) {
 		t.Fatalf("a second write for the event was not rejected: %v", err)
+	}
+}
+
+// §10.4 (task 08): the finaliser relays the device's request kind to the vault, so the vault can
+// refuse to index a client-generated request.
+func TestFinaliseCarriesPromptKind(t *testing.T) {
+	ec := m3Event()
+	ec.PromptKind = "client_generated"
+	st, v := &fakeStore{ec: ec}, &fakeVault{}
+	s := newService(t, st, v)
+	resp, err := s.Decide(context.Background(), tenant, device, request(), "https://e")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := st.grants[resp.GrantID]
+	digest := "sha256:" + strings.Repeat("a", 64)
+	report := UploadReport{
+		TenantID: tenant, GrantID: g.GrantID, ObjectID: g.ObjectID, EventID: event, BlobPath: "p",
+		RawDigest: digest, DeclaredRawDigest: digest, SizeBytes: 128, PlaintextSizeBytes: 100,
+		WrappedKeyB64: "d3JhcHBlZA==", KeyID: "kek", KeyVersion: "1",
+	}
+	if _, err := s.Finalise(context.Background(), report); err != nil {
+		t.Fatal(err)
+	}
+	if len(v.finalised) != 1 {
+		t.Fatalf("finalise stored %d objects, want 1", len(v.finalised))
+	}
+	if v.finalised[0].PromptKind != "client_generated" {
+		t.Fatalf("the vault was told prompt_kind %q, want client_generated", v.finalised[0].PromptKind)
+	}
+}
+
+// HTTPVault.Finalise carries the request kind across the internal HTTP boundary (task 08).
+func TestHTTPVaultFinaliseCarriesPromptKind(t *testing.T) {
+	var got map[string]any
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("reading the request body: %v", err)
+			return
+		}
+		if err := json.Unmarshal(body, &got); err != nil {
+			t.Errorf("request body is not JSON: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	v := NewHTTPVault(ts.URL)
+	err := v.Finalise(context.Background(), tenant, "device:"+device, StoredObject{
+		ObjectID: "aaaaaaaa-0000-4000-8000-000000000001", SubmissionID: "bbbbbbbb-1111-4111-8111-00000000000b",
+		EventID: event, PromptKind: "client_generated", BlobPath: "p",
+		CiphertextSHA256: "sha256:" + strings.Repeat("a", 64), PlaintextSizeBytes: 100,
+		WrappedDEK: "d3JhcHBlZA==", KEKID: "kek", KEKVersion: "1",
+	})
+	if err != nil {
+		t.Fatalf("finalise: %v", err)
+	}
+	if got["prompt_kind"] != "client_generated" {
+		t.Fatalf("the vault was sent prompt_kind %v, want client_generated", got["prompt_kind"])
 	}
 }

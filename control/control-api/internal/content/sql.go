@@ -25,7 +25,7 @@ const (
 SELECT t.ceiling_mode, t.content_budget_bytes_per_day,
        coalesce((SELECT u.content_bytes_added FROM ops.usage_daily u
                   WHERE u.tenant_id = t.tenant_id AND u.usage_day = (now() AT TIME ZONE 'utc')::date), 0),
-       o.kind, o.collection_mode, o.expires_at, s.submission_id, s.content_state
+       o.kind, o.prompt_kind, o.collection_mode, o.expires_at, s.submission_id, s.content_state
   FROM ops.tenant t
   LEFT JOIN ingest.observation o
          ON o.tenant_id = t.tenant_id AND o.event_id = $2::uuid AND o.device_id = $3::uuid
@@ -100,11 +100,11 @@ func (s *SQLStore) withTenant(ctx context.Context, tenantID string, fn func(tx *
 func (s *SQLStore) EventContext(ctx context.Context, tenantID, deviceID, eventID string) (*EventContext, error) {
 	ec := &EventContext{}
 	err := s.withTenant(ctx, tenantID, func(tx *sql.Tx) error {
-		var kind, mode, submission, state sql.NullString
+		var kind, promptKind, mode, submission, state sql.NullString
 		var expires sql.NullTime
 		err := tx.QueryRowContext(ctx, sqlEventContext, tenantID, eventID, deviceID).Scan(
 			&ec.CeilingMode, &ec.BudgetBytesPerDay, &ec.BytesAddedToday,
-			&kind, &mode, &expires, &submission, &state)
+			&kind, &promptKind, &mode, &expires, &submission, &state)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil // unknown tenant: the event is not found either
 		}
@@ -116,7 +116,7 @@ func (s *SQLStore) EventContext(ctx context.Context, tenantID, deviceID, eventID
 		}
 		ec.Found = true
 		ec.Kind, ec.CollectionMode, ec.ExpiresAt = kind.String, mode.String, expires.Time
-		ec.SubmissionID, ec.ContentState = submission.String, state.String
+		ec.PromptKind, ec.SubmissionID, ec.ContentState = promptKind.String, submission.String, state.String
 
 		g, err := scanGrant(tx.QueryRowContext(ctx, sqlLatestGrant, tenantID, eventID))
 		if err != nil && !errors.Is(err, ErrGrantUnknown) {

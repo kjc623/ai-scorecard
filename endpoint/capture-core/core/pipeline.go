@@ -184,6 +184,11 @@ type Pipeline struct {
 	// BodyCap is the fallback cap when the bundle does not set one.
 	BodyCap int64
 
+	// PromptKind is the request-kind decider (task 08). It defaults to decidePromptKind; a test
+	// pins it to isolate the pipeline from a client's exact wording. It never sees identity, only
+	// the captured payload and the text C1 extracted.
+	PromptKind promptKindFunc
+
 	mu        sync.Mutex
 	counters  map[protocol.Route]*CounterSet
 	lastOK    map[protocol.Route]time.Time
@@ -249,6 +254,7 @@ func NewPipeline(sink Sink, clock func() time.Time, newID func() string) (*Pipel
 		NewID:          newID,
 		Retention:      30 * 24 * time.Hour,
 		ClassifyBudget: 2 * time.Second,
+		PromptKind:     decidePromptKind,
 		mu:             sync.Mutex{},
 		counters:       map[protocol.Route]*CounterSet{},
 		lastOK:         map[protocol.Route]time.Time{},
@@ -476,6 +482,14 @@ func (p *Pipeline) Process(ctx context.Context, obs Observation) (Outcome, error
 		in.DedupKey = key
 		in.ContentDigest = digest
 		in.Attachments = wireAttachments(atts)
+		// The request kind is decided once, here, from the captured payload and the text C1
+		// identified (task 08). It gates the classification input below and, downstream, the
+		// search index and the event-list default.
+		decider := p.PromptKind
+		if decider == nil {
+			decider = decidePromptKind
+		}
+		in.PromptKind = decider(body, text)
 
 		if obs.OverCap {
 			// §5.3: classify nothing. The record still carries the classifier's attribution and
@@ -484,9 +498,22 @@ func (p *Pipeline) Process(ctx context.Context, obs Observation) (Outcome, error
 			in.ClassifierVersion = p.classifierVersion(obs.Route)
 			in.Confidence = protocol.ConfidenceDegraded
 			in.Labels = []protocol.Label{}
+		} else if in.PromptKind == protocol.PromptKindClientGenerated {
+			// The client made this request for itself (titling a session, a summary, telemetry).
+			// There is no text a person authored to classify, so the classifier is not run and no
+			// label can be invented from the client's own instructions. The record still carries a
+			// classifier version so it is attributable, an empty label set, and high confidence:
+			// the honest statement is "nothing a person typed", not "classification failed".
+			in.ClassifierVersion = p.classifierVersion(obs.Route)
+			in.Confidence = protocol.ConfidenceHigh
+			in.Labels = []protocol.Label{}
 		} else {
-			// 3. hand bytes to the classifier.
-			resp, cerr := p.classify(ctx, obs, res.Mode, body, digest)
+			// 3. hand the classifier the text a person authored, not the whole captured body: the
+			// body also carries the client's system prompt and tool definitions, and classifying
+			// those is what gave a plain question a source_code label (task 08). Where C1 found no
+			// authored boundary the whole body is handed over and the record is already degraded,
+			// which is the honest best effort.
+			resp, cerr := p.classify(ctx, obs, res.Mode, classifyInput(text, body, xerr), digest)
 			if cerr != nil {
 				// §5.4: classifier unavailable or over budget → carry the request unclassified.
 				// The record says classification was attempted and did not complete.
@@ -671,6 +698,17 @@ func (p *Pipeline) dedupKey(id Identity, tier string, obs Observation, digest st
 	default:
 		return dedup.SurrogateKey(id.TenantID, id.DeviceID, obs.ToolFingerprint, string(obs.Kind), obs.OccurredAt, size, atts, p.Normalizer)
 	}
+}
+
+// classifyInput is the bytes handed to the classifier: the text C1 identified as authored when it
+// could (task 08), otherwise the body as observed. Handing over the whole body when an authored
+// turn exists is the defect this exists to prevent: a question whose body carried a tool schema
+// came back labelled source_code.
+func classifyInput(text string, body []byte, xerr error) []byte {
+	if xerr == nil {
+		return []byte(text)
+	}
+	return body
 }
 
 func (p *Pipeline) classify(ctx context.Context, obs Observation, mode protocol.CollectionMode, body []byte, digest string) (protocol.ClassifyResponse, error) {
