@@ -167,13 +167,17 @@ test('only uploaded content offers a retrieval', async () => {
   assert.match(html, /remains on the device/);
 });
 
-test('a hit shows the prompt text with the person, the device and the tool', async () => {
+test('a hit shows the prompt text with the person, the hostname and the tool', async () => {
   const { explorer } = explorerFor();
   const state = { ...explorer.state, text: { status: 'ready', query: 'x', truncated: false, problem: null, hits: [
-    { submissionId: 's1', snippet: 'What is the <em>capital</em> of Australia', subject: 'u_4f21', device: 'd-1', tool: 'claude_code' },
+    { submissionId: 's1', snippet: 'What is the <em>capital</em> of Australia', subject: 'alice@contoso.example', device: 'd-1', hostname: 'FIN-LAPTOP-07', tool: 'claude_code' },
     { submissionId: 's2', snippet: 'another', subject: null, device: null, tool: null },
+    { submissionId: 's3', snippet: 'third', subject: 'u_9a02', device: 'd-2', hostname: null, tool: 'chatgpt_web' },
   ] } };
   const html = renderExploreText(state);
-  assert.match(html, /<span>u_4f21<\/span><span class="x-hit-sep" aria-hidden="true">\|<\/span><span>d-1<\/span><span class="x-hit-sep" aria-hidden="true">\|<\/span><span>claude_code<\/span>/);
+  // The hostname is preferred to the device UUID when there is one (ADR 0021).
+  assert.match(html, /<span>alice@contoso\.example<\/span><span class="x-hit-sep" aria-hidden="true">\|<\/span><span>FIN-LAPTOP-07<\/span><span class="x-hit-sep" aria-hidden="true">\|<\/span><span>claude_code<\/span>/);
+  // With no hostname the UUID is the device part; a hit with no metadata still names its submission.
+  assert.match(html, /<span>u_9a02<\/span><span class="x-hit-sep" aria-hidden="true">\|<\/span><span>d-2<\/span>/);
   assert.match(html, />s2<\/span>/, 'a hit with no metadata still names its submission');
 });

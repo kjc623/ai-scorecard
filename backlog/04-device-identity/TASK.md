@@ -14,7 +14,7 @@ devices.
 Enrolment and heartbeat carry, and the device read returns:
 
 - hostname
-- primary user: the user reference most recently active on the device
+- username at time of submission
 - agent version
 - the collection mode (M0 to M3) in force on the device
 - managed state, resolved from MDM where available, otherwise reported by the agent

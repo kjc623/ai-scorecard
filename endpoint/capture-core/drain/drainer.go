@@ -53,6 +53,12 @@ type Config struct {
 	DeviceID     string
 	MDMID        string
 	AgentVersion string
+	// Hostname is the clear machine name, sent at enrolment only while the tenant's device_identity
+	// is 'clear'; the caller empties it when the setting is 'hashed' (ADR 0021). HostnameHash is the
+	// hashed form, sent instead when the setting is 'hashed'. ManagedState is the agent's report.
+	Hostname     string
+	HostnameHash string
+	ManagedState string
 
 	BackoffBase time.Duration
 	BackoffCap  time.Duration

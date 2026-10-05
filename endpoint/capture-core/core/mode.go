@@ -18,6 +18,9 @@ type ScopeQuery struct {
 	Population      string
 	DeviceID        string
 	UserRef         string
+	// SubjectName is the clear account name, carried so the pipeline can stamp it on the envelope
+	// when the tenant's device_identity is 'clear' (ADR 0021). It has no part in mode resolution.
+	SubjectName string
 }
 
 // Contribution is one scope entry's input to the resolved mode, kept so an operator can see

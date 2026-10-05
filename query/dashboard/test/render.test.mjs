@@ -128,13 +128,20 @@ test('the devices screen says the fleet, what needs attention, and each device i
   assert.deepEqual(view.tiles[0].split.map((p) => [p.label, p.count]), [['Reporting', 4180], ['Not reporting', 440]]);
   assert.equal(view.tiles[1].href, '#devices?status=attention');
   assert.deepEqual(view.tables.map((x) => x.title), ['Devices']);
-  assert.deepEqual(view.tables[0].columns.map((c) => c.label), ['Device', 'Status', 'Last seen', 'OS', 'Management', '']);
+  assert.deepEqual(view.tables[0].columns.map((c) => c.label), ['Device', 'User', 'Status', 'Last seen', 'Agent version', 'Mode', 'OS', 'Management', '']);
   assert.deepEqual(view.filters.map((f) => f.label), ['Status', 'OS', 'Management']);
   const html = renderScreen(view, SHELL);
   assert.match(html, /Never checked in/);
   assert.match(html, /Quiet since 2026-09-29/);
   assert.match(html, /days ago/);
   assert.match(html, /href="explore\.html#events\?device=/);
+  // The device is named by hostname, the UUID stays on hover, and the user, version and mode are
+  // shown (ADR 0021; backlog/04-device-identity).
+  assert.match(html, /FIN-LAPTOP-07/);
+  assert.match(html, /title="9f1c0b6e-0000-4000-8000-000000000001"/);
+  assert.match(html, /alice@contoso\.example/);
+  assert.match(html, /1\.4\.2/);
+  assert.match(html, /m3/);
   assert.ok(!/Spool|watermark|Collector/i.test(html), 'pipeline internals are not on this screen');
   const windowsOnly = (await dashboard.load('devices', { filters: { device_os: 'windows' } })).view;
   assert.ok(windowsOnly.tables[0].rows.every(({ row }) => row.device_os === 'windows'));

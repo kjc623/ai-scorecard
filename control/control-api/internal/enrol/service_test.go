@@ -435,3 +435,51 @@ func isCode(err error, code string) bool {
 	}
 	return apiErr.Code == code
 }
+
+// TestEnrolmentIdentitySettingGatesTheStoredHostname covers ADR 0021 at the enrolment boundary: a
+// 'clear' tenant stores the hostname the device sent and the response tells the device the setting;
+// a 'hashed' tenant stores no clear hostname even though the device sent one.
+func TestEnrolmentIdentitySettingGatesTheStoredHostname(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		setting  protocol.DeviceIdentity
+		wantHost string
+	}{
+		{"clear tenant stores the hostname", protocol.DeviceIdentityClear, "LAPTOP-7"},
+		{"hashed tenant drops the clear hostname", protocol.DeviceIdentityHashed, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tenant := activeTenant(tenantA, regionA)
+			tenant.DeviceIdentity = tc.setting
+			r := newRig(t, tenant, regionA)
+			token := r.addToken(t, tenantA)
+			req, _, err := x509Request(token, "hw-identity")
+			if err != nil {
+				t.Fatalf("x509Request: %v", err)
+			}
+			req.Device.Hostname = "LAPTOP-7"
+			req.Device.ManagedState = "managed"
+
+			resp, err := r.svc.Enrol(context.Background(), enrol.Input{Request: req, HTM: "POST", HTU: htu})
+			if err != nil {
+				t.Fatalf("Enrol: %v", err)
+			}
+			if resp.DeviceIdentity != tc.setting {
+				t.Errorf("response device_identity = %q, want %q", resp.DeviceIdentity, tc.setting)
+			}
+			dev, err := r.store.Device(context.Background(), tenantA, resp.DeviceID)
+			if err != nil {
+				t.Fatalf("Device: %v", err)
+			}
+			if dev.Hostname != tc.wantHost {
+				t.Errorf("stored hostname = %q, want %q", dev.Hostname, tc.wantHost)
+			}
+			if dev.ManagedState != "managed" {
+				t.Errorf("stored managed_state = %q, want managed", dev.ManagedState)
+			}
+			if dev.AgentVersion != "1.4.2" {
+				t.Errorf("stored agent_version = %q, want 1.4.2", dev.AgentVersion)
+			}
+		})
+	}
+}

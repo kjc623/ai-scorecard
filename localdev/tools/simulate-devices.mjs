@@ -108,13 +108,17 @@ function dpopProof(device, path, accessToken) {
 async function enrol(index, token) {
   const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
   const { kty, crv, x, y } = publicKey.export({ format: 'jwk' });
-  const device = { index, privateKey, jwk: { kty, crv, x, y }, os: index % 3 === 0 ? 'macos' : 'windows', monotonic: 1000, accessToken: null, tokenExpires: 0 };
+  const os = index % 3 === 0 ? 'macos' : 'windows';
+  // The clear identity the agent now reports (ADR 0021). The tenant's device_identity is 'clear',
+  // so the hostname and managed state are stored; a 'hashed' tenant would drop the hostname.
+  const hostname = `SIM-${os === 'macos' ? 'MAC' : 'WIN'}-${String(index + 1).padStart(2, '0')}`;
+  const device = { index, privateKey, jwk: { kty, crv, x, y }, os, hostname, managedState: index === 1 ? 'managed' : 'managed', monotonic: 1000, accessToken: null, tokenExpires: 0, subjectNames: {} };
   const res = await post('/v1/enrol', {
     schema_version: '1.0',
     enrolment_token: token,
     mode: 'dpop',
     jwk: device.jwk,
-    device: { os: device.os, agent_version: 'simulate-devices/1', hardware_identity_hash: sha256(`sample-hardware-${TENANT}-${index}`) },
+    device: { os, agent_version: 'simulate-devices/1', hostname, managed_state: device.managedState, hardware_identity_hash: sha256(`sample-hardware-${TENANT}-${index}`) },
   }, { DPoP: dpopProof(device, '/v1/enrol') });
   if (res.status !== 200 || !res.json?.device_id) throw new Error(`enrol ${index}: ${res.status} ${res.text.slice(0, 300)}`);
   device.id = res.json.device_id;
@@ -166,6 +170,9 @@ async function sendHealth(device) {
     schema_version: '1.0',
     reported_at: iso(Date.now()),
     agent_version: 'simulate-devices/1',
+    hostname: device.hostname,
+    collection_mode: 'm2',
+    managed_state: device.managedState,
     policy_bundle_version: 'sim-lab',
     signature_ok: true,
     spool: { depth_events: 0, capacity_events: 25000, dropped_total: 0, rejected_total: 0 },
@@ -203,6 +210,9 @@ function core(device, user, tool, kind, direction, occurredMs, source, mode) {
     tenant_id: TENANT,
     device_id: device.id,
     user_ref: user,
+    // The clear account name at submission time (ADR 0021). The tenant is 'clear', so it is stored;
+    // the read falls back to user_ref when a device could not attribute an observation.
+    subject_name: device.subjectNames?.[user],
     tool_fingerprint: tool,
     direction,
     kind,
@@ -301,11 +311,15 @@ const devices = [];
 for (let i = 0; i < DEVICE_COUNT; i += 1) devices.push(await enrol(i, tokens[i]));
 console.log(`  enrolled ${devices.length} devices through ${EDGE}/v1/enrol (dpop)`);
 
-// One or two people per device. A user_ref is a pseudonym; no name crosses the wire.
+// One or two people per device. A user_ref is a pseudonym; the clear account name rides alongside
+// it (ADR 0021), and the tenant's device_identity is 'clear' so it is stored.
 const people = devices.flatMap((device, i) => {
-  const refs = [`u_${createHash('sha256').update(`${TENANT}-person-${i}-a`).digest('hex').slice(0, 4)}`];
-  if (i % 4 === 0) refs.push(`u_${createHash('sha256').update(`${TENANT}-person-${i}-b`).digest('hex').slice(0, 4)}`);
-  return refs.map((user) => ({ device, user }));
+  const refs = [{ ref: `u_${createHash('sha256').update(`${TENANT}-person-${i}-a`).digest('hex').slice(0, 4)}`, name: `sim.user.${i}.a@northwind.example` }];
+  if (i % 4 === 0) refs.push({ ref: `u_${createHash('sha256').update(`${TENANT}-person-${i}-b`).digest('hex').slice(0, 4)}`, name: `sim.user.${i}.b@northwind.example` });
+  return refs.map(({ ref, name }) => {
+    device.subjectNames[ref] = name;
+    return { device, user: ref };
+  });
 });
 
 const now = Date.now();

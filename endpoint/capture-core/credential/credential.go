@@ -36,6 +36,11 @@ type Credential struct {
 	// the same value it was first issued under.
 	HardwareIdentityHash string `json:"hardware_identity_hash"`
 
+	// DeviceIdentity is the tenant's identity setting as the server stated it at enrolment
+	// (ADR 0021). It is stored with the credential so a restart keeps acting on the setting the
+	// tenant chose; an empty value means the server did not state one.
+	DeviceIdentity protocol.DeviceIdentity `json:"device_identity,omitempty"`
+
 	// PrivateKey is the EC private key in PEM "EC PRIVATE KEY" form. It never leaves the device.
 	PrivateKey string `json:"private_key"`
 

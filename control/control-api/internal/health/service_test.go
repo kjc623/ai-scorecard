@@ -14,10 +14,13 @@ import (
 
 func validReport(at time.Time) protocol.HealthRequest {
 	return protocol.HealthRequest{
-		SchemaVersion: protocol.HealthSchemaVersion,
-		ReportedAt:    at,
-		AgentVersion:  "test-agent/1",
-		Spool:         protocol.SpoolHealth{DepthEvents: 7, DroppedTotal: 2},
+		SchemaVersion:  protocol.HealthSchemaVersion,
+		ReportedAt:     at,
+		AgentVersion:   "test-agent/1",
+		Hostname:       "LAPTOP-7",
+		ManagedState:   "managed",
+		CollectionMode: "m2",
+		Spool:          protocol.SpoolHealth{DepthEvents: 7, DroppedTotal: 2},
 		Collectors: []protocol.HealthReport{
 			{
 				Collector: "egress_proxy",
@@ -29,10 +32,18 @@ func validReport(at time.Time) protocol.HealthRequest {
 	}
 }
 
+// seed adds the tenant and device a health report authenticates as. The health service now reads the
+// tenant's device-identity setting and updates the device row, so both must exist.
+func seed(st *store.Memory) {
+	st.AddTenant(store.Tenant{TenantID: "tenant-1", Status: "active", IngestEnabled: true, DeviceIdentity: protocol.DeviceIdentityClear})
+	st.AddDevice(store.Device{TenantID: "tenant-1", DeviceID: "device-1", OS: "windows"})
+}
+
 // docs/02 §5.4: the health channel upserts one row per collector and stamps device activity in the
 // same transaction. Both facts must land, and the closed vocabulary must be enforced.
 func TestReportWritesCollectorStateAndDeviceActivity(t *testing.T) {
 	st := store.NewMemory()
+	seed(st)
 	svc, err := New(st, Config{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -46,6 +57,10 @@ func TestReportWritesCollectorStateAndDeviceActivity(t *testing.T) {
 	}
 	if resp.NextReportAfterS != 900 {
 		t.Errorf("next_report_after_s = %d, want 900", resp.NextReportAfterS)
+	}
+	// ADR 0021: the response restates the tenant's identity setting so the device learns it.
+	if resp.DeviceIdentity != protocol.DeviceIdentityClear {
+		t.Errorf("device_identity = %q, want clear", resp.DeviceIdentity)
 	}
 	row, ok := st.CollectorStateAt("tenant-1", "device-1", "egress_proxy")
 	if !ok {
@@ -65,11 +80,26 @@ func TestReportWritesCollectorStateAndDeviceActivity(t *testing.T) {
 	if len(row.Detail) == 0 {
 		t.Error("device-level detail was not recorded")
 	}
+	// ADR 0021: the device row now carries the reported version, managed state and clear hostname.
+	dev, err := st.Device(context.Background(), "tenant-1", "device-1")
+	if err != nil {
+		t.Fatalf("Device: %v", err)
+	}
+	if dev.Hostname != "LAPTOP-7" {
+		t.Errorf("device hostname = %q, want LAPTOP-7", dev.Hostname)
+	}
+	if dev.AgentVersion != "test-agent/1" {
+		t.Errorf("device agent_version = %q, want test-agent/1", dev.AgentVersion)
+	}
+	if dev.ManagedState != "managed" {
+		t.Errorf("device managed_state = %q, want managed", dev.ManagedState)
+	}
 }
 
 func TestReportRefusesUnknownCollector(t *testing.T) {
 	st := store.NewMemory()
 	st.SetCollectors("egress_proxy")
+	seed(st)
 	svc, _ := New(st, Config{})
 	req := validReport(time.Now())
 	req.Collectors[0].Collector = "not_a_collector"
@@ -89,6 +119,7 @@ func TestReportRefusesUnknownCollector(t *testing.T) {
 // The stale-report guard: an out-of-order report must not overwrite a newer row (docs/02 §5.4).
 func TestReportDoesNotOverwriteNewerState(t *testing.T) {
 	st := store.NewMemory()
+	seed(st)
 	svc, _ := New(st, Config{})
 	base := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
 	svc.SetClock(func() time.Time { return base })
@@ -118,6 +149,30 @@ func TestReportDoesNotOverwriteNewerState(t *testing.T) {
 	row, _ = st.CollectorStateAt("tenant-1", "device-1", "egress_proxy")
 	if row.State != "degraded" {
 		t.Fatalf("a stale report overwrote state: got %q", row.State)
+	}
+}
+
+func TestReportGatesClearHostnameOnTenantSetting(t *testing.T) {
+	st := store.NewMemory()
+	st.AddTenant(store.Tenant{TenantID: "tenant-1", Status: "active", IngestEnabled: true, DeviceIdentity: protocol.DeviceIdentityHashed})
+	st.AddDevice(store.Device{TenantID: "tenant-1", DeviceID: "device-1", OS: "windows"})
+	svc, _ := New(st, Config{})
+
+	resp, err := svc.Report(context.Background(), "tenant-1", "device-1", validReport(time.Now()))
+	if err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+	if resp.DeviceIdentity != protocol.DeviceIdentityHashed {
+		t.Fatalf("device_identity = %q, want hashed", resp.DeviceIdentity)
+	}
+	dev, err := st.Device(context.Background(), "tenant-1", "device-1")
+	if err != nil {
+		t.Fatalf("Device: %v", err)
+	}
+	// The server is authoritative: a stale device that still sends a clear hostname to a 'hashed'
+	// tenant must not have it stored.
+	if dev.Hostname != "" {
+		t.Errorf("a hashed tenant stored a clear hostname %q", dev.Hostname)
 	}
 }
 

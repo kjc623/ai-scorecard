@@ -87,6 +87,17 @@ function renderCell(row, column, max = 0) {
       ? `<span class="v-text" title="${escapeHtml(formatInstant(raw))}">${escapeHtml(row[`${key}_ago`] ?? formatInstant(raw))}</span>`
       : '<span class="v-absent">Never</span>';
   }
+  if (kind === 'device-name') {
+    // The hostname is the device name; the UUID is the identity and stays available on hover, and
+    // is the fallback label when no hostname was recorded (a 'hashed' tenant, or an old device).
+    const uuid = row.device ? String(row.device) : '';
+    if (raw === null || raw === undefined || raw === '') {
+      return uuid
+        ? `<span class="v-text" title="${escapeHtml(uuid)}"><span class="v-mono">${escapeHtml(uuid.slice(0, 8))}…</span></span>`
+        : renderValue({ kind: 'absent' });
+    }
+    return `<span class="v-text" title="${escapeHtml(uuid)}">${escapeHtml(String(raw))}</span>`;
+  }
   if (kind === 'link') {
     return raw ? `<a class="cell-link" href="${escapeHtml(String(raw))}">${escapeHtml(column.linkLabel ?? 'Open')}</a>` : '';
   }

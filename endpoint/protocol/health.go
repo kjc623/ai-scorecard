@@ -49,6 +49,16 @@ type HealthRequest struct {
 	SchemaVersion       string      `json:"schema_version"`
 	ReportedAt          time.Time   `json:"reported_at"`
 	AgentVersion        string      `json:"agent_version,omitempty"`
+	// Hostname is the clear machine name, present only while the tenant's device_identity is
+	// 'clear'. When it is 'hashed' the device sends nothing here and the enrolment-time
+	// hostname_hash stands (ADR 0021).
+	Hostname            string      `json:"hostname,omitempty"`
+	// CollectionMode is the effective base mode the device resolved from the signed bundle for its
+	// own scope: the device override when the bundle names this device, otherwise the tenant
+	// default. It is optional so a device whose bundle has not loaded yet can still report health.
+	CollectionMode      string      `json:"collection_mode,omitempty"`
+	// ManagedState is the agent's report, because there is no MDM resolver in this build.
+	ManagedState        string      `json:"managed_state,omitempty"`
 	ClockOffsetMS       *int64      `json:"clock_offset_ms,omitempty"`
 	PolicyBundleVersion string      `json:"policy_bundle_version,omitempty"`
 	SignatureOK         *bool       `json:"signature_ok,omitempty"`
@@ -72,6 +82,15 @@ func (r HealthRequest) Validate() error {
 	case len(r.Collectors) == 0:
 		return errors.New("protocol: health report names no collectors")
 	}
+	// A mode or managed state outside the closed set is a defect in the device, and the server
+	// refuses the report rather than guessing: a mis-set mode column would describe a collection
+	// posture the device may not be in.
+	if r.CollectionMode != "" && !CollectionMode(r.CollectionMode).Valid() {
+		return fmt.Errorf("protocol: health collection_mode %q is outside the closed set", r.CollectionMode)
+	}
+	if r.ManagedState != "" && !ManagedState(r.ManagedState).Valid() {
+		return fmt.Errorf("protocol: health managed_state %q is outside the closed set", r.ManagedState)
+	}
 	if err := r.Spool.Validate(); err != nil {
 		return err
 	}
@@ -86,7 +105,10 @@ func (r HealthRequest) Validate() error {
 // HealthResponse is the 200 body. next_report_after_s carries the cadence so the fleet can be slowed
 // without shipping device code (docs/02 §5.4).
 type HealthResponse struct {
-	AckedAt          time.Time `json:"acked_at"`
-	ServerTime       time.Time `json:"server_time"`
-	NextReportAfterS int       `json:"next_report_after_s"`
+	AckedAt          time.Time      `json:"acked_at"`
+	ServerTime       time.Time      `json:"server_time"`
+	NextReportAfterS int            `json:"next_report_after_s"`
+	// DeviceIdentity restates the tenant's identity setting so a device sees a change without
+	// waiting for its next enrolment (ADR 0021). Empty means the server did not state one.
+	DeviceIdentity   DeviceIdentity `json:"device_identity,omitempty"`
 }

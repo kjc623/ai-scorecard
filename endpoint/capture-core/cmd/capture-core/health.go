@@ -31,6 +31,10 @@ type healthChannel struct {
 	writes    int
 	lastErr   error
 	lastAt    time.Time
+	// deviceIdentity is the tenant setting the device currently acts on (ADR 0021). It starts from
+	// configuration (default 'clear') and is refreshed from each authenticated response, so a tenant
+	// that flips the setting moves the device without a reinstall.
+	deviceIdentity protocol.DeviceIdentity
 	// publishes counts successful report POSTs and lastPublishErr is the most recent failure, so the
 	// snapshot can say whether the heartbeat is reaching the control plane (C23/C25).
 	publishes      int
@@ -42,7 +46,28 @@ type healthChannel struct {
 }
 
 func newHealthChannel(cfg Config, log *slog.Logger, svc *service) *healthChannel {
-	return &healthChannel{cfg: cfg, log: log, svc: svc, stop: make(chan struct{})}
+	return &healthChannel{cfg: cfg, log: log, svc: svc, deviceIdentity: cfg.deviceIdentityMode(), stop: make(chan struct{})}
+}
+
+// currentDeviceIdentity is the setting the device acts on.
+func (h *healthChannel) currentDeviceIdentity() protocol.DeviceIdentity {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.deviceIdentity.Valid() {
+		return h.deviceIdentity
+	}
+	return protocol.DeviceIdentityClear
+}
+
+// adoptDeviceIdentity records a setting the server stated. An empty or invalid value is ignored: an
+// older server that does not state one must not silently change the device's posture.
+func (h *healthChannel) adoptDeviceIdentity(id protocol.DeviceIdentity) {
+	if !id.Valid() {
+		return
+	}
+	h.mu.Lock()
+	h.deviceIdentity = id
+	h.mu.Unlock()
 }
 
 // canPublish reports whether a heartbeat can be sent: it needs a configured device endpoint (a
@@ -101,13 +126,17 @@ func (h *healthChannel) publish(ctx context.Context) {
 	}
 	callCtx, cancel := context.WithTimeout(ctx, healthPublishTimeout)
 	defer cancel()
-	if _, err := h.svc.drainer.ReportHealth(callCtx, req); err != nil {
+	resp, err := h.svc.drainer.ReportHealth(callCtx, req)
+	if err != nil {
 		h.mu.Lock()
 		h.lastPublishErr = err
 		h.mu.Unlock()
 		h.log.Warn("health: heartbeat not delivered", "error", err)
 		return
 	}
+	// The response restates the tenant's device-identity setting; adopting it is how a device that
+	// enrolled under one setting learns the tenant changed it (ADR 0021).
+	h.adoptDeviceIdentity(resp.DeviceIdentity)
 	h.mu.Lock()
 	h.publishes++
 	h.lastPublishAt = time.Now()
@@ -145,6 +174,13 @@ type healthSnapshot struct {
 	DeviceID       string                  `json:"device_id"`
 	IdentitySource string                  `json:"identity_source"`
 	AgentVersion   string                  `json:"agent_version"`
+	// Device identity (ADR 0021). Hostname and SubjectName are present only while the tenant's
+	// device_identity is 'clear'; ManagedState and CollectionMode are always reported.
+	Hostname       string                  `json:"hostname,omitempty"`
+	SubjectName    string                  `json:"subject_name,omitempty"`
+	ManagedState   string                  `json:"managed_state,omitempty"`
+	CollectionMode string                  `json:"collection_mode,omitempty"`
+	DeviceIdentity string                  `json:"device_identity,omitempty"`
 	GeneratedAt    time.Time               `json:"generated_at"`
 	PolicyVersion  string                  `json:"policy_version,omitempty"`
 	PolicyOutcome  string                  `json:"policy_outcome"`
@@ -229,10 +265,21 @@ func (h *healthChannel) Snapshot() healthSnapshot {
 	}
 
 	connected, classVersion, detail := h.svc.host.status()
+	identity := h.currentDeviceIdentity()
+	hostname, subjectName := "", ""
+	if identity == protocol.DeviceIdentityClear {
+		hostname = h.cfg.resolvedHostname()
+		subjectName = h.cfg.resolvedSubjectName()
+	}
 	snap := healthSnapshot{
 		DeviceID:       deviceID,
 		IdentitySource: identitySource,
 		AgentVersion:   version,
+		Hostname:       hostname,
+		SubjectName:    subjectName,
+		ManagedState:   string(h.cfg.managedState()),
+		CollectionMode: string(h.baseMode(deviceID)),
+		DeviceIdentity: string(identity),
 		GeneratedAt:    time.Now().UTC(),
 		PolicyVersion:  policyVersion,
 		PolicyOutcome:  outcome,
@@ -310,6 +357,25 @@ func collectorCode(name string) string {
 	return strings.ReplaceAll(name, "-", "_")
 }
 
+// baseMode is the effective base collection mode for the device: the device's own override when the
+// signed bundle names it, otherwise the tenant default (backlog/04-device-identity/DECISIONS.md D4).
+// It deliberately does not run full scope resolution: with no tool or population, Resolve would fold
+// in the class priors and the notice gate for an unnamed user, which is not what "the mode in force
+// on the device" means.
+func (h *healthChannel) baseMode(deviceID string) protocol.CollectionMode {
+	b := h.svc.currentBundle()
+	if b == nil {
+		return ""
+	}
+	if m, ok := b.DeviceModes[deviceID]; ok && m.Valid() {
+		return m
+	}
+	if b.TenantDefault.Valid() {
+		return b.TenantDefault
+	}
+	return ""
+}
+
 // healthRequest renders the protocol.HealthRequest the control plane's POST /v1/health accepts. The
 // collector names are canonicalised to ref.collector codes; a report naming a route the coverage
 // layer does not know would be refused by the server (docs/01 §4.3).
@@ -345,6 +411,9 @@ func (h *healthChannel) healthRequest() protocol.HealthRequest {
 		SchemaVersion:       protocol.HealthSchemaVersion,
 		ReportedAt:          snap.GeneratedAt,
 		AgentVersion:        snap.AgentVersion,
+		Hostname:            snap.Hostname,
+		CollectionMode:      snap.CollectionMode,
+		ManagedState:        snap.ManagedState,
 		PolicyBundleVersion: snap.PolicyVersion,
 		Spool: protocol.SpoolHealth{
 			DepthEvents:   int64(snap.Spool.Depth),

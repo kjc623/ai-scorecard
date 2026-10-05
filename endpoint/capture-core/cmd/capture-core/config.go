@@ -1,11 +1,13 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
 	"os"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/shadow-ai-capture/device/capture-core/core"
 	"github.com/shadow-ai-capture/device/capture-core/policy"
+	"github.com/shadow-ai-capture/device/protocol"
 )
 
 // defaultTLSListen is the "ask the OS for a port" default. A service pins a real port in its
@@ -33,6 +36,16 @@ type Config struct {
 	UserRef            string
 	Population         string
 	Retention          string
+
+	// Device identity (ADR 0021). Hostname and SubjectName are the clear identity fields; empty
+	// means "resolve from the operating system". ManagedState is the agent's report, because there
+	// is no MDM resolver in this build. DeviceIdentity is the tenant setting the device acts on:
+	// 'clear' sends the hostname and subject name, 'hashed' sends neither. It defaults to 'clear'
+	// (the product default) and is refreshed from the server's enrolment and health responses.
+	Hostname       string
+	SubjectName    string
+	ManagedState   string
+	DeviceIdentity string
 
 	// Policy.
 	BundlePath  string
@@ -267,8 +280,97 @@ func spoolBounds(profile string) (int64, int) {
 
 // buildIdentity is the enrolment result the agent stamps on envelopes. On a real device it comes
 // from §13.1's enrolment; here it is configuration, and an empty tenant is refused by validate.
+// SubjectName is present only while the device-identity setting is 'clear' (ADR 0021).
 func (c Config) identity() core.Identity {
-	return core.Identity{TenantID: c.TenantID, DeviceID: c.DeviceID, UserRef: c.UserRef}
+	return core.Identity{
+		TenantID:    c.TenantID,
+		DeviceID:    c.DeviceID,
+		UserRef:     c.UserRef,
+		SubjectName: c.clearSubjectName(),
+	}
+}
+
+// clearSubjectName is the account name to stamp on envelopes, or empty when the device-identity
+// setting is 'hashed'. The setting gates what the device sends; control-api is authoritative and
+// drops a clear value a stale device still sends, so the two layers agree.
+func (c Config) clearSubjectName() string {
+	if c.deviceIdentityMode() != protocol.DeviceIdentityClear {
+		return ""
+	}
+	return c.resolvedSubjectName()
+}
+
+// deviceIdentityMode is the setting the device acts on, defaulting to 'clear' (the product default)
+// when nothing configured one. Anything other than the exact 'hashed' value is treated as clear and
+// the server corrects it on the next response.
+func (c Config) deviceIdentityMode() protocol.DeviceIdentity {
+	if strings.TrimSpace(c.DeviceIdentity) == string(protocol.DeviceIdentityHashed) {
+		return protocol.DeviceIdentityHashed
+	}
+	return protocol.DeviceIdentityClear
+}
+
+// resolvedHostname is the clear machine name: the configured value, else the OS hostname, else
+// empty. Empty is reported as absent and never as a placeholder.
+func (c Config) resolvedHostname() string {
+	if h := strings.TrimSpace(c.Hostname); h != "" {
+		return h
+	}
+	if h, err := os.Hostname(); err == nil {
+		return strings.TrimSpace(h)
+	}
+	return ""
+}
+
+// clearHostname is the machine name to send, or empty when the device-identity setting is 'hashed'
+// (ADR 0021).
+func (c Config) clearHostname() string {
+	if c.deviceIdentityMode() != protocol.DeviceIdentityClear {
+		return ""
+	}
+	return c.resolvedHostname()
+}
+
+// hostnameHash is the hashed machine name to send when the device-identity setting is 'hashed'.
+// Lowercased before hashing so two spellings of one machine collapse, and prefixed like every other
+// digest in the system. Empty when the setting is 'clear' or no hostname could be resolved.
+func (c Config) hostnameHash() string {
+	if c.deviceIdentityMode() != protocol.DeviceIdentityHashed {
+		return ""
+	}
+	h := c.resolvedHostname()
+	if h == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(strings.ToLower(h)))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// resolvedSubjectName is the clear account name: the configured value, else the OS user, else a
+// conventional environment variable. It is the machine's interactive account, not proof of which
+// process opened a given connection; the report says so plainly.
+func (c Config) resolvedSubjectName() string {
+	if n := strings.TrimSpace(c.SubjectName); n != "" {
+		return n
+	}
+	if u, err := user.Current(); err == nil && strings.TrimSpace(u.Username) != "" {
+		return strings.TrimSpace(u.Username)
+	}
+	for _, k := range []string{"USERNAME", "USER", "LOGNAME"} {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// managedState is the agent's report, defaulting to 'unknown' because there is no MDM resolver in
+// this build and 'unknown' is not 'unmanaged'.
+func (c Config) managedState() protocol.ManagedState {
+	if m := protocol.ManagedState(strings.TrimSpace(c.ManagedState)); m.Valid() {
+		return m
+	}
+	return protocol.ManagedStateUnknown
 }
 
 func (c Config) scopeQuery(tool string) core.ScopeQuery {
@@ -277,6 +379,7 @@ func (c Config) scopeQuery(tool string) core.ScopeQuery {
 		Population:      c.Population,
 		DeviceID:        c.DeviceID,
 		UserRef:         c.UserRef,
+		SubjectName:     c.clearSubjectName(),
 	}
 }
 

@@ -1,9 +1,9 @@
 # Architecture decision records
 
-Twenty records. Each states the context, the decision, the alternatives that were actually
+Twenty-one records. Each states the context, the decision, the alternatives that were actually
 considered, and the consequences — including what becomes harder and what would change the decision.
 
-Nineteen are `proposed` and one, 0008, is superseded by 0014. None has been reviewed outside this
+Twenty are `proposed` and one, 0008, is superseded by 0014. None has been reviewed outside this
 package.
 
 **This file is the index.** When a subsystem document and a record disagree, the record is the
@@ -32,8 +32,9 @@ decision and the document is the explanation. The subsystem documents are listed
 | [0018](0018-model-detection-carries-no-window.md) | `model_detection` carries no window, and the contract's kind branches are exhaustive | proposed |
 | [0019](0019-the-origin-validates-the-device-certificate-itself.md) | The origin validates the device certificate itself; the edge is a filter | proposed |
 | [0020](0020-device-transport-is-application-gateway-with-a-pluggable-authenticator.md) | Device transport is Application Gateway with a pluggable authenticator: mTLS, DPoP, or a dev secret | proposed |
+| [0021](0021-device-identity-is-clear-by-default.md) | Device identity is clear by default, gated per tenant at the device, and a real username rides beside `user_ref` | proposed |
 
-Twenty records. One is superseded, and the supersession is the most consequential edit in the set:
+Twenty-one records. One is superseded, and the supersession is the most consequential edit in the set:
 **ADR 0014 reverses ADR 0008 on customer requirement.** ADR 0008 is kept, marked superseded, because
 its reasoning about brief §3.5 is still correct — what changed is the response to it. **ADR 0016** is an
 amendment of a different kind: it changes the classifier host's language, and with it a §4.1 clause, while
@@ -46,6 +47,10 @@ itself, so the edge stays a filter rather than becoming the authority — and it
 **ADR 0020** amends 0019 on the one point research invalidated: the edge is Application Gateway, not
 Front Door, and the origin authenticates a forwarded certificate through a pluggable seam (mTLS, DPoP, or
 an acknowledged development principal) rather than terminating the client TLS handshake itself.
+**ADR 0021** reverses the package's pseudonymity position on the owner's direction: device identity
+is clear by default and a real username rides beside `user_ref`, gated per tenant at the device — it
+supersedes `docs/04` A8 and `docs/06` A6, and is the one record here that widens what personal data
+the product holds rather than narrowing it.
 
 ## Which decisions carry the most weight
 

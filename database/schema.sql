@@ -248,6 +248,14 @@ CREATE TABLE ops.tenant (
   content_search               text NOT NULL DEFAULT 'disabled'
                                  CHECK (content_search IN ('disabled','attachment_names','full_text')),
   content_budget_bytes_per_day bigint NOT NULL DEFAULT 0 CHECK (content_budget_bytes_per_day >= 0),
+  -- The device-identity setting (backlog/04-device-identity). 'clear' means the device sends, and
+  -- the read returns, the machine's hostname and the submitting account name; 'hashed' means the
+  -- device sends only the hostname hash and no account name. ON by default, at the owner's
+  -- direction: this deliberately reverses the earlier "pseudonymous on the wire" position, and the
+  -- reasoning, the opt-out and the ADR that supersedes docs/04 A8 and docs/06 A6 are recorded in
+  -- backlog/04-device-identity/DECISIONS.md and docs/adr.
+  device_identity              text NOT NULL DEFAULT 'clear'
+                                 CHECK (device_identity IN ('clear','hashed')),
   directory_source             text,
   -- The two enforcement gates, deliberately separate from the commercial lifecycle in `status`.
   --
@@ -335,6 +343,10 @@ COMMENT ON COLUMN ops.user_dim.directory_object_id_enc IS
 CREATE TABLE ops.device (
   tenant_id        uuid NOT NULL REFERENCES ops.tenant(tenant_id),
   device_id        uuid NOT NULL,
+  -- The clear machine name, present only while the tenant's device_identity is 'clear'; when it is
+  -- 'hashed' the device sends hostname_hash instead and this stays NULL. Both columns exist so the
+  -- setting is a real per-tenant choice rather than a one-way door (backlog/04-device-identity).
+  hostname         text,
   hostname_hash    text,
   -- The stable, privacy-preserving idempotency key for enrolment (brief C11, master doc A17).
   -- A hash rather than the raw hardware identifier, so re-enrolment can recognise a returning
@@ -343,8 +355,21 @@ CREATE TABLE ops.device (
   hardware_identity_hash text,
   os               text NOT NULL CHECK (os IN ('windows','macos','linux')),
   os_version       text,
+  -- Reported by the device at enrolment and on each heartbeat. agent_version is the reporting build;
+  -- collection_mode is the effective base mode the device resolved from the signed bundle for its
+  -- own scope (see DECISIONS.md D4). Both are current-state facts, overwritten on each report.
+  agent_version    text,
   mdm_id           text,
   managed_state    text NOT NULL DEFAULT 'unknown' CHECK (managed_state IN ('managed','unmanaged','unknown')),
+  -- Reported by the device, because there is no MDM resolver in this build. The meaning of each value
+  -- and the mapping to a managed/unmanaged/unknown vocabulary live in docs/06.
+  collection_mode  text CHECK (collection_mode IN ('m0','m1','m2','m3')),
+  -- The person most recently active on the device, maintained monotonically by the ingest acceptance
+  -- path as last_seen_at is. last_user_ref is the pseudonymous key; last_subject_name is the clear
+  -- account name from the same submission, present only while device_identity is 'clear'. Keeping
+  -- these on the device row lets the Devices read return a user without a per-read subject join.
+  last_user_ref     text,
+  last_subject_name text,
   residency_region text,
   enrolled_at      timestamptz NOT NULL DEFAULT now(),
   revoked_at       timestamptz,
@@ -353,6 +378,15 @@ CREATE TABLE ops.device (
   last_seen_at     timestamptz,
   PRIMARY KEY (tenant_id, device_id)
 );
+
+COMMENT ON COLUMN ops.device.hostname IS
+  'The clear machine name, when the tenant''s device_identity is ''clear''. NULL when the setting is ''hashed'', in which case hostname_hash carries the device-supplied hash and no clear name is stored. The reversal of the earlier hash-only design is recorded in backlog/04-device-identity/DECISIONS.md and the accompanying ADR.';
+
+COMMENT ON COLUMN ops.device.collection_mode IS
+  'The effective base collection mode the device resolved from the signed bundle for its own scope: the device override when the bundle names this device, otherwise the tenant default. Per-tool, per-population and per-class modes can be narrower and are not reflected here; this is the blanket coverage the device applies where no narrower scope does (DECISIONS.md D4).';
+
+COMMENT ON COLUMN ops.device.last_subject_name IS
+  'The clear account name from the device''s most recent submission, present only while device_identity is ''clear''. It exists so the Devices list can name the user as-of the last submission without a subject join on every read; it is the reason the Devices read is subject-level and audited (docs/04 section 5.2).';
 
 -- Brief C11: re-enrolment after a re-image is idempotent and returns the existing identity, so a
 -- hardware identity may appear at most once per tenant. A plain UNIQUE constraint is the wrong
@@ -938,6 +972,11 @@ CREATE TABLE ingest.observation (
   event_id          uuid NOT NULL,
   device_id         uuid NOT NULL,
   user_ref          text NOT NULL,
+  -- The clear account name at submission time, present only while the tenant's device_identity is
+  -- 'clear' and only when the device could attribute the observation to a person. NULL is a real
+  -- answer (a background process, a headless host, a hashed tenant) and the read falls back to
+  -- user_ref; it is never a placeholder for "unknown person".
+  subject_name      text,
   tool_fingerprint  text NOT NULL,
   direction         text NOT NULL CHECK (direction IN ('egress','ingress','none')),
   kind              text NOT NULL CHECK (kind IN ('prompt','usage_rollup','model_detection')),
@@ -1094,6 +1133,11 @@ CREATE TABLE ingest.submission (
   kind               text NOT NULL CHECK (kind IN ('prompt','usage_rollup','model_detection')),
   device_id          uuid NOT NULL,
   user_ref           text NOT NULL,
+  -- The clear account name at submission time; see ingest.observation.subject_name. A submission
+  -- merged from several routes keeps the name of the winning (highest-fidelity) observation, which
+  -- is the same route whose content-bearing fields win, so the name and the content always describe
+  -- the same observation.
+  subject_name       text,
   tool_fingerprint   text NOT NULL,
   first_occurred_at  timestamptz NOT NULL,
   last_occurred_at   timestamptz NOT NULL,
@@ -1417,8 +1461,14 @@ CREATE VIEW mart.v_device_liveness
 WITH (security_invoker = true) AS
 SELECT d.tenant_id,
        d.device_id,
+       d.hostname,
        d.os,
+       d.os_version,
+       d.agent_version,
        d.managed_state,
+       d.collection_mode,
+       d.last_user_ref,
+       d.last_subject_name,
        d.enrolled_at,
        d.revoked_at,
        d.last_seen_at,
@@ -1433,7 +1483,7 @@ SELECT d.tenant_id,
   FROM ops.device d;
 
 COMMENT ON VIEW mart.v_device_liveness IS
-  'Turns an absence of events into an explicit state. `stale` and `never_reported` are different facts and are not merged, and neither is `revoked`: a device that was deliberately removed is not a device that has gone quiet.';
+  'Turns an absence of events into an explicit state. `stale` and `never_reported` are different facts and are not merged, and neither is `revoked`: a device that was deliberately removed is not a device that has gone quiet. It also carries the device identity fields the Devices page shows (hostname, agent_version, collection_mode, managed_state) and the most-recent user (last_user_ref, last_subject_name), which makes a read of it subject-level: docs/04 §5.2 audits any query that returns a subject reference, so this view''s reads are audited as served.';
 
 -- Sanctioned state joined to aggregates, because the state is present-tense configuration
 -- rather than a property of the event (see the note on mart.agg_tool_period).
@@ -1781,6 +1831,7 @@ DECLARE
   v_is_exact      boolean;
   v_exact         text;
   v_weak          text;
+  v_subject_name  text;
 BEGIN
   SELECT f.fidelity_rank INTO v_fidelity FROM ref.route_fidelity f WHERE f.source = v_source;
   IF v_fidelity IS NULL THEN
@@ -1800,11 +1851,18 @@ BEGIN
                                       p_envelope->>'tool_fingerprint', v_kind, v_occurred,
                                       (p_envelope->>'size_bytes')::bigint);
 
+  -- The clear account name is stored only for a tenant whose identity setting is 'clear'. The
+  -- server is authoritative: a stale device that still sends a name to a 'hashed' tenant has it
+  -- dropped here, so the setting is a real storage control and not a display filter (ADR 0021).
+  SELECT CASE WHEN t.device_identity = 'clear' THEN nullif(p_envelope->>'subject_name', '') END
+    INTO v_subject_name
+    FROM ops.tenant t WHERE t.tenant_id = v_tenant;
+
   -- Step 1: record the observation. ON CONFLICT DO NOTHING is what makes a retry free
   -- (brief C12: idempotency enforced by the store, not by a check in code). The primary key
   -- is (tenant_id, event_id), so a replayed batch inserts nothing and reports duplicates.
   INSERT INTO ingest.observation (
-    tenant_id, event_id, device_id, user_ref, tool_fingerprint, direction, kind,
+    tenant_id, event_id, device_id, user_ref, subject_name, tool_fingerprint, direction, kind,
     occurred_at, received_at, monotonic_offset_ms, source, confidence, collection_mode,
     size_bytes, content_digest, labels, classifier_version, content_excerpt, policy_decision,
     window_start, window_end, submission_count, bytes_total, detection_basis,
@@ -1815,6 +1873,7 @@ BEGIN
     v_event_id,
     (p_envelope->>'device_id')::uuid,
     p_envelope->>'user_ref',
+    v_subject_name,
     p_envelope->>'tool_fingerprint',
     p_envelope->>'direction',
     v_kind,
@@ -1858,6 +1917,16 @@ BEGIN
     RETURN QUERY SELECT 'duplicate'::text, v_sub_id;
     RETURN;
   END IF;
+
+  -- The most recent user, for the Devices read. Guarded like last_seen_at so an out-of-order batch
+  -- (a spool flush, a retry) cannot move the device's user backwards; the clear name is gated by the
+  -- tenant setting as v_subject_name above already is (ADR 0021).
+  UPDATE ops.device
+     SET last_user_ref     = p_envelope->>'user_ref',
+         last_subject_name = v_subject_name
+   WHERE tenant_id = v_tenant
+     AND device_id = (p_envelope->>'device_id')::uuid
+     AND (last_seen_at IS NULL OR last_seen_at <= p_received_at);
 
   -- Step 2: fold the observation into the logical submission. Three cases, in order:
   --
@@ -1931,6 +2000,13 @@ BEGIN
                                      ELSE coalesce(s.content_digest,
                                                    CASE WHEN v_is_exact THEN p_envelope->>'content_digest' END) END,
            labels             = CASE WHEN v_fidelity < s.winning_fidelity THEN p_envelope->'labels' ELSE s.labels END,
+           -- The name travels with the winning observation like the other per-observation fields,
+           -- except that a route which could not attribute a person does not erase a name an earlier
+           -- route did supply: coalesce keeps the first known name. A name is not content, so it is
+           -- safe to combine across two observations of the same submission, which is one person.
+           subject_name       = CASE WHEN v_fidelity < s.winning_fidelity
+                                     THEN v_subject_name
+                                     ELSE coalesce(s.subject_name, v_subject_name) END,
            classifier_version = CASE WHEN v_fidelity < s.winning_fidelity THEN p_envelope->>'classifier_version' ELSE s.classifier_version END,
            confidence         = CASE WHEN v_fidelity < s.winning_fidelity THEN p_envelope->>'confidence' ELSE s.confidence END,
            -- A row that still has no exact key is the honest lower bound on that count, so it
@@ -1951,8 +2027,8 @@ BEGIN
   END IF;
 
   INSERT INTO ingest.submission (
-    tenant_id, submission_id, dedup_key, dedup_weak_key, kind, device_id, user_ref, tool_fingerprint,
-    first_occurred_at, last_occurred_at, received_at, collection_mode, size_bytes,
+    tenant_id, submission_id, dedup_key, dedup_weak_key, kind, device_id, user_ref, subject_name,
+    tool_fingerprint, first_occurred_at, last_occurred_at, received_at, collection_mode, size_bytes,
     content_digest, labels, classifier_version, confidence, policy_action, policy_rule_id,
     decided_locally, winning_source, winning_fidelity, observed_routes, observation_count,
     merge_confidence, expires_at
@@ -1965,6 +2041,7 @@ BEGIN
     v_kind,
     (p_envelope->>'device_id')::uuid,
     p_envelope->>'user_ref',
+    v_subject_name,
     p_envelope->>'tool_fingerprint',
     v_occurred, v_occurred, p_received_at, v_mode,
     (p_envelope->>'size_bytes')::bigint,
@@ -2062,8 +2139,11 @@ GRANT SELECT ON ops.tenant, ops.device, ops.device_credential, ops.retention_pol
 -- Accepting a batch is the device's activity, so ingest-api stamps last_seen_at in the same
 -- transaction that accepts it (docs/04 §3.7, docs/01-collectors.md §14.5). The grant is
 -- column-level and one-way: an activity stamp must not become a way for the write path to change a
--- device's identity, os or revocation.
-GRANT UPDATE (last_seen_at) ON ops.device TO sac_ingest;
+-- device's identity, os or revocation. last_user_ref and last_subject_name are the same fact for the
+-- person (the most recent submission's user), so the Devices read can name the user without a
+-- subject join; they are still identity columns in the sense that matters -- the write path can set
+-- these three timestamps-of-activity fields and nothing else about the device.
+GRANT UPDATE (last_seen_at, last_user_ref, last_subject_name) ON ops.device TO sac_ingest;
 -- The usage ledger is incremented by the component that accepts the events, in the same
 -- transaction, because a billing counter that could commit without its data -- or data without
 -- its counter -- would be wrong in a way nobody notices until an invoice is disputed.

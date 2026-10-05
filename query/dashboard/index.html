@@ -1339,10 +1339,10 @@ const TOOL_ROWS = Object.freeze([
 ]);
 
 const DEVICE_ROWS = Object.freeze([
-  Object.freeze({ device: '9f1c0b6e-0000-4000-8000-000000000001', device_os: 'windows', managed_state: 'managed', region: 'eu', liveness: 'reporting', collector: 'capture_extension', collector_state: 'healthy', spool_depth: 0, spool_dropped_total: 0, last_seen_at: '2026-10-01T11:57:00Z' }),
-  Object.freeze({ device: '9f1c0b6e-0000-4000-8000-000000000002', device_os: 'macos', managed_state: 'managed', region: 'eu', liveness: 'stale', collector: 'egress_proxy', collector_state: 'degraded', spool_depth: 812, spool_dropped_total: 0, last_seen_at: '2026-09-29T02:11:00Z' }),
-  Object.freeze({ device: '9f1c0b6e-0000-4000-8000-000000000003', device_os: 'windows', managed_state: 'unmanaged', region: 'us', liveness: 'never_reported', collector: null, collector_state: null, spool_depth: null, spool_dropped_total: null, last_seen_at: null }),
-  Object.freeze({ device: '9f1c0b6e-0000-4000-8000-000000000004', device_os: 'windows', managed_state: 'managed', region: 'us', liveness: 'revoked', collector: 'cli_shim', collector_state: 'absent', spool_depth: 0, spool_dropped_total: 4412, last_seen_at: '2026-09-12T09:00:00Z' }),
+  Object.freeze({ device: '9f1c0b6e-0000-4000-8000-000000000001', hostname: 'FIN-LAPTOP-07', device_os: 'windows', os_version: '11', agent_version: '1.4.2', collection_mode: 'm3', managed_state: 'managed', user_ref: 'u_4f21', subject_name: 'alice@contoso.example', region: 'eu', liveness: 'reporting', collector: 'capture_extension', collector_state: 'healthy', spool_depth: 0, spool_dropped_total: 0, last_seen_at: '2026-10-01T11:57:00Z' }),
+  Object.freeze({ device: '9f1c0b6e-0000-4000-8000-000000000002', hostname: 'MAC-DESIGN-2', device_os: 'macos', os_version: '15', agent_version: '1.4.2', collection_mode: 'm2', managed_state: 'managed', user_ref: 'u_9a02', subject_name: 'bob@contoso.example', region: 'eu', liveness: 'stale', collector: 'egress_proxy', collector_state: 'degraded', spool_depth: 812, spool_dropped_total: 0, last_seen_at: '2026-09-29T02:11:00Z' }),
+  Object.freeze({ device: '9f1c0b6e-0000-4000-8000-000000000003', hostname: null, device_os: 'windows', os_version: '10', agent_version: null, collection_mode: 'm1', managed_state: 'unmanaged', user_ref: null, subject_name: null, region: 'us', liveness: 'never_reported', collector: null, collector_state: null, spool_depth: null, spool_dropped_total: null, last_seen_at: null }),
+  Object.freeze({ device: '9f1c0b6e-0000-4000-8000-000000000004', hostname: 'OPS-BUILD-4', device_os: 'windows', os_version: '11', agent_version: '1.3.0', collection_mode: 'm0', managed_state: 'managed', user_ref: 'u_1b77', subject_name: 'svc-build', region: 'us', liveness: 'revoked', collector: 'cli_shim', collector_state: 'absent', spool_depth: 0, spool_dropped_total: 4412, last_seen_at: '2026-09-12T09:00:00Z' }),
 ]);
 
 const ACTIVITY_ROWS = Object.freeze([
@@ -2517,6 +2517,12 @@ function devicesView(state, { filters = {}, now = new Date(), exploreHref = 'exp
       status: status.key,
       status_text: status.text,
       last_seen_at_ago: row.last_seen_at ? ago(row.last_seen_at, now) : null,
+      // The device name is the hostname, with the UUID kept for the hover and as the fallback. The
+      // user is the clear account name of the most recent submission, with the pseudonymous ref as
+      // the fallback (ADR 0021). Both are present only when the tenant's identity setting is clear.
+      device_name: row.hostname || null,
+      user: row.subject_name ?? row.user_ref ?? null,
+      mode: row.collection_mode ?? null,
       activity: row.device ? `${exploreHref}#events?device=${encodeURIComponent(String(row.device))}` : null,
     };
   });
@@ -2592,9 +2598,12 @@ function devicesView(state, { filters = {}, now = new Date(), exploreHref = 'exp
         ...tableFrom({ data: rows }, {
           title: 'Devices',
           columns: [
-            column('device', 'Device'),
+            column('device_name', 'Device', 'device-name'),
+            column('user', 'User'),
             column('status', 'Status', 'status'),
             column('last_seen_at', 'Last seen', 'ago'),
+            column('agent_version', 'Agent version'),
+            column('mode', 'Mode', 'vocab'),
             column('device_os', 'OS', 'vocab'),
             column('managed_state', 'Management', 'vocab'),
             Object.freeze({ key: 'activity', label: '', kind: 'link', linkLabel: 'View activity' }),
@@ -3069,6 +3078,17 @@ function renderCell(row, column, max = 0) {
     return raw
       ? `<span class="v-text" title="${escapeHtml(formatInstant(raw))}">${escapeHtml(row[`${key}_ago`] ?? formatInstant(raw))}</span>`
       : '<span class="v-absent">Never</span>';
+  }
+  if (kind === 'device-name') {
+    // The hostname is the device name; the UUID is the identity and stays available on hover, and
+    // is the fallback label when no hostname was recorded (a 'hashed' tenant, or an old device).
+    const uuid = row.device ? String(row.device) : '';
+    if (raw === null || raw === undefined || raw === '') {
+      return uuid
+        ? `<span class="v-text" title="${escapeHtml(uuid)}"><span class="v-mono">${escapeHtml(uuid.slice(0, 8))}…</span></span>`
+        : renderValue({ kind: 'absent' });
+    }
+    return `<span class="v-text" title="${escapeHtml(uuid)}">${escapeHtml(String(raw))}</span>`;
   }
   if (kind === 'link') {
     return raw ? `<a class="cell-link" href="${escapeHtml(String(raw))}">${escapeHtml(column.linkLabel ?? 'Open')}</a>` : '';

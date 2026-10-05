@@ -24,6 +24,11 @@ and may not report its content, a digest of it, or anything derived from it. Tha
 schema, in `endpoint/protocol`, and in the database's shape constraints — three independent places,
 because a rule enforced in one place is a rule with one bug away from being no rule.
 
+`subject_name` is the one field that reverses an earlier position: the wire was pseudonymous end to
+end (`user_ref` only), and ADR 0021 adds an optional clear account name beside it for tenants that
+choose `device_identity = 'clear'`. It is not content-derived and is permitted at every kind and
+mode; a `hashed` tenant's device sends neither it nor the clear hostname.
+
 Observations are immutable and the envelope is the record, per
 [ADR 0004](../docs/adr/0004-observations-are-immutable-and-the-closed-envelope-is-the-record.md).
 

@@ -286,9 +286,8 @@ export interface EnvelopeCore {
    */
   readonly device_id: Uuid;
   /**
-   * Pseudonymous subject reference, stable per tenant. Resolved to a person only through
-   * ops.user_dim, which is populated from the customer's directory. The wire format never carries a
-   * name, email or directory object id.
+   * Pseudonymous subject reference, stable per tenant. This remains the join key for policy scope,
+   * dedup, aggregates, k-suppression and audit. It is not the display name; see subject_name.
    * @minLength 1
    * @maxLength 200
    */
@@ -361,7 +360,7 @@ export interface EnvelopeCore {
  * Required by the schema: the common core (with `direction`, `kind`, `collection_mode`
  * pinned), plus `size_bytes`, `policy_decision`.
  *
- * Permitted but not required: nothing beyond the required fields.
+ * Permitted but not required: `subject_name`.
  *
  * Must not carry, so absent from this interface: `received_at`, `confidence`,
  * `content_digest`, `labels`, `classifier_version`, `content_excerpt`, `attachments`,
@@ -395,6 +394,16 @@ export interface DevicePromptM0 extends EnvelopeCore {
    */
   readonly collection_mode: "m0";
   /**
+   * The human-readable account name of the person at the moment of submission, when the tenant's
+   * device_identity setting is 'clear'. Optional: a device that cannot attribute the observation to
+   * a person (a background process, a headless host) omits it, and the read falls back to user_ref.
+   * This field reverses the earlier pseudonymous-only wire position (docs/04 A8, docs/06 A6) at the
+   * owner's direction; it is carried only when the setting permits.
+   * @minLength 1
+   * @maxLength 200
+   */
+  readonly subject_name?: string;
+  /**
    * Size of the observed payload. Available at every mode including M0.
    * @minimum 0
    */
@@ -412,7 +421,7 @@ export interface DevicePromptM0 extends EnvelopeCore {
  * Required by the schema: the common core (with `direction`, `kind`, `collection_mode`
  * pinned), plus `received_at`, `size_bytes`, `policy_decision`.
  *
- * Permitted but not required: nothing beyond the required fields.
+ * Permitted but not required: `subject_name`.
  *
  * Must not carry, so absent from this interface: `confidence`, `content_digest`, `labels`,
  * `classifier_version`, `content_excerpt`, `attachments`, `window_start`, `window_end`,
@@ -453,6 +462,16 @@ export interface StoredPromptM0 extends EnvelopeCore {
    */
   readonly received_at: DateTime;
   /**
+   * The human-readable account name of the person at the moment of submission, when the tenant's
+   * device_identity setting is 'clear'. Optional: a device that cannot attribute the observation to
+   * a person (a background process, a headless host) omits it, and the read falls back to user_ref.
+   * This field reverses the earlier pseudonymous-only wire position (docs/04 A8, docs/06 A6) at the
+   * owner's direction; it is carried only when the setting permits.
+   * @minLength 1
+   * @maxLength 200
+   */
+  readonly subject_name?: string;
+  /**
    * Size of the observed payload. Available at every mode including M0.
    * @minimum 0
    */
@@ -471,7 +490,7 @@ export interface StoredPromptM0 extends EnvelopeCore {
  * pinned), plus `confidence`, `size_bytes`, `content_digest`, `labels`, `classifier_version`,
  * `policy_decision`.
  *
- * Permitted but not required: `content_excerpt`, `attachments`.
+ * Permitted but not required: `subject_name`, `content_excerpt`, `attachments`.
  *
  * Must not carry, so absent from this interface: `received_at`, `window_start`, `window_end`,
  * `submission_count`, `bytes_total`, `detection_basis`.
@@ -503,6 +522,16 @@ export interface DevicePromptM1 extends EnvelopeCore {
    * @enum "m0" | "m1" | "m2" | "m3"
    */
   readonly collection_mode: "m1";
+  /**
+   * The human-readable account name of the person at the moment of submission, when the tenant's
+   * device_identity setting is 'clear'. Optional: a device that cannot attribute the observation to
+   * a person (a background process, a headless host) omits it, and the read falls back to user_ref.
+   * This field reverses the earlier pseudonymous-only wire position (docs/04 A8, docs/06 A6) at the
+   * owner's direction; it is carried only when the setting permits.
+   * @minLength 1
+   * @maxLength 200
+   */
+  readonly subject_name?: string;
   /**
    * Overall classifier confidence band. 'degraded' means classification was attempted and did not
    * complete — the explicit signal required by brief §6 so that a failed classifier is never
@@ -559,7 +588,7 @@ export interface DevicePromptM1 extends EnvelopeCore {
  * pinned), plus `received_at`, `confidence`, `size_bytes`, `content_digest`, `labels`,
  * `classifier_version`, `policy_decision`.
  *
- * Permitted but not required: `content_excerpt`, `attachments`.
+ * Permitted but not required: `subject_name`, `content_excerpt`, `attachments`.
  *
  * Must not carry, so absent from this interface: `window_start`, `window_end`,
  * `submission_count`, `bytes_total`, `detection_basis`.
@@ -598,6 +627,16 @@ export interface StoredPromptM1 extends EnvelopeCore {
    * @format date-time
    */
   readonly received_at: DateTime;
+  /**
+   * The human-readable account name of the person at the moment of submission, when the tenant's
+   * device_identity setting is 'clear'. Optional: a device that cannot attribute the observation to
+   * a person (a background process, a headless host) omits it, and the read falls back to user_ref.
+   * This field reverses the earlier pseudonymous-only wire position (docs/04 A8, docs/06 A6) at the
+   * owner's direction; it is carried only when the setting permits.
+   * @minLength 1
+   * @maxLength 200
+   */
+  readonly subject_name?: string;
   /**
    * Overall classifier confidence band. 'degraded' means classification was attempted and did not
    * complete — the explicit signal required by brief §6 so that a failed classifier is never
@@ -654,7 +693,7 @@ export interface StoredPromptM1 extends EnvelopeCore {
  * pinned), plus `confidence`, `size_bytes`, `content_digest`, `labels`, `classifier_version`,
  * `content_excerpt`, `policy_decision`.
  *
- * Permitted but not required: `attachments`.
+ * Permitted but not required: `subject_name`, `attachments`.
  *
  * Must not carry, so absent from this interface: `received_at`, `window_start`, `window_end`,
  * `submission_count`, `bytes_total`, `detection_basis`.
@@ -686,6 +725,16 @@ export interface DevicePromptM2 extends EnvelopeCore {
    * @enum "m0" | "m1" | "m2" | "m3"
    */
   readonly collection_mode: "m2";
+  /**
+   * The human-readable account name of the person at the moment of submission, when the tenant's
+   * device_identity setting is 'clear'. Optional: a device that cannot attribute the observation to
+   * a person (a background process, a headless host) omits it, and the read falls back to user_ref.
+   * This field reverses the earlier pseudonymous-only wire position (docs/04 A8, docs/06 A6) at the
+   * owner's direction; it is carried only when the setting permits.
+   * @minLength 1
+   * @maxLength 200
+   */
+  readonly subject_name?: string;
   /**
    * Overall classifier confidence band. 'degraded' means classification was attempted and did not
    * complete — the explicit signal required by brief §6 so that a failed classifier is never
@@ -742,7 +791,7 @@ export interface DevicePromptM2 extends EnvelopeCore {
  * pinned), plus `received_at`, `confidence`, `size_bytes`, `content_digest`, `labels`,
  * `classifier_version`, `content_excerpt`, `policy_decision`.
  *
- * Permitted but not required: `attachments`.
+ * Permitted but not required: `subject_name`, `attachments`.
  *
  * Must not carry, so absent from this interface: `window_start`, `window_end`,
  * `submission_count`, `bytes_total`, `detection_basis`.
@@ -781,6 +830,16 @@ export interface StoredPromptM2 extends EnvelopeCore {
    * @format date-time
    */
   readonly received_at: DateTime;
+  /**
+   * The human-readable account name of the person at the moment of submission, when the tenant's
+   * device_identity setting is 'clear'. Optional: a device that cannot attribute the observation to
+   * a person (a background process, a headless host) omits it, and the read falls back to user_ref.
+   * This field reverses the earlier pseudonymous-only wire position (docs/04 A8, docs/06 A6) at the
+   * owner's direction; it is carried only when the setting permits.
+   * @minLength 1
+   * @maxLength 200
+   */
+  readonly subject_name?: string;
   /**
    * Overall classifier confidence band. 'degraded' means classification was attempted and did not
    * complete — the explicit signal required by brief §6 so that a failed classifier is never
@@ -837,7 +896,7 @@ export interface StoredPromptM2 extends EnvelopeCore {
  * pinned), plus `confidence`, `size_bytes`, `content_digest`, `labels`, `classifier_version`,
  * `policy_decision`.
  *
- * Permitted but not required: `attachments`.
+ * Permitted but not required: `subject_name`, `attachments`.
  *
  * Must not carry, so absent from this interface: `received_at`, `content_excerpt`,
  * `window_start`, `window_end`, `submission_count`, `bytes_total`, `detection_basis`.
@@ -869,6 +928,16 @@ export interface DevicePromptM3 extends EnvelopeCore {
    * @enum "m0" | "m1" | "m2" | "m3"
    */
   readonly collection_mode: "m3";
+  /**
+   * The human-readable account name of the person at the moment of submission, when the tenant's
+   * device_identity setting is 'clear'. Optional: a device that cannot attribute the observation to
+   * a person (a background process, a headless host) omits it, and the read falls back to user_ref.
+   * This field reverses the earlier pseudonymous-only wire position (docs/04 A8, docs/06 A6) at the
+   * owner's direction; it is carried only when the setting permits.
+   * @minLength 1
+   * @maxLength 200
+   */
+  readonly subject_name?: string;
   /**
    * Overall classifier confidence band. 'degraded' means classification was attempted and did not
    * complete — the explicit signal required by brief §6 so that a failed classifier is never
@@ -921,7 +990,7 @@ export interface DevicePromptM3 extends EnvelopeCore {
  * pinned), plus `received_at`, `confidence`, `size_bytes`, `content_digest`, `labels`,
  * `classifier_version`, `policy_decision`.
  *
- * Permitted but not required: `attachments`.
+ * Permitted but not required: `subject_name`, `attachments`.
  *
  * Must not carry, so absent from this interface: `content_excerpt`, `window_start`,
  * `window_end`, `submission_count`, `bytes_total`, `detection_basis`.
@@ -960,6 +1029,16 @@ export interface StoredPromptM3 extends EnvelopeCore {
    * @format date-time
    */
   readonly received_at: DateTime;
+  /**
+   * The human-readable account name of the person at the moment of submission, when the tenant's
+   * device_identity setting is 'clear'. Optional: a device that cannot attribute the observation to
+   * a person (a background process, a headless host) omits it, and the read falls back to user_ref.
+   * This field reverses the earlier pseudonymous-only wire position (docs/04 A8, docs/06 A6) at the
+   * owner's direction; it is carried only when the setting permits.
+   * @minLength 1
+   * @maxLength 200
+   */
+  readonly subject_name?: string;
   /**
    * Overall classifier confidence band. 'degraded' means classification was attempted and did not
    * complete — the explicit signal required by brief §6 so that a failed classifier is never
@@ -1011,7 +1090,7 @@ export interface StoredPromptM3 extends EnvelopeCore {
  * Required by the schema: the common core (with `direction`, `kind` pinned), plus
  * `window_start`, `window_end`, `submission_count`, `bytes_total`.
  *
- * Permitted but not required: `confidence`.
+ * Permitted but not required: `subject_name`, `confidence`.
  *
  * Must not carry, so absent from this interface: `received_at`, `size_bytes`,
  * `content_digest`, `labels`, `classifier_version`, `content_excerpt`, `attachments`,
@@ -1036,6 +1115,16 @@ export interface DeviceUsageRollup extends EnvelopeCore {
    * @enum "prompt" | "usage_rollup" | "model_detection"
    */
   readonly kind: "usage_rollup";
+  /**
+   * The human-readable account name of the person at the moment of submission, when the tenant's
+   * device_identity setting is 'clear'. Optional: a device that cannot attribute the observation to
+   * a person (a background process, a headless host) omits it, and the read falls back to user_ref.
+   * This field reverses the earlier pseudonymous-only wire position (docs/04 A8, docs/06 A6) at the
+   * owner's direction; it is carried only when the setting permits.
+   * @minLength 1
+   * @maxLength 200
+   */
+  readonly subject_name?: string;
   /**
    * Overall classifier confidence band. 'degraded' means classification was attempted and did not
    * complete — the explicit signal required by brief §6 so that a failed classifier is never
@@ -1071,7 +1160,7 @@ export interface DeviceUsageRollup extends EnvelopeCore {
  * Required by the schema: the common core (with `direction`, `kind` pinned), plus
  * `received_at`, `window_start`, `window_end`, `submission_count`, `bytes_total`.
  *
- * Permitted but not required: `confidence`.
+ * Permitted but not required: `subject_name`, `confidence`.
  *
  * Must not carry, so absent from this interface: `size_bytes`, `content_digest`, `labels`,
  * `classifier_version`, `content_excerpt`, `attachments`, `policy_decision`,
@@ -1103,6 +1192,16 @@ export interface StoredUsageRollup extends EnvelopeCore {
    * @format date-time
    */
   readonly received_at: DateTime;
+  /**
+   * The human-readable account name of the person at the moment of submission, when the tenant's
+   * device_identity setting is 'clear'. Optional: a device that cannot attribute the observation to
+   * a person (a background process, a headless host) omits it, and the read falls back to user_ref.
+   * This field reverses the earlier pseudonymous-only wire position (docs/04 A8, docs/06 A6) at the
+   * owner's direction; it is carried only when the setting permits.
+   * @minLength 1
+   * @maxLength 200
+   */
+  readonly subject_name?: string;
   /**
    * Overall classifier confidence band. 'degraded' means classification was attempted and did not
    * complete — the explicit signal required by brief §6 so that a failed classifier is never
@@ -1138,7 +1237,7 @@ export interface StoredUsageRollup extends EnvelopeCore {
  * Required by the schema: the common core (with `direction`, `kind` pinned), plus
  * `detection_basis`.
  *
- * Permitted but not required: `confidence`.
+ * Permitted but not required: `subject_name`, `confidence`.
  *
  * Must not carry, so absent from this interface: `received_at`, `size_bytes`,
  * `content_digest`, `labels`, `classifier_version`, `content_excerpt`, `attachments`,
@@ -1164,6 +1263,16 @@ export interface DeviceModelDetection extends EnvelopeCore {
    */
   readonly kind: "model_detection";
   /**
+   * The human-readable account name of the person at the moment of submission, when the tenant's
+   * device_identity setting is 'clear'. Optional: a device that cannot attribute the observation to
+   * a person (a background process, a headless host) omits it, and the read falls back to user_ref.
+   * This field reverses the earlier pseudonymous-only wire position (docs/04 A8, docs/06 A6) at the
+   * owner's direction; it is carried only when the setting permits.
+   * @minLength 1
+   * @maxLength 200
+   */
+  readonly subject_name?: string;
+  /**
    * Overall classifier confidence band. 'degraded' means classification was attempted and did not
    * complete — the explicit signal required by brief §6 so that a failed classifier is never
    * reported as 'no sensitive data found'.
@@ -1185,7 +1294,7 @@ export interface DeviceModelDetection extends EnvelopeCore {
  * Required by the schema: the common core (with `direction`, `kind` pinned), plus
  * `received_at`, `detection_basis`.
  *
- * Permitted but not required: `confidence`.
+ * Permitted but not required: `subject_name`, `confidence`.
  *
  * Must not carry, so absent from this interface: `size_bytes`, `content_digest`, `labels`,
  * `classifier_version`, `content_excerpt`, `attachments`, `policy_decision`, `window_start`,
@@ -1217,6 +1326,16 @@ export interface StoredModelDetection extends EnvelopeCore {
    * @format date-time
    */
   readonly received_at: DateTime;
+  /**
+   * The human-readable account name of the person at the moment of submission, when the tenant's
+   * device_identity setting is 'clear'. Optional: a device that cannot attribute the observation to
+   * a person (a background process, a headless host) omits it, and the read falls back to user_ref.
+   * This field reverses the earlier pseudonymous-only wire position (docs/04 A8, docs/06 A6) at the
+   * owner's direction; it is carried only when the setting permits.
+   * @minLength 1
+   * @maxLength 200
+   */
+  readonly subject_name?: string;
   /**
    * Overall classifier confidence band. 'degraded' means classification was attempted and did not
    * complete — the explicit signal required by brief §6 so that a failed classifier is never

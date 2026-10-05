@@ -115,6 +115,10 @@ func parseFlags(args []string) (Config, runMode, error) {
 	fs.StringVar(&cfg.TenantID, "tenant-id", cfg.TenantID, "tenant id stamped on every envelope (from enrolment, §13.1)")
 	fs.StringVar(&cfg.DeviceID, "device-id", cfg.DeviceID, "device id stamped on every envelope")
 	fs.StringVar(&cfg.UserRef, "user-ref", cfg.UserRef, "pseudonymous subject reference (never a name or e-mail)")
+	fs.StringVar(&cfg.Hostname, "hostname", cfg.Hostname, "clear machine name reported to the control plane; empty resolves the OS hostname (ADR 0021)")
+	fs.StringVar(&cfg.SubjectName, "subject-name", cfg.SubjectName, "clear account name stamped on each submission; empty resolves the OS user (ADR 0021)")
+	fs.StringVar(&cfg.ManagedState, "managed-state", cfg.ManagedState, "whether the device is under MDM: managed | unmanaged | unknown (default unknown; no MDM resolver in this build)")
+	fs.StringVar(&cfg.DeviceIdentity, "device-identity", cfg.DeviceIdentity, "tenant identity setting to act on: clear | hashed (default clear; the server restates and may change it)")
 	fs.StringVar(&cfg.Population, "population", cfg.Population, "user population for scope resolution (may be empty)")
 	fs.StringVar(&cfg.Retention, "retention", cfg.Retention, "device-side retention for spooled observations (e.g. 720h)")
 

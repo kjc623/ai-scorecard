@@ -286,3 +286,57 @@ func TestEnvelope_NoUndecidedJSONKeys(t *testing.T) {
 		t.Error("an empty label set was omitted; absence and emptiness are different facts at M1+")
 	}
 }
+
+// TestEnvelope_SubjectNameIsOptionalAndGated covers ADR 0021 at the device boundary: the clear
+// account name rides on the envelope when set, is absent when the identity carries none (a 'hashed'
+// tenant), and an over-long name is refused at mint time rather than sent to be rejected by ingest.
+func TestEnvelope_SubjectNameIsOptionalAndGated(t *testing.T) {
+	size := int64(10)
+	start := time.Unix(1_700_000_000, 0).UTC()
+	base := EnvelopeInput{
+		Identity:        Identity{TenantID: "t", DeviceID: "d", UserRef: "u", SubjectName: "alice@contoso"},
+		EventID:         "11111111-2222-4333-8444-555555555555",
+		Kind:            protocol.KindPrompt,
+		Route:           protocol.RouteProxyLoopback,
+		Mode:            protocol.ModeM0,
+		ToolFingerprint: "tool",
+		OccurredAt:      start,
+		SizeBytes:       &size,
+		Decision:        &protocol.Decision{RuleID: "R", Action: protocol.ActionLogged},
+		DedupKey:        "sha256:" + strings.Repeat("a", 64),
+	}
+
+	raw, err := BuildEnvelope(base)
+	if err != nil {
+		t.Fatalf("BuildEnvelope: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := string(fields["subject_name"]); got != `"alice@contoso"` {
+		t.Fatalf("subject_name = %s, want the identity's clear name", got)
+	}
+
+	// No name in the identity: the field is omitted, never emitted empty (absence is a fact).
+	hashed := base
+	hashed.Identity = Identity{TenantID: "t", DeviceID: "d", UserRef: "u"}
+	raw, err = BuildEnvelope(hashed)
+	if err != nil {
+		t.Fatalf("BuildEnvelope (no name): %v", err)
+	}
+	fields = map[string]json.RawMessage{}
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := fields["subject_name"]; ok {
+		t.Error("a record with no clear name carried subject_name")
+	}
+
+	// The contract caps the name at 200 characters; the device refuses rather than emitting it.
+	tooLong := base
+	tooLong.SubjectName = strings.Repeat("x", 201)
+	if _, err := BuildEnvelope(tooLong); err == nil {
+		t.Error("an over-long subject_name was minted; ingest would reject it")
+	}
+}
