@@ -2,8 +2,11 @@ package vault
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/shadow-ai-capture/device/protocol"
@@ -27,6 +30,12 @@ type SearchRequest struct {
 	// CaseReference is optional for a search and required for a retrieval: C16 gates full-content
 	// retrieval, not bounded snippets (§6.3's honest consequence 3).
 	CaseReference string
+	// Filters narrows the search to a person, tool, device, mode and received-at window. The vault
+	// composes them by joining its index to ingest.submission (docs/04 §15.3), because query-api
+	// may not read the index and the vault may not hand the filter to a second reader.
+	Filters store.SearchFilters
+	// Cursor is the opaque position a later page resumes from. Empty is the first page.
+	Cursor string
 }
 
 // SearchResult is bounded snippets plus the counts the audit row records.
@@ -36,6 +45,8 @@ type SearchResult struct {
 	UnitKinds []string
 	Effective store.SearchTier
 	Truncated bool
+	// NextCursor is the position of the next page, or empty at the end of the result set.
+	NextCursor string
 }
 
 // Search executes one search under the tenant's ceiling, the bundle's scope narrowing, the closed
@@ -87,47 +98,133 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (SearchResult, 
 		return SearchResult{}, err
 	}
 
+	var cursor *store.SearchCursor
+	if req.Cursor != "" {
+		c, err := decodeSearchCursor(req.Cursor)
+		if err != nil {
+			return SearchResult{}, Denialf(DenySearchCursorInvalid, "%v", err)
+		}
+		cursor = c
+	}
+
 	limit := req.Limit
 	if limit <= 0 || limit > s.opts.MaxSearchResults {
 		limit = s.opts.MaxSearchResults
 	}
+	// One more than the page, so "there is another page" is known without a second query. The
+	// extra row is dropped before the answer is built; it exists only to set the cursor.
 	q := store.SearchQuery{
 		TenantID: tenant.TenantID, Form: req.Form, Text: query, UnitKind: unitKind,
-		Limit: limit, MinSimilar: s.opts.FuzzyThreshold,
+		Limit: limit + 1, MinSimilar: s.opts.FuzzyThreshold, Filters: req.Filters, Cursor: cursor,
 	}
 
 	// Audit before serve, in the same transaction: §6.3 requires "no audit row, no results", and
 	// the failure mode it prevents is a query used as a confirmation oracle, which produces its
 	// signal precisely when it returns nothing.
+	detail := map[string]any{
+		// The query terms are themselves subject-level data (§6.3): an audit log recording
+		// that an analyst searched for a name is a record of an investigation into that
+		// person, so it belongs in the audited, hash-chained trail and nowhere else.
+		"form": string(req.Form), "terms": query, "scope": req.Scope,
+		"unit_kind": unitKind, "limit": limit, "effective_tier": string(effective),
+	}
+	// The filters are recorded too: a search narrowed to a person is an investigation into that
+	// person, and the audit row is the only place that narrowing should live.
+	if f := filterDetail(req.Filters); len(f) > 0 {
+		detail["filters"] = f
+	}
 	hits, err := s.opts.Store.SearchAudited(ctx, q, store.AuditEntry{
 		TenantID: tenant.TenantID, ActorType: "user", ActorID: req.Principal,
 		Action: ActionSearch, ObjectType: "search_text", ObjectID: req.Scope,
 		CaseReference: req.CaseReference,
-		Detail: map[string]any{
-			// The query terms are themselves subject-level data (§6.3): an audit log recording
-			// that an analyst searched for a name is a record of an investigation into that
-			// person, so it belongs in the audited, hash-chained trail and nowhere else.
-			"form": string(req.Form), "terms": query, "scope": req.Scope,
-			"unit_kind": unitKind, "limit": limit, "effective_tier": string(effective),
-		},
-		OccurredAt: now,
+		Detail:        detail,
+		OccurredAt:    now,
 	})
 	if err != nil {
 		return SearchResult{}, Denialf(DenyAuditUnavailable, "the search audit row could not be committed, so the search fails closed: %v", err)
 	}
 
+	next := ""
+	if len(hits) > limit {
+		hits = hits[:limit]
+		last := hits[len(hits)-1]
+		next = encodeSearchCursor(store.SearchCursor{
+			ReceivedAt: last.ReceivedAt, SubmissionID: last.SubmissionID,
+			UnitKind: last.UnitKind, UnitIndex: last.UnitIndex,
+		})
+	}
 	out := make([]store.SearchHit, 0, len(hits))
 	for _, h := range hits {
 		h.Snippet = bound(h.Snippet, s.opts.MaxSnippetChars)
 		out = append(out, h)
 	}
 	return SearchResult{
-		State:     "available",
-		Hits:      out,
-		UnitKinds: unitKinds(effective),
-		Effective: effective,
-		Truncated: len(hits) >= limit,
+		State:      "available",
+		Hits:       out,
+		UnitKinds:  unitKinds(effective),
+		Effective:  effective,
+		Truncated:  next != "",
+		NextCursor: next,
 	}, nil
+}
+
+// filterDetail records only the filters that were set, so an audit row does not claim a narrowing
+// that was not asked for. The values are the same non-secret dimensions the event list uses.
+func filterDetail(f store.SearchFilters) map[string]any {
+	out := map[string]any{}
+	if f.Subject != "" {
+		out["subject"] = f.Subject
+	}
+	if f.Tool != "" {
+		out["tool"] = f.Tool
+	}
+	if f.Device != "" {
+		out["device"] = f.Device
+	}
+	if f.Mode != "" {
+		out["mode"] = f.Mode
+	}
+	if !f.ReceivedFrom.IsZero() {
+		out["received_from"] = f.ReceivedFrom.UTC().Format(time.RFC3339)
+	}
+	if !f.ReceivedTo.IsZero() {
+		out["received_to"] = f.ReceivedTo.UTC().Format(time.RFC3339)
+	}
+	return out
+}
+
+// searchCursorJSON is the wire shape of a page cursor. It is opaque to callers; the fields are
+// the ordering key (received_at, submission_id, unit_kind, unit_index).
+type searchCursorJSON struct {
+	T time.Time `json:"t"`
+	S string    `json:"s"`
+	K string    `json:"k"`
+	I int       `json:"i"`
+}
+
+func encodeSearchCursor(c store.SearchCursor) string {
+	b, err := json.Marshal(searchCursorJSON{T: c.ReceivedAt.UTC(), S: c.SubmissionID, K: c.UnitKind, I: c.UnitIndex})
+	if err != nil {
+		// The struct is closed and contains no erroring type; a failure here is a defect, and an
+		// empty cursor means "the end", which is safe.
+		return ""
+	}
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+func decodeSearchCursor(s string) (*store.SearchCursor, error) {
+	b, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil {
+		return nil, fmt.Errorf("the page cursor is not valid base64")
+	}
+	var j searchCursorJSON
+	if err := json.Unmarshal(b, &j); err != nil {
+		return nil, fmt.Errorf("the page cursor is not a JSON object")
+	}
+	if j.S == "" || j.K == "" || j.T.IsZero() {
+		return nil, fmt.Errorf("the page cursor is missing its ordering key")
+	}
+	return &store.SearchCursor{ReceivedAt: j.T, SubmissionID: j.S, UnitKind: j.K, UnitIndex: j.I}, nil
 }
 
 // effectiveTier applies the bundle's narrowing: the tenant tier is a ceiling, and a scope the

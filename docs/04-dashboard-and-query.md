@@ -451,10 +451,10 @@ is what a tier rather than a global switch means.
 
 - **Read path and cost: search, then retrieve — the order is the design, not a UI convenience.**
   **Step one, find the candidates by content.** `POST /v1/content-search` (§15.3) matches a term,
-  phrase, substring or fuzzy filename pattern within the tenant's enabled scopes, composed with the
-  usual dimensions — tool, class, severity, rule, review state, subject, window — and returns **hit
-  references with bounded highlighted snippets**: enough to recognise the event, never the event's
-  content. **Step two, open one event.** The single `ingest.submission` row by
+  phrase, substring or fuzzy filename pattern within the tenant's enabled scopes. **As built:** the
+  term form is forwarded and composed with subject, tool, device, collection mode and a received-at
+  window; it returns **hit references with bounded highlighted snippets** and a page cursor — enough to
+  recognise the event, never the event's content. **Step two, open one event.** The single `ingest.submission` row by
   `(tenant_id, submission_id)`, its `ingest.observation` rows — one per route in `observed_routes`, so
   an overlapping-route count can be *explained* rather than merely defended (R9) — its labels, its
   policy decision, its `content_state`. A bounded search page, then O(1) plus O(routes).
@@ -1542,9 +1542,13 @@ bounded text matching over a table this component cannot see, executed by the co
 principal and a configured scope and passes the request to `content-vault`, which executes and audits it.
 It still rejects a text predicate on `/v1/query` with an error that names this endpoint. Only the
 term-or-phrase form is forwarded; the substring and fuzzy filename forms are not, and the device uploads
-no attachments to index. The response carries hits (`submission_id`, `snippet`, `rank`) and `truncated`,
-and **no index-coverage block**. The dashboard's Explore page is the surface: a prompt-text search box
-whose matches open the event they belong to.
+no attachments to index. The response carries hits (`submission_id`, `snippet`, `rank`), `truncated` and
+an opaque `next_cursor`, and **no index-coverage block**. The request carries the filters the search
+composes by — person, tool, device, collection mode and a received-at window — and the vault applies
+them by joining `ingest.search_text` to `ingest.submission` (`database/schema.sql`: `sac_vault` holds a
+column-scoped `SELECT` there), so `query-api` never reads an index row. The dashboard's Explore page is
+the surface: a prompt-text search box, the filter rail and window switch that narrow it, and a page of
+matches that open the event they belong to.
 
 **What an analyst types** is a match expression, in one of three forms:
 
@@ -1556,7 +1560,11 @@ whose matches open the event they belong to.
 
 **What composes with it** is the same closed dimension set as §2.4 — tool, class, severity, rule, review
 state, `content_state`, subject, device, department, population, and a `received_at` window — resolved
-through the same frozen registry, with values bound and never interpolated. Three properties are
+through the same frozen registry, with values bound and never interpolated. **As built:** only five of
+those are applied to the text results — subject, tool, device, collection mode and the `received_at`
+window — because those are the columns the vault composes against `ingest.submission`. The other rail
+filters (action, data class, request kind, department) still narrow the event list and are named on the
+page as not applying to the prompt search, rather than looking as if they had. Three properties are
 structural rather than conveniences:
 
 - **At least one narrowing predicate is mandatory** — a tool, a data class or a user population drawn
@@ -1565,7 +1573,9 @@ structural rather than conveniences:
   This is §15.1's narrowing applied at request time: the tier is a ceiling, and a search that names no
   scope is asking for the whole tenant. **ASSUMPTION:** A15 — the narrowing requirement is fixed by C5
   and ADR 0014 but its request-time form is not; a named predicate is the form that can be refused
-  before the query runs.
+  before the query runs. **As built:** the vault requires only a scope the signed bundle names; it does
+  not yet refuse a search that names no other narrowing predicate. The dashboard always sends its
+  window, so the screen cannot ask for the whole tenant, but the request-time refusal is not there.
 - **`unit_kind` is part of the request**, so the answer for a form the tenant cannot have is a capability
   answer, not an empty page: a prompt-body match at `attachment_names` returns
   `content_search_not_enabled` (§13).
@@ -1594,10 +1604,11 @@ structural rather than conveniences:
   M2 excerpt cap this document already pins (§3.9), so a search can never return, by volume, more content
   than the mode beneath it already allows to travel by default. The bound is configuration recorded per
   tenant (06 §14.3 Q-f).
-- **Ordering is relevance, and relevance is not a person.** `(rank DESC, received_at DESC,
-  submission_id DESC)` — total, so §7's keyset pagination is exact. A subject facet counts hits; no
-  measure ranks people by volume, and no view of this endpoint is a leaderboard (§14 item 1, brief
-  §1.2).
+- **Ordering is newest-first, and it is not a person.** **As built:** `(received_at DESC, submission_id
+  DESC, unit_kind DESC, unit_index DESC)` — total, so §7's keyset pagination is exact; this follows the
+  task-09 brief, where the design above had relevance first. A per-hit `rank` is still returned, but it
+  is not the ordering key. No measure ranks people by volume, and no view of this endpoint is a
+  leaderboard (§14 item 1, brief §1.2).
 - **The coverage block is not optional, and a search that cannot state its coverage is not served.** A
   search over an index holding 399 of 412 in-scope submissions must say so, by reason: `not_captured`
   (never read at this mode), `local_only` (taken and left on the device), `shredded` (destroyed, with the
@@ -1605,10 +1616,12 @@ structural rather than conveniences:
   most of the scope was never indexed — C25's failure mode, on the screen most likely to be believed.
   The counts come from `ingest.submission.content_state` over the same narrowed predicate and window, and
   they are part of the query's cost class (§12.1), not a decoration added afterwards.
-- **Pagination is §7's.** Self-contained cursors — no subject reference in the ordering key — page 50 /
-  maximum 200, frozen at the first page on `ingest.search_text.created_at <= :upper` so a unit indexed
-  mid-iteration cannot shift a boundary. Units shredded mid-iteration disappear and make a page shorter,
-  which §7.4 already defines as not-the-end.
+- **Pagination is §7's.** Self-contained cursors — no subject reference in the ordering key — so page
+  two repeats only the terms, filters and window of page one. **As built:** the cursor is the opaque
+  keyset `(received_at, submission_id, unit_kind, unit_index)` of the last hit, page size up to the
+  vault's `MaxSearchResults` (20 in the lab), and a page shorter than the size still ends only when the
+  cursor is null; the dashboard offers 5, 10 or 20 per page. Units shredded mid-iteration disappear and
+  make a page shorter, which §7.4 already defines as not-the-end.
 
 ### 15.4 Where it executes, why, and what it writes
 

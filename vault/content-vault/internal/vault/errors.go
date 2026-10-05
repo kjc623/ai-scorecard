@@ -58,6 +58,7 @@ const (
 	DenySearchDisabled            DenialReason = "search_disabled"
 	DenySearchTierNotInScope      DenialReason = "search_tier_not_in_scope"
 	DenySearchUnitNotPermitted    DenialReason = "search_unit_not_permitted"
+	DenySearchCursorInvalid       DenialReason = "search_cursor_invalid"
 	DenyCustodyModeUnsupported    DenialReason = "custody_mode_unsupported"
 	DenyIndexUnitNotPermitted     DenialReason = "index_unit_not_permitted"
 	DenyTenantMismatch            DenialReason = "tenant_mismatch"
@@ -72,8 +73,8 @@ var AllDenialReasons = []DenialReason{
 	DenySecondApproverNotDistinct, DenyAuditUnavailable,
 	DenyTenantNotPermitted, DenyRetrievalDisabled, DenyKeyCustodySearchConflict,
 	DenySearchTierRequiresM3, DenySearchDisabled, DenySearchTierNotInScope,
-	DenySearchUnitNotPermitted, DenyCustodyModeUnsupported, DenyIndexUnitNotPermitted,
-	DenyTenantMismatch,
+	DenySearchUnitNotPermitted, DenySearchCursorInvalid, DenyCustodyModeUnsupported,
+	DenyIndexUnitNotPermitted, DenyTenantMismatch,
 }
 
 // Valid reports membership of the closed set.

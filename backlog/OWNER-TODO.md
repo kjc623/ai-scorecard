@@ -31,6 +31,11 @@ Each line names the task that left it. The exact commands are in that task's `RE
   `prompt_kind` to `ingest.observation`, `ingest.submission` and `ops.content_object`, extends the
   three observation constraints, and replaces `ingest.record_event`. The lab's database already
   has it. (08)
+- [ ] **Apply 09's prompt-search grant to any database other than the lab's**, after 08's:
+  `psql "$DSN" -v ON_ERROR_STOP=1 -f backlog/09-prompt-search-filters/MIGRATION.sql`. It extends
+  `sac_vault`'s column grant on `ingest.submission` with `tool_fingerprint`, `collection_mode` and
+  `received_at`, so the vault can compose a search filtered by person, tool, device, mode and
+  received-at window. It is idempotent, and the lab's database already has it. (09)
 - [ ] **Rebuild and reinstall the lab MSI for task 08**, on the Windows host, with the lab up:
   `node localdev/build.mjs --auth` (the lab services changed), then `node installer/lab-msi.mjs`,
   then `msiexec /i installer\dist\ShadowAICapture.msi`. The harness cannot build the MSI (the

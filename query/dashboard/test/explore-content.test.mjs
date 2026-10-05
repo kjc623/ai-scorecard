@@ -13,6 +13,7 @@ import { createExploreStub } from '../src/explore-stub.js';
 import { createExplorer } from '../src/explore-app.js';
 import { renderExploreDetail, renderExploreText } from '../src/explore-render.js';
 import { createQueryApi, createContentApi } from '../src/transport.js';
+import { windowFor } from '../src/dsl.js';
 
 const NOW = new Date('2026-10-01T12:00:00Z');
 const now = () => NOW;
@@ -70,7 +71,7 @@ test('a prompt-text search returns fragments, and a hit opens the event it belon
   await explorer.searchText('capital australia');
   assert.equal(explorer.state.text.status, 'ready');
   assert.ok(explorer.state.text.hits.length > 0, 'the sample has a prompt with those words');
-  assert.deepEqual(asked[0], ['search', { query: 'capital australia', limit: 20 }]);
+  assert.deepEqual(asked[0], ['search', { query: 'capital australia', limit: 20, window: windowFor('d30', NOW) }]);
 
   const html = renderExploreText(explorer.state);
   assert.match(html, /<em>capital<\/em>/, 'the search highlight survives');
@@ -108,6 +109,73 @@ test('a page with no content path says so instead of searching', async () => {
   await explorer.searchText('capital');
   assert.equal(explorer.state.text.status, 'refused');
   assert.equal(explorer.state.text.problem.code, 'no_content_path');
+});
+
+test('the rail filters narrow a prompt-text search, and a person with no content returns none', async () => {
+  const { explorer, stub, asked } = explorerFor();
+  await explorer.restore('#events?window=d30');
+  const uploaded = stub.sample.events.filter((e) => e.content_state === 'uploaded');
+  const subject = uploaded[0].subject;
+
+  await explorer.setFilter('subject', subject);
+  await explorer.searchText('the');
+  assert.equal(explorer.state.text.status, 'ready');
+  assert.ok(explorer.state.text.hits.length > 0, 'the sample person has uploaded content');
+  assert.ok(explorer.state.text.hits.every((h) => h.subject === subject));
+  const sent = asked.filter(([kind]) => kind === 'search').pop()[1];
+  assert.equal(sent.subject, subject, 'the person filter reaches the search');
+
+  await explorer.setFilter('subject', 'nobody@example');
+  assert.equal(explorer.state.text.status, 'ready');
+  assert.equal(explorer.state.text.hits.length, 0, 'a different person returns none');
+});
+
+test('the window switch applies to prompt-text results', async () => {
+  const { explorer, asked } = explorerFor();
+  await explorer.restore('#events?window=d30');
+  await explorer.searchText('the');
+  const d30 = explorer.state.text.hits.length;
+  const before = asked.filter(([kind]) => kind === 'search').pop()[1].window;
+
+  await explorer.setWindow('h6');
+  const after = asked.filter(([kind]) => kind === 'search').pop()[1].window;
+  assert.equal(explorer.state.text.status, 'ready');
+  assert.ok(Date.parse(after.from) > Date.parse(before.from), 'the search was re-issued with the narrower window');
+  assert.ok(explorer.state.text.hits.length < d30, 'the narrower window returns fewer of the same matches');
+});
+
+test('a prompt-text search pages, and the page size can be smaller than the default', async () => {
+  const { explorer } = explorerFor();
+  await explorer.restore('#events?window=d30');
+  await explorer.setTextPageSize(5);
+  await explorer.searchText('the');
+  assert.equal(explorer.state.text.hits.length, 5, 'a smaller page size is honoured');
+  assert.ok(explorer.state.text.nextCursor, 'a full page has a next page');
+
+  const first = explorer.state.text.hits.map((h) => h.submissionId);
+  await explorer.loadMoreText();
+  assert.equal(explorer.state.text.hits.length, 10);
+  assert.deepEqual(explorer.state.text.hits.slice(0, 5).map((h) => h.submissionId), first, 'page two is appended, not replaced');
+
+  // Keep loading to the end: the last page clears the cursor.
+  let guard = 0;
+  while (explorer.state.text.nextCursor && guard < 10) {
+    await explorer.loadMoreText();
+    guard += 1;
+  }
+  assert.equal(explorer.state.text.nextCursor, null, 'the result set ends');
+});
+
+test('a rail filter the search cannot apply is named rather than silently ignored', async () => {
+  const { explorer } = explorerFor();
+  await explorer.restore('#events?window=d30');
+  await explorer.setFilter('action', 'blocked');
+  await explorer.searchText('the');
+  const html = renderExploreText(explorer.state);
+  assert.match(html, /still filter the list only/);
+  assert.match(html, /action/);
+  assert.match(html, /id="x-text-page"/, 'the page-size control is offered');
+  assert.match(html, /Showing \d+ matching prompt/);
 });
 
 // ── approved retrieval ───────────────────────────────────────────────────────────────────────

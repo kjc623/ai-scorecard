@@ -57,7 +57,9 @@
 .x-searchbar-input::-webkit-search-cancel-button { display: none; }
 .x-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; margin-bottom: 18px; }
 .x-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.x-text-active .x-toolbar, .x-text-active .x-summary, .x-text-active .x-results-body { display: none; }
+/* A prompt-text search takes over the list body, but the toolbar and its filter rail stay: the
+   person, tool, device, mode and window filters apply to the text results too (task 09). */
+.x-text-active .x-summary, .x-text-active .x-results-body { display: none; }
 @media (min-width: 1200px) {
   .x-main:has(.x-has-detail) { padding-right: 472px; }
 }
@@ -208,8 +210,11 @@ input.x-filter { width: 124px; cursor: text; }
 
 /* ── content: the prompt-text search, and an approved retrieval in the detail panel ─────────── */
 .x-text-panel { display: grid; gap: 12px; }
-.x-text-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.x-text-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
 .x-text-head h2 { font-size: 14.5px; font-weight: 600; color: var(--ink); }
+.x-text-tools { display: flex; align-items: center; gap: 12px; }
+.x-text-page { display: inline-flex; align-items: center; gap: 6px; }
+.x-text-more { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .x-hits { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .x-hit {
   display: grid; gap: 6px; width: 100%; text-align: left; padding: 16px 18px; cursor: pointer; font-size: 14.5px;

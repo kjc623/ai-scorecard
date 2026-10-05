@@ -24,6 +24,9 @@ const COLLECTION_MODES = Object.freeze(['m0', 'm1', 'm2', 'm3']);
 /** Hash keys that carry page state rather than a filter. No dataset has a field with these names. */
 const RESERVED_KEYS = Object.freeze(['window', 'open', 'include']);
 
+/** Page sizes a prompt-text search offers. The lab holds fewer than 21 matches for most terms. */
+export const TEXT_PAGE_SIZES = Object.freeze([5, 10, 20]);
+
 /** The longest string value the API admits (DSL.md §2.3). */
 const MAX_VALUE_LENGTH = 256;
 
@@ -64,7 +67,7 @@ export const EXPLORE_DATASETS = Object.freeze({
     noun: 'event',
     questionId: 'q8_activity',
     detail: 'record',
-    windows: Object.freeze(['h24', 'd7', 'd30']),
+    windows: Object.freeze(['h6', 'h24', 'd7', 'd30']),
     defaultWindow: 'd7',
     ordering: 'Newest received first',
     rowKey: (row) => String(row.submission_id),

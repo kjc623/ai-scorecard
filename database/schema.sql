@@ -2290,7 +2290,12 @@ GRANT SELECT, INSERT, UPDATE ON ops.retrieval_grant TO sac_vault;
 -- quietly retire the invariant that exactly one component can read content (ADR 0014).
 GRANT SELECT, INSERT, UPDATE, DELETE ON ingest.search_text TO sac_vault;
 GRANT SELECT ON ops.tenant, ops.retention_policy, ops.hold, ops.grant, ops.erasure_receipt TO sac_vault;
-GRANT SELECT (tenant_id, submission_id, device_id, user_ref, content_state, expires_at)
+-- The vault composes a filtered content search by joining its index to these columns: the person,
+-- tool, device, mode and receive time a search may narrow by (docs/04 §15.3). It is a column grant,
+-- not a table grant, so this cannot quietly become access to labels, policy or content state. It is
+-- the only metadata the vault reads from a submission; query-api still holds the read of the index.
+GRANT SELECT (tenant_id, submission_id, device_id, user_ref, tool_fingerprint,
+              collection_mode, content_state, received_at, expires_at)
   ON ingest.submission TO sac_vault;
 GRANT INSERT ON ops.audit TO sac_vault;
 GRANT SELECT, UPDATE ON ops.grant TO sac_vault;

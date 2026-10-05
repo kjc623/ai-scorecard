@@ -23,6 +23,10 @@ export const CONTENT_PATHS = Object.freeze({
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_FIELD = 512;
 const MAX_EVENT_IDS = 16;
+/** The collection modes a search may narrow by; the same closed set the event list uses. */
+const MODES = Object.freeze(['m0', 'm1', 'm2', 'm3']);
+/** The filters a prompt-text search composes by, beyond the terms (docs/04 §15.3). */
+const TEXT_FILTERS = Object.freeze(['subject', 'tool', 'device', 'mode']);
 
 /** A refusal in the shape the dashboard already renders: a state, a code, a sentence. */
 function refusal(status, state, code, message) {
@@ -77,15 +81,46 @@ export function createContentForwarder({ vaultUrl, scope = '', fetchImpl = globa
   }
 
   /**
-   * POST /v1/content-search: terms in, bounded snippets out. The vault audits the search in the
-   * transaction that serves it.
+   * POST /v1/content-search: terms plus optional filters in, bounded snippets out. The vault
+   * composes the filters against its own index and audits the search in the transaction that serves
+   * it, so this service only carries a validated request across.
    */
   async function search(principal, body) {
     const query = field(body, 'query', { required: true });
     if (query.error) return refusal(400, 'refused', 'bad_request', query.error);
+    const cursor = field(body, 'cursor');
+    if (cursor.error) return refusal(400, 'refused', 'bad_request', cursor.error);
+
+    const filters = {};
+    for (const name of TEXT_FILTERS) {
+      const parsed = field(body, name);
+      if (parsed.error) return refusal(400, 'refused', 'bad_request', parsed.error);
+      if (parsed.value) filters[name] = parsed.value;
+    }
+    if (filters.mode && !MODES.includes(filters.mode)) {
+      return refusal(400, 'refused', 'bad_request', `mode must be one of ${MODES.join(', ')}`);
+    }
+
+    // The received-at window, from the page's window switch. Each bound is optional; an absent
+    // bound is open, which is how "the last 24 hours" reaches the vault as a single from-instant.
+    const window = body?.window;
+    if (window !== undefined && window !== null) {
+      if (typeof window !== 'object' || Array.isArray(window)) return refusal(400, 'refused', 'bad_request', 'window must be an object with from and to');
+      for (const [name, key] of [['from', 'received_from'], ['to', 'received_to']]) {
+        const value = window[name];
+        if (value === undefined || value === null || value === '') continue;
+        if (typeof value !== 'string' || Number.isNaN(Date.parse(value))) {
+          return refusal(400, 'refused', 'bad_request', `window.${name} must be an ISO 8601 instant`);
+        }
+        filters[key] = value;
+      }
+    }
+
     const answer = await call('/v1/content-search', principal, {
       scope, form: 'terms', query: query.value,
       limit: Number.isInteger(body?.limit) && body.limit > 0 && body.limit <= 50 ? body.limit : 20,
+      ...(cursor.value ? { cursor: cursor.value } : {}),
+      ...filters,
     });
     if (answer.status !== 200) return vaultRefusal('search', answer);
     return {
@@ -94,6 +129,9 @@ export function createContentForwarder({ vaultUrl, scope = '', fetchImpl = globa
         state: 'available',
         hits: (answer.json?.hits ?? []).map((h) => ({ submission_id: h.submission_id, snippet: h.snippet, rank: h.rank })),
         truncated: Boolean(answer.json?.truncated),
+        // The vault's opaque page position, passed through untouched: this service cannot read the
+        // index, so it cannot invent or inspect a cursor.
+        next_cursor: answer.json?.next_cursor || null,
       },
     };
   }

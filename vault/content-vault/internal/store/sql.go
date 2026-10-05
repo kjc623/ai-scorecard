@@ -150,22 +150,45 @@ DELETE FROM ingest.search_text WHERE tenant_id = $1::uuid AND submission_id = $2
 	SQLDeleteSearchTextForTenant = `
 DELETE FROM ingest.search_text WHERE tenant_id = $1::uuid`
 
+	// Every search joins its index rows to ingest.submission and carries the same filter and
+	// cursor predicates, so one shape is reviewable across the three forms. $1 is the tenant, the
+	// next params are the form's own, then the five filter values, then the four cursor values. A
+	// filter that is unset is the empty string (text) or NULL (timestamptz), taken as "no
+	// predicate" rather than as a value to match. The device is cast from nullif() so an unset
+	// device is NULL, not the invalid uuid cast of the empty string.
+	//
+	// The ordering is newest-first and total: received_at, then submission_id, then the unit, so a
+	// keyset cursor can resume exactly. The row comparison against the cursor is strict (<) because
+	// the ordering descends on every component.
+
 	// SQLSearchTerms is the term/phrase form of docs/04 §15.3, served by search_text_tsv_gin.
 	// $2 is a tsquery *text this service constructed* from parsed terms, never the analyst's raw
 	// input: to_tsquery() raises on malformed syntax, and a search must not be a way to make the
 	// database raise. $3 restricts the unit kinds the caller's tier permits.
 	SQLSearchTerms = `
-SELECT submission_id::text,
-       unit_kind,
-       unit_index,
-       ts_headline('simple', body, to_tsquery('simple', $2::text),
+SELECT st.submission_id::text,
+       st.unit_kind,
+       st.unit_index,
+       ts_headline('simple', st.body, to_tsquery('simple', $2::text),
                    'StartSel=<em>, StopSel=</em>, MaxFragments=1, MaxWords=24, MinWords=6, FragmentDelimiter= … '),
-       ts_rank(tsv, to_tsquery('simple', $2::text))
-  FROM ingest.search_text
- WHERE tenant_id = $1::uuid
-   AND tsv @@ to_tsquery('simple', $2::text)
-   AND ($3::text = '' OR unit_kind = $3::text)
- ORDER BY 5 DESC, 1
+       ts_rank(st.tsv, to_tsquery('simple', $2::text)),
+       s.received_at
+  FROM ingest.search_text st
+  JOIN ingest.submission s
+    ON s.tenant_id = st.tenant_id AND s.submission_id = st.submission_id
+ WHERE st.tenant_id = $1::uuid
+   AND st.tsv @@ to_tsquery('simple', $2::text)
+   AND ($3::text = '' OR st.unit_kind = $3::text)
+   AND ($5::text = '' OR s.user_ref = $5::text)
+   AND ($6::text = '' OR s.tool_fingerprint = $6::text)
+   AND ($7::text = '' OR s.device_id::text = $7::text)
+   AND ($8::text = '' OR s.collection_mode = $8::text)
+   AND ($9::timestamptz IS NULL OR s.received_at >= $9::timestamptz)
+   AND ($10::timestamptz IS NULL OR s.received_at < $10::timestamptz)
+   AND ($11::timestamptz IS NULL OR
+        (s.received_at, st.submission_id, st.unit_kind, st.unit_index)
+          < ($11::timestamptz, $12::uuid, $13::text, $14::int))
+ ORDER BY s.received_at DESC, st.submission_id DESC, st.unit_kind DESC, st.unit_index DESC
  LIMIT $4::int`
 
 	// SQLSearchFilenameSubstring is the substring form, served by the partial trigram index and
@@ -173,32 +196,56 @@ SELECT submission_id::text,
 	// lower-cased, so this statement and the in-memory double answer the same question rather than
 	// differing on case.
 	SQLSearchFilenameSubstring = `
-SELECT submission_id::text,
-       unit_kind,
-       unit_index,
-       body,
-       similarity(lower(body), lower($2::text))
-  FROM ingest.search_text
- WHERE tenant_id = $1::uuid
-   AND unit_kind = 'attachment_name'
-   AND lower(body) LIKE '%' || lower($2::text) || '%'
- ORDER BY 5 DESC, 1
+SELECT st.submission_id::text,
+       st.unit_kind,
+       st.unit_index,
+       st.body,
+       similarity(lower(st.body), lower($2::text)),
+       s.received_at
+  FROM ingest.search_text st
+  JOIN ingest.submission s
+    ON s.tenant_id = st.tenant_id AND s.submission_id = st.submission_id
+ WHERE st.tenant_id = $1::uuid
+   AND st.unit_kind = 'attachment_name'
+   AND lower(st.body) LIKE '%' || lower($2::text) || '%'
+   AND ($4::text = '' OR s.user_ref = $4::text)
+   AND ($5::text = '' OR s.tool_fingerprint = $5::text)
+   AND ($6::text = '' OR s.device_id::text = $6::text)
+   AND ($7::text = '' OR s.collection_mode = $7::text)
+   AND ($8::timestamptz IS NULL OR s.received_at >= $8::timestamptz)
+   AND ($9::timestamptz IS NULL OR s.received_at < $9::timestamptz)
+   AND ($10::timestamptz IS NULL OR
+        (s.received_at, st.submission_id, st.unit_kind, st.unit_index)
+          < ($10::timestamptz, $11::uuid, $12::text, $13::int))
+ ORDER BY s.received_at DESC, st.submission_id DESC, st.unit_kind DESC, st.unit_index DESC
  LIMIT $3::int`
 
 	// SQLSearchFilenameFuzzy is the fuzzy form: pg_trgm similarity over filenames only, with both
 	// sides lower-cased for the same reason.
 	SQLSearchFilenameFuzzy = `
-SELECT submission_id::text,
-       unit_kind,
-       unit_index,
-       body,
-       similarity(lower(body), lower($2::text))
-  FROM ingest.search_text
- WHERE tenant_id = $1::uuid
-   AND unit_kind = 'attachment_name'
-   AND lower(body) % lower($2::text)
-   AND similarity(lower(body), lower($2::text)) >= $3::float8
- ORDER BY 5 DESC, 1
+SELECT st.submission_id::text,
+       st.unit_kind,
+       st.unit_index,
+       st.body,
+       similarity(lower(st.body), lower($2::text)),
+       s.received_at
+  FROM ingest.search_text st
+  JOIN ingest.submission s
+    ON s.tenant_id = st.tenant_id AND s.submission_id = st.submission_id
+ WHERE st.tenant_id = $1::uuid
+   AND st.unit_kind = 'attachment_name'
+   AND lower(st.body) % lower($2::text)
+   AND similarity(lower(st.body), lower($2::text)) >= $3::float8
+   AND ($5::text = '' OR s.user_ref = $5::text)
+   AND ($6::text = '' OR s.tool_fingerprint = $6::text)
+   AND ($7::text = '' OR s.device_id::text = $7::text)
+   AND ($8::text = '' OR s.collection_mode = $8::text)
+   AND ($9::timestamptz IS NULL OR s.received_at >= $9::timestamptz)
+   AND ($10::timestamptz IS NULL OR s.received_at < $10::timestamptz)
+   AND ($11::timestamptz IS NULL OR
+        (s.received_at, st.submission_id, st.unit_kind, st.unit_index)
+          < ($11::timestamptz, $12::uuid, $13::text, $14::int))
+ ORDER BY s.received_at DESC, st.submission_id DESC, st.unit_kind DESC, st.unit_index DESC
  LIMIT $4::int`
 
 	// SQLInsertAudit writes one audit row. prev_hash and row_hash are deliberately absent: the
@@ -526,13 +573,21 @@ func (s *SQLStore) SearchAudited(ctx context.Context, q SearchQuery, e AuditEntr
 		}
 		var rows *sql.Rows
 		var err error
+		filter := filterParams(q.Filters)
+		cursor := cursorParams(q.Cursor)
 		switch q.Form {
 		case FormTerms:
-			rows, err = tx.QueryContext(ctx, SQLSearchTerms, q.TenantID, q.Text, q.UnitKind, q.Limit)
+			args := append([]any{q.TenantID, q.Text, q.UnitKind, q.Limit}, filter...)
+			args = append(args, cursor...)
+			rows, err = tx.QueryContext(ctx, SQLSearchTerms, args...)
 		case FormSubstring:
-			rows, err = tx.QueryContext(ctx, SQLSearchFilenameSubstring, q.TenantID, q.Text, q.Limit)
+			args := append([]any{q.TenantID, q.Text, q.Limit}, filter...)
+			args = append(args, cursor...)
+			rows, err = tx.QueryContext(ctx, SQLSearchFilenameSubstring, args...)
 		case FormFuzzy:
-			rows, err = tx.QueryContext(ctx, SQLSearchFilenameFuzzy, q.TenantID, q.Text, q.MinSimilar, q.Limit)
+			args := append([]any{q.TenantID, q.Text, q.MinSimilar, q.Limit}, filter...)
+			args = append(args, cursor...)
+			rows, err = tx.QueryContext(ctx, SQLSearchFilenameFuzzy, args...)
 		default:
 			return fmt.Errorf("store: search form %q is outside the closed set", q.Form)
 		}
@@ -543,10 +598,14 @@ func (s *SQLStore) SearchAudited(ctx context.Context, q SearchQuery, e AuditEntr
 		for rows.Next() {
 			var h SearchHit
 			var rank sql.NullFloat64
-			if err := rows.Scan(&h.SubmissionID, &h.UnitKind, &h.UnitIndex, &h.Snippet, &rank); err != nil {
+			var received sql.NullTime
+			if err := rows.Scan(&h.SubmissionID, &h.UnitKind, &h.UnitIndex, &h.Snippet, &rank, &received); err != nil {
 				return fmt.Errorf("store: scan search hit: %w", err)
 			}
 			h.Rank = rank.Float64
+			if received.Valid {
+				h.ReceivedAt = received.Time
+			}
 			out = append(out, h)
 		}
 		return rows.Err()
@@ -712,6 +771,21 @@ func nullTime(t time.Time) any {
 		return nil
 	}
 	return t
+}
+
+// filterParams renders the five filter predicates in the order every search statement expects:
+// subject, tool, device, mode, received_at >=, received_at <. An unset instant is NULL.
+func filterParams(f SearchFilters) []any {
+	return []any{f.Subject, f.Tool, f.Device, f.Mode, nullTime(f.ReceivedFrom), nullTime(f.ReceivedTo)}
+}
+
+// cursorParams renders the four keyset components. With no cursor all four are NULL, which the
+// statement reads as "no cursor"; passing the empty string here would be an invalid uuid cast.
+func cursorParams(c *SearchCursor) []any {
+	if c == nil {
+		return []any{nil, nil, nil, nil}
+	}
+	return []any{c.ReceivedAt, c.SubmissionID, c.UnitKind, c.UnitIndex}
 }
 
 func orEmpty(m map[string]int) map[string]int {
