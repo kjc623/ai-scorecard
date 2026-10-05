@@ -409,16 +409,31 @@ export function createExploreStub({ now = () => new Date(), scenario = 'realisti
     if (current === 'audit_unavailable') return contentRefusal('audit_unavailable', 'The search audit row could not be committed, so the search fails closed.');
     const words = String(body?.query ?? '').toLowerCase().split(/[^a-z0-9_]+/).filter(Boolean);
     if (words.length === 0) return contentRefusal('search_disabled', 'An empty search is refused rather than returning the whole index.');
+    const window = body?.window ?? null;
     const hits = [];
     for (const event of uploaded()) {
+      // The same filters the vault composes against ingest.submission: person, tool, device, mode
+      // and the received-at window. The sample carries all five on each event.
+      if (body?.subject && (event.subject ?? '') !== body.subject) continue;
+      if (body?.tool && (event.tool ?? '') !== body.tool) continue;
+      if (body?.device && (event.device ?? '') !== body.device) continue;
+      if (body?.mode && (event.mode ?? '') !== body.mode) continue;
+      if (window?.from && Date.parse(event.received_at) < Date.parse(window.from)) continue;
+      if (window?.to && Date.parse(event.received_at) >= Date.parse(window.to)) continue;
       const typed = sampleTyped(event);
       const lower = typed.toLowerCase();
       if (!words.every((word) => lower.includes(word))) continue;
       const snippet = typed.replace(new RegExp(`\\b(${words.join('|')})\\b`, 'gi'), '<em>$1</em>');
-      hits.push(Object.freeze({ submission_id: event.submission_id, snippet, rank: 1, subject: event.subject ?? null, device: event.device ?? null, tool: event.tool ?? null }));
+      hits.push(Object.freeze({ submission_id: event.submission_id, snippet, rank: 1, subject: event.subject ?? null, device: event.device ?? null, tool: event.tool ?? null, received_at: event.received_at }));
     }
-    const limit = typeof body?.limit === 'number' ? body.limit : 20;
-    return Object.freeze({ state: 'available', hits: Object.freeze(hits.slice(0, limit)), truncated: hits.length > limit });
+    // Newest first, the order the vault returns. The cursor is a plain offset here; the real one is
+    // the vault's opaque keyset.
+    hits.sort((a, b) => Date.parse(b.received_at) - Date.parse(a.received_at));
+    const limit = typeof body?.limit === 'number' && body.limit > 0 ? body.limit : 20;
+    const offset = body?.cursor ? Number(body.cursor) || 0 : 0;
+    const page = hits.slice(offset, offset + limit);
+    const next = offset + limit < hits.length ? String(offset + limit) : null;
+    return Object.freeze({ state: 'available', hits: Object.freeze(page), truncated: next !== null, next_cursor: next });
   }
 
   async function retrieveContent(body) {

@@ -15,7 +15,7 @@ import { escapeHtml } from './render.js';
 import { formatBytes, formatCount, formatDuration, formatInstant, formatScore } from './format.js';
 import { coverageText, freshnessText, emptyStateFor, fixSentence } from './states.js';
 import { eventView } from './views.js';
-import { EXPLORE_DATASETS, EXPLORE_DATASET_IDS, exploreWindows } from './explore-model.js';
+import { EXPLORE_DATASETS, EXPLORE_DATASET_IDS, exploreWindows, TEXT_PAGE_SIZES } from './explore-model.js';
 
 /** Which values of which field get a tint. Only real warning and fault states are tinted. */
 const EXPLORE_TONES = Object.freeze({
@@ -289,6 +289,28 @@ function exploreHitMeta(hit) {
   return `<span class="x-hit-meta x-mono">${parts.map((part) => `<span>${escapeHtml(part)}</span>`).join('<span class="x-hit-sep" aria-hidden="true">|</span>')}</span>`;
 }
 
+/** The number of hits one page asks for. Offered because most lab terms have fewer than 21. */
+function exploreTextPageSize(text) {
+  const size = text.pageSize ?? TEXT_PAGE_SIZES[TEXT_PAGE_SIZES.length - 1];
+  const options = TEXT_PAGE_SIZES
+    .map((n) => `<option value="${n}"${n === size ? ' selected' : ''}>${n}</option>`)
+    .join('');
+  return `<label class="x-text-page"><span class="x-sub">Per page</span>`
+    + `<select id="x-text-page" class="x-select" aria-label="Results per page">${options}</select></label>`;
+}
+
+/**
+ * The filters a prompt search does not apply. Said rather than implied: the rail stays visible
+ * during a text search, so an action or data-class filter beside it must not look as if it narrowed
+ * the prompts. The vault composes only the person, tool, device, mode and window.
+ */
+function exploreTextIgnored(text) {
+  const ignored = Array.isArray(text.ignored) ? text.ignored : [];
+  if (ignored.length === 0) return '';
+  return `<p class="x-sub">Prompt search applies Person, Tool, Device, Collection mode and the window. `
+    + `${ignored.map(escapeHtml).join(', ')} still filter the list only.</p>`;
+}
+
 /**
  * The prompt-text search: its hits, or why there are none. It sits apart from the list because it
  * is a different read. A hit is a fragment and a reference; opening it reads the event.
@@ -297,11 +319,13 @@ export function renderExploreText(state) {
   const text = state.text;
   if (text.status === 'idle') return '';
   const head = `<div class="x-text-head"><h2>Prompts containing <span class="x-mono">${escapeHtml(text.query)}</span></h2>`
-    + '<button type="button" class="x-btn x-btn-quiet" data-act="text-clear">Back to the list</button></div>';
-  if (text.status === 'loading') return `<div class="x-text-panel" aria-busy="true">${head}<p class="x-sub" role="status">Searching</p></div>`;
-  if (text.status === 'refused') return `<div class="x-text-panel">${head}${exploreContentProblem(text.problem)}</div>`;
+    + `<div class="x-text-tools">${exploreTextPageSize(text)}`
+    + '<button type="button" class="x-btn x-btn-quiet" data-act="text-clear">Back to the list</button></div></div>';
+  const ignored = exploreTextIgnored(text);
+  if (text.status === 'loading') return `<div class="x-text-panel" aria-busy="true">${head}${ignored}<p class="x-sub" role="status">Searching</p></div>`;
+  if (text.status === 'refused') return `<div class="x-text-panel">${head}${ignored}${exploreContentProblem(text.problem)}</div>`;
   if (text.hits.length === 0) {
-    return `<div class="x-text-panel">${head}<p class="x-sub">No uploaded prompt contains every one of those words.</p></div>`;
+    return `<div class="x-text-panel">${head}${ignored}<p class="x-sub">No uploaded prompt contains every one of those words.</p></div>`;
   }
   const rows = text.hits.map((hit) => {
     // The fragment is escaped whole; only the search's own highlight marks are put back.
@@ -309,8 +333,14 @@ export function renderExploreText(state) {
     return `<li><button type="button" class="x-hit" data-act="hit" data-submission="${escapeHtml(hit.submissionId)}" aria-pressed="${hit.submissionId === state.detail.submissionId}">`
       + `<span class="x-hit-snippet">${snippet}</span>${exploreHitMeta(hit)}</button></li>`;
   }).join('');
-  return `<div class="x-text-panel">${head}<ul class="x-hits">${rows}</ul>`
-    + (text.truncated ? '<p class="x-sub">More prompts match than are shown; add a word to narrow it.</p>' : '') + '</div>';
+  const count = `<p class="x-text-count x-sub">Showing ${escapeHtml(formatCount(text.hits.length))} matching prompt${text.hits.length === 1 ? '' : 's'}${text.nextCursor ? ', more available' : ''}.</p>`;
+  const foot = text.moreProblem
+    ? exploreContentProblem(text.moreProblem)
+    : (text.nextCursor
+      ? `<button type="button" class="x-btn" data-act="text-more"${text.loadingMore ? ' disabled' : ''}>${text.loadingMore ? 'Loading' : 'Load next page'}</button>`
+      : '');
+  return `<div class="x-text-panel">${head}${ignored}<ul class="x-hits">${rows}</ul>`
+    + `<div class="x-text-more">${count}${foot}</div></div>`;
 }
 
 /**

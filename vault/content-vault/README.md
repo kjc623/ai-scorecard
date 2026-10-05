@@ -104,6 +104,12 @@ scope, and an unnamed scope carries `disabled`. The three search forms are close
 into a tsquery this service constructs, so an analyst cannot make the database raise or inject an
 operator), `substring` and `fuzzy` (filenames only, served by the partial trigram index).
 
+A search composes the terms with the person, tool, device, collection mode and received-at window it is
+given, and returns matches newest first with a keyset cursor. The vault applies those filters itself, by
+joining `ingest.search_text` to a column-scoped read of `ingest.submission` (the grant is in
+`database/schema.sql`), because `query-api` is not granted the index and must not filter it. An
+unreadable cursor is `search_cursor_invalid`; the filters are recorded in the search's audit row.
+
 ## The HTTP surface and identity
 
 One surface, **internal ingress only**: `POST /v1/content/object`, `/v1/content/object/finalise`,

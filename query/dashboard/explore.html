@@ -371,6 +371,9 @@ const GAP_REASONS = Object.freeze([
 
 /** Windows the UI offers, in hours. Named so the label and the request cannot disagree. */
 const WINDOWS = Object.freeze({
+  // Offered on the events/search dataset so a prompt search can be narrowed below a day: the lab's
+  // indexed prompts all fall inside 24 hours, so the coarser presets cannot show the switch working.
+  h6: Object.freeze({ label: 'Last 6 hours', hours: 6, bucket: 'hour' }),
   h24: Object.freeze({ label: 'Last 24 hours', hours: 24, bucket: 'hour' }),
   d7: Object.freeze({ label: 'Last 7 days', hours: 24 * 7, bucket: 'day' }),
   d30: Object.freeze({ label: 'Last 30 days', hours: 24 * 30, bucket: 'day' }),
@@ -3313,6 +3316,9 @@ const COLLECTION_MODES = Object.freeze(['m0', 'm1', 'm2', 'm3']);
 /** Hash keys that carry page state rather than a filter. No dataset has a field with these names. */
 const RESERVED_KEYS = Object.freeze(['window', 'open', 'include']);
 
+/** Page sizes a prompt-text search offers. The lab holds fewer than 21 matches for most terms. */
+const TEXT_PAGE_SIZES = Object.freeze([5, 10, 20]);
+
 /** The longest string value the API admits (DSL.md §2.3). */
 const MAX_VALUE_LENGTH = 256;
 
@@ -3353,7 +3359,7 @@ const EXPLORE_DATASETS = Object.freeze({
     noun: 'event',
     questionId: 'q8_activity',
     detail: 'record',
-    windows: Object.freeze(['h24', 'd7', 'd30']),
+    windows: Object.freeze(['h6', 'h24', 'd7', 'd30']),
     defaultWindow: 'd7',
     ordering: 'Newest received first',
     rowKey: (row) => String(row.submission_id),
@@ -4240,16 +4246,31 @@ function createExploreStub({ now = () => new Date(), scenario = 'realistic', lat
     if (current === 'audit_unavailable') return contentRefusal('audit_unavailable', 'The search audit row could not be committed, so the search fails closed.');
     const words = String(body?.query ?? '').toLowerCase().split(/[^a-z0-9_]+/).filter(Boolean);
     if (words.length === 0) return contentRefusal('search_disabled', 'An empty search is refused rather than returning the whole index.');
+    const window = body?.window ?? null;
     const hits = [];
     for (const event of uploaded()) {
+      // The same filters the vault composes against ingest.submission: person, tool, device, mode
+      // and the received-at window. The sample carries all five on each event.
+      if (body?.subject && (event.subject ?? '') !== body.subject) continue;
+      if (body?.tool && (event.tool ?? '') !== body.tool) continue;
+      if (body?.device && (event.device ?? '') !== body.device) continue;
+      if (body?.mode && (event.mode ?? '') !== body.mode) continue;
+      if (window?.from && Date.parse(event.received_at) < Date.parse(window.from)) continue;
+      if (window?.to && Date.parse(event.received_at) >= Date.parse(window.to)) continue;
       const typed = sampleTyped(event);
       const lower = typed.toLowerCase();
       if (!words.every((word) => lower.includes(word))) continue;
       const snippet = typed.replace(new RegExp(`\\b(${words.join('|')})\\b`, 'gi'), '<em>$1</em>');
-      hits.push(Object.freeze({ submission_id: event.submission_id, snippet, rank: 1, subject: event.subject ?? null, device: event.device ?? null, tool: event.tool ?? null }));
+      hits.push(Object.freeze({ submission_id: event.submission_id, snippet, rank: 1, subject: event.subject ?? null, device: event.device ?? null, tool: event.tool ?? null, received_at: event.received_at }));
     }
-    const limit = typeof body?.limit === 'number' ? body.limit : 20;
-    return Object.freeze({ state: 'available', hits: Object.freeze(hits.slice(0, limit)), truncated: hits.length > limit });
+    // Newest first, the order the vault returns. The cursor is a plain offset here; the real one is
+    // the vault's opaque keyset.
+    hits.sort((a, b) => Date.parse(b.received_at) - Date.parse(a.received_at));
+    const limit = typeof body?.limit === 'number' && body.limit > 0 ? body.limit : 20;
+    const offset = body?.cursor ? Number(body.cursor) || 0 : 0;
+    const page = hits.slice(offset, offset + limit);
+    const next = offset + limit < hits.length ? String(offset + limit) : null;
+    return Object.freeze({ state: 'available', hits: Object.freeze(page), truncated: next !== null, next_cursor: next });
   }
 
   async function retrieveContent(body) {
@@ -4581,6 +4602,28 @@ function exploreHitMeta(hit) {
   return `<span class="x-hit-meta x-mono">${parts.map((part) => `<span>${escapeHtml(part)}</span>`).join('<span class="x-hit-sep" aria-hidden="true">|</span>')}</span>`;
 }
 
+/** The number of hits one page asks for. Offered because most lab terms have fewer than 21. */
+function exploreTextPageSize(text) {
+  const size = text.pageSize ?? TEXT_PAGE_SIZES[TEXT_PAGE_SIZES.length - 1];
+  const options = TEXT_PAGE_SIZES
+    .map((n) => `<option value="${n}"${n === size ? ' selected' : ''}>${n}</option>`)
+    .join('');
+  return `<label class="x-text-page"><span class="x-sub">Per page</span>`
+    + `<select id="x-text-page" class="x-select" aria-label="Results per page">${options}</select></label>`;
+}
+
+/**
+ * The filters a prompt search does not apply. Said rather than implied: the rail stays visible
+ * during a text search, so an action or data-class filter beside it must not look as if it narrowed
+ * the prompts. The vault composes only the person, tool, device, mode and window.
+ */
+function exploreTextIgnored(text) {
+  const ignored = Array.isArray(text.ignored) ? text.ignored : [];
+  if (ignored.length === 0) return '';
+  return `<p class="x-sub">Prompt search applies Person, Tool, Device, Collection mode and the window. `
+    + `${ignored.map(escapeHtml).join(', ')} still filter the list only.</p>`;
+}
+
 /**
  * The prompt-text search: its hits, or why there are none. It sits apart from the list because it
  * is a different read. A hit is a fragment and a reference; opening it reads the event.
@@ -4589,11 +4632,13 @@ function renderExploreText(state) {
   const text = state.text;
   if (text.status === 'idle') return '';
   const head = `<div class="x-text-head"><h2>Prompts containing <span class="x-mono">${escapeHtml(text.query)}</span></h2>`
-    + '<button type="button" class="x-btn x-btn-quiet" data-act="text-clear">Back to the list</button></div>';
-  if (text.status === 'loading') return `<div class="x-text-panel" aria-busy="true">${head}<p class="x-sub" role="status">Searching</p></div>`;
-  if (text.status === 'refused') return `<div class="x-text-panel">${head}${exploreContentProblem(text.problem)}</div>`;
+    + `<div class="x-text-tools">${exploreTextPageSize(text)}`
+    + '<button type="button" class="x-btn x-btn-quiet" data-act="text-clear">Back to the list</button></div></div>';
+  const ignored = exploreTextIgnored(text);
+  if (text.status === 'loading') return `<div class="x-text-panel" aria-busy="true">${head}${ignored}<p class="x-sub" role="status">Searching</p></div>`;
+  if (text.status === 'refused') return `<div class="x-text-panel">${head}${ignored}${exploreContentProblem(text.problem)}</div>`;
   if (text.hits.length === 0) {
-    return `<div class="x-text-panel">${head}<p class="x-sub">No uploaded prompt contains every one of those words.</p></div>`;
+    return `<div class="x-text-panel">${head}${ignored}<p class="x-sub">No uploaded prompt contains every one of those words.</p></div>`;
   }
   const rows = text.hits.map((hit) => {
     // The fragment is escaped whole; only the search's own highlight marks are put back.
@@ -4601,8 +4646,14 @@ function renderExploreText(state) {
     return `<li><button type="button" class="x-hit" data-act="hit" data-submission="${escapeHtml(hit.submissionId)}" aria-pressed="${hit.submissionId === state.detail.submissionId}">`
       + `<span class="x-hit-snippet">${snippet}</span>${exploreHitMeta(hit)}</button></li>`;
   }).join('');
-  return `<div class="x-text-panel">${head}<ul class="x-hits">${rows}</ul>`
-    + (text.truncated ? '<p class="x-sub">More prompts match than are shown; add a word to narrow it.</p>' : '') + '</div>';
+  const count = `<p class="x-text-count x-sub">Showing ${escapeHtml(formatCount(text.hits.length))} matching prompt${text.hits.length === 1 ? '' : 's'}${text.nextCursor ? ', more available' : ''}.</p>`;
+  const foot = text.moreProblem
+    ? exploreContentProblem(text.moreProblem)
+    : (text.nextCursor
+      ? `<button type="button" class="x-btn" data-act="text-more"${text.loadingMore ? ' disabled' : ''}>${text.loadingMore ? 'Loading' : 'Load next page'}</button>`
+      : '');
+  return `<div class="x-text-panel">${head}${ignored}<ul class="x-hits">${rows}</ul>`
+    + `<div class="x-text-more">${count}${foot}</div></div>`;
 }
 
 /**
@@ -4778,7 +4829,28 @@ function renderExploreDetail(state) {
 const DETAIL_CLOSED = Object.freeze({ status: 'closed', key: null, row: null, record: null, submissionId: null });
 
 /** The prompt-text search: nothing asked yet. */
-const TEXT_IDLE = Object.freeze({ status: 'idle', query: '', hits: Object.freeze([]), truncated: false, problem: null });
+const TEXT_IDLE = Object.freeze({
+  status: 'idle', query: '', hits: Object.freeze([]), nextCursor: null, truncated: false,
+  problem: null, moreProblem: null, loadingMore: false, pageSize: 20, ignored: Object.freeze([]),
+});
+
+/** The filters a prompt-text search composes by. The rest still filter the list only. */
+const TEXT_FILTER_FIELDS = Object.freeze(['subject', 'tool', 'device', 'mode']);
+
+/** The filters the vault can apply to a text search: person, tool, device and collection mode. */
+function textFiltersOf(filters) {
+  const out = {};
+  for (const name of TEXT_FILTER_FIELDS) {
+    const value = filters[name];
+    if (typeof value === 'string' && value.trim() !== '') out[name] = value.trim();
+  }
+  return out;
+}
+
+/** Active filters a prompt search does not apply, so the page can say so rather than imply it did. */
+function textIgnoredOf(filters) {
+  return Object.keys(filters).filter((name) => !TEXT_FILTER_FIELDS.includes(name));
+}
 /** The content of the open record: nothing retrieved. Content is never held past the record it belongs to. */
 const CONTENT_IDLE = Object.freeze({
   status: 'idle', submissionId: null, problem: null, gone: null, typed: '', kind: null, full: '', bytes: 0, grantId: null,
@@ -4834,6 +4906,8 @@ function createExplorer({ api, content = null, now = () => new Date(), onChange 
   });
   /** The query the rows on screen belong to: what later pages must repeat exactly. */
   let ran = null;
+  /** The prompt search on screen: what a later page must repeat, and the window it was resolved with. */
+  let textRan = null;
   let searchSeq = 0;
   let detailSeq = 0;
   let textSeq = 0;
@@ -4910,13 +4984,24 @@ function createExplorer({ api, content = null, now = () => new Date(), onChange 
     return state;
   }
 
+  /**
+   * Re-run what is on screen after the filter or window state changes. The list always re-runs;
+   * the prompt search re-runs too when one is showing, because the rail and the window now apply
+   * to it (task 09). Both read the state as it is after the change.
+   */
+  function refresh() {
+    const listRun = run();
+    if (state.text.status === 'idle') return listRun;
+    return Promise.all([listRun, searchText(state.text.query)]).then(() => state);
+  }
+
   function applyFilters(dataset, filters, problems = []) {
     set({
       filters: Object.freeze({ ...filters }),
       queryText: problems.length > 0 ? state.queryText : formatExploreQuery(filters, dataset),
       problems: Object.freeze([...problems]),
     });
-    return run();
+    return refresh();
   }
 
   /** Search with the text of the query bar. */
@@ -4967,7 +5052,7 @@ function createExplorer({ api, content = null, now = () => new Date(), onChange 
     const next = exploreWindowPreset(dataset, preset);
     if (next === state.windowPreset) return Promise.resolve(state);
     set({ windowPreset: next });
-    return run();
+    return refresh();
   }
 
   /** Show or hide the requests a client made for itself. Off is the default and hides them. */
@@ -5009,45 +5094,100 @@ function createExplorer({ api, content = null, now = () => new Date(), onChange 
     return state;
   }
 
+  /** One hit, in the shape the renderer and the open action use. */
+  function textHit(h) {
+    return Object.freeze({
+      submissionId: String(h.submission_id), snippet: String(h.snippet ?? ''),
+      subject: h.subject ?? null, directory_name: h.directory_name ?? null,
+      device: h.device ?? null, tool: h.tool ?? null, tool_name: h.tool_name ?? null,
+      hostname: h.hostname ?? null,
+    });
+  }
+
   /**
-   * Search prompt text. This is not a filter of the list above it: it is a separate, audited read
-   * of the content index, answered with bounded snippets, and a hit is opened like any other event.
+   * Search prompt text, narrowed by the filters the rail holds and the window in force. It is not
+   * a filter of the list above it: it is a separate, audited read of the content index, answered
+   * with bounded snippets and a page cursor, and a hit is opened like any other event.
+   *
+   * The window is resolved once here and kept with the request, so every later page of the same
+   * search repeats the window the first page was issued under.
    */
   async function searchText(query) {
     const text = String(query ?? '').trim();
     const seq = ++textSeq;
     if (text === '') {
+      textRan = null;
       set({ text: TEXT_IDLE });
       return state;
     }
+    const pageSize = state.text.pageSize ?? TEXT_IDLE.pageSize;
+    const filters = textFiltersOf(state.filters);
+    const ignored = Object.freeze(textIgnoredOf(state.filters));
     if (!content) {
-      set({ text: Object.freeze({ ...TEXT_IDLE, status: 'refused', query: text, problem: Object.freeze({ code: 'no_content_path', message: 'This page has no content path behind it.' }) }) });
+      textRan = null;
+      set({ text: Object.freeze({ ...TEXT_IDLE, status: 'refused', query: text, pageSize, ignored, problem: Object.freeze({ code: 'no_content_path', message: 'This page has no content path behind it.' }) }) });
       return state;
     }
-    set({ text: Object.freeze({ ...TEXT_IDLE, status: 'loading', query: text }) });
-    const answer = await content.search({ query: text, limit: 20 });
+    const window = state.windowPreset ? windowFor(state.windowPreset, now()) : null;
+    textRan = Object.freeze({ query: text, limit: pageSize, ...filters, ...(window ? { window } : {}) });
+    set({ text: Object.freeze({ ...TEXT_IDLE, status: 'loading', query: text, pageSize, ignored }) });
+    const answer = await content.search(textRan);
     if (seq !== textSeq) return state;
     if (answer.state !== 'available') {
-      set({ text: Object.freeze({ ...TEXT_IDLE, status: 'refused', query: text, problem: Object.freeze(answer.error ?? { code: answer.state, message: 'The search was not served.' }) }) });
+      set({ text: Object.freeze({ ...TEXT_IDLE, status: 'refused', query: text, pageSize, ignored, problem: Object.freeze(answer.error ?? { code: answer.state, message: 'The search was not served.' }) }) });
       return state;
     }
     set({
       text: Object.freeze({
-        status: 'ready', query: text, problem: null,
-        hits: Object.freeze((answer.hits ?? []).map((h) => Object.freeze({
-          submissionId: String(h.submission_id), snippet: String(h.snippet ?? ''),
-          subject: h.subject ?? null, directory_name: h.directory_name ?? null,
-          device: h.device ?? null, tool: h.tool ?? null, tool_name: h.tool_name ?? null,
-          hostname: h.hostname ?? null,
-        }))),
+        status: 'ready', query: text, problem: null, pageSize, ignored,
+        moreProblem: null, loadingMore: false,
+        hits: Object.freeze((answer.hits ?? []).map(textHit)),
+        nextCursor: answer.next_cursor ?? null,
         truncated: Boolean(answer.truncated),
       }),
     });
     return state;
   }
 
+  /** Fetch the next page of the prompt search on screen and append it. */
+  async function loadMoreText() {
+    const cursor = state.text.nextCursor;
+    if (state.text.status !== 'ready' || !cursor || !textRan || state.text.loadingMore) return state;
+    const seq = textSeq;
+    set({ text: Object.freeze({ ...state.text, loadingMore: true, moreProblem: null }) });
+    const answer = await content.search({ ...textRan, cursor });
+    if (seq !== textSeq) return state;
+    if (answer.state !== 'available') {
+      // The hits already shown stay; the refusal says why the list stops here.
+      set({ text: Object.freeze({ ...state.text, loadingMore: false, moreProblem: Object.freeze(answer.error ?? { code: answer.state, message: 'The search was not served.' }) }) });
+      return state;
+    }
+    set({
+      text: Object.freeze({
+        ...state.text, loadingMore: false, moreProblem: null,
+        hits: Object.freeze([...state.text.hits, ...(answer.hits ?? []).map(textHit)]),
+        nextCursor: answer.next_cursor ?? null,
+        truncated: Boolean(answer.truncated),
+      }),
+    });
+    return state;
+  }
+
+  /** Change the number of hits a prompt search asks for per page, and restart it. */
+  function setTextPageSize(size) {
+    const n = Number(size);
+    if (!Number.isInteger(n) || n <= 0 || n > 50) return Promise.resolve(state);
+    if (state.text.status === 'idle') {
+      set({ text: Object.freeze({ ...TEXT_IDLE, pageSize: n }) });
+      return Promise.resolve(state);
+    }
+    set({ text: Object.freeze({ ...state.text, pageSize: n }) });
+    return searchText(state.text.query);
+  }
+
   function clearText() {
     textSeq += 1;
+    textRan = null;
     if (state.text !== TEXT_IDLE) set({ text: TEXT_IDLE });
     return state;
   }
@@ -5131,7 +5271,7 @@ function createExplorer({ api, content = null, now = () => new Date(), onChange 
   return Object.freeze({
     get state() { return state; },
     run, loadMore, setQuery, setFilter, clearFilters, setDataset, setWindow, setIncludeClientGenerated, open, close, restore, hash,
-    searchText, clearText, openHit, retrieveContent, hideContent,
+    searchText, loadMoreText, setTextPageSize, clearText, openHit, retrieveContent, hideContent,
   });
 }
 
@@ -5260,10 +5400,16 @@ async function bootExplore({ document, api: given, content: givenContent } = {})
       const pending = explorer.openHit(target.dataset.submission);
       focusDetail();
       pending.then(focusDetail);
-    } else if (act === 'text-clear') {
+    } else if (act === 'text-more') explorer.loadMoreText();
+    else if (act === 'text-clear') {
       textInput.value = '';
       explorer.clearText();
     } else if (act === 'retrieve') explorer.retrieveContent();
+  });
+
+  // The page size is a prompt-search control, rendered into #x-text rather than the rail.
+  el('x-text').addEventListener('change', (event) => {
+    if (event.target?.id === 'x-text-page') explorer.setTextPageSize(event.target.value);
   });
 
   // A filter is applied when it is committed: a choice from a list, or Enter in a text field.

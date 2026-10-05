@@ -28,20 +28,40 @@ type Memory struct {
 	objects  map[string]map[string]ContentObject // tenant -> object
 	grants   map[string]map[string]RetrievalGrant
 	search   map[string][]SearchUnit // tenant -> units
-	audit    []AuditEntry
-	receipts map[string]ErasureReceipt
-	closed   bool
+	// submissions is ingest.submission's metadata, keyed tenant -> submission. The SQL store gets
+	// this by joining the table; the double needs a copy to apply the same filters.
+	submissions map[string]map[string]SearchSubmission
+	audit       []AuditEntry
+	receipts    map[string]ErasureReceipt
+	closed      bool
 }
 
 // NewMemory returns an empty store.
 func NewMemory() *Memory {
 	return &Memory{
-		tenants:  map[string]Tenant{},
-		objects:  map[string]map[string]ContentObject{},
-		grants:   map[string]map[string]RetrievalGrant{},
-		search:   map[string][]SearchUnit{},
-		receipts: map[string]ErasureReceipt{},
+		tenants:     map[string]Tenant{},
+		objects:     map[string]map[string]ContentObject{},
+		grants:      map[string]map[string]RetrievalGrant{},
+		search:      map[string][]SearchUnit{},
+		submissions: map[string]map[string]SearchSubmission{},
+		receipts:    map[string]ErasureReceipt{},
 	}
+}
+
+// PutSearchSubmission seeds the submission metadata a filtered search joins to. It stands in for
+// the row ingest-api writes; the SQL store reads the real one.
+func (m *Memory) PutSearchSubmission(s SearchSubmission) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.submissions[s.TenantID] == nil {
+		m.submissions[s.TenantID] = map[string]SearchSubmission{}
+	}
+	m.submissions[s.TenantID][s.SubmissionID] = s
+}
+
+// submission returns the metadata for one submission, or the zero value when none was seeded.
+func (m *Memory) submissionLocked(tenantID, submissionID string) SearchSubmission {
+	return m.submissions[tenantID][submissionID]
 }
 
 // PutTenant seeds a tenant. It exists for tests and local development; the SQL implementation
@@ -207,22 +227,80 @@ func (m *Memory) searchText(_ context.Context, q SearchQuery) ([]SearchHit, erro
 		if q.UnitKind != "" && u.UnitKind != q.UnitKind {
 			continue
 		}
+		meta := m.submissionLocked(q.TenantID, u.SubmissionID)
+		if !filterMatches(q.Filters, meta) {
+			continue
+		}
+		if q.Cursor != nil && !afterSearchCursor(*q.Cursor, meta.ReceivedAt, u) {
+			continue
+		}
 		snippet, rank, ok := matchUnit(q, u)
 		if !ok {
 			continue
 		}
-		hits = append(hits, SearchHit{SubmissionID: u.SubmissionID, UnitKind: u.UnitKind, UnitIndex: u.UnitIndex, Snippet: snippet, Rank: rank})
+		hits = append(hits, SearchHit{
+			SubmissionID: u.SubmissionID, UnitKind: u.UnitKind, UnitIndex: u.UnitIndex,
+			Snippet: snippet, Rank: rank, ReceivedAt: meta.ReceivedAt,
+		})
 	}
+	// Newest first, total: the same ordering the SQL statements use, so a keyset page resumes at
+	// the same place against either implementation.
 	sort.Slice(hits, func(i, j int) bool {
-		if hits[i].Rank != hits[j].Rank {
-			return hits[i].Rank > hits[j].Rank
+		a, b := hits[i], hits[j]
+		if !a.ReceivedAt.Equal(b.ReceivedAt) {
+			return a.ReceivedAt.After(b.ReceivedAt)
 		}
-		return hits[i].SubmissionID < hits[j].SubmissionID
+		if a.SubmissionID != b.SubmissionID {
+			return a.SubmissionID > b.SubmissionID
+		}
+		if a.UnitKind != b.UnitKind {
+			return a.UnitKind > b.UnitKind
+		}
+		return a.UnitIndex > b.UnitIndex
 	})
 	if len(hits) > limit {
 		hits = hits[:limit]
 	}
 	return hits, nil
+}
+
+// filterMatches applies the five optional filters to one submission. A missing metadata row is the
+// zero value, so any filter that names a value excludes it, which is the fail-closed reading.
+func filterMatches(f SearchFilters, s SearchSubmission) bool {
+	if f.Subject != "" && s.UserRef != f.Subject {
+		return false
+	}
+	if f.Tool != "" && s.ToolFingerprint != f.Tool {
+		return false
+	}
+	if f.Device != "" && s.DeviceID != f.Device {
+		return false
+	}
+	if f.Mode != "" && s.CollectionMode != f.Mode {
+		return false
+	}
+	if !f.ReceivedFrom.IsZero() && s.ReceivedAt.Before(f.ReceivedFrom) {
+		return false
+	}
+	if !f.ReceivedTo.IsZero() && !s.ReceivedAt.Before(f.ReceivedTo) {
+		return false
+	}
+	return true
+}
+
+// afterSearchCursor reports whether a unit sorts strictly after the cursor in the descending
+// ordering (received_at, submission_id, unit_kind, unit_index).
+func afterSearchCursor(c SearchCursor, receivedAt time.Time, u SearchUnit) bool {
+	if !receivedAt.Equal(c.ReceivedAt) {
+		return receivedAt.Before(c.ReceivedAt)
+	}
+	if u.SubmissionID != c.SubmissionID {
+		return u.SubmissionID < c.SubmissionID
+	}
+	if u.UnitKind != c.UnitKind {
+		return u.UnitKind < c.UnitKind
+	}
+	return u.UnitIndex < c.UnitIndex
 }
 
 // matchUnit applies one of the three closed forms. It returns a bounded highlighted snippet.

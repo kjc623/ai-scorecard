@@ -72,7 +72,10 @@ Explore carries the two content reads, so an analyst does not leave the page to 
 
 - **Search prompt text** (the second box under the filter query) asks the content vault for prompts
   containing the words given, and shows a fragment per match. It is not a filter of the list: it is
-  a separate, audited read, and opening a match opens that event.
+  a separate, audited read, and opening a match opens that event. The filter rail stays visible while
+  it is on: the Person, Tool, Device, Collection mode filters and the window switch narrow the prompt
+  search too (the other rail filters still narrow the list only, and the page says so). Results page
+  newest-first, 5, 10 or 20 per page.
 - **Retrieve content** is in an event's detail panel when its content state is `uploaded`. It takes
   a case reference, a second approver and a justification, and the vault decides. What comes back is
   shown two ways: *what the user typed*, and, collapsed beneath it, *everything captured for the

@@ -335,6 +335,9 @@ const GAP_REASONS = Object.freeze([
 
 /** Windows the UI offers, in hours. Named so the label and the request cannot disagree. */
 const WINDOWS = Object.freeze({
+  // Offered on the events/search dataset so a prompt search can be narrowed below a day: the lab's
+  // indexed prompts all fall inside 24 hours, so the coarser presets cannot show the switch working.
+  h6: Object.freeze({ label: 'Last 6 hours', hours: 6, bucket: 'hour' }),
   h24: Object.freeze({ label: 'Last 24 hours', hours: 24, bucket: 'hour' }),
   d7: Object.freeze({ label: 'Last 7 days', hours: 24 * 7, bucket: 'day' }),
   d30: Object.freeze({ label: 'Last 30 days', hours: 24 * 30, bucket: 'day' }),

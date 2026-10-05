@@ -163,12 +163,19 @@ type rotateRequestJSON struct {
 }
 
 type searchRequestJSON struct {
-	TenantID      string `json:"tenant_id,omitempty"`
-	Scope         string `json:"scope"`
-	Form          string `json:"form"`
-	Query         string `json:"query"`
-	Limit         int    `json:"limit,omitempty"`
-	CaseReference string `json:"case_reference,omitempty"`
+	TenantID      string    `json:"tenant_id,omitempty"`
+	Scope         string    `json:"scope"`
+	Form          string    `json:"form"`
+	Query         string    `json:"query"`
+	Limit         int       `json:"limit,omitempty"`
+	CaseReference string    `json:"case_reference,omitempty"`
+	Cursor        string    `json:"cursor,omitempty"`
+	Subject       string    `json:"subject,omitempty"`
+	Tool          string    `json:"tool,omitempty"`
+	Device        string    `json:"device,omitempty"`
+	Mode          string    `json:"mode,omitempty"`
+	ReceivedFrom  time.Time `json:"received_from,omitempty"`
+	ReceivedTo    time.Time `json:"received_to,omitempty"`
 }
 
 // ---------------------------------------------------------------------------------------
@@ -363,6 +370,11 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request, p auth.Pri
 	res, err := s.Vault.Search(r.Context(), vault.SearchRequest{
 		TenantID: p.TenantID, Principal: p.Subject, Scope: req.Scope,
 		Form: store.SearchForm(req.Form), Query: req.Query, Limit: req.Limit, CaseReference: req.CaseReference,
+		Cursor: req.Cursor,
+		Filters: store.SearchFilters{
+			Subject: req.Subject, Tool: req.Tool, Device: req.Device, Mode: req.Mode,
+			ReceivedFrom: req.ReceivedFrom, ReceivedTo: req.ReceivedTo,
+		},
 	})
 	if err != nil {
 		s.writeVaultError(w, err)
@@ -378,6 +390,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request, p auth.Pri
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"state": "available", "effective_tier": string(res.Effective),
 		"unit_kinds": res.UnitKinds, "hits": hits, "truncated": res.Truncated,
+		"next_cursor": res.NextCursor,
 	})
 }
 

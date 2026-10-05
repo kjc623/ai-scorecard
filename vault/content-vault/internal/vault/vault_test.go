@@ -774,6 +774,129 @@ func TestSearchTierRefusals(t *testing.T) {
 	})
 }
 
+// TestFilteredSearchJoinsSubmissionAndPagesNewestFirst is task 09: one search that composes the
+// terms with the person, tool, device, mode and received-at window, returns newest first, and
+// pages with a keyset cursor. The vault joins its index to ingest.submission; the memory double
+// is seeded with the same metadata so the two implementations answer the same question.
+func TestFilteredSearchJoinsSubmissionAndPagesNewestFirst(t *testing.T) {
+	ctx := context.Background()
+	rig := testrig.New(t, testrig.Options{
+		Tenants:    []store.Tenant{testrig.Tenant(FullText())},
+		ScopeTiers: map[string]store.SearchTier{"tool:chatgpt": store.SearchFullText},
+	})
+	base := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	const (
+		s1 = "11111111-1111-4111-8111-000000000001"
+		s2 = "22222222-2222-4222-8222-000000000002"
+		s3 = "33333333-3333-4333-8333-000000000003"
+		d1 = "dddddddd-0000-4000-8000-000000000001"
+		d2 = "dddddddd-0000-4000-8000-000000000002"
+	)
+	seed := func(sub, body, user, tool, device, mode string, at time.Time) {
+		t.Helper()
+		if err := rig.Service.IndexUnit(ctx, testrig.TenantID, vault.IndexUnit{
+			UnitKind: store.UnitPromptBody, Body: body,
+		}, sub); err != nil {
+			t.Fatalf("index %s: %v", sub, err)
+		}
+		rig.Memory.PutSearchSubmission(store.SearchSubmission{
+			TenantID: testrig.TenantID, SubmissionID: sub, UserRef: user,
+			ToolFingerprint: tool, DeviceID: device, CollectionMode: mode, ReceivedAt: at,
+		})
+	}
+	seed(s1, "the wire transfer to australia", "alice", "claude_web", d1, "m3", base)
+	seed(s2, "the wire transfer to australia", "alice", "claude_web", d1, "m3", base.Add(time.Hour))
+	seed(s3, "the wire transfer to australia", "bob", "gemini_web", d2, "m1", base.Add(2*time.Hour))
+
+	search := func(t *testing.T, req vault.SearchRequest) vault.SearchResult {
+		t.Helper()
+		req.TenantID, req.Principal, req.Scope, req.Form = testrig.TenantID, "a@example.com", "tool:chatgpt", store.FormTerms
+		res, err := rig.Service.Search(ctx, req)
+		if err != nil {
+			t.Fatalf("search %+v: %v", req.Filters, err)
+		}
+		return res
+	}
+
+	t.Run("newest first", func(t *testing.T) {
+		res := search(t, vault.SearchRequest{Query: "wire"})
+		ids := []string{res.Hits[0].SubmissionID, res.Hits[1].SubmissionID, res.Hits[2].SubmissionID}
+		if ids[0] != s3 || ids[1] != s2 || ids[2] != s1 {
+			t.Fatalf("hits ordered %v, want newest first s3, s2, s1", ids)
+		}
+	})
+
+	t.Run("the person filter keeps only that person, and a different person returns none", func(t *testing.T) {
+		res := search(t, vault.SearchRequest{Query: "wire", Filters: store.SearchFilters{Subject: "alice"}})
+		if len(res.Hits) != 2 {
+			t.Fatalf("subject=alice returned %d hits, want 2", len(res.Hits))
+		}
+		for _, h := range res.Hits {
+			if h.SubmissionID == s3 {
+				t.Errorf("a hit for bob survived the alice filter")
+			}
+		}
+		none := search(t, vault.SearchRequest{Query: "wire", Filters: store.SearchFilters{Subject: "nobody"}})
+		if len(none.Hits) != 0 {
+			t.Fatalf("subject=nobody returned %d hits, want none", len(none.Hits))
+		}
+	})
+
+	t.Run("tool, device, mode and window each narrow", func(t *testing.T) {
+		cases := []struct {
+			name string
+			f    store.SearchFilters
+			want string
+		}{
+			{"tool", store.SearchFilters{Tool: "gemini_web"}, s3},
+			{"device", store.SearchFilters{Device: d2}, s3},
+			{"mode", store.SearchFilters{Mode: "m1"}, s3},
+			{"window", store.SearchFilters{ReceivedFrom: base.Add(30 * time.Minute), ReceivedTo: base.Add(90 * time.Minute)}, s2},
+		}
+		for _, tc := range cases {
+			res := search(t, vault.SearchRequest{Query: "wire", Filters: tc.f})
+			if len(res.Hits) != 1 || res.Hits[0].SubmissionID != tc.want {
+				t.Errorf("%s filter returned %+v, want only %s", tc.name, res.Hits, tc.want)
+			}
+		}
+	})
+
+	t.Run("paging resumes exactly and ends", func(t *testing.T) {
+		first := search(t, vault.SearchRequest{Query: "wire", Limit: 2})
+		if len(first.Hits) != 2 || first.NextCursor == "" {
+			t.Fatalf("page one is %d hits with cursor %q, want 2 and a cursor", len(first.Hits), first.NextCursor)
+		}
+		second := search(t, vault.SearchRequest{Query: "wire", Limit: 2, Cursor: first.NextCursor})
+		if len(second.Hits) != 1 || second.Hits[0].SubmissionID != s1 {
+			t.Fatalf("page two is %+v, want only s1", second.Hits)
+		}
+		if second.NextCursor != "" {
+			t.Errorf("page two offered a further cursor %q; the result set has ended", second.NextCursor)
+		}
+	})
+
+	t.Run("an unreadable cursor is refused", func(t *testing.T) {
+		_, err := rig.Service.Search(ctx, vault.SearchRequest{
+			TenantID: testrig.TenantID, Principal: "a@example.com", Scope: "tool:chatgpt",
+			Form: store.FormTerms, Query: "wire", Cursor: "not-a-cursor",
+		})
+		assertDenial(t, err, vault.DenySearchCursorInvalid)
+	})
+
+	t.Run("the filter is recorded in the audit row", func(t *testing.T) {
+		search(t, vault.SearchRequest{Query: "wire", Filters: store.SearchFilters{Subject: "alice", Mode: "m3"}})
+		var detail map[string]any
+		for _, row := range rig.Memory.Audit() {
+			if row.Action == vault.ActionSearch {
+				detail, _ = row.Detail["filters"].(map[string]any)
+			}
+		}
+		if detail == nil || detail["subject"] != "alice" || detail["mode"] != "m3" {
+			t.Fatalf("audit filter detail is %+v, want subject=alice and mode=m3", detail)
+		}
+	})
+}
+
 // ---------------------------------------------------------------------------------------
 // Client-generated requests are never indexed (task 08)
 // ---------------------------------------------------------------------------------------

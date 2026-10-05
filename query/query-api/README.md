@@ -78,7 +78,7 @@ from the body:
 
 | Route | Body | What happens |
 |---|---|---|
-| `POST /v1/content-search` | `{ query, limit? }` | Forwarded as the vault's `terms` search for the configured scope. Answers `{ state: "available", hits: [{ submission_id, snippet, rank }], truncated }` |
+| `POST /v1/content-search` | `{ query, limit?, cursor?, subject?, tool?, device?, mode?, window? }` | Forwarded as the vault's `terms` search for the configured scope, with the person, tool, device, mode and received-at window filters. Answers `{ state: "available", hits: [{ submission_id, snippet, rank }], truncated, next_cursor }`. It validates the filters here but decides nothing about content |
 | `POST /v1/content/retrieval` | `{ event_ids, case_reference, second_approver, justification }` | Runs the vault's two steps, retrieval then redemption, for the first of the events that has a stored object. Answers `{ state: "available", event_id, grant_id, raw_digest, content }`, or the vault's `no_longer_available` result with its reason |
 
 A refusal carries the vault's own reason code and status. `event_ids` are the observations of the

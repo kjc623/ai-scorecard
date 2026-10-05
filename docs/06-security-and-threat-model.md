@@ -375,7 +375,7 @@ member of it), and one runtime role per component.
 |---|---|---|---|
 | `ingest-api` | `sac_ingest` | Insert observations and rejections; insert and update submissions and the usage ledger; read-only `SELECT` on tenant, device, credential and retention state; insert audit. Collector health is written by `sac_control`, not here | Select content or wrapped keys; **any** Key Vault unwrap right |
 | `control-api` | `sac_control` | Tenant and policy configuration, device state, grant decisions, policy signing; column-scoped read of submission metadata | Prompt content; unwrapped keys |
-| `content-vault` | `sac_vault` | Wrapped keys, ciphertext objects, grant state, **and the full-text index over prompt text and attachment names — it is the only role granted `SELECT` on `ingest.search_text`.** **The only unwrap right in the system** | Any user-facing endpoint — internal ingress only (D7) |
+| `content-vault` | `sac_vault` | Wrapped keys, ciphertext objects, grant state, **and the full-text index over prompt text and attachment names — it is the only role granted `SELECT` on `ingest.search_text`.** A **column-scoped** read of `ingest.submission` (person, tool, device, mode, received time, content state) so a filtered search is composed against the index without giving `query-api` the index. **The only unwrap right in the system** | Any user-facing endpoint — internal ingress only (D7) |
 | `query-api` | `sac_query` | Events, labels, aggregates, findings, audit; calls `content-vault` for content **and for search** | Unwrapped keys; it is not granted `SELECT` on `ops.content_object` **or on `ingest.search_text`** at all |
 | `aggregator`, `reconciler` | `sac_ops` (one database role shared by both jobs) | Rollups, expiry, erasure mechanics, drift detection — including `DELETE` on `ingest.observation` and `ingest.submission` and row access to `ops.content_object` and `ops.grant` for expiry | Content decryption; unwrap |
 | Dashboard | Static SPA + Entra ID | `query-api` only | Database, Blob, Key Vault |
@@ -397,7 +397,11 @@ accepts attacker-influenced input at the highest volume in the system, so a memo
 must not become a content breach), and **`query-api` has no unwrap right** (it serves the widest
 audience, so it must ask `content-vault`, keeping the authorization decision and its audit obligation
 in one place). The search feature was built without weakening either: `query-api` sends a query and
-receives bounded snippets, and the index is not a table `query-api` can address at all.
+receives bounded snippets, and the index is not a table `query-api` can address at all. A search's
+filters (person, tool, device, mode, received-at window) travel with the terms and are applied by
+`content-vault`, which joins its index to the column-scoped read of `ingest.submission`; `query-api`
+still never reads an index row, and the only expansion is the vault's own read of submission
+metadata it already held a partial grant on.
 
 **As built:** the first separation is not met by the declared Key Vault role assignments.
 `azure/main.bicep` (lines 242–246) assigns `ingest-api`'s identity the `cryptoServiceEncryption`

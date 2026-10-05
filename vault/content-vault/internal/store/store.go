@@ -187,6 +187,34 @@ func (f SearchForm) Valid() bool {
 	}
 }
 
+// SearchFilters narrows a search to the same dimensions the event list composes by (docs/04
+// §15.3): a person, a tool, a device, a collection mode, and a received-at window. Every field is
+// optional; the zero value adds no predicate. The vault composes them, joining its own index to
+// ingest.submission, because query-api cannot read the index and must not be the one to filter it.
+type SearchFilters struct {
+	Subject      string // ingest.submission.user_ref
+	Tool         string // ingest.submission.tool_fingerprint
+	Device       string // ingest.submission.device_id, a uuid
+	Mode         string // ingest.submission.collection_mode, m0..m3
+	ReceivedFrom time.Time
+	ReceivedTo   time.Time // exclusive, so adjacent windows do not double-count
+}
+
+// IsZero reports whether the filter adds no predicate at all.
+func (f SearchFilters) IsZero() bool {
+	return f.Subject == "" && f.Tool == "" && f.Device == "" && f.Mode == "" &&
+		f.ReceivedFrom.IsZero() && f.ReceivedTo.IsZero()
+}
+
+// SearchCursor is the keyset position a later page resumes from: the ordering key of the last hit
+// the previous page returned. It is opaque to the caller; the service mints and parses it.
+type SearchCursor struct {
+	ReceivedAt   time.Time
+	SubmissionID string
+	UnitKind     string
+	UnitIndex    int
+}
+
 // SearchQuery is one read of the index. Every field is bound, never interpolated: the query text
 // reaches PostgreSQL as a parameter and the unit kinds as a slice.
 type SearchQuery struct {
@@ -196,6 +224,9 @@ type SearchQuery struct {
 	UnitKind   string // "" means both kinds the caller is permitted to read
 	Limit      int
 	MinSimilar float64 // fuzzy only
+	Filters    SearchFilters
+	// Cursor resumes a keyset page. nil is the first page.
+	Cursor *SearchCursor
 }
 
 // SearchHit is one bounded result: a submission, the unit it matched, and a highlighted snippet.
@@ -206,6 +237,22 @@ type SearchHit struct {
 	UnitIndex    int
 	Snippet      string
 	Rank         float64
+	// ReceivedAt is the submission's server receive time. It is the search's ordering key and the
+	// first component of the page cursor, and it is carried so a page can be resumed exactly.
+	ReceivedAt time.Time
+}
+
+// SearchSubmission is the submission metadata a filtered search joins to. In SQL it is read from
+// ingest.submission in the same statement that reads the index; the in-memory double keeps a copy
+// so it can answer the same question without a database.
+type SearchSubmission struct {
+	TenantID        string
+	SubmissionID    string
+	UserRef         string
+	ToolFingerprint string
+	DeviceID        string
+	CollectionMode  string
+	ReceivedAt      time.Time
 }
 
 // AuditEntry is one ops.audit row. prev_hash and row_hash are filled by ops.audit_chain() in the
