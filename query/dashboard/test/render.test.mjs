@@ -65,6 +65,29 @@ test('a suppressed cell and a zero render into different markup on the same tabl
   assert.ok(!/>0</.test(suppressedCell), 'the suppressed row contains no zero');
 });
 
+test('a tool cell resolves the name at read time and keeps the raw fingerprint visible', () => {
+  const state = readState(envelope('ok', {
+    data: [
+      { tool: 'tls_b6681b043244c43f', tool_name: 'Claude Code', submissions: 40 },
+      { tool: 'tls_2a942648fee3bbd5', tool_name: 'Unrecognised tool', submissions: 3 },
+      { tool: 'legacy_fingerprint', submissions: 1 },
+    ],
+    freshness: FRESH, coverage: COMPLETE, suppression: { k: 5, suppressed_cells: 0 },
+  }));
+  const html = renderTable({
+    title: 'Tools',
+    columns: [{ key: 'tool', label: 'Tool' }, { key: 'submissions', label: 'Submissions', kind: 'measure' }],
+    rows: state.data.map((row) => ({ row })),
+    emptyText: 'none', suppressedCells: 0,
+  });
+  // The known tool shows its name and its fingerprint.
+  assert.match(html, /Claude Code<\/span> <span class="v-mono v-tool-fp">tls_b6681b043244c43f/);
+  // An unknown fingerprint is not silently echoed as a plausible name: it says so, and exposes the raw.
+  assert.match(html, /Unrecognised tool<\/span> <span class="v-mono v-tool-fp">tls_2a942648fee3bbd5/);
+  // A row with no resolved name falls back to the fingerprint, which is all there is.
+  assert.match(html, /<span class="v-text v-mono" title="Tool fingerprint">legacy_fingerprint<\/span>/);
+});
+
 test('the tile for a floored total says it is a floor, and the tile for an all-suppressed measure says suppressed', () => {
   const floored = readState(envelope('ok', { data: [{ submissions: 10 }, { result_state: 'suppressed', k: 5 }], freshness: FRESH, coverage: COMPLETE, suppression: { k: 5, suppressed_cells: 1 } }));
   const rows = toolsView(floored).tiles;

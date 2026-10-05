@@ -244,6 +244,13 @@ is what a tier rather than a global switch means.
 - **Gap.** Detection-only tools (mode I) and rollup-only evidence have no measure here, so such a tool
   is **absent from the tool inventory** — a silently incomplete answer. `detections` and `rollup_events`
   close this (§4.6); a deployment that predates them returns `not_yet_covered`.
+- **As built: the name.** The endpoint emits a behaviour-derived fingerprint, never a brand, so the
+  read path resolves it at read time through `ops.tool_display_name()`: a tenant override in
+  `ops.tool`, else the shared seed in `ref.tool_catalogue`, else the literal `Unrecognised tool`.
+  Every row still carries the raw fingerprint in `tool`, and the resolved name in `tool_name`, so a
+  fingerprint the catalogue does not hold is visibly unknown rather than silently mislabelled
+  (backlog/05-tool-catalogue). The catalogue is reference data; sanction state is not implied by a
+  name.
 
 ### 3.2 Q2 — Which are unsanctioned, and who is using them?
 
@@ -260,6 +267,14 @@ is what a tier rather than a global switch means.
 - **Three states, not two.** `unsanctioned`, `unknown` and `sanctioned` are separate answers; `unknown`
   gets its own count and list. Merging it into either asserts something the tenant never decided
   (C8, brief §2).
+- **As built: the read path and the write.** `mart.agg_tool_user_period` LEFT JOINs `ops.tool` at read
+  time for present-tense `sanctioned_state`, and resolves `tool_name` as §3.1 does. The template
+  `q2_unsanctioned_users` defaults `sanctioned_state` to `unsanctioned` (its own question) and a
+  caller may name `unknown` for that list. The suppression cell is the `(bucket, tool)` group, so a
+  tool used by fewer than k people is suppressed while a tool with enough people publishes the rows
+  that name them. The decision is set by an audited write, `POST /v1/tool-sanction`, which upserts
+  `ops.tool` and commits an `ops.audit` row in the same transaction; `unknown` clears the
+  attribution the schema requires for any other state (backlog/05-tool-catalogue).
 
 ### 3.3 Q3 — How much is usage growing, per team?
 

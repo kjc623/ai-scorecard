@@ -13,6 +13,8 @@
 //   node tools/observe.mjs 'index.html?transport=live#devices'
 //   node tools/observe.mjs 'explore.html?transport=live#events?class=payment_card' --expect payment_card
 //   node tools/observe.mjs 'explore.html?transport=live#events' --click 'tr.x-row'     # open the first event
+//   node tools/observe.mjs 'explore.html?transport=live' --fill '#x-text-query=invoice' --click '#x-text-form button[type=submit]'
+//                                                                                  # type a prompt-text search and run it
 //   node tools/observe.mjs http://127.0.0.1:8787/index.html --width 390     # a narrow screen
 //
 // Quote the address: `#` and `?` mean something to a shell.
@@ -21,6 +23,8 @@
 // --absent <text>   exit 1 if this text is visible once the page has settled. Repeatable.
 // --click <css>     click the first match after the page settles, then settle again. Repeatable,
 //                   in order. A selector that matches nothing is exit 1.
+// --fill <css>=<v>  set a field's value and dispatch input/change events, before any --click. Use
+//                   for a clause that needs text typed into a form. Repeatable, in order.
 // --out <dir>       default .integration/observe/ at the repository root (ignored by git: a
 //                   screenshot of live data carries names and prompts).
 //
@@ -69,7 +73,7 @@ const EXPECT_TIMEOUT_MS = 15000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function parseArgs(argv) {
-  const opts = { target: null, out: join(REPO, '.integration', 'observe'), expect: [], absent: [], click: [], width: 1440, height: 900 };
+  const opts = { target: null, out: join(REPO, '.integration', 'observe'), expect: [], absent: [], click: [], fill: [], width: 1440, height: 900 };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const value = () => {
@@ -80,6 +84,7 @@ function parseArgs(argv) {
     else if (a === '--expect') opts.expect.push(value());
     else if (a === '--absent') opts.absent.push(value());
     else if (a === '--click') opts.click.push(value());
+    else if (a === '--fill') opts.fill.push(value());
     else if (a === '--width') opts.width = Number(value());
     else if (a === '--height') opts.height = Number(value());
     else if (a.startsWith('--')) throw new Error(`unknown option ${a}`);
@@ -255,6 +260,34 @@ async function main() {
     if (nav.errorText) throw new Error(`could not load ${url.href}: ${nav.errorText}`);
     let settled = await settle();
 
+    // A field the clause needs typed into. The value is set through the native input setter and an
+    // `input` event is dispatched, so a page listening for `input` (as the dashboard's search bar
+    // does) sees exactly what a typist would produce; a `change` event follows for good measure.
+    for (const spec of opts.fill) {
+      const eq = spec.indexOf('=');
+      if (eq < 1) {
+        failures.push(`--fill ${spec}: expected <css-selector>=<value>`);
+        break;
+      }
+      const selector = spec.slice(0, eq);
+      const value = spec.slice(eq + 1);
+      const ok = await evaluate(`(() => {
+        const el = document.querySelector(${JSON.stringify(selector)});
+        if (!el) return false;
+        const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value')?.set;
+        if (setter) setter.call(el, ${JSON.stringify(value)}); else el.value = ${JSON.stringify(value)};
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+      })()`);
+      if (!ok) {
+        failures.push(`--fill ${selector}: nothing on the page matches`);
+        break;
+      }
+      lastActivity = Date.now();
+      settled = (await settle()) && settled;
+    }
+
     for (const selector of opts.click) {
       const hit = await evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return false; el.scrollIntoView({ block: 'center' }); el.click(); return true; })()`);
       if (!hit) {
@@ -264,7 +297,6 @@ async function main() {
       lastActivity = Date.now();
       settled = (await settle()) && settled;
     }
-
     for (const text of opts.expect) {
       const deadline = Date.now() + EXPECT_TIMEOUT_MS;
       let seen = false;
@@ -301,10 +333,11 @@ async function main() {
       `browser:             ${cdp.browser}, ${opts.width}x${opts.height}`,
       `settled:             ${settled ? 'yes' : `no (requests still open after ${SETTLE_TIMEOUT_MS / 1000} s)`}`,
       `clicked:             ${opts.click.length === 0 ? 'nothing' : opts.click.join(' , ')}`,
+      `filled:              ${opts.fill.length === 0 ? 'nothing' : opts.fill.map((s) => s.slice(0, s.indexOf('='))).join(' , ')}`,
       `console errors:      ${list(consoleErrors)}`,
       `failed requests:     ${list(failedRequests)}`,
       `other-host requests: ${list([...otherHosts])}`,
-      `checks:              ${failures.length === 0 ? `${opts.expect.length + opts.absent.length + opts.click.length} held` : `FAILED\n${failures.map((s) => `    ${s}`).join('\n')}`}`,
+      `checks:              ${failures.length === 0 ? `${opts.expect.length + opts.absent.length + opts.click.length + opts.fill.length} held` : `FAILED\n${failures.map((s) => `    ${s}`).join('\n')}`}`,
       `screenshot:          ${stem}.png`,
       `rendered DOM:        ${stem}.html`,
     ].join('\n');

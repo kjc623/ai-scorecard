@@ -234,7 +234,9 @@ export function submissionDetailStatement(submissionId) {
     id: 'submission_detail',
     text: [
       'SELECT s.submission_id, s.received_at, s.first_occurred_at, s.last_occurred_at,',
-      '       s.user_ref, s.tool_fingerprint, s.kind, s.collection_mode, s.policy_action,',
+      '       s.user_ref, s.tool_fingerprint,',
+      '       ops.tool_display_name(s.tool_fingerprint) AS tool_name,',
+      '       s.kind, s.collection_mode, s.policy_action,',
       '       s.policy_rule_id, s.decided_locally, s.confidence, s.merge_confidence,',
       '       s.content_state, s.shredded_reason, s.size_bytes, s.content_digest, s.labels,',
       '       s.classifier_version, s.winning_source, s.winning_fidelity, s.observed_routes,',

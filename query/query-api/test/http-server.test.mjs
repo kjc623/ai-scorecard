@@ -332,7 +332,7 @@ async function waitFor(predicate, timeoutMs = 5000) {
 
 test('a content search hit carries the person, the device and the tool of its submission', async (t) => {
   const id = '06f2b95e-def2-42ea-824b-926d74b59b97';
-  const client = fakeClient({ rows: [{ submission_id: id, user_ref: 'u_4f21', subject_name: 'alice@example', tool: 'claude_code', device: '35beae1b-e366-465a-8517-58df42c88bdc', hostname: 'LAPTOP-7' }] });
+  const client = fakeClient({ rows: [{ submission_id: id, user_ref: 'u_4f21', subject_name: 'alice@example', tool: 'claude_code', tool_name: 'Claude Code', device: '35beae1b-e366-465a-8517-58df42c88bdc', hostname: 'LAPTOP-7' }] });
   const contentForwarder = {
     async handle() {
       return { status: 200, body: { state: 'available', hits: [{ submission_id: id, snippet: 'the <em>capital</em>', rank: 1 }, { submission_id: 'not-a-uuid', snippet: 'x', rank: 0 }], truncated: false } };
@@ -344,7 +344,7 @@ test('a content search hit carries the person, the device and the tool of its su
   const body = await res.json();
   // The clear name of the submitter and the hostname ride on the hit (ADR 0021); the UUID device
   // remains the identity behind the hit.
-  assert.deepEqual(body.hits[0], { submission_id: id, snippet: 'the <em>capital</em>', rank: 1, subject: 'alice@example', tool: 'claude_code', device: '35beae1b-e366-465a-8517-58df42c88bdc', hostname: 'LAPTOP-7' });
+  assert.deepEqual(body.hits[0], { submission_id: id, snippet: 'the <em>capital</em>', rank: 1, subject: 'alice@example', tool: 'claude_code', tool_name: 'Claude Code', device: '35beae1b-e366-465a-8517-58df42c88bdc', hostname: 'LAPTOP-7' });
   assert.deepEqual(body.hits[1], { submission_id: 'not-a-uuid', snippet: 'x', rank: 0 }, 'a hit with no submission row is served as the vault sent it');
   const lookup = client.calls.query.find((q) => q.text.includes('ingest.submission'));
   assert.deepEqual(lookup.params, [TENANT, id], 'the lookup is tenant-scoped and its ids are a bound parameter');
@@ -471,6 +471,89 @@ test('a review with no established tenant is refused 403 and never reaches the d
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ submission_id: REVIEW_SUBMISSION, rule_id: 'PAYMENT_CARD_PAN', review_state: 'confirmed' }),
+  });
+  assert.equal(res.status, 403);
+  assert.equal((await res.json()).result_state, 'unauthorised_role');
+  assert.equal(client.calls.query.length, 0);
+});
+
+// ---------------------------------------------------------------------------------------------
+// A tool sanction decision is a configuration write, audited beside the read that shows it
+// ---------------------------------------------------------------------------------------------
+
+const TOOL_FP = 'tls_b6681b043244c43f';
+
+/** A client that knows the sanction statements by their shape. */
+function sanctionClient({ existing = null, saved = { tool_fingerprint: TOOL_FP, display_name: null, sanctioned_state: 'unsanctioned', decided_by: 'analyst@lab.test', decided_at: new Date('2026-10-05T01:00:00Z') } } = {}) {
+  const calls = { query: [], began: 0, committed: 0, rolledBack: 0 };
+  return {
+    calls,
+    async connect() {},
+    async query(text, params) {
+      calls.query.push({ text, params });
+      if (text.includes('FROM ops.tool')) return { rows: existing ? [existing] : [], rowCount: existing ? 1 : 0, fields: [] };
+      if (text.includes('INSERT INTO ops.tool')) return { rows: saved ? [saved] : [], rowCount: saved ? 1 : 0, fields: [] };
+      if (text.includes('INSERT INTO ops.audit')) return { rows: [{ audit_seq: 77, occurred_at: new Date('2026-10-05T01:00:01Z') }], rowCount: 1, fields: [] };
+      return { rows: [], rowCount: 0, fields: [] };
+    },
+    async begin() { calls.began += 1; },
+    async commit() { calls.committed += 1; },
+    async rollback() { calls.rolledBack += 1; },
+    async close() {},
+  };
+}
+
+test('a sanction decision is upserted and audited in one transaction, with the actor from the session', async (t) => {
+  const client = sanctionClient();
+  const { base } = await withServer(t, { client });
+  const res = await fetch(`${base}${PATHS.TOOL_SANCTION}`, {
+    method: 'POST',
+    headers: asTenant({ 'x-sac-dev-actor': 'analyst@lab.test' }),
+    body: JSON.stringify({ tool_fingerprint: TOOL_FP, sanctioned_state: 'unsanctioned', note: 'not approved' }),
+  });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.result_state, 'ok');
+  assert.equal(body.data.tool_fingerprint, TOOL_FP);
+  assert.equal(body.data.sanctioned_state, 'unsanctioned');
+  assert.equal(body.data.previous_state, 'unknown', 'an absent row is unknown, a real answer');
+  assert.equal(body.audit.entry_id, '77');
+
+  const upsert = client.calls.query.find((c) => c.text.includes('INSERT INTO ops.tool'));
+  assert.ok(upsert, 'the decision must be written');
+  assert.deepEqual(upsert.params, [TOOL_FP, null, 'unsanctioned', 'analyst@lab.test']);
+  assert.ok(upsert.text.includes('ops.current_tenant()'), 'the tenant is the session, never a parameter');
+  assert.equal(upsert.text.includes(TENANT), false, 'the tenant must never appear in the SQL text');
+  assert.ok(upsert.text.includes("CASE WHEN $3::text = 'unknown' THEN NULL ELSE $4::text END"), 'unknown clears attribution');
+
+  const audit = client.calls.query.find((c) => c.text.includes('INSERT INTO ops.audit'));
+  assert.ok(audit, 'the decision must be audited');
+  assert.equal(audit.params[2], 'tool.sanction');
+  assert.equal(audit.params[3], 'ops.tool');
+  assert.equal(client.calls.committed, 1, 'decision and audit commit together');
+  assert.equal(client.calls.rolledBack, 0);
+});
+
+test('a tenant in a sanction body is refused as a validation error, not honoured', async (t) => {
+  const client = sanctionClient();
+  const { base } = await withServer(t, { client });
+  const res = await fetch(`${base}${PATHS.TOOL_SANCTION}`, {
+    method: 'POST',
+    headers: asTenant(),
+    body: JSON.stringify({ tool_fingerprint: TOOL_FP, sanctioned_state: 'sanctioned', tenant_id: TENANT }),
+  });
+  assert.equal(res.status, 400);
+  assert.equal((await res.json()).error.code, 'tenant_in_request');
+  assert.equal(client.calls.query.length, 0, 'a rejected body must not reach the database');
+});
+
+test('a sanction with no established tenant is refused 403 and never reaches the database', async (t) => {
+  const client = sanctionClient();
+  const { base } = await withServer(t, { client });
+  const res = await fetch(`${base}${PATHS.TOOL_SANCTION}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ tool_fingerprint: TOOL_FP, sanctioned_state: 'sanctioned' }),
   });
   assert.equal(res.status, 403);
   assert.equal((await res.json()).result_state, 'unauthorised_role');

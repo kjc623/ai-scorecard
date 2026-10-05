@@ -23,6 +23,7 @@ import { plan, executePlan } from '../plan.js';
 import { RESULT_STATES } from '../errors.js';
 import { CONTENT_PATHS, createContentForwarder } from './content.js';
 import { validateReviewRequest, FINDING_FOR_REVIEW_SQL, UPSERT_REVIEW_SQL, findingReviewAuditStatement } from '../review.js';
+import { validateSanctionRequest, TOOL_SANCTION_FOR_REVIEW_SQL, UPSERT_TOOL_SANCTION_SQL, toolSanctionAuditStatement } from '../sanction.js';
 
 const HIT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -32,6 +33,7 @@ export const PATHS = Object.freeze({
   READINESS: '/readyz',
   QUERY: '/v1/query',
   FINDING_REVIEW: '/v1/finding-review',
+  TOOL_SANCTION: '/v1/tool-sanction',
 });
 
 /** §6.2: a request body larger than this is refused before it is parsed, not after. */
@@ -558,6 +560,128 @@ export function createHandler({
     }
   }
 
+  /**
+   * Tool sanction (sanction.js). The second audited configuration write this service accepts, for
+   * the same reason as the first: `sac_query` holds the read that shows the state and now holds
+   * INSERT+UPDATE on `ops.tool`, so the decision and the read that reflects it are one round trip
+   * from the same place. The tenant is the session's and the actor is the authenticated principal;
+   * neither is read from the body. The decision and its audit row commit together, so a response is
+   * never served for a state change that was not recorded.
+   */
+  async function toolSanction(req, res) {
+    const principal = principalOf(req, cfg);
+    if (!principal) {
+      sendJson(res, 403, {
+        result_state: 'unauthorised_role',
+        error: {
+          code: 'role',
+          message: cfg.devTrustPrincipal
+            ? 'no tenant was established for this request'
+            : 'the authenticated session is not built yet; this service refuses to guess a tenant',
+        },
+      });
+      return;
+    }
+
+    let body;
+    try {
+      const raw = await readBody(req);
+      body = raw.trim() === '' ? {} : JSON.parse(raw);
+    } catch (error) {
+      const rendered = renderError(error, log);
+      sendJson(res, rendered.status, rendered.body);
+      return;
+    }
+
+    let sanction;
+    try {
+      sanction = validateSanctionRequest(body);
+    } catch (error) {
+      const rendered = renderError(error, log);
+      sendJson(res, rendered.status, rendered.body);
+      return;
+    }
+
+    try {
+      await gate.acquire();
+    } catch (error) {
+      const rendered = renderError(error, log);
+      sendJson(res, rendered.status, rendered.body);
+      return;
+    }
+
+    let conn = null;
+    try {
+      conn = await source.acquire();
+      await source.useTenant(conn, principal.tenant);
+      await conn.begin();
+
+      // The previous decision, for the audit detail. An absent row is `unknown`, a real answer.
+      const existing = await conn.query(TOOL_SANCTION_FOR_REVIEW_SQL, [sanction.toolFingerprint]);
+      const previousState = existing?.rows?.[0]?.sanctioned_state ?? 'unknown';
+
+      const saved = await conn.query(UPSERT_TOOL_SANCTION_SQL, [
+        sanction.toolFingerprint,
+        sanction.displayName,
+        sanction.sanctionedState,
+        principal.actorId,
+      ]);
+      const audit = toolSanctionAuditStatement({
+        actorId: principal.actorId,
+        toolFingerprint: sanction.toolFingerprint,
+        sanctionedState: sanction.sanctionedState,
+        previousState,
+        displayName: sanction.displayName,
+        note: sanction.note,
+        caseReference: principal.caseReference,
+      });
+      const auditRow = await conn.query(audit.text, audit.params);
+      await conn.commit();
+
+      const row = saved?.rows?.[0] ?? {};
+      const auditEntry = auditRow?.rows?.[0] ?? null;
+      sendJson(res, 200, {
+        api_version: '1',
+        result_state: 'ok',
+        data: {
+          tool_fingerprint: row.tool_fingerprint ?? sanction.toolFingerprint,
+          display_name: row.display_name ?? sanction.displayName,
+          sanctioned_state: row.sanctioned_state ?? sanction.sanctionedState,
+          previous_state: previousState,
+          decided_by: row.decided_by ?? (sanction.sanctionedState === 'unknown' ? null : principal.actorId),
+          decided_at: row.decided_at instanceof Date ? row.decided_at.toISOString() : (row.decided_at ?? null),
+        },
+        ...(auditEntry
+          ? {
+              audit: {
+                entry_id: auditEntry.audit_seq === undefined ? null : String(auditEntry.audit_seq),
+                written_at: auditEntry.occurred_at instanceof Date ? auditEntry.occurred_at.toISOString() : (auditEntry.occurred_at ?? null),
+              },
+            }
+          : {}),
+      });
+    } catch (error) {
+      if (conn) {
+        try {
+          await conn.rollback();
+        } catch {
+          // A rollback failure must not mask the original error.
+        }
+      }
+      const rendered = renderError(error, log);
+      sendJson(res, rendered.status, rendered.body);
+    } finally {
+      if (conn) {
+        try {
+          await source.release(conn);
+        } catch (error) {
+          log?.warn?.(`query-api: could not return a connection to the pool: ${error?.message ?? error}`);
+        }
+      }
+      gate.release();
+    }
+  }
+
   const forwarder = contentForwarder ?? createContentForwarder({ vaultUrl: cfg.contentVaultUrl, scope: cfg.contentSearchScope, log });
 
   /**
@@ -615,7 +739,8 @@ export function createHandler({
       await source.useTenant(conn, principal.tenant);
       const result = await conn.query(
         `SELECT s.submission_id::text AS submission_id, s.user_ref AS user_ref, s.subject_name AS subject_name,
-                s.tool_fingerprint AS tool, s.device_id::text AS device, d.hostname AS hostname
+                s.tool_fingerprint AS tool, ops.tool_display_name(s.tool_fingerprint) AS tool_name,
+                s.device_id::text AS device, d.hostname AS hostname
            FROM ingest.submission s
            LEFT JOIN ops.device d
              ON d.tenant_id = s.tenant_id AND d.device_id = s.device_id
@@ -632,6 +757,7 @@ export function createHandler({
           // is always attributable to something an analyst can act on (ADR 0021, docs/04 §15.3).
           subject: row.subject_name ?? row.user_ref ?? null,
           tool: row.tool ?? null,
+          tool_name: row.tool_name ?? null,
           device: row.device ?? null,
           hostname: row.hostname ?? null,
         };
@@ -656,9 +782,10 @@ export function createHandler({
     if (req.method === 'GET' && url.split('?')[0] === PATHS.READINESS) return void readiness(res);
     if (req.method === 'POST' && url.split('?')[0] === PATHS.QUERY) return void query(req, res);
     if (req.method === 'POST' && url.split('?')[0] === PATHS.FINDING_REVIEW) return void findingReview(req, res);
+    if (req.method === 'POST' && url.split('?')[0] === PATHS.TOOL_SANCTION) return void toolSanction(req, res);
     if (req.method === 'POST' && Object.values(CONTENT_PATHS).includes(url.split('?')[0])) return void content(req, res, url.split('?')[0]);
 
-    if (url.split('?')[0] === PATHS.QUERY || url.split('?')[0] === PATHS.LIVENESS || url.split('?')[0] === PATHS.READINESS || url.split('?')[0] === PATHS.FINDING_REVIEW) {
+    if (url.split('?')[0] === PATHS.QUERY || url.split('?')[0] === PATHS.LIVENESS || url.split('?')[0] === PATHS.READINESS || url.split('?')[0] === PATHS.FINDING_REVIEW || url.split('?')[0] === PATHS.TOOL_SANCTION) {
       res.writeHead(405, { 'content-type': 'application/json; charset=utf-8', allow: 'GET, POST' });
       res.end(JSON.stringify({ result_state: 'not_found', error: { code: 'method_not_allowed', message: `${req.method} is not allowed on ${url}` } }));
       return;

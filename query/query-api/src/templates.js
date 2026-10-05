@@ -160,8 +160,12 @@ export const TEMPLATES = Object.freeze({
     title: 'Which tools are unsanctioned, and who is using them?',
     source: 'mart.agg_tool_user_period',
     kind: 'aggregate',
-    params: ['window', 'bucket', 'limit', 'tool', 'subject'],
+    params: ['window', 'bucket', 'limit', 'tool', 'subject', 'sanctioned_state'],
     build(params) {
+      // The question is "which are unsanctioned": the state filter is part of the question, not an
+      // optional narrowing. `sanctioned_state` may name another state (e.g. `unknown` gets its own
+      // list, docs/04 §3.2), but omitting it answers the template's own question.
+      const sanctionState = oneOf(params, 'sanctioned_state', ['sanctioned', 'unsanctioned', 'unknown']) ?? 'unsanctioned';
       return {
         document: {
           query_version: '1',
@@ -172,16 +176,22 @@ export const TEMPLATES = Object.freeze({
           filters: filtersOf([
             eq('tool', optionalStr(params, 'tool')),
             eq('subject', optionalStr(params, 'subject')),
+            eq('sanctioned_state', sanctionState),
           ]),
           window: windowOf(params),
-          order: [{ by: 'submissions', dir: 'desc' }],
+          // A list of people, ordered by tool and then by person — never by volume. A
+          // submissions-desc ordering would be the leaderboard the product forbids (docs/04 §11.2,
+          // brief §1.2); this is the cursor docs/04 §3.2 names.
+          order: [{ by: 'tool', dir: 'asc' }, { by: 'subject', dir: 'asc' }],
           limit: limitOf(params, 500, 500),
         },
         notes: [
           'Subject-bearing: this read is audited as it is served, and its cursor is server-side because the ordering key contains a subject reference (§7.2).',
           'An unscoped window beyond 7 days is refused by the cost guard, naming the narrowing that would make it servable (§3.2).',
-          'Three states, not two: `unsanctioned`, `unknown` and `sanctioned` are separate answers, and `unknown` gets its own count and list (§3.2).',
-          'The unsanctioned tool set is resolved from the same view Q1 reads (mart.v_tool_usage); the people come from this source. Both precomputed, nothing scans raw events.',
+          'Three states, not two: `unsanctioned`, `unknown` and `sanctioned` are separate answers, and `unknown` gets its own count and list (§3.2). The default here is `unsanctioned`, the template\'s own question.',
+          'The unsanctioned tool set is resolved from the tool fingerprint joined to ops.tool at read time (mart.agg_tool_user_period ⋈ ops.tool); its display name comes from ref.tool_catalogue. Both precomputed, nothing scans raw events.',
+          'The k-suppression cell is the (bucket, tool) group, not the person: a tool used by fewer than k people is suppressed, and a tool with enough people publishes the rows that name them (§3.2, §6.4).',
+          'Ordered by tool and then by person, never by volume: this is a list, not a leaderboard (§11.2).',
         ],
       };
     },

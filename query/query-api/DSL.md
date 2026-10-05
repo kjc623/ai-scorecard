@@ -109,7 +109,7 @@ offered is `unknown_dimension` / `unknown_measure`, and the error lists what is 
 |---|---|---|
 | `mart.v_tool_usage` | `bucket`, `tool`, `sanctioned_state` | `submissions`, `users`, `bytes_total`, `blocked`, `warned`, `logged` |
 | `mart.agg_tool_period` | `bucket`, `tool`, `sanctioned_state` | the six above plus `detections`, `rollup_events`, `degraded_events` |
-| `mart.agg_tool_user_period` | `bucket`, `tool`, `subject` | `submissions`, `bytes_total` |
+| `mart.agg_tool_user_period` | `bucket`, `tool`, `sanctioned_state`, `subject` | `submissions`, `bytes_total` |
 | `mart.agg_org_period` | `bucket`, `department`, `population`, `tool` | `submissions`, `users` |
 | `mart.agg_class_period` | `bucket`, `class`, `tool`, `severity`, `classifier_version` | `submissions`, `users`, `max_score`, `degraded_events` |
 | `mart.agg_user_period` | `bucket`, `subject` | `submissions`, `bytes_total`, `tools_used`, `block_events` |
@@ -197,7 +197,7 @@ Every template declares exactly these parameters; anything else is an error.
 | Template | Source | Parameters | Notes |
 |---|---|---|---|
 | `q1_tools_ranked` | `mart.v_tool_usage` | `window`, `bucket`, `limit`, `tool`, `sanctioned_state` | rank by `submissions`, tie-break `tool`; `sanctioned_state` NULL renders as `unknown`, never as `unsanctioned` |
-| `q2_unsanctioned_users` | `mart.agg_tool_user_period` | `window`, `bucket`, `limit`, `tool`, `subject` | subject-bearing → audited; not cursor-paged (no `cursor` parameter — one response bounded by `limit`, default and maximum 500); > 7 days unscoped is refused |
+| `q2_unsanctioned_users` | `mart.agg_tool_user_period` | `window`, `bucket`, `limit`, `tool`, `subject`, `sanctioned_state` | subject-bearing → audited; the state defaults to `unsanctioned` (the question), and `unknown` is a separate call; the k cell is the `(bucket, tool)` group; ordered by tool then person, never by volume; not cursor-paged (no `cursor` parameter — one response bounded by `limit`, default and maximum 500); > 7 days unscoped is refused |
 | `q3_team_growth` | `mart.agg_org_period` | `window`, `bucket`, `limit`, `department`, `population` | carries the `unmapped` residual in `meta.extras.org_coverage`; `not_yet_covered` before the directory sync |
 | `q4_class_mix` | `mart.agg_class_period` | `window`, `bucket`, `limit`, `dimensions`, `class`, `severity` | `dimensions` ⊆ `{class, tool, severity, classifier_version}`, ≤ 3; default `[class, severity]` |
 | `q5_findings` | `mart.v_finding` | `window`, `limit`, `cursor`, `severity`, `rule`, `review_state`, `subject`, `tool`, `class` | review state `open` means nobody has looked |
@@ -387,7 +387,14 @@ disagree with the choice rather than discover it.
    "never silently downgraded"; the version is carried on every request and response.
 2. **`sanctioned_state` is a dimension.** §2.4's dimension table omits it, but §3.2 requires
    "which are unsanctioned" and the three states to stay separate. It is groupable and filterable
-   on the two tool sources, and is nullable (NULL = a tool with no `ops.tool` row = `unknown`).
+   on the three tool sources (`mart.v_tool_usage`, `mart.agg_tool_period`,
+   `mart.agg_tool_user_period`), and is nullable (NULL = a tool with no `ops.tool` row = `unknown`).
+2a. **`tool_name` is returned, not offered as a dimension.** Every source that shows a tool returns
+   the raw fingerprint in `tool` and a present-tense display name in `tool_name`, resolved by
+   `ops.tool_display_name()` from `ops.tool` (a tenant override) and `ref.tool_catalogue` (the shared
+   seed), falling back to the literal `Unrecognised tool`. The raw value stays the grouping and
+   filtering key, so the index and `starts_with` behaviour are unchanged and an unknown tool is
+   never hidden behind a plausible name.
 3. **`classifier_version` is a dimension.** §3.4 requires a classifier change to appear as a
    version change; it is in `mart.agg_class_period`'s primary key, so it is offered. With the
    three-dimension cap, `class` + `tool` + `severity` + `classifier_version` cannot all be shown at

@@ -163,14 +163,37 @@ export function compile(validated, opts = {}) {
       select.push(`max(${source.subjectCount.column})::bigint AS __k_subjects`);
       meta.subject_count_basis = collapsing ? 'lower_bound' : 'exact';
     } else if (source.subjectCount.distinct) {
-      // count(DISTINCT …) over the aggregate rows is exact for any grouping: the rows are
-      // already per-subject, so this is not a scan of events.
-      select.push(`count(DISTINCT ${source.subjectCount.distinct})::bigint AS __k_subjects`);
-      meta.subject_count_basis = 'exact';
+      // Q2's cell is the tool, not the person (docs/04 §3.2). When `subject` is a grouping key the
+      // grain is one row per subject per bucket, so the number of grouped rows in the (bucket,
+      // tool) window is exactly the number of distinct subjects that used the tool in that cell —
+      // available as a plain window count, where `count(DISTINCT …) OVER …` is not legal SQL. Any
+      // other shape (no subject grouping, a reduced week/month bucket) keeps the exact
+      // `count(DISTINCT …)`, so the fallback is never a wrong number.
+      if (source.subjectCount.perToolCell && query.dimensions.includes('subject') && query.bucket) {
+        const bucketExpr = (query.bucket === 'hour' || query.bucket === 'day')
+          ? source.bucket.startColumn
+          : `date_trunc(${BUCKET_TRUNC_SQL[query.bucket]}, ${source.bucket.startColumn})`;
+        select.push(`count(*) OVER (PARTITION BY ${bucketExpr}, ${source.dimensions.tool.sql})::bigint AS __k_subjects`);
+        meta.subject_count_basis = 'per_tool_cell';
+      } else {
+        select.push(`count(DISTINCT ${source.subjectCount.distinct})::bigint AS __k_subjects`);
+        meta.subject_count_basis = 'exact';
+      }
     }
   }
 
-  for (const entry of source.extraSelect ?? []) select.push(entry);
+  for (const entry of source.extraSelect ?? []) {
+    // A derived display column belongs in the SELECT only when its grouping key is actually
+    // grouped: `tool_name` is a function of `tool_fingerprint`, so a query that does not GROUP BY
+    // tool cannot select it at all. A plain string is unconditional; an object with
+    // `whenDimensions` is emitted only when every named dimension is grouped.
+    if (typeof entry === 'string') {
+      select.push(entry);
+      continue;
+    }
+    if (entry.whenDimensions && !entry.whenDimensions.every((d) => query.dimensions.includes(d))) continue;
+    select.push(entry.sql);
+  }
 
   // -------------------------------------------------------------------------------------------
   // FROM and the lazy directory join

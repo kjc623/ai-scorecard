@@ -16,9 +16,13 @@ Each line names the task that left it. The exact commands are in that task's `RE
   One reinstall covers both tasks that asked for it. On 2026-10-04 the real device's row on Devices
   still showed no hostname, agent version or mode, so this had not been done. (02, 04)
 - [ ] **Apply the schema changes to any database other than the lab's.** The lab's database has
-  had all three applied by the agents. Anything else needs 02's four statements (in its report),
-  then `backlog/03-findings/MIGRATION.sql`, then `backlog/04-device-identity/MIGRATION.sql`, in that
-  order. (02, 03, 04)
+  had all four applied by the agents. Anything else needs 02's four statements (in its report),
+  then `backlog/03-findings/MIGRATION.sql`, then `backlog/04-device-identity/MIGRATION.sql`, then
+  `backlog/05-tool-catalogue/MIGRATION.sql`, in that order. (02, 03, 04, 05)
+- [ ] **Apply 05's tool catalogue to any database other than the lab's**, after 04's migration:
+  `psql "$DSN" -v ON_ERROR_STOP=1 -f backlog/05-tool-catalogue/MIGRATION.sql`. It creates
+  `ref.tool_catalogue`, seeds it, adds `ops.tool_display_name()` and grants the sanction write.
+  (05)
 
 ## Verify
 
@@ -36,6 +40,11 @@ On the owner's dashboard, `http://127.0.0.1:8787`, with the real device.
   direct database call, not with the device. (03)
 - [ ] After the reinstall: the device appears by hostname on Devices and in search results, with
   its agent version and mode, and the user shown is the person who typed the prompt. (04)
+- [ ] New Claude Code traffic from the device shows as "Claude Code" on Tools, in Search rows and in
+  prompt search results; a destination the seed catalogue does not hold shows as "Unrecognised tool"
+  with its raw fingerprint. Task 05 observed all four existing `tls_*` fingerprints resolving this
+  way (three to Claude Code, one unrecognised); the new traffic proves the derivation is unchanged.
+  (05)
 
 ## Answer
 
