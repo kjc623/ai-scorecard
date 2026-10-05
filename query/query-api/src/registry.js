@@ -258,6 +258,14 @@ export const SOURCES = Object.freeze({
     subjectBearing: false,
     requiresSubjectScope: false,
     indexes: Object.freeze(['mart.agg_tool_period PK (tenant_id, bucket_start, bucket_size, tool_fingerprint)']),
+    // The display name is joined at read time from ops.tool / ref.tool_catalogue through
+    // ops.tool_display_name(); `tool` keeps returning the raw fingerprint, so the name can never
+    // hide which behaviour-derived tool a row is about, and an unknown fingerprint is returned as
+    // "Unrecognised tool" with `tool` beside it (brief §2, C8). It is selected only when `tool` is
+    // a grouping dimension, because the name is a function of the grouped fingerprint.
+    extraSelect: Object.freeze([
+      Object.freeze({ sql: 'ops.tool_display_name(t.tool_fingerprint) AS "tool_name"', whenDimensions: Object.freeze(['tool']) }),
+    ]),
     warnings: Object.freeze([
       'mart.v_tool_usage exposes no detections/rollup_events/degraded_events: a detection-only tool (mode I) or a rollup-only tool cannot appear in this source. Use source mart.agg_tool_period for those measures (docs/04 §3.1 "Gap", §4.6).',
     ]),
@@ -305,6 +313,9 @@ export const SOURCES = Object.freeze({
         when: Object.freeze(['sanctioned_state']),
       }),
     ]),
+    extraSelect: Object.freeze([
+      Object.freeze({ sql: 'ops.tool_display_name(t.tool_fingerprint) AS "tool_name"', whenDimensions: Object.freeze(['tool']) }),
+    ]),
     warnings: Object.freeze([
       'sanctioned_state is present-tense configuration joined at read time (ops.tool), never a property of the aggregate row (docs/04 §4.1).',
     ]),
@@ -325,6 +336,7 @@ export const SOURCES = Object.freeze({
     dimensions: Object.freeze({
       bucket: dim('bucket', 'a.bucket_start', 'timestamp', { cardinalitySource: 'derived from the window and the applied bucket' }),
       tool: dim('tool', 'a.tool_fingerprint', 'text', { startsWith: true, ...TOOL_CARD }),
+      sanctioned_state: dim('sanctioned_state', 'ot.sanctioned_state', 'text', { nullable: true, ...SANCTIONED_CARD }),
       subject: dim('subject', 'a.user_ref', 'text', { ...USER_CARD }),
     }),
     measures: Object.freeze({
@@ -337,7 +349,13 @@ export const SOURCES = Object.freeze({
       { dim: 'tool', dir: 'asc' },
       { dim: 'subject', dir: 'asc' },
     ]),
-    subjectCount: Object.freeze({ distinct: 'a.user_ref' }),
+    // The suppression cell for Q2 is the tool, not the person: docs/04 §3.2 says "per-tool per-day
+    // cells below k subjects suppressed", and a read that names who uses an unsanctioned tool must
+    // suppress a tool used by fewer than k people while still naming the tool's users when there
+    // are enough of them to make the count a fact about a group rather than about a person. The
+    // window count `count(*)` over the grouped (bucket, tool) cell is exactly that number because
+    // the grain is one row per subject per bucket; see compile.js.
+    subjectCount: Object.freeze({ distinct: 'a.user_ref', perToolCell: true }),
     kSuppression: true,
     subjectBearing: true,
     requiresSubjectScope: false,
@@ -345,8 +363,22 @@ export const SOURCES = Object.freeze({
       'mart.agg_tool_user_period PK (tenant_id, bucket_start, bucket_size, tool_fingerprint, user_ref)',
       'docs/04 §3.11 (tenant_id, tool_fingerprint, bucket_start DESC, bucket_size)',
     ]),
+    // SANCTION is joined present-tense from ops.tool, exactly as Q1 does: a decision made after a
+    // bucket was written changes what the next read says about it, and never rewrites the bucket.
+    joins: Object.freeze([
+      Object.freeze({
+        id: 'tool',
+        sql: 'LEFT JOIN ops.tool ot ON ot.tenant_id = a.tenant_id AND ot.tool_fingerprint = a.tool_fingerprint',
+        when: Object.freeze(['sanctioned_state']),
+      }),
+    ]),
+    extraSelect: Object.freeze([
+      Object.freeze({ sql: 'ops.tool_display_name(a.tool_fingerprint) AS "tool_name"', whenDimensions: Object.freeze(['tool']) }),
+    ]),
     warnings: Object.freeze([
       'docs/04 §3.2: an unscoped window beyond 7 days is refused by the cost guard when subject is a grouping dimension.',
+      'sanctioned_state is present-tense configuration joined at read time (ops.tool), never a property of the aggregate row; NULL means no decision, rendered as `unknown`, never as `unsanctioned`.',
+      'k-suppression applies to the (bucket, tool) cell, not the person: a tool used by fewer than k people is suppressed, and a tool with enough people publishes its per-person rows, which are the point of naming who uses it (docs/04 §3.2, §6.4).',
     ]),
   }),
 
@@ -615,6 +647,12 @@ export const SOURCES = Object.freeze({
       'd.collection_mode AS "collection_mode"',
       'd.last_user_ref AS "user_ref"',
       'd.last_subject_name AS "subject_name"',
+      // The directory's own display name, current as of the last sync, resolved per row. It is a
+      // scalar subquery rather than a join because the devices list is a frozen column list and a
+      // join would only be emitted when a dimension happened to use it; this is one lookup on a
+      // page-sized list. NULL when there is no sync, no display name, or a 'hashed' tenant (the
+      // sync stores no clear name then). See ops.user_dim.display_name.
+      '(SELECT ud.display_name FROM ops.user_dim ud WHERE ud.tenant_id = d.tenant_id AND ud.user_ref = d.last_user_ref) AS "directory_name"',
       "CASE WHEN d.revoked_at IS NOT NULL THEN 'revoked' WHEN d.last_seen_at IS NULL THEN 'never_reported' WHEN d.last_seen_at < now() - interval '24 hours' THEN 'stale' ELSE 'reporting' END AS \"liveness\"",
       'cs.collector AS "collector"',
       'cs.state AS "collector_state"',
@@ -803,6 +841,8 @@ export const SOURCES = Object.freeze({
       's.last_occurred_at AS last_occurred_at',
       's.user_ref AS "subject"',
       's.tool_fingerprint AS "tool"',
+      // The display name joined at read time; the raw fingerprint travels beside it in `tool`.
+      'ops.tool_display_name(s.tool_fingerprint) AS "tool_name"',
       's.device_id AS "device"',
       's.collection_mode AS "mode"',
       's.policy_action AS "action"',
@@ -890,6 +930,7 @@ export const SOURCES = Object.freeze({
       'f.severity AS "severity"',
       'f.user_ref AS "subject"',
       'f.tool_fingerprint AS "tool"',
+      'ops.tool_display_name(f.tool_fingerprint) AS "tool_name"',
       'f.collection_mode AS "mode"',
       'f.decided_locally AS "decided_locally"',
       'f.review_state AS "review_state"',

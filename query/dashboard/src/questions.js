@@ -70,6 +70,7 @@ export const QUESTIONS = Object.freeze({
       limit: ctx.limit ?? 500,
       tool: ctx.filters.tool,
       subject: ctx.filters.subject,
+      sanctioned_state: ctx.filters.sanctioned_state ?? 'unsanctioned',
     })),
   },
 

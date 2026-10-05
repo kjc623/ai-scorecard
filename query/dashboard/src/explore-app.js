@@ -283,7 +283,9 @@ export function createExplorer({ api, content = null, now = () => new Date(), on
         status: 'ready', query: text, problem: null,
         hits: Object.freeze((answer.hits ?? []).map((h) => Object.freeze({
           submissionId: String(h.submission_id), snippet: String(h.snippet ?? ''),
-          subject: h.subject ?? null, device: h.device ?? null, tool: h.tool ?? null,
+          subject: h.subject ?? null, directory_name: h.directory_name ?? null,
+          device: h.device ?? null, tool: h.tool ?? null, tool_name: h.tool_name ?? null,
+          hostname: h.hostname ?? null,
         }))),
         truncated: Boolean(answer.truncated),
       }),

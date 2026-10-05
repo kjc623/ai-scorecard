@@ -118,6 +118,27 @@ mark the token used. Nothing in the request path re-checks identity with a
 read-then-write: single-use is a conditional `UPDATE ... WHERE used_at IS NULL` whose zero-row result
 is the reuse.
 
+## The directory sync (`control-api sync-directory`)
+
+The organisational dimension (`ops.user_dim`) is filled by a subcommand of this binary, not by the
+HTTP service and not by a device route. It reads a directory and reconciles `ops.user_dim` per
+tenant: a user the source omits is retired (`status = 'inactive'`), never deleted; a user with no
+department is written with NULL and counted unmapped; `directory_object_id_enc` is sealed with
+AES-256-GCM under a per-tenant key derived from `SAC_DIRECTORY_KEY`. Two providers exist: `entra`
+(Microsoft Graph, client credentials, mapping `user_ref` from `--entra-user-ref-attribute`, default
+`onPremisesSamAccountName`) and `file` (a JSON export, the lab source). The clear directory display
+name is stored only while the tenant's `device_identity` is `clear` (ADR 0021). The full design and
+the mapping are in [internal/directory](internal/directory); the package comment is the reference.
+
+```
+control-api sync-directory -store sql -dsn "$SAC_PG_DSN" -provider file \
+  -file backlog/06-directory-sync/sample-directory.json -tenant <uuid> -directory-key <base64-32b>
+```
+
+Without `-tenant` it syncs every tenant the session can see, which a role constrained by forced
+row-level security cannot enumerate (the same caveat as the aggregator: pass `-tenant`, or run it as
+a role that can).
+
 ## What is not built yet
 
 1. **The Key Vault signer is an interface, not an implementation.** `KeyVaultSigner.Sign` returns a

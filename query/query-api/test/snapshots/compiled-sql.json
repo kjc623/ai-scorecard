@@ -70,7 +70,7 @@
     "statements": [
       {
         "id": "read",
-        "text": "SELECT t.bucket_start AS bucket,\n       t.tool_fingerprint AS \"tool\",\n       SUM(t.submissions) AS \"submissions\",\n       MAX(t.users) AS \"users\",\n       SUM(t.bytes_total) AS \"bytes_total\",\n       SUM(t.blocked) AS \"blocked\",\n       SUM(t.warned) AS \"warned\",\n       SUM(t.logged) AS \"logged\",\n       max(t.users)::bigint AS __k_subjects\n  FROM mart.v_tool_usage t\n WHERE t.tenant_id = ops.current_tenant()\n   AND t.bucket_start >= $1::timestamptz\n   AND t.bucket_start < $2::timestamptz\n   AND t.bucket_start <= $3::timestamptz\n   AND t.bucket_size = $4::text\n GROUP BY t.bucket_start, t.tool_fingerprint\n ORDER BY t.bucket_start DESC NULLS LAST, SUM(t.submissions) DESC NULLS LAST, t.tool_fingerprint ASC NULLS LAST\n LIMIT $5::int",
+        "text": "SELECT t.bucket_start AS bucket,\n       t.tool_fingerprint AS \"tool\",\n       SUM(t.submissions) AS \"submissions\",\n       MAX(t.users) AS \"users\",\n       SUM(t.bytes_total) AS \"bytes_total\",\n       SUM(t.blocked) AS \"blocked\",\n       SUM(t.warned) AS \"warned\",\n       SUM(t.logged) AS \"logged\",\n       max(t.users)::bigint AS __k_subjects,\n       ops.tool_display_name(t.tool_fingerprint) AS \"tool_name\"\n  FROM mart.v_tool_usage t\n WHERE t.tenant_id = ops.current_tenant()\n   AND t.bucket_start >= $1::timestamptz\n   AND t.bucket_start < $2::timestamptz\n   AND t.bucket_start <= $3::timestamptz\n   AND t.bucket_size = $4::text\n GROUP BY t.bucket_start, t.tool_fingerprint\n ORDER BY t.bucket_start DESC NULLS LAST, SUM(t.submissions) DESC NULLS LAST, t.tool_fingerprint ASC NULLS LAST\n LIMIT $5::int",
         "params": [
           "2026-09-01T00:00:00.000Z",
           "2026-09-08T00:00:00.000Z",
@@ -145,18 +145,19 @@
           null,
           null,
           null,
-          "{\"source\":\"mart.agg_tool_user_period\",\"query_version\":\"1\",\"bucket\":\"day\",\"dimensions\":[\"tool\",\"subject\"],\"measures\":[\"submissions\",\"bytes_total\"],\"order\":[{\"by\":\"submissions\",\"dir\":\"desc\"}],\"window\":{\"from\":\"2026-09-01T00:00:00.000Z\",\"to\":\"2026-09-08T00:00:00.000Z\"},\"rollup\":false,\"filters\":[{\"field\":\"tool\",\"op\":\"eq\",\"value\":\"claude_web\"}]}"
+          "{\"source\":\"mart.agg_tool_user_period\",\"query_version\":\"1\",\"bucket\":\"day\",\"dimensions\":[\"tool\",\"subject\"],\"measures\":[\"submissions\",\"bytes_total\"],\"order\":[{\"by\":\"tool\",\"dir\":\"asc\"},{\"by\":\"subject\",\"dir\":\"asc\"}],\"window\":{\"from\":\"2026-09-01T00:00:00.000Z\",\"to\":\"2026-09-08T00:00:00.000Z\"},\"rollup\":false,\"filters\":[{\"field\":\"tool\",\"op\":\"eq\",\"value\":\"claude_web\"},{\"field\":\"sanctioned_state\",\"op\":\"eq\",\"value\":\"unsanctioned\"}]}"
         ]
       },
       {
         "id": "read",
-        "text": "SELECT a.bucket_start AS bucket,\n       a.tool_fingerprint AS \"tool\",\n       a.user_ref AS \"subject\",\n       SUM(a.submissions) AS \"submissions\",\n       SUM(a.bytes_total) AS \"bytes_total\",\n       count(DISTINCT a.user_ref)::bigint AS __k_subjects\n  FROM mart.agg_tool_user_period a\n WHERE a.tenant_id = ops.current_tenant()\n   AND a.bucket_start >= $1::timestamptz\n   AND a.bucket_start < $2::timestamptz\n   AND a.bucket_start <= $3::timestamptz\n   AND a.bucket_size = $4::text\n   AND a.tool_fingerprint = $5::text\n GROUP BY a.bucket_start, a.tool_fingerprint, a.user_ref\n ORDER BY a.bucket_start DESC NULLS LAST, SUM(a.submissions) DESC NULLS LAST, a.tool_fingerprint ASC NULLS LAST, a.user_ref ASC NULLS LAST\n LIMIT $6::int",
+        "text": "SELECT a.bucket_start AS bucket,\n       a.tool_fingerprint AS \"tool\",\n       a.user_ref AS \"subject\",\n       SUM(a.submissions) AS \"submissions\",\n       SUM(a.bytes_total) AS \"bytes_total\",\n       count(*) OVER (PARTITION BY a.bucket_start, a.tool_fingerprint)::bigint AS __k_subjects,\n       ops.tool_display_name(a.tool_fingerprint) AS \"tool_name\"\n  FROM mart.agg_tool_user_period a\n  LEFT JOIN ops.tool ot ON ot.tenant_id = a.tenant_id AND ot.tool_fingerprint = a.tool_fingerprint\n WHERE a.tenant_id = ops.current_tenant()\n   AND a.bucket_start >= $1::timestamptz\n   AND a.bucket_start < $2::timestamptz\n   AND a.bucket_start <= $3::timestamptz\n   AND a.bucket_size = $4::text\n   AND a.tool_fingerprint = $5::text\n   AND ot.sanctioned_state = $6::text\n GROUP BY a.bucket_start, a.tool_fingerprint, a.user_ref\n ORDER BY a.bucket_start DESC NULLS LAST, a.tool_fingerprint ASC NULLS LAST, a.user_ref ASC NULLS LAST\n LIMIT $7::int",
         "params": [
           "2026-09-01T00:00:00.000Z",
           "2026-09-08T00:00:00.000Z",
           "2026-09-08T00:00:00.000Z",
           "day",
           "claude_web",
+          "unsanctioned",
           101
         ]
       },
@@ -185,17 +186,12 @@
         "submissions": "additive",
         "bytes_total": "additive"
       },
-      "subject_count_basis": "exact",
+      "subject_count_basis": "per_tool_cell",
       "order": [
         {
           "by": "bucket",
           "dir": "desc",
           "key": "bucket"
-        },
-        {
-          "by": "submissions",
-          "dir": "desc",
-          "key": "submissions"
         },
         {
           "by": "tool",
@@ -381,7 +377,7 @@
       },
       {
         "id": "read",
-        "text": "SELECT f.submission_id AS submission_id,\n       f.detected_at AS detected_at,\n       f.rule_id AS \"rule\",\n       f.rule_title AS rule_title,\n       f.class_code AS \"class\",\n       f.severity AS \"severity\",\n       f.user_ref AS \"subject\",\n       f.tool_fingerprint AS \"tool\",\n       f.collection_mode AS \"mode\",\n       f.decided_locally AS \"decided_locally\",\n       f.review_state AS \"review_state\",\n       f.reviewed_by AS reviewed_by,\n       f.reviewed_at AS reviewed_at,\n       f.policy_action AS policy_action\n  FROM mart.v_finding f\n WHERE f.tenant_id = ops.current_tenant()\n   AND f.detected_at >= $1::timestamptz\n   AND f.detected_at < $2::timestamptz\n   AND f.detected_at <= $3::timestamptz\n ORDER BY f.detected_at DESC NULLS LAST, f.submission_id DESC NULLS LAST, f.rule_id ASC NULLS LAST\n LIMIT $4::int",
+        "text": "SELECT f.submission_id AS submission_id,\n       f.detected_at AS detected_at,\n       f.rule_id AS \"rule\",\n       f.rule_title AS rule_title,\n       f.class_code AS \"class\",\n       f.severity AS \"severity\",\n       f.user_ref AS \"subject\",\n       f.tool_fingerprint AS \"tool\",\n       ops.tool_display_name(f.tool_fingerprint) AS \"tool_name\",\n       f.collection_mode AS \"mode\",\n       f.decided_locally AS \"decided_locally\",\n       f.review_state AS \"review_state\",\n       f.reviewed_by AS reviewed_by,\n       f.reviewed_at AS reviewed_at,\n       f.policy_action AS policy_action\n  FROM mart.v_finding f\n WHERE f.tenant_id = ops.current_tenant()\n   AND f.detected_at >= $1::timestamptz\n   AND f.detected_at < $2::timestamptz\n   AND f.detected_at <= $3::timestamptz\n ORDER BY f.detected_at DESC NULLS LAST, f.submission_id DESC NULLS LAST, f.rule_id ASC NULLS LAST\n LIMIT $4::int",
         "params": [
           "2026-09-01T00:00:00.000Z",
           "2026-09-08T00:00:00.000Z",
@@ -535,7 +531,7 @@
       },
       {
         "id": "read",
-        "text": "SELECT d.device_id AS \"device\",\n       d.hostname AS \"hostname\",\n       d.os AS \"device_os\",\n       d.os_version AS \"os_version\",\n       d.agent_version AS \"agent_version\",\n       d.managed_state AS \"managed_state\",\n       d.collection_mode AS \"collection_mode\",\n       d.last_user_ref AS \"user_ref\",\n       d.last_subject_name AS \"subject_name\",\n       CASE WHEN d.revoked_at IS NOT NULL THEN 'revoked' WHEN d.last_seen_at IS NULL THEN 'never_reported' WHEN d.last_seen_at < now() - interval '24 hours' THEN 'stale' ELSE 'reporting' END AS \"liveness\",\n       cs.collector AS \"collector\",\n       cs.state AS \"collector_state\",\n       d.enrolled_at AS enrolled_at,\n       d.revoked_at AS revoked_at,\n       d.last_seen_at AS last_seen_at,\n       d.collectors_reporting AS collectors_reporting,\n       cs.spool_depth AS spool_depth,\n       cs.spool_dropped_total AS spool_dropped_total,\n       cs.last_success_at AS last_success_at,\n       cs.last_report_at AS last_report_at,\n       cs.error_code AS error_code,\n       coalesce(cs.collector, chr(1)) AS \"__ord_collector\"\n  FROM mart.v_device_liveness d LEFT JOIN ops.collector_state cs ON cs.tenant_id = d.tenant_id AND cs.device_id = d.device_id\n WHERE d.tenant_id = ops.current_tenant()\n ORDER BY d.device_id ASC NULLS LAST, coalesce(cs.collector, chr(1)) ASC NULLS LAST\n LIMIT $1::int",
+        "text": "SELECT d.device_id AS \"device\",\n       d.hostname AS \"hostname\",\n       d.os AS \"device_os\",\n       d.os_version AS \"os_version\",\n       d.agent_version AS \"agent_version\",\n       d.managed_state AS \"managed_state\",\n       d.collection_mode AS \"collection_mode\",\n       d.last_user_ref AS \"user_ref\",\n       d.last_subject_name AS \"subject_name\",\n       (SELECT ud.display_name FROM ops.user_dim ud WHERE ud.tenant_id = d.tenant_id AND ud.user_ref = d.last_user_ref) AS \"directory_name\",\n       CASE WHEN d.revoked_at IS NOT NULL THEN 'revoked' WHEN d.last_seen_at IS NULL THEN 'never_reported' WHEN d.last_seen_at < now() - interval '24 hours' THEN 'stale' ELSE 'reporting' END AS \"liveness\",\n       cs.collector AS \"collector\",\n       cs.state AS \"collector_state\",\n       d.enrolled_at AS enrolled_at,\n       d.revoked_at AS revoked_at,\n       d.last_seen_at AS last_seen_at,\n       d.collectors_reporting AS collectors_reporting,\n       cs.spool_depth AS spool_depth,\n       cs.spool_dropped_total AS spool_dropped_total,\n       cs.last_success_at AS last_success_at,\n       cs.last_report_at AS last_report_at,\n       cs.error_code AS error_code,\n       coalesce(cs.collector, chr(1)) AS \"__ord_collector\"\n  FROM mart.v_device_liveness d LEFT JOIN ops.collector_state cs ON cs.tenant_id = d.tenant_id AND cs.device_id = d.device_id\n WHERE d.tenant_id = ops.current_tenant()\n ORDER BY d.device_id ASC NULLS LAST, coalesce(cs.collector, chr(1)) ASC NULLS LAST\n LIMIT $1::int",
         "params": [
           51
         ]
@@ -596,7 +592,7 @@
       },
       {
         "id": "read",
-        "text": "SELECT s.submission_id AS submission_id,\n       s.received_at AS received_at,\n       s.first_occurred_at AS first_occurred_at,\n       s.last_occurred_at AS last_occurred_at,\n       s.user_ref AS \"subject\",\n       s.tool_fingerprint AS \"tool\",\n       s.device_id AS \"device\",\n       s.collection_mode AS \"mode\",\n       s.policy_action AS \"action\",\n       s.policy_rule_id AS policy_rule_id,\n       s.content_state AS \"content_state\",\n       s.shredded_reason AS shredded_reason,\n       s.winning_source AS \"route\",\n       s.kind AS \"detection_basis\",\n       s.merge_confidence AS \"merge_confidence\",\n       s.confidence AS \"confidence\",\n       s.observation_count AS observation_count,\n       s.labels AS labels,\n       s.size_bytes AS size_bytes,\n       s.winning_fidelity AS winning_fidelity,\n       s.observed_routes AS observed_routes\n  FROM ingest.submission s\n WHERE s.tenant_id = ops.current_tenant()\n   AND s.received_at >= $1::timestamptz\n   AND s.received_at < $2::timestamptz\n   AND s.received_at <= $3::timestamptz\n   AND s.user_ref = $4::text\n ORDER BY s.received_at DESC NULLS LAST, s.submission_id DESC NULLS LAST\n LIMIT $5::int",
+        "text": "SELECT s.submission_id AS submission_id,\n       s.received_at AS received_at,\n       s.first_occurred_at AS first_occurred_at,\n       s.last_occurred_at AS last_occurred_at,\n       s.user_ref AS \"subject\",\n       s.tool_fingerprint AS \"tool\",\n       ops.tool_display_name(s.tool_fingerprint) AS \"tool_name\",\n       s.device_id AS \"device\",\n       s.collection_mode AS \"mode\",\n       s.policy_action AS \"action\",\n       s.policy_rule_id AS policy_rule_id,\n       s.content_state AS \"content_state\",\n       s.shredded_reason AS shredded_reason,\n       s.winning_source AS \"route\",\n       s.kind AS \"detection_basis\",\n       s.merge_confidence AS \"merge_confidence\",\n       s.confidence AS \"confidence\",\n       s.observation_count AS observation_count,\n       s.labels AS labels,\n       s.size_bytes AS size_bytes,\n       s.winning_fidelity AS winning_fidelity,\n       s.observed_routes AS observed_routes\n  FROM ingest.submission s\n WHERE s.tenant_id = ops.current_tenant()\n   AND s.received_at >= $1::timestamptz\n   AND s.received_at < $2::timestamptz\n   AND s.received_at <= $3::timestamptz\n   AND s.user_ref = $4::text\n ORDER BY s.received_at DESC NULLS LAST, s.submission_id DESC NULLS LAST\n LIMIT $5::int",
         "params": [
           "2026-09-01T00:00:00.000Z",
           "2026-09-08T00:00:00.000Z",
@@ -663,7 +659,7 @@
       },
       {
         "id": "submission_detail",
-        "text": "SELECT s.submission_id, s.received_at, s.first_occurred_at, s.last_occurred_at,\n       s.user_ref, s.tool_fingerprint, s.kind, s.collection_mode, s.policy_action,\n       s.policy_rule_id, s.decided_locally, s.confidence, s.merge_confidence,\n       s.content_state, s.shredded_reason, s.size_bytes, s.content_digest, s.labels,\n       s.classifier_version, s.winning_source, s.winning_fidelity, s.observed_routes,\n       s.observation_count, s.expires_at,\n       o.event_id AS observation_event_id, o.source AS observation_source,\n       o.kind AS observation_kind, o.direction, o.occurred_at AS observation_occurred_at,\n       o.received_at AS observation_received_at, o.size_bytes AS observation_size_bytes,\n       o.labels AS observation_labels, o.policy_decision, o.detection_basis,\n       o.window_start, o.window_end, o.submission_count, o.bytes_total\n  FROM ingest.submission s\n  LEFT JOIN ingest.observation o\n    ON o.tenant_id = s.tenant_id AND o.dedup_key = s.dedup_key\n WHERE s.tenant_id = ops.current_tenant()\n   AND s.submission_id = $1::uuid\n ORDER BY o.received_at ASC, o.event_id ASC",
+        "text": "SELECT s.submission_id, s.received_at, s.first_occurred_at, s.last_occurred_at,\n       s.user_ref, s.tool_fingerprint,\n       ops.tool_display_name(s.tool_fingerprint) AS tool_name,\n       s.kind, s.collection_mode, s.policy_action,\n       s.policy_rule_id, s.decided_locally, s.confidence, s.merge_confidence,\n       s.content_state, s.shredded_reason, s.size_bytes, s.content_digest, s.labels,\n       s.classifier_version, s.winning_source, s.winning_fidelity, s.observed_routes,\n       s.observation_count, s.expires_at,\n       o.event_id AS observation_event_id, o.source AS observation_source,\n       o.kind AS observation_kind, o.direction, o.occurred_at AS observation_occurred_at,\n       o.received_at AS observation_received_at, o.size_bytes AS observation_size_bytes,\n       o.labels AS observation_labels, o.policy_decision, o.detection_basis,\n       o.window_start, o.window_end, o.submission_count, o.bytes_total\n  FROM ingest.submission s\n  LEFT JOIN ingest.observation o\n    ON o.tenant_id = s.tenant_id AND o.dedup_key = s.dedup_key\n WHERE s.tenant_id = ops.current_tenant()\n   AND s.submission_id = $1::uuid\n ORDER BY o.received_at ASC, o.event_id ASC",
         "params": [
           "11111111-2222-4333-8444-555555555555"
         ]
@@ -708,7 +704,7 @@
       },
       {
         "id": "read",
-        "text": "SELECT s.submission_id AS submission_id,\n       s.received_at AS received_at,\n       s.first_occurred_at AS first_occurred_at,\n       s.last_occurred_at AS last_occurred_at,\n       s.user_ref AS \"subject\",\n       s.tool_fingerprint AS \"tool\",\n       s.device_id AS \"device\",\n       s.collection_mode AS \"mode\",\n       s.policy_action AS \"action\",\n       s.policy_rule_id AS policy_rule_id,\n       s.content_state AS \"content_state\",\n       s.shredded_reason AS shredded_reason,\n       s.winning_source AS \"route\",\n       s.kind AS \"detection_basis\",\n       s.merge_confidence AS \"merge_confidence\",\n       s.confidence AS \"confidence\",\n       s.observation_count AS observation_count,\n       s.labels AS labels,\n       s.size_bytes AS size_bytes,\n       s.winning_fidelity AS winning_fidelity,\n       s.observed_routes AS observed_routes\n  FROM ingest.submission s\n WHERE s.tenant_id = ops.current_tenant()\n   AND s.received_at >= $1::timestamptz\n   AND s.received_at < $2::timestamptz\n   AND s.received_at <= $3::timestamptz\n ORDER BY s.received_at DESC NULLS LAST, s.submission_id DESC NULLS LAST\n LIMIT $4::int",
+        "text": "SELECT s.submission_id AS submission_id,\n       s.received_at AS received_at,\n       s.first_occurred_at AS first_occurred_at,\n       s.last_occurred_at AS last_occurred_at,\n       s.user_ref AS \"subject\",\n       s.tool_fingerprint AS \"tool\",\n       ops.tool_display_name(s.tool_fingerprint) AS \"tool_name\",\n       s.device_id AS \"device\",\n       s.collection_mode AS \"mode\",\n       s.policy_action AS \"action\",\n       s.policy_rule_id AS policy_rule_id,\n       s.content_state AS \"content_state\",\n       s.shredded_reason AS shredded_reason,\n       s.winning_source AS \"route\",\n       s.kind AS \"detection_basis\",\n       s.merge_confidence AS \"merge_confidence\",\n       s.confidence AS \"confidence\",\n       s.observation_count AS observation_count,\n       s.labels AS labels,\n       s.size_bytes AS size_bytes,\n       s.winning_fidelity AS winning_fidelity,\n       s.observed_routes AS observed_routes\n  FROM ingest.submission s\n WHERE s.tenant_id = ops.current_tenant()\n   AND s.received_at >= $1::timestamptz\n   AND s.received_at < $2::timestamptz\n   AND s.received_at <= $3::timestamptz\n ORDER BY s.received_at DESC NULLS LAST, s.submission_id DESC NULLS LAST\n LIMIT $4::int",
         "params": [
           "2026-09-01T00:00:00.000Z",
           "2026-09-08T00:00:00.000Z",
@@ -1140,7 +1136,7 @@
     "statements": [
       {
         "id": "read",
-        "text": "SELECT t.bucket_start AS bucket,\n       t.tool_fingerprint AS \"tool\",\n       ot.sanctioned_state AS \"sanctioned_state\",\n       SUM(t.submissions) AS \"submissions\",\n       MAX(t.users) AS \"users\",\n       SUM(t.bytes_total) AS \"bytes_total\",\n       max(t.users)::bigint AS __k_subjects\n  FROM mart.agg_tool_period t\n  LEFT JOIN ops.tool ot ON ot.tenant_id = t.tenant_id AND ot.tool_fingerprint = t.tool_fingerprint\n WHERE t.tenant_id = ops.current_tenant()\n   AND t.bucket_start >= $1::timestamptz\n   AND t.bucket_start < $2::timestamptz\n   AND t.bucket_start <= $3::timestamptz\n   AND t.bucket_size = $4::text\n   AND starts_with(t.tool_fingerprint, $5::text)\n GROUP BY t.bucket_start, t.tool_fingerprint, ot.sanctioned_state\n ORDER BY t.bucket_start DESC NULLS LAST, t.tool_fingerprint ASC NULLS LAST, ot.sanctioned_state ASC NULLS LAST\n LIMIT $6::int",
+        "text": "SELECT t.bucket_start AS bucket,\n       t.tool_fingerprint AS \"tool\",\n       ot.sanctioned_state AS \"sanctioned_state\",\n       SUM(t.submissions) AS \"submissions\",\n       MAX(t.users) AS \"users\",\n       SUM(t.bytes_total) AS \"bytes_total\",\n       max(t.users)::bigint AS __k_subjects,\n       ops.tool_display_name(t.tool_fingerprint) AS \"tool_name\"\n  FROM mart.agg_tool_period t\n  LEFT JOIN ops.tool ot ON ot.tenant_id = t.tenant_id AND ot.tool_fingerprint = t.tool_fingerprint\n WHERE t.tenant_id = ops.current_tenant()\n   AND t.bucket_start >= $1::timestamptz\n   AND t.bucket_start < $2::timestamptz\n   AND t.bucket_start <= $3::timestamptz\n   AND t.bucket_size = $4::text\n   AND starts_with(t.tool_fingerprint, $5::text)\n GROUP BY t.bucket_start, t.tool_fingerprint, ot.sanctioned_state\n ORDER BY t.bucket_start DESC NULLS LAST, t.tool_fingerprint ASC NULLS LAST, ot.sanctioned_state ASC NULLS LAST\n LIMIT $6::int",
         "params": [
           "2026-09-01T00:00:00.000Z",
           "2026-09-08T00:00:00.000Z",
@@ -1204,7 +1200,7 @@
     "statements": [
       {
         "id": "read",
-        "text": "SELECT date_trunc('week', t.bucket_start) AS bucket,\n       t.tool_fingerprint AS \"tool\",\n       ot.sanctioned_state AS \"sanctioned_state\",\n       SUM(t.submissions) AS \"submissions\",\n       MAX(t.users) AS \"users\",\n       SUM(t.bytes_total) AS \"bytes_total\",\n       max(t.users)::bigint AS __k_subjects\n  FROM mart.agg_tool_period t\n  LEFT JOIN ops.tool ot ON ot.tenant_id = t.tenant_id AND ot.tool_fingerprint = t.tool_fingerprint\n WHERE t.tenant_id = ops.current_tenant()\n   AND t.bucket_start >= $1::timestamptz\n   AND t.bucket_start < $2::timestamptz\n   AND t.bucket_start <= $3::timestamptz\n   AND t.bucket_size = $4::text\n   AND starts_with(t.tool_fingerprint, $5::text)\n GROUP BY GROUPING SETS ((date_trunc('week', t.bucket_start), t.tool_fingerprint, ot.sanctioned_state), ())\n ORDER BY date_trunc('week', t.bucket_start) DESC NULLS LAST, t.tool_fingerprint ASC NULLS LAST, ot.sanctioned_state ASC NULLS LAST",
+        "text": "SELECT date_trunc('week', t.bucket_start) AS bucket,\n       t.tool_fingerprint AS \"tool\",\n       ot.sanctioned_state AS \"sanctioned_state\",\n       SUM(t.submissions) AS \"submissions\",\n       MAX(t.users) AS \"users\",\n       SUM(t.bytes_total) AS \"bytes_total\",\n       max(t.users)::bigint AS __k_subjects,\n       ops.tool_display_name(t.tool_fingerprint) AS \"tool_name\"\n  FROM mart.agg_tool_period t\n  LEFT JOIN ops.tool ot ON ot.tenant_id = t.tenant_id AND ot.tool_fingerprint = t.tool_fingerprint\n WHERE t.tenant_id = ops.current_tenant()\n   AND t.bucket_start >= $1::timestamptz\n   AND t.bucket_start < $2::timestamptz\n   AND t.bucket_start <= $3::timestamptz\n   AND t.bucket_size = $4::text\n   AND starts_with(t.tool_fingerprint, $5::text)\n GROUP BY GROUPING SETS ((date_trunc('week', t.bucket_start), t.tool_fingerprint, ot.sanctioned_state), ())\n ORDER BY date_trunc('week', t.bucket_start) DESC NULLS LAST, t.tool_fingerprint ASC NULLS LAST, ot.sanctioned_state ASC NULLS LAST",
         "params": [
           "2026-09-01T00:00:00.000Z",
           "2026-09-08T00:00:00.000Z",
@@ -1276,12 +1272,12 @@
           null,
           null,
           null,
-          "{\"source\":\"mart.agg_tool_user_period\",\"query_version\":\"1\",\"bucket\":\"day\",\"dimensions\":[\"tool\"],\"measures\":[\"submissions\",\"bytes_total\"],\"order\":[],\"window\":{\"from\":\"2026-09-01T00:00:00.000Z\",\"to\":\"2026-09-08T00:00:00.000Z\"},\"rollup\":false,\"filters\":[{\"field\":\"tool\",\"op\":\"starts_with\",\"value\":\"claude\"}]}"
+          "{\"source\":\"mart.agg_tool_user_period\",\"query_version\":\"1\",\"bucket\":\"day\",\"dimensions\":[\"tool\",\"sanctioned_state\"],\"measures\":[\"submissions\",\"bytes_total\"],\"order\":[],\"window\":{\"from\":\"2026-09-01T00:00:00.000Z\",\"to\":\"2026-09-08T00:00:00.000Z\"},\"rollup\":false,\"filters\":[{\"field\":\"tool\",\"op\":\"starts_with\",\"value\":\"claude\"}]}"
         ]
       },
       {
         "id": "read",
-        "text": "SELECT a.bucket_start AS bucket,\n       a.tool_fingerprint AS \"tool\",\n       SUM(a.submissions) AS \"submissions\",\n       SUM(a.bytes_total) AS \"bytes_total\",\n       count(DISTINCT a.user_ref)::bigint AS __k_subjects\n  FROM mart.agg_tool_user_period a\n WHERE a.tenant_id = ops.current_tenant()\n   AND a.bucket_start >= $1::timestamptz\n   AND a.bucket_start < $2::timestamptz\n   AND a.bucket_start <= $3::timestamptz\n   AND a.bucket_size = $4::text\n   AND starts_with(a.tool_fingerprint, $5::text)\n GROUP BY a.bucket_start, a.tool_fingerprint\n ORDER BY a.bucket_start DESC NULLS LAST, a.tool_fingerprint ASC NULLS LAST\n LIMIT $6::int",
+        "text": "SELECT a.bucket_start AS bucket,\n       a.tool_fingerprint AS \"tool\",\n       ot.sanctioned_state AS \"sanctioned_state\",\n       SUM(a.submissions) AS \"submissions\",\n       SUM(a.bytes_total) AS \"bytes_total\",\n       count(DISTINCT a.user_ref)::bigint AS __k_subjects,\n       ops.tool_display_name(a.tool_fingerprint) AS \"tool_name\"\n  FROM mart.agg_tool_user_period a\n  LEFT JOIN ops.tool ot ON ot.tenant_id = a.tenant_id AND ot.tool_fingerprint = a.tool_fingerprint\n WHERE a.tenant_id = ops.current_tenant()\n   AND a.bucket_start >= $1::timestamptz\n   AND a.bucket_start < $2::timestamptz\n   AND a.bucket_start <= $3::timestamptz\n   AND a.bucket_size = $4::text\n   AND starts_with(a.tool_fingerprint, $5::text)\n GROUP BY a.bucket_start, a.tool_fingerprint, ot.sanctioned_state\n ORDER BY a.bucket_start DESC NULLS LAST, a.tool_fingerprint ASC NULLS LAST, ot.sanctioned_state ASC NULLS LAST\n LIMIT $6::int",
         "params": [
           "2026-09-01T00:00:00.000Z",
           "2026-09-08T00:00:00.000Z",
@@ -1327,11 +1323,16 @@
           "by": "tool",
           "dir": "asc",
           "key": "tool"
+        },
+        {
+          "by": "sanctioned_state",
+          "dir": "asc",
+          "key": "sanctioned_state"
         }
       ],
       "k": 5,
-      "estimated_cells": 7,
-      "bounded_cells": 7
+      "estimated_cells": 21,
+      "bounded_cells": 21
     }
   },
   "source:mart.agg_tool_user_period:week+rollup": {
@@ -1348,12 +1349,12 @@
           null,
           null,
           null,
-          "{\"source\":\"mart.agg_tool_user_period\",\"query_version\":\"1\",\"bucket\":\"week\",\"dimensions\":[\"tool\"],\"measures\":[\"submissions\",\"bytes_total\"],\"order\":[],\"window\":{\"from\":\"2026-09-01T00:00:00.000Z\",\"to\":\"2026-09-08T00:00:00.000Z\"},\"rollup\":true,\"filters\":[{\"field\":\"tool\",\"op\":\"starts_with\",\"value\":\"claude\"}]}"
+          "{\"source\":\"mart.agg_tool_user_period\",\"query_version\":\"1\",\"bucket\":\"week\",\"dimensions\":[\"tool\",\"sanctioned_state\"],\"measures\":[\"submissions\",\"bytes_total\"],\"order\":[],\"window\":{\"from\":\"2026-09-01T00:00:00.000Z\",\"to\":\"2026-09-08T00:00:00.000Z\"},\"rollup\":true,\"filters\":[{\"field\":\"tool\",\"op\":\"starts_with\",\"value\":\"claude\"}]}"
         ]
       },
       {
         "id": "read",
-        "text": "SELECT date_trunc('week', a.bucket_start) AS bucket,\n       a.tool_fingerprint AS \"tool\",\n       SUM(a.submissions) AS \"submissions\",\n       SUM(a.bytes_total) AS \"bytes_total\",\n       count(DISTINCT a.user_ref)::bigint AS __k_subjects\n  FROM mart.agg_tool_user_period a\n WHERE a.tenant_id = ops.current_tenant()\n   AND a.bucket_start >= $1::timestamptz\n   AND a.bucket_start < $2::timestamptz\n   AND a.bucket_start <= $3::timestamptz\n   AND a.bucket_size = $4::text\n   AND starts_with(a.tool_fingerprint, $5::text)\n GROUP BY GROUPING SETS ((date_trunc('week', a.bucket_start), a.tool_fingerprint), ())\n ORDER BY date_trunc('week', a.bucket_start) DESC NULLS LAST, a.tool_fingerprint ASC NULLS LAST",
+        "text": "SELECT date_trunc('week', a.bucket_start) AS bucket,\n       a.tool_fingerprint AS \"tool\",\n       ot.sanctioned_state AS \"sanctioned_state\",\n       SUM(a.submissions) AS \"submissions\",\n       SUM(a.bytes_total) AS \"bytes_total\",\n       count(DISTINCT a.user_ref)::bigint AS __k_subjects,\n       ops.tool_display_name(a.tool_fingerprint) AS \"tool_name\"\n  FROM mart.agg_tool_user_period a\n  LEFT JOIN ops.tool ot ON ot.tenant_id = a.tenant_id AND ot.tool_fingerprint = a.tool_fingerprint\n WHERE a.tenant_id = ops.current_tenant()\n   AND a.bucket_start >= $1::timestamptz\n   AND a.bucket_start < $2::timestamptz\n   AND a.bucket_start <= $3::timestamptz\n   AND a.bucket_size = $4::text\n   AND starts_with(a.tool_fingerprint, $5::text)\n GROUP BY GROUPING SETS ((date_trunc('week', a.bucket_start), a.tool_fingerprint, ot.sanctioned_state), ())\n ORDER BY date_trunc('week', a.bucket_start) DESC NULLS LAST, a.tool_fingerprint ASC NULLS LAST, ot.sanctioned_state ASC NULLS LAST",
         "params": [
           "2026-09-01T00:00:00.000Z",
           "2026-09-08T00:00:00.000Z",
@@ -1398,11 +1399,16 @@
           "by": "tool",
           "dir": "asc",
           "key": "tool"
+        },
+        {
+          "by": "sanctioned_state",
+          "dir": "asc",
+          "key": "sanctioned_state"
         }
       ],
       "k": 5,
-      "estimated_cells": 2,
-      "bounded_cells": 2
+      "estimated_cells": 4,
+      "bounded_cells": 4
     }
   },
   "source:mart.agg_user_period:day": {
@@ -1559,7 +1565,7 @@
       },
       {
         "id": "read",
-        "text": "SELECT d.device_id AS \"device\",\n       d.hostname AS \"hostname\",\n       d.os AS \"device_os\",\n       d.os_version AS \"os_version\",\n       d.agent_version AS \"agent_version\",\n       d.managed_state AS \"managed_state\",\n       d.collection_mode AS \"collection_mode\",\n       d.last_user_ref AS \"user_ref\",\n       d.last_subject_name AS \"subject_name\",\n       CASE WHEN d.revoked_at IS NOT NULL THEN 'revoked' WHEN d.last_seen_at IS NULL THEN 'never_reported' WHEN d.last_seen_at < now() - interval '24 hours' THEN 'stale' ELSE 'reporting' END AS \"liveness\",\n       cs.collector AS \"collector\",\n       cs.state AS \"collector_state\",\n       d.enrolled_at AS enrolled_at,\n       d.revoked_at AS revoked_at,\n       d.last_seen_at AS last_seen_at,\n       d.collectors_reporting AS collectors_reporting,\n       cs.spool_depth AS spool_depth,\n       cs.spool_dropped_total AS spool_dropped_total,\n       cs.last_success_at AS last_success_at,\n       cs.last_report_at AS last_report_at,\n       cs.error_code AS error_code,\n       coalesce(cs.collector, chr(1)) AS \"__ord_collector\"\n  FROM mart.v_device_liveness d LEFT JOIN ops.collector_state cs ON cs.tenant_id = d.tenant_id AND cs.device_id = d.device_id\n WHERE d.tenant_id = ops.current_tenant()\n ORDER BY d.device_id ASC NULLS LAST, coalesce(cs.collector, chr(1)) ASC NULLS LAST\n LIMIT $1::int",
+        "text": "SELECT d.device_id AS \"device\",\n       d.hostname AS \"hostname\",\n       d.os AS \"device_os\",\n       d.os_version AS \"os_version\",\n       d.agent_version AS \"agent_version\",\n       d.managed_state AS \"managed_state\",\n       d.collection_mode AS \"collection_mode\",\n       d.last_user_ref AS \"user_ref\",\n       d.last_subject_name AS \"subject_name\",\n       (SELECT ud.display_name FROM ops.user_dim ud WHERE ud.tenant_id = d.tenant_id AND ud.user_ref = d.last_user_ref) AS \"directory_name\",\n       CASE WHEN d.revoked_at IS NOT NULL THEN 'revoked' WHEN d.last_seen_at IS NULL THEN 'never_reported' WHEN d.last_seen_at < now() - interval '24 hours' THEN 'stale' ELSE 'reporting' END AS \"liveness\",\n       cs.collector AS \"collector\",\n       cs.state AS \"collector_state\",\n       d.enrolled_at AS enrolled_at,\n       d.revoked_at AS revoked_at,\n       d.last_seen_at AS last_seen_at,\n       d.collectors_reporting AS collectors_reporting,\n       cs.spool_depth AS spool_depth,\n       cs.spool_dropped_total AS spool_dropped_total,\n       cs.last_success_at AS last_success_at,\n       cs.last_report_at AS last_report_at,\n       cs.error_code AS error_code,\n       coalesce(cs.collector, chr(1)) AS \"__ord_collector\"\n  FROM mart.v_device_liveness d LEFT JOIN ops.collector_state cs ON cs.tenant_id = d.tenant_id AND cs.device_id = d.device_id\n WHERE d.tenant_id = ops.current_tenant()\n ORDER BY d.device_id ASC NULLS LAST, coalesce(cs.collector, chr(1)) ASC NULLS LAST\n LIMIT $1::int",
         "params": [
           21
         ]
@@ -1615,7 +1621,7 @@
       },
       {
         "id": "read",
-        "text": "SELECT f.submission_id AS submission_id,\n       f.detected_at AS detected_at,\n       f.rule_id AS \"rule\",\n       f.rule_title AS rule_title,\n       f.class_code AS \"class\",\n       f.severity AS \"severity\",\n       f.user_ref AS \"subject\",\n       f.tool_fingerprint AS \"tool\",\n       f.collection_mode AS \"mode\",\n       f.decided_locally AS \"decided_locally\",\n       f.review_state AS \"review_state\",\n       f.reviewed_by AS reviewed_by,\n       f.reviewed_at AS reviewed_at,\n       f.policy_action AS policy_action\n  FROM mart.v_finding f\n WHERE f.tenant_id = ops.current_tenant()\n   AND f.detected_at >= $1::timestamptz\n   AND f.detected_at < $2::timestamptz\n   AND f.detected_at <= $3::timestamptz\n ORDER BY f.detected_at DESC NULLS LAST, f.submission_id DESC NULLS LAST, f.rule_id ASC NULLS LAST\n LIMIT $4::int",
+        "text": "SELECT f.submission_id AS submission_id,\n       f.detected_at AS detected_at,\n       f.rule_id AS \"rule\",\n       f.rule_title AS rule_title,\n       f.class_code AS \"class\",\n       f.severity AS \"severity\",\n       f.user_ref AS \"subject\",\n       f.tool_fingerprint AS \"tool\",\n       ops.tool_display_name(f.tool_fingerprint) AS \"tool_name\",\n       f.collection_mode AS \"mode\",\n       f.decided_locally AS \"decided_locally\",\n       f.review_state AS \"review_state\",\n       f.reviewed_by AS reviewed_by,\n       f.reviewed_at AS reviewed_at,\n       f.policy_action AS policy_action\n  FROM mart.v_finding f\n WHERE f.tenant_id = ops.current_tenant()\n   AND f.detected_at >= $1::timestamptz\n   AND f.detected_at < $2::timestamptz\n   AND f.detected_at <= $3::timestamptz\n ORDER BY f.detected_at DESC NULLS LAST, f.submission_id DESC NULLS LAST, f.rule_id ASC NULLS LAST\n LIMIT $4::int",
         "params": [
           "2026-09-01T00:00:00.000Z",
           "2026-09-08T00:00:00.000Z",
@@ -1672,7 +1678,7 @@
     "statements": [
       {
         "id": "read",
-        "text": "SELECT t.bucket_start AS bucket,\n       t.tool_fingerprint AS \"tool\",\n       t.sanctioned_state AS \"sanctioned_state\",\n       SUM(t.submissions) AS \"submissions\",\n       MAX(t.users) AS \"users\",\n       SUM(t.bytes_total) AS \"bytes_total\",\n       max(t.users)::bigint AS __k_subjects\n  FROM mart.v_tool_usage t\n WHERE t.tenant_id = ops.current_tenant()\n   AND t.bucket_start >= $1::timestamptz\n   AND t.bucket_start < $2::timestamptz\n   AND t.bucket_start <= $3::timestamptz\n   AND t.bucket_size = $4::text\n   AND starts_with(t.tool_fingerprint, $5::text)\n GROUP BY t.bucket_start, t.tool_fingerprint, t.sanctioned_state\n ORDER BY t.bucket_start DESC NULLS LAST, t.tool_fingerprint ASC NULLS LAST, t.sanctioned_state ASC NULLS LAST\n LIMIT $6::int",
+        "text": "SELECT t.bucket_start AS bucket,\n       t.tool_fingerprint AS \"tool\",\n       t.sanctioned_state AS \"sanctioned_state\",\n       SUM(t.submissions) AS \"submissions\",\n       MAX(t.users) AS \"users\",\n       SUM(t.bytes_total) AS \"bytes_total\",\n       max(t.users)::bigint AS __k_subjects,\n       ops.tool_display_name(t.tool_fingerprint) AS \"tool_name\"\n  FROM mart.v_tool_usage t\n WHERE t.tenant_id = ops.current_tenant()\n   AND t.bucket_start >= $1::timestamptz\n   AND t.bucket_start < $2::timestamptz\n   AND t.bucket_start <= $3::timestamptz\n   AND t.bucket_size = $4::text\n   AND starts_with(t.tool_fingerprint, $5::text)\n GROUP BY t.bucket_start, t.tool_fingerprint, t.sanctioned_state\n ORDER BY t.bucket_start DESC NULLS LAST, t.tool_fingerprint ASC NULLS LAST, t.sanctioned_state ASC NULLS LAST\n LIMIT $6::int",
         "params": [
           "2026-09-01T00:00:00.000Z",
           "2026-09-08T00:00:00.000Z",
@@ -1736,7 +1742,7 @@
     "statements": [
       {
         "id": "read",
-        "text": "SELECT date_trunc('week', t.bucket_start) AS bucket,\n       t.tool_fingerprint AS \"tool\",\n       t.sanctioned_state AS \"sanctioned_state\",\n       SUM(t.submissions) AS \"submissions\",\n       MAX(t.users) AS \"users\",\n       SUM(t.bytes_total) AS \"bytes_total\",\n       max(t.users)::bigint AS __k_subjects\n  FROM mart.v_tool_usage t\n WHERE t.tenant_id = ops.current_tenant()\n   AND t.bucket_start >= $1::timestamptz\n   AND t.bucket_start < $2::timestamptz\n   AND t.bucket_start <= $3::timestamptz\n   AND t.bucket_size = $4::text\n   AND starts_with(t.tool_fingerprint, $5::text)\n GROUP BY GROUPING SETS ((date_trunc('week', t.bucket_start), t.tool_fingerprint, t.sanctioned_state), ())\n ORDER BY date_trunc('week', t.bucket_start) DESC NULLS LAST, t.tool_fingerprint ASC NULLS LAST, t.sanctioned_state ASC NULLS LAST",
+        "text": "SELECT date_trunc('week', t.bucket_start) AS bucket,\n       t.tool_fingerprint AS \"tool\",\n       t.sanctioned_state AS \"sanctioned_state\",\n       SUM(t.submissions) AS \"submissions\",\n       MAX(t.users) AS \"users\",\n       SUM(t.bytes_total) AS \"bytes_total\",\n       max(t.users)::bigint AS __k_subjects,\n       ops.tool_display_name(t.tool_fingerprint) AS \"tool_name\"\n  FROM mart.v_tool_usage t\n WHERE t.tenant_id = ops.current_tenant()\n   AND t.bucket_start >= $1::timestamptz\n   AND t.bucket_start < $2::timestamptz\n   AND t.bucket_start <= $3::timestamptz\n   AND t.bucket_size = $4::text\n   AND starts_with(t.tool_fingerprint, $5::text)\n GROUP BY GROUPING SETS ((date_trunc('week', t.bucket_start), t.tool_fingerprint, t.sanctioned_state), ())\n ORDER BY date_trunc('week', t.bucket_start) DESC NULLS LAST, t.tool_fingerprint ASC NULLS LAST, t.sanctioned_state ASC NULLS LAST",
         "params": [
           "2026-09-01T00:00:00.000Z",
           "2026-09-08T00:00:00.000Z",

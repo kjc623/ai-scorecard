@@ -51,8 +51,16 @@ test('a question omits a parameter the analyst did not set rather than sending a
   assert.ok('window' in request.params && 'bucket' in request.params);
 });
 
-test('the person question carries its subject and refuses to be built without one', () => {
-  const withSubject = QUESTIONS.q6_subject_series.request(ctx({ filters: { subject: 'u_1' } }));
+// The Unsanctioned screen is Q2's own question, so it asks for unsanctioned tools by default; the
+// state is still overridable, because `unknown` gets its own list (docs/04 §3.2).
+test('Q2 asks for unsanctioned tools by default and lets the state be overridden', () => {
+  const byDefault = QUESTIONS.q2_unsanctioned_users.request(ctx({ filters: { tool: 'claude_web' } }));
+  assert.equal(byDefault.params.sanctioned_state, 'unsanctioned');
+  const unknown = QUESTIONS.q2_unsanctioned_users.request(ctx({ filters: { tool: 'claude_web', sanctioned_state: 'unknown' } }));
+  assert.equal(unknown.params.sanctioned_state, 'unknown');
+});
+
+test('the person question carries its subject and refuses to be built without one', () => {  const withSubject = QUESTIONS.q6_subject_series.request(ctx({ filters: { subject: 'u_1' } }));
   assert.equal(withSubject.params.subject, 'u_1');
   let error;
   try {

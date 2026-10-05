@@ -7,14 +7,16 @@ and prunes what is no longer true or no longer needed.
 ## Where you are
 
 You are in the OpenCode harness: Fedora, workspace at `/workspace`, with Go, Node, `psql`, `rg`, a
-headless Chromium and the host's Docker engine through the mounted socket.
+headless Chromium and the host's Docker engine through the mounted socket. `git status` is never
+clean here: it also shows `.claude/`, `skills-lock.json` and a locally modified
+`installer/profiles/lab-host.env`, none of which is yours.
 
 The harness is on the network of **the device-auth lab** (`localdev/authlab.compose.yaml`, network
 `scorecard-authlab`, containers named `sac-authlab-*`). This is the lab a real endpoint agent is
-enrolled against, the one with the dashboard, and the one the backlog was observed on. Everything
-in it is reachable by service name:
+enrolled against and the one this backlog was observed on. Everything in it is reachable by
+service name:
 
-- Plain `psql` reaches its database (`postgres`, database `shadow`).
+- Plain `psql` reaches its database: `postgres://postgres:sac-lab-only@postgres:5432/shadow?sslmode=disable` (the password is a compose literal, not a secret). That DSN is what `SAC_PG_DSN` should carry for a Go service or tagged test run from the harness; the control-api/ingest-api tagged tests default to `127.0.0.1:5432`, which is not the lab, so they skip here.
 - `$LAB_QUERY_URL`, `$LAB_INGEST_URL` and `$LAB_VAULT_URL` are its `query-api`, `ingest-api` and
   `content-vault`. The device path is the edge, `https://edge:8443`, with the lab's own
   certificate.
@@ -34,10 +36,8 @@ Simulated data goes in the sample tenant and nowhere else:
 
 - `node localdev/tools/simulate-devices.mjs --edge https://edge:8443 --devices 8 --events 240`
   enrols devices and sends events and health reports through the device path, into the sample
-  tenant, which is its default. Run from the harness on 2026-10-04, it was accepted in full, and
-  the pages filled within one aggregator interval (30 s). Never pass it `--tenant` with the
-  owner's tenant id: earlier tasks did, and the owner's fleet page now counts eight invented
-  devices beside the real one.
+  tenant, which is its default. It was accepted in full from the harness, and the pages fill
+  within one aggregator interval (30 s). Never pass it `--tenant` with the owner's tenant id.
 - Use it freely to make a page show what you need to see: enough people to clear k-suppression, a
   degraded collector, a quiet device, an empty state. A row you need that the simulator cannot
   produce, you may write into the sample tenant with `psql`.

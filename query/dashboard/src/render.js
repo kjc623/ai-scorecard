@@ -107,6 +107,17 @@ function renderCell(row, column, max = 0) {
     return raw === null || raw === undefined ? '<span class="v-vocab v-vocab-unknown">unknown</span>' : renderValue({ kind: 'vocab', text: raw });
   }
   if (raw === null || raw === undefined) return renderValue({ kind: 'absent' });
+  // The tool column resolves the raw, behaviour-derived fingerprint to a name at read time. Both
+  // are shown: the name is what a person reads, and the fingerprint is the stable identity behind
+  // it, so an "Unrecognised tool" is never mistaken for a tool the product knows and merely
+  // labelled badly (brief §2, C8). A row that carries no tool_name falls back to the fingerprint.
+  if (key === 'tool') {
+    const fingerprint = String(raw);
+    const name = row.tool_name ? String(row.tool_name) : fingerprint;
+    if (name === fingerprint) return `<span class="v-text v-mono" title="Tool fingerprint">${escapeHtml(fingerprint)}</span>`;
+    return `<span class="v-text" title="Tool fingerprint ${escapeHtml(fingerprint)}">${escapeHtml(name)}</span>`
+      + ` <span class="v-mono v-tool-fp">${escapeHtml(fingerprint)}</span>`;
+  }
   // A person reference opens that person's series: the one screen that takes it.
   if (key === 'subject') return `<a class="cell-link" href="#person?subject=${encodeURIComponent(String(raw))}">${escapeHtml(String(raw))}</a>`;
   return `<span class="v-text">${escapeHtml(String(raw))}</span>`;

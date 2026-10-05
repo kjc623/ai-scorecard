@@ -79,11 +79,11 @@ export const SOURCES = Object.freeze({
   'mart.agg_tool_user_period': Object.freeze({
     kind: 'aggregate',
     label: 'Usage per tool per person',
-    dimensions: Object.freeze(['bucket', 'tool', 'subject']),
+    dimensions: Object.freeze(['bucket', 'tool', 'sanctioned_state', 'subject']),
     measures: Object.freeze(['submissions', 'bytes_total']),
     answers: 'Q2',
     subjectBearing: true,
-    note: 'subject-bearing: every read is audited, and the cursor is server-side',
+    note: 'subject-bearing: every read is audited, and the cursor is server-side; sanctioned state is joined at read time and the k cell is the tool, not the person',
   }),
   'mart.agg_org_period': Object.freeze({
     kind: 'aggregate',
@@ -179,7 +179,7 @@ export const TEMPLATES = Object.freeze({
     title: 'Which are unsanctioned, and who is using them?',
     source: 'mart.agg_tool_user_period',
     screen: 'unsanctioned',
-    params: Object.freeze(['window', 'bucket', 'limit', 'tool', 'subject']),
+    params: Object.freeze(['window', 'bucket', 'limit', 'tool', 'subject', 'sanctioned_state']),
   }),
   q3_team_growth: Object.freeze({
     question: 3,

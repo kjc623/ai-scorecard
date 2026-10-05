@@ -84,6 +84,12 @@ export function renderExploreValue(row, column, { full = false } = {}) {
     case 'rule':
       return `<span class="x-rule">${escapeHtml(raw)}</span>${row.rule ? ` <span class="x-mono x-sub">${escapeHtml(row.rule)}</span>` : ''}`;
     case 'mono':
+      // The tool column resolves a behaviour-derived fingerprint to a name at read time; the
+      // fingerprint stays beside it so an unknown tool is visibly unknown rather than
+      // mislabelled. Other mono columns render the raw value.
+      if (column.key === 'tool' && row.tool_name && String(row.tool_name) !== String(raw)) {
+        return `<span title="Tool fingerprint ${escapeHtml(raw)}">${escapeHtml(row.tool_name)}</span> <span class="x-mono x-sub">${escapeHtml(raw)}</span>`;
+      }
       return `<span class="x-mono">${escapeHtml(raw)}</span>`;
     default:
       return `<span>${escapeHtml(raw)}</span>`;
@@ -268,7 +274,12 @@ function exploreHitMeta(hit) {
   // Prefer the device hostname to the UUID (ADR 0021): an analyst places a machine by its name, and
   // the UUID is still the identity behind the "open the event" action.
   const device = typeof hit.hostname === 'string' && hit.hostname !== '' ? hit.hostname : hit.device;
-  const parts = [hit.subject, device, hit.tool].filter((part) => typeof part === 'string' && part !== '');
+  // The tool is named by its resolved display name when the read path supplied one; the raw
+  // fingerprint is the fallback, so an unrecognised tool is still identifiable.
+  const tool = typeof hit.tool_name === 'string' && hit.tool_name !== '' ? hit.tool_name : hit.tool;
+  // The account name the device reported, then the directory's own (current) display name beside it,
+  // so a stale as-of-submission name is distinguishable from the directory's. Either can be absent.
+  const parts = [hit.subject, hit.directory_name, device, tool].filter((part) => typeof part === 'string' && part !== '');
   if (parts.length === 0) return `<span class="x-mono x-sub">${escapeHtml(hit.submissionId)}</span>`;
   return `<span class="x-hit-meta x-mono">${parts.map((part) => `<span>${escapeHtml(part)}</span>`).join('<span class="x-hit-sep" aria-hidden="true">|</span>')}</span>`;
 }
@@ -343,6 +354,7 @@ function exploreRecord(detail, dataset, state) {
     ...first,
     subject: first.subject ?? first.user_ref ?? detail.row?.subject,
     tool: first.tool ?? first.tool_fingerprint ?? detail.row?.tool,
+    tool_name: first.tool_name ?? detail.row?.tool_name,
     device: first.device ?? first.device_id ?? detail.row?.device,
     department: first.department ?? detail.row?.department,
     mode: first.mode ?? first.collection_mode,

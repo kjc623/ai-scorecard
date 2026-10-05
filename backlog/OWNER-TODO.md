@@ -16,9 +16,24 @@ Each line names the task that left it. The exact commands are in that task's `RE
   One reinstall covers both tasks that asked for it. On 2026-10-04 the real device's row on Devices
   still showed no hostname, agent version or mode, so this had not been done. (02, 04)
 - [ ] **Apply the schema changes to any database other than the lab's.** The lab's database has
-  had all three applied by the agents. Anything else needs 02's four statements (in its report),
-  then `backlog/03-findings/MIGRATION.sql`, then `backlog/04-device-identity/MIGRATION.sql`, in that
-  order. (02, 03, 04)
+  had all four applied by the agents. Anything else needs 02's four statements (in its report),
+  then `backlog/03-findings/MIGRATION.sql`, then `backlog/04-device-identity/MIGRATION.sql`, then
+  `backlog/05-tool-catalogue/MIGRATION.sql`, in that order. (02, 03, 04, 05)
+- [ ] **Apply 05's tool catalogue to any database other than the lab's**, after 04's migration:
+  `psql "$DSN" -v ON_ERROR_STOP=1 -f backlog/05-tool-catalogue/MIGRATION.sql`. It creates
+  `ref.tool_catalogue`, seeds it, adds `ops.tool_display_name()` and grants the sanction write.
+  (05)
+- [ ] **Apply 06's directory migration to any database other than the lab's**, after 05's:
+  `psql "$DSN" -v ON_ERROR_STOP=1 -f backlog/06-directory-sync/MIGRATION.sql`. It adds
+  `ops.user_dim.display_name`; the lab's database already has it. (06)
+- [ ] **Point the directory sync at a real Microsoft Entra ID tenant.** The harness has no Entra
+  tenant, so the Graph provider is the one path not exercised here. Register an application, grant
+  it `User.Read.All` (application permission), and run
+  `control-api sync-directory --store sql --dsn "$SAC_PG_DSN" --provider entra --entra-tenant <tenant>
+  --entra-client-id <id> --entra-client-secret <secret>
+  --entra-user-ref-attribute onPremisesSamAccountName --directory-key "$SAC_DIRECTORY_KEY"`.
+  The control-api binary carries the subcommand after `go build -tags sac_sql_driver`, and the
+  auth-lab image after `node localdev/build.mjs --auth`. (06)
 
 ## Verify
 
@@ -36,6 +51,11 @@ On the owner's dashboard, `http://127.0.0.1:8787`, with the real device.
   direct database call, not with the device. (03)
 - [ ] After the reinstall: the device appears by hostname on Devices and in search results, with
   its agent version and mode, and the user shown is the person who typed the prompt. (04)
+- [ ] New Claude Code traffic from the device shows as "Claude Code" on Tools, in Search rows and in
+  prompt search results; a destination the seed catalogue does not hold shows as "Unrecognised tool"
+  with its raw fingerprint. Task 05 observed all four existing `tls_*` fingerprints resolving this
+  way (three to Claude Code, one unrecognised); the new traffic proves the derivation is unchanged.
+  (05)
 
 ## Answer
 
@@ -48,3 +68,9 @@ On the owner's dashboard, `http://127.0.0.1:8787`, with the real device.
 - [ ] **Remove the simulated devices from the owner's tenant, and restore the device task 02
   backdated?** Eight of the ten enrolled devices there are simulated. Simulated data now goes to
   the sample tenant, but what is already there stays until it is deleted. (01, 02, 04)
+- [ ] **Decide the disposition of the four baseline failures** that `backlog/BASELINE.md` records:
+  the two `endpoint/classifier-host` tests that need a Windows job object; the five
+  `ingestion/ingest-api/internal/store` live tests that reuse the owner's tenant id and so fail
+  against the lab database; the `seams` gate finding at `endpoint/protocol/content.go:63`; and the
+  `db` gate, which reports FAIL instead of SKIP when `powershell` is absent. For each, say whether
+  the repository is fixed or the failure stays in the baseline as known. (00)

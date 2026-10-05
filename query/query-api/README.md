@@ -39,7 +39,7 @@ status, so the transport repeats the pipeline's decision rather than inventing a
 | File | Responsibility |
 |---|---|
 | `src/http/config.js` | The deployment's `SAC_*` vocabulary in one place. Fails closed on anything it does not recognise; there is no "prefer" TLS mode, because a silent fallback to plaintext is a downgrade rather than a mode |
-| `src/http/server.js` | `/healthz`, `/readyz` and `POST /v1/query`, plus the body ceiling, the concurrency gate and the error rendering. It also routes the two content reads to `content.js` |
+| `src/http/server.js` | `/healthz`, `/readyz` and `POST /v1/query`, plus the body ceiling, the concurrency gate and the error rendering. It also routes the two content reads to `content.js`, and the two audited configuration writes (`POST /v1/finding-review`, `POST /v1/tool-sanction`) to `review.js` and `sanction.js` |
 | `src/http/content.js` | `POST /v1/content-search` and `POST /v1/content/retrieval`, forwarded to `content-vault`. It decides nothing about content |
 | `src/http/pool.js` | Per-request connections, and the **mandatory tenant reset** on release |
 | `src/http/main.js` | Resolve config, prove the database, listen, drain on `SIGTERM` |

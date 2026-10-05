@@ -38,6 +38,16 @@ import (
 )
 
 func main() {
+	// `sync-directory` is the scheduled directory job, not an HTTP route: it is dispatched before
+	// the server's own configuration is required, so it does not need a token signing key or a CA to
+	// run (sync_directory.go). Every other invocation starts the device-facing service.
+	if len(os.Args) > 1 && os.Args[1] == "sync-directory" {
+		if err := runSyncDirectory(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "control-api sync-directory:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "control-api:", err)
 		os.Exit(1)

@@ -184,6 +184,31 @@ CREATE TABLE ref.rule (
   retired_in        text REFERENCES ref.classifier_release(release_version)
 );
 
+-- The seed tool catalogue: the shared, non-tenant-specific mapping from a behaviour-derived
+-- `tool_fingerprint` to a human-readable name. Brief §2 and C8 make discovery behavioural, so the
+-- endpoint never emits a brand: it emits a fingerprint derived from what it observed (a TLS
+-- host+path hash, a process image signature, or an extension name). This table is what turns that
+-- opaque value back into "Claude Code" on the read side.
+--
+-- It is deliberately global reference data, not a column on ops.tool: ops.tool is per-tenant
+-- sanction state, and a name is not a decision. A tenant may override the name through
+-- ops.tool.display_name; an operator may add a fingerprint here without touching any tenant.
+-- `signal_kind` and `evidence` record how the fingerprint was derived so the catalogue can be
+-- regenerated rather than guessed at, and so a reviewer can see which host/path a hash stands for.
+--
+-- The TLS rows are the sha256 of `tls|<lowercased host>|<path with leading/trailing slashes
+-- trimmed>`, first eight bytes in lowercase hex, exactly as
+-- endpoint/capture-core/proxy/tlsproxy/provider.go derives it. A fingerprint the catalogue does
+-- not hold is not an error and is not inferred: the read renders it as "Unrecognised tool" with
+-- the raw fingerprint beside it.
+CREATE TABLE ref.tool_catalogue (
+  tool_fingerprint  text PRIMARY KEY,
+  display_name      text NOT NULL,
+  vendor            text,
+  signal_kind       text NOT NULL CHECK (signal_kind IN ('tls','process','extension','other')),
+  evidence          jsonb NOT NULL DEFAULT '{}'::jsonb
+);
+
 -- The fidelity ranking that decides which of two observations of the same submission wins
 -- (brief §4.1 and R9; master doc §5.3). LOWER RANK IS BETTER. The ranking is about the
 -- quality of the observed content, not the coverage of the route: a route that sees fewer
@@ -332,6 +357,12 @@ CREATE TABLE ops.user_dim (
   department            text,
   population            text,
   manager_ref           text,
+  -- The directory's own display name for the person. Like the department it is a directory attribute
+  -- needed by the read, not the mapping to a person (that stays directory_object_id_enc). It is
+  -- written only while the tenant's device_identity is 'clear', so a tenant that opted out of clear
+  -- identities stores no directory name either (ADR 0021; the read then falls back to the account
+  -- name the device reports, then to user_ref).
+  display_name          text,
   status                text NOT NULL DEFAULT 'unknown' CHECK (status IN ('active','inactive','unknown')),
   synced_at             timestamptz,
   PRIMARY KEY (tenant_id, user_ref)
@@ -339,6 +370,9 @@ CREATE TABLE ops.user_dim (
 
 COMMENT ON COLUMN ops.user_dim.directory_object_id_enc IS
   'The directory identifier, encrypted. This is the only column that maps a pseudonymous user_ref to a real person, and it exists solely so that subject export and erasure can resolve one. Absent it, the wire format is pseudonymous end to end.';
+
+COMMENT ON COLUMN ops.user_dim.display_name IS
+  'The directory''s display name for the user_ref, shown beside the account name the device reports. It is not the mapping to a real person: that is directory_object_id_enc, which is encrypted and never exported. Written only while the tenant''s device_identity is ''clear''.';
 
 CREATE TABLE ops.device (
   tenant_id        uuid NOT NULL REFERENCES ops.tenant(tenant_id),
@@ -1509,6 +1543,32 @@ SELECT a.tenant_id,
 COMMENT ON VIEW mart.v_tool_usage IS
   'Brief §3.6 questions 1 and 2. LEFT JOIN, not INNER: a tool with no ops.tool row must still appear, reporting sanctioned_state as NULL, so that the read layer can render it as `unknown` rather than dropping it. Brief C8 forbids conflating unknown with prohibited, and silently omitting the row would be a third kind of wrong.';
 
+-- The one place a fingerprint becomes a name. Resolution is present-tense, at read time, exactly
+-- as sanctioned state is (ops.tool is configuration; ref.tool_catalogue is the shared seed), so a
+-- catalogue addition or a tenant override shows on the next read without rewriting any aggregate.
+--
+-- The order of the coalesce is the product's: a tenant's own label wins, then the shared
+-- catalogue, then the explicit "Unrecognised tool". It never falls back to the raw fingerprint as
+-- the *name*, because a fingerprint shown in a name's place reads like a tool we know and have
+-- merely labelled badly (brief §2, C8). The raw value still travels on every row as `tool`.
+CREATE FUNCTION ops.tool_display_name(p_tool_fingerprint text)
+RETURNS text
+LANGUAGE sql STABLE AS $$
+  SELECT coalesce(
+    (SELECT t.display_name
+       FROM ops.tool t
+      WHERE t.tenant_id = ops.current_tenant()
+        AND t.tool_fingerprint = p_tool_fingerprint
+        AND t.display_name IS NOT NULL),
+    (SELECT c.display_name
+       FROM ref.tool_catalogue c
+      WHERE c.tool_fingerprint = p_tool_fingerprint),
+    'Unrecognised tool')
+$$;
+
+COMMENT ON FUNCTION ops.tool_display_name(text) IS
+  'Fingerprint -> display name: tenant override, else shared catalogue, else "Unrecognised tool". STABLE, tenant-scoped through ops.tool RLS; the raw fingerprint is never substituted for the name.';
+
 -- Findings joined to the current rule definition and to review state (defaulting to open).
 --
 -- class_code and severity are read from ref.rule, not from mart.finding: they are present-tense
@@ -2129,7 +2189,8 @@ CREATE POLICY tenant_isolation ON ops.tenant
 --   * control-api manages configuration and grant decisions and cannot read content or keys.
 --   * content-vault is the only role that can touch ops.content_object.
 --   * query-api can read events, aggregates and findings, cannot see wrapped keys at all, and
---     cannot write anything except its own audit trail and a finding review.
+--     cannot write anything except its own audit trail, a finding review and a tool sanction
+--     decision (each an audited configuration write beside the read that shows it).
 --   * the scheduled jobs own retention, aggregation and reconciliation.
 --   * no runtime role has UPDATE or DELETE on ops.audit or UPDATE on ingest.observation.
 
@@ -2215,9 +2276,14 @@ GRANT SELECT ON ops.tenant, ops.user_dim, ops.device, ops.collector_state, ops.t
       -- would strand. Read-only: query-api can inform the decision but never take it.
       ops.subscription, ops.usage_daily TO sac_query;
 GRANT SELECT ON ref.data_class, ref.rule, ref.classifier_release, ref.route_fidelity, ref.collector TO sac_query;
+GRANT SELECT ON ref.tool_catalogue TO sac_query;
 GRANT INSERT, SELECT ON ops.audit TO sac_query;
 GRANT SELECT, INSERT, UPDATE ON ops.finding_review TO sac_query;
-GRANT EXECUTE ON FUNCTION ops.current_tenant() TO sac_query;
+-- The tool sanction decision (POST /v1/tool-sanction). It is a configuration write that belongs
+-- beside the read that shows it, exactly as a finding review does; the row and its audit entry
+-- commit together. Still no content, still no keys, and no grant on any other write surface.
+GRANT INSERT, UPDATE ON ops.tool TO sac_query;
+GRANT EXECUTE ON FUNCTION ops.current_tenant(), ops.tool_display_name(text) TO sac_query;
 
 -- sac_query reads observations for drill-down. It is NOT granted SELECT on ops.content_object,
 -- so the component that answers analyst queries cannot see a wrapped data key even in
@@ -2316,6 +2382,63 @@ INSERT INTO ref.rule (rule_id, class_code, detector_kind, severity, title, descr
   ('SRC_INTERNAL_REPO',     'source_code',      'deterministic', 'high',     'Proprietary source code',         'Source declarations or repository detail indicating proprietary implementation.',                          '2026.01.0-shadow'),
   ('PHI_CLINICAL_TERM',     'health',           'deterministic', 'high',     'Health information',              'Clinical vocabulary and anything suggesting a medical condition.',                                        '2026.01.0-shadow'),
   ('LEGAL_CONTRACT_TERMS',  'legal_commercial', 'deterministic', 'medium',   'Contract or commercial terms',    'Contractual or commercially sensitive language.',                                                         '2026.01.0-shadow');
+
+-- The seed tool catalogue (ref.tool_catalogue). Three groups:
+--
+--   * `tls` rows are hashes the egress proxy derives from a destination host and path. They are
+--     listed one row per observed path because the fingerprint is over host+path: one tool (Claude
+--     Code) legitimately has several. `evidence` carries the host and path so the row can be
+--     regenerated and reviewed rather than being an unexplained hash.
+--   * `process` rows are the process-detector's image-derived names (`proc_<signature>`) and the
+--     local-inference fingerprints the loopback broker and the lab simulator emit.
+--   * `extension` rows are the names the Chromium extension emits for a known browser tool.
+--
+-- Unknown fingerprints are deliberately absent. This seed is the common tools, not a claim to know
+-- every destination; the read path renders an absent fingerprint as "Unrecognised tool".
+INSERT INTO ref.tool_catalogue (tool_fingerprint, display_name, vendor, signal_kind, evidence) VALUES
+  ('tls_b6681b043244c43f', 'Claude Code', 'anthropic', 'tls', '{"host":"api.anthropic.com","path":"/v1/messages"}'),
+  ('tls_5a5a41ed0bf50d9d', 'Claude Code', 'anthropic', 'tls', '{"host":"api.anthropic.com","path":"/v1/messages/count_tokens"}'),
+  ('tls_69f6ab029df3c019', 'Claude Code', 'anthropic', 'tls', '{"host":"api.anthropic.com","path":"/api/event_logging/v2/batch"}'),
+  ('tls_31299ef7601928f7', 'Claude Code', 'anthropic', 'tls', '{"host":"api.anthropic.com","path":"/api/event_logging/batch"}'),
+  ('tls_cb53d2b2add3d450', 'Claude Code', 'anthropic', 'tls', '{"host":"api.anthropic.com","path":"/api/claude_cli_profile"}'),
+  ('tls_f32477ff734d70d1', 'OpenAI API', 'openai', 'tls', '{"host":"api.openai.com","path":"/v1/chat/completions"}'),
+  ('tls_4a602150609f427e', 'OpenAI API', 'openai', 'tls', '{"host":"api.openai.com","path":"/v1/responses"}'),
+  ('tls_15ab95c6f0615e12', 'OpenAI API', 'openai', 'tls', '{"host":"api.openai.com","path":"/v1/models"}'),
+  ('tls_8a9512eae8499418', 'OpenAI API', 'openai', 'tls', '{"host":"api.openai.com","path":"/v1/completions"}'),
+  ('tls_11574658dafb8805', 'ChatGPT (web)', 'openai', 'tls', '{"host":"chatgpt.com","path":"/backend-api/conversation"}'),
+  ('tls_fd863543bed5e1fd', 'ChatGPT (web)', 'openai', 'tls', '{"host":"chatgpt.com","path":"/backend-api/chat/completions"}'),
+  ('tls_2af2dd0ea445e033', 'ChatGPT (web)', 'openai', 'tls', '{"host":"chat.openai.com","path":"/backend-api/conversation"}'),
+  ('tls_f412811be7ac6539', 'GitHub Copilot', 'github', 'tls', '{"host":"api.githubcopilot.com","path":"/chat/completions"}'),
+  ('tls_336b980c5f15d4f0', 'GitHub Copilot', 'github', 'tls', '{"host":"api.githubcopilot.com","path":"/v1/chat/completions"}'),
+  ('tls_ba5b03450233e3fc', 'GitHub Copilot', 'github', 'tls', '{"host":"api.githubcopilot.com","path":"/models"}'),
+  ('tls_3a0703d7a0dc3a68', 'GitHub Copilot', 'github', 'tls', '{"host":"copilot.microsoft.com","path":"/chat/completions"}'),
+  ('tls_7659f7a5e64cd885', 'Gemini (web)', 'google', 'tls', '{"host":"gemini.google.com","path":"/"}'),
+  ('tls_0320fa08a4f64851', 'Gemini API', 'google', 'tls', '{"host":"generativelanguage.googleapis.com","path":"/v1beta/models"}'),
+  ('tls_a40a04ef6e27de9f', 'Perplexity (web)', 'perplexity', 'tls', '{"host":"www.perplexity.ai","path":"/"}'),
+  ('tls_aefb9cd055abfffb', 'Perplexity API', 'perplexity', 'tls', '{"host":"api.perplexity.ai","path":"/chat/completions"}'),
+  ('tls_9230903190dcf0dc', 'Cursor', 'cursor', 'tls', '{"host":"api2.cursor.sh","path":"/"}'),
+  ('tls_14a9086e088f0d82', 'Cursor', 'cursor', 'tls', '{"host":"api.cursor.com","path":"/"}'),
+  ('tls_84160351478923e0', 'Mistral API', 'mistral', 'tls', '{"host":"api.mistral.ai","path":"/v1/chat/completions"}'),
+  ('tls_41b7a7dd22bb3bae', 'Groq API', 'groq', 'tls', '{"host":"api.groq.com","path":"/openai/v1/chat/completions"}'),
+  ('tls_823b80bdeef13f38', 'OpenRouter', 'openrouter', 'tls', '{"host":"openrouter.ai","path":"/api/v1/chat/completions"}'),
+  ('tls_ce5fbce2b73c1868', 'DeepSeek API', 'deepseek', 'tls', '{"host":"api.deepseek.com","path":"/chat/completions"}'),
+  ('tls_d829c7e9598888f9', 'xAI API', 'xai', 'tls', '{"host":"api.x.ai","path":"/v1/chat/completions"}'),
+  ('tls_544b80dcc1446f8b', 'Together AI', 'together', 'tls', '{"host":"api.together.xyz","path":"/v1/chat/completions"}'),
+  ('tls_4fb4f5cb98d7a1c3', 'Cohere API', 'cohere', 'tls', '{"host":"api.cohere.ai","path":"/v1/chat"}'),
+  ('ollama_local',     'Ollama (local)',   'ollama',   'process',   '{"basis":"loopback port map","note":"lab and simulator fingerprint for a local Ollama runtime"}'),
+  ('proc_ollama',      'Ollama (local)',   'ollama',   'process',   '{"image_signature":"ollama"}'),
+  ('proc_lmstudio',    'LM Studio (local)','lmstudio', 'process',   '{"image_signature":"lm studio"}'),
+  ('proc_llama',       'llama.cpp (local)','llama.cpp','process',   '{"image_signature":"llama.cpp"}'),
+  ('proc_vllm',        'vLLM (local)',     'vllm',     'process',   '{"image_signature":"vllm"}'),
+  ('chatgpt_web',      'ChatGPT (web)',    'openai',   'extension', '{"note":"simulator/legacy extension fingerprint"}'),
+  ('claude_web',       'Claude (web)',     'anthropic','extension', '{"note":"simulator/legacy extension fingerprint"}'),
+  ('copilot_chat',     'GitHub Copilot',   'github',   'extension', '{"note":"simulator/legacy extension fingerprint"}'),
+  ('cursor_ide',       'Cursor',           'cursor',   'extension', '{"note":"simulator/legacy extension fingerprint"}'),
+  ('gemini_web',       'Gemini (web)',     'google',   'extension', '{"note":"simulator/legacy extension fingerprint"}'),
+  ('perplexity_web',   'Perplexity (web)', 'perplexity','extension','{"note":"simulator/legacy extension fingerprint"}'),
+  ('genai.web.chat.v1:chatgpt', 'ChatGPT (web)', 'openai',   'extension', '{"note":"extension fingerprint, pre-tf1 protocol"}'),
+  ('genai.web.chat.v1:claude',  'Claude (web)',  'anthropic','extension', '{"note":"extension fingerprint, pre-tf1 protocol"}'),
+  ('genai.web.chat.v1:gemini',  'Gemini (web)',  'google',   'extension', '{"note":"extension fingerprint, pre-tf1 protocol"}');
 
 
 -- =====================================================================================

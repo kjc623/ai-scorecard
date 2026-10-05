@@ -137,3 +137,22 @@ implies more certainty than it has is worse than one that admits its edges.
    like an error — it looks like an unchanged organisation). Nothing in this repository measures it.
    *How to close it: it appears as a line item and a health signal once `control-api` exists.*
 
+## Built (backlog/06, 2026-10-05)
+
+`control-api` now exists, and decision 2 is built as it stands: `control-api sync-directory` fills
+`ops.user_dim` for a tenant, from Microsoft Entra ID through Graph (application client credentials)
+or from a JSON directory export. It is idempotent and upserts per `user_ref`; a user the directory no
+longer returns is retired (`status = 'inactive'`) rather than deleted, so the "never dropped"
+behaviour of aggregates already computed survives a person leaving. A user the directory holds with
+no department is written with NULL and counted in the explicit `unmapped` series. The mapping from
+the endpoint's `user_ref` to a directory identity is a configurable directory attribute
+(`onPremisesSamAccountName` by default) whose value the device's `--user-ref` is set to — stated and
+tested because the design left it open. `directory_object_id_enc` is sealed with AES-256-GCM under a
+per-tenant key derived from a deployment master key.
+
+Still open from this record: nothing measures the sync's cost or staleness (closing note 4), the
+directory credential is a command-line/environment secret rather than a managed identity (a
+deployment concern), and `manager_ref` remains unused (closing note 3). A person who changes team
+still has their earlier usage attributed to the old department until the trailing aggregate window
+recomputes (closing note 2) — the sync does not rewrite history, and the aggregate is as-at-now.
+

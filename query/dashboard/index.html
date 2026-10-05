@@ -127,11 +127,11 @@ const SOURCES = Object.freeze({
   'mart.agg_tool_user_period': Object.freeze({
     kind: 'aggregate',
     label: 'Usage per tool per person',
-    dimensions: Object.freeze(['bucket', 'tool', 'subject']),
+    dimensions: Object.freeze(['bucket', 'tool', 'sanctioned_state', 'subject']),
     measures: Object.freeze(['submissions', 'bytes_total']),
     answers: 'Q2',
     subjectBearing: true,
-    note: 'subject-bearing: every read is audited, and the cursor is server-side',
+    note: 'subject-bearing: every read is audited, and the cursor is server-side; sanctioned state is joined at read time and the k cell is the tool, not the person',
   }),
   'mart.agg_org_period': Object.freeze({
     kind: 'aggregate',
@@ -227,7 +227,7 @@ const TEMPLATES = Object.freeze({
     title: 'Which are unsanctioned, and who is using them?',
     source: 'mart.agg_tool_user_period',
     screen: 'unsanctioned',
-    params: Object.freeze(['window', 'bucket', 'limit', 'tool', 'subject']),
+    params: Object.freeze(['window', 'bucket', 'limit', 'tool', 'subject', 'sanctioned_state']),
   }),
   q3_team_growth: Object.freeze({
     question: 3,
@@ -1339,7 +1339,7 @@ const TOOL_ROWS = Object.freeze([
 ]);
 
 const DEVICE_ROWS = Object.freeze([
-  Object.freeze({ device: '9f1c0b6e-0000-4000-8000-000000000001', hostname: 'FIN-LAPTOP-07', device_os: 'windows', os_version: '11', agent_version: '1.4.2', collection_mode: 'm3', managed_state: 'managed', user_ref: 'u_4f21', subject_name: 'alice@contoso.example', region: 'eu', liveness: 'reporting', collector: 'capture_extension', collector_state: 'healthy', spool_depth: 0, spool_dropped_total: 0, last_seen_at: '2026-10-01T11:57:00Z' }),
+  Object.freeze({ device: '9f1c0b6e-0000-4000-8000-000000000001', hostname: 'FIN-LAPTOP-07', device_os: 'windows', os_version: '11', agent_version: '1.4.2', collection_mode: 'm3', managed_state: 'managed', user_ref: 'u_4f21', subject_name: 'alice@contoso.example', directory_name: 'Alice Smith', region: 'eu', liveness: 'reporting', collector: 'capture_extension', collector_state: 'healthy', spool_depth: 0, spool_dropped_total: 0, last_seen_at: '2026-10-01T11:57:00Z' }),
   Object.freeze({ device: '9f1c0b6e-0000-4000-8000-000000000002', hostname: 'MAC-DESIGN-2', device_os: 'macos', os_version: '15', agent_version: '1.4.2', collection_mode: 'm2', managed_state: 'managed', user_ref: 'u_9a02', subject_name: 'bob@contoso.example', region: 'eu', liveness: 'stale', collector: 'egress_proxy', collector_state: 'degraded', spool_depth: 812, spool_dropped_total: 0, last_seen_at: '2026-09-29T02:11:00Z' }),
   Object.freeze({ device: '9f1c0b6e-0000-4000-8000-000000000003', hostname: null, device_os: 'windows', os_version: '10', agent_version: null, collection_mode: 'm1', managed_state: 'unmanaged', user_ref: null, subject_name: null, region: 'us', liveness: 'never_reported', collector: null, collector_state: null, spool_depth: null, spool_dropped_total: null, last_seen_at: null }),
   Object.freeze({ device: '9f1c0b6e-0000-4000-8000-000000000004', hostname: 'OPS-BUILD-4', device_os: 'windows', os_version: '11', agent_version: '1.3.0', collection_mode: 'm0', managed_state: 'managed', user_ref: 'u_1b77', subject_name: 'svc-build', region: 'us', liveness: 'revoked', collector: 'cli_shim', collector_state: 'absent', spool_depth: 0, spool_dropped_total: 4412, last_seen_at: '2026-09-12T09:00:00Z' }),
@@ -1832,6 +1832,7 @@ const QUESTIONS = Object.freeze({
       limit: ctx.limit ?? 500,
       tool: ctx.filters.tool,
       subject: ctx.filters.subject,
+      sanctioned_state: ctx.filters.sanctioned_state ?? 'unsanctioned',
     })),
   },
 
@@ -2293,9 +2294,13 @@ function unsanctionedView(state) {
 
 function teamsView(state) {
   const org = state.meta?.extras?.org_coverage?.[0] ?? null;
+  // The residual is computed here rather than read from a column: mart.agg_org_period holds only
+  // users with a department, so "no department" is the difference between every user-day and the
+  // mapped ones. It is surfaced as its own tile, not only a footnote, because "never dropped" means
+  // visible on the page, not discoverable behind a disclosure (docs/04 §3.3).
+  const unmapped = org ? Math.max(0, (org.users_all ?? 0) - (org.users_mapped ?? 0)) : null;
   const notes = [];
   if (org) {
-    const unmapped = Math.max(0, (org.users_all ?? 0) - (org.users_mapped ?? 0));
     notes.push(
       `Unmapped people are an explicit series: ${formatCount(org.users_all)} user-days in the window, ${formatCount(org.users_mapped)} with a department, ${formatCount(unmapped)} without.`,
     );
@@ -2307,6 +2312,7 @@ function teamsView(state) {
       measureTile('People (lower bound)', state, 'users'),
       tile('Teams in this page', { kind: 'number', text: formatCount(new Set(state.data.map((r) => r.department)).size) }, null),
       tile('Mapped user-days', org ? { kind: 'number', text: formatCount(org.users_mapped) } : { kind: 'absent', text: '—' }, org ? `of ${formatCount(org.users_all)}` : 'No directory coverage read came back with this page.'),
+      tile('Unmapped user-days', unmapped === null ? { kind: 'absent', text: '—' } : { kind: 'number', text: formatCount(unmapped) }, org ? `of ${formatCount(org.users_all)}` : 'No directory coverage read came back with this page.'),
     ]),
     tables: Object.freeze([
       tableFrom(state, {
@@ -2519,9 +2525,11 @@ function devicesView(state, { filters = {}, now = new Date(), exploreHref = 'exp
       last_seen_at_ago: row.last_seen_at ? ago(row.last_seen_at, now) : null,
       // The device name is the hostname, with the UUID kept for the hover and as the fallback. The
       // user is the clear account name of the most recent submission, with the pseudonymous ref as
-      // the fallback (ADR 0021). Both are present only when the tenant's identity setting is clear.
+      // the fallback (ADR 0021). directory_name is the directory's own current name, shown beside it
+      // when a sync has supplied one; both are absent for a 'hashed' tenant.
       device_name: row.hostname || null,
       user: row.subject_name ?? row.user_ref ?? null,
+      directory_name: row.directory_name ?? null,
       mode: row.collection_mode ?? null,
       activity: row.device ? `${exploreHref}#events?device=${encodeURIComponent(String(row.device))}` : null,
     };
@@ -2600,6 +2608,7 @@ function devicesView(state, { filters = {}, now = new Date(), exploreHref = 'exp
           columns: [
             column('device_name', 'Device', 'device-name'),
             column('user', 'User'),
+            column('directory_name', 'Directory name'),
             column('status', 'Status', 'status'),
             column('last_seen_at', 'Last seen', 'ago'),
             column('agent_version', 'Agent version'),
@@ -3099,6 +3108,17 @@ function renderCell(row, column, max = 0) {
     return raw === null || raw === undefined ? '<span class="v-vocab v-vocab-unknown">unknown</span>' : renderValue({ kind: 'vocab', text: raw });
   }
   if (raw === null || raw === undefined) return renderValue({ kind: 'absent' });
+  // The tool column resolves the raw, behaviour-derived fingerprint to a name at read time. Both
+  // are shown: the name is what a person reads, and the fingerprint is the stable identity behind
+  // it, so an "Unrecognised tool" is never mistaken for a tool the product knows and merely
+  // labelled badly (brief §2, C8). A row that carries no tool_name falls back to the fingerprint.
+  if (key === 'tool') {
+    const fingerprint = String(raw);
+    const name = row.tool_name ? String(row.tool_name) : fingerprint;
+    if (name === fingerprint) return `<span class="v-text v-mono" title="Tool fingerprint">${escapeHtml(fingerprint)}</span>`;
+    return `<span class="v-text" title="Tool fingerprint ${escapeHtml(fingerprint)}">${escapeHtml(name)}</span>`
+      + ` <span class="v-mono v-tool-fp">${escapeHtml(fingerprint)}</span>`;
+  }
   // A person reference opens that person's series: the one screen that takes it.
   if (key === 'subject') return `<a class="cell-link" href="#person?subject=${encodeURIComponent(String(raw))}">${escapeHtml(String(raw))}</a>`;
   return `<span class="v-text">${escapeHtml(String(raw))}</span>`;
