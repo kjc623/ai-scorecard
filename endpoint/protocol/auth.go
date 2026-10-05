@@ -75,17 +75,60 @@ func (m AuthMode) Valid() bool {
 // idempotency key: per-tenant unique, it makes a re-image return the existing device_id rather
 // than mint a duplicate (C11), and a revoked device cannot re-enrol into a fresh identity through
 // it.
+//
+// hostname and subject_name are the clear identity fields. As built (ADR 0021) a device whose
+// tenant's device_identity is 'clear' sends the hostname (and, on each event, a subject_name);
+// when the setting is 'hashed' it sends hostname_hash and no name. The setting reaches the device
+// on the enrolment and health responses; until it has been told, the device uses its configured
+// default, which is 'clear'.
 type DeviceInfo struct {
 	OS                   string `json:"os"`
 	OSVersion            string `json:"os_version,omitempty"`
 	AgentVersion         string `json:"agent_version"`
+	Hostname             string `json:"hostname,omitempty"`
+	HostnameHash         string `json:"hostname_hash,omitempty"`
+	ManagedState         string `json:"managed_state,omitempty"`
 	MDMID                string `json:"mdm_id,omitempty"`
 	HardwareIdentityHash string `json:"hardware_identity_hash"`
 }
 
+// DeviceIdentity is the tenant's device-identity setting as the server states it to a device
+// (ADR 0021). 'clear' means send the hostname and the submitting account name; 'hashed' means send
+// only hostname_hash and no name. It is a closed pair, not a boolean, so a future third mode does
+// not silently become one of the two.
+type DeviceIdentity string
+
+const (
+	DeviceIdentityClear  DeviceIdentity = "clear"
+	DeviceIdentityHashed DeviceIdentity = "hashed"
+)
+
+// Valid rejects anything outside the closed pair rather than defaulting it. A default here would
+// silently pick a privacy posture the tenant did not choose.
+func (d DeviceIdentity) Valid() bool {
+	return d == DeviceIdentityClear || d == DeviceIdentityHashed
+}
+
+// ManagedState is the closed vocabulary for whether the device is under MDM. 'unknown' is a
+// first-class value: it is what a device without an MDM integration reports, and conflating it
+// with 'unmanaged' would assert a fact nobody established.
+type ManagedState string
+
+const (
+	ManagedStateManaged   ManagedState = "managed"
+	ManagedStateUnmanaged ManagedState = "unmanaged"
+	ManagedStateUnknown   ManagedState = "unknown"
+)
+
+// Valid rejects anything outside the closed set.
+func (m ManagedState) Valid() bool {
+	return m == ManagedStateManaged || m == ManagedStateUnmanaged || m == ManagedStateUnknown
+}
+
 // EnrolmentRequest is the /v1/enrol body (docs/02-ingest-and-transport.md §5.1). It is mode-
 // agnostic: an x509 device carries a CSR, a dpop device carries its public JWK, and the unused
-// field is omitted. There is no hostname, username or directory identifier here by design.
+// field is omitted. It carries a hostname and (via DeviceInfo) a managed state; it does not carry
+// a subject name, which rides on each event, not on enrolment.
 type EnrolmentRequest struct {
 	SchemaVersion  string     `json:"schema_version"`
 	EnrolmentToken string     `json:"enrolment_token,omitempty"`
@@ -119,7 +162,10 @@ type EnrolmentResponse struct {
 	Reenrolled    bool             `json:"reenrolled"`
 	Credential    IssuedCredential `json:"credential"`
 	PolicyETag    string           `json:"policy_etag,omitempty"`
-	ServerTime    time.Time        `json:"server_time"`
+	// DeviceIdentity is the tenant's identity setting, so a device learns whether to send clear
+	// values (ADR 0021). Empty means the server did not state one and the device keeps its default.
+	DeviceIdentity DeviceIdentity `json:"device_identity,omitempty"`
+	ServerTime     time.Time      `json:"server_time"`
 }
 
 // JWK is the RFC 7517 public-key subset the DPoP mode uses. E and N carry an RSA modulus and

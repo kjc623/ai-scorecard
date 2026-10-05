@@ -542,6 +542,12 @@ export function devicesView(state, { filters = {}, now = new Date(), exploreHref
       status: status.key,
       status_text: status.text,
       last_seen_at_ago: row.last_seen_at ? ago(row.last_seen_at, now) : null,
+      // The device name is the hostname, with the UUID kept for the hover and as the fallback. The
+      // user is the clear account name of the most recent submission, with the pseudonymous ref as
+      // the fallback (ADR 0021). Both are present only when the tenant's identity setting is clear.
+      device_name: row.hostname || null,
+      user: row.subject_name ?? row.user_ref ?? null,
+      mode: row.collection_mode ?? null,
       activity: row.device ? `${exploreHref}#events?device=${encodeURIComponent(String(row.device))}` : null,
     };
   });
@@ -617,9 +623,12 @@ export function devicesView(state, { filters = {}, now = new Date(), exploreHref
         ...tableFrom({ data: rows }, {
           title: 'Devices',
           columns: [
-            column('device', 'Device'),
+            column('device_name', 'Device', 'device-name'),
+            column('user', 'User'),
             column('status', 'Status', 'status'),
             column('last_seen_at', 'Last seen', 'ago'),
+            column('agent_version', 'Agent version'),
+            column('mode', 'Mode', 'vocab'),
             column('device_os', 'OS', 'vocab'),
             column('managed_state', 'Management', 'vocab'),
             Object.freeze({ key: 'activity', label: '', kind: 'link', linkLabel: 'View activity' }),

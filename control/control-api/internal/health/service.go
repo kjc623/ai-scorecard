@@ -24,7 +24,8 @@ import (
 // Store is the persistence seam the health path needs. It is the subset of store.Store this service
 // uses, so a test can supply a double.
 type Store interface {
-	RecordHealth(ctx context.Context, tenantID, deviceID string, at time.Time, reports []store.CollectorState) error
+	Tenant(ctx context.Context, tenantID string) (store.Tenant, error)
+	RecordHealth(ctx context.Context, tenantID, deviceID string, at time.Time, reports []store.CollectorState, dev store.DeviceHealth) error
 }
 
 // Config tunes the response's cadence hint.
@@ -68,6 +69,24 @@ func (s *Service) Report(ctx context.Context, tenantID, deviceID string, req pro
 			"a health report must be authenticated as a device")
 	}
 	now := s.now().UTC()
+	// The tenant's identity setting gates what is stored and is restated to the device (ADR 0021).
+	// Reading it here, not trusting the body, is what makes the setting authoritative.
+	tenant, err := s.store.Tenant(ctx, tenantID)
+	if err != nil {
+		if errors.Is(err, store.ErrUnknownTenant) {
+			return protocol.HealthResponse{}, apierr.New(http.StatusForbidden, apierr.CodeUnknownTenant,
+				"the authenticated tenant is unknown to this deployment")
+		}
+		return protocol.HealthResponse{}, apierr.Internal(fmt.Errorf("tenant: %w", err))
+	}
+	dev := store.DeviceHealth{
+		AgentVersion:   req.AgentVersion,
+		CollectionMode: req.CollectionMode,
+		ManagedState:   req.ManagedState,
+	}
+	if tenant.DeviceIdentity == protocol.DeviceIdentityClear {
+		dev.Hostname = req.Hostname
+	}
 	rows := make([]store.CollectorState, 0, len(req.Collectors))
 	for _, c := range req.Collectors {
 		detail, err := deviceDetail(req, c)
@@ -87,7 +106,7 @@ func (s *Service) Report(ctx context.Context, tenantID, deviceID string, req pro
 			Detail:            detail,
 		})
 	}
-	if err := s.store.RecordHealth(ctx, tenantID, deviceID, now, rows); err != nil {
+	if err := s.store.RecordHealth(ctx, tenantID, deviceID, now, rows, dev); err != nil {
 		if errors.Is(err, store.ErrUnknownCollector) {
 			return protocol.HealthResponse{}, apierr.New(http.StatusBadRequest, apierr.CodeSchemaViolation,
 				"a report named a collector this deployment does not know; a coverage path with no name is refused rather than stored")
@@ -98,6 +117,7 @@ func (s *Service) Report(ctx context.Context, tenantID, deviceID string, req pro
 		AckedAt:          now,
 		ServerTime:       now,
 		NextReportAfterS: s.next,
+		DeviceIdentity:   tenant.DeviceIdentity,
 	}, nil
 }
 

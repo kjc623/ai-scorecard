@@ -577,6 +577,16 @@ itself derived from content the vendor could not otherwise read.** The digest wa
 accepted because the product owner ruled search a required capability (§6.6). Neither is a cryptographic
 oversight, and neither can be fixed without giving up the feature it serves.
 
+**A second, wider reversal, recorded here rather than left implied (ADR 0021).** The device read and
+the dashboard now show a clear hostname and the submitting account name by default, where this
+document's A6 assumption kept names off the wire and resolved a person only through the encrypted
+`ops.user_dim.directory_object_id_enc`. The owner directed it; the reasoning and the
+`ops.tenant.device_identity` opt-out are in ADR 0021. The security reading is not softened: a store
+compromise now yields a behavioural record attributed to real people and real machines, so A6's
+"anonymous behavioural record" is no longer the default product. What remains true is that the
+setting is a real control — a tenant that sets `hashed` transmits and stores neither the clear
+hostname nor the name — and that the read which returns them is audited as served.
+
 ### 5.6 The search index is plaintext-derived, and searchable encryption does not fix it
 
 **What the index is.** `ingest.search_text` stores `prompt_body` and `attachment_name` units as

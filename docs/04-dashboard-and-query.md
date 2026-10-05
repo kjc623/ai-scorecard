@@ -70,11 +70,13 @@ ignored**: silently dropping it would turn an attempted cross-tenant read into a
 while rejecting it makes the attempt an auditable failure. Enforcement is structural (forced row-level
 security, tenant leading every primary key), so a bug in the query layer cannot cross tenants.
 
-**Names are not resolved in v1.** The dashboard shows `user_ref` plus `department`, `population` and
-`manager_ref` from `ops.user_dim`; `directory_object_id_enc` exists so that subject export and erasure
-can resolve a person, and is deliberately not a naming facility. **ASSUMPTION:** the brief is silent on
-how an analyst learns which person a `user_ref` is; keeping names out of the store and out of our logs
-is the conservative reading, with name resolution a documented follow-on.
+**Names are shown where the tenant asks for them (ADR 0021).** The dashboard shows `user_ref` plus
+`department`, `population` and `manager_ref` from `ops.user_dim`; `directory_object_id_enc` exists so
+that subject export and erasure can resolve a person. As of ADR 0021 a tenant may also set
+`ops.tenant.device_identity = 'clear'`, which stores and shows the device hostname and the clear
+account name at submission time, alongside `user_ref`. The setting defaults to `clear`; a tenant that
+sets it to `hashed` stores only a hostname hash and no name, and the read falls back to `user_ref`.
+The earlier "no names in the store" position (assumption A8) is superseded by that record.
 
 ### 2.2 Authorisation roles
 
@@ -715,7 +717,7 @@ COMMIT;                                 -- only now does the API write the respo
 | Trigger | Why |
 |---|---|
 | Any query that **filters on** `user_ref` | Asking about a person is the act being recorded, whatever comes back |
-| Any query that **returns** `user_ref` | The response identifies a subject |
+| Any query that **returns** `user_ref` (or the clear `subject_name`) | The response identifies a subject. As of ADR 0021 the device read returns the most recent user, so Devices is subject-level and audited |
 | Any single-submission or single-finding detail read | The row belongs to a person; the detail view is the most sensitive read in the product |
 | **Any aggregate whose scope resolves to fewer than k distinct subjects** — **k = 5** | A small cell *is* the subjects in it: with the org chart in hand, a cell a handful of people wide is a per-person fact. Five is the conventional small-cell floor and is below typical team size at this customer scale, so it does not blunt the product. Full rationale in §6.2; the schema anticipates the rule for `mart.agg_class_period` |
 | Any content retrieval (request, approval, reveal) | C16; the audit is written before content is returned |
@@ -724,8 +726,10 @@ COMMIT;                                 -- only now does the API write the respo
 | Any export run | One row per run, not per row (§5.3) |
 
 **Not** subject-level, and therefore not audited: tool- and class-level aggregates whose cells resolve
-to k or more subjects, device and coverage state, retention and hold lists, reference data. An audit
+to k or more subjects, coverage state, retention and hold lists, reference data. An audit
 log that records the ordinary dashboard is noise, and noise is how a real access goes unnoticed.
+(The device read was in this list until ADR 0021 made it return the device's most recent user; it is
+now subject-level, as the table above says.)
 
 The k-check costs nothing extra: §6 already computes each cell's distinct-subject count to decide
 suppression, so the same value decides the audit trigger. **The audit decision is made before
@@ -1206,7 +1210,10 @@ window of its own, so the Devices and Overview banners describe today rather tha
 `ops.collector_state`, sorted by silence duration and `spool_dropped_total`. Its four liveness states
 stay distinct, and its central claim is C24's: an absence of events is ambiguous, a health signal is
 not. A device that has gone silent is a **row produced by the server**, not a gap an analyst must
-notice.
+notice. As of ADR 0021 each row is named by its hostname (the UUID on hover) and carries the user
+most recently active on it, the agent version and the effective collection mode, so a device is
+identified by something an operator recognises. Because the row names a user it is subject-level and
+the read is audited (§5.2).
 
 **Degraded collection** collects everything the collection paths report about themselves: per-collector
 state counts, spool depth and dropped totals (C22's visible undercount), the `degraded`-confidence share
@@ -1532,7 +1539,7 @@ structural rather than conveniences:
   "coverage": { "submissions_in_scope": 412, "indexed": 399,
                 "not_indexed": { "not_captured": 6, "local_only": 0, "shredded": 7 } },
   "freshness": { "source": "ingest.search_text", "last_unit_at": "…", "state": "fresh" },
-  "data": [ { "submission_id": "…", "received_at": "…", "user_ref": "…", "tool": "claude_web",
+  "data": [ { "submission_id": "…", "received_at": "…", "user_ref": "…", "subject_name": "…", "hostname": "…", "tool": "claude_web",
               "unit_kind": "prompt_body", "rank": 0.0812,
               "fragments": [ { "offset": 412, "text": "…the wire transfer instruction…" } ] } ],
   "audit": { "entry_id": "…", "written_at": "…" } }
@@ -1659,7 +1666,7 @@ they are the parameters the brief leaves open.
 | A5 | Spike: ≥ 14 observed buckets, value > median + 4·MAD and ≥ 3× median | The brief says "changed or spiked" without defining it; median/MAD resists the flush day a mean would absorb |
 | A6 | Subject export p95 ≤ 4 h, hard bound 24 h; second approver only when content is included | §4.5 requires a bounded time without a number; the bound holds because subjects have hundreds-to-thousands of rows (D1) |
 | A7 | Export destination is Azure Blob in v1, behind a storage-writer interface | The brief says "the customer's own storage" without a cloud; the platform is Azure (S1) |
-| A8 | The dashboard displays `user_ref`, not personal names | The brief is silent; the encrypted directory id exists for export/erasure resolution, not naming |
+| A8 | ~~The dashboard displays `user_ref`, not personal names~~ **superseded by ADR 0021**: the dashboard shows a clear hostname and account name when the tenant's `device_identity` is `clear`, and `user_ref` otherwise | The brief is silent; the owner directed the reversal in ADR 0021, which keeps a `hashed` opt-out |
 | A9 | Reading `ops.audit` writes one audit row per query and is not re-audited | C30 says "every read of subject-level data"; a one-level per-query rule is the only terminating reading |
 | A10 | The M2 excerpt is part of the event record, not gated by the retrieval workflow | Brief §1.1 puts the excerpt on the wire at M2 by default; gating it would make M2 self-contradictory |
 | A11 | The < 30 s retrieval target runs from second approval to first byte | §8's "once granted" is the only measurable reading; approval latency is reported separately |

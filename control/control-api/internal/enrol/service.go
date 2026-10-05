@@ -196,13 +196,14 @@ func (s *Service) Enrol(ctx context.Context, in Input) (protocol.EnrolmentRespon
 	}
 
 	return protocol.EnrolmentResponse{
-		SchemaVersion: protocol.EnrolmentSchemaVersion,
-		DeviceID:      device.DeviceID,
-		TenantID:      tenant.TenantID,
-		Region:        tenant.ResidencyRegion,
-		Reenrolled:    reenrolled,
-		Credential:    credential,
-		ServerTime:    now,
+		SchemaVersion:  protocol.EnrolmentSchemaVersion,
+		DeviceID:       device.DeviceID,
+		TenantID:       tenant.TenantID,
+		Region:         tenant.ResidencyRegion,
+		Reenrolled:     reenrolled,
+		Credential:     credential,
+		DeviceIdentity: tenant.DeviceIdentity,
+		ServerTime:     now,
 	}, nil
 }
 
@@ -283,6 +284,7 @@ func (s *Service) reconcileDevice(ctx context.Context, tenant store.Tenant, req 
 			existing.OSVersion = req.Device.OSVersion
 			existing.MDMID = req.Device.MDMID
 			existing.ResidencyRegion = tenant.ResidencyRegion
+			applyEnrolmentIdentity(&existing, tenant, req.Device)
 			updated, err := s.store.UpsertDevice(ctx, existing)
 			if err != nil {
 				return store.Device{}, false, apierr.Internal(fmt.Errorf("update device: %w", err))
@@ -308,11 +310,35 @@ func (s *Service) reconcileDevice(ctx context.Context, tenant store.Tenant, req 
 		ResidencyRegion:      tenant.ResidencyRegion,
 		EnrolledAt:           now,
 	}
+	applyEnrolmentIdentity(&d, tenant, req.Device)
 	created, err := s.store.UpsertDevice(ctx, d)
 	if err != nil {
 		return store.Device{}, false, apierr.Internal(fmt.Errorf("insert device: %w", err))
 	}
 	return created, false, nil
+}
+
+// applyEnrolmentIdentity records the device identity fields an enrolment carries (ADR 0021). Which
+// of hostname/hostname_hash is stored is the tenant's choice, not the device's: a 'clear' tenant
+// stores the hostname and a 'hashed' tenant stores only the hash, so a device that sends the wrong
+// one cannot make the server store a value the tenant forbade. AgentVersion and ManagedState are
+// overwritten only when supplied, so a re-enrolment that omits them keeps the last known value.
+func applyEnrolmentIdentity(d *store.Device, tenant store.Tenant, info protocol.DeviceInfo) {
+	if info.AgentVersion != "" {
+		d.AgentVersion = info.AgentVersion
+	}
+	if info.ManagedState != "" && protocol.ManagedState(info.ManagedState).Valid() {
+		d.ManagedState = info.ManagedState
+	}
+	if tenant.DeviceIdentity == protocol.DeviceIdentityHashed {
+		if info.HostnameHash != "" {
+			d.HostnameHash = info.HostnameHash
+		}
+		return
+	}
+	if info.Hostname != "" {
+		d.Hostname = info.Hostname
+	}
 }
 
 // currentDevice authenticates a rotation: the existing credential must be live, and the device may
@@ -361,6 +387,7 @@ func (s *Service) currentDevice(ctx context.Context, current *Current, req proto
 	device.OSVersion = req.Device.OSVersion
 	device.MDMID = req.Device.MDMID
 	device.ResidencyRegion = tenant.ResidencyRegion
+	applyEnrolmentIdentity(&device, tenant, req.Device)
 	updated, err := s.store.UpsertDevice(ctx, device)
 	if err != nil {
 		return store.Tenant{}, store.Device{}, apierr.Internal(fmt.Errorf("update device: %w", err))

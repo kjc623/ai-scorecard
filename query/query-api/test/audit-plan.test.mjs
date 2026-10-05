@@ -197,14 +197,20 @@ test('a wide aggregate cell writes no audit row at all', async () => {
   assert.equal(envelope.result_state, 'ok');
 });
 
-test('device and coverage reads are not subject-level and are not audited (§5.2)', () => {
+test('the device read is subject-level and audited; the coverage read is not (§5.2, ADR 0021)', () => {
   const device = validate({ query_version: '1', source: 'mart.v_device_liveness', filters: [], limit: 10 });
   const coverage = validate({ query_version: '1', source: 'ops.coverage_snapshot', filters: [], window: { ...baseDoc().window }, limit: 10 });
-  for (const validated of [device, coverage]) {
-    const decision = auditDecision(validated, {});
-    assert.equal(decision.required, false, `${validated.source.id} is not subject-level`);
-    assert.equal(decision.phase, 'none');
-  }
+
+  // The device row now returns the most recent user (user_ref, subject_name), so docs/04 §5.2 row 2
+  // makes it subject-level: a read that identifies a subject is recorded as served.
+  const deviceDecision = auditDecision(device, {});
+  assert.equal(deviceDecision.required, true, 'a device read that names a user is subject-level');
+  assert.equal(deviceDecision.phase, 'pre_read');
+  assert.ok(deviceDecision.reasons.includes('returns_subject_reference'));
+
+  const coverageDecision = auditDecision(coverage, {});
+  assert.equal(coverageDecision.required, false, 'coverage carries no subject reference');
+  assert.equal(coverageDecision.phase, 'none');
 });
 
 test('the audit detail describes the question and puts subject values in subject_ref', () => {

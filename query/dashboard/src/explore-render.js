@@ -265,7 +265,10 @@ function exploreContentProblem(problem) {
 
 /** Who typed a matching prompt, on which device, into which tool. A part the answer lacks is left out. */
 function exploreHitMeta(hit) {
-  const parts = [hit.subject, hit.device, hit.tool].filter((part) => typeof part === 'string' && part !== '');
+  // Prefer the device hostname to the UUID (ADR 0021): an analyst places a machine by its name, and
+  // the UUID is still the identity behind the "open the event" action.
+  const device = typeof hit.hostname === 'string' && hit.hostname !== '' ? hit.hostname : hit.device;
+  const parts = [hit.subject, device, hit.tool].filter((part) => typeof part === 'string' && part !== '');
   if (parts.length === 0) return `<span class="x-mono x-sub">${escapeHtml(hit.submissionId)}</span>`;
   return `<span class="x-hit-meta x-mono">${parts.map((part) => `<span>${escapeHtml(part)}</span>`).join('<span class="x-hit-sep" aria-hidden="true">|</span>')}</span>`;
 }

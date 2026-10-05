@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/shadow-ai-capture/device/protocol"
 )
 
 // Memory is the in-memory Store used by the service tests and by a local run. Every branch below is
@@ -311,7 +313,7 @@ func (m *Memory) MarkEnrolmentTokenUsed(_ context.Context, tenantID, tokenHash s
 // RecordHealth implements Store, mirroring the SQL transaction: validate the collector vocabulary,
 // upsert each row if it is newer, and stamp last_seen_at monotonically. The whole call is under one
 // lock, so a partly-invalid report changes nothing.
-func (m *Memory) RecordHealth(_ context.Context, tenantID, deviceID string, at time.Time, reports []CollectorState) error {
+func (m *Memory) RecordHealth(_ context.Context, tenantID, deviceID string, at time.Time, reports []CollectorState, dev DeviceHealth) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, r := range reports {
@@ -328,8 +330,36 @@ func (m *Memory) RecordHealth(_ context.Context, tenantID, deviceID string, at t
 		m.collectorReportAt[key] = at
 	}
 	seenKey := deviceKey(tenantID, deviceID)
-	if prev, ok := m.lastSeen[seenKey]; !ok || prev.Before(at) {
+	fresh := true
+	if prev, ok := m.lastSeen[seenKey]; ok && !prev.Before(at) {
+		fresh = false
+	} else {
 		m.lastSeen[seenKey] = at
+	}
+	// Device identity fields are applied only for a fresh report, matching the SQL guard, and the
+	// clear hostname is gated on the tenant's setting so the double mirrors the server's authority.
+	if fresh {
+		if d, ok := m.devices[seenKey]; ok {
+			identity := protocol.DeviceIdentityClear
+			if t, ok := m.tenants[tenantID]; ok && t.DeviceIdentity != "" {
+				identity = t.DeviceIdentity
+			}
+			if identity == protocol.DeviceIdentityHashed {
+				if dev.HostnameHash != "" {
+					d.HostnameHash = dev.HostnameHash
+				}
+			} else if dev.Hostname != "" {
+				d.Hostname = dev.Hostname
+			}
+			if dev.AgentVersion != "" {
+				d.AgentVersion = dev.AgentVersion
+			}
+			if dev.ManagedState != "" {
+				d.ManagedState = dev.ManagedState
+			}
+			// collection_mode has no field on Device; the read path reads it from the column.
+			m.devices[seenKey] = d
+		}
 	}
 	return nil
 }

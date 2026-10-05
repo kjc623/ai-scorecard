@@ -614,15 +614,27 @@ export function createHandler({
       conn = await source.acquire();
       await source.useTenant(conn, principal.tenant);
       const result = await conn.query(
-        `SELECT s.submission_id::text AS submission_id, s.user_ref AS subject, s.tool_fingerprint AS tool, s.device_id::text AS device
+        `SELECT s.submission_id::text AS submission_id, s.user_ref AS user_ref, s.subject_name AS subject_name,
+                s.tool_fingerprint AS tool, s.device_id::text AS device, d.hostname AS hostname
            FROM ingest.submission s
+           LEFT JOIN ops.device d
+             ON d.tenant_id = s.tenant_id AND d.device_id = s.device_id
           WHERE s.tenant_id = $1::uuid AND s.submission_id = ANY(string_to_array($2::text, ',')::uuid[])`,
         [principal.tenant, ids.join(',')],
       );
       const known = new Map((result?.rows ?? []).map((row) => [row.submission_id, row]));
       return hits.map((hit) => {
         const row = known.get(hit.submission_id);
-        return row ? { ...hit, subject: row.subject ?? null, tool: row.tool ?? null, device: row.device ?? null } : hit;
+        if (!row) return hit;
+        return {
+          ...hit,
+          // The clear name at submission time when there is one, else the pseudonymous ref, so a hit
+          // is always attributable to something an analyst can act on (ADR 0021, docs/04 §15.3).
+          subject: row.subject_name ?? row.user_ref ?? null,
+          tool: row.tool ?? null,
+          device: row.device ?? null,
+          hostname: row.hostname ?? null,
+        };
       });
     } catch (error) {
       log?.warn?.(`query-api: search hits could not be described: ${error?.message ?? error}`);

@@ -192,6 +192,9 @@ func (d *Drainer) enrol(ctx context.Context, hwid string) (*credential.Credentia
 		Device: protocol.DeviceInfo{
 			OS:                   runtime.GOOS,
 			AgentVersion:         d.cfg.AgentVersion,
+			Hostname:             d.cfg.Hostname,
+			HostnameHash:         d.cfg.HostnameHash,
+			ManagedState:         d.cfg.ManagedState,
 			MDMID:                d.cfg.MDMID,
 			HardwareIdentityHash: hwid,
 		},
@@ -249,6 +252,7 @@ func (d *Drainer) enrol(ctx context.Context, hwid string) (*credential.Credentia
 		TenantID:             resp.TenantID,
 		Region:               resp.Region,
 		HardwareIdentityHash: hwid,
+		DeviceIdentity:       resp.DeviceIdentity,
 		PrivateKey:           string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})),
 	}
 	switch resp.Credential.Mode {

@@ -14,11 +14,13 @@ import (
 
 // Identity is the part of the envelope that identifies the subject. It is resolved from the
 // device's enrolment, never from a provider, so no provider can attribute an observation to
-// another tenant or user.
+// another tenant or user. SubjectName is optional and is the clear account name at submission time
+// (ADR 0021); when it is empty the record carries only the pseudonymous UserRef.
 type Identity struct {
-	TenantID string
-	DeviceID string
-	UserRef  string
+	TenantID    string
+	DeviceID    string
+	UserRef     string
+	SubjectName string
 }
 
 // SchemaVersion is the contract version these records validate against.
@@ -35,6 +37,11 @@ const SchemaVersion = "1.0"
 type EnvelopeInput struct {
 	Identity Identity
 	EventID  string
+
+	// SubjectName overrides Identity.SubjectName for this one observation when non-empty. It exists
+	// for a route that can attribute one request to a person even when the pipeline's identity was
+	// resolved without a name; an empty value falls back to the identity.
+	SubjectName string
 
 	Kind  protocol.Kind
 	Route protocol.Route
@@ -77,6 +84,7 @@ type envelopeWire struct {
 	TenantID      string `json:"tenant_id"`
 	DeviceID      string `json:"device_id"`
 	UserRef       string `json:"user_ref"`
+	SubjectName   string `json:"subject_name,omitempty"`
 
 	ToolFingerprint   string                  `json:"tool_fingerprint"`
 	Direction         string                  `json:"direction"`
@@ -130,6 +138,11 @@ func BuildEnvelope(in EnvelopeInput) ([]byte, error) {
 	if !in.Route.Valid() {
 		return nil, fmt.Errorf("core: envelope has route %q outside the closed vocabulary", in.Route)
 	}
+	// The contract caps subject_name at 200 characters. Refuse an over-long name here rather than
+	// emit a record ingest will reject: the device's job is never to send an invalid envelope.
+	if name := subjectName(in); len([]rune(name)) > 200 {
+		return nil, fmt.Errorf("core: subject_name is %d characters, over the contract's 200-character cap", len([]rune(name)))
+	}
 	contentDerived := in.ContentDigest != "" || len(in.Labels) > 0 || in.ClassifierVersion != "" ||
 		in.Confidence != "" || in.Excerpt != nil || len(in.Attachments) > 0
 	if in.Mode == protocol.ModeM0 && contentDerived {
@@ -145,6 +158,7 @@ func BuildEnvelope(in EnvelopeInput) ([]byte, error) {
 		TenantID:          in.Identity.TenantID,
 		DeviceID:          in.Identity.DeviceID,
 		UserRef:           in.Identity.UserRef,
+		SubjectName:       subjectName(in),
 		ToolFingerprint:   in.ToolFingerprint,
 		Kind:              in.Kind,
 		OccurredAt:        in.OccurredAt.UTC(),
@@ -248,6 +262,7 @@ var kindFieldPolicy = map[protocol.Kind]map[string]fieldRule{
 		"dedup_key":       fieldRequired,
 		"size_bytes":      fieldRequired, // available at every mode, including M0
 		"policy_decision": fieldRequired, // a tenant can block a tool without reading content
+		"subject_name":    fieldOptional, // ADR 0021: the clear account name, allowed at every kind/mode
 		"content_digest":  fieldOptional, "labels": fieldOptional, "classifier_version": fieldOptional,
 		"confidence": fieldOptional, "content_excerpt": fieldOptional, "attachments": fieldOptional,
 		"window_start": fieldForbidden, "window_end": fieldForbidden,
@@ -264,6 +279,7 @@ var kindFieldPolicy = map[protocol.Kind]map[string]fieldRule{
 		"window_end":       fieldRequired,
 		"submission_count": fieldRequired,
 		"bytes_total":      fieldRequired,
+		"subject_name":     fieldOptional,
 		"size_bytes":       fieldForbidden,
 		"policy_decision":  fieldForbidden,
 		"content_digest":   fieldForbidden, "labels": fieldForbidden, "classifier_version": fieldForbidden,
@@ -277,6 +293,7 @@ var kindFieldPolicy = map[protocol.Kind]map[string]fieldRule{
 		"monotonic_offset_ms": fieldRequired, "source": fieldRequired, "collection_mode": fieldRequired,
 		"dedup_key":       fieldRequired,
 		"detection_basis": fieldRequired,
+		"subject_name":    fieldOptional,
 		"size_bytes":      fieldForbidden,
 		"policy_decision": fieldForbidden,
 		"content_digest":  fieldForbidden, "labels": fieldForbidden, "classifier_version": fieldForbidden,
@@ -392,6 +409,18 @@ func wireFieldNames() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// subjectName returns the clear account name for this observation (ADR 0021): the per-input
+// override when set, otherwise the pipeline identity's. It is trimmed so a stray newline from a
+// hostname lookup does not become part of the stored name. An empty result is legitimate and means
+// the record carries only the pseudonymous user_ref.
+func subjectName(in EnvelopeInput) string {
+	name := strings.TrimSpace(in.SubjectName)
+	if name == "" {
+		name = strings.TrimSpace(in.Identity.SubjectName)
+	}
+	return name
 }
 
 func unquoted(raw json.RawMessage) string {

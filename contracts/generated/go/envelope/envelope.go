@@ -27,16 +27,18 @@
 //     enforced as written.
 //
 // Permitted by the schema but not required, so optional in the structs below:
-//   DevicePromptM1: content_excerpt, attachments
-//   StoredPromptM1: content_excerpt, attachments
-//   DevicePromptM2: attachments
-//   StoredPromptM2: attachments
-//   DevicePromptM3: attachments
-//   StoredPromptM3: attachments
-//   DeviceUsageRollup: confidence
-//   StoredUsageRollup: confidence
-//   DeviceModelDetection: confidence
-//   StoredModelDetection: confidence
+//   DevicePromptM0: subject_name
+//   StoredPromptM0: subject_name
+//   DevicePromptM1: subject_name, content_excerpt, attachments
+//   StoredPromptM1: subject_name, content_excerpt, attachments
+//   DevicePromptM2: subject_name, attachments
+//   StoredPromptM2: subject_name, attachments
+//   DevicePromptM3: subject_name, attachments
+//   StoredPromptM3: subject_name, attachments
+//   DeviceUsageRollup: subject_name, confidence
+//   StoredUsageRollup: subject_name, confidence
+//   DeviceModelDetection: subject_name, confidence
+//   StoredModelDetection: subject_name, confidence
 
 package envelope
 
@@ -422,9 +424,8 @@ type EnvelopeCore struct {
 	EventID  UUID `json:"event_id"`
 	TenantID UUID `json:"tenant_id"`
 	DeviceID UUID `json:"device_id"`
-	// Pseudonymous subject reference, stable per tenant. Resolved to a person only through
-	// ops.user_dim, which is populated from the customer's directory. The wire format never carries a
-	// name, email or directory object id.
+	// Pseudonymous subject reference, stable per tenant. This remains the join key for policy scope,
+	// dedup, aggregates, k-suppression and audit. It is not the display name; see subject_name.
 	UserRef string `json:"user_ref"`
 	// Behaviour-derived identifier for the destination or application, not a brand name. Discovery
 	// must classify behaviour rather than match a curated list (brief §2), so this value is computed
@@ -517,13 +518,14 @@ func (e EnvelopeCore) ValidateCore() error {
 //
 // Required: the common core (direction, kind, collection_mode pinned), plus size_bytes,
 // policy_decision.
-// Permitted but not required: nothing beyond the required fields.
+// Permitted but not required: subject_name.
 // Must not carry, so absent from this struct: received_at, confidence, content_digest, labels,
 // classifier_version, content_excerpt, attachments, window_start, window_end, submission_count,
 // bytes_total, detection_basis.
 type DevicePromptM0 struct {
 	EnvelopeCore
 
+	SubjectName    *string        `json:"subject_name,omitempty"`
 	SizeBytes      int64          `json:"size_bytes"`
 	PolicyDecision PolicyDecision `json:"policy_decision"`
 }
@@ -548,6 +550,14 @@ func (e *DevicePromptM0) Validate() error {
 	if e.CollectionMode != CollectionModeM0 {
 		return fmt.Errorf("envelope: DevicePromptM0: collection_mode must be %q, got %q", CollectionModeM0, e.CollectionMode)
 	}
+	if e.SubjectName != nil {
+		if len((*e.SubjectName)) < 1 {
+			return fmt.Errorf("envelope: DevicePromptM0: subject_name must be at least 1 character(s), got %d", len((*e.SubjectName)))
+		}
+		if len((*e.SubjectName)) > 200 {
+			return fmt.Errorf("envelope: DevicePromptM0: subject_name must be at most 200 character(s), got %d", len((*e.SubjectName)))
+		}
+	}
 	if e.SizeBytes < 0 {
 		return fmt.Errorf("envelope: DevicePromptM0: size_bytes must be >= 0, got %d", e.SizeBytes)
 	}
@@ -561,7 +571,7 @@ func (e *DevicePromptM0) Validate() error {
 //
 // Required: the common core (direction, kind, collection_mode pinned), plus received_at,
 // size_bytes, policy_decision.
-// Permitted but not required: nothing beyond the required fields.
+// Permitted but not required: subject_name.
 // Must not carry, so absent from this struct: confidence, content_digest, labels,
 // classifier_version, content_excerpt, attachments, window_start, window_end, submission_count,
 // bytes_total, detection_basis.
@@ -569,6 +579,7 @@ type StoredPromptM0 struct {
 	EnvelopeCore
 
 	ReceivedAt     DateTime       `json:"received_at"`
+	SubjectName    *string        `json:"subject_name,omitempty"`
 	SizeBytes      int64          `json:"size_bytes"`
 	PolicyDecision PolicyDecision `json:"policy_decision"`
 }
@@ -596,6 +607,14 @@ func (e *StoredPromptM0) Validate() error {
 	if e.ReceivedAt == "" {
 		return fmt.Errorf("envelope: StoredPromptM0: received_at is required and must not be empty")
 	}
+	if e.SubjectName != nil {
+		if len((*e.SubjectName)) < 1 {
+			return fmt.Errorf("envelope: StoredPromptM0: subject_name must be at least 1 character(s), got %d", len((*e.SubjectName)))
+		}
+		if len((*e.SubjectName)) > 200 {
+			return fmt.Errorf("envelope: StoredPromptM0: subject_name must be at most 200 character(s), got %d", len((*e.SubjectName)))
+		}
+	}
 	if e.SizeBytes < 0 {
 		return fmt.Errorf("envelope: StoredPromptM0: size_bytes must be >= 0, got %d", e.SizeBytes)
 	}
@@ -609,12 +628,13 @@ func (e *StoredPromptM0) Validate() error {
 //
 // Required: the common core (direction, kind, collection_mode pinned), plus confidence,
 // size_bytes, content_digest, labels, classifier_version, policy_decision.
-// Permitted but not required: content_excerpt, attachments.
+// Permitted but not required: subject_name, content_excerpt, attachments.
 // Must not carry, so absent from this struct: received_at, window_start, window_end,
 // submission_count, bytes_total, detection_basis.
 type DevicePromptM1 struct {
 	EnvelopeCore
 
+	SubjectName       *string        `json:"subject_name,omitempty"`
 	Confidence        Confidence     `json:"confidence"`
 	SizeBytes         int64          `json:"size_bytes"`
 	ContentDigest     Sha256         `json:"content_digest"`
@@ -644,6 +664,14 @@ func (e *DevicePromptM1) Validate() error {
 	}
 	if e.CollectionMode != CollectionModeM1 {
 		return fmt.Errorf("envelope: DevicePromptM1: collection_mode must be %q, got %q", CollectionModeM1, e.CollectionMode)
+	}
+	if e.SubjectName != nil {
+		if len((*e.SubjectName)) < 1 {
+			return fmt.Errorf("envelope: DevicePromptM1: subject_name must be at least 1 character(s), got %d", len((*e.SubjectName)))
+		}
+		if len((*e.SubjectName)) > 200 {
+			return fmt.Errorf("envelope: DevicePromptM1: subject_name must be at most 200 character(s), got %d", len((*e.SubjectName)))
+		}
 	}
 	if !e.Confidence.Valid() {
 		return fmt.Errorf("envelope: DevicePromptM1: confidence is %q, which is outside the closed set", string(e.Confidence))
@@ -690,13 +718,14 @@ func (e *DevicePromptM1) Validate() error {
 //
 // Required: the common core (direction, kind, collection_mode pinned), plus received_at,
 // confidence, size_bytes, content_digest, labels, classifier_version, policy_decision.
-// Permitted but not required: content_excerpt, attachments.
+// Permitted but not required: subject_name, content_excerpt, attachments.
 // Must not carry, so absent from this struct: window_start, window_end, submission_count,
 // bytes_total, detection_basis.
 type StoredPromptM1 struct {
 	EnvelopeCore
 
 	ReceivedAt        DateTime       `json:"received_at"`
+	SubjectName       *string        `json:"subject_name,omitempty"`
 	Confidence        Confidence     `json:"confidence"`
 	SizeBytes         int64          `json:"size_bytes"`
 	ContentDigest     Sha256         `json:"content_digest"`
@@ -729,6 +758,14 @@ func (e *StoredPromptM1) Validate() error {
 	}
 	if e.ReceivedAt == "" {
 		return fmt.Errorf("envelope: StoredPromptM1: received_at is required and must not be empty")
+	}
+	if e.SubjectName != nil {
+		if len((*e.SubjectName)) < 1 {
+			return fmt.Errorf("envelope: StoredPromptM1: subject_name must be at least 1 character(s), got %d", len((*e.SubjectName)))
+		}
+		if len((*e.SubjectName)) > 200 {
+			return fmt.Errorf("envelope: StoredPromptM1: subject_name must be at most 200 character(s), got %d", len((*e.SubjectName)))
+		}
 	}
 	if !e.Confidence.Valid() {
 		return fmt.Errorf("envelope: StoredPromptM1: confidence is %q, which is outside the closed set", string(e.Confidence))
@@ -775,12 +812,13 @@ func (e *StoredPromptM1) Validate() error {
 //
 // Required: the common core (direction, kind, collection_mode pinned), plus confidence,
 // size_bytes, content_digest, labels, classifier_version, content_excerpt, policy_decision.
-// Permitted but not required: attachments.
+// Permitted but not required: subject_name, attachments.
 // Must not carry, so absent from this struct: received_at, window_start, window_end,
 // submission_count, bytes_total, detection_basis.
 type DevicePromptM2 struct {
 	EnvelopeCore
 
+	SubjectName       *string        `json:"subject_name,omitempty"`
 	Confidence        Confidence     `json:"confidence"`
 	SizeBytes         int64          `json:"size_bytes"`
 	ContentDigest     Sha256         `json:"content_digest"`
@@ -810,6 +848,14 @@ func (e *DevicePromptM2) Validate() error {
 	}
 	if e.CollectionMode != CollectionModeM2 {
 		return fmt.Errorf("envelope: DevicePromptM2: collection_mode must be %q, got %q", CollectionModeM2, e.CollectionMode)
+	}
+	if e.SubjectName != nil {
+		if len((*e.SubjectName)) < 1 {
+			return fmt.Errorf("envelope: DevicePromptM2: subject_name must be at least 1 character(s), got %d", len((*e.SubjectName)))
+		}
+		if len((*e.SubjectName)) > 200 {
+			return fmt.Errorf("envelope: DevicePromptM2: subject_name must be at most 200 character(s), got %d", len((*e.SubjectName)))
+		}
 	}
 	if !e.Confidence.Valid() {
 		return fmt.Errorf("envelope: DevicePromptM2: confidence is %q, which is outside the closed set", string(e.Confidence))
@@ -855,13 +901,14 @@ func (e *DevicePromptM2) Validate() error {
 // Required: the common core (direction, kind, collection_mode pinned), plus received_at,
 // confidence, size_bytes, content_digest, labels, classifier_version, content_excerpt,
 // policy_decision.
-// Permitted but not required: attachments.
+// Permitted but not required: subject_name, attachments.
 // Must not carry, so absent from this struct: window_start, window_end, submission_count,
 // bytes_total, detection_basis.
 type StoredPromptM2 struct {
 	EnvelopeCore
 
 	ReceivedAt        DateTime       `json:"received_at"`
+	SubjectName       *string        `json:"subject_name,omitempty"`
 	Confidence        Confidence     `json:"confidence"`
 	SizeBytes         int64          `json:"size_bytes"`
 	ContentDigest     Sha256         `json:"content_digest"`
@@ -894,6 +941,14 @@ func (e *StoredPromptM2) Validate() error {
 	}
 	if e.ReceivedAt == "" {
 		return fmt.Errorf("envelope: StoredPromptM2: received_at is required and must not be empty")
+	}
+	if e.SubjectName != nil {
+		if len((*e.SubjectName)) < 1 {
+			return fmt.Errorf("envelope: StoredPromptM2: subject_name must be at least 1 character(s), got %d", len((*e.SubjectName)))
+		}
+		if len((*e.SubjectName)) > 200 {
+			return fmt.Errorf("envelope: StoredPromptM2: subject_name must be at most 200 character(s), got %d", len((*e.SubjectName)))
+		}
 	}
 	if !e.Confidence.Valid() {
 		return fmt.Errorf("envelope: StoredPromptM2: confidence is %q, which is outside the closed set", string(e.Confidence))
@@ -938,12 +993,13 @@ func (e *StoredPromptM2) Validate() error {
 //
 // Required: the common core (direction, kind, collection_mode pinned), plus confidence,
 // size_bytes, content_digest, labels, classifier_version, policy_decision.
-// Permitted but not required: attachments.
+// Permitted but not required: subject_name, attachments.
 // Must not carry, so absent from this struct: received_at, content_excerpt, window_start,
 // window_end, submission_count, bytes_total, detection_basis.
 type DevicePromptM3 struct {
 	EnvelopeCore
 
+	SubjectName       *string        `json:"subject_name,omitempty"`
 	Confidence        Confidence     `json:"confidence"`
 	SizeBytes         int64          `json:"size_bytes"`
 	ContentDigest     Sha256         `json:"content_digest"`
@@ -972,6 +1028,14 @@ func (e *DevicePromptM3) Validate() error {
 	}
 	if e.CollectionMode != CollectionModeM3 {
 		return fmt.Errorf("envelope: DevicePromptM3: collection_mode must be %q, got %q", CollectionModeM3, e.CollectionMode)
+	}
+	if e.SubjectName != nil {
+		if len((*e.SubjectName)) < 1 {
+			return fmt.Errorf("envelope: DevicePromptM3: subject_name must be at least 1 character(s), got %d", len((*e.SubjectName)))
+		}
+		if len((*e.SubjectName)) > 200 {
+			return fmt.Errorf("envelope: DevicePromptM3: subject_name must be at most 200 character(s), got %d", len((*e.SubjectName)))
+		}
 	}
 	if !e.Confidence.Valid() {
 		return fmt.Errorf("envelope: DevicePromptM3: confidence is %q, which is outside the closed set", string(e.Confidence))
@@ -1013,13 +1077,14 @@ func (e *DevicePromptM3) Validate() error {
 //
 // Required: the common core (direction, kind, collection_mode pinned), plus received_at,
 // confidence, size_bytes, content_digest, labels, classifier_version, policy_decision.
-// Permitted but not required: attachments.
+// Permitted but not required: subject_name, attachments.
 // Must not carry, so absent from this struct: content_excerpt, window_start, window_end,
 // submission_count, bytes_total, detection_basis.
 type StoredPromptM3 struct {
 	EnvelopeCore
 
 	ReceivedAt        DateTime       `json:"received_at"`
+	SubjectName       *string        `json:"subject_name,omitempty"`
 	Confidence        Confidence     `json:"confidence"`
 	SizeBytes         int64          `json:"size_bytes"`
 	ContentDigest     Sha256         `json:"content_digest"`
@@ -1051,6 +1116,14 @@ func (e *StoredPromptM3) Validate() error {
 	}
 	if e.ReceivedAt == "" {
 		return fmt.Errorf("envelope: StoredPromptM3: received_at is required and must not be empty")
+	}
+	if e.SubjectName != nil {
+		if len((*e.SubjectName)) < 1 {
+			return fmt.Errorf("envelope: StoredPromptM3: subject_name must be at least 1 character(s), got %d", len((*e.SubjectName)))
+		}
+		if len((*e.SubjectName)) > 200 {
+			return fmt.Errorf("envelope: StoredPromptM3: subject_name must be at most 200 character(s), got %d", len((*e.SubjectName)))
+		}
 	}
 	if !e.Confidence.Valid() {
 		return fmt.Errorf("envelope: StoredPromptM3: confidence is %q, which is outside the closed set", string(e.Confidence))
@@ -1092,12 +1165,13 @@ func (e *StoredPromptM3) Validate() error {
 //
 // Required: the common core (direction, kind pinned), plus window_start, window_end,
 // submission_count, bytes_total.
-// Permitted but not required: confidence.
+// Permitted but not required: subject_name, confidence.
 // Must not carry, so absent from this struct: received_at, size_bytes, content_digest, labels,
 // classifier_version, content_excerpt, attachments, policy_decision, detection_basis.
 type DeviceUsageRollup struct {
 	EnvelopeCore
 
+	SubjectName     *string     `json:"subject_name,omitempty"`
 	Confidence      *Confidence `json:"confidence,omitempty"`
 	WindowStart     DateTime    `json:"window_start"`
 	WindowEnd       DateTime    `json:"window_end"`
@@ -1121,6 +1195,14 @@ func (e *DeviceUsageRollup) Validate() error {
 	}
 	if e.Kind != KindUsageRollup {
 		return fmt.Errorf("envelope: DeviceUsageRollup: kind must be %q, got %q", KindUsageRollup, e.Kind)
+	}
+	if e.SubjectName != nil {
+		if len((*e.SubjectName)) < 1 {
+			return fmt.Errorf("envelope: DeviceUsageRollup: subject_name must be at least 1 character(s), got %d", len((*e.SubjectName)))
+		}
+		if len((*e.SubjectName)) > 200 {
+			return fmt.Errorf("envelope: DeviceUsageRollup: subject_name must be at most 200 character(s), got %d", len((*e.SubjectName)))
+		}
 	}
 	if e.Confidence != nil {
 		if !(*e.Confidence).Valid() {
@@ -1146,13 +1228,14 @@ func (e *DeviceUsageRollup) Validate() error {
 //
 // Required: the common core (direction, kind pinned), plus received_at, window_start, window_end,
 // submission_count, bytes_total.
-// Permitted but not required: confidence.
+// Permitted but not required: subject_name, confidence.
 // Must not carry, so absent from this struct: size_bytes, content_digest, labels,
 // classifier_version, content_excerpt, attachments, policy_decision, detection_basis.
 type StoredUsageRollup struct {
 	EnvelopeCore
 
 	ReceivedAt      DateTime    `json:"received_at"`
+	SubjectName     *string     `json:"subject_name,omitempty"`
 	Confidence      *Confidence `json:"confidence,omitempty"`
 	WindowStart     DateTime    `json:"window_start"`
 	WindowEnd       DateTime    `json:"window_end"`
@@ -1180,6 +1263,14 @@ func (e *StoredUsageRollup) Validate() error {
 	if e.ReceivedAt == "" {
 		return fmt.Errorf("envelope: StoredUsageRollup: received_at is required and must not be empty")
 	}
+	if e.SubjectName != nil {
+		if len((*e.SubjectName)) < 1 {
+			return fmt.Errorf("envelope: StoredUsageRollup: subject_name must be at least 1 character(s), got %d", len((*e.SubjectName)))
+		}
+		if len((*e.SubjectName)) > 200 {
+			return fmt.Errorf("envelope: StoredUsageRollup: subject_name must be at most 200 character(s), got %d", len((*e.SubjectName)))
+		}
+	}
 	if e.Confidence != nil {
 		if !(*e.Confidence).Valid() {
 			return fmt.Errorf("envelope: StoredUsageRollup: confidence is %q, which is outside the closed set", string((*e.Confidence)))
@@ -1203,13 +1294,14 @@ func (e *StoredUsageRollup) Validate() error {
 // DeviceModelDetection is the device envelope for kind "model_detection".
 //
 // Required: the common core (direction, kind pinned), plus detection_basis.
-// Permitted but not required: confidence.
+// Permitted but not required: subject_name, confidence.
 // Must not carry, so absent from this struct: received_at, size_bytes, content_digest, labels,
 // classifier_version, content_excerpt, attachments, policy_decision, window_start, window_end,
 // submission_count, bytes_total.
 type DeviceModelDetection struct {
 	EnvelopeCore
 
+	SubjectName    *string        `json:"subject_name,omitempty"`
 	Confidence     *Confidence    `json:"confidence,omitempty"`
 	DetectionBasis DetectionBasis `json:"detection_basis"`
 }
@@ -1231,6 +1323,14 @@ func (e *DeviceModelDetection) Validate() error {
 	if e.Kind != KindModelDetection {
 		return fmt.Errorf("envelope: DeviceModelDetection: kind must be %q, got %q", KindModelDetection, e.Kind)
 	}
+	if e.SubjectName != nil {
+		if len((*e.SubjectName)) < 1 {
+			return fmt.Errorf("envelope: DeviceModelDetection: subject_name must be at least 1 character(s), got %d", len((*e.SubjectName)))
+		}
+		if len((*e.SubjectName)) > 200 {
+			return fmt.Errorf("envelope: DeviceModelDetection: subject_name must be at most 200 character(s), got %d", len((*e.SubjectName)))
+		}
+	}
 	if e.Confidence != nil {
 		if !(*e.Confidence).Valid() {
 			return fmt.Errorf("envelope: DeviceModelDetection: confidence is %q, which is outside the closed set", string((*e.Confidence)))
@@ -1245,7 +1345,7 @@ func (e *DeviceModelDetection) Validate() error {
 // StoredModelDetection is the stored envelope for kind "model_detection".
 //
 // Required: the common core (direction, kind pinned), plus received_at, detection_basis.
-// Permitted but not required: confidence.
+// Permitted but not required: subject_name, confidence.
 // Must not carry, so absent from this struct: size_bytes, content_digest, labels,
 // classifier_version, content_excerpt, attachments, policy_decision, window_start, window_end,
 // submission_count, bytes_total.
@@ -1253,6 +1353,7 @@ type StoredModelDetection struct {
 	EnvelopeCore
 
 	ReceivedAt     DateTime       `json:"received_at"`
+	SubjectName    *string        `json:"subject_name,omitempty"`
 	Confidence     *Confidence    `json:"confidence,omitempty"`
 	DetectionBasis DetectionBasis `json:"detection_basis"`
 }
@@ -1276,6 +1377,14 @@ func (e *StoredModelDetection) Validate() error {
 	}
 	if e.ReceivedAt == "" {
 		return fmt.Errorf("envelope: StoredModelDetection: received_at is required and must not be empty")
+	}
+	if e.SubjectName != nil {
+		if len((*e.SubjectName)) < 1 {
+			return fmt.Errorf("envelope: StoredModelDetection: subject_name must be at least 1 character(s), got %d", len((*e.SubjectName)))
+		}
+		if len((*e.SubjectName)) > 200 {
+			return fmt.Errorf("envelope: StoredModelDetection: subject_name must be at most 200 character(s), got %d", len((*e.SubjectName)))
+		}
 	}
 	if e.Confidence != nil {
 		if !(*e.Confidence).Valid() {

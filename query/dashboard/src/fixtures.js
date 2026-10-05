@@ -64,10 +64,10 @@ const TOOL_ROWS = Object.freeze([
 ]);
 
 const DEVICE_ROWS = Object.freeze([
-  Object.freeze({ device: '9f1c0b6e-0000-4000-8000-000000000001', device_os: 'windows', managed_state: 'managed', region: 'eu', liveness: 'reporting', collector: 'capture_extension', collector_state: 'healthy', spool_depth: 0, spool_dropped_total: 0, last_seen_at: '2026-10-01T11:57:00Z' }),
-  Object.freeze({ device: '9f1c0b6e-0000-4000-8000-000000000002', device_os: 'macos', managed_state: 'managed', region: 'eu', liveness: 'stale', collector: 'egress_proxy', collector_state: 'degraded', spool_depth: 812, spool_dropped_total: 0, last_seen_at: '2026-09-29T02:11:00Z' }),
-  Object.freeze({ device: '9f1c0b6e-0000-4000-8000-000000000003', device_os: 'windows', managed_state: 'unmanaged', region: 'us', liveness: 'never_reported', collector: null, collector_state: null, spool_depth: null, spool_dropped_total: null, last_seen_at: null }),
-  Object.freeze({ device: '9f1c0b6e-0000-4000-8000-000000000004', device_os: 'windows', managed_state: 'managed', region: 'us', liveness: 'revoked', collector: 'cli_shim', collector_state: 'absent', spool_depth: 0, spool_dropped_total: 4412, last_seen_at: '2026-09-12T09:00:00Z' }),
+  Object.freeze({ device: '9f1c0b6e-0000-4000-8000-000000000001', hostname: 'FIN-LAPTOP-07', device_os: 'windows', os_version: '11', agent_version: '1.4.2', collection_mode: 'm3', managed_state: 'managed', user_ref: 'u_4f21', subject_name: 'alice@contoso.example', region: 'eu', liveness: 'reporting', collector: 'capture_extension', collector_state: 'healthy', spool_depth: 0, spool_dropped_total: 0, last_seen_at: '2026-10-01T11:57:00Z' }),
+  Object.freeze({ device: '9f1c0b6e-0000-4000-8000-000000000002', hostname: 'MAC-DESIGN-2', device_os: 'macos', os_version: '15', agent_version: '1.4.2', collection_mode: 'm2', managed_state: 'managed', user_ref: 'u_9a02', subject_name: 'bob@contoso.example', region: 'eu', liveness: 'stale', collector: 'egress_proxy', collector_state: 'degraded', spool_depth: 812, spool_dropped_total: 0, last_seen_at: '2026-09-29T02:11:00Z' }),
+  Object.freeze({ device: '9f1c0b6e-0000-4000-8000-000000000003', hostname: null, device_os: 'windows', os_version: '10', agent_version: null, collection_mode: 'm1', managed_state: 'unmanaged', user_ref: null, subject_name: null, region: 'us', liveness: 'never_reported', collector: null, collector_state: null, spool_depth: null, spool_dropped_total: null, last_seen_at: null }),
+  Object.freeze({ device: '9f1c0b6e-0000-4000-8000-000000000004', hostname: 'OPS-BUILD-4', device_os: 'windows', os_version: '11', agent_version: '1.3.0', collection_mode: 'm0', managed_state: 'managed', user_ref: 'u_1b77', subject_name: 'svc-build', region: 'us', liveness: 'revoked', collector: 'cli_shim', collector_state: 'absent', spool_depth: 0, spool_dropped_total: 4412, last_seen_at: '2026-09-12T09:00:00Z' }),
 ]);
 
 const ACTIVITY_ROWS = Object.freeze([

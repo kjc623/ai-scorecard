@@ -404,6 +404,9 @@ func (s *service) ensureDrainer() error {
 		DeviceID:       s.cfg.DeviceID,
 		MDMID:          s.cfg.MDMID,
 		AgentVersion:   version,
+		Hostname:       s.cfg.clearHostname(),
+		HostnameHash:   s.cfg.hostnameHash(),
+		ManagedState:   string(s.cfg.managedState()),
 		BackoffBase:    s.cfg.BackoffBase,
 		BackoffCap:     s.cfg.BackoffCap,
 		DrainInterval:  s.cfg.DrainInterval,
@@ -412,7 +415,17 @@ func (s *service) ensureDrainer() error {
 		// enrol, or re-enrol), so envelopes carry the tenant_id/device_id the write path
 		// authenticates. UserRef is not issued by the server, so it stays the flag value.
 		OnEnrolled: func(c *credential.Credential) {
-			s.pipe.SetIdentity(core.Identity{TenantID: c.TenantID, DeviceID: c.DeviceID, UserRef: s.cfg.UserRef})
+			// The issued credential may restate the tenant's device-identity setting (ADR 0021).
+			// Adopt it for this process and gate the clear account name on it, so a device that
+			// enrolled under 'hashed' stops stamping a name immediately.
+			if c.DeviceIdentity.Valid() {
+				s.health.adoptDeviceIdentity(c.DeviceIdentity)
+			}
+			subjectName := s.cfg.clearSubjectName()
+			if c.DeviceIdentity.Valid() && c.DeviceIdentity != protocol.DeviceIdentityClear {
+				subjectName = ""
+			}
+			s.pipe.SetIdentity(core.Identity{TenantID: c.TenantID, DeviceID: c.DeviceID, UserRef: s.cfg.UserRef, SubjectName: subjectName})
 			if s.detect != nil {
 				s.detect.SetIdentity(detect.Identity{TenantID: c.TenantID, DeviceID: c.DeviceID})
 			}

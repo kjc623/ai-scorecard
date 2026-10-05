@@ -578,6 +578,11 @@ func (p *Pipeline) EmitEnvelope(ctx context.Context, in EnvelopeInput) (Outcome,
 			if in.Identity.UserRef == "" {
 				in.Identity.UserRef = id.UserRef
 			}
+			// The clear account name travels the same way as the pseudonymous ref: a provider that
+			// did not attribute a person inherits the pipeline's (ADR 0021).
+			if in.Identity.SubjectName == "" {
+				in.Identity.SubjectName = id.SubjectName
+			}
 		}
 	}
 	return p.finish(ctx, c, Observation{Route: in.Route, Kind: in.Kind}, in, out)

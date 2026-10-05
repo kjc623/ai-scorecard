@@ -30,8 +30,8 @@ const (
 	// a pooled connection cannot leak one tenant's session into the next request.
 	SQLSetTenant = `SELECT set_config('app.tenant_id', $1, true)`
 
-	// SQLTenant resolves the tenant's lifecycle state and pinned region. $1 tenant.
-	SQLTenant = `SELECT status, ingest_enabled, residency_region
+	// SQLTenant resolves the tenant's lifecycle state, pinned region and identity setting. $1 tenant.
+	SQLTenant = `SELECT status, ingest_enabled, residency_region, device_identity
   FROM ops.tenant
  WHERE tenant_id = $1::uuid`
 
@@ -47,6 +47,7 @@ SELECT tenant_id, token_hash, hardware_identity_hash, issued_at, expires_at, use
 	// device_hardware_identity_uniq makes the result unique where a hash is present.
 	SQLFindDeviceByHardwareIdentity = `
 SELECT tenant_id, device_id, os, os_version, mdm_id, hardware_identity_hash,
+       hostname, hostname_hash, agent_version, managed_state,
        residency_region, enrolled_at, revoked_at
   FROM ops.device
  WHERE tenant_id = $1::uuid AND hardware_identity_hash = $2`
@@ -54,25 +55,34 @@ SELECT tenant_id, device_id, os, os_version, mdm_id, hardware_identity_hash,
 	// SQLDevice reads one device by id.
 	SQLDevice = `
 SELECT tenant_id, device_id, os, os_version, mdm_id, hardware_identity_hash,
+       hostname, hostname_hash, agent_version, managed_state,
        residency_region, enrolled_at, revoked_at
   FROM ops.device
  WHERE tenant_id = $1::uuid AND device_id = $2::uuid`
 
 	// SQLUpsertDevice inserts a device or refreshes the mutable fields of the one with the same id.
-	// COALESCE keeps a previously recorded hardware identity if this request arrived without one.
+	// COALESCE keeps a previously recorded value if this request arrived without one, so a
+	// re-enrolment that omits the hostname does not erase it. Which of hostname/hostname_hash is
+	// populated is decided by the tenant setting before the call (ADR 0021).
 	SQLUpsertDevice = `
 INSERT INTO ops.device (tenant_id, device_id, os, os_version, mdm_id, hardware_identity_hash,
-                        residency_region)
-VALUES ($1::uuid, $2::uuid, $3, nullif($4, ''), nullif($5, ''), nullif($6, ''), nullif($7, ''))
+                        hostname, hostname_hash, agent_version, managed_state, residency_region)
+VALUES ($1::uuid, $2::uuid, $3, nullif($4, ''), nullif($5, ''), nullif($6, ''),
+        nullif($7, ''), nullif($8, ''), nullif($9, ''), nullif($10, ''), nullif($11, ''))
 ON CONFLICT (tenant_id, device_id) DO UPDATE
    SET os                     = EXCLUDED.os,
        os_version             = EXCLUDED.os_version,
        mdm_id                 = EXCLUDED.mdm_id,
        hardware_identity_hash = COALESCE(EXCLUDED.hardware_identity_hash,
                                          ops.device.hardware_identity_hash),
+       hostname               = COALESCE(EXCLUDED.hostname, ops.device.hostname),
+       hostname_hash          = COALESCE(EXCLUDED.hostname_hash, ops.device.hostname_hash),
+       agent_version          = COALESCE(EXCLUDED.agent_version, ops.device.agent_version),
+       managed_state          = COALESCE(EXCLUDED.managed_state, ops.device.managed_state),
        residency_region       = COALESCE(EXCLUDED.residency_region,
                                          ops.device.residency_region)
 RETURNING tenant_id, device_id, os, os_version, mdm_id, hardware_identity_hash,
+          hostname, hostname_hash, agent_version, managed_state,
           residency_region, enrolled_at, revoked_at`
 
 	// SQLRevokeDeviceCredentials closes every live credential of the device. It is paired with the
@@ -157,7 +167,7 @@ func (s *SQLStore) Tenant(ctx context.Context, tenantID string) (Tenant, error) 
 	var t Tenant
 	err := s.withTenant(ctx, tenantID, func(tx *sql.Tx) error {
 		err := tx.QueryRowContext(ctx, SQLTenant, tenantID).
-			Scan(&t.Status, &t.IngestEnabled, &t.ResidencyRegion)
+			Scan(&t.Status, &t.IngestEnabled, &t.ResidencyRegion, &t.DeviceIdentity)
 		if err == sql.ErrNoRows {
 			return ErrUnknownTenant
 		}
@@ -202,10 +212,10 @@ func (s *SQLStore) ResolveEnrolmentToken(ctx context.Context, tenantID, tokenHas
 func (s *SQLStore) FindDeviceByHardwareIdentity(ctx context.Context, tenantID, hardwareIdentityHash string) (Device, error) {
 	var d Device
 	err := s.withTenant(ctx, tenantID, func(tx *sql.Tx) error {
-		var hwid, osv, mdm, region sql.NullString
+		var hwid, osv, mdm, region, host, hosthash, agentv, managed sql.NullString
 		var revoked sql.NullTime
 		err := tx.QueryRowContext(ctx, SQLFindDeviceByHardwareIdentity, tenantID, hardwareIdentityHash).
-			Scan(&d.TenantID, &d.DeviceID, &d.OS, &osv, &mdm, &hwid, &region, &d.EnrolledAt, &revoked)
+			Scan(&d.TenantID, &d.DeviceID, &d.OS, &osv, &mdm, &hwid, &host, &hosthash, &agentv, &managed, &region, &d.EnrolledAt, &revoked)
 		if err == sql.ErrNoRows {
 			return ErrDeviceUnknown
 		}
@@ -213,6 +223,7 @@ func (s *SQLStore) FindDeviceByHardwareIdentity(ctx context.Context, tenantID, h
 			return fmt.Errorf("store: find device by hardware identity: %w", err)
 		}
 		d.OSVersion, d.MDMID, d.HardwareIdentityHash, d.ResidencyRegion = osv.String, mdm.String, hwid.String, region.String
+		d.Hostname, d.HostnameHash, d.AgentVersion, d.ManagedState = host.String, hosthash.String, agentv.String, managed.String
 		d.RevokedAt = nullTime(revoked)
 		return nil
 	})
@@ -226,10 +237,10 @@ func (s *SQLStore) FindDeviceByHardwareIdentity(ctx context.Context, tenantID, h
 func (s *SQLStore) Device(ctx context.Context, tenantID, deviceID string) (Device, error) {
 	var d Device
 	err := s.withTenant(ctx, tenantID, func(tx *sql.Tx) error {
-		var hwid, osv, mdm, region sql.NullString
+		var hwid, osv, mdm, region, host, hosthash, agentv, managed sql.NullString
 		var revoked sql.NullTime
 		err := tx.QueryRowContext(ctx, SQLDevice, tenantID, deviceID).
-			Scan(&d.TenantID, &d.DeviceID, &d.OS, &osv, &mdm, &hwid, &region, &d.EnrolledAt, &revoked)
+			Scan(&d.TenantID, &d.DeviceID, &d.OS, &osv, &mdm, &hwid, &host, &hosthash, &agentv, &managed, &region, &d.EnrolledAt, &revoked)
 		if err == sql.ErrNoRows {
 			return ErrDeviceUnknown
 		}
@@ -237,6 +248,7 @@ func (s *SQLStore) Device(ctx context.Context, tenantID, deviceID string) (Devic
 			return fmt.Errorf("store: device: %w", err)
 		}
 		d.OSVersion, d.MDMID, d.HardwareIdentityHash, d.ResidencyRegion = osv.String, mdm.String, hwid.String, region.String
+		d.Hostname, d.HostnameHash, d.AgentVersion, d.ManagedState = host.String, hosthash.String, agentv.String, managed.String
 		d.RevokedAt = nullTime(revoked)
 		return nil
 	})
@@ -250,15 +262,17 @@ func (s *SQLStore) Device(ctx context.Context, tenantID, deviceID string) (Devic
 func (s *SQLStore) UpsertDevice(ctx context.Context, d Device) (Device, error) {
 	var out Device
 	err := s.withTenant(ctx, d.TenantID, func(tx *sql.Tx) error {
-		var hwid, osv, mdm, region sql.NullString
+		var hwid, osv, mdm, region, host, hosthash, agentv, managed sql.NullString
 		var revoked sql.NullTime
 		err := tx.QueryRowContext(ctx, SQLUpsertDevice,
-			d.TenantID, d.DeviceID, d.OS, d.OSVersion, d.MDMID, d.HardwareIdentityHash, d.ResidencyRegion).
-			Scan(&out.TenantID, &out.DeviceID, &out.OS, &osv, &mdm, &hwid, &region, &out.EnrolledAt, &revoked)
+			d.TenantID, d.DeviceID, d.OS, d.OSVersion, d.MDMID, d.HardwareIdentityHash,
+			d.Hostname, d.HostnameHash, d.AgentVersion, d.ManagedState, d.ResidencyRegion).
+			Scan(&out.TenantID, &out.DeviceID, &out.OS, &osv, &mdm, &hwid, &host, &hosthash, &agentv, &managed, &region, &out.EnrolledAt, &revoked)
 		if err != nil {
 			return fmt.Errorf("store: upsert device: %w", err)
 		}
 		out.OSVersion, out.MDMID, out.HardwareIdentityHash, out.ResidencyRegion = osv.String, mdm.String, hwid.String, region.String
+		out.Hostname, out.HostnameHash, out.AgentVersion, out.ManagedState = host.String, hosthash.String, agentv.String, managed.String
 		out.RevokedAt = nullTime(revoked)
 		return nil
 	})
