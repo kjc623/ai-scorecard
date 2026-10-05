@@ -48,3 +48,9 @@ On the owner's dashboard, `http://127.0.0.1:8787`, with the real device.
 - [ ] **Remove the simulated devices from the owner's tenant, and restore the device task 02
   backdated?** Eight of the ten enrolled devices there are simulated. Simulated data now goes to
   the sample tenant, but what is already there stays until it is deleted. (01, 02, 04)
+- [ ] **Decide the disposition of the four baseline failures** that `backlog/BASELINE.md` records:
+  the two `endpoint/classifier-host` tests that need a Windows job object; the five
+  `ingestion/ingest-api/internal/store` live tests that reuse the owner's tenant id and so fail
+  against the lab database; the `seams` gate finding at `endpoint/protocol/content.go:63`; and the
+  `db` gate, which reports FAIL instead of SKIP when `powershell` is absent. For each, say whether
+  the repository is fixed or the failure stays in the baseline as known. (00)
