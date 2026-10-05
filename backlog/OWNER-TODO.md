@@ -9,6 +9,13 @@ Each line names the task that left it. The exact commands are in that task's `RE
 
 ## Run
 
+- [ ] **Point the dashboard's session at a real Microsoft Entra ID tenant** (task 11). Register an
+  application for the dashboard, define the four app roles (`viewer`, `analyst`, `content_reader`,
+  `admin`) and assign them, and make the token carry the shadow tenant uuid in a claim (default name
+  `sac_tenant`; override with `SAC_OIDC_TENANT_CLAIM`). Set on `query-api`: `SAC_OIDC_ISSUER` and
+  `SAC_OIDC_AUDIENCE` (the API audience). Set on each dashboard: `SAC_OIDC_ISSUER`, `SAC_OIDC_CLIENT_ID`,
+  `SAC_OIDC_CLIENT_SECRET` (a confidential client), and register `<dashboard-origin>/callback` as a
+  redirect URI. The lab's identity provider is a stand-in, not Entra. (11)
 - [ ] **Run task 00** before task 05, on a clean tree at the head of `main`. It expects
   `git status` to show nothing but its own changes. (review)
 - [ ] **Rebuild and reinstall the lab MSI on the Windows host**, from the head of the stack, with
@@ -59,6 +66,10 @@ Each line names the task that left it. The exact commands are in that task's `RE
 ## Verify
 
 On the owner's dashboard, `http://127.0.0.1:8787`, with the real device.
+
+- [ ] The dashboard now asks you to sign in; sign in against the real Entra tenant, once as an
+  analyst and once as an admin. Confirm the Audit trail names each person's own account, and that a
+  viewer's navigation does not offer Search while a content reader's does. (11)
 
 - [ ] After sending prompts from the device: Tools shows tools with submission and people counts
   and a time chart; Users shows a series for `lab-user`; Data classes shows the classes seen; no

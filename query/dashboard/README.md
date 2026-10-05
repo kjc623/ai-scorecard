@@ -92,9 +92,11 @@ from its own origin, and the live server forwards it straight to `content-vault`
 display logic in `src/explore-model.js` (`exploreUserInput`): it knows Claude Code's
 `<system-reminder>` blocks and the Anthropic message format, and shows any other capture whole.
 
-The analyst is whoever the session says is asking, which today is the development principal
-`tools/serve.mjs` names. The second approver is a name the requester types: the vault refuses the
-requester's own name, but nothing yet makes the second person approve.
+The analyst is whoever the signed-in session says is asking: `tools/serve.mjs` runs the OIDC
+authorization-code flow (task 11), holds the access token server-side, and forwards it to `query-api`,
+which verifies it. The page holds only an opaque session cookie and the role decides which navigation
+items it is shown. The second approver is a name the requester types: the vault refuses the requester's
+own name, but nothing yet makes the second person approve.
 
 ### Live mode
 
@@ -103,13 +105,15 @@ a `query-api` and this dashboard beside the lab's services, reading the lab tena
 <http://127.0.0.1:8787/explore.html?transport=live>. The rest of this section is how that works and
 how to run it by hand against another tenant.
 
-The browser never chooses a tenant. `tools/serve.mjs` forwards the query endpoint and the two
-content endpoints to the `query-api` named by `--api` (or `SAC_QUERY_API_URL`) and adds the
-development principal headers itself, from `SAC_DEV_TENANT` and `SAC_DEV_ACTOR`; a minted retrieval
-URL (`SAC_CONTENT_VAULT_URL`) goes straight to `content-vault`, because content must not transit
-query-api. This is a
-development forwarder: it works only against a `query-api` started with `SAC_DEV_TRUST_PRINCIPAL=1`,
-and it stands in for the authenticated session, which is not built. The content reads also need that
+The browser never chooses a tenant. In the auth lab, `tools/serve.mjs` runs the OIDC sign-in against
+`SAC_OIDC_ISSUER` (authorization code + PKCE, `tools/session.mjs`), holds the access token server-side,
+and forwards the query endpoint and the two content endpoints to the `query-api` named by `--api` (or
+`SAC_QUERY_API_URL`) with the token in the `Authorization` header. `query-api` verifies the token against
+the issuer's JWKS and reads the tenant and roles from it. A minted retrieval URL (`SAC_CONTENT_VAULT_URL`)
+goes straight to `content-vault`, because content must not transit query-api; it is the one path with no
+session, because the single-use grant is the capability. Without `SAC_OIDC_ISSUER` the server falls back
+to the development principal headers (`SAC_DEV_TENANT`, `SAC_DEV_ACTOR`) against a `query-api` started
+with `SAC_DEV_TRUST_PRINCIPAL=1`; that is the memory lab, not the deployment. The content reads also need
 `query-api` to be given the vault (`SAC_CONTENT_VAULT_URL`, and `SAC_CONTENT_SEARCH_SCOPE` for search).
 
 ```bash
@@ -174,7 +178,7 @@ empty or inert, for the reason given. None is faked in live mode.
 | **Content** filter values `local_only`, `uploaded`, `shredded`, and their answers in the detail panel | `uploaded` for a device collecting at M3 in the auth lab, where retrieval works; otherwise `not_captured` | `shredded` needs the erasure path. Events sent by the simulator carry no content. |
 | **Free text in the query bar** | Refused with the reason, in both modes, pointing at the prompt-text search | There is no text predicate on `/v1/query` by design. Text is searched in its own box. |
 | **Prompt-text search** | Matches only prompts uploaded since the vault began indexing | Attachment filenames are not searched, and there is no index-coverage block saying how much of the window is indexed. |
-| **The session** | A development principal added by `tools/serve.mjs` | The authenticated session that maps a signed-in person to one tenant. Until it exists, live mode is a lab arrangement only. |
+| **The session** | A real OIDC sign-in (task 11): `tools/serve.mjs` runs authorization code + PKCE against `SAC_OIDC_ISSUER`, holds the access token server-side, and forwards it to `query-api`, which verifies it against the issuer's JWKS. The page holds one opaque cookie and the role hides the navigation it cannot use. Without `SAC_OIDC_ISSUER` the server falls back to the development principal header — the memory lab's arrangement, said out loud at startup. | A real customer identity provider is the owner's to configure; the lab uses `localdev/oidc`. |
 
 Checked against the live API in a browser: the Events list, the `action` filter, the event detail
 panel, the Devices list and the Audit trail (which fills with the dashboard's own reads); and, in

@@ -65,9 +65,14 @@ Two properties of that layer are load-bearing and easy to get wrong:
   pooled connection carries its last tenant; releasing one without clearing it is a cross-tenant read
   that looks like a healthy pool. A connection whose reset fails is closed rather than returned.
 
-The authenticated session is **not built yet**: no Entra principal is resolved to a tenant, so a
-deployment refuses every read with `403` until it exists. `localdev/` runs the service with
-`SAC_DEV_TRUST_PRINCIPAL=1`, the same explicit escape hatch `ingestion/ingest-api` uses.
+The authenticated session is the customer's identity provider (task 11): the browser's server holds
+the OIDC access token and presents it as a bearer, and `src/http/auth.js` verifies the RS256 signature
+against the issuer's JWKS and reads the tenant, the actor and the app roles from the claims. A request
+without a verified token is refused `403` unless `SAC_DEV_TRUST_PRINCIPAL=1` is set, which accepts the
+same development header `ingestion/ingest-api` uses — the memory lab's escape hatch, off in a deployment.
+`src/roles.js` holds the closed role set (`viewer`, `analyst`, `content_reader`, `admin`) and the
+capability each source and endpoint needs; `content-vault` checks the role again on the two content reads.
+A deployment that configures no issuer refuses every read by design.
 
 ### The two content reads
 

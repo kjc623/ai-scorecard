@@ -16,16 +16,74 @@ import (
 	"github.com/shadow-ai-capture/content-vault/internal/vault"
 )
 
-// server builds the HTTP surface over a rig, with a static internal principal.
+// server builds the HTTP surface over a rig, with a static internal principal that may read
+// content: the two roles the browser-facing routes need. Role enforcement itself is tested in
+// TestContentRoutesRequireAContentRole.
 func server(t *testing.T, o testrig.Options) (*httptest.Server, *testrig.Rig) {
+	t.Helper()
+	return serverAs(t, []string{"analyst", "content_reader"}, o)
+}
+
+// serverAs is server with the caller's roles named, so a test can hold the role boundary.
+func serverAs(t *testing.T, roles []string, o testrig.Options) (*httptest.Server, *testrig.Rig) {
 	t.Helper()
 	rig := testrig.New(t, o)
 	h := httpapi.New(rig.Service, auth.StaticAuthenticator{P: auth.Principal{
-		Service: "query-api", Subject: "analyst@example.com", TenantID: testrig.TenantID,
+		Service: "query-api", Subject: "analyst@example.com", TenantID: testrig.TenantID, Roles: roles,
 	}}, nil)
 	ts := httptest.NewServer(h.Handler())
 	t.Cleanup(ts.Close)
 	return ts, rig
+}
+
+// TestContentRoutesRequireAContentRole is the vault's half of the role boundary: the component
+// that returns content re-checks the session role its caller asserts, so a bug in query-api's gate
+// is not the only thing between a viewer and a prompt.
+func TestContentRoutesRequireAContentRole(t *testing.T) {
+	retrieval := `{"event_id":"` + testrig.EventA + `"}`
+	search := `{"scope":"lab","form":"terms","query":"capital"}`
+	for _, tc := range []struct {
+		name  string
+		roles []string
+	}{
+		{"no roles", nil},
+		{"viewer", []string{"viewer"}},
+		{"admin", []string{"admin"}},
+	} {
+		ts, _ := serverAs(t, tc.roles, testrig.Options{})
+		for _, path := range []string{"/v1/content/retrieval", "/v1/content-search"} {
+			body := retrieval
+			if path == "/v1/content-search" {
+				body = search
+			}
+			status, out := post(t, ts, path, body)
+			if status != http.StatusForbidden {
+				t.Fatalf("%s: %s returned %d, want 403 (%v)", tc.name, path, status, out)
+			}
+			if code := errorCode(out); code != "role" {
+				t.Fatalf("%s: %s refused with %q, want role", tc.name, path, code)
+			}
+		}
+	}
+
+	// An analyst may search but may not mint a retrieval URL: search is an analyst capability,
+	// opening one event's stored content is the content reader's.
+	ts, _ := serverAs(t, []string{"analyst"}, testrig.Options{})
+	if status, out := post(t, ts, "/v1/content-search", search); status == http.StatusForbidden {
+		if errorCode(out) == "role" {
+			t.Fatalf("analyst was refused search by role: %v", out)
+		}
+	}
+	if status, out := post(t, ts, "/v1/content/retrieval", retrieval); status != http.StatusForbidden {
+		t.Fatalf("analyst retrieval returned %d, want 403 (%v)", status, out)
+	}
+}
+
+// errorCode reads the code from the vault's error envelope, which is the only shape a refusal has.
+func errorCode(out map[string]any) string {
+	errObj, _ := out["error"].(map[string]any)
+	code, _ := errObj["code"].(string)
+	return code
 }
 
 func post(t *testing.T, ts *httptest.Server, path, body string) (int, map[string]any) {

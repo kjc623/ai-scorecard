@@ -25,6 +25,9 @@
 //                   in order. A selector that matches nothing is exit 1.
 // --fill <css>=<v>  set a field's value and dispatch input/change events, before any --click. Use
 //                   for a clause that needs text typed into a form. Repeatable, in order.
+// --sign-in <user>  sign in before loading the address, through the issuer's login_hint (the lab
+//                   stand-in's account chooser). The page is then loaded with the session cookie
+//                   the server set. Use it for any clause about what a signed-in role sees.
 // --out <dir>       default .integration/observe/ at the repository root (ignored by git: a
 //                   screenshot of live data carries names and prompts).
 //
@@ -75,7 +78,7 @@ const EXPECT_TIMEOUT_MS = 15000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function parseArgs(argv) {
-  const opts = { target: null, out: join(REPO, '.integration', 'observe'), expect: [], absent: [], click: [], fill: [], width: 1440, height: 900 };
+  const opts = { target: null, out: join(REPO, '.integration', 'observe'), expect: [], absent: [], click: [], fill: [], signIn: null, width: 1440, height: 900 };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const value = () => {
@@ -87,6 +90,7 @@ function parseArgs(argv) {
     else if (a === '--absent') opts.absent.push(value());
     else if (a === '--click') opts.click.push(value());
     else if (a === '--fill') opts.fill.push(value());
+    else if (a === '--sign-in') opts.signIn = value();
     else if (a === '--width') opts.width = Number(value());
     else if (a === '--height') opts.height = Number(value());
     else if (a.startsWith('--')) throw new Error(`unknown option ${a}`);
@@ -265,8 +269,18 @@ async function main() {
     await send('Runtime.enable');
     await send('Emulation.setDeviceMetricsOverride', { width: opts.width, height: opts.height, deviceScaleFactor: 1, mobile: false });
 
-    const nav = await send('Page.navigate', { url: url.href });
-    if (nav.errorText) throw new Error(`could not load ${url.href}: ${nav.errorText}`);
+    // Signing in first, when asked: the login route redirects to the issuer, the issuer back to
+    // /callback, and the server sets its session cookie and returns the browser to `next`. The
+    // target page then loads with the cookie, exactly as it does for a person.
+    let initialUrl = url.href;
+    if (opts.signIn) {
+      const login = new URL('/login', url.origin);
+      login.searchParams.set('hint', opts.signIn);
+      login.searchParams.set('next', `${url.pathname}${url.search}${url.hash}`);
+      initialUrl = login.href;
+    }
+    const nav = await send('Page.navigate', { url: initialUrl });
+    if (nav.errorText) throw new Error(`could not load ${initialUrl}: ${nav.errorText}`);
     let settled = await settle();
 
     // A field the clause needs typed into. The value is set through the native input setter and an
@@ -338,6 +352,7 @@ async function main() {
     const header = [
       `address:             ${finalUrl}`,
       `title:               ${title}`,
+      `signed in as:        ${opts.signIn ?? 'not signed in'}`,
       `observed at:         ${new Date().toISOString()}`,
       `browser:             ${cdp.browser}, ${opts.width}x${opts.height}`,
       `settled:             ${settled ? 'yes' : `no (requests still open after ${SETTLE_TIMEOUT_MS / 1000} s)`}`,

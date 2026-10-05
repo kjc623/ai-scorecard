@@ -86,30 +86,33 @@ device's account name gates the directory's (the column is NULL and the read sho
 
 ### 2.2 Authorisation roles
 
-Entra app roles mapped to a closed set, enforced per endpoint. Database roles are per *component*, so
-role checks are the application's job and tenant isolation is the database's.
+Entra app roles mapped to a closed set, enforced per endpoint in `query-api` and again in
+`content-vault`. Database roles are per *component*, so role checks are the application's job and
+tenant isolation is the database's.
+
+The set was reconciled with the product owner for task 11 and differs from the six-role design that
+stood here (A16 below). The approval step on content retrieval was removed by product decision, which
+retires the roles that existed to keep a requester and a second approver apart.
 
 | Role | Can read | Structurally cannot |
 |---|---|---|
-| `analyst` | Aggregates as §6 permits; event/finding lists; device and coverage state; **content search** over the tenant's enabled scopes, returning bounded snippets (§15) | Full content; attachment contents; `ops.audit`; export configuration |
-| `investigator` | All of the above, plus case creation, retrieval **requests**, finding review | Approve their own retrieval request |
-| `approver` | Retrieval requests awaiting a second approver, and their evidence | Initiate a retrieval request (C16 separation of duties) |
-| `auditor` | `ops.audit`, `ops.erasure_receipt`, `ops.reconciliation_run`, `ops.coverage_snapshot` | Subject-level events; content; configuration changes |
-| `privacy_officer` | Subject export (§10), erasure requests, holds, notices | Content unless the export includes it and a second approver concurs |
-| `tenant_admin` | Modes, retention, holds, directory sync, export destination | Content; subject-level events by virtue of the role |
+| `viewer` | Aggregates and the device list | Events, findings, the per-person screen, content, the audit trail, configuration |
+| `analyst` | The viewer's reads, plus event and finding lists, the per-person screen, and prompt-text search (bounded snippets) | Full content; `ops.audit`; export configuration |
+| `content_reader` | The analyst's reads, plus opening one event's stored content | Configuration; the audit trail |
+| `admin` | Configuration, sanction decisions, exports, directory sync, and the audit trail | Subject-level events and findings; content |
 | Vendor operator | Infrastructure metadata | Content, under every `key_custody` mode (master doc §4.3) |
 
-**Content search is an `analyst` capability, not a new role.** The tenant's tier decides *what* may be
-searched and the role decides *who* may ask; nothing about a search is role-gated beyond that, because a
-tier that needed a second approver would be a different tier (§15.6). The two roles whose remit already
-includes reading subject-level data — `analyst` and `investigator` — are the two that can search;
-`approver`, `auditor`, `privacy_officer` and `tenant_admin` cannot, for the reasons their rows give.
+**The owner's reconciliation (task 11).** Four decisions, each deliberate. `viewer` sees the device
+list, including the person its row now names (ADR 0021) — an explicit exception to the "no per-person
+data" reading of that role, recorded here rather than left to infer. The design's `approver` and
+`investigator` existed for C16's approval path, which the product no longer has, and are retired.
+`auditor` and `privacy_officer` fold into `admin`: the owner chose one administrative role over three,
+so the audit trail and subject export/erasure (task 13) are admin reads. Prompt-text search is an
+`analyst` capability and `content_reader` additionally opens stored content; both reach content only
+through `content-vault`, which checks the role again.
+
 **ASSUMPTION:** A16 — the brief names no role mapping, and this document's tier is a tenant decision
 about capability rather than a second approval gate on content (06 §6.3).
-
-**ASSUMPTION:** the brief names only an "analyst" while requiring a second approver (C16) and an audit
-read path (§3.6 Q10); these six roles are the minimum that keeps *reading*, *approving* and *proving
-what was read* in different hands.
 
 ### 2.3 Response envelope and versioning
 
@@ -962,10 +965,11 @@ Question 9 is the one question that touches content, through exactly one route.
 panel offers the request when `content_state` is `uploaded`; `query-api` forwards
 `POST /v1/content/retrieval` to `content-vault`, which records the request, commits the audit rows
 (`content_retrieval_requested`, `_granted`, `_redeemed`, or `_refused`) before anything is read, issues a
-single-use grant and redeems it. Four things differ from the flow above. **Step 3 is not a decision:** the
-second approver is a name recorded on the request, which the vault requires to differ from the requester;
-no second person approves, and there is no `approval_pending` state. The roles of §4 are not enforced,
-because the requester is a development principal rather than an authenticated session. The content is
+single-use grant and redeems it. Three things differ from the flow above. **Step 3 is not a decision:**
+the second approver is a name recorded on the request, which the vault requires to differ from the
+requester; no second person approves, and there is no `approval_pending` state. **The roles of §2.2 are
+enforced (task 11):** the requester is the signed-in session — the tenant and the `content_reader` role
+come from the verified token — and the vault checks that role again when it mints the URL. The content is
 served from the vault's single-use retrieval URL, which the browser fetches through the analyst web
 tier: `query-api` relays the URL and never the content, and the vault serves the bytes from the
 ciphertext it reads back under its own storage identity. And holds
@@ -1144,9 +1148,10 @@ complete, receipted artefact across `ingest`, `mart`, `ops` and possibly Blob st
 **States:** `requested → authorised → running → sealed → delivered → expired`, plus `failed` and
 `delivered_partial`. Every transition writes an audit row; the manifest is the receipt.
 
-**Authorisation.** Requested by `privacy_officer` or `tenant_admin` with a recorded reason and a case or
-lawful-basis reference — the reason is what makes it an accountable act rather than a data dump. **A
-second approver is required when the export includes stored content. ASSUMPTION:** §4.5 does not require
+**Authorisation.** Requested by `admin` (the owner folded `privacy_officer` and `tenant_admin` into one
+role for task 11, §2.2) with a recorded reason and a case or lawful-basis reference — the reason is what
+makes it an accountable act rather than a data dump. **A second approver is required when the export
+includes stored content. ASSUMPTION:** §4.5 does not require
 one, but C16 does for single-object retrieval and a subject export is a bulk content read; applying the
 weaker rule to the larger artefact would make C16 trivially avoidable. The job runs as a job identity,
 never as the requester, so it cannot launder permissions.
@@ -1205,16 +1210,16 @@ requirement: the caveat is not a page, it is the frame.
 | Unsanctioned | Q2 | `mart.v_tool_usage` → `mart.agg_tool_user_period` | Yes | analyst+ |
 | Classes | Q4 | `mart.agg_class_period` | Cells below k | all |
 | Teams | Q3 | `mart.agg_org_period` | Cells below k | all |
-| Person | Q6 | `mart.agg_user_period` | Yes | investigator+ |
+| Person | Q6 | `mart.agg_user_period` | Yes | analyst+ |
 | Findings | Q5 | `mart.v_finding` | Yes | analyst+ |
 | Activity | Q8 | `ingest.submission` | Yes | analyst+ |
-| Event detail / retrieval | Q9 | `ingest.submission`, then §8 | Yes | investigator+ |
+| Event detail / retrieval | Q9 | `ingest.submission`, then §8 | Yes | analyst+ (`content_reader` to retrieve) |
 | Content search | Q9 first half, Q5, Q8 | `ingest.search_text` via `content-vault` (§15) | Yes — bounded snippets | analyst+ |
 | Devices | Q7 | `mart.v_device_liveness`, `ops.collector_state` | Device, not person | all |
 | Degraded collection | brief §7, R11 | `ops.collector_state`, `ingest.rejected`, `ops.reconciliation_run` | No | all |
-| Audit | Q10 | `ops.audit` | Yes | auditor |
-| Exports | §9, §10 | watermarks, manifests | Yes | tenant_admin, privacy_officer |
-| Settings | Modes, retention, holds, directory sync, destination | `ops.*` | No | tenant_admin |
+| Audit | Q10 | `ops.audit` | Yes | admin |
+| Exports | §9, §10 | watermarks, manifests | Yes | admin |
+| Settings | Modes, retention, holds, directory sync, destination | `ops.*` | No | admin |
 
 **Person is a lookup, not a list.** It is reached from a finding, a case, a content search (§15), or a
 lookup for a known `user_ref`; there is no screen that enumerates people sorted by volume and no column
@@ -1581,8 +1586,8 @@ structural rather than conveniences:
 - **`unit_kind` is part of the request**, so the answer for a form the tenant cannot have is a capability
   answer, not an empty page: a prompt-body match at `attachment_names` returns
   `content_search_not_enabled` (§13).
-- **Role is `analyst` or `investigator`** and nothing else (§2.2): the tier decides what may be searched,
-  the role decides who may ask.
+- **Role is `analyst` or `content_reader`** and nothing else (§2.2): the tier decides what may be
+  searched, the role decides who may ask.
 
 **What comes back is hit references with bounded fragments, never the unit:**
 
@@ -1732,7 +1737,7 @@ they are the parameters the brief leaves open.
 | A13 | Week buckets are ISO (Monday); all buckets UTC | The brief is silent, and a week boundary must be written down rather than inferred per chart |
 | A14 | A search returns ≤ 3 fragments × 160 characters per hit (≤ 480) and 50/200 hits per page | The brief fixes no bound; the cap sits below the 2,048-character M2 excerpt cap (§3.9), so a search cannot return more content by volume than the mode beneath it already lets travel by default |
 | A15 | Every search names at least one narrowing predicate (tool, class or population) and a ≤ 31-day window, and a scope must be named in the signed bundle before its tier applies | C5 forbids an upload-everything state and D6/ADR 0014 require search never to be enabled globally; a named predicate at request time and a named scope at signing time are the two mechanical forms of that |
-| A16 | Content search is reachable by `analyst` and `investigator` only | The brief names no role mapping; the tier is for tenants who treat bounded search as an ordinary analyst capability (06 §6.3), and the other four roles are built around not reading subject-level data (§2.2) |
+| A16 | Content search is reachable by `analyst` and `content_reader` only | The brief names no role mapping; the tier is for tenants who treat bounded search as an ordinary analyst capability (06 §6.3). The owner widened this for task 11: `analyst` keeps search, and `content_reader` adds stored-content retrieval (§2.2) |
 
 ---
 

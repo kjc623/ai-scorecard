@@ -161,7 +161,7 @@ test('with development trust off, the header is ignored and the read is refused'
     body: JSON.stringify({ query_version: '1', source: 'mart.v_tool_usage', bucket: 'day', dimensions: ['tool'], measures: ['submissions'], filters: [], window: { from: '2026-09-01T00:00:00Z', to: '2026-09-08T00:00:00Z' } }),
   });
   assert.equal(res.status, 403);
-  assert.match((await res.json()).error.message, /session is not built yet/);
+  assert.match((await res.json()).error.message, /no signed-in session/);
 });
 
 test('a tenant in the request body is refused as a validation error, not honoured', async (t) => {
@@ -558,5 +558,89 @@ test('a sanction with no established tenant is refused 403 and never reaches the
   });
   assert.equal(res.status, 403);
   assert.equal((await res.json()).result_state, 'unauthorised_role');
+  assert.equal(client.calls.query.length, 0);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Role boundaries (task 11)
+// ---------------------------------------------------------------------------------------------
+
+const WINDOW = { from: '2026-09-01T00:00:00Z', to: '2026-09-08T00:00:00Z' };
+const AGGREGATE = { query_version: '1', source: 'mart.v_tool_usage', bucket: 'day', dimensions: ['tool'], measures: ['submissions'], filters: [], window: WINDOW };
+const EVENTS = { query_version: '1', template: 'q8_activity', params: { window: WINDOW } };
+const DEVICES = { query_version: '1', template: 'q7_devices', params: {} };
+const AUDIT = { query_version: '1', template: 'q10_audit_trail', params: { window: WINDOW } };
+
+const asRole = (role, extra = {}) => asTenant({ 'x-sac-dev-role': role, ...extra });
+
+async function queryAs(base, role, body) {
+  const res = await fetch(`${base}${PATHS.QUERY}`, { method: 'POST', headers: asRole(role), body: JSON.stringify(body) });
+  return res;
+}
+
+test('a viewer reads aggregates and devices but is refused events, findings and the audit trail', async (t) => {
+  const { base } = await withServer(t);
+  assert.notEqual((await queryAs(base, 'viewer', AGGREGATE)).status, 403, 'a viewer may read aggregates');
+  assert.notEqual((await queryAs(base, 'viewer', DEVICES)).status, 403, 'the owner ruled the device list visible to a viewer');
+  const events = await queryAs(base, 'viewer', EVENTS);
+  assert.equal(events.status, 403, 'events are subject-level');
+  assert.equal((await events.json()).result_state, 'unauthorised_role');
+  const audit = await queryAs(base, 'viewer', AUDIT);
+  assert.equal(audit.status, 403, 'the audit trail is the admin capability');
+});
+
+test('an analyst reads events but is refused the audit trail and any content', async (t) => {
+  const { base } = await withServer(t);
+  assert.notEqual((await queryAs(base, 'analyst', EVENTS)).status, 403, 'an analyst may read events');
+  assert.equal((await queryAs(base, 'analyst', AUDIT)).status, 403, 'the audit trail is admin');
+  // The content gate sits before the forwarder: analyst may search, not retrieve.
+  const search = await fetch(`${base}${'/v1/content-search'}`, { method: 'POST', headers: asRole('analyst'), body: JSON.stringify({ query: 'capital' }) });
+  assert.notEqual(search.status, 403, 'search is an analyst capability');
+  const retrieval = await fetch(`${base}${'/v1/content/retrieval'}`, { method: 'POST', headers: asRole('analyst'), body: JSON.stringify({ event_ids: [TENANT] }) });
+  assert.equal(retrieval.status, 403, 'opening stored content needs the content reader role');
+});
+
+test('a content reader may mint a retrieval URL; a viewer may not do either content read', async (t) => {
+  const { base } = await withServer(t);
+  const retrieval = await fetch(`${base}${'/v1/content/retrieval'}`, { method: 'POST', headers: asRole('content_reader'), body: JSON.stringify({ event_ids: [TENANT] }) });
+  assert.notEqual(retrieval.status, 403, 'a content reader passes the retrieval gate (the vault is unconfigured here)');
+  for (const path of ['/v1/content-search', '/v1/content/retrieval']) {
+    const res = await fetch(`${base}${path}`, { method: 'POST', headers: asRole('viewer'), body: JSON.stringify({ query: 'x', event_ids: [TENANT] }) });
+    assert.equal(res.status, 403, `a viewer is refused ${path}`);
+    assert.equal((await res.json()).error.code, 'role');
+  }
+});
+
+test('an admin reads the audit trail and decides sanctions, but reads no subject-level events', async (t) => {
+  const { base } = await withServer(t);
+  assert.notEqual((await queryAs(base, 'admin', AUDIT)).status, 403, 'the audit trail is an admin read');
+  assert.equal((await queryAs(base, 'admin', EVENTS)).status, 403, 'admin reads no subject-level events');
+  assert.equal((await queryAs(base, 'admin', AGGREGATE)).status, 200, 'admin keeps the aggregates');
+});
+
+test('a verified token establishes the tenant, actor and roles, and the tenant cannot come from the body', async (t) => {
+  const seen = [];
+  const verifier = {
+    enabled: true,
+    async verify(token) {
+      if (token !== 'signed.token.value') throw new Error('signature does not verify');
+      return { tenant: TENANT, actorId: 'reader@lab.test', subject: 'sub-1', roles: ['viewer'], caseReference: null };
+    },
+  };
+  const { base, client } = await withServer(t, { cfg: testConfig({ SAC_DEV_TRUST_PRINCIPAL: '', SAC_OIDC_ISSUER: 'https://idp.test', SAC_OIDC_AUDIENCE: 'sac-query-api' }), verifier, client: { ...fakeClient(), async query(text, params) { seen.push({ text, params }); return { rows: [], rowCount: 0, fields: [] }; } } });
+  const res = await fetch(`${base}${PATHS.QUERY}`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer signed.token.value' }, body: JSON.stringify(AGGREGATE) });
+  assert.equal(res.status, 200, 'the aggregate read is served for the viewer token');
+  const setTenant = seen.find((c) => /set_config\('app\.tenant_id'/.test(c.text));
+  assert.deepEqual(setTenant.params, [TENANT], 'the tenant came from the verified token');
+  const events = await fetch(`${base}${PATHS.QUERY}`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer signed.token.value' }, body: JSON.stringify(EVENTS) });
+  assert.equal(events.status, 403, 'the token role is the viewer role');
+});
+
+test('an invalid bearer token is refused even with development trust off', async (t) => {
+  const verifier = { enabled: true, async verify() { throw new Error('nope'); } };
+  const client = fakeClient();
+  const { base } = await withServer(t, { cfg: testConfig({ SAC_DEV_TRUST_PRINCIPAL: '', SAC_OIDC_ISSUER: 'https://idp.test', SAC_OIDC_AUDIENCE: 'sac-query-api' }), verifier, client });
+  const res = await fetch(`${base}${PATHS.QUERY}`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer forged' }, body: JSON.stringify(AGGREGATE) });
+  assert.equal(res.status, 403);
   assert.equal(client.calls.query.length, 0);
 });

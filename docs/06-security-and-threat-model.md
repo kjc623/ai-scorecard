@@ -187,9 +187,12 @@ request headers that it trusts only because its ingress is internal
 (`vault/content-vault/internal/auth/auth.go`). The vault's SQL path is written to set the session tenant
 inside every transaction, so row-level security remains the final arbiter; the mTLS assertion of the caller is the
 part that is not in place (§5.2). B13 is now exercised: `query-api` forwards content search and approved
-retrieval to the vault with those headers, naming the tenant and subject it took from its own session —
-which today is a development principal header, not an authenticated one. The vault does not restrict
-routes by calling service, so any of its three allowed callers may call any route. In the local auth lab
+retrieval to the vault with those headers, naming the tenant, subject and **roles** it took from its own
+session — which as of task 11 is an OIDC token verified against the issuer's JWKS, not a development
+principal header. The vault now restricts the two browser-facing routes by role (`analyst` or
+`content_reader` for search, `content_reader` for retrieval), re-checking what its caller asserted. The
+vault does not otherwise restrict routes by calling service, so any of its three allowed callers may call a
+route. In the local auth lab
 the vault connects to the database as the owner, so row-level security is not exercised there.
 
 Three boundaries the design deliberately does **not** create: no central plaintext inspection point
@@ -307,11 +310,15 @@ controls while A2 is plaintext at rest. §8 T13–T16 and §10.5 are the consequ
 Analysts, approvers, tenant administrators and auditors authenticate to Entra ID. There is no local
 account, no shared analyst login and no separate password store.
 
-- **Role claims, never query parameters.** Roles are `viewer`, `analyst`, `approver`, `auditor`,
-  `tenant-admin`. `approver` is deliberately separate from `analyst`: C16's second approver is
-  worthless if the same principal can hold both and click twice in one session.
-  **ASSUMPTION:** §14.1 A7 — whether the approver is a customer-side or vendor-side role is left open
-  by master doc Q9, and this document does not decide it.
+- **Role claims, never query parameters.** Roles are `viewer`, `analyst`, `content_reader`,
+  `admin`, enforced per endpoint in `query-api` and again in `content-vault`. This is the four-role
+  set reconciled with the product owner for task 11 (docs/04 §2.2); it differs from the original
+  five-role list here. `approver` is gone because the product removed the second-approver step on
+  content retrieval, which was the only thing that role did; `auditor` and the design's
+  `privacy_officer` fold into `admin`. Prompt-text search is an `analyst` capability and
+  `content_reader` additionally opens one event's stored content. **The former §14.1 A7 question**
+  (whether the approver is customer-side or vendor-side) is closed by removing the role, not
+  answered.
 - **The tenant comes from the token.** `tenant_id` is a claim, never read from a body, query string or
   header. §7 makes this mechanical at the database.
 - **Phishing-resistant authentication for privileged roles**, multi-factor for all humans. The
@@ -1557,7 +1564,7 @@ Every **ASSUMPTION** in this document, so none is buried in a table.
 | A4 | The per-tenant KEK uses the shortest key-store recovery window consistent with the customer's backup policy, and the actual window is disclosed in the erasure receipt | §6.4: soft-delete or purge protection means "destroyed" has a bounded delay before "unrecoverable". A receipt claiming immediate destruction and being wrong is worse than one stating the window and being right. **D6′ adds a boundary to what the window governs**: it applies to content objects, and index rows are removed by deletion rather than by this window (§11.4) |
 | A5 | The 70–85% management-coverage figure is a property of the customer's estate, not of the product, so the product reports its own coverage and records the estate-level number as unknown | Brief §5.5 gives the figure as a planning assumption. §12 R1 depends on this reading: the product cannot measure devices it was never installed on |
 | A6 | The scheduled Parquet export carries metadata and labels only, and excludes `content_digest`, `dedup_key`, **`ingest.search_text.body` and `ingest.search_text.tsv`** | §5.5, §6.5, §11.3. Without the exclusion the export is a cross-database correlation surface in storage the vendor cannot control, and after D6′ it would also be a second unbounded copy of indexed prompt text. The design mechanism survives the reversal; the reason for it is now twofold. **derived from** D6's framing of the export as the answer to cross-content search (which required that it not be a digest oracle) plus §6.5's confinement of the index to one reader |
-| A7 | The approver for content retrieval may be a customer-side or a vendor-side role, and this document does not choose | Master doc Q9 leaves it open; C16 requires a second approver either way and the API carries the field. Deciding is a product decision, not a security one. **D6′ narrows what this assumption covers**: it is an assumption about the *retrieval* gate, and the `full_text` search path has no approver at all for it to apply to (§6.3) |
+| A7 | The approver for content retrieval may be a customer-side or a vendor-side role, and this document does not choose | Master doc Q9 left it open; C16 required a second approver either way and the API carried the field. **Closed by removal (task 11):** the product removed the second-approver step on retrieval, so there is no approver role. The API still accepts the recorded name; it is not a role, and no role gates on it. **D6′ had already narrowed what this assumption covered**: it was about the *retrieval* gate, and the `full_text` search path has no approver at all (§6.3) |
 | A8 | Whether a customer-side content exporter is in v1 is unresolved, and §6.5 assumes it is not | Master doc Q11. Assuming it *is* in scope would assume a component inside the customer's environment that this document cannot specify |
 | A9 | The device never holds the unwrapped per-tenant KEK; the server-side unwrap is the only path | **derived from** brief §4.4's "per-object encryption keys wrapped by a per-tenant key" and C14's per-event grant: the object key is delivered per grant, so the tenant KEK has no reason to be on the device, and placing it there would give every device a tenant-wide decrypt capability |
 | A10 | Security-relevant retention decisions (audit retention, hold precedence, export retention) are recorded as configuration rather than compiled into code | C35 requires holds with a visible scope and their own expiry, and Q10 leaves hold-versus-erasure precedence open. Configuration keeps an unresolved question reversible. **Now includes index retention**, because `ingest.search_text.expires_at` is a fourth retention input alongside the event TTL, the content TTL and holds |

@@ -160,6 +160,9 @@ export function plan(request, ctx = {}) {
     template: expansion ? { name: expansion.name, question: expansion.question, title: expansion.title } : null,
     query,
     source,
+    // The registry id, for the role gate: it maps a read to the capability it needs without
+    // re-deriving the source from the request.
+    source_id: source.id,
     dsl_hash: dslHash,
     compiled,
     statements: Object.freeze(statements),
@@ -224,6 +227,7 @@ function planSingle(expansion, ctx, now) {
     template: { name: expansion.name, question: expansion.question, title: expansion.title },
     query: null,
     source: null,
+    source_id: expansion.source ?? null,
     dsl_hash: hashOf({ template: expansion.name, params: expansion.params ?? null }),
     compiled: null,
     statements: Object.freeze([auditStatementBuilt, ...statements, ...sideReads]),
