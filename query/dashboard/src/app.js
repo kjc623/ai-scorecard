@@ -8,7 +8,7 @@
 // so a test can drive every screen against the stub transport without a browser. `boot()` is the
 // only function that touches a document.
 
-import { createQueryApi, httpTransport } from './transport.js';
+import { createQueryApi, httpTransport, loadSession } from './transport.js';
 import { scenarioTransport } from './scenarios.js';
 import { readState } from './states.js';
 import { QUESTIONS, context } from './questions.js';
@@ -20,6 +20,7 @@ import {
 import { unavailableView } from './unavailable.js';
 import { renderScreen, renderNav, renderGallery } from './render.js';
 import { shellNavItems, groupOf, readCollapsed, wireShell } from './shell.js';
+import { allowedPageIds, filterNavItems } from './session.js';
 import { SCENARIOS, SCENARIO_NAMES } from './fixtures.js';
 
 /**
@@ -247,8 +248,11 @@ export async function boot({ document, scenario = 'realistic', api } = {}) {
   const query = live ? '?transport=live' : '';
   const dashboard = createDashboard({ api: active, exploreHref: `explore.html${query}` });
   // The Explore page is a sibling page, not a screen: it is linked from the top of the navigation
-  // and carries the same data source.
-  const navItems = NAV_ITEMS.map((item) => (item.id === 'explore' ? { ...item, href: `explore.html${query}` } : item));
+  // and carries the same data source. A signed-in role may see fewer pages than the shell names;
+  // the server says which, and query-api refuses the reads behind the rest.
+  const session = await loadSession();
+  const allowed = allowedPageIds(session);
+  const navItems = filterNavItems(NAV_ITEMS.map((item) => (item.id === 'explore' ? { ...item, href: `explore.html${query}` } : item)), allowed);
   const collapsed = readCollapsed(document);
 
   let paintedNav = null;

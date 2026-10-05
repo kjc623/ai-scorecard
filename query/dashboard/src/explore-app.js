@@ -13,9 +13,10 @@
 //   * a refusal is a state to show, never an empty list;
 //   * an answer that arrives after a newer search began is discarded.
 
-import { createQueryApi, httpTransport, createContentApi, httpContentTransport } from './transport.js';
+import { createQueryApi, httpTransport, createContentApi, httpContentTransport, loadSession } from './transport.js';
 import { renderNav } from './render.js';
 import { shellNavItems, readCollapsed, wireShell } from './shell.js';
+import { allowedPageIds, filterNavItems } from './session.js';
 import { windowFor } from './dsl.js';
 import { readState } from './states.js';
 import {
@@ -512,7 +513,11 @@ export async function bootExplore({ document, api: given, content: givenContent 
   const shellQuery = live ? '?transport=live' : '';
   const collapsed = readCollapsed(document);
   const nav = el('nav');
-  if (nav) nav.innerHTML = renderNav(shellNavItems({ page: `index.html${shellQuery}`, query: shellQuery }), 'explore', { collapsed: [...collapsed] });
+  // A signed-in role may see fewer pages than the shell names; the server decides, and the read
+  // path refuses the rest. Sample mode has no session and keeps the whole navigation.
+  const session = await loadSession();
+  const allowed = allowedPageIds(session);
+  if (nav) nav.innerHTML = renderNav(filterNavItems(shellNavItems({ page: `index.html${shellQuery}`, query: shellQuery }), allowed), 'explore', { collapsed: [...collapsed] });
   wireShell({ document, live, collapsed });
   const api = given ?? (live ? createQueryApi({ transport: httpTransport() }) : null);
   const stub = api ? null : createExploreStub({ latencyMs: 220 });

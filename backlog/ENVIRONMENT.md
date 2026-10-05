@@ -89,6 +89,10 @@ or a script says "the lab" and means that one, it does not mean yours.
   `node query/dashboard/tools/observe.mjs 'index.html?transport=live#devices' --expect Reporting`.
   A bare path like that one opens the owner's dashboard; give the full address for the sample
   tenant's. Quote the address. The header of the script documents `--expect`, `--absent` and `--click`.
+- The dashboards now require a session (task 11). Add `--sign-in <account>`, e.g.
+  `--sign-in reader@lab.test` for the owner's tenant or `--sign-in viewer.sample@lab.test` for the
+  sample's; the lab identity provider at `http://oidc:8080` lists the accounts and their roles, and an
+  unauthenticated browser is redirected to it.
 - This is how a claim about what a page shows is checked. A POST to the dashboard's `/v1/query`
   forwarder shows that the data is there; it does not show that the page renders it.
 - The script loads, waits, clicks and reads. If a clause needs more (typing into a field, a

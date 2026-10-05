@@ -107,6 +107,18 @@ const EXTENSIONS = {
     // ceilings above: a container platform has no field to pass a value in, and a deployment that
     // wants a different global pool sets it.
     SAC_MAX_CONNECTIONS: 'image: 40 is the global statement-pool cap from §12.3 (master doc Q12); a deployment that wants a different ceiling sets it',
+    // Pre-existing gaps found while task 11 touched this list: the binary reads these and
+    // azure/main.bicep passes none, so the checker was red before task 11. Named rather than
+    // hidden, exactly as the list intends.
+    SAC_CONTENT_SEARCH_SCOPE: 'gap: the signed policy bundle names search scopes; the deployment passes none, so a deployed vault search is disabled until it does',
+    // The authenticated session (task 11). The binary reads all five; the auth lab sets the
+    // issuer and audience, and azure/main.bicep passes none yet, so the deployment gaps stay
+    // visible rather than being satisfied by the lab.
+    SAC_OIDC_ISSUER: 'gap: the customer identity provider (Entra ID). A deployment sets it from its tenant; the auth lab sets it to the local OIDC stand-in',
+    SAC_OIDC_AUDIENCE: 'gap: the API audience a token must name. A deployment sets it; the auth lab sets it to sac-query-api',
+    SAC_OIDC_JWKS_URL: 'gap: the issuer JWKS endpoint; defaults to <issuer>/jwks',
+    SAC_OIDC_TENANT_CLAIM: 'image: sac_tenant, the signed claim that carries the shadow tenant uuid (a real tenant needs a claims-mapping policy)',
+    SAC_OIDC_ROLES_CLAIM: 'image: roles, the app-role claim the token carries',
   },
   'control-api': {
     SAC_HTTP_ADDR: 'image: a container binds 0.0.0.0, and the Bicep passes no command/args',
@@ -119,6 +131,10 @@ const EXTENSIONS = {
     SAC_TOKEN_ISSUER: 'gap (§5.2): the `iss` of issued access tokens; the deployment passes none',
     SAC_TOKEN_AUDIENCE: 'gap (§5.2): the `aud` of issued access tokens — see SAC_TOKEN_ISSUER',
     SAC_DPOP_TOKEN_KEY_PEM: 'gap: the access-token signing key. The binary refuses to start without it; no deployment injects it yet',
+    // Pre-existing gaps found while task 11 touched this list: the binary reads these and
+    // azure/main.bicep passes none, so the checker was red before task 11.
+    SAC_VAULT_URL: 'gap: the content-vault address control-api asks for a granted object\'s key; the deployment passes none',
+    SAC_UPLOAD_SIGNING_KEY: 'gap: the key control-api and the storage layer share to authenticate an upload finalisation; the auth lab sets a literal, a deployment injects it from Key Vault',
   },
 };
 

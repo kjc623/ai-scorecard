@@ -201,9 +201,42 @@ services:
       retries: 20
       start_period: 5s
 
+  # oidc — the local OpenID Connect stand-in task 11 needs: a real authorization-code + PKCE
+  # flow that mints RS256 tokens. It is to a customer's Entra ID tenant what the edge is to
+  # Application Gateway: the protocol is real, the directory is a fixture. Each user maps to a
+  # shadow tenant and an app role, so the lab can sign in as a viewer, an analyst, a content
+  # reader or an admin, for either tenant. Not published: the browser reaches it by service name.
+  oidc:
+    image: sac/oidc:lab
+    environment:
+      OIDC_ISSUER: http://oidc:8080
+      OIDC_API_AUDIENCE: sac-query-api
+      OIDC_CLIENT_ID: sac-dashboard
+      # The directory. `sub` is the actor the audit trail records; `tenant` is the shadow tenant
+      # the session is scoped to. A real Entra tenant supplies the role through an app role and
+      # the tenant through a claims-mapping policy (the owner's hand-off names it).
+      OIDC_USERS: >-
+        [
+          {"sub":"viewer@lab.test","name":"Vera Viewer","email":"viewer@lab.test","role":"viewer","tenant":"11111111-1111-1111-1111-111111111111"},
+          {"sub":"analyst@lab.test","name":"Ana Analyst","email":"analyst@lab.test","role":"analyst","tenant":"11111111-1111-1111-1111-111111111111"},
+          {"sub":"reader@lab.test","name":"Rhea Reader","email":"reader@lab.test","role":"content_reader","tenant":"11111111-1111-1111-1111-111111111111"},
+          {"sub":"admin@lab.test","name":"Ada Admin","email":"admin@lab.test","role":"admin","tenant":"11111111-1111-1111-1111-111111111111"},
+          {"sub":"viewer.sample@lab.test","name":"Vera Viewer (sample)","email":"viewer.sample@lab.test","role":"viewer","tenant":"5a3c0de0-7e57-4a11-9000-0000000d3a01"},
+          {"sub":"analyst.sample@lab.test","name":"Ana Analyst (sample)","email":"analyst.sample@lab.test","role":"analyst","tenant":"5a3c0de0-7e57-4a11-9000-0000000d3a01"},
+          {"sub":"reader.sample@lab.test","name":"Rhea Reader (sample)","email":"reader.sample@lab.test","role":"content_reader","tenant":"5a3c0de0-7e57-4a11-9000-0000000d3a01"},
+          {"sub":"admin.sample@lab.test","name":"Ada Admin (sample)","email":"admin.sample@lab.test","role":"admin","tenant":"5a3c0de0-7e57-4a11-9000-0000000d3a01"}
+        ]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8080/healthz"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 2s
+
   # query-api — the read path, and the only way a browser reaches content: it forwards the two
-  # content reads to content-vault under its own identity. The authenticated session is not built,
-  # so it trusts the development principal header the dashboard's server adds. Not published.
+  # content reads to content-vault under its own identity. It verifies the session token the
+  # dashboard forwards (task 11) against the lab OIDC stand-in's JWKS, and reads the tenant, the
+  # actor and the roles from the signed claims. Not published.
   query-api:
     image: sac/query-api:lab
     depends_on:
@@ -215,25 +248,32 @@ services:
       SAC_PG_USER: postgres
       SAC_PG_PASSWORD: sac-lab-only
       SAC_PG_SSLMODE: disable
-      SAC_DEV_TRUST_PRINCIPAL: "1"
       SAC_CONTENT_VAULT_URL: http://content-vault:8080
       SAC_CONTENT_SEARCH_SCOPE: lab
+      # The authenticated session. SAC_DEV_TRUST_PRINCIPAL is deliberately absent: the lab uses
+      # the real token path, so a read without a valid token is refused.
+      SAC_OIDC_ISSUER: http://oidc:8080
+      SAC_OIDC_AUDIENCE: sac-query-api
 
   # dashboard — the analyst's one page: http://127.0.0.1:8787/explore.html?transport=live. Events,
   # findings, devices and the audit trail come from query-api; prompt-text search and approved
-  # content retrieval go through query-api to content-vault. Its server names the tenant and the
-  # analyst (a development stand-in for the session); the page chooses neither.
+  # content retrieval go through query-api to content-vault. Its server runs the OIDC sign-in
+  # (task 11) and holds the access token server-side; the page holds only an opaque cookie.
   dashboard:
     image: sac/dashboard:lab
     depends_on:
       - query-api
+      - oidc
     environment:
       SAC_QUERY_API_URL: http://query-api:8080
       # The dev forwarder sends a minted retrieval URL straight here, never through query-api, so
       # content never transits the read path (docs/02 §11).
       SAC_CONTENT_VAULT_URL: http://content-vault:8080
-      SAC_DEV_TENANT: 11111111-1111-1111-1111-111111111111
-      SAC_DEV_ACTOR: ${LAB_ANALYST:-analyst@lab.test}
+      SAC_OIDC_ISSUER: http://oidc:8080
+      SAC_OIDC_CLIENT_ID: sac-dashboard
+      # Pin this dashboard to the owner's tenant: a token for another tenant is refused here, so
+      # the sample dashboard cannot show the owner's data even if a sign-in is misdirected.
+      SAC_DASHBOARD_TENANT: 11111111-1111-1111-1111-111111111111
     ports:
       - "127.0.0.1:${LAB_DASHBOARD_PORT:-8787}:8787"
 
@@ -245,11 +285,13 @@ services:
     image: sac/dashboard:lab
     depends_on:
       - query-api
+      - oidc
     environment:
       SAC_QUERY_API_URL: http://query-api:8080
       SAC_CONTENT_VAULT_URL: http://content-vault:8080
-      SAC_DEV_TENANT: 5a3c0de0-7e57-4a11-9000-0000000d3a01
-      SAC_DEV_ACTOR: ${LAB_ANALYST:-analyst@lab.test}
+      SAC_OIDC_ISSUER: http://oidc:8080
+      SAC_OIDC_CLIENT_ID: sac-dashboard
+      SAC_DASHBOARD_TENANT: 5a3c0de0-7e57-4a11-9000-0000000d3a01
     ports:
       - "127.0.0.1:${LAB_DASHBOARD_SAMPLE_PORT:-8788}:8787"
 

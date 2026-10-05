@@ -34,6 +34,13 @@ export const ENV = Object.freeze({
   MAX_CONCURRENCY: 'SAC_MAX_CONCURRENCY',
   MAX_QUEUE: 'SAC_MAX_QUEUE',
   MAX_CONNECTIONS: 'SAC_MAX_CONNECTIONS',
+  // The authenticated session (task 11). The issuer is empty in the memory lab, where the
+  // development principal is the only path.
+  OIDC_ISSUER: 'SAC_OIDC_ISSUER',
+  OIDC_AUDIENCE: 'SAC_OIDC_AUDIENCE',
+  OIDC_JWKS_URL: 'SAC_OIDC_JWKS_URL',
+  OIDC_TENANT_CLAIM: 'SAC_OIDC_TENANT_CLAIM',
+  OIDC_ROLES_CLAIM: 'SAC_OIDC_ROLES_CLAIM',
 });
 
 /** A configuration error is a refusal to start, never a defaulted value. §12.3's fail-closed rule. */
@@ -106,6 +113,18 @@ export function loadConfig(env = process.env) {
   const pgDatabase = text(env, ENV.PG_DATABASE);
   const role = text(env, ENV.ROLE) || DEFAULT_ROLE;
 
+  // The identity provider is all-or-nothing: a token's issuer and audience are checked
+  // together, and a service configured with one and not the other would refuse every token
+  // for a reason an operator could not see. Refusing to start says so instead.
+  const oidcIssuer = text(env, ENV.OIDC_ISSUER);
+  const oidcAudience = text(env, ENV.OIDC_AUDIENCE);
+  if (oidcIssuer && !oidcAudience) {
+    throw new ConfigError(`${ENV.OIDC_AUDIENCE} is required when ${ENV.OIDC_ISSUER} is set: a token is verified against the API it was minted for.`);
+  }
+  if (!oidcIssuer && oidcAudience) {
+    throw new ConfigError(`${ENV.OIDC_ISSUER} is required when ${ENV.OIDC_AUDIENCE} is set.`);
+  }
+
   const { host, port } = parseAddr(text(env, ENV.HTTP_ADDR));
 
   // sslmode mirrors libpq's spelling, because that is what an operator will have in front of them.
@@ -149,6 +168,22 @@ export function loadConfig(env = process.env) {
     // tiers; a scope the vault is not told about carries `disabled` (docs/06 §6.3).
     contentSearchScope: text(env, ENV.CONTENT_SEARCH_SCOPE),
     appInsights: text(env, ENV.APPINSIGHTS),
+    /**
+     * The authenticated session's identity provider (task 11). Issuer and audience are both
+     * required together: a token has to be checked against the issuer it claims and the API it
+     * was minted for. With neither set the service has no token path and, unless the
+     * development flag is on, refuses every read.
+     */
+    oidc: Object.freeze({
+      issuer: oidcIssuer,
+      audience: oidcAudience,
+      jwksUrl: text(env, ENV.OIDC_JWKS_URL),
+      tenantClaim: text(env, ENV.OIDC_TENANT_CLAIM) || 'sac_tenant',
+      rolesClaim: text(env, ENV.OIDC_ROLES_CLAIM) || 'roles',
+      get enabled() {
+        return this.issuer !== '';
+      },
+    }),
     /**
      * Development-only principal trust.
      *

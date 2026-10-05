@@ -24,6 +24,7 @@ import { RESULT_STATES } from '../errors.js';
 import { CONTENT_PATHS, createContentForwarder } from './content.js';
 import { validateReviewRequest, FINDING_FOR_REVIEW_SQL, UPSERT_REVIEW_SQL, findingReviewAuditStatement } from '../review.js';
 import { validateSanctionRequest, TOOL_SANCTION_FOR_REVIEW_SQL, UPSERT_TOOL_SANCTION_SQL, toolSanctionAuditStatement } from '../sanction.js';
+import { DEV_ROLE, capabilityForEndpoint, capabilityForSource, isKnownRole, rolesAllow, unauthorisedRole } from '../roles.js';
 
 const HIT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -116,30 +117,87 @@ function sendJson(res, status, body) {
 }
 
 /**
- * The tenant, and the actor, for this request.
+ * The session for this request: tenant, actor and roles.
  *
  * TENANT IS NEVER READ FROM THE BODY. REASON.TENANT_IN_REQUEST exists because a request that tries
  * to choose its own tenant is refused as a validation error rather than ignored, and that only
  * means something if the value this server uses came from somewhere the caller cannot write.
  *
- * NOTE — this is the honest state, not a finished one. The authenticated session (an Entra
- * principal resolved to exactly one ops.tenant.tenant_id, docs/04 §4.2) is NOT BUILT YET. Until it
- * is, the only trusted source available is a development-only header, and it is accepted only when
- * SAC_DEV_TRUST_PRINCIPAL=1 — the same explicit escape hatch the Go services use for a local run.
- * Without it, every query is refused 403 with `unauthorised_role`, because a service that cannot
- * establish who is asking must not answer.
+ * Two sources, tried in order:
+ *
+ *   1. A bearer token, verified in auth.js against the configured issuer's JWKS. The tenant, the
+ *      actor and the roles all come from the signed claims. This is the product path.
+ *   2. The development header, and only when SAC_DEV_TRUST_PRINCIPAL=1. It is the same explicit
+ *      escape hatch the Go services use for a local run; it is named, it is off unless set, and
+ *      the role it carries defaults to the lab-only `dev` role.
+ *
+ * Without either, every read is refused 403: a service that cannot establish who is asking must
+ * not answer.
  */
-function principalOf(req, cfg) {
+async function principalOf(req, cfg, verifier, log) {
+  if (verifier?.enabled) {
+    const header = req.headers['authorization'];
+    if (typeof header === 'string' && /^Bearer\s+\S+/.test(header)) {
+      try {
+        return await verifier.verify(header.replace(/^Bearer\s+/i, '').trim());
+      } catch (error) {
+        // The token itself is never logged: it is a credential. The reason is.
+        log?.warn?.(`query-api: a session token was refused: ${error?.message ?? error}`);
+        return null;
+      }
+    }
+  }
   if (!cfg.devTrustPrincipal) return null;
   const tenant = req.headers['x-sac-dev-tenant'];
   if (typeof tenant !== 'string' || tenant.trim() === '') return null;
   const actor = req.headers['x-sac-dev-actor'];
   const caseRef = req.headers['x-sac-dev-case'];
+  // The lab may name the role it wants to exercise; absent, the escape hatch carries every
+  // capability so a lab run is not rewritten as a role. A token can never yield `dev`.
+  const requested = String(req.headers['x-sac-dev-role'] ?? '')
+    .split(',')
+    .map((r) => r.trim())
+    .filter(isKnownRole);
   return {
     tenant: tenant.trim(),
     actorId: typeof actor === 'string' && actor.trim() !== '' ? actor.trim() : 'unknown',
+    subject: typeof actor === 'string' && actor.trim() !== '' ? actor.trim() : 'unknown',
+    roles: requested.length > 0 ? requested : [DEV_ROLE],
     caseReference: typeof caseRef === 'string' && caseRef.trim() !== '' ? caseRef.trim() : null,
   };
+}
+
+/**
+ * Refuse a request whose session role does not carry `capability`. Throws the §13
+ * `unauthorised_role` rejection, so the HTTP layer renders it like every other rejection.
+ */
+function assertCapability(principal, capability, { path = null } = {}) {
+  if (rolesAllow(principal.roles, capability)) return;
+  throw unauthorisedRole(`use ${capability}`, { role: principal.roles.join(','), path });
+}
+
+/** The body an unauthenticated request gets. Fail closed, and say which of the two reasons it was. */
+function unauthenticatedBody(cfg) {
+  return {
+    result_state: 'unauthorised_role',
+    error: {
+      code: 'role',
+      message: cfg.devTrustPrincipal
+        ? 'no tenant was established for this request'
+        : 'no signed-in session; sign in and present the bearer token',
+    },
+  };
+}
+
+/**
+ * Refuse when the session role lacks `capability`, and report whether it did. A write handler
+ * calls this before it reads the body, so a wrong-role request never reaches the database.
+ */
+function roleRefusal(res, principal, capability, path, log) {
+  if (rolesAllow(principal.roles, capability)) return false;
+  const rendered = renderError(unauthorisedRole(`use ${capability}`, { role: principal.roles.join(','), path }), log);
+  sendJson(res, rendered.status, rendered.body);
+  return true;
 }
 
 /** Turn anything thrown by the pipeline or the driver into a wire-legal response. */
@@ -279,6 +337,7 @@ export function createHandler({
   gate = createGate({ maxConcurrency: cfg?.limits?.maxConcurrency ?? 8, maxQueue: cfg?.limits?.maxQueue ?? 32 }),
   out = null,
   contentForwarder = null,
+  verifier = null,
 } = {}) {
   if (!cfg) throw new Error('createHandler needs a configuration');
   const source = connectionSource({ pool, client, log });
@@ -325,20 +384,11 @@ export function createHandler({
 
   async function query(req, res) {
     const started = Date.now();
-    const principal = principalOf(req, cfg);
+    const principal = await principalOf(req, cfg, verifier, log);
     if (!principal) {
       // Fail closed. A read path that cannot say who is asking does not answer, and it says which
       // of the two reasons it was: no session, or a session that is not built yet.
-      const body = {
-        result_state: 'unauthorised_role',
-        error: {
-          code: 'role',
-          message: cfg.devTrustPrincipal
-            ? 'no tenant was established for this request'
-            : 'the authenticated session is not built yet; this service refuses to guess a tenant',
-        },
-      };
-      sendJson(res, 403, body);
+      sendJson(res, 403, unauthenticatedBody(cfg));
       return;
     }
 
@@ -408,6 +458,9 @@ export function createHandler({
         now: now(),
       };
       const planned = plan(request, ctx);
+      // The role gate sits between planning and execution: the plan names the source, the source
+      // names the capability, and a role without it is refused before a row is read (§13).
+      assertCapability(principal, capabilityForSource(planned.source_id), { path: PATHS.QUERY });
       const envelope = await executePlan(planned, ctx);
       sendJson(res, 200, envelope);
     } catch (error) {
@@ -438,19 +491,12 @@ export function createHandler({
    * judgement that was not recorded.
    */
   async function findingReview(req, res) {
-    const principal = principalOf(req, cfg);
+    const principal = await principalOf(req, cfg, verifier, log);
     if (!principal) {
-      sendJson(res, 403, {
-        result_state: 'unauthorised_role',
-        error: {
-          code: 'role',
-          message: cfg.devTrustPrincipal
-            ? 'no tenant was established for this request'
-            : 'the authenticated session is not built yet; this service refuses to guess a tenant',
-        },
-      });
+      sendJson(res, 403, unauthenticatedBody(cfg));
       return;
     }
+    if (roleRefusal(res, principal, capabilityForEndpoint(PATHS.FINDING_REVIEW), PATHS.FINDING_REVIEW, log)) return;
 
     let body;
     try {
@@ -569,19 +615,12 @@ export function createHandler({
    * never served for a state change that was not recorded.
    */
   async function toolSanction(req, res) {
-    const principal = principalOf(req, cfg);
+    const principal = await principalOf(req, cfg, verifier, log);
     if (!principal) {
-      sendJson(res, 403, {
-        result_state: 'unauthorised_role',
-        error: {
-          code: 'role',
-          message: cfg.devTrustPrincipal
-            ? 'no tenant was established for this request'
-            : 'the authenticated session is not built yet; this service refuses to guess a tenant',
-        },
-      });
+      sendJson(res, 403, unauthenticatedBody(cfg));
       return;
     }
+    if (roleRefusal(res, principal, capabilityForEndpoint(PATHS.TOOL_SANCTION), PATHS.TOOL_SANCTION, log)) return;
 
     let body;
     try {
@@ -690,9 +729,17 @@ export function createHandler({
    * gate with /v1/query so a slow vault cannot exhaust the process.
    */
   async function content(req, res, path) {
-    const principal = principalOf(req, cfg);
+    const principal = await principalOf(req, cfg, verifier, log);
     if (!principal) {
-      sendJson(res, 403, { state: 'refused', error: { code: 'role', message: 'no tenant was established for this request' } });
+      sendJson(res, 403, { state: 'refused', error: { code: 'role', message: 'no signed-in session for this request' } });
+      return;
+    }
+    // The role gate sits on the request that mints a retrieval URL and on the search, before the
+    // vault is called. The vault checks the same role again, because it is the component that
+    // returns content and it must not rely on its caller having done so.
+    const capability = capabilityForEndpoint(path);
+    if (capability && !rolesAllow(principal.roles, capability)) {
+      sendJson(res, 403, { state: 'refused', error: { code: 'role', message: `role ${principal.roles.join(',')} may not use ${capability}` } });
       return;
     }
     let body;

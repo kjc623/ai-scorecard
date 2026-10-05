@@ -87,6 +87,31 @@ export function createQueryApi({ transport }) {
 }
 
 /**
+ * The signed-in session, as the page sees it, or null when there is none.
+ *
+ * This is the one network seam the page has beyond the query and content reads: the browser asks
+ * its own server who it is signed in as, and the server answers with the pages the role may open.
+ * Sample mode and a signed-out page both get `null`, which the navigation reads as "show
+ * everything" — the sample state gallery is not a session. A failed fetch is not an error shown
+ * to the reader; it is the fall-through.
+ *
+ * @param {object} [input]
+ * @param {typeof fetch} [input.fetchImpl]
+ */
+export async function loadSession({ fetchImpl } = {}) {
+  const doFetch = fetchImpl ?? (typeof fetch === 'function' ? fetch.bind(globalThis) : null);
+  if (!doFetch) return null;
+  try {
+    const res = await doFetch('session', { headers: { accept: 'application/json' }, credentials: 'same-origin' });
+    if (!res?.ok) return null;
+    const body = await res.json();
+    return body && typeof body === 'object' ? body : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The canned transport. Keys are matched against the request body's template, source and filter
  * values, so a fixture can answer "the classes screen with a suppressed cell" without the screen
  * knowing a fixture exists.

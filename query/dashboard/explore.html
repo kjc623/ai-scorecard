@@ -1170,6 +1170,31 @@ function createQueryApi({ transport }) {
 }
 
 /**
+ * The signed-in session, as the page sees it, or null when there is none.
+ *
+ * This is the one network seam the page has beyond the query and content reads: the browser asks
+ * its own server who it is signed in as, and the server answers with the pages the role may open.
+ * Sample mode and a signed-out page both get `null`, which the navigation reads as "show
+ * everything" — the sample state gallery is not a session. A failed fetch is not an error shown
+ * to the reader; it is the fall-through.
+ *
+ * @param {object} [input]
+ * @param {typeof fetch} [input.fetchImpl]
+ */
+async function loadSession({ fetchImpl } = {}) {
+  const doFetch = fetchImpl ?? (typeof fetch === 'function' ? fetch.bind(globalThis) : null);
+  if (!doFetch) return null;
+  try {
+    const res = await doFetch('session', { headers: { accept: 'application/json' }, credentials: 'same-origin' });
+    if (!res?.ok) return null;
+    const body = await res.json();
+    return body && typeof body === 'object' ? body : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The canned transport. Keys are matched against the request body's template, source and filter
  * values, so a fixture can answer "the classes screen with a suppressed cell" without the screen
  * knowing a fixture exists.
@@ -3313,6 +3338,32 @@ function readCollapsed(document) {
   return new Set(String(readPref(document, 'sac.nav.collapsed', NAV_FOLDED.join('|'))).split('|').filter(Boolean));
 }
 
+// ─── src/session.js ────────────────────────────────────────────────────
+// session.js — what the navigation hides for a signed-in role.
+//
+// The page never holds a token and never reads one: its server does, and it answers GET /session
+// with the actor, the tenant and the page ids the role may open (tools/session.mjs decides those
+// server-side, so the rule lives in one place). The fetch itself lives in transport.js, the
+// package's one network seam; this module is the pure part — the decision about which nav items
+// survive it.
+//
+// Sample mode — the file opened from disk — has no server and gets `null`, which means "show
+// everything"; that is the sample transport's own state gallery, not a signed-in session.
+
+/**
+ * The nav ids a session may show, or null for "all" (sample mode). A session with no `pages`
+ * is treated as all, so a server that predates this field does not blank the navigation.
+ */
+function allowedPageIds(session) {
+  return Array.isArray(session?.pages) ? new Set(session.pages) : null;
+}
+
+/** Keep only the nav items the session may show. `null` allowed means keep every item. */
+function filterNavItems(items, allowed) {
+  if (!allowed) return items;
+  return items.filter((item) => allowed.has(item.id));
+}
+
 // ─── src/explore-model.js ──────────────────────────────────────────────
 // explore-model.js — what the Explore page can search, and how a typed query becomes closed filters.
 //
@@ -4863,6 +4914,7 @@ function renderExploreDetail(state) {
 
 
 
+
 const DETAIL_CLOSED = Object.freeze({ status: 'closed', key: null, row: null, record: null, submissionId: null });
 
 /** The prompt-text search: nothing asked yet. */
@@ -5343,7 +5395,11 @@ async function bootExplore({ document, api: given, content: givenContent } = {})
   const shellQuery = live ? '?transport=live' : '';
   const collapsed = readCollapsed(document);
   const nav = el('nav');
-  if (nav) nav.innerHTML = renderNav(shellNavItems({ page: `index.html${shellQuery}`, query: shellQuery }), 'explore', { collapsed: [...collapsed] });
+  // A signed-in role may see fewer pages than the shell names; the server decides, and the read
+  // path refuses the rest. Sample mode has no session and keeps the whole navigation.
+  const session = await loadSession();
+  const allowed = allowedPageIds(session);
+  if (nav) nav.innerHTML = renderNav(filterNavItems(shellNavItems({ page: `index.html${shellQuery}`, query: shellQuery }), allowed), 'explore', { collapsed: [...collapsed] });
   wireShell({ document, live, collapsed });
   const api = given ?? (live ? createQueryApi({ transport: httpTransport() }) : null);
   const stub = api ? null : createExploreStub({ latencyMs: 220 });

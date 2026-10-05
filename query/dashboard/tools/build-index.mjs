@@ -37,6 +37,7 @@ export const MODULE_ORDER = Object.freeze([
   'unavailable.js',
   'render.js',
   'shell.js',
+  'session.js',
   'app.js',
 ]);
 
@@ -69,6 +70,7 @@ export const EXPLORE_MODULE_ORDER = Object.freeze([
   'views.js',
   'render.js',
   'shell.js',
+  'session.js',
   'explore-model.js',
   'explore-stub.js',
   'explore-render.js',

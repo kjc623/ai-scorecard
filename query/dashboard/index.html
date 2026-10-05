@@ -1134,6 +1134,31 @@ function createQueryApi({ transport }) {
 }
 
 /**
+ * The signed-in session, as the page sees it, or null when there is none.
+ *
+ * This is the one network seam the page has beyond the query and content reads: the browser asks
+ * its own server who it is signed in as, and the server answers with the pages the role may open.
+ * Sample mode and a signed-out page both get `null`, which the navigation reads as "show
+ * everything" — the sample state gallery is not a session. A failed fetch is not an error shown
+ * to the reader; it is the fall-through.
+ *
+ * @param {object} [input]
+ * @param {typeof fetch} [input.fetchImpl]
+ */
+async function loadSession({ fetchImpl } = {}) {
+  const doFetch = fetchImpl ?? (typeof fetch === 'function' ? fetch.bind(globalThis) : null);
+  if (!doFetch) return null;
+  try {
+    const res = await doFetch('session', { headers: { accept: 'application/json' }, credentials: 'same-origin' });
+    if (!res?.ok) return null;
+    const body = await res.json();
+    return body && typeof body === 'object' ? body : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The canned transport. Keys are matched against the request body's template, source and filter
  * values, so a fixture can answer "the classes screen with a suppressed cell" without the screen
  * knowing a fixture exists.
@@ -3523,6 +3548,32 @@ function readCollapsed(document) {
   return new Set(String(readPref(document, 'sac.nav.collapsed', NAV_FOLDED.join('|'))).split('|').filter(Boolean));
 }
 
+// ─── src/session.js ────────────────────────────────────────────────────
+// session.js — what the navigation hides for a signed-in role.
+//
+// The page never holds a token and never reads one: its server does, and it answers GET /session
+// with the actor, the tenant and the page ids the role may open (tools/session.mjs decides those
+// server-side, so the rule lives in one place). The fetch itself lives in transport.js, the
+// package's one network seam; this module is the pure part — the decision about which nav items
+// survive it.
+//
+// Sample mode — the file opened from disk — has no server and gets `null`, which means "show
+// everything"; that is the sample transport's own state gallery, not a signed-in session.
+
+/**
+ * The nav ids a session may show, or null for "all" (sample mode). A session with no `pages`
+ * is treated as all, so a server that predates this field does not blank the navigation.
+ */
+function allowedPageIds(session) {
+  return Array.isArray(session?.pages) ? new Set(session.pages) : null;
+}
+
+/** Keep only the nav items the session may show. `null` allowed means keep every item. */
+function filterNavItems(items, allowed) {
+  if (!allowed) return items;
+  return items.filter((item) => allowed.has(item.id));
+}
+
 // ─── src/app.js ────────────────────────────────────────────────────────
 // app.js — the shell: hash routing, one data layer, and the screen table of §11.2.
 //
@@ -3533,6 +3584,7 @@ function readCollapsed(document) {
 // `createDashboard` is deliberately DOM-free: it takes an api and returns `load(screenId, params)`,
 // so a test can drive every screen against the stub transport without a browser. `boot()` is the
 // only function that touches a document.
+
 
 
 
@@ -3768,8 +3820,11 @@ async function boot({ document, scenario = 'realistic', api } = {}) {
   const query = live ? '?transport=live' : '';
   const dashboard = createDashboard({ api: active, exploreHref: `explore.html${query}` });
   // The Explore page is a sibling page, not a screen: it is linked from the top of the navigation
-  // and carries the same data source.
-  const navItems = NAV_ITEMS.map((item) => (item.id === 'explore' ? { ...item, href: `explore.html${query}` } : item));
+  // and carries the same data source. A signed-in role may see fewer pages than the shell names;
+  // the server says which, and query-api refuses the reads behind the rest.
+  const session = await loadSession();
+  const allowed = allowedPageIds(session);
+  const navItems = filterNavItems(NAV_ITEMS.map((item) => (item.id === 'explore' ? { ...item, href: `explore.html${query}` } : item)), allowed);
   const collapsed = readCollapsed(document);
 
   let paintedNav = null;

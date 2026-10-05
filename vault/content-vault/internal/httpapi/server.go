@@ -29,6 +29,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/shadow-ai-capture/content-vault/internal/auth"
@@ -102,6 +103,18 @@ func (s *Server) guard(next func(http.ResponseWriter, *http.Request, auth.Princi
 		}
 		next(w, r, p, body)
 	}
+}
+
+// requireRole refuses when the principal carries none of the allowed analyst-app roles. It is
+// checked here, in the component that returns content, as well as in query-api: a role assertion
+// that only the caller enforces is the caller's, not the vault's.
+func (s *Server) requireRole(w http.ResponseWriter, p auth.Principal, allowed ...string) bool {
+	if p.HasAnyRole(allowed...) {
+		return true
+	}
+	s.writeTransportError(w, http.StatusForbidden, "role",
+		"this route needs one of the roles "+strings.Join(allowed, ", ")+" and the caller carried none of them")
+	return false
 }
 
 // ---------------------------------------------------------------------------------------
@@ -262,6 +275,12 @@ func (s *Server) handleFinalise(w http.ResponseWriter, r *http.Request, p auth.P
 }
 
 func (s *Server) handleRetrieval(w http.ResponseWriter, r *http.Request, p auth.Principal, body []byte) {
+	// Minting a retrieval URL is the moment content is authorised (task 11). Only a session that
+	// may read content may ask; the vault's own check is the one that counts because it mints the
+	// capability.
+	if !s.requireRole(w, p, "content_reader") {
+		return
+	}
 	var req retrievalRequestJSON
 	if !s.decode(w, p, body, &req) {
 		return
@@ -411,6 +430,11 @@ func (s *Server) handleRotate(w http.ResponseWriter, r *http.Request, p auth.Pri
 }
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request, p auth.Principal, body []byte) {
+	// A prompt-text search returns content-derived snippets, so it needs a role that may read
+	// content: an analyst (search) or a content reader (search and retrieval).
+	if !s.requireRole(w, p, "analyst", "content_reader") {
+		return
+	}
 	var req searchRequestJSON
 	if !s.decode(w, p, body, &req) {
 		return

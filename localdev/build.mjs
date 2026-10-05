@@ -82,6 +82,9 @@ const IMAGES = [
   // contentlab is the stand-in for ciphertext storage and the analyst's retrieval page, which is
   // what lets the auth lab run the M3 content path end to end (docs/02 §10, §11).
   { name: 'contentlab', dir: 'localdev/contentlab', pkg: '.', kind: 'go' },
+  // oidc is the local OpenID Connect stand-in task 11 needs: a real authorization-code + PKCE
+  // flow that mints RS256 tokens, so query-api verifies a signed token rather than a header.
+  { name: 'oidc', dir: 'localdev/oidc', pkg: '.', kind: 'go' },
 ];
 
 // Binaries that run on the host, not in a container. authlab generates the dev PKI and drives the

@@ -61,6 +61,10 @@ export function createContentForwarder({ vaultUrl, scope = '', fetchImpl = globa
         'x-sac-service': 'query-api',
         'x-sac-subject': principal.actorId,
         'x-sac-tenant': principal.tenant,
+        // The roles are the session's, taken from the verified token. The vault checks them
+        // against the route; it is the component that returns content, so it does not rely on
+        // its caller having enforced the role. It never reads a role from the browser.
+        'x-sac-roles': (principal.roles ?? []).join(','),
       },
       body: JSON.stringify(body),
     });

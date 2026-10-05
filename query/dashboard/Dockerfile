@@ -19,7 +19,7 @@ COPY query/dashboard/package.json ./package.json
 COPY query/dashboard/index.html query/dashboard/module.html query/dashboard/explore.html ./
 COPY query/dashboard/styles.css query/dashboard/explore.css ./
 COPY query/dashboard/src/ ./src/
-COPY query/dashboard/tools/serve.mjs ./tools/serve.mjs
+COPY query/dashboard/tools/serve.mjs query/dashboard/tools/session.mjs ./tools/
 
 RUN adduser -D -H -u 10001 sac \
  && chown -R 10001:10001 /app
@@ -28,6 +28,6 @@ EXPOSE 8787
 USER 10001:10001
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=3s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:8787/explore.html').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  CMD node -e "fetch('http://127.0.0.1:8787/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 ENTRYPOINT ["node", "tools/serve.mjs", "--host", "0.0.0.0"]

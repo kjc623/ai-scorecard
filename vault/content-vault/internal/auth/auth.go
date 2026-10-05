@@ -39,6 +39,24 @@ type Principal struct {
 	// TenantID is the tenant the caller is acting for. It comes from the authenticated principal
 	// and never from the request body (docs/02 §12).
 	TenantID string
+	// Roles are the analyst-app roles the human session carries, as the caller (query-api)
+	// verified from the signed token. They are optional: a service caller that acts without a
+	// human (control-api on the device path, ops on the retention path) names none, and the
+	// browser-facing read routes refuse it for that. The vault checks them again on those routes
+	// because it is the component that returns content.
+	Roles []string
+}
+
+// HasAnyRole reports whether the principal carries at least one of the roles named.
+func (p Principal) HasAnyRole(allowed ...string) bool {
+	for _, have := range p.Roles {
+		for _, want := range allowed {
+			if have == want {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Validate rejects an incomplete principal rather than defaulting any field.
@@ -68,6 +86,10 @@ type HeaderAuthenticator struct {
 	ServiceHeader string
 	SubjectHeader string
 	TenantHeader  string
+	// RolesHeader carries a comma-separated list of the session's analyst-app roles. It is set by
+	// query-api from the verified token; a caller that names none is unaffected unless it asks for
+	// a route that needs one.
+	RolesHeader string
 	// AllowedServices is the closed set of callers. An unknown service is refused rather than
 	// trusted: the ingress may have authenticated *something*, and the vault still decides who
 	// may read content.
@@ -84,6 +106,7 @@ func NewHeaderAuthenticator(allowed ...string) *HeaderAuthenticator {
 		ServiceHeader:   "X-Sac-Service",
 		SubjectHeader:   "X-Sac-Subject",
 		TenantHeader:    "X-Sac-Tenant",
+		RolesHeader:     "X-Sac-Roles",
 		AllowedServices: set,
 	}
 }
@@ -95,6 +118,7 @@ func (h *HeaderAuthenticator) Authenticate(r *http.Request) (Principal, error) {
 		Service:  strings.TrimSpace(r.Header.Get(h.ServiceHeader)),
 		Subject:  strings.TrimSpace(r.Header.Get(h.SubjectHeader)),
 		TenantID: strings.ToLower(strings.TrimSpace(r.Header.Get(h.TenantHeader))),
+		Roles:    splitRoles(r.Header.Get(h.RolesHeader)),
 	}
 	if err := p.Validate(); err != nil {
 		return Principal{}, fmt.Errorf("%w: %v", ErrUnauthenticated, err)
@@ -119,6 +143,18 @@ func (s StaticAuthenticator) Authenticate(*http.Request) (Principal, error) {
 		return Principal{}, fmt.Errorf("%w: %v", ErrUnauthenticated, err)
 	}
 	return s.P, nil
+}
+
+// splitRoles reads the comma-separated roles header. Empty entries are dropped, so a trailing
+// comma, or a caller that names no role, yields an empty list rather than a role named "".
+func splitRoles(raw string) []string {
+	out := []string{}
+	for _, part := range strings.Split(raw, ",") {
+		if role := strings.TrimSpace(part); role != "" {
+			out = append(out, role)
+		}
+	}
+	return out
 }
 
 func looksLikeUUID(s string) bool {

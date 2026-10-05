@@ -15,6 +15,7 @@
 import { loadConfig, redactedDsn, ConfigError } from './config.js';
 import { createQueryServer, PATHS } from './server.js';
 import { createPool } from './pool.js';
+import { createVerifier } from './auth.js';
 
 /** Graceful shutdown: stop accepting, let in-flight requests finish, then exit. */
 function installSignalHandlers(service, log) {
@@ -98,7 +99,18 @@ export async function main(env = process.env, { startClient } = {}) {
     return 1;
   }
 
-  const service = createQueryServer({ cfg, pool, log });
+  const service = createQueryServer({
+    cfg,
+    pool,
+    log,
+    verifier: createVerifier({
+      issuer: cfg.oidc.issuer,
+      audience: cfg.oidc.audience,
+      jwksUrl: cfg.oidc.jwksUrl,
+      tenantClaim: cfg.oidc.tenantClaim,
+      rolesClaim: cfg.oidc.rolesClaim,
+    }),
+  });
   let address;
   try {
     address = await service.listen(cfg.http);
@@ -112,8 +124,10 @@ export async function main(env = process.env, { startClient } = {}) {
     `query-api: listening on ${cfg.http.host}:${cfg.http.port} as ${cfg.role} ` +
       `(${redactedDsn(cfg)}); probes ${PATHS.LIVENESS} ${PATHS.READINESS}, read path ${PATHS.QUERY}`,
   );
-  if (!cfg.devTrustPrincipal) {
-    log.info('query-api: no authenticated session is wired yet, so every read returns 403 by design');
+  if (cfg.oidc.enabled) {
+    log.info(`query-api: verifying sessions from ${cfg.oidc.issuer} for audience ${cfg.oidc.audience}`);
+  } else if (!cfg.devTrustPrincipal) {
+    log.info('query-api: no identity provider is configured, so every read returns 403 by design');
   }
 
   installSignalHandlers(service, log);
