@@ -303,7 +303,8 @@ func currentInt(ctx context.Context, tx *sql.Tx, query, tenantID, appliesTo stri
 	var v sql.NullInt64
 	if err := tx.QueryRowContext(ctx, query, tenantID, appliesTo).Scan(&v); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, ErrUnknownTenant
+			// No retention row yet is a tenant with no override, not an unknown tenant.
+			return nil, nil
 		}
 		return nil, fmt.Errorf("store: read current value: %w", err)
 	}
