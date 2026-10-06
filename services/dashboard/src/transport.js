@@ -9,7 +9,7 @@
 // which checks the admin role and audits each write.
 
 import {
-  QUERY_ENDPOINT, CONTENT_SEARCH_ENDPOINT, CONTENT_RETRIEVAL_ENDPOINT, RESULT_STATES,
+  QUERY_ENDPOINT, CONTENT_SEARCH_ENDPOINT, CONTENT_RETRIEVAL_ENDPOINT, LIST_EXPORT_ENDPOINT, RESULT_STATES,
   ADMIN_DEPLOYMENT_ENDPOINT, ADMIN_PACKAGE_ENDPOINT, ADMIN_VERIFICATION_ENDPOINT, ADMIN_KEYS_ENDPOINT, ADMIN_SCIM_TOKENS_ENDPOINT,
   ADMIN_SETTINGS_ENDPOINT, ADMIN_SETTINGS_COLLECTION_MODE_ENDPOINT, ADMIN_SETTINGS_SCOPE_OVERRIDE_ENDPOINT,
   ADMIN_SETTINGS_RETENTION_ENDPOINT, ADMIN_SETTINGS_CONTENT_SEARCH_ENDPOINT, ADMIN_SETTINGS_TOOL_SANCTION_ENDPOINT,
@@ -208,6 +208,61 @@ export function httpContentTransport({ fetchImpl } = {}) {
     search: (body) => post(CONTENT_SEARCH_ENDPOINT, body),
     retrieve: (body) => post(CONTENT_RETRIEVAL_ENDPOINT, body),
     readUrl: get,
+  });
+}
+
+/**
+ * The list export: the current filtered events or findings list as a bounded CSV. It is a query-api
+ * write path in the sense that it produces a downloadable artifact server-side; it returns a
+ * single-use, short-lived download link rather than the rows themselves, and the audit row records
+ * the filters. The answer is `{state: 'available', download_url, row_count}` or a refusal, so the
+ * page never tells a network failure from a refusal by catching an exception.
+ *
+ * @param {object} input
+ * @param {(body: object) => Promise<object>} input.transport
+ */
+export function createListExportApi({ transport }) {
+  if (!transport || typeof transport.post !== 'function') {
+    throw new TypeError('createListExportApi needs a transport with post(body).');
+  }
+  async function list(body) {
+    let answer;
+    try {
+      answer = await transport.post(body);
+    } catch (error) {
+      return { state: 'refused', error: { code: 'transport_unavailable', message: String(error?.message ?? error) } };
+    }
+    if (answer?.result_state === 'ok' && typeof answer.export?.download_url === 'string') {
+      return { state: 'available', download_url: answer.export.download_url, row_count: answer.export.row_count ?? null };
+    }
+    return { state: 'refused', error: exportErrorOf(answer) };
+  }
+  return Object.freeze({ list });
+}
+
+/** A list-export refusal's code and sentence, whichever error spelling the server used. */
+function exportErrorOf(body) {
+  const code = body?.error?.code ?? body?.result_state ?? 'refused';
+  const message = body?.error?.message ?? 'The export was not served.';
+  return Object.freeze({ code: typeof code === 'string' && code !== '' ? code : 'refused', message });
+}
+
+/** The real list-export transport: one POST on the page's own origin. */
+export function httpExportTransport({ fetchImpl } = {}) {
+  const doFetch = fetchImpl ?? (typeof fetch === 'function' ? fetch.bind(globalThis) : null);
+  if (!doFetch) {
+    throw new TransportError({ result_state: 'busy', error: { code: 'no_fetch', message: 'This environment has no fetch implementation.' } }, { network: true });
+  }
+  return Object.freeze({
+    async post(body) {
+      const response = await doFetch(LIST_EXPORT_ENDPOINT, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      return response.json();
+    },
   });
 }
 

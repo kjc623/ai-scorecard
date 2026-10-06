@@ -402,12 +402,47 @@ test('switching dataset carries the filters both have and drops the rest by name
   assert.match(renderExploreSummary(explorer.state), /Audited read, entry/);
 });
 
-test('the page offers no export, no download and no external link', () => {
+test('the page offers the export only for events and findings, and no external link', async () => {
   const template = readFileSync(join(ROOT, 'explore.html'), 'utf8');
-  const sources = ['explore-render.js', 'explore-app.js'].map((f) => readFileSync(join(ROOT, 'src', f), 'utf8')).join('\n');
+  const sources = ['explore-render.js', 'explore-app.js', 'explore-model.js'].map((f) => readFileSync(join(ROOT, 'src', f), 'utf8')).join('\n');
+  // The download is a server-minted link: the client names no .csv file and no download attribute,
+  // and loads nothing from another host.
   assert.ok(!/href="http/.test(template + sources));
-  assert.ok(!/download|export csv/i.test(template));
   assert.ok(!/\bdownload=|\.csv\b/.test(sources));
+
+  const ready = { dataset: 'events', status: 'ready', rows: [], result: { page: {} }, filters: {}, includeClientGenerated: false, windowPreset: 'd7', export: { status: 'idle' } };
+  assert.match(renderExploreSummary(ready), /Export CSV/, 'events offer the export');
+  assert.match(renderExploreSummary({ ...ready, dataset: 'findings' }), /Export CSV/, 'findings offer the export');
+  assert.ok(!/Export CSV/.test(renderExploreSummary({ ...ready, dataset: 'devices' })), 'devices do not export');
+  assert.ok(!/Export CSV/.test(renderExploreSummary({ ...ready, dataset: 'audit' })), 'the audit trail does not export');
+});
+
+test('exporting the list follows the server link and reports the refusal otherwise', async () => {
+  const stub = createExploreFake({ now, scenario: 'realistic' });
+  const api = createQueryApi({ transport: { async send(body) { return stub.send(body); } } });
+
+  const saved = [];
+  const ex = createExplorer({
+    api,
+    export: { async list() { return { state: 'available', download_url: '/v1/export/x', row_count: 7 }; } },
+    save: (url) => saved.push(url),
+    now,
+  });
+  await ex.run();
+  await ex.exportList();
+  assert.deepEqual(saved, ['/v1/export/x'], 'the link was handed to the browser');
+  assert.equal(ex.state.export.status, 'saved');
+
+  const refused = createExplorer({
+    api,
+    export: { async list() { return { state: 'refused', error: { code: 'query_too_broad', message: 'too large' } }; } },
+    save: () => {},
+    now,
+  });
+  await refused.run();
+  await refused.exportList();
+  assert.equal(refused.state.export.status, 'refused');
+  assert.equal(refused.state.export.problem.code, 'query_too_broad');
 });
 
 test('the stylesheet follows the system colour scheme and honours reduced motion', () => {

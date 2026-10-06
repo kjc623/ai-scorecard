@@ -161,7 +161,26 @@ export function renderExploreSummary(state) {
   const newer = state.result.page?.newer_events_exist
     ? '<button type="button" class="x-link" data-act="run">Newer rows have arrived. Search again</button>'
     : '';
-  return `<p class="x-summary-line">${parts.map((p) => `<span>${p}</span>`).join('')}${newer}</p>`;
+  const exportNote = exploreExportNote(state, dataset);
+  return `<p class="x-summary-line">${parts.map((p) => `<span>${p}</span>`).join('')}${newer}${exportNote}</p>`;
+}
+
+/**
+ * The export action, offered only for the two lists that export as per-person rows (events and
+ * findings). Devices and the audit trail are not exportable here, so no export can become a ranking
+ * of people. The button shows the export's state: sending, saved, or refused with the reason.
+ */
+function exploreExportNote(state, dataset) {
+  if (!dataset.exportable) return '';
+  const exp = state.export ?? { status: 'idle' };
+  if (exp.status === 'exporting') return '<button type="button" class="x-link" disabled>Exporting CSV…</button>';
+  if (exp.status === 'saved') {
+    return `<span class="x-sub">Exported ${exp.rowCount != null ? `${escapeHtml(formatCount(exp.rowCount))} row${exp.rowCount === 1 ? '' : 's'}` : 'the list'} as CSV.</span>`;
+  }
+  if (exp.status === 'refused') {
+    return `<span class="x-sub" title="${escapeHtml(exp.problem?.message ?? '')}">Export refused${exp.problem?.code ? `: ${escapeHtml(exp.problem.code)}` : ''}.</span>`;
+  }
+  return '<button type="button" class="x-link" data-act="export">Export CSV</button>';
 }
 
 function exploreHead(dataset) {

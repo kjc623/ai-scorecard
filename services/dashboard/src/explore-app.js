@@ -14,7 +14,7 @@
 //   * a refusal is a state to show, never an empty list;
 //   * an answer that arrives after a newer search began is discarded.
 
-import { createQueryApi, httpTransport, createContentApi, httpContentTransport, loadSession } from './transport.js';
+import { createQueryApi, httpTransport, createContentApi, httpContentTransport, createListExportApi, httpExportTransport, loadSession } from './transport.js';
 import { renderNav } from './render.js';
 import { shellNavItems, readCollapsed, wireShell } from './shell.js';
 import { allowedPageIds, filterNavItems } from './session.js';
@@ -86,10 +86,13 @@ function exploreRefusalFrom(error) {
  *
  * @param {object} input
  * @param {{run: (body: object) => Promise<object>}} input.api
+ * @param {object} [input.content]
+ * @param {{list: (body: object) => Promise<object>}} [input.export]
+ * @param {(url: string) => void} [input.save]  hands a download link to the browser
  * @param {() => Date} [input.now]
  * @param {(state: object) => void} [input.onChange]
  */
-export function createExplorer({ api, content = null, now = () => new Date(), onChange = () => {} }) {
+export function createExplorer({ api, content = null, export: exportApi = null, save = () => {}, now = () => new Date(), onChange = () => {} }) {
   const first = EXPLORE_DATASETS[EXPLORE_DEFAULT_DATASET];
   let state = Object.freeze({
     dataset: first.id,
@@ -108,6 +111,8 @@ export function createExplorer({ api, content = null, now = () => new Date(), on
     content: CONTENT_IDLE,
     /** Whether this page has a content path at all. Without one the two features say so. */
     contentAvailable: Boolean(content),
+    /** The list export: idle, exporting, an error, or a saved download. */
+    export: Object.freeze({ status: 'idle', problem: null, rowCount: null }),
     shell: Object.freeze({ coverage: null, freshness: null }),
   });
   /** The query the rows on screen belong to: what later pages must repeat exactly. */
@@ -486,10 +491,38 @@ export function createExplorer({ api, content = null, now = () => new Date(), on
     });
   }
 
+  /**
+   * Export the current filtered events or findings list. The list on screen is re-issued as an
+   * export: query-api generates a bounded CSV server-side and returns a single-use, short-lived
+   * download link, which is handed to the browser. The audit row records the filters.
+   */
+  async function exportList() {
+    const dataset = EXPLORE_DATASETS[state.dataset];
+    if (!dataset.exportable || state.status !== 'ready' || !ran) return state;
+    set({ export: Object.freeze({ status: 'exporting', problem: null, rowCount: null }) });
+    if (!exportApi) {
+      set({ export: Object.freeze({ status: 'refused', problem: Object.freeze({ code: 'no_export_path', message: 'This page has no export path behind it.' }), rowCount: null }) });
+      return state;
+    }
+    const answer = await exportApi.list(buildExploreRequest({
+      dataset,
+      filters: state.filters,
+      window: state.windowPreset ? windowFor(state.windowPreset, now()) : null,
+      includeClientGenerated: state.includeClientGenerated,
+    }));
+    if (answer.state === 'available' && typeof answer.download_url === 'string' && answer.download_url !== '') {
+      save(answer.download_url);
+      set({ export: Object.freeze({ status: 'saved', problem: null, rowCount: answer.row_count ?? null }) });
+      return state;
+    }
+    set({ export: Object.freeze({ status: 'refused', problem: Object.freeze(answer.error ?? { code: 'refused', message: 'The export was not served.' }), rowCount: null }) });
+    return state;
+  }
+
   return Object.freeze({
     get state() { return state; },
     run, loadMore, setQuery, setFilter, clearFilters, setDataset, setWindow, setIncludeClientGenerated, open, close, restore, hash,
-    searchText, loadMoreText, setTextPageSize, clearText, openHit, retrieveContent, hideContent,
+    searchText, loadMoreText, setTextPageSize, clearText, openHit, retrieveContent, hideContent, exportList,
   });
 }
 
@@ -503,8 +536,9 @@ export function createExplorer({ api, content = null, now = () => new Date(), on
  * @param {Document} input.document
  * @param {object} [input.api]     a query api (createQueryApi); the page origin's otherwise
  * @param {object} [input.content] a content api (createContentApi); the page origin's otherwise
+ * @param {object} [input.export]  a list-export api (createListExportApi); the page origin's otherwise
  */
-export async function bootExplore({ document, api: given, content: givenContent } = {}) {
+export async function bootExplore({ document, api: given, content: givenContent, export: givenExport } = {}) {
   const el = (id) => document.getElementById(id);
   const collapsed = readCollapsed(document);
   const nav = el('nav');
@@ -516,10 +550,21 @@ export async function bootExplore({ document, api: given, content: givenContent 
   wireShell({ document, collapsed, session });
   const api = given ?? createQueryApi({ transport: httpTransport() });
   const content = givenContent ?? createContentApi({ transport: httpContentTransport() });
+  const exportApi = givenExport ?? createListExportApi({ transport: httpExportTransport() });
   const textInput = el('x-text-query');
   let lastHash = null;
 
-  const explorer = createExplorer({ api, content, onChange: paint });
+  /** Hand a download link to the browser as a file the server has already named. */
+  const save = (url) => {
+    const link = document.createElement('a');
+    link.href = url;
+    link.rel = 'noopener';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  };
+
+  const explorer = createExplorer({ api, content, export: exportApi, save, onChange: paint });
 
   /** Replace a region only when its markup changed, so an untouched region keeps its focus. */
   const painted = new Map();
@@ -608,6 +653,7 @@ export async function bootExplore({ document, api: given, content: givenContent 
     else if (act === 'clear') explorer.clearFilters();
     else if (act === 'run') explorer.run();
     else if (act === 'more') explorer.loadMore();
+    else if (act === 'export') explorer.exportList();
     else if (act === 'open') openRow(target.dataset.key);
     else if (act === 'close') closeDetail();
     else if (act === 'hit') {

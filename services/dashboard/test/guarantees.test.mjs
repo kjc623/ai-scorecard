@@ -332,7 +332,7 @@ test('the only endpoints the pages call are the query endpoint, the two content 
   // read configuration and never data. Anything else named here would be another way in.
   const files = sourceFiles().filter((rel) => rel.startsWith('src/'));
   const allowed = [
-    ['/v1/', 'query'], ['/v1/', 'content-search'], ['/v1/', 'content/retrieval'],
+    ['/v1/', 'query'], ['/v1/', 'content-search'], ['/v1/', 'content/retrieval'], ['/v1/', 'list-export'],
     ['/admin/v1/', 'deployment'], ['/admin/v1/', 'deployment/package'], ['/admin/v1/', 'deployment/verification'],
     ['/admin/v1/', 'deployment/keys'], ['/admin/v1/', 'scim/tokens'],
     ['/admin/v1/', 'settings'], ['/admin/v1/', 'settings/collection-mode'], ['/admin/v1/', 'settings/scope-override'],

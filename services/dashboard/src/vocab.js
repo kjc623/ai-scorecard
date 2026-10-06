@@ -21,6 +21,8 @@ export const QUERY_VERSION = '1';
 export const QUERY_ENDPOINT = '/v1/query';
 export const CONTENT_SEARCH_ENDPOINT = '/v1/content-search';
 export const CONTENT_RETRIEVAL_ENDPOINT = '/v1/content/retrieval';
+/** The list export: the current filtered events or findings list, as a bounded CSV via a link. */
+export const LIST_EXPORT_ENDPOINT = '/v1/list-export';
 
 /**
  * The admin API behind Settings → Deployment. It is control-api's, not the read path's: the dashboard server forwards /admin/v1/* there with the session's product token, and
