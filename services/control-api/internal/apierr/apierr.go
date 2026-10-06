@@ -50,6 +50,12 @@ const (
 	CodeReleaseUnavailable  = "release_unavailable"
 	CodeUnsupportedFormat   = "unsupported_format"
 	CodeInvalidVerification = "invalid_device_verification"
+
+	// The Settings API's refusals, each named so the page can say what the database refused.
+	CodeCollectionExceedsCeiling = "collection_exceeds_ceiling"
+	CodeScopeOverrideTooWide     = "scope_override_too_wide"
+	CodeSearchTierRequiresMode   = "search_tier_requires_mode"
+	CodeRetentionOutOfRange      = "retention_out_of_range"
 )
 
 // Error is a decided failure. Message is written for the caller; Cause, when set, is logged and

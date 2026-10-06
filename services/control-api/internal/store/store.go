@@ -187,6 +187,8 @@ type PolicyTenant struct {
 	Status        string
 	IngestEnabled bool
 	CeilingMode   string
+	// CollectionMode is the requested mode, resolved to the ceiling when none is set.
+	CollectionMode string
 }
 
 // Active mirrors Tenant.Active.
@@ -196,6 +198,8 @@ func (t PolicyTenant) Active() bool { return t.Status != "closed" && t.IngestEna
 type PolicyInputs struct {
 	Tenant            PolicyTenant
 	InterceptionHosts []string
+	// ScopeOverrides is the tenant's narrower per-tool modes, keyed by tool fingerprint.
+	ScopeOverrides map[string]string
 }
 
 // PolicyBundle is one ops.policy_bundle row. SignedEnvelope is the exact bytes GET /v1/policy
@@ -223,6 +227,42 @@ type MintDecision struct {
 	Audit  *AuditEntry
 }
 
+// RetentionDefaults is the fallback retention the schema seeds (ref.retention_class), shown beside
+// the tenant's own period when the tenant has not overridden it.
+type RetentionDefaults struct {
+	EventDays   int
+	ContentDays int
+}
+
+// ToolDecision is one tool's sanction state as the Settings page shows it: the catalogue's
+// fingerprint and name, and the tenant's decision (unknown when none has been made).
+type ToolDecision struct {
+	ToolFingerprint string
+	DisplayName     string
+	SanctionedState string
+}
+
+// DeviceMode is the collection mode a device reported it has actually applied, from ops.device.
+type DeviceMode struct {
+	DeviceID       string
+	Hostname       string
+	CollectionMode string
+	LastSeenAt     *time.Time
+}
+
+// Settings is everything the Settings page reads in one round trip.
+type Settings struct {
+	CeilingMode     string
+	CollectionMode  string            // "" means "follow the ceiling"
+	ScopeOverrides  map[string]string // tool fingerprint -> mode
+	EventRetentionDays   *int
+	ContentRetentionDays *int
+	ContentSearch   string
+	RetentionDefaults RetentionDefaults
+	Tools           []ToolDecision
+	Devices         []DeviceMode
+}
+
 // Errors callers distinguish. Every other error is an infrastructure failure and is retryable.
 var (
 	ErrUnknownTenant     = errors.New("store: tenant unknown")
@@ -242,6 +282,14 @@ var (
 	ErrIntuneDeviceConflict = errors.New("store: intune device id already bound to another device")
 	// ErrNoPolicyBundle means the tenant has no servable signed bundle.
 	ErrNoPolicyBundle = errors.New("store: no policy bundle")
+	// ErrCollectionExceedsCeiling is a requested mode wider than the tenant's ceiling.
+	ErrCollectionExceedsCeiling = errors.New("store: collection mode exceeds the tenant ceiling")
+	// ErrScopeOverrideTooWide is a per-tool override wider than the requested mode or ceiling.
+	ErrScopeOverrideTooWide = errors.New("store: scope override is wider than the requested mode")
+	// ErrSearchTierRequiresCeiling is a content search tier the tenant's ceiling cannot back.
+	ErrSearchTierRequiresCeiling = errors.New("store: content search tier needs a higher ceiling mode")
+	// ErrRetentionOutOfRange is a retention period outside the retention classes' days.
+	ErrRetentionOutOfRange = errors.New("store: retention period is outside the retention classes")
 )
 
 // Store is control-api's persistence. *SQLStore implements it; tests use storetest.Memory.
@@ -298,6 +346,25 @@ type Store interface {
 	// inserts what it returns, and returns the bundle in force afterwards. The lock makes replicas
 	// that see the same changed inputs mint one version, not two.
 	MintPolicyBundle(ctx context.Context, tenantID string, decide func(latest *PolicyBundle) (MintDecision, error)) (PolicyBundle, error)
+
+	// Settings reads the Settings page's state. ErrUnknownTenant when the tenant does not exist.
+	Settings(ctx context.Context, tenantID string) (Settings, error)
+	// SetCollectionMode sets the requested collection mode; a nil mode follows the ceiling again.
+	// ErrCollectionExceedsCeiling when the mode is wider than the ceiling.
+	SetCollectionMode(ctx context.Context, tenantID string, mode *string, audit AuditEntry) error
+	// SetScopeOverride sets or clears (nil mode) one tool's narrower override.
+	// ErrScopeOverrideTooWide when the override is wider than the requested mode or the ceiling.
+	SetScopeOverride(ctx context.Context, tenantID string, fingerprint string, mode *string, audit AuditEntry) error
+	// SetRetention sets the retention period for events or content, as the tenant's
+	// ops.retention_policy. appliesTo is "event" or "content". ErrRetentionOutOfRange when ttlDays
+	// is outside the retention classes.
+	SetRetention(ctx context.Context, tenantID string, appliesTo string, ttlDays int, audit AuditEntry) error
+	// SetContentSearch sets the content search tier. ErrSearchTierRequiresCeiling when the tier
+	// needs a ceiling the tenant does not have.
+	SetContentSearch(ctx context.Context, tenantID string, tier string, audit AuditEntry) error
+	// SetToolSanction sets one tool's sanction decision. state is sanctioned, unsanctioned or
+	// unknown; setting unknown clears the attribution.
+	SetToolSanction(ctx context.Context, tenantID string, fingerprint string, state string, audit AuditEntry) error
 
 	// Ping checks the database is reachable, for readiness.
 	Ping(ctx context.Context) error

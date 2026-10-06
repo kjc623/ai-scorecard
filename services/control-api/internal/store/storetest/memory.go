@@ -42,6 +42,14 @@ type Memory struct {
 	scimUsers    map[string]int64
 	scimGroups   map[string]int64
 	scimLast     map[string]time.Time
+
+	collectionModes map[string]string
+	scopeOverrides  map[string]map[string]string
+	retention       map[string]map[string]int
+	contentSearch   map[string]string
+	toolState       map[string]map[string]string
+	catalogueTools  []store.ToolDecision
+	deviceModes     map[string]string
 }
 
 var _ store.Store = (*Memory)(nil)
@@ -65,6 +73,12 @@ func New() *Memory {
 		scimUsers:         map[string]int64{},
 		scimGroups:        map[string]int64{},
 		scimLast:          map[string]time.Time{},
+		collectionModes:   map[string]string{},
+		scopeOverrides:    map[string]map[string]string{},
+		retention:         map[string]map[string]int{},
+		contentSearch:     map[string]string{},
+		toolState:         map[string]map[string]string{},
+		deviceModes:       map[string]string{},
 	}
 	for _, c := range []string{"capture_extension", "egress_proxy", "loopback_broker", "cli_shim", "process_detector", "classifier_host"} {
 		m.collectors[c] = true
@@ -225,6 +239,58 @@ func (m *Memory) SetCeiling(tenantID, mode string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.ceilings[tenantID] = mode
+}
+
+// SeedCollectionMode seeds the tenant's requested collection mode; "" means follow the ceiling.
+func (m *Memory) SeedCollectionMode(tenantID, mode string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.collectionModes[tenantID] = mode
+}
+
+// SeedScopeOverride seeds one tool's narrower override; "" clears it.
+func (m *Memory) SeedScopeOverride(tenantID, fingerprint, mode string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.scopeOverrides[tenantID] == nil {
+		m.scopeOverrides[tenantID] = map[string]string{}
+	}
+	if mode == "" {
+		delete(m.scopeOverrides[tenantID], fingerprint)
+	} else {
+		m.scopeOverrides[tenantID][fingerprint] = mode
+	}
+}
+
+// SeedRetention seeds the tenant's event or content retention in days.
+func (m *Memory) SeedRetention(tenantID, appliesTo string, days int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.retention[tenantID] == nil {
+		m.retention[tenantID] = map[string]int{}
+	}
+	m.retention[tenantID][appliesTo] = days
+}
+
+// SeedContentSearch seeds the tenant's content search tier.
+func (m *Memory) SeedContentSearch(tenantID, tier string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.contentSearch[tenantID] = tier
+}
+
+// SetCatalogueTools replaces the tool catalogue the Settings page reads.
+func (m *Memory) SetCatalogueTools(tools ...store.ToolDecision) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.catalogueTools = append([]store.ToolDecision(nil), tools...)
+}
+
+// SetDeviceMode seeds a device's applied collection mode.
+func (m *Memory) SetDeviceMode(tenantID, deviceID, mode string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.deviceModes[key(tenantID, deviceID)] = mode
 }
 
 // SetCatalogueHosts replaces the tool catalogue's TLS hosts.
@@ -411,6 +477,9 @@ func (m *Memory) RecordHealth(_ context.Context, tenantID, deviceID string, at t
 			d.ManagedState = dev.ManagedState
 		}
 		m.devices[dk] = d
+	}
+	if dev.CollectionMode != "" {
+		m.deviceModes[dk] = dev.CollectionMode
 	}
 	return nil
 }
@@ -612,9 +681,18 @@ func (m *Memory) PolicyInputs(_ context.Context, tenantID string) (store.PolicyI
 	if ceiling == "" {
 		ceiling = string(protocol.ModeM0)
 	}
+	requested := m.collectionModes[tenantID]
+	if requested == "" {
+		requested = ceiling
+	}
 	in := store.PolicyInputs{Tenant: store.PolicyTenant{
-		TenantID: tenantID, Status: t.Status, IngestEnabled: t.IngestEnabled, CeilingMode: ceiling,
+		TenantID: tenantID, Status: t.Status, IngestEnabled: t.IngestEnabled,
+		CeilingMode: ceiling, CollectionMode: requested,
 	}}
+	in.ScopeOverrides = map[string]string{}
+	for k, v := range m.scopeOverrides[tenantID] {
+		in.ScopeOverrides[k] = v
+	}
 	seen := map[string]bool{}
 	for _, h := range m.hosts {
 		h = strings.ToLower(strings.TrimSpace(h))
@@ -669,4 +747,210 @@ func (m *Memory) MintPolicyBundle(_ context.Context, tenantID string, decide fun
 		m.audit(*d.Audit)
 	}
 	return nb, nil
+}
+
+// Settings implements store.Store.
+func (m *Memory) Settings(_ context.Context, tenantID string) (store.Settings, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.tenants[tenantID]; !ok {
+		return store.Settings{}, store.ErrUnknownTenant
+	}
+	ceiling := m.ceilings[tenantID]
+	if ceiling == "" {
+		ceiling = string(protocol.ModeM0)
+	}
+	out := store.Settings{
+		CeilingMode:     ceiling,
+		CollectionMode:  m.collectionModes[tenantID],
+		ScopeOverrides:  map[string]string{},
+		ContentSearch:   m.contentSearch[tenantID],
+		RetentionDefaults: store.RetentionDefaults{EventDays: 90, ContentDays: 30},
+	}
+	if out.ContentSearch == "" {
+		out.ContentSearch = "disabled"
+	}
+	for k, v := range m.scopeOverrides[tenantID] {
+		out.ScopeOverrides[k] = v
+	}
+	if d, ok := m.retention[tenantID]["event"]; ok {
+		v := d
+		out.EventRetentionDays = &v
+	}
+	if d, ok := m.retention[tenantID]["content"]; ok {
+		v := d
+		out.ContentRetentionDays = &v
+	}
+	for _, c := range m.catalogueTools {
+		state := "unknown"
+		if s, ok := m.toolState[tenantID][c.ToolFingerprint]; ok {
+			state = s
+		}
+		out.Tools = append(out.Tools, store.ToolDecision{ToolFingerprint: c.ToolFingerprint, DisplayName: c.DisplayName, SanctionedState: state})
+	}
+	for _, d := range m.devices {
+		if d.TenantID != tenantID || d.RevokedAt != nil {
+			continue
+		}
+		out.Devices = append(out.Devices, store.DeviceMode{
+			DeviceID: d.DeviceID, Hostname: d.Hostname,
+			CollectionMode: m.deviceModes[key(tenantID, d.DeviceID)],
+		})
+	}
+	return out, nil
+}
+
+// SetCollectionMode implements store.Store.
+func (m *Memory) SetCollectionMode(_ context.Context, tenantID string, mode *string, audit store.AuditEntry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.tenants[tenantID]; !ok {
+		return store.ErrUnknownTenant
+	}
+	ceiling := m.ceilings[tenantID]
+	if ceiling == "" {
+		ceiling = string(protocol.ModeM0)
+	}
+	previous := m.collectionModes[tenantID]
+	next := ""
+	if mode != nil {
+		next = *mode
+		if modeRank(next) > modeRank(ceiling) {
+			return store.ErrCollectionExceedsCeiling
+		}
+	}
+	m.collectionModes[tenantID] = next
+	audit.Detail = merge(audit.Detail, map[string]any{"previous": previous, "new": next})
+	m.audit(audit)
+	return nil
+}
+
+// SetScopeOverride implements store.Store.
+func (m *Memory) SetScopeOverride(_ context.Context, tenantID, fingerprint string, mode *string, audit store.AuditEntry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.tenants[tenantID]; !ok {
+		return store.ErrUnknownTenant
+	}
+	ceiling := m.ceilings[tenantID]
+	if ceiling == "" {
+		ceiling = string(protocol.ModeM0)
+	}
+	requested := m.collectionModes[tenantID]
+	if requested == "" {
+		requested = ceiling
+	}
+	if m.scopeOverrides[tenantID] == nil {
+		m.scopeOverrides[tenantID] = map[string]string{}
+	}
+	previous, had := m.scopeOverrides[tenantID][fingerprint]
+	next := ""
+	if mode != nil {
+		next = *mode
+		if modeRank(next) > modeRank(requested) || modeRank(next) > modeRank(ceiling) {
+			return store.ErrScopeOverrideTooWide
+		}
+		m.scopeOverrides[tenantID][fingerprint] = next
+	} else {
+		delete(m.scopeOverrides[tenantID], fingerprint)
+	}
+	if !had {
+		previous = ""
+	}
+	audit.Detail = merge(audit.Detail, map[string]any{"tool_fingerprint": fingerprint, "previous": previous, "new": next})
+	m.audit(audit)
+	return nil
+}
+
+// SetRetention implements store.Store.
+func (m *Memory) SetRetention(_ context.Context, tenantID, appliesTo string, ttlDays int, audit store.AuditEntry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.tenants[tenantID]; !ok {
+		return store.ErrUnknownTenant
+	}
+	if appliesTo != "event" && appliesTo != "content" {
+		return store.ErrRetentionOutOfRange
+	}
+	if m.retention[tenantID] == nil {
+		m.retention[tenantID] = map[string]int{}
+	}
+	previous := m.retention[tenantID][appliesTo]
+	m.retention[tenantID][appliesTo] = ttlDays
+	audit.Detail = merge(audit.Detail, map[string]any{"applies_to": appliesTo, "previous": previous, "new": ttlDays})
+	m.audit(audit)
+	return nil
+}
+
+// SetContentSearch implements store.Store.
+func (m *Memory) SetContentSearch(_ context.Context, tenantID, tier string, audit store.AuditEntry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.tenants[tenantID]; !ok {
+		return store.ErrUnknownTenant
+	}
+	ceiling := m.ceilings[tenantID]
+	if ceiling == "" {
+		ceiling = string(protocol.ModeM0)
+	}
+	if tier == "full_text" && ceiling != "m3" {
+		return store.ErrSearchTierRequiresCeiling
+	}
+	if tier == "attachment_names" && ceiling == "m0" {
+		return store.ErrSearchTierRequiresCeiling
+	}
+	previous := m.contentSearch[tenantID]
+	if previous == "" {
+		previous = "disabled"
+	}
+	m.contentSearch[tenantID] = tier
+	audit.Detail = merge(audit.Detail, map[string]any{"previous": previous, "new": tier})
+	m.audit(audit)
+	return nil
+}
+
+// SetToolSanction implements store.Store.
+func (m *Memory) SetToolSanction(_ context.Context, tenantID, fingerprint, state string, audit store.AuditEntry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.tenants[tenantID]; !ok {
+		return store.ErrUnknownTenant
+	}
+	if m.toolState[tenantID] == nil {
+		m.toolState[tenantID] = map[string]string{}
+	}
+	previous := m.toolState[tenantID][fingerprint]
+	if previous == "" {
+		previous = "unknown"
+	}
+	m.toolState[tenantID][fingerprint] = state
+	audit.Detail = merge(audit.Detail, map[string]any{"tool_fingerprint": fingerprint, "previous": previous, "new": state})
+	m.audit(audit)
+	return nil
+}
+
+func modeRank(mode string) int {
+	switch mode {
+	case "m0":
+		return 0
+	case "m1":
+		return 1
+	case "m2":
+		return 2
+	case "m3":
+		return 3
+	}
+	return -1
+}
+
+func merge(base map[string]any, extra map[string]any) map[string]any {
+	if base == nil {
+		base = map[string]any{}
+	}
+	for k, v := range extra {
+		if _, ok := base[k]; !ok {
+			base[k] = v
+		}
+	}
+	return base
 }

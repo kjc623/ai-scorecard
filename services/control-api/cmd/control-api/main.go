@@ -36,6 +36,7 @@ import (
 	"github.com/shadow-ai-capture/control-api/internal/policyserve"
 	"github.com/shadow-ai-capture/control-api/internal/scim"
 	"github.com/shadow-ai-capture/control-api/internal/session"
+	"github.com/shadow-ai-capture/control-api/internal/settings"
 	"github.com/shadow-ai-capture/control-api/internal/store"
 )
 
@@ -227,10 +228,15 @@ func wire(cfg config, db *sql.DB, logger *slog.Logger) (*httpapi.Server, *sessio
 	if err != nil {
 		return nil, nil, err
 	}
+	settingsHandler, err := settings.NewHandler(st, adminAuthenticator(verifier), settings.Config{Logger: logger})
+	if err != nil {
+		return nil, nil, err
+	}
 
 	return &httpapi.Server{
 		Store: st, CA: ca, Enrol: enrolSvc, Health: healthSvc, Policy: policy, Content: contentSvc,
 		Admin:      admin,
+		Settings:   settingsHandler,
 		Extensions: deploy.NewExtensions(cfg.AgentReleaseDir, cfg.PublicDeviceEndpoint, logger),
 		SCIM:       scim.NewHandler(scimSvc, "/scim/v2", logger),
 		Mounts: map[string]http.Handler{

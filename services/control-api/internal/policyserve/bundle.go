@@ -20,6 +20,9 @@ type Bundle struct {
 
 	TenantDefault string `json:"tenant_default_mode"`
 
+	// ToolModes is the tenant's narrower per-tool collection modes, keyed by tool fingerprint.
+	ToolModes map[string]string `json:"tool_modes,omitempty"`
+
 	Interception Interception `json:"interception"`
 	CLIShim      CLIShim      `json:"cli_shim"`
 }

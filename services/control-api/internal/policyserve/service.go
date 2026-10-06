@@ -227,10 +227,10 @@ func (s *Service) remember(tenantID string, b store.PolicyBundle, now time.Time)
 
 // compose builds the candidate bundle from the inputs.
 func (s *Service) compose(in store.PolicyInputs) (*Bundle, error) {
-	mode := protocol.CollectionMode(in.Tenant.CeilingMode)
+	mode := protocol.CollectionMode(in.Tenant.CollectionMode)
 	if !mode.Valid() {
 		// The ceiling CHECK makes this unreachable from the database; refusing beats guessing.
-		return nil, fmt.Errorf("tenant ceiling_mode %q is outside {m0,m1,m2,m3}", in.Tenant.CeilingMode)
+		return nil, fmt.Errorf("tenant collection_mode %q is outside {m0,m1,m2,m3}", in.Tenant.CollectionMode)
 	}
 	hosts := append([]string(nil), in.InterceptionHosts...)
 	sort.Strings(hosts)
@@ -243,8 +243,16 @@ func (s *Service) compose(in store.PolicyInputs) (*Bundle, error) {
 	if canary == "" && len(hosts) > 0 {
 		canary = hosts[0] + ":443"
 	}
+	toolModes := map[string]string{}
+	for fp, m := range in.ScopeOverrides {
+		if !protocol.CollectionMode(m).Valid() {
+			return nil, fmt.Errorf("scope override %q has mode %q outside {m0,m1,m2,m3}", fp, m)
+		}
+		toolModes[fp] = m
+	}
 	return &Bundle{
 		TenantDefault: string(mode),
+		ToolModes:     toolModes,
 		Interception: Interception{
 			SeedHosts:   hosts,
 			Ports:       []int{443},
@@ -283,6 +291,9 @@ func (s *Service) mint(tenantID string, latest *store.PolicyBundle, b Bundle, no
 	// the audit trail and the schema's policy_bundle_digest_names_envelope check agree on.
 	sum := sha256.Sum256(envelope)
 	scope := map[string]any{"tenant_default": b.TenantDefault}
+	if len(b.ToolModes) > 0 {
+		scope["tool_modes"] = b.ToolModes
+	}
 	scopeJSON, err := json.Marshal(scope)
 	if err != nil {
 		return store.MintDecision{}, err

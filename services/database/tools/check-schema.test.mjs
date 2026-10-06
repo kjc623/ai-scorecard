@@ -156,8 +156,8 @@ expectCaught('grants: query-api reading stored content',
   'services/database/schema.sql', (s) => `${s}\nGRANT SELECT ON ops.content TO sac_query;\n`,
   'grants.ops.content.only-vault-and-jobs');
 expectCaught('grants: the expire job reading ciphertext',
-  'services/database/schema.sql', (s) => s.replace('GRANT SELECT (tenant_id, object_id, submission_id, expires_at), DELETE ON ops.content TO sac_ops;',
-    'GRANT SELECT (tenant_id, object_id, submission_id, expires_at, ciphertext), DELETE ON ops.content TO sac_ops;'),
+  'services/database/schema.sql', (s) => s.replace('GRANT SELECT (tenant_id, object_id, submission_id, event_id, expires_at), DELETE ON ops.content TO sac_ops;',
+    'GRANT SELECT (tenant_id, object_id, submission_id, event_id, expires_at, ciphertext), DELETE ON ops.content TO sac_ops;'),
   'grants.ops.content.jobs-delete-without-reading');
 expectCaught('grants: the expire job reading indexed prompt text',
   'services/database/schema.sql', (s) => s.replace('GRANT SELECT (tenant_id, submission_id, unit_kind, unit_index, expires_at), DELETE',

@@ -20,6 +20,7 @@ import (
 
 	"github.com/shadow-ai-capture/platform/postgres"
 
+	"github.com/shadow-ai-capture/jobs/internal/erase"
 	"github.com/shadow-ai-capture/jobs/internal/expire"
 	"github.com/shadow-ai-capture/jobs/internal/rollup"
 	"github.com/shadow-ai-capture/jobs/internal/tenant"
@@ -29,7 +30,7 @@ import (
 // session at once and never competes with the services for connections.
 const maxConns = 4
 
-const usage = "usage: jobs aggregate|expire"
+const usage = "usage: jobs aggregate|expire|erase"
 
 // job is one subcommand: the work done for one tenant inside its transaction, and the log key its
 // per-table row counts are reported under.
@@ -52,6 +53,13 @@ var jobs = map[string]job{
 		countsKey: "removed",
 		run: func(ctx context.Context, tx *sql.Tx, id string) (map[string]int64, error) {
 			return expire.Tenant(ctx, tx, id)
+		},
+	},
+	"erase": {
+		name:      "erase",
+		countsKey: "removed",
+		run: func(ctx context.Context, tx *sql.Tx, id string) (map[string]int64, error) {
+			return erase.Tenant(ctx, tx, id)
 		},
 	},
 }

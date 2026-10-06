@@ -170,6 +170,13 @@ CREATE TABLE ops.tenant (
   residency_region             text NOT NULL,
   -- The highest collection mode any policy bundle for this tenant may use (section 8).
   ceiling_mode                 text NOT NULL CHECK (ceiling_mode IN ('m0','m1','m2','m3')),
+  -- The requested collection mode, set by an admin on the Settings page and delivered to devices as
+  -- the bundle's tenant_default_mode. NULL means "follow the ceiling"; a value must not exceed it.
+  collection_mode              text CHECK (collection_mode IN ('m0','m1','m2','m3')),
+  -- Narrower per-tool modes (tool_fingerprint -> mode), applied on top of collection_mode. An
+  -- override must not exceed the requested mode, so it can never widen collection; enforced by
+  -- enforce_scope_overrides (section 8).
+  scope_overrides              jsonb NOT NULL DEFAULT '{}'::jsonb,
   -- Content search tier:
   --   disabled          structured filtering only (tool, user, date, class, rule, severity)
   --   attachment_names  adds substring and fuzzy search over attachment filenames (collected at M1)
@@ -208,6 +215,10 @@ CREATE TABLE ops.tenant (
     CHECK (content_search = 'disabled'
            OR (content_search = 'attachment_names' AND ceiling_mode <> 'm0')
            OR (content_search = 'full_text' AND ceiling_mode = 'm3')),
+  -- The requested mode may not exceed the ceiling it is collected under.
+  CONSTRAINT tenant_collection_within_ceiling
+    CHECK (collection_mode IS NULL
+           OR ops.mode_rank(collection_mode) <= ops.mode_rank(ceiling_mode)),
   CONSTRAINT tenant_closed_implies_gates_shut
     CHECK (status <> 'closed' OR (NOT ingest_enabled AND NOT read_enabled)),
   -- A closed gate always records who closed it, when and why.
@@ -548,6 +559,48 @@ CREATE TABLE ops.erasure_receipt (
   receipt_hash     text,
   PRIMARY KEY (tenant_id, receipt_id),
   CONSTRAINT erasure_subject_requires_ref CHECK (scope_kind <> 'subject' OR subject_ref IS NOT NULL)
+);
+
+-- A generated, downloadable artifact: a list-export CSV or a subject-export archive. The link names
+-- an opaque id, the row is marked used on redemption, and the expire job sweeps rows past expires_at,
+-- so it is single-use and short-lived. A subject export's archive holds the stored prompts the admin
+-- asked for, so its payload is exactly as sensitive as the prompts themselves.
+CREATE TABLE ops.export (
+  tenant_id     uuid NOT NULL REFERENCES ops.tenant(tenant_id),
+  export_id     uuid NOT NULL,
+  kind          text NOT NULL CHECK (kind IN ('list','subject')),
+  -- A list export: which list source the CSV holds. A subject export leaves this NULL.
+  source        text CHECK (source IN ('ingest.submission','mart.v_finding')),
+  -- A subject export: the person the archive holds. A list export leaves this NULL.
+  subject_ref   text,
+  row_count     int CHECK (row_count >= 0),
+  content_type  text NOT NULL,
+  payload       bytea NOT NULL,
+  requested_by  text NOT NULL,
+  requested_at  timestamptz NOT NULL,
+  expires_at    timestamptz NOT NULL,
+  used_at       timestamptz,
+  PRIMARY KEY (tenant_id, export_id),
+  CONSTRAINT export_kind_scope CHECK (
+    (kind = 'list' AND source IS NOT NULL AND subject_ref IS NULL)
+    OR (kind = 'subject' AND subject_ref IS NOT NULL AND source IS NULL)),
+  CONSTRAINT export_expiry_after_request CHECK (expires_at > requested_at)
+);
+
+CREATE INDEX export_expiry ON ops.export (tenant_id, expires_at);
+
+-- A pending subject erasure: an admin asked that one person's data be removed. query-api records the
+-- request and audits it; the erase job performs the removal and writes the receipt, which is the
+-- proof it happened.
+CREATE TABLE ops.erasure_request (
+  tenant_id     uuid NOT NULL REFERENCES ops.tenant(tenant_id),
+  request_id    uuid NOT NULL,
+  subject_ref   text NOT NULL,
+  requested_by  text NOT NULL,
+  requested_at  timestamptz NOT NULL,
+  completed_at  timestamptz,
+  receipt_id    uuid,
+  PRIMARY KEY (tenant_id, request_id)
 );
 
 -- How current each aggregate is, so the dashboard never shows a number without its freshness.
@@ -1550,6 +1603,38 @@ CREATE TRIGGER policy_bundle_ceiling
   BEFORE INSERT OR UPDATE ON ops.policy_bundle
   FOR EACH ROW EXECUTE FUNCTION ops.enforce_policy_ceiling();
 
+-- A scope override must name a non-empty tool and a valid mode no wider than the requested mode
+-- (which is itself no wider than the ceiling), so composition can never widen collection. The
+-- bundle ceiling trigger above is the backstop for the composed matrix; this refuses the input
+-- earlier, so the Settings page gets a named error rather than a bundle-mint failure.
+CREATE FUNCTION ops.enforce_scope_overrides() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+  v_requested int := ops.mode_rank(coalesce(NEW.collection_mode, NEW.ceiling_mode));
+  v_key  text;
+  v_mode text;
+  v_rank int;
+BEGIN
+  FOR v_key, v_mode IN
+    SELECT e.key, e.value
+      FROM jsonb_each_text(NEW.scope_overrides) AS e(key, value)
+  LOOP
+    v_rank := ops.mode_rank(v_mode);
+    IF v_rank IS NULL THEN
+      RAISE EXCEPTION 'scope override % has an unrecognised collection mode', v_key;
+    END IF;
+    IF v_rank > v_requested THEN
+      RAISE EXCEPTION 'scope override % (mode %) is wider than the tenant''s requested mode (%)',
+        v_key, v_mode, coalesce(NEW.collection_mode, NEW.ceiling_mode);
+    END IF;
+  END LOOP;
+  RETURN NEW;
+END $$;
+
+CREATE TRIGGER scope_overrides_within_requested
+  BEFORE INSERT OR UPDATE OF collection_mode, ceiling_mode, scope_overrides ON ops.tenant
+  FOR EACH ROW EXECUTE FUNCTION ops.enforce_scope_overrides();
+
 -- The audit hash chain: each row hashes its predecessor in the same tenant. The per-tenant advisory
 -- lock stops two concurrent writers from reading the same predecessor and forking the chain.
 CREATE FUNCTION ops.audit_chain() RETURNS trigger
@@ -1944,7 +2029,8 @@ DECLARE
     'ops.user_dim', 'ops.device', 'ops.device_credential', 'ops.collector_state',
     'ops.policy_bundle', 'ops.tool', 'ops.notice_acknowledgement', 'ops.retention_policy',
     'ops.audit', 'ops.grant', 'ops.content', 'ops.retrieval_grant', 'ops.finding_review',
-    'ops.erasure_receipt', 'ops.aggregate_watermark', 'ops.coverage_snapshot',
+    'ops.erasure_receipt', 'ops.export', 'ops.erasure_request',
+    'ops.aggregate_watermark', 'ops.coverage_snapshot',
     'ops.subscription', 'ops.usage_daily',
     'ops.identity_connection', 'ops.tenant_email_domain', 'ops.onboarding_invite',
     'ops.role_grant', 'ops.auth_session', 'ops.scim_token', 'ops.scim_user', 'ops.scim_group',
@@ -2138,6 +2224,11 @@ GRANT SELECT, INSERT, UPDATE ON ops.finding_review TO sac_query;
 -- A tool sanction decision commits with its audit entry, beside the read that shows it.
 GRANT INSERT, UPDATE ON ops.tool TO sac_query;
 GRANT EXECUTE ON FUNCTION ops.current_tenant(), ops.tool_display_name(text) TO sac_query;
+-- Exports are this service's artifacts: it writes a generated CSV or archive and serves it once.
+GRANT SELECT, INSERT ON ops.export TO sac_query;
+GRANT UPDATE (used_at) ON ops.export TO sac_query;
+-- Recording a subject erasure request; the erase job performs it.
+GRANT SELECT, INSERT ON ops.erasure_request TO sac_query;
 
 -- Scheduled jobs: aggregation and expiry.
 GRANT SELECT, INSERT, UPDATE, DELETE ON ingest.observation, ingest.submission TO sac_ops;
@@ -2147,7 +2238,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON mart.finding, mart.agg_tool_period,
       mart.agg_user_period, mart.agg_device_period TO sac_ops;
 -- Expiry deletes content and its index entries without being able to read either, and marks the
 -- content's submission shredded.
-GRANT SELECT (tenant_id, object_id, submission_id, expires_at), DELETE ON ops.content TO sac_ops;
+GRANT SELECT (tenant_id, object_id, submission_id, event_id, expires_at), DELETE ON ops.content TO sac_ops;
 GRANT SELECT (tenant_id, submission_id, unit_kind, unit_index, expires_at), DELETE
   ON ingest.search_text TO sac_ops;
 GRANT SELECT, INSERT, UPDATE ON ops.erasure_receipt, ops.aggregate_watermark,
@@ -2162,6 +2253,10 @@ GRANT SELECT ON ref.data_class, ref.rule, ref.route_fidelity,
       ref.collector, ref.retention_class TO sac_ops;
 GRANT INSERT ON ops.audit TO sac_ops;
 GRANT EXECUTE ON FUNCTION ops.current_tenant() TO sac_ops;
+-- The erase job sweeps expired exports (by id and expiry, never the payload) and processes the
+-- subject erasure requests query-api records.
+GRANT SELECT (tenant_id, export_id, expires_at), DELETE ON ops.export TO sac_ops;
+GRANT SELECT, UPDATE ON ops.erasure_request TO sac_ops;
 
 
 -- =====================================================================================

@@ -73,6 +73,8 @@ var tables = []table{
 	newTable("ingest.observation", "event_id"),
 	newTable("ingest.submission", "submission_id"),
 	newTable("ingest.rejected", "rejected_id"),
+	// Exports are single-use and short-lived; an expired one is swept with everything else.
+	newTable("ops.export", "export_id"),
 }
 
 // retentionPathSQL opens the retention path for the rest of the transaction. ingest.observation

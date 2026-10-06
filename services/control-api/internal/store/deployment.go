@@ -103,7 +103,7 @@ INSERT INTO ops.audit (tenant_id, actor_type, actor_id, action, object_type, obj
 VALUES ($1::uuid, $2, $3, $4, $5, nullif($6, ''), $7::jsonb, $8::timestamptz)`
 
 	SQLPolicyTenant = `
-SELECT status, ingest_enabled, ceiling_mode
+SELECT status, ingest_enabled, ceiling_mode, coalesce(collection_mode, ceiling_mode)
   FROM ops.tenant
  WHERE tenant_id = $1::uuid`
 
@@ -113,6 +113,12 @@ SELECT DISTINCT lower(evidence->>'host') AS host
   FROM ref.tool_catalogue
  WHERE signal_kind = 'tls' AND coalesce(evidence->>'host', '') <> ''
  ORDER BY host`
+
+	// SQLScopeOverrides is the tenant's narrower per-tool modes, as tool_fingerprint -> mode.
+	SQLScopeOverrides = `
+SELECT key, value
+  FROM ops.tenant t, jsonb_each_text(t.scope_overrides)
+ WHERE t.tenant_id = $1::uuid`
 
 	// SQLLockTenantPolicy serialises minting per tenant for the rest of the transaction.
 	SQLLockTenantPolicy = `SELECT pg_advisory_xact_lock(hashtextextended('ops.policy_bundle:' || $1, 0))`
@@ -343,7 +349,7 @@ func (s *SQLStore) PolicyInputs(ctx context.Context, tenantID string) (PolicyInp
 	var in PolicyInputs
 	err := s.withTenant(ctx, tenantID, func(tx *sql.Tx) error {
 		t := PolicyTenant{TenantID: tenantID}
-		err := tx.QueryRowContext(ctx, SQLPolicyTenant, tenantID).Scan(&t.Status, &t.IngestEnabled, &t.CeilingMode)
+		err := tx.QueryRowContext(ctx, SQLPolicyTenant, tenantID).Scan(&t.Status, &t.IngestEnabled, &t.CeilingMode, &t.CollectionMode)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrUnknownTenant
 		}
@@ -351,10 +357,32 @@ func (s *SQLStore) PolicyInputs(ctx context.Context, tenantID string) (PolicyInp
 			return fmt.Errorf("store: policy tenant: %w", err)
 		}
 		in.Tenant = t
-		in.InterceptionHosts, err = interceptionHosts(ctx, tx)
-		return err
+		var err2 error
+		in.InterceptionHosts, err2 = interceptionHosts(ctx, tx)
+		if err2 != nil {
+			return err2
+		}
+		in.ScopeOverrides, err2 = scopeOverrides(ctx, tx, tenantID)
+		return err2
 	})
 	return in, err
+}
+
+func scopeOverrides(ctx context.Context, tx *sql.Tx, tenantID string) (map[string]string, error) {
+	rows, err := tx.QueryContext(ctx, SQLScopeOverrides, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("store: scope overrides: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, fmt.Errorf("store: scope overrides: %w", err)
+		}
+		out[k] = v
+	}
+	return out, rows.Err()
 }
 
 func interceptionHosts(ctx context.Context, tx *sql.Tx) ([]string, error) {
