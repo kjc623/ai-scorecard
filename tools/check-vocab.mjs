@@ -1,25 +1,12 @@
 #!/usr/bin/env node
-// tools/check-vocab.mjs - machine diff of the shared vocabularies between device components.
+// check-vocab.mjs — the device components spell every shared closed vocabulary the same way.
 //
-// `check-seams.mjs` checks *field names* against the contract. This checks the other half of a seam:
-// the **enumerated values** two components must agree on. A closed vocabulary is only closed if
-// every implementation spells it the same way, and a one-letter difference (`revoked_device` vs
-// `device_revoked`) compiles on both sides and fails only at runtime, on a rejection path nobody
-// exercises. That exact class of defect was found in this project once already, between the ingest
-// wire codes and the database quarantine CHECK.
+// endpoint/protocol (Go) is the source of truth; the extension transcribes its vocabularies in
+// extension/src/messages.js. A one-letter difference compiles on both sides and fails only at
+// runtime, so this parses both and compares them by value, with the names aligned.
 //
-// How it works: the protocol package is the source of truth (it is what both sides import or
-// transcribe), so this script extracts the Go constant names and string values by parsing the Go
-// source, then extracts the consumer's exported constants from its JavaScript, and diffs them by
-// **value** with the names aligned. No compilation, no imports, no network.
-//
-//   node tools/check-vocab.mjs            # diff and exit non-zero on drift
+//   node tools/check-vocab.mjs            # exit 1 on drift
 //   node tools/check-vocab.mjs --json
-//
-// What it proves: the two sides agree on every value in the vocabularies it is told to compare,
-// and nothing is missing on either side.
-// What it does not prove: that either side *uses* the values correctly, or that a component which
-// re-derives a vocabulary at runtime agrees with this static picture. That needs behavioural tests.
 
 import { readFileSync, existsSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
@@ -65,13 +52,13 @@ const VOCABULARIES = [
   },
   {
     id: 'counter',
-    title: 'Health counters (§4.3, protocol Counter*)',
+    title: 'Health counters (protocol Counter*)',
     go: { file: 'endpoint/protocol/envelope.go', prefix: 'Counter' },
     js: { file: 'extension/src/messages.js', groups: ['COUNTER'] },
   },
   {
     id: 'collector-state',
-    title: 'Collector states (§4.2, protocol State*)',
+    title: 'Collector states (protocol State*)',
     go: { file: 'endpoint/protocol/envelope.go', prefix: 'State' },
     js: { file: 'extension/src/messages.js', groups: ['STATE'] },
   },

@@ -1,67 +1,38 @@
-# AGENTS.md — repository agent instructions
+# AGENTS.md
 
-Entry point for agents working anywhere in this repository. **`backlog/AGENTS.md` governs the dashboard
-backlog only** (one task per numbered folder under `backlog/`); read this file first, then that one if
-you are picking up a backlog task.
+Instructions for agents working in this repository. Read `README.md` and `docs/architecture.md`
+first; `backlog/AGENTS.md` adds instructions for the product tasks under `backlog/`.
 
-## Current focus: a pre-prod Azure deployment for a device test
+## Current focus: the first pre-production deployment
 
-The repository is being prepared to run a **pre-prod** environment on Azure and test, on real hardware:
+The goal is a pre-prod environment in Azure and a real-device test: Intune installs the agent, the
+device enrols, its events reach PostgreSQL, and they appear on the dashboard. The code, the template
+and the pipelines are ready for it; nothing has been deployed yet. What remains are owner actions,
+in order, in `azure/RUNBOOK.md`: subscription and resource group, the deployment identity and GitHub
+environment, DNS names and the device TLS certificate, the vendor Entra application, Intune
+licensing, then the bootstrap deployment, `azure/scripts/create-secrets.sh`, and the deploy workflow.
 
-1. MDM installation (Intune delivers the agent package)
-2. Device enrolment
-3. Data reaching PostgreSQL
-4. The dashboard
+## Rules
 
-**Nothing has been deployed.** Every Azure claim in this repository is either static-verified
-(`azure/tools/`) or a plan. There is no subscription and no observation.
+- `node tools/accept.mjs` passes before you say the repository works. A gate reported `SKIPPED`
+  was not checked; say so.
+- Work on a branch; never commit to `main`; do not push or open a pull request unless asked. Never
+  commit `.claude/` or `skills-lock.json`.
+- Never run `node localdev/run.mjs` with any flag: the running lab is the owner's, and a device may be
+  enrolled against it. Never change the owner's tenant (`11111111-1111-1111-1111-111111111111`).
+- Tests never touch a database they did not create. Live database tests run only when
+  `SAC_TEST_PG_DSN` names a database, and use a random tenant.
 
-**Start here:**
-- [`azure/RUNBOOK.md`](azure/RUNBOOK.md) — the ordered go-live sequence, with the repository location
-  named at every step, and the current blockers.
-- [`azure/README.md`](azure/README.md) — the exact `az` commands and the static-vs-deployed distinction.
-- [`azure/pipelines/`](azure/pipelines/) — `infra.yml` / `drift.yml` / `policy-scan.yml`. They are
-  **inert** until installed under `.github/workflows/`.
+## Conventions
 
-### Decisions already made
-
-- **Device authentication is the product-issued x509 model ("Shape A").** Intune delivers the agent
-  package and a per-tenant deployment key; `control-api` signs a device leaf from the CA in Key Vault
-  (`sac-device-ca-cert` / `sac-device-ca-key`) and `ingest-api` re-verifies the forwarded leaf against
-  the same certificate. No customer PKI; DPoP is **unwired**. [ADR 0022](docs/adr/0022-customer-issued-device-certificates-are-registered-not-signed.md)
-  (customer-issued certificates) is a documented **optional** mode, dormant unless a tenant sets
-  `device_ca_pem`.
-- **Front Door Premium, not Standard.** The Private Link origin that keeps the Container Apps
-  environment private is Premium-only. Standard is documented as an optional cost lever with its
-  public-origin deviation in the runbook — do not adopt it silently.
-- Two edges: **Application Gateway** is the device ingress, **Front Door** the analyst ingress
-  ([ADR 0020](docs/adr/0020-device-transport-is-application-gateway-with-a-pluggable-authenticator.md)).
-  `content-vault` is internal-only.
-
-### Still blocking (full list in the runbook)
-
-1. **Services run in-memory.** `azure/main.bicep` never sets `SAC_STORE`, and the production Dockerfiles
-   build without `-tags sac_sql_driver`, so nothing persists until both are fixed.
-2. **No `migrations` image** and no `reconciler` source — the migration job cannot apply the schema.
-3. **No image build/push pipeline** — images must exist in the ACR before a revision can start.
-4. **No policy-bundle authoring** and **no signed MSI**; the MSI can only be built on Windows.
-5. Operator prerequisites, not code: Intune licensing, DNS/certificates, the Entra app.
-
-## Working rules (all agents)
-
-- Run `node tools/accept.mjs` (or the specific gate) before claiming the repository works. A gate that
-  cannot run is reported `SKIPPED`, and **a skipped gate is not a pass**.
-- Never commit `.claude/` or `skills-lock.json`.
-- Work on a branch; never commit to `main`; do not push or open a pull request unless asked.
-- Never run `node localdev/run.mjs` with any flag — it can regenerate the lab CA and orphan an installed
-  device. Never change the owner's tenant (`11111111-1111-1111-1111-111111111111`).
-- The static checks for this work: `node --test azure/tools/index.mjs` (50 checks),
-  `node database/tools/check-schema.mjs`, `node localdev/tools/check-config-agreement.mjs`, the Go suites
-  in `control/control-api`, `ingestion/ingest-api` and `endpoint/capture-core`, and the database
-  invariants (`database/invariants.test.sql`).
-
-## Where things are
-
-The component map is in [`README.md`](README.md); the design record is [`docs/`](docs/) and its
-decisions are [`docs/adr/`](docs/adr/README.md). Backlog task instructions are
-[`backlog/AGENTS.md`](backlog/AGENTS.md).
+- Production code only: no feature, flag or file the deployment does not use; the lab adapts to the
+  product, not the other way round.
+- Well-known libraries over hand-rolled ones; no build tags or stand-ins.
+- Comments explain what is not obvious, briefly, in the present tense. No references to decisions,
+  tasks, documents or history; the code and its tests are the record.
+- One short README per component: what it is, how it runs in production (its configuration), how to
+  build and test it.
+- A schema change goes in `database/schema.sql` and, once an environment exists, also in a numbered
+  migration (`database/migrations/README.md`). A device envelope change starts in `contracts/`.
+- A setting the deployment passes must be read by its component (`tools/check-config.mjs` checks
+  this).

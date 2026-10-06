@@ -1,1 +1,0 @@
-{"type":"observation","version":1,"body":{"client_id":"c-1","route":"ext.web_request","tool_fingerprint":"tf1:web-request","occurred_at":"2025-10-02T14:00:00.000Z","monotonic_offset_ms":1234,"size_bytes":41,"has_content":true,"content_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","content":"Summarise the attached contract, please."}}

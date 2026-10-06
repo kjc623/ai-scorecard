@@ -1,20 +1,14 @@
-# The build context is the repository root (see each service's Dockerfile), and this tree carries
-# local tool state no image needs. Without this file every `docker build .` ships ~2 GB before the
-# first instruction runs, which makes the lab build time out; the module cache alone is ~1.6 GB.
-#
-# NOT excluded: `*/bin/`. The `lab` stage packages a binary compiled on the host by
-# localdev/build.mjs, so `ingestion/ingest-api/bin/…` must stay in the context. The `build` and
-# `production` stages compile from source and ignore it.
+# Every image builds with the repository root as its context and copies only the modules it needs;
+# this keeps local state and build output out of the context.
 .git
+.github
 .tools
-.testtmp
-.integration
-.research
-.selftest
-.cockpit
-obsidian_vault
 **/.tools
+.testtmp
 **/.selftest
 **/node_modules
-**/evidence
+**/bin
+**/dist
 *.log
+**/.authlab*
+**/.msi
