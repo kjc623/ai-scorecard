@@ -12,6 +12,9 @@ param postgresServerId string
 @description('Container app resource ids to watch for restarts. Empty on the bootstrap deployment.')
 param containerAppIds array = []
 
+@description('Container App job resource ids to watch for failed and stale executions. Empty on the bootstrap deployment.')
+param jobIds array = []
+
 @description('Application Gateway resource id, or empty when it is not deployed.')
 param applicationGatewayId string = ''
 
@@ -136,6 +139,48 @@ resource metric 'Microsoft.Insights/metricAlerts@2018-03-01' = [for a in metricA
   }
 }]
 
+// A job execution increments the Executions metric with a "state" dimension, so a non-zero count of
+// "Failed" states means a run failed. A job that is never scheduled emits no metric, which is why
+// the staleness checks below read the system logs instead.
+resource jobFailed 'Microsoft.Insights/metricAlerts@2018-03-01' = [for jobId in jobIds: {
+  name: '${baseName}-job-failed-${last(split(jobId, '/'))}'
+  location: 'global'
+  tags: tags
+  properties: {
+    description: 'A job execution failed: its container exited unsuccessfully.'
+    severity: 1
+    enabled: true
+    scopes: [jobId]
+    evaluationFrequency: 'PT1M'
+    windowSize: 'PT5M'
+    criteria: {
+      'odata.type': 'Microsoft.Azure.Monitor.SingleResourceMultipleMetricCriteria'
+      allOf: [
+        {
+          criterionType: 'StaticThresholdCriterion'
+          name: 'Executions'
+          metricName: 'Executions'
+          metricNamespace: 'Microsoft.App/jobs'
+          operator: 'GreaterThan'
+          threshold: 0
+          timeAggregation: 'Total'
+          // A freshly deployed job has no execution history yet, so its metric has no data to
+          // validate against until the first run.
+          skipMetricValidation: true
+          dimensions: [
+            {
+              name: 'state'
+              operator: 'Include'
+              values: ['Failed']
+            }
+          ]
+        }
+      ]
+    }
+    actions: [{ actionGroupId: actionGroup.id }]
+  }
+}]
+
 // Every service and job logs JSON lines with a "level" field; a burst of errors is the earliest
 // signal of a failing dependency or a failing job run.
 resource errorLogs 'Microsoft.Insights/scheduledQueryRules@2023-03-15-preview' = {
@@ -167,3 +212,55 @@ resource errorLogs 'Microsoft.Insights/scheduledQueryRules@2023-03-15-preview' =
     actions: { actionGroups: [actionGroup.id] }
   }
 }
+
+// A scheduled job that stops produces no error line, so the error-burst rule above does not cover
+// it. These count the job's non-error system log lines: a successful run logs at least one Info
+// line, and a stopped job logs none, which reads as a count below one.
+var jobStaleAlerts = [
+  {
+    name: 'aggregate-stale'
+    job: 'aggregate'
+    window: 'PT20M'
+    evaluation: 'PT5M'
+    description: 'No successful aggregate execution in 20 minutes; every dashboard figure goes stale.'
+    severity: 1
+  }
+  {
+    name: 'expire-stale'
+    job: 'expire'
+    window: 'PT26H'
+    evaluation: 'PT1H'
+    description: 'No successful expire execution in 26 hours; data outlives its promised retention.'
+    severity: 1
+  }
+]
+
+resource jobStale 'Microsoft.Insights/scheduledQueryRules@2023-03-15-preview' = [for a in jobStaleAlerts: if (!empty(jobIds)) {
+  name: '${baseName}-${a.name}'
+  location: location
+  tags: tags
+  properties: {
+    displayName: '${baseName}: ${a.name}'
+    description: a.description
+    severity: a.severity
+    enabled: true
+    evaluationFrequency: a.evaluation
+    windowSize: a.window
+    scopes: [logAnalyticsWorkspaceId]
+    criteria: {
+      allOf: [
+        {
+          query: 'ContainerAppSystemLogs | where JobName == \'${a.job}\' | where Type == \'Info\''
+          timeAggregation: 'Count'
+          operator: 'LessThan'
+          threshold: 1
+          failingPeriods: {
+            numberOfEvaluationPeriods: 1
+            minFailingPeriodsToAlert: 1
+          }
+        }
+      ]
+    }
+    actions: { actionGroups: [actionGroup.id] }
+  }
+}]

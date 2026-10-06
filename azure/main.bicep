@@ -480,6 +480,7 @@ module monitoring 'modules/monitoring.bicep' = {
       queryApp.?outputs.id ?? ''
       dashboardApp.?outputs.id ?? ''
     ] : []
+    jobIds: deploy ? map(jobModules, m => m.?outputs.id ?? '') : []
     applicationGatewayId: deploy ? resourceId('Microsoft.Network/applicationGateways', '${baseName}-agw') : ''
     frontDoorProfileId: deploy ? (frontDoor.?outputs.profileId ?? '') : ''
     alertEmails: alertEmails
