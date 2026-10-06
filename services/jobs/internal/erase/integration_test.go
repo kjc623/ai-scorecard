@@ -39,8 +39,8 @@ func TestEraseAgainstPostgreSQL(t *testing.T) {
 	f.content(a, received)
 
 	pgtest.AsOwner(t, tx)
-	pgtest.Exec(t, tx, `INSERT INTO ops.erasure_request (tenant_id, request_id, subject_ref, requested_by)
-	                    VALUES ($1, gen_random_uuid(), $2, 'admin@example.com')`, tenant, subjectA)
+	pgtest.Exec(t, tx, `INSERT INTO ops.erasure_request (tenant_id, request_id, subject_ref, requested_by, requested_at)
+	                    VALUES ($1, gen_random_uuid(), $2, 'admin@example.com', now())`, tenant, subjectA)
 	f.expect("pending request", `SELECT count(*)::text FROM ops.erasure_request WHERE tenant_id = $1 AND completed_at IS NULL`, "1")
 
 	pgtest.AsJobs(t, tx)
@@ -153,7 +153,7 @@ func (f fixture) content(submission string, at time.Time) {
 	pgtest.Exec(f.t, f.tx, `INSERT INTO ops.content (tenant_id, object_id, event_id, submission_id, grant_id, key_version,
 	                           ciphertext, plaintext_size_bytes, raw_digest, retention_class, prompt_kind, created_at, expires_at)
 	                         VALUES ($1, gen_random_uuid(), $2, $3, $4, 'v1', decode(repeat('00', 29), 'hex'), 1,
-	                                 'sha256:'||repeat('0', 64), 'standard', 'user', $5, $5 + interval '30 days')`,
+	                                 'sha256:'||repeat('0', 64), 'standard', 'user', $5::timestamptz, $5::timestamptz + interval '30 days')`,
 		f.tenant, event, submission, grant, at)
 	pgtest.Exec(f.t, f.tx, `UPDATE ingest.submission SET content_state = 'uploaded'
 	                         WHERE tenant_id = $1 AND submission_id = $2`, f.tenant, submission)
