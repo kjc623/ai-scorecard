@@ -214,6 +214,12 @@ func TestScopeOverride(t *testing.T) {
 	put := func(body string) *httptest.ResponseRecorder {
 		return r.do(t, "admin", "PUT", "/admin/v1/settings/scope-override", body)
 	}
+	// An override wider than the ceiling is refused even while following the ceiling.
+	r.store.SetCeiling(tenantA, "m1")
+	if rec := put(`{"tool_fingerprint":"tls_b6681b043244c43f","collection_mode":"m2"}`); rec.Code != http.StatusConflict || errorCode(t, rec) != apierr.CodeScopeOverrideTooWide {
+		t.Fatalf("override above the ceiling: %d %s", rec.Code, rec.Body)
+	}
+	r.store.SetCeiling(tenantA, "m3")
 	// Request a mode below the ceiling so a wider override is possible to refuse.
 	r.store.SeedCollectionMode(tenantA, "m2")
 	// A narrower override is accepted.
