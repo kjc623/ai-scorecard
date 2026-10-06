@@ -1,32 +1,25 @@
-// Command oidc is the local OpenID Connect stand-in the device-auth lab runs so tasks 11+
-// can exercise a real sign-in without a customer identity provider.
+// Command oidc is the lab's customer identity provider: a small OpenID Connect provider that
+// control-api signs people in through, the way it signs them in through a customer's Entra or Okta.
 //
-// Since the enterprise-onboarding change it plays a CUSTOMER's provider, upstream of the product:
-// control-api is its one confidential client (client_secret_post or client_secret_basic), and the
-// lab links it to the sample tenant as an ops.identity_connection by its issuer. Which tenant a
-// person lands in is control-api's mapping of this issuer, never a claim this fixture emits; the
-// sac_tenant claim below is left in only because nothing reads it any more.
+// It serves one realm per lab tenant. Each realm is its own issuer, <OIDC_ISSUER>/<realm>, because
+// control-api maps an issuer to exactly one tenant (as Entra has one issuer per directory). Per realm
+// it offers discovery, a JWKS, an authorization-code flow with PKCE (S256) for one confidential
+// client (control-api), and RS256 id_tokens carrying the claims control-api reads: email (verified),
+// preferred_username, name and roles.
 //
-// It is deliberately a stand-in, not a second authentication path, and it lives in localdev/
-// for the same reason the edge and contentlab do: nothing a service imports, no service has
-// an "if lab" branch. What it does provide is the real protocol shape the product is built
-// against:
+// The issuer, the token endpoint and the JWKS are reached by control-api on the lab network; the
+// authorization endpoint is reached by a browser, so discovery names it under OIDC_PUBLIC_URL.
 //
-//   - discovery at /.well-known/openid-configuration, a JWKS at /jwks, and RS256-signed
-//     id_token and access_token JWTs, so control-api verifies a signed id_token (exact iss, aud =
-//     its client id, nonce) rather than trusting what a browser says;
-//   - an authorization-code flow with PKCE (S256) and a client secret, so control-api holds the
-//     session and the browser never sees a tenant or a role it could choose;
-//   - the claims a relying party reads for the actor: email (verified), preferred_username, sub;
-//   - a configurable directory of users, each with a shadow tenant and an app role, so the
-//     lab can sign in as a viewer, an analyst, a content reader or an admin.
+// It has no passwords and no consent screen: /authorize signs in the realm's account named by
+// login_hint (control-api passes the work email on as one), and without a hint it shows the realm's
+// accounts to choose from. The signing key is generated at every start.
 //
-// What it does NOT do, and must not be mistaken for: it has no passwords, no consent screen
-// and no refresh tokens; it signs with a key generated fresh at every start (so a restart
-// invalidates every session), and it accepts any loopback redirect_uri. It is a lab fixture.
-//
-// The claim the product reads for roles is `roles` (an array), mapped through the connection's
-// role_map; this fixture emits product role names, so the lab's map is the identity map.
+//	OIDC_ADDR           listen address (default 0.0.0.0:8080)
+//	OIDC_ISSUER         issuer base as control-api reaches it (default http://oidc:8080)
+//	OIDC_PUBLIC_URL     the same server as a browser reaches it (default OIDC_ISSUER)
+//	OIDC_CLIENT_ID      the one client (default sac-control)
+//	OIDC_CLIENT_SECRET  its secret (required)
+//	OIDC_USERS          JSON array of {"sub","name","email","role","realm"}
 package main
 
 import (
@@ -39,13 +32,15 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
+	"html"
 	"log/slog"
 	"math/big"
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -54,33 +49,26 @@ import (
 const (
 	defaultAddr     = "0.0.0.0:8080"
 	defaultIssuer   = "http://oidc:8080"
-	defaultAudience = "sac-query-api"
-	defaultClientID = "sac-dashboard"
-	// authCodeTTL bounds an issued authorization code. A sign-in round trip is seconds.
+	defaultClientID = "sac-control"
+	// authCodeTTL bounds an issued authorization code; a sign-in round trip takes seconds.
 	authCodeTTL = 2 * time.Minute
-	// accessTokenTTL and idTokenTTL are short on purpose: human revocation is near-real-time
-	// (docs/06 §4.1) and a lab session should not outlive the browser run that created it.
-	accessTokenTTL = 15 * time.Minute
-	idTokenTTL     = 15 * time.Minute
-	// keyBits for the RS256 signing key, matching what Entra ID presents.
-	keyBits = 2048
+	tokenTTL    = 15 * time.Minute
+	keyBits     = 2048
 )
 
-// user is one directory entry: an account, the role it carries and the shadow tenant it
-// belongs to. `sub` is the actor id the audit trail records.
+// user is one account: the realm it signs in to and the product role it carries in `roles`.
 type user struct {
-	Sub    string `json:"sub"`
-	Name   string `json:"name"`
-	Email  string `json:"email"`
-	Role   string `json:"role"`
-	Tenant string `json:"tenant"`
+	Sub   string `json:"sub"`
+	Name  string `json:"name"`
+	Email string `json:"email"`
+	Role  string `json:"role"`
+	Realm string `json:"realm"`
 }
 
-// config is the process's whole state, read from flags and environment.
 type config struct {
 	addr         string
-	issuer       string
-	audience     string
+	issuer       string // base; a realm's issuer is issuer + "/" + realm
+	publicURL    string // base of the browser-facing authorization endpoint
 	clientID     string
 	clientSecret string
 	users        []user
@@ -95,8 +83,6 @@ type authCode struct {
 	expiresAt     time.Time
 }
 
-// server is the lab issuer. The signing key is generated at start; the code store is in
-// memory because the lab has one process and no shared state.
 type server struct {
 	cfg config
 	key *rsa.PrivateKey
@@ -109,196 +95,189 @@ type server struct {
 }
 
 func main() {
-	var (
-		addr         = flag.String("addr", envOr("OIDC_ADDR", defaultAddr), "listen address")
-		issuer       = flag.String("issuer", os.Getenv("OIDC_ISSUER"), "public issuer base URL")
-		audience     = flag.String("audience", envOr("OIDC_API_AUDIENCE", defaultAudience), "access-token audience (query-api)")
-		clientID     = flag.String("client-id", envOr("OIDC_CLIENT_ID", defaultClientID), "dashboard client id")
-		clientSecret = flag.String("client-secret", os.Getenv("OIDC_CLIENT_SECRET"), "client secret (empty = public client with PKCE)")
-	)
-	flag.Parse()
-
-	if *issuer == "" {
-		*issuer = defaultIssuer
-	}
-
-	users, err := usersFromEnv(os.Getenv("OIDC_USERS"))
+	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	cfg, err := configFromEnv(os.Getenv)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "oidc: %v\n", err)
+		fmt.Fprintln(os.Stderr, "oidc:", err)
 		os.Exit(1)
 	}
-	if len(users) == 0 {
-		fmt.Fprintln(os.Stderr, "oidc: OIDC_USERS names no users; set it, for example "+
-			`'[{"sub":"viewer@lab.test","name":"Viewer","role":"viewer","tenant":"11111111-1111-1111-1111-111111111111"}]'`)
-		os.Exit(1)
-	}
-
-	key, err := rsa.GenerateKey(rand.Reader, keyBits)
+	s, err := newServer(cfg, log)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "oidc: cannot generate a signing key: %v\n", err)
+		fmt.Fprintln(os.Stderr, "oidc:", err)
 		os.Exit(1)
 	}
-
-	s := &server{
-		cfg: config{
-			addr: *addr, issuer: strings.TrimRight(*issuer, "/"),
-			audience: *audience, clientID: *clientID, clientSecret: *clientSecret, users: users,
-		},
-		key: key, kid: kidOf(&key.PublicKey), log: slog.Default(), now: time.Now,
-		codes: map[string]authCode{},
-	}
-
-	httpServer := &http.Server{
-		Addr:              s.cfg.addr,
-		Handler:           s.Handler(),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-	s.log.Info("oidc: listening", "addr", s.cfg.addr, "issuer", s.cfg.issuer,
-		"audience", s.cfg.audience, "client_id", s.cfg.clientID, "users", len(s.cfg.users))
-	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		s.log.Error("oidc: server stopped", "error", err)
+	srv := &http.Server{Addr: cfg.addr, Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second}
+	log.Info("oidc listening", "addr", cfg.addr, "issuer", cfg.issuer, "public_url", cfg.publicURL, "realms", s.realms())
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Error("oidc stopped", "error", err.Error())
 		os.Exit(1)
 	}
 }
 
-// Handler returns the stand-in's routes. It is a method so a test can drive the real surface
-// without a listener.
+var realmName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+
+func configFromEnv(getenv func(string) string) (config, error) {
+	get := func(name, fallback string) string {
+		if v := strings.TrimSpace(getenv(name)); v != "" {
+			return v
+		}
+		return fallback
+	}
+	cfg := config{
+		addr:         get("OIDC_ADDR", defaultAddr),
+		issuer:       strings.TrimRight(get("OIDC_ISSUER", defaultIssuer), "/"),
+		clientID:     get("OIDC_CLIENT_ID", defaultClientID),
+		clientSecret: strings.TrimSpace(getenv("OIDC_CLIENT_SECRET")),
+	}
+	cfg.publicURL = strings.TrimRight(get("OIDC_PUBLIC_URL", cfg.issuer), "/")
+	if cfg.clientSecret == "" {
+		return config{}, errors.New("OIDC_CLIENT_SECRET is required: control-api is a confidential client")
+	}
+	users, err := usersFromJSON(getenv("OIDC_USERS"))
+	if err != nil {
+		return config{}, err
+	}
+	cfg.users = users
+	return cfg, nil
+}
+
+// usersFromJSON parses OIDC_USERS. A provider with no accounts signs nobody in, so that is an error.
+func usersFromJSON(raw string) ([]user, error) {
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var users []user
+	if err := dec.Decode(&users); err != nil {
+		return nil, fmt.Errorf("OIDC_USERS is not a JSON array of accounts: %w", err)
+	}
+	if len(users) == 0 {
+		return nil, errors.New("OIDC_USERS names no accounts")
+	}
+	for i, u := range users {
+		if u.Sub == "" || u.Email == "" || u.Role == "" {
+			return nil, fmt.Errorf("OIDC_USERS[%d] needs sub, email and role", i)
+		}
+		if !realmName.MatchString(u.Realm) {
+			return nil, fmt.Errorf("OIDC_USERS[%d]: realm %q is not a lower-case name", i, u.Realm)
+		}
+	}
+	return users, nil
+}
+
+func newServer(cfg config, log *slog.Logger) (*server, error) {
+	key, err := rsa.GenerateKey(rand.Reader, keyBits)
+	if err != nil {
+		return nil, fmt.Errorf("generate signing key: %w", err)
+	}
+	sum := sha256.Sum256(x509.MarshalPKCS1PublicKey(&key.PublicKey))
+	return &server{
+		cfg: cfg, key: key, kid: base64.RawURLEncoding.EncodeToString(sum[:8]),
+		log: log, now: time.Now, codes: map[string]authCode{},
+	}, nil
+}
+
+// Handler returns the provider's routes.
 func (s *server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /.well-known/openid-configuration", s.handleDiscovery)
-	mux.HandleFunc("GET /jwks", s.handleJWKS)
-	mux.HandleFunc("GET /authorize", s.handleAuthorize)
-	mux.HandleFunc("POST /token", s.handleToken)
-	mux.HandleFunc("GET /healthz", s.handleHealth)
-	mux.HandleFunc("GET /", s.handleIndex)
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+	})
+	mux.HandleFunc("GET /{$}", s.handleIndex)
+	mux.HandleFunc("GET /{realm}/.well-known/openid-configuration", s.inRealm(s.handleDiscovery))
+	mux.HandleFunc("GET /{realm}/jwks", s.inRealm(s.handleJWKS))
+	mux.HandleFunc("GET /{realm}/authorize", s.inRealm(s.handleAuthorize))
+	mux.HandleFunc("POST /{realm}/token", s.inRealm(s.handleToken))
 	return mux
 }
 
-func kidOf(pub *rsa.PublicKey) string {
-	sum := sha256.Sum256(x509.MarshalPKCS1PublicKey(pub))
-	return base64.RawURLEncoding.EncodeToString(sum[:8])
-}
-
-func envOr(name, fallback string) string {
-	if v := strings.TrimSpace(os.Getenv(name)); v != "" {
-		return v
-	}
-	return fallback
-}
-
-// usersFromEnv parses OIDC_USERS, a JSON array of user objects. An error is fatal rather
-// than defaulted: a lab issuer with no directory would sign in nobody.
-func usersFromEnv(raw string) ([]user, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil, nil
-	}
-	var in []user
-	dec := json.NewDecoder(strings.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&in); err != nil {
-		return nil, fmt.Errorf("OIDC_USERS is not a JSON array of users: %w", err)
-	}
-	for i, u := range in {
-		if u.Sub == "" || u.Tenant == "" || u.Role == "" {
-			return nil, fmt.Errorf("OIDC_USERS[%d] needs sub, role and tenant", i)
+func (s *server) realms() []string {
+	var out []string
+	for _, u := range s.cfg.users {
+		if !slices.Contains(out, u.Realm) {
+			out = append(out, u.Realm)
 		}
 	}
-	return in, nil
+	return out
 }
 
-// ---------------------------------------------------------------------------------------
-// Discovery and keys
-// ---------------------------------------------------------------------------------------
+// inRealm resolves the {realm} path segment, answering 404 for a realm no account belongs to.
+func (s *server) inRealm(h func(http.ResponseWriter, *http.Request, string)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		realm := r.PathValue("realm")
+		if !slices.Contains(s.realms(), realm) {
+			http.NotFound(w, r)
+			return
+		}
+		h(w, r, realm)
+	}
+}
 
-func (s *server) handleDiscovery(w http.ResponseWriter, _ *http.Request) {
-	s.writeJSON(w, http.StatusOK, map[string]any{
-		"issuer":                                s.cfg.issuer,
-		"authorization_endpoint":                s.cfg.issuer + "/authorize",
-		"token_endpoint":                        s.cfg.issuer + "/token",
-		"jwks_uri":                              s.cfg.issuer + "/jwks",
+func (s *server) issuer(realm string) string { return s.cfg.issuer + "/" + realm }
+
+func (s *server) handleDiscovery(w http.ResponseWriter, _ *http.Request, realm string) {
+	iss := s.issuer(realm)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"issuer":                                iss,
+		"authorization_endpoint":                s.cfg.publicURL + "/" + realm + "/authorize",
+		"token_endpoint":                        iss + "/token",
+		"jwks_uri":                              iss + "/jwks",
 		"response_types_supported":              []string{"code"},
 		"subject_types_supported":               []string{"public"},
 		"id_token_signing_alg_values_supported": []string{"RS256"},
 		"scopes_supported":                      []string{"openid", "profile", "email"},
 		"code_challenge_methods_supported":      []string{"S256"},
 		"grant_types_supported":                 []string{"authorization_code"},
-		"token_endpoint_auth_methods_supported": s.tokenAuthMethods(),
-		"claims_supported": []string{"sub", "email", "email_verified", "name", "preferred_username",
-			"roles", "nonce"},
+		"token_endpoint_auth_methods_supported": []string{"client_secret_post", "client_secret_basic"},
+		"claims_supported":                      []string{"sub", "email", "email_verified", "name", "preferred_username", "roles", "nonce"},
 	})
 }
 
-// tokenAuthMethods is what a client must present at /token: a secret, in either RFC 6749 §2.3.1
-// form, when one is configured (the lab's confidential client), otherwise nothing but PKCE.
-func (s *server) tokenAuthMethods() []string {
-	if s.cfg.clientSecret == "" {
-		return []string{"none"}
-	}
-	return []string{"client_secret_post", "client_secret_basic"}
-}
-
-func (s *server) handleJWKS(w http.ResponseWriter, _ *http.Request) {
+func (s *server) handleJWKS(w http.ResponseWriter, _ *http.Request, _ string) {
 	e := big.NewInt(int64(s.key.PublicKey.E))
-	s.writeJSON(w, http.StatusOK, map[string]any{
-		"keys": []map[string]any{{
-			"kty": "RSA", "use": "sig", "alg": "RS256", "kid": s.kid,
-			"n": base64.RawURLEncoding.EncodeToString(s.key.PublicKey.N.Bytes()),
-			"e": base64.RawURLEncoding.EncodeToString(e.Bytes()),
-		}},
-	})
+	writeJSON(w, http.StatusOK, map[string]any{"keys": []map[string]any{{
+		"kty": "RSA", "use": "sig", "alg": "RS256", "kid": s.kid,
+		"n": base64.RawURLEncoding.EncodeToString(s.key.PublicKey.N.Bytes()),
+		"e": base64.RawURLEncoding.EncodeToString(e.Bytes()),
+	}}})
 }
 
-// ---------------------------------------------------------------------------------------
-// Authorization code flow
-// ---------------------------------------------------------------------------------------
-
-// handleAuthorize issues a code for login_hint's user. There is no password and no consent
-// screen: the lab picks the account by login_hint. Without one it renders the directory so
-// a person can choose, which is what a human sees when they open the issuer directly.
-func (s *server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleAuthorize(w http.ResponseWriter, r *http.Request, realm string) {
 	q := r.URL.Query()
-	redirectURI := q.Get("redirect_uri")
-	if redirectURI == "" {
-		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request", "error_description": "redirect_uri is required"})
+	back, err := url.Parse(q.Get("redirect_uri"))
+	if err != nil || back.Host == "" {
+		writeJSON(w, http.StatusBadRequest, oauthError("invalid_request", "redirect_uri must be an absolute URL"))
 		return
 	}
-	if q.Get("response_type") != "code" {
-		s.redirectError(w, r, redirectURI, "unsupported_response_type", "only response_type=code is served")
+	refuse := func(code, detail string) {
+		params := back.Query()
+		params.Set("error", code)
+		params.Set("error_description", detail)
+		if state := q.Get("state"); state != "" {
+			params.Set("state", state)
+		}
+		back.RawQuery = params.Encode()
+		http.Redirect(w, r, back.String(), http.StatusFound)
+	}
+	switch {
+	case q.Get("response_type") != "code":
+		refuse("unsupported_response_type", "only response_type=code is served")
+		return
+	case q.Get("client_id") != s.cfg.clientID:
+		refuse("invalid_client", "unknown client_id")
+		return
+	case q.Get("code_challenge_method") != "S256" || q.Get("code_challenge") == "":
+		refuse("invalid_request", "PKCE with code_challenge_method=S256 is required")
 		return
 	}
-	if q.Get("client_id") != s.cfg.clientID {
-		s.redirectError(w, r, redirectURI, "invalid_client", "unknown client_id")
-		return
-	}
-	if q.Get("code_challenge_method") != "S256" || q.Get("code_challenge") == "" {
-		s.redirectError(w, r, redirectURI, "invalid_request", "PKCE with code_challenge_method=S256 is required")
-		return
-	}
-
-	hint := strings.TrimSpace(q.Get("login_hint"))
-	u, ok := s.findUser(hint)
+	u, ok := s.findUser(realm, q.Get("login_hint"))
 	if !ok {
-		// A directory page rather than a JSON error: the only way to reach here in the lab is
-		// a person opening the issuer in a browser, and a list is more useful than a code.
-		s.writeUsersPage(w, r)
+		s.writeChooser(w, r, realm)
 		return
 	}
-
-	code := randomToken(24)
+	code := randomToken()
 	s.mu.Lock()
-	s.codes[code] = authCode{
-		user: u, redirectURI: redirectURI,
-		codeChallenge: q.Get("code_challenge"), nonce: q.Get("nonce"),
-		expiresAt: s.now().Add(authCodeTTL),
-	}
+	s.codes[code] = authCode{user: u, redirectURI: back.String(), codeChallenge: q.Get("code_challenge"),
+		nonce: q.Get("nonce"), expiresAt: s.now().Add(authCodeTTL)}
 	s.mu.Unlock()
-
-	back, err := url.Parse(redirectURI)
-	if err != nil {
-		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request", "error_description": "redirect_uri is not a URL"})
-		return
-	}
 	params := back.Query()
 	params.Set("code", code)
 	if state := q.Get("state"); state != "" {
@@ -308,89 +287,64 @@ func (s *server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, back.String(), http.StatusFound)
 }
 
-// handleToken exchanges a code (whose PKCE verifier the caller proves) for an access token
-// for the API audience and an id token for the client.
-func (s *server) handleToken(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleToken(w http.ResponseWriter, r *http.Request, realm string) {
 	if err := r.ParseForm(); err != nil {
-		s.writeOAuthError(w, http.StatusBadRequest, "invalid_request", "the token request is not form-encoded")
+		writeJSON(w, http.StatusBadRequest, oauthError("invalid_request", "the token request is not form-encoded"))
 		return
 	}
 	if r.PostForm.Get("grant_type") != "authorization_code" {
-		s.writeOAuthError(w, http.StatusBadRequest, "unsupported_grant_type", "only authorization_code is served")
+		writeJSON(w, http.StatusBadRequest, oauthError("unsupported_grant_type", "only authorization_code is served"))
 		return
 	}
-	// Client authentication, either form RFC 6749 §2.3.1 allows. A relying party picks one from the
-	// discovery document; refusing the other would make the fixture stricter than real providers.
-	clientID, clientSecret, basic := r.BasicAuth()
+	// Either client authentication form of RFC 6749 section 2.3.1; the basic form URL-encodes each
+	// part before joining them.
+	clientID, secret, basic := r.BasicAuth()
 	if basic {
-		// The basic form URL-encodes each part before joining them with a colon.
 		clientID, _ = url.QueryUnescape(clientID)
-		clientSecret, _ = url.QueryUnescape(clientSecret)
+		secret, _ = url.QueryUnescape(secret)
 	} else {
-		clientID, clientSecret = r.PostForm.Get("client_id"), r.PostForm.Get("client_secret")
+		clientID, secret = r.PostForm.Get("client_id"), r.PostForm.Get("client_secret")
 	}
-	if clientID != "" && clientID != s.cfg.clientID {
-		s.writeOAuthError(w, http.StatusUnauthorized, "invalid_client", "unknown client_id")
-		return
-	}
-	if s.cfg.clientSecret != "" && subtle.ConstantTimeCompare([]byte(clientSecret), []byte(s.cfg.clientSecret)) != 1 {
-		s.writeOAuthError(w, http.StatusUnauthorized, "invalid_client", "client_secret does not match")
+	if clientID != s.cfg.clientID || subtle.ConstantTimeCompare([]byte(secret), []byte(s.cfg.clientSecret)) != 1 {
+		writeJSON(w, http.StatusUnauthorized, oauthError("invalid_client", "client authentication failed"))
 		return
 	}
 
-	code := r.PostForm.Get("code")
 	s.mu.Lock()
-	entry, ok := s.codes[code]
-	if ok {
-		delete(s.codes, code) // single-use, redeemed or expired
-	}
+	entry, ok := s.codes[r.PostForm.Get("code")]
+	delete(s.codes, r.PostForm.Get("code"))
 	s.mu.Unlock()
-	if !ok || s.now().After(entry.expiresAt) {
-		s.writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "the code is unknown, used or expired")
+	switch {
+	case !ok || s.now().After(entry.expiresAt) || entry.user.Realm != realm:
+		writeJSON(w, http.StatusBadRequest, oauthError("invalid_grant", "the code is unknown, used or expired"))
 		return
-	}
-	if r.PostForm.Get("redirect_uri") != entry.redirectURI {
-		s.writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "redirect_uri does not match the one the code was issued for")
+	case r.PostForm.Get("redirect_uri") != entry.redirectURI:
+		writeJSON(w, http.StatusBadRequest, oauthError("invalid_grant", "redirect_uri differs from the authorization request"))
 		return
-	}
-	if !pkceMatches(entry.codeChallenge, r.PostForm.Get("code_verifier")) {
-		s.writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "code_verifier does not match the challenge")
+	case !pkceMatches(entry.codeChallenge, r.PostForm.Get("code_verifier")):
+		writeJSON(w, http.StatusBadRequest, oauthError("invalid_grant", "code_verifier does not match the challenge"))
 		return
 	}
 
 	now := s.now()
-	access, err := s.signJWT(map[string]any{
-		"iss": s.cfg.issuer, "aud": s.cfg.audience, "sub": entry.user.Sub,
-		"email": entry.user.Email, "name": entry.user.Name,
-		"roles": []string{entry.user.Role}, "sac_tenant": entry.user.Tenant,
-		"iat": now.Unix(), "exp": now.Add(accessTokenTTL).Unix(),
-	})
-	if err != nil {
-		s.writeOAuthError(w, http.StatusInternalServerError, "server_error", err.Error())
-		return
-	}
-	// The relying party takes the actor from email, then preferred_username, then sub; a directory
-	// fixture has verified every address it lists, so it says so rather than leaving the RP to guess.
-	idClaims := map[string]any{
-		"iss": s.cfg.issuer, "aud": s.cfg.clientID, "sub": entry.user.Sub,
-		"email": entry.user.Email, "email_verified": entry.user.Email != "", "name": entry.user.Name,
-		"preferred_username": firstNonEmpty(entry.user.Email, entry.user.Sub),
-		"roles": []string{entry.user.Role}, "sac_tenant": entry.user.Tenant,
-		"iat": now.Unix(), "exp": now.Add(idTokenTTL).Unix(),
+	base := map[string]any{"iss": s.issuer(realm), "aud": s.cfg.clientID, "sub": entry.user.Sub,
+		"iat": now.Unix(), "exp": now.Add(tokenTTL).Unix()}
+	idClaims := map[string]any{"email": entry.user.Email, "email_verified": true, "name": entry.user.Name,
+		"preferred_username": entry.user.Email, "roles": []string{entry.user.Role}}
+	for k, v := range base {
+		idClaims[k] = v
 	}
 	if entry.nonce != "" {
 		idClaims["nonce"] = entry.nonce
 	}
-	id, err := s.signJWT(idClaims)
-	if err != nil {
-		s.writeOAuthError(w, http.StatusInternalServerError, "server_error", err.Error())
+	idToken, err1 := s.sign(idClaims)
+	accessToken, err2 := s.sign(base)
+	if err := errors.Join(err1, err2); err != nil {
+		writeJSON(w, http.StatusInternalServerError, oauthError("server_error", err.Error()))
 		return
 	}
-
-	s.writeJSON(w, http.StatusOK, map[string]any{
-		"access_token": access, "id_token": id,
-		"token_type": "Bearer", "expires_in": int(accessTokenTTL.Seconds()),
-	})
+	writeJSON(w, http.StatusOK, map[string]any{"access_token": accessToken, "id_token": idToken,
+		"token_type": "Bearer", "expires_in": int(tokenTTL.Seconds())})
 }
 
 // pkceMatches is RFC 7636 S256: base64url(sha256(verifier)) == challenge.
@@ -399,12 +353,11 @@ func pkceMatches(challenge, verifier string) bool {
 		return false
 	}
 	sum := sha256.Sum256([]byte(verifier))
-	return base64.RawURLEncoding.EncodeToString(sum[:]) == challenge
+	return subtle.ConstantTimeCompare([]byte(base64.RawURLEncoding.EncodeToString(sum[:])), []byte(challenge)) == 1
 }
 
-// signJWT signs an RS256 JWT with the process's key. The three parts are base64url without
-// padding, which is what every verifier expects.
-func (s *server) signJWT(claims map[string]any) (string, error) {
+// sign returns an RS256 JWT over claims.
+func (s *server) sign(claims map[string]any) (string, error) {
 	header, err := json.Marshal(map[string]string{"alg": "RS256", "typ": "JWT", "kid": s.kid})
 	if err != nil {
 		return "", err
@@ -413,100 +366,69 @@ func (s *server) signJWT(claims map[string]any) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	signingInput := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(payload)
-	sum := sha256.Sum256([]byte(signingInput))
+	input := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(payload)
+	sum := sha256.Sum256([]byte(input))
 	sig, err := rsa.SignPKCS1v15(rand.Reader, s.key, crypto.SHA256, sum[:])
 	if err != nil {
 		return "", err
 	}
-	return signingInput + "." + base64.RawURLEncoding.EncodeToString(sig), nil
+	return input + "." + base64.RawURLEncoding.EncodeToString(sig), nil
 }
 
-func (s *server) findUser(hint string) (user, bool) {
+func (s *server) findUser(realm, hint string) (user, bool) {
 	hint = strings.ToLower(strings.TrimSpace(hint))
+	if hint == "" {
+		return user{}, false
+	}
 	for _, u := range s.cfg.users {
-		if u.Sub == hint || strings.ToLower(u.Email) == hint || strings.EqualFold(u.Name, hint) {
+		if u.Realm == realm && (strings.ToLower(u.Email) == hint || u.Sub == hint) {
 			return u, true
 		}
 	}
-	// No hint: fall through to the directory page. The stand-in must not sign anyone in by
-	// default — a real provider shows a login form, and an unauthenticated browser must not end up
-	// with a session. observe.mjs always names an account.
 	return user{}, false
 }
 
-// ---------------------------------------------------------------------------------------
-// Small helpers
-// ---------------------------------------------------------------------------------------
-
-func (s *server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	s.writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "issuer": s.cfg.issuer, "users": len(s.cfg.users)})
-}
-
-// handleIndex is the directory page, so an operator can see who the stand-in can sign in.
-func (s *server) handleIndex(w http.ResponseWriter, _ *http.Request) {
-	s.writeUsersPage(w, nil)
-}
-
-func (s *server) writeUsersPage(w http.ResponseWriter, r *http.Request) {
+// writeChooser lists a realm's accounts, each linking back to /authorize with its login_hint.
+func (s *server) writeChooser(w http.ResponseWriter, r *http.Request, realm string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprint(w, "<!doctype html><meta charset=utf-8><title>lab identity provider</title>")
-	fmt.Fprintf(w, "<h1>%s</h1><p>This is the lab OpenID Connect stand-in. It has no passwords; a sign-in names an account with <code>login_hint</code>.</p>", s.cfg.issuer)
-	fmt.Fprint(w, "<table><tr><th>sub</th><th>role</th><th>tenant</th></tr>")
+	fmt.Fprintf(w, "<!doctype html><meta charset=utf-8><title>Lab sign-in</title><h1>Sign in to %s</h1><ul>", html.EscapeString(realm))
 	for _, u := range s.cfg.users {
-		if r != nil {
-			q := r.URL.Query()
-			q.Set("login_hint", u.Sub)
-			// Keep the original request's redirect/state when rendering the chooser.
-			link := "/authorize?" + q.Encode()
-			fmt.Fprintf(w, "<tr><td><a href=%q>%s</a></td><td>%s</td><td>%s</td></tr>", link, u.Sub, u.Role, u.Tenant)
+		if u.Realm != realm {
 			continue
 		}
-		fmt.Fprintf(w, "<tr><td>%s</td><td>%s</td><td>%s</td></tr>", u.Sub, u.Role, u.Tenant)
+		q := r.URL.Query()
+		q.Set("login_hint", u.Email)
+		fmt.Fprintf(w, `<li><a href="%s">%s</a> (%s)</li>`, html.EscapeString("authorize?"+q.Encode()),
+			html.EscapeString(u.Email), html.EscapeString(u.Role))
+	}
+	fmt.Fprint(w, "</ul>")
+}
+
+func (s *server) handleIndex(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprint(w, "<!doctype html><meta charset=utf-8><title>Lab identity provider</title><h1>Lab identity provider</h1><table><tr><th>issuer</th><th>account</th><th>role</th></tr>")
+	for _, u := range s.cfg.users {
+		fmt.Fprintf(w, "<tr><td>%s</td><td>%s</td><td>%s</td></tr>", html.EscapeString(s.issuer(u.Realm)),
+			html.EscapeString(u.Email), html.EscapeString(u.Role))
 	}
 	fmt.Fprint(w, "</table>")
 }
 
-func (s *server) redirectError(w http.ResponseWriter, r *http.Request, redirectURI, code, detail string) {
-	back, err := url.Parse(redirectURI)
-	if err != nil {
-		s.writeOAuthError(w, http.StatusBadRequest, code, detail)
-		return
-	}
-	params := back.Query()
-	params.Set("error", code)
-	params.Set("error_description", detail)
-	if state := r.URL.Query().Get("state"); state != "" {
-		params.Set("state", state)
-	}
-	back.RawQuery = params.Encode()
-	http.Redirect(w, r, back.String(), http.StatusFound)
+func oauthError(code, detail string) map[string]string {
+	return map[string]string{"error": code, "error_description": detail}
 }
 
-func (s *server) writeOAuthError(w http.ResponseWriter, status int, code, detail string) {
-	s.writeJSON(w, status, map[string]string{"error": code, "error_description": detail})
-}
-
-func (s *server) writeJSON(w http.ResponseWriter, status int, v any) {
+func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
-func randomToken(n int) string {
-	b := make([]byte, n)
+func randomToken() string {
+	b := make([]byte, 24)
 	if _, err := rand.Read(b); err != nil {
-		panic(err) // a lab issuer that cannot read randomness cannot mint a code
+		panic(err)
 	}
 	return base64.RawURLEncoding.EncodeToString(b)
 }

@@ -1,0 +1,238 @@
+# The lab: the production images, wired as azure/main.bicep wires them, on one machine.
+#
+# Start, seed and check it with `node localdev/run.mjs`, which puts the lab's key material into the
+# environment this file reads (LAB_CA_*, LAB_EDGE_*, LAB_*_SIGNING_KEY); the secrets in
+# .authlab-identity/ are read as env files. Every LAB_*_PORT and LAB_PUBLIC_HOST may be set in the
+# environment or in localdev/.env.
+#
+#   service        on the lab network          from the host
+#   edge           https://edge:8443           https://127.0.0.1:8443   (LAB_EDGE_PORT)  devices
+#   dashboard      http://dashboard:8080       http://127.0.0.1:8787    (LAB_DASHBOARD_PORT)
+#   oidc           http://oidc:8080            http://127.0.0.1:8790    (LAB_OIDC_PORT)  sign-in pages
+#   postgres       postgres:5432               127.0.0.1:55435          (LAB_PG_PORT)
+#   control-api, ingest-api, content-vault, query-api: :8080 on the lab network only
+
+name: sac-lab
+
+networks:
+  default:
+    name: sac-lab
+
+x-database: &database
+  SAC_PG_HOST: postgres
+  SAC_PG_DATABASE: shadow
+  # Every login's password: the lab's PostgreSQL listens on the host's loopback only. In Azure each
+  # component authenticates with its managed identity instead.
+  SAC_PG_PASSWORD: sac-lab-only
+  SAC_PG_SSLMODE: disable
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: sac-lab-only
+    ports:
+      - "127.0.0.1:${LAB_PG_PORT:-55435}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  # The server as Azure Database for PostgreSQL presents it: a NOLOGIN azure_pg_admin owning the
+  # database, a non-superuser administrator with CREATEROLE in it (the migration identity), and one
+  # login per component. Idempotent.
+  db-setup:
+    image: postgres:16-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: postgres
+      PGPASSWORD: sac-lab-only
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        psql -v ON_ERROR_STOP=1 -q <<'SQL'
+        SELECT 'CREATE ROLE azure_pg_admin NOLOGIN'
+         WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'azure_pg_admin') \gexec
+        SELECT 'CREATE ROLE sac_admin LOGIN CREATEROLE IN ROLE azure_pg_admin'
+         WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'sac_admin') \gexec
+        SELECT format('CREATE ROLE %I LOGIN', login)
+          FROM unnest(ARRAY['ingest-api', 'control-api', 'content-vault', 'query-api', 'jobs']) AS login
+         WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = login) \gexec
+        SELECT format('ALTER ROLE %I PASSWORD %L', login, 'sac-lab-only')
+          FROM unnest(ARRAY['sac_admin', 'ingest-api', 'control-api', 'content-vault', 'query-api', 'jobs']) AS login \gexec
+        SELECT 'CREATE DATABASE shadow OWNER azure_pg_admin'
+         WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'shadow') \gexec
+        SQL
+    restart: "no"
+
+  # The production migrator, as the administrator. The component logins already exist, so it only
+  # makes each a member of its runtime role; the object ids are unused.
+  migrate:
+    image: sac/migrate:lab
+    depends_on:
+      db-setup:
+        condition: service_completed_successfully
+    environment:
+      <<: *database
+      SAC_PG_USER: sac_admin
+      SAC_DB_LOGINS: >-
+        [{"login":"ingest-api","role":"sac_ingest","objectId":"00000000-0000-0000-0000-000000000001"},
+        {"login":"control-api","role":"sac_control","objectId":"00000000-0000-0000-0000-000000000002"},
+        {"login":"content-vault","role":"sac_vault","objectId":"00000000-0000-0000-0000-000000000003"},
+        {"login":"query-api","role":"sac_query","objectId":"00000000-0000-0000-0000-000000000004"},
+        {"login":"jobs","role":"sac_ops","objectId":"00000000-0000-0000-0000-000000000005"}]
+    restart: "no"
+
+  control-api:
+    image: sac/control-api:lab
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      <<: *database
+      SAC_PG_USER: control-api
+      SAC_REGION: lab
+      SAC_CA_CERT_PEM: ${LAB_CA_CERT_PEM:-}
+      SAC_CA_KEY_PEM: ${LAB_CA_KEY_PEM:-}
+      # query-api and content-vault fetch the JWKS from here, so it is the lab-network address.
+      SAC_AUTH_ISSUER: http://control-api:8080
+      SAC_SESSION_SIGNING_KEY_FILE: /run/sac/session-signing.key
+      SAC_POLICY_SIGNING_KEY_FILE: /run/sac/policy-signing.key
+      SAC_PUBLIC_URL: http://${LAB_PUBLIC_HOST:-127.0.0.1}:${LAB_DASHBOARD_PORT:-8787}
+      SAC_PUBLIC_DEVICE_ENDPOINT: https://${LAB_PUBLIC_HOST:-127.0.0.1}:${LAB_EDGE_PORT:-8443}
+      SAC_CONTENT_VAULT_URL: http://content-vault:8080
+      # The lab identity provider is plain http on a private address.
+      SAC_AUTH_ALLOW_INSECURE_IDP: "true"
+    env_file:
+      - .authlab-identity/internal-token.env
+      - .authlab-identity/directory-key.env
+    configs:
+      - source: session-signing-key
+        target: /run/sac/session-signing.key
+        mode: 0444
+      - source: policy-signing-key
+        target: /run/sac/policy-signing.key
+        mode: 0444
+    volumes:
+      # The agent release (release.json, the MSI, the extension CRX) that localdev/lab-msi.mjs builds.
+      - ./.msi:/opt/sac/agent-release:ro
+    restart: unless-stopped
+
+  ingest-api:
+    image: sac/ingest-api:lab
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      <<: *database
+      SAC_PG_USER: ingest-api
+      SAC_REGION: lab
+      SAC_CA_CERT_PEM: ${LAB_CA_CERT_PEM:-}
+    restart: unless-stopped
+
+  content-vault:
+    image: sac/content-vault:lab
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      <<: *database
+      SAC_PG_USER: content-vault
+      SAC_AUTH_ISSUER: http://control-api:8080
+      SAC_AUTH_AUDIENCE: sac-vault
+    env_file:
+      - .authlab-identity/content-keys.env
+    restart: unless-stopped
+
+  query-api:
+    image: sac/query-api:lab
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      <<: *database
+      SAC_PG_USER: query-api
+      SAC_AUTH_ISSUER: http://control-api:8080
+      SAC_AUTH_AUDIENCE: sac-query
+      SAC_CONTENT_VAULT_URL: http://content-vault:8080
+    env_file:
+      - .authlab-identity/cursor-key.env
+    restart: unless-stopped
+
+  dashboard:
+    image: sac/dashboard:lab
+    depends_on:
+      - control-api
+      - query-api
+    environment:
+      SAC_PUBLIC_URL: http://${LAB_PUBLIC_HOST:-127.0.0.1}:${LAB_DASHBOARD_PORT:-8787}
+      SAC_CONTROL_URL: http://control-api:8080
+      SAC_QUERY_API_URL: http://query-api:8080
+      SAC_CONTENT_VAULT_URL: http://content-vault:8080
+    env_file:
+      - .authlab-identity/internal-token.env
+    ports:
+      - "127.0.0.1:${LAB_DASHBOARD_PORT:-8787}:8080"
+    restart: unless-stopped
+
+  # The scheduled jobs: aggregate every minute, expire every hour.
+  jobs:
+    image: sac/lab-jobs:lab
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      <<: *database
+      SAC_PG_USER: jobs
+    restart: unless-stopped
+
+  # The device ingress, as Application Gateway.
+  edge:
+    image: sac/edge:lab
+    depends_on:
+      - control-api
+      - ingest-api
+    environment:
+      EDGE_TLS_CERT_PEM: ${LAB_EDGE_CERT_PEM:-}
+      EDGE_TLS_KEY_PEM: ${LAB_EDGE_KEY_PEM:-}
+    ports:
+      - "${LAB_EDGE_PORT:-8443}:8443"
+    restart: unless-stopped
+
+  # The customers' identity provider: one realm, and one issuer, per lab tenant.
+  oidc:
+    image: sac/oidc:lab
+    environment:
+      OIDC_ISSUER: http://oidc:8080
+      OIDC_PUBLIC_URL: http://${LAB_PUBLIC_HOST:-127.0.0.1}:${LAB_OIDC_PORT:-8790}
+      OIDC_CLIENT_ID: sac-control
+      OIDC_USERS: >-
+        [{"sub":"viewer@lab.test","name":"Vera Viewer","email":"viewer@lab.test","role":"viewer","realm":"lab"},
+        {"sub":"analyst@lab.test","name":"Ana Analyst","email":"analyst@lab.test","role":"analyst","realm":"lab"},
+        {"sub":"reader@lab.test","name":"Rhea Reader","email":"reader@lab.test","role":"content_reader","realm":"lab"},
+        {"sub":"admin@lab.test","name":"Ada Admin","email":"admin@lab.test","role":"admin","realm":"lab"},
+        {"sub":"viewer@sample.test","name":"Vic Viewer","email":"viewer@sample.test","role":"viewer","realm":"sample"},
+        {"sub":"analyst@sample.test","name":"Sam Analyst","email":"analyst@sample.test","role":"analyst","realm":"sample"},
+        {"sub":"reader@sample.test","name":"Rob Reader","email":"reader@sample.test","role":"content_reader","realm":"sample"},
+        {"sub":"admin@sample.test","name":"Abe Admin","email":"admin@sample.test","role":"admin","realm":"sample"}]
+    env_file:
+      - .authlab-identity/oidc-client.env
+    ports:
+      - "127.0.0.1:${LAB_OIDC_PORT:-8790}:8080"
+    restart: unless-stopped
+
+configs:
+  session-signing-key:
+    environment: LAB_SESSION_SIGNING_KEY
+  policy-signing-key:
+    environment: LAB_POLICY_SIGNING_KEY
+
+volumes:
+  postgres:

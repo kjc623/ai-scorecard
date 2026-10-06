@@ -1,22 +1,15 @@
-# syntax=docker/dockerfile:1
+# The lab's identity provider. Build context: the repository root.
 #
-# oidc — the local OpenID Connect stand-in (see main.go for what is real and what is a
-# fixture). It is a standard-library-only program with no module dependency and no runtime
-# data file, so localdev/build.mjs cross-compiles it on the host (GOPROXY=off) and this image
-# never needs a golang image or a network — the same shape as the edge and contentlab images.
-#
-# BUILD CONTEXT IS THE REPOSITORY ROOT:
-#     docker build --target lab -t sac/oidc:lab -f localdev/oidc/Dockerfile .
-ARG LAB_BASE=alpine:latest
-FROM ${LAB_BASE} AS lab
+#   docker build -f localdev/oidc/Dockerfile -t sac/oidc:lab .
 
-# Path to the binary produced by localdev/build.mjs, relative to the build context.
-ARG BINARY=localdev/oidc/bin/oidc
+FROM golang:1.27-alpine AS build
+ENV CGO_ENABLED=0
+WORKDIR /src
+COPY localdev/oidc/ ./
+RUN go build -trimpath -ldflags="-s -w" -o /out/oidc .
 
-RUN adduser -D -H -u 10001 oidc
-COPY ${BINARY} /usr/local/bin/oidc
-RUN chmod 0555 /usr/local/bin/oidc
-
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/oidc /usr/local/bin/oidc
 EXPOSE 8080
-USER 10001:10001
+USER nonroot:nonroot
 ENTRYPOINT ["/usr/local/bin/oidc"]

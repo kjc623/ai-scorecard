@@ -1,23 +1,14 @@
 # Coding harnesses, as containers on the lab's network.
 #
-# Each service here is one harness. It sees the repository at /workspace and reaches the lab by
-# service name (the left-hand column of the table in docker-compose.yml). The lab must be up first,
-# because the `scorecard` network belongs to it:
+# Each service here is one harness. It sees the repository at /workspace and reaches the lab's
+# services by name (control-api, ingest-api, query-api, content-vault, dashboard and postgres, all
+# on port 8080 except postgres). The lab must be up first, because the `sac-lab` network belongs to it:
 #
 #     node localdev/run.mjs
 #     node localdev/harness/mcp-gateway.mjs          # in its own terminal; optional, for MCP
 #     docker compose -f localdev/harness.compose.yaml run --rm pi
 #
 # Adding a harness is a Dockerfile under localdev/harness/<name>/ and one service below.
-#
-# The opencode harness is the exception to "the lab": it is on the device-auth lab's network
-# (`scorecard-authlab`, from localdev/authlab.compose.yaml) and not on `scorecard`, because that is
-# the lab the backlog is worked against. Both labs use the same service names and the same database
-# credentials, so a harness on both networks could not tell which `postgres` it had reached. For
-# opencode the addresses below therefore mean the device-auth lab, which must be up first:
-#
-#     docker compose -f localdev/authlab.compose.yaml up -d
-#     docker compose -f localdev/harness.compose.yaml run --rm opencode
 #
 # Docker: the host's docker socket is mounted, so a harness can inspect, restart and exec into the
 # lab's containers — and every other container on this machine. That is a deliberate grant.
@@ -32,16 +23,13 @@ name: sac-harness
 
 x-harness: &harness
   working_dir: /workspace
-  networks: [scorecard]
+  networks: [sac-lab]
   stdin_open: true
   tty: true
   # The socket is root:root 0660 inside a container, and a harness does not run as root.
   group_add: ["0"]
   environment: &harness-env
-    # The lab, as seen from inside its network. localdev/run.mjs --no-up reads the three URLs.
-    LAB_INGEST_URL: http://ingest-api:8080
-    LAB_VAULT_URL: http://content-vault:8080
-    LAB_QUERY_URL: http://query-api:8080
+    # The lab's database as its superuser, for psql.
     PGHOST: postgres
     PGDATABASE: shadow
     PGUSER: postgres
@@ -70,7 +58,6 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
   opencode:
     <<: *harness
-    networks: [scorecard-authlab]
     build:
       context: harness/fedora
     image: sac/harness-opencode
@@ -81,9 +68,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
 
 networks:
-  scorecard:
-    external: true
-  scorecard-authlab:
+  sac-lab:
     external: true
 
 volumes:

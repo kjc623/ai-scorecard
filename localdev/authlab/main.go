@@ -1,27 +1,27 @@
-// Command authlab is the development PKI and the end-to-end device client for the local auth lab
-// (ADR 0020 decision 5). It has two modes:
+// Command authlab is the lab's device-side tool. It runs on the lab network.
 //
-//	authlab pki   -pki-dir DIR
-//	    Generates the dev CA, the edge's server key pair and the access-token signing key pair with
-//	    the standard library. The CA signs the device leaves control-api issues; the edge presents the
-//	    server certificate; control-api signs tokens with the private half and ingest-api verifies
-//	    with the public half. The material is written to DIR, which is gitignored and generated fresh
-//	    on every run: no key is ever committed.
+//	authlab pki
+//	    Prints fresh lab key material as JSON: the device CA and the edge's server certificate. It
+//	    writes no file; localdev/run.mjs stores it once and keeps it.
 //
-//	authlab smoke -edge-url URL -pki-dir DIR -tenant UUID -enrolment-token-x509 T -enrolment-token-dpop T
-//	    Uses the real endpoint/protocol types and real crypto to prove both production auth modes
-//	    through the edge: x509 enrol -> events accepted, and dpop enrol -> token -> events accepted,
-//	    plus the negatives (no credential refused, a replayed DPoP jti refused, a certificate from
-//	    another CA refused).
-//
-// The client is device-side code, not service code: it never imports a service package and the
-// services never import it. Everything it does on the wire is what a real endpoint agent does.
+//	authlab smoke [flags]
+//	    Proves the lab works end to end, the way a device and an analyst use it: every service is
+//	    ready; the edge serves the device API only; a device enrols with the deployment key (and is
+//	    refused without one), sends an event with its certificate, and fetches a policy bundle that
+//	    verifies under the pinned key; and an analyst signs in through the identity provider and
+//	    reads that device's events through the dashboard. The CA and the deployment key come from
+//	    the environment (LAB_CA_CERT_PEM, LAB_DEPLOYMENT_KEY).
 package main
 
 import (
+	"crypto/ed25519"
+	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"strings"
+	"time"
 )
 
 func main() {
@@ -29,43 +29,20 @@ func main() {
 		usage()
 		os.Exit(2)
 	}
-	mode := os.Args[1]
-	args := os.Args[2:]
-
 	var err error
-	switch mode {
+	switch os.Args[1] {
 	case "pki":
-		fs := flag.NewFlagSet("pki", flag.ExitOnError)
-		dir := fs.String("pki-dir", "", "directory to write generated key material into (required)")
-		_ = fs.Parse(args)
-		if *dir == "" {
-			fmt.Fprintln(os.Stderr, "authlab pki: -pki-dir is required")
-			os.Exit(2)
-		}
-		err = generatePKI(*dir)
+		err = writePKI(os.Stdout)
 	case "smoke":
-		fs := flag.NewFlagSet("smoke", flag.ExitOnError)
-		cfg := smokeConfig{}
-		fs.StringVar(&cfg.EdgeURL, "edge-url", "https://127.0.0.1:8443", "edge base URL (scheme://host:port)")
-		fs.StringVar(&cfg.PKIDir, "pki-dir", "", "directory with dev-ca.crt (required)")
-		fs.StringVar(&cfg.Tenant, "tenant", "", "tenant uuid the enrolment tokens belong to (required)")
-		fs.StringVar(&cfg.TokenX509, "enrolment-token-x509", "", "single-use enrolment token for the x509 flow (required)")
-		fs.StringVar(&cfg.TokenDPoP, "enrolment-token-dpop", "", "single-use enrolment token for the dpop flow (required)")
-		_ = fs.Parse(args)
-		if cfg.PKIDir == "" || cfg.Tenant == "" || cfg.TokenX509 == "" || cfg.TokenDPoP == "" {
-			fmt.Fprintln(os.Stderr, "authlab smoke: -pki-dir, -tenant, -enrolment-token-x509 and -enrolment-token-dpop are required")
-			os.Exit(2)
+		var cfg smokeConfig
+		cfg, err = smokeConfigFrom(os.Args[2:], os.Getenv)
+		if err == nil {
+			err = runSmoke(cfg)
 		}
-		err = runSmoke(cfg)
-	case "help", "-h", "--help":
-		usage()
-		return
 	default:
-		fmt.Fprintf(os.Stderr, "authlab: unknown mode %q\n", mode)
 		usage()
 		os.Exit(2)
 	}
-
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "authlab:", err)
 		os.Exit(1)
@@ -73,10 +50,52 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `authlab — development PKI and end-to-end client for the local auth lab
+	fmt.Fprintln(os.Stderr, "usage: authlab pki | authlab smoke -tenant UUID -policy-key HEX [flags]")
+}
 
-  authlab pki   -pki-dir DIR
-  authlab smoke -edge-url URL -pki-dir DIR -tenant UUID \
-                -enrolment-token-x509 TOKEN -enrolment-token-dpop TOKEN
-`)
+func smokeConfigFrom(args []string, getenv func(string) string) (smokeConfig, error) {
+	fs := flag.NewFlagSet("smoke", flag.ContinueOnError)
+	cfg := smokeConfig{CAPEM: getenv("LAB_CA_CERT_PEM"), DeploymentKey: strings.TrimSpace(getenv("LAB_DEPLOYMENT_KEY"))}
+	var policyKey, resolve string
+	fs.StringVar(&cfg.Edge, "edge", "https://edge:8443", "the edge's address on the lab network")
+	fs.StringVar(&cfg.Tenant, "tenant", "", "the tenant the deployment key belongs to")
+	fs.StringVar(&policyKey, "policy-key", "", "the policy public key devices pin, hex")
+	fs.StringVar(&cfg.PolicyKeyID, "policy-key-id", "policy-key-1", "the policy key id devices pin")
+	fs.StringVar(&cfg.Dashboard, "dashboard", "http://127.0.0.1:8787", "the dashboard's public URL")
+	fs.StringVar(&resolve, "resolve", "", "public host:port=lab host:port pairs, comma-separated")
+	fs.StringVar(&cfg.Analyst, "analyst", "", "an analyst account of the tenant")
+	fs.DurationVar(&cfg.Wait, "wait", 90*time.Second, "how long the services may take to become ready")
+	if err := fs.Parse(args); err != nil {
+		return smokeConfig{}, err
+	}
+	cfg.Edge = strings.TrimRight(cfg.Edge, "/")
+	cfg.Dashboard = strings.TrimRight(cfg.Dashboard, "/")
+	var errs []error
+	if strings.TrimSpace(cfg.CAPEM) == "" {
+		errs = append(errs, errors.New("LAB_CA_CERT_PEM is required"))
+	}
+	if cfg.DeploymentKey == "" {
+		errs = append(errs, errors.New("LAB_DEPLOYMENT_KEY is required"))
+	}
+	if cfg.Tenant == "" || cfg.Analyst == "" {
+		errs = append(errs, errors.New("-tenant and -analyst are required"))
+	}
+	if b, err := hex.DecodeString(strings.TrimSpace(policyKey)); err != nil || len(b) != ed25519.PublicKeySize {
+		errs = append(errs, errors.New("-policy-key must be a 64-digit hex Ed25519 public key"))
+	} else {
+		cfg.PolicyKey = b
+	}
+	cfg.Resolve = map[string]string{}
+	for _, pair := range strings.Split(resolve, ",") {
+		if pair = strings.TrimSpace(pair); pair == "" {
+			continue
+		}
+		from, to, ok := strings.Cut(pair, "=")
+		if !ok || from == "" || to == "" {
+			errs = append(errs, fmt.Errorf("-resolve %q is not host:port=host:port", pair))
+			continue
+		}
+		cfg.Resolve[from] = to
+	}
+	return cfg, errors.Join(errs...)
 }

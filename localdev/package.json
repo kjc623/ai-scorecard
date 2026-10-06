@@ -1,0 +1,9 @@
+{
+  "name": "shadow-ai-capture-localdev",
+  "private": true,
+  "type": "module",
+  "description": "The local lab: its scripts' tests.",
+  "scripts": {
+    "test": "node --test"
+  }
+}

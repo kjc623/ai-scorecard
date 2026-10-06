@@ -1,8 +1,6 @@
 package main
 
 import (
-	"crypto/rand"
-	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -13,265 +11,222 @@ import (
 	"net/url"
 	"strings"
 	"testing"
-	"time"
 )
 
-const testTenant = "11111111-1111-4111-8111-111111111111"
+const testUsers = `[
+  {"sub":"reader@lab.test","name":"Rhea Reader","email":"reader@lab.test","role":"content_reader","realm":"lab"},
+  {"sub":"admin@sample.test","name":"Ada Admin","email":"admin@sample.test","role":"admin","realm":"sample"}
+]`
 
-// testServer builds the stand-in over a fresh key, the same way main does.
-func testServer(t *testing.T) *server {
+func testServer(t *testing.T) *httptest.Server {
 	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	cfg, err := configFromEnv(env{
+		"OIDC_ISSUER":        "http://oidc.test",
+		"OIDC_PUBLIC_URL":    "http://127.0.0.1:8790",
+		"OIDC_CLIENT_SECRET": "lab-secret",
+		"OIDC_USERS":         testUsers,
+	}.get)
 	if err != nil {
-		t.Fatalf("generate key: %v", err)
+		t.Fatalf("config: %v", err)
 	}
-	return &server{
-		cfg: config{
-			issuer: "http://oidc.test", audience: "sac-query-api", clientID: "sac-dashboard",
-			users: []user{{Sub: "reader@lab.test", Name: "Rhea Reader", Email: "reader@lab.test", Role: "content_reader", Tenant: testTenant}},
-		},
-		key: key, kid: kidOf(&key.PublicKey), log: slog.Default(), now: time.Now,
-		codes: map[string]authCode{},
+	s, err := newServer(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("server: %v", err)
 	}
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+	return ts
 }
 
-func getJSON(t *testing.T, ts *httptest.Server, path string) map[string]any {
+type env map[string]string
+
+func (e env) get(k string) string { return e[k] }
+
+func getJSON(t *testing.T, address string) (int, map[string]any) {
 	t.Helper()
-	res, err := http.Get(ts.URL + path)
+	res, err := http.Get(address)
 	if err != nil {
-		t.Fatalf("GET %s: %v", path, err)
+		t.Fatalf("GET %s: %v", address, err)
 	}
 	defer res.Body.Close()
 	var out map[string]any
-	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
-		t.Fatalf("GET %s is not JSON: %v", path, err)
-	}
-	return out
+	_ = json.NewDecoder(res.Body).Decode(&out)
+	return res.StatusCode, out
 }
 
-// TestDiscoveryAndJWKS: a client discovers the endpoints and finds one RS256 key, which is what
-// control-api, the relying party, fetches to verify an id_token.
-func TestDiscoveryAndJWKS(t *testing.T) {
-	ts := httptest.NewServer(testServer(t).Handler())
-	defer ts.Close()
+var noRedirect = &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 
-	d := getJSON(t, ts, "/.well-known/openid-configuration")
-	if d["issuer"] != "http://oidc.test" || d["jwks_uri"] != "http://oidc.test/jwks" {
-		t.Fatalf("discovery is wrong: %v", d)
-	}
-	jwks := getJSON(t, ts, "/jwks")
-	keys, _ := jwks["keys"].([]any)
-	if len(keys) != 1 {
-		t.Fatalf("expected one key, got %v", jwks)
-	}
-	key, _ := keys[0].(map[string]any)
-	if key["kty"] != "RSA" || key["alg"] != "RS256" {
-		t.Fatalf("key is not an RS256 RSA key: %v", key)
-	}
-}
-
-// TestAuthorizeWithoutHintShowsTheDirectory: the stand-in must not sign anyone in by default, or
-// an unauthenticated browser would end up with a session.
-func TestAuthorizeWithoutHintShowsTheDirectory(t *testing.T) {
-	ts := httptest.NewServer(testServer(t).Handler())
-	defer ts.Close()
-	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	u := ts.URL + "/authorize?response_type=code&client_id=sac-dashboard&redirect_uri=" + url.QueryEscape("http://dash/callback") + "&code_challenge=x&code_challenge_method=S256"
-	res, err := client.Get(u)
-	if err != nil {
-		t.Fatalf("GET authorize: %v", err)
-	}
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("no-hint authorize returned %d, want 200 directory", res.StatusCode)
-	}
-	body, _ := io.ReadAll(res.Body)
-	if !strings.Contains(string(body), "reader@lab.test") {
-		t.Fatal("the directory page did not list the user")
-	}
-}
-
-// TestAuthorizationCodeFlowWithPKCE is the real flow: a code comes back with the state, the
-// exchange proves the verifier, wrong verifiers are refused, and the id_token carries the tenant,
-// the role and the nonce.
-func TestAuthorizationCodeFlowWithPKCE(t *testing.T) {
-	ts := httptest.NewServer(testServer(t).Handler())
-	defer ts.Close()
-	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-
-	verifier := base64.RawURLEncoding.EncodeToString([]byte("a-verifier-long-enough-for-the-test"))
+func challenge(verifier string) string {
 	sum := sha256.Sum256([]byte(verifier))
-	challenge := base64.RawURLEncoding.EncodeToString(sum[:])
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
 
-	authURL := ts.URL + "/authorize?" + url.Values{
-		"response_type": {"code"}, "client_id": {"sac-dashboard"}, "redirect_uri": {"http://dash/callback"},
-		"state": {"st-1"}, "nonce": {"no-1"}, "code_challenge": {challenge}, "code_challenge_method": {"S256"},
-		"login_hint": {"reader@lab.test"},
-	}.Encode()
-	res, err := client.Get(authURL)
+// authorize runs /authorize for one account and returns the code from the redirect.
+func authorize(t *testing.T, ts *httptest.Server, realm, hint, verifier string) string {
+	t.Helper()
+	res, err := noRedirect.Get(ts.URL + "/" + realm + "/authorize?" + url.Values{
+		"response_type": {"code"}, "client_id": {"sac-control"}, "redirect_uri": {"http://dash/callback"},
+		"state": {"st"}, "nonce": {"no"}, "code_challenge": {challenge(verifier)},
+		"code_challenge_method": {"S256"}, "login_hint": {hint},
+	}.Encode())
 	if err != nil {
 		t.Fatalf("authorize: %v", err)
 	}
 	res.Body.Close()
 	if res.StatusCode != http.StatusFound {
-		t.Fatalf("authorize returned %d, want 302", res.StatusCode)
+		t.Fatalf("authorize answered %d, want 302", res.StatusCode)
 	}
 	loc, _ := url.Parse(res.Header.Get("Location"))
-	code := loc.Query().Get("code")
-	if code == "" || loc.Query().Get("state") != "st-1" {
-		t.Fatalf("authorize redirect is wrong: %s", res.Header.Get("Location"))
+	if loc.Query().Get("state") != "st" || loc.Query().Get("code") == "" {
+		t.Fatalf("authorize redirect is wrong: %s", loc)
 	}
+	return loc.Query().Get("code")
+}
 
-	// A wrong verifier is refused before a token is minted.
-	bad, err := http.PostForm(ts.URL+"/token", url.Values{"grant_type": {"authorization_code"}, "code": {code}, "redirect_uri": {"http://dash/callback"}, "client_id": {"sac-dashboard"}, "code_verifier": {"wrong"}})
-	if err != nil {
-		t.Fatalf("token (bad): %v", err)
+func exchange(t *testing.T, ts *httptest.Server, realm string, form url.Values, basicUser, basicPass string) (int, map[string]any) {
+	t.Helper()
+	form.Set("grant_type", "authorization_code")
+	form.Set("redirect_uri", "http://dash/callback")
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/"+realm+"/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if basicUser != "" {
+		req.SetBasicAuth(url.QueryEscape(basicUser), url.QueryEscape(basicPass))
 	}
-	bad.Body.Close()
-	if bad.StatusCode != http.StatusBadRequest {
-		t.Fatalf("a wrong verifier returned %d, want 400", bad.StatusCode)
-	}
-
-	// The code was single-use, so re-authorize for the good exchange.
-	res2, _ := client.Get(authURL)
-	res2.Body.Close()
-	loc2, _ := url.Parse(res2.Header.Get("Location"))
-	good, err := http.PostForm(ts.URL+"/token", url.Values{"grant_type": {"authorization_code"}, "code": {loc2.Query().Get("code")}, "redirect_uri": {"http://dash/callback"}, "client_id": {"sac-dashboard"}, "code_verifier": {verifier}})
+	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("token: %v", err)
 	}
-	defer good.Body.Close()
-	if good.StatusCode != http.StatusOK {
-		t.Fatalf("token returned %d", good.StatusCode)
-	}
-	var tokens map[string]any
-	json.NewDecoder(good.Body).Decode(&tokens)
-	idToken, _ := tokens["id_token"].(string)
-	accessToken, _ := tokens["access_token"].(string)
-	if idToken == "" || accessToken == "" {
-		t.Fatalf("no tokens: %v", tokens)
-	}
-	claims := decodePayload(t, idToken)
-	if claims["sac_tenant"] != testTenant || claims["nonce"] != "no-1" {
-		t.Fatalf("id_token claims wrong: %v", claims)
-	}
-	roles, _ := claims["roles"].([]any)
-	if len(roles) != 1 || roles[0] != "content_reader" {
-		t.Fatalf("id_token roles wrong: %v", claims["roles"])
-	}
-	access := decodePayload(t, accessToken)
-	if access["aud"] != "sac-query-api" {
-		t.Fatalf("access token audience wrong: %v", access["aud"])
-	}
+	defer res.Body.Close()
+	var out map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&out)
+	return res.StatusCode, out
 }
 
-func decodePayload(t *testing.T, token string) map[string]any {
+func claims(t *testing.T, token string) map[string]any {
 	t.Helper()
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		t.Fatalf("not a JWT: %s", token)
+		t.Fatalf("not a JWT: %q", token)
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		t.Fatalf("payload is not base64url: %v", err)
+		t.Fatalf("payload: %v", err)
 	}
 	var out map[string]any
 	if err := json.Unmarshal(raw, &out); err != nil {
-		t.Fatalf("payload is not JSON: %v", err)
+		t.Fatalf("payload: %v", err)
 	}
 	return out
 }
 
-// TestConfidentialClient: as an upstream provider the stand-in has one confidential client,
-// control-api. Discovery says how to authenticate, both RFC 6749 §2.3.1 forms work, a wrong secret
-// or another client id is refused, and the id_token carries what the relying party takes the
-// actor from.
-func TestConfidentialClient(t *testing.T) {
-	s := testServer(t)
-	s.cfg.clientID, s.cfg.clientSecret = "sac-control", "lab-secret"
-	ts := httptest.NewServer(s.Handler())
-	defer ts.Close()
+func TestEachRealmIsItsOwnIssuer(t *testing.T) {
+	ts := testServer(t)
+	for _, realm := range []string{"lab", "sample"} {
+		status, d := getJSON(t, ts.URL+"/"+realm+"/.well-known/openid-configuration")
+		if status != http.StatusOK || d["issuer"] != "http://oidc.test/"+realm ||
+			d["token_endpoint"] != "http://oidc.test/"+realm+"/token" ||
+			d["jwks_uri"] != "http://oidc.test/"+realm+"/jwks" {
+			t.Fatalf("%s discovery is wrong: %d %v", realm, status, d)
+		}
+		// The browser reaches the authorization endpoint at the public address.
+		if d["authorization_endpoint"] != "http://127.0.0.1:8790/"+realm+"/authorize" {
+			t.Fatalf("%s authorization endpoint is %v", realm, d["authorization_endpoint"])
+		}
+		_, jwks := getJSON(t, ts.URL+"/"+realm+"/jwks")
+		if keys, _ := jwks["keys"].([]any); len(keys) != 1 {
+			t.Fatalf("%s JWKS: %v", realm, jwks)
+		}
+	}
+	if status, _ := getJSON(t, ts.URL+"/other/.well-known/openid-configuration"); status != http.StatusNotFound {
+		t.Fatalf("an unknown realm answered %d, want 404", status)
+	}
+}
 
-	d := getJSON(t, ts, "/.well-known/openid-configuration")
-	methods, _ := d["token_endpoint_auth_methods_supported"].([]any)
-	if len(methods) != 2 || methods[0] != "client_secret_post" || methods[1] != "client_secret_basic" {
-		t.Fatalf("discovery must offer both secret forms, got %v", d["token_endpoint_auth_methods_supported"])
+func TestCodeFlowIssuesTheRealmsIDToken(t *testing.T) {
+	ts := testServer(t)
+	verifier := "a-verifier-that-is-long-enough-for-pkce"
+
+	code := authorize(t, ts, "lab", "Reader@Lab.test", verifier)
+	status, body := exchange(t, ts, "lab", url.Values{"code": {code}, "code_verifier": {"wrong"},
+		"client_id": {"sac-control"}, "client_secret": {"lab-secret"}}, "", "")
+	if status != http.StatusBadRequest {
+		t.Fatalf("a wrong verifier answered %d, want 400", status)
+	}
+	// A code is single use, including after a refused exchange.
+	status, _ = exchange(t, ts, "lab", url.Values{"code": {code}, "code_verifier": {verifier},
+		"client_id": {"sac-control"}, "client_secret": {"lab-secret"}}, "", "")
+	if status != http.StatusBadRequest {
+		t.Fatalf("a used code answered %d, want 400", status)
 	}
 
-	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	verifier := base64.RawURLEncoding.EncodeToString([]byte("another-verifier-long-enough-for-it"))
-	sum := sha256.Sum256([]byte(verifier))
-	code := func() string {
-		t.Helper()
-		res, err := client.Get(ts.URL + "/authorize?" + url.Values{
-			"response_type": {"code"}, "client_id": {"sac-control"}, "redirect_uri": {"http://control/callback"},
-			"nonce": {"n"}, "code_challenge": {base64.RawURLEncoding.EncodeToString(sum[:])},
-			"code_challenge_method": {"S256"}, "login_hint": {"reader@lab.test"},
-		}.Encode())
-		if err != nil {
-			t.Fatalf("authorize: %v", err)
-		}
-		res.Body.Close()
-		loc, _ := url.Parse(res.Header.Get("Location"))
-		return loc.Query().Get("code")
+	code = authorize(t, ts, "lab", "reader@lab.test", verifier)
+	status, body = exchange(t, ts, "lab", url.Values{"code": {code}, "code_verifier": {verifier}}, "sac-control", "lab-secret")
+	if status != http.StatusOK {
+		t.Fatalf("token answered %d: %v", status, body)
 	}
-	exchange := func(form url.Values, user, pass string) *http.Response {
-		t.Helper()
-		form.Set("grant_type", "authorization_code")
-		form.Set("redirect_uri", "http://control/callback")
-		form.Set("code_verifier", verifier)
-		form.Set("code", code())
-		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/token", strings.NewReader(form.Encode()))
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		if user != "" {
-			req.SetBasicAuth(url.QueryEscape(user), url.QueryEscape(pass))
-		}
-		res, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatalf("token: %v", err)
-		}
-		return res
+	c := claims(t, body["id_token"].(string))
+	roles, _ := c["roles"].([]any)
+	if c["iss"] != "http://oidc.test/lab" || c["aud"] != "sac-control" || c["nonce"] != "no" ||
+		c["email"] != "reader@lab.test" || c["email_verified"] != true || len(roles) != 1 || roles[0] != "content_reader" {
+		t.Fatalf("id_token claims are wrong: %v", c)
 	}
 
+	// A code from one realm does not redeem at another.
+	code = authorize(t, ts, "sample", "admin@sample.test", verifier)
+	if status, _ := exchange(t, ts, "lab", url.Values{"code": {code}, "code_verifier": {verifier}}, "sac-control", "lab-secret"); status != http.StatusBadRequest {
+		t.Fatalf("a sample code redeemed at lab answered %d, want 400", status)
+	}
+}
+
+func TestClientAuthentication(t *testing.T) {
+	ts := testServer(t)
+	verifier := "another-verifier-long-enough-for-pkce"
 	for name, c := range map[string]struct {
 		form       url.Values
 		user, pass string
 		want       int
 	}{
-		"post":           {url.Values{"client_id": {"sac-control"}, "client_secret": {"lab-secret"}}, "", "", http.StatusOK},
-		"basic":          {url.Values{}, "sac-control", "lab-secret", http.StatusOK},
-		"wrong secret":   {url.Values{"client_id": {"sac-control"}, "client_secret": {"nope"}}, "", "", http.StatusUnauthorized},
-		"no secret":      {url.Values{"client_id": {"sac-control"}}, "", "", http.StatusUnauthorized},
-		"another client": {url.Values{}, "sac-dashboard", "lab-secret", http.StatusUnauthorized},
+		"post":         {url.Values{"client_id": {"sac-control"}, "client_secret": {"lab-secret"}}, "", "", http.StatusOK},
+		"basic":        {url.Values{}, "sac-control", "lab-secret", http.StatusOK},
+		"wrong secret": {url.Values{"client_id": {"sac-control"}, "client_secret": {"nope"}}, "", "", http.StatusUnauthorized},
+		"no secret":    {url.Values{"client_id": {"sac-control"}}, "", "", http.StatusUnauthorized},
+		"other client": {url.Values{}, "someone-else", "lab-secret", http.StatusUnauthorized},
 	} {
-		res := exchange(c.form, c.user, c.pass)
-		var body map[string]any
-		json.NewDecoder(res.Body).Decode(&body)
-		res.Body.Close()
-		if res.StatusCode != c.want {
-			t.Fatalf("%s: token returned %d (%v), want %d", name, res.StatusCode, body, c.want)
-		}
-		if c.want != http.StatusOK {
-			continue
-		}
-		claims := decodePayload(t, body["id_token"].(string))
-		if claims["aud"] != "sac-control" || claims["email"] != "reader@lab.test" ||
-			claims["email_verified"] != true || claims["preferred_username"] != "reader@lab.test" {
-			t.Fatalf("%s: id_token claims wrong: %v", name, claims)
+		c.form.Set("code", authorize(t, ts, "sample", "admin@sample.test", verifier))
+		c.form.Set("code_verifier", verifier)
+		if status, body := exchange(t, ts, "sample", c.form, c.user, c.pass); status != c.want {
+			t.Fatalf("%s: token answered %d (%v), want %d", name, status, body, c.want)
 		}
 	}
 }
 
-// TestUsersFromEnvRejectsAnIncompleteDirectory so a misconfigured lab fails at start.
-func TestUsersFromEnvRejectsAnIncompleteDirectory(t *testing.T) {
-	if _, err := usersFromEnv(`[{"sub":"a","role":"viewer"}]`); err == nil {
-		t.Fatal("a user with no tenant must be refused")
+func TestAuthorizeWithoutAHintShowsTheRealmsAccounts(t *testing.T) {
+	ts := testServer(t)
+	res, err := noRedirect.Get(ts.URL + "/lab/authorize?" + url.Values{
+		"response_type": {"code"}, "client_id": {"sac-control"}, "redirect_uri": {"http://dash/callback"},
+		"code_challenge": {"x"}, "code_challenge_method": {"S256"},
+	}.Encode())
+	if err != nil {
+		t.Fatalf("authorize: %v", err)
 	}
-	if _, err := usersFromEnv(`not json`); err == nil {
-		t.Fatal("non-JSON must be refused")
+	defer res.Body.Close()
+	page, _ := io.ReadAll(res.Body)
+	if res.StatusCode != http.StatusOK || !strings.Contains(string(page), "reader@lab.test") ||
+		strings.Contains(string(page), "admin@sample.test") {
+		t.Fatalf("the chooser must list this realm's accounts only: %d %s", res.StatusCode, page)
 	}
-	users, err := usersFromEnv(`[{"sub":"a","role":"viewer","tenant":"11111111-1111-4111-8111-111111111111"}]`)
-	if err != nil || len(users) != 1 {
-		t.Fatalf("a complete user must parse: %v %v", users, err)
+}
+
+func TestConfigRefusesAnIncompleteDirectory(t *testing.T) {
+	for name, e := range map[string]env{
+		"no secret":   {"OIDC_USERS": testUsers},
+		"no users":    {"OIDC_CLIENT_SECRET": "s", "OIDC_USERS": "[]"},
+		"not json":    {"OIDC_CLIENT_SECRET": "s", "OIDC_USERS": "nope"},
+		"no realm":    {"OIDC_CLIENT_SECRET": "s", "OIDC_USERS": `[{"sub":"a","email":"a@b.c","role":"viewer"}]`},
+		"extra field": {"OIDC_CLIENT_SECRET": "s", "OIDC_USERS": `[{"sub":"a","email":"a@b.c","role":"viewer","realm":"lab","tenant":"x"}]`},
+	} {
+		if _, err := configFromEnv(e.get); err == nil {
+			t.Fatalf("%s: the configuration must be refused", name)
+		}
 	}
 }
