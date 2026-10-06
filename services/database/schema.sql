@@ -2202,6 +2202,9 @@ GRANT SELECT ON ref.data_class, ref.retention_class TO sac_vault;
 GRANT SELECT (tenant_id, submission_id, device_id, user_ref, tool_fingerprint,
               collection_mode, content_state, received_at, expires_at, prompt_kind, labels)
   ON ingest.submission TO sac_vault;
+-- A subject export resolves content by the subject's events too, so an object whose submission was
+-- not yet known at upload is still found. Column-level: never excerpts, digests or policy decisions.
+GRANT SELECT (tenant_id, event_id, user_ref) ON ingest.observation TO sac_vault;
 -- Storing content marks its submission uploaded, in the same transaction.
 GRANT UPDATE (content_state) ON ingest.submission TO sac_vault;
 GRANT INSERT ON ops.audit TO sac_vault;
@@ -2238,7 +2241,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON mart.finding, mart.agg_tool_period,
       mart.agg_user_period, mart.agg_device_period TO sac_ops;
 -- Expiry deletes content and its index entries without being able to read either, and marks the
 -- content's submission shredded.
-GRANT SELECT (tenant_id, object_id, submission_id, expires_at), DELETE ON ops.content TO sac_ops;
+GRANT SELECT (tenant_id, object_id, submission_id, event_id, expires_at), DELETE ON ops.content TO sac_ops;
 GRANT SELECT (tenant_id, submission_id, unit_kind, unit_index, expires_at), DELETE
   ON ingest.search_text TO sac_ops;
 GRANT SELECT, INSERT, UPDATE ON ops.erasure_receipt, ops.aggregate_watermark,
@@ -2253,6 +2256,10 @@ GRANT SELECT ON ref.data_class, ref.rule, ref.route_fidelity,
       ref.collector, ref.retention_class TO sac_ops;
 GRANT INSERT ON ops.audit TO sac_ops;
 GRANT EXECUTE ON FUNCTION ops.current_tenant() TO sac_ops;
+-- The erase job sweeps expired exports (by id and expiry, never the payload) and processes the
+-- subject erasure requests query-api records.
+GRANT SELECT (tenant_id, export_id, expires_at), DELETE ON ops.export TO sac_ops;
+GRANT SELECT, UPDATE ON ops.erasure_request TO sac_ops;
 
 
 -- =====================================================================================
