@@ -16,7 +16,7 @@ on Linux and Windows (`.github/workflows/ci.yml`).
 | `node` | `npm test` in every Node package |
 | `static` | The checks below, the contract drift check, the schema check and the infrastructure checks, with their tests |
 | `bicep` | `az bicep build` of the template and both parameter files, warnings included |
-| `database` | `database/tools/test-database.mjs`: the schema applied as a non-superuser on PostgreSQL 16, then its invariants |
+| `database` | `services/database/tools/test-database.mjs`: the schema applied as a non-superuser on PostgreSQL 16, then its invariants |
 | `installer` | `installer/verify.mjs` (Windows) |
 | `browser` | `extension/tools/in-browser-check.mjs` in a real Chrome or Edge |
 

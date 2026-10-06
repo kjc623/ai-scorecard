@@ -34,14 +34,14 @@ prompt itself crosses only when the backend grants the upload of that one event.
 | `endpoint/capture-spool` | Device | Encrypted, bounded, crash-safe queue between capture and delivery |
 | `extension` | Device browsers (Chrome, Edge) | Observes requests to AI tools, extracts the prompt and the files attached to it, warns or blocks inline, and hands both to capture-core through the native messaging host |
 | `installer` | Build | The Windows MSI (and macOS/Linux packages) that install the agent and register the native messaging host |
-| `ingestion/ingest-api` | Container app | The one write path for events: authenticates the device certificate, validates each envelope against the contract, writes through `ingest.record_event` |
-| `control/control-api` | Container app | Device enrolment and certificates, signed policy delivery, content grants and upload, analyst sign-in and sessions, SCIM, tenant onboarding, tenant packages and extension updates |
-| `vault/content-vault` | Container app (internal) | The only component that can decrypt prompt content; stores it encrypted in PostgreSQL and serves approved retrievals and content search |
-| `query/query-api` | Container app (internal) | The one read path: a closed query DSL compiled to parameterised SQL |
-| `query/dashboard` | Container app | The analyst web app and its server: sign-in session, and the only forwarder of browser requests into the environment |
-| `jobs` | Container Apps jobs | `aggregate` recomputes the dashboard's aggregates every five minutes; `expire` deletes data past its retention daily |
-| `database` | PostgreSQL 16 | The schema, its invariant tests, and the `migrate` job that applies it |
-| `platform` | Library | Managed-identity tokens and the PostgreSQL connection every Go service uses |
+| `services/ingest-api` | Container app | The one write path for events: authenticates the device certificate, validates each envelope against the contract, writes through `ingest.record_event` |
+| `services/control-api` | Container app | Device enrolment and certificates, signed policy delivery, content grants and upload, analyst sign-in and sessions, SCIM, tenant onboarding, tenant packages and extension updates |
+| `services/content-vault` | Container app (internal) | The only component that can decrypt prompt content; stores it encrypted in PostgreSQL and serves approved retrievals and content search |
+| `services/query-api` | Container app (internal) | The one read path: a closed query DSL compiled to parameterised SQL |
+| `services/dashboard` | Container app | The analyst web app and its server: sign-in session, and the only forwarder of browser requests into the environment |
+| `services/jobs` | Container Apps jobs | `aggregate` recomputes the dashboard's aggregates every five minutes; `expire` deletes data past its retention daily |
+| `services/database` | PostgreSQL 16 | The schema, its invariant tests, and the `migrate` job that applies it |
+| `services/platform` | Library | Managed-identity tokens and the PostgreSQL connection every Go service uses |
 | `contracts` | Library | The event envelope schema and its generated Go binding |
 | `azure` | Bicep | The deployment |
 | `localdev` | Laptop | A local lab of the whole system |

@@ -33,8 +33,8 @@ other tasks after both have merged, or rebase onto them.
 - Verify on the local lab (`localdev/README.md`). Never run `node localdev/run.mjs` with any flag,
   and never change the owner's tenant (`11111111-1111-1111-1111-111111111111`); simulated data goes in
   the lab's sample tenant.
-- A schema change goes in `database/schema.sql` and, for databases that already exist, in a numbered
-  migration (`database/migrations/README.md`). A change to the device envelope starts in `contracts/`.
+- A schema change goes in `services/database/schema.sql` and, for databases that already exist, in a numbered
+  migration (`services/database/migrations/README.md`). A change to the device envelope starts in `contracts/`.
 - A question only the owner can answer is asked in the session — the options, your recommendation,
   and what is hard to change later — and that part waits for the answer. Every other choice is yours.
 - Match the code around you. Comments explain what is not obvious, briefly; no references to tasks,

@@ -67,13 +67,13 @@ const GATES = [
     id: 'static',
     decides: 'A cross-component check fails: contract drift, vocabulary disagreement, a broken structural invariant, deployment configuration disagreement, or a schema or infrastructure property regression.',
     run: () => steps([
-      ...tracked('tools/*.test.mjs').concat(tracked('azure/tools/*.test.mjs'), tracked('database/tools/*.test.mjs'), tracked('contracts/tools/*.test.mjs'))
+      ...tracked('tools/*.test.mjs').concat(tracked('azure/tools/*.test.mjs'), tracked('services/database/tools/*.test.mjs'), tracked('contracts/tools/*.test.mjs'))
         .map((t) => [t, 'node', ['--test', t]]),
       ['contracts', 'node', ['contracts/tools/verify.mjs']],
       ['vocabularies', 'node', ['tools/check-vocab.mjs']],
       ['invariants', 'node', ['tools/check-invariants.mjs']],
       ['configuration', 'node', ['tools/check-config.mjs']],
-      ['schema', 'node', ['database/tools/check-schema.mjs']],
+      ['schema', 'node', ['services/database/tools/check-schema.mjs']],
       ['infrastructure', 'node', ['azure/tools/check-infra.mjs']],
     ]),
   },
@@ -93,7 +93,7 @@ const GATES = [
   {
     id: 'database',
     decides: 'The schema does not apply as a non-superuser on PostgreSQL 16, or its invariants fail.',
-    run: () => steps([['database gate', 'node', ['database/tools/test-database.mjs']]]),
+    run: () => steps([['database gate', 'node', ['services/database/tools/test-database.mjs']]]),
   },
   {
     id: 'installer',

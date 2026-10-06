@@ -20,8 +20,8 @@ An audited, admin-only API in `control-api`, and a Settings page in the dashboar
 ## Read first
 
 - `docs/architecture.md`: collection modes, the policy bundle, prompt content and search.
-- `control/control-api/internal/policyserve`: how the bundle is built and signed.
-- `database/schema.sql`: `ops.tenant`, `ops.retention_policy`, `ops.tool`, and the constraints on
+- `services/control-api/internal/policyserve`: how the bundle is built and signed.
+- `services/database/schema.sql`: `ops.tenant`, `ops.retention_policy`, `ops.tool`, and the constraints on
   mode and search tier. A combination the database refuses must be refused in the page with a clear
   message.
 
@@ -31,7 +31,7 @@ An audited, admin-only API in `control-api`, and a Settings page in the dashboar
 - A mode increase that begins capturing content needs an explicit confirmation step in the page.
 - The page shows the mode each device has actually applied (devices report it), not only the mode
   requested.
-- The Settings page is in the dashboard's navigation (`query/dashboard/src/shell.js`) and visible to
+- The Settings page is in the dashboard's navigation (`services/dashboard/src/shell.js`) and visible to
   admins only.
 
 ## Done when

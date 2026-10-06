@@ -4,7 +4,7 @@
 
 control-api refuses to mint a product token when a tenant is not `active` or its `read_enabled` is
 false: sign-in and token refresh answer 403 with the code `tenant_closed`
-(`control/control-api/internal/identity/identity.go`, `CodeTenantClosed`). The dashboard server shows
+(`services/control-api/internal/identity/identity.go`, `CodeTenantClosed`). The dashboard server shows
 a generic sign-in failure, and a session whose refresh is refused mid-use just stops working.
 
 ## Goal
@@ -16,8 +16,8 @@ a generic sign-in failure, and a session whose refresh is refused mid-use just s
 
 ## Scope
 
-- `query/dashboard/server/` (the sign-in flow, the session refresh, the sign-in page messages).
-- Tests in `query/dashboard/test/` with a stubbed control-api answering `tenant_closed` on sign-in and
+- `services/dashboard/server/` (the sign-in flow, the session refresh, the sign-in page messages).
+- Tests in `services/dashboard/test/` with a stubbed control-api answering `tenant_closed` on sign-in and
   on refresh.
 - Out of scope: control-api (its behaviour is settled), other error codes.
 

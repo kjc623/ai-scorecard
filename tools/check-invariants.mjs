@@ -71,7 +71,7 @@ const checks = {
   },
 
   'dashboard-never-speaks-sql': () => {
-    const dash = files('query/dashboard').filter((f) => !isTest(f));
+    const dash = files('services/dashboard').filter((f) => !isTest(f));
     return [
       ...scan(dash, /\b(SELECT\s+[\w*]+\s+FROM|INSERT\s+INTO|DELETE\s+FROM|UPDATE\s+\w+\s+SET|FROM\s+(ops|mart|ingest|ref)\.)/, uncommented),
       ...scan(dash, /from\s+['"](pg|postgres|pg-native)['"]|require\(['"]pg['"]\)/, uncommented),
@@ -79,8 +79,8 @@ const checks = {
   },
 
   'query-api-binds-values': () => {
-    const entry = join(ROOT, 'query', 'query-api', 'src', 'compile.js');
-    if (!existsSync(entry)) return ['query/query-api/src/compile.js is missing'];
+    const entry = join(ROOT, 'services', 'query-api', 'src', 'compile.js');
+    if (!existsSync(entry)) return ['services/query-api/src/compile.js is missing'];
     const probe = `
       import { compile } from ${JSON.stringify(pathToFileURL(entry).href)};
       const hostile = ["x; DROP TABLE ops.tenant--", "tool_fingerprint) UNION SELECT 1--", "1;SELECT", '"; --'];
@@ -107,10 +107,10 @@ const checks = {
 
   'only-content-vault-decrypts': () => {
     // The jobs delete expired content without reading it; the schema and the deployment declare it.
-    const elsewhere = files('control', 'ingestion', 'query', 'endpoint', 'extension', 'platform').filter((f) => !isTest(f));
+    const elsewhere = files('services/control-api', 'services/ingest-api', 'services/query-api', 'services/dashboard', 'endpoint', 'extension', 'services/platform').filter((f) => !isTest(f));
     return [
       ...scan(elsewhere, /\bops\.content\b(?!_)/, uncommented),
-      ...scan(elsewhere.concat(files('jobs')), /SAC_CONTENT_KEYS/, uncommented),
+      ...scan(elsewhere.concat(files('services/jobs')), /SAC_CONTENT_KEYS/, uncommented),
     ];
   },
 

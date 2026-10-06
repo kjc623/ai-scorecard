@@ -20,10 +20,10 @@ way to produce everything held about one person for a data-subject request.
 ## Read first
 
 - `docs/architecture.md`: product rules, data, prompt content.
-- `query/query-api/DSL.md` and `src/registry.js`: how list reads are shaped, paged and audited.
-- `database/schema.sql`: `ops.erasure_receipt`, `ops.user_dim`, and the foreign keys that cascade
+- `services/query-api/DSL.md` and `src/registry.js`: how list reads are shaped, paged and audited.
+- `services/database/schema.sql`: `ops.erasure_receipt`, `ops.user_dim`, and the foreign keys that cascade
   from `ingest.submission`.
-- `jobs/internal/expire`: batched deletion and receipts.
+- `services/jobs/internal/expire`: batched deletion and receipts.
 
 ## Constraints
 

@@ -36,9 +36,9 @@ Present both, with your recommendation:
 
 - A check that fails when the extension can emit a fingerprint for a tool that has no catalogue row:
   a test in `extension/test/` that computes the fingerprints and reads the seed in
-  `database/schema.sql`, or a step in `tools/check-vocab.mjs`.
+  `services/database/schema.sql`, or a step in `tools/check-vocab.mjs`.
 - Correct the comment in `extension/src/tool-fingerprint.js` to say what is true.
-- A catalogue change goes in `database/schema.sql` (nothing is deployed, so no migration file).
+- A catalogue change goes in `services/database/schema.sql` (nothing is deployed, so no migration file).
 
 ## Done when
 

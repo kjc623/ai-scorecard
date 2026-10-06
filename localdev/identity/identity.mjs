@@ -14,7 +14,7 @@
 //   classifier-signing.key   hex Ed25519 seed    signs the lab MSI's classifier release
 //   deployment-key.<tenant>  a deployment key    one per lab tenant; the seed stores its hash
 //
-// The seal is control-api's directory cipher (control/control-api/internal/directory), reproduced
+// The seal is control-api's directory cipher (services/control-api/internal/directory), reproduced
 // because the lab writes a sealed column with SQL: AES-256-GCM under HMAC-SHA256(directory key,
 // "sac-directory-object-id\0" + tenant id), stored as nonce || ciphertext || tag. identity.test.mjs
 // pins it to a vector the Go cipher produced.

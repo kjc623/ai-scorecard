@@ -166,8 +166,8 @@ test('the counter set and the detail vocabulary match protocol/envelope.go', () 
   for (const d of details) assert.ok(messages.includes(`'${d}'`), `detail ${d} must be in the closed set`);
 });
 
-test('the collector name is the one database/schema.sql registers in ref.collector', () => {
-  const sql = readFileSync(join(REPO_ROOT, 'database', 'schema.sql'), 'utf8');
+test('the collector name is the one services/database/schema.sql registers in ref.collector', () => {
+  const sql = readFileSync(join(REPO_ROOT, 'services', 'database', 'schema.sql'), 'utf8');
   assert.ok(sql.includes("('capture_extension', 'capture_extension'"), 'ref.collector must carry this name');
   const messages = readFileSync(join(HERE, 'src', 'messages.js'), 'utf8');
   assert.match(messages, /COLLECTOR_NAME = 'capture_extension'/);

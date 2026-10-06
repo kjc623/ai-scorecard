@@ -16,15 +16,15 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 // Where each deployed workload's code lives. Go services also read the shared platform module.
 const COMPONENTS = {
-  ingestApp: ['ingestion/ingest-api', 'platform'],
-  controlApp: ['control/control-api', 'platform'],
-  vaultApp: ['vault/content-vault', 'platform'],
-  queryApp: ['query/query-api'],
-  dashboardApp: ['query/dashboard'],
-  aggregate: ['jobs', 'platform'],
-  expire: ['jobs', 'platform'],
-  migrate: ['database', 'platform'],
-  'tenant-admin': ['control/control-api', 'platform'],
+  ingestApp: ['services/ingest-api', 'services/platform'],
+  controlApp: ['services/control-api', 'services/platform'],
+  vaultApp: ['services/content-vault', 'services/platform'],
+  queryApp: ['services/query-api'],
+  dashboardApp: ['services/dashboard'],
+  aggregate: ['services/jobs', 'services/platform'],
+  expire: ['services/jobs', 'services/platform'],
+  migrate: ['services/database', 'services/platform'],
+  'tenant-admin': ['services/control-api', 'services/platform'],
 };
 
 // Injected by the container-app and container-app-job modules for every workload; a component

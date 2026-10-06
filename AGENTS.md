@@ -32,7 +32,7 @@ licensing, then the bootstrap deployment, `azure/scripts/create-secrets.sh`, and
   tasks, documents or history; the code and its tests are the record.
 - One short README per component: what it is, how it runs in production (its configuration), how to
   build and test it.
-- A schema change goes in `database/schema.sql` and, once an environment exists, also in a numbered
-  migration (`database/migrations/README.md`). A device envelope change starts in `contracts/`.
+- A schema change goes in `services/database/schema.sql` and, once an environment exists, also in a numbered
+  migration (`services/database/migrations/README.md`). A device envelope change starts in `contracts/`.
 - A setting the deployment passes must be read by its component (`tools/check-config.mjs` checks
   this).

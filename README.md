@@ -14,13 +14,13 @@ the backend grants that one event. `docs/architecture.md` describes the system.
 | `endpoint/` | The device agent: `capture-core` (the service), `classifier-host`, `capture-spool`, `protocol`, and cross-module integration tests |
 | `extension/` | The Chrome/Edge extension |
 | `installer/` | The Windows MSI, macOS package and Linux package |
-| `ingestion/ingest-api/` | The event write path |
-| `control/control-api/` | Enrolment, policy, content grants and upload, sign-in, SCIM, tenant onboarding |
-| `vault/content-vault/` | Encrypted prompt storage, retrieval and content search |
-| `query/query-api/`, `query/dashboard/` | The read API and the analyst web app |
-| `jobs/` | The scheduled `aggregate` and `expire` jobs |
-| `database/` | The PostgreSQL schema, its invariant tests, and the `migrate` job |
-| `platform/` | Managed-identity tokens and the PostgreSQL connection shared by the Go services |
+| `services/ingest-api/` | The event write path |
+| `services/control-api/` | Enrolment, policy, content grants and upload, sign-in, SCIM, tenant onboarding |
+| `services/content-vault/` | Encrypted prompt storage, retrieval and content search |
+| `services/query-api/`, `services/dashboard/` | The read API and the analyst web app |
+| `services/jobs/` | The scheduled `aggregate` and `expire` jobs |
+| `services/database/` | The PostgreSQL schema, its invariant tests, and the `migrate` job |
+| `services/platform/` | Managed-identity tokens and the PostgreSQL connection shared by the Go services |
 | `contracts/` | The event envelope schema and its generated Go binding |
 | `azure/` | The deployment (Bicep), its runbook and scripts |
 | `localdev/` | A local lab of the whole system |

@@ -146,13 +146,13 @@ jobs:
           build() {
             docker buildx build --push --tag "$registry/$1:$tag" --file "$2" "${@:3}" .
           }
-          build ingest-api    ingestion/ingest-api/Dockerfile
-          build control-api   control/control-api/Dockerfile --build-context agent-release="${{ runner.temp }}/agent-release"
-          build content-vault vault/content-vault/Dockerfile
-          build query-api     query/query-api/Dockerfile
-          build dashboard     query/dashboard/Dockerfile
-          build jobs          jobs/Dockerfile
-          build migrate       database/Dockerfile
+          build ingest-api    services/ingest-api/Dockerfile
+          build control-api   services/control-api/Dockerfile --build-context agent-release="${{ runner.temp }}/agent-release"
+          build content-vault services/content-vault/Dockerfile
+          build query-api     services/query-api/Dockerfile
+          build dashboard     services/dashboard/Dockerfile
+          build jobs          services/jobs/Dockerfile
+          build migrate       services/database/Dockerfile
 
   deploy:
     needs: images

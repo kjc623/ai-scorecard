@@ -48,13 +48,13 @@ export const SMOKE_ANALYST = `analyst@${TENANTS.sample.domain}`;
 
 /** Every image the lab runs, in build order: lab-jobs is built from the jobs image. */
 export const IMAGES = Object.freeze([
-  { name: 'migrate', dockerfile: 'database/Dockerfile' },
-  { name: 'ingest-api', dockerfile: 'ingestion/ingest-api/Dockerfile' },
-  { name: 'control-api', dockerfile: 'control/control-api/Dockerfile' },
-  { name: 'content-vault', dockerfile: 'vault/content-vault/Dockerfile' },
-  { name: 'query-api', dockerfile: 'query/query-api/Dockerfile' },
-  { name: 'dashboard', dockerfile: 'query/dashboard/Dockerfile' },
-  { name: 'jobs', dockerfile: 'jobs/Dockerfile' },
+  { name: 'migrate', dockerfile: 'services/database/Dockerfile' },
+  { name: 'ingest-api', dockerfile: 'services/ingest-api/Dockerfile' },
+  { name: 'control-api', dockerfile: 'services/control-api/Dockerfile' },
+  { name: 'content-vault', dockerfile: 'services/content-vault/Dockerfile' },
+  { name: 'query-api', dockerfile: 'services/query-api/Dockerfile' },
+  { name: 'dashboard', dockerfile: 'services/dashboard/Dockerfile' },
+  { name: 'jobs', dockerfile: 'services/jobs/Dockerfile' },
   { name: 'edge', dockerfile: 'localdev/edge/Dockerfile' },
   { name: 'oidc', dockerfile: 'localdev/oidc/Dockerfile' },
   { name: 'authlab', dockerfile: 'localdev/authlab/Dockerfile' },
