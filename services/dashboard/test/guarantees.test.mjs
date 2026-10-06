@@ -12,7 +12,7 @@ import { renderScreen, renderValue, renderTable } from '../src/render.js';
 import { eventView, devicesView, seriesFrom, refusalView } from '../src/views.js';
 import { createDashboard, SCREENS } from '../src/app.js';
 import { createQueryApi, createAdminApi } from '../src/transport.js';
-import { ADMIN_DEPLOYMENT_ENDPOINT, ADMIN_SCIM_TOKENS_ENDPOINT } from '../src/vocab.js';
+import { ADMIN_DEPLOYMENT_ENDPOINT } from '../src/vocab.js';
 import { ACTIVITY_ROWS, DEVICE_ROWS, fixtureTransport } from './fixtures.mjs';
 import { codeOnly, sourceFiles, ROOT, envelope, FRESH, COMPLETE, PARTIAL } from './helpers.mjs';
 
@@ -247,9 +247,9 @@ test('the query path performs no write of any kind', async () => {
 });
 
 test('every write this client can make goes to control-api\'s admin API, which audits it', async () => {
-  // Settings → Deployment is the one place the dashboard changes anything. Each write is one of the
-  // admin endpoints vocab.js names; control-api checks the admin role and writes the audit row
-  // with the real actor. Nothing else in the client sends a write.
+  // Settings → Deployment and Settings → Settings are the two places the dashboard changes
+  // anything. Each write is one of the admin endpoints vocab.js names; control-api checks the admin
+  // role and writes the audit row with the real actor. Nothing else in the client sends a write.
   const sent = [];
   const admin = createAdminApi({ transport: { async request(spec) { sent.push(spec); return { status: 204, body: null }; } } });
   await admin.setVerification('none');
@@ -257,9 +257,14 @@ test('every write this client can make goes to control-api\'s admin API, which a
   await admin.revokeKey('k');
   await admin.createScimToken('label');
   await admin.revokeScimToken('t');
+  await admin.setCollectionMode('m1');
+  await admin.setScopeOverride('tls_x', 'm0');
+  await admin.setRetention('event', 90);
+  await admin.setContentSearch('attachment_names');
+  await admin.setToolSanction('tls_x', 'unsanctioned');
   const writes = sent.filter((s) => s.method !== 'GET');
-  assert.equal(writes.length, 5);
-  for (const w of writes) assert.ok(w.path.startsWith(ADMIN_DEPLOYMENT_ENDPOINT) || w.path.startsWith(ADMIN_SCIM_TOKENS_ENDPOINT), `${w.method} ${w.path}`);
+  assert.equal(writes.length, 10);
+  for (const w of writes) assert.ok(w.path.startsWith('/admin/v1/'), `${w.method} ${w.path} is not an admin endpoint`);
 });
 
 // ── no silence presented as coverage ─────────────────────────────────────────────────────────
@@ -323,13 +328,15 @@ test('no file in this package contains a statement or a database driver', () => 
 test('the only endpoints the pages call are the query endpoint, the two content reads and the deployment admin API', () => {
   // The query endpoint takes a closed query document and never returns content. The two content
   // reads are forwarded to content-vault, which decides and audits. The admin endpoints are
-  // Settings → Deployment's, control-api's, admin-only and audited; they read configuration and
-  // never data. Anything else named here would be another way in.
+  // Settings → Deployment's and Settings → Settings', control-api's, admin-only and audited; they
+  // read configuration and never data. Anything else named here would be another way in.
   const files = sourceFiles().filter((rel) => rel.startsWith('src/'));
   const allowed = [
     ['/v1/', 'query'], ['/v1/', 'content-search'], ['/v1/', 'content/retrieval'],
     ['/admin/v1/', 'deployment'], ['/admin/v1/', 'deployment/package'], ['/admin/v1/', 'deployment/verification'],
     ['/admin/v1/', 'deployment/keys'], ['/admin/v1/', 'scim/tokens'],
+    ['/admin/v1/', 'settings'], ['/admin/v1/', 'settings/collection-mode'], ['/admin/v1/', 'settings/scope-override'],
+    ['/admin/v1/', 'settings/retention'], ['/admin/v1/', 'settings/content-search'], ['/admin/v1/', 'settings/tools'],
   ].map((parts) => parts.join(''));
   const others = files.map((rel) => readFileSync(join(ROOT, rel), 'utf8')).join('\n');
   const urls = [...others.matchAll(/['"](\/(?:admin\/)?v1\/[a-z/-]+)['"]/g)].map((m) => m[1]);

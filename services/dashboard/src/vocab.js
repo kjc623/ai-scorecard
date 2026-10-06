@@ -33,6 +33,19 @@ export const ADMIN_VERIFICATION_ENDPOINT = '/admin/v1/deployment/verification';
 export const ADMIN_KEYS_ENDPOINT = '/admin/v1/deployment/keys';
 export const ADMIN_SCIM_TOKENS_ENDPOINT = '/admin/v1/scim/tokens';
 
+/**
+ * The admin API behind Settings → Settings. control-api's, admin-only and audited, like Deployment:
+ * collection mode and its narrower per-tool overrides, event and content retention, tool sanction
+ * decisions and the content search tier. These are the only writes this client makes, besides
+ * Deployment's.
+ */
+export const ADMIN_SETTINGS_ENDPOINT = '/admin/v1/settings';
+export const ADMIN_SETTINGS_COLLECTION_MODE_ENDPOINT = '/admin/v1/settings/collection-mode';
+export const ADMIN_SETTINGS_SCOPE_OVERRIDE_ENDPOINT = '/admin/v1/settings/scope-override';
+export const ADMIN_SETTINGS_RETENTION_ENDPOINT = '/admin/v1/settings/retention';
+export const ADMIN_SETTINGS_CONTENT_SEARCH_ENDPOINT = '/admin/v1/settings/content-search';
+export const ADMIN_SETTINGS_TOOL_SANCTION_ENDPOINT = '/admin/v1/settings/tools';
+
 /** k, the small-cell floor. A cell below it arrives suppressed and is never a number. */
 export const K = 5;
 

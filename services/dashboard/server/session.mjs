@@ -37,6 +37,7 @@ const PAGE_CAPABILITY = Object.freeze({
   audit: 'audit',
   explore: 'search',
   deployment: 'settings',
+  settings: 'settings',
 });
 
 const ALWAYS_VISIBLE = Object.freeze(['posture', 'tools', 'teams']);

@@ -20,6 +20,8 @@ import { shellNavItems, groupOf, readCollapsed, wireShell } from './shell.js';
 import { allowedPageIds, filterNavItems, mayOpen } from './session.js';
 import { createDeployment } from './deployment.js';
 import { renderDeployment } from './deployment-render.js';
+import { createSettings } from './settings.js';
+import { renderSettings } from './settings-render.js';
 
 /**
  * The screens. The event detail is reached from a row that names a submission; the rest are in the
@@ -35,6 +37,8 @@ export const SCREENS = Object.freeze([
   // Settings → Deployment reads and writes control-api's admin API, not the query API: it has no
   // question and no envelope, and boot() hands it to its own controller (deployment.js).
   Object.freeze({ id: 'deployment', label: 'Deployment', question: null, kind: 'admin' }),
+  // Settings → Settings is the other admin screen, over the same admin API (settings.js).
+  Object.freeze({ id: 'settings', label: 'Settings', question: null, kind: 'admin' }),
   Object.freeze({ id: 'event', label: 'Event detail', question: 9, kind: 'input', questionId: 'q9_event_detail' }),
 ]);
 
@@ -271,6 +275,7 @@ export async function boot({ document, api, admin, session: givenSession } = {})
   let paintedNav = null;
   let paintedScreen = null;
   let deployment = null;
+  let settings = null;
 
   function paintDeployment(state) {
     if (paintedScreen === 'deployment') root.innerHTML = renderDeployment(state, { eyebrow: groupOf('deployment') });
@@ -284,6 +289,15 @@ export async function boot({ document, api, admin, session: givenSession } = {})
       copy: (text) => copyToClipboard(document, text),
     });
     return deployment;
+  }
+
+  function paintSettings(state) {
+    if (paintedScreen === 'settings') root.innerHTML = renderSettings(state, { eyebrow: groupOf('settings') });
+  }
+
+  function settingsController() {
+    settings ??= createSettings({ admin: adminApi, onChange: paintSettings });
+    return settings;
   }
 
   async function render() {
@@ -309,6 +323,12 @@ export async function boot({ document, api, admin, session: givenSession } = {})
       return;
     }
     if (screen.kind === 'admin') {
+      if (screen.id === 'settings') {
+        const controller = settingsController();
+        paintSettings(controller.state);
+        if (!sameScreen || controller.state.status !== 'ready') await controller.load();
+        return;
+      }
       const controller = deploymentController();
       paintDeployment(controller.state);
       if (!sameScreen || controller.state.status !== 'ready') await controller.load();
@@ -330,6 +350,13 @@ export async function boot({ document, api, admin, session: givenSession } = {})
   (document.defaultView ?? document).addEventListener('hashchange', render);
   document.addEventListener('submit', (event) => {
     const form = event.target;
+    // Settings' retention form: Enter saves the value beside it.
+    if (form?.dataset?.settingsForm === 'retention') {
+      event.preventDefault();
+      const field = form.querySelector?.('[data-settings-draft]');
+      if (field && settings) settings.act({ action: 'save-retention', appliesTo: field.dataset.settingsDraft });
+      return;
+    }
     // Deployment's forms act through their buttons; Enter in the token label creates the token.
     if (form?.dataset?.depForm !== undefined) {
       event.preventDefault();
@@ -342,18 +369,32 @@ export async function boot({ document, api, admin, session: givenSession } = {})
     const subject = form.elements.subject.value.trim();
     document.location.hash = subject ? `#person?subject=${encodeURIComponent(subject)}` : '#person';
   });
-  // Deployment's buttons name their action in data-dep; what is typed into a label is kept as it is typed.
+  // Deployment's buttons name their action in data-dep; Settings' controls name theirs in data-action.
   document.addEventListener('click', (event) => {
+    const action = event.target?.closest?.('[data-action]');
+    if (action && settings && action.tagName !== 'SELECT' && !action.disabled) {
+      event.preventDefault();
+      settings.act({ ...action.dataset });
+      return;
+    }
     const target = event.target?.closest?.('[data-dep]');
     if (!target || !deployment || target.disabled) return;
     event.preventDefault();
     deployment.act({ ...target.dataset });
   });
+  // A per-tool override or other select names its action in data-action and fires change, not click.
+  document.addEventListener('change', (event) => {
+    const select = event.target?.closest?.('select[data-action]');
+    if (!select || !settings) return;
+    settings.act({ action: select.dataset.action, tool: select.dataset.tool, value: select.value });
+  });
   document.addEventListener('input', (event) => {
+    const draft = event.target?.dataset?.settingsDraft;
+    if (draft && settings) settings.setRetentionDraft(draft, event.target.value);
     const field = event.target?.dataset?.depDraft;
     if (field && deployment) deployment.setDraft(field, event.target.value);
   });
   await render();
 
-  return { render, dashboard, deployment: () => deployment };
+  return { render, dashboard, deployment: () => deployment, settings: () => settings };
 }

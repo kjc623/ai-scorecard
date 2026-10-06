@@ -11,6 +11,8 @@
 import {
   QUERY_ENDPOINT, CONTENT_SEARCH_ENDPOINT, CONTENT_RETRIEVAL_ENDPOINT, RESULT_STATES,
   ADMIN_DEPLOYMENT_ENDPOINT, ADMIN_PACKAGE_ENDPOINT, ADMIN_VERIFICATION_ENDPOINT, ADMIN_KEYS_ENDPOINT, ADMIN_SCIM_TOKENS_ENDPOINT,
+  ADMIN_SETTINGS_ENDPOINT, ADMIN_SETTINGS_COLLECTION_MODE_ENDPOINT, ADMIN_SETTINGS_SCOPE_OVERRIDE_ENDPOINT,
+  ADMIN_SETTINGS_RETENTION_ENDPOINT, ADMIN_SETTINGS_CONTENT_SEARCH_ENDPOINT, ADMIN_SETTINGS_TOOL_SANCTION_ENDPOINT,
 } from './vocab.js';
 
 /** An error the transport produced, carrying the same shape as an API refusal. */
@@ -264,6 +266,26 @@ export function createAdminApi({ transport }) {
     revokeScimToken(tokenId) {
       return done({ method: 'POST', path: revokePath(ADMIN_SCIM_TOKENS_ENDPOINT, tokenId) });
     },
+    async settings() {
+      const answer = await call({ method: 'GET', path: ADMIN_SETTINGS_ENDPOINT });
+      if (!ok(answer.status) || !answer.body || typeof answer.body !== 'object') return refused(answer);
+      return { state: 'available', data: normaliseSettings(answer.body) };
+    },
+    setCollectionMode(mode) {
+      return done({ method: 'PUT', path: ADMIN_SETTINGS_COLLECTION_MODE_ENDPOINT, body: { collection_mode: mode } });
+    },
+    setScopeOverride(toolFingerprint, mode) {
+      return done({ method: 'PUT', path: ADMIN_SETTINGS_SCOPE_OVERRIDE_ENDPOINT, body: { tool_fingerprint: toolFingerprint, collection_mode: mode } });
+    },
+    setRetention(appliesTo, ttlDays) {
+      return done({ method: 'PUT', path: ADMIN_SETTINGS_RETENTION_ENDPOINT, body: { applies_to: appliesTo, ttl_days: ttlDays } });
+    },
+    setContentSearch(tier) {
+      return done({ method: 'PUT', path: ADMIN_SETTINGS_CONTENT_SEARCH_ENDPOINT, body: { content_search: tier } });
+    },
+    setToolSanction(toolFingerprint, state) {
+      return done({ method: 'PUT', path: `${ADMIN_SETTINGS_TOOL_SANCTION_ENDPOINT}/${encodeURIComponent(String(toolFingerprint))}/sanction`, body: { sanctioned_state: state } });
+    },
   });
 }
 
@@ -317,6 +339,42 @@ export function normaliseDeployment(body) {
     }),
     devices: Object.freeze({ enrolled: nullableNumber(devices.enrolled), last_enrolled_at: nullableText(devices.last_enrolled_at) }),
     release,
+  });
+}
+
+/**
+ * The Settings read, with every field present: a value the server did not send is null, never a
+ * zero or an empty string, because "not reported" and "none" are different answers. An empty
+ * collection_mode means "follow the ceiling".
+ */
+export function normaliseSettings(body) {
+  const tools = (Array.isArray(body.tools) ? body.tools : []).filter((t) => t && typeof t === 'object').map((t) => Object.freeze({
+    tool_fingerprint: String(t.tool_fingerprint ?? ''),
+    display_name: nullableText(t.display_name),
+    sanctioned_state: ['sanctioned', 'unsanctioned', 'unknown'].includes(t.sanctioned_state) ? t.sanctioned_state : 'unknown',
+  }));
+  const devices = (Array.isArray(body.devices) ? body.devices : []).filter((d) => d && typeof d === 'object').map((d) => Object.freeze({
+    device_id: String(d.device_id ?? ''),
+    hostname: nullableText(d.hostname),
+    collection_mode: nullableText(d.collection_mode),
+    last_seen_at: nullableText(d.last_seen_at),
+  }));
+  const overrides = body.scope_overrides && typeof body.scope_overrides === 'object' ? body.scope_overrides : {};
+  const scoped = {};
+  for (const [fp, mode] of Object.entries(overrides)) scoped[fp] = nullableText(mode);
+  return Object.freeze({
+    ceiling_mode: nullableText(body.ceiling_mode),
+    collection_mode: nullableText(body.collection_mode),
+    scope_overrides: Object.freeze(scoped),
+    event_retention_days: nullableNumber(body.event_retention_days),
+    content_retention_days: nullableNumber(body.content_retention_days),
+    retention_defaults: Object.freeze({
+      event_days: nullableNumber(body.retention_defaults?.event_days),
+      content_days: nullableNumber(body.retention_defaults?.content_days),
+    }),
+    content_search: ['disabled', 'attachment_names', 'full_text'].includes(body.content_search) ? body.content_search : 'disabled',
+    tools: Object.freeze(tools),
+    devices: Object.freeze(devices),
   });
 }
 
