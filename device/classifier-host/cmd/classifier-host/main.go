@@ -32,7 +32,7 @@ func main() {
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: classifier-host serve --release DIR --pubkey HEX [--transport stdio] | parse-child")
+		fmt.Fprintln(stderr, "usage: classifier-host serve --release DIR --pubkey HEX [--transport stdio] [--parser-timeout DURATION] | parse-child")
 		return 2
 	}
 	switch args[0] {
@@ -56,6 +56,7 @@ func serve(args []string, stdin io.Reader, stdout io.Writer, log *slog.Logger) e
 	releaseDir := fs.String("release", "", "signed classifier release directory")
 	pubkeyHex := fs.String("pubkey", "", "hex Ed25519 public key the release must verify under")
 	transport := fs.String("transport", "stdio", "the only transport is stdio")
+	parserTimeout := fs.Duration("parser-timeout", isolation.DefaultLimits().Timeout, "per-document parser timeout")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -77,7 +78,9 @@ func serve(args []string, stdin io.Reader, stdout io.Writer, log *slog.Logger) e
 	if err != nil {
 		return err
 	}
-	host, err := classify.New(classify.Options{Release: rel, Parser: isolation.New(child, isolation.DefaultLimits())})
+	limits := isolation.DefaultLimits()
+	limits.Timeout = *parserTimeout
+	host, err := classify.New(classify.Options{Release: rel, Parser: isolation.New(child, limits)})
 	if err != nil {
 		return err
 	}

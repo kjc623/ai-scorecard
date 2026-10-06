@@ -27,7 +27,8 @@ jobs:
           node-version: '22'
       - run: az bicep install
       # Docker and Chrome are on the hosted runner, so the database and browser gates run here.
-      - run: node tools/accept.mjs --skip installer
+      # The hosted Ubuntu runner has gcc, so the Go suites also run under the race detector.
+      - run: node tools/accept.mjs --skip installer --race
 
   windows:
     name: accept (Windows)

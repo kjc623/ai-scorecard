@@ -5,6 +5,7 @@
 //   node tools/accept.mjs --only go,node   just those gates
 //   node tools/accept.mjs --skip browser   everything but those
 //   node tools/accept.mjs --list           the gates and what a failure means
+//   node tools/accept.mjs --only go --race run each Go module's tests under -race
 //
 // A gate that cannot run here (no Docker, no az, not Windows, no Chromium) is reported SKIPPED with
 // its reason. SKIPPED is not a pass: the summary says what was not checked.
@@ -21,6 +22,9 @@ const args = process.argv.slice(2);
 const listArg = (flag) => (args.includes(flag) ? args[args.indexOf(flag) + 1]?.split(',') ?? [] : null);
 const only = listArg('--only');
 const skip = new Set(listArg('--skip') ?? []);
+// --race runs each Go module's tests under the race detector. It needs cgo (a C compiler), so it
+// is used on the hosted Ubuntu runner and inside a golang container, not on a plain Windows box.
+const race = args.includes('--race');
 
 function run(cmd, cmdArgs, cwd = ROOT) {
   const r = spawnSync(cmd, cmdArgs, { cwd, encoding: 'utf8', shell: process.platform === 'win32', maxBuffer: 64 << 20 });
@@ -47,7 +51,7 @@ const GATES = [
     decides: 'A Go module fails go vet or its tests.',
     run: () => steps(tracked('*go.mod').map((mod) => dirname(mod)).flatMap((dir) => [
       [`${dir}: go vet`, 'go', ['vet', './...'], join(ROOT, dir)],
-      [`${dir}: go test`, 'go', ['test', './...'], join(ROOT, dir)],
+      [`${dir}: go test`, 'go', ['test', ...(race ? ['-race'] : []), './...'], join(ROOT, dir)],
     ])),
   },
   {

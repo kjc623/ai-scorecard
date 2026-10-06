@@ -126,7 +126,7 @@ func docx(t *testing.T, text string) []byte {
 // document; the document is parsed by a parser child of the host.
 func TestServeOverStdio(t *testing.T) {
 	dir, pub := signedRelease(t)
-	host := start(t, "serve", "--release", dir, "--pubkey", pub, "--transport", "stdio")
+	host := start(t, "serve", "--release", dir, "--pubkey", pub, "--transport", "stdio", "--parser-timeout", "5s")
 
 	var hs protocol.HandshakeResponse
 	host.exchange(t, protocol.HandshakeRequest{CoreVersion: "capture-core/test", ProtocolVersion: protocol.Version}, &hs)
