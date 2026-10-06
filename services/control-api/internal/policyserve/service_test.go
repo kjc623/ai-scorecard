@@ -165,6 +165,36 @@ func TestServesASignedBundleComposedFromTheTenant(t *testing.T) {
 	}
 }
 
+// TestComposeCarriesRequestedModeAndOverrides: the requested collection mode (which may be below the
+// ceiling) is the bundle's tenant_default_mode, and each narrower per-tool override rides in
+// tool_modes and the stored scope matrix, so the ceiling trigger sees it.
+func TestComposeCarriesRequestedModeAndOverrides(t *testing.T) {
+	r := newRig(t, nil)
+	r.store.SeedCollectionMode(tenantA, "m2")
+	r.store.SeedScopeOverride(tenantA, "tls_b6681b043244c43f", "m0")
+
+	rec := r.get(t, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	var resp protocol.PolicyResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := payloadOf(t, resp.SignedBundle)
+	if p["tenant_default_mode"] != "m2" {
+		t.Fatalf("tenant_default_mode = %v, want m2", p["tenant_default_mode"])
+	}
+	toolModes := p["tool_modes"].(map[string]any)
+	if toolModes["tls_b6681b043244c43f"] != "m0" {
+		t.Fatalf("tool_modes = %v", toolModes)
+	}
+	row := r.store.PolicyBundles(tenantA)[0]
+	if !strings.Contains(string(row.ScopeMatrix), `"tool_modes"`) || !strings.Contains(string(row.ScopeMatrix), `"m0"`) {
+		t.Fatalf("scope matrix %s does not carry the override", row.ScopeMatrix)
+	}
+}
+
 func TestIfNoneMatchAnswers304(t *testing.T) {
 	r := newRig(t, nil)
 	first := r.get(t, "")
@@ -178,8 +208,8 @@ func TestIfNoneMatchAnswers304(t *testing.T) {
 	}
 }
 
-// TestVersionIsStableUntilAnInputChanges: polling mints nothing; a changed ceiling, catalogue or key
-// mints exactly one new, higher version.
+// TestVersionIsStableUntilAnInputChanges: polling mints nothing; a changed ceiling, collection mode
+// or override mints exactly one new, higher version.
 func TestVersionIsStableUntilAnInputChanges(t *testing.T) {
 	r := newRig(t, nil)
 	ctx := context.Background()
