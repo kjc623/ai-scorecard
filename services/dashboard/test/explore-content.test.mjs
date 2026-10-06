@@ -239,14 +239,14 @@ test('only uploaded content offers a retrieval', async () => {
 test('a hit shows the prompt text with the person, the hostname and the tool', async () => {
   const { explorer } = explorerFor();
   const state = { ...explorer.state, text: { status: 'ready', query: 'x', truncated: false, problem: null, hits: [
-    { submissionId: 's1', snippet: 'What is the <em>capital</em> of Australia', subject: 'alice@contoso.example', directory_name: 'Alice Smith', device: 'd-1', hostname: 'FIN-LAPTOP-07', tool: 'claude_code' },
+    { submissionId: 's1', snippet: 'What is the <em>capital</em> of Australia', subject: 'alice@contoso.example', directory_name: 'Alice Smith', device: 'd-1', hostname: 'FIN-LAPTOP-07', tool: 'tls_b6681b043244c43f', tool_name: 'Claude Code' },
     { submissionId: 's2', snippet: 'another', subject: null, device: null, tool: null },
-    { submissionId: 's3', snippet: 'third', subject: 'u_9a02', device: 'd-2', hostname: null, tool: 'chatgpt_web' },
+    { submissionId: 's3', snippet: 'third', subject: 'u_9a02', device: 'd-2', hostname: null, tool: 'tls_11574658dafb8805' },
   ] } };
   const html = renderExploreText(state);
   // The hostname is preferred to the device UUID when there is one, and the directory display
   // name sits between the account name and the device.
-  assert.match(html, /<span>alice@contoso\.example<\/span><span class="x-hit-sep" aria-hidden="true">\|<\/span><span>Alice Smith<\/span><span class="x-hit-sep" aria-hidden="true">\|<\/span><span>FIN-LAPTOP-07<\/span><span class="x-hit-sep" aria-hidden="true">\|<\/span><span>claude_code<\/span>/);
+  assert.match(html, /<span>alice@contoso\.example<\/span><span class="x-hit-sep" aria-hidden="true">\|<\/span><span>Alice Smith<\/span><span class="x-hit-sep" aria-hidden="true">\|<\/span><span>FIN-LAPTOP-07<\/span><span class="x-hit-sep" aria-hidden="true">\|<\/span><span>Claude Code<\/span>/);
   // With no hostname the UUID is the device part; a hit with no metadata still names its submission.
   assert.match(html, /<span>u_9a02<\/span><span class="x-hit-sep" aria-hidden="true">\|<\/span><span>d-2<\/span>/);
   assert.match(html, />s2<\/span>/, 'a hit with no metadata still names its submission');

@@ -17,8 +17,8 @@ import { STATE_ENVELOPES } from './fixtures.mjs';
 
 const SUPPRESSED = Object.freeze({ bucket: '2026-09-30T00:00:00Z', tool: 'shadow_llm_gateway', result_state: 'suppressed', reason: 'fewer_than_k_subjects', k: 5 });
 const ZERO = Object.freeze({ bucket: '2026-09-30T00:00:00Z', tool: 'legacy_summariser', submissions: 0, users: 0 });
-const VALUE = Object.freeze({ bucket: '2026-09-30T00:00:00Z', tool: 'claude_web', submissions: 812, users: 214 });
-const ABSENT = Object.freeze({ bucket: '2026-09-30T00:00:00Z', tool: 'copilot_chat' });
+const VALUE = Object.freeze({ bucket: '2026-09-30T00:00:00Z', tool: 'tls_b6681b043244c43f', submissions: 812, users: 214 });
+const ABSENT = Object.freeze({ bucket: '2026-09-30T00:00:00Z', tool: 'tls_f412811be7ac6539' });
 
 test('a suppressed cell yields suppressed, never a number', () => {
   const value = measureOf(SUPPRESSED, 'submissions');

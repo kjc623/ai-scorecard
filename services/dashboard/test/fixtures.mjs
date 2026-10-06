@@ -50,13 +50,13 @@ function page(overrides = {}) {
 }
 
 const TOOL_ROWS = Object.freeze([
-  Object.freeze({ bucket: DAY, tool: 'claude_web', sanctioned_state: 'unsanctioned', submissions: 812, users: 214, bytes_total: 41_000_000, blocked: 12, warned: 40, logged: 760 }),
+  Object.freeze({ bucket: DAY, tool: 'tls_b6681b043244c43f', sanctioned_state: 'unsanctioned', submissions: 812, users: 214, bytes_total: 41_000_000, blocked: 12, warned: 40, logged: 760 }),
   // Below k: the server has already replaced every measure with the suppression marker. The
   // client must not turn this back into a number.
   Object.freeze({ bucket: DAY, tool: 'shadow_llm_gateway', sanctioned_state: 'unknown', result_state: 'suppressed', reason: 'fewer_than_k_subjects', k: 5 }),
   // A genuine zero: we looked and there was none. This is an answer, not a secret.
   Object.freeze({ bucket: DAY, tool: 'legacy_summariser', sanctioned_state: 'sanctioned', submissions: 0, users: 0, bytes_total: 0, blocked: 0, warned: 0, logged: 0 }),
-  Object.freeze({ bucket: DAY, tool: 'copilot_chat', sanctioned_state: 'sanctioned', submissions: 4021, users: 1877, bytes_total: 190_000_000, blocked: 3, warned: 210, logged: 3808 }),
+  Object.freeze({ bucket: DAY, tool: 'tls_f412811be7ac6539', sanctioned_state: 'sanctioned', submissions: 4021, users: 1877, bytes_total: 190_000_000, blocked: 3, warned: 210, logged: 3808 }),
 ]);
 
 const DEVICE_ROWS = Object.freeze([
@@ -72,7 +72,7 @@ const ACTIVITY_ROWS = Object.freeze([
     received_at: '2026-09-30T14:02:11Z',
     first_occurred_at: '2026-09-30T13:58:00Z',
     last_occurred_at: '2026-09-30T14:01:30Z',
-    subject: 'u_4f21', tool: 'claude_web', device: '9f1c0b6e-0000-4000-8000-000000000001',
+    subject: 'u_4f21', tool: 'tls_b6681b043244c43f', device: '9f1c0b6e-0000-4000-8000-000000000001',
     mode: 'm2', action: 'blocked', content_state: 'uploaded', route: 'ext.page_context',
     detection_basis: 'prompt', merge_confidence: 'high', confidence: 'high',
     observation_count: 2, size_bytes: 2481, labels: [{ class: 'customer_pii', score: 0.91 }],
@@ -83,7 +83,7 @@ const ACTIVITY_ROWS = Object.freeze([
     received_at: '2026-09-30T13:41:02Z',
     first_occurred_at: '2026-09-23T08:00:00Z', // a spool flush: nine days between the two clocks
     last_occurred_at: '2026-09-23T08:04:00Z',
-    subject: 'u_9a02', tool: 'chatgpt_web', device: '9f1c0b6e-0000-4000-8000-000000000002',
+    subject: 'u_9a02', tool: 'tls_11574658dafb8805', device: '9f1c0b6e-0000-4000-8000-000000000002',
     mode: 'm1', action: 'logged', content_state: 'not_captured', route: 'proxy.tls',
     detection_basis: 'prompt', merge_confidence: 'low', confidence: 'degraded',
     observation_count: 1, size_bytes: 900, labels: [{ class: 'source_code', score: 0.62 }],
@@ -94,7 +94,7 @@ const ACTIVITY_ROWS = Object.freeze([
     received_at: '2026-09-30T11:20:00Z',
     first_occurred_at: '2026-09-30T11:19:50Z',
     last_occurred_at: '2026-09-30T11:19:50Z',
-    subject: 'u_4f21', tool: 'claude_web', device: '9f1c0b6e-0000-4000-8000-000000000001',
+    subject: 'u_4f21', tool: 'tls_b6681b043244c43f', device: '9f1c0b6e-0000-4000-8000-000000000001',
     mode: 'm0', action: null, content_state: 'not_captured', route: 'proc.detect',
     detection_basis: 'model_detection', merge_confidence: 'high', confidence: null,
     observation_count: 1, size_bytes: null, labels: null, observed_routes: ['proc.detect'],
@@ -110,9 +110,9 @@ const RECORD_HEAD = Object.freeze({
   received_at: '2026-09-30T14:02:11Z',
   first_occurred_at: '2026-09-30T13:58:00Z',
   last_occurred_at: '2026-09-30T14:01:30Z',
-  user_ref: 'u_4f21', tool_fingerprint: 'claude_web', tool_name: 'Claude',
+  user_ref: 'u_4f21', tool_fingerprint: 'tls_b6681b043244c43f', tool_name: 'Claude Code',
   kind: 'prompt', collection_mode: 'm2', policy_action: 'blocked',
-  policy_rule_id: 'PCI_PAN_PATTERN', decided_locally: true, confidence: 'high', merge_confidence: 'high',
+  policy_rule_id: 'PAYMENT_CARD_PAN', decided_locally: true, confidence: 'high', merge_confidence: 'high',
   content_state: 'uploaded', shredded_reason: null, size_bytes: 2481, content_digest: 'sha256:aa', labels: [{ class: 'customer_pii', score: 0.91 }],
   classifier_version: 'c-2026.09', winning_source: 'ext.page_context', winning_fidelity: 'full', observed_routes: ['ext.page_context', 'proxy.tls'],
   observation_count: 2, expires_at: '2027-09-30T14:02:11Z',
@@ -123,7 +123,7 @@ const RECORD_ROWS = Object.freeze([
     ...RECORD_HEAD,
     observation_event_id: '22222222-3333-4444-8555-666666666661', observation_source: 'ext.page_context', observation_kind: 'prompt', direction: 'egress',
     observation_occurred_at: '2026-09-30T13:58:00Z', observation_received_at: '2026-09-30T14:02:11Z', observation_size_bytes: 2481,
-    observation_labels: [{ class: 'customer_pii', score: 0.91 }], policy_decision: { rule_id: 'PCI_PAN_PATTERN', action: 'blocked' },
+    observation_labels: [{ class: 'customer_pii', score: 0.91 }], policy_decision: { rule_id: 'PAYMENT_CARD_PAN', action: 'blocked' },
     detection_basis: 'prompt', window_start: null, window_end: null, submission_count: null, bytes_total: null,
   }),
   Object.freeze({
@@ -136,8 +136,8 @@ const RECORD_ROWS = Object.freeze([
 ]);
 
 const FINDING_ROWS = Object.freeze([
-  Object.freeze({ submission_id: '11111111-2222-4333-8444-555555555551', detected_at: '2026-09-30T14:02:12Z', rule: 'PCI_PAN_PATTERN', rule_title: 'Payment card number in prompt', class: 'payment_card', severity: 'critical', subject: 'u_4f21', tool: 'claude_web', mode: 'm2', review_state: 'open', decided_locally: true }),
-  Object.freeze({ submission_id: '11111111-2222-4333-8444-555555555552', detected_at: '2026-09-30T13:41:05Z', rule: 'SRC_INTERNAL_REPO', rule_title: 'Proprietary source code', class: 'source_code', severity: 'high', subject: 'u_9a02', tool: 'chatgpt_web', mode: 'm1', review_state: 'disputed', decided_locally: false }),
+  Object.freeze({ submission_id: '11111111-2222-4333-8444-555555555551', detected_at: '2026-09-30T14:02:12Z', rule: 'PAYMENT_CARD_PAN', rule_title: 'Payment card number', class: 'payment_card', severity: 'critical', subject: 'u_4f21', tool: 'tls_b6681b043244c43f', mode: 'm2', review_state: 'open', decided_locally: true }),
+  Object.freeze({ submission_id: '11111111-2222-4333-8444-555555555552', detected_at: '2026-09-30T13:41:05Z', rule: 'SOURCE_DECLARATION', rule_title: 'Source code', class: 'source_code', severity: 'high', subject: 'u_9a02', tool: 'tls_11574658dafb8805', mode: 'm1', review_state: 'disputed', decided_locally: false }),
 ]);
 
 const AUDIT_ROWS = Object.freeze([
@@ -283,8 +283,8 @@ const REALISTIC = Object.freeze({
   }),
   q2_unsanctioned_users: ok({
     data: [
-      { bucket: DAY, tool: 'claude_web', subject: 'u_9a02', submissions: 214, bytes_total: 12_000_000 },
-      { bucket: DAY, tool: 'claude_web', subject: 'u_4f21', submissions: 188, bytes_total: 9_400_000 },
+      { bucket: DAY, tool: 'tls_b6681b043244c43f', subject: 'u_9a02', submissions: 214, bytes_total: 12_000_000 },
+      { bucket: DAY, tool: 'tls_b6681b043244c43f', subject: 'u_4f21', submissions: 188, bytes_total: 9_400_000 },
       { bucket: DAY, tool: 'shadow_llm_gateway', result_state: 'suppressed', reason: 'fewer_than_k_subjects', k: 5 },
     ],
     freshness: freshness(),

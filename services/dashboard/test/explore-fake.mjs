@@ -28,19 +28,19 @@ export const EXPLORE_SCENARIOS = Object.freeze({
 export const EXPLORE_SCENARIO_NAMES = Object.freeze(Object.keys(EXPLORE_SCENARIOS));
 
 const SAMPLE_TOOLS = Object.freeze([
-  'chatgpt_web', 'chatgpt_web', 'chatgpt_web', 'claude_web', 'claude_web', 'copilot_chat', 'copilot_chat',
-  'gemini_web', 'perplexity_web', 'cursor_ide', 'shadow_llm_gateway',
+  'tls_11574658dafb8805', 'tls_11574658dafb8805', 'tls_11574658dafb8805', 'tls_b6681b043244c43f', 'tls_b6681b043244c43f', 'tls_f412811be7ac6539', 'tls_f412811be7ac6539',
+  'tls_7659f7a5e64cd885', 'tls_a40a04ef6e27de9f', 'tls_9230903190dcf0dc', 'shadow_llm_gateway',
 ]);
 const SAMPLE_DEPARTMENTS = Object.freeze(['Engineering', 'Finance', 'Legal', 'Customer Success', 'Sales', 'People']);
 const SAMPLE_CLASSES = Object.freeze(['customer_pii', 'source_code', 'credential', 'payment_card', 'legal_commercial', 'government_id', 'health']);
 const SAMPLE_RULES = Object.freeze({
-  payment_card: Object.freeze({ rule: 'PCI_PAN_PATTERN', rule_title: 'Payment card number in prompt', severity: 'critical' }),
-  credential: Object.freeze({ rule: 'SECRET_API_KEY', rule_title: 'API key or access token', severity: 'critical' }),
-  government_id: Object.freeze({ rule: 'GOV_ID_NUMBER', rule_title: 'Government identifier', severity: 'high' }),
-  customer_pii: Object.freeze({ rule: 'PII_CUSTOMER_RECORD', rule_title: 'Customer personal data', severity: 'high' }),
-  source_code: Object.freeze({ rule: 'SRC_INTERNAL_REPO', rule_title: 'Proprietary source code', severity: 'high' }),
-  health: Object.freeze({ rule: 'PHI_CLINICAL_TERM', rule_title: 'Health information', severity: 'high' }),
-  legal_commercial: Object.freeze({ rule: 'LEGAL_CONTRACT_TERMS', rule_title: 'Contract or commercial terms', severity: 'medium' }),
+  payment_card: Object.freeze({ rule: 'PAYMENT_CARD_PAN', rule_title: 'Payment card number', severity: 'critical' }),
+  credential: Object.freeze({ rule: 'AWS_ACCESS_KEY_ID', rule_title: 'AWS access key ID', severity: 'critical' }),
+  government_id: Object.freeze({ rule: 'US_SSN_STRUCTURE', rule_title: 'US Social Security number', severity: 'critical' }),
+  customer_pii: Object.freeze({ rule: 'CUSTOMER_PII_LABEL', rule_title: 'Personal data field', severity: 'high' }),
+  source_code: Object.freeze({ rule: 'SOURCE_DECLARATION', rule_title: 'Source code', severity: 'high' }),
+  health: Object.freeze({ rule: 'HEALTH_CLINICAL_VOCABULARY', rule_title: 'Clinical information', severity: 'critical' }),
+  legal_commercial: Object.freeze({ rule: 'LEGAL_CLAUSE_VOCABULARY', rule_title: 'Contract language', severity: 'medium' }),
 });
 const SAMPLE_ANALYSTS = Object.freeze(['r.okafor@customer.example', 'm.lindqvist@customer.example', 'd.haddad@customer.example']);
 

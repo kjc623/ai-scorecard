@@ -23,7 +23,7 @@ test('every question builds a request the DSL admits, with only declared paramet
       filters: {
         subject: 'u_1',
         submission_id: '11111111-2222-4333-8444-555555555551',
-        tool: 'claude_web',
+        tool: 'tls_b6681b043244c43f',
         severity: 'critical',
         liveness: 'stale',
         class: 'customer_pii',
@@ -51,9 +51,9 @@ test('a question omits a parameter the analyst did not set rather than sending a
 // The Unsanctioned screen is Q2's own question, so it asks for unsanctioned tools by default; the
 // state is still overridable, because `unknown` gets its own list.
 test('Q2 asks for unsanctioned tools by default and lets the state be overridden', () => {
-  const byDefault = QUESTIONS.q2_unsanctioned_users.request(ctx({ filters: { tool: 'claude_web' } }));
+  const byDefault = QUESTIONS.q2_unsanctioned_users.request(ctx({ filters: { tool: 'tls_b6681b043244c43f' } }));
   assert.equal(byDefault.params.sanctioned_state, 'unsanctioned');
-  const unknown = QUESTIONS.q2_unsanctioned_users.request(ctx({ filters: { tool: 'claude_web', sanctioned_state: 'unknown' } }));
+  const unknown = QUESTIONS.q2_unsanctioned_users.request(ctx({ filters: { tool: 'tls_b6681b043244c43f', sanctioned_state: 'unknown' } }));
   assert.equal(unknown.params.sanctioned_state, 'unknown');
 });
 

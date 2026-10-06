@@ -4,7 +4,7 @@
 // and the audit trail (Q10). It adds no read path. Every request it makes is one of the existing
 // template builders in questions.js, so it cannot ask anything the DSL does not admit.
 //
-// The query bar is a convenience over the same closed filters the rail shows: `tool:claude_web
+// The query bar is a convenience over the same closed filters the rail shows: `tool:tls_b6681b043244c43f
 // action:blocked`. It is parsed here, and anything it cannot place is a *problem* that blocks the
 // search rather than a token that is dropped: no unrecognised filter is silently ignored. A bare
 // word is the commonest case. It is refused with the reason, because this API has no text
@@ -72,7 +72,7 @@ export const EXPLORE_DATASETS = Object.freeze({
     rowKey: (row) => String(row.submission_id),
     fields: Object.freeze([
       exploreField('subject', 'Person', { hint: 'A user reference, such as u_4f21' }),
-      exploreField('tool', 'Tool', { hint: 'A tool fingerprint, such as claude_web' }),
+      exploreField('tool', 'Tool', { hint: 'A tool fingerprint, such as tls_b6681b043244c43f' }),
       exploreField('action', 'Policy action', { values: ['blocked', 'warned', 'logged'] }),
       exploreField('class', 'Data class', { values: DATA_CLASSES, closed: false }),
       exploreField('content_state', 'Content', { values: ['not_captured', 'local_only', 'uploaded', 'shredded'] }),
@@ -108,9 +108,9 @@ export const EXPLORE_DATASETS = Object.freeze({
       exploreField('severity', 'Severity', { values: SEVERITIES }),
       exploreField('review_state', 'Review', { values: ['open', 'disputed', 'confirmed'] }),
       exploreField('class', 'Data class', { values: DATA_CLASSES, closed: false }),
-      exploreField('rule', 'Rule', { hint: 'A rule code, such as PCI_PAN_PATTERN' }),
+      exploreField('rule', 'Rule', { hint: 'A rule code, such as PAYMENT_CARD_PAN' }),
       exploreField('subject', 'Person', { hint: 'A user reference, such as u_4f21' }),
-      exploreField('tool', 'Tool', { hint: 'A tool fingerprint, such as claude_web' }),
+      exploreField('tool', 'Tool', { hint: 'A tool fingerprint, such as tls_b6681b043244c43f' }),
     ]),
     columns: Object.freeze([
       exploreColumn('detected_at', 'Detected', 'server-clock'),
@@ -382,7 +382,7 @@ export function buildExploreRecordRequest({ submissionId, receivedAtHint }) {
   }));
 }
 
-/** `#events?window=d7&tool=claude_web&open=<key>`: the whole page state, so a search can be linked. */
+/** `#events?window=d7&tool=tls_b6681b043244c43f&open=<key>`: the whole page state, so a search can be linked. */
 export function encodeExploreHash({ dataset, windowPreset, filters, open, includeClientGenerated = false }) {
   const params = new URLSearchParams();
   if (windowPreset && windowPreset !== dataset.defaultWindow) params.set('window', windowPreset);

@@ -58,14 +58,14 @@ test('only list templates are searchable: no dataset reads an aggregate or a per
 // ── the query bar ────────────────────────────────────────────────────────────────────────────
 
 test('a query parses into closed filters, including a quoted value', () => {
-  const parsed = parseExploreQuery('tool:claude_web action:blocked department:"Customer Success"', EXPLORE_DATASETS.events);
+  const parsed = parseExploreQuery('tool:tls_b6681b043244c43f action:blocked department:"Customer Success"', EXPLORE_DATASETS.events);
   assert.deepEqual(parsed.problems, []);
-  assert.deepEqual({ ...parsed.filters }, { tool: 'claude_web', action: 'blocked', department: 'Customer Success' });
-  assert.equal(formatExploreQuery(parsed.filters, EXPLORE_DATASETS.events), 'tool:claude_web action:blocked department:"Customer Success"');
+  assert.deepEqual({ ...parsed.filters }, { tool: 'tls_b6681b043244c43f', action: 'blocked', department: 'Customer Success' });
+  assert.equal(formatExploreQuery(parsed.filters, EXPLORE_DATASETS.events), 'tool:tls_b6681b043244c43f action:blocked department:"Customer Success"');
 });
 
 test('free text is refused with the reason, never dropped', () => {
-  const parsed = parseExploreQuery('salary tool:claude_web', EXPLORE_DATASETS.events);
+  const parsed = parseExploreQuery('salary tool:tls_b6681b043244c43f', EXPLORE_DATASETS.events);
   assert.equal(parsed.problems.length, 1);
   assert.equal(parsed.problems[0].code, 'free_text');
   assert.match(parsed.problems[0].message, /no text search/);
@@ -137,11 +137,11 @@ test('the default events request hides client-generated requests, and the toggle
 
 test('every filter and the window reach the read', async () => {
   const { explorer } = explorerFor();
-  await explorer.restore('#events?window=d30&tool=claude_web&action=blocked');
+  await explorer.restore('#events?window=d30&tool=tls_b6681b043244c43f&action=blocked');
   assert.equal(explorer.state.status, 'ready');
-  assert.ok(explorer.state.rows.length > 0, 'the fake has blocked claude_web events');
+  assert.ok(explorer.state.rows.length > 0, 'the fake has blocked tls_b6681b043244c43f events');
   for (const row of explorer.state.rows) {
-    assert.equal(row.tool, 'claude_web');
+    assert.equal(row.tool, 'tls_b6681b043244c43f');
     assert.equal(row.action, 'blocked');
     assert.ok(Date.parse(row.received_at) >= NOW.getTime() - 30 * 86_400_000);
   }
@@ -337,23 +337,23 @@ test('a newer search discards an older answer that arrives late', async () => {
     },
   });
   const explorer = createExplorer({ api, now });
-  const slow = explorer.setQuery('tool:chatgpt_web');
-  await explorer.setQuery('tool:claude_web');
+  const slow = explorer.setQuery('tool:tls_11574658dafb8805');
+  await explorer.setQuery('tool:tls_b6681b043244c43f');
   release();
   await slow;
   assert.ok(explorer.state.rows.length > 0);
-  assert.ok(explorer.state.rows.every((r) => r.tool === 'claude_web'), 'the late answer did not overwrite the newer one');
+  assert.ok(explorer.state.rows.every((r) => r.tool === 'tls_b6681b043244c43f'), 'the late answer did not overwrite the newer one');
 });
 
 // ── links ────────────────────────────────────────────────────────────────────────────────────
 
 test('the address carries the whole search and round-trips', async () => {
   const { explorer } = explorerFor();
-  await explorer.restore('#findings?window=d30&review_state=open&tool=chatgpt_web');
-  assert.equal(explorer.hash(), '#findings?window=d30&review_state=open&tool=chatgpt_web');
+  await explorer.restore('#findings?window=d30&review_state=open&tool=tls_11574658dafb8805');
+  assert.equal(explorer.hash(), '#findings?window=d30&review_state=open&tool=tls_11574658dafb8805');
   const decoded = decodeExploreHash(explorer.hash());
   assert.equal(decoded.dataset.id, 'findings');
-  assert.deepEqual({ ...decoded.filters }, { review_state: 'open', tool: 'chatgpt_web' });
+  assert.deepEqual({ ...decoded.filters }, { review_state: 'open', tool: 'tls_11574658dafb8805' });
   assert.equal(encodeExploreHash({ dataset: EXPLORE_DATASETS.events, windowPreset: 'd7', filters: {}, open: null }), '#events');
 });
 
@@ -394,10 +394,10 @@ test('the rail renders the include toggle for events, with the pressed state it 
 
 test('switching dataset carries the filters both have and drops the rest by name', async () => {
   const { explorer } = explorerFor();
-  await explorer.restore('#events?window=d30&tool=claude_web&action=blocked');
+  await explorer.restore('#events?window=d30&tool=tls_b6681b043244c43f&action=blocked');
   await explorer.setDataset('findings');
-  assert.deepEqual({ ...explorer.state.filters }, { tool: 'claude_web' });
-  assert.equal(explorer.state.queryText, 'tool:claude_web');
+  assert.deepEqual({ ...explorer.state.filters }, { tool: 'tls_b6681b043244c43f' });
+  assert.equal(explorer.state.queryText, 'tool:tls_b6681b043244c43f');
   assert.match(renderExploreRail(explorer.state), /Clear 1/);
   assert.match(renderExploreSummary(explorer.state), /Audited read, entry/);
 });
