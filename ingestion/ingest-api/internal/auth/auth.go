@@ -1,142 +1,160 @@
-// Package auth resolves the authenticated principal for a device-facing request.
+// Package auth authenticates a device from the client certificate Application Gateway forwards.
 //
-// Two rules from docs/02-ingest-and-transport.md §2 and §5.3 are load-bearing here:
-//
-//   - tenant_id, device_id and region come from the authenticated principal and never from the
-//     request body (C32). The body's tenant_id is checked against this principal and a
-//     disagreement is rejected, never honoured.
-//   - The edge (Application Gateway, or a lab proxy speaking the same X-Client-Cert interface) is a
-//     filter, never the authority: the origin re-validates the credential and, decisively, the
-//     per-device credential status on every request (§2.2), with no cache, because the check is a
-//     point lookup at 0.14 events/s mean. The mode is selected by what the request presents, and
-//     every production mode funnels through resolveCredential so none can skip a check another makes.
+// The gateway terminates the device's TLS connection and passes the presented leaf in
+// X-Client-Cert. The gateway is a filter, not the authority: the chain is verified here against the
+// device CA, and the credential's status is read from the database on every request. Tenant and
+// device come from the certificate and never from the request body.
 package auth
 
 import (
 	"context"
 	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/shadow-ai-capture/device/protocol"
 
-	"github.com/shadow-ai-capture/ingest-api/internal/contract"
 	"github.com/shadow-ai-capture/ingest-api/internal/store"
 )
 
-// Principal is who the request is from. Everything here is derived from the credential.
+// Principal is the authenticated device.
 type Principal struct {
 	TenantID     string
 	DeviceID     string
 	CredentialID string
-	NotAfter     time.Time
 }
 
-// Authenticator turns a request into a Principal.
-type Authenticator interface {
-	Authenticate(ctx context.Context, r *http.Request) (Principal, error)
-}
-
-// Authentication failures. They are distinct because the operator-facing response distinguishes
-// them, even where §7's closed code set has only one code for the class.
+// Authentication failures that are not a credential's database status. Those are the store's
+// errors (store.ErrCredentialRevoked and the rest), returned unwrapped.
 var (
-	ErrNoCredential      = errors.New("auth: no client credential presented")
-	ErrBadCredential     = errors.New("auth: client credential is not a device credential")
-	ErrCredentialUnknown = errors.New("auth: credential unknown or not issued by this deployment")
-	ErrCredentialRevoked = errors.New("auth: credential revoked")
-	ErrCredentialExpired = errors.New("auth: credential expired")
-	ErrDeviceRevoked     = errors.New("auth: device revoked")
-	ErrUnknownTenant     = errors.New("auth: tenant unknown or inactive")
-	ErrTenantSuspended   = errors.New("auth: tenant ingest is disabled")
-	ErrRegionMismatch    = errors.New("auth: deployment region is not the tenant's pinned region")
-	// The DPoP mode's failures, kept apart so writeAuthError can name the stage (ADR 0020 §2). A
-	// replay is an authentication failure, not a permissions failure: the proof authenticated a
-	// different request and must not authenticate this one.
-	ErrBadAccessToken         = errors.New("auth: the DPoP access token is missing, malformed, or not issued for this deployment")
-	ErrBadProof               = errors.New("auth: the DPoP proof is not a valid sender-constrained proof for this request")
-	ErrReplay                 = errors.New("auth: the DPoP proof was already presented (jti replay)")
-	ErrThumbprintMismatch     = errors.New("auth: the presented key is not the credential's transport binding")
-	ErrCredentialTypeMismatch = errors.New("auth: the credential type does not match the presented authentication mode")
+	ErrNoCredential  = errors.New("auth: no client certificate presented")
+	ErrBadCredential = errors.New("auth: the client certificate is not a device certificate issued by the device CA")
 )
 
-// MTLSAuthenticator authenticates a request from its TLS client certificate and the credential
-// table. It performs the admission-time status check; the authoritative check happens again inside
-// the write transaction (store.WriteBatch), because a credential can be revoked while a batch is
-// being validated (§2.3).
-type MTLSAuthenticator struct {
-	Store store.Store
-	// Region is the region this deployment serves, used for the §12 fail-closed region check.
-	// Empty disables only that check, and does so visibly: the deployment is then single-region.
+// Statuses reads a credential's state.
+type Statuses interface {
+	PrincipalStatus(ctx context.Context, tenantID, deviceID, credentialID string) (store.PrincipalStatus, error)
+}
+
+// Certificates authenticates the certificate forwarded in protocol.HeaderClientCert.
+type Certificates struct {
+	Store Statuses
+	// Roots is the device CA: the certificate control-api signs device leaves with.
+	Roots *x509.CertPool
+	// Region is the deployment's region; a tenant pinned to another region is refused.
 	Region string
 	Now    func() time.Time
 }
 
-// Presents reports whether the request carries the credential this authenticator consumes: a client
-// certificate on the connection. The pluggable selector uses it so a request without one is not
-// mistaken for a failed certificate.
-func (a *MTLSAuthenticator) Presents(r *http.Request) bool {
-	return r.TLS != nil && len(r.TLS.PeerCertificates) > 0
-}
+var uuidRE = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
-// Authenticate implements Authenticator. Go's TLS handshake has already verified the chain against
-// the listener's ClientCAs (RequireAndVerifyClientCert), so what remains is to read the identity out
-// of the leaf, compute the transport binding, and run the shared status check.
-func (a *MTLSAuthenticator) Authenticate(ctx context.Context, r *http.Request) (Principal, error) {
-	if !a.Presents(r) {
+// Authenticate verifies the forwarded chain, reads the identity from the leaf, and checks the
+// credential's status.
+func (a *Certificates) Authenticate(ctx context.Context, r *http.Request) (Principal, error) {
+	header := strings.TrimSpace(r.Header.Get(protocol.HeaderClientCert))
+	if header == "" {
 		return Principal{}, ErrNoCredential
 	}
-	leaf := r.TLS.PeerCertificates[0]
-	tenantID, deviceID, credentialID, err := identityFromCertificate(leaf)
+	chain, err := parseChain(header)
+	if err != nil {
+		return Principal{}, fmt.Errorf("%w: %v", ErrBadCredential, err)
+	}
+	now := time.Now()
+	if a.Now != nil {
+		now = a.Now()
+	}
+	leaf := chain[0]
+	intermediates := x509.NewCertPool()
+	for _, c := range chain[1:] {
+		intermediates.AddCert(c)
+	}
+	if _, err := leaf.Verify(x509.VerifyOptions{
+		Roots:         a.Roots,
+		Intermediates: intermediates,
+		CurrentTime:   now,
+		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}); err != nil {
+		return Principal{}, fmt.Errorf("%w: %v", ErrBadCredential, err)
+	}
+
+	p, err := identity(leaf)
 	if err != nil {
 		return Principal{}, err
 	}
-	thumbprint, err := certificateSPKIThumbprint(leaf)
+	st, err := a.Store.PrincipalStatus(ctx, p.TenantID, p.DeviceID, p.CredentialID)
 	if err != nil {
+		return Principal{}, fmt.Errorf("auth: credential status: %w", err)
+	}
+	if err := st.Check(now, a.Region); err != nil {
 		return Principal{}, err
 	}
-	return resolveCredential(ctx, a.Store, a.Region, nowFrom(a.Now), credentialProof{
-		TenantID: tenantID, DeviceID: deviceID, CredentialID: credentialID,
-		Mode: protocol.AuthModeX509, Thumbprint: thumbprint,
-	})
+	return p, nil
 }
 
-// identityFromCertificate reads the identity §2.2 puts in the certificate: device_id as the
-// subject CN, the tenant in an organisational attribute. The tenant is NOT taken from any header:
-// a header is caller-controlled, and tenant from the principal is what makes cross-tenant writes
-// structurally impossible rather than merely unauthorised.
-func identityFromCertificate(leaf *x509.Certificate) (tenantID, deviceID, credentialID string, err error) {
-	deviceID = leaf.Subject.CommonName
-	if deviceID == "" {
-		return "", "", "", fmt.Errorf("%w: certificate has no subject CN", ErrBadCredential)
-	}
-	if !contract.IsUUID(deviceID) {
-		return "", "", "", fmt.Errorf("%w: subject CN %q is not a device uuid", ErrBadCredential, deviceID)
+// identity reads the device from the subject common name and the tenant from the organisational
+// unit, as control-api issues them. The credential id is a digest of the whole certificate, so the
+// credential row it names binds this exact certificate, key included.
+func identity(leaf *x509.Certificate) (Principal, error) {
+	device := leaf.Subject.CommonName
+	if !uuidRE.MatchString(device) {
+		return Principal{}, fmt.Errorf("%w: the subject common name is not a device id", ErrBadCredential)
 	}
 	for _, ou := range leaf.Subject.OrganizationalUnit {
-		if contract.IsUUID(ou) {
-			tenantID = ou
-			break
+		if uuidRE.MatchString(ou) {
+			return Principal{TenantID: ou, DeviceID: device, CredentialID: protocol.CredentialID(leaf.Raw)}, nil
 		}
 	}
-	if tenantID == "" {
-		return "", "", "", fmt.Errorf("%w: certificate carries no tenant organisational unit", ErrBadCredential)
+	return Principal{}, fmt.Errorf("%w: the subject carries no tenant id", ErrBadCredential)
+}
+
+// parseChain decodes the PEM certificates in the header: the leaf first, then any intermediates.
+// The gateway URL-encodes the PEM, because a header value cannot carry its newlines. Both percent
+// encodings are tried (a space as %20 keeps a literal '+' of base64 intact; a space as '+' needs
+// form decoding), and a raw PEM is accepted too.
+func parseChain(header string) ([]*x509.Certificate, error) {
+	candidates := []string{header}
+	if s, err := url.PathUnescape(header); err == nil && s != header {
+		candidates = append(candidates, s)
 	}
-	// The credential id is derived from the certificate itself, so a re-issued certificate is a
-	// different row and revocation granularity is per credential, not per device. The derivation is
-	// shared (protocol.CredentialID) so control-api, which issues the certificate, and this service,
-	// which only ever sees it, compute the same id without sharing state.
-	credentialID = protocol.CredentialID(leaf.Raw)
-	return tenantID, deviceID, credentialID, nil
+	if s, err := url.QueryUnescape(header); err == nil && s != header {
+		candidates = append(candidates, s)
+	}
+	var err error
+	for _, text := range candidates {
+		var chain []*x509.Certificate
+		if chain, err = decodePEM(text); err == nil {
+			return chain, nil
+		}
+	}
+	return nil, err
 }
 
-// Static is a test authenticator: it returns a fixed principal or a fixed error. It is used by the
-// service's tests in place of a TLS handshake, never by the binary.
-type Static struct {
-	P   Principal
-	Err error
+func decodePEM(text string) ([]*x509.Certificate, error) {
+	var chain []*x509.Certificate
+	rest := []byte(text)
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, err
+		}
+		chain = append(chain, cert)
+	}
+	if len(chain) == 0 {
+		return nil, errors.New("the header carries no certificate")
+	}
+	return chain, nil
 }
-
-// Authenticate implements Authenticator.
-func (s Static) Authenticate(context.Context, *http.Request) (Principal, error) { return s.P, s.Err }

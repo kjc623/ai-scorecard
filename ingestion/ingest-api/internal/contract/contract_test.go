@@ -2,30 +2,15 @@ package contract
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
-
-	generated "shadow-ai-capture.invalid/contracts/generated/go/envelope"
 )
 
-func load(t *testing.T) *Schema {
-	t.Helper()
-	path, err := Discover(".")
-	if err != nil {
-		t.Fatalf("Discover: %v", err)
-	}
-	s, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	return s
-}
+func sha(c string) string { return "sha256:" + strings.Repeat(c, 64) }
 
-func validM1(t *testing.T) json.RawMessage {
-	t.Helper()
-	m := map[string]any{
+// promptM1 is a valid device submission at m1.
+func promptM1() map[string]any {
+	return map[string]any{
 		"schema_version":      "1.0",
 		"event_id":            "11111111-1111-4111-8111-111111111111",
 		"tenant_id":           "22222222-2222-4222-8222-222222222222",
@@ -40,257 +25,194 @@ func validM1(t *testing.T) json.RawMessage {
 		"collection_mode":     "m1",
 		"confidence":          "high",
 		"size_bytes":          10,
-		"content_digest":      "sha256:" + strings.Repeat("a", 64),
-		"labels":              []any{},
-		"classifier_version":  "2026.01.0-shadow",
+		"content_digest":      sha("a"),
+		"labels":              []any{map[string]any{"class": "credential", "score": 0.9}},
+		"classifier_version":  "2026.01.0",
 		"policy_decision":     map[string]any{"rule_id": "RULE_1", "action": "logged", "decided_locally": true},
-		"dedup_key":           "sha256:" + strings.Repeat("b", 64),
+		"dedup_key":           sha("b"),
 	}
-	b, err := json.Marshal(m)
+}
+
+func promptM0() map[string]any {
+	m := promptM1()
+	m["collection_mode"] = "m0"
+	for _, f := range []string{"confidence", "content_digest", "labels", "classifier_version"} {
+		delete(m, f)
+	}
+	return m
+}
+
+func rollup() map[string]any {
+	m := promptM0()
+	for _, f := range []string{"size_bytes", "policy_decision"} {
+		delete(m, f)
+	}
+	m["kind"], m["direction"], m["collection_mode"], m["source"] = "usage_rollup", "none", "m1", "proc.detect"
+	m["window_start"], m["window_end"] = "2026-10-02T13:55:00Z", "2026-10-02T14:00:00Z"
+	m["submission_count"], m["bytes_total"] = 3, 4096
+	return m
+}
+
+func parse(t *testing.T, m map[string]any) *Envelope {
+	t.Helper()
+	raw, err := json.Marshal(m)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	return b
+	env, err := Parse(raw)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	return env
 }
 
-func TestValidEnvelopePasses(t *testing.T) {
-	s := load(t)
-	raw := validM1(t)
-	env, err := DecodeEnvelope(raw)
+func validator(t *testing.T) *Validator {
+	t.Helper()
+	v, err := NewValidator()
 	if err != nil {
-		t.Fatalf("DecodeEnvelope: %v", err)
+		t.Fatalf("NewValidator: %v", err)
 	}
-	if v, err := s.ValidateEnvelope(env); err != nil {
-		t.Fatalf("ValidateEnvelope: %v", err)
-	} else if v != nil {
-		t.Fatalf("a valid M1 prompt was rejected at %s: %s", v.Pointer, v.Expected)
-	}
-	if env.GeneratedError() != nil {
-		t.Errorf("the generated decoder refused a valid envelope: %v", env.GeneratedError())
-	}
-	if env.Generated() == nil {
-		t.Error("the generated contract value is nil after a successful decode")
-	}
+	return v
 }
 
-// TestTwoValidatorsAgreeAndTheSchemaWalkIsStricter records a deliberate interpretation.
-//
-// The generated types assert `format` only as non-emptiness (their own documented choice, and
-// defensible: draft 2020-12 treats format as an annotation). The schema walk asserts the uuid
-// shape. Ingest must assert it, because ingest.record_event() casts these fields with ::uuid and a
-// malformed value aborts the whole batch inside the database. Rather than leave that as a comment,
-// the test pins both verdicts so a future change to either one is visible.
-func TestTwoValidatorsAgreeAndTheSchemaWalkIsStricter(t *testing.T) {
-	s := load(t)
+func TestValidEnvelopesPass(t *testing.T) {
+	v := validator(t)
+	m2 := promptM1()
+	m2["collection_mode"] = "m2"
+	m2["content_excerpt"] = map[string]any{"kind": "match_span", "text": "4111"}
+	detection := rollup()
+	for _, f := range []string{"window_start", "window_end", "submission_count", "bytes_total"} {
+		delete(detection, f)
+	}
+	detection["kind"], detection["detection_basis"] = "model_detection", "process_scan"
 
-	var m map[string]any
-	if err := json.Unmarshal(validM1(t), &m); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	m["event_id"] = "not-a-uuid"
-	raw, _ := json.Marshal(m)
-
-	if _, err := generated.DecodeDeviceSubmission(raw); err != nil {
-		t.Errorf("expected the generated decoder to accept a non-uuid event_id (it asserts non-emptiness only), got %v", err)
-	}
-	env, err := DecodeEnvelope(raw)
-	if err != nil {
-		t.Fatalf("DecodeEnvelope: %v", err)
-	}
-	v, err := s.ValidateEnvelope(env)
-	if err != nil {
-		t.Fatalf("ValidateEnvelope: %v", err)
-	}
-	if v == nil {
-		t.Fatal("the schema walk must reject a non-uuid event_id: the store casts it to uuid and would abort the batch")
-	}
-	if v.Pointer != "/event_id" {
-		t.Errorf("pointer = %q, want /event_id", v.Pointer)
-	}
-	if !strings.Contains(v.Expected, "format uuid") {
-		t.Errorf("expected = %q, want it to name the format constraint", v.Expected)
+	for name, m := range map[string]map[string]any{
+		"prompt m0": promptM0(), "prompt m1": promptM1(), "prompt m2": m2,
+		"usage rollup": rollup(), "model detection": detection,
+	} {
+		if viol := v.Validate(parse(t, m)); viol != nil {
+			t.Errorf("%s: rejected with %+v", name, *viol)
+		}
 	}
 }
 
-func TestSchemaViolationsAreLocated(t *testing.T) {
-	s := load(t)
+func TestViolationsAreLocated(t *testing.T) {
 	cases := []struct {
-		name        string
-		mutate      func(m map[string]any)
-		wantPointer string
-		// valueMarker must NOT appear in detail.expected: §7 says the report describes the violated
-		// constraint's *shape* and never echoes the offending value, which can be content.
-		valueMarker string
+		name     string
+		doc      func() map[string]any
+		pointer  string
+		expected string
+		mode     bool
 	}{
-		{"missing required field", func(m map[string]any) { delete(m, "dedup_key") }, "/dedup_key", ""},
-		{"bad pattern", func(m map[string]any) { m["dedup_key"] = "sha256:NOT-A-DIGEST" }, "/dedup_key", "NOT-A-DIGEST"},
-		{"unknown field", func(m map[string]any) { m["prompt_text"] = "SECRET-CONTENT-MARKER" }, "/prompt_text", "SECRET-CONTENT-MARKER"},
-		{"wrong type", func(m map[string]any) { m["size_bytes"] = "TEN-BYTES" }, "/size_bytes", "TEN-BYTES"},
-		{"enum violation", func(m map[string]any) { m["source"] = "ext.telepathy" }, "/source", "ext.telepathy"},
-		{"device-sent received_at", func(m map[string]any) { m["received_at"] = "2026-10-02T14:00:00Z" }, "/received_at", ""},
-		{"m1 without labels", func(m map[string]any) { delete(m, "labels") }, "/labels", ""},
+		{"content at m0", func() map[string]any { m := promptM0(); m["content_digest"] = sha("c"); return m },
+			"/content_digest", "absent when kind is prompt and collection_mode is m0", true},
+		{"prompt_kind at m0", func() map[string]any { m := promptM0(); m["prompt_kind"] = "user"; return m },
+			"/prompt_kind", "absent when kind is prompt and collection_mode is m0", true},
+		{"labels missing at m1", func() map[string]any { m := promptM1(); delete(m, "labels"); return m },
+			"/labels", `required when kind is prompt and collection_mode is one of ["m1","m2","m3"]`, true},
+		{"excerpt missing at m2", func() map[string]any { m := promptM1(); m["collection_mode"] = "m2"; return m },
+			"/content_excerpt", "required when kind is prompt and collection_mode is m2", true},
+		{"excerpt at m3", func() map[string]any {
+			m := promptM1()
+			m["collection_mode"] = "m3"
+			m["content_excerpt"] = map[string]any{"kind": "match_span", "text": "x"}
+			return m
+		}, "/content_excerpt", "absent when kind is prompt and collection_mode is m3", true},
+		{"size_bytes on a rollup", func() map[string]any { m := rollup(); m["size_bytes"] = 7; return m },
+			"/size_bytes", "absent when kind is usage_rollup", false},
+		{"direction pinned per kind", func() map[string]any { m := promptM1(); m["direction"] = "none"; return m },
+			"/direction", `const "egress" when kind is prompt`, false},
+		{"undeclared field", func() map[string]any { m := promptM1(); m["prompt_text"] = "secret"; return m },
+			"/prompt_text", "no such field in this schema version", false},
+		{"received_at from a device", func() map[string]any { m := promptM1(); m["received_at"] = "2026-10-02T14:00:01Z"; return m },
+			"/received_at", "absent", false},
+		{"missing core field", func() map[string]any { m := promptM1(); delete(m, "dedup_key"); return m },
+			"/dedup_key", "required", false},
+		{"event_id not a uuid", func() map[string]any { m := promptM1(); m["event_id"] = "not-a-uuid"; return m },
+			"/event_id", "format uuid", false},
+		{"occurred_at not a timestamp", func() map[string]any { m := promptM1(); m["occurred_at"] = "yesterday"; return m },
+			"/occurred_at", "format date-time", false},
+		{"malformed digest", func() map[string]any { m := promptM1(); m["dedup_key"] = "sha256:short"; return m },
+			"/dedup_key", "pattern ^sha256:[0-9a-f]{64}$", false},
+		{"label score out of range", func() map[string]any {
+			m := promptM1()
+			m["labels"] = []any{map[string]any{"class": "credential", "score": 2}}
+			return m
+		}, "/labels/0/score", "maximum 1", false},
+		{"route outside the vocabulary", func() map[string]any { m := promptM1(); m["source"] = "ext.telepathy"; return m },
+			"/source", "one of", false},
 	}
+	v := validator(t)
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			var m map[string]any
-			if err := json.Unmarshal(validM1(t), &m); err != nil {
-				t.Fatalf("unmarshal: %v", err)
+			viol := v.Validate(parse(t, c.doc()))
+			if viol == nil {
+				t.Fatal("accepted")
 			}
-			c.mutate(m)
-			raw, _ := json.Marshal(m)
-			env, err := DecodeEnvelope(raw)
-			if err != nil {
-				t.Fatalf("DecodeEnvelope: %v", err)
-			}
-			v, err := s.ValidateEnvelope(env)
-			if err != nil {
-				t.Fatalf("ValidateEnvelope: %v", err)
-			}
-			if v == nil {
-				t.Fatal("expected a violation")
-			}
-			if v.Pointer != c.wantPointer {
-				t.Errorf("pointer = %q, want %q (expected: %s)", v.Pointer, c.wantPointer, v.Expected)
-			}
-			if v.Expected == "" {
-				t.Error("a violation must describe the violated constraint")
-			}
-			if c.valueMarker != "" && strings.Contains(v.Expected, c.valueMarker) {
-				t.Errorf("the violation echoes the offending value %q: %q", c.valueMarker, v.Expected)
+			if viol.Pointer != c.pointer || !strings.HasPrefix(viol.Expected, c.expected) || viol.Mode != c.mode {
+				t.Errorf("got %+v, want pointer %q, expected %q, mode %v", *viol, c.pointer, c.expected, c.mode)
 			}
 		})
 	}
 }
 
-func TestSchemaVocabularyComesFromTheFile(t *testing.T) {
-	s := load(t)
-	req := s.RequiredFields()
-	want := []string{
-		"collection_mode", "dedup_key", "device_id", "direction", "event_id", "kind",
-		"monotonic_offset_ms", "occurred_at", "schema_version", "source", "tenant_id",
-		"tool_fingerprint", "user_ref",
+func TestViolationNeverEchoesTheValue(t *testing.T) {
+	const secret = "4111-1111-1111-1111 the customer's card"
+	m := promptM1()
+	m["collection_mode"] = "m2"
+	m["content_excerpt"] = map[string]any{"kind": "match_span", "text": strings.Repeat(secret, 100)}
+	viol := validator(t).Validate(parse(t, m))
+	if viol == nil {
+		t.Fatal("an excerpt over maxLength was accepted")
 	}
-	if strings.Join(req, ",") != strings.Join(want, ",") {
-		t.Errorf("RequiredFields = %v, want %v", req, want)
+	if strings.Contains(viol.Expected, "4111") || strings.Contains(viol.Pointer, "4111") {
+		t.Errorf("the violation echoes the value: %+v", *viol)
 	}
-	kinds := s.KindRegistry()
-	if strings.Join(kinds, ",") != "model_detection,prompt,usage_rollup" {
-		t.Errorf("KindRegistry = %v", kinds)
-	}
-	routes := s.RouteRegistry()
-	if len(routes) != 7 {
-		t.Errorf("RouteRegistry = %v, want the seven closed routes", routes)
+	if viol.Pointer != "/content_excerpt/text" || viol.Expected != "maxLength 2048" {
+		t.Errorf("got %+v", *viol)
 	}
 }
 
-func TestPresenceAndRedaction(t *testing.T) {
-	raw := validM1(t)
-	env, err := DecodeEnvelope(raw)
-	if err != nil {
-		t.Fatalf("DecodeEnvelope: %v", err)
-	}
-	presence := env.PresenceOf(load(t).RequiredFields())
-	if len(presence.Missing) != 0 {
-		t.Errorf("missing = %v, want none on a valid envelope", presence.Missing)
-	}
-	if !contains(presence.Present, "content_digest") {
-		t.Errorf("present = %v, want the content fields named", presence.Present)
-	}
-
-	// §7: the quarantine holds the diagnosis; the content and anything derived from it is removed.
-	// db/schema.sql is stricter than §7's wording here, and the stricter rule is the one that has to
-	// be satisfied, so content_digest goes too.
-	red := env.Redacted()
-	for _, forbidden := range []string{"content_digest", "content_excerpt", "prompt_text", "content_bytes", "attachments"} {
-		if _, present := red[forbidden]; present {
-			t.Errorf("redacted envelope still carries %s", forbidden)
-		}
-	}
-	for _, kept := range []string{"event_id", "tenant_id", "device_id", "kind", "collection_mode", "occurred_at", "labels", "policy_decision"} {
-		if _, present := red[kept]; !present {
-			t.Errorf("redacted envelope dropped %s, which §7 keeps", kept)
-		}
-	}
-	if got := env.RedactedKeys(); len(got) != 1 || got[0] != "content_digest" {
-		t.Errorf("RedactedKeys = %v, want [content_digest]", got)
-	}
-}
-
-func TestDecodeEnvelopeRefusesNonObject(t *testing.T) {
-	for _, raw := range []string{`"a string"`, `[1,2,3]`, `null`, `not json`} {
-		if _, err := DecodeEnvelope([]byte(raw)); err == nil {
-			t.Errorf("DecodeEnvelope(%s) accepted a non-object", raw)
+func TestMostSpecificViolationIsReportedDeterministically(t *testing.T) {
+	m := promptM0()
+	m["content_digest"] = sha("c")
+	m["zzz_unknown"] = true
+	m["user_ref"] = ""
+	v := validator(t)
+	for range 20 {
+		viol := v.Validate(parse(t, m))
+		if viol == nil || viol.Pointer != "/content_digest" || !viol.Mode {
+			t.Fatalf("got %+v, want the m0 content rule reported first on every run", viol)
 		}
 	}
 }
 
-// TestDiscoverWalksUpToASchemaItControls asserts the positive behaviour — a nested working
-// directory finds the schema above it — against a tree this test builds itself, so the result does
-// not depend on what happens to exist above the temp directory.
-func TestDiscoverWalksUpToASchemaItControls(t *testing.T) {
-	root := t.TempDir()
-	nested := filepath.Join(root, "a", "b", "c")
-	if err := os.MkdirAll(nested, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Join(root, "contracts"), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	want := filepath.Join(root, "contracts", "event-envelope.schema.json")
-	if err := os.WriteFile(want, []byte(`{"$defs":{}}`), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-
-	got, err := Discover(nested)
-	if err != nil {
-		t.Fatalf("Discover: %v", err)
-	}
-	if got != want {
-		t.Errorf("Discover = %q, want %q", got, want)
-	}
-	// The bounded form must agree with the unbounded one when it is not bounded.
-	if gotWithin, err := DiscoverWithin(nested, ""); err != nil || gotWithin != want {
-		t.Errorf("DiscoverWithin(nested, \"\") = %q, %v; want %q, nil", gotWithin, err, want)
-	}
-	// A directory that contains the schema must be the first hit, without walking further up.
-	if got, err := DiscoverWithin(filepath.Join(root, "contracts"), root); err != nil || got != want {
-		t.Errorf("DiscoverWithin from the contracts directory = %q, %v; want %q, nil", got, err, want)
-	}
-}
-
-// TestDiscoverWithinReportsNoSchemaInItsSearchBoundary is the negative case, and its premise is
-// constructed rather than assumed: the search is bounded to a tree this test owns, which contains
-// no schema anywhere.
-//
-// The earlier version of this test asserted that Discover failed from a temp directory, on the
-// assumption that no contracts/event-envelope.schema.json existed above it. That assumption is
-// about the machine's layout, and it is false wherever the temp directory lives inside the
-// repository — which is the case in the sandboxed acceptance run, where it produced a failure that
-// looked like a discovery defect and was not one.
-func TestDiscoverWithinReportsNoSchemaInItsSearchBoundary(t *testing.T) {
-	root := t.TempDir()
-	nested := filepath.Join(root, "a", "b", "c")
-	if err := os.MkdirAll(nested, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-
-	if _, err := DiscoverWithin(nested, root); err == nil {
-		t.Error("DiscoverWithin must report that no schema exists between the start directory and its boundary")
-	}
-	// The boundary itself is examined, not treated as the first directory to skip.
-	if _, err := DiscoverWithin(root, root); err == nil {
-		t.Error("the boundary directory must be searched before giving up")
-	}
-	// Without a boundary there is nothing to stop at, so it can only fail at the filesystem root;
-	// that path is covered by the sandboxed run and is deliberately not asserted here, because
-	// whether it fails depends on the machine.
-}
-
-func contains(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
+func TestRedactedKeepsOnlyDeclaredNonContentFields(t *testing.T) {
+	m := promptM1()
+	m["content_excerpt"] = map[string]any{"kind": "match_span", "text": "secret"}
+	m["attachments"] = []any{map[string]any{"name": "a.txt"}}
+	m["prompt_text"] = "secret"
+	env := parse(t, m)
+	red := validator(t).Redacted(env)
+	for _, gone := range []string{"content_digest", "content_excerpt", "attachments", "prompt_text"} {
+		if _, ok := red[gone]; ok {
+			t.Errorf("redacted envelope still carries %s", gone)
 		}
 	}
-	return false
+	for _, kept := range []string{"event_id", "kind", "collection_mode", "labels", "policy_decision"} {
+		if _, ok := red[kept]; !ok {
+			t.Errorf("redacted envelope lost %s", kept)
+		}
+	}
+	if present := env.Present(); !strings.Contains(strings.Join(present, ","), "prompt_text") {
+		t.Errorf("the presence list must still name the dropped field, got %v", present)
+	}
+}
+
+func TestParseRefusesWhatIsNotAnObject(t *testing.T) {
+	for _, raw := range []string{`[]`, `"x"`, `null`, `{"a":1} trailing`, `{`} {
+		if _, err := Parse([]byte(raw)); err == nil {
+			t.Errorf("Parse(%s) accepted", raw)
+		}
+	}
 }

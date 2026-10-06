@@ -1,59 +1,36 @@
-// Package store is the persistence seam of the ingest write path.
+// Package store is ingest-api's PostgreSQL access: the device's credential status, the route
+// table, and the batch write.
 //
-// The interface is deliberately small: four methods, one of which is the write. Everything that
-// decides *merge* semantics lives in PostgreSQL's ingest.record_event() (db/schema.sql), because
-// docs/02-ingest-and-transport.md §6 requires idempotency and the dedup tie-break to be enforced by
-// the store's unique constraints rather than by a check in application code. The service does not
-// re-implement the ladder; it calls it.
-//
-// Two implementations:
-//
-//   - Memory: the test double. It mirrors ingest.record_event()'s documented semantics so the
-//     service can be tested without a database, and the integration test checks the mirror against
-//     the real stored procedure rather than trusting it.
-//   - SQL: database/sql against the real schema. Every statement it issues is a constant in
-//     sql.go, and the SQL statement *text* is executed against a live PostgreSQL 17 in the
-//     integration test. What is not verified without a wire driver is the database/sql plumbing
-//     around those statements; see the package report.
+// Merge semantics live in the database. ingest.record_event() decides whether an event is new, a
+// merge into an existing submission, or a duplicate, enforced by unique constraints rather than by
+// a read in application code; this package calls it and reads back what it decided.
 package store
 
 import (
 	"context"
-	"crypto/subtle"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"sort"
 	"time"
 
 	"github.com/shadow-ai-capture/device/protocol"
 )
 
-// RouteFidelity is one row of ref.route_fidelity. The rank is *stored*, never compiled in: §4.4
-// says so explicitly, and ingest.record_event() looks it up before it will accept a route at all.
-// Rank is lower-is-better, which is the direction the stored procedure compares.
-type RouteFidelity struct {
-	Source        string `json:"source"`
-	Rank          int    `json:"rank"`
-	YieldsContent bool   `json:"yields_content"`
-}
+// Why a principal may not write. Anything else a method returns is an infrastructure failure, and
+// the batch is retryable.
+var (
+	ErrUnknownTenant     = errors.New("store: tenant unknown")
+	ErrTenantSuspended   = errors.New("store: tenant ingest disabled")
+	ErrRegionMismatch    = errors.New("store: tenant is pinned to another region")
+	ErrCredentialUnknown = errors.New("store: device credential unknown")
+	ErrDeviceRevoked     = errors.New("store: device revoked")
+	ErrCredentialRevoked = errors.New("store: device credential revoked")
+	ErrCredentialExpired = errors.New("store: device credential expired")
+)
 
-// RouteTable is ref.route_fidelity, keyed by source.
-type RouteTable map[string]RouteFidelity
-
-// Sources returns the known routes, sorted, for a diagnosable rejection.
-func (t RouteTable) Sources() []string {
-	out := make([]string, 0, len(t))
-	for k := range t {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
-}
-
-// PrincipalStatus is ops.tenant + ops.device + ops.device_credential as the write path needs it.
-// Credential status is checked at admission and again inside the write transaction (§2.3).
+// PrincipalStatus is ops.tenant, ops.device and ops.device_credential as the write path needs
+// them. It is read at admission and again inside the write transaction.
 type PrincipalStatus struct {
 	TenantKnown       bool
 	TenantStatus      string
@@ -64,63 +41,19 @@ type PrincipalStatus struct {
 	CredentialKnown   bool
 	CredentialExpiry  time.Time
 	CredentialRevoked *time.Time
-	// CredentialType is ops.device_credential.credential_type: "x509" or "dpop". It is what makes
-	// the credential's mode a property of the row rather than of the deployment (ADR 0020 §4), so
-	// an x509 presentation cannot authenticate against a dpop credential even if the thumbprint
-	// somehow matched.
-	CredentialType string
-	// PublicKeyThumbprint is the single transport binding for both modes (ADR 0020 §4): SHA-256 over
-	// the certificate SPKI for x509, the RFC 7638 JWK thumbprint for dpop. The authenticator computes
-	// the same value from what the request presented and refuses a disagreement (CheckBinding).
-	PublicKeyThumbprint string
 }
 
-// Errors the write path distinguishes. Everything else is an infrastructure failure and is
-// retryable.
-var (
-	ErrUnknownTenant      = errors.New("store: tenant unknown")
-	ErrTenantSuspended    = errors.New("store: tenant ingest disabled")
-	ErrCredentialRevoked  = errors.New("store: device credential revoked")
-	ErrCredentialExpired  = errors.New("store: device credential expired")
-	ErrCredentialUnknown  = errors.New("store: device credential unknown")
-	ErrDeviceRevoked      = errors.New("store: device revoked")
-	ErrUnknownRoute       = errors.New("store: route not in ref.route_fidelity")
-	ErrSubmissionNotFound = errors.New("store: submission row not found after write")
-	// ErrCredentialThumbprintMismatch is the transport-binding failure of ADR 0020 §4: the key the
-	// request presented is not the key the credential row was issued against. It is compared during
-	// admission, before revocation and expiry are reported, so a stolen credential whose key does
-	// not match is refused as a bad credential rather than as a revoked one.
-	ErrCredentialThumbprintMismatch = errors.New("store: presented key does not match the credential's public_key_thumbprint")
-	// ErrCredentialTypeMismatch refuses a credential presented in a mode other than the one its row
-	// records, so a dpop row cannot be authenticated by a certificate and an x509 row cannot be
-	// authenticated by a DPoP key.
-	ErrCredentialTypeMismatch = errors.New("store: credential_type does not match the presented credential mode")
-)
-
-// CheckBinding compares what a request presented with what the credential row binds (ADR 0020 §4).
-// It is the one place both x509 paths and the DPoP path make the comparison, so they cannot drift
-// to different binding rules. An empty presented or stored value means the comparison is not
-// available (the in-memory double and older rows), and is skipped rather than guessed: the live
-// schema makes both columns NOT NULL, so a deployed row always carries them.
-func (s PrincipalStatus) CheckBinding(presentedType, presentedThumbprint string) error {
-	if presentedType != "" && s.CredentialType != "" && presentedType != s.CredentialType {
-		return ErrCredentialTypeMismatch
-	}
-	if presentedThumbprint != "" && s.PublicKeyThumbprint != "" &&
-		subtle.ConstantTimeCompare([]byte(presentedThumbprint), []byte(s.PublicKeyThumbprint)) != 1 {
-		return ErrCredentialThumbprintMismatch
-	}
-	return nil
-}
-
-// CheckWritable applies the §2.3 rules to a status. It is shared by both implementations so the
-// double cannot be more permissive than the real thing.
-func (s PrincipalStatus) CheckWritable(now time.Time) error {
+// Check reports why the principal may not write at now, or nil. region is the deployment's
+// region; an empty region skips that comparison, which the in-transaction re-check uses because
+// residency cannot change between admission and commit.
+func (s PrincipalStatus) Check(now time.Time, region string) error {
 	switch {
 	case !s.TenantKnown:
 		return ErrUnknownTenant
 	case !s.IngestEnabled || s.TenantStatus == "closed":
 		return ErrTenantSuspended
+	case region != "" && s.TenantRegion != region:
+		return ErrRegionMismatch
 	case !s.DeviceKnown:
 		return ErrCredentialUnknown
 	case s.DeviceRevokedAt != nil:
@@ -129,52 +62,40 @@ func (s PrincipalStatus) CheckWritable(now time.Time) error {
 		return ErrCredentialUnknown
 	case s.CredentialRevoked != nil:
 		return ErrCredentialRevoked
-	case !s.CredentialExpiry.IsZero() && !s.CredentialExpiry.After(now):
+	case !s.CredentialExpiry.After(now):
 		return ErrCredentialExpired
 	}
 	return nil
 }
 
-// Outcome is what ingest.record_event() returned for one event, plus what the store read back.
-//
-// The three values are the stored procedure's own: 'inserted' (this observation created the
-// logical submission), 'merged' (it folded into an existing one) and 'duplicate' (the event_id was
-// already accepted). They are not collapsed: a duplicate is counted and reported, never silently
-// dropped (§6).
+// Outcome is what ingest.record_event() returned for one event.
 type Outcome string
 
 const (
-	OutcomeInserted  Outcome = "inserted"
-	OutcomeMerged    Outcome = "merged"
-	OutcomeDuplicate Outcome = "duplicate"
+	OutcomeInserted  Outcome = "inserted"  // this observation created the logical submission
+	OutcomeMerged    Outcome = "merged"    // it folded into an existing submission
+	OutcomeDuplicate Outcome = "duplicate" // the event_id was already recorded
 )
 
-// AcceptedEvent is one event that passed validation in memory and is now to be written.
+// AcceptedEvent is one validated event to record.
 type AcceptedEvent struct {
-	Index    int             // position in the batch, for response ordering
-	EventID  string          // for the response; already validated as a uuid
-	Route    string          // from the envelope, already checked against ref.route_fidelity
+	Index    int             // position in the batch
+	EventID  string          // validated uuid
+	Route    string          // the envelope's source, present in ref.route_fidelity
 	Envelope json.RawMessage // exactly the bytes the device sent
 }
 
-// Rejection is one event that failed validation. It is written to ingest.rejected in the same
-// transaction as the accepted events (§6 step 5), so a validation failure is never a partial
-// commit and never a silent drop.
+// Rejection is one event that failed validation, quarantined in ingest.rejected in the same
+// transaction as the accepted events.
 type Rejection struct {
-	Index    int
-	EventID  string
 	Reason   protocol.ReasonCode
 	Detail   *protocol.BatchRejectionDetail
-	Presence any // contract.FieldPresence
-	Redacted map[string]json.RawMessage
-	// Quarantine is false when the live ingest.rejected CHECK has no code for this rejection.
-	// The rejection is still reported to the device with its full detail; what is missing is the
-	// operator-side row, and that gap is reported rather than papered over with a wrong code.
-	Quarantine bool
+	Present  []string       // the field names the envelope carried
+	Redacted map[string]any // the envelope with content-derived and undeclared fields removed
 }
 
-// BatchWrite is one transaction's worth of work: the principal to re-check, the events to record,
-// the rejections to quarantine.
+// BatchWrite is one transaction: the principal to re-check, the events to record and the
+// rejections to quarantine.
 type BatchWrite struct {
 	TenantID     string
 	DeviceID     string
@@ -184,129 +105,242 @@ type BatchWrite struct {
 	Rejected     []Rejection
 }
 
-// EventOutcome is the per-event result of the write.
+// EventOutcome is the result of recording one accepted event.
 type EventOutcome struct {
 	Index           int
 	EventID         string
 	Outcome         Outcome
 	SubmissionID    string
-	FirstReceivedAt *time.Time
-	// WonFields reports whether the submission's contested fields are this observation's route's.
-	// It is read back from the store's own decision (winning_source / winning_fidelity), not
-	// recomputed here, so the response cannot hold a second opinion about the tie-break.
-	//
-	// The reading is *route*-based and that is deliberate: §4.4's requirement is that "the record
-	// must carry which route produced it", and winning_source is that fact. It follows that a
-	// re-observation from the route that already holds the fields reports true even though no
-	// contested field changed, because the fields the submission carries did come from that route.
-	// An observation from a route that does not hold them reports false. Distinguishing "this
-	// observation changed a field" would need the row's pre-update winner, which the stored
-	// procedure does not return; inventing a second read for a display flag would put a
-	// ladder-shaped query back into application code, which §6 forbids.
+	FirstReceivedAt *time.Time // the original receipt of a duplicate
+	// WonFields reports whether the submission's contested fields come from this event's route,
+	// read back from the submission's winning_source rather than recomputed.
 	WonFields bool
 }
 
-// BatchResult is the write outcome, aligned with BatchWrite.Accepted.
-type BatchResult struct {
-	Outcomes []EventOutcome
+// The statements this service issues.
+const (
+	// sqlSetTenant scopes row-level security to one tenant for the rest of the transaction.
+	sqlSetTenant = `SELECT set_config('app.tenant_id', $1, true)`
+
+	sqlPrincipalStatus = `
+SELECT t.status,
+       t.ingest_enabled,
+       t.residency_region,
+       d.device_id IS NOT NULL,
+       d.revoked_at,
+       c.credential_id IS NOT NULL,
+       c.expires_at,
+       c.revoked_at
+  FROM ops.tenant t
+  LEFT JOIN ops.device d
+         ON d.tenant_id = t.tenant_id AND d.device_id = $2::uuid
+  LEFT JOIN ops.device_credential c
+         ON c.tenant_id = d.tenant_id AND c.device_id = d.device_id AND c.credential_id = $3::uuid
+ WHERE t.tenant_id = $1::uuid`
+
+	sqlRoutes = `SELECT source FROM ref.route_fidelity`
+
+	// sqlRecordEvent is the write: $1 is the envelope as the device sent it, $2 the batch's single
+	// receive time.
+	sqlRecordEvent = `SELECT event_outcome, event_submission_id FROM ingest.record_event($1::jsonb, $2::timestamptz)`
+
+	sqlFirstReceivedAt = `SELECT received_at FROM ingest.observation WHERE tenant_id = $1::uuid AND event_id = $2::uuid`
+
+	sqlSubmissionWinner = `SELECT winning_source FROM ingest.submission WHERE tenant_id = $1::uuid AND submission_id = $2::uuid`
+
+	// sqlInsertRejected takes the quarantine window from ref.retention_class.
+	sqlInsertRejected = `
+INSERT INTO ingest.rejected (tenant_id, device_id, received_at, reason_code, detail, field_presence, envelope_redacted, expires_at)
+VALUES ($1::uuid, $2::uuid, $3::timestamptz, $4::text, $5::jsonb, $6::jsonb, $7::jsonb,
+        $3::timestamptz + make_interval(days => COALESCE(
+            (SELECT default_ttl_days FROM ref.retention_class WHERE retention_class = 'quarantine'), 30)))`
+
+	// sqlTouchDevice only moves last_seen_at forward, so a retried or out-of-order batch cannot
+	// make a live device look quiet.
+	sqlTouchDevice = `
+UPDATE ops.device SET last_seen_at = $3::timestamptz
+ WHERE tenant_id = $1::uuid AND device_id = $2::uuid
+   AND (last_seen_at IS NULL OR last_seen_at < $3::timestamptz)`
+)
+
+// Postgres implements the store on a database/sql pool.
+type Postgres struct {
+	db *sql.DB
 }
 
-// Store is the persistence seam.
-type Store interface {
-	// RouteFidelity returns ref.route_fidelity. §4.4: ranks are stored, not compiled in.
-	RouteFidelity(ctx context.Context) (RouteTable, error)
-	// PrincipalStatus resolves the authenticated principal to tenant, device and credential state.
-	PrincipalStatus(ctx context.Context, tenantID, deviceID, credentialID string) (PrincipalStatus, error)
-	// DPoPReplaySeen records an RFC 9449 proof jti for tenantID and reports whether it had already
-	// been seen inside the window that ends at expiresAt. A true second return is an authentication
-	// failure, not a permissions failure: the same proof must never authorise two requests.
-	DPoPReplaySeen(ctx context.Context, tenantID, jti string, expiresAt time.Time) (bool, error)
-	// WriteBatch performs the whole batch in one transaction: credential re-check, then one
-	// ingest.record_event() call per accepted event, then the rejections. Either all of it
-	// commits or none of it does.
-	WriteBatch(ctx context.Context, w BatchWrite) (BatchResult, error)
-	// Close releases resources.
-	Close() error
-}
+// New wraps an open pool.
+func New(db *sql.DB) *Postgres { return &Postgres{db: db} }
 
-// QuarantineReason maps the §7 wire vocabulary onto the live ingest.rejected.reason_code CHECK.
-//
-// The two vocabularies now use the same spellings for every fact that can appear on both surfaces,
-// which is what the schema's own COMMENT on ingest.rejected asks for ("See
-// docs/02-ingest-and-transport.md §7 for the reason codes"). The CHECK used to say device_revoked,
-// batch_oversize and schema_version_unsupported; those were renames rather than a second
-// vocabulary, and db/schema.sql is aligned to the §7 spellings.
-//
-// What remains a genuine difference is not a rename but a fact that lives on one surface only:
-//
-//   - storage/batch-only: malformed_json, internal_error and dedup_key_mismatch describe why a
-//     record was held at a layer that has no per-event wire outcome, so no wire code maps to them;
-//   - wire-only: duplicate_batch is batch-level by construction (§5.3) and tenant_mismatch is a
-//     body disagreeing with the authenticated principal, which must not be filed under this
-//     tenant's row under a code that means something else (ingest.rejected.tenant_id is NOT NULL
-//     and RLS-scoped, so there is no honest tenant to file a cross-tenant body under).
-//
-// §7 and protocol.ReasonCode are the wire contract and are closed, so the wire keeps its names and
-// this function is the only place the translation exists. The second return value is false when
-// there is no representable row; TestQuarantineMappingIsTotal asserts that every wire code is
-// either mapped or one of those two documented exceptions.
-func QuarantineReason(r protocol.ReasonCode) (string, bool) {
-	switch r {
-	case protocol.ReasonSchemaViolation:
-		return "schema_violation", true
-	case protocol.ReasonUnsupportedSchemaVersion:
-		return "unsupported_schema_version", true
-	case protocol.ReasonUnknownKind:
-		return "unknown_kind", true
-	case protocol.ReasonUnknownTenant:
-		return "unknown_tenant", true
-	case protocol.ReasonRevokedDevice:
-		return "revoked_device", true
-	case protocol.ReasonRegionMismatch:
-		return "region_mismatch", true
-	case protocol.ReasonModeViolation:
-		return "mode_violation", true
-	case protocol.ReasonOversize:
-		return "oversize", true
-	case protocol.ReasonTenantMismatch:
-		return "", false
-	case protocol.ReasonDuplicateBatch:
-		return "", false
-	}
-	return "", false
-}
+// Ping is a database round trip, for readiness.
+func (p *Postgres) Ping(ctx context.Context) error { return p.db.PingContext(ctx) }
 
-// TTLFromLabels is a deliberately small mirror of ops.event_ttl_days(): the in-memory store needs
-// *a* retention value so expires_at is populated, and the real resolution stays in the database.
-// It never invents a policy -- it uses the standard class default.
-func TTLFromLabels(defaultDays int, _ json.RawMessage) int {
-	if defaultDays <= 0 {
-		return 90 // ref.retention_class 'standard' default_ttl_days
-	}
-	return defaultDays
-}
-
-// LoadRouteTable reads ref.route_fidelity rows from a JSON file, for the in-memory store.
-// The rows are data, never compiled in: §4.4 is explicit that the ranking lives in the table.
-// services/ingest-api/testdata/route-fidelity.seed.json holds the rows db/schema.sql seeds.
-func LoadRouteTable(path string) (RouteTable, error) {
-	b, err := os.ReadFile(path)
+// Routes returns the sources in ref.route_fidelity. ingest.record_event() refuses a route the
+// table does not hold, so the service checks it per event before the transaction opens.
+func (p *Postgres) Routes(ctx context.Context) ([]string, error) {
+	rows, err := p.db.QueryContext(ctx, sqlRoutes)
 	if err != nil {
-		return nil, fmt.Errorf("read route table %s: %w", path, err)
+		return nil, fmt.Errorf("store: routes: %w", err)
 	}
-	var rows []RouteFidelity
-	if err := json.Unmarshal(b, &rows); err != nil {
-		return nil, fmt.Errorf("parse route table %s: %w", path, err)
-	}
-	table := RouteTable{}
-	for _, r := range rows {
-		if r.Source == "" {
-			return nil, fmt.Errorf("route table %s has a row with no source", path)
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var source string
+		if err := rows.Scan(&source); err != nil {
+			return nil, fmt.Errorf("store: routes: %w", err)
 		}
-		table[r.Source] = r
+		out = append(out, source)
 	}
-	if len(table) == 0 {
-		return nil, fmt.Errorf("route table %s carries no routes", path)
+	return out, rows.Err()
+}
+
+// PrincipalStatus reads the tenant, device and credential state for an authenticated
+// certificate.
+func (p *Postgres) PrincipalStatus(ctx context.Context, tenantID, deviceID, credentialID string) (PrincipalStatus, error) {
+	var st PrincipalStatus
+	err := p.inTenant(ctx, tenantID, func(tx *sql.Tx) error {
+		var err error
+		st, err = principalStatus(ctx, tx, tenantID, deviceID, credentialID)
+		return err
+	})
+	return st, err
+}
+
+func principalStatus(ctx context.Context, tx *sql.Tx, tenantID, deviceID, credentialID string) (PrincipalStatus, error) {
+	var (
+		st                                        PrincipalStatus
+		deviceRevoked, credentialRevoked, expires sql.NullTime
+	)
+	err := tx.QueryRowContext(ctx, sqlPrincipalStatus, tenantID, deviceID, credentialID).Scan(
+		&st.TenantStatus, &st.IngestEnabled, &st.TenantRegion,
+		&st.DeviceKnown, &deviceRevoked, &st.CredentialKnown, &expires, &credentialRevoked)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PrincipalStatus{}, nil
 	}
-	return table, nil
+	if err != nil {
+		return PrincipalStatus{}, fmt.Errorf("store: principal status: %w", err)
+	}
+	st.TenantKnown = true
+	if deviceRevoked.Valid {
+		st.DeviceRevokedAt = &deviceRevoked.Time
+	}
+	if credentialRevoked.Valid {
+		st.CredentialRevoked = &credentialRevoked.Time
+	}
+	st.CredentialExpiry = expires.Time
+	return st, nil
+}
+
+// WriteBatch records a batch in one transaction: the credential is re-checked first, so a device
+// revoked while its batch was validated writes nothing; then one ingest.record_event() call per
+// accepted event in request order; then the rejections; then the device's last_seen_at. Either all
+// of it commits or none of it does.
+func (p *Postgres) WriteBatch(ctx context.Context, w BatchWrite) ([]EventOutcome, error) {
+	var outcomes []EventOutcome
+	err := p.inTenant(ctx, w.TenantID, func(tx *sql.Tx) error {
+		st, err := principalStatus(ctx, tx, w.TenantID, w.DeviceID, w.CredentialID)
+		if err != nil {
+			return err
+		}
+		if err := st.Check(w.ReceivedAt, ""); err != nil {
+			return err
+		}
+
+		outcomes = make([]EventOutcome, 0, len(w.Accepted))
+		for _, ev := range w.Accepted {
+			out, err := recordEvent(ctx, tx, w, ev)
+			if err != nil {
+				return err
+			}
+			outcomes = append(outcomes, out)
+		}
+
+		for _, r := range w.Rejected {
+			if err := insertRejected(ctx, tx, w, r); err != nil {
+				return err
+			}
+		}
+
+		if _, err := tx.ExecContext(ctx, sqlTouchDevice, w.TenantID, w.DeviceID, w.ReceivedAt); err != nil {
+			return fmt.Errorf("store: touch device: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return outcomes, nil
+}
+
+func recordEvent(ctx context.Context, tx *sql.Tx, w BatchWrite, ev AcceptedEvent) (EventOutcome, error) {
+	out := EventOutcome{Index: ev.Index, EventID: ev.EventID}
+	var submissionID sql.NullString
+	if err := tx.QueryRowContext(ctx, sqlRecordEvent, string(ev.Envelope), w.ReceivedAt).
+		Scan(&out.Outcome, &submissionID); err != nil {
+		return out, fmt.Errorf("store: record event %s: %w", ev.EventID, err)
+	}
+	out.SubmissionID = submissionID.String
+
+	switch out.Outcome {
+	case OutcomeDuplicate:
+		var first time.Time
+		err := tx.QueryRowContext(ctx, sqlFirstReceivedAt, w.TenantID, ev.EventID).Scan(&first)
+		switch {
+		case err == nil:
+			first = first.UTC()
+			out.FirstReceivedAt = &first
+		case !errors.Is(err, sql.ErrNoRows):
+			return out, fmt.Errorf("store: first receipt of %s: %w", ev.EventID, err)
+		}
+	case OutcomeMerged:
+		var winner sql.NullString
+		err := tx.QueryRowContext(ctx, sqlSubmissionWinner, w.TenantID, out.SubmissionID).Scan(&winner)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return out, fmt.Errorf("store: winner of submission %s: %w", out.SubmissionID, err)
+		}
+		out.WonFields = winner.String == ev.Route
+	case OutcomeInserted:
+		out.WonFields = true
+	default:
+		return out, fmt.Errorf("store: record event %s returned outcome %q", ev.EventID, out.Outcome)
+	}
+	return out, nil
+}
+
+func insertRejected(ctx context.Context, tx *sql.Tx, w BatchWrite, r Rejection) error {
+	detail, err := json.Marshal(r.Detail)
+	if err != nil {
+		return fmt.Errorf("store: rejection detail: %w", err)
+	}
+	presence, err := json.Marshal(map[string][]string{"present": r.Present})
+	if err != nil {
+		return fmt.Errorf("store: rejection presence: %w", err)
+	}
+	redacted, err := json.Marshal(r.Redacted)
+	if err != nil {
+		return fmt.Errorf("store: redacted envelope: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, sqlInsertRejected, w.TenantID, w.DeviceID, w.ReceivedAt,
+		string(r.Reason), string(detail), string(presence), string(redacted)); err != nil {
+		return fmt.Errorf("store: quarantine %s: %w", r.Reason, err)
+	}
+	return nil
+}
+
+// inTenant runs fn in a transaction scoped to tenantID by row-level security.
+func (p *Postgres) inTenant(ctx context.Context, tenantID string, fn func(tx *sql.Tx) error) error {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, sqlSetTenant, tenantID); err != nil {
+		return fmt.Errorf("store: set tenant: %w", err)
+	}
+	if err := fn(tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit: %w", err)
+	}
+	return nil
 }
