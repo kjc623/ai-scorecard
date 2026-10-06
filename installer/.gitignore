@@ -1,9 +1,3 @@
-# Build output and the local lab. Never committed.
+# Build output. Never committed.
 .stage/
-.lab/
 dist/
-# Release build state: the development trust-anchor keys (private halves) and WiX's debug database.
-.release/
-
-# The generated platform artefacts under generated/ ARE committed on purpose: they are the
-# "--check"-able output of installer/manifest.mjs, the way contracts/generated is for the contract.

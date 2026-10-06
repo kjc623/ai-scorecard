@@ -13,7 +13,6 @@
     "webRequest",
     "webRequestBlocking",
     "nativeMessaging",
-    "scripting",
     "tabs",
     "alarms"
   ],

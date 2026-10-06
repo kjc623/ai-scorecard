@@ -1,16 +1,10 @@
 /**
- * fake-chrome.mjs — the fake `chrome` the whole suite runs against.
+ * fake-chrome.mjs — the fake `chrome` the suite runs against.
  *
- * This is the point of the exercise: no Chromium on this host, so in-browser behaviour is NOT
- * verified anywhere in this suite. What *is* verified is every decision the extension makes, plus
- * the two facts that are only observable at the API boundary:
- *
- *   - which listener each lane was registered on, and **with which `extraInfoSpec`** — that is
- *     where the M0 guarantee lives (`requestBody` present or absent);
- *   - which `urls` filter each lane was given.
- *
- * Anything the fake does that Chrome would not do is a false pass, so the fake implements the API
- * surface exactly as documented in `src/adapter.js` and nothing more.
+ * It records the two facts observable at the API boundary: which listener each lane was registered
+ * on and with which `extraInfoSpec` (where the M0 guarantee lives: `requestBody` present or absent),
+ * and which `urls` filter each lane was given. It implements the surface `src/adapter.js` documents
+ * and nothing more, because anything Chrome would not do is a false pass.
  */
 
 const textEncoder = new TextEncoder();
@@ -34,7 +28,6 @@ export function createFakeChrome() {
     alarmHandlers: [],
     messages: [],
     messageHandlers: [],
-    session: new Map(),
     tabAnswers: new Map(),
     tabQueries: [],
     lastError: undefined,
@@ -43,7 +36,7 @@ export function createFakeChrome() {
     failConnect: false,
     failPostAfter: Infinity,
     posted: [],
-    /** Whether this install actually holds `webRequestBlocking`. False models an unpacked load. */
+    /** Whether this install holds `webRequestBlocking`. False models an install not forced by policy. */
     blockingGranted: true,
   };
 
@@ -80,9 +73,8 @@ export function createFakeChrome() {
     },
 
     /**
-     * The §7.4 capability probe. `blockingGranted` is settable so a test can put the extension in
-     * the state a real unpacked install is in: the manifest declares `webRequestBlocking`, and the
-     * grant is absent, so a blocking listener is accepted and then never invoked.
+     * The blocking capability probe. `blockingGranted` is settable so a test can model an install
+     * whose manifest declares `webRequestBlocking` without the grant.
      */
     permissions: {
       async contains({ permissions }) {
@@ -148,17 +140,6 @@ export function createFakeChrome() {
       onAlarm: {
         addListener(fn) {
           state.alarmHandlers.push(fn);
-        },
-      },
-    },
-
-    storage: {
-      session: {
-        async get(key) {
-          return state.session.has(key) ? { [key]: state.session.get(key) } : {};
-        },
-        async set(items) {
-          for (const [k, v] of Object.entries(items)) state.session.set(k, v);
         },
       },
     },

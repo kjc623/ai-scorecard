@@ -1,22 +1,16 @@
 /**
- * messages.js — the extension's copy of the device-side native-messaging vocabulary.
+ * messages.js — the extension's copy of the native-messaging vocabulary in endpoint/protocol
+ * (native.go, envelope.go). Field names and the closed sets are transcribed verbatim; a contract
+ * test fails if they drift from the Go source.
  *
- * SOURCE OF TRUTH: endpoint/protocol/native.go and endpoint/protocol/envelope.go (owned by the
- * Lead). This file is a mechanical transcription, not a second design: field names, the
- * closed type set, the closed refusal-reason set, the closed counter set and the closed
- * detail set are copied verbatim. If a shape here is wrong, message the Lead — do not fork it.
+ * Wire shape: one JSON object per message, `{ type, version, id?, body? }`.
  *
- * Wire shape (NativeMessage in native.go): one JSON object per message,
- *   { type, version, id?, body? }
- * with `version` = NATIVE_MESSAGE_VERSION (protocol.Version).
- *
- * Two asymmetries the Lead called out, both enforced below:
- *   - an `ack` is NOT delivery. The spool is what makes that distinction; nothing here
- *     increments an `emitted` counter on ack.
- *   - an ObservationMessage must never say `has_content: true` with an empty content field,
- *     and must never carry content at M0. `validateObservation()` rejects both, mirroring
- *     ObservationMessage.Validate() in native.go.
+ * An `ack` means capture-core accepted the message, not that it was delivered; the spool owns
+ * that distinction. An ObservationMessage never says `has_content: true` without content, and never
+ * carries content at M0; `validateObservation()` mirrors ObservationMessage.Validate().
  */
+
+import { bytesToBase64, toBytes } from './codec.js';
 
 /** protocol.Version / protocol.MaxNativeMessageBytes. */
 export const NATIVE_MESSAGE_VERSION = 1;
@@ -24,7 +18,7 @@ export const MAX_NATIVE_MESSAGE_BYTES = 1 << 20; // 1 MiB
 /** protocol.MaxAttachmentBytes — a transport ceiling; the effective cap is bundle policy. */
 export const MAX_ATTACHMENT_BYTES = 64 << 20;
 
-/** Extension -> capture-core (native.go Type*). */
+/** Extension -> capture-core. */
 export const TYPE = Object.freeze({
   OBSERVATION: 'observation',
   ATTACHMENT_MANIFEST: 'attachment_manifest',
@@ -45,7 +39,7 @@ export const CORE_TYPE = Object.freeze({
   HEALTH_SNAPSHOT: 'health_snapshot',
 });
 
-/** Closed set: RefusalReason in native.go. Do not add a member without telling the Lead. */
+/** protocol.RefusalReason, a closed set. */
 export const REFUSAL = Object.freeze({
   ATTACHMENT_TOO_LARGE: 'attachment_too_large',
   MODE_FORBIDS_READ: 'mode_forbids_read',
@@ -56,9 +50,7 @@ export const REFUSAL = Object.freeze({
   QUEUE_FULL: 'queue_full',
 });
 
-export const REFUSAL_REASONS = Object.freeze(Object.values(REFUSAL));
-
-/** protocol.Route — the closed route vocabulary. The extension may produce three of them. */
+/** protocol.Route. The extension produces the three `ext.*` routes. */
 export const ROUTE = Object.freeze({
   EXT_WEB_REQUEST: 'ext.web_request',
   EXT_PAGE_CONTEXT: 'ext.page_context',
@@ -75,18 +67,15 @@ export const EXTENSION_ROUTES = Object.freeze([ROUTE.EXT_WEB_REQUEST, ROUTE.EXT_
 /** protocol.CollectionMode. */
 export const MODE = Object.freeze({ M0: 'm0', M1: 'm1', M2: 'm2', M3: 'm3' });
 
-/**
- * CollectionMode.ReadsContent() — `m != m0 && m != ""`. An absent/unknown mode is NOT a
- * read-permitting mode: the conservative state is "do not read the body" (Lead, task-6).
- */
+/** CollectionMode.ReadsContent(). An absent or unknown mode does not permit reading the body. */
 export function modeReadsContent(mode) {
   return mode === MODE.M1 || mode === MODE.M2 || mode === MODE.M3;
 }
 
-/** protocol.Action — the three values are never merged. */
+/** protocol.Action. */
 export const ACTION = Object.freeze({ BLOCKED: 'blocked', WARNED: 'warned', LOGGED: 'logged' });
 
-/** protocol.Counter — closed at seven; a provider reports these and nothing else (§4.3). */
+/** protocol.Counter, closed at seven: a provider reports these and nothing else. */
 export const COUNTERS = Object.freeze([
   'observed',
   'emitted',
@@ -108,7 +97,7 @@ export const COUNTER = Object.freeze({
   ERRORS: 'errors',
 });
 
-/** protocol.Detail — the closed per-provider detail vocabulary (endpoint/protocol/envelope.go). */
+/** protocol.Detail, the closed per-provider detail vocabulary. */
 export const DETAIL = Object.freeze({
   NONE: '',
   CLASSIFIER_UNAVAILABLE: 'classifier_unavailable',
@@ -138,26 +127,19 @@ export const DETAIL = Object.freeze({
   BUNDLE_SCHEMA_INVALID: 'bundle_schema_invalid',
   BUNDLE_VERSION_REGRESSION: 'bundle_version_regression',
   BUNDLE_ARTEFACT_MISSING: 'bundle_artefact_missing',
-  // §7.4/§15.2: this install holds webRequestBlocking but was not granted it — every unpacked
-  // load, and the browser says so only in a console message. Observation still works; cancelling a
-  // request does not. A coverage state with no name is what §15.2 forbids, so it has one.
+  // The manifest declares webRequestBlocking but the install was not granted it (any install that
+  // is not force-installed by policy): observation works, cancelling a request does not.
   ENFORCEMENT_UNAVAILABLE: 'enforcement_unavailable',
   CONTENT_OVER_CAP: 'content_over_cap',
   UNDECODABLE_CONTENT: 'undecodable_content',
   VERSION_MISMATCH: 'version_mismatch',
   MODE_VIOLATION: 'mode_violation',
-  // ADR 0020: an x509 device leaf past its NotAfter cannot authenticate and cannot be renewed
-  // without a fresh enrolment token, so the cause has a name rather than a silent 401 loop.
   CREDENTIAL_EXPIRED: 'credential_expired',
-  // Trust/CA and the CLI trust shim (§4.5, §5.2, §14): the install and its verification are
-  // separate causes because the wrong store fails silently, and each shim check has a name.
   TRUST_INSTALL_FAILED: 'trust_install_failed',
   TRUST_VERIFY_FAILED: 'trust_verify_failed',
   SHIM_PROFILE_MISSING: 'shim_profile_missing',
   SHIM_CA_BUNDLE_UNREADABLE: 'shim_ca_bundle_unreadable',
   SHIM_NOT_INHERITED: 'shim_not_inherited',
-  // A drain-configured device with no issued credential yet: refuse to mint rather than stamp a
-  // placeholder identity the write path will reject.
   IDENTITY_UNRESOLVED: 'identity_unresolved',
 });
 
@@ -171,29 +153,8 @@ export const STATE = Object.freeze({
   TAMPERED: 'tampered',
 });
 
-/**
- * The collector name for this provider. §4.3: "the collector name must come from
- * ref.collector, so a provider cannot invent a name for a coverage path the reporting layer
- * does not know." db/schema.sql ref.collector carries exactly one extension row:
- * ('capture_extension', 'capture_extension', ...).
- */
+/** This provider's collector name, as registered in the schema's `ref.collector`. */
 export const COLLECTOR_NAME = 'capture_extension';
-
-/** ref.route_fidelity weights (db/schema.sql): page_context 10 beats web_request 40 beats dom 60. */
-export const ROUTE_FIDELITY = Object.freeze({
-  [ROUTE.EXT_PAGE_CONTEXT]: 10,
-  [ROUTE.EXT_WEB_REQUEST]: 40,
-  [ROUTE.EXT_DOM]: 60,
-});
-
-/** Errors thrown by this module, so callers can distinguish a shape fault from a transport fault. */
-export class MessageShapeError extends Error {
-  constructor(message, reason = REFUSAL.MALFORMED) {
-    super(message);
-    this.name = 'MessageShapeError';
-    this.reason = reason;
-  }
-}
 
 /** Wrap a body in the NativeMessage envelope. */
 export function frame(type, body, id = undefined) {
@@ -213,14 +174,14 @@ export function unframe(raw) {
   return { type: raw.type, version: raw.version, id: raw.id, body: raw.body, versionMismatch: false };
 }
 
-/** UTF-8 byte length of the framed message, checked against the 1 MiB ceiling the queue budgets against. */
+/** UTF-8 byte length of the framed message, checked against the 1 MiB ceiling. */
 export function framedByteLength(type, body, id) {
   return new TextEncoder().encode(JSON.stringify(frame(type, body, id))).byteLength;
 }
 
 /**
- * Mirror of ObservationMessage.Validate() (native.go). Returns null when the message is
- * well-formed, or a {reason, message} pair drawn from the closed refusal set.
+ * Mirror of ObservationMessage.Validate(). Returns null when the message is well-formed, or a
+ * {reason, message} pair drawn from the closed refusal set.
  */
 export function validateObservation(o) {
   if (!o || typeof o !== 'object') return { reason: REFUSAL.MALFORMED, message: 'observation is not an object' };
@@ -262,43 +223,13 @@ export function validateObservation(o) {
   return null;
 }
 
-/** Mirror of HealthReport.Validate(): a counter name outside the closed set is a defect. */
-export function validateHealthReport(h) {
-  if (!h || typeof h !== 'object') return { reason: REFUSAL.MALFORMED, message: 'health report is not an object' };
-  if (typeof h.collector !== 'string' || h.collector === '') {
-    return { reason: REFUSAL.MALFORMED, message: 'health report has no collector name' };
-  }
-  if (!Object.values(STATE).includes(h.state)) {
-    return { reason: REFUSAL.MALFORMED, message: `health report state ${JSON.stringify(h.state)} outside the closed set` };
-  }
-  for (const k of Object.keys(h.counters || {})) {
-    if (!COUNTERS.includes(k)) {
-      return { reason: REFUSAL.MALFORMED, message: `counter ${JSON.stringify(k)} outside the closed set` };
-    }
-  }
-  return null;
-}
-
-export function refusal(reason, message) {
-  if (!REFUSAL_REASONS.includes(reason)) {
-    throw new MessageShapeError(`refusal reason ${reason} is outside the closed set`);
-  }
-  return { reason, message };
-}
-
 /**
  * Build an outbound observation body with every protocol field present exactly once.
  *
- * **`content` is base64 in every case, text and binary alike.** `ObservationMessage.Content` in
- * endpoint/protocol/native.go is `[]byte` with `json:"content"`, and `encoding/json` base64-decodes
- * a `[]byte` — so a raw text payload fails to decode ("illegal base64 data at input byte 9"), and
- * text that happens to *be* valid base64 silently decodes to different bytes than the user typed
- * while `content_digest` was computed over the original. The digest and the content disagreeing is
- * a content-identity break: it propagates into `dedup_key`, into what the classifier sees, and
- * into the record's value as evidence.
- *
- * So the encoding happens HERE, where the value is created, rather than at each call site — the
- * one place a caller cannot forget it. `encodeContent()` is the single encoder for both paths.
+ * `content` is base64 in every case, text and binary alike: ObservationMessage.Content is a Go
+ * `[]byte`, which encoding/json base64-decodes. Raw text would fail to decode, and text that happens
+ * to be valid base64 would decode to different bytes than `content_digest` describes. Encoding here,
+ * where the value is created, means no call site can forget it.
  */
 export function observationBody(fields) {
   const body = {
@@ -324,8 +255,8 @@ export function observationBody(fields) {
 }
 
 /**
- * The one encoder for `content`. Accepts the bytes, a base64 string (what the binary path already
- * holds), or a decoded text string, and always returns the base64 that `[]byte` requires.
+ * The one encoder for `content`. Accepts bytes, a base64 string (`alreadyBase64`), or decoded text,
+ * and returns the base64 that `[]byte` requires.
  *
  * @param {Uint8Array|ArrayBuffer|string} value
  * @param {{alreadyBase64?: boolean}} [opts]
@@ -336,51 +267,4 @@ export function encodeContent(value, opts = {}) {
     return bytesToBase64(new TextEncoder().encode(value));
   }
   return bytesToBase64(toBytes(value));
-}
-
-/** Decode a frame's `content` back to the bytes the digest was taken over. Mirrors encoding/json. */
-export function decodeContentFrame(value) {
-  if (typeof value !== 'string') return new Uint8Array(0);
-  return base64ToBytes(value);
-}
-
-function toBytes(input) {
-  if (input == null) return new Uint8Array(0);
-  if (input instanceof Uint8Array) return input;
-  if (input instanceof ArrayBuffer) return new Uint8Array(input);
-  if (ArrayBuffer.isView(input)) return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
-  return new Uint8Array(0);
-}
-
-const B64_TABLE = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-
-function bytesToBase64(input) {
-  const b = toBytes(input);
-  let out = '';
-  for (let i = 0; i < b.length; i += 3) {
-    const n = (b[i] << 16) | ((b[i + 1] || 0) << 8) | (b[i + 2] || 0);
-    out +=
-      B64_TABLE[(n >> 18) & 63] +
-      B64_TABLE[(n >> 12) & 63] +
-      (i + 1 < b.length ? B64_TABLE[(n >> 6) & 63] : '=') +
-      (i + 2 < b.length ? B64_TABLE[n & 63] : '=');
-  }
-  return out;
-}
-
-function base64ToBytes(s) {
-  const clean = String(s ?? '').replace(/[^A-Za-z0-9+/]/g, '');
-  const out = new Uint8Array(Math.floor((clean.length * 3) / 4));
-  let o = 0;
-  let acc = 0;
-  let bits = 0;
-  for (const ch of clean) {
-    acc = (acc << 6) | B64_TABLE.indexOf(ch);
-    bits += 6;
-    if (bits >= 8) {
-      bits -= 8;
-      out[o++] = (acc >> bits) & 0xff;
-    }
-  }
-  return out.subarray(0, o);
 }

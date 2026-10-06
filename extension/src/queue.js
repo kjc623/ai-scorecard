@@ -1,32 +1,23 @@
 /**
- * queue.js — the bounded in-memory queue of §3.4.
+ * queue.js — the bounded in-memory queue for observations capture-core has not yet accepted.
  *
- * "The extension cannot read the spool, so undeliverable observations are held in extension
- * memory only, bounded, dropped oldest-first with a counter, and merged into the health report
- * when the channel returns."
- *
- * Three consequences implemented here:
- *   - **the bound is enforced on write**, not on a timer (§12's rule for the spool, applied to
- *     the extension's much smaller buffer);
- *   - **a drop is counted, never silent** (C22): `dropped` increments by exactly the number of
- *     entries evicted, and the drop is attributed to the channel state that caused it;
- *   - **nothing is written to extension storage**: the queue is a plain array in the service
- *     worker's memory and dies with it. The only durability is the spool, which the extension
- *     cannot reach — which is why the queue is deliberately small.
+ * The extension cannot reach the device spool, so undeliverable observations are held in memory
+ * only: bounded on write, dropped oldest-first, and every drop counted. Nothing is written to
+ * extension storage; the queue dies with the service worker, which is why it is small.
  */
 
-/** 200 entries is the default: §3.4 wants a buffer, not a second spool. */
+/** A buffer, not a second spool. */
 export const DEFAULT_CAPACITY = 200;
 
 export function createQueue({ capacity = DEFAULT_CAPACITY, onDrop = null } = {}) {
   if (!Number.isInteger(capacity) || capacity < 1) throw new RangeError('capacity must be a positive integer');
 
   /** @type {Array<{kind: string, payload: any, size_bytes: number, enqueued_at: number}>} */
-  let entries = [];
+  const entries = [];
   let dropped = 0;
   let droppedBytes = 0;
   /** @type {Record<string, number>} why entries were dropped, so the health report can say */
-  let droppedByKind = Object.create(null);
+  const droppedByKind = Object.create(null);
   let enqueued = 0;
   let delivered = 0;
   let sequence = 0;
@@ -89,9 +80,5 @@ export function createQueue({ capacity = DEFAULT_CAPACITY, onDrop = null } = {})
     };
   }
 
-  function reset() {
-    entries = [];
-  }
-
-  return { enqueue, peek, ack, size, depthBytes, stats, reset, get capacity() { return capacity; } };
+  return { enqueue, peek, ack, size, stats };
 }

@@ -1,23 +1,20 @@
 /**
  * service-worker.js — the MV3 background entry point. Wiring only; every decision lives in a
- * module `node --test` can load without a browser.
+ * module `node --test` loads without a browser.
  *
- * Lifecycle note that shapes the design: an MV3 service worker is killed aggressively, so
- * everything held here is memory and dies with it. That is what §7.1 requires ("the extension
- * holds nothing durable"): the queue, the counters and the policy cache are all rebuildable, and
- * the only durable store on the device is the spool, which the extension cannot reach (§3.4).
+ * An MV3 service worker is killed aggressively, so everything here is memory: the queue, the
+ * counters and the policy cache are rebuilt on start. The only durable store on the device is
+ * capture-core's spool.
  *
- * Division of labour with the content script, stated once so it is not re-litigated per call:
- *
- *   - the **content script** holds the `File` object, so it drives an attachment transfer and
- *     calls this worker for each frame;
- *   - this **worker** owns the native channel, so attachment frames are relayed here and
- *     answered with `capture-core`'s own reply, so a refusal is the core's, not the worker's.
+ * The content script holds the `File` object and drives an attachment transfer; this worker owns
+ * the native channel, relays each frame and returns capture-core's own reply.
  */
 
+import { ExtError } from '../src/adapter.js';
+import { createAttachmentCollector } from '../src/attachments/collect.js';
 import { createChromeAdapter } from '../src/chrome-adapter.js';
 import { createHealthReporter } from '../src/health.js';
-import { COLLECTOR_NAME, DETAIL, TYPE } from '../src/messages.js';
+import { CORE_TYPE, DETAIL, TYPE } from '../src/messages.js';
 import { createNativeClient } from '../src/native.js';
 import { createPipeline } from '../src/pipeline.js';
 import { createPolicyCache } from '../src/mode-policy.js';
@@ -38,9 +35,8 @@ export function bootstrap(adapter, { deviceId = null, version = '0.1.0', capacit
     queueStats: () => queue.stats(),
     policySnapshot: () => policy.snapshot(),
   });
-  // §4.3 + C22: the provider's `dropped` counter and the spool's `spool_dropped_total` are
-  // separate counters, summed for the operator. This is the provider half, and the queue is the
-  // one place that knows a drop happened.
+  // The extension's `dropped` counter is separate from the spool's own drop counter; the queue is
+  // the one place that knows a drop happened here.
   const queue = createQueue({
     capacity,
     onDrop: () => health.counters.inc('dropped', 1),
@@ -52,22 +48,17 @@ export function bootstrap(adapter, { deviceId = null, version = '0.1.0', capacit
     ...(Number.isFinite(connectCooldownMs) ? { connectCooldownMs } : {}),
     onEvent: (ev) => {
       if (ev.kind === 'port_opened') {
-        // A port object exists. That is NOT a working channel — for a host that does not exist the
-        // browser hands one out and delivers the disconnect later — so nothing is marked connected
-        // and **nothing is hung off this event**. Starting a policy sync or a drain here closes a
-        // retry loop: the send fails, the port drops, the next send opens another port, and this
-        // event fires again. Measured at ~6,000 attempts/second before it was removed.
+        // A port object is not a working channel, and nothing may hang off this event: a send
+        // started here would fail, drop the port, open another and fire this again.
         return;
       }
       if (ev.kind === 'connected') {
-        // A message round-tripped: the channel is real. §3.4's "merged into the health report when
-        // the channel returns" hangs off this, and it is what makes `core: connected` honest.
+        // A message round-tripped: the channel is real. Fetch policy and deliver the queue.
         health.onChannelConnected();
         requestPolicySync();
         void pipeline.drainQueue(20).then(() => reportHealth());
       } else if (ev.kind === 'connect_failed' || ev.kind === 'disconnected') {
-        // §3.4: a failed connect is capture-core `absent` plus extension-side `degraded`,
-        // never "no observations".
+        // capture-core `absent` plus extension-side `degraded`, never "no observations".
         health.onChannelAbsent(DETAIL.CLASSIFIER_UNAVAILABLE);
         health.counters.countError('native_unavailable');
       } else if (ev.kind === 'version_mismatch') {
@@ -78,16 +69,19 @@ export function bootstrap(adapter, { deviceId = null, version = '0.1.0', capacit
     },
   });
 
-  const pipeline = createPipeline({ adapter, policy, native, queue, health });
+  const pipeline = createPipeline({
+    adapter,
+    policy,
+    native,
+    queue,
+    health,
+    attachments: createAttachmentCollector({ adapter, counters: health.counters }),
+  });
 
   /**
-   * §7.4's capability, asked before registration rather than assumed.
-   *
-   * A refused blocking registration is accepted silently and then never invoked, so registering the
-   * observation lanes as blocking on an install that lacks the grant would collect **nothing at
-   * all** — the failure §15.2 forbids. The lanes therefore adapt: with the grant a `blocked` rule can
-   * cancel; without it observation is unchanged and the health report says enforcement is
-   * unavailable instead of leaving it silently inert.
+   * Whether this install holds `webRequestBlocking`, asked before any lane is registered: a
+   * blocking registration without the grant is accepted silently and never invoked, so the lanes
+   * register blocking only when it can work.
    */
   let blockingAvailable = true;
   let lanes = null;
@@ -100,23 +94,19 @@ export function bootstrap(adapter, { deviceId = null, version = '0.1.0', capacit
       blockingAvailable,
       onBodyLane: (input) => pipeline.captureWithBody(input),
       onMetadataLane: (input) => pipeline.captureMetadata(input),
-      // The response lane hands over a bare response record; the pipeline takes it wrapped, the
-      // same shape the two request lanes use.
       onResponse: (detail) => pipeline.onResponse({ detail }),
     });
-    // Nothing is registered until the first policy arrives: with no bundle every destination
-    // resolves to M0, so §11.2's guarantee holds by construction rather than by a handler check.
+    // Until the first policy arrives every destination resolves to M0, so no body lane exists.
     lanes.refresh();
     return lanes;
   }
 
-  // ── policy (§3.4 bidirectional channel, §11.3's device-side bundle) ───────────────────────
   async function requestPolicySync() {
     try {
       const answer = await native.sendRequest(TYPE.POLICY_SYNC, { known_version: policy.snapshot().policy_version || '' });
       return applyPolicy(answer.body);
     } catch (e) {
-      // §13.3's device-side half: with no bundle the device resolves M0 and reports why.
+      // With no bundle the device resolves M0 and reports why.
       health.onChannelAbsent(DETAIL.CLASSIFIER_UNAVAILABLE);
       return { applied: false, reason: 'channel_down' };
     }
@@ -130,59 +120,40 @@ export function bootstrap(adapter, { deviceId = null, version = '0.1.0', capacit
       health.counters.countError('evaluation_error');
       return applied;
     }
-    if (bundle.device_id) pipeline.setDeviceId(bundle.device_id);
     installLanesNow().refresh();
     return applied;
   }
 
-  // ── health ────────────────────────────────────────────────────────────────────────────────
   function reportHealth() {
-    // `detail` and `enforcement` are set by the health reporter from the capability it was told
-    // about at startup, so the wire report and the internal state cannot disagree.
     const report = health.report();
     try {
       native.sendOneWay(TYPE.HEALTH, report);
       health.counters.rollWindow();
     } catch (e) {
-      // The report is not queued: the next one carries the same counters, cumulatively.
+      // Not queued: the next report carries the same counters, cumulatively.
       health.onChannelAbsent(DETAIL.CLASSIFIER_UNAVAILABLE);
     }
     return report;
   }
 
-  // ── attachment relay ──────────────────────────────────────────────────────────────────────
-  /**
-   * One attachment frame, relayed. The content script calls this for the manifest, each chunk and
-   * the completion, so the ordering guarantee of §7.3 ("manifest before bytes") is enforced by
-   * the code that holds the bytes.
-   */
-  async function relayFrame(type, body) {
-    return await native.sendRequest(type, body);
-  }
-
-  // ── content-script routing ────────────────────────────────────────────────────────────────
-  adapter.messages.onMessage(async (msg, sender) => {
+  // The content script sends each attachment frame (manifest, chunks, completion) here; the code
+  // that holds the bytes therefore enforces "manifest before bytes".
+  adapter.messages.onMessage(async (msg) => {
     if (!msg || typeof msg !== 'object') return { ok: false, error: 'empty message' };
-    switch (msg.type) {
-      case 'capture_attachment_frame':
-        return { ok: true, answer: await relayFrame(msg.frame_type, msg.body) };
-      case 'capture_page_context': {
-        // §7.3: `content_no_attachments` is the honest record when no File handle was reachable.
-        // It is counted here and reported with the observation, never guessed at.
-        if (msg.candidates && msg.candidates.length) {
-          health.counters.inc('observed', 0);
-        } else {
-          health.counters.inc('observed', 0);
-          health.pageContextNoAttachments = (health.pageContextNoAttachments || 0) + 1;
+    if (msg.type === 'capture_attachment_frame') {
+      try {
+        return { ok: true, answer: await native.sendRequest(msg.frame_type, msg.body) };
+      } catch (e) {
+        // A refusal is capture-core's answer to this frame: the content script acts on it.
+        if (e instanceof ExtError && e.code === 'core_refused') {
+          return { ok: true, answer: { type: CORE_TYPE.REFUSAL, body: { reason: e.detail.reason, message: e.message } } };
         }
-        return { ok: true };
+        throw e;
       }
-      default:
-        return { ok: false, error: `unknown message type ${msg.type}` };
     }
+    return { ok: false, error: `unknown message type ${msg.type}` };
   });
 
-  // ── alarms ────────────────────────────────────────────────────────────────────────────────
   function installAlarms() {
     adapter.alarms.create(HEALTH_ALARM, { periodInMinutes: HEALTH_PERIOD_MINUTES });
     adapter.alarms.create(POLICY_SYNC_ALARM, { periodInMinutes: POLICY_SYNC_PERIOD_MINUTES });
@@ -196,22 +167,13 @@ export function bootstrap(adapter, { deviceId = null, version = '0.1.0', capacit
   }
 
   async function start() {
-    // Ask for the capability before anything is registered, because the answer changes what the
-    // lanes ask for. `hasWebRequestBlocking` defaults to true when it cannot be answered, so this
-    // can only ever turn a silently-inert lane into a working observation lane.
     try {
       blockingAvailable = await adapter.permissions.hasWebRequestBlocking();
     } catch {
       blockingAvailable = true;
     }
-    if (!blockingAvailable) {
-      // §7.4/§15.2's coverage state, carried in the protocol's own `detail` vocabulary as
-      // `enforcement_unavailable`. Reported rather than silent: a path that cannot enforce must say
-      // so instead of reporting healthy while inspection is wider than enforcement.
-      health.onEnforcementUnavailable();
-    } else {
-      health.onEnforcementAvailable();
-    }
+    if (blockingAvailable) health.onEnforcementAvailable();
+    else health.onEnforcementUnavailable();
     installAlarms();
     const installed = installLanesNow();
     await requestPolicySync();
@@ -228,9 +190,6 @@ export function bootstrap(adapter, { deviceId = null, version = '0.1.0', capacit
     reportHealth,
     requestPolicySync,
     applyPolicy,
-    relayFrame,
-    collector: COLLECTOR_NAME,
-    /** §7.4's capability as this install holds it, and the lanes once they are registered. */
     get blockingAvailable() {
       return blockingAvailable;
     },
@@ -240,7 +199,8 @@ export function bootstrap(adapter, { deviceId = null, version = '0.1.0', capacit
   };
 }
 
-// ── MV3 entry: only runs in a browser, never under `node --test` ─────────────────────────────
+// MV3 entry: runs in a browser, never under `node --test`. `__captureApp` is the handle the
+// real-browser check reads health and taps the queue through.
 if (typeof chrome !== 'undefined' && chrome.runtime && typeof chrome.runtime.connectNative === 'function') {
   const adapter = createChromeAdapter(globalThis);
   const app = bootstrap(adapter);

@@ -1,20 +1,14 @@
 /**
- * attachments/files.js — the page-context half of §7.3. Runs in the content script's isolated
- * world, which is the only place a `File` object exists.
+ * attachments/files.js — the page-side file registry. Runs in the content script's isolated world,
+ * the only place a `File` object exists.
  *
- * The discipline §7.3 fixes, expressed as the shape of this API:
- *
- *   - **snapshot-on-send, never read-through.** `collectCandidates()` reads *metadata only*
- *     (`name`, `size`, `type`, `lastModified`) and keeps the page's `File` reference. No byte
- *     is read until a transfer is opened, so the extension never holds bytes for files the user
- *     never sends.
- *   - **`File` references are held, not values copied**: the object is reachable only from this
- *     closure, and `forget()` drops it once the transfer ends.
- *   - **a filename alone is not attachment capture.** `collectCandidates()` returning a name with
- *     no reachable handle is exactly the case §7.3 calls `content_no_attachments`, and the
- *     result says so rather than guessing.
- *   - **a failed read never fails the submission.** Every error path returns a structured result
- *     the caller can count; nothing here throws past its own boundary.
+ *   - Snapshot on send, never read-through: `collectCandidates()` reads metadata only and keeps the
+ *     page's `File` reference; no byte is read until a transfer is opened.
+ *   - `File` references are held, not copied, and `forget()` drops one when its transfer ends. A
+ *     file that has been transferred is not offered again, so it attaches to one submission only.
+ *   - A filename alone is not attachment capture: with no reachable handle the result says
+ *     `no_reachable_file` rather than guessing.
+ *   - A failed read never fails the submission: every error path returns a structured result.
  */
 
 /**
@@ -31,18 +25,21 @@
  * Build the page-side file registry.
  * @param {object} opts
  * @param {Document} [opts.document]
- * @param {number} [opts.maxFiles]     §7.3/E3's cap; the envelope allows 32 attachment descriptors.
+ * @param {number} [opts.maxFiles]     the envelope admits 32 attachment descriptors
  */
 export function createFileRegistry({ document = globalThis.document, maxFiles = 32, onReadError = null } = {}) {
   /** @type {Map<string, {file: any, candidate: FileCandidate, reads: number}>} */
   const handles = new Map();
   /** Files seen on drop events, which never appear in an `<input type=file>`. */
   const dropped = [];
+  /** Files already attached to a submission; an input keeps its files after the page sends them. */
+  const attached = new WeakSet();
   let counter = 0;
 
   function snapshot(file, source) {
     if (!file || typeof file !== 'object') return null;
     if (typeof file.name !== 'string' || file.name === '') return null;
+    if (attached.has(file)) return null;
     const refId = `f${++counter}`;
     const candidate = {
       ref_id: refId,
@@ -100,13 +97,12 @@ export function createFileRegistry({ document = globalThis.document, maxFiles = 
       }
     }
     if (out.length > 0) {
-      // The reason names the path that produced the candidates, because the caller records it:
-      // §7.3 resolves "the page's file input **or** drop target", and which one answered is a
-      // coverage fact rather than a detail.
+      // The reason names which path produced the candidates (a drop target, a file input, or
+      // both), because the caller records it.
       return { candidates: out, reachable: true, reason: sawDrop ? (sawInput ? 'drop_and_input' : 'drop') : 'input' };
     }
-    // §7.3's honest case: the composer built the upload in a worker or canvas and no File handle
-    // is reachable. The caller records `content_no_attachments` and counts it.
+    // The composer built the upload in a worker or canvas and no File handle is reachable. The
+    // caller records `content_no_attachments` and counts it.
     return { candidates: [], reachable: false, reason: 'no_reachable_file' };
   }
 
@@ -115,14 +111,9 @@ export function createFileRegistry({ document = globalThis.document, maxFiles = 
     return h ? h.candidate : null;
   }
 
-  function sizeOf(refId) {
-    const h = handles.get(refId);
-    return h ? h.candidate.size_bytes : null;
-  }
-
   /**
-   * Read one slice. Returns bytes, or a structured failure: never throws to the caller, because
-   * "a failed attachment read never fails the submission" (§7.3).
+   * Read one slice. Returns bytes, or a structured failure; never throws, because a failed
+   * attachment read must not fail the submission.
    * @returns {Promise<{ok: true, bytes: Uint8Array}|{ok: false, code: string, message: string}>}
    */
   async function readSlice(refId, offset, length) {
@@ -153,18 +144,16 @@ export function createFileRegistry({ document = globalThis.document, maxFiles = 
     }
   }
 
+  /** Drop the reference once its transfer has ended; the file is not offered again. */
   function forget(refId) {
+    const h = handles.get(refId);
+    if (h) attached.add(h.file);
     return handles.delete(refId);
-  }
-
-  function forgetAll() {
-    handles.clear();
-    dropped.length = 0;
   }
 
   function heldCount() {
     return handles.size;
   }
 
-  return { collectCandidates, noteDrop, get, sizeOf, readSlice, forget, forgetAll, heldCount };
+  return { collectCandidates, noteDrop, get, readSlice, forget, heldCount };
 }

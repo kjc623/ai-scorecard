@@ -1,54 +1,32 @@
 /**
- * native.js — the extension end of the native-messaging channel to `capture-core` (§3.4, A2).
+ * native.js — the extension end of the native-messaging channel to capture-core.
  *
- * Responsibilities, and nothing else:
- *   - own the port's lifetime, connect lazily, and translate a failed connect or a disconnect
- *     into `ExtError('native_unavailable')`. It never swallows one;
- *   - correlate request/response pairs by the `id` field native.go carries for exactly that;
- *   - enforce the `MaxNativeMessageBytes` ceiling on the *framed* message before posting,
- *     because Chromium's own ceiling is the thing the attachment chunking exists for;
- *   - drain the bounded queue in order, removing an entry only after `capture-core` has
- *     accepted it. An `ack` means accepted, never "ingested" — the spool is what makes that
- *     distinction (Lead, task-6) — so nothing here increments `emitted` on an ack.
+ *   - owns the port's lifetime: connects lazily, and turns a failed connect or a disconnect into
+ *     `ExtError('native_unavailable')`;
+ *   - correlates request/response pairs by the message `id`;
+ *   - enforces the 1 MiB ceiling on the framed message before posting;
+ *   - drains the bounded queue in order, removing an entry only once capture-core has accepted it.
  *
- * The one thing it deliberately does not do is retry into a busy loop: a failed send leaves the
- * entry in the queue (or drops it oldest-first if the queue is full), counts the error, and
- * reports the channel `absent`.
+ * It never retries into a busy loop: after a disconnect it refuses new connects for a cool-down,
+ * and a failed send leaves the entry queued.
  */
 
 import { ExtError } from './adapter.js';
-import {
-  CORE_TYPE,
-  MAX_NATIVE_MESSAGE_BYTES,
-  REFUSAL,
-  TYPE,
-  framedByteLength,
-  frame,
-  unframe,
-} from './messages.js';
+import { CORE_TYPE, MAX_NATIVE_MESSAGE_BYTES, framedByteLength, frame, unframe } from './messages.js';
 
-/** The registered native messaging host application name. Deployment installs the manifest for it (§14). */
+/** The native messaging host name the installers register. */
 export const NATIVE_APP = 'com.shadowaicapture.capture_core';
 
 export const DEFAULT_TIMEOUT_MS = 10_000;
 
 /**
- * After a disconnect, refuse to open a new port for this long.
- *
- * Without it, a missing or broken native host produces a **tight loop**, measured in Edge 154 at
- * roughly 6,000 connect attempts per second: `connectNative` returns a port, the browser delivers
- * the disconnect for the absent host, the port is dropped, and the next send opens another. Anything
- * that triggers a send on each connect (a policy sync, a queue drain) closes the cycle and spins.
- * That is a real defect on a user's machine — sustained CPU burn for a channel that is simply not
- * there — and §3.5's "a crash loops stops retrying into a state where the user's machine is
- * intermittently broken" is the same rule applied one process down.
- *
- * The queue is what makes the wait harmless: an observation emitted during the cool-down is held,
- * counted, and delivered by the next drain once the channel is real (§3.4).
+ * After a disconnect, no new port is opened for this long. Without it a missing host is a tight
+ * loop: `connectNative` returns a port, the browser delivers the disconnect, the next send opens
+ * another. The queue holds what is emitted meanwhile.
  */
 export const DEFAULT_CONNECT_COOLDOWN_MS = 5_000;
 
-/** How a refused-while-cooling-down connect is reported, so it is never mistaken for a new failure. */
+/** How a connect refused during the cool-down is reported, so it is never counted as a new failure. */
 export const COOLDOWN_ERROR_CODE = 'native_cooling_down';
 
 /**
@@ -56,6 +34,7 @@ export const COOLDOWN_ERROR_CODE = 'native_cooling_down';
  * @param {import('./adapter.js').Adapter} opts.adapter
  * @param {string} [opts.application]
  * @param {number} [opts.timeoutMs]
+ * @param {number} [opts.connectCooldownMs]
  * @param {(event: object) => void} [opts.onEvent]   channel events for the health reporter
  */
 export function createNativeClient({
@@ -71,18 +50,16 @@ export function createNativeClient({
   const pending = new Map();
   let connected = false;
   let lastError = null;
-  /** True once a message has actually been answered on the current port. */
+  /** True once a message has been answered on the current port. */
   let answered = false;
-  /** Wall-clock gate: no new port is opened before this, so a dead host cannot be hammered. */
+  /** No new port is opened before this time. */
   let nextConnectAllowedAt = 0;
 
   function connect() {
     if (port) return port;
     const remaining = nextConnectAllowedAt - Date.now();
     if (remaining > 0) {
-      // Cooling down after a disconnect. Refused without opening a port and **without emitting an
-      // event**, because this is not a new failure — it is the same one, still standing. Emitting
-      // here is what would rebuild the loop the cool-down exists to break.
+      // The same failure, still standing: refuse without opening a port or emitting an event.
       throw new ExtError(COOLDOWN_ERROR_CODE, `native host unavailable; next attempt in ${Math.ceil(remaining / 1000)}s`);
     }
     try {
@@ -94,12 +71,9 @@ export function createNativeClient({
       lastError = null;
       p.onMessage((raw) => handleMessage(raw));
       p.onDisconnect((err) => handleDisconnect(err));
-      // **`port_opened`, not `connected`.** A port object is not a working channel: for a host that
-      // does not exist the browser hands one out and only later delivers the disconnect, so a
-      // health report that called this "connected" would claim a coverage path that does not work —
-      // the §15.2/INV-6 failure, and the one the browser gate caught. `connected` is emitted below,
-      // when a message actually round-trips. Nothing may hang work off this event either: doing so
-      // is what closed the retry loop.
+      // A port object is not a working channel: for a missing host the browser hands one out and
+      // delivers the disconnect later. `connected` is emitted once a message round-trips, and no
+      // work may hang off `port_opened`, or a missing host becomes a retry loop.
       onEvent({ kind: 'port_opened' });
       return port;
     } catch (e) {
@@ -118,8 +92,7 @@ export function createNativeClient({
     answered = false;
     port = null;
     lastError = new ExtError('native_unavailable', message);
-    // Start the cool-down *here*, at the moment the channel is known bad, so the very next send in
-    // the same tick cannot open another port.
+    // The cool-down starts here, so the very next send in the same tick cannot open another port.
     nextConnectAllowedAt = Date.now() + connectCooldownMs;
     for (const [, entry] of pending) {
       clearTimeout(entry.timer);
@@ -136,7 +109,7 @@ export function createNativeClient({
       return;
     }
     if (msg.versionMismatch) {
-      // frames.go: a version mismatch is a degraded handshake, never a crash.
+      // A version mismatch is a degraded handshake, never a crash.
       onEvent({ kind: 'version_mismatch', version: msg.version });
       return;
     }
@@ -144,14 +117,12 @@ export function createNativeClient({
       const entry = pending.get(msg.id);
       pending.delete(msg.id);
       clearTimeout(entry.timer);
+      // A refusal is still an answer: the channel works even though this request was declined.
+      markAnswered();
       if (msg.type === CORE_TYPE.REFUSAL) {
         const body = msg.body || {};
-        // A refusal is still an answer: the channel works, the core declined this message. It proves
-        // the round trip, so it counts as a working channel even though the request failed.
-        markAnswered();
         entry.reject(new ExtError('core_refused', body.message || 'refused', { reason: body.reason }));
       } else {
-        markAnswered();
         entry.resolve(msg);
       }
       return;
@@ -164,8 +135,7 @@ export function createNativeClient({
     const correlationId = id || `m${++nextId}`;
     const size = framedByteLength(type, body, correlationId);
     if (size > MAX_NATIVE_MESSAGE_BYTES) {
-      // Refused locally: the ceiling is native.go's, and a message that large would be
-      // rejected by Chromium without a diagnosable error.
+      // Chromium would reject a message this large without a diagnosable error.
       throw new ExtError('core_refused', `framed message is ${size} bytes, ceiling is ${MAX_NATIVE_MESSAGE_BYTES}`);
     }
     try {
@@ -177,15 +147,11 @@ export function createNativeClient({
     return { id: correlationId, bytes: size };
   }
 
-  /** Fire-and-forget: the caller keeps the queue entry and removes it on ack or refusal. */
+  /** Send a message and resolve with capture-core's answer, or reject on refusal or timeout. */
   function sendRequest(type, body) {
     const { id } = post(type, body);
     return new Promise((resolve, reject) => {
-      // NOT unref'd on purpose. In a service worker the port keeps the worker alive anyway, so
-      // unref'ing would buy nothing; in a test it would let the event loop drain before the
-      // timeout fires, turning "we time out and report it" into "the promise never settles",
-      // which is precisely the failure mode this timer exists to prevent (C21: "no answer" is
-      // `degraded`, never "nothing happened").
+      // Not unref'd: an unanswered request must settle as `native_timeout`, never hang.
       const timer = setTimeout(() => {
         pending.delete(id);
         onEvent({ kind: 'timeout', type });
@@ -195,26 +161,21 @@ export function createNativeClient({
     });
   }
 
-  /**
-   * A message came back: the channel is real. Emitted once per port, so `connected` means "a
-   * round trip succeeded" rather than "a port object was handed out".
-   */
+  /** Emitted once per port: `connected` means a round trip succeeded. */
   function markAnswered() {
     if (answered) return;
     answered = true;
     onEvent({ kind: 'connected' });
   }
 
-  /**
-   * Fire-and-forget, used where a refusal is not actionable (health).
-   */
+  /** Fire-and-forget, where a refusal is not actionable (health). */
   function sendOneWay(type, body) {
     return post(type, body);
   }
 
   /**
-   * Drain the queue oldest-first. Each entry is removed only after the ack, so a mid-drain
-   * failure loses nothing that was not already dropped by the bound.
+   * Drain the queue oldest-first. Each entry is removed only after its ack, so a mid-drain failure
+   * loses nothing the bound had not already dropped.
    *
    * @param {ReturnType<import('./queue.js').createQueue>} queue
    * @param {number} [max]
@@ -231,9 +192,8 @@ export function createNativeClient({
         sent++;
       } catch (e) {
         failures.push({ seq: head.seq, code: e instanceof ExtError ? e.code : 'internal_error' });
-        // A refusal is the core's decision about this entry and it will refuse it again:
-        // drop it, counted, rather than blocking the queue behind it. A transport failure
-        // leaves everything in place for the next drain.
+        // capture-core will refuse the same entry again: drop it, counted, rather than block the
+        // queue behind it. A transport failure leaves everything in place for the next drain.
         if (e instanceof ExtError && e.code === 'core_refused') {
           queue.ack(head.seq, 1);
           continue;
@@ -248,50 +208,5 @@ export function createNativeClient({
     return connected;
   }
 
-  function requiresAttention() {
-    return pending.size > 0;
-  }
-
-  return {
-    connect,
-    sendRequest,
-    sendOneWay,
-    drain,
-    isConnected,
-    requiresAttention,
-    get lastError() {
-      return lastError;
-    },
-    close() {
-      if (port) {
-        try {
-          port.disconnect();
-        } catch {
-          /* the host may already be gone */
-        }
-      }
-      port = null;
-      connected = false;
-    },
-    get application() {
-      return application;
-    },
-  };
+  return { connect, sendRequest, sendOneWay, drain, isConnected };
 }
-
-/** §3.4 policy sync: the extension holds no durable state, so this is how it gets policy after a restart. */
-export function policySyncRequest(knownVersion) {
-  return { known_version: knownVersion || '' };
-}
-
-export function modeQuery({ tool_fingerprint, host, media_type, size_bytes }) {
-  const body = { tool_fingerprint };
-  if (host) body.host = host;
-  if (media_type) body.media_type = media_type;
-  if (Number.isFinite(size_bytes)) body.size_bytes = size_bytes;
-  return body;
-}
-
-/** The refusal-reason vocabulary, re-exported so callers never hard-code a string. */
-export const REFUSALS = REFUSAL;
-export { TYPE };

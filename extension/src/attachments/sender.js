@@ -1,25 +1,18 @@
 /**
- * attachments/sender.js — §7.3's chunked transfer, manifest first, driven from the **content
- * script** because that is where the `File` object lives.
+ * attachments/sender.js — the chunked attachment transfer, driven from the content script because
+ * that is where the `File` object lives.
  *
- * The order is the point. The manifest goes to `capture-core` — relayed through the service
- * worker, which owns the native channel — **before any byte**. §3.4: "attachment bytes are
- * chunked behind a manifest ... that lets `capture-core` refuse an oversized upload *before*
- * transfer". So the interesting assertion is not that a refusal is handled; it is that, on a
- * refusal, `readSlice` is never called at all.
- *
- * The other two properties §7.3 fixes:
- *   - **snapshot-on-send, never read-through**: `files.js` holds the page's `File` reference and
- *     this module reads it in chunks, hashing as it goes. Nothing is written to extension storage.
- *   - **a failed attachment read never fails the submission**: every failure path returns a
- *     result. None of them throws past this boundary, so the prompt text is still captured.
+ * The manifest goes to capture-core (relayed by the service worker, which owns the native channel)
+ * before any byte, so an oversized upload is refused before a single byte is read. The file is then
+ * read in chunks and hashed as it goes; nothing is written to extension storage. Every failure path
+ * returns a result rather than throwing, so a failed attachment never fails the submission.
  */
 
 import { ExtError, errorCode } from '../adapter.js';
-import { sha256Prefixed } from '../codec.js';
+import { bytesToBase64, sha256Prefixed } from '../codec.js';
 import { CORE_TYPE, MAX_ATTACHMENT_BYTES, TYPE } from '../messages.js';
 
-/** Chunks are zero-based and contiguous; a gap is refused rather than assembled (native.go). */
+/** Chunks are zero-based and contiguous; capture-core refuses a gap rather than assembling it. */
 export const DEFAULT_CHUNK_BYTES = 256 * 1024;
 
 /**
@@ -51,6 +44,8 @@ export function createAttachmentSender({
     const transfer_id = newIds()[0];
     const desc = { ...descriptor };
     const declared = Number.isFinite(desc.size_bytes) ? desc.size_bytes : 0;
+    // The manifest carries the protocol's descriptor fields; the page-side reference stays here.
+    const wire = { name: desc.name, size_bytes: declared, ...(desc.media_type ? { media_type: desc.media_type } : {}) };
 
     // Local pre-check against the transport ceiling. `capture-core` is the authority — the
     // effective cap is bundle policy and may be tighter — but refusing here means no manifest and
@@ -71,7 +66,7 @@ export function createAttachmentSender({
     // 1. Manifest first.
     let began;
     try {
-      began = await relay(TYPE.ATTACHMENT_MANIFEST, { transfer_id, observation_id, descriptor: { ...desc, digest: undefined } });
+      began = await relay(TYPE.ATTACHMENT_MANIFEST, { transfer_id, observation_id, descriptor: wire });
     } catch (e) {
       count('attachment_channel_failed', 1);
       return failure(errorCode(e), desc, String((e && e.message) || e));
@@ -121,8 +116,7 @@ export function createAttachmentSender({
         const want = Math.min(effectiveChunk, declared - offset);
         const r = await readSlice(desc.ref_id, offset, want);
         if (!r || !r.ok) {
-          // §7.3: a failed attachment read never fails the submission — it is counted and the
-          // prompt text is still captured.
+          // A failed read is counted; the submission itself is unaffected.
           await safeComplete(transfer_id, seq, `${(r && r.code) || 'read_failed'}: ${(r && r.message) || ''}`);
           count('attachment_read_failed', 1);
           return failure('attachment_read_failed', desc, (r && r.message) || 'read failed', seq, offset);
@@ -159,7 +153,7 @@ export function createAttachmentSender({
       chunks: seq,
       bytes_sent: offset,
       digest,
-      descriptor: digest ? { ...desc, digest } : desc,
+      descriptor: digest ? { ...wire, content_digest: digest } : wire,
     };
   }
 
@@ -181,27 +175,12 @@ export function createAttachmentSender({
     return { status: 'failed', reason, chunks, bytes_sent, digest: null, descriptor: desc, message };
   }
 
-  return { send, chunkBytes, maxAttachmentBytes };
-}
-
-/** `encoding/json` marshals []byte as base64, so the frame carries base64 too. */
-export function bytesToBase64(bytes) {
-  const table = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-  let out = '';
-  for (let i = 0; i < bytes.byteLength; i += 3) {
-    const n = (bytes[i] << 16) | ((bytes[i + 1] || 0) << 8) | (bytes[i + 2] || 0);
-    out += table[(n >> 18) & 63] + table[(n >> 12) & 63] +
-      (i + 1 < bytes.byteLength ? table[(n >> 6) & 63] : '=') +
-      (i + 2 < bytes.byteLength ? table[n & 63] : '=');
-  }
-  return out;
+  return { send };
 }
 
 /**
- * A streaming SHA-256 is not available in WebCrypto, so the hasher retains the chunks it read.
- * For the sizes §7.3 deals in that is bounded by the bundle's attachment cap, and the alternative
- * — a hand-written SHA-256 — would be a second implementation of a primitive the device already
- * has. The cap is enforced before the first byte is read, so this cannot grow without bound.
+ * WebCrypto has no streaming SHA-256, so the hasher retains the chunks it read. That is bounded by
+ * the attachment cap, which is enforced before the first byte is read.
  */
 export function createChunkedHasher(crypto) {
   const parts = [];

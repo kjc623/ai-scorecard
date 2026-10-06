@@ -1,30 +1,18 @@
 /**
- * test/golden-frames.test.mjs — the seam the Lead's cross-module harness reads, kept honest from
- * this side.
+ * test/golden-frames.test.mjs — the golden native-messaging frames `endpoint/integration` decodes
+ * through the real Go types.
  *
- * `tools/emit-frames.mjs` builds the golden native-messaging frames that `endpoint/integration`
- * decodes through the real `endpoint/protocol` Go types. Those frames are built by *this* package's
- * `observationBody()` and `frame()`, which is the whole point: a fixture that agrees with the Go
- * types by construction is what let the content-encoding break survive every check on both sides.
+ * `tools/emit-frames.mjs` builds them with this package's own `observationBody()` and `frame()`, so
+ * they cannot agree with the Go types merely by construction. Three properties:
  *
- * So the generator is a coupling, and this file is the test that keeps it from rotting. Three
- * properties:
- *
- *   1. **the generator still produces six cases**, each decodable with a matching digest — a change
- *      to `observationBody()` that breaks the seam fails here rather than in someone else's suite;
- *   2. **the committed golden files still match what the generator produces** — a drift check, so a
- *      lead who never re-runs the generator still finds out;
- *   3. **importing the generator writes nothing** — a test must not have a filesystem side effect in
- *      another component's tree, and the CLI must still work exactly as documented.
- *
- * This file also encodes the mutation the Lead used to prove the harness has teeth: sending
- * `content` raw. If the encoder were removed, the mutation below is what the frames would look like,
- * and the assertions here show it would be caught.
+ *   1. the generator produces six cases, each decodable with a matching digest;
+ *   2. the committed golden files still match what the generator produces (a drift check);
+ *   3. importing the generator writes nothing; only the CLI writes, where it is told.
  */
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -32,11 +20,10 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { buildCases, emitCases, DEFAULT_OUT } from '../tools/emit-frames.mjs';
-import { decodeContentFrame } from '../src/messages.js';
+import { base64ToBytes } from '../src/codec.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PKG = resolve(HERE, '..');
-const REPO_ROOT = resolve(PKG, '..', '..');
 const GOLDEN_DIR = DEFAULT_OUT;
 
 const digestOf = (bytes) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
@@ -69,7 +56,7 @@ test('the generator emits six cases, each with a frame the consumer can decode',
     if (payload.expects.content_bytes > 0) {
       assert.equal(typeof body.content, 'string', `${name}: content is a JSON string`);
       assert.ok(jsonByteField(body.content), `${name}: and it is valid base64, or encoding/json errors out`);
-      const decoded = decodeContentFrame(body.content);
+      const decoded = base64ToBytes(body.content);
       assert.equal(decoded.byteLength, payload.expects.content_bytes, `${name}: it decodes to the expected length`);
       assert.equal(digestOf(decoded), body.content_digest, `${name}: and its digest is the one on the frame`);
       if (payload.expects.content_text !== undefined) {
@@ -87,13 +74,13 @@ test('the generator emits six cases, each with a frame the consumer can decode',
 });
 
 test('the base64-looking case is the silent one: raw text would decode to different bytes without erroring', () => {
-  // The mutation the Lead used to prove the cross-module harness has teeth, reproduced here so this
-  // side of the seam fails too if the encoder is ever removed.
+  // Sending `content` raw is the mutation this guards against: it fails here if the encoder is
+  // ever removed.
   const c = buildCases().find((x) => x.name === 'text-that-looks-like-base64.json');
   const typed = 'aGVsbG8gd29ybGQ=';
 
   // What the frame sends, and what a consumer sees.
-  const sent = decodeContentFrame(c.payload.frame.body.content);
+  const sent = base64ToBytes(c.payload.frame.body.content);
   assert.equal(Buffer.from(sent).toString('utf8'), typed, 'the user typed base64 text and that is what arrives');
 
   // What sending `content` raw would have produced: no error, different bytes, digest now describing
@@ -105,13 +92,13 @@ test('the base64-looking case is the silent one: raw text would decode to differ
 
   // And the loud half, for completeness: ordinary ASCII sent raw is not valid base64 at all.
   const ascii = buildCases().find((x) => x.name === 'text-ascii.json');
-  const rawAscii = decodeContentFrame('Summarise the Q4 revenue deck for the board.');
-  assert.notDeepEqual([...rawAscii], [...decodeContentFrame(ascii.payload.frame.body.content)]);
+  const rawAscii = base64ToBytes('Summarise the Q4 revenue deck for the board.');
+  assert.notDeepEqual([...rawAscii], [...base64ToBytes(ascii.payload.frame.body.content)]);
 });
 
-test('importing the generator writes nothing — a test must not touch another component\'s tree', () => {
-  // The generator's default output is the Lead's golden directory. Importing it must build cases and
-  // stop; only the CLI writes. Asserted on the module's shape rather than by watching the clock.
+test('importing the generator writes nothing: a test must not touch another component\'s tree', () => {
+  // The generator's default output is endpoint/integration's golden directory. Importing it builds
+  // cases and stops; only the CLI writes.
   const before = existsSync(GOLDEN_DIR) ? readdirSync(GOLDEN_DIR).sort() : null;
   const cases = buildCases();
   assert.equal(cases.length, 6);

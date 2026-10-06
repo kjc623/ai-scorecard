@@ -1,11 +1,8 @@
 /**
- * fake-core.mjs — a stand-in for `capture-core`, implementing the parts of
- * device/protocol/native.go that the extension can observe.
- *
- * It exists so the suite can test the *protocol* half of the extension's behaviour without a
- * browser or a Go process: refusals are typed, an oversized manifest is refused before transfer,
- * and a self-contradicting observation is rejected the way `ObservationMessage.Validate()` rejects
- * it. The refusal strings are copied from native.go's closed set.
+ * fake-core.mjs — a fake capture-core implementing the parts of endpoint/protocol's native
+ * messaging the extension can observe: refusals are typed, an oversized manifest is refused before
+ * transfer, and a self-contradicting observation is rejected the way ObservationMessage.Validate()
+ * rejects it.
  */
 
 import { CORE_TYPE, NATIVE_MESSAGE_VERSION, REFUSAL } from '../src/messages.js';
@@ -121,7 +118,7 @@ export function createFakeCore({
           return reply(CORE_TYPE.REFUSAL, id, { reason: REFUSAL.MALFORMED, message: 'descriptor without a name' });
         }
         if (descriptor.size_bytes > attachmentCapacityBytes) {
-          // native.go: refuse *before* transfer. No byte has moved at this point.
+          // Refuse before transfer: no byte has moved at this point.
           return reply(CORE_TYPE.REFUSAL, id, {
             reason: REFUSAL.ATTACHMENT_TOO_LARGE,
             message: `${descriptor.name} is ${descriptor.size_bytes} bytes, cap is ${attachmentCapacityBytes}`,

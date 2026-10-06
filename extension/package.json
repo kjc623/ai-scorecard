@@ -1,11 +1,16 @@
 {
-  "name": "capture-extension",
+  "name": "shadow-ai-capture-extension",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Manifest V3 browser half of Shadow AI Capture (docs/01-collectors.md 7). Zero dependencies; runs offline.",
-  "main": "run-tests.mjs",
+  "description": "The Shadow AI Capture browser extension (Manifest V3, Chrome and Edge).",
   "scripts": {
-    "test": "node --test"
+    "test": "node --test \"test/*.test.mjs\"",
+    "build:crx": "node tools/build-crx.mjs",
+    "check:browser": "node tools/in-browser-check.mjs"
+  },
+  "devDependencies": {
+    "crx3": "^2.0.0",
+    "puppeteer-core": "^25.12.0"
   }
 }

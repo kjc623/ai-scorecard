@@ -1,9 +1,8 @@
 /**
- * test/mode-policy.test.mjs — §11's "the mode is applied before content is read".
+ * test/mode-policy.test.mjs — the mode is applied before content is read.
  *
- * The properties that matter here are the conservative ones: with no bundle, a stale bundle or an
- * unparseable scope entry the resolution goes **downward** to M0, never upward. §11.3: "A device
- * cannot exceed a ceiling it holds no bundle entry for".
+ * The properties that matter are the conservative ones: with no bundle, a stale bundle or an
+ * unparseable scope entry the resolution goes downward to M0, never upward.
  */
 
 import test from 'node:test';
@@ -48,7 +47,7 @@ test('a host with no scope entry resolves to the tenant default, not to a wider 
   assert.equal(r.reason, 'scope:(default)');
 });
 
-test('most-restrictive wins across every applicable entry, including an m0 default (§11.1)', () => {
+test('most-restrictive wins across every applicable entry, including an m0 default', () => {
   const policy = createPolicyCache();
   policy.applyBundle({
     policy_version: 'v1',
@@ -60,8 +59,8 @@ test('most-restrictive wins across every applicable entry, including an m0 defau
   assert.equal(policy.modeFor({ host: 'api.example-ai.invalid' }).mode, 'm1', 'the wildcard applies');
   assert.equal(policy.modeFor({ host: 'other.invalid' }).mode, 'm3', 'the default applies');
 
-  // The consequence stated plainly in §11.1: the device may apply a MORE restrictive mode than
-  // the strictest applicable scope entry, and that over-restriction is the conservative direction.
+  // The device may apply a MORE restrictive mode than the widest applicable scope entry; that
+  // over-restriction is the conservative direction.
   const strict = createPolicyCache();
   strict.applyBundle({ policy_version: 'v1', default_mode: 'm1', scope: { 'chat.example-ai.invalid': 'm0', '*.example-ai.invalid': 'm2' } });
   assert.equal(
@@ -95,7 +94,7 @@ test('a stale bundle resolves downward to M0 rather than continuing at its old m
   assert.equal(r.unsigned, true);
 });
 
-test('an unusable bundle keeps the previous one and marks it stale, exactly as §13.3 keeps enforcing', () => {
+test('an unusable bundle keeps the previous one and marks it stale', () => {
   const c = clock();
   const policy = createPolicyCache({ now: c.now, staleAfterMs: 10_000 });
   policy.applyBundle({ policy_version: 'v1', default_mode: 'm1', scope: { 'x.invalid': 'm2' } });
@@ -153,7 +152,7 @@ test('the cache never persists: snapshot() exposes only what the running bundle 
   assert.equal(policy.snapshot().policy_version, null);
 });
 
-test('§11.3 mode-change attribution: the health report carries the enforcing bundle version', () => {
+test('mode-change attribution: the snapshot carries the enforcing bundle version', () => {
   const policy = createPolicyCache();
   policy.applyBundle({ policy_version: 'bundle-42', default_mode: 'm1' });
   assert.equal(policy.snapshot().policy_version, 'bundle-42');
@@ -173,11 +172,11 @@ test('the body-lane include list and the confirmation window are bundle policy, 
   assert.equal(policy.confirmationWindowMs(), 5000);
 });
 
-test('the rules and release state come from the bundle and default to non-enforcing (§9.6)', () => {
+test('the rules and release state come from the bundle and default to non-enforcing', () => {
   const policy = createPolicyCache();
   assert.deepEqual(policy.rules(), []);
   assert.equal(policy.releaseState(), 'rolled_back', 'no release ⇒ no enforcement');
-  policy.applyBundle({ policy_version: 'v1', default_mode: 'm1', rules: [{ rule_id: 'R1', action: 'blocked' }], classifier_release: { version: 'c1', state: 'shadow' } });
+  policy.applyBundle({ policy_version: 'v1', default_mode: 'm1', rules: [{ rule_id: 'rule-1', action: 'blocked' }], classifier_release: { version: 'c1', state: 'shadow' } });
   assert.equal(policy.rules().length, 1);
   assert.equal(policy.releaseState(), 'shadow');
 });

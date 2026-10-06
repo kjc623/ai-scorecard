@@ -1,104 +1,92 @@
 #!/usr/bin/env node
-// installer/release-msi.mjs - build the generic, code-only Windows MSI a vendor ships.
+// installer/release-msi.mjs - build the agent release control-api serves: the generic Windows MSI,
+// the browser extension CRX, and release.json describing both.
 //
-//   node installer/release-msi.mjs                       # installer/dist/release/{ShadowAICapture.msi,release.json}
-//   node installer/release-msi.mjs --version 0.2.0 --policy-key-file vendor-policy.pub --sign
+//   node installer/release-msi.mjs --version 1.4.0 \
+//     --policy-key-file policy-signing.pub --policy-key-id policy-key-1 \
+//     --classifier-key classifier-signing.key \
+//     --classifier-rules endpoint/classifier-host/rules/default.json \
+//     --classifier-model endpoint/classifier-host/rules/model.json \
+//     --extension-key extension-signing.pem \
+//     [--wix-eula wix7] [--sign] [--out installer/dist/release]
 //
-// One MSI for every tenant. It carries the binaries, the signed classifier release and the
-// vendor-wide capture-core.env (layout, product defaults, the policy and classifier trust anchors);
-// it carries no tenant, deployment key or token. control-api's Settings -> Deployment download puts
-// ShadowAICapture.tenant.env beside it, and the MSI copies that file at install, so the whole
-// install command is `msiexec /i ShadowAICapture.msi /qn` (docs/05-platform-delivery.md §6.1).
-//
-// release.json is read back out of the built package (ProductCode, UpgradeCode, version, package
-// code), never predicted. control-api reads this folder as SAC_AGENT_RELEASE_DIR.
-//
-//   --version X.Y.Z        MSI ProductVersion; default the manifest's. Raise it for every release
-//                          an MDM should upgrade to: Intune supersedence and detection key on it.
-//   --policy-key HEX | --policy-key-file FILE   the policy trust anchor (control-api's
-//                          SAC_POLICY_SIGNING_KEY_FILE public half; hex, or a PEM key, private or
-//                          public). Also SAC_POLICY_TRUST_KEY[_FILE]. Default: the lab's vendor key
-//                          (localdev/.authlab-identity/policy-signing.pub.hex) when this checkout
-//                          has a lab, else installer/.release/keys/policy-key.pub, minted as a
-//                          DEVELOPMENT pair when absent.
-//   --policy-key-id ID     the key id bundles must name (default policy-key-1)
-//   --classifier-key FILE  classifier signing seed (hex); default installer/.release/keys/classifier.key.hex,
-//                          created when absent. --classifier-rules FILE: default the development rules.
-//   --src DIR              compile the binaries from DIR (an export of a release tag) instead of the working tree
-//   --sign                 sign the executables and the MSI (Build-Msi.ps1 documents the signer settings)
-//
-// It needs WiX (v5+) and Windows. It installs nothing.
+// Every input is required; --extension-key may instead come from SAC_EXTENSION_SIGNING_KEY (the PEM
+// itself). --wix-eula accepts the WiX Open Source Maintenance Fee EULA for an unattended build;
+// --sign signs the executables and the MSI with the signer msi.mjs reads from the environment.
+// release.json is read back out of the built package, and the build fails if any release check does.
 
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { parseArgs } from 'node:util';
 
-import { PRODUCT, TENANT_PACKAGE } from './manifest.mjs';
-import { BuildError, KEYS, ROOT, buildMsi, moveWixPdb, readMsi, rel, resolvePolicyAnchor, stageGeneric, writeReleaseJson } from './windows/msi.mjs';
+import { buildCrx } from '../extension/tools/build-crx.mjs';
+import { BuildError, ROOT, STAGE_OPTIONS, buildStage, resolveInputs } from './build.mjs';
+import { TENANT_PACKAGE } from './manifest.mjs';
+import { MSI_FILE, buildMsi, isSigned, readMsi, releaseChecks } from './windows/msi.mjs';
 
-const ARGS = process.argv.slice(2);
-function valueOf(flag, fallback) {
-  const i = ARGS.indexOf(flag);
-  return i === -1 ? fallback : ARGS[i + 1];
-}
-function step(msg) {
-  console.log(`release-msi: ${msg}`);
-}
-
-if (process.platform !== 'win32') {
-  console.error('release-msi: the MSI is built with WiX and read back through Windows Installer; run this on Windows');
-  process.exit(1);
-}
-
-const VERSION = valueOf('--version', PRODUCT.version);
-const OUT = join('installer', 'dist', 'release');
+const log = (msg) => console.log(`release-msi: ${msg}`);
 
 try {
-  if (!/^\d+\.\d+\.\d+$/.test(VERSION)) throw new BuildError(`--version ${VERSION}: an MSI ProductVersion is major.minor.build`);
-  const anchor = resolvePolicyAnchor({ key: valueOf('--policy-key'), keyFile: valueOf('--policy-key-file'), keyId: valueOf('--policy-key-id') });
-  step(`policy trust anchor ${anchor.policyKeyId} from ${anchor.source}`);
-  if (anchor.minted) {
-    step(`  the private half is in ${rel(KEYS)}; a lab control-api can sign with it (SAC_POLICY_SIGNING_KEY_FILE).`);
-    step('  A vendor release passes the production public key with --policy-key-file instead.');
-  }
-
-  const staged = stageGeneric({ version: VERSION, anchor, classifierKey: valueOf('--classifier-key'), classifierRules: valueOf('--classifier-rules'), src: valueOf('--src'), log: step });
-  const generic = readFileSync(join(ROOT, 'installer', '.stage', 'windows-amd64', 'etc', 'capture-core.env'), 'utf8');
-
-  step(`building ShadowAICapture.msi ${VERSION} …`);
-  const msi = buildMsi({ outDir: OUT, version: VERSION, sign: ARGS.includes('--sign') });
-  moveWixPdb(OUT);
-
-  // What went into the package, checked against the package: no copied file is shipped, the
-  // service reads both files in order, and the installed vendor file is the one staged.
-  const info = readMsi(msi, ['File', 'MoveFile', 'ServiceInstall']);
-  const files = info.tables.File.map((f) => f.FileName.split('|').pop());
-  if (files.some((f) => /tenant\.env$/i.test(f))) throw new BuildError('the generic MSI installs a tenant file; it must only copy one');
-  const move = info.tables.MoveFile.find((m) => m.SourceName === TENANT_PACKAGE.fileName);
-  if (!move) throw new BuildError(`the MSI has no MoveFile row for ${TENANT_PACKAGE.fileName}`);
-
-  const release = writeReleaseJson(msi, {
-    source: staged.source,
-    trust: {
-      policy_key_id: anchor.policyKeyId,
-      policy_key: anchor.policyKey,
-      classifier_pubkey: staged.classifierPubkey,
-      classifier_rules: staged.classifierRules,
-      generic_config_sha256: createHash('sha256').update(generic).digest('hex'),
+  if (process.platform !== 'win32') throw new BuildError('the MSI is built with WiX and read back through Windows Installer: run this on Windows');
+  const { values } = parseArgs({
+    options: {
+      ...STAGE_OPTIONS,
+      'extension-key': { type: 'string' },
+      'wix-eula': { type: 'string' },
+      sign: { type: 'boolean', default: false },
+      out: { type: 'string', default: join(ROOT, 'installer', 'dist', 'release') },
     },
   });
+  const inputs = resolveInputs(values);
+  const extensionKey = values['extension-key'] ? readFileSync(values['extension-key'], 'utf8') : process.env.SAC_EXTENSION_SIGNING_KEY;
+  if (!extensionKey) throw new BuildError('missing required input: --extension-key (or SAC_EXTENSION_SIGNING_KEY)');
+  const out = resolve(values.out);
 
-  console.log(`
-release-msi: built ${rel(msi)}
-${JSON.stringify(release, null, 2)}
+  const { stage, anchors, generic } = buildStage({ os: 'windows', arch: 'amd64', inputs, log });
+  rmSync(out, { recursive: true, force: true });
+  mkdirSync(out, { recursive: true });
 
-  ${rel(join(ROOT, OUT))} is what control-api serves as SAC_AGENT_RELEASE_DIR. Nothing was installed.
-  Intune: Win32 app from ShadowAICapture.msi + ${TENANT_PACKAGE.fileName}; detection = MSI product code
-  ${release.product_code}, version ${release.version} or later (installer/README.md, "Deploying it").`);
+  log(`build ${MSI_FILE} ${inputs.version}`);
+  const msi = buildMsi({ stage, outDir: out, version: inputs.version, sign: values.sign, wixEula: values['wix-eula'], log });
+  log('package the extension');
+  const extension = await buildCrx({ keyPem: extensionKey, version: inputs.version, outDir: out }).catch((err) => {
+    throw new BuildError(`extension: ${err.message}`);
+  });
+
+  const info = readMsi(msi);
+  const bytes = readFileSync(msi);
+  const release = {
+    version: info.version,
+    product_code: info.product_code,
+    upgrade_code: info.upgrade_code,
+    package_code: info.package_code,
+    name: info.product_name,
+    publisher: info.manufacturer,
+    file: MSI_FILE,
+    sha256: createHash('sha256').update(bytes).digest('hex'),
+    size: bytes.length,
+    signed: isSigned(msi),
+    install_command: `msiexec /i ${MSI_FILE} /qn`,
+    uninstall_command: `msiexec /x ${info.product_code} /qn`,
+    tenant_file: TENANT_PACKAGE.fileName,
+    trust: {
+      policy_key: anchors.SAC_POLICY_KEY,
+      policy_key_id: anchors.SAC_POLICY_KEY_ID,
+      classifier_pubkey: anchors.SAC_CLASSIFIER_PUBKEY,
+      generic_config_sha256: createHash('sha256').update(generic).digest('hex'),
+    },
+    extension,
+    built_at: new Date().toISOString(),
+  };
+  writeFileSync(join(out, 'release.json'), JSON.stringify(release, null, 2) + '\n');
+
+  const failed = releaseChecks(out).filter(([, ok]) => !ok);
+  if (failed.length) throw new BuildError(`the built release fails its checks:\n${failed.map(([name, , detail]) => `  ${name}: ${detail}`).join('\n')}`);
+  log(`built ${out}`);
+  console.log(JSON.stringify(release, null, 2));
 } catch (err) {
-  if (err instanceof BuildError) {
-    console.error(`release-msi: ${err.message}`);
-    process.exit(1);
-  }
-  throw err;
+  if (!(err instanceof BuildError) && !String(err.code).startsWith('ERR_PARSE_ARGS')) throw err;
+  console.error(`release-msi: ${err.message}`);
+  process.exit(1);
 }

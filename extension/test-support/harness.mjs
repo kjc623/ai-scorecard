@@ -41,12 +41,9 @@ export function createHarness({ core = {}, capacity = 200, failConnect = false, 
 
   // Route every native port into the fake core, before anything builds an adapter.
   //
-  // `state.failConnect` is the single source of truth for whether a connect fails, and this wrapper
-  // must not shadow it with the closure value. It did, and the inconsistency was invisible until a
-  // test revived the channel mid-run: the wrapper took its "failing" branch, `origConnect` saw
-  // `state.failConnect === false` and handed back a port **without the routing patch**, and the frame
-  // went nowhere — surfacing as a 10-second `native_timeout` in a test that was about ack semantics.
-  // Reading the state in one place means a port that exists is always a port that answers.
+  // `state.failConnect` is the single source of truth for whether a connect fails; the wrapper reads
+  // it rather than a closure copy, so a port that exists is always a port that answers, even when a
+  // test revives the channel mid-run.
   const origConnect = fake.chrome.runtime.connectNative.bind(fake.chrome.runtime);
   let connectCount = 0;
   fake.chrome.runtime.connectNative = (application) => {
@@ -118,6 +115,47 @@ export async function waitFor(predicate, { timeoutMs = 5000, label = 'condition'
     if (Date.now() > deadline) throw new Error(`waitFor timed out waiting for ${label}`);
     await new Promise((resolve) => setTimeout(resolve, 1));
   }
+}
+
+/**
+ * Give tab `tabId` a content script whose page holds `files` in a file input, wired the way Chrome
+ * wires it: the worker reaches it with `tabs.sendMessage`, and it relays attachment frames back to
+ * the worker's own `runtime.onMessage` listener, which forwards them to the fake core.
+ * @param {{name: string, media_type?: string, bytes: Uint8Array}[]} files
+ */
+export function attachTab(h, tabId, files) {
+  // The worker registers its listener before the harness's own content script.
+  const workerListener = h.fake.state.messageHandlers[0];
+  let listener = null;
+  const scope = { crypto: fakeCrypto(), performance: globalThis.performance };
+  scope.chrome = {
+    runtime: {
+      id: 'fake-extension-id',
+      onMessage: { addListener: (fn) => (listener = fn) },
+      sendMessage: (message) => new Promise((resolve) => workerListener(message, { tab: { id: tabId } }, resolve)),
+    },
+  };
+  const inputFiles = files.map((f) => ({
+    name: f.name,
+    type: f.media_type || '',
+    size: f.bytes.byteLength,
+    lastModified: 1,
+    slice: (offset, end) => ({ arrayBuffer: async () => f.bytes.slice(offset, end).buffer }),
+  }));
+  const document = {
+    querySelectorAll: (selector) => (selector === 'input[type="file"]' ? [{ files: inputFiles }] : []),
+    addEventListener: () => {},
+  };
+  const content = bootstrapContentScript(createContentScriptAdapter(scope), { document });
+  const asked = [];
+  h.fake.state.tabAnswers.set(tabId, (message) => {
+    asked.push(message.type);
+    return new Promise((resolve) => {
+      const returned = listener(message, { tab: { id: tabId } }, resolve);
+      if (returned !== true) resolve(returned);
+    });
+  });
+  return { content, asked };
 }
 
 export { createFakeChrome, createFakeCore, NATIVE_MESSAGE_VERSION };

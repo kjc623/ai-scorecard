@@ -1,25 +1,15 @@
 /**
- * mode-policy.js — what the extension is allowed to do with a request, decided before it
- * touches the body (§11.2: "the mode is applied before content is read").
+ * mode-policy.js — what the extension may do with a request, decided before it touches the body.
  *
- * Two facts shape this module.
+ * capture-core is authoritative for the effective mode; the extension holds a cache of the signed
+ * policy it receives over the native channel. The cache fails closed: absent, stale, unparseable or
+ * unknown resolves to `m0`, and at `m0` the body is not read at all.
  *
- * 1. **capture-core is authoritative for the effective mode** (Lead, task-6; §3.4's
- *    bidirectional native channel exists so the extension "can be told ... a destination's
- *    effective mode"). What the extension holds is a *cache of signed policy*. §11.3:
- *    "A device cannot exceed a ceiling it holds no bundle entry for" and "a matrix that fails
- *    to resolve resolves *downward*". The cache therefore fails closed: absent, stale,
- *    unparseable or unknown ⇒ `m0`, and `m0` means the body is not read at all.
+ * M0 is enforced at registration: the body-bearing webRequest lane is filtered by
+ * `isBodyBearing(url)`, so for an M0 destination Chrome never hands the extension `requestBody`.
  *
- * 2. **M0 is enforced at registration, not inside the handler.** The pipeline asks
- *    `isBodyBearing(url)` before it registers the body-bearing webRequest lane, so for an M0
- *    destination Chrome never hands the extension `requestBody`. That makes §7.1's "the body
- *    is not retained, hashed or sent" a property of the listener filter — one a test can
- *    assert on — rather than a promise about what a handler does after the bytes arrive.
- *
- * Nothing here persists. §11.3's mode-change attribution and the notice gate are policy the
- * bundle carries; the extension stores the bundle it is enforcing in memory only, and reports
- * its version on the health channel.
+ * Nothing here persists. The bundle lives in memory only and its version is reported on the health
+ * channel.
  */
 
 import { MODE, modeReadsContent } from './messages.js';
@@ -52,8 +42,8 @@ export function createPolicyCache({ now = () => Date.now(), staleAfterMs = DEFAU
 
   function applyBundle(bundle, { at = now() } = {}) {
     if (!bundle || typeof bundle !== 'object' || typeof bundle.policy_version !== 'string' || bundle.policy_version === '') {
-      // An unusable bundle is not "no policy": keep the previous one, exactly as §13.3 does
-      // for a signature failure, and report it. If there is none, we stay at M0.
+      // An unusable bundle is not "no policy": keep the previous one, marked stale. With none,
+      // everything stays at M0.
       current = current ? { ...current, stale: true } : null;
       rebuildM0();
       return { applied: false, reason: 'unusable_bundle', policy_version: current ? current.bundle.policy_version : null };
@@ -76,8 +66,8 @@ export function createPolicyCache({ now = () => Date.now(), staleAfterMs = DEFAU
   }
 
   /**
-   * Resolve the mode for a request. Order is most-restrictive-wins over every entry that
-   * applies (§11.1), and any failure to resolve returns M0 rather than a wider mode.
+   * Resolve the mode for a request: most restrictive wins over every entry that applies, and any
+   * failure to resolve returns M0 rather than a wider mode.
    * @param {{host: string, tool_fingerprint?: string, media_type?: string, size_bytes?: number, url?: string}} target
    * @returns {{mode: string, reason: string, policy_version: string|null, unsigned: boolean}}
    */
@@ -100,12 +90,9 @@ export function createPolicyCache({ now = () => Date.now(), staleAfterMs = DEFAU
       if (patternMatches(pattern, host, target.tool_fingerprint)) matches.push({ pattern, mode });
     }
 
-    // §11.3: "an observation with no matching scope entry resolves to the tenant default". The
-    // default is therefore a *fallback*, not a competing entry — including it in the
-    // most-restrictive reduction would let an M0 default silently override an explicit m2 scope
-    // entry, which is the wrong reading of "most restrictive" and would make the scope matrix
-    // inert. Most-restrictive applies across the entries that DO match; the default stands in
-    // when none does.
+    // The tenant default applies only when no scope entry matches. Folding it into the
+    // most-restrictive reduction would let an M0 default silently override every explicit scope
+    // entry.
     const entries = matches.length
       ? matches
       : [{ pattern: '(default)', mode: isMode(current.bundle.default_mode) ? current.bundle.default_mode : CONSERVATIVE_MODE }];
@@ -116,7 +103,7 @@ export function createPolicyCache({ now = () => Date.now(), staleAfterMs = DEFAU
     return { mode: winner.mode, reason: `scope:${winner.pattern}`, policy_version: current.bundle.policy_version, unsigned: false };
   }
 
-  /** §11.2/§7.1: the gate the pipeline registers the body-bearing listener behind. */
+  /** The gate the body-bearing listener is registered behind. */
   function isBodyBearing(url) {
     let host = '';
     try {
@@ -155,15 +142,10 @@ export function createPolicyCache({ now = () => Date.now(), staleAfterMs = DEFAU
     return current ? current.bundle.rules || [] : [];
   }
 
-  /** Scope keys this device resolves to a non-reading mode, for the body-lane filter. */
-  function m0Patterns() {
-    return [...m0Hosts];
-  }
-
   /**
    * The bundle's body-lane include list, if the deployment supplies one. Chrome match patterns
    * cannot express "everything except", so a deployment that needs a strict observation set names
-   * it here; otherwise the lane observes broadly (§7.1) and the per-request gate does the work.
+   * it here; otherwise the lane observes broadly and the per-request gate does the work.
    */
   function bodyLanePatterns() {
     const p = current && current.bundle.body_lane_patterns;
@@ -184,7 +166,7 @@ export function createPolicyCache({ now = () => Date.now(), staleAfterMs = DEFAU
     return Number.isFinite(v) && v > 0 ? v : 20_000;
   }
 
-  /** §11.3: the cap comes from the bundle; absent a bundle there is no cap to exceed, only M0. */
+  /** The caps come from the bundle; without a bundle there is no cap to exceed, only M0. */
   function caps() {
     const c = (current && current.bundle.mode_caps) || {};
     return {
@@ -193,11 +175,7 @@ export function createPolicyCache({ now = () => Date.now(), staleAfterMs = DEFAU
     };
   }
 
-  /**
-   * The §8.2 destination sets, for the predicate's "evidence, never sufficient" row. These are
-   * *discovery* hints (A9/C8: "a destination the tenant already sanctioned or denied may shift a
-   * prior"), never the decision — §2.1 forbids deciding by hostname.
-   */
+  /** The bundle's destination sets: evidence for the predicate, never the decision. */
   function discoverySets() {
     if (!current) return {};
     return {
@@ -207,7 +185,7 @@ export function createPolicyCache({ now = () => Date.now(), staleAfterMs = DEFAU
     };
   }
 
-  return { applyBundle, modeFor, isBodyBearing, snapshot, clear, rules, releaseState, caps, discoverySets, confirmationWindowMs, m0Patterns, bodyLanePatterns };
+  return { applyBundle, modeFor, isBodyBearing, snapshot, clear, rules, releaseState, caps, discoverySets, confirmationWindowMs, bodyLanePatterns };
 }
 
 function isMode(m) {

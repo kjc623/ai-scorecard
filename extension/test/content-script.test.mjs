@@ -1,12 +1,7 @@
 /**
- * test/content-script.test.mjs — the isolated-world half of §7.3.
- *
- * The content script is the only code that ever touches a `File`, so this is where the two halves
- * of §7.3 meet: the page resolves a `File` handle, and the transfer is driven from here through
- * the service worker's relay to `capture-core`.
- *
- * NOT VERIFIED HERE: that a real page's `input[type=file]` behaves as the fake document does, and
- * that Chromium permits a content script to read a user-selected `File`. Both need a browser.
+ * test/content-script.test.mjs — the isolated-world wiring: the page resolves a `File` handle, and
+ * the transfer is driven from here through the service worker's relay to capture-core. The page is
+ * a fake document; tools/in-browser-check.mjs covers a real one.
  */
 
 import test from 'node:test';
@@ -108,7 +103,7 @@ function makeElement() {
   return el;
 }
 
-// ── §7.3: resolving the file input ───────────────────────────────────────────────────────────
+// ── resolving the file input ───────────────────────────────────────────────────────────────
 
 test('capture_upload_check answers with metadata only, and never reads a byte', async () => {
   const world = makeWorld({
@@ -128,7 +123,7 @@ test('capture_upload_check answers with metadata only, and never reads a byte', 
   assert.deepEqual(world.filesRegistry, [], 'no slice was taken: reading at selection holds bytes the user never sends');
 });
 
-test('§7.3: no reachable File handle reports no_reachable_file, which is what records content_no_attachments', async () => {
+test('no reachable File handle reports no_reachable_file, which is what records content_no_attachments', async () => {
   const world = makeWorld({
     core: { handle: async () => ({ type: CORE_TYPE.ACK, version: 1, body: {} }) },
     files: [],
@@ -151,7 +146,7 @@ test('a dropped file is offered first, because it is the element the user used',
   assert.equal(result.reason, 'drop_and_input');
 });
 
-// ── §7.3: the chunked transfer, driven from the page ─────────────────────────────────────────
+// ── the chunked transfer, driven from the page ───────────────────────────────────────────────
 
 test('an accepted upload is transferred as manifest-then-chunks through the relay', async () => {
   const seen = [];
@@ -271,7 +266,7 @@ test('the File reference is dropped once the transfer ends, so nothing is held b
   assert.equal(world.app.registry.heldCount(), 0, 'snapshot-on-send, and the reference is not retained afterwards');
 });
 
-// ── §7.4: the confirmation, rendered in the page ────────────────────────────────────────────
+// ── the warn confirmation, rendered in the page ────────────────────────────────────────────
 
 test('capture_warn renders the confirmation and answers with the user\'s explicit choice', async () => {
   const world = makeWorld({ core: { handle: async () => ({ type: CORE_TYPE.ACK, version: 1, body: {} }) } });

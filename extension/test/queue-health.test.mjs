@@ -1,19 +1,18 @@
 /**
- * test/queue-health.test.mjs — §3.4's bounded queue and §4.3's closed counter set.
+ * test/queue-health.test.mjs — the bounded queue and the closed counter set.
  *
- * The two claims under test:
- *   - the bound is enforced on write with **drop-oldest**, and every drop increments `dropped` by
- *     exactly the number evicted (C22: "a drop is counted, never silent");
- *   - a dead channel is reported as capture-core `absent` **plus** extension-side `degraded` —
- *     never as "no observations" (§3.4). That distinction is the whole of check 2 below.
+ *   - the bound is enforced on write with drop-oldest, and every drop increments `dropped` by
+ *     exactly the number evicted: a drop is counted, never silent;
+ *   - a dead channel is reported as capture-core `absent` plus extension-side `degraded`, never as
+ *     "no observations".
  */
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createQueue } from '../src/queue.js';
-import { COUNTER, createCounterSet, createCounters, createHealthReporter } from '../src/health.js';
-import { COUNTERS } from '../src/messages.js';
+import { createCounterSet, createCounters, createHealthReporter } from '../src/health.js';
+import { COUNTER, COUNTERS } from '../src/messages.js';
 
 test('the queue drops the OLDEST entry when full, and counts exactly what it dropped', () => {
   const queue = createQueue({ capacity: 3 });
@@ -33,7 +32,7 @@ test('the queue drops the OLDEST entry when full, and counts exactly what it dro
   assert.equal(stats.capacity, 3);
 });
 
-test('a drop is reported to the counter set, so §4.3\'s `dropped` moves with the queue', () => {
+test('a drop is reported to the counter set, so `dropped` moves with the queue', () => {
   const counters = createCounterSet();
   const queue = createQueue({ capacity: 2, onDrop: () => counters.inc(COUNTER.DROPPED, 1) });
   for (let i = 0; i < 5; i++) queue.enqueue('observation', { i }, 1);
@@ -70,7 +69,7 @@ test('a capacity below one is refused rather than silently accepted', () => {
 test('counters are the closed seven, at zero, and an unknown name is refused rather than sent', () => {
   const c = createCounters();
   assert.deepEqual(Object.keys(c).sort(), [...COUNTERS].sort());
-  assert.equal(COUNTERS.length, 7, '§4.3/A15 closes the set at seven');
+  assert.equal(COUNTERS.length, 7, 'the set is closed at seven');
   for (const v of Object.values(c)) assert.equal(v, 0);
 
   const set = createCounterSet();
@@ -79,7 +78,7 @@ test('counters are the closed seven, at zero, and an unknown name is refused rat
   assert.equal(set.snapshot().counters.observed, 1);
 });
 
-test('counters are cumulative since start plus a windowed delta (§4.3)', () => {
+test('counters are cumulative since start plus a windowed delta', () => {
   const set = createCounterSet();
   set.inc('observed', 3);
   set.inc('emitted', 2);
@@ -115,7 +114,7 @@ test('a failed connect is reported as capture-core absent AND extension-side deg
   assert.equal(report.queue.depth, 2);
   assert.equal(report.queue.capacity, 2);
   assert.equal(report.queue.dropped_total, 1);
-  assert.equal(report.policy.version, 'v3', '§11.3 mode-change attribution');
+  assert.equal(report.policy.version, 'v3', 'mode-change attribution');
 });
 
 test('the queue\'s drop counter and the health counter are the same number, because the queue drives it', () => {
@@ -141,7 +140,7 @@ test('errors are counted with a cause, so an operator can group without reading 
   assert.deepEqual(snap.errors_by_code, { native_unavailable: 2, evaluation_error: 1, internal_error: 1 });
 });
 
-test('§3.4: a dead channel reports capture-core absent AND extension-side degraded', () => {
+test('a dead channel reports capture-core absent AND extension-side degraded', () => {
   const health = createHealthReporter({
     device_id: 'dev-1',
     queueStats: () => queue.stats(),
@@ -166,7 +165,7 @@ test('§3.4: a dead channel reports capture-core absent AND extension-side degra
   assert.equal(report.queue.depth, 2);
   assert.equal(report.queue.capacity, 2);
   assert.equal(report.queue.dropped_total, 1);
-  assert.equal(report.policy.version, 'v3', '§11.3 mode-change attribution');
+  assert.equal(report.policy.version, 'v3', 'mode-change attribution');
 });
 
 test('a connected channel reports healthy and a successful send is recorded as emitted', () => {

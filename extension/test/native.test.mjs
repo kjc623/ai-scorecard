@@ -1,5 +1,5 @@
 /**
- * test/native.test.mjs — the channel to capture-core (§3.4) against the Lead's protocol.
+ * test/native.test.mjs — the native-messaging channel to capture-core.
  *
  * Four properties:
  *   - a failed connect is `native_unavailable` and never a silent no-op;
@@ -14,8 +14,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createNativeClient, NATIVE_APP, policySyncRequest, modeQuery } from '../src/native.js';
-import { CORE_TYPE, REFUSAL, TYPE, frame, framedByteLength, observationBody, unframe, validateHealthReport, validateObservation } from '../src/messages.js';
+import { createNativeClient, NATIVE_APP } from '../src/native.js';
+import { CORE_TYPE, COUNTERS, REFUSAL, STATE, TYPE, frame, framedByteLength, observationBody, unframe, validateObservation } from '../src/messages.js';
 import { createHarness, createFakeChrome, settle } from '../test-support/harness.mjs';
 import { createChromeAdapter } from '../src/chrome-adapter.js';
 import { fakeCrypto } from '../test-support/harness.mjs';
@@ -68,7 +68,9 @@ test('the client reaches the fake core and gets an ack for a health report', asy
   const sent = h.core.received.find((m) => m.type === TYPE.HEALTH);
   assert.ok(sent, 'the frame reached the core');
   assert.equal(sent.version, 1, 'protocol.Version is carried per message');
-  assert.equal(validateHealthReport(sent.body), null, 'the health body validates against the protocol shape');
+  assert.equal(sent.body.collector, 'capture_extension');
+  assert.ok(Object.values(STATE).includes(sent.body.state), 'the state is from the closed set');
+  assert.deepEqual(Object.keys(sent.body.counters).filter((k) => !COUNTERS.includes(k)), [], 'only the closed counter set');
 });
 
 test('a disconnect surfaces as native_unavailable and fails every in-flight request', async () => {
@@ -84,7 +86,7 @@ test('a disconnect surfaces as native_unavailable and fails every in-flight requ
   h.fake.chrome.runtime.connectNative = () => silent;
   const scoped = createChromeAdapter({ chrome: h.fake.chrome, crypto: h.crypto, performance: globalThis.performance });
   const client = createNativeClient({ adapter: scoped, timeoutMs: 5000 });
-  const inFlight = client.sendRequest(TYPE.MODE_QUERY, modeQuery({ tool_fingerprint: 'tf1:x', host: 'a.invalid' }));
+  const inFlight = client.sendRequest(TYPE.MODE_QUERY, { tool_fingerprint: 'tf1:x', host: 'a.invalid' });
   await settle(1);
   assert.equal(client.isConnected(), true);
   assert.ok(captured, 'the client must have registered a disconnect listener');
@@ -108,7 +110,7 @@ test('a timeout is native_timeout, not a hang', async () => {
   const scoped = createChromeAdapter({ chrome: h.fake.chrome, crypto: h.crypto, performance: globalThis.performance });
   const client = createNativeClient({ adapter: scoped, timeoutMs: 20 });
   await assert.rejects(
-    client.sendRequest(TYPE.MODE_QUERY, modeQuery({ tool_fingerprint: 'tf1:x', host: 'a.invalid' })),
+    client.sendRequest(TYPE.MODE_QUERY, { tool_fingerprint: 'tf1:x', host: 'a.invalid' }),
     (e) => e.code === 'native_timeout',
   );
 });
@@ -239,7 +241,7 @@ test('observation validation refuses the contradictions native.go refuses', () =
     size_bytes: 2,
     has_content: true,
     content: 'hi',
-    decision: { rule_id: 'R1', action: 'logged', decided_locally: true },
+    decision: { rule_id: 'rule-1', action: 'logged', decided_locally: true },
   };
   assert.equal(validateObservation(good), null);
 
@@ -253,28 +255,4 @@ test('observation validation refuses the contradictions native.go refuses', () =
   assert.equal(validateObservation({ ...good, degraded_reason: 'budget_exhausted' }), null);
 });
 
-test('health-report validation refuses a counter outside the closed set', () => {
-  const base = { device_id: 'd', collector: 'capture_extension', state: 'healthy', since: 'now', counters: { observed: 1 } };
-  assert.equal(validateHealthReport(base), null);
-  assert.equal(validateHealthReport({ ...base, counters: { invented_counter: 1 } }).reason, REFUSAL.MALFORMED);
-  assert.equal(validateHealthReport({ ...base, collector: '' }).reason, REFUSAL.MALFORMED);
-  assert.equal(validateHealthReport({ ...base, state: 'fine' }).reason, REFUSAL.MALFORMED);
-});
 
-test('the policy-sync and mode-query bodies match the protocol structs', () => {
-  assert.deepEqual(policySyncRequest('v1'), { known_version: 'v1' });
-  assert.deepEqual(policySyncRequest(), { known_version: '' });
-  assert.deepEqual(modeQuery({ tool_fingerprint: 'tf1:x' }), { tool_fingerprint: 'tf1:x' });
-  assert.deepEqual(modeQuery({ tool_fingerprint: 'tf1:x', host: 'a.invalid', media_type: 'application/json', size_bytes: 12 }), {
-    tool_fingerprint: 'tf1:x',
-    host: 'a.invalid',
-    media_type: 'application/json',
-    size_bytes: 12,
-  });
-});
-
-test('a refusal whose reason is outside the closed set cannot be constructed', async () => {
-  const { refusal } = await import('../src/messages.js');
-  assert.throws(() => refusal('because_i_said_so', 'no'), /outside the closed set/);
-  assert.deepEqual(refusal(REFUSAL.ATTACHMENT_TOO_LARGE, 'too big'), { reason: 'attachment_too_large', message: 'too big' });
-});

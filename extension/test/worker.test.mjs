@@ -1,15 +1,11 @@
 /**
- * test/worker.test.mjs — the extension driven end to end through the fake chrome, which is the
- * closest this host can get to the browser.
+ * test/worker.test.mjs — the extension driven end to end through the fake chrome.
  *
- * Everything here goes through the real wiring: `background/service-worker.js` → `registration.js`
- * → `pipeline.js` → `native.js` → the fake `capture-core`. `fake.drive(lane, detail)` calls the
- * listener Chrome would call, with the `extraInfoSpec` Chrome would have been given, so the
- * registration assertions are assertions about what a browser would actually hand over.
- *
- * NOT VERIFIED HERE, and not verifiable on this host: that Chromium honours `{cancel: true}`,
- * that a content script can read a real `File`, and that a real native host exists. See README.md
- * for the exact clicks a human must make.
+ * Everything goes through the real wiring: `background/service-worker.js` → `registration.js` →
+ * `pipeline.js` → `native.js` → the fake capture-core. `fake.drive(lane, detail)` calls the listener
+ * Chrome would call, registered with the `extraInfoSpec` Chrome would have been given, so the
+ * registration assertions are about what a browser would hand over. tools/in-browser-check.mjs
+ * covers a real browser.
  */
 
 import test from 'node:test';
@@ -129,18 +125,18 @@ test('a chat submission on the body lane is emitted with content, digest and ide
   assert.ok(obs, 'a positive match is emitted');
   assert.equal(obs.has_content, true);
   // `content` is base64 because the protocol declares it `[]byte`; assert on the DECODED bytes,
-  // which is what a real capture-core sees (§7.2's identity property).
+  // which is what a real capture-core sees.
   const decoded = h.core.lastDecodedContent();
   assert.ok(decoded, 'the frame content decodes the way encoding/json decodes []byte');
   assert.equal(Buffer.from(decoded).toString('utf8'), bodyText, 'the decoded content is the payload as sent');
   assert.equal(await h.core.lastComputedDigest(), obs.content_digest, 'and its digest matches content_digest');
   assert.equal(obs.content_is_binary, undefined);
-  assert.ok(obs.tool_fingerprint.startsWith('tf1:'), '§8.1\'s versioned prefix');
+  assert.ok(obs.tool_fingerprint.startsWith('tf1:'), 'the versioned fingerprint prefix');
   assert.equal(obs.route, 'ext.web_request');
   assert.equal(obs.size_bytes, Buffer.byteLength(bodyText));
 });
 
-test('a negative match is counted, never emitted — that is what makes the predicate auditable (§7.3)', async () => {
+test('a negative match is counted, never emitted: that is what makes the predicate auditable', async () => {
   const h = await started();
   const before = h.app.health.counters.snapshot().counters;
   await h.fake.drive(
@@ -163,12 +159,12 @@ test('a provider that classifies nothing and one that classifies everything are 
   await settle();
   const c = h.app.health.counters.snapshot().counters;
   assert.equal(c.observed, 2);
-  assert.equal(c.emitted, 1, '§4.3: `emitted` counts envelopes, and an envelope reached capture-core once');
+  assert.equal(c.emitted, 1, '`emitted` counts observations capture-core accepted, once each');
   assert.equal(c.skipped_not_generative, 1);
   assert.equal(observationFrames(h.core).length, 1, 'the counter and the wire must agree');
 
-  // The audit property §7.3 states: a provider that classifies nothing and one that classifies
-  // everything are both visible in the counters, and neither is visible from the event stream.
+  // A provider that classifies nothing and one that classifies everything are both visible in the
+  // counters, though neither is visible from the event stream.
   const quiet = await started();
   for (let i = 0; i < 4; i++) {
     await quiet.fake.drive('body', chromeRequest({ requestId: `q${i}`, url: DRAFT_URL, headers: { 'content-type': 'application/json' }, body: JSON.stringify(DRAFT_BODY) }));
@@ -181,7 +177,7 @@ test('a provider that classifies nothing and one that classifies everything are 
   assert.equal(observationFrames(quiet.core).length, 0, 'and nothing at all was emitted');
 });
 
-// ── §7.2 decode paths, end to end ────────────────────────────────────────────────────────────
+// ── decode paths, end to end ─────────────────────────────────────────────────────────────────
 
 test('a strict UTF-8 body is carried as text; an invalid one is carried as bytes and marked binary', async () => {
   const h = await started();
@@ -198,7 +194,7 @@ test('a strict UTF-8 body is carried as text; an invalid one is carried as bytes
   // The same structurally-valid submission, but with bytes inside a string value that are not
   // valid UTF-8. The strict decoder must fail on the whole payload, so the extension marks it
   // binary and hashes the RAW BYTES — never a lossily-substituted string. A lossy decode here
-  // would produce a different digest for the same wire bytes, breaking cross-route dedup (§7.2).
+  // would produce a different digest for the same wire bytes, breaking cross-route dedup.
   const invalidChat = Buffer.concat([
     Buffer.from('{"model":"example-large-2026","messages":[{"role":"user","content":"Quarterly figures '),
     Buffer.from([0xc3, 0x28, 0xff, 0xfe]), // 0xC3 expects a continuation byte; 0x28 is not one
@@ -208,7 +204,7 @@ test('a strict UTF-8 body is carried as text; an invalid one is carried as bytes
   await settle();
   const binaryObs = h.core.lastObservation();
   assert.ok(binaryObs, 'a structurally valid submission with undecodable bytes is still an observation');
-  assert.equal(binaryObs.content_is_binary, true, '§7.2: binary fallback, never lossy replacement');
+  assert.equal(binaryObs.content_is_binary, true, 'binary fallback, never lossy replacement');
   assert.equal(binaryObs.size_bytes, invalidChat.byteLength);
   assert.notEqual(binaryObs.content_digest, goodDigest);
 
@@ -220,7 +216,7 @@ test('a strict UTF-8 body is carried as text; an invalid one is carried as bytes
   assert.equal(Buffer.from(decodedBinary).toString('utf8').includes('\uFFFD'), true, 'the lossy reading is available but was NOT what was hashed');
 });
 
-// ── bounded bodies (§5.3) ───────────────────────────────────────────────────────────────────
+// ── bounded bodies ──────────────────────────────────────────────────────────────────────────
 
 test('an over-cap body is sized and hashed, emitted degraded, and never held whole', async () => {
   const cap = 2048;
@@ -240,9 +236,10 @@ test('an over-cap body is sized and hashed, emitted degraded, and never held who
   const decoded = h.core.lastDecodedContent();
   assert.ok(decoded.byteLength <= cap, 'only the prefix was ever held, and the frame carries no more than that');
   assert.equal(await h.core.lastComputedDigest(), obs.content_digest, 'the digest describes the prefix that was actually carried');
-  assert.equal(obs.degraded_reason, 'content_over_cap', '§9.7: an over-cap body is degraded, never reported as "clean"');});
+  assert.equal(obs.degraded_reason, 'content_over_cap', 'an over-cap body is degraded, never reported as "clean"');
+});
 
-// ── §7.4 inline warn/block ──────────────────────────────────────────────────────────────────
+// ── inline warn/block ───────────────────────────────────────────────────────────────────────
 
 test('a blocked request is CANCELLED and is still an event', async () => {
   const h = await started({
@@ -259,13 +256,13 @@ test('a blocked request is CANCELLED and is still an event', async () => {
 
   assert.deepEqual(response, { cancel: true }, 'blocked cancels through webRequestBlocking');
   const obs = h.core.lastObservation();
-  assert.ok(obs, '§7.4: a blocked request is still an event, or we could not answer "what did we stop"');
+  assert.ok(obs, 'a blocked request is still an event, or nothing could answer "what did we stop"');
   assert.equal(obs.decision.action, 'blocked');
   assert.equal(obs.decision.rule_id, 'BLOCK_EXTERNAL');
   assert.equal(obs.decision.decided_locally, true, 'the decision is local: no round trip');
 });
 
-test('a shadow release computes the decision but never blocks (§9.6)', async () => {
+test('a shadow release computes the decision but never blocks', async () => {
   const h = await started({
     bundle: {
       policy_version: 'b1',
@@ -340,10 +337,10 @@ test('a warn with no one to ask fails OPEN, degraded, and counts the failure', a
   const response = await h.fake.drive('body', chromeRequest({ url: CHAT_URL, headers: { 'content-type': 'application/json' }, body: JSON.stringify(CHAT_BODY) }));
   await settle();
 
-  assert.equal(response, undefined, 'brief §6: a broken classifier must not become a broken browser');
+  assert.equal(response, undefined, 'a broken classifier must not become a broken browser');
   const obs = h.core.lastObservation();
   assert.equal(obs.decision.action, 'logged');
-  assert.equal(obs.degraded_reason, 'classifier_unavailable', 'C21: degraded is explicit, never "clean"');
+  assert.equal(obs.degraded_reason, 'classifier_unavailable', 'degraded is explicit, never "clean"');
   const errorsAfter = h.app.health.counters.snapshot().counters.errors;
   assert.ok(errorsAfter > errorsBefore, 'the failure is counted, because a silent fail-open is a lie');
 });
@@ -364,7 +361,7 @@ test('a logged decision carries decided_locally: true', async () => {
   assert.equal(obs.decision.decided_locally, true);
 });
 
-// ── §7.4/E4: the WebSocket gap ──────────────────────────────────────────────────────────────
+// ── WebSocket: the handshake only ───────────────────────────────────────────────────────────
 
 test('a WebSocket handshake is captured as identity and volume only, and the frames are not', async () => {
   const h = await started();
@@ -381,7 +378,7 @@ test('a WebSocket handshake is captured as identity and volume only, and the fra
   await settle();
 
   const obs = h.core.lastObservation();
-  assert.ok(obs, '§7.4: the handshake is captured, so tool identity and a session count are obtainable');
+  assert.ok(obs, 'the handshake is captured, so tool identity and a session count are obtainable');
   assert.equal(obs.has_content, false);
   assert.equal(obs.content, undefined);
   assert.match(obs.tool_fingerprint, /^tf1:/);
@@ -389,7 +386,7 @@ test('a WebSocket handshake is captured as identity and volume only, and the fra
   assert.equal(queued, 0);
 });
 
-// ── §3.4 channel-down reporting ─────────────────────────────────────────────────────────────
+// ── channel-down reporting ──────────────────────────────────────────────────────────────────
 
 test('with capture-core absent, observations are queued, the queue is bounded, and drops are counted', async () => {
   // The channel never exists: the harness is built with the connection failing, so the adapter
@@ -408,7 +405,7 @@ test('with capture-core absent, observations are queued, the queue is bounded, a
   assert.equal(h.app.queue.size(), 3, 'the bound is enforced, not hoped for');
   const c = h.app.health.counters.snapshot().counters;
   assert.equal(c.observed, 6);
-  assert.equal(c.dropped, 3, 'drop-oldest with a counter (C22)');
+  assert.equal(c.dropped, 3, 'drop-oldest with a counter');
   assert.equal(h.app.queue.stats().dropped_total, 3);
   assert.equal(h.app.health.state, 'absent', 'the channel, not the coverage, is what is absent');
 });
@@ -439,8 +436,8 @@ test('a failed connect is reported as capture-core absent AND extension-side deg
   assert.ok(report.counters.observed >= 1, 'what WAS observed is still reported');
   assert.ok(report.queue.depth >= 1, 'and what could not be delivered is reported with it');
   assert.ok(report.counters.dropped >= before.dropped, 'the queue owns the drop counter and it is visible');
-  // §3.4 is explicit that this is NOT "no observations": observed moved even though the channel is
-  // dead, and the two facts are reported together rather than one standing in for the other.
+  // This is NOT "no observations": observed moved even though the channel is dead, and the two
+  // facts are reported together rather than one standing in for the other.
   assert.equal(report.counters.observed, before.observed + 1);
 });
 
@@ -479,10 +476,8 @@ test('when the channel returns, the queued observations are merged out and the r
 });
 
 test('a dead native host does not become a retry loop: connects are backed off, not hammered', async () => {
-  // Measured in Edge 154 at ~6,000 connect attempts/second before the cool-down existed, because
-  // each connect was followed by the browser delivering a disconnect for the absent host and the
-  // next send opening another port. On a user's machine that is sustained CPU burn for a channel
-  // that is simply not there, and §3.5's crash-loop rule is the same rule one process down.
+  // Without the cool-down each connect is followed by the browser delivering a disconnect for the
+  // absent host and the next send opening another port: sustained CPU burn for a missing channel.
   const h = createHarness({ failConnect: true, connectCooldownMs: 5000 });
   await h.app.start();
   h.app.applyPolicy({ policy_version: 'b1', bundle: { policy_version: 'b1', default_mode: 'm1' } });
@@ -504,12 +499,13 @@ test('a dead native host does not become a retry loop: connects are backed off, 
   assert.ok(errors <= 6, `the error counter must not climb per attempt while nothing new happens: ${errors}`);
 });
 
-test('nothing durable is written: no extension storage call is ever made', async () => {
+test('nothing durable is written: the fake chrome has no storage API and nothing reaches for one', async () => {
   const h = await started();
+  assert.equal(h.fake.chrome.storage, undefined);
   await h.fake.drive('body', chromeRequest({ url: CHAT_URL, headers: { 'content-type': 'application/json' }, body: JSON.stringify(CHAT_BODY) }));
   await h.fake.drive('body', chromeRequest({ requestId: 'r2', url: DRAFT_URL, headers: { 'content-type': 'application/json' }, body: JSON.stringify(DRAFT_BODY) }));
   await settle();
-  assert.equal(h.fake.state.session.size, 0, '§7.1: the extension holds nothing durable');
+  assert.equal(h.core.observations().length >= 1, true, 'the extension still worked without any storage');
 });
 
 // ── health ──────────────────────────────────────────────────────────────────────────────────
@@ -530,7 +526,7 @@ test('the health report is sent on the health channel with all seven counters an
     'observed',
     'skipped_not_generative',
   ]);
-  assert.equal(frame.body.policy.version, 'bundle-1', '§11.3 mode-change attribution');
+  assert.equal(frame.body.policy.version, 'bundle-1', 'mode-change attribution');
 });
 
 test('the alarms are installed for the health report and the policy poll', async () => {
@@ -538,13 +534,13 @@ test('the alarms are installed for the health report and the policy poll', async
   await h.app.start();
   const names = h.fake.state.alarms.map((a) => a.name);
   assert.ok(names.includes('capture-health'), 'the report is periodic, so a drain happens without traffic');
-  assert.ok(names.includes('capture-policy-sync'), '§11.3: the bundle is re-read, so a mode change takes effect');
+  assert.ok(names.includes('capture-policy-sync'), 'the bundle is re-read, so a mode change takes effect');
   assert.equal(h.fake.state.alarmHandlers.length, 1);
 });
 
-// ── §7.5 Mode B: the response contract ──────────────────────────────────────────────────────
+// ── the response contract ───────────────────────────────────────────────────────────────────
 
-test('§7.5 Mode B: a weak submission is upgraded when the response contract agrees, on the higher-fidelity route', async () => {
+test('a weak submission is upgraded when the response contract agrees, on the higher-fidelity route', async () => {
   const h = await started();
   const prose = JSON.stringify({ note_id: 'n1', text: 'A long note that a person typed. '.repeat(8) });
   const detail = chromeRequest({ requestId: 'resp-1', url: 'https://saas.example-ai.invalid/api/assist', headers: { 'content-type': 'application/json' }, body: prose });
@@ -611,14 +607,14 @@ test('an unusable bundle leaves the previous policy enforcing and is reported', 
   const h = await started();
   const result = h.app.applyPolicy({ policy_version: 'b-bad', bundle: 'not an object' });
   assert.equal(result.applied, false);
-  assert.equal(h.app.policy.snapshot().policy_version, 'bundle-1', '§13.3: the previous bundle is retained');
+  assert.equal(h.app.policy.snapshot().policy_version, 'bundle-1', 'the previous bundle is retained');
   assert.ok(h.app.health.counters.snapshot().counters.errors >= 1);
 });
 
-// ── §7.4's capability, and the defect the browser found ─────────────────────────────────────
+// ── the blocking capability ─────────────────────────────────────────────────────────────────
 test('with webRequestBlocking granted, both lanes register as blocking (the deployed case)', async () => {
   const h = await started();
-  assert.deepEqual(h.fake.registration('metadata').extra, ['blocking'], 'a policy-installed extension keeps §7.4');
+  assert.deepEqual(h.fake.registration('metadata').extra, ['blocking'], 'a force-installed extension can block');
   assert.deepEqual(h.fake.registration('body').extra, ['blocking', 'requestBody']);
   assert.equal(h.app.blockingAvailable, true);
   assert.equal(h.app.lanes.enforcement, 'blocking');
@@ -626,10 +622,8 @@ test('with webRequestBlocking granted, both lanes register as blocking (the depl
 });
 
 test('without the grant, the lanes register WITHOUT blocking and observation still works', async () => {
-  // The state a real unpacked install is in. Before this was handled, the extension asked for
-  // `blocking` on every lane; the browser accepted the registration and then never invoked the
-  // listener, so the extension observed NOTHING. Measured in Edge 154: on the same event, in the
-  // same worker, a plain listener received 3 events and a blocking listener received 0.
+  // The state of any install not force-installed by policy: a blocking registration would be
+  // accepted and never invoked, so the extension would observe nothing.
   const h = createHarness();
   h.fake.state.blockingGranted = false;
   await h.app.start();
@@ -643,18 +637,18 @@ test('without the grant, the lanes register WITHOUT blocking and observation sti
   assert.equal(h.app.reportHealth().enforcement, 'observation_only', 'reported, never silent');
   assert.ok(h.app.health.counters.snapshot().errors_by_code.enforcement_unavailable >= 1);
 
-  // And observation actually happens: this is the property that was broken.
+  // And observation actually happens.
   await h.fake.drive('body', chromeRequest({ url: CHAT_URL, headers: { 'content-type': 'application/json' }, body: JSON.stringify(CHAT_BODY) }));
   await settle();
-  assert.equal(h.app.health.counters.snapshot().counters.observed, 1, '§15.2/C21: never less inspection, silently');
+  assert.equal(h.app.health.counters.snapshot().counters.observed, 1, 'never less inspection, silently');
   const obs = h.core.lastObservation();
   assert.equal(obs.decision.action, 'logged');
   assert.equal(obs.decision.decided_locally, true);
 });
 
 test('a capability that cannot be read defaults to blocking, never to lost collection', async () => {
-  // The deployed case is the policy-installed one, and observation no longer depends on the answer
-  // either way — so an unanswerable probe must not silently disable enforcement.
+  // The deployed case is the force-installed one, and observation does not depend on the answer,
+  // so an unanswerable probe must not silently disable enforcement.
   const h = createHarness();
   delete h.fake.chrome.permissions;
   await h.app.start();
@@ -690,11 +684,9 @@ function blackHolePort() {
 }
 
 test('an observation emitted while the channel looks up but cannot deliver ends up QUEUED, not counted emitted', async () => {
-  // The property, not the sequence. `connectNative()` succeeded, so `isConnected()` is true, and
-  // the browser has not yet delivered the disconnect — the window in which the old `emit()` took a
-  // fast path, posted into a dead port, incremented `emitted`, and lost the observation. A counted
-  // `emitted` that was never delivered is a silent undercount, which is the failure this design
-  // exists to make visible.
+  // `connectNative()` succeeded, so `isConnected()` is true, and the browser has not delivered the
+  // disconnect. A direct send in this window would post into a dead port and count `emitted` for an
+  // observation that was lost.
   const h = createHarness({ nativeTimeoutMs: 150 });
   h.fake.chrome.runtime.connectNative = () => blackHolePort();
   await h.app.start();
@@ -720,8 +712,7 @@ test('an observation emitted while the channel looks up but cannot deliver ends 
 
 test('an observation leaves the queue only when capture-core acks it', async () => {
   // The other half: with a real channel the entry is enqueued, sent, acked, and only then removed
-  // and counted. `emitted` therefore means "accepted by capture-core", which is what §3.4 and the
-  // protocol's own note about an ack describe.
+  // and counted. `emitted` therefore means "accepted by capture-core".
   const h = await started();
   await h.fake.drive('body', chromeRequest({ url: CHAT_URL, headers: { 'content-type': 'application/json' }, body: JSON.stringify(CHAT_BODY) }));
   await waitFor(() => h.core.observations().length === 1, { label: 'the frame to reach capture-core' });
@@ -776,7 +767,7 @@ test('the client id is stable per observation so attachment chunks can reference
   assert.notEqual(ids[0], ids[1], 'two observations are two logical facts, even of the same bytes');
 });
 
-test('an automation marker raises the context evidence but is never required (§7.5 Mode C)', async () => {
+test('an automation marker raises the context evidence but is never required', async () => {
   const h = await started();
   const marked = chromeRequest({
     url: 'https://agent.example-ai.invalid/v1/respond',

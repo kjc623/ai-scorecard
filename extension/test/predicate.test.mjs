@@ -1,12 +1,11 @@
 /**
- * test/predicate.test.mjs — §8.2's shape predicate as a pure function.
+ * test/predicate.test.mjs — the shape predicate as a pure function.
  *
- * The properties under test are the ones §7.3 and §7.5 hinge on:
  *   - a positive match needs enough evidence, and the two strong shapes match on their own;
- *   - a negative match is *counted, not emitted* — this file proves the predicate returns false,
- *     the pipeline test proves `skipped_not_generative` moves and nothing is sent;
- *   - §7.5 Mode B's separation: a draft save and a chat call on one origin differ by body, not path;
- *   - destination and path are evidence, never sufficient (§2.1, C7).
+ *   - a negative match is counted, not emitted: this file proves the predicate returns false, the
+ *     worker test proves `skipped_not_generative` moves and nothing is sent;
+ *   - a draft save and a chat call on one origin differ by body, not path;
+ *   - destination and path are evidence, never sufficient.
  */
 
 import test from 'node:test';
@@ -17,7 +16,6 @@ import {
   DEFAULT_THRESHOLD,
   LONG_TEXT_CHARS,
   STRUCTURAL_FLOOR,
-  automationMarker,
   classifyWithResponse,
   formFileCandidates,
   hostOf,
@@ -28,6 +26,7 @@ import {
   registeredDomain,
   shapeVector,
 } from '../src/predicate.js';
+import { tabContextOf } from '../src/registration.js';
 import {
   CHAT_BODY,
   DRAFT_BODY,
@@ -79,14 +78,14 @@ test('a tool-declaration body is generative on request structure alone', () => {
   assert.ok(r.signals.some((s) => s.id === 'body_tool_declarations'));
 });
 
-test('a destination in the bundle is evidence, never sufficient (§8.2)', () => {
+test('a destination in the bundle is evidence, never sufficient', () => {
   const req = { ...longProseRequest(), bundle: { sanctioned: ['saas.example-ai.invalid'] } };
   const r = predicateRequest(req);
   assert.ok(r.signals.some((s) => s.id === 'destination_sanctioned_set'), 'hostname is a signal');
   assert.equal(r.match, false, 'a sanctioned host must not turn a draft save into a submission');
 });
 
-test('a conversational path is evidence, never sufficient (§2.1, C7)', () => {
+test('a conversational path is evidence, never sufficient', () => {
   const tiny = {
     url: 'https://unknown.invalid/chat/completions',
     method: 'POST',
@@ -106,7 +105,7 @@ test('a GET with no body never matches, however conversational the path', () => 
   assert.equal(r.metadata_candidate, false);
 });
 
-test('§7.5 Mode B: a weak request only becomes a match when the response contract agrees', () => {
+test('a weak request only becomes a match when the response contract agrees', () => {
   // A prose body alone is below threshold; the streaming contract is the second half of the
   // conjunction. This is the row that separates an in-SaaS AI feature from a draft save.
   const req = longProseRequest({ size_bytes: 400 });
@@ -201,7 +200,7 @@ test('an invalid-UTF-8 body contributes KEY evidence but never value evidence', 
   assert.equal(structured.match, true, 'and a chat-shaped payload with undecodable bytes is still a submission');
 });
 
-test('form bodies are classified from parsed key/value pairs (E2)', () => {
+test('form bodies are classified from parsed key/value pairs', () => {
   const body = new URLSearchParams({ prompt: 'x'.repeat(200), model: 'example-large-2026' }).toString();
   const r = predicateRequest({
     url: 'https://example-ai.invalid/api/generate',
@@ -227,7 +226,7 @@ test('upload-bearing detection: multipart, and a form value that carries a filen
   assert.equal(isUploadBearing({ headers: { 'content-type': 'application/json' }, form: null }), false);
 });
 
-test('a form carrying a filename is reported on the predicate result, which is how §7.3 decides', () => {
+test('a form carrying a filename is reported on the predicate result as an attachment candidate', () => {
   const r = predicateRequest({
     url: 'https://example-ai.invalid/api/upload',
     method: 'POST',
@@ -241,7 +240,7 @@ test('a form carrying a filename is reported on the predicate result, which is h
   assert.deepEqual(r.attachment_candidates, [{ field: 'file', name: 'quarterly.xlsx' }]);
 });
 
-test('path shapes are normalised so two sessions on one tool agree (§8.1 signal 2)', () => {
+test('path shapes are normalised so two sessions on one tool agree', () => {
   assert.equal(normalisePath('/v1/c/8f3a1b2c-1111-2222-3333-444455556666/chat'), '/v1/c/:uuid/chat');
   assert.equal(normalisePath('/v1/c/12345/chat'), '/v1/c/:n/chat');
   assert.equal(
@@ -265,7 +264,7 @@ test('registered domain collapses subdomains so one tool yields one destination'
   assert.equal(hostOf('https://Chat.Example-INVALID/x'), 'chat.example-invalid');
 });
 
-test('the shape vector excludes route-specific signals so two routes agree (§8.3 item 2)', () => {
+test('the shape vector excludes route-specific signals so two routes agree', () => {
   const v = shapeVector(chatRequest());
   assert.deepEqual(Object.keys(v).sort(), [
     'body_shape',
@@ -286,10 +285,10 @@ test('the shape vector excludes route-specific signals so two routes agree (§8.
   assert.deepEqual(v.role_values, ['system', 'user']);
 });
 
-test('the automation marker is read from headers or client hints, and is never required (§7.5)', () => {
-  assert.deepEqual(automationMarker({ 'x-automation': '1' }), { present: true, marker: 'x-automation', strength: 'high' });
-  assert.equal(automationMarker({ 'user-agent': 'Mozilla/5.0 HeadlessChrome/120' }).present, true);
-  assert.equal(automationMarker({ 'user-agent': 'Mozilla/5.0 Chrome/120' }).present, false);
+test('the automation marker is read from request headers, and is never required', () => {
+  assert.deepEqual(tabContextOf({ requestHeaders: { 'x-automation': '1' } }), ['automation_marker']);
+  assert.deepEqual(tabContextOf({ requestHeaders: { 'user-agent': 'Mozilla/5.0 HeadlessChrome/120' } }), ['automation_marker']);
+  assert.deepEqual(tabContextOf({ requestHeaders: { 'user-agent': 'Mozilla/5.0 Chrome/120' } }), []);
 });
 
 test('the predicate is pure: the same record gives the same score twice', () => {

@@ -1,12 +1,7 @@
 /**
- * contract.test.mjs — the checks that are about the package rather than a behaviour: the manifest
- * is valid MV3 JSON, this tree calls `chrome.*` in exactly two modules, and the protocol vocabulary
- * is a verbatim transcription of the Lead's `endpoint/protocol`.
- *
- * Why this file sits at the package root rather than under `test/`: on Node 22.23
- * `node --test extension` treats the argument as a *file*, not a directory, so a
- * root-level test file is what makes the documented command work from the repo root as well as
- * `node --test` from inside the package. The rest of the suite is in `test/` and `test-support/`.
+ * contract.test.mjs — checks about the package rather than a behaviour: the manifest is valid MV3,
+ * the tree calls `chrome.*` in exactly two modules, and the protocol vocabulary matches
+ * `endpoint/protocol`.
  */
 
 import test from 'node:test';
@@ -15,14 +10,13 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-// This file sits at the package root, so one level up is the repository root.
+const HERE = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const REPO_ROOT = resolve(HERE, '..');
 
 const manifest = JSON.parse(readFileSync(join(HERE, 'manifest.json'), 'utf8'));
 
 test('manifest.json parses as JSON and declares MV3', () => {
-  assert.equal(manifest.manifest_version, 3, 'MV3 is E1/E23; MV2 is not loadable by Chromium any more');
+  assert.equal(manifest.manifest_version, 3, 'Chromium loads MV3 extensions only');
   assert.equal(typeof manifest.version, 'string', 'Chrome requires the version as a string of 1-4 integers');
   assert.match(manifest.version, /^\d+(\.\d+){0,3}$/);
   assert.match(manifest.name, /\S/);
@@ -39,24 +33,23 @@ test('the service worker is an ES module, which is what lets `src/` be plain ES 
   );
 });
 
-test('webRequestBlocking is requested: policy-installed extensions retain it and §7.4 depends on it (E1)', () => {
+test('webRequestBlocking is requested: a force-installed extension keeps it, and blocking depends on it', () => {
   assert.ok(manifest.permissions.includes('webRequest'));
   assert.ok(manifest.permissions.includes('webRequestBlocking'), 'blocked cancels only through webRequestBlocking');
-  assert.ok(manifest.permissions.includes('nativeMessaging'), '§3.4/A2: native messaging is the transport to capture-core');
+  assert.ok(manifest.permissions.includes('nativeMessaging'), 'native messaging is the transport to capture-core');
 });
 
 test('the permission list is exactly the minimum, with no permission present that no module uses', () => {
-  // Every permission here has a named consumer; PERMISSIONS.md states each justification.
-  // `storage` is deliberately absent: §7.1 requires that the extension holds nothing durable.
+  // Every permission here has a consumer. `storage` is absent: the extension holds nothing durable.
   assert.deepEqual(
     [...manifest.permissions].sort(),
-    ['alarms', 'nativeMessaging', 'scripting', 'tabs', 'webRequest', 'webRequestBlocking'],
+    ['alarms', 'nativeMessaging', 'tabs', 'webRequest', 'webRequestBlocking'],
   );
   assert.equal(manifest.permissions.includes('storage'), false, 'no durable storage in this extension');
   assert.equal(manifest.permissions.includes('<all_urls>'), false, 'host permissions are not a `permissions` member');
 });
 
-test('broad observation is declared as a host permission, which is a real privacy surface (§7.1)', () => {
+test('broad observation is declared as a host permission', () => {
   assert.deepEqual(manifest.host_permissions, ['<all_urls>']);
   assert.ok(Array.isArray(manifest.content_scripts) && manifest.content_scripts.length === 1);
   assert.deepEqual(manifest.content_scripts[0].matches, ['<all_urls>']);
@@ -66,22 +59,13 @@ test('broad observation is declared as a host permission, which is a real privac
 
 test('the content script is isolated-world only: it must not run in the page (MAIN)', () => {
   const cs = manifest.content_scripts[0];
-  assert.equal(cs.world === undefined || cs.world === 'ISOLATED', true, 'the isolated world is the whole point of §7.3');
+  assert.equal(cs.world === undefined || cs.world === 'ISOLATED', true, 'a page must not be able to reach the extension');
 });
 
 test('the declared content script is a classic script, and contains no static import', () => {
-  // This test exists because its absence was invisible. The package used to declare
-  // `content/content-script.js` — a module with three static imports — as its content script.
-  // Chromium loads a declared content script as a **classic script**, and a content script cannot
-  // be an ES module (the `content_scripts` entry has no `type` field; declaring one does nothing),
-  // so the browser killed the file on its first line:
-  //
-  //   Uncaught SyntaxError: Cannot use import statement outside a module
-  //
-  // The consequence was that the entire §7.3 attachment path was dead in every browser: no listener
-  // was registered, `tabs.sendMessage` reported "Receiving end does not exist", and a file the user
-  // selected could never be read. Every unit test passed, because the suite imports the module the
-  // ordinary way and never asked whether a browser could load it.
+  // Chromium loads a declared content script as a classic script (the `content_scripts` entry has no
+  // `type` field), so one static import is a syntax error that silently disables the script. A
+  // suite that imports the module the ordinary way cannot see that.
   const cs = manifest.content_scripts[0];
   const declared = cs.js[0];
   const source = readFileSync(join(HERE, declared), 'utf8');
@@ -108,7 +92,7 @@ test('the content script modules the script imports are web-accessible, which Ch
   }
 });
 
-test('the native messaging host name is the one capture-core registers (deployment installs it, §14)', () => {
+test('the native messaging host name is the one the installers register', () => {
   const src = readFileSync(join(HERE, 'src', 'native.js'), 'utf8');
   assert.match(src, /export const NATIVE_APP = 'com\.shadowaicapture\.capture_core'/);
   assert.match(src, /com\.shadowaicapture\.capture_core/);
@@ -129,8 +113,8 @@ test('every JSON file in the package parses', () => {
 });
 
 test('`chrome.` appears in exactly two modules: the adapter and its browser binding', () => {
-  // The testability seam, asserted rather than trusted. `adapter.js` names the global once and
-  // documents the assumed surface; `chrome-adapter.js` is the only place chrome.* is called.
+  // `adapter.js` names the global once and documents the surface; `chrome-adapter.js` is the only
+  // place chrome.* is called.
   const allowed = new Set(['src/adapter.js', 'src/chrome-adapter.js']);
   const offenders = [];
   for (const file of walk(join(HERE, 'src')).concat([join(HERE, 'background', 'service-worker.js'), join(HERE, 'content', 'content-script.js')])) {
@@ -141,20 +125,16 @@ test('`chrome.` appears in exactly two modules: the adapter and its browser bind
     const code = text
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/^\s*\/\/.*$/gm, '')
-      .replace(/chrome\.runtime && typeof chrome\.runtime\.connectNative === 'function'/g, '')
-      .replace(/typeof chrome !== 'undefined' && chrome\.runtime && chrome\.runtime\.id/g, '');
+      .replace(/chrome\.runtime && typeof chrome\.runtime\.connectNative === 'function'/g, '');
     if (/\bchrome\s*\./.test(code) && !allowed.has(rel)) offenders.push(rel);
   }
   assert.deepEqual(offenders, [], 'only src/adapter.js and src/chrome-adapter.js may call chrome.*');
 });
 
-test('the extension declares no dependency and needs no build step', () => {
-  const pkgPath = join(HERE, 'package.json');
-  const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
-  assert.equal(pkg.dependencies, undefined, 'zero external dependencies: this host is offline');
-  assert.equal(pkg.devDependencies, undefined, 'the suite is node:test, which is built in');
+test('the extension ships no runtime dependency and its sources are ES modules', () => {
+  const pkg = JSON.parse(readFileSync(join(HERE, 'package.json'), 'utf8'));
+  assert.equal(pkg.dependencies, undefined, 'the browser loads these files as they are: no bundler, no runtime dependency');
   assert.equal(pkg.type, 'module', '.js files in this package are ES modules, as the manifest requires');
-  assert.equal(pkg.scripts.test, 'node --test', 'the documented command is discovery from the package directory');
 });
 
 test('the protocol vocabulary is a verbatim transcription of endpoint/protocol', () => {
@@ -178,7 +158,7 @@ test('the protocol vocabulary is a verbatim transcription of endpoint/protocol',
 test('the counter set and the detail vocabulary match protocol/envelope.go', () => {
   const go = readFileSync(join(REPO_ROOT, 'endpoint', 'protocol', 'envelope.go'), 'utf8');
   const counters = [...go.matchAll(/Counter\w+\s+Counter\s*=\s*"([a-z_]+)"/g)].map((m) => m[1]);
-  assert.deepEqual(counters.length, 7, '§4.3 makes the counter set closed at seven');
+  assert.deepEqual(counters.length, 7, 'the counter set is closed at seven');
   const messages = readFileSync(join(HERE, 'src', 'messages.js'), 'utf8');
   for (const c of counters) assert.ok(messages.includes(`'${c}'`), `counter ${c} must be in the closed set`);
 
@@ -186,7 +166,7 @@ test('the counter set and the detail vocabulary match protocol/envelope.go', () 
   for (const d of details) assert.ok(messages.includes(`'${d}'`), `detail ${d} must be in the closed set`);
 });
 
-test('the collector name is the one db/schema.sql registers in ref.collector', () => {
+test('the collector name is the one database/schema.sql registers in ref.collector', () => {
   const sql = readFileSync(join(REPO_ROOT, 'database', 'schema.sql'), 'utf8');
   assert.ok(sql.includes("('capture_extension', 'capture_extension'"), 'ref.collector must carry this name');
   const messages = readFileSync(join(HERE, 'src', 'messages.js'), 'utf8');
@@ -199,7 +179,7 @@ test('the observation body carries only fields native.go declares', () => {
   const fields = [...block.matchAll(/json:"([a-z_]+)/g)].map((m) => m[1]);
   assert.ok(fields.length > 8, 'the observation body must have its fields declared with json tags');
   const pipeline = readFileSync(join(HERE, 'src', 'pipeline.js'), 'utf8');
-  const protocolBody = pipeline.slice(pipeline.indexOf('function protocolBody'), pipeline.indexOf('function attachDescriptors'));
+  const protocolBody = pipeline.slice(pipeline.indexOf('function protocolBody'), pipeline.indexOf('function drainQueue'));
   for (const f of fields) {
     assert.ok(protocolBody.includes(`.${f}`), `protocolBody must be able to carry ${f}`);
   }

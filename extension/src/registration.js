@@ -1,93 +1,32 @@
 /**
- * registration.js — where "the extension does not read a body it may not read" stops being a
- * promise and becomes a property of the listener filter.
+ * registration.js — the two webRequest lanes. "The extension does not read a body it may not read"
+ * is a property of the listener filter, not a promise inside a handler:
  *
- * §11.2's last paragraph is the load-bearing sentence: "**the browser route is the one place
- * where content is genuinely not read at M0**: the extension's `requestBody` read *is* the
- * content read, so where the effective mode for a destination is already known to be M0 the
- * extension does not register the body-bearing listener for it and works from request metadata
- * only."
+ *   metadata lane  addListener(handler, {urls}, [...])                          always installed
+ *   body lane      addListener(handler, {urls: bodyFilter}, [..., 'requestBody']) gated by policy
  *
- * So there are two lanes, and the difference between them is one option in the filter:
+ * Destinations the policy resolves to M0 are kept out of the body filter, so Chrome never produces
+ * `requestBody` for them. Inside the handler `isBodyBearing(url)` covers the window between a
+ * policy change and the filter rebuild, and the pipeline's mode gate is the last check.
  *
- *   lane A (metadata)  addListener(handler, {urls}, [...])                        — always installed
- *   lane B (body)      addListener(handler, {urls: bodyFilter}, [...,'requestBody']) — gated
- *
- * ── The blocking capability, and why registration adapts to it ──────────────────────────────
- *
- * §7.4 needs `webRequestBlocking` so a `blocked` rule can cancel. Only a policy-installed extension
- * is granted it (E1). **An unpacked load is not, and the refusal is silent**: the browser logs
- *
- *   "You do not have permission to use blocking webRequest listeners. ... webRequestBlocking is only
- *    allowed for extensions that are installed using ExtensionInstallForcelist."
- *
- * and `addListener(..., ['blocking'])` neither throws nor reports anything — `hasListeners()` still
- * returns true and the listener is simply **never invoked**. Measured in Edge 154: a listener
- * registered with `['blocking']` received 0 events while a plain listener on the same event, in the
- * same worker, received 3.
- *
- * The first version of this module registered *every* lane with `['blocking']`, which made the
- * consequence severe and silent: on any install without the privilege the extension observed
- * **nothing at all**, while its health report said nothing about it. §15.2 and C21/C22 forbid exactly
- * that — never less inspection, silently.
- *
- * So the lanes adapt to the capability the install actually holds:
- *
- *   blocking available   → the lanes register with `['blocking']`, and a `blocked` rule cancels.
- *   blocking unavailable → the same lanes register WITHOUT it. Observation is unaffected — it never
- *                          needed to cancel — and enforcement is reported unavailable rather than
- *                          being silently inert.
- *
- * §7.2 holds either way: the observation lane returns no blocking response, so a request is released
- * as soon as its handler settles.
- *
- * Three guards, in order, all of which must pass before any byte is handed to the logic:
- *
- *   1. `computeBodyFilter(policy)` — destinations the policy cache resolves to M0 are not in the
- *      filter at all. Chrome therefore never produces `requestBody` for them.
- *   2. `isBodyBearing(url)` inside the handler — belt and braces for the window between a policy
- *      change and the filter being rebuilt.
- *   3. `pipeline.readBodyForMode()` — the mode gate at the point of use.
- *
- * A test asserts on the registered filter *and* the registered `extraInfoSpec`, which is the only
- * place either guarantee can be checked from outside a browser; `tools/in-browser-check.mjs` checks
- * the behaviour in a real one. The cost is stated rather than hidden: §11.2 says "any resulting
- * weakness in the shape predicate [is] recorded as a coverage property of M0", so a metadata-lane
- * observation carries `unread_reason: 'mode_forbids_read'` and no content.
+ * Blocking: only a force-installed extension is granted `webRequestBlocking`, and a blocking
+ * registration without the grant is accepted silently and never invoked. So the lanes register
+ * with 'blocking' only when the grant is held; without it observation is unchanged and the health
+ * report says enforcement is unavailable.
  */
 
 import { normaliseBody } from './request-body.js';
 
 export const ALL_URLS = ['<all_urls>'];
 
-/**
- * Everything the extension observes. `webRequest` with `<all_urls>` is §7.1's broad-observation
- * layer — a real privacy surface, declared in the manifest and justified in PERMISSIONS.md
- * rather than discovered in a review.
- */
+/** The request types the extension observes, on every host. */
 export const OBSERVED_TYPES = ['main_frame', 'sub_frame', 'xmlhttprequest', 'websocket', 'other'];
 
 /**
- * Destinations that are never body-bearing regardless of what a bundle says: §11.2's
- * conservative direction is downward, and a loopback or link-local destination inside a SaaS
- * page is not the submission the predicate is looking for.
+ * Destinations that are never body-bearing, whatever a bundle says: a loopback or link-local
+ * destination is not the submission the predicate is looking for.
  */
 export const NEVER_BODY_BEARING = ['http://localhost/*', 'http://127.0.0.1/*', 'http://[::1]/*', 'http://169.254.0.0/16/*'];
-
-/**
- * The `extraInfoSpec` for a lane, given what the install actually permits.
- *
- * @param {{withBody: boolean, blocking: boolean}} spec
- */
-export function laneExtraInfoSpec({ withBody, blocking }) {
-  const out = [];
-  // §7.4: 'blocking' is what lets a `blocked` rule cancel, and it is the only reason to ask for it.
-  if (blocking) out.push('blocking');
-  // §7.2/E2: 'requestBody' is orthogonal to 'blocking'. It must be requested on the body lane even
-  // when blocking is unavailable, or that lane would observe nothing but metadata.
-  if (withBody) out.push('requestBody');
-  return out;
-}
 
 export function installLanes({
   adapter,
@@ -96,17 +35,16 @@ export function installLanes({
   onMetadataLane,
   onResponse = null,
   types = OBSERVED_TYPES,
-  /** §7.4's capability. False means observation still works and enforcement is reported unavailable. */
+  /** False means observation still works and enforcement is reported unavailable. */
   blockingAvailable = true,
 }) {
-  /** @type {string[]} what lane B is currently registered for — the thing the test asserts on. */
+  /** @type {string[]} what the body lane is currently registered for. */
   let bodyFilter = [];
   let installed = false;
-  let reinstallCount = 0;
+  let bodyInstalled = false;
 
   async function bodyHandler(detail) {
-    // Guard 2: the filter is rebuilt on policy change, but a request already in flight must not
-    // slip through the window. Asking the cache directly is cheap and conservative.
+    // The filter is rebuilt on policy change; a request already in flight is checked again here.
     if (!policy.isBodyBearing(detail.url)) {
       return toBlockingResponse(await onMetadataLane({ detail, tab_context: tabContextOf(detail) }));
     }
@@ -130,11 +68,8 @@ export function installLanes({
       // that has already been released, so it has no business delaying anything.
       adapter.webRequest.onCompleted(guard(onResponse), { urls: ALL_URLS, types });
     }
-    // Lane B is registered only when its filter is non-empty. Until the first policy arrives
-    // `computeBodyFilter` returns [] — the extension has no bundle entry for any destination, so
-    // §11.3's "cannot exceed a ceiling it holds no bundle entry for" resolves everything to M0 and
-    // the body-bearing listener is simply not installed. Chrome then never produces `requestBody`
-    // for this extension at all, which is the strongest form of §11.2's guarantee.
+    // The body lane is registered only when its filter is non-empty. Until the first policy
+    // arrives every destination resolves to M0, so no body listener exists at all.
     if (bodyFilter.length > 0) {
       adapter.webRequest.onBeforeRequestWithBody(guard(bodyHandler), {
         urls: bodyFilter.slice(),
@@ -145,12 +80,10 @@ export function installLanes({
     }
   }
 
-  let bodyInstalled = false;
-
   /**
-   * Re-derive lane B's filter and (re-)register it, or remove it when policy now says every
-   * destination is M0. Called on every policy sync, which is what makes a mode change take effect
-   * without a browser restart (§11.3: "the device stores the bundle it is enforcing").
+   * Re-derive the body lane's filter and re-register it, or remove it when policy now resolves
+   * every destination to M0. Called on every policy sync, so a mode change takes effect without a
+   * browser restart.
    */
   function refresh() {
     const next = computeBodyFilter(policy);
@@ -162,7 +95,6 @@ export function installLanes({
       return true;
     }
     if (!changed) return false;
-    reinstallCount += 1;
     if (bodyFilter.length > 0) {
       adapter.webRequest.onBeforeRequestWithBody(guard(bodyHandler), {
         urls: bodyFilter.slice(),
@@ -181,44 +113,24 @@ export function installLanes({
     get bodyLaneInstalled() {
       return bodyInstalled;
     },
-    /** §7.4's capability as this install holds it, so the health report can state it. */
     get enforcement() {
       return blockingAvailable ? 'blocking' : 'observation_only';
     },
-    /** The `extraInfoSpec` each lane was registered with, for the tests and the README. */
-    get extraInfoSpec() {
-      return {
-        metadata: laneExtraInfoSpec({ withBody: false, blocking: blockingAvailable }),
-        body: laneExtraInfoSpec({ withBody: true, blocking: blockingAvailable }),
-      };
-    },
-    get metadataFilter() {
-      return installed ? ALL_URLS.slice() : [];
-    },
     get bodyFilter() {
       return bodyFilter.slice();
-    },
-    get reinstallCount() {
-      return reinstallCount;
     },
     refresh,
   };
 }
 
 /**
- * The URL patterns Chrome is given for lane B.
+ * The URL patterns Chrome is given for the body lane:
  *
- * Three cases, in order of how much the bundle has decided:
- *
- *   1. **No bundle at all** ⇒ `[]`: lane B is not installed, so no destination is body-bearing.
- *      §11.3's "a device cannot exceed a ceiling it holds no bundle entry for" makes this the
- *      correct starting state, and it also makes §11.2's M0 guarantee structural: the extension
- *      has not merely promised not to read those bodies, it has not asked Chrome for them.
- *   2. **A bundle with a body-lane include list** ⇒ exactly that list. Chrome match patterns
- *      cannot express "everything except", so a deployment that wants a strict observation set
- *      names it, and the exclusion of M0 destinations is then by construction.
- *   3. **A bundle with no include list** ⇒ `<all_urls>`. Broad observation, narrow emission
- *      (§7.1); the M0 destinations are excluded per-request by the handler guard instead.
+ *   1. no bundle: `[]`, so the body lane is not installed and no body is requested;
+ *   2. a bundle with a body-lane include list: exactly that list (Chrome match patterns cannot
+ *      express "everything except");
+ *   3. a bundle with no include list: `<all_urls>`, with M0 destinations excluded per request by
+ *      the handler guard.
  */
 export function computeBodyFilter(policy) {
   const snapshot = typeof policy.snapshot === 'function' ? policy.snapshot() : null;
@@ -236,7 +148,7 @@ function guard(handler) {
     Promise.resolve()
       .then(() => handler(detail))
       .catch((e) => {
-        // Fail open: a broken classifier must not become a broken browser (brief §6, §7.4).
+        // Fail open: a broken classifier must not become a broken browser.
         if (typeof console !== 'undefined' && console.warn) console.warn('[capture] observation failed; failing open', e);
         return undefined;
       });
@@ -244,7 +156,7 @@ function guard(handler) {
 
 function toBlockingResponse(result) {
   if (!result) return undefined;
-  // §7.4: `blocked` cancels through webRequestBlocking. Everything else releases the request.
+  // `blocked` cancels through webRequestBlocking; everything else releases the request.
   return result.cancel ? { cancel: true } : undefined;
 }
 
@@ -253,7 +165,7 @@ function capFor(policy) {
   return Number.isFinite(caps.body_bytes) && caps.body_bytes > 0 ? caps.body_bytes : undefined;
 }
 
-/** §7.5 Mode C's automation marker is read from request headers, never from a page global. */
+/** The automation marker is read from request headers, never from a page global. */
 export function tabContextOf(detail) {
   const ctx = [];
   const headers = (detail && detail.requestHeaders) || {};

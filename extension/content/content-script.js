@@ -1,32 +1,19 @@
 /**
- * content-script.js — the isolated-world half of §7.3, and the only code that ever touches a
- * `File`.
+ * content-script.js — the isolated-world wiring, and the only code that touches a `File`.
+ * `content-boot.js` loads it in a browser; the Node suite imports it directly.
  *
- * Wiring only: the two pieces of logic it uses (`files.js`, `sender.js`) are plain modules with
- * no chrome.* and are unit-tested in Node. What lives here is the three listeners that make them
- * reachable from a page:
- *
- *   1. a drop listener, so a drag-and-dropped file is resolvable (the drop target is an element
- *      the user chose, which is the strongest available signal);
- *   2. the `capture_upload_check` call from the service worker, which resolves the page's file
- *      input or drop target to `File` objects and returns **metadata only** — a filename is not
- *      attachment capture (§7.3), and reading a byte here would violate snapshot-on-send;
- *   3. the `capture_upload_send` call, which opens the chunked transfer;
- *   4. the §7.4 warning overlay, which is rendered in the page and answered explicitly.
+ *   1. a drop listener, so a dragged-and-dropped file is resolvable;
+ *   2. `capture_upload_check`: resolves the page's file input or drop target to `File` objects and
+ *      returns metadata only (no byte is read until a transfer is opened);
+ *   3. `capture_upload_send`: runs the chunked transfer;
+ *   4. `capture_warn`: the warn confirmation, rendered in the page and answered explicitly.
  */
 
 import { createContentScriptAdapter } from '../src/chrome-adapter.js';
 import { createFileRegistry } from '../src/attachments/files.js';
 import { createAttachmentSender } from '../src/attachments/sender.js';
 
-/**
- * The adapter for whichever world this module has been loaded into.
- *
- * Exported so `content-boot.js` — which cannot import anything statically, because it is loaded as
- * a classic content script — can build the same adapter this module would have built for itself.
- * The browser entry point passes a message bridge backed by `chrome.runtime`; the Node suite passes
- * a fake. The adapter is otherwise identical, which is the point.
- */
+/** The adapter for the world this module is loaded into; `content-boot.js` cannot import it statically. */
 export function createContentScriptAdapterForThisWorld() {
   return createContentScriptAdapter(globalThis);
 }
@@ -38,7 +25,6 @@ export function bootstrapContentScript(adapter, { document = adapter.document } 
     crypto: adapter.crypto,
     newIds: () => adapter.randomUUIDs(1),
   });
-  let lastResolution = { candidates: [], reachable: false, reason: 'not_asked' };
 
   // 1. Files that arrive by drop never appear in an `<input type=file>`.
   if (document && typeof document.addEventListener === 'function') {
@@ -49,7 +35,7 @@ export function bootstrapContentScript(adapter, { document = adapter.document } 
           const dt = event.dataTransfer;
           if (dt && dt.files && dt.files.length) registry.noteDrop(dt.files);
         } catch (e) {
-          /* a page that blocks the read is exactly the `content_no_attachments` case */
+          /* a page that blocks the read leaves no reachable file, which is reported as such */
         }
       },
       true,
@@ -57,8 +43,7 @@ export function bootstrapContentScript(adapter, { document = adapter.document } 
   }
 
   function resolveUpload() {
-    lastResolution = registry.collectCandidates();
-    return lastResolution;
+    return registry.collectCandidates();
   }
 
   // 2/3/4. Messages from the service worker.
@@ -70,9 +55,8 @@ export function bootstrapContentScript(adapter, { document = adapter.document } 
         return {
           ok: true,
           candidates: resolved.candidates,
-          // §7.3: where the composer builds the upload in a worker or canvas and no `File`
-          // handle is reachable, this is what the pipeline records as `content_no_attachments`
-          // and counts in the coverage row.
+          // False when the composer built the upload in a worker or canvas and no `File` handle
+          // is reachable.
           reachable: resolved.reachable,
           reason: resolved.reason,
         };
@@ -84,8 +68,7 @@ export function bootstrapContentScript(adapter, { document = adapter.document } 
           readSlice: (refId, offset, length) => registry.readSlice(refId, offset, length),
           isCancelled: () => Boolean(msg.cancelled),
         });
-        // Snapshot-on-send: the transfer is complete, so the reference is dropped. Nothing was
-        // written to extension storage at any point.
+        // The transfer has ended: the reference is dropped and the file is not offered again.
         registry.forget(msg.descriptor && msg.descriptor.ref_id);
         return { ok: true, result };
       }
@@ -98,16 +81,14 @@ export function bootstrapContentScript(adapter, { document = adapter.document } 
     }
   });
 
-  return { registry, sender, resolveUpload, get lastResolution() { return lastResolution; } };
+  return { registry, sender, resolveUpload };
 }
 
 /**
- * §7.4's confirmation, rendered before the request proceeds. Deliberately blunt: a modal
- * overlay, a countdown matching the 300 ms decision budget, and the default answer being
- * "cancel" — the request only proceeds on an explicit click.
+ * The warn confirmation, rendered before the request proceeds: an overlay with "Send anyway" and
+ * "Cancel request". An unanswered prompt resolves as proceed after `timeout_ms` (fail open).
  *
- * Injected with `textContent` only: a rule message comes from a signed bundle, and a signed
- * bundle is still data, not markup.
+ * Text is set with `textContent` only: a rule message from a signed bundle is data, not markup.
  */
 export function showWarning(document, spec) {
   return new Promise((resolve) => {
@@ -159,14 +140,7 @@ export function showWarning(document, spec) {
     host.append(title, body, target, send, cancel);
     (document.body || document.documentElement).appendChild(host);
 
-    // Bounded by §7.4's budget: an unanswered prompt is fail-open `logged` with
-    // `confidence: degraded`, never a silent block and never an indefinitely held request.
+    // An unanswered prompt fails open, never a silent block or an indefinitely held request.
     const timer = setTimeout(() => finish(true), timeout);
   });
-}
-
-// ── MV3 entry: only runs in a browser, never under `node --test` ─────────────────────────────
-if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id) {
-  const adapter = createContentScriptAdapter(globalThis);
-  bootstrapContentScript(adapter, { document: globalThis.document });
 }

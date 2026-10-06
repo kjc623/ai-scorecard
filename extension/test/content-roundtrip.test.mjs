@@ -1,17 +1,11 @@
 /**
- * test/content-roundtrip.test.mjs — the acceptance property for the defect the verifier found:
+ * test/content-roundtrip.test.mjs — a frame produced by the extension's own code round-trips
+ * through endpoint/protocol's Go type to byte-identical content with a matching digest.
  *
- *   **a frame produced by the extension's own code must round-trip through device/protocol's Go
- *   type to byte-identical content with a matching digest.**
+ * Field-name checks cannot see an encoding mismatch, so this file tests the encoding itself and,
+ * where a Go toolchain is available, compiles and runs a real Go consumer of the real type.
  *
- * Why the whole suite was blind to it, and why this file exists rather than an assertion somewhere
- * else: every other check compared *field names*. `contract.test.mjs` compares `json:"name"` tags;
- * the fake core used to check presence; the Go tests construct structs directly and never see JSON.
- * The encoding was nobody's job. So this file tests the encoding as such, and — where the Go
- * toolchain is available — compiles and runs a real Go consumer of the real type.
- *
- * The four payload classes are the ones the Lead named, and the third and fourth are the two a
- * naive "does it error?" test misses:
+ * Four payload classes; the third and fourth are the ones a "does it error?" test misses:
  *   1. plain ASCII text;
  *   2. non-ASCII UTF-8 (multi-byte sequences);
  *   3. binary bytes that are not valid UTF-8;
@@ -28,15 +22,15 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { observationBody, encodeContent, decodeContentFrame, validateObservation } from '../src/messages.js';
-import { sha256Prefixed } from '../src/codec.js';
+import { observationBody, encodeContent, validateObservation } from '../src/messages.js';
+import { base64ToBytes, sha256Prefixed } from '../src/codec.js';
 import { fakeCrypto } from '../test-support/harness.mjs';
 import { createHarness, settle } from '../test-support/harness.mjs';
 import { chromeRequest } from '../test-support/fake-chrome.mjs';
 import { CHAT_BODY } from '../test-support/fixtures.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-// This file is extension/test/, so three levels up is one above the repository root; two is the root.
+// extension/test/ -> repository root.
 const REPO_ROOT = resolve(HERE, '..', '..');
 const CHAT_URL = 'https://chat.example-ai.invalid/v1/chat/completions';
 
@@ -150,9 +144,9 @@ test('encodeContent is the single encoder, and it round-trips every byte value',
   // base64 string — so that no caller has a reason to bypass it.
   const bytes = new Uint8Array(256);
   for (let i = 0; i < 256; i++) bytes[i] = i;
-  assert.deepEqual([...decodeContentFrame(encodeContent(bytes))], [...bytes], 'bytes');
-  assert.deepEqual([...decodeContentFrame(encodeContent('héllo'))], [...Buffer.from('héllo')], 'text');
-  assert.deepEqual([...decodeContentFrame(encodeContent('AAEC', { alreadyBase64: true }))], [0, 1, 2], 'an already-encoded value');
+  assert.deepEqual([...base64ToBytes(encodeContent(bytes))], [...bytes], 'bytes');
+  assert.deepEqual([...base64ToBytes(encodeContent('héllo'))], [...Buffer.from('héllo')], 'text');
+  assert.deepEqual([...base64ToBytes(encodeContent('AAEC', { alreadyBase64: true }))], [0, 1, 2], 'an already-encoded value');
   assert.equal(encodeContent(new Uint8Array([0xc3, 0x28])), 'wyg=', 'binary encodes without a decode attempt');
 });
 
@@ -222,7 +216,7 @@ const GO_PRESENT = probeGo();
 function probeGo() {
   try {
     const env = goEnv();
-    const r = spawnSync(env.GO || 'go', ['version'], { encoding: 'utf8', env });
+    const r = spawnSync('go', ['version'], { encoding: 'utf8', env });
     return r.status === 0 ? r.stdout.trim() : null;
   } catch {
     return null;
@@ -230,25 +224,17 @@ function probeGo() {
 }
 
 function goEnv() {
-  return {
-    ...process.env,
-    GOCACHE: join(REPO_ROOT, '.tools', 'gocache'),
-    GOPROXY: 'off',
-    GOTOOLCHAIN: 'local',
-    GOFLAGS: '-mod=mod',
-    GO111MODULE: 'on',
-    GOWORK: 'off',
-    PATH: `${process.env.PATH}${process.platform === 'win32' ? ';' : ':'}${process.env.LOCALAPPDATA || ''}\\Programs\\Go\\bin`,
-  };
+  // GOWORK=off keeps a surrounding go.work out of the throwaway module.
+  return { ...process.env, GOFLAGS: '-mod=mod', GOWORK: 'off' };
 }
 
-test('a real Go consumer of device/protocol.ObservationMessage decodes the extension frame byte-identically', { skip: GO_PRESENT ? false : 'no Go toolchain on PATH: see the NOT VERIFIED note in README.md' }, async () => {
+test('a real Go consumer of protocol.ObservationMessage decodes the extension frame byte-identically', { skip: GO_PRESENT ? false : 'no Go toolchain on PATH' }, async () => {
   // The strongest form of the check: the extension's own frame, fed to the real Go type through
   // encoding/json, with the consumer computing the digest itself.
   const tmp = mkdtempSync(join(tmpdir(), 'capture-roundtrip-'));
   try {
     const protocolDir = join(REPO_ROOT, 'endpoint', 'protocol');
-    assert.ok(existsSync(join(protocolDir, 'native.go')), 'device/protocol must be present');
+    assert.ok(existsSync(join(protocolDir, 'native.go')), 'endpoint/protocol must be present');
     cpSync(protocolDir, join(tmp, 'protocol'), { recursive: true });
 
     // A frame built by the extension's own code, not by the test.
@@ -335,8 +321,7 @@ func base64Decode(s string) ([]byte, error) { return base64.StdEncoding.DecodeSt
 
     writeFileSync(
       join(tmp, 'go.mod'),
-      // `device/protocol` is its own module (it has a go.mod), so the consumer reaches it by a
-      // `replace` rather than by a relative import path. This is the real module and the real type.
+      // endpoint/protocol is its own module, reached by a `replace`: the real module and type.
       `module roundtrip
 
 go 1.22

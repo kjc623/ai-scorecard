@@ -1,23 +1,18 @@
 /**
- * request-body.js — normalising a chrome.webRequest payload into the two shapes §7.2 names,
- * and the over-cap discipline of §5.3 applied to a browser body.
+ * request-body.js — normalises a chrome.webRequest payload, and caps what is held in memory.
  *
- * chrome.webRequest hands back exactly two shapes (E2):
- *   - form encodings -> `requestBody.formData`, already parsed into key/value pairs;
- *   - everything else -> `requestBody.raw`, an array of ArrayBuffer chunks.
- * AI submissions are the "everything else" case in practice, so the normal path is a strict
- * UTF-8 decode with a binary fallback.
+ * chrome.webRequest hands back two shapes: form encodings as `requestBody.formData` (parsed
+ * key/value pairs) and everything else as `requestBody.raw` (an array of ArrayBuffer chunks). AI
+ * submissions are the raw case in practice: a strict UTF-8 decode with a binary fallback.
  *
- * The invariant this module protects: **the bytes handed to the digest are the bytes the
- * browser sent.** Nothing here is decoded with replacement characters, so the digest of a
- * body observed on this route equals the digest the proxy route would compute for the same
- * wire bytes, which is what cross-route dedup (§8.3, docs/02-ingest §4) needs.
+ * The bytes handed to the digest are the bytes the browser sent. Nothing is decoded with
+ * replacement characters, so this route's digest equals the one the proxy route computes for the
+ * same wire bytes, which is what cross-route dedup needs.
  */
 
-import { ExtError } from './adapter.js';
 import { concatBytes, decodeBody, toBytes } from './codec.js';
 
-/** Default cap for a body the extension will hold in memory. Per-tenant caps are bundle policy (§11.3). */
+/** Default cap for a body the extension holds in memory; the bundle may set a per-tenant cap. */
 export const DEFAULT_BODY_CAP_BYTES = 1 << 20; // 1 MiB
 
 /**
@@ -74,18 +69,12 @@ export function formToBytes(form) {
   return concatBytes(parts.map((p, i) => (i === 0 ? p : concatBytes([new Uint8Array([38]), p]))));
 }
 
-export function contentTypeOf(requestHeaders) {
-  const h = requestHeaders || {};
-  return h['content-type'] || h['Content-Type'] || '';
-}
-
 /**
  * Normalise a body under a cap.
  *
- * Over cap (§5.3 discipline, the extension's half): the body is *not* read wholesale into
- * memory. `prefix` holds only the first `capBytes`, `size` reports the whole payload, and
- * `truncated_reason` is set so the caller emits `confidence: degraded` rather than a
- * silent "classified clean". Callers hash the bytes they actually hold.
+ * Over the cap the body is not read wholesale into memory: `prefix` holds only the first
+ * `capBytes`, `size` reports the whole payload, and `truncated_reason` is set so the caller
+ * reports a degraded observation rather than a clean one. Callers hash the bytes they hold.
  *
  * @param {{formData?: any, raw?: any}|null|undefined} requestBody
  * @param {{capBytes?: number}} [opts]
@@ -153,21 +142,4 @@ export function normaliseBody(requestBody, opts = {}) {
 
 function byteLenOf(s) {
   return typeof s === 'string' ? new TextEncoder().encode(s).byteLength : 0;
-}
-
-/**
- * The §7.2 rule stated as a function: decode strictly, and on failure keep the bytes and say
- * the payload is binary. A lossy decode here would change the digest and break dedup.
- */
-export function decodeForTransport(bytes) {
-  const d = decodeBody(bytes);
-  if (d.encoding === 'utf8') return { encoding: 'utf8', text: d.text, isBinary: false };
-  return { encoding: 'binary', text: null, isBinary: true };
-}
-
-/** Guard for callers that must never touch bytes at M0. */
-export function assertReadPermitted(mode, operation) {
-  if (!mode || mode === 'm0') {
-    throw new ExtError('internal_error', `content read attempted at ${mode || 'unknown'} during ${operation}`);
-  }
 }

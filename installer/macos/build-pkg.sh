@@ -1,81 +1,62 @@
 #!/bin/sh
-# installer/macos/build-pkg.sh - build ShadowAICapture.pkg from a stage.
+# build-pkg.sh - build ShadowAICapture.pkg from a darwin stage. Run it on macOS:
 #
-#   node installer/build.mjs --os darwin --arch arm64
-#   installer/macos/build-pkg.sh --stage installer/.stage/darwin-arm64 --out installer/dist
+#   node installer/build.mjs --os darwin --arch arm64 --version 1.4.0 ...
+#   installer/macos/build-pkg.sh --stage installer/.stage/darwin-arm64 --version 1.4.0 --out installer/dist \
+#     [--sign "Developer ID Installer: <organisation> (<team id>)"]
 #
-# NOT VERIFIED ON THIS HOST: there is no macOS, no pkgbuild and no productbuild here. This script is
-# the macOS half of the platform contract, kept behaviourally aligned with the Linux install and the
-# WiX source through installer/manifest.mjs; only a macOS host proves it. When pkgbuild is absent it
-# prints the commands it would run and exits non-zero rather than pretending to have built a package.
-#
-# What it installs, matching docs/05-platform-delivery.md §6.1:
-#   /usr/local/opt/shadow-ai-capture/bin/{capture-core,classifier-host,capture-core-run}
-#   /usr/local/etc/shadow-ai-capture/capture-core.env.example
-#   /Library/LaunchDaemons/com.shadowaicapture.capture-core.plist
-# The PKG carries no tenant data. The tenant package puts ShadowAICapture.tenant.env beside it;
-# preinstall refuses an install with neither that nor an installed tenant.env, and postinstall copies
-# it to /usr/local/etc/shadow-ai-capture/tenant.env, the same rule as the Windows MSI.
+# The package installs the binaries and the classifier release under /usr/local/opt/shadow-ai-capture,
+# the vendor file under /usr/local/etc/shadow-ai-capture, the LaunchDaemon, and the native messaging
+# host for Chrome and Edge. The tenant file travels beside the .pkg: preinstall refuses an install
+# with neither it nor an installed tenant.env, and postinstall copies it in.
 set -eu
 
-STAGE=""; OUT="installer/dist"; CONFIG_SRC=""; SIGN=""; VERSION="0.1.0"
+STAGE=""; OUT=""; VERSION=""; SIGN=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --stage) STAGE="$2"; shift 2 ;;
     --out) OUT="$2"; shift 2 ;;
-    --config) CONFIG_SRC="$2"; shift 2 ;;
-    --sign) SIGN="$2"; shift 2 ;;
     --version) VERSION="$2"; shift 2 ;;
-    -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --sign) SIGN="$2"; shift 2 ;;
+    -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "build-pkg.sh: unknown argument $1" >&2; exit 2 ;;
   esac
 done
-[ -n "$STAGE" ] || { echo "build-pkg.sh: --stage DIR is required" >&2; exit 2; }
-[ -e "$STAGE/bin/capture-core" ] || { echo "build-pkg.sh: $STAGE is not a darwin stage; run node installer/build.mjs --os darwin" >&2; exit 1; }
+[ -n "$STAGE" ] && [ -n "$OUT" ] && [ -n "$VERSION" ] || { echo "build-pkg.sh: --stage, --out and --version are required" >&2; exit 2; }
+command -v pkgbuild >/dev/null 2>&1 || { echo "build-pkg.sh: pkgbuild not found; build the package on macOS" >&2; exit 1; }
+
+HOST=com.shadowaicapture.capture_core.json
+PLIST=com.shadowaicapture.capture-core.plist
+for f in bin/capture-core bin/classifier-host classifier/manifest.json etc/capture-core.env "etc/$PLIST" "etc/$HOST"; do
+  [ -e "$STAGE/$f" ] || { echo "build-pkg.sh: $STAGE/$f is missing; build the stage with node installer/build.mjs --os darwin" >&2; exit 1; }
+done
 
 HERE=$(cd "$(dirname "$0")" && pwd)
-
-if ! command -v pkgbuild >/dev/null 2>&1; then
-  cat >&2 <<EOF
-build-pkg.sh: pkgbuild not found - this host cannot build a macOS PKG. On a macOS host run:
-
-  node installer/build.mjs --os darwin --arch arm64
-  installer/macos/build-pkg.sh --stage installer/.stage/darwin-arm64 --out installer/dist
-
-The script stages these files, then runs pkgbuild + productbuild:
-  bin/capture-core, bin/classifier-host, bin/capture-core-run
-  etc/capture-core.env.example
-  /Library/LaunchDaemons/com.shadowaicapture.capture-core.plist
-EOF
-  exit 1
-fi
-
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
-ROOT="$WORK/root"
-mkdir -p "$ROOT/usr/local/opt/shadow-ai-capture/bin" \
-         "$ROOT/usr/local/etc/shadow-ai-capture" \
-         "$ROOT/Library/LaunchDaemons"
+R="$WORK/root"
+OPT="$R/usr/local/opt/shadow-ai-capture"
+install -d "$OPT/bin" "$OPT/classifier" "$R/usr/local/etc/shadow-ai-capture" "$R/Library/LaunchDaemons" \
+  "$R/Library/Google/Chrome/NativeMessagingHosts" "$R/Library/Microsoft Edge/NativeMessagingHosts"
+install -m 0755 "$STAGE/bin/capture-core" "$OPT/bin/capture-core"
+install -m 0755 "$STAGE/bin/classifier-host" "$OPT/bin/classifier-host"
+cp -R "$STAGE/classifier/." "$OPT/classifier/"
+install -m 0644 "$STAGE/etc/capture-core.env" "$R/usr/local/etc/shadow-ai-capture/capture-core.env"
+install -m 0644 "$STAGE/etc/$PLIST" "$R/Library/LaunchDaemons/$PLIST"
+install -m 0644 "$STAGE/etc/$HOST" "$R/Library/Google/Chrome/NativeMessagingHosts/$HOST"
+install -m 0644 "$STAGE/etc/$HOST" "$R/Library/Microsoft Edge/NativeMessagingHosts/$HOST"
 
-install -m 0755 "$STAGE/bin/capture-core" "$ROOT/usr/local/opt/shadow-ai-capture/bin/capture-core"
-install -m 0755 "$STAGE/bin/classifier-host" "$ROOT/usr/local/opt/shadow-ai-capture/bin/classifier-host"
-install -m 0755 "$STAGE/bin/capture-core-run" "$ROOT/usr/local/opt/shadow-ai-capture/bin/capture-core-run"
-install -m 0644 "$STAGE/etc/capture-core.env.example" "$ROOT/usr/local/etc/shadow-ai-capture/capture-core.env.example"
-install -m 0644 "$STAGE/etc/service-definition.plist" "$ROOT/Library/LaunchDaemons/com.shadowaicapture.capture-core.plist"
-if [ -n "$CONFIG_SRC" ]; then
-  install -m 0600 "$CONFIG_SRC" "$ROOT/usr/local/etc/shadow-ai-capture/capture-core.env"
-fi
+# pkgbuild runs the scripts only when they are executable, whatever the checkout preserved.
+install -d "$WORK/scripts"
+install -m 0755 "$HERE/scripts/preinstall" "$HERE/scripts/postinstall" "$WORK/scripts/"
 
 mkdir -p "$OUT"
-COMPONENT="$OUT/ShadowAICapture-component.pkg"
-pkgbuild --root "$ROOT" --identifier com.shadowaicapture.capture-core --version "$VERSION" \
-  --scripts "$HERE/scripts" "$COMPONENT"
-
-PKG="$OUT/ShadowAICapture.pkg"
+COMPONENT="$WORK/ShadowAICapture-component.pkg"
+pkgbuild --root "$R" --identifier com.shadowaicapture.capture-core --version "$VERSION" \
+  --ownership recommended --scripts "$WORK/scripts" "$COMPONENT"
 if [ -n "$SIGN" ]; then
-  productbuild --package "$COMPONENT" --sign "$SIGN" "$PKG"
+  productbuild --package "$COMPONENT" --sign "$SIGN" "$OUT/ShadowAICapture.pkg"
 else
-  echo "build-pkg.sh: WARNING - unsigned development PKG; pass --sign 'Developer ID Installer: ...' for a release" >&2
-  productbuild --package "$COMPONENT" "$PKG"
+  productbuild --package "$COMPONENT" "$OUT/ShadowAICapture.pkg"
 fi
-echo "built $PKG"
+echo "built $OUT/ShadowAICapture.pkg"

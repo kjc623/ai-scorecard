@@ -1,32 +1,19 @@
 #!/bin/sh
-# installer/macos/scripts/postinstall - create state, seed the config, load the daemon.
+# postinstall - create the state and log directories, install the tenant file, start the daemon.
 set -eu
-STATEDIR=/var/db/shadow-ai-capture
-LOGDIR=/var/log/shadow-ai-capture
 CONFIGDIR=/usr/local/etc/shadow-ai-capture
-LABEL=com.shadowaicapture.capture-core
-PLIST="/Library/LaunchDaemons/${LABEL}.plist"
+PLIST=/Library/LaunchDaemons/com.shadowaicapture.capture-core.plist
 
-mkdir -p "$STATEDIR" "$LOGDIR" "$CONFIGDIR"
-# The state holds the spool and the sealed credential; root-only, like the Linux unit.
-chmod 700 "$STATEDIR"
-chmod 700 "$LOGDIR"
+# The CLI shim writes into /var/db/shadow-ai-capture for every user to read; the state beneath it
+# holds the device credential and the spool, root only.
+install -d -m 0755 /var/db/shadow-ai-capture
+install -d -m 0700 /var/db/shadow-ai-capture/state /var/log/shadow-ai-capture
 
-# Never overwrite an existing profile: an installer that resets a device identity is worse than one
-# that stops (docs/05-platform-delivery.md §6.4).
-if [ ! -f "$CONFIGDIR/capture-core.env" ] && [ -f "$CONFIGDIR/capture-core.env.example" ]; then
-  cp "$CONFIGDIR/capture-core.env.example" "$CONFIGDIR/capture-core.env"
-  chmod 600 "$CONFIGDIR/capture-core.env"
-fi
-
-# The tenant file beside the .pkg ($1 is the package path) becomes tenant.env, which the wrapper reads
-# after capture-core.env. A supplied one replaces an installed one; with none, the installed one is kept.
+# $1 is the package path. A supplied tenant file replaces an installed one; with none, it is kept.
 PKG_DIR=$(dirname "${1:-/nonexistent/pkg}")
 if [ -f "$PKG_DIR/ShadowAICapture.tenant.env" ]; then
-  cp "$PKG_DIR/ShadowAICapture.tenant.env" "$CONFIGDIR/tenant.env"
-  chmod 600 "$CONFIGDIR/tenant.env"
+  install -m 0600 "$PKG_DIR/ShadowAICapture.tenant.env" "$CONFIGDIR/tenant.env"
 fi
 
-# Modern launchctl first, then the legacy verb for older systems.
-launchctl bootstrap system "$PLIST" 2>/dev/null || launchctl load -w "$PLIST" 2>/dev/null || true
+launchctl bootstrap system "$PLIST"
 exit 0

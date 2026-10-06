@@ -1,42 +1,33 @@
 /**
- * adapter.js — the ONLY module in this extension that calls `chrome.*`.
+ * adapter.js — the interface between the extension and `chrome.*`.
  *
- * Every chrome API the extension touches is described here as an interface, and the
- * browser implementation of that interface is built from a `chrome` object passed in.
- * Nothing else in `src/` may reference the global `chrome` (asserted by a test that greps
- * the tree), so the entire decision path is exercised by `node --test` against
- * `test-support/fake-chrome.mjs`.
+ * Every chrome API the extension touches is described here as an interface; `chrome-adapter.js`
+ * builds the browser implementation from a `chrome` object. No other module references the
+ * global `chrome` (a test greps the tree), so the whole decision path runs under `node --test`
+ * against `test-support/fake-chrome.mjs`.
  *
- * Assumed chrome.* surface — the complete list, so a reviewer can check it against a
- * real browser without reading the rest of the tree:
+ * The chrome.* surface, complete:
  *
- *   chrome.webRequest.onBeforeRequest.addListener(fn, filter, ["blocking", "requestBody"])
- *   chrome.webRequest.onBeforeRequest.addListener(fn, filter, ["blocking"])
+ *   chrome.webRequest.onBeforeRequest.addListener(fn, filter, ["blocking"?, "requestBody"?])
+ *   chrome.webRequest.onBeforeRequest.removeListener(fn)
  *   chrome.webRequest.onCompleted.addListener(fn, filter)
- *   chrome.webRequest.OnBeforeRequestOptions.DISABLE_OPTIMIZATION   (constants, not logic)
- *   chrome.runtime.connectNative(application)
- *   chrome.runtime.onMessage.addListener(fn) / sendMessage(msg)
- *   chrome.runtime.getURL(path)
- *   chrome.runtime.lastError                                       (read inside callbacks)
- *   chrome.tabs.sendMessage(tabId, msg, options) / query({active:true, currentWindow:true})
+ *   chrome.runtime.connectNative(application) / lastError
+ *   chrome.runtime.onMessage.addListener(fn) / sendMessage(msg) / getURL(path)
+ *   chrome.tabs.sendMessage(tabId, msg) / query({active: true, currentWindow: true})
  *   chrome.alarms.create(name, {periodInMinutes}) / onAlarm.addListener(fn)
- *   chrome.storage.session.get(key) / set(obj) / remove(key)
+ *   chrome.permissions.contains({permissions: ["webRequestBlocking"]})
  *   (content script world) globalThis.crypto.subtle
  *
- * Deliberately NOT used: chrome.declarativeNetRequest (cannot block inline with a
- * decision that depends on the body), chrome.storage.local (nothing durable), any
- * analytics or remote code path.
+ * Not used: chrome.declarativeNetRequest (it cannot make a decision that depends on the body),
+ * chrome.storage (the extension holds nothing durable), analytics, remote code.
  */
 
 /** @typedef {'m0'|'m1'|'m2'|'m3'} CollectionMode */
 
 /**
  * @typedef {object} RequestRecordInput
- * A normalised request. The two requestBody shapes Chrome exposes:
- *   - form encodings  -> `formData` as parsed key/value pairs (E2)
- *   - everything else -> `raw` as bytes (E2); Chrome's ArrayBuffer, copied here.
- * `raw` is an ArrayBuffer and stays binary: this module must not base64 or hash a body
- * at M0, because at M0 the bytes passed here are the defect, not the data.
+ * A normalised request. Chrome exposes two requestBody shapes: form encodings arrive as parsed
+ * `formData`, everything else as `raw` bytes (copied here from Chrome's ArrayBuffer).
  * @property {string} requestId
  * @property {string} url
  * @property {string} method
@@ -64,14 +55,13 @@
 
 /**
  * @typedef {object} WebRequestAdapter
- * @property {(handler: (d: RequestRecordInput) => any, opts: {urls: string[], types?: string[]}) => void} onBeforeRequest
- *   Metadata-only observation lane. The extension does NOT pass `requestBody` here.
- * @property {(handler: (d: RequestRecordInput) => any, opts: {urls: string[], types?: string[]}) => void} onBeforeRequestWithBody
- *   Body-bearing lane. `requestBody` is requested here and only here, which is what makes
- *   "an M0 destination's body is never read" a property of registration rather than of
- *   discipline inside a handler.
+ * @property {(handler: (d: RequestRecordInput) => any, opts: {urls: string[], types?: string[], blocking?: boolean}) => void} onBeforeRequest
+ *   Metadata-only lane: registered without `requestBody`.
+ * @property {(handler: (d: RequestRecordInput) => any, opts: {urls: string[], types?: string[], blocking?: boolean}) => void} onBeforeRequestWithBody
+ *   Body lane: the only registration that asks for `requestBody`, so "an M0 destination's body is
+ *   never read" is a property of what is registered rather than of a handler's discipline.
+ * @property {() => void} removeBodyLane
  * @property {(handler: (d: ResponseRecordInput) => void, opts: {urls: string[], types?: string[]}) => void} onCompleted
- * @property {(pattern: string) => boolean} isBodyBearingUrl  the host gate, injected by the caller
  */
 
 /**
@@ -89,12 +79,12 @@
  * @property {{onMessage: (fn: (message: any, sender: any) => any) => void, sendMessage: (message: any) => Promise<any>}} messages
  * @property {{sendMessage: (tabId: number, message: any, options?: any) => Promise<any>, query: (q: any) => Promise<any[]>}} tabs
  * @property {{create: (name: string, info: {periodInMinutes: number}) => void, onAlarm: (fn: (alarm: {name: string}) => void) => void}} alarms
- * @property {{get: (key: string) => Promise<any>, set: (items: any) => Promise<void>}} session
+ * @property {{hasWebRequestBlocking: () => Promise<boolean>}} permissions
  * @property {Crypto} crypto                             WebCrypto, for SHA-256 and UUIDs
  * @property {() => number} now                          milliseconds, monotonic where the host allows
- * @property {() => string} getURL
+ * @property {(path: string) => string} getURL
  * @property {(n: number) => string[]} randomUUIDs       `n` v4 UUIDs
- * @property {(spec: WarnSpec) => Promise<WarnAnswer>} warnUser  renders the §7.4 confirmation
+ * @property {(spec: WarnSpec) => Promise<WarnAnswer>} warnUser  renders the warn confirmation
  */
 
 /**
@@ -116,6 +106,7 @@
  * @property {string} reason         'user_proceeded' | 'user_cancelled' | 'timeout' | 'no_receiver'
  */
 
+/** An error with a code from the closed set the health report counts (never prose). */
 export class ExtError extends Error {
   /** @param {string} code @param {string} message @param {object} [detail] */
   constructor(code, message, detail = {}) {
@@ -126,41 +117,8 @@ export class ExtError extends Error {
   }
 }
 
-/** Error codes are a closed set: a health report counts them, so they cannot be prose. */
-export const ERROR_CODES = Object.freeze([
-  'native_unavailable',
-  'native_timeout',
-  'native_protocol_error',
-  /**
-   * A connect was refused because the channel is cooling down after a disconnect. It is deliberately
-   * NOT counted as a fresh error: it is the same failure still standing, and counting it per attempt
-   * is what would turn a backoff into a counter that climbs while nothing new happens.
-   */
-  'native_cooling_down',
-  'core_refused',
-  'oversize_refused',
-  'attachment_read_failed',
-  'attachment_no_input',
-  'evaluation_error',
-  'budget_exceeded',
-  'warn_unavailable',
-  /** §7.4's capability is absent on this install: observation works, a `blocked` rule cannot act. */
-  'enforcement_unavailable',
-  'internal_error',
-]);
-
-export function isExtError(e) {
-  return e instanceof ExtError;
-}
-
 export function errorCode(e) {
-  return isExtError(e) && typeof e.code === 'string' ? e.code : 'internal_error';
-}
-
-/** Chrome MV3 "unsupported request body type" arrives as a thrown Error, not a code. */
-export function isUnsupportedBodyError(e) {
-  const m = String((e && e.message) || e || '');
-  return /request ?body/i.test(m) && /(unsupported|not supported|cannot|invalid)/i.test(m);
+  return e instanceof ExtError && typeof e.code === 'string' ? e.code : 'internal_error';
 }
 
 /** The single place that knows the global object is called `chrome`. */

@@ -1,52 +1,35 @@
 #!/bin/sh
-# installer/linux/uninstall.sh - reverse of install.sh.
+# uninstall.sh - remove Shadow AI Capture. Run it as root:
 #
-#   sudo installer/linux/uninstall.sh --purge
-#   installer/linux/uninstall.sh --prefix "$HOME/.sac" --purge
+#   sudo sh uninstall.sh [--purge]
 #
-# The default keeps the state directory (the spool and any sealed credential) and the configuration,
-# so a reinstall resumes the same device rather than silently minting a new identity. --purge removes
-# them, which is the "clean uninstall" of docs/05-platform-delivery.md §6.4 and is deliberately a
-# choice, not a default.
-
+# Without --purge the state directory and the configuration are kept, so a reinstall resumes as the
+# same enrolled device. --purge also removes them: the device credential, the spool and the tenant
+# file. Stopping the service removes its interception root from the system trust store.
 set -eu
-PREFIX=""
+
 PURGE=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --prefix) PREFIX="$2"; shift 2 ;;
     --purge) PURGE=1; shift ;;
-    -h|--help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "uninstall.sh: unknown argument $1" >&2; exit 2 ;;
   esac
 done
+[ "$(id -u)" = 0 ] || { echo "uninstall.sh: run as root" >&2; exit 1; }
 
-if [ -n "$PREFIX" ]; then
-  PREFIX=$(cd "$PREFIX" 2>/dev/null && pwd || echo "$PREFIX")
-  BINDIR="$PREFIX/bin"; CONFIGDIR="$PREFIX/etc"; STATEDIR="$PREFIX/state"; DATADIR="$PREFIX/share"; LOGDIR="$PREFIX/log"
-  SERVICE=0
-else
-  BINDIR=/opt/shadow-ai-capture; CONFIGDIR=/etc/shadow-ai-capture; STATEDIR=/var/lib/shadow-ai-capture; DATADIR=/usr/share/shadow-ai-capture; LOGDIR=/var/log/shadow-ai-capture
-  SERVICE=1
-fi
-
-if [ "$SERVICE" -eq 1 ]; then
-  if command -v systemctl >/dev/null 2>&1; then
-    systemctl disable --now shadow-ai-capture.service 2>/dev/null || true
-    systemctl daemon-reload || true
-  fi
+HOST=com.shadowaicapture.capture_core.json
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl disable --now shadow-ai-capture.service 2>/dev/null || true
   rm -f /etc/systemd/system/shadow-ai-capture.service
-  # Binaries only; the state and config are handled below by the same choice.
-  rm -rf "$BINDIR"
-  rmdir "$(dirname "$BINDIR")" 2>/dev/null || true
-else
-  rm -rf "$BINDIR"
+  systemctl daemon-reload
 fi
-rm -rf "$DATADIR"
+rm -f "/etc/opt/chrome/native-messaging-hosts/$HOST" "/etc/opt/edge/native-messaging-hosts/$HOST"
+rm -rf /opt/shadow-ai-capture
 
 if [ "$PURGE" -eq 1 ]; then
-  rm -rf "$STATEDIR" "$CONFIGDIR" "$LOGDIR"
-  echo "uninstalled (purged: state, config and logs removed)"
+  rm -rf /etc/shadow-ai-capture /var/lib/shadow-ai-capture
+  echo "uninstalled; state and configuration removed"
 else
-  echo "uninstalled (kept: $STATEDIR and $CONFIGDIR; re-run with --purge to remove them)"
+  echo "uninstalled; kept /etc/shadow-ai-capture and /var/lib/shadow-ai-capture (--purge removes them)"
 fi

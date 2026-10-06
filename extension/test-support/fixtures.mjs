@@ -1,7 +1,6 @@
 /**
- * fixtures.mjs — request records for the predicate tests, in the two shapes §7.5 Mode B exists to
- * separate: a chat call and a draft save from the same origin, distinguished by their bodies
- * rather than their paths.
+ * fixtures.mjs — request records for the predicate tests: a chat call and a draft save from the
+ * same origin, distinguished by their bodies rather than their paths.
  */
 
 import { toArrayBuffer } from './fake-chrome.mjs';
@@ -12,7 +11,7 @@ export function bytesOf(value) {
   return typeof value === 'string' ? encoder.encode(value) : value;
 }
 
-/** §8.2's canonical positive: a `messages` array with role/content, model parameters, POST+JSON. */
+/** The canonical positive: a `messages` array with role/content, model parameters, POST+JSON. */
 export const CHAT_BODY = {
   model: 'example-large-2026',
   messages: [
@@ -71,7 +70,7 @@ export function longProseRequest(overrides = {}) {
   };
 }
 
-/** A tool-declaration request: the second shape that is generative on its own (§8.2 row 4). */
+/** A tool-declaration request: the second shape that is generative on its own. */
 export function toolCallRequest(overrides = {}) {
   const body = bytesOf(
     JSON.stringify({
@@ -90,7 +89,7 @@ export function toolCallRequest(overrides = {}) {
   };
 }
 
-/** A response contract §8.2 accepts: streaming framing for the same request. */
+/** A generative response contract: streaming framing for the same request. */
 export const STREAMING_RESPONSE = {
   status: 200,
   headers: { 'content-type': 'text/event-stream', 'transfer-encoding': 'chunked' },

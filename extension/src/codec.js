@@ -1,11 +1,9 @@
 /**
  * codec.js — byte, text and digest primitives. Pure; no chrome.*.
  *
- * The rule this module exists to enforce (docs/01-collectors.md §7.2): a body is decoded
- * with a **fatal** UTF-8 decoder. On failure the payload is treated as binary and the raw
- * bytes are kept. It is never decoded with replacement characters, because `U+FFFD`
- * substitution changes the bytes the digest is taken over, which changes `content_digest`,
- * which changes `dedup_key`, which breaks cross-route dedup (docs/02-ingest §4).
+ * A body is decoded with a **fatal** UTF-8 decoder; on failure the payload is binary and the raw
+ * bytes are kept. It is never decoded with replacement characters: U+FFFD substitution would
+ * change the bytes the digest is taken over, and so `content_digest` and cross-route dedup.
  */
 
 import { ExtError } from './adapter.js';
@@ -40,7 +38,7 @@ export function utf8Strict(bytes) {
 }
 
 /**
- * §7.2 in one function: decode strictly, and on failure fall back to "binary".
+ * Decode strictly, and on failure fall back to "binary".
  * `encoding: 'binary'` means the payload is not text — it is carried as bytes and only
  * ever represented by its digest and size.
  * @returns {{encoding: 'utf8', text: string, bytes: Uint8Array} |
@@ -105,8 +103,7 @@ export function concatBytes(parts) {
 }
 
 /**
- * `sha256:<64 lowercase hex>` — the only digest form the envelope admits
- * (contracts/event-envelope.schema.json $defs/sha256).
+ * Hex SHA-256 over the bytes.
  * @param {Crypto} crypto WebCrypto from the adapter, never the global.
  */
 export async function sha256Hex(crypto, bytes) {
@@ -114,16 +111,7 @@ export async function sha256Hex(crypto, bytes) {
   return bytesToHex(new Uint8Array(buf));
 }
 
+/** `sha256:<64 lowercase hex>`, the digest form the event envelope admits. */
 export async function sha256Prefixed(crypto, bytes) {
   return `sha256:${await sha256Hex(crypto, bytes)}`;
-}
-
-/** Hex digest shape check, used by tests and by the envelope builder's own preconditions. */
-export function isDigest(s) {
-  return typeof s === 'string' && /^sha256:[0-9a-f]{64}$/.test(s);
-}
-
-/** Counter for a byte-range walk, so a truncated payload can report what it actually saw. */
-export function sliceBytes(bytes, start, end) {
-  return toBytes(bytes).subarray(start, end);
 }

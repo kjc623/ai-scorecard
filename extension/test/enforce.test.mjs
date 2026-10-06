@@ -1,9 +1,7 @@
 /**
- * test/enforce.test.mjs — §7.4's inline warn/block.
- *
- * Every one of §7.4's four claims is a test here, plus the two outcomes the document is explicit
- * about and easy to get wrong: a **blocked request is still an event**, and a decision that fails
- * or exceeds its budget **fails open** with `confidence: degraded` rather than blocking.
+ * test/enforce.test.mjs — inline warn/block: local decisions, `blocked` cancels, `warned` waits for
+ * an explicit answer, and a decision that fails or exceeds its budget fails open as degraded rather
+ * than blocking.
  */
 
 import test from 'node:test';
@@ -18,7 +16,6 @@ import {
   decideSync,
   decideWithConfirmation,
   degradedDetail,
-  decisionRecord,
   enforcing,
   evaluateRule,
   ruleMatches,
@@ -100,7 +97,7 @@ test('an unanswered warning fails OPEN, degraded, and never silently blocks', as
     ...base({ url: 'https://warned.invalid/v1/chat' }),
     confirm: async () => ({ proceeded: true, answered: false, reason: 'no_receiver' }),
   });
-  assert.equal(r.decision.action, DECISION.LOGGED, 'brief §6: a broken classifier must not become a broken browser');
+  assert.equal(r.decision.action, DECISION.LOGGED, 'a broken classifier must not become a broken browser');
   assert.equal(r.cancel, false);
   assert.equal(r.degraded, true);
   assert.equal(r.error_counted, true);
@@ -139,7 +136,7 @@ test('a confirmation transport that throws fails open, degraded, with the error 
   assert.match(r.error, /tab gone/);
 });
 
-test('an evaluation error fails open: `logged`, degraded, error counted (§7.4)', () => {
+test('an evaluation error fails open: `logged`, degraded, error counted', () => {
   // A rule list that cannot be iterated: the failure must not leave the request path.
   const r = decideSync(base({ rules: { not: 'an array' } }));
   assert.equal(r.decision.action, DECISION.LOGGED);
@@ -201,12 +198,12 @@ test('an evaluation that exceeds the 300 ms budget fails open with Detail budget
   assert.equal(degradedDetail(r), 'budget_exhausted', 'the Detail value is endpoint/protocol/envelope.go\'s, not a local spelling');
 });
 
-test('the decision budget is 300 ms, taken from §7.4 rather than the 150 ms classification target', () => {
+test('the decision budget is 300 ms', () => {
   assert.equal(DECISION_BUDGET_MS, 300);
   const b = createBudget({ budgetMs: 300, now: () => 0 });
   assert.equal(b.expired(), false);
 });
-test('§9.6: shadow and rolled_back releases never enforce, and the record says which it was', () => {
+test('shadow and rolled_back releases never enforce, and the record says which it was', () => {
   for (const [state, reason] of [
     ['shadow', REASON.SHADOW],
     ['rolled_back', REASON.ROLLED_BACK],
@@ -263,24 +260,8 @@ test('rules are ordered and the first match wins', () => {
   assert.equal(evaluateRule([], req).rule, null);
 });
 
-test('a decision record carries what capture-core needs, including the fail-open case', () => {
-  const outcome = decideSync(base());
-  const record = decisionRecord(outcome, {
-    client_id: 'c1',
-    occurred_at: '2026-10-02T17:26:50.000Z',
-    url: 'https://allowed.invalid/v1/chat',
-    tool_fingerprint: 'tf1:abc',
-  });
-  assert.equal(record.decision.action, 'logged');
-  assert.equal(record.decision.decided_locally, true);
-  assert.equal(record.degraded, false);
-  assert.equal(record.user_answer, null);
-  assert.equal(record.client_id, 'c1');
-});
-
-test('the confirmation window is separate from the decision budget, and this is a stated decision', () => {
-  // Recorded deliberately: a `warned` rule whose confirmation shared the 300 ms decision budget
-  // would be behaviourally identical to fail-open, making the schema's `warned` action unreachable.
+test('the confirmation window is separate from the decision budget', () => {
+  // A confirmation sharing the 300 ms decision budget would make `warned` behave like fail-open.
   assert.equal(CONFIRMATION_WINDOW_MS, 20_000);
   assert.ok(CONFIRMATION_WINDOW_MS > DECISION_BUDGET_MS);
 });

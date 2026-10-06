@@ -1,10 +1,9 @@
 /**
- * test/codec.test.mjs — the §7.2 decode rule and the byte primitives the digest depends on.
+ * test/codec.test.mjs — the strict decode rule and the byte primitives the digest depends on.
  *
- * The property under test is not "decoding works". It is: **the bytes the digest is taken over are
- * the bytes the browser sent**, on both the UTF-8 path and the binary path, with no replacement
- * characters anywhere. A lossy decode corrupts the digest, which changes `dedup_key`, which breaks
- * dedup across routes (docs/01-ingest §4).
+ * The property under test: the bytes the digest is taken over are the bytes the browser sent, on
+ * both the UTF-8 and the binary path, with no replacement characters anywhere. A lossy decode
+ * changes the digest, and so `dedup_key` and dedup across routes.
  */
 
 import test from 'node:test';
@@ -17,12 +16,11 @@ import {
   bytesToHex,
   concatBytes,
   decodeBody,
-  isDigest,
   sha256Prefixed,
   toBytes,
   utf8Strict,
 } from '../src/codec.js';
-import { decodeForTransport, normaliseBody, rawByteLength } from '../src/request-body.js';
+import { normaliseBody, rawByteLength } from '../src/request-body.js';
 import { INVALID_UTF8, LATIN1_TEXT, toArrayBuffer } from '../test-support/fake-chrome.mjs';
 import { fakeCrypto } from '../test-support/harness.mjs';
 
@@ -63,7 +61,7 @@ test('UTF-8 and binary paths hash the same input bytes → one digest, so dedup 
   const a = await sha256Prefixed(crypto, utf8Bytes);
   const b = await sha256Prefixed(crypto, new Uint8Array(utf8Bytes));
   assert.equal(a, b);
-  assert.ok(isDigest(a));
+  assert.match(a, /^sha256:[0-9a-f]{64}$/);
 
   const invalid = await sha256Prefixed(crypto, INVALID_UTF8);
   const alsoInvalid = await sha256Prefixed(crypto, decodeBody(INVALID_UTF8).bytes);
@@ -117,7 +115,7 @@ test('an over-cap prefix that cannot be decoded is labelled binary, not silently
   assert.equal(body.decode.text, null);
 });
 
-test('normaliseBody keeps a form body as key/value pairs (E2) and still produces bytes', () => {
+test('normaliseBody keeps a form body as key/value pairs and still produces bytes', () => {
   const body = normaliseBody({ formData: { prompt: ['hello'], model: ['gpt'] } });
   assert.equal(body.source, 'form');
   assert.deepEqual(body.form, { prompt: ['hello'], model: ['gpt'] });
@@ -130,11 +128,6 @@ test('normaliseBody on an absent body is size 0 and not an error', () => {
   assert.equal(body.source, 'none');
   assert.equal(body.size, 0);
   assert.equal(body.bytes.byteLength, 0);
-});
-
-test('decodeForTransport names the binary case explicitly', () => {
-  assert.deepEqual(decodeForTransport(encoder.encode('ok')), { encoding: 'utf8', text: 'ok', isBinary: false });
-  assert.deepEqual(decodeForTransport(INVALID_UTF8), { encoding: 'binary', text: null, isBinary: true });
 });
 
 test('toBytes accepts every buffer shape Chrome might hand over', () => {

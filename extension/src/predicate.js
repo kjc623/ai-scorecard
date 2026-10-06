@@ -1,25 +1,18 @@
 /**
- * predicate.js — §8.2's "user-authored payload sent to a generative endpoint", as one pure
- * function over a request record. No chrome.*, no clock, no I/O: this is the unit under test.
+ * predicate.js — "a user-authored payload sent to a generative endpoint", as one pure function
+ * over a request record. No chrome.*, no clock, no I/O.
  *
- * Discipline the caller must respect (§7.3): the predicate runs **before** the mode is
- * consulted for content, because whether a request is a generative submission is a shape
- * question — size, structure and content type are M0-grade information (§11.3's M0 row).
- * A negative match is counted (`skipped_not_generative`) and never emitted.
+ * The predicate runs before the mode is consulted for content: whether a request is a generative
+ * submission is a question of shape (size, structure, content type), which is M0-grade
+ * information. A negative match is counted (`skipped_not_generative`) and never emitted.
  *
- * Evidence, not verdict: each signal contributes weight and the threshold favours recall,
- * because the brief's problem is finding tools nobody has enumerated and precision is
- * recovered downstream (§8.2). Enforcement is a different, higher-threshold decision (§7.4).
+ * Each signal contributes weight and the threshold favours recall, because the point is finding
+ * tools nobody has enumerated; precision is recovered downstream. The weights are a calibration,
+ * exported so the tuning is visible.
  *
- * The weights below are this implementation's calibration of §8.2's table — the document
- * fixes the evidence and the asymmetry (recall over precision) but not the numbers. They are
- * exported so a reviewer can see exactly what was tuned, and so a bundle can override them.
- *
- * Two consequences of §7.5-Mode B worth stating: a `messages`-shaped array is accepted on its
- * own (`structural`), because that shape is already the "generative request structure" half;
- * plain natural-language text is not, because text alone is also the shape of a draft save.
- * A plain-text request can only reach a match when the response contract agrees — which is
- * why `classifyWithResponse()` exists and why `predicateResponse` is a first-class export.
+ * A `messages`-shaped array is generative on its own (`structural`). Plain natural-language text is
+ * not, because text alone is also the shape of a draft save: a plain-text request only matches when
+ * the response contract agrees, which is what `classifyWithResponse()` decides.
  */
 
 import { utf8Strict } from './codec.js';
@@ -37,11 +30,9 @@ export const SIGNAL_WEIGHT = Object.freeze({
   body_long_text: 0.25,
   body_many_fields: 0.10,
   /**
-   * The §8.2 chat shape found by a key scan instead of a parse: the body is a capped prefix (§5.3)
-   * or its bytes are not valid UTF-8 (§7.2). It carries its own weight because the evidence is
-   * weaker than a parsed array — no value was ever read — and it exists so that §5.3's
-   * "over-cap body emitted with confidence: degraded" and §7.2's binary fallback are reachable
-   * rather than dead paths.
+   * The chat shape found by a key scan instead of a parse: the body is a capped prefix or its bytes
+   * are not valid UTF-8. Weaker evidence than a parsed array (no value was read), but it keeps
+   * over-cap and binary bodies matchable.
    */
   body_chat_shape_from_key_scan: 0.25,
   // Method, content type, size
@@ -50,23 +41,23 @@ export const SIGNAL_WEIGHT = Object.freeze({
   request_non_trivial_size: 0.05,
   // Path — "low weight, evidence only"
   path_conversational_vocabulary: 0.10,
-  // Destination — "evidence, never sufficient" (§8.2); the bundle supplies these sets
+  // Destination: evidence, never sufficient; the bundle supplies these sets
   destination_sanctioned_set: 0.15,
   destination_seed_set: 0.10,
   destination_denied_set: 0.15,
-  // Context (§8.2 last row, §7.5 Mode C)
+  // Context
   context_automation_marker: 0.30,
   context_composer: 0.10,
 });
 
 export const DEFAULT_THRESHOLD = 0.8;
-/** Below this there is nothing to reclassify on: §7.2 defers classification, it does not schedule it for every byte. */
+/** Below this a request is not held for its response contract. */
 export const CANDIDATE_FLOOR = 0.25;
-/** Strong enough to carry a request without response corroboration (§7.5 Mode B's first half). */
+/** Strong enough to carry a request without response corroboration. */
 export const STRUCTURAL_FLOOR = 0.8;
-/** A text member must hold at least this much contiguous text to count as "non-trivial" (§8.2 row 2). */
+/** A text member must hold at least this much contiguous text to count as non-trivial. */
 export const LONG_TEXT_CHARS = 180;
-/** "A body above a trivial size" (§8.2 row 5). */
+/** A body above this size is non-trivial. */
 export const TRIVIAL_SIZE_BYTES = 32;
 
 const ROLE_KEYS = ['role', 'author', 'speaker', 'sender', 'from'];
@@ -86,7 +77,7 @@ const PATH_VOCABULARY = /(^|[/_.-])(chat|chats|completion|completions|complete|g
 
 const JSON_CONTENT_TYPES = ['application/json', 'application/vnd.api+json', 'text/json', 'application/x-ndjson', 'application/jsonl'];
 
-/** Cheap shape signature of the path: numeric ids and uuids collapse, so two sessions on one tool agree (§8.1 signal 2). */
+/** Cheap shape signature of the path: numeric ids and uuids collapse, so two sessions on one tool agree. */
 export function normalisePath(pathname) {
   return String(pathname || '')
     .replace(/\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '/:uuid')
@@ -105,7 +96,7 @@ export function hostOf(url) {
 
 export function pathnameOf(url) {
   try {
-    return new URL(url).pathname + (new URL(url).search ? '' : '');
+    return new URL(url).pathname;
   } catch {
     return '';
   }
@@ -231,7 +222,7 @@ function signal(list, id, weight, detail) {
 }
 
 /**
- * §8.2's request-side set. Pure: same input, same output, no clock and no globals.
+ * The request-side evidence. Pure: same input, same output, no clock and no globals.
  *
  * @param {object} rec
  * @param {string} rec.url
@@ -240,7 +231,7 @@ function signal(list, id, weight, detail) {
  * @param {number} [rec.size_bytes]
  * @param {Uint8Array|null} [rec.bytes]      the bytes actually held (may be a capped prefix)
  * @param {boolean} [rec.truncated]          true when `bytes` is a prefix of a larger payload
- * @param {string|null} [rec.form_text]      form bodies arrive parsed (E2)
+ * @param {string|null} [rec.form_text]      form bodies arrive parsed
  * @param {{sanctioned?: Set<string>|string[], seed?: Set<string>|string[], denied?: Set<string>|string[]}} [rec.bundle]
  * @param {string[]} [rec.tab_context]       e.g. ['active_composer', 'automation_marker']
  * @param {number} [threshold]
@@ -253,12 +244,12 @@ export function predicateRequest(rec, threshold = DEFAULT_THRESHOLD) {
   const size = Number.isFinite(rec.size_bytes) ? rec.size_bytes : bytes ? bytes.byteLength : 0;
   const method = String(rec.method || '').toUpperCase();
 
-  // Method, content type, size (§8.2 row 5)
+  // Method, content type, size
   if (method === 'POST' || method === 'PUT' || method === 'PATCH') signal(signals, 'request_post', SIGNAL_WEIGHT.request_post, method);
   if (ct.json) signal(signals, 'request_json_content_type', SIGNAL_WEIGHT.request_json_content_type, ct.base);
   if (size > TRIVIAL_SIZE_BYTES) signal(signals, 'request_non_trivial_size', SIGNAL_WEIGHT.request_non_trivial_size, String(size));
 
-  // Path: low weight, evidence only — never the decision (§2.1, C7)
+  // Path: low weight, evidence only, never the decision
   let pathSignal = null;
   try {
     const u = new URL(rec.url);
@@ -296,8 +287,7 @@ export function predicateRequest(rec, threshold = DEFAULT_THRESHOLD) {
     const names = Object.keys(rec.form || {});
     if (names.some((n) => PROMPT_KEYS.has(n))) signal(signals, 'body_prompt_member', SIGNAL_WEIGHT.body_prompt_member, 'form');
     if (names.some((n) => MODEL_PARAM_KEYS.has(n))) signal(signals, 'body_model_params', SIGNAL_WEIGHT.body_model_params, 'form');
-    // A form upload is also how attachment capture is decided (§7.3): a file input's
-    // filename travels as a form value, and that is a positive upload match.
+    // A file input's filename travels as a form value, which is a positive upload match.
     if (names.length >= 3) signal(signals, 'body_many_fields', SIGNAL_WEIGHT.body_many_fields, `forms:${names.length}`);
     const longest = Math.max(0, ...Object.values(rec.form || {}).flat().map((v) => (typeof v === 'string' ? v.length : 0)));
     if (longest >= LONG_TEXT_CHARS) signal(signals, 'body_long_text', SIGNAL_WEIGHT.body_long_text, `chars:${longest}`);
@@ -321,14 +311,13 @@ export function predicateRequest(rec, threshold = DEFAULT_THRESHOLD) {
       signal(signals, 'body_many_fields', SIGNAL_WEIGHT.body_many_fields, 'json');
     }
   } else if (bytes && bytes.byteLength > 0) {
-    // Bytes that did not parse as JSON. Either the payload is a capped prefix (§5.3) or its bytes
-    // are not valid UTF-8 (§7.2); §7.2's binary case is decided by the strict decoder, not assumed.
+    // Bytes that did not parse as JSON: a capped prefix, or bytes that are not valid UTF-8. The
+    // strict decoder decides which.
     structure = utf8Strict(bytes).ok ? 'unparsed' : 'binary';
   }
 
-  // Body structure discovered from a key scan rather than a parse. Both cases must still be able to
-  // reach a match, or §5.3's "over-cap body is emitted with `confidence: degraded`" would never
-  // happen and §7.2's binary fallback would be a dead path.
+  // Body structure from a key scan rather than a parse, so over-cap and binary bodies can still
+  // match (and are then reported degraded).
   if (structure === 'unparsed' || structure === 'binary') {
     const scanDetail = structure === 'binary' ? 'binary_key_scan' : 'unparsed_prefix';
     const keys = byteKeyScan(bytes, structure === 'binary');
@@ -351,10 +340,8 @@ export function predicateRequest(rec, threshold = DEFAULT_THRESHOLD) {
       if ([...keys].some((k) => TOOL_KEYS.has(k))) {
         signal(signals, 'body_tool_declarations', SIGNAL_WEIGHT.body_tool_declarations, scanDetail);
       }
-      // A member named `messages`, a role discriminator and a content payload found together is the
-      // §8.2 chat shape, seen without a parse. It carries its own weight because the evidence is
-      // weaker than a parsed array — the values were never read — and it is exactly the situation
-      // §5.3 and §7.2 describe.
+      // A member named `messages`, a role discriminator and a content payload together is the chat
+      // shape, seen without a parse.
       const roleLike = [...keys].some((k) => ROLE_KEYS.includes(k));
       const contentLike = [...keys].some((k) => CONTENT_KEYS.includes(k));
       const messagesNamed = keys.has('messages') || keys.has('contents');
@@ -375,16 +362,10 @@ export function predicateRequest(rec, threshold = DEFAULT_THRESHOLD) {
     || signals.some((s) => s.id === 'body_chat_shape_from_key_scan');
   const match = score >= threshold;
 
-  // The metadata-only counterpart of `match`, for the lane where no body exists at all
-  // (§11.2: an M0 destination's body was never requested). "Match" cannot honestly be decided
-  // from a body that was never read, so the question on that lane is whether the request is
-  // worth an identity-and-volume observation — the strongest thing the route may report at M0
-  // (§11.3's M0 row: identity, tool, times, mode, size, policy decision).
-  //
-  // The size test is loosened to "non-zero OR a conversational path", because on this lane the
-  // size is genuinely unknown: the extension has not asked for the body, so a hard minimum here
-  // would make M0 observation impossible rather than conservative. What it emits is identity and
-  // volume, and a false positive costs one uninteresting event (§8.2's stated asymmetry).
+  // The metadata-only counterpart of `match`, for the lane where no body was requested (an M0
+  // destination). It decides whether the request is worth an identity-and-volume observation, the
+  // most the route reports at M0. The size is unknown on that lane, so a conversational path stands
+  // in for it; a false positive costs one uninteresting event.
   const conversationalPath = signals.some((s) => s.id === 'path_conversational_vocabulary');
   const metadata_candidate =
     method !== 'GET' &&
@@ -407,14 +388,14 @@ export function predicateRequest(rec, threshold = DEFAULT_THRESHOLD) {
   };
 }
 
-/** An "upload-bearing request" for §7.3: a multipart/form body, or a form carrying a filename. */
+/** An upload-bearing request: a multipart/form body, or a form carrying a filename. */
 export function isUploadBearing({ headers, form, ct }) {
   const base = (ct && ct.base) || contentTypeClass(headers).base;
   if (base.startsWith('multipart/form-data')) return true;
   return formFileCandidates(form).length > 0;
 }
 
-/** Form values that carry a filename. A filename alone is not attachment capture (§7.3). */
+/** Form values that carry a filename. A filename alone is not attachment capture. */
 export function formFileCandidates(form) {
   if (!form) return [];
   const names = ['file', 'files', 'filename', 'file_name', 'upload', 'attachment', 'attachments', 'document'];
@@ -434,9 +415,8 @@ const STREAMING_CONTRACTS = ['text/event-stream', 'application/x-ndjson', 'appli
 const COMPLETION_HOOKS = ['x-request-id', 'openai-processing-ms', 'openai-version', 'x-ratelimit-limit-tokens', 'anthropic-ratelimit-tokens-limit'];
 
 /**
- * §8.2's response row: "a streaming or completion-shaped response contract for the same
- * request". Signature only — status, content type, framing headers. Never the response body,
- * which is a non-goal (§1.2) and is not available on this route anyway.
+ * The response-side evidence: a streaming or completion-shaped response contract for the same
+ * request. Signature only (status, content type, framing headers); never the response body.
  */
 export function predicateResponse(res) {
   const signals = [];
@@ -459,10 +439,9 @@ export function predicateResponse(res) {
 }
 
 /**
- * §7.5 Mode B: the answer to "a draft save and a chat call from the same origin are separated
- * by their bodies rather than their paths" is a **conjunction** — a generative request
- * structure *and* a generative response contract. A `messages`-shaped array is the first half
- * on its own; anything weaker needs the response half.
+ * A draft save and a chat call on the same origin differ by body, not path, so a match is a
+ * conjunction: a generative request structure and a generative response contract. A
+ * `messages`-shaped array is enough on its own; anything weaker needs the response half.
  *
  * @returns {{match: boolean, score: number, response_score: number, structural: boolean, reason: string, signals: any[]}}
  */
@@ -480,21 +459,10 @@ export function classifyWithResponse(req, res, threshold = DEFAULT_THRESHOLD) {
   return { match: false, score: combined, response_score: s.score, structural: r.structural, reason: r.match ? 'structure_without_response_contract' : 'below_threshold', signals: [...r.signals, ...s.signals] };
 }
 
-/** §8.2's last row: an automation marker raises confidence that a run came from an agent (Mode C, §7.5). */
-export function automationMarker(headers) {
-  const h = headers || {};
-  const strong = ['x-automation', 'x-agent', 'x-playwright', 'x-puppeteer', 'x-selenium', 'x-browser-agent', 'x-client-agent'];
-  for (const k of strong) if (h[k] !== undefined) return { present: true, marker: k, strength: 'high' };
-  const ch = String(h['sec-ch-ua'] || '') + String(h['user-agent'] || '');
-  if (/headless|automation/i.test(ch)) return { present: true, marker: 'client_hints', strength: 'high' };
-  return { present: false, marker: '', strength: 'none' };
-}
-
 /**
- * §8.1 signals 1-3, the subset this route can see, canonicalised (sorted) and shape-replaced.
- * Route-specific signals are excluded by construction — this function is given only
- * destination, path shape and body shape — so one tool seen through two routes yields one
- * vector (§8.3 items 1 and 2). The tenant-declared label never enters the derivation.
+ * The fingerprint's signal vector: destination, method, path shape and body shape only. Signals
+ * that exist on one route alone are excluded, so one tool seen through two routes yields one
+ * vector. The tenant-declared label never enters the derivation.
  */
 export function shapeVector(req) {
   const r = predicateRequest(req, Number.POSITIVE_INFINITY);
@@ -538,9 +506,4 @@ function lastTwo(parts) {
 
 function round3(n) {
   return Math.round(n * 1000) / 1000;
-}
-
-/** §7.4's 150 ms classification target is the classifier's; this is the shape pass and it is pure arithmetic. */
-export function predicateBudgetMs() {
-  return 0;
 }

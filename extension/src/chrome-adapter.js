@@ -1,18 +1,14 @@
 /**
  * chrome-adapter.js — builds the adapter from a real `chrome` object.
  *
- * This file and `adapter.js` are the only two that may touch `chrome.*`: a test greps the tree
- * and fails if any other module does, so everything downstream is exercised offline against
- * `test-support/fake-chrome.mjs`.
- *
- * It is deliberately dumb: normalise Chrome's shapes into the adapter's shapes, map the two
- * `webRequest` lanes onto `onBeforeRequest` with and without `requestBody`, and get out of the
- * way. No policy, no classification, no storage.
+ * It normalises Chrome's shapes into the adapter's, maps the two `webRequest` lanes onto
+ * `onBeforeRequest` with and without `requestBody`, and nothing else: no policy, no
+ * classification, no storage.
  */
 
 import { ExtError, chromeApi } from './adapter.js';
 
-/** A blocking listener must never leave Chrome hanging: the warn path is bounded by §7.4's 300 ms. */
+/** Upper bound on how long a blocking listener holds a request, whatever the handler does. */
 const BLOCKING_TIMEOUT_MS = 25_000;
 
 export function createChromeAdapter(scope = globalThis) {
@@ -76,14 +72,9 @@ export function createChromeAdapter(scope = globalThis) {
   }
 
   function register(handler, opts, withBody) {
-    // DISABLE_OPTIMIZATION is deliberately NOT requested: it exists for extensions that mutate
-    // requests, and §7.1 requires that no request is modified and none is delayed beyond the
-    // blocking decision.
-    //
-    // `blocking` is per-lane and comes from the caller, because the capability is per-install: only
-    // a policy-installed extension is granted `webRequestBlocking`, and a refused blocking
-    // registration is accepted silently and then never invoked (see registration.js). Asking for
-    // 'blocking' only when it can work is what keeps observation alive on installs that lack it.
+    // `blocking` comes from the caller because the capability is per install: only a
+    // policy-installed extension holds `webRequestBlocking`, and a blocking registration without
+    // the grant is accepted silently and never invoked (see registration.js).
     const extraInfoSpec = [];
     if (opts.blocking) extraInfoSpec.push('blocking');
     if (withBody) extraInfoSpec.push('requestBody');
@@ -115,9 +106,8 @@ export function createChromeAdapter(scope = globalThis) {
         return listener;
       },
       /**
-       * Unregister the body lane. Needed, not optional: when policy changes so that every
-       * destination resolves to M0, the extension must stop asking Chrome for bodies at all —
-       * otherwise the request that arrives after the change still carries bytes.
+       * Unregister the body lane: when policy resolves every destination to M0 the extension must
+       * stop asking Chrome for bodies, or the next request still carries bytes.
        */
       removeBodyLane: () => {
         if (bodyLaneListener) {
@@ -140,8 +130,7 @@ export function createChromeAdapter(scope = globalThis) {
               method: d.method,
               statusCode: d.statusCode,
               responseHeaders: headerMap(d.responseHeaders),
-              // Request headers are carried because §8.2's response row is "a ... response contract
-              // for the same request": the pair is what the predicate evaluates.
+              // The predicate evaluates the request and its response contract as a pair.
               requestHeaders: headerMap(d.requestHeaders),
               type: d.type,
               timeStamp: d.timeStamp,
@@ -155,7 +144,8 @@ export function createChromeAdapter(scope = globalThis) {
     runtime: {
       connectNative: (application) => {
         const port = api.runtime.connectNative(application);
-        if (!port) throw new ExtError('native_unavailable', `connectNative(${application}) failed`);        return {
+        if (!port) throw new ExtError('native_unavailable', `connectNative(${application}) failed`);
+        return {
           postMessage: (m) => port.postMessage(m),
           onMessage: (fn) => port.onMessage.addListener(fn),
           onDisconnect: (fn) => port.onDisconnect.addListener(() => fn(api.runtime.lastError || null)),
@@ -186,34 +176,15 @@ export function createChromeAdapter(scope = globalThis) {
       onAlarm: (fn) => api.alarms.onAlarm.addListener(fn),
     },
 
-    session: {
-      get: async (key) => {
-        if (!api.storage || !api.storage.session) return undefined;
-        const r = await api.storage.session.get(key);
-        return r ? r[key] : undefined;
-      },
-      set: async (items) => {
-        if (!api.storage || !api.storage.session) return;
-        await api.storage.session.set(items);
-      },
-    },
-
     crypto: cryptoObj,
     now: () => (scope.performance && typeof scope.performance.now === 'function' ? scope.performance.now() : Date.now()),
     getURL: (path) => api.runtime.getURL(path),
 
     /**
-     * §7.4's capability, asked rather than assumed.
-     *
-     * `webRequestBlocking` is granted only to a policy-installed extension (E1). An install that
-     * lacks it still *declares* it in the manifest — `chrome.runtime.getManifest().permissions`
-     * lists it either way — so the manifest is not the signal. `chrome.permissions.contains` asks
-     * about the grant, which is the thing that decides whether a blocking listener will ever be
-     * invoked.
-     *
-     * When the answer cannot be obtained the default is `true`: the deployed case is the
-     * policy-installed one, and observation no longer depends on the answer either way, so a wrong
-     * `true` costs an inert blocking lane (reported) rather than lost collection.
+     * Whether this install holds `webRequestBlocking`. Only a policy-installed extension is granted
+     * it, and the manifest lists it either way, so the grant is asked for rather than read from the
+     * manifest. An unanswerable query defaults to `true`, the deployed (force-installed) case;
+     * observation does not depend on the answer.
      */
     permissions: {
       hasWebRequestBlocking: async () => {
@@ -235,9 +206,8 @@ export function createChromeAdapter(scope = globalThis) {
     },
 
     /**
-     * §7.4's confirmation, rendered in the page so it is unmissable and answered explicitly. A
-     * tab with no content script, or an unanswered prompt, reports `answered: false` — the caller
-     * turns that into fail-open `logged` with `confidence: degraded`, never a silent block.
+     * The warn confirmation, rendered in the page. A tab with no content script, or an unanswered
+     * prompt, reports `answered: false`; the caller turns that into a fail-open, degraded `logged`.
      */
     warnUser: async (spec) => {
       try {
@@ -270,10 +240,7 @@ function fallbackUuid(cryptoObj) {
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
 }
 
-/**
- * The content-script half of the adapter: no webRequest, no native port, no alarms.
- * `files.js` and `attachments.js` take this, so both are unit-testable in Node.
- */
+/** The content-script half of the adapter: no webRequest, no native port, no alarms. */
 export function createContentScriptAdapter(scope = globalThis) {
   const api = chromeApi(scope);
   const cryptoObj = scope.crypto || globalThis.crypto;

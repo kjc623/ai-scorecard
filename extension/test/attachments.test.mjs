@@ -1,16 +1,15 @@
 /**
- * test/attachments.test.mjs — §7.3's attachment capture.
+ * test/attachments.test.mjs — attachment capture.
  *
- * The load-bearing assertion is not that a refusal is *handled*; it is that on a refusal
- * `readSlice` is **never called**, because §3.4's manifest exists so that "capture-core [can]
- * refuse an oversized upload *before* transfer". A test that only checks the returned status
+ * The load-bearing assertion is that on a refusal `readSlice` is never called: the manifest exists
+ * so capture-core can refuse an oversized upload before transfer. Checking only the returned status
  * would pass against an implementation that streamed the whole file and then gave up.
  */
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createAttachmentSender, bytesToBase64, createChunkedHasher } from '../src/attachments/sender.js';
+import { createAttachmentSender, createChunkedHasher } from '../src/attachments/sender.js';
 import { createFileRegistry } from '../src/attachments/files.js';
 import { createFakeCore } from '../test-support/fake-core.mjs';
 import { CORE_TYPE, MAX_ATTACHMENT_BYTES, NATIVE_MESSAGE_VERSION, REFUSAL, TYPE } from '../src/messages.js';
@@ -34,7 +33,7 @@ function makeSender(core, overrides = {}) {
   return { sender, counts, bridge };
 }
 
-/** A File stand-in that records every slice the sender asked for. */
+/** A fake File that records every slice the sender asked for. */
 function fakeFile(bytes, { name = 'quarterly.xlsx', type = 'application/vnd.ms-excel', failsAt = null } = {}) {
   const reads = [];
   return {
@@ -53,7 +52,7 @@ function fakeFile(bytes, { name = 'quarterly.xlsx', type = 'application/vnd.ms-e
 }
 
 test('an oversized attachment is refused on the manifest, and NOT ONE BYTE is read', async () => {
-  // The core's effective cap is 1 MiB; the file is 8 MiB. §3.4: refuse before transfer.
+  // The core's effective cap is 1 MiB; the file is 8 MiB.
   const core = createFakeCore({ attachmentCapacityBytes: 1 << 20 });
   const { sender, counts } = makeSender(core);
   const file = fakeFile(new Uint8Array(8 << 20));
@@ -183,13 +182,6 @@ test('a cancelled transfer stops at a chunk boundary and closes the transfer', a
   assert.ok(core.received.some((m) => m.type === TYPE.ATTACHMENT_COMPLETE && m.body.error === 'cancelled'));
 });
 
-test('base64 is what encoding/json emits for []byte, and it round-trips', () => {
-  const bytes = new Uint8Array([0, 1, 2, 253, 254, 255, 128]);
-  const b64 = bytesToBase64(bytes);
-  assert.equal(Buffer.from(b64, 'base64').length, bytes.byteLength);
-  assert.deepEqual([...Buffer.from(b64, 'base64')], [...bytes]);
-});
-
 test('the chunked hasher digests what was fed to it, in order', async () => {
   const hasher = createChunkedHasher(fakeCrypto());
   hasher.update(new Uint8Array([1, 2]));
@@ -224,7 +216,7 @@ test('a file input resolves to File-like candidates with metadata only', () => {
   assert.equal(result.candidates[0].source, 'input');
 });
 
-test('§7.3: no reachable File handle is `no_reachable_file`, which is what content_no_attachments records', () => {
+test('no reachable File handle is `no_reachable_file`, which is what content_no_attachments records', () => {
   const registry = createFileRegistry({ document: fakeDocument([]) });
   const result = registry.collectCandidates();
   assert.deepEqual(result.candidates, []);
@@ -249,7 +241,7 @@ test('the reason names which path resolved the files, and the cap is honoured', 
   const registry = createFileRegistry({ document: fakeDocument([inputs]) });
   const result = registry.collectCandidates();
   assert.equal(result.reason, 'input');
-  assert.equal(result.candidates.length, 32, 'E3/§7.3: the envelope admits 32 attachment descriptors');
+  assert.equal(result.candidates.length, 32, 'the envelope admits 32 attachment descriptors');
   assert.equal(registry.heldCount(), 32);
 });
 

@@ -2,9 +2,8 @@
 // extension/tools/emit-frames.mjs
 //
 // Emits the golden native-messaging frames that endpoint/integration consumes. The frames are built
-// by THIS package's own `observationBody()` and `frame()`, so what the cross-component harness reads
-// is what the extension actually produces - not a fixture that agrees with the Go types by
-// construction, which is how the content-encoding break survived every check on both sides.
+// by this package's own `observationBody()` and `frame()`, so what the Go harness decodes is what
+// the extension produces, not a fixture that agrees with the Go types by construction.
 //
 //   node extension/tools/emit-frames.mjs                 # writes the golden files
 //   node extension/tools/emit-frames.mjs <out-dir>       # writes them elsewhere
@@ -12,15 +11,12 @@
 //
 // Writes one JSON case per payload class into endpoint/integration/testdata/native/ by default.
 //
-// `buildCases()` is exported so this package's own suite can run the generator without writing
-// anything, and without duplicating the case construction - duplication is exactly what let the
-// content-encoding break through. `test/golden-frames.test.mjs` uses it to assert the six cases stay
-// decodable, and that the committed golden files still match what this generator produces.
+// `buildCases()` is exported so `test/golden-frames.test.mjs` can build the same cases without
+// writing anything, assert they stay decodable, and check the committed files have not drifted.
 //
-// The four payload classes are deliberate. Plain ASCII and binary are the easy ones. The third -
-// a payload that *is* valid base64 - is the case a "does it error?" test cannot see: raw text that
-// happens to decode is not an error, it is silently different bytes, and the digest then describes
-// content nobody sent. The fourth is M0, where there must be no content at all.
+// Plain ASCII and binary are the easy cases. A payload that is itself valid base64 is the one a
+// "does it error?" test cannot see: raw text that happens to decode is silently different bytes,
+// and the digest then describes content nobody sent. M0 must carry no content at all.
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -139,7 +135,7 @@ export function buildCases() {
     );
   }
 
-  // 4. Binary that is not text at all - the path that already base64-encoded before the fix.
+  // 4. Binary that is not text at all.
   {
     const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff, 0xfe, 0x01]);
     cases.push(
@@ -235,8 +231,8 @@ export function emitCases(outDir = DEFAULT_OUT) {
 
 export { DEFAULT_OUT };
 
-// Only run as a script. Importing this module must have no filesystem side effect, so that a test
-// can build the same frames without touching the Lead's golden directory.
+// Only run as a script. Importing this module has no filesystem side effect, so a test can build the
+// same frames without touching endpoint/integration's golden directory.
 const invokedDirectly = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (invokedDirectly) {
   const outDir = process.argv[2] || process.env.FRAME_OUT_DIR || DEFAULT_OUT;

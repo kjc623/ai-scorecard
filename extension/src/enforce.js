@@ -1,45 +1,30 @@
 /**
- * enforce.js — §7.4's inline warn/block, decided locally against the bundle's rules.
+ * enforce.js — inline warn/block, decided locally against the bundle's rules.
  *
- * The four properties §7.4 fixes, each one a line of code below:
- *   - **the decision is local**: rules come from the signed bundle the extension already
- *     holds, and every decision carries `decided_locally: true`. No round trip.
- *   - **`blocked` cancels the request** through webRequestBlocking (the caller turns
+ *   - The decision is local: rules come from the signed bundle the extension already holds, and
+ *     every decision carries `decided_locally: true`.
+ *   - `blocked` cancels the request through webRequestBlocking (the caller turns
  *     `{cancel: true}` into the blocking response).
- *   - **`warned` requires explicit user confirmation** rendered before the request proceeds,
- *     and the answer is recorded *as part of the decision* — so the same rule deciding the
- *     same way twice is two events, because two prompts were sent.
- *   - **fail open on decision failure**: evaluation error or budget exhaustion ⇒ the request
- *     proceeds as `logged`, the event carries `confidence: degraded` and a `Detail` of
- *     `budget_exceeded`, and the failure is counted. "A broken classifier must not become a
- *     broken browser."
+ *   - `warned` requires an explicit user confirmation before the request proceeds, and the answer
+ *     is recorded as part of the decision.
+ *   - Decision failure fails open: an evaluation error or an exhausted budget lets the request
+ *     proceed as `logged`, marked degraded, and the failure is counted. A broken classifier must
+ *     not become a broken browser.
  *
- * §9.6's release states are honoured here rather than in the classifier path: a release in
- * `shadow` or `rolled_back` never enforces, and the resulting `logged` decision is marked so
- * an operator can see the difference between "we chose not to block" and "we may not block".
- *
- * A blocked request is still an event: `blocked` returns a decision record and the caller
- * emits it. Otherwise the product could not answer "what did we stop" (§7.4).
+ * Only an `enforcing` classifier release acts; `shadow` and `rolled_back` compute the decision and
+ * record it as `logged`, marked so "we chose not to block" differs from "we may not block". A
+ * blocked request is still an event: the caller emits its decision.
  */
 
 import { DETAIL } from './messages.js';
 
-/** §7.4: "the budget is the 300 ms target, not the 150 ms classification target". */
+/** The budget for reaching a verdict. */
 export const DECISION_BUDGET_MS = 300;
 
 /**
- * The confirmation window, kept separate from the decision budget on purpose.
- *
- * §7.4's 300 ms is a *decision* budget: it bounds evaluating the rules and reaching a verdict,
- * because "the only work permitted to delay a request is the inline warn/block decision, bounded
- * by §9.4's decision budget". A `warned` verdict then has to be rendered and answered by a human,
- * and a human does not answer inside 300 ms — so treating the two as one number would make
- * `warned` behaviourally identical to fail-open, and the schema's `warned` action unreachable.
- *
- * This is therefore a **decision the document leaves open**, recorded as such in the module
- * report: rule evaluation is bounded at 300 ms, the confirmation window is bounded separately,
- * and the separation is what keeps a `warned` rule from silently degrading to `logged`.
- * Whoever owns the deployment can set this; it is bundle-overridable in `policy.rules()` usage.
+ * How long a `warned` request waits for its human, kept separate from the decision budget: a
+ * person does not answer inside 300 ms, so one number would make `warned` behave like fail-open.
+ * The bundle can override it (`confirmation_window_ms`).
  */
 export const CONFIRMATION_WINDOW_MS = 20_000;
 
@@ -70,9 +55,8 @@ export function nowMs() {
 }
 
 /**
- * A deadline over an injected clock. `sync` reports whether `work` finished inside the
- * budget at the point it was measured; `asyncDeadline(cb)` runs a callback that can itself
- * check `expired()`.
+ * A deadline over an injected clock. `sync(work)` and `run(work)` report whether the work finished
+ * inside the budget; the work itself may check `expired()`.
  */
 export function createBudget({ budgetMs = DECISION_BUDGET_MS, now = nowMs } = {}) {
   const startedAt = now();
@@ -98,10 +82,9 @@ export function createBudget({ budgetMs = DECISION_BUDGET_MS, now = nowMs } = {}
 /**
  * A rule matches when every matcher it names matches. `mode` is the strictest mode the rule may act at.
  *
- * A matcher that is present but malformed makes the rule **not match**, rather than matching
- * everything: rule data comes from a signed bundle and can be malformed without being hostile, and
- * a broken rule must not become an unqualified block. `evaluateRule` reports the skip so it is
- * counted rather than silent (§7.4: "the failure is counted").
+ * A matcher that is present but malformed makes the rule not match, rather than matching
+ * everything: a broken rule must not become an unqualified block. `evaluateRule` reports the skip
+ * so it is counted.
  */
 export function ruleMatches(rule, { host, path, tool_fingerprint: tool, size_bytes: size, mode }) {
   if (!rule || typeof rule !== 'object') return false;
@@ -177,7 +160,7 @@ function hasMalformedMatcher(rule) {
   return rule.min_size_bytes !== undefined && !Number.isFinite(rule.min_size_bytes);
 }
 
-/** §9.6: only an `enforcing` release may act. */
+/** Only an `enforcing` release may act. */
 export function enforcing(releaseState) {
   return releaseState === 'enforcing';
 }
@@ -196,8 +179,7 @@ function decide(action, ruleId, reason, extra = {}) {
 }
 
 /**
- * The synchronous half: decide without asking anyone. Everything §7.4 permits to block
- * inline is decided here, inside the 300 ms budget.
+ * The synchronous half: decide without asking anyone, inside the decision budget.
  *
  * @param {object} input
  * @param {string} input.url
@@ -241,7 +223,7 @@ export function decideSync(input) {
       }),
     );
   } catch (e) {
-    // §7.4: "if evaluation errors ... the request proceeds (logged)".
+    // An evaluation error fails open.
     return decide(DECISION.LOGGED, 'NONE', REASON.FAILED_OPEN, {
       degraded: true,
       error_counted: true,
@@ -283,8 +265,8 @@ export function decideSync(input) {
     });
   }
 
-  // Past this point the rule's own fields are read, and a rule that is not shaped like a rule
-  // must fail open rather than throw out of the request path (§7.4).
+  // Past this point the rule's own fields are read; a rule that is not shaped like a rule fails
+  // open rather than throwing out of the request path.
   let ruleId;
   let action;
   try {
@@ -302,7 +284,7 @@ export function decideSync(input) {
   }
 
   if (!enforcing(input.release_state)) {
-    // Shadow and rolled_back compute the decision, record it, and never act (§9.6).
+    // Shadow and rolled_back compute the decision, record it, and never act.
     return decide(DECISION.LOGGED, ruleId, input.release_state === 'shadow' ? REASON.SHADOW : REASON.ROLLED_BACK, {
       needs_confirmation: false,
       cancel: false,
@@ -363,15 +345,9 @@ function safeRuleId(rule) {
  * The asynchronous half: a `warned` decision, rendered before the request proceeds, with the
  * user's answer recorded as part of the decision.
  *
- * Two different bounds, and keeping them distinct is deliberate (see CONFIRMATION_WINDOW_MS):
- *   - rule evaluation is bounded by the **300 ms decision budget**, and an evaluation that
- *     cannot finish inside it is fail-open `logged` with `confidence: degraded`;
- *   - the **confirmation window** bounds how long the request waits for a human. An unanswered
- *     prompt inside *that* window is fail-open `logged` with `confidence: degraded`, never a
- *     silent block and never an indefinitely held request.
- *
- * A `warned` verdict that is answered records the answer as part of the decision — "so the same
- * rule deciding the same way twice is two events, because two prompts were sent" (§7.4).
+ * Rule evaluation is bounded by the decision budget; the wait for a human by the confirmation
+ * window. Exceeding either, or an unanswered prompt, fails open as a degraded `logged`, never a
+ * silent block and never an indefinitely held request.
  *
  * @param {object} input                 as for decideSync, plus:
  * @param {() => Promise<{proceeded: boolean, answered: boolean, reason: string}>} input.confirm
@@ -475,36 +451,11 @@ export async function decideWithConfirmation(input) {
 }
 
 /**
- * Turn an outcome into the shared decision record: the message capture-core receives, and
- * what the counters are updated from. `decided_locally` is true on every path, including
- * fail-open, because a decision made without a round trip is what the field records.
- */
-export function decisionRecord(outcome, { client_id, occurred_at, url, tool_fingerprint }) {
-  return {
-    client_id,
-    occurred_at,
-    url,
-    tool_fingerprint,
-    decision: outcome.decision,
-    reason: outcome.reason,
-    confirmed: outcome.confirmed === undefined ? null : outcome.confirmed,
-    user_answer: outcome.user_answer === undefined ? null : outcome.user_answer,
-    degraded: Boolean(outcome.degraded),
-    over_budget: Boolean(outcome.over_budget),
-  };
-}
-
-/**
- * `Detail` for a degraded decision, from the closed vocabulary of endpoint/protocol/envelope.go.
- *
- * The choice carries the diagnosis, not just the fact: a `warned` rule that could not be put to a
- * human is a different coverage failure from an evaluation that ran out of budget time, and an
- * operator looking at a degraded share needs to know which one they have (§9.7's table).
+ * `Detail` for a degraded decision: an exhausted budget is `budget_exhausted`; anything else (a
+ * prompt nobody answered, an evaluation error) is `classifier_unavailable`.
  */
 export function degradedDetail(outcome) {
-  if (outcome.reason === REASON.BUDGET_EXCEEDED) return DETAIL.BUDGET_EXHAUSTED;
-  if (outcome.reason === REASON.WARN_UNANSWERED || outcome.reason === REASON.WARN_CANCELLED) return DETAIL.CLASSIFIER_UNAVAILABLE;
-  return DETAIL.CLASSIFIER_UNAVAILABLE;
+  return outcome.reason === REASON.BUDGET_EXCEEDED ? DETAIL.BUDGET_EXHAUSTED : DETAIL.CLASSIFIER_UNAVAILABLE;
 }
 
 function round(n) {
