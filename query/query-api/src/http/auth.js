@@ -1,48 +1,34 @@
 // auth.js — the authenticated session, from the product's own access token.
 //
-// WHY THIS FILE EXISTS. Until task 11 the only trusted source of a tenant was a development
-// header (`x-sac-dev-tenant`) accepted behind SAC_DEV_TRUST_PRINCIPAL=1. That is a lab
-// arrangement, not authentication: a header is something the caller writes. Task 11 replaced it
-// with a token from the customer's identity provider; the enterprise onboarding change replaced
-// THAT with the product's own access token, because a customer IdP's access token is opaque or
-// not meant for us (Google, Okta), so verifying it here could never work for "any IdP".
-//
-// One issuer, one JWKS. control-api is the relying party for every customer IdP; it resolves the
-// tenant, the actor and the roles from OUR mapping, keeps the server-side session, and mints a
-// short-lived ES256 token (contract §2). This module verifies that token and nothing else.
-//
-// Why a library here, in a package that otherwise has none. JOSE verification is a classic
-// source of authentication bypasses (alg confusion, `crit` ignored, a JWK built from attacker
-// input, a kid-miss turned into a JWKS fetch storm). `jose` is zero-dependency, audited, and
-// does each of those correctly; a hand-rolled ES256 verifier would be a second, untested copy
-// of the same logic at the one boundary where a bug is a cross-tenant read.
+// control-api is the one issuer: it is the relying party for every customer identity provider,
+// resolves the tenant, the actor and the roles, and mints a short-lived ES256 access token. This
+// module verifies that token and nothing else, using `jose` for the JOSE handling.
 //
 // What is verified, and why each matters:
 //   - the token is a compact JWS of bounded size, so a megabyte header is refused unparsed;
 //   - `alg` is ES256 and only ES256, so `none`, an HMAC confusion or RS256 cannot pass;
 //   - `typ` is `at+jwt` and `kid` is named, as the issuer's header always carries them;
-//   - an unrecognised `crit` parameter is refused (jose implements RFC 7515 §4.1.11);
+//   - an unrecognised `crit` parameter is refused;
 //   - the key comes only from the configured JWKS (an embedded `jwk`/`jku`/`x5u` is never used),
 //     and a kid the cache does not hold triggers at most one refetch per cooldown;
 //   - `iss` equals the configured issuer exactly and `aud` names this service;
-//   - `exp`, `nbf` and `iat` with 60 s of leeway, and the token is no older than ten minutes —
-//     the contract's lifetime cap, so a revoked session cannot outlive it here;
+//   - `exp`, `nbf` and `iat` with 60 s of leeway, and the token is no older than ten minutes, so
+//     a revoked session cannot outlive it here;
 //   - the tenant is a uuid, the actor is named, and at least one role is a product role.
-// A token that is signed but names no tenant or no known role is refused, never defaulted —
-// the fail-closed rule of docs/04 §2.1.
+// A token that is signed but names no tenant or no known role is refused, never defaulted.
 
 import { createRemoteJWKSet, customFetch, decodeProtectedHeader, jwtVerify } from 'jose';
 import { isKnownRole } from '../roles.js';
 
-/** The one signature algorithm the product issuer uses (contract §2). */
+/** The one signature algorithm the product issuer uses. */
 export const TOKEN_ALG = 'ES256';
 /** RFC 9068's media type for a JWT access token; the issuer's header carries it. */
 export const TOKEN_TYP = 'at+jwt';
 /** This service's own audience. The issuer names all three verifiers in one token. */
 export const DEFAULT_AUDIENCE = 'sac-query';
-/** Clock leeway for exp, nbf and iat. The contract allows at most 60 s. */
+/** Clock leeway for exp, nbf and iat. */
 export const CLOCK_TOLERANCE_SEC = 60;
-/** The contract caps a token at ten minutes; one older than that is refused whatever its exp says. */
+/** A token older than ten minutes is refused whatever its exp says. */
 export const MAX_TOKEN_AGE_SEC = 600;
 /** A product token is a few hundred bytes. Anything near this is not one, and is not parsed. */
 export const MAX_TOKEN_BYTES = 8 * 1024;
@@ -63,7 +49,7 @@ const MAX_ACTOR = 256;
 // eslint-disable-next-line no-control-regex
 const CONTROL = /[\u0000-\u001f\u007f]/;
 
-/** `{issuer}/.well-known/jwks.json`, the contract's default JWKS location. */
+/** `{issuer}/.well-known/jwks.json`, the issuer's JWKS location. */
 export function defaultJwksUrl(issuer) {
   return `${String(issuer).replace(/\/+$/, '')}/.well-known/jwks.json`;
 }
@@ -111,12 +97,10 @@ function reasonOf(error) {
 }
 
 /**
- * Build the token verifier from configuration. `enabled` is false when no issuer is configured,
- * which is the memory-lab case: then the development principal is the only path, and only behind
- * its own flag.
+ * Build the token verifier.
  *
- * @param {object} [opts]
- * @param {string} [opts.issuer]      exact `iss`; empty disables the token path
+ * @param {object} opts
+ * @param {string} opts.issuer        exact `iss`
  * @param {string} [opts.audience]    this service's audience
  * @param {string} [opts.jwksUrl]     defaults to {issuer}/.well-known/jwks.json
  * @param {typeof fetch} [opts.fetchImpl]  test seam for the JWKS fetch
@@ -131,9 +115,7 @@ export function createVerifier({
   now = () => new Date(),
   cooldownMs = JWKS_COOLDOWN_MS,
 } = {}) {
-  if (!issuer) {
-    return Object.freeze({ enabled: false, async verify() { throw new Error('no token issuer is configured'); } });
-  }
+  if (!issuer) throw new Error('createVerifier needs the token issuer');
   const keys = createRemoteJWKSet(new URL(jwksUrl || defaultJwksUrl(issuer)), {
     cacheMaxAge: JWKS_CACHE_MAX_AGE_MS,
     cooldownDuration: cooldownMs,
@@ -142,7 +124,6 @@ export function createVerifier({
   });
 
   return Object.freeze({
-    enabled: true,
     issuer,
     audience,
     /**

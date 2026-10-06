@@ -1,4 +1,4 @@
-// plan.js — the whole read path, in the order the document fixes it.
+// plan.js — the whole read path, in order.
 //
 //   request (template or DSL document)
 //     -> expand template            (templates.js)
@@ -6,18 +6,18 @@
 //     -> guard                      (guard.js: cost refused before execution)
 //     -> resolve cursor             (cursor.js: bound to tenant, query and ordering)
 //     -> compile                    (compile.js: parameterised SQL)
-//     -> audit decision             (audit.js: §5, fail closed)
+//     -> audit decision             (audit.js: fail closed)
 //     -> execute in one transaction (executePlan below)
-//     -> suppress                   (suppress.js: §6)
-//     -> envelope                   (envelope.js: §2.3, §13)
+//     -> suppress                   (suppress.js)
+//     -> envelope                   (envelope.js)
 //
-// `plan()` is pure and synchronous: it is what a test asserts against, and what a hostile-input
-// corpus is run through. `executePlan()` needs a database client, which is injected because this
-// package carries no PostgreSQL driver (offline host, zero dependencies).
+// `plan()` is pure and synchronous: it is what tests and the hostile-input corpus run through.
+// `executePlan()` takes a database connection and runs the plan inside one tenant-scoped
+// transaction.
 
 import { createHash } from 'node:crypto';
-import { API_VERSION, K, QUERY_VERSION, SOURCE_WATERMARK } from './registry.js';
-import { PROHIBITED_FIELDS, REASON, QueryError, auditUnavailable, unsupported } from './errors.js';
+import { API_VERSION, K, QUERY_CLASSES, QUERY_VERSION, SOURCE_WATERMARK } from './registry.js';
+import { PROHIBITED_FIELDS, REASON, fromDatabaseError, unsupported } from './errors.js';
 import { validate, canonicalJson } from './validate.js';
 import { guard } from './guard.js';
 import { compile, effectiveOrderKeys } from './compile.js';
@@ -41,18 +41,12 @@ import {
 } from './envelope.js';
 import {
   coverageStatement,
-  erasureEvidenceStatement,
   freshnessStatement,
   newerEventsStatement,
   resolveMissingRecord,
-  submissionDetailStatement,
 } from './blocks.js';
-import {
-  decodeCursor,
-  encodeCursor,
-  isSubjectBearingOrder,
-  paginate,
-} from './cursor.js';
+import { decodeCursor, encodeCursor, paginate } from './cursor.js';
+import { inTransaction } from './db.js';
 
 /**
  * @typedef {object} Plan
@@ -80,7 +74,7 @@ const SIDE_READ_IDS = Object.freeze([
 ]);
 
 /**
- * Build the statement plan for one request. Throws QueryError for every rejection §13 names.
+ * Build the statement plan for one request. Throws QueryError for every rejection.
  *
  * @param {object} request   a DSL document, or {template, params}
  * @param {object} [ctx]
@@ -90,8 +84,7 @@ const SIDE_READ_IDS = Object.freeze([
  * @param {string|null} [ctx.sessionId]  the token's `sid`, carried into the audit row's detail
  * @param {Date|string} [ctx.now]
  * @param {string} [ctx.snapshotUpper]
- * @param {object} [ctx.cursorStore]   the server-side resume store (cursor.js)
- * @param {Buffer|string} [ctx.cursorKey]
+ * @param {Buffer|string} [ctx.cursorKey]  required when the request carries a cursor
  * @returns {Plan}
  */
 export function plan(request, ctx = {}) {
@@ -101,7 +94,7 @@ export function plan(request, ctx = {}) {
   const document = expansion ? expansion.document : request;
 
   if (expansion && expansion.document === null) {
-    // A single-record template (Q9) has no aggregate shape: it is a detail read with its own
+    // A single-record template (q9) has no aggregate shape: it is a detail read with its own
     // statements, and its request is a record reference rather than a query document.
     return planSingle(expansion, ctx, now);
   }
@@ -113,7 +106,8 @@ export function plan(request, ctx = {}) {
   const klass = validated.klass;
 
   const orderKeys = effectiveOrderKeys(query, source);
-  const dslHash = hashOf(query);
+  // The cursor is not part of the question it pages through, so it is left out of the hash.
+  const dslHash = hashOf({ ...query, cursor: null });
   const resolvedCursor = resolveCursorFor(query, source, orderKeys, dslHash, ctx);
 
   const compiled = compile({ query, source, klass }, {
@@ -162,8 +156,7 @@ export function plan(request, ctx = {}) {
     template: expansion ? { name: expansion.name, question: expansion.question, title: expansion.title } : null,
     query,
     source,
-    // The registry id, for the role gate: it maps a read to the capability it needs without
-    // re-deriving the source from the request.
+    // The registry id, so the role gate maps a read to its capability without re-deriving it.
     source_id: source.id,
     dsl_hash: dslHash,
     compiled,
@@ -181,13 +174,12 @@ export function plan(request, ctx = {}) {
       query_version: QUERY_VERSION,
       dsl_hash: dslHash,
       snapshot_upper_bound: resolvedCursor.snapshotUpper,
-      cursor_mode: resolvedCursor.mode,
       coarsened: guarded.coarsened,
       guard: Object.freeze({
         buckets: guarded.buckets,
         estimated_cells: guarded.estimatedCells,
         bounded_cells: guarded.boundedCells,
-        paged: guarded.paged,
+        limited: guarded.limited,
         estimated_bytes: guarded.estimatedBytes,
       }),
       notes: Object.freeze([...(expansion?.notes ?? []), ...guarded.notes]),
@@ -202,9 +194,9 @@ function planSingle(expansion, ctx, now) {
     const built = statement();
     if (built) statements.push(built);
   }
-  // A missing record is ambiguous between "never existed" and "existed and was purged", and §13
-  // resolves it from the window the record would have been received in. The caller may name that
-  // window with `received_at_hint`; without it the response says so rather than guessing.
+  // A missing record is ambiguous between "never existed" and "existed and was purged", and the
+  // window it would have been received in decides which. The caller may name that window with
+  // `received_at_hint`; without it the response says so rather than guessing.
   const hint = expansion.params?.received_at_hint ?? null;
   const decision = Object.freeze({
     required: true,
@@ -239,6 +231,8 @@ function planSingle(expansion, ctx, now) {
       api_version: API_VERSION,
       query_version: QUERY_VERSION,
       single_record: true,
+      query_class: 'single',
+      statement_timeout_ms: QUERY_CLASSES.single.statementTimeoutMs,
       received_at_hint: hint,
       notes: Object.freeze([...expansion.notes]),
     }),
@@ -250,84 +244,34 @@ function planSingle(expansion, ctx, now) {
 // ---------------------------------------------------------------------------------------------
 
 function resolveCursorFor(query, source, orderKeys, dslHash, ctx) {
-  const subjectBearing = isSubjectBearingOrder(orderKeys);
-  const fallbackUpper = ctx.snapshotUpper ?? defaultUpper(query, source, ctx);
-  if (!query.cursor) {
-    return Object.freeze({ position: null, snapshotUpper: fallbackUpper, mode: subjectBearing ? 'server_side' : 'self_contained' });
-  }
-
-  // §7.2: a cursor whose ordering key contains a subject reference is never a client-held
-  // encoding of that reference. A self-contained token here is refused, not decoded.
-  const looksSelfContained = query.cursor.includes('.');
-  if (subjectBearing) {
-    if (looksSelfContained) {
-      throw unsupported(REASON.CURSOR_REQUIRES_TOTAL_ORDER, 'A cursor over a subject-bearing ordering key must be an opaque server-side id.', {});
-    }
-    if (!ctx.cursorStore) {
-      throw unsupported(REASON.CURSOR_UNKNOWN, 'No server-side cursor store is configured.', {});
-    }
-    const resume = ctx.cursorStore.take(query.cursor);
-    if (resume.dsl_hash !== dslHash) {
-      throw unsupported(REASON.CURSOR_MISMATCH, 'Cursor belongs to a different query; restart from page one.', {});
-    }
-    if (ctx.tenant !== undefined && resume.tenant !== ctx.tenant) {
-      throw unsupported(REASON.CURSOR_TENANT_MISMATCH, 'Cursor was issued for a different session.', {});
-    }
-    return Object.freeze({ position: resume.position, snapshotUpper: resume.snapshotUpper, mode: 'server_side' });
-  }
-
-  const payload = decodeCursor(query.cursor, {
-    tenant: ctx.tenant,
-    dslHash,
-    order: orderKeys,
-  }, { key: ctx.cursorKey });
-  return Object.freeze({ position: payload.pos, snapshotUpper: payload.upper, mode: 'self_contained' });
+  const upper = ctx.snapshotUpper ?? defaultUpper(query, source, ctx);
+  if (!query.cursor) return Object.freeze({ position: null, snapshotUpper: upper });
+  const payload = decodeCursor(query.cursor, { tenant: ctx.tenant, dslHash, order: orderKeys }, { key: ctx.cursorKey });
+  return Object.freeze({ position: payload.pos, snapshotUpper: payload.upper });
 }
 
 /**
- * §7.3: "snapshot_upper_bound is the maximum received_at visible when the first page was served;
- * every later page carries WHERE received_at <= :upper."
+ * The snapshot upper bound: every page after the first carries `<time column> <= upper`.
  *
- * For a list that bound is the moment page one is served — rows appended after it are announced
- * by `newer_events_exist` rather than shifting the boundary. For an aggregate there is nothing to
- * shift (the read re-derives its buckets), so the window's own upper bound is the honest answer
- * and it is deterministic, which a cursor needs.
+ * For a list it is the moment page one is served, and rows appended after it are announced by
+ * `newer_events_exist` rather than shifting page boundaries. An aggregate is not paged, so the
+ * window's own upper bound is used.
  */
 function defaultUpper(query, source, ctx) {
-  if (source.kind === 'list' && source.time) return (ctx.now instanceof Date ? ctx.now : new Date(ctx.now ?? Date.now())).toISOString();
+  if (source.kind === 'list' && source.time) return toDate(ctx.now ?? new Date()).toISOString();
   return query.window ? query.window.to : new Date().toISOString();
 }
 
-/**
- * The resume token for the row a page ended on. Subject-bearing orderings go through the store;
- * everything else is signed and handed to the client.
- */
-export function makeResume(query, source, orderKeys, dslHash, ctx, upper) {
+/** The cursor that resumes a list after `row`. */
+function resumeAfter(orderKeys, dslHash, ctx, upper) {
   return (row) => {
-    const position = positionFrom(row, orderKeys);
-    if (isSubjectBearingOrder(orderKeys)) {
-      if (!ctx.cursorStore) {
-        throw unsupported(REASON.CURSOR_UNKNOWN, 'No server-side cursor store is configured.', {});
-      }
-      return ctx.cursorStore.put({ dsl_hash: dslHash, tenant: ctx.tenant, position, snapshotUpper: upper });
+    const position = {};
+    for (const key of orderKeys) {
+      const value = row[key];
+      position[key] = value instanceof Date ? value.toISOString() : value;
     }
-    return encodeCursor({
-      tenant: ctx.tenant,
-      dslHash,
-      order: orderKeys,
-      upper,
-      position,
-    }, { key: ctx.cursorKey });
+    return encodeCursor({ tenant: ctx.tenant, dslHash, order: orderKeys, upper, position }, { key: ctx.cursorKey });
   };
-}
-
-function positionFrom(row, orderKeys) {
-  const out = {};
-  for (const key of orderKeys) {
-    const value = row[key];
-    out[key] = value instanceof Date ? value.toISOString() : value;
-  }
-  return out;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -335,18 +279,16 @@ function positionFrom(row, orderKeys) {
 // ---------------------------------------------------------------------------------------------
 
 /**
- * Run a plan inside one transaction and return the §2.3 envelope.
+ * Run a plan inside one tenant-scoped transaction and return the response envelope.
  *
- * `client` is injected and must provide `query(text, params)`, `begin()`, `commit()` and
- * `rollback()`. Nothing is returned to the caller before COMMIT: §5.1's "nothing is streamed"
- * is what makes cancellation safe and what makes fail-closed possible.
+ * Nothing is returned before COMMIT, so a cancelled read has served nothing and a read whose audit
+ * row cannot be committed serves no rows.
  *
  * @param {Plan} planResult
  * @param {object} ctx
- * @param {object} ctx.client
- * @param {object} [ctx.cursorStore]
+ * @param {{query: Function}} ctx.client  a pooled connection
+ * @param {string} ctx.tenant
  * @param {Buffer|string} [ctx.cursorKey]
- * @param {string} [ctx.tenant]
  * @param {Date} [ctx.now]
  * @returns {Promise<object>} the response envelope
  */
@@ -357,73 +299,39 @@ export async function executePlan(planResult, ctx = {}) {
   }
   const now = toDate(ctx.now ?? new Date());
   const results = new Map();
-  const statements = [...planResult.statements];
-
-  // A post-read audit (the small-cell trigger of §5.2) is decided from the read's own
-  // `__k_subjects` column and inserted before anything is served.
-  if (planResult.audit.plan.phase === 'post_read') {
-    const index = statements.findIndex((s) => s.id === 'read');
-    const readStatement = statements[index];
-    try {
-      await client.begin();
-      const readResult = await client.query(readStatement.text, readStatement.params);
-      results.set('read', readResult);
-      if (anyCellBelowK(readResult.rows ?? [])) {
-        const statement = auditStatement(planResult.audit.decision, {
-          actorId: ctx.actorId ?? 'unknown',
-          caseReference: ctx.caseReference ?? null,
-          sessionId: ctx.sessionId ?? null,
-          subjectRef: planResult.audit.subjectRef,
-          detail: auditDetail({ query: planResult.query, source: planResult.source }, { rows: (readResult.rows ?? []).length }),
-        });
-        const auditResult = await client.query(statement.text, statement.params);
-        results.set('audit_insert', auditResult);
-      }
-      await runSideReads(statements.filter((s) => s.id !== 'read'), client, results);
-      await client.commit();
-    } catch (error) {
-      await safeRollback(client);
-      throw asQueryError(error);
-    }
-    return assemble(planResult, results, now, ctx);
-  }
+  let current = null;
+  const run = async (statement) => {
+    current = statement.id;
+    results.set(statement.id, await client.query(statement.text, statement.params));
+  };
 
   try {
-    await client.begin();
-    for (const statement of statements) {
-      // eslint-disable-next-line no-await-in-loop
-      const result = await client.query(statement.text, statement.params);
-      results.set(statement.id, result);
-    }
-    await client.commit();
+    await inTransaction(client, { tenant: ctx.tenant, statementTimeoutMs: planResult.meta.statement_timeout_ms }, async () => {
+      if (planResult.audit.plan.phase === 'post_read') {
+        // The small-cell audit is decided from the read's own `__k_subjects` column and inserted
+        // before anything is served.
+        const statements = planResult.statements;
+        await run(statements.find((s) => s.id === 'read'));
+        if (anyCellBelowK(results.get('read').rows ?? [])) {
+          await run(auditStatement(planResult.audit.decision, {
+            actorId: ctx.actorId ?? 'unknown',
+            caseReference: ctx.caseReference ?? null,
+            sessionId: ctx.sessionId ?? null,
+            subjectRef: planResult.audit.subjectRef,
+            detail: auditDetail({ query: planResult.query, source: planResult.source }, { rows: (results.get('read').rows ?? []).length }),
+          }));
+        }
+        for (const statement of statements) if (statement.id !== 'read') await run(statement);
+      } else {
+        for (const statement of planResult.statements) await run(statement);
+      }
+      current = 'commit';
+    });
   } catch (error) {
-    await safeRollback(client);
-    throw asQueryError(error);
+    const auditFailed = current === 'audit_insert' || (current === 'commit' && results.has('audit_insert'));
+    throw fromDatabaseError(error, { auditFailed });
   }
   return assemble(planResult, results, now, ctx);
-}
-
-async function runSideReads(statements, client, results) {
-  for (const statement of statements) {
-    // eslint-disable-next-line no-await-in-loop
-    const result = await client.query(statement.text, statement.params);
-    results.set(statement.id, result);
-  }
-}
-
-async function safeRollback(client) {
-  try {
-    if (typeof client.rollback === 'function') await client.rollback();
-  } catch {
-    // A rollback failure must not mask the original error.
-  }
-}
-
-function asQueryError(error) {
-  if (error instanceof QueryError) return error;
-  return auditUnavailable(REASON.AUDIT_WRITE_FAILED, 'The read could not be completed inside one transaction, so nothing was served.', {
-    cause: String(error?.message ?? error).slice(0, 200),
-  });
 }
 
 /** Turn executed statements into the response envelope. */
@@ -439,7 +347,7 @@ function assemble(planResult, results, now, ctx) {
       source: 'ingest.submission',
       last_run_at: null,
       state: 'fresh',
-      note: 'read directly from the event table: an event is visible as soon as its ingest transaction commits (brief §8).',
+      note: 'Read directly from the event table: an event is visible as soon as its ingest transaction commits.',
     });
     const auditRow = results.get('audit_insert')?.rows?.[0] ?? null;
     if (detailRows.length === 0) {
@@ -488,8 +396,8 @@ function assemble(planResult, results, now, ctx) {
   const orderKeys = planResult.meta.order.map((t) => t.by);
   const upper = planResult.meta.snapshot_upper_bound;
 
-  // §3.10: the audit page's hash links are verified before anything is returned, and a mismatch
-  // is an integrity alert rather than a list that looks fine.
+  // The audit page's hash links are verified before anything is returned, and a mismatch is an
+  // integrity alert rather than a list that looks fine.
   if (planResult.source.id === 'ops.audit') {
     const verdict = verifyAuditPage(readRows);
     if (!verdict.ok) {
@@ -506,18 +414,22 @@ function assemble(planResult, results, now, ctx) {
     }
   }
 
-  // Hidden columns (`__k_subjects`, `__ord_*`) are stripped by applySuppression, after it has
-  // used them: the k decision needs the distinct-subject count, and stripping first would make
-  // every cell look wide.
+  // Hidden columns (`__k_subjects`, `__ord_*`) are stripped by applySuppression after it has used
+  // them: the k decision needs the distinct-subject count.
   let rows = [...readRows];
   let page = null;
+  const limit = planResult.query.limit;
   if (planResult.source.kind === 'list') {
-    const limit = planResult.query.limit ?? rows.length;
     const newerEventsExist = Boolean(results.get('newer_events')?.rows?.[0]?.newer_events_exist);
-    const resume = makeResume(planResult.query, planResult.source, orderKeys, planResult.dsl_hash, ctx, upper);
-    const paged = paginate({ rows, limit, resume, snapshotUpper: upper, newerEventsExist });
+    const resume = resumeAfter(orderKeys, planResult.dsl_hash, ctx, upper);
+    const paged = paginate({ rows, limit: limit ?? rows.length, resume, snapshotUpper: upper, newerEventsExist });
     rows = [...paged.rows];
     page = paged.page;
+  } else if (limit !== null) {
+    // An aggregate is not paged. The statement fetched one row beyond the limit so the response can
+    // say whether the limit cut the result short.
+    meta.truncated = rows.length > limit;
+    rows = rows.slice(0, limit);
   }
 
   const suppressionResult = applySuppression(rows, {
@@ -588,18 +500,6 @@ function auditBlock(row) {
   });
 }
 
-/** Hidden columns are for the executor, not the wire. */
-function stripPrivate(row) {
-  const out = {};
-  for (const [key, value] of Object.entries(row)) {
-    if (key.startsWith('__')) continue;
-    out[key] = value;
-  }
-  return out;
-}
-
-export { stripPrivate };
-
 // ---------------------------------------------------------------------------------------------
 
 function isTemplateRequest(request) {
@@ -607,10 +507,9 @@ function isTemplateRequest(request) {
 }
 
 /**
- * A template request is validated for closure too. Without this, a request carrying both a
- * template and `{"sql": "..."}` would have the SQL key dropped by the expansion and answered —
- * which is exactly the "ignore what you do not recognise" failure §2.4 forbids. Only the three
- * template keys exist, and the prohibited ones are named rather than merely unknown.
+ * A template request is closed too: a request carrying both a template and `{"sql": "..."}` is
+ * refused, not answered with the SQL key dropped. Only the three template keys exist, and the
+ * prohibited ones are named rather than merely unknown.
  */
 function assertTemplateRequestKeys(request) {
   const allowed = ['query_version', 'template', 'params'];
@@ -636,7 +535,7 @@ function assertTemplateRequestKeys(request) {
   }
 }
 
-/** §7.2: the cursor binds to `dsl_hash`, the hash of the normalised query. */
+/** The hash of the normalised query a cursor binds to. */
 export function hashOf(value) {
   return createHash('sha256').update(canonicalJson(value), 'utf8').digest('hex');
 }
@@ -646,15 +545,11 @@ function toDate(value) {
 }
 
 /**
- * The coverage window a read with no window of its own uses: the current UTC day, as a half-open
- * [day start, next day start) date range. Coverage is a per-day fact and the device read is
- * current-state, so the question it answers is "what is happening today", not "what happened
- * yesterday". A date range whose end is the next midnight keeps the end exclusive and the query
- * servable by the primary key.
+ * The coverage window for a read with no window of its own: the current UTC day, half-open
+ * [day start, next day start). Coverage is a per-day fact and the device read is current state, so
+ * the question is "what is happening today".
  */
 function currentDayWindow(now) {
   const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
   return { from: start.toISOString(), to: new Date(start.getTime() + 86_400_000).toISOString() };
 }
-
-export { submissionDetailStatement, erasureEvidenceStatement };

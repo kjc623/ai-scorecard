@@ -6,15 +6,14 @@
 //
 // The query bar is a convenience over the same closed filters the rail shows: `tool:claude_web
 // action:blocked`. It is parsed here, and anything it cannot place is a *problem* that blocks the
-// search rather than a token that is dropped (docs/04 §14 item 15: no unrecognised filter is
-// silently ignored). A bare word is the commonest case. It is refused with the reason, because
-// this API has no text predicate and a search box that quietly ignored free text would look like
-// "no matches".
+// search rather than a token that is dropped: no unrecognised filter is silently ignored. A bare
+// word is the commonest case. It is refused with the reason, because this API has no text
+// predicate and a search box that quietly ignored free text would look like "no matches".
 //
 // Nothing here ranks or sorts. A list source has one fixed total ordering, set by the server, and
 // the page shows rows in the order they arrive.
 
-import { TEMPLATES, WINDOWS } from './vocab.js';
+import { WINDOWS } from './vocab.js';
 import { QUESTIONS, context } from './questions.js';
 
 const DATA_CLASSES = Object.freeze(['payment_card', 'government_id', 'credential', 'customer_pii', 'source_code', 'legal_commercial', 'health']);
@@ -24,10 +23,10 @@ const COLLECTION_MODES = Object.freeze(['m0', 'm1', 'm2', 'm3']);
 /** Hash keys that carry page state rather than a filter. No dataset has a field with these names. */
 const RESERVED_KEYS = Object.freeze(['window', 'open', 'include']);
 
-/** Page sizes a prompt-text search offers. The lab holds fewer than 21 matches for most terms. */
+/** Page sizes a prompt-text search offers. */
 export const TEXT_PAGE_SIZES = Object.freeze([5, 10, 20]);
 
-/** The longest string value the API admits (DSL.md §2.3). */
+/** The longest string value the API admits. */
 const MAX_VALUE_LENGTH = 256;
 
 /**
@@ -335,49 +334,6 @@ export function formatExploreQuery(filters, dataset) {
     .join(' ');
 }
 
-/**
- * Completions for the term the caret is in: field names while a name is being typed, and the
- * vocabulary once a field with one is named. Fields already used are not offered again.
- *
- * @returns {{start:number, end:number, items: ReadonlyArray<{label:string, insert:string, kind:'field'|'value'}>}}
- */
-export function suggestExploreTerms(text, caret, dataset) {
-  const source = String(text ?? '');
-  const at = Math.max(0, Math.min(typeof caret === 'number' ? caret : source.length, source.length));
-  let start = at;
-  while (start > 0 && !/\s/.test(source[start - 1])) start -= 1;
-  let end = at;
-  while (end < source.length && !/\s/.test(source[end])) end += 1;
-  const token = source.slice(start, end);
-  const used = new Set(Object.keys(parseExploreQuery(source.slice(0, start) + source.slice(end), dataset).filters));
-
-  const colon = token.indexOf(':');
-  if (colon === -1) {
-    const prefix = token.toLowerCase();
-    const items = dataset.fields
-      .filter((f) => !used.has(f.name) && f.name.startsWith(prefix))
-      .map((f) => Object.freeze({ label: `${f.name}:`, insert: `${f.name}:`, kind: 'field', title: f.label }));
-    return Object.freeze({ start, end, items: Object.freeze(items) });
-  }
-  const field = fieldOf(dataset, token.slice(0, colon));
-  const typed = token.slice(colon + 1).replace(/^"/, '').toLowerCase();
-  if (!field || !field.values) return Object.freeze({ start, end, items: Object.freeze([]) });
-  const items = field.values
-    .filter((v) => v.startsWith(typed) && v !== typed)
-    .map((v) => Object.freeze({ label: v, insert: `${field.name}:${v} `, kind: 'value', title: `${field.label}: ${v}` }));
-  return Object.freeze({ start, end, items: Object.freeze(items) });
-}
-
-/** Replace the term at [start, end) with a completion. Returns the new text and caret. */
-export function applyExploreSuggestion(text, suggestion, item) {
-  const source = String(text ?? '');
-  const before = source.slice(0, suggestion.start);
-  const after = source.slice(suggestion.end).replace(/^\s+/, '');
-  // A completed value already ends in a space; a field name is left open for its value.
-  const joined = item.kind === 'value' ? before + item.insert + after : before + item.insert + (after ? ` ${after}` : '');
-  return Object.freeze({ text: joined, caret: before.length + item.insert.length });
-}
-
 /** The window preset in force for a dataset: the one asked for when it is offered, else the default. */
 export function exploreWindowPreset(dataset, preset) {
   if (dataset.windows.length === 0) return null;
@@ -486,13 +442,6 @@ export function decodeExploreHash(hash) {
 
 const EXPLORE_INJECTED_BLOCK = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
 
-/** What a capture is, in the words the detail panel uses when there is nothing typed to show. */
-export const EXPLORE_CAPTURE_KINDS = Object.freeze({
-  prompt: 'a prompt',
-  internal: 'client telemetry, with nothing a person typed',
-  other: 'a request with no user message',
-});
-
 function exploreStripInjected(text) {
   return String(text ?? '').replace(EXPLORE_INJECTED_BLOCK, '').trim();
 }
@@ -535,10 +484,4 @@ export function exploreUserInput(content) {
     if (typed !== '') return Object.freeze({ typed, kind: 'prompt' });
   }
   return Object.freeze({ typed: '', kind: Array.isArray(body.events) ? 'internal' : 'other' });
-}
-
-/** Every filter field a dataset declares must be a parameter its template admits. */
-export function exploreFieldsOutsideTemplate(dataset) {
-  const admitted = TEMPLATES[dataset.questionId]?.params ?? [];
-  return dataset.fields.map((f) => f.name).filter((name) => !admitted.includes(name));
 }

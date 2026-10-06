@@ -1,40 +1,22 @@
-// serve.mjs — the dashboard's own server: the pages, sign-in, and the forwarders behind them.
+// server.mjs — the dashboard server: the pages, sign-in, and the forwarders behind them.
 //
-// WHAT IT IS NOW. A thin backend-for-frontend over control-api's identity service (the shared
-// contract, §3 and §6). control-api is the relying party for every customer identity provider,
-// keeps the session and mints short-lived product access tokens; this server only
+// A thin backend-for-frontend over control-api's identity service. It
 //
 //   * runs the sign-in pages: /signin, then /signin/start asks control-api to begin (by work email,
 //     by "Sign in with Microsoft", or with an onboarding invite) and sends the browser to the
 //     provider; /callback hands the code back to control-api and sets the session cookie;
 //     /signout revokes the session;
 //   * holds the product token per session in memory (session.mjs), re-minted through
-//     /internal/v1/auth/token shortly before it expires. The session lives in control-api, so any
-//     instance can serve any session;
+//     /internal/v1/auth/token shortly before it expires;
 //   * forwards /v1/* to query-api and /admin/v1/* to control-api with
 //     `Authorization: Bearer <product token>`, and never the cookie; /onboard/* goes to control-api
 //     untouched, because the invite in it is the credential and there is no session yet;
+//   * forwards a minted retrieval URL straight to content-vault, so content never transits
+//     query-api; the single-use grant in the URL is the capability;
 //   * refuses a state-changing /v1 or /admin/v1 request that did not come from this origin.
 //
-// The browser holds one opaque HttpOnly cookie and never a token. Every page and every read needs
-// the session, except the sign-in pages and their two stylesheets, /onboard/*, and the minted
-// retrieval URL, which is a single-use capability forwarded straight to content-vault so that
-// content never transits query-api (docs/02 §11).
-//
-// WITHOUT SAC_CONTROL_URL this is the development principal, exactly as before: every forwarded
-// request carries x-sac-dev-tenant / x-sac-dev-actor (SAC_DEV_TENANT, SAC_DEV_ACTOR), which only a
-// query-api started with SAC_DEV_TRUST_PRINCIPAL=1 accepts. It is the memory lab's arrangement,
-// said out loud at startup and on the sign-in page.
-//
-//   node tools/serve.mjs                          # http://127.0.0.1:8787/
-//   node tools/serve.mjs --port 9000 --host 0.0.0.0
-//   node tools/serve.mjs --api http://127.0.0.1:8082
-//
-// Environment: SAC_CONTROL_URL, SAC_INTERNAL_TOKEN, SAC_PUBLIC_URL, SAC_QUERY_API_URL,
-// SAC_CONTENT_VAULT_URL, SAC_DASHBOARD_TENANT; development only: SAC_DEV_TENANT, SAC_DEV_ACTOR.
-// The README's "Running the server" table says what each does.
-//
-// Zero dependencies: node:http, node:fs, node:stream and fetch.
+// Every page and read needs a session except the sign-in pages and their two stylesheets,
+// /onboard/*, the minted retrieval URL and the two probes.
 
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
@@ -63,26 +45,24 @@ import {
 } from './session.mjs';
 import { renderSigninPage, signinMessage } from './signin-page.mjs';
 
-const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+/** The package root: the pages, their stylesheets and src/ are served from here. */
+export const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 const CONTENT_RETRIEVAL_PATH = '/v1/content/retrieval';
 // A minted retrieval URL is GET /v1/content/retrieval/<tenant>/<grant>; the POST that mints it has
 // no trailing segment and goes to query-api like every other /v1 request.
 const RETRIEVAL_PREFIX = `${CONTENT_RETRIEVAL_PATH}/`;
 const MAX_BODY_BYTES = 256 * 1024;
-/** Where a signed-in person lands when nothing else was asked for: the live dashboard. */
-const LIVE_HOME = '/index.html?transport=live';
 /** The sign-in page's own assets. Everything else served from disk needs a session. */
 const PUBLIC_ASSETS = new Set(['/styles.css', '/signin.css']);
-/** What this server serves from disk: the pages, their stylesheets, and the modules module.html imports. */
+/** What this server serves from disk: the pages, their stylesheets, and the modules they import. */
 const SERVABLE = /^\/(?:[\w.-]+\.(?:html|css)|src\/[\w.-]+\.js)$/;
 /** An opaque session id must be a valid cookie value (RFC 6265 cookie-octet) before it is set as one. */
 const COOKIE_OCTETS = /^[\x21\x23-\x2B\x2D-\x3A\x3C-\x5B\x5D-\x7E]{16,1024}$/;
 const RELAYED_HEADERS = Object.freeze(['content-type', 'content-disposition', 'content-length', 'etag', 'last-modified', 'retry-after']);
 /**
- * control-api's identity refusals (contract §3, and the codes its identity service adds), each to
- * the page that says it. The page shows control-api's own code beside ours when they differ. Any
- * other code is a generic failure, shown with its code.
+ * control-api's identity refusals, each to the page that says it. The page shows control-api's
+ * own code beside ours when they differ. Any other code is a generic failure, shown with its code.
  */
 const IDENTITY_REFUSALS = new Map([
   ['no_sso_connection', 'no_sso_connection'], ['tenant_not_onboarded', 'tenant_not_onboarded'],
@@ -97,52 +77,93 @@ const HOP_BY_HOP = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'p
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
-  '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
 };
 
-/** The configuration, from the command line and the environment. */
-export function configFromEnv(argv = process.argv, env = process.env) {
-  const flag = (name) => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : undefined);
-  const publicUrl = String(env.SAC_PUBLIC_URL ?? '').trim().replace(/\/$/, '');
-  return {
+/** A configuration this server refuses to start with. */
+export class ConfigError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'ConfigError';
+  }
+}
+
+/** The environment variables this server requires, by configuration key. */
+export const REQUIRED_ENV = Object.freeze({
+  controlUrl: 'SAC_CONTROL_URL',
+  internalToken: 'SAC_INTERNAL_TOKEN',
+  publicUrl: 'SAC_PUBLIC_URL',
+  queryApiUrl: 'SAC_QUERY_API_URL',
+  vaultUrl: 'SAC_CONTENT_VAULT_URL',
+});
+
+const DEFAULT_PORT = 8080;
+
+/** `host:port`, `:port` or `host`; empty is 0.0.0.0:8080, because a container must bind every interface. */
+export function parseAddr(value) {
+  const text = String(value ?? '').trim();
+  if (text === '') return { host: '0.0.0.0', port: DEFAULT_PORT };
+  const idx = text.lastIndexOf(':');
+  if (idx < 0) return { host: text, port: DEFAULT_PORT };
+  const host = text.slice(0, idx).replace(/^\[|\]$/g, '') || '0.0.0.0';
+  const port = Number(text.slice(idx + 1));
+  if (!Number.isInteger(port) || port < 0 || port > 65_535) throw new ConfigError(`SAC_HTTP_ADDR has an invalid port: ${JSON.stringify(text)}`);
+  return { host, port };
+}
+
+function absoluteUrl(name, value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new ConfigError(`${name} is not a URL: ${JSON.stringify(value)}`);
+  }
+  if (!/^https?:$/.test(url.protocol) || url.host === '') throw new ConfigError(`${name} must be an absolute http(s) URL; got ${JSON.stringify(value)}`);
+  return value.replace(/\/+$/, '');
+}
+
+/**
+ * Check a configuration and return it normalised, or throw a ConfigError naming every missing or
+ * malformed variable. The server never starts half-configured.
+ */
+export function checkConfig(config) {
+  const missing = Object.entries(REQUIRED_ENV).filter(([key]) => String(config[key] ?? '').trim() === '').map(([, name]) => name);
+  if (missing.length > 0) throw new ConfigError(`missing ${missing.join(', ')}`);
+  const out = { ...config, internalToken: String(config.internalToken).trim() };
+  for (const key of ['controlUrl', 'publicUrl', 'queryApiUrl', 'vaultUrl']) out[key] = absoluteUrl(REQUIRED_ENV[key], String(config[key]).trim());
+  return out;
+}
+
+/** The configuration, from the environment. */
+export function configFromEnv(env = process.env) {
+  const { host, port } = parseAddr(env.SAC_HTTP_ADDR);
+  return checkConfig({
     root: PACKAGE_ROOT,
-    port: Number(flag('--port')) || 8787,
-    // Loopback unless told otherwise: a container has to listen on all interfaces to be published.
-    host: flag('--host') ?? '127.0.0.1',
-    queryApiUrl: String(flag('--api') ?? env.SAC_QUERY_API_URL ?? '').replace(/\/$/, ''),
-    vaultUrl: String(env.SAC_CONTENT_VAULT_URL ?? '').replace(/\/$/, ''),
-    controlUrl: String(env.SAC_CONTROL_URL ?? '').trim().replace(/\/$/, ''),
-    internalToken: String(env.SAC_INTERNAL_TOKEN ?? '').trim(),
-    publicUrl,
-    cookieSecure: env.SAC_COOKIE_SECURE === '1' || publicUrl.startsWith('https:'),
-    // Not where the tenant comes from (the token says that): an extra guard, so the sample dashboard
-    // cannot show the owner's tenant even if a sign-in is misdirected. Empty means unpinned.
-    pinnedTenant: String(env.SAC_DASHBOARD_TENANT ?? '').trim().toLowerCase(),
-    devTenant: env.SAC_DEV_TENANT ?? '',
-    devActor: env.SAC_DEV_ACTOR ?? 'dashboard-dev',
-  };
+    host,
+    port,
+    controlUrl: env.SAC_CONTROL_URL,
+    internalToken: env.SAC_INTERNAL_TOKEN,
+    publicUrl: env.SAC_PUBLIC_URL,
+    queryApiUrl: env.SAC_QUERY_API_URL,
+    vaultUrl: env.SAC_CONTENT_VAULT_URL,
+  });
 }
 
 /**
  * Build the server. It is returned unstarted, so a test can listen on port 0 against a fake
  * control-api and query-api.
  *
- * @param {ReturnType<typeof configFromEnv> & {fetchImpl?: typeof fetch, now?: () => number, log?: Console}} config
+ * @param {object} config  checkConfig's fields, plus optional fetchImpl, now, log and root
  */
 export function createDashboardServer(config) {
-  const cfg = { root: PACKAGE_ROOT, queryApiUrl: '', vaultUrl: '', controlUrl: '', internalToken: '', publicUrl: '', cookieSecure: false, pinnedTenant: '', devTenant: '', devActor: 'dashboard-dev', ...config };
+  const cfg = { root: PACKAGE_ROOT, ...checkConfig(config) };
   const fetchImpl = cfg.fetchImpl ?? globalThis.fetch;
   const log = cfg.log ?? console;
-  if (cfg.controlUrl && !cfg.internalToken) {
-    throw new Error('SAC_CONTROL_URL is set but SAC_INTERNAL_TOKEN is not: the dashboard cannot call control-api\'s identity service without it.');
-  }
-  const identity = cfg.controlUrl ? createIdentityClient({ baseUrl: cfg.controlUrl, internalToken: cfg.internalToken, fetchImpl }) : null;
-  const tokens = identity ? createTokenCache({ identity, now: cfg.now }) : null;
-  const publicOrigin = cfg.publicUrl ? new URL(cfg.publicUrl).origin : '';
-  const secure = Boolean(cfg.cookieSecure);
-  const devPrincipal = identity ? null : Object.freeze({ actor: cfg.devActor, tenant: cfg.devTenant });
+  const identity = createIdentityClient({ baseUrl: cfg.controlUrl, internalToken: cfg.internalToken, fetchImpl });
+  const tokens = createTokenCache({ identity, now: cfg.now });
+  const publicOrigin = new URL(cfg.publicUrl).origin;
+  // Cookies are Secure whenever the address people use is https.
+  const secure = publicOrigin.startsWith('https:');
 
   // ------------------------------------------------------------------------------------------
   // Small helpers
@@ -156,18 +177,11 @@ export function createDashboardServer(config) {
     return String(req.headers['x-forwarded-proto'] ?? '').split(',')[0].trim() || 'http';
   }
 
-  /** The origins a same-origin request may name: the configured public URL, and the address this request reached. */
+  /** The origins a same-origin request may name: the public URL's, and the address this request reached. */
   function allowedOrigins(req) {
-    const list = [];
-    if (publicOrigin) list.push(publicOrigin);
+    const list = [publicOrigin];
     if (req.headers.host) list.push(`${protoOf(req)}://${req.headers.host}`);
     return list;
-  }
-
-  /** The redirect_uri the provider sends the browser back to. */
-  function redirectUriOf(req) {
-    const origin = publicOrigin || `${protoOf(req)}://${req.headers.host ?? `${cfg.host ?? '127.0.0.1'}:${cfg.port ?? 8787}`}`;
-    return `${origin}/callback`;
   }
 
   function page(res, status, html, extra = {}) {
@@ -176,7 +190,7 @@ export function createDashboardServer(config) {
   }
 
   function signinPage(res, code, { next = '/', email = '', detail = null, extra = {}, status = null } = {}) {
-    page(res, status ?? (code ? signinMessage(code).status : 200), renderSigninPage({ code, detail, next, email, identity: Boolean(identity), dev: devPrincipal }), extra);
+    page(res, status ?? (code ? signinMessage(code).status : 200), renderSigninPage({ code, detail, next, email }), extra);
   }
 
   function redirect(res, location, extra = {}) {
@@ -221,15 +235,11 @@ export function createDashboardServer(config) {
 
   /** Who is asking: `{ ok: true, session }` or `{ ok: false, reason }`. */
   async function sessionOf(req) {
-    if (!identity) {
-      return { ok: true, session: Object.freeze({ dev: true, actor: cfg.devActor, tenant: cfg.devTenant, roles: Object.freeze(['dev']), role: 'dev', idp: null, token: null }) };
-    }
     const id = readCookie(req.headers.cookie);
     if (!id) return { ok: false, reason: 'no_session' };
     const got = await tokens.get(id);
     if (!got.ok) return got;
-    if (cfg.pinnedTenant && got.principal.tenant !== cfg.pinnedTenant) return { ok: false, reason: 'wrong_tenant' };
-    return { ok: true, session: Object.freeze({ id, dev: false, token: got.token, ...got.principal, role: primaryRole(got.principal.roles) }) };
+    return { ok: true, session: Object.freeze({ id, token: got.token, ...got.principal, role: primaryRole(got.principal.roles) }) };
   }
 
   function isApiPath(path) {
@@ -239,11 +249,10 @@ export function createDashboardServer(config) {
   /** No session: an API call is refused with JSON, a page is sent to sign in and returned afterwards. */
   function unauthenticated(req, res, url, reason) {
     const path = url.pathname;
-    const ended = reason === 'session_ended' || reason === 'wrong_tenant';
-    const extra = ended ? { 'set-cookie': clearSession() } : {};
+    const extra = reason === 'session_ended' ? { 'set-cookie': clearSession() } : {};
     if (isApiPath(path)) {
       const unavailable = reason === 'identity_unavailable';
-      const status = unavailable ? 503 : reason === 'wrong_tenant' ? 403 : 401;
+      const status = unavailable ? 503 : 401;
       const code = unavailable ? 'identity_unavailable' : reason;
       const message = unavailable ? 'The sign-in service cannot be reached; the session could not be checked.' : 'No signed-in session. Sign in at /signin.';
       if (extra['set-cookie']) res.setHeader('set-cookie', extra['set-cookie']);
@@ -251,7 +260,6 @@ export function createDashboardServer(config) {
       return refuseAdmin(res, status, code, message);
     }
     if (reason === 'identity_unavailable') return signinPage(res, 'unavailable');
-    if (reason === 'wrong_tenant') return signinPage(res, 'wrong_tenant', { extra });
     const next = safeNext(`${url.pathname}${url.search}`);
     const notice = reason === 'session_ended' ? '&notice=session_ended' : '';
     return redirect(res, `/signin?next=${encodeURIComponent(next)}${notice}`, extra);
@@ -270,7 +278,6 @@ export function createDashboardServer(config) {
   }
 
   async function handleSigninStart(req, res, url) {
-    if (!identity) return redirect(res, safeNext(url.searchParams.get('next') ?? '/'));
     let params = url.searchParams;
     if (req.method === 'POST') {
       if (!sameOriginRequest(req.headers, allowedOrigins(req))) return signinPage(res, 'signin_failed', { detail: 'cross_site_request', status: 403 });
@@ -289,7 +296,7 @@ export function createDashboardServer(config) {
     if (!email && !provider && !invite) return signinPage(res, 'email_required', { next });
     if (email && !/^[^\s@]{1,64}@[^\s@]+\.[^\s@]{2,}$/.test(email)) return signinPage(res, 'email_required', { next, email });
 
-    const answer = await identity.begin({ email: email || null, provider, invite: invite || null, redirectUri: redirectUriOf(req) });
+    const answer = await identity.begin({ email: email || null, provider, invite: invite || null, redirectUri: `${publicOrigin}/callback` });
     if (!answer.ok) {
       if (answer.status === 0) return signinPage(res, 'unavailable', { next, email });
       const known = IDENTITY_REFUSALS.get(answer.error) ?? 'signin_failed';
@@ -311,7 +318,6 @@ export function createDashboardServer(config) {
   }
 
   async function handleCallback(req, res, url) {
-    if (!identity) return redirect(res, '/');
     const extra = { 'set-cookie': clearSignin(), 'referrer-policy': 'no-referrer' };
     const attempt = decodeAttempt(readCookie(req.headers.cookie, SIGNIN_COOKIE));
     const providerError = url.searchParams.get('error');
@@ -334,29 +340,36 @@ export function createDashboardServer(config) {
       log.warn?.('dashboard: control-api completed a sign-in with an unusable session or principal; it was revoked');
       return signinPage(res, principal || typeof answer.body?.principal !== 'object' ? 'signin_failed' : 'no_role', { next: attempt.next, extra });
     }
-    if (cfg.pinnedTenant && principal.tenant !== cfg.pinnedTenant) {
-      await identity.revoke(session);
-      return signinPage(res, 'wrong_tenant', { extra });
-    }
     tokens.seed(session, answer.body);
-    const next = attempt.next === '/' ? LIVE_HOME : attempt.next;
-    return redirect(res, next, { 'set-cookie': [sessionCookie(session, { secure }), clearSignin()], 'referrer-policy': 'no-referrer' });
+    return redirect(res, attempt.next, { 'set-cookie': [sessionCookie(session, { secure }), clearSignin()], 'referrer-policy': 'no-referrer' });
   }
 
   async function handleSignout(req, res) {
     // A sign-out link followed from another site is refused; a typed address or this page's own
-    // button is not. Signing someone out is not a theft, but it should still be their choice.
+    // button is not.
     const site = String(req.headers['sec-fetch-site'] ?? '');
     if (site && site !== 'none' && !sameOriginRequest(req.headers, allowedOrigins(req))) {
       return signinPage(res, 'signin_failed', { detail: 'cross_site_request', status: 403 });
     }
     const id = readCookie(req.headers.cookie);
-    if (id && identity) {
+    if (id) {
       tokens.drop(id);
       const revoked = await identity.revoke(id);
       if (!revoked.ok) log.warn?.(`dashboard: revoking a session at sign-out failed (${revoked.error}); the cookie is cleared regardless`);
     }
     return redirect(res, '/signin?notice=signed_out', { 'set-cookie': clearSession() });
+  }
+
+  /**
+   * control-api's onboarding hands the browser here with ?invite=&provider= (or ?hint=<email>) to
+   * begin the activating sign-in, which /signin/start does. Anything else goes to /signin.
+   */
+  function handleLogin(res, url) {
+    const start = new URLSearchParams();
+    for (const name of ['invite', 'provider']) if (url.searchParams.get(name)) start.set(name, url.searchParams.get(name));
+    if (url.searchParams.get('hint')) start.set('email', url.searchParams.get('hint'));
+    start.set('next', safeNext(url.searchParams.get('next') ?? '/'));
+    return redirect(res, start.has('invite') || start.has('provider') || start.has('email') ? `/signin/start?${start}` : `/signin?next=${encodeURIComponent(start.get('next'))}`);
   }
 
   // ------------------------------------------------------------------------------------------
@@ -392,13 +405,13 @@ export function createDashboardServer(config) {
    * Forward one API request. The caller's cookie and Authorization header are not sent: the only
    * credential upstream sees is the one this server attaches.
    */
-  async function forwardApi(req, res, { base, target, auth, timeoutMs, refuse, name }) {
+  async function forwardApi(req, res, { base, target, token, timeoutMs, refuse, name }) {
     let body;
     if (!['GET', 'HEAD'].includes(req.method)) {
       body = await readBody(req);
       if (body === null) return refuse(res, 413, 'body_too_large', 'The request body is larger than this server forwards.');
     }
-    const headers = { 'accept-encoding': 'identity', ...auth };
+    const headers = { 'accept-encoding': 'identity', authorization: `Bearer ${token}` };
     for (const h of ['content-type', 'accept', 'accept-language', 'if-none-match', 'if-match', 'x-request-id']) {
       if (req.headers[h]) headers[h] = req.headers[h];
     }
@@ -420,7 +433,6 @@ export function createDashboardServer(config) {
    * things removed are hop-by-hop headers and this server's own cookies; nothing is added.
    */
   async function forwardOnboard(req, res, url) {
-    if (!cfg.controlUrl) return page(res, 404, renderSigninPage({ code: 'signin_failed', detail: 'no_control_api', identity: false, dev: devPrincipal }));
     const headers = { 'accept-encoding': 'identity', 'x-forwarded-host': String(req.headers.host ?? ''), 'x-forwarded-proto': protoOf(req) };
     for (const [name, value] of Object.entries(req.headers)) {
       if (HOP_BY_HOP.has(name) || name === 'cookie') continue;
@@ -431,7 +443,7 @@ export function createDashboardServer(config) {
     let body;
     if (!['GET', 'HEAD'].includes(req.method)) {
       body = await readBody(req);
-      if (body === null) return page(res, 413, renderSigninPage({ code: 'signin_failed', detail: 'body_too_large', identity: Boolean(identity), dev: devPrincipal }));
+      if (body === null) return page(res, 413, renderSigninPage({ code: 'signin_failed', detail: 'body_too_large' }));
     }
     let upstream;
     try {
@@ -454,7 +466,6 @@ export function createDashboardServer(config) {
 
   /** Forward one minted retrieval URL straight to the vault: the grant is the capability, so no principal is added. */
   async function forwardRetrieval(req, res, target) {
-    if (!cfg.vaultUrl) return refuseV1(res, 503, 'no_vault_configured', 'This server was started without SAC_CONTENT_VAULT_URL, so a retrieval URL cannot be redeemed.', 'busy');
     let upstream;
     try {
       upstream = await fetchImpl(`${cfg.vaultUrl}${target}`, { headers: { 'accept-encoding': 'identity' }, signal: AbortSignal.timeout(60_000) });
@@ -507,21 +518,13 @@ export function createDashboardServer(config) {
     res.setHeader('x-content-type-options', 'nosniff');
     res.setHeader('referrer-policy', 'same-origin');
 
-    if (path === '/healthz') return json(res, 200, { status: 'ok', auth: identity ? 'control-api' : 'development' });
+    if (path === '/healthz') return json(res, 200, { status: 'ok' });
+    if (path === '/readyz') return json(res, 200, { status: 'ready' });
     if (path === '/signin') return handleSignin(req, res, url);
     if (path === '/signin/start') return handleSigninStart(req, res, url);
     if (path === '/callback') return handleCallback(req, res, url);
-    if (path === '/signout' || path === '/logout') return handleSignout(req, res);
-    if (path === '/login') {
-      // The task-11 address, kept so an old link still lands on sign-in, and control-api's
-      // onboarding default: it hands the browser here with ?invite=&provider= to begin the
-      // activating sign-in, which /signin/start does.
-      const start = new URLSearchParams();
-      for (const name of ['invite', 'provider']) if (url.searchParams.get(name)) start.set(name, url.searchParams.get(name));
-      if (url.searchParams.get('hint')) start.set('email', url.searchParams.get('hint'));
-      start.set('next', safeNext(url.searchParams.get('next') ?? '/'));
-      return redirect(res, start.has('invite') || start.has('provider') || start.has('email') ? `/signin/start?${start}` : `/signin?next=${encodeURIComponent(start.get('next'))}`);
-    }
+    if (path === '/signout') return handleSignout(req, res);
+    if (path === '/login') return handleLogin(res, url);
     if (path === '/onboard' || path.startsWith('/onboard/')) return forwardOnboard(req, res, url);
     if (path.startsWith(RETRIEVAL_PREFIX)) {
       if (req.method !== 'GET') return void res.writeHead(405, { allow: 'GET' }).end();
@@ -535,7 +538,7 @@ export function createDashboardServer(config) {
 
     // Who the page is, so the navigation can hide what the roles cannot use. Not a credential.
     if (path === '/session') {
-      return json(res, 200, { actor: session.actor, tenant: session.tenant, idp: session.idp, role: session.role, roles: session.roles, pages: pagesForRoles(session.roles), dev: session.dev });
+      return json(res, 200, { actor: session.actor, tenant: session.tenant, idp: session.idp, role: session.role, roles: session.roles, pages: pagesForRoles(session.roles) });
     }
 
     const api = path.startsWith('/v1/');
@@ -545,33 +548,25 @@ export function createDashboardServer(config) {
       return api ? refuseV1(res, 403, 'cross_site_request', message) : refuseAdmin(res, 403, 'cross_site_request', message);
     }
     if (api) {
-      if (!cfg.queryApiUrl) return refuseV1(res, 503, 'no_api_configured', 'This server was started without a query API behind it.', 'busy');
-      const auth = session.dev
-        ? (cfg.devTenant ? { 'x-sac-dev-tenant': cfg.devTenant, 'x-sac-dev-actor': cfg.devActor } : {})
-        : { authorization: `Bearer ${session.token}` };
       const refuse = (r, s, c, m) => refuseV1(r, s, c, m, s === 413 ? 'query_too_broad' : 'busy');
-      return forwardApi(req, res, { base: cfg.queryApiUrl, target: `${path}${url.search}`, auth, timeoutMs: 60_000, refuse, name: 'query API' });
+      return forwardApi(req, res, { base: cfg.queryApiUrl, target: `${path}${url.search}`, token: session.token, timeoutMs: 60_000, refuse, name: 'query API' });
     }
     if (admin) {
-      if (session.dev) return refuseAdmin(res, 503, 'no_control_api', 'The development principal has no admin API; start this server with SAC_CONTROL_URL.');
       // control-api checks the role on the token; this keeps a non-admin's request from leaving at all.
       if (!canAny(session.roles, 'settings')) return refuseAdmin(res, 403, 'forbidden', 'Only an admin can use these settings.');
-      return forwardApi(req, res, { base: cfg.controlUrl, target: `${path}${url.search}`, auth: { authorization: `Bearer ${session.token}` }, timeoutMs: 120_000, refuse: refuseAdmin, name: 'admin API' });
+      return forwardApi(req, res, { base: cfg.controlUrl, target: `${path}${url.search}`, token: session.token, timeoutMs: 120_000, refuse: refuseAdmin, name: 'admin API' });
     }
 
     // The Search page is where content is reachable; a role that may not search is not served it.
     if ((path === '/explore.html' || path === '/explore') && !canAny(session.roles, 'search')) {
       return signinPage(res, 'not_permitted');
     }
-    if (path === '/') {
-      if (!session.dev) return redirect(res, LIVE_HOME);
-      return serveStatic(req, res, '/module.html');
-    }
+    if (path === '/') return serveStatic(req, res, '/index.html');
     if (path === '/explore') return serveStatic(req, res, '/explore.html');
     return serveStatic(req, res, path);
   }
 
-  const server = createServer((req, res) => {
+  return createServer((req, res) => {
     route(req, res).catch((error) => {
       // The reason goes to the server's log; the person gets a sentence.
       log.error?.(`dashboard: ${req.method} ${requestUrl(req).pathname} failed: ${error?.message ?? error}`);
@@ -579,39 +574,5 @@ export function createDashboardServer(config) {
       if (isApiPath(requestUrl(req).pathname)) return void json(res, 500, { error: 'internal_error', message: 'The dashboard server could not complete this request.' });
       return void signinPage(res, 'signin_failed');
     });
-  });
-  server.identityMode = identity ? 'control-api' : 'development';
-  return server;
-}
-
-// Started as a program, not imported by a test. Windows may spell the drive letter either way.
-const samePath = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
-const invokedDirectly = process.argv[1] ? samePath(resolve(process.argv[1]), fileURLToPath(import.meta.url)) : false;
-if (invokedDirectly) {
-  const cfg = configFromEnv();
-  let server;
-  try {
-    server = createDashboardServer(cfg);
-  } catch (error) {
-    console.error(`dashboard: ${error.message}`);
-    process.exit(1);
-  }
-  server.listen(cfg.port, cfg.host, () => {
-    const base = `http://${cfg.host}:${cfg.port}`;
-    console.log(`dashboard:  ${base}/index.html?transport=live   (sample data: ${base}/index.html)`);
-    console.log(`search:     ${base}/explore.html?transport=live`);
-    if (cfg.controlUrl) {
-      console.log(`sign-in:    ${base}/signin, through control-api at ${cfg.controlUrl}; pages and /v1, /admin/v1 need a session`);
-      console.log(`            redirect URI ${cfg.publicUrl ? `${cfg.publicUrl}/callback` : '<the address the browser used>/callback'}; cookies ${cfg.cookieSecure ? 'Secure' : 'not Secure (http)'}`);
-      // The Host header is the lab's answer for two dashboards on two ports. A deployment names its
-      // address, so the redirect URI is not whatever a request claims and can be registered.
-      if (!cfg.publicUrl) console.log('            SAC_PUBLIC_URL is not set: the redirect URI follows the request\'s Host header. Set it in any deployment.');
-    } else {
-      console.log('sign-in:    NOT configured (no SAC_CONTROL_URL). Every forwarded request carries the development principal header; it is a lab arrangement, not authentication.');
-    }
-    if (cfg.queryApiUrl) console.log(`query API:  /v1/* is forwarded to ${cfg.queryApiUrl}${cfg.controlUrl ? '' : cfg.devTenant ? `, as tenant ${cfg.devTenant}` : ''}`);
-    if (cfg.controlUrl) console.log(`admin API:  /admin/v1/* and /onboard/* are forwarded to ${cfg.controlUrl}`);
-    if (cfg.vaultUrl) console.log(`content:    minted retrieval URLs go straight to ${cfg.vaultUrl} (never through query-api)`);
-    console.log('index.html needs no server: open the file directly.');
   });
 }

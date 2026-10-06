@@ -1,8 +1,7 @@
 // observe.mjs — open one dashboard address in a real headless browser and save what it shows.
 //
-// `probe.mjs` drives the built page against a fake document; the tests assert on that. Neither is a
-// browser, and "the page shows it" is a claim about a browser. This is the evidence for that claim:
-// it loads the address, waits for the page's own requests to finish, and writes
+// The tests drive the pages against fake documents; "the page shows it" is a claim about a browser.
+// This loads the address in one, waits for the page's own requests to finish, and writes
 //
 //   <out>/<stamp>-<slug>.png    a full-page screenshot
 //   <out>/<stamp>-<slug>.txt    the header below, then the text a person would read on the page
@@ -10,10 +9,10 @@
 //
 // and prints the .txt to stdout.
 //
-//   node tools/observe.mjs 'index.html?transport=live#devices'
-//   node tools/observe.mjs 'explore.html?transport=live#events?class=payment_card' --expect payment_card
-//   node tools/observe.mjs 'explore.html?transport=live#events' --click 'tr.x-row'     # open the first event
-//   node tools/observe.mjs 'explore.html?transport=live' --fill '#x-text-query=invoice' --click '#x-text-form button[type=submit]'
+//   node tools/observe.mjs 'index.html#devices'
+//   node tools/observe.mjs 'explore.html#events?class=payment_card' --expect payment_card
+//   node tools/observe.mjs 'explore.html#events' --click 'tr.x-row'     # open the first event
+//   node tools/observe.mjs 'explore.html' --fill '#x-text-query=invoice' --click '#x-text-form button[type=submit]'
 //                                                                                  # type a prompt-text search and run it
 //   node tools/observe.mjs http://127.0.0.1:8787/index.html --width 390     # a narrow screen
 //
@@ -31,10 +30,10 @@
 //                   passes the email on as one); if it shows its account chooser instead, the
 //                   account's link is clicked. The page then loads with the session cookie the
 //                   server set. Use it for any clause about what a signed-in role sees.
-// --session <id>    load the page with this sac_session cookie instead, e.g. one printed by
-//                   tools/lab-session.mjs. Either way the header says who the session is.
-// --out <dir>       default .integration/observe/ at the repository root (ignored by git: a
-//                   screenshot of live data carries names and prompts).
+// --session <id>    load the page with this sac_session cookie instead. Either way the header
+//                   says who the session is.
+// --out <dir>       default sac-observe/ in the system temporary directory, outside the
+//                   repository: a screenshot of live data carries names and prompts.
 //
 // Exit 0 means the page loaded and every --expect/--absent/--click held. It does not mean the page
 // is right; read the text. A console error or a failed request is reported in the header and is
@@ -54,10 +53,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+import { join, resolve } from 'node:path';
 
 const BROWSER_CANDIDATES = [
   '/usr/lib64/chromium-browser/headless_shell',
@@ -83,7 +79,7 @@ const EXPECT_TIMEOUT_MS = 15000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function parseArgs(argv) {
-  const opts = { target: null, out: join(REPO, '.integration', 'observe'), expect: [], absent: [], click: [], fill: [], signIn: null, session: null, width: 1440, height: 900 };
+  const opts = { target: null, out: join(tmpdir(), 'sac-observe'), expect: [], absent: [], click: [], fill: [], signIn: null, session: null, width: 1440, height: 900 };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const value = () => {
@@ -103,7 +99,7 @@ function parseArgs(argv) {
     else if (opts.target === null) opts.target = a;
     else throw new Error(`one address at a time; got a second: ${a}`);
   }
-  if (opts.target === null) throw new Error('give the address to open, for example \'index.html?transport=live#devices\'');
+  if (opts.target === null) throw new Error('give the address to open, for example \'index.html#devices\'');
   return opts;
 }
 

@@ -2,17 +2,14 @@
 //
 // The HTTP tests hold the role boundaries with a real verifier too; this suite exercises the
 // verifier itself: an ES256 signature checked against the issuer's JWKS, and each property a
-// token must have (contract §2) refused when it is wrong. Tokens are built by hand in
-// helpers.mjs, not by the library under test, so each malformed shape is exactly the one named.
-//
-// It signs with keys generated in the test, so nothing here needs the lab.
+// token must have refused when it is wrong. Tokens are built by hand in helpers.mjs, not by the
+// library under test, so each malformed shape is exactly the one named. Keys are generated per run.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
 
 import { createVerifier, defaultJwksUrl, MAX_TOKEN_BYTES, sessionFromClaims } from '../src/http/auth.js';
-import { loadConfig, ConfigError } from '../src/http/config.js';
 import { createTestIssuer, TENANT } from './helpers.mjs';
 
 const now = () => Math.floor(Date.now() / 1000);
@@ -195,11 +192,11 @@ test('kid-miss refetches are rate-limited: inside the cooldown an unknown kid co
 test('an unknown role is dropped; a token left with no product role is refused', async () => {
   const { issuer, verifier } = setup();
   const p = await verifier.verify(issuer.mint({ roles: ['analyst', 'superuser', 'dev', 'analyst'] }));
-  assert.deepEqual(p.roles, ['analyst'], '`dev` is never minted from a token, and duplicates collapse');
+  assert.deepEqual(p.roles, ['analyst'], 'unknown roles are dropped and duplicates collapse');
   await assert.rejects(() => verifier.verify(issuer.mint({ roles: ['superuser'] })), /role/);
   await assert.rejects(() => verifier.verify(issuer.mint({ roles: [] })), /role/);
   await assert.rejects(() => verifier.verify(issuer.mint({ roles: undefined })), /role/);
-  await assert.rejects(() => verifier.verify(issuer.mint({ roles: 'admin' })), /role/, 'the contract names an array');
+  await assert.rejects(() => verifier.verify(issuer.mint({ roles: 'admin' })), /role/, 'roles is an array');
 });
 
 test('a token with no tenant, no actor or no subject is refused rather than defaulted', async () => {
@@ -219,38 +216,6 @@ test('sessionFromClaims drops a malformed sid instead of refusing the read', () 
   assert.equal(p.actorId, 'a@lab.test');
 });
 
-// ---------------------------------------------------------------------------------------------
-// Configuration: SAC_AUTH_* replaces task 11's SAC_OIDC_*
-// ---------------------------------------------------------------------------------------------
-
-const BASE_ENV = { SAC_PG_HOST: 'h', SAC_PG_DATABASE: 'd' };
-
-test('the issuer alone turns the token path on, with the contract defaults', () => {
-  const cfg = loadConfig({ ...BASE_ENV, SAC_AUTH_ISSUER: 'http://control-api:8080' });
-  assert.equal(cfg.auth.enabled, true);
-  assert.equal(cfg.auth.audience, 'sac-query');
-  assert.equal(cfg.auth.jwksUrl, 'http://control-api:8080/.well-known/jwks.json');
-  const custom = loadConfig({ ...BASE_ENV, SAC_AUTH_ISSUER: 'https://id.example', SAC_AUTH_AUDIENCE: 'aud-x', SAC_AUTH_JWKS_URL: 'https://keys.example/jwks' });
-  assert.equal(custom.auth.audience, 'aud-x');
-  assert.equal(custom.auth.jwksUrl, 'https://keys.example/jwks');
-});
-
-test('no issuer means no token path, and the task-11 SAC_OIDC_* names are no longer read', () => {
-  const cfg = loadConfig({ ...BASE_ENV, SAC_OIDC_ISSUER: 'http://oidc:8080', SAC_OIDC_AUDIENCE: 'sac-query-api' });
-  assert.equal(cfg.auth.enabled, false);
-  assert.equal('oidc' in cfg, false);
-});
-
-test('an audience or JWKS URL without an issuer, or an issuer that is not a URL, refuses to start', () => {
-  assert.throws(() => loadConfig({ ...BASE_ENV, SAC_AUTH_AUDIENCE: 'sac-query' }), ConfigError);
-  assert.throws(() => loadConfig({ ...BASE_ENV, SAC_AUTH_JWKS_URL: 'http://x/jwks' }), ConfigError);
-  assert.throws(() => loadConfig({ ...BASE_ENV, SAC_AUTH_ISSUER: 'control-api' }), ConfigError);
-  assert.throws(() => loadConfig({ ...BASE_ENV, SAC_AUTH_ISSUER: 'ftp://control-api' }), ConfigError);
-  assert.throws(() => loadConfig({ ...BASE_ENV, SAC_AUTH_ISSUER: 'http://control-api', SAC_AUTH_JWKS_URL: 'keys' }), ConfigError);
-});
-
-test('a disabled verifier refuses every token', async () => {
-  const v = createVerifier({ issuer: '' });
-  assert.equal(v.enabled, false);
-  await assert.rejects(() => v.verify('a.b.c'), /no token issuer/);
+test('a verifier needs an issuer', () => {
+  assert.throws(() => createVerifier({ issuer: '' }), /issuer/);
 });

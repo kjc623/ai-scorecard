@@ -6,10 +6,11 @@
 // touches a document.
 //
 // The rules the controller keeps:
-//   * a query with a problem is not sent. Nothing is dropped to make it sendable (§14 item 15);
+//   * a query with a problem is not sent. Nothing is dropped to make it sendable;
 //   * the window is resolved once per search and reused for every later page, because a cursor is
 //     bound to the query it was issued for;
-//   * only `next_cursor: null` ends a result set. A short page does not (DSL.md §7);
+//   * only `next_cursor: null` ends a result set. A short page does not: rows deleted underneath an
+//     iteration make a page shorter;
 //   * a refusal is a state to show, never an empty list;
 //   * an answer that arrives after a newer search began is discarded.
 
@@ -24,13 +25,11 @@ import {
   parseExploreQuery, formatExploreQuery, checkExploreFilter,
   buildExploreRequest, buildExploreRecordRequest, encodeExploreHash, decodeExploreHash, exploreUserInput,
 } from './explore-model.js';
-import { createExploreStub, EXPLORE_SCENARIOS, EXPLORE_SCENARIO_NAMES } from './explore-stub.js';
 import {
   renderExploreDatasets, renderExploreWindow,
   renderExploreProblems, renderExploreRail, renderExploreSummary, renderExploreResults, renderExploreDetail,
   renderExploreText,
 } from './explore-render.js';
-import { escapeHtml } from './render.js';
 import { eventView } from './views.js';
 
 const DETAIL_CLOSED = Object.freeze({ status: 'closed', key: null, row: null, record: null, submissionId: null });
@@ -193,8 +192,8 @@ export function createExplorer({ api, content = null, now = () => new Date(), on
 
   /**
    * Re-run what is on screen after the filter or window state changes. The list always re-runs;
-   * the prompt search re-runs too when one is showing, because the rail and the window now apply
-   * to it (task 09). Both read the state as it is after the change.
+   * the prompt search re-runs too when one is showing, because the rail and the window apply to
+   * it. Both read the state as it is after the change.
    */
   function refresh() {
     const listRun = run();
@@ -406,8 +405,8 @@ export function createExplorer({ api, content = null, now = () => new Date(), on
   }
 
   /**
-   * Retrieve the content of the open record (docs/02 §11). The case reference and the second
-   * approver go to the vault, which decides; a refusal comes back with its reason and is shown.
+   * Retrieve the content of the open record. The vault decides; a refusal comes back with its
+   * reason and is shown.
    */
   async function retrieveContent() {
     const detail = state.detail;
@@ -421,7 +420,7 @@ export function createExplorer({ api, content = null, now = () => new Date(), on
     }
     set({ content: Object.freeze({ ...base, status: 'loading' }) });
     // The retrieval request mints a single-use URL; the content itself is fetched from that URL,
-    // never from this answer (docs/02 §11). The vault audits both halves.
+    // never from this answer. The vault audits both halves.
     const answer = await content.retrieve({ event_ids: exploreEventIds(detail.record) });
     if (seq !== contentSeq || state.detail.submissionId !== submissionId) return state;
     if (answer.state === 'available' && typeof answer.retrieval_url === 'string' && answer.retrieval_url !== '') {
@@ -495,40 +494,32 @@ export function createExplorer({ api, content = null, now = () => new Date(), on
 }
 
 /**
- * Boot the page into a document. With no `api` it runs on the sample transport and says so.
+ * Boot the page into a document.
  *
- * `explore.html?transport=live` reads the real query API instead, through the one endpoint on the
- * page's own origin. The page sends no tenant and no credential: its server (tools/serve.mjs)
- * attaches the session's product token, or the development principal in the memory lab.
+ * Every read goes to the page's own origin. The page sends no tenant and no credential: its server
+ * attaches the session's product token.
  *
  * @param {object} input
  * @param {Document} input.document
- * @param {object} [input.api] a real api, e.g. createQueryApi({transport: httpTransport()})
+ * @param {object} [input.api]     a query api (createQueryApi); the page origin's otherwise
+ * @param {object} [input.content] a content api (createContentApi); the page origin's otherwise
  */
 export async function bootExplore({ document, api: given, content: givenContent } = {}) {
   const el = (id) => document.getElementById(id);
-  const live = new URLSearchParams(document.location.search).get('transport') === 'live';
-  // The same navigation panel as the dashboard: its links lead back to the screens, on the same
-  // data source this page reads.
-  const shellQuery = live ? '?transport=live' : '';
   const collapsed = readCollapsed(document);
   const nav = el('nav');
-  // A signed-in role may see fewer pages than the shell names; the server decides, and the read
-  // path refuses the rest. Sample mode has no session and keeps the whole navigation.
+  // The same navigation panel as the dashboard. A signed-in role may see fewer pages than the
+  // shell names; the server decides, and the read path refuses the rest.
   const session = await loadSession();
   const allowed = allowedPageIds(session);
-  if (nav) nav.innerHTML = renderNav(filterNavItems(shellNavItems({ page: `index.html${shellQuery}`, query: shellQuery }), allowed), 'explore', { collapsed: [...collapsed] });
-  wireShell({ document, live, collapsed, session });
-  const api = given ?? (live ? createQueryApi({ transport: httpTransport() }) : null);
-  const stub = api ? null : createExploreStub({ latencyMs: 220 });
-  // The content reads follow the same choice as the query read: the page's own origin when live,
-  // the sample when not. A caller that passes its own api passes its own content path, or none.
-  const content = givenContent
-    ?? (given ? null : createContentApi({ transport: live ? httpContentTransport() : stub.content }));
+  if (nav) nav.innerHTML = renderNav(filterNavItems(shellNavItems({ page: 'index.html' }), allowed), 'explore', { collapsed: [...collapsed] });
+  wireShell({ document, collapsed, session });
+  const api = given ?? createQueryApi({ transport: httpTransport() });
+  const content = givenContent ?? createContentApi({ transport: httpContentTransport() });
   const textInput = el('x-text-query');
   let lastHash = null;
 
-  const explorer = createExplorer({ api: api ?? createQueryApi({ transport: stub }), content, onChange: paint });
+  const explorer = createExplorer({ api, content, onChange: paint });
 
   /** Replace a region only when its markup changed, so an untouched region keeps its focus. */
   const painted = new Map();
@@ -660,21 +651,10 @@ export async function bootExplore({ document, api: given, content: givenContent 
     }
   });
 
-  const scenario = el('x-scenario');
-  if (stub) {
-    scenario.innerHTML = EXPLORE_SCENARIO_NAMES.map((name) => `<option value="${name}">${escapeHtml(EXPLORE_SCENARIOS[name])}</option>`).join('');
-    scenario.addEventListener('change', () => {
-      stub.setScenario(scenario.value);
-      explorer.run();
-    });
-  } else {
-    el('x-sample').hidden = true;
-  }
-
   document.defaultView.addEventListener('hashchange', () => {
     if (document.location.hash !== lastHash) explorer.restore(document.location.hash);
   });
 
   await explorer.restore(document.location.hash);
-  return { explorer, stub };
+  return { explorer };
 }

@@ -1,269 +1,277 @@
-// http-server.test.mjs — the HTTP surface, driven through a real socket with a fake database.
+// http-server.test.mjs — the HTTP surface, driven by real ES256 tokens through the real verifier.
 //
-// WHAT THIS PROVES, and what it deliberately does not. It proves the transport: which paths exist,
-// which methods are allowed, that a request the server cannot read is refused rather than guessed
-// at, that the tenant never comes from the body, and that a pipeline rejection keeps the state,
-// reason and HTTP status the pipeline chose. It does NOT prove that any query returns a correct
-// number — that is compile/plan/suppress's business and their suites cover it — and it does not
-// prove the driver works: the client here is a fake, and the real one has its own suite.
-//
-// The server is started on port 0 and stopped at the end, so nothing is left listening.
+// The database is a recording double with the shape of a pg pool: connect() hands out a client
+// whose query() sees every statement, BEGIN, COMMIT and ROLLBACK included, so each test can assert
+// what reached the database and in what order.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { loadConfig } from '../src/http/config.js';
 import { createQueryServer, createGate, PATHS, MAX_BODY_BYTES } from '../src/http/server.js';
+import { loadConfig } from '../src/http/config.js';
 import { createVerifier } from '../src/http/auth.js';
 import { createContentForwarder, CONTENT_PATHS } from '../src/http/content.js';
-import { createTestIssuer } from './helpers.mjs';
+import { FINDING_FOR_REVIEW_SQL, UPSERT_REVIEW_SQL } from '../src/review.js';
+import { TOOL_SANCTION_FOR_REVIEW_SQL, UPSERT_TOOL_SANCTION_SQL } from '../src/sanction.js';
+import { createTestIssuer, TENANT } from './helpers.mjs';
 
-/** The tenant under test. A missing or body-supplied tenant is a different test's business. */
-const TENANT = '00000000-0000-4000-8000-0000000000aa';
+const SILENT = Object.freeze({ info() {}, warn() {}, error() {} });
+const WINDOW = { from: '2026-09-01T00:00:00Z', to: '2026-09-08T00:00:00Z' };
+const AGGREGATE = { query_version: '1', source: 'mart.v_tool_usage', bucket: 'day', dimensions: ['tool'], measures: ['submissions'], filters: [], window: WINDOW };
+const EVENTS = { query_version: '1', template: 'q8_activity', params: { window: WINDOW } };
+const DEVICES = { query_version: '1', template: 'q7_devices', params: {} };
+const AUDIT = { query_version: '1', template: 'q10_audit_trail', params: { window: WINDOW } };
+const REVIEW_SUBMISSION = '80385a3a-ed3d-4950-bd21-3606c6f97fc5';
+const REVIEW_BODY = { submission_id: REVIEW_SUBMISSION, rule_id: 'PAYMENT_CARD_PAN', review_state: 'confirmed' };
+const TOOL_FP = 'tls_b6681b043244c43f';
+const SANCTION_BODY = { tool_fingerprint: TOOL_FP, sanctioned_state: 'sanctioned' };
+const RETRIEVAL_EVENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const HIT = '06f2b95e-def2-42ea-824b-926d74b59b97';
+
+/** Canned rows for the statements the writes and the hit lookup issue, by their exact text. */
+function defaultAnswer(text) {
+  if (text === FINDING_FOR_REVIEW_SQL) return [{ user_ref: 'u_4f21' }];
+  if (text === UPSERT_REVIEW_SQL) return [{ review_state: 'confirmed', reviewed_by: 'reader@lab.test', reviewed_at: new Date('2026-10-05T01:00:00Z') }];
+  if (text === TOOL_SANCTION_FOR_REVIEW_SQL) return [];
+  if (text === UPSERT_TOOL_SANCTION_SQL) return [{ tool_fingerprint: TOOL_FP, display_name: null, sanctioned_state: 'sanctioned', decided_by: 'reader@lab.test', decided_at: new Date('2026-10-05T01:00:00Z') }];
+  if (text.startsWith('INSERT INTO ops.audit')) return [{ audit_seq: 42, occurred_at: new Date('2026-10-05T01:00:01Z') }];
+  return [];
+}
 
 /**
- * A client that answers the statements the pipeline issues with empty result sets.
- *
- * `begin`/`commit`/`rollback` are counted rather than ignored: "nothing is returned to the caller
- * before COMMIT" is a property of the read path, and a fake that hides the order would let a
- * regression in it pass.
+ * A pool double. `fail` throws a driver error (with `code`) from the first statement whose text
+ * includes `fail.on`; `connectError` makes connect() itself fail.
  */
-function fakeClient({ rows = [], failOn = null } = {}) {
-  const calls = { query: [], began: 0, committed: 0, rolledBack: 0 };
-  return {
-    calls,
-    async connect() {},
+function fakePool({ answer = defaultAnswer, fail = null, connectError = null, hold = null } = {}) {
+  const calls = { query: [], connected: 0, released: 0 };
+  const client = {
     async query(text, params) {
       calls.query.push({ text, params });
-      if (failOn && text.includes(failOn)) {
+      if (hold) await hold(text);
+      if (fail && text.includes(fail.on)) {
         const error = new Error('simulated driver failure');
-        error.code = '57014';
+        error.code = fail.code;
         throw error;
       }
-      if (text === 'SELECT 1') return { rows: [{ '?column?': 1 }], rowCount: 1, fields: [] };
-      return { rows, rowCount: rows.length, fields: [] };
+      return { rows: answer(text, params) ?? [] };
     },
-    async begin() {
-      calls.began += 1;
+    release() {
+      calls.released += 1;
     },
-    async commit() {
-      calls.committed += 1;
+  };
+  return {
+    calls,
+    async connect() {
+      if (connectError) throw connectError;
+      calls.connected += 1;
+      return client;
     },
-    async rollback() {
-      calls.rolledBack += 1;
+    async query(text) {
+      if (connectError) throw connectError;
+      return { rows: text === 'SELECT 1' ? [{ '?column?': 1 }] : [] };
     },
-    async close() {},
+    async end() {},
   };
 }
 
-function testConfig(overrides = {}) {
-  return loadConfig({
-    SAC_ROLE: 'sac_query',
-    SAC_PG_HOST: 'shadowpg',
-    SAC_PG_DATABASE: 'shadow',
-    SAC_DEV_TRUST_PRINCIPAL: '1',
-    ...overrides,
-  });
+/** A vault double that records what it was sent and answers both content routes. */
+function vaultDouble(searchHits = []) {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    const path = new URL(url).pathname;
+    calls.push({ path, headers: { ...init.headers }, body: JSON.parse(init.body) });
+    const json = path === '/v1/content-search'
+      ? { state: 'available', hits: searchHits, truncated: false }
+      : { state: 'available', grant_id: 'g-1', raw_digest: 'sha256:x', expires_at: '2026-10-05T00:05:00Z', retrieval_url: `/v1/content/retrieval/${TENANT}/g-1` };
+    return { status: 200, json: async () => json };
+  };
+  return { calls, forwarder: createContentForwarder({ vaultUrl: 'http://vault.internal:8080', fetchImpl, log: null }) };
 }
 
-/** Start a server on an ephemeral port and return a fetch bound to it plus a close(). */
-async function withServer(t, { cfg = testConfig(), client = fakeClient(), ...rest } = {}) {
-  const service = createQueryServer({ cfg, client, log: { info() {}, error() {}, warn() {} }, ...rest });
+/** Start a server on an ephemeral port with a test issuer, and return helpers bound to it. */
+async function withServer(t, { pool = fakePool(), vault = vaultDouble(), gate } = {}) {
+  const issuer = createTestIssuer();
+  const cfg = loadConfig({
+    SAC_PG_HOST: 'db.test',
+    SAC_PG_DATABASE: 'shadow',
+    SAC_PG_USER: 'query-api',
+    SAC_PG_PASSWORD: 'test-only',
+    SAC_PG_SSLMODE: 'disable',
+    SAC_CONTENT_VAULT_URL: 'http://vault.internal:8080',
+    SAC_CURSOR_KEY: 'c'.repeat(32),
+    SAC_AUTH_ISSUER: issuer.issuer,
+  });
+  const verifier = createVerifier({ issuer: issuer.issuer, fetchImpl: issuer.fetchImpl });
+  const service = createQueryServer({ cfg, pool, verifier, contentForwarder: vault.forwarder, log: SILENT, ...(gate ? { gate } : {}) });
   const address = await service.listen({ host: '127.0.0.1', port: 0 });
   const base = `http://127.0.0.1:${address.port}`;
-  t.after(async () => {
-    await service.close();
+  t.after(() => service.close());
+  const bearer = (roles = ['content_reader'], claims = {}) => ({ authorization: `Bearer ${issuer.mint({ roles, ...claims })}` });
+  const call = (path, body, headers = bearer()) => fetch(`${base}${path}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...headers },
+    body: typeof body === 'string' ? body : JSON.stringify(body),
   });
-  return { base, client, service, cfg };
+  return { base, pool, vault, issuer, bearer, call };
 }
 
-const asTenant = (extra = {}) => ({ 'x-sac-dev-tenant': TENANT, 'content-type': 'application/json', ...extra });
-
 // ---------------------------------------------------------------------------------------------
-// The probes the deployment actually calls
+// Probes
 // ---------------------------------------------------------------------------------------------
 
-test('liveness answers 200 and names the role it is running as', async (t) => {
-  const { base } = await withServer(t);
+test('liveness answers 200 without touching the database', async (t) => {
+  const { base, pool } = await withServer(t, { pool: fakePool({ connectError: new Error('down') }) });
   const res = await fetch(`${base}${PATHS.LIVENESS}`);
   assert.equal(res.status, 200);
-  const body = await res.json();
-  assert.equal(body.status, 'ok');
-  assert.equal(body.role, 'sac_query');
+  assert.deepEqual(await res.json(), { status: 'ok' });
+  assert.equal(pool.calls.connected, 0);
 });
 
-test('readiness asks a real dependency, and answers 200 when the database answers', async (t) => {
-  const { base } = await withServer(t);
-  const res = await fetch(`${base}${PATHS.READINESS}`);
-  assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), { status: 'ready', role: 'sac_query' });
-});
+test('readiness is one database round trip: 200 when it answers, 503 without the reason when not', async (t) => {
+  const up = await withServer(t);
+  const ready = await fetch(`${up.base}${PATHS.READINESS}`);
+  assert.equal(ready.status, 200);
+  assert.deepEqual(await ready.json(), { status: 'ready' });
 
-test('readiness answers 503 when the database does not answer, and does not leak why', async (t) => {
-  // A broken database is "take me out of rotation", not "kill me": 503, never 500.
-  const client = fakeClient();
-  client.query = async (text) => {
-    if (text === 'SELECT 1') {
-      const error = new Error('could not connect to server: Connection refused at db.internal.example');
-      error.code = 'ECONNREFUSED';
-      throw error;
-    }
-    return { rows: [], rowCount: 0, fields: [] };
-  };
-  const { base } = await withServer(t, { client });
-  const res = await fetch(`${base}${PATHS.READINESS}`);
+  const down = await withServer(t, { pool: fakePool({ connectError: new Error('connect ECONNREFUSED db.internal.example:5432') }) });
+  const res = await fetch(`${down.base}${PATHS.READINESS}`);
   assert.equal(res.status, 503);
-  const raw = await res.text();
-  assert.equal(raw.includes('db.internal.example'), false, 'the probe body must not carry a host name');
-  assert.equal(raw.includes('ECONNREFUSED'), false, 'nor a driver error code');
+  const text = await res.text();
+  assert.deepEqual(JSON.parse(text), { status: 'not-ready' });
+  assert.ok(!text.includes('db.internal'), 'a driver error never reaches the probe body');
 });
 
 // ---------------------------------------------------------------------------------------------
 // Who is asking
 // ---------------------------------------------------------------------------------------------
 
-test('a read with no established tenant is refused 401, and says so rather than guessing', async (t) => {
-  const { base, client } = await withServer(t);
-  const res = await fetch(`${base}${PATHS.QUERY}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ query_version: '1', source: 'mart.v_tool_usage', bucket: 'day', dimensions: ['tool'], measures: ['submissions'], filters: [], window: { from: '2026-09-01T00:00:00Z', to: '2026-09-08T00:00:00Z' } }),
-  });
+test('a read without a bearer token is refused 401 with the challenge, and touches nothing', async (t) => {
+  const { call, pool } = await withServer(t);
+  const res = await call(PATHS.QUERY, AGGREGATE, {});
   assert.equal(res.status, 401);
-  assert.match(res.headers.get('www-authenticate') ?? '', /^Bearer realm="sac-query"$/);
+  assert.equal(res.headers.get('www-authenticate'), 'Bearer realm="sac-query"');
   const body = await res.json();
   assert.equal(body.result_state, 'unauthorised_role');
   assert.equal(body.error.code, 'unauthenticated');
-  assert.equal(client.calls.query.length, 0, 'an unauthorised read must not reach the database');
+  assert.equal(pool.calls.connected, 0);
 });
 
-test('a read sets the session tenant before it plans or executes anything', async (t) => {
-  // database/schema.sql enforces isolation with FORCE ROW LEVEL SECURITY and every scoped policy
-  // compares against ops.current_tenant(), which reads `app.tenant_id`. A read that never sets it
-  // returns nothing for every query: fail-closed rather than a leak, but an absence of data
-  // presented where the honest answer is "this session asked as nobody".
-  const { base, client } = await withServer(t);
-  const res = await fetch(`${base}${PATHS.QUERY}`, {
-    method: 'POST',
-    headers: asTenant(),
-    body: JSON.stringify({ query_version: '1', source: 'mart.v_tool_usage', bucket: 'day', dimensions: ['tool'], measures: ['submissions'], filters: [], window: { from: '2026-09-01T00:00:00Z', to: '2026-09-08T00:00:00Z' } }),
-  });
-  assert.ok(res.status === 200 || res.status === 503, `expected the read to reach the pipeline, got ${res.status}`);
-
-  const setTenant = client.calls.query.find((c) => /set_config\('app\.tenant_id'/.test(c.text));
-  assert.ok(setTenant, 'the session tenant must be set before the read');
-  assert.deepEqual(setTenant.params, [TENANT], 'and it must be bound, not interpolated');
-  assert.equal(setTenant.text.includes(TENANT), false, 'the tenant must never appear in the SQL text');
+test('a refused token is 401 invalid_token, and the development headers are not a session', async (t) => {
+  const { call, issuer, pool } = await withServer(t);
+  const expired = await call(PATHS.QUERY, AGGREGATE, { authorization: `Bearer ${issuer.mint({ exp: 1, iat: 0 })}` });
+  assert.equal(expired.status, 401);
+  assert.match(expired.headers.get('www-authenticate') ?? '', /error="invalid_token"/);
+  const dev = await call(PATHS.QUERY, AGGREGATE, { 'x-sac-dev-tenant': TENANT, 'x-sac-dev-role': 'admin' });
+  assert.equal(dev.status, 401);
+  assert.equal(pool.calls.connected, 0);
 });
 
-test('with development trust off, the header is ignored and the read is refused', async (t) => {
-  // The escape hatch has to be explicit. A server that honoured the header without the flag would
-  // let any caller choose its own tenant, which is what REASON.TENANT_IN_REQUEST forbids.
-  const { base } = await withServer(t, { cfg: testConfig({ SAC_DEV_TRUST_PRINCIPAL: '' }) });
-  const res = await fetch(`${base}${PATHS.QUERY}`, {
-    method: 'POST',
-    headers: asTenant(),
-    body: JSON.stringify({ query_version: '1', source: 'mart.v_tool_usage', bucket: 'day', dimensions: ['tool'], measures: ['submissions'], filters: [], window: { from: '2026-09-01T00:00:00Z', to: '2026-09-08T00:00:00Z' } }),
-  });
-  assert.equal(res.status, 401);
-  assert.match((await res.json()).error.message, /no signed-in session/);
+test('a read runs in one transaction scoped to the token tenant, with the class timeout', async (t) => {
+  const { call, bearer, pool } = await withServer(t);
+  const answered = await call(PATHS.QUERY, AGGREGATE, bearer(['viewer']));
+  assert.equal(answered.status, 200);
+  const texts = pool.calls.query.map((c) => c.text);
+  assert.equal(texts[0], 'BEGIN');
+  assert.match(texts[1], /^SELECT set_config\('app\.tenant_id', \$1, true\)/);
+  assert.deepEqual(pool.calls.query[1].params, [TENANT, '3000ms', '1500ms']);
+  assert.equal(texts.at(-1), 'COMMIT');
+  assert.ok(texts.every((text) => !text.includes(TENANT)), 'the tenant is bound, never interpolated');
+  assert.equal(pool.calls.released, 1, 'the connection goes back to the pool');
 });
 
-test('a tenant in the request body is refused as a validation error, not honoured', async (t) => {
-  const { base } = await withServer(t, { cfg: testConfig({ SAC_DEV_TRUST_PRINCIPAL: '' }) });
-  const res = await fetch(`${base}${PATHS.QUERY}`, {
-    method: 'POST',
-    headers: asTenant(),
-    body: JSON.stringify({ query_version: '1', tenant_id: TENANT, source: 'mart.v_tool_usage', bucket: 'day', dimensions: ['tool'], measures: ['submissions'], filters: [] }),
-  });
-  assert.equal(res.status, 401, 'no session, so the request is refused before its shape is judged');
+test('a tenant in any request body is refused as a validation error, not honoured', async (t) => {
+  const { call, bearer, pool } = await withServer(t);
+  for (const [path, body, roles] of [
+    [PATHS.QUERY, { ...AGGREGATE, tenant_id: TENANT }, ['viewer']],
+    [PATHS.FINDING_REVIEW, { ...REVIEW_BODY, tenant_id: TENANT }, ['analyst']],
+    [PATHS.TOOL_SANCTION, { ...SANCTION_BODY, tenant_id: TENANT }, ['admin']],
+  ]) {
+    const res = await call(path, body, bearer(roles));
+    assert.equal(res.status, 400, path);
+    assert.equal((await res.json()).error.code, 'tenant_in_request');
+  }
+  assert.equal(pool.calls.connected, 0, 'a rejected body never reaches the database');
 });
 
 // ---------------------------------------------------------------------------------------------
 // Reading the request
 // ---------------------------------------------------------------------------------------------
 
-test('a body that is not JSON is refused 400 with the pipeline\u2019s own malformed_document code', async (t) => {
-  const { base } = await withServer(t);
-  const res = await fetch(`${base}${PATHS.QUERY}`, { method: 'POST', headers: asTenant(), body: '{not json' });
-  assert.equal(res.status, 400);
-  const body = await res.json();
-  assert.equal(body.result_state, 'unsupported_query_shape');
-  assert.equal(body.error.code, 'malformed_document');
+test('a body that is not JSON is 400 malformed_document; an oversized one is 413', async (t) => {
+  const { call } = await withServer(t);
+  const bad = await call(PATHS.QUERY, '{not json');
+  assert.equal(bad.status, 400);
+  assert.deepEqual((await bad.json()).error.code, 'malformed_document');
+  const big = await call(PATHS.QUERY, 'x'.repeat(MAX_BODY_BYTES + 1));
+  assert.equal(big.status, 413);
+  assert.equal((await big.json()).error.code, 'body_too_large');
 });
 
-test('an oversized body is refused 413 before it is parsed', async (t) => {
-  const { base } = await withServer(t);
-  const res = await fetch(`${base}${PATHS.QUERY}`, {
-    method: 'POST',
-    headers: asTenant(),
-    body: 'x'.repeat(MAX_BODY_BYTES + 1),
-  });
-  assert.equal(res.status, 413);
-  assert.equal((await res.json()).error.code, 'body_too_large');
-});
-
-test('a path that does not exist is 404, and a wrong method on a real path is 405', async (t) => {
-  const { base } = await withServer(t);
+test('an unknown path is 404, a wrong method is 405, and every answer is no-store', async (t) => {
+  const { base, call } = await withServer(t);
   const missing = await fetch(`${base}/v1/nope`);
   assert.equal(missing.status, 404);
   assert.equal((await missing.json()).result_state, 'not_found');
-
   const wrongMethod = await fetch(`${base}${PATHS.QUERY}`, { method: 'GET' });
   assert.equal(wrongMethod.status, 405);
   assert.equal(wrongMethod.headers.get('allow'), 'GET, POST');
-});
-
-test('every response is marked no-store, because a query response is per-tenant', async (t) => {
-  const { base } = await withServer(t);
-  const res = await fetch(`${base}${PATHS.QUERY}`, { method: 'POST', headers: asTenant(), body: '{}' });
+  const res = await call(PATHS.QUERY, {});
   assert.equal(res.headers.get('cache-control'), 'no-store');
   assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
 });
 
-// ---------------------------------------------------------------------------------------------
-// What the pipeline says, the transport repeats
-// ---------------------------------------------------------------------------------------------
-
-test('a pipeline rejection keeps the state, the reason and the status the pipeline chose', async (t) => {
-  const { base } = await withServer(t);
-  // A prohibited field is a validation rejection: validate.js names the reason, and the transport
-  // must not turn it into a 500 or invent a code of its own.
-  const res = await fetch(`${base}${PATHS.QUERY}`, {
-    method: 'POST',
-    headers: asTenant(),
-    body: JSON.stringify({ query_version: '1', source: 'mart.v_tool_usage', sql: 'SELECT 1' }),
-  });
-  assert.ok(res.status === 400 || res.status === 403, `expected a typed rejection, got ${res.status}`);
+test('a pipeline rejection keeps its state, reason and status, and is decided before a connection is taken', async (t) => {
+  const { call, pool } = await withServer(t);
+  const res = await call(PATHS.QUERY, { query_version: '1', source: 'mart.v_tool_usage', sql: 'SELECT 1' });
+  assert.equal(res.status, 400);
   const body = await res.json();
-  assert.ok(body.result_state, 'a rejection always carries a result_state');
-  assert.ok(body.error?.code, 'and a machine code');
-  assert.equal('data' in body, false, 'a rejection never carries data');
+  assert.equal(body.result_state, 'unsupported_query_shape');
+  assert.equal(body.error.code, 'prohibited_field');
+  assert.equal('data' in body, false);
+  assert.equal(pool.calls.connected, 0);
 });
 
-test('a driver failure mid-read is reported as audit_unavailable (503), never as a 500', async (t) => {
-  // This is the pipeline's decision, not the transport's, and it is stricter than a SQLSTATE map
-  // would be: executePlan wraps anything thrown inside the transaction as
-  // `audit_unavailable` — "the read could not be completed inside one transaction, so nothing was
-  // served" — because a read that cannot be finished atomically has no answer to give. The
-  // transport must not second-guess that with a status of its own.
-  const client = fakeClient({ failOn: 'FROM' });
-  const { base } = await withServer(t, { client });
-  const res = await fetch(`${base}${PATHS.QUERY}`, {
-    method: 'POST',
-    headers: asTenant(),
-    body: JSON.stringify({ query_version: '1', source: 'mart.v_tool_usage', bucket: 'day', dimensions: ['tool'], measures: ['submissions'], filters: [], window: { from: '2026-09-01T00:00:00Z', to: '2026-09-08T00:00:00Z' } }),
-  });
+// ---------------------------------------------------------------------------------------------
+// Database failures
+// ---------------------------------------------------------------------------------------------
+
+test('a statement timeout is 429 busy and rolls back; any other driver error is 503 with nothing served', async (t) => {
+  const timeout = await withServer(t, { pool: fakePool({ fail: { on: 'FROM mart.v_tool_usage', code: '57014' } }) });
+  const busy = await timeout.call(PATHS.QUERY, AGGREGATE, timeout.bearer(['viewer']));
+  assert.equal(busy.status, 429);
+  const busyBody = await busy.json();
+  assert.equal(busyBody.result_state, 'busy');
+  assert.equal(busyBody.error.code, 'statement_timeout');
+  const texts = timeout.pool.calls.query.map((c) => c.text);
+  assert.ok(texts.includes('ROLLBACK') && !texts.includes('COMMIT'));
+
+  const broken = await withServer(t, { pool: fakePool({ fail: { on: 'FROM mart.v_tool_usage', code: 'XX000' } }) });
+  const res = await broken.call(PATHS.QUERY, AGGREGATE, broken.bearer(['viewer']));
   assert.equal(res.status, 503);
   const body = await res.json();
   assert.equal(body.result_state, 'audit_unavailable');
-  assert.equal('data' in body, false, 'nothing was served, so nothing may be reported');
-  assert.equal(client.calls.committed, 0, 'a failed read must not commit');
-  assert.equal(client.calls.rolledBack, 1, 'and it must roll back');
+  assert.equal(body.error.code, 'read_failed');
+  assert.equal('data' in body, false);
+});
+
+test('an unreachable database is 503, not a 500 or a hang', async (t) => {
+  const { call, bearer } = await withServer(t, { pool: fakePool({ connectError: Object.assign(new Error('token endpoint unreachable'), { code: 'ECONNREFUSED' }) }) });
+  const res = await call(PATHS.QUERY, AGGREGATE, bearer(['viewer']));
+  assert.equal(res.status, 503);
+  assert.equal((await res.json()).result_state, 'audit_unavailable');
+});
+
+test('a write whose audit row cannot be written is rolled back and reported as audit_write_failed', async (t) => {
+  const { call, bearer, pool } = await withServer(t, { pool: fakePool({ fail: { on: 'INSERT INTO ops.audit', code: '23514' } }) });
+  const res = await call(PATHS.FINDING_REVIEW, REVIEW_BODY, bearer(['analyst']));
+  assert.equal(res.status, 503);
+  assert.equal((await res.json()).error.code, 'audit_write_failed');
+  const texts = pool.calls.query.map((c) => c.text);
+  assert.ok(texts.includes('ROLLBACK') && !texts.includes('COMMIT'), 'the review is not kept without its audit row');
 });
 
 // ---------------------------------------------------------------------------------------------
-// The concurrency gate
+// The admission gate
 // ---------------------------------------------------------------------------------------------
 
 test('the gate admits up to its concurrency limit and rejects past its queue depth with 429', async () => {
@@ -279,13 +287,7 @@ test('the gate admits up to its concurrency limit and rejects past its queue dep
   assert.equal(gate.active, 2, 'the queued waiter took the freed slot');
 });
 
-test('a shed request is answered 429 with the busy state, not with a silent queue', async (t) => {
-  // maxConcurrency 1 with maxQueue 0: the first request holds the slot, so the second must be shed
-  // immediately rather than queued for ever. The hold is a single deferred that only the FIRST
-  // query waits on: a flag that every query overwrote would release the wrong request and leave the
-  // first one waiting for its own timeout, which is a test bug that looks like a server bug.
-  // `reached` is settled by the resolver the first request parks on, so the next step waits for the
-  // request to be INSIDE the gate rather than guessing with a sleep or watching a side effect.
+test('a request beyond the gate is answered 429 busy at once, and the one holding the slot is still served', async (t) => {
   let release;
   const held = new Promise((resolve) => {
     release = resolve;
@@ -295,374 +297,132 @@ test('a shed request is answered 429 with the busy state, not with a silent queu
     reached = resolve;
   });
   let first = true;
-  const client = fakeClient();
-  const realQuery = client.query.bind(client);
-  client.query = async (text, params) => {
-    if (text !== 'SELECT 1' && first) {
-      first = false;
-      reached();
-      await held;
-    }
-    return realQuery(text, params);
-  };
-  const { base } = await withServer(t, { client, cfg: testConfig({ SAC_MAX_CONCURRENCY: '1', SAC_MAX_QUEUE: '0' }) });
-
-  const body = JSON.stringify({ query_version: '1', source: 'mart.v_tool_usage', bucket: 'day', dimensions: ['tool'], measures: ['submissions'], filters: [], window: { from: '2026-09-01T00:00:00Z', to: '2026-09-08T00:00:00Z' } });
-  const inFlight = fetch(`${base}${PATHS.QUERY}`, { method: 'POST', headers: asTenant(), body });
-  const gateFull = await Promise.race([inGate.then(() => true), waitFor(() => false, 5000)]);
-  assert.ok(gateFull, 'the first request never occupied the gate');
-
-  const shed = await fetch(`${base}${PATHS.QUERY}`, { method: 'POST', headers: asTenant(), body });
+  const pool = fakePool({
+    hold: async (text) => {
+      if (text === 'BEGIN' && first) {
+        first = false;
+        reached();
+        await held;
+      }
+    },
+  });
+  const { call, bearer } = await withServer(t, { pool, gate: createGate({ maxConcurrency: 1, maxQueue: 0 }) });
+  const inFlight = call(PATHS.QUERY, AGGREGATE, bearer(['viewer']));
+  await inGate;
+  const shed = await call(PATHS.QUERY, AGGREGATE, bearer(['viewer']));
   assert.equal(shed.status, 429);
   assert.equal((await shed.json()).result_state, 'busy');
-
   release();
-  const answered = await inFlight;
-  assert.equal(answered.status, 200, 'the request that held the slot is still served normally');
+  assert.equal((await inFlight).status, 200);
 });
 
-/** Poll a predicate until it holds or the budget runs out. */
-async function waitFor(predicate, timeoutMs = 5000) {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    if (predicate()) return true;
-    if (Date.now() > deadline) return false;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-}
-
 // ---------------------------------------------------------------------------------------------
-// A search hit says who, where and which tool
+// Search hits say who, where and which tool
 // ---------------------------------------------------------------------------------------------
 
-test('a content search hit carries the person, the device and the tool of its submission', async (t) => {
-  const id = '06f2b95e-def2-42ea-824b-926d74b59b97';
-  const client = fakeClient({ rows: [{ submission_id: id, user_ref: 'u_4f21', subject_name: 'alice@example', directory_name: 'Alice Smith', tool: 'claude_code', tool_name: 'Claude Code', device: '35beae1b-e366-465a-8517-58df42c88bdc', hostname: 'LAPTOP-7' }] });
-  const contentForwarder = {
-    async handle() {
-      return { status: 200, body: { state: 'available', hits: [{ submission_id: id, snippet: 'the <em>capital</em>', rank: 1 }, { submission_id: 'not-a-uuid', snippet: 'x', rank: 0 }], truncated: false } };
-    },
-  };
-  const { base } = await withServer(t, { client, contentForwarder });
-  const res = await fetch(`${base}/v1/content-search`, { method: 'POST', headers: asTenant(), body: JSON.stringify({ query: 'capital' }) });
+test('a search hit carries the person, the device and the tool of its submission', async (t) => {
+  const row = { submission_id: HIT, user_ref: 'u_4f21', subject_name: 'alice@example', directory_name: 'Alice Smith', tool: 'claude_code', tool_name: 'Claude Code', device: '35beae1b-e366-465a-8517-58df42c88bdc', hostname: 'LAPTOP-7' };
+  const pool = fakePool({ answer: (text) => (text.includes('AS subject_name') ? [row] : []) });
+  const vault = vaultDouble([{ submission_id: HIT, snippet: 'the <em>capital</em>', rank: 1 }, { submission_id: 'not-a-uuid', snippet: 'x', rank: 0 }]);
+  const { call, bearer } = await withServer(t, { pool, vault });
+  const res = await call(CONTENT_PATHS.SEARCH, { query: 'capital' }, bearer(['analyst']));
   assert.equal(res.status, 200);
   const body = await res.json();
-  // The clear name of the submitter and the hostname ride on the hit (ADR 0021); the UUID device
-  // remains the identity behind the hit.
-  assert.deepEqual(body.hits[0], { submission_id: id, snippet: 'the <em>capital</em>', rank: 1, subject: 'alice@example', directory_name: 'Alice Smith', tool: 'claude_code', tool_name: 'Claude Code', device: '35beae1b-e366-465a-8517-58df42c88bdc', hostname: 'LAPTOP-7' });
+  assert.deepEqual(body.hits[0], { submission_id: HIT, snippet: 'the <em>capital</em>', rank: 1, subject: 'alice@example', directory_name: 'Alice Smith', tool: 'claude_code', tool_name: 'Claude Code', device: '35beae1b-e366-465a-8517-58df42c88bdc', hostname: 'LAPTOP-7' });
   assert.deepEqual(body.hits[1], { submission_id: 'not-a-uuid', snippet: 'x', rank: 0 }, 'a hit with no submission row is served as the vault sent it');
-  const lookup = client.calls.query.find((q) => q.text.includes('ingest.submission'));
-  assert.deepEqual(lookup.params, [TENANT, id], 'the lookup is tenant-scoped and its ids are a bound parameter');
-  assert.ok(client.calls.query.some((q) => q.text.includes('app.tenant_id')), 'the tenant is set on the session first');
+  const lookup = pool.calls.query.find((q) => q.text.includes('AS subject_name'));
+  assert.deepEqual(lookup.params, [TENANT, [HIT]], 'the lookup is tenant-scoped and its ids are a bound parameter');
+  assert.equal(pool.calls.query[0].text, 'BEGIN', 'inside a tenant-scoped transaction');
 });
 
 test('a search hit falls back to the pseudonymous reference when there is no clear name', async (t) => {
-  const id = '06f2b95e-def2-42ea-824b-926d74b59b97';
-  const client = fakeClient({ rows: [{ submission_id: id, user_ref: 'u_4f21', subject_name: null, tool: 'claude_code', device: '35beae1b-e366-465a-8517-58df42c88bdc', hostname: null }] });
-  const contentForwarder = { async handle() { return { status: 200, body: { state: 'available', hits: [{ submission_id: id, snippet: 's', rank: 1 }], truncated: false } }; } };
-  const { base } = await withServer(t, { client, contentForwarder });
-  const res = await fetch(`${base}/v1/content-search`, { method: 'POST', headers: asTenant(), body: JSON.stringify({ query: 's' }) });
-  const body = await res.json();
-  assert.equal(body.hits[0].subject, 'u_4f21', 'the pseudonymous ref is the fallback when the tenant is hashed or the device could not attribute');
+  const pool = fakePool({ answer: (text) => (text.includes('AS subject_name') ? [{ submission_id: HIT, user_ref: 'u_4f21', subject_name: null, tool: 'claude_code', device: '35beae1b-e366-465a-8517-58df42c88bdc', hostname: null }] : []) });
+  const { call, bearer } = await withServer(t, { pool, vault: vaultDouble([{ submission_id: HIT, snippet: 's', rank: 1 }]) });
+  const body = await (await call(CONTENT_PATHS.SEARCH, { query: 's' }, bearer(['analyst']))).json();
+  assert.equal(body.hits[0].subject, 'u_4f21');
   assert.equal(body.hits[0].hostname, null);
-  assert.equal(body.hits[0].directory_name, null, 'a hit with no directory row carries no display name');
+  assert.equal(body.hits[0].directory_name, null);
 });
 
 test('a search still answers when its hits cannot be described', async (t) => {
-  const id = '06f2b95e-def2-42ea-824b-926d74b59b97';
-  const client = fakeClient({ failOn: 'ingest.submission' });
-  const contentForwarder = { async handle() { return { status: 200, body: { state: 'available', hits: [{ submission_id: id, snippet: 's', rank: 1 }], truncated: false } }; } };
-  const { base } = await withServer(t, { client, contentForwarder });
-  const res = await fetch(`${base}/v1/content-search`, { method: 'POST', headers: asTenant(), body: JSON.stringify({ query: 's' }) });
+  const { call, bearer } = await withServer(t, { pool: fakePool({ fail: { on: 'AS subject_name', code: 'XX000' } }), vault: vaultDouble([{ submission_id: HIT, snippet: 's', rank: 1 }]) });
+  const res = await call(CONTENT_PATHS.SEARCH, { query: 's' }, bearer(['analyst']));
   assert.equal(res.status, 200);
-  assert.deepEqual((await res.json()).hits, [{ submission_id: id, snippet: 's', rank: 1 }]);
+  assert.deepEqual((await res.json()).hits, [{ submission_id: HIT, snippet: 's', rank: 1 }]);
 });
 
-// ---------------------------------------------------------------------------------------------
-// Finding review — the one write this service accepts
-// ---------------------------------------------------------------------------------------------
-
-const REVIEW_SUBMISSION = '80385a3a-ed3d-4950-bd21-3606c6f97fc5';
-
-/** A client that knows the three review statements by their shape. */
-function reviewClient({ finding = { user_ref: 'u_4f21' }, saved = { review_state: 'confirmed', reviewed_by: 'analyst@lab.test', reviewed_at: new Date('2026-10-05T01:00:00Z') } } = {}) {
-  const calls = { query: [], began: 0, committed: 0, rolledBack: 0 };
-  return {
-    calls,
-    async connect() {},
-    async query(text, params) {
-      calls.query.push({ text, params });
-      if (text.includes('FROM mart.finding')) return { rows: finding ? [finding] : [], rowCount: finding ? 1 : 0, fields: [] };
-      if (text.includes('INSERT INTO ops.finding_review')) return { rows: saved ? [saved] : [], rowCount: saved ? 1 : 0, fields: [] };
-      if (text.includes('INSERT INTO ops.audit')) return { rows: [{ audit_seq: 42, occurred_at: new Date('2026-10-05T01:00:01Z') }], rowCount: 1, fields: [] };
-      return { rows: [], rowCount: 0, fields: [] };
-    },
-    async begin() { calls.began += 1; },
-    async commit() { calls.committed += 1; },
-    async rollback() { calls.rolledBack += 1; },
-    async close() {},
-  };
-}
-
-test('a valid review is stored and audited in one transaction, with the actor from the session', async (t) => {
-  const client = reviewClient();
-  const { base } = await withServer(t, { client });
-  const res = await fetch(`${base}${PATHS.FINDING_REVIEW}`, {
-    method: 'POST',
-    headers: asTenant({ 'x-sac-dev-actor': 'analyst@lab.test' }),
-    body: JSON.stringify({ submission_id: REVIEW_SUBMISSION, rule_id: 'PAYMENT_CARD_PAN', review_state: 'confirmed', note: 'real card number' }),
-  });
-  assert.equal(res.status, 200);
-  const body = await res.json();
-  assert.equal(body.result_state, 'ok');
-  assert.equal(body.data.review_state, 'confirmed');
-  assert.equal(body.audit.entry_id, '42', 'the audit entry id is returned so the write is traceable');
-
-  const upsert = client.calls.query.find((c) => c.text.includes('INSERT INTO ops.finding_review'));
-  assert.ok(upsert, 'the review must be written');
-  assert.deepEqual(upsert.params, [REVIEW_SUBMISSION, 'PAYMENT_CARD_PAN', 'confirmed', 'analyst@lab.test', 'real card number']);
-  assert.ok(upsert.text.includes('ops.current_tenant()'), 'the tenant is the session, never a parameter');
-  assert.equal(upsert.text.includes(TENANT), false, 'the tenant must never appear in the SQL text');
-
-  const audit = client.calls.query.find((c) => c.text.includes('INSERT INTO ops.audit'));
-  assert.ok(audit, 'the review must be audited');
-  assert.ok(audit.text.includes('ops.current_tenant()'), 'the audit row takes the tenant from the session too');
-  assert.equal(client.calls.committed, 1, 'review and audit commit together');
-  assert.equal(client.calls.rolledBack, 0);
-});
-
-test('reviewing a finding that does not exist is 404 and writes nothing', async (t) => {
-  const client = reviewClient({ finding: null });
-  const { base } = await withServer(t, { client });
-  const res = await fetch(`${base}${PATHS.FINDING_REVIEW}`, {
-    method: 'POST',
-    headers: asTenant(),
-    body: JSON.stringify({ submission_id: REVIEW_SUBMISSION, rule_id: 'PAYMENT_CARD_PAN', review_state: 'disputed' }),
-  });
-  assert.equal(res.status, 404);
-  assert.equal((await res.json()).result_state, 'not_found');
-  assert.equal(client.calls.query.some((c) => c.text.includes('INSERT INTO ops.finding_review')), false, 'no review without a finding');
-  assert.equal(client.calls.committed, 0);
-  assert.equal(client.calls.rolledBack, 1);
-});
-
-test('a tenant in a review body is refused as a validation error, not honoured', async (t) => {
-  const client = reviewClient();
-  const { base } = await withServer(t, { client });
-  const res = await fetch(`${base}${PATHS.FINDING_REVIEW}`, {
-    method: 'POST',
-    headers: asTenant(),
-    body: JSON.stringify({ submission_id: REVIEW_SUBMISSION, rule_id: 'PAYMENT_CARD_PAN', review_state: 'confirmed', tenant_id: TENANT }),
-  });
-  assert.equal(res.status, 400);
-  assert.equal((await res.json()).error.code, 'tenant_in_request');
-  assert.equal(client.calls.query.length, 0, 'a rejected body must not reach the database');
-});
-
-test('review_state is only confirmed or disputed; open is not an action', async (t) => {
-  const { base } = await withServer(t);
-  const res = await fetch(`${base}${PATHS.FINDING_REVIEW}`, {
-    method: 'POST',
-    headers: asTenant(),
-    body: JSON.stringify({ submission_id: REVIEW_SUBMISSION, rule_id: 'PAYMENT_CARD_PAN', review_state: 'open' }),
-  });
-  assert.equal(res.status, 400);
-  assert.equal((await res.json()).error.code, 'type_mismatch');
-});
-
-test('a review with no established tenant is refused 401 and never reaches the database', async (t) => {
-  const client = reviewClient();
-  const { base } = await withServer(t, { client });
-  const res = await fetch(`${base}${PATHS.FINDING_REVIEW}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ submission_id: REVIEW_SUBMISSION, rule_id: 'PAYMENT_CARD_PAN', review_state: 'confirmed' }),
-  });
-  assert.equal(res.status, 401);
-  assert.equal((await res.json()).result_state, 'unauthorised_role');
-  assert.equal(client.calls.query.length, 0);
-});
-
-// ---------------------------------------------------------------------------------------------
-// A tool sanction decision is a configuration write, audited beside the read that shows it
-// ---------------------------------------------------------------------------------------------
-
-const TOOL_FP = 'tls_b6681b043244c43f';
-
-/** A client that knows the sanction statements by their shape. */
-function sanctionClient({ existing = null, saved = { tool_fingerprint: TOOL_FP, display_name: null, sanctioned_state: 'unsanctioned', decided_by: 'analyst@lab.test', decided_at: new Date('2026-10-05T01:00:00Z') } } = {}) {
-  const calls = { query: [], began: 0, committed: 0, rolledBack: 0 };
-  return {
-    calls,
-    async connect() {},
-    async query(text, params) {
-      calls.query.push({ text, params });
-      if (text.includes('FROM ops.tool')) return { rows: existing ? [existing] : [], rowCount: existing ? 1 : 0, fields: [] };
-      if (text.includes('INSERT INTO ops.tool')) return { rows: saved ? [saved] : [], rowCount: saved ? 1 : 0, fields: [] };
-      if (text.includes('INSERT INTO ops.audit')) return { rows: [{ audit_seq: 77, occurred_at: new Date('2026-10-05T01:00:01Z') }], rowCount: 1, fields: [] };
-      return { rows: [], rowCount: 0, fields: [] };
-    },
-    async begin() { calls.began += 1; },
-    async commit() { calls.committed += 1; },
-    async rollback() { calls.rolledBack += 1; },
-    async close() {},
-  };
-}
-
-test('a sanction decision is upserted and audited in one transaction, with the actor from the session', async (t) => {
-  const client = sanctionClient();
-  const { base } = await withServer(t, { client });
-  const res = await fetch(`${base}${PATHS.TOOL_SANCTION}`, {
-    method: 'POST',
-    headers: asTenant({ 'x-sac-dev-actor': 'analyst@lab.test' }),
-    body: JSON.stringify({ tool_fingerprint: TOOL_FP, sanctioned_state: 'unsanctioned', note: 'not approved' }),
-  });
-  assert.equal(res.status, 200);
-  const body = await res.json();
-  assert.equal(body.result_state, 'ok');
-  assert.equal(body.data.tool_fingerprint, TOOL_FP);
-  assert.equal(body.data.sanctioned_state, 'unsanctioned');
-  assert.equal(body.data.previous_state, 'unknown', 'an absent row is unknown, a real answer');
-  assert.equal(body.audit.entry_id, '77');
-
-  const upsert = client.calls.query.find((c) => c.text.includes('INSERT INTO ops.tool'));
-  assert.ok(upsert, 'the decision must be written');
-  assert.deepEqual(upsert.params, [TOOL_FP, null, 'unsanctioned', 'analyst@lab.test']);
-  assert.ok(upsert.text.includes('ops.current_tenant()'), 'the tenant is the session, never a parameter');
-  assert.equal(upsert.text.includes(TENANT), false, 'the tenant must never appear in the SQL text');
-  assert.ok(upsert.text.includes("CASE WHEN $3::text = 'unknown' THEN NULL ELSE $4::text END"), 'unknown clears attribution');
-
-  const audit = client.calls.query.find((c) => c.text.includes('INSERT INTO ops.audit'));
-  assert.ok(audit, 'the decision must be audited');
-  assert.equal(audit.params[2], 'tool.sanction');
-  assert.equal(audit.params[3], 'ops.tool');
-  assert.equal(client.calls.committed, 1, 'decision and audit commit together');
-  assert.equal(client.calls.rolledBack, 0);
-});
-
-test('a tenant in a sanction body is refused as a validation error, not honoured', async (t) => {
-  const client = sanctionClient();
-  const { base } = await withServer(t, { client });
-  const res = await fetch(`${base}${PATHS.TOOL_SANCTION}`, {
-    method: 'POST',
-    headers: asTenant(),
-    body: JSON.stringify({ tool_fingerprint: TOOL_FP, sanctioned_state: 'sanctioned', tenant_id: TENANT }),
-  });
-  assert.equal(res.status, 400);
-  assert.equal((await res.json()).error.code, 'tenant_in_request');
-  assert.equal(client.calls.query.length, 0, 'a rejected body must not reach the database');
-});
-
-test('a sanction with no established tenant is refused 401 and never reaches the database', async (t) => {
-  const client = sanctionClient();
-  const { base } = await withServer(t, { client });
-  const res = await fetch(`${base}${PATHS.TOOL_SANCTION}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ tool_fingerprint: TOOL_FP, sanctioned_state: 'sanctioned' }),
-  });
-  assert.equal(res.status, 401);
-  assert.equal((await res.json()).result_state, 'unauthorised_role');
-  assert.equal(client.calls.query.length, 0);
-});
-
-// ---------------------------------------------------------------------------------------------
-// Role boundaries (task 11)
-// ---------------------------------------------------------------------------------------------
-
-const WINDOW = { from: '2026-09-01T00:00:00Z', to: '2026-09-08T00:00:00Z' };
-const AGGREGATE = { query_version: '1', source: 'mart.v_tool_usage', bucket: 'day', dimensions: ['tool'], measures: ['submissions'], filters: [], window: WINDOW };
-const EVENTS = { query_version: '1', template: 'q8_activity', params: { window: WINDOW } };
-const DEVICES = { query_version: '1', template: 'q7_devices', params: {} };
-const AUDIT = { query_version: '1', template: 'q10_audit_trail', params: { window: WINDOW } };
-
-const asRole = (role, extra = {}) => asTenant({ 'x-sac-dev-role': role, ...extra });
-
-async function queryAs(base, role, body) {
-  const res = await fetch(`${base}${PATHS.QUERY}`, { method: 'POST', headers: asRole(role), body: JSON.stringify(body) });
-  return res;
-}
-
-test('a viewer reads aggregates and devices but is refused events, findings and the audit trail', async (t) => {
-  const { base } = await withServer(t);
-  assert.notEqual((await queryAs(base, 'viewer', AGGREGATE)).status, 403, 'a viewer may read aggregates');
-  assert.notEqual((await queryAs(base, 'viewer', DEVICES)).status, 403, 'the owner ruled the device list visible to a viewer');
-  const events = await queryAs(base, 'viewer', EVENTS);
-  assert.equal(events.status, 403, 'events are subject-level');
-  assert.equal((await events.json()).result_state, 'unauthorised_role');
-  const audit = await queryAs(base, 'viewer', AUDIT);
-  assert.equal(audit.status, 403, 'the audit trail is the admin capability');
-});
-
-test('an analyst reads events but is refused the audit trail and any content', async (t) => {
-  const { base } = await withServer(t);
-  assert.notEqual((await queryAs(base, 'analyst', EVENTS)).status, 403, 'an analyst may read events');
-  assert.equal((await queryAs(base, 'analyst', AUDIT)).status, 403, 'the audit trail is admin');
-  // The content gate sits before the forwarder: analyst may search, not retrieve.
-  const search = await fetch(`${base}${'/v1/content-search'}`, { method: 'POST', headers: asRole('analyst'), body: JSON.stringify({ query: 'capital' }) });
-  assert.notEqual(search.status, 403, 'search is an analyst capability');
-  const retrieval = await fetch(`${base}${'/v1/content/retrieval'}`, { method: 'POST', headers: asRole('analyst'), body: JSON.stringify({ event_ids: [TENANT] }) });
-  assert.equal(retrieval.status, 403, 'opening stored content needs the content reader role');
-});
-
-test('a content reader may mint a retrieval URL; a viewer may not do either content read', async (t) => {
-  const { base } = await withServer(t);
-  const retrieval = await fetch(`${base}${'/v1/content/retrieval'}`, { method: 'POST', headers: asRole('content_reader'), body: JSON.stringify({ event_ids: [TENANT] }) });
-  assert.notEqual(retrieval.status, 403, 'a content reader passes the retrieval gate (the vault is unconfigured here)');
-  for (const path of ['/v1/content-search', '/v1/content/retrieval']) {
-    const res = await fetch(`${base}${path}`, { method: 'POST', headers: asRole('viewer'), body: JSON.stringify({ query: 'x', event_ids: [TENANT] }) });
-    assert.equal(res.status, 403, `a viewer is refused ${path}`);
-    assert.equal((await res.json()).error.code, 'role');
+test("a content request forwards the caller's own bearer token, and nothing else that names them", async (t) => {
+  const { call, issuer, vault } = await withServer(t);
+  const token = issuer.mint({ roles: ['content_reader'], actor: 'reader@lab.test' });
+  assert.equal((await call(CONTENT_PATHS.SEARCH, { query: 'capital' }, { authorization: `Bearer ${token}` })).status, 200);
+  assert.equal((await call(CONTENT_PATHS.RETRIEVAL, { event_ids: [RETRIEVAL_EVENT] }, { authorization: `Bearer ${token}` })).status, 200);
+  assert.equal(vault.calls.length, 2);
+  for (const sent of vault.calls) {
+    assert.deepEqual(sent.headers, { 'content-type': 'application/json', authorization: `Bearer ${token}` }, sent.path);
   }
 });
 
-test('an admin reads the audit trail and decides sanctions, but reads no subject-level events', async (t) => {
-  const { base } = await withServer(t);
-  assert.notEqual((await queryAs(base, 'admin', AUDIT)).status, 403, 'the audit trail is an admin read');
-  assert.equal((await queryAs(base, 'admin', EVENTS)).status, 403, 'admin reads no subject-level events');
-  assert.equal((await queryAs(base, 'admin', AGGREGATE)).status, 200, 'admin keeps the aggregates');
+// ---------------------------------------------------------------------------------------------
+// The two audited writes
+// ---------------------------------------------------------------------------------------------
+
+test('a review is stored and audited in one transaction, with the actor from the token', async (t) => {
+  const { call, bearer, pool } = await withServer(t);
+  const res = await call(PATHS.FINDING_REVIEW, { ...REVIEW_BODY, note: 'real card number' }, bearer(['analyst']));
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.data.review_state, 'confirmed');
+  assert.equal(body.audit.entry_id, '42', 'the audit entry id makes the write traceable');
+  const upsert = pool.calls.query.find((c) => c.text === UPSERT_REVIEW_SQL);
+  assert.deepEqual(upsert.params, [REVIEW_SUBMISSION, 'PAYMENT_CARD_PAN', 'confirmed', 'reader@lab.test', 'real card number']);
+  const texts = pool.calls.query.map((c) => c.text);
+  assert.ok(texts.indexOf(UPSERT_REVIEW_SQL) < texts.findIndex((x) => x.startsWith('INSERT INTO ops.audit')));
+  assert.equal(texts.at(-1), 'COMMIT', 'review and audit commit together');
 });
 
-test('a verified token establishes the tenant, actor and roles, and the tenant cannot come from the body', async (t) => {
-  const seen = [];
-  const verifier = {
-    enabled: true,
-    async verify(token) {
-      if (token !== 'signed.token.value') throw new Error('signature does not verify');
-      return { tenant: TENANT, actorId: 'reader@lab.test', subject: 'sub-1', roles: ['viewer'], caseReference: null };
-    },
-  };
-  const { base, client } = await withServer(t, { cfg: testConfig({ SAC_DEV_TRUST_PRINCIPAL: '', SAC_AUTH_ISSUER: 'https://control-api.test' }), verifier, client: { ...fakeClient(), async query(text, params) { seen.push({ text, params }); return { rows: [], rowCount: 0, fields: [] }; } } });
-  const res = await fetch(`${base}${PATHS.QUERY}`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer signed.token.value' }, body: JSON.stringify(AGGREGATE) });
-  assert.equal(res.status, 200, 'the aggregate read is served for the viewer token');
-  const setTenant = seen.find((c) => /set_config\('app\.tenant_id'/.test(c.text));
-  assert.deepEqual(setTenant.params, [TENANT], 'the tenant came from the verified token');
-  const events = await fetch(`${base}${PATHS.QUERY}`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer signed.token.value' }, body: JSON.stringify(EVENTS) });
-  assert.equal(events.status, 403, 'the token role is the viewer role');
+test('reviewing a finding that does not exist is 404 and writes nothing; open is not an action', async (t) => {
+  const { call, bearer, pool } = await withServer(t, { pool: fakePool({ answer: (text) => (text === FINDING_FOR_REVIEW_SQL ? [] : defaultAnswer(text)) }) });
+  const missing = await call(PATHS.FINDING_REVIEW, REVIEW_BODY, bearer(['analyst']));
+  assert.equal(missing.status, 404);
+  assert.equal((await missing.json()).error.code, 'no_such_finding');
+  assert.ok(!pool.calls.query.some((c) => c.text === UPSERT_REVIEW_SQL || c.text.startsWith('INSERT INTO ops.audit')));
+  const open = await call(PATHS.FINDING_REVIEW, { ...REVIEW_BODY, review_state: 'open' }, bearer(['analyst']));
+  assert.equal(open.status, 400);
+  assert.equal((await open.json()).error.code, 'type_mismatch');
 });
 
-test('an invalid bearer token is refused even with development trust off', async (t) => {
-  const verifier = { enabled: true, async verify() { throw new Error('nope'); } };
-  const client = fakeClient();
-  const { base } = await withServer(t, { cfg: testConfig({ SAC_DEV_TRUST_PRINCIPAL: '', SAC_AUTH_ISSUER: 'https://control-api.test' }), verifier, client });
-  const res = await fetch(`${base}${PATHS.QUERY}`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer forged' }, body: JSON.stringify(AGGREGATE) });
-  assert.equal(res.status, 401);
-  assert.match(res.headers.get('www-authenticate') ?? '', /error="invalid_token"/);
-  assert.equal(client.calls.query.length, 0);
+test('a sanction decision is upserted and audited in one transaction', async (t) => {
+  const { call, bearer, pool } = await withServer(t);
+  const res = await call(PATHS.TOOL_SANCTION, { ...SANCTION_BODY, note: 'approved' }, bearer(['admin']));
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.data.sanctioned_state, 'sanctioned');
+  assert.equal(body.data.previous_state, 'unknown', 'an absent row is unknown, a real answer');
+  const upsert = pool.calls.query.find((c) => c.text === UPSERT_TOOL_SANCTION_SQL);
+  assert.deepEqual(upsert.params, [TOOL_FP, null, 'sanctioned', 'reader@lab.test']);
+  const audit = pool.calls.query.find((c) => c.text.startsWith('INSERT INTO ops.audit'));
+  assert.equal(audit.params[2], 'tool.sanction');
+  assert.equal(pool.calls.query.at(-1).text, 'COMMIT');
+});
+
+test("the token's sid is written into the audit row of a read and of a write", async (t) => {
+  const { call, bearer, pool } = await withServer(t);
+  const analyst = bearer(['analyst'], { sid: 'ABCDEF0123456789' });
+  assert.equal((await call(PATHS.QUERY, EVENTS, analyst)).status, 200);
+  assert.equal((await call(PATHS.FINDING_REVIEW, REVIEW_BODY, analyst)).status, 200);
+  const audits = pool.calls.query.filter((c) => c.text.startsWith('INSERT INTO ops.audit'));
+  assert.equal(audits.length, 2);
+  for (const audit of audits) {
+    assert.equal(audit.params[1], 'reader@lab.test');
+    assert.equal(JSON.parse(audit.params[7]).sid, 'abcdef0123456789');
+  }
 });
 
 // ---------------------------------------------------------------------------------------------
-// The product access token, end to end (contract §2): real ES256 tokens through the real verifier
+// Role boundaries
 // ---------------------------------------------------------------------------------------------
 
-const REVIEW_BODY = { submission_id: REVIEW_SUBMISSION, rule_id: 'PAYMENT_CARD_PAN', review_state: 'confirmed' };
-const SANCTION_BODY = { tool_fingerprint: TOOL_FP, sanctioned_state: 'sanctioned' };
-const RETRIEVAL_EVENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
-
-/**
- * Every route class, the body that reaches its role gate, and the roles that may pass it. The
- * table IS the role design (docs/04 §2.2): a change to a role's reach is a change here.
- */
+/** Every route class, the body that reaches its role gate, and the roles that may pass it. */
 const ROUTE_CLASSES = [
   { name: 'aggregate read', path: PATHS.QUERY, body: AGGREGATE, allowed: ['viewer', 'analyst', 'content_reader', 'admin'] },
   { name: 'device read', path: PATHS.QUERY, body: DEVICES, allowed: ['viewer', 'analyst', 'content_reader'] },
@@ -674,151 +434,46 @@ const ROUTE_CLASSES = [
   { name: 'content retrieval mint', path: CONTENT_PATHS.RETRIEVAL, body: { event_ids: [RETRIEVAL_EVENT] }, allowed: ['content_reader'] },
 ];
 
-/** A client that lets each write's statements succeed, so an allowed write is a 200. */
-function writesClient() {
-  const review = reviewClient();
-  const sanction = sanctionClient();
-  const calls = { query: [] };
-  return {
-    calls,
-    async connect() {},
-    async query(text, params) {
-      calls.query.push({ text, params });
-      if (text.includes('ops.tool')) return sanction.query(text, params);
-      return review.query(text, params);
-    },
-    async begin() {},
-    async commit() {},
-    async rollback() {},
-    async close() {},
-  };
-}
-
-/** A vault double that records what it was sent and answers both content routes. */
-function vaultDouble() {
-  const calls = [];
-  const fetchImpl = async (url, init) => {
-    const path = new URL(url).pathname;
-    calls.push({ path, headers: { ...init.headers } });
-    const json = path === '/v1/content-search'
-      ? { state: 'available', hits: [], truncated: false }
-      : { state: 'available', grant_id: 'g-1', raw_digest: 'sha256:x', expires_at: '2026-10-05T00:05:00Z', retrieval_url: `/v1/content/retrieval/${TENANT}/g-1` };
-    return { status: 200, json: async () => json };
-  };
-  return { calls, forwarder: createContentForwarder({ vaultUrl: 'http://vault.internal:8080', scope: 'lab', fetchImpl, log: null }) };
-}
-
-async function withTokenServer(t, { devTrust = false, client = writesClient() } = {}) {
-  const issuer = createTestIssuer();
-  const verifier = createVerifier({ issuer: issuer.issuer, fetchImpl: issuer.fetchImpl });
-  const vault = vaultDouble();
-  const cfg = testConfig({ SAC_DEV_TRUST_PRINCIPAL: devTrust ? '1' : '', SAC_AUTH_ISSUER: issuer.issuer });
-  const { base } = await withServer(t, { cfg, verifier, client, contentForwarder: vault.forwarder });
-  const call = (path, body, headers = {}) => fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
-  return { issuer, vault, client, call };
-}
-
-test('every role boundary holds on every route class, from a verified ES256 token', async (t) => {
-  const { issuer, call } = await withTokenServer(t);
+test('every role boundary holds on every route class', async (t) => {
+  const { call, bearer } = await withServer(t);
   for (const role of ['viewer', 'analyst', 'content_reader', 'admin']) {
-    const bearer = { authorization: `Bearer ${issuer.mint({ roles: [role] })}` };
     for (const route of ROUTE_CLASSES) {
-      const res = await call(route.path, route.body, bearer);
+      const res = await call(route.path, route.body, bearer([role]));
       const body = await res.json();
       if (route.allowed.includes(role)) {
         assert.equal(res.status, 200, `${role} must be served the ${route.name} (got ${JSON.stringify(body.error)})`);
       } else {
         assert.equal(res.status, 403, `${role} must be refused the ${route.name}`);
-        assert.equal(body.error?.code, 'role', `${role} on ${route.name} is a role refusal, not some other failure`);
+        assert.equal(body.error?.code, 'role');
       }
     }
   }
 });
 
 test('a token carrying several roles has the union of their reach', async (t) => {
-  const { issuer, call } = await withTokenServer(t);
-  const bearer = { authorization: `Bearer ${issuer.mint({ roles: ['viewer', 'admin'] })}` };
-  assert.equal((await call(PATHS.QUERY, DEVICES, bearer)).status, 200, 'device list via viewer');
-  assert.equal((await call(PATHS.TOOL_SANCTION, SANCTION_BODY, bearer)).status, 200, 'sanction via admin');
-  assert.equal((await call(PATHS.QUERY, EVENTS, bearer)).status, 403, 'neither carries subject-level reads');
+  const { call, bearer } = await withServer(t);
+  const both = bearer(['viewer', 'admin']);
+  assert.equal((await call(PATHS.QUERY, DEVICES, both)).status, 200, 'device list via viewer');
+  assert.equal((await call(PATHS.TOOL_SANCTION, SANCTION_BODY, both)).status, 200, 'sanction via admin');
+  assert.equal((await call(PATHS.QUERY, EVENTS, both)).status, 403, 'neither carries subject-level reads');
 });
 
-test('without a session every route class answers 401 and touches nothing', async (t) => {
-  const { issuer, vault, client, call } = await withTokenServer(t);
+test('without a valid session every route class answers 401 and touches nothing', async (t) => {
+  const { call, issuer, pool, vault } = await withServer(t);
   const presented = [
     {},
     { authorization: `Bearer ${issuer.mint({ iss: 'http://elsewhere' })}` },
     { authorization: `Bearer ${issuer.mint({ roles: ['superuser'] })}` },
-    // The development header is not a session when the flag is off.
     { 'x-sac-dev-tenant': TENANT, 'x-sac-dev-role': 'admin' },
   ];
   for (const headers of presented) {
     for (const route of ROUTE_CLASSES) {
       const res = await call(route.path, route.body, headers);
-      assert.equal(res.status, 401, `${route.name} with ${Object.keys(headers).join(',') || 'nothing'} must be 401`);
+      assert.equal(res.status, 401, `${route.name} with ${Object.keys(headers).join(',') || 'nothing'}`);
       assert.equal((await res.json()).error.code, 'unauthenticated');
-      assert.ok(res.headers.get('www-authenticate')?.startsWith('Bearer'), 'the 401 carries the bearer challenge');
+      assert.ok(res.headers.get('www-authenticate')?.startsWith('Bearer'));
     }
   }
-  assert.equal(client.calls.query.length, 0, 'no unauthenticated request reached the database');
+  assert.equal(pool.calls.connected, 0, 'no unauthenticated request reached the database');
   assert.equal(vault.calls.length, 0, 'or the vault');
-});
-
-test("a content request forwards the caller's own bearer to the vault, beside headers that agree with it", async (t) => {
-  const { issuer, vault, call } = await withTokenServer(t);
-  const token = issuer.mint({ roles: ['content_reader', 'superuser'], actor: 'reader@lab.test' });
-  assert.equal((await call(CONTENT_PATHS.SEARCH, { query: 'capital' }, { authorization: `Bearer ${token}` })).status, 200);
-  assert.equal((await call(CONTENT_PATHS.RETRIEVAL, { event_ids: [RETRIEVAL_EVENT] }, { authorization: `Bearer ${token}` })).status, 200);
-  assert.equal(vault.calls.length, 2);
-  for (const sent of vault.calls) {
-    assert.equal(sent.headers.authorization, `Bearer ${token}`, `${sent.path} carries the same token`);
-    assert.equal(sent.headers['x-sac-tenant'], TENANT);
-    assert.equal(sent.headers['x-sac-subject'], 'reader@lab.test');
-    assert.equal(sent.headers['x-sac-roles'], 'content_reader', 'the roles header names only what the token granted');
-    assert.equal(sent.headers['x-sac-service'], 'query-api');
-  }
-});
-
-test("the token's sid is written into the audit row of a read and of a write", async (t) => {
-  const { issuer, client, call } = await withTokenServer(t);
-  const analyst = { authorization: `Bearer ${issuer.mint({ roles: ['analyst'], sid: 'ABCDEF0123456789' })}` };
-  assert.equal((await call(PATHS.QUERY, EVENTS, analyst)).status, 200);
-  assert.equal((await call(PATHS.FINDING_REVIEW, REVIEW_BODY, analyst)).status, 200);
-  const audits = client.calls.query.filter((c) => c.text.includes('INSERT INTO ops.audit'));
-  assert.equal(audits.length, 2, 'the subject-level read and the review each wrote one audit row');
-  for (const audit of audits) {
-    assert.equal(audit.params[1], 'reader@lab.test', "the actor is the token's actor");
-    assert.equal(JSON.parse(audit.params[7]).sid, 'abcdef0123456789', 'detail carries the session id');
-  }
-});
-
-test('with development trust on, a token still wins, and a refused token never falls through to the header', async (t) => {
-  const { issuer, client, call } = await withTokenServer(t, { devTrust: true, client: fakeClient() });
-  const other = '00000000-0000-4000-8000-0000000000bb';
-  const devHeaders = { 'x-sac-dev-tenant': other, 'x-sac-dev-role': 'admin' };
-
-  const res = await call(PATHS.QUERY, AGGREGATE, { ...devHeaders, authorization: `Bearer ${issuer.mint({ roles: ['viewer'] })}` });
-  assert.equal(res.status, 200);
-  const setTenant = client.calls.query.find((c) => /set_config\('app\.tenant_id'/.test(c.text));
-  assert.deepEqual(setTenant.params, [TENANT], "the token's tenant, not the header's");
-
-  const before = client.calls.query.length;
-  const refused = await call(PATHS.QUERY, AGGREGATE, { ...devHeaders, authorization: `Bearer ${issuer.mint({ exp: 1, iat: 0 })}` });
-  assert.equal(refused.status, 401, 'an expired token is a refusal even beside a trusted header');
-  assert.equal(client.calls.query.length, before);
-});
-
-test('the development header path is unchanged: no token, the flag on, the header names tenant and role', async (t) => {
-  const vault = vaultDouble();
-  const { base, client } = await withServer(t, { contentForwarder: vault.forwarder });
-  const res = await fetch(`${base}${CONTENT_PATHS.SEARCH}`, { method: 'POST', headers: asRole('analyst', { 'x-sac-dev-actor': 'analyst@lab.test' }), body: JSON.stringify({ query: 'capital' }) });
-  assert.equal(res.status, 200);
-  assert.equal(vault.calls[0].headers.authorization, undefined, 'a development principal has no token to forward');
-  assert.equal(vault.calls[0].headers['x-sac-tenant'], TENANT);
-  assert.equal(vault.calls[0].headers['x-sac-roles'], 'analyst');
-  // Absent a role header, the escape hatch still carries every capability, and writes no sid.
-  assert.equal((await fetch(`${base}${PATHS.QUERY}`, { method: 'POST', headers: asTenant(), body: JSON.stringify(EVENTS) })).status, 200);
-  const audit = client.calls.query.find((c) => c.text.includes('INSERT INTO ops.audit'));
-  assert.ok(audit, 'the subject-level read was audited');
-  assert.equal('sid' in JSON.parse(audit.params[7]), false, 'no token, no sid');
 });

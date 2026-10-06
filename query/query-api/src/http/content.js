@@ -1,23 +1,16 @@
 // content.js — the two content reads query-api forwards to content-vault.
 //
-// WHY THIS IS A FORWARDER AND NOT A READ. query-api cannot see content: it has no SELECT on
-// ops.content_object or ingest.search_text and no unwrap right (docs/06 §4.4). The one component
-// that can read or return content is content-vault, which has internal ingress only, so a browser
-// reaches it exclusively through here, under this service's identity (docs/02 §11, docs/04 §15.3).
-// Every decision — the four-eyes rule, the single-use grant, the search tier, the audit row written
-// before anything is served — is the vault's. This file carries the request across and renders the
-// vault's answer; it decides nothing.
+// query-api cannot read content: it has no grant on the stored content or the search index. The one
+// component that can is content-vault, which has internal ingress only, so a browser reaches it
+// exclusively through here. Every decision (the second approver, the single-use grant, the tenant's
+// search tier, the audit row written before anything is served) is the vault's.
 //
-// What it adds is the one thing only this side knows: WHO is asking. The tenant and the actor come
-// from the session, never from the body, exactly as they do for /v1/query. With a product token,
-// the caller's own `Authorization: Bearer` goes to the vault too (contract §2): the vault verifies
-// it itself and refuses headers that disagree with it, so it does not have to take this service's
-// word for who the person is. The X-Sac-* headers still travel, because the development lab has no
-// token and the vault's header mode reads them.
+// The caller's own product token is forwarded as `Authorization: Bearer`. The vault verifies it
+// itself and takes the tenant, the actor and the roles from its claims, so it never relies on this
+// service's word for who is asking.
 //
-// A retrieval relays the vault's short-lived retrieval URL and never the content: the browser
-// fetches that URL from the analyst web tier, so no content byte transits this service (docs/02
-// §11). The URL is a capability; the grant it names is single-use and the vault audits the read.
+// A retrieval relays the vault's short-lived, single-use retrieval URL and never the content: the
+// browser fetches that URL through the dashboard server, so no content byte transits this service.
 
 export const CONTENT_PATHS = Object.freeze({
   SEARCH: '/v1/content-search',
@@ -29,7 +22,7 @@ const MAX_FIELD = 512;
 const MAX_EVENT_IDS = 16;
 /** The collection modes a search may narrow by; the same closed set the event list uses. */
 const MODES = Object.freeze(['m0', 'm1', 'm2', 'm3']);
-/** The filters a prompt-text search composes by, beyond the terms (docs/04 §15.3). */
+/** The filters a prompt-text search composes by, beyond the terms. */
 const TEXT_FILTERS = Object.freeze(['subject', 'tool', 'device', 'mode']);
 
 /** A refusal in the shape the dashboard already renders: a state, a code, a sentence. */
@@ -50,28 +43,20 @@ function field(body, name, { required = false } = {}) {
  * Build the forwarder.
  *
  * @param {object} input
- * @param {string} input.vaultUrl     content-vault's internal base URL; empty disables both routes
- * @param {string} [input.scope]      the search scope this deployment asks the vault for
+ * @param {string} input.vaultUrl     content-vault's internal base URL
  * @param {typeof fetch} [input.fetchImpl]
  */
-export function createContentForwarder({ vaultUrl, scope = '', fetchImpl = globalThis.fetch, log = console } = {}) {
-  const base = String(vaultUrl ?? '').replace(/\/$/, '');
+export function createContentForwarder({ vaultUrl, fetchImpl = globalThis.fetch, log = console } = {}) {
+  const base = String(vaultUrl ?? '').replace(/\/+$/, '');
+  if (base === '') throw new Error('createContentForwarder needs the content vault URL');
 
   async function call(path, principal, body) {
     const res = await fetchImpl(`${base}${path}`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'x-sac-service': 'query-api',
-        'x-sac-subject': principal.actorId,
-        'x-sac-tenant': principal.tenant,
-        // The roles are the session's, taken from the verified token. The vault checks them
-        // against the route; it is the component that returns content, so it does not rely on
-        // its caller having enforced the role. It never reads a role from the browser.
-        'x-sac-roles': (principal.roles ?? []).join(','),
-        // Only the token that produced this principal is forwarded (server.js attaches it as a
-        // non-enumerable property). A development principal has none, so none is sent.
-        ...(typeof principal.bearer === 'string' && principal.bearer !== '' ? { authorization: `Bearer ${principal.bearer}` } : {}),
+        // The token that produced this principal (server.js attaches it as a non-enumerable property).
+        authorization: `Bearer ${principal.bearer}`,
       },
       body: JSON.stringify(body),
     });
@@ -128,7 +113,7 @@ export function createContentForwarder({ vaultUrl, scope = '', fetchImpl = globa
     }
 
     const answer = await call('/v1/content-search', principal, {
-      scope, form: 'terms', query: query.value,
+      form: 'terms', query: query.value,
       limit: Number.isInteger(body?.limit) && body.limit > 0 && body.limit <= 50 ? body.limit : 20,
       ...(cursor.value ? { cursor: cursor.value } : {}),
       ...filters,
@@ -149,8 +134,8 @@ export function createContentForwarder({ vaultUrl, scope = '', fetchImpl = globa
 
   /**
    * POST /v1/content/retrieval: the vault authorises one read and mints a single-use retrieval
-   * URL. This service relays the URL and nothing else; the browser redeems it directly through the
-   * analyst web tier, so content never passes through query-api's response body (docs/02 §11).
+   * URL. This service relays the URL and nothing else; the browser redeems it through the dashboard
+   * server, so content never passes through query-api's response body.
    *
    * `event_ids` are the observations of the submission the analyst is looking at (the record read
    * already returned them). A submission has one stored object, held against the event the device
@@ -176,7 +161,7 @@ export function createContentForwarder({ vaultUrl, scope = '', fetchImpl = globa
         return last;
       }
       if (granted.json?.state !== 'available') {
-        // Content that is gone is a result, not an error (C17): the vault says why, with a receipt.
+        // Content that is gone is a result, not an error: the vault says why, with a receipt.
         return { status: 200, body: { state: granted.json?.state ?? 'no_longer_available', reason: granted.json?.reason ?? null, receipt_ref: granted.json?.receipt_ref ?? null } };
       }
       if (typeof granted.json.retrieval_url !== 'string' || granted.json.retrieval_url === '') {
@@ -202,16 +187,14 @@ export function createContentForwarder({ vaultUrl, scope = '', fetchImpl = globa
   }
 
   return Object.freeze({
-    enabled: base !== '',
     /** Answer one content request, or null when the path is not one of the two. */
     async handle(path, principal, body) {
       const run = path === CONTENT_PATHS.SEARCH ? search : path === CONTENT_PATHS.RETRIEVAL ? retrieve : null;
       if (!run) return null;
-      if (base === '') return refusal(503, 'refused', 'content_vault_not_configured', 'this deployment has no content vault configured');
       try {
         return await run(principal, body);
       } catch (error) {
-        log?.warn?.(`query-api: content vault call failed: ${error?.cause?.code ?? error?.message ?? error}`);
+        log?.warn?.('content vault call failed', { error: String(error?.cause?.code ?? error?.message ?? error) });
         return refusal(503, 'refused', 'content_vault_unreachable', 'the content vault could not be reached');
       }
     },

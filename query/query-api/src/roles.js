@@ -1,54 +1,38 @@
 // roles.js — the closed set of analyst-app roles and what each may read.
 //
-// The role names are the `roles` claim of the product access token control-api mints (docs/04
-// §2.2, docs/06 §4.1); control-api maps each customer IdP's own role values onto these names, so
-// this file never sees an IdP's spelling. The set is deliberately small: the design's six-role
-// list was reconciled with the product owner before task 11 was built, and the reconciliation is
-// recorded in that task's REPORT.md. The short version:
+// The role names are the `roles` claim of the product access token control-api mints; control-api
+// maps each customer identity provider's role values onto these names, so this file never sees an
+// IdP's spelling.
 //
-//   viewer          aggregates and the device list — no events, no findings, no people page,
-//                   no content. (The owner ruled that the device list, with the user it now
-//                   names, is visible to a viewer; the brief's "no per-person data" sentence
-//                   is set aside for that one screen.)
-//   analyst         everything a viewer may, plus event and finding lists, the per-person
-//                   screens, and prompt-text search. Not stored-content retrieval.
+//   viewer          aggregates and the device list. No events, findings, people or content.
+//   analyst         everything a viewer may, plus event and finding lists, the per-person screens
+//                   and prompt-text search. Not stored-content retrieval.
 //   content_reader  everything an analyst may, plus opening one event's stored prompt.
-//   admin           configuration, sanction decisions, exports and the audit trail. The
-//                   design's `tenant_admin`, `auditor` and `privacy_officer` folded into it:
-//                   the owner chose one administrative role over three. It reads no events,
+//   admin           configuration, sanction decisions and the audit trail. It reads no events,
 //                   no findings and no content.
 //
-// `dev` is not a product role. It exists only behind SAC_DEV_TRUST_PRINCIPAL and carries
-// every capability, so the lab's pre-session escape hatch does not have to be rewritten as
-// a role. A token can never name it: token verification accepts ROLES only.
-//
-// A capability, not a rank. The roles are not a ladder — content_reader is not "above"
-// admin — so every check is `roleAllows(role, capability)`, never an ordering.
+// Roles are not a ladder (content_reader is not "above" admin), so every check asks whether a role
+// carries a capability, never how roles rank.
 
 import { REASON, QueryError } from './errors.js';
 
 /** The four product roles, in the order the navigation shows them. */
 export const ROLES = Object.freeze(['viewer', 'analyst', 'content_reader', 'admin']);
 
-/** The lab-only escape-hatch role. Never minted from a token. */
-export const DEV_ROLE = 'dev';
-
 /** Every capability the read path knows. */
-export const CAPABILITIES = Object.freeze(['aggregate', 'device', 'subject', 'search', 'content', 'audit', 'settings', 'export', 'sanction']);
+export const CAPABILITIES = Object.freeze(['aggregate', 'device', 'subject', 'search', 'content', 'audit', 'settings', 'sanction']);
 
 /** What each role may do. Frozen so a caller cannot widen a role by mutation. */
 export const ROLE_CAPABILITIES = Object.freeze({
   viewer: Object.freeze(['aggregate', 'device']),
   analyst: Object.freeze(['aggregate', 'device', 'subject', 'search']),
   content_reader: Object.freeze(['aggregate', 'device', 'subject', 'search', 'content']),
-  admin: Object.freeze(['aggregate', 'audit', 'settings', 'export', 'sanction']),
-  [DEV_ROLE]: CAPABILITIES,
+  admin: Object.freeze(['aggregate', 'audit', 'settings', 'sanction']),
 });
 
 /**
- * The capability a source needs. The default is `subject` — the stricter of the two common
- * cases — so a source added later is closed until it is classified here. Device sources and
- * the audit source are the overrides.
+ * The capability a source needs. A source missing here needs `subject`, the stricter common case,
+ * so a new source is closed until it is classified.
  */
 const SOURCE_CAPABILITY = Object.freeze({
   'mart.v_tool_usage': 'aggregate',
@@ -73,7 +57,7 @@ export const ENDPOINT_CAPABILITY = Object.freeze({
   '/v1/content/retrieval': 'content',
 });
 
-/** True for the four product roles; false for `dev`, null and anything unrecognised. */
+/** True for the four product roles; false for null and anything unrecognised. */
 export function isKnownRole(role) {
   return typeof role === 'string' && ROLES.includes(role);
 }
@@ -99,15 +83,9 @@ export function rolesAllow(roles, capability) {
   return Array.isArray(roles) && roles.some((role) => roleAllows(role, capability));
 }
 
-/** The capabilities a role carries, as a plain array, for the dashboard's own hiding. */
-export function capabilitiesOf(role) {
-  return ROLE_CAPABILITIES[role] ?? Object.freeze([]);
-}
-
 /**
- * The typed refusal a caller gets when the role is wrong. It is a `QueryError`, so the HTTP
- * layer renders it through the same §13 envelope as every other rejection: 403, state
- * `unauthorised_role`, code `role`, and the capability that was missing.
+ * The typed refusal for a wrong role: 403, state `unauthorised_role`, code `role`, naming the
+ * missing capability. It is a QueryError, so it renders like every other rejection.
  */
 export function unauthorisedRole(required, { role = null, path = null } = {}) {
   return new QueryError(

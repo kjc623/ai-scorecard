@@ -1,4 +1,4 @@
-// templates.test.mjs — §3's ten questions as named templates.
+// templates.test.mjs — the ten questions as named templates.
 //
 // Each of the ten must (a) expand to a document that validates, (b) compile to a statement whose
 // text contains no interpolated value, and (c) carry the honesty notes the document attaches to
@@ -32,7 +32,7 @@ const PARAMS = Object.freeze({
   q10_audit_trail: { window: WINDOW, limit: 50 },
 });
 
-test('there are exactly ten templates, one per question of §3.6', () => {
+test('there are exactly ten templates, one per question', () => {
   assert.equal(TEMPLATE_NAMES.length, 10);
   const questions = TEMPLATE_NAMES.map((n) => TEMPLATES[n].question).sort((a, b) => a - b);
   assert.deepEqual(questions, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
@@ -116,7 +116,7 @@ test('q4 lets the analyst choose which three of the four grain dimensions to sho
   assert.equal(error.resultState, 'unsupported_query_shape');
 });
 
-test('q5 lists findings with the three-column total key §7.1 requires', () => {
+test('q5 lists findings with a three-column total ordering key', () => {
   const p = plan({ query_version: '1', template: 'q5_findings', params: PARAMS.q5_findings }, { now: NOW });
   const read = p.statements.find((s) => s.id === 'read');
   assert.match(
@@ -150,7 +150,7 @@ test('q7 needs no window and keeps four liveness values distinct', () => {
   }
   assert.match(read.text, /ORDER BY d\.device_id ASC NULLS LAST, coalesce\(cs\.collector, chr\(1\)\) ASC NULLS LAST/);
   // Fleet-wide counts by status, so the Devices cards describe the same population as the cursor
-  // page (docs/04 §3.7). If this disappears, "Need attention" silently reverts to the page count.
+  // page. If this disappears, "Need attention" silently reverts to the page count.
   const status = p.statements.find((s) => s.id === 'device_status');
   assert.ok(status, 'q7 must return fleet-wide counts by status');
   for (const bucket of ['devices_enrolled', 'reporting', 'never_reported', 'stale', 'degraded', 'tampered', 'revoked']) {

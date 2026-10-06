@@ -4,21 +4,21 @@
 // from this file's frozen text (or from registry.js), values are bound. None of them is callable
 // with an identifier from a request.
 //
-// These are the reads the document requires *around* a number:
+// These are the reads that travel *around* a number:
 //
-//   * ops.aggregate_watermark -> §4.5 freshness;
-//   * ops.device + ops.coverage_snapshot -> §11.3 coverage, including the enrolled denominator;
-//   * a bounded EXISTS -> §7.3 `newer_events_exist`;
-//   * mart.agg_tool_period -> §3.4's non-additive total for the class screen;
-//   * mart.agg_* -> §3.3's `unmapped` residual when the directory sync is partial;
-//   * ingest.submission + ingest.observation -> §3.9 step two, and §3.6's late-flush check;
-//   * ops.erasure_receipt -> §13's `not_found` vs `no_longer_available` decision.
+//   * ops.aggregate_watermark -> freshness;
+//   * ops.device + ops.coverage_snapshot -> coverage, including the enrolled denominator;
+//   * a bounded EXISTS -> `newer_events_exist`;
+//   * mart.agg_tool_period -> the non-additive total for the class screen;
+//   * mart.agg_* -> the `unmapped` residual when the directory sync is partial;
+//   * ingest.submission + ingest.observation -> the event detail, and the late-flush check;
+//   * ops.erasure_receipt -> the `not_found` vs `no_longer_available` decision.
 
 import { NATIVE_BUCKETS } from './registry.js';
 import { REASON, unsupported } from './errors.js';
 
 /**
- * §4.5: each completed aggregation run upserts its watermark; this is how the read side knows how
+ * Each completed aggregation run upserts its watermark; this is how the read side knows how
  * current a number is. Absence of a row is `not_yet_covered`, not a zero.
  * @param {string} aggregateName
  * @param {string} bucketSize
@@ -39,7 +39,7 @@ export function freshnessStatement(aggregateName, bucketSize = 'day') {
 }
 
 /**
- * §11.3 / §3.7: coverage over the ENROLLED fleet, with the gap reasons named. `unknown` is a
+ * Coverage over the ENROLLED fleet, with the gap reasons named. `unknown` is a
  * reason value in ops.coverage_snapshot's closed vocabulary, so it appears here as one rather
  * than as a blank.
  *
@@ -78,7 +78,7 @@ export function coverageStatement(window) {
 }
 
 /**
- * §3.7: the device list is cursor-paged, so the "Need attention" card cannot count only the loaded
+ * The device list is cursor-paged, so the "Need attention" card cannot count only the loaded
  * page while the fleet card uses the server's figure — the two would describe different
  * populations. This companion read returns the fleet-wide counts by status, from the enrolled
  * (non-revoked) denominator, so both cards are computed from the same population.
@@ -122,8 +122,8 @@ export function deviceStatusStatement() {
 }
 
 /**
- * §7.3: "`newer_events_exist` (a bounded `EXISTS` on the same index) says rows have arrived since
- * the snapshot, so a consistent-but-stale page is not mistaken for the whole truth."
+ * `newer_events_exist`, a bounded `EXISTS` on the same index, says rows have arrived since the
+ * snapshot, so a consistent-but-stale page is not mistaken for the whole truth.
  *
  * @param {object} source a registry source with `time`
  * @param {string} upperIso the snapshot bound taken at the first page
@@ -145,8 +145,8 @@ export function newerEventsStatement(source, upperIso) {
 }
 
 /**
- * §3.4: "The response carries the note and computes the non-additive total once for the same
- * window from `mart.agg_tool_period.submissions` — two measures, two numbers, both labelled."
+ * The non-additive submissions total for the class screen, computed once for the same window from
+ * `mart.agg_tool_period.submissions`: two measures, two numbers, both labelled.
  *
  * @param {{from:string,to:string,bucket:string|null}} query
  */
@@ -166,8 +166,8 @@ export function classTotalStatement(query) {
 }
 
 /**
- * §3.3: "Users with `department IS NULL` are an explicit `unmapped` series, always present,
- * beside `mapped_user_share` for the window."
+ * Users with no department are an explicit `unmapped` series, always present, beside
+ * `mapped_user_share` for the window.
  *
  * `mart.agg_org_period.department` is NOT NULL, so an unmapped user is *absent* from it rather
  * than present with a NULL. The residual is therefore a difference of two sums over the same
@@ -200,9 +200,9 @@ export function orgCoverageStatement(query) {
 }
 
 /**
- * §3.6: "Late flush: an offline device flushing spikes received time, not behaviour — both clocks
- * are on `ingest.submission`, so rows where `received_at - first_occurred_at` exceeds an hour
- * annotate the flag as a flush."
+ * Late flush: a device that was offline and flushes its spool spikes received time, not behaviour.
+ * Both clocks are on `ingest.submission`, so rows where `received_at - first_occurred_at` exceeds
+ * an hour annotate the series as a flush.
  *
  * @param {string} subject
  * @param {{from:string,to:string}} window
@@ -223,7 +223,7 @@ export function flushCheckStatement(subject, window) {
 }
 
 /**
- * §3.9 step two: one submission and its observations, one row per route, so an overlapping-route
+ * The event detail: one submission and its observations, one row per route, so an overlapping-route
  * count can be explained rather than merely defended. No content column is selected: this
  * component cannot see content, and `content_state` says which of the four answers applies.
  *
@@ -258,15 +258,10 @@ export function submissionDetailStatement(submissionId) {
 }
 
 /**
- * §13's `not_found` rule: "if no retention run and no erasure receipt covers the window in which
- * the record would have been received, the answer is `not_found`; if one does, the answer is
- * `no_longer_available` with the reason and the receipt."
- *
- * The erasure half is answerable from `ops.erasure_receipt`. The retention half is NOT answerable
- * from `db/schema.sql` as it stands: there is no retention-run ledger, and without the row there
- * is no way to recover the expiry it would have carried. `resolveMissingRecord` therefore returns
- * `not_found` with `retention_evidence: 'no_ledger_in_schema'` rather than guessing, and DSL.md
- * records the gap.
+ * Evidence for a missing record: an erasure receipt that covers the window in which the record
+ * would have been received makes the answer `no_longer_available` with the receipt. Retention
+ * expiry deletes rows without a per-row receipt, so a record missing for any other reason is
+ * `not_found` with `retention_evidence: 'no_ledger_in_schema'` rather than a guess.
  *
  * @param {string|null} receivedAtHint ISO instant the caller last saw the record, or null
  */
@@ -287,7 +282,7 @@ export function erasureEvidenceStatement(receivedAtHint) {
 }
 
 /**
- * The `not_found` / `no_longer_available` decision of §13, as a pure function of the evidence.
+ * The `not_found` / `no_longer_available` decision, as a pure function of the evidence.
  *
  * @param {object} input
  * @param {boolean} input.found

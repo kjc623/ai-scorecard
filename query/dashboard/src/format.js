@@ -31,45 +31,12 @@ export function formatScore(value) {
   return value.toFixed(2);
 }
 
-/** A share, with the denominator the caller already has. Never a bare percentage. */
-export function formatShare(numerator, denominator) {
-  if (typeof numerator !== 'number' || typeof denominator !== 'number' || denominator <= 0) return '—';
-  return `${Math.round((numerator / denominator) * 100)}%`;
-}
-
-/** An age in words: "3 min ago". `state` says whether that age is a fault. */
-export function formatAge(fromIso, now = Date.now()) {
-  if (!fromIso) return 'never';
-  const ms = now - Date.parse(fromIso);
-  if (!Number.isFinite(ms)) return 'unknown';
-  if (ms < 0) return 'in the future';
-  const seconds = Math.round(ms / 1000);
-  if (seconds < 90) return `${seconds} s ago`;
-  const minutes = Math.round(seconds / 60);
-  if (minutes < 90) return `${minutes} min ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 48) return `${hours} h ago`;
-  return `${Math.round(hours / 24)} d ago`;
-}
-
 /** An instant, to the minute, in UTC and labelled as such. */
 export function formatInstant(iso) {
   if (!iso) return '—';
   const ms = Date.parse(iso);
   if (!Number.isFinite(ms)) return '—';
   return `${new Date(ms).toISOString().slice(0, 16).replace('T', ' ')}Z`;
-}
-
-/** A day bucket, for a chart axis. */
-export function formatDay(iso) {
-  if (!iso) return '—';
-  return String(iso).slice(0, 10);
-}
-
-/** A uuid, shortened for a table. Never shortened for a detail header. */
-export function shortId(id, length = 8) {
-  if (typeof id !== 'string') return '—';
-  return id.length <= length ? id : `${id.slice(0, length)}…`;
 }
 
 /** A label list, summarised without losing the classes that are present. */

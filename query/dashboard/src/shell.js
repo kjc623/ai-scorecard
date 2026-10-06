@@ -2,15 +2,15 @@
 // shape, the reader's stored preferences, and the controls in the navigation panel.
 //
 // The dashboard (app.js) and the Explore page (explore-app.js) both boot through this, so the
-// sidebar is one thing: the same groups, the same folding, the same theme and data-source switch,
-// and the same line saying who is signed in, with its sign-out button.
+// sidebar is one thing: the same groups, the same folding, the same theme switch, and the same line
+// saying who is signed in, with its sign-out button.
 
 import { escapeHtml } from './render.js';
 
 /**
  * The navigation: six destinations, with the three usage screens under one group and the admin's
- * settings under another. Every other screen is reached from a row, a switch on one of these, or
- * the footer. A signed-in role sees only the items it may use (session.js).
+ * settings under another. Every other screen is reached from a row or a switch on one of these. A
+ * signed-in role sees only the items it may use (session.js).
  */
 export const NAV_GROUPS = Object.freeze([
   { group: null, icon: 'overview', ids: ['posture'], labels: { posture: 'Overview' } },
@@ -26,13 +26,13 @@ const NAV_FOLDED = Object.freeze(NAV_GROUPS.filter((g) => g.folded).map((g) => g
  * The navigation as renderNav takes it. `page` prefixes each screen link, so a sibling page links
  * back into the dashboard; the Explore page sits second, as a top-level link, on both.
  */
-export function shellNavItems({ page = '', query = '', questionOf = () => null } = {}) {
+export function shellNavItems({ page = '', questionOf = () => null } = {}) {
   const items = NAV_GROUPS.flatMap(({ group, icon, ids, labels }) => ids.map((id) => ({
     id, label: labels[id], question: questionOf(id), group, icon, groupIcon: icon, href: `${page}#${id}`,
   })));
   return [
     items[0],
-    { id: 'explore', label: 'Search', href: `explore.html${query}`, icon: 'search', group: null },
+    { id: 'explore', label: 'Search', href: 'explore.html', icon: 'search', group: null },
     ...items.slice(1),
   ];
 }
@@ -46,21 +46,17 @@ const ROLE_LABELS = Object.freeze({ viewer: 'Viewer', analyst: 'Analyst', conten
 
 /**
  * Who is signed in, for the navigation panel: the actor, their roles, and a sign-out button that
- * POSTs to the page's own server. Sample mode has no session and shows nothing; the lab's
- * development principal says that it is one and has nothing to sign out of.
+ * POSTs to the page's own server.
  */
 export function renderWho(session) {
   if (!session || typeof session !== 'object') return '';
-  if (session.dev) {
-    return `<p class="who-text"><span class="who-name">Development principal</span><span class="who-role">${escapeHtml(session.actor ?? '')}</span></p>`;
-  }
   const roles = (Array.isArray(session.roles) ? session.roles : []).map((r) => ROLE_LABELS[r] ?? r).join(', ');
   return `<p class="who-text"><span class="who-name" title="${escapeHtml(session.actor ?? '')}">${escapeHtml(session.actor ?? '')}</span>`
     + `<span class="who-role">${escapeHtml(roles)}</span></p>`
     + '<form class="who-form" method="post" action="/signout"><button type="submit" class="who-out">Sign out</button></form>';
 }
 
-/** Local preferences. Storage can be unavailable (a private window, a file:// page): then nothing is kept. */
+/** Local preferences. Storage can be unavailable (a private window): then nothing is kept. */
 export function readPref(document, key, fallback) {
   try {
     return document.defaultView?.localStorage?.getItem(key) ?? fallback;
@@ -79,10 +75,10 @@ export function writePref(document, key, value) {
 
 /**
  * The shell's own controls: who is signed in, which navigation groups are folded, the theme, the
- * data-source switch, the mobile menu, and a row that opens the record it names. Every lookup is optional, so a test
+ * mobile menu, and a row that opens the record it names. Every lookup is optional, so a test
  * document with none of these elements boots the same way.
  */
-export function wireShell({ document, live, collapsed, session = null }) {
+export function wireShell({ document, collapsed, session = null }) {
   const el = (id) => (typeof document.getElementById === 'function' ? document.getElementById(id) : null);
   const html = document.documentElement;
 
@@ -92,12 +88,6 @@ export function wireShell({ document, live, collapsed, session = null }) {
   // Theme: follow the system unless the reader chose. The choice is the only thing stored.
   const theme = readPref(document, 'sac.theme', '');
   if (html?.dataset && (theme === 'light' || theme === 'dark')) html.dataset.theme = theme;
-
-  const source = el('source');
-  if (source) {
-    source.innerHTML = `<a class="seg-item" href="${live ? '.' : '#'}"${live ? '' : ' aria-current="true"'} data-source="sample">Sample</a>`
-      + `<a class="seg-item" href="${live ? '#' : '?transport=live'}"${live ? ' aria-current="true"' : ''} data-source="live">Live</a>`;
-  }
 
   if (typeof document.addEventListener !== 'function') return;
 
@@ -127,14 +117,6 @@ export function wireShell({ document, live, collapsed, session = null }) {
     }
     // Choosing a destination closes the mobile menu.
     if (target.closest('.nav a')) document.body.classList.remove('menu-open');
-    const sourceLink = target.closest('[data-source]');
-    if (sourceLink && sourceLink.getAttribute('aria-current') !== 'true') {
-      // Switching data source reloads the page on the same screen.
-      event.preventDefault();
-      const base = document.location.pathname;
-      document.location.assign(`${base}${sourceLink.dataset.source === 'live' ? '?transport=live' : ''}${document.location.hash}`);
-      return;
-    }
     const row = target.closest('tr[data-href]');
     if (row && !target.closest('a, button')) document.location.hash = row.dataset.href;
   });

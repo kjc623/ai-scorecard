@@ -8,12 +8,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  measureOf, isSuppressed, hasAnyMeasure, assertStateful, readState, bannersFor,
+  measureOf, isSuppressed, assertStateful, readState, bannersFor,
   coverageText, freshnessText, emptyStateFor, vocabOf,
 } from '../src/states.js';
 import { sumMeasure } from '../src/views.js';
 import { COMPLETE, FRESH, PARTIAL, envelope } from './helpers.mjs';
-import { STATE_ENVELOPES } from '../src/fixtures.js';
+import { STATE_ENVELOPES } from './fixtures.mjs';
 
 const SUPPRESSED = Object.freeze({ bucket: '2026-09-30T00:00:00Z', tool: 'shadow_llm_gateway', result_state: 'suppressed', reason: 'fewer_than_k_subjects', k: 5 });
 const ZERO = Object.freeze({ bucket: '2026-09-30T00:00:00Z', tool: 'legacy_summariser', submissions: 0, users: 0 });
@@ -49,8 +49,6 @@ test('an absent measure is absent, not zero', () => {
 test('the suppressed marker and the zero are distinguishable by every predicate', () => {
   assert.equal(isSuppressed(SUPPRESSED), true);
   assert.equal(isSuppressed(ZERO), false);
-  assert.equal(hasAnyMeasure(ZERO), true, 'a zero is a measurement');
-  assert.equal(hasAnyMeasure(SUPPRESSED), false, 'a suppressed cell carries no measurement');
   assert.notEqual(measureOf(SUPPRESSED, 'submissions').kind, measureOf(ZERO, 'submissions').kind);
 });
 
@@ -125,7 +123,7 @@ test('banners name the reason rather than leaving a bare state', () => {
   assert.ok(unavailable.some((b) => /does not happen/.test(b.text)));
 });
 
-test('state pairs from the brief are kept apart on the row itself', () => {
+test('state pairs are kept apart on the row itself', () => {
   const row = { liveness: 'never_reported', collector_state: 'absent', content_state: 'shredded', policy_action: 'blocked', review_state: 'open', sanctioned_state: 'unknown', merge_confidence: 'low' };
   const vocab = vocabOf(row);
   assert.equal(Object.keys(vocab).length, 7);
@@ -133,7 +131,7 @@ test('state pairs from the brief are kept apart on the row itself', () => {
   assert.equal(vocab.review_state, 'open');
 });
 
-test('every fixture envelope is renderable, and each carries a §13 state', () => {
+test('every fixture envelope is renderable, and each carries a documented state', () => {
   for (const [name, env] of Object.entries(STATE_ENVELOPES)) {
     const state = readState(env);
     assert.ok(state.resultState, `${name} has a state`);

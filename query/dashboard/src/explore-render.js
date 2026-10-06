@@ -2,19 +2,18 @@
 //
 // Every string that came from the API is escaped. The honesty rules the rest of the dashboard
 // keeps are kept here the same way:
-//   * both clocks are shown and the device clock is marked as possibly skewed (§14 item 10);
+//   * both clocks are shown and the device clock is marked as possibly skewed;
 //   * a missing value says what is missing ("none", "unknown", "not classified") and is never a
 //     blank, because a blank and an unknown look identical and mean different things;
 //   * rows are shown in the order the server returned them, with no client-side sort, so no list
-//     here can be turned into a ranking of people (§14 item 1);
+//     here can be turned into a ranking of people;
 //   * a record's detail shows metadata and what its content state permits. Content appears only
-//     after a retrieval the content vault approved for that record (docs/02 §11), and never from
-//     a query: no query path returns content (§14.3).
+//     after a retrieval the content vault approved for that record, and never from a query.
 
 import { escapeHtml } from './render.js';
 import { formatBytes, formatCount, formatDuration, formatInstant, formatScore } from './format.js';
 import { coverageText, freshnessText, emptyStateFor, fixSentence } from './states.js';
-import { eventView } from './views.js';
+import { eventView, eventObservations } from './views.js';
 import { EXPLORE_DATASETS, EXPLORE_DATASET_IDS, exploreWindows, TEXT_PAGE_SIZES } from './explore-model.js';
 
 /** Which values of which field get a tint. Only real warning and fault states are tinted. */
@@ -109,15 +108,6 @@ export function renderExploreWindow(state) {
   if (windows.length === 0) return '<span class="x-window-none">Current state, so no time window</span>';
   return windows.map((w) => (
     `<button type="button" class="x-seg-item" data-act="window" data-window="${w.id}" aria-pressed="${w.id === state.windowPreset}">${escapeHtml(w.label)}</button>`
-  )).join('');
-}
-
-/** Completions under the query bar. Each one is a button, so it works by pointer and by keyboard. */
-export function renderExploreSuggestions(suggestion) {
-  if (!suggestion || suggestion.items.length === 0) return '';
-  const lead = suggestion.items[0].kind === 'field' ? 'Fields' : 'Values';
-  return `<span class="x-suggest-lead">${lead}</span>` + suggestion.items.map((item, i) => (
-    `<button type="button" class="x-suggest-item" data-act="suggest" data-index="${i}" title="${escapeHtml(item.title ?? item.label)}">${escapeHtml(item.label)}</button>`
   )).join('');
 }
 
@@ -276,8 +266,8 @@ function exploreContentProblem(problem) {
 
 /** Who typed a matching prompt, on which device, into which tool. A part the answer lacks is left out. */
 function exploreHitMeta(hit) {
-  // Prefer the device hostname to the UUID (ADR 0021): an analyst places a machine by its name, and
-  // the UUID is still the identity behind the "open the event" action.
+  // Prefer the device hostname to the UUID: an analyst places a machine by its name, and the UUID
+  // is still the identity behind the "open the event" action.
   const device = typeof hit.hostname === 'string' && hit.hostname !== '' ? hit.hostname : hit.device;
   // The tool is named by its resolved display name when the read path supplied one; the raw
   // fingerprint is the fallback, so an unrecognised tool is still identifiable.
@@ -289,7 +279,7 @@ function exploreHitMeta(hit) {
   return `<span class="x-hit-meta x-mono">${parts.map((part) => `<span>${escapeHtml(part)}</span>`).join('<span class="x-hit-sep" aria-hidden="true">|</span>')}</span>`;
 }
 
-/** The number of hits one page asks for. Offered because most lab terms have fewer than 21. */
+/** The number of hits one page asks for. */
 function exploreTextPageSize(text) {
   const size = text.pageSize ?? TEXT_PAGE_SIZES[TEXT_PAGE_SIZES.length - 1];
   const options = TEXT_PAGE_SIZES
@@ -381,22 +371,22 @@ function exploreContent(state, contentState, note) {
 function exploreRecord(detail, dataset, state) {
   const record = detail.record;
   const first = record.data[0];
-  // The API answers with one row per observation, each repeating the submission's columns under
-  // the store's own names (user_ref, tool_fingerprint, collection_mode, policy_action). A list row
-  // names the same things subject, tool, mode and action, and carries the device, so the head is
-  // read through both spellings rather than shown as "not recorded" when only one is present.
+  // The record read answers with one row per observation, each repeating the submission's columns
+  // under the store's names (user_ref, tool_fingerprint, collection_mode, policy_action). The list
+  // names them subject, tool, mode and action, and only the list row carries the device and the
+  // department, so the head reads both.
   const head = {
     ...first,
-    subject: first.subject ?? first.user_ref ?? detail.row?.subject,
-    tool: first.tool ?? first.tool_fingerprint ?? detail.row?.tool,
+    subject: first.user_ref ?? detail.row?.subject,
+    tool: first.tool_fingerprint ?? detail.row?.tool,
     tool_name: first.tool_name ?? detail.row?.tool_name,
-    device: first.device ?? first.device_id ?? detail.row?.device,
-    department: first.department ?? detail.row?.department,
-    mode: first.mode ?? first.collection_mode,
-    action: first.action ?? first.policy_action,
-    detection_basis: first.detection_basis ?? first.kind ?? detail.row?.detection_basis,
+    device: detail.row?.device,
+    department: detail.row?.department,
+    mode: first.collection_mode,
+    action: first.policy_action,
+    detection_basis: first.detection_basis ?? detail.row?.detection_basis,
   };
-  const observations = record.data.filter((row, i) => (row.observation_event_id ? true : i > 0));
+  const observations = eventObservations(record.data);
   const view = eventView(record);
   const contentTile = view.tiles[0];
   const col = (key, kind) => ({ key, kind });

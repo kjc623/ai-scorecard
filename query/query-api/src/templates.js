@@ -1,10 +1,9 @@
-// templates.js — §3's ten questions as named templates over mart/ops.
+// templates.js — the ten questions as named templates over mart and ops.
 //
-// "GraphQL over the event tables. Rejected: unbounded query shape … and the ten questions are
-// known in advance, so the flexibility buys nothing" (ADR 0003). A template is therefore sugar
-// over the closed DSL: it fills in the source, the dimensions, the measures and the ordering —
-// the parts the document fixes — and the caller supplies only the values it is allowed to
-// choose (a window, a bucket, a filter from the template's own allowed set, a page size).
+// The ten questions are known in advance, so a template is sugar over the closed DSL: it fills in
+// the source, the dimensions, the measures and the ordering, and the caller supplies only the
+// values it is allowed to choose (a window, a bucket, a filter from the template's own allowed set,
+// a page size).
 //
 // A template never compiles to SQL of its own. `expand()` returns a DSL document, which goes
 // through the same validate -> guard -> compile path as a hand-written document, so there is
@@ -109,7 +108,7 @@ function filtersOf(entries) {
 /**
  * @typedef {object} Template
  * @property {string} name
- * @property {number} question  brief §3.6 question number
+ * @property {number} question  the question number, 1-10
  * @property {string} title
  * @property {string} source
  * @property {'aggregate'|'list'|'single'} kind
@@ -145,9 +144,9 @@ export const TEMPLATES = Object.freeze({
         },
         // A tool with no ops.tool row still appears (the view LEFT JOINs), reporting
         // sanctioned_state NULL, which the response must render as `unknown` and never as
-        // `unsanctioned` (C8, docs/04 §3.1).
+        // `unsanctioned`.
         notes: [
-          'Rank is by submissions with a deterministic tie-break on tool, and is never a sanction signal (§3.1).',
+          'Rank is by submissions with a deterministic tie-break on tool, and is never a sanction signal.',
           'LIMIT applies to a bucket-major ordering, so it truncates whole buckets rather than returning a top-N per bucket.',
         ],
       };
@@ -164,7 +163,7 @@ export const TEMPLATES = Object.freeze({
     build(params) {
       // The question is "which are unsanctioned": the state filter is part of the question, not an
       // optional narrowing. `sanctioned_state` may name another state (e.g. `unknown` gets its own
-      // list, docs/04 §3.2), but omitting it answers the template's own question.
+      // list), but omitting it answers the template's own question.
       const sanctionState = oneOf(params, 'sanctioned_state', ['sanctioned', 'unsanctioned', 'unknown']) ?? 'unsanctioned';
       return {
         document: {
@@ -180,18 +179,17 @@ export const TEMPLATES = Object.freeze({
           ]),
           window: windowOf(params),
           // A list of people, ordered by tool and then by person — never by volume. A
-          // submissions-desc ordering would be the leaderboard the product forbids (docs/04 §11.2,
-          // brief §1.2); this is the cursor docs/04 §3.2 names.
+          // submissions-desc ordering would be the leaderboard the product forbids.
           order: [{ by: 'tool', dir: 'asc' }, { by: 'subject', dir: 'asc' }],
           limit: limitOf(params, 500, 500),
         },
         notes: [
-          'Subject-bearing: this read is audited as it is served, and its cursor is server-side because the ordering key contains a subject reference (§7.2).',
-          'An unscoped window beyond 7 days is refused by the cost guard, naming the narrowing that would make it servable (§3.2).',
-          'Three states, not two: `unsanctioned`, `unknown` and `sanctioned` are separate answers, and `unknown` gets its own count and list (§3.2). The default here is `unsanctioned`, the template\'s own question.',
+          'Subject-bearing: this read is audited as it is served. It is not paged: one response is bounded by limit.',
+          'An unscoped window beyond 7 days is refused by the cost guard, naming the narrowing that would make it servable.',
+          'Three states, not two: `unsanctioned`, `unknown` and `sanctioned` are separate answers, and `unknown` gets its own count and list. The default here is `unsanctioned`, the template\'s own question.',
           'The unsanctioned tool set is resolved from the tool fingerprint joined to ops.tool at read time (mart.agg_tool_user_period ⋈ ops.tool); its display name comes from ref.tool_catalogue. Both precomputed, nothing scans raw events.',
-          'The k-suppression cell is the (bucket, tool) group, not the person: a tool used by fewer than k people is suppressed, and a tool with enough people publishes the rows that name them (§3.2, §6.4).',
-          'Ordered by tool and then by person, never by volume: this is a list, not a leaderboard (§11.2).',
+          'The k-suppression cell is the (bucket, tool) group, not the person: a tool used by fewer than k people is suppressed, and a tool with enough people publishes the rows that name them.',
+          'Ordered by tool and then by person, never by volume: this is a list, not a leaderboard.',
         ],
       };
     },
@@ -221,12 +219,12 @@ export const TEMPLATES = Object.freeze({
       };
       return {
         document: query,
-        // §3.3: the unmapped residual and mapped_user_share travel with the per-team series, so
+        // The unmapped residual and mapped_user_share travel with the per-team series, so
         // a per-team view cannot silently cover 60% of usage.
         extras: [(q) => orgCoverageStatement(q)],
         notes: [
-          'Empty until the directory sync: the response is not_yet_covered with reason directory_not_synced, never a flat zero line (§3.3).',
-          'Department cells below k distinct users are suppressed (§6); k-suppression does not apply to subject-scoped reads.',
+          'Empty until the directory sync: the response is not_yet_covered with reason directory_not_synced, never a flat zero line.',
+          'Department cells below k distinct users are suppressed; k-suppression does not apply to subject-scoped reads.',
         ],
       };
     },
@@ -275,13 +273,13 @@ export const TEMPLATES = Object.freeze({
           order: [{ by: 'submissions', dir: 'desc' }],
           limit: limitOf(params, 2000, 2000),
         },
-        // §3.4: the class rows fan out (one submission with three labels is in three rows), so
+        // The class rows fan out (one submission with three labels is in three rows), so
         // the non-additive total is computed once, separately, from mart.agg_tool_period.
         extras: [(q) => classTotalStatement(q)],
         notes: [
-          'submissions counts submissions CARRYING that class. The total from mart.agg_tool_period is a different measure and is labelled as one (§3.4).',
-          'Each cell carries `users`, so §6 applies per cell: a class appearing in one person\'s submissions is that person\'s data.',
-          'degraded_events travels beside the class mix so a classifier outage cannot read as a fall in sensitive data (C21).',
+          'submissions counts submissions CARRYING that class. The total from mart.agg_tool_period is a different measure and is labelled as one.',
+          'Each cell carries `users`, so k-suppression applies per cell: a class appearing in one person\'s submissions is that person\'s data.',
+          'degraded_events travels beside the class mix so a classifier outage cannot read as a fall in sensitive data.',
           'Three grouping dimensions is the DSL cap, so `classifier_version` and `severity` cannot both be shown beside class and tool; the template takes `dimensions` to choose.',
         ],
       };
@@ -313,7 +311,7 @@ export const TEMPLATES = Object.freeze({
           cursor: cursorOf(params),
         },
         notes: [
-          'Review state is never defaulted silently: `open` means nobody has looked, not "reviewed and unremarkable" (§3.5).',
+          'Review state is never defaulted silently: `open` means nobody has looked, not "reviewed and unremarkable".',
           'Severity and class are present-tense: they are read from the current ref.rule row, so a rule edit shows on every finding that names it.',
         ],
       };
@@ -341,13 +339,13 @@ export const TEMPLATES = Object.freeze({
       };
       return {
         document: query,
-        // §3.6's late-flush check: both clocks live on ingest.submission, so the annotation is
+        // The late-flush check: both clocks live on ingest.submission, so the annotation is
         // one bounded read over the subject's own rows.
         extras: [(q) => flushCheckStatement(subject, q.window)],
         notes: [
-          'Always audited: it filters on a subject and returns one, so there is no anonymous form of it (§3.6).',
-          'k-suppression does not apply: this is an explicitly subject-scoped read (§6.4).',
-          'Below 14 observed buckets the spike answer is not_yet_covered, not "no change" (§3.6).',
+          'Always audited: it filters on a subject and returns one, so there is no anonymous form of it.',
+          'k-suppression does not apply: this is an explicitly subject-scoped read.',
+          'Below 14 observed buckets the spike answer is not_yet_covered, not "no change".',
         ],
       };
     },
@@ -374,18 +372,18 @@ export const TEMPLATES = Object.freeze({
             eq('region', optionalStr(params, 'region')),
           ]),
           // No window: this is current state, not an event stream. The list is still bounded —
-          // by the cursor page cap and by the fleet itself (≤ 5,000 devices, §3.7).
+          // by the cursor page cap and by the fleet itself.
           window: windowOf(params, { required: false }),
           limit: limitOf(params, 50, 500),
           cursor: cursorOf(params),
         },
         notes: [
-          'Four liveness values stay distinct: `stale`, `never_reported`, `revoked` and `reporting` are four facts, and a revoked device is not a quiet one (§3.7).',
-          'The denominator is the enrolled fleet and is stated, never implied (§3.7).',
-          'docs/04 §3.7 names a three-way join with ops.coverage_snapshot; that table is read as its own source because a per-day snapshot would multiply device rows by the number of days in the window.',
+          'Four liveness values stay distinct: `stale`, `never_reported`, `revoked` and `reporting` are four facts, and a revoked device is not a quiet one.',
+          'The denominator is the enrolled fleet and is stated, never implied.',
+          'Coverage is read as its own source (ops.coverage_snapshot): joining a per-day snapshot would multiply device rows by the number of days in the window.',
         ],
         // Fleet-wide counts by liveness, so the Devices cards describe the same population as the
-        // list's cursor page (docs/04 §3.7). Returned as meta.extras.device_status.
+        // list's cursor page. Returned as meta.extras.device_status.
         extras: [() => deviceStatusStatement()],
       };
     },
@@ -413,7 +411,7 @@ export const TEMPLATES = Object.freeze({
             eq('action', oneOf(params, 'action', ['blocked', 'warned', 'logged'])),
             eq('mode', oneOf(params, 'mode', ['m0', 'm1', 'm2', 'm3'])),
             eq('department', optionalStr(params, 'department')),
-            // The request kind (task 08): `prompt_kind` includes only that kind, `prompt_kind_not`
+            // The request kind: `prompt_kind` includes only that kind, `prompt_kind_not`
             // excludes it. The `ne` form is the dashboard's default-hide of client_generated, and
             // the dimension compiles through coalesce(..., 'unknown') so it never drops a NULL row.
             eq('prompt_kind', oneOf(params, 'prompt_kind', ['user', 'client_generated', 'unknown'])),
@@ -424,9 +422,9 @@ export const TEMPLATES = Object.freeze({
           cursor: cursorOf(params),
         },
         notes: [
-          'Cursored only: no unbounded result set over the event table (C29). A short page is not the end of the results — only next_cursor: null is.',
-          'Rows are ordered and windowed by received_at, the server clock; first_occurred_at and last_occurred_at travel beside it and are never normalised into it (C26).',
-          'merge_confidence = low rows are returned, not hidden: the header carries "N of M rows are low-confidence merges" (R9).',
+          'Cursored only: no unbounded result set over the event table. A short page is not the end of the results — only next_cursor: null is.',
+          'Rows are ordered and windowed by received_at, the server clock; first_occurred_at and last_occurred_at travel beside it and are never normalised into it.',
+          'merge_confidence = low rows are returned, not hidden: the header carries "N of M rows are low-confidence merges".',
         ],
       };
     },
@@ -450,7 +448,7 @@ export const TEMPLATES = Object.freeze({
       }
       return {
         document: null,
-        // Step two of §3.9's search-then-retrieve: the row, its observations (one per route, so
+        // Step two of search-then-retrieve: the row, its observations (one per route, so
         // an overlapping-route count can be explained), its content_state and nothing else.
         statements: [
           () => submissionDetailStatement(submissionId),
@@ -458,8 +456,8 @@ export const TEMPLATES = Object.freeze({
         ],
         singleRecord: true,
         notes: [
-          'No query path returns full content (§8.3). content_state decides which of the four answers applies: not_captured, local_only, uploaded, shredded.',
-          'A hit is a reference, not a reservation: if the record was destroyed between the search and this read, the answer is no_longer_available with the receipt (§3.9).',
+          'No query path returns full content. content_state decides which of the four answers applies: not_captured, local_only, uploaded, shredded.',
+          'A hit is a reference, not a reservation: if the record was destroyed between the search and this read, the answer is no_longer_available with the receipt.',
         ],
       };
     },
@@ -489,7 +487,7 @@ export const TEMPLATES = Object.freeze({
           cursor: cursorOf(params),
         },
         notes: [
-          'Reading the log is itself a subject-level read: one audit row per query describing the filter and row count, and that row is not re-audited (§3.10).',
+          'Reading the log is itself a subject-level read: one audit row per query describing the filter and row count, and that row is not re-audited.',
           'Hash links are verified within each returned page; a mismatch returns audit_chain_broken rather than a list that looks fine.',
         ],
       };
@@ -521,7 +519,7 @@ export function expandTemplate(input) {
   for (const key of Object.keys(params)) {
     if (!template.params.includes(key)) {
       // Unknown keys are rejected, not ignored: a typo in a template parameter would otherwise
-      // silently answer a broader question than the one asked (§2.3).
+      // silently answer a broader question than the one asked.
       throw unsupported(REASON.UNKNOWN_KEY, `Template "${template.name}" has no parameter "${key}".`, {
         template: template.name,
         key,

@@ -1,6 +1,6 @@
 // deployment.js — Settings → Deployment: the state of the page and every action on it.
 //
-// The page an admin uses to get the capture agent onto their devices (contract §5): which identity
+// The page an admin uses to get the capture agent onto their devices: which identity
 // provider is linked, whether a device must also be managed by Intune, a tenant package to download
 // (which mints a deployment key), the keys minted so far, and the SCIM endpoint and tokens that keep
 // people in sync. Every read and write goes through the admin api (transport.js), which control-api
@@ -250,69 +250,5 @@ export function createDeployment({ admin, onChange = () => {}, save = () => {}, 
     get state() { return state; },
     load, setVerification, download, askRevokeKey, revokeKey, createScimToken, dismissToken,
     askRevokeToken, revokeToken, copyValue, setDraft, leave, act, now,
-  });
-}
-
-// -------------------------------------------------------------------------------------------
-// The sample: what index.html shows with no server
-// -------------------------------------------------------------------------------------------
-
-/**
- * A sample admin transport, so the page renders from the filesystem like every other screen. It
- * keeps its own small state, so a revocation or a verification change can be seen to work. It
- * builds no package: a download is refused and says why, rather than saving a file that is not an
- * installer. Its SCIM token says it is a sample.
- */
-export function sampleAdminTransport() {
-  // The SCIM base URL is control-api's, published at the dashboard's own address. The sample has
-  // no address when opened from disk, so there it is "not reported" rather than an invented host.
-  const origin = typeof location !== 'undefined' && /^https?:$/.test(location.protocol ?? '') ? location.origin : null;
-  const data = {
-    connection: { provider: 'entra', status: 'active', entra_tenant_id: '3f9a1c52-6d0e-4b7a-9c11-5e2d8a7b4c90', issuer: null },
-    device_verification: 'none',
-    deployment_keys: [
-      { key_id: 'b1d6c0a4-0001-4000-8000-000000000001', label: 'Intune, all laptops', created_at: '2026-09-02T09:14:00Z', created_by: 'it.admin@example.com', expires_at: null, revoked_at: null, enrolment_count: 312, last_used_at: '2026-10-01T08:51:00Z' },
-      { key_id: 'b1d6c0a4-0001-4000-8000-000000000002', label: 'Pilot group (zip)', created_at: '2026-08-11T15:02:00Z', created_by: 'it.admin@example.com', expires_at: null, revoked_at: '2026-09-02T09:20:00Z', enrolment_count: 41, last_used_at: '2026-08-30T17:40:00Z' },
-      { key_id: 'b1d6c0a4-0001-4000-8000-000000000003', label: 'Kiosks', created_at: '2026-09-20T11:30:00Z', created_by: 'desk.lead@example.com', expires_at: null, revoked_at: null, enrolment_count: 0, last_used_at: null },
-    ],
-    scim: {
-      tokens: [
-        { token_id: 'c2e7d1b5-0002-4000-8000-000000000001', label: 'Entra provisioning', created_at: '2026-09-02T09:40:00Z', revoked_at: null },
-        { token_id: 'c2e7d1b5-0002-4000-8000-000000000002', label: 'First attempt', created_at: '2026-09-01T16:05:00Z', revoked_at: '2026-09-02T09:41:00Z' },
-      ],
-      base_url: origin ? `${origin}/scim/v2` : null, users: 412, groups: 18, last_provisioned_at: '2026-10-01T09:00:00Z',
-    },
-    devices: { enrolled: 353, last_enrolled_at: '2026-10-01T08:51:00Z' },
-    release: { version: '1.4.0', product_code: '{6F1C2B9E-3A4D-4E57-9B21-0C8D7E6F5A41}' },
-  };
-  let serial = 0;
-  const copyOf = () => JSON.parse(JSON.stringify(data));
-  const at = () => new Date().toISOString();
-  return Object.freeze({
-    async request({ method, path, body }) {
-      const revoke = /\/(keys|tokens)\/([^/]+)\/revoke$/.exec(path);
-      if (method === 'GET' && /\/deployment$/.test(path)) return { status: 200, body: copyOf() };
-      if (method === 'PUT' && /\/verification$/.test(path)) {
-        data.device_verification = body?.device_verification === 'intune' ? 'intune' : 'none';
-        return { status: 204 };
-      }
-      if (method === 'POST' && /\/package$/.test(path)) {
-        return { status: 501, body: { error: 'sample_mode', message: 'This is sample data, so no package is built. Open the live dashboard as an admin to download one.' } };
-      }
-      if (method === 'POST' && revoke) {
-        const list = revoke[1] === 'keys' ? data.deployment_keys : data.scim.tokens;
-        const item = list.find((x) => (x.key_id ?? x.token_id) === decodeURIComponent(revoke[2]));
-        if (!item) return { status: 404, body: { error: 'not_found', message: 'No such key in the sample.' } };
-        item.revoked_at = item.revoked_at ?? at();
-        return { status: 204 };
-      }
-      if (method === 'POST' && /\/scim\/tokens$/.test(path)) {
-        serial += 1;
-        const tokenId = `c2e7d1b5-0002-4000-8000-${String(100 + serial).padStart(12, '0')}`;
-        data.scim.tokens.unshift({ token_id: tokenId, label: String(body?.label ?? ''), created_at: at(), revoked_at: null });
-        return { status: 201, body: { token_id: tokenId, token: `sacscim_SAMPLE-ONLY-NOT-A-TOKEN-${serial}`, base_url: data.scim.base_url } };
-      }
-      return { status: 404, body: { error: 'not_found', message: 'The sample has no answer for this request.' } };
-    },
   });
 }

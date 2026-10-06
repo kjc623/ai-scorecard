@@ -6,8 +6,7 @@
 // it never carries an exception, a stack or an upstream body.
 //
 // The forms POST to /signin/start, which asks control-api to begin the sign-in and sends the browser
-// to the identity provider. The lab's development sign-in is offered only when this server runs as
-// the development principal, which is the only time it can work.
+// to the identity provider.
 
 const escapeHtml = (value) => String(value ?? '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -40,10 +39,6 @@ export const SIGNIN_MESSAGES = Object.freeze({
   invite_invalid: Object.freeze({
     status: 400, level: 'refusal', title: 'This onboarding link cannot be used',
     text: 'It has been used already, or it has expired. Ask your vendor for a new onboarding link.',
-  }),
-  wrong_tenant: Object.freeze({
-    status: 403, level: 'refusal', title: 'This dashboard serves another organisation',
-    text: 'You signed in to an organisation this dashboard does not serve. Use your own organisation\'s dashboard address.',
   }),
   not_permitted: Object.freeze({
     status: 403, level: 'refusal', title: 'Your role cannot open this page',
@@ -96,10 +91,8 @@ const MICROSOFT_LOGO = '<svg class="si-ms-logo" viewBox="0 0 21 21" aria-hidden=
  * @param {string|null} [input.detail]     a provider's own error code, shown beside ours
  * @param {string} [input.next]            where to return after signing in (already checked by the caller)
  * @param {string} [input.email]           the address to keep in the field
- * @param {boolean} [input.identity]       whether the identity service is configured (the two sign-in forms)
- * @param {{actor: string, tenant: string}|null} [input.dev]  the development principal, in development mode only
  */
-export function renderSigninPage({ code = null, detail = null, next = '/', email = '', identity = true, dev = null } = {}) {
+export function renderSigninPage({ code = null, detail = null, next = '/', email = '' } = {}) {
   if (code === 'not_permitted') return renderNotPermitted();
   const message = code ? signinMessage(code) : null;
   const shownCode = code && Object.hasOwn(SIGNIN_MESSAGES, code) && !['signed_out', 'session_ended'].includes(code) ? code : null;
@@ -112,36 +105,25 @@ export function renderSigninPage({ code = null, detail = null, next = '/', email
       + '</div>'
     : '';
   const nextField = `<input type="hidden" name="next" value="${escapeHtml(next)}">`;
-  const forms = identity
-    ? '<form class="si-form" method="post" action="/signin/start">'
-      + '<input type="hidden" name="provider" value="entra">' + nextField
-      + `<button type="submit" class="si-ms">${MICROSOFT_LOGO}<span>Sign in with Microsoft</span></button>`
-      + '</form>'
-      + '<div class="si-or" role="separator"><span>or</span></div>'
-      + '<form class="si-form" method="post" action="/signin/start">' + nextField
-      + '<label class="si-label" for="si-email">Work email</label>'
-      + `<input class="si-input" id="si-email" name="email" type="email" required autocomplete="username" spellcheck="false" placeholder="you@your-organisation.com" value="${escapeHtml(email)}">`
-      + '<button type="submit" class="si-btn">Continue with SSO</button>'
-      + '<p class="si-hint">We find your organisation\'s sign-in from the address. Okta, Ping, Google and other OpenID Connect providers sign in this way.</p>'
-      + '</form>'
-    : '';
-  const devPanel = dev
-    ? '<section class="si-dev card"><div class="card-core">'
-      + '<h3>Lab development sign-in</h3>'
-      + '<p>This server is not connected to an identity service. Every request it forwards carries a fixed development principal, which only a query-api started with <code>SAC_DEV_TRUST_PRINCIPAL=1</code> accepts. It is a lab arrangement, not authentication.</p>'
-      + `<dl class="si-facts"><div><dt>Actor</dt><dd>${escapeHtml(dev.actor || 'not set')}</dd></div><div><dt>Tenant</dt><dd><code>${escapeHtml(dev.tenant || 'not set')}</code></dd></div></dl>`
-      + `<a class="si-btn si-btn-link" href="${escapeHtml(next)}">Continue as the development principal</a>`
-      + '</div></section>'
-    : '';
+  const forms = '<form class="si-form" method="post" action="/signin/start">'
+    + '<input type="hidden" name="provider" value="entra">' + nextField
+    + `<button type="submit" class="si-ms">${MICROSOFT_LOGO}<span>Sign in with Microsoft</span></button>`
+    + '</form>'
+    + '<div class="si-or" role="separator"><span>or</span></div>'
+    + '<form class="si-form" method="post" action="/signin/start">' + nextField
+    + '<label class="si-label" for="si-email">Work email</label>'
+    + `<input class="si-input" id="si-email" name="email" type="email" required autocomplete="username" spellcheck="false" placeholder="you@your-organisation.com" value="${escapeHtml(email)}">`
+    + '<button type="submit" class="si-btn">Continue with SSO</button>'
+    + '<p class="si-hint">We find your organisation\'s sign-in from the address. Okta, Ping, Google and other OpenID Connect providers sign in this way.</p>'
+    + '</form>';
   const title = message && !['signed_out', 'session_ended'].includes(code) ? message.title : 'Sign in';
   return pageShell(title,
     '<section class="si-card card"><div class="card-core">'
-    + `<h2>${escapeHtml(identity ? 'Sign in' : 'Development mode')}</h2>`
-    + `<p class="si-lead">${identity ? 'Use your organisation\'s account.' : 'Sign-in is not configured on this server.'}</p>`
+    + '<h2>Sign in</h2>'
+    + '<p class="si-lead">Use your organisation\'s account.</p>'
     + banner + forms
     + '</div></section>'
-    + devPanel
-    + (identity ? '<p class="si-foot">You sign in with your organisation\'s identity provider. Shadow AI Capture never sees your password.</p>' : ''));
+    + '<p class="si-foot">You sign in with your organisation\'s identity provider. Shadow AI Capture never sees your password.</p>');
 }
 
 /** A signed-in person asked for a page their role does not include: a way back, not a sign-in form. */
@@ -151,7 +133,7 @@ function renderNotPermitted() {
     '<section class="si-card card"><div class="card-core">'
     + `<h2>${escapeHtml(message.title)}</h2>`
     + `<p class="si-lead">${escapeHtml(message.text)}</p>`
-    + '<a class="si-btn" href="/index.html?transport=live">Back to the dashboard</a>'
+    + '<a class="si-btn" href="/">Back to the dashboard</a>'
     + '<form class="si-form" method="post" action="/signout"><button type="submit" class="si-btn si-btn-quiet">Sign out</button></form>'
     + '</div></section>');
 }

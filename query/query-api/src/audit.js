@@ -1,7 +1,7 @@
-// audit.js — §5 read auditing.
+// audit.js — read auditing.
 //
-// Brief §3.6: "Every read of subject-level data writes an audit entry **as it is served**, not
-// afterwards." Every read, and as it is served — not in a batch, not best-effort.
+// Every read of subject-level data writes an audit entry as it is served: not afterwards, not in a
+// batch, not best-effort.
 //
 // Three mechanics matter here and each is visible in the code:
 //
@@ -13,12 +13,10 @@
 //   3. The decision is made before suppression. A query answered with `suppressed` still writes
 //      an audit entry, because the attempt to resolve a small group is the fact worth recording.
 //
-// One thing the document does not fix, and this package has to: §5.1 says the audit row is
-// written before the rows are read, while §5.2's small-cell trigger needs the cells' distinct
-// subject counts, which §6 computes only once the cells exist. Both are satisfied by writing the
-// row inside the same transaction and emitting nothing before it commits, which is what "as it
-// is served" requires; the small-cell case is therefore `phase: 'post_read'` and the other cases
-// are `phase: 'pre_read'`. See DSL.md §8.4.
+// Most audit rows are written before the read (`phase: 'pre_read'`). The small-cell trigger needs
+// the cells' distinct-subject counts, which exist only once the read has run, so that row is
+// written after the read inside the same transaction (`phase: 'post_read'`); nothing is emitted
+// before the transaction commits either way.
 
 import { K } from './registry.js';
 import { REASON } from './errors.js';
@@ -34,7 +32,6 @@ export const AUDIT_ACTIONS = Object.freeze({
   single_record: 'query.record',
   content_search: 'content.search',
   content_reveal: 'content.reveal',
-  export_run: 'export.run',
   finding_review: 'finding.review',
   tool_sanction: 'tool.sanction',
 });
@@ -78,7 +75,7 @@ export function auditDecision(validated, context = {}) {
   const reasons = [];
   let phase = 'none';
 
-  // §5.2 row 1: any query that FILTERS ON user_ref. Asking about a person is the act being
+  // Any query that FILTERS ON user_ref. Asking about a person is the act being
   // recorded, whatever comes back.
   const subjectFilters = query.filters.filter((f) => f.field === 'subject');
   if (subjectFilters.length > 0) {
@@ -86,27 +83,27 @@ export function auditDecision(validated, context = {}) {
     phase = 'pre_read';
   }
 
-  // §5.2 row 2: any query that RETURNS user_ref. The response identifies a subject.
+  // Any query that RETURNS user_ref. The response identifies a subject.
   if (source.subjectBearing) {
     reasons.push('returns_subject_reference');
     if (phase === 'none') phase = 'pre_read';
   }
 
-  // §5.2 row 3: a single-submission or single-finding detail read.
+  // A single-submission or single-finding detail read.
   if (context.singleRecord) {
     reasons.push('single_record_detail');
     phase = 'pre_read';
   }
 
-  // §5.2 row 7: any read of ops.audit — one row per query, bounded so it terminates.
+  // Any read of ops.audit: one row per query, not itself re-audited, so it terminates.
   if (source.id === 'ops.audit') {
     reasons.push('reads_the_audit_trail');
     phase = 'pre_read';
   }
 
-  // §5.2 row 4: any aggregate whose scope resolves to fewer than k distinct subjects. The
-  // trigger is decided from the cells' own distinct-subject counts and is applied BEFORE
-  // suppression (§6 computes the count anyway, so the same value decides both), which makes it
+  // Any aggregate whose scope resolves to fewer than k distinct subjects. The trigger is decided
+  // from the cells' own distinct-subject counts and is applied BEFORE suppression (which computes
+  // the same count, so one value decides both), which makes it
   // the one case whose audit row is written after the read and before anything is served.
   if (phase === 'none' && source.kSuppression) {
     reasons.push('may_resolve_below_k_subjects');
@@ -168,12 +165,12 @@ export function auditDetail(validated, context = {}) {
 }
 
 /**
- * The parameterised audit insert. Ten of the eleven columns are parameters; the tenant is
+ * The parameterised audit insert. Every column but the tenant is a parameter; the tenant is
  * `ops.current_tenant()` and cannot be anything else.
  *
  * `sessionId` is the product token's `sid`. ops.audit has no column for it, so it rides in
  * `detail` as `sid`: enough to tie a row to the sign-in that wrote it (control-api audits the
- * session under the same id), and absent when there was no token, as in the development lab.
+ * session under the same id).
  *
  * @param {AuditDecision} decision
  * @param {{actorId:string, actorType?:string, subjectRef?:string|null, caseReference?:string|null, detail:object, objectId?:string|null, sessionId?:string|null}} input
@@ -202,9 +199,8 @@ export function auditStatement(decision, input) {
 }
 
 /**
- * §3.10: "The read path verifies the links within each returned page and displays the last
- * anchored head with its anchor time; a mismatch returns `audit_chain_broken` rather than a
- * list that looks fine."
+ * The read path verifies the hash links within each returned page; a mismatch returns
+ * `audit_chain_broken` rather than a list that looks fine.
  *
  * The two checks are:
  *   * recomputation — the stored `row_hash` equals the sha256 the `ops.audit_chain()` trigger

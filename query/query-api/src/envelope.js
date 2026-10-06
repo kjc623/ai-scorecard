@@ -1,4 +1,4 @@
-// envelope.js — §2.3's response envelope, §4.5's freshness, §11.3's coverage, §13's states.
+// envelope.js — the response envelope: freshness, coverage, suppression and the result state.
 //
 // Three properties matter more than the field names, and all three are encoded here rather than
 // left to a caller's discipline:
@@ -7,11 +7,11 @@
 //     render a number and omit its state without visibly discarding fields it was given.
 //   * `result_state` is a first-class answer, not an error channel.
 //   * `audit.entry_id` is returned to the caller, so a screenshot of a number traces to the
-//     audited read that produced it — which is what makes Q10 answerable.
+//     audited read that produced it.
 //
 // `buildEnvelope` throws when a data-bearing envelope is constructed without its two honesty
-// blocks. That is deliberate: a programming error here must be a 500 in development, never a
-// number on a dashboard with no denominator.
+// blocks: a programming error here must surface as a 500, never as a number on a dashboard with
+// no denominator.
 
 import {
   API_VERSION,
@@ -31,7 +31,7 @@ export function freshnessBlock(input) {
   const now = input.now ?? Date.now();
   const stalenessMs = FRESHNESS_CADENCE_MS * FRESHNESS_STALE_MULTIPLIER;
   if (!input.row) {
-    // §4.6: where a measure is absent for a tenant the panel returns `not_yet_covered` with the
+    // Where a measure is absent for a tenant the panel returns `not_yet_covered` with the
     // reason, never a partial number presented as a whole one.
     return Object.freeze({
       aggregate: input.aggregate,
@@ -53,7 +53,7 @@ export function freshnessBlock(input) {
     last_complete_bucket: toIso(input.row.last_complete_bucket),
     last_run_rows: input.row.last_run_rows ?? null,
     lag_seconds: lagSeconds,
-    // §4.5: `stale` when now() - last_run_at exceeds 3x the cadence (15 minutes). A stale
+    // `stale` when now() - last_run_at exceeds 3x the cadence (15 minutes). A stale
     // aggregate is never silently recomputed on the read path.
     state: stale ? 'stale' : 'fresh',
     ...(stale ? { stale_after_seconds: Math.round(stalenessMs / 1000) } : {}),
@@ -61,7 +61,7 @@ export function freshnessBlock(input) {
 }
 
 /**
- * §11.3 / §3.7: the denominator is stated, never implied. Coverage is measured over the
+ * The denominator is stated, never implied. Coverage is measured over the
  * ENROLLED fleet, and `unknown` shows as a reason rather than a blank.
  *
  * @param {object} input
@@ -119,10 +119,8 @@ function normaliseGaps(value) {
 }
 
 /**
- * §13's precedence, stated once.
- *
- * The document fixes the states but not their order when several are true at once (a stale
- * watermark AND partial coverage, say). The order below is from strongest claim to weakest:
+ * The result state when several are true at once (a stale watermark AND partial coverage, say),
+ * from strongest claim to weakest:
  *
  *   1. `not_yet_covered` — the system has no source for this window or dimension at all.
  *   2. `coverage_degraded` — we have numbers, and they are a floor.
@@ -153,7 +151,7 @@ export function resultStateFor(input) {
   }
   // Data is present. Coverage first: a floor is a stronger statement about the number than its
   // age is, and where coverage cannot be stated at all the number must be treated as a floor
-  // (C25: a path that cannot say must not read as a clean bill of health).
+  // (a path that cannot say must not read as a clean bill of health).
   if (coverageState === 'partial' || coverageState === 'not_yet_covered') return 'coverage_degraded';
   if (freshnessState === 'stale') return 'stale_aggregate';
   if (suppressedCells > 0 && suppressedCells >= rows) return 'suppressed';
@@ -161,15 +159,15 @@ export function resultStateFor(input) {
 }
 
 /**
- * Build the envelope. Throws if a data-bearing envelope is missing its state — the rule of §13's
- * last paragraph, enforced where a code path could otherwise forget it.
+ * Build the envelope. Throws if a data-bearing envelope is missing its freshness or coverage, so a
+ * code path cannot forget them.
  */
 export function buildEnvelope(input) {
   const resultState = input.resultState ?? resultStateFor(input);
   const carryData = input.data !== undefined && input.data !== null;
   if (carryData && (!input.freshness || !input.coverage)) {
     throw new Error(
-      'Refusing to build a data-bearing envelope without freshness and coverage: a number must never travel without its state (docs/04 §13).',
+      'Refusing to build a data-bearing envelope without freshness and coverage: a number must never travel without its state.',
     );
   }
   const envelope = {
@@ -187,7 +185,7 @@ export function buildEnvelope(input) {
   return Object.freeze(envelope);
 }
 
-/** The suppression block of §2.3. `suppressed_cells` is never folded into `data`. */
+/** The suppression block. `suppressed_cells` is never folded into `data`. */
 export function suppressionBlock(input) {
   return Object.freeze({
     k: input.k ?? null,

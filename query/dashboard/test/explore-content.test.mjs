@@ -9,7 +9,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { exploreUserInput } from '../src/explore-model.js';
-import { createExploreStub } from '../src/explore-stub.js';
+import { createExploreFake } from './explore-fake.mjs';
 import { createExplorer } from '../src/explore-app.js';
 import { renderExploreDetail, renderExploreText } from '../src/explore-render.js';
 import { createQueryApi, createContentApi } from '../src/transport.js';
@@ -19,7 +19,7 @@ const NOW = new Date('2026-10-01T12:00:00Z');
 const now = () => NOW;
 
 function explorerFor(scenario = 'realistic', { withContent = true } = {}) {
-  const stub = createExploreStub({ now, scenario });
+  const stub = createExploreFake({ now, scenario });
   const asked = [];
   const content = withContent
     ? createContentApi({
@@ -71,7 +71,7 @@ test('a prompt-text search returns fragments, and a hit opens the event it belon
   await explorer.restore('#events?window=d30');
   await explorer.searchText('capital australia');
   assert.equal(explorer.state.text.status, 'ready');
-  assert.ok(explorer.state.text.hits.length > 0, 'the sample has a prompt with those words');
+  assert.ok(explorer.state.text.hits.length > 0, 'the fake has a prompt with those words');
   assert.deepEqual(asked[0], ['search', { query: 'capital australia', limit: 20, window: windowFor('d30', NOW) }]);
 
   const html = renderExploreText(explorer.state);
@@ -121,7 +121,7 @@ test('the rail filters narrow a prompt-text search, and a person with no content
   await explorer.setFilter('subject', subject);
   await explorer.searchText('the');
   assert.equal(explorer.state.text.status, 'ready');
-  assert.ok(explorer.state.text.hits.length > 0, 'the sample person has uploaded content');
+  assert.ok(explorer.state.text.hits.length > 0, 'the person has uploaded content');
   assert.ok(explorer.state.text.hits.every((h) => h.subject === subject));
   const sent = asked.filter(([kind]) => kind === 'search').pop()[1];
   assert.equal(sent.subject, subject, 'the person filter reaches the search');
@@ -244,8 +244,8 @@ test('a hit shows the prompt text with the person, the hostname and the tool', a
     { submissionId: 's3', snippet: 'third', subject: 'u_9a02', device: 'd-2', hostname: null, tool: 'chatgpt_web' },
   ] } };
   const html = renderExploreText(state);
-  // The hostname is preferred to the device UUID when there is one (ADR 0021), and the directory
-  // display name sits between the account name and the device (backlog/06).
+  // The hostname is preferred to the device UUID when there is one, and the directory display
+  // name sits between the account name and the device.
   assert.match(html, /<span>alice@contoso\.example<\/span><span class="x-hit-sep" aria-hidden="true">\|<\/span><span>Alice Smith<\/span><span class="x-hit-sep" aria-hidden="true">\|<\/span><span>FIN-LAPTOP-07<\/span><span class="x-hit-sep" aria-hidden="true">\|<\/span><span>claude_code<\/span>/);
   // With no hostname the UUID is the device part; a hit with no metadata still names its submission.
   assert.match(html, /<span>u_9a02<\/span><span class="x-hit-sep" aria-hidden="true">\|<\/span><span>d-2<\/span>/);

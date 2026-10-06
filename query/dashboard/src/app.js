@@ -1,15 +1,13 @@
-// app.js — the shell: hash routing, one data layer, and the screen table of §11.2.
+// app.js — the dashboard shell: hash routing, one data layer, and the screen table.
 //
-// Everything here is wiring. The decisions live in states.js (what an envelope means), views.js
-// (what a screen shows) and unavailable.js (what cannot be shown); app.js only decides which one
-// runs and puts the result on the page.
+// Everything here is wiring. The decisions live in states.js (what an envelope means) and views.js
+// (what a screen shows); app.js only decides which one runs and puts the result on the page.
 //
-// `createDashboard` is deliberately DOM-free: it takes an api and returns `load(screenId, params)`,
-// so a test can drive every screen against the stub transport without a browser. `boot()` is the
-// only function that touches a document.
+// `createDashboard` is DOM-free: it takes an api and returns `load(screenId, params)`, so a test
+// can drive every screen against a fake transport without a browser. `boot()` is the only function
+// that touches a document.
 
 import { createQueryApi, httpTransport, loadSession, createAdminApi, httpAdminTransport } from './transport.js';
-import { scenarioTransport } from './scenarios.js';
 import { readState } from './states.js';
 import { QUESTIONS, context } from './questions.js';
 import {
@@ -17,18 +15,15 @@ import {
   personView, devicesView, eventView, auditView, refusalView,
   needsInputView,
 } from './views.js';
-import { unavailableView } from './unavailable.js';
-import { renderScreen, renderNav, renderGallery } from './render.js';
+import { renderScreen, renderNav } from './render.js';
 import { shellNavItems, groupOf, readCollapsed, wireShell } from './shell.js';
 import { allowedPageIds, filterNavItems, mayOpen } from './session.js';
-import { createDeployment, sampleAdminTransport } from './deployment.js';
+import { createDeployment } from './deployment.js';
 import { renderDeployment } from './deployment-render.js';
-import { SCENARIOS, SCENARIO_NAMES } from './fixtures.js';
 
 /**
- * The screens. Five are in the navigation; the event detail, the catalogue of gaps and the state
- * gallery are reached by a link or an address. What used to be separate screens for unsanctioned
- * use, data classes and degraded collection are now a switch on Usage and on Devices.
+ * The screens. The event detail is reached from a row that names a submission; the rest are in the
+ * navigation. Unsanctioned use and data classes are a switch on Usage.
  */
 export const SCREENS = Object.freeze([
   Object.freeze({ id: 'posture', label: 'Overview', question: null, kind: 'posture' }),
@@ -41,8 +36,6 @@ export const SCREENS = Object.freeze([
   // question and no envelope, and boot() hands it to its own controller (deployment.js).
   Object.freeze({ id: 'deployment', label: 'Deployment', question: null, kind: 'admin' }),
   Object.freeze({ id: 'event', label: 'Event detail', question: 9, kind: 'input', questionId: 'q9_event_detail' }),
-  Object.freeze({ id: 'unavailable', label: 'What we cannot show', question: null, kind: 'catalogue' }),
-  Object.freeze({ id: 'gallery', label: 'State gallery', question: null, kind: 'gallery' }),
 ]);
 
 /** What the Usage screen can show: each is its own question, switched in place. */
@@ -54,18 +47,6 @@ const USAGE_MODES = Object.freeze({
 
 function usageMode(filters) {
   return USAGE_MODES[filters?.view] ? filters.view : 'tools';
-}
-
-/** Addresses of screens that were merged into another, so an old link still lands somewhere true. */
-const SCREEN_ALIASES = Object.freeze({
-  unsanctioned: Object.freeze({ id: 'tools', filters: Object.freeze({ view: 'unsanctioned' }) }),
-  classes: Object.freeze({ id: 'tools', filters: Object.freeze({ view: 'classes' }) }),
-  degraded: Object.freeze({ id: 'devices', filters: Object.freeze({ status: 'attention' }) }),
-});
-
-function resolveScreen(id, filters = {}) {
-  const alias = SCREEN_ALIASES[id];
-  return alias ? { id: alias.id, filters: { ...filters, ...alias.filters } } : { id, filters };
 }
 
 export const SCREEN_IDS = Object.freeze(SCREENS.map((s) => s.id));
@@ -87,7 +68,7 @@ export function refusalFrom(error, { title = 'Read refused' } = {}) {
  * @param {ReturnType<typeof createQueryApi>} input.api
  * @param {Date} [input.now]
  */
-export function createDashboard({ api, now = () => new Date(), exploreHref = 'explore.html' }) {
+export function createDashboard({ api, now = () => new Date() }) {
   /** The last coverage and freshness blocks seen are kept, for a screen that reads nothing itself. */
   const observed = { coverage: null, freshness: null, watermarks: new Map() };
 
@@ -118,9 +99,8 @@ export function createDashboard({ api, now = () => new Date(), exploreHref = 'ex
    * refusal is a state to render rather than a crash.
    */
   async function load(screenId, given = {}) {
-    const resolved = resolveScreen(screenId, given.filters ?? {});
-    const params = { ...given, filters: resolved.filters };
-    const screen = SCREENS.find((s) => s.id === resolved.id) ?? SCREENS[0];
+    const params = { ...given, filters: given.filters ?? {} };
+    const screen = SCREENS.find((s) => s.id === screenId) ?? SCREENS[0];
     const ctx = context({ preset: params.preset ?? 'd7', filters: params.filters ?? {}, now: now() });
     try {
       switch (screen.kind) {
@@ -163,13 +143,9 @@ export function createDashboard({ api, now = () => new Date(), exploreHref = 'ex
           const state = await ask('q9_event_detail', context({ filters: { submission_id: submissionId, received_at_hint: params.filters?.received_at_hint }, now: now() }));
           return { view: eventView(state), shell: shell() };
         }
-        case 'catalogue':
-          return { view: unavailableView(), shell: shell() };
         case 'admin':
-          return { view: null, shell: shell(), admin: true };
-        case 'gallery':
         default:
-          return { view: null, shell: shell(), gallery: true };
+          return { view: null, shell: shell(), admin: true };
       }
     } catch (error) {
       return { view: refusalFrom(error, { title: screen.label }), shell: shell() };
@@ -179,7 +155,7 @@ export function createDashboard({ api, now = () => new Date(), exploreHref = 'ex
   function viewFor(screenId, state, params) {
     switch (screenId) {
       case 'teams': return teamsView(state);
-      case 'devices': return devicesView(state, { filters: params.filters ?? {}, now: now(), exploreHref });
+      case 'devices': return devicesView(state, { filters: params.filters ?? {}, now: now() });
       case 'audit': return state.resultState === 'audit_chain_broken' ? refusalView(state, { title: 'Audit' }) : auditView(state);
       default: return refusalView(state, { title: screenId });
     }
@@ -197,7 +173,7 @@ export function parseHash(hash) {
   const filters = {};
   const params = new URLSearchParams(queryString ?? '');
   for (const [key, value] of params.entries()) filters[key] = value;
-  return { id, scenario: id === 'gallery' ? parts[1] : undefined, preset: filters.preset, filters };
+  return { id, preset: filters.preset, filters };
 }
 
 /** The navigation of shell.js, with each screen's question number for its tooltip. */
@@ -268,33 +244,27 @@ function copyToClipboard(document, text) {
 /**
  * Boot the dashboard into a document. The only function in this package that touches the DOM.
  *
+ * Every read goes to the page's own origin: /v1/* for the query API and /admin/v1/* for
+ * Settings → Deployment, which the dashboard server forwards with the session's product token.
+ *
  * @param {object} input
  * @param {Document} input.document
- * @param {string} [input.scenario] one of SCENARIO_NAMES; ignored when `api` is supplied
- * @param {object} [input.api]      a real api, e.g. over httpTransport
- * @param {object} [input.admin]    an admin api (createAdminApi); the sample's or the page origin's otherwise
+ * @param {object} [input.api]      a query api (createQueryApi); the page origin's otherwise
+ * @param {object} [input.admin]    an admin api (createAdminApi); the page origin's otherwise
  * @param {object|null} [input.session] who is signed in, as GET /session answers; read from the server otherwise
  */
-export async function boot({ document, scenario = 'realistic', api, admin, session: givenSession } = {}) {
+export async function boot({ document, api, admin, session: givenSession } = {}) {
   const root = document.getElementById('app');
   const nav = document.getElementById('nav');
-  // `?transport=live` reads the real query API through the endpoint on the page's own origin,
-  // exactly as the Explore page does. Without it the page runs on canned envelopes and says so.
-  const live = !api && new URLSearchParams(document.location.search ?? '').get('transport') === 'live';
   // One dashboard for the whole session, so the last coverage read carries across navigation.
-  const stubs = api || live ? null : scenarioTransport(scenario);
-  const active = api ?? createQueryApi({ transport: live ? httpTransport() : stubs });
-  // Settings → Deployment follows the same choice: the admin API on the page's own origin when
-  // live, a sample that builds no package when not.
-  const adminApi = admin ?? createAdminApi({ transport: live ? httpAdminTransport() : sampleAdminTransport() });
-  const query = live ? '?transport=live' : '';
-  const dashboard = createDashboard({ api: active, exploreHref: `explore.html${query}` });
-  // The Explore page is a sibling page, not a screen: it is linked from the top of the navigation
-  // and carries the same data source. A signed-in role may see fewer pages than the shell names;
-  // the server says which, and query-api and control-api refuse what lies behind the rest.
+  const active = api ?? createQueryApi({ transport: httpTransport() });
+  const adminApi = admin ?? createAdminApi({ transport: httpAdminTransport() });
+  const dashboard = createDashboard({ api: active });
+  // A signed-in role may see fewer pages than the shell names; the server says which, and
+  // query-api and control-api refuse what lies behind the rest.
   const session = givenSession !== undefined ? givenSession : await loadSession();
   const allowed = allowedPageIds(session);
-  const navItems = filterNavItems(NAV_ITEMS.map((item) => (item.id === 'explore' ? { ...item, href: `explore.html${query}` } : item)), allowed);
+  const navItems = filterNavItems(NAV_ITEMS, allowed);
   const navIds = new Set(NAV_ITEMS.map((item) => item.id));
   const collapsed = readCollapsed(document);
 
@@ -317,9 +287,7 @@ export async function boot({ document, scenario = 'realistic', api, admin, sessi
   }
 
   async function render() {
-    const { id: routeId, scenario: routeScenario, preset, filters: routeFilters } = parseHash(document.location.hash);
-    const { id, filters } = resolveScreen(routeId, routeFilters);
-    if (routeScenario && stubs && typeof stubs.setScenario === 'function') stubs.setScenario(routeScenario);
+    const { id, preset, filters } = parseHash(document.location.hash);
     const screen = SCREENS.find((s) => s.id === id) ?? SCREENS[0];
     // The navigation is repainted only when it changes, so its groups do not re-open on every click.
     const navHtml = renderNav(navItems, screen.id, { collapsed: [...collapsed] });
@@ -347,18 +315,13 @@ export async function boot({ document, scenario = 'realistic', api, admin, sessi
       return;
     }
     const typing = sameScreen && document.activeElement?.name === 'subject';
-    const { view, shell, gallery } = await dashboard.load(screen.id, { preset, filters });
-    if (gallery) {
-      root.innerHTML = renderGallery(SCENARIO_NAMES.map((name) => ({ id: name, label: SCENARIOS[name].label })), stubs ? stubs.scenario() : 'live')
-        + `<p class="gallery-hint">Scenario in force: <strong>${stubs ? stubs.label() : 'live API'}</strong>. Pick another, then visit any screen.</p>`;
-      return;
-    }
+    const { view, shell } = await dashboard.load(screen.id, { preset, filters });
     const { preset: _preset, ...others } = filters;
     root.innerHTML = renderScreen(view, { ...shell, eyebrow: groupOf(screen.id), switch: switchFor(screen, preset, others), presets: presetsFor(screen, preset, others) });
     if (typing) root.querySelector?.('input[name="subject"]')?.focus();
   }
 
-  wireShell({ document, live, collapsed, session });
+  wireShell({ document, collapsed, session });
 
   // The handler returns the render promise. A browser ignores a listener's return value, so this
   // costs nothing there; it means a test can await a navigation and read the finished page rather

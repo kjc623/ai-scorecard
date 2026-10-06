@@ -1,4 +1,4 @@
-// validate.test.mjs — the closed-document gate (§2.3, §2.4, §13).
+// validate.test.mjs — the closed-document gate.
 //
 // The property under test: an unknown key, field, operator or bucket is REJECTED, never ignored,
 // because ignoring an unrecognised filter answers a different question than the one asked.
@@ -17,7 +17,7 @@ test('a well-formed document validates and is frozen', () => {
   assert.ok(Object.isFrozen(query));
 });
 
-test('every rejection carries a §13 result_state and an HTTP status', () => {
+test('every rejection carries a result_state and an HTTP status', () => {
   const error = rejection(() => validate(baseDoc({ nope: 1 })));
   assert.ok(error instanceof QueryError);
   assert.ok(RESULT_STATES[error.resultState], `unknown result state ${error.resultState}`);
@@ -43,7 +43,7 @@ test('prohibited SQL-ish keys are rejected by name, not treated as unknown', () 
   }
 });
 
-test('a tenant anywhere in the request is rejected, not ignored (§2.1)', () => {
+test('a tenant anywhere in the request is rejected, not ignored', () => {
   for (const key of ['tenant_id', 'tenant']) {
     const error = rejection(() => validate(baseDoc({ [key]: 'other-tenant' })));
     assert.equal(error.reason, 'tenant_in_request');
@@ -51,7 +51,7 @@ test('a tenant anywhere in the request is rejected, not ignored (§2.1)', () => 
   }
 });
 
-test('a content predicate on /v1/query is rejected rather than ignored (§2.4)', () => {
+test('a content predicate on /v1/query is rejected rather than ignored', () => {
   for (const key of ['content_match', 'snippet', 'search', 'match', 'tsv', 'body']) {
     const error = rejection(() => validate(baseDoc({ [key]: 'wire transfer' })));
     assert.equal(error.reason, 'text_predicate_in_request');
@@ -78,7 +78,7 @@ test('unsupported query_version is rejected, never silently downgraded', () => {
   assert.equal(rejection(() => validate(baseDoc({ query_version: undefined }))).reason, 'unsupported_query_version');
 });
 
-test('starts_with is permitted only on tool fingerprints (§12.3)', () => {
+test('starts_with is permitted only on tool fingerprints', () => {
   const error = rejection(() => validate(baseDoc({ filters: [{ field: 'sanctioned_state', op: 'starts_with', value: 'un' }] })));
   assert.equal(error.reason, 'operator_not_applicable');
   assert.equal(error.http, 400);
@@ -167,12 +167,12 @@ test('ordering is only on a returned measure or a grouped dimension', () => {
   );
 });
 
-test('rollup and a cursor are mutually exclusive', () => {
-  const error = rejection(() => validate(baseDoc({ rollup: true, cursor: 'abc.def' })));
-  assert.equal(error.reason, 'rollup_with_cursor');
+test('an aggregate takes no cursor, and a list takes no rollup', () => {
+  assert.equal(rejection(() => validate(baseDoc({ rollup: true, cursor: 'abc.def' }))).reason, 'aggregate_not_paged');
+  assert.equal(rejection(() => validate({ query_version: '1', source: 'mart.v_device_liveness', rollup: true, limit: 10 })).reason, 'malformed_document');
 });
 
-test('a per-subject source cannot be read without naming the subject (�11.2, �14.1)', () => {
+test('a per-subject source cannot be read without naming the subject', () => {
   const bare = {
     query_version: '1',
     source: 'mart.agg_user_period',

@@ -1,9 +1,7 @@
-// session-tools.test.mjs — the dashboard server's session helpers (tools/session.mjs).
+// session-tools.test.mjs — the dashboard server's session helpers (server/session.mjs).
 //
-// Node-side, no browser and no lab: a fake fetch stands in for control-api's internal identity
-// API. The role boundary the browser sees (which nav ids survive) is derived from the same map
-// query-api enforces; the server-level behaviour (cookies on the wire, forwarding, CSRF) is in
-// test/bff.test.mjs.
+// Node-side, no browser: a fake fetch plays control-api's internal identity
+// API. The server-level behaviour (cookies on the wire, forwarding, CSRF) is in test/bff.test.mjs.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -18,9 +16,7 @@ import {
   decodeAttempt,
   encodeAttempt,
   isStateChanging,
-  pagesFor,
   pagesForRoles,
-  parseCookies,
   primaryRole,
   principalFrom,
   readCookie,
@@ -30,7 +26,9 @@ import {
   sessionKey,
   signinCookie,
   withoutOwnCookies,
-} from '../tools/session.mjs';
+} from '../server/session.mjs';
+
+const pagesFor = (role) => pagesForRoles([role]);
 
 const TENANT = '00000000-0000-4000-8000-0000000000aa';
 
@@ -51,19 +49,13 @@ test('each role maps to the pages it may open', () => {
   assert.equal(pagesFor('admin').includes('explore'), false, 'admin does not search prompt text');
   assert.equal(pagesFor('viewer').includes('audit'), false);
   assert.equal(pagesFor('viewer').includes('explore'), false, 'a viewer is not offered Search');
-  assert.equal(pagesFor(null), null, 'no session means the sample mode shows everything');
 });
 
 test('several roles open the union of their pages, because roles are not a ladder', () => {
   const pages = pagesForRoles(['admin', 'content_reader']);
   for (const id of ['audit', 'deployment', 'explore', 'person', 'devices']) assert.ok(pages.includes(id), id);
-  assert.equal(pagesForRoles([]), null);
+  assert.deepEqual(pagesForRoles([]), []);
   assert.equal(primaryRole(['viewer', 'content_reader']), 'content_reader');
-});
-
-test('the lab development principal is offered every page, as query-api grants it every capability', () => {
-  const pages = pagesForRoles(['dev']);
-  for (const id of ['posture', 'tools', 'teams', 'person', 'devices', 'audit', 'explore', 'deployment']) assert.ok(pages.includes(id), id);
 });
 
 test('content_reader carries the content capability; analyst does not', () => {
@@ -79,7 +71,7 @@ test('a principal from control-api is checked: a uuid tenant, a product role and
   assert.deepEqual(principalFrom({ tenant: TENANT.toUpperCase(), actor: 'a@x.test', roles: ['viewer', 'superuser'], idp: 'oidc' }),
     { tenant: TENANT, actor: 'a@x.test', roles: ['viewer'], idp: 'oidc' });
   assert.equal(principalFrom({ tenant: 'not-a-uuid', actor: 'a', roles: ['viewer'] }), null);
-  assert.equal(principalFrom({ tenant: TENANT, actor: 'a', roles: ['dev'] }), null, 'a token can never carry the lab role');
+  assert.equal(principalFrom({ tenant: TENANT, actor: 'a', roles: ['superuser'] }), null, 'a role outside the product set is not a session');
   assert.equal(principalFrom({ tenant: TENANT, actor: '', roles: ['viewer'] }), null);
 });
 
@@ -92,7 +84,6 @@ test('the session cookie is HttpOnly, SameSite=Lax, Path=/, and Secure only when
   assert.match(sessionCookie('abc', { secure: true }), /; Secure$/);
   assert.match(sessionCookie('', { maxAgeSec: 0 }), /^sac_session=; .*Max-Age=0/);
   assert.equal(readCookie(`other=x; ${sessionCookie('abc')}`), 'abc');
-  assert.deepEqual(parseCookies('a=1; b=2'), { a: '1', b: '2' });
   assert.equal(readCookie('nothing=1'), null);
 });
 
@@ -102,14 +93,14 @@ test('the sign-in attempt cookie is sent only to /callback and lives ten minutes
 });
 
 test('the attempt round-trips with its return path, and a foreign return path is replaced', () => {
-  assert.deepEqual(decodeAttempt(encodeAttempt({ attempt: 'att.1', next: '/index.html?transport=live#deployment' })), { attempt: 'att.1', next: '/index.html?transport=live#deployment' });
+  assert.deepEqual(decodeAttempt(encodeAttempt({ attempt: 'att.1', next: '/index.html?view=classes' })), { attempt: 'att.1', next: '/index.html?view=classes' });
   assert.equal(decodeAttempt(encodeAttempt({ attempt: 'a', next: 'https://evil.test/' })).next, '/');
   assert.equal(decodeAttempt('not base64 json'), null);
   assert.equal(decodeAttempt(null), null);
 });
 
 test('safeNext keeps a path on this origin and nothing else', () => {
-  assert.equal(safeNext('/explore.html?transport=live'), '/explore.html?transport=live');
+  assert.equal(safeNext('/explore.html?x=1'), '/explore.html?x=1');
   for (const bad of ['//evil.test/', '/\\evil.test', 'https://evil.test', 'javascript:alert(1)', '/a\u0000b', '']) assert.equal(safeNext(bad), '/', JSON.stringify(bad));
 });
 

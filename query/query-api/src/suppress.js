@@ -1,10 +1,10 @@
-// suppress.js — §6 k-suppression, applied on the read path and nowhere else.
+// suppress.js — k-suppression, applied on the read path and nowhere else.
 //
-// The rule (docs/04 §6.2): k = 5 distinct subjects per cell; k applies to distinct subjects,
+// The rule: k = 5 distinct subjects per cell; k applies to distinct subjects,
 // not to rows; a suppressed cell suppresses every measure in it; and a suppressed cell is a
 // third kind of value — neither a zero nor a null.
 //
-// The one thing this module must never do is merge the two facts §6.3 keeps apart:
+// The one thing this module must never do is merge two different facts:
 //
 //   0          means "we looked and there was none"
 //   suppressed means "there was something and we are not telling you the number"
@@ -40,7 +40,7 @@ export function suppressedCell(k, extra = {}) {
  * @param {object} options
  * @param {ReadonlyArray<string>} options.measures    measure names to blank out when suppressed
  * @param {number} [options.k]
- * @param {boolean} [options.subjectScoped]  §6.4: explicitly subject-scoped reads are not suppressed
+ * @param {boolean} [options.subjectScoped]  explicitly subject-scoped reads are not suppressed
  * @param {string} [options.totalRowMarker]  dimension key that is NULL on the rollup total row
  * @param {ReadonlyArray<string>} [options.groupKeys] grouping keys, used to find the total row
  * @returns {SuppressionResult}
@@ -51,16 +51,16 @@ export function applySuppression(rows, options) {
   const groupKeys = options.groupKeys ?? [];
   const notes = [];
 
-  // §6.4: "Does not apply to explicitly subject-scoped reads — a list filtered by user_ref, or
-  // a single detail. Those answer questions about a named person, which is the product's
-  // purpose (Q6, Q8, Q9); the controls there are authorisation and audit, not anonymity."
+  // Explicitly subject-scoped reads (a list filtered by user_ref, or a single detail) are not
+  // suppressed: they answer questions about a named person, which is the product's purpose (Q6,
+  // Q8, Q9), and the controls there are authorisation and audit, not anonymity.
   if (options.subjectScoped) {
     return Object.freeze({
       rows: Object.freeze(rows.map((row) => stripInternal(row))),
       suppressedCells: 0,
       totalSuppressed: false,
       suppressed: Object.freeze([]),
-      notes: Object.freeze(['k-suppression does not apply to an explicitly subject-scoped read (docs/04 §6.4).']),
+      notes: Object.freeze(['k-suppression does not apply to an explicitly subject-scoped read.']),
     });
   }
 
@@ -88,9 +88,9 @@ export function applySuppression(rows, options) {
   });
 
   // -------------------------------------------------------------------------------------------
-  // §6.2 complementary suppression: "If a response contains exactly one suppressed cell and a
-  // published total over the same dimension, the total is suppressed too; otherwise the total
-  // minus the published cells recovers the hidden value."
+  // Complementary suppression: if a response contains exactly one suppressed cell and a published
+  // total over the same dimension, the total is suppressed too; otherwise the total minus the
+  // published cells recovers the hidden value.
   // -------------------------------------------------------------------------------------------
   let totalSuppressed = false;
   if (totalIndex >= 0 && suppressed.length === 1) {
@@ -104,7 +104,7 @@ export function applySuppression(rows, options) {
     marked[totalIndex] = suppressedCell(k, { ...kept, reason: 'complementary_suppression' });
     totalSuppressed = true;
     suppressed.push(Object.freeze({ cell: Object.freeze({ ...kept }), reason: 'complementary_suppression', k }));
-    notes.push('The published total was suppressed as well: with exactly one suppressed cell it would otherwise have recovered the hidden value (docs/04 §6.2).');
+    notes.push('The published total was suppressed as well: with exactly one suppressed cell it would otherwise have recovered the hidden value.');
   }
 
   return Object.freeze({
@@ -149,9 +149,9 @@ function isGenuineZero(value) {
 }
 
 /**
- * The audit trigger of §5.2 is decided *before* suppression: "a query answered with `suppressed`
- * still writes an audit entry, because the attempt to resolve a small group is the fact worth
- * recording". This is the predicate the executor applies to the raw rows, ahead of marking.
+ * The small-cell audit trigger is decided *before* suppression: a query answered with
+ * `suppressed` still writes an audit entry, because the attempt to resolve a small group is the
+ * fact worth recording. This is the predicate the executor applies to the raw rows.
  */
 export function anyCellBelowK(rows, k = DEFAULT_K) {
   return rows.some((row) => {

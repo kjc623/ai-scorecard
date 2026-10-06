@@ -1,4 +1,4 @@
-// guard-envelope.test.mjs — §12's cost guard and §13's result states.
+// guard-envelope.test.mjs — the cost guard and the result states.
 //
 // The guard's contract is "rejection, not degradation": an over-budget request never runs, and
 // the refusal names the fix. The envelope's contract is "no metric without its state": a
@@ -43,15 +43,15 @@ test('the cell estimate multiplies buckets by the grouped cardinalities, tighten
   assert.equal(listed.estimatedCells, 7 * 3);
 });
 
-test('a paged aggregate is bounded by its page, and the estimate is disclosed rather than hidden', () => {
+test('a limited aggregate is bounded by its limit, and the estimate is disclosed rather than hidden', () => {
   const p = plan(baseDoc({ source: 'mart.agg_tool_user_period', measures: ['submissions'], dimensions: ['tool', 'subject'], filters: [{ field: 'tool', op: 'eq', value: 'x' }], limit: 500 }), { now: NOW });
-  assert.equal(p.meta.guard.paged, true);
+  assert.equal(p.meta.guard.limited, true);
   assert.ok(p.meta.guard.estimated_cells > 2000);
   assert.equal(p.meta.guard.bounded_cells, 501);
-  assert.ok(p.meta.notes.some((n) => n.includes('Paged aggregate')));
+  assert.ok(p.meta.notes.some((n) => n.includes('Limited aggregate')));
 });
 
-test('an unpaged aggregate over the same shape is refused', () => {
+test('an unlimited aggregate over the same shape is refused', () => {
   const error = rejection(() =>
     plan(
       baseDoc({

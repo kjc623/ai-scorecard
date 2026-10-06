@@ -1,4 +1,4 @@
-// audit-plan.test.mjs — §5's audit-on-read and the executor's transaction shape.
+// audit-plan.test.mjs — audit-on-read and the executor's transaction shape.
 //
 // The two properties that matter: the audit decision is made before suppression, and a read that
 // cannot be proved to have happened does not happen (fail closed, zero rows, 503).
@@ -12,7 +12,10 @@ import { REASON } from '../src/errors.js';
 import { resolveMissingRecord } from '../src/blocks.js';
 import { baseDoc, NOW } from './helpers.mjs';
 
-/** A client that records statements and returns canned rows per statement id. */
+/**
+ * A connection that records statements and returns canned rows per statement id. BEGIN, COMMIT,
+ * ROLLBACK and the tenant scope arrive through query(), as they do on a pooled pg client.
+ */
 function fakeClient(canned = {}, options = {}) {
   const log = [];
   let inTransaction = false;
@@ -21,24 +24,30 @@ function fakeClient(canned = {}, options = {}) {
     get transaction() {
       return inTransaction;
     },
-    async begin() {
-      if (inTransaction) throw new Error('nested transaction');
-      inTransaction = true;
-      log.push({ kind: 'BEGIN' });
-    },
-    async commit() {
-      inTransaction = false;
-      log.push({ kind: 'COMMIT' });
-    },
-    async rollback() {
-      inTransaction = false;
-      log.push({ kind: 'ROLLBACK' });
-    },
     async query(text, params) {
+      if (text === 'BEGIN') {
+        if (inTransaction) throw new Error('nested transaction');
+        inTransaction = true;
+        log.push({ kind: 'BEGIN' });
+        return { rows: [] };
+      }
+      if (text === 'COMMIT' || text === 'ROLLBACK') {
+        inTransaction = false;
+        log.push({ kind: text });
+        return { rows: [] };
+      }
       if (!inTransaction) throw new Error('statement outside a transaction');
+      if (text.startsWith("SELECT set_config('app.tenant_id'")) {
+        log.push({ kind: 'SCOPE', params });
+        return { rows: [] };
+      }
       const id = options.idOf ? options.idOf(text) : idFromText(text);
       log.push({ kind: 'query', id, text, params });
-      if (options.failOn && options.failOn(id)) throw new Error('simulated database failure');
+      if (options.failOn && options.failOn(id)) {
+        const error = new Error('simulated database failure');
+        if (options.code) error.code = options.code;
+        throw error;
+      }
       return { rows: canned[id] ?? [] };
     },
   };
@@ -63,9 +72,9 @@ test('a query that returns a subject reference is audited, and the audit row is 
   assert.equal(p.statements[1].id, 'read');
 
   const client = fakeClient({ read: [] });
-  await executePlan(p, { client, now: NOW });
+  await executePlan(p, { client, now: NOW, tenant: 't1' });
   const kinds = client.log.map((e) => e.kind === 'query' ? e.id : e.kind);
-  assert.deepEqual(kinds.slice(0, 3), ['BEGIN', 'audit_insert', 'read']);
+  assert.deepEqual(kinds.slice(0, 4), ['BEGIN', 'SCOPE', 'audit_insert', 'read']);
   assert.equal(kinds[kinds.length - 1], 'COMMIT');
 });
 
@@ -90,7 +99,7 @@ test('a read of the audit trail writes one row and is not re-audited', async () 
   );
   assert.equal(p.audit.decision.selfAudited, false);
   const client = fakeClient({ read: rows, audit_insert: [{ audit_seq: 99, occurred_at: new Date('2026-10-02T12:00:00Z') }] });
-  const envelope = await executePlan(p, { client, now: NOW });
+  const envelope = await executePlan(p, { client, now: NOW, tenant: 't1' });
   const auditQueries = client.log.filter((e) => e.kind === 'query' && e.id === 'audit_insert');
   assert.equal(auditQueries.length, 1, 'exactly one audit row per query, no recursion');
   assert.equal(envelope.audit.entry_id, '99');
@@ -108,7 +117,7 @@ test('a broken hash link returns audit_chain_broken rather than a list that look
     { now: NOW, tenant: 't1', actorId: 'auditor-1' },
   );
   const client = fakeClient({ read: rows, audit_insert: [{ audit_seq: 1, occurred_at: new Date('2026-10-02T12:00:00Z') }] });
-  const envelope = await executePlan(p, { client, now: NOW });
+  const envelope = await executePlan(p, { client, now: NOW, tenant: 't1' });
   assert.equal(envelope.result_state, 'audit_chain_broken');
   assert.equal(envelope.data, undefined);
   assert.equal(envelope.error.code, REASON.LINK_MISMATCH);
@@ -135,7 +144,7 @@ test('a failing audit insert serves zero rows and returns 503 audit_unavailable'
   const client = fakeClient({ read: [{ submission_id: 'x', "subject": 'user-1' }] }, { failOn: (id) => id === 'audit_insert' });
   let error;
   try {
-    await executePlan(p, { client, now: NOW });
+    await executePlan(p, { client, now: NOW, tenant: 't1' });
   } catch (e) {
     error = e;
   }
@@ -155,7 +164,7 @@ test('a failure after the read still rolls back and serves nothing', async () =>
   const client = fakeClient({}, { failOn: (id) => id === 'coverage' });
   let error;
   try {
-    await executePlan(p, { client, now: NOW });
+    await executePlan(p, { client, now: NOW, tenant: 't1' });
   } catch (e) {
     error = e;
   }
@@ -174,7 +183,7 @@ test('the small-cell trigger is post-read: the audit row is written after the ce
     coverage: [{ devices_enrolled: 100, devices_reporting: 100, expected_collector_days: 600, observed_collector_days: 600, gap_reasons: {} }],
     audit_insert: [{ audit_seq: 7, occurred_at: new Date('2026-10-02T12:00:00Z') }],
   });
-  const envelope = await executePlan(p, { client, now: NOW });
+  const envelope = await executePlan(p, { client, now: NOW, tenant: 't1' });
   const order = client.log.map((e) => (e.kind === 'query' ? e.id : e.kind));
   assert.ok(order.indexOf('read') < order.indexOf('audit_insert'), 'the cells decide the trigger');
   assert.equal(envelope.audit.entry_id, '7');
@@ -190,19 +199,19 @@ test('a wide aggregate cell writes no audit row at all', async () => {
     freshness: [{ aggregate_name: 'mart.agg_tool_period', bucket_size: 'day', last_run_at: new Date(NOW.getTime() - 60_000), last_complete_bucket: '2026-10-02T11:00:00Z' }],
     coverage: [{ devices_enrolled: 100, devices_reporting: 100, expected_collector_days: 600, observed_collector_days: 600, gap_reasons: {} }],
   });
-  const envelope = await executePlan(p, { client, now: NOW });
+  const envelope = await executePlan(p, { client, now: NOW, tenant: 't1' });
   assert.ok(!client.log.some((e) => e.kind === 'query' && e.id === 'audit_insert'));
   assert.equal(envelope.audit, undefined);
   assert.equal(envelope.suppression.suppressed_cells, 0);
   assert.equal(envelope.result_state, 'ok');
 });
 
-test('the device read is subject-level and audited; the coverage read is not (§5.2, ADR 0021)', () => {
+test('the device read is subject-level and audited; the coverage read is not', () => {
   const device = validate({ query_version: '1', source: 'mart.v_device_liveness', filters: [], limit: 10 });
   const coverage = validate({ query_version: '1', source: 'ops.coverage_snapshot', filters: [], window: { ...baseDoc().window }, limit: 10 });
 
-  // The device row now returns the most recent user (user_ref, subject_name), so docs/04 §5.2 row 2
-  // makes it subject-level: a read that identifies a subject is recorded as served.
+  // The device row returns the most recent user (user_ref, subject_name), so it is subject-level:
+  // a read that identifies a subject is recorded as served.
   const deviceDecision = auditDecision(device, {});
   assert.equal(deviceDecision.required, true, 'a device read that names a user is subject-level');
   assert.equal(deviceDecision.phase, 'pre_read');
@@ -228,7 +237,7 @@ test('the audit detail describes the question and puts subject values in subject
   assert.equal(statement.params[5], 'user_ref_9');
 });
 
-test('§13\'s not_found rule: a purge receipt makes the answer no_longer_available, not 404', () => {
+test('a missing record covered by an erasure receipt is no_longer_available, not 404', () => {
   const receipt = { receipt_id: 'r1', scope_kind: 'subject', completed_at: '2026-09-06T00:00:00Z', mechanisms: ['db_delete'], removed_counts: { submission: 12 }, remaining_counts: {} };
   const purged = resolveMissingRecord({ found: false, receivedAtHint: '2026-09-05T04:00:00Z', receipts: [receipt] });
   assert.equal(purged.result_state, 'no_longer_available');
@@ -268,4 +277,52 @@ test('an event list page is cursored and reports newer events without hiding the
   assert.equal(envelope.page.newer_events_exist, true);
   assert.equal(envelope.page.snapshot_upper_bound, NOW.toISOString());
   assert.equal(envelope.data.length, 2);
+});
+
+test('the transaction is scoped to the session tenant with the query class statement timeout', async () => {
+  const p = plan(baseDoc({ measures: ['submissions'] }), { now: NOW, tenant: 't1', actorId: 'analyst-1' });
+  const client = fakeClient({});
+  await executePlan(p, { client, now: NOW, tenant: 't1' });
+  const scope = client.log.find((e) => e.kind === 'SCOPE');
+  assert.deepEqual(scope.params, ['t1', '3000ms', '1500ms'], 'aggregate class: 3 s statement timeout, half of it for locks');
+  assert.equal(client.log[0].kind, 'BEGIN');
+  assert.equal(client.log.at(-1).kind, 'COMMIT');
+});
+
+test('a read without a tenant is refused before anything runs', async () => {
+  const p = plan(baseDoc(), { now: NOW, tenant: 't1', actorId: 'analyst-1' });
+  const client = fakeClient({});
+  await assert.rejects(executePlan(p, { client, now: NOW }));
+  assert.equal(client.log.length, 0);
+});
+
+test('a statement timeout is busy and retryable, not an audit failure', async () => {
+  const p = plan(
+    { query_version: '1', source: 'ingest.submission', filters: [], window: { ...baseDoc().window }, limit: 10 },
+    { now: NOW, tenant: 't1', actorId: 'analyst-1' },
+  );
+  for (const [code, reason] of [['57014', 'statement_timeout'], ['55P03', 'lock_timeout'], ['40001', 'serialization_failure'], ['40P01', 'serialization_failure']]) {
+    const client = fakeClient({}, { failOn: (id) => id === 'read', code });
+    const error = await executePlan(p, { client, now: NOW, tenant: 't1' }).then(() => null, (e) => e);
+    assert.equal(error.resultState, 'busy', code);
+    assert.equal(error.http, 429);
+    assert.equal(error.reason, reason);
+    assert.ok(client.log.some((e) => e.kind === 'ROLLBACK'));
+  }
+  const other = fakeClient({}, { failOn: (id) => id === 'read', code: '42P01' });
+  const error = await executePlan(p, { client: other, now: NOW, tenant: 't1' }).then(() => null, (e) => e);
+  assert.equal(error.resultState, 'audit_unavailable');
+  assert.equal(error.reason, 'read_failed', 'only the audit insert itself is audit_write_failed');
+});
+
+test('an aggregate is cut at its limit and says whether the limit truncated it', async () => {
+  const p = plan(baseDoc({ measures: ['submissions'], limit: 2 }), { now: NOW, tenant: 't1', actorId: 'analyst-1' });
+  const rows = [1, 2, 3].map((n) => ({ bucket: '2026-09-01T00:00:00Z', tool: `t${n}`, submissions: 100, __k_subjects: 40 }));
+  const truncated = await executePlan(p, { client: fakeClient({ read: rows }), now: NOW, tenant: 't1' });
+  assert.equal(truncated.data.length, 2, 'the probe row is never served');
+  assert.equal(truncated.meta.truncated, true);
+  assert.equal(truncated.page, undefined, 'an aggregate is not paged');
+  const whole = await executePlan(p, { client: fakeClient({ read: rows.slice(0, 2) }), now: NOW, tenant: 't1' });
+  assert.equal(whole.data.length, 2);
+  assert.equal(whole.meta.truncated, false);
 });

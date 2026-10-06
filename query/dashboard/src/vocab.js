@@ -1,32 +1,29 @@
 // vocab.js — the closed vocabularies of the query DSL, mirrored on the client.
 //
-// This file is a *client-side mirror* of services/query-api/src/registry.js. It exists so the
+// This file mirrors query-api's registry (query/query-api/src/registry.js). It exists so the
 // dashboard can refuse to build a query the server would reject, before the request leaves the
 // browser: the DSL is closed, so an unknown dimension is a 400 rather than a silent no-op, and a
-// guessed field name is a hard failure. `test/parity.test.mjs` imports the server's registry and
-// asserts that these lists are equal name for name — a mirror that drifts is a mirror that lies.
+// guessed field name is a hard failure. test/parity.test.mjs imports the server's registry and
+// asserts that these lists are equal name for name.
 //
 // Nothing here is a query. It is a list of nouns the API admits.
 
 /** The DSL version this client speaks. A different version is not a downgrade, it is a rejection. */
 export const QUERY_VERSION = '1';
-export const API_VERSION = '1';
 
 /**
- * The endpoints this client may call. `test/section14.test.mjs` asserts there are no others.
+ * The endpoints this client may call. test/guarantees.test.mjs asserts there are no others.
  *
  * The query endpoint takes a closed query document and never returns content. The two content
- * reads are the approved path docs/04 §15.3 and docs/02 §11 describe: query-api forwards them to
- * content-vault, which decides, audits before it serves, and is the only component that can open
- * content. Neither takes a query document, and neither is reachable through the DSL.
+ * reads are forwarded by query-api to content-vault, which decides, audits before it serves, and is
+ * the only component that can open content. Neither takes a query document.
  */
 export const QUERY_ENDPOINT = '/v1/query';
 export const CONTENT_SEARCH_ENDPOINT = '/v1/content-search';
 export const CONTENT_RETRIEVAL_ENDPOINT = '/v1/content/retrieval';
 
 /**
- * The admin API behind Settings → Deployment (contract §5). It is control-api's, not the read
- * path's: the dashboard server forwards /admin/v1/* there with the session's product token, and
+ * The admin API behind Settings → Deployment. It is control-api's, not the read path's: the dashboard server forwards /admin/v1/* there with the session's product token, and
  * control-api checks the admin role and audits every write with the real actor. These are the
  * only writes this client makes. A key or token id is appended as /<id>/revoke.
  */
@@ -38,31 +35,6 @@ export const ADMIN_SCIM_TOKENS_ENDPOINT = '/admin/v1/scim/tokens';
 
 /** k, the small-cell floor. A cell below it arrives suppressed and is never a number. */
 export const K = 5;
-
-export const OPERATORS = Object.freeze([
-  'eq',
-  'ne',
-  'in',
-  'not_in',
-  'lt',
-  'lte',
-  'gt',
-  'gte',
-  'between',
-  'starts_with',
-  'is_null',
-]);
-
-export const BUCKETS = Object.freeze(['hour', 'day', 'week', 'month']);
-export const NATIVE_BUCKETS = Object.freeze(['hour', 'day']);
-
-/** Bucket length in milliseconds, for the "how many points will this be" hint. */
-export const BUCKET_MS = Object.freeze({
-  hour: 3_600_000,
-  day: 86_400_000,
-  week: 604_800_000,
-  month: 2_629_800_000,
-});
 
 /**
  * Sources, with the dimensions and measures each actually carries. A dimension or measure that
@@ -95,7 +67,7 @@ export const SOURCES = Object.freeze({
     measures: Object.freeze(['submissions', 'bytes_total']),
     answers: 'Q2',
     subjectBearing: true,
-    note: 'subject-bearing: every read is audited, and the cursor is server-side; sanctioned state is joined at read time and the k cell is the tool, not the person',
+    note: 'subject-bearing: every read is audited; sanctioned state is joined at read time and the k cell is the tool, not the person',
   }),
   'mart.agg_org_period': Object.freeze({
     kind: 'aggregate',
@@ -133,7 +105,7 @@ export const SOURCES = Object.freeze({
   'mart.v_device_liveness': Object.freeze({
     kind: 'list',
     label: 'Devices and their collection state',
-    dimensions: Object.freeze(['device', 'device_os', 'managed_state', 'region', 'liveness', 'collector', 'collector_state']),
+    dimensions: Object.freeze(['device', 'hostname', 'agent_version', 'device_os', 'managed_state', 'collection_mode', 'region', 'liveness', 'collector', 'collector_state']),
     measures: Object.freeze([]),
     answers: 'Q7',
     noWindow: true,
@@ -175,9 +147,7 @@ export const SOURCES = Object.freeze({
   }),
 });
 
-export const SOURCE_NAMES = Object.freeze(Object.keys(SOURCES));
-
-/** The ten questions of docs/04 §3, with the parameters each template admits. */
+/** The ten questions, with the parameters each template admits. */
 export const TEMPLATES = Object.freeze({
   q1_tools_ranked: Object.freeze({
     question: 1,
@@ -255,7 +225,7 @@ export const TEMPLATES = Object.freeze({
 
 export const TEMPLATE_NAMES = Object.freeze(Object.keys(TEMPLATES));
 
-/** §13's result states, with the treatment each one demands of the UI. */
+/** The result states, with the treatment each one demands of the UI. */
 export const RESULT_STATES = Object.freeze({
   ok: Object.freeze({ http: 200, carriesData: true, treatment: 'data', label: 'A real answer' }),
   empty: Object.freeze({ http: 200, carriesData: true, treatment: 'empty', label: 'We looked, coverage was adequate, there is nothing' }),
@@ -278,9 +248,7 @@ export const RESULT_STATES = Object.freeze({
   audit_chain_broken: Object.freeze({ http: 500, carriesData: false, treatment: 'refusal', label: "A page's hash links do not verify" }),
 });
 
-export const RESULT_STATE_NAMES = Object.freeze(Object.keys(RESULT_STATES));
-
-/** Values that must never be merged in a rendering (docs/04 §14 item 8, brief §3.2). */
+/** Values that must never be merged in a rendering. */
 export const STATE_PAIRS = Object.freeze({
   liveness: Object.freeze(['reporting', 'stale', 'never_reported', 'revoked']),
   collector_state: Object.freeze(['healthy', 'degraded', 'absent', 'tampered']),
@@ -291,22 +259,12 @@ export const STATE_PAIRS = Object.freeze({
   merge_confidence: Object.freeze(['high', 'low']),
 });
 
-/** The coverage gap vocabulary: `unknown` is a value, not a blank (docs/04 §11.3). */
-export const GAP_REASONS = Object.freeze([
-  'not_enrolled', 'not_managed', 'client_bypassed_proxy', 'pinned_certificate',
-  'permission_denied', 'process_excluded', 'tampered', 'unknown',
-]);
-
 /** Windows the UI offers, in hours. Named so the label and the request cannot disagree. */
 export const WINDOWS = Object.freeze({
-  // Offered on the events/search dataset so a prompt search can be narrowed below a day: the lab's
-  // indexed prompts all fall inside 24 hours, so the coarser presets cannot show the switch working.
+  // Offered on the events dataset, so a list or a prompt search can be narrowed below a day.
   h6: Object.freeze({ label: 'Last 6 hours', hours: 6, bucket: 'hour' }),
   h24: Object.freeze({ label: 'Last 24 hours', hours: 24, bucket: 'hour' }),
   d7: Object.freeze({ label: 'Last 7 days', hours: 24 * 7, bucket: 'day' }),
   d30: Object.freeze({ label: 'Last 30 days', hours: 24 * 30, bucket: 'day' }),
   d90: Object.freeze({ label: 'Last 90 days', hours: 24 * 90, bucket: 'day' }),
 });
-
-/** Page sizes the API admits, per kind. The client never asks for more. */
-export const PAGE_SIZES = Object.freeze({ list: 50, listMax: 500, aggregateDefault: 400 });

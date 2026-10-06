@@ -1,7 +1,6 @@
 // snapshots.test.mjs — the compiled SQL is pinned, so a change to the compiler is a diff.
 //
-// "Include the compiled-SQL snapshots so the verifier can diff them." This test is the diff: it
-// fails when the compiler's output changes in any way, including in a way that would be easy to
+// It fails when the compiler's output changes in any way, including in a way that would be easy to
 // miss in review (a reordered tie-break, a lost cast, a bucket predicate that disappeared).
 
 import test from 'node:test';

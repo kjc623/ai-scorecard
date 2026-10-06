@@ -1,44 +1,32 @@
-// session.mjs — the dashboard server's side of sign-in, kept out of serve.mjs so it can be tested.
+// session.mjs — the dashboard server's side of sign-in: the client of control-api's identity
+// service, the per-session product-token cache, the cookies, the same-origin check and the
+// role-to-page map the navigation is hidden by.
 //
-// WHY THIS IS SMALL NOW. Task 11 built an OpenID Connect client in this file: the dashboard was the
-// relying party for one identity provider and forwarded that provider's access token. That cannot
-// serve "any customer IdP" — a Google or Okta access token is opaque or not meant for us — so
-// control-api became the product's one identity service (the shared contract, §3 and §6). It is
-// the relying party for every customer IdP, keeps the server-side session, and mints short-lived
-// product access tokens that query-api, content-vault and control-api's admin API all verify.
-//
-// What is left here is a thin backend-for-frontend:
-//   * an identity client for control-api's internal API (begin, complete, token, revoke), called
-//     with the shared internal bearer and never reachable from a browser;
-//   * a per-session cache of the product access token, refreshed through /internal/v1/auth/token
-//     shortly before it expires. The session lives in control-api, so any instance of this server
-//     can serve any session: a cache miss is a refresh, never a sign-out;
-//   * the cookies (the opaque session id, and the sign-in attempt while the browser is at the IdP),
-//     the same-origin check that stands in for a CSRF token, and the role-to-page map the
-//     navigation is hidden by.
-//
-// The browser holds one opaque cookie and never a token. Zero dependencies: node:crypto only.
+// control-api is the relying party for every customer identity provider, keeps the server-side
+// session and mints short-lived product access tokens. This server calls its internal API with
+// the shared internal bearer, holds the product token per session, and gives the browser one
+// opaque HttpOnly cookie and never a token. The session lives in control-api, so any instance of
+// this server can serve any session: a cache miss is a refresh, never a sign-out.
 
 import { createHash } from 'node:crypto';
 
-/** The analyst-app roles, mirroring query-api's roles.js. Two copies because the packages are
- *  separately deployable and zero-dependency; a drift is caught by the report, not a build. `dev`
- *  is the lab's development principal (SAC_DEV_TRUST_PRINCIPAL), which carries every capability
- *  there and so is offered every page here. A product token can never name it. */
+/**
+ * What each analyst-app role may do. query-api's roles.js holds the same map and enforces it;
+ * test/parity.test.mjs asserts the two are equal.
+ */
 export const ROLE_CAPABILITIES = Object.freeze({
   viewer: Object.freeze(['aggregate', 'device']),
   analyst: Object.freeze(['aggregate', 'device', 'subject', 'search']),
   content_reader: Object.freeze(['aggregate', 'device', 'subject', 'search', 'content']),
-  admin: Object.freeze(['aggregate', 'audit', 'settings', 'export', 'sanction']),
-  dev: Object.freeze(['aggregate', 'device', 'subject', 'search', 'content', 'audit', 'settings', 'export', 'sanction']),
+  admin: Object.freeze(['aggregate', 'audit', 'settings', 'sanction']),
 });
 
-/** The roles a product token may carry. `dev` is not one of them. */
-export const PRODUCT_ROLES = Object.freeze(['viewer', 'analyst', 'content_reader', 'admin']);
+/** The roles a product token may carry. */
+export const PRODUCT_ROLES = Object.freeze(Object.keys(ROLE_CAPABILITIES));
 
 /**
- * The navigation a role may see. The dashboard's own hiding is defence in depth: query-api and
- * control-api refuse the reads and writes anyway, and this decides what is offered.
+ * The navigation a role may see. Hiding is defence in depth: query-api and control-api refuse the
+ * reads and writes anyway, and this decides what is offered.
  */
 const PAGE_CAPABILITY = Object.freeze({
   posture: 'aggregate',
@@ -68,15 +56,9 @@ export function canAny(roles, capability) {
   return (roles ?? []).some((role) => can(role, capability));
 }
 
-/** The page ids a role may open. `null` (no session) means "show everything", the sample mode. */
-export function pagesFor(role) {
-  if (!role) return null;
-  return pagesForRoles([role]);
-}
-
 /** The page ids a set of roles may open: the union, because the roles are not a ladder. */
 export function pagesForRoles(roles) {
-  if (!Array.isArray(roles) || roles.length === 0) return null;
+  if (!Array.isArray(roles) || roles.length === 0) return [];
   const pages = Object.entries(PAGE_CAPABILITY)
     .filter(([, capability]) => canAny(roles, capability))
     .map(([page]) => page);
@@ -111,7 +93,7 @@ export function principalFrom(raw) {
 // -------------------------------------------------------------------------------------------
 
 /**
- * A client for control-api's internal identity API (contract §3). Every answer is a value, never a
+ * A client for control-api's internal identity API. Every answer is a value, never a
  * throw: `{ ok: true, status, body }` or `{ ok: false, status, error }`, where status 0 and error
  * `identity_unreachable` mean the service could not be reached. The server turns each into a
  * page or a JSON refusal; nothing here decides what a person reads.
@@ -261,7 +243,7 @@ export function createTokenCache({ identity, now = () => Date.now(), refreshBefo
 
 export const SESSION_COOKIE = 'sac_session';
 export const SIGNIN_COOKIE = 'sac_signin';
-/** control-api's session max age (contract §3). The server-side session decides; this only stops a browser keeping a dead id. */
+/** control-api's session max age. The server-side session decides; this only stops a browser keeping a dead id. */
 export const SESSION_MAX_AGE_SEC = 8 * 3600;
 /** control-api holds a sign-in attempt for ten minutes. */
 export const SIGNIN_MAX_AGE_SEC = 10 * 60;
@@ -292,17 +274,6 @@ export function readCookie(header, name = SESSION_COOKIE) {
     if (k === name) return rest.join('=') || null;
   }
   return null;
-}
-
-/** Parse a Cookie header into a plain object, for tests. */
-export function parseCookies(header) {
-  const out = {};
-  if (typeof header !== 'string') return out;
-  for (const part of header.split(';')) {
-    const idx = part.indexOf('=');
-    if (idx > 0) out[part.slice(0, idx).trim()] = part.slice(idx + 1).trim();
-  }
-  return out;
 }
 
 /** A Cookie header with this server's own cookies removed, for a request forwarded elsewhere. */
@@ -366,7 +337,7 @@ function headerValue(value) {
   return Array.isArray(value) ? value[0] : value;
 }
 
-/** Is this method one that changes something? GET and HEAD do not, by contract. */
+/** Is this method one that changes something? GET, HEAD and OPTIONS do not. */
 export function isStateChanging(method) {
   return !['GET', 'HEAD', 'OPTIONS'].includes(String(method ?? 'GET').toUpperCase());
 }

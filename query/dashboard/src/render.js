@@ -9,8 +9,6 @@
 // different value kinds, so a stylesheet change cannot merge them by accident either.
 
 import { formatBytes, formatCount, formatInstant, formatScore } from './format.js';
-import { freshnessText, coverageText } from './states.js';
-import { GAP_REASONS } from './vocab.js';
 
 export function escapeHtml(value) {
   return String(value ?? '')
@@ -110,7 +108,7 @@ function renderCell(row, column, max = 0) {
   // The tool column resolves the raw, behaviour-derived fingerprint to a name at read time. Both
   // are shown: the name is what a person reads, and the fingerprint is the stable identity behind
   // it, so an "Unrecognised tool" is never mistaken for a tool the product knows and merely
-  // labelled badly (brief §2, C8). A row that carries no tool_name falls back to the fingerprint.
+  // labelled badly. A row that carries no tool_name falls back to the fingerprint.
   if (key === 'tool') {
     const fingerprint = String(raw);
     const name = row.tool_name ? String(row.tool_name) : fingerprint;
@@ -298,11 +296,8 @@ const NAV_ICONS = Object.freeze({
   overview: '<circle cx="12" cy="12" r="8.5"/><path d="M12 12 16.5 8"/><path d="M12 3.5v2M20.5 12h-2M5.5 12h-2"/>',
   search: '<circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/>',
   usage: '<path d="M4 19.5V10M9.5 19.5v-15M15 19.5v-7M20.5 19.5V7"/>',
-  review: '<path d="M5 4.5h14v12H9l-4 3z"/><path d="M9 9h6M9 12.5h4"/>',
   collection: '<rect x="4" y="5" width="16" height="11" rx="1.5"/><path d="M9 20h6M12 16v4"/>',
   governance: '<path d="M12 3.5 5 6.5v5c0 4.3 2.9 7.4 7 9 4.1-1.6 7-4.7 7-9v-5z"/><path d="m9.2 12 2 2 3.6-4"/>',
-  unavailable: '<circle cx="12" cy="12" r="8.5"/><path d="M6 18 18 6"/>',
-  developer: '<path d="m8.5 8-4 4 4 4M15.5 8l4 4-4 4M13.5 5.5l-3 13"/>',
   settings: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
 });
 
@@ -345,21 +340,4 @@ export function renderNav(items, current, options = {}) {
       + `<summary>${navIcon(entry.icon)}<span>${escapeHtml(entry.group)}</span><svg class="nav-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></summary>`
       + `<div class="nav-items">${entry.members.map((m) => link(m, true)).join('')}</div></details>`;
   }).join('');
-}
-
-/** The state gallery: pick a scenario, see every screen render it. */
-export function renderGallery(scenarios, current) {
-  return `<section class="gallery"><h3>State gallery</h3>`
-    + `<p>Every result state the API documents, rendered by the same code the screens use. Pick one to force it across the dashboard.</p>`
-    + `<div class="gallery-items">${scenarios.map((s) => `<a class="gallery-item${s.id === current ? ' active' : ''}" href="#gallery/${escapeHtml(s.id)}">${escapeHtml(s.label)}</a>`).join('')}</div>`
-    + '</section>';
-}
-
-/** The reason vocabulary, rendered so an absent reason cannot look like a blank. */
-export function renderGapReasons(coverage) {
-  const present = coverage?.gap_reasons ?? {};
-  return `<ul class="gap-list">${GAP_REASONS.map((reason) => {
-    const count = present[reason];
-    return `<li class="${count === undefined ? 'gap-none' : 'gap-some'}">${escapeHtml(reason)}: ${count === undefined ? 'none recorded' : escapeHtml(formatCount(count))}</li>`;
-  }).join('')}</ul>`;
 }

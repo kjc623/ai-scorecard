@@ -1,11 +1,11 @@
-// questions.js — the ten questions of docs/04 §3, as request builders.
+// questions.js — the ten questions, as request builders.
 //
 // Each one returns a request body produced by dsl.js, so a question cannot express anything the
 // DSL does not admit. The ten are deliberately narrow: the API's own template layer pins the
 // source, the dimensions, the measures and the ordering, and the client supplies only values.
 
-import { buildTemplate, buildDocument, windowFor } from './dsl.js';
-import { SOURCES, TEMPLATES } from './vocab.js';
+import { buildTemplate, windowFor } from './dsl.js';
+import { TEMPLATES } from './vocab.js';
 
 /** The context every screen carries: what the analyst has chosen, and nothing else. */
 export function context(overrides = {}) {
@@ -203,15 +203,3 @@ export const QUESTIONS = Object.freeze({
 });
 
 export const QUESTION_NAMES = Object.freeze(Object.keys(QUESTIONS));
-
-/** The API's documented parameter list for a question, for a screen that wants to show its bounds. */
-export function questionParams(id) {
-  return TEMPLATES[id]?.params ?? [];
-}
-
-/** The source a question reads, so the UI can say where a number came from. */
-export function questionSource(id) {
-  return TEMPLATES[id]?.source ?? null;
-}
-
-export { buildDocument, SOURCES };

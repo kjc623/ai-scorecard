@@ -1,9 +1,9 @@
-// errors.js — the §13 result states, expressed as a typed rejection the caller cannot ignore.
+// errors.js — the result states, and the typed rejection a caller cannot ignore.
 //
 // A query that is not servable is never answered with an empty page, a zero, or a silently
 // dropped filter: it is answered with a result_state that says so, an HTTP status that
-// distinguishes "the request failed" from "the answer is not a number", and — where a fix
-// exists — the fix, named. §13's table is the only source for the codes below.
+// distinguishes "the request failed" from "the answer is not a number", and, where a fix exists,
+// the fix, named.
 
 import { API_VERSION, QUERY_VERSION } from './registry.js';
 
@@ -14,7 +14,7 @@ import { API_VERSION, QUERY_VERSION } from './registry.js';
  *   'unauthorised_role'|'content_search_not_enabled'|'audit_chain_broken'} ResultState
  */
 
-/** §13's table, verbatim in code. `data` is true only for states that carry an answer. */
+/** Every result state and its HTTP status. `data` is true only for states that carry an answer. */
 export const RESULT_STATES = Object.freeze({
   ok: { http: 200, data: true },
   empty: { http: 200, data: true },
@@ -85,7 +85,7 @@ export const REASON = Object.freeze({
   CURSOR_REQUIRES_TOTAL_ORDER: 'cursor_requires_total_order',
   COST_ESTIMATE_EXCEEDED: 'cost_estimate_exceeded',
   SERIES_TOO_LONG: 'series_too_long',
-  ROLLUP_WITH_CURSOR: 'rollup_with_cursor',
+  AGGREGATE_NOT_PAGED: 'aggregate_not_paged',
   NON_ADDITIVE_MEASURE: 'non_additive_measure',
   NO_MEASURES: 'no_measures',
   BUCKET_REQUIRED: 'bucket_required',
@@ -99,6 +99,10 @@ export const REASON = Object.freeze({
   CURSOR_TENANT_MISMATCH: 'cursor_tenant_mismatch',
   CURSOR_VERSION_MISMATCH: 'cursor_version_mismatch',
   AUDIT_WRITE_FAILED: 'audit_write_failed',
+  READ_FAILED: 'read_failed',
+  STATEMENT_TIMEOUT: 'statement_timeout',
+  LOCK_TIMEOUT: 'lock_timeout',
+  SERIALIZATION_FAILURE: 'serialization_failure',
   CHAIN_MISMATCH: 'chain_mismatch',
   LINK_MISMATCH: 'link_mismatch',
   RECORD_PURGED: 'record_purged',
@@ -113,12 +117,11 @@ const FIXABLE = new Set([
   REASON.SUBJECT_SCOPE_REQUIRED,
   REASON.TOO_MANY_DIMENSIONS,
   REASON.LIST_TOO_LONG,
-  REASON.SUBJECT_SCOPE_REQUIRED,
 ]);
 
 /**
- * A typed rejection. Every field of the wire error comes from here, and `result_state` is the
- * §13 state — never a bespoke one.
+ * A typed rejection. Every field of the wire error comes from here, and `result_state` is always
+ * one of RESULT_STATES.
  */
 export class QueryError extends Error {
   /**
@@ -173,9 +176,40 @@ export function auditUnavailable(reason, message, detail) {
 }
 
 /**
- * The fields §2.4 prohibits by name. Their presence is not "an unknown key": it is a request
- * that tried to speak SQL or to choose its own tenant, and §2.1/§2.4 say to reject it as a
- * validation error rather than ignore it.
+ * The rejection for a PostgreSQL error raised inside a read or write transaction. The transaction
+ * has rolled back, so nothing was served and no audit row survives.
+ *
+ *   57014 statement timeout, 55P03 lock timeout, 40001/40P01 serialisation failure or deadlock:
+ *     `busy` (429), because the same request may succeed when retried;
+ *   anything else: `audit_unavailable` (503), with `audit_write_failed` when the audit insert itself
+ *     failed and `read_failed` for any other statement.
+ *
+ * A QueryError passes through unchanged.
+ *
+ * @param {unknown} error
+ * @param {{auditFailed?: boolean}} [opts]
+ * @returns {QueryError}
+ */
+export function fromDatabaseError(error, { auditFailed = false } = {}) {
+  if (error instanceof QueryError) return error;
+  const code = typeof error?.code === 'string' ? error.code : '';
+  if (code === '57014') {
+    return new QueryError('busy', REASON.STATEMENT_TIMEOUT, 'The statement exceeded its time budget; retry, or narrow the query.');
+  }
+  if (code === '55P03') {
+    return new QueryError('busy', REASON.LOCK_TIMEOUT, 'A lock the statement needed was not released in time; retry shortly.');
+  }
+  if (code === '40001' || code === '40P01') {
+    return new QueryError('busy', REASON.SERIALIZATION_FAILURE, 'The transaction was rolled back by a concurrent change; retry.');
+  }
+  return auditFailed
+    ? auditUnavailable(REASON.AUDIT_WRITE_FAILED, 'The audit entry could not be committed, so nothing was served.')
+    : auditUnavailable(REASON.READ_FAILED, 'The transaction could not be completed, so nothing was served.');
+}
+
+/**
+ * Keys refused by name. Their presence is not "an unknown key": it is a request that tried to
+ * speak SQL, search text, or choose its own tenant, so it is rejected rather than ignored.
  */
 export const PROHIBITED_FIELDS = Object.freeze({
   sql: REASON.PROHIBITED_FIELD,

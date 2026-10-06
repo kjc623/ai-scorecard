@@ -1,13 +1,10 @@
-// suppress-cursor.test.mjs — §6 k-suppression and §7 cursor pagination.
-//
-// These two are the ones the acceptance criteria call out explicitly: "k-suppression and cursor
-// stability have explicit tests".
+// suppress-cursor.test.mjs — k-suppression and cursor pagination.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { applySuppression, anyCellBelowK } from '../src/suppress.js';
-import { createCursorStore, decodeCursor, encodeCursor, paginate } from '../src/cursor.js';
-import { plan } from '../src/plan.js';
+import { decodeCursor, encodeCursor, paginate } from '../src/cursor.js';
+import { plan, executePlan } from '../src/plan.js';
 import { baseDoc, NOW } from './helpers.mjs';
 
 const KEY = Buffer.from('a'.repeat(32));
@@ -83,7 +80,7 @@ test('with two suppressed cells the total stays published: neither value is reco
   assert.equal(result.rows[2].submissions, 50);
 });
 
-test('suppression does not apply to an explicitly subject-scoped read (§6.4)', () => {
+test('suppression does not apply to an explicitly subject-scoped read', () => {
   const result = applySuppression([cell({ __k_subjects: 1, users: 1 })], {
     measures: ['submissions', 'users'],
     subjectScoped: true,
@@ -180,23 +177,14 @@ test('a cursor signed with another key does not verify', () => {
   assert.equal(error.resultState, 'cursor_expired');
 });
 
-test('a subject-bearing ordering key uses a server-side cursor, never a client-held one', () => {
-  const store = createCursorStore({ ttlMs: 60_000 });
-  const id = store.put({ dsl_hash: 'h', tenant: 'tenant-a', position: { subject: 'user_ref_1' }, snapshotUpper: '2026-09-07T00:00:00Z' });
-  assert.ok(!id.includes('.'), 'a server-side cursor is an opaque id, not an encoding');
-  const resume = store.take(id);
-  assert.equal(resume.position.subject, 'user_ref_1');
-  // A server-side cursor is single-use and short-lived.
-  assert.throws(() => store.take('unknown-id'), (error) => error.resultState === 'cursor_expired');
-});
-
-test('a self-contained cursor presented for a subject-bearing ordering is refused', () => {
+test('a cursor is refused on an aggregate: aggregates are not paged', () => {
   const token = encodeCursor(CURSOR_INPUT, { key: KEY, now: 1000 });
   let error;
   try {
     plan(
       baseDoc({
         source: 'mart.agg_tool_user_period',
+        measures: ['submissions'],
         dimensions: ['tool', 'subject'],
         filters: [{ field: 'tool', op: 'eq', value: 'claude_web' }],
         cursor: token,
@@ -208,6 +196,40 @@ test('a self-contained cursor presented for a subject-bearing ordering is refuse
     error = e;
   }
   assert.equal(error.resultState, 'unsupported_query_shape');
+  assert.equal(error.reason, 'aggregate_not_paged');
+});
+
+test('a cursor without a key is refused rather than signed with a made-up one', () => {
+  assert.throws(() => encodeCursor(CURSOR_INPUT, {}), /cursor key/);
+  assert.throws(() => decodeCursor('a.b', {}, {}), /cursor key/);
+});
+
+test('page two follows page one: the cursor resumes after the last row under the same snapshot', async () => {
+  const doc = { query_version: '1', source: 'ingest.submission', filters: [], window: { from: '2026-09-01T00:00:00Z', to: '2026-09-08T00:00:00Z' }, limit: 2 };
+  const ctx = { now: NOW, tenant: 'tenant-a', actorId: 'a', cursorKey: KEY };
+  const rows = [
+    { submission_id: '00000000-0000-4000-8000-000000000003', received_at: new Date('2026-09-07T10:00:00Z') },
+    { submission_id: '00000000-0000-4000-8000-000000000002', received_at: new Date('2026-09-07T09:00:00Z') },
+    { submission_id: '00000000-0000-4000-8000-000000000001', received_at: new Date('2026-09-07T08:00:00Z') },
+  ];
+  const planned = plan(doc, ctx);
+  const client = { async query(text) { return { rows: text === planned.compiled.text ? rows : [] }; } };
+  const first = await executePlan(planned, { ...ctx, client });
+  assert.equal(first.data.length, 2);
+  const cursor = first.page.next_cursor;
+  assert.ok(cursor, 'the probe row means there is a next page');
+
+  const later = new Date(NOW.getTime() + 60_000);
+  const second = plan({ ...doc, cursor }, { ...ctx, now: later });
+  assert.equal(second.meta.snapshot_upper_bound, first.page.snapshot_upper_bound, 'page two keeps the snapshot of page one');
+  assert.match(second.compiled.text, /s\.received_at < \$\d+::timestamptz\)/, 'page two resumes after the last row');
+  assert.ok(second.compiled.params.includes('2026-09-07T09:00:00.000Z'));
+  assert.ok(second.compiled.params.includes('00000000-0000-4000-8000-000000000002'));
+
+  const otherTenant = (() => { try { plan({ ...doc, cursor }, { ...ctx, tenant: 'tenant-b' }); } catch (e) { return e; } return null; })();
+  assert.equal(otherTenant.reason, 'cursor_tenant_mismatch');
+  const otherQuery = (() => { try { plan({ ...doc, limit: 3, filters: [{ field: 'tool', op: 'eq', value: 'x' }], cursor }, ctx); } catch (e) { return e; } return null; })();
+  assert.equal(otherQuery.reason, 'cursor_mismatch');
 });
 
 test('pagination stops only when there is no next page, never on a short page', () => {
@@ -229,5 +251,4 @@ test('a plan for a page two page carries the frozen snapshot bound', () => {
   assert.equal(first.meta.snapshot_upper_bound, '2026-09-08T00:00:00.000Z', 'an aggregate freezes on its window');
   const list = plan({ query_version: '1', source: 'ingest.submission', filters: [], window: { from: '2026-09-01T00:00:00Z', to: '2026-10-01T00:00:00Z' }, limit: 3 }, { now: NOW, tenant: 'tenant-a', cursorKey: KEY });
   assert.equal(list.meta.snapshot_upper_bound, NOW.toISOString(), 'a list freezes at the moment page one is served');
-  assert.equal(first.meta.cursor_mode, 'self_contained');
 });

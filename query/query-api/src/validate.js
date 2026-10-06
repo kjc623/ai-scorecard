@@ -1,12 +1,12 @@
 // validate.js — the closed-document gate.
 //
 // Everything a client may utter passes through here, and only three verdicts exist: the
-// document is normalised into a frozen canonical form, or it is rejected with a typed §13
+// document is normalised into a frozen canonical form, or it is rejected with a typed result
 // state, or the process throws (a bug in this package, never in the request). Unknown keys,
 // unknown identifiers and unknown operators are rejected rather than ignored, because ignoring
-// an unrecognised filter answers a different question than the one asked (§2.3, §14 item 15).
+// an unrecognised filter answers a different question than the one asked.
 //
-// Two properties are load-bearing for INV-3:
+// Two properties keep the browser from ever speaking SQL:
 //
 //   1. No value from the request is copied into any field the compiler reads as SQL. The
 //      canonical form carries *names* (dimension/measure/operator names) and *values*, and the
@@ -114,7 +114,7 @@ function assertShape(doc) {
     if (TOP_LEVEL_KEYS.includes(key)) continue;
     const prohibited = PROHIBITED_FIELDS[key];
     if (prohibited === REASON.TENANT_IN_REQUEST) {
-      // §2.1: a request carrying a tenant anywhere is rejected, not ignored. Silently dropping
+      // A request carrying a tenant anywhere is rejected, not ignored. Silently dropping
       // it would turn an attempted cross-tenant read into an uneventful success.
       throw unsupported(
         REASON.TENANT_IN_REQUEST,
@@ -123,7 +123,7 @@ function assertShape(doc) {
       );
     }
     if (prohibited === REASON.TEXT_PREDICATE_IN_REQUEST) {
-      // §2.4: no content predicate exists on /v1/query. A text predicate is a different read,
+      // No content predicate exists on /v1/query. A text predicate is a different read,
       // against a table this component cannot see; it fails validation rather than being ignored.
       throw unsupported(
         REASON.TEXT_PREDICATE_IN_REQUEST,
@@ -223,7 +223,7 @@ function resolveDimensions(doc, source, bucket) {
   }
   if (out.length > 0 && source.kind === 'list') {
     // A bounded list is a list. Grouping it would collapse the rows the cursor pages over, and
-    // any time-bucketed number must come from mart rather than from event rows (C27, §3.8).
+    // any time-bucketed number must come from mart rather than from event rows.
     throw unsupported(REASON.NO_MEASURES, `Source "${source.id}" is a bounded list and does not group; filter on the dimension instead of grouping by it.`, {
       source: source.id,
       offered_as_filters: [...Object.keys(source.dimensions)],
@@ -234,9 +234,8 @@ function resolveDimensions(doc, source, bucket) {
 
 /**
  * A source whose row grain IS a person (`mart.agg_user_period`) may only be read about a named
- * subject. §11.2: "Person is a lookup, not a list … there is no screen that enumerates people
- * sorted by volume and no column that ranks them", and §14 item 1 makes a volume leaderboard a
- * non-goal. Left unenforced, that non-goal would be one document away.
+ * subject. A person is a lookup, not a list: no read enumerates people sorted by volume, so a
+ * volume leaderboard is never one document away.
  */
 function assertSubjectScope(doc, source, dimensions) {
   if (!source.requiresSubjectScope) return;
@@ -247,7 +246,7 @@ function assertSubjectScope(doc, source, dimensions) {
   if (!named) {
     throw unsupported(
       REASON.SUBJECT_SCOPE_REQUIRED,
-      `Source "${source.id}" is a per-subject series and must name the subject it is about: a read without a subject filter would enumerate people (docs/04 §11.2, §14 item 1).`,
+      `Source "${source.id}" is a per-subject series and must name the subject it is about: a read without a subject filter would enumerate people.`,
       {
         source: source.id,
         fix: { add_filter: { field: 'subject', op: 'eq', value: '<user_ref>' } },
@@ -437,7 +436,7 @@ function resolveFilters(doc, source) {
       });
     }
     if (!dimension.operators.includes(op)) {
-      // §12.3: `starts_with` is permitted only on tool fingerprints. Anything else is refused
+      // `starts_with` is permitted only on tool fingerprints. Anything else is refused
       // with the reason, never quietly re-interpreted as equality.
       const detail = { path, field, operator: op, permitted: dimension.operators };
       if (op === 'starts_with' && !dimension.startsWith) {
@@ -454,7 +453,7 @@ function resolveFilters(doc, source) {
 /**
  * The window is mandatory everywhere except on a source that has no event clock at all: the
  * device-liveness list is current state, not an event stream, and its result set is bounded by
- * the cursor's page cap instead (§3.7: ≤ 5,000 devices × 6 collectors).
+ * the cursor's page cap instead.
  */
 function resolveWindow(doc, source) {
   const window = doc.window;
@@ -498,7 +497,7 @@ function resolveOrder(doc, source, dimensions, measures, bucket) {
     throw unsupported(REASON.MALFORMED_DOCUMENT, 'order must be an array of {by, dir}.');
   }
   if (source.kind === 'list' && raw.length > 0) {
-    // §7.1: each list read path has one ordering key, and it ends in columns unique for the
+    // Each list read path has one ordering key, and it ends in columns unique for the
     // tenant. Letting a caller reorder a list would break the exactness of its keyset page.
     throw unsupported(REASON.CURSOR_REQUIRES_TOTAL_ORDER, `Source "${source.id}" has a fixed total ordering (${source.order.map((o) => `${o.dim} ${o.dir}`).join(', ')}); order is not a client choice on this read path.`, {
       source: source.id,
@@ -553,30 +552,30 @@ function resolveLimit(doc, source, klass) {
   return raw;
 }
 
-function resolveCursor(doc) {
+function resolveCursor(doc, source) {
   const raw = doc.cursor ?? null;
   if (raw === null) return null;
   if (typeof raw !== 'string') {
     throw unsupported(REASON.MALFORMED_DOCUMENT, 'cursor must be an opaque string or null.', { received_type: typeof raw });
   }
+  if (source.kind !== 'list') {
+    throw unsupported(REASON.AGGREGATE_NOT_PAGED, `Source "${source.id}" is an aggregate and is not paged: one response is bounded by limit. Narrow the window or the filters instead.`, { source: source.id });
+  }
   if (raw.length > 4096) {
-    // Every cursor failure is `cursor_expired` (§13): the client's action is the same in all of
-    // them — restart from page one, told why.
+    // Every cursor failure is `cursor_expired`: the client's action is the same in all of them,
+    // restart from page one, told why.
     throw cursorExpired(REASON.CURSOR_UNKNOWN, 'Cursor is too long to be one of ours.', { max_length: 4096 });
   }
   return raw;
 }
 
-function resolveRollup(doc, source, cursor) {
+function resolveRollup(doc, source) {
   const rollup = doc.rollup ?? false;
   if (typeof rollup !== 'boolean') {
     throw unsupported(REASON.MALFORMED_DOCUMENT, 'rollup must be a boolean.', { received_type: typeof rollup });
   }
   if (rollup && source.kind !== 'aggregate') {
     throw unsupported(REASON.MALFORMED_DOCUMENT, `Source "${source.id}" is a bounded list; a published total over a list is a cost guard problem, not a grouping one.`, { source: source.id });
-  }
-  if (rollup && cursor !== null) {
-    throw unsupported(REASON.ROLLUP_WITH_CURSOR, 'A published total row and keyset paging are mutually exclusive in one response: page without rollup, or take the total without a cursor.', {});
   }
   return rollup;
 }
@@ -595,7 +594,6 @@ function timeField(source) {
     nullable: false,
     startsWith: false,
     cardinality: 0,
-    cardinalitySource: 'window bounds',
     operators: Object.freeze(['eq', 'ne', 'lt', 'lte', 'gt', 'gte', 'between']),
   });
 }
@@ -605,7 +603,7 @@ function timeField(source) {
  *
  * @param {unknown} doc
  * @returns {{query: NormalisedQuery, source: object, klass: object}}
- * @throws {QueryError} on any rejection, with the §13 result_state already attached
+ * @throws {QueryError} on any rejection, with its result_state already attached
  */
 export function validate(doc) {
   assertShape(doc);
@@ -628,8 +626,8 @@ export function validate(doc) {
   const window = resolveWindow(doc, withTime);
   const order = resolveOrder(doc, withTime, dimensions, measures, bucket);
   const limit = resolveLimit(doc, withTime, klass);
-  const cursor = resolveCursor(doc);
-  const rollup = resolveRollup(doc, withTime, cursor);
+  const cursor = resolveCursor(doc, withTime);
+  const rollup = resolveRollup(doc, withTime);
 
   /** @type {NormalisedQuery} */
   const query = Object.freeze({
@@ -656,8 +654,8 @@ function klassOf(source) {
 }
 
 /**
- * Stable canonical JSON: object keys sorted, no whitespace. Used for the cursor's `dsl_hash`
- * (§7.2), so that two documents that mean the same question hash the same.
+ * Stable canonical JSON: object keys sorted, no whitespace. Used for the cursor's `dsl_hash`, so
+ * that two documents that mean the same question hash the same.
  * @param {unknown} value
  * @returns {string}
  */

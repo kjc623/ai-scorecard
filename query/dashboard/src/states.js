@@ -11,7 +11,7 @@
 // `measureOf()` is the only way a screen may obtain a value, and it returns a discriminated
 // result, never a number that might be a lie. `render.js` has no other source of numbers.
 //
-// The other rules encoded here, all from docs/04 §13 and §14:
+// The other rules encoded here:
 //   * a data-bearing envelope must carry freshness and coverage — if it does not, this module
 //     refuses to treat it as an answer (`assertStateful`), because a number without its state is
 //     the failure the envelope exists to make impossible;
@@ -43,7 +43,7 @@ export function measureOf(row, measure) {
   const present = Object.prototype.hasOwnProperty.call(row, measure) && row[measure] !== null && row[measure] !== undefined;
   if (suppressed) {
     // Even if a measure key were present on a suppressed row — a bug at the producer — the
-    // suppression wins. Publishing it would be the exact merge §6.3 forbids.
+    // suppression wins. Publishing it would merge a withheld number into an answer.
     return { kind: 'suppressed', k: typeof row.k === 'number' ? row.k : K, reason: row.reason ?? 'fewer_than_k_subjects' };
   }
   if (!present) return { kind: 'absent' };
@@ -56,12 +56,6 @@ export function measureOf(row, measure) {
 /** True when the row is a suppression marker rather than a measurement. */
 export function isSuppressed(row) {
   return row?.result_state === 'suppressed';
-}
-
-/** True when the row carries any real measure: a zero is real, an absent measure is not. */
-export function hasAnyMeasure(row) {
-  if (!row || typeof row !== 'object' || isSuppressed(row)) return false;
-  return Object.entries(row).some(([key, value]) => !SYSTEM_ROW_KEYS.includes(key) && typeof value === 'number');
 }
 
 /** The closed-vocabulary values on a row, grouped, so the renderer can keep pairs distinct. */
@@ -111,7 +105,7 @@ export function freshnessText(freshness) {
 
 /**
  * A human sentence for a coverage block. The enrolled denominator is always part of the sentence:
- * no fleet figure is shown without it (§11.3, brief §5.5).
+ * no fleet figure is shown without it.
  */
 export function coverageText(coverage) {
   if (!coverage) return { text: 'Coverage unknown', state: 'unknown', gaps: [] };

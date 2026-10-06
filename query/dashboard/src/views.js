@@ -1,15 +1,15 @@
-// views.js — the information architecture of docs/04 §11, as view models.
+// views.js — the dashboard's screens, as view models.
 //
 // Screens produce *view models*, not markup: a tile, a table, a series and a set of notes. render.js
 // turns those into HTML. The split is what makes the honesty rules testable without a DOM — a test
 // asserts on `tile.value.kind`, which is where "suppressed" and "zero" are still distinguishable.
 //
 // Every number a screen shows comes from `measureOf`/`sumMeasure` in states.js. There is no other
-// path to a value, so the merge §6.3 forbids cannot happen in one screen while being avoided in
-// another.
+// path to a value, so a suppressed cell cannot be merged with a zero in one screen while being
+// kept apart in another.
 
 import { measureOf, isSuppressed, vocabOf } from './states.js';
-import { formatBytes, formatCount, formatDuration, formatInstant, formatLabels, formatScore, shortId } from './format.js';
+import { formatBytes, formatCount, formatInstant, formatLabels, formatScore } from './format.js';
 import { K, SOURCES, TEMPLATES } from './vocab.js';
 
 /**
@@ -76,14 +76,13 @@ export function tableFrom(state, { title, columns, emptyText }) {
 }
 
 /**
- * A series for a chart. Only an aggregate source can produce one: a chart computed by scanning
- * event rows is the thing C27 forbids, so a screen whose source is an event list gets no series at
- * all rather than an approximate one.
+ * A series for a chart. Only a precomputed aggregate can produce one: a chart computed by scanning
+ * event rows would be approximate, so a screen whose source is an event list gets no series at all.
  */
 export function seriesFrom(state, { measure, dim = 'tool', title }) {
   const source = state.meta?.source ?? '';
   if (!source.startsWith('mart.')) {
-    return Object.freeze({ title, unavailable: true, reason: `${source || 'this source'} is not a precomputed aggregate, so it cannot back a chart (C27).`, points: [] });
+    return Object.freeze({ title, unavailable: true, reason: `${source || 'this source'} is not a precomputed aggregate, so it cannot back a chart.`, points: [] });
   }
   const byBucket = new Map();
   for (const row of state.data) {
@@ -152,7 +151,7 @@ function screen(id, title, question, source, body) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Posture — the landing screen (§11.1)
+// Overview — the landing screen
 // ---------------------------------------------------------------------------------------------
 
 /** A state that carries nothing, for a panel whose read did not come back. */
@@ -320,8 +319,7 @@ export function teamsView(state) {
   const org = state.meta?.extras?.org_coverage?.[0] ?? null;
   // The residual is computed here rather than read from a column: mart.agg_org_period holds only
   // users with a department, so "no department" is the difference between every user-day and the
-  // mapped ones. It is surfaced as its own tile, not only a footnote, because "never dropped" means
-  // visible on the page, not discoverable behind a disclosure (docs/04 §3.3).
+  // mapped ones. It is its own tile, not a footnote, so people with no department stay visible.
   const unmapped = org ? Math.max(0, (org.users_all ?? 0) - (org.users_mapped ?? 0)) : null;
   const notes = [];
   if (org) {
@@ -396,75 +394,6 @@ export function classesView(state) {
     ]),
     series: Object.freeze([seriesFrom(state, { measure: 'submissions', title: 'Class-carrying submissions per bucket' })]),
     ...shared(state, notes),
-  });
-}
-
-export function findingsView(state) {
-  const reviews = new Map();
-  for (const row of state.data) if (row.review_state) reviews.set(row.review_state, (reviews.get(row.review_state) ?? 0) + 1);
-  return screen('findings', 'Findings', TEMPLATES.q5_findings.title, 'mart.v_finding', {
-    subtitle: 'Submissions that hit a policy rule, with the review state nobody has defaulted for them.',
-    tiles: Object.freeze([
-      tile('Findings in page', { kind: 'number', text: formatCount(state.data.length) }, null),
-      ...[...reviews.entries()].map(([name, count]) => tile(`Review: ${name}`, { kind: 'number', text: formatCount(count) }, name === 'open' ? 'Nobody has looked' : null)),
-    ]),
-    tables: Object.freeze([
-      tableFrom(state, {
-        title: 'Findings',
-        columns: [
-          column('detected_at', 'Detected', 'instant'),
-          column('severity', 'Severity', 'vocab'),
-          column('rule_title', 'Rule'),
-          column('class', 'Class', 'vocab'),
-          column('subject', 'Person'),
-          column('tool', 'Tool'),
-          column('review_state', 'Review', 'vocab'),
-        ],
-        emptyText: 'No finding was raised in this window.',
-      }),
-    ]),
-    series: Object.freeze([]),
-    ...shared(state, [
-      'Severity and class are present-tense: a rule edit shows on every finding that names it.',
-      'Open means nobody has looked. It is not "reviewed and unremarkable".',
-    ]),
-  });
-}
-
-export function activityView(state) {
-  const lowMerge = state.data.filter((row) => row.merge_confidence === 'low').length;
-  const lateFlush = state.data.filter((row) => row.received_at && row.first_occurred_at
-    && Date.parse(row.received_at) - Date.parse(row.first_occurred_at) > 3_600_000).length;
-  return screen('activity', 'Activity', TEMPLATES.q8_activity.title, 'ingest.submission', {
-    subtitle: 'A bounded, cursor-paged list of events. The only path in this product that touches event rows.',
-    tiles: Object.freeze([
-      tile('Rows in page', { kind: 'number', text: formatCount(state.data.length) }, state.page?.next_cursor ? 'More rows exist: page only while next_cursor is present.' : 'This is the last page.'),
-      tile('Low-confidence merges', { kind: 'number', text: formatCount(lowMerge) }, `of ${state.data.length} rows in this page — a page count, not a window total.`),
-      tile('Flushed late (> 1 h)', { kind: 'number', text: formatCount(lateFlush) }, 'Received long after the device clock said it happened: a spool flush, not a burst of activity.'),
-      tile('Newer events since snapshot', { kind: 'vocab', text: state.page?.newer_events_exist ? 'true' : 'false' }, state.page?.snapshot_upper_bound ? `Snapshot frozen at ${formatInstant(state.page.snapshot_upper_bound)}` : null),
-    ]),
-    tables: Object.freeze([
-      tableFrom(state, {
-        title: 'Events',
-        columns: [
-          column('received_at', 'Received (server)', 'instant'),
-          column('first_occurred_at', 'Occurred (device)', 'device-clock'),
-          column('subject', 'Person'),
-          column('tool', 'Tool'),
-          column('action', 'Action', 'vocab'),
-          column('content_state', 'Content', 'vocab'),
-          column('mode', 'Mode', 'vocab'),
-          column('merge_confidence', 'Merge', 'vocab'),
-          column('observation_count', 'Routes', 'count'),
-        ],
-        emptyText: 'Nothing happened in this window.',
-      }),
-    ]),
-    series: Object.freeze([]),
-    ...shared(state, [
-      'Both clocks are shown. Neither is normalised into the other: the device clock may be skewed.',
-      'A short page is not the end of the results. Only next_cursor: null ends an iteration.',
-    ]),
   });
 }
 
@@ -549,8 +478,8 @@ export function devicesView(state, { filters = {}, now = new Date(), exploreHref
       last_seen_at_ago: row.last_seen_at ? ago(row.last_seen_at, now) : null,
       // The device name is the hostname, with the UUID kept for the hover and as the fallback. The
       // user is the clear account name of the most recent submission, with the pseudonymous ref as
-      // the fallback (ADR 0021). directory_name is the directory's own current name, shown beside it
-      // when a sync has supplied one; both are absent for a 'hashed' tenant.
+      // the fallback. directory_name is the directory's own current name, shown beside it when a
+      // sync has supplied one; both are absent for a 'hashed' tenant.
       device_name: row.hostname || null,
       user: row.subject_name ?? row.user_ref ?? null,
       directory_name: row.directory_name ?? null,
@@ -586,8 +515,8 @@ export function devicesView(state, { filters = {}, now = new Date(), exploreHref
     .sort().map((value) => [value, DEVICE_LABELS[value] ?? value]);
 
   // The fleet figures come from the server when it sent them. `device_status` is the fleet-wide
-  // count by status (docs/04 §3.7), so "Need attention" and the fleet card describe the same
-  // population; without it, only the listed page is counted and the card says so.
+  // count by status, so "Need attention" and the fleet card describe the same population; without
+  // it, only the listed page is counted and the card says so.
   const cov = state.coverage ?? null;
   const fleet = typeof cov?.devices_enrolled === 'number' && typeof cov?.devices_reporting === 'number';
   const status = state.meta?.extras?.device_status?.[0] ?? null;
@@ -685,25 +614,40 @@ export function auditView(state) {
 }
 
 /**
- * Event detail (Q9 second half). What is shown depends on content_state, and each of the four is a
- * different answer — never a blank and never content.
+ * The columns of a record read that describe one observation rather than the submission. The read
+ * answers with one row per observation, each repeating the submission's own columns.
+ */
+const OBSERVATION_COLUMNS = Object.freeze([
+  'observation_event_id', 'observation_source', 'observation_kind', 'direction', 'observation_occurred_at',
+  'observation_received_at', 'observation_size_bytes', 'observation_labels', 'policy_decision',
+  'detection_basis', 'window_start', 'window_end', 'submission_count', 'bytes_total',
+]);
+
+/** The observation rows of a record read. A submission with none comes back as one row with them null. */
+export function eventObservations(rows) {
+  return (rows ?? []).filter((row) => typeof row?.observation_event_id === 'string' && row.observation_event_id !== '');
+}
+
+/**
+ * Event detail (Q9). What is shown depends on content_state, and each of the four is a different
+ * answer — never a blank and never content.
  */
 export function eventView(state) {
   const head = state.data[0] ?? null;
-  const observations = state.data.slice(1);
+  const observations = eventObservations(state.data);
   const contentState = head?.content_state ?? state.meta?.content_state ?? 'not_captured';
   const contentAnswer = {
     not_captured: 'Content was never read at this mode. Labels, digest, size and the policy action are all there is — and there is no index entry either.',
-    local_only: 'Content was taken and remains on the device. It is not retrievable in v1: grants are device-initiated and there is no device-facing pull endpoint.',
+    local_only: 'Content was taken and remains on the device. It was never uploaded, so it cannot be retrieved.',
     uploaded: 'Content is stored. Open the event in Search to read the prompt; this screen shows metadata only.',
     shredded: 'The content existed and has been destroyed. The reason and the receipt are the answer.',
   }[contentState] ?? 'Unknown content state.';
   return screen('event', 'Event detail', TEMPLATES.q9_event_detail.title, 'ingest.submission', {
-    subtitle: 'One event, its observation routes, and what the content state permits. No query path returns full content.',
+    subtitle: 'One event, its observation routes, and what the content state permits. No query returns content.',
     tiles: Object.freeze([
       tile('Content state', { kind: 'vocab', text: contentState }, contentAnswer),
       tile('Routes', { kind: 'number', text: formatCount(head?.observation_count ?? observations.length) }, 'One observation per route, so an overlapping count can be explained.'),
-      tile('Mode', { kind: 'vocab', text: head?.mode ?? '—' }, null),
+      tile('Mode', { kind: 'vocab', text: head?.collection_mode ?? '—' }, null),
       tile('Merge confidence', { kind: 'vocab', text: head?.merge_confidence ?? '—' }, head?.merge_confidence === 'low' ? 'A weak dedup key produced this row: counted, never discarded.' : null),
     ]),
     tables: Object.freeze([
@@ -711,7 +655,7 @@ export function eventView(state) {
         title: 'Metadata',
         columns: Object.freeze([column('field', 'Field'), column('value', 'Value')]),
         rows: Object.freeze(head ? Object.entries(head)
-          .filter(([key]) => !key.startsWith('observation_'))
+          .filter(([key]) => !OBSERVATION_COLUMNS.includes(key))
           .map(([field, value]) => Object.freeze({ row: { field, value: renderable(value) }, vocab: {}, suppressed: false })) : []),
         emptyText: 'The record is not here. See the state above for why.',
         suppressedCells: 0,
@@ -731,7 +675,7 @@ export function eventView(state) {
     series: Object.freeze([]),
     ...shared(state, [
       'A hit is a reference, not a reservation: between a search and this read the record can be shredded, and no_longer_available with a receipt is the answer.',
-      'Full content is reached only through the approved retrieval path, which this API does not expose.',
+      'The prompt itself is read in Search, through the content vault\'s approved retrieval; no query returns content.',
     ]),
   });
 }

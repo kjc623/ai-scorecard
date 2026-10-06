@@ -1,9 +1,9 @@
 // helpers.mjs — test scaffolding. Not a test file itself.
 //
-// The dashboard has no DOM dependency in src/ except app.js's boot(), so most tests drive view
-// models and HTML strings directly. The few that need a document get the smallest one that works.
+// The pages have no DOM dependency except the boot functions, so most tests drive view models and
+// HTML strings directly. The few that need a document get the smallest one that works.
 
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readdirSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -31,8 +31,8 @@ export function sourceFiles({ includeTests = false } = {}) {
 }
 
 /**
- * Strip comments and string literals, the way tools/check-invariants.mjs does, so a mention in
- * prose is not a violation and a scanner does not match its own pattern text.
+ * Strip comments and string literals, so a mention in prose is not a violation and a scanner does
+ * not match its own pattern text.
  */
 export function codeOnly(text, file = 'x.js') {
   let t = text;
@@ -71,25 +71,7 @@ export function fakeDocument(hash = '#posture') {
   return doc;
 }
 
-/** Import the inline module that index.html carries, so a test drives exactly what a browser runs. */
-export async function importInlineModule() {
-  const html = readFileSync(join(ROOT, 'index.html'), 'utf8');
-  const match = /<script type="module">([\s\S]*?)<\/script>/.exec(html);
-  if (!match) throw new Error('index.html has no inline module block');
-  const source = match[1];
-  const url = `data:text/javascript;base64,${Buffer.from(source, 'utf8').toString('base64')}`;
-  return import(url);
-}
-
-/** Extract the inline module source without evaluating it. */
-export function inlineModuleSource() {
-  const html = readFileSync(join(ROOT, 'index.html'), 'utf8');
-  const match = /<script type="module">([\s\S]*?)<\/script>/.exec(html);
-  if (!match) throw new Error('index.html has no inline module block');
-  return match[1];
-}
-
-/** A envelope builder for tests that need one specific state. */
+/** An envelope builder for tests that need one specific state. */
 export function envelope(resultState, body = {}) {
   return { api_version: '1', query_version: '1', result_state: resultState, ...body };
 }

@@ -1,10 +1,7 @@
-// guard.js — §12.2's cost guard: rejection, not degradation.
+// guard.js — the cost guard: rejection, not degradation.
 //
-// "The DSL is closed, so cost is knowable before execution. Each query shape declares a cost
-// class; the guard multiplies requested cells by grouping cardinalities and refuses over-budget
-// requests before the statement runs."
-//
-// So this module never runs EXPLAIN and never touches the database. It multiplies the declared
+// The DSL is closed, so cost is knowable before execution. This module never runs EXPLAIN and
+// never touches the database. It multiplies the declared
 // cardinality of each grouped dimension by the number of buckets in the window, and compares
 // the product to the class's cap. Where a filter pins a dimension, the estimate is tightened, so
 // that a well-narrowed question is not refused for the shape of a broad one.
@@ -33,7 +30,7 @@ const BUCKET_DAYS = Object.freeze({ hour: 1 / 24, day: 1, week: 7, month: 30.437
  * @property {number} buckets        buckets in the window under the applied bucket
  * @property {number} estimatedCells cells the response may contain
  * @property {number} estimatedBytes lower-bound estimate of the response body
- * @property {object|null} coarsened {from, to, reason} when §7.5's auto-coarsening fired
+ * @property {object|null} coarsened {from, to, reason} when the series was auto-coarsened
  * @property {ReadonlyArray<string>} notes
  * @property {object|null} severability
  */
@@ -58,13 +55,10 @@ export function guard(validated, opts = {}) {
   const windowDays = windowDaysOf(query);
 
   // -------------------------------------------------------------------------------------------
-  // §7.5 time series: at most 400 points, auto-coarsened, and the applied bucket is reported in
-  // `freshness`. §12.3 answers the same case with `query_too_broad` and a suggestion of week or
-  // month. The two are reconciled by who chose the resolution: a series whose bucket the server
-  // picked (none was asked for) is auto-coarsened and says so; a caller who explicitly pinned a
-  // bucket that cannot fit 400 points is refused and told which bucket would fit. Silently
-  // changing a resolution a caller asked for would be the "degrade instead of reject" failure
-  // §12.2 forbids. DSL.md §9 records the reconciliation.
+  // A time series is at most 400 points. Who chose the resolution decides what happens beyond
+  // that: a series whose bucket the server picked (none was asked for) is auto-coarsened and says
+  // so; a caller who pinned a bucket that cannot fit is refused and told which bucket would fit.
+  // Silently changing a resolution a caller asked for would be degrading instead of rejecting.
   // -------------------------------------------------------------------------------------------
   let coarsened = null;
   const maxSeriesPoints = opts.maxSeriesPoints ?? MAX_SERIES_POINTS;
@@ -89,7 +83,7 @@ export function guard(validated, opts = {}) {
         to: fitting,
         reason: `series_exceeds_${maxSeriesPoints}_points`,
       };
-      notes.push(`A ${query.bucket}-bucketed window of ${round(windowDays)} days exceeds ${maxSeriesPoints} points; the server-chosen bucket was auto-coarsened to ${fitting} (§7.5) and the applied bucket is reported in freshness.`);
+      notes.push(`A ${query.bucket}-bucketed window of ${round(windowDays)} days exceeds ${maxSeriesPoints} points; the server-chosen bucket was auto-coarsened to ${fitting} and the applied bucket is reported in freshness.`);
       query = Object.freeze({ ...query, bucket: fitting });
     }
   }
@@ -102,15 +96,13 @@ export function guard(validated, opts = {}) {
   if (query.rollup) estimatedCells += 1;
 
   const maxCells = opts.maxCells ?? klass.maxCells;
-  // §12.1 caps an aggregate read at 2,000 cells and §7.5 caps an aggregate RESPONSE at 2,000
-  // cells. A cursor-paged aggregate (Q2's tool-by-subject list, §3.2 "50/500") has a response
-  // bounded by its page, not by the size of the set it pages over — and the document requires
-  // that shape explicitly. So the cap is applied to what the response can carry:
-  //   * no page size  -> the whole estimated result set must fit;
-  //   * a page size   -> the page must fit, and the estimate is reported rather than hidden.
-  // DSL.md §9 records this as a decision the document left open.
-  const paged = query.kind === 'aggregate' && query.limit !== null;
-  const boundedCells = paged ? Math.min(estimatedCells, query.limit + 1) : estimatedCells;
+  // An aggregate response carries at most 2,000 cells. The cap applies to what the response can
+  // carry:
+  //   * no limit  -> the whole estimated result set must fit;
+  //   * a limit   -> the limited response must fit, and the estimate is reported rather than
+  //                  hidden (Q2's tool-by-subject list is bounded this way).
+  const limited = query.kind === 'aggregate' && query.limit !== null;
+  const boundedCells = limited ? Math.min(estimatedCells, query.limit + 1) : estimatedCells;
   if (maxCells !== null && query.kind === 'aggregate' && boundedCells > maxCells) {
     const suggestion = suggestCoarserBucket(query, source, cardinalities, maxCells);
     throw tooBroad(REASON.COST_ESTIMATE_EXCEEDED, `This shape may return about ${estimatedCells} cells, above the ${maxCells}-cell cap for a ${source.costClass} read.`, {
@@ -121,9 +113,9 @@ export function guard(validated, opts = {}) {
       fix: suggestion,
     });
   }
-  if (paged && estimatedCells > maxCells) {
+  if (limited && estimatedCells > maxCells) {
     notes.push(
-      `Paged aggregate: the response is bounded by the ${query.limit}-row page, and the set being paged over is estimated at ${estimatedCells} cells. The estimator runs before execution and the number is reported so it is not mistaken for a total.`,
+      `Limited aggregate: the response is bounded by its ${query.limit}-row limit, and the full result is estimated at ${estimatedCells} cells. The estimate is reported so it is not mistaken for a total.`,
     );
   }
 
@@ -143,7 +135,7 @@ export function guard(validated, opts = {}) {
     buckets,
     estimatedCells,
     boundedCells,
-    paged,
+    limited,
     estimatedBytes,
     coarsened,
     notes: Object.freeze(notes),
@@ -152,8 +144,7 @@ export function guard(validated, opts = {}) {
 }
 
 /**
- * §12.1 / §3.8: a list window is capped, and the cap is not a suggestion. The window is
- * half-open [from, to).
+ * A list window is capped, and the cap is not a suggestion. The window is half-open [from, to).
  */
 function assertListWindow(query, source) {
   const maxDays = source.time?.maxDays ?? null;
@@ -174,8 +165,8 @@ function narrowingHint(source) {
 }
 
 /**
- * §3.2: "the guard refuses an unscoped window beyond 7 days when `subject` is a grouping
- * dimension, naming the narrowing that would make it servable."
+ * A window beyond 7 days is refused when `subject` is a grouping dimension and no tool or subject
+ * filter narrows it; the refusal names the narrowing that would make it servable.
  */
 function assertSubjectScope(query, source) {
   if (!query.dimensions.includes('subject')) return;
@@ -183,7 +174,7 @@ function assertSubjectScope(query, source) {
   const narrowedBySubject = query.filters.some((f) => f.field === 'subject' && (f.op === 'eq' || f.op === 'in'));
   const narrowedByTool = query.filters.some((f) => f.field === 'tool' && (f.op === 'eq' || f.op === 'in' || f.op === 'starts_with'));
   if (days > MAX_UNNARROWED_SUBJECT_WINDOW_DAYS && !narrowedBySubject && !narrowedByTool) {
-    throw tooBroad(REASON.WINDOW_TOO_WIDE, `A subject-grouped read is refused beyond ${MAX_UNNARROWED_SUBJECT_WINDOW_DAYS} days unless it is narrowed by a tool or a subject filter (docs/04 §3.2).`, {
+    throw tooBroad(REASON.WINDOW_TOO_WIDE, `A subject-grouped read is refused beyond ${MAX_UNNARROWED_SUBJECT_WINDOW_DAYS} days unless it is narrowed by a tool or a subject filter.`, {
       max_days: MAX_UNNARROWED_SUBJECT_WINDOW_DAYS,
       requested_days: round(days),
       fix: { add_filter: ['tool eq/in', 'subject eq/in'], or_narrow_window_to_days: MAX_UNNARROWED_SUBJECT_WINDOW_DAYS },
@@ -193,14 +184,14 @@ function assertSubjectScope(query, source) {
 }
 
 /**
- * §12.2: "No shape may be served by a sequential scan of `ingest.submission`. Every list shape
- * declares the index it requires; if the submitted filter combination is not covered, the API
- * returns `unsupported_query_shape` naming the filters that would make it servable."
+ * No shape may be served by a sequential scan of `ingest.submission`. Every list shape declares
+ * the index it requires, and an uncovered filter combination is `unsupported_query_shape`
+ * naming the filters that would make it servable.
  *
- * The check that actually bites is prefix matching: `starts_with` on a tool fingerprint cannot
- * use the `submission_by_tool` btree, and there is no trigram or text-pattern index on
- * `ingest.submission` in §3.11's list. Prefix matching over tool fingerprints is served from
- * the mart instead, and that is the fix the error names.
+ * The check that bites is prefix matching: `starts_with` on a tool fingerprint cannot use the
+ * `submission_by_tool` btree, and there is no text-pattern index on `ingest.submission`. Prefix
+ * matching over tool fingerprints is served from the mart instead, and that is the fix the error
+ * names.
  */
 function assertSeverability(query, source) {
   const prefixFilters = query.filters.filter((f) => f.op === 'starts_with');
@@ -271,7 +262,7 @@ function groupedCardinalities(query, source) {
   return out;
 }
 
-/** Name the coarser bucket that would fit, or the dimension to drop (§12.2). */
+/** Name the coarser bucket that would fit, or the dimension to drop. */
 function suggestCoarserBucket(query, source, cardinalities, maxCells) {
   if (query.bucket) {
     const days = windowDaysOf(query);

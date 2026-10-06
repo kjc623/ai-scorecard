@@ -169,7 +169,6 @@ code {
 .seg-item:hover { color: var(--ink); }
 .seg-item:active { transform: scale(.96); }
 .seg-item[aria-current="true"] { background: var(--panel); color: var(--ink); box-shadow: inset 0 1px 0 var(--hi), 0 1px 2px rgb(0 0 0 / .12); }
-.seg-small .seg-item { padding: 3px 10px; font-size: 12px; }
 
 .content { min-width: 0; }
 .app { padding: 44px 40px 48px 28px; max-width: 1480px; }
@@ -253,7 +252,7 @@ a.tile { display: block; text-decoration: none; color: inherit; }
 
 /* ── tables ───────────────────────────────────────────────────────────────────────────────── */
 .block-head { display: flex; align-items: center; gap: 10px; padding: 18px 22px 12px; }
-.block-head h3, .gallery h3 { margin: 0; font-size: 14.5px; font-weight: 600; color: var(--ink); letter-spacing: -0.01em; }
+.block-head h3 { margin: 0; font-size: 14.5px; font-weight: 600; color: var(--ink); letter-spacing: -0.01em; }
 .block-link { margin-left: auto; font-size: 12px; color: var(--accent); text-decoration: none; }
 .block-link:hover { text-decoration: underline; }
 .block-head .table-note + .block-link { margin-left: 14px; }
@@ -362,7 +361,7 @@ tr.row-empty td { color: var(--ink-soft); font-style: italic; }
 .search-form input::-webkit-search-cancel-button { display: none; }
 /* A change within a screen is not an arrival: nothing replays its entrance. */
 .same-screen *, .switched * { animation: none !important; }
-.switched > .screen, .switched > .needs, .switched > .gallery { animation: fade .25s var(--ease) both !important; }
+.switched > .screen, .switched > .needs { animation: fade .25s var(--ease) both !important; }
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
 .needs-form input {
   flex: 1 1 auto; min-width: 0; height: 38px; padding: 0 16px; font: 13px var(--mono); color: var(--ink);
@@ -376,19 +375,6 @@ tr.row-empty td { color: var(--ink-soft); font-style: italic; }
 }
 .needs-form button:hover { opacity: .88; }
 .needs-form button:active { transform: scale(.97); }
-
-.gallery h3 { font: 400 clamp(34px, 4vw, 52px)/1.02 var(--serif); letter-spacing: -0.025em; margin-bottom: 12px; }
-.gallery p { color: var(--ink-soft); margin: 0; max-width: 68ch; }
-.gallery-items { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; margin-top: 26px; }
-.gallery-item {
-  text-decoration: none; border: 1px solid var(--line); border-radius: 14px;
-  padding: 13px 16px; font-size: 13.5px; color: var(--text); background: var(--panel);
-  box-shadow: inset 0 1px 0 var(--hi);
-  transition: transform .4s var(--ease), border-color .4s var(--ease);
-}
-.gallery-item:hover { border-color: var(--line-strong); transform: translateY(-2px); }
-.gallery-item.active { background: var(--ink); color: var(--on-ink); border-color: var(--ink); }
-.gallery-hint { font-size: 13px; color: var(--ink-soft); margin-top: 20px; }
 
 /* ── who is signed in: one line above the panel's foot, and a quiet way out ───────────────── */
 .who:empty { display: none; }
@@ -500,13 +486,10 @@ td.dp-action { text-align: right; white-space: nowrap; }
 .v-vocab-pending { background: var(--warn-bg); color: var(--warn); }
 .v-vocab-disabled, .v-vocab-expired { background: var(--bad-bg); color: var(--bad); }
 
-.app-foot { padding: 0 40px 36px 28px; max-width: 1480px; color: var(--ink-faint); font-size: 12px; }
-.app-foot p { margin: 0; padding-top: 18px; border-top: 1px solid var(--line); }
-.app-foot a { color: var(--ink-soft); }
 
 /* ── motion: everything arrives once, in order, by transform and opacity only ─────────────── */
 @media (prefers-reduced-motion: no-preference) {
-  .screen > *, .needs, .gallery { animation: rise .8s var(--ease) both; }
+  .screen > *, .needs { animation: rise .8s var(--ease) both; }
   .screen > :nth-child(2) { animation-delay: .05s; }
   .screen > :nth-child(3) { animation-delay: .1s; }
   .screen > :nth-child(4) { animation-delay: .15s; }
@@ -541,7 +524,7 @@ td.dp-action { text-align: right; white-space: nowrap; }
   .dp-kv > div { grid-template-columns: minmax(0, 1fr); gap: 2px; }
   .dp-inline-row, .dp-secret-row { flex-direction: column; }
   .menu-open .nav > * { animation: rise .6s var(--ease) both; }
-  .app, .app-foot { padding-left: 16px; padding-right: 16px; }
+  .app { padding-left: 16px; padding-right: 16px; }
   .app { padding-top: 24px; }
   .screen-tools { align-items: flex-start; }
   .tile:first-child { grid-column: auto; }

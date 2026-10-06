@@ -1,25 +1,20 @@
-// explore-stub.js — a sample-data transport for the Explore page.
+// explore-fake.mjs — a fake query-api and content path for the Explore tests.
 //
-// The stub in fixtures.js answers every request for a question with the same three rows, which is
-// right for a state gallery and useless for a search: a filter that changes nothing cannot be seen
-// to work. This transport holds a few hundred generated rows and answers the four list templates
-// and the record template the way the API would: it applies the window and every filter, pages
-// with a cursor that is bound to the query it was issued for, and ends an iteration only with
-// `next_cursor: null`.
+// It holds a few hundred generated rows and answers the four list templates and the record
+// template the way query-api does: it applies the window and every filter, pages with a cursor
+// bound to the query it was issued for, ends an iteration only with `next_cursor: null`, and
+// answers a record read with one row per observation. The content reads behave like the vault's:
+// only an uploaded event has anything to find, and a retrieval URL is single-use.
 //
-// Everything it returns is invented, and the page labels it as sample data. It is seeded from a
-// constant, so the same request at the same `now` gives the same rows and a test can assert them.
-//
-// It speaks only the envelope: nothing here is a query, and nothing reaches a network.
+// It is seeded from a constant, so the same request at the same `now` gives the same rows.
 
-import { stubTransport } from './transport.js';
-import { freshness, coverage, STATE_ENVELOPES } from './fixtures.js';
+import { freshness, coverage, STATE_ENVELOPES } from './fixtures.mjs';
 
 const SAMPLE_EVENT_COUNT = 137;
 const SAMPLE_SPAN_MS = 30 * 86_400_000;
 const SAMPLE_CURSOR_TTL_MS = 15 * 60_000;
 
-/** What the sample-state control can force, so every state of the page can be looked at. */
+/** States a test can force on every read. */
 export const EXPLORE_SCENARIOS = Object.freeze({
   realistic: 'Realistic mix',
   empty: 'Nothing found',
@@ -266,6 +261,49 @@ function sampleObservations(event) {
   }));
 }
 
+/** A record read as query-api answers it: one row per observation, the submission's columns repeated under the store's names. */
+function sampleRecordRows(event) {
+  const head = {
+    submission_id: event.submission_id,
+    received_at: event.received_at,
+    first_occurred_at: event.first_occurred_at,
+    last_occurred_at: event.last_occurred_at,
+    user_ref: event.subject,
+    tool_fingerprint: event.tool,
+    tool_name: null,
+    kind: event.detection_basis,
+    collection_mode: event.mode,
+    policy_action: event.action,
+    policy_rule_id: null,
+    decided_locally: event.mode !== 'm3',
+    confidence: event.confidence,
+    merge_confidence: event.merge_confidence,
+    content_state: event.content_state,
+    shredded_reason: event.content_state === 'shredded' ? 'retention_expired' : null,
+    size_bytes: event.size_bytes,
+    content_digest: null,
+    labels: event.labels,
+    classifier_version: null,
+    winning_source: event.route,
+    winning_fidelity: null,
+    observed_routes: event.observed_routes,
+    observation_count: event.observation_count,
+    expires_at: null,
+  };
+  return sampleObservations(event).map((o) => Object.freeze({
+    ...head,
+    ...o,
+    observation_received_at: event.received_at,
+    observation_labels: event.labels,
+    policy_decision: null,
+    detection_basis: event.detection_basis,
+    window_start: null,
+    window_end: null,
+    submission_count: null,
+    bytes_total: null,
+  }));
+}
+
 const SAMPLE_PROMPTS = Object.freeze([
   'Summarise the Q4 revenue deck for the board in five bullet points.',
   'Rewrite this customer complaint reply so it sounds less defensive.',
@@ -277,7 +315,7 @@ const SAMPLE_PROMPTS = Object.freeze([
   'Write a SQL query that finds customers with no orders in the last 90 days.',
 ]);
 
-/** What the sample person typed for an event. Invented, and stable for a given event. */
+/** What the person typed for an event. Invented, and stable for a given event. */
 function sampleTyped(event) {
   const n = parseInt(event.submission_id.slice(0, 8), 16);
   return SAMPLE_PROMPTS[n % SAMPLE_PROMPTS.length];
@@ -285,18 +323,18 @@ function sampleTyped(event) {
 
 /** Everything the sample device captured: the typed text inside the context a client adds. */
 function sampleCapture(event) {
-  return `<system-reminder>\nSample client context for ${event.tool}. A real client adds its own instructions here.\n</system-reminder>\n${sampleTyped(event)}`;
+  return `<system-reminder>\nClient context for ${event.tool}.\n</system-reminder>\n${sampleTyped(event)}`;
 }
 
 /**
- * The sample transport.
+ * The fake.
  *
  * @param {object} [input]
  * @param {() => Date} [input.now]
  * @param {string} [input.scenario]  one of EXPLORE_SCENARIO_NAMES
  * @param {number} [input.latencyMs] a pause before each answer, so a loading state can be seen
  */
-export function createExploreStub({ now = () => new Date(), scenario = 'realistic', latencyMs = 0 } = {}) {
+export function createExploreFake({ now = () => new Date(), scenario = 'realistic', latencyMs = 0 } = {}) {
   let current = EXPLORE_SCENARIO_NAMES.includes(scenario) ? scenario : 'realistic';
   const sample = buildExploreSample(now());
   const cursors = new Map();
@@ -376,7 +414,7 @@ export function createExploreStub({ now = () => new Date(), scenario = 'realisti
     const event = sample.events.find((row) => row.submission_id === body.params?.submission_id);
     if (!event) return STATE_ENVELOPES.not_found;
     return sampleEnvelope('ok', {
-      data: [event, ...sampleObservations(event)],
+      data: sampleRecordRows(event),
       freshness: freshFor('ingest.submission'),
       coverage: coverage({ state: 'partial' }),
       audit: audited(),
@@ -384,13 +422,11 @@ export function createExploreStub({ now = () => new Date(), scenario = 'realisti
     });
   }
 
-  const inner = stubTransport({
-    routes: [
-      { match: (body) => Boolean(SAMPLE_LISTS[body?.template]), reply: listReply },
-      { match: (body) => body?.template === 'q9_event_detail', reply: recordReply },
-    ],
-    fallback: STATE_ENVELOPES.refused_shape,
-  });
+  const answer = (body) => {
+    if (SAMPLE_LISTS[body?.template]) return listReply(body);
+    if (body?.template === 'q9_event_detail') return recordReply(body);
+    return STATE_ENVELOPES.refused_shape;
+  };
 
   // ── the content reads: prompt-text search and approved retrieval, over the same sample ──────
   //
@@ -437,7 +473,7 @@ export function createExploreStub({ now = () => new Date(), scenario = 'realisti
   }
 
   // The retrieval request mints a URL; the content is served only when that URL is fetched, and
-  // only once — the same single-use shape the vault has (docs/02 §11).
+  // only once — the same single-use shape the vault has.
   const pendingRetrievals = new Map();
 
   async function retrieveContent(body) {
@@ -452,7 +488,7 @@ export function createExploreStub({ now = () => new Date(), scenario = 'realisti
     if (event.content_state === 'shredded' || current === 'destroyed') {
       return Object.freeze({ state: 'no_longer_available', reason: 'retention_expired', receipt_ref: 'rcpt_sample_0001' });
     }
-    const url = `stub://retrieval/${sampleUuid(0x9a, sample.events.indexOf(event))}`;
+    const url = `/v1/content/retrieval/fake/${sampleUuid(0x9a, sample.events.indexOf(event))}`;
     pendingRetrievals.set(url, sampleCapture(event));
     return Object.freeze({
       state: 'available',
@@ -475,7 +511,7 @@ export function createExploreStub({ now = () => new Date(), scenario = 'realisti
     content: Object.freeze({ search: searchContent, retrieve: retrieveContent, readUrl: readRetrieval }),
     async send(body) {
       if (latencyMs > 0) await new Promise((resolve) => { setTimeout(resolve, latencyMs); });
-      return inner.send(body);
+      return answer(body);
     },
     setScenario(name) {
       if (EXPLORE_SCENARIO_NAMES.includes(name)) current = name;

@@ -1,6 +1,6 @@
 // compile.test.mjs — the DSL-to-SQL compiler.
 //
-// The two properties under test are the ones ADR 0003 turns on: values are bound and identifiers
+// The two properties under test keep the browser from speaking SQL: values are bound and identifiers
 // are resolved, so there is no escaping code to get wrong; and the ordering a cursor pages over
 // is total, so a keyset page is exact rather than approximately right.
 
@@ -145,7 +145,7 @@ test('an exact distinct-subject count is taken over aggregate rows, not over eve
     baseDoc({ source: 'mart.agg_tool_user_period', dimensions: ['tool'], measures: ['submissions'] }),
   );
   assert.ok(c.text.includes('count(DISTINCT a.user_ref)::bigint AS __k_subjects'));
-  assert.ok(!c.text.includes('ingest.submission'), 'no aggregate read may touch the event table (C27)');
+  assert.ok(!c.text.includes('ingest.submission'), 'no aggregate read may touch the event table');
 });
 
 test('the directory join is emitted only when a directory dimension is used', () => {

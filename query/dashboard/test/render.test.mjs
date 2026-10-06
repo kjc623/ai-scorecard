@@ -1,23 +1,20 @@
-// render.test.mjs — every state renders, and the acceptance criterion is a test:
-// "opening index.html against a stub transport renders every state".
+// render.test.mjs — every documented state renders on every screen, and the screens say what they show.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { renderScreen, renderValue, renderTable, renderSeries, escapeHtml } from '../src/render.js';
 import { readState } from '../src/states.js';
-import { devicesView, classesView, teamsView, toolsView, activityView, auditView, toolsView as tv } from '../src/views.js';
-import { unavailableView, noApiView } from '../src/unavailable.js';
-import { STATE_ENVELOPES, SCENARIO_NAMES, SCENARIOS } from '../src/fixtures.js';
+import { devicesView, classesView, teamsView, toolsView, eventView } from '../src/views.js';
+import { STATE_ENVELOPES, SCENARIO_NAMES, RECORD_ROWS, fixtureTransport } from './fixtures.mjs';
 import { createDashboard, SCREENS, refusalFrom } from '../src/app.js';
 import { createQueryApi } from '../src/transport.js';
-import { scenarioTransport } from '../src/scenarios.js';
 import { COMPLETE, FRESH, PARTIAL, envelope } from './helpers.mjs';
 import { K } from '../src/vocab.js';
 
 const SHELL = { coverage: PARTIAL, freshness: FRESH };
 
 function dashboardFor(scenario = 'realistic') {
-  return createDashboard({ api: createQueryApi({ transport: scenarioTransport(scenario) }), now: () => new Date('2026-10-01T12:00:00Z') });
+  return createDashboard({ api: createQueryApi({ transport: fixtureTransport(scenario) }), now: () => new Date('2026-10-01T12:00:00Z') });
 }
 
 test('every documented result state renders without throwing, and none renders as a blank', () => {
@@ -131,14 +128,13 @@ test('the overview summarises usage, data classes and findings beside the enroll
   assert.equal(new Set(titles).size, titles.length, 'a warning every read carries is said once');
 });
 
-test('merged screens are a switch on the screen that absorbed them, and old addresses still resolve', async () => {
+test('Usage switches between tools, data classes and unsanctioned use, and Devices narrows to what needs attention', async () => {
   const dashboard = dashboardFor();
   assert.equal((await dashboard.load('tools', { filters: { view: 'classes' } })).view.id, 'classes');
   assert.equal((await dashboard.load('tools', { filters: { view: 'unsanctioned' } })).view.id, 'unsanctioned');
-  assert.equal((await dashboard.load('classes', {})).view.id, 'classes');
+  assert.equal((await dashboard.load('tools', {})).view.id, 'tools');
   const all = (await dashboard.load('devices', {})).view;
-  const attention = (await dashboard.load('degraded', {})).view;
-  assert.equal(attention.id, 'devices');
+  const attention = (await dashboard.load('devices', { filters: { status: 'attention' } })).view;
   assert.ok(attention.tables[0].rows.length < all.tables[0].rows.length);
   assert.ok(attention.tables[0].rows.every(({ row }) => row.status !== 'reporting'));
 });
@@ -158,8 +154,7 @@ test('the devices screen says the fleet, what needs attention, and each device i
   assert.match(html, /Quiet since 2026-09-29/);
   assert.match(html, /days ago/);
   assert.match(html, /href="explore\.html#events\?device=/);
-  // The device is named by hostname, the UUID stays on hover, and the user, version and mode are
-  // shown (ADR 0021; backlog/04-device-identity).
+  // The device is named by hostname, the UUID stays on hover, and the user, version and mode are shown.
   assert.match(html, /FIN-LAPTOP-07/);
   assert.match(html, /title="9f1c0b6e-0000-4000-8000-000000000001"/);
   assert.match(html, /alice@contoso\.example/);
@@ -171,9 +166,9 @@ test('the devices screen says the fleet, what needs attention, and each device i
   assert.ok(windowsOnly.tables[0].rows.every(({ row }) => row.device_os === 'windows'));
 });
 
-// docs/04 §3.7: the fleet card and "Need attention" must describe the same population. When the read
-// returns fleet-wide counts by status (meta.extras.device_status), both cards use it; the loaded
-// page is never the denominator.
+// The fleet card and "Need attention" must describe the same population. When the read returns
+// fleet-wide counts by status (meta.extras.device_status), both cards use it; the loaded page is
+// never the denominator.
 test('the two Devices cards agree when the read returns fleet-wide counts by status', async () => {
   const state = readState(envelope('ok', {
     data: [
@@ -200,18 +195,6 @@ test('the two Devices cards agree when the read returns fleet-wide counts by sta
     view.tiles[0].split.find((p) => p.label === 'Not reporting').count.toLocaleString('en-US'),
     'need attention and not-reporting must be the same population',
   );
-});
-
-test('the catalogue screen renders every gap with its reason, and the no-api screens render theirs', () => {
-  const catalogue = renderScreen(unavailableView(), SHELL);
-  for (const needle of ['Content search', 'Exports', 'Settings', 'Rejected-envelope', 'Anchored chain head']) {
-    assert.ok(catalogue.includes(needle), `${needle} is reported`);
-  }
-  for (const id of ['search', 'exports', 'settings']) {
-    const html = renderScreen(noApiView({ id, title: id, subtitle: '' }), SHELL);
-    assert.ok(/No API behind this screen/.test(html), `${id} says why it is empty`);
-    assert.ok(!/row-empty/.test(html), `${id} does not render an empty result table`);
-  }
 });
 
 test('the audit screen reports an integrity alert as an alert, not as a list', async () => {
@@ -252,28 +235,18 @@ test('the acceptance run: every scenario renders every screen without throwing',
   for (const scenario of SCENARIO_NAMES) {
     const dashboard = dashboardFor(scenario);
     for (const screen of SCREENS) {
-      const { view, shell, gallery, admin } = await dashboard.load(screen.id, { filters: { submission_id: '11111111-2222-4333-8444-555555555551', subject: 'u_1' } });
-      // The gallery and Settings → Deployment are not query screens: the gallery picks a scenario,
-      // and Deployment reads the admin API through its own controller (test/deployment.test.mjs).
-      if (gallery || admin) continue;
+      const { view, shell, admin } = await dashboard.load(screen.id, { filters: { submission_id: '11111111-2222-4333-8444-555555555551', subject: 'u_1' } });
+      // Settings → Deployment is not a query screen: it reads the admin API through its own
+      // controller (test/deployment.test.mjs).
+      if (admin) continue;
       const html = renderScreen(view, shell);
       assert.ok(typeof html === 'string' && html.length > 0, `${scenario}/${screen.id} rendered`);
       rendered.push(`${scenario}/${screen.id}`);
     }
   }
-  const queryScreens = SCREENS.filter((s) => s.kind !== 'gallery' && s.kind !== 'admin').length;
+  const queryScreens = SCREENS.filter((s) => s.kind !== 'admin').length;
   assert.equal(rendered.length, SCENARIO_NAMES.length * queryScreens, 'every scenario × every query screen');
-  assert.ok(rendered.length >= 90, `expected a broad matrix, got ${rendered.length}`);
-});
-
-test('every scenario has a label and is reachable from the gallery', () => {
-  for (const name of SCENARIO_NAMES) {
-    assert.ok(SCENARIOS[name].label, `${name} has a label`);
-    assert.ok(SCENARIOS[name].forced || SCENARIOS[name].answers, `${name} has answers`);
-  }
-  assert.ok(SCENARIO_NAMES.includes('realistic'));
-  assert.ok(SCENARIO_NAMES.includes('blind'), 'the "cannot say" state is in the gallery');
-  assert.ok(SCENARIO_NAMES.includes('suppressed'), 'the suppression state is in the gallery');
+  assert.ok(rendered.length >= 80, `expected a broad matrix, got ${rendered.length}`);
 });
 
 test('k is displayed wherever a suppression is explained', () => {
@@ -300,14 +273,24 @@ test('classes and teams screens carry their two-measure honesty note', () => {
   assert.ok(/1,530 without/.test(teamHtml));
 });
 
-test('the activity screen states that its low-merge figure is page-local', () => {
-  const state = readState(envelope('ok', {
-    data: [{ submission_id: 's', received_at: '2026-09-30T14:00:00Z', first_occurred_at: '2026-09-23T00:00:00Z', merge_confidence: 'low' }],
-    freshness: FRESH, coverage: PARTIAL, page: { returned: 1, next_cursor: null }, meta: { source: 'ingest.submission' },
-  }));
-  const html = renderScreen(activityView(state), SHELL);
-  assert.ok(/page count, not a window total/.test(html));
-  assert.ok(/Flushed late/.test(html));
-});
+test('the event detail screen reads the record as query-api answers it: one row per observation', async () => {
+  const state = readState({ ...STATE_ENVELOPES.stale, data: RECORD_ROWS, meta: { source: 'ingest.submission', content_state: 'uploaded' } });
+  const view = eventView(state);
+  assert.equal(view.tiles.find((t) => t.label === 'Content state').value.text, 'uploaded');
+  assert.equal(view.tiles.find((t) => t.label === 'Mode').value.text, 'm2', 'the mode is the record\'s collection_mode');
+  assert.equal(view.tiles.find((t) => t.label === 'Routes').value.text, '2');
+  const [metadata, routes] = view.tables;
+  const fields = metadata.rows.map(({ row }) => row.field);
+  assert.ok(fields.includes('user_ref') && fields.includes('policy_action') && fields.includes('tool_fingerprint'));
+  for (const column of ['observation_event_id', 'observation_source', 'direction', 'policy_decision']) assert.ok(!fields.includes(column), `${column} describes an observation, not the submission`);
+  assert.ok(fields.includes('observation_count'), 'the route count is a fact about the submission');
+  assert.equal(routes.rows.length, 2, 'both observation rows are routes, the first included');
+  assert.deepEqual(routes.rows.map(({ row }) => row.observation_source), ['ext.page_context', 'proxy.tls']);
 
-export { tv };
+  const dashboard = dashboardFor();
+  const loaded = (await dashboard.load('event', { filters: { submission_id: RECORD_ROWS[0].submission_id } })).view;
+  assert.equal(loaded.tables[1].rows.length, 2);
+
+  const none = eventView(readState({ ...STATE_ENVELOPES.stale, data: [{ ...RECORD_ROWS[0], observation_event_id: null, observation_source: null }], meta: { source: 'ingest.submission' } }));
+  assert.equal(none.tables[1].rows.length, 0, 'a submission with no observation has no routes');
+});

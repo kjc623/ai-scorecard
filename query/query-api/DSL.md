@@ -1,27 +1,19 @@
-# query-api DSL v1 — the frozen grammar
+# query-api DSL, `query_version: "1"`
 
-**Status:** frozen for `query_version: "1"`. · **Owner:** `query/query-api` · **Consumers:** `query/dashboard`, the integration verifier.
-**Normative sources:** [ADR 0003](../../docs/adr/0003-the-dashboard-reads-through-a-query-api-with-a-closed-query-dsl.md), [`docs/04-dashboard-and-query.md`](../../docs/04-dashboard-and-query.md) §2.3, §2.4, §3, §5, §6, §7, §12, §13. This file is the *implemented* grammar; where the two disagree the disagreement is listed in §9 rather than hidden.
-
-> **INV-3.** The browser never speaks SQL. No part of a client-supplied value is ever concatenated
-> into SQL text; a value is *bound*, and a dimension name that is not in the enumerated vocabulary
-> is *rejected, not escaped*. The DSL is closed rather than escaped, so there is no escaping code
-> to get wrong.
-
-If you are the dashboard author, read §1 (two ways to ask), §2 (the closed vocabularies), §3 (the
-ten templates), §4 (the response), §5 (result states) and §7 (pagination). §9 lists every decision
-this document had to make that `docs/04` left open — read it before filing a bug against the API.
+The grammar `POST /v1/query` accepts and the envelope it answers with. The browser never speaks SQL:
+no part of a client-supplied value is ever concatenated into SQL text. A value is *bound*, and a
+name that is not in the closed vocabulary is *rejected, not escaped*.
 
 ---
 
 ## 1. Two ways to ask
 
-Both are `POST /v1/query`. Nine of the ten templates expand to a closed document and go through the
-same validate → guard → compile pipeline, so they cannot express anything a document cannot. The
-exception is `q9_event_detail`: a single-record read with its own fixed statements, which has no
-document form and bypasses that pipeline — its two parameters are checked by the template itself.
+Both are `POST /v1/query` with `Authorization: Bearer <product access token>`. Nine of the ten
+templates expand to a closed document and go through the same validate → guard → compile pipeline,
+so they cannot express anything a document cannot. The exception is `q9_event_detail`: a
+single-record read with its own fixed statements, whose two parameters are checked by the template.
 
-**1a. A named template** — the ten questions of §3, pre-shaped server-side:
+**1a. A named template**, one of the ten questions of section 3:
 
 ```json
 { "query_version": "1",
@@ -45,8 +37,7 @@ rejected. A parameter the template does not declare is an error, not a no-op.
   "window": { "from": "2026-09-01T00:00:00Z", "to": "2026-10-01T00:00:00Z" },
   "order": [ { "by": "submissions", "dir": "desc" } ],
   "limit": 200,
-  "rollup": false,
-  "cursor": null }
+  "rollup": false }
 ```
 
 ### Top-level keys — the complete set
@@ -54,29 +45,29 @@ rejected. A parameter the template does not declare is an error, not a no-op.
 | Key | Type | Notes |
 |---|---|---|
 | `query_version` | `"1"` | **required**; any other value is `unsupported_query_version`. There is no silent downgrade. |
-| `template` | string | one of the ten names in §3 |
+| `template` | string | one of the ten names in section 3 |
 | `params` | object | only with `template` |
-| `source` | string | one of §2.1 |
-| `bucket` | `"hour"｜"day"｜"week"｜"month"` or absent | see §2.4 |
+| `source` | string | one of section 2.1 |
+| `bucket` | `"hour"｜"day"｜"week"｜"month"` or absent | see section 2.4 |
 | `dimensions` | string[] | ≤ 3, plus the bucket. Aggregates only. |
-| `measures` | string[] | ≥ 1 on an aggregate; must exist on the chosen source (§2.2) |
+| `measures` | string[] | ≥ 1 on an aggregate; must exist on the chosen source (section 2.2) |
 | `filters` | object[] | ≤ 16; `{field, op, value}` |
 | `window` | `{from,to}` | ISO-8601 UTC; half-open `[from, to)`. Required except on `mart.v_device_liveness`. |
 | `order` | `{by,dir}[]` | ≤ 3; only a returned measure or a grouped dimension; aggregates only |
-| `limit` | integer | page size / row cap; ≤ 500 on a list, ≤ 2000 on an aggregate |
-| `cursor` | string | opaque; echo it back verbatim (§7) |
-| `rollup` | boolean | adds a published total row; mutually exclusive with `cursor` |
+| `limit` | integer | page size on a list (≤ 500), row cap on an aggregate (≤ 2000) |
+| `cursor` | string | list sources only; opaque, echo it back verbatim (section 7). An aggregate is not paged: a cursor on one is `aggregate_not_paged`. |
+| `rollup` | boolean | aggregates only; adds a published total row |
 
-Anything else is `unsupported_query_shape / unknown_key`. Twenty-two keys are rejected **by name**
+Anything else is `unsupported_query_shape / unknown_key`. Some keys are rejected **by name**
 because their presence is an attempt rather than a typo:
 
 * `sql`, `raw`, `where`, `expression`, `order_by`, `filter_sql`, `having`, `select`, `from`, `join`,
-  `group_by` → `prohibited_field` (eleven keys)
-* `tenant_id`, `tenant` → `tenant_in_request`. **The tenant comes from the authenticated session
-  and never from the request.** A request carrying one is rejected, not ignored: silently dropping
-  it would turn an attempted cross-tenant read into an uneventful success.
+  `group_by` → `prohibited_field`
+* `tenant_id`, `tenant` → `tenant_in_request`. **The tenant comes from the access token and never
+  from the request.** A request carrying one is rejected, not ignored: silently dropping it would
+  turn an attempted cross-tenant read into an uneventful success.
 * `content_match`, `snippet`, `search`, `match`, `tsv`, `body` → `text_predicate_in_request`.
-  There is no text predicate on `/v1/query`; text search is `POST /v1/content-search` §15.3.
+  There is no text predicate on `/v1/query`; prompt-text search is `POST /v1/content-search`.
 * `__proto__`, `prototype`, `constructor` → `not_closed`.
 
 ---
@@ -85,7 +76,7 @@ because their presence is an attempt rather than a typo:
 
 ### 2.1 Sources
 
-| `source` | Kind | Answers | §3.11 indexes it needs |
+| `source` | Kind | Answers | Indexes it relies on |
 |---|---|---|---|
 | `mart.v_tool_usage` | aggregate | Q1, Q2 tool set | `mart.agg_tool_period` PK |
 | `mart.agg_tool_period` | aggregate | Q1 including `detections`/`rollup_events`/`degraded_events` | PK |
@@ -126,10 +117,14 @@ predicate `class`; on `mart.v_finding` — `detected_at`, `submission_id`, `rule
 `ops.audit` — `audit_seq`, `occurred_at`, `object_id`; on `mart.v_device_liveness` — `enrolled_at`,
 `last_seen_at`, `revoked_at`, `spool_depth`, `spool_dropped_total`.
 
+Every source that shows a tool returns the raw fingerprint in `tool` and a display name in
+`tool_name`, resolved at read time from the tenant's `ops.tool` override and the shared
+`ref.tool_catalogue`, falling back to `Unrecognised tool`. `sanctioned_state` is present-tense
+configuration joined at read time; NULL (no decision) renders as `unknown`, never `unsanctioned`.
+
 **`mart.agg_user_period` requires a subject filter** (`subject eq` or `subject in`). Its row grain
-*is* a person, so a read without one would be a list of people — which §11.2 ("Person is a lookup,
-not a list") and §14 item 1 (no volume leaderboard) forbid. The refusal is
-`unsupported_query_shape / subject_scope_required` and the fix is in `error.detail.fix`.
+*is* a person, so a read without one would be a list of people, which the product never offers. The
+refusal is `unsupported_query_shape / subject_scope_required` and the fix is in `error.detail.fix`.
 
 The window column is filterable under its own name (`received_at`, `detected_at`, `occurred_at`,
 `snapshot_day`) with the comparison operators below.
@@ -143,34 +138,34 @@ The window column is filterable under its own name (`received_at`, `detected_at`
 * `is_null` takes no value. `eq: null` is rejected — use `is_null` (a `= NULL` predicate that
   silently matches nothing is exactly the class of bug this DSL exists to prevent).
 * `starts_with` is permitted **only** on `tool` fingerprints, and only on aggregate sources; on
-  `ingest.submission` and `mart.v_finding` it is refused as `unsupported_query_shape` because no
-  index in §3.11 serves a prefix predicate there (the error names
-  `fix.alternative_source: mart.agg_tool_period`).
+  `ingest.submission` and `mart.v_finding` it is `unsupported_query_shape / no_covering_index`,
+  and the error names `fix.alternative_source: mart.agg_tool_period`.
 * Type rules: text/uuid → `eq ne in not_in is_null`; timestamp/date/number → those plus
   `lt lte gt gte between`; boolean → `eq ne is_null`.
 * Values are typed: timestamps must be ISO-8601 UTC (`2026-09-01T00:00:00Z`), dates `YYYY-MM-DD`,
   identifiers canonical uuids, strings ≤ 256 characters. Nested objects and arrays are not values.
 * `class` on `ingest.submission` is a **predicate**, not a dimension: `eq` only, compiled as
-  `labels @> jsonb_build_array(jsonb_build_object('class', $n))` and served by the `labels`
-  jsonb_path_ops GIN. `labels` is a jsonb **array** of `{class, score}`, so the operand is wrapped
-  in a one-element array: `array @> object` is false for every value and would silently match
-  nothing.
+  `labels @> jsonb_build_array(jsonb_build_object('class', $n))` and served by the `labels` GIN.
+* `prompt_kind` on `ingest.submission` filters through `coalesce(prompt_kind, 'unknown')`, so a
+  row whose kind the device did not decide is never dropped by `ne`; the raw column is returned.
 
 ### 2.4 Buckets, grouping and ordering
 
-* `bucket`: `hour` and `day` are native (`mart.agg_*_period.bucket_size` admits exactly those);
-  `week` (ISO, Monday) and `month` are read-side reductions over day rows. Whichever is applied,
-  exactly one `bucket_size` is pinned — without that, an hour row would be added to a day total.
-  The applied bucket is returned in `meta.applied_bucket`.
-* Omitting `bucket` on an aggregate means a single window total, computed from **day** rows
-  (`meta.applied_bucket: "day"`).
+* `bucket`: `hour` and `day` are native; `week` (ISO, Monday) and `month` are read-side reductions
+  over day rows. Whichever is applied, exactly one `bucket_size` is pinned, so an hour row is never
+  added to a day total. The applied bucket is returned in `meta.applied_bucket`.
+* Omitting `bucket` on an aggregate means a single window total, computed from **day** rows.
+* A series is at most 400 points. A bucket the server chose (a document sent with no `bucket`) is
+  auto-coarsened and reported; a bucket the caller pinned (every template pins one) that cannot fit
+  is refused with `fix.coarser_bucket`.
 * `dimensions` ≤ 3, and `bucket` is not a dimension name (pass it as `bucket`).
-* A list source does not group: grouping an event list is `unsupported_query_shape`. Any
-  time-bucketed number must come from `mart` (C27).
+* A list source does not group: grouping a list is `unsupported_query_shape`. Any time-bucketed
+  number comes from `mart`.
 * `order` is ≤ 3 terms, each naming a returned measure or a grouped dimension. The server then
   **appends the deterministic tie-break** — bucket first (DESC) when bucketed, then every grouped
-  key ASC — so the ordering is total and a keyset page is exact. Caller terms come after the
-  bucket: `ORDER BY bucket DESC, <your terms>, <tie-break>`.
+  key ASC — so the ordering is total: `ORDER BY bucket DESC, <your terms>, <tie-break>`.
+* `limit` on an aggregate truncates in that order, so it cuts whole buckets rather than returning a
+  top-N per bucket; `meta.truncated` says whether it cut anything.
 * List sources have one fixed total ordering each; supplying `order` for one is
   `cursor_requires_total_order`.
 
@@ -184,12 +179,11 @@ The window column is filterable under its own name (`received_at`, `detected_at`
 
 `users` is `exact` only when the cell is a single aggregate row (the grouping includes the source's
 full grain and the bucket is native); otherwise it is `distinct_lower_bound` and is served as
-`max(...)`, which **never overstates**. The same value is the k input of §6.
+`max(...)`, which **never overstates**. The same value is the k input of section 6.
 
 `max_score` is a `MAX`, not a sum. `submissions` on `mart.agg_class_period` counts submissions
-*carrying that class*: one submission with three labels appears in three rows, so summing class
-rows and calling the result "submissions" overstates volume. The Q4 template returns the
-non-additive total separately, from `mart.agg_tool_period`, as `meta.extras.class_total`.
+*carrying that class*: one submission with three labels appears in three rows. The Q4 template
+returns the non-additive total separately, from `mart.agg_tool_period`, as `meta.extras.class_total`.
 
 ---
 
@@ -199,15 +193,15 @@ Every template declares exactly these parameters; anything else is an error.
 
 | Template | Source | Parameters | Notes |
 |---|---|---|---|
-| `q1_tools_ranked` | `mart.v_tool_usage` | `window`, `bucket`, `limit`, `tool`, `sanctioned_state` | rank by `submissions`, tie-break `tool`; `sanctioned_state` NULL renders as `unknown`, never as `unsanctioned` |
-| `q2_unsanctioned_users` | `mart.agg_tool_user_period` | `window`, `bucket`, `limit`, `tool`, `subject`, `sanctioned_state` | subject-bearing → audited; the state defaults to `unsanctioned` (the question), and `unknown` is a separate call; the k cell is the `(bucket, tool)` group; ordered by tool then person, never by volume; not cursor-paged (no `cursor` parameter — one response bounded by `limit`, default and maximum 500); > 7 days unscoped is refused |
+| `q1_tools_ranked` | `mart.v_tool_usage` | `window`, `bucket`, `limit`, `tool`, `sanctioned_state` | rank by `submissions`, tie-break `tool`; `mart.v_tool_usage` has no `detections`/`rollup_events`/`degraded_events` (`meta.warnings` says so; use `mart.agg_tool_period`) |
+| `q2_unsanctioned_users` | `mart.agg_tool_user_period` | `window`, `bucket`, `limit`, `tool`, `subject`, `sanctioned_state` | subject-bearing → audited; the state defaults to `unsanctioned`, and `unknown` is a separate call; the k cell is the `(bucket, tool)` group; ordered by tool then person, never by volume; one response bounded by `limit` (default and maximum 500); > 7 days unscoped is refused |
 | `q3_team_growth` | `mart.agg_org_period` | `window`, `bucket`, `limit`, `department`, `population` | carries the `unmapped` residual in `meta.extras.org_coverage`; `not_yet_covered` before the directory sync |
 | `q4_class_mix` | `mart.agg_class_period` | `window`, `bucket`, `limit`, `dimensions`, `class`, `severity` | `dimensions` ⊆ `{class, tool, severity, classifier_version}`, ≤ 3; default `[class, severity]` |
 | `q5_findings` | `mart.v_finding` | `window`, `limit`, `cursor`, `severity`, `rule`, `review_state`, `subject`, `tool`, `class` | review state `open` means nobody has looked |
-| `q6_subject_series` | `mart.agg_user_period` | `subject` (**required**), `window`, `bucket`, `limit` | k-suppression exempt (§6.4); carries `meta.extras.flush_check` |
-| `q7_devices` | `mart.v_device_liveness` | `limit`, `cursor`, `liveness`, `collector_state`, `collector`, `device_os`, `managed_state`, `region` | **no window**; four liveness values stay distinct |
-| `q8_activity` | `ingest.submission` | `window`, `limit`, `cursor`, `subject`, `tool`, `device`, `class`, `content_state`, `action`, `mode`, `department`, `prompt_kind`, `prompt_kind_not` | window ≤ 31 days; both clocks returned; `prompt_kind` includes only that kind and `prompt_kind_not` excludes it (the default-hide of `client_generated`); both filter through `coalesce(prompt_kind, 'unknown')` so a NULL row never drops |
-| `q9_event_detail` | `ingest.submission` | `submission_id` (**required**), `received_at_hint` | single record; response is `data: [row, …observations]` |
+| `q6_subject_series` | `mart.agg_user_period` | `subject` (**required**), `window`, `bucket`, `limit` | k-suppression exempt; carries `meta.extras.flush_check` |
+| `q7_devices` | `mart.v_device_liveness` | `limit`, `cursor`, `liveness`, `collector_state`, `collector`, `device_os`, `managed_state`, `region` | **no window**; four liveness values stay distinct; the row grain and cursor are `(device, collector)`; fleet-wide counts in `meta.extras.device_status` |
+| `q8_activity` | `ingest.submission` | `window`, `limit`, `cursor`, `subject`, `tool`, `device`, `class`, `content_state`, `action`, `mode`, `department`, `prompt_kind`, `prompt_kind_not` | window ≤ 31 days; both clocks returned; `prompt_kind` includes only that kind and `prompt_kind_not` excludes it |
+| `q9_event_detail` | `ingest.submission` | `submission_id` (**required**), `received_at_hint` | single record; `data` is one row per observation, each carrying the submission's columns |
 | `q10_audit_trail` | `ops.audit` | `window`, `limit`, `cursor`, `actor`, `action`, `object_type`, `subject`, `case` | hash links verified in SQL before the page is returned |
 
 `window` is `{from, to}` in every row above.
@@ -233,22 +227,23 @@ Every template declares exactly these parameters; anything else is an error.
   "meta": { "…": "see below" } }
 ```
 
-Three properties are load-bearing and are enforced in code, not by convention:
+Three properties are enforced in code, not by convention:
 
 1. **`freshness` and `coverage` are always present on a data-bearing response.** The envelope
-   builder refuses to construct one without them, so a UI cannot omit a state it was given.
-   `page` is present on a list read. `audit` is present exactly when an audit row was written —
-   `audit.entry_id` is what makes a screenshot traceable (Q10).
-2. **`result_state` is a first-class answer, not an error channel** (§5).
+   builder refuses to construct one without them. `page` is present on a list read. `audit` is
+   present exactly when an audit row was written; `audit.entry_id` makes a screenshot traceable.
+2. **`result_state` is a first-class answer, not an error channel** (section 5).
 3. **`data` never contains a bare number for a suppressed cell, and never a hidden column.**
    Internal columns (`__k_subjects`, `__ord_*`, `__recomputed_hash`) never reach the wire.
 
 `meta` carries, at least: `source`, `kind`, `applied_bucket`, `native_bucket_size`, `reduced_from`,
-`dimensions`, `measures`, `measure_semantics`, `order`, `limit`, `probe_row`, `rollup`,
-`has_cursor`, `k`, `subject_count_basis`, `query_class`, `statement_timeout_ms`, `required_indexes`,
-`warnings`, `joins_used`, `dsl_hash`, `snapshot_upper_bound`, `cursor_mode`, `coarsened`,
-`guard{estimated_cells,bounded_cells,paged,estimated_bytes}`, `notes`, and `extras` when the
-template produced a side read.
+`dimensions`, `measures`, `measure_semantics`, `order`, `limit`, `probe_row`, `truncated` (an
+aggregate with a `limit`), `rollup`, `has_cursor`, `k`, `subject_count_basis`, `query_class`,
+`statement_timeout_ms`, `required_indexes`, `warnings`, `joins_used`, `dsl_hash`,
+`snapshot_upper_bound`, `coarsened`, `guard{estimated_cells,bounded_cells,limited,estimated_bytes}`,
+`notes`, and `extras` when the template produced a side read. New keys may appear in `meta`,
+`freshness`, `coverage` and `suppression` within `query_version: "1"`; `data`, `page`,
+`result_state` and the error codes are the stable surface.
 
 A suppressed cell looks like this and carries **no measure at all** — not `0`, not `null`:
 
@@ -272,16 +267,16 @@ not a number", and the client must render the difference.
 | `stale_aggregate` | 200 | watermark older than 3× the cadence (15 min) | data **with** its age |
 | `coverage_degraded` | 200 | the value is a floor, not a total | data with the gap share |
 | `suppressed` | 200 | every cell in the response was suppressed | hatched cells |
-| `no_longer_available` | **410** | the record existed and was destroyed | with `shredded_reason` and the receipt |
-| `not_found` | 404 | no such record, and no purge covers its window | "No such record" |
+| `no_longer_available` | **410** | the record existed and was destroyed | with the reason and the erasure receipt |
+| `not_found` | 404 | no such record, and no erasure receipt covers its window | "No such record"; `detail.purge_window_unknown` when no `received_at_hint` was given, `detail.retention_evidence: "no_ledger_in_schema"` because retention expiry leaves no per-row receipt |
 | `unsupported_query_shape` | 400 | filter combination not servable | the fix, named |
 | `query_too_broad` | 400 | over budget or over a cap | the coarser bucket / narrower window that fits |
-| `cursor_expired` | 400 | a signed token that is expired, mismatched, or from another query or tenant; an unknown or expired server-side id (§7 lists what the server-side path refuses differently) | restart from page one, told why |
-| `audit_unavailable` | 503 | the audit row could not be committed — or any other database error inside the read's transaction (a statement timeout included), which rolls the whole read back | **no data at all** |
-| `busy` | 429 | shed by the concurrency gate (its queue is full), or the request exceeded its time budget | retry hint |
-| `unauthorised_role` | 403 | the role cannot make this read | which role is needed |
-| `audit_chain_broken` | 500 | a page's hash links do not verify. The transport also answers with this state, and `error.code: internal_error`, for any error it does not recognise — a connection-pool refusal included | an integrity alert, not a list |
-| `not_captured` / `not_retrievable` / `key_unavailable` | 200 / 200 / 503 | content states of §8.2 | as §13 |
+| `cursor_expired` | 400 | a cursor that is expired, tampered, or from another query or tenant | restart from page one, told why |
+| `audit_unavailable` | 503 | the transaction could not be completed and was rolled back: `audit_write_failed` when the audit insert failed, `read_failed` for anything else | **no data at all** |
+| `busy` | 429 | shed by the admission gate, the request exceeded its time budget (`request_timeout`), or the statement hit its timeout, a lock timeout or a serialisation failure (`statement_timeout`, `lock_timeout`, `serialization_failure`) | retry |
+| `unauthorised_role` | 403 / 401 | the role cannot make this read (403, `role`); 401 with `unauthenticated` when there is no valid token | which role is needed, or sign in |
+| `audit_chain_broken` | 500 | a page's hash links do not verify; also `error.code: internal_error` for an unexpected defect | an integrity alert, not a list |
+| `not_captured` / `not_retrievable` / `key_unavailable` | 200 / 200 / 503 | content states | as named |
 
 Error body:
 
@@ -292,7 +287,8 @@ Error body:
                          "fix": { "coarser_bucket": "week" } } } }
 ```
 
-A rejection never carries `data`, `freshness` or `coverage` — there is no number to qualify.
+A rejection never carries `data`, `freshness` or `coverage` — there is no number to qualify. On
+`query_too_broad` / `unsupported_query_shape`, `error.detail.fix` is the action the user can take.
 
 ---
 
@@ -306,7 +302,7 @@ A rejection never carries `data`, `freshness` or `coverage` — there is no numb
 * **Complementary suppression.** With `rollup: true`, if exactly one cell in the response is
   suppressed the published total is suppressed too (`reason: "complementary_suppression"`),
   because otherwise total − published cells recovers the hidden value.
-* Does **not** apply to explicitly subject-scoped reads (`q6`, a subject-filtered list) — §6.4.
+* Does **not** apply to explicitly subject-scoped reads (`q6`, a subject-filtered list).
 * `meta.subject_count_basis` is `exact` or `lower_bound`; a `lower_bound` can only over-suppress.
 * The audit decision is made **before** suppression: a query answered with `suppressed` still writes
   an audit entry.
@@ -315,28 +311,19 @@ A rejection never carries `data`, `freshness` or `coverage` — there is no numb
 
 ## 7. Cursor pagination
 
-* **Only `page.next_cursor` ends an iteration.** A short page is not the end: rows deleted
+* Only list reads are paged. An aggregate takes no `cursor`; its response is bounded by `limit`.
+* **Only `page.next_cursor: null` ends an iteration.** A short page is not the end: rows deleted
   mid-pagination (retention expiry, erasure) make a page shorter, and stopping there would truncate
-  a result set whose rows were erased underneath it (§7.4).
-* Pass the cursor back verbatim as `cursor`. Treat it as opaque; do not parse, decode or construct
-  one.
-* Two encodings, and the client cannot tell which it received: a signed self-contained token (no
-  subject reference in the ordering key) or an opaque server-side id (ordering key contains
-  `subject`). Both expire after **15 minutes**. Only list reads return a `page` block, and no list
-  source orders by `subject`, so the service issues signed tokens only; it is also started without
-  a server-side cursor store.
-* Every failure of a signed token — expired, unknown, tampered, another tenant, another query, a
-  changed ordering key after a deploy — is `cursor_expired` (400). On the server-side path an
-  unknown or expired id is `cursor_expired` too, but an id issued for a different query
-  (`cursor_mismatch`) or a different session (`cursor_tenant_mismatch`), a signed-looking token
-  offered where a server-side id is required, and a service with no cursor store configured are
-  refused as `unsupported_query_shape` (400). In every case: restart from page one; do not retry
-  with an offset.
-* `page.snapshot_upper_bound` freezes the window at first page: everything after page one carries
-  `received_at <= upper`, so an insert cannot shift a boundary and a row can be neither seen twice
-  nor skipped. `page.newer_events_exist` announces that rows arrived since the snapshot rather than
-  hiding them.
-* Cursors are subject-level data: never log one in full, never echo it in an error.
+  the result set.
+* Pass the cursor back verbatim as `cursor`, with the same document otherwise. Treat it as opaque.
+* A cursor is signed with the deployment's cursor key, so any replica accepts a cursor any replica
+  issued. It is bound to the tenant, the normalised query and the ordering key, and expires after
+  **15 minutes**. Every failure — expired, tampered, another tenant, another query, a changed
+  ordering key after a deploy — is `cursor_expired` (400): restart from page one.
+* `page.snapshot_upper_bound` freezes the window at the first page: every later page carries
+  `<time column> <= upper`, so an insert cannot shift a boundary and a row is neither seen twice nor
+  skipped. `page.newer_events_exist` announces rows that arrived since the snapshot.
+* Never log a cursor in full or echo it in an error.
 
 ---
 
@@ -347,159 +334,32 @@ A rejection never carries `data`, `freshness` or `coverage` — there is no numb
 | Bound | Value | Refusal |
 |---|---|---|
 | Aggregate cells | 2,000 | `query_too_broad` naming the coarser bucket that fits |
-| Aggregate page | ≤ 2,000 | a paged aggregate is bounded by its page; the estimate is disclosed in `meta.guard` |
-| List rows | 50 default, 500 max | `query_too_broad` with the bound on a document; a template `limit` above the template's own cap is `unsupported_query_shape / cost_estimate_exceeded` |
+| Aggregate with a `limit` | ≤ 2,000 rows | bounded by the limit; the full estimate is disclosed in `meta.guard` |
+| List rows | 50 default, 500 max | `query_too_broad` on a document; a template `limit` above the template's own cap is `unsupported_query_shape / cost_estimate_exceeded` |
 | Event/finding window | 31 days | `query_too_broad` |
 | Audit window | 366 days | `query_too_broad` |
 | Coverage window | 366 days | `query_too_broad` |
 | Subject-grouped window | 7 days unless narrowed by a tool or subject filter | `query_too_broad` naming the narrowing |
-| Time series | 400 points | auto-coarsened when the server chose the bucket (a document sent with no `bucket`); refused, naming the bucket that fits, when the document or a template set one |
+| Time series | 400 points | auto-coarsened or refused (section 2.4) |
 | Response body | 8 MB | `query_too_broad` |
-| Statement timeout | the session's `statement_timeout`, from `SAC_PG_STATEMENT_TIMEOUT_MS` (default 10 s) | set on the connection at startup; an overrun rolls the read back |
 
-The per-class budgets — aggregate 3 s, list/audit/operational 5 s — are reported in
-`meta.statement_timeout_ms` and are **metadata only**: the executor issues no `SET LOCAL`, so the
-timeout in force is the connection's own. The row cap is the bound `LIMIT` of the compiled
-statement, which is a single `SELECT`.
+Each read runs in one transaction with the statement timeout of its query class — aggregate 3 s,
+list, audit and operational 5 s, single record 3 s, reported as `meta.statement_timeout_ms` — and a
+lock timeout of half that. An overrun rolls the read back and answers `busy`. The process admits 8
+requests to the database at once and queues 32; beyond that the answer is an immediate `busy`.
 
-### 8.2 When a read is audited (§5)
+### 8.2 When a read is audited
 
 Audited **before** the rows are served: any query that filters on `subject`; any query that returns
 a subject reference; a single-record detail; any read of `ops.audit` (one row per query, not
 re-audited).
 
 Audited **after** the read and before anything is served: an aggregate whose cells resolve to fewer
-than k distinct subjects — the same value §6 computes for suppression decides it.
+than k distinct subjects — the same value section 6 computes for suppression decides it.
 
-Not audited: tool-, class- and team-level aggregates whose cells are k or wider; device and
-coverage state; reference data.
+Not audited: tool-, class- and team-level aggregates whose cells are k or wider; coverage state;
+reference data.
 
 Fail closed: if the audit row cannot be committed the transaction is rolled back, the response is
-`503 audit_unavailable`, and **zero rows** are served. Nothing is streamed; a subject-level
-response is materialised and committed before its first byte.
-
----
-
-## 9. Decisions this document makes, where `docs/04` left a gap
-
-Each of these is a place the specification is silent, contradictory, or unrepresentable, and the
-choice this package made instead. They are listed so the dashboard author and the verifier can
-disagree with the choice rather than discover it.
-
-1. **`query_version` is a string, and a mismatch is a hard rejection.** §2.3 requires rejection
-   "never silently downgraded"; the version is carried on every request and response.
-2. **`sanctioned_state` is a dimension.** §2.4's dimension table omits it, but §3.2 requires
-   "which are unsanctioned" and the three states to stay separate. It is groupable and filterable
-   on the three tool sources (`mart.v_tool_usage`, `mart.agg_tool_period`,
-   `mart.agg_tool_user_period`), and is nullable (NULL = a tool with no `ops.tool` row = `unknown`).
-2a. **`tool_name` is returned, not offered as a dimension.** Every source that shows a tool returns
-   the raw fingerprint in `tool` and a present-tense display name in `tool_name`, resolved by
-   `ops.tool_display_name()` from `ops.tool` (a tenant override) and `ref.tool_catalogue` (the shared
-   seed), falling back to the literal `Unrecognised tool`. The raw value stays the grouping and
-   filtering key, so the index and `starts_with` behaviour are unchanged and an unknown tool is
-   never hidden behind a plausible name.
-3. **`classifier_version` is a dimension.** §3.4 requires a classifier change to appear as a
-   version change; it is in `mart.agg_class_period`'s primary key, so it is offered. With the
-   three-dimension cap, `class` + `tool` + `severity` + `classifier_version` cannot all be shown at
-   once; the q4 template takes `dimensions` to choose.
-4. **Measures beyond §2.4's list are offered where the column exists**: `detections`,
-   `rollup_events`, `degraded_events` (on `mart.agg_tool_period`), `block_events` (on
-   `mart.agg_user_period`). §4.6 says these landed in the schema for exactly these questions.
-5. **Q1 cannot show `detections`/`rollup_events`/`degraded_events`.** `mart.v_tool_usage` — the view
-   §3.1 names — does not expose them. The response says so in `meta.warnings`; use source
-   `mart.agg_tool_period` for those measures.
-6. **Q7 is two sources, not one three-way join.** §3.7 names
-   `mart.v_device_liveness ⋈ ops.collector_state ⋈ ops.coverage_snapshot`, but
-   `ops.coverage_snapshot` is one row per device per collector per **day**: joining it without a
-   `snapshot_day` predicate multiplies every device row by the number of days in the window. So
-   `mart.v_device_liveness` joins `ops.collector_state` (≤ 6 rows per device, which is what §3.7's
-   "5,000 × 6 collectors = 30k rows" describes), and coverage is its own source.
-7. **The Q7 cursor is `(device_id, collector)`, not `(device_id)`.** §7.1 gives a device-only key,
-   but the row grain after the collector join is `(device, collector)`; a device-only key is not
-   total and the keyset page would be inexact.
-8. **Q2 and the 2,000-cell cap.** §12.1 caps an aggregate read at 2,000 cells; §3.2
-   requires Q2 to be cursor-paged at 50/500. Both cannot hold unless the cap applies to the
-   *response*. So: an aggregate with a `limit` is bounded by that limit, an aggregate without one
-   must fit 2,000 cells, and the estimate is disclosed in `meta.guard.estimated_cells`. Cursor
-   paging of Q2 itself is **not implemented**: the template takes no `cursor`, an aggregate
-   response carries no `page` block, and the template's `limit` is capped at 500 rows.
-9. **Auto-coarsening versus refusal.** §7.5 and §3.1 say a series beyond 400 points is
-   auto-coarsened and the applied bucket named in `freshness`; §12.3 says a four-year day-bucketed
-   trend is `query_too_broad` suggesting week or month. Both are honoured by asking who chose the
-   resolution: a **server-chosen** bucket (the caller sent none) is auto-coarsened and reported; a
-   **caller-pinned** bucket that cannot fit is refused with `fix.coarser_bucket`. Every aggregate
-   template writes a bucket into the document it expands to (`day` when the caller gives none), and
-   that counts as pinned — so auto-coarsening applies only to a document sent with no `bucket`.
-10. **Ordering precedence.** §2.4 says ordering is on a measure or a grouped dimension "always with
-    a deterministic tie-break on the remaining grouping keys"; §7.1 gives the aggregate-series key
-    as `(bucket_start DESC, <grouping keys> ASC)`. Implemented as: bucket DESC first, then the
-    caller's terms, then the grouping keys ASC. That is what makes "top N within each bucket" the
-    natural reading, and it is the key the cursor binds to.
-11. **`limit` on an aggregate truncates whole buckets rather than returning a top-N per bucket.**
-    §3.1 mentions "top-N per bucket"; that needs a window function whose keyset page is not the
-    same ordering, so it is not implemented. A caller that needs it should page the series and
-    rank client-side, or ask for one bucket.
-12. **Windows are mandatory except on `mart.v_device_liveness`.** §3.6/C29 forbid unbounded result
-    sets; the device list is current state rather than a stream and is bounded by its page.
-13. **A findings list window is capped at 31 days** because §12.1's "Event / finding list" row says
-    so. A year-long findings review therefore needs either a window walk or an API change; §3.5's
-    cost note assumes a shorter horizon. Flagged as a document ambiguity, not a design choice.
-14. **The audit window cap is 366 days.** §12.1 gives no window for an audit read; a year is what
-    the audit trail's own sizing (§3.10, ~36k rows/tenant/year) makes servable at 500 rows a page.
-15. **`not_found` versus `no_longer_available` is only half-implementable.** §13 resolves a missing
-    record by asking whether "no retention run and no erasure receipt covers the window". Erasure
-    receipts exist (`ops.erasure_receipt`), and are checked; **there is no retention-run ledger in
-    `database/schema.sql`**, and without the row there is no way to recover the expiry it would have
-    carried. The response therefore returns `not_found` with
-    `detail.retention_evidence: "no_ledger_in_schema"` rather than guessing, and without a
-    `received_at_hint` it says `purge_window_unknown: true` — a submission id is a uuid, not a
-    timestamp, so the window is not derivable from it.
-16. **The k-triggered audit row is written after the read, before the response.** §5.1 says the row
-    is written "before the rows are read"; §5.2's small-cell trigger needs the cells' distinct
-    subject counts, which §6 computes only once the cells exist. Both are satisfied by writing the
-    row in the same transaction and serving nothing before it commits.
-17. **`users` is a distinct-subject count served as `max(...)` when the cell may combine rows** — a
-    lower bound that never overstates, labelled `distinct_lower_bound` in
-    `meta.measure_semantics`. Summing the column would be an upper bound and would publish cells
-    that are really smaller than k.
-18. **A cell of genuine zeros is published as zero even when its subject count is below k.** §6.3's
-    rule that a zero and a suppressed cell are different facts decides it.
-19. **Audit action names are this package's own closed vocabulary** (`query.aggregate`,
-    `query.events`, `query.findings`, `query.devices`, `query.coverage`, `audit.read`,
-    `query.record`, `content.search`, `content.reveal`, `export.run`). §3.10 names only
-    `content_search` as a new action; the rest are not fixed by the document.
-20. **`meta` is additive.** New keys may appear in `meta`, `freshness`, `coverage` and `suppression`
-    within `query_version: "1"`; `data`, `page`, `result_state` and the error codes are the stable
-    surface. §2.3's "additive only" is applied to the envelope the same way it is applied to the
-    DSL. Should this change, `query_version` changes.
-21. **A per-subject source must name its subject.** §2.4 describes `subject` as a dimension without
-    saying that some sources may not be grouped by it freely. `mart.agg_user_period`'s row grain
-    *is* a person, so a read of it without a `subject eq`/`in` filter is refused as
-    `subject_scope_required`. Without that rule, §14 item 1's "no per-employee ranking" would be
-    one query document away, and the Q6 template would be the only thing standing in the way.
-    `mart.agg_tool_user_period` (Q2, "who is using them") is deliberately *not* subject-scoped:
-    the document asks that question per tool, and the 7-day and page-size rules bound it instead.
-22. **`prompt_kind` is an additive dimension on `ingest.submission`, compiled through
-    `coalesce(s.prompt_kind, 'unknown')`.** The task-08 request-kind column is nullable (the device
-    did not decide), so a plain `s.prompt_kind <> $` predicate would drop NULL rows and a
-    default-hide of `client_generated` would hide pre-decision rows too. The coalesce makes NULL
-    filter as `unknown` and keeps the `ne` operator from dropping them; `listSelect` still returns
-    the raw column, so a NULL row renders as `unknown` on the client rather than being rewritten.
-
----
-
-## 10. Contract for the dashboard author
-
-* Call `POST /v1/query` with `query_version: "1"`. Never send `tenant_id`; the session owns it.
-* Prefer a template; use a document only when the template's parameters do not cover the screen.
-* Render `freshness` and `coverage` on the tile that shows a number, not in a tooltip.
-* Treat a cell with `result_state: "suppressed"` as a distinct hatched state, with `k` and
-  `reason` available. Never coerce it to `0`, and never coerce a `0` to suppressed.
-* Page only while `next_cursor` is non-null.
-* On `cursor_expired`, restart from page one and tell the user why.
-* On `query_too_broad` / `unsupported_query_shape`, read `error.detail.fix` and present it as the
-  action the user can take — the API refuses rather than degrading, so the fix is always in the
-  response.
-
-If this grammar has to change, the change is additive within `query_version: "1"`; anything else is
-a new version and this file, the dashboard and the verifier all move together.
+`503 audit_unavailable`, and **zero rows** are served. Nothing is streamed; a response is
+materialised and committed before its first byte.

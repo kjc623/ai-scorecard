@@ -1,175 +1,91 @@
-// pool.test.mjs — the connection pool, and the two properties that make reuse safe.
-//
-// WHY THIS FILE EXISTS. The first version of the read path was handed ONE client and used it for
-// everything: readiness probes and every read transaction. Two defects followed, both found by the
-// agent who wrote the driver rather than by any test:
-//
-//   1. a second concurrent request — or a probe during a read — got SAC_BUSY, because one session
-//      runs one transaction at a time; and
-//   2. nothing set `app.tenant_id`, which every scoped row-level-security policy reads, so each
-//      query would have returned nothing at all.
-//
-// Both are asserted here, because both were invisible: the service looked healthy, the probes
-// answered, and the only symptom was an absence of data.
+// pool.test.mjs — how the database pool authenticates, encrypts, and reads values.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { ENTRA_POSTGRES_RESOURCE, TYPES, createPool, entraTokenSource, inTransaction } from '../src/db.js';
 
-import { createPool, PoolError } from '../src/http/pool.js';
-import { loadConfig } from '../src/http/config.js';
+const IDENTITY = Object.freeze({ endpoint: 'http://localhost:42356/msi/token', header: 'identity-header', clientId: '5d1c0de0-0000-4000-8000-000000000001' });
 
-/**
- * A driver stand-in that records everything and can be told to fail.
- *
- * `connectDelayMs` is what makes the concurrency assertions meaningful: without it, connections
- * appear instantly and a pool would look correct even if it handed the same session to everyone.
- */
-function fakeDriver({ connectDelayMs = 0, failConnect = false, failResetFor = null } = {}) {
-  const made = [];
-  const createClient = () => {
-    const client = {
-      id: made.length + 1,
-      connected: false,
-      statements: [],
-      async connect() {
-        if (connectDelayMs) await new Promise((r) => setTimeout(r, connectDelayMs));
-        if (failConnect) throw new Error('cannot connect');
-        this.connected = true;
-      },
-      async query(text, params) {
-        this.statements.push({ text, params });
-        if (failResetFor !== null && /set_config\('app\.tenant_id', ''/.test(text) && this.id === failResetFor) {
-          throw new Error('reset failed');
-        }
-        return { rows: [], rowCount: 0, fields: [] };
-      },
-      async begin() {},
-      async commit() {},
-      async rollback() {},
-      async close() {
-        this.closed = true;
-      },
+function identityEndpoint({ expiresIn = 3600, status = 200, now = () => Date.now() } = {}) {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url: new URL(url), headers: init.headers });
+    const n = calls.length;
+    return {
+      status,
+      json: async () => ({ access_token: `token-${n}`, expires_on: String(Math.floor(now() / 1000) + expiresIn), resource: ENTRA_POSTGRES_RESOURCE, token_type: 'Bearer' }),
     };
-    made.push(client);
-    return client;
   };
-  return { createClient, made };
+  return { calls, fetchImpl };
 }
 
-const poolOf = (driver, overrides = {}) =>
-  createPool({
-    createClient: driver.createClient,
-    clientOptions: {},
-    max: 4,
-    maxQueue: 2,
-    log: { warn() {}, info() {}, error() {} },
-    ...overrides,
-  });
-
-test('two concurrent borrowers get two different connections', async () => {
-  // The defect this replaces: one shared client meant the second request waited for the first
-  // request's COMMIT and then failed with SAC_BUSY.
-  const driver = fakeDriver();
-  const pool = poolOf(driver);
-  const [a, b] = await Promise.all([pool.acquire(), pool.acquire()]);
-  assert.notEqual(a, b, 'one session cannot serve two transactions');
-  assert.equal(pool.size, 2);
-  assert.equal(pool.inUseCount, 2);
-  await pool.close();
+test('the Entra token is fetched for the managed identity from the Container Apps endpoint', async () => {
+  const endpoint = identityEndpoint();
+  const password = entraTokenSource(IDENTITY, { fetchImpl: endpoint.fetchImpl });
+  assert.equal(await password(), 'token-1');
+  const [call] = endpoint.calls;
+  assert.equal(call.url.origin + call.url.pathname, IDENTITY.endpoint);
+  assert.equal(call.url.searchParams.get('api-version'), '2019-08-01');
+  assert.equal(call.url.searchParams.get('resource'), 'https://ossrdbms-aad.database.windows.net');
+  assert.equal(call.url.searchParams.get('client_id'), IDENTITY.clientId);
+  assert.deepEqual(call.headers, { 'X-IDENTITY-HEADER': 'identity-header' });
 });
 
-test('a released connection is reused rather than reopened', async () => {
-  const driver = fakeDriver();
-  const pool = poolOf(driver);
-  const first = await pool.acquire();
-  await pool.release(first);
-  assert.equal(pool.size, 1);
-  assert.equal(pool.idleCount, 1);
-  const second = await pool.acquire();
-  assert.equal(second, first, 'the idle connection is handed back out');
-  assert.equal(driver.made.length, 1, 'no second connection was opened');
-  await pool.close();
+test('the token is cached until five minutes before it expires, and concurrent connections share one fetch', async () => {
+  let clock = Date.parse('2026-10-05T12:00:00Z');
+  const now = () => clock;
+  const endpoint = identityEndpoint({ expiresIn: 3600, now });
+  const password = entraTokenSource(IDENTITY, { fetchImpl: endpoint.fetchImpl, now });
+  assert.deepEqual(await Promise.all([password(), password(), password()]), ['token-1', 'token-1', 'token-1']);
+  assert.equal(endpoint.calls.length, 1);
+  clock += 54 * 60_000;
+  assert.equal(await password(), 'token-1', 'still more than five minutes left');
+  clock += 2 * 60_000;
+  assert.equal(await password(), 'token-2', 'inside the five-minute margin a new token is fetched');
+  assert.equal(endpoint.calls.length, 2);
 });
 
-test('the tenant is set on the session before a read, and cleared before reuse', async () => {
-  // THE ONE THAT MATTERS. `set_config(..., false)` is session-scoped, so a pooled connection
-  // carries its last tenant. If release() did not clear it, the next tenant's query would run as
-  // the previous one — a cross-tenant read that looks like a healthy pool.
-  const driver = fakeDriver();
-  const pool = poolOf(driver);
-  const conn = await pool.acquire();
-
-  await pool.useTenant(conn, 'tenant-a');
-  assert.deepEqual(conn.statements.at(-1), {
-    text: "SELECT set_config('app.tenant_id', $1, false)",
-    params: ['tenant-a'],
-  });
-  // The tenant is a BIND, never interpolated: a tenant id spliced into SQL text is the thing this
-  // service exists to make unnecessary.
-  assert.equal(conn.statements.at(-1).text.includes('tenant-a'), false, 'the tenant must not appear in the SQL text');
-
-  await pool.release(conn);
-  const clearing = conn.statements.at(-1);
-  assert.match(clearing.text, /set_config\('app\.tenant_id', ''/, 'release must clear the session tenant');
-
-  // And once cleared, the connection is only reused with a new tenant set.
-  const again = await pool.acquire();
-  assert.equal(again, conn);
-  await pool.useTenant(again, 'tenant-b');
-  assert.deepEqual(again.statements.at(-1).params, ['tenant-b']);
-  await pool.close();
+test('an identity endpoint failure is an error for that connection, and the next one retries', async () => {
+  const failing = identityEndpoint({ status: 500 });
+  const password = entraTokenSource(IDENTITY, { fetchImpl: failing.fetchImpl });
+  await assert.rejects(password(), /answered 500/);
+  await assert.rejects(password(), /answered 500/);
+  assert.equal(failing.calls.length, 2, 'a failure is not cached');
 });
 
-test('a connection whose tenant reset fails is closed, not returned to the idle set', async () => {
-  // Reusing it would leave the previous tenant in force. Closing is the only safe answer, and the
-  // pool must not quietly prefer the cheaper one.
-  const driver = fakeDriver({ failResetFor: 1 });
-  const pool = poolOf(driver);
-  const conn = await pool.acquire();
-  await pool.useTenant(conn, 'tenant-a');
-  await pool.release(conn);
-  assert.equal(conn.closed, true, 'a connection that cannot be cleared must be discarded');
-  assert.equal(pool.idleCount, 0, 'and must not be offered to the next borrower');
-  await pool.close();
+test('the pool verifies TLS unless told sslmode=disable, and uses a password only when one is set', async () => {
+  const base = { host: 'db.example', port: 5432, database: 'shadow', user: 'query-api', identity: IDENTITY };
+  const azure = createPool({ ...base, password: '', sslMode: 'require' });
+  const lab = createPool({ ...base, password: 'lab-only', sslMode: 'disable' });
+  try {
+    assert.deepEqual(azure.options.ssl, { rejectUnauthorized: true });
+    assert.equal(typeof azure.options.password, 'function', 'no password: every connection fetches an Entra token');
+    assert.equal(azure.options.application_name, 'query-api');
+    assert.equal(lab.options.ssl, false);
+    assert.equal(lab.options.password, 'lab-only');
+  } finally {
+    await azure.end();
+    await lab.end();
+  }
 });
 
-test('past its ceiling and its queue, the pool refuses with busy instead of queueing for ever', async () => {
-  const driver = fakeDriver();
-  const pool = poolOf(driver, { max: 2, maxQueue: 1 });
-  const a = await pool.acquire();
-  const b = await pool.acquire();
-
-  // The queue holds one; the next is refused immediately (not after a timeout).
-  const queued = pool.acquire();
-  await assert.rejects(() => pool.acquire(), (error) => {
-    assert.ok(error instanceof PoolError);
-    assert.equal(error.busy, true);
-    return true;
-  });
-
-  // Releasing one admits the waiter, and nothing is lost.
-  await pool.release(a);
-  const admitted = await queued;
-  assert.ok(admitted === a || admitted === b);
-  assert.equal(pool.waiting, 0);
-  await pool.close();
+test('values are read losslessly: exact numbers become numbers, the rest stay text, timestamps are UTC', () => {
+  const parse = (oid, text) => TYPES.getTypeParser(oid, 'text')(text);
+  assert.strictEqual(parse(20, '42'), 42);
+  assert.strictEqual(parse(20, '9007199254740993'), '9007199254740993', 'an int8 past 2^53 stays exact text');
+  assert.strictEqual(parse(1700, '1.10'), 1.1);
+  assert.strictEqual(parse(1700, '123456789012345678901234567890'), '123456789012345678901234567890');
+  assert.equal(parse(1114, '2026-09-01 10:00:00.123456').toISOString(), '2026-09-01T10:00:00.123Z', 'a zoneless timestamp is UTC');
+  assert.equal(parse(1184, '2026-09-01 10:00:00+02').toISOString(), '2026-09-01T08:00:00.000Z');
+  assert.equal(parse(1082, '2026-09-01').toISOString(), '2026-09-01T00:00:00.000Z', 'a date is UTC midnight');
+  assert.strictEqual(parse(1184, 'infinity'), 'infinity');
 });
 
-test('close() refuses new borrowers and releases every connection', async () => {
-  const driver = fakeDriver();
-  const pool = poolOf(driver);
-  const conn = await pool.acquire();
-  await pool.close();
-  assert.equal(conn.closed, true, 'close must not leave a connection open');
-  assert.equal(pool.size, 0);
-  await assert.rejects(() => pool.acquire(), /closing/);
-});
-
-test('the configured ceilings are the ones §12.3 names', () => {
-  // The numbers are not arbitrary, so they are asserted rather than left implicit: 8 concurrent
-  // statements per tenant, a bounded queue of 32, and the ~40-connection global ceiling.
-  const cfg = loadConfig({ SAC_PG_HOST: 'h', SAC_PG_DATABASE: 'd' });
-  assert.equal(cfg.limits.maxConcurrency, 8);
-  assert.equal(cfg.limits.maxQueue, 32);
-  assert.equal(cfg.limits.maxConnections, 40);
+test('a tenant-scoped transaction sets the tenant and timeouts first, and rolls back on failure', async () => {
+  const log = [];
+  const client = { async query(text, params) { log.push([text, params]); if (text === 'boom') throw new Error('x'); return { rows: [] }; } };
+  await assert.rejects(inTransaction(client, { tenant: 't1', statementTimeoutMs: 5000 }, () => client.query('boom')));
+  assert.deepEqual(log.map(([text]) => text.split(',')[0]), ['BEGIN', "SELECT set_config('app.tenant_id'", 'boom', 'ROLLBACK']);
+  assert.deepEqual(log[1][1], ['t1', '5000ms', '2500ms']);
+  await assert.rejects(inTransaction(client, { tenant: '', statementTimeoutMs: 5000 }, async () => {}), /tenant/);
 });

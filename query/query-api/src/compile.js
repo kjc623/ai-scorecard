@@ -1,8 +1,7 @@
 // compile.js — DSL -> parameterised SQL.
 //
-// INV-3 (ADR 0003): "No part of a client-supplied value is ever concatenated into SQL text; a
-// value is bound, and a dimension name that is not in the enumerated vocabulary is rejected
-// rather than escaped."
+// No part of a client-supplied value is ever concatenated into SQL text: a value is bound, and a
+// dimension name that is not in the enumerated vocabulary is rejected rather than escaped.
 //
 // Read the code below as the argument for that property. Every character this module adds to
 // `text` comes from one of three places:
@@ -106,8 +105,8 @@ export function compile(validated, opts = {}) {
       select.push(`${startColumn} AS bucket`);
       groupBy.push(startColumn);
     } else {
-      // Week and month are read-side reductions over day rows: still aggregate-only (C27),
-      // and the applied bucket is named in freshness (§7.5).
+      // Week and month are read-side reductions over day rows: still aggregate-only,
+      // and the applied bucket is named in freshness.
       meta.native_bucket_size = REDUCTION_SOURCE_BUCKET;
       meta.reduced_from = REDUCTION_SOURCE_BUCKET;
       select.push(`date_trunc(${BUCKET_TRUNC_SQL[query.bucket]}, ${startColumn}) AS bucket`);
@@ -143,7 +142,7 @@ export function compile(validated, opts = {}) {
   for (const name of query.measures) {
     const measure = source.measures[name];
     select.push(`${measure.agg.toUpperCase()}(${measure.column}) AS ${quoteIdent(name)}`);
-    // §6.1/§3.4: `users` is a distinct-subject count, not a counter. When the cell may combine
+    // `users` is a distinct-subject count, not a counter. When the cell may combine
     // several source rows it is served as `max(...)`, a lower bound that never overstates —
     // and the response says which of the two it is, so a rendering cannot present a bound as
     // an exact count.
@@ -163,7 +162,7 @@ export function compile(validated, opts = {}) {
       select.push(`max(${source.subjectCount.column})::bigint AS __k_subjects`);
       meta.subject_count_basis = collapsing ? 'lower_bound' : 'exact';
     } else if (source.subjectCount.distinct) {
-      // Q2's cell is the tool, not the person (docs/04 §3.2). When `subject` is a grouping key the
+      // Q2's cell is the tool, not the person. When `subject` is a grouping key the
       // grain is one row per subject per bucket, so the number of grouped rows in the (bucket,
       // tool) window is exactly the number of distinct subjects that used the tool in that cell —
       // available as a plain window count, where `count(DISTINCT …) OVER …` is not legal SQL. Any
@@ -224,7 +223,7 @@ export function compile(validated, opts = {}) {
     where.push(`${timeColumn} >= ${bind(query.window.from)}${windowCast}`);
     where.push(`${timeColumn} < ${bind(query.window.to)}${windowCast}`);
     if (opts.snapshotUpper) {
-      // §7.3: the window is frozen at the first page. Rows are appended at the head of a DESC
+      // The window is frozen at the first page. Rows are appended at the head of a DESC
       // ordering, so without this an insert after page one would shift boundaries and a row
       // would be seen twice or skipped.
       where.push(`${timeColumn} <= ${bind(opts.snapshotUpper)}${windowCast}`);
@@ -251,7 +250,7 @@ export function compile(validated, opts = {}) {
   // -------------------------------------------------------------------------------------------
   let text = `SELECT ${select.join(',\n       ')}\n  FROM ${fromParts.join('\n  ')}\n WHERE ${where.join('\n   AND ')}`;
   if (query.rollup) {
-    // A published total over the same dimension, which §6.2's complementary suppression needs.
+    // A published total over the same dimension, which complementary suppression needs.
     const sets = groupBy.length > 0 ? `(${groupBy.join(', ')}), ()` : '()';
     text += `\n GROUP BY GROUPING SETS (${sets})`;
   } else if (groupBy.length > 0) {
@@ -276,7 +275,7 @@ export function compile(validated, opts = {}) {
 
 /**
  * The ordering key, as column names, without compiling anything. The cursor needs it before the
- * statement exists: §7.2 binds a cursor to the exact ordering it was issued under.
+ * statement exists, because a cursor is bound to the exact ordering it was issued under.
  *
  * @returns {ReadonlyArray<string>}
  */
@@ -285,9 +284,8 @@ export function effectiveOrderKeys(query, source) {
 }
 
 /**
- * The effective total ordering. Bucket leads when the read is bucketed (§7.1's "aggregate
- * series: (bucket_start DESC, <grouping keys> ASC)"), then the caller's ranking, then every
- * remaining grouping key ascending.
+ * The effective total ordering. Bucket leads (descending) when the read is bucketed, then the
+ * caller's ranking, then every remaining grouping key ascending.
  */
 function effectiveOrder(query, source, meta) {
   const terms = [];
@@ -397,8 +395,7 @@ function compileFilter(filter, source, bind) {
     if (filter.op !== 'eq') {
       throw unsupported(REASON.OPERATOR_NOT_APPLICABLE, `"${filter.field}" supports eq only on this source.`, { field: filter.field, operator: filter.op });
     }
-    // `labels` is a jsonb ARRAY of {class, score} (contracts/event-envelope.schema.json
-    // $defs.label). `array @> object` is false for every value, because containment requires the
+    // `labels` is a jsonb ARRAY of {class, score}. `array @> object` is false for every value, because containment requires the
     // same JSON type at the top level: the right operand must be a one-element ARRAY too, or the
     // filter silently matches nothing. `jsonb_path_ops` serves this form unchanged.
     return `${expr} @> jsonb_build_array(jsonb_build_object('class', ${bind(filter.value)}${cast}))`;

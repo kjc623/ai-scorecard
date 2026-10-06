@@ -1,12 +1,8 @@
-// fixtures.js — canned envelopes for every state the API documents.
+// fixtures.mjs — canned envelopes for the tests: one per result state the API documents, an answer
+// per question in query-api's response shapes, and a transport that serves them.
 //
-// These are not mocks of a happy path. Every result_state in §13 has a fixture, because the point
-// of the stub is that a human can see how the dashboard renders "we cannot say" as distinct from
-// "there is nothing" without a database, a session or a network.
-//
-// The fixtures are also the test corpus: `test/render.test.mjs` drives the renderers from them.
-
-import { stubTransport } from './transport.js';
+// They are not a happy path: the tests drive every screen through the states that say "we cannot
+// say" as well as the ones that carry data.
 
 const DAY = '2026-09-30T00:00:00Z';
 const WINDOW = Object.freeze({ from: '2026-09-24T00:00:00Z', to: '2026-10-01T00:00:00Z' });
@@ -102,6 +98,40 @@ const ACTIVITY_ROWS = Object.freeze([
     mode: 'm0', action: null, content_state: 'not_captured', route: 'proc.detect',
     detection_basis: 'model_detection', merge_confidence: 'high', confidence: null,
     observation_count: 1, size_bytes: null, labels: null, observed_routes: ['proc.detect'],
+  }),
+]);
+
+/**
+ * A record read (Q9) as query-api answers it: one row per observation, each repeating the
+ * submission's columns under the store's names.
+ */
+const RECORD_HEAD = Object.freeze({
+  submission_id: '11111111-2222-4333-8444-555555555551',
+  received_at: '2026-09-30T14:02:11Z',
+  first_occurred_at: '2026-09-30T13:58:00Z',
+  last_occurred_at: '2026-09-30T14:01:30Z',
+  user_ref: 'u_4f21', tool_fingerprint: 'claude_web', tool_name: 'Claude',
+  kind: 'prompt', collection_mode: 'm2', policy_action: 'blocked',
+  policy_rule_id: 'PCI_PAN_PATTERN', decided_locally: true, confidence: 'high', merge_confidence: 'high',
+  content_state: 'uploaded', shredded_reason: null, size_bytes: 2481, content_digest: 'sha256:aa', labels: [{ class: 'customer_pii', score: 0.91 }],
+  classifier_version: 'c-2026.09', winning_source: 'ext.page_context', winning_fidelity: 'full', observed_routes: ['ext.page_context', 'proxy.tls'],
+  observation_count: 2, expires_at: '2027-09-30T14:02:11Z',
+});
+
+const RECORD_ROWS = Object.freeze([
+  Object.freeze({
+    ...RECORD_HEAD,
+    observation_event_id: '22222222-3333-4444-8555-666666666661', observation_source: 'ext.page_context', observation_kind: 'prompt', direction: 'egress',
+    observation_occurred_at: '2026-09-30T13:58:00Z', observation_received_at: '2026-09-30T14:02:11Z', observation_size_bytes: 2481,
+    observation_labels: [{ class: 'customer_pii', score: 0.91 }], policy_decision: { rule_id: 'PCI_PAN_PATTERN', action: 'blocked' },
+    detection_basis: 'prompt', window_start: null, window_end: null, submission_count: null, bytes_total: null,
+  }),
+  Object.freeze({
+    ...RECORD_HEAD,
+    observation_event_id: '22222222-3333-4444-8555-666666666662', observation_source: 'proxy.tls', observation_kind: 'prompt', direction: 'egress',
+    observation_occurred_at: '2026-09-30T13:58:01Z', observation_received_at: '2026-09-30T14:02:12Z', observation_size_bytes: 2490,
+    observation_labels: null, policy_decision: null,
+    detection_basis: 'prompt', window_start: null, window_end: null, submission_count: null, bytes_total: null,
   }),
 ]);
 
@@ -248,7 +278,7 @@ const REALISTIC = Object.freeze({
       source: 'mart.v_tool_usage',
       applied_bucket: 'day',
       measure_semantics: { submissions: 'additive', users: 'exact' },
-      warnings: ['mart.v_tool_usage exposes no detections/rollup_events/degraded_events: a detection-only tool (mode I) or a rollup-only tool cannot appear in this source. Use source mart.agg_tool_period for those measures (docs/04 §3.1 "Gap", §4.6).'],
+      warnings: ['mart.v_tool_usage exposes no detections/rollup_events/degraded_events: a detection-only or rollup-only tool cannot appear in this source. Use source mart.agg_tool_period for those measures.'],
     },
   }),
   q2_unsanctioned_users: ok({
@@ -261,7 +291,7 @@ const REALISTIC = Object.freeze({
     coverage: coverage({ state: 'partial' }),
     suppression: { k: 5, suppressed_cells: 1, subject_count_basis: 'exact' },
     audit: { entry_id: '8124', written_at: '2026-10-01T11:05:02Z' },
-    meta: { source: 'mart.agg_tool_user_period', applied_bucket: 'day', cursor_mode: 'server_side', k: 5 },
+    meta: { source: 'mart.agg_tool_user_period', applied_bucket: 'day', k: 5 },
   }),
   q3_team_growth: ok({
     data: ORG_ROWS,
@@ -322,7 +352,7 @@ const REALISTIC = Object.freeze({
     meta: { source: 'ingest.submission' },
   }),
   q9_event_detail: ok({
-    data: [ACTIVITY_ROWS[0], { observation_event_id: 'e_1', observation_source: 'ext.page_context', observation_kind: 'prompt', direction: 'egress', observation_occurred_at: '2026-09-30T13:58:00Z', observation_size_bytes: 2481, policy_decision: { rule_id: 'PCI_PAN_PATTERN', action: 'blocked' } }],
+    data: RECORD_ROWS,
     freshness: freshness({ aggregate: 'ingest.submission' }),
     coverage: coverage({ state: 'partial' }),
     audit: { entry_id: '8128', written_at: '2026-10-01T11:05:06Z' },
@@ -363,7 +393,7 @@ const SECOND_PAGE = Object.freeze({
   }),
 });
 
-/** Scenario name -> the answer a question gets. */
+/** Scenario name -> the answer a question gets: the realistic mix, or one state forced on every read. */
 export const SCENARIOS = Object.freeze({
   realistic: Object.freeze({ label: 'Realistic mix', answers: REALISTIC, pageTwo: SECOND_PAGE }),
   stale: Object.freeze({ label: 'Stale aggregate', answers: null, forced: STATE_ENVELOPES.stale }),
@@ -402,48 +432,29 @@ function cursorOf(body) {
 }
 
 /**
- * The stub transport for a scenario. It answers by template name, and it answers a request that
- * carries a cursor with the second page — which is what makes "iterate until next_cursor is null"
- * observable in the browser rather than only in a test.
+ * A query transport for a scenario. It answers by template name, and answers a request that
+ * carries a cursor it issued with the second page; a cursor it never issued gets cursor_expired.
  *
  * @param {string} scenario
  */
-export function createStubTransport(scenario = 'realistic') {
+export function fixtureTransport(scenario = 'realistic') {
   const spec = SCENARIOS[scenario] ?? SCENARIOS.realistic;
-  // Cursors this stub has actually handed out. A cursor is opaque and single-iteration: one the
-  // stub never issued gets the API's own answer for it rather than a second page.
   const issued = new Set();
-  return stubTransport({
-    routes: [
-      {
-        match: (body) => cursorOf(body) !== null,
-        reply: (body) => {
-          const name = keyOf(body);
-          const cursor = cursorOf(body);
-          if (!issued.has(cursor)) return STATE_ENVELOPES.cursor_expired;
-          issued.delete(cursor);
-          if (spec.pageTwo?.[name]) return spec.pageTwo[name];
-          if (spec.forced) return spec.forced;
-          return STATE_ENVELOPES.cursor_expired;
-        },
-      },
-      {
-        match: (body) => typeof body?.template === 'string',
-        reply: (body) => {
-          const name = keyOf(body);
-          if (spec.forced) return spec.forced;
-          const reply = spec.answers?.[name] ?? REALISTIC[name] ?? STATE_ENVELOPES.refused_shape;
-          if (reply?.page?.next_cursor) issued.add(reply.page.next_cursor);
-          return reply;
-        },
-      },
-      {
-        match: (body) => typeof body?.source === 'string',
-        reply: () => spec.forced ?? STATE_ENVELOPES.refused_shape,
-      },
-    ],
-    fallback: STATE_ENVELOPES.refused_shape,
+  return Object.freeze({
+    async send(body) {
+      const name = keyOf(body);
+      const cursor = cursorOf(body);
+      if (cursor !== null) {
+        if (!issued.has(cursor)) return STATE_ENVELOPES.cursor_expired;
+        issued.delete(cursor);
+        return spec.pageTwo?.[name] ?? spec.forced ?? STATE_ENVELOPES.cursor_expired;
+      }
+      if (spec.forced) return spec.forced;
+      const reply = spec.answers?.[name] ?? STATE_ENVELOPES.refused_shape;
+      if (reply?.page?.next_cursor) issued.add(reply.page.next_cursor);
+      return reply;
+    },
   });
 }
 
-export { TOOL_ROWS, DEVICE_ROWS, ACTIVITY_ROWS, FINDING_ROWS, AUDIT_ROWS, ORG_ROWS, CLASS_ROWS, PERSON_ROWS, WINDOW };
+export { TOOL_ROWS, DEVICE_ROWS, ACTIVITY_ROWS, RECORD_ROWS, FINDING_ROWS, AUDIT_ROWS, ORG_ROWS, CLASS_ROWS, PERSON_ROWS, WINDOW };

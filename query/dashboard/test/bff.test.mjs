@@ -1,4 +1,4 @@
-// bff.test.mjs — the dashboard server as a backend-for-frontend over control-api (tools/serve.mjs).
+// bff.test.mjs — the dashboard server as a backend-for-frontend over control-api.
 //
 // Real HTTP on loopback, nothing else: a fake control-api (its internal identity API, its admin
 // API and its onboarding pages) and a fake query-api are started on port 0, the dashboard server is
@@ -9,12 +9,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, request as httpRequest } from 'node:http';
 
-import { createDashboardServer } from '../tools/serve.mjs';
+import { configFromEnv, createDashboardServer, parseAddr } from '../server/server.mjs';
 
 const TENANT = '5a3c0de0-7e57-4a11-9000-0000000d3a01';
-const OTHER_TENANT = '11111111-1111-1111-1111-111111111111';
 const INTERNAL = 'internal-shared-secret';
-const quiet = { warn() {}, error() {}, log() {} };
+const quiet = { info() {}, warn() {}, error() {} };
+const PUBLIC = 'http://dashboard.test';
+const VAULT = 'http://vault.test';
 
 const ROLE_BY_CODE = Object.freeze({ viewer: ['viewer'], analyst: ['analyst'], reader: ['content_reader'], admin: ['admin'] });
 
@@ -128,7 +129,7 @@ async function lab(t, overrides = {}) {
   const query = await fakeQuery();
   const clock = { now: 1_800_000_000_000 };
   const dashboard = createDashboardServer({
-    controlUrl: control.url, internalToken: INTERNAL, queryApiUrl: query.url, log: quiet, now: () => clock.now, ...overrides,
+    controlUrl: control.url, internalToken: INTERNAL, queryApiUrl: query.url, vaultUrl: VAULT, publicUrl: PUBLIC, log: quiet, now: () => clock.now, ...overrides,
   });
   const port = await listen(dashboard);
   t.after(() => {
@@ -138,7 +139,7 @@ async function lab(t, overrides = {}) {
   });
   const origin = `http://127.0.0.1:${port}`;
   /** Sign in as a role through the real redirect dance; returns the session cookie value. */
-  async function signIn(code, { next = '/index.html?transport=live' } = {}) {
+  async function signIn(code, { next = '/' } = {}) {
     const started = await send(port, `/signin/start?email=${encodeURIComponent(`${code}@lab.test`)}&next=${encodeURIComponent(next)}`);
     assert.equal(started.status, 302, `begin for ${code}`);
     const attempt = cookieValue(started.headers['set-cookie'], 'sac_signin');
@@ -160,7 +161,6 @@ test('the sign-in page offers Microsoft and work-email SSO, loads nothing from a
   assert.match(page.text, /Work email/);
   assert.match(page.text, /Continue with SSO/);
   assert.match(page.text, /name="next" value="\/explore.html"/);
-  assert.doesNotMatch(page.text, /Lab development sign-in/, 'no development sign-in when an identity service is configured');
   assert.doesNotMatch(page.text, /<script/i);
   assert.doesNotMatch(page.text, /(?:src|href)="https?:/, 'every asset is local');
   assert.equal((await send(port, '/styles.css')).status, 200, 'the stylesheet is public');
@@ -170,9 +170,9 @@ test('the sign-in page offers Microsoft and work-email SSO, loads nothing from a
 
 test('an unauthenticated page is sent to sign in; an unauthenticated API call is refused with JSON', async (t) => {
   const { port, query, control } = await lab(t);
-  const pageRes = await send(port, '/index.html?transport=live');
+  const pageRes = await send(port, '/index.html?view=classes');
   assert.equal(pageRes.status, 302);
-  assert.equal(pageRes.headers.location, '/signin?next=%2Findex.html%3Ftransport%3Dlive');
+  assert.equal(pageRes.headers.location, '/signin?next=%2Findex.html%3Fview%3Dclasses');
   const api = await send(port, '/v1/query', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
   assert.equal(api.status, 401);
   assert.equal(api.json().result_state, 'unauthorised_role');
@@ -191,12 +191,12 @@ test('an unauthenticated page is sent to sign in; an unauthenticated API call is
 
 test('a work email begins a sign-in at control-api and sends the browser to the provider with a short-lived attempt cookie', async (t) => {
   const { port, control } = await lab(t);
-  const res = await send(port, '/signin/start?email=reader%40lab.test&next=%2Fexplore.html%3Ftransport%3Dlive');
+  const res = await send(port, '/signin/start?email=reader%40lab.test&next=%2Fexplore.html');
   assert.equal(res.status, 302);
   assert.equal(res.headers.location, 'https://idp.example.test/authorize?state=st-1');
   const begin = control.state.calls.find((c) => c.path === '/internal/v1/auth/begin');
   assert.equal(begin.headers.authorization, `Bearer ${INTERNAL}`);
-  assert.deepEqual(JSON.parse(begin.body), { redirect_uri: `http://127.0.0.1:${port}/callback`, email: 'reader@lab.test' });
+  assert.deepEqual(JSON.parse(begin.body), { redirect_uri: `${PUBLIC}/callback`, email: 'reader@lab.test' });
   const line = cookieLine(res.headers['set-cookie'], 'sac_signin');
   assert.match(line, /; HttpOnly; SameSite=Lax; Path=\/callback; Max-Age=600$/, 'HttpOnly, Lax, only sent to /callback, ten minutes, not Secure on http');
 });
@@ -207,7 +207,7 @@ test('"Sign in with Microsoft" posts from the page and begins with provider=entr
     method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', origin, 'sec-fetch-site': 'same-origin' }, body: 'provider=entra&next=%2F',
   });
   assert.equal(res.status, 302);
-  assert.deepEqual(JSON.parse(control.state.calls.find((c) => c.path === '/internal/v1/auth/begin').body), { redirect_uri: `${origin}/callback`, provider: 'entra' });
+  assert.deepEqual(JSON.parse(control.state.calls.find((c) => c.path === '/internal/v1/auth/begin').body), { redirect_uri: `${PUBLIC}/callback`, provider: 'entra' });
 });
 
 test('an onboarding invite is passed to begin, so the first sign-in can activate the connection', async (t) => {
@@ -227,9 +227,9 @@ test('an email with no SSO connection gets a plain page that keeps the address',
 
 test('the callback completes at control-api and sets the session cookie with the right flags', async (t) => {
   const { control, signIn } = await lab(t);
-  const { response, session } = await signIn('analyst', { next: '/explore.html?transport=live' });
+  const { response, session } = await signIn('analyst', { next: '/explore.html' });
   assert.equal(response.status, 302);
-  assert.equal(response.headers.location, '/explore.html?transport=live');
+  assert.equal(response.headers.location, '/explore.html');
   assert.ok(session, 'a session cookie was set');
   const line = cookieLine(response.headers['set-cookie'], 'sac_session');
   assert.match(line, /^sac_session=session-analyst-\d+-0123456789abcdef; HttpOnly; SameSite=Lax; Path=\/; Max-Age=28800$/);
@@ -240,14 +240,14 @@ test('the callback completes at control-api and sets the session cookie with the
 });
 
 test('with an https public URL the cookies are Secure and the redirect URI is the public one', async (t) => {
-  const { port, control } = await lab(t, { publicUrl: 'https://dash.example.test', cookieSecure: true });
+  const { port, control } = await lab(t, { publicUrl: 'https://dash.example.test' });
   const started = await send(port, '/signin/start?email=admin%40lab.test');
   assert.match(cookieLine(started.headers['set-cookie'], 'sac_signin'), /; Secure$/);
   assert.equal(JSON.parse(control.state.calls.find((c) => c.path === '/internal/v1/auth/begin').body).redirect_uri, 'https://dash.example.test/callback');
   const attempt = cookieValue(started.headers['set-cookie'], 'sac_signin');
   const back = await send(port, '/callback?code=admin&state=st-1', { headers: { cookie: `sac_signin=${attempt}` } });
   assert.match(cookieLine(back.headers['set-cookie'], 'sac_session'), /HttpOnly; SameSite=Lax; Path=\/; Max-Age=28800; Secure$/);
-  assert.equal(back.headers.location, '/index.html?transport=live', 'a sign-in with nowhere to return to lands on the live dashboard');
+  assert.equal(back.headers.location, '/', 'a sign-in with nowhere to return to lands on the dashboard');
 });
 
 for (const [code, title] of [['tenant_not_onboarded', 'Your organisation is not set up yet'], ['no_role', 'No access has been assigned to you'], ['connection_disabled', 'Sign-in is turned off for your organisation']]) {
@@ -277,26 +277,11 @@ test('a callback without its attempt cookie, or one the provider refused, says s
 });
 
 test('control-api unreachable at sign-in is a "try again" page, not an error dump', async (t) => {
-  const { port } = await lab(t, { controlUrl: 'http://127.0.0.1:9', internalToken: INTERNAL });
+  const { port } = await lab(t, { controlUrl: 'http://127.0.0.1:9' });
   const res = await send(port, '/signin/start?email=a%40lab.test');
   assert.equal(res.status, 503);
   assert.match(res.text, /Sign-in is unavailable/);
   assert.doesNotMatch(res.text, /ECONNREFUSED|fetch failed/);
-});
-
-test('a dashboard pinned to a tenant refuses, and revokes, a sign-in for another', async (t) => {
-  const { port, control } = await lab(t, { pinnedTenant: OTHER_TENANT });
-  const started = await send(port, '/signin/start?email=x%40lab.test');
-  const attempt = cookieValue(started.headers['set-cookie'], 'sac_signin');
-  const res = await send(port, '/callback?code=admin&state=st-1', { headers: { cookie: `sac_signin=${attempt}` } });
-  assert.equal(res.status, 403);
-  assert.match(res.text, /serves another organisation/);
-  assert.ok(control.state.calls.some((c) => c.path === '/internal/v1/auth/revoke'), 'the session was revoked');
-  assert.equal(cookieValue(res.headers['set-cookie'], 'sac_session'), null);
-});
-
-test('the server will not start against control-api without the internal token', () => {
-  assert.throws(() => createDashboardServer({ controlUrl: 'http://control', internalToken: '', log: quiet }), /SAC_INTERNAL_TOKEN/);
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -446,41 +431,21 @@ test('GET /session names the pages each role may open; Search is not served to a
   assert.equal(viewerSession.pages.includes('explore'), false);
   assert.equal(viewerSession.pages.includes('deployment'), false);
   assert.equal(viewerSession.actor, 'viewer@lab.test');
+  assert.equal('dev' in viewerSession, false);
   assert.equal(JSON.stringify(viewerSession).includes('at-viewer'), false, 'the page is never given a token');
   const adminSession = (await send(port, '/session', { headers: { cookie: `sac_session=${admin}` } })).json();
   assert.ok(adminSession.pages.includes('deployment'));
-  const refused = await send(port, '/explore.html?transport=live', { headers: { cookie: `sac_session=${viewer}` } });
+  const refused = await send(port, '/explore.html', { headers: { cookie: `sac_session=${viewer}` } });
   assert.equal(refused.status, 403);
   assert.match(refused.text, /Your role cannot open this page/);
-  assert.equal((await send(port, '/explore.html?transport=live', { headers: { cookie: `sac_session=${reader}` } })).status, 200);
-  assert.equal((await send(port, '/', { headers: { cookie: `sac_session=${reader}` } })).headers.location, '/index.html?transport=live');
-  assert.equal((await send(port, '/tools/serve.mjs', { headers: { cookie: `sac_session=${reader}` } })).status, 404, 'only the pages are served, not the server\'s source');
-});
-
-// ---------------------------------------------------------------------------------------------
-// The lab's development principal, unchanged
-// ---------------------------------------------------------------------------------------------
-
-test('without SAC_CONTROL_URL the development principal is forwarded, and the sign-in page says it is one', async (t) => {
-  const query = await fakeQuery();
-  const dashboard = createDashboardServer({ queryApiUrl: query.url, devTenant: TENANT, devActor: 'dev@lab.test', log: quiet });
-  const port = await listen(dashboard);
-  t.after(() => {
-    dashboard.close();
-    query.server.close();
-  });
-  const page = await send(port, '/signin');
-  assert.match(page.text, /Lab development sign-in/);
-  assert.doesNotMatch(page.text, /Sign in with Microsoft/, 'no sign-in form that cannot work');
-  const res = await send(port, '/v1/query', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
-  assert.equal(res.status, 200);
-  assert.equal(query.calls[0].headers['x-sac-dev-tenant'], TENANT);
-  assert.equal(query.calls[0].headers['x-sac-dev-actor'], 'dev@lab.test');
-  assert.equal(query.calls[0].headers.authorization, undefined);
-  const session = (await send(port, '/session')).json();
-  assert.equal(session.dev, true);
-  assert.ok(session.pages.includes('explore') && session.pages.includes('audit'), 'the lab principal is offered every page, as query-api grants it every capability');
-  assert.equal((await send(port, '/admin/v1/deployment')).status, 503, 'no admin API without control-api');
+  assert.equal((await send(port, '/explore.html', { headers: { cookie: `sac_session=${reader}` } })).status, 200);
+  const home = await send(port, '/', { headers: { cookie: `sac_session=${reader}` } });
+  assert.equal(home.status, 200, 'the dashboard is served at the root');
+  assert.match(home.text, /<script type="module"/);
+  const module = await send(port, '/src/app.js', { headers: { cookie: `sac_session=${reader}` } });
+  assert.equal(module.headers['content-type'], 'text/javascript; charset=utf-8', 'the page loads its ES modules directly');
+  assert.equal((await send(port, '/server/server.mjs', { headers: { cookie: `sac_session=${reader}` } })).status, 404, 'only the pages are served, not the server\'s source');
+  assert.equal((await send(port, '/test/helpers.mjs', { headers: { cookie: `sac_session=${reader}` } })).status, 404);
 });
 
 test('control-api\'s onboarding hand-off to /login?invite=&provider= begins the activating sign-in', async (t) => {
@@ -490,7 +455,7 @@ test('control-api\'s onboarding hand-off to /login?invite=&provider= begins the 
   assert.match(hop.headers.location, /^\/signin\/start\?invite=sacinv_abc&provider=oidc&next=%2F$/);
   const started = await send(port, hop.headers.location);
   assert.equal(started.status, 302);
-  assert.deepEqual(JSON.parse(control.state.calls.find((c) => c.path === '/internal/v1/auth/begin').body), { redirect_uri: `http://127.0.0.1:${port}/callback`, provider: 'oidc', invite: 'sacinv_abc' });
+  assert.deepEqual(JSON.parse(control.state.calls.find((c) => c.path === '/internal/v1/auth/begin').body), { redirect_uri: `${PUBLIC}/callback`, provider: 'oidc', invite: 'sacinv_abc' });
   assert.equal((await send(port, '/login?next=%2Fexplore.html')).headers.location, '/signin?next=%2Fexplore.html');
 });
 
@@ -503,4 +468,36 @@ test('control-api\'s other refusal codes get their own sentence, with control-ap
     assert.match(res.text, new RegExp(title), code);
     assert.match(res.text, new RegExp(code), `${code} is shown for a help desk`);
   }
+});
+
+// ---------------------------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------------------------
+
+test('the server refuses to start without every upstream, the internal token and the public URL', () => {
+  const full = {
+    SAC_CONTROL_URL: 'http://control-api:8080', SAC_INTERNAL_TOKEN: 'x', SAC_PUBLIC_URL: 'https://dash.example.test',
+    SAC_QUERY_API_URL: 'http://query-api:8080', SAC_CONTENT_VAULT_URL: 'http://content-vault:8080',
+  };
+  const cfg = configFromEnv(full);
+  assert.equal(cfg.host, '0.0.0.0');
+  assert.equal(cfg.port, 8080);
+  for (const name of Object.keys(full)) {
+    assert.throws(() => configFromEnv({ ...full, [name]: '' }), new RegExp(name), `${name} is required`);
+  }
+  assert.throws(() => configFromEnv({ ...full, SAC_QUERY_API_URL: 'query-api' }), /SAC_QUERY_API_URL/);
+  assert.throws(() => createDashboardServer({ controlUrl: 'http://control', log: quiet }), /SAC_INTERNAL_TOKEN/);
+});
+
+test('SAC_HTTP_ADDR takes host:port, :port or nothing', () => {
+  assert.deepEqual(parseAddr(''), { host: '0.0.0.0', port: 8080 });
+  assert.deepEqual(parseAddr(':9000'), { host: '0.0.0.0', port: 9000 });
+  assert.deepEqual(parseAddr('127.0.0.1:8787'), { host: '127.0.0.1', port: 8787 });
+  assert.throws(() => parseAddr(':http'), /SAC_HTTP_ADDR/);
+});
+
+test('the probes answer without a session', async (t) => {
+  const { port } = await lab(t);
+  assert.equal((await send(port, '/healthz')).status, 200);
+  assert.equal((await send(port, '/readyz')).status, 200);
 });

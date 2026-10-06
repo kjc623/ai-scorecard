@@ -2,7 +2,7 @@
 //
 // A tool's sanctioned state is configuration, not a property of any event or aggregate: the same
 // fingerprint is approved by one tenant and prohibited by another, and `unknown` must never be
-// conflated with `unsanctioned` (brief C8). It therefore lives in `ops.tool`, is joined at read
+// conflated with `unsanctioned`. It therefore lives in `ops.tool`, is joined at read
 // time by Q1/Q2, and is set here rather than denormalised into a bucket — a decision must show on
 // the next read without rewriting history.
 //

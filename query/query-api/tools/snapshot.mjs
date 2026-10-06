@@ -3,9 +3,8 @@
 //   node tools/snapshot.mjs           regenerate test/snapshots/compiled-sql.json
 //   node tools/snapshot.mjs --check   exit 1 if the file differs from what the code produces
 //
-// The snapshots exist so the integration verifier can diff the compiled SQL against a reviewed
-// artefact rather than re-deriving it, and so a change to the compiler shows up as a diff in a
-// review rather than as a silent change of question.
+// The snapshots pin the compiled SQL, so a change to the compiler shows up as a diff in review
+// rather than as a silent change of question.
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';

@@ -1,7 +1,6 @@
 // tool-catalogue.test.mjs — the catalogue, the read-time resolution and the sanction write.
 //
-// Three claims are under test, and each has a pure half and (below, when the device-auth lab is
-// reachable) a live half:
+// Three claims are under test (db.test.mjs runs the resolver against a live database):
 //
 //   1. every source that can show a tool resolves the fingerprint to a name at read time, and keeps
 //      the raw fingerprint beside it, so an unknown tool is never mistaken for a known one;
@@ -12,7 +11,6 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
 import { plan } from '../src/plan.js';
 import { compile } from '../src/compile.js';
 import { validate } from '../src/validate.js';
@@ -168,78 +166,4 @@ test('a sanction writes a tool.sanction audit row naming the previous state', ()
   assert.deepEqual(audit.params.slice(1, 5), ['analyst@example', 'tool.sanction', 'ops.tool', 'tls_b6681b043244c43f']);
   assert.match(String(audit.params[7]), /"previous_state":"unknown"/);
   assert.match(String(audit.params[7]), /"sanctioned_state":"unsanctioned"/);
-});
-
-// ── live: resolution and the write, against the device-auth lab ─────────────────────────────────
-
-const LAB = 'sac-authlab-postgres-1';
-
-function labReady() {
-  const running = spawnSync('docker', ['ps', '--format', '{{.Names}}'], { encoding: 'utf8' });
-  if (running.status !== 0 || !(running.stdout ?? '').split('\n').map((s) => s.trim()).includes(LAB)) {
-    return 'the device-auth lab PostgreSQL is not running: this live half SKIPS and is not a pass';
-  }
-  const has = spawnSync('docker', ['exec', LAB, 'psql', '-U', 'postgres', '-d', 'shadow', '-Atc',
-    "select 1 from information_schema.tables where table_schema='ref' and table_name='tool_catalogue'"], { encoding: 'utf8' });
-  if ((has.stdout ?? '').trim() !== '1') {
-    return 'ref.tool_catalogue is not present: apply backlog/05-tool-catalogue/MIGRATION.sql first';
-  }
-  return false;
-}
-
-const SKIP = labReady();
-
-test('the resolver names a catalogue fingerprint, an override and an unknown one', { skip: SKIP }, () => {
-  const tenant = '00000000-0000-4000-8000-0000000005a1';
-  const script = [
-    'BEGIN;',
-    `SELECT set_config('app.tenant_id','${tenant}',false);`,
-    `INSERT INTO ops.tenant (tenant_id, name, status, residency_region, key_custody, kek_id, ceiling_mode)
-       VALUES ('${tenant}','tool-catalogue-test','active','eu','vendor','kek-test','m3');`,
-    // A catalogue fingerprint with no tenant decision resolves to the catalogue's name.
-    `SELECT 'catalogue', ops.tool_display_name('tls_b6681b043244c43f');`,
-    // A fingerprint the catalogue does not hold is explicitly unrecognised, never echoed as a name.
-    `SELECT 'unknown', ops.tool_display_name('tls_2a942648fee3bbd5');`,
-    // A tenant override wins over the catalogue.
-    `INSERT INTO ops.tool (tenant_id, tool_fingerprint, display_name, sanctioned_state, decided_by, decided_at)
-       VALUES ('${tenant}','tls_b6681b043244c43f','Claude Code (approved build)','sanctioned','tester',now());`,
-    `SELECT 'override', ops.tool_display_name('tls_b6681b043244c43f');`,
-    'ROLLBACK;',
-  ].join('\n');
-  const res = spawnSync('docker', ['exec', '-i', LAB, 'psql', '-U', 'postgres', '-d', 'shadow', '-v', 'ON_ERROR_STOP=1', '-q', '-tA', '-f', '-'], { encoding: 'utf8', input: script });
-  assert.equal(res.status, 0, res.stderr);
-  const lines = (res.stdout ?? '').split('\n').map((s) => s.trim()).filter(Boolean);
-  assert.ok(lines.includes('catalogue|Claude Code'), res.stdout);
-  assert.ok(lines.includes('unknown|Unrecognised tool'), res.stdout);
-  assert.ok(lines.includes('override|Claude Code (approved build)'), res.stdout);
-});
-
-test('the sanction upsert commits the decision and its audit, and rolls back clean', { skip: SKIP }, () => {
-  const tenant = '00000000-0000-4000-8000-0000000005a2';
-  const script = [
-    'BEGIN;',
-    `SELECT set_config('app.tenant_id','${tenant}',false);`,
-    `INSERT INTO ops.tenant (tenant_id, name, status, residency_region, key_custody, kek_id, ceiling_mode)
-       VALUES ('${tenant}','tool-sanction-test','active','eu','vendor','kek-test','m3');`,
-    `INSERT INTO ops.tool (tenant_id, tool_fingerprint, display_name, sanctioned_state, decided_by, decided_at)
-       VALUES ('${tenant}','chatgpt_web',NULL,'unsanctioned','tester',now())
-       ON CONFLICT (tenant_id, tool_fingerprint) DO UPDATE
-         SET sanctioned_state = EXCLUDED.sanctioned_state,
-             decided_by = EXCLUDED.decided_by, decided_at = EXCLUDED.decided_at;`,
-    `SELECT 'state', sanctioned_state, decided_by FROM ops.tool WHERE tenant_id='${tenant}' AND tool_fingerprint='chatgpt_web';`,
-    // The schema refuses an unattributed non-unknown decision.
-    `DO $$ BEGIN
-       BEGIN
-         INSERT INTO ops.tool (tenant_id, tool_fingerprint, sanctioned_state) VALUES ('${tenant}','gemini_web','sanctioned');
-         RAISE EXCEPTION 'an unattributed decision was accepted';
-       EXCEPTION WHEN check_violation THEN NULL; END;
-     END $$;`,
-    `SELECT 'unattributed','refused';`,
-    'ROLLBACK;',
-  ].join('\n');
-  const res = spawnSync('docker', ['exec', '-i', LAB, 'psql', '-U', 'postgres', '-d', 'shadow', '-v', 'ON_ERROR_STOP=1', '-q', '-tA', '-f', '-'], { encoding: 'utf8', input: script });
-  assert.equal(res.status, 0, res.stderr);
-  const lines = (res.stdout ?? '').split('\n').map((s) => s.trim()).filter(Boolean);
-  assert.ok(lines.includes('state|unsanctioned|tester'), res.stdout);
-  assert.ok(lines.includes('unattributed|refused'), res.stdout);
 });

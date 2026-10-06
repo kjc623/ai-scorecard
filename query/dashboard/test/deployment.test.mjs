@@ -9,11 +9,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createAdminApi, filenameFromDisposition, normaliseDeployment } from '../src/transport.js';
-import { createDeployment, deploymentKeyState, sampleAdminTransport, verificationAvailable } from '../src/deployment.js';
+import { createAdminApi, createQueryApi, filenameFromDisposition, normaliseDeployment } from '../src/transport.js';
+import { createDeployment, deploymentKeyState, verificationAvailable } from '../src/deployment.js';
 import { renderDeployment } from '../src/deployment-render.js';
 import { boot } from '../src/app.js';
 import { fakeDocument } from './helpers.mjs';
+import { fixtureTransport } from './fixtures.mjs';
+
+const queryApi = () => createQueryApi({ transport: fixtureTransport() });
 
 const NOW = new Date('2026-10-05T12:00:00Z');
 
@@ -344,7 +347,7 @@ function session(roles, pages) {
 test('a viewer is shown no Search, no Users, no Audit trail and no Settings; reaching Deployment directly is refused in the page', async () => {
   const { admin, requests } = fakeAdmin({ [GET]: () => ({ status: 200, body: populated() }) });
   const doc = fakeDocument('#posture');
-  await boot({ document: doc, scenario: 'realistic', admin, session: session(['viewer'], ['posture', 'tools', 'teams', 'devices']) });
+  await boot({ document: doc, api: queryApi(), admin, session: session(['viewer'], ['posture', 'tools', 'teams', 'devices']) });
   const nav = doc.html('nav');
   assert.doesNotMatch(nav, />Search</);
   assert.doesNotMatch(nav, />Users</);
@@ -362,7 +365,7 @@ test('a viewer is shown no Search, no Users, no Audit trail and no Settings; rea
 test('an admin is shown Settings → Deployment and the page renders over the admin API', async () => {
   const { admin, requests } = fakeAdmin({ [GET]: () => ({ status: 200, body: populated() }) });
   const doc = fakeDocument('#deployment');
-  await boot({ document: doc, scenario: 'realistic', admin, session: session(['admin'], ['posture', 'tools', 'teams', 'audit', 'deployment']) });
+  await boot({ document: doc, api: queryApi(), admin, session: session(['admin'], ['posture', 'tools', 'teams', 'audit', 'deployment']) });
   const nav = doc.html('nav');
   assert.match(nav, />Settings</);
   assert.match(nav, />Deployment</);
@@ -370,19 +373,4 @@ test('an admin is shown Settings → Deployment and the page renders over the ad
   assert.match(doc.html('app'), /Deployment keys/);
   assert.match(doc.html('app'), /Laptops/);
   assert.equal(requests[0].path, '/admin/v1/deployment');
-});
-
-test('sample mode, with no session, shows every page and a sample Deployment that builds no package', async () => {
-  const doc = fakeDocument('#deployment');
-  const { deployment } = await boot({ document: doc, scenario: 'realistic', session: null });
-  assert.match(doc.html('nav'), />Deployment</);
-  assert.match(doc.html('nav'), />Search</);
-  assert.equal(doc.html('who'), '', 'no session, no signed-in line');
-  assert.match(doc.html('app'), /Intune, all laptops/);
-  await deployment().download('intunewin');
-  assert.match(doc.html('app'), /This is sample data, so no package is built/);
-  const sample = createAdminApi({ transport: sampleAdminTransport() });
-  const read = await sample.deployment();
-  assert.equal(read.state, 'available');
-  assert.equal(read.data.scim.base_url, null, 'opened from disk there is no address to show');
 });

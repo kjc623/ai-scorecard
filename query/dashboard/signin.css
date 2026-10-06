@@ -41,7 +41,6 @@
 .si-btn { border: 0; background: var(--ink); color: var(--on-ink); }
 .si-btn:hover { opacity: .88; }
 .si-btn:active, .si-ms:active { transform: scale(.985); }
-.si-btn-link { width: fit-content; }
 
 /* Microsoft's button: white, a grey hairline, grey text, the four squares. Dark: #2f2f2f, white text. */
 .si-ms { background: #ffffff; color: #5e5e5e; border: 1px solid #8c8c8c; font-family: "Segoe UI", var(--sans); }
@@ -56,14 +55,6 @@
 .si-or::before, .si-or::after { content: ""; flex: 1 1 auto; height: 1px; background: var(--line); }
 .si-hint { margin: 2px 0 0; font-size: 12.5px; color: var(--ink-soft); }
 .si-foot { margin: 0; text-align: center; font-size: 12.5px; color: var(--ink-faint); }
-
-.si-dev .card-core { padding: 22px 24px; display: grid; gap: 10px; }
-.si-dev h3 { margin: 0; font-size: 14.5px; font-weight: 600; color: var(--ink); }
-.si-dev p { margin: 0; font-size: 13px; color: var(--ink-soft); }
-.si-facts { display: grid; gap: 4px; margin: 0; font-size: 13px; }
-.si-facts > div { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 8px; }
-.si-facts dt { color: var(--ink-soft); }
-.si-facts dd { margin: 0; overflow-wrap: anywhere; }
 
 @media (prefers-reduced-motion: no-preference) {
   .si > * { animation: rise .8s var(--ease) both; }

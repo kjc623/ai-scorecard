@@ -1,34 +1,22 @@
 // server.js — the HTTP surface of query-api.
 //
-// WHY THIS FILE EXISTS. Everything this service is known for was already built: the closed DSL
-// (validate.js), the allow-list (registry.js), the compiler (compile.js), the pipeline
-// (plan.js), the ten templates and the audit chain. What did not exist was anything that LISTENS.
-// azure/main.bicep declared a container app named query-api with an image, docs/04 documented
-// POST /v1/query, and there was no server: `grep -r 'createServer|listen(' query/query-api` returned
-// nothing. The deployment template named a service that could not be built or run.
-//
-// WHAT THIS LAYER DOES, and deliberately does not do. It is transport only:
-//   - it reads the request, and refuses one it cannot read;
-//   - it puts the tenant on the query context from a TRUSTED source, never from the body;
-//   - it calls plan() and executePlan(), which own validation, guard, compile, audit and suppress;
-//   - it renders the result the pipeline produced, and the typed rejection the pipeline raised.
-//
-// It makes no decision about what a query means, what a value may be, or what an error is. Those
-// live in the modules it calls, and duplicating any of them here would be a second source of truth
-// for the product's central claim — that the browser never speaks SQL.
+// Transport only. It authenticates the caller from the product access token, reads the request,
+// takes the tenant from the token (never from the body), and calls plan() and executePlan(), which
+// own validation, cost, compilation, audit and suppression. It renders the envelope the pipeline
+// produced or the typed rejection it raised, and makes no decision about what a query means.
 
 import { createServer } from 'node:http';
-import { QueryError } from '../errors.js';
+import { QueryError, RESULT_STATES, fromDatabaseError } from '../errors.js';
 import { plan, executePlan } from '../plan.js';
-import { RESULT_STATES } from '../errors.js';
+import { QUERY_CLASSES } from '../registry.js';
+import { inTransaction } from '../db.js';
 import { CONTENT_PATHS, createContentForwarder } from './content.js';
 import { validateReviewRequest, FINDING_FOR_REVIEW_SQL, UPSERT_REVIEW_SQL, findingReviewAuditStatement } from '../review.js';
 import { validateSanctionRequest, TOOL_SANCTION_FOR_REVIEW_SQL, UPSERT_TOOL_SANCTION_SQL, toolSanctionAuditStatement } from '../sanction.js';
-import { DEV_ROLE, capabilityForEndpoint, capabilityForSource, isKnownRole, rolesAllow, unauthorisedRole } from '../roles.js';
+import { capabilityForEndpoint, capabilityForSource, rolesAllow, unauthorisedRole } from '../roles.js';
 
 const HIT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** The two paths azure/modules/container-app.bicep probes, and the one read path docs/04 §5 names. */
 export const PATHS = Object.freeze({
   LIVENESS: '/healthz',
   READINESS: '/readyz',
@@ -37,28 +25,25 @@ export const PATHS = Object.freeze({
   TOOL_SANCTION: '/v1/tool-sanction',
 });
 
-/** §6.2: a request body larger than this is refused before it is parsed, not after. */
+/** A request body larger than this is refused before it is parsed. */
 export const MAX_BODY_BYTES = 256 * 1024;
 
-/** The default ceiling on how long the whole request may take, including the queue wait. */
+/** The ceiling on one request, including its wait in the queue. */
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
-const LIVENESS_BODY = Object.freeze({ status: 'ok' });
-const READY_BODY = Object.freeze({ status: 'ready' });
-const NOT_READY_BODY = Object.freeze({ status: 'not-ready' });
-
 /**
- * The one error shape this layer produces that is NOT a QueryError: a transport-level refusal.
- *
- * It uses the same envelope as a typed rejection because a client that has to handle two error
- * shapes will handle one of them wrongly. `busy` is §13's own state for "the service is shedding
- * load", so a shed request is indistinguishable, to a well-behaved client, from one the pipeline
- * shed itself.
+ * The process-wide admission gate: at most MAX_CONCURRENCY requests use the database at once and
+ * MAX_QUEUE wait for a slot. Beyond that the answer is an immediate `busy` (429) rather than an
+ * unbounded queue, which would turn one slow query into everyone's latency.
  */
-function transportError(resultState, code, message) {
-  const spec = RESULT_STATES[resultState] ?? RESULT_STATES.busy;
-  return { status: spec.http, body: { result_state: resultState, error: { code, message } } };
-}
+export const MAX_CONCURRENCY = 8;
+export const MAX_QUEUE = 32;
+
+/** One connection per admitted request, plus one so a readiness probe never waits behind reads. */
+export const POOL_MAX = MAX_CONCURRENCY + 1;
+
+/** The statement budget for the two writes and the search-hit lookup. */
+const OPERATIONAL_TIMEOUT_MS = QUERY_CLASSES.operational.statementTimeoutMs;
 
 class HttpError extends Error {
   constructor(status, payload, { closeConnection = false } = {}) {
@@ -69,7 +54,7 @@ class HttpError extends Error {
   }
 }
 
-/** Read a body with a hard ceiling, without ever buffering more than the ceiling. */
+/** Read a body with a hard ceiling, never buffering more than the ceiling. */
 function readBody(req, limit = MAX_BODY_BYTES) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -80,10 +65,8 @@ function readBody(req, limit = MAX_BODY_BYTES) {
       size += chunk.length;
       if (size > limit) {
         done = true;
-        // Settle the promise instead of destroying the socket here. Destroying first closes the
-        // connection under the response the caller is about to write, so the client sees "fetch
-        // failed" rather than the 413 that explains what happened. The caller answers, and the
-        // response closes the connection (see `closeConnection`).
+        // Answer first and close afterwards (see closeConnection): destroying the socket here would
+        // leave the client with "fetch failed" instead of the 413 that explains it.
         reject(new HttpError(413, { result_state: 'unsupported_query_shape', error: { code: 'body_too_large', message: `request body exceeds ${limit} bytes` } }, { closeConnection: true }));
         req.pause();
         return;
@@ -109,7 +92,7 @@ function sendJson(res, status, body, extraHeaders = null) {
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'content-length': Buffer.byteLength(text),
-    // A query response is per-tenant and per-user. Nothing between here and the browser may keep it.
+    // Every response is per tenant and per user; nothing between here and the browser may keep it.
     'cache-control': 'no-store',
     'x-content-type-options': 'nosniff',
     ...(extraHeaders ?? {}),
@@ -118,159 +101,11 @@ function sendJson(res, status, body, extraHeaders = null) {
 }
 
 /**
- * The session for this request: tenant, actor and roles.
- *
- * TENANT IS NEVER READ FROM THE BODY. REASON.TENANT_IN_REQUEST exists because a request that tries
- * to choose its own tenant is refused as a validation error rather than ignored, and that only
- * means something if the value this server uses came from somewhere the caller cannot write.
- *
- * Two sources, tried in order:
- *
- *   1. A bearer token: the product access token control-api mints, verified in auth.js against
- *      the issuer's JWKS. The tenant, the actor and the roles all come from the signed claims.
- *      This is the product path. A presented token that fails is a refusal, never a fall-through
- *      to the development header.
- *   2. The development header, and only when SAC_DEV_TRUST_PRINCIPAL=1. It is the same explicit
- *      escape hatch the Go services use for a local run; it is named, it is off unless set, and
- *      the role it carries defaults to the lab-only `dev` role.
- *
- * Without either the request is refused 401: a service that cannot establish who is asking must
- * not answer. `tokenRefused` says which of the two it was, for the WWW-Authenticate challenge.
- *
- * A principal from a token carries that token as a non-enumerable `bearer`, so the content
- * forwarder can hand the vault the same credential (contract §2) and a log or a spread of the
- * principal cannot carry it anywhere else.
- */
-async function principalOf(req, cfg, verifier, log) {
-  if (verifier?.enabled) {
-    const header = req.headers['authorization'];
-    if (typeof header === 'string' && /^Bearer\s+\S+/i.test(header)) {
-      const token = header.replace(/^Bearer\s+/i, '').trim();
-      try {
-        const principal = await verifier.verify(token);
-        return { principal: Object.defineProperty({ ...principal }, 'bearer', { value: token, enumerable: false }) };
-      } catch (error) {
-        // The token itself is never logged: it is a credential. The reason is.
-        log?.warn?.(`query-api: a session token was refused: ${error?.message ?? error}`);
-        return { principal: null, tokenRefused: true };
-      }
-    }
-  }
-  const principal = devPrincipalOf(req, cfg);
-  return { principal, tokenRefused: false };
-}
-
-/** The development principal, read exactly as task 11 left it. Null unless the flag is on. */
-function devPrincipalOf(req, cfg) {
-  if (!cfg.devTrustPrincipal) return null;
-  const tenant = req.headers['x-sac-dev-tenant'];
-  if (typeof tenant !== 'string' || tenant.trim() === '') return null;
-  const actor = req.headers['x-sac-dev-actor'];
-  const caseRef = req.headers['x-sac-dev-case'];
-  // The lab may name the role it wants to exercise; absent, the escape hatch carries every
-  // capability so a lab run is not rewritten as a role. A token can never yield `dev`.
-  const requested = String(req.headers['x-sac-dev-role'] ?? '')
-    .split(',')
-    .map((r) => r.trim())
-    .filter(isKnownRole);
-  return {
-    tenant: tenant.trim(),
-    actorId: typeof actor === 'string' && actor.trim() !== '' ? actor.trim() : 'unknown',
-    subject: typeof actor === 'string' && actor.trim() !== '' ? actor.trim() : 'unknown',
-    roles: requested.length > 0 ? requested : [DEV_ROLE],
-    sessionId: null,
-    caseReference: typeof caseRef === 'string' && caseRef.trim() !== '' ? caseRef.trim() : null,
-  };
-}
-
-/**
- * Refuse a request whose session role does not carry `capability`. Throws the §13
- * `unauthorised_role` rejection, so the HTTP layer renders it like every other rejection.
- */
-function assertCapability(principal, capability, { path = null } = {}) {
-  if (rolesAllow(principal.roles, capability)) return;
-  throw unauthorisedRole(`use ${capability}`, { role: principal.roles.join(','), path });
-}
-
-/**
- * Answer a request that established no principal: 401, with the RFC 6750 challenge.
- *
- * The body keeps `unauthorised_role` as its state because the result-state vocabulary is closed and
- * the dashboard refuses an unknown one; the code says what actually happened. A presented token
- * that failed gets `invalid_token`, so a client can tell "sign in" from "your token is bad".
- */
-function sendUnauthenticated(res, cfg, tokenRefused, { contentShape = false } = {}) {
-  const message = tokenRefused
-    ? 'the bearer token was refused; sign in again'
-    : cfg.devTrustPrincipal
-      ? 'no tenant was established for this request'
-      : 'no signed-in session; sign in and present the bearer token';
-  const challenge = tokenRefused ? 'Bearer realm="sac-query", error="invalid_token"' : 'Bearer realm="sac-query"';
-  const body = contentShape
-    ? { state: 'refused', error: { code: 'unauthenticated', message } }
-    : { result_state: 'unauthorised_role', error: { code: 'unauthenticated', message } };
-  sendJson(res, 401, body, { 'www-authenticate': challenge });
-}
-
-/**
- * Refuse when the session role lacks `capability`, and report whether it did. A write handler
- * calls this before it reads the body, so a wrong-role request never reaches the database.
- */
-function roleRefusal(res, principal, capability, path, log) {
-  if (rolesAllow(principal.roles, capability)) return false;
-  const rendered = renderError(unauthorisedRole(`use ${capability}`, { role: principal.roles.join(','), path }), log);
-  sendJson(res, rendered.status, rendered.body);
-  return true;
-}
-
-/** Turn anything thrown by the pipeline or the driver into a wire-legal response. */
-function renderError(error, log) {
-  if (error instanceof QueryError) {
-    // The pipeline already decided the state, the reason, the fix and the HTTP status. This layer
-    // does not get a second opinion.
-    return { status: error.http, body: error.toEnvelope() };
-  }
-  if (error instanceof HttpError) {
-    return { status: error.status, body: error.payload };
-  }
-  // A driver error carries a SQLSTATE. Mapping it here rather than letting it become a 500 is what
-  // keeps "the database refused this" distinguishable from "this service is broken".
-  const code = typeof error?.code === 'string' ? error.code : '';
-  if (code === '57014') {
-    return transportError('busy', 'statement_timeout', 'the statement exceeded its server-side budget');
-  }
-  if (code === '40001' || code === '40P01') {
-    return transportError('busy', 'serialization_failure', 'the transaction was rolled back and may be retried');
-  }
-  if (error instanceof QueryError) return { status: error.http, body: error.toEnvelope() };
-  // Anything else is a defect, and a defect is logged in full and reported in outline: an internal
-  // message can name a host, a column or a DSN fragment.
-  log?.error?.('unhandled error in the read path', error);
-  return {
-    status: 500,
-    body: { result_state: 'audit_chain_broken', error: { code: 'internal_error', message: 'the service could not complete this read' } },
-  };
-}
-
-/**
  * A bounded concurrency gate with a bounded queue.
- *
- * §12.3: per-tenant concurrency is the limit that matters because the audit hash chain serialises
- * per tenant, and beyond the queue the answer is an immediate `busy` (429) — never unbounded
- * queueing, which turns one tenant's pathological query into every tenant's latency.
  */
-export function createGate({ maxConcurrency, maxQueue }) {
+export function createGate({ maxConcurrency = MAX_CONCURRENCY, maxQueue = MAX_QUEUE } = {}) {
   let active = 0;
   const queue = [];
-
-  function release() {
-    active -= 1;
-    const next = queue.shift();
-    if (next) {
-      active += 1;
-      next();
-    }
-  }
 
   return {
     get active() {
@@ -286,311 +121,281 @@ export function createGate({ maxConcurrency, maxQueue }) {
         return Promise.resolve();
       }
       if (queue.length >= maxQueue) {
-        return Promise.reject(
-          new HttpError(429, { result_state: 'busy', error: { code: 'busy', message: 'the service is at its concurrency limit; retry shortly' } }),
-        );
+        return Promise.reject(new HttpError(429, { result_state: 'busy', error: { code: 'busy', message: 'the service is at its concurrency limit; retry shortly' } }));
       }
       return new Promise((resolve) => queue.push(resolve));
     },
-    release,
-  };
-}
-
-/**
- * A pool borrowed from, or a bare client.
- *
- * The two are behind one shape because a test wants to hand in a fake and the service wants a pool,
- * and neither should have to know about the other. A bare client is wrapped as a one-connection
- * source: correct for a fake, and deliberately NOT how the service runs — a single session cannot
- * serve two requests, which is the defect the pool exists to fix.
- */
-function connectionSource({ pool, client, log }) {
-  if (pool) {
-    return {
-      async acquire() {
-        return pool.acquire();
-      },
-      useTenant(conn, tenant) {
-        // The pool owns this, because it also owns the reset on release. The two are one mechanism.
-        return pool.useTenant(conn, tenant);
-      },
-      async release(conn) {
-        await pool.release(conn);
-      },
-      async close() {
-        await pool.close();
-      },
-      kind: 'pool',
-    };
-  }
-  if (!client || typeof client.query !== 'function') throw new Error('createHandler needs a pool or a client with query(text, params).');
-  return {
-    async acquire() {
-      return client;
+    release() {
+      active -= 1;
+      const next = queue.shift();
+      if (next) {
+        active += 1;
+        next();
+      }
     },
-    async useTenant(conn, tenant) {
-      // The same statement the pool issues, so a test exercises the tenant plumbing rather than
-      // stepping around it. A fake client records it; that is how the test asserts it happened.
-      await conn.query("SELECT set_config('app.tenant_id', $1, false)", [tenant]);
-    },
-    async release() {},
-    async close() {
-      await client.close?.();
-    },
-    kind: 'single',
   };
 }
 
 /**
  * Build the request handler.
  *
- * Everything is injected: the pool (or, in a test, a single client), the clock, the logger. That is
- * what lets the whole surface be tested without a database, and it is the same seam executePlan()
- * already exposes.
+ * @param {object} input
+ * @param {object} input.cfg                 loadConfig()
+ * @param {import('pg').Pool} input.pool     anything with connect() and query()
+ * @param {{verify: (token: string) => Promise<object>}} input.verifier
+ * @param {object} [input.contentForwarder]
+ * @param {() => Date} [input.now]
+ * @param {object} [input.log]
+ * @param {object} [input.gate]
  */
 export function createHandler({
   cfg,
-  pool = null,
-  client = null,
-  cursorStore = null,
-  cursorKey = null,
+  pool,
+  verifier,
+  contentForwarder = null,
   now = () => new Date(),
   log = console,
-  requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
-  gate = createGate({ maxConcurrency: cfg?.limits?.maxConcurrency ?? 8, maxQueue: cfg?.limits?.maxQueue ?? 32 }),
-  out = null,
-  contentForwarder = null,
-  verifier = null,
+  gate = createGate(),
 } = {}) {
   if (!cfg) throw new Error('createHandler needs a configuration');
-  const source = connectionSource({ pool, client, log });
-  // Exposed so createQueryServer can close the same source the handler borrows from. Without this
-  // the server would close its listener and leave the pool's connections open, which a test notices
-  // as a process that will not exit.
-  if (typeof out?.captureSource === 'function') out.captureSource(source);  if (source.kind === 'single') {
-    // Said out loud rather than discovered under load. A single connection is a test fixture; in the
-    // service it produced SAC_BUSY for the second concurrent request and for any probe during a read.
-    log?.warn?.(
-      'query-api: serving from a single database connection. This is a test configuration: a real ' +
-        'deployment must pass a pool, because one session cannot run two transactions.',
-    );
+  if (!pool || typeof pool.connect !== 'function') throw new Error('createHandler needs a pool');
+  if (!verifier || typeof verifier.verify !== 'function') throw new Error('createHandler needs a token verifier');
+  const forwarder = contentForwarder ?? createContentForwarder({ vaultUrl: cfg.contentVaultUrl, log });
+
+  /** Render a thrown error. A QueryError already carries its state, reason and status. */
+  function renderError(error) {
+    if (error instanceof QueryError) return { status: error.http, body: error.toEnvelope() };
+    if (error instanceof HttpError) return { status: error.status, body: error.payload };
+    // Anything else is a defect: logged in full, reported in outline, because an internal message
+    // can name a host or a column.
+    log.error('unhandled error', { error: String(error?.stack ?? error) });
+    return {
+      status: 500,
+      body: { result_state: 'audit_chain_broken', error: { code: 'internal_error', message: 'the service could not complete this request' } },
+    };
   }
 
-  /** Liveness: is the process up. Never touches a dependency, so the platform may restart on it. */
-  function liveness(res) {
-    sendJson(res, 200, { ...LIVENESS_BODY, role: cfg.role });
+  function sendError(res, error) {
+    const rendered = renderError(error);
+    sendJson(res, rendered.status, rendered.body);
+  }
+
+  /** A failure on the database path: log what the driver said, answer with the typed rejection. */
+  function databaseFailure(res, error, opts) {
+    if (!(error instanceof QueryError)) log.warn('database operation failed', { error: String(error?.message ?? error), code: error?.code ?? null });
+    sendError(res, fromDatabaseError(error, opts));
   }
 
   /**
-   * Readiness: deliberately not liveness. A broken database connection means "take me out of
-   * rotation", not "kill me" — the distinction azure/modules/container-app.bicep's own comment asks
-   * for, and the same one ingestion/ingest-api/cmd/ingest-api/probes.go implements.
+   * The session for this request, from the bearer token, or null after answering 401.
    *
-   * It borrows its own connection rather than sharing one with a read: a probe that waits behind a
-   * query is a probe that reports a busy service as unready, and one that borrows a session mid
-   * transaction cannot run at all.
+   * The principal carries the token as a non-enumerable `bearer`, so the content forwarder can hand
+   * the vault the same credential while a log line or a spread of the principal cannot.
    */
-  async function readiness(res) {
-    let conn = null;
-    try {
-      conn = await source.acquire();
-      await conn.query('SELECT 1');
-      sendJson(res, 200, { ...READY_BODY, role: cfg.role });
-    } catch {
-      // The reason is not returned: its reader is the platform, and a driver error can carry a
-      // hostname. It is logged instead.
-      sendJson(res, 503, NOT_READY_BODY);
-    } finally {
-      if (conn) await source.release(conn);
+  async function authenticate(req, res, { contentShape = false } = {}) {
+    const header = req.headers.authorization;
+    const token = typeof header === 'string' && /^Bearer\s+\S+/i.test(header) ? header.replace(/^Bearer\s+/i, '').trim() : '';
+    let refused = false;
+    if (token !== '') {
+      try {
+        const principal = await verifier.verify(token);
+        return Object.defineProperty({ ...principal }, 'bearer', { value: token, enumerable: false });
+      } catch (error) {
+        // The token is a credential and is never logged; the reason is.
+        log.warn('bearer token refused', { reason: String(error?.message ?? error) });
+        refused = true;
+      }
     }
+    const message = refused ? 'the bearer token was refused; sign in again' : 'no signed-in session; sign in and present the bearer token';
+    // The body keeps `unauthorised_role` because the result-state vocabulary is closed; the code
+    // says what happened, and `invalid_token` tells a client its token is bad rather than absent.
+    const body = contentShape
+      ? { state: 'refused', error: { code: 'unauthenticated', message } }
+      : { result_state: 'unauthorised_role', error: { code: 'unauthenticated', message } };
+    sendJson(res, 401, body, { 'www-authenticate': refused ? 'Bearer realm="sac-query", error="invalid_token"' : 'Bearer realm="sac-query"' });
+    return null;
   }
 
-  async function query(req, res) {
-    const started = Date.now();
-    const { principal, tokenRefused } = await principalOf(req, cfg, verifier, log);
-    if (!principal) {
-      // Fail closed. A read path that cannot say who is asking does not answer.
-      sendUnauthenticated(res, cfg, tokenRefused);
-      return;
-    }
-
+  /** The JSON body, or undefined after answering. */
+  async function readJson(req, res, { contentShape = false } = {}) {
     let raw;
     try {
       raw = await readBody(req);
     } catch (error) {
-      const rendered = renderError(error, log);
-      if (error instanceof HttpError && error.closeConnection) {
-        // An oversized body cannot be drained for ever: answer, then close. The client that kept
-        // uploading is told why, which is the whole point of answering before disconnecting.
+      const refusal = error instanceof HttpError
+        ? error
+        : new HttpError(400, { result_state: 'unsupported_query_shape', error: { code: 'malformed_document', message: 'the request body could not be read' } });
+      if (refusal.closeConnection) {
+        // An oversized body cannot be drained for ever: answer, then close.
         res.setHeader('connection', 'close');
-        sendJson(res, rendered.status, rendered.body);
         res.on('finish', () => req.destroy());
-        return;
       }
-      sendJson(res, rendered.status, rendered.body);
-      return;
+      sendJson(res, refusal.status, contentShape
+        ? { state: 'refused', error: { code: refusal.payload.error.code, message: refusal.payload.error.message } }
+        : refusal.payload);
+      return undefined;
     }
-
-    let request;
     try {
-      request = raw.trim() === '' ? {} : JSON.parse(raw);
+      return raw.trim() === '' ? {} : JSON.parse(raw);
     } catch {
-      const rendered = renderError(
-        new HttpError(400, { result_state: 'unsupported_query_shape', error: { code: 'malformed_document', message: 'the request body is not JSON' } }),
-        log,
-      );
-      sendJson(res, rendered.status, rendered.body);
-      return;
-    }
-
-    let conn = null;
-    try {
-      await gate.acquire();
-    } catch (error) {
-      const rendered = renderError(error, log);
-      sendJson(res, rendered.status, rendered.body);
-      return;
-    }
-
-    try {
-      conn = await source.acquire();
-
-      // The tenant goes on the SESSION before anything is planned or executed.
-      //
-      // database/schema.sql enforces isolation with FORCE ROW LEVEL SECURITY, and every scoped
-      // policy compares against ops.current_tenant(), which reads `app.tenant_id`. Without this the
-      // read path returns nothing for every query — fail-closed, so not a leak, but an absence of
-      // data presented where the honest answer is "this session asked as nobody".
-      //
-      // `set_config(name, value, false)` rather than `SET LOCAL`: a utility statement cannot take a
-      // bind parameter, and a tenant interpolated into SQL text is the one thing this whole service
-      // exists to avoid. The pool clears it again on release — that reset is what makes it safe to
-      // hand the same connection to the next tenant.
-      await source.useTenant(conn, principal.tenant);
-
-      // The whole read happens inside one transaction that COMMITs before anything is served
-      // (§5.1: subject-level responses are not streamed), so a cancelled read has served nothing.
-      const ctx = {
-        client: conn,
-        tenant: principal.tenant,
-        actorId: principal.actorId,
-        // The issuer's session id, so an audit row can be tied to the sign-in that wrote it.
-        sessionId: principal.sessionId ?? null,
-        caseReference: principal.caseReference,
-        cursorStore,
-        cursorKey,
-        now: now(),
-      };
-      const planned = plan(request, ctx);
-      // The role gate sits between planning and execution: the plan names the source, the source
-      // names the capability, and a role without it is refused before a row is read (§13).
-      assertCapability(principal, capabilityForSource(planned.source_id), { path: PATHS.QUERY });
-      const envelope = await executePlan(planned, ctx);
-      sendJson(res, 200, envelope);
-    } catch (error) {
-      const rendered = renderError(error, log);
-      sendJson(res, rendered.status, rendered.body);
-    } finally {
-      if (conn) {
-        try {
-          await source.release(conn);
-        } catch (error) {
-          // A connection that cannot be returned is closed by the pool; the request is already
-          // answered, so this is a warning and not a second error for the caller.
-          log?.warn?.(`query-api: could not return a connection to the pool: ${error?.message ?? error}`);
-        }
-      }
-      gate.release();
-      const ms = Date.now() - started;
-      log?.info?.(`query-api ${request?.source ?? request?.template ?? '?'} ${ms}ms`);
+      sendJson(res, 400, contentShape
+        ? { state: 'refused', error: { code: 'malformed_document', message: 'the request body is not JSON' } }
+        : { result_state: 'unsupported_query_shape', error: { code: 'malformed_document', message: 'the request body is not JSON' } });
+      return undefined;
     }
   }
 
-  /**
-   * Finding review (review.js). The one WRITE this service accepts, and it is here because
-   * `sac_query` already holds INSERT+UPDATE on `ops.finding_review` and INSERT on `ops.audit`
-   * (db/schema.sql §10), and a review is meaningless except beside the read that shows it. The
-   * tenant is the session's and the reviewer is the authenticated principal; neither is read from
-   * the body. The review and its audit row commit together, so a response is never served for a
-   * judgement that was not recorded.
-   */
-  async function findingReview(req, res) {
-    const { principal, tokenRefused } = await principalOf(req, cfg, verifier, log);
-    if (!principal) {
-      sendUnauthenticated(res, cfg, tokenRefused);
-      return;
-    }
-    if (roleRefusal(res, principal, capabilityForEndpoint(PATHS.FINDING_REVIEW), PATHS.FINDING_REVIEW, log)) return;
-
-    let body;
-    try {
-      const raw = await readBody(req);
-      body = raw.trim() === '' ? {} : JSON.parse(raw);
-    } catch (error) {
-      const rendered = renderError(error, log);
-      sendJson(res, rendered.status, rendered.body);
-      return;
-    }
-
-    let review;
-    try {
-      review = validateReviewRequest(body);
-    } catch (error) {
-      const rendered = renderError(error, log);
-      sendJson(res, rendered.status, rendered.body);
-      return;
-    }
-
+  /** Run `fn` holding a gate slot, or answer 429 when the queue is full. */
+  async function admitted(res, fn, { contentShape = false } = {}) {
     try {
       await gate.acquire();
     } catch (error) {
-      const rendered = renderError(error, log);
-      sendJson(res, rendered.status, rendered.body);
+      if (contentShape) sendJson(res, 429, { state: 'refused', error: { code: 'busy', message: 'the service is at its concurrency limit; retry shortly' } });
+      else sendError(res, error);
+      return;
+    }
+    try {
+      await fn();
+    } finally {
+      gate.release();
+    }
+  }
+
+  /** Run `fn(client)` on a pooled connection. */
+  async function withClient(fn) {
+    const client = await pool.connect();
+    try {
+      return await fn(client);
+    } finally {
+      client.release();
+    }
+  }
+
+  /** Liveness: the process is up. It touches no dependency, so the platform may restart on it. */
+  function liveness(res) {
+    sendJson(res, 200, { status: 'ok' });
+  }
+
+  /** Readiness: one database round trip. A failure takes the replica out of rotation. */
+  async function readiness(res) {
+    try {
+      await pool.query('SELECT 1');
+      sendJson(res, 200, { status: 'ready' });
+    } catch (error) {
+      // Its reader is the platform, and a driver error can carry a host name: logged, not returned.
+      log.warn('readiness check failed', { error: String(error?.message ?? error) });
+      sendJson(res, 503, { status: 'not-ready' });
+    }
+  }
+
+  async function query(req, res) {
+    const principal = await authenticate(req, res);
+    if (!principal) return;
+    const request = await readJson(req, res);
+    if (request === undefined) return;
+
+    const ctx = {
+      tenant: principal.tenant,
+      actorId: principal.actorId,
+      sessionId: principal.sessionId ?? null,
+      caseReference: principal.caseReference ?? null,
+      cursorKey: cfg.cursorKey,
+      now: now(),
+    };
+    let planned;
+    try {
+      planned = plan(request, ctx);
+      // The plan names the source and the source names the capability: a role without it is
+      // refused before a row is read.
+      const capability = capabilityForSource(planned.source_id);
+      if (!rolesAllow(principal.roles, capability)) throw unauthorisedRole(`use ${capability}`, { role: principal.roles.join(','), path: PATHS.QUERY });
+    } catch (error) {
+      sendError(res, error);
       return;
     }
 
-    let conn = null;
-    try {
-      conn = await source.acquire();
-      await source.useTenant(conn, principal.tenant);
-      await conn.begin();
-
-      // The finding must exist for this tenant. Because the predicate is ops.current_tenant(), a
-      // submission id from another tenant is not found rather than found-and-refused.
-      const found = await conn.query(FINDING_FOR_REVIEW_SQL, [review.submissionId, review.ruleId]);
-      if (!found?.rows?.length) {
-        await conn.rollback();
-        sendJson(res, 404, {
-          result_state: 'not_found',
-          error: { code: 'no_such_finding', message: 'No finding with that submission and rule exists for this tenant.' },
-        });
-        return;
+    await admitted(res, async () => {
+      try {
+        const envelope = await withClient((client) => executePlan(planned, { ...ctx, client }));
+        sendJson(res, 200, envelope);
+      } catch (error) {
+        databaseFailure(res, error);
       }
-      const subjectRef = found.rows[0].user_ref ?? null;
+    });
+  }
 
-      const saved = await conn.query(UPSERT_REVIEW_SQL, [
-        review.submissionId,
-        review.ruleId,
-        review.reviewState,
-        principal.actorId,
-        review.note,
-      ]);
-      const audit = findingReviewAuditStatement({
-        actorId: principal.actorId,
-        submissionId: review.submissionId,
-        ruleId: review.ruleId,
-        reviewState: review.reviewState,
-        note: review.note,
-        subjectRef,
-        caseReference: principal.caseReference,
-        sessionId: principal.sessionId ?? null,
-      });
-      const auditRow = await conn.query(audit.text, audit.params);
-      await conn.commit();
+  /**
+   * An audited write: the change and its audit row commit together in one tenant-scoped
+   * transaction, so a response is never served for a change that was not recorded. The actor is
+   * the authenticated principal and the tenant is the session's; neither is read from the body.
+   */
+  async function auditedWrite(req, res, path, validateBody, perform) {
+    const principal = await authenticate(req, res);
+    if (!principal) return;
+    const capability = capabilityForEndpoint(path);
+    if (!rolesAllow(principal.roles, capability)) {
+      sendError(res, unauthorisedRole(`use ${capability}`, { role: principal.roles.join(','), path }));
+      return;
+    }
+    const body = await readJson(req, res);
+    if (body === undefined) return;
+    let input;
+    try {
+      input = validateBody(body);
+    } catch (error) {
+      sendError(res, error);
+      return;
+    }
+    await admitted(res, async () => {
+      let auditing = false;
+      try {
+        const answer = await withClient((client) => inTransaction(client, { tenant: principal.tenant, statementTimeoutMs: OPERATIONAL_TIMEOUT_MS }, () => perform(client, principal, input, () => {
+          auditing = true;
+        })));
+        sendJson(res, answer.status, answer.body);
+      } catch (error) {
+        databaseFailure(res, error, { auditFailed: auditing });
+      }
+    });
+  }
 
-      const row = saved?.rows?.[0] ?? {};
-      const auditEntry = auditRow?.rows?.[0] ?? null;
-      sendJson(res, 200, {
+  function auditBlock(row) {
+    if (!row) return {};
+    return {
+      audit: {
+        entry_id: row.audit_seq === undefined ? null : String(row.audit_seq),
+        written_at: row.occurred_at instanceof Date ? row.occurred_at.toISOString() : (row.occurred_at ?? null),
+      },
+    };
+  }
+
+  const isoOrNull = (value) => (value instanceof Date ? value.toISOString() : (value ?? null));
+
+  /** POST /v1/finding-review: confirm or dispute one finding. */
+  async function reviewFinding(client, principal, review, auditing) {
+    // The predicate is the session tenant, so a finding from another tenant is not found rather
+    // than found and refused.
+    const found = await client.query(FINDING_FOR_REVIEW_SQL, [review.submissionId, review.ruleId]);
+    if (!found.rows.length) {
+      return { status: 404, body: { result_state: 'not_found', error: { code: 'no_such_finding', message: 'No finding with that submission and rule exists for this tenant.' } } };
+    }
+    const saved = await client.query(UPSERT_REVIEW_SQL, [review.submissionId, review.ruleId, review.reviewState, principal.actorId, review.note]);
+    const audit = findingReviewAuditStatement({
+      actorId: principal.actorId,
+      submissionId: review.submissionId,
+      ruleId: review.ruleId,
+      reviewState: review.reviewState,
+      note: review.note,
+      subjectRef: found.rows[0].user_ref ?? null,
+      caseReference: principal.caseReference ?? null,
+      sessionId: principal.sessionId ?? null,
+    });
+    auditing();
+    const auditRow = await client.query(audit.text, audit.params);
+    const row = saved.rows[0] ?? {};
+    return {
+      status: 200,
+      body: {
         api_version: '1',
         result_state: 'ok',
         data: {
@@ -598,114 +403,35 @@ export function createHandler({
           rule_id: review.ruleId,
           review_state: row.review_state ?? review.reviewState,
           reviewed_by: row.reviewed_by ?? principal.actorId,
-          reviewed_at: row.reviewed_at instanceof Date ? row.reviewed_at.toISOString() : (row.reviewed_at ?? null),
+          reviewed_at: isoOrNull(row.reviewed_at),
         },
-        ...(auditEntry
-          ? {
-              audit: {
-                entry_id: auditEntry.audit_seq === undefined ? null : String(auditEntry.audit_seq),
-                written_at: auditEntry.occurred_at instanceof Date ? auditEntry.occurred_at.toISOString() : (auditEntry.occurred_at ?? null),
-              },
-            }
-          : {}),
-      });
-    } catch (error) {
-      if (conn) {
-        try {
-          await conn.rollback();
-        } catch {
-          // A rollback failure must not mask the original error.
-        }
-      }
-      const rendered = renderError(error, log);
-      sendJson(res, rendered.status, rendered.body);
-    } finally {
-      if (conn) {
-        try {
-          await source.release(conn);
-        } catch (error) {
-          log?.warn?.(`query-api: could not return a connection to the pool: ${error?.message ?? error}`);
-        }
-      }
-      gate.release();
-    }
+        ...auditBlock(auditRow.rows[0]),
+      },
+    };
   }
 
-  /**
-   * Tool sanction (sanction.js). The second audited configuration write this service accepts, for
-   * the same reason as the first: `sac_query` holds the read that shows the state and now holds
-   * INSERT+UPDATE on `ops.tool`, so the decision and the read that reflects it are one round trip
-   * from the same place. The tenant is the session's and the actor is the authenticated principal;
-   * neither is read from the body. The decision and its audit row commit together, so a response is
-   * never served for a state change that was not recorded.
-   */
-  async function toolSanction(req, res) {
-    const { principal, tokenRefused } = await principalOf(req, cfg, verifier, log);
-    if (!principal) {
-      sendUnauthenticated(res, cfg, tokenRefused);
-      return;
-    }
-    if (roleRefusal(res, principal, capabilityForEndpoint(PATHS.TOOL_SANCTION), PATHS.TOOL_SANCTION, log)) return;
-
-    let body;
-    try {
-      const raw = await readBody(req);
-      body = raw.trim() === '' ? {} : JSON.parse(raw);
-    } catch (error) {
-      const rendered = renderError(error, log);
-      sendJson(res, rendered.status, rendered.body);
-      return;
-    }
-
-    let sanction;
-    try {
-      sanction = validateSanctionRequest(body);
-    } catch (error) {
-      const rendered = renderError(error, log);
-      sendJson(res, rendered.status, rendered.body);
-      return;
-    }
-
-    try {
-      await gate.acquire();
-    } catch (error) {
-      const rendered = renderError(error, log);
-      sendJson(res, rendered.status, rendered.body);
-      return;
-    }
-
-    let conn = null;
-    try {
-      conn = await source.acquire();
-      await source.useTenant(conn, principal.tenant);
-      await conn.begin();
-
-      // The previous decision, for the audit detail. An absent row is `unknown`, a real answer.
-      const existing = await conn.query(TOOL_SANCTION_FOR_REVIEW_SQL, [sanction.toolFingerprint]);
-      const previousState = existing?.rows?.[0]?.sanctioned_state ?? 'unknown';
-
-      const saved = await conn.query(UPSERT_TOOL_SANCTION_SQL, [
-        sanction.toolFingerprint,
-        sanction.displayName,
-        sanction.sanctionedState,
-        principal.actorId,
-      ]);
-      const audit = toolSanctionAuditStatement({
-        actorId: principal.actorId,
-        toolFingerprint: sanction.toolFingerprint,
-        sanctionedState: sanction.sanctionedState,
-        previousState,
-        displayName: sanction.displayName,
-        note: sanction.note,
-        caseReference: principal.caseReference,
-        sessionId: principal.sessionId ?? null,
-      });
-      const auditRow = await conn.query(audit.text, audit.params);
-      await conn.commit();
-
-      const row = saved?.rows?.[0] ?? {};
-      const auditEntry = auditRow?.rows?.[0] ?? null;
-      sendJson(res, 200, {
+  /** POST /v1/tool-sanction: record a tool's sanction state. */
+  async function sanctionTool(client, principal, sanction, auditing) {
+    // The previous decision, for the audit detail. An absent row is `unknown`, a real answer.
+    const existing = await client.query(TOOL_SANCTION_FOR_REVIEW_SQL, [sanction.toolFingerprint]);
+    const previousState = existing.rows[0]?.sanctioned_state ?? 'unknown';
+    const saved = await client.query(UPSERT_TOOL_SANCTION_SQL, [sanction.toolFingerprint, sanction.displayName, sanction.sanctionedState, principal.actorId]);
+    const audit = toolSanctionAuditStatement({
+      actorId: principal.actorId,
+      toolFingerprint: sanction.toolFingerprint,
+      sanctionedState: sanction.sanctionedState,
+      previousState,
+      displayName: sanction.displayName,
+      note: sanction.note,
+      caseReference: principal.caseReference ?? null,
+      sessionId: principal.sessionId ?? null,
+    });
+    auditing();
+    const auditRow = await client.query(audit.text, audit.params);
+    const row = saved.rows[0] ?? {};
+    return {
+      status: 200,
+      body: {
         api_version: '1',
         result_state: 'ok',
         data: {
@@ -714,103 +440,51 @@ export function createHandler({
           sanctioned_state: row.sanctioned_state ?? sanction.sanctionedState,
           previous_state: previousState,
           decided_by: row.decided_by ?? (sanction.sanctionedState === 'unknown' ? null : principal.actorId),
-          decided_at: row.decided_at instanceof Date ? row.decided_at.toISOString() : (row.decided_at ?? null),
+          decided_at: isoOrNull(row.decided_at),
         },
-        ...(auditEntry
-          ? {
-              audit: {
-                entry_id: auditEntry.audit_seq === undefined ? null : String(auditEntry.audit_seq),
-                written_at: auditEntry.occurred_at instanceof Date ? auditEntry.occurred_at.toISOString() : (auditEntry.occurred_at ?? null),
-              },
-            }
-          : {}),
-      });
-    } catch (error) {
-      if (conn) {
-        try {
-          await conn.rollback();
-        } catch {
-          // A rollback failure must not mask the original error.
-        }
-      }
-      const rendered = renderError(error, log);
-      sendJson(res, rendered.status, rendered.body);
-    } finally {
-      if (conn) {
-        try {
-          await source.release(conn);
-        } catch (error) {
-          log?.warn?.(`query-api: could not return a connection to the pool: ${error?.message ?? error}`);
-        }
-      }
-      gate.release();
-    }
+        ...auditBlock(auditRow.rows[0]),
+      },
+    };
   }
 
-  const forwarder = contentForwarder ?? createContentForwarder({ vaultUrl: cfg.contentVaultUrl, scope: cfg.contentSearchScope, log });
-
   /**
-   * The two content reads (content.js). They are forwarded, never answered here: this service
-   * establishes who is asking and the vault decides everything else. They share the concurrency
-   * gate with /v1/query so a slow vault cannot exhaust the process.
+   * The two content reads (content.js), forwarded to the vault, which decides everything. They
+   * share the admission gate with /v1/query so a slow vault cannot exhaust the process.
    */
   async function content(req, res, path) {
-    const { principal, tokenRefused } = await principalOf(req, cfg, verifier, log);
-    if (!principal) {
-      sendUnauthenticated(res, cfg, tokenRefused, { contentShape: true });
-      return;
-    }
-    // The role gate sits on the request that mints a retrieval URL and on the search, before the
-    // vault is called. The vault checks the same role again, because it is the component that
-    // returns content and it must not rely on its caller having done so.
+    const principal = await authenticate(req, res, { contentShape: true });
+    if (!principal) return;
+    // Checked here before the vault is called; the vault checks the same role again, because it is
+    // the component that returns content.
     const capability = capabilityForEndpoint(path);
-    if (capability && !rolesAllow(principal.roles, capability)) {
+    if (!rolesAllow(principal.roles, capability)) {
       sendJson(res, 403, { state: 'refused', error: { code: 'role', message: `role ${principal.roles.join(',')} may not use ${capability}` } });
       return;
     }
-    let body;
-    try {
-      const raw = await readBody(req);
-      body = raw.trim() === '' ? {} : JSON.parse(raw);
-    } catch (error) {
-      const status = error instanceof HttpError ? error.status : 400;
-      sendJson(res, status, { state: 'refused', error: { code: status === 413 ? 'body_too_large' : 'malformed_document', message: 'the request body could not be read as JSON' } });
-      return;
-    }
-    try {
-      await gate.acquire();
-    } catch {
-      sendJson(res, 429, { state: 'refused', error: { code: 'busy', message: 'the service is at its concurrency limit; retry shortly' } });
-      return;
-    }
-    try {
+    const body = await readJson(req, res, { contentShape: true });
+    if (body === undefined) return;
+    await admitted(res, async () => {
       const answer = await forwarder.handle(path, principal, body);
       if (path === CONTENT_PATHS.SEARCH && answer.status === 200 && Array.isArray(answer.body?.hits)) {
         answer.body.hits = await describeHits(principal, answer.body.hits);
       }
       sendJson(res, answer.status, answer.body);
-    } finally {
-      gate.release();
-    }
+    }, { contentShape: true });
   }
 
   /**
    * Who and where each search hit is: the person, the device and the tool of its submission.
    *
-   * The vault answers a search with a submission and a fragment, because that is all it knows.
-   * The submission's metadata is this service's to read (ingest.submission, under the tenant's
-   * row-level security), and a hit an analyst cannot place is one they must open to understand.
-   * The search itself is already audited by the vault; this adds no content. A lookup that fails
-   * leaves the hits as the vault served them.
+   * The vault answers a search with a submission and a fragment, which is all it knows. The
+   * submission's metadata is this service's to read under the tenant's row-level security, and it
+   * adds no content. A lookup that fails leaves the hits as the vault served them.
    */
   async function describeHits(principal, hits) {
     const ids = [...new Set(hits.map((h) => h?.submission_id).filter((id) => typeof id === 'string' && HIT_ID.test(id)))];
     if (ids.length === 0) return hits;
-    let conn = null;
+    let rows;
     try {
-      conn = await source.acquire();
-      await source.useTenant(conn, principal.tenant);
-      const result = await conn.query(
+      rows = await withClient((client) => inTransaction(client, { tenant: principal.tenant, statementTimeoutMs: OPERATIONAL_TIMEOUT_MS }, async () => (await client.query(
         `SELECT s.submission_id::text AS submission_id, s.user_ref AS user_ref, s.subject_name AS subject_name,
                 ud.display_name AS directory_name,
                 s.tool_fingerprint AS tool, ops.tool_display_name(s.tool_fingerprint) AS tool_name,
@@ -820,98 +494,92 @@ export function createHandler({
              ON d.tenant_id = s.tenant_id AND d.device_id = s.device_id
            LEFT JOIN ops.user_dim ud
              ON ud.tenant_id = s.tenant_id AND ud.user_ref = s.user_ref
-          WHERE s.tenant_id = $1::uuid AND s.submission_id = ANY(string_to_array($2::text, ',')::uuid[])`,
-        [principal.tenant, ids.join(',')],
-      );
-      const known = new Map((result?.rows ?? []).map((row) => [row.submission_id, row]));
-      return hits.map((hit) => {
-        const row = known.get(hit.submission_id);
-        if (!row) return hit;
-        return {
-          ...hit,
-          // The clear name at submission time when there is one, else the pseudonymous ref, so a hit
-          // is always attributable to something an analyst can act on (ADR 0021, docs/04 §15.3).
-          subject: row.subject_name ?? row.user_ref ?? null,
-          // The directory's current display name, shown beside the account name the device reported
-          // so the analyst can tell a stale as-of-submission name from the directory's own. Both are
-          // gated by the same device_identity setting: the sync stores none for a 'hashed' tenant.
-          directory_name: row.directory_name ?? null,
-          tool: row.tool ?? null,
-          tool_name: row.tool_name ?? null,
-          device: row.device ?? null,
-          hostname: row.hostname ?? null,
-        };
-      });
+          WHERE s.tenant_id = $1::uuid AND s.submission_id = ANY($2::uuid[])`,
+        [principal.tenant, ids],
+      )).rows));
     } catch (error) {
-      log?.warn?.(`query-api: search hits could not be described: ${error?.message ?? error}`);
+      log.warn('search hits could not be described', { error: String(error?.message ?? error) });
       return hits;
-    } finally {
-      if (conn) {
-        try {
-          await source.release(conn);
-        } catch (error) {
-          log?.warn?.(`query-api: could not return a connection to the pool: ${error?.message ?? error}`);
-        }
-      }
     }
+    const known = new Map(rows.map((row) => [row.submission_id, row]));
+    return hits.map((hit) => {
+      const row = known.get(hit.submission_id);
+      if (!row) return hit;
+      return {
+        ...hit,
+        // The name at submission time when there is one, else the pseudonymous ref, so a hit is
+        // always attributable to something an analyst can act on.
+        subject: row.subject_name ?? row.user_ref ?? null,
+        // The directory's current display name, beside the account name the device reported. The
+        // directory sync stores none for a tenant whose device identity is hashed.
+        directory_name: row.directory_name ?? null,
+        tool: row.tool ?? null,
+        tool_name: row.tool_name ?? null,
+        device: row.device ?? null,
+        hostname: row.hostname ?? null,
+      };
+    });
   }
 
-  return function handler(req, res) {
-    const url = req.url ?? '/';
-    if (req.method === 'GET' && url.split('?')[0] === PATHS.LIVENESS) return liveness(res);
-    if (req.method === 'GET' && url.split('?')[0] === PATHS.READINESS) return void readiness(res);
-    if (req.method === 'POST' && url.split('?')[0] === PATHS.QUERY) return void query(req, res);
-    if (req.method === 'POST' && url.split('?')[0] === PATHS.FINDING_REVIEW) return void findingReview(req, res);
-    if (req.method === 'POST' && url.split('?')[0] === PATHS.TOOL_SANCTION) return void toolSanction(req, res);
-    if (req.method === 'POST' && Object.values(CONTENT_PATHS).includes(url.split('?')[0])) return void content(req, res, url.split('?')[0]);
+  const ROUTES = new Map([
+    [`GET ${PATHS.LIVENESS}`, (req, res) => liveness(res)],
+    [`GET ${PATHS.READINESS}`, (req, res) => readiness(res)],
+    [`POST ${PATHS.QUERY}`, query],
+    [`POST ${PATHS.FINDING_REVIEW}`, (req, res) => auditedWrite(req, res, PATHS.FINDING_REVIEW, validateReviewRequest, reviewFinding)],
+    [`POST ${PATHS.TOOL_SANCTION}`, (req, res) => auditedWrite(req, res, PATHS.TOOL_SANCTION, validateSanctionRequest, sanctionTool)],
+    [`POST ${CONTENT_PATHS.SEARCH}`, (req, res) => content(req, res, CONTENT_PATHS.SEARCH)],
+    [`POST ${CONTENT_PATHS.RETRIEVAL}`, (req, res) => content(req, res, CONTENT_PATHS.RETRIEVAL)],
+  ]);
+  const KNOWN_PATHS = new Set([...ROUTES.keys()].map((key) => key.split(' ')[1]));
 
-    if (url.split('?')[0] === PATHS.QUERY || url.split('?')[0] === PATHS.LIVENESS || url.split('?')[0] === PATHS.READINESS || url.split('?')[0] === PATHS.FINDING_REVIEW || url.split('?')[0] === PATHS.TOOL_SANCTION) {
-      res.writeHead(405, { 'content-type': 'application/json; charset=utf-8', allow: 'GET, POST' });
-      res.end(JSON.stringify({ result_state: 'not_found', error: { code: 'method_not_allowed', message: `${req.method} is not allowed on ${url}` } }));
+  return function handler(req, res) {
+    const path = (req.url ?? '/').split('?')[0];
+    const route = ROUTES.get(`${req.method} ${path}`);
+    if (route) {
+      Promise.resolve(route(req, res)).catch((error) => {
+        if (!res.headersSent) sendError(res, error);
+        else res.destroy();
+      });
       return;
     }
-    res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ result_state: 'not_found', error: { code: 'not_found', message: 'no such path' } }));
+    if (KNOWN_PATHS.has(path)) {
+      sendJson(res, 405, { result_state: 'not_found', error: { code: 'method_not_allowed', message: `${req.method} is not allowed on ${path}` } }, { allow: 'GET, POST' });
+      return;
+    }
+    sendJson(res, 404, { result_state: 'not_found', error: { code: 'not_found', message: 'no such path' } });
   };
 }
 
 /**
- * Start listening.
- *
- * The returned object exposes `close()` so a test can start and stop one without leaking a port,
- * and `url` so a caller can print where it is.
+ * The HTTP server. `close()` stops the listener, drops idle keep-alive sockets, and ends the pool.
  */
 export function createQueryServer(options) {
-  // The handler creates the connection source; this collects it so close() can shut it down with
-  // the listener. One source, one owner, one place that closes it.
-  const shared = { source: null };
-  const handler = createHandler({ ...options, out: { captureSource: (source) => (shared.source = source) } });
+  const handler = createHandler(options);
+  const log = options.log ?? console;
   const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   const server = createServer((req, res) => {
-    // A hung request must not hold a connection slot for ever.
-    //
-    // The timer is set here and cleared on 'close', deliberately NOT with res.setTimeout: a
-    // response-object timeout is a *socket* timeout, so it outlives the response, keeps one timer
-    // per idle keep-alive connection alive, and holds the process open for its full duration after
-    // the last request has been answered. That is invisible in production and very visible in a
-    // test suite, which then sits idle for the whole timeout.
+    // A per-request timer cleared on 'close', rather than res.setTimeout: a socket timeout outlives
+    // the response and keeps idle keep-alive connections (and the process) alive.
+    const started = Date.now();
     const timer = setTimeout(() => {
       if (!res.headersSent) {
-        const rendered = transportError('busy', 'request_timeout', 'the request exceeded its time budget');
-        res.writeHead(rendered.status, { 'content-type': 'application/json; charset=utf-8', connection: 'close' });
-        res.end(JSON.stringify(rendered.body));
+        const body = JSON.stringify({ result_state: 'busy', error: { code: 'request_timeout', message: 'the request exceeded its time budget' } });
+        res.writeHead(RESULT_STATES.busy.http, { 'content-type': 'application/json; charset=utf-8', connection: 'close' });
+        res.end(body);
       }
       req.destroy();
     }, requestTimeoutMs);
     timer.unref?.();
     res.on('close', () => clearTimeout(timer));
+    const path = (req.url ?? '/').split('?')[0];
+    if (path !== PATHS.LIVENESS && path !== PATHS.READINESS) {
+      res.on('finish', () => log.info?.('request', { method: req.method, path, status: res.statusCode, ms: Date.now() - started }));
+    }
     handler(req, res);
   });
   return {
     server,
     handler,
-    /** The connection source, so a caller can close the pool with the listener. */
-    closeConnections: () => shared.source?.close(),
     listen(address) {
       return new Promise((resolve, reject) => {
         server.once('error', reject);
@@ -921,11 +589,10 @@ export function createQueryServer(options) {
         });
       });
     },
-    close() {
-      // Close idle keep-alive sockets as well as the listener. Without this, close() waits for a
-      // client that is holding a connection open, which is exactly what a fetch-based test does.
+    async close() {
       server.closeAllConnections?.();
-      return new Promise((resolve) => server.close(() => resolve())).then(() => shared.source?.close());
+      await new Promise((resolve) => server.close(() => resolve()));
+      await options.pool?.end?.();
     },
   };
 }

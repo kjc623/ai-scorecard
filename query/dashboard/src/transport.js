@@ -1,22 +1,12 @@
-// transport.js — THE data layer. Everything the dashboard knows about the network lives here.
+// transport.js — the data layer. Everything the dashboard knows about the network lives here.
 //
-// One module, one seam. `createQueryApi({transport})` takes a transport and returns the only
-// object the rest of the app is allowed to talk to. Two transports ship:
-//
-//   * `stubTransport(fixtures)` — canned envelopes, so `index.html` opens from the filesystem and
-//     every state (fresh, stale, partial coverage, suppressed, empty, refusal, 410, cursor) is
-//     visible to a human without a server, a database, or a session.
-//   * `httpTransport({fetchImpl, url})` — a real POST of the same body to `/v1/query`.
-//
-// `test/section14.test.mjs` asserts that no other file in this package calls `fetch`, builds a
-// URL, or names any endpoint other than the ones in vocab.js: the browser reaches data through a
-// closed query document, reaches content only through the two reads content-vault decides, and
-// changes configuration only through control-api's admin API (`createAdminApi`, Settings →
-// Deployment), which checks the admin role and audits each write.
-//
-// Pagination lives here too, because it is a property of the transport rather than of a screen:
-// a page is only finished when `next_cursor` is null. A short page is NOT the end — rows deleted
-// underneath an iteration make a page shorter, and stopping on that would truncate the answer.
+// `createQueryApi({transport})` takes a transport and returns the only object the rest of the app
+// talks to; `httpTransport()` POSTs a request body to /v1/query on the page's own origin.
+// test/guarantees.test.mjs asserts that no other file in this package calls `fetch` or names an
+// endpoint other than the ones in vocab.js: the browser reaches data through a closed query
+// document, reaches content only through the two reads content-vault decides, and changes
+// configuration only through control-api's admin API (`createAdminApi`, Settings → Deployment),
+// which checks the admin role and audits each write.
 
 import {
   QUERY_ENDPOINT, CONTENT_SEARCH_ENDPOINT, CONTENT_RETRIEVAL_ENDPOINT, RESULT_STATES,
@@ -92,13 +82,11 @@ export function createQueryApi({ transport }) {
 }
 
 /**
- * The signed-in session, as the page sees it, or null when there is none.
+ * The signed-in session, as the page sees it, or null when it could not be read.
  *
- * This is the one network seam the page has beyond the query and content reads: the browser asks
- * its own server who it is signed in as, and the server answers with the pages the role may open.
- * Sample mode and a signed-out page both get `null`, which the navigation reads as "show
- * everything" — the sample state gallery is not a session. A failed fetch is not an error shown
- * to the reader; it is the fall-through.
+ * The browser asks its own server who it is signed in as, and the server answers with the pages
+ * the roles may open. A failed read is not an error shown to the reader: the navigation is left
+ * whole, and the server still refuses what the roles may not use.
  *
  * @param {object} [input]
  * @param {typeof fetch} [input.fetchImpl]
@@ -114,36 +102,6 @@ export async function loadSession({ fetchImpl } = {}) {
   } catch {
     return null;
   }
-}
-
-/**
- * The canned transport. Keys are matched against the request body's template, source and filter
- * values, so a fixture can answer "the classes screen with a suppressed cell" without the screen
- * knowing a fixture exists.
- *
- * @param {object} input
- * @param {ReadonlyArray<{match: (body: object) => boolean, reply: (body: object) => object}>} input.routes
- * @param {object} [input.fallback] envelope used when no route matches
- */
-export function stubTransport({ routes, fallback }) {
-  return Object.freeze({
-    async send(body) {
-      for (const route of routes) {
-        if (route.match(body)) return route.reply(body);
-      }
-      if (fallback) return fallback;
-      return {
-        api_version: '1',
-        query_version: '1',
-        result_state: 'unsupported_query_shape',
-        error: {
-          code: 'no_stub_route',
-          message: 'The stub transport has no canned answer for this request.',
-          detail: { body },
-        },
-      };
-    },
-  });
 }
 
 /**
@@ -180,8 +138,8 @@ export function httpTransport({ url = QUERY_ENDPOINT, fetchImpl, headers } = {})
  *
  * They are not queries. A query document cannot name content, and the two requests go to their own
  * endpoints, which query-api forwards to content-vault. The retrieval request answers with a
- * single-use URL, never the content (docs/02 §11): the browser then fetches that URL from the
- * vault through the page's own web tier. Every answer is the vault's — `state: "available"` with a
+ * single-use URL, never the content: the browser then fetches that URL from the vault through
+ * the page's own server. Every answer is the vault's — `state: "available"` with a
  * result, a state that says the content is gone, or a refusal with the vault's own reason — so a
  * screen never has to tell a network failure from a refusal by catching an exception.
  *
@@ -426,36 +384,3 @@ export function httpAdminTransport({ fetchImpl } = {}) {
     },
   });
 }
-
-/**
- * Page through a list read. Iteration stops when `next_cursor` is null and at no other time:
- * a short page is not the end of the results, because rows deleted mid-iteration make a page
- * shorter and stopping there would truncate a result set whose rows were erased underneath it.
- *
- * @param {object} input
- * @param {(body: object) => Promise<object>} input.fetchPage
- * @param {object} input.body          the request without a cursor
- * @param {number} [input.maxPages]    a safety bound for the UI, never a correctness one
- */
-export async function collectPages({ fetchPage, body, maxPages = 20 }) {
-  const pages = [];
-  const rows = [];
-  let cursor = null;
-  let guard = 0;
-  do {
-    const request = cursor === null ? body : { ...body, cursor };
-    // eslint-disable-next-line no-await-in-loop
-    const envelope = await fetchPage(request);
-    pages.push(envelope);
-    if (!RESULT_STATES[envelope.result_state]) return { rows, pages, envelope, error: 'unknown_result_state' };
-    if (!envelope.result_state.startsWith('ok') && !envelope.data) {
-      return { rows, pages, envelope, error: envelope.result_state };
-    }
-    rows.push(...(envelope.data ?? []));
-    cursor = envelope.page?.next_cursor ?? null;
-    guard += 1;
-  } while (cursor !== null && guard < maxPages);
-  return { rows, pages, envelope: pages[pages.length - 1], truncated: cursor !== null };
-}
-
-export { QUERY_ENDPOINT };

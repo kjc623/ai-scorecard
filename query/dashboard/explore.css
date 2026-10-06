@@ -41,8 +41,6 @@
 /* ── page frame ───────────────────────────────────────────────────────────────────────────── */
 .x-app { max-width: none; }
 .x-main .screen-head { margin-bottom: 26px; }
-.x-sample { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ink-3); }
-.x-sample[hidden] { display: none; }
 
 /* ── one search bar, then one row: what to list, the window, and the filters ───────────────── */
 .x-searchbar {
@@ -58,7 +56,7 @@
 .x-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; margin-bottom: 18px; }
 .x-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 /* A prompt-text search takes over the list body, but the toolbar and its filter rail stay: the
-   person, tool, device, mode and window filters apply to the text results too (task 09). */
+   person, tool, device, mode and window filters apply to the text results too. */
 .x-text-active .x-summary, .x-text-active .x-results-body { display: none; }
 @media (min-width: 1200px) {
   .x-main:has(.x-has-detail) { padding-right: 472px; }

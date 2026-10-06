@@ -1,14 +1,14 @@
 // hostile.test.mjs — the hostile-input corpus.
 //
-// INV-3 says: "No part of a client-supplied value is ever concatenated into SQL text; a value is
-// bound, and a dimension name that is not in the enumerated vocabulary is rejected rather than
-// escaped."
+// The property under test: no part of a client-supplied value is ever concatenated into SQL text.
+// A value is bound, and a dimension name that is not in the enumerated vocabulary is rejected
+// rather than escaped.
 //
 // This file tries to break that in the ways that break real DSLs — quotes, statement
 // terminators, comment sequences, UNION, nested JSON, oversized arrays, unknown operators,
 // prototype pollution — and asserts one of exactly two outcomes for every attempt:
 //
-//   * a typed §13 rejection, and no statement at all; or
+//   * a typed rejection, and no statement at all; or
 //   * a compiled statement whose TEXT is byte-identical to the compiled text of a benign
 //     document of the same shape, with the hostile value present only in `params`.
 //
@@ -196,7 +196,7 @@ test('every compiled statement in the corpus stays inside a printable-SQL alphab
 test('a hostile cursor is refused as cursor_expired, never parsed as a position', () => {
   for (const cursor of [HOSTILE[0], 'not-a-cursor', 'aaaa.bbbb', 'x'.repeat(5000)]) {
     const error = rejection(() =>
-      plan(baseDoc({ cursor }), { now: NOW, tenant: 'tenant-a', cursorKey: Buffer.from('k'.repeat(32)) }),
+      plan({ query_version: '1', source: 'ingest.submission', filters: [], window: { from: '2026-09-01T00:00:00Z', to: '2026-09-08T00:00:00Z' }, limit: 10, cursor }, { now: NOW, tenant: 'tenant-a', cursorKey: Buffer.from('k'.repeat(32)) }),
     );
     assert.equal(error.resultState, 'cursor_expired', `cursor ${cursor.slice(0, 20)}`);
   }
