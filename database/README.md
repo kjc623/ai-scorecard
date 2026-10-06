@@ -1,78 +1,57 @@
-# `database/` — the PostgreSQL schema
+# database
 
-The server store, and the only one. SQLite is the *device* spool and nothing else
-([ADR 0002](../docs/adr/0002-postgresql-is-the-server-store-sqlite-is-only-the-device-spool.md)).
+The product's PostgreSQL 16 schema and the `migrate` job that applies it.
 
 | Path | What it is |
 |---|---|
-| [`schema.sql`](schema.sql) | The whole schema: DDL, roles, grants, row-level security, triggers, functions, seed data |
-| [`invariants.test.sql`](invariants.test.sql) | 68 assertions that the schema's properties actually hold |
-| [`tools/`](tools/) | The checkers, the live-server runner, and the log tally |
-| [`evidence/`](evidence/) | Captured runs and their README. The README is tracked; the raw logs are not |
+| `schema.sql` | The whole schema: roles, tables, row-level security, grants, functions, triggers, seed data. Schema version 1 |
+| `migrations/` | Numbered changes for databases that already exist (see its README) |
+| `database.go`, `cmd/migrate/` | The migrator (Go module `github.com/shadow-ai-capture/database`) |
+| `Dockerfile` | The `migrate` image (build context: the repository root) |
+| `invariants.test.sql` | Assertions that the schema's properties hold on a real server, run as the runtime roles |
+| `tools/` | `test-database.mjs` (the database gate) and `check-schema.mjs` (static checks) |
 
-## What the schema holds
+## In production
 
-Four schemas, split by who may read them: `ref` (closed reference data), `ops` (tenants, policy,
-grants, audit, retention), `ingest` (submissions, observations, quarantine, the content-search index)
-and `mart` (the aggregates the dashboard reads). Tenant isolation is structural rather than
-conventional — forced row-level security on every tenant-scoped table, tenant-leading keys, and
-per-tenant content keys as an independent second layer. The full model is
-[docs/03-data-platform.md](../docs/03-data-platform.md).
+The deployment runs the `migrate` image as a job before the services start. It holds one
+connection under an advisory lock, creates `public.schema_migration` if needed, applies
+`schema.sql` to an empty database and then each pending migration (each in its own transaction with
+its ledger row), and makes every component login a member of exactly its runtime role, creating the
+login with `pgaadauth_create_principal_with_oid` when it does not exist. A re-run changes nothing.
+It logs JSON to stdout and exits non-zero on failure.
 
-**The cross-tenant reads are functions, not grants.** Sign-in, SCIM and onboarding must find a
-tenant before they can set `app.tenant_id` (which tenant is this issuer, whose session is this cookie);
-and a forwarded device certificate must find its credential before the tenant is known (ADR 0022).
-Those lookups are eight `SECURITY DEFINER` functions in section 5c, owned by `sac_resolver` -- a NOLOGIN
-role with no members whose only reach is SELECT on the tables they read through a SELECT-only policy --
-with `search_path` pinned and EXECUTE revoked from PUBLIC and granted only to the roles that need it
-(`sac_control` for the identity lookups; `sac_control` and `sac_ingest` for the device-credential
-resolver, which the authenticating origin calls). They return only what may be used (an active
-connection, a live session, an unrevoked token, a live device credential). `ops.auth_signin` is the one
-table with no tenant; it is forced with a policy for `sac_control` only. T55-T68 exercise all of it as
-the runtime roles, and `tools/check-schema.mjs` refuses a definer that is executable by PUBLIC or owned
-by any other kind of role.
-
-**A known gap in the grants.** `control-api`'s content grant path (docs/02 §5.5, §10) reads
-`ingest.observation`, updates `ingest.submission.content_state` and writes
-`ops.usage_daily.content_bytes_added`. `schema.sql` grants `sac_control` none of the three, so that
-path cannot run as its runtime role yet. It has only been run in the local device-auth lab, where every
-service connects as the database owner — which also means row-level security was not exercised there.
-`ops.grant` has no unique index on `(tenant_id, event_id)` for live grants, which docs/02 §5.5
-specifies.
-
-## How it is verified
-
-The schema is not a claim. It is applied to a real PostgreSQL server and its properties are asserted
-**as the runtime roles**, never as a superuser — a superuser bypasses row-level security and would
-therefore prove nothing about it:
+| Variable | Meaning |
+|---|---|
+| `SAC_PG_HOST`, `SAC_PG_PORT` (5432), `SAC_PG_DATABASE` | The server and database |
+| `SAC_PG_USER` | The migration identity: in Azure a Microsoft Entra administrator of the server (member of `azure_pg_admin`, `CREATEROLE`, not a superuser), with `CREATE` on the database and on schema `public` |
+| `SAC_PG_PASSWORD` | Lab only. Without it each connection authenticates with an Entra token for the managed identity |
+| `SAC_PG_SSLMODE` (`require`) | TLS mode |
+| `SAC_DB_LOGINS` | JSON array of `{"login", "role", "objectId"}`: the login name, one of `sac_ingest`, `sac_control`, `sac_vault`, `sac_query`, `sac_ops`, and the managed identity's object id. Empty skips the step |
 
 ```
-powershell -NoProfile -ExecutionPolicy Bypass -File database/tools/run-invariants.ps1
+SAC_DB_LOGINS='[{"login":"ingest-api","role":"sac_ingest","objectId":"<guid>"},{"login":"control-api","role":"sac_control","objectId":"<guid>"},{"login":"content-vault","role":"sac_vault","objectId":"<guid>"},{"login":"query-api","role":"sac_query","objectId":"<guid>"},{"login":"jobs","role":"sac_ops","objectId":"<guid>"}]'
 ```
 
-That starts — or reuses — the `shadowpg-invariants` container, applies `schema.sql`, runs
-`invariants.test.sql`, and reports the assertion tally. The container is left running afterwards. It is gate 8 of `node tools/accept.mjs`. The assertions cover the collection-mode
-boundary, tenant isolation (including fail-closed behaviour with no tenant set), the two-tier dedup
-ladder, the policy ceiling, the audit hash chain, append-only enforcement, retention materialisation,
-and the states the brief says must never be merged.
+Every tenant-scoped query runs in a transaction that first does
+`SELECT set_config('app.tenant_id', $1, true)`; without it row-level security returns nothing.
 
-Two things the runner states about itself rather than hiding:
+## Changing the schema
 
-- **The deployment target is PostgreSQL 16; the host runs 17.11.** Every construct used has a
-  minimum version ≤13, which is an argument, not a run.
-- **The runner judges on its TALLY line, not its exit code**, because that exit code once lied (its
-  error counter matched `ON_ERROR_STOP` in the echoed command). `tools/accept.mjs` follows the same
-  rule deliberately: a gate that trusts an exit code it has seen lie once will lie again.
+Edit `schema.sql` so a new database gets the change, and add the same change as the next
+`migrations/NNNN-name.sql` so existing databases get it. Then run the checks below.
 
-## The checkers
+## Build and test
 
-`schema.sql` is also checked **statically**, without a server, by `tools/check-schema.mjs`. It parses
-the DDL and compares it against the wire contract and against two independent artefacts — the reason
-codes `endpoint/protocol` can emit and the codes `ingestion/ingest-api` actually maps — and it parses
-`README.md`, `docs/00-architecture.md` and `docs/03-data-platform.md` for the assertion count so a
-stale number in prose fails the build instead of confusing a reader.
+```
+cd database && go vet ./... && go test ./...      # unit tests; set SAC_TEST_PG_DSN to an empty database for the live test
+node database/tools/check-schema.mjs               # static checks, no server
+node --test database/tools/check-schema.test.mjs   # proves each static check can fail
+node database/tools/test-database.mjs              # the gate (Docker and Go)
+docker build -f database/Dockerfile -t migrate .   # the image, from the repository root
+```
 
-That last check exists because of a defect worth knowing about: an early rewrite of the quarantine
-reason-code CHECK silently dropped `revoked_device`, and the behavioural assertion **passed anyway**,
-because the same misunderstanding was in both the code and the test's expected list. Comparing the
-CHECK against two artefacts outside the database is what caught it.
+The gate starts a throwaway `postgres:16` container set up like Azure (a NOLOGIN `azure_pg_admin`, a
+non-superuser administrator with `CREATEROLE` in it, a database it owns, and an emulation of
+`pgaadauth_create_principal_with_oid`), runs the migrator twice as that administrator, checks the
+component logins, runs `invariants.test.sql`, and removes the container. It prints PASS or FAIL;
+without Docker or Go it prints SKIPPED and exits 3, and a skipped gate is not a pass.
