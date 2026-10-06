@@ -61,6 +61,3 @@ The tests need no network beyond loopback: the server tests start fake control-a
 listeners on port 0, and the page tests drive the DOM-free controllers against fake transports
 (`test/fixtures.mjs`, `test/explore-fake.mjs`). `test/parity.test.mjs` imports query-api's registry,
 templates, result states and roles, so it runs from a full checkout.
-
-`tools/observe.mjs` opens one page in a headless Chromium and saves a screenshot, the page text and
-the rendered DOM; it is a local inspection tool and is not part of the image.

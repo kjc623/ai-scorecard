@@ -57,6 +57,10 @@ tenants and keys as they are.
 `node localdev/tools/simulate-devices.mjs` enrols ten simulated devices in Northwind Freight through
 the edge and sends them about 300 events and a health report each (`--devices`, `--events`).
 
+`node localdev/tools/observe.mjs <address>` opens one dashboard page in a headless Chromium and saves
+a screenshot, the page text and the rendered DOM to `--out`; it is a local inspection tool, not part
+of any image.
+
 ## The lab MSI
 
 On Windows, with Go 1.27 and WiX 7 (`dotnet tool install --global wix`), with the lab started once:
@@ -103,6 +107,7 @@ agent and makes sealed or encrypted rows unreadable.
 | `edge/`, `oidc/`, `jobs/` | The edge, the identity provider and the job loop |
 | `authlab/` | The device-side tool: `authlab pki` makes the lab's PKI, `authlab smoke` is the smoke |
 | `tools/simulate-devices.mjs` | Simulated devices |
+| `tools/observe.mjs` | Open one page in a headless browser; save its screenshot, text and DOM |
 | `harness.compose.yaml`, `harness/`, `QUICKSTART.md` | Coding-agent harnesses on the lab network |
 
 Tests: `npm test` in `localdev`, and `go vet ./... && go test ./...` in `authlab`, `edge` and `oidc`.
