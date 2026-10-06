@@ -561,6 +561,48 @@ CREATE TABLE ops.erasure_receipt (
   CONSTRAINT erasure_subject_requires_ref CHECK (scope_kind <> 'subject' OR subject_ref IS NOT NULL)
 );
 
+-- A generated, downloadable artifact: a list-export CSV or a subject-export archive. The link names
+-- an opaque id, the row is marked used on redemption, and the expire job sweeps rows past expires_at,
+-- so it is single-use and short-lived. A subject export's archive holds the stored prompts the admin
+-- asked for, so its payload is exactly as sensitive as the prompts themselves.
+CREATE TABLE ops.export (
+  tenant_id     uuid NOT NULL REFERENCES ops.tenant(tenant_id),
+  export_id     uuid NOT NULL,
+  kind          text NOT NULL CHECK (kind IN ('list','subject')),
+  -- A list export: which list source the CSV holds. A subject export leaves this NULL.
+  source        text CHECK (source IN ('ingest.submission','mart.v_finding')),
+  -- A subject export: the person the archive holds. A list export leaves this NULL.
+  subject_ref   text,
+  row_count     int CHECK (row_count >= 0),
+  content_type  text NOT NULL,
+  payload       bytea NOT NULL,
+  requested_by  text NOT NULL,
+  requested_at  timestamptz NOT NULL,
+  expires_at    timestamptz NOT NULL,
+  used_at       timestamptz,
+  PRIMARY KEY (tenant_id, export_id),
+  CONSTRAINT export_kind_scope CHECK (
+    (kind = 'list' AND source IS NOT NULL AND subject_ref IS NULL)
+    OR (kind = 'subject' AND subject_ref IS NOT NULL AND source IS NULL)),
+  CONSTRAINT export_expiry_after_request CHECK (expires_at > requested_at)
+);
+
+CREATE INDEX export_expiry ON ops.export (tenant_id, expires_at);
+
+-- A pending subject erasure: an admin asked that one person's data be removed. query-api records the
+-- request and audits it; the erase job performs the removal and writes the receipt, which is the
+-- proof it happened.
+CREATE TABLE ops.erasure_request (
+  tenant_id     uuid NOT NULL REFERENCES ops.tenant(tenant_id),
+  request_id    uuid NOT NULL,
+  subject_ref   text NOT NULL,
+  requested_by  text NOT NULL,
+  requested_at  timestamptz NOT NULL,
+  completed_at  timestamptz,
+  receipt_id    uuid,
+  PRIMARY KEY (tenant_id, request_id)
+);
+
 -- How current each aggregate is, so the dashboard never shows a number without its freshness.
 CREATE TABLE ops.aggregate_watermark (
   tenant_id            uuid NOT NULL REFERENCES ops.tenant(tenant_id),
@@ -1987,7 +2029,8 @@ DECLARE
     'ops.user_dim', 'ops.device', 'ops.device_credential', 'ops.collector_state',
     'ops.policy_bundle', 'ops.tool', 'ops.notice_acknowledgement', 'ops.retention_policy',
     'ops.audit', 'ops.grant', 'ops.content', 'ops.retrieval_grant', 'ops.finding_review',
-    'ops.erasure_receipt', 'ops.aggregate_watermark', 'ops.coverage_snapshot',
+    'ops.erasure_receipt', 'ops.export', 'ops.erasure_request',
+    'ops.aggregate_watermark', 'ops.coverage_snapshot',
     'ops.subscription', 'ops.usage_daily',
     'ops.identity_connection', 'ops.tenant_email_domain', 'ops.onboarding_invite',
     'ops.role_grant', 'ops.auth_session', 'ops.scim_token', 'ops.scim_user', 'ops.scim_group',
@@ -2181,6 +2224,11 @@ GRANT SELECT, INSERT, UPDATE ON ops.finding_review TO sac_query;
 -- A tool sanction decision commits with its audit entry, beside the read that shows it.
 GRANT INSERT, UPDATE ON ops.tool TO sac_query;
 GRANT EXECUTE ON FUNCTION ops.current_tenant(), ops.tool_display_name(text) TO sac_query;
+-- Exports are this service's artifacts: it writes a generated CSV or archive and serves it once.
+GRANT SELECT, INSERT ON ops.export TO sac_query;
+GRANT UPDATE (used_at) ON ops.export TO sac_query;
+-- Recording a subject erasure request; the erase job performs it.
+GRANT SELECT, INSERT ON ops.erasure_request TO sac_query;
 
 -- Scheduled jobs: aggregation and expiry.
 GRANT SELECT, INSERT, UPDATE, DELETE ON ingest.observation, ingest.submission TO sac_ops;
