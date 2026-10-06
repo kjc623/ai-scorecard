@@ -50,7 +50,7 @@ async function fakeControl() {
       }
       if (url.pathname === '/internal/v1/auth/complete') {
         if (input.attempt !== 'attempt-1' || input.state !== 'st-1') return json(400, { error: 'bad_attempt' });
-        if (['tenant_not_onboarded', 'no_role', 'connection_disabled', 'user_deactivated', 'invite_used', 'attempt_expired'].includes(input.code)) return json(403, { error: input.code });
+        if (['tenant_not_onboarded', 'no_role', 'connection_disabled', 'user_deactivated', 'invite_used', 'attempt_expired', 'tenant_closed'].includes(input.code)) return json(403, { error: input.code });
         const roles = ROLE_BY_CODE[input.code] ?? ['viewer'];
         const session = `session-${input.code}-${state.sessions.size}-0123456789abcdef`;
         const principal = { tenant: state.tenant, actor: `${input.code}@lab.test`, roles, idp: 'oidc' };
@@ -60,6 +60,7 @@ async function fakeControl() {
       if (url.pathname === '/internal/v1/auth/token') {
         const s = state.sessions.get(input.session);
         if (!s || s.revoked || state.tokenStatus === 401) return json(401, { error: 'session_ended' });
+        if (state.tokenStatus === 403) return json(403, { error: 'tenant_closed' });
         state.minted += 1;
         return json(200, { access_token: `at-refreshed-${state.minted}`, expires_in: 600, principal: s.principal });
       }
@@ -250,7 +251,7 @@ test('with an https public URL the cookies are Secure and the redirect URI is th
   assert.equal(back.headers.location, '/', 'a sign-in with nowhere to return to lands on the dashboard');
 });
 
-for (const [code, title] of [['tenant_not_onboarded', 'Your organisation is not set up yet'], ['no_role', 'No access has been assigned to you'], ['connection_disabled', 'Sign-in is turned off for your organisation']]) {
+for (const [code, title] of [['tenant_not_onboarded', 'Your organisation is not set up yet'], ['no_role', 'No access has been assigned to you'], ['connection_disabled', 'Sign-in is turned off for your organisation'], ['tenant_closed', 'Access is suspended for your organisation']]) {
   test(`a ${code} refusal is a plain page, with no session and no stack trace`, async (t) => {
     const { port } = await lab(t);
     const started = await send(port, '/signin/start?email=x%40lab.test');
@@ -401,6 +402,24 @@ test('a session control-api has ended clears the cookie: an API call gets 401, a
   const pageRes = await send(port, '/index.html', { headers: { cookie: `sac_session=${session}` } });
   assert.equal(pageRes.status, 302);
   assert.match(pageRes.headers.location, /^\/signin\?next=%2Findex\.html&notice=session_ended$/);
+});
+
+test('a refresh refused with tenant_closed ends the session and shows the suspended message, not calls failing one by one', async (t) => {
+  const { port, control, clock, signIn } = await lab(t);
+  const { session } = await signIn('viewer');
+  control.state.tokenStatus = 403;
+  clock.now += 600_000;
+  const api = await send(port, '/v1/query', { method: 'POST', headers: { cookie: `sac_session=${session}`, 'content-type': 'application/json' }, body: '{}' });
+  assert.equal(api.status, 401);
+  assert.equal(api.json().error.code, 'tenant_closed');
+  assert.match(cookieLine(api.headers['set-cookie'], 'sac_session'), /Max-Age=0/, 'the session is ended, not left to fail again');
+  const pageRes = await send(port, '/index.html', { headers: { cookie: `sac_session=${session}` } });
+  assert.equal(pageRes.status, 302);
+  assert.match(pageRes.headers.location, /^\/signin\?next=%2Findex\.html&notice=tenant_closed$/);
+  const page = await send(port, '/signin?notice=tenant_closed');
+  assert.equal(page.status, 403);
+  assert.match(page.text, /Access is suspended for your organisation/);
+  assert.match(page.text, /tenant_closed/);
 });
 
 test('sign-out revokes the session at control-api and clears the cookie', async (t) => {

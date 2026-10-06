@@ -67,7 +67,7 @@ const RELAYED_HEADERS = Object.freeze(['content-type', 'content-disposition', 'c
 const IDENTITY_REFUSALS = new Map([
   ['no_sso_connection', 'no_sso_connection'], ['tenant_not_onboarded', 'tenant_not_onboarded'],
   ['onboarding_incomplete', 'tenant_not_onboarded'], ['no_role', 'no_role'], ['connection_disabled', 'connection_disabled'],
-  ['user_deactivated', 'user_deactivated'],
+  ['user_deactivated', 'user_deactivated'], ['tenant_closed', 'tenant_closed'],
   ['attempt_unknown', 'signin_expired'], ['attempt_expired', 'signin_expired'], ['state_mismatch', 'signin_expired'],
   ['invite_unknown', 'invite_invalid'], ['invite_used', 'invite_invalid'], ['invite_expired', 'invite_invalid'],
   ['provider_unavailable', 'unavailable'], ['unavailable', 'unavailable'],
@@ -249,7 +249,8 @@ export function createDashboardServer(config) {
   /** No session: an API call is refused with JSON, a page is sent to sign in and returned afterwards. */
   function unauthenticated(req, res, url, reason) {
     const path = url.pathname;
-    const extra = reason === 'session_ended' ? { 'set-cookie': clearSession() } : {};
+    const ended = reason === 'session_ended' || reason === 'tenant_closed';
+    const extra = ended ? { 'set-cookie': clearSession() } : {};
     if (isApiPath(path)) {
       const unavailable = reason === 'identity_unavailable';
       const status = unavailable ? 503 : 401;
@@ -261,7 +262,7 @@ export function createDashboardServer(config) {
     }
     if (reason === 'identity_unavailable') return signinPage(res, 'unavailable');
     const next = safeNext(`${url.pathname}${url.search}`);
-    const notice = reason === 'session_ended' ? '&notice=session_ended' : '';
+    const notice = ended ? `&notice=${reason}` : '';
     return redirect(res, `/signin?next=${encodeURIComponent(next)}${notice}`, extra);
   }
 
@@ -273,7 +274,7 @@ export function createDashboardServer(config) {
     const next = safeNext(url.searchParams.get('next') ?? '/');
     // Only our own notices are taken from the address; an error is never, so a link cannot make
     // this page say something it did not decide.
-    const notice = ['signed_out', 'session_ended'].includes(url.searchParams.get('notice')) ? url.searchParams.get('notice') : null;
+    const notice = ['signed_out', 'session_ended', 'tenant_closed'].includes(url.searchParams.get('notice')) ? url.searchParams.get('notice') : null;
     signinPage(res, notice, { next });
   }
 

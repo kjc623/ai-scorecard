@@ -36,6 +36,10 @@ export const SIGNIN_MESSAGES = Object.freeze({
     status: 403, level: 'refusal', title: 'Your account is not active',
     text: 'Your organisation\'s directory says your account is deactivated, so you cannot sign in to this product. Contact your administrator.',
   }),
+  tenant_closed: Object.freeze({
+    status: 403, level: 'refusal', title: 'Access is suspended for your organisation',
+    text: 'Your organisation\'s access to this dashboard has been suspended. Contact your administrator.',
+  }),
   invite_invalid: Object.freeze({
     status: 400, level: 'refusal', title: 'This onboarding link cannot be used',
     text: 'It has been used already, or it has expired. Ask your vendor for a new onboarding link.',

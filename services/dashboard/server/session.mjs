@@ -206,7 +206,7 @@ export function createTokenCache({ identity, now = () => Date.now(), refreshBefo
     }
     if (answer.status === 401 || answer.status === 403 || answer.status === 404) {
       entries.delete(key);
-      return { ok: false, reason: 'session_ended' };
+      return { ok: false, reason: answer.error === 'tenant_closed' ? 'tenant_closed' : 'session_ended' };
     }
     if (previous && previous.expiresAt > now()) return { ok: true, token: previous.token, principal: previous.principal };
     return { ok: false, reason: 'identity_unavailable' };

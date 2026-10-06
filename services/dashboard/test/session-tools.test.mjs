@@ -199,6 +199,15 @@ test('a session control-api has ended is dropped; an unreachable control-api doe
   assert.deepEqual(await cache.get(null), { ok: false, reason: 'no_session' });
 });
 
+test('a token refused with tenant_closed is dropped with a tenant_closed reason, distinct from session_ended', async () => {
+  let clock = 0;
+  const cache = createTokenCache({ identity: { token: async () => ({ ok: false, status: 403, error: 'tenant_closed' }) }, now: () => clock, refreshBeforeMs: 60_000 });
+  cache.seed('sid', { access_token: 't0', expires_in: 100, principal: { tenant: TENANT, actor: 'a', roles: ['viewer'] } });
+  clock = 101_000;
+  assert.deepEqual(await cache.get('sid'), { ok: false, reason: 'tenant_closed' });
+  assert.equal(cache.size, 0);
+});
+
 test('the cache is keyed by a hash of the session id, never the id itself', () => {
   assert.match(sessionKey('secret-session'), /^[0-9a-f]{64}$/);
   assert.notEqual(sessionKey('secret-session'), 'secret-session');
