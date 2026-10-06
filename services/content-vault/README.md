@@ -19,6 +19,9 @@ can decrypt it. It has **internal ingress only**: no device, browser or edge rou
   forwards from the browser. Redeeming it claims the grant, decrypts and audits in one transaction.
 - **Search.** query-api forwards `POST /v1/content-search` (role `analyst` or `content_reader`). The
   tier comes from `ops.tenant.content_search`; the audit row commits with the results.
+- **Subject export.** query-api forwards `POST /v1/content/subject-export` (role `admin`). The vault
+  decrypts every stored prompt of one subject and returns them, so the archive query-api assembles
+  can hold the prompts a data-subject request is entitled to.
 
 Every read is audited in the transaction that serves it. Content past its retention, or sealed
 under a key version the keyring no longer holds, is answered as `no_longer_available`.

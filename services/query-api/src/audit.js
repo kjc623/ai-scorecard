@@ -34,6 +34,9 @@ export const AUDIT_ACTIONS = Object.freeze({
   content_reveal: 'content.reveal',
   finding_review: 'finding.review',
   tool_sanction: 'tool.sanction',
+  list_export: 'export.list',
+  subject_export: 'export.subject',
+  subject_erasure: 'subject.erasure',
 });
 
 const ACTION_BY_SOURCE = Object.freeze({

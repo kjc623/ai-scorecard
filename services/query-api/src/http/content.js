@@ -15,6 +15,7 @@
 export const CONTENT_PATHS = Object.freeze({
   SEARCH: '/v1/content-search',
   RETRIEVAL: '/v1/content/retrieval',
+  SUBJECT_EXPORT: '/v1/content/subject-export',
 });
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -193,6 +194,36 @@ export function createContentForwarder({ vaultUrl, fetchImpl = globalThis.fetch,
       if (!run) return null;
       try {
         return await run(principal, body);
+      } catch (error) {
+        log?.warn?.('content vault call failed', { error: String(error?.cause?.code ?? error?.message ?? error) });
+        return refusal(503, 'refused', 'content_vault_unreachable', 'the content vault could not be reached');
+      }
+    },
+
+    /**
+     * POST /v1/content/subject-export: the vault decrypts one subject's stored prompts and returns
+     * them (base64 plaintext). This service relays them for the archive; content transits this
+     * service exactly once, inside the export the admin requested.
+     */
+    async subjectExport(principal, subjectRef) {
+      try {
+        const answer = await call(CONTENT_PATHS.SUBJECT_EXPORT, principal, { subject_ref: subjectRef });
+        if (answer.status !== 200) return vaultRefusal('subject export', answer);
+        return {
+          status: 200,
+          body: {
+            state: 'available',
+            prompts: (answer.json?.prompts ?? []).map((p) => ({
+              event_id: p.event_id ?? null,
+              submission_id: p.submission_id ?? null,
+              prompt_kind: p.prompt_kind ?? null,
+              raw_digest: p.raw_digest ?? null,
+              size_bytes: p.size_bytes ?? 0,
+              plaintext: p.plaintext ?? '',
+            })),
+            skipped: answer.json?.skipped ?? 0,
+          },
+        };
       } catch (error) {
         log?.warn?.('content vault call failed', { error: String(error?.cause?.code ?? error?.message ?? error) });
         return refusal(503, 'refused', 'content_vault_unreachable', 'the content vault could not be reached');

@@ -6,6 +6,7 @@
 // produced or the typed rejection it raised, and makes no decision about what a query means.
 
 import { createServer } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { QueryError, RESULT_STATES, fromDatabaseError } from '../errors.js';
 import { plan, executePlan } from '../plan.js';
 import { QUERY_CLASSES } from '../registry.js';
@@ -14,6 +15,13 @@ import { CONTENT_PATHS, createContentForwarder } from './content.js';
 import { validateReviewRequest, FINDING_FOR_REVIEW_SQL, UPSERT_REVIEW_SQL, findingReviewAuditStatement } from '../review.js';
 import { validateSanctionRequest, TOOL_SANCTION_FOR_REVIEW_SQL, UPSERT_TOOL_SANCTION_SQL, toolSanctionAuditStatement } from '../sanction.js';
 import { capabilityForEndpoint, capabilityForSource, rolesAllow, unauthorisedRole } from '../roles.js';
+import { planListExport, EXPORT_MAX_ROWS, EXPORT_TTL_MS, exportTooLarge, listExportCsv } from '../export.js';
+import {
+  RESOLVE_SUBJECT_SQL, SUBJECT_SUBMISSIONS_SQL, SUBJECT_OBSERVATIONS_SQL, SUBJECT_FINDINGS_SQL,
+  INSERT_EXPORT_SQL, EXPORT_FOR_DOWNLOAD_SQL, CLAIM_EXPORT_SQL, INSERT_ERASURE_REQUEST_SQL,
+  validateSubjectRequest, buildSubjectArchive, SUBJECT_EXPORT_MAX_ROWS,
+} from '../subject.js';
+import { AUDIT_ACTIONS, auditStatement } from '../audit.js';
 
 const HIT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -23,6 +31,10 @@ export const PATHS = Object.freeze({
   QUERY: '/v1/query',
   FINDING_REVIEW: '/v1/finding-review',
   TOOL_SANCTION: '/v1/tool-sanction',
+  LIST_EXPORT: '/v1/list-export',
+  SUBJECT_EXPORT: '/v1/subject-export',
+  SUBJECT_ERASURE: '/v1/subject-erasure',
+  EXPORT_DOWNLOAD: '/v1/export',
 });
 
 /** A request body larger than this is refused before it is parsed. */
@@ -521,6 +533,256 @@ export function createHandler({
     });
   }
 
+  const EXPORT_DOWNLOAD_PREFIX = `${PATHS.EXPORT_DOWNLOAD}/`;
+
+  /** POST /v1/list-export: the current filtered events or findings list as a bounded CSV. */
+  async function listExport(req, res) {
+    const principal = await authenticate(req, res);
+    if (!principal) return;
+    const capability = capabilityForEndpoint(PATHS.LIST_EXPORT);
+    if (!rolesAllow(principal.roles, capability)) {
+      sendError(res, unauthorisedRole(`use ${capability}`, { role: principal.roles.join(','), path: PATHS.LIST_EXPORT }));
+      return;
+    }
+    const body = await readJson(req, res);
+    if (body === undefined) return;
+    let planned;
+    try {
+      planned = planListExport(body, {
+        actorId: principal.actorId,
+        sessionId: principal.sessionId ?? null,
+        caseReference: principal.caseReference ?? null,
+      });
+    } catch (error) {
+      sendError(res, error);
+      return;
+    }
+
+    await admitted(res, async () => {
+      let auditing = false;
+      try {
+        const answer = await withClient((client) => inTransaction(client, {
+          tenant: principal.tenant,
+          statementTimeoutMs: QUERY_CLASSES.event_list.statementTimeoutMs,
+        }, async () => {
+          await client.query(planned.audit.text, planned.audit.params);
+          auditing = true;
+          const read = await client.query(planned.compiled.text, planned.compiled.params);
+          if (read.rows.length > EXPORT_MAX_ROWS) throw exportTooLarge(read.rows);
+          const csv = Buffer.from(listExportCsv(planned.source.id, read.rows), 'utf8');
+          const inserted = await client.query(INSERT_EXPORT_SQL, [
+            randomUUID(), 'list', planned.source.id, null, read.rows.length,
+            'text/csv; charset=utf-8', csv, principal.actorId, `${EXPORT_TTL_MS} ms`,
+          ]);
+          const row = inserted.rows[0];
+          return {
+            export_id: row.export_id,
+            download_url: `${PATHS.EXPORT_DOWNLOAD}/${row.export_id}`,
+            row_count: read.rows.length,
+            expires_at: row.expires_at instanceof Date ? row.expires_at.toISOString() : row.expires_at,
+          };
+        }));
+        sendJson(res, 200, { api_version: '1', result_state: 'ok', export: answer, audit: null });
+      } catch (error) {
+        databaseFailure(res, error, { auditFailed: auditing });
+      }
+    });
+  }
+
+  /** POST /v1/subject-export: one person's events, findings and stored prompts as an archive. */
+  async function subjectExport(req, res) {
+    const principal = await authenticate(req, res);
+    if (!principal) return;
+    const capability = capabilityForEndpoint(PATHS.SUBJECT_EXPORT);
+    if (!rolesAllow(principal.roles, capability)) {
+      sendError(res, unauthorisedRole(`use ${capability}`, { role: principal.roles.join(','), path: PATHS.SUBJECT_EXPORT }));
+      return;
+    }
+    const body = await readJson(req, res);
+    if (body === undefined) return;
+    let input;
+    try {
+      input = validateSubjectRequest(body);
+    } catch (error) {
+      sendError(res, error);
+      return;
+    }
+
+    await admitted(res, async () => {
+      let auditing = false;
+      try {
+        const answer = await withClient((client) => inTransaction(client, {
+          tenant: principal.tenant,
+          statementTimeoutMs: QUERY_CLASSES.event_list.statementTimeoutMs,
+        }, async () => {
+          const resolved = await client.query(RESOLVE_SUBJECT_SQL, [input.subjectRef]);
+          const canonicalRef = resolved.rows[0]?.user_ref ?? input.subjectRef;
+          const displayName = resolved.rows[0]?.display_name ?? null;
+          const limit = SUBJECT_EXPORT_MAX_ROWS + 1;
+          const [subs, obs, findings] = await Promise.all([
+            client.query(SUBJECT_SUBMISSIONS_SQL, [canonicalRef, limit]),
+            client.query(SUBJECT_OBSERVATIONS_SQL, [canonicalRef, limit]),
+            client.query(SUBJECT_FINDINGS_SQL, [canonicalRef, limit]),
+          ]);
+          for (const rows of [subs.rows, obs.rows, findings.rows]) {
+            if (rows.length > SUBJECT_EXPORT_MAX_ROWS) throw exportTooLarge(rows);
+          }
+          return { canonicalRef, displayName, submissions: subs.rows, observations: obs.rows, findings: findings.rows };
+        }));
+        // The stored prompts are decrypted by content-vault, the only component that can.
+        const prompts = await forwarder.subjectExport(principal, answer.canonicalRef);
+        if (prompts.status !== 200) {
+          sendJson(res, prompts.status, prompts.body);
+          return;
+        }
+        const archive = buildSubjectArchive({
+          subjectRef: input.subjectRef,
+          canonicalRef: answer.canonicalRef,
+          displayName: answer.displayName,
+          generatedAt: new Date().toISOString(),
+          submissions: answer.submissions,
+          observations: answer.observations,
+          findings: answer.findings,
+          prompts: prompts.body.prompts ?? [],
+        });
+        const exported = await withClient((client) => inTransaction(client, {
+          tenant: principal.tenant,
+          statementTimeoutMs: QUERY_CLASSES.event_list.statementTimeoutMs,
+        }, async () => {
+          const audit = auditStatement(
+            { action: AUDIT_ACTIONS.subject_export, object_type: 'subject' },
+            {
+              actorId: principal.actorId,
+              subjectRef: answer.canonicalRef,
+              caseReference: principal.caseReference ?? null,
+              sessionId: principal.sessionId ?? null,
+              detail: {
+                requested_ref: input.subjectRef,
+                canonical_ref: answer.canonicalRef,
+                events: answer.submissions.length,
+                observations: answer.observations.length,
+                findings: answer.findings.length,
+                stored_prompts: prompts.body.prompts?.length ?? 0,
+              },
+            },
+          );
+          await client.query(audit.text, audit.params);
+          auditing = true;
+          const inserted = await client.query(INSERT_EXPORT_SQL, [
+            randomUUID(), 'subject', null, answer.canonicalRef, answer.submissions.length,
+            'application/zip', archive, principal.actorId, `${EXPORT_TTL_MS} ms`,
+          ]);
+          return inserted.rows[0];
+        }));
+        sendJson(res, 200, {
+          api_version: '1',
+          result_state: 'ok',
+          export: {
+            export_id: exported.export_id,
+            download_url: `${PATHS.EXPORT_DOWNLOAD}/${exported.export_id}`,
+            row_count: answer.submissions.length,
+            expires_at: exported.expires_at instanceof Date ? exported.expires_at.toISOString() : exported.expires_at,
+          },
+        });
+      } catch (error) {
+        databaseFailure(res, error, { auditFailed: auditing });
+      }
+    });
+  }
+
+  /** POST /v1/subject-erasure: record a request the jobs' erase job performs. */
+  async function subjectErasure(req, res) {
+    const principal = await authenticate(req, res);
+    if (!principal) return;
+    const capability = capabilityForEndpoint(PATHS.SUBJECT_ERASURE);
+    if (!rolesAllow(principal.roles, capability)) {
+      sendError(res, unauthorisedRole(`use ${capability}`, { role: principal.roles.join(','), path: PATHS.SUBJECT_ERASURE }));
+      return;
+    }
+    const body = await readJson(req, res);
+    if (body === undefined) return;
+    let input;
+    try {
+      input = validateSubjectRequest(body);
+    } catch (error) {
+      sendError(res, error);
+      return;
+    }
+
+    await admitted(res, async () => {
+      let auditing = false;
+      try {
+        const answer = await withClient((client) => inTransaction(client, {
+          tenant: principal.tenant,
+          statementTimeoutMs: QUERY_CLASSES.operational.statementTimeoutMs,
+        }, async () => {
+          const resolved = await client.query(RESOLVE_SUBJECT_SQL, [input.subjectRef]);
+          const canonicalRef = resolved.rows[0]?.user_ref ?? input.subjectRef;
+          const audit = auditStatement(
+            { action: AUDIT_ACTIONS.subject_erasure, object_type: 'subject' },
+            {
+              actorId: principal.actorId,
+              subjectRef: canonicalRef,
+              caseReference: principal.caseReference ?? null,
+              sessionId: principal.sessionId ?? null,
+              detail: { requested_ref: input.subjectRef, canonical_ref: canonicalRef },
+            },
+          );
+          await client.query(audit.text, audit.params);
+          auditing = true;
+          const inserted = await client.query(INSERT_ERASURE_REQUEST_SQL, [randomUUID(), canonicalRef, principal.actorId]);
+          return { request_id: inserted.rows[0].request_id, subject_ref: canonicalRef };
+        }));
+        sendJson(res, 200, { api_version: '1', result_state: 'ok', erasure: answer });
+      } catch (error) {
+        databaseFailure(res, error, { auditFailed: auditing });
+      }
+    });
+  }
+
+  /** GET /v1/export/{id}: one single-use, short-lived download. */
+  async function exportDownload(req, res, exportId) {
+    const principal = await authenticate(req, res);
+    if (!principal) return;
+    await admitted(res, async () => {
+      try {
+        const claimed = await withClient((client) => inTransaction(client, {
+          tenant: principal.tenant,
+          statementTimeoutMs: QUERY_CLASSES.operational.statementTimeoutMs,
+        }, async () => {
+          const got = await client.query(CLAIM_EXPORT_SQL, [exportId]);
+          if (got.rows.length > 0) return { status: 'ok', ...got.rows[0] };
+          const existing = await client.query(EXPORT_FOR_DOWNLOAD_SQL, [exportId]);
+          if (existing.rows.length === 0) return { status: 'not_found' };
+          if (existing.rows[0].used_at !== null) return { status: 'used' };
+          return { status: 'expired' };
+        }));
+        if (claimed.status === 'ok') {
+          const filename = claimed.kind === 'subject'
+            ? 'subject-export.zip'
+            : (claimed.source === 'mart.v_finding' ? 'findings.csv' : 'events.csv');
+          res.writeHead(200, {
+            'content-type': claimed.content_type,
+            'content-disposition': `attachment; filename="${filename}"`,
+            'cache-control': 'no-store',
+            'content-length': claimed.payload.length,
+          });
+          res.end(claimed.payload);
+          return;
+        }
+        if (claimed.status === 'used') {
+          sendJson(res, 410, { result_state: 'no_longer_available', error: { code: 'export_used', message: 'The export link was already downloaded once.' } });
+        } else if (claimed.status === 'expired') {
+          sendJson(res, 410, { result_state: 'no_longer_available', error: { code: 'export_expired', message: 'The export link has expired.' } });
+        } else {
+          sendJson(res, 404, { result_state: 'not_found', error: { code: 'not_found', message: 'No such export.' } });
+        }
+      } catch (error) {
+        databaseFailure(res, error);
+      }
+    });
+  }
+
   const ROUTES = new Map([
     [`GET ${PATHS.LIVENESS}`, (req, res) => liveness(res)],
     [`GET ${PATHS.READINESS}`, (req, res) => readiness(res)],
@@ -529,11 +791,24 @@ export function createHandler({
     [`POST ${PATHS.TOOL_SANCTION}`, (req, res) => auditedWrite(req, res, PATHS.TOOL_SANCTION, validateSanctionRequest, sanctionTool)],
     [`POST ${CONTENT_PATHS.SEARCH}`, (req, res) => content(req, res, CONTENT_PATHS.SEARCH)],
     [`POST ${CONTENT_PATHS.RETRIEVAL}`, (req, res) => content(req, res, CONTENT_PATHS.RETRIEVAL)],
+    [`POST ${PATHS.LIST_EXPORT}`, listExport],
+    [`POST ${PATHS.SUBJECT_EXPORT}`, subjectExport],
+    [`POST ${PATHS.SUBJECT_ERASURE}`, subjectErasure],
   ]);
   const KNOWN_PATHS = new Set([...ROUTES.keys()].map((key) => key.split(' ')[1]));
 
   return function handler(req, res) {
     const path = (req.url ?? '/').split('?')[0];
+    if (req.method === 'GET' && path.startsWith(EXPORT_DOWNLOAD_PREFIX)) {
+      const id = path.slice(EXPORT_DOWNLOAD_PREFIX.length);
+      if (HIT_ID.test(id)) {
+        Promise.resolve(exportDownload(req, res, id)).catch((error) => {
+          if (!res.headersSent) sendError(res, error);
+          else res.destroy();
+        });
+        return;
+      }
+    }
     const route = ROUTES.get(`${req.method} ${path}`);
     if (route) {
       Promise.resolve(route(req, res)).catch((error) => {
