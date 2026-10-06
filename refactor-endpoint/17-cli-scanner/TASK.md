@@ -1,6 +1,6 @@
 # 17. CLI and package scanner
 
-Needs: on the reference host, these installed for the owner's account: `claude` (Claude Code,
+Needs: on the reference VM, these installed for the console user: `claude` (Claude Code,
 native installer or npm), `codex` (npm), `gemini` (npm, `@google/gemini-cli`) and `copilot`
 (npm, `@github/copilot`).
 
@@ -55,8 +55,11 @@ discovered program.
 ## Done when
 
 - `cd device/capture-core && go test -race ./inventory/` passes.
-- On the reference host with the lab MSI rebuilt, `app:claude_code`, `app:codex`,
-  `app:gemini_cli` and `app:copilot_cli` arrive as `discovery` / `cli_installed`, each with the
-  version the tool reports for itself. Compare against `claude --version` and the others, run in
-  the owner's own shell (the agent never runs them), and show both side by side.
+- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`:
+  - `app:claude_code`, `app:codex`, `app:gemini_cli` and `app:copilot_cli` arrive as
+    `discovery` / `cli_installed`, each with the console user's `user_ref` and the version the
+    tool reports for itself.
+  - Compare against
+    `invm.ps1 -AsUser console -Command 'claude --version; codex --version; gemini --version; copilot --version'`,
+    run in the console user's session (the agent never runs them), and show both side by side.
 - `node tools/accept.mjs` passes.

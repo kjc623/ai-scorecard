@@ -50,11 +50,16 @@ from what the telemetry claims.
 ## Done when
 
 - `cd device/capture-core && go test -race ./otlp/...` passes.
-- On the reference host:
-  1. Build a small program outside the repository that uses the official OpenTelemetry Go SDK to
-     emit one `chat` span with `gen_ai.*` attributes and a user message.
-  2. Point it at the receiver with the token, and run it as the owner.
-  3. It produces an `agent_activity` / `model_request` and a `tool.otel` prompt event in the lab
-     tenant, with `tool_fingerprint` `exe:<hash of the program's name>` and the owner's
-     `user_ref`.
+- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`:
+  1. On the PC, build a small Windows program outside the repository that uses the official
+     OpenTelemetry Go SDK. It emits one `chat` span with `gen_ai.*` attributes and a user message
+     to `http://127.0.0.1:47318`, with the token taken from its environment.
+  2. Copy it in with `invm.ps1 -CopyTo`.
+  3. Read the token with `invm.ps1 -Command` (don't print it in the report), and run the program
+     as the console user with `invm.ps1 -AsUser console -Command`, passing the token in the
+     environment.
+  4. It produces an `agent_activity` / `model_request` and a `tool.otel` prompt event in the lab
+     tenant, with `tool_fingerprint` `exe:<hash of the program's name>`. Its `user_ref` is the one
+     derived from the console user's UPN, or its `subject_name` is that UPN if device identity is
+     clear.
 - `node tools/accept.mjs` passes.

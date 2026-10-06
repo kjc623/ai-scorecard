@@ -1,7 +1,13 @@
 # 22. Discovery volume check
 
-Needs: the reference host left running with the lab MSI from task 21 for 24 hours of ordinary use
-(the owner's normal working day), with every endpoint collector on.
+Needs:
+- the reference VM running, with the agent from task 21 deployed by Intune and every endpoint
+  collector on, for one full UTC day;
+- during that day, the owner uses the console session for ordinary AI-tool work: opening the
+  installed desktop apps, CLIs and VS Code several times;
+- the second user stays signed in.
+
+The VM has no other users, so this is the closest it gets to a working day.
 
 ## Problem
 
@@ -14,7 +20,7 @@ validation. Two things can break this in real use:
 
 ## Goal
 
-A measured day on the reference host shows the discovery volume per collector and per type,
+A measured day on the reference VM shows the discovery volume per collector and per type,
 under budget with headroom, with zero rejected records. Any defect found is fixed in the
 collector at fault.
 

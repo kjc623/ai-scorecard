@@ -50,18 +50,44 @@ repository; where they differ, `DESIGN.md` wins, and your brief wins over both.
   - `node tools/accept.mjs` passes before you report. A gate reported `SKIPPED` was not checked:
     say so.
 
-## Verifying on the reference host
+## Verifying on the reference VM
 
-The reference host is the owner's Windows 11 machine.
+Every on-device check runs on the reference VM described in `TESTBED.md`: a Windows 11 Hyper-V VM,
+Entra-joined and Intune-managed. The owner's PC runs the lab and the browser, and is never the
+test device. Read `TESTBED.md`'s rules before touching the VM or Intune.
 
-- Build the agent with `node localdev/lab-msi.mjs`. It needs the lab to be running; if it isn't,
-  ask the owner to start it.
-- Install by double-clicking `localdev\.msi\ShadowAICapture.msi`.
-- The lab tenant is `10ca1ab0-0000-4000-8000-000000000001`.
-- A "Done when" clause about the dashboard is observed in the browser, at
-  `https://127.0.0.1:8787`.
-- A brief that says "Needs:" lists what the owner must provide (an installed tool, a signed-in
-  account, a Mac). If it is missing, stop and ask; don't fake it.
+- **Deploy** the agent to the VM through Intune, exactly as a customer would, with
+  `node localdev/testbed/deploy.mjs`. It builds, publishes, nudges the VM and waits until the VM
+  reports the new version.
+  - Never install by copying or double-clicking an MSI in the VM.
+  - The lab must be running; if it isn't, ask the owner to start it.
+- **Check** inside the VM with `powershell -File localdev/testbed/invm.ps1`:
+  - `-Command` runs as the VM administrator: services, files, HKLM, the machine trust store,
+    `certutil`, the agent's state and log.
+  - `-AsUser console` or `-AsUser second` runs in that Entra user's own session: HKCU, the user's
+    environment, a tool or `curl.exe` run as that user, the tool's own UI.
+  - `-Screenshot` captures the console screen.
+  - Quote the exact `invm.ps1` command lines in the report.
+- **Users.** "The console user" and "the second user" are the two Entra test users in
+  `TESTBED.md`. Both are always signed in.
+- **Tenant.** The lab tenant is `10ca1ab0-0000-4000-8000-000000000001`.
+- **Dashboard checks.** A "Done when" clause about the dashboard is observed in the browser on the
+  PC, at the lab's dashboard address.
+- **Console steps are the owner's.** A step "at the VM's console" means using a desktop app's
+  window (Cursor, Claude Desktop, ChatGPT Desktop, VS Code chat, the browser, an interactive
+  `claude` session). No tool can drive those windows, so the owner does it:
+  1. Stop and tell the owner exactly what to do: which app, the exact text to paste (canaries and
+     test secrets included), and what to look for.
+  2. Wait for them to confirm.
+  3. Capture the result with `invm.ps1 -Screenshot`, and check the events and logs yourself.
+
+  Everything that can run from a command line runs through `invm.ps1` instead.
+- **Needs.** A brief's "Needs:" line lists what the owner must have done on the VM (a tool
+  installed and signed in as the console user, a Mac). If it is missing, stop and ask; don't fake
+  it.
+- **Timing and resources.** Intune delivery takes minutes, sometimes longer. Batch your changes and
+  deploy once they pass their unit tests, not after every edit. The VM's resources are what the
+  performance budgets are measured against.
 
 ## Report
 

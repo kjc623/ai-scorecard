@@ -1,6 +1,7 @@
 # 20. Local model detection
 
-Needs: on the reference host, Ollama for Windows installed and running, with two models pulled
+Needs: on the reference VM, Ollama for Windows installed for the console user and running in their
+session, with two models pulled
 (for example `ollama pull llama3.2:1b` and `ollama pull qwen2.5:0.5b`). Optionally LM Studio
 with one downloaded model.
 
@@ -53,7 +54,9 @@ record per runtime and user with the model names.
 ## Done when
 
 - `cd device/capture-core && go test -race ./inventory/` passes.
-- On the reference host with Ollama running and two models pulled, a `discovery` / `local_model`
-  record for `app:ollama` arrives in the lab tenant with both model names and the owner's
-  `user_ref`.
+- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`, with Ollama running and
+  two models pulled:
+  - A `discovery` / `local_model` record for `app:ollama` arrives in the lab tenant, with both
+    model names and the console user's `user_ref`.
+  - Show `invm.ps1 -AsUser console -Command 'ollama list'` beside it.
 - `node tools/accept.mjs` passes.

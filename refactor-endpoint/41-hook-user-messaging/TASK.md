@@ -1,6 +1,6 @@
 # 41. Coaching messages
 
-Needs: Claude Code and Cursor installed on the reference host and signed in.
+Needs: Claude Code and Cursor installed on the reference VM and signed in as the console user.
 
 ## Problem
 
@@ -22,8 +22,10 @@ the link is usable.
 
 - For each tool and each of `warn` and `block`:
   1. Write a lab-tenant rule with a 280-character message and a link.
-  2. Trigger it, and record how the tool shows it: wrapping, truncation, Markdown or plain text,
-     link clickable or not. Take screenshots.
+  2. Trigger it on the reference VM (deployed with `node localdev/testbed/deploy.mjs`), in the
+     tool's interactive UI at the VM's console. Record how the tool shows it: wrapping,
+     truncation, Markdown or plain text, link clickable or not. Take screenshots with
+     `invm.ps1 -Screenshot`.
 - Adjust only the adapters' `Render` (`capture-core/hooks/claudecode.go`, `cursor.go`):
   - the order of message and link;
   - a separator;
@@ -39,5 +41,6 @@ the link is usable.
 
 - `cd device/capture-core && go test ./hooks/` passes with the golden tests.
 - `DECISIONS.md` has the observed rendering per tool and action, with versions.
-- The report includes four screenshots (2 tools × warn/block) showing the message and link.
+- The report includes four `invm.ps1 -Screenshot` captures from the VM (2 tools × warn/block),
+  showing the message and link.
 - `node tools/accept.mjs` passes.

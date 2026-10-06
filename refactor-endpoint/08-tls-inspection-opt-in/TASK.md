@@ -25,7 +25,7 @@ four up on the next policy poll, without a restart; turning it off removes them.
   - `ops.tenant.tls_inspection boolean NOT NULL DEFAULT false`, audited on change like the other
     tenant settings.
   - The lab seed (`localdev/lab.mjs` or `localdev/seed.mjs`, wherever the tenants' settings are
-    set) sets it `true` for the lab tenant, so the owner's lab device keeps today's behaviour.
+    set) sets it `true` for the lab tenant, so a lab device keeps today's behaviour.
     Leave the sample tenant at the default.
 - **control-api**:
   - `policyserve.Bundle.Interception` gains `Enabled bool` (`json:"enabled"`), filled from the
@@ -57,12 +57,19 @@ four up on the next policy poll, without a restart; turning it off removes them.
 ## Done when
 
 - The device tests above pass.
-- On the reference host with the lab MSI:
-  1. With the setting off for the lab tenant: `certutil -store Root` lists no Shadow AI Capture
-     root, `reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v AutoConfigURL`
-     shows no PAC, and the machine environment has no `HTTPS_PROXY` from the shim.
-  2. Switching it on in the dashboard brings all three back within one policy poll (the
-     default interval is 15 minutes; don't restart the service). Record the time from the change
-     to each one appearing. Switching it off removes them within one poll.
+- On the reference VM, after deploying with `node localdev/testbed/deploy.mjs`:
+  1. With the setting off for the lab tenant, all three are absent:
+     - `invm.ps1 -Command 'certutil -store Root'` lists no Shadow AI Capture root;
+     - `invm.ps1 -AsUser console -Command 'reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v AutoConfigURL'`
+       shows no PAC;
+     - `invm.ps1 -Command '[Environment]::GetEnvironmentVariable("HTTPS_PROXY","Machine")'` is
+       empty.
+  2. Switching it on in the dashboard brings all three back within one policy poll (the default
+     interval is 15 minutes; don't restart the service).
+     - Run the same three commands repeatedly, and record the time from the change to each one
+       appearing.
+     - Run the PAC check with `-AsUser second` too: the second user's Internet Settings get the PAC
+       as well.
+     - Switching it off removes them within one poll.
   3. Afterwards, leave the setting on for the lab tenant.
 - `node tools/accept.mjs` passes.

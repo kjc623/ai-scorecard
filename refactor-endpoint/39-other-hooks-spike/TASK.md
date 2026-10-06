@@ -1,7 +1,7 @@
 # 39. Other tools' hooks: spike
 
-Needs: on the reference host, Codex CLI, Copilot CLI, VS Code with GitHub Copilot, and Gemini CLI
-installed and signed in.
+Needs: on the reference VM, installed and signed in as the console user: Codex CLI, Copilot CLI,
+VS Code with GitHub Copilot, and Gemini CLI.
 
 ## Problem
 
@@ -17,7 +17,9 @@ adapter, or a recorded "not available" with the reason.
 ## Scope
 
 - For each tool, check the current docs and the installed version, and test by hand with a script
-  hook:
+  hook on the reference VM (placed with `invm.ps1 -CopyTo`, the tool run with
+  `invm.ps1 -AsUser console -Command` for CLIs or at the console for VS Code, and the result
+  captured with `invm.ps1 -Screenshot`):
   1. Is there a hook that runs before a prompt is sent?
   2. Can it block, and does the tool show the hook's reason?
   3. Can the hook be declared in a machine-wide, admin-managed location that a user can't
@@ -42,6 +44,10 @@ adapter, or a recorded "not available" with the reason.
 ## Done when
 
 - `DECISIONS.md` has the four entries.
-- For each adapter built: its `go test` passes, and on the reference host a prompt with an
-  AWS-key-shaped test string is blocked in that tool with the rule's message (screenshot).
+- For each adapter built:
+  - its `go test` passes;
+  - on the reference VM, deployed with `node localdev/testbed/deploy.mjs`, a prompt with an
+    AWS-key-shaped test string is blocked in that tool with the rule's message, run as the console
+    user (`invm.ps1 -AsUser console -Command` for a CLI, or at the console with
+    `invm.ps1 -Screenshot`).
 - `node tools/accept.mjs` passes.

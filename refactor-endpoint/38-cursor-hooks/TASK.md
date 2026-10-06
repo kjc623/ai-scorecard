@@ -1,6 +1,6 @@
 # 38. Cursor hooks
 
-Needs: Cursor installed on the reference host and signed in.
+Needs: Cursor installed on the reference VM and signed in as the console user.
 
 ## Problem
 
@@ -27,8 +27,9 @@ works, and is recorded.
     `tool_name`, `tool_input` or their current names);
   - the response shape (for example `{"continue": false, "user_message": ...}` or
     `{"permission": "deny", ...}`);
-  - whether a block from each event stops the action in practice. Test it with a hand-written
-    script before writing any agent code.
+  - whether a block from each event stops the action in practice. Test it before writing any
+    agent code, with a hand-written script hook placed in the VM with `invm.ps1 -CopyTo` and
+    `invm.ps1 -Command`, and Cursor used at the VM's console (`invm.ps1 -Screenshot`).
 - **Adapter** (`capture-core/hooks/cursor.go`), using task 36's interface:
   - `beforeSubmitPrompt` sends `prompt` as `prompt_text`, with the conversation id as
     `session_id`.
@@ -55,11 +56,16 @@ works, and is recorded.
 ## Done when
 
 - `cd device/capture-core && go test -race ./hooks/ ./toolconfig/` passes.
-- On the reference host with a rebuilt lab MSI and a lab-tenant rule "block `credential`":
-  1. In Cursor's chat, a prompt containing an AWS-key-shaped test string either is blocked with
-     the rule's message, or (if verification found blocks not honoured) goes through and is
-     recorded as `logged` with the rule id.
-  2. Both outcomes appear on the dashboard as `tool.hook` events for `app:cursor`. Screenshot it.
+- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`, with a lab-tenant rule
+  "block `credential`":
+  1. `invm.ps1 -Command 'Get-Content <enterprise hooks.json path>'` shows the agent's entries
+     beside any customer entries.
+  2. In Cursor's chat at the VM's console, a prompt containing an AWS-key-shaped test string
+     either is blocked with the rule's message, or (if verification found blocks not honoured)
+     goes through and is recorded as `logged` with the rule id. Capture Cursor with
+     `invm.ps1 -Screenshot`.
+  3. Either outcome appears on the dashboard as a `tool.hook` event for `app:cursor`, attributed
+     to the console user. Screenshot the dashboard on the PC.
 - `DECISIONS.md` has the verified file path, formats and block behaviour for both events, with
   the Cursor version.
 - `node tools/accept.mjs` passes.

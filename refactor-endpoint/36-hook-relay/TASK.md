@@ -68,13 +68,17 @@ service over the native endpoint, which decides allow, warn or block from the bu
 - `ref.collector` row `hook_relay`. Add `protocol.Collector` and the route constant if task 05
   hasn't already.
 - **Benchmark** (`capture-core/hooks/bench_windows_test.go`, build tag-free, skipped unless
-  `SAC_HOOK_BENCH=1`):
+  `SAC_HOOK_BENCH=1`). It runs on the reference VM, whose resources are the budget's baseline:
   1. Build `capture-core.exe`.
   2. Start a service in-process with a test bundle and a real classifier-host release.
   3. Run `capture-core.exe --hook test prompt` 1,000 times with a 4 KB prompt containing no
      secret, plus 100 runs with an AWS-key-shaped string.
   4. Report the p50, p95 and p99 of the whole process's wall time. The test fails when p99 is
      50 ms or more.
+
+  The hook processes run as the invoking user, as real hooks do. The test needs no elevation, and
+  its in-process service uses a temporary pipe name and state directory, not the installed
+  service's.
 
 ## Done when
 
@@ -83,6 +87,12 @@ service over the native endpoint, which decides allow, warn or block from the bu
     a refused frame);
   - a test that a `block` rule on `credential` blocks the AWS-key-shaped prompt and records
     `blocked`.
-- On the reference host, `SAC_HOOK_BENCH=1 go test -run HookBench -v ./hooks/` reports a p99
-  under 50 ms. Paste the numbers into the report and into `DECISIONS.md`.
+- On the reference VM:
+  1. On the PC, build the benchmark's binaries: `go test -c -o hooks.test.exe ./hooks/`,
+     `capture-core.exe`, and `classifier-host.exe` with a test classifier release.
+  2. Copy them into one folder in the VM with `invm.ps1 -CopyTo`.
+  3. Run the benchmark as the console user:
+     `invm.ps1 -AsUser console -Command '$env:SAC_HOOK_BENCH=1; <folder>\hooks.test.exe -test.run HookBench -test.v'`.
+  4. It reports a p99 under 50 ms. Paste the numbers into the report and into `DECISIONS.md`,
+     with the VM's vCPU count and memory.
 - `node tools/accept.mjs` passes.

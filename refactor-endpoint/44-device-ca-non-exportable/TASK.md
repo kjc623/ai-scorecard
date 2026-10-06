@@ -48,11 +48,17 @@ Exporting the key fails.
 ## Done when
 
 - `cd device/capture-core && go test -race ./proxy/tlsproxy/` passes on Windows.
-- On the reference host with a rebuilt lab MSI and TLS inspection on:
-  1. `certutil -store Root` lists the device root.
-  2. `certutil -csp "Microsoft Software Key Storage Provider" -key` lists `ShadowAICapture-DeviceRoot`.
-  3. An export attempt (`certutil -exportPFX` of the root, run as SYSTEM through `psexec -s` or a
-     scheduled task) fails, with the error pasted into the report.
-  4. A proxied `curl.exe` request still succeeds.
-- No key file remains in the state directory: `dir` of it shows none.
+- On the reference VM, deployed with `node localdev/testbed/deploy.mjs` over the previous build
+  (so the migration runs), with TLS inspection on:
+  1. `invm.ps1 -Command 'certutil -store Root'` lists the device root, and only one Shadow AI
+     Capture root.
+  2. `invm.ps1 -Command 'certutil -csp "Microsoft Software Key Storage Provider" -key'` lists
+     `ShadowAICapture-DeviceRoot`.
+  3. An export attempt fails, with the error pasted into the report. Run `certutil -exportPFX` of
+     the root as SYSTEM, from an `invm.ps1 -Command` script that registers and runs a one-shot
+     scheduled task under `NT AUTHORITY\SYSTEM`, captures its output, then deletes the task.
+  4. A proxied request still succeeds:
+     `invm.ps1 -AsUser console -Command 'curl.exe -s -o NUL -w "%{http_code}" https://api.openai.com/v1/models'`.
+- No key file remains in the state directory. Listing it with `invm.ps1 -Command`
+  (`Get-ChildItem C:\ProgramData\ShadowAICapture\state -Recurse`) shows no device-root key file.
 - `node tools/accept.mjs` passes.

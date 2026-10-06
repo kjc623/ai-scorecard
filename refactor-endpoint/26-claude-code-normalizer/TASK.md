@@ -61,9 +61,12 @@ A Claude Code normalizer converts every event in the task 25 fixtures to envelop
 ## Done when
 
 - `cd device/capture-core && go test -race ./otlp/...` passes.
-- On the reference host (lab MSI rebuilt, OTel on for the lab tenant), a Claude Code session run
-  as the owner gives one `prompt` (route `tool.otel`) plus `agent_activity` records in the lab
-  tenant, attributed to the owner. Point Claude Code at the receiver with the same session
-  environment as task 25, but with endpoint `http://127.0.0.1:47318` and the token header. Task
-  27 makes this automatic.
+- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`, with OTel on for the lab
+  tenant:
+  - Run a headless Claude Code session as the console user:
+    `invm.ps1 -AsUser console -Command '<set the task 25 variables for this process>; claude -p "..."'`,
+    with endpoint `http://127.0.0.1:47318` and the token header (read with `invm.ps1 -Command 'Get-Content C:\ProgramData\ShadowAICapture\state\otlp.token'`, never printed in the report).
+  - It gives one `prompt` (route `tool.otel`) plus `agent_activity` records in the lab tenant.
+    Their `user_ref` is the one derived from the console user's UPN.
+  - Task 27 makes the configuration automatic.
 - `node tools/accept.mjs` passes.

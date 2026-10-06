@@ -1,6 +1,6 @@
 # 27. Claude Code config writer
 
-Needs: on the reference host, Claude Code installed and signed in for the owner's account.
+Needs: on the reference VM, Claude Code installed and signed in for the console user.
 
 ## Problem
 
@@ -37,8 +37,8 @@ With interception on, Claude Code's connections are blind-tunnelled.
 - **Claude Code writer** (`toolconfig/claudecode.go` + `_windows.go`):
   - Path: the Windows managed settings location. Verify it in the current documentation
     (https://docs.anthropic.com/en/docs/claude-code/settings, believed to be
-    `C:\Program Files\ClaudeCode\managed-settings.json`) and on the install. Record it and the
-    version in `DECISIONS.md`.
+    `C:\Program Files\ClaudeCode\managed-settings.json`) and on the VM's install. Record it and
+    the version in `DECISIONS.md`.
   - `Installed()` uses the inventory facts: `app:claude_code` found by task 17's locations.
     Reuse the scanner functions; don't re-scan in a second way.
   - It merges into the JSON's `env` object and touches no other key. Keys:
@@ -83,15 +83,22 @@ With interception on, Claude Code's connections are blind-tunnelled.
 ## Done when
 
 - `cd device/capture-core && go test -race ./toolconfig/ ./proxy/tlsproxy/` passes.
-- On the reference host with the lab MSI rebuilt and OTel on for the lab tenant and Claude Code:
-  1. The managed settings file contains the agent's `env` keys, and any keys it had before.
-  2. A new `claude` session's prompt arrives as a `tool.otel` prompt event, with no environment
-     variables set by hand.
-  3. Setting `CLAUDE_CODE_ENABLE_TELEMETRY=0` in the owner's user settings
-     (`%USERPROFILE%\.claude\settings.json` `env`) and in the shell doesn't stop the export.
-     Show the next prompt arriving.
-  4. Switching Claude Code's OTel off in the dashboard removes the keys within one policy poll,
-     and the file matches its backup.
-  5. With TLS inspection on, a Claude Code prompt produces no `proxy.tls` event, and the proxy's
-     `blind_tunnelled` counter rises.
+- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`, with OTel on for the lab
+  tenant and Claude Code:
+  1. Before deploying, put an unrelated key in the managed settings file with `invm.ps1 -Command`,
+     to stand in for a customer's own setting.
+     After deploying, `invm.ps1 -Command 'Get-Content "C:\Program Files\ClaudeCode\managed-settings.json"'`
+     (or the verified path) shows the agent's `env` keys and the unrelated key, unchanged. The
+     token value isn't printed in the report.
+  2. A new session's prompt, `invm.ps1 -AsUser console -Command 'claude -p "..."'`, arrives as a
+     `tool.otel` prompt event with the console user's `user_ref`, with no environment variables
+     set by hand.
+  3. Set `CLAUDE_CODE_ENABLE_TELEMETRY=0` in the console user's
+     `%USERPROFILE%\.claude\settings.json` `env` (with `invm.ps1 -AsUser console`) and in the
+     session's own environment. The export doesn't stop: show the next prompt arriving. Remove
+     the user setting afterwards.
+  4. Switching Claude Code's OTel off in the dashboard removes the agent's keys within one policy
+     poll, and the file matches its backup (compare with `invm.ps1 -Command`).
+  5. With TLS inspection on, a Claude Code prompt produces no `proxy.tls` event, and the
+     `egress_proxy` row's `blind_tunnelled` counter rises.
 - `node tools/accept.mjs` passes.

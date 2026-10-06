@@ -1,8 +1,8 @@
 # 32. Claude Cowork spike
 
-Needs: on the reference host, Claude Desktop with Cowork available to the owner's account. If
-Cowork isn't available on Windows, a Mac with it is acceptable for the research half; say which
-was used.
+Needs: on the reference VM, Claude Desktop installed and signed in as the console user, with
+Cowork available to that account. If Cowork isn't available on Windows, a Mac with it is
+acceptable for the research half; say which was used.
 
 ## Problem
 
@@ -26,10 +26,12 @@ report names the follow-up tasks precisely.
     page, the Claude Desktop enterprise configuration documentation, and any managed-settings or
     MDM keys);
   - Harmonic's OTel announcement (in `PLAN.md` sources) for what they configure.
-- **Try it on a real install**:
-  1. Point Cowork's OTel at an `otelcol-contrib` file exporter (as in task 25).
-  2. Run one Cowork task.
-  3. Capture the output.
+- **Try it on a real install**, on the reference VM as the console user:
+  1. Point Cowork's OTel at an `otelcol-contrib` file exporter (as in task 25), copied in with
+     `invm.ps1 -CopyTo` and run with `invm.ps1 -AsUser console -Command`.
+  2. Run one Cowork task in Claude Desktop at the VM's console, and take an
+     `invm.ps1 -Screenshot`.
+  3. Copy the output back with `invm.ps1 -CopyFrom`.
   4. If output arrives, save it as fixtures under
      `device/capture-core/otlp/testdata/cowork/<version>/`, with task 25's placeholder rules and
      README.
@@ -43,8 +45,9 @@ report names the follow-up tasks precisely.
   - whether the existing Claude Code normalizer (task 26) already accepts the events.
 - **Outcome**, exactly one of these:
   - **Covered by existing code**: the Claude Code normalizer and config writer already cover
-    Cowork, for example because Cowork reads the same managed settings `env`. Show a Cowork
-    prompt arriving as a `tool.otel` event, and stop.
+    Cowork, for example because Cowork reads the same managed settings `env`. On the VM, deployed
+    with `node localdev/testbed/deploy.mjs`, show a Cowork prompt arriving as a `tool.otel` event,
+    and stop.
   - **Needs follow-up**: write in the report the exact follow-up tasks (normalizer, config
     writer, the new `tools` key `cowork` in `DESIGN.md` §5, and the catalog row) for the owner
     to add. Write no product code beyond the fixtures.

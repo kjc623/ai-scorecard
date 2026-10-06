@@ -327,8 +327,9 @@ Any other dependency needs the owner's approval: stop and ask. Builds stay `CGO_
 
 ## 12. Platforms
 
-Every collector task is implemented and verified on Windows (the reference host is the owner's
-Windows 11 machine with the lab MSI). On macOS and Linux, the same collector compiles and reports
+Every collector task is implemented and verified on Windows, on the reference VM in `TESTBED.md`:
+Hyper-V, Entra-joined and Intune-managed, with the agent delivered by Intune through
+`localdev/testbed/deploy.mjs` (task 00). On macOS and Linux, the same collector compiles and reports
 `absent` with detail `tool_version_unsupported` for the tool configs, or `etw_session_failed` for
 ETW, until tasks 53–56 port it. Each new package keeps the existing file-suffix convention
 (`_windows.go`, `_darwin.go`, `_linux.go`, `_other.go`).
@@ -338,8 +339,8 @@ ETW, until tasks 53–56 port it. Each new package keeps the existing file-suffi
 | Budget | Value | Enforced by |
 |---|---|---|
 | Discovery records per device per UTC day | 200 (bundle `discovery_daily_budget`) | task 15; measured in task 22 |
-| Hook decision, whole `--hook` process, 4 KB prompt, on the reference host | p99 < 50 ms, hard ceiling 400 ms | task 36; gated in task 51 |
+| Hook decision, whole `--hook` process, 4 KB prompt, on the reference VM | p99 < 50 ms, hard ceiling 400 ms | task 36; gated in task 51 |
 | OTLP receiver | 2,000 log records/s sustained, p99 request handling < 20 ms | task 51 |
-| capture-core idle | < 1 % of one core averaged over 10 min, private working set < 150 MB | task 51 (measured on the reference host, not CI) |
+| capture-core idle | < 1 % of one core averaged over 10 min, private working set < 150 MB | task 51 (measured on the reference VM, not CI) |
 | Policy toggle | collector started or stopped within one policy poll | tasks 06, 07, 08 |
 | Config drift | reverted within 5 s | task 34 |

@@ -1,6 +1,6 @@
 # 40. Hook and OTel merge
 
-Needs: Claude Code installed on the reference host and signed in.
+Needs: Claude Code installed on the reference VM and signed in as the console user.
 
 ## Problem
 
@@ -51,9 +51,12 @@ seen by only one path still produces exactly one envelope.
 ## Done when
 
 - `cd device/capture-core && go test -race ./merge/ ./hooks/ ./otlp/` passes.
-- On the reference host with Claude Code's hooks and OTel both on for the lab tenant:
-  1. Send five prompts.
-  2. The lab database or dashboard shows exactly five prompt events for `app:claude_code`, each
-     on route `tool.hook`, with a decision.
+- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`, with Claude Code's hooks
+  and OTel both on for the lab tenant:
+  1. Send five distinct prompts as the console user, each with
+     `invm.ps1 -AsUser console -Command 'claude -p "<prompt n>"'` (each run is its own session).
+     Then send two more in one interactive `claude` session at the VM's console.
+  2. The lab database shows exactly seven prompt events for `app:claude_code` from the VM's
+     device, each on route `tool.hook`, with a decision, and none on route `tool.otel`.
   3. Paste the query and its output.
 - `node tools/accept.mjs` passes.

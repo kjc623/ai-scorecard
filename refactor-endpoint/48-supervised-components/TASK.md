@@ -53,8 +53,11 @@ gateway would be a second user. No gateway code is written here.
 
 - `cd device/capture-core && go test -race ./component/ ./classifierlink/ ./cmd/capture-core/ ./core/`
   passes.
-- On the reference host with a rebuilt lab MSI:
-  1. Killing `classifier-host.exe` brings it back within 2 s.
-  2. The `classifier_host` row on the dashboard's device view stays `healthy` after the restart.
-  3. Killing it six times in a row shows `degraded`/`component_crash_loop` on the device view.
+- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`:
+  1. `invm.ps1 -Command 'Stop-Process -Name classifier-host -Force; Start-Sleep -Milliseconds 2000; Get-Process classifier-host'`
+     shows a new process within 2 s.
+  2. The VM's `classifier_host` row on the dashboard's device view stays `healthy` after the
+     restart.
+  3. Killing it six times in a row, in one `invm.ps1 -Command` loop that waits for each restart,
+     shows `degraded`/`component_crash_loop` on the device view.
 - `node tools/accept.mjs` passes.

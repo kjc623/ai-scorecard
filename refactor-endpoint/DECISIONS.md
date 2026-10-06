@@ -47,3 +47,17 @@ decided and why, and for a vendor fact the product version checked.
 - **Tool order.** Claude Code, then Codex, then Copilot, then Cursor.
 - **Network inspection reads requests only** (task 45). The product records prompts; nothing
   stores model responses, so parsing streamed responses (plan E34) is left out.
+
+## 2026-10-06, owner, after the first draft
+
+- **Testing happens on a VM, not the owner's PC.**
+  - The VM is Hyper-V on the owner's PC, Entra-joined and Intune-managed (`TESTBED.md`).
+  - Agents reach it with PowerShell Direct (`localdev/testbed/invm.ps1`).
+  - Every build reaches it through Intune. The agent publishes it with Microsoft Graph, through a
+    dedicated app registration, to one Win32 app assigned only to a test device group
+    (`localdev/testbed/deploy.mjs`, task 00).
+  - The VM trusts the lab CA through an Intune certificate profile, so the VM's tenant file has no
+    `SAC_CA_FILE`.
+  - Lab builds are versioned `1.1.<build number>`, so every build is an Intune update.
+- The two users of a check are Entra test users signed in on the VM. The performance budgets
+  (`DESIGN.md` §13) are measured on the VM.

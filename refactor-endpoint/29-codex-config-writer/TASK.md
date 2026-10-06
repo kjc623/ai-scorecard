@@ -1,6 +1,6 @@
 # 29. Codex config writer
 
-Needs: on the reference host, the Codex CLI installed and signed in for the owner's account.
+Needs: on the reference VM, the Codex CLI installed and signed in for the console user.
 
 ## Problem
 
@@ -50,10 +50,14 @@ original. The Windows override gap is a recorded, visible limitation.
 ## Done when
 
 - `cd device/capture-core && go test -race ./toolconfig/` passes.
-- On the reference host with the lab MSI rebuilt and Codex OTel on for the lab tenant:
-  1. With the temporary user config from task 28 removed, a new Codex session's prompt arrives as
-     a `tool.otel` prompt event for `app:codex`.
-  2. Adding a user-level `[otel]` override that disables export:
+- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`, with Codex OTel on for the
+  lab tenant:
+  1. With the temporary user config from task 28 removed, a new Codex session's prompt
+     (`invm.ps1 -AsUser console -Command 'codex exec "..."'`) arrives as a `tool.otel` prompt
+     event for `app:codex`, with the console user's `user_ref`.
+     - Show the machine-wide file with `invm.ps1 -Command`, at the verified path.
+  2. Add a user-level `[otel]` override that disables export, in the console user's
+     `%USERPROFILE%\.codex\config.toml` via `invm.ps1 -AsUser console`. Remove it afterwards.
      - if the verified precedence says it wins, the `tool_config_codex` row goes `degraded` /
        `config_tampered` within one health interval;
      - if it doesn't win, the export continues.

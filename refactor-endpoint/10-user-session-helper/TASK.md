@@ -43,13 +43,14 @@ The helper's first job is to show a notification the service asks for.
      `System.AppUserModel.ID` property to `device/installer/manifest.mjs` and regenerate the
      `.wxs`.
 - **Service side** (`capture-core/userhelper`, a `core.Provider` with collector `user_helper`):
-  - Every 15 seconds, on the existing `watchPeople` tick, enumerate active interactive sessions
-    (`WTSEnumerateSessionsW`, state `WTSActive`).
+  - Every 15 seconds, on the existing `watchPeople` tick, enumerate the interactive sessions that
+    have a signed-in user (`WTSEnumerateSessionsW`, states `WTSActive` and `WTSDisconnected`). A
+    fast-user-switched user is disconnected but still signed in, and still runs tools.
   - Start `capture-core.exe --user-helper` in each session that has no live helper, with
     `WTSQueryUserToken` and `CreateProcessAsUserW` (no window, `lpDesktop` `winsta0\default`).
   - Restart a helper that exits, at most 5 times in 10 minutes per session, then report
     `degraded`/`helper_unavailable`.
-  - Health is `healthy` when every active session has a connected helper.
+  - Health is `healthy` when every signed-in session has a connected helper.
   - Expose `Notify(sessionID, n) error` for later tasks.
   - Not `Toggled`: the helper always runs, because it collects nothing.
 - `ref.collector` row `user_helper`, and the detail `helper_unavailable`.
@@ -60,10 +61,17 @@ The helper's first job is to show a notification the service asks for.
 
 - `cd device/capture-core && go test -race ./localipc/ ./userhelper/ ./cmd/capture-core/` passes,
   including a test where a client that is not the session's owner is refused for `helper_hello`.
-- On the reference host with a rebuilt lab MSI:
-  1. `Get-Process capture-core` shows a helper in the owner's session.
-  2. Ending it brings it back within 15 s.
+- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`:
+  1. `invm.ps1 -Command 'Get-Process capture-core -IncludeUserName | Select Id,SessionId,UserName,Path'`
+     shows a helper running as the console user in the console session, and one running as the
+     second user in the second user's (disconnected) session.
+  2. Stopping that helper (`invm.ps1 -Command 'Stop-Process -Id <helper pid>'`) brings it back
+     within 15 s. Show the new PID.
   3. Prove `Notify` with the userhelper package's Windows integration test (not with production
-     code added for the purpose). The test starts a helper in the current session and shows a
-     toast. Take a screenshot.
+     code added for the purpose).
+     - Build the test binary on the PC
+       (`go test -c -o userhelper.test.exe ./userhelper/`).
+     - Copy it in with `invm.ps1 -CopyTo`, and run it in the VM with `invm.ps1 -Command`. It
+       starts a helper in the console session and shows a toast.
+     - Capture it with `invm.ps1 -Screenshot`.
 - `node tools/accept.mjs` passes.

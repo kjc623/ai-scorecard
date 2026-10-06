@@ -1,16 +1,18 @@
 # Endpoint agent refactor
 
 This folder breaks the owner's plan (`PLAN.md`) into tasks that each fit one agent session.
-`DESIGN.md` fixes how the plan maps onto this repository: names, wire shapes, settings, ports and
+`TESTBED.md` describes the reference VM where every on-device check runs (Hyper-V, Entra-joined,
+Intune-managed) and the owner's one-time setup for it. `DESIGN.md` fixes how the plan maps onto this repository: names, wire shapes, settings, ports and
 dependencies. `DECISIONS.md` records what has been settled and why. `AGENTS.md` holds the rules for
 the agents doing the work.
 
-Tasks run in number order unless "Depends on" allows otherwise. "Needs" lists what the owner must
+Tasks run in number order unless "Depends on" allows otherwise. Tasks 13, 30–32, 37–41, 43, 45–47 and 52 include steps the owner does at the VM's console in a desktop app (`AGENTS.md`); the agent stops and asks at those points. Every task that checks its work on a device also depends on task 00, and its "Needs" means on the reference VM, installed and signed in as the console user unless it says otherwise. "Needs" lists what the owner must
 supply. The Plan column gives the plan's task id.
 
 | # | Task | Plan | Depends on | Needs | Done |
 |---|---|---|---|---|---|
 | **Phase 0: Foundation** | | | | | |
+| 00 | [Reference VM tooling](00-reference-vm/TASK.md) | | | `TESTBED.md` setup done | [ ] |
 | 01 | [Make the policy drift test run](01-bundle-drift-test/TASK.md) | E03 | | | [ ] |
 | 02 | [Serialise classifier requests](02-classifier-link-serialise/TASK.md) | E24, E25 | | | [ ] |
 | 03 | [Envelope: endpoint routes and kinds](03-envelope-endpoint-kinds/TASK.md) | E02 | | | [ ] |
@@ -34,7 +36,7 @@ supply. The Plan column gives the plan's task id.
 | 20 | [Local model detection](20-local-model-detection/TASK.md) | E11 | 16 | Ollama with two models | [ ] |
 | 57 | [Local model capture in policy](57-loopback-policy/TASK.md) | E11 | 08, 20 | Ollama with two models | [ ] |
 | 21 | [Connection monitor](21-connection-monitor/TASK.md) | E12 | 19 | | [ ] |
-| 22 | [Discovery volume check](22-discovery-volume-check/TASK.md) | E13 | 16–21 | 24 h on the reference host | [ ] |
+| 22 | [Discovery volume check](22-discovery-volume-check/TASK.md) | E13 | 16–21 | 24 h of ordinary use on the reference VM | [ ] |
 | **Phase 2: Native telemetry** | | | | | |
 | 23 | [Local OTLP receiver](23-otlp-receiver/TASK.md) | E14 | 06, 07 | | [ ] |
 | 24 | [OTLP sender attribution](24-otlp-attribution/TASK.md) | E15 | 09, 23 | A second local Windows account | [ ] |

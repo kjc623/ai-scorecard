@@ -1,6 +1,6 @@
 # 37. Claude Code hooks
 
-Needs: Claude Code installed on the reference host and signed in, under the owner's account.
+Needs: Claude Code installed on the reference VM and signed in as the console user.
 
 ## Problem
 
@@ -59,13 +59,19 @@ true.
 ## Done when
 
 - `cd device/capture-core && go test -race ./hooks/ ./toolconfig/` passes.
-- On the reference host with a rebuilt lab MSI and a lab-tenant rule "block `credential`" (tenant
-  at `m1` or higher):
-  1. In a new `claude` session, a prompt containing an AWS-key-shaped test string is blocked.
-     Claude Code shows the rule's message. Take a screenshot.
-  2. A prompt without one goes through.
-  3. The blocked prompt's event shows `source = tool.hook` and `policy_decision.action = blocked`
-     on the dashboard.
+- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`, with a lab-tenant rule
+  "block `credential`" (tenant at `m1` or higher):
+  1. `invm.ps1 -Command 'Get-Content <managed-settings path>'` shows the agent's hook entries.
+  2. In a new interactive `claude` session at the VM's console, a prompt containing an
+     AWS-key-shaped test string is blocked, and Claude Code shows the rule's message. Capture it
+     with `invm.ps1 -Screenshot`.
+  3. A prompt without one goes through.
+  4. As a non-interactive cross-check, run
+     `invm.ps1 -AsUser console -Command 'claude -p "<prompt with the test string>"'` and show
+     that it is refused, with the rule's message in the output.
+  5. The blocked prompt's event shows `source = tool.hook` and `policy_decision.action = blocked`
+     on the dashboard, attributed to the console user's UPN-derived `user_ref`.
 - Turning "only managed hooks" on and then off in the dashboard adds and removes
-  `allowManagedHooksOnly` within one policy poll. Show the file before and after.
+  `allowManagedHooksOnly` within one policy poll. Show the file before and after, read with
+  `invm.ps1 -Command`.
 - `node tools/accept.mjs` passes.

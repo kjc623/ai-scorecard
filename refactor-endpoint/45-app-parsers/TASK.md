@@ -1,7 +1,7 @@
 # 45. Per-app protocol parsers
 
-Needs: Claude Desktop and ChatGPT Desktop installed on the reference host and signed in, with TLS
-inspection on for the lab tenant.
+Needs: Claude Desktop and ChatGPT Desktop installed on the reference VM and signed in as the
+console user, with TLS inspection on for the lab tenant.
 
 ## Problem
 
@@ -52,7 +52,14 @@ of mis-extracted.
   `content_unprocessable` detail on the provider row. This is the canary that flags format
   changes.
 - **Fixtures** (`parsers/<target>/testdata/<app version>/`): request bodies captured on the
-  reference host through the proxy, with canary prompt text (no real prompts). Streaming responses
+  reference VM through the proxy, with canary prompt text (no real prompts).
+  - Send the canary prompts in each app at the VM's console as the console user.
+  - Capture the bodies with a capture-only build of the agent on a scratch branch that is never
+    merged, which writes intercepted request bodies to a file. Deploy it with
+    `node localdev/testbed/deploy.mjs`, and redeploy the normal build afterwards.
+  - Copy the files back with `invm.ps1 -CopyFrom`.
+  - API fixtures (`anthropic`, `openai`, `gemini`) may instead come from requests sent through the
+    proxy with `invm.ps1 -AsUser console -Command 'curl.exe ...'`. Streaming responses
   aren't parsed: the agent reads requests only, so `Result` has no response text. Record this in
   `DECISIONS.md` as a deviation from the plan's "and streamed responses".
 - Replace both copies of the extractor in `tlsproxy` and `loopback` with the registry.
@@ -66,7 +73,10 @@ of mis-extracted.
 ## Done when
 
 - `cd device/capture-core && go test -race ./parsers/... ./proxy/...` passes.
-- On the reference host, a canary prompt in Claude Desktop and one in ChatGPT Desktop each produce
-  a `proxy.tls` event at `m1`+ whose digest matches the canary text's digest. Compute it
-  separately and show both.
+- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`:
+  1. A canary prompt sent at the VM's console in Claude Desktop, and one in ChatGPT Desktop, each
+     produce a `proxy.tls` event at `m1`+, attributed to the console user.
+  2. Each event's digest matches the canary text's digest. Compute that separately on the PC and
+     show both.
+  3. Add an `invm.ps1 -Screenshot` of each app after sending.
 - `node tools/accept.mjs` passes.

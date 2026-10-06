@@ -1,7 +1,7 @@
 # 16. Installed app scanner
 
-Needs: on the reference host, Claude Desktop, ChatGPT Desktop (Microsoft Store / MSIX) and Cursor
-installed for the owner's account.
+Needs: on the reference VM, Claude Desktop, ChatGPT Desktop (Microsoft Store / MSIX) and Cursor
+installed for the console user.
 
 ## Problem
 
@@ -40,7 +40,7 @@ admin can turn it on and off from the dashboard (task 07) without a restart.
     (`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Appx\AppxAllUserStore`) and each loaded
     user's
     `HKU\<SID>\Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages`
-    for package full names. Verify both on the reference host and record what was found in
+    for package full names. Verify both on the reference VM (`invm.ps1 -Command` for HKLM; HKU of the console user's SID for the per-user store) and record what was found in
     `DECISIONS.md`.
   - Match the uninstall `DisplayName` against `windows_uninstall_name`, the uninstall
     `DisplayIcon`/`InstallLocation` executable against `windows_exe`, the package family name
@@ -65,12 +65,16 @@ admin can turn it on and off from the dashboard (task 07) without a restart.
 ## Done when
 
 - `cd device/capture-core && go test -race ./inventory/` passes.
-- On the reference host with the lab MSI rebuilt:
+- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`:
   1. Within one scan, `app:claude_desktop`, `app:chatgpt_desktop` and `app:cursor` arrive in the
-     lab tenant as `discovery` / `app_installed` with versions. Show them from the lab database
-     or the dashboard.
+     lab tenant as `discovery` / `app_installed` with versions, and with the console user's
+     `user_ref` for the per-user installs.
+     - Show them from the lab database or the dashboard.
+     - Show the versions the VM itself reports beside them:
+       `invm.ps1 -AsUser console -Command 'Get-AppxPackage *ChatGPT*; Get-ItemProperty HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\* | Select DisplayName,DisplayVersion'`.
   2. In the dashboard, switch "Inventory" off for the lab tenant. After the next policy poll,
      without a restart, the `inventory_scanner` health row is `absent` with
-     `disabled_by_policy`.
+     `disabled_by_policy`. Show that the service's start time didn't change:
+     `invm.ps1 -Command 'Get-Process capture-core | Select Id,StartTime'`, before and after.
   3. Switch it back on, and it returns `healthy`. This is the plan's E03 finish line.
 - `node tools/accept.mjs` passes.

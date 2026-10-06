@@ -1,7 +1,7 @@
 # 57. Local model capture in policy
 
-Needs: on the reference host, Ollama for Windows installed with two models pulled (the same setup
-as task 20).
+Needs: on the reference VM, Ollama for Windows installed for the console user with two models
+pulled (the same setup as task 20).
 
 ## Problem
 
@@ -79,11 +79,17 @@ Turning the setting off restores Ollama's original port and releases the broker'
 
 ## Done when
 
-- On the reference host, with the lab tenant's Ollama "Local model capture" switched on in the
-  dashboard and no service restart:
-  1. After the next policy poll, `curl http://127.0.0.1:11434/api/generate` with a prompt
-     produces a `proxy.loopback` event for `app:ollama` in the lab tenant, visible on the
-     dashboard.
-  2. Switching it off restores `OLLAMA_HOST` to its original value, and Ollama answers on 11434
-     directly.
+- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`, with the lab tenant's
+  Ollama "Local model capture" switched on in the dashboard and no service restart:
+  1. After the next policy poll,
+     `invm.ps1 -Command '[Environment]::GetEnvironmentVariable("OLLAMA_HOST","Machine")'` shows
+     `127.0.0.1:21434`.
+  2. `invm.ps1 -Command 'Get-NetTCPConnection -LocalPort 11434 -State Listen'` shows
+     `capture-core` holding 11434.
+  3. `invm.ps1 -AsUser console -Command 'curl.exe -s http://127.0.0.1:11434/api/generate -d "{\"model\":\"<a pulled model>\",\"prompt\":\"hello\",\"stream\":false}"'`
+     answers, and produces a `proxy.loopback` event for `app:ollama` in the lab tenant, attributed
+     to the console user and visible on the dashboard.
+  4. Switching it off in the dashboard restores `OLLAMA_HOST` to its original value within one
+     poll (the same `-Command`). After Ollama restarts, it answers on 11434 directly, with the
+     listener check showing `ollama` and not `capture-core`.
 - `node tools/accept.mjs` passes.

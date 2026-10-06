@@ -66,12 +66,23 @@ state for every location the agent touched. A script proves it by comparing snap
 
 - `cd device/capture-core && go test -race ./cmd/capture-core/ ./toolconfig/` passes.
 - `node device/installer/verify.mjs` passes.
-- On the reference host:
-  1. `snapshot.ps1 > before.json`.
-  2. Install the lab MSI, enable every collector, hooks and TLS inspection for the lab tenant,
-     and let one policy poll apply them.
-  3. Uninstall from Settings → Apps.
-  4. `snapshot.ps1 > after.json`, then `snapshot.ps1 -Compare before.json after.json` exits 0.
-  5. Paste both commands' output.
-  Afterwards, reinstall the lab MSI so the owner's lab device is enrolled again.
+- On the reference VM, through Intune end to end:
+  1. Restore the clean checkpoint with `invm.ps1 -RestoreCheckpoint` (no agent installed).
+  2. Copy `snapshot.ps1` in with `invm.ps1 -CopyTo`, and take the "before" snapshot with
+     `invm.ps1 -Command` (as administrator; it reads every loaded user hive, so both signed-in
+     users' Internet Settings are covered). Copy `before.json` back with `invm.ps1 -CopyFrom`.
+  3. Deploy with `node localdev/testbed/deploy.mjs`. Enable every collector, hooks, TLS
+     inspection and Ollama capture for the lab tenant, and let one policy poll apply them.
+  4. Exercise the features: one `claude -p` prompt run with `invm.ps1 -AsUser console -Command`,
+     one `curl.exe` through the proxy run with `-AsUser second`, so the second user gets a PAC
+     too, and one notification.
+  5. Uninstall through Intune with `node localdev/testbed/deploy.mjs --uninstall`. Wait until
+     `invm.ps1 -Command 'Get-Service ShadowAICapture'` reports no such service.
+  6. Take the "after" snapshot the same way, then run
+     `snapshot.ps1 -Compare before.json after.json` on the PC; it exits 0.
+  7. Paste both commands' output, and the VM's `%WINDIR%\Temp\ShadowAICapture-uninstall.log`
+     (read with `invm.ps1 -Command`).
+
+  Afterwards, run `node localdev/testbed/deploy.mjs` again, so the app is assigned as required and
+  the VM is enrolled for the next task.
 - `node tools/accept.mjs` passes.

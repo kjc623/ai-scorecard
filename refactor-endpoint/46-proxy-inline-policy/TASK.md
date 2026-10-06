@@ -1,7 +1,7 @@
 # 46. Inline policy in the proxy
 
-Needs: Claude Desktop installed on the reference host and signed in, with TLS inspection on for
-the lab tenant.
+Needs: Claude Desktop installed on the reference VM and signed in as the console user, with TLS
+inspection on for the lab tenant.
 
 ## Problem
 
@@ -49,9 +49,14 @@ the request goes through, a notification shows the message, and the event record
 ## Done when
 
 - `cd device/capture-core && go test -race ./proxy/tlsproxy/ ./parsers/...` passes.
-- On the reference host with a lab-tenant rule "block `credential`":
-  1. Sending an AWS-key-shaped test string in Claude Desktop shows the app's error with the rule's
-     message, and a Windows notification appears.
-  2. The event shows `source = proxy.tls` and `policy_decision.action = blocked`.
-  3. Screenshots of both, and of the dashboard event.
+- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`, with a lab-tenant rule
+  "block `credential`":
+  1. Sending an AWS-key-shaped test string in Claude Desktop at the VM's console shows the app's
+     error with the rule's message, and a Windows notification appears in the console session.
+     Capture both with `invm.ps1 -Screenshot`, taken while the toast is visible.
+  2. The same secret sent with `curl.exe` to `api.anthropic.com`
+     (`invm.ps1 -AsUser console -Command 'curl.exe ...'`) returns 403 with the Anthropic error
+     shape and the rule's message.
+  3. The events show `source = proxy.tls`, `policy_decision.action = blocked`, and the console
+     user's `user_ref`. Screenshot the dashboard event on the PC.
 - `node tools/accept.mjs` passes.

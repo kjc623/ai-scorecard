@@ -60,11 +60,18 @@ TLS inspection breaks things, so it needs ways to step out of the way:
 
 - `cd device/capture-core && go test -race ./proxy/...` passes, and the control-api and dashboard
   tests pass.
-- On the reference host:
-  1. Tripping the `proxy.tls` kill switch in the dashboard makes the next Claude Desktop request
-     go direct within one policy poll (the `egress_proxy` row shows `killed`, and a `blind_tunnelled`
-     count rises).
-  2. Clearing it restores interception.
-  3. Turning TLS inspection off removes the PAC and root within one poll, as in task 08.
-  4. Record the times.
+- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`, with TLS inspection on:
+  1. If task 43 called for the QUIC rule:
+     `invm.ps1 -Command 'Get-NetFirewallRule -DisplayName "ShadowAICapture QUIC *" | Get-NetFirewallApplicationFilter'`
+     lists one rule per app executable. If it didn't, the same command lists none.
+  2. Tripping the `proxy.tls` kill switch in the dashboard makes the next Claude Desktop request,
+     sent at the VM's console, go direct within one policy poll:
+     - the `egress_proxy` row shows `killed`;
+     - the `blind_tunnelled` count in the VM's `health.json` rises, read before and after with
+       `invm.ps1 -Command`.
+  3. Clearing it restores interception.
+  4. Turning TLS inspection off removes the PAC and root within one poll, checked with the same
+     `invm.ps1` commands as task 08, and removes the QUIC rules (the `Get-NetFirewallRule` command
+     above lists none).
+  5. Record the times.
 - `node tools/accept.mjs` passes.

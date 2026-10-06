@@ -1,7 +1,7 @@
 # 13. Extension policy hand-off
 
-Needs: Chrome or Edge on the reference host with the lab extension force-installed (as for the
-browser gate).
+Needs: Edge or Chrome on the reference VM, with the lab extension force-installed by the Intune
+policy in `TESTBED.md` (setup step 5), and the console user signed in to ChatGPT in it.
 
 ## Problem
 
@@ -27,8 +27,9 @@ same enforcement rules (task 11) with the same matching (task 12).
 
 ## Scope
 
-- **First, confirm the defect**: on the reference host, record the extension's resolved mode and
-  rule count before the fix, from its health row or a service-worker console log.
+- **First, confirm the defect**: on the reference VM, with the current agent deployed, record the
+  extension's resolved mode and rule count before the fix. Use its health row in the lab database,
+  or the service-worker console log in the console user's browser.
 - **Protocol** (`device/protocol/native.go`): `PolicyBundleMessage.Bundle` carries the verified,
   decoded payload, the exact JSON object the signature covered. Never the envelope. The extension
   trusts capture-core, which verified it.
@@ -64,10 +65,14 @@ same enforcement rules (task 11) with the same matching (task 12).
 - `cd device/extension && npm test` passes, including the shared evaluator cases.
 - `cd device/capture-core && go test ./enforce/ ./cmd/capture-core/` passes against the same
   shared cases.
-- On the reference host (lab MSI rebuilt, extension updated), with a lab-tenant rule
-  "block `credential` on route `ext.web_request`" and the tenant at `m1` or higher:
-  1. Pasting an AWS-key-shaped test string into ChatGPT in the browser is blocked, and the overlay
-     shows the rule's message.
-  2. The event carries `policy_decision.action = "blocked"`.
-  3. Screenshot both.
+- On the reference VM, with a lab-tenant rule "block `credential` on route `ext.web_request`" and
+  the tenant at `m1` or higher:
+  - Deploy the agent with `node localdev/testbed/deploy.mjs`. The updated extension reaches the VM
+    through the force-install policy from the lab's update manifest.
+  - `invm.ps1 -AsUser console` can't type into a browser, so the console user's actions in steps 1
+    and 2 are the owner's: ask the owner to paste the string in the VM and say when.
+  1. In the console user's browser, pasting an AWS-key-shaped test string into ChatGPT is blocked,
+     and the overlay shows the rule's message. Capture it with `invm.ps1 -Screenshot`.
+  2. The event in the lab tenant carries `policy_decision.action = "blocked"`, with the console
+     user's `user_ref`. Screenshot the dashboard's event.
 - `node tools/accept.mjs` passes, including the `browser` gate.

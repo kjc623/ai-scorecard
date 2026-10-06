@@ -1,7 +1,7 @@
 # 30. Copilot fixtures and normalizer
 
-Needs: on the reference host, VS Code with GitHub Copilot Chat, and the Copilot CLI
-(`@github/copilot`), both signed in with an account that has a Copilot licence.
+Needs: on the reference VM, installed and signed in as the console user: VS Code with GitHub
+Copilot Chat, and the Copilot CLI (`@github/copilot`), with an account that has a Copilot licence.
 
 ## Problem
 
@@ -19,13 +19,18 @@ normalizer maps it onto envelopes with the same guarantees as task 26.
 
 ## Scope
 
-- **Capture** (no product code), with `otelcol-contrib` and a file exporter:
-  - **VS Code**: set the Copilot OTel settings in the owner's user `settings.json`, for the
-    capture only: the endpoint pointing at the collector, and content capture on. Run a chat
-    turn and an agent-mode turn that uses one tool.
-  - **CLI**: set the documented `COPILOT_OTEL_*` variables in one shell, and run one prompt with
-    a tool use.
+- **Capture** (no product code), on the reference VM as the console user, with `otelcol-contrib`
+  and a file exporter:
+  - Copy the collector binary and its config in with `invm.ps1 -CopyTo`, and run it with
+    `invm.ps1 -AsUser console -Command` (on `127.0.0.1:4318`, not the agent's ports).
+  - **VS Code**: set the Copilot OTel settings in the console user's own `settings.json`, for the
+    capture only: the endpoint pointing at the collector, and content capture on. Run a chat turn
+    and an agent-mode turn that uses one tool, in VS Code at the VM's console.
+  - **CLI**: run, with `invm.ps1 -AsUser console -Command`, one shell that sets the documented
+    `COPILOT_OTEL_*` variables and runs one `copilot` prompt with a tool use.
   - Repeat both with content capture off.
+  - Remove the temporary user settings afterwards, and copy the collector's output files back
+    with `invm.ps1 -CopyFrom`.
   - Save the fixtures under `device/capture-core/otlp/testdata/copilot/vscode-<version>/` and
     `cli-<version>/`, with task 25's placeholder rules and README. Capture traces as well as
     logs if Copilot emits spans.
@@ -46,8 +51,16 @@ normalizer maps it onto envelopes with the same guarantees as task 26.
 ## Done when
 
 - `cd device/capture-core && go test -race ./otlp/...` passes over all Copilot fixtures.
-- On the reference host, a Copilot Chat turn in VS Code, pointed by hand at
-  `http://127.0.0.1:47318` with the token header (temporary user settings; task 31 makes it
-  managed), gives a `tool.otel` prompt event for `app:github_copilot`, attributed to the owner.
-  The same is shown for the CLI with `app:copilot_cli`.
+- On the reference VM, after deploying with `node localdev/testbed/deploy.mjs` with OTel on for
+  the lab tenant:
+  1. Read the agent's token with `invm.ps1 -Command` (from `otlp.token` in the state directory;
+     don't print it in the report).
+  2. Point VS Code Copilot by hand at `http://127.0.0.1:47318` with the token header, in the
+     console user's settings. These are temporary user settings; task 31 makes them managed.
+  3. A Copilot Chat turn in VS Code at the VM's console gives a `tool.otel` prompt event for
+     `app:github_copilot`. Its `user_ref` is the one derived from the console user's UPN, or its
+     `subject_name` is that UPN if the tenant's device identity is clear.
+  4. The same is shown for the CLI, run with `invm.ps1 -AsUser console -Command 'copilot ...'`,
+     with `app:copilot_cli`.
+  5. Remove the temporary settings afterwards.
 - `node tools/accept.mjs` passes.

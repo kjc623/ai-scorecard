@@ -1,7 +1,7 @@
 # 09. Process attribution
 
-Needs: on the reference host, a second local Windows account that can be signed in alongside the
-owner's (fast user switching).
+Needs: on the reference VM, the second user from `TESTBED.md` signed in alongside the console user
+(both sessions stay signed in).
 
 ## Problem
 
@@ -56,10 +56,15 @@ each intercepted request to the process owner instead of the console user.
 
 ## Done when
 
-- `cd device/capture-core && go test -race ./hostinfo/ ./proxy/tlsproxy/` passes on Windows.
-- On the reference host, with TLS inspection on for the lab tenant:
-  1. A `curl.exe https://api.openai.com/v1/models` is run by the second account in its own session
-     while the owner is at the console.
-  2. It produces a `proxy.tls` event whose `user_ref` is the second account's. Show this from the
-     lab database or the dashboard.
+- `cd device/capture-core && go test -race ./hostinfo/ ./proxy/tlsproxy/` passes on the PC (Windows).
+- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`, with TLS inspection on for
+  the lab tenant:
+  1. Run `invm.ps1 -AsUser second -Command 'curl.exe -s -o NUL -w "%{http_code}" https://api.openai.com/v1/models'`
+     while the console user is at the console.
+  2. It produces a `proxy.tls` event whose `user_ref` is the ref derived from the second user's UPN
+     (`protocol.DeriveUserRef` with kind `upn`, and `subject_name` equal to the UPN while device
+     identity is clear), not the console user's.
+     - Show this from the lab database or the dashboard.
+     - Run the same command with `-AsUser console`, and show the console user's ref on that event,
+       for contrast.
 - `node tools/accept.mjs` passes.

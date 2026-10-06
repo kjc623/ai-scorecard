@@ -1,7 +1,7 @@
 # 18. IDE extension scanner
 
-Needs: on the reference host, VS Code with the GitHub Copilot (and Copilot Chat), Claude Code and
-Continue extensions installed for the owner's account. Cursor (installed for task 16) also has at
+Needs: on the reference VM, VS Code with the GitHub Copilot (and Copilot Chat), Claude Code and
+Continue extensions installed for the console user. Cursor (installed for task 16) also has at
 least one AI extension.
 
 ## Problem
@@ -42,7 +42,9 @@ for every user profile, with their versions and the IDE they belong to. It emits
 ## Done when
 
 - `cd device/capture-core && go test -race ./inventory/` passes.
-- On the reference host with the lab MSI rebuilt, `app:github_copilot`, `app:claude_code_vscode`
-  and `app:continue` arrive as `discovery` / `ide_extension` with `host_app` `app:vscode` and the
-  versions VS Code's Extensions view shows. Show both side by side.
+- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`:
+  - `app:github_copilot`, `app:claude_code_vscode` and `app:continue` arrive as
+    `discovery` / `ide_extension`, with `host_app` `app:vscode` and the console user's `user_ref`.
+  - Their versions match `invm.ps1 -AsUser console -Command 'code --list-extensions --show-versions'`.
+    Show both side by side.
 - `node tools/accept.mjs` passes.

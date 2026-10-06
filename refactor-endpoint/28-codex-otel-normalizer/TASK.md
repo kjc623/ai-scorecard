@@ -1,7 +1,8 @@
 # 28. Codex fixtures and normalizer
 
-Needs: on the reference host, the Codex CLI installed and signed in for the owner's account (and
-Codex Desktop, if a Windows build is available).
+Needs: on the reference VM, the Codex CLI installed and signed in for the console user (and Codex
+Desktop, if a Windows build is available). The agent may copy test-only helpers (`otelcol-contrib`)
+into `C:\ProgramData\SacTestbed\` with `invm.ps1 -CopyTo`.
 
 ## Problem
 
@@ -18,16 +19,20 @@ the same guarantees as the Claude Code normalizer (task 26).
 ## Scope
 
 - **Capture** (no product code), as task 25 did:
-  1. Use `otelcol-contrib` with a `file` exporter.
-  2. Configure Codex for the capture session only, in the owner's own
-     `%USERPROFILE%\.codex\config.toml`:
+  1. In the VM, use `otelcol-contrib` with a `file` exporter, run as the console user, as in
+     task 25.
+  2. Configure Codex for the capture session only, in the console user's
+     `%USERPROFILE%\.codex\config.toml` (written with `invm.ps1 -AsUser console`):
      - an `[otel]` section with the OTLP HTTP exporter pointing at the collector;
      - `log_user_prompt = true`;
      - the documented exporter keys, verified against the current documentation.
 
      Restore the file afterwards.
-  3. Run one session with a prompt, a tool call (one allowed, one denied) and an API error.
+  3. Run one headless session (`codex exec`, as the console user) with a prompt, a tool call
+     (one allowed, one denied) and an API error.
   4. Run a second session with `log_user_prompt = false`.
+  - Copy the exporter's files to the PC with `invm.ps1 -CopyFrom`, then remove the capture files
+    and the collector from the VM.
   5. Save the fixtures to `device/capture-core/otlp/testdata/codex/<codex-version>/`, with the
      same placeholder rules and README as task 25. If Codex Desktop exists on Windows and its
      events differ, add a `desktop-<version>/` folder.
@@ -46,7 +51,11 @@ the same guarantees as the Claude Code normalizer (task 26).
 
 - `cd device/capture-core && go test -race ./otlp/...` passes, with every fixture event converted
   and no unlisted attribute.
-- On the reference host, a Codex session pointed by hand at `http://127.0.0.1:47318` with the
-  token header (the same temporary user config as the capture; task 29 makes it managed) gives a
-  `tool.otel` prompt event for `app:codex`, attributed to the owner.
+- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`:
+  - Point a Codex session, run as the console user, by hand at `http://127.0.0.1:47318` with the
+    token header (read with `invm.ps1 -Command 'Get-Content C:\ProgramData\ShadowAICapture\state\otlp.token'`, never printed in the report). Use the same temporary user config as the capture; task 29
+    makes it managed.
+  - It gives a `tool.otel` prompt event for `app:codex`, with the `user_ref` derived from the
+    console user's UPN.
+  - Remove the temporary config afterwards.
 - `node tools/accept.mjs` passes.

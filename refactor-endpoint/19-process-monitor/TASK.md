@@ -36,7 +36,7 @@ version and signer. An admin can switch it on and off from the dashboard.
   - subscribes to `Microsoft-Windows-Kernel-Process` (`{22FB2CD6-0E7B-422B-A0C7-2FAD1FD0E716}`),
     keyword `WINEVENT_KEYWORD_PROCESS` (0x10). Event 1 (ProcessStart) gives PID, image name and
     start time; event 2 (ProcessStop) gives PID. Verify the event ids and fields on the
-    reference host and record the Windows build checked in `DECISIONS.md`.
+    reference VM and record the Windows build checked in `DECISIONS.md`.
   - **On start**: match the image's base name with `Bundle.AppByExe("windows", …)`. On a match,
     resolve the process through `hostinfo.ProcessInfo` (task 09: image, user, publisher). Keep a
     running-set entry `pid → (app_key, user, started)`, and send a `discovery.Record{Type: app_running, Basis: process_event, AppKey, Version, Publisher, Person}`
@@ -60,17 +60,24 @@ version and signer. An admin can switch it on and off from the dashboard.
   - two starts in a day give one record;
   - a mismatched publisher is emitted with the observed publisher;
   - a Windows-only test opens a real session for a few seconds and sees the test's own child
-    process start (`go test` runs elevated on the reference host; skip with a clear message when
-    it isn't elevated).
+    process start (it needs elevation, so it runs in the VM as below; skip with a clear message when it isn't
+    elevated).
 
 ## Done when
 
-- `cd device/capture-core && go test -race ./etwsession/ ./procmon/` passes. On the reference
-  host, run it elevated and show that the real-session test ran rather than skipped.
-- On the reference host with the lab MSI rebuilt:
-  1. Launching and quitting Claude Desktop produces, within seconds, an `app_running` record for
-     `app:claude_desktop` with its publisher and the owner's `user_ref` in the lab tenant.
-  2. The service log (`capture-core.log` in the state directory, at the default `info` level)
-     shows one line for the start and one for the stop. The provider logs, for each catalog start
+- `cd device/capture-core && go test -race ./etwsession/ ./procmon/` passes on the PC.
+- The elevated real-session test runs in the VM, and the report shows it ran rather than
+  skipped. Build the test binary on the PC (`go test -c`), copy it in with
+  `invm.ps1 -CopyTo`, and run it elevated in the VM with `invm.ps1 -Command`.
+- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`:
+  1. Start Claude Desktop as the console user, then quit it:
+     `invm.ps1 -AsUser console -Command 'Start-Process "$env:LOCALAPPDATA\AnthropicClaude\claude.exe"'`,
+     then after 20 s `invm.ps1 -AsUser console -Command 'Get-Process claude | Stop-Process'`.
+     Verify the install path in the VM first.
+  2. Within seconds, an `app_running` record arrives in the lab tenant for `app:claude_desktop`,
+     with its publisher and the console user's `user_ref`.
+  3. The service log shows one line for the start and one for the stop:
+     `invm.ps1 -Command 'Get-Content C:\ProgramData\ShadowAICapture\state\capture-core.log -Tail 50'`
+     at the default `info` level. The provider logs, for each catalog start
      and stop it handles, the app key and PID only, never a command line.
 - `node tools/accept.mjs` passes.
