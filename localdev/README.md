@@ -65,7 +65,7 @@ On Windows, with Go 1.27 and WiX 7 (`dotnet tool install --global wix`), with th
 node localdev/lab-msi.mjs
 ```
 
-builds the product's release (`installer/release-msi.mjs`) with the lab's policy key, classifier key
+builds the product's release (`device/installer/release-msi.mjs`) with the lab's policy key, classifier key
 and extension key, into `localdev\.msi\`, and writes `ShadowAICapture.tenant.env` beside the MSI:
 the Lab tenant, the edge, the tenant's deployment key and the lab CA (`SAC_CA_FILE`). Double-click
 `localdev\.msi\ShadowAICapture.msi`: the agent installs as the `ShadowAICapture` service, enrols

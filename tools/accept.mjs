@@ -99,13 +99,13 @@ const GATES = [
     id: 'installer',
     decides: 'The Windows installer build or its static checks are broken.',
     run: () => process.platform === 'win32'
-      ? steps([['installer', 'node', ['installer/verify.mjs']]])
+      ? steps([['installer', 'node', ['device/installer/verify.mjs']]])
       : { status: 'SKIPPED', detail: 'the MSI is built and checked on Windows' },
   },
   {
     id: 'browser',
     decides: 'The extension does not load or observe requests in a real Chromium.',
-    run: () => steps([['browser', 'node', ['extension/tools/in-browser-check.mjs']]]),
+    run: () => steps([['browser', 'node', ['device/extension/tools/in-browser-check.mjs']]]),
   },
 ];
 

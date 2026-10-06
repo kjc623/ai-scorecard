@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Builds the lab MSI: the product's Windows release, built by installer/release-msi.mjs with the
+// Builds the lab MSI: the product's Windows release, built by device/installer/release-msi.mjs with the
 // lab's trust anchors, and beside it the tenant file a deployment package carries, naming the lab
 // tenant, the lab edge, the lab tenant's deployment key and the lab CA. Windows only.
 //
@@ -53,25 +53,25 @@ function main() {
   ensureLabIdentity(IDENTITY_DIR, TENANT_IDS);
   const identity = readLabIdentity(IDENTITY_DIR, TENANT_IDS);
   const { deviceEndpoint } = labAddresses(JSON.parse(run('docker', ['compose', '-f', COMPOSE_FILE, 'config', '--format', 'json'])));
-  if (!existsSync(join(ROOT, 'extension', 'node_modules', 'crx3'))) run('npm', ['ci', '--prefix', 'extension', '--no-audit', '--no-fund']);
+  if (!existsSync(join(ROOT, 'device', 'extension', 'node_modules', 'crx3'))) run('npm', ['ci', '--prefix', 'device/extension', '--no-audit', '--no-fund']);
 
   const version = labVersion();
   const out = mkdtempSync(join(tmpdir(), 'sac-lab-msi-'));
   try {
     console.log(`lab-msi: building release ${version} …`);
     const built = spawnSync(process.execPath, [
-      join(ROOT, 'installer', 'release-msi.mjs'),
+      join(ROOT, 'device', 'installer', 'release-msi.mjs'),
       '--version', version,
       '--policy-key-file', identity.paths.policyPublicKey,
       '--policy-key-id', POLICY_KEY_ID,
       '--classifier-key', identity.paths.classifierKey,
-      '--classifier-rules', join(ROOT, 'endpoint', 'classifier-host', 'rules', 'default.json'),
-      '--classifier-model', join(ROOT, 'endpoint', 'classifier-host', 'rules', 'model.json'),
-      '--extension-key', join(ROOT, 'extension', 'tools', 'extension-key.pem'),
+      '--classifier-rules', join(ROOT, 'device', 'classifier-host', 'rules', 'default.json'),
+      '--classifier-model', join(ROOT, 'device', 'classifier-host', 'rules', 'model.json'),
+      '--extension-key', join(ROOT, 'device', 'extension', 'tools', 'extension-key.pem'),
       '--wix-eula', 'wix7',
       '--out', out,
     ], { cwd: ROOT, stdio: 'inherit' });
-    if (built.status !== 0) throw new Error('installer/release-msi.mjs failed (above)');
+    if (built.status !== 0) throw new Error('device/installer/release-msi.mjs failed (above)');
     // Copied into the folder rather than built there, so control-api's view of it stays mounted.
     mkdirSync(MSI_DIR, { recursive: true });
     cpSync(out, MSI_DIR, { recursive: true, force: true });

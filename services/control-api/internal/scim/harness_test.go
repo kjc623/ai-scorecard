@@ -20,7 +20,7 @@ import (
 )
 
 // The tenants every test uses. tenantA is 'clear' and carries the protocol test-vector key, so the
-// vectors in endpoint/protocol/userref_test.go come out of the SCIM mapping unchanged; tenantB is
+// vectors in device/protocol/userref_test.go come out of the SCIM mapping unchanged; tenantB is
 // 'hashed' and mints its own key on first need.
 const (
 	tenantA = "aaaaaaaa-0000-4000-8000-00000000000a"

@@ -23,7 +23,7 @@ refers to. Steps marked **(once)** are done once per environment.
    - Secret `SAC_CLASSIFIER_SIGNING_KEY`: the classifier release signing seed, 32 random bytes in
      hex (`openssl rand -hex 32`). Keep it; devices verify classifier releases against its public half.
    - Secret `SAC_EXTENSION_SIGNING_KEY`: the PEM private key whose public half is `key` in
-     `extension/manifest.json`. It fixes the extension's id; a different key is a different
+     `device/extension/manifest.json`. It fixes the extension's id; a different key is a different
      extension to every browser.
    - Optional code signing with Azure Trusted Signing: variables `SAC_SIGNING_ENDPOINT`,
      `SAC_SIGNING_ACCOUNT`, `SAC_SIGNING_PROFILE`, with the deployment identity granted the

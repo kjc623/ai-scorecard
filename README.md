@@ -11,9 +11,9 @@ the backend grants that one event. `docs/architecture.md` describes the system.
 
 | Path | What it is |
 |---|---|
-| `endpoint/` | The device agent: `capture-core` (the service), `classifier-host`, `capture-spool`, `protocol`, and cross-module integration tests |
-| `extension/` | The Chrome/Edge extension |
-| `installer/` | The Windows MSI, macOS package and Linux package |
+| `device/` | The device agent: `capture-core` (the service), `classifier-host`, `capture-spool`, `protocol`, and cross-module integration tests |
+| `device/extension/` | The Chrome/Edge extension |
+| `device/installer/` | The Windows MSI, macOS package and Linux package |
 | `services/ingest-api/` | The event write path |
 | `services/control-api/` | Enrolment, policy, content grants and upload, sign-in, SCIM, tenant onboarding |
 | `services/content-vault/` | Encrypted prompt storage, retrieval and content search |

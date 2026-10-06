@@ -19,8 +19,8 @@ localdev/.env
 
 # The extension's signing key: the public half is committed as manifest.json's `key`; the private
 # half signs the CRX and lives in the pipeline's secrets, never in the repository.
-extension/tools/extension-key.pem
-extension/tools/extension-key.pub.der
+device/extension/tools/extension-key.pem
+device/extension/tools/extension-key.pub.der
 
 # Editor / OS
 .DS_Store

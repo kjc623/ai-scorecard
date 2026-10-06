@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 #
 # control-api. The build context is the repository root, because the module replaces
-# endpoint/protocol and platform with their paths in the repository:
+# device/protocol and platform with their paths in the repository:
 #
 #   docker build -f services/control-api/Dockerfile \
 #     --build-context agent-release=<dir with release.json, ShadowAICapture.msi, shadow-ai-capture.crx> \
@@ -17,7 +17,7 @@ ARG RUNTIME_IMAGE=gcr.io/distroless/static-debian12:nonroot
 FROM ${GO_IMAGE} AS build
 ENV CGO_ENABLED=0
 WORKDIR /src
-COPY endpoint/protocol/ endpoint/protocol/
+COPY device/protocol/ device/protocol/
 COPY services/platform/ services/platform/
 COPY services/control-api/go.mod services/control-api/go.sum services/control-api/
 WORKDIR /src/services/control-api

@@ -1,0 +1,47 @@
+# extension
+
+The Shadow AI Capture browser extension: Manifest V3, Chrome and Edge, force-installed by policy. It
+observes requests, decides locally whether one is a submission to a generative-AI service, and hands
+matched observations (and the files attached to them) to `capture-core` over native messaging; the
+agent builds, spools and sends the records. At M0 no request body is read: the body listener is not
+registered for a destination whose mode does not read content. At a mode that reads content, the
+files the user attached in the sending tab are transferred to `capture-core` (manifest, chunks,
+completion) before the observation that names them, so the agent can classify them on the device;
+the observation carries each file's name, media type, size and digest. Plain ES modules, no build step.
+
+## How it runs in production
+
+The release build (`device/installer/release-msi.mjs`) packages `shadow-ai-capture.crx` beside the MSI and
+records it in `release.json`; control-api serves the CRX and its update manifest at
+`https://<device-fqdn>/v1/extension/updates.xml`, and the browsers install it from the
+`ExtensionInstallForcelist` policy (see `device/installer/README.md`). The installers register the native
+messaging host `com.shadowaicapture.capture_core` for the extension's id, which `manifest.json`'s
+`key` pins (`ebdiaplaignnfokkkoekjkdajlopdfkk`). With no host the extension keeps observing, holds
+observations in a bounded memory queue and reports the channel absent.
+
+| Permission | Why |
+|---|---|
+| `webRequest`, host `<all_urls>` | see every request, including to services nobody listed; requests are never modified |
+| `webRequestBlocking` | cancel a request a local `blocked` rule matches; granted only to a policy-installed extension, and its absence is reported |
+| `nativeMessaging` | the only channel to `capture-core`; observations leave through it and nowhere else |
+| `tabs` | show a `warned` rule's confirmation in the tab that made the request |
+| `alarms` | send the health report and refresh policy while the browser is idle |
+
+The content script runs in every frame's isolated world from `document_start`, because a file the
+user attaches exists only in the page. The extension stores nothing and loads no remote code.
+
+## Build and test
+
+```
+npm ci
+npm test                                   # unit suite, Node 22, no browser
+npm run check:browser                      # the extension in a real Chrome, Edge or Chromium (SAC_BROWSER)
+node tools/build-crx.mjs --key extension.pem --version 1.4.0 --out dist
+node tools/emit-frames.mjs                 # regenerate device/integration's golden native frames
+```
+
+The signing key is the RSA private key whose public half is `manifest.json`'s `key` (Key Vault in CI,
+never committed); a different key is refused because the CRX would install under another id. A new
+key changes the id, the policy value and the host registration: `openssl genpkey -algorithm RSA
+-pkeyopt rsa_keygen_bits:2048 -out extension.pem`, then put
+`openssl pkey -in extension.pem -pubout -outform DER | base64 -w0` in `key`.

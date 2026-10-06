@@ -5,7 +5,7 @@
 FROM golang:1.27-alpine AS build
 ENV CGO_ENABLED=0
 WORKDIR /src
-COPY endpoint/protocol/ endpoint/protocol/
+COPY device/protocol/ device/protocol/
 COPY localdev/authlab/ localdev/authlab/
 RUN cd localdev/authlab && go build -trimpath -ldflags="-s -w" -o /out/authlab .
 

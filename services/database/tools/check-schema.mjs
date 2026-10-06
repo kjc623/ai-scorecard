@@ -374,7 +374,7 @@ check('grants.nothing-to-public', !grants.some((g) => g.grantees.includes('PUBLI
 // CHECK refuses would fail the whole batch at runtime.
 
 {
-  const protocolSrc = read('endpoint/protocol/batch.go');
+  const protocolSrc = read('device/protocol/batch.go');
   const serviceSrc = read('services/ingest-api/internal/ingest/service.go');
   const m = schemaCode.match(/reason_code\s+text\s+NOT NULL\s+CHECK\s*\(\s*reason_code\s+IN\s*\(([\s\S]*?)\)\)/);
   const sqlCodes = m ? [...m[1].matchAll(/'([a-z_]+)'/g)].map((x) => x[1]) : [];
@@ -387,7 +387,7 @@ check('grants.nothing-to-public', !grants.some((g) => g.grantees.includes('PUBLI
   const unknown = [...rejected].filter((n) => !wire.has(n));
   check('vocab.emitters-found', wire.size > 0 && rejected.size > 0 && unknown.length === 0,
     wire.size === 0 || rejected.size === 0
-      ? 'endpoint/protocol/batch.go or services/ingest-api/internal/ingest/service.go is missing, or no reject(protocol.Reason...) call was found'
+      ? 'device/protocol/batch.go or services/ingest-api/internal/ingest/service.go is missing, or no reject(protocol.Reason...) call was found'
       : unknown.length
         ? `service.go rejects with codes batch.go does not declare: ${unknown.join(', ')}`
         : `ingest-api rejects events with ${[...rejected].map((n) => wire.get(n)).join(', ')}; never stored: ${[...notStored].map((n) => wire.get(n)).join(', ') || 'none'}`);

@@ -22,7 +22,7 @@ const INPUTS = [
   'services/database/schema.sql',
   'services/database/invariants.test.sql',
   'contracts/event-envelope.schema.json',
-  'endpoint/protocol/batch.go',
+  'device/protocol/batch.go',
   'services/ingest-api/internal/ingest/service.go',
 ];
 

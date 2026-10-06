@@ -29,11 +29,11 @@ prompt itself crosses only when the backend grants the upload of that one event.
 
 | Component | Where | What it does |
 |---|---|---|
-| `endpoint/capture-core` | Device, as a service | Observes AI traffic (`proxy.tls` for CLI tools routed by `cli.shim`, `proxy.loopback` for local model servers, and the browser extension through its native messaging host), applies policy, classifies through `classifier-host`, spools, and delivers events |
-| `endpoint/classifier-host` | Device, child of capture-core | Deterministic rules (payment cards, identifiers, credentials, keys) over prompt text and documents, from a signed release |
-| `endpoint/capture-spool` | Device | Encrypted, bounded, crash-safe queue between capture and delivery |
-| `extension` | Device browsers (Chrome, Edge) | Observes requests to AI tools, extracts the prompt and the files attached to it, warns or blocks inline, and hands both to capture-core through the native messaging host |
-| `installer` | Build | The Windows MSI (and macOS/Linux packages) that install the agent and register the native messaging host |
+| `device/capture-core` | Device, as a service | Observes AI traffic (`proxy.tls` for CLI tools routed by `cli.shim`, `proxy.loopback` for local model servers, and the browser extension through its native messaging host), applies policy, classifies through `classifier-host`, spools, and delivers events |
+| `device/classifier-host` | Device, child of capture-core | Deterministic rules (payment cards, identifiers, credentials, keys) over prompt text and documents, from a signed release |
+| `device/capture-spool` | Device | Encrypted, bounded, crash-safe queue between capture and delivery |
+| `device/extension` | Device browsers (Chrome, Edge) | Observes requests to AI tools, extracts the prompt and the files attached to it, warns or blocks inline, and hands both to capture-core through the native messaging host |
+| `device/installer` | Build | The Windows MSI (and macOS/Linux packages) that install the agent and register the native messaging host |
 | `services/ingest-api` | Container app | The one write path for events: authenticates the device certificate, validates each envelope against the contract, writes through `ingest.record_event` |
 | `services/control-api` | Container app | Device enrolment and certificates, signed policy delivery, content grants and upload, analyst sign-in and sessions, SCIM, tenant onboarding, tenant packages and extension updates |
 | `services/content-vault` | Container app (internal) | The only component that can decrypt prompt content; stores it encrypted in PostgreSQL and serves approved retrievals and content search |

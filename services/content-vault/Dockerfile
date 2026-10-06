@@ -9,11 +9,11 @@ WORKDIR /src
 # The module replaces two sibling modules by relative path; their go.mod files are copied first so
 # the dependency download is cached until a go.mod or go.sum changes.
 COPY services/platform/go.mod services/platform/go.sum ./services/platform/
-COPY endpoint/protocol/go.mod ./endpoint/protocol/
+COPY device/protocol/go.mod ./device/protocol/
 COPY services/content-vault/go.mod services/content-vault/go.sum ./services/content-vault/
 RUN cd services/content-vault && go mod download
 COPY services/platform/ ./services/platform/
-COPY endpoint/protocol/ ./endpoint/protocol/
+COPY device/protocol/ ./device/protocol/
 COPY services/content-vault/ ./services/content-vault/
 RUN cd services/content-vault && go build -trimpath -ldflags="-s -w" -o /out/content-vault ./cmd/content-vault
 

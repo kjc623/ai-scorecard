@@ -16,7 +16,7 @@ disk:
 | `.testtmp/` | Test runners' scratch space and browser profiles |
 | `.tools/` | Old Go build and module caches pointed inside the repository, tens of thousands of files |
 | `bin/` | Stale host-built binaries |
-| `installer/.lab/` (or `device/installer/.lab/` after task 15) | Staging folders of the old lab MSI build |
+| `device/installer/.lab/` (or `device/installer/.lab/` after task 15) | Staging folders of the old lab MSI build |
 
 ## Goal
 

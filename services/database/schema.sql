@@ -1177,7 +1177,7 @@ CREATE TABLE ingest.rejected (
   rejected_id        bigint GENERATED ALWAYS AS IDENTITY,
   device_id          uuid,
   received_at        timestamptz NOT NULL DEFAULT now(),
-  -- The per-event reason codes ingest-api quarantines, spelled as endpoint/protocol.ReasonCode
+  -- The per-event reason codes ingest-api quarantines, spelled as device/protocol.ReasonCode
   -- spells them. tenant_mismatch is never stored: an envelope naming another tenant has no honest
   -- tenant to be filed under.
   reason_code        text NOT NULL CHECK (reason_code IN (

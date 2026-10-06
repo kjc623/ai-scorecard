@@ -39,5 +39,5 @@ node --test contracts/tools/                # drift, registries, field sets, gof
 cd contracts/generated/go && go test ./...  # the Go package's own tests
 ```
 
-Changing the schema changes every consumer: the endpoint (`endpoint/capture-core` mints envelopes),
+Changing the schema changes every consumer: the endpoint (`device/capture-core` mints envelopes),
 ingest-api (validates and decodes them) and the database (`ingest.record_event` stores them).

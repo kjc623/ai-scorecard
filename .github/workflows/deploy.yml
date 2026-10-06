@@ -73,7 +73,7 @@ jobs:
       - name: tools
         run: |
           dotnet tool install --global wix --version 7.0.0
-          npm ci --prefix extension
+          npm ci --prefix device/extension
 
       # Code signing with Azure Trusted Signing, when the environment configures an account.
       - uses: azure/login@v2
@@ -106,11 +106,11 @@ jobs:
           Set-Content -NoNewline (Join-Path $keys 'classifier.key') $env:CLASSIFIER_KEY
           Set-Content (Join-Path $keys 'extension.pem') $env:EXTENSION_KEY
           $out = Join-Path $env:RUNNER_TEMP 'agent-release'
-          node installer/release-msi.mjs --version "1.0.${{ github.run_number }}" `
+          node device/installer/release-msi.mjs --version "1.0.${{ github.run_number }}" `
             --policy-key-file (Join-Path $keys 'policy.pub') --policy-key-id policy-key-1 `
             --classifier-key (Join-Path $keys 'classifier.key') `
-            --classifier-rules endpoint/classifier-host/rules/default.json `
-            --classifier-model endpoint/classifier-host/rules/model.json `
+            --classifier-rules device/classifier-host/rules/default.json `
+            --classifier-model device/classifier-host/rules/model.json `
             --extension-key (Join-Path $keys 'extension.pem') `
             --wix-eula wix7 $env:SIGN --out $out
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

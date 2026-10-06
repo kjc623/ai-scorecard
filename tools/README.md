@@ -17,8 +17,8 @@ on Linux and Windows (`.github/workflows/ci.yml`).
 | `static` | The checks below, the contract drift check, the schema check and the infrastructure checks, with their tests |
 | `bicep` | `az bicep build` of the template and both parameter files, warnings included |
 | `database` | `services/database/tools/test-database.mjs`: the schema applied as a non-superuser on PostgreSQL 16, then its invariants |
-| `installer` | `installer/verify.mjs` (Windows) |
-| `browser` | `extension/tools/in-browser-check.mjs` in a real Chrome or Edge |
+| `installer` | `device/installer/verify.mjs` (Windows) |
+| `browser` | `device/extension/tools/in-browser-check.mjs` in a real Chrome or Edge |
 
 The cross-component checks in this directory compare one component against another, which no
 component's own tests can do:
@@ -27,4 +27,4 @@ component's own tests can do:
 |---|---|
 | `check-config.mjs` | Every environment variable `azure/main.bicep` sets for an app or job is read by that component |
 | `check-invariants.mjs` | Structural properties: devices hold no database credential, the dashboard holds no SQL, query-api binds values, the spool is append-only, only content-vault touches stored content, collector health stays closed |
-| `check-vocab.mjs` | The extension and `endpoint/protocol` spell every shared vocabulary the same way |
+| `check-vocab.mjs` | The extension and `device/protocol` spell every shared vocabulary the same way |

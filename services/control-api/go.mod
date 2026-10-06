@@ -20,6 +20,6 @@ require (
 )
 
 replace (
-	github.com/shadow-ai-capture/device/protocol => ../../endpoint/protocol
+	github.com/shadow-ai-capture/device/protocol => ../../device/protocol
 	github.com/shadow-ai-capture/platform => ../platform
 )

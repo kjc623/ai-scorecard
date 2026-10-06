@@ -359,7 +359,7 @@ func isStatus(err error, status int) bool {
 	return errors.As(err, &e) && e.Status == status
 }
 
-// TestServedBundleVerifiesWithTheDevicesVerifier runs endpoint/capture-core/policy's own Verifier
+// TestServedBundleVerifiesWithTheDevicesVerifier runs device/capture-core/policy's own Verifier
 // over a bundle exactly as GET /v1/policy serves it. capture-core is a separate module and
 // control-api must not require it, so the test writes a throwaway module that replaces the device
 // modules with their paths in this repository and runs it with the local toolchain. It

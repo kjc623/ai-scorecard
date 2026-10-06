@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // check-vocab.mjs — the device components spell every shared closed vocabulary the same way.
 //
-// endpoint/protocol (Go) is the source of truth; the extension transcribes its vocabularies in
-// extension/src/messages.js. A one-letter difference compiles on both sides and fails only at
+// device/protocol (Go) is the source of truth; the extension transcribes its vocabularies in
+// device/extension/src/messages.js. A one-letter difference compiles on both sides and fails only at
 // runtime, so this parses both and compares them by value, with the names aligned.
 //
 //   node tools/check-vocab.mjs            # exit 1 on drift
@@ -20,53 +20,53 @@ const VOCABULARIES = [
   {
     id: 'native-message-type',
     title: 'Native-messaging message types (protocol/native.go Type*)',
-    go: { file: 'endpoint/protocol/native.go', prefix: 'Type' },
+    go: { file: 'device/protocol/native.go', prefix: 'Type' },
     // The extension splits the two directions into separate frozen objects (TYPE for extension ->
     // core, CORE_TYPE for core -> extension). That is a clearer structure than one flat set, and it
     // is not drift, so the comparison is against the union of the two.
-    js: { file: 'extension/src/messages.js', groups: ['TYPE', 'CORE_TYPE'] },
+    js: { file: 'device/extension/src/messages.js', groups: ['TYPE', 'CORE_TYPE'] },
   },
   {
     id: 'refusal-reason',
     title: 'Refusal reasons (protocol RefusalReason)',
-    go: { file: 'endpoint/protocol/native.go', prefix: 'Refusal', pascalValues: true },
-    js: { file: 'extension/src/messages.js', groups: ['REFUSAL'] },
+    go: { file: 'device/protocol/native.go', prefix: 'Refusal', pascalValues: true },
+    js: { file: 'device/extension/src/messages.js', groups: ['REFUSAL'] },
   },
   {
     id: 'route',
     title: 'Collection routes (protocol Route*)',
-    go: { file: 'endpoint/protocol/envelope.go', prefix: 'Route' },
-    js: { file: 'extension/src/messages.js', groups: ['ROUTE'] },
+    go: { file: 'device/protocol/envelope.go', prefix: 'Route' },
+    js: { file: 'device/extension/src/messages.js', groups: ['ROUTE'] },
   },
   {
     id: 'collection-mode',
     title: 'Collection modes (protocol Mode*)',
-    go: { file: 'endpoint/protocol/envelope.go', prefix: 'Mode', values: ['m0', 'm1', 'm2', 'm3'] },
-    js: { file: 'extension/src/messages.js', groups: ['MODE'] },
+    go: { file: 'device/protocol/envelope.go', prefix: 'Mode', values: ['m0', 'm1', 'm2', 'm3'] },
+    js: { file: 'device/extension/src/messages.js', groups: ['MODE'] },
   },
   {
     id: 'policy-action',
     title: 'Policy actions (protocol Action*)',
-    go: { file: 'endpoint/protocol/envelope.go', prefix: 'Action' },
-    js: { file: 'extension/src/messages.js', groups: ['ACTION'] },
+    go: { file: 'device/protocol/envelope.go', prefix: 'Action' },
+    js: { file: 'device/extension/src/messages.js', groups: ['ACTION'] },
   },
   {
     id: 'counter',
     title: 'Health counters (protocol Counter*)',
-    go: { file: 'endpoint/protocol/envelope.go', prefix: 'Counter' },
-    js: { file: 'extension/src/messages.js', groups: ['COUNTER'] },
+    go: { file: 'device/protocol/envelope.go', prefix: 'Counter' },
+    js: { file: 'device/extension/src/messages.js', groups: ['COUNTER'] },
   },
   {
     id: 'collector-state',
     title: 'Collector states (protocol State*)',
-    go: { file: 'endpoint/protocol/envelope.go', prefix: 'State' },
-    js: { file: 'extension/src/messages.js', groups: ['STATE'] },
+    go: { file: 'device/protocol/envelope.go', prefix: 'State' },
+    js: { file: 'device/extension/src/messages.js', groups: ['STATE'] },
   },
   {
     id: 'detail',
     title: 'Health detail vocabulary (protocol Detail*)',
-    go: { file: 'endpoint/protocol/envelope.go', prefix: 'Detail' },
-    js: { file: 'extension/src/messages.js', groups: ['DETAIL'] },
+    go: { file: 'device/protocol/envelope.go', prefix: 'Detail' },
+    js: { file: 'device/extension/src/messages.js', groups: ['DETAIL'] },
   },
 ];
 
@@ -178,7 +178,7 @@ function main() {
           kind: 'not-in-protocol',
           name,
           value,
-          detail: `${vocab.js.file} (${vocab.js.group}) defines ${name} = "${value}"; endpoint/protocol has no such value`,
+          detail: `${vocab.js.file} (${vocab.js.group}) defines ${name} = "${value}"; device/protocol has no such value`,
         });
         count++;
       }
@@ -192,7 +192,7 @@ function main() {
     process.exit(findings.length === 0 ? 0 : 1);
   }
 
-  console.log('Shared vocabularies: endpoint/protocol (source of truth) vs consumers');
+  console.log('Shared vocabularies: device/protocol (source of truth) vs consumers');
   console.log('');
   for (const s of summaries) {
     const mark = s.status === 'ABSENT' ? 'ABSENT ' : s.status === 'agree' ? 'agree  ' : 'DRIFT  ';

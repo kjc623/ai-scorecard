@@ -10,12 +10,12 @@ WORKDIR /src
 ENV CGO_ENABLED=0
 
 COPY services/ingest-api/go.mod services/ingest-api/go.sum services/ingest-api/
-COPY endpoint/protocol/go.mod endpoint/protocol/
+COPY device/protocol/go.mod device/protocol/
 COPY contracts/generated/go/go.mod contracts/generated/go/
 COPY services/platform/go.mod services/platform/go.sum services/platform/
 RUN cd services/ingest-api && go mod download
 
-COPY endpoint/protocol/ endpoint/protocol/
+COPY device/protocol/ device/protocol/
 COPY contracts/generated/go/ contracts/generated/go/
 COPY services/platform/ services/platform/
 COPY services/ingest-api/ services/ingest-api/

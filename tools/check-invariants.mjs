@@ -62,7 +62,7 @@ function scan(list, pattern, view = codeOnly) {
 
 const checks = {
   'collectors-hold-no-database-credential': () => {
-    const device = files('endpoint', 'extension', 'installer');
+    const device = files('device');
     return [
       ...scan(device, /\b(jackc\/pgx|lib\/pq|database\/sql|sql\.Open)\b/),
       ...scan(device.filter((f) => f.endsWith('go.mod')), /(pgx|lib\/pq)/),
@@ -102,12 +102,12 @@ const checks = {
     return reached ? [`${reached} hostile input(s) reached SQL text`] : [];
   },
 
-  'spool-is-append-only': () => scan(files('endpoint/capture-spool').filter((f) => f.endsWith('.go') && !isTest(f)),
+  'spool-is-append-only': () => scan(files('device/capture-spool').filter((f) => f.endsWith('.go') && !isTest(f)),
     /\bfunc\s*\([^)]*\)\s*(Update|SetPayload|Rewrite|ReplaceEntry)\s*\(/),
 
   'only-content-vault-decrypts': () => {
     // The jobs delete expired content without reading it; the schema and the deployment declare it.
-    const elsewhere = files('services/control-api', 'services/ingest-api', 'services/query-api', 'services/dashboard', 'endpoint', 'extension', 'services/platform').filter((f) => !isTest(f));
+    const elsewhere = files('services/control-api', 'services/ingest-api', 'services/query-api', 'services/dashboard', 'device/capture-core', 'device/capture-spool', 'device/classifier-host', 'device/protocol', 'device/integration', 'device/extension', 'services/platform').filter((f) => !isTest(f));
     return [
       ...scan(elsewhere, /\bops\.content\b(?!_)/, uncommented),
       ...scan(elsewhere.concat(files('services/jobs')), /SAC_CONTENT_KEYS/, uncommented),
@@ -115,8 +115,8 @@ const checks = {
   },
 
   'coverage-states-are-closed': () => {
-    const envelope = join(ROOT, 'endpoint', 'protocol', 'envelope.go');
-    if (!existsSync(envelope)) return ['endpoint/protocol/envelope.go is missing'];
+    const envelope = join(ROOT, 'device', 'protocol', 'envelope.go');
+    if (!existsSync(envelope)) return ['device/protocol/envelope.go is missing'];
     const body = readFileSync(envelope, 'utf8');
     return ['StateHealthy', 'StateDegraded', 'StateAbsent', 'StateTampered', 'CounterDropped']
       .filter((name) => !new RegExp(`\\b${name}\\b`).test(body))
