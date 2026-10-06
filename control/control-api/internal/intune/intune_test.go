@@ -29,7 +29,7 @@ func (t *tokens) Token(_ context.Context, customerTenantID, scope string) (strin
 	return "graph-token", t.err
 }
 
-// graph is a stand-in for Microsoft Graph's managedDevices endpoint.
+// graph is a fake of Microsoft Graph's managedDevices endpoint.
 func graph(t *testing.T, status int, body string) (*httptest.Server, *http.Request) {
 	t.Helper()
 	var seen http.Request
@@ -68,7 +68,7 @@ func reason(t *testing.T, err error) string {
 }
 
 // TestGraphCheckerAsksTheCustomersIntune pins the request: the customer's tenant and Graph's
-// default scope for the token, the managed device by id with the contract's $select, and a bearer
+// default scope for the token, the managed device by id with the expected $select, and a bearer
 // token.
 func TestGraphCheckerAsksTheCustomersIntune(t *testing.T) {
 	srv, seen := graph(t, 200, managed("PF3ABC12", entraDeviceID, "managed"))

@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"time"
-
-	"github.com/shadow-ai-capture/control-api/internal/directory"
 )
 
 // Store errors. A Tx returns them unwrapped so the service can map each to its SCIM status.
@@ -27,6 +25,24 @@ type UserRow struct {
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 }
+
+// UserDimRow is the person's ops.user_dim row as SCIM writes it: the sealed externalId (else
+// userName), the department from the enterprise extension, the display name only while the tenant's
+// device_identity is 'clear', and the status from `active`. A nil pointer is SQL NULL.
+type UserDimRow struct {
+	UserRef              string
+	DirectoryObjectIDEnc []byte
+	Department           *string
+	DisplayName          *string
+	Status               string
+	SyncedAt             time.Time
+}
+
+// The two ops.user_dim status values SCIM writes.
+const (
+	DimActive   = "active"
+	DimInactive = "inactive"
+)
 
 // GroupRow is one ops.scim_group row. A group's name is not a person's data, so it is stored clear.
 type GroupRow struct {
@@ -95,7 +111,7 @@ type Tx interface {
 	UpdateUser(UserRow) error
 	// PutAlias points alias at canonical, moving it if it pointed elsewhere.
 	PutAlias(alias, canonical string, at time.Time) error
-	UpsertUserDim(directory.Row) error
+	UpsertUserDim(UserDimRow) error
 
 	Group(id string, forUpdate bool) (GroupRow, error)
 	GroupsByDisplayName(name string) ([]GroupRow, error)

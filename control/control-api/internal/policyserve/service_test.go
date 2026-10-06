@@ -29,12 +29,12 @@ import (
 	"github.com/shadow-ai-capture/control-api/internal/apierr"
 	"github.com/shadow-ai-capture/control-api/internal/policyserve"
 	"github.com/shadow-ai-capture/control-api/internal/store"
+	"github.com/shadow-ai-capture/control-api/internal/store/storetest"
 )
 
 const (
-	tenantA  = "5a3c0de0-7e57-4a11-9000-0000000d3a01"
-	deviceA  = "22222222-2222-4222-8222-222222222222"
-	release1 = "2026.01.0-shadow"
+	tenantA = "5a3c0de0-7e57-4a11-9000-0000000d3a01"
+	deviceA = "22222222-2222-4222-8222-222222222222"
 )
 
 var (
@@ -43,18 +43,17 @@ var (
 )
 
 type rig struct {
-	store *store.Memory
+	store *storetest.Memory
 	svc   *policyserve.Service
 	now   time.Time
 }
 
 func newRig(t *testing.T, mutate func(*policyserve.Config)) *rig {
 	t.Helper()
-	r := &rig{store: store.NewMemory(), now: time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)}
+	r := &rig{store: storetest.New(), now: time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)}
 	r.store.AddTenant(store.Tenant{TenantID: tenantA, Status: "active", IngestEnabled: true})
 	r.store.SetCeiling(tenantA, "m3")
 	r.store.SetCatalogueHosts("api.openai.com", "API.Anthropic.com", "chatgpt.com", "api.openai.com")
-	r.store.SetClassifierReleases(store.ClassifierRelease{Version: release1, State: "shadow"})
 	cfg := policyserve.Config{Now: func() time.Time { return r.now }, RecheckInterval: -1, Logger: quiet}
 	if mutate != nil {
 		mutate(&cfg)
@@ -127,7 +126,7 @@ func TestServesASignedBundleComposedFromTheTenant(t *testing.T) {
 		t.Fatalf("payload version/mode = %v/%v, response version %s", p["version"], p["tenant_default_mode"], resp.BundleVersion)
 	}
 	if v, _ := strconv.ParseInt(resp.BundleVersion, 10, 64); v < r.now.Unix() {
-		t.Fatalf("first version %d is below the minting time %d; it would order before a lab bundle", v, r.now.Unix())
+		t.Fatalf("first version %d is below the minting time %d", v, r.now.Unix())
 	}
 	ic := p["interception"].(map[string]any)
 	hosts, _ := json.Marshal(ic["seed_hosts"])
@@ -137,8 +136,14 @@ func TestServesASignedBundleComposedFromTheTenant(t *testing.T) {
 	if _, ok := ic["root_ca_pem"]; ok {
 		t.Fatal("the server put a root CA in the bundle; the device generates its own")
 	}
-	if c := p["classifier"].(map[string]any); c["release_id"] != release1 || c["state"] != "shadow" {
-		t.Fatalf("classifier = %v", c)
+	shim := p["cli_shim"].(map[string]any)
+	if _, ok := shim["managed_dir"]; ok || shim["proxy_addr"] != policyserve.DefaultProxyListen {
+		t.Fatalf("cli_shim = %v", shim)
+	}
+	for _, field := range []string{"classifier", "proc_detect", "shape_predicate", "loopback", "spool"} {
+		if _, ok := p[field]; ok {
+			t.Errorf("the payload carries %q, which this service does not compose", field)
+		}
 	}
 
 	rows := r.store.PolicyBundles(tenantA)
@@ -148,7 +153,7 @@ func TestServesASignedBundleComposedFromTheTenant(t *testing.T) {
 	row := rows[0]
 	sum := sha256.Sum256(resp.SignedBundle)
 	if !bytes.Equal(row.SignedEnvelope, resp.SignedBundle) || row.SignedDigest != "sha256:"+hex.EncodeToString(sum[:]) ||
-		row.SignatureKID != policyserve.DefaultKeyID || row.ClassifierRelease != release1 || row.RetentionClass != "standard" {
+		row.SignatureKID != policyserve.DefaultKeyID || row.RetentionClass != "standard" {
 		t.Fatalf("stored row = %+v", row)
 	}
 	if string(row.ScopeMatrix) != `{"tenant_default":"m3"}` {
@@ -235,7 +240,7 @@ func newer(a, b string) bool {
 	return x > y
 }
 
-// TestVersionOrdersAfterAnyEarlierBundle: a previous version above the clock (a lab bundle minted
+// TestVersionOrdersAfterAnyEarlierBundle: a previous version above the clock (a bundle minted
 // later, or a skewed clock) is still exceeded.
 func TestVersionOrdersAfterAnyEarlierBundle(t *testing.T) {
 	r := newRig(t, nil)
@@ -249,28 +254,26 @@ func TestVersionOrdersAfterAnyEarlierBundle(t *testing.T) {
 	}
 }
 
-// TestNoBundleIs404: with nothing stored and nothing composable the answer is 404, which the
-// device reads as M0; a stored bundle stays served even when composition becomes impossible.
-func TestNoBundleIs404(t *testing.T) {
+// A stored bundle whose payload carries a field this service no longer composes is replaced by a new
+// version rather than served again: the device's strict decoder would refuse it.
+func TestAStoredBundleWithRetiredFieldsIsReplaced(t *testing.T) {
 	r := newRig(t, nil)
-	r.store.SetClassifierReleases()
-	rec := r.get(t, "")
-	if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), apierr.CodeNoPolicyBundle) {
-		t.Fatalf("status %d body %s", rec.Code, rec.Body)
-	}
-	if len(r.store.PolicyBundles(tenantA)) != 0 {
-		t.Fatal("a bundle was written with no classifier release")
-	}
-
-	served := newRig(t, nil)
-	first, err := served.svc.Current(context.Background(), tenantA)
+	first, err := r.svc.Current(context.Background(), tenantA)
 	if err != nil {
 		t.Fatal(err)
 	}
-	served.store.SetClassifierReleases()
-	again, err := served.svc.Current(context.Background(), tenantA)
-	if err != nil || again.Version != first.Version {
-		t.Fatalf("stored bundle withdrawn: %+v %v", again, err)
+	_, payload := payloadOf(t, first.Envelope)
+	stale := append([]byte(`{"classifier":{"release_id":"r1","state":"shadow"},`), payload[1:]...)
+	envelope, _ := json.Marshal(policyserve.SignedBundle{KeyID: policyserve.DefaultKeyID, Algorithm: "ed25519",
+		Payload: stale, Signature: base64.StdEncoding.EncodeToString(ed25519.Sign(signingKey, stale))})
+	v, _ := strconv.ParseInt(first.Version, 10, 64)
+	r.store.AddPolicyBundle(store.PolicyBundle{TenantID: tenantA, Version: v + 1, SignatureKID: policyserve.DefaultKeyID, SignedEnvelope: envelope})
+	again, err := r.svc.Current(context.Background(), tenantA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Version == first.Version || again.Version == strconv.FormatInt(v+1, 10) || bytes.Contains(again.Envelope, []byte("classifier")) {
+		t.Fatalf("the stale bundle was served: version %s", again.Version)
 	}
 }
 
@@ -312,9 +315,6 @@ func TestRecheckIntervalCachesTheServedBundle(t *testing.T) {
 	r.store.SetCeiling(tenantA, "m0")
 	if v, _ := r.svc.Current(ctx, tenantA); v.Version != v1.Version {
 		t.Fatal("the cache was not used inside the interval")
-	}
-	if v, _ := r.svc.Refresh(ctx, tenantA); v.Version == v1.Version {
-		t.Fatal("Refresh did not re-read the inputs")
 	}
 }
 
@@ -362,7 +362,7 @@ func isStatus(err error, status int) bool {
 // TestServedBundleVerifiesWithTheDevicesVerifier runs endpoint/capture-core/policy's own Verifier
 // over a bundle exactly as GET /v1/policy serves it. capture-core is a separate module and
 // control-api must not require it, so the test writes a throwaway module that replaces the device
-// modules with their paths in this repository and runs it with the local toolchain, offline. It
+// modules with their paths in this repository and runs it with the local toolchain. It
 // catches the one drift a mirror can have: a field the device does not know, which its strict
 // decoder would refuse.
 func TestServedBundleVerifiesWithTheDevicesVerifier(t *testing.T) {
@@ -391,7 +391,6 @@ func TestServedBundleVerifiesWithTheDevicesVerifier(t *testing.T) {
 	gomod := "module sacpolicycheck\n\ngo 1.27\n\nrequire github.com/shadow-ai-capture/device/capture-core v0.0.0\n\n" +
 		"replace github.com/shadow-ai-capture/device/capture-core => " + abs(filepath.Join(endpoint, "capture-core")) + "\n" +
 		"replace github.com/shadow-ai-capture/device/protocol => " + abs(filepath.Join(endpoint, "protocol")) + "\n" +
-		"replace github.com/shadow-ai-capture/device/canon => " + abs(filepath.Join(endpoint, "canon")) + "\n" +
 		"replace github.com/shadow-ai-capture/device/capture-spool => " + abs(filepath.Join(endpoint, "capture-spool")) + "\n"
 	program := `package main
 
@@ -416,7 +415,7 @@ func main() {
 		fmt.Println("ERR", err)
 		os.Exit(1)
 	}
-	store, err := policy.NewStore(v, nil)
+	store, err := policy.NewStore(v)
 	if err != nil {
 		fmt.Println("ERR", err)
 		os.Exit(1)
@@ -427,7 +426,7 @@ func main() {
 		fmt.Println("ERR", res.Outcome, res.Cause, res.Err)
 		os.Exit(1)
 	}
-	fmt.Println("OK", res.Outcome, b.Version, b.TenantDefault, len(b.Interception.SeedHosts), b.Classifier.ReleaseID, b.Intercepts("api.openai.com", 443))
+	fmt.Println("OK", res.Outcome, b.Version, b.TenantDefault, len(b.Interception.SeedHosts), b.CLIShim.ProxyAddr, b.Intercepts("api.openai.com", 443))
 }
 `
 	for name, body := range map[string]string{"go.mod": gomod, "main.go": program} {
@@ -441,12 +440,12 @@ func main() {
 	}
 	cmd := exec.Command(goBin, "run", ".", bundlePath, r.svc.PublicKeyHex(), r.svc.KeyID())
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOPROXY=off", "GOWORK=off", "GOTOOLCHAIN=local", "CGO_ENABLED=0")
+	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off", "CGO_ENABLED=0")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("capture-core's verifier refused the served bundle: %v\n%s", err, out)
 	}
-	want := "OK accepted " + resp.BundleVersion + " m3 3 " + release1 + " true"
+	want := "OK accepted " + resp.BundleVersion + " m3 3 " + policyserve.DefaultProxyListen + " true"
 	if got := strings.TrimSpace(string(out)); !strings.HasSuffix(got, want) {
 		t.Fatalf("verifier output %q, want %q", got, want)
 	}
@@ -462,7 +461,7 @@ func main() {
 	}
 	cmd = exec.Command(goBin, "run", ".", bundlePath, r.svc.PublicKeyHex(), r.svc.KeyID())
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOPROXY=off", "GOWORK=off", "GOTOOLCHAIN=local", "CGO_ENABLED=0")
+	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off", "CGO_ENABLED=0")
 	if out, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(out), "bundle_schema_invalid") {
 		t.Fatalf("a bundle with an unknown field was not refused as schema-invalid: %v\n%s", err, out)
 	}

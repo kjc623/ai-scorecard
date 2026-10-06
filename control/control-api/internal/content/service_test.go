@@ -1,8 +1,8 @@
 package content
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -17,16 +17,16 @@ import (
 )
 
 const (
-	tenant = "11111111-1111-1111-1111-111111111111"
-	device = "22222222-2222-4222-8222-222222222222"
-	event  = "33333333-3333-4333-8333-333333333333"
+	tenant     = "5a3c0de0-7e57-4a11-9000-0000000d3a01"
+	device     = "22222222-2222-4222-8222-222222222222"
+	event      = "33333333-3333-4333-8333-333333333333"
+	submission = "44444444-4444-4444-8444-444444444444"
 )
 
 type fakeStore struct {
 	ec       EventContext
 	grants   map[string]Grant
 	uploaded int64
-	voided   []string
 }
 
 func (f *fakeStore) EventContext(_ context.Context, _, deviceID, _ string) (*EventContext, error) {
@@ -36,13 +36,17 @@ func (f *fakeStore) EventContext(_ context.Context, _, deviceID, _ string) (*Eve
 	}
 	return &ec, nil
 }
+
 func (f *fakeStore) InsertGrant(_ context.Context, _ string, g Grant) error {
 	if f.grants == nil {
 		f.grants = map[string]Grant{}
 	}
 	f.grants[g.GrantID] = g
+	gg := g
+	f.ec.Grant = &gg
 	return nil
 }
+
 func (f *fakeStore) Grant(_ context.Context, _, id string) (*Grant, error) {
 	g, ok := f.grants[id]
 	if !ok {
@@ -50,250 +54,266 @@ func (f *fakeStore) Grant(_ context.Context, _, id string) (*Grant, error) {
 	}
 	return &g, nil
 }
-func (f *fakeStore) VoidGrant(_ context.Context, _, id string) error {
-	f.voided = append(f.voided, id)
-	return nil
-}
-func (f *fakeStore) RecordUpload(_ context.Context, _, _ string, n int64) error {
+
+func (f *fakeStore) AddContentUsage(_ context.Context, _ string, n int64) error {
 	f.uploaded += n
-	f.ec.ContentState = "uploaded"
 	return nil
 }
 
+// fakeVault stores each grant's content once and answers a repeat as a replay.
 type fakeVault struct {
-	prepared  int
-	finalised []StoredObject
+	puts   []string
+	stored map[string]bool
+	err    error
 }
 
-func (v *fakeVault) Prepare(context.Context, string, string, string, string, string, time.Time, int64) (*PreparedKey, error) {
-	v.prepared++
-	return &PreparedKey{ObjectKeyB64: "a2V5", WrappedDEK: "d3JhcHBlZA==", KEKID: "kek", KEKVersion: "1"}, nil
-}
-func (v *fakeVault) Finalise(_ context.Context, _, _ string, obj StoredObject) error {
-	v.finalised = append(v.finalised, obj)
-	return nil
+func (v *fakeVault) Put(_ context.Context, tenantID, eventID, grantID, digest string, body []byte) (bool, error) {
+	v.puts = append(v.puts, strings.Join([]string{tenantID, eventID, grantID, digest, string(body)}, "|"))
+	if v.err != nil {
+		return false, v.err
+	}
+	if v.stored == nil {
+		v.stored = map[string]bool{}
+	}
+	first := !v.stored[grantID]
+	v.stored[grantID] = true
+	return first, nil
 }
 
 func m3Event() EventContext {
 	return EventContext{
 		Found: true, Kind: "prompt", CollectionMode: "m3", ExpiresAt: time.Now().Add(time.Hour),
-		SubmissionID: "44444444-4444-4444-8444-444444444444", ContentState: "not_captured",
+		SubmissionID: submission, ContentState: "not_captured",
 		CeilingMode: "m3", BudgetBytesPerDay: 1 << 20,
 	}
 }
 
-func request() protocol.ContentGrantRequest {
+func grantRequest() protocol.ContentGrantRequest {
 	return protocol.ContentGrantRequest{
 		SchemaVersion: protocol.ContentGrantSchemaVersion, EventID: event, CollectionMode: protocol.ModeM3,
-		ContentDigest: "sha256:" + strings.Repeat("0", 64), SizeBytes: 100, RawSizeBytes: 128,
+		ContentDigest: "sha256:" + strings.Repeat("a", 64), SizeBytes: 100, RawSizeBytes: 120,
 	}
 }
 
-func newService(t *testing.T, st *fakeStore, v *fakeVault) *Service {
+func newService(t *testing.T, ec EventContext) (*Service, *fakeStore, *fakeVault) {
 	t.Helper()
-	s, err := New(st, v, Config{UploadSigningKey: []byte("0123456789abcdef0123")})
+	st, v := &fakeStore{ec: ec}, &fakeVault{}
+	s, err := New(st, v)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return s
+	return s, st, v
 }
 
-func statusOf(err error) int {
+func code(err error) string {
 	var e *apierr.Error
 	if errors.As(err, &e) {
-		return e.Status
+		return e.Code
 	}
-	return 0
+	return ""
 }
 
-// §5.5: a granted decision carries one upload URL, the object key and the metadata the device
-// repeats; it is recorded as a live grant naming one object.
-func TestDecide_GrantsAnM3EventOfThisDevice(t *testing.T) {
-	st, v := &fakeStore{ec: m3Event()}, &fakeVault{}
-	resp, err := newService(t, st, v).Decide(context.Background(), tenant, device, request(), "https://edge.example")
+func TestGrantDecisions(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		ec     func(*EventContext)
+		req    func(*protocol.ContentGrantRequest)
+		code   string
+		reason string
+	}{
+		{name: "another device's event", ec: func(e *EventContext) { e.Found = false }, code: string(protocol.ReasonUnknownEvent)},
+		{name: "not an M3 event", ec: func(e *EventContext) { e.CollectionMode = "m2" }, code: string(protocol.ReasonModeViolation)},
+		{name: "already uploaded", ec: func(e *EventContext) { e.ContentState = "uploaded" }, code: string(protocol.ReasonGrantConsumed)},
+		{name: "oversize", req: func(r *protocol.ContentGrantRequest) { r.RawSizeBytes = protocol.MaxContentObjectBytes + 1 }, code: string(protocol.ReasonOversize)},
+		{name: "bad event id", req: func(r *protocol.ContentGrantRequest) { r.EventID = "x" }, code: apierr.CodeSchemaViolation},
+		{name: "ceiling below m3", ec: func(e *EventContext) { e.CeilingMode = "m2" }, reason: DenyModeNotPermitted},
+		{name: "retention expired", ec: func(e *EventContext) { e.ExpiresAt = time.Now().Add(-time.Minute) }, reason: DenyRetentionExpired},
+		{name: "over budget", ec: func(e *EventContext) { e.BytesAddedToday = 1<<20 - 100 }, reason: DenyOverBudget},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ec := m3Event()
+			if c.ec != nil {
+				c.ec(&ec)
+			}
+			req := grantRequest()
+			if c.req != nil {
+				c.req(&req)
+			}
+			s, st, _ := newService(t, ec)
+			resp, err := s.Decide(context.Background(), tenant, device, req)
+			if c.code != "" {
+				if code(err) != c.code {
+					t.Fatalf("err = %v, want %s", err, c.code)
+				}
+				return
+			}
+			if err != nil || resp.State != protocol.ContentGrantDenied || resp.Reason != c.reason {
+				t.Fatalf("resp = %+v, %v; want denied %s", resp, err, c.reason)
+			}
+			again, err := s.Decide(context.Background(), tenant, device, req)
+			if err != nil || again.GrantID != resp.GrantID || again.State != protocol.ContentGrantDenied || len(st.grants) != 1 {
+				t.Fatalf("a denial was decided again: %+v, %v", again, err)
+			}
+		})
+	}
+}
+
+func TestGrantIsReturnedAgainWhileOpen(t *testing.T) {
+	s, st, _ := newService(t, m3Event())
+	resp, err := s.Decide(context.Background(), tenant, device, grantRequest())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.State != protocol.ContentGrantGranted || resp.Upload == nil || resp.Key == nil {
-		t.Fatalf("response = %+v, want a granted decision with an upload and a key", resp)
+	if resp.State != protocol.ContentGrantGranted || resp.MaxBytes != protocol.MaxContentObjectBytes ||
+		time.Until(resp.ExpiresAt) > GrantTTL || resp.ExpiresAt.Before(time.Now()) {
+		t.Fatalf("resp = %+v", resp)
+	}
+	again, err := s.Decide(context.Background(), tenant, device, grantRequest())
+	if err != nil || again.GrantID != resp.GrantID || len(st.grants) != 1 {
+		t.Fatalf("an open grant was decided again: %+v, %v", again, err)
 	}
 	g := st.grants[resp.GrantID]
-	if g.Decision != DecisionGranted || g.ObjectID == "" {
-		t.Fatalf("recorded grant = %+v", g)
-	}
-	if !strings.HasPrefix(resp.Upload.URL, "https://edge.example/v1/content/upload/"+g.ObjectID+"?") {
-		t.Fatalf("upload URL %q does not name the granted object", resp.Upload.URL)
-	}
-	if resp.Upload.Headers[protocol.HeaderContentGrantID] != resp.GrantID {
-		t.Fatal("the upload metadata does not carry the grant id")
+	used := time.Now()
+	g.UsedAt = &used
+	st.ec.Grant = &g
+	if _, err := s.Decide(context.Background(), tenant, device, grantRequest()); code(err) != string(protocol.ReasonGrantConsumed) {
+		t.Fatalf("a used grant: err = %v", err)
 	}
 }
 
-// §5.5: another device's event is unknown, a mode that holds no content is refused rather than
-// denied, and a consumed grant is a conflict.
-func TestDecide_Refusals(t *testing.T) {
-	cases := []struct {
+func grantFor(t *testing.T) (*Service, *fakeStore, *fakeVault, string) {
+	t.Helper()
+	s, st, v := newService(t, m3Event())
+	resp, err := s.Decide(context.Background(), tenant, device, grantRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s, st, v, resp.GrantID
+}
+
+func TestUploadForwardsTheGrantedContentOnce(t *testing.T) {
+	s, st, v, grantID := grantFor(t)
+	body := []byte(`{"prompt":"summarise the contract"}`)
+	u := Upload{GrantID: grantID, EventID: event, RawDigest: protocol.RawDigest(body), Body: body}
+	if err := s.Upload(context.Background(), tenant, device, u); err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Join([]string{tenant, event, grantID, protocol.RawDigest(body), string(body)}, "|")
+	if len(v.puts) != 1 || v.puts[0] != want {
+		t.Fatalf("vault puts = %q", v.puts)
+	}
+	if st.uploaded != int64(len(body)) {
+		t.Fatalf("usage = %d, want %d", st.uploaded, len(body))
+	}
+	// A retry after the grant was used is forwarded (the vault answers it as a replay) and is not
+	// counted again.
+	g := st.grants[grantID]
+	used := time.Now()
+	g.UsedAt = &used
+	st.grants[grantID] = g
+	if err := s.Upload(context.Background(), tenant, device, u); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if len(v.puts) != 2 || st.uploaded != int64(len(body)) {
+		t.Fatalf("retry: puts %d, usage %d", len(v.puts), st.uploaded)
+	}
+}
+
+func TestUploadRefusals(t *testing.T) {
+	body := []byte("content")
+	good := func(grantID string) Upload {
+		return Upload{GrantID: grantID, EventID: event, RawDigest: protocol.RawDigest(body), Body: body}
+	}
+	for _, c := range []struct {
 		name   string
-		mutate func(*EventContext)
 		device string
-		want   int
+		mutate func(*Upload, *fakeStore, *fakeVault)
+		code   string
 	}{
-		{"another device's event", func(*EventContext) {}, "99999999-9999-4999-8999-999999999999", http.StatusNotFound},
-		{"an M2 event", func(e *EventContext) { e.CollectionMode = "m2" }, device, http.StatusUnprocessableEntity},
-		{"already uploaded", func(e *EventContext) { e.ContentState = "uploaded" }, device, http.StatusConflict},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			ec := m3Event()
-			tc.mutate(&ec)
-			v := &fakeVault{}
-			_, err := newService(t, &fakeStore{ec: ec}, v).Decide(context.Background(), tenant, tc.device, request(), "https://e")
-			if got := statusOf(err); got != tc.want {
-				t.Fatalf("status = %d (%v), want %d", got, err, tc.want)
+		{name: "digest mismatch", mutate: func(u *Upload, _ *fakeStore, _ *fakeVault) { u.RawDigest = protocol.RawDigest([]byte("other")) }, code: apierr.CodeSchemaViolation},
+		{name: "empty body", mutate: func(u *Upload, _ *fakeStore, _ *fakeVault) { u.Body = nil; u.RawDigest = protocol.RawDigest(nil) }, code: string(protocol.ReasonOversize)},
+		{name: "bad grant id", mutate: func(u *Upload, _ *fakeStore, _ *fakeVault) { u.GrantID = "nope" }, code: apierr.CodeSchemaViolation},
+		{name: "unknown grant", mutate: func(u *Upload, _ *fakeStore, _ *fakeVault) { u.GrantID = submission }, code: apierr.CodeNotFound},
+		{name: "another device", device: "99999999-9999-4999-8999-999999999999", code: apierr.CodeNotFound},
+		{name: "another event", mutate: func(u *Upload, _ *fakeStore, _ *fakeVault) { u.EventID = submission }, code: apierr.CodeNotFound},
+		{name: "expired", mutate: func(u *Upload, st *fakeStore, _ *fakeVault) {
+			g := st.grants[u.GrantID]
+			g.ExpiresAt = time.Now().Add(-time.Second)
+			st.grants[u.GrantID] = g
+		}, code: string(protocol.ReasonGrantExpired)},
+		{name: "denied", mutate: func(u *Upload, st *fakeStore, _ *fakeVault) {
+			g := st.grants[u.GrantID]
+			g.Decision, g.DenialReason = DecisionDenied, DenyOverBudget
+			st.grants[u.GrantID] = g
+		}, code: apierr.CodeForbidden},
+		{name: "already stored", mutate: func(_ *Upload, _ *fakeStore, v *fakeVault) { v.err = &VaultError{Status: 409, Code: "already_stored"} }, code: string(protocol.ReasonGrantConsumed)},
+		{name: "vault says expired", mutate: func(_ *Upload, _ *fakeStore, v *fakeVault) { v.err = &VaultError{Status: 403, Code: "grant_expired"} }, code: string(protocol.ReasonGrantExpired)},
+		{name: "vault refuses the grant", mutate: func(_ *Upload, _ *fakeStore, v *fakeVault) {
+			v.err = &VaultError{Status: 403, Code: "grant_not_granted"}
+		}, code: apierr.CodeForbidden},
+		{name: "vault 500", mutate: func(_ *Upload, _ *fakeStore, v *fakeVault) { v.err = &VaultError{Status: 500} }, code: apierr.CodeUnavailable},
+		{name: "vault down", mutate: func(_ *Upload, _ *fakeStore, v *fakeVault) { v.err = errors.New("connection refused") }, code: apierr.CodeUnavailable},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s, st, v, grantID := grantFor(t)
+			u := good(grantID)
+			if c.mutate != nil {
+				c.mutate(&u, st, v)
 			}
-			if v.prepared != 0 {
-				t.Fatal("a refused request reached the vault")
+			dev := device
+			if c.device != "" {
+				dev = c.device
+			}
+			if err := s.Upload(context.Background(), tenant, dev, u); code(err) != c.code {
+				t.Fatalf("err = %v, want %s", err, c.code)
+			}
+			if st.uploaded != 0 {
+				t.Fatal("a refused upload was counted")
 			}
 		})
 	}
 }
 
-// §10.2: a denial is a 200 with a reason from the closed set, it mints no key, and it is terminal.
-func TestDecide_Denials(t *testing.T) {
-	cases := []struct {
-		name   string
-		mutate func(*EventContext)
-		want   string
-	}{
-		{"ceiling below M3", func(e *EventContext) { e.CeilingMode = "m1" }, DenyModeNotPermitted},
-		{"past retention", func(e *EventContext) { e.ExpiresAt = time.Now().Add(-time.Minute) }, DenyRetentionExpired},
-		{"over budget", func(e *EventContext) { e.BudgetBytesPerDay = 100 }, DenyOverBudget},
-		{"no budget set", func(e *EventContext) { e.BudgetBytesPerDay = 0 }, DenyOverBudget},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			ec := m3Event()
-			tc.mutate(&ec)
-			st, v := &fakeStore{ec: ec}, &fakeVault{}
-			s := newService(t, st, v)
-			resp, err := s.Decide(context.Background(), tenant, device, request(), "https://e")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if resp.State != protocol.ContentGrantDenied || resp.Reason != tc.want || resp.Key != nil || resp.Upload != nil {
-				t.Fatalf("response = %+v, want denied/%s with no key and no upload", resp, tc.want)
-			}
-			if v.prepared != 0 {
-				t.Fatal("a denial minted a key")
-			}
-			g := st.grants[resp.GrantID]
-			st.ec.Grant = &g
-			again, err := s.Decide(context.Background(), tenant, device, request(), "https://e")
-			if err != nil || again.GrantID != resp.GrantID {
-				t.Fatalf("a repeat request re-decided a denied event: %+v %v", again, err)
-			}
-		})
-	}
+type staticTokens struct{}
+
+func (staticTokens) ServiceToken(audience, service string) (string, error) {
+	return "svc." + audience + "." + service, nil
 }
 
-// §10.4: the finaliser promotes only the bytes the device declared, against a live grant, once.
-func TestFinalise(t *testing.T) {
-	st, v := &fakeStore{ec: m3Event()}, &fakeVault{}
-	s := newService(t, st, v)
-	resp, err := s.Decide(context.Background(), tenant, device, request(), "https://e")
-	if err != nil {
-		t.Fatal(err)
-	}
-	g := st.grants[resp.GrantID]
-	digest := "sha256:" + strings.Repeat("a", 64)
-	report := UploadReport{
-		TenantID: tenant, GrantID: g.GrantID, ObjectID: g.ObjectID, EventID: event, BlobPath: "p",
-		RawDigest: digest, DeclaredRawDigest: digest, SizeBytes: 128, PlaintextSizeBytes: 100,
-		WrappedKeyB64: "d3JhcHBlZA==", KeyID: "kek", KeyVersion: "1",
-	}
-
-	bad := report
-	bad.DeclaredRawDigest = "sha256:" + strings.Repeat("b", 64)
-	if _, err := s.Finalise(context.Background(), bad); !errors.Is(err, ErrUploadRejected) {
-		t.Fatalf("a digest mismatch was not rejected: %v", err)
-	}
-	if len(st.voided) != 1 || len(v.finalised) != 0 {
-		t.Fatalf("a mismatch must void the grant and store nothing (voided %d, stored %d)", len(st.voided), len(v.finalised))
-	}
-
-	wrong := report
-	wrong.ObjectID = "55555555-5555-4555-8555-555555555555"
-	if _, err := s.Finalise(context.Background(), wrong); !errors.Is(err, ErrUploadRejected) {
-		t.Fatalf("an object the grant does not name was not rejected: %v", err)
-	}
-
-	if _, err := s.Finalise(context.Background(), report); err != nil {
-		t.Fatal(err)
-	}
-	if len(v.finalised) != 1 || st.uploaded != 128 || st.ec.ContentState != "uploaded" {
-		t.Fatalf("a verified upload was not recorded (stored %d, bytes %d, state %s)", len(v.finalised), st.uploaded, st.ec.ContentState)
-	}
-	if _, err := s.Finalise(context.Background(), report); !errors.Is(err, ErrUploadRejected) {
-		t.Fatalf("a second write for the event was not rejected: %v", err)
-	}
-}
-
-// §10.4 (task 08): the finaliser relays the device's request kind to the vault, so the vault can
-// refuse to index a client-generated request.
-func TestFinaliseCarriesPromptKind(t *testing.T) {
-	ec := m3Event()
-	ec.PromptKind = "client_generated"
-	st, v := &fakeStore{ec: ec}, &fakeVault{}
-	s := newService(t, st, v)
-	resp, err := s.Decide(context.Background(), tenant, device, request(), "https://e")
-	if err != nil {
-		t.Fatal(err)
-	}
-	g := st.grants[resp.GrantID]
-	digest := "sha256:" + strings.Repeat("a", 64)
-	report := UploadReport{
-		TenantID: tenant, GrantID: g.GrantID, ObjectID: g.ObjectID, EventID: event, BlobPath: "p",
-		RawDigest: digest, DeclaredRawDigest: digest, SizeBytes: 128, PlaintextSizeBytes: 100,
-		WrappedKeyB64: "d3JhcHBlZA==", KeyID: "kek", KeyVersion: "1",
-	}
-	if _, err := s.Finalise(context.Background(), report); err != nil {
-		t.Fatal(err)
-	}
-	if len(v.finalised) != 1 {
-		t.Fatalf("finalise stored %d objects, want 1", len(v.finalised))
-	}
-	if v.finalised[0].PromptKind != "client_generated" {
-		t.Fatalf("the vault was told prompt_kind %q, want client_generated", v.finalised[0].PromptKind)
-	}
-}
-
-// HTTPVault.Finalise carries the request kind across the internal HTTP boundary (task 08).
-func TestHTTPVaultFinaliseCarriesPromptKind(t *testing.T) {
-	var got map[string]any
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Errorf("reading the request body: %v", err)
-			return
+func TestHTTPVaultPutsWithAServiceToken(t *testing.T) {
+	var got *http.Request
+	var gotBody []byte
+	status := http.StatusCreated
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r
+		gotBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(status)
+		if status == http.StatusConflict {
+			_, _ = w.Write([]byte(`{"error":{"code":"grant_consumed"}}`))
 		}
-		if err := json.Unmarshal(body, &got); err != nil {
-			t.Errorf("request body is not JSON: %v", err)
-		}
-		w.WriteHeader(http.StatusOK)
 	}))
-	defer ts.Close()
-
-	v := NewHTTPVault(ts.URL)
-	err := v.Finalise(context.Background(), tenant, "device:"+device, StoredObject{
-		ObjectID: "aaaaaaaa-0000-4000-8000-000000000001", SubmissionID: "bbbbbbbb-1111-4111-8111-00000000000b",
-		EventID: event, PromptKind: "client_generated", BlobPath: "p",
-		CiphertextSHA256: "sha256:" + strings.Repeat("a", 64), PlaintextSizeBytes: 100,
-		WrappedDEK: "d3JhcHBlZA==", KEKID: "kek", KEKVersion: "1",
-	})
-	if err != nil {
-		t.Fatalf("finalise: %v", err)
+	defer srv.Close()
+	v := NewHTTPVault(srv.URL+"/", staticTokens{})
+	body := []byte("content")
+	if stored, err := v.Put(context.Background(), tenant, event, submission, protocol.RawDigest(body), body); err != nil || !stored {
+		t.Fatalf("201: stored %v, %v", stored, err)
 	}
-	if got["prompt_kind"] != "client_generated" {
-		t.Fatalf("the vault was sent prompt_kind %v, want client_generated", got["prompt_kind"])
+	if got.Method != http.MethodPut || got.URL.Path != "/internal/v1/tenants/"+tenant+"/content/"+event {
+		t.Fatalf("request = %s %s", got.Method, got.URL.Path)
+	}
+	if got.Header.Get("Authorization") != "Bearer svc.sac-vault.control-api" ||
+		got.Header.Get(protocol.HeaderContentGrantID) != submission ||
+		got.Header.Get(protocol.HeaderContentRawDigest) != protocol.RawDigest(body) || !bytes.Equal(gotBody, body) {
+		t.Fatalf("headers = %v, body %q", got.Header, gotBody)
+	}
+	status = http.StatusOK
+	if stored, err := v.Put(context.Background(), tenant, event, submission, protocol.RawDigest(body), body); err != nil || stored {
+		t.Fatalf("200 replay: stored %v, %v", stored, err)
+	}
+	status = http.StatusConflict
+	var ve *VaultError
+	if _, err := v.Put(context.Background(), tenant, event, submission, protocol.RawDigest(body), body); !errors.As(err, &ve) ||
+		ve.Status != http.StatusConflict || ve.Code != "grant_consumed" {
+		t.Fatalf("409: err = %v", err)
 	}
 }

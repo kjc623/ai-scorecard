@@ -6,19 +6,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
-	"github.com/shadow-ai-capture/control-api/internal/directory"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // =====================================================================================
 // Every SQL statement the SCIM provider issues, in one file.
 // =====================================================================================
 //
-// The rule control-api's other stores hold: one place for SQL, so the seam with database/schema.sql
-// is reviewable in one screen, and the tagged live test prepares every statement against the real
-// schema. Every statement after the token lookup runs in a transaction whose RLS session tenant was
+// One place for SQL, so the seam with database/schema.sql is reviewable in one screen, and the live
+// test prepares every statement against the real schema. Every statement after the token lookup runs in a transaction whose RLS session tenant was
 // set first; the tables are under forced row-level security, so a session with no tenant reads and
 // writes nothing. The one pre-tenant read is ops.tenant_for_scim_token, a definer function that
 // returns only a tenant id.
@@ -80,7 +78,7 @@ INSERT INTO ops.scim_user (tenant_id, scim_id, user_name_hash, external_id_hash,
 VALUES ($1::uuid, $2::uuid, $3::bytea, $4::bytea, $5::bytea, $6::text, $7::boolean,
         $8::timestamptz, $9::timestamptz)`
 
-	// SQLUpdateSCIMUser never touches user_ref: the canonical ref is fixed at creation (contract §4).
+	// SQLUpdateSCIMUser never touches user_ref: the canonical ref is fixed at creation.
 	SQLUpdateSCIMUser = `
 UPDATE ops.scim_user
    SET user_name_hash = $3::bytea, external_id_hash = $4::bytea, resource_enc = $5::bytea,
@@ -96,6 +94,21 @@ VALUES ($1::uuid, $2::text, $3::text, $4::timestamptz)
 ON CONFLICT (tenant_id, alias_ref) DO UPDATE
    SET user_ref = EXCLUDED.user_ref
  WHERE ops.user_ref_alias.user_ref IS DISTINCT FROM EXCLUDED.user_ref`
+
+	// SQLUpsertUserDim writes the person's ops.user_dim row. COALESCE keeps a previously sealed
+	// directory identifier when this write has none; the department is overwritten, because a NULL
+	// department is the meaningful "unmapped" value, not a missing one. $1 tenant, $2 user_ref,
+	// $3 sealed directory id, $4 department, $5 display name, $6 status, $7 at.
+	SQLUpsertUserDim = `
+INSERT INTO ops.user_dim (tenant_id, user_ref, directory_object_id_enc, department, display_name, status, synced_at)
+VALUES ($1::uuid, $2::text, $3::bytea, $4::text, $5::text, $6::text, $7::timestamptz)
+ON CONFLICT (tenant_id, user_ref) DO UPDATE
+   SET directory_object_id_enc = COALESCE(EXCLUDED.directory_object_id_enc,
+                                          ops.user_dim.directory_object_id_enc),
+       department   = EXCLUDED.department,
+       display_name = EXCLUDED.display_name,
+       status       = EXCLUDED.status,
+       synced_at    = EXCLUDED.synced_at`
 
 	sqlGroupColumns = `scim_id::text, display_name, COALESCE(external_id, ''), created_at, updated_at`
 
@@ -176,7 +189,7 @@ var Statements = []Statement{
 	{"insert_user", SQLInsertSCIMUser},
 	{"update_user", SQLUpdateSCIMUser},
 	{"put_alias", SQLPutUserRefAlias},
-	{"upsert_user_dim", directory.SQLUpsertDirectoryUser},
+	{"upsert_user_dim", SQLUpsertUserDim},
 	{"group", SQLSCIMGroup},
 	{"group_for_update", SQLSCIMGroupForUpdate},
 	{"groups_by_display_name", SQLSCIMGroupsByDisplayName},
@@ -193,8 +206,7 @@ var Statements = []Statement{
 	{"insert_audit", SQLSCIMInsertAudit},
 }
 
-// SQLStore is the database/sql Store. The driver is registered by the binary (the sac_sql_driver
-// build), exactly as for control-api's other stores.
+// SQLStore is the database/sql Store.
 type SQLStore struct {
 	db *sql.DB
 }
@@ -233,14 +245,10 @@ func (s *SQLStore) InTenant(ctx context.Context, tenantID string, fn func(Tx) er
 	return nil
 }
 
-// isUniqueViolation recognises SQLSTATE 23505 without importing a driver: pgx's error type has a
-// SQLState method, and the text fallback covers a driver that only formats it.
+// isUniqueViolation recognises SQLSTATE 23505, unique_violation.
 func isUniqueViolation(err error) bool {
-	var coded interface{ SQLState() string }
-	if errors.As(err, &coded) {
-		return coded.SQLState() == "23505"
-	}
-	return err != nil && strings.Contains(err.Error(), "SQLSTATE 23505")
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
 type sqlTx struct {
@@ -410,9 +418,9 @@ func (x *sqlTx) PutAlias(alias, canonical string, at time.Time) error {
 	return err
 }
 
-func (x *sqlTx) UpsertUserDim(row directory.Row) error {
-	_, err := x.exec(directory.SQLUpsertDirectoryUser, x.tenant, row.UserRef, bytea(row.DirectoryObjectIDEnc),
-		row.Department, row.Population, row.ManagerRef, row.DisplayName, row.Status, row.SyncedAt)
+func (x *sqlTx) UpsertUserDim(row UserDimRow) error {
+	_, err := x.exec(SQLUpsertUserDim, x.tenant, row.UserRef, bytea(row.DirectoryObjectIDEnc),
+		row.Department, row.DisplayName, row.Status, row.SyncedAt)
 	return err
 }
 

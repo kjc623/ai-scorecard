@@ -1,7 +1,10 @@
-// Package apierr is the device-facing error surface of the control plane. One value carries the
-// HTTP status, the machine-readable code, a hand-written sentence for the device, and an optional
-// detail payload, so the transport can render docs/02 §5's common envelope without inventing an
-// outcome and without ever echoing an internal cause.
+// Package apierr is control-api's error surface for devices and the admin API. One value carries
+// the HTTP status, a machine-readable code, a sentence for the caller and an optional detail
+// payload, rendered as the common envelope:
+//
+//	{ "error": { "code": "...", "detail": { ... }, "server_time": "...", "message": "..." } }
+//
+// An internal cause is logged and never sent.
 package apierr
 
 import (
@@ -13,54 +16,44 @@ import (
 	"time"
 )
 
-// The closed set of control-plane error codes. Docs/02 §7's codes are reused where they name the
-// same fact (revoked_device, unknown_tenant, region_mismatch, schema_violation); the rest name
-// enrolment- and token-specific failures the ingest vocabulary has no word for.
+// The closed set of error codes.
 const (
 	CodeSchemaViolation          = "schema_violation"
 	CodeUnsupportedSchemaVersion = "unsupported_schema_version"
-	CodeRevokedDevice            = "revoked_device"
-	CodeUnknownTenant            = "unknown_tenant"
-	CodeRegionMismatch           = "region_mismatch"
-	CodeHardwareConflict         = "hardware_identity_conflict"
-	CodeEnrolmentTokenExpired    = "enrolment_token_expired"
-	CodeEnrolmentTokenInvalid    = "enrolment_token_invalid"
-	CodeInvalidCSR               = "invalid_csr"
-	// CodeInvalidClientCert is a customer-issued (ADR 0022) enrolment whose presented certificate is
-	// missing, unreadable, or does not chain to the tenant's device trust anchor.
-	CodeInvalidClientCert = "invalid_client_certificate"
-	CodeInvalidProof      = "invalid_dpop_proof"
-	CodeInvalidAssertion  = "invalid_assertion"
-	CodeInvalidRequest    = "invalid_request"
-	CodeUnavailable       = "unavailable"
+	CodeInvalidRequest           = "invalid_request"
+	CodeUnauthenticated          = "unauthenticated"
+	CodeForbidden                = "forbidden"
+	CodeNotFound                 = "not_found"
+	CodeMethodNotAllowed         = "method_not_allowed"
+	CodeRateLimited              = "rate_limited"
+	CodeUnavailable              = "unavailable"
 
-	// The deployment-key bootstrap (contract §5). Each lifecycle failure is its own code, as the
-	// enrolment token's are, so an operator can tell a revoked key from an expired or a mistyped one.
+	// Device authentication and enrolment.
+	CodeInvalidClientCert    = "invalid_client_certificate"
+	CodeRevokedDevice        = "revoked_device"
+	CodeUnknownTenant        = "unknown_tenant"
+	CodeRegionMismatch       = "region_mismatch"
+	CodeHardwareConflict     = "hardware_identity_conflict"
+	CodeInvalidCSR           = "invalid_csr"
 	CodeDeploymentKeyInvalid = "deployment_key_invalid"
 	CodeDeploymentKeyRevoked = "deployment_key_revoked"
 	CodeDeploymentKeyExpired = "deployment_key_expired"
-	// CodeRateLimited is §5's 429: the caller is told to come back, never refused for good.
-	CodeRateLimited = "rate_limited"
-	// CodeDeviceNotManaged is the one code for every refusal of a tenant's MDM check; detail.reason
-	// names which check failed, so the device's log says why without a second vocabulary.
+	// CodeDeviceNotManaged is every refusal of a tenant's MDM check; detail.reason names which
+	// check failed.
 	CodeDeviceNotManaged = "device_not_managed"
-	// CodeNoPolicyBundle is GET /v1/policy's 404: the device falls to M0 (docs/02 §5.2, C10).
+
+	// CodeNoPolicyBundle is GET /v1/policy's 404: the device stays at M0.
 	CodeNoPolicyBundle = "no_policy_bundle"
 
-	// The admin surface (contract §5). It is not device-facing, but it renders the same envelope so
-	// the dashboard reads one error shape from every control-plane route.
-	CodeUnauthenticated     = "unauthenticated"
-	CodeForbidden           = "forbidden"
-	CodeNotFound            = "not_found"
+	// The admin API.
 	CodeNoEntraConnection   = "no_entra_connection"
 	CodeReleaseUnavailable  = "release_unavailable"
-	CodeMethodNotAllowed    = "method_not_allowed"
 	CodeUnsupportedFormat   = "unsupported_format"
 	CodeInvalidVerification = "invalid_device_verification"
 )
 
-// Error is the control-plane failure. Message is device-facing by construction; Cause, when set, is
-// logged and never sent.
+// Error is a decided failure. Message is written for the caller; Cause, when set, is logged and
+// never sent.
 type Error struct {
 	Status  int
 	Code    string
@@ -77,7 +70,7 @@ func (e *Error) Error() string {
 	return e.Code + ": " + e.Message
 }
 
-// Unwrap exposes the internal cause to errors.Is/As.
+// Unwrap exposes the internal cause to errors.Is and errors.As.
 func (e *Error) Unwrap() error { return e.Cause }
 
 // New builds an error with no detail and no internal cause.
@@ -90,7 +83,7 @@ func Detailed(status int, code, message string, detail any) *Error {
 	return &Error{Status: status, Code: code, Message: message, Detail: detail}
 }
 
-// Internal builds a 503 and records the cause for the log, never for the device.
+// Internal builds a retryable 503 and records the cause for the log.
 func Internal(cause error) *Error {
 	return &Error{
 		Status:  http.StatusServiceUnavailable,
@@ -100,11 +93,9 @@ func Internal(cause error) *Error {
 	}
 }
 
-// RetryAfterSeconds is what a 429 or 503 tells the caller to wait. One number, so the header and
-// the body cannot disagree.
+// RetryAfterSeconds is what a 429 or 503 tells the caller to wait, in the header and the body.
 const RetryAfterSeconds = 5
 
-// envelope is docs/02 §5's common error body.
 type envelope struct {
 	Error body `json:"error"`
 }
@@ -117,13 +108,9 @@ type body struct {
 	Message     string    `json:"message,omitempty"`
 }
 
-// Write renders err as §5's envelope: the same shape internal/httpapi writes, for the routes that
-// live in their own packages (GET /v1/policy, the admin API). An error that is not an *Error is
-// an unclassified failure and becomes a 503; a Cause is logged and never sent.
+// Write renders err as the envelope. An error that is not an *Error is an unclassified failure and
+// becomes a 503.
 func Write(w http.ResponseWriter, err error, now time.Time, logger *slog.Logger) {
-	if logger == nil {
-		logger = slog.Default()
-	}
 	var e *Error
 	if !errors.As(err, &e) {
 		logger.Error("control: unclassified failure", "error", err)
@@ -137,10 +124,15 @@ func Write(w http.ResponseWriter, err error, now time.Time, logger *slog.Logger)
 		out.Error.RetryAfterS = RetryAfterSeconds
 		w.Header().Set("Retry-After", strconv.Itoa(RetryAfterSeconds))
 	}
+	WriteJSON(w, e.Status, out, logger)
+}
+
+// WriteJSON writes v as an uncacheable JSON response.
+func WriteJSON(w http.ResponseWriter, status int, v any, logger *slog.Logger) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(e.Status)
-	if err := json.NewEncoder(w).Encode(out); err != nil {
-		logger.Error("control: write error response", "error", err)
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		logger.Error("control: write response", "error", err)
 	}
 }

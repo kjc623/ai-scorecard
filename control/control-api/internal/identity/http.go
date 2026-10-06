@@ -11,10 +11,10 @@ import (
 	"strings"
 )
 
-// The internal sign-in API (contract §3). Its only caller is the dashboard server; the edge never
-// routes /internal/*, and every request must carry `Authorization: Bearer <SAC_INTERNAL_TOKEN>`.
-// The bearer is a shared secret in the lab; in Azure the same check is where the platform's service
-// identity replaces it.
+// The internal sign-in API. Its only caller is the dashboard server, which authenticates every
+// request with `Authorization: Bearer <SAC_INTERNAL_TOKEN>`: a shared secret held in Key Vault and
+// delivered to both services, compared here in constant time. A request without it is refused
+// whichever route or edge it arrived through.
 const (
 	PathBegin    = "/internal/v1/auth/begin"
 	PathComplete = "/internal/v1/auth/complete"

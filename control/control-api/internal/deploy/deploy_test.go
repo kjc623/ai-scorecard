@@ -28,6 +28,7 @@ import (
 	"github.com/shadow-ai-capture/control-api/internal/deploy"
 	"github.com/shadow-ai-capture/control-api/internal/enrol"
 	"github.com/shadow-ai-capture/control-api/internal/store"
+	"github.com/shadow-ai-capture/control-api/internal/store/storetest"
 )
 
 const (
@@ -90,7 +91,7 @@ func (f *fakeScim) Revoke(_ context.Context, tenantID, tokenID, revokedBy string
 func (f *fakeScim) List(context.Context, string) ([]deploy.ScimToken, error) { return f.tokens, nil }
 
 type rig struct {
-	store *store.Memory
+	store *storetest.Memory
 	scim  *fakeScim
 	mux   *http.ServeMux
 	now   time.Time
@@ -100,7 +101,7 @@ var admin = deploy.Principal{Tenant: tenantA, Actor: "admin@contoso.example", Su
 
 func newRig(t *testing.T, releaseDir string) *rig {
 	t.Helper()
-	r := &rig{store: store.NewMemory(), scim: &fakeScim{}, mux: http.NewServeMux(),
+	r := &rig{store: storetest.New(), scim: &fakeScim{}, mux: http.NewServeMux(),
 		now: time.Date(2026, 10, 5, 10, 0, 0, 0, time.UTC)}
 	r.store.AddTenant(store.Tenant{TenantID: tenantA, Status: "active", IngestEnabled: true})
 	// The authenticator reads a test header naming which principal the "token" carries.
@@ -203,8 +204,9 @@ func unzip(t *testing.T, b []byte) map[string][]byte {
 	return out
 }
 
-// checkTenantEnv asserts the tenant file holds exactly the four contract values, CRLF, and returns
-// the deployment key in it.
+// checkTenantEnv asserts the tenant file holds exactly the tenant id, the device endpoint and the
+// deployment key, CRLF, and returns
+// the key.
 func checkTenantEnv(t *testing.T, env []byte) string {
 	t.Helper()
 	text := string(env)
@@ -222,7 +224,7 @@ func checkTenantEnv(t *testing.T, env []byte) string {
 		}
 		values[k] = v
 	}
-	if len(values) != 4 || values["SAC_TENANT_ID"] != tenantA || values["SAC_DEVICE_ENDPOINT"] != endpoint || values["SAC_AUTH_MODE"] != "dpop" {
+	if len(values) != 3 || values["SAC_TENANT_ID"] != tenantA || values["SAC_DEVICE_ENDPOINT"] != endpoint {
 		t.Fatalf("tenant.env values = %v", values)
 	}
 	key := values["SAC_DEPLOYMENT_KEY"]
@@ -559,7 +561,7 @@ func TestScimTokens(t *testing.T) {
 		t.Fatalf("audit actions = %v", actions)
 	}
 
-	none, err := deploy.NewHandler(store.NewMemory(), func(*http.Request) (deploy.Principal, error) { return admin, nil }, nil, deploy.Config{Logger: quiet})
+	none, err := deploy.NewHandler(storetest.New(), func(*http.Request) (deploy.Principal, error) { return admin, nil }, nil, deploy.Config{Logger: quiet})
 	if err != nil {
 		t.Fatal(err)
 	}

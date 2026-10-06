@@ -18,9 +18,11 @@ import (
 
 	"github.com/shadow-ai-capture/control-api/internal/directory"
 	"github.com/shadow-ai-capture/control-api/internal/identity"
+	"github.com/shadow-ai-capture/control-api/internal/identity/identitytest"
 	"github.com/shadow-ai-capture/control-api/internal/identity/idptest"
 	"github.com/shadow-ai-capture/control-api/internal/onboard"
 	"github.com/shadow-ai-capture/control-api/internal/session"
+	"github.com/shadow-ai-capture/control-api/internal/session/sessiontest"
 )
 
 const (
@@ -42,7 +44,7 @@ func (secretAuth) ClientAuth(context.Context, string) (url.Values, error) {
 
 type rig struct {
 	t       *testing.T
-	store   *identity.MemoryStore
+	store   *identitytest.Store
 	cipher  *directory.Cipher
 	ident   *identity.Service
 	svc     *onboard.Service
@@ -63,7 +65,7 @@ func newRig(t *testing.T) *rig {
 	r.cipher, _ = directory.NewCipher(key)
 	r.entra = idptest.NewEntra(t, appID, appKey)
 	r.oidc = idptest.NewOIDC(t, "northwind-oidc", "northwind-secret")
-	r.store = identity.NewMemoryStore()
+	r.store = identitytest.NewStore()
 	r.store.AddTenant(tenantA, "Contoso")
 	r.store.AddTenant(tenantC, "Northwind")
 	r.store.AddEmailDomain("northwind.example", tenantC)
@@ -73,12 +75,13 @@ func newRig(t *testing.T) *rig {
 	sk, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	ks, _ := session.NewKeySet(sk)
 	issuer, _ := session.NewIssuer(ks, session.IssuerConfig{Issuer: "http://control-api:8080"})
-	mgr, _ := session.NewManager(session.NewMemoryStore(), session.ManagerConfig{})
+	mgr, _ := session.NewManager(sessiontest.NewStore(), session.ManagerConfig{})
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	var err error
 	r.ident, err = identity.New(identity.Config{
 		Store: r.store, Sessions: mgr, Issuer: issuer, Cipher: r.cipher, AllowInsecureIdP: true, Logger: logger,
-		Entra: &identity.EntraConfig{ClientID: appID, Auth: secretAuth{}, LoginBaseURL: r.entra.Base()},
+		RedirectURIs: []string{public + "/callback"},
+		Entra:        &identity.EntraConfig{ClientID: appID, Auth: secretAuth{}, LoginBaseURL: r.entra.Base()},
 	})
 	if err != nil {
 		t.Fatal(err)

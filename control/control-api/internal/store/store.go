@@ -1,18 +1,10 @@
-// Package store is the persistence seam of control-api's enrolment and token paths.
+// Package store is control-api's PostgreSQL persistence for devices, their certificates, health,
+// deployment keys, policy bundles and the audit trail.
 //
-// The interface is deliberately small and tenant-explicit: every method takes the tenant that the
-// authenticated credential resolved to, because row-level security is forced on every ops table and
-// a session that has not set a tenant reads zero rows (brief C32; docs/02-ingest-and-transport.md
-// §12). Two implementations:
-//
-//   - Memory: the test double and the local run. It mirrors the statements in sql.go so the service
-//     can be tested without a database, and the live test checks the SQL text against a real
-//     PostgreSQL rather than trusting the mirror.
-//   - SQL: database/sql against the real schema. Every statement it issues is a constant in sql.go,
-//     and the live test executes that text against a reachable PostgreSQL 17 when one is present.
-//
-// The credential type and its single transport binding are ADR 0020 decision 4: `x509` or `dpop`,
-// with public_key_thumbprint as the one value the authenticator compares for both modes.
+// Every method takes the tenant explicitly and runs in a transaction that first sets the
+// row-level-security session tenant: RLS is forced on every ops table, so a session without a
+// tenant reads and writes nothing. Every statement is a constant in this package and is executed
+// as written by the live test.
 package store
 
 import (
@@ -26,75 +18,29 @@ import (
 	"github.com/shadow-ai-capture/device/protocol"
 )
 
-// Tenant is the slice of ops.tenant the control path decides on. DeviceIdentity is the tenant's
-// identity setting (ADR 0021): it is returned to the device and gates what the server stores.
+// Tenant is the slice of ops.tenant the device paths decide on. DeviceIdentity is returned to the
+// device and decides which of hostname and hostname hash is stored.
 type Tenant struct {
 	TenantID        string
 	Status          string
 	IngestEnabled   bool
 	ResidencyRegion string
 	DeviceIdentity  protocol.DeviceIdentity
-	// DeviceCAPEM is the tenant's device trust anchor (ADR 0022): the PEM bundle its device
-	// certificates must chain to. Empty means the tenant uses product-issued certificates (the
-	// signer path); non-empty means the customer's PKI/MDM issues them and this service registers
-	// and verifies rather than signs.
-	DeviceCAPEM string
 }
 
-// CredentialOrigin records who issued an x509 credential (ADR 0022). DPoP credentials are always
-// OriginProduct: the product registers the key it is shown.
-type CredentialOrigin string
-
-const (
-	// OriginProduct: control-api signed the leaf from the device's CSR (ADR 0020 decision 3).
-	OriginProduct CredentialOrigin = "product"
-	// OriginCustomer: the customer's PKI/MDM issued the certificate and this service registered it.
-	OriginCustomer CredentialOrigin = "customer"
-)
-
-// Active reports whether the tenant may enrol or obtain a token. A suspended or closed tenant is
-// refused; nothing here silently treats an unknown gate as open.
+// Active reports whether the tenant may enrol devices and be served policy.
 func (t Tenant) Active() bool { return t.Status != "closed" && t.IngestEnabled }
 
-// EnrolmentToken is ops.enrolment_token as the enrolment path needs it.
-type EnrolmentToken struct {
-	TenantID             string
-	TokenHash            string
-	HardwareIdentityHash string
-	IssuedAt             time.Time
-	ExpiresAt            time.Time
-	UsedAt               *time.Time
-	RevokedAt            *time.Time
-}
-
-// Usable reports whether the token may still redeem. A used, revoked or expired token is refused
-// with a distinct error at the caller so the operator can tell the causes apart.
-func (t EnrolmentToken) Usable(now time.Time) error {
-	switch {
-	case t.RevokedAt != nil:
-		return ErrTokenRevoked
-	case t.UsedAt != nil:
-		return ErrTokenUsed
-	case !t.ExpiresAt.After(now):
-		return ErrTokenExpired
-	}
-	return nil
-}
-
-// Device is the slice of ops.device the control path writes and reads. hardware_identity_hash is
-// the C11 idempotency key: it is set-once, and a re-enrolment that matches it returns the existing
-// device rather than minting a second identity.
+// Device is the slice of ops.device the control path writes and reads. HardwareIdentityHash is the
+// per-tenant idempotency key: a re-enrolment that matches it returns the existing device.
 type Device struct {
 	TenantID             string
 	DeviceID             string
 	OS                   string
 	OSVersion            string
-	MDMID                string
 	HardwareIdentityHash string
 	ResidencyRegion      string
-	// Device identity (ADR 0021). Hostname is the clear name and HostnameHash the hashed one; which
-	// is populated is decided by the tenant's device_identity setting. AgentVersion and ManagedState
-	// are reported by the device.
+	// Hostname is stored for a 'clear' tenant and HostnameHash for a 'hashed' one.
 	Hostname     string
 	HostnameHash string
 	AgentVersion string
@@ -102,80 +48,36 @@ type Device struct {
 	EnrolledAt   time.Time
 	RevokedAt    *time.Time
 	// IntuneDeviceID is the Intune managed-device id a deployment-key enrolment was verified
-	// against (contract §5). Only the verified path writes it, never the device's own claim, and it
-	// is unique per tenant: one Intune device is one product device. It is read and written by the
-	// DeploymentStore statements only, so the token path does not depend on the column.
+	// against. Only SetDeviceIntuneID writes it, and it is unique per tenant.
 	IntuneDeviceID string
 }
 
-// Credential is the slice of ops.device_credential the control path writes and reads. Type is the
-// ADR 0020 mode; PublicKeyThumbprint is the single binding for both modes; PublicKeyJWK is the
-// registered DPoP key and is empty for x509.
+// Credential is one ops.device_credential row: a device certificate. CredentialID is derived from
+// the certificate (protocol.CredentialID) and PublicKeyThumbprint is the SHA-256 of its
+// SubjectPublicKeyInfo, base64url.
 type Credential struct {
 	TenantID            string
 	CredentialID        string
 	DeviceID            string
-	Type                protocol.AuthMode
-	Origin              CredentialOrigin
 	PublicKeyThumbprint string
-	PublicKeyJWK        json.RawMessage
 	IssuedAt            time.Time
 	ExpiresAt           time.Time
 	RevokedAt           *time.Time
 }
 
-// Active reports whether the credential may still be used or rotated.
+// Active reports whether the credential may still authenticate the device.
 func (c Credential) Active(now time.Time) error {
 	switch {
 	case c.RevokedAt != nil:
 		return ErrCredentialRevoked
-	case !c.ExpiresAt.IsZero() && !c.ExpiresAt.After(now):
+	case !c.ExpiresAt.After(now):
 		return ErrCredentialExpired
 	}
 	return nil
 }
 
-// IssueCredential is one transaction: revoke the device's live credentials and insert the new one.
-// The previous credential is never deleted, so revocation granularity and history survive.
-type IssueCredential struct {
-	TenantID            string
-	DeviceID            string
-	CredentialID        string
-	Type                protocol.AuthMode
-	Origin              CredentialOrigin
-	PublicKeyThumbprint string
-	PublicKeyJWK        json.RawMessage
-	IssuedAt            time.Time
-	ExpiresAt           time.Time
-	RevokedAt           time.Time
-}
-
-// Errors the control path distinguishes. Everything else is an infrastructure failure and is
-// retryable.
-var (
-	ErrUnknownTenant     = errors.New("store: tenant unknown")
-	ErrTenantInactive    = errors.New("store: tenant is not active")
-	ErrTokenUnknown      = errors.New("store: enrolment token unknown")
-	ErrTokenUsed         = errors.New("store: enrolment token already used")
-	ErrTokenExpired      = errors.New("store: enrolment token expired")
-	ErrTokenRevoked      = errors.New("store: enrolment token revoked")
-	ErrTokenBinding      = errors.New("store: enrolment token is bound to another hardware identity")
-	ErrDeviceRevoked     = errors.New("store: device revoked")
-	ErrDeviceUnknown     = errors.New("store: device unknown")
-	ErrCredentialUnknown = errors.New("store: device credential unknown")
-	ErrCredentialRevoked = errors.New("store: device credential revoked")
-	ErrCredentialExpired = errors.New("store: device credential expired")
-	// ErrUnknownCollector is a report naming a collector ref.collector does not hold. It is a
-	// validation failure, not an infrastructure one: the report is refused rather than stored under
-	// a coverage path nobody can interpret (docs/01 §4.3).
-	ErrUnknownCollector = errors.New("store: collector unknown")
-)
-
-// CollectorState is one collector's health row as the health channel reports it (docs/02 §5.4).
-// State is the closed healthy|degraded|absent|tampered; Detail is the closed error-code vocabulary
-// carried to ops.collector_state.error_code; the rest is the row's own shape. SpoolDepth,
-// SpoolCapacity and SpoolDroppedTotal are device-level in the report but per-collector rows in the
-// schema, so the caller repeats them.
+// CollectorState is one ops.collector_state row as the health channel reports it. The spool
+// figures are device-level in the report and repeated on every collector's row.
 type CollectorState struct {
 	Collector         string
 	State             string
@@ -189,10 +91,7 @@ type CollectorState struct {
 	Detail            json.RawMessage
 }
 
-// DeviceHealth is the device-level part of one health report (ADR 0021). Empty fields are left
-// unchanged. The clear Hostname is applied only when the tenant's device_identity is 'clear' and
-// HostnameHash only when it is 'hashed', which the caller resolves; HostnameHash exists so a
-// 'hashed' tenant still records a device-supplied hash rather than losing the value.
+// DeviceHealth is the device-level part of a health report. Empty fields leave the stored value.
 type DeviceHealth struct {
 	Hostname       string
 	HostnameHash   string
@@ -201,42 +100,210 @@ type DeviceHealth struct {
 	ManagedState   string
 }
 
-// Store is the persistence seam.
-type Store interface {
-	// Tenant resolves the tenant's lifecycle state and pinned region. The tenant comes from the
-	// authenticated credential or the token, never from the request body.
-	Tenant(ctx context.Context, tenantID string) (Tenant, error)
-	// ResolveEnrolmentToken looks up a token by (tenant, hash). The caller has hashed the presented
-	// token and checks the returned hash back in constant time, so the stored value is the authority.
-	ResolveEnrolmentToken(ctx context.Context, tenantID, tokenHash string) (EnrolmentToken, error)
-	// FindDeviceByHardwareIdentity is the C11 idempotency lookup. ErrDeviceUnknown means the
-	// identity is new.
-	FindDeviceByHardwareIdentity(ctx context.Context, tenantID, hardwareIdentityHash string) (Device, error)
-	// Device reads one device by id, for re-enrolment and token issue.
-	Device(ctx context.Context, tenantID, deviceID string) (Device, error)
-	// UpsertDevice inserts a device or updates the mutable fields of the one with the same id.
-	UpsertDevice(ctx context.Context, d Device) (Device, error)
-	// IssueCredential revokes the device's live credentials and inserts the new one in one
-	// transaction, so a rotation cannot leave a device with two live credentials or none.
-	IssueCredential(ctx context.Context, in IssueCredential) (Credential, error)
-	// DeviceCredential reads one credential by id.
-	DeviceCredential(ctx context.Context, tenantID, credentialID string) (Credential, error)
-	// DeviceCredentialByDevice reads the device's live credential, for re-enrolment and token issue.
-	DeviceCredentialByDevice(ctx context.Context, tenantID, deviceID string) (Credential, error)
-	// MarkEnrolmentTokenUsed settles a token after a successful enrolment (§5.1, single-use).
-	MarkEnrolmentTokenUsed(ctx context.Context, tenantID, tokenHash string, at time.Time) error
-	// RecordHealth upserts one ops.collector_state row per report, updates the device-level identity
-	// fields it was given, and stamps the device's last_seen_at, in one transaction (§5.4 step 4,
-	// docs/04 §3.7). A report naming a collector not in ref.collector returns ErrUnknownCollector
-	// and writes nothing. The per-collector guard means a stale report never overwrites a newer one,
-	// so a retry or an out-of-order replay is harmless.
-	RecordHealth(ctx context.Context, tenantID, deviceID string, at time.Time, reports []CollectorState, dev DeviceHealth) error
-	// Close releases resources.
-	Close() error
+// Device-verification modes, the closed set ops.tenant.device_verification holds.
+const (
+	VerificationNone   = "none"
+	VerificationIntune = "intune"
+)
+
+// Audit actor types, the closed set ops.audit.actor_type holds.
+const (
+	ActorUser    = "user"
+	ActorDevice  = "device"
+	ActorService = "service"
+	ActorSystem  = "system"
+)
+
+// DeploymentKey is ops.deployment_key. KeyHash is the stored sha256:<hex>; the plaintext key is
+// never stored.
+type DeploymentKey struct {
+	KeyID          string
+	TenantID       string
+	KeyHash        string
+	Label          string
+	CreatedBy      string
+	CreatedAt      time.Time
+	ExpiresAt      *time.Time
+	RevokedAt      *time.Time
+	EnrolmentCount int64
+	LastUsedAt     *time.Time
 }
 
-// NewUUID returns a random RFC 4122 version-4 UUID. It is here rather than in a service so both
-// stores and the services that mint device and credential ids agree on one generator.
+// Usable reports whether the key may still enrol a device. A revoked key is reported as revoked
+// even when it has also expired, because the revocation is the decision worth reporting.
+func (k DeploymentKey) Usable(now time.Time) error {
+	switch {
+	case k.RevokedAt != nil:
+		return ErrDeploymentKeyRevoked
+	case k.ExpiresAt != nil && !k.ExpiresAt.After(now):
+		return ErrDeploymentKeyExpired
+	}
+	return nil
+}
+
+// DeviceVerification is the tenant's enrolment check and the Entra tenant of its active Entra
+// connection (empty when there is none).
+type DeviceVerification struct {
+	Mode          string
+	EntraTenantID string
+}
+
+// IdentityConnection is the slice of ops.identity_connection the admin page shows.
+type IdentityConnection struct {
+	Provider      string
+	Status        string
+	EntraTenantID string
+	Issuer        string
+}
+
+// AuditEntry is one ops.audit row. The chain hashes are computed by the table's trigger. Detail
+// never carries a key, a token or package content.
+type AuditEntry struct {
+	TenantID   string
+	ActorType  string
+	ActorID    string
+	Action     string
+	ObjectType string
+	ObjectID   string
+	Detail     map[string]any
+	OccurredAt time.Time
+}
+
+// DeploymentSummary is what the deployment admin page reads.
+type DeploymentSummary struct {
+	Connection         *IdentityConnection
+	DeviceVerification string
+	Keys               []DeploymentKey
+	DevicesEnrolled    int64
+	LastEnrolledAt     *time.Time
+	ScimUsers          int64
+	ScimGroups         int64
+	LastProvisionedAt  *time.Time
+}
+
+// PolicyTenant is the slice of ops.tenant a policy bundle is composed from.
+type PolicyTenant struct {
+	TenantID      string
+	Status        string
+	IngestEnabled bool
+	CeilingMode   string
+}
+
+// Active mirrors Tenant.Active.
+func (t PolicyTenant) Active() bool { return t.Status != "closed" && t.IngestEnabled }
+
+// PolicyInputs is everything in the database a bundle is composed from.
+type PolicyInputs struct {
+	Tenant            PolicyTenant
+	InterceptionHosts []string
+}
+
+// PolicyBundle is one ops.policy_bundle row. SignedEnvelope is the exact bytes GET /v1/policy
+// serves.
+type PolicyBundle struct {
+	TenantID             string
+	Version              int64
+	ScopeMatrix          json.RawMessage
+	DestinationAllowlist json.RawMessage
+	FeatureState         json.RawMessage
+	SpoolBounds          json.RawMessage
+	RetentionClass       string
+	SignatureKID         string
+	SignedDigest         string
+	SignedEnvelope       []byte
+	EffectiveFrom        time.Time
+	CreatedBy            string
+	CreatedAt            time.Time
+}
+
+// MintDecision is what a MintPolicyBundle callback returns: a bundle to insert and its audit row,
+// or a nil Bundle to keep the latest in force.
+type MintDecision struct {
+	Bundle *PolicyBundle
+	Audit  *AuditEntry
+}
+
+// Errors callers distinguish. Every other error is an infrastructure failure and is retryable.
+var (
+	ErrUnknownTenant     = errors.New("store: tenant unknown")
+	ErrDeviceUnknown     = errors.New("store: device unknown")
+	ErrCredentialUnknown = errors.New("store: device credential unknown")
+	ErrCredentialRevoked = errors.New("store: device credential revoked")
+	ErrCredentialExpired = errors.New("store: device credential expired")
+	// ErrUnknownCollector is a health report naming a collector ref.collector does not hold.
+	ErrUnknownCollector     = errors.New("store: collector unknown")
+	ErrDeploymentKeyUnknown = errors.New("store: deployment key unknown")
+	ErrDeploymentKeyRevoked = errors.New("store: deployment key revoked")
+	ErrDeploymentKeyExpired = errors.New("store: deployment key expired")
+	// ErrNoEntraConnection refuses device_verification 'intune' for a tenant with no active Entra
+	// connection: there would be no customer tenant to look the device up in.
+	ErrNoEntraConnection = errors.New("store: tenant has no active entra connection")
+	// ErrIntuneDeviceConflict is a second device claiming an Intune id another device holds.
+	ErrIntuneDeviceConflict = errors.New("store: intune device id already bound to another device")
+	// ErrNoPolicyBundle means the tenant has no servable signed bundle.
+	ErrNoPolicyBundle = errors.New("store: no policy bundle")
+)
+
+// Store is control-api's persistence. *SQLStore implements it; tests use storetest.Memory.
+type Store interface {
+	// Tenant resolves the tenant's lifecycle state, pinned region and identity setting.
+	Tenant(ctx context.Context, tenantID string) (Tenant, error)
+	// FindDeviceByHardwareIdentity is the idempotency lookup; ErrDeviceUnknown means the identity
+	// is new.
+	FindDeviceByHardwareIdentity(ctx context.Context, tenantID, hardwareIdentityHash string) (Device, error)
+	// Device reads one device.
+	Device(ctx context.Context, tenantID, deviceID string) (Device, error)
+	// UpsertDevice inserts a device or refreshes the mutable fields of the one with the same id.
+	UpsertDevice(ctx context.Context, d Device) (Device, error)
+	// IssueCredential revokes the device's live credentials at c.IssuedAt and inserts c, in one
+	// transaction, so a rotation cannot leave a device with two live credentials or none.
+	IssueCredential(ctx context.Context, c Credential) error
+	// DeviceCredential reads one credential.
+	DeviceCredential(ctx context.Context, tenantID, credentialID string) (Credential, error)
+	// RecordHealth upserts one ops.collector_state row per report (a stale report never overwrites
+	// a newer one), applies the device-level fields and stamps last_seen_at, in one transaction. A
+	// report naming an unknown collector returns ErrUnknownCollector and writes nothing.
+	RecordHealth(ctx context.Context, tenantID, deviceID string, at time.Time, reports []CollectorState, dev DeviceHealth) error
+
+	// DeploymentKeyByHash resolves a presented deployment key; ErrDeploymentKeyUnknown when no row
+	// matches.
+	DeploymentKeyByHash(ctx context.Context, tenantID, keyHash string) (DeploymentKey, error)
+	// DeviceVerification reads the tenant's mode and its active Entra connection's tenant id.
+	DeviceVerification(ctx context.Context, tenantID string) (DeviceVerification, error)
+	// FindDeviceByIntuneID is the Intune idempotency lookup; ErrDeviceUnknown means the id is new.
+	FindDeviceByIntuneID(ctx context.Context, tenantID, intuneDeviceID string) (Device, error)
+	// SetDeviceIntuneID binds a verified Intune id to a device; ErrIntuneDeviceConflict when another
+	// device of the tenant holds it.
+	SetDeviceIntuneID(ctx context.Context, tenantID, deviceID, intuneDeviceID string) error
+	// RecordDeploymentEnrolment counts one enrolment against the key and writes its audit row.
+	RecordDeploymentEnrolment(ctx context.Context, tenantID, keyID string, at time.Time, audit AuditEntry) error
+	// Audit writes one audit row.
+	Audit(ctx context.Context, audit AuditEntry) error
+	// CreateDeploymentKey inserts a key and its audit row.
+	CreateDeploymentKey(ctx context.Context, k DeploymentKey, audit AuditEntry) (DeploymentKey, error)
+	// RevokeDeploymentKey revokes a key. Revoking a revoked key returns it unchanged and writes no
+	// second audit row; ErrDeploymentKeyUnknown when the tenant has no such key.
+	RevokeDeploymentKey(ctx context.Context, tenantID, keyID string, at time.Time, audit AuditEntry) (DeploymentKey, error)
+	// SetDeviceVerification changes the tenant's mode and writes its audit row. 'intune' needs an
+	// active Entra connection: ErrNoEntraConnection otherwise.
+	SetDeviceVerification(ctx context.Context, tenantID, mode string, audit AuditEntry) error
+	// DeploymentSummary reads the admin page's figures.
+	DeploymentSummary(ctx context.Context, tenantID string) (DeploymentSummary, error)
+
+	// PolicyInputs reads what a bundle is composed from.
+	PolicyInputs(ctx context.Context, tenantID string) (PolicyInputs, error)
+	// LatestPolicyBundle returns the highest-versioned bundle; ErrNoPolicyBundle when none exists.
+	LatestPolicyBundle(ctx context.Context, tenantID string) (PolicyBundle, error)
+	// MintPolicyBundle runs decide under a per-tenant lock with the latest bundle (nil when none),
+	// inserts what it returns, and returns the bundle in force afterwards. The lock makes replicas
+	// that see the same changed inputs mint one version, not two.
+	MintPolicyBundle(ctx context.Context, tenantID string, decide func(latest *PolicyBundle) (MintDecision, error)) (PolicyBundle, error)
+
+	// Ping checks the database is reachable, for readiness.
+	Ping(ctx context.Context) error
+}
+
+// NewUUID returns a random version-4 UUID.
 func NewUUID() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -244,21 +311,12 @@ func NewUUID() (string, error) {
 	}
 	b[6] = (b[6] & 0x0f) | 0x40
 	b[8] = (b[8] & 0x3f) | 0x80
-	buf := make([]byte, 36)
-	hex.Encode(buf[0:8], b[0:4])
-	buf[8] = '-'
-	hex.Encode(buf[9:13], b[4:6])
-	buf[13] = '-'
-	hex.Encode(buf[14:18], b[6:8])
-	buf[18] = '-'
-	hex.Encode(buf[19:23], b[8:10])
-	buf[23] = '-'
-	hex.Encode(buf[24:36], b[10:16])
-	return string(buf), nil
+	h := hex.EncodeToString(b[:])
+	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32], nil
 }
 
-// IsUUID reports whether s is the canonical 8-4-4-4-12 hex form. It is the same shape the database
-// casts with ::uuid, so a malformed identifier is refused before it reaches a driver.
+// IsUUID reports whether s is the canonical 8-4-4-4-12 hex form the database casts with ::uuid, so
+// a malformed identifier is refused before it reaches a statement.
 func IsUUID(s string) bool {
 	if len(s) != 36 {
 		return false

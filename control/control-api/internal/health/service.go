@@ -1,10 +1,8 @@
-// Package health implements POST /v1/health, the device health channel of
-// docs/02-ingest-and-transport.md §5.4 and §9.
+// Package health implements POST /v1/health, the device health channel.
 //
-// It is deliberately not an event: health is current state, and one row per device per collector is
-// upserted by key (D5, ADR 0011; docs/01-collectors.md §4.3). The service owns the two decisions the
-// transport must not make: which collector names are permitted, and that a stale report does not
-// overwrite a newer one.
+// Health is current state, not an event: one row per device per collector is upserted by key. The
+// service decides which collector names are permitted and that a stale report never overwrites a
+// newer one.
 package health
 
 import (
@@ -21,8 +19,7 @@ import (
 	"github.com/shadow-ai-capture/control-api/internal/store"
 )
 
-// Store is the persistence seam the health path needs. It is the subset of store.Store this service
-// uses, so a test can supply a double.
+// Store is the subset of store.Store the health channel uses.
 type Store interface {
 	Tenant(ctx context.Context, tenantID string) (store.Tenant, error)
 	RecordHealth(ctx context.Context, tenantID, deviceID string, at time.Time, reports []store.CollectorState, dev store.DeviceHealth) error
@@ -30,9 +27,8 @@ type Store interface {
 
 // Config tunes the response's cadence hint.
 type Config struct {
-	// NextReportAfterS is the cadence the device is told to use (docs/02 §5.4: cadence is
-	// server-driven so the fleet can be slowed without shipping device code). Zero defaults to 900 s
-	// (the document's 15-minute assumption).
+	// NextReportAfterS is the reporting cadence the device is told to use, so the fleet can be slowed
+	// without shipping device code. Zero means 900 seconds.
 	NextReportAfterS int
 }
 
@@ -55,11 +51,8 @@ func New(st Store, cfg Config) (*Service, error) {
 	return &Service{store: st, now: time.Now, next: next}, nil
 }
 
-// SetClock overrides the clock, for tests.
-func (s *Service) SetClock(now func() time.Time) { s.now = now }
-
 // Report validates one health request and writes it. Tenant and device come from the authenticated
-// credential, never from the body (docs/02 §5.4).
+// certificate, never from the body.
 func (s *Service) Report(ctx context.Context, tenantID, deviceID string, req protocol.HealthRequest) (protocol.HealthResponse, error) {
 	if err := req.Validate(); err != nil {
 		return protocol.HealthResponse{}, apierr.New(http.StatusBadRequest, apierr.CodeSchemaViolation, err.Error())
@@ -69,8 +62,7 @@ func (s *Service) Report(ctx context.Context, tenantID, deviceID string, req pro
 			"a health report must be authenticated as a device")
 	}
 	now := s.now().UTC()
-	// The tenant's identity setting gates what is stored and is restated to the device (ADR 0021).
-	// Reading it here, not trusting the body, is what makes the setting authoritative.
+	// The tenant's identity setting decides what is stored and is restated to the device.
 	tenant, err := s.store.Tenant(ctx, tenantID)
 	if err != nil {
 		if errors.Is(err, store.ErrUnknownTenant) {
@@ -121,9 +113,8 @@ func (s *Service) Report(ctx context.Context, tenantID, deviceID string, req pro
 	}, nil
 }
 
-// deviceDetail is the row's `detail` jsonb: the counters (the closed seven, docs/01 §4.3) plus the
-// device-level fields that have no dedicated column (docs/02 §9). It is per-row because the schema
-// keys collector_state by collector; the device-level values are repeated on each row.
+// deviceDetail is the row's detail document: the collector's counters plus the device-level fields
+// that have no column of their own, repeated on each collector's row.
 func deviceDetail(req protocol.HealthRequest, c protocol.HealthReport) (json.RawMessage, error) {
 	doc := map[string]any{
 		"agent_version": req.AgentVersion,
@@ -157,9 +148,7 @@ func deviceDetail(req protocol.HealthRequest, c protocol.HealthReport) (json.Raw
 	return raw, nil
 }
 
-// countersMap renders the closed counter set in a stable, closed shape. A nil map becomes the seven
-// zeroes, so a missing counter is never confused with one that is genuinely zero (protocol.
-// NewHealthReport's own rule).
+// countersMap renders the closed counter set; a missing counter is written as zero.
 func countersMap(in map[protocol.Counter]uint64) map[string]uint64 {
 	out := make(map[string]uint64, len(protocol.AllCounters))
 	for _, c := range protocol.AllCounters {

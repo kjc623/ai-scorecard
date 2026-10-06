@@ -12,8 +12,7 @@ import (
 
 	"github.com/shadow-ai-capture/device/protocol"
 
-	"github.com/shadow-ai-capture/control-api/internal/directory"
-	"github.com/shadow-ai-capture/control-api/internal/store"
+	"github.com/shadow-ai-capture/control-api/internal/session"
 )
 
 // A user's core attributes a provider may send but the stored resource does not take from it: the
@@ -68,7 +67,6 @@ type userFacts struct {
 	active      bool
 	displayName string
 	department  string
-	population  string
 }
 
 func (s *Service) facts(res map[string]any) userFacts {
@@ -89,9 +87,6 @@ func (s *Service) facts(res map[string]any) userFacts {
 	}
 	if f.displayName == "" {
 		f.displayName = strings.TrimSpace(firstString(res, "name.givenName") + " " + firstString(res, "name.familyName"))
-	}
-	if s.cfg.PopulationAttribute != "" {
-		f.population = firstString(res, s.cfg.PopulationAttribute)
 	}
 	return f
 }
@@ -166,19 +161,17 @@ func (s *Service) writeIdentity(tx Tx, tenantID, identity string, key []byte, ro
 	if err != nil {
 		return err
 	}
-	dim := directory.Row{
+	dim := UserDimRow{
 		UserRef:              row.UserRef,
 		DirectoryObjectIDEnc: sealed,
 		Department:           nullable(f.department),
-		Population:           nullable(f.population),
-		Status:               directory.StatusInactive,
+		Status:               DimInactive,
 		SyncedAt:             at,
 	}
 	if f.active {
-		dim.Status = directory.StatusActive
+		dim.Status = DimActive
 	}
-	// ADR 0021: a tenant that chose hashed device identities stores no clear name from the
-	// directory either.
+	// A tenant that chose hashed device identities stores no clear name from the directory either.
 	if identity == "clear" {
 		dim.DisplayName = nullable(f.displayName)
 	}
@@ -216,7 +209,7 @@ func (s *Service) CreateUser(ctx context.Context, p Principal, body map[string]a
 	if err != nil {
 		return nil, internal(err)
 	}
-	id, err := store.NewUUID()
+	id, err := session.NewUUID()
 	if err != nil {
 		return nil, internal(err)
 	}

@@ -13,18 +13,19 @@ import (
 	"github.com/shadow-ai-capture/control-api/internal/onboard"
 )
 
-// `control-api tenant create|invite` is the vendor operator's side of onboarding (the shared contract
-// §0.1, §3): the vendor creates the product tenant, then issues a one-time link the customer's admin
-// opens to connect their identity provider. It is a command, not an HTTP route, because nothing a
-// customer can reach should be able to create a tenant or name its email domains.
+// `control-api tenant create|invite` is the vendor operator's side of onboarding: create the
+// product tenant, then issue the one-time link the customer's admin opens to connect their identity
+// provider. They are commands rather than routes, because nothing a customer can reach may create a
+// tenant or name its email domains. In Azure they run as the manual tenant-admin job, with the
+// control-api image and database login.
 //
-//	control-api tenant create --dsn "$SAC_PG_DSN" --name "Contoso" --region eu-west \
-//	  --key-custody vendor --ceiling m1
-//	control-api tenant invite --dsn "$SAC_PG_DSN" --tenant <id> --domain contoso.com \
-//	  [--domain contoso.co.uk] [--expires 168h] [--public-url https://app.example.com]
+//	control-api tenant create --name "Contoso" --region eastus --ceiling m1 --actor alice@vendor
+//	control-api tenant invite --tenant <id> --domain contoso.com [--domain contoso.co.uk] \
+//	  [--expires 168h] --actor alice@vendor
 //
-// create prints the tenant id and invite prints the onboarding URL, each alone on stdout, so a script
-// can capture them. The URL is shown once: only its hash is stored.
+// create prints the tenant id and invite prints the onboarding URL, each alone on stdout. The URL
+// is shown once: only its hash is stored. The database comes from SAC_PG_*, --region defaults to
+// SAC_REGION, and the onboarding URL is built on SAC_PUBLIC_URL.
 func runTenant(args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: control-api tenant create|invite [flags]")
@@ -34,121 +35,74 @@ func runTenant(args []string) error {
 		return runTenantCreate(args[1:])
 	case "invite":
 		return runTenantInvite(args[1:])
-	default:
-		return fmt.Errorf("unknown tenant command %q (want create or invite)", args[0])
 	}
-}
-
-// operatorDB is the database flags both commands share, resolved the way sync-directory resolves them.
-type operatorDB struct {
-	dsn, driver, pgHost, pgPort, pgDatabase, role string
-	actor                                         string
-}
-
-func (o *operatorDB) register(fs *flag.FlagSet) {
-	fs.StringVar(&o.dsn, "dsn", "", "database DSN; the caller must register a driver")
-	fs.StringVar(&o.driver, "driver", "", "database/sql driver name; must be registered in this binary")
-	fs.StringVar(&o.pgHost, "pg-host", "", "database host (used to build the DSN, not a password)")
-	fs.StringVar(&o.pgPort, "pg-port", "5432", "database port")
-	fs.StringVar(&o.pgDatabase, "pg-database", "shadow", "database name")
-	fs.StringVar(&o.role, "role", "control-api", "the identity this process connects as")
-	fs.StringVar(&o.actor, "actor", operatorName(), "the vendor operator recorded in the audit trail (env SAC_OPERATOR)")
-}
-
-// operatorName defaults the audit actor to who is running the command.
-func operatorName() string {
-	for _, name := range []string{"SAC_OPERATOR", "USERNAME", "USER"} {
-		if v := strings.TrimSpace(os.Getenv(name)); v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
-func (o *operatorDB) open(ctx context.Context) (*sql.DB, error) {
-	dsn := o.dsn
-	if dsn == "" {
-		dsn = postgresDSN(o.pgHost, o.pgPort, o.pgDatabase, o.role)
-	}
-	if dsn == "" {
-		return nil, errors.New("no database: pass -dsn, or -pg-host (with the other -pg-* flags)")
-	}
-	driver := o.driver
-	if driver == "" {
-		driver = defaultDriverName
-	}
-	if driver == "" {
-		return nil, errors.New("no PostgreSQL driver is registered in this binary; build with -tags sac_sql_driver")
-	}
-	db, err := sql.Open(driver, dsn)
-	if err != nil {
-		return nil, fmt.Errorf("open database with driver %q: %w", driver, err)
-	}
-	pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if err := db.PingContext(pctx); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("database is not reachable: %w", err)
-	}
-	return db, nil
+	return fmt.Errorf("unknown tenant command %q (want create or invite)", args[0])
 }
 
 func runTenantCreate(args []string) error {
 	fs := flag.NewFlagSet("tenant create", flag.ContinueOnError)
-	var o operatorDB
-	o.register(fs)
 	var t onboard.NewTenant
 	fs.StringVar(&t.Name, "name", "", "the customer's name (required)")
-	fs.StringVar(&t.Region, "region", "", "residency region the tenant is pinned to (required)")
-	fs.StringVar(&t.KeyCustody, "key-custody", "vendor", "vendor | customer_managed | customer_held")
-	fs.StringVar(&t.CeilingMode, "ceiling", "m1", "collection ceiling: m0 | m1 | m2 | m3")
-	fs.StringVar(&t.KEKID, "kek-id", "", "the tenant key-encryption key id (required for m3)")
+	fs.StringVar(&t.Region, "region", os.Getenv(EnvRegion), "the residency region the tenant is pinned to (default "+EnvRegion+")")
+	fs.StringVar(&t.CeilingMode, "ceiling", "m1", "the collection ceiling: m0, m1, m2 or m3")
+	fs.StringVar(&t.Actor, "actor", "", "the vendor operator recorded in the audit trail (required)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	t.Actor = o.actor
-	ctx := context.Background()
-	db, err := o.open(ctx)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-	id, err := onboard.CreateTenant(ctx, db, t)
-	if err != nil {
-		return err
-	}
-	fmt.Println(id)
-	return nil
+	return inDatabase(func(ctx context.Context, db *sql.DB) error {
+		id, err := onboard.CreateTenant(ctx, db, t)
+		if err != nil {
+			return err
+		}
+		fmt.Println(id)
+		return nil
+	})
 }
 
 func runTenantInvite(args []string) error {
 	fs := flag.NewFlagSet("tenant invite", flag.ContinueOnError)
-	var o operatorDB
-	o.register(fs)
 	var in onboard.NewInvite
-	var domains stringList
+	var domains domainList
 	fs.StringVar(&in.TenantID, "tenant", "", "the tenant id `tenant create` printed (required)")
-	fs.Var(&domains, "domain", "an email domain whose people sign in to this tenant; repeatable")
+	fs.Var(&domains, "domain", "an email domain whose people sign in to this tenant; repeatable (required)")
 	fs.DurationVar(&in.TTL, "expires", 7*24*time.Hour, "how long the link stays valid (at most 720h)")
-	fs.StringVar(&in.PublicURL, "public-url", os.Getenv("SAC_PUBLIC_URL"), "the product's browser-facing base URL (env SAC_PUBLIC_URL)")
+	fs.StringVar(&in.Actor, "actor", "", "the vendor operator recorded in the audit trail (required)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if len(domains) == 0 {
-		return errors.New("name at least one --domain: a work email is routed to its tenant by domain")
+		return errors.New("name at least one --domain: a work email is routed to its tenant by its domain")
 	}
-	in.Domains, in.Actor = domains, o.actor
-	ctx := context.Background()
-	db, err := o.open(ctx)
+	in.Domains, in.PublicURL = domains, strings.TrimRight(os.Getenv(EnvPublicURL), "/")
+	return inDatabase(func(ctx context.Context, db *sql.DB) error {
+		inv, err := onboard.CreateInvite(ctx, db, in)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "onboarding link for tenant %s, single use, expires %s:\n", in.TenantID, inv.ExpiresAt.Format(time.RFC3339))
+		fmt.Println(inv.URL)
+		return nil
+	})
+}
+
+// inDatabase opens the database from SAC_PG_* and runs fn with a bounded context.
+func inDatabase(fn func(ctx context.Context, db *sql.DB) error) error {
+	db, err := openDatabase()
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-	inv, err := onboard.CreateInvite(ctx, db, in)
-	if err != nil {
-		return err
-	}
-	fmt.Fprintf(os.Stderr, "onboarding link for tenant %s, single use, expires %s:\n", in.TenantID, inv.ExpiresAt.Format(time.RFC3339))
-	fmt.Println(inv.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	return fn(ctx, db)
+}
+
+// domainList collects repeated --domain flags.
+type domainList []string
+
+func (d *domainList) String() string { return strings.Join(*d, ",") }
+
+func (d *domainList) Set(v string) error {
+	*d = append(*d, v)
 	return nil
 }

@@ -16,8 +16,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shadow-ai-capture/control-api/internal/jose"
+	"github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
+
 	"github.com/shadow-ai-capture/control-api/internal/session"
+	"github.com/shadow-ai-capture/control-api/internal/session/sessiontest"
 )
 
 const (
@@ -52,11 +55,25 @@ func principal() session.Principal {
 }
 
 func newIssuer(t *testing.T, c *clock, keys *session.KeySet) *session.Issuer {
-	is, err := session.NewIssuer(keys, session.IssuerConfig{Issuer: iss + "/", TTL: time.Hour, Now: c.Now})
+	is, err := session.NewIssuer(keys, session.IssuerConfig{Issuer: iss + "/", Now: c.Now})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return is
+}
+
+// unverified splits a token into its one protected header and its claims, without verifying it.
+func unverified(t *testing.T, tok string) (jose.Header, map[string]json.RawMessage) {
+	t.Helper()
+	parsed, err := jwt.ParseSigned(tok, []jose.SignatureAlgorithm{jose.ES256})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claims map[string]json.RawMessage
+	if err := parsed.UnsafeClaimsWithoutVerification(&claims); err != nil {
+		t.Fatal(err)
+	}
+	return parsed.Headers[0], claims
 }
 
 func TestMintedTokenShapeAndVerify(t *testing.T) {
@@ -66,38 +83,34 @@ func TestMintedTokenShapeAndVerify(t *testing.T) {
 		t.Fatal(err)
 	}
 	is := newIssuer(t, c, keys)
-	if is.TTL() != session.MaxTokenTTL {
-		t.Fatalf("TTL = %s; an hour must clamp to %s", is.TTL(), session.MaxTokenTTL)
-	}
 	tok, exp, err := is.Mint(principal())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if exp.Sub(c.t) > session.MaxTokenTTL {
+	if d := exp.Sub(c.t); d > session.TokenTTL || d < session.TokenTTL-time.Second || session.TokenTTL > session.MaxTokenTTL {
 		t.Fatalf("exp is %s away", exp.Sub(c.t))
 	}
-	j, err := jose.Parse(tok)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if typ, _ := j.HeaderString("typ"); typ != "at+jwt" {
+	h, claims := unverified(t, tok)
+	if typ, _ := h.ExtraHeaders[jose.HeaderType].(string); typ != "at+jwt" {
 		t.Fatalf("typ = %q", typ)
 	}
-	if kid, _ := j.HeaderString("kid"); kid != keys.SigningKeyID() {
-		t.Fatalf("kid = %q", kid)
+	if h.KeyID != keys.SigningKeyID() {
+		t.Fatalf("kid = %q", h.KeyID)
 	}
 	var aud []string
-	_ = json.Unmarshal(j.Claims["aud"], &aud)
+	_ = json.Unmarshal(claims["aud"], &aud)
 	if strings.Join(aud, ",") != "sac-query,sac-vault,sac-control" {
 		t.Fatalf("aud = %v", aud)
 	}
 	for _, claim := range []string{"iss", "sub", "sac_tenant", "actor", "roles", "idp", "sid", "iat", "exp", "jti"} {
-		if !j.Claims.Has(claim) {
+		if _, ok := claims[claim]; !ok {
 			t.Fatalf("token lacks %s", claim)
 		}
 	}
-	if got, _ := j.Claims.String("iss"); got != iss {
-		t.Fatalf("iss = %q (the trailing slash must not survive)", got)
+	var gotIss string
+	_ = json.Unmarshal(claims["iss"], &gotIss)
+	if gotIss != iss {
+		t.Fatalf("iss = %q (the trailing slash must not survive)", gotIss)
 	}
 	v := session.NewVerifier(is)
 	p, err := v.Verify(tok, session.AudienceVault)
@@ -106,6 +119,55 @@ func TestMintedTokenShapeAndVerify(t *testing.T) {
 	}
 	if p.Tenant != tenant || strings.Join(p.Roles, ",") != "viewer,admin" || p.SessionID != "0123456789abcdef" || p.Subject != conn+":oid" {
 		t.Fatalf("principal = %+v", p)
+	}
+}
+
+func TestServiceToken(t *testing.T) {
+	c := &clock{t: time.Now().UTC()}
+	keys, _ := session.NewKeySet(newKey(t))
+	is := newIssuer(t, c, keys)
+	tok, err := is.ServiceToken(session.AudienceVault, "control-api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, _ := unverified(t, tok)
+	if typ, _ := h.ExtraHeaders[jose.HeaderType].(string); typ != "at+jwt" || h.KeyID != keys.SigningKeyID() {
+		t.Fatalf("header = %+v", h)
+	}
+	// A verifier holds only the published JWKS.
+	jwks := keys.JWKS()
+	pub := jwks.Key(h.KeyID)
+	if len(pub) != 1 {
+		t.Fatalf("the signing kid is not in the JWKS")
+	}
+	parsed, err := jwt.ParseSigned(tok, []jose.SignatureAlgorithm{jose.ES256})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var registered jwt.Claims
+	var raw map[string]json.RawMessage
+	if err := parsed.Claims(pub[0].Key, &registered, &raw); err != nil {
+		t.Fatalf("does not verify against the JWKS: %v", err)
+	}
+	if err := registered.ValidateWithLeeway(jwt.Expected{Issuer: iss, AnyAudience: jwt.Audience{"sac-vault"}, Subject: "control-api", Time: c.t}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if string(raw["aud"]) != `"sac-vault"` || string(raw["svc"]) != `"control-api"` {
+		t.Fatalf("aud = %s, svc = %s", raw["aud"], raw["svc"])
+	}
+	if life := registered.Expiry.Time().Sub(registered.IssuedAt.Time()); life <= 0 || life > 5*time.Minute {
+		t.Fatalf("life = %s", life)
+	}
+	for _, claim := range []string{"sac_tenant", "actor", "roles"} {
+		if _, ok := raw[claim]; ok {
+			t.Fatalf("a service token carries %s", claim)
+		}
+	}
+	if _, err := session.NewVerifier(is).Verify(tok, session.AudienceVault); !errors.Is(err, session.ErrInvalidToken) {
+		t.Fatalf("a service token passed as a product token: %v", err)
+	}
+	if _, err := is.ServiceToken("", "control-api"); err == nil {
+		t.Fatal("a service token without an audience was minted")
 	}
 }
 
@@ -123,8 +185,12 @@ func TestVerifyRefusals(t *testing.T) {
 	foreign, _, _ := newIssuer(t, c, other).Mint(principal())
 	otherIss, _ := session.NewIssuer(keys, session.IssuerConfig{Issuer: "http://elsewhere:8080", Now: c.Now})
 	wrongIss, _, _ := otherIss.Mint(principal())
-	dpopTyped, _ := jose.SignES256(map[string]any{"alg": "ES256", "typ": "dpop+jwt", "kid": keys.SigningKeyID()},
-		map[string]any{"iss": iss}, key)
+	wrongTyp, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: jose.JSONWebKey{Key: key, KeyID: keys.SigningKeyID()}},
+		(&jose.SignerOptions{}).WithType("JWT"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherTyped, _ := jwt.Signed(wrongTyp).Claims(map[string]any{"iss": iss}).Serialize()
 	parts := strings.Split(tok, ".")
 	hs256 := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"at+jwt","kid":"`+keys.SigningKeyID()+`"}`)) + "." + parts[1] + "." + parts[2]
 	none := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"at+jwt"}`)) + "." + parts[1] + "."
@@ -136,7 +202,7 @@ func TestVerifyRefusals(t *testing.T) {
 		"wrong audience":   {tok, "sac-other"},
 		"unknown key":      {foreign, session.AudienceQuery},
 		"wrong issuer":     {wrongIss, session.AudienceQuery},
-		"dpop typ":         {dpopTyped, session.AudienceQuery},
+		"another typ":      {otherTyped, session.AudienceQuery},
 		"hs256 alg":        {hs256, session.AudienceQuery},
 		"none alg":         {none, session.AudienceQuery},
 		"tampered payload": {tampered, session.AudienceQuery},
@@ -150,7 +216,7 @@ func TestVerifyRefusals(t *testing.T) {
 		})
 	}
 	t.Run("expiry with leeway", func(t *testing.T) {
-		c.t = c.t.Add(is.TTL() + 30*time.Second)
+		c.t = c.t.Add(session.TokenTTL + 30*time.Second)
 		if _, err := v.Verify(tok, session.AudienceQuery); err != nil {
 			t.Fatalf("inside the leeway: %v", err)
 		}
@@ -248,42 +314,9 @@ func TestWellKnown(t *testing.T) {
 	}
 }
 
-func TestRequireMiddleware(t *testing.T) {
-	keys, _ := session.NewKeySet(newKey(t))
-	is := newIssuer(t, &clock{t: time.Now()}, keys)
-	v := session.NewVerifier(is)
-	var seen session.Principal
-	h := v.Require(session.AudienceControl, session.RoleAdmin)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seen, _ = session.FromContext(r.Context())
-		w.WriteHeader(204)
-	}))
-	serve := func(bearer string) int {
-		req := httptest.NewRequest(http.MethodGet, "/admin/v1/deployment", nil)
-		if bearer != "" {
-			req.Header.Set("Authorization", "Bearer "+bearer)
-		}
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, req)
-		return rec.Code
-	}
-	if code := serve(""); code != 401 {
-		t.Fatalf("no token: %d", code)
-	}
-	viewer := principal()
-	viewer.Roles = []string{"viewer"}
-	vt, _, _ := is.Mint(viewer)
-	if code := serve(vt); code != 403 {
-		t.Fatalf("viewer: %d", code)
-	}
-	at, _, _ := is.Mint(principal())
-	if code := serve(at); code != 204 || seen.Actor != "alice@contoso.example" {
-		t.Fatalf("admin: %d %+v", code, seen)
-	}
-}
-
 func TestManagerBounds(t *testing.T) {
 	c := &clock{t: time.Now().UTC()}
-	st := session.NewMemoryStore()
+	st := sessiontest.NewStore()
 	m, err := session.NewManager(st, session.ManagerConfig{MaxAge: 24 * time.Hour, Idle: 3 * time.Hour, Now: c.Now})
 	if err != nil {
 		t.Fatal(err)

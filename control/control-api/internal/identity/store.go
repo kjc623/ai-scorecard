@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/shadow-ai-capture/control-api/internal/session"
 )
 
 // The connection providers and statuses, as ops.identity_connection spells them.
@@ -109,14 +111,21 @@ type NewConnection struct {
 	Scopes          string
 }
 
+// TenantAccess is the slice of ops.tenant that decides whether its people may be given product
+// tokens.
+type TenantAccess struct {
+	Status      string
+	ReadEnabled bool
+}
+
 // TenantSummary is what the onboarding page shows about the tenant it is connecting.
 type TenantSummary struct {
 	Name    string
 	Domains []string
 }
 
-// Store is the persistence seam. Lookups that run before a tenant is known go through the contract's
-// SECURITY DEFINER functions; everything else sets the row-level-security tenant first.
+// Store is the persistence seam. Lookups that run before a tenant is known go through SECURITY
+// DEFINER functions; everything else sets the row-level-security tenant first.
 type Store interface {
 	// ConnectionForEntraTenant is ops.identity_connection_for_entra: active connections only.
 	ConnectionForEntraTenant(ctx context.Context, entraTenantID string) (Connection, error)
@@ -133,6 +142,8 @@ type Store interface {
 
 	TenantConnections(ctx context.Context, tenantID string) ([]Connection, error)
 	TenantSummary(ctx context.Context, tenantID string) (TenantSummary, error)
+	// TenantAccess reads the tenant's status and read gate; ErrNotFound when it does not exist.
+	TenantAccess(ctx context.Context, tenantID string) (TenantAccess, error)
 	Invite(ctx context.Context, tenantID, tokenHash string) (Invite, error)
 	InviteByID(ctx context.Context, tenantID, inviteID string) (Invite, error)
 	RoleGrants(ctx context.Context, tenantID, connectionID, subject string) ([]string, error)
@@ -151,4 +162,17 @@ type Store interface {
 	// ErrConnectionDisabled when the connection is.
 	Activate(ctx context.Context, a Activation) error
 	Audit(ctx context.Context, tenantID string, e AuditEntry) error
+}
+
+// ActivationAudit is the three rows an activation commits, shared by every Store so they cannot
+// drift: the invite spent, the connection activated, the first admin granted — each attributed to
+// the person whose sign-in did it.
+func ActivationAudit(a Activation) []AuditEntry {
+	return []AuditEntry{
+		{ActorType: "user", ActorID: a.Actor, Action: "onboarding_invite.use", ObjectType: "onboarding_invite", ObjectID: a.InviteID},
+		{ActorType: "user", ActorID: a.Actor, Action: "identity_connection.activate", ObjectType: "identity_connection",
+			ObjectID: a.ConnectionID, Detail: map[string]any{"invite_id": a.InviteID}},
+		{ActorType: "user", ActorID: a.Actor, Action: "role.grant", ObjectType: "role_grant", ObjectID: a.ConnectionID + ":" + a.Subject,
+			Detail: map[string]any{"role": session.RoleAdmin, "granted_by": "onboarding-invite:" + a.InviteID}},
+	}
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/shadow-ai-capture/control-api/internal/identity"
 	"github.com/shadow-ai-capture/control-api/internal/identity/idptest"
 	"github.com/shadow-ai-capture/control-api/internal/session"
+	"github.com/shadow-ai-capture/control-api/internal/session/sessiontest"
 )
 
 func TestEntraHappyPath(t *testing.T) {
@@ -478,26 +479,18 @@ func TestRefreshAtMostEveryThirtyMinutesAndFailureEndsTheSession(t *testing.T) {
 	refusal(t, err, identity.CodeSessionEnded)
 }
 
-func TestKidMissRefetchIsRateLimited(t *testing.T) {
+func TestProviderKeyRotationIsPickedUp(t *testing.T) {
 	r := newRig(t)
 	if _, err := r.signIn(identity.BeginRequest{Provider: "entra"}, r.entra, r.entraUser("viewer")); err != nil {
 		t.Fatal(err)
 	}
-	base, _, _, _ := r.entra.Counts()
-	// Outside the window of the first fetch, so the first unknown kid may refetch and the rest may not.
-	r.clock.Advance(2 * time.Minute)
+	// A kid the provider does not publish is refused.
 	r.entra.SignKid = "invented"
-	for i := 0; i < 3; i++ {
-		_, err := r.signIn(identity.BeginRequest{Provider: "entra"}, r.entra, r.entraUser("viewer"))
-		refusal(t, err, identity.CodeSignInFailed)
-	}
-	if hits, _, _, _ := r.entra.Counts(); hits-base != 1 {
-		t.Fatalf("JWKS fetched %d times for three unknown kids, want 1", hits-base)
-	}
-	// A real rotation is picked up once the window has passed.
+	_, err := r.signIn(identity.BeginRequest{Provider: "entra"}, r.entra, r.entraUser("viewer"))
+	refusal(t, err, identity.CodeSignInFailed)
+	// A real rotation: the new kid is fetched and verifies.
 	r.entra.SignKid = ""
 	r.entra.RotateKey(t, "k2")
-	r.clock.Advance(2 * time.Minute)
 	if _, err := r.signIn(identity.BeginRequest{Provider: "entra"}, r.entra, r.entraUser("viewer")); err != nil {
 		t.Fatalf("after rotation: %v", err)
 	}
@@ -513,6 +506,7 @@ func TestBeginRefusals(t *testing.T) {
 		{"unknown domain", identity.BeginRequest{Email: "x@unknown.example", RedirectURI: redirect}, identity.CodeNoSSOConnection},
 		{"no email", identity.BeginRequest{RedirectURI: redirect}, identity.CodeBadRequest},
 		{"relative redirect", identity.BeginRequest{Provider: "entra", RedirectURI: "/callback"}, identity.CodeBadRequest},
+		{"unlisted redirect", identity.BeginRequest{Provider: "entra", RedirectURI: "https://elsewhere.example/callback"}, identity.CodeBadRequest},
 		{"odd provider", identity.BeginRequest{Provider: "saml", RedirectURI: redirect}, identity.CodeBadRequest},
 		{"malformed invite", identity.BeginRequest{Invite: "sacinv_nope", RedirectURI: redirect}, identity.CodeInviteUnknown},
 	}
@@ -521,6 +515,19 @@ func TestBeginRefusals(t *testing.T) {
 			_, err := r.svc.Begin(ctx, c.req)
 			refusal(t, err, c.code)
 		})
+	}
+}
+
+func TestRedirectURIsAreRequired(t *testing.T) {
+	r := newRig(t)
+	mgr, _ := session.NewManager(sessiontest.NewStore(), session.ManagerConfig{})
+	base := identity.Config{Store: r.store, Sessions: mgr, Issuer: r.issuer, Cipher: r.cipher}
+	if _, err := identity.New(base); err == nil {
+		t.Fatal("a service with no redirect URIs was built")
+	}
+	base.RedirectURIs = []string{"/callback"}
+	if _, err := identity.New(base); err == nil {
+		t.Fatal("a relative redirect URI was accepted")
 	}
 }
 
@@ -615,4 +622,31 @@ func TestInviteSpentBetweenBeginAndComplete(t *testing.T) {
 	r.store.AddInvite(inv)
 	_, err = r.svc.Complete(ctx, identity.CompleteRequest{Attempt: begun.Attempt, Code: code, State: state})
 	refusal(t, err, identity.CodeInviteUsed)
+}
+
+// A tenant that is not active, or whose reads are closed, gets no product token: sign-in is
+// refused, a live session cannot re-mint, and reopening the tenant restores the same session.
+func TestClosedTenantGetsNoToken(t *testing.T) {
+	r := newRig(t)
+	res, err := r.signIn(identity.BeginRequest{Provider: "entra"}, r.entra, r.entraUser("analyst"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		status string
+		read   bool
+	}{{"active", false}, {"suspended", true}, {"offboarding", true}, {"closed", false}} {
+		r.store.SetTenantAccess(tenantA, c.status, c.read)
+		_, err := r.svc.Token(ctx, res.Session)
+		refusal(t, err, identity.CodeTenantClosed)
+		_, err = r.signIn(identity.BeginRequest{Provider: "entra"}, r.entra, r.entraUser("analyst"))
+		refusal(t, err, identity.CodeTenantClosed)
+	}
+	r.store.SetTenantAccess(tenantA, "active", true)
+	if _, err := r.svc.Token(ctx, res.Session); err != nil {
+		t.Fatalf("Token after the tenant reopened: %v", err)
+	}
+	if !has(r.auditActions(tenantA), "auth.sign_in_refused") {
+		t.Fatal("the refused sign-in was not audited")
+	}
 }

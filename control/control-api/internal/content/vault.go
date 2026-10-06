@@ -7,102 +7,71 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
+
+	"github.com/shadow-ai-capture/device/protocol"
 )
 
-// HTTPVault calls content-vault on its internal ingress. The three identity headers are the ones
-// the vault's header authenticator reads; they are trusted there only because the ingress admits
-// nothing but control-api and query-api.
+// Service-token parameters for calls to content-vault.
+const (
+	VaultAudience  = "sac-vault"
+	ServiceSubject = "control-api"
+)
+
+// ServiceTokens mints the short-lived service token control-api presents to content-vault.
+type ServiceTokens interface {
+	ServiceToken(audience, service string) (string, error)
+}
+
+// HTTPVault calls content-vault on its internal ingress, authenticated with a service token signed
+// by control-api's session signing key.
 type HTTPVault struct {
-	base string
-	http *http.Client
+	base   string
+	tokens ServiceTokens
+	client *http.Client
 }
 
-// NewHTTPVault builds the client for a vault base URL such as http://content-vault:8080.
-func NewHTTPVault(base string) *HTTPVault {
-	return &HTTPVault{base: strings.TrimRight(base, "/"), http: &http.Client{Timeout: 15 * time.Second}}
+// NewHTTPVault builds the client for a content-vault base URL.
+func NewHTTPVault(base string, tokens ServiceTokens) *HTTPVault {
+	return &HTTPVault{
+		base:   strings.TrimRight(base, "/"),
+		tokens: tokens,
+		client: &http.Client{Timeout: 60 * time.Second},
+	}
 }
 
-// Prepare implements Vault: POST /v1/content/object.
-func (v *HTTPVault) Prepare(ctx context.Context, tenantID, subject, objectID, submissionID, eventID string, expiresAt time.Time, plaintextSize int64) (*PreparedKey, error) {
-	req := map[string]any{
-		"object_id":                     objectID,
-		"event_id":                      eventID,
-		"retention_class":               RetentionClass,
-		"expected_plaintext_size_bytes": plaintextSize,
-	}
-	if submissionID != "" {
-		req["submission_id"] = submissionID
-	}
-	if !expiresAt.IsZero() {
-		req["expires_at"] = expiresAt.UTC().Format(time.RFC3339Nano)
-	}
-	var resp struct {
-		ObjectKeyB64  string `json:"object_key_b64"`
-		WrappedDEKB64 string `json:"wrapped_dek_b64"`
-		KEKID         string `json:"kek_id"`
-		KEKVersion    string `json:"kek_version"`
-	}
-	if err := v.call(ctx, tenantID, subject, "/v1/content/object", req, &resp); err != nil {
-		return nil, err
-	}
-	if resp.ObjectKeyB64 == "" || resp.WrappedDEKB64 == "" {
-		return nil, fmt.Errorf("vault prepare returned no key")
-	}
-	return &PreparedKey{ObjectKeyB64: resp.ObjectKeyB64, WrappedDEK: resp.WrappedDEKB64, KEKID: resp.KEKID, KEKVersion: resp.KEKVersion}, nil
-}
-
-// Finalise implements Vault: POST /v1/content/object/finalise.
-func (v *HTTPVault) Finalise(ctx context.Context, tenantID, subject string, obj StoredObject) error {
-	req := map[string]any{
-		"object_id":            obj.ObjectID,
-		"event_id":             obj.EventID,
-		"prompt_kind":          obj.PromptKind,
-		"blob_path":            obj.BlobPath,
-		"ciphertext_sha256":    obj.CiphertextSHA256,
-		"plaintext_size_bytes": obj.PlaintextSizeBytes,
-		"wrapped_dek_b64":      obj.WrappedDEK,
-		"kek_id":               obj.KEKID,
-		"kek_version":          obj.KEKVersion,
-		"retention_class":      RetentionClass,
-	}
-	if obj.SubmissionID != "" {
-		req["submission_id"] = obj.SubmissionID
-	}
-	if !obj.ExpiresAt.IsZero() {
-		req["expires_at"] = obj.ExpiresAt.UTC().Format(time.RFC3339Nano)
-	}
-	return v.call(ctx, tenantID, subject, "/v1/content/object/finalise", req, nil)
-}
-
-func (v *HTTPVault) call(ctx context.Context, tenantID, subject, path string, body any, out any) error {
-	raw, err := json.Marshal(body)
+// Put implements Vault: PUT /internal/v1/tenants/{tenant}/content/{event}. content-vault answers
+// 201 when it stores the content and 200 when the same grant and digest were already stored.
+func (v *HTTPVault) Put(ctx context.Context, tenantID, eventID, grantID, rawDigest string, body []byte) (bool, error) {
+	token, err := v.tokens.ServiceToken(VaultAudience, ServiceSubject)
 	if err != nil {
-		return err
+		return false, fmt.Errorf("service token: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, v.base+path, bytes.NewReader(raw))
+	endpoint := v.base + "/internal/v1/tenants/" + url.PathEscape(tenantID) + "/content/" + url.PathEscape(eventID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return false, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Sac-Service", "control-api")
-	req.Header.Set("X-Sac-Subject", subject)
-	req.Header.Set("X-Sac-Tenant", tenantID)
-	resp, err := v.http.Do(req)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set(protocol.HeaderContentGrantID, grantID)
+	req.Header.Set(protocol.HeaderContentRawDigest, rawDigest)
+	resp, err := v.client.Do(req)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer resp.Body.Close()
-	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return err
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return resp.StatusCode == http.StatusCreated, nil
 	}
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("vault %s: status %d: %s", path, resp.StatusCode, strings.TrimSpace(string(b)))
+	var e struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
 	}
-	if out == nil {
-		return nil
-	}
-	return json.Unmarshal(b, out)
+	_ = json.Unmarshal(raw, &e)
+	return false, &VaultError{Status: resp.StatusCode, Code: e.Error.Code}
 }

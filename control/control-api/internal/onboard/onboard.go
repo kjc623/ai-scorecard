@@ -1,6 +1,6 @@
 // Package onboard is how a customer's admin links the product tenant the vendor created to their
-// identity provider (contract §0.1, §3): the /onboard/* pages, the Entra admin-consent round trip,
-// the OIDC provider form, and the vendor operator's tenant and invite commands.
+// identity provider: the /onboard/* pages, the Entra admin-consent round trip, the OIDC provider
+// form, and the vendor operator's tenant and invite commands.
 //
 // The invite token is the only credential before the first sign-in, so every step re-checks it, and
 // none of them activates anything. A connection is created pending — Entra after Microsoft reports
@@ -8,9 +8,9 @@
 // sign-in through it succeeds (internal/identity's Complete), which is also what makes the person who
 // signed in the tenant's first admin and spends the invite.
 //
-// The pages are small server-rendered HTML with no script and no external asset, served through the
-// dashboard's origin (it forwards /onboard/* untouched), with no-referrer so the invite in the URL
-// never leaks to Microsoft or the customer's provider in a Referer header.
+// The pages are small server-rendered HTML with no script and no external asset, served under the
+// product's public origin, with no-referrer so the invite in the URL never leaks to Microsoft or the
+// customer's provider in a Referer header.
 package onboard
 
 import (
@@ -30,7 +30,7 @@ import (
 )
 
 const (
-	// PathPrefix is what the dashboard forwards and the edge routes to control-api.
+	// PathPrefix is the onboarding pages' path on the public origin.
 	PathPrefix = "/onboard/"
 	// PathEntraCallback is the admin-consent redirect URI, registered on the vendor's Entra app.
 	PathEntraCallback = "/onboard/entra/callback"
@@ -45,7 +45,9 @@ const (
 
 // EntraConfig turns on the "Microsoft Entra ID" choice.
 type EntraConfig struct {
-	ClientID     string
+	ClientID string
+	// LoginBaseURL is the identity platform host; empty is https://login.microsoftonline.com. Tests
+	// point it at a fake provider.
 	LoginBaseURL string
 	// ConsentProbe proves the consent landed by obtaining an app-only token in the consenting tenant
 	// (entraapp.App.Token). The callback's `tenant` parameter is only a query string, so without the
@@ -58,15 +60,16 @@ type EntraConfig struct {
 type Config struct {
 	Store  identity.Store
 	Cipher *directory.Cipher
-	// PublicURL is the browser-facing base (SAC_PUBLIC_URL): the dashboard origin that forwards
-	// /onboard/* here. The consent redirect URI and the sign-in hand-off are built from it.
+	// PublicURL is the product's browser-facing origin (SAC_PUBLIC_URL), under which /onboard/*
+	// reaches this service. The consent redirect URI and the sign-in hand-off are built from it.
 	PublicURL string
 	// SignInPath is the dashboard's sign-in route; default /login. It receives ?invite=&provider=
 	// and passes both to POST /internal/v1/auth/begin.
 	SignInPath string
 	Entra      *EntraConfig
 	HTTPClient *http.Client
-	// AllowInsecureIssuers admits http issuers and private addresses (the lab's stand-in only).
+	// AllowInsecureIssuers admits http issuers and private addresses. It exists for the local lab's
+	// test identity provider and is never set in production.
 	AllowInsecureIssuers bool
 	// ProbeRetry is the first wait between consent probes; Entra replicates a new service principal
 	// within seconds, so the probe tries three times. Default two seconds.

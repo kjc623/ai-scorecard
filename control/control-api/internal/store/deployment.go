@@ -2,221 +2,468 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 )
 
-// The enterprise deployment seam (contract §5): the per-tenant deployment key a customer's package
-// carries, the tenant's device-verification setting and the Intune binding it produces, the admin
-// summary the Settings -> Deployment page reads, and the audit rows every one of those writes.
-//
-// It is a separate interface from Store on purpose. The single-use enrolment-token path reads none
-// of these tables, so a deployment that has not yet migrated them keeps enrolling lab devices; and a
-// caller that needs only the deployment half is not handed the credential half.
-
-// Device-verification modes, the closed set ops.tenant.device_verification holds.
+// The deployment-key, admin-summary, audit and policy statements.
 const (
-	VerificationNone   = "none"
-	VerificationIntune = "intune"
+	SQLDeploymentKeyByHash = `
+SELECT ` + keyColumns + `
+  FROM ops.deployment_key
+ WHERE tenant_id = $1::uuid AND key_hash = $2`
+
+	SQLDeploymentKeyByID = `
+SELECT ` + keyColumns + `
+  FROM ops.deployment_key
+ WHERE tenant_id = $1::uuid AND key_id = $2::uuid`
+
+	SQLListDeploymentKeys = `
+SELECT ` + keyColumns + `
+  FROM ops.deployment_key
+ WHERE tenant_id = $1::uuid
+ ORDER BY created_at DESC, key_id`
+
+	// SQLInsertDeploymentKey stores a minted key's hash. $7 is NULL for a key that does not expire.
+	SQLInsertDeploymentKey = `
+INSERT INTO ops.deployment_key (key_id, tenant_id, key_hash, label, created_by, created_at, expires_at)
+VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6::timestamptz, $7::timestamptz)
+RETURNING ` + keyColumns
+
+	// SQLRevokeDeploymentKey revokes a live key; a second revoke is a zero-row update, so the first
+	// revocation's time and audit row stand.
+	SQLRevokeDeploymentKey = `
+UPDATE ops.deployment_key
+   SET revoked_at = $3::timestamptz
+ WHERE tenant_id = $1::uuid AND key_id = $2::uuid AND revoked_at IS NULL
+RETURNING ` + keyColumns
+
+	// SQLTouchDeploymentKey counts one enrolment. last_used_at only moves forward.
+	SQLTouchDeploymentKey = `
+UPDATE ops.deployment_key
+   SET enrolment_count = enrolment_count + 1,
+       last_used_at    = greatest(coalesce(last_used_at, $3::timestamptz), $3::timestamptz)
+ WHERE tenant_id = $1::uuid AND key_id = $2::uuid`
+
+	// SQLDeviceVerification reads the tenant's mode and the Entra tenant of its active Entra
+	// connection, the one customer tenant an Intune lookup may be made in.
+	SQLDeviceVerification = `
+SELECT t.device_verification,
+       coalesce((SELECT c.entra_tenant_id
+                   FROM ops.identity_connection c
+                  WHERE c.tenant_id = t.tenant_id AND c.provider = 'entra' AND c.status = 'active'
+                  ORDER BY c.activated_at DESC NULLS LAST, c.created_at DESC
+                  LIMIT 1), '')
+  FROM ops.tenant t
+ WHERE t.tenant_id = $1::uuid`
+
+	SQLSetDeviceVerification = `
+UPDATE ops.tenant
+   SET device_verification = $2, updated_at = now()
+ WHERE tenant_id = $1::uuid`
+
+	// SQLIdentityConnectionSummary names the active connection if there is one, else the newest.
+	SQLIdentityConnectionSummary = `
+SELECT provider, status, coalesce(entra_tenant_id, ''), coalesce(issuer, '')
+  FROM ops.identity_connection
+ WHERE tenant_id = $1::uuid
+ ORDER BY (status = 'active') DESC, created_at DESC
+ LIMIT 1`
+
+	SQLDeviceSummary = `
+SELECT count(*) FILTER (WHERE revoked_at IS NULL), max(enrolled_at)
+  FROM ops.device
+ WHERE tenant_id = $1::uuid`
+
+	// SQLScimSummary reads counts and timestamps only, never a sealed resource.
+	SQLScimSummary = `
+SELECT (SELECT count(*) FROM ops.scim_user  WHERE tenant_id = $1::uuid AND active),
+       (SELECT count(*) FROM ops.scim_group WHERE tenant_id = $1::uuid),
+       greatest((SELECT max(updated_at) FROM ops.scim_user  WHERE tenant_id = $1::uuid),
+                (SELECT max(updated_at) FROM ops.scim_group WHERE tenant_id = $1::uuid))`
+
+	SQLFindDeviceByIntuneID = `
+SELECT ` + deviceColumns + `
+  FROM ops.device
+ WHERE tenant_id = $1::uuid AND intune_device_id = $2`
+
+	// SQLSetDeviceIntuneID binds a verified Intune id. The per-tenant unique index refuses a second
+	// device claiming the same id.
+	SQLSetDeviceIntuneID = `
+UPDATE ops.device
+   SET intune_device_id = $3
+ WHERE tenant_id = $1::uuid AND device_id = $2::uuid`
+
+	// SQLInsertAudit writes one audit row; the table's trigger computes the chain hashes.
+	SQLInsertAudit = `
+INSERT INTO ops.audit (tenant_id, actor_type, actor_id, action, object_type, object_id, detail, occurred_at)
+VALUES ($1::uuid, $2, $3, $4, $5, nullif($6, ''), $7::jsonb, $8::timestamptz)`
+
+	SQLPolicyTenant = `
+SELECT status, ingest_enabled, ceiling_mode
+  FROM ops.tenant
+ WHERE tenant_id = $1::uuid`
+
+	// SQLInterceptionHosts is the tool catalogue's TLS hosts: what the device may decrypt.
+	SQLInterceptionHosts = `
+SELECT DISTINCT lower(evidence->>'host') AS host
+  FROM ref.tool_catalogue
+ WHERE signal_kind = 'tls' AND coalesce(evidence->>'host', '') <> ''
+ ORDER BY host`
+
+	// SQLLockTenantPolicy serialises minting per tenant for the rest of the transaction.
+	SQLLockTenantPolicy = `SELECT pg_advisory_xact_lock(hashtextextended('ops.policy_bundle:' || $1, 0))`
+
+	SQLLatestPolicyBundle = `
+SELECT bundle_version, scope_matrix, destination_allowlist, feature_state, spool_bounds,
+       retention_class, signature_kid, signed_digest, signed_envelope,
+       effective_from, created_by, created_at
+  FROM ops.policy_bundle
+ WHERE tenant_id = $1::uuid
+ ORDER BY bundle_version DESC
+ LIMIT 1`
+
+	// SQLInsertPolicyBundle writes a signed bundle. The table's ceiling trigger refuses a scope
+	// matrix above the tenant ceiling.
+	SQLInsertPolicyBundle = `
+INSERT INTO ops.policy_bundle (tenant_id, bundle_version, scope_matrix, destination_allowlist,
+                               retention_class, spool_bounds, feature_state,
+                               signature_kid, signed_digest, effective_from, created_by, signed_envelope)
+VALUES ($1::uuid, $2::bigint, $3::jsonb, $4::jsonb, $5, $6::jsonb, $7::jsonb, $8, $9,
+        $10::timestamptz, $11, $12::bytea)`
 )
 
-// Audit actor types, the closed set ops.audit.actor_type holds.
-const (
-	ActorUser    = "user"
-	ActorDevice  = "device"
-	ActorService = "service"
-	ActorSystem  = "system"
-)
+const keyColumns = `key_id::text, tenant_id::text, key_hash, label, created_by, created_at, expires_at,
+       revoked_at, enrolment_count, last_used_at`
 
-// Errors the deployment path distinguishes.
-var (
-	ErrDeploymentKeyUnknown = errors.New("store: deployment key unknown")
-	ErrDeploymentKeyRevoked = errors.New("store: deployment key revoked")
-	ErrDeploymentKeyExpired = errors.New("store: deployment key expired")
-	// ErrNoEntraConnection refuses device_verification='intune' for a tenant with no active Entra
-	// connection: there would be no customer tenant to ask Intune in.
-	ErrNoEntraConnection = errors.New("store: tenant has no active entra connection")
-	// ErrIntuneDeviceConflict is a second product device claiming an Intune id one already holds.
-	ErrIntuneDeviceConflict = errors.New("store: intune device id already bound to another device")
-	// ErrNoPolicyBundle means the tenant has no servable signed bundle.
-	ErrNoPolicyBundle = errors.New("store: no policy bundle")
-)
-
-// DeploymentKey is ops.deployment_key. KeyHash is the stored sha256:<hex>; the plaintext is never
-// held by the store.
-type DeploymentKey struct {
-	KeyID          string
-	TenantID       string
-	KeyHash        string
-	Label          string
-	CreatedBy      string
-	CreatedAt      time.Time
-	ExpiresAt      *time.Time
-	RevokedAt      *time.Time
-	EnrolmentCount int64
-	LastUsedAt     *time.Time
+func scanDeploymentKey(row rowScanner) (DeploymentKey, error) {
+	var k DeploymentKey
+	var expires, revoked, used sql.NullTime
+	if err := row.Scan(&k.KeyID, &k.TenantID, &k.KeyHash, &k.Label, &k.CreatedBy, &k.CreatedAt,
+		&expires, &revoked, &k.EnrolmentCount, &used); err != nil {
+		return DeploymentKey{}, err
+	}
+	k.ExpiresAt, k.RevokedAt, k.LastUsedAt = nullTime(expires), nullTime(revoked), nullTime(used)
+	return k, nil
 }
 
-// Usable reports whether the key may still enrol a device. Revocation is checked first, because a
-// revoked key that has also expired was revoked by a person and that is the fact worth reporting.
-func (k DeploymentKey) Usable(now time.Time) error {
-	switch {
-	case k.RevokedAt != nil:
-		return ErrDeploymentKeyRevoked
-	case k.ExpiresAt != nil && !k.ExpiresAt.After(now):
-		return ErrDeploymentKeyExpired
+// DeploymentKeyByHash implements Store.
+func (s *SQLStore) DeploymentKeyByHash(ctx context.Context, tenantID, keyHash string) (DeploymentKey, error) {
+	var k DeploymentKey
+	err := s.withTenant(ctx, tenantID, func(tx *sql.Tx) error {
+		var err error
+		k, err = scanDeploymentKey(tx.QueryRowContext(ctx, SQLDeploymentKeyByHash, tenantID, keyHash))
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrDeploymentKeyUnknown
+		}
+		if err != nil {
+			return fmt.Errorf("store: deployment key: %w", err)
+		}
+		return nil
+	})
+	return k, err
+}
+
+// DeviceVerification implements Store.
+func (s *SQLStore) DeviceVerification(ctx context.Context, tenantID string) (DeviceVerification, error) {
+	var v DeviceVerification
+	err := s.withTenant(ctx, tenantID, func(tx *sql.Tx) error {
+		var err error
+		v, err = deviceVerification(ctx, tx, tenantID)
+		return err
+	})
+	return v, err
+}
+
+func deviceVerification(ctx context.Context, tx *sql.Tx, tenantID string) (DeviceVerification, error) {
+	var v DeviceVerification
+	err := tx.QueryRowContext(ctx, SQLDeviceVerification, tenantID).Scan(&v.Mode, &v.EntraTenantID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return v, ErrUnknownTenant
+	}
+	if err != nil {
+		return v, fmt.Errorf("store: device verification: %w", err)
+	}
+	return v, nil
+}
+
+// SetDeviceIntuneID implements Store.
+func (s *SQLStore) SetDeviceIntuneID(ctx context.Context, tenantID, deviceID, intuneDeviceID string) error {
+	return s.withTenant(ctx, tenantID, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, SQLSetDeviceIntuneID, tenantID, deviceID, intuneDeviceID)
+		if isUniqueViolation(err) {
+			return ErrIntuneDeviceConflict
+		}
+		if err != nil {
+			return fmt.Errorf("store: set device intune id: %w", err)
+		}
+		if n, err := res.RowsAffected(); err == nil && n == 0 {
+			return ErrDeviceUnknown
+		}
+		return nil
+	})
+}
+
+// RecordDeploymentEnrolment implements Store.
+func (s *SQLStore) RecordDeploymentEnrolment(ctx context.Context, tenantID, keyID string, at time.Time, audit AuditEntry) error {
+	return s.withTenant(ctx, tenantID, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, SQLTouchDeploymentKey, tenantID, keyID, at.UTC()); err != nil {
+			return fmt.Errorf("store: count deployment enrolment: %w", err)
+		}
+		return insertAudit(ctx, tx, audit)
+	})
+}
+
+// Audit implements Store.
+func (s *SQLStore) Audit(ctx context.Context, audit AuditEntry) error {
+	return s.withTenant(ctx, audit.TenantID, func(tx *sql.Tx) error {
+		return insertAudit(ctx, tx, audit)
+	})
+}
+
+// CreateDeploymentKey implements Store.
+func (s *SQLStore) CreateDeploymentKey(ctx context.Context, k DeploymentKey, audit AuditEntry) (DeploymentKey, error) {
+	var out DeploymentKey
+	err := s.withTenant(ctx, k.TenantID, func(tx *sql.Tx) error {
+		var err error
+		out, err = scanDeploymentKey(tx.QueryRowContext(ctx, SQLInsertDeploymentKey,
+			k.KeyID, k.TenantID, k.KeyHash, k.Label, k.CreatedBy, k.CreatedAt.UTC(), nullableTime(k.ExpiresAt)))
+		if err != nil {
+			return fmt.Errorf("store: insert deployment key: %w", err)
+		}
+		return insertAudit(ctx, tx, audit)
+	})
+	return out, err
+}
+
+// RevokeDeploymentKey implements Store.
+func (s *SQLStore) RevokeDeploymentKey(ctx context.Context, tenantID, keyID string, at time.Time, audit AuditEntry) (DeploymentKey, error) {
+	var out DeploymentKey
+	err := s.withTenant(ctx, tenantID, func(tx *sql.Tx) error {
+		var err error
+		out, err = scanDeploymentKey(tx.QueryRowContext(ctx, SQLRevokeDeploymentKey, tenantID, keyID, at.UTC()))
+		if errors.Is(err, sql.ErrNoRows) {
+			// Already revoked (the first revocation stands) or unknown.
+			out, err = scanDeploymentKey(tx.QueryRowContext(ctx, SQLDeploymentKeyByID, tenantID, keyID))
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrDeploymentKeyUnknown
+			}
+			if err != nil {
+				return fmt.Errorf("store: read deployment key: %w", err)
+			}
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("store: revoke deployment key: %w", err)
+		}
+		return insertAudit(ctx, tx, audit)
+	})
+	return out, err
+}
+
+// SetDeviceVerification implements Store.
+func (s *SQLStore) SetDeviceVerification(ctx context.Context, tenantID, mode string, audit AuditEntry) error {
+	return s.withTenant(ctx, tenantID, func(tx *sql.Tx) error {
+		current, err := deviceVerification(ctx, tx, tenantID)
+		if err != nil {
+			return err
+		}
+		if mode == VerificationIntune && current.EntraTenantID == "" {
+			return ErrNoEntraConnection
+		}
+		if _, err := tx.ExecContext(ctx, SQLSetDeviceVerification, tenantID, mode); err != nil {
+			return fmt.Errorf("store: set device verification: %w", err)
+		}
+		if audit.Detail == nil {
+			audit.Detail = map[string]any{}
+		}
+		audit.Detail["previous"] = current.Mode
+		return insertAudit(ctx, tx, audit)
+	})
+}
+
+// DeploymentSummary implements Store.
+func (s *SQLStore) DeploymentSummary(ctx context.Context, tenantID string) (DeploymentSummary, error) {
+	var out DeploymentSummary
+	err := s.withTenant(ctx, tenantID, func(tx *sql.Tx) error {
+		v, err := deviceVerification(ctx, tx, tenantID)
+		if err != nil {
+			return err
+		}
+		out.DeviceVerification = v.Mode
+		var c IdentityConnection
+		err = tx.QueryRowContext(ctx, SQLIdentityConnectionSummary, tenantID).
+			Scan(&c.Provider, &c.Status, &c.EntraTenantID, &c.Issuer)
+		switch {
+		case err == nil:
+			out.Connection = &c
+		case !errors.Is(err, sql.ErrNoRows):
+			return fmt.Errorf("store: identity connection: %w", err)
+		}
+		if out.Keys, err = listDeploymentKeys(ctx, tx, tenantID); err != nil {
+			return err
+		}
+		var lastEnrolled sql.NullTime
+		if err := tx.QueryRowContext(ctx, SQLDeviceSummary, tenantID).Scan(&out.DevicesEnrolled, &lastEnrolled); err != nil {
+			return fmt.Errorf("store: device summary: %w", err)
+		}
+		out.LastEnrolledAt = nullTime(lastEnrolled)
+		var lastProvisioned sql.NullTime
+		if err := tx.QueryRowContext(ctx, SQLScimSummary, tenantID).Scan(&out.ScimUsers, &out.ScimGroups, &lastProvisioned); err != nil {
+			return fmt.Errorf("store: scim summary: %w", err)
+		}
+		out.LastProvisionedAt = nullTime(lastProvisioned)
+		return nil
+	})
+	return out, err
+}
+
+func listDeploymentKeys(ctx context.Context, tx *sql.Tx, tenantID string) ([]DeploymentKey, error) {
+	rows, err := tx.QueryContext(ctx, SQLListDeploymentKeys, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list deployment keys: %w", err)
+	}
+	defer rows.Close()
+	var keys []DeploymentKey
+	for rows.Next() {
+		k, err := scanDeploymentKey(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: list deployment keys: %w", err)
+		}
+		keys = append(keys, k)
+	}
+	return keys, rows.Err()
+}
+
+// PolicyInputs implements Store.
+func (s *SQLStore) PolicyInputs(ctx context.Context, tenantID string) (PolicyInputs, error) {
+	var in PolicyInputs
+	err := s.withTenant(ctx, tenantID, func(tx *sql.Tx) error {
+		t := PolicyTenant{TenantID: tenantID}
+		err := tx.QueryRowContext(ctx, SQLPolicyTenant, tenantID).Scan(&t.Status, &t.IngestEnabled, &t.CeilingMode)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrUnknownTenant
+		}
+		if err != nil {
+			return fmt.Errorf("store: policy tenant: %w", err)
+		}
+		in.Tenant = t
+		in.InterceptionHosts, err = interceptionHosts(ctx, tx)
+		return err
+	})
+	return in, err
+}
+
+func interceptionHosts(ctx context.Context, tx *sql.Tx) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, SQLInterceptionHosts)
+	if err != nil {
+		return nil, fmt.Errorf("store: interception hosts: %w", err)
+	}
+	defer rows.Close()
+	var hosts []string
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			return nil, fmt.Errorf("store: interception hosts: %w", err)
+		}
+		hosts = append(hosts, h)
+	}
+	return hosts, rows.Err()
+}
+
+func scanPolicyBundle(row rowScanner, tenantID string) (PolicyBundle, error) {
+	b := PolicyBundle{TenantID: tenantID}
+	var scope, allow, feature, spool []byte
+	if err := row.Scan(&b.Version, &scope, &allow, &feature, &spool, &b.RetentionClass,
+		&b.SignatureKID, &b.SignedDigest, &b.SignedEnvelope, &b.EffectiveFrom, &b.CreatedBy, &b.CreatedAt); err != nil {
+		return PolicyBundle{}, err
+	}
+	b.ScopeMatrix, b.DestinationAllowlist = json.RawMessage(scope), json.RawMessage(allow)
+	b.FeatureState, b.SpoolBounds = json.RawMessage(feature), json.RawMessage(spool)
+	return b, nil
+}
+
+// LatestPolicyBundle implements Store.
+func (s *SQLStore) LatestPolicyBundle(ctx context.Context, tenantID string) (PolicyBundle, error) {
+	var out PolicyBundle
+	err := s.withTenant(ctx, tenantID, func(tx *sql.Tx) error {
+		var err error
+		out, err = scanPolicyBundle(tx.QueryRowContext(ctx, SQLLatestPolicyBundle, tenantID), tenantID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNoPolicyBundle
+		}
+		if err != nil {
+			return fmt.Errorf("store: latest policy bundle: %w", err)
+		}
+		return nil
+	})
+	return out, err
+}
+
+// MintPolicyBundle implements Store.
+func (s *SQLStore) MintPolicyBundle(ctx context.Context, tenantID string, decide func(latest *PolicyBundle) (MintDecision, error)) (PolicyBundle, error) {
+	var out PolicyBundle
+	err := s.withTenant(ctx, tenantID, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, SQLLockTenantPolicy, tenantID); err != nil {
+			return fmt.Errorf("store: lock tenant policy: %w", err)
+		}
+		var latest *PolicyBundle
+		b, err := scanPolicyBundle(tx.QueryRowContext(ctx, SQLLatestPolicyBundle, tenantID), tenantID)
+		switch {
+		case err == nil:
+			latest = &b
+		case !errors.Is(err, sql.ErrNoRows):
+			return fmt.Errorf("store: latest policy bundle: %w", err)
+		}
+		d, err := decide(latest)
+		if err != nil {
+			return err
+		}
+		if d.Bundle == nil {
+			if latest == nil {
+				return ErrNoPolicyBundle
+			}
+			out = *latest
+			return nil
+		}
+		nb := *d.Bundle
+		nb.TenantID = tenantID
+		if _, err := tx.ExecContext(ctx, SQLInsertPolicyBundle,
+			tenantID, nb.Version, jsonText(nb.ScopeMatrix, "{}"), jsonText(nb.DestinationAllowlist, "[]"),
+			nb.RetentionClass, jsonText(nb.SpoolBounds, "{}"), jsonText(nb.FeatureState, "{}"),
+			nb.SignatureKID, nb.SignedDigest, nb.EffectiveFrom.UTC(), nb.CreatedBy, nb.SignedEnvelope); err != nil {
+			return fmt.Errorf("store: insert policy bundle: %w", err)
+		}
+		if d.Audit != nil {
+			if err := insertAudit(ctx, tx, *d.Audit); err != nil {
+				return err
+			}
+		}
+		nb.CreatedAt = nb.EffectiveFrom
+		out = nb
+		return nil
+	})
+	return out, err
+}
+
+func insertAudit(ctx context.Context, tx *sql.Tx, a AuditEntry) error {
+	detail := []byte("{}")
+	if len(a.Detail) > 0 {
+		var err error
+		if detail, err = json.Marshal(a.Detail); err != nil {
+			return fmt.Errorf("store: audit detail: %w", err)
+		}
+	}
+	at := a.OccurredAt
+	if at.IsZero() {
+		at = time.Now()
+	}
+	if _, err := tx.ExecContext(ctx, SQLInsertAudit, a.TenantID, a.ActorType, a.ActorID, a.Action,
+		a.ObjectType, a.ObjectID, string(detail), at.UTC()); err != nil {
+		return fmt.Errorf("store: insert audit: %w", err)
 	}
 	return nil
-}
-
-// DeviceVerification is the tenant's enrolment check and what it needs: the mode, and the Entra
-// tenant of the tenant's active Entra connection (empty when there is none).
-type DeviceVerification struct {
-	Mode          string
-	EntraTenantID string
-}
-
-// IdentityConnection is the slice of ops.identity_connection the admin page shows.
-type IdentityConnection struct {
-	Provider      string
-	Status        string
-	EntraTenantID string
-	Issuer        string
-}
-
-// AuditEntry is one ops.audit row. prev_hash and row_hash are the chain trigger's, never the
-// caller's. Detail must not carry a key, a token or package content.
-type AuditEntry struct {
-	TenantID   string
-	ActorType  string
-	ActorID    string
-	Action     string
-	ObjectType string
-	ObjectID   string
-	Detail     map[string]any
-	OccurredAt time.Time
-}
-
-func (a AuditEntry) detailJSON() (string, error) {
-	if len(a.Detail) == 0 {
-		return "{}", nil
-	}
-	b, err := json.Marshal(a.Detail)
-	if err != nil {
-		return "", err
-	}
-	return string(b), nil
-}
-
-// DeploymentSummary is everything GET /admin/v1/deployment reads from the database in one go.
-type DeploymentSummary struct {
-	Connection         *IdentityConnection
-	DeviceVerification string
-	Keys               []DeploymentKey
-	DevicesEnrolled    int64
-	LastEnrolledAt     *time.Time
-	ScimUsers          int64
-	ScimGroups         int64
-	LastProvisionedAt  *time.Time
-}
-
-// DeploymentStore is the persistence seam of deployment-key enrolment and of the deployment admin
-// API. Every method is tenant-scoped, exactly as Store's are.
-type DeploymentStore interface {
-	// DeploymentKeyByHash resolves a presented key by (tenant, hash). ErrDeploymentKeyUnknown when
-	// no row matches; the caller compares the hash back in constant time.
-	DeploymentKeyByHash(ctx context.Context, tenantID, keyHash string) (DeploymentKey, error)
-	// DeviceVerification reads the tenant's mode and its active Entra connection's tenant id.
-	// ErrUnknownTenant when the tenant does not exist.
-	DeviceVerification(ctx context.Context, tenantID string) (DeviceVerification, error)
-	// FindDeviceByIntuneID is the Intune half of C11: ErrDeviceUnknown means the id is new.
-	FindDeviceByIntuneID(ctx context.Context, tenantID, intuneDeviceID string) (Device, error)
-	// SetDeviceIntuneID binds a verified Intune id to a device. ErrIntuneDeviceConflict when another
-	// device of the tenant already holds it.
-	SetDeviceIntuneID(ctx context.Context, tenantID, deviceID, intuneDeviceID string) error
-	// RecordDeploymentEnrolment counts one enrolment against the key (enrolment_count,
-	// last_used_at) and writes its audit row, in one transaction.
-	RecordDeploymentEnrolment(ctx context.Context, tenantID, keyID string, at time.Time, audit AuditEntry) error
-	// Audit writes one audit row on its own, for an event that changes no other row.
-	Audit(ctx context.Context, audit AuditEntry) error
-
-	// CreateDeploymentKey inserts a key and its audit row in one transaction.
-	CreateDeploymentKey(ctx context.Context, k DeploymentKey, audit AuditEntry) (DeploymentKey, error)
-	// RevokeDeploymentKey revokes a key. Revoking a revoked key is not an error and writes no second
-	// audit row; ErrDeploymentKeyUnknown when the tenant has no such key.
-	RevokeDeploymentKey(ctx context.Context, tenantID, keyID string, at time.Time, audit AuditEntry) (DeploymentKey, error)
-	// SetDeviceVerification changes the tenant's mode and writes its audit row in one transaction.
-	// 'intune' needs an active Entra connection, checked inside the same transaction:
-	// ErrNoEntraConnection otherwise.
-	SetDeviceVerification(ctx context.Context, tenantID, mode string, audit AuditEntry) error
-	// DeploymentSummary reads the admin page's figures. ErrUnknownTenant when the tenant does not
-	// exist.
-	DeploymentSummary(ctx context.Context, tenantID string) (DeploymentSummary, error)
-}
-
-// PolicyTenant is the slice of ops.tenant a policy bundle is composed from.
-type PolicyTenant struct {
-	TenantID      string
-	Status        string
-	IngestEnabled bool
-	CeilingMode   string
-}
-
-// Active mirrors Tenant.Active: a tenant that may not enrol may not be served policy either.
-func (t PolicyTenant) Active() bool { return t.Status != "closed" && t.IngestEnabled }
-
-// ClassifierRelease is the ref.classifier_release row a bundle names.
-type ClassifierRelease struct {
-	Version string
-	State   string
-}
-
-// PolicyInputs is everything a bundle is composed from that lives in the database. Classifier is
-// nil when no release in a servable state exists, which is the one input without which no bundle
-// can be written (ops.policy_bundle.classifier_release is a NOT NULL foreign key).
-type PolicyInputs struct {
-	Tenant            PolicyTenant
-	InterceptionHosts []string
-	Classifier        *ClassifierRelease
-}
-
-// PolicyBundle is one ops.policy_bundle row as the policy path writes and serves it.
-// SignedEnvelope is the exact bytes GET /v1/policy serves; a row without one (written before the
-// column existed) is never served, but its version still bounds the next one.
-type PolicyBundle struct {
-	TenantID             string
-	Version              int64
-	ScopeMatrix          json.RawMessage
-	DestinationAllowlist json.RawMessage
-	FeatureState         json.RawMessage
-	SpoolBounds          json.RawMessage
-	ClassifierRelease    string
-	RetentionClass       string
-	SignatureKID         string
-	SignedDigest         string
-	SignedEnvelope       []byte
-	EffectiveFrom        time.Time
-	CreatedBy            string
-	CreatedAt            time.Time
-}
-
-// MintDecision is what a MintPolicyBundle callback returns: a bundle to insert and its audit row,
-// or a nil Bundle to keep the latest in force.
-type MintDecision struct {
-	Bundle *PolicyBundle
-	Audit  *AuditEntry
-}
-
-// PolicyStore is the persistence seam of GET /v1/policy.
-type PolicyStore interface {
-	// PolicyInputs reads the tenant row, the interception hosts of the tool catalogue and the
-	// classifier release a new bundle would name. ErrUnknownTenant when the tenant does not exist.
-	PolicyInputs(ctx context.Context, tenantID string) (PolicyInputs, error)
-	// LatestPolicyBundle returns the highest-versioned bundle. ErrNoPolicyBundle when none exists.
-	LatestPolicyBundle(ctx context.Context, tenantID string) (PolicyBundle, error)
-	// MintPolicyBundle runs decide under a per-tenant lock with the latest bundle (nil when none),
-	// inserts what it returns in the same transaction, and returns the latest bundle afterwards. The
-	// lock is what makes two replicas that see the same changed inputs mint one version, not two.
-	MintPolicyBundle(ctx context.Context, tenantID string, decide func(latest *PolicyBundle) (MintDecision, error)) (PolicyBundle, error)
 }

@@ -12,8 +12,7 @@ import (
 	"github.com/shadow-ai-capture/control-api/internal/session"
 )
 
-// The onboarding invite token: the enrolment-token spelling with its own prefix (contract §1). The
-// tenant id rides in the clear so the RLS session can be opened before the lookup; the 256-bit tail
+// The onboarding invite token. The tenant id rides in the clear so the RLS session can be opened before the lookup; the 256-bit tail
 // is the secret, and only sha256 of the whole token is stored.
 //
 //	sacinv_<tenant uuid>.<base64url 32 bytes>

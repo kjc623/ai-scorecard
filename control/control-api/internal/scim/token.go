@@ -9,12 +9,12 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/shadow-ai-capture/control-api/internal/store"
+	"github.com/shadow-ai-capture/control-api/internal/session"
 )
 
-// The SCIM token format: the enrolment token's spelling (internal/enrol/token.go) with its own
-// prefix, so a SCIM token, a deployment key and an enrolment token can never be mistaken for one
-// another in a log or a support ticket. The tenant id is in the clear because the RLS session must be
+// The SCIM token format: `sacscim_<tenant uuid>.<256-bit base64url secret>`, the deployment key's
+// spelling with its own prefix, so the two can never be mistaken for one another in a log or a
+// support ticket. The tenant id is in the clear because the RLS session must be
 // opened before the token's row can be read; only the 256-bit tail is secret, and only the sha256 of
 // the whole plaintext is stored.
 const (
@@ -28,7 +28,7 @@ var ErrMalformedToken = errors.New("scim: malformed token")
 // MintToken returns a fresh plaintext token for a tenant and its stored hash. The plaintext is shown
 // to the admin once and never stored.
 func MintToken(tenantID string) (plaintext, hash string, err error) {
-	if !store.IsUUID(tenantID) {
+	if !session.IsUUID(tenantID) {
 		return "", "", fmt.Errorf("scim: tenant %q is not a uuid", tenantID)
 	}
 	var secret [tokenSecretBytes]byte
@@ -46,7 +46,7 @@ func ParseToken(plaintext string) (string, error) {
 		return "", ErrMalformedToken
 	}
 	tenant, secret, ok := strings.Cut(rest, ".")
-	if !ok || !store.IsUUID(tenant) {
+	if !ok || !session.IsUUID(tenant) {
 		return "", ErrMalformedToken
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(secret)

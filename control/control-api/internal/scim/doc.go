@@ -4,7 +4,7 @@
 // a provider that answers the RFC but refuses Entra's "Replace" or Okta's path-less PATCH provisions
 // nobody.
 //
-// # The person, keyed the way devices key them (contract §4)
+// # The person, keyed the way devices key them
 //
 // A user's canonical user_ref is protocol.DeriveUserRef(upn, userName) under the tenant's
 // user-reference key (directory.UserRefKeys), fixed when the user is created. Devices derive the same
@@ -16,10 +16,9 @@
 // when a userName is reused, its alias moves to the new holder, and the new holder gets a canonical ref
 // of their own if the old one is already a person's.
 //
-// ops.user_dim holds one row per canonical ref: the department from the enterprise extension, an
-// optional configured population attribute, the display name only while the tenant's
-// device_identity is 'clear', the sealed externalId (else userName) as directory_object_id_enc, and
-// the status from `active`.
+// ops.user_dim holds one row per canonical ref: the department from the enterprise extension, the
+// display name only while the tenant's device_identity is 'clear', the sealed externalId (else
+// userName) as directory_object_id_enc, and the status from `active`.
 //
 // # What is stored, and what is not
 //
@@ -27,7 +26,7 @@
 // returns what the identity provider sent and the provider's own diffing stays quiet; the lookups
 // a provider makes (userName eq, externalId eq) go through HMACs under the tenant key, so the table
 // holds no clear identifier. A password, when a provider sends one, is dropped before anything is
-// sealed. Groups are stored for a later role mapping; nothing maps them to roles yet.
+// sealed. Groups are stored as the provider sends them; no product decision reads them.
 //
 // # Retire, never delete
 //

@@ -17,11 +17,11 @@ import (
 	"time"
 )
 
-// The tenant package (contract §0.7, §5). Every customer gets the same generic, code-only
-// ShadowAICapture.msi; what makes a package theirs is one small file beside it,
-// ShadowAICapture.tenant.env, which the MSI copies from its source folder at install. The file holds
-// four values and nothing else tenant-specific, so the MSI never changes per customer and needs no
-// install flags: `msiexec /i ShadowAICapture.msi /qn`.
+// The tenant package. Every customer gets the same generic, code-only ShadowAICapture.msi; what
+// makes a package theirs is one small file beside it, ShadowAICapture.tenant.env, which the MSI
+// copies from its source folder at install. The file holds the tenant id, the device endpoint and
+// the deployment key, so the MSI never changes per customer and needs no install parameters:
+// `msiexec /i ShadowAICapture.msi /qn`.
 
 // File names inside a package and in the release directory.
 const (
@@ -29,15 +29,15 @@ const (
 	TenantEnvFileName = "ShadowAICapture.tenant.env"
 	ReadmeFileName    = "README.txt"
 	ReleaseFileName   = "release.json"
-	// DefaultProductName is the MSI's ProductName (installer/manifest.mjs PRODUCT.displayName),
-	// used when release.json does not name it.
+	// DefaultProductName is the MSI's ProductName when release.json does not name it.
 	DefaultProductName = "Shadow AI Capture"
 	// DefaultMaxReleaseBytes bounds the MSI a package is built from. Packages are built in memory,
-	// so this is the bound on one download's footprint (about three times the MSI).
+	// so this bounds one download's footprint (about three times the MSI).
 	DefaultMaxReleaseBytes = 256 << 20
 )
 
-// Release is release.json, written by the installer build beside the generic MSI.
+// Release is release.json, written by the release build beside the generic MSI and the browser
+// extension.
 type Release struct {
 	Version     string `json:"version"`
 	ProductCode string `json:"product_code"`
@@ -49,9 +49,21 @@ type Release struct {
 	Signed      bool   `json:"signed"`
 	// Name is the MSI ProductName, when the build records it.
 	Name string `json:"name,omitempty"`
+	// Extension is the packaged browser extension, when the release carries one.
+	Extension *ReleaseExtension `json:"extension,omitempty"`
 }
 
-// ProductName is what the Intune app is named after, as Microsoft's packaging tool names an MSI.
+// ReleaseExtension describes the browser extension's CRX in the release directory.
+type ReleaseExtension struct {
+	// ID is the extension id: 32 characters a-p, derived from the CRX signing key.
+	ID      string `json:"id"`
+	Version string `json:"version"`
+	File    string `json:"file"`
+	SHA256  string `json:"sha256"`
+	Size    int64  `json:"size"`
+}
+
+// ProductName is what the Intune app is named after.
 func (r Release) ProductName() string {
 	if strings.TrimSpace(r.Name) != "" {
 		return r.Name
@@ -59,10 +71,10 @@ func (r Release) ProductName() string {
 	return DefaultProductName
 }
 
-// ErrReleaseUnavailable wraps every reason a package cannot be built from the release directory.
+// ErrReleaseUnavailable wraps every reason the release directory cannot serve what was asked.
 var ErrReleaseUnavailable = errors.New("deploy: agent release unavailable")
 
-// ReadRelease reads and checks release.json only, for the admin page's release line.
+// ReadRelease reads and checks release.json.
 func ReadRelease(dir string) (Release, error) {
 	if strings.TrimSpace(dir) == "" {
 		return Release{}, fmt.Errorf("%w: no release directory is configured", ErrReleaseUnavailable)
@@ -92,8 +104,8 @@ func ReadRelease(dir string) (Release, error) {
 	return r, nil
 }
 
-// LoadRelease reads release.json and the MSI it describes, and refuses an MSI whose size or
-// sha256 disagrees with it: a package must carry exactly the build the release names.
+// LoadRelease reads release.json and the MSI it describes, refusing an MSI whose size or sha256
+// disagrees with it: a package carries exactly the build the release names.
 func LoadRelease(dir string, maxBytes int64) (Release, []byte, error) {
 	r, err := ReadRelease(dir)
 	if err != nil {
@@ -102,30 +114,39 @@ func LoadRelease(dir string, maxBytes int64) (Release, []byte, error) {
 	if maxBytes <= 0 {
 		maxBytes = DefaultMaxReleaseBytes
 	}
-	f, err := os.Open(filepath.Join(dir, MSIFileName))
+	msi, err := readVerified(filepath.Join(dir, MSIFileName), r.SHA256, r.Size, maxBytes)
 	if err != nil {
-		return Release{}, nil, fmt.Errorf("%w: %v", ErrReleaseUnavailable, err)
-	}
-	defer f.Close()
-	msi, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
-	if err != nil {
-		return Release{}, nil, fmt.Errorf("%w: read msi: %v", ErrReleaseUnavailable, err)
-	}
-	if int64(len(msi)) > maxBytes {
-		return Release{}, nil, fmt.Errorf("%w: the msi is over the %d-byte package bound", ErrReleaseUnavailable, maxBytes)
-	}
-	if r.Size > 0 && int64(len(msi)) != r.Size {
-		return Release{}, nil, fmt.Errorf("%w: the msi is %d bytes and release.json says %d", ErrReleaseUnavailable, len(msi), r.Size)
-	}
-	want := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(r.SHA256), "sha256:"))
-	if want == "" {
-		return Release{}, nil, fmt.Errorf("%w: release.json has no sha256", ErrReleaseUnavailable)
-	}
-	sum := sha256.Sum256(msi)
-	if hex.EncodeToString(sum[:]) != want {
-		return Release{}, nil, fmt.Errorf("%w: the msi's sha256 does not match release.json", ErrReleaseUnavailable)
+		return Release{}, nil, fmt.Errorf("%w: %s: %v", ErrReleaseUnavailable, MSIFileName, err)
 	}
 	return r, msi, nil
+}
+
+// readVerified reads a release file and checks it against its recorded sha256 and size.
+func readVerified(path, wantSHA256 string, wantSize, maxBytes int64) ([]byte, error) {
+	want := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(wantSHA256), "sha256:"))
+	if len(want) != sha256.Size*2 {
+		return nil, errors.New("release.json records no sha256")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("over the %d-byte bound", maxBytes)
+	}
+	if wantSize > 0 && int64(len(data)) != wantSize {
+		return nil, fmt.Errorf("%d bytes, release.json says %d", len(data), wantSize)
+	}
+	sum := sha256.Sum256(data)
+	if hex.EncodeToString(sum[:]) != want {
+		return nil, errors.New("sha256 does not match release.json")
+	}
+	return data, nil
 }
 
 // msiGUID normalises a GUID to the MSI spelling: braces, upper case.
@@ -149,21 +170,20 @@ func msiGUID(s string) (string, error) {
 	return "{" + g + "}", nil
 }
 
-// TenantEnv renders ShadowAICapture.tenant.env: the four values the contract allows, CRLF, in the
-// vocabulary capture-core's --config-file reads. Nothing else tenant-specific goes in a package.
+// TenantEnv renders ShadowAICapture.tenant.env: the tenant id, the device endpoint and the
+// deployment key, CRLF, in the vocabulary the agent's configuration file reads.
 func TenantEnv(tenantID, deviceEndpoint, deploymentKey string) []byte {
 	lines := []string{
 		"# Shadow AI Capture tenant settings. Keep this file beside ShadowAICapture.msi; the installer copies it.",
 		"SAC_TENANT_ID=" + tenantID,
 		"SAC_DEVICE_ENDPOINT=" + deviceEndpoint,
 		"SAC_DEPLOYMENT_KEY=" + deploymentKey,
-		"SAC_AUTH_MODE=dpop",
 	}
 	return []byte(strings.Join(lines, "\r\n") + "\r\n")
 }
 
-// Readme renders README.txt for the .zip package: how to install it and how to detect it, for an
-// admin deploying through ConfigMgr, Group Policy or another MDM.
+// Readme renders README.txt for the .zip package: how to install and detect it, for an admin
+// deploying through ConfigMgr, Group Policy or another MDM.
 func Readme(r Release) []byte {
 	lines := []string{
 		r.ProductName() + " " + r.Version + " - deployment package",
@@ -230,17 +250,19 @@ func addDeflated(zw *zip.Writer, name string, data []byte, now time.Time) error 
 }
 
 // addStored writes an uncompressed entry with its CRC and sizes in the local header and no data
-// descriptor, the layout .NET's ZipFile writes for Microsoft's packaging tool and the most
-// conservative one a zip reader can be handed. CreateRaw takes the header as given, so the fields
-// CreateHeader would fill (versions, MS-DOS time) are filled here.
+// descriptor, the layout Microsoft's packaging tool writes. CreateRaw writes the header exactly as
+// given, so the MS-DOS timestamp fields are filled here: CreateRaw does not derive them from
+// Modified.
 func addStored(zw *zip.Writer, name string, data []byte, now time.Time) error {
 	date, clock := msDosTime(now)
 	w, err := zw.CreateRaw(&zip.FileHeader{
-		Name:               name,
-		Method:             zip.Store,
-		CreatorVersion:     zipVersion20,
-		ReaderVersion:      zipVersion20,
-		ModifiedDate:       date,
+		Name:           name,
+		Method:         zip.Store,
+		CreatorVersion: zipVersion20,
+		ReaderVersion:  zipVersion20,
+		//lint:ignore SA1019 CreateRaw writes only the MS-DOS fields; Modified is not consulted.
+		ModifiedDate: date,
+		//lint:ignore SA1019 as above.
 		ModifiedTime:       clock,
 		CRC32:              crc32.ChecksumIEEE(data),
 		CompressedSize64:   uint64(len(data)),

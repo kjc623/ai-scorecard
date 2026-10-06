@@ -7,11 +7,9 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/shadow-ai-capture/control-api/internal/directory"
 )
 
-// Memory is the in-memory Store, for control-api's -store memory and for tests. It keeps the
+// Memory is the in-memory Store the tests run against. It keeps the
 // properties the SQL store gets from the database: one tenant's transaction cannot see another
 // tenant's rows, a failed transaction leaves nothing behind, and userName hashes are unique per
 // tenant. Transactions are serialised, which is stricter than the database and harmless here.
@@ -30,7 +28,7 @@ type memTenant struct {
 	tokens         map[string]TokenRow
 	users          map[string]UserRow
 	aliases        map[string]memAlias
-	dim            map[string]directory.Row
+	dim            map[string]UserDimRow
 	groups         map[string]GroupRow
 	members        map[string]map[string]bool
 	audit          []AuditEntry
@@ -46,7 +44,7 @@ func (m *Memory) AddTenant(tenantID, deviceIdentity string) {
 	m.tenants[strings.ToLower(tenantID)] = &memTenant{
 		deviceIdentity: deviceIdentity,
 		tokens:         map[string]TokenRow{}, users: map[string]UserRow{}, aliases: map[string]memAlias{},
-		dim: map[string]directory.Row{}, groups: map[string]GroupRow{}, members: map[string]map[string]bool{},
+		dim: map[string]UserDimRow{}, groups: map[string]GroupRow{}, members: map[string]map[string]bool{},
 	}
 }
 
@@ -94,12 +92,12 @@ func (m *Memory) Aliases(tenantID string) map[string]string {
 }
 
 // UserDim returns one ops.user_dim row, for inspection.
-func (m *Memory) UserDim(tenantID, userRef string) (directory.Row, bool) {
+func (m *Memory) UserDim(tenantID, userRef string) (UserDimRow, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	t, ok := m.tenants[strings.ToLower(tenantID)]
 	if !ok {
-		return directory.Row{}, false
+		return UserDimRow{}, false
 	}
 	row, ok := t.dim[userRef]
 	return row, ok
@@ -130,7 +128,7 @@ func (t *memTenant) clone() *memTenant {
 	c := &memTenant{
 		deviceIdentity: t.deviceIdentity,
 		tokens:         map[string]TokenRow{}, users: map[string]UserRow{}, aliases: map[string]memAlias{},
-		dim: map[string]directory.Row{}, groups: map[string]GroupRow{}, members: map[string]map[string]bool{},
+		dim: map[string]UserDimRow{}, groups: map[string]GroupRow{}, members: map[string]map[string]bool{},
 		audit: append([]AuditEntry(nil), t.audit...),
 	}
 	for k, v := range t.tokens {
@@ -312,7 +310,7 @@ func (x *memTx) PutAlias(alias, canonical string, at time.Time) error {
 	return nil
 }
 
-func (x *memTx) UpsertUserDim(row directory.Row) error {
+func (x *memTx) UpsertUserDim(row UserDimRow) error {
 	if prev, ok := x.t.dim[row.UserRef]; ok && row.DirectoryObjectIDEnc == nil {
 		row.DirectoryObjectIDEnc = prev.DirectoryObjectIDEnc
 	}

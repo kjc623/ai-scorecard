@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/shadow-ai-capture/control-api/internal/directory"
-	"github.com/shadow-ai-capture/control-api/internal/store"
+	"github.com/shadow-ai-capture/control-api/internal/session"
 )
 
 // Page sizes. A provider asks for what it wants (Okta imports 100 at a time); MaxPageSize bounds one
@@ -33,10 +33,6 @@ type KeySource interface {
 
 // Config is the deployment's SCIM settings.
 type Config struct {
-	// PopulationAttribute is a SCIM attribute path (for example
-	// `urn:ietf:params:scim:schemas:extension:enterprise:2.0:User:division` or `userType`) whose value
-	// is written to ops.user_dim.population. Empty writes NULL: population has no default source.
-	PopulationAttribute string
 	// BaseURL is the public SCIM base the identity provider was given, such as
 	// `https://app.example.com/scim/v2`. It spells meta.location; empty omits it rather than trusting a
 	// Host header to spell it.
@@ -106,12 +102,6 @@ func NewService(st Store, keys KeySource, cipher *directory.Cipher, cfg Config) 
 		return nil, fmt.Errorf("scim: the service needs a store, a user_ref key source and a cipher")
 	}
 	cfg.BaseURL = strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
-	cfg.PopulationAttribute = strings.TrimSpace(cfg.PopulationAttribute)
-	if cfg.PopulationAttribute != "" {
-		if _, err := parsePath(cfg.PopulationAttribute); err != nil {
-			return nil, fmt.Errorf("scim: population attribute %q is not a SCIM attribute path", cfg.PopulationAttribute)
-		}
-	}
 	return &Service{store: st, keys: keys, cipher: cipher, cfg: cfg, Now: time.Now, Logger: slog.Default()}, nil
 }
 
@@ -166,7 +156,7 @@ func (s *Service) Authenticate(ctx context.Context, authorization string) (Princ
 }
 
 // LookupHash is how ops.scim_user stores a userName or externalId for lookup: HMAC-SHA256 under the
-// tenant's user-reference key over the trimmed, lower-cased value (contract §1). The identity
+// tenant's user-reference key over the trimmed, lower-cased value. The identity
 // service may compute the same to find a signed-in person's row.
 func LookupHash(key []byte, value string) []byte {
 	mac := hmac.New(sha256.New, key)
@@ -321,7 +311,7 @@ func pageOf(all []map[string]any, start, count int) []map[string]any {
 	return all[start-1 : end]
 }
 
-func isUUID(s string) bool { return store.IsUUID(s) }
+func isUUID(s string) bool { return session.IsUUID(s) }
 
 // errAbort carries a SCIM error out of a store transaction so the transaction rolls back.
 type errAbort struct{ e *Error }

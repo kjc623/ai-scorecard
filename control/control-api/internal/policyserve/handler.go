@@ -11,9 +11,8 @@ import (
 	"github.com/shadow-ai-capture/control-api/internal/apierr"
 )
 
-// DeviceAuthenticator resolves the device a request authenticates as: the same current-credential
-// resolution /v1/health uses (a forwarded certificate, or a DPoP access token and proof). The
-// tenant and device come from the credential, never from the request.
+// DeviceAuthenticator resolves the device a request authenticates as, from its verified certificate.
+// The tenant and device come from the certificate, never from the request.
 type DeviceAuthenticator func(r *http.Request) (tenantID, deviceID string, err error)
 
 // Handler serves GET /v1/policy. HEAD answers the same status and headers without a body.
@@ -23,10 +22,6 @@ func (s *Service) Handler(auth DeviceAuthenticator) http.Handler {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			w.Header().Set("Allow", "GET, HEAD")
 			apierr.Write(w, apierr.New(http.StatusMethodNotAllowed, apierr.CodeMethodNotAllowed, "GET is required"), now, s.cfg.Logger)
-			return
-		}
-		if auth == nil {
-			apierr.Write(w, apierr.New(http.StatusServiceUnavailable, apierr.CodeUnavailable, "device authentication is not configured"), now, s.cfg.Logger)
 			return
 		}
 		tenantID, deviceID, err := auth(r)

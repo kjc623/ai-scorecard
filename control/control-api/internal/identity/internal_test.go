@@ -1,30 +1,9 @@
 package identity
 
 import (
-	"encoding/base64"
 	"strings"
 	"testing"
 )
-
-func TestParseRS256PinsTheAlgorithm(t *testing.T) {
-	seg := func(s string) string { return base64.RawURLEncoding.EncodeToString([]byte(s)) }
-	payload := seg(`{"iss":"x"}`)
-	for name, header := range map[string]string{
-		"none":     `{"alg":"none"}`,
-		"hs256":    `{"alg":"HS256","kid":"k1"}`,
-		"es256":    `{"alg":"ES256","kid":"k1"}`,
-		"ps256":    `{"alg":"PS256","kid":"k1"}`,
-		"no alg":   `{"kid":"k1"}`,
-		"critical": `{"alg":"RS256","kid":"k1","crit":["exp"]}`,
-	} {
-		if _, err := parseRS256(seg(header) + "." + payload + "." + seg("sig")); err == nil {
-			t.Fatalf("%s: accepted", name)
-		}
-	}
-	if _, err := parseRS256(seg(`{"alg":"RS256","kid":"k1"}`) + "." + payload + "." + seg("sig")); err != nil {
-		t.Fatalf("RS256: %v", err)
-	}
-}
 
 func TestInviteTokenFormat(t *testing.T) {
 	tenant := "AAAAAAAA-0000-4000-8000-000000000001"

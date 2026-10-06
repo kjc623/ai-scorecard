@@ -15,8 +15,10 @@ import (
 
 	"github.com/shadow-ai-capture/control-api/internal/directory"
 	"github.com/shadow-ai-capture/control-api/internal/identity"
+	"github.com/shadow-ai-capture/control-api/internal/identity/identitytest"
 	"github.com/shadow-ai-capture/control-api/internal/identity/idptest"
 	"github.com/shadow-ai-capture/control-api/internal/session"
+	"github.com/shadow-ai-capture/control-api/internal/session/sessiontest"
 )
 
 const (
@@ -61,8 +63,8 @@ func (s secretAuth) ClientAuth(context.Context, string) (url.Values, error) {
 type rig struct {
 	t         *testing.T
 	clock     *clock
-	store     *identity.MemoryStore
-	sessions  *session.MemoryStore
+	store     *identitytest.Store
+	sessions  *sessiontest.Store
 	cipher    *directory.Cipher
 	issuer    *session.Issuer
 	verifier  *session.Verifier
@@ -91,7 +93,7 @@ func newRig(t *testing.T) *rig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sessStore := session.NewMemoryStore()
+	sessStore := sessiontest.NewStore()
 	mgr, err := session.NewManager(sessStore, session.ManagerConfig{Now: clk.Now})
 	if err != nil {
 		t.Fatal(err)
@@ -101,7 +103,7 @@ func newRig(t *testing.T) *rig {
 	oidc := idptest.NewOIDC(t, oidcClient, oidcSecret)
 	oidc.Now = clk.Now
 
-	st := identity.NewMemoryStore()
+	st := identitytest.NewStore()
 	st.AddTenant(tenantA, "Contoso")
 	st.AddTenant(tenantB, "Fabrikam")
 	st.AddEmailDomain("contoso.example", tenantA)
@@ -124,6 +126,7 @@ func newRig(t *testing.T) *rig {
 	svc, err := identity.New(identity.Config{
 		Store: st, Sessions: mgr, Issuer: issuer, Cipher: cipher,
 		Entra:            &identity.EntraConfig{ClientID: entraApp, Auth: secretAuth{entraSecret}, LoginBaseURL: entra.Base()},
+		RedirectURIs:     []string{redirect},
 		AllowInsecureIdP: true,
 		Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Now:              clk.Now,

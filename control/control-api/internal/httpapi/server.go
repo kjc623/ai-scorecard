@@ -1,22 +1,17 @@
-// Package httpapi is the transport for control-api's two device-facing endpoints,
-// POST /v1/enrol and POST /v1/token (docs/02-ingest-and-transport.md §5.1, §5.2).
+// Package httpapi is control-api's HTTP surface: the device routes, the browser extension routes,
+// the admin, identity, onboarding and SCIM handlers mounted beside them, and the platform probes.
 //
-// It owns exactly three things: reading the bytes (a size cap), turning an authenticated request into
-// a call to a service, and rendering errors as §5's common envelope:
-//
-//	{ "error": { "code": "...", "detail": { ... }, "server_time": "..." } }
-//
-// All decisions and codes come from the services, so the transport cannot invent an outcome. The one
-// thing it does own is resolving the *current credential* a rotation re-enrolment presents (a
-// forwarded certificate, or an access token plus DPoP proof), because that is a property of the HTTP
-// request rather than of the enrolment domain.
+// Devices authenticate with the certificate control-api issued them. Application Gateway
+// terminates the device's TLS connection and forwards the presented certificate in X-Client-Cert
+// without validating its chain, so every request that relies on it is verified here against the
+// device CA (chain, validity window, clientAuth) and matched to the device's live credential before
+// the tenant and device it names are used. The tenant and device always come from the certificate,
+// never from a request body.
 package httpapi
 
 import (
-	"crypto/sha256"
-	"crypto/subtle"
+	"context"
 	"crypto/x509"
-	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -24,7 +19,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/shadow-ai-capture/device/protocol"
@@ -32,201 +26,119 @@ import (
 	"github.com/shadow-ai-capture/control-api/internal/apierr"
 	"github.com/shadow-ai-capture/control-api/internal/content"
 	"github.com/shadow-ai-capture/control-api/internal/deploy"
-	"github.com/shadow-ai-capture/control-api/internal/dpop"
+	"github.com/shadow-ai-capture/control-api/internal/deviceca"
 	"github.com/shadow-ai-capture/control-api/internal/enrol"
 	"github.com/shadow-ai-capture/control-api/internal/health"
 	"github.com/shadow-ai-capture/control-api/internal/policyserve"
 	"github.com/shadow-ai-capture/control-api/internal/store"
-	"github.com/shadow-ai-capture/control-api/internal/token"
 )
 
-// MaxBodyBytes caps a device request body. Both endpoints carry a small JSON document -- a CSR or a
-// JWK is the largest member -- so 256 KiB is generous and bounds a hostile body before decoding.
+// MaxBodyBytes caps a device JSON request body.
 const MaxBodyBytes = 256 << 10
 
-// Server is the HTTP surface.
+// Server is the HTTP surface. Every field is set in a deployment; a test sets the ones it exercises,
+// and a route whose handler is nil is not registered.
 type Server struct {
-	Enrol    *enrol.Service
-	Token    *token.Service
-	Verifier *token.Verifier
-	Store    store.Store
-	Logger   *slog.Logger
-	Now      func() time.Time
-
-	// Content is the grant path (§5.5, §10). Nil when the deployment has no content vault to ask:
-	// the routes then answer 503 rather than deciding a grant nothing could honour.
+	Store   store.Store
+	CA      *deviceca.CA
+	Enrol   *enrol.Service
+	Health  *health.Service
+	Policy  *policyserve.Service
 	Content *content.Service
 
-	// Health is the health channel (§5.4). Nil only in a build or test that does not wire it; the
-	// route then answers 503 rather than silently dropping a report.
-	Health *health.Service
-
-	// Policy serves GET /v1/policy (§5.2). Nil when no policy signing key is configured: the route
-	// answers 503, and a device keeps the bundle it has (or stays at M0) rather than reading an
-	// absence as permission.
-	Policy *policyserve.Service
-
-	// Admin is the deployment admin API (/admin/v1/*), reached only from the dashboard's server
-	// with a product access token. The device edge never forwards /admin/*.
+	// Admin is the deployment admin API (/admin/v1/*), authenticated by product access tokens.
 	Admin *deploy.Handler
-
-	// SCIM is the provisioning endpoint a customer's identity provider pushes to (/scim/v2). Nil
-	// when the deployment has no directory key to seal what it would store.
+	// Extensions serves the browser extension's update manifest and CRX.
+	Extensions *deploy.Extensions
+	// SCIM is the provisioning endpoint a customer's identity provider calls (/scim/v2).
 	SCIM http.Handler
+	// Mounts are further handlers by path prefix: the internal sign-in API, the onboarding pages and
+	// the token issuer's well-known documents.
+	Mounts map[string]http.Handler
+
+	Logger *slog.Logger
+	Now    func() time.Time
 }
 
-// New builds a server.
-func New(enrolSvc *enrol.Service, tokenSvc *token.Service, verifier *token.Verifier, st store.Store, logger *slog.Logger) *Server {
-	if logger == nil {
-		logger = slog.Default()
-	}
-	return &Server{Enrol: enrolSvc, Token: tokenSvc, Verifier: verifier, Store: st, Logger: logger, Now: time.Now}
-}
-
-// Handler returns the routes. /healthz is deployment infrastructure, not a device API (§5).
+// Handler returns the routes.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/enrol", s.handleEnrol)
-	mux.HandleFunc("/v1/token", s.handleToken)
-	mux.HandleFunc("/v1/health", s.handleHealth)
-	mux.HandleFunc("/v1/policy", s.handlePolicy)
-	mux.HandleFunc("/v1/content/grant", s.handleContentGrant)
-	mux.Handle("/scim/v2", http.HandlerFunc(s.handleSCIM))
-	mux.Handle("/scim/v2/", http.HandlerFunc(s.handleSCIM))
+	if s.Enrol != nil {
+		mux.HandleFunc("POST /v1/enrol", s.handleEnrol)
+	}
+	if s.Health != nil {
+		mux.HandleFunc("POST /v1/health", s.handleHealth)
+	}
+	if s.Policy != nil {
+		mux.Handle("/v1/policy", s.Policy.Handler(func(r *http.Request) (string, string, error) {
+			cur, err := s.authenticateDevice(r)
+			return cur.TenantID, cur.DeviceID, err
+		}))
+	}
+	if s.Content != nil {
+		mux.HandleFunc("POST /v1/content/grant", s.handleContentGrant)
+		mux.HandleFunc("POST "+protocol.ContentUploadPath, s.handleContentUpload)
+	}
+	if s.Extensions != nil {
+		s.Extensions.Register(mux)
+	}
 	if s.Admin != nil {
 		s.Admin.Register(mux)
 	}
-	// Not a device route: the edge does not forward it. The storage layer calls it when an upload
-	// lands, and authenticates with the upload signing key.
-	mux.HandleFunc("/internal/v1/content/finalise", s.handleContentFinalise)
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, `{"status":"ok"}`)
+	if s.SCIM != nil {
+		mux.Handle("/scim/v2", s.SCIM)
+		mux.Handle("/scim/v2/", s.SCIM)
+	}
+	for prefix, h := range s.Mounts {
+		mux.Handle(prefix, h)
+	}
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		s.writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
+	mux.HandleFunc("GET /readyz", s.handleReady)
 	return mux
 }
 
+// handleReady answers readiness with a database round trip. The reason for a failure is logged,
+// not returned: it can carry a host name.
+func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	if s.Store == nil {
+		s.writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not-ready"})
+		return
+	}
+	if err := s.Store.Ping(ctx); err != nil {
+		s.Logger.Warn("readiness probe failed", "error", err)
+		s.writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not-ready"})
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+}
+
 func (s *Server) handleEnrol(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", http.MethodPost)
-		s.writeError(w, apierr.New(http.StatusMethodNotAllowed, apierr.CodeSchemaViolation, "POST is required"))
-		return
-	}
-	body, ok := s.readBody(w, r)
-	if !ok {
-		return
-	}
 	var req protocol.EnrolmentRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		s.writeError(w, apierr.New(400, apierr.CodeSchemaViolation, "the enrolment body is not valid JSON"))
+	if !s.decode(w, r, &req) {
 		return
 	}
-
-	in := enrol.Input{
+	resp, err := s.Enrol.Enrol(r.Context(), enrol.Input{
 		Request: req,
-		Proof:   r.Header.Get(protocol.HeaderDPoP),
-		HTM:     r.Method,
-		HTU:     dpop.HTU(r),
-	}
-	if req.Mode == protocol.AuthModeX509 {
-		// ADR 0022: a customer-issued enrolment registers the certificate the device presented. The
-		// service decides from the tenant whether to use it (customer tenant) or the CSR (product
-		// tenant), so both are offered and only one is consumed.
-		in.ClientChain = s.clientCertificateChain(r)
-	}
-	if req.EnrolmentToken == "" {
-		// The resolver runs only after the service has validated the body, so a malformed body is a
-		// 400 even when no usable credential is presented.
-		in.ResolveCurrent = func() (*enrol.Current, error) { return s.resolveCurrent(r) }
-	}
-
-	resp, err := s.Enrol.Enrol(r.Context(), in)
+		Current: func() (enrol.Current, error) { return s.authenticateDevice(r) },
+	})
 	if err != nil {
 		s.writeError(w, err)
 		return
 	}
+	s.Logger.Info("control: device enrolled", "tenant", resp.TenantID, "device", resp.DeviceID, "reenrolled", resp.Reenrolled)
 	s.writeJSON(w, http.StatusOK, resp)
-}
-
-func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", http.MethodPost)
-		s.writeError(w, apierr.New(http.StatusMethodNotAllowed, apierr.CodeInvalidRequest, "POST is required"))
-		return
-	}
-	body, ok := s.readBody(w, r)
-	if !ok {
-		return
-	}
-	var req protocol.TokenRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		s.writeError(w, apierr.New(400, apierr.CodeInvalidRequest, "the token body is not valid JSON"))
-		return
-	}
-	proof := r.Header.Get(protocol.HeaderDPoP)
-	if proof == "" {
-		s.writeError(w, apierr.New(401, apierr.CodeInvalidProof, "a DPoP proof is required"))
-		return
-	}
-	resp, err := s.Token.Issue(r.Context(), req, proof, r.Method, dpop.HTU(r))
-	if err != nil {
-		s.writeError(w, err)
-		return
-	}
-	s.writeJSON(w, http.StatusOK, resp)
-}
-
-// handleHealth is POST /v1/health (§5.4). The device authenticates with its current credential; the
-// tenant and device come from that credential, never from the body.
-// handlePolicy is GET /v1/policy (§5.2). The device authenticates exactly as it does for health:
-// tenant and device come from the presented credential, never from the request.
-func (s *Server) handlePolicy(w http.ResponseWriter, r *http.Request) {
-	if s.Policy == nil {
-		s.writeError(w, apierr.New(http.StatusServiceUnavailable, apierr.CodeUnavailable, "policy delivery is not configured on this deployment"))
-		return
-	}
-	s.Policy.Handler(func(r *http.Request) (string, string, error) {
-		cur, err := s.resolveCurrent(r)
-		if err != nil {
-			return "", "", err
-		}
-		return cur.TenantID, cur.DeviceID, nil
-	}).ServeHTTP(w, r)
-}
-
-// handleSCIM hands /scim/v2 to the provisioning endpoint, or answers in SCIM's own error schema so
-// an identity provider's connection test reports the real reason.
-func (s *Server) handleSCIM(w http.ResponseWriter, r *http.Request) {
-	if s.SCIM != nil {
-		s.SCIM.ServeHTTP(w, r)
-		return
-	}
-	w.Header().Set("Content-Type", "application/scim+json")
-	w.WriteHeader(http.StatusServiceUnavailable)
-	_, _ = io.WriteString(w, `{"schemas":["urn:ietf:params:scim:api:messages:2.0:Error"],"status":"503","detail":"SCIM provisioning is not configured on this deployment"}`)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", http.MethodPost)
-		s.writeError(w, apierr.New(http.StatusMethodNotAllowed, apierr.CodeInvalidRequest, "POST is required"))
-		return
-	}
-	if s.Health == nil {
-		s.writeError(w, apierr.New(http.StatusServiceUnavailable, apierr.CodeUnavailable, "the health channel is not configured on this deployment"))
-		return
-	}
-	body, ok := s.readBody(w, r)
-	if !ok {
-		return
-	}
 	var req protocol.HealthRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		s.writeError(w, apierr.New(400, apierr.CodeSchemaViolation, "the health body is not valid JSON"))
+	if !s.decode(w, r, &req) {
 		return
 	}
-	cur, err := s.resolveCurrent(r)
+	cur, err := s.authenticateDevice(r)
 	if err != nil {
 		s.writeError(w, err)
 		return
@@ -236,38 +148,20 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, err)
 		return
 	}
-	s.Logger.Info("control: health report recorded", "tenant", cur.TenantID, "device", cur.DeviceID,
-		"collectors", len(req.Collectors))
 	s.writeJSON(w, http.StatusOK, resp)
 }
 
-// handleContentGrant is POST /v1/content/grant (§5.5). The device authenticates with its current
-// credential; the tenant and device come from that credential, never from the body.
 func (s *Server) handleContentGrant(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", http.MethodPost)
-		s.writeError(w, apierr.New(http.StatusMethodNotAllowed, apierr.CodeInvalidRequest, "POST is required"))
-		return
-	}
-	if s.Content == nil {
-		s.writeError(w, apierr.New(http.StatusServiceUnavailable, apierr.CodeUnavailable, "content grants are not configured on this deployment"))
-		return
-	}
-	body, ok := s.readBody(w, r)
-	if !ok {
-		return
-	}
 	var req protocol.ContentGrantRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		s.writeError(w, apierr.New(400, apierr.CodeSchemaViolation, "the grant body is not valid JSON"))
+	if !s.decode(w, r, &req) {
 		return
 	}
-	cur, err := s.resolveCurrent(r)
+	cur, err := s.authenticateDevice(r)
 	if err != nil {
 		s.writeError(w, err)
 		return
 	}
-	resp, err := s.Content.Decide(r.Context(), cur.TenantID, cur.DeviceID, req, publicBase(r))
+	resp, err := s.Content.Decide(r.Context(), cur.TenantID, cur.DeviceID, req)
 	if err != nil {
 		s.writeError(w, err)
 		return
@@ -277,228 +171,148 @@ func (s *Server) handleContentGrant(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, resp)
 }
 
-// handleContentFinalise is the finaliser's entry point (§10.4): the storage layer reports an
-// upload, and the object is promoted only if it matches a live grant and its declared digest. A
-// rejection is a 422, which tells the storage layer to delete the staged bytes.
-func (s *Server) handleContentFinalise(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", http.MethodPost)
-		s.writeError(w, apierr.New(http.StatusMethodNotAllowed, apierr.CodeInvalidRequest, "POST is required"))
-		return
-	}
-	if s.Content == nil {
-		s.writeError(w, apierr.New(http.StatusServiceUnavailable, apierr.CodeUnavailable, "content grants are not configured on this deployment"))
-		return
-	}
-	body, ok := s.readBody(w, r)
-	if !ok {
-		return
-	}
-	if !s.Content.VerifyBody(body, r.Header.Get("X-Sac-Upload-Signature")) {
-		s.writeError(w, apierr.New(http.StatusUnauthorized, apierr.CodeInvalidRequest, "the finalise call is not signed by the storage layer"))
-		return
-	}
-	var report content.UploadReport
-	if err := json.Unmarshal(body, &report); err != nil {
-		s.writeError(w, apierr.New(400, apierr.CodeSchemaViolation, "the finalise body is not valid JSON"))
-		return
-	}
-	submissionID, err := s.Content.Finalise(r.Context(), report)
+// handleContentUpload is POST /v1/content: the body is the content object itself.
+func (s *Server) handleContentUpload(w http.ResponseWriter, r *http.Request) {
+	cur, err := s.authenticateDevice(r)
 	if err != nil {
-		if errors.Is(err, content.ErrUploadRejected) {
-			s.Logger.Warn("control: upload rejected", "grant", report.GrantID, "object", report.ObjectID, "error", err)
-			s.writeError(w, apierr.New(http.StatusUnprocessableEntity, apierr.CodeInvalidRequest, "the upload does not match a live grant"))
+		s.writeError(w, err)
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, protocol.MaxContentObjectBytes))
+	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			s.writeError(w, apierr.New(http.StatusRequestEntityTooLarge, string(protocol.ReasonOversize),
+				"the content object is over the per-object cap"))
 			return
 		}
-		s.writeError(w, apierr.Internal(err))
+		s.writeError(w, apierr.New(http.StatusBadRequest, apierr.CodeInvalidRequest, "the request body could not be read"))
 		return
 	}
-	s.Logger.Info("control: content object stored", "tenant", report.TenantID, "event", report.EventID,
-		"object", report.ObjectID, "bytes", report.SizeBytes)
-	s.writeJSON(w, http.StatusOK, map[string]string{"state": "uploaded", "object_id": report.ObjectID, "submission_id": submissionID})
+	u := content.Upload{
+		GrantID:   r.Header.Get(protocol.HeaderContentGrantID),
+		EventID:   r.Header.Get(protocol.HeaderContentEventID),
+		RawDigest: r.Header.Get(protocol.HeaderContentRawDigest),
+		Body:      body,
+	}
+	if err := s.Content.Upload(r.Context(), cur.TenantID, cur.DeviceID, u); err != nil {
+		s.writeError(w, err)
+		return
+	}
+	s.Logger.Info("control: content uploaded", "tenant", cur.TenantID, "device", cur.DeviceID,
+		"event", u.EventID, "grant", u.GrantID, "bytes", len(body))
+	s.writeJSON(w, http.StatusOK, map[string]string{"state": "uploaded", "grant_id": u.GrantID, "event_id": u.EventID})
 }
 
-// publicBase is the scheme and host the device reached this service on, as the edge reports it.
-func publicBase(r *http.Request) string {
-	scheme := r.Header.Get("X-Forwarded-Proto")
-	if scheme == "" {
-		scheme = "https"
-		if r.TLS == nil {
-			scheme = "http"
-		}
+// authenticateDevice verifies the forwarded device certificate and resolves the device's live
+// credential. The certificate must chain to the device CA, be inside its validity window and carry
+// clientAuth; it must name a device and a tenant; and it must be exactly the certificate the
+// device's live, unexpired credential was issued for.
+func (s *Server) authenticateDevice(r *http.Request) (enrol.Current, error) {
+	header := r.Header.Get(protocol.HeaderClientCert)
+	if header == "" {
+		return enrol.Current{}, apierr.New(http.StatusUnauthorized, apierr.CodeUnauthenticated, "a device certificate is required")
 	}
-	host := r.Header.Get("X-Forwarded-Host")
-	if host == "" {
-		host = r.Host
-	}
-	return scheme + "://" + host
-}
-
-// readBody enforces the size cap and returns the bytes. It answers the caller itself on failure.
-func (s *Server) readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
-	r.Body = http.MaxBytesReader(w, r.Body, MaxBodyBytes)
-	body, err := io.ReadAll(r.Body)
+	chain, err := parseChain(header)
 	if err != nil {
-		var maxErr *http.MaxBytesError
-		if errors.As(err, &maxErr) {
-			s.writeError(w, apierr.New(http.StatusRequestEntityTooLarge, apierr.CodeInvalidRequest, "the request body is over the cap"))
-			return nil, false
-		}
-		s.Logger.Warn("control: reading the request body failed", "error", err, "remote", r.RemoteAddr)
-		s.writeError(w, apierr.New(400, apierr.CodeInvalidRequest, "the request body could not be read"))
-		return nil, false
+		return enrol.Current{}, apierr.New(http.StatusUnauthorized, apierr.CodeInvalidClientCert, "the forwarded device certificate cannot be read")
 	}
-	return body, true
-}
-
-// resolveCurrent authenticates a rotation re-enrolment that presents its existing credential instead
-// of a bootstrap token. Two forms, matching ADR 0020 decision 2:
-//
-//   - x509: the leaf in the TLS connection (a direct-TLS listener) or forwarded as X-Client-Cert by
-//     the edge. Its SPKI thumbprint must equal the credential's registered value.
-//   - dpop: a short-lived access token this service issued, presented as `Authorization: DPoP ...`
-//     with a fresh DPoP proof whose `ath` binds it to the token and whose key matches `cnf.jkt`.
-func (s *Server) resolveCurrent(r *http.Request) (*enrol.Current, error) {
-	if cert := s.clientCertificate(r); cert != nil {
-		return s.resolveCertCurrent(r, cert)
+	now := s.now()
+	if err := s.CA.Verify(chain, now); err != nil {
+		s.Logger.Info("control: device certificate refused", "error", err)
+		return enrol.Current{}, apierr.New(http.StatusUnauthorized, apierr.CodeInvalidClientCert,
+			"the device certificate does not verify against the device CA")
 	}
-	auth := r.Header.Get(protocol.HeaderAuthorization)
-	if strings.HasPrefix(strings.ToLower(auth), "dpop ") {
-		return s.resolveDPoPCurrent(r, strings.TrimSpace(auth[len("DPoP "):]))
-	}
-	return nil, apierr.New(401, apierr.CodeRevokedDevice,
-		"a re-enrolment must present an enrolment token or the current device credential")
-}
-
-// clientCertificateChain reads the chain a request presented: the peer certificates of a direct-TLS
-// listener, or the chain the edge forwards as X-Client-Cert (leaf first). It is what an ADR 0022
-// customer-issued enrolment registers; the service verifies it, this only parses it.
-func (s *Server) clientCertificateChain(r *http.Request) []*x509.Certificate {
-	if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
-		return r.TLS.PeerCertificates
-	}
-	header := r.Header.Get(protocol.HeaderClientCert)
-	if header == "" {
-		return nil
-	}
-	if unescaped, err := url.QueryUnescape(header); err == nil && strings.Contains(unescaped, "-----BEGIN") {
-		header = unescaped
-	}
-	var out []*x509.Certificate
-	for {
-		block, rest := pem.Decode([]byte(header))
-		if block == nil {
-			break
-		}
-		if block.Type == "CERTIFICATE" {
-			if cert, err := x509.ParseCertificate(block.Bytes); err == nil {
-				out = append(out, cert)
-			}
-		}
-		header = string(rest)
-	}
-	return out
-}
-
-func (s *Server) clientCertificate(r *http.Request) *x509.Certificate {
-	if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
-		return r.TLS.PeerCertificates[0]
-	}
-	header := r.Header.Get(protocol.HeaderClientCert)
-	if header == "" {
-		return nil
-	}
-	// The edge percent-encodes the PEM so it survives as one header value; a gateway that forwards
-	// it raw is accepted as it is.
-	if unescaped, err := url.QueryUnescape(header); err == nil && strings.Contains(unescaped, "-----BEGIN") {
-		header = unescaped
-	}
-	// The edge forwards the certificate as PEM; the first CERTIFICATE block is the leaf.
-	for {
-		block, rest := pem.Decode([]byte(header))
-		if block == nil {
-			return nil
-		}
-		if block.Type == "CERTIFICATE" {
-			cert, err := x509.ParseCertificate(block.Bytes)
-			if err != nil {
-				return nil
-			}
-			return cert
-		}
-		header = string(rest)
-	}
-}
-
-func (s *Server) resolveCertCurrent(r *http.Request, leaf *x509.Certificate) (*enrol.Current, error) {
-	deviceID := leaf.Subject.CommonName
-	if !store.IsUUID(deviceID) {
-		return nil, apierr.New(401, apierr.CodeRevokedDevice, "the certificate subject CN is not a device uuid")
-	}
-	var tenantID string
+	leaf := chain[0]
+	cur := enrol.Current{DeviceID: leaf.Subject.CommonName, CredentialID: protocol.CredentialID(leaf.Raw)}
 	for _, ou := range leaf.Subject.OrganizationalUnit {
 		if store.IsUUID(ou) {
-			tenantID = ou
+			cur.TenantID = ou
 			break
 		}
 	}
-	if tenantID == "" {
-		return nil, apierr.New(401, apierr.CodeRevokedDevice, "the certificate carries no tenant organisational unit")
+	if !store.IsUUID(cur.DeviceID) || cur.TenantID == "" {
+		return enrol.Current{}, apierr.New(http.StatusUnauthorized, apierr.CodeInvalidClientCert,
+			"the device certificate does not name a device and a tenant")
 	}
-	cred, err := s.Store.DeviceCredentialByDevice(r.Context(), tenantID, deviceID)
+	cred, err := s.Store.DeviceCredential(r.Context(), cur.TenantID, cur.CredentialID)
 	if errors.Is(err, store.ErrCredentialUnknown) {
-		return nil, apierr.New(401, apierr.CodeRevokedDevice, "the device has no live credential")
+		return enrol.Current{}, apierr.New(http.StatusUnauthorized, apierr.CodeRevokedDevice, "the device certificate is not a registered credential")
 	}
 	if err != nil {
-		return nil, apierr.Internal(err)
+		return enrol.Current{}, apierr.Internal(err)
 	}
-	if cred.Type != protocol.AuthModeX509 {
-		return nil, apierr.New(401, apierr.CodeRevokedDevice, "the live credential is not an x509 credential")
+	if cred.DeviceID != cur.DeviceID || cred.PublicKeyThumbprint != enrol.SPKIThumbprint(leaf.RawSubjectPublicKeyInfo) {
+		return enrol.Current{}, apierr.New(http.StatusUnauthorized, apierr.CodeRevokedDevice, "the device certificate does not match its credential")
 	}
-	sum := sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
-	presented := base64.RawURLEncoding.EncodeToString(sum[:])
-	if subtle.ConstantTimeCompare([]byte(presented), []byte(cred.PublicKeyThumbprint)) != 1 {
-		return nil, apierr.New(401, apierr.CodeRevokedDevice, "the certificate does not match the registered device credential")
+	if err := cred.Active(now); err != nil {
+		return enrol.Current{}, apierr.New(http.StatusUnauthorized, apierr.CodeRevokedDevice, "the device credential is revoked or expired")
 	}
-	if err := cred.Active(s.now()); err != nil {
-		return nil, apierr.New(401, apierr.CodeRevokedDevice, "the current device credential is revoked or expired")
-	}
-	return &enrol.Current{TenantID: tenantID, DeviceID: deviceID, CredentialID: cred.CredentialID, KeyThumbprint: presented}, nil
+	return cur, nil
 }
 
-func (s *Server) resolveDPoPCurrent(r *http.Request, accessToken string) (*enrol.Current, error) {
-	if s.Verifier == nil {
-		return nil, apierr.New(401, apierr.CodeRevokedDevice, "access-token authentication is not configured")
+// parseChain decodes the forwarded PEM chain, leaf first. The gateway URL-encodes the PEM because a
+// header value cannot carry its newlines; both percent encodings are tried (a space as %20 keeps
+// base64's '+' intact, a space as '+' needs form decoding), and raw PEM is accepted too.
+func parseChain(header string) ([]*x509.Certificate, error) {
+	candidates := []string{header}
+	if s, err := url.PathUnescape(header); err == nil && s != header {
+		candidates = append(candidates, s)
 	}
-	verified, err := s.Verifier.Verify(accessToken)
+	if s, err := url.QueryUnescape(header); err == nil && s != header {
+		candidates = append(candidates, s)
+	}
+	err := errors.New("the header carries no certificate")
+	for _, text := range candidates {
+		var chain []*x509.Certificate
+		if chain, err = decodePEM(text); err == nil {
+			return chain, nil
+		}
+	}
+	return nil, err
+}
+
+func decodePEM(text string) ([]*x509.Certificate, error) {
+	var chain []*x509.Certificate
+	rest := []byte(text)
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, err
+		}
+		chain = append(chain, cert)
+	}
+	if len(chain) == 0 {
+		return nil, errors.New("the header carries no certificate")
+	}
+	return chain, nil
+}
+
+// decode reads a size-capped JSON body. It answers the caller itself on failure.
+func (s *Server) decode(w http.ResponseWriter, r *http.Request, v any) bool {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBodyBytes))
 	if err != nil {
-		return nil, apierr.New(401, apierr.CodeRevokedDevice, "the presented access token did not verify")
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			s.writeError(w, apierr.New(http.StatusRequestEntityTooLarge, apierr.CodeInvalidRequest, "the request body is over the cap"))
+			return false
+		}
+		s.writeError(w, apierr.New(http.StatusBadRequest, apierr.CodeInvalidRequest, "the request body could not be read"))
+		return false
 	}
-	proofCompact := r.Header.Get(protocol.HeaderDPoP)
-	if proofCompact == "" {
-		return nil, apierr.New(401, apierr.CodeInvalidProof, "a DPoP proof is required with the access token")
+	if err := json.Unmarshal(body, v); err != nil {
+		s.writeError(w, apierr.New(http.StatusBadRequest, apierr.CodeSchemaViolation, "the request body is not valid JSON"))
+		return false
 	}
-	proof, err := dpop.Verify(proofCompact, r.Method, dpop.HTU(r), accessToken, s.now(), dpop.DefaultSkew)
-	if err != nil {
-		return nil, apierr.New(401, apierr.CodeInvalidProof, "the DPoP proof did not verify")
-	}
-	if subtle.ConstantTimeCompare([]byte(proof.Thumbprint), []byte(verified.JKT)) != 1 {
-		return nil, apierr.New(401, apierr.CodeInvalidProof, "the DPoP proof key is not the token's bound key")
-	}
-	cred, err := s.Store.DeviceCredential(r.Context(), verified.TenantID, verified.CredentialID)
-	if errors.Is(err, store.ErrCredentialUnknown) {
-		return nil, apierr.New(401, apierr.CodeRevokedDevice, "the credential the token names is gone")
-	}
-	if err != nil {
-		return nil, apierr.Internal(err)
-	}
-	if err := cred.Active(s.now()); err != nil {
-		return nil, apierr.New(401, apierr.CodeRevokedDevice, "the current device credential is revoked or expired")
-	}
-	return &enrol.Current{
-		TenantID: verified.TenantID, DeviceID: verified.DeviceID,
-		CredentialID: verified.CredentialID, KeyThumbprint: verified.JKT,
-	}, nil
+	return true
 }
 
 func (s *Server) now() time.Time {
@@ -508,43 +322,10 @@ func (s *Server) now() time.Time {
 	return time.Now().UTC()
 }
 
-// errorEnvelope is §5's common error body.
-type errorEnvelope struct {
-	Error errorBody `json:"error"`
-}
-
-type errorBody struct {
-	Code        string    `json:"code"`
-	Detail      any       `json:"detail,omitempty"`
-	ServerTime  time.Time `json:"server_time"`
-	RetryAfterS int       `json:"retry_after_s,omitempty"`
-	Message     string    `json:"message,omitempty"`
-}
-
 func (s *Server) writeError(w http.ResponseWriter, err error) {
-	var apiErr *apierr.Error
-	if !errors.As(err, &apiErr) {
-		s.Logger.Error("control: unclassified failure", "error", err)
-		apiErr = apierr.Internal(err)
-	}
-	if apiErr.Cause != nil {
-		s.Logger.Error("control: request failed with an internal cause", "error", apiErr.Cause, "code", apiErr.Code)
-	}
-	body := errorEnvelope{Error: errorBody{
-		Code: apiErr.Code, Detail: apiErr.Detail, ServerTime: s.now(), Message: apiErr.Message,
-	}}
-	if apiErr.Status == http.StatusTooManyRequests || apiErr.Status == http.StatusServiceUnavailable {
-		body.Error.RetryAfterS = 5
-		w.Header().Set("Retry-After", "5")
-	}
-	s.writeJSON(w, apiErr.Status, body)
+	apierr.Write(w, err, s.now(), s.Logger)
 }
 
 func (s *Server) writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		s.Logger.Error("control: write response", "error", err)
-	}
+	apierr.WriteJSON(w, status, v, s.Logger)
 }

@@ -16,13 +16,12 @@ import (
 // Every SQL statement the identity service issues, in one file.
 // =====================================================================================
 //
-// The rule control-api's other stores hold: constants, reviewable in one screen, prepared verbatim by
-// the tagged live test. Three access paths, chosen by what is known when the statement runs:
+// Constants, reviewable in one screen and prepared verbatim by the live test. Three access paths,
+// chosen by what is known when the statement runs:
 //
 //   - before any tenant is known (an Entra tid, a connection id from an attempt, an email domain), the
-//     contract's SECURITY DEFINER functions, which are the only way past row-level security;
-//   - ops.auth_signin, which is pre-tenant by nature and read and written by sac_control alone, with
-//     no RLS (contract §1 leaves that to the schema; this file assumes it);
+//     SECURITY DEFINER lookup functions, which are the only way past row-level security;
+//   - ops.auth_signin, which is pre-tenant by nature: its policy admits sac_control alone;
 //   - everything else in a transaction that sets app.tenant_id first, so RLS is the final arbiter.
 //
 // Lists travel as comma-joined text split in SQL, as the session store's roles do: the values (user
@@ -62,6 +61,8 @@ RETURNING coalesce(connection_id::text, ''), coalesce(state, ''), coalesce(nonce
 
 	sqlTenantName = `SELECT name FROM ops.tenant WHERE tenant_id = $1::uuid`
 
+	sqlTenantAccess = `SELECT status, read_enabled FROM ops.tenant WHERE tenant_id = $1::uuid`
+
 	sqlTenantDomains = `SELECT domain FROM ops.tenant_email_domain WHERE tenant_id = $1::uuid ORDER BY domain`
 
 	inviteColumns = `invite_id::text, tenant_id::text, token_hash, created_by, created_at, expires_at, used_at,
@@ -79,7 +80,7 @@ SELECT role FROM ops.role_grant WHERE tenant_id = $1::uuid AND connection_id = $
 	sqlUserRefKey = `SELECT user_ref_key_enc FROM ops.tenant WHERE tenant_id = $1::uuid`
 
 	// The candidates in order (a session's recorded ref first), each resolved through the alias table
-	// to the canonical ref the SCIM row carries (contract §4).
+	// to the canonical ref the SCIM row carries.
 	sqlScimUser = `
 SELECT s.user_ref, s.active
   FROM unnest(string_to_array($2::text, ',')) WITH ORDINALITY AS c(ref, ord)
@@ -146,6 +147,7 @@ var Statements = []Statement{
 	{"sweep_attempts", "drop expired attempts", sqlSweepAttempts},
 	{"tenant_connections", "a tenant's connections", sqlTenantConnections},
 	{"tenant_name", "onboarding page heading", sqlTenantName},
+	{"tenant_access", "tenant status and read gate before a token is minted", sqlTenantAccess},
 	{"tenant_domains", "onboarding page domains", sqlTenantDomains},
 	{"invite_by_hash", "invite token lookup in its own tenant", sqlInviteByHash},
 	{"invite_by_id", "an attempt's invite", sqlInviteByID},
@@ -336,6 +338,19 @@ func (s *SQLStore) TenantSummary(ctx context.Context, tenantID string) (TenantSu
 	return sum, err
 }
 
+// TenantAccess implements Store.
+func (s *SQLStore) TenantAccess(ctx context.Context, tenantID string) (TenantAccess, error) {
+	var a TenantAccess
+	err := s.withTenant(ctx, tenantID, func(tx *sql.Tx) error {
+		err := tx.QueryRowContext(ctx, sqlTenantAccess, tenantID).Scan(&a.Status, &a.ReadEnabled)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	})
+	return a, err
+}
+
 func scanInvite(row scanner) (Invite, error) {
 	var inv Invite
 	var used sql.NullTime
@@ -490,7 +505,7 @@ func (s *SQLStore) Activate(ctx context.Context, a Activation) error {
 			"onboarding-invite:"+a.InviteID, a.At); err != nil {
 			return err
 		}
-		for _, e := range activationAudit(a) {
+		for _, e := range ActivationAudit(a) {
 			if err := s.audit(ctx, tx, a.TenantID, e); err != nil {
 				return err
 			}

@@ -16,8 +16,8 @@ import (
 )
 
 // NewHTTPClient is the client every outbound identity call uses: discovery, keys, the token endpoint.
-// A customer types an issuer during onboarding and control-api then fetches from it, so unless the
-// deployment allows it (the lab, whose stand-in provider is on a private network) the dialer refuses
+// A customer types an issuer during onboarding and control-api then fetches from it, so unless
+// allowPrivate is set (only for the local lab's test identity provider) the dialer refuses
 // loopback, private, link-local and unspecified addresses at connect time — after DNS, so a name that
 // later resolves inward is refused too. No proxy is consulted, for the same reason.
 func NewHTTPClient(allowPrivate bool, timeout time.Duration) *http.Client {
@@ -139,11 +139,11 @@ func ValidateIssuer(ctx context.Context, client *http.Client, issuer string, all
 	if err := checkMetadata(meta, issuer, allowInsecure); err != nil {
 		return ProviderMetadata{}, err
 	}
-	keys, err := fetchJWKS(ctx, client, meta.JWKSURI)
+	n, err := rsaSigningKeys(ctx, client, meta.JWKSURI)
 	if err != nil {
 		return ProviderMetadata{}, err
 	}
-	if len(keys) == 0 {
+	if n == 0 {
 		return ProviderMetadata{}, errors.New("the provider's JWKS holds no RSA signing key")
 	}
 	return meta, nil

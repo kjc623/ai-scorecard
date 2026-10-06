@@ -1,34 +1,33 @@
-// Package session is the product's own token authority and its server-side session store
-// (the shared contract §2 and §3; docs/06 §4.1).
+// Package session is the product's own token authority and its server-side session store.
 //
 // control-api is the relying party for every customer identity provider (internal/identity), and
 // what it hands the rest of the product is never the provider's token: it is a short-lived product
 // access token this package mints, ES256 under a dedicated session-signing key, verified by
-// query-api, content-vault and control-api's own admin API against one issuer and one JWKS. A Google
-// or Okta access token is opaque or not meant for us, so forwarding provider tokens could never work
-// for "any provider"; one issuer can.
+// query-api, content-vault and control-api's own admin API against one issuer and one JWKS.
 //
 // The browser never holds a product token. The dashboard server holds an opaque session id (the
-// cookie) and exchanges it here for a token of at most ten minutes, which is what makes a revoked
-// session, a SCIM deactivation or a disabled connection take effect within one token lifetime.
+// cookie) and exchanges it here for a token of a few minutes, which is what makes a revoked session,
+// a SCIM deactivation or a disabled connection take effect within one token lifetime.
+//
+// The same authority signs the service token control-api presents to content-vault: a token with no
+// tenant or person, naming the calling service in its svc claim.
 package session
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
+	"slices"
 	"strings"
 	"time"
 
-	"github.com/shadow-ai-capture/control-api/internal/jose"
+	"github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 )
 
-// The product roles (docs/06 §4.1, reconciled with the owner for task 11). The order is the
-// canonical order roles are written in, so two tokens for one person compare equal.
+// The product roles, in the canonical order roles are written in, so two tokens for one person
+// compare equal.
 const (
 	RoleViewer        = "viewer"
 	RoleAnalyst       = "analyst"
@@ -39,24 +38,13 @@ const (
 var roleOrder = []string{RoleViewer, RoleAnalyst, RoleContentReader, RoleAdmin}
 
 // ValidRole reports whether r is a product role.
-func ValidRole(r string) bool {
-	for _, v := range roleOrder {
-		if r == v {
-			return true
-		}
-	}
-	return false
-}
+func ValidRole(r string) bool { return slices.Contains(roleOrder, r) }
 
 // CanonicalRoles drops unknown and repeated roles and returns the rest in canonical order.
 func CanonicalRoles(in []string) []string {
-	have := map[string]bool{}
-	for _, r := range in {
-		have[r] = true
-	}
 	out := []string{}
 	for _, r := range roleOrder {
-		if have[r] {
+		if slices.Contains(in, r) {
 			out = append(out, r)
 		}
 	}
@@ -78,11 +66,18 @@ const (
 	IdPOIDC  = "oidc"
 )
 
-// MaxTokenTTL is the contract's ceiling on a product token's life.
-const MaxTokenTTL = 10 * time.Minute
-
-// Leeway is the clock skew a verifier tolerates on exp, nbf and iat.
-const Leeway = 60 * time.Second
+const (
+	// TokenTTL is the life of a product token.
+	TokenTTL = 5 * time.Minute
+	// MaxTokenTTL is the ceiling verifiers may assume for a product token's life.
+	MaxTokenTTL = 10 * time.Minute
+	// ServiceTokenTTL is the life of a service token.
+	ServiceTokenTTL = 5 * time.Minute
+	// Leeway is the clock skew a verifier tolerates on exp, nbf and iat.
+	Leeway = 60 * time.Second
+	// typAccessToken is the JOSE typ of every token this authority signs (RFC 9068).
+	typAccessToken = "at+jwt"
+)
 
 // Principal is who a product token speaks for. The JSON form is the `principal` object of the
 // internal sign-in API; the other fields are for this service's own use.
@@ -102,45 +97,40 @@ type Principal struct {
 
 // HasRole reports whether the principal holds any of roles.
 func (p Principal) HasRole(roles ...string) bool {
-	for _, have := range p.Roles {
-		for _, want := range roles {
-			if have == want {
-				return true
-			}
+	for _, want := range roles {
+		if slices.Contains(p.Roles, want) {
+			return true
 		}
 	}
 	return false
 }
 
-// claims is the payload of a product token, exactly the contract's member list.
-type claims struct {
-	Iss    string   `json:"iss"`
-	Aud    []string `json:"aud"`
-	Sub    string   `json:"sub"`
+// productClaims are the private claims of a product token; the registered ones are jwt.Claims.
+type productClaims struct {
 	Tenant string   `json:"sac_tenant"`
 	Actor  string   `json:"actor"`
 	Roles  []string `json:"roles"`
 	IdP    string   `json:"idp"`
 	SID    string   `json:"sid"`
-	Iat    int64    `json:"iat"`
-	Exp    int64    `json:"exp"`
-	Jti    string   `json:"jti"`
+}
+
+// serviceClaims is the private claim of a service token.
+type serviceClaims struct {
+	Service string `json:"svc"`
 }
 
 // IssuerConfig configures the token authority.
 type IssuerConfig struct {
 	// Issuer is SAC_AUTH_ISSUER, the exact `iss` every verifier pins (e.g. http://control-api:8080).
 	Issuer string
-	// TTL is the token life; it is clamped to MaxTokenTTL. Default 5 minutes.
-	TTL time.Duration
-	Now func() time.Time
+	Now    func() time.Time
 }
 
-// Issuer mints product access tokens.
+// Issuer mints product access tokens and service tokens.
 type Issuer struct {
 	keys   *KeySet
 	issuer string
-	ttl    time.Duration
+	signer jose.Signer
 	now    func() time.Time
 }
 
@@ -154,26 +144,18 @@ func NewIssuer(keys *KeySet, cfg IssuerConfig) (*Issuer, error) {
 	if !strings.HasPrefix(iss, "https://") && !strings.HasPrefix(iss, "http://") {
 		return nil, fmt.Errorf("session: issuer %q is not an absolute http(s) URL", cfg.Issuer)
 	}
-	if cfg.TTL <= 0 {
-		cfg.TTL = 5 * time.Minute
-	}
-	if cfg.TTL > MaxTokenTTL {
-		cfg.TTL = MaxTokenTTL
-	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	return &Issuer{keys: keys, issuer: iss, ttl: cfg.TTL, now: cfg.Now}, nil
+	signer, err := jose.NewSigner(keys.signingKey(), (&jose.SignerOptions{}).WithType(typAccessToken))
+	if err != nil {
+		return nil, fmt.Errorf("session: signer: %w", err)
+	}
+	return &Issuer{keys: keys, issuer: iss, signer: signer, now: cfg.Now}, nil
 }
 
 // Issuer is the `iss` this authority writes.
 func (i *Issuer) Issuer() string { return i.issuer }
-
-// TTL is the life of a minted token.
-func (i *Issuer) TTL() time.Duration { return i.ttl }
-
-// Keys is the key set, for the verifier and the JWKS handler.
-func (i *Issuer) Keys() *KeySet { return i.keys }
 
 // Mint signs a token for p. Tenant, actor, at least one role, the idp and the subject are required:
 // a token that names no role would be refused by every verifier anyway, and minting one would hide
@@ -192,23 +174,47 @@ func (i *Issuer) Mint(p Principal) (string, time.Time, error) {
 	case p.Subject == "":
 		return "", time.Time{}, errors.New("session: a token needs a subject")
 	}
+	registered, err := i.registered(jwt.Audience{AudienceQuery, AudienceVault, AudienceControl}, p.Subject, TokenTTL)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	tok, err := jwt.Signed(i.signer).Claims(registered).Claims(productClaims{
+		Tenant: strings.ToLower(p.Tenant), Actor: p.Actor, Roles: roles, IdP: p.IdP, SID: p.SessionID,
+	}).Serialize()
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("session: sign: %w", err)
+	}
+	return tok, registered.Expiry.Time().UTC(), nil
+}
+
+// ServiceToken signs a token that authenticates this service to another one: aud is audience, sub
+// and svc name the calling service, and it lives ServiceTokenTTL. It carries no tenant, actor or
+// role, so it can never pass as a person's product token.
+func (i *Issuer) ServiceToken(audience, service string) (string, error) {
+	if strings.TrimSpace(audience) == "" || strings.TrimSpace(service) == "" {
+		return "", errors.New("session: a service token needs an audience and a service")
+	}
+	registered, err := i.registered(jwt.Audience{audience}, service, ServiceTokenTTL)
+	if err != nil {
+		return "", err
+	}
+	tok, err := jwt.Signed(i.signer).Claims(registered).Claims(serviceClaims{Service: service}).Serialize()
+	if err != nil {
+		return "", fmt.Errorf("session: sign: %w", err)
+	}
+	return tok, nil
+}
+
+func (i *Issuer) registered(aud jwt.Audience, subject string, ttl time.Duration) (jwt.Claims, error) {
 	jti, err := NewUUID()
 	if err != nil {
-		return "", time.Time{}, err
+		return jwt.Claims{}, err
 	}
 	now := i.now().UTC()
-	exp := now.Add(i.ttl)
-	c := claims{
-		Iss: i.issuer, Aud: []string{AudienceQuery, AudienceVault, AudienceControl},
-		Sub: p.Subject, Tenant: strings.ToLower(p.Tenant), Actor: p.Actor, Roles: roles, IdP: p.IdP,
-		SID: p.SessionID, Iat: now.Unix(), Exp: exp.Unix(), Jti: jti,
-	}
-	header := map[string]any{"alg": jose.AlgES256, "typ": jose.TypAccessToken, "kid": i.keys.signerKID}
-	tok, err := jose.SignES256(header, c, i.keys.signer)
-	if err != nil {
-		return "", time.Time{}, err
-	}
-	return tok, time.Unix(c.Exp, 0).UTC(), nil
+	return jwt.Claims{
+		Issuer: i.issuer, Audience: aud, Subject: subject, ID: jti,
+		IssuedAt: jwt.NewNumericDate(now), Expiry: jwt.NewNumericDate(now.Add(ttl)),
+	}, nil
 }
 
 // Verifier checks product tokens against the local key set. control-api's admin API uses it; the
@@ -232,51 +238,39 @@ func invalid(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", ErrInvalidToken, fmt.Sprintf(format, args...))
 }
 
-// Verify checks a compact token for one audience: alg pinned to ES256 (jose refuses any other), typ
-// at+jwt, a kid this set publishes, the exact issuer, the audience, and exp/nbf/iat within Leeway.
+// Verify checks a compact token for one audience: alg pinned to ES256, typ at+jwt, a kid this set
+// publishes, the exact issuer, the audience, and exp/nbf/iat within Leeway.
 func (v *Verifier) Verify(token, audience string) (Principal, error) {
-	j, err := jose.Parse(token)
+	parsed, err := jwt.ParseSigned(token, []jose.SignatureAlgorithm{jose.ES256})
 	if err != nil {
 		return Principal{}, invalid("%v", err)
 	}
-	if typ, _ := j.HeaderString("typ"); typ != jose.TypAccessToken {
+	if len(parsed.Headers) != 1 {
+		return Principal{}, invalid("not a single-signature token")
+	}
+	h := parsed.Headers[0]
+	if typ, _ := h.ExtraHeaders[jose.HeaderType].(string); typ != typAccessToken {
 		return Principal{}, invalid("typ %q", typ)
 	}
-	kid, _ := j.HeaderString("kid")
-	pub := v.keys.publicKey(kid)
+	pub := v.keys.publicKey(h.KeyID)
 	if pub == nil {
 		return Principal{}, invalid("unknown kid")
 	}
-	if err := j.Verify(pub); err != nil {
+	var registered jwt.Claims
+	var c productClaims
+	if err := parsed.Claims(pub, &registered, &c); err != nil {
 		return Principal{}, invalid("%v", err)
 	}
-	if iss, _ := j.Claims.String("iss"); iss != v.issuer {
-		return Principal{}, invalid("issuer %q", iss)
-	}
-	if !audienceHas(j.Claims["aud"], audience) {
-		return Principal{}, invalid("audience does not include %q", audience)
-	}
-	now := v.now().UTC()
-	exp, ok := j.Claims.Int64("exp")
-	if !ok {
+	if registered.Expiry == nil {
 		return Principal{}, invalid("no exp")
 	}
-	if !now.Before(time.Unix(exp, 0).Add(Leeway)) {
-		return Principal{}, invalid("expired")
-	}
-	if nbf, ok := j.Claims.Int64("nbf"); ok && now.Add(Leeway).Before(time.Unix(nbf, 0)) {
-		return Principal{}, invalid("not yet valid")
-	}
-	if iat, ok := j.Claims.Int64("iat"); ok && now.Add(Leeway).Before(time.Unix(iat, 0)) {
-		return Principal{}, invalid("issued in the future")
-	}
-	var c claims
-	raw, _ := json.Marshal(j.Claims)
-	if err := json.Unmarshal(raw, &c); err != nil {
-		return Principal{}, invalid("claims: %v", err)
+	if err := registered.ValidateWithLeeway(jwt.Expected{
+		Issuer: v.issuer, AnyAudience: jwt.Audience{audience}, Time: v.now().UTC(),
+	}, Leeway); err != nil {
+		return Principal{}, invalid("%v", err)
 	}
 	roles := CanonicalRoles(c.Roles)
-	if !IsUUID(c.Tenant) || c.Actor == "" || len(roles) == 0 || c.Sub == "" {
+	if !IsUUID(c.Tenant) || c.Actor == "" || len(roles) == 0 || registered.Subject == "" {
 		return Principal{}, invalid("missing tenant, actor, role or subject")
 	}
 	if c.IdP != IdPEntra && c.IdP != IdPOIDC {
@@ -284,71 +278,8 @@ func (v *Verifier) Verify(token, audience string) (Principal, error) {
 	}
 	return Principal{
 		Tenant: strings.ToLower(c.Tenant), Actor: c.Actor, Roles: roles, IdP: c.IdP,
-		Subject: c.Sub, SessionID: c.SID, TokenID: c.Jti, ExpiresAt: time.Unix(exp, 0).UTC(),
+		Subject: registered.Subject, SessionID: c.SID, TokenID: registered.ID, ExpiresAt: registered.Expiry.Time().UTC(),
 	}, nil
-}
-
-func audienceHas(raw json.RawMessage, want string) bool {
-	var one string
-	if json.Unmarshal(raw, &one) == nil {
-		return one == want
-	}
-	var many []string
-	if json.Unmarshal(raw, &many) == nil {
-		for _, a := range many {
-			if a == want {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-type principalKey struct{}
-
-// FromContext returns the principal Require stored on the request context.
-func FromContext(ctx context.Context) (Principal, bool) {
-	p, ok := ctx.Value(principalKey{}).(Principal)
-	return p, ok
-}
-
-// WithPrincipal stores p on ctx, for a handler test that bypasses Require.
-func WithPrincipal(ctx context.Context, p Principal) context.Context {
-	return context.WithValue(ctx, principalKey{}, p)
-}
-
-// Require is middleware for control-api's admin API: a bearer product token for audience, and, when
-// roles are named, at least one of them. The principal is on the request context for the handler,
-// which is where the audit actor comes from — never from a header the caller wrote.
-func (v *Verifier) Require(audience string, roles ...string) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			auth := r.Header.Get("Authorization")
-			if len(auth) < 7 || !strings.EqualFold(auth[:7], "bearer ") {
-				w.Header().Set("WWW-Authenticate", `Bearer realm="sac-control"`)
-				writeJSONError(w, http.StatusUnauthorized, "unauthenticated")
-				return
-			}
-			p, err := v.Verify(strings.TrimSpace(auth[7:]), audience)
-			if err != nil {
-				w.Header().Set("WWW-Authenticate", `Bearer realm="sac-control", error="invalid_token"`)
-				writeJSONError(w, http.StatusUnauthorized, "unauthenticated")
-				return
-			}
-			if len(roles) > 0 && !p.HasRole(roles...) {
-				writeJSONError(w, http.StatusForbidden, "forbidden_role")
-				return
-			}
-			next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), p)))
-		})
-	}
-}
-
-func writeJSONError(w http.ResponseWriter, status int, code string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": code})
 }
 
 // NewUUID returns a random version-4 UUID.

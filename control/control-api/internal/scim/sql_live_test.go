@@ -1,5 +1,3 @@
-//go:build sac_sql_driver
-
 package scim
 
 import (
@@ -9,66 +7,19 @@ import (
 	"io"
 	"log/slog"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/shadow-ai-capture/control-api/internal/directory"
-	"github.com/shadow-ai-capture/control-api/sqlpg"
+	"github.com/shadow-ai-capture/control-api/internal/pgtest"
 )
 
-// The tagged live test: the SCIM provider end to end, over HTTP, against a PostgreSQL with
-// database/schema.sql applied, through the real RLS sessions, definer function, constraints and audit
-// trigger. It SKIPS loudly when no server is reachable.
-//
-// Point it at a throwaway database, not the lab's: it seeds its own tenant and removes what it can,
-// but ops.audit is append-only and references the tenant, so the tenant row stays behind, closed,
-// named scim-live-<n>. The DSN follows the directory live test: SAC_PG_DSN, then the PG* variables,
-// then a localhost default. SAC_PG_STORE_DSN, when set, is the connection the provider itself uses,
-// so it can run as sac_control under forced RLS and its grants while the seeding runs as an owner.
-
-func liveDSN() string {
-	if v := os.Getenv("SAC_PG_DSN"); v != "" {
-		return v
-	}
-	if host := os.Getenv("PGHOST"); host != "" {
-		user := os.Getenv("PGUSER")
-		if user == "" {
-			user = "postgres"
-		}
-		db := os.Getenv("PGDATABASE")
-		if db == "" {
-			db = "shadow"
-		}
-		return fmt.Sprintf("postgres://%s:%s@%s:5432/%s?sslmode=disable", user, os.Getenv("PGPASSWORD"), host, db)
-	}
-	return "postgres://postgres:sac-lab-only@127.0.0.1:5432/shadow?sslmode=disable"
-}
-
-func openLive(t *testing.T) *sql.DB {
-	t.Helper()
-	return openDSN(t, liveDSN())
-}
-
-func openDSN(t *testing.T, dsn string) *sql.DB {
-	t.Helper()
-	db, err := sqlpg.OpenDB(dsn)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := db.PingContext(ctx); err != nil {
-		_ = db.Close()
-		t.Skipf("SKIPPING (not a failure): no PostgreSQL reachable: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	return db
-}
+// The live test: the SCIM provider end to end, over HTTP, run as sac_control against the database
+// SAC_TEST_PG_DSN names, through the real RLS sessions, definer function, constraints and audit
+// trigger. ops.audit is append-only and references the seeded tenants, so they stay behind, closed.
 
 func TestSCIMSQLStatementsPrepare(t *testing.T) {
-	db := openLive(t)
+	db := pgtest.Open(t)
 	ctx := context.Background()
 	for i, s := range Statements {
 		name := fmt.Sprintf("sac_scim_probe_%d", i)
@@ -83,10 +34,10 @@ func TestSCIMSQLStatementsPrepare(t *testing.T) {
 func seedLiveTenant(t *testing.T, db *sql.DB, identity string) string {
 	t.Helper()
 	ctx := context.Background()
-	tenant := fmt.Sprintf("00000000-0000-4000-8002-%012d", time.Now().UnixNano()%1_000_000_000_000)
+	tenant := pgtest.UUID(t)
 	if _, err := db.ExecContext(ctx, `INSERT INTO ops.tenant
-	  (tenant_id, name, status, residency_region, key_custody, ceiling_mode, content_search, device_identity)
-	  VALUES ($1::uuid, $2, 'active', 'eu-west', 'vendor', 'm1', 'disabled', $3)`, tenant, "scim-live-"+tenant[24:], identity); err != nil {
+	  (tenant_id, name, status, residency_region, ceiling_mode, content_search, device_identity)
+	  VALUES ($1::uuid, $2, 'active', 'eu-west', 'm1', 'disabled', $3)`, tenant, "scim-live-"+tenant[:8], identity); err != nil {
 		t.Fatalf("seed tenant: %v", err)
 	}
 	t.Cleanup(func() {
@@ -111,17 +62,14 @@ func seedLiveTenant(t *testing.T, db *sql.DB, identity string) string {
 }
 
 func TestSCIMAgainstPostgres(t *testing.T) {
-	db := openLive(t)
+	db := pgtest.Open(t)
 	ctx := context.Background()
 	tenant := seedLiveTenant(t, db, "clear")
 	other := seedLiveTenant(t, db, "clear")
 
-	storeDB := db
-	if v := os.Getenv("SAC_PG_STORE_DSN"); v != "" {
-		storeDB = openDSN(t, v)
-	}
+	storeDB := pgtest.OpenAs(t, "sac_control")
 	cipher, _ := directory.NewCipher([]byte("0123456789abcdef0123456789abcdef"))
-	keys, _ := directory.NewUserRefKeys(directory.NewSQL(storeDB), cipher)
+	keys, _ := directory.NewUserRefKeys(directory.NewKeyStore(storeDB), cipher)
 	st := NewSQL(storeDB)
 	svc, err := NewService(st, keys, cipher, Config{BaseURL: "https://live.example.test/scim/v2"})
 	if err != nil {

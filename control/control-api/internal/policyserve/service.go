@@ -1,18 +1,12 @@
-// Package policyserve is GET /v1/policy (docs/02-ingest-and-transport.md §5.2) and the writer of
-// ops.policy_bundle that the backlog has lacked (FOLLOWUPS: "nothing writes the signed policy
-// bundle").
+// Package policyserve serves GET /v1/policy and writes ops.policy_bundle.
 //
-// A tenant's bundle is composed from what the database says about it -- the tenant's ceiling as the
-// default collection mode, the tool catalogue's TLS hosts as the interception scope, the servable
-// classifier release -- in the shape the lab's sac-bundle has always produced, signed with the
-// vendor's Ed25519 policy key in the envelope capture-core/policy verifies, and stored with the
-// exact signed bytes in ops.policy_bundle.signed_envelope. A new version is minted only when that
-// composition, or the signing key, differs from the latest stored bundle; otherwise the stored bytes
-// are served again, so the ETag a device holds stays valid until something it would enforce changes.
-//
-// Composition happens on the read path, under a per-tenant lock, because no settings writer exists
-// yet: the first poll after an input changes mints the new version. A settings writer can call
-// Refresh after its own write to mint eagerly; the outcome is the same version either way.
+// A tenant's bundle is composed from what the database says about it: the tenant's ceiling as the
+// default collection mode and the tool catalogue's TLS hosts as the interception scope. It is signed with the vendor's Ed25519 policy key in the envelope
+// the agent verifies, and stored with the exact signed bytes. A new version is minted only when the
+// composition or the signing key differs from the latest stored bundle; otherwise the stored bytes
+// are served again, so the ETag a device holds stays valid until something it would enforce
+// changes. Composition happens on the read path under a per-tenant lock, so the first poll after an
+// input changes mints the new version.
 package policyserve
 
 import (
@@ -35,8 +29,7 @@ import (
 	"github.com/shadow-ai-capture/control-api/internal/store"
 )
 
-// Config is the service's composition defaults and timing. Every default is what the lab's
-// installer passes sac-bundle today, so an enterprise device and a lab device are configured alike.
+// Config is the service's composition defaults and timing.
 type Config struct {
 	// KeyID is the key id the envelope names; the device pins it beside the public key.
 	KeyID string
@@ -61,7 +54,7 @@ const (
 	DefaultPreferredCanary = "api.anthropic.com"
 	DefaultRecheckInterval = 30 * time.Second
 	// retentionClass is ops.policy_bundle.retention_class for every composed bundle: the event
-	// default, until a retention setting exists to choose another.
+	// retention class.
 	retentionClass = "standard"
 	actorID        = "control-api"
 )
@@ -80,7 +73,7 @@ type cached struct {
 
 // Service composes, signs, stores and serves policy bundles.
 type Service struct {
-	store store.PolicyStore
+	store store.Store
 	key   ed25519.PrivateKey
 	cfg   Config
 
@@ -88,9 +81,8 @@ type Service struct {
 	cache map[string]cached
 }
 
-// New builds the service. It refuses a missing store or key rather than serving unsigned policy:
-// only signed bundles are ever served (docs/02 §5.2).
-func New(st store.PolicyStore, key ed25519.PrivateKey, cfg Config) (*Service, error) {
+// New builds the service. Only signed bundles are ever served, so a key is required.
+func New(st store.Store, key ed25519.PrivateKey, cfg Config) (*Service, error) {
 	if st == nil {
 		return nil, errors.New("policyserve: store is required")
 	}
@@ -134,25 +126,11 @@ func (s *Service) PublicKeyHex() string { return PublicKeyHex(s.key) }
 // ETag names the tenant's current bundle as GET /v1/policy would; it lets an enrolment response
 // carry policy_etag.
 func (s *Service) ETag(ctx context.Context, tenantID string) (string, error) {
-	if s == nil {
-		// A nil *Service stored in an interface is not a nil interface; answering here keeps a
-		// deployment without a signing key from panicking on every enrolment.
-		return "", errors.New("policyserve: policy signing is not configured")
-	}
 	sv, err := s.Current(ctx, tenantID)
 	if err != nil {
 		return "", err
 	}
 	return sv.ETag, nil
-}
-
-// Refresh re-reads the tenant's inputs now, minting a new version if they changed. A settings
-// writer calls it after its own commit so devices see the change on their next poll.
-func (s *Service) Refresh(ctx context.Context, tenantID string) (Served, error) {
-	s.mu.Lock()
-	delete(s.cache, tenantID)
-	s.mu.Unlock()
-	return s.Current(ctx, tenantID)
 }
 
 // Current returns the tenant's bundle in force, minting a new version first when its inputs have
@@ -196,10 +174,10 @@ func (s *Service) Current(ctx context.Context, tenantID string) (Served, error) 
 
 	var published *store.PolicyBundle
 	minted, err := s.store.MintPolicyBundle(ctx, tenantID, func(latest *store.PolicyBundle) (store.MintDecision, error) {
-		if s.current(latest, candidate) || candidate == nil {
+		if s.current(latest, candidate) {
 			return store.MintDecision{}, nil
 		}
-		d, err := s.mint(tenantID, latest, *candidate, in, now)
+		d, err := s.mint(tenantID, latest, *candidate, now)
 		published = d.Bundle
 		return d, err
 	})
@@ -212,20 +190,16 @@ func (s *Service) Current(ctx context.Context, tenantID string) (Served, error) 
 	}
 	if published != nil && published.Version == minted.Version {
 		s.cfg.Logger.Info("control: policy bundle published", "tenant", tenantID, "version", minted.Version,
-			"kid", minted.SignatureKID, "classifier", minted.ClassifierRelease)
+			"kid", minted.SignatureKID)
 	}
 	return s.remember(tenantID, minted, now)
 }
 
 // current reports whether latest may be served for this candidate: it is servable, signed with
-// the current key, and composed from the same inputs. A nil candidate (nothing composable) keeps
-// any servable latest rather than withdrawing policy.
+// the current key, and composed from the same inputs.
 func (s *Service) current(latest *store.PolicyBundle, candidate *Bundle) bool {
 	if latest == nil || len(latest.SignedEnvelope) == 0 {
 		return false
-	}
-	if candidate == nil {
-		return true
 	}
 	if latest.SignatureKID != s.cfg.KeyID {
 		return false
@@ -251,12 +225,8 @@ func (s *Service) remember(tenantID string, b store.PolicyBundle, now time.Time)
 	return sv, nil
 }
 
-// compose builds the candidate bundle from the inputs, or nil when no bundle can be written (no
-// servable classifier release: ops.policy_bundle names one and the device requires one).
+// compose builds the candidate bundle from the inputs.
 func (s *Service) compose(in store.PolicyInputs) (*Bundle, error) {
-	if in.Classifier == nil {
-		return nil, nil
-	}
 	mode := protocol.CollectionMode(in.Tenant.CeilingMode)
 	if !mode.Valid() {
 		// The ceiling CHECK makes this unreachable from the database; refusing beats guessing.
@@ -273,10 +243,6 @@ func (s *Service) compose(in store.PolicyInputs) (*Bundle, error) {
 	if canary == "" && len(hosts) > 0 {
 		canary = hosts[0] + ":443"
 	}
-	state := in.Classifier.State
-	if state != "shadow" && state != "enforcing" && state != "rolled_back" {
-		return nil, fmt.Errorf("classifier release %q is in state %q, which a bundle cannot name", in.Classifier.Version, state)
-	}
 	return &Bundle{
 		TenantDefault: string(mode),
 		Interception: Interception{
@@ -285,9 +251,7 @@ func (s *Service) compose(in store.PolicyInputs) (*Bundle, error) {
 			ProxyListen: s.cfg.ProxyListen,
 			ProxyCanary: canary,
 		},
-		Classifier: ClassifierRelease{ReleaseID: in.Classifier.Version, State: state},
 		CLIShim: CLIShim{
-			Enabled:     true,
 			ProxyAddr:   s.cfg.ProxyListen,
 			Runtimes:    append([]string(nil), s.cfg.Runtimes...),
 			NoProxy:     append([]string(nil), s.cfg.NoProxy...),
@@ -296,11 +260,10 @@ func (s *Service) compose(in store.PolicyInputs) (*Bundle, error) {
 	}, nil
 }
 
-// mint signs the candidate as the next version. The version is the larger of the previous one plus
-// one and the current Unix time, so it is monotonic per tenant and also orders after a bundle the
-// lab's installer minted (sac-bundle versions are Unix seconds) -- a device moving from a lab
-// bundle to a served one sees an upgrade, never a regression it must refuse.
-func (s *Service) mint(tenantID string, latest *store.PolicyBundle, b Bundle, in store.PolicyInputs, now time.Time) (store.MintDecision, error) {
+// mint signs the candidate as the next version: the larger of the previous version plus one and
+// the current Unix time, so versions are monotonic per tenant and order after any bundle minted
+// earlier with a Unix-time version.
+func (s *Service) mint(tenantID string, latest *store.PolicyBundle, b Bundle, now time.Time) (store.MintDecision, error) {
 	version := now.Unix()
 	var previous int64
 	if latest != nil {
@@ -320,9 +283,6 @@ func (s *Service) mint(tenantID string, latest *store.PolicyBundle, b Bundle, in
 	// the audit trail and the schema's policy_bundle_digest_names_envelope check agree on.
 	sum := sha256.Sum256(envelope)
 	scope := map[string]any{"tenant_default": b.TenantDefault}
-	if len(b.ToolModes) > 0 {
-		scope["tool_modes"] = b.ToolModes
-	}
 	scopeJSON, err := json.Marshal(scope)
 	if err != nil {
 		return store.MintDecision{}, err
@@ -335,7 +295,7 @@ func (s *Service) mint(tenantID string, latest *store.PolicyBundle, b Bundle, in
 	if err != nil {
 		return store.MintDecision{}, err
 	}
-	featureJSON, err := json.Marshal(map[string]any{"cli_shim": b.CLIShim.Enabled, "proxy_tls": true})
+	featureJSON, err := json.Marshal(map[string]any{"cli_shim": true, "proxy_tls": true})
 	if err != nil {
 		return store.MintDecision{}, err
 	}
@@ -346,7 +306,6 @@ func (s *Service) mint(tenantID string, latest *store.PolicyBundle, b Bundle, in
 		DestinationAllowlist: allowJSON,
 		FeatureState:         featureJSON,
 		SpoolBounds:          json.RawMessage(`{}`),
-		ClassifierRelease:    in.Classifier.Version,
 		RetentionClass:       retentionClass,
 		SignatureKID:         s.cfg.KeyID,
 		SignedDigest:         "sha256:" + hex.EncodeToString(sum[:]),
@@ -366,7 +325,6 @@ func (s *Service) mint(tenantID string, latest *store.PolicyBundle, b Bundle, in
 			"previous_version":    previous,
 			"tenant_default_mode": b.TenantDefault,
 			"interception_hosts":  len(hosts),
-			"classifier_release":  in.Classifier.Version,
 			"signature_kid":       s.cfg.KeyID,
 			"signed_digest":       row.SignedDigest,
 		},

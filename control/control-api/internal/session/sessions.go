@@ -11,8 +11,8 @@ import (
 	"time"
 )
 
-// The contract's session bounds: a signed-in person is asked to sign in again after eight hours
-// whatever they do, and after an hour in which nothing asked for a token.
+// Session bounds: a signed-in person is asked to sign in again after eight hours whatever they do,
+// and after an hour in which nothing asked for a token.
 const (
 	MaxAge      = 8 * time.Hour
 	IdleTimeout = 1 * time.Hour
@@ -50,8 +50,8 @@ type Record struct {
 func (r Record) SID() string { return SID(r.Hash) }
 
 // Store is the persistence seam over ops.auth_session. The lookup by hash runs before any tenant is
-// known (the dashboard presents only the opaque id), so it goes through the contract's definer
-// function; every write is tenant-scoped under row-level security.
+// known (the dashboard presents only the opaque id), so it goes through a SECURITY DEFINER function;
+// every write is tenant-scoped under row-level security.
 type Store interface {
 	Create(ctx context.Context, rec Record) error
 	ByHash(ctx context.Context, hash []byte) (Record, error)
@@ -61,7 +61,7 @@ type Store interface {
 	SetRefresh(ctx context.Context, tenantID string, hash []byte, enc []byte, at time.Time) error
 }
 
-// ManagerConfig bounds sessions. Zero values take the contract's bounds; larger values are clamped
+// ManagerConfig bounds sessions. Zero values take MaxAge and IdleTimeout; larger values are clamped
 // to them, because the bounds are a security property rather than a preference.
 type ManagerConfig struct {
 	MaxAge time.Duration

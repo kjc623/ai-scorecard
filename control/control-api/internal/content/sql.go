@@ -8,24 +8,19 @@ import (
 	"time"
 )
 
-// The statements of the grant path. Like the rest of control-api's SQL they are constants, they are
-// tenant-scoped, and they run in a transaction whose session tenant is set first.
-//
-// As deployed, three of them need database grants the schema does not yet give `sac_control`: a read
-// of ingest.observation (the §5.5 "an observation of that device" check), an update of
-// ingest.submission.content_state, and a write of ops.usage_daily. The lab connects as the database
-// owner, so they run there; the grants are the remaining work for a least-privilege deployment.
+// The grant path's statements. Each runs in a transaction whose row-level-security tenant is set
+// first.
 const (
 	sqlSetTenant = `SELECT set_config('app.tenant_id', $1, true)`
 
 	// sqlEventContext reads the event as this device's observation, the submission it belongs to,
-	// and the tenant's ceiling and budget, in one row. No row means the tenant is unknown; a NULL
-	// kind means the device has no such event.
+	// and the tenant's ceiling, budget and content bytes so far today, in one row. No row means the
+	// tenant is unknown; a NULL kind means the device has no such event.
 	sqlEventContext = `
 SELECT t.ceiling_mode, t.content_budget_bytes_per_day,
        coalesce((SELECT u.content_bytes_added FROM ops.usage_daily u
                   WHERE u.tenant_id = t.tenant_id AND u.usage_day = (now() AT TIME ZONE 'utc')::date), 0),
-       o.kind, o.prompt_kind, o.collection_mode, o.expires_at, s.submission_id, s.content_state
+       o.kind, o.collection_mode, o.expires_at, s.submission_id::text, s.content_state
   FROM ops.tenant t
   LEFT JOIN ingest.observation o
          ON o.tenant_id = t.tenant_id AND o.event_id = $2::uuid AND o.device_id = $3::uuid
@@ -33,40 +28,23 @@ SELECT t.ceiling_mode, t.content_budget_bytes_per_day,
          ON s.tenant_id = o.tenant_id AND s.dedup_key = o.dedup_key
  WHERE t.tenant_id = $1::uuid`
 
-	// sqlLatestGrant is the most recent decision for the event.
 	sqlLatestGrant = `
-SELECT grant_id, event_id, coalesce(submission_id::text, ''), device_id, decision,
-       coalesce(denial_reason, ''), coalesce(object_id::text, ''), upload_expires_at
+SELECT ` + grantColumns + `
   FROM ops.grant
  WHERE tenant_id = $1::uuid AND event_id = $2::uuid
  ORDER BY requested_at DESC
  LIMIT 1`
 
 	sqlGrant = `
-SELECT grant_id, event_id, coalesce(submission_id::text, ''), device_id, decision,
-       coalesce(denial_reason, ''), coalesce(object_id::text, ''), upload_expires_at
+SELECT ` + grantColumns + `
   FROM ops.grant
  WHERE tenant_id = $1::uuid AND grant_id = $2::uuid`
 
 	sqlInsertGrant = `
 INSERT INTO ops.grant (tenant_id, grant_id, event_id, submission_id, device_id, decided_at, decision,
-                       denial_reason, object_id, upload_expires_at)
+                       denial_reason, expires_at)
 VALUES ($1::uuid, $2::uuid, $3::uuid, nullif($4, '')::uuid, $5::uuid, now(), $6,
-        nullif($7, ''), nullif($8, '')::uuid, $9::timestamptz)`
-
-	// sqlMarkLocalOnly records the one thing a grant request proves about content: the device
-	// holds it. Until a verified upload, that is where it is (docs/02 §3, ADR 0017).
-	sqlMarkLocalOnly = `
-UPDATE ingest.submission SET content_state = 'local_only'
- WHERE tenant_id = $1::uuid AND submission_id = nullif($2, '')::uuid AND content_state = 'not_captured'`
-
-	sqlVoidGrant = `
-UPDATE ops.grant SET decision = 'voided', decided_at = now()
- WHERE tenant_id = $1::uuid AND grant_id = $2::uuid AND decision = 'granted'`
-
-	sqlMarkUploaded = `
-UPDATE ingest.submission SET content_state = 'uploaded'
- WHERE tenant_id = $1::uuid AND submission_id = $2::uuid AND content_state IN ('not_captured', 'local_only')`
+        nullif($7, ''), $8::timestamptz)`
 
 	sqlAddContentUsage = `
 INSERT INTO ops.usage_daily (tenant_id, usage_day, content_bytes_added)
@@ -75,10 +53,23 @@ ON CONFLICT (tenant_id, usage_day) DO UPDATE
    SET content_bytes_added = ops.usage_daily.content_bytes_added + EXCLUDED.content_bytes_added`
 )
 
-// SQLStore is the database/sql implementation of Store.
+const grantColumns = `grant_id::text, event_id::text, coalesce(submission_id::text, ''), device_id::text, decision,
+       coalesce(denial_reason, ''), expires_at, used_at`
+
+// Statements is every statement the grant path issues, for the live test.
+var Statements = map[string]string{
+	"set_tenant":        sqlSetTenant,
+	"event_context":     sqlEventContext,
+	"latest_grant":      sqlLatestGrant,
+	"grant":             sqlGrant,
+	"insert_grant":      sqlInsertGrant,
+	"add_content_usage": sqlAddContentUsage,
+}
+
+// SQLStore is the PostgreSQL implementation of Store.
 type SQLStore struct{ db *sql.DB }
 
-// NewSQL wraps an open handle. The caller owns the driver, as with the enrolment store.
+// NewSQL wraps an open pool. The caller owns and closes it.
 func NewSQL(db *sql.DB) *SQLStore { return &SQLStore{db: db} }
 
 func (s *SQLStore) withTenant(ctx context.Context, tenantID string, fn func(tx *sql.Tx) error) error {
@@ -100,13 +91,13 @@ func (s *SQLStore) withTenant(ctx context.Context, tenantID string, fn func(tx *
 func (s *SQLStore) EventContext(ctx context.Context, tenantID, deviceID, eventID string) (*EventContext, error) {
 	ec := &EventContext{}
 	err := s.withTenant(ctx, tenantID, func(tx *sql.Tx) error {
-		var kind, promptKind, mode, submission, state sql.NullString
+		var kind, mode, submission, state sql.NullString
 		var expires sql.NullTime
 		err := tx.QueryRowContext(ctx, sqlEventContext, tenantID, eventID, deviceID).Scan(
 			&ec.CeilingMode, &ec.BudgetBytesPerDay, &ec.BytesAddedToday,
-			&kind, &promptKind, &mode, &expires, &submission, &state)
+			&kind, &mode, &expires, &submission, &state)
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil // unknown tenant: the event is not found either
+			return nil
 		}
 		if err != nil {
 			return fmt.Errorf("content: event context: %w", err)
@@ -116,8 +107,7 @@ func (s *SQLStore) EventContext(ctx context.Context, tenantID, deviceID, eventID
 		}
 		ec.Found = true
 		ec.Kind, ec.CollectionMode, ec.ExpiresAt = kind.String, mode.String, expires.Time
-		ec.PromptKind, ec.SubmissionID, ec.ContentState = promptKind.String, submission.String, state.String
-
+		ec.SubmissionID, ec.ContentState = submission.String, state.String
 		g, err := scanGrant(tx.QueryRowContext(ctx, sqlLatestGrant, tenantID, eventID))
 		if err != nil && !errors.Is(err, ErrGrantUnknown) {
 			return err
@@ -144,15 +134,19 @@ func (s *SQLStore) Grant(ctx context.Context, tenantID, grantID string) (*Grant,
 
 func scanGrant(row *sql.Row) (*Grant, error) {
 	var g Grant
-	var expires sql.NullTime
-	err := row.Scan(&g.GrantID, &g.EventID, &g.SubmissionID, &g.DeviceID, &g.Decision, &g.DenialReason, &g.ObjectID, &expires)
+	var expires, used sql.NullTime
+	err := row.Scan(&g.GrantID, &g.EventID, &g.SubmissionID, &g.DeviceID, &g.Decision, &g.DenialReason, &expires, &used)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrGrantUnknown
 	}
 	if err != nil {
-		return nil, fmt.Errorf("content: reading grant: %w", err)
+		return nil, fmt.Errorf("content: read grant: %w", err)
 	}
-	g.UploadExpiresAt = expires.Time
+	g.ExpiresAt = expires.Time
+	if used.Valid {
+		t := used.Time
+		g.UsedAt = &t
+	}
 	return &g, nil
 }
 
@@ -160,39 +154,22 @@ func scanGrant(row *sql.Row) (*Grant, error) {
 func (s *SQLStore) InsertGrant(ctx context.Context, tenantID string, g Grant) error {
 	return s.withTenant(ctx, tenantID, func(tx *sql.Tx) error {
 		var expires any
-		if !g.UploadExpiresAt.IsZero() {
-			expires = g.UploadExpiresAt.Format(time.RFC3339Nano)
+		if !g.ExpiresAt.IsZero() {
+			expires = g.ExpiresAt.UTC().Format(time.RFC3339Nano)
 		}
-		_, err := tx.ExecContext(ctx, sqlInsertGrant, tenantID, g.GrantID, g.EventID, g.SubmissionID, g.DeviceID,
-			g.Decision, g.DenialReason, g.ObjectID, expires)
-		if err != nil {
-			return fmt.Errorf("content: recording grant: %w", err)
-		}
-		if _, err := tx.ExecContext(ctx, sqlMarkLocalOnly, tenantID, g.SubmissionID); err != nil {
-			return fmt.Errorf("content: marking submission local_only: %w", err)
+		if _, err := tx.ExecContext(ctx, sqlInsertGrant, tenantID, g.GrantID, g.EventID, g.SubmissionID, g.DeviceID,
+			g.Decision, g.DenialReason, expires); err != nil {
+			return fmt.Errorf("content: record grant: %w", err)
 		}
 		return nil
 	})
 }
 
-// VoidGrant implements Store.
-func (s *SQLStore) VoidGrant(ctx context.Context, tenantID, grantID string) error {
+// AddContentUsage implements Store.
+func (s *SQLStore) AddContentUsage(ctx context.Context, tenantID string, bytes int64) error {
 	return s.withTenant(ctx, tenantID, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, sqlVoidGrant, tenantID, grantID)
-		return err
-	})
-}
-
-// RecordUpload implements Store: the content-state transition and the usage counter move together.
-func (s *SQLStore) RecordUpload(ctx context.Context, tenantID, submissionID string, bytes int64) error {
-	return s.withTenant(ctx, tenantID, func(tx *sql.Tx) error {
-		if submissionID != "" {
-			if _, err := tx.ExecContext(ctx, sqlMarkUploaded, tenantID, submissionID); err != nil {
-				return fmt.Errorf("content: marking submission uploaded: %w", err)
-			}
-		}
 		if _, err := tx.ExecContext(ctx, sqlAddContentUsage, tenantID, bytes); err != nil {
-			return fmt.Errorf("content: recording content usage: %w", err)
+			return fmt.Errorf("content: record content usage: %w", err)
 		}
 		return nil
 	})

@@ -5,8 +5,6 @@ import (
 	"testing"
 
 	"github.com/shadow-ai-capture/device/protocol"
-
-	"github.com/shadow-ai-capture/control-api/internal/directory"
 )
 
 // Okta's SCIM 2.0 client shapes (Okta's "SCIM 2.0 protocol reference" requests): a paged probe,
@@ -78,7 +76,7 @@ func TestOktaProvisioningLifecycle(t *testing.T) {
 	  "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User": {"department": "Sales"},
 	  "meta": {"resourceType": "User"}}`)
 	dim := h.dim(tenantA, upnRef)
-	if deref(dim.Department) != "Sales" || deref(dim.DisplayName) != "Another User" || dim.Status != directory.StatusActive {
+	if deref(dim.Department) != "Sales" || deref(dim.DisplayName) != "Another User" || dim.Status != DimActive {
 		t.Fatalf("user_dim after PUT = %s / %s / %s", deref(dim.Department), deref(dim.DisplayName), dim.Status)
 	}
 
@@ -91,7 +89,7 @@ func TestOktaProvisioningLifecycle(t *testing.T) {
 	if got["active"] != false || got["password"] != nil {
 		t.Fatalf("after deactivate + password = %v", got)
 	}
-	if h.dim(tenantA, upnRef).Status != directory.StatusInactive {
+	if h.dim(tenantA, upnRef).Status != DimInactive {
 		t.Fatal("deactivation did not reach user_dim")
 	}
 
@@ -326,14 +324,14 @@ func TestReusedUserNameMovesItsAliasAndKeepsPeopleApart(t *testing.T) {
 	}
 }
 
-func TestPopulationAttributeAndBadRequests(t *testing.T) {
-	h := newHarness(t, Config{PopulationAttribute: "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User:division"})
+func TestBadRequests(t *testing.T) {
+	h := newHarness(t, Config{})
 	tok, _ := h.token(tenantA)
 	id := str(h.mustDo(201, "POST", "/scim/v2/Users", tok, map[string]any{"userName": "pop@contoso.com",
 		SchemaEnterpriseUser: map[string]any{"division": "Contractors"}})["id"])
 	ref := h.storedUser(tenantA, id).UserRef
-	if d := h.dim(tenantA, ref); deref(d.Population) != "Contractors" || d.Department != nil {
-		t.Fatalf("population = %s, department = %s", deref(d.Population), deref(d.Department))
+	if d := h.dim(tenantA, ref); d.Department != nil {
+		t.Fatalf("department = %s", deref(d.Department))
 	}
 
 	for name, body := range map[string]string{

@@ -2,282 +2,353 @@ package httpapi_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/x509"
-	"encoding/base64"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/shadow-ai-capture/device/protocol"
 
+	"github.com/shadow-ai-capture/control-api/internal/apierr"
+	"github.com/shadow-ai-capture/control-api/internal/content"
+	"github.com/shadow-ai-capture/control-api/internal/deviceca/devicecatest"
 	"github.com/shadow-ai-capture/control-api/internal/enrol"
+	"github.com/shadow-ai-capture/control-api/internal/health"
 	"github.com/shadow-ai-capture/control-api/internal/httpapi"
-	"github.com/shadow-ai-capture/control-api/internal/jose"
-	"github.com/shadow-ai-capture/control-api/internal/signer"
+	"github.com/shadow-ai-capture/control-api/internal/policyserve"
 	"github.com/shadow-ai-capture/control-api/internal/store"
-	"github.com/shadow-ai-capture/control-api/internal/token"
+	"github.com/shadow-ai-capture/control-api/internal/store/storetest"
 )
 
 const (
-	tenantID = "11111111-1111-7111-8111-111111111111"
-	deviceID = "33333333-3333-7333-8333-333333333333"
-	credID   = "44444444-4444-7444-8444-444444444444"
+	tenantID = "5a3c0de0-7e57-4a11-9000-0000000d3a01"
+	eventID  = "66666666-6666-4666-8666-666666666666"
+	region   = "eu-west"
 )
 
-var fixedNow = time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
 
-// harness wires the two services and the store behind an httptest server.
-type harness struct {
-	srv       *httptest.Server
-	store     *store.Memory
-	deviceKey *ecdsa.PrivateKey
-	jwk       protocol.JWK
-	token     *enrolToken
+// contentStore is a content.Store with one M3 event observed by one device.
+type contentStore struct {
+	device string
+	grants map[string]content.Grant
 }
 
-type enrolToken struct {
-	plaintext string
-	tenant    string
+func (c *contentStore) EventContext(_ context.Context, _, deviceID, _ string) (*content.EventContext, error) {
+	ec := &content.EventContext{CeilingMode: "m3", BudgetBytesPerDay: 1 << 20}
+	if deviceID == c.device {
+		ec.Found, ec.Kind, ec.CollectionMode, ec.ContentState = true, "prompt", "m3", "local_only"
+	}
+	return ec, nil
+}
+
+func (c *contentStore) InsertGrant(_ context.Context, _ string, g content.Grant) error {
+	c.grants[g.GrantID] = g
+	return nil
+}
+
+func (c *contentStore) Grant(_ context.Context, _, id string) (*content.Grant, error) {
+	g, ok := c.grants[id]
+	if !ok {
+		return nil, content.ErrGrantUnknown
+	}
+	return &g, nil
+}
+
+func (c *contentStore) AddContentUsage(context.Context, string, int64) error { return nil }
+
+type vault struct{ bodies [][]byte }
+
+func (v *vault) Put(_ context.Context, _, _, _, _ string, body []byte) (bool, error) {
+	v.bodies = append(v.bodies, body)
+	return true, nil
+}
+
+type harness struct {
+	t       *testing.T
+	store   *storetest.Memory
+	ca      *devicecatest.Authority
+	content *contentStore
+	vault   *vault
+	handler http.Handler
+	key     string
 }
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	st := store.NewMemory()
-	st.SetNow(func() time.Time { return fixedNow })
-	st.AddTenant(store.Tenant{TenantID: tenantID, Status: "active", IngestEnabled: true, ResidencyRegion: "eu-west"})
-
-	deviceKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	st := storetest.New()
+	st.AddTenant(store.Tenant{TenantID: tenantID, Status: "active", IngestEnabled: true, ResidencyRegion: region})
+	st.SetCeiling(tenantID, "m3")
+	st.SetCatalogueHosts("api.anthropic.com")
+	ca := devicecatest.New(t)
+	enrolSvc, err := enrol.New(st, ca.CA, enrol.Config{Region: region})
 	if err != nil {
-		t.Fatalf("device key: %v", err)
+		t.Fatal(err)
 	}
-	jwk, err := jose.JWKFromPublic(&deviceKey.PublicKey)
+	healthSvc, err := health.New(st, health.Config{})
 	if err != nil {
-		t.Fatalf("device jwk: %v", err)
+		t.Fatal(err)
 	}
-	thumb, _ := jwk.Thumbprint()
-	jwkJSON, _ := json.Marshal(jwk)
-	st.AddDevice(store.Device{TenantID: tenantID, DeviceID: deviceID, OS: "windows"})
-	st.AddCredential(store.Credential{
-		TenantID: tenantID, CredentialID: credID, DeviceID: deviceID,
-		Type: protocol.AuthModeDPoP, PublicKeyThumbprint: thumb, PublicKeyJWK: jwkJSON,
-		IssuedAt: fixedNow, ExpiresAt: fixedNow.Add(90 * 24 * time.Hour),
-	})
-
-	ca, err := signer.NewLocalCA(nil, nil, 90*24*time.Hour, []string{"ingest.eu.example.com"})
+	_, signingKey, _ := ed25519.GenerateKey(rand.Reader)
+	policySvc, err := policyserve.New(st, signingKey, policyserve.Config{Logger: quiet})
 	if err != nil {
-		t.Fatalf("NewLocalCA: %v", err)
+		t.Fatal(err)
 	}
-	enrolSvc, err := enrol.New(st, ca, enrol.Config{Region: "eu-west", Now: func() time.Time { return fixedNow }})
+	cs, v := &contentStore{grants: map[string]content.Grant{}}, &vault{}
+	contentSvc, err := content.New(cs, v)
 	if err != nil {
-		t.Fatalf("enrol.New: %v", err)
+		t.Fatal(err)
 	}
-	signKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	tokenSvc, err := token.New(st, signKey, token.Config{
-		Issuer: "https://control.eu.example.com", Audience: "ingest", Region: "eu-west",
-		Now: func() time.Time { return fixedNow },
-	})
-	if err != nil {
-		t.Fatalf("token.New: %v", err)
+	h := &harness{t: t, store: st, ca: ca, content: cs, vault: v}
+	keyID, _ := store.NewUUID()
+	if h.key, err = enrol.MintDeploymentKey(tenantID); err != nil {
+		t.Fatal(err)
 	}
-	verifier, _ := token.NewVerifier(&signKey.PublicKey, "https://control.eu.example.com", "ingest", func() time.Time { return fixedNow })
-	server := httpapi.New(enrolSvc, tokenSvc, verifier, st, nil)
-	server.Now = func() time.Time { return fixedNow }
-	ts := httptest.NewServer(server.Handler())
-	t.Cleanup(ts.Close)
-
-	h := &harness{srv: ts, store: st, deviceKey: deviceKey, jwk: jwk}
-	h.token = h.addToken(t)
+	st.AddDeploymentKey(store.DeploymentKey{KeyID: keyID, TenantID: tenantID, KeyHash: enrol.HashDeploymentKey(h.key), CreatedAt: time.Now()})
+	srv := &httpapi.Server{
+		Store: st, CA: ca.CA, Enrol: enrolSvc, Health: healthSvc, Policy: policySvc, Content: contentSvc, Logger: quiet,
+	}
+	h.handler = srv.Handler()
 	return h
 }
 
-func (h *harness) addToken(t *testing.T) *enrolToken {
-	t.Helper()
-	plaintext, err := enrol.MintEnrolmentToken(tenantID)
-	if err != nil {
-		t.Fatalf("mint token: %v", err)
+func (h *harness) do(method, path, certHeader string, body []byte, headers map[string]string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, bytes.NewReader(body))
+	if certHeader != "" {
+		req.Header.Set(protocol.HeaderClientCert, certHeader)
 	}
-	h.store.AddEnrolmentToken(store.EnrolmentToken{
-		TenantID: tenantID, TokenHash: enrol.HashEnrolmentToken(plaintext),
-		IssuedAt: fixedNow, ExpiresAt: fixedNow.Add(time.Hour),
-	})
-	return &enrolToken{plaintext: plaintext, tenant: tenantID}
-}
-
-func postJSON(t *testing.T, url string, body any, headers map[string]string) (*http.Response, []byte) {
-	t.Helper()
-	b, err := json.Marshal(body)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(b))
-	if err != nil {
-		t.Fatalf("new request: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("do: %v", err)
-	}
-	defer resp.Body.Close()
-	var buf bytes.Buffer
-	if _, err := buf.ReadFrom(resp.Body); err != nil {
-		t.Fatalf("read body: %v", err)
-	}
-	return resp, buf.Bytes()
+	rec := httptest.NewRecorder()
+	h.handler.ServeHTTP(rec, req)
+	return rec
 }
 
-func makeCSR(t *testing.T) string {
+func enrolment(t *testing.T, key, hwid string) []byte {
 	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("key: %v", err)
-	}
-	der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{SignatureAlgorithm: x509.ECDSAWithSHA256}, key)
-	if err != nil {
-		t.Fatalf("CSR: %v", err)
-	}
-	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der}))
+	b, _ := json.Marshal(protocol.EnrolmentRequest{
+		SchemaVersion: protocol.EnrolmentSchemaVersion,
+		DeploymentKey: key,
+		CSR:           devicecatest.NewDeviceKey(t).CSRPEM,
+		Device:        protocol.DeviceInfo{OS: "windows", AgentVersion: "1.0.0", HardwareIdentityHash: hwid},
+	})
+	return b
 }
 
-// TestEnrolEndToEnd drives the transport: a valid x509 enrolment returns 200 with a credential, and a
-// reused token returns a §5 error envelope with a code and server_time.
-func TestEnrolEndToEnd(t *testing.T) {
-	h := newHarness(t)
-	body := protocol.EnrolmentRequest{
-		SchemaVersion:  protocol.EnrolmentSchemaVersion,
-		EnrolmentToken: h.token.plaintext,
-		Mode:           protocol.AuthModeX509,
-		CSR:            makeCSR(t),
-		Device:         protocol.DeviceInfo{OS: "windows", AgentVersion: "1.0", HardwareIdentityHash: "hw-http"},
+// enrol enrols a device with the deployment key and returns its response and its certificate as
+// the gateway forwards it.
+func (h *harness) enrol(hwid string) (protocol.EnrolmentResponse, string) {
+	h.t.Helper()
+	rec := h.do(http.MethodPost, "/v1/enrol", "", enrolment(h.t, h.key, hwid), nil)
+	if rec.Code != http.StatusOK {
+		h.t.Fatalf("enrol: %d %s", rec.Code, rec.Body.String())
 	}
-	resp, raw := postJSON(t, h.srv.URL+"/v1/enrol", body, nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", resp.StatusCode, raw)
+	var resp protocol.EnrolmentResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		h.t.Fatal(err)
 	}
-	var out protocol.EnrolmentResponse
-	if err := json.Unmarshal(raw, &out); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if out.DeviceID == "" || out.Credential.CertPEM == "" {
-		t.Fatalf("response = %+v, want a device id and a certificate", out)
-	}
+	return resp, url.QueryEscape(resp.Credential.CertPEM)
+}
 
-	resp, raw = postJSON(t, h.srv.URL+"/v1/enrol", body, nil)
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("reused token status = %d, want 401; body = %s", resp.StatusCode, raw)
-	}
-	var errEnv struct {
+func errorCode(rec *httptest.ResponseRecorder) string {
+	var e struct {
 		Error struct {
-			Code       string    `json:"code"`
-			ServerTime time.Time `json:"server_time"`
+			Code string `json:"code"`
 		} `json:"error"`
 	}
-	if err := json.Unmarshal(raw, &errEnv); err != nil {
-		t.Fatalf("decode error envelope: %v", err)
-	}
-	if errEnv.Error.Code == "" || errEnv.Error.ServerTime.IsZero() {
-		t.Fatalf("error envelope = %s, want a code and server_time", raw)
-	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &e)
+	return e.Error.Code
 }
 
-// TestTokenEndToEnd drives the token transport: a valid assertion and proof return a DPoP token, and
-// a bad proof returns 401 in the common envelope.
-func TestTokenEndToEnd(t *testing.T) {
-	h := newHarness(t)
-	htu := h.srv.URL + "/v1/token"
-
-	header := map[string]any{"alg": jose.AlgES256, "typ": "JWT"}
-	assertionClaims := map[string]any{
-		"sub": deviceID, "tenant_id": tenantID,
-		"iat": fixedNow.Unix(), "exp": fixedNow.Add(time.Hour).Unix(),
-	}
-	assertion, err := jose.SignES256(header, assertionClaims, h.deviceKey)
-	if err != nil {
-		t.Fatalf("sign assertion: %v", err)
-	}
-	proofHeader := map[string]any{"typ": jose.TypDPoP, "alg": jose.AlgES256, "jwk": h.jwk}
-	proofClaims := map[string]any{"htm": "POST", "htu": htu, "iat": fixedNow.Unix(), "jti": "jti-http"}
-	proof, _ := jose.SignES256(proofHeader, proofClaims, h.deviceKey)
-
-	body := protocol.TokenRequest{GrantType: token.GrantTypeJWTBearer, Assertion: assertion}
-	resp, raw := postJSON(t, htu, body, map[string]string{protocol.HeaderDPoP: proof})
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", resp.StatusCode, raw)
-	}
-	var out protocol.TokenResponse
-	if err := json.Unmarshal(raw, &out); err != nil {
-		t.Fatalf("decode token response: %v", err)
-	}
-	if err := out.Validate(); err != nil {
-		t.Fatalf("token response does not validate: %v", err)
-	}
-
-	// A proof bound to the wrong URL is refused.
-	badProof, _ := jose.SignES256(proofHeader, map[string]any{"htm": "POST", "htu": "https://evil/v1/token", "iat": fixedNow.Unix(), "jti": "jti-http-bad"}, h.deviceKey)
-	resp, raw = postJSON(t, htu, body, map[string]string{protocol.HeaderDPoP: badProof})
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("bad proof status = %d, want 401; body = %s", resp.StatusCode, raw)
-	}
-}
-
-// TestReenrolmentWithAccessToken drives the dpop re-enrolment path: the current credential is
-// presented as the access token plus a proof, not as a bootstrap token.
-func TestReenrolmentWithAccessToken(t *testing.T) {
-	h := newHarness(t)
-	htu := h.srv.URL + "/v1/token"
-	header := map[string]any{"alg": jose.AlgES256, "typ": "JWT"}
-	assertion, _ := jose.SignES256(header, map[string]any{
-		"sub": deviceID, "tenant_id": tenantID,
-		"iat": fixedNow.Unix(), "exp": fixedNow.Add(time.Hour).Unix(),
-	}, h.deviceKey)
-	proof, _ := jose.SignES256(
-		map[string]any{"typ": jose.TypDPoP, "alg": jose.AlgES256, "jwk": h.jwk},
-		map[string]any{"htm": "POST", "htu": htu, "iat": fixedNow.Unix(), "jti": "jti-reenrol"},
-		h.deviceKey)
-	_, raw := postJSON(t, htu, protocol.TokenRequest{GrantType: token.GrantTypeJWTBearer, Assertion: assertion},
-		map[string]string{protocol.HeaderDPoP: proof})
-	var tok protocol.TokenResponse
-	if err := json.Unmarshal(raw, &tok); err != nil {
-		t.Fatalf("decode token: %v", err)
-	}
-
-	enrolHTU := h.srv.URL + "/v1/enrol"
-	// The one proof header authenticates the *current* credential: it is bound to the access token
-	// through `ath` and keyed by the registered device key, which is also the key a re-enrolment
-	// must re-register.
-	sum := sha256.Sum256([]byte(tok.AccessToken))
-	ath := base64.RawURLEncoding.EncodeToString(sum[:])
-	enrolProof, _ := jose.SignES256(
-		map[string]any{"typ": jose.TypDPoP, "alg": jose.AlgES256, "jwk": h.jwk},
-		map[string]any{"htm": "POST", "htu": enrolHTU, "iat": fixedNow.Unix(), "jti": "jti-enrol-proof", "ath": ath},
-		h.deviceKey)
-	resp, raw := postJSON(t, enrolHTU, protocol.EnrolmentRequest{
-		SchemaVersion: protocol.EnrolmentSchemaVersion,
-		Mode:          protocol.AuthModeDPoP,
-		JWK:           &h.jwk,
-		Device:        protocol.DeviceInfo{OS: "windows", HardwareIdentityHash: "hw-http"},
-	}, map[string]string{
-		protocol.HeaderAuthorization: "DPoP " + tok.AccessToken,
-		protocol.HeaderDPoP:          enrolProof,
+func healthReport() []byte {
+	b, _ := json.Marshal(protocol.HealthRequest{
+		SchemaVersion: protocol.HealthSchemaVersion, ReportedAt: time.Now(), AgentVersion: "1.0.0",
+		Collectors: []protocol.HealthReport{{Collector: "egress_proxy", State: protocol.StateHealthy}},
 	})
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("re-enrolment status = %d, want 200; body = %s", resp.StatusCode, raw)
+	return b
+}
+
+func grantRequest() []byte {
+	b, _ := json.Marshal(protocol.ContentGrantRequest{
+		SchemaVersion: protocol.ContentGrantSchemaVersion, EventID: eventID, CollectionMode: protocol.ModeM3,
+		ContentDigest: "sha256:" + strings.Repeat("a", 64), SizeBytes: 10, RawSizeBytes: 10,
+	})
+	return b
+}
+
+func TestEnrolThenRotateWithTheForwardedCertificate(t *testing.T) {
+	h := newHarness(t)
+	first, cert := h.enrol("hw-1")
+
+	rec := h.do(http.MethodPost, "/v1/enrol", cert, enrolment(t, "", "hw-1"), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rotation: %d %s", rec.Code, rec.Body.String())
 	}
-	var out protocol.EnrolmentResponse
-	if err := json.Unmarshal(raw, &out); err != nil {
-		t.Fatalf("decode: %v", err)
+	var rotated protocol.EnrolmentResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &rotated)
+	if rotated.DeviceID != first.DeviceID || !rotated.Reenrolled || rotated.Credential.CertPEM == first.Credential.CertPEM {
+		t.Fatalf("rotation = %+v", rotated)
 	}
-	if !out.Reenrolled || out.DeviceID != deviceID {
-		t.Fatalf("re-enrolment = %+v, want reenrolled on the existing device %s", out, deviceID)
+	// The rotated-away certificate no longer authenticates; the new one does.
+	if rec := h.do(http.MethodPost, "/v1/health", cert, healthReport(), nil); rec.Code != http.StatusUnauthorized || errorCode(rec) != apierr.CodeRevokedDevice {
+		t.Fatalf("the previous certificate: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := h.do(http.MethodPost, "/v1/health", url.QueryEscape(rotated.Credential.CertPEM), healthReport(), nil); rec.Code != http.StatusOK {
+		t.Fatalf("the rotated certificate: %d %s", rec.Code, rec.Body.String())
+	}
+	// A rotation without any credential is refused.
+	if rec := h.do(http.MethodPost, "/v1/enrol", "", enrolment(t, "", "hw-1"), nil); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("no credential: %d", rec.Code)
+	}
+}
+
+func TestDeviceRoutesWithTheForwardedCertificate(t *testing.T) {
+	h := newHarness(t)
+	resp, cert := h.enrol("hw-routes")
+	h.content.device = resp.DeviceID
+
+	if rec := h.do(http.MethodPost, "/v1/health", cert, healthReport(), nil); rec.Code != http.StatusOK {
+		t.Fatalf("health: %d %s", rec.Code, rec.Body.String())
+	}
+	if _, ok := h.store.CollectorStateAt(tenantID, resp.DeviceID, "egress_proxy"); !ok {
+		t.Fatal("the health report was not recorded against the certificate's device")
+	}
+
+	rec := h.do(http.MethodGet, "/v1/policy", cert, nil, nil)
+	if rec.Code != http.StatusOK || rec.Header().Get(protocol.HeaderETag) == "" {
+		t.Fatalf("policy: %d %s", rec.Code, rec.Body.String())
+	}
+	if again := h.do(http.MethodGet, "/v1/policy", cert, nil, map[string]string{protocol.HeaderIfNoneMatch: rec.Header().Get(protocol.HeaderETag)}); again.Code != http.StatusNotModified {
+		t.Fatalf("policy with a matching ETag: %d", again.Code)
+	}
+
+	rec = h.do(http.MethodPost, "/v1/content/grant", cert, grantRequest(), nil)
+	var grant protocol.ContentGrantResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &grant)
+	if rec.Code != http.StatusOK || grant.State != protocol.ContentGrantGranted {
+		t.Fatalf("grant: %d %s", rec.Code, rec.Body.String())
+	}
+	body := []byte(`{"prompt":"hello"}`)
+	rec = h.do(http.MethodPost, protocol.ContentUploadPath, cert, body, map[string]string{
+		protocol.HeaderContentGrantID:   grant.GrantID,
+		protocol.HeaderContentEventID:   eventID,
+		protocol.HeaderContentRawDigest: protocol.RawDigest(body),
+	})
+	if rec.Code != http.StatusOK || len(h.vault.bodies) != 1 || !bytes.Equal(h.vault.bodies[0], body) {
+		t.Fatalf("upload: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// Every route that relies on the forwarded certificate refuses one that does not verify against
+// the device CA or does not match the device's live credential.
+func TestForwardedCertificateIsVerified(t *testing.T) {
+	h := newHarness(t)
+	resp, good := h.enrol("hw-verify")
+	leaf, _ := pem.Decode([]byte(resp.Credential.CertPEM))
+	issued, _ := x509.ParseCertificate(leaf.Bytes)
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	subject := pkix.Name{CommonName: resp.DeviceID, OrganizationalUnit: []string{tenantID}}
+	tmpl := func(mutate func(*x509.Certificate)) *x509.Certificate {
+		c := &x509.Certificate{
+			Subject: subject, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+			KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		}
+		if mutate != nil {
+			mutate(c)
+		}
+		return c
+	}
+	forward := func(c *x509.Certificate) string {
+		return url.QueryEscape(string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: c.Raw})))
+	}
+	other := devicecatest.New(t)
+	cases := map[string]struct{ header, code string }{
+		"no certificate": {"", apierr.CodeUnauthenticated},
+		"not PEM":        {"garbage", apierr.CodeInvalidClientCert},
+		"another CA":     {forward(other.Leaf(t, tmpl(nil), &key.PublicKey)), apierr.CodeInvalidClientCert},
+		"expired": {forward(h.ca.Leaf(t, tmpl(func(c *x509.Certificate) {
+			c.NotBefore, c.NotAfter = time.Now().Add(-48*time.Hour), time.Now().Add(-24*time.Hour)
+		}), &key.PublicKey)), apierr.CodeInvalidClientCert},
+		"not client auth": {forward(h.ca.Leaf(t, tmpl(func(c *x509.Certificate) {
+			c.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
+		}), &key.PublicKey)), apierr.CodeInvalidClientCert},
+		"no tenant": {forward(h.ca.Leaf(t, tmpl(func(c *x509.Certificate) {
+			c.Subject = pkix.Name{CommonName: resp.DeviceID}
+		}), &key.PublicKey)), apierr.CodeInvalidClientCert},
+		"CA-signed but never issued": {forward(h.ca.Leaf(t, tmpl(nil), &key.PublicKey)), apierr.CodeRevokedDevice},
+	}
+	routes := []struct {
+		method, path string
+		body         []byte
+	}{
+		{http.MethodPost, "/v1/health", healthReport()},
+		{http.MethodGet, "/v1/policy", nil},
+		{http.MethodPost, "/v1/content/grant", grantRequest()},
+		{http.MethodPost, protocol.ContentUploadPath, []byte("x")},
+		{http.MethodPost, "/v1/enrol", enrolment(t, "", "hw-verify")},
+	}
+	for name, c := range cases {
+		for _, r := range routes {
+			rec := h.do(r.method, r.path, c.header, r.body, nil)
+			if rec.Code != http.StatusUnauthorized || errorCode(rec) != c.code {
+				t.Errorf("%s %s: %d %s, want 401 %s", name, r.path, rec.Code, errorCode(rec), c.code)
+			}
+		}
+	}
+	if len(h.vault.bodies) != 0 {
+		t.Fatal("a refused certificate reached content-vault")
+	}
+
+	// Both percent encodings of the PEM are accepted, as is the raw PEM.
+	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: issued.Raw}))
+	for name, header := range map[string]string{
+		"query escaped": good,
+		"path escaped":  url.PathEscape(pemText),
+	} {
+		if rec := h.do(http.MethodPost, "/v1/health", header, healthReport(), nil); rec.Code != http.StatusOK {
+			t.Errorf("%s: %d %s", name, rec.Code, rec.Body.String())
+		}
+	}
+
+	// A revoked credential no longer authenticates.
+	h.store.RevokeCredential(tenantID, protocol.CredentialID(issued.Raw), time.Now())
+	if rec := h.do(http.MethodPost, "/v1/health", good, healthReport(), nil); rec.Code != http.StatusUnauthorized || errorCode(rec) != apierr.CodeRevokedDevice {
+		t.Fatalf("revoked credential: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestBodiesAreCapped(t *testing.T) {
+	h := newHarness(t)
+	resp, cert := h.enrol("hw-caps")
+	h.content.device = resp.DeviceID
+	if rec := h.do(http.MethodPost, "/v1/enrol", "", bytes.Repeat([]byte("a"), httpapi.MaxBodyBytes+1), nil); rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized enrolment: %d", rec.Code)
+	}
+	big := bytes.Repeat([]byte("a"), protocol.MaxContentObjectBytes+1)
+	if rec := h.do(http.MethodPost, protocol.ContentUploadPath, cert, big, nil); rec.Code != http.StatusRequestEntityTooLarge || errorCode(rec) != string(protocol.ReasonOversize) {
+		t.Fatalf("oversized upload: %d %s", rec.Code, errorCode(rec))
+	}
+}
+
+func TestProbes(t *testing.T) {
+	h := newHarness(t)
+	for _, path := range []string{"/healthz", "/readyz"} {
+		if rec := h.do(http.MethodGet, path, "", nil, nil); rec.Code != http.StatusOK {
+			t.Errorf("%s: %d", path, rec.Code)
+		}
 	}
 }

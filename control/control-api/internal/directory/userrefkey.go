@@ -3,13 +3,14 @@ package directory
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"sync"
 
 	"github.com/shadow-ai-capture/device/protocol"
 )
 
-// The tenant's user-reference key (contract §1, §4; protocol.DeriveUserRef).
+// The tenant's user-reference key (protocol.DeriveUserRef).
 //
 // Every device in a tenant derives each person's pseudonymous user_ref under this key, and the SCIM
 // side derives the same value from what the customer's identity provider sends, so the two meet
@@ -23,6 +24,9 @@ import (
 // does not yield it. Devices receive it in the clear inside the enrolment response; that is the
 // design (a device must compute refs offline), and it is why the ref is a pseudonym rather than a
 // secret.
+
+// ErrUnknownTenant is returned by a UserRefKeyStore when the tenant does not exist.
+var ErrUnknownTenant = errors.New("directory: tenant unknown")
 
 // UserRefKeyStore is the persistence seam for the key. Both methods are tenant-scoped.
 type UserRefKeyStore interface {
@@ -91,42 +95,4 @@ func clone(b []byte) []byte {
 	out := make([]byte, len(b))
 	copy(out, b)
 	return out
-}
-
-// MemoryKeyStore is the in-memory UserRefKeyStore, for control-api's -store memory and for tests.
-// Tenants are created on first sight unless Known is set, because the memory store has no tenant
-// table to consult.
-type MemoryKeyStore struct {
-	mu     sync.Mutex
-	sealed map[string][]byte
-	// Known, when non-nil, restricts the store to these tenants; any other is ErrUnknownTenant.
-	Known map[string]bool
-}
-
-// NewMemoryKeyStore returns an empty store that accepts any tenant.
-func NewMemoryKeyStore() *MemoryKeyStore {
-	return &MemoryKeyStore{sealed: map[string][]byte{}}
-}
-
-// SealedUserRefKey implements UserRefKeyStore.
-func (m *MemoryKeyStore) SealedUserRefKey(_ context.Context, tenantID string) ([]byte, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.Known != nil && !m.Known[tenantID] {
-		return nil, ErrUnknownTenant
-	}
-	return clone(m.sealed[tenantID]), nil
-}
-
-// InitUserRefKey implements UserRefKeyStore.
-func (m *MemoryKeyStore) InitUserRefKey(_ context.Context, tenantID string, sealed []byte) ([]byte, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.Known != nil && !m.Known[tenantID] {
-		return nil, ErrUnknownTenant
-	}
-	if len(m.sealed[tenantID]) == 0 {
-		m.sealed[tenantID] = clone(sealed)
-	}
-	return clone(m.sealed[tenantID]), nil
 }

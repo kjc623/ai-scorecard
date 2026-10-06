@@ -6,8 +6,6 @@ import (
 	"testing"
 
 	"github.com/shadow-ai-capture/device/protocol"
-
-	"github.com/shadow-ai-capture/control-api/internal/directory"
 )
 
 // The request bodies below are the shapes Microsoft Entra ID's provisioning service sends (Microsoft's
@@ -70,7 +68,7 @@ func TestEntraProvisioningLifecycle(t *testing.T) {
 	}
 
 	dim := h.dim(tenantA, vectorUPN)
-	if deref(dim.Department) != "Engineering" || deref(dim.DisplayName) != "Ada Lovelace" || dim.Status != directory.StatusActive {
+	if deref(dim.Department) != "Engineering" || deref(dim.DisplayName) != "Ada Lovelace" || dim.Status != DimActive {
 		t.Fatalf("user_dim = dept %s, name %s, status %s", deref(dim.Department), deref(dim.DisplayName), dim.Status)
 	}
 	if got, err := h.cipher.Open(tenantA, dim.DirectoryObjectIDEnc); err != nil || got != vectorOIDID {
@@ -153,8 +151,8 @@ func TestEntraProvisioningLifecycle(t *testing.T) {
 	if ext, _ := got[SchemaEnterpriseUser].(map[string]any); ext["manager"] != nil || ext["department"] != nil {
 		t.Fatalf("value-less removes left %v", ext)
 	}
-	if d := h.dim(tenantA, vectorUPN); d.Department != nil || d.ManagerRef != nil {
-		t.Fatalf("user_dim after clearing = dept %s, manager %s", deref(d.Department), deref(d.ManagerRef))
+	if d := h.dim(tenantA, vectorUPN); d.Department != nil {
+		t.Fatalf("user_dim after clearing = dept %s", deref(d.Department))
 	}
 
 	// Entra's soft delete: "Replace" active with the string "False".
@@ -164,7 +162,7 @@ func TestEntraProvisioningLifecycle(t *testing.T) {
 	if got["active"] != false {
 		t.Fatalf("active after \"False\" = %#v, want the boolean false", got["active"])
 	}
-	if h.storedUser(tenantA, id).Active || h.dim(tenantA, vectorUPN).Status != directory.StatusInactive {
+	if h.storedUser(tenantA, id).Active || h.dim(tenantA, vectorUPN).Status != DimInactive {
 		t.Fatal("a deactivated user is still active in scim_user or user_dim")
 	}
 	// ...and back, the compliant way.
@@ -197,7 +195,7 @@ func TestEntraProvisioningLifecycle(t *testing.T) {
 	if code, _ := h.do("DELETE", "/scim/v2/Users/"+id, tok, nil); code != 204 {
 		t.Fatalf("DELETE = %d, want 204", code)
 	}
-	if h.storedUser(tenantA, id).Active || h.dim(tenantA, vectorUPN).Status != directory.StatusInactive {
+	if h.storedUser(tenantA, id).Active || h.dim(tenantA, vectorUPN).Status != DimInactive {
 		t.Fatal("DELETE left the person active")
 	}
 	if d := h.dim(tenantA, vectorUPN); deref(d.DisplayName) != "Ada King" {

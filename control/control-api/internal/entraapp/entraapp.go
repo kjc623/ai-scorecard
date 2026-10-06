@@ -1,21 +1,17 @@
 // Package entraapp is the vendor's multi-tenant Microsoft Entra application as a client: the
-// credential it authenticates with, and the app-only tokens it obtains in a customer's tenant
-// (contract §3, §5).
+// credential it authenticates with, and the app-only tokens it obtains in a customer's tenant.
 //
 // One application serves both sign-in (internal/identity redeems authorization codes with it) and the
 // one Graph application permission the product asks for, DeviceManagementManagedDevices.Read.All,
 // which the enrolment path uses for the Intune check. The customer grants it by admin consent during
 // onboarding; nothing here asks for User.Read.All, because people reach the product through SCIM.
 //
-// Three credentials, exactly one configured:
+// Two credentials, exactly one configured:
 //
-//   - a client secret (SAC_ENTRA_CLIENT_SECRET) — the lab's, because it is a password in an
-//     environment variable;
-//   - a certificate (SAC_ENTRA_CERT_FILE) — a client-assertion JWT signed with the certificate's
-//     key, so no secret crosses the wire;
-//   - a managed identity as a federated credential (SAC_ENTRA_FIC=managed) — the platform issues the
-//     container's identity a token for api://AzureADTokenExchange, and that token is the assertion.
-//     Nothing secret is stored anywhere, which is why it is the production choice.
+//   - the process's managed identity as a federated identity credential (FIC "managed"): the platform
+//     issues the identity a token for api://AzureADTokenExchange, and that token is the client
+//     assertion. Nothing secret is stored anywhere; this is the production credential.
+//   - a client secret, for a local lab pointed at a real Entra tenant.
 package entraapp
 
 import (
@@ -30,32 +26,19 @@ import (
 	"strings"
 	"sync"
 	"time"
-)
 
-// Environment names. The binary reads them through ConfigFromEnv.
-const (
-	EnvClientID     = "SAC_ENTRA_CLIENT_ID"
-	EnvClientSecret = "SAC_ENTRA_CLIENT_SECRET"
-	EnvCertFile     = "SAC_ENTRA_CERT_FILE"
-	EnvFIC          = "SAC_ENTRA_FIC"
-	// EnvMIClientID names a user-assigned managed identity; empty uses AZURE_CLIENT_ID, then the
-	// system-assigned identity.
-	EnvMIClientID = "SAC_ENTRA_MI_CLIENT_ID"
-	// EnvLoginBase overrides the Microsoft identity platform host, for a sovereign cloud or a test.
-	EnvLoginBase = "SAC_ENTRA_LOGIN_BASE"
+	"github.com/shadow-ai-capture/platform/azureidentity"
 )
 
 const (
 	// DefaultLoginBase is the public cloud's identity platform.
 	DefaultLoginBase = "https://login.microsoftonline.com"
-	// FICAudience is the audience a federated identity credential's assertion must carry.
-	FICAudience = "api://AzureADTokenExchange"
 	// AssertionType is RFC 7523's client assertion type.
 	AssertionType = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
 	// GraphScope is the app-only scope for Microsoft Graph.
 	GraphScope = "https://graph.microsoft.com/.default"
-	// DefaultIMDS is the Azure instance metadata token endpoint.
-	DefaultIMDS = "http://169.254.169.254/metadata/identity/oauth2/token"
+	// FICManaged selects the managed identity as the federated credential.
+	FICManaged = "managed"
 )
 
 // ErrNotConfigured is returned by New when no client id is configured: Entra is then off, which is a
@@ -71,43 +54,19 @@ type TokenSource interface {
 type Config struct {
 	ClientID     string
 	ClientSecret string
-	CertFile     string
-	// FIC is "managed" for a managed identity used as a federated credential; empty otherwise.
+	// FIC is FICManaged to authenticate with the process's managed identity; empty otherwise.
 	FIC string
-	// ManagedIdentityClientID selects a user-assigned identity; empty is the default identity.
-	ManagedIdentityClientID string
-	LoginBaseURL            string
-	// IdentityEndpoint and IdentityHeader are the Container Apps / App Service managed identity
-	// endpoint the platform sets (IDENTITY_ENDPOINT, IDENTITY_HEADER). Empty falls back to IMDS.
-	IdentityEndpoint string
-	IdentityHeader   string
-	IMDSURL          string
-	HTTPClient       *http.Client
-	Now              func() time.Time
+	// Identity issues the managed identity's tokens. Nil uses azureidentity.FromEnvironment.
+	Identity azureidentity.TokenSource
+	// LoginBaseURL is the identity platform host; empty is DefaultLoginBase. Tests point it at a fake.
+	LoginBaseURL string
+	HTTPClient   *http.Client
+	Now          func() time.Time
 }
 
-// ConfigFromEnv reads the SAC_ENTRA_* names and the platform's managed-identity variables.
-func ConfigFromEnv(getenv func(string) string) Config {
-	mi := strings.TrimSpace(getenv(EnvMIClientID))
-	if mi == "" {
-		mi = strings.TrimSpace(getenv("AZURE_CLIENT_ID"))
-	}
-	return Config{
-		ClientID:                strings.TrimSpace(getenv(EnvClientID)),
-		ClientSecret:            getenv(EnvClientSecret),
-		CertFile:                strings.TrimSpace(getenv(EnvCertFile)),
-		FIC:                     strings.TrimSpace(getenv(EnvFIC)),
-		ManagedIdentityClientID: mi,
-		LoginBaseURL:            strings.TrimSpace(getenv(EnvLoginBase)),
-		IdentityEndpoint:        strings.TrimSpace(getenv("IDENTITY_ENDPOINT")),
-		IdentityHeader:          getenv("IDENTITY_HEADER"),
-	}
-}
-
-// credential produces the client-authentication parameters for one token request. aud is the token
-// endpoint the request goes to, which a client assertion must name.
+// credential produces the client-authentication parameters for one token request.
 type credential interface {
-	params(ctx context.Context, aud string) (url.Values, error)
+	params(ctx context.Context) (url.Values, error)
 	kind() string
 }
 
@@ -144,38 +103,25 @@ func New(cfg Config) (*App, error) {
 	if base == "" {
 		base = DefaultLoginBase
 	}
-	set := 0
-	for _, v := range []string{cfg.ClientSecret, cfg.CertFile, cfg.FIC} {
-		if v != "" {
-			set++
-		}
-	}
-	if set != 1 {
-		return nil, fmt.Errorf("entraapp: configure exactly one credential (%s, %s or %s=managed); %d are set",
-			EnvClientSecret, EnvCertFile, EnvFIC, set)
+	if (cfg.ClientSecret != "") == (cfg.FIC != "") {
+		return nil, errors.New("entraapp: configure exactly one credential: a client secret or the managed identity (FIC managed)")
 	}
 	app := &App{clientID: cfg.ClientID, loginBase: base, client: cfg.HTTPClient, now: cfg.Now, cache: map[string]cachedToken{}}
 	switch {
 	case cfg.ClientSecret != "":
 		app.cred = secretCredential{secret: cfg.ClientSecret}
-	case cfg.CertFile != "":
-		c, err := loadCertCredential(cfg.CertFile, cfg.ClientID, cfg.Now)
-		if err != nil {
-			return nil, err
-		}
-		app.cred = c
+	case cfg.FIC != FICManaged:
+		return nil, fmt.Errorf("entraapp: federated credential %q is not %q", cfg.FIC, FICManaged)
 	default:
-		if cfg.FIC != "managed" {
-			return nil, fmt.Errorf("entraapp: %s=%q; the only federated credential this build obtains is \"managed\"", EnvFIC, cfg.FIC)
+		identity := cfg.Identity
+		if identity == nil {
+			cred, err := azureidentity.FromEnvironment()
+			if err != nil {
+				return nil, fmt.Errorf("entraapp: %w", err)
+			}
+			identity = cred
 		}
-		imds := cfg.IMDSURL
-		if imds == "" {
-			imds = DefaultIMDS
-		}
-		app.cred = &managedCredential{
-			endpoint: cfg.IdentityEndpoint, header: cfg.IdentityHeader, imds: imds,
-			clientID: cfg.ManagedIdentityClientID, client: cfg.HTTPClient, now: cfg.Now,
-		}
+		app.cred = managedCredential{identity: identity}
 	}
 	return app, nil
 }
@@ -189,11 +135,11 @@ func (a *App) Credential() string { return a.cred.kind() }
 // LoginBase is the identity platform host this app talks to.
 func (a *App) LoginBase() string { return a.loginBase }
 
-// ClientAuth returns the client-authentication parameters for a request to tokenEndpoint: a secret,
-// or a client assertion whose audience is that endpoint. internal/identity uses it to redeem a
+// ClientAuth returns the client-authentication parameters for a request to a token endpoint: the
+// secret, or the managed identity's client assertion. internal/identity uses it to redeem a
 // sign-in's authorization code and to refresh.
-func (a *App) ClientAuth(ctx context.Context, tokenEndpoint string) (url.Values, error) {
-	return a.cred.params(ctx, tokenEndpoint)
+func (a *App) ClientAuth(ctx context.Context, _ string) (url.Values, error) {
+	return a.cred.params(ctx)
 }
 
 var tenantRE = regexp.MustCompile(`^[0-9a-zA-Z][0-9a-zA-Z.-]{0,253}$`)
@@ -217,7 +163,7 @@ func (a *App) Token(ctx context.Context, customerTenantID, scope string) (string
 	a.mu.Unlock()
 
 	endpoint := a.loginBase + "/" + url.PathEscape(tid) + "/oauth2/v2.0/token"
-	form, err := a.cred.params(ctx, endpoint)
+	form, err := a.cred.params(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -243,10 +189,24 @@ func (a *App) Token(ctx context.Context, customerTenantID, scope string) (string
 
 type secretCredential struct{ secret string }
 
-func (s secretCredential) params(context.Context, string) (url.Values, error) {
+func (s secretCredential) params(context.Context) (url.Values, error) {
 	return url.Values{"client_secret": {s.secret}}, nil
 }
 func (secretCredential) kind() string { return "client-secret" }
+
+// managedCredential presents the managed identity's token for api://AzureADTokenExchange as the
+// client assertion. The app registration trusts that identity as a federated credential, so the app
+// holds no secret and no key at all. The token source caches the token.
+type managedCredential struct{ identity azureidentity.TokenSource }
+
+func (m managedCredential) params(ctx context.Context) (url.Values, error) {
+	tok, err := m.identity.Token(ctx, azureidentity.ResourceTokenExchange)
+	if err != nil {
+		return nil, fmt.Errorf("entraapp: managed identity: %w", err)
+	}
+	return url.Values{"client_assertion_type": {AssertionType}, "client_assertion": {tok}}, nil
+}
+func (managedCredential) kind() string { return "managed-identity-fic" }
 
 // OAuthError is a token endpoint's refusal. It carries the protocol error code and the AADSTS number,
 // never the request, so it is safe to log.

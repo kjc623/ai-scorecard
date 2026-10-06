@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// The statements over ops.auth_session (contract §1). The lookup is the definer function, because the
+// The statements over ops.auth_session. The lookup is a definer function, because the
 // dashboard presents only the opaque id and no tenant is known yet; it returns nothing for a session
 // that is revoked or past expires_at, so a caller bug cannot resurrect one. Every write sets the
 // session tenant first and names it, so row-level security is the final arbiter of whose session is
@@ -63,7 +63,7 @@ var Statements = []Statement{
 	{"set_session_refresh", "record a provider refresh", sqlSetSessionRefresh},
 }
 
-// SQLStore is the database/sql Store. The caller owns the driver and the handle.
+// SQLStore is the database/sql Store. The caller owns the handle.
 type SQLStore struct{ db *sql.DB }
 
 // NewSQL wraps an open handle.

@@ -11,13 +11,11 @@
 package idptest
 
 import (
-	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -25,6 +23,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 )
 
 // Identity is who signs in at the fake provider.
@@ -193,11 +194,7 @@ func (p *IdP) serve(w http.ResponseWriter, r *http.Request) {
 		p.JWKSHits++
 		pub, kid := p.key.PublicKey, p.kid
 		p.mu.Unlock()
-		writeJSON(w, 200, map[string]any{"keys": []map[string]any{{
-			"kty": "RSA", "use": "sig", "kid": kid,
-			"n": base64.RawURLEncoding.EncodeToString(pub.N.Bytes()),
-			"e": base64.RawURLEncoding.EncodeToString(big.NewInt(int64(pub.E)).Bytes()),
-		}}})
+		writeJSON(w, 200, jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{Key: &pub, KeyID: kid, Use: "sig"}}})
 	case r.Method == http.MethodPost && (path == "/token" || strings.HasSuffix(path, "/oauth2/v2.0/token")):
 		p.token(w, r)
 	default:
@@ -352,7 +349,11 @@ func (p *IdP) issue(w http.ResponseWriter, who Identity, nonce string) {
 		kid = p.SignKid
 	}
 	p.mu.Unlock()
-	idToken := sign(key, kid, claims)
+	idToken, err := sign(key, kid, claims)
+	if err != nil {
+		oauthError(w, 500, "server_error")
+		return
+	}
 	body := map[string]any{"id_token": idToken, "access_token": "opaque-" + randomString(), "token_type": "Bearer", "expires_in": 3600}
 	if p.RefreshTokens {
 		rt := "rt-" + randomString()
@@ -364,14 +365,14 @@ func (p *IdP) issue(w http.ResponseWriter, who Identity, nonce string) {
 	writeJSON(w, 200, body)
 }
 
-// Sign makes an RS256 JWT with the given key, for tests that forge a token outright.
-func sign(key *rsa.PrivateKey, kid string, claims map[string]any) string {
-	hb, _ := json.Marshal(map[string]string{"alg": "RS256", "typ": "JWT", "kid": kid})
-	cb, _ := json.Marshal(claims)
-	input := base64.RawURLEncoding.EncodeToString(hb) + "." + base64.RawURLEncoding.EncodeToString(cb)
-	sum := sha256.Sum256([]byte(input))
-	sig, _ := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, sum[:])
-	return input + "." + base64.RawURLEncoding.EncodeToString(sig)
+// sign makes an RS256 JWT with the given key and kid.
+func sign(key *rsa.PrivateKey, kid string, claims map[string]any) (string, error) {
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: jose.JSONWebKey{Key: key, KeyID: kid}},
+		(&jose.SignerOptions{}).WithType("JWT"))
+	if err != nil {
+		return "", err
+	}
+	return jwt.Signed(signer).Claims(claims).Serialize()
 }
 
 func randomString() string {

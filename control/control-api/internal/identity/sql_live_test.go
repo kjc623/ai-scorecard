@@ -1,5 +1,3 @@
-//go:build sac_sql_driver
-
 package identity_test
 
 import (
@@ -8,60 +6,22 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/shadow-ai-capture/control-api/internal/identity"
-	"github.com/shadow-ai-capture/control-api/sqlpg"
+	"github.com/shadow-ai-capture/control-api/internal/pgtest"
 )
 
-// The tagged live test: every identity statement prepared verbatim, then the SQL store driven through
-// the real driver against a PostgreSQL with database/schema.sql applied — the definer functions,
-// forced row-level security, the cross-tenant uniqueness of an Entra tenant id, single-use attempts
-// and invites, and the audit rows activation commits. It SKIPS loudly when no server is reachable.
-//
-// Point it at a throwaway database, not the lab's: it seeds two tenants of its own and removes what
-// it can, but ops.audit is append-only and references them, so both stay behind, closed.
-// SAC_PG_DSN (then PG*, then localhost) seeds as an owner; SAC_PG_STORE_DSN, when set, is the
-// connection the store uses, so it can run as a member of sac_control.
-
-func liveDSN(name string) string {
-	if v := os.Getenv(name); v != "" {
-		return v
-	}
-	if name == "SAC_PG_STORE_DSN" {
-		return liveDSN("SAC_PG_DSN")
-	}
-	if host := os.Getenv("PGHOST"); host != "" {
-		user := os.Getenv("PGUSER")
-		if user == "" {
-			user = "postgres"
-		}
-		return fmt.Sprintf("postgres://%s:%s@%s:5432/shadow?sslmode=disable", user, os.Getenv("PGPASSWORD"), host)
-	}
-	return "postgres://postgres:sac-lab-only@127.0.0.1:5432/shadow?sslmode=disable"
-}
-
-func openLive(t *testing.T, name string) *sql.DB {
-	t.Helper()
-	db, err := sqlpg.OpenDB(liveDSN(name))
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	pctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := db.PingContext(pctx); err != nil {
-		_ = db.Close()
-		t.Skipf("SKIPPING (not a failure): no PostgreSQL reachable: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	return db
-}
+// The live test: every identity statement prepared verbatim, then the SQL store driven as
+// sac_control against the database SAC_TEST_PG_DSN names — the definer functions, forced row-level
+// security, the cross-tenant uniqueness of an Entra tenant id, single-use attempts and invites, and
+// the audit rows activation commits. ops.audit is append-only and references the seeded tenants, so
+// they stay behind, closed.
 
 func TestIdentityStatementsPrepare(t *testing.T) {
-	db := openLive(t, "SAC_PG_DSN")
+	db := pgtest.Open(t)
 	for i, s := range identity.Statements {
 		name := fmt.Sprintf("sac_identity_probe_%d", i)
 		if _, err := db.Exec("PREPARE " + name + " AS " + s.SQL); err != nil {
@@ -97,10 +57,10 @@ func exec(q string, args ...any) func(*sql.Tx) error {
 	return func(tx *sql.Tx) error { _, err := tx.Exec(q, args...); return err }
 }
 
-func seedTenant(t *testing.T, db *sql.DB, suffix int64, label string) string {
-	tenant := fmt.Sprintf("00000000-0000-4000-80%02d-%012d", 7+len(label)%2, suffix)
-	ownerTx(t, db, tenant, exec(`INSERT INTO ops.tenant (tenant_id, name, status, residency_region, key_custody, ceiling_mode)
-	  VALUES ($1::uuid, $2, 'active', 'eu-west', 'vendor', 'm1')`, tenant, "identity-live-"+label))
+func seedTenant(t *testing.T, db *sql.DB, label string) string {
+	tenant := pgtest.UUID(t)
+	ownerTx(t, db, tenant, exec(`INSERT INTO ops.tenant (tenant_id, name, status, residency_region, ceiling_mode)
+	  VALUES ($1::uuid, $2, 'active', 'eu-west', 'm1')`, tenant, "identity-live-"+label))
 	t.Cleanup(func() {
 		tx, err := db.Begin()
 		if err != nil {
@@ -133,14 +93,13 @@ func seedTenant(t *testing.T, db *sql.DB, suffix int64, label string) string {
 }
 
 func TestIdentitySQLStoreAgainstPostgres(t *testing.T) {
-	owner := openLive(t, "SAC_PG_DSN")
-	st := identity.NewSQL(openLive(t, "SAC_PG_STORE_DSN"))
+	owner := pgtest.Open(t)
+	st := identity.NewSQL(pgtest.OpenAs(t, "sac_control"))
 	ctx := context.Background()
-	n := time.Now().UnixNano() % 1_000_000_000_000
-	tenant := seedTenant(t, owner, n, "a")
-	other := seedTenant(t, owner, n, "bb")
-	tid := fmt.Sprintf("00000000-0000-4000-8009-%012d", n)
-	domain := fmt.Sprintf("live-%d.example", n)
+	tenant := seedTenant(t, owner, "a")
+	other := seedTenant(t, owner, "bb")
+	tid := pgtest.UUID(t)
+	domain := fmt.Sprintf("live-%s.example", tenant[:8])
 	now := time.Now().UTC()
 
 	// Email domain discovery through the definer function.

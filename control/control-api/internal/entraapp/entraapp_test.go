@@ -2,28 +2,14 @@ package entraapp
 
 import (
 	"context"
-	"crypto"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/sha1"
-	"crypto/sha256"
-	"crypto/x509"
-	"crypto/x509/pkix"
-	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
-	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 )
 
 const (
@@ -123,169 +109,48 @@ func TestExactlyOneCredential(t *testing.T) {
 	if _, err := New(Config{ClientID: clientID, FIC: "github"}); err == nil {
 		t.Fatal("an unknown federated credential was accepted")
 	}
-	cfg := ConfigFromEnv(func(k string) string {
-		return map[string]string{EnvClientID: clientID, EnvFIC: "managed", "AZURE_CLIENT_ID": "mi-id", "IDENTITY_ENDPOINT": "http://x"}[k]
-	})
-	if cfg.ClientID != clientID || cfg.FIC != "managed" || cfg.ManagedIdentityClientID != "mi-id" || cfg.IdentityEndpoint != "http://x" {
-		t.Fatalf("ConfigFromEnv = %+v", cfg)
-	}
 }
 
-// writeCert makes a self-signed RSA certificate and key, as the owner would upload to the app.
-func writeCert(t *testing.T) (string, *x509.Certificate) {
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tmpl := &x509.Certificate{SerialNumber: big.NewInt(7), Subject: pkix.Name{CommonName: "sac-entra-app"},
-		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour)}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cert, _ := x509.ParseCertificate(der)
-	pkcs8, _ := x509.MarshalPKCS8PrivateKey(key)
-	body := append(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: pkcs8}),
-		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})...)
-	path := filepath.Join(t.TempDir(), "entra-app.pem")
-	if err := os.WriteFile(path, body, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return path, cert
+// fakeIdentity is the managed identity's token source.
+type fakeIdentity struct {
+	mu        sync.Mutex
+	resources []string
 }
 
-// TestCertificateClientAssertionShape checks the assertion exactly as Entra does: RS256, x5t = the
-// base64url SHA-1 thumbprint of the uploaded certificate, aud = the token endpoint called, iss = sub
-// = the client id, a jti, and a life of at most ten minutes — and the signature verifies under the
-// certificate's public key.
-func TestCertificateClientAssertionShape(t *testing.T) {
-	path, cert := writeCert(t)
-	var assertion string
+func (f *fakeIdentity) Token(_ context.Context, resource string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resources = append(f.resources, resource)
+	return "mi-assertion-token", nil
+}
+
+// TestManagedIdentityFederatedCredential is the production path: the managed identity's token for
+// api://AzureADTokenExchange becomes the client assertion.
+func TestManagedIdentityFederatedCredential(t *testing.T) {
 	ep := newTokenEndpoint(t, func(_ string, f url.Values) string {
-		if f.Get("client_assertion_type") != AssertionType || f.Get("client_secret") != "" {
+		if f.Get("client_assertion_type") != AssertionType || f.Get("client_assertion") != "mi-assertion-token" || f.Get("client_secret") != "" {
 			return "invalid_client"
 		}
-		assertion = f.Get("client_assertion")
 		return ""
 	})
-	app, err := New(Config{ClientID: clientID, CertFile: path, LoginBaseURL: ep.srv.URL})
+	mi := &fakeIdentity{}
+	app, err := New(Config{ClientID: clientID, FIC: FICManaged, Identity: mi, LoginBaseURL: ep.srv.URL})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := app.Token(context.Background(), tid, GraphScope); err != nil {
 		t.Fatal(err)
 	}
-	parts := strings.Split(assertion, ".")
-	if len(parts) != 3 {
-		t.Fatalf("assertion %q is not a compact JWS", assertion)
+	form, err := app.ClientAuth(context.Background(), ep.srv.URL+"/organizations/oauth2/v2.0/token")
+	if err != nil || form.Get("client_assertion") != "mi-assertion-token" {
+		t.Fatalf("ClientAuth = %v, %v", form, err)
 	}
-	var header map[string]string
-	var claims map[string]any
-	hb, _ := base64.RawURLEncoding.DecodeString(parts[0])
-	cb, _ := base64.RawURLEncoding.DecodeString(parts[1])
-	_ = json.Unmarshal(hb, &header)
-	_ = json.Unmarshal(cb, &claims)
-	thumb := sha1.Sum(cert.Raw)
-	if header["alg"] != "RS256" || header["typ"] != "JWT" || header["x5t"] != base64.RawURLEncoding.EncodeToString(thumb[:]) {
-		t.Fatalf("header = %v", header)
-	}
-	wantAud := ep.srv.URL + "/" + tid + "/oauth2/v2.0/token"
-	if claims["aud"] != wantAud || claims["iss"] != clientID || claims["sub"] != clientID || claims["jti"] == "" {
-		t.Fatalf("claims = %v", claims)
-	}
-	if life := claims["exp"].(float64) - claims["nbf"].(float64); life <= 0 || life > 600 {
-		t.Fatalf("assertion life = %vs", life)
-	}
-	sig, _ := base64.RawURLEncoding.DecodeString(parts[2])
-	sum := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
-	if err := rsa.VerifyPKCS1v15(cert.PublicKey.(*rsa.PublicKey), crypto.SHA256, sum[:], sig); err != nil {
-		t.Fatalf("assertion signature: %v", err)
-	}
-	// The same credential authenticates a sign-in's code redemption, with that endpoint as aud.
-	params, err := app.ClientAuth(context.Background(), "https://login.example/organizations/oauth2/v2.0/token")
-	if err != nil || params.Get("client_assertion") == "" || params.Get("client_assertion_type") != AssertionType {
-		t.Fatalf("ClientAuth = %v, %v", params, err)
-	}
-}
-
-func TestCertificateFileMustHoldAMatchingRSAKey(t *testing.T) {
-	path, _ := writeCert(t)
-	other, _ := writeCert(t)
-	a, _ := os.ReadFile(path)
-	b, _ := os.ReadFile(other)
-	// a's key with b's certificate
-	keyBlock, _ := pem.Decode(a)
-	var certBlock *pem.Block
-	for rest := b; ; {
-		var blk *pem.Block
-		blk, rest = pem.Decode(rest)
-		if blk == nil {
-			break
-		}
-		if blk.Type == "CERTIFICATE" {
-			certBlock = blk
+	for _, r := range mi.resources {
+		if r != "api://AzureADTokenExchange" {
+			t.Fatalf("the managed identity was asked for %q", r)
 		}
 	}
-	mixed := append(pem.EncodeToMemory(keyBlock), pem.EncodeToMemory(certBlock)...)
-	if _, err := parseCertCredential(mixed, clientID, time.Now); err == nil {
-		t.Fatal("a key that is not the certificate's was accepted")
-	}
-}
-
-// TestManagedIdentityFederatedCredential is the production path: the container's managed identity
-// token for api://AzureADTokenExchange becomes the client assertion. Both platform endpoints are
-// exercised: Container Apps (IDENTITY_ENDPOINT + X-IDENTITY-HEADER) and IMDS (Metadata: true).
-func TestManagedIdentityFederatedCredential(t *testing.T) {
-	for _, mode := range []string{"container-apps", "imds"} {
-		t.Run(mode, func(t *testing.T) {
-			var miCalls int
-			mi := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				miCalls++
-				q := r.URL.Query()
-				ok := q.Get("resource") == FICAudience && q.Get("client_id") == "user-assigned-mi"
-				if mode == "container-apps" {
-					ok = ok && r.Header.Get("X-IDENTITY-HEADER") == "platform-secret" && q.Get("api-version") == "2019-08-01"
-				} else {
-					ok = ok && r.Header.Get("Metadata") == "true" && q.Get("api-version") == "2018-02-01"
-				}
-				if !ok {
-					w.WriteHeader(400)
-					return
-				}
-				// expires_on is unix seconds as a string, as both platform endpoints send it.
-				_ = json.NewEncoder(w).Encode(map[string]any{
-					"access_token": "mi-assertion-token", "expires_on": strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10),
-				})
-			}))
-			defer mi.Close()
-			ep := newTokenEndpoint(t, func(_ string, f url.Values) string {
-				if f.Get("client_assertion_type") != AssertionType || f.Get("client_assertion") != "mi-assertion-token" {
-					return "invalid_client"
-				}
-				return ""
-			})
-			cfg := Config{ClientID: clientID, FIC: "managed", ManagedIdentityClientID: "user-assigned-mi", LoginBaseURL: ep.srv.URL}
-			if mode == "container-apps" {
-				cfg.IdentityEndpoint, cfg.IdentityHeader = mi.URL, "platform-secret"
-			} else {
-				cfg.IMDSURL = mi.URL
-			}
-			app, err := New(cfg)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := app.Token(context.Background(), tid, GraphScope); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := app.Token(context.Background(), "22222222-2222-4333-8444-555555555555", GraphScope); err != nil {
-				t.Fatal(err)
-			}
-			if miCalls != 1 {
-				t.Fatalf("managed identity endpoint called %d times; its token must be cached", miCalls)
-			}
-			if app.Credential() != "managed-identity-fic" {
-				t.Fatalf("credential = %s", app.Credential())
-			}
-		})
+	if app.Credential() != "managed-identity-fic" {
+		t.Fatalf("credential = %s", app.Credential())
 	}
 }

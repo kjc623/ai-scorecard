@@ -1,3 +1,7 @@
+// Package directory holds what the control plane keeps under the deployment's directory key
+// (SAC_DIRECTORY_KEY): the Cipher that seals every `*_enc` column, and each tenant's user-reference
+// key (UserRefKeys), from which devices and the SCIM service both derive a person's pseudonymous
+// user_ref.
 package directory
 
 import (
@@ -11,11 +15,10 @@ import (
 	"strings"
 )
 
-// Cipher seals the product's `*_enc` columns. It began as the seal for directory_object_id_enc,
-// the one column that maps a pseudonymous user_ref to a real person; the enterprise-onboarding
-// contract made it the scheme for every sealed column (the tenant's user-reference key, a SCIM
-// resource as last provisioned, an OIDC client secret), so a deployment holds one directory key
-// rather than one per column.
+// Cipher seals the product's `*_enc` columns: directory_object_id_enc (the one column that maps a
+// pseudonymous user_ref to a real person), the tenant's user-reference key, a SCIM resource as last
+// provisioned, an OIDC client secret, a PKCE verifier and an identity provider's refresh token. A
+// deployment holds one directory key for all of them.
 //
 // The master key is per deployment, and each tenant gets its own key derived from it, so a row
 // copied from one tenant's partition cannot be opened with another's derived key even if RLS were
@@ -40,8 +43,7 @@ func NewCipher(master []byte) (*Cipher, error) {
 	return &Cipher{master: cp}, nil
 }
 
-// DecodeKey reads SAC_DIRECTORY_KEY's spelling: standard base64 of 32 bytes. It is here rather than
-// in the binary so the HTTP service and the sync subcommand read the secret the same way.
+// DecodeKey reads SAC_DIRECTORY_KEY's spelling: standard base64 of 32 bytes.
 func DecodeKey(encoded string) ([]byte, error) {
 	encoded = strings.TrimSpace(encoded)
 	if encoded == "" {
@@ -57,10 +59,10 @@ func DecodeKey(encoded string) ([]byte, error) {
 	return key, nil
 }
 
-// tenantKey derives a per-tenant key. HMAC-SHA256 is the KDF rather than HKDF so the build stays on
-// the standard library's most basic primitives; the master key is already full entropy, which is
-// what makes a single HMAC a sound KDF here. The label predates the other sealed columns and is
-// kept, because changing it would orphan every value already sealed.
+// tenantKey derives a per-tenant key: HMAC-SHA256 of a fixed label and the tenant id under the
+// master key. The master key is full entropy, which is what makes a single HMAC a sound KDF. The
+// label and the construction are part of the stored format: changing either would make every value
+// already sealed unreadable.
 func (c *Cipher) tenantKey(tenantID string) []byte {
 	mac := hmac.New(sha256.New, c.master)
 	mac.Write([]byte("sac-directory-object-id\x00"))

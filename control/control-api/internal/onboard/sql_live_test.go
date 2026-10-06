@@ -1,48 +1,24 @@
-//go:build sac_sql_driver
-
 package onboard_test
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/shadow-ai-capture/control-api/internal/identity"
 	"github.com/shadow-ai-capture/control-api/internal/onboard"
-	"github.com/shadow-ai-capture/control-api/sqlpg"
+	"github.com/shadow-ai-capture/control-api/internal/pgtest"
 )
 
-// The tagged live test for the vendor operator's commands: the statements prepared verbatim, then
-// `tenant create` and `tenant invite` against a PostgreSQL with database/schema.sql applied. It
-// SKIPS loudly when no server is reachable. Point it at a throwaway database: the tenants it creates
-// stay behind, closed, because their audit rows are append-only.
-
-func liveDB(t *testing.T) *sql.DB {
-	t.Helper()
-	dsn := os.Getenv("SAC_PG_DSN")
-	if dsn == "" {
-		dsn = "postgres://postgres:sac-lab-only@127.0.0.1:5432/shadow?sslmode=disable"
-	}
-	db, err := sqlpg.OpenDB(dsn)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	pctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := db.PingContext(pctx); err != nil {
-		_ = db.Close()
-		t.Skipf("SKIPPING (not a failure): no PostgreSQL reachable: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	return db
-}
+// The live test for the vendor operator's commands: the statements prepared verbatim, then `tenant
+// create` and `tenant invite` run as sac_control — the role the tenant-admin job connects as —
+// under forced row-level security, against the database SAC_TEST_PG_DSN names. The tenants it
+// creates stay behind, closed, because their audit rows are append-only.
 
 func TestAdminStatementsPrepare(t *testing.T) {
-	db := liveDB(t)
+	db := pgtest.Open(t)
 	for i, s := range onboard.AdminStatements {
 		name := fmt.Sprintf("sac_onboard_probe_%d", i)
 		if _, err := db.Exec("PREPARE " + name + " AS " + s.SQL); err != nil {
@@ -78,20 +54,21 @@ func closeTenant(t *testing.T, db *sql.DB, tenant string) {
 }
 
 func TestTenantCreateAndInviteAgainstPostgres(t *testing.T) {
-	db := liveDB(t)
+	owner := pgtest.Open(t)
+	db := pgtest.OpenAs(t, "sac_control")
 	ctx := context.Background()
-	domain := fmt.Sprintf("onboard-live-%d.example", time.Now().UnixNano()%1_000_000_000)
+	domain := fmt.Sprintf("onboard-live-%s.example", pgtest.UUID(t)[:8])
 
-	first, err := onboard.CreateTenant(ctx, db, onboard.NewTenant{Name: "Live One", Region: "eu-west", KeyCustody: "vendor", CeilingMode: "m1", Actor: "op"})
+	first, err := onboard.CreateTenant(ctx, db, onboard.NewTenant{Name: "Live One", Region: "eu-west", CeilingMode: "m1", Actor: "op"})
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
-	closeTenant(t, db, first)
-	second, err := onboard.CreateTenant(ctx, db, onboard.NewTenant{Name: "Live Two", Region: "eu-west", KeyCustody: "vendor", CeilingMode: "m1", Actor: "op"})
+	closeTenant(t, owner, first)
+	second, err := onboard.CreateTenant(ctx, db, onboard.NewTenant{Name: "Live Two", Region: "eu-west", CeilingMode: "m3", Actor: "op"})
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
-	closeTenant(t, db, second)
+	closeTenant(t, owner, second)
 
 	inv, err := onboard.CreateInvite(ctx, db, onboard.NewInvite{TenantID: first, Domains: []string{strings.ToUpper(domain)}, PublicURL: "https://app.example.test", Actor: "op"})
 	if err != nil {
@@ -117,7 +94,7 @@ func TestTenantCreateAndInviteAgainstPostgres(t *testing.T) {
 		t.Fatalf("stored invite = %+v, %v", got, err)
 	}
 	var actions []string
-	rows, err := db.Query(`SELECT action || '/' || actor_id FROM ops.audit WHERE tenant_id = $1::uuid ORDER BY audit_seq`, first)
+	rows, err := owner.Query(`SELECT action || '/' || actor_id FROM ops.audit WHERE tenant_id = $1::uuid ORDER BY audit_seq`, first)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +108,7 @@ func TestTenantCreateAndInviteAgainstPostgres(t *testing.T) {
 	if strings.Join(actions, ",") != want {
 		t.Fatalf("audit = %v", actions)
 	}
-	if _, err := onboard.CreateTenant(ctx, db, onboard.NewTenant{Name: "x", Region: "eu-west", KeyCustody: "vendor", CeilingMode: "m3", Actor: "op"}); err == nil {
-		t.Fatal("an m3 tenant without a key was created")
+	if _, err := onboard.CreateTenant(ctx, db, onboard.NewTenant{Name: "x", Region: "eu-west", CeilingMode: "m4", Actor: "op"}); err == nil {
+		t.Fatal("a tenant with an unknown ceiling was created")
 	}
 }

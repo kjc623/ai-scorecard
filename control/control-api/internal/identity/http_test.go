@@ -81,7 +81,7 @@ func TestInternalAPIShapes(t *testing.T) {
 		t.Fatalf("complete body = %v", out)
 	}
 	if len(p) != 4 {
-		t.Fatalf("principal carries more than the contract's four members: %v", p)
+		t.Fatalf("principal carries more than its four members: %v", p)
 	}
 
 	rec, out = call(t, h, identity.PathToken, internalToken, map[string]string{"session": sess})
@@ -97,8 +97,11 @@ func TestInternalAPIShapes(t *testing.T) {
 		t.Fatalf("token after revoke: %d %v", rec.Code, out)
 	}
 
-	// A refusal the contract names is a 403 with its code and nothing else.
+	// A decided refusal is a 403 with its code and nothing else.
 	rec, out = call(t, h, identity.PathBegin, internalToken, identity.BeginRequest{Provider: "entra", RedirectURI: redirect})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("begin: %d %v", rec.Code, out)
+	}
 	code, state = r.entra.Authorize(t, out["authorize_url"].(string), r.entraUser())
 	rec, out = call(t, h, identity.PathComplete, internalToken, identity.CompleteRequest{Attempt: out["attempt"].(string), Code: code, State: state})
 	if rec.Code != http.StatusForbidden || out["error"] != "no_role" || len(out) != 1 {

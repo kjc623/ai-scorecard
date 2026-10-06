@@ -16,7 +16,7 @@ import (
 // of them have arrived, so every caller sees "no key yet" and proposes its own. Only the store's
 // conditional write may then decide.
 type barrierKeyStore struct {
-	inner   *MemoryKeyStore
+	inner   *memKeyStore
 	arrived sync.WaitGroup
 	inits   atomic.Int32
 }
@@ -35,7 +35,7 @@ func (b *barrierKeyStore) InitUserRefKey(ctx context.Context, tenantID string, s
 
 func TestUserRefKeysTwoFirstCallersEndWithOneKey(t *testing.T) {
 	const callers = 2
-	store := &barrierKeyStore{inner: NewMemoryKeyStore()}
+	store := &barrierKeyStore{inner: newMemKeyStore()}
 	store.arrived.Add(callers)
 	// Two processes, not one: a shared cache would hide the race this test is about.
 	var keys [callers][]byte
@@ -75,7 +75,7 @@ func TestUserRefKeysTwoFirstCallersEndWithOneKey(t *testing.T) {
 }
 
 func TestUserRefKeysMintOnceThenCache(t *testing.T) {
-	store := &countingKeyStore{inner: NewMemoryKeyStore()}
+	store := &countingKeyStore{inner: newMemKeyStore()}
 	ks, err := NewUserRefKeys(store, testCipher(t))
 	if err != nil {
 		t.Fatal(err)
@@ -107,7 +107,7 @@ func TestUserRefKeysMintOnceThenCache(t *testing.T) {
 }
 
 func TestUserRefKeysAreTenantScoped(t *testing.T) {
-	store := NewMemoryKeyStore()
+	store := newMemKeyStore()
 	ks, _ := NewUserRefKeys(store, testCipher(t))
 	a, err := ks.Key(context.Background(), "tenant-a")
 	if err != nil {
@@ -122,7 +122,7 @@ func TestUserRefKeysAreTenantScoped(t *testing.T) {
 	}
 	// A sealed key copied into another tenant's row does not open there.
 	sealedA, _ := store.SealedUserRefKey(context.Background(), "tenant-a")
-	moved := NewMemoryKeyStore()
+	moved := newMemKeyStore()
 	_, _ = moved.InitUserRefKey(context.Background(), "tenant-b", sealedA)
 	other, _ := NewUserRefKeys(moved, testCipher(t))
 	if _, err := other.Key(context.Background(), "tenant-b"); err == nil {
@@ -131,7 +131,7 @@ func TestUserRefKeysAreTenantScoped(t *testing.T) {
 }
 
 func TestUserRefKeysRefuseAnUnknownTenant(t *testing.T) {
-	store := NewMemoryKeyStore()
+	store := newMemKeyStore()
 	store.Known = map[string]bool{"tenant-known": true}
 	ks, _ := NewUserRefKeys(store, testCipher(t))
 	if _, err := ks.Key(context.Background(), "tenant-other"); !errors.Is(err, ErrUnknownTenant) {
@@ -148,7 +148,7 @@ func TestUserRefKeysServeTheKeyDevicesDeriveWith(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := NewMemoryKeyStore()
+	store := newMemKeyStore()
 	sealed, _ := testCipher(t).SealBytes("tenant-v", vectorKey)
 	_, _ = store.InitUserRefKey(context.Background(), "tenant-v", sealed)
 	ks, _ := NewUserRefKeys(store, testCipher(t))
@@ -178,7 +178,7 @@ func TestDecodeKey(t *testing.T) {
 }
 
 type countingKeyStore struct {
-	inner        *MemoryKeyStore
+	inner        *memKeyStore
 	reads, inits int
 }
 
@@ -190,4 +190,34 @@ func (c *countingKeyStore) SealedUserRefKey(ctx context.Context, tenantID string
 func (c *countingKeyStore) InitUserRefKey(ctx context.Context, tenantID string, sealed []byte) ([]byte, error) {
 	c.inits++
 	return c.inner.InitUserRefKey(ctx, tenantID, sealed)
+}
+
+// memKeyStore is a map-backed UserRefKeyStore. Known, when non-nil, restricts it to those tenants.
+type memKeyStore struct {
+	mu     sync.Mutex
+	sealed map[string][]byte
+	Known  map[string]bool
+}
+
+func newMemKeyStore() *memKeyStore { return &memKeyStore{sealed: map[string][]byte{}} }
+
+func (m *memKeyStore) SealedUserRefKey(_ context.Context, tenantID string) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Known != nil && !m.Known[tenantID] {
+		return nil, ErrUnknownTenant
+	}
+	return clone(m.sealed[tenantID]), nil
+}
+
+func (m *memKeyStore) InitUserRefKey(_ context.Context, tenantID string, sealed []byte) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Known != nil && !m.Known[tenantID] {
+		return nil, ErrUnknownTenant
+	}
+	if len(m.sealed[tenantID]) == 0 {
+		m.sealed[tenantID] = clone(sealed)
+	}
+	return clone(m.sealed[tenantID]), nil
 }

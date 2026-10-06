@@ -1,6 +1,7 @@
 package policyserve
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
@@ -8,60 +9,34 @@ import (
 	"time"
 )
 
-// Bundle is the server's view of the signed policy bundle: the subset of
-// endpoint/capture-core/policy.Bundle this service composes, with the same JSON names.
-//
-// It is a mirror, not an import, because capture-core is a separate module and control-api builds
-// offline with no replace into it. The device decodes the payload with unknown fields refused, so a
-// field here that the device does not know would make every served bundle unenforceable; the test
-// TestServedBundleVerifiesWithTheDevicesVerifier runs capture-core's own Verifier over this
-// package's output to catch exactly that drift.
+// Bundle is the subset of the agent's policy bundle this service composes, with the same JSON
+// names. The agent decodes the payload with unknown fields refused, so a field here it does not know
+// would make every served bundle unenforceable; TestServedBundleVerifiesWithTheDevicesVerifier runs
+// the agent's own verifier over this package's output to catch that drift.
 type Bundle struct {
 	Version     string    `json:"version"`
 	EffectiveAt time.Time `json:"effective_at"`
 	Actor       string    `json:"actor,omitempty"`
 
-	TenantDefault string            `json:"tenant_default_mode"`
-	ToolModes     map[string]string `json:"tool_modes,omitempty"`
+	TenantDefault string `json:"tenant_default_mode"`
 
-	Interception   Interception      `json:"interception"`
-	Loopback       struct{}          `json:"loopback"`
-	ProcDetect     struct{}          `json:"proc_detect"`
-	Spool          SpoolBounds       `json:"spool"`
-	ShapePredicate struct{}          `json:"shape_predicate"`
-	Classifier     ClassifierRelease `json:"classifier"`
-	CLIShim        CLIShim           `json:"cli_shim"`
+	Interception Interception `json:"interception"`
+	CLIShim      CLIShim      `json:"cli_shim"`
 }
 
 // Interception is the decryption scope. The per-device root CA is deliberately absent: the device
 // generates its own and the server never holds it.
 type Interception struct {
-	TenantHosts []string `json:"tenant_hosts,omitempty"`
 	SeedHosts   []string `json:"seed_hosts,omitempty"`
 	Ports       []int    `json:"ports,omitempty"`
 	ProxyListen string   `json:"proxy_listen,omitempty"`
 	ProxyCanary string   `json:"proxy_canary,omitempty"`
 }
 
-// SpoolBounds is left empty, so the device keeps its built-in §12 bound.
-type SpoolBounds struct {
-	MaxBytes             int64 `json:"max_bytes,omitempty"`
-	MaxRows              int64 `json:"max_rows,omitempty"`
-	DeviceRetentionHours int   `json:"device_retention_hours,omitempty"`
-}
-
-// ClassifierRelease names the release the bundle activates.
-type ClassifierRelease struct {
-	ReleaseID string `json:"release_id"`
-	State     string `json:"state"`
-}
-
-// CLIShim is the CLI trust shim's configuration. ManagedDir is left to the device, because one
-// bundle serves every platform and the directory is a platform path.
+// CLIShim is the CLI trust shim's configuration. The shim is always on and its managed directory is
+// the device's own per-platform default, so one bundle serves every platform.
 type CLIShim struct {
-	Enabled     bool     `json:"enabled,omitempty"`
 	ProxyAddr   string   `json:"proxy_addr,omitempty"`
-	ManagedDir  string   `json:"managed_dir,omitempty"`
 	Runtimes    []string `json:"runtimes,omitempty"`
 	NoProxy     []string `json:"no_proxy,omitempty"`
 	NodeRequire bool     `json:"node_require,omitempty"`
@@ -107,14 +82,18 @@ func content(b Bundle) ([]byte, error) {
 	return json.Marshal(b)
 }
 
-// envelopeContent recovers the content of a stored envelope, for comparison with a candidate.
+// envelopeContent recovers the content of a stored envelope, for comparison with a candidate. A
+// payload carrying a field this service no longer composes is an error, so a bundle the device
+// would refuse is replaced rather than served again.
 func envelopeContent(envelope []byte) (keyID string, c []byte, err error) {
 	var sb SignedBundle
 	if err := json.Unmarshal(envelope, &sb); err != nil {
 		return "", nil, err
 	}
+	dec := json.NewDecoder(bytes.NewReader(sb.Payload))
+	dec.DisallowUnknownFields()
 	var b Bundle
-	if err := json.Unmarshal(sb.Payload, &b); err != nil {
+	if err := dec.Decode(&b); err != nil {
 		return "", nil, err
 	}
 	c, err = content(b)

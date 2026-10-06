@@ -1,22 +1,16 @@
-// Command control-api is the device-facing control plane (docs/02-ingest-and-transport.md §5.1,
-// §5.2; ADR 0020 decisions 3 and 4).
+// Command control-api is the product's control plane: device enrolment, policy, health and content
+// grants for devices; the sign-in, session and product-token service, onboarding and SCIM for
+// people; and the deployment admin API.
 //
-// It serves POST /v1/enrol and POST /v1/token, plus /healthz and /readyz for the platform. Enrolment
-// issues a per-device credential -- an X.509 leaf from a CertificateSigner, or a registered DPoP
-// public key -- and the token endpoint issues a short-lived, DPoP-bound access token. The device's
-// private key never leaves the device: enrolment carries a CSR or a public JWK.
-//
-// Offline note: this repository builds with GOPROXY=off and the Go standard library only, and the
-// standard library has no PostgreSQL wire driver. -store=sql therefore expects the driver to be
-// registered in the binary (see cmd/control-api/driver_tagged.go); without one, sql.Open fails with
-// "unknown driver" and the message says so.
+//	control-api                      serve (configured by environment)
+//	control-api tenant create ...    create a tenant (see tenant.go)
+//	control-api tenant invite ...    issue a tenant's onboarding link
 package main
 
 import (
 	"context"
 	"database/sql"
 	"errors"
-	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -26,391 +20,268 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/shadow-ai-capture/platform/postgres"
+
 	"github.com/shadow-ai-capture/control-api/internal/content"
-	"github.com/shadow-ai-capture/control-api/internal/dpop"
+	"github.com/shadow-ai-capture/control-api/internal/deploy"
+	"github.com/shadow-ai-capture/control-api/internal/deviceca"
+	"github.com/shadow-ai-capture/control-api/internal/directory"
 	"github.com/shadow-ai-capture/control-api/internal/enrol"
+	"github.com/shadow-ai-capture/control-api/internal/entraapp"
 	"github.com/shadow-ai-capture/control-api/internal/health"
 	"github.com/shadow-ai-capture/control-api/internal/httpapi"
-	"github.com/shadow-ai-capture/control-api/internal/jose"
-	"github.com/shadow-ai-capture/control-api/internal/signer"
+	"github.com/shadow-ai-capture/control-api/internal/identity"
+	"github.com/shadow-ai-capture/control-api/internal/intune"
+	"github.com/shadow-ai-capture/control-api/internal/onboard"
+	"github.com/shadow-ai-capture/control-api/internal/policyserve"
+	"github.com/shadow-ai-capture/control-api/internal/scim"
+	"github.com/shadow-ai-capture/control-api/internal/session"
 	"github.com/shadow-ai-capture/control-api/internal/store"
-	"github.com/shadow-ai-capture/control-api/internal/token"
 )
 
 func main() {
-	// `sync-directory` is the scheduled directory job, not an HTTP route: it is dispatched before
-	// the server's own configuration is required, so it does not need a token signing key or a CA to
-	// run (sync_directory.go). Every other invocation starts the device-facing service.
-	if len(os.Args) > 1 && os.Args[1] == "sync-directory" {
-		if err := runSyncDirectory(os.Args[2:]); err != nil {
-			fmt.Fprintln(os.Stderr, "control-api sync-directory:", err)
-			os.Exit(1)
-		}
-		return
-	}
-	// `tenant create` and `tenant invite` are the vendor's onboarding commands (tenant.go): they
-	// write a tenant and a one-time invite, and need only the database.
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	var err error
 	if len(os.Args) > 1 && os.Args[1] == "tenant" {
-		if err := runTenant(os.Args[2:]); err != nil {
-			fmt.Fprintln(os.Stderr, "control-api tenant:", err)
-			os.Exit(1)
-		}
-		return
+		err = runTenant(os.Args[2:])
+	} else {
+		err = serve(logger)
 	}
-	if err := run(); err != nil {
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "control-api:", err)
 		os.Exit(1)
 	}
 }
 
-// defaultDriverName is the database/sql driver this binary carries, or empty. It is set to "pgx" by
-// driver_tagged.go in the sac_sql_driver build; the untagged binary refuses -store=sql rather than
-// starting in memory while a deployment believes it is persisting.
-var defaultDriverName = ""
-
-type options struct {
-	addr              string
-	storeKind         string
-	dsn               string
-	driver            string
-	pgHost            string
-	pgPort            string
-	pgDatabase        string
-	role              string
-	region            string
-	caCertFile        string
-	caKeyFile         string
-	tokenKeyPEM       string
-	tokenIssuer       string
-	tokenAudience     string
-	sans              string
-	enrolmentTokenTTL time.Duration
-	credentialTTL     time.Duration
-	shutdownGraceful  time.Duration
-	vaultURL          string
+// openDatabase opens the pool from the SAC_PG_* environment.
+func openDatabase() (*sql.DB, error) {
+	cfg, err := postgres.ConfigFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	return postgres.Open(cfg)
 }
 
-// EnvVaultURL and EnvUploadSigningKey configure the content grant path (docs/02 §5.5, §10). The
-// signing key is a secret shared with the storage layer, so it has no flag.
-const (
-	EnvVaultURL         = "SAC_VAULT_URL"
-	EnvUploadSigningKey = "SAC_UPLOAD_SIGNING_KEY"
-)
-
-func run() error {
-	var o options
-	flag.StringVar(&o.addr, "addr", "127.0.0.1:8443",
-		"listen address (env "+EnvHTTPAddr+"); a container needs 0.0.0.0:8080, which the image sets")
-	flag.StringVar(&o.storeKind, "store", "memory", "memory | sql (env "+EnvStore+")")
-	flag.StringVar(&o.dsn, "dsn", "", "database DSN (with -store=sql); the caller must register a driver")
-	flag.StringVar(&o.driver, "driver", "", "database/sql driver name (with -store=sql); must be registered in this binary")
-	flag.StringVar(&o.pgHost, "pg-host", "", "database host (env "+EnvPGHost+"); used to build the DSN, not a password")
-	flag.StringVar(&o.pgPort, "pg-port", "5432", "database port; the deployment passes no port, so it stays a flag")
-	flag.StringVar(&o.pgDatabase, "pg-database", "shadow", "database name (env "+EnvPGDatabase+")")
-	flag.StringVar(&o.role, "role", "control-api", "the identity this process runs as (env "+EnvRole+")")
-	flag.StringVar(&o.region, "region", "", "the region this deployment serves; a tenant pinned elsewhere is refused (env "+EnvRegion+"; empty disables only that check)")
-	flag.StringVar(&o.caCertFile, "ca-cert", "", "LocalCA certificate (PEM file); omitted generates a fresh development CA")
-	flag.StringVar(&o.caKeyFile, "ca-key", "", "LocalCA private key (PEM file); required with -ca-cert")
-	flag.StringVar(&o.tokenKeyPEM, "dpop-token-key-pem", "", "ES256 access-token signing key: PEM text or a PEM file path (env "+EnvDPoPTokenKeyPEM+"); required")
-	flag.StringVar(&o.tokenIssuer, "token-issuer", "", "iss claim of issued access tokens (env "+EnvTokenIssuer+")")
-	flag.StringVar(&o.tokenAudience, "token-audience", "", "aud claim of issued access tokens (env "+EnvTokenAudience+")")
-	flag.StringVar(&o.sans, "sans", "", "comma-separated DNS names / IPs the issued leaf SAN carries; empty means none")
-	flag.DurationVar(&o.enrolmentTokenTTL, "enrolment-token-ttl", 24*time.Hour,
-		"life an operator-minted enrolment token would carry (env "+EnvEnrolmentTokenTTL+")")
-	flag.DurationVar(&o.credentialTTL, "credential-ttl", 90*24*time.Hour,
-		"life of an issued device credential (env "+EnvCredentialTTL+")")
-	flag.DurationVar(&o.shutdownGraceful, "shutdown-grace", 10*time.Second, "graceful shutdown grace period")
-	flag.StringVar(&o.vaultURL, "vault-url", os.Getenv(EnvVaultURL),
-		"content-vault base URL on its internal ingress (env "+EnvVaultURL+"); empty disables content grants")
-	flag.Parse()
-
-	passed := visited(flag.CommandLine)
-	o.addr = passed.str("addr", o.addr, EnvHTTPAddr, "127.0.0.1:8443")
-	o.storeKind = passed.str("store", o.storeKind, EnvStore, "memory")
-	o.pgHost = passed.str("pg-host", o.pgHost, EnvPGHost, "")
-	o.pgDatabase = passed.str("pg-database", o.pgDatabase, EnvPGDatabase, "shadow")
-	o.role = passed.str("role", o.role, EnvRole, "control-api")
-	o.region = passed.str("region", o.region, EnvRegion, "")
-	o.tokenIssuer = passed.str("token-issuer", o.tokenIssuer, EnvTokenIssuer, "")
-	o.tokenAudience = passed.str("token-audience", o.tokenAudience, EnvTokenAudience, "")
-	o.credentialTTL = passed.duration("credential-ttl", o.credentialTTL, EnvCredentialTTL, 90*24*time.Hour)
-	o.enrolmentTokenTTL = passed.duration("enrolment-token-ttl", o.enrolmentTokenTTL, EnvEnrolmentTokenTTL, 24*time.Hour)
-	keyVaultURI := os.Getenv(EnvKeyVaultURI)
-	appInsights := os.Getenv(EnvAppInsights)
-
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-
-	if err := validateHTTPAddr(o.addr); err != nil {
-		return err
+func serve(logger *slog.Logger) error {
+	cfg, err := loadConfig(os.Getenv)
+	if err != nil {
+		return fmt.Errorf("configuration:\n%w", err)
 	}
-	if err := checkURL(EnvKeyVaultURI, keyVaultURI); err != nil {
-		return err
-	}
-	if err := checkURL(EnvAppInsights, appInsights); err != nil {
-		return err
-	}
-	if appInsights != "" {
-		// Stated rather than implied: the deployment passes a connection string this build does not
-		// export to. Adding an exporter means adding a dependency, and this build has none.
-		logger.Warn("SAC_APPINSIGHTS is set but this build exports no telemetry to it; the connection string is read, validated, and never logged")
-	}
-
-	// §5.1: the access token's signing key is required. Refusing to start without it is the point.
-	tokenKeyPEM := o.tokenKeyPEM
-	if tokenKeyPEM == "" {
-		tokenKeyPEM = os.Getenv(EnvDPoPTokenKeyPEM)
-	}
-	if tokenKeyPEM == "" {
-		return fmt.Errorf("refusing to start without the access-token signing key: set %s or --dpop-token-key-pem "+
-			"(an endpoint that issued tokens under an unstated key would be a different authority from the one configured)", EnvDPoPTokenKeyPEM)
-	}
-	tokenKeyBytes, err := pemValue(tokenKeyPEM, EnvDPoPTokenKeyPEM)
+	db, err := openDatabase()
 	if err != nil {
 		return err
 	}
-	tokenKey, err := jose.ParseECPrivateKeyPEM(tokenKeyBytes)
-	if err != nil {
-		return err
-	}
+	defer db.Close()
 
-	sg, err := loadSigner(o, keyVaultURI, logger)
+	srv, issuer, err := wire(cfg, db, logger)
 	if err != nil {
-		return err
-	}
-
-	var st store.Store
-	var contentDB *sql.DB
-	switch o.storeKind {
-	case "memory":
-		st = store.NewMemory()
-		logger.Warn("running with the in-memory store: nothing is persisted and no database identity is used; this is for a local run and for tests")
-	case "sql":
-		dsn := o.dsn
-		if dsn == "" {
-			dsn = postgresDSN(o.pgHost, o.pgPort, o.pgDatabase, o.role)
-		}
-		driver := o.driver
-		if driver == "" {
-			driver = defaultDriverName
-		}
-		if driver == "" {
-			return sqlRefusal(o, dsn)
-		}
-		db, err := sql.Open(driver, dsn)
-		if err != nil {
-			return fmt.Errorf("open database with driver %q: %w (a registered driver is required; the standard library has none)", driver, err)
-		}
-		db.SetMaxOpenConns(16)
-		db.SetConnMaxIdleTime(5 * time.Minute)
-		st = store.NewSQL(db)
-		contentDB = db
-		logger.Info("serving from PostgreSQL", "driver", driver, "dsn", redactDSN(dsn))
-	default:
-		return fmt.Errorf("unknown -store %q (want memory or sql)", o.storeKind)
-	}
-	defer st.Close()
-
-	ent, err := wireEnterprise(st, contentDB, logger)
-	if err != nil {
-		return err
-	}
-	enrolSvc, err := enrol.New(st, sg, enrol.Config{
-		Region:        o.region,
-		CredentialTTL: o.credentialTTL,
-		ProofSkew:     dpop.DefaultSkew,
-		Deployment:    ent.deployment,
-		Intune:        ent.intune,
-		UserRefKeys:   ent.userRefKeys,
-		PolicyETag:    ent.policyETag,
-		KeyRate:       ent.keyRate,
-		KeyBurst:      ent.keyBurst,
-	})
-	if err != nil {
-		return err
-	}
-	tokenSvc, err := token.New(st, tokenKey, token.Config{
-		Issuer:    o.tokenIssuer,
-		Audience:  o.tokenAudience,
-		TokenTTL:  15 * time.Minute,
-		ProofSkew: dpop.DefaultSkew,
-		Region:    o.region,
-	})
-	if err != nil {
-		return err
-	}
-	verifier, err := token.NewVerifier(&tokenKey.PublicKey, o.tokenIssuer, o.tokenAudience, nil)
-	if err != nil {
-		return err
-	}
-
-	srv := httpapi.New(enrolSvc, tokenSvc, verifier, st, logger)
-
-	// The health channel (§5.4). It is always wired: a device that reports is an operational fact,
-	// and a route that answers 503 while a device believes it reported would be a coverage lie.
-	healthSvc, err := health.New(st, health.Config{})
-	if err != nil {
-		return err
-	}
-	srv.Health = healthSvc
-	srv.Policy, srv.Admin, srv.SCIM = ent.policy, ent.admin, ent.scim
-
-	// The content grant path needs all three of: a vault to mint the object key, a database to
-	// decide against, and the key the storage layer verifies an upload URL with. Without any one of
-	// them the route answers 503; it never decides a grant nothing could honour.
-	switch signingKey := os.Getenv(EnvUploadSigningKey); {
-	case o.vaultURL == "":
-		logger.Info("content grants are disabled: no vault URL is configured", "env", EnvVaultURL)
-	case contentDB == nil:
-		logger.Warn("content grants are disabled: they are decided against the database, and this process runs the in-memory store")
-	case signingKey == "":
-		return fmt.Errorf("refusing to start with %s set but no %s: an upload URL nobody can verify is an upload path with no decision behind it", EnvVaultURL, EnvUploadSigningKey)
-	default:
-		if err := checkURL(EnvVaultURL, o.vaultURL); err != nil {
-			return err
-		}
-		contentSvc, err := content.New(content.NewSQL(contentDB), content.NewHTTPVault(o.vaultURL), content.Config{
-			UploadSigningKey: []byte(signingKey),
-		})
-		if err != nil {
-			return err
-		}
-		srv.Content = contentSvc
-		logger.Info("content grants enabled", "vault", o.vaultURL)
-	}
-	// The store probe behind /readyz: reading ops.tenant is a real query in SQL mode and a real state
-	// check in memory mode. An unknown tenant is a healthy database, so only a transport error fails.
-	ready := func(ctx context.Context) error {
-		_, err := st.Tenant(ctx, "00000000-0000-0000-0000-000000000000")
-		if err == nil || errors.Is(err, store.ErrUnknownTenant) {
-			return nil
-		}
 		return err
 	}
 	httpServer := &http.Server{
-		Addr:              o.addr,
-		Handler:           withProbes(ent.handler(srv.Handler()), ready, logger),
+		Addr:              cfg.HTTPAddr,
+		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       90 * time.Second,
 	}
-
 	errCh := make(chan error, 1)
 	go func() {
-		logger.Info("control-api listening", "addr", o.addr, "store", o.storeKind,
-			"signer", sg.Name(), "region", o.region,
-			"keyvault_configured", keyVaultURI != "", "token_kid", tokenSvc.KeyID(),
-			"credential_ttl", o.credentialTTL.String())
+		logger.Info("control-api listening", "addr", cfg.HTTPAddr, "region", cfg.Region,
+			"issuer", issuer.Issuer(), "entra", cfg.EntraClientID != "")
 		errCh <- httpServer.ListenAndServe()
 	}()
-
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	select {
 	case err := <-errCh:
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if !errors.Is(err, http.ErrServerClosed) {
 			return err
 		}
 	case <-stop:
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), o.shutdownGraceful)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	logger.Info("shutting down")
 	return httpServer.Shutdown(ctx)
 }
 
-// loadSigner selects the certificate authority.
-//
-// Precedence: an explicit CA key pair — the --ca-cert/--ca-key files on a laptop, or
-// SAC_CA_CERT_PEM/SAC_CA_KEY_PEM injected from Key Vault in a deployment — is the authority whenever
-// it is present. A deployment that placed a device CA key pair in Key Vault signs leaves with it here.
-// Only when NO CA material is supplied does a configured Key Vault URI select the KeyVaultSigner
-// (HSM-resident signing), which this build does not implement; and with neither, a fresh development
-// CA is generated in process. The choice is stated at startup, never made silently per request.
-func loadSigner(o options, keyVaultURI string, logger *slog.Logger) (signer.CertificateSigner, error) {
-	if (o.caCertFile == "") != (o.caKeyFile == "") {
-		return nil, fmt.Errorf("LocalCA needs --ca-cert and --ca-key together, or neither")
-	}
-	var caCert, caKey []byte
-	if o.caCertFile != "" {
-		var err error
-		if caCert, err = os.ReadFile(o.caCertFile); err != nil {
-			return nil, fmt.Errorf("read CA certificate: %w", err)
-		}
-		if caKey, err = os.ReadFile(o.caKeyFile); err != nil {
-			return nil, fmt.Errorf("read CA key: %w", err)
-		}
-	} else {
-		caCert = []byte(os.Getenv(EnvCACertPEM))
-		caKey = []byte(os.Getenv(EnvCAKeyPEM))
-	}
-	if (len(caCert) == 0) != (len(caKey) == 0) {
-		return nil, fmt.Errorf("%s and %s must be set together, or neither", EnvCACertPEM, EnvCAKeyPEM)
-	}
-	switch {
-	case len(caCert) > 0:
-		ca, err := signer.NewLocalCA(caCert, caKey, o.credentialTTL, splitList(o.sans))
-		if err != nil {
-			return nil, err
-		}
-		logger.Info("device certificate authority configured", "source", "CA key pair (Key Vault secret or --ca-cert/--ca-key)")
-		return ca, nil
-	case keyVaultURI != "":
-		logger.Warn("SAC_KEYVAULT_URI is set and no CA key pair is configured: certificate signing selects the Key Vault signer, which this build does not implement; supply " + EnvCACertPEM + "/" + EnvCAKeyPEM + " or a certificate enrolment is refused")
-		return &signer.KeyVaultSigner{VaultURI: keyVaultURI}, nil
-	default:
-		ca, err := signer.NewLocalCA(nil, nil, o.credentialTTL, splitList(o.sans))
-		if err != nil {
-			return nil, err
-		}
-		logger.Warn("no CA material was configured: a fresh development CA was generated in process; every credential is invalid after a restart")
-		return ca, nil
-	}
-}
+// wire builds every service over the database and mounts it on one server.
+func wire(cfg config, db *sql.DB, logger *slog.Logger) (*httpapi.Server, *session.Issuer, error) {
+	st := store.NewSQL(db)
 
-// pemValue accepts PEM text or a path to a PEM file, so the same flag works with an environment
-// secret (text) and with a file on a laptop.
-func pemValue(value, name string) ([]byte, error) {
-	if strings.Contains(value, "-----BEGIN") {
-		return []byte(value), nil
-	}
-	b, err := os.ReadFile(value)
+	ca, err := deviceca.New(cfg.CACertPEM, cfg.CAKeyPEM)
 	if err != nil {
-		return nil, fmt.Errorf("%s: value is neither PEM text nor a readable file: %w", name, err)
+		return nil, nil, fmt.Errorf("%s/%s: %w", EnvCACertPEM, EnvCAKeyPEM, err)
 	}
-	return b, nil
-}
+	key, err := directory.DecodeKey(cfg.DirectoryKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", EnvDirectoryKey, err)
+	}
+	cipher, err := directory.NewCipher(key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", EnvDirectoryKey, err)
+	}
+	userRefKeys, err := directory.NewUserRefKeys(directory.NewKeyStore(db), cipher)
+	if err != nil {
+		return nil, nil, err
+	}
 
-func splitList(s string) []string {
-	var out []string
-	for _, part := range strings.Split(s, ",") {
-		if p := strings.TrimSpace(part); p != "" {
-			out = append(out, p)
+	keys, err := session.LoadKeyFile(cfg.SessionSigningKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", EnvSessionSigningKey, err)
+	}
+	issuer, err := session.NewIssuer(keys, session.IssuerConfig{Issuer: cfg.AuthIssuer})
+	if err != nil {
+		return nil, nil, err
+	}
+
+	policyKey, err := policyserve.LoadSigningKey(cfg.PolicySigningKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", EnvPolicySigningKey, err)
+	}
+	policy, err := policyserve.New(st, policyKey, policyserve.Config{KeyID: cfg.PolicySigningKeyID, Logger: logger})
+	if err != nil {
+		return nil, nil, err
+	}
+	logger.Info("policy signing key loaded", "kid", policy.KeyID(), "public_key_hex", policy.PublicKeyHex())
+
+	// The vendor's Entra app is optional: a deployment whose customers all use another OpenID
+	// Connect provider has none.
+	app, err := entraapp.New(entraapp.Config{ClientID: cfg.EntraClientID, ClientSecret: cfg.EntraClientSecret, FIC: cfg.EntraFIC})
+	switch {
+	case errors.Is(err, entraapp.ErrNotConfigured):
+		app = nil
+	case err != nil:
+		return nil, nil, err
+	}
+	var checker intune.Checker
+	var entraID *identity.EntraConfig
+	var entraOnboard *onboard.EntraConfig
+	if app != nil {
+		gc, err := intune.NewGraphChecker(app, nil)
+		if err != nil {
+			return nil, nil, err
 		}
+		checker = gc
+		entraID = &identity.EntraConfig{ClientID: app.ClientID(), Auth: app}
+		entraOnboard = &onboard.EntraConfig{ClientID: app.ClientID(), ConsentProbe: func(ctx context.Context, tid string) error {
+			_, err := app.Token(ctx, tid, entraapp.GraphScope)
+			return err
+		}}
+		logger.Info("Entra app configured", "client_id", app.ClientID(), "credential", app.Credential())
 	}
-	return out
+	if cfg.AllowInsecureIdP {
+		logger.Warn("identity providers may use http and private addresses; this is for the local lab only", "env", EnvAuthAllowInsecureIdP)
+	}
+
+	enrolSvc, err := enrol.New(st, ca, enrol.Config{
+		Region: cfg.Region, Intune: checker, UserRefKeys: userRefKeys, PolicyETag: policy,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	healthSvc, err := health.New(st, health.Config{})
+	if err != nil {
+		return nil, nil, err
+	}
+	contentSvc, err := content.New(content.NewSQL(db), content.NewHTTPVault(cfg.ContentVaultURL, issuer))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	sessions, err := session.NewManager(session.NewSQL(db), session.ManagerConfig{})
+	if err != nil {
+		return nil, nil, err
+	}
+	idStore := identity.NewSQL(db)
+	idSvc, err := identity.New(identity.Config{
+		Store: idStore, Sessions: sessions, Issuer: issuer, Cipher: cipher, Entra: entraID,
+		RedirectURIs: cfg.RedirectURIs, AllowInsecureIdP: cfg.AllowInsecureIdP, Logger: logger,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	internalAPI, err := idSvc.InternalHandler(cfg.InternalToken)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", EnvInternalToken, err)
+	}
+	onboarding, err := onboard.New(onboard.Config{
+		Store: idStore, Cipher: cipher, PublicURL: cfg.PublicURL, Entra: entraOnboard,
+		AllowInsecureIssuers: cfg.AllowInsecureIdP, Logger: logger,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+
+	scimStore := scim.NewSQL(db)
+	scimBase := cfg.PublicURL + "/scim/v2"
+	scimSvc, err := scim.NewService(scimStore, userRefKeys, cipher, scim.Config{BaseURL: scimBase})
+	if err != nil {
+		return nil, nil, err
+	}
+	scimSvc.Logger = logger
+
+	verifier := session.NewVerifier(issuer)
+	admin, err := deploy.NewHandler(st, adminAuthenticator(verifier), scimTokens{scim.NewTokens(scimStore)}, deploy.Config{
+		ReleaseDir: cfg.AgentReleaseDir, DeviceEndpoint: cfg.PublicDeviceEndpoint, ScimBaseURL: scimBase, Logger: logger,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return &httpapi.Server{
+		Store: st, CA: ca, Enrol: enrolSvc, Health: healthSvc, Policy: policy, Content: contentSvc,
+		Admin:      admin,
+		Extensions: deploy.NewExtensions(cfg.AgentReleaseDir, cfg.PublicDeviceEndpoint, logger),
+		SCIM:       scim.NewHandler(scimSvc, "/scim/v2", logger),
+		Mounts: map[string]http.Handler{
+			"/internal/v1/auth/": internalAPI,
+			onboard.PathPrefix:   onboarding.Handler(),
+			"/.well-known/":      issuer.WellKnownHandler(),
+		},
+		Logger: logger,
+	}, issuer, nil
 }
 
-// sqlRefusal is stated as a message rather than a dead end: the default build carries no PostgreSQL
-// driver, and the driver is compiled only under the sac_sql_driver tag so `go build ./...` stays
-// standard-library only. The message names the tagged build rather than starting in memory while a
-// deployment believes it is persisting.
-func sqlRefusal(o options, dsn string) error {
-	return fmt.Errorf(`--store sql cannot start in this build: no PostgreSQL driver is compiled in.
+// adminAuthenticator resolves an admin request's principal from its product access token
+// (audience sac-control). The audited actor comes from the verified token, never from a header.
+func adminAuthenticator(v *session.Verifier) deploy.Authenticator {
+	return func(r *http.Request) (deploy.Principal, error) {
+		h := r.Header.Get("Authorization")
+		scheme, token, ok := strings.Cut(h, " ")
+		if !ok || !strings.EqualFold(scheme, "Bearer") {
+			return deploy.Principal{}, errors.New("no bearer token")
+		}
+		p, err := v.Verify(strings.TrimSpace(token), session.AudienceControl)
+		if err != nil {
+			return deploy.Principal{}, err
+		}
+		return deploy.Principal{Tenant: p.Tenant, Actor: p.Actor, Subject: p.Subject, Roles: p.Roles}, nil
+	}
+}
 
-  driver   github.com/jackc/pgx/v5/stdlib (registered as "pgx"). This build does not carry it -- the
-           dependency is compiled only under the sac_sql_driver tag, which is what keeps the default
-           build dependency-free (see sqlpg/doc.go).
-  dsn      %s
-           from %s=%s %s=%s %s=%s (read from this process; never logged with a credential in them)
+// scimTokens adapts SCIM's token store to the admin API.
+type scimTokens struct{ t *scim.Tokens }
 
-  the tagged build, which uses the real driver and needs no -driver flag:
-      go build -tags sac_sql_driver -o control-api-sql ./cmd/control-api
-      ./control-api-sql -store sql -dsn "$SAC_PG_DSN"
+func (a scimTokens) Create(ctx context.Context, tenantID, label, by string) (string, string, error) {
+	return a.t.Create(ctx, tenantID, label, by)
+}
 
-  what IS verified:
-      go test -tags sac_sql_driver ./sqlpg/ -v
+func (a scimTokens) Revoke(ctx context.Context, tenantID, id, by string) error {
+	err := a.t.Revoke(ctx, tenantID, id, by)
+	if scim.IsNotFound(err) {
+		return fmt.Errorf("scim token %s: %w", id, deploy.ErrNotFound)
+	}
+	return err
+}
 
-  to fetch the driver on a host with a module proxy:
-      go get github.com/jackc/pgx/v5/stdlib && go mod tidy`,
-		dsn, EnvPGHost, o.pgHost, EnvPGDatabase, o.pgDatabase, EnvRole, o.role)
+func (a scimTokens) List(ctx context.Context, tenantID string) ([]deploy.ScimToken, error) {
+	list, err := a.t.List(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]deploy.ScimToken, 0, len(list))
+	for _, t := range list {
+		out = append(out, deploy.ScimToken{TokenID: t.TokenID, Label: t.Label, CreatedAt: t.CreatedAt, RevokedAt: t.RevokedAt})
+	}
+	return out, nil
 }

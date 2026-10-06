@@ -1,5 +1,5 @@
 // Package intune is the Intune managed-device check a deployment-key enrolment passes when its
-// tenant sets device_verification='intune' (contract §5).
+// tenant sets device_verification='intune'.
 //
 // A deployment key alone is a shared secret: every device a customer's package reaches holds it, so
 // anyone who copies the package can enrol. For a tenant whose devices are managed by Intune, the
@@ -36,7 +36,7 @@ const GraphScope = "https://graph.microsoft.com/.default"
 const DefaultGraphBaseURL = "https://graph.microsoft.com"
 
 // TokenSource obtains an app-only access token for the multi-tenant app in a customer's Entra
-// tenant. The identity side implements it (client secret, certificate or managed-identity federated
+// tenant. The identity side implements it (a client secret or the managed-identity federated
 // credential); this package only consumes it, so it is declared here rather than imported.
 type TokenSource interface {
 	Token(ctx context.Context, customerTenantID, scope string) (string, error)
@@ -87,8 +87,9 @@ type Checker interface {
 
 // GraphChecker is the Checker that asks Microsoft Graph.
 type GraphChecker struct {
-	Tokens  TokenSource
-	HTTP    *http.Client
+	Tokens TokenSource
+	HTTP   *http.Client
+	// BaseURL is DefaultGraphBaseURL; tests point it at a fake.
 	BaseURL string
 }
 
@@ -177,7 +178,7 @@ func (g *GraphChecker) Check(ctx context.Context, entraTenantID string, att *pro
 	return d, nil
 }
 
-// Decide applies the contract's checks to a managed device Graph returned. It is separate from
+// Decide applies the checks to a managed device Graph returned. It is separate from
 // Check so the rules are testable without a network.
 func Decide(id string, d ManagedDevice, att *protocol.DeviceAttestation) error {
 	if !strings.EqualFold(strings.Trim(d.ID, "{}"), id) {

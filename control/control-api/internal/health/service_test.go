@@ -10,6 +10,7 @@ import (
 
 	"github.com/shadow-ai-capture/control-api/internal/apierr"
 	"github.com/shadow-ai-capture/control-api/internal/store"
+	"github.com/shadow-ai-capture/control-api/internal/store/storetest"
 )
 
 func validReport(at time.Time) protocol.HealthRequest {
@@ -32,24 +33,23 @@ func validReport(at time.Time) protocol.HealthRequest {
 	}
 }
 
-// seed adds the tenant and device a health report authenticates as. The health service now reads the
-// tenant's device-identity setting and updates the device row, so both must exist.
-func seed(st *store.Memory) {
+// seed adds the tenant and device a health report authenticates as.
+func seed(st *storetest.Memory) {
 	st.AddTenant(store.Tenant{TenantID: "tenant-1", Status: "active", IngestEnabled: true, DeviceIdentity: protocol.DeviceIdentityClear})
 	st.AddDevice(store.Device{TenantID: "tenant-1", DeviceID: "device-1", OS: "windows"})
 }
 
-// docs/02 §5.4: the health channel upserts one row per collector and stamps device activity in the
-// same transaction. Both facts must land, and the closed vocabulary must be enforced.
+// The health channel upserts one row per collector and stamps device activity in the same
+// transaction; both facts must land.
 func TestReportWritesCollectorStateAndDeviceActivity(t *testing.T) {
-	st := store.NewMemory()
+	st := storetest.New()
 	seed(st)
 	svc, err := New(st, Config{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	at := time.Date(2026, 10, 4, 9, 0, 0, 0, time.UTC)
-	svc.SetClock(func() time.Time { return at })
+	svc.now = func() time.Time { return at }
 
 	resp, err := svc.Report(context.Background(), "tenant-1", "device-1", validReport(at))
 	if err != nil {
@@ -58,7 +58,7 @@ func TestReportWritesCollectorStateAndDeviceActivity(t *testing.T) {
 	if resp.NextReportAfterS != 900 {
 		t.Errorf("next_report_after_s = %d, want 900", resp.NextReportAfterS)
 	}
-	// ADR 0021: the response restates the tenant's identity setting so the device learns it.
+	// The response restates the tenant's identity setting so the device learns it.
 	if resp.DeviceIdentity != protocol.DeviceIdentityClear {
 		t.Errorf("device_identity = %q, want clear", resp.DeviceIdentity)
 	}
@@ -76,11 +76,11 @@ func TestReportWritesCollectorStateAndDeviceActivity(t *testing.T) {
 	if !ok || !seen.Equal(at) {
 		t.Errorf("last_seen_at = %v (%v), want %v", seen, ok, at)
 	}
-	// The device-level fields have no column and travel in the row's detail document (docs/02 §9).
+	// The device-level fields have no column and travel in the row's detail document.
 	if len(row.Detail) == 0 {
 		t.Error("device-level detail was not recorded")
 	}
-	// ADR 0021: the device row now carries the reported version, managed state and clear hostname.
+	// The device row carries the reported version, managed state and clear hostname.
 	dev, err := st.Device(context.Background(), "tenant-1", "device-1")
 	if err != nil {
 		t.Fatalf("Device: %v", err)
@@ -97,7 +97,7 @@ func TestReportWritesCollectorStateAndDeviceActivity(t *testing.T) {
 }
 
 func TestReportRefusesUnknownCollector(t *testing.T) {
-	st := store.NewMemory()
+	st := storetest.New()
 	st.SetCollectors("egress_proxy")
 	seed(st)
 	svc, _ := New(st, Config{})
@@ -116,19 +116,19 @@ func TestReportRefusesUnknownCollector(t *testing.T) {
 	}
 }
 
-// The stale-report guard: an out-of-order report must not overwrite a newer row (docs/02 §5.4).
+// An out-of-order report must not overwrite a newer row.
 func TestReportDoesNotOverwriteNewerState(t *testing.T) {
-	st := store.NewMemory()
+	st := storetest.New()
 	seed(st)
 	svc, _ := New(st, Config{})
 	base := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
-	svc.SetClock(func() time.Time { return base })
+	svc.now = func() time.Time { return base }
 	if _, err := svc.Report(context.Background(), "tenant-1", "device-1", validReport(base)); err != nil {
 		t.Fatalf("first report: %v", err)
 	}
 
 	// A later report flips the state to degraded.
-	svc.SetClock(func() time.Time { return base.Add(time.Hour) })
+	svc.now = func() time.Time { return base.Add(time.Hour) }
 	later := validReport(base.Add(time.Hour))
 	later.Collectors[0].State = protocol.StateDegraded
 	if _, err := svc.Report(context.Background(), "tenant-1", "device-1", later); err != nil {
@@ -140,7 +140,7 @@ func TestReportDoesNotOverwriteNewerState(t *testing.T) {
 	}
 
 	// A stale report (older timestamp) must be ignored.
-	svc.SetClock(func() time.Time { return base.Add(30 * time.Minute) })
+	svc.now = func() time.Time { return base.Add(30 * time.Minute) }
 	stale := validReport(base.Add(30 * time.Minute))
 	stale.Collectors[0].State = protocol.StateTampered
 	if _, err := svc.Report(context.Background(), "tenant-1", "device-1", stale); err != nil {
@@ -153,7 +153,7 @@ func TestReportDoesNotOverwriteNewerState(t *testing.T) {
 }
 
 func TestReportGatesClearHostnameOnTenantSetting(t *testing.T) {
-	st := store.NewMemory()
+	st := storetest.New()
 	st.AddTenant(store.Tenant{TenantID: "tenant-1", Status: "active", IngestEnabled: true, DeviceIdentity: protocol.DeviceIdentityHashed})
 	st.AddDevice(store.Device{TenantID: "tenant-1", DeviceID: "device-1", OS: "windows"})
 	svc, _ := New(st, Config{})
@@ -177,7 +177,7 @@ func TestReportGatesClearHostnameOnTenantSetting(t *testing.T) {
 }
 
 func TestReportRefusesUnvalidatedShape(t *testing.T) {
-	svc, _ := New(store.NewMemory(), Config{})
+	svc, _ := New(storetest.New(), Config{})
 	req := validReport(time.Now())
 	req.SchemaVersion = "9.9"
 	_, err := svc.Report(context.Background(), "tenant-1", "device-1", req)

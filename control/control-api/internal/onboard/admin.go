@@ -15,7 +15,7 @@ import (
 	"github.com/shadow-ai-capture/control-api/internal/session"
 )
 
-// The vendor operator's two steps (contract §3): create the product tenant, then issue the one-time
+// The vendor operator's two steps: create the product tenant, then issue the one-time
 // onboarding link with the email domains the vendor knows belong to the customer. Domains are set
 // here and never claimed by the customer, because a domain decides which tenant a work email signs in
 // to.
@@ -27,8 +27,8 @@ const (
 	sqlAdminSetTenant = `SELECT set_config('app.tenant_id', $1, true)`
 
 	sqlAdminCreateTenant = `
-INSERT INTO ops.tenant (tenant_id, name, status, residency_region, key_custody, kek_id, ceiling_mode)
-VALUES ($1::uuid, $2::text, 'active', $3::text, $4::text, nullif($5::text, ''), $6::text)`
+INSERT INTO ops.tenant (tenant_id, name, status, residency_region, ceiling_mode)
+VALUES ($1::uuid, $2::text, 'active', $3::text, $4::text)`
 
 	sqlAdminTenantName = `SELECT name FROM ops.tenant WHERE tenant_id = $1::uuid`
 
@@ -69,7 +69,7 @@ var AdminStatements = []AdminStatement{
 
 // NewTenant is `control-api tenant create`.
 type NewTenant struct {
-	Name, Region, KeyCustody, CeilingMode, KEKID string
+	Name, Region, CeilingMode string
 	// Actor is the vendor operator, recorded as vendor:<actor>.
 	Actor string
 	Now   time.Time
@@ -83,12 +83,8 @@ func CreateTenant(ctx context.Context, db *sql.DB, t NewTenant) (string, error) 
 		return "", errors.New("onboard: a tenant needs a name")
 	case t.Region == "":
 		return "", errors.New("onboard: a tenant needs a residency region")
-	case t.KeyCustody != "vendor" && t.KeyCustody != "customer_managed" && t.KeyCustody != "customer_held":
-		return "", fmt.Errorf("onboard: key custody %q is not vendor, customer_managed or customer_held", t.KeyCustody)
 	case t.CeilingMode != "m0" && t.CeilingMode != "m1" && t.CeilingMode != "m2" && t.CeilingMode != "m3":
 		return "", fmt.Errorf("onboard: ceiling %q is not m0, m1, m2 or m3", t.CeilingMode)
-	case t.CeilingMode == "m3" && strings.TrimSpace(t.KEKID) == "":
-		return "", errors.New("onboard: an m3 ceiling stores content, so it needs a key (--kek-id)")
 	case strings.TrimSpace(t.Actor) == "":
 		return "", errors.New("onboard: the operator must be named")
 	}
@@ -100,11 +96,11 @@ func CreateTenant(ctx context.Context, db *sql.DB, t NewTenant) (string, error) 
 		return "", err
 	}
 	err = adminTx(ctx, db, id, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, sqlAdminCreateTenant, id, t.Name, t.Region, t.KeyCustody, t.KEKID, t.CeilingMode); err != nil {
+		if _, err := tx.ExecContext(ctx, sqlAdminCreateTenant, id, t.Name, t.Region, t.CeilingMode); err != nil {
 			return fmt.Errorf("insert tenant: %w", err)
 		}
 		return adminAudit(ctx, tx, id, t.Actor, "tenant.create", "tenant", id, map[string]any{
-			"name": t.Name, "region": t.Region, "key_custody": t.KeyCustody, "ceiling_mode": t.CeilingMode,
+			"name": t.Name, "region": t.Region, "ceiling_mode": t.CeilingMode,
 		}, t.Now)
 	})
 	if err != nil {

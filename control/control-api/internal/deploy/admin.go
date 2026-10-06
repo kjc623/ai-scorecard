@@ -1,12 +1,12 @@
-// Package deploy is the deployment half of the admin API (contract §5): the Settings -> Deployment
-// page's read, the tenant package download that mints a deployment key per download, key
-// revocation, the device-verification setting, and the SCIM token endpoints. It also builds the
-// packages (package.go, intunewin.go).
+// Package deploy is the deployment admin API and the packages it builds: the Settings ->
+// Deployment page's read, the tenant package download that mints a deployment key per download,
+// key revocation, the device-verification setting, the SCIM token endpoints, and the browser
+// extension's update manifest and CRX.
 //
-// Every route requires a product access token carrying the admin role, resolved by an injected
-// Authenticator (the identity service's verifier); the tenant is the token's, never the request's.
-// Every write is audited with the real actor in the same transaction as the write where the store
-// owns both, and immediately after it where another component does (SCIM tokens).
+// Every admin route requires a product access token carrying the admin role, resolved by an
+// injected Authenticator; the tenant is the token's, never the request's. Every write is audited
+// with the real actor, in the same transaction as the write where the store owns both and
+// immediately after it where another component does (SCIM tokens).
 package deploy
 
 import (
@@ -65,15 +65,12 @@ var ErrNotFound = errors.New("deploy: not found")
 
 // Config is the admin surface's settings.
 type Config struct {
-	// ReleaseDir is SAC_AGENT_RELEASE_DIR: ShadowAICapture.msi and release.json.
+	// ReleaseDir holds ShadowAICapture.msi, the browser extension and release.json.
 	ReleaseDir string
-	// DeviceEndpoint is SAC_PUBLIC_DEVICE_ENDPOINT, written into every package as SAC_DEVICE_ENDPOINT.
+	// DeviceEndpoint is the public device origin written into every tenant package.
 	DeviceEndpoint string
-	// ScimBaseURL is what a customer's IdP is pointed at: {SAC_PUBLIC_URL}/scim/v2.
+	// ScimBaseURL is the SCIM base a customer's identity provider is pointed at.
 	ScimBaseURL string
-	// KeyTTL is a minted key's life. Zero, the default, mints keys that do not expire: an MDM keeps
-	// installing the same package for as long as it is assigned, and revocation is the control.
-	KeyTTL time.Duration
 	// MaxReleaseBytes bounds the MSI a package is built from.
 	MaxReleaseBytes int64
 	Now             func() time.Time
@@ -82,7 +79,7 @@ type Config struct {
 
 // Handler serves the deployment admin routes.
 type Handler struct {
-	store store.DeploymentStore
+	store store.Store
 	auth  Authenticator
 	scim  ScimTokens
 	cfg   Config
@@ -90,7 +87,7 @@ type Handler struct {
 
 // NewHandler builds the admin surface. A nil ScimTokens leaves the SCIM token routes answering 503
 // and the page's token list empty; the store and authenticator are required.
-func NewHandler(st store.DeploymentStore, auth Authenticator, scim ScimTokens, cfg Config) (*Handler, error) {
+func NewHandler(st store.Store, auth Authenticator, scim ScimTokens, cfg Config) (*Handler, error) {
 	if st == nil {
 		return nil, errors.New("deploy: store is required")
 	}
@@ -254,7 +251,7 @@ func (h *Handler) handleSummary(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, t := range tokens {
-			out.Scim.Tokens = append(out.Scim.Tokens, scimTokenJSON{TokenID: t.TokenID, Label: t.Label, CreatedAt: t.CreatedAt, RevokedAt: t.RevokedAt})
+			out.Scim.Tokens = append(out.Scim.Tokens, scimTokenJSON(t))
 		}
 	}
 	// A missing or unreadable release is shown as no release, not as a failed page: the admin can
@@ -350,19 +347,13 @@ func (h *Handler) handlePackage(w http.ResponseWriter, r *http.Request) {
 
 	// The key is stored only once its package exists, so a failed build leaves no orphan key; and
 	// the package is sent only once the key is stored, so no package carries a key nobody can use.
-	var expires *time.Time
-	if h.cfg.KeyTTL > 0 {
-		t := now.Add(h.cfg.KeyTTL)
-		expires = &t
-	}
+	// A key does not expire: an MDM installs the same package for as long as it is assigned, and
+	// revocation is the control.
 	key := store.DeploymentKey{
 		KeyID: keyID, TenantID: p.Tenant, KeyHash: enrol.HashDeploymentKey(plaintext), Label: label,
-		CreatedBy: p.actorID(), CreatedAt: now, ExpiresAt: expires,
+		CreatedBy: p.actorID(), CreatedAt: now,
 	}
 	detail := map[string]any{"label": label, "format": req.Format, "release_version": rel.Version}
-	if expires != nil {
-		detail["expires_at"] = expires.Format(time.RFC3339)
-	}
 	if _, err := h.store.CreateDeploymentKey(r.Context(), key,
 		h.userAudit(p, "deployment_key.create", "deployment_key", keyID, now, detail)); err != nil {
 		h.fail(w, apierr.Internal(fmt.Errorf("store deployment key: %w", err)))

@@ -54,7 +54,7 @@ func newHarness(t *testing.T, cfg Config) *harness {
 	mem := NewMemory()
 	mem.AddTenant(tenantA, "clear")
 	mem.AddTenant(tenantB, "hashed")
-	keyStore := directory.NewMemoryKeyStore()
+	keyStore := &memKeyStore{sealed: map[string][]byte{}}
 	key, err := protocol.DecodeUserRefKey(vectorKey)
 	if err != nil {
 		t.Fatal(err)
@@ -178,7 +178,7 @@ func (h *harness) storedUser(tenant, id string) UserRow {
 	return UserRow{}
 }
 
-func (h *harness) dim(tenant, ref string) directory.Row {
+func (h *harness) dim(tenant, ref string) UserDimRow {
 	h.t.Helper()
 	row, ok := h.mem.UserDim(tenant, ref)
 	if !ok {
@@ -248,4 +248,25 @@ func (h *harness) doHeader(method, path, authorization string) (int, map[string]
 	raw, _ := io.ReadAll(res.Body)
 	out, _ := decodeObject(raw)
 	return res.StatusCode, out
+}
+
+// memKeyStore is a map-backed directory.UserRefKeyStore that accepts any tenant.
+type memKeyStore struct {
+	mu     sync.Mutex
+	sealed map[string][]byte
+}
+
+func (m *memKeyStore) SealedUserRefKey(_ context.Context, tenantID string) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]byte(nil), m.sealed[tenantID]...), nil
+}
+
+func (m *memKeyStore) InitUserRefKey(_ context.Context, tenantID string, sealed []byte) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.sealed[tenantID]) == 0 {
+		m.sealed[tenantID] = append([]byte(nil), sealed...)
+	}
+	return append([]byte(nil), m.sealed[tenantID]...), nil
 }

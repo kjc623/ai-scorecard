@@ -8,7 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/shadow-ai-capture/control-api/internal/store"
+	"github.com/shadow-ai-capture/control-api/internal/session"
 )
 
 // Tokens administers a tenant's SCIM tokens for the admin API (Settings → Deployment,
@@ -57,7 +57,7 @@ func (t *Tokens) Create(ctx context.Context, tenantID, label, createdBy string) 
 	if err != nil {
 		return "", "", err
 	}
-	id, err := store.NewUUID()
+	id, err := session.NewUUID()
 	if err != nil {
 		return "", "", err
 	}
@@ -79,7 +79,7 @@ func (t *Tokens) Revoke(ctx context.Context, tenantID, tokenID, revokedBy string
 	if strings.TrimSpace(revokedBy) == "" {
 		return fmt.Errorf("scim: a token is revoked by a named actor")
 	}
-	if !store.IsUUID(tokenID) {
+	if !session.IsUUID(tokenID) {
 		return ErrNotFound
 	}
 	tokenID = strings.ToLower(tokenID)

@@ -12,15 +12,12 @@ import (
 	"strings"
 )
 
-// DefaultKeyID is the key id a bundle names when none is configured. It is the device's default
-// (capture-core --policy-key-id) and sac-bundle's, so a generic agent pinned to the vendor key
-// accepts a served bundle with no extra configuration.
+// DefaultKeyID is the key id a bundle names when none is configured; it is the agent's default.
 const DefaultKeyID = "policy-key-1"
 
-// LoadSigningKey reads the policy signing key from SAC_POLICY_SIGNING_KEY_FILE. Two forms are
-// accepted: a PKCS#8 PEM Ed25519 private key (`openssl genpkey -algorithm ed25519`), and the hex
-// form sac-bundle's --policy-priv takes (64-byte private key, or a 32-byte seed). The key is never
-// logged; only its public half (PublicKeyHex) may be.
+// LoadSigningKey reads the policy signing key file: a PKCS#8 PEM Ed25519 private key
+// (`openssl genpkey -algorithm ed25519`), or hex of the 64-byte private key or its 32-byte seed. The
+// key is never logged; only its public half (PublicKeyHex) may be.
 func LoadSigningKey(path string) (ed25519.PrivateKey, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {

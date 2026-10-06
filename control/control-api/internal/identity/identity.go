@@ -1,6 +1,6 @@
 // Package identity is control-api as the OpenID Connect relying party for every customer identity
-// provider (contract §0.2, §0.3, §3): Microsoft Entra ID through the vendor's multi-tenant app, and
-// any other OIDC provider a customer connects at onboarding.
+// provider: Microsoft Entra ID through the vendor's multi-tenant app, and any other OIDC provider a
+// customer connects at onboarding.
 //
 // The dashboard server is a thin client of this package's internal API. It asks Begin for an
 // authorize URL, sends the browser there, and hands the code back to Complete; everything that makes
@@ -31,15 +31,17 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coreos/go-oidc/v3/oidc"
+
 	"github.com/shadow-ai-capture/device/protocol"
 
 	"github.com/shadow-ai-capture/control-api/internal/directory"
 	"github.com/shadow-ai-capture/control-api/internal/session"
 )
 
-// The refusal codes of the internal API. The four the contract names are tenant_not_onboarded,
-// no_role, connection_disabled and session_ended (and no_sso_connection at begin); the rest name
-// conditions the dashboard shows as "start again" or that only a misconfigured caller meets.
+// The refusal codes of the internal API. The dashboard explains tenant_not_onboarded, no_role,
+// connection_disabled, session_ended and no_sso_connection to the person; the rest name conditions
+// it shows as "start again" or that only a misconfigured caller meets.
 const (
 	CodeBadRequest           = "bad_request"
 	CodeNoSSOConnection      = "no_sso_connection"
@@ -52,6 +54,7 @@ const (
 	CodeNoRole               = "no_role"
 	CodeConnectionDisabled   = "connection_disabled"
 	CodeUserDeactivated      = "user_deactivated"
+	CodeTenantClosed         = "tenant_closed"
 	CodeInviteUnknown        = "invite_unknown"
 	CodeInviteUsed           = "invite_used"
 	CodeInviteExpired        = "invite_expired"
@@ -75,7 +78,7 @@ func refuse(status int, code, format string, args ...any) *Refusal {
 }
 
 const (
-	// AttemptTTL is the contract's life of a sign-in attempt and its PKCE/state/nonce.
+	// AttemptTTL is the life of a sign-in attempt and its PKCE verifier, state and nonce.
 	AttemptTTL = 10 * time.Minute
 	// RefreshInterval is how often a session's IdP refresh token is exercised at most.
 	RefreshInterval = 30 * time.Minute
@@ -97,7 +100,8 @@ type ClientAuthenticator interface {
 type EntraConfig struct {
 	ClientID string
 	Auth     ClientAuthenticator
-	// LoginBaseURL is the identity platform host; default https://login.microsoftonline.com.
+	// LoginBaseURL is the identity platform host; empty is https://login.microsoftonline.com. Tests
+	// point it at a fake provider.
 	LoginBaseURL string
 }
 
@@ -112,14 +116,14 @@ type Config struct {
 	Entra *EntraConfig
 	// HTTPClient makes every outbound call; default NewHTTPClient(AllowInsecureIdP, 10s).
 	HTTPClient *http.Client
-	// AllowedRedirectURIs, when non-empty, is the exact set of redirect_uri values Begin accepts.
-	AllowedRedirectURIs []string
-	// AllowInsecureIdP admits http issuers and private addresses: the lab's stand-in provider only.
+	// RedirectURIs is the exact set of redirect_uri values Begin accepts. It is required: a sign-in
+	// returns its authorization code to the redirect URI, so an open set would hand codes to anyone.
+	RedirectURIs []string
+	// AllowInsecureIdP admits http issuers and private addresses. It exists for the local lab's test
+	// identity provider and is never set in production.
 	AllowInsecureIdP bool
-	// JWKSRefetchInterval bounds kid-miss refetches per JWKS; default one minute.
-	JWKSRefetchInterval time.Duration
-	Logger              *slog.Logger
-	Now                 func() time.Time
+	Logger           *slog.Logger
+	Now              func() time.Time
 }
 
 // Service is the relying party.
@@ -131,7 +135,6 @@ type Service struct {
 	entra         *EntraConfig
 	entraBase     string
 	client        *http.Client
-	keys          *keyCache
 	allowInsecure bool
 	redirects     []string
 	log           *slog.Logger
@@ -139,6 +142,7 @@ type Service struct {
 
 	mu        sync.Mutex
 	discovery map[string]cachedMeta
+	keySets   map[string]*oidc.RemoteKeySet
 	lastSweep time.Time
 }
 
@@ -156,6 +160,13 @@ func New(cfg Config) (*Service, error) {
 		return nil, errors.New("identity: a session manager and a token issuer are required")
 	case cfg.Cipher == nil:
 		return nil, errors.New("identity: a cipher (SAC_DIRECTORY_KEY) is required to seal sign-in state")
+	case len(cfg.RedirectURIs) == 0:
+		return nil, errors.New("identity: at least one redirect URI is required")
+	}
+	for _, u := range cfg.RedirectURIs {
+		if err := checkAbsolute(u); err != nil {
+			return nil, fmt.Errorf("identity: %w", err)
+		}
 	}
 	if cfg.Entra != nil && (cfg.Entra.ClientID == "" || cfg.Entra.Auth == nil) {
 		return nil, errors.New("identity: Entra needs a client id and a credential")
@@ -169,14 +180,10 @@ func New(cfg Config) (*Service, error) {
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = NewHTTPClient(cfg.AllowInsecureIdP, 10*time.Second)
 	}
-	if cfg.JWKSRefetchInterval <= 0 {
-		cfg.JWKSRefetchInterval = time.Minute
-	}
 	s := &Service{
 		store: cfg.Store, sessions: cfg.Sessions, issuer: cfg.Issuer, cipher: cfg.Cipher, entra: cfg.Entra,
-		client: cfg.HTTPClient, allowInsecure: cfg.AllowInsecureIdP, redirects: cfg.AllowedRedirectURIs,
-		log: cfg.Logger, now: cfg.Now, discovery: map[string]cachedMeta{},
-		keys: newKeyCache(cfg.HTTPClient, cfg.Now, cfg.JWKSRefetchInterval),
+		client: cfg.HTTPClient, allowInsecure: cfg.AllowInsecureIdP, redirects: append([]string(nil), cfg.RedirectURIs...),
+		log: cfg.Logger, now: cfg.Now, discovery: map[string]cachedMeta{}, keySets: map[string]*oidc.RemoteKeySet{},
 	}
 	if cfg.Entra != nil {
 		s.entraBase = strings.TrimRight(cfg.Entra.LoginBaseURL, "/")
@@ -348,12 +355,19 @@ func withOpenID(scopes string) string {
 }
 
 func (s *Service) checkRedirect(raw string) error {
+	if err := checkAbsolute(raw); err != nil {
+		return err
+	}
+	if !contains(s.redirects, raw) {
+		return fmt.Errorf("redirect_uri %q is not one this deployment allows", raw)
+	}
+	return nil
+}
+
+func checkAbsolute(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") || u.Fragment != "" || u.User != nil {
 		return fmt.Errorf("redirect_uri %q is not an absolute http(s) URL", raw)
-	}
-	if len(s.redirects) > 0 && !contains(s.redirects, raw) {
-		return fmt.Errorf("redirect_uri %q is not one this deployment allows", raw)
 	}
 	return nil
 }
@@ -583,6 +597,13 @@ func (s *Service) Complete(ctx context.Context, req CompleteRequest) (CompleteRe
 	if known && !active {
 		return CompleteResult{}, s.refuseAudited(ctx, conn, who, refuse(403, CodeUserDeactivated, "SCIM marks %s inactive", userRef))
 	}
+	if err := s.tenantOpen(ctx, conn.TenantID); err != nil {
+		var r *Refusal
+		if errors.As(err, &r) {
+			return CompleteResult{}, s.refuseAudited(ctx, conn, who, r)
+		}
+		return CompleteResult{}, err
+	}
 
 	if a.InviteID != "" {
 		if err := s.activate(ctx, conn, a.InviteID, who, now); err != nil {
@@ -709,8 +730,7 @@ func (s *Service) redeem(ctx context.Context, kind string, conn *Connection, for
 		}
 		if secret != "" {
 			// client_secret_post unless the provider says it only takes basic: the post form is what
-			// most providers (and the lab's stand-in) accept, and discovery that lists no methods is the
-			// common case.
+			// most providers accept, and discovery that lists no methods is the common case.
 			if len(meta.TokenAuthMethods) > 0 && !contains(meta.TokenAuthMethods, "client_secret_post") &&
 				contains(meta.TokenAuthMethods, "client_secret_basic") {
 				basic = &[2]string{conn.ClientID, secret}
@@ -737,10 +757,6 @@ func (s *Service) verifyIDToken(ctx context.Context, kind string, conn *Connecti
 	if raw == "" {
 		return signer{}, refuse(401, CodeSignInFailed, "the token response carried no id_token")
 	}
-	parts, err := parseRS256(raw)
-	if err != nil {
-		return signer{}, refuse(401, CodeSignInFailed, "%v", err)
-	}
 	var jwksURL, clientID string
 	if kind == ProviderEntra {
 		jwksURL, clientID = s.entraBase+"/common/discovery/v2.0/keys", s.entra.ClientID
@@ -751,14 +767,10 @@ func (s *Service) verifyIDToken(ctx context.Context, kind string, conn *Connecti
 		}
 		jwksURL, clientID = meta.JWKSURI, conn.ClientID
 	}
-	pub, err := s.keys.key(ctx, jwksURL, parts.kid)
+	c, err := s.verifyIDTokenSignature(ctx, jwksURL, clientID, raw)
 	if err != nil {
 		return signer{}, refuse(401, CodeSignInFailed, "%v", err)
 	}
-	if err := parts.verify(pub); err != nil {
-		return signer{}, refuse(401, CodeSignInFailed, "%v", err)
-	}
-	c := parts.claims
 	var who signer
 	if kind == ProviderEntra {
 		who.tid = strings.ToLower(str(c, "tid"))
@@ -771,7 +783,7 @@ func (s *Service) verifyIDToken(ctx context.Context, kind string, conn *Connecti
 	} else if iss := str(c, "iss"); iss != conn.Issuer {
 		return signer{}, refuse(401, CodeSignInFailed, "issuer %q is not the connection's", iss)
 	}
-	if err := checkAudience(c, clientID); err != nil {
+	if err := checkAuthorizedParty(c, clientID); err != nil {
 		return signer{}, refuse(401, CodeSignInFailed, "%v", err)
 	}
 	if err := checkTimes(c, s.now().UTC(), session.Leeway); err != nil {
@@ -841,6 +853,11 @@ func (s *Service) Token(ctx context.Context, sessionID string) (TokenResult, err
 	if err != nil {
 		return TokenResult{}, err
 	}
+	// A tenant whose reads are closed gets no token, but its sessions survive: reopening the tenant
+	// restores access without a new sign-in.
+	if err := s.tenantOpen(ctx, rec.TenantID); err != nil {
+		return TokenResult{}, err
+	}
 	_, active, known, err := s.scimPerson(ctx, rec.TenantID, conn.Provider, rec.Actor, rec.Subject, rec.UserRef)
 	if err != nil {
 		return TokenResult{}, err
@@ -907,6 +924,23 @@ func (s *Service) Revoke(ctx context.Context, sessionID string) error {
 	return nil
 }
 
+// tenantOpen refuses a tenant that is not active or whose reads are closed. Every product read
+// carries a product token, and a token lives at most a few minutes, so closing a tenant here closes
+// its reads everywhere within one token life.
+func (s *Service) tenantOpen(ctx context.Context, tenantID string) error {
+	access, err := s.store.TenantAccess(ctx, tenantID)
+	if errors.Is(err, ErrNotFound) {
+		return refuse(403, CodeTenantClosed, "tenant %s does not exist", tenantID)
+	}
+	if err != nil {
+		return err
+	}
+	if access.Status != "active" || !access.ReadEnabled {
+		return refuse(403, CodeTenantClosed, "tenant %s is %s with reads enabled %v", tenantID, access.Status, access.ReadEnabled)
+	}
+	return nil
+}
+
 func (s *Service) mint(rec session.Record, idp string) (string, int, session.Principal, error) {
 	p := session.Principal{
 		Tenant: rec.TenantID, Actor: rec.Actor, Roles: rec.Roles, IdP: idp,
@@ -958,7 +992,7 @@ func (s *Service) refresh(ctx context.Context, conn *Connection, rec session.Rec
 // ---------------------------------------------------------------------------------------------
 
 // scimPerson finds the SCIM-provisioned person behind a sign-in, by the refs the shared derivation
-// gives (contract §4): the UPN-ref of the actor and, for Entra, the oid-ref of the subject, each
+// gives: the UPN-ref of the actor and, for Entra, the oid-ref of the subject, each
 // resolved through ops.user_ref_alias. known is the ref a session already recorded.
 func (s *Service) scimPerson(ctx context.Context, tenantID, provider, actor, subject, known string) (string, bool, bool, error) {
 	var refs []string

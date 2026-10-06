@@ -2,7 +2,7 @@ package identity
 
 import "github.com/shadow-ai-capture/control-api/internal/session"
 
-// resolveRoles is the contract's role rule: the IdP's role values mapped by the connection's
+// resolveRoles is the role rule: the IdP's role values mapped by the connection's
 // role_map, united with the grants recorded in ops.role_grant.
 //
 // An empty role_map is the identity map over the product role names, so an Entra app role named
