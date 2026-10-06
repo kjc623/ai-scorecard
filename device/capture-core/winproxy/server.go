@@ -1,0 +1,350 @@
+package winproxy
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"net/http"
+	"net/url"
+	"sync"
+
+	"github.com/shadow-ai-capture/device/capture-core/core"
+	"github.com/shadow-ai-capture/device/capture-core/policy"
+)
+
+// Config carries the PAC server's inputs and its operating-system seams. Everything that is
+// policy (the interception hosts) or runtime state (the proxy's bound address) is read through
+// functions so the PAC is rendered fresh on every request rather than cached stale.
+type Config struct {
+	// Listen is the loopback host:port the PAC is served on. Only the port is used; the PAC is
+	// always bound to 127.0.0.1 so it is never reachable off the device.
+	Listen string
+	// Bundles returns the bundle in force, for the interception hosts.
+	Bundles func() *policy.Bundle
+	// ProxyAddr returns proxy.tls's bound loopback address; empty means it is not in the path.
+	ProxyAddr func() string
+	// Users, OpenSettings and FetchPAC are the operating-system seams; nil selects the platform
+	// default (Windows). A test overrides them so nothing touches the machine.
+	Users        func(context.Context) ([]string, error)
+	OpenSettings func(sid string) (Registry, error)
+	FetchPAC     func(ctx context.Context, u string) ([]byte, error)
+
+	Log core.Logger
+}
+
+// Server serves the PAC and keeps each signed-in user's AutoConfigURL pointed at it. It fails open:
+// stopping it (or a crash of the whole agent) leaves the PAC returning the original route, and a
+// clean Stop restores every user's previous AutoConfigURL.
+type Server struct {
+	cfg Config
+
+	mu        sync.Mutex
+	listener  net.Listener
+	http      *http.Server
+	pacURL    string
+	originals map[string]Original
+	restores  map[string]Restore
+	skips     map[string]string
+	started   bool
+	stopped   bool
+}
+
+// New returns an unstarted server.
+func New(cfg Config) *Server {
+	if cfg.Log == nil {
+		cfg.Log = nopLogger{}
+	}
+	if cfg.Bundles == nil {
+		cfg.Bundles = func() *policy.Bundle { return nil }
+	}
+	if cfg.ProxyAddr == nil {
+		cfg.ProxyAddr = func() string { return "" }
+	}
+	if cfg.Users == nil {
+		cfg.Users = signedInUsers
+	}
+	if cfg.OpenSettings == nil {
+		cfg.OpenSettings = openInternetSettings
+	}
+	if cfg.FetchPAC == nil {
+		cfg.FetchPAC = fetchPAC
+	}
+	if cfg.Listen == "" {
+		cfg.Listen = "127.0.0.1:8350"
+	}
+	return &Server{
+		cfg:       cfg,
+		originals: map[string]Original{},
+		restores:  map[string]Restore{},
+		skips:     map[string]string{},
+	}
+}
+
+// nopLogger drops the provider's logs when none is configured.
+type nopLogger struct{}
+
+func (nopLogger) Printf(string, ...any) {}
+
+// Start binds the PAC listener on loopback, begins serving, then points each signed-in user's
+// AutoConfigURL at it. A user whose existing settings cannot be reproduced is left untouched
+// (fail open) rather than risk breaking their proxy.
+func (s *Server) Start(ctx context.Context) error {
+	s.mu.Lock()
+	if s.started {
+		s.mu.Unlock()
+		return nil
+	}
+	s.mu.Unlock()
+
+	ln, err := net.Listen("tcp", loopbackListen(s.cfg.Listen))
+	if err != nil {
+		return fmt.Errorf("winproxy: PAC listener: %w", err)
+	}
+	pacURL := pacURLFrom(ln)
+	if pacURL == "" {
+		_ = ln.Close()
+		return fmt.Errorf("winproxy: PAC listener %s has no usable port", s.cfg.Listen)
+	}
+
+	s.mu.Lock()
+	s.listener = ln
+	s.pacURL = pacURL
+	s.mu.Unlock()
+
+	// Serve before writing any setting, so a user's first PAC fetch is always answered.
+	srv := &http.Server{Handler: http.HandlerFunc(s.handlePAC)}
+	s.mu.Lock()
+	s.http = srv
+	s.mu.Unlock()
+	go func() { _ = srv.Serve(ln) }()
+
+	if err := s.reconcile(ctx); err != nil {
+		s.cfg.Log.Printf("winproxy: applying the PAC to signed-in users: %v", err)
+	}
+
+	s.mu.Lock()
+	s.started = true
+	s.stopped = false
+	s.mu.Unlock()
+	return nil
+}
+
+// Stop restores every user's previous AutoConfigURL, then stops serving. Restoring first is the
+// fail-open ordering: no user is left pointing at a PAC that is about to go away.
+func (s *Server) Stop(ctx context.Context) error {
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return nil
+	}
+	s.stopped = true
+	s.mu.Unlock()
+
+	s.restoreAll(ctx)
+
+	s.mu.Lock()
+	srv := s.http
+	s.listener = nil
+	s.mu.Unlock()
+	if srv != nil {
+		_ = srv.Shutdown(ctx)
+	}
+	return nil
+}
+
+// Refresh reconciles the applied users with who is now signed in: a newly signed-in user gets the
+// PAC applied, a signed-out user's previous AutoConfigURL is restored.
+func (s *Server) Refresh(ctx context.Context) error {
+	s.mu.Lock()
+	started := s.started && !s.stopped
+	s.mu.Unlock()
+	if !started {
+		return nil
+	}
+	return s.reconcile(ctx)
+}
+
+func (s *Server) reconcile(ctx context.Context) error {
+	sids, err := s.cfg.Users(ctx)
+	if err != nil {
+		return err
+	}
+	now := make(map[string]bool, len(sids))
+	for _, sid := range sids {
+		now[sid] = true
+	}
+
+	s.mu.Lock()
+	var toApply, toRestore []string
+	for sid := range now {
+		if _, done := s.restores[sid]; !done {
+			toApply = append(toApply, sid)
+		}
+	}
+	for sid := range s.restores {
+		if !now[sid] {
+			toRestore = append(toRestore, sid)
+		}
+	}
+	pacURL := s.pacURL
+	s.mu.Unlock()
+
+	for _, sid := range toRestore {
+		s.restoreOne(ctx, sid)
+	}
+	for _, sid := range toApply {
+		if err := s.applyOne(ctx, sid, pacURL+"?u="+url.QueryEscape(sid)); err != nil {
+			s.recordSkip(sid, err)
+		}
+	}
+	return nil
+}
+
+// applyOne reads one user's existing proxy settings, fetches and inlines an existing PAC when the
+// user has one, and points their AutoConfigURL at the PAC.
+func (s *Server) applyOne(ctx context.Context, sid, pacURL string) error {
+	reg, err := s.cfg.OpenSettings(sid)
+	if err != nil {
+		return err
+	}
+	defer reg.Close()
+
+	orig, err := ReadOriginal(reg)
+	if err != nil {
+		return err
+	}
+	if orig.AutoConfigURL != "" {
+		body, ferr := s.cfg.FetchPAC(ctx, orig.AutoConfigURL)
+		if ferr != nil {
+			return fmt.Errorf("cannot fetch existing PAC %q: %w", orig.AutoConfigURL, ferr)
+		}
+		if !delegatable(string(body)) {
+			return fmt.Errorf("existing PAC %q does not declare FindProxyForURL; leaving the user's settings untouched", orig.AutoConfigURL)
+		}
+		orig.AutoConfigBody = string(body)
+	}
+
+	restore, err := NewSettings(reg).Apply(pacURL)
+	if err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	s.originals[sid] = orig
+	s.restores[sid] = restore
+	delete(s.skips, sid)
+	s.mu.Unlock()
+	s.cfg.Log.Printf("winproxy: desktop apps for %s routed through the PAC", sid)
+	return nil
+}
+
+// restoreOne puts a signed-out user's previous AutoConfigURL back.
+func (s *Server) restoreOne(ctx context.Context, sid string) {
+	s.mu.Lock()
+	restore, ok := s.restores[sid]
+	delete(s.restores, sid)
+	delete(s.originals, sid)
+	delete(s.skips, sid)
+	s.mu.Unlock()
+	if !ok {
+		return
+	}
+	reg, err := s.cfg.OpenSettings(sid)
+	if err != nil {
+		s.cfg.Log.Printf("winproxy: restoring %s's AutoConfigURL: %v", sid, err)
+		return
+	}
+	defer reg.Close()
+	if err := NewSettings(reg).Restore(restore); err != nil {
+		s.cfg.Log.Printf("winproxy: restoring %s's AutoConfigURL: %v", sid, err)
+	}
+}
+
+// restoreAll restores every applied user, used at Stop.
+func (s *Server) restoreAll(ctx context.Context) {
+	s.mu.Lock()
+	restores := make(map[string]Restore, len(s.restores))
+	for sid, r := range s.restores {
+		restores[sid] = r
+	}
+	s.restores = map[string]Restore{}
+	s.originals = map[string]Original{}
+	s.skips = map[string]string{}
+	s.mu.Unlock()
+
+	for sid, restore := range restores {
+		reg, err := s.cfg.OpenSettings(sid)
+		if err != nil {
+			s.cfg.Log.Printf("winproxy: restoring %s's AutoConfigURL: %v", sid, err)
+			continue
+		}
+		if err := NewSettings(reg).Restore(restore); err != nil {
+			s.cfg.Log.Printf("winproxy: restoring %s's AutoConfigURL: %v", sid, err)
+		}
+		_ = reg.Close()
+	}
+}
+
+// recordSkip logs a per-user skip once per reason, so a user with an unreadable existing PAC does
+// not produce a warning every refresh interval.
+func (s *Server) recordSkip(sid string, err error) {
+	s.mu.Lock()
+	if prev, seen := s.skips[sid]; !seen || prev != err.Error() {
+		s.skips[sid] = err.Error()
+		s.mu.Unlock()
+		s.cfg.Log.Printf("winproxy: leaving %s's proxy settings untouched: %v", sid, err)
+		return
+	}
+	s.mu.Unlock()
+}
+
+// handlePAC serves the PAC for one user. A request for a user we did not configure returns a PAC
+// that goes direct for every host: fail open, never intercepting a user we do not know.
+func (s *Server) handlePAC(w http.ResponseWriter, r *http.Request) {
+	sid := r.URL.Query().Get("u")
+	s.mu.Lock()
+	orig, ok := s.originals[sid]
+	s.mu.Unlock()
+
+	spec := Spec{}
+	if ok {
+		spec = Spec{
+			ProxyAddr:      s.cfg.ProxyAddr(),
+			InterceptHosts: s.interceptHosts(),
+			Original:       orig,
+		}
+	}
+	w.Header().Set("Content-Type", "application/x-ns-proxy-autoconfig")
+	_, _ = w.Write(Render(spec))
+}
+
+// interceptHosts is the bundle's interception scope: tenant hosts then seed hosts.
+func (s *Server) interceptHosts() []string {
+	b := s.cfg.Bundles()
+	if b == nil {
+		return nil
+	}
+	out := make([]string, 0, len(b.Interception.TenantHosts)+len(b.Interception.SeedHosts))
+	out = append(out, b.Interception.TenantHosts...)
+	out = append(out, b.Interception.SeedHosts...)
+	return out
+}
+
+// loopbackListen rewrites a host:port to bind on 127.0.0.1 with the same port, so the PAC is never
+// reachable off the device whatever the policy names.
+func loopbackListen(listen string) string {
+	_, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return "127.0.0.1:8350"
+	}
+	return net.JoinHostPort("127.0.0.1", port)
+}
+
+// pacURLFrom returns the PAC base URL for a bound loopback listener.
+func pacURLFrom(ln net.Listener) string {
+	_, port, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		return ""
+	}
+	return "http://127.0.0.1:" + port + "/proxy.pac"
+}

@@ -24,6 +24,7 @@ import (
 	"github.com/shadow-ai-capture/device/capture-core/proxy/tlsproxy"
 	"github.com/shadow-ai-capture/device/capture-core/state"
 	"github.com/shadow-ai-capture/device/capture-core/trust"
+	"github.com/shadow-ai-capture/device/capture-core/winproxy"
 	capturespool "github.com/shadow-ai-capture/device/capture-spool"
 	"github.com/shadow-ai-capture/device/protocol"
 )
@@ -39,6 +40,7 @@ const (
 	startupBound      = 30 * time.Second // enrolment and the first policy fetch at startup
 	defaultBodyCap    = 4 << 20
 	defaultTLSListen  = "127.0.0.1:0"
+	defaultPACListen  = "127.0.0.1:8350"
 	spoolMaxBytes     = 25 << 20
 	spoolMaxEntries   = 25000
 	serviceStopBudget = drainDeadline + 15*time.Second
@@ -119,6 +121,12 @@ type service struct {
 	trust   trustStore
 	health  *healthChannel
 	native  *nativeServer
+
+	// tlsProv is proxy.tls, and pac the Windows desktop-app PAC that points at it. The PAC is
+	// not a provider (it produces no observations); it is started and stopped beside the native
+	// messaging endpoint and fails open by returning the previous route when the proxy drops out.
+	tlsProv *tlsproxy.Provider
+	pac     *winproxy.Server
 
 	policyMu   sync.Mutex
 	policySync *policySync
@@ -332,6 +340,7 @@ func (s *service) buildProviders() error {
 	if err := s.reg.Add(tlsProv); err != nil {
 		return err
 	}
+	s.tlsProv = tlsProv
 
 	s.broker = loopback.New(loopback.Config{
 		Ports:    portsFrom(b),
@@ -357,7 +366,37 @@ func (s *service) buildProviders() error {
 		shim.Runtimes = b.CLIShim.Runtimes
 		shim.NodeRequire = b.CLIShim.NodeRequire
 	}
-	return s.reg.Add(cli.New(shim))
+	if err := s.reg.Add(cli.New(shim)); err != nil {
+		return err
+	}
+
+	s.buildPAC(b)
+	return nil
+}
+
+// buildPAC builds the Windows desktop-app PAC when the platform is Windows and a bundle is in
+// force. It is a no-op elsewhere; desktop apps keep the device's existing proxy behaviour.
+func (s *service) buildPAC(b *policy.Bundle) {
+	if runtime.GOOS != "windows" || b == nil {
+		return
+	}
+	// A kill switch that stops proxy.tls also stops the PAC: there is nothing to route to, and a
+	// suppressed proxy must not cause any user's proxy settings to be changed.
+	if ks, ok := b.KillSwitchFor(protocol.RouteProxyTLS); ok && ks.Mode == policy.KillDisable {
+		if ks.EffectiveAt.IsZero() || !ks.EffectiveAt.After(time.Now()) {
+			return
+		}
+	}
+	listen := b.Interception.PacListen
+	if strings.TrimSpace(listen) == "" {
+		listen = defaultPACListen
+	}
+	s.pac = winproxy.New(winproxy.Config{
+		Listen:    listen,
+		Bundles:   s.currentBundle,
+		ProxyAddr: func() string { return s.tlsProv.ListenAddr() },
+		Log:       s.logf,
+	})
 }
 
 func (s *service) currentBundle() *policy.Bundle {
@@ -394,6 +433,11 @@ func (s *service) Start(ctx context.Context) error {
 		// The browser relay is one collection path; the others keep running without it.
 		s.log.Error("native messaging endpoint unavailable; the browser extension cannot reach the agent", "endpoint", s.native.addr, "error", err)
 	}
+	if s.pac != nil {
+		if err := s.pac.Start(ctx); err != nil {
+			s.log.Error("desktop-app PAC capture unavailable; desktop apps keep their previous proxy behaviour", "error", err)
+		}
+	}
 	s.health.Start(ctx)
 	s.log.Info("capture-core started", "order", s.sup.Order())
 	return nil
@@ -402,6 +446,11 @@ func (s *service) Start(ctx context.Context) error {
 // Stop ends the background loops, runs the shutdown sequence and releases the spool.
 func (s *service) Stop(ctx context.Context) error {
 	s.native.Stop()
+	// Restore every user's previous proxy settings before the proxy stops enforcing, so no desktop
+	// app is left pointing at a PAC whose proxy is about to go away.
+	if s.pac != nil {
+		_ = s.pac.Stop(ctx)
+	}
 	s.health.Stop()
 	select {
 	case <-s.bgStop:

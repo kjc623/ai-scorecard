@@ -58,6 +58,11 @@ type Interception struct {
 
 	// ProxyCanary is the end-to-end probe destination (host:port) the proxy handshakes against.
 	ProxyCanary string `json:"proxy_canary,omitempty"`
+
+	// PacListen is the loopback address the desktop-app PAC is served on. The PAC URL is written
+	// into each signed-in user's Internet Settings, so it must be a fixed loopback port, never
+	// ":0". Empty means the desktop-app capture path is off.
+	PacListen string `json:"pac_listen,omitempty"`
 }
 
 // LoopbackPort is one row of the loopback port map: which tool, which port the broker holds, where
@@ -307,6 +312,11 @@ func (b *Bundle) Validate() error {
 	// end-to-end probe, so the bundle that names it must be well formed.
 	if b.Interception.ProxyCanary != "" && !validHostPort(b.Interception.ProxyCanary) {
 		return fmt.Errorf("policy: interception proxy_canary %q is not a usable host:port", b.Interception.ProxyCanary)
+	}
+	// The PAC listen address is written into each user's Internet Settings, so a malformed one
+	// would break desktop-app routing rather than merely degrade a probe.
+	if b.Interception.PacListen != "" && !validHostPort(b.Interception.PacListen) {
+		return fmt.Errorf("policy: interception pac_listen %q is not a usable host:port", b.Interception.PacListen)
 	}
 	if b.CLIShim.ProxyAddr != "" && !validHostPort(b.CLIShim.ProxyAddr) {
 		return fmt.Errorf("policy: cli_shim proxy_addr %q is not a usable host:port", b.CLIShim.ProxyAddr)

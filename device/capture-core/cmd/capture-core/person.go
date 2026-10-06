@@ -206,6 +206,11 @@ func (s *service) watchPeople(ctx context.Context, stop <-chan struct{}) {
 			return
 		case <-t.C:
 			s.refreshPerson()
+			// Reconcile the desktop-app PAC with who is signed in: a new sign-in gets the PAC
+			// applied, a sign-out restores the user's previous proxy settings.
+			if s.pac != nil {
+				_ = s.pac.Refresh(ctx)
+			}
 		}
 	}
 }

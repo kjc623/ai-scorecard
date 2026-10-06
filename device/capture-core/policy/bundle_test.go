@@ -28,6 +28,19 @@ func TestBundleValidateProxyAndCLIShim(t *testing.T) {
 		t.Fatal("a malformed proxy_listen was accepted")
 	}
 
+	// Accept: a well-formed pac_listen, and reject a malformed one (it is written into each
+	// user's Internet Settings, so it must be a usable loopback host:port).
+	okPAC := testBundle("42")
+	okPAC.Interception.PacListen = "127.0.0.1:8350"
+	if err := okPAC.Validate(); err != nil {
+		t.Fatalf("a well-formed pac_listen was rejected: %v", err)
+	}
+	badPAC := testBundle("42")
+	badPAC.Interception.PacListen = "not-a-host-port"
+	if err := badPAC.Validate(); err == nil {
+		t.Fatal("a malformed pac_listen was accepted")
+	}
+
 	// Reject: a cli_shim proxy_addr that is not host:port.
 	badAddr := testBundle("42")
 	badAddr.CLIShim.ProxyAddr = "no-port-here"
