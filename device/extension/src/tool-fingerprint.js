@@ -2,12 +2,16 @@
  * tool-fingerprint.js — `tool_fingerprint = "tf1:" + base32(SHA-256(canonical(signal_vector)))`.
  *
  * The `tf1:` prefix versions the derivation so it can change without silently re-keying history.
- * The vector holds only signals every route can produce (destination, method, normalised path
- * shape, content type, body shape), so one tool seen through the browser and through the proxy
- * yields one fingerprint. The tab URL, request id, timestamp and automation marker are excluded.
+ * The vector holds the destination, method, normalised path shape, content type, body shape,
+ * message count bucket, role values, and whether model parameters or tool declarations are
+ * present. It excludes the tab URL, request id, timestamp and automation marker.
  *
- * At M0 the body is not read, so `body_shape` is `unread` and the fingerprint is weaker; that is
- * recorded in the vector rather than hidden.
+ * The derivation is extension-specific: the egress proxy derives its own `tls_` fingerprint from
+ * the host and path, so one tool seen through both routes yields one fingerprint per route, not one
+ * fingerprint overall. Because the body shape and the message-count and role signals read from the
+ * body enter the vector, one tool also yields different fingerprints at M0 — when the body is not
+ * read, so `body_shape` is `unread` — and at M1+, when it is. Recording `unread` rather than
+ * omitting the field keeps that weaker observation explicit in the vector.
  */
 
 import { sha256Hex } from './codec.js';
