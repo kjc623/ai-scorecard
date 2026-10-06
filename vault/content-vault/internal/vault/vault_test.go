@@ -3,1240 +3,669 @@ package vault_test
 import (
 	"bytes"
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
+	"encoding/base64"
 	"errors"
-	"fmt"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/shadow-ai-capture/content-vault/internal/keys"
-	"github.com/shadow-ai-capture/content-vault/internal/store"
-	"github.com/shadow-ai-capture/content-vault/internal/testrig"
-	"github.com/shadow-ai-capture/content-vault/internal/vault"
 	"github.com/shadow-ai-capture/device/protocol"
+
+	"github.com/shadow-ai-capture/content-vault/internal/keyring"
+	"github.com/shadow-ai-capture/content-vault/internal/store"
+	"github.com/shadow-ai-capture/content-vault/internal/store/storetest"
+	"github.com/shadow-ai-capture/content-vault/internal/vault"
 )
 
-// encryptWithDEK is the device's half of the hierarchy: AES-256-GCM under the per-object data key.
-// The rotation test uses it to prove that a re-wrap does not make an existing ciphertext
-// unreadable — the property "re-wrap, never re-encrypt" exists to protect.
-func encryptWithDEK(t *testing.T, dek, plaintext []byte) []byte {
-	t.Helper()
-	block, err := aes.NewCipher(dek)
-	if err != nil {
-		t.Fatal(err)
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		t.Fatal(err)
-	}
-	nonce := bytes.Repeat([]byte{7}, gcm.NonceSize())
-	return gcm.Seal(nil, nonce, plaintext, nil)
+const (
+	tenantID     = "7d3c6a52-0b8e-4f0e-9a51-2a4c1f6b9e01"
+	otherTenant  = "c2b1f0e4-5d6a-4b7c-8e9f-0a1b2c3d4e5f"
+	eventID      = "0f8e7d6c-5b4a-4392-8170-6f5e4d3c2b1a"
+	grantID      = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
+	submissionID = "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e"
+	deviceID     = "3c4d5e6f-7a8b-4c9d-8e1f-2a3b4c5d6e7f"
+)
+
+var t0 = time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+
+type rig struct {
+	t     *testing.T
+	store *storetest.Fake
+	keys  *keyring.Keyring
+	svc   *vault.Service
+	now   time.Time
 }
 
-func decryptWithDEK(t *testing.T, dek, ciphertext []byte) []byte {
+func newRig(t *testing.T, tier store.SearchTier) *rig {
 	t.Helper()
-	block, err := aes.NewCipher(dek)
+	r := &rig{t: t, store: storetest.New(), now: t0}
+	r.keys = mustKeys(t, "v1:"+b64(1))
+	r.store.PutTenant(store.Tenant{TenantID: tenantID, Status: "active", ContentSearch: tier, IngestEnabled: true, ReadEnabled: true})
+	r.store.PutSubmission(storetest.Submission{TenantID: tenantID, SubmissionID: submissionID, PromptKind: "user", ReceivedAt: t0.Add(-time.Minute)})
+	r.store.PutGrant(tenantID, store.Grant{
+		GrantID: grantID, EventID: eventID, DeviceID: deviceID, SubmissionID: submissionID,
+		Decision: "granted", ExpiresAt: t0.Add(10 * time.Minute),
+	})
+	r.build(r.keys)
+	return r
+}
+
+func (r *rig) build(keys *keyring.Keyring) {
+	svc, err := vault.New(vault.Config{Store: r.store, Keys: keys, RetrievalURLBase: "https://analyst.example/", Now: func() time.Time { return r.now }})
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	r.svc = svc
+}
+
+func b64(fill byte) string {
+	return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{fill}, keyring.KeySize))
+}
+
+func mustKeys(t *testing.T, spec string) *keyring.Keyring {
+	t.Helper()
+	k, err := keyring.Parse(spec)
 	if err != nil {
 		t.Fatal(err)
 	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		t.Fatal(err)
+	return k
+}
+
+func upload(content []byte) vault.UploadRequest {
+	return vault.UploadRequest{TenantID: tenantID, EventID: eventID, GrantID: grantID, RawDigest: protocol.RawDigest(content), Content: content}
+}
+
+func wantDenial(t *testing.T, err error, reason vault.Reason) {
+	t.Helper()
+	d, ok := vault.AsDenial(err)
+	if !ok || d.Reason != reason {
+		t.Fatalf("error = %v, want denial %s", err, reason)
 	}
-	nonce := bytes.Repeat([]byte{7}, gcm.NonceSize())
-	out, err := gcm.Open(nil, nonce, ciphertext, nil)
-	if err != nil {
-		t.Fatalf("the content no longer decrypts under its data key: %v", err)
+}
+
+func actions(f *storetest.Fake) []string {
+	var out []string
+	for _, a := range f.Audit() {
+		out = append(out, a.Action)
 	}
 	return out
 }
 
-// ---------------------------------------------------------------------------------------
-// The grant matrix
-// ---------------------------------------------------------------------------------------
+var ctx = context.Background()
 
-// TestGrantMatrix is the deliverable's core: every row is a way a retrieval can be attempted, and
-// every refusal carries a reason from the closed set.
-func TestGrantMatrix(t *testing.T) {
-	const principal = "analyst@example.com"
+func TestUploadStoresEncryptedContent(t *testing.T) {
+	r := newRig(t, store.SearchFullText)
+	content := []byte("summarise the Q3 board pack")
+	res, err := r.svc.Upload(ctx, upload(content))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Replayed || res.EventID != eventID || res.GrantID != grantID || res.SizeBytes != len(content) {
+		t.Fatalf("result = %+v", res)
+	}
+	if want := t0.AddDate(0, 0, 30); !res.ExpiresAt.Equal(want) {
+		t.Fatalf("expires_at = %s, want now + the tenant's 30-day retention = %s", res.ExpiresAt, want)
+	}
+	stored := r.store.Content(tenantID)
+	if len(stored) != 1 {
+		t.Fatalf("%d objects stored, want 1", len(stored))
+	}
+	c := stored[0]
+	if bytes.Contains(c.Ciphertext, content) || c.KeyVersion != "v1" || c.RawDigest != protocol.RawDigest(content) ||
+		c.SubmissionID != submissionID || c.PromptKind != "user" || c.RetentionClass != "content" || c.ObjectID != res.ObjectID {
+		t.Fatalf("stored row = %+v", c)
+	}
+	plaintext, err := r.keys.Open(tenantID, c.ObjectID, c.KeyVersion, c.Ciphertext)
+	if err != nil || !bytes.Equal(plaintext, content) {
+		t.Fatalf("stored ciphertext does not open to the upload: %q, %v", plaintext, err)
+	}
+	if g := r.store.Grant(tenantID, grantID); !g.UsedAt.Equal(t0) {
+		t.Fatalf("grant used_at = %s, want %s", g.UsedAt, t0)
+	}
+	if s := r.store.Submission(tenantID, submissionID); s.ContentState != "uploaded" {
+		t.Fatalf("submission content_state = %q, want uploaded", s.ContentState)
+	}
+	audit := r.store.Audit()
+	if len(audit) != 1 || audit[0].Action != vault.ActionContentStored || audit[0].ActorType != "device" || audit[0].ActorID != deviceID {
+		t.Fatalf("audit = %+v", audit)
+	}
+	if strings.Contains(strings.ToLower(audit[0].Detail["raw_digest"].(string)), "q3") {
+		t.Fatal("the audit row carries content")
+	}
+}
 
-	t.Run("a valid grant redeems once and returns the content path", func(t *testing.T) {
-		rig := testrig.New(t, testrig.Options{})
-		obj := rig.Store(t, testrig.TenantID, testrig.ObjectA, testrig.SubmissionA, testrig.EventA)
-		grantID := rig.Retrieve(t, principal, testrig.EventA)
+func TestARetryOfTheSameUploadSucceedsWithoutWriting(t *testing.T) {
+	r := newRig(t, store.SearchFullText)
+	content := []byte("the same prompt")
+	first, err := r.svc.Upload(ctx, upload(content))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.now = t0.Add(time.Hour) // after the grant expired: a retry still succeeds
+	again, err := r.svc.Upload(ctx, upload(content))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !again.Replayed || again.ObjectID != first.ObjectID || again.RawDigest != first.RawDigest {
+		t.Fatalf("retry = %+v, want the first object replayed", again)
+	}
+	if n := len(r.store.Content(tenantID)); n != 1 {
+		t.Fatalf("%d objects after a retry, want 1", n)
+	}
+	if got := actions(r.store); len(got) != 1 {
+		t.Fatalf("audit after a retry = %v, want the one content_stored row", got)
+	}
+}
 
-		res, err := rig.Service.Redeem(context.Background(), vault.RedeemRequest{
-			TenantID: testrig.TenantID, GrantID: grantID, Principal: principal, EventID: testrig.EventA,
-		})
-		if err != nil {
-			t.Fatalf("redeem: %v", err)
-		}
-		if res.State != "available" {
-			t.Fatalf("state is %q, want available", res.State)
-		}
-		if res.RawDigest != obj.Digest {
-			t.Errorf("raw digest is %q, want %q", res.RawDigest, obj.Digest)
-		}
-		if res.BlobPath != obj.BlobPath {
-			t.Errorf("blob path is %q, want %q", res.BlobPath, obj.BlobPath)
-		}
-		if !res.GrantExpiresAt.After(rig.Clock.T) {
-			t.Errorf("the grant expires at %s, which is not after now (%s)", res.GrantExpiresAt, rig.Clock.T)
-		}
-	})
+func TestADifferentBodyUnderAUsedGrantIsRefused(t *testing.T) {
+	r := newRig(t, store.SearchFullText)
+	if _, err := r.svc.Upload(ctx, upload([]byte("first"))); err != nil {
+		t.Fatal(err)
+	}
+	_, err := r.svc.Upload(ctx, upload([]byte("second")))
+	wantDenial(t, err, vault.ReasonAlreadyStored)
+}
 
-	t.Run("no grant is denied with grant_required", func(t *testing.T) {
-		rig := testrig.New(t, testrig.Options{})
-		rig.Store(t, testrig.TenantID, testrig.ObjectA, testrig.SubmissionA, testrig.EventA)
-		_, err := rig.Service.Redeem(context.Background(), vault.RedeemRequest{
-			TenantID: testrig.TenantID, GrantID: "99999999-9999-4999-8999-999999999999",
-			Principal: principal, EventID: testrig.EventA,
-		})
-		assertDenial(t, err, vault.DenyGrantRequired)
-	})
+func TestASecondGrantCannotReplaceStoredContent(t *testing.T) {
+	r := newRig(t, store.SearchFullText)
+	if _, err := r.svc.Upload(ctx, upload([]byte("first"))); err != nil {
+		t.Fatal(err)
+	}
+	const second = "4d5e6f7a-8b9c-4d0e-9f1a-2b3c4d5e6f7a"
+	r.store.PutGrant(tenantID, store.Grant{GrantID: second, EventID: eventID, DeviceID: deviceID, Decision: "granted", ExpiresAt: t0.Add(time.Hour)})
+	req := upload([]byte("replacement"))
+	req.GrantID = second
+	_, err := r.svc.Upload(ctx, req)
+	wantDenial(t, err, vault.ReasonAlreadyStored)
+	if !r.store.Grant(tenantID, second).UsedAt.IsZero() {
+		t.Fatal("the refused upload's grant claim was committed")
+	}
+}
 
-	t.Run("an expired grant is denied with grant_expired", func(t *testing.T) {
-		rig := testrig.New(t, testrig.Options{GrantTTL: time.Minute})
-		rig.Store(t, testrig.TenantID, testrig.ObjectA, testrig.SubmissionA, testrig.EventA)
-		grantID := rig.Retrieve(t, principal, testrig.EventA)
-
-		// One second past the window. Time is moved on the injected clock, so the test is not
-		// waiting for anything and cannot flake on a slow machine.
-		rig.Clock.Advance(time.Minute + time.Second)
-		_, err := rig.Service.Redeem(context.Background(), vault.RedeemRequest{
-			TenantID: testrig.TenantID, GrantID: grantID, Principal: principal, EventID: testrig.EventA,
-		})
-		assertDenial(t, err, vault.DenyGrantExpired)
-	})
-
-	t.Run("an already-used grant is denied with grant_already_used", func(t *testing.T) {
-		rig := testrig.New(t, testrig.Options{})
-		rig.Store(t, testrig.TenantID, testrig.ObjectA, testrig.SubmissionA, testrig.EventA)
-		grantID := rig.Retrieve(t, principal, testrig.EventA)
-
-		if _, err := rig.Service.Redeem(context.Background(), vault.RedeemRequest{
-			TenantID: testrig.TenantID, GrantID: grantID, Principal: principal, EventID: testrig.EventA,
-		}); err != nil {
-			t.Fatalf("first redemption: %v", err)
-		}
-		_, err := rig.Service.Redeem(context.Background(), vault.RedeemRequest{
-			TenantID: testrig.TenantID, GrantID: grantID, Principal: principal, EventID: testrig.EventA,
-		})
-		assertDenial(t, err, vault.DenyGrantAlreadyUsed)
-	})
-
-	t.Run("a grant for event A used against event B is denied", func(t *testing.T) {
-		rig := testrig.New(t, testrig.Options{})
-		rig.Store(t, testrig.TenantID, testrig.ObjectA, testrig.SubmissionA, testrig.EventA)
-		rig.Store(t, testrig.TenantID, testrig.ObjectB, testrig.SubmissionB, testrig.EventB)
-		grantID := rig.Retrieve(t, principal, testrig.EventA)
-
-		_, err := rig.Service.Redeem(context.Background(), vault.RedeemRequest{
-			TenantID: testrig.TenantID, GrantID: grantID, Principal: principal, EventID: testrig.EventB,
-		})
-		assertDenial(t, err, vault.DenyGrantEventMismatch)
-	})
-
-	t.Run("a grant issued to one principal is denied to another", func(t *testing.T) {
-		rig := testrig.New(t, testrig.Options{})
-		rig.Store(t, testrig.TenantID, testrig.ObjectA, testrig.SubmissionA, testrig.EventA)
-		grantID := rig.Retrieve(t, principal, testrig.EventA)
-
-		_, err := rig.Service.Redeem(context.Background(), vault.RedeemRequest{
-			TenantID: testrig.TenantID, GrantID: grantID, Principal: "someone.else@example.com", EventID: testrig.EventA,
-		})
-		assertDenial(t, err, vault.DenyGrantPrincipalMismatch)
-	})
-
-	t.Run("concurrent redemptions of one grant yield exactly one success", func(t *testing.T) {
-		rig := testrig.New(t, testrig.Options{})
-		rig.Store(t, testrig.TenantID, testrig.ObjectA, testrig.SubmissionA, testrig.EventA)
-		grantID := rig.Retrieve(t, principal, testrig.EventA)
-
-		const attempts = 8
-		var wg sync.WaitGroup
-		results := make(chan error, attempts)
-		for i := 0; i < attempts; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				_, err := rig.Service.Redeem(context.Background(), vault.RedeemRequest{
-					TenantID: testrig.TenantID, GrantID: grantID, Principal: principal, EventID: testrig.EventA,
-				})
-				results <- err
-			}()
-		}
-		wg.Wait()
-		close(results)
-		ok, used := 0, 0
-		for err := range results {
-			switch {
-			case err == nil:
-				ok++
-
-			default:
-				if d, isDenial := vault.IsDenial(err); isDenial && d.Reason == vault.DenyGrantAlreadyUsed {
-					used++
-					continue
-				}
-				t.Errorf("unexpected concurrent outcome: %v", err)
+func TestUploadRefusals(t *testing.T) {
+	cases := map[string]struct {
+		edit   func(*rig, *vault.UploadRequest)
+		reason vault.Reason
+	}{
+		"digest mismatch": {func(_ *rig, q *vault.UploadRequest) { q.RawDigest = protocol.RawDigest([]byte("other")) }, vault.ReasonInvalidRequest},
+		"oversize": {func(_ *rig, q *vault.UploadRequest) {
+			q.Content = make([]byte, protocol.MaxContentObjectBytes+1)
+			q.RawDigest = protocol.RawDigest(q.Content)
+		}, vault.ReasonInvalidRequest},
+		"unknown grant":         {func(_ *rig, q *vault.UploadRequest) { q.GrantID = "5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b" }, vault.ReasonGrantUnknown},
+		"grant for other event": {func(_ *rig, q *vault.UploadRequest) { q.EventID = "6f7a8b9c-0d1e-4f2a-9b3c-4d5e6f7a8b9c" }, vault.ReasonGrantUnknown},
+		"grant in other tenant": {func(r *rig, q *vault.UploadRequest) {
+			r.store.PutTenant(store.Tenant{TenantID: otherTenant, Status: "active", IngestEnabled: true, ReadEnabled: true})
+			q.TenantID = otherTenant
+		}, vault.ReasonGrantUnknown},
+		"denied grant": {func(r *rig, _ *vault.UploadRequest) {
+			g := r.store.Grant(tenantID, grantID)
+			g.Decision = "denied"
+			r.store.PutGrant(tenantID, g)
+		}, vault.ReasonGrantNotGranted},
+		"expired grant": {func(r *rig, _ *vault.UploadRequest) { r.now = t0.Add(10 * time.Minute) }, vault.ReasonGrantExpired},
+		"used grant, content since deleted": {func(r *rig, _ *vault.UploadRequest) {
+			g := r.store.Grant(tenantID, grantID)
+			g.UsedAt = t0.Add(-time.Minute)
+			r.store.PutGrant(tenantID, g)
+		}, vault.ReasonGrantConsumed},
+		"unknown tenant": {func(_ *rig, q *vault.UploadRequest) { q.TenantID = otherTenant }, vault.ReasonTenantNotPermitted},
+		"ingest disabled": {func(r *rig, _ *vault.UploadRequest) {
+			r.store.PutTenant(store.Tenant{TenantID: tenantID, Status: "suspended", ContentSearch: store.SearchFullText, ReadEnabled: true})
+		}, vault.ReasonTenantNotPermitted},
+		"offboarding": {func(r *rig, _ *vault.UploadRequest) {
+			r.store.PutTenant(store.Tenant{TenantID: tenantID, Status: "offboarding", IngestEnabled: true, ReadEnabled: true})
+		}, vault.ReasonTenantNotPermitted},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			r := newRig(t, store.SearchFullText)
+			req := upload([]byte("prompt"))
+			tc.edit(r, &req)
+			_, err := r.svc.Upload(ctx, req)
+			wantDenial(t, err, tc.reason)
+			if n := len(r.store.Content(tenantID)) + len(r.store.Content(otherTenant)); n != 0 {
+				t.Fatalf("%d objects stored by a refused upload", n)
 			}
-		}
-		if ok != 1 || used != attempts-1 {
-			t.Fatalf("concurrent redemption: %d succeeded, %d refused as used; want 1 and %d", ok, used, attempts-1)
-		}
-	})
-
-	t.Run("C16's approval fields are required and distinct", func(t *testing.T) {
-		rig := testrig.New(t, testrig.Options{})
-		rig.Store(t, testrig.TenantID, testrig.ObjectA, testrig.SubmissionA, testrig.EventA)
-		base := vault.RetrieveRequest{
-			TenantID: testrig.TenantID, EventID: testrig.EventA, Principal: principal,
-			CaseReference: "CASE-42", SecondApprover: "approver@example.com",
-		}
-
-		// Neither a case reference nor a second approver is required: the retrieval is granted
-		// without them and recorded as it was asked.
-		bare := base
-		bare.CaseReference = ""
-		bare.SecondApprover = ""
-		granted, err := rig.Service.Retrieve(context.Background(), bare)
-		if err != nil {
-			t.Fatalf("a retrieval with no case reference and no approver was refused: %v", err)
-		}
-		if granted.GrantID == "" {
-			t.Fatalf("a retrieval with no case reference and no approver issued no grant")
-		}
-
-		selfApproved := base
-		selfApproved.SecondApprover = principal
-		_, err = rig.Service.Retrieve(context.Background(), selfApproved)
-		assertDenial(t, err, vault.DenySecondApproverNotDistinct)
-	})
-
-	t.Run("an event with no stored content is refused, not served empty", func(t *testing.T) {
-		rig := testrig.New(t, testrig.Options{})
-		_, err := rig.Service.Retrieve(context.Background(), vault.RetrieveRequest{
-			TenantID: testrig.TenantID, EventID: testrig.EventA, Principal: principal,
-			CaseReference: "CASE-42", SecondApprover: "approver@example.com",
-		})
-		assertDenial(t, err, vault.DenyNoContentObject)
-	})
-
-	t.Run("a tenant whose reads are disabled is refused", func(t *testing.T) {
-		rig := testrig.New(t, testrig.Options{Tenants: []store.Tenant{
-			testrig.Tenant(func(tn *store.Tenant) { tn.ReadEnabled = false }),
-		}})
-		rig.Store(t, testrig.TenantID, testrig.ObjectA, testrig.SubmissionA, testrig.EventA)
-		_, err := rig.Service.Retrieve(context.Background(), vault.RetrieveRequest{
-			TenantID: testrig.TenantID, EventID: testrig.EventA, Principal: principal,
-			CaseReference: "CASE-42", SecondApprover: "approver@example.com",
-		})
-		assertDenial(t, err, vault.DenyRetrievalDisabled)
-	})
-}
-
-// TestEveryRefusalReasonIsInTheClosedSet guards the closed set itself: a refusal that is not in the
-// set cannot be counted, and §10.2's four must be members.
-func TestEveryRefusalReasonIsInTheClosedSet(t *testing.T) {
-	for _, r := range vault.AllDenialReasons {
-		if !r.Valid() {
-			t.Errorf("reason %q reports itself as outside the closed set", r)
-		}
-	}
-	for _, r := range vault.GrantDecisionReasons {
-		if !r.Valid() {
-			t.Errorf("§10.2 reason %q is missing from the closed set", r)
-		}
-	}
-	if len(vault.GrantDecisionReasons) != 4 {
-		t.Errorf("§10.2 enumerates four grant-decision reasons, the package carries %d", len(vault.GrantDecisionReasons))
-	}
-	if vault.DenialReason("not_a_reason").Valid() {
-		t.Error("the closed set accepted an invented reason")
-	}
-	for _, r := range vault.AllUnavailableReasons {
-		if !r.Valid() {
-			t.Errorf("unavailability %q is outside the closed set", r)
-		}
-	}
-	if len(vault.AllUnavailableReasons) != 5 {
-		t.Errorf("docs/02 §11 enumerates five no_longer_available reasons, the package carries %d", len(vault.AllUnavailableReasons))
-	}
-}
-
-// ---------------------------------------------------------------------------------------
-// Rotation
-// ---------------------------------------------------------------------------------------
-
-// TestRotationRewrapsWithoutReencrypting is the rotation requirement: an object encrypted under
-// tenant key version N stays readable after rotation to N+1, nothing re-encrypts, and the old
-// version is not used for new writes.
-func TestRotationRewrapsWithoutReencrypting(t *testing.T) {
-	ctx := context.Background()
-	rig := testrig.New(t, testrig.Options{})
-	plaintext := []byte("the prompt that must survive a rotation")
-
-	first := rig.Store(t, testrig.TenantID, testrig.ObjectA, testrig.SubmissionA, testrig.EventA)
-	ciphertext := encryptWithDEK(t, first.DEK, plaintext)
-	if first.KEKVersion != "1" {
-		t.Fatalf("the first object was sealed under version %q, want 1", first.KEKVersion)
-	}
-
-	// A second object, so the rotation has more than one row to re-wrap.
-	second := rig.Store(t, testrig.TenantID, testrig.ObjectB, testrig.SubmissionB, testrig.EventB)
-
-	before, err := rig.Memory.ContentObject(ctx, testrig.TenantID, testrig.ObjectA)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	rot, err := rig.Service.RotateTenant(ctx, testrig.TenantID)
-	if err != nil {
-		t.Fatalf("rotate: %v", err)
-	}
-	if rot.OldVersion != "1" || rot.NewVersion != "2" {
-		t.Fatalf("rotation went %s -> %s, want 1 -> 2", rot.OldVersion, rot.NewVersion)
-	}
-	if rot.Rewrapped != 2 || len(rot.Failed) != 0 {
-		t.Fatalf("rotation re-wrapped %d objects with %d failures; want 2 and 0", rot.Rewrapped, len(rot.Failed))
-	}
-
-	after, err := rig.Memory.ContentObject(ctx, testrig.TenantID, testrig.ObjectA)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if after.KEKVersion != "2" {
-		t.Errorf("object A is on key version %q, want 2", after.KEKVersion)
-	}
-	// Nothing else about the object changed: not the blob, not its digest, not its size. If a
-	// byte of those moved, the rotation re-encrypted, which is the thing it must not do.
-	if after.CiphertextSHA256 != before.CiphertextSHA256 || after.BlobPath != before.BlobPath ||
-		after.PlaintextSizeBytes != before.PlaintextSizeBytes {
-		t.Errorf("rotation changed the stored object: before %+v after %+v", before, after)
-	}
-	if bytes.Equal(after.WrappedDEK, before.WrappedDEK) {
-		t.Error("the wrapped key did not change, so it was not re-wrapped")
-	}
-
-	// The real proof: unwrap under the new version and decrypt the ciphertext that was produced
-	// before the rotation.
-	aad := keys.AAD{TenantID: testrig.TenantID, ObjectID: testrig.ObjectA, KEKID: after.KEKID, KEKVersion: after.KEKVersion}
-	dek, err := rig.Keys.Unwrap(ctx, aad, after.WrappedDEK)
-	if err != nil {
-		t.Fatalf("unwrapping after rotation: %v", err)
-	}
-	if !bytes.Equal(dek, first.DEK) {
-		t.Error("rotation produced a different data key, so the content was re-encrypted")
-	}
-	if got := decryptWithDEK(t, dek, ciphertext); !bytes.Equal(got, plaintext) {
-		t.Fatalf("content encrypted before the rotation no longer decrypts: %q", got)
-	}
-
-	// The old version stays in the key store: a row that failed to re-wrap must remain readable,
-	// and deleting it would turn a partial rotation into data loss.
-	versions := rig.Keys.Versions("kek-" + testrig.TenantID)
-	if len(versions) < 2 || versions[0] != "1" || versions[1] != "2" {
-		t.Errorf("key versions after rotation: %v; both 1 and 2 must remain", versions)
-	}
-
-	// A new write is sealed under the new version: the old one is not silently used again.
-	third := rig.Store(t, testrig.TenantID, "cccccccc-0000-4000-8000-000000000003", testrig.SubmissionA, "cccccccc-2222-4222-8222-0000000000ec")
-	if third.KEKVersion != "2" {
-		t.Fatalf("a new object after rotation was sealed under version %q, want 2", third.KEKVersion)
-	}
-	_ = second
-}
-
-// TestRotationAuditsAndReportsFailures covers the two things a rotation must not do silently.
-func TestRotationAuditsAndReportsFailures(t *testing.T) {
-	ctx := context.Background()
-	rig := testrig.New(t, testrig.Options{})
-	rig.Store(t, testrig.TenantID, testrig.ObjectA, testrig.SubmissionA, testrig.EventA)
-
-	rot, err := rig.Service.RotateTenant(ctx, testrig.TenantID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rot.NewVersion != "2" {
-		t.Fatalf("new version %q", rot.NewVersion)
-	}
-	found := false
-	for _, row := range rig.Memory.Audit() {
-		if row.Action == vault.ActionKeyRotated {
-			found = true
-			if row.Detail["new_version"] != "2" {
-				t.Errorf("the rotation audit row does not name the new version: %+v", row.Detail)
+			if len(r.store.Audit()) != 0 {
+				t.Fatal("a refused upload wrote an audit row")
 			}
-		}
-	}
-	if !found {
-		t.Error("the rotation wrote no audit row")
-	}
-
-	// Rotating a tenant with no KEK is refused rather than treated as a no-op.
-	noKey := testrig.New(t, testrig.Options{Tenants: []store.Tenant{
-		testrig.Tenant(func(tn *store.Tenant) { tn.KEKID = "" }),
-	}})
-	if _, err := noKey.Service.RotateTenant(ctx, testrig.TenantID); err == nil {
-		t.Error("a tenant with no KEK rotated successfully")
+		})
 	}
 }
 
-// ---------------------------------------------------------------------------------------
-// Erasure
-// ---------------------------------------------------------------------------------------
-
-// TestErasureDestroysContentAndReportsItDestroyed is §6.4 plus the receipt requirement: after
-// erasure the ciphertext is unreadable and the read path says so as a *result*, not an error.
-func TestErasureDestroysContentAndReportsItDestroyed(t *testing.T) {
-	ctx := context.Background()
-	const principal = "analyst@example.com"
-	rig := testrig.New(t, testrig.Options{Tenants: []store.Tenant{
-		testrig.Tenant(func(tn *store.Tenant) { tn.ContentSearch = store.SearchAttachmentNames }),
-	}})
-	obj := rig.Store(t, testrig.TenantID, testrig.ObjectA, testrig.SubmissionA, testrig.EventA,
-		vault.IndexUnit{UnitKind: store.UnitAttachmentName, UnitIndex: 0, Body: "Q3-contract.pdf"})
-	grantID := rig.Retrieve(t, principal, testrig.EventA)
-
-	res, err := rig.Service.ShredObject(ctx, vault.ShredRequest{
-		TenantID: testrig.TenantID, ObjectID: obj.ObjectID, Reason: "erasure", RequestedBy: "dpo@example.com",
-	})
-	if err != nil {
-		t.Fatalf("shred: %v", err)
+func TestNothingCommitsWithoutTheAuditRow(t *testing.T) {
+	r := newRig(t, store.SearchFullText)
+	r.store.FailAudit = true
+	if _, err := r.svc.Upload(ctx, upload([]byte("prompt"))); err == nil {
+		t.Fatal("the upload succeeded without its audit row")
 	}
-	if res.AlreadyShredded {
-		t.Fatal("the object reported itself already shredded")
+	if len(r.store.Content(tenantID)) != 0 || !r.store.Grant(tenantID, grantID).UsedAt.IsZero() || len(r.store.SearchRows(tenantID)) != 0 ||
+		r.store.Submission(tenantID, submissionID).ContentState != "" {
+		t.Fatal("content, the grant claim, the content state or index rows committed without the audit row")
 	}
-	if res.Receipt.ReceiptID == "" || len(res.Receipt.Mechanisms) == 0 {
-		t.Fatalf("the erasure produced no receipt: %+v", res.Receipt)
-	}
+}
 
-	// 1. The wrapped key is gone: what is stored cannot be unwrapped by anyone, including a reader
-	//    who reaches the row directly.
-	row, err := rig.Memory.ContentObject(ctx, testrig.TenantID, obj.ObjectID)
-	if err != nil {
+func TestAShreddedSubmissionStaysShredded(t *testing.T) {
+	r := newRig(t, store.SearchFullText)
+	r.store.PutSubmission(storetest.Submission{TenantID: tenantID, SubmissionID: submissionID, PromptKind: "user", ContentState: "shredded"})
+	if _, err := r.svc.Upload(ctx, upload([]byte("late upload"))); err != nil {
 		t.Fatal(err)
 	}
-	if row.State != store.StateShredded || row.ShreddedReason != "erasure" || row.ShreddedAt.IsZero() {
-		t.Errorf("the row does not record the shred: %+v", row)
-	}
-	aad := keys.AAD{TenantID: testrig.TenantID, ObjectID: obj.ObjectID, KEKID: row.KEKID, KEKVersion: row.KEKVersion}
-	if _, err := rig.Keys.Unwrap(ctx, aad, row.WrappedDEK); err == nil {
-		t.Error("the wrapped key still unwraps after erasure")
-	}
-
-	// 2. The read path reports it as destroyed, not as an error, and links the receipt.
-	_, err = rig.Service.Retrieve(ctx, vault.RetrieveRequest{
-		TenantID: testrig.TenantID, EventID: testrig.EventA, Principal: principal,
-		CaseReference: "CASE-42", SecondApprover: "approver@example.com",
-	})
-	unavail, ok := vault.IsUnavailable(err)
-	if !ok {
-		t.Fatalf("retrieving erased content returned %v, want a no_longer_available result", err)
-	}
-	if unavail.Reason != vault.UnavailableErasure {
-		t.Errorf("unavailability reason is %q, want erasure", unavail.Reason)
-	}
-	if unavail.ReceiptRef != res.Receipt.ReceiptID {
-		t.Errorf("the unavailability does not link the receipt: %q vs %q", unavail.ReceiptRef, res.Receipt.ReceiptID)
-	}
-
-	// 3. A grant issued before the erasure also reports the content as destroyed.
-	redeem, err := rig.Service.Redeem(ctx, vault.RedeemRequest{
-		TenantID: testrig.TenantID, GrantID: grantID, Principal: principal, EventID: testrig.EventA,
-	})
-	if err != nil {
-		t.Fatalf("redeeming a grant whose content was erased returned an error: %v", err)
-	}
-	if redeem.State != "no_longer_available" || redeem.Reason != vault.UnavailableErasure {
-		t.Errorf("redeem state %q reason %q, want no_longer_available/erasure", redeem.State, redeem.Reason)
-	}
-
-	// 4. Erasure reaches the index too: key destruction cannot touch a table that is not under a
-	//    key, which is §6.4's footnote.
-	left, err := rig.Memory.DeleteSearchText(ctx, testrig.TenantID, obj.SubmissionID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if left != 0 {
-		t.Errorf("the erasure left %d index rows behind", left)
-	}
-	if res.SearchRowsRemoved != 1 {
-		t.Errorf("the receipt says %d index rows were removed, want 1", res.SearchRowsRemoved)
-	}
-	if res.Receipt.RemovedCounts["search_text"] != 1 {
-		t.Errorf("the receipt's counts do not include the index: %+v", res.Receipt.RemovedCounts)
-	}
-
-	// 5. Erasure is idempotent and does not claim a second deletion.
-	again, err := rig.Service.ShredObject(ctx, vault.ShredRequest{
-		TenantID: testrig.TenantID, ObjectID: obj.ObjectID, Reason: "erasure", RequestedBy: "dpo@example.com",
-	})
-	if err != nil {
-		t.Fatalf("a second erasure returned an error: %v", err)
-	}
-	if !again.AlreadyShredded {
-		t.Error("a second erasure did not report the object as already shredded")
-	}
-	if again.Receipt.ReceiptID != "" {
-		t.Error("a second erasure wrote a second receipt")
+	if s := r.store.Submission(tenantID, submissionID); s.ContentState != "shredded" {
+		t.Fatalf("content_state = %q, want shredded left alone", s.ContentState)
 	}
 }
 
-// TestTenantKeyDestructionMakesContentUnavailable is the offboarding case: destroying the KEK
-// destroys every object of the tenant at once, and the read path reports `key_unavailable`.
-func TestTenantKeyDestructionMakesContentUnavailable(t *testing.T) {
-	ctx := context.Background()
-	const principal = "analyst@example.com"
-	rig := testrig.New(t, testrig.Options{})
-	rig.Store(t, testrig.TenantID, testrig.ObjectA, testrig.SubmissionA, testrig.EventA)
-
-	res, err := rig.Service.ShredObject(ctx, vault.ShredRequest{
-		TenantID: testrig.TenantID, ObjectID: testrig.ObjectA, Reason: "tenant_offboarded",
-		RequestedBy: "ops@example.com", DestroyTenantKey: true,
-	})
-	if err != nil {
-		t.Fatalf("offboarding shred: %v", err)
+func TestIndexingFollowsTheTenantsTier(t *testing.T) {
+	object := []byte(`{"prompt":"merger plan for Contoso","attachments":[{"name":"Q3-board.pdf","size_bytes":10},{"name":"terms.docx"}]}`)
+	cases := map[store.SearchTier][]string{
+		store.SearchFullText:        {"attachment_name:0:Q3-board.pdf", "attachment_name:1:terms.docx", "prompt_body:0:merger plan for Contoso"},
+		store.SearchAttachmentNames: {"attachment_name:0:Q3-board.pdf", "attachment_name:1:terms.docx"},
+		store.SearchDisabled:        nil,
 	}
-	if !res.KeyDestroyed {
-		t.Fatal("the tenant key was not destroyed")
-	}
-	if _, gone := rig.Keys.DestroyedReason(testrig.Tenant().KEKID); !gone {
-		t.Error("the key store does not report the KEK as destroyed")
-	}
-
-	_, err = rig.Service.Retrieve(ctx, vault.RetrieveRequest{
-		TenantID: testrig.TenantID, EventID: testrig.EventA, Principal: principal,
-		CaseReference: "CASE-42", SecondApprover: "approver@example.com",
-	})
-	unavail, ok := vault.IsUnavailable(err)
-	if !ok {
-		t.Fatalf("retrieving offboarded content returned %v, want a no_longer_available result", err)
-	}
-	if unavail.Reason != vault.UnavailableTenantOffboarded {
-		t.Errorf("unavailability reason is %q, want tenant_offboarded", unavail.Reason)
-	}
-
-	// A pre-existing wrapped key cannot be opened at all: this is the "destroying the key destroys
-	// the content" property, exercised on bytes that are still in the row.
-	obj, err := rig.Memory.ContentObject(ctx, testrig.TenantID, testrig.ObjectA)
-	if err != nil {
-		t.Fatal(err)
-	}
-	aad := keys.AAD{TenantID: testrig.TenantID, ObjectID: testrig.ObjectA, KEKID: obj.KEKID, KEKVersion: obj.KEKVersion}
-	if _, err := rig.Keys.Unwrap(ctx, aad, obj.WrappedDEK); !errors.Is(err, keys.ErrKeyDestroyed) {
-		t.Errorf("unwrapping after key destruction returned %v, want ErrKeyDestroyed", err)
-	}
-}
-
-// TestRetentionExpiryIsReportedAsUnavailable covers the other §11 reason: an object past its
-// retention is unavailable whether or not the sweep has run.
-func TestRetentionExpiryIsReportedAsUnavailable(t *testing.T) {
-	ctx := context.Background()
-	rig := testrig.New(t, testrig.Options{})
-	rig.Store(t, testrig.TenantID, testrig.ObjectA, testrig.SubmissionA, testrig.EventA)
-	rig.Clock.Advance(200 * 24 * time.Hour) // past the fixture's 90-day retention
-
-	_, err := rig.Service.Retrieve(ctx, vault.RetrieveRequest{
-		TenantID: testrig.TenantID, EventID: testrig.EventA, Principal: "analyst@example.com",
-		CaseReference: "CASE-42", SecondApprover: "approver@example.com",
-	})
-	unavail, ok := vault.IsUnavailable(err)
-	if !ok {
-		t.Fatalf("retrieving expired content returned %v, want a no_longer_available result", err)
-	}
-	if unavail.Reason != vault.UnavailableRetentionExpired {
-		t.Errorf("reason %q, want retention_expired", unavail.Reason)
-	}
-}
-
-// ---------------------------------------------------------------------------------------
-// Search tiers and the ADR 0014 invariant at the service boundary
-// ---------------------------------------------------------------------------------------
-
-func TestSearchTierRefusals(t *testing.T) {
-	ctx := context.Background()
-
-	t.Run("a disabled tenant may not search", func(t *testing.T) {
-		rig := testrig.New(t, testrig.Options{ScopeTiers: map[string]store.SearchTier{"tool:chatgpt": store.SearchFullText}})
-		_, err := rig.Service.Search(ctx, vault.SearchRequest{
-			TenantID: testrig.TenantID, Principal: "a@example.com", Scope: "tool:chatgpt", Form: store.FormTerms, Query: "secret",
-		})
-		assertDenial(t, err, vault.DenySearchDisabled)
-	})
-
-	t.Run("a scope the bundle does not name is refused", func(t *testing.T) {
-		rig := testrig.New(t, testrig.Options{
-			Tenants:    []store.Tenant{testrig.Tenant(FullText())},
-			ScopeTiers: map[string]store.SearchTier{"tool:chatgpt": store.SearchFullText},
-		})
-		_, err := rig.Service.Search(ctx, vault.SearchRequest{
-			TenantID: testrig.TenantID, Principal: "a@example.com", Scope: "tool:other", Form: store.FormTerms, Query: "secret",
-		})
-		assertDenial(t, err, vault.DenySearchTierNotInScope)
-	})
-
-	t.Run("the bundle narrows the tenant ceiling", func(t *testing.T) {
-		rig := testrig.New(t, testrig.Options{
-			Tenants:    []store.Tenant{testrig.Tenant(FullText())},
-			ScopeTiers: map[string]store.SearchTier{"tool:chatgpt": store.SearchFullText, "tool:other": store.SearchAttachmentNames},
-		})
-		res, err := rig.Service.Search(ctx, vault.SearchRequest{
-			TenantID: testrig.TenantID, Principal: "a@example.com", Scope: "tool:other", Form: store.FormTerms, Query: "contract",
-		})
-		if err != nil {
-			t.Fatalf("search: %v", err)
-		}
-		if res.Effective != store.SearchAttachmentNames {
-			t.Errorf("effective tier is %q, want attachment_names", res.Effective)
-		}
-		for _, k := range res.UnitKinds {
-			if k != store.UnitAttachmentName {
-				t.Errorf("a narrowed scope searched %q", k)
+	for tier, want := range cases {
+		t.Run(string(tier), func(t *testing.T) {
+			r := newRig(t, tier)
+			res, err := r.svc.Upload(ctx, upload(object))
+			if err != nil {
+				t.Fatal(err)
 			}
-		}
-	})
-
-	t.Run("prompt bodies are indexed only at full_text", func(t *testing.T) {
-		rig := testrig.New(t, testrig.Options{
-			Tenants: []store.Tenant{testrig.Tenant(func(tn *store.Tenant) { tn.ContentSearch = store.SearchAttachmentNames })},
-		})
-		err := rig.Service.IndexUnit(ctx, testrig.TenantID, vault.IndexUnit{
-			UnitKind: store.UnitPromptBody, Body: "a prompt that must not be indexed",
-		}, testrig.SubmissionA)
-		assertDenial(t, err, vault.DenyIndexUnitNotPermitted)
-		if err := rig.Service.IndexUnit(ctx, testrig.TenantID, vault.IndexUnit{
-			UnitKind: store.UnitAttachmentName, Body: "Q3-contract.pdf",
-		}, testrig.SubmissionA); err != nil {
-			t.Errorf("a filename must be indexable at attachment_names: %v", err)
-		}
-	})
-
-	t.Run("full_text with customer_held is refused at the service boundary", func(t *testing.T) {
-		// The database makes this pair unrepresentable. The memory store does not, precisely so
-		// this test can prove the service refuses it on its own: a dropped constraint, a bypassed
-		// migration or a stale replica must not turn the vault into an indexer.
-		impossible := testrig.Tenant(func(tn *store.Tenant) {
-			tn.ContentSearch = store.SearchFullText
-			tn.KeyCustody = store.CustodyCustomerHeld
-		})
-		rig := testrig.New(t, testrig.Options{
-			Tenants:    []store.Tenant{impossible},
-			ScopeTiers: map[string]store.SearchTier{"tool:chatgpt": store.SearchFullText},
-		})
-
-		err := rig.Service.IndexUnit(ctx, testrig.TenantID, vault.IndexUnit{
-			UnitKind: store.UnitPromptBody, Body: "must never be indexed",
-		}, testrig.SubmissionA)
-		assertDenial(t, err, vault.DenyKeyCustodySearchConflict)
-
-		_, err = rig.Service.Search(ctx, vault.SearchRequest{
-			TenantID: testrig.TenantID, Principal: "a@example.com", Scope: "tool:chatgpt", Form: store.FormTerms, Query: "must",
-		})
-		assertDenial(t, err, vault.DenyKeyCustodySearchConflict)
-
-		res, err := rig.Service.FinaliseObject(ctx, vault.FinaliseRequest{
-			TenantID: testrig.TenantID, ObjectID: testrig.ObjectA, SubmissionID: testrig.SubmissionA,
-			EventID: testrig.EventA, BlobPath: "b", CiphertextSHA256: "sha256:" + testrig.ObjectA,
-			WrappedDEK: []byte{1, 2, 3}, KEKID: "k", KEKVersion: "1",
-			IndexUnits: []vault.IndexUnit{{UnitKind: store.UnitPromptBody, Body: "must never be indexed"}},
-		})
-		if err != nil {
-			t.Fatalf("finalise: %v", err)
-		}
-		if len(res.Refused) != 1 || res.Refused[0].Reason != vault.DenyKeyCustodySearchConflict {
-			t.Fatalf("the refused unit was not reported: %+v", res)
-		}
-		if res.Indexed != 0 {
-			t.Errorf("the service indexed %d units it must not have", res.Indexed)
-		}
-	})
-
-	t.Run("full_text below an M3 ceiling is refused", func(t *testing.T) {
-		rig := testrig.New(t, testrig.Options{
-			Tenants: []store.Tenant{testrig.Tenant(FullText(), func(tn *store.Tenant) {
-				tn.CeilingMode = "m1"
-			})},
-			ScopeTiers: map[string]store.SearchTier{"tool:chatgpt": store.SearchFullText},
-		})
-		_, err := rig.Service.Search(ctx, vault.SearchRequest{
-			TenantID: testrig.TenantID, Principal: "a@example.com", Scope: "tool:chatgpt", Form: store.FormTerms, Query: "x",
-		})
-		assertDenial(t, err, vault.DenySearchTierRequiresM3)
-	})
-
-	t.Run("the substring and fuzzy forms are filenames only", func(t *testing.T) {
-		rig := testrig.New(t, testrig.Options{
-			Tenants:    []store.Tenant{testrig.Tenant(FullText())},
-			ScopeTiers: map[string]store.SearchTier{"tool:chatgpt": store.SearchFullText},
-		})
-		rig.Store(t, testrig.TenantID, testrig.ObjectA, testrig.SubmissionA, testrig.EventA,
-			vault.IndexUnit{UnitKind: store.UnitAttachmentName, UnitIndex: 0, Body: "Q3-contract.pdf"},
-			vault.IndexUnit{UnitKind: store.UnitPromptBody, UnitIndex: 0, Body: "the Q3-contract is attached"})
-
-		sub, err := rig.Service.Search(ctx, vault.SearchRequest{
-			TenantID: testrig.TenantID, Principal: "a@example.com", Scope: "tool:chatgpt",
-			Form: store.FormSubstring, Query: "Q3-contract",
-		})
-		if err != nil {
-			t.Fatalf("substring search: %v", err)
-		}
-		if len(sub.Hits) != 1 || sub.Hits[0].UnitKind != store.UnitAttachmentName {
-			t.Fatalf("a substring search returned %+v; it must return filenames only", sub.Hits)
-		}
-
-		// The terms form is whole-word, so a hyphenated filename is the substring form's job
-		// (docs/04 §15.2: full-text search is the right tool for prose, and trigrams are the right
-		// tool for "find me the file called something like Q3-contract"). A word that appears in the
-		// prompt body is found by the terms form, and only in the prompt body.
-		terms, err := rig.Service.Search(ctx, vault.SearchRequest{
-			TenantID: testrig.TenantID, Principal: "a@example.com", Scope: "tool:chatgpt",
-			Form: store.FormTerms, Query: "attached",
-		})
-		if err != nil {
-			t.Fatalf("terms search: %v", err)
-		}
-		if len(terms.Hits) != 1 || terms.Hits[0].UnitKind != store.UnitPromptBody {
-			t.Errorf("a terms search for a prompt word returned %+v; want the prompt body only", terms.Hits)
-		}
-	})
-
-	t.Run("a search with no hits is still audited", func(t *testing.T) {
-		rig := testrig.New(t, testrig.Options{
-			Tenants:    []store.Tenant{testrig.Tenant(FullText())},
-			ScopeTiers: map[string]store.SearchTier{"tool:chatgpt": store.SearchFullText},
-		})
-		res, err := rig.Service.Search(ctx, vault.SearchRequest{
-			TenantID: testrig.TenantID, Principal: "a@example.com", Scope: "tool:chatgpt",
-			Form: store.FormTerms, Query: "nothing-matches-this",
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(res.Hits) != 0 {
-			t.Fatalf("expected no hits, got %+v", res.Hits)
-		}
-		found := false
-		for _, row := range rig.Memory.Audit() {
-			if row.Action == vault.ActionSearch {
-				found = true
-				if row.Detail["terms"] == "" {
-					t.Error("the audit row does not record the query terms")
+			var got []string
+			for _, u := range r.store.SearchRows(tenantID) {
+				got = append(got, u.UnitKind+":"+string(rune('0'+u.UnitIndex))+":"+u.Body)
+				if !u.ExpiresAt.Equal(res.ExpiresAt) {
+					t.Errorf("index row expires %s, the content %s", u.ExpiresAt, res.ExpiresAt)
 				}
 			}
-		}
-		if !found {
-			t.Error("a search that returned nothing wrote no audit row; §6.3 requires one")
-		}
-	})
-
-	t.Run("search terms are sanitised into a closed tsquery", func(t *testing.T) {
-		rig := testrig.New(t, testrig.Options{
-			Tenants:    []store.Tenant{testrig.Tenant(FullText())},
-			ScopeTiers: map[string]store.SearchTier{"tool:chatgpt": store.SearchFullText},
-		})
-		rig.Store(t, testrig.TenantID, testrig.ObjectA, testrig.SubmissionA, testrig.EventA,
-			vault.IndexUnit{UnitKind: store.UnitPromptBody, UnitIndex: 0, Body: "wire transfer to iban"})
-
-		res, err := rig.Service.Search(ctx, vault.SearchRequest{
-			TenantID: testrig.TenantID, Principal: "a@example.com", Scope: "tool:chatgpt",
-			Form: store.FormTerms, Query: `"wire transfer" AND iban & !;`,
-		})
-		if err != nil {
-			t.Fatalf("search with operator-shaped input: %v", err)
-		}
-		if len(res.Hits) != 1 {
-			t.Fatalf("the phrase search returned %d hits, want 1", len(res.Hits))
-		}
-		var terms string
-		for _, row := range rig.Memory.Audit() {
-			if row.Action == vault.ActionSearch {
-				terms, _ = row.Detail["terms"].(string)
+			if strings.Join(got, "|") != strings.Join(want, "|") {
+				t.Fatalf("index rows = %v, want %v", got, want)
 			}
-		}
-		if terms == "" {
-			t.Fatal("no terms were recorded")
-		}
-		// The closed transformation: the phrase becomes an adjacency pair, the operator words are
-		// dropped, and every tsquery operator the analyst typed is gone.
-		if terms != "wire <-> transfer & iban" {
-			t.Errorf("sanitised query is %q, want %q", terms, "wire <-> transfer & iban")
-		}
-		for _, bad := range []string{"!", ";", "drop", "table"} {
-			if contains(terms, bad) {
-				t.Errorf("the query text %q still contains %q after sanitisation", terms, bad)
+			if res.IndexedAttachmentNames+res.IndexedPrompt != len(want) {
+				t.Fatalf("result counts %d+%d rows, %d written", res.IndexedPrompt, res.IndexedAttachmentNames, len(want))
 			}
-		}
-	})
-}
-
-// TestFilteredSearchJoinsSubmissionAndPagesNewestFirst is task 09: one search that composes the
-// terms with the person, tool, device, mode and received-at window, returns newest first, and
-// pages with a keyset cursor. The vault joins its index to ingest.submission; the memory double
-// is seeded with the same metadata so the two implementations answer the same question.
-func TestFilteredSearchJoinsSubmissionAndPagesNewestFirst(t *testing.T) {
-	ctx := context.Background()
-	rig := testrig.New(t, testrig.Options{
-		Tenants:    []store.Tenant{testrig.Tenant(FullText())},
-		ScopeTiers: map[string]store.SearchTier{"tool:chatgpt": store.SearchFullText},
-	})
-	base := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
-	const (
-		s1 = "11111111-1111-4111-8111-000000000001"
-		s2 = "22222222-2222-4222-8222-000000000002"
-		s3 = "33333333-3333-4333-8333-000000000003"
-		d1 = "dddddddd-0000-4000-8000-000000000001"
-		d2 = "dddddddd-0000-4000-8000-000000000002"
-	)
-	seed := func(sub, body, user, tool, device, mode string, at time.Time) {
-		t.Helper()
-		if err := rig.Service.IndexUnit(ctx, testrig.TenantID, vault.IndexUnit{
-			UnitKind: store.UnitPromptBody, Body: body,
-		}, sub); err != nil {
-			t.Fatalf("index %s: %v", sub, err)
-		}
-		rig.Memory.PutSearchSubmission(store.SearchSubmission{
-			TenantID: testrig.TenantID, SubmissionID: sub, UserRef: user,
-			ToolFingerprint: tool, DeviceID: device, CollectionMode: mode, ReceivedAt: at,
 		})
 	}
-	seed(s1, "the wire transfer to australia", "alice", "claude_web", d1, "m3", base)
-	seed(s2, "the wire transfer to australia", "alice", "claude_web", d1, "m3", base.Add(time.Hour))
-	seed(s3, "the wire transfer to australia", "bob", "gemini_web", d2, "m1", base.Add(2*time.Hour))
-
-	search := func(t *testing.T, req vault.SearchRequest) vault.SearchResult {
-		t.Helper()
-		req.TenantID, req.Principal, req.Scope, req.Form = testrig.TenantID, "a@example.com", "tool:chatgpt", store.FormTerms
-		res, err := rig.Service.Search(ctx, req)
-		if err != nil {
-			t.Fatalf("search %+v: %v", req.Filters, err)
-		}
-		return res
-	}
-
-	t.Run("newest first", func(t *testing.T) {
-		res := search(t, vault.SearchRequest{Query: "wire"})
-		ids := []string{res.Hits[0].SubmissionID, res.Hits[1].SubmissionID, res.Hits[2].SubmissionID}
-		if ids[0] != s3 || ids[1] != s2 || ids[2] != s1 {
-			t.Fatalf("hits ordered %v, want newest first s3, s2, s1", ids)
-		}
-	})
-
-	t.Run("the person filter keeps only that person, and a different person returns none", func(t *testing.T) {
-		res := search(t, vault.SearchRequest{Query: "wire", Filters: store.SearchFilters{Subject: "alice"}})
-		if len(res.Hits) != 2 {
-			t.Fatalf("subject=alice returned %d hits, want 2", len(res.Hits))
-		}
-		for _, h := range res.Hits {
-			if h.SubmissionID == s3 {
-				t.Errorf("a hit for bob survived the alice filter")
-			}
-		}
-		none := search(t, vault.SearchRequest{Query: "wire", Filters: store.SearchFilters{Subject: "nobody"}})
-		if len(none.Hits) != 0 {
-			t.Fatalf("subject=nobody returned %d hits, want none", len(none.Hits))
-		}
-	})
-
-	t.Run("tool, device, mode and window each narrow", func(t *testing.T) {
-		cases := []struct {
-			name string
-			f    store.SearchFilters
-			want string
-		}{
-			{"tool", store.SearchFilters{Tool: "gemini_web"}, s3},
-			{"device", store.SearchFilters{Device: d2}, s3},
-			{"mode", store.SearchFilters{Mode: "m1"}, s3},
-			{"window", store.SearchFilters{ReceivedFrom: base.Add(30 * time.Minute), ReceivedTo: base.Add(90 * time.Minute)}, s2},
-		}
-		for _, tc := range cases {
-			res := search(t, vault.SearchRequest{Query: "wire", Filters: tc.f})
-			if len(res.Hits) != 1 || res.Hits[0].SubmissionID != tc.want {
-				t.Errorf("%s filter returned %+v, want only %s", tc.name, res.Hits, tc.want)
-			}
-		}
-	})
-
-	t.Run("paging resumes exactly and ends", func(t *testing.T) {
-		first := search(t, vault.SearchRequest{Query: "wire", Limit: 2})
-		if len(first.Hits) != 2 || first.NextCursor == "" {
-			t.Fatalf("page one is %d hits with cursor %q, want 2 and a cursor", len(first.Hits), first.NextCursor)
-		}
-		second := search(t, vault.SearchRequest{Query: "wire", Limit: 2, Cursor: first.NextCursor})
-		if len(second.Hits) != 1 || second.Hits[0].SubmissionID != s1 {
-			t.Fatalf("page two is %+v, want only s1", second.Hits)
-		}
-		if second.NextCursor != "" {
-			t.Errorf("page two offered a further cursor %q; the result set has ended", second.NextCursor)
-		}
-	})
-
-	t.Run("an unreadable cursor is refused", func(t *testing.T) {
-		_, err := rig.Service.Search(ctx, vault.SearchRequest{
-			TenantID: testrig.TenantID, Principal: "a@example.com", Scope: "tool:chatgpt",
-			Form: store.FormTerms, Query: "wire", Cursor: "not-a-cursor",
-		})
-		assertDenial(t, err, vault.DenySearchCursorInvalid)
-	})
-
-	t.Run("the filter is recorded in the audit row", func(t *testing.T) {
-		search(t, vault.SearchRequest{Query: "wire", Filters: store.SearchFilters{Subject: "alice", Mode: "m3"}})
-		var detail map[string]any
-		for _, row := range rig.Memory.Audit() {
-			if row.Action == vault.ActionSearch {
-				detail, _ = row.Detail["filters"].(map[string]any)
-			}
-		}
-		if detail == nil || detail["subject"] != "alice" || detail["mode"] != "m3" {
-			t.Fatalf("audit filter detail is %+v, want subject=alice and mode=m3", detail)
-		}
-	})
 }
 
-// ---------------------------------------------------------------------------------------
-// Client-generated requests are never indexed (task 08)
-// ---------------------------------------------------------------------------------------
-
-// TestClientGeneratedIsNeverIndexed: a client_generated submission writes no prompt_body search
-// unit, whichever path would otherwise produce one, while a user submission still does. The kind
-// is decided on the device; the vault honours it rather than re-deriving typed text, which is
-// exactly the failure the task exists to stop (a client titling request quotes the user's prompt
-// in a user-role message, so typedText alone cannot tell them apart).
-func TestClientGeneratedIsNeverIndexed(t *testing.T) {
-	ctx := context.Background()
-	tiers := map[string]store.SearchTier{"tool:chatgpt": store.SearchFullText}
-
-	t.Run("a caller-supplied prompt_body unit is dropped for client_generated", func(t *testing.T) {
-		rig := testrig.New(t, testrig.Options{Tenants: []store.Tenant{testrig.Tenant(FullText())}, ScopeTiers: tiers})
-		res, err := rig.Service.FinaliseObject(ctx, vault.FinaliseRequest{
-			TenantID: testrig.TenantID, ObjectID: testrig.ObjectA, SubmissionID: testrig.SubmissionA,
-			EventID: testrig.EventA, BlobPath: "b", CiphertextSHA256: "sha256:" + strings.Repeat("a", 64),
-			WrappedDEK: []byte{1, 2, 3}, KEKID: "k", KEKVersion: "1",
-			PromptKind: protocol.PromptKindClientGenerated,
-			IndexUnits: []vault.IndexUnit{{UnitKind: store.UnitPromptBody, Body: "what is the capital of Australia"}},
-		})
-		if err != nil {
-			t.Fatalf("finalise: %v", err)
-		}
-		if res.Indexed != 0 {
-			t.Fatalf("client_generated indexed %d units, want 0", res.Indexed)
-		}
-		assertNoPromptHit(t, rig, "capital")
-	})
-
-	t.Run("a caller-supplied prompt_body unit is kept for a user prompt", func(t *testing.T) {
-		rig := testrig.New(t, testrig.Options{Tenants: []store.Tenant{testrig.Tenant(FullText())}, ScopeTiers: tiers})
-		res, err := rig.Service.FinaliseObject(ctx, vault.FinaliseRequest{
-			TenantID: testrig.TenantID, ObjectID: testrig.ObjectA, SubmissionID: testrig.SubmissionA,
-			EventID: testrig.EventA, BlobPath: "b", CiphertextSHA256: "sha256:" + strings.Repeat("a", 64),
-			WrappedDEK: []byte{1, 2, 3}, KEKID: "k", KEKVersion: "1",
-			PromptKind: protocol.PromptKindUser,
-			IndexUnits: []vault.IndexUnit{{UnitKind: store.UnitPromptBody, Body: "what is the capital of Australia"}},
-		})
-		if err != nil {
-			t.Fatalf("finalise: %v", err)
-		}
-		if res.Indexed != 1 {
-			t.Fatalf("user prompt indexed %d units, want 1", res.Indexed)
-		}
-		assertPromptHit(t, rig, "capital")
-	})
-
-	t.Run("a derived prompt_body is omitted for client_generated", func(t *testing.T) {
-		blobs := map[string][]byte{}
-		rig := testrig.New(t, testrig.Options{
-			Tenants:    []store.Tenant{testrig.Tenant(FullText())},
-			ScopeTiers: tiers,
-			FetchBlob:  func(path string) ([]byte, error) { return blobs[path], nil },
-		})
-		res := finaliseSealed(t, rig, blobs, testrig.ObjectA, testrig.SubmissionA, testrig.EventA, protocol.PromptKindClientGenerated)
-		if res.Indexed != 0 {
-			t.Fatalf("client_generated derived %d units, want 0", res.Indexed)
-		}
-		assertNoPromptHit(t, rig, "capital")
-	})
-
-	t.Run("a derived prompt_body is kept for a user prompt", func(t *testing.T) {
-		blobs := map[string][]byte{}
-		rig := testrig.New(t, testrig.Options{
-			Tenants:    []store.Tenant{testrig.Tenant(FullText())},
-			ScopeTiers: tiers,
-			FetchBlob:  func(path string) ([]byte, error) { return blobs[path], nil },
-		})
-		res := finaliseSealed(t, rig, blobs, testrig.ObjectA, testrig.SubmissionA, testrig.EventA, protocol.PromptKindUser)
-		if res.Indexed != 1 {
-			t.Fatalf("user prompt derived %d units, want 1", res.Indexed)
-		}
-		assertPromptHit(t, rig, "capital")
-	})
-}
-
-// TestReindexTenantClearsClientGenerated: a reindex brings rows written by an earlier indexing rule
-// to the current one — a client_generated object loses the prompt_body row it had, and a user
-// object keeps (or regains) its own.
-func TestReindexTenantClearsClientGenerated(t *testing.T) {
-	ctx := context.Background()
-	blobs := map[string][]byte{}
-	rig := testrig.New(t, testrig.Options{
-		Tenants:    []store.Tenant{testrig.Tenant(FullText())},
-		ScopeTiers: map[string]store.SearchTier{"tool:chatgpt": store.SearchFullText},
-		FetchBlob:  func(path string) ([]byte, error) { return blobs[path], nil },
-	})
-
-	// A client_generated object whose prompt_body row was written by an earlier rule.
-	clientRes := finaliseSealed(t, rig, blobs, testrig.ObjectA, testrig.SubmissionA, testrig.EventA, protocol.PromptKindUser)
-	if clientRes.Indexed != 1 {
-		t.Fatalf("setup: user prompt derived %d units, want 1", clientRes.Indexed)
-	}
-	// Flip the object's kind to client_generated as a reindex would see it after the device
-	// decision landed, then rewrite the row directly so the reindex has a stale index to clear.
-	obj, err := rig.Memory.ContentObject(ctx, testrig.TenantID, testrig.ObjectA)
+func TestAClientGeneratedRequestIsNeverIndexed(t *testing.T) {
+	r := newRig(t, store.SearchFullText)
+	r.store.PutSubmission(storetest.Submission{TenantID: tenantID, SubmissionID: submissionID, PromptKind: "client_generated"})
+	res, err := r.svc.Upload(ctx, upload([]byte(`{"prompt":"generate a title","attachments":[{"name":"a.txt"}]}`)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	obj.PromptKind = protocol.PromptKindClientGenerated
-	if err := rig.Memory.PutContentObject(ctx, obj); err != nil {
-		t.Fatal(err)
+	if rows := r.store.SearchRows(tenantID); len(rows) != 0 || res.IndexedPrompt+res.IndexedAttachmentNames != 0 {
+		t.Fatalf("client-generated content was indexed: %+v", rows)
 	}
-	assertPromptHit(t, rig, "capital")
-
-	indexed, cleared, failed, err := rig.Service.ReindexTenant(ctx, testrig.TenantID)
-	if err != nil {
-		t.Fatalf("reindex: %v", err)
+	if c := r.store.Content(tenantID); len(c) != 1 || c[0].PromptKind != "client_generated" {
+		t.Fatal("client-generated content is still stored, with its kind")
 	}
-	if indexed != 0 || cleared != 1 || failed != 0 {
-		t.Fatalf("reindex = indexed %d, cleared %d, failed %d; want 0/1/0", indexed, cleared, failed)
-	}
-	assertNoPromptHit(t, rig, "capital")
 }
 
-// finaliseSealed walks prepare → seal → finalise for one object whose content carries a typed turn,
-// returning the finalise result. The sealed bytes go into blobs, which the rig's FetchBlob reads.
-func finaliseSealed(t *testing.T, rig *testrig.Rig, blobs map[string][]byte, objectID, submissionID, eventID string, kind protocol.PromptKind) vault.FinaliseResult {
+func TestContentWithoutAKnownSubmissionIsStoredButNotIndexed(t *testing.T) {
+	r := newRig(t, store.SearchFullText)
+	g := r.store.Grant(tenantID, grantID)
+	g.SubmissionID = ""
+	r.store.PutGrant(tenantID, g)
+	if _, err := r.svc.Upload(ctx, upload([]byte("typed text"))); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.store.Content(tenantID)) != 1 || len(r.store.SearchRows(tenantID)) != 0 {
+		t.Fatal("want the object stored and no index rows")
+	}
+}
+
+func TestTheIndexHoldsWhatThePersonTyped(t *testing.T) {
+	r := newRig(t, store.SearchFullText)
+	body := `{"model":"x","system":"You are helpful","messages":[
+		{"role":"user","content":"first question"},
+		{"role":"assistant","content":"answer"},
+		{"role":"user","content":[{"type":"text","text":"<system-reminder>ctx</system-reminder>follow-up about invoices"},{"type":"image"}]}]}`
+	if _, err := r.svc.Upload(ctx, upload([]byte(body))); err != nil {
+		t.Fatal(err)
+	}
+	rows := r.store.SearchRows(tenantID)
+	if len(rows) != 1 || rows[0].Body != "follow-up about invoices" {
+		t.Fatalf("index rows = %+v, want only this turn's typed text", rows)
+	}
+}
+
+// --- retrieval -----------------------------------------------------------------------------
+
+func stored(t *testing.T, r *rig, content []byte) vault.UploadResult {
 	t.Helper()
-	ctx := context.Background()
-	prep, err := rig.Service.PrepareObject(ctx, vault.PrepareRequest{
-		TenantID: testrig.TenantID, ObjectID: objectID, SubmissionID: submissionID, EventID: eventID,
-		RetentionClass: "content", ExpiresAt: rig.Clock.T.Add(90 * 24 * time.Hour),
-	})
+	res, err := r.svc.Upload(ctx, upload(content))
 	if err != nil {
-		t.Fatalf("prepare: %v", err)
-	}
-	plaintext := []byte(`{"messages":[{"role":"user","content":"what is the capital of Australia"}]}`)
-	sealed, err := protocol.SealContent(prep.DEK, eventID, plaintext)
-	if err != nil {
-		t.Fatalf("seal: %v", err)
-	}
-	blobPath := "objects/" + objectID
-	blobs[blobPath] = sealed
-	res, err := rig.Service.FinaliseObject(ctx, vault.FinaliseRequest{
-		TenantID: testrig.TenantID, ObjectID: objectID, SubmissionID: submissionID, EventID: eventID,
-		BlobPath: blobPath, CiphertextSHA256: protocol.RawDigest(sealed), PlaintextSizeBytes: int64(len(plaintext)),
-		WrappedDEK: prep.WrappedDEK, KEKID: prep.KEKID, KEKVersion: prep.KEKVersion,
-		RetentionClass: "content", ExpiresAt: rig.Clock.T.Add(90 * 24 * time.Hour),
-		PromptKind: kind,
-	})
-	if err != nil {
-		t.Fatalf("finalise: %v", err)
+		t.Fatal(err)
 	}
 	return res
 }
 
-// assertPromptHit fails unless a full-text search for query finds exactly one prompt_body hit.
-func assertPromptHit(t *testing.T, rig *testrig.Rig, query string) {
-	t.Helper()
-	hits := searchHits(t, rig, query)
-	if len(hits) != 1 || hits[0].UnitKind != store.UnitPromptBody {
-		t.Fatalf("search for %q returned %+v; want one prompt_body hit", query, hits)
-	}
+func retrieve() vault.RetrieveRequest {
+	return vault.RetrieveRequest{TenantID: tenantID, EventID: eventID, Principal: "alice@example.com", CaseReference: "CASE-7", SecondApprover: "bob@example.com", SessionID: "abcdef0123"}
 }
 
-// assertNoPromptHit fails if a full-text search for query finds anything at all.
-func assertNoPromptHit(t *testing.T, rig *testrig.Rig, query string) {
-	t.Helper()
-	if hits := searchHits(t, rig, query); len(hits) != 0 {
-		t.Fatalf("search for %q returned %+v; want no hits", query, hits)
-	}
-}
+func TestRetrievalIsMintedAuditedAndRedeemedOnce(t *testing.T) {
+	r := newRig(t, store.SearchFullText)
+	content := []byte("the prompt")
+	up := stored(t, r, content)
 
-func searchHits(t *testing.T, rig *testrig.Rig, query string) []store.SearchHit {
-	t.Helper()
-	res, err := rig.Service.Search(context.Background(), vault.SearchRequest{
-		TenantID: testrig.TenantID, Principal: "a@example.com", Scope: "tool:chatgpt",
-		Form: store.FormTerms, Query: query,
-	})
-	if err != nil {
-		t.Fatalf("search: %v", err)
-	}
-	return res.Hits
-}
-
-// ---------------------------------------------------------------------------------------
-// Audit-before-serve, and failing closed
-// ---------------------------------------------------------------------------------------
-
-// TestAuditIsWrittenBeforeTheObjectIsRead asserts the ordering §11 requires, by recording the call
-// sequence rather than by trusting the code's shape.
-func TestAuditIsWrittenBeforeTheObjectIsRead(t *testing.T) {
-	ctx := context.Background()
-	rig := testrig.New(t, testrig.Options{})
-	rig.Store(t, testrig.TenantID, testrig.ObjectA, testrig.SubmissionA, testrig.EventA)
-
-	rec := &recordingStore{Memory: rig.Memory}
-	svc, err := vault.New(vault.Options{Store: rec, Keys: rig.Keys, Now: rig.Clock.Now})
+	res, err := r.svc.Retrieve(ctx, retrieve())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Retrieve(ctx, vault.RetrieveRequest{
-		TenantID: testrig.TenantID, EventID: testrig.EventA, Principal: "analyst@example.com",
-		CaseReference: "CASE-42", SecondApprover: "approver@example.com",
-	}); err != nil {
-		t.Fatalf("retrieve: %v", err)
+	if res.RawDigest != up.RawDigest || !res.ExpiresAt.Equal(t0.Add(5*time.Minute)) {
+		t.Fatalf("retrieval = %+v", res)
 	}
-	rec.mu.Lock()
-	defer rec.mu.Unlock()
-	var auditAt, readAt = -1, -1
-	for i, call := range rec.calls {
-		if call == "AppendAudit" && auditAt < 0 {
-			auditAt = i
-		}
-		if call == "ObjectForEvent" && readAt < 0 {
-			readAt = i
-		}
+	if want := "https://analyst.example/v1/content/retrieval/" + tenantID + "/" + res.GrantID; res.RetrievalURL != want {
+		t.Fatalf("retrieval URL = %q, want %q", res.RetrievalURL, want)
 	}
-	if auditAt < 0 || readAt < 0 {
-		t.Fatalf("call sequence did not include both calls: %v", rec.calls)
+	audit := r.store.Audit()
+	granted := audit[len(audit)-1]
+	if granted.Action != vault.ActionRetrievalGranted || granted.ActorID != "alice@example.com" || granted.CaseReference != "CASE-7" ||
+		granted.Detail["second_approver"] != "bob@example.com" || granted.Detail["sid"] != "abcdef0123" {
+		t.Fatalf("grant audit = %+v", granted)
 	}
-	if auditAt > readAt {
-		t.Fatalf("the object was read before the audit row was written: %v", rec.calls)
-	}
-}
 
-// TestReadsFailClosedWhenTheAuditCannotBeWritten is §11's "no audit row, no content".
-func TestReadsFailClosedWhenTheAuditCannotBeWritten(t *testing.T) {
-	ctx := context.Background()
-	rig := testrig.New(t, testrig.Options{
-		Tenants:    []store.Tenant{testrig.Tenant(FullText())},
-		ScopeTiers: map[string]store.SearchTier{"tool:chatgpt": store.SearchFullText},
-	})
-	rig.Store(t, testrig.TenantID, testrig.ObjectA, testrig.SubmissionA, testrig.EventA)
-
-	broken := &failingAuditStore{Memory: rig.Memory}
-	svc, err := vault.New(vault.Options{
-		Store: broken, Keys: rig.Keys, Now: rig.Clock.Now,
-		ScopeTiers: map[string]store.SearchTier{"tool:chatgpt": store.SearchFullText},
-	})
+	got, err := r.svc.Redeem(ctx, tenantID, res.GrantID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = svc.Retrieve(ctx, vault.RetrieveRequest{
-		TenantID: testrig.TenantID, EventID: testrig.EventA, Principal: "analyst@example.com",
-		CaseReference: "CASE-42", SecondApprover: "approver@example.com",
-	})
-	assertDenial(t, err, vault.DenyAuditUnavailable)
-
-	_, err = svc.Search(ctx, vault.SearchRequest{
-		TenantID: testrig.TenantID, Principal: "analyst@example.com", Scope: "tool:chatgpt",
-		Form: store.FormTerms, Query: "anything",
-	})
-	if err == nil {
-		t.Fatal("a search succeeded while the audit path was failing")
+	if !bytes.Equal(got.Plaintext, content) || got.RawDigest != up.RawDigest || got.EventID != eventID {
+		t.Fatalf("redeemed = %+v", got)
 	}
-	if d, ok := vault.IsDenial(err); !ok || d.Reason != vault.DenyAuditUnavailable {
-		t.Fatalf("a search with a broken audit path returned %v, want audit_unavailable", err)
+	if last := r.store.Audit()[len(r.store.Audit())-1]; last.Action != vault.ActionRetrievalRedeemed || last.Detail["outcome"] != "served" {
+		t.Fatalf("redemption audit = %+v", last)
+	}
+
+	_, err = r.svc.Redeem(ctx, tenantID, res.GrantID)
+	wantDenial(t, err, vault.ReasonGrantAlreadyUsed)
+}
+
+func TestRetrievalRefusalsAreAudited(t *testing.T) {
+	r := newRig(t, store.SearchFullText)
+	stored(t, r, []byte("x"))
+
+	self := retrieve()
+	self.SecondApprover = self.Principal
+	_, err := r.svc.Retrieve(ctx, self)
+	wantDenial(t, err, vault.ReasonSecondApproverNotDistinct)
+
+	missing := retrieve()
+	missing.EventID = "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d"
+	_, err = r.svc.Retrieve(ctx, missing)
+	wantDenial(t, err, vault.ReasonNoContentObject)
+
+	got := actions(r.store)
+	if strings.Join(got[1:], ",") != vault.ActionRetrievalRefused+","+vault.ActionRetrievalRefused {
+		t.Fatalf("audit = %v, want both refusals recorded", got)
 	}
 }
 
-// TestPrepareStoresNothingUntilFinalise is the two-phase shape: a minted key with no stored object.
-func TestPrepareStoresNothingUntilFinalise(t *testing.T) {
-	ctx := context.Background()
-	rig := testrig.New(t, testrig.Options{})
-	prep, err := rig.Service.PrepareObject(ctx, vault.PrepareRequest{
-		TenantID: testrig.TenantID, ObjectID: testrig.ObjectA, SubmissionID: testrig.SubmissionA,
-		EventID: testrig.EventA, RetentionClass: "standard",
-	})
+func TestRetrievalWithoutAnApproverIsAllowed(t *testing.T) {
+	r := newRig(t, store.SearchFullText)
+	stored(t, r, []byte("x"))
+	req := retrieve()
+	req.SecondApprover, req.CaseReference = "", ""
+	if _, err := r.svc.Retrieve(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExpiredContentIsUnavailableWithItsReceipt(t *testing.T) {
+	r := newRig(t, store.SearchFullText)
+	up := stored(t, r, []byte("x"))
+	r.store.PutReceipt(tenantID, "8b9c0d1e-2f3a-4b4c-9d5e-6f7a8b9c0d1e")
+	r.now = up.ExpiresAt
+	_, err := r.svc.Retrieve(ctx, retrieve())
+	u, ok := vault.AsUnavailable(err)
+	if !ok || u.Reason != vault.UnavailableRetentionExpired || u.ReceiptRef != "8b9c0d1e-2f3a-4b4c-9d5e-6f7a8b9c0d1e" {
+		t.Fatalf("error = %v, want retention_expired with the receipt", err)
+	}
+	if last := actions(r.store); last[len(last)-1] != vault.ActionRetrievalRefused {
+		t.Fatal("the unavailability was not audited")
+	}
+}
+
+func TestContentUnderARetiredKeyIsUnavailable(t *testing.T) {
+	r := newRig(t, store.SearchFullText)
+	stored(t, r, []byte("x"))
+	r.build(mustKeys(t, "v2:"+b64(2)))
+	_, err := r.svc.Retrieve(ctx, retrieve())
+	if u, ok := vault.AsUnavailable(err); !ok || u.Reason != vault.UnavailableKeyUnavailable {
+		t.Fatalf("error = %v, want key_unavailable", err)
+	}
+}
+
+func TestContentSurvivesKeyRotation(t *testing.T) {
+	r := newRig(t, store.SearchFullText)
+	stored(t, r, []byte("before rotation"))
+	r.build(mustKeys(t, "v2:"+b64(2)+",v1:"+b64(1)))
+	res, err := r.svc.Retrieve(ctx, retrieve())
 	if err != nil {
-		t.Fatalf("prepare: %v", err)
+		t.Fatal(err)
 	}
-	if len(prep.DEK) != 32 || len(prep.WrappedDEK) == 0 {
-		t.Fatalf("prepare returned a %d-byte key and a %d-byte wrapped form", len(prep.DEK), len(prep.WrappedDEK))
-	}
-	if _, err := rig.Memory.ContentObject(ctx, testrig.TenantID, testrig.ObjectA); !errors.Is(err, store.ErrObjectNotFound) {
-		t.Errorf("prepare wrote an object row: %v", err)
-	}
-	// The wrapped form cannot be opened as a different object's key: the AAD binds it to its row.
-	other := keys.AAD{TenantID: testrig.TenantID, ObjectID: testrig.ObjectB, KEKID: prep.KEKID, KEKVersion: prep.KEKVersion}
-	if _, err := rig.Keys.Unwrap(ctx, other, prep.WrappedDEK); !errors.Is(err, keys.ErrAuthentication) {
-		t.Errorf("a wrapped key opened under another object's AAD: %v", err)
+	got, err := r.svc.Redeem(ctx, tenantID, res.GrantID)
+	if err != nil || string(got.Plaintext) != "before rotation" {
+		t.Fatalf("redeem after rotation = %q, %v", got.Plaintext, err)
 	}
 }
 
-// FullText is a tenant option for a vendor-managed M3 tenant with full-text search.
-func FullText() func(*store.Tenant) {
-	return func(tn *store.Tenant) {
-		tn.ContentSearch = store.SearchFullText
-		tn.CeilingMode = "m3"
-		tn.KeyCustody = store.CustodyVendor
+func TestRedemptionRefusals(t *testing.T) {
+	r := newRig(t, store.SearchFullText)
+	stored(t, r, []byte("x"))
+	res, err := r.svc.Retrieve(ctx, retrieve())
+	if err != nil {
+		t.Fatal(err)
 	}
+	_, err = r.svc.Redeem(ctx, tenantID, "9c0d1e2f-3a4b-4c5d-8e6f-7a8b9c0d1e2f")
+	wantDenial(t, err, vault.ReasonGrantRequired)
+	_, err = r.svc.Redeem(ctx, otherTenant, res.GrantID)
+	wantDenial(t, err, vault.ReasonGrantRequired)
+
+	r.now = res.ExpiresAt
+	_, err = r.svc.Redeem(ctx, tenantID, res.GrantID)
+	wantDenial(t, err, vault.ReasonGrantExpired)
 }
 
-// ---------------------------------------------------------------------------------------
-// helpers
-// ---------------------------------------------------------------------------------------
+func TestContentDeletedAfterTheGrantIsUnavailable(t *testing.T) {
+	r := newRig(t, store.SearchFullText)
+	up := stored(t, r, []byte("x"))
+	res, _ := r.svc.Retrieve(ctx, retrieve())
+	r.store.EditContent(tenantID, up.ObjectID, func(*store.Content) bool { return false })
+	_, err := r.svc.Redeem(ctx, tenantID, res.GrantID)
+	if u, ok := vault.AsUnavailable(err); !ok || u.Reason != vault.UnavailableErasure {
+		t.Fatalf("error = %v, want erasure", err)
+	}
+	_, err = r.svc.Redeem(ctx, tenantID, res.GrantID)
+	wantDenial(t, err, vault.ReasonGrantAlreadyUsed)
+}
 
-func assertDenial(t *testing.T, err error, want vault.DenialReason) {
-	t.Helper()
+func TestTamperedCiphertextIsAFaultAndConsumesNothing(t *testing.T) {
+	r := newRig(t, store.SearchFullText)
+	up := stored(t, r, []byte("x"))
+	res, _ := r.svc.Retrieve(ctx, retrieve())
+	r.store.EditContent(tenantID, up.ObjectID, func(c *store.Content) bool {
+		c.Ciphertext = bytes.Clone(c.Ciphertext)
+		c.Ciphertext[len(c.Ciphertext)-1] ^= 1
+		return true
+	})
+	_, err := r.svc.Redeem(ctx, tenantID, res.GrantID)
 	if err == nil {
-		t.Fatalf("expected a refusal with reason %q, got success", want)
+		t.Fatal("tampered ciphertext was served")
 	}
-	d, ok := vault.IsDenial(err)
-	if !ok {
-		t.Fatalf("expected a refusal with reason %q, got %v", want, err)
+	if _, ok := vault.AsDenial(err); ok {
+		t.Fatal("tampering was reported as a refusal rather than a fault")
 	}
-	if d.Reason != want {
-		t.Fatalf("refusal reason is %q, want %q (%v)", d.Reason, want, err)
+	if _, ok := vault.AsUnavailable(err); ok {
+		t.Fatal("tampering was reported as content that is gone")
 	}
-	if !d.Reason.Valid() {
-		t.Errorf("refusal reason %q is outside the closed set", d.Reason)
+	r.store.EditContent(tenantID, up.ObjectID, func(c *store.Content) bool {
+		c.Ciphertext[len(c.Ciphertext)-1] ^= 1
+		return true
+	})
+	if _, err := r.svc.Redeem(ctx, tenantID, res.GrantID); err != nil {
+		t.Fatalf("the failed redemption consumed the grant: %v", err)
 	}
 }
 
-func contains(haystack, needle string) bool {
-	return bytes.Contains([]byte(haystack), []byte(needle))
+func TestNothingIsServedWithoutTheAuditRow(t *testing.T) {
+	r := newRig(t, store.SearchFullText)
+	stored(t, r, []byte("x"))
+	res, _ := r.svc.Retrieve(ctx, retrieve())
+	r.store.FailAudit = true
+	if got, err := r.svc.Redeem(ctx, tenantID, res.GrantID); err == nil || got.Plaintext != nil {
+		t.Fatal("content was served without its audit row")
+	}
+	if _, err := r.svc.Retrieve(ctx, retrieve()); err == nil {
+		t.Fatal("a retrieval grant was minted without its audit row")
+	}
+	r.store.FailAudit = false
+	if _, err := r.svc.Redeem(ctx, tenantID, res.GrantID); err != nil {
+		t.Fatalf("the grant was consumed by the failed redemption: %v", err)
+	}
 }
 
-type recordingStore struct {
-	*store.Memory
-	mu    sync.Mutex
-	calls []string
+func TestReadsCanBeSwitchedOff(t *testing.T) {
+	r := newRig(t, store.SearchFullText)
+	stored(t, r, []byte("x"))
+	res, _ := r.svc.Retrieve(ctx, retrieve())
+	r.store.PutTenant(store.Tenant{TenantID: tenantID, Status: "suspended", ContentSearch: store.SearchFullText, IngestEnabled: true})
+	_, err := r.svc.Retrieve(ctx, retrieve())
+	wantDenial(t, err, vault.ReasonRetrievalDisabled)
+	_, err = r.svc.Redeem(ctx, tenantID, res.GrantID)
+	wantDenial(t, err, vault.ReasonRetrievalDisabled)
+	_, err = r.svc.Search(ctx, vault.SearchRequest{TenantID: tenantID, Principal: "alice", Query: "x"})
+	wantDenial(t, err, vault.ReasonRetrievalDisabled)
 }
 
-func (r *recordingStore) record(name string) {
-	r.mu.Lock()
-	r.calls = append(r.calls, name)
-	r.mu.Unlock()
+// --- search --------------------------------------------------------------------------------
+
+func searchRig(t *testing.T, tier store.SearchTier) *rig {
+	t.Helper()
+	r := newRig(t, tier)
+	expires := t0.Add(24 * time.Hour)
+	r.store.PutSearchRow(tenantID, store.SearchUnit{SubmissionID: submissionID, UnitKind: store.UnitPromptBody, Body: "contract renewal for contoso", ExpiresAt: expires})
+	r.store.PutSearchRow(tenantID, store.SearchUnit{SubmissionID: submissionID, UnitKind: store.UnitAttachmentName, Body: "contoso-contract.pdf", ExpiresAt: expires})
+	return r
 }
 
-func (r *recordingStore) AppendAudit(ctx context.Context, e store.AuditEntry) error {
-	r.record("AppendAudit")
-	return r.Memory.AppendAudit(ctx, e)
+func search(r *rig, form store.SearchForm, query string) (vault.SearchResult, error) {
+	return r.svc.Search(ctx, vault.SearchRequest{TenantID: tenantID, Principal: "alice@example.com", SessionID: "abcdef0123", Form: form, Query: query, CaseReference: "CASE-1"})
 }
 
-func (r *recordingStore) ObjectForEvent(ctx context.Context, tenantID, eventID string) (store.ContentObject, error) {
-	r.record("ObjectForEvent")
-	return r.Memory.ObjectForEvent(ctx, tenantID, eventID)
+func kinds(res vault.SearchResult) string {
+	var out []string
+	for _, h := range res.Hits {
+		out = append(out, h.UnitKind)
+	}
+	return strings.Join(out, ",")
 }
 
-type failingAuditStore struct{ *store.Memory }
-
-func (f *failingAuditStore) AppendAudit(context.Context, store.AuditEntry) error {
-	return fmt.Errorf("audit storage is unavailable")
+func TestSearchFollowsTheTenantsTier(t *testing.T) {
+	cases := []struct {
+		tier store.SearchTier
+		form store.SearchForm
+		want string
+	}{
+		{store.SearchFullText, store.FormTerms, "prompt_body,attachment_name"},
+		{store.SearchFullText, "", "prompt_body,attachment_name"},
+		{store.SearchFullText, store.FormSubstring, "attachment_name"},
+		{store.SearchFullText, store.FormFuzzy, "attachment_name"},
+		{store.SearchAttachmentNames, store.FormTerms, "attachment_name"},
+		{store.SearchAttachmentNames, store.FormSubstring, "attachment_name"},
+	}
+	for _, tc := range cases {
+		r := searchRig(t, tc.tier)
+		res, err := search(r, tc.form, "contoso")
+		if err != nil {
+			t.Fatalf("%s/%s: %v", tc.tier, tc.form, err)
+		}
+		if got := kinds(res); got != tc.want || res.Tier != tc.tier {
+			t.Errorf("%s/%s: hits %q (tier %s), want %q", tc.tier, tc.form, got, res.Tier, tc.want)
+		}
+	}
+	r := searchRig(t, store.SearchDisabled)
+	_, err := search(r, store.FormTerms, "contoso")
+	wantDenial(t, err, vault.ReasonSearchDisabled)
 }
 
-func (f *failingAuditStore) SearchAudited(context.Context, store.SearchQuery, store.AuditEntry) ([]store.SearchHit, error) {
-	return nil, fmt.Errorf("audit storage is unavailable")
+func TestSearchIsAuditedInTheSameTransaction(t *testing.T) {
+	r := searchRig(t, store.SearchFullText)
+	if _, err := search(r, store.FormTerms, `contoso "contract renewal"`); err != nil {
+		t.Fatal(err)
+	}
+	a := r.store.Audit()
+	last := a[len(a)-1]
+	if last.Action != vault.ActionSearch || last.ActorID != "alice@example.com" || last.CaseReference != "CASE-1" ||
+		last.Detail["terms"] != "contoso & contract <-> renewal" || last.Detail["sid"] != "abcdef0123" {
+		t.Fatalf("search audit = %+v", last)
+	}
+	r.store.FailAudit = true
+	if res, err := search(r, store.FormTerms, "contoso"); err == nil || len(res.Hits) != 0 {
+		t.Fatal("search results were served without an audit row")
+	}
+}
+
+func TestSearchPagesNewestFirst(t *testing.T) {
+	r := newRig(t, store.SearchFullText)
+	for i, sub := range []string{"a0000000-0000-4000-8000-000000000001", "a0000000-0000-4000-8000-000000000002", "a0000000-0000-4000-8000-000000000003"} {
+		r.store.PutSubmission(storetest.Submission{TenantID: tenantID, SubmissionID: sub, ReceivedAt: t0.Add(-time.Duration(i) * time.Hour)})
+		r.store.PutSearchRow(tenantID, store.SearchUnit{SubmissionID: sub, UnitKind: store.UnitPromptBody, Body: "invoice", ExpiresAt: t0.Add(time.Hour)})
+	}
+	var seen []string
+	cursor := ""
+	for page := 0; page < 3; page++ {
+		res, err := r.svc.Search(ctx, vault.SearchRequest{TenantID: tenantID, Principal: "alice", Query: "invoice", Limit: 2, Cursor: cursor})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, h := range res.Hits {
+			seen = append(seen, h.SubmissionID[len(h.SubmissionID)-1:])
+		}
+		if cursor = res.NextCursor; cursor == "" {
+			break
+		}
+	}
+	if strings.Join(seen, "") != "123" {
+		t.Fatalf("pages returned %v, want submissions 1,2,3 newest first exactly once", seen)
+	}
+	_, err := r.svc.Search(ctx, vault.SearchRequest{TenantID: tenantID, Principal: "alice", Query: "invoice", Cursor: "not-a-cursor"})
+	wantDenial(t, err, vault.ReasonSearchCursorInvalid)
+}
+
+func TestExpiredIndexRowsAreNotReturned(t *testing.T) {
+	r := searchRig(t, store.SearchFullText)
+	r.now = t0.Add(25 * time.Hour)
+	res, err := search(r, store.FormTerms, "contoso")
+	if err != nil || len(res.Hits) != 0 {
+		t.Fatalf("hits = %v, %v; want none past the rows' expiry", res.Hits, err)
+	}
+}
+
+func TestSearchInputIsValidated(t *testing.T) {
+	r := searchRig(t, store.SearchFullText)
+	for _, q := range []string{"", "   ", "&|!()", strings.Repeat("a", 257)} {
+		_, err := search(r, store.FormTerms, q)
+		wantDenial(t, err, vault.ReasonInvalidRequest)
+	}
+	_, err := search(r, "regex", "contoso")
+	wantDenial(t, err, vault.ReasonInvalidRequest)
+}
+
+func TestNewNeedsAStoreAndAKeyring(t *testing.T) {
+	if _, err := vault.New(vault.Config{Keys: mustKeys(t, "v1:"+b64(1))}); err == nil {
+		t.Fatal("built without a store")
+	}
+	if _, err := vault.New(vault.Config{Store: storetest.New()}); err == nil {
+		t.Fatal("built without a keyring")
+	}
+}
+
+func TestErrorsAreDistinguishable(t *testing.T) {
+	var d *vault.Denial
+	if errors.As(&vault.Unavailable{}, &d) {
+		t.Fatal("an unavailability reads as a denial")
+	}
 }

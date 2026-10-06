@@ -1,136 +1,123 @@
-// Package store is the persistence seam of the content vault.
+// Package store is content-vault's PostgreSQL access.
 //
-// It holds the two things §5.3 keeps in different systems: the wrapped per-object data key (a
-// database row here) and the ciphertext (a blob this service never sees). The interface is shaped
-// so that every operation the vault performs is **one statement**, which is what makes the
-// integration with db/schema.sql reviewable: the statements live in sql.go, and
-// sql_integration_test.go executes their exact text against a live PostgreSQL 17 server.
-//
-// Two implementations:
-//
-//   - Memory: the test double. It is deliberately *permissive* about the schema's invariants — it
-//     will happily store a tenant whose custody and search tier contradict each other, exactly as
-//     a database whose check constraint had been dropped would. That is what makes the service's
-//     own refusal testable: if the double enforced the rule, the service's copy of it could be
-//     deleted and every test would still pass.
-//   - SQL: database/sql against the real schema, with the row-level-security session tenant set
-//     inside every transaction. No PostgreSQL wire driver is fetchable offline (ADR 0016), so
-//     NewSQL takes an already-opened *sql.DB and the binary that embeds this service registers the
-//     driver.
+// Every operation runs inside one transaction scoped to one tenant: the transaction first sets
+// app.tenant_id, which the schema's row-level security policies read, so a statement can only see
+// and write that tenant's rows. The vault's rules live in package vault; this package is the SQL.
 package store
 
 import (
 	"context"
 	"errors"
 	"time"
-
-	"github.com/shadow-ai-capture/device/protocol"
 )
 
-// Custody is ops.tenant.key_custody (§6.2).
-type Custody string
-
-const (
-	CustodyVendor          Custody = "vendor"
-	CustodyCustomerManaged Custody = "customer_managed"
-	CustodyCustomerHeld    Custody = "customer_held"
+// Errors the vault branches on. Anything else is an infrastructure failure.
+var (
+	// ErrNotFound means the row asked for does not exist for this tenant, or a conditional claim
+	// matched no row.
+	ErrNotFound = errors.New("store: not found")
+	// ErrContentExists means the event already has stored content.
+	ErrContentExists = errors.New("store: content already stored for this event")
 )
 
-// Valid reports membership of the closed set.
-func (c Custody) Valid() bool {
-	switch c {
-	case CustodyVendor, CustodyCustomerManaged, CustodyCustomerHeld:
-		return true
-	default:
-		return false
-	}
+// Store opens tenant-scoped transactions.
+type Store interface {
+	// InTenant runs fn in one transaction whose row-level-security tenant is tenantID. The
+	// transaction commits when fn returns nil and rolls back otherwise.
+	InTenant(ctx context.Context, tenantID string, fn func(Tx) error) error
 }
 
-// SearchTier is ops.tenant.content_search (§6.1, ADR 0014).
-type SearchTier string
+// Tx is one tenant-scoped transaction.
+type Tx interface {
+	// Tenant reads the tenant row.
+	Tenant(ctx context.Context) (Tenant, error)
 
-const (
-	SearchDisabled        SearchTier = "disabled"
-	SearchAttachmentNames SearchTier = "attachment_names"
-	SearchFullText        SearchTier = "full_text"
-)
+	// ClaimGrant marks an upload grant used, provided it is for eventID, granted, unused and
+	// unexpired at now. It returns ErrNotFound when no grant matched all of that.
+	ClaimGrant(ctx context.Context, grantID, eventID string, now time.Time) (Grant, error)
+	// Grant reads an upload grant, to explain a claim that matched nothing.
+	Grant(ctx context.Context, grantID string) (Grant, error)
+	// UploadContext reads what storing content for submissionID needs: the submission's prompt
+	// kind and the tenant's content retention. submissionID may be empty.
+	UploadContext(ctx context.Context, submissionID string) (UploadContext, error)
+	// InsertContent stores one encrypted object. It returns ErrContentExists when the event
+	// already has one.
+	InsertContent(ctx context.Context, c Content) error
+	// MarkUploaded records on the submission that its content is stored, unless it already says so
+	// or says the content was shredded.
+	MarkUploaded(ctx context.Context, submissionID string) error
+	// PutSearchText writes or replaces one search index row.
+	PutSearchText(ctx context.Context, u SearchUnit) error
 
-// Valid reports membership of the closed set.
-func (t SearchTier) Valid() bool {
-	switch t {
-	case SearchDisabled, SearchAttachmentNames, SearchFullText:
-		return true
-	default:
-		return false
-	}
+	// ContentForEvent reads an event's stored object without its ciphertext.
+	ContentForEvent(ctx context.Context, eventID string) (Content, error)
+	// ContentForObject reads one stored object with its ciphertext.
+	ContentForObject(ctx context.Context, objectID string) (Content, error)
+
+	// InsertRetrievalGrant records a single-use retrieval grant.
+	InsertRetrievalGrant(ctx context.Context, g RetrievalGrant) error
+	// RetrievalGrant reads one retrieval grant.
+	RetrievalGrant(ctx context.Context, grantID string) (RetrievalGrant, error)
+	// ClaimRetrievalGrant redeems a grant that is unused. It returns ErrNotFound when the grant
+	// was already redeemed, so two concurrent redemptions cannot both succeed.
+	ClaimRetrievalGrant(ctx context.Context, grantID, usedBy string, now time.Time) (RetrievalGrant, error)
+
+	// Search reads the content search index.
+	Search(ctx context.Context, q SearchQuery) ([]SearchHit, error)
+	// LatestReceiptID returns the tenant's most recent erasure receipt id, or "" when there is
+	// none.
+	LatestReceiptID(ctx context.Context) (string, error)
+	// AppendAudit writes one audit row.
+	AppendAudit(ctx context.Context, e AuditEntry) error
 }
 
-// Rank orders the tiers so "the tenant tier is a ceiling" can be compared rather than string-matched.
-func (t SearchTier) Rank() int {
-	switch t {
-	case SearchAttachmentNames:
-		return 1
-	case SearchFullText:
-		return 2
-	default:
-		return 0
-	}
-}
-
-// Tenant is ops.tenant as the vault needs it.
+// Tenant is the part of ops.tenant the vault reads.
 type Tenant struct {
 	TenantID      string
-	Name          string
 	Status        string // active | suspended | offboarding | closed
-	KeyCustody    Custody
-	KEKID         string
-	CeilingMode   protocol.CollectionMode
 	ContentSearch SearchTier
 	IngestEnabled bool
 	ReadEnabled   bool
 }
 
-// ContentObject is ops.content_object: the wrapped DEK beside the blob reference, never the
-// ciphertext itself (§5.3).
-type ContentObject struct {
-	TenantID     string
-	ObjectID     string
-	SubmissionID string
+// Grant is a per-event content upload grant (ops.grant).
+type Grant struct {
+	GrantID      string
 	EventID      string
-	// PromptKind is the device's request-kind decision (protocol.PromptKind), carried so a
-	// reindex can keep a client-generated request out of the search index. It is not a column in
-	// ops.content_object; the memory store keeps it and the SQL store leaves it empty, which reads
-	// as unknown.
-	PromptKind         protocol.PromptKind
-	BlobPath           string
-	CiphertextSHA256   string
-	PlaintextSizeBytes int64
-	WrappedDEK         []byte
-	KEKID              string
-	KEKVersion         string
-	RetentionClass     string
-	State              string // uploaded | shredded
-	ShreddedReason     string
-	CreatedAt          time.Time
-	ExpiresAt          time.Time
-	ShreddedAt         time.Time
+	DeviceID     string
+	SubmissionID string // "" when the event's submission was not known at grant time
+	Decision     string // pending | granted | denied | expired | voided
+	ExpiresAt    time.Time
+	UsedAt       time.Time // zero while unused
 }
 
-// Object states, from the schema's CHECK.
-const (
-	StateUploaded = "uploaded"
-	StateShredded = "shredded"
-)
+// UploadContext is what the vault reads before storing content.
+type UploadContext struct {
+	// PromptKind is the submission's request kind: user | client_generated | unknown, or "".
+	PromptKind string
+	// RetentionDays is the tenant's content retention for this submission.
+	RetentionDays int
+}
 
-// RetrievalGrant is a short-lived, single-use authorisation to read one object's plaintext, bound
-// to the principal that asked and the event it belongs to (docs/02 §11 "Serving").
-//
-// The record is a table this service needs and db/schema.sql does not yet have; sql.go carries the
-// DDL and the statements, and the README states plainly that the SQL path for retrieval grants is
-// NOT VERIFIED because the table does not exist. The in-memory implementation is the one the tests
-// exercise.
+// Content is one stored object (ops.content).
+type Content struct {
+	TenantID           string
+	ObjectID           string
+	EventID            string
+	SubmissionID       string // "" when unknown
+	GrantID            string
+	KeyVersion         string
+	Ciphertext         []byte // nil when read without it
+	PlaintextSizeBytes int
+	RawDigest          string
+	RetentionClass     string
+	PromptKind         string // "" when unknown
+	CreatedAt          time.Time
+	ExpiresAt          time.Time
+}
+
+// RetrievalGrant is a single-use authorisation to read one object (ops.retrieval_grant).
 type RetrievalGrant struct {
-	TenantID       string
 	GrantID        string
 	EventID        string
 	ObjectID       string
@@ -140,74 +127,68 @@ type RetrievalGrant struct {
 	SecondApprover string
 	IssuedAt       time.Time
 	ExpiresAt      time.Time
-	UsedAt         time.Time
+	UsedAt         time.Time // zero while unused
 	UsedBy         string
 	RawDigest      string
 }
 
-// Used reports whether the grant has been consumed. The window between UsedAt and a claimed write
-// is closed by ClaimRetrievalGrant, which is a single conditional UPDATE in SQL.
-func (g RetrievalGrant) Used() bool { return !g.UsedAt.IsZero() }
+// SearchTier is ops.tenant.content_search.
+type SearchTier string
 
-// SearchUnit is one row of ingest.search_text.
-type SearchUnit struct {
-	TenantID     string
-	SubmissionID string
-	UnitKind     string // prompt_body | attachment_name
-	UnitIndex    int
-	Body         string
-	ExpiresAt    time.Time
+// The search tiers, lowest first.
+const (
+	SearchDisabled        SearchTier = "disabled"
+	SearchAttachmentNames SearchTier = "attachment_names"
+	SearchFullText        SearchTier = "full_text"
+)
+
+// Allows reports whether the tier permits indexing and searching units of kind.
+func (t SearchTier) Allows(kind string) bool {
+	switch kind {
+	case UnitPromptBody:
+		return t == SearchFullText
+	case UnitAttachmentName:
+		return t == SearchFullText || t == SearchAttachmentNames
+	}
+	return false
 }
 
-// Unit kinds, from the schema's CHECK.
+// Search index unit kinds (ingest.search_text.unit_kind).
 const (
 	UnitPromptBody     = "prompt_body"
 	UnitAttachmentName = "attachment_name"
 )
 
-// ValidUnitKind reports membership of the schema's closed set.
-func ValidUnitKind(k string) bool { return k == UnitPromptBody || k == UnitAttachmentName }
-
-// SearchForm is the closed set of match expressions an analyst may type (docs/04 §15.3).
-type SearchForm string
-
-const (
-	FormTerms     SearchForm = "terms"     // tsv @@ to_tsquery, served by search_text_tsv_gin
-	FormSubstring SearchForm = "substring" // body ILIKE, served by search_text_name_trgm
-	FormFuzzy     SearchForm = "fuzzy"     // similarity(), served by search_text_name_trgm
-)
-
-// Valid reports membership of the closed set.
-func (f SearchForm) Valid() bool {
-	switch f {
-	case FormTerms, FormSubstring, FormFuzzy:
-		return true
-	default:
-		return false
-	}
+// SearchUnit is one ingest.search_text row.
+type SearchUnit struct {
+	SubmissionID string
+	UnitKind     string
+	UnitIndex    int
+	Body         string
+	ExpiresAt    time.Time
 }
 
-// SearchFilters narrows a search to the same dimensions the event list composes by (docs/04
-// §15.3): a person, a tool, a device, a collection mode, and a received-at window. Every field is
-// optional; the zero value adds no predicate. The vault composes them, joining its own index to
-// ingest.submission, because query-api cannot read the index and must not be the one to filter it.
+// SearchForm is how a search matches.
+type SearchForm string
+
+// The search forms.
+const (
+	FormTerms     SearchForm = "terms"     // full-text terms and phrases over the tsvector
+	FormSubstring SearchForm = "substring" // case-insensitive substring of an attachment name
+	FormFuzzy     SearchForm = "fuzzy"     // trigram similarity to an attachment name
+)
+
+// SearchFilters narrow a search by submission metadata. Zero values add no predicate.
 type SearchFilters struct {
 	Subject      string // ingest.submission.user_ref
 	Tool         string // ingest.submission.tool_fingerprint
-	Device       string // ingest.submission.device_id, a uuid
-	Mode         string // ingest.submission.collection_mode, m0..m3
+	Device       string // ingest.submission.device_id
+	Mode         string // ingest.submission.collection_mode
 	ReceivedFrom time.Time
-	ReceivedTo   time.Time // exclusive, so adjacent windows do not double-count
+	ReceivedTo   time.Time // exclusive
 }
 
-// IsZero reports whether the filter adds no predicate at all.
-func (f SearchFilters) IsZero() bool {
-	return f.Subject == "" && f.Tool == "" && f.Device == "" && f.Mode == "" &&
-		f.ReceivedFrom.IsZero() && f.ReceivedTo.IsZero()
-}
-
-// SearchCursor is the keyset position a later page resumes from: the ordering key of the last hit
-// the previous page returned. It is opaque to the caller; the service mints and parses it.
+// SearchCursor is the keyset position after the last hit of a page.
 type SearchCursor struct {
 	ReceivedAt   time.Time
 	SubmissionID string
@@ -215,150 +196,36 @@ type SearchCursor struct {
 	UnitIndex    int
 }
 
-// SearchQuery is one read of the index. Every field is bound, never interpolated: the query text
-// reaches PostgreSQL as a parameter and the unit kinds as a slice.
+// SearchQuery is one read of the index. Every value is a bound parameter.
 type SearchQuery struct {
-	TenantID   string
 	Form       SearchForm
-	Text       string
-	UnitKind   string // "" means both kinds the caller is permitted to read
+	Text       string // a tsquery built by the vault for FormTerms; lower-cased text otherwise
+	UnitKind   string // "" searches both kinds
 	Limit      int
-	MinSimilar float64 // fuzzy only
+	MinSimilar float64 // FormFuzzy only
 	Filters    SearchFilters
-	// Cursor resumes a keyset page. nil is the first page.
-	Cursor *SearchCursor
+	Cursor     *SearchCursor
+	Now        time.Time // index rows that expired before Now are not returned
 }
 
-// SearchHit is one bounded result: a submission, the unit it matched, and a highlighted snippet.
-// The full body is never a field, so no caller can receive one by accident.
+// SearchHit is one match: a submission, the unit that matched, and a snippet.
 type SearchHit struct {
 	SubmissionID string
 	UnitKind     string
 	UnitIndex    int
 	Snippet      string
 	Rank         float64
-	// ReceivedAt is the submission's server receive time. It is the search's ordering key and the
-	// first component of the page cursor, and it is carried so a page can be resumed exactly.
-	ReceivedAt time.Time
+	ReceivedAt   time.Time
 }
 
-// SearchSubmission is the submission metadata a filtered search joins to. In SQL it is read from
-// ingest.submission in the same statement that reads the index; the in-memory double keeps a copy
-// so it can answer the same question without a database.
-type SearchSubmission struct {
-	TenantID        string
-	SubmissionID    string
-	UserRef         string
-	ToolFingerprint string
-	DeviceID        string
-	CollectionMode  string
-	ReceivedAt      time.Time
-}
-
-// AuditEntry is one ops.audit row. prev_hash and row_hash are filled by ops.audit_chain() in the
-// database, so a caller cannot forge a link by supplying one.
+// AuditEntry is one ops.audit row. The chain hashes are computed by the database.
 type AuditEntry struct {
-	TenantID      string
 	ActorType     string // user | device | service | system
 	ActorID       string
 	Action        string
 	ObjectType    string
 	ObjectID      string
-	SubjectRef    string
 	CaseReference string
 	Detail        map[string]any
 	OccurredAt    time.Time
-}
-
-// ErasureReceipt is ops.erasure_receipt: the record that makes "we deleted it" checkable (C34).
-type ErasureReceipt struct {
-	TenantID        string
-	ReceiptID       string
-	ScopeKind       string // subject | tenant | retention | hold_release
-	SubjectRef      string
-	RequestedBy     string
-	RequestedAt     time.Time
-	CompletedAt     time.Time
-	Mechanisms      []string
-	RemovedCounts   map[string]int
-	RemainingCounts map[string]int
-}
-
-// Errors the vault branches on. Anything else is infrastructure and retryable.
-var (
-	ErrUnknownTenant      = errors.New("store: tenant unknown")
-	ErrObjectNotFound     = errors.New("store: content object not found")
-	ErrGrantNotFound      = errors.New("store: retrieval grant not found")
-	ErrGrantAlreadyUsed   = errors.New("store: retrieval grant already used")
-	ErrNoReceipt          = errors.New("store: no erasure receipt for this tenant")
-	ErrTenantNotPermitted = errors.New("store: tenant is not permitted to store content")
-)
-
-// Store is the persistence seam. Every method is one statement or one transaction of statements
-// that the vault issues in a fixed order.
-type Store interface {
-	// Tenant reads ops.tenant (RLS-scoped by the session tenant in SQL).
-	Tenant(ctx context.Context, tenantID string) (Tenant, error)
-
-	// PutContentObject inserts or replaces the row that holds a wrapped DEK.
-	PutContentObject(ctx context.Context, obj ContentObject) error
-
-	// ContentObject reads one object by id.
-	ContentObject(ctx context.Context, tenantID, objectID string) (ContentObject, error)
-
-	// ObjectForEvent reads the object an event's grant produced, if any.
-	ObjectForEvent(ctx context.Context, tenantID, eventID string) (ContentObject, error)
-
-	// ObjectsForTenant lists the objects a rotation must re-wrap.
-	ObjectsForTenant(ctx context.Context, tenantID string) ([]ContentObject, error)
-
-	// RewrapObject records a DEK sealed under a new KEK version. The single-use guard is
-	// kek_version = expectVersion: a concurrent rotation cannot re-wrap the same row twice with
-	// two different new versions and have the second silently win.
-	RewrapObject(ctx context.Context, tenantID, objectID string, wrapped []byte, kekVersion, expectVersion string, at time.Time) error
-
-	// ShredObject marks an object destroyed **and destroys its wrapped key in the same
-	// statement**, so "shredded" cannot be recorded while the key survives.
-	ShredObject(ctx context.Context, tenantID, objectID, reason string, at time.Time) error
-
-	// PutSearchUnit writes one ingest.search_text row.
-	PutSearchUnit(ctx context.Context, unit SearchUnit) error
-
-	// DeleteSearchText removes index rows for one submission, or for a whole tenant when
-	// submissionID is empty. §6.4: erasure must reach the index by row deletion, because key
-	// destruction does not touch it.
-	DeleteSearchText(ctx context.Context, tenantID, submissionID string) (int64, error)
-
-	// SearchAudited serves one search: it writes the audit row and runs the query **in one
-	// transaction, audit first**, and fails closed (docs/06 §6.3: "no audit row, no results").
-	// It is one method rather than two calls because a search whose audit committed separately
-	// could be served without a record, which is the failure §3.6 forbids.
-	SearchAudited(ctx context.Context, q SearchQuery, e AuditEntry) ([]SearchHit, error)
-
-	// AppendAudit writes one audit row. In SQL this is the same transaction that serves the read,
-	// which is what "audit before serve, failing closed" means mechanically.
-	AppendAudit(ctx context.Context, e AuditEntry) error
-
-	// PutRetrievalGrant records a new single-use grant.
-	PutRetrievalGrant(ctx context.Context, g RetrievalGrant) error
-
-	// RetrievalGrant reads one grant.
-	RetrievalGrant(ctx context.Context, tenantID, grantID string) (RetrievalGrant, error)
-
-	// ClaimRetrievalGrant consumes a grant atomically. It returns ErrGrantAlreadyUsed when the
-	// grant was already consumed, which is the only single-use mechanism that survives two
-	// concurrent requests.
-	ClaimRetrievalGrant(ctx context.Context, tenantID, grantID, principal string, now time.Time) (RetrievalGrant, error)
-
-	// PutErasureReceipt records what was removed and what deliberately survived.
-	PutErasureReceipt(ctx context.Context, r ErasureReceipt) error
-
-	// LastReceipt returns the tenant's most recent erasure receipt, so a §11
-	// `no_longer_available` result can link the receipt that explains it. It returns
-	// ErrNoReceipt when there is none; a missing reference must not turn unavailability into an
-	// error.
-	LastReceipt(ctx context.Context, tenantID string) (ErasureReceipt, error)
-
-	// Close releases resources.
-	Close() error
 }

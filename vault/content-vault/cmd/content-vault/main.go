@@ -1,408 +1,174 @@
-// Command content-vault is the content vault: the only component that can unwrap a content key
-// (docs/06 §5.3, D7).
+// Command content-vault stores prompt content encrypted in PostgreSQL and is the only component that
+// can decrypt it. It has internal ingress only: control-api uploads content under per-event grants,
+// query-api forwards analysts' searches and retrieval requests, and the dashboard server forwards
+// the single-use retrieval URLs it mints.
 //
-// **Internal ingress only.** It has no device-facing endpoint and no user-facing endpoint: devices
-// reach content through control-api's grant decision and then write ciphertext straight to blob
-// storage, and browsers reach content through query-api, which calls this service over the internal
-// network under its own service identity (docs/02 §11). The binary refuses to bind a non-loopback
-// address unless the operator says so explicitly, which is the most a process can check about its
-// own ingress — and the README states that the acknowledgement is not a substitute for the network
-// control.
-//
-// Subcommands:
-//
-//	serve       run the internal HTTP surface
-//	schema-sql  print the SQL this service issues, as a psql script, for the live-schema harness
-//	version     print the build's identity and the key backend it would use
+// Configuration is the environment; see README.md.
 package main
 
 import (
 	"context"
-	"database/sql"
 	"errors"
-	"flag"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
-	"strings"
+	"os/signal"
+	"strconv"
+	"syscall"
 	"time"
 
+	"github.com/shadow-ai-capture/platform/postgres"
+
 	"github.com/shadow-ai-capture/content-vault/internal/auth"
-	"github.com/shadow-ai-capture/content-vault/internal/blob"
 	"github.com/shadow-ai-capture/content-vault/internal/httpapi"
-	"github.com/shadow-ai-capture/content-vault/internal/keys"
+	"github.com/shadow-ai-capture/content-vault/internal/keyring"
 	"github.com/shadow-ai-capture/content-vault/internal/store"
 	"github.com/shadow-ai-capture/content-vault/internal/vault"
 )
 
-// Version is the service's version.
-const Version = "0.1.0-dev"
+// Environment variables. The database is configured by platform/postgres's SAC_PG_* variables.
+const (
+	EnvHTTPAddr         = "SAC_HTTP_ADDR"
+	EnvContentKeys      = "SAC_CONTENT_KEYS"
+	EnvAuthIssuer       = "SAC_AUTH_ISSUER"
+	EnvAuthAudience     = "SAC_AUTH_AUDIENCE"
+	EnvAuthJWKSURL      = "SAC_AUTH_JWKS_URL"
+	EnvRetrievalURLBase = "SAC_RETRIEVAL_URL_BASE"
+)
 
 func main() {
-	args := os.Args[1:]
-	if len(args) == 0 {
-		usage()
-		os.Exit(2)
+	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(log)
+	if err := run(log); err != nil {
+		log.Error("content-vault: stopped", "error", err)
+		os.Exit(1)
 	}
-	var code int
-	switch args[0] {
-	case "serve":
-		code = runServe(args[1:])
-	case "schema-sql":
-		code = runSchemaSQL(args[1:])
-	case "version":
-		fmt.Printf("content-vault %s\n", Version)
-	default:
-		fmt.Fprintf(os.Stderr, "content-vault: unknown subcommand %q\n\n", args[0])
-		usage()
-		code = 2
-	}
-	os.Exit(code)
 }
 
-func usage() {
-	fmt.Fprint(os.Stderr, `content-vault — grant-bound content retrieval (docs/06 §5.3, docs/02 §10-11)
-
-  serve       --addr HOST:PORT [--key-backend local|kms] [--key-file FILE]
-              [--allow-non-loopback] [--allow-unimplemented-kms]
-              [--auth-issuer URL [--auth-audience sac-vault] [--auth-jwks-url URL]]
-  schema-sql  [--out FILE]
-  version
-
-The service has internal ingress only. Binding a non-loopback address requires
---allow-non-loopback, and the deployment must additionally lock its origin to query-api and
-control-api (docs/02 §12); the flag is an acknowledgement, not a control.
-`)
+// config is the validated environment.
+type config struct {
+	addr             string
+	keys             *keyring.Keyring
+	auth             auth.Config
+	retrievalURLBase string
+	db               postgres.Config
 }
 
-func fatalf(format string, args ...any) int {
-	fmt.Fprintf(os.Stderr, "content-vault: "+format+"\n", args...)
-	return 1
-}
-
-func runServe(args []string) int {
-	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
-	addr := fs.String("addr", "127.0.0.1:8090", "listen address (env "+EnvHTTPAddr+"); a container needs 0.0.0.0:8080, which the image sets")
-	backend := fs.String("key-backend", "local", "local | kms (env "+EnvKeyBackend+")")
-	keyFile := fs.String("key-file", "", "local key file (development); empty means in-memory")
-	keyVaultURI := fs.String("keyvault-uri", "", "Key Vault URI the kms backend would call (env "+EnvKeyVaultURI+")")
-	blobEndpoint := fs.String("blob-ciphertext-endpoint", "", "private blob endpoint for ciphertext (env "+EnvBlobCiphertextEndpoint+")")
-	blobIdentity := fs.String("blob-identity", "static", "how the vault authenticates to blob storage: static | managed (env "+EnvBlobIdentity+")")
-	blobCredential := fs.String("blob-credential", "", "static storage bearer the lab stand-in checks (env "+EnvBlobReadCredential+")")
-	retrievalURLBase := fs.String("retrieval-url-base", "", "origin a browser reaches a minted retrieval URL on (env "+EnvRetrievalURLBase+")")
-	role := fs.String("role", "content-vault", "the identity this process runs as (env "+EnvRole+")")
-	allowNonLoopback := fs.Bool("allow-non-loopback", false, "acknowledge that this binds a non-loopback address (env "+EnvAllowNonLoopback+", or "+EnvInternalOnly+"=true from a deployment that has internal ingress)")
-	allowKMS := fs.Bool("allow-unimplemented-kms", false, "start with a cloud KMS backend this build has not implemented")
-	storeKind := fs.String("store", "memory", "memory | sql (env "+EnvStore+")")
-	dsn := fs.String("dsn", "", "database/sql DSN (the caller must register a driver)")
-	pgHost := fs.String("pg-host", "", "database host (env "+EnvPGHost+"); used to build the DSN, not a password")
-	pgPort := fs.String("pg-port", "5432", "database port; the deployment passes no port, so it stays a flag")
-	pgDatabase := fs.String("pg-database", "shadow", "database name (env "+EnvPGDatabase+")")
-	authIssuer := fs.String("auth-issuer", "", "the product access token issuer, control-api (env "+EnvAuthIssuer+"); empty trusts X-Sac-* headers alone (lab only)")
-	authAudience := fs.String("auth-audience", "", "the vault's audience in the token (env "+EnvAuthAudience+"); default "+auth.DefaultAudience)
-	authJWKSURL := fs.String("auth-jwks-url", "", "the issuer's JWKS (env "+EnvAuthJWKSURL+"); default {issuer}/.well-known/jwks.json")
-	if err := fs.Parse(args); err != nil {
-		return 2
+func loadConfig(getenv func(string) string) (config, error) {
+	c := config{
+		addr:             getenv(EnvHTTPAddr),
+		retrievalURLBase: getenv(EnvRetrievalURLBase),
+		auth: auth.Config{
+			Issuer:   getenv(EnvAuthIssuer),
+			Audience: getenv(EnvAuthAudience),
+			JWKSURL:  getenv(EnvAuthJWKSURL),
+		},
 	}
-
-	// The deployment's names, with a flag winning. Everything below is a resolved setting.
-	passed := visited(fs)
-	*addr = passed.str("addr", *addr, EnvHTTPAddr, "127.0.0.1:8090")
-	*backend = passed.str("key-backend", *backend, EnvKeyBackend, "local")
-	*keyVaultURI = passed.str("keyvault-uri", *keyVaultURI, EnvKeyVaultURI, "")
-	*blobEndpoint = passed.str("blob-ciphertext-endpoint", *blobEndpoint, EnvBlobCiphertextEndpoint, "")
-	*blobIdentity = passed.str("blob-identity", *blobIdentity, EnvBlobIdentity, "static")
-	*blobCredential = passed.str("blob-credential", *blobCredential, EnvBlobReadCredential, "")
-	*retrievalURLBase = passed.str("retrieval-url-base", *retrievalURLBase, EnvRetrievalURLBase, "")
-	*role = passed.str("role", *role, EnvRole, "content-vault")
-	*storeKind = passed.str("store", *storeKind, EnvStore, "memory")
-	*pgHost = passed.str("pg-host", *pgHost, EnvPGHost, "")
-	*pgDatabase = passed.str("pg-database", *pgDatabase, EnvPGDatabase, "shadow")
-	*allowNonLoopback = passed.boolean("allow-non-loopback", *allowNonLoopback, EnvAllowNonLoopback, false)
-	*authIssuer = passed.str("auth-issuer", *authIssuer, EnvAuthIssuer, "")
-	*authAudience = passed.str("auth-audience", *authAudience, EnvAuthAudience, "")
-	*authJWKSURL = passed.str("auth-jwks-url", *authJWKSURL, EnvAuthJWKSURL, "")
-	appInsights := os.Getenv(EnvAppInsights)
-
-	// A non-loopback bind needs an acknowledgement from the operator or from the deployment. The
-	// deployment's form is SAC_INTERNAL_ONLY=true, which says the fact the flag asks a person to
-	// assert; it is still an acknowledgement and not a control (docs/02 §12, and the README).
-	internalOnly := envTrue(EnvInternalOnly)
-	acknowledged := *allowNonLoopback || internalOnly
-
-	logger := slog.Default()
-	if err := validateHTTPAddr(*addr); err != nil {
-		return fatalf("%v", err)
+	if c.addr == "" {
+		c.addr = "127.0.0.1:8080"
 	}
-	if err := checkURL(EnvKeyVaultURI, *keyVaultURI); err != nil {
-		return fatalf("%v", err)
+	if err := checkAddr(c.addr); err != nil {
+		return config{}, err
 	}
-	if err := checkURL(EnvBlobCiphertextEndpoint, *blobEndpoint); err != nil {
-		return fatalf("%v", err)
+	spec := getenv(EnvContentKeys)
+	if spec == "" {
+		return config{}, fmt.Errorf("%s is required: content cannot be stored or read without the keyring", EnvContentKeys)
 	}
-	if err := checkURL(EnvRetrievalURLBase, *retrievalURLBase); err != nil {
-		return fatalf("%v", err)
-	}
-	if *blobIdentity != "static" && *blobIdentity != "managed" {
-		return fatalf("unknown --blob-identity %q (want static or managed)", *blobIdentity)
-	}
-	authenticator, verifier, err := buildAuthenticator(*authIssuer, *authAudience, *authJWKSURL)
+	keys, err := keyring.Parse(spec)
 	if err != nil {
-		return fatalf("%v", err)
+		return config{}, fmt.Errorf("%s: %w", EnvContentKeys, err)
 	}
-	// A storage endpoint with no credential is the unauthenticated read this task exists to remove,
-	// so it is a startup failure rather than a warning: a deployment names its managed identity, and
-	// the lab passes the shared bearer its stand-in checks.
-	if *blobEndpoint != "" && *blobIdentity == "static" && strings.TrimSpace(*blobCredential) == "" {
-		return fatalf("--blob-ciphertext-endpoint is set but no storage credential is: pass --blob-credential (the lab stand-in) or --blob-identity managed")
+	c.keys = keys
+	if c.auth.Issuer == "" {
+		return config{}, fmt.Errorf("%s is required: every route but a retrieval URL is authorised by the issuer's tokens", EnvAuthIssuer)
 	}
-	if appInsights != "" {
-		// The deployment passes a connection string this build does not export to. Read, reported,
-		// and never logged: a connection string carries a key.
-		slog.Warn("SAC_APPINSIGHTS is set but this build exports no telemetry to it; the connection string is read, validated, and never logged")
+	for name, value := range map[string]string{EnvAuthIssuer: c.auth.Issuer, EnvAuthJWKSURL: c.auth.JWKSURL, EnvRetrievalURLBase: c.retrievalURLBase} {
+		if err := checkURL(name, value); err != nil {
+			return config{}, err
+		}
 	}
+	return c, nil
+}
 
-	// The key backend is the component's whole reason to exist, so the one thing this binary must
-	// never do is claim a backend it does not have.
-	var kw keys.KeyWrapper
-	switch *backend {
-	case "local":
-		if *keyFile != "" {
-			w, err := keys.OpenLocal(*keyFile)
-			if err != nil {
-				return fatalf("opening the local key file: %v", err)
-			}
-			kw = w
-		} else {
-			kw = keys.NewLocal()
-		}
-	case "kms":
-		if !*allowKMS {
-			return fatalf("the azure-key-vault backend is NOT IMPLEMENTED in this build (no network, no cloud SDK: TOOLCHAIN-DECISION.md §3). " +
-				"Starting with it would mean a deployment reporting a KMS it does not have. Pass --allow-unimplemented-kms only to demonstrate the refusal. " +
-				"(" + EnvKeyBackend + "=" + *backend + ", " + EnvKeyVaultURI + "=" + *keyVaultURI + ")")
-		}
-		endpoint := *keyVaultURI
-		if endpoint == "" {
-			endpoint = os.Getenv("CONTENT_VAULT_KMS_ENDPOINT")
-		}
-		kw = keys.NewKMS(endpoint, os.Getenv("CONTENT_VAULT_KMS_MODE"))
-	default:
-		return fatalf("unknown --key-backend %q (want local or kms)", *backend)
-	}
-
-	var st store.Store = store.NewMemory()
-	if *storeKind != "memory" && *storeKind != "sql" {
-		return fatalf("unknown --store %q (want memory or sql)", *storeKind)
-	}
-	if *storeKind == "sql" && defaultDriverName != "" {
-		// A build carrying a driver (the sac_sql_driver tag) serves from PostgreSQL.
-		databaseDSN := *dsn
-		if databaseDSN == "" {
-			databaseDSN = postgresDSN(*pgHost, *pgPort, *pgDatabase, *role)
-		}
-		if databaseDSN == "" {
-			return fatalf("--store sql needs --dsn, or %s to build one from", EnvPGHost)
-		}
-		db, err := sql.Open(defaultDriverName, databaseDSN)
-		if err != nil {
-			return fatalf("opening the database with driver %q: %v", defaultDriverName, err)
-		}
-		db.SetMaxOpenConns(16)
-		db.SetConnMaxIdleTime(5 * time.Minute)
-		st = store.NewSQL(db)
-	} else if *storeKind == "sql" {
-		// The SQL store needs a registered database/sql driver, and no PostgreSQL driver is
-		// fetchable offline (ADR 0016). Saying which driver, which variables and which evidence
-		// exists is the difference between a refusal and a dead end; the one thing this must never
-		// do is start in memory and let a deployment believe it is persisting.
-		databaseDSN := postgresDSN(*pgHost, *pgPort, *pgDatabase, *role)
-		return fatalf(`--store sql cannot start in this build: no PostgreSQL driver is compiled in.
-
-  driver       github.com/jackc/pgx/v5/stdlib (registered as "pgx"); a Go module, deliberately not vendored by an offline build
-  dsn          %s   (from %s=%s %s=%s %s=%s)
-  --dsn        %q
-  what IS verified: every statement this service issues is rendered by `+"`schema-sql`"+` and executed against a
-  live PostgreSQL by internal/store's live-schema harness -- the SQL text, not the database/sql plumbing.
-  to close it on a host with a module proxy:
-      go get github.com/jackc/pgx/v5/stdlib
-      go build ./...
-      content-vault serve -store sql -dsn "$SAC_PG_DSN"`,
-			databaseDSN, EnvPGHost, *pgHost, EnvPGDatabase, *pgDatabase, EnvRole, *role, *dsn)
-	}
-
-	// The storage reader the deployment wires: the vault presents its identity on every read.
-	var blobs vault.BlobReader
-	if *blobEndpoint != "" {
-		var cred blob.Credential
-		if *blobIdentity == "managed" {
-			cred = &blob.ManagedIdentity{}
-		} else {
-			cred = blob.StaticBearer{Token: *blobCredential}
-		}
-		blobs = &blob.HTTPReader{
-			Endpoint: *blobEndpoint, Credential: cred,
-			Client: &http.Client{Timeout: 30 * time.Second}, MaxBytes: maxBlobBytes,
-		}
-	}
-	svc, err := vault.New(vault.Options{
-		Store:      st,
-		Keys:       kw,
-		Logger:     logger,
-		ScopeTiers: scopeTiersFromEnv(),
-		Blobs:      blobs,
-		// The browser redeems the minted URL through the analyst web tier; this is the origin it
-		// is reached on, and empty leaves the URL a path the page resolves against its own.
-		RetrievalURLBase: *retrievalURLBase,
-	})
+func run(log *slog.Logger) error {
+	cfg, err := loadConfig(os.Getenv)
 	if err != nil {
-		return fatalf("%v", err)
+		return err
 	}
-	h := httpapi.New(svc, authenticator, logger)
-
-	// CONTENT_VAULT_REINDEX_TENANTS names tenants whose prompt index is rebuilt from their stored
-	// objects at start, after a change to what is indexed. It runs beside serving and is safe to
-	// repeat: each row is rewritten from the object it belongs to.
-	for _, tenantID := range strings.Split(os.Getenv("CONTENT_VAULT_REINDEX_TENANTS"), ",") {
-		tenantID = strings.TrimSpace(tenantID)
-		if tenantID == "" {
-			continue
-		}
-		go func() {
-			indexed, cleared, failed, err := svc.ReindexTenant(context.Background(), tenantID)
-			if err != nil {
-				logger.Warn("content-vault: reindex did not run", "tenant", tenantID, "error", err)
-				return
-			}
-			logger.Info("content-vault: reindexed", "tenant", tenantID, "indexed", indexed, "cleared", cleared, "failed", failed)
-		}()
+	if cfg.db, err = postgres.ConfigFromEnv(); err != nil {
+		return err
 	}
+	db, err := postgres.Open(cfg.db)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	st := store.New(db)
 
-	if err := checkBindAddress(*addr, acknowledged); err != nil {
-		return fatalf("%v", err)
+	verifier, err := auth.NewVerifier(cfg.auth)
+	if err != nil {
+		return err
+	}
+	svc, err := vault.New(vault.Config{Store: st, Keys: cfg.keys, RetrievalURLBase: cfg.retrievalURLBase, Logger: log})
+	if err != nil {
+		return err
 	}
 	srv := &http.Server{
-		Addr:              *addr,
-		Handler:           withProbes(h.Handler(), kw, *storeKind, logger),
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
+		Addr:              cfg.addr,
+		Handler:           httpapi.New(svc, verifier, st.Ping, log).Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
-	ingress := "internal-only"
-	if internalOnly {
-		ingress = "internal-only (declared by " + EnvInternalOnly + ")"
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	errs := make(chan error, 1)
+	go func() { errs <- srv.ListenAndServe() }()
+	log.Info("content-vault: listening", "addr", cfg.addr, "database", cfg.db.String(),
+		"issuer", cfg.auth.Issuer, "audience", verifier.Audience, "jwks", verifier.JWKSURL,
+		"key_version", cfg.keys.Current(), "key_versions", cfg.keys.Versions(),
+		"retrieval_url_base", cfg.retrievalURLBase)
+
+	select {
+	case err := <-errs:
+		return err
+	case <-ctx.Done():
 	}
-	slog.Info("content-vault listening",
-		"addr", *addr, "key_backend", string(kw.Kind()), "ingress", ingress, "role", *role,
-		"store", *storeKind, "non_loopback_acknowledged", acknowledged,
-		"blob_ciphertext_endpoint_configured", *blobEndpoint != "", "blob_identity", *blobIdentity,
-		"retrieval_url_base_configured", *retrievalURLBase != "",
-		"appinsights_configured", appInsights != "")
-	if verifier != nil {
-		slog.Info("content-vault: human routes verify the product access token",
-			"issuer", verifier.Issuer, "audience", verifier.Audience, "jwks", verifier.JWKSURL, "alg", auth.TokenAlg)
-	} else {
-		// Said as loudly as a log can: this is the absence of person-level authentication. Any
-		// caller the ingress lets through names its own tenant, subject and roles.
-		slog.Warn("content-vault: NO TOKEN ISSUER (" + EnvAuthIssuer + " unset) — tenant, subject and roles on every route " +
-			"are read from X-Sac-* headers and trusted because the ingress is internal. This is the lab arrangement; " +
-			"a deployment must set " + EnvAuthIssuer + " so the vault verifies the person's token itself.")
+	log.Info("content-vault: shutting down")
+	shutdown, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdown); err != nil {
+		return err
 	}
-	if *blobEndpoint != "" && *blobIdentity == "static" {
-		// Stated rather than implied: the lab's storage stand-in checks this bearer and no more.
-		// A deployment sets SAC_BLOB_IDENTITY=managed, and the read then carries the container
-		// app's managed-identity token instead of a shared secret.
-		slog.Warn("SAC_BLOB_IDENTITY=static: storage reads carry a shared bearer meant for the lab stand-in, not a storage account")
+	if err := <-errs; !errors.Is(err, http.ErrServerClosed) {
+		return err
 	}
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return fatalf("serving: %v", err)
-	}
-	return 0
+	return nil
 }
 
-// defaultDriverName is the database/sql driver this binary carries. The default build carries none
-// and leaves it empty; the sac_sql_driver build sets it (driver_tagged.go).
-var defaultDriverName = ""
-
-// maxBlobBytes bounds one stored object read for a redemption.
-const maxBlobBytes = 64<<20 + 1024
-
-// checkBindAddress refuses a non-loopback bind without an explicit acknowledgement.
-func checkBindAddress(addr string, acknowledged bool) error {
-	host, _, err := net.SplitHostPort(addr)
+func checkAddr(addr string) error {
+	_, port, err := net.SplitHostPort(addr)
 	if err != nil {
-		return fmt.Errorf("--addr %q is not host:port: %w", addr, err)
+		return fmt.Errorf("%s %q is not host:port", EnvHTTPAddr, addr)
 	}
-	if acknowledged {
-		return nil
+	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+		return fmt.Errorf("%s %q has no valid port", EnvHTTPAddr, addr)
 	}
-	if host == "localhost" {
-		return nil
-	}
-	ip := net.ParseIP(host)
-	if ip != nil && ip.IsLoopback() {
-		return nil
-	}
-	return fmt.Errorf("--addr %q is not a loopback address and content-vault has internal ingress only (D7): "+
-		"binding it would expose the only component that can unwrap content keys. Pass --allow-non-loopback to acknowledge", addr)
+	return nil
 }
 
-// scopeTiersFromEnv reads the signed bundle's per-scope search tiers. The bundle itself is
-// control-api's artefact; this is the shape this service is handed, as `scope=tier` pairs.
-func scopeTiersFromEnv() map[string]store.SearchTier {
-	out := map[string]store.SearchTier{}
-	for _, pair := range strings.Split(os.Getenv("CONTENT_VAULT_SCOPE_TIERS"), ",") {
-		pair = strings.TrimSpace(pair)
-		if pair == "" {
-			continue
-		}
-		parts := strings.SplitN(pair, "=", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		tier := store.SearchTier(parts[1])
-		if tier.Valid() {
-			out[parts[0]] = tier
-		}
+func checkURL(name, value string) error {
+	if value == "" {
+		return nil
 	}
-	return out
+	u, err := url.Parse(value)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		return fmt.Errorf("%s %q is not an absolute http(s) URL", name, value)
+	}
+	return nil
 }
-
-// runSchemaSQL prints the SQL this service issues as a psql script, so the live-schema harness
-// executes the *same text* the service would send rather than a copy of it. That is the same
-// discipline ingest-api uses, and it is what makes the harness evidence rather than documentation.
-func runSchemaSQL(args []string) int {
-	fs := flag.NewFlagSet("schema-sql", flag.ContinueOnError)
-	out := fs.String("out", "", "write to a file instead of stdout")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	var b strings.Builder
-	b.WriteString("-- generated by content-vault schema-sql; every statement the service issues.\n")
-	b.WriteString("\\set ON_ERROR_STOP on\nBEGIN;\n")
-	for _, st := range store.Statements {
-		fmt.Fprintf(&b, "\n-- %s: %s\n", st.Name, st.Purpose)
-		if !st.Verified {
-			fmt.Fprintf(&b, "-- NOT EXECUTED: %s does not exist in db/schema.sql; see SQLRetrievalGrantDDL\n", st.Name)
-			continue
-		}
-		fmt.Fprintf(&b, "PREPARE %s AS %s;\nDEALLOCATE %s;\n", st.Name, st.SQL, st.Name)
-	}
-	b.WriteString("\nROLLBACK;\n")
-	b.WriteString("\n-- The retrieval-grant table this service needs and the schema does not yet have:\n")
-	for _, line := range strings.Split(store.SQLRetrievalGrantDDL, "\n") {
-		b.WriteString("-- " + line + "\n")
-	}
-	if *out != "" {
-		if err := os.WriteFile(*out, []byte(b.String()), 0o644); err != nil {
-			return fatalf("writing %s: %v", *out, err)
-		}
-		return 0
-	}
-	fmt.Print(b.String())
-	return 0
-}
-
-var _ = context.Background

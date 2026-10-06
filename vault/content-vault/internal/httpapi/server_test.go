@@ -2,413 +2,392 @@ package httpapi_test
 
 import (
 	"bytes"
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
-	"github.com/shadow-ai-capture/content-vault/internal/auth"
+	"github.com/shadow-ai-capture/device/protocol"
+
+	"github.com/shadow-ai-capture/content-vault/internal/auth/authtest"
 	"github.com/shadow-ai-capture/content-vault/internal/httpapi"
+	"github.com/shadow-ai-capture/content-vault/internal/keyring"
 	"github.com/shadow-ai-capture/content-vault/internal/store"
-	"github.com/shadow-ai-capture/content-vault/internal/testrig"
+	"github.com/shadow-ai-capture/content-vault/internal/store/storetest"
 	"github.com/shadow-ai-capture/content-vault/internal/vault"
 )
 
-// server builds the HTTP surface over a rig, with a static internal principal that may read
-// content: the two roles the browser-facing routes need. Role enforcement itself is tested in
-// TestContentRoutesRequireAContentRole.
-func server(t *testing.T, o testrig.Options) (*httptest.Server, *testrig.Rig) {
+const (
+	tenantID     = "7d3c6a52-0b8e-4f0e-9a51-2a4c1f6b9e01"
+	eventID      = "0f8e7d6c-5b4a-4392-8170-6f5e4d3c2b1a"
+	grantID      = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
+	submissionID = "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e"
+	deviceID     = "3c4d5e6f-7a8b-4c9d-8e1f-2a3b4c5d6e7f"
+)
+
+type rig struct {
+	t      *testing.T
+	iss    *authtest.Issuer
+	store  *storetest.Fake
+	server *httptest.Server
+	ready  error
+}
+
+func newRig(t *testing.T) *rig {
 	t.Helper()
-	return serverAs(t, []string{"analyst", "content_reader"}, o)
+	r := &rig{t: t, iss: authtest.New(t), store: storetest.New()}
+	r.store.PutTenant(store.Tenant{TenantID: tenantID, Status: "active", ContentSearch: store.SearchFullText, IngestEnabled: true, ReadEnabled: true})
+	r.store.PutSubmission(storetest.Submission{TenantID: tenantID, SubmissionID: submissionID, PromptKind: "user", ReceivedAt: time.Now().Add(-time.Minute)})
+	r.store.PutGrant(tenantID, store.Grant{GrantID: grantID, EventID: eventID, DeviceID: deviceID, SubmissionID: submissionID, Decision: "granted", ExpiresAt: time.Now().Add(time.Hour)})
+	keys, err := keyring.Parse("v1:" + base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := vault.New(vault.Config{Store: r.store, Keys: keys})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready := func(context.Context) error { return r.ready }
+	r.server = httptest.NewServer(httpapi.New(svc, r.iss.Verifier(t), ready, nil).Handler())
+	t.Cleanup(r.server.Close)
+	return r
 }
 
-// serverAs is server with the caller's roles named, so a test can hold the role boundary.
-func serverAs(t *testing.T, roles []string, o testrig.Options) (*httptest.Server, *testrig.Rig) {
+type response struct {
+	status int
+	header http.Header
+	body   []byte
+}
+
+func (r response) json(t *testing.T) map[string]any {
 	t.Helper()
-	rig := testrig.New(t, o)
-	h := httpapi.New(rig.Service, auth.StaticAuthenticator{P: auth.Principal{
-		Service: "query-api", Subject: "analyst@example.com", TenantID: testrig.TenantID, Roles: roles,
-	}}, nil)
-	ts := httptest.NewServer(h.Handler())
-	t.Cleanup(ts.Close)
-	return ts, rig
+	var out map[string]any
+	if err := json.Unmarshal(r.body, &out); err != nil {
+		t.Fatalf("response %d is not JSON: %q", r.status, r.body)
+	}
+	return out
 }
 
-// TestContentRoutesRequireAContentRole is the vault's half of the role boundary: the component
-// that returns content re-checks the session role its caller asserts, so a bug in query-api's gate
-// is not the only thing between a viewer and a prompt.
-func TestContentRoutesRequireAContentRole(t *testing.T) {
-	retrieval := `{"event_id":"` + testrig.EventA + `"}`
-	search := `{"scope":"lab","form":"terms","query":"capital"}`
-	for _, tc := range []struct {
-		name  string
-		roles []string
-	}{
-		{"no roles", nil},
-		{"viewer", []string{"viewer"}},
-		{"admin", []string{"admin"}},
-	} {
-		ts, _ := serverAs(t, tc.roles, testrig.Options{})
-		for _, path := range []string{"/v1/content/retrieval", "/v1/content-search"} {
-			body := retrieval
-			if path == "/v1/content-search" {
-				body = search
-			}
-			status, out := post(t, ts, path, body)
-			if status != http.StatusForbidden {
-				t.Fatalf("%s: %s returned %d, want 403 (%v)", tc.name, path, status, out)
-			}
-			if code := errorCode(out); code != "role" {
-				t.Fatalf("%s: %s refused with %q, want role", tc.name, path, code)
-			}
-		}
-	}
-
-	// An analyst may search but may not mint a retrieval URL: search is an analyst capability,
-	// opening one event's stored content is the content reader's.
-	ts, _ := serverAs(t, []string{"analyst"}, testrig.Options{})
-	if status, out := post(t, ts, "/v1/content-search", search); status == http.StatusForbidden {
-		if errorCode(out) == "role" {
-			t.Fatalf("analyst was refused search by role: %v", out)
-		}
-	}
-	if status, out := post(t, ts, "/v1/content/retrieval", retrieval); status != http.StatusForbidden {
-		t.Fatalf("analyst retrieval returned %d, want 403 (%v)", status, out)
-	}
-}
-
-// errorCode reads the code from the vault's error envelope, which is the only shape a refusal has.
-func errorCode(out map[string]any) string {
-	errObj, _ := out["error"].(map[string]any)
-	code, _ := errObj["code"].(string)
+func (r response) code(t *testing.T) string {
+	t.Helper()
+	e, _ := r.json(t)["error"].(map[string]any)
+	code, _ := e["code"].(string)
 	return code
 }
 
-func post(t *testing.T, ts *httptest.Server, path, body string) (int, map[string]any) {
-	t.Helper()
-	resp, err := http.Post(ts.URL+path, "application/json", strings.NewReader(body))
+func (r *rig) do(method, path, token string, body []byte, headers map[string]string) response {
+	r.t.Helper()
+	req, err := http.NewRequest(method, r.server.URL+path, bytes.NewReader(body))
 	if err != nil {
-		t.Fatalf("POST %s: %v", path, err)
+		r.t.Fatal(err)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		r.t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	var out map[string]any
-	dec := json.NewDecoder(resp.Body)
-	if err := dec.Decode(&out); err != nil {
-		t.Fatalf("POST %s: response is not JSON: %v", path, err)
-	}
-	return resp.StatusCode, out
+	b, _ := io.ReadAll(resp.Body)
+	return response{status: resp.StatusCode, header: resp.Header, body: b}
 }
 
-// TestThePublicAndEdgeRoutesDoNotExist is the internal-ingress property (D6/D7) held by the router:
-// the vault is reachable only from inside the network, and the device-facing and analyst-facing
-// routes belong to other services. A test asserts their absence rather than a comment claiming it,
-// because "nobody would add that route" is exactly the kind of assumption that ages badly.
-func TestThePublicAndEdgeRoutesDoNotExist(t *testing.T) {
-	ts, _ := server(t, testrig.Options{})
-	edge := []struct{ method, path string }{
-		{"POST", "/v1/events"},        // ingest-api, devices
-		{"POST", "/v1/content/grant"}, // control-api, devices (§5.5)
-		{"PUT", "/v1/content/upload"}, // blob storage, devices: content never reaches the vault
-		{"GET", "/v1/policy"},         // control-api, devices
-		{"POST", "/v1/enrol"},         // control-api, devices
-		{"POST", "/v1/health"},        // control-api
-		{"POST", "/v1/query"},         // query-api's own surface
-		{"GET", "/v1/query"},
-		{"GET", "/"},
-		{"GET", "/admin"},
-		{"GET", "/v1/content-objects"}, // no enumeration surface exists at all
-	}
-	for _, e := range edge {
-		req, err := http.NewRequest(e.method, ts.URL+e.path, bytes.NewReader([]byte("{}")))
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatalf("%s %s: %v", e.method, e.path, err)
-		}
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusNotFound {
-			t.Errorf("%s %s returned %d; the vault must not serve this route on any surface",
-				e.method, e.path, resp.StatusCode)
-		}
-	}
+func uploadPath() string { return "/internal/v1/tenants/" + tenantID + "/content/" + eventID }
+
+func uploadHeaders(body []byte) map[string]string {
+	return map[string]string{protocol.HeaderContentGrantID: grantID, protocol.HeaderContentRawDigest: protocol.RawDigest(body), "Content-Type": "application/octet-stream"}
 }
 
-// TestEveryInternalRouteIsWired: the surface exists, and only for POST.
-func TestEveryInternalRouteIsWired(t *testing.T) {
-	ts, _ := server(t, testrig.Options{})
-	internal := []string{
-		"/v1/content/object",
-		"/v1/content/object/finalise",
-		"/v1/content/retrieval",
-		"/v1/content/redeem",
-		"/v1/content/shred",
-		"/v1/content/rotate",
-		"/v1/content-search",
+func (r *rig) upload(token string, body []byte) response {
+	r.t.Helper()
+	return r.do(http.MethodPut, uploadPath(), token, body, uploadHeaders(body))
+}
+
+func TestUploadIsAuthorisedOnlyForControlAPIsServiceToken(t *testing.T) {
+	r := newRig(t)
+	body := []byte("prompt")
+	other, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	wrongAud := r.iss.Claims()
+	wrongAud["aud"], wrongAud["svc"], wrongAud["sub"] = "sac-query", "control-api", "control-api"
+	wrongIss := r.iss.Claims()
+	wrongIss["iss"], wrongIss["svc"] = "https://elsewhere.example", "control-api"
+	forged := r.iss.Claims()
+	forged["svc"] = "control-api"
+
+	cases := map[string]struct {
+		token  string
+		status int
+	}{
+		"no token":            {"", http.StatusUnauthorized},
+		"not a JWT":           {"opaque-token", http.StatusUnauthorized},
+		"wrong audience":      {r.iss.Sign(t, wrongAud), http.StatusUnauthorized},
+		"wrong issuer":        {r.iss.Sign(t, wrongIss), http.StatusUnauthorized},
+		"forged signature":    {authtest.SignWith(t, other, "test-key-1", forged), http.StatusUnauthorized},
+		"another service":     {r.iss.Service(t, "query-api"), http.StatusForbidden},
+		"a person's token":    {r.iss.Person(t, tenantID, "alice", "admin", "content_reader"), http.StatusForbidden},
+		"control-api service": {r.iss.Service(t, "control-api"), http.StatusCreated},
 	}
-	for _, path := range internal {
-		status, _ := post(t, ts, path, `{}`)
-		if status == http.StatusNotFound || status == http.StatusMethodNotAllowed {
-			t.Errorf("POST %s is not wired (status %d)", path, status)
+	for _, name := range []string{"no token", "not a JWT", "wrong audience", "wrong issuer", "forged signature", "another service", "a person's token", "control-api service"} {
+		tc := cases[name]
+		resp := r.upload(tc.token, body)
+		if resp.status != tc.status {
+			t.Errorf("%s: status %d (%s), want %d", name, resp.status, resp.body, tc.status)
 		}
-		if status == http.StatusUnauthorized {
-			t.Errorf("POST %s refused an authenticated caller as unauthenticated", path)
+		if tc.status != http.StatusCreated && len(r.store.Content(tenantID)) != 0 {
+			t.Fatalf("%s: content was stored", name)
 		}
+	}
+	if n := len(r.store.Content(tenantID)); n != 1 {
+		t.Fatalf("%d objects stored, want the one authorised upload", n)
 	}
 }
 
-// TestUnauthenticatedCallersAreRefused: no principal, no service.
-func TestUnauthenticatedCallersAreRefused(t *testing.T) {
-	rig := testrig.New(t, testrig.Options{})
-	h := httpapi.New(rig.Service, auth.NewHeaderAuthenticator("query-api", "control-api"), nil)
-	ts := httptest.NewServer(h.Handler())
-	defer ts.Close()
+func TestUploadAnswers(t *testing.T) {
+	r := newRig(t)
+	token := r.iss.Service(t, "control-api")
+	body := []byte(`{"prompt":"merger","attachments":[{"name":"plan.pdf"}]}`)
 
-	resp, err := http.Post(ts.URL+"/v1/content-search", "application/json", strings.NewReader(`{}`))
+	first := r.upload(token, body)
+	if first.status != http.StatusCreated {
+		t.Fatalf("first upload: %d %s", first.status, first.body)
+	}
+	got := first.json(t)
+	indexed, _ := got["indexed"].(map[string]any)
+	if got["state"] != "stored" || got["event_id"] != eventID || got["grant_id"] != grantID || got["raw_digest"] != protocol.RawDigest(body) ||
+		got["size_bytes"] != float64(len(body)) || got["replayed"] != false || indexed["prompt_body"] != float64(1) || indexed["attachment_name"] != float64(1) {
+		t.Fatalf("first upload answer = %v", got)
+	}
+
+	retry := r.upload(token, body)
+	if retry.status != http.StatusOK || retry.json(t)["replayed"] != true || retry.json(t)["object_id"] != got["object_id"] {
+		t.Fatalf("retry: %d %s, want 200 replayed with the same object", retry.status, retry.body)
+	}
+
+	different := []byte("something else")
+	if resp := r.upload(token, different); resp.status != http.StatusConflict || resp.code(t) != "already_stored" {
+		t.Fatalf("a different body under the used grant: %d %s", resp.status, resp.body)
+	}
+}
+
+func TestUploadRequestValidation(t *testing.T) {
+	r := newRig(t)
+	token := r.iss.Service(t, "control-api")
+	body := []byte("prompt")
+	cases := map[string]struct {
+		path    string
+		headers map[string]string
+		status  int
+	}{
+		"tenant not a uuid":      {"/internal/v1/tenants/acme/content/" + eventID, uploadHeaders(body), http.StatusBadRequest},
+		"event not a uuid":       {"/internal/v1/tenants/" + tenantID + "/content/e1", uploadHeaders(body), http.StatusBadRequest},
+		"no grant header":        {uploadPath(), map[string]string{protocol.HeaderContentRawDigest: protocol.RawDigest(body)}, http.StatusBadRequest},
+		"no digest header":       {uploadPath(), map[string]string{protocol.HeaderContentGrantID: grantID}, http.StatusBadRequest},
+		"malformed digest":       {uploadPath(), map[string]string{protocol.HeaderContentGrantID: grantID, protocol.HeaderContentRawDigest: "md5:abc"}, http.StatusBadRequest},
+		"digest of another body": {uploadPath(), map[string]string{protocol.HeaderContentGrantID: grantID, protocol.HeaderContentRawDigest: protocol.RawDigest([]byte("x"))}, http.StatusBadRequest},
+	}
+	for name, tc := range cases {
+		if resp := r.do(http.MethodPut, tc.path, token, body, tc.headers); resp.status != tc.status {
+			t.Errorf("%s: %d %s, want %d", name, resp.status, resp.body, tc.status)
+		}
+	}
+	if len(r.store.Content(tenantID)) != 0 || !r.store.Grant(tenantID, grantID).UsedAt.IsZero() {
+		t.Fatal("a malformed upload stored content or used the grant")
+	}
+}
+
+func TestAnOversizedUploadIsRefusedBeforeItIsRead(t *testing.T) {
+	r := newRig(t)
+	big := make([]byte, protocol.MaxContentObjectBytes+1)
+	resp := r.upload(r.iss.Service(t, "control-api"), big)
+	if resp.status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status %d, want 413", resp.status)
+	}
+
+	// Without a Content-Length the body is cut off at the limit as it is read.
+	req, _ := http.NewRequest(http.MethodPut, r.server.URL+uploadPath(), io.MultiReader(bytes.NewReader(big)))
+	req.ContentLength = -1
+	req.Header.Set("Authorization", "Bearer "+r.iss.Service(t, "control-api"))
+	for k, v := range uploadHeaders(big) {
+		req.Header.Set(k, v)
+	}
+	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("an unauthenticated request returned %d, want 401", resp.StatusCode)
-	}
-
-	// An authenticated service that is not in the closed caller set is refused too: the vault
-	// decides who may read content, not the ingress alone.
-	req, _ := http.NewRequest("POST", ts.URL+"/v1/content-search", strings.NewReader(`{}`))
-	req.Header.Set("X-Sac-Service", "capture-extension")
-	req.Header.Set("X-Sac-Subject", "analyst@example.com")
-	req.Header.Set("X-Sac-Tenant", testrig.TenantID)
-	resp2, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp2.Body.Close()
-	if resp2.StatusCode != http.StatusUnauthorized {
-		t.Errorf("a non-permitted service returned %d, want 401", resp2.StatusCode)
+	res.Body.Close()
+	if res.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("chunked oversize: status %d, want 413", res.StatusCode)
 	}
 }
 
-// TestTenantComesFromThePrincipalNotTheBody is docs/02 §12: a body tenant that disagrees is
-// rejected, not reconciled.
-func TestTenantComesFromThePrincipalNotTheBody(t *testing.T) {
-	ts, rig := server(t, testrig.Options{Tenants: []store.Tenant{testrig.Tenant(), testrig.Tenant(func(tn *store.Tenant) {
-		tn.TenantID = testrig.OtherTenantID
-		tn.KEKID = "kek-other"
-	})}})
-	rig.Store(t, testrig.TenantID, testrig.ObjectA, testrig.SubmissionA, testrig.EventA)
-
-	status, body := post(t, ts, "/v1/content/retrieval", `{
-		"tenant_id": "`+testrig.OtherTenantID+`",
-		"event_id": "`+testrig.EventA+`",
-		"case_reference": "CASE-1",
-		"second_approver": "approver@example.com"
-	}`)
-	if status != http.StatusForbidden {
-		t.Fatalf("a body tenant that disagrees with the principal returned %d, want 403 (%v)", status, body)
-	}
-	errObj, _ := body["error"].(map[string]any)
-	if errObj["code"] != string(vault.DenyTenantMismatch) {
-		t.Errorf("refusal reason is %v, want %s", errObj["code"], vault.DenyTenantMismatch)
+func TestUploadGrantRefusalsCarryTheirCode(t *testing.T) {
+	r := newRig(t)
+	g := r.store.Grant(tenantID, grantID)
+	g.Decision = "denied"
+	r.store.PutGrant(tenantID, g)
+	resp := r.upload(r.iss.Service(t, "control-api"), []byte("x"))
+	if resp.status != http.StatusForbidden || resp.code(t) != "grant_not_granted" {
+		t.Fatalf("denied grant: %d %s", resp.status, resp.body)
 	}
 }
 
-// TestFullLifecycleOverTheInternalSurface walks prepare → finalise → retrieval → redeem, which is
-// the shape control-api and query-api drive.
-func TestFullLifecycleOverTheInternalSurface(t *testing.T) {
-	ts, _ := server(t, testrig.Options{Tenants: []store.Tenant{testrig.Tenant(func(tn *store.Tenant) {
-		tn.ContentSearch = store.SearchAttachmentNames
-	})}})
-
-	status, body := post(t, ts, "/v1/content/object", `{
-		"object_id": "`+testrig.ObjectA+`", "submission_id": "`+testrig.SubmissionA+`",
-		"event_id": "`+testrig.EventA+`", "retention_class": "standard"}`)
-	if status != http.StatusOK {
-		t.Fatalf("prepare returned %d (%v)", status, body)
-	}
-	objectKey, _ := body["object_key_b64"].(string)
-	wrapped, _ := body["wrapped_dek_b64"].(string)
-	kekID, _ := body["kek_id"].(string)
-	kekVersion, _ := body["kek_version"].(string)
-	if objectKey == "" || wrapped == "" || kekID == "" || kekVersion == "" {
-		t.Fatalf("prepare response is incomplete: %v", body)
-	}
-	if _, err := base64.StdEncoding.DecodeString(objectKey); err != nil {
-		t.Errorf("object_key_b64 is not base64: %v", err)
-	}
-
-	digest := "sha256:" + strings.Repeat("ab", 32)
-	status, body = post(t, ts, "/v1/content/object/finalise", `{
-		"object_id": "`+testrig.ObjectA+`", "submission_id": "`+testrig.SubmissionA+`",
-		"event_id": "`+testrig.EventA+`", "blob_path": "tenants/x/objects/a",
-		"ciphertext_sha256": "`+digest+`", "plaintext_size_bytes": 4096,
-		"wrapped_dek_b64": "`+wrapped+`", "kek_id": "`+kekID+`", "kek_version": "`+kekVersion+`",
-		"retention_class": "standard",
-		"index_units": [{"unit_kind": "attachment_name", "unit_index": 0, "body": "Q3-contract.pdf"}]}`)
-	if status != http.StatusOK {
-		t.Fatalf("finalise returned %d (%v)", status, body)
-	}
-	if body["indexed"].(float64) != 1 {
-		t.Errorf("finalise indexed %v units, want 1", body["indexed"])
-	}
-
-	status, body = post(t, ts, "/v1/content/retrieval", `{
-		"event_id": "`+testrig.EventA+`", "case_reference": "CASE-1",
-		"second_approver": "approver@example.com", "justification": "investigation"}`)
-	if status != http.StatusOK {
-		t.Fatalf("retrieval returned %d (%v)", status, body)
-	}
-	grantID, _ := body["grant_id"].(string)
-	if grantID == "" {
-		t.Fatal("retrieval returned no grant id")
-	}
-
-	status, body = post(t, ts, "/v1/content/redeem", `{
-		"grant_id": "`+grantID+`", "event_id": "`+testrig.EventA+`"}`)
-	if status != http.StatusOK || body["state"] != "available" {
-		t.Fatalf("redeem returned %d (%v)", status, body)
-	}
-	if body["raw_digest"] != digest {
-		t.Errorf("redeem returned raw_digest %v, want %v", body["raw_digest"], digest)
-	}
-
-	// And the grant is single-use over HTTP as well.
-	status, body = post(t, ts, "/v1/content/redeem", `{
-		"grant_id": "`+grantID+`", "event_id": "`+testrig.EventA+`"}`)
-	if status != http.StatusForbidden {
-		t.Fatalf("a second redemption returned %d (%v), want 403", status, body)
-	}
-	if errObj, _ := body["error"].(map[string]any); errObj["code"] != string(vault.DenyGrantAlreadyUsed) {
-		t.Errorf("second redemption reason is %v, want %s", errObj["code"], vault.DenyGrantAlreadyUsed)
-	}
+func retrieval(r *rig, token string, body string) response {
+	r.t.Helper()
+	return r.do(http.MethodPost, "/v1/content/retrieval", token, []byte(body), map[string]string{"Content-Type": "application/json"})
 }
 
-// TestUnavailabilityIsA200WithAnExplicitResult is C17 and docs/02 §11: "an expired, erased or
-// shredded record returns 200 with an explicit result, never 404 and never an empty body".
-func TestUnavailabilityIsA200WithAnExplicitResult(t *testing.T) {
-	ts, rig := server(t, testrig.Options{})
-	obj := rig.Store(t, testrig.TenantID, testrig.ObjectA, testrig.SubmissionA, testrig.EventA)
-	if _, err := rig.Service.ShredObject(t.Context(), vault.ShredRequest{
-		TenantID: testrig.TenantID, ObjectID: obj.ObjectID, Reason: "erasure", RequestedBy: "dpo@example.com",
-	}); err != nil {
-		t.Fatal(err)
+func TestRetrievalOverHTTP(t *testing.T) {
+	r := newRig(t)
+	content := []byte("the stored prompt")
+	if resp := r.upload(r.iss.Service(t, "control-api"), content); resp.status != http.StatusCreated {
+		t.Fatalf("upload: %d %s", resp.status, resp.body)
 	}
+	reader := r.iss.Person(t, tenantID, "alice@example.com", "content_reader")
+	body := `{"event_id":"` + eventID + `","case_reference":"CASE-9","second_approver":"bob@example.com","justification":""}`
 
-	status, body := post(t, ts, "/v1/content/retrieval", `{
-		"event_id": "`+testrig.EventA+`", "case_reference": "CASE-1",
-		"second_approver": "approver@example.com"}`)
-	if status != http.StatusOK {
-		t.Fatalf("retrieving erased content returned %d (%v), want 200 with an explicit result", status, body)
-	}
-	if body["state"] != "no_longer_available" {
-		t.Errorf("state is %v, want no_longer_available", body["state"])
-	}
-	if body["reason"] != string(vault.UnavailableErasure) {
-		t.Errorf("reason is %v, want erasure", body["reason"])
-	}
-	if ref, _ := body["receipt_ref"].(string); ref == "" {
-		t.Error("the unavailability carries no receipt reference")
-	}
-}
-
-// TestRefusalReasonsAreClosed: every refusal says whether its code is a member of the documented
-// set, so a caller can tell a content refusal from a transport failure without a lookup table.
-func TestRefusalReasonsAreClosed(t *testing.T) {
-	ts, _ := server(t, testrig.Options{})
-	status, body := post(t, ts, "/v1/content/redeem", `{"grant_id": "33333333-3333-4333-8333-333333333333", "event_id": "`+testrig.EventA+`"}`)
-	if status != http.StatusForbidden {
-		t.Fatalf("redeeming an unknown grant returned %d (%v)", status, body)
-	}
-	errObj, _ := body["error"].(map[string]any)
-	code, _ := errObj["code"].(string)
-	if !vault.DenialReason(code).Valid() {
-		t.Errorf("refusal code %q is outside the closed set", code)
-	}
-	if closed, _ := errObj["closed"].(bool); !closed {
-		t.Errorf("the refusal did not report itself as a closed reason: %v", errObj)
-	}
-}
-
-// TestMalformedBodiesAreTransportErrorsNotContentRefusals: the two kinds are kept apart.
-func TestMalformedBodiesAreTransportErrorsNotContentRefusals(t *testing.T) {
-	ts, _ := server(t, testrig.Options{})
-	for _, body := range []string{`{`, `{"unknown_field": 1}`, `{"object_id": "x"}{"trailing": 1}`} {
-		status, out := post(t, ts, "/v1/content/object", body)
-		if status != http.StatusBadRequest {
-			t.Errorf("body %q returned %d (%v), want 400", body, status, out)
+	for name, tc := range map[string]struct {
+		token  string
+		status int
+	}{
+		"no token":           {"", http.StatusUnauthorized},
+		"analyst only":       {r.iss.Person(t, tenantID, "carol", "analyst"), http.StatusForbidden},
+		"a service token":    {r.iss.Service(t, "control-api"), http.StatusForbidden},
+		"another tenant's":   {r.iss.Person(t, "c2b1f0e4-5d6a-4b7c-8e9f-0a1b2c3d4e5f", "alice", "content_reader"), http.StatusForbidden},
+		"unknown body field": {reader, http.StatusBadRequest},
+	} {
+		b := body
+		if name == "unknown body field" {
+			b = `{"event_id":"` + eventID + `","tenant_id":"` + tenantID + `"}`
 		}
-		errObj, _ := out["error"].(map[string]any)
-		if errObj["code"] != "bad_request" {
-			t.Errorf("body %q produced code %v, want bad_request", body, errObj["code"])
+		if resp := retrieval(r, tc.token, b); resp.status != tc.status {
+			t.Errorf("%s: %d %s, want %d", name, resp.status, resp.body, tc.status)
 		}
 	}
-}
 
-// TestFinaliseDecodesPromptKind: the prompt_kind field crosses the internal HTTP boundary and is
-// decoded, so a client_generated finalise indexes no prompt_body unit while a user one does.
-func TestFinaliseDecodesPromptKind(t *testing.T) {
-	tiers := map[string]store.SearchTier{"tool:chatgpt": store.SearchFullText}
-	ts, _ := server(t, testrig.Options{
-		Tenants:    []store.Tenant{testrig.Tenant(func(tn *store.Tenant) { tn.ContentSearch = store.SearchFullText })},
-		ScopeTiers: tiers,
-	})
-
-	finalise := func(objectID, promptKind string) float64 {
-		status, body := post(t, ts, "/v1/content/object", `{
-			"object_id": "`+objectID+`", "submission_id": "`+testrig.SubmissionA+`",
-			"event_id": "`+testrig.EventA+`", "retention_class": "standard"}`)
-		if status != http.StatusOK {
-			t.Fatalf("prepare returned %d (%v)", status, body)
-		}
-		wrapped := body["wrapped_dek_b64"].(string)
-		kekID := body["kek_id"].(string)
-		kekVersion := body["kek_version"].(string)
-
-		digest := "sha256:" + strings.Repeat("ab", 32)
-		status, body = post(t, ts, "/v1/content/object/finalise", `{
-			"object_id": "`+objectID+`", "submission_id": "`+testrig.SubmissionA+`",
-			"event_id": "`+testrig.EventA+`", "blob_path": "tenants/x/objects/`+objectID+`",
-			"ciphertext_sha256": "`+digest+`", "plaintext_size_bytes": 4096,
-			"wrapped_dek_b64": "`+wrapped+`", "kek_id": "`+kekID+`", "kek_version": "`+kekVersion+`",
-			"retention_class": "standard", "prompt_kind": "`+promptKind+`",
-			"index_units": [{"unit_kind": "prompt_body", "unit_index": 0, "body": "what is the capital of Australia"}]}`)
-		if status != http.StatusOK {
-			t.Fatalf("finalise returned %d (%v)", status, body)
-		}
-		return body["indexed"].(float64)
+	resp := retrieval(r, reader, body)
+	if resp.status != http.StatusOK {
+		t.Fatalf("retrieval: %d %s", resp.status, resp.body)
+	}
+	got := resp.json(t)
+	url, _ := got["retrieval_url"].(string)
+	if got["state"] != "available" || got["raw_digest"] != protocol.RawDigest(content) || !strings.HasPrefix(url, vault.RetrievalPath+tenantID+"/") {
+		t.Fatalf("retrieval answer = %v", got)
 	}
 
-	if got := finalise(testrig.ObjectA, "client_generated"); got != 0 {
-		t.Errorf("client_generated finalise indexed %v units, want 0", got)
+	// The browser redeems the URL through the dashboard server, which adds no identity.
+	redeemed := r.do(http.MethodGet, url, "", nil, nil)
+	if redeemed.status != http.StatusOK || !bytes.Equal(redeemed.body, content) {
+		t.Fatalf("redeem: %d %q", redeemed.status, redeemed.body)
 	}
-	if got := finalise(testrig.ObjectB, "user"); got != 1 {
-		t.Errorf("user finalise indexed %v units, want 1", got)
+	if redeemed.header.Get(protocol.HeaderContentRawDigest) != protocol.RawDigest(content) ||
+		redeemed.header.Get("Cache-Control") != "no-store" || redeemed.header.Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("redeem headers = %v", redeemed.header)
+	}
+	if again := r.do(http.MethodGet, url, "", nil, nil); again.status != http.StatusForbidden || again.code(t) != "grant_already_used" {
+		t.Fatalf("second redemption: %d %s", again.status, again.body)
+	}
+	if bad := r.do(http.MethodGet, vault.RetrievalPath+"acme/1", "", nil, nil); bad.status != http.StatusBadRequest {
+		t.Fatalf("malformed retrieval URL: %d", bad.status)
 	}
 }
 
-// TestHealthReportsTheKeyBackendHonestly: an operator must be able to see that this build is not
-// running a cloud KMS, and that the surface is internal.
-func TestHealthReportsTheKeyBackendHonestly(t *testing.T) {
-	ts, _ := server(t, testrig.Options{})
-	resp, err := http.Get(ts.URL + "/healthz")
-	if err != nil {
-		t.Fatal(err)
+func TestGoneContentIsAnExplicitAnswer(t *testing.T) {
+	r := newRig(t)
+	if resp := r.upload(r.iss.Service(t, "control-api"), []byte("x")); resp.status != http.StatusCreated {
+		t.Fatal(resp.status)
 	}
-	defer resp.Body.Close()
-	var out map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		t.Fatal(err)
+	reader := r.iss.Person(t, tenantID, "alice", "content_reader")
+	minted := retrieval(r, reader, `{"event_id":"`+eventID+`"}`).json(t)
+	object := r.store.Content(tenantID)[0].ObjectID
+	r.store.EditContent(tenantID, object, func(c *store.Content) bool { c.ExpiresAt = time.Now().Add(-time.Second); return true })
+
+	resp := retrieval(r, reader, `{"event_id":"`+eventID+`"}`)
+	if got := resp.json(t); resp.status != http.StatusOK || got["state"] != "no_longer_available" || got["reason"] != "retention_expired" {
+		t.Fatalf("retrieval of expired content: %d %s", resp.status, resp.body)
 	}
-	if out["key_backend"] != "local-software" {
-		t.Errorf("health reports key_backend %v; the test rig uses the local software wrapper", out["key_backend"])
+	redeem := r.do(http.MethodGet, minted["retrieval_url"].(string), "", nil, nil)
+	if got := redeem.json(t); redeem.status != http.StatusGone || got["reason"] != "retention_expired" {
+		t.Fatalf("redemption of expired content: %d %s", redeem.status, redeem.body)
 	}
-	if out["ingress"] != "internal-only" {
-		t.Errorf("health reports ingress %v, want internal-only", out["ingress"])
+	missing := retrieval(r, reader, `{"event_id":"6f7a8b9c-0d1e-4f2a-9b3c-4d5e6f7a8b9c"}`)
+	if missing.status != http.StatusForbidden || missing.code(t) != "no_content_object" {
+		t.Fatalf("retrieval with no content: %d %s", missing.status, missing.body)
 	}
-	if reasons, ok := out["denial_reasons"].([]any); !ok || len(reasons) == 0 {
-		t.Error("health does not publish the closed refusal set")
+}
+
+func TestSearchOverHTTP(t *testing.T) {
+	r := newRig(t)
+	if resp := r.upload(r.iss.Service(t, "control-api"), []byte(`{"prompt":"renewal terms for contoso"}`)); resp.status != http.StatusCreated {
+		t.Fatal(resp.status)
+	}
+	analyst := r.iss.Person(t, tenantID, "alice", "analyst")
+	search := func(token, body string) response {
+		return r.do(http.MethodPost, "/v1/content-search", token, []byte(body), map[string]string{"Content-Type": "application/json"})
+	}
+	resp := search(analyst, `{"form":"terms","query":"contoso","limit":20,"subject":"","received_from":"2026-01-01T00:00:00Z"}`)
+	if resp.status != http.StatusOK {
+		t.Fatalf("search: %d %s", resp.status, resp.body)
+	}
+	got := resp.json(t)
+	hits, _ := got["hits"].([]any)
+	if got["state"] != "available" || got["effective_tier"] != "full_text" || len(hits) != 1 || got["truncated"] != false {
+		t.Fatalf("search answer = %v", got)
+	}
+	if hit := hits[0].(map[string]any); hit["submission_id"] != submissionID || hit["unit_kind"] != "prompt_body" {
+		t.Fatalf("hit = %v", hit)
+	}
+	if resp := search(r.iss.Person(t, tenantID, "v", "viewer"), `{"query":"contoso"}`); resp.status != http.StatusForbidden {
+		t.Fatalf("viewer: %d", resp.status)
+	}
+	if resp := search(analyst, `{"query":"contoso","scope":"default"}`); resp.status != http.StatusBadRequest {
+		t.Fatalf("unknown field: %d", resp.status)
+	}
+	if resp := search(analyst, `{"query":""}`); resp.status != http.StatusBadRequest || resp.code(t) != "invalid_request" {
+		t.Fatalf("empty query: %d %s", resp.status, resp.body)
+	}
+}
+
+func TestProbes(t *testing.T) {
+	r := newRig(t)
+	if resp := r.do(http.MethodGet, "/healthz", "", nil, nil); resp.status != http.StatusOK {
+		t.Fatalf("healthz: %d", resp.status)
+	}
+	if resp := r.do(http.MethodGet, "/readyz", "", nil, nil); resp.status != http.StatusOK {
+		t.Fatalf("readyz: %d", resp.status)
+	}
+	r.ready = errors.New("connection refused")
+	if resp := r.do(http.MethodGet, "/readyz", "", nil, nil); resp.status != http.StatusServiceUnavailable {
+		t.Fatalf("readyz with the database down: %d", resp.status)
+	}
+	if resp := r.do(http.MethodGet, "/healthz", "", nil, nil); resp.status != http.StatusOK {
+		t.Fatal("liveness depends on the database")
+	}
+}
+
+func TestOnlyTheDocumentedRoutesExist(t *testing.T) {
+	r := newRig(t)
+	token := r.iss.Service(t, "control-api")
+	for _, route := range []string{
+		"POST /v1/content/object", "POST /v1/content/object/finalise", "POST /v1/content/redeem",
+		"POST /v1/content/shred", "POST /v1/content/rotate", "POST /v1/content/grant", "POST /v1/content",
+		"GET /internal/v1/tenants/" + tenantID + "/content/" + eventID,
+	} {
+		method, path, _ := strings.Cut(route, " ")
+		if resp := r.do(method, path, token, []byte("{}"), nil); resp.status != http.StatusNotFound && resp.status != http.StatusMethodNotAllowed {
+			t.Errorf("%s answered %d", route, resp.status)
+		}
 	}
 }
