@@ -1,150 +1,80 @@
-# endpoint — the device tier
+# endpoint
 
-This is the half of the system that runs on a company-managed laptop. It exists because the
-customers are companies that have *not* bought enterprise AI: there is no vendor-side API to pull
-from, so if the device does not observe a submission, the fact does not exist anywhere. Everything
-here is built to make that observation possible without making the device a content-egress path.
+The agent that runs on a managed laptop. It observes AI submissions (the local TLS proxy for CLI
+tools, the loopback broker for local inference servers, the browser extension through native
+messaging), classifies them on the device, applies the tenant's signed collection policy, spools
+them encrypted and delivers them to the device edge over mutual TLS.
 
-The design and its reasons are in [docs/01-collectors.md](../docs/01-collectors.md); the language
-choices are in [docs/00-architecture.md §4.1](../docs/00-architecture.md). This file is the map of
-the code, not a second copy of the design.
-
-## Collecting Claude Code prompts
-
-The delivery path is built (service → enrol → spool → drain → `POST /v1/events`) and the trust/CA
-half is now built too, so a CLI speaking HTTPS to `api.anthropic.com` is captured end to end:
-
-1. **Mint a signed policy bundle** with `endpoint/capture-core/cmd/sac-bundle`. It generates the
-   per-device CA (`ca.pem` / `ca.key`), scopes `proxy.tls` to the generative hosts, embeds the root
-   CA public cert and the `cli_shim` block, names the classifier release, and signs with an Ed25519
-   policy key. `--selftest` still signs a throwaway bundle for its own evidence run.
-2. **Turn the interceptor on**: `SAC_PROXY_TLS=true` with a fixed `SAC_PROXY_TLS_LISTEN` port (the
-   bundle's `interception.proxy_listen` is the default when the flag is left alone).
-3. **Trust the CA**: `SAC_TRUST_INSTALL=true` installs `ca.pem` into the store the platform honours
-   (`trust/`), and `SAC_CA_CERT`/`SAC_CA_KEY` pin the CA so the trusted root is stable across
-   restarts. `proxy.tls` verifies with the end-to-end canary probe, never on the strength of a file
-   write. `SAC_TRUST_REMOVE_ON_STOP=true` removes it on uninstall or kill switch.
-4. **Route the CLI to it, transparently**: `SAC_CLI_SHIM=true` writes the managed profile and CA
-   bundle (`NODE_EXTRA_CA_CERTS`, `NODE_USE_ENV_PROXY=1`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`,
-   `CURL_CA_BUNDLE`, both cases of the proxy variables, and the Node CONNECT bootstrap) into the
-   machine/user environment. The user opens a terminal and runs `claude` as normal — no wrapper, no
-   per-command change. Claude Code's `fetch` path is covered on Node 24+ by `NODE_USE_ENV_PROXY` and
-   on older runtimes by Claude Code's own `HTTPS_PROXY` support; the `https` path is covered by the
-   bootstrap. In production the environment and trust configuration are delivered by MDM/GPO
-   ([docs/05 §6](../docs/05-platform-delivery.md)).
-
-5. **Classify, without a second service**: `SAC_CLASSIFIER_RELEASE` and `SAC_CLASSIFIER_PUBKEY` make
-   the agent run the `classifier-host` installed beside it as a child on stdio, loading that signed
-   release. With neither these nor `SAC_CLASSIFIER_ADDRESS`, classification is rules-only and every
-   classified event says `confidence: degraded`.
-6. **Hold content, at M3 only**: `SAC_CONTENT_DIR` and `SAC_CONTENT_KEY` give the agent a sealed
-   local content store. An M3 prompt's text is held there, and once its event is delivered the drain
-   asks `control-api` for a per-event grant and makes the one upload the grant permits
-   ([docs/02 §3, §10](../docs/02-ingest-and-transport.md)). Without them an M3 observation is refused.
-
-The remaining deployment work is operator-side: an MDM deliverer for the bundle and CA pair, and the
-signed artefact. `endpoint/testlab/` runs interception, trust and the shim on Linux in a container.
-On Windows the whole chain above runs from one install: `node installer/lab-msi.mjs` plays the MDM's
-part for the local auth lab and builds an MSI that installs the service with all six steps
-configured ([installer/README.md](../installer/README.md)). That path was exercised on Windows 11
-with the real Claude Code CLI: prompts were captured, classified, delivered, uploaded under a grant
-and read back through `content-vault`.
-
-## What is here
-
-| Directory | What it is |
+| Module | What it is |
 |---|---|
-| [protocol/](protocol/README.md) | The device-side wire and IPC contract, owned by the Lead. Envelope, frames, spool records, native messaging, batch shapes. No component redefines these shapes. |
-| [capture-core/](capture-core/README.md) | The privileged agent: providers, mode resolution, envelope minting, policy store, spool wiring, the native-messaging host, the M3 local content store, and the device-to-cloud drain. One static Go binary per platform; on Windows it hosts the service itself (`--service`). |
-| [capture-spool/](capture-spool/README.md) | The only durable store on the device: bounded, encrypted at rest, append-only, single-writer. Implements `protocol.Store`. |
-| [classifier-host/](classifier-host/README.md) | Rules, validators and model over bytes handed to it, compiled from one Go source to native and `js/wasm`, with document parsing in an isolated child. |
-| [canon/](canon/README.md) | Unicode NFC — step C3 of the `sac-canon-1` contract — with tables generated from and checked against Node's ICU. |
-| [integration/](integration/README.md) | Test-only module that wires the pieces together for real, because every component suite only proves the component against its own fakes. |
+| `protocol` | The shapes the device components and the device edge agree on: enrolment, policy, events, health, content upload, native messaging, classifier frames, spool records. |
+| `capture-core` | The agent binary (`cmd/capture-core`) and its packages: `core` (pipeline, mode gate, envelope, supervisor), `policy`, `proxy/tlsproxy`, `proxy/loopback`, `cli` (CLI trust shim), `trust`, `drain` (enrolment, delivery, policy fetch, health, content upload), `credential`, `contentstore`, `state`, `hostinfo`, `dedup`, `classifierlink`, `attachments`. |
+| `capture-spool` | The encrypted, bounded, crash-safe single-writer spool. |
+| `classifier-host` | The on-device classifier, run by capture-core as a child process on stdio. |
+| `integration` | Cross-component tests, including contract acceptance of every envelope the device emits. |
 
-`capture-extension` is the fourth device process and lives in [extension/](../extension), outside
-this tree: it is plain JavaScript (ES modules) and Manifest V3, and it is the only component that can see browser
-internals. Its seam with `capture-core` is `protocol/native.go`.
+## Running in production
 
-Distribution is in [installer/](../installer): a Windows MSI, a macOS PKG and a Linux package, all
-driven from one manifest. The Windows MSI registers `capture-core` as a service it hosts itself
-(`--service`, the SCM contract implemented in the binary), configured by a file. This tree is the
-code those artefacts install.
+The installer registers one service (Windows service `ShadowAICapture`, launchd
+`com.shadowaicapture.capture-core`, systemd `shadow-ai-capture.service`) that runs:
 
-## How the parts compose
+```
+capture-core --config-file <vendor capture-core.env> --config-file <tenant.env>
+```
 
-A provider (proxy, broker, detector, or the browser over native messaging) hands the core an
-observation: metadata it could obtain **without** reading content, plus a lazy content reader. The
-pipeline resolves the effective mode from the signed bundle first, and only then decides whether the
-reader is ever called. That ordering is the mechanism behind the product's central promise — at M0
-nothing reads the bytes at all — so it is enforced by the type system rather than by a check
-someone has to remember.
+Each file is `KEY=VALUE` lines; a later file wins, and a command-line flag wins over both. The
+tenant file comes from the customer's MDM with the deployment package.
 
-From there the pipeline computes the route's dedup keys (`dedup`), classifies content if the mode
-permits (`classifierlink` to `classifier-host`), mints an envelope that the contract's closed schema
-will accept, and appends it to the spool. The spool holds exactly the bytes the device will
-eventually send, and nothing in it parses them.
+| Key | Flag | Meaning |
+|---|---|---|
+| `SAC_STATE_DIR` | `--state-dir` | Protected state directory (required). Holds the spool, `spool.key`, `credential.sealed`, `content/`, `content.key`, `policy/`, `device-ca/`, `health.json` and, for the Windows service, `capture-core.log`. capture-core gives it a protected DACL (SYSTEM, Administrators) on Windows and mode 0700 owned by root elsewhere. |
+| `SAC_TENANT_ID` | `--tenant-id` | Tenant id (required; tenant file). |
+| `SAC_DEVICE_ENDPOINT` | `--device-endpoint` | Device edge base URL, https with no path (required; tenant file). |
+| `SAC_DEPLOYMENT_KEY` | `--deployment-key` | Tenant deployment key; enrols the device (tenant file). |
+| `SAC_CA_FILE` | `--ca-file` | PEM CA set trusted for the device endpoint in addition to the system roots. |
+| `SAC_POLICY_KEY` | `--policy-key` | Hex Ed25519 key the policy bundle must verify under. Without it the device runs at M0. |
+| `SAC_POLICY_KEY_ID` | `--policy-key-id` | Key id the bundle must name (default `policy-key-1`). |
+| `SAC_CLASSIFIER_RELEASE` | `--classifier-release` | Signed classifier release directory; set with the key below. |
+| `SAC_CLASSIFIER_PUBKEY` | `--classifier-pubkey` | Hex Ed25519 key the classifier release must verify under. |
+| `SAC_DEVICE_IDENTITY` | `--device-identity` | `clear` or `hashed` until the server states the tenant's setting (default `clear`). |
+| `SAC_LOG_LEVEL` | `--log-level` | `debug`, `info`, `warn`, `error` (default `info`). Logs are JSON on standard error. |
 
-The spool is not the end of the path. [`capture-core/drain/`](capture-core/drain/README.md) reads it
-oldest-first and delivers batches to the tenant's ingest API over the ADR 0020 transport — `x509`
-mTLS or DPoP — so a device enrols once, holds one revocable credential, and settles every record
-from the API's per-event outcome. It is **opt-in** (`--device-endpoint`): with no endpoint the spool
-*is* the endpoint and the shutdown drain reports what is still in it. The ingest service itself lives
-in [ingestion/](../ingestion), not here; the device never holds a database credential
-([ADR 0001](../docs/adr/0001-one-validating-write-path-collectors-hold-no-database-credential.md)).
+The CLI trust shim writes the CA bundle and environment profile that command-line runtimes read to
+a directory users can read, outside the state directory: `C:\ProgramData\ShadowAICapture\cli`
+(Windows), `/var/db/shadow-ai-capture` (macOS, with `state/` inside it, root only) and
+`/etc/shadow-ai-capture` plus `/etc/profile.d/shadow-ai-capture.sh` (Linux). The directory is the
+agent's own default, never taken from the policy bundle.
 
-Content takes a different path from events, and only at M3. The envelope never carries prompt text
-at any mode. An M3 prompt's content is sealed into
-[`capture-core/contentstore/`](capture-core/contentstore/README.md) and stays on the device; the
-drain requests a grant for it only after its event has been delivered, because a grant is decided
-about an event the server already has. A granted object is sealed under the key the grant carries
-and written once; a denied one stays local until retention removes it.
+On first start the agent enrols with the deployment key (a CSR; the edge returns a device
+certificate), fetches the signed policy bundle, mints its per-device interception CA and installs
+it in the trust store, and starts the providers. It rotates the certificate, presenting the current
+one, two thirds of the way through its validity. `capture-core --print-config` shows the resolved
+configuration and the enrolment; `--version` the build.
 
-Policy is data: a signed bundle decides interception scope, loopback port maps, per-tool modes, the
-body cap and the kill switch. A bundle that fails verification never changes what the device is
-enforcing — the previous one stays in force, or the device runs at M0 with none.
+## The browser's native messaging host
+
+Chrome and Edge start the registered host with the extension's origin (`chrome-extension://<id>/`)
+as the first argument; the installers register `capture-core` itself. In that mode it is a relay:
+it connects to the running service at `\\.\pipe\ShadowAICapture.native` (Windows; SYSTEM and
+Administrators full control, interactive users read and write, remote clients refused) or
+`/var/run/shadow-ai-capture/native.sock` (macOS and Linux; directory 0755 root, socket 0666), checks
+that the endpoint belongs to the service (pipe owned by SYSTEM or Administrators, socket peer uid
+0), and copies Chromium native-messaging frames (4-byte little-endian length, then one JSON
+message, at most 1 MiB) between its stdin/stdout and the endpoint. The service names the connecting
+process's account (the pipe's client process token, `SO_PEERCRED`, `LOCAL_PEERCRED`) and attributes
+that browser user's observations to them.
+
+Attachment bytes arrive ahead of their observation (manifest, contiguous chunks, completion). The
+service refuses the manifest with `mode_forbids_read` when policy reads no content, holds at most
+32 MiB per attachment and 64 MiB per connection in memory, and drops bytes whose observation does
+not name them by digest within two minutes. The observation's bytes are classified under its mode
+(documents go to classifier-host's isolated parser child), the labels join the event's, and the
+bytes are discarded: the envelope carries only the name, size and digest, and nothing is written
+to the spool or the content store.
 
 ## Build and test
 
-Go commands run with the offline prefix. The modules depend on the standard library and on each
-other only, and the repository's gates set `GOPROXY=off` by choice, so no build reaches the network.
-With `$PWD` at the repository root (where `.tools\` lives):
-
-```powershell
-$env:GOCACHE="$PWD\.tools\gocache"; $env:GOPROXY="off"; $env:GOTOOLCHAIN="local"; $env:GOFLAGS="-mod=mod"
 ```
-
-Each module builds and tests independently (`go test ./...` in `protocol/`, `canon/`,
-`capture-spool/`, `capture-core/`, `classifier-host/`, `integration/`). From the repository root,
-`node tools/verify-all.mjs` runs them all, and `node tools/accept.mjs` is the acceptance gate.
-`endpoint/capture-core/run.ps1` is the capture-core entry point, with `-Selftest` for the assembled
-end-to-end run.
-
-## What is deliberately not here
-
-- **The browser half.** Chromium APIs are unavailable outside Chromium; see [extension/](../extension).
-- **`cli.shim` is opt-in.** The provider is built ([capture-core/cli/](capture-core/cli/README.md))
-  and runs in §3.5's step 4 when the enrolment profile sets `--cli-shim`; with no root CA it reports
-  `degraded` with a named cause rather than a healthy-looking empty row.
-- **The server tier.** `ingest-api`, `control-api` and `content-vault` live in
-  [ingestion/](../ingestion), [control/](../control) and [vault/](../vault). What *is* here is the
-  device half of the write path — [`capture-core/drain/`](capture-core/drain/README.md) — which is
-  opt-in, delivers events to `POST /v1/events`, and at M3 requests content grants from
-  `POST /v1/content/grant`; the device holds no database credential and never talks to the vault.
-- **Platform facilities are partly wired.** The OS trust store is wired
-  ([capture-core/trust/](capture-core/trust/README.md)) when `--trust-install` is set, and removal is
-  as reliable as installation. The **system proxy**, **DPAPI/Keychain key sealing** and a full
-  **process enumerator** are still interfaces with no wired implementation. Where a capability is
-  missing the component reports `degraded` with a named detail instead of claiming health.
-- **SQLite.** [ADR 0002](../docs/adr/0002-postgresql-is-the-server-store-sqlite-is-only-the-device-spool.md)
-  names SQLite in WAL mode for the device spool. The spool was written without network access and
-  the builds run with `GOPROXY=off`, so no SQLite driver is a dependency, and cgo is unavailable
-  (the build host has no C compiler); the spool is an append-only segment log behind the same
-  `protocol.Store` interface. A pure-Go driver is fetchable when the module proxy is enabled and
-  could satisfy that interface later. The deviation is stated in
-  [capture-spool/doc.go](capture-spool/doc.go) and is not presented as SQLite.
-- **Rust, and the language change that replaced it.** [ADR 0016](../docs/adr/0016-the-classifier-host-is-one-go-source-built-for-native-and-js-wasm.md)
-  makes the classifier host one Go source compiled to native and `js/wasm`, because §9.1's requirement is
-  byte-identical labels from one source rather than a particular language — and when it was decided the build
-  host had no Rust toolchain and no network to fetch one. The decision is recorded; the files that stated the original
-  choice ([docs/00 §4.1](../docs/00-architecture.md), [docs/01 §3.1 and §9.1](../docs/01-collectors.md))
-  were corrected to point at it.
+cd endpoint/capture-core && go build -ldflags "-X main.version=1.2.3" ./cmd/capture-core
+for m in protocol capture-spool capture-core integration; do (cd endpoint/$m && gofmt -l . && go vet ./... && go test ./...); done
+```

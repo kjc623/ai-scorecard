@@ -2,180 +2,170 @@ package drain
 
 import (
 	"context"
-	"crypto/x509"
-	"encoding/json"
 	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
+	"github.com/shadow-ai-capture/device/capture-core/credential"
 	"github.com/shadow-ai-capture/device/protocol"
 )
 
-// newRawDrainer builds a drainer with a manual (plain-HTTP) client and no credential, for exercising
-// the enrol and token flows in isolation.
-func newRawDrainer(t *testing.T, cfg Config, handler http.HandlerFunc) (*Drainer, *httptest.Server) {
-	t.Helper()
-	srv := httptest.NewServer(handler)
-	t.Cleanup(srv.Close)
-	cfg.Endpoint = srv.URL
-	d := &Drainer{
-		cfg:    cfg,
-		client: &client{base: strings.TrimRight(srv.URL, "/"), caPool: x509.NewCertPool(), http: srv.Client()},
-		log:    nopLogger{},
-		clock:  time.Now,
-		state:  protocol.StateAbsent,
-		stopCh: make(chan struct{}),
-	}
-	return d, srv
-}
-
-func TestEnrolDPoP(t *testing.T) {
-	var got protocol.EnrolmentRequest
-	var dpopHeader string
-	d, _ := newRawDrainer(t, Config{
-		AuthMode:       protocol.AuthModeDPoP,
-		EnrolmentToken: "tok-123",
-		TenantID:       "tenant-1",
-		DeviceID:       "device-1",
-		AgentVersion:   "test",
-		MDMID:          "mdm-9",
-	}, func(w http.ResponseWriter, r *http.Request) {
-		dpopHeader = r.Header.Get(protocol.HeaderDPoP)
-		body := gunzipBody(t, r)
-		if err := json.Unmarshal(body, &got); err != nil {
-			t.Fatalf("decode enrol request: %v", err)
+// A first enrolment presents the deployment key, no client certificate, the attestation the OS
+// states and the hardware identity derived from the hardware seed; the issued credential is
+// stored, adopted and presented from then on.
+func TestFirstEnrolmentPresentsTheDeploymentKey(t *testing.T) {
+	e := newFakeEdge(t)
+	var adopted *credential.Credential
+	d := newTestDrainer(t, e, nil, nil, func(c *Config) {
+		c.Attestation = func() *protocol.DeviceAttestation {
+			return &protocol.DeviceAttestation{IntuneDeviceID: "intune-1", SerialNumber: "PF2X9K7Q"}
 		}
-		resp := protocol.EnrolmentResponse{
-			SchemaVersion: protocol.EnrolmentSchemaVersion,
-			DeviceID:      "device-1",
-			TenantID:      "tenant-1",
-			Region:        "eu",
-			Credential:    protocol.IssuedCredential{Mode: protocol.AuthModeDPoP, JWK: &protocol.JWK{Kty: "EC", Crv: "P-256", X: "x", Y: "y"}},
-			ServerTime:    time.Now().UTC(),
-		}
-		raw, _ := json.Marshal(resp)
-		writeJSON(t, w, http.StatusOK, raw)
+		c.ManagedState = "managed"
+		c.OnEnrolled = func(cred *credential.Credential) { adopted = cred }
 	})
-	c, err := d.enrol(context.Background(), HardwareIdentityHash("tenant-1", "device-1", "mdm-9"))
-	if err != nil {
-		t.Fatalf("enrol: %v", err)
+	if !d.EnsureEnrolled(context.Background()) {
+		t.Fatal("EnsureEnrolled failed")
 	}
-	if got.Mode != protocol.AuthModeDPoP {
-		t.Fatalf("mode = %q, want dpop", got.Mode)
+	reqs, certs := e.enrolments()
+	if len(reqs) != 1 {
+		t.Fatalf("enrolments = %d, want 1", len(reqs))
 	}
-	if got.EnrolmentToken != "tok-123" {
-		t.Fatalf("token = %q, want tok-123", got.EnrolmentToken)
+	req := reqs[0]
+	if req.DeploymentKey != "sacdk_test" || certs[0] != "" {
+		t.Fatalf("first enrolment presented key %q and certificate %q", req.DeploymentKey, certs[0])
 	}
-	if got.JWK == nil || got.JWK.Kty != "EC" {
-		t.Fatalf("jwk = %+v, want an EC JWK", got.JWK)
+	if req.Attestation == nil || req.Attestation.IntuneDeviceID != "intune-1" || req.Device.ManagedState != "managed" {
+		t.Fatalf("attestation %+v managed_state %q", req.Attestation, req.Device.ManagedState)
 	}
-	if got.CSR != "" {
-		t.Fatal("a dpop enrol carried a CSR")
+	if req.Device.HardwareIdentityHash != HardwareIdentityHash(testTenant, "smbios:test") {
+		t.Fatal("the hardware identity is not derived from the hardware seed")
 	}
-	if got.Device.HardwareIdentityHash == "" {
-		t.Fatal("enrol carried no hardware_identity_hash")
+	if adopted == nil || adopted.DeviceID != testDevice || adopted.TenantID != testTenant {
+		t.Fatalf("adopted credential = %+v", adopted)
 	}
-	if dpopHeader == "" {
-		t.Fatal("a dpop enrol carried no DPoP proof header")
+	stored, err := d.creds.Load()
+	if err != nil || stored.CertPEM != adopted.CertPEM {
+		t.Fatalf("the issued credential was not stored: %v", err)
 	}
-	if c.Mode != protocol.AuthModeDPoP || c.JWK == nil {
-		t.Fatalf("issued credential = %+v", c)
+	// A restart loads the stored credential and does not enrol again.
+	again, err := New(d.cfg, d.store, d.creds, nil, time.Now)
+	if err != nil || !again.Status().Enrolled {
+		t.Fatalf("restart: enrolled=%v err=%v", again.Status().Enrolled, err)
 	}
-	if c.PrivateKey == "" {
-		t.Fatal("issued credential carries no private key")
+	if !again.EnsureEnrolled(context.Background()) {
+		t.Fatal("restart could not use the stored credential")
 	}
-	if _, err := c.ECPrivateKey(); err != nil {
-		t.Fatalf("issued key does not parse: %v", err)
+	if reqs, _ := e.enrolments(); len(reqs) != 1 {
+		t.Fatalf("a restart enrolled again (%d enrolments)", len(reqs))
 	}
 }
 
-func TestEnrolX509(t *testing.T) {
-	var got protocol.EnrolmentRequest
-	d, _ := newRawDrainer(t, Config{
-		AuthMode:       protocol.AuthModeX509,
-		EnrolmentToken: "tok-123",
-		TenantID:       "tenant-1",
-		DeviceID:       "device-1",
-		AgentVersion:   "test",
-	}, func(w http.ResponseWriter, r *http.Request) {
-		body := gunzipBody(t, r)
-		if err := json.Unmarshal(body, &got); err != nil {
-			t.Fatalf("decode enrol request: %v", err)
-		}
-		resp := protocol.EnrolmentResponse{
-			SchemaVersion: protocol.EnrolmentSchemaVersion,
-			DeviceID:      "device-1",
-			TenantID:      "tenant-1",
-			Region:        "eu",
-			Credential:    protocol.IssuedCredential{Mode: protocol.AuthModeX509, CertPEM: "-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----\n"},
-			ServerTime:    time.Now().UTC(),
-		}
-		raw, _ := json.Marshal(resp)
-		writeJSON(t, w, http.StatusOK, raw)
+// A credential past two thirds of its validity is rotated: the request presents the current
+// certificate and no deployment key, and keeps the hardware identity it was first issued under.
+func TestRotationPresentsTheCurrentCertificate(t *testing.T) {
+	e := newFakeEdge(t)
+	// Issued an hour ago for 80 minutes: past two thirds of its life, still valid.
+	current := e.issued(80 * time.Minute)
+	d := newTestDrainer(t, e, nil, current)
+	if !d.EnsureEnrolled(context.Background()) {
+		t.Fatal("EnsureEnrolled failed")
+	}
+	reqs, certs := e.enrolments()
+	if len(reqs) != 1 {
+		t.Fatalf("enrolments = %d, want one rotation", len(reqs))
+	}
+	if reqs[0].DeploymentKey != "" || certs[0] != testDevice {
+		t.Fatalf("rotation presented key %q and certificate %q; want the certificate only", reqs[0].DeploymentKey, certs[0])
+	}
+	if reqs[0].Device.HardwareIdentityHash != current.HardwareIdentityHash {
+		t.Fatal("rotation changed the hardware identity")
+	}
+	if got := d.credentialNow(); got.CertPEM == current.CertPEM || !got.NotAfter.After(current.NotAfter) {
+		t.Fatal("the rotated certificate was not adopted")
+	}
+}
+
+// A rotation the edge refuses keeps the current, still valid certificate in use.
+func TestFailedRotationKeepsTheCurrentCertificate(t *testing.T) {
+	e := newFakeEdge(t)
+	current := e.issued(80 * time.Minute)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/enrol", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusServiceUnavailable, []byte(`{"error":{"code":"unavailable"}}`))
 	})
-	c, err := d.enrol(context.Background(), HardwareIdentityHash("tenant-1", "device-1", ""))
-	if err != nil {
-		t.Fatalf("enrol: %v", err)
+	e.srv.Config.Handler = mux
+	d := newTestDrainer(t, e, nil, current)
+	if !d.EnsureEnrolled(context.Background()) {
+		t.Fatal("a failed rotation made a valid credential unusable")
 	}
-	if got.Mode != protocol.AuthModeX509 {
-		t.Fatalf("mode = %q, want x509", got.Mode)
-	}
-	if got.CSR == "" {
-		t.Fatal("an x509 enrol carried no CSR")
-	}
-	if got.JWK != nil {
-		t.Fatal("an x509 enrol carried a JWK")
-	}
-	if c.Mode != protocol.AuthModeX509 || c.CertPEM == "" {
-		t.Fatalf("issued credential = %+v", c)
+	if d.credentialNow().CertPEM != current.CertPEM {
+		t.Fatal("the current certificate was replaced after a failed rotation")
 	}
 }
 
-func TestEnrolFailureIsClassified(t *testing.T) {
-	d, _ := newRawDrainer(t, Config{
-		AuthMode:       protocol.AuthModeDPoP,
-		EnrolmentToken: "tok-123",
-		TenantID:       "tenant-1",
-		DeviceID:       "device-1",
-		AgentVersion:   "test",
-	}, func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(t, w, http.StatusUnauthorized, []byte(`{"error":{"code":"revoked_device","server_time":"2026-10-01T00:00:00Z"}}`))
+// An expired certificate cannot authenticate a rotation, so the device enrols again with the
+// deployment key under its original hardware identity, which returns its existing device_id.
+func TestExpiredCertificateEnrolsAgainWithTheDeploymentKey(t *testing.T) {
+	e := newFakeEdge(t)
+	expired := e.issued(30 * time.Minute) // issued an hour ago: expired half an hour ago
+	d := newTestDrainer(t, e, nil, expired)
+	if !d.EnsureEnrolled(context.Background()) {
+		t.Fatal("EnsureEnrolled failed")
+	}
+	reqs, _ := e.enrolments()
+	if len(reqs) != 1 || reqs[0].DeploymentKey != "sacdk_test" || reqs[0].Device.HardwareIdentityHash != expired.HardwareIdentityHash {
+		t.Fatalf("re-enrolment = %+v", reqs)
+	}
+}
+
+// With no deployment key and no usable credential the device cannot enrol, and says why.
+func TestNoDeploymentKeyIsANamedDegradedState(t *testing.T) {
+	e := newFakeEdge(t)
+	d := newTestDrainer(t, e, nil, e.issued(30*time.Minute), func(c *Config) { c.DeploymentKey = "" })
+	if d.EnsureEnrolled(context.Background()) {
+		t.Fatal("an expired credential with no deployment key reported usable")
+	}
+	if st := d.Status(); st.State != protocol.StateDegraded || st.Detail != protocol.DetailCredentialExpired {
+		t.Fatalf("status = %+v, want degraded/credential_expired", st)
+	}
+}
+
+func TestEnrolmentRefusalIsClassified(t *testing.T) {
+	e := newFakeEdge(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/enrol", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusUnauthorized, []byte(`{"error":{"code":"unknown_tenant"}}`))
 	})
-	_, err := d.enrol(context.Background(), HardwareIdentityHash("tenant-1", "device-1", ""))
-	if err == nil {
-		t.Fatal("enrol accepted a 401")
+	e.srv.Config.Handler = mux
+	d := newTestDrainer(t, e, nil, nil)
+	if d.EnsureEnrolled(context.Background()) {
+		t.Fatal("a refused enrolment reported success")
 	}
-	ae, ok := err.(*apiError)
-	if !ok {
-		t.Fatalf("error is %T, want *apiError", err)
-	}
-	if ae.status != http.StatusUnauthorized || ae.code != protocol.ReasonRevokedDevice {
-		t.Fatalf("apiError = %+v, want 401/revoked_device", ae)
-	}
-	if ae.Retryable() {
-		t.Fatal("a revoked credential is not retryable")
+	if st := d.Status(); st.State != protocol.StateDegraded || st.Detail != protocol.DetailUpstreamFailure {
+		t.Fatalf("status = %+v, want degraded/upstream_failure", st)
 	}
 }
 
-func TestHardwareIdentityHash(t *testing.T) {
-	withMDM := HardwareIdentityHash("tenant-1", "device-1", "mdm-9")
-	fallback := HardwareIdentityHash("tenant-1", "device-1", "")
-	again := HardwareIdentityHash("tenant-1", "device-1", "mdm-9")
-	if withMDM != again {
-		t.Fatal("HardwareIdentityHash is not deterministic")
+func TestHardwareIdentityHashIsPerTenantAndPerSeed(t *testing.T) {
+	a := HardwareIdentityHash("t1", "smbios:1")
+	if a != HardwareIdentityHash("t1", "smbios:1") {
+		t.Fatal("not deterministic")
 	}
-	if withMDM == fallback {
-		t.Fatal("the MDM seed and the fallback seed produced the same hash; the seed must be honoured")
+	if a == HardwareIdentityHash("t2", "smbios:1") || a == HardwareIdentityHash("t1", "smbios:2") {
+		t.Fatal("the tenant and the seed must both be part of the hash")
 	}
-	otherTenant := HardwareIdentityHash("tenant-2", "device-1", "mdm-9")
-	if withMDM == otherTenant {
-		t.Fatal("the hash is not tenant-scoped")
-	}
-	for _, h := range []string{withMDM, fallback} {
-		if !strings.HasPrefix(h, "sha256:") {
-			t.Fatalf("hash %q has no sha256: prefix", h)
+}
+
+func TestEnrolmentOSUsesTheEnrolmentVocabulary(t *testing.T) {
+	for goos, want := range map[string]string{"windows": "windows", "darwin": "macos", "linux": "linux"} {
+		if got := enrolmentOS(goos); got != want {
+			t.Errorf("enrolmentOS(%q) = %q, want %q", goos, got, want)
 		}
+	}
+}
+
+func TestNewRefusesAPlainHTTPEndpoint(t *testing.T) {
+	if _, err := newClient("http://edge.example", ""); err == nil {
+		t.Fatal("a plain http endpoint was accepted")
 	}
 }

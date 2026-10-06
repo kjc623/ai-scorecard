@@ -12,14 +12,14 @@ import (
 // ScopeQuery is what the device knows about an observation *before* it reads anything: the
 // tool's behaviour-derived fingerprint, the user's population, and the device. Data class is
 // deliberately absent — it is a *result*, and the mode must be chosen before the content is
-// read, which is what the class-prior map exists for (A14).
+// read, which is what the class-prior map exists for.
 type ScopeQuery struct {
 	ToolFingerprint string
 	Population      string
 	DeviceID        string
 	UserRef         string
 	// SubjectName is the clear account name, carried so the pipeline can stamp it on the envelope
-	// when the tenant's device_identity is 'clear' (ADR 0021). It has no part in mode resolution.
+	// when the tenant's device_identity is 'clear'. It has no part in mode resolution.
 	SubjectName string
 }
 
@@ -42,7 +42,7 @@ type Resolution struct {
 }
 
 // ReadsContent reports whether the resolved mode permits reading the payload at all. Every
-// content path must consult this before touching bytes (§11.2).
+// content path must consult this before touching bytes.
 func (r Resolution) ReadsContent() bool { return r.Mode.ReadsContent() }
 
 // Reason strings used in reports. They are stable so a coverage report can group by them.
@@ -54,7 +54,7 @@ const (
 	ReasonUnresolved       = "scope_entry_unresolvable_resolved_downward"
 )
 
-// Resolve applies §11.1's rule:
+// Resolve applies the scope rule:
 //
 //	effective_mode = most_restrictive(
 //	    mode_for_tool(tool_fingerprint),
@@ -64,11 +64,11 @@ const (
 //
 // with two gates in front of it that can only ever *lower* the mode:
 //
-//   - §13.3 rule 5: with no bundle in force (a fresh install whose first bundle failed
+//   - With no bundle in force (a fresh install whose first bundle failed
 //     verification, or any moment before the first poll) the device is at M0. M0 is a
 //     reduction in capability, never an increase, and no code path in this package can
 //     return a content-reading mode without a verified bundle behind it.
-//   - §11.3/§13.4: a user who has not acknowledged the required notice version resolves to
+//   - A user who has not acknowledged the required notice version resolves to
 //     M0, with the reason reported rather than the downgrade being silent.
 func Resolve(b *policy.Bundle, q ScopeQuery) Resolution {
 	if b == nil {
@@ -104,7 +104,7 @@ func Resolve(b *policy.Bundle, q ScopeQuery) Resolution {
 	for _, a := range axes {
 		if strings.TrimSpace(a.key) == "" {
 			// No key on this axis: the tenant default is the only value that can apply, and
-			// there is no value of "unset" that means "everything" (§11.3).
+			// there is no value of "unset" that means "everything".
 			res.Contributions = append(res.Contributions, Contribution{
 				Axis: a.axis, Key: a.key, Mode: b.TenantDefault, Reason: ReasonTenantDefault,
 			})
@@ -196,7 +196,7 @@ func ModeRank(m protocol.CollectionMode) int {
 	}
 }
 
-// MostRestrictive returns the lowest-ranked mode, which for §11.1's ordering
+// MostRestrictive returns the lowest-ranked mode, which for the mode ordering
 // (m0 < m1 < m2 < m3) is the most restrictive. With no inputs it returns M0: "most
 // restrictive" of nothing is the one mode that reads nothing.
 func MostRestrictive(modes ...protocol.CollectionMode) protocol.CollectionMode {

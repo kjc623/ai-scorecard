@@ -1,16 +1,14 @@
-// Package dedup implements the device half of docs/02-ingest-and-transport.md §4 —
-// "Deduplication — normative". It is deliberately a separate package from the collectors:
-// the digest a route computes and the digest ingest recomputes must be the same function,
-// so there is one implementation and one test, and the device never invents its own.
+// Package dedup computes the two identifiers that let the server recognise one submission seen
+// twice: the canonical content digest and the dedup key.
 //
-// The two keys:
+//	content_digest = "sha256:" + hex(SHA-256(digest_input))
+//	dedup_key      = "sha256:" + hex(SHA-256("sac-dedup-1" ␟ ... ␟ tier ␟ material))
 //
-//	content_digest = "sha256:" + hex(SHA-256(digest_input))     (§4.2 C9)
-//	dedup_key      = sha256("sac-dedup-1" ␟ ... ␟ tier ␟ material) (§4.5 key ladder)
-//
-// Both are pinned to a canonicalisation version (`sac-canon-1`), because changing any step
-// splits the fleet: a device on the old version and one on the new compute different keys for
-// the same submission.
+// Two routes that observe the same submission (a proxy reading messages[], the extension reading
+// a compose box) collapse into one fact only when both compute identical keys, so the
+// canonicalisation steps, separators and substitutions here are literal and fixed by test. Both
+// identifiers are pinned to a canonicalisation version: changing any step would make a device on
+// the old version and one on the new disagree about the same submission.
 package dedup
 
 import (
@@ -21,60 +19,38 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 const (
-	// CanonVersion is the canonicalisation version of docs/02 §4.2. It is the first field of
-	// digest_input, so a version change cannot silently collide old and new digests.
+	// CanonVersion is the first field of digest_input, so a version change cannot silently
+	// collide old and new digests.
 	CanonVersion = "sac-canon-1"
 
-	// LadderVersion is the dedup_key ladder version of docs/02 §4.5.
+	// LadderVersion is the first field of the dedup key input.
 	LadderVersion = "sac-dedup-1"
 
-	// BucketWidth is the dedup time bucket, docs/02 §4.3: 300 s, on the device's own wall
-	// clock, uncorrected. A narrower bucket splits one submission seen by two routes; a wider
-	// one merges two identical sends.
+	// BucketWidth is the dedup time bucket on the device's own, uncorrected wall clock. A
+	// narrower bucket splits one submission seen by two routes; a wider one merges two
+	// identical sends.
 	BucketWidth = 300 * time.Second
 
-	// Sep is U+001F INFORMATION SEPARATOR ONE, the field separator of C9. C4 guarantees it
-	// cannot occur inside any field, which is what makes the layout unambiguous without
-	// escaping or length prefixes.
+	// Sep is U+001F INFORMATION SEPARATOR ONE, the field separator. Canonicalisation removes it
+	// from every field, which makes the layout unambiguous without escaping.
 	Sep = "\x1f"
 
-	// Unreadable is the literal a canonicalisation step substitutes when a route is
-	// structurally unable to read the bytes (C7, E3). It is not "absent": the difference
-	// between "no attachment" and "an attachment whose bytes we cannot read" is a coverage
-	// fact and must survive into the key.
+	// Unreadable stands in for an attachment digest the route cannot compute. It is not
+	// "absent": "no attachment" and "an attachment whose bytes cannot be read" are different
+	// facts and both must survive into the key.
 	Unreadable = "~"
 
-	// TierT is content-derived material; TierS is the payload-shape surrogate M0 is forced
-	// to use; TierR is a rollup window; TierD is a detection basis.
+	// TierT is content-derived material; TierS is the payload-shape surrogate M0 uses.
 	TierT = "T"
 	TierS = "S"
-	TierR = "R"
-	TierD = "D"
 )
 
-// Normalizer is Unicode NFC (C3). It is an interface for one honest reason: Go's standard
-// library has no Unicode normalisation, and this host is offline, so golang.org/x/text is
-// not available. The default is IdentityNFC, which is correct for already-composed text
-// (the overwhelming majority of UTF-8 in the wild) and wrong for decomposed sequences; the
-// difference is reported rather than hidden (see Normalizer doc on IdentityNFC).
-type Normalizer interface {
-	NFC(string) string
-}
-
-// IdentityNFC performs no normalisation. It is the default so the package compiles and its
-// arithmetic is testable offline, and it is a *known* deviation from C3: text containing
-// decomposed combining sequences (for example "e" + U+0301) will digest differently here
-// than at a conforming implementation. It is named Identity, not Default, so a caller
-// cannot adopt it by accident.
-type IdentityNFC struct{}
-
-// NFC returns s unchanged.
-func (IdentityNFC) NFC(s string) string { return s }
-
-// Attachment is the canonicalisation input for one attachment (C7). ContentDigest is
+// Attachment is the canonicalisation input for one attachment. ContentDigest is
 // "sha256:"+hex over the raw attached octets, or Unreadable when the route cannot read them.
 type Attachment struct {
 	Name          string
@@ -83,7 +59,7 @@ type Attachment struct {
 	ContentDigest string
 }
 
-// digestInput builds the C9 layout:
+// digestInput builds the digest layout:
 //
 //	"sac-canon-1" ␟ "T" ␟ text ␟ att* ␟ "END"
 //	att = "A" ␟ name ␟ media_type ␟ decimal(size_bytes) ␟ content_digest
@@ -111,45 +87,33 @@ func digestInput(text string, atts []Attachment) string {
 	return b.String()
 }
 
-// ContentDigest is the envelope's `content_digest`: C9's digest over the canonical text and
-// canonicalised attachments, prefixed with the algorithm so a future change is visible in
-// the value and not just in a version field.
-func ContentDigest(text string, atts []Attachment, n Normalizer) string {
-	return "sha256:" + hex.EncodeToString(hashBytes(digestInput(CanonicalText(text, n), CanonicalAttachments(atts, n))))
+// ContentDigest is the envelope's content_digest over the canonical text and the canonicalised
+// attachments, prefixed with the algorithm so a future change is visible in the value itself.
+func ContentDigest(text string, atts []Attachment) string {
+	return "sha256:" + hex.EncodeToString(hashBytes(digestInput(CanonicalText(text), CanonicalAttachments(atts))))
 }
 
-// CanonicalText runs C2–C6 over a caller-supplied segment (C1 segment selection is
-// route-specific and is not this package's business):
+// CanonicalText canonicalises the user-authored segment a route identified:
 //
-//	C2 decode: ill-formed UTF-8 becomes U+FFFD, a leading BOM is stripped (Go's conversion
-//	           yields U+FFFD per invalid byte, which is the specified replacement)
-//	C3 NFC
-//	C4 strip controls and invisibles, keeping TAB/LF/CR for C5 to fold
-//	C5 collapse whitespace to single U+0020, trim
-//	C6 nothing else: no case folding, no stemming, no punctuation stripping
-func CanonicalText(s string, n Normalizer) string {
-	if n == nil {
-		n = IdentityNFC{}
-	}
-	s = strings.TrimPrefix(s, "\ufeff") // C2: a leading BOM belongs to the encoding, not the content
-	s = n.NFC(s)                        // C3
-	s = stripControlsAndInvisibles(s)   // C4
-	s = collapseWhitespace(s)           // C5
-	return s
+//   - a leading byte-order mark is removed (it belongs to the encoding, not the content);
+//   - the text is normalised to Unicode NFC;
+//   - control and invisible characters are removed, keeping TAB, LF and CR for the next step;
+//   - every run of whitespace becomes one U+0020, and the ends are trimmed;
+//   - nothing else: no case folding, stemming or punctuation stripping.
+func CanonicalText(s string) string {
+	s = strings.TrimPrefix(s, "\ufeff")
+	s = norm.NFC.String(s)
+	s = stripControlsAndInvisibles(s)
+	return collapseWhitespace(s)
 }
 
-// CanonicalAttachments runs C7 and the ordering rule that follows it: records are sorted by
-// (name, content_digest, size_bytes), because multipart order and file-list order are not
-// the same fact.
-func CanonicalAttachments(atts []Attachment, n Normalizer) []Attachment {
-	if n == nil {
-		n = IdentityNFC{}
-	}
+// CanonicalAttachments canonicalises each attachment (base name, NFC, lower-case media type
+// without parameters, Unreadable for a missing digest) and sorts them by (name, content_digest,
+// size_bytes), because multipart order and file-list order are not the same fact.
+func CanonicalAttachments(atts []Attachment) []Attachment {
 	out := make([]Attachment, 0, len(atts))
 	for _, a := range atts {
-		name := basename(a.Name)
-		name = n.NFC(name)
-		name = collapseWhitespace(stripControlsAndInvisibles(name))
+		name := collapseWhitespace(stripControlsAndInvisibles(norm.NFC.String(basename(a.Name))))
 		mt := strings.ToLower(strings.TrimSpace(a.MediaType))
 		if i := strings.IndexByte(mt, ';'); i >= 0 { // parameters (charset, boundary) are framing
 			mt = strings.TrimSpace(mt[:i])
@@ -161,10 +125,11 @@ func CanonicalAttachments(atts []Attachment, n Normalizer) []Attachment {
 		if dig == "" {
 			dig = Unreadable
 		}
-		if a.SizeBytes < 0 {
-			a.SizeBytes = 0
+		size := a.SizeBytes
+		if size < 0 {
+			size = 0
 		}
-		out = append(out, Attachment{Name: name, MediaType: mt, SizeBytes: a.SizeBytes, ContentDigest: dig})
+		out = append(out, Attachment{Name: name, MediaType: mt, SizeBytes: size, ContentDigest: dig})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Name != out[j].Name {
@@ -178,12 +143,10 @@ func CanonicalAttachments(atts []Attachment, n Normalizer) []Attachment {
 	return out
 }
 
-// NamesDigest is the `names_digest` of the Tier S material: sha256 over the sorted,
-// canonicalised attachment names, or Unreadable when none are known. The document does not
-// fix the join character for names; U+001F is used here for the same reason C9 uses it, and
-// the choice is recorded as an open item in the endpoint report.
-func NamesDigest(atts []Attachment, n Normalizer) string {
-	canon := CanonicalAttachments(atts, n)
+// NamesDigest is the names part of the Tier S material: SHA-256 over the sorted, canonicalised
+// attachment names joined with Sep, or Unreadable when none are known.
+func NamesDigest(atts []Attachment) string {
+	canon := CanonicalAttachments(atts)
 	if len(canon) == 0 {
 		return Unreadable
 	}
@@ -194,20 +157,20 @@ func NamesDigest(atts []Attachment, n Normalizer) string {
 	return "sha256:" + hex.EncodeToString(hashBytes(strings.Join(names, Sep)))
 }
 
-// BucketStart is §4.3: floor(occurred_at_utc / 300s) × 300s, from the device's own wall
-// clock, uncorrected. Device skew shifts both routes on one device equally, so correcting it
-// would reintroduce the disagreement the key exists to remove.
+// BucketStart is floor(occurred_at_utc / 300 s) × 300 s from the device's own wall clock,
+// uncorrected. Skew shifts every route on one device equally, so correcting it would reintroduce
+// the disagreement the key exists to remove.
 func BucketStart(occurredAt time.Time) time.Time {
 	return occurredAt.UTC().Truncate(BucketWidth)
 }
 
-// Key is the §4.5 ladder:
+// Key builds a dedup key:
 //
 //	dedup_input = "sac-dedup-1" ␟ tenant ␟ device ␟ tool ␟ direction ␟ kind ␟ bucket_start
 //	              ␟ tier ␟ material
 //
-// Returning "" for any empty required field is deliberate: a key computed from a missing
-// dimension would merge two different submissions, so the caller gets an error instead.
+// An empty required field is an error rather than an empty component: a key computed from a
+// missing dimension would merge two different submissions.
 func Key(tenant, device, tool, direction, kind string, bucketStart time.Time, tier, material string) (string, error) {
 	switch {
 	case tenant == "":
@@ -230,7 +193,7 @@ func Key(tenant, device, tool, direction, kind string, bucketStart time.Time, ti
 	return "sha256:" + hex.EncodeToString(hashBytes(input)), nil
 }
 
-// ContentKey is the Tier T key: the strongest material, available at M1 and above.
+// ContentKey is the Tier T key, the strongest material, available at M1 and above.
 func ContentKey(tenant, device, tool, kind string, occurredAt time.Time, contentDigest string) (string, error) {
 	if contentDigest == "" {
 		return "", fmt.Errorf("dedup: Tier T requires a content_digest")
@@ -238,27 +201,12 @@ func ContentKey(tenant, device, tool, kind string, occurredAt time.Time, content
 	return Key(tenant, device, tool, "egress", kind, BucketStart(occurredAt), TierT, contentDigest)
 }
 
-// SurrogateKey is the Tier S key, the M0 path: size, attachment count and names digest stand
-// in for content the device is not permitted to read. §4.5 is explicit that this is weaker
-// and that the weakness is reported, never hidden.
-func SurrogateKey(tenant, device, tool, kind string, occurredAt time.Time, sizeBytes int64, attachments []Attachment, n Normalizer) (string, error) {
-	material := fmt.Sprintf("%d%s%d%s%s", sizeBytes, Sep, len(attachments), Sep, NamesDigest(attachments, n))
+// SurrogateKey is the Tier S key used at M0 and whenever the content digest is not canonical:
+// size, attachment count and the names digest stand in for content the device did not read. It
+// is weaker than Tier T, and the record says so.
+func SurrogateKey(tenant, device, tool, kind string, occurredAt time.Time, sizeBytes int64, attachments []Attachment) (string, error) {
+	material := fmt.Sprintf("%d%s%d%s%s", sizeBytes, Sep, len(attachments), Sep, NamesDigest(attachments))
 	return Key(tenant, device, tool, "egress", kind, BucketStart(occurredAt), TierS, material)
-}
-
-// RollupKey is Tier R. For a rollup the window *is* the bucket: the record describes a
-// period, not an instant.
-func RollupKey(tenant, device, tool, kind string, windowStart, windowEnd time.Time) (string, error) {
-	material := windowStart.UTC().Format(time.RFC3339) + Sep + windowEnd.UTC().Format(time.RFC3339)
-	return Key(tenant, device, tool, "none", kind, BucketStart(windowStart), TierR, material)
-}
-
-// DetectionKey is Tier D: the detection basis is the only material a model_detection has.
-func DetectionKey(tenant, device, tool, kind string, occurredAt time.Time, detectionBasis string) (string, error) {
-	if detectionBasis == "" {
-		return "", fmt.Errorf("dedup: Tier D requires a detection_basis")
-	}
-	return Key(tenant, device, tool, "none", kind, BucketStart(occurredAt), TierD, detectionBasis)
 }
 
 func hashBytes(s string) []byte {
@@ -274,12 +222,12 @@ func basename(p string) string {
 	return p
 }
 
-// stripControlsAndInvisibles is C4. It keeps TAB, LF and CR because C5 folds them; it
-// removes DEL and C1, the zero-width and joiner block, bidi marks and overrides, the word
-// joiner and invisible operators block, and U+FEFF. This step is what guarantees U+001F
+// stripControlsAndInvisibles removes C0 controls (except TAB, LF and CR, which
+// collapseWhitespace folds), DEL and C1, the zero-width and joiner characters, bidi marks and
+// overrides, the word joiner and invisible operators, and U+FEFF. It is what guarantees U+001F
 // cannot occur inside a field.
 func stripControlsAndInvisibles(s string) string {
-	if !strings.ContainsFunc(s, func(r rune) bool { return isControlOrInvisible(r) }) {
+	if !strings.ContainsFunc(s, isControlOrInvisible) {
 		return s
 	}
 	var b strings.Builder
@@ -296,18 +244,18 @@ func stripControlsAndInvisibles(s string) string {
 func isControlOrInvisible(r rune) bool {
 	switch {
 	case r == '\t' || r == '\n' || r == '\r':
-		return false // folded by C5
+		return false
 	case r < 0x20: // C0 controls
 		return true
 	case r == 0x7f: // DEL
 		return true
 	case r >= 0x80 && r <= 0x9f: // C1
 		return true
-	case r >= 0x200b && r <= 0x200d: // zero-width space/non-joiner/joiner
+	case r >= 0x200b && r <= 0x200d: // zero-width space, non-joiner, joiner
 		return true
 	case r == 0x200e || r == 0x200f: // LRM, RLM
 		return true
-	case r >= 0x202a && r <= 0x202e: // bidi embedding/override
+	case r >= 0x202a && r <= 0x202e: // bidi embedding and override
 		return true
 	case r >= 0x2060 && r <= 0x2064: // word joiner, invisible operators
 		return true
@@ -317,8 +265,7 @@ func isControlOrInvisible(r rune) bool {
 	return false
 }
 
-// collapseWhitespace is C5: CRLF and CR become LF, every run of whitespace becomes a single
-// U+0020, and leading/trailing whitespace is trimmed.
+// collapseWhitespace turns every run of whitespace into a single U+0020 and trims both ends.
 func collapseWhitespace(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
@@ -349,16 +296,14 @@ func isWhitespace(r rune) bool {
 	return r >= 0x2000 && r <= 0x200a
 }
 
-// Decode is C2 for callers that hold bytes rather than a string: ill-formed sequences become
-// U+FFFD and a leading BOM is dropped. It never fails, because a collector that refused a
-// body it could not decode would be a collector that drops observations (C22).
+// Decode turns bytes into text for canonicalisation: each run of ill-formed UTF-8 becomes one
+// U+FFFD and a leading byte-order mark is dropped. It never fails, because a collector that
+// refused a body it could not decode would drop the observation.
 func Decode(b []byte) string {
 	if len(b) == 0 {
 		return ""
 	}
 	if !utf8.Valid(b) {
-		// Go's []rune conversion substitutes U+FFFD for each ill-formed byte, which is the
-		// specified replacement and keeps the digest deterministic.
 		return strings.ToValidUTF8(string(b), string(utf8.RuneError))
 	}
 	return strings.TrimPrefix(string(b), "\ufeff")

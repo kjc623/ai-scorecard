@@ -57,11 +57,11 @@ func crashChild(spoolDir string) int {
 	mode := os.Getenv(childEnvMode)
 	portion := os.Getenv(childEnvPortion)
 
-	kp, err := NewFileKeyProvider(keyPath, spoolDir)
+	key, err := fileKey(keyPath)
 	if err != nil {
-		return fail("key provider: %v", err)
+		return fail("key: %v", err)
 	}
-	cfg := Config{Dir: spoolDir, Keys: kp, SyncEvery: -1}
+	cfg := Config{Dir: spoolDir, Key: key, SyncEvery: -1}
 	switch mode {
 	case modeDropCommit:
 		// Five records fit; the sixth forces an eviction, whose tombstone is the frame the
@@ -280,11 +280,11 @@ func (c *crashRun) open(t *testing.T) *Spool {
 // bundle-driven data, so a restart is not required to use the same ones.
 func (c *crashRun) openWith(t *testing.T, tweak ...func(*Config)) *Spool {
 	t.Helper()
-	kp, err := NewFileKeyProvider(c.keyPath, c.spoolDir)
+	key, err := fileKey(c.keyPath)
 	if err != nil {
-		t.Fatalf("key provider: %v", err)
+		t.Fatalf("key: %v", err)
 	}
-	cfg := Config{Dir: c.spoolDir, Keys: kp, SyncEvery: -1}
+	cfg := Config{Dir: c.spoolDir, Key: key, SyncEvery: -1}
 	for _, f := range tweak {
 		f(&cfg)
 	}
@@ -530,7 +530,7 @@ func TestCrashAfterMarkInFlightReturnsRecordsToPending(t *testing.T) {
 	}
 }
 
-// Crash mid-drop (§12.2): the tombstone is the commit. The child wrote the whole tombstone
+// Crash mid-drop: the tombstone is the commit. The child wrote the whole tombstone
 // frame and was killed before applying it, so on reopen the drop must be counted — exactly
 // once, not zero times and not twice.
 func TestCrashWithTheTombstoneWrittenCountsTheDropExactlyOnce(t *testing.T) {

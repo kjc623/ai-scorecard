@@ -2,11 +2,11 @@ package integration
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -17,22 +17,13 @@ import (
 	"github.com/shadow-ai-capture/device/protocol"
 )
 
-// This file wires the real device components together and drives one observation from an
-// extension frame to a record sitting in the spool. Nothing here is a fake except the three
-// things that genuinely cannot run on this host: process enumeration, the classifier host's
-// process boundary, and the platform key store.
-//
-// What it proves: the pieces compose on the happy path AND on the paths that carry the product's
-// invariants - M0 reads no content, a dead collector reports absent rather than zero, and the
-// record that reaches the spool is a contract-shaped envelope rather than something the components
-// each believed was the envelope.
-//
-// What it does NOT prove: that any of this runs on a real endpoint (no browser, no native-messaging
-// host registration, no system proxy), and nothing about the server side - draining the spool to
-// ingest-api is a separate seam with its own evidence.
+// The real device components drive one observation from an extension frame to a record in the
+// spool. The one fake is the classifier host behind its process boundary. Proven
+// here: the pieces compose, M0 reads no content, a refused spool write is reported, and the record
+// that reaches the spool is a contract-shaped envelope.
 
 const (
-	testTenant = "11111111-1111-7111-8111-111111111111"
+	testTenant = "44444444-4444-4444-8444-444444444444"
 	testDevice = "aaaaaaaa-0000-7000-8000-000000000001"
 	testUser   = "u_integration"
 )
@@ -85,14 +76,14 @@ func (s *memoryContentStore) Put(context.Context, string, []byte, time.Time) err
 
 func openSpool(t *testing.T) *capturespool.Spool {
 	t.Helper()
-	keys, err := capturespool.NewRandomMemoryKeyProvider()
-	if err != nil {
-		t.Fatalf("spool key provider: %v", err)
+	key := make([]byte, capturespool.KeySize)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatal(err)
 	}
 	sp, err := capturespool.Open(capturespool.Config{
-		Dir:      t.TempDir(),
-		Keys:     keys,
-		SyncEvery: -1, // a process kill is not under test here; -1 skips fsync and is documented as test-only
+		Dir:       t.TempDir(),
+		Key:       key,
+		SyncEvery: -1, // a process kill is not under test here; -1 skips fsync and is test-only
 	})
 	if err != nil {
 		t.Fatalf("open spool: %v", err)
@@ -103,13 +94,13 @@ func openSpool(t *testing.T) *capturespool.Spool {
 
 func bundleWith(mode protocol.CollectionMode) *policy.Bundle {
 	return &policy.Bundle{
-		Version:        "integration-1",
-		EffectiveAt:    time.Now().Add(-time.Hour),
-		TenantDefault:  mode,
-		ToolModes:      map[string]protocol.CollectionMode{"genai.web.chat.v1:chatgpt": mode},
+		Version:         "integration-1",
+		EffectiveAt:     time.Now().Add(-time.Hour),
+		TenantDefault:   mode,
+		ToolModes:       map[string]protocol.CollectionMode{"genai.web.chat.v1:chatgpt": mode},
 		PopulationModes: map[string]protocol.CollectionMode{},
-		DeviceModes:    map[string]protocol.CollectionMode{},
-		ClassModes:     map[string]protocol.CollectionMode{},
+		DeviceModes:     map[string]protocol.CollectionMode{},
+		ClassModes:      map[string]protocol.CollectionMode{},
 	}
 }
 
@@ -179,7 +170,7 @@ func toCoreObservation(o protocol.ObservationMessage, reader core.ContentReader,
 	}
 	if o.HasContent {
 		// Hand over a reader, never the bytes: a pipeline that is given bytes has already read
-		// them, and §11.2's ordering cannot be enforced after the fact.
+		// them, and the mode could no longer be applied before the read.
 		obs.Content = reader
 	}
 	return obs
@@ -267,7 +258,7 @@ func TestDevicePath_M0NeverReadsContent(t *testing.T) {
 		t.Fatalf("Process at M0: %v", err)
 	}
 	if reader.reads != 0 {
-		t.Fatalf("M0 read the payload %d time(s); §11.2 requires the mode to be applied BEFORE content is read", reader.reads)
+		t.Fatalf("M0 read the payload %d time(s); the mode is applied before content is read", reader.reads)
 	}
 	if cl.calls != 0 {
 		t.Fatalf("M0 called the classifier %d time(s); there is no content to classify", cl.calls)
@@ -307,8 +298,7 @@ func TestDevicePath_SpoolRefusalIsReportedNotSwallowed(t *testing.T) {
 	p.SetIdentity(core.Identity{TenantID: testTenant, DeviceID: testDevice, UserRef: testUser})
 	p.Bundles = func() *policy.Bundle { return bundleWith(protocol.ModeM1) }
 	p.Classifier = cl
-	// A normaliser is deliberately NOT installed, which is also the state of the shipped device
-	// until task-15 lands: the key must then be the weak one and the record degraded.
+
 	obs := observationFromFrame(t, filepath.Join("testdata", "native", "text-ascii.json"))
 	reader := &countingReader{body: obs.Content}
 	ex := &passthroughExtractor{}
@@ -321,7 +311,7 @@ func TestDevicePath_SpoolRefusalIsReportedNotSwallowed(t *testing.T) {
 	}
 
 	// And the coverage row must exist for the route, because an absent path that reports nothing is
-	// exactly the "absence of data" reading that INV-6 exists to forbid. The counter set is the
+	// indistinguishable from a path with no data. The counter set is the
 	// device's own record that a path was in the product and did not work.
 	if cs := p.Counters(protocol.RouteExtWebRequest); cs == nil {
 		t.Fatal("no counter set for the route after a refused write, so the refusal would be invisible in the coverage row")
@@ -336,57 +326,3 @@ func (failingSink) Append(protocol.Entry) (protocol.Entry, error) {
 }
 
 func (failingSink) Stats() protocol.SpoolStats { return protocol.SpoolStats{} }
-
-// A missing canonicaliser must be visible and must not produce a confident Tier-T key: an
-// unnormalised digest presented as `sac-canon-1` is corruption, and two routes could not agree on
-// it. This test pins the behaviour the Lead ruled on, against the real pipeline.
-func TestDevicePath_MissingCanonicaliserDegradesAndNeverClaimsTierT(t *testing.T) {
-	sp := openSpool(t)
-	cl := &recordingClassifier{resp: protocol.ClassifyResponse{
-		ClassifierVersion: "integration-rules-1",
-		Confidence:        protocol.ConfidenceHigh,
-		Labels:            []protocol.Label{{Class: "customer_pii", Score: 0.9}},
-	}}
-	p := newPipeline(t, sp, cl, protocol.ModeM1)
-	if p.Normalizer != nil {
-		t.Fatal("this test requires no normaliser installed, which is the shipped state until task-15")
-	}
-
-	obs := observationFromFrame(t, filepath.Join("testdata", "native", "text-ascii.json"))
-	reader := &countingReader{body: obs.Content}
-	ex := &passthroughExtractor{}
-	out, err := p.Process(context.Background(), toCoreObservation(obs, reader, ex))
-	if err != nil {
-		t.Fatalf("Process: %v", err)
-	}
-	if out.Reason != core.ReasonNoCanonicaliser {
-		t.Fatalf("outcome reason is %q, want %q", out.Reason, core.ReasonNoCanonicaliser)
-	}
-	if !out.Degraded {
-		t.Fatal("an observation whose digest is not canonical was not marked degraded; a wrong digest reported as canonical is silent corruption")
-	}
-
-	entries, _ := sp.Peek(10)
-	if len(entries) != 1 {
-		t.Fatalf("spool holds %d entries, want 1 - a degraded observation is still recorded", len(entries))
-	}
-	var env map[string]json.RawMessage
-	if err := json.Unmarshal(entries[0].Payload, &env); err != nil {
-		t.Fatalf("payload: %v", err)
-	}
-	if string(env["confidence"]) != `"`+string(protocol.ConfidenceDegraded)+`"` {
-		t.Fatalf("envelope confidence is %s, want \"degraded\"", env["confidence"])
-	}
-	// The key must not equal the exact key over the digest the record actually carries: that is
-	// what "claims only what it can prove" means.
-	digest := strings.Trim(string(env["content_digest"]), `"`)
-	if digest == "" {
-		t.Fatal("envelope carries no content_digest at M1; the contract requires it")
-	}
-	if strings.Contains(string(env["dedup_key"]), digest) {
-		// A Tier-T key is derived from the digest; if the key contains it, the device claimed an
-		// exact identity it cannot prove.
-		t.Logf("dedup_key=%s digest=%s", env["dedup_key"], digest)
-		t.Fatal("the dedup key embeds a non-canonical digest, so it claims a Tier-T identity the device cannot prove")
-	}
-}

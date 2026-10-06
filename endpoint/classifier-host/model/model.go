@@ -1,30 +1,13 @@
-// Package model is the fuzzy-class stage of docs/01-collectors.md §9.2: "The model runs on what
-// the rules did not resolve, for the fuzzy classes brief §6 lists" (customer_pii, source_code,
-// legal, health).
+// Package model is the classifier's keyword scorer: for each class, a sparse linear model over
+// token and phrase counts. It runs after the rules and scores only the classes the rules did not
+// already label, which is where vocabulary rather than a single pattern is the evidence.
 //
-// Two properties matter more here than modelling quality, and both are structural:
-//
-//   - **Determinism across the two targets.** §9.1 requires one source to produce byte-identical
-//     labels natively and in the wasm copy. A model that computes in float64 through a
-//     transcendental (a sigmoid, an exponential) is at the mercy of the platform's libm: amd64
-//     has assembly implementations that wasm does not, and the last-ulp difference can move a
-//     score across a threshold. Scoring here is therefore **fixed-point integer arithmetic**
-//     (int64 sums over integer weights) converted to float64 once by exact division, so the two
-//     targets agree bit for bit by construction rather than by testing.
-//   - **The artefact is signed data, verified before use.** A missing, unloadable or unverified
-//     artefact is §9.7's "model artefact was missing, unloadable or failed to verify" — degraded,
-//     never a confident label and never silently "no rules".
-//
-// The artefact is a sparse linear scorer over token counts. That is deliberately modest: §9.2
-// puts the rules and validators first, the model is the backstop for classes no rule resolves,
-// and a heavier artefact would be a heavier thing to sign, verify and load on the interactive
-// path.
+// Scores are integer sums divided once by the artefact's scale, so the same text always produces
+// the same score on every platform.
 package model
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,91 +17,55 @@ import (
 	"strings"
 )
 
-// Caps bound the artefact at load time, the same way §9.5 bounds the rules.
-type Caps struct {
-	MaxArtefactBytes int
-	MaxClasses       int
-	MaxFeatures      int
-	MaxTokenBytes    int
-	MaxVersionBytes  int
-	MaxTokens        int // tokens read from the classified text, per call
-	MaxCount         int // per-feature count saturation
-}
+// Limits an artefact must stay within.
+const (
+	MaxArtefactBytes = 1 << 20
+	MaxClasses       = 32
+	MaxFeatures      = 4096
+	MaxTokenBytes    = 64
+	MaxVersionBytes  = 64
+	maxTextTokens    = 20000
+	defaultMaxCount  = 4
+)
 
-// DefaultCaps is the shipped bound.
-func DefaultCaps() Caps {
-	return Caps{
-		MaxArtefactBytes: 1 << 20,
-		MaxClasses:       32,
-		MaxFeatures:      4096,
-		MaxTokenBytes:    64,
-		MaxVersionBytes:  64,
-		MaxTokens:        20000,
-		MaxCount:         4,
-	}
-}
-
-// ErrUnavailable is returned when no artefact was supplied: the model stage is skipped and the
-// response is degraded (§9.7).
-var ErrUnavailable = errors.New("model: no model artefact is loaded")
-
-// ErrVerify is returned when the artefact does not match its signed digest.
-var ErrVerify = errors.New("model: artefact does not match its signed digest")
-
-// ErrRejected wraps a load-time rejection of the artefact's contents.
-var ErrRejected = errors.New("model: artefact rejected")
-
-// Feature is one literal token or space-separated phrase with an integer weight.
+// Feature is a lowercase token, or a space-separated phrase, with an integer weight.
 type Feature struct {
 	Token  string `json:"token"`
 	Weight int64  `json:"weight"`
-	// MaxCount saturates the count, so a token repeated a thousand times cannot dominate.
-	// Zero means the artefact's default.
+	// MaxCount caps how many occurrences count, so one repeated word cannot dominate. Zero means
+	// four.
 	MaxCount int `json:"max_count,omitempty"`
 }
 
-// ClassModel is one fuzzy class.
-type ClassModel struct {
+// Class is one scored class. A class is reported when its clamped sum reaches Threshold.
+type Class struct {
 	Class     string    `json:"class"`
 	Threshold int64     `json:"threshold"`
-	Bias      int64     `json:"bias"`
+	Bias      int64     `json:"bias,omitempty"`
 	Features  []Feature `json:"features"`
 }
 
-// Artefact is the signed model document.
+// Artefact is the model file.
 type Artefact struct {
-	Version string       `json:"version"`
-	Scale   int64        `json:"scale"`
-	Classes []ClassModel `json:"classes"`
+	Version string  `json:"version"`
+	Scale   int64   `json:"scale"`
+	Classes []Class `json:"classes"`
 }
 
-// Model is a loaded, validated artefact.
+// Model is a validated artefact, safe for concurrent use.
 type Model struct {
-	artefact Artefact
-	caps     Caps
+	a Artefact
 }
 
-// Load verifies the artefact against its signed digest and validates it whole. wantDigest is
-// "sha256:<hex>"; an empty digest is a caller defect and is refused, because §9.7 makes
-// "failed to verify" a degraded case and a caller that skips verification would turn it into a
-// silent success.
-func Load(raw []byte, wantDigest string, caps Caps) (*Model, error) {
-	if caps.MaxClasses == 0 {
-		caps = DefaultCaps()
-	}
-	if wantDigest == "" {
-		return nil, fmt.Errorf("%w: no digest to verify against", ErrVerify)
-	}
-	sum := sha256.Sum256(raw)
-	got := "sha256:" + hex.EncodeToString(sum[:])
-	// Exact comparison, like the release loader's verifyDigest: `sha256:<64 lowercase hex>` has one
-	// spelling, and accepting an uppercase one here would admit an artefact the release's own digest
-	// check (and the database columns that carry digests) would refuse.
-	if got != wantDigest {
-		return nil, fmt.Errorf("%w: artefact is %s, manifest declares %s (a digest has one spelling: sha256:<64 lowercase hex>)", ErrVerify, got, wantDigest)
-	}
-	if len(raw) > caps.MaxArtefactBytes {
-		return nil, fmt.Errorf("%w: artefact is %d bytes, over the %d-byte cap", ErrRejected, len(raw), caps.MaxArtefactBytes)
+// ErrRejected wraps every rejection of an artefact's contents.
+var ErrRejected = errors.New("model: artefact rejected")
+
+var classPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
+// Parse validates an artefact as a whole.
+func Parse(raw []byte) (*Model, error) {
+	if len(raw) > MaxArtefactBytes {
+		return nil, fmt.Errorf("%w: %d bytes, over the %d-byte limit", ErrRejected, len(raw), MaxArtefactBytes)
 	}
 	var a Artefact
 	dec := json.NewDecoder(bytes.NewReader(raw))
@@ -129,28 +76,25 @@ func Load(raw []byte, wantDigest string, caps Caps) (*Model, error) {
 	if err := dec.Decode(new(json.RawMessage)); err != io.EOF {
 		return nil, fmt.Errorf("%w: trailing content after the first JSON value", ErrRejected)
 	}
-	if a.Version == "" || len(a.Version) > caps.MaxVersionBytes {
-		return nil, fmt.Errorf("%w: version is empty or over %d bytes", ErrRejected, caps.MaxVersionBytes)
+	if a.Version == "" || len(a.Version) > MaxVersionBytes {
+		return nil, fmt.Errorf("%w: version is empty or over %d bytes", ErrRejected, MaxVersionBytes)
 	}
 	if a.Scale <= 0 || a.Scale > 1<<40 {
 		return nil, fmt.Errorf("%w: scale %d is outside 1..2^40", ErrRejected, a.Scale)
 	}
-	if len(a.Classes) == 0 || len(a.Classes) > caps.MaxClasses {
-		return nil, fmt.Errorf("%w: %d classes, outside 1..%d", ErrRejected, len(a.Classes), caps.MaxClasses)
+	if len(a.Classes) == 0 || len(a.Classes) > MaxClasses {
+		return nil, fmt.Errorf("%w: %d classes, outside 1..%d", ErrRejected, len(a.Classes), MaxClasses)
 	}
 	seen := map[string]bool{}
 	features := 0
 	for i := range a.Classes {
 		c := &a.Classes[i]
-		if !classPattern.MatchString(c.Class) {
-			return nil, fmt.Errorf("%w: class %q does not match %s", ErrRejected, c.Class, classPattern)
-		}
-		if seen[c.Class] {
-			return nil, fmt.Errorf("%w: class %q declared twice", ErrRejected, c.Class)
+		if !classPattern.MatchString(c.Class) || seen[c.Class] {
+			return nil, fmt.Errorf("%w: class %q is malformed or declared twice", ErrRejected, c.Class)
 		}
 		seen[c.Class] = true
 		if c.Threshold < 0 || c.Threshold > a.Scale {
-			return nil, fmt.Errorf("%w: class %q threshold %d outside 0..scale", ErrRejected, c.Class, c.Threshold)
+			return nil, fmt.Errorf("%w: class %q threshold %d is outside 0..scale", ErrRejected, c.Class, c.Threshold)
 		}
 		if len(c.Features) == 0 {
 			return nil, fmt.Errorf("%w: class %q has no features", ErrRejected, c.Class)
@@ -158,67 +102,48 @@ func Load(raw []byte, wantDigest string, caps Caps) (*Model, error) {
 		features += len(c.Features)
 		for j := range c.Features {
 			f := &c.Features[j]
-			if f.Token == "" || len(f.Token) > caps.MaxTokenBytes {
-				return nil, fmt.Errorf("%w: class %q feature %d token is empty or over %d bytes", ErrRejected, c.Class, j, caps.MaxTokenBytes)
-			}
-			if f.Weight == 0 {
-				return nil, fmt.Errorf("%w: class %q feature %q has zero weight", ErrRejected, c.Class, f.Token)
-			}
-			if f.Weight > a.Scale || f.Weight < -a.Scale {
-				return nil, fmt.Errorf("%w: class %q feature %q weight %d exceeds scale", ErrRejected, c.Class, f.Token, f.Weight)
-			}
-			if f.MaxCount < 0 || f.MaxCount > 1024 {
-				return nil, fmt.Errorf("%w: class %q feature %q max_count %d out of range", ErrRejected, c.Class, f.Token, f.MaxCount)
+			switch {
+			case f.Token == "" || len(f.Token) > MaxTokenBytes:
+				return nil, fmt.Errorf("%w: class %q feature %d token is empty or over %d bytes", ErrRejected, c.Class, j, MaxTokenBytes)
+			case f.Weight == 0 || f.Weight > a.Scale || f.Weight < -a.Scale:
+				return nil, fmt.Errorf("%w: class %q feature %q weight %d is zero or exceeds the scale", ErrRejected, c.Class, f.Token, f.Weight)
+			case f.MaxCount < 0 || f.MaxCount > 1024:
+				return nil, fmt.Errorf("%w: class %q feature %q max_count %d is outside 0..1024", ErrRejected, c.Class, f.Token, f.MaxCount)
 			}
 			if f.MaxCount == 0 {
-				f.MaxCount = caps.MaxCount
+				f.MaxCount = defaultMaxCount
 			}
 			f.Token = strings.ToLower(f.Token)
 		}
 	}
-	if features > caps.MaxFeatures {
-		return nil, fmt.Errorf("%w: %d features, over the %d cap", ErrRejected, features, caps.MaxFeatures)
+	if features > MaxFeatures {
+		return nil, fmt.Errorf("%w: %d features, over the %d limit", ErrRejected, features, MaxFeatures)
 	}
-	return &Model{artefact: a, caps: caps}, nil
+	return &Model{a: a}, nil
 }
 
-var classPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+// Version is the artefact's version.
+func (m *Model) Version() string { return m.a.Version }
 
-// Version is the artefact version, which the classifier release folds into classifier_version.
-func (m *Model) Version() string { return m.artefact.Version }
-
-// Classes lists the artefact's classes in declaration order.
-func (m *Model) Classes() []string {
-	out := make([]string, 0, len(m.artefact.Classes))
-	for _, c := range m.artefact.Classes {
-		out = append(out, c.Class)
-	}
-	return out
-}
-
-// Prediction is one class's score.
+// Prediction is one class's score: Fixed divided by the artefact's scale.
 type Prediction struct {
-	Class     string
-	Score     float64 // Fixed / Scale, by exact integer division
-	Fixed     int64
-	Threshold float64
+	Class string
+	Score float64
+	Fixed int64
 }
 
-// Score runs the model. skip names classes the rules already resolved: §9.2 says the model runs
-// on what the rules did not resolve, so a class with a defensible rules verdict is not
-// second-guessed by a fuzzy score.
-//
-// Deadline is checked between classes, so a model that is slow degrades the model stage rather
-// than the submission (§9.4).
-func (m *Model) Score(text string, skip map[string]bool, deadlineExpired func() bool) []Prediction {
-	tokens := tokenise(text, m.caps.MaxTokens)
+// Score returns the classes whose score reaches their threshold, highest first, skipping the
+// classes in skip. expired is checked between classes; when it reports true, scoring stops and
+// the classes scored so far are returned.
+func (m *Model) Score(text string, skip map[string]bool, expired func() bool) []Prediction {
+	tokens := tokenise(text)
 	counts := map[string]int{}
 	for _, t := range tokens {
 		counts[t]++
 	}
-	out := make([]Prediction, 0, len(m.artefact.Classes))
-	for _, c := range m.artefact.Classes {
-		if deadlineExpired != nil && deadlineExpired() {
+	var out []Prediction
+	for _, c := range m.a.Classes {
+		if expired() {
 			break
 		}
 		if skip[c.Class] {
@@ -226,27 +151,13 @@ func (m *Model) Score(text string, skip map[string]bool, deadlineExpired func() 
 		}
 		sum := c.Bias
 		for _, f := range c.Features {
-			n := countFeature(f, tokens, counts)
-			if n > f.MaxCount {
-				n = f.MaxCount
-			}
-			sum += f.Weight * int64(n)
+			sum += f.Weight * int64(min(countFeature(f, tokens, counts), f.MaxCount))
 		}
-		if sum < 0 {
-			sum = 0
-		}
-		if sum > m.artefact.Scale {
-			sum = m.artefact.Scale
-		}
+		sum = max(0, min(sum, m.a.Scale))
 		if sum < c.Threshold {
 			continue
 		}
-		out = append(out, Prediction{
-			Class:     c.Class,
-			Score:     float64(sum) / float64(m.artefact.Scale),
-			Fixed:     sum,
-			Threshold: float64(c.Threshold) / float64(m.artefact.Scale),
-		})
+		out = append(out, Prediction{Class: c.Class, Score: float64(sum) / float64(m.a.Scale), Fixed: sum})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Fixed != out[j].Fixed {
@@ -257,62 +168,48 @@ func (m *Model) Score(text string, skip map[string]bool, deadlineExpired func() 
 	return out
 }
 
-// countFeature counts a feature's occurrences. A single-token feature is a map lookup; a phrase
-// is matched over the token stream driven by the first word, so the cost is bounded by the
-// token count rather than by a re-scan of the raw text.
+// countFeature counts a feature's occurrences: a map lookup for a token, a walk over the token
+// stream for a phrase.
 func countFeature(f Feature, tokens []string, counts map[string]int) int {
-	if !strings.Contains(f.Token, " ") {
+	parts := strings.Split(f.Token, " ")
+	if len(parts) == 1 {
 		return counts[f.Token]
 	}
-	parts := strings.Split(f.Token, " ")
 	n := 0
-	for i := 0; i+len(parts) <= len(tokens); i++ {
-		if tokens[i] != parts[0] {
-			continue
-		}
-		ok := true
-		for j := 1; j < len(parts); j++ {
-			if tokens[i+j] != parts[j] {
-				ok = false
+	for i := 0; i+len(parts) <= len(tokens) && n < f.MaxCount; i++ {
+		match := true
+		for j, p := range parts {
+			if tokens[i+j] != p {
+				match = false
 				break
 			}
 		}
-		if ok {
+		if match {
 			n++
 			i += len(parts) - 1
-			if n >= f.MaxCount {
-				return n
-			}
 		}
 	}
 	return n
 }
 
-// tokenise lowercases and splits on anything that is not a letter, digit, underscore or
-// hyphen. The result is capped: the model is a fuzzy backstop, and reading a megabyte of
-// attacker text into it is not the point of the stage.
-func tokenise(s string, max int) []string {
+// tokenise lowercases text and splits it on anything other than an ASCII letter, digit,
+// underscore or hyphen, reading at most maxTextTokens tokens.
+func tokenise(s string) []string {
 	out := make([]string, 0, 256)
 	start := -1
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		word := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-'
-		if word {
-			if start < 0 {
-				start = i
-			}
-			continue
-		}
-		if start >= 0 {
+	for i := 0; i <= len(s); i++ {
+		word := i < len(s) && (s[i] >= 'a' && s[i] <= 'z' || s[i] >= 'A' && s[i] <= 'Z' ||
+			s[i] >= '0' && s[i] <= '9' || s[i] == '_' || s[i] == '-')
+		switch {
+		case word && start < 0:
+			start = i
+		case !word && start >= 0:
 			out = append(out, strings.ToLower(s[start:i]))
 			start = -1
-			if len(out) >= max {
+			if len(out) >= maxTextTokens {
 				return out
 			}
 		}
-	}
-	if start >= 0 {
-		out = append(out, strings.ToLower(s[start:]))
 	}
 	return out
 }

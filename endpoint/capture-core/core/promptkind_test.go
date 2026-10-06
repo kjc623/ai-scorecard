@@ -10,7 +10,7 @@ import (
 	"github.com/shadow-ai-capture/device/protocol"
 )
 
-// The decision is a shape judgement over the payload and C1's output, so the table pins both the
+// The decision is a shape judgement over the payload and the extracted text, so the table pins both the
 // client patterns and the default: an unmatched prompt is a person's, never the client's.
 func TestDecidePromptKind(t *testing.T) {
 	titling := "<session>\nWhat is the capital of Australia\n</session>\n\n" +
@@ -95,9 +95,8 @@ func TestPipelineMarksATitlingRequestClientGeneratedAndDoesNotClassify(t *testin
 	}
 }
 
-// The capital-of-Australia defect: the body carried a system prompt and tool definitions, and the
-// classifier ran over all of it, so a plain question came back labelled source_code. The device
-// now hands the classifier only the text C1 identified as authored.
+// A body that carries a system prompt and tool definitions must not label a plain question
+// source_code: the classifier is handed only the text extraction identified as authored.
 func TestPipelineClassifiesTheAuthoredTextNotTheWholeBody(t *testing.T) {
 	sink := &recordingSink{}
 	p := newTestPipeline(t, sink, m1Bundle())

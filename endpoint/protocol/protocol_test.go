@@ -10,10 +10,6 @@ import (
 	"time"
 )
 
-// These tests are the executable form of the seams: they are what the integration verifier
-// re-runs. Every test asserts a property one of the documents states, and the test names carry
-// the document reference so a failure points at the paragraph that is now false.
-
 func TestFrameRoundTrip(t *testing.T) {
 	var buf bytes.Buffer
 	payload := []byte(`{"hello":"classifier"}`)
@@ -29,7 +25,7 @@ func TestFrameRoundTrip(t *testing.T) {
 	}
 }
 
-// §3.4: a version handshake on connect; a mismatch is `degraded`, never a crash and never a
+// A version handshake on connect; a mismatch is `degraded`, never a crash and never a
 // misparse of the stream.
 func TestFrameVersionMismatchIsDetectable(t *testing.T) {
 	var buf bytes.Buffer
@@ -74,7 +70,7 @@ func TestFrameTruncatedPayloadIsAnError(t *testing.T) {
 	}
 }
 
-// §7.1/§11.2: at M0 the device is not permitted to read content. A frame that carries content
+// At M0 the device is not permitted to read content. A frame that carries content
 // while claiming it has none is a defect and is refused at the door.
 func TestObservationContradictionIsRefused(t *testing.T) {
 	o := ObservationMessage{
@@ -100,7 +96,7 @@ func TestObservationRouteMustBeAnExtensionRoute(t *testing.T) {
 	}
 }
 
-// §3.4: the manifest lets capture-core refuse an oversized upload before any byte moves.
+// The manifest lets capture-core refuse an oversized upload before any byte moves.
 func TestAttachmentOverCapIsRefusedAtTheManifest(t *testing.T) {
 	o := ObservationMessage{
 		ClientID:        "c2",
@@ -116,7 +112,7 @@ func TestAttachmentOverCapIsRefusedAtTheManifest(t *testing.T) {
 	}
 }
 
-// §3.2: `blocked`, `warned` and `logged` are never merged, and a value outside the set is not
+// `blocked`, `warned` and `logged` are never merged, and a value outside the set is not
 // silently recorded as one of them.
 func TestDecisionActionIsClosed(t *testing.T) {
 	o := ObservationMessage{
@@ -134,7 +130,7 @@ func TestDecisionActionIsClosed(t *testing.T) {
 	}
 }
 
-// §4.3: health carries the closed counter set and a closed state set. An invented counter name
+// Health carries the closed counter set and a closed state set. An invented counter name
 // would create a coverage path the reporting layer cannot group.
 func TestHealthReportCountersAreClosed(t *testing.T) {
 	h := NewHealthReport("d1", "proxy.tls", "1.0.0", time.Now())
@@ -157,7 +153,7 @@ func TestHealthReportCountersAreClosed(t *testing.T) {
 	}
 }
 
-// §3.3: the classifier must be structurally unable to see identity. If someone adds an identity
+// The classifier must be structurally unable to see identity. If someone adds an identity
 // field to ClassifyRequest, this test fails before the code can ship.
 func TestClassifyRequestCarriesNoIdentity(t *testing.T) {
 	b, err := json.Marshal(ClassifyRequest{Mode: ModeM1, Content: []byte("x")})
@@ -170,12 +166,12 @@ func TestClassifyRequestCarriesNoIdentity(t *testing.T) {
 	}
 	for _, forbidden := range IdentityFieldNames {
 		if _, present := m[forbidden]; present {
-			t.Fatalf("ClassifyRequest carries identity field %q (docs/01-collectors.md §3.3)", forbidden)
+			t.Fatalf("ClassifyRequest carries identity field %q", forbidden)
 		}
 	}
 }
 
-// §11.2: the mode is applied before content is read, and the classifier is the second gate.
+// The mode is applied before content is read, and the classifier is the second gate.
 func TestClassifyRequestRefusesContentAtM0(t *testing.T) {
 	q := ClassifyRequest{Mode: ModeM0, Content: []byte("prompt text")}
 	if err := q.Validate(); err == nil {
@@ -191,9 +187,9 @@ func TestClassifyRequestRefusesContentAtM0(t *testing.T) {
 	}
 }
 
-// §9.7: `degraded` means classification was attempted and did not complete. §9.2 and §9.7's
-// "not emitted when" column also fix the other half: an empty label set with `confidence: high`
-// is a *legitimate* output meaning the classifier ran and found nothing, so it must validate.
+// degraded means classification was attempted and did not complete. The other half: an empty
+// label set with confidence high is a legitimate output meaning the classifier ran and found
+// nothing, so it must validate.
 func TestClassifyResponseConfidenceSemantics(t *testing.T) {
 	ok := ClassifyResponse{
 		ClassifierVersion: "c-1",
@@ -212,7 +208,7 @@ func TestClassifyResponseConfidenceSemantics(t *testing.T) {
 	// found nothing, which is a fact about the data, not a failure.
 	empty := ClassifyResponse{ClassifierVersion: "c-1", Confidence: ConfidenceHigh}
 	if err := empty.Validate(); err != nil {
-		t.Fatalf("an empty label set with confidence high was refused: %v (docs/01-collectors.md §9.2)", err)
+		t.Fatalf("an empty label set with confidence high was refused: %v", err)
 	}
 	badScore := ok
 	badScore.Labels = []Label{{Class: "x", Score: 1.5}}
@@ -288,7 +284,7 @@ func TestClassifyRequestBudgetIsMillisecondsOnTheWire(t *testing.T) {
 	}
 }
 
-// The detail vocabulary is closed and every value the documents name must be in it, or a
+// The detail vocabulary is closed and every cause a component reports must be in it, or a
 // coverage report cannot group by cause.
 func TestDetailVocabularyIsClosed(t *testing.T) {
 	required := []Detail{
@@ -297,14 +293,14 @@ func TestDetailVocabularyIsClosed(t *testing.T) {
 		DetailUndecodableContent, DetailReleaseLoadFailed, DetailModeViolation,
 		DetailBudgetExhausted, DetailHostUnreachable, DetailContentUnprocessable,
 		DetailParserFailed, DetailPortHeldByOther, DetailKilled, DetailVersionMismatch,
-		// §13.3 rule 4: the four causes behind the `tampered` state a policy-verification
+		// The four causes behind the `tampered` state a policy-verification
 		// failure produces. A closed vocabulary that cannot name them cannot report them.
 		DetailBundleSignatureInvalid, DetailBundleSchemaInvalid,
 		DetailBundleVersionRegression, DetailBundleArtefactMissing,
 	}
 	for _, d := range required {
 		if !d.Valid() {
-			t.Fatalf("detail %q is named in the documents but missing from the closed vocabulary", d)
+			t.Fatalf("detail %q is reported by a component but missing from the closed vocabulary", d)
 		}
 	}
 	if Detail("parser_oom").Valid() {
@@ -368,7 +364,7 @@ func TestAttachmentDescriptorUsesContractFieldNames(t *testing.T) {
 	}
 }
 
-// §5.3: a batch that parses always yields per-event outcomes, and a truncated or padded body is
+// A batch that parses always yields per-event outcomes, and a truncated or padded body is
 // caught by the redundant event_count.
 func TestEventBatchEnvelopeRules(t *testing.T) {
 	good := EventBatch{SchemaVersion: "1.0", BatchID: "b1", EventCount: 1, Events: []json.RawMessage{json.RawMessage(`{}`)}}
@@ -393,14 +389,11 @@ func TestEventBatchEnvelopeRules(t *testing.T) {
 	}
 }
 
-// §7: the reason codes are a closed set and only `duplicate_batch` is retryable.
-func TestReasonCodesAreClosedAndRetryability(t *testing.T) {
+// The reason codes are a closed set.
+func TestReasonCodesAreClosed(t *testing.T) {
 	for _, c := range AllReasonCodes {
 		if !c.Valid() {
 			t.Fatalf("%q is in AllReasonCodes but not Valid", c)
-		}
-		if c.Retryable() != (c == ReasonDuplicateBatch) {
-			t.Fatalf("retryability of %q is wrong: every code is terminal for the event except duplicate_batch", c)
 		}
 	}
 	if ReasonCode("content_leak").Valid() {
@@ -450,30 +443,28 @@ func TestEventBatchResponseValidation(t *testing.T) {
 	}
 }
 
-// §8: the outcome-to-spool mapping lives in exactly one place, and a retryable rejection must
-// stay pending rather than being dropped or settled as rejected.
+// The outcome-to-spool mapping lives in exactly one place: delivered and rejected are terminal,
+// and an outcome outside the closed set leaves the record pending.
 func TestOutcomeSettlesSpoolCorrectly(t *testing.T) {
 	cases := []struct {
 		outcome Outcome
-		reason  ReasonCode
 		want    SpoolState
 		settled bool
 	}{
-		{OutcomeAccepted, "", SpoolDelivered, true},
-		{OutcomeDuplicate, "", SpoolDelivered, true},
-		{OutcomeRejected, ReasonModeViolation, SpoolRejected, true},
-		{OutcomeRejected, ReasonDuplicateBatch, SpoolPending, false},
-		{Outcome("nonsense"), "", SpoolPending, false},
+		{OutcomeAccepted, SpoolDelivered, true},
+		{OutcomeDuplicate, SpoolDelivered, true},
+		{OutcomeRejected, SpoolRejected, true},
+		{Outcome("nonsense"), SpoolPending, false},
 	}
 	for _, c := range cases {
-		got, settled := c.outcome.SettleState(c.reason)
+		got, settled := c.outcome.SettleState()
 		if got != c.want || settled != c.settled {
-			t.Fatalf("SettleState(%q, %q) = (%q, %v), want (%q, %v)", c.outcome, c.reason, got, settled, c.want, c.settled)
+			t.Fatalf("SettleState(%q) = (%q, %v), want (%q, %v)", c.outcome, got, settled, c.want, c.settled)
 		}
 	}
 }
 
-// §12: a spool entry that cannot be delivered, or whose kind is outside the closed registry, is
+// A spool entry that cannot be delivered, or whose kind is outside the closed registry, is
 // refused at the door rather than stored and retried forever.
 func TestSpoolEntryValidation(t *testing.T) {
 	good := Entry{
@@ -491,7 +482,7 @@ func TestSpoolEntryValidation(t *testing.T) {
 	badKind := good
 	badKind.Kind = Kind("process_exec")
 	if err := badKind.Validate(); err == nil {
-		t.Fatal("an entry whose kind is outside the closed registry was accepted; R7 depends on this being impossible")
+		t.Fatal("an entry whose kind is outside the closed registry was accepted")
 	}
 	noDedup := good
 	noDedup.DedupKey = ""
@@ -510,7 +501,7 @@ func TestSpoolEntryValidation(t *testing.T) {
 	}
 }
 
-// §11.2: ReadsContent is the gate every content path consults. A default here would be a silent
+// ReadsContent is the gate every content path consults. A default here would be a silent
 // mode widening, so an unknown mode must not read.
 func TestModeReadsContent(t *testing.T) {
 	if ModeM0.ReadsContent() {

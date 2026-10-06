@@ -20,7 +20,7 @@ import (
 const (
 	// DefaultSegmentBytes is the roll size of one segment file. It is small enough that
 	// reclamation frees space in useful units and large enough that a day of observations
-	// (an order of 10 KB, §12) never rolls a segment.
+	// (an order of 10 KB) never rolls a segment.
 	DefaultSegmentBytes = 1 << 20
 
 	segmentsDirName        = "segments"
@@ -31,14 +31,13 @@ const (
 	tombstoneEstimate      = 128
 )
 
-// DefaultBounds is ASSUMPTION A16: ~25 MB or ~25,000 rows, whichever comes first, tuned per
-// tenant by the bundle's "spool bounds" field. Two to three orders of magnitude above
-// expected single-day volume, so an ordinary outage never approaches it.
+// DefaultBounds is ~25 MB or ~25,000 rows, whichever comes first: two to three orders of
+// magnitude above expected single-day volume, so an ordinary outage never approaches it.
 func DefaultBounds() Bounds {
 	return Bounds{MaxBytes: 25 << 20, MaxEntries: 25000}
 }
 
-// Bounds is the spool bound. Both are enforced on write (§12), and either may be zero to
+// Bounds is the spool bound. Both are enforced on write, and either may be zero to
 // mean "no bound of this kind".
 type Bounds struct {
 	MaxBytes   int64 // on-disk bytes retained by the spool
@@ -53,21 +52,21 @@ const (
 	// CorruptFail (default) refuses to open. Tampering is loud.
 	CorruptFail CorruptPolicy = iota
 	// CorruptQuarantine renames the damaged file aside, continues with what is readable,
-	// and reports the loss in Recovery. It is for the operational path: §12.2 requires the
-	// device to report an unreadable spool as data loss with a count, not to stop
-	// collecting, and not to start clean silently.
+	// and reports the loss in Recovery. It is for the operational path: an unreadable spool is
+	// reported as data loss with a count, without stopping collection and without starting
+	// clean silently.
 	CorruptQuarantine
 )
 
 // Config configures a spool.
 type Config struct {
 	// Dir is the spool directory. It is owned by the spool: the spool is the single writer
-	// of every file in it (§3.4).
+	// of every file in it.
 	Dir string
 
-	// Keys supplies the spool key. Required: the spool never generates a key inside its
-	// own directory, because a key beside its ciphertext is not encryption at rest (§12).
-	Keys KeyProvider
+	// Key is the 32-byte AES-256 spool key. The caller keeps it outside the spool directory:
+	// a key beside its ciphertext is not encryption at rest.
+	Key []byte
 
 	// Bounds defaults to DefaultBounds when both fields are zero.
 	Bounds Bounds
@@ -90,8 +89,8 @@ type Config struct {
 
 // Recovery reports what Open had to do to make the log readable: what it truncated, what it
 // quarantined, and how many in-flight records went back to pending. It is data-loss
-// reporting, and it is deliberately explicit — §12.2 requires an unreadable spool to be
-// visible with a count, never silent.
+// reporting, and it is deliberately explicit: an unreadable spool is visible with a count,
+// never silent.
 type Recovery struct {
 	// TornBytes is how many bytes of an incomplete trailing frame were discarded. A torn
 	// frame was never a record, so this is not data loss; it is the write that was killed.
@@ -130,10 +129,6 @@ type Recovery struct {
 type Spool struct {
 	cfg  Config
 	aead cipher.AEAD
-
-	// keySealed is what the KeyProvider reported about its own protection. It is surfaced
-	// as SpoolStats.EncryptionKeySealed rather than assumed true.
-	keySealed bool
 
 	lock       *writerLock
 	segsDir    string
@@ -176,13 +171,13 @@ var _ protocol.Store = (*Spool)(nil)
 //
 // Recovery reads every frame in order, discards an incomplete trailing frame, and returns
 // every record a previous process left in flight to pending. It never rewrites a record and
-// never repairs a frame: recovery is replay and truncation, exactly as §12.2's table says.
+// never repairs a frame: recovery is replay and truncation.
 func Open(cfg Config) (*Spool, error) {
 	if cfg.Dir == "" {
 		return nil, errors.New("spool: Config.Dir is required")
 	}
-	if cfg.Keys == nil {
-		return nil, errors.New("spool: Config.Keys is required; the spool will not generate a key inside its own directory")
+	if len(cfg.Key) != KeySize {
+		return nil, fmt.Errorf("spool: Config.Key must be %d bytes, got %d", KeySize, len(cfg.Key))
 	}
 	if cfg.Bounds.MaxBytes == 0 && cfg.Bounds.MaxEntries == 0 {
 		cfg.Bounds = DefaultBounds()
@@ -216,20 +211,12 @@ func Open(cfg Config) (*Spool, error) {
 	}
 	s.lock = lock
 
-	// One encryption key (§3.4). Failure to obtain it is fatal: an unreadable spool is
-	// recreated and reported, never silently started empty (§12.2).
-	key, err := cfg.Keys.Key()
-	if err != nil {
-		s.lock.release()
-		return nil, fmt.Errorf("spool: obtaining the spool key: %w", err)
-	}
-	aead, err := newAEAD(key)
+	aead, err := newAEAD(cfg.Key)
 	if err != nil {
 		s.lock.release()
 		return nil, err
 	}
 	s.aead = aead
-	s.keySealed = cfg.Keys.Sealed()
 
 	counters, err := loadCounters(s.countersIn, aead)
 	if err != nil {
@@ -902,14 +889,14 @@ func (s *Spool) Append(e protocol.Entry) (protocol.Entry, error) {
 	return e, nil
 }
 
-// enforceBoundLocked is the one place the bound is enforced (§3.4). It selects the oldest
+// enforceBoundLocked is the one place the bound is enforced. It selects the oldest
 // pending observations, then writes their tombstones, then applies them: a drop that is not
 // durable must not be counted, and a record that is not durably dropped must stay pending.
 //
 // It never evicts an in-flight or already-delivered record. If the bound cannot be met by
 // evicting pending records — for instance while a batch is in flight and pins the oldest
 // segments — the observation is still accepted and the overage is counted, because the
-// device must not stop observing because it cannot store (§12.2).
+// device must not stop observing because it cannot store.
 func (s *Spool) enforceBoundLocked(incoming int64) {
 	bounds := s.cfg.Bounds
 	if bounds.MaxEntries <= 0 && bounds.MaxBytes <= 0 {
@@ -945,7 +932,7 @@ func (s *Spool) enforceBoundLocked(incoming int64) {
 	}
 	// Still over after evicting everything evictable — because the rest is in flight or
 	// already terminal — is a fact the health report must see, not a reason to discard the
-	// new observation (§12.2).
+	// new observation.
 	if bounds.MaxEntries > 0 && s.pending+s.inFlight+1 > bounds.MaxEntries {
 		s.overBound++
 	} else if bounds.MaxBytes > 0 && s.diskBytes+incoming > bounds.MaxBytes {

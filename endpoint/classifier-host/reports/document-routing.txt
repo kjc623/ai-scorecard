@@ -1,4 +1,0 @@
-corpus=documents-native-only-v1 cases=2
-native docx: degraded=false labels=payment_card
-wasm docx:   degraded=true stages=parse
-text path identical=true

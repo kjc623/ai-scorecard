@@ -23,7 +23,7 @@ import (
 
 // stubUpstream is a relocated local inference server on an ephemeral loopback port. It is
 // created explicitly (rather than with httptest) so a test can close it, watch the broker
-// release, and bring it back on the *same* port — §6.4's crash-and-recover rows.
+// release, and bring it back on the same port: crash and recover.
 type stubUpstream struct {
 	mu       sync.Mutex
 	ln       net.Listener
@@ -89,7 +89,7 @@ func (u *stubUpstream) Close() {
 }
 
 // Reopen restarts the server on the port it had before, which is what "the user restarts the
-// server" means in §6.4.
+// server" means.
 func (u *stubUpstream) Reopen(t *testing.T) {
 	t.Helper()
 	u.mu.Lock()
@@ -248,7 +248,7 @@ func testConfig(upstreamPort, heldPort int, pipe Pipeline) Config {
 // TestBroker_6_2_NeverBoundWithoutServingUpstream is the invariant the whole provider exists
 // for: with no reachable upstream the port is *not* bound, so a client gets connection-refused
 // rather than a broker that accepts and fails.
-func TestBroker_6_2_NeverBoundWithoutServingUpstream(t *testing.T) {
+func TestBrokerNeverBoundWithoutServingUpstream(t *testing.T) {
 	deadUpstream := freePort(t) // nothing is listening there
 	held := freePort(t)
 	pipe := &recordingPipeline{mode: protocol.ModeM1}
@@ -265,22 +265,22 @@ func TestBroker_6_2_NeverBoundWithoutServingUpstream(t *testing.T) {
 		return !portOpen(held)
 	})
 	if portOpen(held) {
-		t.Fatal("§6.2 rule 3: the broker bound a port whose upstream is unreachable")
+		t.Fatal("the broker bound a port whose upstream is unreachable")
 	}
 	configured, heldN, reachable := b.Coverage()
 	if configured != 1 || heldN != 0 || reachable != 0 {
-		t.Fatalf("§6.5 coverage = (%d,%d,%d), want (1,0,0)", configured, heldN, reachable)
+		t.Fatalf("coverage = (%d,%d,%d), want (1,0,0)", configured, heldN, reachable)
 	}
 	h := b.Health()
 	if h.State != protocol.StateDegraded {
-		t.Fatalf("§6.4: health state = %q, want degraded (not absent: the provider is running)", h.State)
+		t.Fatalf("health state = %q, want degraded (not absent: the provider is running)", h.State)
 	}
 	if h.Detail != protocol.DetailUpstreamUnreachable {
-		t.Fatalf("§6.3 detail = %q, want %q", h.Detail, protocol.DetailUpstreamUnreachable)
+		t.Fatalf("detail = %q, want %q", h.Detail, protocol.DetailUpstreamUnreachable)
 	}
 }
 
-func TestBroker_6_2_BindsAfterPreflightAndBrokersRequests(t *testing.T) {
+func TestBrokerBindsAfterPreflightAndBrokersRequests(t *testing.T) {
 	upstream := newStubUpstream(t)
 	held := freePort(t)
 	pipe := &recordingPipeline{mode: protocol.ModeM1}
@@ -324,7 +324,7 @@ func TestBroker_6_2_BindsAfterPreflightAndBrokersRequests(t *testing.T) {
 		t.Fatalf("size_bytes = %d, want %d", obs.SizeBytes, len(body))
 	}
 	if !pipe.didRead() {
-		t.Fatal("§11.2: content was forwarded but never handed to the pipeline at M1")
+		t.Fatal("content was forwarded but never handed to the pipeline at M1")
 	}
 	if obs.Decision == nil {
 		t.Fatal("the broker emitted an observation with no policy decision; policy_decision is required for every prompt")
@@ -334,13 +334,13 @@ func TestBroker_6_2_BindsAfterPreflightAndBrokersRequests(t *testing.T) {
 		t.Fatalf("counters = %v, want observed=1 emitted=1", c)
 	}
 	if h := b.Health(); h.State != protocol.StateHealthy || h.Detail != protocol.DetailNone {
-		t.Fatalf("§6.3 health = %q/%q, want healthy with no detail (port held and upstream reachable)", h.State, h.Detail)
+		t.Fatalf("health = %q/%q, want healthy with no detail (port held and upstream reachable)", h.State, h.Detail)
 	}
 }
 
-// §11.2 at the broker: at M0 the body is forwarded but never retained, so the pipeline gets no
+// At M0 the body is forwarded but never retained, so the pipeline gets no
 // content reader at all.
-func TestBroker_11_2_M0ForwardsWithoutRetainingTheBody(t *testing.T) {
+func TestBrokerM0ForwardsWithoutRetainingTheBody(t *testing.T) {
 	upstream := newStubUpstream(t)
 	held := freePort(t)
 	pipe := &recordingPipeline{mode: protocol.ModeM0}
@@ -365,10 +365,10 @@ func TestBroker_11_2_M0ForwardsWithoutRetainingTheBody(t *testing.T) {
 	waitFor(t, 2*time.Second, "the observation", func() bool { return len(pipe.observations()) == 1 })
 	obs := pipe.observations()[0]
 	if obs.Content != nil {
-		t.Fatal("§11.2: the broker retained a content reader at M0")
+		t.Fatal("the broker retained a content reader at M0")
 	}
 	if pipe.didRead() {
-		t.Fatal("§11.2: content was read at M0")
+		t.Fatal("content was read at M0")
 	}
 	if obs.SizeBytes != int64(len(body)) {
 		t.Fatalf("size_bytes = %d, want %d (size is available at M0)", obs.SizeBytes, len(body))
@@ -378,10 +378,10 @@ func TestBroker_11_2_M0ForwardsWithoutRetainingTheBody(t *testing.T) {
 	}
 }
 
-// §6.4: the upstream crashes, the broker releases, the user restarts the server, the broker
+// The upstream crashes, the broker releases, the user restarts the server, the broker
 // re-binds. The invariant across the whole sequence is that the port is never bound while the
 // upstream is down.
-func TestBroker_6_4_UpstreamCrashReleasesAndRecoveryRebinds(t *testing.T) {
+func TestBrokerUpstreamCrashReleasesAndRecoveryRebinds(t *testing.T) {
 	upstream := newStubUpstream(t)
 	held := freePort(t)
 	pipe := &recordingPipeline{mode: protocol.ModeM1}
@@ -398,25 +398,24 @@ func TestBroker_6_4_UpstreamCrashReleasesAndRecoveryRebinds(t *testing.T) {
 	upstream.Close()
 	waitFor(t, 5*time.Second, "the broker to release the port", func() bool { return !portOpen(held) })
 	if h := b.Health(); h.State != protocol.StateDegraded {
-		t.Fatalf("§6.4: state after upstream crash = %q, want degraded", h.State)
+		t.Fatalf("state after upstream crash = %q, want degraded", h.State)
 	}
 	if h := b.Health(); h.Detail != protocol.DetailUpstreamUnreachable && h.Detail != protocol.DetailCoolingDown {
-		t.Fatalf("§6.4: detail after upstream crash = %q, want upstream_unreachable or cooling_down", h.Detail)
+		t.Fatalf("detail after upstream crash = %q, want upstream_unreachable or cooling_down", h.Detail)
 	}
 
 	upstream.Reopen(t)
 	waitFor(t, 5*time.Second, "the broker to re-bind after recovery", func() bool { return portOpen(held) })
 	configured, heldN, reachable := b.Coverage()
 	if configured != 1 || heldN != 1 || reachable != 1 {
-		t.Fatalf("§6.5 coverage after recovery = (%d,%d,%d), want (1,1,1)", configured, heldN, reachable)
+		t.Fatalf("coverage after recovery = (%d,%d,%d), want (1,1,1)", configured, heldN, reachable)
 	}
 }
 
-// The R1 harness's question, asked as an assertion: when a port conflict ends, the health row and
-// the coverage row must agree about the same port. Before the fix they did not — the broker recovered,
-// re-bound in about a second and served a request while Health still said `tampered`, the only state
+// When a port conflict ends, the health row and the coverage row must agree about the same port:
+// a broker that recovered, re-bound and served a request must not still say tampered, the only state
 // that raises a security finding.
-func TestBroker_6_2_RecoveredPortConflictIsNotTamperedAndCoverageAgrees(t *testing.T) {
+func TestBrokerRecoveredPortConflictIsNotTamperedAndCoverageAgrees(t *testing.T) {
 	upstream := newStubUpstream(t)
 	held := freePort(t)
 
@@ -479,9 +478,9 @@ func TestBroker_6_2_RecoveredPortConflictIsNotTamperedAndCoverageAgrees(t *testi
 	}
 }
 
-// §6.2 rule 5: if something is listening that is not the expected upstream, the broker does not
+// If something is listening that is not the expected upstream, the broker does not
 // bind, does not kill the holder, and reports tampered with detail=port_held_by_other.
-func TestBroker_6_2_PortHeldByOtherIsTamperedAndNeverFoughtFor(t *testing.T) {
+func TestBrokerPortHeldByOtherIsTamperedAndNeverFoughtFor(t *testing.T) {
 	upstream := newStubUpstream(t)
 	held := freePort(t)
 
@@ -518,17 +517,17 @@ func TestBroker_6_2_PortHeldByOtherIsTamperedAndNeverFoughtFor(t *testing.T) {
 	})
 	h := b.Health()
 	if h.Detail != protocol.DetailPortHeldByOther {
-		t.Fatalf("§6.2 rule 5 detail = %q, want %q", h.Detail, protocol.DetailPortHeldByOther)
+		t.Fatalf("conflict detail = %q, want %q", h.Detail, protocol.DetailPortHeldByOther)
 	}
 	_, heldN, _ := b.Coverage()
 	if heldN != 0 {
-		t.Fatalf("§6.2 rule 5: broker claims %d held ports while another process holds it", heldN)
+		t.Fatalf("broker claims %d held ports while another process holds it", heldN)
 	}
 
 	// The holder is untouched: still listening, still serving.
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", held), time.Second)
 	if err != nil {
-		t.Fatalf("§6.2 rule 5: the broker killed the holder's listener: %v", err)
+		t.Fatalf("the broker killed the holder's listener: %v", err)
 	}
 	_ = conn.Close()
 	select {
@@ -538,7 +537,7 @@ func TestBroker_6_2_PortHeldByOtherIsTamperedAndNeverFoughtFor(t *testing.T) {
 	}
 }
 
-func TestBroker_6_2_StopReleasesThePortAndIsIdempotent(t *testing.T) {
+func TestBrokerStopReleasesThePortAndIsIdempotent(t *testing.T) {
 	upstream := newStubUpstream(t)
 	held := freePort(t)
 	b := New(testConfig(upstream.Port(), held, &recordingPipeline{mode: protocol.ModeM1}))
@@ -554,7 +553,7 @@ func TestBroker_6_2_StopReleasesThePortAndIsIdempotent(t *testing.T) {
 		t.Fatalf("Stop: %v", err)
 	}
 	if portOpen(held) {
-		t.Fatal("§6.2 rule 1: the port is still bound after Stop")
+		t.Fatal("the port is still bound after Stop")
 	}
 	if err := b.Stop(ctx); err != nil {
 		t.Fatalf("Stop is not idempotent: %v", err)
@@ -566,14 +565,14 @@ func TestBroker_6_2_StopReleasesThePortAndIsIdempotent(t *testing.T) {
 	// The port is genuinely free: another process can take it.
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", held))
 	if err != nil {
-		t.Fatalf("§6.2 rule 1: the port was not released for reuse: %v", err)
+		t.Fatalf("the port was not released for reuse: %v", err)
 	}
 	_ = ln.Close()
 }
 
-// §3.5 step 2: the release happens before anything else on shutdown, and it happens while the
+// The release happens before anything else on shutdown, and it happens while the
 // provider is still running.
-func TestBroker_3_5_ReleaseIsSeparateFromStop(t *testing.T) {
+func TestBrokerReleaseIsSeparateFromStop(t *testing.T) {
 	upstream := newStubUpstream(t)
 	held := freePort(t)
 	b := New(testConfig(upstream.Port(), held, &recordingPipeline{mode: protocol.ModeM1}))
@@ -589,16 +588,16 @@ func TestBroker_3_5_ReleaseIsSeparateFromStop(t *testing.T) {
 		t.Fatalf("Release: %v", err)
 	}
 	if portOpen(held) {
-		t.Fatal("§6.2 rule 1: Release left the port bound")
+		t.Fatal("Release left the port bound")
 	}
 	if err := b.Stop(ctx); err != nil {
 		t.Fatalf("Stop after Release: %v", err)
 	}
 }
 
-// §6.4's last row: repeated failure past a threshold stops trying for a long cool-down, so a
+// Repeated failure past a threshold stops trying for a long cool-down, so a
 // broken configuration is not an endless bind/release loop against the user's machine.
-func TestBroker_6_4_CoolDownAfterRepeatedFailures(t *testing.T) {
+func TestBrokerCoolDownAfterRepeatedFailures(t *testing.T) {
 	dead := freePort(t)
 	held := freePort(t)
 	cfg := testConfig(dead, held, &recordingPipeline{mode: protocol.ModeM1})
@@ -627,7 +626,7 @@ func TestBroker_6_4_CoolDownAfterRepeatedFailures(t *testing.T) {
 
 // A non-submission (a GET, or a POST with no body) is counted as skipped_not_generative: the
 // predicate is running, and the counter proves it without claiming it is right.
-func TestBroker_SkipsNonGenerativeRequestsAndCountsThem(t *testing.T) {
+func TestBrokerSkipsNonGenerativeRequestsAndCountsThem(t *testing.T) {
 	upstream := newStubUpstream(t)
 	held := freePort(t)
 	pipe := &recordingPipeline{mode: protocol.ModeM1}
@@ -658,8 +657,8 @@ func TestBroker_SkipsNonGenerativeRequestsAndCountsThem(t *testing.T) {
 	}
 }
 
-// The JSON extractor is C1 for this route: the last user-role message, or a top-level prompt.
-func TestJSONExtractor_LastUserTurn(t *testing.T) {
+// The JSON extractor takes the last user-role message, or a top-level prompt.
+func TestJSONExtractorLastUserTurn(t *testing.T) {
 	body := []byte(`{"model":"x","messages":[{"role":"system","content":"sys"},{"role":"user","content":"first"},{"role":"assistant","content":"a"},{"role":"user","content":[{"type":"text","text":"second"}]}]}`)
 	text, atts, err := JSONExtractor{}.Extract(body, "application/json")
 	if err != nil {
@@ -678,20 +677,20 @@ func TestJSONExtractor_LastUserTurn(t *testing.T) {
 
 // The canonicalisation seam is exercised here too: the broker's extractor feeds the same
 // dedup.ContentDigest the pipeline uses, so the two cannot drift.
-func TestBroker_ExtractionFeedsCanonicalDigest(t *testing.T) {
+func TestBrokerExtractionFeedsCanonicalDigest(t *testing.T) {
 	body := []byte(`{"messages":[{"role":"user","content":"hello world"}]}`)
 	text, atts, err := JSONExtractor{}.Extract(body, "application/json")
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
-	d1 := dedup.ContentDigest(text, atts, dedup.IdentityNFC{})
-	d2 := dedup.ContentDigest("hello world", nil, dedup.IdentityNFC{})
+	d1 := dedup.ContentDigest(text, atts)
+	d2 := dedup.ContentDigest("hello world", nil)
 	if d1 != d2 {
 		t.Fatalf("digest through the extractor = %s, want %s", d1, d2)
 	}
 }
 
-func TestBroker_HealthNeverHealthyWhenStopped(t *testing.T) {
+func TestBrokerHealthNeverHealthyWhenStopped(t *testing.T) {
 	upstream := newStubUpstream(t)
 	held := freePort(t)
 	b := New(testConfig(upstream.Port(), held, &recordingPipeline{mode: protocol.ModeM1}))
@@ -705,7 +704,7 @@ func TestBroker_HealthNeverHealthyWhenStopped(t *testing.T) {
 	waitFor(t, 3*time.Second, "holding", func() bool { return portOpen(held) })
 	_ = b.Stop(ctx)
 	if h := b.Health(); h.State == protocol.StateHealthy {
-		t.Fatal("§4.1: Health reported healthy after Stop")
+		t.Fatal("Health reported healthy after Stop")
 	}
 }
 

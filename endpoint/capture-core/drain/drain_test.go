@@ -4,21 +4,13 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
 	"io"
 	"net/http"
-	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/shadow-ai-capture/device/capture-core/credential"
 	"github.com/shadow-ai-capture/device/protocol"
 )
 
@@ -143,8 +135,8 @@ func (s *memStore) reason(seq uint64) string {
 func testEnvelope(t *testing.T, eventID string) protocol.Entry {
 	t.Helper()
 	env := map[string]any{
-		"schema_version": "1.0", "event_id": eventID, "tenant_id": "tenant-1",
-		"device_id": "device-1", "user_ref": "u", "tool_fingerprint": "t",
+		"schema_version": "1.0", "event_id": eventID, "tenant_id": testTenant,
+		"device_id": testDevice, "user_ref": "u", "tool_fingerprint": "t",
 		"direction": "egress", "kind": "prompt", "occurred_at": time.Now().UTC().Format(time.RFC3339),
 		"monotonic_offset_ms": 1, "source": "ext.web_request", "collection_mode": "m1",
 		"size_bytes": 10, "policy_decision": map[string]any{"rule_id": "r", "action": "logged", "decided_locally": true},
@@ -162,57 +154,6 @@ func testEnvelope(t *testing.T, eventID string) protocol.Entry {
 		Payload:   raw,
 		SizeBytes: int64(len(raw)),
 	}
-}
-
-// newTestDrainer wires a drainer to an httptest peer over plain HTTP (loopback), so the drain-loop
-// logic is tested without the TLS handshake; the TLS path is exercised by the selftest.
-func newTestDrainer(t *testing.T, store StoreFunc, handler http.HandlerFunc) (*Drainer, *httptest.Server) {
-	t.Helper()
-	srv := httptest.NewServer(handler)
-	t.Cleanup(srv.Close)
-	d := &Drainer{
-		cfg: Config{
-			Endpoint:      srv.URL,
-			AuthMode:      protocol.AuthModeDPoP,
-			TenantID:      "tenant-1",
-			DeviceID:      "device-1",
-			AgentVersion:  "test",
-			BackoffBase:   time.Millisecond,
-			BackoffCap:    50 * time.Millisecond,
-			DrainInterval: time.Millisecond,
-		},
-		store:   store,
-		creds:   nil,
-		client:  &client{base: strings.TrimRight(srv.URL, "/"), caPool: x509.NewCertPool(), http: srv.Client()},
-		log:     nopLogger{},
-		clock:   time.Now,
-		backoff: Backoff{Base: time.Millisecond, Cap: 50 * time.Millisecond},
-		state:   protocol.StateAbsent,
-		stopCh:  make(chan struct{}),
-	}
-	// Pre-seed a credential so Drain does not attempt enrolment.
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("generate key: %v", err)
-	}
-	keyDER, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		t.Fatalf("marshal key: %v", err)
-	}
-	c := &credential.Credential{
-		Mode:       protocol.AuthModeDPoP,
-		DeviceID:   "device-1",
-		TenantID:   "tenant-1",
-		PrivateKey: string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})),
-		JWK:        &protocol.JWK{Kty: "EC", Crv: "P-256", X: "x", Y: "y"},
-	}
-	if err := d.setCredential(c); err != nil {
-		t.Fatalf("setCredential: %v", err)
-	}
-	// Pre-seed a valid token so the drain loop does not fetch one from the (events-only) peer.
-	d.token = "test-token"
-	d.tokenExp = time.Now().Add(time.Hour)
-	return d, srv
 }
 
 // acceptedResponseForBatch returns a 200 events response accepting every event in the batch.
@@ -270,26 +211,41 @@ func gunzipBody(t *testing.T, r *http.Request) []byte {
 	return b
 }
 
-func writeJSON(t *testing.T, w http.ResponseWriter, status int, body []byte) {
-	t.Helper()
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_, _ = w.Write(body)
+// eventsHandler serves /v1/events with fn and records the client certificate presented.
+func eventsHandler(e *fakeEdge, fn http.HandlerFunc) func() []string {
+	var mu sync.Mutex
+	presented := []string{}
+	e.mux.HandleFunc("/v1/events", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
+			presented = append(presented, r.TLS.PeerCertificates[0].Subject.CommonName)
+		} else {
+			presented = append(presented, "")
+		}
+		mu.Unlock()
+		fn(w, r)
+	})
+	return func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), presented...)
+	}
 }
 
-// ---------------------------------------------------------------------------------------------
-// The drain loop.
+func storeOf(s *memStore) StoreFunc { return func() (protocol.Store, error) { return s, nil } }
 
-func TestDrainDeliversAndSettles(t *testing.T) {
+func TestDrainDeliversOverMutualTLSAndSettles(t *testing.T) {
+	e := newFakeEdge(t)
 	store := newMemStore()
-	for i := 0; i < 3; i++ {
-		if _, err := store.Append(testEnvelope(t, "evt-"+string(rune('a'+i)))); err != nil {
-			t.Fatalf("Append: %v", err)
+	for _, id := range []string{"evt-a", "evt-b", "evt-c"} {
+		if _, err := store.Append(testEnvelope(t, id)); err != nil {
+			t.Fatal(err)
 		}
 	}
-	d, _ := newTestDrainer(t, func() (protocol.Store, error) { return store, nil }, func(w http.ResponseWriter, r *http.Request) {
+	presented := eventsHandler(e, func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(t, w, http.StatusOK, acceptedResponse(t, r))
 	})
+	d := newTestDrainer(t, e, storeOf(store), e.issued(24*time.Hour))
 	res, err := d.Drain(context.Background(), time.Now().Add(5*time.Second))
 	if err != nil {
 		t.Fatalf("Drain: %v", err)
@@ -302,119 +258,84 @@ func TestDrainDeliversAndSettles(t *testing.T) {
 			t.Fatalf("entry %d state = %s, want delivered", i, store.state(uint64(i)))
 		}
 	}
+	if got := presented(); len(got) == 0 || got[0] != testDevice {
+		t.Fatalf("client certificates presented = %v, want the device leaf", got)
+	}
+	if st := d.Status(); st.State != protocol.StateHealthy {
+		t.Fatalf("status = %+v, want healthy after a delivery", st)
+	}
 }
 
-func TestDrainRejectsTerminalReason(t *testing.T) {
+func TestDrainSettlesATerminalRejection(t *testing.T) {
+	e := newFakeEdge(t)
 	store := newMemStore()
 	if _, err := store.Append(testEnvelope(t, "evt-x")); err != nil {
-		t.Fatalf("Append: %v", err)
+		t.Fatal(err)
 	}
-	d, _ := newTestDrainer(t, func() (protocol.Store, error) { return store, nil }, func(w http.ResponseWriter, r *http.Request) {
-		body := gunzipBody(t, r)
+	eventsHandler(e, func(w http.ResponseWriter, r *http.Request) {
 		var batch protocol.EventBatch
-		_ = json.Unmarshal(body, &batch)
-		results := []protocol.EventResult{{EventID: "evt-x", Outcome: protocol.OutcomeRejected, Reason: protocol.ReasonModeViolation}}
-		resp := protocol.EventBatchResponse{
+		_ = json.Unmarshal(gunzipBody(t, r), &batch)
+		raw, _ := json.Marshal(protocol.EventBatchResponse{
 			SchemaVersion: "1.0", BatchID: batch.BatchID, ReceivedAt: time.Now().UTC(), ServerTime: time.Now().UTC(),
-			Counts: protocol.BatchCounts{Rejected: 1}, Results: results,
-		}
-		raw, _ := json.Marshal(resp)
+			Counts:  protocol.BatchCounts{Rejected: 1},
+			Results: []protocol.EventResult{{EventID: "evt-x", Outcome: protocol.OutcomeRejected, Reason: protocol.ReasonModeViolation}},
+		})
 		writeJSON(t, w, http.StatusOK, raw)
 	})
+	d := newTestDrainer(t, e, storeOf(store), e.issued(24*time.Hour))
 	res, err := d.Drain(context.Background(), time.Now().Add(5*time.Second))
 	if err != nil {
 		t.Fatalf("Drain: %v", err)
 	}
-	if res.Rejected != 1 {
-		t.Fatalf("Rejected = %d, want 1", res.Rejected)
-	}
-	if store.state(1) != protocol.SpoolRejected {
-		t.Fatalf("entry state = %s, want rejected", store.state(1))
-	}
-	if store.reason(1) != string(protocol.ReasonModeViolation) {
-		t.Fatalf("reason = %q, want mode_violation", store.reason(1))
+	if res.Rejected != 1 || store.state(1) != protocol.SpoolRejected || store.reason(1) != string(protocol.ReasonModeViolation) {
+		t.Fatalf("result %+v, entry %s/%q; want one rejected with mode_violation", res, store.state(1), store.reason(1))
 	}
 }
 
-func TestDrainRetriesRetryableStatus(t *testing.T) {
+func TestDrainRetriesAnUnavailableEdge(t *testing.T) {
+	e := newFakeEdge(t)
 	store := newMemStore()
 	if _, err := store.Append(testEnvelope(t, "evt-r")); err != nil {
-		t.Fatalf("Append: %v", err)
+		t.Fatal(err)
 	}
 	var mu sync.Mutex
 	attempts := 0
-	d, _ := newTestDrainer(t, func() (protocol.Store, error) { return store, nil }, func(w http.ResponseWriter, r *http.Request) {
+	eventsHandler(e, func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		attempts++
 		n := attempts
 		mu.Unlock()
 		if n == 1 {
-			writeJSON(t, w, http.StatusServiceUnavailable, []byte(`{"error":{"code":"schema_violation","server_time":"2026-10-01T00:00:00Z"}}`))
+			writeJSON(t, w, http.StatusServiceUnavailable, []byte(`{"error":{"code":"schema_violation"}}`))
 			return
 		}
 		writeJSON(t, w, http.StatusOK, acceptedResponse(t, r))
 	})
+	d := newTestDrainer(t, e, storeOf(store), e.issued(24*time.Hour))
 	res, err := d.Drain(context.Background(), time.Now().Add(5*time.Second))
 	if err != nil {
 		t.Fatalf("Drain: %v", err)
 	}
-	if res.Delivered != 1 {
-		t.Fatalf("Delivered = %d, want 1 after retry", res.Delivered)
-	}
 	mu.Lock()
 	defer mu.Unlock()
-	if attempts != 2 {
-		t.Fatalf("attempts = %d, want 2 (one retry after 503)", attempts)
+	if res.Delivered != 1 || attempts != 2 {
+		t.Fatalf("delivered %d after %d attempts, want 1 after 2", res.Delivered, attempts)
 	}
 }
 
-func TestDrainDuplicateBatchUsesFreshID(t *testing.T) {
-	store := newMemStore()
-	if _, err := store.Append(testEnvelope(t, "evt-d")); err != nil {
-		t.Fatalf("Append: %v", err)
-	}
-	var mu sync.Mutex
-	seen := map[string]bool{}
-	d, _ := newTestDrainer(t, func() (protocol.Store, error) { return store, nil }, func(w http.ResponseWriter, r *http.Request) {
-		body := gunzipBody(t, r)
-		var batch protocol.EventBatch
-		_ = json.Unmarshal(body, &batch)
-		mu.Lock()
-		seen[batch.BatchID] = true
-		first := len(seen) == 1
-		mu.Unlock()
-		if first {
-			writeJSON(t, w, http.StatusConflict, []byte(`{"error":{"code":"duplicate_batch","server_time":"2026-10-01T00:00:00Z"}}`))
-			return
-		}
-		writeJSON(t, w, http.StatusOK, acceptedResponseForBatch(t, batch))
-	})
-	res, err := d.Drain(context.Background(), time.Now().Add(5*time.Second))
-	if err != nil {
-		t.Fatalf("Drain: %v", err)
-	}
-	if res.Delivered != 1 {
-		t.Fatalf("Delivered = %d, want 1", res.Delivered)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(seen) != 2 {
-		t.Fatalf("saw %d distinct batch ids, want 2 (a fresh id on duplicate_batch)", len(seen))
-	}
-}
-
-func TestDrainTerminalRetainsSpool(t *testing.T) {
+func TestDrainRetainsTheSpoolWhenTheEdgeRefusesTheBatch(t *testing.T) {
+	e := newFakeEdge(t)
 	store := newMemStore()
 	if _, err := store.Append(testEnvelope(t, "evt-t")); err != nil {
-		t.Fatalf("Append: %v", err)
+		t.Fatal(err)
 	}
-	d, _ := newTestDrainer(t, func() (protocol.Store, error) { return store, nil }, func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(t, w, http.StatusUnauthorized, []byte(`{"error":{"code":"revoked_device","server_time":"2026-10-01T00:00:00Z"}}`))
+	eventsHandler(e, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusUnauthorized, []byte(`{"error":{"code":"revoked_device"}}`))
 	})
+	d := newTestDrainer(t, e, storeOf(store), e.issued(24*time.Hour))
 	if _, err := d.Drain(context.Background(), time.Now().Add(5*time.Second)); err != nil {
 		t.Fatalf("Drain: %v", err)
 	}
-	// The spool retains the record (back to pending), not discarded (§13).
 	if store.state(1) != protocol.SpoolPending {
 		t.Fatalf("entry state = %s, want pending (retained)", store.state(1))
 	}
@@ -423,18 +344,17 @@ func TestDrainTerminalRetainsSpool(t *testing.T) {
 	}
 }
 
+// A 200 whose body is not a valid events response degrades the drain and retains the record.
 func TestDrainMalformedSuccessBodyDegrades(t *testing.T) {
+	e := newFakeEdge(t)
 	store := newMemStore()
 	if _, err := store.Append(testEnvelope(t, "evt-mal")); err != nil {
-		t.Fatalf("Append: %v", err)
+		t.Fatal(err)
 	}
-	// A 200 whose body is not a valid events response is a non-*apiError from sendBatch. The
-	// drainer must not panic on the nil *apiError; it degrades and retains the record.
-	d, _ := newTestDrainer(t, func() (protocol.Store, error) { return store, nil }, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("this is not json"))
+	eventsHandler(e, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, []byte("this is not json"))
 	})
+	d := newTestDrainer(t, e, storeOf(store), e.issued(24*time.Hour))
 	if _, err := d.Drain(context.Background(), time.Now().Add(250*time.Millisecond)); err != nil {
 		t.Fatalf("Drain: %v", err)
 	}
@@ -446,66 +366,60 @@ func TestDrainMalformedSuccessBodyDegrades(t *testing.T) {
 	}
 }
 
-func TestCredentialExpired(t *testing.T) {
-	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
-	d := &Drainer{clock: func() time.Time { return now }}
-
-	if d.credentialExpired(nil) {
-		t.Fatal("a nil credential reported expired")
-	}
-	if d.credentialExpired(&credential.Credential{Mode: protocol.AuthModeDPoP}) {
-		t.Fatal("a DPoP credential (which has no NotAfter) reported expired")
-	}
-	if d.credentialExpired(&credential.Credential{Mode: protocol.AuthModeX509}) {
-		t.Fatal("an x509 credential with no NotAfter reported expired")
-	}
-	if d.credentialExpired(&credential.Credential{Mode: protocol.AuthModeX509, NotAfter: now.Add(time.Hour)}) {
-		t.Fatal("an x509 credential valid for another hour reported expired")
-	}
-	if !d.credentialExpired(&credential.Credential{Mode: protocol.AuthModeX509, NotAfter: now}) {
-		t.Fatal("an x509 credential at its NotAfter reported not expired")
-	}
-	if !d.credentialExpired(&credential.Credential{Mode: protocol.AuthModeX509, NotAfter: now.Add(-time.Second)}) {
-		t.Fatal("an x509 credential past its NotAfter reported not expired")
-	}
-}
-
-func TestDrainEmptyIsNoop(t *testing.T) {
-	store := newMemStore()
-	d, _ := newTestDrainer(t, func() (protocol.Store, error) { return store, nil }, func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("the drain should not call the peer when the spool is empty")
+func TestDrainOfAnEmptySpoolSendsNothing(t *testing.T) {
+	e := newFakeEdge(t)
+	eventsHandler(e, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("the drain called the edge with an empty spool")
 	})
+	d := newTestDrainer(t, e, storeOf(newMemStore()), e.issued(24*time.Hour))
 	res, err := d.Drain(context.Background(), time.Now().Add(time.Second))
-	if err != nil {
-		t.Fatalf("Drain: %v", err)
-	}
-	if !res.Empty {
-		t.Fatal("Empty = false for an empty spool")
-	}
-	if res.Delivered != 0 || res.Rejected != 0 {
-		t.Fatalf("empty spool produced %+v", res)
+	if err != nil || !res.Empty || res.Delivered != 0 {
+		t.Fatalf("empty spool: %+v, %v", res, err)
 	}
 }
 
-func TestDrainRejectsOversizeEnvelope(t *testing.T) {
+func TestDrainRejectsAnOversizeEnvelopeWithoutSendingIt(t *testing.T) {
+	e := newFakeEdge(t)
 	store := newMemStore()
-	e := testEnvelope(t, "evt-big")
-	e.Payload = bytes.Repeat([]byte("x"), protocol.MaxEnvelopeBytes+1)
-	e.SizeBytes = int64(len(e.Payload))
-	if _, err := store.Append(e); err != nil {
-		t.Fatalf("Append: %v", err)
+	big := testEnvelope(t, "evt-big")
+	big.Payload = bytes.Repeat([]byte("x"), protocol.MaxEnvelopeBytes+1)
+	if _, err := store.Append(big); err != nil {
+		t.Fatal(err)
 	}
-	d, _ := newTestDrainer(t, func() (protocol.Store, error) { return store, nil }, func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("an oversize envelope must not be sent")
+	eventsHandler(e, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("an oversize envelope was sent")
 	})
+	d := newTestDrainer(t, e, storeOf(store), e.issued(24*time.Hour))
 	res, err := d.Drain(context.Background(), time.Now().Add(5*time.Second))
-	if err != nil {
+	if err != nil || res.Rejected != 1 || store.state(1) != protocol.SpoolRejected || store.reason(1) != string(protocol.ReasonOversize) {
+		t.Fatalf("result %+v err %v, entry %s/%q; want rejected oversize", res, err, store.state(1), store.reason(1))
+	}
+}
+
+// A record minted under another identity than the credential is settled with a visible reason and
+// never sent: the write path would reject its tenant or device.
+func TestDrainQuarantinesARecordMintedUnderAnotherIdentity(t *testing.T) {
+	e := newFakeEdge(t)
+	store := newMemStore()
+	stale := testEnvelope(t, "evt-stale")
+	stale.Payload = bytes.Replace(stale.Payload, []byte(testDevice), []byte("someone-else"), 1)
+	if _, err := store.Append(stale); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append(testEnvelope(t, "evt-ok")); err != nil {
+		t.Fatal(err)
+	}
+	eventsHandler(e, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, acceptedResponse(t, r))
+	})
+	d := newTestDrainer(t, e, storeOf(store), e.issued(24*time.Hour))
+	if _, err := d.Drain(context.Background(), time.Now().Add(5*time.Second)); err != nil {
 		t.Fatalf("Drain: %v", err)
 	}
-	if res.Rejected != 1 {
-		t.Fatalf("Rejected = %d, want 1", res.Rejected)
+	if store.state(1) != protocol.SpoolRejected || store.reason(1) != reasonStaleIdentity {
+		t.Fatalf("stale entry = %s/%q, want rejected/%s", store.state(1), store.reason(1), reasonStaleIdentity)
 	}
-	if store.state(1) != protocol.SpoolRejected {
-		t.Fatalf("state = %s, want rejected", store.state(1))
+	if store.state(2) != protocol.SpoolDelivered {
+		t.Fatalf("current entry = %s, want delivered", store.state(2))
 	}
 }

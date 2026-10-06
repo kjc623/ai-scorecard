@@ -1,0 +1,81 @@
+{
+  "name": "docx-payment-card",
+  "why": "a Word document carrying a payment card number, sent as the extension sends it: manifest, contiguous chunks, completion, then the observation naming it by digest",
+  "frames": [
+    {
+      "type": "attachment_manifest",
+      "version": 1,
+      "id": "case-att-manifest",
+      "body": {
+        "transfer_id": "tr-invoice",
+        "observation_id": "c-attachment",
+        "descriptor": {
+          "name": "invoice-2026-117.docx",
+          "size_bytes": 645,
+          "media_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        }
+      }
+    },
+    {
+      "type": "attachment_chunk",
+      "version": 1,
+      "id": "case-att-chunk-0",
+      "body": {
+        "transfer_id": "tr-invoice",
+        "seq": 0,
+        "data": "UEsDBBQAAAAIAABIRl2axphxygAAADoBAAATAAAAW0NvbnRlbnRfVHlwZXNdLnhtbH1QzU7DMAx+lShX1LrjgBBquwODI3AYD2AlbhfR2FGSjfH2uAztwIGj/f3a/fYcF3OiXILwYDdtZw2xEx94Huz7/rm5t9ux338lKkapXAZ7qDU9ABR3oIillUSsyCQ5YtUxz5DQfeBMcNt1d+CEK3Ft6uphx35HEx6Xap7Our7EqtyaxwtvjRosprQEh1VhWFEY+1dtmYMn84a5vmBUFnxK9uDFHaMq2/9tTuz/dG1kmoKjq351S1kclaLnx6W9IhED3/z2gJ9njN9QSwMEFAAAAAgAAEhGXRQfbSHFAAAADgEAABEAAAB3b3JkL2RvY3VtZW50LnhtbFWPwW7DIAyGX8XivIYQTd0aJemt0m47dA=="
+      }
+    },
+    {
+      "type": "attachment_chunk",
+      "version": 1,
+      "id": "case-att-chunk-1",
+      "body": {
+        "transfer_id": "tr-invoice",
+        "seq": 1,
+        "data": "D0DBS5ACRoY17dsXusO0y2dZ/6/P8nC8+RWuyMlRGIVqWgEYDFkX5lF8nU+7d3Gchq23ZH48hgylH1K/jWLJOfZSJrOg16mhiKFk38Re57LyLDdiG5kMplR0fpVd2+6l1y6IqryQvdcZK7giTx/hSs4gdG233yn11sDnijohmEXzjJAXhItedSidTGA0W3hVSoH6hxfAW3R8h/Ygu0MzyOqu5Cfjk7/35d9v0wNQSwECFAAUAAAACAAASEZdmsaYccoAAAA6AQAAEwAAAAAAAAAAAAAApAEAAAAAW0NvbnRlbnRfVHlwZXNdLnhtbFBLAQIUABQAAAAIAABIRl0UH20hxQAAAA4BAAARAAAAAAAAAAAAAACkAfsAAAB3b3JkL2RvY3VtZW50LnhtbFBLBQYAAAAAAgACAIAAAADvAQAAAAA="
+      }
+    },
+    {
+      "type": "attachment_complete",
+      "version": 1,
+      "id": "case-att-complete",
+      "body": {
+        "transfer_id": "tr-invoice",
+        "chunks": 2
+      }
+    },
+    {
+      "type": "observation",
+      "version": 1,
+      "id": "case-att-observation",
+      "body": {
+        "client_id": "c-attachment",
+        "route": "ext.web_request",
+        "tool_fingerprint": "genai.web.chat.v1:chatgpt",
+        "occurred_at": "2026-10-06T09:00:00.000Z",
+        "monotonic_offset_ms": 223344,
+        "size_bytes": 52,
+        "has_content": true,
+        "content_digest": "sha256:998bfff934a0c7c0c00fc8e96e76d4b1ecc5dc1337023c7cb8cd70d8d1cdce61",
+        "content": "U3VtbWFyaXNlIHRoZSBhdHRhY2hlZCBpbnZvaWNlIGZvciB0aGUgZmluYW5jZSB0ZWFtLg==",
+        "attachments": [
+          {
+            "name": "invoice-2026-117.docx",
+            "size_bytes": 645,
+            "media_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "content_digest": "sha256:d74b38982751f46bf907911bfa0fbdbf1a80256c0573013f01e61fc3ea61ac53"
+          }
+        ]
+      }
+    }
+  ],
+  "expects": {
+    "label": "payment_card",
+    "envelope_attachment": {
+      "name": "invoice-2026-117.docx",
+      "size_bytes": 645,
+      "content_digest": "sha256:d74b38982751f46bf907911bfa0fbdbf1a80256c0573013f01e61fc3ea61ac53"
+    }
+  }
+}

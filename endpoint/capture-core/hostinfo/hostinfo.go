@@ -1,7 +1,7 @@
 // Package hostinfo reads what the operating system states about this device and about the person
 // at it: the MDM and directory identifiers an enrolment is checked against (attestation), a
 // hardware seed for the enrolment idempotency key, and the interactive console user a user_ref is
-// derived from (contract §4).
+// derived from.
 //
 // Every reader sits behind a seam (Registry, the machine certificate list, the raw SMBIOS table,
 // the user lookups) so the selection rules run on any OS in a test; only the windows files touch
@@ -80,7 +80,7 @@ func (f Facts) AttestationOrNil() *protocol.DeviceAttestation {
 	return &a
 }
 
-// HardwareSeed is the preferred seed for the enrolment idempotency key (C11): what survives a
+// HardwareSeed is the preferred seed for the enrolment idempotency key: what survives a
 // re-image first. The SMBIOS UUID and serial are the hardware's; the MDM and directory ids are
 // re-issued by a re-enrolment or a re-join, so they are not used; the install id changes on
 // re-image but at least never collides. Empty means the system stated none of them.

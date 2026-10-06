@@ -18,7 +18,7 @@ import (
 
 // Pipeline is the capture-core pipeline as the broker uses it: one call resolves the mode
 // *before* the body is buffered, the other hands the observation over. Resolving first is
-// §11.2's ordering: at M0 the broker forwards the body without retaining it.
+// the mode-first rule: at M0 the broker forwards the body without retaining it.
 type Pipeline interface {
 	ResolveMode(q core.ScopeQuery) core.Resolution
 	Process(ctx context.Context, obs core.Observation) (core.Outcome, error)
@@ -30,7 +30,7 @@ type AgentInfo struct {
 	UserRef    string
 }
 
-// Config is the broker's policy data plus its seams. Every timing here is policy data (§6.3)
+// Config is the broker's policy data plus its seams. Every timing here is policy data
 // so a bad configuration is fixed by a bundle rather than a release.
 type Config struct {
 	// Ports are the per-tool bundle entries: fingerprint, port, mode, upstream and preflight
@@ -43,7 +43,7 @@ type Config struct {
 	PreflightInterval time.Duration
 	PreflightTimeout  time.Duration
 
-	// MaxConsecutiveFailures and CoolDown are §6.4's repeated-failure threshold and cool-down.
+	// MaxConsecutiveFailures and CoolDown are the repeated-failure threshold and cool-down.
 	MaxConsecutiveFailures int
 	CoolDown               time.Duration
 
@@ -52,7 +52,7 @@ type Config struct {
 	BackoffMax  time.Duration
 
 	// BodyCap bounds a buffered request body. An over-cap body is forwarded unread-as-content
-	// and reported degraded (§5.3's rule, applied here for the same reason).
+	// and reported degraded.
 	BodyCap int64
 
 	Pipeline Pipeline
@@ -149,8 +149,8 @@ func (b *Broker) Name() protocol.Route { return protocol.RouteProxyLoopback }
 
 // Start implements core.Provider.
 //
-// It returns nil even when preflight fails and the port stays RELEASED: §6.2 rule 3 makes
-// refusing to bind the *safe* behaviour, and §6.4 reports that condition as `degraded` rather
+// It returns nil even when preflight fails and the port stays RELEASED: refusing to bind is
+// the safe behaviour, and the condition is reported as degraded rather
 // than as an absent provider. It returns after every port has reached its first decision, so
 // the supervisor's ordering (broker last) means something.
 func (b *Broker) Start(ctx context.Context) error {
@@ -202,9 +202,9 @@ func (b *Broker) Start(ctx context.Context) error {
 	return nil
 }
 
-// Release performs §3.5's shutdown step 2: the loopback port is released before anything else,
+// Release is the first shutdown step: the loopback port is released before anything else,
 // because a broker holding a port without a serving upstream is the one failure that breaks
-// the user rather than losing data (E14).
+// the user rather than losing data.
 func (b *Broker) Release(ctx context.Context) error {
 	b.mu.Lock()
 	runners := append([]*portRunner(nil), b.runners...)
@@ -230,7 +230,7 @@ func (b *Broker) Stop(ctx context.Context) error {
 	for _, r := range runners {
 		// stopNow closes the runner's own stop channel and releases the listener immediately:
 		// the release happens before the goroutine is even asked to wind down, so the port is
-		// free the moment Stop begins (§6.2 rule 1, §3.5 step 2).
+		// free the moment Stop begins.
 		r.stopNow()
 	}
 	done := make(chan struct{})
@@ -246,7 +246,7 @@ func (b *Broker) Stop(ctx context.Context) error {
 	return nil
 }
 
-// Health implements core.Provider. The rule from §4.1 is the important one here: `healthy`
+// Health implements core.Provider. The rule is the important one here: `healthy`
 // requires the port held *and* the upstream reachable, because "listening" is not "observing".
 func (b *Broker) Health() core.Health {
 	b.mu.Lock()
@@ -308,7 +308,7 @@ func (b *Broker) Health() core.Health {
 }
 
 // PortConflicts reports how many times any port has been observed held by another process since the
-// process started. It is the sticky half of §6.2 rule 5: the *state* is present-tense (`tampered`
+// process started. It is the sticky half of conflict reporting: the state is present-tense (tampered
 // clears on a successful bind, because `tampered` is the only state that raises a security finding),
 // and the history travels here rather than in the closed seven counters or in a detail code that
 // describes the current state.
@@ -325,7 +325,7 @@ func (b *Broker) PortConflicts() int {
 	return total
 }
 
-// Coverage is §6.5's coverage row: ports configured N, held M, upstream reachable K. `K < M` is
+// Coverage is the broker's coverage row: ports configured N, held M, upstream reachable K. K < M is
 // an alarm rather than a footnote, which is why it is a separate accessor rather than prose.
 func (b *Broker) Coverage() (configured, held, reachable int) {
 	b.mu.Lock()
@@ -344,7 +344,7 @@ func (b *Broker) Coverage() (configured, held, reachable int) {
 func (b *Broker) Counters() *core.CounterSet { return b.counters }
 
 // ApplyPolicy implements core.Provider: a diff, never a restart. A port whose entry changed is
-// released first (the configuration-change restart path of §6.2 rule 2) and re-preflighted.
+// released first (a configuration change restarts through release) and re-preflighted.
 func (b *Broker) ApplyPolicy(bundle policy.Bundle) error {
 	b.mu.Lock()
 	started := b.started
@@ -427,8 +427,8 @@ func firstNonEmpty(a, b protocol.Detail) protocol.Detail {
 }
 
 // portRunner owns one held port. It is the single writer of that port's state: the watchdog
-// and the preflight only *report* events, and this goroutine decides what happens (§6.3: "the
-// watchdog never binds").
+// and the preflight only report events, and this goroutine decides what happens: the watchdog
+// never binds.
 type portRunner struct {
 	broker *Broker
 
@@ -514,7 +514,7 @@ func (r *portRunner) lastFailDetail() protocol.Detail {
 }
 
 // releaseNow closes the listening socket immediately. Every restart path goes through here
-// first, which is §6.2 rule 2 expressed in code rather than in intention.
+// first: a held port is always closed before it is restarted.
 func (r *portRunner) releaseNow() {
 	r.mu.Lock()
 	ln := r.ln
@@ -561,7 +561,7 @@ func (r *portRunner) run() {
 	defer signalReady() // a runner that exits early must still release Start's wait
 	defer r.releaseNow()
 
-	// The watchdog is a separate goroutine (§6.3): it reports, it never binds.
+	// The watchdog is a separate goroutine: it reports, it never binds.
 	watchdogDone := make(chan struct{})
 	go r.watchdog(watchdogDone)
 	defer close(watchdogDone)
@@ -616,7 +616,7 @@ func (r *portRunner) run() {
 		case ActClose:
 			// A release is a restart path: the port is closed, and the next attempt happens
 			// after a backoff. Without arming the timer here a released broker would wait for
-			// an event that never comes and never recover (§6.4 row 3).
+			// an event that never comes and never recover.
 			backoffTimer.Reset(r.nextBackoff())
 		case ActRelease:
 			// Something else holds the port. The broker does not fight for it, and re-checks
@@ -646,7 +646,7 @@ func (r *portRunner) apply(ev Event) Action {
 		}
 		return action
 	case ActBind:
-		// Release precedes bind on every path (§6.2 rule 2): no code path rebinds while a
+		// Release precedes bind on every path: no code path rebinds while a
 		// previous socket may be open.
 		r.releaseNow()
 		// Rule 5: if something is listening on the port we intend to hold and it is not us, the
@@ -663,7 +663,7 @@ func (r *portRunner) apply(ev Event) Action {
 		if err != nil {
 			// If the port answers a probe it is held by another process; otherwise this is a
 			// plain bind failure. The two are different coverage facts and are reported
-			// differently (§6.4).
+			// differently.
 			if tcpProbe(r.portAddr(), 200*time.Millisecond) == nil {
 				r.mu.Lock()
 				r.stateFollow(EvPortHeldByOther)
@@ -681,7 +681,7 @@ func (r *portRunner) apply(ev Event) Action {
 		r.ln = ln
 		// The bind is the positive observation that moves BINDING -> HOLDING. Without it the
 		// port would be open while the machine believed it was still binding, which is exactly
-		// the "listening is not observing" confusion §4.1 forbids.
+		// the "listening is not observing" confusion.
 		r.stateFollow(EvBindOK)
 		r.mu.Unlock()
 		return ActServe
@@ -734,7 +734,7 @@ func (r *portRunner) nextBackoff() time.Duration {
 
 // preflightEvent runs one preflight and converts it to an event. Any well-formed HTTP
 // response, including 4xx, is success: a 4xx proves a server is listening and speaking HTTP,
-// and requiring 2xx would fail on a server wanting authentication (§6.3).
+// and requiring 2xx would fail on a server wanting authentication.
 func (r *portRunner) preflightEvent() Event {
 	ctx, cancel := context.WithTimeout(context.Background(), r.broker.cfg.PreflightTimeout)
 	defer cancel()
@@ -837,8 +837,8 @@ func (r *portRunner) emit(ev Event) {
 	}
 }
 
-// Preflight is §6.3's single loopback HTTP request: minimal, read-only, short deadline, then a
-// close. The path is per-tool bundle configuration (A8) because invoking a generation endpoint
+// Preflight is the single loopback HTTP request: minimal, read-only, short deadline, then a
+// close. The path is per-tool bundle configuration because invoking a generation endpoint
 // to test health would consume the user's resources and could itself look like usage.
 func Preflight(ctx context.Context, upstreamAddr, path string, timeout time.Duration) error {
 	if path == "" {

@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// One writer, one encryption key, one place the bound is enforced (§3.4). The writer lock is
+// One writer, one encryption key, one place the bound is enforced. The writer lock is
 // an *operating-system* lock on a lock file in the spool directory, not a sentinel file:
 // the OS releases it when the holding process dies, for any reason, so there is no stale
 // lock to detect and no window in which two processes can both believe they hold it.

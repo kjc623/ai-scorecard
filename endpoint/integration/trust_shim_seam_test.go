@@ -22,21 +22,12 @@ import (
 	"github.com/shadow-ai-capture/device/protocol"
 )
 
-// This file wires the real trust/CA manager and the real cli.shim provider into the real core
-// Registry + Supervisor, so the seams between them are proven against the real code rather than
-// against each package's own fakes. The only fakes are the two things that genuinely cannot run on
-// this host: the platform command runner (update-ca-certificates, certutil, security) and the
-// proxy.tls socket itself.
-//
-// What it proves: cli.shim starts before proxy.tls (§3.5 ordering), the system proxy is pointed at
-// the proxy only when there is a SystemProxy to point, the shim's managed CA bundle is a real
-// parseable root, the proxy.tls kill switch removes the shim's files and reports absent/killed, the
-// trust manager's install/verify/remove round-trip is a real file lifecycle, and a shim without a
-// root never reports healthy.
-//
-// What it does NOT prove: that any of this runs on a real endpoint (no /etc, no keychain, no real
-// system proxy), or that the OS actually honours the installed root - the platform halves are behind
-// interfaces with fakes here, exactly as documented in the module README.
+// The real trust manager and the real cli.shim provider in the real core registry and supervisor.
+// The only fakes are the platform command runner (update-ca-certificates, certutil, security) and
+// the proxy.tls socket. Proven here: cli.shim starts before proxy.tls, the shim's managed CA bundle
+// carries a real parseable root, the proxy.tls kill switch removes the shim's files and reports
+// absent/killed, the trust manager's install/verify/remove is a real file lifecycle, and a shim
+// without a root never reports healthy.
 
 const shimProxyAddr = "127.0.0.1:8843"
 
@@ -107,23 +98,10 @@ func (r *fakeRunner) Run(_ context.Context, name string, args ...string) (string
 	return "", nil
 }
 
-// fakeProxyTLS stands in for proxy.tls: it reports a listen address and counts how many times the
-// supervisor asked for it, which is the observable proof that the supervisor points the proxy only
-// when it has a SystemProxy and only after the proxy is listening.
-type fakeProxyTLS struct {
-	mu          sync.Mutex
-	listenAddr  string
-	listenCalls int
-}
+// fakeProxyTLS stands in for proxy.tls.
+type fakeProxyTLS struct{}
 
 func (p *fakeProxyTLS) Name() protocol.Route { return protocol.RouteProxyTLS }
-
-func (p *fakeProxyTLS) ListenAddr() string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.listenCalls++
-	return p.listenAddr
-}
 
 func (p *fakeProxyTLS) Start(context.Context) error { return nil }
 func (p *fakeProxyTLS) Stop(context.Context) error  { return nil }
@@ -131,33 +109,6 @@ func (p *fakeProxyTLS) Health() core.Health {
 	return core.Healthy(protocol.DetailNone, time.Now(), time.Now(), core.NewCounterSet(time.Now()))
 }
 func (p *fakeProxyTLS) ApplyPolicy(policy.Bundle) error { return nil }
-
-func (p *fakeProxyTLS) listenCallCount() int {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.listenCalls
-}
-
-// recordingSystemProxy records PointAt so the test can assert the supervisor pointed the proxy at
-// the proxy.tls listen address, and only that address.
-type recordingSystemProxy struct {
-	mu      sync.Mutex
-	pointed []string
-}
-
-func (r *recordingSystemProxy) PointAt(_ context.Context, addr string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.pointed = append(r.pointed, addr)
-	return nil
-}
-func (r *recordingSystemProxy) Restore(context.Context) error            { return nil }
-func (r *recordingSystemProxy) Effective(context.Context) (string, bool) { return "", false }
-func (r *recordingSystemProxy) pointedAddrs() []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return append([]string(nil), r.pointed...)
-}
 
 func indexOf(haystack []string, needle string) int {
 	for i, s := range haystack {
@@ -168,15 +119,12 @@ func indexOf(haystack []string, needle string) int {
 	return -1
 }
 
-// A real core.Registry with a real cli.New provider and a fake proxy.tls, driven through the real
-// core.Supervisor, must record start_cli.shim before start_proxy.tls, point the system proxy at the
-// proxy only after it is listening, and leave the shim healthy with a real, parseable root in its
-// CA bundle.
-func TestTrustShimSeam_StartupOrdersShimBeforeProxyAndHealthiesTheBundle(t *testing.T) {
+// The supervisor starts cli.shim before proxy.tls and leaves the shim healthy with a real,
+// parseable root in its CA bundle.
+func TestTrustShimSeamStartsTheShimBeforeTheProxy(t *testing.T) {
 	der, rootPEM := newRootCert(t)
 	shim, managedDir := newShimProvider(t, rootPEM)
-	proxyTLS := &fakeProxyTLS{listenAddr: shimProxyAddr}
-	sysProxy := &recordingSystemProxy{}
+	proxyTLS := &fakeProxyTLS{}
 
 	reg := core.NewRegistry(time.Now, nil)
 	if err := reg.Add(shim); err != nil {
@@ -190,8 +138,6 @@ func TestTrustShimSeam_StartupOrdersShimBeforeProxyAndHealthiesTheBundle(t *test
 	if err != nil {
 		t.Fatalf("new supervisor: %v", err)
 	}
-	sup.SystemProxy = sysProxy
-
 	if err := sup.Startup(context.Background()); err != nil {
 		t.Fatalf("Startup: %v", err)
 	}
@@ -199,7 +145,6 @@ func TestTrustShimSeam_StartupOrdersShimBeforeProxyAndHealthiesTheBundle(t *test
 	order := sup.Order()
 	cliIdx := indexOf(order, core.StepStartCLIShim)
 	tlsIdx := indexOf(order, core.StepStartProxyTLS)
-	pointIdx := indexOf(order, core.StepPointSystemProxy)
 	if cliIdx == -1 {
 		t.Fatalf("order does not contain %q: %v", core.StepStartCLIShim, order)
 	}
@@ -208,17 +153,6 @@ func TestTrustShimSeam_StartupOrdersShimBeforeProxyAndHealthiesTheBundle(t *test
 	}
 	if cliIdx >= tlsIdx {
 		t.Fatalf("%q (%d) is not before %q (%d): %v", core.StepStartCLIShim, cliIdx, core.StepStartProxyTLS, tlsIdx, order)
-	}
-	if pointIdx <= tlsIdx {
-		t.Fatalf("%q (%d) is not after %q (%d); the proxy may only be pointed at once it is listening", core.StepPointSystemProxy, pointIdx, core.StepStartProxyTLS, tlsIdx)
-	}
-
-	// The system proxy was pointed at the proxy's listen address, exactly once.
-	if got := sysProxy.pointedAddrs(); len(got) != 1 || got[0] != shimProxyAddr {
-		t.Fatalf("system proxy pointed at %v, want exactly [%s]", got, shimProxyAddr)
-	}
-	if proxyTLS.listenCallCount() == 0 {
-		t.Fatal("the supervisor never asked proxy.tls for its listen address")
 	}
 
 	// The shim's row is healthy.
@@ -253,42 +187,12 @@ func TestTrustShimSeam_StartupOrdersShimBeforeProxyAndHealthiesTheBundle(t *test
 	}
 }
 
-// Without a SystemProxy the supervisor must not consult the proxy's listen address at all: there is
-// nothing to point, and asking the proxy where it listens is the first half of pointing at it.
-func TestTrustShimSeam_NoSystemProxyLeavesProxyUnpointed(t *testing.T) {
-	_, rootPEM := newRootCert(t)
-	shim, _ := newShimProvider(t, rootPEM)
-	proxyTLS := &fakeProxyTLS{listenAddr: shimProxyAddr}
-
-	reg := core.NewRegistry(time.Now, nil)
-	if err := reg.Add(shim); err != nil {
-		t.Fatalf("register cli.shim: %v", err)
-	}
-	if err := reg.Add(proxyTLS); err != nil {
-		t.Fatalf("register proxy.tls: %v", err)
-	}
-
-	sup, err := core.NewSupervisor(reg, nil, time.Now)
-	if err != nil {
-		t.Fatalf("new supervisor: %v", err)
-	}
-	// SystemProxy deliberately left nil.
-
-	if err := sup.Startup(context.Background()); err != nil {
-		t.Fatalf("Startup: %v", err)
-	}
-
-	if n := proxyTLS.listenCallCount(); n != 0 {
-		t.Fatalf("supervisor consulted proxy.tls ListenAddr %d time(s) with no SystemProxy; the proxy must not be pointed at without something to point", n)
-	}
-}
-
 // A proxy.tls kill switch must stop the shim too: the shim feeds a proxy that has stopped
 // enforcing, so its managed files must go and its row must report absent with detail=killed.
-func TestTrustShimSeam_ProxyTLSKillSwitchRemovesShimFilesAndReportsKilled(t *testing.T) {
+func TestTrustShimSeamKillSwitchRemovesShimFilesAndReportsKilled(t *testing.T) {
 	_, rootPEM := newRootCert(t)
 	shim, managedDir := newShimProvider(t, rootPEM)
-	proxyTLS := &fakeProxyTLS{listenAddr: shimProxyAddr}
+	proxyTLS := &fakeProxyTLS{}
 
 	reg := core.NewRegistry(time.Now, nil)
 	if err := reg.Add(shim); err != nil {
@@ -338,7 +242,7 @@ func TestTrustShimSeam_ProxyTLSKillSwitchRemovesShimFilesAndReportsKilled(t *tes
 // The trust manager's Linux round-trip is a real file lifecycle: Install writes the PEM, Verify
 // reads it back, Remove deletes it, and Verify then says it is gone. The platform command is a fake
 // that reports success, which is what keeps the test off the real trust store.
-func TestTrustRoundTrip_InstallVerifyRemove(t *testing.T) {
+func TestTrustRoundTripInstallVerifyRemove(t *testing.T) {
 	der, _ := newRootCert(t)
 	certDir := t.TempDir()
 	runner := &fakeRunner{} // returns success for update-ca-certificates and update-ca-trust
@@ -382,9 +286,9 @@ func TestTrustRoundTrip_InstallVerifyRemove(t *testing.T) {
 }
 
 // A shim configured with no root CA must degrade after Start and never report healthy: a shim that
-// points runtimes at a proxy without a root to trust is a coverage lie, and §4.5 requires a root to
+// points runtimes at a proxy without a root to trust is a coverage lie, so a root is required to
 // be healthy.
-func TestTrustShimSeam_EmptyRootDegradesNeverHealthy(t *testing.T) {
+func TestTrustShimSeamEmptyRootIsNeverHealthy(t *testing.T) {
 	managedDir := t.TempDir()
 	p := cli.New(cli.Config{
 		ManagedDir:  managedDir,

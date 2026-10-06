@@ -5,10 +5,8 @@ import (
 	"time"
 )
 
-// Backoff is docs/02-ingest-and-transport.md §8's exponential backoff with full jitter: the bound
-// doubles per attempt, is capped, and the actual delay is uniform in [0, bound]. Full jitter (not
-// "equal jitter") is what spreads a 5,000-device post-outage flush, and the bound is chosen before
-// it is capped so the distribution is not biased toward the cap.
+// Backoff is exponential backoff with full jitter: the bound doubles per attempt, is capped, and
+// the delay is uniform in [0, bound]. Full jitter is what spreads a fleet's flush after an outage.
 type Backoff struct {
 	Base time.Duration
 	Cap  time.Duration

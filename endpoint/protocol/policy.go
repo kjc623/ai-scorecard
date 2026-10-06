@@ -6,9 +6,9 @@ import (
 	"time"
 )
 
-// The GET /v1/policy exchange (docs/02-ingest-and-transport.md §5.2). The device authenticates with
-// its current credential, sends the version it holds as If-None-Match, and receives either 304 with
-// no body or a PolicyResponse whose SignedBundle it hands, byte for byte, to the policy verifier.
+// The GET /v1/policy exchange. The device authenticates with its current credential, sends the
+// version it holds as If-None-Match, and receives either 304 with no body or a PolicyResponse
+// whose SignedBundle it hands, byte for byte, to the policy verifier.
 //
 // The signed envelope travels inside the response as it was stored, not re-assembled from parts:
 // the signature covers the payload bytes exactly as signed, so the server serves the bytes it

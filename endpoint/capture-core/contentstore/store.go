@@ -1,12 +1,11 @@
-// Package contentstore is the M3 local content store (docs/01-collectors.md §11.3, ADR 0017):
-// content keyed by event, sealed at rest, held on the device within local retention, and never
-// leaving it except through a per-event grant (docs/02-ingest-and-transport.md §3, §10).
+// Package contentstore holds M3 content on the device: keyed by event, sealed at rest, kept within
+// local retention, and leaving the device only through a per-event grant.
 //
-// It holds two things per event. The content itself is one file sealed with AES-256-GCM under a
-// key file that lives outside the store directory, so a copy of the directory alone opens nothing.
-// The grant state is one index entry: whether the event has been delivered (a grant can only be
-// requested for an event the server has), and what the server decided. Nothing here enters an
-// envelope — a device claiming it holds content is not evidence that it does.
+// It holds two things per event. The content is one file sealed with AES-256-GCM under a key the
+// caller keeps outside the store directory, so a copy of the directory alone opens nothing. The
+// grant state is one index entry: whether the event has been delivered (a grant can only be
+// requested for an event the server has) and what the server decided. Nothing here enters an
+// envelope.
 package contentstore
 
 import (
@@ -23,6 +22,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/shadow-ai-capture/device/capture-core/state"
 )
 
 // State is where one held object is on the grant path.
@@ -33,7 +34,7 @@ const (
 	StateHeld State = "held"
 	// StateReady: the event was delivered; a grant may be requested.
 	StateReady State = "ready"
-	// StateUploaded: a grant was issued and the ciphertext was written. Terminal.
+	// StateUploaded: a grant was issued and the content was uploaded. Terminal.
 	StateUploaded State = "uploaded"
 	// StateDenied: the server decided against an upload. Terminal; the content stays local.
 	StateDenied State = "denied"
@@ -55,9 +56,10 @@ type Item struct {
 
 // Request is the event's own description of its content, taken from the delivered envelope.
 type Request struct {
-	CollectionMode string `json:"collection_mode,omitempty"`
-	ContentDigest  string `json:"content_digest,omitempty"`
-	PolicyRuleID   string `json:"policy_rule_id,omitempty"`
+	CollectionMode  string `json:"collection_mode,omitempty"`
+	ContentDigest   string `json:"content_digest,omitempty"`
+	PolicyRuleID    string `json:"policy_rule_id,omitempty"`
+	AttachmentCount int    `json:"attachment_count,omitempty"`
 }
 
 // ErrNotHeld is returned for an event the store holds no content for.
@@ -77,33 +79,21 @@ type Store struct {
 	items map[string]*Item
 }
 
-// Open opens (or creates) the store in dir, sealed under the key in keyFile. The key file must be
-// outside dir, for the reason the spool's must (§12): the key and what it seals do not travel
-// together. A missing key file is created with 32 random bytes, mode 0600.
-func Open(dir, keyFile string, now func() time.Time) (*Store, error) {
-	if dir == "" || keyFile == "" {
-		return nil, errors.New("contentstore: a directory and a key file are both required")
+// Open opens (or creates) the store in dir, sealed under key (32 bytes). The caller keeps the key
+// outside dir: the key and what it seals do not travel together.
+func Open(dir string, key []byte, now func() time.Time) (*Store, error) {
+	if dir == "" {
+		return nil, errors.New("contentstore: a directory is required")
 	}
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, err
-	}
-	absKey, err := filepath.Abs(keyFile)
-	if err != nil {
-		return nil, err
-	}
-	if rel, err := filepath.Rel(absDir, absKey); err == nil && rel != ".." && !filepath.IsAbs(rel) && len(rel) >= 1 && rel[0] != '.' {
-		return nil, fmt.Errorf("contentstore: key file %s is inside the content directory", keyFile)
 	}
 	if now == nil {
 		now = time.Now
 	}
 	if err := os.MkdirAll(absDir, 0o700); err != nil {
 		return nil, fmt.Errorf("contentstore: creating %s: %w", dir, err)
-	}
-	key, err := loadOrCreateKey(absKey)
-	if err != nil {
-		return nil, err
 	}
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -118,30 +108,6 @@ func Open(dir, keyFile string, now func() time.Time) (*Store, error) {
 		return nil, err
 	}
 	return s, nil
-}
-
-func loadOrCreateKey(path string) ([]byte, error) {
-	key, err := os.ReadFile(path)
-	if err == nil {
-		if len(key) != 32 {
-			return nil, fmt.Errorf("contentstore: key file %s is %d bytes, want 32", path, len(key))
-		}
-		return key, nil
-	}
-	if !os.IsNotExist(err) {
-		return nil, fmt.Errorf("contentstore: reading key file: %w", err)
-	}
-	key = make([]byte, 32)
-	if _, err := rand.Read(key); err != nil {
-		return nil, err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, err
-	}
-	if err := os.WriteFile(path, key, 0o600); err != nil {
-		return nil, fmt.Errorf("contentstore: writing key file: %w", err)
-	}
-	return key, nil
 }
 
 // Put implements core.ContentStore: seal the content for one event and index it as held.
@@ -331,12 +297,6 @@ func (s *Store) saveIndexLocked() error {
 	return writeAtomic(s.indexPath(), raw)
 }
 
-// writeAtomic writes through a temporary file and a rename, so a crash leaves the old file or the
-// new one, never a torn one.
-func writeAtomic(path string, data []byte) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
-}
+// writeAtomic writes through a protected temporary file and a rename, so a crash leaves the old
+// file or the new one, never a torn one.
+func writeAtomic(path string, data []byte) error { return state.WriteFile(path, data) }

@@ -81,6 +81,9 @@ type frameHeader struct {
 	Nonce   [12]byte
 }
 
+// KeySize is the spool key length: 32 bytes, AES-256.
+const KeySize = 32
+
 func newAEAD(key []byte) (cipher.AEAD, error) {
 	if len(key) != KeySize {
 		return nil, fmt.Errorf("spool: key must be %d bytes, got %d", KeySize, len(key))

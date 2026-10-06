@@ -6,25 +6,18 @@ import (
 	"time"
 )
 
-// The device health channel: docs/02-ingest-and-transport.md §5.4 and §9. A device sends one report
-// per collection cycle; the server upserts one row per collector into ops.collector_state, keyed
-// (tenant, device, collector). It is deliberately NOT an event stream (D5, ADR 0011): health is
-// current-state information, and emitting it as events would be the unbounded category brief §3.1
-// warns about.
+// The device health channel. A device reports periodically and the server keeps one row per
+// collector, keyed (tenant, device, collector). It is current state, not an event stream.
 //
-// Why a separate type from HealthReport: HealthReport is one collector's row (what a provider
-// produces); HealthRequest is the whole report (the device-level fields plus the per-collector
-// array). The server cannot derive the device-level fields from a collector row, and the device
-// cannot send them one collector at a time.
+// HealthReport is one collector's row; HealthRequest is the whole report: the device-level fields
+// plus the per-collector array.
 
-// HealthSchemaVersion is the document version of the /v1/health exchange, independent of the /v1 API
-// major version (docs/02 §5).
+// HealthSchemaVersion is the document version of the /v1/health exchange.
 const HealthSchemaVersion = "1.0"
 
-// SpoolHealth is the device's local spool accounting. It is device-level: there is one spool per
-// device (§3.4), and the counter is what makes an undercount visible to the operator (C22).
-// spool_dropped_total and the per-provider `dropped` counter are separate facts and are never summed
-// before they reach the operator (docs/01 §4.3).
+// SpoolHealth is the device's spool accounting; the drop counter is what makes an undercount
+// visible to the operator. The spool's dropped total and the per-provider dropped counter are
+// separate facts and are never summed.
 type SpoolHealth struct {
 	DepthEvents     int64      `json:"depth_events"`
 	CapacityEvents  int64      `json:"capacity_events,omitempty"`
@@ -42,22 +35,22 @@ func (s SpoolHealth) Validate() error {
 	return nil
 }
 
-// HealthRequest is the body of POST /v1/health. tenant_id and device_id are absent by construction:
-// they come from the authenticated credential and never from the report (docs/02 §5.4), exactly as
-// on /v1/events.
+// HealthRequest is the body of POST /v1/health. tenant_id and device_id are absent by
+// construction: they come from the authenticated credential, exactly as on /v1/events.
 type HealthRequest struct {
-	SchemaVersion       string      `json:"schema_version"`
-	ReportedAt          time.Time   `json:"reported_at"`
-	AgentVersion        string      `json:"agent_version,omitempty"`
-	// Hostname is the clear machine name, present only while the tenant's device_identity is
-	// 'clear'. When it is 'hashed' the device sends nothing here and the enrolment-time
-	// hostname_hash stands (ADR 0021).
-	Hostname            string      `json:"hostname,omitempty"`
+	SchemaVersion string    `json:"schema_version"`
+	ReportedAt    time.Time `json:"reported_at"`
+	AgentVersion  string    `json:"agent_version,omitempty"`
+	// Hostname is the clear machine name, present only while the tenant's device identity is
+	// clear. When it is hashed the device sends nothing here and the enrolment-time
+	// hostname_hash stands.
+	Hostname string `json:"hostname,omitempty"`
 	// CollectionMode is the effective base mode the device resolved from the signed bundle for its
 	// own scope: the device override when the bundle names this device, otherwise the tenant
 	// default. It is optional so a device whose bundle has not loaded yet can still report health.
-	CollectionMode      string      `json:"collection_mode,omitempty"`
-	// ManagedState is the agent's report, because there is no MDM resolver in this build.
+	CollectionMode string `json:"collection_mode,omitempty"`
+	// ManagedState is the agent's report: managed when the OS shows an Intune enrolment, else
+	// unknown.
 	ManagedState        string      `json:"managed_state,omitempty"`
 	ClockOffsetMS       *int64      `json:"clock_offset_ms,omitempty"`
 	PolicyBundleVersion string      `json:"policy_bundle_version,omitempty"`
@@ -66,8 +59,7 @@ type HealthRequest struct {
 	CredentialNotAfter  *time.Time  `json:"credential_not_after,omitempty"`
 	Spool               SpoolHealth `json:"spool"`
 	// Collectors is open within a schema version: a new collector may report without a schema
-	// change, because a collector is additive while a new field on the envelope is not (§5
-	// versioning rules).
+	// change.
 	Collectors []HealthReport `json:"collectors"`
 }
 
@@ -102,13 +94,13 @@ func (r HealthRequest) Validate() error {
 	return nil
 }
 
-// HealthResponse is the 200 body. next_report_after_s carries the cadence so the fleet can be slowed
-// without shipping device code (docs/02 §5.4).
+// HealthResponse is the 200 body. next_report_after_s carries the cadence so the fleet can be
+// slowed without shipping device code.
 type HealthResponse struct {
-	AckedAt          time.Time      `json:"acked_at"`
-	ServerTime       time.Time      `json:"server_time"`
-	NextReportAfterS int            `json:"next_report_after_s"`
+	AckedAt          time.Time `json:"acked_at"`
+	ServerTime       time.Time `json:"server_time"`
+	NextReportAfterS int       `json:"next_report_after_s"`
 	// DeviceIdentity restates the tenant's identity setting so a device sees a change without
-	// waiting for its next enrolment (ADR 0021). Empty means the server did not state one.
-	DeviceIdentity   DeviceIdentity `json:"device_identity,omitempty"`
+	// waiting for its next enrolment. Empty means the server did not state one.
+	DeviceIdentity DeviceIdentity `json:"device_identity,omitempty"`
 }

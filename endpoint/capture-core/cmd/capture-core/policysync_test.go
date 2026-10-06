@@ -16,6 +16,7 @@ import (
 
 	"github.com/shadow-ai-capture/device/capture-core/drain"
 	"github.com/shadow-ai-capture/device/capture-core/policy"
+	"github.com/shadow-ai-capture/device/capture-core/state"
 	"github.com/shadow-ai-capture/device/protocol"
 )
 
@@ -27,7 +28,6 @@ func signedTestBundle(t *testing.T, priv ed25519.PrivateKey, version string, mod
 		EffectiveAt:   time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC),
 		TenantDefault: mode,
 		Interception:  policy.Interception{ProxyListen: "127.0.0.1:8843", ProxyCanary: "api.anthropic.com:443"},
-		Classifier:    policy.ClassifierRelease{ReleaseID: "rel-1", State: policy.ReleaseEnforcing},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -72,11 +72,11 @@ func newSyncFixture(t *testing.T) *syncFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store, err := policy.NewStore(v, nil)
+	store, err := policy.NewStore(v)
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &syncFixture{store: store, cache: policyCache{dir: filepath.Join(t.TempDir(), policyCacheDir)}, fetcher: &scriptedFetcher{}, priv: priv}
+	f := &syncFixture{store: store, cache: policyCache{dir: filepath.Join(t.TempDir(), state.PolicyDir)}, fetcher: &scriptedFetcher{}, priv: priv}
 	f.sync = newPolicySync(store, f.cache, f.fetcher, func(r policy.Result) { f.results = append(f.results, r) },
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return f
@@ -130,7 +130,7 @@ func TestPolicySyncNotModifiedKeepsTheBundle(t *testing.T) {
 	}
 }
 
-// docs/01 §13.3: a bundle that fails verification is discarded and the previous one stays in force;
+// A bundle that fails verification is discarded and the previous one stays in force;
 // it is not cached, so a restart cannot pick it up either; polling backs off.
 func TestPolicySyncBadSignatureKeepsThePreviousBundle(t *testing.T) {
 	f := newSyncFixture(t)
@@ -156,7 +156,7 @@ func TestPolicySyncBadSignatureKeepsThePreviousBundle(t *testing.T) {
 	}
 }
 
-// docs/02 §5.2: a 404 means the tenant has no bundle, and the device is at M0 — never "no policy,
+// A 404 with the error envelope means the tenant has no bundle, and the device is at M0 — never "no policy,
 // no restriction". The cache goes too, and the next fetch asks for a bundle rather than a 304.
 func TestPolicySyncNoBundleFallsToM0(t *testing.T) {
 	f := newSyncFixture(t)
@@ -210,22 +210,23 @@ func TestFetchedPolicyCacheIsVerifiedAtStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := t.TempDir()
-	cfg := Config{DeviceEndpoint: "https://devices.example.com", CredentialFile: filepath.Join(dir, "credential.sealed"),
-		PolicyKey: hex.EncodeToString(pub), PolicyKeyID: "policy-key-1"}
+	dir, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{PolicyKey: hex.EncodeToString(pub), PolicyKeyID: "policy-key-1"}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	refs := policy.ArtefactResolverFunc(func(policy.ArtefactRef) error { return nil })
 
-	store, res, err := openFetchedPolicy(cfg, refs, log)
+	store, res, err := openFetchedPolicy(cfg, dir, log)
 	if err != nil || store.InForce() != nil || res.Outcome != policy.OutcomeFellToM0 {
 		t.Fatalf("no cache: store in force %v, result %+v, err %v; want M0", store.InForce(), res, err)
 	}
 
-	cache := policyCache{dir: filepath.Join(dir, policyCacheDir)}
+	cache := policyCache{dir: dir.Path(state.PolicyDir)}
 	if err := cache.save(signedTestBundle(t, priv, "7", protocol.ModeM1), `"7"`); err != nil {
 		t.Fatal(err)
 	}
-	store, res, err = openFetchedPolicy(cfg, refs, log)
+	store, res, err = openFetchedPolicy(cfg, dir, log)
 	if err != nil || store.InForce() == nil || store.InForce().Version != "7" || res.Outcome != policy.OutcomeAccepted {
 		t.Fatalf("cached bundle not in force at start: %+v %v", res, err)
 	}
@@ -234,7 +235,7 @@ func TestFetchedPolicyCacheIsVerifiedAtStart(t *testing.T) {
 	if err := cache.save([]byte(strings.Replace(string(raw), `"m1"`, `"m3"`, 1)), `"7"`); err != nil {
 		t.Fatal(err)
 	}
-	store, res, err = openFetchedPolicy(cfg, refs, log)
+	store, res, err = openFetchedPolicy(cfg, dir, log)
 	if err != nil || store.InForce() != nil || res.Cause != policy.CauseSignatureInvalid {
 		t.Fatalf("a modified cache: in force %v, result %+v; want M0 and a signature cause", store.InForce(), res)
 	}

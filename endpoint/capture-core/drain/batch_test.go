@@ -99,7 +99,7 @@ func TestSettleMapping(t *testing.T) {
 	if err := store.MarkInFlight(bb.seqs); err != nil {
 		t.Fatalf("MarkInFlight: %v", err)
 	}
-	d := &Drainer{}
+	d := &Drainer{log: nopLogger{}}
 	var res Result
 	resp := &protocol.EventBatchResponse{
 		Results: []protocol.EventResult{

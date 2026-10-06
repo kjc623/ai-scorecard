@@ -7,7 +7,7 @@ import (
 
 var (
 	// ErrWriterActive is returned by Open when another live process holds the spool's
-	// writer lock. One writer, one spool (§3.4, §12).
+	// writer lock. One writer, one spool.
 	ErrWriterActive = errors.New("spool: another process holds the writer lock")
 
 	// ErrClosed is returned by any operation on a closed spool.

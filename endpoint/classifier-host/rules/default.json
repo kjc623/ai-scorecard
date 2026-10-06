@@ -1,0 +1,81 @@
+{
+  "version": "rules-1.0.0",
+  "rules": [
+    {
+      "rule_id": "PAYMENT_CARD_PAN",
+      "class": "payment_card",
+      "score": 0.9,
+      "when": [
+        { "signal": "regex", "dialect": "linear", "pattern": "\\b[2-6][0-9](?:[ .-]?[0-9]){10,17}\\b", "max_matches": 64 },
+        { "signal": "validator", "validator": "luhn" },
+        { "signal": "context", "predicate": "not_preceded_by", "value": "test" }
+      ]
+    },
+    {
+      "rule_id": "US_SSN_STRUCTURE",
+      "class": "government_id",
+      "score": 0.9,
+      "when": [
+        { "signal": "regex", "dialect": "linear", "pattern": "\\b[0-9]{3}[- ][0-9]{2}[- ][0-9]{4}\\b", "max_matches": 32 },
+        { "signal": "validator", "validator": "us_ssn" }
+      ]
+    },
+    {
+      "rule_id": "UK_NINO",
+      "class": "government_id",
+      "score": 0.85,
+      "when": [
+        { "signal": "regex", "dialect": "linear", "pattern": "\\b[A-CEGHJ-PR-TW-Z][A-CEGHJ-NPR-TW-Z] ?[0-9]{2} ?[0-9]{2} ?[0-9]{2} ?[A-D]\\b", "max_matches": 16 },
+        { "signal": "validator", "validator": "gb_nino" }
+      ]
+    },
+    {
+      "rule_id": "PRIVATE_KEY_BLOCK",
+      "class": "credential",
+      "score": 0.95,
+      "when": [
+        { "signal": "regex", "dialect": "linear", "pattern": "-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----", "max_matches": 4 }
+      ]
+    },
+    {
+      "rule_id": "AWS_ACCESS_KEY_ID",
+      "class": "credential",
+      "score": 0.9,
+      "when": [
+        { "signal": "regex", "dialect": "linear", "pattern": "\\b(?:AKIA|ASIA)[0-9A-Z]{16}\\b", "max_matches": 8 }
+      ]
+    },
+    {
+      "rule_id": "CUSTOMER_PII_LABEL",
+      "class": "customer_pii",
+      "score": 0.65,
+      "when": [
+        { "signal": "regex", "dialect": "linear", "pattern": "(?i)\\b(?:date of birth|passport number|home address|national insurance number|social security number)\\b", "max_matches": 16 }
+      ]
+    },
+    {
+      "rule_id": "HEALTH_CLINICAL_VOCABULARY",
+      "class": "health",
+      "score": 0.7,
+      "when": [
+        { "signal": "regex", "dialect": "linear", "pattern": "(?i)\\b(?:diagnos(?:is|es|ed)|prescriptions?|clinical trials?|medical records?|icd-10)\\b", "max_matches": 16 }
+      ]
+    },
+    {
+      "rule_id": "LEGAL_CLAUSE_VOCABULARY",
+      "class": "legal_commercial",
+      "score": 0.7,
+      "when": [
+        { "signal": "regex", "dialect": "linear", "pattern": "(?i)\\b(?:whereas|hereinafter|witnesseth|indemnif(?:y|ies|ied|ication)|governing law|force majeure)\\b", "max_matches": 16 }
+      ]
+    },
+    {
+      "rule_id": "SOURCE_DECLARATION",
+      "class": "source_code",
+      "score": 0.7,
+      "when": [
+        { "signal": "regex", "dialect": "linear", "pattern": "(?m)^[ \\t]*(?:(?:(?:public|private|protected|internal|abstract|final|static|sealed|export|default|async|pub)[ \\t]+)*(?:(?:func|function|def|fn)[ \\t]+[A-Za-z_][A-Za-z0-9_]*[ \\t]*[(<]|class[ \\t]+[A-Za-z_][A-Za-z0-9_]*(?:[ \\t]*[:({<]|[ \\t]+(?:extends|implements)[ \\t]))|package[ \\t]+[A-Za-z_][A-Za-z0-9_.]*[ \\t]*;?[ \\t]*$|import[ \\t]+[A-Za-z_][A-Za-z0-9_.*]*[ \\t]*;?[ \\t]*$|#include[ \\t]*[<\"])", "max_matches": 16 }
+      ]
+    }
+  ]
+}

@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -116,36 +117,43 @@ func TestStartWritesFilesWithContentAndPermissions(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	// CA bundle: the root, mode 0600.
-	if got := fileMode(t, cfg.CABundlePath); got != 0o600 {
-		t.Fatalf("CA bundle mode = %o, want 0600", got)
+	// CA bundle: the device root plus the system roots, readable by every user's runtime.
+	if got, _ := os.ReadFile(cfg.CABundlePath); !bundleContainsRoot(got, root) {
+		t.Fatalf("CA bundle does not carry the root PEM")
 	}
-	if got, _ := os.ReadFile(cfg.CABundlePath); string(got) != string(root) {
-		t.Fatalf("CA bundle content does not equal the root PEM")
+	// POSIX modes: the bundle and the profile are world-readable. Windows has no mode bits; the
+	// shim's directory is readable by users through its inherited ACL.
+	if runtime.GOOS != "windows" {
+		if got := fileMode(t, cfg.CABundlePath); got != 0o644 {
+			t.Fatalf("CA bundle mode = %o, want 0644", got)
+		}
+		if got := fileMode(t, cfg.ProfilePath); got != 0o644 {
+			t.Fatalf("profile mode = %o, want 0644", got)
+		}
 	}
 
-	// Profile: shell exports, mode 0644, both cases of the proxy vars plus the CA vars.
-	if got := fileMode(t, cfg.ProfilePath); got != 0o644 {
-		t.Fatalf("profile mode = %o, want 0644", got)
-	}
+	// Profile: both cases of the proxy variables plus the CA variables, in the platform's syntax.
 	profile, _ := os.ReadFile(cfg.ProfilePath)
-	for _, want := range []string{
-		"export HTTP_PROXY='http://127.0.0.1:8080'",
-		"export HTTPS_PROXY='http://127.0.0.1:8080'",
-		"export http_proxy='http://127.0.0.1:8080'",
-		"export NO_PROXY='localhost,127.0.0.1,::1'",
-		"export NODE_EXTRA_CA_CERTS='" + cfg.CABundlePath + "'",
-		"export SSL_CERT_FILE='" + cfg.CABundlePath + "'",
-		"export REQUESTS_CA_BUNDLE='" + cfg.CABundlePath + "'",
-		"export CURL_CA_BUNDLE='" + cfg.CABundlePath + "'",
-		"export NODE_USE_ENV_PROXY='1'",
+	for _, kv := range [][2]string{
+		{"HTTP_PROXY", "http://127.0.0.1:8080"},
+		{"HTTPS_PROXY", "http://127.0.0.1:8080"},
+		{"http_proxy", "http://127.0.0.1:8080"},
+		{"NO_PROXY", "localhost,127.0.0.1,::1"},
+		{"NODE_EXTRA_CA_CERTS", cfg.CABundlePath},
+		{"SSL_CERT_FILE", cfg.CABundlePath},
+		{"REQUESTS_CA_BUNDLE", cfg.CABundlePath},
+		{"CURL_CA_BUNDLE", cfg.CABundlePath},
+		{"NODE_USE_ENV_PROXY", "1"},
 	} {
-		if !strings.Contains(string(profile), want) {
+		if want := profileLine(kv[0], kv[1]); !strings.Contains(string(profile), want) {
 			t.Fatalf("profile missing %q\n---\n%s", want, profile)
 		}
 	}
 
-	// Env file (Linux): KEY=VALUE lines.
+	// Env file: KEY=VALUE lines, written on Linux only.
+	if runtime.GOOS != "linux" {
+		return
+	}
 	env, err := os.ReadFile(cfg.EnvFile)
 	if err != nil {
 		t.Fatalf("env file: %v", err)
@@ -158,6 +166,15 @@ func TestStartWritesFilesWithContentAndPermissions(t *testing.T) {
 			t.Fatalf("env file missing %q\n---\n%s", want, env)
 		}
 	}
+}
+
+// profileLine is how the platform's profile sets one variable: a batch "set" on Windows, a POSIX
+// export elsewhere.
+func profileLine(name, value string) string {
+	if runtime.GOOS == "windows" {
+		return "set \"" + name + "=" + value + "\""
+	}
+	return "export " + name + "='" + value + "'"
 }
 
 func TestCABundleContainsTheRoot(t *testing.T) {
@@ -375,7 +392,7 @@ func TestNodeProxyScript(t *testing.T) {
 
 	// The profile must wire the bootstrap through NODE_OPTIONS.
 	profile, _ := os.ReadFile(cfg.ProfilePath)
-	if !strings.Contains(string(profile), "NODE_OPTIONS='--require "+cfg.NodeBootstrapPath+"'") {
+	if !strings.Contains(string(profile), profileLine("NODE_OPTIONS", "--require "+cfg.NodeBootstrapPath)) {
 		t.Fatalf("profile does not wire NODE_OPTIONS\n---\n%s", profile)
 	}
 
@@ -426,9 +443,13 @@ func TestCounters(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	// emitted: ca bundle + profile + env file = 3 on Linux.
-	if got := p.Counters().Cumulative()[protocol.CounterEmitted]; got != 3 {
-		t.Fatalf("emitted = %d, want 3", got)
+	// emitted: the CA bundle and the profile, plus the env file on Linux.
+	want := uint64(2)
+	if runtime.GOOS == "linux" {
+		want = 3
+	}
+	if got := p.Counters().Cumulative()[protocol.CounterEmitted]; got != want {
+		t.Fatalf("emitted = %d, want %d", got, want)
 	}
 
 	// One healthy check: observed increments, dropped stays zero.

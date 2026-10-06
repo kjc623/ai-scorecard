@@ -60,16 +60,11 @@ func newFakeHost(t *testing.T, h fakeHost) (net.Conn, *fakeHost) {
 
 func clientWithHost(t *testing.T, h fakeHost) *Client {
 	t.Helper()
-	c, err := New(Address{Network: "unix", Path: "/tmp/does-not-exist.sock"}, "core-1", 300*time.Millisecond)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
 	conn, _ := newFakeHost(t, h)
-	c.SetDialer(func(context.Context, Address) (net.Conn, error) { return conn, nil })
-	return c
+	return NewWithDialer(func(context.Context) (net.Conn, error) { return conn, nil }, "core-1", 300*time.Millisecond)
 }
 
-func TestLink_3_4_HandshakeAndClassifyRoundTrip(t *testing.T) {
+func TestLinkHandshakeAndClassifyRoundTrip(t *testing.T) {
 	c := clientWithHost(t, fakeHost{
 		handshake: protocol.HandshakeResponse{OK: true, ClassifierVersion: "rel-2026-10-01"},
 		reply: protocol.ClassifyResponse{
@@ -99,9 +94,9 @@ func TestLink_3_4_HandshakeAndClassifyRoundTrip(t *testing.T) {
 	_ = c.Close()
 }
 
-// §3.4: a version handshake mismatch marks the host degraded and falls back to rules-only with
+// A version handshake mismatch marks the host degraded and falls back to rules-only with
 // `confidence: degraded` — never failing the submission, and never "no labels found".
-func TestLink_3_4_VersionMismatchDegradesToRulesOnly(t *testing.T) {
+func TestLinkVersionMismatchDegradesToRulesOnly(t *testing.T) {
 	cases := []struct {
 		name string
 		host fakeHost
@@ -132,7 +127,7 @@ func TestLink_3_4_VersionMismatchDegradesToRulesOnly(t *testing.T) {
 				Content: []byte("hello"), Mode: protocol.ModeM1, BudgetMS: 200,
 			})
 			if err != nil {
-				t.Fatalf("§3.4: a handshake mismatch failed the submission: %v", err)
+				t.Fatalf("a handshake mismatch failed the submission: %v", err)
 			}
 			if resp.Confidence != protocol.ConfidenceDegraded {
 				t.Fatalf("confidence = %q, want degraded", resp.Confidence)
@@ -141,7 +136,7 @@ func TestLink_3_4_VersionMismatchDegradesToRulesOnly(t *testing.T) {
 				t.Fatalf("classifier version = %q, want the rules-only baseline", resp.ClassifierVersion)
 			}
 			if err := resp.Validate(); err != nil {
-				t.Fatalf("§13.3 rule 6: the rules-only fallback does not satisfy the response contract: %v", err)
+				t.Fatalf("the rules-only fallback does not satisfy the response contract: %v", err)
 			}
 			degraded, reason := c.Degraded()
 			if !degraded {
@@ -158,7 +153,7 @@ func TestLink_3_4_VersionMismatchDegradesToRulesOnly(t *testing.T) {
 }
 
 // A hung host is detected by request timeout: "no answer" is degraded, never "no labels found".
-func TestLink_3_4_HungHostTimesOutToDegraded(t *testing.T) {
+func TestLinkHungHostTimesOutToDegraded(t *testing.T) {
 	c := clientWithHost(t, fakeHost{
 		handshake: protocol.HandshakeResponse{OK: true, ClassifierVersion: "v1"},
 		silent:    true,
@@ -189,7 +184,7 @@ func TestLink_3_4_HungHostTimesOutToDegraded(t *testing.T) {
 
 // The mode gate is a refusal, not an outage: a request that asks the classifier to read content
 // at M0 is a defect upstream and is returned as an error rather than silently degraded.
-func TestLink_11_2_RefusesAModeViolatingRequest(t *testing.T) {
+func TestLinkRefusesAModeViolatingRequest(t *testing.T) {
 	c := clientWithHost(t, fakeHost{handshake: protocol.HandshakeResponse{OK: true, ClassifierVersion: "v1"}})
 	_ = c.Connect(context.Background())
 	_, err := c.Classify(context.Background(), protocol.ClassifyRequest{
@@ -200,24 +195,7 @@ func TestLink_11_2_RefusesAModeViolatingRequest(t *testing.T) {
 	}
 }
 
-func TestLink_Addresses(t *testing.T) {
-	if (Address{Network: "carrier-pigeon", Path: "x"}).Valid() {
-		t.Fatal("an unknown transport was accepted")
-	}
-	if (Address{Network: "unix", Path: ""}).Valid() {
-		t.Fatal("an empty path was accepted")
-	}
-	win := addressFor("windows", "C:/ProgramData/ShadowAICapture", "classifier-host")
-	if win.Network != "pipe" || win.Path != `\\.\pipe\classifier-host` {
-		t.Fatalf("windows address = %+v, want a named pipe", win)
-	}
-	nix := addressFor("linux", "/var/lib/shadow-ai-capture", "classifier-host")
-	if nix.Network != "unix" || nix.Path != "/var/lib/shadow-ai-capture/classifier-host" {
-		t.Fatalf("linux address = %+v, want a unix socket", nix)
-	}
-}
-
-func TestLink_CloseIsIdempotent(t *testing.T) {
+func TestLinkCloseIsIdempotent(t *testing.T) {
 	c := clientWithHost(t, fakeHost{handshake: protocol.HandshakeResponse{OK: true, ClassifierVersion: "v1"}})
 	if err := c.Close(); err != nil {
 		t.Fatalf("Close before connect: %v", err)

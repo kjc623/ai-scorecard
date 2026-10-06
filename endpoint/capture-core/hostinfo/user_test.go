@@ -8,7 +8,7 @@ import (
 	"github.com/shadow-ai-capture/device/protocol"
 )
 
-// The vectors are written by hand from real GUIDs (contract §4: an Entra account's SID is
+// The vectors are written by hand from real GUIDs (an Entra account's SID is
 // S-1-12-1 followed by the object id's sixteen bytes as four little-endian sub-authorities).
 // The second is the published example of the conversion (an Entra object id and the SID Windows
 // gives the account), so the rule is checked against Windows' own behaviour, not only this code.
@@ -32,7 +32,7 @@ func TestObjectIDFromSID(t *testing.T) {
 	}
 }
 
-// The precedence of contract §4 against the DeriveUserRef vectors protocol pins (computed outside
+// The precedence against the DeriveUserRef vectors protocol pins (computed outside
 // Go), so the device meets the directory's derivation, not just its own.
 func TestUserRefPrecedence(t *testing.T) {
 	key, err := protocol.DecodeUserRefKey("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8")

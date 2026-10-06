@@ -1,160 +1,156 @@
 package credential
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"io/fs"
+	"math/big"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
-	capturespool "github.com/shadow-ai-capture/device/capture-spool"
-	"github.com/shadow-ai-capture/device/protocol"
+	"github.com/shadow-ai-capture/device/capture-core/state"
 )
 
-func testKeyProvider(t *testing.T) capturespool.KeyProvider {
+func testKey(t *testing.T) []byte {
 	t.Helper()
-	k, err := capturespool.NewRandomMemoryKeyProvider()
-	if err != nil {
-		t.Fatalf("key provider: %v", err)
+	k := make([]byte, 32)
+	if _, err := rand.Read(k); err != nil {
+		t.Fatal(err)
 	}
 	return k
 }
 
-func testECPrivateKeyPEM(t *testing.T) string {
+// testCredential is a credential with a real self-signed leaf, so KeyPair can be exercised.
+func testCredential(t *testing.T) *Credential {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		t.Fatalf("generate key: %v", err)
+		t.Fatal(err)
 	}
-	der, err := x509.MarshalECPrivateKey(key)
+	notAfter := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "device-1"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: notAfter}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
-		t.Fatalf("marshal key: %v", err)
+		t.Fatal(err)
 	}
-	return string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der}))
-}
-
-func testCredential(t *testing.T, mode protocol.AuthMode) *Credential {
-	t.Helper()
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
 	return &Credential{
-		Mode:                 mode,
 		DeviceID:             "device-1",
 		TenantID:             "tenant-1",
 		Region:               "eu",
 		HardwareIdentityHash: "sha256:abc",
-		PrivateKey:           testECPrivateKeyPEM(t),
+		PrivateKey:           string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})),
+		CertPEM:              string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
+		NotAfter:             notAfter,
 	}
 }
 
-func TestStoreRoundTrips(t *testing.T) {
-	for _, mode := range []protocol.AuthMode{protocol.AuthModeX509, protocol.AuthModeDPoP} {
-		t.Run(string(mode), func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "credential.sealed")
-			store, err := Open(path, testKeyProvider(t))
-			if err != nil {
-				t.Fatalf("Open: %v", err)
-			}
-			c := &Credential{
-				Mode:                 mode,
-				DeviceID:             "device-1",
-				TenantID:             "tenant-1",
-				Region:               "eu",
-				HardwareIdentityHash: "sha256:abc",
-				PrivateKey:           testECPrivateKeyPEM(t),
-			}
-			if mode == protocol.AuthModeX509 {
-				c.CertPEM = "-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----\n"
-			} else {
-				c.JWK = &protocol.JWK{Kty: "EC", Crv: "P-256", X: "x", Y: "y"}
-			}
-			if err := store.Save(c); err != nil {
-				t.Fatalf("Save: %v", err)
-			}
-			got, err := store.Load()
-			if err != nil {
-				t.Fatalf("Load: %v", err)
-			}
-			if got.Mode != mode || got.DeviceID != "device-1" || got.TenantID != "tenant-1" {
-				t.Fatalf("round trip changed identity: %+v", got)
-			}
-			if got.PrivateKey != c.PrivateKey {
-				t.Fatal("round trip changed the private key")
-			}
-			if err := got.Validate(); err != nil {
-				t.Fatalf("Validate: %v", err)
-			}
-			if _, err := got.ECPrivateKey(); err != nil {
-				t.Fatalf("ECPrivateKey: %v", err)
-			}
-		})
-	}
-}
-
-func TestStoreLoadMissingIsNotExist(t *testing.T) {
-	store, err := Open(filepath.Join(t.TempDir(), "nope"), testKeyProvider(t))
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	if _, err := store.Load(); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("Load of a missing file = %v, want os.ErrNotExist", err)
-	}
-}
-
-func TestStoreRefusesTampering(t *testing.T) {
+func TestStoreRoundTripsAndProtectsTheFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "credential.sealed")
-	store, err := Open(path, testKeyProvider(t))
+	store, err := Open(path, testKey(t))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	c := testCredential(t, protocol.AuthModeDPoP)
-	c.JWK = &protocol.JWK{Kty: "EC", Crv: "P-256", X: "x", Y: "y"}
+	c := testCredential(t)
 	if err := store.Save(c); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
+	got, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.DeviceID != c.DeviceID || got.TenantID != c.TenantID || got.CertPEM != c.CertPEM || !got.NotAfter.Equal(c.NotAfter) {
+		t.Fatalf("round trip changed the credential: %+v", got)
+	}
+	if _, err := got.KeyPair(); err != nil {
+		t.Fatalf("KeyPair: %v", err)
+	}
+	if err := state.CheckFile(path); err != nil {
+		t.Fatalf("the credential file is not protected: %v", err)
+	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read: %v", err)
+		t.Fatal(err)
 	}
-	raw[len(raw)/2] ^= 0x01
+	if bytes.Contains(raw, []byte("PRIVATE KEY")) || bytes.Contains(raw, []byte("device-1")) {
+		t.Fatal("the credential file holds plaintext")
+	}
+}
+
+func TestLoadWithoutAFileIsNotEnrolled(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "nope"), testKey(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Load(); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Load of a missing file = %v, want fs.ErrNotExist", err)
+	}
+}
+
+func TestLoadRefusesTamperingAndTheWrongKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "credential.sealed")
+	store, err := Open(path, testKey(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(testCredential(t)); err != nil {
+		t.Fatal(err)
+	}
+	other, err := Open(path, testKey(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := other.Load(); err == nil {
+		t.Fatal("a credential opened under another key")
+	}
+	raw, _ := os.ReadFile(path)
+	raw[len(raw)-1] ^= 0xff
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
-		t.Fatalf("write: %v", err)
+		t.Fatal(err)
 	}
 	if _, err := store.Load(); err == nil {
 		t.Fatal("a tampered credential was accepted")
 	}
 }
 
-func TestStoreRefusesWrongKey(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "credential.sealed")
-	store, err := Open(path, testKeyProvider(t))
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	c := testCredential(t, protocol.AuthModeDPoP)
-	c.JWK = &protocol.JWK{Kty: "EC", Crv: "P-256", X: "x", Y: "y"}
-	if err := store.Save(c); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-	other, err := Open(path, testKeyProvider(t))
-	if err != nil {
-		t.Fatalf("Open other: %v", err)
-	}
-	if _, err := other.Load(); err == nil {
-		t.Fatal("a credential read under the wrong key was accepted")
+func TestValidateRefusesAnUnusableCredential(t *testing.T) {
+	for name, mutate := range map[string]func(*Credential){
+		"no device":  func(c *Credential) { c.DeviceID = "" },
+		"no tenant":  func(c *Credential) { c.TenantID = "" },
+		"no key":     func(c *Credential) { c.PrivateKey = "" },
+		"no leaf":    func(c *Credential) { c.CertPEM = "" },
+		"bad leaf":   func(c *Credential) { c.CertPEM = "not a certificate" },
+		"wrong pair": func(c *Credential) { c.PrivateKey = testCredential(t).PrivateKey },
+	} {
+		c := testCredential(t)
+		mutate(c)
+		if c.Validate() == nil {
+			if _, err := c.KeyPair(); err == nil {
+				t.Errorf("%s: an unusable credential validated and built a key pair", name)
+			}
+		}
 	}
 }
 
-func TestSealedReflectsProvider(t *testing.T) {
-	kp := testKeyProvider(t)
-	store, err := Open(filepath.Join(t.TempDir(), "c"), kp)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
+func TestExpired(t *testing.T) {
+	c := testCredential(t)
+	if c.Expired(c.NotAfter.Add(-time.Second)) || !c.Expired(c.NotAfter) {
+		t.Fatal("Expired disagrees with NotAfter")
 	}
-	// MemoryKeyProvider is unsealed by definition.
-	if store.Sealed() {
-		t.Fatal("Sealed() is true for a MemoryKeyProvider, which is never platform-protected")
+	c.NotAfter = time.Time{}
+	if c.Expired(time.Now()) {
+		t.Fatal("a zero NotAfter was treated as expired")
 	}
 }

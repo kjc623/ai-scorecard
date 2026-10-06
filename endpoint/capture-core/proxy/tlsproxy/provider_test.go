@@ -23,47 +23,6 @@ import (
 
 // ---- fakes ---------------------------------------------------------------------------------
 
-type recProxy struct {
-	mu         sync.Mutex
-	steps      []string
-	addr       string
-	effective  bool
-	openAtRest map[string]bool
-	openCheck  func() bool
-}
-
-func (s *recProxy) PointAt(_ context.Context, addr string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.addr = addr
-	s.effective = true
-	s.steps = append(s.steps, "systemproxy.PointAt:"+addr)
-	return nil
-}
-
-func (s *recProxy) Restore(context.Context) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.steps = append(s.steps, "systemproxy.Restore")
-	if s.openCheck != nil {
-		s.openAtRest["listener_open"] = s.openCheck()
-	}
-	s.effective = false
-	return nil
-}
-
-func (s *recProxy) Effective(context.Context) (string, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.addr, s.effective
-}
-
-func (s *recProxy) sequence() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]string(nil), s.steps...)
-}
-
 type fakeTrust struct {
 	installed []byte
 	removes   int
@@ -134,7 +93,6 @@ func bundleIntercepting(port int) *policy.Bundle {
 			SeedHosts: []string{"127.0.0.1"},
 			Ports:     []int{port},
 		},
-		Classifier: policy.ClassifierRelease{ReleaseID: "rel-1", State: policy.ReleaseEnforcing},
 	}
 }
 
@@ -231,11 +189,11 @@ func waitFor(t *testing.T, d time.Duration, what string, cond func() bool) {
 	t.Fatalf("timed out waiting for %s", what)
 }
 
-// ---- §5.3 interception ----------------------------------------------------------------------
+// ---- interception ----------------------------------------------------------------------
 
-// §5.3: an eligible destination is terminated with a minted leaf, the request is read, and the
+// An eligible destination is terminated with a minted leaf, the request is read, and the
 // response streams back. The client believes it is talking to the real host.
-func TestTLS_5_3_InterceptsEligibleDestination(t *testing.T) {
+func TestTLSInterceptsEligibleDestination(t *testing.T) {
 	body := `{"messages":[{"role":"user","content":"Summarise the attached contract."}]}`
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got, _ := io.ReadAll(r.Body)
@@ -248,14 +206,12 @@ func TestTLS_5_3_InterceptsEligibleDestination(t *testing.T) {
 	defer upstream.Close()
 	upPort := upstream.Listener.Addr().(*net.TCPAddr).Port
 
-	sysProxy := &recProxy{openAtRest: map[string]bool{}}
 	pipe := &fakePipeline{mode: protocol.ModeM1}
 	bundle := bundleIntercepting(upPort)
 	p := newProviderForTest(t, Config{
 		Listen:        "127.0.0.1:0",
 		Bundles:       func() *policy.Bundle { return bundle },
 		Pipeline:      pipe,
-		SystemProxy:   sysProxy,
 		UpstreamRoots: upstreamPool(upstream),
 		CanaryHost:    "127.0.0.1",
 		CanaryPort:    upPort,
@@ -265,7 +221,7 @@ func TestTLS_5_3_InterceptsEligibleDestination(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	if p.Health().State != protocol.StateHealthy {
-		t.Fatalf("§5.6 health = %s/%s, want healthy after the end-to-end probe", p.Health().State, p.Health().Detail)
+		t.Fatalf("health = %s/%s, want healthy after the end-to-end probe", p.Health().State, p.Health().Detail)
 	}
 
 	ca := p.CA()
@@ -298,9 +254,9 @@ func TestTLS_5_3_InterceptsEligibleDestination(t *testing.T) {
 	}
 }
 
-// §5.1: a destination in none of the three sets is blind-tunnelled. The proof is that the client
+// A destination in none of the three sets is blind-tunnelled. The proof is that the client
 // sees the *upstream's* certificate: our leaf would fail verification against the upstream pool.
-func TestTLS_5_1_BlindTunnelsUnlistedDestination(t *testing.T) {
+func TestTLSBlindTunnelsUnlistedDestination(t *testing.T) {
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"direct":true}`))
@@ -331,13 +287,13 @@ func TestTLS_5_1_BlindTunnelsUnlistedDestination(t *testing.T) {
 		t.Fatalf("blind tunnel response = %d %q", resp.StatusCode, got)
 	}
 	if c := p.Counters().Cumulative(); c[protocol.CounterBlindTunnelled] != 1 {
-		t.Fatalf("§5.1 blind_tunnelled = %d, want 1", c[protocol.CounterBlindTunnelled])
+		t.Fatalf("blind_tunnelled = %d, want 1", c[protocol.CounterBlindTunnelled])
 	}
 }
 
-// §13.3 rule 5 through this provider's eyes: with no bundle in force nothing is intercepted, so
+// With no bundle in force nothing is intercepted, so
 // no content is read. M0 is a reduction in capability, never an increase.
-func TestTLS_13_3_NoBundleMeansNothingIsDecrypted(t *testing.T) {
+func TestTLSNoBundleMeansNothingIsDecrypted(t *testing.T) {
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"direct":true}`))
 	}))
@@ -366,11 +322,11 @@ func TestTLS_13_3_NoBundleMeansNothingIsDecrypted(t *testing.T) {
 	}
 }
 
-// ---- §5.4 fail-open ---------------------------------------------------------------------
+// ---- fail-open ---------------------------------------------------------------------
 
-// §5.4's table, trigger by trigger. The acceptance property is that the client's exchange
+// The fail-open table, trigger by trigger. The client's exchange
 // completes in every row except the one where the upstream itself failed.
-func TestTLS_5_4_FailOpenTable(t *testing.T) {
+func TestTLSFailOpenTable(t *testing.T) {
 	body := `{"messages":[{"role":"user","content":"hello"}]}`
 
 	t.Run("classifier unavailable carries the request and reports degraded", func(t *testing.T) {
@@ -380,10 +336,9 @@ func TestTLS_5_4_FailOpenTable(t *testing.T) {
 		defer upstream.Close()
 		upPort := upstream.Listener.Addr().(*net.TCPAddr).Port
 		pipe := &fakePipeline{mode: protocol.ModeM1, degraded: true, reason: core.ReasonClassifierDegraded}
-		sysProxy := &recProxy{openAtRest: map[string]bool{}}
 		p := newProviderForTest(t, Config{
 			Listen: "127.0.0.1:0", Bundles: func() *policy.Bundle { return bundleIntercepting(upPort) },
-			Pipeline: pipe, SystemProxy: sysProxy, UpstreamRoots: upstreamPool(upstream),
+			Pipeline: pipe, UpstreamRoots: upstreamPool(upstream),
 			CanaryHost: "127.0.0.1", CanaryPort: upPort,
 		})
 		if err := p.Start(context.Background()); err != nil {
@@ -393,13 +348,13 @@ func TestTLS_5_4_FailOpenTable(t *testing.T) {
 		defer conn.Close()
 		resp, _ := postThroughTunnel(t, conn, "127.0.0.1", body)
 		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("§5.4: the client's request was not carried: %d", resp.StatusCode)
+			t.Fatalf("the client's request was not carried: %d", resp.StatusCode)
 		}
 		waitFor(t, 2*time.Second, "the degradation to be recorded", func() bool {
 			return p.Health().Detail == protocol.DetailClassifierUnavailable
 		})
 		if h := p.Health(); h.State != protocol.StateDegraded {
-			t.Fatalf("§5.4: health = %s, want degraded", h.State)
+			t.Fatalf("health = %s, want degraded", h.State)
 		}
 	})
 
@@ -410,10 +365,9 @@ func TestTLS_5_4_FailOpenTable(t *testing.T) {
 		defer upstream.Close()
 		upPort := upstream.Listener.Addr().(*net.TCPAddr).Port
 		pipe := &fakePipeline{mode: protocol.ModeM1, procErr: errors.New("spool full")}
-		sysProxy := &recProxy{openAtRest: map[string]bool{}}
 		p := newProviderForTest(t, Config{
 			Listen: "127.0.0.1:0", Bundles: func() *policy.Bundle { return bundleIntercepting(upPort) },
-			Pipeline: pipe, SystemProxy: sysProxy, UpstreamRoots: upstreamPool(upstream),
+			Pipeline: pipe, UpstreamRoots: upstreamPool(upstream),
 			CanaryHost: "127.0.0.1", CanaryPort: upPort,
 		})
 		if err := p.Start(context.Background()); err != nil {
@@ -423,13 +377,13 @@ func TestTLS_5_4_FailOpenTable(t *testing.T) {
 		defer conn.Close()
 		resp, _ := postThroughTunnel(t, conn, "127.0.0.1", body)
 		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("§5.4: a spool failure blocked the client: %d", resp.StatusCode)
+			t.Fatalf("a spool failure blocked the client: %d", resp.StatusCode)
 		}
 		waitFor(t, 2*time.Second, "the dropped count", func() bool {
 			return p.Counters().Cumulative()[protocol.CounterDropped] == 1
 		})
 		if d := p.Health().Detail; d != protocol.DetailSpoolUnwritable {
-			t.Fatalf("§5.4: detail = %q, want %q", d, protocol.DetailSpoolUnwritable)
+			t.Fatalf("detail = %q, want %q", d, protocol.DetailSpoolUnwritable)
 		}
 	})
 
@@ -441,10 +395,9 @@ func TestTLS_5_4_FailOpenTable(t *testing.T) {
 
 		bundle := bundleIntercepting(dead)
 		bundle.Interception.Ports = []int{dead, livePort} // the canary needs to be interceptable
-		sysProxy := &recProxy{openAtRest: map[string]bool{}}
 		p := newProviderForTest(t, Config{
 			Listen: "127.0.0.1:0", Bundles: func() *policy.Bundle { return bundle },
-			Pipeline: &fakePipeline{mode: protocol.ModeM1}, SystemProxy: sysProxy,
+			Pipeline:      &fakePipeline{mode: protocol.ModeM1},
 			UpstreamRoots: upstreamPool(live), CanaryHost: "127.0.0.1", CanaryPort: livePort,
 		})
 		if err := p.Start(context.Background()); err != nil {
@@ -460,7 +413,7 @@ func TestTLS_5_4_FailOpenTable(t *testing.T) {
 		_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 		_, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodPost})
 		if err == nil {
-			t.Fatal("§5.4: a response was substituted for an upstream connect failure")
+			t.Fatal("a response was substituted for an upstream connect failure")
 		}
 		waitFor(t, 2*time.Second, "the upstream failure detail", func() bool {
 			return p.Health().Detail == protocol.DetailUpstreamFailure
@@ -468,9 +421,9 @@ func TestTLS_5_4_FailOpenTable(t *testing.T) {
 	})
 }
 
-// §5.3: an over-cap body is not read into memory, is sized, and is reported as degraded — never
+// An over-cap body is not read into memory, is sized, and is reported as degraded — never
 // as a silent "clean". The bytes still reach the upstream unchanged.
-func TestTLS_5_3_OverCapBodyIsForwardedButNotHeld(t *testing.T) {
+func TestTLSOverCapBodyIsForwardedButNotHeld(t *testing.T) {
 	body := strings.Repeat("A", 4096)
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got, _ := io.ReadAll(r.Body)
@@ -483,10 +436,9 @@ func TestTLS_5_3_OverCapBodyIsForwardedButNotHeld(t *testing.T) {
 	upPort := upstream.Listener.Addr().(*net.TCPAddr).Port
 
 	pipe := &fakePipeline{mode: protocol.ModeM1}
-	sysProxy := &recProxy{openAtRest: map[string]bool{}}
 	p := newProviderForTest(t, Config{
 		Listen: "127.0.0.1:0", Bundles: func() *policy.Bundle { return bundleIntercepting(upPort) },
-		Pipeline: pipe, SystemProxy: sysProxy, UpstreamRoots: upstreamPool(upstream),
+		Pipeline: pipe, UpstreamRoots: upstreamPool(upstream),
 		CanaryHost: "127.0.0.1", CanaryPort: upPort, BodyCap: 128,
 	})
 	if err := p.Start(context.Background()); err != nil {
@@ -508,40 +460,33 @@ func TestTLS_5_3_OverCapBodyIsForwardedButNotHeld(t *testing.T) {
 	waitFor(t, 2*time.Second, "the observation", func() bool { return len(pipe.observations()) == 1 })
 	obs := pipe.observations()[0]
 	if !obs.OverCap {
-		t.Fatalf("§5.3: over-cap body was not flagged (size=%d cap=128)", obs.SizeBytes)
+		t.Fatalf("over-cap body was not flagged (size=%d cap=128)", obs.SizeBytes)
 	}
 	if obs.SizeBytes != int64(len(body)) {
-		t.Fatalf("§5.3: size_bytes = %d, want the full observed size %d", obs.SizeBytes, len(body))
+		t.Fatalf("size_bytes = %d, want the full observed size %d", obs.SizeBytes, len(body))
 	}
-	// §5.3 allows a digest of the first N bytes, so the pipeline may see the bounded prefix — but
+	// A digest of the first N bytes is allowed, so the pipeline may see the bounded prefix, but
 	// never the whole body: the point is that an over-cap payload is not held in memory.
 	for _, held := range pipe.readBodies {
 		if len(held) > 128 {
-			t.Fatalf("§5.3: an over-cap body was read into memory: %d bytes (cap 128)", len(held))
+			t.Fatalf("an over-cap body was read into memory: %d bytes (cap 128)", len(held))
 		}
 	}
 }
 
-// ---- §5.5 kill switch and the pinned-client ladder ------------------------------------------
+// ---- kill switch and the pinned-client ladder ------------------------------------------
 
-// §5.5's ordering is the dangerous half: enforcement and interception stop FIRST, then the system
-// proxy is restored, then the provider reports absent with detail=killed. Traffic must never be
-// left pointed at a proxy that has stopped intercepting.
-func TestTLS_5_5_KillSwitchStopsEnforcementBeforeRestoringTheProxy(t *testing.T) {
+// The kill switch stops interception first, then removes the trusted root, then reports absent
+// with detail killed.
+func TestKillSwitchStopsInterceptionThenRemovesTheRoot(t *testing.T) {
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer upstream.Close()
 	upPort := upstream.Listener.Addr().(*net.TCPAddr).Port
 
-	var p *Provider
-	sysProxy := &recProxy{openAtRest: map[string]bool{}}
-	sysProxy.openCheck = func() bool {
-		// True would mean the listener is still intercepting when the system proxy is restored.
-		return p.ListenAddr() != ""
-	}
 	trustRoot := &fakeTrust{}
-	p = newProviderForTest(t, Config{
+	p := newProviderForTest(t, Config{
 		Listen: "127.0.0.1:0", Bundles: func() *policy.Bundle { return bundleIntercepting(upPort) },
-		Pipeline: &fakePipeline{mode: protocol.ModeM1}, SystemProxy: sysProxy, TrustRoot: trustRoot,
+		Pipeline: &fakePipeline{mode: protocol.ModeM1}, TrustRoot: trustRoot,
 		UpstreamRoots: upstreamPool(upstream), CanaryHost: "127.0.0.1", CanaryPort: upPort,
 	})
 	if err := p.Start(context.Background()); err != nil {
@@ -559,52 +504,39 @@ func TestTLS_5_5_KillSwitchStopsEnforcementBeforeRestoringTheProxy(t *testing.T)
 			Provider: protocol.RouteProxyTLS, Mode: policy.KillDisable,
 			EffectiveAt: time.Unix(1_700_000_100, 0), ReasonCode: "fleet_regression_1234",
 		}},
-		Classifier: policy.ClassifierRelease{ReleaseID: "rel-1", State: policy.ReleaseEnforcing},
 	}
 	if err := p.ApplyPolicy(ks); err != nil {
 		t.Fatalf("ApplyPolicy: %v", err)
 	}
 
-	want := []string{
-		"stop_interception:kill_switch", // 1 stop enforcement and interception first
-		"systemproxy.Restore",           // 2 then restore the system proxy
-		"trustroot.Remove",              // 3 then stop trusting our interception authority (§5.2)
-		"health:absent:killed",          // 4 then report absent detail=killed
-	}
-	got := p.Sequence()
-	if strings.Join(got, " > ") != strings.Join(want, " > ") {
-		t.Fatalf("§5.5 ordering\ngot:  %v\nwant: %v", got, want)
+	want := []string{"stop_interception:kill_switch", "trustroot.Remove", "health:absent:killed"}
+	if got := p.Sequence(); strings.Join(got, " > ") != strings.Join(want, " > ") {
+		t.Fatalf("kill switch ordering\ngot:  %v\nwant: %v", got, want)
 	}
 	if trustRoot.removes != 1 {
-		t.Fatalf("§5.2: the kill switch called TrustRoot.Remove %d times, want 1 (removal as reliable as installation)", trustRoot.removes)
-	}
-	if open, recorded := sysProxy.openAtRest["listener_open"]; recorded && open {
-		t.Fatal("§5.5: the system proxy was restored while interception was still listening — the exact ordering that breaks egress")
+		t.Fatalf("the kill switch called TrustRoot.Remove %d times, want 1", trustRoot.removes)
 	}
 	h := p.Health()
 	if h.State != protocol.StateAbsent || h.Detail != protocol.DetailKilled {
-		t.Fatalf("§5.5 health after the kill switch = %s/%s, want absent/killed", h.State, h.Detail)
+		t.Fatalf("health after the kill switch = %s/%s, want absent/killed", h.State, h.Detail)
 	}
-	// The kill switch removes the risky capability, not the product: capture-core stays installed
-	// and its other providers keep running. This provider is done, and says so.
 	if p.ListenAddr() != "" {
-		t.Fatal("§5.5: the proxy is still listening after the kill switch")
+		t.Fatal("the proxy is still listening after the kill switch")
 	}
 }
 
-// §5.5's first row: a client that fails the minted-leaf handshake is excluded per process and
+// A client that fails the minted-leaf handshake is excluded per process and
 // destination, and tunnelled blind from then on — never left broken to preserve collection.
-func TestTLS_5_5_PinnedClientExclusionLadder(t *testing.T) {
+func TestTLSPinnedClientExclusionLadder(t *testing.T) {
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"direct":true}`))
 	}))
 	defer upstream.Close()
 	upPort := upstream.Listener.Addr().(*net.TCPAddr).Port
 
-	sysProxy := &recProxy{openAtRest: map[string]bool{}}
 	p := newProviderForTest(t, Config{
 		Listen: "127.0.0.1:0", Bundles: func() *policy.Bundle { return bundleIntercepting(upPort) },
-		Pipeline: &fakePipeline{mode: protocol.ModeM1}, SystemProxy: sysProxy,
+		Pipeline:      &fakePipeline{mode: protocol.ModeM1},
 		UpstreamRoots: upstreamPool(upstream), CanaryHost: "127.0.0.1", CanaryPort: upPort,
 		Process: func(net.Conn) string { return "pinned-client" },
 	})
@@ -642,17 +574,16 @@ func TestTLS_5_5_PinnedClientExclusionLadder(t *testing.T) {
 	}
 }
 
-// §5.6: healthy requires the end-to-end probe. Without one the provider reports tls_probe_failed
+// Healthy requires the end-to-end probe. Without one the provider reports tls_probe_failed
 // rather than claiming health on the strength of a successful bind.
-func TestTLS_5_6_HealthNeverHealthyWithoutTheProbe(t *testing.T) {
+func TestTLSHealthNeverHealthyWithoutTheProbe(t *testing.T) {
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer upstream.Close()
 	upPort := upstream.Listener.Addr().(*net.TCPAddr).Port
 
-	sysProxy := &recProxy{openAtRest: map[string]bool{}}
 	p := newProviderForTest(t, Config{
 		Listen: "127.0.0.1:0", Bundles: func() *policy.Bundle { return bundleIntercepting(upPort) },
-		Pipeline: &fakePipeline{mode: protocol.ModeM1}, SystemProxy: sysProxy,
+		Pipeline:      &fakePipeline{mode: protocol.ModeM1},
 		UpstreamRoots: upstreamPool(upstream), // no canary configured
 	})
 	if err := p.Start(context.Background()); err != nil {
@@ -660,26 +591,19 @@ func TestTLS_5_6_HealthNeverHealthyWithoutTheProbe(t *testing.T) {
 	}
 	h := p.Health()
 	if h.State == protocol.StateHealthy {
-		t.Fatal("§5.6: healthy without a successful end-to-end probe through a minted leaf")
+		t.Fatal("healthy without a successful end-to-end probe through a minted leaf")
 	}
 	if h.State != protocol.StateDegraded || h.Detail != protocol.DetailTLSProbeFailed {
-		t.Fatalf("§5.6 health = %s/%s, want degraded/%s", h.State, h.Detail, protocol.DetailTLSProbeFailed)
+		t.Fatalf("health = %s/%s, want degraded/%s", h.State, h.Detail, protocol.DetailTLSProbeFailed)
 	}
 }
 
-// §5.2/A3: the device CA is per device, its private key never leaves the process, and only the
-// sealed form is handed to platform key protection.
-func TestTLS_5_2_CAIsPerDeviceAndOnlyTheSealedFormLeaves(t *testing.T) {
-	sealer := &fakeSealer{key: []byte("0123456789abcdef0123456789abcdef")}
-	ca, err := NewCA("device-1", sealer, time.Unix(1_700_000_000, 0))
+// The device CA is per device, and its leaves are short-lived, cover their hostname and are cached
+// per host.
+func TestCAIsPerDeviceAndMintsShortLivedLeaves(t *testing.T) {
+	ca, err := NewCA("device-1", time.Unix(1_700_000_000, 0))
 	if err != nil {
 		t.Fatalf("NewCA: %v", err)
-	}
-	if len(ca.Sealed()) == 0 {
-		t.Fatal("no sealed key was produced; the CA key must not be left in the clear")
-	}
-	if sealer.sealedCalls != 1 {
-		t.Fatalf("sealed %d times, want 1", sealer.sealedCalls)
 	}
 	if !strings.Contains(ca.Info().Subject, "device-1") {
 		t.Fatalf("CA subject = %q, want the device id in it (per-device, not per-fleet)", ca.Info().Subject)
@@ -706,32 +630,10 @@ func TestTLS_5_2_CAIsPerDeviceAndOnlyTheSealedFormLeaves(t *testing.T) {
 	}
 }
 
-type fakeSealer struct {
-	key         []byte
-	sealedCalls int
-}
-
-func (f *fakeSealer) Seal(plain []byte) ([]byte, error) {
-	f.sealedCalls++
-	out := make([]byte, len(plain))
-	for i := range plain {
-		out[i] = plain[i] ^ f.key[i%len(f.key)]
-	}
-	return out, nil
-}
-
-func (f *fakeSealer) Open(sealed []byte) ([]byte, error) {
-	out := make([]byte, len(sealed))
-	for i := range sealed {
-		out[i] = sealed[i] ^ f.key[i%len(f.key)]
-	}
-	return out, nil
-}
-
-// ---- §5.2 trust-store installation -----------------------------------------------------------
+// ---- trust-store installation -----------------------------------------------------------
 
 // fakeVerifyingTrust records an install and then answers the store read-back. A store that does
-// not confirm the certificate is the silent-wrong-store case §5.2 warns about, so it must surface
+// not confirm the certificate is the silent wrong-store case, so it must surface
 // as a named degraded cause rather than a healthy row.
 type fakeVerifyingTrust struct {
 	fakeTrust
@@ -749,9 +651,9 @@ func (fakeFailingTrust) Install(context.Context, []byte) error {
 	return fmt.Errorf("store is read-only")
 }
 
-// §5.2: the end-to-end probe uses the in-process pool, so it can succeed even when the OS store
+// The end-to-end probe uses the in-process pool, so it can succeed even when the OS store
 // was never touched. The store verification is what makes that silent failure visible in health.
-func TestTLS_5_2_TrustStoreFailureIsNamedInHealth(t *testing.T) {
+func TestTLSTrustStoreFailureIsNamedInHealth(t *testing.T) {
 	canaryPort := freePort(t)
 	bundle := bundleIntercepting(canaryPort)
 
@@ -786,10 +688,10 @@ func TestTLS_5_2_TrustStoreFailureIsNamedInHealth(t *testing.T) {
 	}
 }
 
-// §5.5: a kill switch in the bundle already in force when the provider starts must suppress it
+// A kill switch in the bundle already in force when the provider starts must suppress it
 // before it binds or installs a root. The supervisor applies the bundle before any provider
 // starts, so a switch that is only honored in ApplyPolicy would be silently defeated at startup.
-func TestTLS_5_5_KillSwitchInInitialBundleSuppressesStart(t *testing.T) {
+func TestTLSKillSwitchInInitialBundleSuppressesStart(t *testing.T) {
 	canaryPort := freePort(t)
 	b := bundleIntercepting(canaryPort)
 	ksAt := time.Unix(1_600_000_000, 0)
@@ -817,9 +719,9 @@ func TestTLS_5_5_KillSwitchInInitialBundleSuppressesStart(t *testing.T) {
 	}
 }
 
-// §5.5: EffectiveAt is when the operator asked enforcement to stop; a future-dated switch must not
+// EffectiveAt is when the operator asked enforcement to stop; a future-dated switch must not
 // fire early.
-func TestTLS_5_5_FutureKillSwitchDoesNotFireEarly(t *testing.T) {
+func TestTLSFutureKillSwitchDoesNotFireEarly(t *testing.T) {
 	b := bundleIntercepting(443)
 	b.KillSwitches = []policy.KillSwitch{{
 		Provider: protocol.RouteProxyTLS, Mode: policy.KillDisable,

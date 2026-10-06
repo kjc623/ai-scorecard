@@ -9,8 +9,8 @@ import (
 )
 
 // One writer means one writer *process*; within the process the spool serialises callers.
-// The race detector needs cgo, which this offline host does not have, so this test exercises
-// the same hazard the detector would: many goroutines appending, peeking and reading stats
+// The test exercises the hazard the race detector would, without needing cgo: many goroutines
+// appending, peeking and reading stats
 // at once, with the resulting counts asserted exactly. A missing or partial lock shows up as
 // a wrong count or a map corruption rather than as a flake.
 func TestConcurrentCallersAreSerialised(t *testing.T) {

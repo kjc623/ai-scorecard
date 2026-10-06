@@ -8,40 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
-	"syscall"
-	"unicode/utf16"
 	"unsafe"
-)
 
-// The Windows readers use the standard library's syscall package and lazily loaded system DLLs,
-// not golang.org/x/sys/windows, for the reason cmd/capture-core/service_windows.go gives: this
-// module builds offline with no module beyond the repository's own.
-
-const (
-	keyWow6464Key = 0x0100
-
-	certStoreProvSystemW               = 10
-	certSystemStoreLocalMachine        = 0x00020000
-	certStoreReadonlyFlag              = 0x00008000
-	certStoreOpenExistingFlag          = 0x00004000
-	firmwareTableProviderRSMB          = 0x52534D42 // 'RSMB'
-	errorNoMoreItems                   = syscall.Errno(259)
-	errorNoToken                       = syscall.Errno(1008)
-	errorPrivilegeNotHeld              = syscall.Errno(1314)
-	errorMoreData                      = syscall.Errno(234)
-	invalidConsoleSession       uint32 = 0xFFFFFFFF
-)
-
-var (
-	kernel32 = syscall.NewLazyDLL("kernel32.dll")
-	wtsapi32 = syscall.NewLazyDLL("wtsapi32.dll")
-	advapi32 = syscall.NewLazyDLL("advapi32.dll")
-
-	procGetSystemFirmwareTable       = kernel32.NewProc("GetSystemFirmwareTable")
-	procWTSGetActiveConsoleSessionID = kernel32.NewProc("WTSGetActiveConsoleSessionId")
-	procWTSQueryUserToken            = wtsapi32.NewProc("WTSQueryUserToken")
-	procImpersonateLoggedOnUser      = advapi32.NewProc("ImpersonateLoggedOnUser")
-	procRevertToSelf                 = advapi32.NewProc("RevertToSelf")
+	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 )
 
 // SystemSources reads the real machine.
@@ -65,122 +35,75 @@ func SystemRegistry() Registry { return winRegistry{} }
 
 type winRegistry struct{}
 
-func openKey(path string) (syscall.Handle, error) {
-	p, err := syscall.UTF16PtrFromString(path)
+func openKey(path string) (registry.Key, error) {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, path, registry.READ|registry.WOW64_64KEY)
 	if err != nil {
-		return 0, err
-	}
-	var h syscall.Handle
-	if err := syscall.RegOpenKeyEx(syscall.HKEY_LOCAL_MACHINE, p, 0, syscall.KEY_READ|keyWow6464Key, &h); err != nil {
 		return 0, regErr(err)
 	}
-	return h, nil
+	return k, nil
 }
 
 func regErr(err error) error {
-	if errors.Is(err, syscall.ERROR_FILE_NOT_FOUND) || errors.Is(err, syscall.ERROR_PATH_NOT_FOUND) {
+	if errors.Is(err, registry.ErrNotExist) || errors.Is(err, windows.ERROR_PATH_NOT_FOUND) {
 		return ErrNotFound
 	}
 	return err
 }
 
 func (winRegistry) SubKeys(path string) ([]string, error) {
-	h, err := openKey(path)
+	k, err := openKey(path)
 	if err != nil {
 		return nil, err
 	}
-	defer syscall.RegCloseKey(h)
-	var count, maxLen uint32
-	if err := syscall.RegQueryInfoKey(h, nil, nil, nil, &count, &maxLen, nil, nil, nil, nil, nil, nil); err != nil {
-		return nil, err
-	}
-	out := make([]string, 0, count)
-	buf := make([]uint16, maxLen+1)
-	for i := uint32(0); ; i++ {
-		n := uint32(len(buf))
-		err := syscall.RegEnumKeyEx(h, i, &buf[0], &n, nil, nil, nil, nil)
-		if errors.Is(err, errorNoMoreItems) {
-			return out, nil
-		}
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, syscall.UTF16ToString(buf[:n]))
-	}
+	defer k.Close()
+	return k.ReadSubKeyNames(-1)
 }
 
-func (winRegistry) value(path, name string) (uint32, []byte, error) {
-	h, err := openKey(path)
-	if err != nil {
-		return 0, nil, err
-	}
-	defer syscall.RegCloseKey(h)
-	pn, err := syscall.UTF16PtrFromString(name)
-	if err != nil {
-		return 0, nil, err
-	}
-	var typ, size uint32
-	if err := syscall.RegQueryValueEx(h, pn, nil, &typ, nil, &size); err != nil {
-		return 0, nil, regErr(err)
-	}
-	if size == 0 {
-		return typ, nil, nil
-	}
-	buf := make([]byte, size)
-	if err := syscall.RegQueryValueEx(h, pn, nil, &typ, &buf[0], &size); err != nil {
-		return 0, nil, regErr(err)
-	}
-	return typ, buf[:size], nil
-}
-
-func (r winRegistry) String(path, name string) (string, error) {
-	typ, b, err := r.value(path, name)
+func (winRegistry) String(path, name string) (string, error) {
+	k, err := openKey(path)
 	if err != nil {
 		return "", err
 	}
-	if typ != syscall.REG_SZ && typ != syscall.REG_EXPAND_SZ {
-		return "", fmt.Errorf("hostinfo: %s\\%s is registry type %d, not a string", path, name, typ)
+	defer k.Close()
+	v, _, err := k.GetStringValue(name)
+	if err != nil {
+		return "", regErr(err)
 	}
-	u := make([]uint16, len(b)/2)
-	for i := range u {
-		u[i] = binary.LittleEndian.Uint16(b[2*i:])
-	}
-	return syscall.UTF16ToString(u), nil
+	return v, nil
 }
 
-func (r winRegistry) Integer(path, name string) (uint64, error) {
-	typ, b, err := r.value(path, name)
+func (winRegistry) Integer(path, name string) (uint64, error) {
+	k, err := openKey(path)
 	if err != nil {
 		return 0, err
 	}
-	switch {
-	case typ == syscall.REG_DWORD && len(b) >= 4:
-		return uint64(binary.LittleEndian.Uint32(b)), nil
-	case typ == syscall.REG_QWORD && len(b) >= 8:
-		return binary.LittleEndian.Uint64(b), nil
-	default:
-		return 0, fmt.Errorf("hostinfo: %s\\%s is registry type %d, not an integer", path, name, typ)
+	defer k.Close()
+	v, _, err := k.GetIntegerValue(name)
+	if err != nil {
+		return 0, regErr(err)
 	}
+	return v, nil
 }
 
 // machineCerts lists LocalMachine\My read-only. Only the public certificates are read.
 func machineCerts() ([]*x509.Certificate, error) {
-	name, err := syscall.UTF16PtrFromString("MY")
+	name, err := windows.UTF16PtrFromString("MY")
 	if err != nil {
 		return nil, err
 	}
-	store, err := syscall.CertOpenStore(certStoreProvSystemW, 0, 0,
-		certSystemStoreLocalMachine|certStoreReadonlyFlag|certStoreOpenExistingFlag, uintptr(unsafe.Pointer(name)))
+	store, err := windows.CertOpenStore(windows.CERT_STORE_PROV_SYSTEM_W, 0, 0,
+		windows.CERT_SYSTEM_STORE_LOCAL_MACHINE|windows.CERT_STORE_READONLY_FLAG|windows.CERT_STORE_OPEN_EXISTING_FLAG,
+		uintptr(unsafe.Pointer(name)))
 	if err != nil {
 		return nil, fmt.Errorf("opening LocalMachine\\My: %w", err)
 	}
-	defer syscall.CertCloseStore(store, 0)
+	defer windows.CertCloseStore(store, 0)
 	var out []*x509.Certificate
-	var ctx *syscall.CertContext
+	var ctx *windows.CertContext
 	for {
 		// Each call frees the context it is handed; the loop ends when the store is exhausted.
-		ctx, _ = syscall.CertEnumCertificatesInStore(store, ctx)
-		if ctx == nil {
+		ctx, err = windows.CertEnumCertificatesInStore(store, ctx)
+		if err != nil || ctx == nil {
 			return out, nil
 		}
 		der := append([]byte(nil), unsafe.Slice(ctx.EncodedCert, ctx.Length)...)
@@ -189,6 +112,11 @@ func machineCerts() ([]*x509.Certificate, error) {
 		}
 	}
 }
+
+var procGetSystemFirmwareTable = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetSystemFirmwareTable")
+
+// firmwareTableProviderRSMB is the 'RSMB' provider signature of GetSystemFirmwareTable.
+const firmwareTableProviderRSMB = 0x52534D42
 
 // firmwareSMBIOS returns the raw SMBIOS table (GetSystemFirmwareTable 'RSMB'), which any user may
 // read: a RawSMBIOSData header of 8 bytes, then the structure table.
@@ -215,23 +143,23 @@ func firmwareSMBIOS() (RawSMBIOS, error) {
 
 // consoleToken is the primary token of the user signed in at the physical console. Only a
 // service (SE_TCB_NAME) may ask; anyone else is told ErrNotPermitted.
-func consoleToken() (syscall.Token, error) {
-	sess, _, _ := procWTSGetActiveConsoleSessionID.Call()
-	if uint32(sess) == invalidConsoleSession {
+func consoleToken() (windows.Token, error) {
+	sess := windows.WTSGetActiveConsoleSessionId()
+	if sess == 0xFFFFFFFF {
 		return 0, ErrNoConsoleUser
 	}
-	var tok syscall.Handle
-	if r, _, err := procWTSQueryUserToken.Call(sess, uintptr(unsafe.Pointer(&tok))); r == 0 {
+	var tok windows.Token
+	if err := windows.WTSQueryUserToken(sess, &tok); err != nil {
 		switch {
-		case errors.Is(err, errorNoToken):
+		case errors.Is(err, windows.ERROR_NO_TOKEN):
 			return 0, ErrNoConsoleUser
-		case errors.Is(err, errorPrivilegeNotHeld), errors.Is(err, syscall.ERROR_ACCESS_DENIED):
+		case errors.Is(err, windows.ERROR_PRIVILEGE_NOT_HELD), errors.Is(err, windows.ERROR_ACCESS_DENIED):
 			return 0, ErrNotPermitted
 		default:
 			return 0, fmt.Errorf("WTSQueryUserToken: %w", err)
 		}
 	}
-	return syscall.Token(tok), nil
+	return tok, nil
 }
 
 func consoleUser() (User, error) {
@@ -244,25 +172,41 @@ func consoleUser() (User, error) {
 }
 
 func processUser() (User, error) {
-	tok, err := syscall.OpenCurrentProcessToken()
+	return userFromToken(windows.GetCurrentProcessToken())
+}
+
+// UserOfProcess names the user a process runs as, from its token: the identity of a local peer
+// such as the browser's native-messaging relay.
+func UserOfProcess(pid uint32) (User, error) {
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	if err != nil {
+		return User{}, fmt.Errorf("opening process %d: %w", pid, err)
+	}
+	defer windows.CloseHandle(h)
+	var tok windows.Token
+	if err := windows.OpenProcessToken(h, windows.TOKEN_QUERY, &tok); err != nil {
+		return User{}, fmt.Errorf("opening the token of process %d: %w", pid, err)
+	}
+	defer tok.Close()
+	u, err := userFromToken(tok)
 	if err != nil {
 		return User{}, err
 	}
-	defer tok.Close()
-	return userFromToken(tok)
+	u.Source = "process"
+	if u.ObjectID == "" {
+		u.ObjectID, _ = ObjectIDFromSID(u.SID)
+	}
+	return u, nil
 }
 
 // userFromToken names a token's user with what is local and cheap: the SID, DOMAIN\user, and the
 // UPN Windows cached at sign-in.
-func userFromToken(tok syscall.Token) (User, error) {
+func userFromToken(tok windows.Token) (User, error) {
 	tu, err := tok.GetTokenUser()
 	if err != nil {
 		return User{}, err
 	}
-	sid, err := tu.User.Sid.String()
-	if err != nil {
-		return User{}, err
-	}
+	sid := tu.User.Sid.String()
 	u := User{SID: sid}
 	if account, domain, _, err := tu.User.Sid.LookupAccount(""); err == nil {
 		u.Account = account
@@ -296,7 +240,7 @@ func directoryUPN(u User) (string, error) {
 // impersonating runs fn on a dedicated OS thread that carries tok's identity. The thread is never
 // unlocked: a goroutine that exits while locked takes its thread with it, so a thread whose
 // RevertToSelf failed can never run other Go code as the user.
-func impersonating(tok syscall.Token, fn func() (string, error)) (string, error) {
+func impersonating(tok windows.Token, fn func() (string, error)) (string, error) {
 	type result struct {
 		s   string
 		err error
@@ -304,12 +248,19 @@ func impersonating(tok syscall.Token, fn func() (string, error)) (string, error)
 	ch := make(chan result, 1)
 	go func() {
 		runtime.LockOSThread()
-		if r, _, err := procImpersonateLoggedOnUser.Call(uintptr(tok)); r == 0 {
-			ch <- result{"", fmt.Errorf("ImpersonateLoggedOnUser: %w", err)}
+		var imp windows.Token
+		if err := windows.DuplicateTokenEx(tok, windows.TOKEN_IMPERSONATE|windows.TOKEN_QUERY, nil,
+			windows.SecurityImpersonation, windows.TokenImpersonation, &imp); err != nil {
+			ch <- result{"", fmt.Errorf("duplicating the user token: %w", err)}
+			return
+		}
+		defer imp.Close()
+		if err := windows.SetThreadToken(nil, imp); err != nil {
+			ch <- result{"", fmt.Errorf("impersonating the user: %w", err)}
 			return
 		}
 		s, ferr := fn()
-		if r, _, err := procRevertToSelf.Call(); r == 0 {
+		if err := windows.RevertToSelf(); err != nil {
 			ch <- result{"", fmt.Errorf("RevertToSelf: %w", err)}
 			return
 		}
@@ -320,22 +271,24 @@ func impersonating(tok syscall.Token, fn func() (string, error)) (string, error)
 }
 
 // upnOfCaller is the calling thread's user principal name: GetUserNameEx, then TranslateName from
-// the SAM-compatible account name. Both need a directory (a domain controller) for a domain
-// account and answer nothing for a local one.
+// the SAM-compatible account name. Both need a domain controller for a domain account and answer
+// nothing for a local one.
 func upnOfCaller(account string) (string, error) {
-	upn, err := nameCall(func(buf *uint16, n *uint32) error { return syscall.GetUserNameEx(syscall.NameUserPrincipal, buf, n) })
+	upn, err := nameCall(func(buf *uint16, n *uint32) error {
+		return windows.GetUserNameEx(windows.NameUserPrincipal, buf, n)
+	})
 	if err == nil && upn != "" {
 		return upn, nil
 	}
 	if account == "" {
 		return "", err
 	}
-	acct, perr := syscall.UTF16PtrFromString(account)
+	acct, perr := windows.UTF16PtrFromString(account)
 	if perr != nil {
 		return "", perr
 	}
 	return nameCall(func(buf *uint16, n *uint32) error {
-		return syscall.TranslateName(acct, syscall.NameSamCompatible, syscall.NameUserPrincipal, buf, n)
+		return windows.TranslateName(acct, windows.NameSamCompatible, windows.NameUserPrincipal, buf, n)
 	})
 }
 
@@ -346,24 +299,12 @@ func nameCall(call func(*uint16, *uint32) error) (string, error) {
 		size := n
 		err := call(&buf[0], &size)
 		if err == nil {
-			if size > uint32(len(buf)) {
-				size = uint32(len(buf))
-			}
-			return string(utf16.Decode(trimNUL(buf[:size]))), nil
+			return windows.UTF16ToString(buf), nil
 		}
-		if !errors.Is(err, errorMoreData) || size <= n {
+		if !errors.Is(err, windows.ERROR_MORE_DATA) || size <= n {
 			return "", err
 		}
 		n = size
 	}
 	return "", errors.New("hostinfo: name buffer kept growing")
-}
-
-func trimNUL(u []uint16) []uint16 {
-	for i, c := range u {
-		if c == 0 {
-			return u[:i]
-		}
-	}
-	return u
 }

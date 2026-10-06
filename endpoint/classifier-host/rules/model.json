@@ -1,0 +1,77 @@
+{
+  "version": "model-1.0.0",
+  "scale": 1000,
+  "classes": [
+    {
+      "class": "customer_pii",
+      "threshold": 350,
+      "features": [
+        { "token": "passport", "weight": 90 },
+        { "token": "date of birth", "weight": 220 },
+        { "token": "national insurance", "weight": 220 },
+        { "token": "social security", "weight": 200 },
+        { "token": "ssn", "weight": 200 },
+        { "token": "home address", "weight": 180 },
+        { "token": "email", "weight": 70 },
+        { "token": "phone", "weight": 60 },
+        { "token": "address", "weight": 50 },
+        { "token": "mr", "weight": 25 },
+        { "token": "mrs", "weight": 25 }
+      ]
+    },
+    {
+      "class": "source_code",
+      "threshold": 400,
+      "features": [
+        { "token": "package", "weight": 80 },
+        { "token": "func", "weight": 120 },
+        { "token": "def", "weight": 120 },
+        { "token": "import", "weight": 70 },
+        { "token": "namespace", "weight": 100 },
+        { "token": "printf", "weight": 100 },
+        { "token": "include", "weight": 120 },
+        { "token": "struct", "weight": 90 },
+        { "token": "void", "weight": 80 },
+        { "token": "const", "weight": 50 },
+        { "token": "return", "weight": 40 },
+        { "token": "async", "weight": 60 },
+        { "token": "await", "weight": 60 }
+      ]
+    },
+    {
+      "class": "legal_commercial",
+      "threshold": 400,
+      "features": [
+        { "token": "whereas", "weight": 200 },
+        { "token": "hereinafter", "weight": 260 },
+        { "token": "witnesseth", "weight": 260 },
+        { "token": "indemnify", "weight": 240 },
+        { "token": "governing law", "weight": 240 },
+        { "token": "jurisdiction", "weight": 160 },
+        { "token": "liability", "weight": 150 },
+        { "token": "clause", "weight": 130 },
+        { "token": "agreement", "weight": 120 },
+        { "token": "shall", "weight": 90 },
+        { "token": "parties", "weight": 90 },
+        { "token": "obligations", "weight": 80 }
+      ]
+    },
+    {
+      "class": "health",
+      "threshold": 400,
+      "features": [
+        { "token": "diagnosis", "weight": 220 },
+        { "token": "prescription", "weight": 220 },
+        { "token": "patient", "weight": 180 },
+        { "token": "clinical", "weight": 140 },
+        { "token": "physician", "weight": 180 },
+        { "token": "dosage", "weight": 180 },
+        { "token": "symptoms", "weight": 140 },
+        { "token": "treatment", "weight": 120 },
+        { "token": "therapy", "weight": 110 },
+        { "token": "icd-10", "weight": 240 },
+        { "token": "medical", "weight": 90 }
+      ]
+    }
+  ]
+}

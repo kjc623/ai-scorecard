@@ -13,25 +13,23 @@ import (
 	"github.com/shadow-ai-capture/device/protocol"
 )
 
-// Cause is §13.3's closed list of signature-failure causes. The wire value always comes from
-// protocol.Detail's closed vocabulary (the four names were added there at this component's
-// request): a cause string invented locally would be a coverage cause the reporting layer
-// cannot group.
+// Cause is the closed list of verification-failure causes. Each maps onto protocol.Detail's
+// closed vocabulary: a cause string invented locally would be a coverage cause the reporting
+// layer cannot group.
 type Cause string
 
-// The four causes of §13.3 rule 4, in the order the verification chain checks them.
+// The causes, in the order the verification chain checks them.
 const (
 	CauseSignatureInvalid  Cause = "bundle_signature_invalid"
 	CauseSchemaInvalid     Cause = "bundle_schema_invalid"
 	CauseVersionRegression Cause = "bundle_version_regression"
-	CauseArtefactMissing   Cause = "bundle_artefact_missing"
 	CauseAccepted          Cause = ""
 )
 
 // Valid reports whether the cause is in the closed set.
 func (c Cause) Valid() bool {
 	switch c {
-	case CauseSignatureInvalid, CauseSchemaInvalid, CauseVersionRegression, CauseArtefactMissing:
+	case CauseSignatureInvalid, CauseSchemaInvalid, CauseVersionRegression:
 		return true
 	default:
 		return false
@@ -47,19 +45,15 @@ func (c Cause) Detail() protocol.Detail {
 		return protocol.DetailBundleSchemaInvalid
 	case CauseVersionRegression:
 		return protocol.DetailBundleVersionRegression
-	case CauseArtefactMissing:
-		return protocol.DetailBundleArtefactMissing
 	default:
 		return protocol.DetailNone
 	}
 }
 
-// SignedBundle is the envelope around a bundle payload. **Open decision:** docs/01-collectors.md
-// §13.2 fixes the verification *order* but not the signing envelope's wire format, so this
-// shape is this implementation's choice and is reported as such. The signature covers the
-// payload bytes exactly as received, never a re-serialisation of the parsed structure: a
-// canonical-JSON requirement would add a second way for two implementations to disagree, and
-// the payload is only ever read through this envelope.
+// SignedBundle is the envelope around a bundle payload. The signature covers the payload bytes
+// exactly as received, never a re-serialisation of the parsed structure: a canonical-JSON
+// requirement would add a second way for two implementations to disagree, and the payload is
+// only ever read through this envelope.
 type SignedBundle struct {
 	KeyID     string          `json:"key_id"`
 	Algorithm string          `json:"algorithm"`
@@ -115,9 +109,9 @@ func (v *Verifier) VerifyEnvelope(raw []byte) (json.RawMessage, error) {
 	return sb.Payload, nil
 }
 
-// Open runs §13.2's chain: signature, then schema, then version, then artefact digests.
+// Open runs the verification chain: signature, then schema, then version.
 // The bundle in force is the caller's to compare against, because only the Store knows it.
-func (v *Verifier) Open(raw []byte, inForce *Bundle, refs ArtefactResolver) (*Bundle, error) {
+func (v *Verifier) Open(raw []byte, inForce *Bundle) (*Bundle, error) {
 	payload, err := v.VerifyEnvelope(raw)
 	if err != nil {
 		return nil, err
@@ -138,42 +132,10 @@ func (v *Verifier) Open(raw []byte, inForce *Bundle, refs ArtefactResolver) (*Bu
 				"bundle version %q is older than the version in force %q", b.Version, inForce.Version)}
 		}
 	}
-	if err := checkArtefacts(b, refs); err != nil {
-		return nil, err
-	}
 	return b, nil
 }
 
-// ArtefactResolver answers "is this signed artefact present with this digest". §13.2 stops
-// verification at the first unresolvable digest, so a bundle cannot name a release the
-// device cannot evaluate.
-type ArtefactResolver interface {
-	Resolve(ref ArtefactRef) error
-}
-
-// ArtefactResolverFunc adapts a function.
-type ArtefactResolverFunc func(ref ArtefactRef) error
-
-// Resolve calls f.
-func (f ArtefactResolverFunc) Resolve(ref ArtefactRef) error { return f(ref) }
-
-func checkArtefacts(b *Bundle, refs ArtefactResolver) error {
-	if len(b.Artefacts) == 0 {
-		return nil
-	}
-	if refs == nil {
-		return &Failure{Cause: CauseArtefactMissing, Err: fmt.Errorf(
-			"bundle names %d artefacts and no resolver is configured; an unverifiable release must not be enforced", len(b.Artefacts))}
-	}
-	for _, a := range b.Artefacts {
-		if err := refs.Resolve(a); err != nil {
-			return &Failure{Cause: CauseArtefactMissing, Err: fmt.Errorf("artefact %q (%s): %w", a.Name, a.Path, err)}
-		}
-	}
-	return nil
-}
-
-// Failure is a verification failure with its §13.3 cause code.
+// Failure is a verification failure with its cause.
 type Failure struct {
 	Cause Cause
 	Err   error
@@ -202,10 +164,9 @@ func CauseOf(err error) Cause {
 	return f.Cause
 }
 
-// versionOlder compares two bundle versions, newest-wins. Bundle version format is not fixed
-// by the document (an open decision recorded in the endpoint report); this implementation
-// accepts dot-separated numeric components ("2026.10.02.3") and rejects ordering it cannot
-// perform, because the safe direction for an unorderable version is "retain the previous".
+// versionOlder compares two bundle versions, newest-wins. It accepts dot-separated numeric
+// components ("2026.10.02.3") and refuses an ordering it cannot perform, because the safe
+// direction for an unorderable version is to retain the previous bundle.
 func versionOlder(candidate, inForce string) (older bool, unknown bool) {
 	c, ok1 := parseVersion(candidate)
 	f, ok2 := parseVersion(inForce)
@@ -275,10 +236,10 @@ const (
 	// OutcomeUnchanged means the bundle is the one already in force; a 304 or a re-poll.
 	OutcomeUnchanged Outcome = "unchanged"
 	// OutcomeRetainedPrevious means verification failed and the previous bundle stays in
-	// force — not partially applied, not applied with the check skipped (§13.3 rule 2).
+	// force — not partially applied, not applied with the check skipped.
 	OutcomeRetainedPrevious Outcome = "retained_previous"
 	// OutcomeFellToM0 means verification failed with no previous bundle, so the device is at
-	// M0: metadata only, no content read (§13.3 rule 5).
+	// M0: metadata only, no content read.
 	OutcomeFellToM0 Outcome = "fell_to_m0"
 )
 
@@ -287,12 +248,12 @@ type Result struct {
 	Outcome  Outcome
 	Cause    Cause
 	Version  string // version in force after the poll ("" when M0)
-	Failures int    // consecutive verification failures, for §13.3 rule 7 escalation
+	Failures int    // consecutive verification failures, for escalation
 	Severity string // info | warning | critical
 	Err      error
 }
 
-// Severity levels for §13.3 rule 7: repeated failures escalate rather than becoming a
+// Severity levels: repeated failures escalate rather than becoming a
 // request storm.
 const (
 	SeverityInfo     = "info"
@@ -300,16 +261,13 @@ const (
 	SeverityCritical = "critical"
 )
 
-// escalationThreshold is the consecutive-failure count at which severity escalates. It is an
-// open decision (the document says "a threshold"), named here so it is one number in one
-// place rather than a literal in a branch.
+// escalationThreshold is the consecutive-failure count at which severity escalates.
 const escalationThreshold = 3
 
 // Store holds the bundle in force. It is the only writer of that field, so "which policy is
 // the device enforcing" has exactly one answer at any instant.
 type Store struct {
 	verifier *Verifier
-	refs     ArtefactResolver
 
 	mu         sync.Mutex
 	inForce    *Bundle
@@ -320,11 +278,11 @@ type Store struct {
 
 // NewStore builds a store around a pinned verifier. A nil verifier is a programming error:
 // the store refuses to exist rather than accepting unverified bundles.
-func NewStore(v *Verifier, refs ArtefactResolver) (*Store, error) {
+func NewStore(v *Verifier) (*Store, error) {
 	if v == nil {
 		return nil, fmt.Errorf("policy: store needs a verifier; an unverified bundle must never be enforceable")
 	}
-	return &Store{verifier: v, refs: refs}, nil
+	return &Store{verifier: v}, nil
 }
 
 // InForce returns the bundle being enforced, or nil when there is none — and nil is what
@@ -362,7 +320,7 @@ func (s *Store) Apply(raw []byte) Result {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	b, err := s.verifier.Open(raw, s.inForce, s.refs)
+	b, err := s.verifier.Open(raw, s.inForce)
 	if err != nil {
 		cause := CauseOf(err)
 		s.failures++
@@ -396,7 +354,7 @@ func (s *Store) Apply(raw []byte) Result {
 }
 
 // Withdraw takes the bundle out of force because the server stated, over the device's
-// authenticated channel, that the tenant has none (docs/02 §5.2: GET /v1/policy 404). The device
+// authenticated channel, that the tenant has none (GET /v1/policy answered 404). The device
 // is then at M0. It is the one change of state that does not need a verified bundle, and it is
 // safe for the reason Apply's rule exists: M0 is the floor, so withdrawing can only narrow what the
 // device does, never widen it.
@@ -410,7 +368,7 @@ func (s *Store) Withdraw() Result {
 	return Result{Outcome: OutcomeFellToM0, Severity: SeverityWarning}
 }
 
-// PollBackoff is §13.3 rule 7: repeated failures back the polling off so a fleet-wide signing
+// PollBackoff backs polling off after repeated failures, so a fleet-wide signing
 // problem does not become a request storm. The bundle stays in force throughout.
 func (s *Store) PollBackoff(base time.Duration) time.Duration {
 	s.mu.Lock()

@@ -9,8 +9,8 @@ import (
 
 // Peek returns up to n pending observations in sequence order, oldest first. It reads the
 // payload back from the segment, so the bytes returned are exactly the bytes that were
-// appended (ADR 0004). It never changes state and never drops anything: the bound is
-// enforced on write and nowhere else (§12).
+// appended. It never changes state and never drops anything: the bound is
+// enforced on write and nowhere else.
 func (s *Spool) Peek(n int) ([]protocol.Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -145,11 +145,11 @@ func (s *Spool) Settle(seq uint64, state protocol.SpoolState, reason string) err
 }
 
 // Expire applies device-side retention: a record past its ExpiresAt is dropped whether or not
-// it was delivered, because retention is a property of the observation and not of the queue
-// (protocol.Entry.ExpiresAt; §12.2).
+// it was delivered, because retention is a property of the observation (protocol.Entry.ExpiresAt)
+// and not of the queue.
 //
 // Expiries are counted separately from overflow drops. They are different failures with
-// different fixes, and §12.2 requires them to be distinguishable; ExtendedStats carries both.
+// different fixes, so ExtendedStats carries both.
 func (s *Spool) Expire(now time.Time) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -208,7 +208,7 @@ func (s *Spool) Depth() int {
 }
 
 // DroppedTotal is `spool_dropped_total`: a monotonic count of observations evicted by the
-// bound, never silent, and never reset by the deletion that produced it (§12.2, C22).
+// bound, never silent, and never reset by the deletion that produced it.
 func (s *Spool) DroppedTotal() uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -232,7 +232,7 @@ func (s *Spool) Capacity() Bounds {
 }
 
 // DropAttribution is what was lost, by kind and route, so an operator sees "we lost 800
-// prompt events from the proxy route" rather than a bare number (§12.2).
+// prompt events from the proxy route" rather than a bare number.
 type DropAttribution struct {
 	Kind  string `json:"kind"`
 	Route string `json:"route"`
@@ -284,14 +284,13 @@ func (s *Spool) Stats() protocol.SpoolStats {
 func (s *Spool) statsLocked() protocol.SpoolStats {
 	dropped, _, delivered, rejected := s.totalsLocked()
 	return protocol.SpoolStats{
-		Depth:               s.pending + s.inFlight,
-		DroppedTotal:        dropped,
-		RejectedTotal:       rejected,
-		DeliveredTotal:      delivered,
-		OldestSpooledAt:     s.oldestPendingLocked(),
-		EncryptionKeySealed: s.keySealed,
-		BoundBytes:          s.cfg.Bounds.MaxBytes,
-		UsedBytes:           s.diskBytes,
+		Depth:           s.pending + s.inFlight,
+		DroppedTotal:    dropped,
+		RejectedTotal:   rejected,
+		DeliveredTotal:  delivered,
+		OldestSpooledAt: s.oldestPendingLocked(),
+		BoundBytes:      s.cfg.Bounds.MaxBytes,
+		UsedBytes:       s.diskBytes,
 	}
 }
 
@@ -299,10 +298,9 @@ func (s *Spool) statsLocked() protocol.SpoolStats {
 // protocol.SpoolStats: the separate expiry count, the drop attribution, and what recovery
 // had to do.
 //
-// A windowed delta is deliberately not computed here. §4.3 defines every counter as
-// "cumulative since process start plus a windowed delta", with the delta derived by the
-// reporter from successive reports; a delta computed here would be a second, divergent
-// definition of the same number.
+// A windowed delta is deliberately not computed here: every counter is cumulative since process
+// start, and the reporter derives deltas from successive reports; a delta computed here would be
+// a second, divergent definition of the same number.
 type ExtendedStats struct {
 	protocol.SpoolStats
 
@@ -312,7 +310,7 @@ type ExtendedStats struct {
 	Segments         int
 
 	// ExpiredTotal and OverBoundTotal are the two facts protocol.SpoolStats cannot carry:
-	// a retention expiry is not an overflow drop (§12.2), and an over-bound append is a
+	// a retention expiry is not an overflow drop, and an over-bound append is a
 	// record that was accepted while the spool could not free space.
 	ExpiredTotal   uint64
 	OverBoundTotal uint64
@@ -332,14 +330,13 @@ func (s *Spool) Extended() ExtendedStats {
 	dropped, expired, delivered, rejected := s.totalsLocked()
 	st := ExtendedStats{
 		SpoolStats: protocol.SpoolStats{
-			Depth:               s.pending + s.inFlight,
-			DroppedTotal:        dropped,
-			RejectedTotal:       rejected,
-			DeliveredTotal:      delivered,
-			OldestSpooledAt:     s.oldestPendingLocked(),
-			EncryptionKeySealed: s.keySealed,
-			BoundBytes:          s.cfg.Bounds.MaxBytes,
-			UsedBytes:           s.diskBytes,
+			Depth:           s.pending + s.inFlight,
+			DroppedTotal:    dropped,
+			RejectedTotal:   rejected,
+			DeliveredTotal:  delivered,
+			OldestSpooledAt: s.oldestPendingLocked(),
+			BoundBytes:      s.cfg.Bounds.MaxBytes,
+			UsedBytes:       s.diskBytes,
 		},
 		Pending:          s.pending,
 		InFlight:         s.inFlight,

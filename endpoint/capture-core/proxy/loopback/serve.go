@@ -90,7 +90,7 @@ func (b *bodyBuffer) overCap() bool {
 // isSubmission is the broker's local shape decision. The port is already the generative
 // endpoint, so the predicate here is deliberately narrow: a body-bearing POST that is not the
 // preflight request. Everything else is counted as `skipped_not_generative`, which proves the
-// predicate is running without claiming it is right (§4.3).
+// predicate is running without claiming it is right.
 func isSubmission(req *http.Request, preflightPath string) bool {
 	if req.Method != http.MethodPost {
 		return false
@@ -129,7 +129,7 @@ func (r *portRunner) handleConn(ctx context.Context, client net.Conn) {
 		b.counters.Add(protocol.CounterSkippedNotGenerative)
 	}
 
-	// §11.2's ordering: resolve the mode before any byte of the body is retained.
+	// Resolve the mode before any byte of the body is retained.
 	mode := r.currentSpec().Mode
 	if b.cfg.Pipeline != nil {
 		res := b.cfg.Pipeline.ResolveMode(core.ScopeQuery{
@@ -150,7 +150,7 @@ func (r *portRunner) handleConn(ctx context.Context, client net.Conn) {
 
 	upstream, err := net.DialTimeout("tcp", r.upstreamAddr(), b.cfg.PreflightTimeout)
 	if err != nil {
-		// §5.4 upstream trigger, applied to the broker: the client gets the connection error it
+		// An upstream failure: the client gets the connection error it
 		// would have seen anyway. Closing without a response is that error; no response is
 		// substituted, and nothing is invented.
 		b.counters.Add(protocol.CounterErrors)
@@ -171,13 +171,12 @@ func (r *portRunner) handleConn(ctx context.Context, client net.Conn) {
 	resp, rerr := http.ReadResponse(bufio.NewReader(upstream), req)
 	if rerr != nil {
 		// The upstream failed mid-exchange: the client sees the failure, and we do not
-		// substitute a response (§5.4).
+		// substitute a response.
 		b.counters.Add(protocol.CounterErrors)
 		<-writeDone
 		return
 	}
-	// Responses are streamed through without buffering: E4 makes response capture a non-goal,
-	// and `direction: ingress` exists in the contract and stays unused.
+	// Responses are streamed through without buffering: responses are not captured.
 	werr := resp.Write(client)
 	_ = resp.Body.Close()
 	select {
@@ -244,7 +243,7 @@ func (r *portRunner) observe(ctx context.Context, req *http.Request, counted int
 	}
 }
 
-// JSONExtractor is the route's C1 implementation for a JSON request body: the last user-role
+// JSONExtractor is the route's text extraction for a JSON request body: the last user-role
 // message of `messages[]`, or a top-level `prompt`. A body it cannot interpret returns an error
 // so the observation degrades to the tier S surrogate instead of guessing which characters the
 // user authored.

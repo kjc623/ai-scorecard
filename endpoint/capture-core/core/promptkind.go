@@ -7,29 +7,29 @@ import (
 	"github.com/shadow-ai-capture/device/protocol"
 )
 
-// The device decides what kind of prompt a captured request is (contract envelopeCore.prompt_kind,
-// task 08). Before this decision the classification ran over the whole captured body — the
-// client's system prompt, tool definitions and re-sent history included — so a plain question
-// could carry a `source_code` label taken from a tool schema, and a request no person wrote
-// (Claude Code titling a session, summarising a turn, telemetry) was stored and indexed as if a
+// The device decides what kind of prompt a captured request is (the envelope's prompt_kind).
+// Classifying the whole captured body (the client's system prompt, tool definitions and re-sent
+// history included) would let a plain question carry a source_code label taken from a tool
+// schema, and would store and index a request no person wrote (Claude Code titling a session,
+// summarising a turn, telemetry) as if a
 // person had typed it.
 //
 // The decision is a *shape* judgement, never a meaning judgement, and it is made once, here, so
 // content-vault, query-api and the dashboard stop each carrying their own patch. Two signals:
 //
-//   - the text C1 extracted (docs/02 §4.2). When it is non-empty and matches a known client
+//   - the extracted text. When it is non-empty and matches a known client
 //     pattern, the request is the client's own. Otherwise it is what a person typed.
 //   - the body's shape, when no authored turn exists. A JSON body with a `messages` or `events`
 //     member and no user text is a request the client made for itself.
 //
 // If neither signal decides, the answer is `unknown`, never `client_generated`: a false
-// "client_generated" would hide a person's prompt, which the brief forbids, while a false
+// "client_generated" would hide a person's prompt, while a false
 // "user" only shows a client's request.
 type promptKindFunc func(payload []byte, extracted string) protocol.PromptKind
 
 // clientPromptMarkers are known client-generated request patterns. They are the observable text
-// of Claude Code's own meta-requests — the same strings that were being indexed as if a person
-// had typed them — matched case-insensitively against a whitespace-collapsed copy of C1's output.
+// of Claude Code's own meta-requests, matched case-insensitively against a whitespace-collapsed
+// copy of the extracted text.
 //
 // This is a **seed**, not a closed vocabulary: a client that changes its wording stops matching,
 // which degrades to `user` (show it) rather than hiding a person's prompt. A new marker is added
@@ -64,7 +64,7 @@ func decidePromptKind(payload []byte, extracted string) protocol.PromptKind {
 }
 
 // bodyHasNoAuthoredTurn reports whether a JSON body is an AI request the client made for itself:
-// it has the shape of a chat or telemetry call but no user text (C1 extracted nothing). A body
+// it has the shape of a chat or telemetry call but no user text (extraction found nothing). A body
 // that is not a JSON object is not recognised, so the answer falls back to `unknown`.
 func bodyHasNoAuthoredTurn(payload []byte) bool {
 	if len(payload) == 0 {

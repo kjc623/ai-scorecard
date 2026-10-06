@@ -42,8 +42,7 @@ func TestBoundEvictsOldestExactlyAndCounts(t *testing.T) {
 		}
 	}
 
-	// Attribution: §12.2 wants "we lost N prompt events from the proxy route", not a bare
-	// number.
+	// Attribution: "we lost N prompt events from the proxy route", not a bare number.
 	attr := sp.DroppedBy()
 	if len(attr) != 1 {
 		t.Fatalf("DroppedBy = %+v, want one (kind, route) row", attr)
@@ -53,7 +52,7 @@ func TestBoundEvictsOldestExactlyAndCounts(t *testing.T) {
 	}
 }
 
-// An in-flight record is never evicted: §12.2 evicts the oldest *pending* rows first, and
+// An in-flight record is never evicted: the bound evicts the oldest pending rows first, and
 // never in-flight or already-sent ones.
 func TestBoundNeverEvictsInFlightRecords(t *testing.T) {
 	sp := openTest(t, t.TempDir(), func(c *Config) {
@@ -92,7 +91,7 @@ func TestBoundNeverEvictsInFlightRecords(t *testing.T) {
 
 // When the bound cannot be met by evicting pending records — everything retained is in
 // flight — the observation is still accepted and the overage is counted, rather than the new
-// observation being discarded or an in-flight record being evicted (§12.2).
+// observation being discarded or an in-flight record being evicted.
 func TestOverBoundIsCountedNotSilent(t *testing.T) {
 	sp := openTest(t, t.TempDir(), func(c *Config) {
 		c.Bounds = Bounds{MaxEntries: 2}

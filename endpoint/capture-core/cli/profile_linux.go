@@ -8,10 +8,11 @@ import (
 	"github.com/shadow-ai-capture/device/protocol"
 )
 
-// defaultManagedDir is the Linux machine-scope directory for the shim's files.
+// defaultManagedDir is the shim's directory: the product's configuration folder, which the
+// installer creates readable by users (the tenant file inside it is root-only).
 func defaultManagedDir() string { return "/etc/shadow-ai-capture" }
 
-// defaultProfilePath is the /etc/profile.d fragment every login shell sources (§14.3).
+// defaultProfilePath is the /etc/profile.d fragment every login shell sources.
 func defaultProfilePath(string) string { return "/etc/profile.d/shadow-ai-capture.sh" }
 
 // renderProfile is the POSIX shell profile on Linux.

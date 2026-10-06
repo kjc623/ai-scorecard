@@ -1,6 +1,5 @@
-// Package core is the endpoint agent's spine: the provider contract (docs/01-collectors.md
-// §4.1), the health and counter contract (§4.2, §4.3), the mode resolution and the content
-// gate (§11), and the startup/shutdown ordering (§3.5).
+// Package core is the endpoint agent's spine: the provider contract, the health and counter
+// contract, the mode resolution and the content gate, and the startup and shutdown order.
 //
 // Two properties are structural rather than documentary here:
 //
@@ -22,20 +21,17 @@ import (
 	"github.com/shadow-ai-capture/device/protocol"
 )
 
-// Health is the per-provider health row of §4.1. `Detail` is protocol.Detail — the closed
-// vocabulary the health channel carries as `error_code` — rather than the bare `string` the
-// document sketches, because the closed set is what lets a coverage report group by cause
-// without parsing prose.
+// Health is one provider's health row. Detail is protocol.Detail, the closed vocabulary the
+// health channel carries as error_code, so a coverage report can group by cause without parsing
+// prose.
 //
-// WindowDelta and WindowSince are §4.3's second half: counters are cumulative since process
-// start *plus* a windowed delta, because "1,204 dropped since Tuesday" is actionable and
-// "1,204 dropped since install" is not. protocol.HealthReport carries one counter map, so
-// the wire encoding puts cumulative counters there and the window is exposed separately (see
-// the endpoint report's open items).
+// Counters are cumulative since process start; WindowDelta and WindowSince add a windowed delta,
+// because "1,204 dropped since Tuesday" is actionable and "1,204 dropped since install" is not.
+// protocol.HealthReport carries one counter map, so the wire carries the cumulative counters.
 type Health struct {
 	State       protocol.CollectorState
 	Detail      protocol.Detail
-	LastSuccess time.Time // zero means "never" — the field C23 requires
+	LastSuccess time.Time // zero means never
 	Counters    map[protocol.Counter]uint64
 	WindowDelta map[protocol.Counter]uint64
 	WindowSince time.Time
@@ -106,7 +102,7 @@ func (h Health) Validate() error {
 }
 
 // Report renders the row for POST /v1/health. The collector name is the route name, so a
-// provider cannot invent a coverage path the reporting layer does not know (§4.3).
+// provider cannot invent a coverage path the reporting layer does not know.
 func (h Health) Report(deviceID, version string) protocol.HealthReport {
 	rep := protocol.NewHealthReport(deviceID, "", version, h.Since)
 	rep.State = h.State
@@ -130,7 +126,7 @@ func knownCounter(k protocol.Counter) bool {
 	return false
 }
 
-// CounterSet is §4.3's bounded counter set: a fixed, small, named set with a closed
+// CounterSet is the bounded counter set: a fixed, small, named set with a closed
 // vocabulary, cumulative since process start plus a windowed delta, carried on the health
 // channel only — never as events.
 //
@@ -164,7 +160,7 @@ func NewCounterSet(t time.Time) *CounterSet {
 }
 
 // Incr adds n to a counter. An unknown name never becomes a counter: it is refused and
-// counted as an error, because the set is closed (A15).
+// counted as an error, because the set is closed.
 func (c *CounterSet) Incr(k protocol.Counter, n uint64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -240,7 +236,7 @@ func (c *CounterSet) Snapshot(state protocol.CollectorState, detail protocol.Det
 	return buildHealth(state, detail, since, lastSuccess, c)
 }
 
-// Provider is §4.1's common provider contract, one provider per coverage row.
+// Provider is the common provider contract, one provider per coverage row.
 //
 // The four rules the contract encodes: Start is transactional (ready, or everything it took
 // released — there is no half-started state, because a half-started proxy is worse than a
@@ -248,7 +244,7 @@ func (c *CounterSet) Snapshot(state protocol.CollectorState, detail protocol.Det
 // tampered, since interference is evidence, and shutdown must not deadlock on it); Health
 // never says healthy when the provider is not in the path; and no provider may fail into a
 // state that reports success — state derives from a positive observation, never from the
-// absence of errors (C25).
+// absence of errors.
 type Provider interface {
 	Name() protocol.Route
 	Start(ctx context.Context) error

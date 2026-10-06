@@ -6,9 +6,9 @@ import (
 	"time"
 )
 
-// The batch shapes for POST /v1/events (docs/02-ingest-and-transport.md §5.3, §6, §7).
+// The batch shapes for POST /v1/events.
 //
-// Two properties this file exists to keep honest:
+// Two properties the shapes keep:
 //
 //   - A batch that parses always returns 200, even when every event inside it is rejected. The
 //     per-event outcome is the contract, so a device never has to guess which events landed.
@@ -16,7 +16,7 @@ import (
 //     the body. A body tenant_id that disagrees is rejected `tenant_mismatch`, not reconciled,
 //     which is why nothing in this file is authoritative for tenant resolution.
 
-// Batch caps from §5.3.
+// Batch caps.
 const (
 	MinBatchEvents       = 1
 	MaxBatchEvents       = 500
@@ -69,7 +69,7 @@ const (
 	OutcomeRejected  Outcome = "rejected"
 )
 
-// ReasonCode is the closed rejection set of §7. A new code is a contract change.
+// ReasonCode is the closed per-event rejection set. A new code is a contract change.
 type ReasonCode string
 
 const (
@@ -81,21 +81,15 @@ const (
 	ReasonRevokedDevice            ReasonCode = "revoked_device"
 	ReasonRegionMismatch           ReasonCode = "region_mismatch"
 	ReasonModeViolation            ReasonCode = "mode_violation"
-	ReasonDuplicateBatch           ReasonCode = "duplicate_batch"
 	ReasonOversize                 ReasonCode = "oversize"
 )
 
-// AllReasonCodes is the closed set, in the order the document lists it.
+// AllReasonCodes is the closed set.
 var AllReasonCodes = [...]ReasonCode{
 	ReasonSchemaViolation, ReasonUnsupportedSchemaVersion, ReasonUnknownKind,
 	ReasonUnknownTenant, ReasonTenantMismatch, ReasonRevokedDevice,
-	ReasonRegionMismatch, ReasonModeViolation, ReasonDuplicateBatch, ReasonOversize,
+	ReasonRegionMismatch, ReasonModeViolation, ReasonOversize,
 }
-
-// Retryable reports whether the device should retry the event after this rejection. Every code
-// is terminal for that event except `duplicate_batch`, which is retryable with a fresh batch_id:
-// one poison event must not block the queue behind it (§8).
-func (r ReasonCode) Retryable() bool { return r == ReasonDuplicateBatch }
 
 // Valid reports whether the code is in the closed set.
 func (r ReasonCode) Valid() bool {
@@ -107,9 +101,9 @@ func (r ReasonCode) Valid() bool {
 	return false
 }
 
-// BatchRejectionDetail is the diagnosability payload of §7: a reason code, a JSON Pointer, the
-// violated constraint's *shape*, and the sorted field-name presence map. It never echoes the
-// offending value, because the offending value can be content.
+// BatchRejectionDetail makes a rejection diagnosable: a JSON Pointer, the violated constraint's
+// shape, and the sorted field-name presence map. It never echoes the offending value, because the
+// offending value can be content.
 type BatchRejectionDetail struct {
 	Pointer     string   `json:"pointer,omitempty"`
 	Expected    string   `json:"expected,omitempty"`
@@ -122,7 +116,7 @@ type EventResult struct {
 	EventID         string                `json:"event_id"`
 	Outcome         Outcome               `json:"outcome"`
 	SubmissionID    string                `json:"submission_id,omitempty"`
-	DedupTier       string                `json:"dedup_tier,omitempty"` // T (tier T) or S (§4)
+	DedupTier       string                `json:"dedup_tier,omitempty"` // T or S
 	WonFields       *bool                 `json:"won_fields,omitempty"` // true when this observation won the tie-break
 	FirstReceivedAt *time.Time            `json:"first_received_at,omitempty"`
 	Reason          ReasonCode            `json:"reason,omitempty"`
@@ -207,16 +201,14 @@ func (r EventBatchResponse) Validate(sent []string) error {
 	return nil
 }
 
-// Settle maps one event outcome onto the spool state a device should record. This is the single
-// place that mapping lives, so the drain loop cannot decide differently from the spool.
-func (o Outcome) SettleState(reason ReasonCode) (SpoolState, bool) {
+// SettleState maps one event outcome onto the spool state a device records, and reports whether
+// that state is terminal. Every rejection reason is terminal for its event, so one poison event
+// cannot block the queue behind it. This is the single place the mapping lives.
+func (o Outcome) SettleState() (SpoolState, bool) {
 	switch o {
 	case OutcomeAccepted, OutcomeDuplicate:
 		return SpoolDelivered, true
 	case OutcomeRejected:
-		if reason.Retryable() {
-			return SpoolPending, false
-		}
 		return SpoolRejected, true
 	default:
 		return SpoolPending, false

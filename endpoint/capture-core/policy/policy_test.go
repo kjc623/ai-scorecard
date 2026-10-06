@@ -5,15 +5,12 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/shadow-ai-capture/device/protocol"
 )
-
-var okResolver = ArtefactResolverFunc(func(ArtefactRef) error { return nil })
 
 func testBundle(version string) *Bundle {
 	return &Bundle{
@@ -30,8 +27,6 @@ func testBundle(version string) *Bundle {
 		Loopback: LoopbackPolicy{Ports: []LoopbackPort{{
 			ToolFingerprint: "ollama", Port: 11434, UpstreamPort: 21434, PreflightPath: "/", Mode: protocol.ModeM1, OriginalPort: 11434,
 		}}},
-		Classifier: ClassifierRelease{ReleaseID: "rel-1", State: ReleaseEnforcing},
-		Artefacts:  []ArtefactRef{{Name: "rules", Path: "/var/lib/sac/rules.json", Digest: "sha256:" + strings.Repeat("ab", 32)}},
 	}
 }
 
@@ -48,14 +43,14 @@ func newKeyPair(t *testing.T, keyID string) (*Verifier, ed25519.PrivateKey) {
 	return v, priv
 }
 
-func TestVerify_SignAndOpenRoundTrip(t *testing.T) {
+func TestVerifySignAndOpenRoundTrip(t *testing.T) {
 	v, priv := newKeyPair(t, "policy-key-1")
 	b := testBundle("42")
 	raw, err := Sign("policy-key-1", priv, b)
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}
-	got, err := v.Open(raw, nil, ArtefactResolverFunc(func(ArtefactRef) error { return nil }))
+	got, err := v.Open(raw, nil)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -64,7 +59,7 @@ func TestVerify_SignAndOpenRoundTrip(t *testing.T) {
 	}
 }
 
-func TestVerify_SignatureFailuresAreNamed(t *testing.T) {
+func TestVerifySignatureFailuresAreNamed(t *testing.T) {
 	v, priv := newKeyPair(t, "policy-key-1")
 	otherVerifier, _ := newKeyPair(t, "policy-key-1") // same id, different key
 	b := testBundle("42")
@@ -80,12 +75,12 @@ func TestVerify_SignatureFailuresAreNamed(t *testing.T) {
 	}
 	env["payload"] = json.RawMessage(strings.Replace(string(env["payload"]), `"m1"`, `"m3"`, 1))
 	tampered, _ := json.Marshal(env)
-	if _, err := v.Open(tampered, nil, nil); CauseOf(err) != CauseSignatureInvalid {
+	if _, err := v.Open(tampered, nil); CauseOf(err) != CauseSignatureInvalid {
 		t.Fatalf("tampered payload cause = %q, want %q (err=%v)", CauseOf(err), CauseSignatureInvalid, err)
 	}
 
 	// A signature from a different key under the same key id must not verify.
-	if _, err := otherVerifier.Open(raw, nil, nil); CauseOf(err) != CauseSignatureInvalid {
+	if _, err := otherVerifier.Open(raw, nil); CauseOf(err) != CauseSignatureInvalid {
 		t.Fatalf("wrong key cause = %q, want %q", CauseOf(err), CauseSignatureInvalid)
 	}
 
@@ -94,19 +89,19 @@ func TestVerify_SignatureFailuresAreNamed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
 	}
-	if _, err := wrongID.Open(raw, nil, nil); CauseOf(err) != CauseSignatureInvalid {
+	if _, err := wrongID.Open(raw, nil); CauseOf(err) != CauseSignatureInvalid {
 		t.Fatalf("unknown key id cause = %q, want %q", CauseOf(err), CauseSignatureInvalid)
 	}
 
 	// A non-ed25519 algorithm is refused before anything else.
 	env["algorithm"] = json.RawMessage(`"rsa"`)
 	alg, _ := json.Marshal(env)
-	if _, err := v.Open(alg, nil, nil); CauseOf(err) != CauseSignatureInvalid {
+	if _, err := v.Open(alg, nil); CauseOf(err) != CauseSignatureInvalid {
 		t.Fatalf("algorithm cause = %q, want %q", CauseOf(err), CauseSignatureInvalid)
 	}
 }
 
-func TestVerify_SchemaFailures(t *testing.T) {
+func TestVerifySchemaFailures(t *testing.T) {
 	v, priv := newKeyPair(t, "policy-key-1")
 
 	// A field the device does not understand: the bundle is refused rather than partly applied,
@@ -123,7 +118,7 @@ func TestVerify_SchemaFailures(t *testing.T) {
 	sig := ed25519.Sign(priv, newPayload)
 	env["signature"] = json.RawMessage(`"` + base64.StdEncoding.EncodeToString(sig) + `"`)
 	rawUnknown, _ := json.Marshal(env)
-	if _, err := v.Open(rawUnknown, nil, nil); CauseOf(err) != CauseSchemaInvalid {
+	if _, err := v.Open(rawUnknown, nil); CauseOf(err) != CauseSchemaInvalid {
 		t.Fatalf("unknown field cause = %q, want %q", CauseOf(err), CauseSchemaInvalid)
 	}
 
@@ -135,20 +130,20 @@ func TestVerify_SchemaFailures(t *testing.T) {
 	}
 }
 
-func TestVerify_VersionRegressionIsRefused(t *testing.T) {
+func TestVerifyVersionRegressionIsRefused(t *testing.T) {
 	v, priv := newKeyPair(t, "policy-key-1")
 	inForce := testBundle("10")
 	older := testBundle("9")
 	raw, _ := Sign("policy-key-1", priv, older)
-	if _, err := v.Open(raw, inForce, nil); CauseOf(err) != CauseVersionRegression {
+	if _, err := v.Open(raw, inForce); CauseOf(err) != CauseVersionRegression {
 		t.Fatalf("older bundle cause = %q, want %q", CauseOf(err), CauseVersionRegression)
 	}
 	same, _ := Sign("policy-key-1", priv, testBundle("10"))
-	if _, err := v.Open(same, inForce, okResolver); err != nil {
+	if _, err := v.Open(same, inForce); err != nil {
 		t.Fatalf("same-version bundle refused: %v", err)
 	}
 	newer, _ := Sign("policy-key-1", priv, testBundle("11"))
-	if _, err := v.Open(newer, inForce, okResolver); err != nil {
+	if _, err := v.Open(newer, inForce); err != nil {
 		t.Fatalf("newer bundle refused: %v", err)
 	}
 	// An unorderable version is refused in the safe direction: retaining the previous bundle is
@@ -156,31 +151,14 @@ func TestVerify_VersionRegressionIsRefused(t *testing.T) {
 	opaque := testBundle("release-candidate")
 	inForceOpaque := testBundle("release-other")
 	rawOpaque, _ := Sign("policy-key-1", priv, opaque)
-	if _, err := v.Open(rawOpaque, inForceOpaque, nil); CauseOf(err) != CauseVersionRegression {
+	if _, err := v.Open(rawOpaque, inForceOpaque); CauseOf(err) != CauseVersionRegression {
 		t.Fatalf("unorderable version cause = %q, want %q", CauseOf(err), CauseVersionRegression)
 	}
 }
 
-func TestVerify_ArtefactDigestsMustResolve(t *testing.T) {
+func TestStoreRetainsPreviousOnFailure(t *testing.T) {
 	v, priv := newKeyPair(t, "policy-key-1")
-	raw, _ := Sign("policy-key-1", priv, testBundle("42"))
-	missing := ArtefactResolverFunc(func(ArtefactRef) error { return errors.New("no such artefact") })
-	if _, err := v.Open(raw, nil, missing); CauseOf(err) != CauseArtefactMissing {
-		t.Fatalf("missing artefact cause = %q, want %q", CauseOf(err), CauseArtefactMissing)
-	}
-	if _, err := v.Open(raw, nil, nil); CauseOf(err) != CauseArtefactMissing {
-		t.Fatalf("no resolver cause = %q, want %q", CauseOf(err), CauseArtefactMissing)
-	}
-	if _, err := v.Open(raw, nil, ArtefactResolverFunc(func(ArtefactRef) error { return nil })); err != nil {
-		t.Fatalf("resolvable artefact refused: %v", err)
-	}
-}
-
-// §13.3 rule 2: a bundle failing verification leaves the previous one in force, unmodified. This
-// is the property that makes the signature meaningful over time.
-func TestStore_RetainsPreviousOnFailure(t *testing.T) {
-	v, priv := newKeyPair(t, "policy-key-1")
-	store, err := NewStore(v, okResolver)
+	store, err := NewStore(v)
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
@@ -208,11 +186,11 @@ func TestStore_RetainsPreviousOnFailure(t *testing.T) {
 	}
 }
 
-// §13.3 rule 5: with no previous bundle a failed verification is M0 — a reduction, never an
+// With no previous bundle a failed verification is M0 — a reduction, never an
 // increase.
-func TestStore_NoPreviousBundleMeansM0(t *testing.T) {
+func TestStoreNoPreviousBundleMeansM0(t *testing.T) {
 	v, _ := newKeyPair(t, "policy-key-1")
-	store, _ := NewStore(v, okResolver)
+	store, _ := NewStore(v)
 	res := store.Apply([]byte(`{"key_id":"policy-key-1","algorithm":"ed25519","payload":{},"signature":"AAAA"}`))
 	if res.Outcome != OutcomeFellToM0 {
 		t.Fatalf("outcome = %q, want fell_to_m0", res.Outcome)
@@ -225,11 +203,11 @@ func TestStore_NoPreviousBundleMeansM0(t *testing.T) {
 	}
 }
 
-// §13.3 rule 7: repeated failures escalate and back off, so a fleet-wide signing problem does not
+// Repeated failures escalate and back off, so a fleet-wide signing problem does not
 // become a request storm.
-func TestStore_EscalatesAndBacksOff(t *testing.T) {
+func TestStoreEscalatesAndBacksOff(t *testing.T) {
 	v, _ := newKeyPair(t, "policy-key-1")
-	store, _ := NewStore(v, okResolver)
+	store, _ := NewStore(v)
 	base := time.Minute
 	bad := []byte(`{"key_id":"policy-key-1","algorithm":"ed25519","payload":{},"signature":"AAAA"}`)
 	var last Result
@@ -251,8 +229,8 @@ func TestStore_EscalatesAndBacksOff(t *testing.T) {
 	}
 }
 
-func TestCause_DetailUsesTheClosedVocabulary(t *testing.T) {
-	for _, c := range []Cause{CauseSignatureInvalid, CauseSchemaInvalid, CauseVersionRegression, CauseArtefactMissing} {
+func TestCauseDetailUsesTheClosedVocabulary(t *testing.T) {
+	for _, c := range []Cause{CauseSignatureInvalid, CauseSchemaInvalid, CauseVersionRegression} {
 		d := c.Detail()
 		if !d.Valid() {
 			t.Errorf("cause %q maps to detail %q, which is outside protocol.Detail's closed vocabulary", c, d)
@@ -270,7 +248,7 @@ func TestCause_DetailUsesTheClosedVocabulary(t *testing.T) {
 	}
 }
 
-func TestBundle_InterceptsIsAScopeNotADiscoveryMechanism(t *testing.T) {
+func TestBundleInterceptsIsAScopeNotADiscoveryMechanism(t *testing.T) {
 	b := testBundle("42")
 	cases := []struct {
 		host string
@@ -291,7 +269,7 @@ func TestBundle_InterceptsIsAScopeNotADiscoveryMechanism(t *testing.T) {
 			t.Errorf("Intercepts(%q,%d) = %v, want %v", c.host, c.port, got, c.want)
 		}
 	}
-	// Default port set is 443 only; non-443 interception is per-tenant opt-in (§5.3).
+	// Default port set is 443 only; non-443 interception is per-tenant opt-in.
 	noPorts := testBundle("42")
 	noPorts.Interception.Ports = nil
 	if noPorts.Intercepts("api.example.invalid", 8443) {
@@ -305,7 +283,7 @@ func TestBundle_InterceptsIsAScopeNotADiscoveryMechanism(t *testing.T) {
 	}
 }
 
-func TestBundle_ValidateRejectsWhatCannotBeEnforced(t *testing.T) {
+func TestBundleValidateRejectsWhatCannotBeEnforced(t *testing.T) {
 	cases := []struct {
 		name   string
 		mutate func(*Bundle)
@@ -326,8 +304,6 @@ func TestBundle_ValidateRejectsWhatCannotBeEnforced(t *testing.T) {
 		{"broker forwards to itself", func(b *Bundle) {
 			b.Loopback.Ports[0].UpstreamPort = b.Loopback.Ports[0].Port
 		}},
-		{"unknown classifier state", func(b *Bundle) { b.Classifier.State = "vibes" }},
-		{"artefact without a digest", func(b *Bundle) { b.Artefacts = []ArtefactRef{{Name: "rules", Path: "/x"}} }},
 	}
 	for _, c := range cases {
 		b := testBundle("42")
@@ -341,7 +317,7 @@ func TestBundle_ValidateRejectsWhatCannotBeEnforced(t *testing.T) {
 	}
 }
 
-func TestBundle_KillSwitchIsLookedUpByRoute(t *testing.T) {
+func TestBundleKillSwitchIsLookedUpByRoute(t *testing.T) {
 	b := testBundle("42")
 	b.KillSwitches = []KillSwitch{{
 		Provider: protocol.RouteProxyTLS, Mode: KillDisable,
@@ -359,9 +335,9 @@ func TestBundle_KillSwitchIsLookedUpByRoute(t *testing.T) {
 	}
 }
 
-func TestStore_UnchangedVersionIsIdempotent(t *testing.T) {
+func TestStoreUnchangedVersionIsIdempotent(t *testing.T) {
 	v, priv := newKeyPair(t, "policy-key-1")
-	store, _ := NewStore(v, okResolver)
+	store, _ := NewStore(v)
 	raw, _ := Sign("policy-key-1", priv, testBundle("10"))
 	if res := store.Apply(raw); res.Outcome != OutcomeAccepted {
 		t.Fatalf("first = %q", res.Outcome)
@@ -375,8 +351,8 @@ func TestStore_UnchangedVersionIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestNewStore_RefusesToExistWithoutAVerifier(t *testing.T) {
-	if _, err := NewStore(nil, nil); err == nil {
+func TestNewStoreRefusesToExistWithoutAVerifier(t *testing.T) {
+	if _, err := NewStore(nil); err == nil {
 		t.Fatal("a store without a verifier would make unverified bundles enforceable")
 	}
 }
@@ -384,9 +360,9 @@ func TestNewStore_RefusesToExistWithoutAVerifier(t *testing.T) {
 // A server that states the tenant has no bundle (GET /v1/policy 404) takes the device to M0, and
 // the version check starts again from nothing: the next bundle the tenant mints is accepted even
 // though its version cannot be ordered against a bundle that no longer exists.
-func TestStore_WithdrawFallsToM0(t *testing.T) {
+func TestStoreWithdrawFallsToM0(t *testing.T) {
 	v, priv := newKeyPair(t, "policy-key-1")
-	store, _ := NewStore(v, okResolver)
+	store, _ := NewStore(v)
 	raw, _ := Sign("policy-key-1", priv, testBundle("10"))
 	if res := store.Apply(raw); res.Outcome != OutcomeAccepted {
 		t.Fatalf("apply = %+v", res)

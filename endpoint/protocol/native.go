@@ -6,12 +6,12 @@ import (
 	"time"
 )
 
-// Native messaging between the capture extension and capture-core (docs/01-collectors.md §3.4).
+// Native messaging between the browser extension and capture-core.
 //
-// Chromium enforces a message size ceiling and the extension cannot read the spool, so:
+// Chromium enforces a message size ceiling and the extension cannot read the spool, so
 // observations flow one way, attachment bytes flow chunked behind a manifest that lets
-// capture-core refuse an oversized upload *before* transfer, and anything undeliverable is
-// held in extension memory only, bounded, dropped oldest-first with a counter.
+// capture-core refuse an oversized upload before transfer, and anything undeliverable is held in
+// extension memory only, bounded, dropped oldest-first with a counter.
 //
 // Every message is one JSON object with a `type` discriminator. A message whose type is
 // unknown is counted and dropped; it is never guessed at.

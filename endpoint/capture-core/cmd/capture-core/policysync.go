@@ -11,19 +11,17 @@ import (
 
 	"github.com/shadow-ai-capture/device/capture-core/drain"
 	"github.com/shadow-ai-capture/device/capture-core/policy"
+	"github.com/shadow-ai-capture/device/capture-core/state"
 )
 
-// The policy bundle a tenant-packaged device fetches for itself (docs/02 §5.2, docs/01 §13.2):
-// with no --bundle configured, the device asks GET /v1/policy after enrolment, verifies the answer
-// under the vendor's pinned policy key, keeps the last verified bundle on disk so a restart
-// enforces it before the network answers, and polls with If-None-Match at the server's cadence.
-// Nothing here can widen what the device does: an unverified, older or unreadable bundle leaves the
-// one in force where it is (M0 when there is none), and only the server's own statement that the
-// tenant has no bundle withdraws one, which narrows to M0.
+// The policy bundle the device fetches for itself: after enrolment it asks GET /v1/policy,
+// verifies the answer under the pinned policy key, keeps the last verified bundle in the state
+// directory so a restart enforces it before the network answers, and polls with If-None-Match at
+// the server's cadence. Nothing here can widen what the device does: an unverified, older or
+// unreadable bundle leaves the one in force where it is (M0 when there is none), and only the
+// server's own statement that the tenant has no bundle withdraws one, which narrows to M0.
 
 const (
-	policyCacheDir = "policy"
-
 	// defaultPolicyInterval is the poll cadence when the server states none. Polling is cheap (a 304
 	// is a few hundred bytes), and a policy change should reach the fleet within a working session.
 	defaultPolicyInterval = 15 * time.Minute
@@ -55,21 +53,21 @@ func (c policyCache) save(raw []byte, etag string) error {
 	if err := os.MkdirAll(c.dir, 0o700); err != nil {
 		return err
 	}
-	if err := writeFileAtomic(c.bundlePath(), raw, 0o600); err != nil {
+	if err := state.WriteFile(c.bundlePath(), raw); err != nil {
 		return err
 	}
 	if etag == "" {
 		_ = os.Remove(c.etagPath())
 		return nil
 	}
-	return writeFileAtomic(c.etagPath(), []byte(etag), 0o600)
+	return state.WriteFile(c.etagPath(), []byte(etag))
 }
 
 func (c policyCache) saveETag(etag string) error {
 	if etag == "" {
 		return nil
 	}
-	return writeFileAtomic(c.etagPath(), []byte(etag), 0o600)
+	return state.WriteFile(c.etagPath(), []byte(etag))
 }
 
 func (c policyCache) remove() {
@@ -180,8 +178,8 @@ func (p *policySync) once(ctx context.Context) time.Duration {
 		res := p.store.Apply(f.Envelope)
 		p.accepted(res)
 		if res.Err != nil {
-			// §13.3: the bundle is discarded, the previous one stays in force (M0 with none), the
-			// cause is reported, and repeated failures back the polling off (rule 7).
+			// The bundle is discarded, the previous one stays in force (M0 with none), the cause is
+			// reported, and repeated failures back the polling off.
 			wait = p.store.PollBackoff(wait)
 			p.recordLocked(now, "error", res.Err, wait)
 			p.log.Warn("policy: fetched bundle refused; the bundle in force is unchanged",

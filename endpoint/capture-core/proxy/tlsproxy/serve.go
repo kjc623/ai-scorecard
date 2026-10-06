@@ -26,7 +26,7 @@ func (c *countingReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// bodyBuffer is the M1+ retention of a request body, bounded. §5.3: an over-cap body is not read
+// bodyBuffer is the M1+ retention of a request body, bounded. An over-cap body is not read
 // into memory — the proxy records size_bytes and a digest of the first N bytes, classifies
 // nothing and emits with `confidence: degraded`, never a silent "clean".
 type bodyBuffer struct {
@@ -73,7 +73,7 @@ func (b *bodyBuffer) overCap() bool {
 	return b.over
 }
 
-// JSONExtractor is C1 for a JSON request body: the last user-role message of `messages[]`, or a
+// JSONExtractor extracts the text of a JSON request body: the last user-role message of `messages[]`, or a
 // top-level `prompt`. Unrecognised bodies return an error so the observation degrades to the
 // tier S surrogate rather than guessing which characters the user authored.
 type JSONExtractor struct{}

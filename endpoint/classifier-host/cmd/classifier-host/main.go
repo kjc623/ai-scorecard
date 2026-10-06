@@ -1,142 +1,94 @@
-// Command classifier-host is the classifier host of docs/01-collectors.md §9 and the parent of
-// the §10 parser child. One source builds for native (the resident host) and for GOOS=js
-// GOARCH=wasm (the extension's in-page copy), and the `classify` subcommand runs the same fixed
-// corpus through both, which is what §9.1's equivalence property is measured over.
+// Command classifier-host classifies content for capture-core, which starts it as a child process
+// and exchanges length-prefixed frames with it over the child's stdin and stdout:
 //
-// Subcommands:
+//	classifier-host serve --release DIR --pubkey HEX [--transport stdio]
 //
-//	classify    run a corpus once and write the canonical, timing-free verdict records
-//	measure     run a corpus N times and write §9.4's per-stage latency percentiles
-//	release     build a signed release directory (development tool; the signing key is a file)
-//	serve       serve the local request/response channel (native: stdio, unix socket or loopback)
-//	parse-child the parser child itself, spawned by parser/isolation; reads one framed document
-//	version     print the build's target and version
-//
-// Every subcommand that loads a release takes `--release <dir> --pubkey <hex>`; there is no
-// default key and no unsigned path, because a release the device cannot verify is a release the
-// device must not run (§9.5).
+// serve loads the signed release in DIR, refuses to start unless it verifies under the Ed25519
+// public key HEX, and answers until stdin closes. Documents are parsed in a further child of this
+// same executable, started as `classifier-host parse-child` for each document. Diagnostics go to
+// stderr as JSON lines.
 package main
 
 import (
 	"crypto/ed25519"
 	"encoding/hex"
+	"errors"
+	"flag"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
-	"runtime"
 	"strings"
 
 	"github.com/shadow-ai-capture/device/classifier-host/classify"
-	"github.com/shadow-ai-capture/device/classifier-host/docparse"
-	"github.com/shadow-ai-capture/device/classifier-host/model"
+	"github.com/shadow-ai-capture/device/classifier-host/parser"
+	"github.com/shadow-ai-capture/device/classifier-host/parser/isolation"
 	"github.com/shadow-ai-capture/device/classifier-host/release"
-	"github.com/shadow-ai-capture/device/classifier-host/rules"
 )
 
-// Version is the host binary's version. It is the classifier_version of last resort when no
-// release is loaded, so no response is ever unattributable.
-const Version = "0.1.0-dev"
-
 func main() {
-	args := os.Args[1:]
+	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
+}
+
+func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		usage()
-		os.Exit(2)
+		fmt.Fprintln(stderr, "usage: classifier-host serve --release DIR --pubkey HEX [--transport stdio] | parse-child")
+		return 2
 	}
-	var code int
 	switch args[0] {
-	case "classify":
-		code = runClassify(args[1:])
-	case "measure":
-		code = runMeasure(args[1:])
-	case "release":
-		code = runRelease(args[1:])
 	case "serve":
-		code = runServe(args[1:])
+		log := slog.New(slog.NewJSONHandler(stderr, nil))
+		if err := serve(args[1:], stdin, stdout, log); err != nil {
+			log.Error("classifier-host stopped", "error", err)
+			return 1
+		}
+		return 0
 	case "parse-child":
-		code = runParseChild(args[1:])
-	case "version":
-		fmt.Printf("classifier-host %s %s/%s\n", Version, runtime.GOOS, runtime.GOARCH)
-	case "help", "-h", "--help":
-		usage()
+		return parser.Execute(stdin, stdout, parser.DefaultLimits())
 	default:
-		fmt.Fprintf(os.Stderr, "classifier-host: unknown subcommand %q\n\n", args[0])
-		usage()
-		code = 2
+		fmt.Fprintf(stderr, "classifier-host: unknown command %q\n", args[0])
+		return 2
 	}
-	os.Exit(code)
 }
 
-func usage() {
-	fmt.Fprint(os.Stderr, `classifier-host — rules -> validators -> model classification (docs/01-collectors.md §9)
-
-  classify    --release DIR --pubkey HEX --corpus FILE [--out FILE]
-  measure     --release DIR --pubkey HEX --corpus FILE [--iterations N] [--out FILE]
-  release     --dir DIR --state shadow|enforcing|rolled_back --version V --key FILE
-              [--rules FILE] [--no-model] [--previous V] [--print-pubkey]
-  serve       --release DIR --pubkey HEX [--transport stdio|unix|tcp] [--addr VALUE]
-  parse-child
-  version
-
-The classify and measure subcommands exist so the same corpus can be run through the native and
-the js/wasm build and the outputs diffed: §9.1's byte-identical-labels property is asserted by
-device/classifier-host/equivalence_test.go, not by convention.
-`)
-}
-
-func fatalf(format string, args ...any) int {
-	fmt.Fprintf(os.Stderr, "classifier-host: "+format+"\n", args...)
-	return 1
-}
-
-// targetBudget is §9.4's ladder for the target this binary was built for. One source, two
-// targets, two published columns — the budget is the only thing the target selects.
-func targetBudget() classify.Budget {
-	if runtime.GOARCH == "wasm" {
-		return classify.WASMBudget()
+func serve(args []string, stdin io.Reader, stdout io.Writer, log *slog.Logger) error {
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	releaseDir := fs.String("release", "", "signed classifier release directory")
+	pubkeyHex := fs.String("pubkey", "", "hex Ed25519 public key the release must verify under")
+	transport := fs.String("transport", "stdio", "the only transport is stdio")
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
-	return classify.NativeBudget()
-}
-
-// rig bundles the pieces a classification needs.
-type rig struct {
-	store *release.Store
-	host  *classify.Host
-}
-
-// loadRig verifies and loads the release, wires the parser child for this target, and builds the
-// host.
-func loadRig(releaseDir, pubkeyHex string) (*rig, error) {
-	if releaseDir == "" || pubkeyHex == "" {
-		return nil, fmt.Errorf("--release and --pubkey are both required: a release must be verified before it is run")
+	if *releaseDir == "" || *pubkeyHex == "" {
+		return errors.New("--release and --pubkey are both required")
 	}
-	pubBytes, err := hex.DecodeString(strings.TrimSpace(pubkeyHex))
+	if *transport != "stdio" {
+		return fmt.Errorf("transport %q is not supported; the classifier serves its parent over stdio", *transport)
+	}
+	pub, err := hex.DecodeString(strings.TrimSpace(*pubkeyHex))
+	if err != nil || len(pub) != ed25519.PublicKeySize {
+		return fmt.Errorf("--pubkey must be a %d-byte Ed25519 public key in hex", ed25519.PublicKeySize)
+	}
+	rel, err := release.Load(*releaseDir, ed25519.PublicKey(pub))
 	if err != nil {
-		return nil, fmt.Errorf("--pubkey is not hex: %w", err)
+		return err
 	}
-	if len(pubBytes) != ed25519.PublicKeySize {
-		return nil, fmt.Errorf("--pubkey is %d bytes, want an ed25519 public key of %d", len(pubBytes), ed25519.PublicKeySize)
-	}
-	store := release.NewStore()
-	if _, err := store.Apply(releaseDir, release.NewTrust(ed25519.PublicKey(pubBytes)), rules.DefaultCaps(), model.DefaultCaps()); err != nil {
-		return nil, err
-	}
-	host, err := classify.New(classify.Options{
-		Store:       store,
-		Parser:      newParserRunner(),
-		Budget:      targetBudget(),
-		Metrics:     classify.NewMetrics(512),
-		Version:     Version,
-		Enforcement: classify.DefaultEnforcement(),
-	})
+	child, err := isolation.DefaultCommand()
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return &rig{store: store, host: host}, nil
+	host, err := classify.New(classify.Options{Release: rel, Parser: isolation.New(child, isolation.DefaultLimits())})
+	if err != nil {
+		return err
+	}
+	log.Info("classifier-host serving", "release", rel.Version, "rules", rel.Rules.Version(), "model", rel.Model.Version())
+	return classify.NewServer(host).ServeConn(stdio{stdin, stdout})
 }
 
-// newParserRunner is defined per target: parser/isolation on native, nil on js/wasm where §9.1's
-// table says document parsing is unavailable.
-var _ = docparse.CauseNone
+// stdio joins the process's stdin and stdout into the connection the server reads and writes.
+type stdio struct {
+	io.Reader
+	io.Writer
+}
 
-func osName() string   { return runtime.GOOS }
-func archName() string { return runtime.GOARCH }
+func (stdio) Close() error { return nil }

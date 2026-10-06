@@ -7,10 +7,8 @@ import (
 	"io"
 )
 
-// Length-prefixed framing for the local socket between capture-core and classifier-host
-// (docs/01-collectors.md §3.4). Unix domain socket under the service's directory on macOS,
-// named pipe on Windows; this file is the framing only, so both platforms share one
-// implementation and one test.
+// Length-prefixed framing between capture-core and classifier-host, which runs as capture-core's
+// child on stdio. This file is the framing only.
 //
 //	+--------+--------+------------------+
 //	| ver(1) | len(4) | payload (len)    |
@@ -20,14 +18,14 @@ import (
 // version mismatch is detected on the frame that has it instead of corrupting the stream.
 // len is big-endian and counts payload bytes only.
 const (
-	// Version is the current framing version. Both sides send it; a mismatch is a
-	// degraded handshake, never a crash (docs/01-collectors.md §3.4).
+	// Version is the current framing version. Both sides send it; a mismatch is a degraded
+	// handshake, never a crash.
 	Version byte = 1
 
 	headerSize = 5
 
 	// MaxFrameBytes bounds a single frame. The classifier is fed one observation or one
-	// document at a time, so the ceiling is the document cap, not a network MTU.
+	// document at a time, so the ceiling is the document cap.
 	MaxFrameBytes = 64 << 20
 )
 

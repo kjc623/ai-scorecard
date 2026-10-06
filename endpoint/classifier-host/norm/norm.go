@@ -1,225 +1,145 @@
-// Package norm is the normalise stage of docs/01-collectors.md §9.2: "decoding, Unicode
-// normalisation, whitespace collapsing and text extraction from structured bodies", with the
-// digest that becomes `content_digest` computed here because normalisation is part of the dedup
-// contract.
+// Package norm turns the bytes handed to the classifier into the text the rules and the model
+// read: it decodes them, extracts the text of a JSON or XML body, applies Unicode NFKC
+// normalisation, removes invisible format and control characters, and collapses whitespace.
 //
-// §9.2 also makes the stage *bounded*, because it runs over attacker-influenced input on the
-// interactive path: "linear, allocation-bounded, and refuses pathological inputs — deeply
-// nested structures, enormous strings — by truncating and marking, with `confidence: degraded`
-// if the truncation changed what a rule could see."
+// NFKC folds compatibility forms, so a full-width or superscript digit, a ligature or a
+// non-breaking space reads as its plain equivalent and cannot hide a match from a rule.
 //
-// Two different caps, two different outcomes, and the difference matters to §9.7:
-//
-//   - A body over the classifier's *input* cap is content the provider handed over that the
-//     classifier could not process: ErrOverCap, degraded, detail `content_over_cap`.
-//   - A body that decodes but whose text exceeds the *text* cap is truncated and marked. It
-//     degrades only when the dropped tail could have carried a match; a payload that was large
-//     but fully processed does not degrade (§9.7's "not emitted when" column).
-//
-// Unicode normalisation is a documented subset this build round, not full NFKC: golang.org/x/text
-// is not fetchable on the offline build host (ADR 0016). The subset — compatibility folding for
-// fullwidth/halfwidth ASCII forms, Unicode space folding, zero-width and format-character
-// removal, and line-ending canonicalisation — is deterministic and target-independent, which is
-// what §9.1's equivalence property requires. It is reported as an open decision in README.md.
+// The stage is bounded because its input is attacker-influenced: a body over the input limit is
+// refused, a structured body is read with a token budget and a depth limit, and text over the
+// text limit is truncated and marked.
 package norm
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"strings"
+	"unicode"
 	"unicode/utf16"
 	"unicode/utf8"
+
+	"golang.org/x/text/unicode/norm"
 )
 
-// Limits bounds the stage. Values are parameters (brief §8's resource budget), not design.
+// Limits bound the stage.
 type Limits struct {
-	// MaxInputBytes is the largest body the classifier will normalise at all.
+	// MaxInputBytes is the largest body normalised at all.
 	MaxInputBytes int
-	// MaxTextBytes bounds the normalised text handed to rules and the model.
+	// MaxTextBytes bounds the normalised text.
 	MaxTextBytes int
-	// MaxJSONTokens bounds the number of tokens read from a structured body.
-	MaxJSONTokens int
-	// MaxDepth bounds nesting in a structured body.
+	// MaxTokens bounds the tokens read from a JSON or XML body.
+	MaxTokens int
+	// MaxDepth bounds nesting in a JSON or XML body.
 	MaxDepth int
 }
 
-// DefaultLimits is the shipped bound. It is small on purpose: a prompt that needs more than a
-// megabyte of normalised text is an attachment, and attachments take the parser-child path
-// (§10) off the interactive path.
+// DefaultLimits are the limits the classifier runs with.
 func DefaultLimits() Limits {
-	return Limits{
-		MaxInputBytes: 1 << 20,
-		MaxTextBytes:  1 << 20,
-		MaxJSONTokens: 20000,
-		MaxDepth:      64,
-	}
+	return Limits{MaxInputBytes: 1 << 20, MaxTextBytes: 1 << 20, MaxTokens: 20000, MaxDepth: 64}
 }
-
-func (l Limits) withDefaults() Limits {
-	d := DefaultLimits()
-	if l.MaxInputBytes <= 0 {
-		l.MaxInputBytes = d.MaxInputBytes
-	}
-	if l.MaxTextBytes <= 0 {
-		l.MaxTextBytes = d.MaxTextBytes
-	}
-	if l.MaxJSONTokens <= 0 {
-		l.MaxJSONTokens = d.MaxJSONTokens
-	}
-	if l.MaxDepth <= 0 {
-		l.MaxDepth = d.MaxDepth
-	}
-	return l
-}
-
-// Encoding is what the bytes turned out to be.
-type Encoding string
-
-const (
-	EncodingUTF8    Encoding = "utf-8"
-	EncodingUTF16LE Encoding = "utf-16le"
-	EncodingUTF16BE Encoding = "utf-16be"
-	EncodingEmpty   Encoding = ""
-)
 
 var (
-	// ErrOverCap is the §9.7 "over-cap body" case: content the classifier refuses to process.
-	ErrOverCap = errors.New("norm: content is over the classifier's input cap")
-	// ErrUndecodable is the §9.7 "undecodable bytes" case.
-	ErrUndecodable = errors.New("norm: content is not decodable as the declared media type")
+	// ErrOverCap is a body larger than MaxInputBytes.
+	ErrOverCap = errors.New("norm: content is over the classifier's input limit")
+	// ErrUndecodable is a body that is not text in a supported encoding.
+	ErrUndecodable = errors.New("norm: content is not decodable as text")
 )
 
-// Result is the normalised text plus the facts a caller needs to decide about degradation.
+// Result is the normalised text and what was lost producing it.
 type Result struct {
-	Text     string
-	Digest   string // sha256:<hex> of Text — the digest that becomes content_digest
-	Encoding Encoding
-
-	// Truncated is true when input was dropped to fit a cap.
+	Text string
+	// Truncated is set when input was dropped to fit a limit.
 	Truncated bool
-	// TruncationAffectsRules is true when the dropped input could have carried a match. It is
-	// the difference between §9.7's two rows: a truncated payload that a rule could not fully
-	// see degrades, and one that was large but fully processed does not.
+	// TruncationAffectsRules is set when the dropped input could have carried a match: it held
+	// something other than whitespace, or a structural limit stopped extraction.
 	TruncationAffectsRules bool
-	// Pathological names the structure that tripped a structural cap (nesting, token budget),
-	// for the stage's error text.
+	// Pathological names the structural limit that stopped extraction: "nesting",
+	// "token_budget" or "text_cap".
 	Pathological string
-
-	BytesIn  int
-	BytesOut int
 }
 
-// Normalise runs the stage. A non-nil error means the classifier could not process the body at
-// all (degraded, detail per the error); a nil error with TruncationAffectsRules means the
-// pipeline degrades the normalise stage while still running rules over the truncated text.
+// Normalise runs the stage. An error means the body could not be processed at all.
 func Normalise(mediaType string, content []byte, lim Limits) (Result, error) {
-	lim = lim.withDefaults()
-	res := Result{BytesIn: len(content), Encoding: EncodingEmpty}
+	var res Result
 	if len(content) == 0 {
-		res.Digest = digestOf("")
 		return res, nil
 	}
 	if len(content) > lim.MaxInputBytes {
 		return res, ErrOverCap
 	}
-
-	text, enc, err := decode(mediaType, content)
+	mt := baseMediaType(mediaType)
+	text, err := decode(mt, content)
 	if err != nil {
 		return res, err
 	}
-	res.Encoding = enc
-
-	text, patho := extract(mediaType, text, lim)
-	if patho != "" {
-		res.Pathological = patho
-	}
-
-	text = foldUnicode(text)
-	text = collapseWhitespace(text)
-
+	text, res.Pathological = extract(mt, text, lim)
+	text = collapseWhitespace(fold(text))
 	if len(text) > lim.MaxTextBytes {
-		cut := utf8Boundary(text, lim.MaxTextBytes)
-		dropped := text[cut:]
+		cut := lim.MaxTextBytes
+		for cut > 0 && !utf8.RuneStart(text[cut]) {
+			cut--
+		}
 		res.Truncated = true
-		res.TruncationAffectsRules = hasRuleVisibleContent(dropped)
+		res.TruncationAffectsRules = strings.TrimSpace(text[cut:]) != ""
 		text = text[:cut]
 	}
 	if res.Pathological != "" {
-		res.Truncated = true
-		res.TruncationAffectsRules = true
+		res.Truncated, res.TruncationAffectsRules = true, true
 	}
-
 	res.Text = text
-	res.BytesOut = len(text)
-	res.Digest = digestOf(text)
 	return res, nil
 }
 
-func digestOf(s string) string {
-	sum := sha256.Sum256([]byte(s))
-	return "sha256:" + hex.EncodeToString(sum[:])
+// baseMediaType lowercases a media type and drops its parameters.
+func baseMediaType(mt string) string {
+	mt = strings.ToLower(mt)
+	if i := strings.IndexByte(mt, ';'); i >= 0 {
+		mt = mt[:i]
+	}
+	return strings.TrimSpace(mt)
 }
 
-// decode resolves the bytes to a UTF-8 string, or refuses. A declared binary media type is
-// refused rather than guessed at: the classifier classifies text and hands documents to the
-// parser child (§10), and guessing would turn "we could not read this" into "we found nothing".
-func decode(mediaType string, content []byte) (string, Encoding, error) {
-	mt := strings.ToLower(strings.TrimSpace(mediaType))
-	if i := strings.IndexByte(mt, ';'); i >= 0 {
-		mt = strings.TrimSpace(mt[:i])
-	}
+// decode returns the body as UTF-8. UTF-16 with a byte-order mark is decoded; a binary media type
+// or invalid UTF-8 is refused rather than guessed at.
+func decode(mt string, content []byte) (string, error) {
 	if !textual(mt) {
-		return "", EncodingEmpty, ErrUndecodable
+		return "", ErrUndecodable
 	}
-
-	// UTF-16 with a byte-order mark is decoded rather than refused: the bytes are readable and
-	// refusing them would lose content the product exists to classify.
 	if len(content) >= 2 {
 		switch {
 		case content[0] == 0xFF && content[1] == 0xFE:
-			return decodeUTF16(content[2:], false), EncodingUTF16LE, nil
+			return decodeUTF16(content[2:], false), nil
 		case content[0] == 0xFE && content[1] == 0xFF:
-			return decodeUTF16(content[2:], true), EncodingUTF16BE, nil
+			return decodeUTF16(content[2:], true), nil
 		}
 	}
 	body := content
-	enc := EncodingUTF8
-	if len(content) >= 3 && content[0] == 0xEF && content[1] == 0xBB && content[2] == 0xBF {
-		body = content[3:]
+	if len(body) >= 3 && body[0] == 0xEF && body[1] == 0xBB && body[2] == 0xBF {
+		body = body[3:]
 	}
 	if !utf8.Valid(body) {
-		return "", enc, ErrUndecodable
+		return "", ErrUndecodable
 	}
-	return string(body), enc, nil
+	return string(body), nil
 }
 
-// textual reports whether the media type is one the classifier reads as text or extracts text
-// from. An empty media type is treated as text: capture-core hands over prompt bytes whose type
-// it may not know, and §9.2's normalisation is exactly the stage that copes with that.
+// textual reports whether a media type is read as text. An empty media type is: capture-core
+// does not always know the type of the prompt bytes it hands over.
 func textual(mt string) bool {
-	if mt == "" {
-		return true
-	}
-	if strings.HasPrefix(mt, "text/") {
+	switch {
+	case mt == "", strings.HasPrefix(mt, "text/"), strings.HasSuffix(mt, "+json"), strings.HasSuffix(mt, "+xml"):
 		return true
 	}
 	switch mt {
-	case "application/json", "application/ld+json", "application/x-ndjson", "application/xml",
+	case "application/json", "application/x-ndjson", "application/xml",
 		"application/x-www-form-urlencoded", "application/javascript", "application/x-javascript",
 		"application/x-sh", "application/yaml", "application/x-yaml":
-		return true
-	}
-	// A +json / +xml structured suffix is text by definition.
-	if strings.HasSuffix(mt, "+json") || strings.HasSuffix(mt, "+xml") {
 		return true
 	}
 	return false
 }
 
 func decodeUTF16(b []byte, bigEndian bool) string {
-	n := len(b) / 2
-	u := make([]uint16, 0, n)
+	u := make([]uint16, 0, len(b)/2)
 	for i := 0; i+1 < len(b); i += 2 {
 		if bigEndian {
 			u = append(u, uint16(b[i])<<8|uint16(b[i+1]))
@@ -230,88 +150,56 @@ func decodeUTF16(b []byte, bigEndian bool) string {
 	return string(utf16.Decode(u))
 }
 
-// foldUnicode is the documented compatibility subset. It is a single pass, allocation-bounded
-// by the input length, and identical on every target (no locale, no tables from outside the
-// standard library).
-func foldUnicode(s string) string {
-	// Fast path: pure ASCII without the characters below needs no rewrite.
-	if isPlainASCII(s) {
+// fold removes format characters (zero-width characters, soft hyphens, byte-order marks) and C0
+// controls other than tab and newline, turns CR and CRLF into LF, and applies NFKC. Removing an
+// invisible character first means it cannot split a match in two.
+func fold(s string) string {
+	if !needsFold(s) {
 		return s
 	}
 	var b strings.Builder
 	b.Grow(len(s))
-	for i := 0; i < len(s); {
-		r, size := utf8.DecodeRuneInString(s[i:])
-		i += size
+	for i, r := range s {
 		switch {
-		case r == 0xFEFF || (r >= 0x200B && r <= 0x200F) || r == 0x2060 || r == 0x00AD || r == 0x180E:
-			// Byte-order mark, zero-width and format characters: not content, and keeping them
-			// would let a rule's match be split by an invisible character.
-			continue
-		case r == 0x00A0 || (r >= 0x2000 && r <= 0x200A) || r == 0x202F || r == 0x205F || r == 0x3000:
-			b.WriteByte(' ')
-		case r >= 0xFF01 && r <= 0xFF5E:
-			// Fullwidth ASCII (U+FF01..U+FF5E) -> ASCII. The offset is 0xFEE0, so U+FF01 is '!'
-			// and U+FF14 is '4'; using 0xFF00 here would emit C0 control bytes instead of
-			// digits, which is exactly how a rule goes blind to a pasted full-width card number.
-			b.WriteByte(byte(r - 0xFEE0))
 		case r == '\r':
-			// CRLF is one line ending, not two: the \r is dropped when the \n that follows it
-			// would otherwise be doubled.
-			if i < len(s) && s[i] == '\n' {
+			if i+1 < len(s) && s[i+1] == '\n' {
 				continue
 			}
 			b.WriteByte('\n')
-		case r < 0x20 && r != '\n' && r != '\t':
-			// C0 controls other than tab and newline: dropped rather than mapped, so they
-			// cannot break a token into two.
-			continue
+		case r < 0x20 && r != '\n' && r != '\t', unicode.Is(unicode.Cf, r):
 		default:
 			b.WriteRune(r)
 		}
 	}
-	return b.String()
+	return norm.NFKC.String(b.String())
 }
 
-func isPlainASCII(s string) bool {
+// needsFold reports whether s holds anything fold would change: a non-ASCII byte, a CR or a
+// control character.
+func needsFold(s string) bool {
 	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c >= 0x80 || c == '\r' || c < 0x20 && c != '\n' && c != '\t' {
-			return false
+		if c := s[i]; c >= utf8.RuneSelf || c < 0x20 && c != '\n' && c != '\t' {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
-// collapseWhitespace canonicalises line endings, collapses horizontal whitespace runs, and
-// trims. Newlines are preserved: §9.2's whitespace collapsing is about the interactive path's
-// cost and about a rule seeing "4111  1111" and "4111 1111" the same way, not about destroying
-// line structure that offsets and excerpts depend on.
-//
-// It writes into a byte buffer rather than a strings.Builder because trimming the space run
-// before a newline has to be O(1): a builder cannot truncate, and rebuilding it per line would
-// make this stage quadratic in exactly the attacker-controlled input §9.2 says must stay linear.
+// collapseWhitespace collapses runs of horizontal whitespace to one space, removes whitespace at
+// the start and end of each line and leading and trailing newlines, and keeps the line structure
+// that excerpt offsets refer to. It is a single pass over the input.
 func collapseWhitespace(s string) string {
 	buf := make([]byte, 0, len(s))
-	pendingSpace := false
-	atLineStart := true
+	pendingSpace, atLineStart := false, true
 	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch c {
+		switch c := s[i]; c {
 		case '\n':
-			for len(buf) > 0 && (buf[len(buf)-1] == ' ' || buf[len(buf)-1] == '\t') {
-				buf = buf[:len(buf)-1]
-			}
 			if len(buf) > 0 {
 				buf = append(buf, '\n')
 			}
-			pendingSpace = false
-			atLineStart = true
+			pendingSpace, atLineStart = false, true
 		case ' ', '\t', '\v', '\f':
-			if atLineStart {
-				continue
-			}
-			pendingSpace = true
+			pendingSpace = !atLineStart
 		default:
 			if pendingSpace {
 				buf = append(buf, ' ')
@@ -325,29 +213,4 @@ func collapseWhitespace(s string) string {
 		buf = buf[:len(buf)-1]
 	}
 	return string(buf)
-}
-
-// hasRuleVisibleContent reports whether a dropped tail could have carried a match: any
-// non-whitespace byte. A tail of pure whitespace is a payload that was large but fully
-// processed, which §9.7 says must not degrade.
-func hasRuleVisibleContent(s string) bool {
-	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case ' ', '\t', '\n', '\r', '\v', '\f':
-		default:
-			return true
-		}
-	}
-	return false
-}
-
-func utf8Boundary(s string, max int) int {
-	if max >= len(s) {
-		return len(s)
-	}
-	cut := max
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return cut
 }

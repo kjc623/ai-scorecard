@@ -11,8 +11,8 @@ import (
 	"sort"
 )
 
-// The counter file. §12.2 requires `dropped_total` to be a monotonic counter stored
-// separately from the queue, so that it survives the deletion that produces it: a counter
+// The counter file. dropped_total is a monotonic counter stored separately from the queue,
+// so that it survives the deletion that produces it: a counter
 // kept in the dropped rows would count itself away.
 //
 // The design here is one fold, not two ledgers. Every drop and expiry is a tombstone frame
@@ -45,12 +45,12 @@ type countersFile struct {
 	NextSegmentSeq uint64 `json:"next_segment_seq"`
 
 	// Drop attribution of folded segments, so "we lost 800 prompt events from the proxy
-	// route" survives reclamation (§12.2).
+	// route" survives reclamation.
 	Drops    []attribution `json:"drops,omitempty"`
 	Expiries []attribution `json:"expiries,omitempty"`
 
 	// Visible data loss, carried forward so the health report can say "spool_reinitialised
-	// with N events lost" rather than starting clean (§12.2).
+	// with N events lost" rather than starting clean.
 	CorruptSegments int   `json:"corrupt_segments,omitempty"`
 	CorruptBytes    int64 `json:"corrupt_bytes,omitempty"`
 	CountersReset   bool  `json:"counters_reset,omitempty"`
@@ -120,8 +120,8 @@ func attrMap(s []attribution) map[attrKey]uint64 {
 }
 
 // The counter file is sealed with the same AEAD as the log, in the same frame format. It is
-// small but it is not harmless: the drop attribution names kinds and routes, and §12 requires
-// a spool directory that another local user can read to expose neither content nor metadata.
+// small but it is not harmless: the drop attribution names kinds and routes, and a spool
+// directory another local user can read must expose neither content nor metadata.
 // Sealing it also means a modified counter file is detected rather than trusted.
 func loadCounters(path string, aead cipher.AEAD) (countersFile, error) {
 	var c countersFile

@@ -1,10 +1,9 @@
-// Package tlsproxy is `proxy.tls` (docs/01-collectors.md §5): the only provider that reads
-// content outside the browser, and therefore the one with the largest blast radius in the
-// product (brief §5.5).
+// Package tlsproxy is proxy.tls, the local HTTPS proxy that terminates TLS for the AI
+// destinations the signed policy names and tunnels everything else untouched. CLI runtimes reach
+// it through the environment cli.shim writes.
 //
-// Its defining property is that failing open is the acceptance criterion, not an aspiration: the
-// user's traffic is never blocked, degraded or delayed by this provider's inability to do its
-// job (§5.4). Every branch below therefore prefers "carry the request" over "report an error",
+// It fails open: the user's traffic is never blocked, degraded or delayed by the provider's
+// inability to do its job. Every branch prefers carrying the request over reporting an error,
 // and the only thing that stops interception is signed policy.
 package tlsproxy
 
@@ -50,35 +49,27 @@ type Config struct {
 	// "127.0.0.1:0" so nothing binds a fixed port.
 	Listen string
 
-	// Bundles returns the bundle in force. nil means "none", which resolves to M0 (§13.3 rule 5)
-	// and, for this provider, means it stops reading content — never that it widens.
+	// Bundles returns the bundle in force. nil means none, which resolves to M0 and, for this
+	// provider, means it stops reading content; it never widens.
 	Bundles func() *policy.Bundle
 
 	Pipeline Pipeline
 	Decide   func(tool string) *protocol.Decision
 	Agent    core.ScopeQuery
 
-	// SystemProxy is the platform proxy configuration: the provider points it at itself only
-	// once it is listening, confirms it is the *effective* proxy, and restores it on shutdown
-	// and on the kill switch.
-	SystemProxy core.SystemProxy
-
-	// TrustRoot installs/removes the device CA. Removal is as reliable as installation (§5.2).
+	// TrustRoot installs and removes the device CA. Removal is as reliable as installation.
 	TrustRoot core.TrustRoot
 
-	// Sealer is the platform key protection for the CA key. nil is reported, not hidden.
-	Sealer Sealer
-
-	// CACertPEM and CAKeyPEM load a pre-existing device CA instead of minting one at start. They
-	// must be set together; exactly one is a configuration error, never a silent generated
-	// fallback. This is the path an offline generator (cmd/sac-bundle) uses to hand the proxy the
-	// same per-device root the device already trusts.
+	// CACertPEM and CAKeyPEM are the device CA the proxy mints leaves from: the per-device CA
+	// the service keeps in its state directory, which is the root the trust store holds. They
+	// are set together; exactly one is a configuration error. With neither, the provider mints
+	// a CA for this run.
 	CACertPEM []byte
 	CAKeyPEM  []byte
 
 	// CanaryHost/CanaryPort is the end-to-end probe destination. Healthy requires a successful
-	// handshake through a minted leaf against it (§5.2, §5.6); without one the provider reports
-	// `tls_probe_failed` rather than claiming health on the strength of a successful file write.
+	// handshake through a minted leaf against it; without one the provider reports
+	// tls_probe_failed rather than claiming health on the strength of a successful file write.
 	CanaryHost string
 	CanaryPort int
 
@@ -89,12 +80,12 @@ type Config struct {
 	// in-process pool rather than touching the OS store.
 	UpstreamRoots *x509.CertPool
 
-	// Process names the client behind a connection, for the per-process exclusion ladder (§5.5).
-	// It is a seam because process attribution is platform-specific.
+	// Process names the client behind a connection, for the per-process exclusion of clients
+	// that pin certificates. It is a seam because process attribution is platform-specific.
 	Process func(conn net.Conn) string
 
-	// PinnedReprobeInterval bounds an exclusion: "re-probed at a slow cadence because a client
-	// update can change its behaviour. It is never a permanent silent omission" (§5.5).
+	// PinnedReprobeInterval bounds an exclusion: a client update can change its behaviour, so an
+	// excluded destination is re-probed at this cadence and never silently omitted for good.
 	PinnedReprobeInterval time.Duration
 
 	DialTimeout      time.Duration
@@ -138,24 +129,22 @@ func (c Config) withDefaults() Config {
 type Provider struct {
 	cfg Config
 
-	mu            sync.Mutex
-	ln            net.Listener
-	ca            *CA
-	startedAt     time.Time
-	started       bool
-	stopped       bool
-	killed        bool
-	enforcing     bool
-	wasEffective  bool
-	probeOK       bool
-	lastSuccess   time.Time
-	counters      *core.CounterSet
-	exclusions    map[string]time.Time // process|host -> excluded until
-	acceptDone    chan struct{}
-	wg            sync.WaitGroup
-	sequence      []string // side effects, for the ordering assertions in tests
-	lastDegraded  protocol.Detail
-	systemProxyAt string
+	mu           sync.Mutex
+	ln           net.Listener
+	ca           *CA
+	startedAt    time.Time
+	started      bool
+	stopped      bool
+	killed       bool
+	enforcing    bool
+	probeOK      bool
+	lastSuccess  time.Time
+	counters     *core.CounterSet
+	exclusions   map[string]time.Time // process|host -> excluded until
+	acceptDone   chan struct{}
+	wg           sync.WaitGroup
+	sequence     []string // side effects, for the ordering assertions in tests
+	lastDegraded protocol.Detail
 }
 
 // Name implements core.Provider.
@@ -195,8 +184,7 @@ func (p *Provider) CA() *CA {
 	return p.ca
 }
 
-// ListenAddr implements core.ListenAddr: the supervisor points the system proxy at this, and
-// never before the listener exists.
+// ListenAddr is the address the proxy listens on, empty before it binds.
 func (p *Provider) ListenAddr() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -206,9 +194,9 @@ func (p *Provider) ListenAddr() string {
 	return p.ln.Addr().String()
 }
 
-// buildCA produces the device CA: a configured PEM pair when supplied, otherwise a freshly minted
-// per-device CA. Exactly one of the pair is refused rather than silently generating a fallback,
-// because a proxy running a CA the device does not trust must not claim to intercept.
+// buildCA produces the device CA: the configured PEM pair when supplied, otherwise a CA minted for
+// this run. Exactly one of the pair is refused rather than silently generating a fallback, because
+// a proxy running a CA the device does not trust must not claim to intercept.
 func (p *Provider) buildCA(deviceID string) (*CA, error) {
 	haveCert, haveKey := len(p.cfg.CACertPEM) > 0, len(p.cfg.CAKeyPEM) > 0
 	switch {
@@ -217,23 +205,22 @@ func (p *Provider) buildCA(deviceID string) (*CA, error) {
 	case haveCert || haveKey:
 		return nil, fmt.Errorf("tlsproxy: CA certificate and key must be supplied together; refusing a silent generated fallback")
 	default:
-		return NewCA(deviceID, p.cfg.Sealer, p.cfg.Clock())
+		return NewCA(deviceID, p.cfg.Clock())
 	}
 }
 
-// Start mints the device CA, binds the proxy, optionally installs the CA public certificate and
-// points the system proxy at itself, then runs the end-to-end probe. It never fails because
-// interception is unavailable: it reports `degraded` and keeps the user's traffic direct.
+// Start loads the device CA, binds the proxy, installs the CA certificate when a trust root is
+// configured, then runs the end-to-end probe. It never fails because interception is
+// unavailable: it reports degraded and the user's traffic stays direct.
 func (p *Provider) Start(ctx context.Context) error {
 	p.mu.Lock()
 	if p.started {
 		p.mu.Unlock()
 		return nil
 	}
-	// A kill switch in the bundle already in force at startup must suppress the provider before it
-	// ever binds or installs a root. The supervisor applies the bundle at step 1, before any
-	// provider starts, so without this check the switch would be recorded and then ignored: Start
-	// would bind, install the CA and intercept while Health reported absent/killed.
+	// A kill switch in the bundle already in force at startup suppresses the provider before it
+	// binds or installs a root. The supervisor applies the bundle before any provider starts, so
+	// without this check the switch would be recorded and then ignored.
 	if p.killSwitchActive() {
 		p.started = true
 		p.killed = true
@@ -267,24 +254,10 @@ func (p *Provider) Start(ctx context.Context) error {
 	p.mu.Unlock()
 
 	if p.cfg.TrustRoot != nil {
-		// Installation is verified by the probe below, never by the write returning nil (§5.2:
-		// the wrong store fails silently).
+		// Installation is verified by reading the store back, never by the write returning nil:
+		// a write to the wrong store fails silently.
 		if err := p.installTrustRoot(ctx, ca); err != nil {
 			p.cfg.Log.Printf("tlsproxy: could not install the device CA: %v", err)
-		}
-	}
-	if p.cfg.SystemProxy != nil {
-		if err := p.cfg.SystemProxy.PointAt(ctx, ln.Addr().String()); err != nil {
-			p.cfg.Log.Printf("tlsproxy: could not point the system proxy at %s: %v", ln.Addr().String(), err)
-		} else {
-			p.mu.Lock()
-			p.systemProxyAt = ln.Addr().String()
-			p.mu.Unlock()
-		}
-		if eff, ok := p.cfg.SystemProxy.Effective(ctx); ok && eff == ln.Addr().String() {
-			p.mu.Lock()
-			p.wasEffective = true
-			p.mu.Unlock()
 		}
 	}
 
@@ -294,11 +267,9 @@ func (p *Provider) Start(ctx context.Context) error {
 		p.acceptLoop()
 	}()
 
-	// The end-to-end probe: a real handshake against a destination whose leaf we minted. This is
-	// the only thing that may produce `healthy` (§5.2, §5.6).
-	//
-	// The probe reads the listen address and the CA pool, both of which take this mutex, so it is
-	// called outside the lock: a self-deadlock here would hang startup forever.
+	// The end-to-end probe, a real handshake against a destination whose leaf the proxy minted,
+	// is the only thing that may produce healthy. It reads the listen address and the CA pool,
+	// both of which take the mutex, so it runs outside the lock.
 	ok := p.probe(ctx)
 	p.mu.Lock()
 	p.started = true
@@ -307,7 +278,6 @@ func (p *Provider) Start(ctx context.Context) error {
 	if !ok {
 		p.cfg.Log.Printf("tlsproxy: end-to-end probe failed; reporting degraded with %s", protocol.DetailTLSProbeFailed)
 	}
-	_ = ctx
 	return nil
 }
 
@@ -340,8 +310,7 @@ func (p *Provider) installTrustRoot(ctx context.Context, ca *CA) error {
 	}
 	der := ca.DER()
 	if err := tr.Install(ctx, der); err != nil {
-		// A write that did not happen is a named degraded cause, never a silent health claim:
-		// §5.2's wrong store fails silently, so the failure has to reach the coverage row.
+		// A write that did not happen is a named degraded cause, never a silent health claim.
 		p.setDetail(protocol.DetailTrustInstallFailed)
 		return err
 	}
@@ -403,9 +372,7 @@ func (p *Provider) probe(ctx context.Context) bool {
 	return true
 }
 
-// Stop implements core.Provider: interception stops, the system proxy is restored, the CA public
-// certificate is removed when an uninstall or kill switch asks for it, and the listener closes.
-// It is idempotent.
+// Stop implements core.Provider: interception stops and the listener closes. It is idempotent.
 func (p *Provider) Stop(ctx context.Context) error {
 	p.mu.Lock()
 	if p.stopped {
@@ -417,14 +384,7 @@ func (p *Provider) Stop(ctx context.Context) error {
 	p.enforcing = false
 	p.mu.Unlock()
 
-	// Enforcement first: no new interception, then the system proxy is restored. §5.5's
-	// dangerous ordering is traffic left pointed at a proxy that has stopped intercepting.
 	p.stopInterception("stop")
-	if p.cfg.SystemProxy != nil && p.systemProxyAt != "" {
-		if err := p.cfg.SystemProxy.Restore(ctx); err != nil {
-			p.cfg.Log.Printf("tlsproxy: could not restore the system proxy: %v", err)
-		}
-	}
 	if ln != nil {
 		_ = ln.Close()
 	}
@@ -460,10 +420,8 @@ func (p *Provider) stopInterception(reason string) {
 
 // ApplyPolicy implements core.Provider: a diff, never a restart.
 //
-// The kill switch (§5.5) is the one policy change that stops interception, and its ordering is
-// the dangerous half: enforcement and interception stop FIRST, then the system proxy is
-// restored, then the provider reports `absent` with `detail=killed`. Traffic is never left
-// pointed at a proxy that has stopped intercepting.
+// The kill switch is the one policy change that stops interception. Interception stops first,
+// then the trusted root is removed, then the provider reports absent with detail killed.
 func (p *Provider) ApplyPolicy(b policy.Bundle) error {
 	ks, ok := b.KillSwitchFor(protocol.RouteProxyTLS)
 	if !ok || ks.Mode != policy.KillDisable {
@@ -475,42 +433,30 @@ func (p *Provider) ApplyPolicy(b policy.Bundle) error {
 	p.mu.Lock()
 	already := p.killed
 	p.killed = true
-	restore := p.systemProxyAt
 	p.mu.Unlock()
 	if already {
 		return nil
 	}
-	// 1. stop enforcement and interception first.
 	p.stopInterception("kill_switch")
-	// 2. then restore the system proxy.
-	if p.cfg.SystemProxy != nil && restore != "" {
-		if err := p.cfg.SystemProxy.Restore(context.Background()); err != nil {
-			p.cfg.Log.Printf("tlsproxy: kill switch could not restore the system proxy: %v", err)
-		}
-		p.step("systemproxy.Restore")
-	}
-	// 3. then remove the trusted root (§5.2: removal is as reliable as installation). The kill
-	// switch is exactly when a device must stop trusting the interception authority, so leaving
-	// the root behind would contradict the property. The manager is idempotent enough to report a
-	// benign remove error, which is logged and not escalated.
+	// The kill switch is exactly when a device must stop trusting the interception authority.
+	// A benign remove error is logged and not escalated.
 	if p.cfg.TrustRoot != nil {
 		if err := p.cfg.TrustRoot.Remove(context.Background()); err != nil {
 			p.cfg.Log.Printf("tlsproxy: kill switch could not remove the trusted root: %v", err)
 		}
 		p.step("trustroot.Remove")
 	}
-	// 4. then report absent detail=killed (the health row reads p.killed).
 	p.step("health:absent:" + string(protocol.DetailKilled))
 	return nil
 }
 
-// Health implements core.Provider. Healthy requires all three of bound, confirmed as the
-// effective system proxy, and a successful end-to-end probe through a minted leaf (§5.6).
+// Health implements core.Provider. Healthy requires the proxy to be bound and a successful
+// end-to-end probe through a minted leaf.
 func (p *Provider) Health() core.Health {
 	p.mu.Lock()
 	ln := p.ln
 	started, stopped, killed := p.started, p.stopped, p.killed
-	probeOK, wasEffective := p.probeOK, p.wasEffective
+	probeOK := p.probeOK
 	lastDegraded := p.lastDegraded
 	excluded := 0
 	now := p.cfg.Clock()
@@ -531,24 +477,12 @@ func (p *Provider) Health() core.Health {
 		return p.counters.Snapshot(protocol.StateAbsent, protocol.DetailNone, p.startedAt, lastOK)
 	}
 
-	effective := false
-	if p.cfg.SystemProxy != nil {
-		if eff, ok := p.cfg.SystemProxy.Effective(context.Background()); ok && eff == ln.Addr().String() {
-			effective = true
-		}
-	}
 	switch {
-	case wasEffective && p.cfg.SystemProxy != nil && !effective:
-		// Something changed the system proxy away from us: that is external interference, which
-		// is `tampered`, not a capability gap.
-		return p.counters.Snapshot(protocol.StateTampered, protocol.DetailNotEffectiveProxy, p.startedAt, lastOK)
-	case p.cfg.SystemProxy != nil && !effective:
-		return p.counters.Snapshot(protocol.StateDegraded, protocol.DetailNotEffectiveProxy, p.startedAt, lastOK)
 	case !probeOK:
 		return p.counters.Snapshot(protocol.StateDegraded, protocol.DetailTLSProbeFailed, p.startedAt, lastOK)
 	case lastDegraded != protocol.DetailNone:
-		// A capability failed on a recent request (classifier, spool, upstream). Health must not
-		// claim healthy while a named capability is not working (§4.2).
+		// A capability failed on a recent request (classifier, spool, upstream): health does not
+		// claim healthy while a named capability is not working.
 		return p.counters.Snapshot(protocol.StateDegraded, lastDegraded, p.startedAt, lastOK)
 	case excluded > 0:
 		return p.counters.Snapshot(protocol.StateDegraded, protocol.DetailClientPinned, p.startedAt, lastOK)
@@ -581,7 +515,7 @@ func (p *Provider) acceptLoop() {
 	}
 }
 
-// handle is the CONNECT path of §5.3. The decision tree is the whole provider: eligible
+// handle is the CONNECT path. The decision tree is the whole provider: eligible
 // destinations are terminated, everything else is tunnelled blind, and no branch may break the
 // client.
 func (p *Provider) handle(client net.Conn) {
@@ -603,7 +537,7 @@ func (p *Provider) handle(client net.Conn) {
 	process := p.cfg.Process(client)
 	bundle := p.bundle()
 
-	// §5.5's exclusion ladder: a destination excluded for this process is blind-tunnelled, and
+	// The exclusion ladder: a destination excluded for this process is blind-tunnelled, and
 	// the exclusion is re-probed at a slow cadence rather than being permanent.
 	if p.excluded(process, host) {
 		p.counters.Add(protocol.CounterNotCooperative)
@@ -612,7 +546,7 @@ func (p *Provider) handle(client net.Conn) {
 	}
 
 	if bundle == nil || !bundle.Intercepts(host, port) {
-		// §5.1: a destination in none of the three sets is blind-tunnelled, and the device
+		// A destination in none of the three sets is blind-tunnelled, and the device
 		// records only host, bytes, duration and owning process.
 		p.blindTunnel(client, br, req.Host, process, protocol.DetailNone)
 		return
@@ -628,7 +562,7 @@ func (p *Provider) bundle() *policy.Bundle {
 	return p.cfg.Bundles()
 }
 
-// mode resolves the effective mode before anything is read (§11.2) and never returns an empty
+// mode resolves the effective mode before anything is read and never returns an empty
 // value: with no bundle in force this is M0, which stops content reading.
 func (p *Provider) mode(host string) core.Resolution {
 	q := p.cfg.Agent
@@ -665,12 +599,12 @@ func (p *Provider) intercept(client net.Conn, br *bufio.Reader, req *http.Reques
 	tlsConn := tls.Server(client, &tls.Config{
 		Certificates: []tls.Certificate{*leaf},
 		MinVersion:   tls.VersionTLS12,
-		NextProtos:   []string{"http/1.1"}, // §5.3: the proxy does not pretend to support HTTP/3
+		NextProtos:   []string{"http/1.1"}, // The proxy does not pretend to support HTTP/3
 	})
 	hctx, cancel := context.WithTimeout(context.Background(), p.cfg.HandshakeTimeout)
 	defer cancel()
 	if err := tlsConn.HandshakeContext(hctx); err != nil {
-		// §5.5 first row: a TLS alert during the minted-leaf handshake, repeated, means the
+		// A TLS alert during the minted-leaf handshake, repeated, means the
 		// client pins a certificate or validates against a bundled CA list. Exclude the
 		// destination for that process and tunnel it blind from then on — never leave the client
 		// broken to preserve collection.
@@ -697,13 +631,13 @@ func (p *Provider) serveIntercepted(client *tls.Conn, host string, port int, pro
 	submission := req.Method == http.MethodPost || req.Method == http.MethodPut
 	p.counters.Add(protocol.CounterObserved)
 	if !submission {
-		// The shape predicate said no. Counted, never guessed at (§4.3, §8.2).
+		// The shape predicate said no. Counted, never guessed at.
 		p.counters.Add(protocol.CounterSkippedNotGenerative)
 	}
 
 	res := p.mode(host)
 
-	// §11.2: the mode is applied before content is read.
+	// The mode is applied before content is read.
 	var buf *bodyBuffer
 	var body io.Reader = req.Body
 	if submission && res.ReadsContent() {
@@ -718,7 +652,7 @@ func (p *Provider) serveIntercepted(client *tls.Conn, host string, port int, pro
 		RootCAs:    p.cfg.UpstreamRoots,
 	})
 	if err != nil {
-		// §5.4 trigger 4: return the connection error the client would have seen anyway; never
+		// Return the connection error the client would have seen anyway; never
 		// substitute a response. Closing without a response IS that error.
 		p.counters.Add(protocol.CounterErrors)
 		p.setDetail(protocol.DetailUpstreamFailure)
@@ -744,8 +678,7 @@ func (p *Provider) serveIntercepted(client *tls.Conn, host string, port int, pro
 		<-writeDone
 		return
 	}
-	// Responses stream through unbuffered: E4 makes response capture a non-goal, and the
-	// contract's `direction: ingress` exists and stays unused (§5.6).
+	// Responses stream through unbuffered: responses are not captured.
 	werr := resp.Write(client)
 	_ = resp.Body.Close()
 	<-writeDone
@@ -763,7 +696,7 @@ func (p *Provider) serveIntercepted(client *tls.Conn, host string, port int, pro
 	p.observe(req, counted.n, buf, res)
 }
 
-// observe hands the request to the pipeline. Failures here are the §5.4 triggers 1 and 2 and
+// observe hands the request to the pipeline. Failures here (classifier, spool) are reported and
 // never stop the client's exchange, which has already completed.
 func (p *Provider) observe(req *http.Request, counted int64, buf *bodyBuffer, res core.Resolution) {
 	size := counted
@@ -819,11 +752,11 @@ func (p *Provider) setDetail(d protocol.Detail) {
 	p.lastDegraded = d
 }
 
-// blindTunnel accepts the CONNECT, establishes a byte tunnel, and decrypts nothing (§5.1).
+// blindTunnel accepts the CONNECT, establishes a byte tunnel, and decrypts nothing.
 func (p *Provider) blindTunnel(client net.Conn, br *bufio.Reader, hostport, process string, detail protocol.Detail) {
 	upstream, err := net.DialTimeout("tcp", hostport, p.cfg.DialTimeout)
 	if err != nil {
-		// §5.4 trigger 4 again: the client sees the connection error it would have seen anyway.
+		// The client sees the connection error it would have seen anyway.
 		p.counters.Add(protocol.CounterErrors)
 		return
 	}

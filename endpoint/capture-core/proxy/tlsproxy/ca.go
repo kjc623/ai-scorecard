@@ -1,37 +1,20 @@
 package tlsproxy
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"math/big"
 	"sync"
 	"time"
 )
-
-// Sealer is the platform's at-rest key protection (A1: DPAPI scoped to the service account on
-// Windows, Keychain on macOS). It is an interface because the real facility cannot be exercised
-// in a test: the fake in this package's tests is an in-process AEAD, and the real implementations
-// are NOT VERIFIED here.
-//
-// The CA private key is never written to disk **by this package**: the only form that leaves this
-// process is Seal's output, and nothing in this package writes it anywhere. That is §3.3's "a CA
-// key is an interception capability": escrowing it turns a per-device liability into a
-// fleet-wide one.
-//
-// A deployment that pins a CA pair across restarts (cmd/sac-bundle + --ca-key) persists the key
-// itself, as a 0600 file when no platform keystore is configured — the same file-key-provider
-// deviation §14.3 records for the spool key, reported unsealed rather than implying protection the
-// build does not have. DPAPI/Keychain sealing is not wired yet.
-type Sealer interface {
-	Seal(plaintext []byte) ([]byte, error)
-	Open(sealed []byte) ([]byte, error)
-}
 
 // CAInfo is the non-secret description of the device CA, for the trust store and for health.
 type CAInfo struct {
@@ -41,15 +24,14 @@ type CAInfo struct {
 	Fingerprint string // sha256 of the DER, for the operator to check the right root is installed
 }
 
-// CA is the per-device certificate authority. One per device, never per tenant and never per
-// fleet (A3): a stolen key covers only that device's minted leaves, and there is no vendor-held
-// key that could be compelled to mint a certificate for a customer's hostname.
+// CA is the per-device certificate authority. There is one per device, never per tenant or per
+// fleet: a stolen key covers only that device's minted leaves, and there is no vendor-held key
+// that could be compelled to mint a certificate for a customer's hostname.
 type CA struct {
-	key    *ecdsa.PrivateKey
-	cert   *x509.Certificate
-	der    []byte
-	pool   *x509.CertPool
-	sealed []byte
+	key  *ecdsa.PrivateKey
+	cert *x509.Certificate
+	der  []byte
+	pool *x509.CertPool
 
 	mu      sync.Mutex
 	leaves  map[string]*tls.Certificate
@@ -60,17 +42,16 @@ type CA struct {
 // process's need for it is an interception capability lying around.
 const LeafTTL = 12 * time.Hour
 
-// NewCA mints a per-device CA. The key is generated here and never leaves the process in the
-// clear; when a Sealer is supplied, the sealed form is retained for the platform to store.
-func NewCA(deviceID string, sealer Sealer, now time.Time) (*CA, error) {
-	// Three calendar months: the life of a CA minted for one run or one lab bundle.
-	return NewCAValidFor(deviceID, sealer, now, now.AddDate(0, 3, 0).Sub(now))
+// NewCA mints a per-device CA valid for three calendar months, the life of a CA minted for one
+// run.
+func NewCA(deviceID string, now time.Time) (*CA, error) {
+	return NewCAValidFor(deviceID, now, now.AddDate(0, 3, 0).Sub(now))
 }
 
 // NewCAValidFor mints a per-device CA valid for validity. A CA the device keeps across restarts is
 // installed in the trust store once and reused, so it lives longer than one minted per run; it is
 // still per device, so its life bounds only that device's exposure.
-func NewCAValidFor(deviceID string, sealer Sealer, now time.Time, validity time.Duration) (*CA, error) {
+func NewCAValidFor(deviceID string, now time.Time, validity time.Duration) (*CA, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("tlsproxy: generating device CA key: %w", err)
@@ -104,21 +85,7 @@ func NewCAValidFor(deviceID string, sealer Sealer, now time.Time, validity time.
 	pool := x509.NewCertPool()
 	pool.AddCert(cert)
 
-	ca := &CA{key: key, cert: cert, der: der, pool: pool, leaves: map[string]*tls.Certificate{}, leafTTL: LeafTTL}
-	if sealer != nil {
-		// Only the sealed form is retained; the plain DER of the key is handed to Seal and
-		// dropped. Nothing here writes it anywhere.
-		keyDER, err := x509.MarshalECPrivateKey(key)
-		if err != nil {
-			return nil, fmt.Errorf("tlsproxy: marshalling the device CA key: %w", err)
-		}
-		sealed, err := sealer.Seal(keyDER)
-		if err != nil {
-			return nil, fmt.Errorf("tlsproxy: sealing the device CA key: %w", err)
-		}
-		ca.sealed = sealed
-	}
-	return ca, nil
+	return &CA{key: key, cert: cert, der: der, pool: pool, leaves: map[string]*tls.Certificate{}, leafTTL: LeafTTL}, nil
 }
 
 // DER returns the CA certificate for the platform trust store. Only the public half.
@@ -176,10 +143,6 @@ func (c *CA) Leaf(host string, now time.Time) (*tls.Certificate, error) {
 	return cert, nil
 }
 
-// Sealed returns the sealed CA key, for the platform store. It is empty when no sealer was
-// configured, which is a configuration the caller can detect rather than a silent no-op.
-func (c *CA) Sealed() []byte { return append([]byte(nil), c.sealed...) }
-
 // ErrNoCA reports that interception was attempted without a device CA, which is a programming
 // error rather than a runtime condition: a provider that cannot mint a leaf cannot intercept.
 var ErrNoCA = errors.New("tlsproxy: no device CA")
@@ -187,4 +150,102 @@ var ErrNoCA = errors.New("tlsproxy: no device CA")
 func fingerprint(der []byte) string {
 	sum := sha256Sum(der)
 	return fmt.Sprintf("%x", sum[:])
+}
+
+// NewCAFromPEM rebuilds a device CA from a certificate and an EC private key in PEM form, so a CA
+// the device keeps across restarts is the one the trust store already holds. The key is accepted
+// in PKCS#8 ("PRIVATE KEY") or SEC1 ("EC PRIVATE KEY") form; anything else is refused, because a
+// key that is not EC cannot mint the P-256 leaves this package signs.
+func NewCAFromPEM(certPEM, keyPEM []byte, now time.Time) (*CA, error) {
+	cert, der, err := parseCertPEM(certPEM)
+	if err != nil {
+		return nil, fmt.Errorf("tlsproxy: CA certificate: %w", err)
+	}
+	key, err := parseECKeyPEM(keyPEM)
+	if err != nil {
+		return nil, fmt.Errorf("tlsproxy: CA key: %w", err)
+	}
+	if pub, ok := cert.PublicKey.(*ecdsa.PublicKey); !ok || pub.Curve != key.Curve ||
+		pub.X.Cmp(key.X) != 0 || pub.Y.Cmp(key.Y) != 0 {
+		return nil, errors.New("tlsproxy: CA certificate and key do not match")
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(cert)
+	return &CA{
+		key:     key,
+		cert:    cert,
+		der:     der,
+		pool:    pool,
+		leaves:  map[string]*tls.Certificate{},
+		leafTTL: LeafTTL,
+	}, nil
+}
+
+// PEM returns the CA certificate as a PEM block. It is the public half and safe to install into
+// the trust store.
+func (c *CA) PEM() []byte {
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: c.der})
+}
+
+// KeyPEM returns the CA private key as a PKCS#8 PEM block. It is an interception capability: the
+// caller stores it where only the service can read it, and nothing in this package writes it.
+func (c *CA) KeyPEM() ([]byte, error) {
+	der, err := x509.MarshalPKCS8PrivateKey(c.key)
+	if err != nil {
+		return nil, fmt.Errorf("tlsproxy: marshalling CA key: %w", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), nil
+}
+
+// parseCertPEM parses exactly one PEM x509 certificate.
+func parseCertPEM(data []byte) (*x509.Certificate, []byte, error) {
+	block, err := singlePEMBlock(data)
+	if err != nil {
+		return nil, nil, err
+	}
+	if block.Type != "CERTIFICATE" {
+		return nil, nil, fmt.Errorf("PEM block is %q, not a certificate", block.Type)
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, nil, fmt.Errorf("not a parseable x509 certificate: %w", err)
+	}
+	return cert, block.Bytes, nil
+}
+
+// parseECKeyPEM parses exactly one EC private key in PKCS#8 or SEC1 form.
+func parseECKeyPEM(data []byte) (*ecdsa.PrivateKey, error) {
+	block, err := singlePEMBlock(data)
+	if err != nil {
+		return nil, err
+	}
+	switch block.Type {
+	case "PRIVATE KEY": // PKCS#8
+		k, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("PKCS#8 key: %w", err)
+		}
+		ec, ok := k.(*ecdsa.PrivateKey)
+		if !ok {
+			return nil, fmt.Errorf("PKCS#8 key is %T, not an EC key", k)
+		}
+		return ec, nil
+	case "EC PRIVATE KEY": // SEC1
+		return x509.ParseECPrivateKey(block.Bytes)
+	default:
+		return nil, fmt.Errorf("PEM block is %q, not an EC private key (PKCS#8 or SEC1)", block.Type)
+	}
+}
+
+// singlePEMBlock requires exactly one PEM block and no trailing data, because a CA key or
+// certificate handed to the proxy must be unambiguous about which one it is.
+func singlePEMBlock(data []byte) (*pem.Block, error) {
+	block, rest := pem.Decode(data)
+	if block == nil {
+		return nil, errors.New("no PEM block")
+	}
+	if len(bytes.TrimSpace(rest)) != 0 {
+		return nil, errors.New("multiple PEM blocks or trailing data; exactly one block is required")
+	}
+	return block, nil
 }

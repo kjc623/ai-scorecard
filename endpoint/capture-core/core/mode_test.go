@@ -18,7 +18,6 @@ func testBundle(version string, defaultMode protocol.CollectionMode, toolModes m
 		Actor:         "tenant-admin@example.invalid",
 		TenantDefault: defaultMode,
 		ToolModes:     toolModes,
-		Classifier:    policy.ClassifierRelease{ReleaseID: "rel-1", State: policy.ReleaseEnforcing},
 	}
 }
 
@@ -121,7 +120,7 @@ func TestResolveNoticeGateLowersToM0AndReportsWhy(t *testing.T) {
 	}
 }
 
-// The property §13.3 is built around: a bundle that fails verification never changes what the
+// A bundle that fails verification never changes what the
 // device is enforcing. This test tampers with a bundle that would *widen* a tool from m1 to m3
 // and asserts the widening never happens.
 func TestTamperedBundleNeverWidensAMode(t *testing.T) {
@@ -133,7 +132,7 @@ func TestTamperedBundleNeverWidensAMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verifier: %v", err)
 	}
-	store, err := policy.NewStore(verifier, nil)
+	store, err := policy.NewStore(verifier)
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}
@@ -183,14 +182,14 @@ func TestTamperedBundleNeverWidensAMode(t *testing.T) {
 }
 
 // With no previous bundle, a failed verification is M0 — a reduction in capability, never an
-// increase (§13.3 rule 5).
+// increase.
 func TestFailedFirstBundleFallsToM0(t *testing.T) {
 	pub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("key: %v", err)
 	}
 	verifier, _ := policy.NewVerifier("policy-key-1", pub)
-	store, _ := policy.NewStore(verifier, nil)
+	store, _ := policy.NewStore(verifier)
 	res := store.Apply([]byte(`{"key_id":"policy-key-1","algorithm":"ed25519","payload":{},"signature":"AAAA"}`))
 	if res.Outcome != policy.OutcomeFellToM0 {
 		t.Fatalf("outcome = %q, want fell_to_m0", res.Outcome)

@@ -9,18 +9,20 @@ import (
 	"time"
 )
 
-const eventA = "11111111-1111-4111-8111-111111111111"
+const eventA = "5e1f0c3a-7d2b-4c19-9a8e-2f6b1d4c7e90"
+
+var testKey = bytes.Repeat([]byte{0x5a}, 32)
 
 func open(t *testing.T, dir string, now func() time.Time) *Store {
 	t.Helper()
-	s, err := Open(filepath.Join(dir, "content"), filepath.Join(dir, "content.key"), now)
+	s, err := Open(filepath.Join(dir, "content"), testKey, now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return s
 }
 
-// §11.3: content is held sealed, keyed by event, and survives a restart with its grant state.
+// Content is held sealed, keyed by event, and survives a restart with its grant state.
 func TestHeldContentIsSealedAndSurvivesReopen(t *testing.T) {
 	dir := t.TempDir()
 	content := []byte("the prompt as the person typed it")
@@ -104,8 +106,5 @@ func TestExpiryAndKeyPlacement(t *testing.T) {
 	}
 	if s.HeldObjects() != 0 || s.HeldBytes() != 0 {
 		t.Fatal("expired content is still counted as held")
-	}
-	if _, err := Open(filepath.Join(dir, "c2"), filepath.Join(dir, "c2", "key"), nil); err == nil {
-		t.Fatal("a key file inside the content directory was accepted")
 	}
 }

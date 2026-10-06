@@ -1,9 +1,6 @@
 package protocol
 
 import (
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -11,38 +8,39 @@ import (
 	"time"
 )
 
-// The content grant of docs/02-ingest-and-transport.md §5.5 and §10: the device asks whether one
-// event's content may be uploaded, and a granted decision carries the only means to do it — one
-// upload URL and one object key. These shapes are shared by the device, which sends the request
-// and seals the object, control-api, which decides, and content-vault, which opens the object for
-// an approved retrieval.
+// Content upload at collection mode M3.
+//
+// Prompt content stays on the device until the server grants its upload for one event. The device
+// asks with POST /v1/content/grant; a granted decision names a grant id, and the device then
+// sends the content once with POST /v1/content over its authenticated connection. control-api
+// checks the grant and hands the content to content-vault, which encrypts and stores it.
 
 // ContentGrantSchemaVersion is the grant request's schema_version.
 const ContentGrantSchemaVersion = "1.0"
 
-// Grant states. A denial is a successful decision and travels in a 200 (§5.5).
+// Grant states. A denial is a successful decision and travels in a 200.
 const (
 	ContentGrantGranted = "granted"
 	ContentGrantDenied  = "denied"
 )
 
-// ContentKeyAlg is the only object-key algorithm (§10.4).
-const ContentKeyAlg = "A256GCM"
+// ContentUploadPath is where the device sends granted content.
+const ContentUploadPath = "/v1/content"
 
-// Upload metadata headers. The grant response names the ones the server decided, and the device
-// repeats them verbatim; HeaderContentRawDigest is the one the device computes, because only it
-// has seen the bytes it is about to write.
+// MaxContentObjectBytes caps one uploaded content object: the prompt text the device extracted,
+// or the request body as observed when it could not extract one. The device holds no content
+// larger than this. Attachment bytes are never part of the object; each attachment's name, size
+// and digest travel in the event envelope.
+const MaxContentObjectBytes = 16 << 20
+
+// Upload headers. HeaderContentRawDigest is the digest of the exact body bytes (RawDigest).
 const (
-	HeaderContentGrantID       = "X-Sac-Grant-Id"
-	HeaderContentEventID       = "X-Sac-Event-Id"
-	HeaderContentWrappedKey    = "X-Sac-Wrapped-Key"
-	HeaderContentKeyID         = "X-Sac-Key-Id"
-	HeaderContentKeyVersion    = "X-Sac-Key-Version"
-	HeaderContentPlaintextSize = "X-Sac-Plaintext-Size"
-	HeaderContentRawDigest     = "X-Sac-Raw-Digest"
+	HeaderContentGrantID   = "X-Sac-Grant-Id"
+	HeaderContentEventID   = "X-Sac-Event-Id"
+	HeaderContentRawDigest = "X-Sac-Raw-Digest"
 )
 
-// Reason codes the grant endpoint adds to the §5 error envelope.
+// Reason codes the content endpoints add to the error envelope.
 const (
 	ReasonUnknownEvent  ReasonCode = "unknown_event"
 	ReasonGrantConsumed ReasonCode = "grant_consumed"
@@ -79,79 +77,18 @@ func (r ContentGrantRequest) Validate() error {
 	return nil
 }
 
-// ContentGrantResponse is the 200 body. Upload and Key are present only when State is granted.
+// ContentGrantResponse is the 200 body of POST /v1/content/grant. GrantID and MaxBytes matter only
+// when State is granted.
 type ContentGrantResponse struct {
-	GrantID   string         `json:"grant_id"`
-	State     string         `json:"state"`
-	Reason    string         `json:"reason,omitempty"`
-	ExpiresAt time.Time      `json:"expires_at"`
-	Upload    *ContentUpload `json:"upload,omitempty"`
-	Key       *ContentKey    `json:"key,omitempty"`
-	MaxBytes  int64          `json:"max_bytes,omitempty"`
+	GrantID   string    `json:"grant_id"`
+	State     string    `json:"state"`
+	Reason    string    `json:"reason,omitempty"`
+	ExpiresAt time.Time `json:"expires_at"`
+	MaxBytes  int64     `json:"max_bytes,omitempty"`
 }
 
-// ContentUpload is the single write the grant permits. The URL is opaque and used verbatim.
-type ContentUpload struct {
-	Method  string            `json:"method"`
-	URL     string            `json:"url"`
-	Headers map[string]string `json:"headers,omitempty"`
-}
-
-// ContentKey is the object key: plaintext for the device to seal with, and the wrapped form the
-// server keeps. The plaintext key is not a disclosure — the device already holds the plaintext it
-// is about to encrypt (§10.4).
-type ContentKey struct {
-	ObjectKeyB64  string `json:"object_key_b64"`
-	WrappedKeyB64 string `json:"wrapped_key_b64"`
-	KeyID         string `json:"key_id"`
-	Alg           string `json:"alg"`
-}
-
-// SealContent encrypts one event's content under its object key: AES-256-GCM, a fresh nonce
-// prepended to the ciphertext, and the event id as additional data so an object served against
-// another event fails to open.
-func SealContent(objectKey []byte, eventID string, plaintext []byte) ([]byte, error) {
-	gcm, err := contentAEAD(objectKey)
-	if err != nil {
-		return nil, err
-	}
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		return nil, err
-	}
-	return gcm.Seal(nonce, nonce, plaintext, []byte(eventID)), nil
-}
-
-// OpenContent is the inverse of SealContent.
-func OpenContent(objectKey []byte, eventID string, sealed []byte) ([]byte, error) {
-	gcm, err := contentAEAD(objectKey)
-	if err != nil {
-		return nil, err
-	}
-	n := gcm.NonceSize()
-	if len(sealed) < n {
-		return nil, errors.New("protocol: sealed content is shorter than its nonce")
-	}
-	return gcm.Open(nil, sealed[:n], sealed[n:], []byte(eventID))
-}
-
-// SealedContentSize is the size of the object SealContent produces for a plaintext of n bytes.
-func SealedContentSize(n int64) int64 { return n + 12 + 16 }
-
-// RawDigest is the upload's raw_digest: the digest of the exact bytes written (§10.4), in the one
-// spelling the repository uses for digests.
-func RawDigest(sealed []byte) string {
-	sum := sha256.Sum256(sealed)
+// RawDigest is the digest of an upload body, in the repository's digest spelling.
+func RawDigest(body []byte) string {
+	sum := sha256.Sum256(body)
 	return "sha256:" + hex.EncodeToString(sum[:])
-}
-
-func contentAEAD(objectKey []byte) (cipher.AEAD, error) {
-	if len(objectKey) != 32 {
-		return nil, fmt.Errorf("protocol: object key is %d bytes, want 32", len(objectKey))
-	}
-	block, err := aes.NewCipher(objectKey)
-	if err != nil {
-		return nil, err
-	}
-	return cipher.NewGCM(block)
 }

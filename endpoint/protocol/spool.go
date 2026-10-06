@@ -6,16 +6,15 @@ import (
 	"time"
 )
 
-// Spool record shape and the interface the spool exposes (docs/01-collectors.md §12).
+// Spool record shape and the interface the spool exposes.
 //
-// The spool is the only durable device-side store, it is written by capture-core alone, and
-// it holds exactly the bytes the device will send. Sequence numbers are monotonic and are
-// what makes "the oldest undelivered observation" a well-defined thing to drop when the
-// bound is reached (C22: a drop is counted, never silent).
+// The spool is the only durable device-side store of observations, it is written by capture-core
+// alone, and it holds exactly the bytes the device will send. Sequence numbers are monotonic,
+// which makes "the oldest undelivered observation" a well-defined thing to drop when the bound is
+// reached; a drop is counted, never silent.
 //
-// This file defines the record and the interface. The implementation is
-// device/capture-spool; it stores opaque payload bytes and never parses an envelope, so the
-// spool has no opinion about the contract and cannot drift from it.
+// The implementation is capture-spool. It stores opaque payload bytes and never parses an
+// envelope.
 
 // SpoolState is the delivery state of one spooled observation.
 type SpoolState string
@@ -49,8 +48,8 @@ func (s SpoolState) Valid() bool {
 //
 // Seq is assigned by the spool on append, is strictly increasing, and is never reused: it is
 // the ordering key for drop-oldest and the tie-break for "which of two routes did we keep".
-// Payload is the envelope exactly as the device minted it, and the spool never rewrites it -
-// an observation is immutable once spooled (ADR 0004).
+// Payload is the envelope exactly as the device minted it, and the spool never rewrites it: an
+// observation is immutable once spooled.
 type Entry struct {
 	Seq               uint64         `json:"seq"`
 	ClientID          string         `json:"client_id,omitempty"` // correlates with the extension's observation id
@@ -61,9 +60,8 @@ type Entry struct {
 	OccurredAt        time.Time      `json:"occurred_at"`
 	MonotonicOffsetMS int64          `json:"monotonic_offset_ms"`
 
-	// DedupKey is the canonical idempotency key computed by the device (§4 of the ingest
-	// document). The spool does not compute it; it is mirrored here so a drain can group
-	// without decrypting the payload.
+	// DedupKey is the idempotency key the device computed. The spool does not compute it; it is
+	// mirrored here so a drain can group without decrypting the payload.
 	DedupKey string `json:"dedup_key"`
 
 	// Payload is the minted envelope. Opaque to the spool.
@@ -108,8 +106,8 @@ func (e Entry) Validate() error {
 	return nil
 }
 
-// Valid reports whether the kind is in the closed registry. A new kind is an ADR, not a code
-// change, which is what makes risk R7 structural: no kind exists for raw process telemetry.
+// Valid reports whether the kind is in the closed registry. A new kind is a contract change, so
+// no kind can appear for raw process telemetry.
 func (k Kind) Valid() bool {
 	switch k {
 	case KindPrompt, KindUsageRollup, KindModelDetection:
@@ -132,26 +130,24 @@ func (r Route) Valid() bool {
 	}
 }
 
-// SpoolStats is what the health report reads: the two counters and the depth. SpoolDepth and
-// SpoolDroppedTotal are first-class because C22 requires the drop counter to be reported, not
-// buried. Provider-level `dropped` and SpoolDroppedTotal are separate counters and are summed
-// for the operator: an observation lost before the spool and one evicted from it are different
-// failures with different fixes.
+// SpoolStats is what the health report reads: the depth and the counters. The dropped total is
+// reported, never buried. The provider-level dropped counter and DroppedTotal are separate: an
+// observation lost before the spool and one evicted from it are different failures with
+// different fixes.
 type SpoolStats struct {
-	Depth               int       `json:"spool_depth"`
-	DroppedTotal        uint64    `json:"spool_dropped_total"`
-	RejectedTotal       uint64    `json:"spool_rejected_total"`
-	DeliveredTotal      uint64    `json:"spool_delivered_total"`
-	OldestSpooledAt     time.Time `json:"oldest_spooled_at,omitempty"`
-	EncryptionKeySealed bool      `json:"encryption_key_sealed"`
-	BoundBytes          int64     `json:"bound_bytes"`
-	UsedBytes           int64     `json:"used_bytes"`
+	Depth           int       `json:"spool_depth"`
+	DroppedTotal    uint64    `json:"spool_dropped_total"`
+	RejectedTotal   uint64    `json:"spool_rejected_total"`
+	DeliveredTotal  uint64    `json:"spool_delivered_total"`
+	OldestSpooledAt time.Time `json:"oldest_spooled_at,omitempty"`
+	BoundBytes      int64     `json:"bound_bytes"`
+	UsedBytes       int64     `json:"used_bytes"`
 }
 
-// Store is the interface capture-core uses and device/capture-spool implements.
+// Store is the interface capture-core uses and capture-spool implements.
 //
-// One writer, one encryption key, one place the bound is enforced (§3.4). Append is the only
-// way in; there is deliberately no Update that could rewrite a spooled observation.
+// One writer, one encryption key, one place the bound is enforced. Append is the only way in;
+// there is deliberately no Update that could rewrite a spooled observation.
 type Store interface {
 	// Append writes one entry and returns it with its assigned sequence number. It blocks
 	// until the entry is durable. A full spool evicts oldest-pending first and reports the
@@ -174,13 +170,4 @@ type Store interface {
 
 	// Close releases the single writer. It is idempotent.
 	Close() error
-}
-
-// RetentionDeadline computes the device-side retention deadline for an observation. The device
-// bound and the server retention are two independent mechanisms (docs/03-data-platform.md);
-// this is the device one, and it is deliberately shorter: a record that outlives it is dropped
-// and counted, because delivering it late would produce an observation the server has already
-// aged out.
-func RetentionDeadline(occurredAt time.Time, deviceRetention time.Duration) time.Time {
-	return occurredAt.Add(deviceRetention)
 }

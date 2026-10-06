@@ -115,7 +115,7 @@ func TestRegistryStartFailureDegradesOneRowOnly(t *testing.T) {
 }
 
 // A provider that claims healthy after a failed Start must not surface as healthy: "no
-// provider may fail into a state that reports success" (C25).
+// provider may fail into a state that reports success".
 func TestRegistryNeverReportsHealthyAfterFailedStart(t *testing.T) {
 	p := &fakeProvider{route: protocol.RouteProxyLoopback, startErr: errors.New("preflight refused"), health: healthyRow()}
 	r := newTestRegistry(t, p)
@@ -295,7 +295,7 @@ func TestApplyPolicyReachesEveryProviderAndNeverRestarts(t *testing.T) {
 		}
 	}
 	if a.starts != before {
-		t.Fatal("ApplyPolicy restarted a provider; §4.1 says policy application is a diff, never a restart")
+		t.Fatal("ApplyPolicy restarted a provider; policy application is a diff, never a restart")
 	}
 	if len(a.applied) != 1 || a.applied[0] != "42" {
 		t.Fatalf("provider saw %v, want the bundle version", a.applied)

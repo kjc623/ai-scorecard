@@ -24,27 +24,24 @@ import (
 
 	"github.com/shadow-ai-capture/device/capture-core/credential"
 	"github.com/shadow-ai-capture/device/capture-core/drain"
-	capturespool "github.com/shadow-ai-capture/device/capture-spool"
 	"github.com/shadow-ai-capture/device/protocol"
 )
 
-// This test wires the real capture-spool and the real drain package to a fake ingest peer, proving
-// the device-to-cloud half of the endpoint composes: an observation minted by the pipeline and
-// spooled encrypted-at-rest is drained oldest-first, POSTed to /v1/events, and settled delivered.
-//
-// Nothing here is a fake except the ingest peer (the server side, which this module never runs) and
-// the throwaway TLS CA the drain pins to, exactly as a production device pins its issuing CA set.
+// The real capture-spool and the real drain against a fake device edge: an observation minted by
+// the pipeline and spooled encrypted at rest is drained oldest-first to POST /v1/events over
+// mutual TLS, with the device certificate the edge's device CA issued, and settled delivered.
+// Nothing is a fake except the edge, which this module never runs.
 
 type ingestPeer struct {
-	mu      sync.Mutex
-	events  int
-	batches int
+	mu         sync.Mutex
+	events     int
+	batches    int
+	clientCNs  []string
+	clientRoot *x509.CertPool
 }
 
-func TestDevicePath_DrainDeliversToAnIngestPeer(t *testing.T) {
+func TestDrainDeliversOverMutualTLSToTheEdge(t *testing.T) {
 	sp := openSpool(t)
-
-	// Spool one real observation through the pipeline.
 	cl := &recordingClassifier{resp: protocol.ClassifyResponse{
 		ClassifierVersion: "integration-rules-1",
 		Confidence:        protocol.ConfidenceHigh,
@@ -57,45 +54,24 @@ func TestDevicePath_DrainDeliversToAnIngestPeer(t *testing.T) {
 		t.Fatalf("Process: emitted=%v err=%v", out.Emitted, err)
 	}
 
-	entries, err := sp.Peek(10)
-	if err != nil {
-		t.Fatalf("Peek: %v", err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("spool holds %d entries, want 1", len(entries))
-	}
-
-	// Fake ingest peer over real TLS, pinned by a throwaway CA the drain trusts.
-	peer := &ingestPeer{}
+	deviceCA, deviceCAKey := mustCA(t, "integration device CA")
+	peer := &ingestPeer{clientRoot: x509.NewCertPool()}
+	peer.clientRoot.AddCert(deviceCA)
 	srv, caFile := startTLSIngest(t, peer)
 
-	// A pre-seeded dpop credential, so the drain is already enrolled (enrolment is covered by the
-	// drain package's own suite and the selftest).
-	credStore := openCredentialStore(t)
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	// A credential the device CA issued, so the drain is already enrolled.
+	credStore, err := credential.Open(filepath.Join(t.TempDir(), "credential.sealed"), make([]byte, 32))
 	if err != nil {
-		t.Fatalf("generate key: %v", err)
+		t.Fatal(err)
 	}
-	keyDER, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		t.Fatalf("marshal key: %v", err)
-	}
-	if err := credStore.Save(&credential.Credential{
-		Mode:       protocol.AuthModeDPoP,
-		DeviceID:   testDevice,
-		TenantID:   testTenant,
-		PrivateKey: string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})),
-		JWK:        &protocol.JWK{Kty: "EC", Crv: "P-256", X: "x", Y: "y"},
-	}); err != nil {
+	if err := credStore.Save(issuedCredential(t, deviceCA, deviceCAKey)); err != nil {
 		t.Fatalf("Save credential: %v", err)
 	}
 
 	d, err := drain.New(drain.Config{
 		Endpoint:      srv.URL,
-		AuthMode:      protocol.AuthModeDPoP,
 		CAFile:        caFile,
 		TenantID:      testTenant,
-		DeviceID:      testDevice,
 		AgentVersion:  "integration",
 		BackoffBase:   time.Millisecond,
 		BackoffCap:    50 * time.Millisecond,
@@ -104,7 +80,6 @@ func TestDevicePath_DrainDeliversToAnIngestPeer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("drain.New: %v", err)
 	}
-
 	res, err := d.Drain(context.Background(), time.Now().Add(5*time.Second))
 	if err != nil {
 		t.Fatalf("Drain: %v", err)
@@ -112,102 +87,100 @@ func TestDevicePath_DrainDeliversToAnIngestPeer(t *testing.T) {
 	if res.Delivered != 1 {
 		t.Fatalf("Delivered = %d, want 1", res.Delivered)
 	}
-
 	if st := sp.Stats(); st.DeliveredTotal != 1 {
 		t.Fatalf("spool delivered_total = %d, want 1", st.DeliveredTotal)
 	}
 	peer.mu.Lock()
 	defer peer.mu.Unlock()
-	if peer.events != 1 {
-		t.Fatalf("ingest peer received %d events, want 1", peer.events)
+	if peer.events != 1 || peer.batches != 1 {
+		t.Fatalf("the edge received %d events in %d batches, want 1 in 1", peer.events, peer.batches)
 	}
-	if peer.batches != 1 {
-		t.Fatalf("ingest peer received %d batches, want 1", peer.batches)
+	if len(peer.clientCNs) != 1 || peer.clientCNs[0] != testDevice {
+		t.Fatalf("client certificates verified by the edge = %v, want the device leaf", peer.clientCNs)
 	}
 }
 
-func openCredentialStore(t *testing.T) *credential.Store {
-	t.Helper()
-	keys, err := capturespool.NewRandomMemoryKeyProvider()
-	if err != nil {
-		t.Fatalf("key provider: %v", err)
-	}
-	store, err := credential.Open(filepath.Join(t.TempDir(), "credential.sealed"), keys)
-	if err != nil {
-		t.Fatalf("credential.Open: %v", err)
-	}
-	return store
-}
-
-// startTLSIngest starts an httptest TLS server answering /v1/enrol, /v1/token and /v1/events,
-// pinned by a throwaway CA written to a file (returned) that the drain trusts, exactly as a
-// production device pins its issuing CA set.
+// startTLSIngest serves /v1/events over TLS with a server certificate from a throwaway CA written
+// to a file the drain trusts, and verifies each client certificate against the device CA, as the
+// edge does before it forwards the leaf.
 func startTLSIngest(t *testing.T, peer *ingestPeer) (*httptest.Server, string) {
 	t.Helper()
-	ca, caKey, err := integrationCA()
-	if err != nil {
-		t.Fatalf("CA: %v", err)
-	}
-	leaf, err := integrationLeaf(ca, caKey)
-	if err != nil {
-		t.Fatalf("leaf: %v", err)
-	}
-	caFile := filepath.Join(t.TempDir(), "ingest-ca.crt")
-	if err := writeCAFile(caFile, ca); err != nil {
-		t.Fatalf("write CA: %v", err)
+	ca, caKey := mustCA(t, "integration edge CA")
+	leaf := mustServerLeaf(t, ca, caKey)
+	caFile := filepath.Join(t.TempDir(), "edge-ca.crt")
+	if err := os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.Raw}), 0o600); err != nil {
+		t.Fatal(err)
 	}
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/v1/enrol":
-			writeIngestJSON(w, http.StatusOK, protocol.EnrolmentResponse{
-				SchemaVersion: protocol.EnrolmentSchemaVersion,
-				DeviceID:      testDevice,
-				TenantID:      testTenant,
-				Region:        "eu",
-				Credential:    protocol.IssuedCredential{Mode: protocol.AuthModeDPoP, JWK: &protocol.JWK{Kty: "EC", Crv: "P-256", X: "x", Y: "y"}},
-				ServerTime:    time.Now().UTC(),
-			})
-		case "/v1/token":
-			writeIngestJSON(w, http.StatusOK, protocol.TokenResponse{AccessToken: "integration-token", TokenType: protocol.TokenTypeDPoP, ExpiresIn: 900, ServerTime: time.Now().UTC()})
-		case "/v1/events":
-			body, err := readGunzip(r)
-			if err != nil {
-				writeIngestJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{"code": protocol.ReasonSchemaViolation}})
-				return
-			}
-			var batch protocol.EventBatch
-			if err := json.Unmarshal(body, &batch); err != nil {
-				writeIngestJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{"code": protocol.ReasonSchemaViolation}})
-				return
-			}
-			peer.mu.Lock()
-			peer.batches++
-			peer.events += len(batch.Events)
-			peer.mu.Unlock()
-			results := make([]protocol.EventResult, len(batch.Events))
-			for i, ev := range batch.Events {
-				var env struct {
-					EventID string `json:"event_id"`
-				}
-				_ = json.Unmarshal(ev, &env)
-				results[i] = protocol.EventResult{EventID: env.EventID, Outcome: protocol.OutcomeAccepted}
-			}
-			writeIngestJSON(w, http.StatusOK, protocol.EventBatchResponse{
-				SchemaVersion: "1.0", BatchID: batch.BatchID, ReceivedAt: time.Now().UTC(), ServerTime: time.Now().UTC(),
-				Counts: protocol.BatchCounts{Accepted: len(results)}, Results: results,
-			})
-		default:
+		if r.URL.Path != "/v1/events" {
 			writeIngestJSON(w, http.StatusNotFound, map[string]any{"error": map[string]any{"code": "unknown"}})
+			return
 		}
+		cn := ""
+		if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
+			cn = r.TLS.PeerCertificates[0].Subject.CommonName
+		}
+		body, err := readGunzip(r)
+		var batch protocol.EventBatch
+		if err == nil {
+			err = json.Unmarshal(body, &batch)
+		}
+		if err != nil {
+			writeIngestJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{"code": protocol.ReasonSchemaViolation}})
+			return
+		}
+		peer.mu.Lock()
+		peer.batches++
+		peer.events += len(batch.Events)
+		peer.clientCNs = append(peer.clientCNs, cn)
+		peer.mu.Unlock()
+		results := make([]protocol.EventResult, len(batch.Events))
+		for i, ev := range batch.Events {
+			var env struct {
+				EventID string `json:"event_id"`
+			}
+			_ = json.Unmarshal(ev, &env)
+			results[i] = protocol.EventResult{EventID: env.EventID, Outcome: protocol.OutcomeAccepted}
+		}
+		writeIngestJSON(w, http.StatusOK, protocol.EventBatchResponse{
+			SchemaVersion: "1.0", BatchID: batch.BatchID, ReceivedAt: time.Now().UTC(), ServerTime: time.Now().UTC(),
+			Counts: protocol.BatchCounts{Accepted: len(results)}, Results: results,
+		})
 	}))
-	srv.TLS = &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{leaf}}
+	srv.TLS = &tls.Config{
+		MinVersion:   tls.VersionTLS13,
+		Certificates: []tls.Certificate{leaf},
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientCAs:    peer.clientRoot,
+	}
 	srv.StartTLS()
 	t.Cleanup(srv.Close)
 	return srv, caFile
 }
 
-func writeCAFile(path string, ca *x509.Certificate) error {
-	return os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.Raw}), 0o600)
+// issuedCredential is a device credential whose leaf the device CA signed.
+func issuedCredential(t *testing.T, ca *x509.Certificate, caKey *ecdsa.PrivateKey) *credential.Credential {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	notAfter := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+	der, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{
+		SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: testDevice},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: notAfter,
+		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}, ca, &key.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, _ := x509.MarshalECPrivateKey(key)
+	return &credential.Credential{
+		DeviceID: testDevice, TenantID: testTenant, HardwareIdentityHash: "sha256:integration",
+		PrivateKey: string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})),
+		CertPEM:    string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
+		NotAfter:   notAfter,
+	}
 }
 
 func writeIngestJSON(w http.ResponseWriter, status int, v any) {
@@ -229,49 +202,42 @@ func readGunzip(r *http.Request) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(rd, 32<<20))
 }
 
-func integrationCA() (*x509.Certificate, *ecdsa.PrivateKey, error) {
+func mustCA(t *testing.T, name string) (*x509.Certificate, *ecdsa.PrivateKey) {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return nil, nil, err
-	}
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		return nil, nil, err
+		t.Fatal(err)
 	}
 	tmpl := &x509.Certificate{
-		SerialNumber: serial, Subject: pkix.Name{CommonName: "integration ingest CA"},
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: name},
 		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour),
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
-		BasicConstraintsValid: true, IsCA: true,
+		KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature, BasicConstraintsValid: true, IsCA: true,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
-		return nil, nil, err
+		t.Fatal(err)
 	}
 	cert, err := x509.ParseCertificate(der)
-	return cert, key, err
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cert, key
 }
 
-func integrationLeaf(ca *x509.Certificate, caKey *ecdsa.PrivateKey) (tls.Certificate, error) {
+func mustServerLeaf(t *testing.T, ca *x509.Certificate, caKey *ecdsa.PrivateKey) tls.Certificate {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return tls.Certificate{}, err
+		t.Fatal(err)
 	}
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		return tls.Certificate{}, err
-	}
-	tmpl := &x509.Certificate{
-		SerialNumber: serial, Subject: pkix.Name{CommonName: "127.0.0.1"},
+	der, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{
+		SerialNumber: big.NewInt(3), Subject: pkix.Name{CommonName: "127.0.0.1"},
 		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour),
-		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		IPAddresses: []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
-		DNSNames:    []string{"localhost"},
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca, &key.PublicKey, caKey)
+		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IPAddresses: []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")}, DNSNames: []string{"localhost"},
+	}, ca, &key.PublicKey, caKey)
 	if err != nil {
-		return tls.Certificate{}, err
+		t.Fatal(err)
 	}
-	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}, nil
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
 }

@@ -1,8 +1,8 @@
-// Package loopback is `proxy.loopback` (docs/01-collectors.md §6): the broker that holds the
-// port a local inference server would otherwise bind, forwards to the relocated server, and
+// Package loopback is proxy.loopback: the broker that holds the port a local inference server
+// would otherwise bind, forwards to the relocated server, and
 // observes the plaintext request bodies that pass through it.
 //
-// §6.2 is why this provider is shaped differently from every other one: its failure mode is
+// This provider is shaped differently from every other one because its failure mode is
 // inverted. Releasing the port when it cannot serve is the safe behaviour, so "refusing to
 // start" is correct here and "starting anyway" is the defect. The state machine in machine.go
 // is the single writer of that decision, the watchdog only reports, and binding happens only
@@ -16,10 +16,10 @@ import (
 	"github.com/shadow-ai-capture/device/protocol"
 )
 
-// State is §6.2's four states.
+// State is the broker's per-port state.
 type State string
 
-// The four states of the §6.2 diagram.
+// The four states.
 const (
 	// StateReleased is the default: the port is not bound by us, the upstream is untouched.
 	StateReleased State = "RELEASED"
@@ -27,7 +27,7 @@ const (
 	StateBinding State = "BINDING"
 	// StateHolding is port bound and forwarding.
 	StateHolding State = "HOLDING"
-	// StateOrphan is a socket closed by the OS on process death (§6.2 rule 4).
+	// StateOrphan is a socket closed by the OS on process death.
 	StateOrphan State = "ORPHAN"
 )
 
@@ -67,16 +67,16 @@ const (
 	ActRelease   Action = "stay_released"
 )
 
-// MachineConfig carries the two thresholds §6.3 and §6.4 name.
+// MachineConfig carries the two thresholds.
 type MachineConfig struct {
 	// MaxConsecutiveFailures is the repeated-failure threshold past which the broker stops
-	// trying for a long cool-down (§6.4's last row) so a broken configuration does not become
+	// trying for a long cool-down so a broken configuration does not become
 	// an endless bind/release loop against the user's machine.
 	MaxConsecutiveFailures int
 }
 
-// Machine is §6.2's state machine for one held port. It is pure: no sockets, no clock, no
-// goroutines, so every transition in the document's diagram is directly testable.
+// Machine is the state machine for one held port. It is pure: no sockets, no clock, no
+// goroutines, so every transition is directly testable.
 type Machine struct {
 	cfg       MachineConfig
 	state     State
@@ -87,7 +87,7 @@ type Machine struct {
 	lastFail  Event
 }
 
-// NewMachine returns a machine whose default state is RELEASED (§6.2 rule 1).
+// NewMachine returns a machine whose default state is RELEASED.
 func NewMachine(cfg MachineConfig) *Machine {
 	if cfg.MaxConsecutiveFailures <= 0 {
 		cfg.MaxConsecutiveFailures = 5
@@ -102,22 +102,22 @@ func (m *Machine) State() State { return m.state }
 func (m *Machine) ConsecutiveFailures() int { return m.failures }
 
 // Tampered reports whether the port is held by something that is not the expected upstream
-// (§6.2 rule 5): the broker does not bind and does not fight for it.
+// : the broker does not bind and does not fight for it.
 //
 // It is **present tense**, and that is a decision rather than a detail: `tampered` is the only state
-// that raises a security finding (§4.2, C24), so a conflict that has ended must not keep raising one.
+// that raises a security finding, so a conflict that has ended must not keep raising one.
 // A sticky flag that outlives its cause made a recovered, serving broker report `tampered` forever —
-// measured by the R1 harness, where the port was re-bound in 1.01 s and served a request while the
-// health row still said `port_held_by_other`. The history is kept in ConflictCount, because "this
+// a port re-bound within a second and serving while the health row still said port_held_by_other.
+// The history is kept in ConflictCount, because "this
 // happened once" is worth knowing without mislabelling a working port.
 func (m *Machine) Tampered() bool { return m.tampered }
 
 // ConflictCount is how many times a port conflict has been observed since the process started. It
-// is deliberately NOT a protocol.Counter: the closed set of seven is closed (A15), so this travels
+// is deliberately NOT a protocol.Counter: the closed set of seven is closed, so this travels
 // on the provider's coverage row rather than inventing a name the reporting layer cannot group.
 func (m *Machine) ConflictCount() int { return m.conflicts }
 
-// Detail is the health cause the machine's current state implies, from §6.3/§6.4's closed
+// Detail is the health cause the machine's current state implies's closed
 // vocabulary.
 func (m *Machine) Detail() protocol.Detail {
 	switch {
@@ -136,7 +136,7 @@ func (m *Machine) Detail() protocol.Detail {
 
 // Apply advances the machine and returns the action the runtime must perform.
 //
-// The transitions, in the order the document states them:
+// The transitions:
 //
 //	RELEASED  + preflight ok                 -> BINDING  (bind; never before preflight)
 //	RELEASED  + preflight fail               -> RELEASED (back off)
@@ -152,7 +152,7 @@ func (m *Machine) Detail() protocol.Detail {
 //	ORPHAN    + preflight fail               -> RELEASED (back off)
 //
 // Release precedes restart on every path: an action that leaves HOLDING always carries
-// ActClose, so no code path can rebind while a previous socket may be open (§6.2 rule 2).
+// ActClose, so no code path can rebind while a previous socket may be open.
 func (m *Machine) Apply(ev Event) Action {
 	switch ev {
 	case EvShutdown:
@@ -193,8 +193,7 @@ func (m *Machine) Apply(ev Event) Action {
 			m.failures++
 			m.lastFail = ev
 			// FROM ORPHAN this is also the return to RELEASED: process death is a release, and
-			// the supervisor does not recreate the socket before re-running preflight (§6.2
-			// rule 4).
+			// the supervisor does not recreate the socket before re-running preflight.
 			m.state = StateReleased
 			return ActBackoff
 		case EvBackoffExpired:
@@ -234,7 +233,7 @@ func (m *Machine) Apply(ev Event) Action {
 		switch ev {
 		case EvProbeFailed:
 			// One missed probe: re-probe immediately, do not release. A momentarily busy
-			// server must not trigger a release (§6.3).
+			// server must not trigger a release.
 			m.missed++
 			if m.missed >= 2 {
 				m.failures++
@@ -285,12 +284,12 @@ func (m *Machine) Apply(ev Event) Action {
 const ActServe Action = "serve"
 
 // Healthy reports whether this port is in the one state where mode F is captured: port held
-// *and* the upstream reachable (§6.3).
+// *and* the upstream reachable.
 func (m *Machine) Healthy() bool { return m.state == StateHolding }
 
 // CloseBeforeRestart asserts the ordering rule as a property of a transition: any transition
 // that leaves HOLDING must carry ActClose. It exists so a test can enumerate transitions and
-// fail if one violates §6.2 rule 2.
+// fail if one restarts a held port without closing it.
 func CloseBeforeRestart(from State, ev Event, action Action) bool {
 	if from != StateHolding {
 		return true
@@ -304,11 +303,11 @@ func CloseBeforeRestart(from State, ev Event, action Action) bool {
 }
 
 // ErrPortUnavailable is returned by the runtime when the port is held by something that is not
-// the expected upstream. It is not a Start failure: §6.4 reports it as `tampered` with
+// the expected upstream. It is not a Start failure: it is reported as tampered with
 // `detail=port_held_by_other` and the broker stays released.
 var ErrPortUnavailable = errors.New("loopback: port is held by another process")
 
-// PreflightTimeoutCap bounds a preflight even when policy asks for a longer one: §6.3 wants a
-// short deadline, because a slow preflight delays recovery and a generous one lets a dead
+// PreflightTimeoutCap bounds a preflight even when policy asks for a longer one: the deadline is
+// short, because a slow preflight delays recovery and a generous one lets a dead
 // server look alive.
 const PreflightTimeoutCap = 10 * time.Second

@@ -3,6 +3,7 @@ package spool
 import (
 	"crypto/rand"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -29,37 +30,59 @@ func testEntry(i int) protocol.Entry {
 	}
 }
 
-// testKey is a fixed key so a test can close and reopen a spool. It is a test key and is
-// never used outside tests; the at-rest test below uses a file key instead.
-func testKey(t *testing.T) KeyProvider {
-	t.Helper()
-	kp, err := NewMemoryKeyProvider([]byte("0123456789abcdef0123456789abcdef"))
-	if err != nil {
-		t.Fatalf("key provider: %v", err)
-	}
-	return kp
-}
+// testKey is a fixed key so a test can close and reopen a spool.
+func testKey() []byte { return []byte("0123456789abcdef0123456789abcdef") }
 
-// otherKey is a different 32-byte key, for proving that a spool opened with the wrong key
-// fails loudly rather than returning plausible records.
-func otherKey(t *testing.T) KeyProvider {
+// otherKey is a different 32-byte key, for proving that a spool opened with the wrong key fails
+// loudly rather than returning plausible records.
+func otherKey(t *testing.T) []byte {
 	t.Helper()
 	k := make([]byte, KeySize)
 	if _, err := rand.Read(k); err != nil {
 		t.Fatalf("rand: %v", err)
 	}
-	kp, err := NewMemoryKeyProvider(k)
-	if err != nil {
-		t.Fatalf("key provider: %v", err)
+	return k
+}
+
+// fileKey reads the key file at path, creating it with a random key when it does not exist, so a
+// parent test and its crash child share one key.
+func fileKey(path string) ([]byte, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
 	}
-	return kp
+	k := make([]byte, KeySize)
+	if _, err := rand.Read(k); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err == nil {
+		_, werr := f.Write(k)
+		if cerr := f.Close(); werr == nil {
+			werr = cerr
+		}
+		if werr != nil {
+			return nil, werr
+		}
+		return k, nil
+	}
+	if !errors.Is(err, os.ErrExist) {
+		return nil, err
+	}
+	k, err = os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(k) != KeySize {
+		return nil, fmt.Errorf("key file %s holds %d bytes, want %d", path, len(k), KeySize)
+	}
+	return k, nil
 }
 
 func openTest(t *testing.T, dir string, tweak ...func(*Config)) *Spool {
 	t.Helper()
 	cfg := Config{
 		Dir:       dir,
-		Keys:      testKey(t),
+		Key:       testKey(),
 		SyncEvery: -1, // tests crash on process kill, not power loss; see doc.go
 	}
 	for _, f := range tweak {

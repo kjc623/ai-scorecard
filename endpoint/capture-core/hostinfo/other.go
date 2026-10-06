@@ -6,23 +6,20 @@ import (
 	"errors"
 	"os"
 	"os/user"
+	"strconv"
 	"strings"
 )
 
-// SystemSources reads what a non-Windows host states. There is no MDM enrolment, join state or
-// readable firmware table here without privileges or new dependencies, so only the install id is
-// read; the attestation is empty, which the enrolment omits.
+// SystemSources reads what a macOS or Linux host states without privileges or a management
+// agent: the install id. The attestation is empty, which the enrolment omits.
 func SystemSources() Sources {
 	return Sources{MachineID: machineID}
 }
 
-// SystemUserSources has no console-session lookup on this platform, so the resolver falls back to
-// this process's own user, as the agent always did here.
+// SystemUserSources names the console user where the platform says who it is (macOS), and falls
+// back to this process's own user elsewhere.
 func SystemUserSources() UserSources {
-	return UserSources{
-		Console: func() (User, error) { return User{}, ErrUnsupported },
-		Process: processUser,
-	}
+	return UserSources{Console: consoleUser, Process: processUser}
 }
 
 // SystemRegistry is nil: there is no registry.
@@ -34,6 +31,17 @@ func processUser() (User, error) {
 		return User{}, err
 	}
 	return User{SID: u.Uid, Account: u.Username}, nil
+}
+
+// UserOfUID names the account with the given uid: the identity of a local peer such as the
+// browser's native-messaging relay.
+func UserOfUID(uid uint32) (User, error) {
+	id := strconv.FormatUint(uint64(uid), 10)
+	u, err := user.LookupId(id)
+	if err != nil {
+		return User{SID: id}, err
+	}
+	return User{SID: id, Account: u.Username, Source: "process"}, nil
 }
 
 func machineID() (string, error) {

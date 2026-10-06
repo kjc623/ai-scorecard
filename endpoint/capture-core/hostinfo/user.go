@@ -38,7 +38,7 @@ type User struct {
 	Source string
 }
 
-// Ref derives the user_ref (contract §4): from the UPN when one resolved, else from the Entra object
+// Ref derives the user_ref: from the UPN when one resolved, else from the Entra object
 // id, else from DOMAIN\user. The directory derives the same value from what SCIM sends, so the
 // order is the one most likely to meet a directory row.
 func (u User) Ref(key []byte) (string, protocol.UserRefKind, error) {
@@ -114,9 +114,10 @@ func cleanUPN(v string) string {
 	return v
 }
 
-// serviceAccountSIDs are the accounts a service runs as. A console run that falls back to its own
-// process user must not report one of these as the person.
-var serviceAccountSIDs = map[string]bool{"S-1-5-18": true, "S-1-5-19": true, "S-1-5-20": true}
+// serviceAccountSIDs are the accounts a service runs as: LocalSystem, LocalService and
+// NetworkService on Windows, root (uid 0) elsewhere. A run that falls back to its own process user
+// never reports one of these as the person.
+var serviceAccountSIDs = map[string]bool{"S-1-5-18": true, "S-1-5-19": true, "S-1-5-20": true, "0": true}
 
 // UserSources are the lookups Resolver drives. Console names the console session's user with what
 // is cheap to read (SID, account, cached UPN); UPN asks the directory for that user's principal name,

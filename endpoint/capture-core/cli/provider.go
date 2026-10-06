@@ -1,15 +1,14 @@
-// Package cli is `cli.shim` (docs/01-collectors.md §4.5): the CLI trust shim.
+// Package cli is cli.shim, the CLI trust shim.
 //
-// It observes nothing directly. Its job is to make modes E (CLI) and G capturable
-// through `proxy.tls` by writing the per-machine shell environment every CLI runtime
+// It observes nothing directly. It makes command-line AI tools capturable through proxy.tls
+// by writing the per-machine shell environment every CLI runtime
 // inherits: a managed profile that exports the proxy variables and the CA-bundle path,
 // the CA bundle itself, and (optionally) a Node bootstrap that routes Node's HTTP
 // stack through the proxy. It holds no ports, takes no locks, and fails open by passing
 // every command through untouched — a broken shim degrades coverage, never a client.
 //
-// §4.5's three checks — profile present with the expected content, CA bundle parses and
-// carries the root, environment inherited by a child — are the three checks in its
-// coverage row, and each has a named detail (protocol.DetailShimProfileMissing,
+// Its coverage row makes three checks (profile present with the expected content, CA bundle
+// parses and carries the root, environment inherited by a child), and each has a named detail (protocol.DetailShimProfileMissing,
 // DetailShimCABundleUnreadable, DetailShimNotInherited) so a coverage report can group by
 // cause rather than parsing prose.
 package cli
@@ -215,18 +214,19 @@ func (p *Provider) Start(ctx context.Context) error {
 	ok := false
 	defer func() {
 		if !ok {
-			// Transactional Start (§4.1): roll back every file on the failure path.
+			// Transactional Start: roll back every file on the failure path.
 			for _, f := range p.managedFiles() {
 				_ = os.Remove(f)
 			}
 		}
 	}()
 
-	// 1. The CA bundle, mode 0600 (the only file that needs to be readable by the runtime
-	// but not world-writable; it holds public certificates, but the mode is the contract).
+	// 1. The CA bundle: the device root plus the system roots, because the runtimes' CA-bundle
+	// variables replace their trust list rather than add to it. It holds public certificates and
+	// every user's runtime reads it, so it is world-readable.
 	if len(p.cfg.RootCAPEM) > 0 {
 		bundle := append(append([]byte(nil), p.cfg.RootCAPEM...), systemRootsPEM()...)
-		if err := writeFile(p.paths.cabundle, bundle, 0o600); err != nil {
+		if err := writeFile(p.paths.cabundle, bundle, 0o644); err != nil {
 			p.counters.Add(protocol.CounterErrors)
 			p.logf("cli: writing CA bundle %s: %v", p.paths.cabundle, err)
 			return fmt.Errorf("cli: writing CA bundle: %w", err)
@@ -346,7 +346,7 @@ func (p *Provider) killSwitchActive(b policy.Bundle) bool {
 	return false
 }
 
-// Health implements core.Provider. Healthy requires all three of §4.5's checks to pass:
+// Health implements core.Provider. Healthy requires all three checks to pass:
 // the profile exists with the expected content, the CA bundle parses and carries the
 // root, and — only when an EnvProbe is configured — a child inherited the environment.
 // It is never healthy without a root CA; a nil EnvProbe skips the inherited check.

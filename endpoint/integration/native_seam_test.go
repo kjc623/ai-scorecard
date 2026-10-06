@@ -22,33 +22,27 @@ func joinLines(lines []string) string {
 	return strings.Join(lines, "\n  ")
 }
 
-// The golden frames in testdata/native/ are produced by ../../apps/capture-extension/tools/emit-frames.mjs
-// and consumed here by the real device/protocol types. That combination is the point: a frame
-// produced by the component that sends it, decoded by the component that receives it, with nothing
-// hand-written in between.
-//
-// If a test in this file fails after someone changes the extension, regenerate the frames and run
-// this again - and read the failing case before assuming the extension is wrong: the whole reason
-// this seam was broken once is that both sides were individually confident.
-//
-// Deliberately NOT covered here: the chrome.* API surface (no browser on this host), and the
-// native-messaging host registration that Chromium performs at install time.
+// The golden frames in testdata/native/ are produced by the extension's own encoder
+// (extension/tools/emit-frames.mjs) and decoded here by the real protocol types: a frame produced
+// by the component that sends it, decoded by the component that receives it, with nothing
+// hand-written in between. If a test fails after an extension change, regenerate the frames and
+// read the failing case's "why" before deciding which side is wrong.
 
 type frameCase struct {
-	Name     string          `json:"name"`
-	Why      string          `json:"why"`
-	Frame    json.RawMessage `json:"frame"`
-	Expects  frameExpects    `json:"expects"`
+	Name    string          `json:"name"`
+	Why     string          `json:"why"`
+	Frame   json.RawMessage `json:"frame"`
+	Expects frameExpects    `json:"expects"`
 }
 
 type frameExpects struct {
-	Decodable           bool   `json:"decodable"`
-	ContentBytes        int    `json:"content_bytes"`
-	ContentText         string `json:"content_text,omitempty"`
-	ContentIsBinary     bool   `json:"content_is_binary,omitempty"`
-	HasContent          bool   `json:"has_content"`
-	ContentDigest       string `json:"content_digest,omitempty"`
-	Counters            map[string]uint64 `json:"counters,omitempty"`
+	Decodable       bool              `json:"decodable"`
+	ContentBytes    int               `json:"content_bytes"`
+	ContentText     string            `json:"content_text,omitempty"`
+	ContentIsBinary bool              `json:"content_is_binary,omitempty"`
+	HasContent      bool              `json:"has_content"`
+	ContentDigest   string            `json:"content_digest,omitempty"`
+	Counters        map[string]uint64 `json:"counters,omitempty"`
 }
 
 func loadFrames(t *testing.T) []frameCase {
@@ -56,7 +50,7 @@ func loadFrames(t *testing.T) []frameCase {
 	dir := filepath.Join("testdata", "native")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		t.Fatalf("read %s: %v (run: node apps/capture-extension/tools/emit-frames.mjs)", dir, err)
+		t.Fatalf("read %s: %v (run: node extension/tools/emit-frames.mjs)", dir, err)
 	}
 	var cases []frameCase
 	for _, e := range entries {

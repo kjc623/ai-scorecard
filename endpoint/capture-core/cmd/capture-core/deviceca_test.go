@@ -10,12 +10,13 @@ import (
 	"time"
 
 	"github.com/shadow-ai-capture/device/capture-core/proxy/tlsproxy"
+	"github.com/shadow-ai-capture/device/capture-core/state"
 )
 
 // The CA is minted once and reused: a restart must hand proxy.tls and the trust store the root the
 // device already trusts, not a new one every start.
 func TestDeviceCAGeneratedOnceAndReused(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), deviceCADir)
+	dir := filepath.Join(t.TempDir(), state.DeviceCADir)
 	now := time.Date(2026, 10, 5, 9, 0, 0, 0, time.UTC)
 
 	cert, key, created, err := ensureDeviceCA(dir, "DESKTOP-01", now)
@@ -33,7 +34,7 @@ func TestDeviceCAGeneratedOnceAndReused(t *testing.T) {
 	if !parsed.IsCA || parsed.NotAfter.Sub(now) < deviceCAValidity-2*time.Hour {
 		t.Fatalf("root is CA=%v valid until %s; want a CA valid for %s", parsed.IsCA, parsed.NotAfter, deviceCAValidity)
 	}
-	if err := checkProtectedFile(filepath.Join(dir, deviceCAKeyFile)); err != nil {
+	if err := state.CheckFile(filepath.Join(dir, deviceCAKeyFile)); err != nil {
 		t.Fatalf("the key file is not protected: %v", err)
 	}
 
@@ -51,7 +52,7 @@ func TestDeviceCAGeneratedOnceAndReused(t *testing.T) {
 // Renewal happens at a start within the margin, never by letting the root expire under live
 // connections.
 func TestDeviceCARenewedNearExpiry(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), deviceCADir)
+	dir := filepath.Join(t.TempDir(), state.DeviceCADir)
 	now := time.Date(2026, 10, 5, 9, 0, 0, 0, time.UTC)
 	cert, _, _, err := ensureDeviceCA(dir, "DESKTOP-01", now)
 	if err != nil {
@@ -66,7 +67,7 @@ func TestDeviceCARenewedNearExpiry(t *testing.T) {
 
 // A certificate whose key is missing or does not match is not this device's CA.
 func TestDeviceCAReplacedWhenThePairIsBroken(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), deviceCADir)
+	dir := filepath.Join(t.TempDir(), state.DeviceCADir)
 	now := time.Now()
 	if _, _, _, err := ensureDeviceCA(dir, "DESKTOP-01", now); err != nil {
 		t.Fatal(err)

@@ -10,8 +10,7 @@ import (
 )
 
 // macOS uses a daemon-delivered profile script plus a loader line in /etc/zshenv, so the
-// environment reaches every shell without relying on a per-user dotfile (A19: exact
-// locations are deployment details; the requirement is a per-machine configuration).
+// environment reaches every shell without relying on a per-user dotfile.
 
 const (
 	zshenvPath  = "/etc/zshenv"
@@ -19,9 +18,9 @@ const (
 	zshenvEnd   = "# <<< sac-shim-end"
 )
 
-// defaultManagedDir is the machine-scope directory for the shim's files. It deliberately has no
-// spaces: the Node bootstrap is wired through NODE_OPTIONS, whose parser splits on whitespace and
-// does not support quoting a path (so /Library/Application Support would break the require hook).
+// defaultManagedDir is the shim's directory: the product folder the installer creates readable by
+// users, with the root-only state directory inside it. It has no spaces, because NODE_OPTIONS
+// splits the bootstrap path on whitespace (so /Library/Application Support would break it).
 func defaultManagedDir() string { return "/var/db/shadow-ai-capture" }
 
 // defaultProfilePath is the managed profile inside ManagedDir, sourced from /etc/zshenv.

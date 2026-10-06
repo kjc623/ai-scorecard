@@ -16,7 +16,7 @@ const recordVersion = 1
 
 // dataMeta is the indexable part of a spooled observation. It is a mirror of protocol.Entry
 // minus the payload: the payload bytes follow it verbatim, so the exact bytes the device
-// minted are what is stored and what Peek returns (ADR 0004: an observation is immutable).
+// minted are what is stored and what Peek returns: an observation is immutable.
 //
 // The spool never parses Payload. It has no field for prompt text, no decoder for the
 // envelope, and no code path that could rewrite one.
@@ -87,8 +87,8 @@ const (
 	opExpire  = "expire"  // past its retention deadline; counted separately from a drop
 )
 
-// Drop causes. §12.2 counts an overflow drop and a retention expiry separately, because
-// they are different failures with different fixes.
+// Drop causes. An overflow drop and a retention expiry are counted separately, because they
+// are different failures with different fixes.
 const (
 	causeBound  = "bound"
 	causeExpiry = "expiry"

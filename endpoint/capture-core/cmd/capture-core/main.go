@@ -1,286 +1,84 @@
-// Command capture-core is the endpoint agent (docs/01-collectors.md §3.1): one static binary per
-// platform that hosts the providers, the policy engine, the spool and the native-messaging host.
+// Command capture-core is the Shadow AI Capture endpoint agent: one binary per platform that runs
+// the collectors (the local TLS proxy, the loopback broker and the CLI trust shim), the policy
+// engine, the spool, the classifier host as a child process, and the device-to-cloud drain.
 //
-// It wires components; it does not contain policy. §4.1's provider contract, §11.2's mode gate,
-// §13.2's bundle verification and §3.5's ordering all live in the packages it imports, and the
-// binary's own job is to resolve configuration, build the graph, drive the supervisor and expose
-// the two edges the rest of the system speaks: the classifier host's local socket and the browser's
-// native-messaging channel.
+// It runs in one of three ways:
 //
-// Subcommands (all flags on the root, because there is exactly one binary):
-//
-//	run                  the service (default): load policy, open the spool, start providers in §3.5 order
-//	--print-config       resolve the bundle and print what the agent resolved, then exit
-//	--native-host        the native-messaging host: Chromium's 4-byte length-prefixed JSON on stdin/stdout
-//	--native-frames DIR  feed the golden frames in DIR through the real framing and dispatch, then exit
-//	--selftest           the end-to-end evidence run: service + frames + health + shutdown, exit non-zero on failure
-//	--version            version and build information
-//
-// Deployment is described in cmd/capture-core/README.md. Nothing here installs a service, writes a
-// system proxy or touches the OS trust store: those are platform facilities behind the interfaces
-// in proxy/tlsproxy, and they are NOT VERIFIED on the host this was built on.
+//   - as the service: started by the Windows Service Control Manager, launchd or systemd with
+//     --config-file arguments, until stopped;
+//   - as the browser's native-messaging host: a browser starts it with the extension's origin
+//     (chrome-extension://<id>/) as the first argument, and it relays frames between the browser
+//     and the running service;
+//   - as a diagnostic: --print-config or --version.
 package main
 
 import (
-	"context"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
-	"os/signal"
-	"syscall"
-	"time"
+	"strings"
 )
 
-// version is the agent version. It is reported in the health channel and in --version, and it is
-// deliberately not tied to any policy version: the bundle carries its own version (§11.3).
-const version = "0.1.0-dev"
+// version is the agent version, set at release build time with -ldflags "-X main.version=...".
+var version = "dev"
 
 func main() {
-	if err := run(); err != nil {
+	if len(os.Args) > 1 && isBrowserOrigin(os.Args[1]) {
+		if err := runRelay(os.Stdin, os.Stdout, dialNative); err != nil {
+			fmt.Fprintf(os.Stderr, "capture-core: native-messaging relay: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintf(os.Stderr, "capture-core: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
-	cfg, mode, err := parseFlags(os.Args[1:])
+func run(args []string) error {
+	cfg, mode, err := parseFlags(args)
+	if errors.Is(err, flag.ErrHelp) {
+		usage(os.Stdout)
+		return nil
+	}
 	if err != nil {
 		return err
 	}
 	if mode.showVersion {
 		fmt.Printf("capture-core %s\n", version)
-		fmt.Printf("protocol framing version %d; native messaging framing: 4-byte little-endian length prefix (Chromium)\n", protocolVersion())
 		return nil
 	}
-
-	logger := newLogger(cfg, mode)
-
-	switch {
-	case mode.printConfig:
-		return printConfig(cfg, slogLogger{logger})
-	case mode.selftest:
-		return runSelftest(cfg, logger)
-	case mode.nativeFrames != "":
-		return runNativeFrames(cfg, logger, mode.nativeFrames)
-	case mode.nativeHost:
-		// The native-messaging host is its own process in Chromium's model, but it shares the
-		// binary and the same service graph: the browser's messages go through the same pipeline
-		// as a proxy's observations.
-		return runNativeHost(cfg, logger)
-	case mode.service:
-		return runAsService(cfg, logger)
-	default:
-		return runService(cfg, logger)
+	if mode.printConfig {
+		return printConfig(cfg, os.Stdout)
 	}
+	if handled, err := runPlatformService(cfg); handled {
+		return err
+	}
+	return runService(cfg, newLogger(cfg.LogLevel, os.Stderr))
 }
 
-// runMode is what the flags asked for. Exactly one of these is true; parseFlags enforces it.
-type runMode struct {
-	showVersion  bool
-	printConfig  bool
-	selftest     bool
-	nativeHost   bool
-	nativeFrames string
-	service      bool
+// isBrowserOrigin reports whether arg is the caller origin Chrome and Edge pass a native-messaging
+// host as its first argument.
+func isBrowserOrigin(arg string) bool {
+	return strings.HasPrefix(arg, "chrome-extension://")
 }
 
-func parseFlags(args []string) (Config, runMode, error) {
-	cfg := defaultConfig()
-	var mode runMode
-	var configFiles stringList
-
-	// --config-file profiles contribute flags before the command line, in the order given, so a later
-	// file wins over an earlier one and a flag the operator also passed wins over both. The Windows
-	// service is configured entirely by two such files: the vendor's generic capture-core.env, then
-	// the tenant's file from the deployment package (contract §5).
-	if paths := prescanFlagValues(args, "config-file"); len(paths) > 0 {
-		fileArgs, err := configArgsFromFiles(paths)
-		if err != nil {
-			return cfg, mode, err
-		}
-		args = append(fileArgs, args...)
-	}
-
-	fs := flag.NewFlagSet("capture-core", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: capture-core [run|--native-host|--selftest|--native-frames DIR|--print-config|--version] [flags]\n\n")
-		fs.PrintDefaults()
-	}
-
-	// Identity and storage.
-	fs.StringVar(&cfg.SpoolDir, "spool-dir", cfg.SpoolDir, "spool directory (the agent's only durable store; §12)")
-	fs.StringVar(&cfg.SpoolKey, "spool-key", cfg.SpoolKey, "path to the spool key file; must be OUTSIDE the spool directory (a key beside its ciphertext is not encryption at rest)")
-	fs.StringVar(&cfg.SpoolBoundsProfile, "spool-bounds", cfg.SpoolBoundsProfile, "spool bound profile: default | dev")
-	fs.StringVar(&cfg.TenantID, "tenant-id", cfg.TenantID, "tenant id stamped on every envelope (from enrolment, §13.1)")
-	fs.StringVar(&cfg.DeviceID, "device-id", cfg.DeviceID, "device id stamped on every envelope")
-	fs.StringVar(&cfg.UserRef, "user-ref", cfg.UserRef, "pseudonymous subject reference (never a name or e-mail); empty derives it from the console user under the tenant's key")
-	fs.StringVar(&cfg.Hostname, "hostname", cfg.Hostname, "clear machine name reported to the control plane; empty resolves the OS hostname (ADR 0021)")
-	fs.StringVar(&cfg.SubjectName, "subject-name", cfg.SubjectName, "clear account name stamped on each submission; empty resolves the console user's UPN, else DOMAIN\\user (ADR 0021)")
-	fs.StringVar(&cfg.ManagedState, "managed-state", cfg.ManagedState, "whether the device is under MDM: managed | unmanaged | unknown; empty reports managed when an Intune enrolment is found, else unknown")
-	fs.StringVar(&cfg.DeviceIdentity, "device-identity", cfg.DeviceIdentity, "tenant identity setting to act on: clear | hashed (default clear; the server restates and may change it)")
-	fs.StringVar(&cfg.Population, "population", cfg.Population, "user population for scope resolution (may be empty)")
-	fs.StringVar(&cfg.Retention, "retention", cfg.Retention, "device-side retention for spooled observations (e.g. 720h)")
-
-	// Policy.
-	fs.StringVar(&cfg.BundlePath, "bundle", cfg.BundlePath, "path to the signed policy bundle (omit for M0: metadata only, §13.3 rule 5)")
-	fs.StringVar(&cfg.PolicyKey, "policy-key", cfg.PolicyKey, "hex-encoded Ed25519 public key the bundle must verify under")
-	fs.StringVar(&cfg.PolicyKeyID, "policy-key-id", cfg.PolicyKeyID, "key id the bundle must name")
-
-	// Classifier host (§3.4).
-	fs.StringVar(&cfg.ClassifierAddress, "classifier-address", cfg.ClassifierAddress, "classifier host address as transport:path, e.g. unix:/run/sac/classifier.sock or pipe:\\\\.\\pipe\\sac-classifier; empty means rules-only")
-	fs.DurationVar(&cfg.ClassifierBudget, "classifier-budget", cfg.ClassifierBudget, "budget for one classification")
-	fs.StringVar(&cfg.ClassifierRelease, "classifier-release", cfg.ClassifierRelease, "signed classifier release directory; with no --classifier-address the agent runs the classifier-host beside it as a child on stdio")
-	fs.StringVar(&cfg.ContentDir, "content-dir", cfg.ContentDir, "M3 local content store directory; empty means the device holds no content and refuses M3 observations")
-	fs.StringVar(&cfg.ContentKey, "content-key", cfg.ContentKey, "key file the content store is sealed under; must be OUTSIDE --content-dir")
-	fs.StringVar(&cfg.ClassifierPubkey, "classifier-pubkey", cfg.ClassifierPubkey, "hex-encoded Ed25519 public key the classifier release must verify under")
-
-	// Providers.
-	fs.BoolVar(&cfg.EnableTLS, "proxy-tls", cfg.EnableTLS, "run proxy.tls (the egress interceptor)")
-	fs.StringVar(&cfg.TLSListen, "proxy-tls-listen", cfg.TLSListen, "proxy.tls listen address; a test or a local run uses 127.0.0.1:0")
-	fs.StringVar(&cfg.TLSCanary, "proxy-tls-canary", cfg.TLSCanary, "canary host:port for the §5.2 end-to-end probe; empty reports degraded, never healthy")
-	fs.BoolVar(&cfg.EnableLoopback, "proxy-loopback", cfg.EnableLoopback, "run proxy.loopback using the bundle's port map")
-	fs.BoolVar(&cfg.EnableProcDetect, "proc-detect", cfg.EnableProcDetect, "run proc.detect (needs an enumerator; without one the route is reported as a named gap)")
-	fs.DurationVar(&cfg.DrainDeadline, "drain-deadline", cfg.DrainDeadline, "bounded spool drain at shutdown (§3.5 step 3)")
-
-	// Trust/CA and the CLI trust shim (§4.5, §5.2, §14).
-	fs.BoolVar(&cfg.TrustInstall, "trust-install", cfg.TrustInstall, "install the per-device root CA into the platform trust store (default false: never touch the store unless asked)")
-	fs.StringVar(&cfg.TrustStore, "trust-store", cfg.TrustStore, "Windows trust store: root | enterprise (other platforms ignore it)")
-	fs.BoolVar(&cfg.TrustRemoveOnStop, "trust-remove-on-stop", cfg.TrustRemoveOnStop, "remove the root CA on shutdown (uninstall or kill switch)")
-	fs.StringVar(&cfg.CAKeyFile, "ca-key", cfg.CAKeyFile, "per-device CA private key PEM (0600); empty generates an ephemeral CA")
-	fs.StringVar(&cfg.CACertFile, "ca-cert", cfg.CACertFile, "per-device CA public cert PEM; empty uses the bundle's interception.root_ca_pem")
-	fs.BoolVar(&cfg.CLIShim, "cli-shim", cfg.CLIShim, "run cli.shim (managed shell trust/proxy environment for CLI runtimes)")
-	fs.StringVar(&cfg.ShimDir, "shim-dir", cfg.ShimDir, "directory cli.shim writes the CA bundle and profile into; empty uses a platform default")
-
-	// Health channel.
-	fs.StringVar(&cfg.HealthFile, "health-file", cfg.HealthFile, "append the health channel to this file as JSON lines (empty disables the writer)")
-	fs.DurationVar(&cfg.HealthInterval, "health-interval", cfg.HealthInterval, "health channel interval")
-
-	// Attachment transport (native messaging, §3.4).
-	fs.Int64Var(&cfg.AttachmentCap, "attachment-cap", cfg.AttachmentCap, "policy cap for one attachment manifest, checked BEFORE any byte moves")
-
-	// Device-to-cloud drain (ADR 0020). An empty --device-endpoint disables the drain.
-	fs.StringVar(&cfg.DeviceEndpoint, "device-endpoint", cfg.DeviceEndpoint, "device ingress base URL, e.g. https://ingest.eu.example.com; empty disables the drain")
-	fs.StringVar(&cfg.AuthMode, "auth-mode", cfg.AuthMode, "device credential mode for the drain: x509 | dpop")
-	fs.StringVar(&cfg.CredentialFile, "credential-file", cfg.CredentialFile, "path to the sealed device credential (issued by POST /v1/enrol)")
-	fs.StringVar(&cfg.EnrolmentToken, "enrolment-token", cfg.EnrolmentToken, "single-use bootstrap token for POST /v1/enrol")
-	fs.StringVar(&cfg.DeploymentKey, "deployment-key", cfg.DeploymentKey, "the tenant's reusable deployment key for POST /v1/enrol (from the tenant package); exclusive with --enrolment-token")
-	fs.StringVar(&cfg.StateDir, "state-dir", cfg.StateDir, "where the agent keeps what it fetches or generates (the cached policy bundle, the per-device CA); empty uses the --credential-file directory")
-	fs.StringVar(&cfg.CAFile, "ca-file", cfg.CAFile, "PEM CA set the edge is pinned to; empty uses the system root set")
-	fs.StringVar(&cfg.MDMID, "mdm-id", cfg.MDMID, "MDM-delivered device identifier (the preferred hardware-identity seed)")
-	fs.DurationVar(&cfg.BackoffBase, "backoff-base", cfg.BackoffBase, "drain retry backoff base (full jitter)")
-	fs.DurationVar(&cfg.BackoffCap, "backoff-cap", cfg.BackoffCap, "drain retry backoff cap")
-
-	// Modes.
-	fs.BoolVar(&mode.showVersion, "version", false, "print version and exit")
-	fs.BoolVar(&mode.printConfig, "print-config", false, "resolve the bundle and print the effective configuration, then exit")
-	fs.BoolVar(&mode.selftest, "selftest", false, "run the end-to-end self test (service, golden frames, health, shutdown) and exit non-zero on failure")
-	fs.BoolVar(&mode.nativeHost, "native-host", false, "run the native-messaging host on stdin/stdout")
-	fs.StringVar(&mode.nativeFrames, "native-frames", "", "directory of golden frame case files to run through the real native-messaging framing, then exit")
-	// KEY=VALUE profiles in the SAC_* vocabulary, read by prescanFlagValues above; registered here so
-	// the flag set accepts them. A later file wins over an earlier one; an explicitly passed flag wins.
-	fs.Var(&configFiles, "config-file", "read a KEY=VALUE SAC_* configuration file (installer/manifest.mjs is the catalogue); repeatable, a later file wins, command-line flags win over all")
-
-	// Windows service. --service is accepted on every platform so the flag set is one shape; a
-	// non-Windows binary refuses it at run time rather than at parse time.
-	fs.BoolVar(&mode.service, "service", false, "run under the Windows Service Control Manager (Windows only)")
-	fs.StringVar(&cfg.ServiceName, "service-name", cfg.ServiceName, "the Windows service name to host (with --service); must match the installer's registration")
-	fs.StringVar(&cfg.WorkDir, "work-dir", cfg.WorkDir, "work directory for --selftest (default: the OS temp directory; wiped per run)")
-	fs.BoolVar(&cfg.KeepWorkDir, "keep-work-dir", cfg.KeepWorkDir, "leave the --selftest work directory behind for inspection (default: remove it, including after a failure)")
-	fs.StringVar(&cfg.LogFormat, "log-format", cfg.LogFormat, "log format: json | text")
-	fs.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "log level: debug | info | warn | error")
-	fs.BoolVar(&cfg.DryRun, "dry-run", cfg.DryRun, "resolve and validate everything, print the plan, and start nothing")
-
-	if err := fs.Parse(args); err != nil {
-		return cfg, mode, err
-	}
-	if fs.NArg() > 0 {
-		return cfg, mode, fmt.Errorf("unexpected argument %q; the only positional form is `run`, which is the default", fs.Arg(0))
-	}
-
-	selected := 0
-	for _, on := range []bool{mode.showVersion, mode.printConfig, mode.selftest, mode.nativeHost, mode.nativeFrames != "", mode.service} {
-		if on {
-			selected++
-		}
-	}
-	if selected > 1 {
-		return cfg, mode, errors.New("choose one of --version, --print-config, --selftest, --native-host, --native-frames, --service")
-	}
-	if err := cfg.validate(mode); err != nil {
-		return cfg, mode, err
-	}
-	return cfg, mode, nil
-}
-
-// defaultConfig is what the flags start from. Every default is either inert (a loopback address the
-// OS assigns) or explicitly a gap; nothing here decides policy.
-func defaultConfig() Config {
-	return Config{
-		SpoolBoundsProfile: "default",
-		Retention:          "720h",
-		PolicyKeyID:        "policy-key-1",
-		ClassifierBudget:   2 * time.Second,
-		EnableTLS:          true,
-		TLSListen:          defaultTLSListen,
-		EnableLoopback:     true,
-		DrainDeadline:      30 * time.Second,
-		HealthInterval:     30 * time.Second,
-		AttachmentCap:      64 << 20, // protocol.MaxAttachmentBytes: the transport ceiling, overridable by policy
-		BackoffBase:        time.Second,
-		BackoffCap:         300 * time.Second,
-		DrainInterval:      time.Second,
-		// WorkDir is deliberately empty: the selftest defaults to the OS temp directory so a run
-		// never writes artifacts into the source tree. --work-dir overrides it, and
-		// --keep-work-dir leaves the directory behind for inspection.
-		WorkDir: "",
-		// ServiceName is the name the installer registers; the SCM dispatch table is keyed by it.
-		ServiceName: "ShadowAICapture",
-		// TrustStore is the Windows store name; other platforms ignore it.
-		TrustStore: "root",
-		LogFormat:  "json",
-		LogLevel:   "info",
-	}
-}
-
-func newLogger(cfg Config, mode runMode) *slog.Logger {
-	level := slog.LevelInfo
-	switch cfg.LogLevel {
+// newLogger is the agent's structured JSON logger.
+func newLogger(level string, w io.Writer) *slog.Logger {
+	var l slog.Level
+	switch level {
 	case "debug":
-		level = slog.LevelDebug
+		l = slog.LevelDebug
 	case "warn":
-		level = slog.LevelWarn
+		l = slog.LevelWarn
 	case "error":
-		level = slog.LevelError
+		l = slog.LevelError
+	default:
+		l = slog.LevelInfo
 	}
-	opts := &slog.HandlerOptions{Level: level}
-	// The native-messaging host must not write anything but frames to stdout: Chromium reads that
-	// stream as a message channel, and a log line in it is a protocol violation.
-	if mode.nativeHost {
-		return slog.New(slog.NewJSONHandler(os.Stderr, opts))
-	}
-	if cfg.LogFormat == "text" {
-		return slog.New(slog.NewTextHandler(os.Stderr, opts))
-	}
-	return slog.New(slog.NewJSONHandler(os.Stderr, opts))
+	return slog.New(slog.NewJSONHandler(w, &slog.HandlerOptions{Level: l}))
 }
-
-// signalContext returns a context cancelled by SIGINT/SIGTERM, which is what the service manager
-// sends on stop.
-func signalContext() (context.Context, func()) {
-	ctx, cancel := context.WithCancel(context.Background())
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-ch
-		cancel()
-	}()
-	return ctx, func() {
-		signal.Stop(ch)
-		cancel()
-	}
-}
-
-func protocolVersion() byte { return protocolFramingVersion() }

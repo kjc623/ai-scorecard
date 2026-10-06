@@ -2,7 +2,7 @@ package cli
 
 // nodeProxyScript is the stdlib-only Node bootstrap the shim writes when NodeRequire is
 // set. Node does not honour HTTP_PROXY/HTTPS_PROXY by default, so a plain environment
-// routes its requests direct and proxy.tls never sees them (§4.5). This script installs
+// routes its requests direct and proxy.tls never sees them. This script installs
 // an https.Agent subclass whose createConnection CONNECTs through HTTPS_PROXY, then makes
 // it the global agent. It deliberately does not pass a "ca" option: the device CA reaches
 // Node through NODE_EXTRA_CA_CERTS, and replacing the store would break public destinations

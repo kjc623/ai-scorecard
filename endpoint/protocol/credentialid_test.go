@@ -3,7 +3,7 @@ package protocol
 import "testing"
 
 // CredentialID is the one value control-api (issuer) and ingest-api (verifier) must agree on
-// without sharing state, so its determinism and shape are asserted here (ADR 0020 decision 4).
+// without sharing state, so its determinism and shape are asserted here.
 func TestCredentialIDIsDeterministicAndVersioned(t *testing.T) {
 	der := []byte("a certificate's DER bytes")
 

@@ -1,8 +1,6 @@
 // Package trust installs, verifies and removes the per-device root CA in the operating system's
-// real trust store (docs/01-collectors.md §4.5, §5.2, §14). It is the platform half of "the
-// device trusts the CA that intercepts its traffic", and it exists because writing the CA to the
-// wrong store fails silently: the platform honours exactly one store, and the manager must choose
-// the one the platform actually reads.
+// trust store. Writing the CA to the wrong store fails silently, so the manager writes the store
+// each platform actually reads and verifies the result by reading it back.
 //
 // Behaviour is selected by Config.OS, not build tags, so a Linux test can exercise the macOS and
 // Windows command construction with a fake Runner. A Manager whose OS value is not one of the

@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// One writer (§3.4, §12). A second open of the same directory is refused while the first
+// One writer. A second open of the same directory is refused while the first
 // holds it, and succeeds once it is released.
 func TestSecondOpenInTheSameProcessIsRefused(t *testing.T) {
 	dir := t.TempDir()
@@ -14,7 +14,7 @@ func TestSecondOpenInTheSameProcessIsRefused(t *testing.T) {
 		t.Fatalf("Append: %v", err)
 	}
 
-	if _, err := Open(Config{Dir: dir, Keys: testKey(t), SyncEvery: -1}); !errors.Is(err, ErrWriterActive) {
+	if _, err := Open(Config{Dir: dir, Key: testKey(), SyncEvery: -1}); !errors.Is(err, ErrWriterActive) {
 		t.Fatalf("second Open returned %v, want ErrWriterActive", err)
 	}
 
@@ -34,11 +34,11 @@ func TestKilledHolderReleasesTheWriterLock(t *testing.T) {
 	run := newCrashRun(t)
 	child := run.spawn(t, modeHold, "")
 
-	kp, err := NewFileKeyProvider(run.keyPath, run.spoolDir)
+	key, err := fileKey(run.keyPath)
 	if err != nil {
-		t.Fatalf("key provider: %v", err)
+		t.Fatalf("key: %v", err)
 	}
-	if _, err := Open(Config{Dir: run.spoolDir, Keys: kp, SyncEvery: -1}); !errors.Is(err, ErrWriterActive) {
+	if _, err := Open(Config{Dir: run.spoolDir, Key: key, SyncEvery: -1}); !errors.Is(err, ErrWriterActive) {
 		t.Fatalf("Open while the child holds the lock returned %v, want ErrWriterActive", err)
 	}
 
@@ -52,7 +52,7 @@ func TestKilledHolderReleasesTheWriterLock(t *testing.T) {
 
 // A spool whose directory cannot be created is refused rather than half-opened.
 func TestOpenRequiresADirectoryAndAKey(t *testing.T) {
-	if _, err := Open(Config{Dir: "", Keys: testKey(t)}); err == nil {
+	if _, err := Open(Config{Dir: "", Key: testKey()}); err == nil {
 		t.Fatal("Open accepted an empty directory")
 	}
 	if _, err := Open(Config{Dir: t.TempDir()}); err == nil {

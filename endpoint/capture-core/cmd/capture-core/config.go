@@ -1,705 +1,214 @@
 package main
 
 import (
-	"crypto/sha256"
+	"bufio"
+	"crypto/ed25519"
 	"encoding/hex"
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
-	"time"
 
-	"github.com/shadow-ai-capture/device/capture-core/core"
-	"github.com/shadow-ai-capture/device/capture-core/policy"
 	"github.com/shadow-ai-capture/device/protocol"
 )
 
-// defaultTLSListen is the "ask the OS for a port" default. A service pins a real port in its
-// enrolment profile; a test leaves this and gets an ephemeral one. It is a named constant because
-// the bundle's interception.proxy_listen only applies when the flag was left at this value.
-const defaultTLSListen = "127.0.0.1:0"
-
-// Config is everything the binary resolves before it starts anything. Every field is either a flag
-// or a value read from the signed bundle; none of it is policy the binary invents, and none of it
-// has a default that widens what the agent may do.
+// Config is everything the agent is configured with. Everything else (what to collect, at which
+// mode, where the proxy listens) comes from the signed policy bundle.
 type Config struct {
-	// Identity and storage.
-	SpoolDir           string
-	SpoolKey           string
-	SpoolBoundsProfile string
-	TenantID           string
-	DeviceID           string
-	UserRef            string
-	Population         string
-	Retention          string
-
-	// Device identity (ADR 0021). Hostname and SubjectName are the clear identity fields; empty
-	// means "resolve from the operating system" (the console user, for the name). ManagedState is
-	// an override: empty reports 'managed' when an Intune enrolment is found, else 'unknown'.
-	// DeviceIdentity is the tenant setting the device acts on: 'clear' sends the hostname and
-	// subject name, 'hashed' sends neither. It defaults to 'clear' (the product default) and is
-	// refreshed from the server's enrolment and health responses.
-	Hostname       string
-	SubjectName    string
-	ManagedState   string
-	DeviceIdentity string
-
-	// Policy.
-	BundlePath  string
+	// StateDir holds the spool, the keys, the device credential, held content, the cached policy
+	// bundle and the interception CA. It is protected so only the service can read it.
+	StateDir string
+	// TenantID, DeviceEndpoint and DeploymentKey come from the tenant file the MDM delivers.
+	TenantID       string
+	DeviceEndpoint string
+	DeploymentKey  string
+	// CAFile names a PEM CA set trusted for the device endpoint in addition to the system roots.
+	CAFile string
+	// PolicyKey is the hex-encoded Ed25519 public key the policy bundle must verify under, and
+	// PolicyKeyID the key id it must name. With no key the device runs at M0.
 	PolicyKey   string
 	PolicyKeyID string
-
-	// Classifier host (§3.4).
-	ClassifierAddress string
-	ClassifierBudget  time.Duration
-	// ClassifierRelease/ClassifierPubkey make the agent run the classifier host itself, as a child
-	// on stdio, when no ClassifierAddress names a host someone else runs.
+	// ClassifierRelease is the signed classifier release directory and ClassifierPubkey the
+	// hex-encoded Ed25519 key it must verify under. With neither, classification is rules-only.
 	ClassifierRelease string
 	ClassifierPubkey  string
-
-	// The M3 local content store (§11.3). Empty ContentDir means the device holds no content, and
-	// an M3 observation is refused rather than emitted without the content it says it holds.
-	ContentDir string
-	ContentKey string
-
-	// Providers.
-	EnableTLS        bool
-	TLSListen        string
-	TLSCanary        string
-	EnableLoopback   bool
-	EnableProcDetect bool
-	DrainDeadline    time.Duration
-
-	// Trust/CA and the CLI trust shim (docs/01-collectors.md §4.5, §5.2, §14).
-	// TrustInstall defaults false: the agent never touches the OS trust store unless the
-	// enrolment profile asks it to (§5.2's wrong-store rule makes a silent install worse than
-	// none). CAKeyFile/CACertFile pin the per-device CA so it survives a restart and the trust
-	// entry stays valid; with neither, the interceptor generates an ephemeral CA as before.
-	TrustInstall      bool
-	TrustStore        string // windows: root | enterprise
-	TrustRemoveOnStop bool
-	CAKeyFile         string
-	CACertFile        string
-	CLIShim           bool
-	ShimDir           string
-
-	// Health channel.
-	HealthFile     string
-	HealthInterval time.Duration
-
-	// Native messaging.
-	AttachmentCap int64
-
-	// Device-to-cloud drain (ADR 0020). Empty DeviceEndpoint means the drain is disabled: the
-	// shutdown drain reports what is still spooled and stops at its deadline, exactly as before.
-	DeviceEndpoint string
-	AuthMode       string // "x509" | "dpop"; empty when the drain is disabled
-	CredentialFile string // path to the sealed device credential
-	EnrolmentToken string // single-use bootstrap token for POST /v1/enrol
-	// DeploymentKey is the tenant's reusable bootstrap credential from the deployment package
-	// (contract §5); exactly one of it and EnrolmentToken is presented.
-	DeploymentKey string
-	// StateDir holds what the agent fetches or generates for itself: the cached policy bundle and
-	// the per-device CA. Empty means the directory of CredentialFile.
-	StateDir      string
-	CAFile        string // PEM CA set the edge is pinned to (empty = system roots)
-	MDMID         string // MDM-delivered device identifier, the preferred hardware-identity seed
-	BackoffBase   time.Duration
-	BackoffCap    time.Duration
-	DrainInterval time.Duration // background drain poll interval (default 1s; the selftest lengthens it)
-
-	// Modes and misc.
-	WorkDir string
-	// ServiceName is the Windows service name used with --service. It must match the name the
-	// installer registered: the SCM dispatcher table and the control handler are keyed by it.
-	ServiceName string
-
-	// KeepWorkDir leaves the selftest's work directory in place for inspection. The default is to
-	// remove it: a self test leaves the tree as it found it, including on the failure path.
-	KeepWorkDir bool
-	LogFormat   string
-	LogLevel    string
-	DryRun      bool
+	// DeviceIdentity is the tenant's identity setting to act on until the server states it:
+	// clear sends the hostname and account name, hashed sends neither.
+	DeviceIdentity string
+	LogLevel       string
 }
 
-func (c Config) validate(mode runMode) error {
-	// The native-messaging mode still needs identity (it mints envelopes) and storage (it writes
-	// them); --print-config and --version do not. --selftest supplies its own work directory, spool,
-	// bundle and identity, so it validates only what it was given.
-	needsStorage := mode.nativeHost || mode.nativeFrames != "" || (!mode.showVersion && !mode.printConfig && !mode.selftest)
-	if needsStorage {
-		if strings.TrimSpace(c.SpoolDir) == "" {
-			return errors.New("--spool-dir is required: a provider with nowhere to write must not start (§3.5 step 2)")
+// configKeys maps each configuration-file key to the flag it sets. The installer generates the
+// vendor and tenant configuration files in this vocabulary.
+var configKeys = map[string]string{
+	"SAC_STATE_DIR":          "state-dir",
+	"SAC_TENANT_ID":          "tenant-id",
+	"SAC_DEVICE_ENDPOINT":    "device-endpoint",
+	"SAC_DEPLOYMENT_KEY":     "deployment-key",
+	"SAC_CA_FILE":            "ca-file",
+	"SAC_POLICY_KEY":         "policy-key",
+	"SAC_POLICY_KEY_ID":      "policy-key-id",
+	"SAC_CLASSIFIER_RELEASE": "classifier-release",
+	"SAC_CLASSIFIER_PUBKEY":  "classifier-pubkey",
+	"SAC_DEVICE_IDENTITY":    "device-identity",
+	"SAC_LOG_LEVEL":          "log-level",
+}
+
+// runMode is what the command line asked for besides running the service.
+type runMode struct {
+	showVersion bool
+	printConfig bool
+}
+
+// parseFlags reads the configuration files named by --config-file, in order, then the remaining
+// flags. A later file wins over an earlier one, and a flag on the command line wins over both.
+func parseFlags(args []string) (Config, runMode, error) {
+	cfg := Config{PolicyKeyID: "policy-key-1", DeviceIdentity: string(protocol.DeviceIdentityClear), LogLevel: "info"}
+	var mode runMode
+	var configFiles []string
+
+	fs := flag.NewFlagSet("capture-core", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.StringVar(&cfg.StateDir, "state-dir", cfg.StateDir, "protected state directory (spool, keys, credential, content, policy cache, device CA)")
+	fs.StringVar(&cfg.TenantID, "tenant-id", cfg.TenantID, "the tenant this device belongs to")
+	fs.StringVar(&cfg.DeviceEndpoint, "device-endpoint", cfg.DeviceEndpoint, "device edge base URL, https with no path")
+	fs.StringVar(&cfg.DeploymentKey, "deployment-key", cfg.DeploymentKey, "the tenant's deployment key; enrols the device")
+	fs.StringVar(&cfg.CAFile, "ca-file", cfg.CAFile, "PEM CA set trusted for the device endpoint in addition to the system roots")
+	fs.StringVar(&cfg.PolicyKey, "policy-key", cfg.PolicyKey, "hex-encoded Ed25519 public key the policy bundle must verify under")
+	fs.StringVar(&cfg.PolicyKeyID, "policy-key-id", cfg.PolicyKeyID, "key id the policy bundle must name")
+	fs.StringVar(&cfg.ClassifierRelease, "classifier-release", cfg.ClassifierRelease, "signed classifier release directory")
+	fs.StringVar(&cfg.ClassifierPubkey, "classifier-pubkey", cfg.ClassifierPubkey, "hex-encoded Ed25519 public key the classifier release must verify under")
+	fs.StringVar(&cfg.DeviceIdentity, "device-identity", cfg.DeviceIdentity, "device identity setting until the server states it: clear | hashed")
+	fs.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "debug | info | warn | error")
+	fs.Func("config-file", "KEY=VALUE configuration file (repeatable; a later file wins, command-line flags win over all)", func(v string) error {
+		configFiles = append(configFiles, v)
+		return nil
+	})
+	fs.BoolVar(&mode.showVersion, "version", false, "print the version and exit")
+	fs.BoolVar(&mode.printConfig, "print-config", false, "print the resolved configuration and the device's state, then exit")
+
+	if err := fs.Parse(args); err != nil {
+		return cfg, mode, err
+	}
+	if fs.NArg() > 0 {
+		return cfg, mode, fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+	// Apply the files, then re-apply the command line so it wins.
+	explicit := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
+	for _, path := range configFiles {
+		values, err := readConfigFile(path)
+		if err != nil {
+			return cfg, mode, err
 		}
-		if strings.TrimSpace(c.SpoolKey) == "" {
-			return errors.New("--spool-key is required: the spool never generates a key inside its own directory (§12)")
-		}
-		// The flags are the identity only for a local/offline run (no --device-endpoint): with a
-		// drain configured the sealed credential (or a bounded enrolment) is authoritative, and the
-		// flags are a validated assertion rather than a requirement.
-		if strings.TrimSpace(c.DeviceEndpoint) == "" {
-			if strings.TrimSpace(c.DeviceID) == "" {
-				return errors.New("--device-id is required for a local run (no --device-endpoint): every envelope carries a device id and health is keyed by it")
+		for _, kv := range values {
+			if explicit[kv[0]] {
+				continue
 			}
-			if strings.TrimSpace(c.TenantID) == "" {
-				return errors.New("--tenant-id is required for a local run (no --device-endpoint): a device with no tenant cannot attribute an observation")
+			if err := fs.Set(kv[0], kv[1]); err != nil {
+				return cfg, mode, fmt.Errorf("config file %s: %s: %w", path, kv[0], err)
 			}
-		}
-		if _, err := time.ParseDuration(c.Retention); err != nil {
-			return fmt.Errorf("--retention %q: %w", c.Retention, err)
 		}
 	}
-	if c.BundlePath != "" && c.PolicyKey == "" {
-		return errors.New("--bundle needs --policy-key: a bundle with no pinned key cannot be verified")
+	if mode.showVersion {
+		return cfg, mode, nil
 	}
-	// With no --bundle the bundle is fetched from GET /v1/policy, which needs a device endpoint to
-	// fetch from; without one a pinned key verifies nothing.
-	if c.PolicyKey != "" && c.BundlePath == "" && strings.TrimSpace(c.DeviceEndpoint) == "" {
-		return errors.New("--policy-key with no --bundle needs --device-endpoint: the bundle is then fetched from GET /v1/policy, and without an endpoint the key verifies nothing")
+	return cfg, mode, cfg.validate()
+}
+
+// readConfigFile reads KEY=VALUE lines and returns (flag name, value) pairs in file order. Blank
+// lines and lines starting with '#' are ignored; the value is everything after the first '=', so a
+// path with spaces needs no quoting. An unknown key is an error, so a typo cannot look configured.
+func readConfigFile(path string) ([][2]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("config file %s: %w", path, err)
+	}
+	defer f.Close()
+	var out [][2]string
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	for line := 1; sc.Scan(); line++ {
+		s := strings.TrimSpace(sc.Text())
+		if line == 1 {
+			s = strings.TrimPrefix(s, "\ufeff")
+		}
+		if s == "" || strings.HasPrefix(s, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(s, "=")
+		if !ok {
+			return nil, fmt.Errorf("config file %s:%d: line is not KEY=VALUE", path, line)
+		}
+		name, known := configKeys[strings.TrimSpace(key)]
+		if !known {
+			return nil, fmt.Errorf("config file %s:%d: unknown key %q", path, line, strings.TrimSpace(key))
+		}
+		out = append(out, [2]string{name, strings.TrimSpace(value)})
+	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("config file %s: %w", path, err)
+	}
+	return out, nil
+}
+
+func (c Config) validate() error {
+	switch {
+	case strings.TrimSpace(c.StateDir) == "":
+		return errors.New("--state-dir (SAC_STATE_DIR) is required")
+	case strings.TrimSpace(c.TenantID) == "":
+		return errors.New("--tenant-id (SAC_TENANT_ID) is required; it comes from the tenant file")
+	case strings.TrimSpace(c.DeviceEndpoint) == "":
+		return errors.New("--device-endpoint (SAC_DEVICE_ENDPOINT) is required; it comes from the tenant file")
+	}
+	u, err := url.Parse(c.DeviceEndpoint)
+	if err != nil || u.Scheme != "https" || u.Host == "" || (u.Path != "" && u.Path != "/") || u.RawQuery != "" {
+		return fmt.Errorf("--device-endpoint %q must be an https URL with a host and no path", c.DeviceEndpoint)
 	}
 	if c.PolicyKey != "" {
-		if _, err := hex.DecodeString(strings.TrimSpace(c.PolicyKey)); err != nil {
-			return fmt.Errorf("--policy-key must be hex-encoded Ed25519 public key bytes: %w", err)
+		if k, err := hex.DecodeString(strings.TrimSpace(c.PolicyKey)); err != nil || len(k) != ed25519.PublicKeySize {
+			return errors.New("--policy-key must be a hex-encoded 32-byte Ed25519 public key")
 		}
 	}
 	if (c.ClassifierRelease == "") != (c.ClassifierPubkey == "") {
-		return errors.New("--classifier-release and --classifier-pubkey go together: a release with no pinned key cannot be verified, and a key with no release verifies nothing")
+		return errors.New("--classifier-release and --classifier-pubkey go together: a release with no pinned key cannot be verified")
 	}
-	if (c.ContentDir == "") != (c.ContentKey == "") {
-		return errors.New("--content-dir and --content-key go together: held content is sealed, and the key must live outside the directory it seals")
+	if !protocol.DeviceIdentity(c.DeviceIdentity).Valid() {
+		return fmt.Errorf("--device-identity %q must be clear or hashed", c.DeviceIdentity)
 	}
-	if mode.nativeFrames != "" {
-		if st, err := os.Stat(mode.nativeFrames); err != nil || !st.IsDir() {
-			return fmt.Errorf("--native-frames %q is not a directory", mode.nativeFrames)
-		}
-	}
-	if c.AttachmentCap <= 0 {
-		return errors.New("--attachment-cap must be positive")
-	}
-	if err := c.validateDrain(); err != nil {
-		return err
-	}
-	switch c.TrustStore {
-	case "", "root", "enterprise":
+	switch c.LogLevel {
+	case "debug", "info", "warn", "error":
 	default:
-		return fmt.Errorf("--trust-store %q must be root or enterprise", c.TrustStore)
+		return fmt.Errorf("--log-level %q must be debug, info, warn or error", c.LogLevel)
 	}
 	return nil
 }
 
-// validateDrain checks the device-to-cloud drain configuration. An empty --device-endpoint means
-// the drain is disabled and nothing else is required; a non-empty one must be a usable https URL
-// with a credential file, a closed auth mode, and sane backoff bounds.
-func (c Config) validateDrain() error {
-	if strings.TrimSpace(c.EnrolmentToken) != "" && strings.TrimSpace(c.DeploymentKey) != "" {
-		return errors.New("--enrolment-token and --deployment-key are both set: a device presents exactly one bootstrap credential (the lab's single-use token, or the tenant package's deployment key)")
-	}
-	if strings.TrimSpace(c.DeviceEndpoint) == "" {
-		if strings.TrimSpace(c.DeploymentKey) != "" {
-			return errors.New("--deployment-key needs --device-endpoint: there is nowhere to enrol")
-		}
-		return nil
-	}
-	u, err := url.Parse(c.DeviceEndpoint)
-	if err != nil || u.Scheme != "https" || u.Host == "" {
-		return fmt.Errorf("--device-endpoint %q must be an https URL with a host", c.DeviceEndpoint)
-	}
-	if u.Path != "" && u.Path != "/" {
-		return fmt.Errorf("--device-endpoint %q must not carry a path: the gateway route map and the DPoP htu are the bare host", c.DeviceEndpoint)
-	}
-	switch c.AuthMode {
-	case "x509", "dpop":
-	default:
-		return fmt.Errorf("--auth-mode %q must be x509 or dpop", c.AuthMode)
-	}
-	if strings.TrimSpace(c.CredentialFile) == "" {
-		return errors.New("--credential-file is required when --device-endpoint is set: the issued credential has nowhere to be sealed")
-	}
-	if strings.TrimSpace(c.SpoolDir) != "" {
-		if absCred, err := filepath.Abs(c.CredentialFile); err == nil {
-			if absSpool, err := filepath.Abs(c.SpoolDir); err == nil && withinDir(absSpool, absCred) {
-				return errors.New("--credential-file must not be inside --spool-dir: a credential beside the spool it shares a key with is not sealing at rest")
-			}
-		}
-	}
-	if c.BackoffBase <= 0 {
-		return errors.New("--backoff-base must be positive")
-	}
-	if c.BackoffCap <= 0 {
-		return errors.New("--backoff-cap must be positive")
-	}
-	if c.BackoffBase > c.BackoffCap {
-		return fmt.Errorf("--backoff-base %s exceeds --backoff-cap %s", c.BackoffBase, c.BackoffCap)
-	}
-	return nil
-}
+// usage is the help text for --help.
+func usage(w io.Writer) {
+	fmt.Fprint(w, `usage: capture-core --config-file FILE [--config-file FILE ...] [flags]
+       capture-core --print-config --config-file FILE ...
+       capture-core --version
 
-// withinDir reports whether path is inside dir (or equal to it), comparing cleaned absolute paths.
-func withinDir(dir, path string) bool {
-	dir = filepath.Clean(dir)
-	path = filepath.Clean(path)
-	if strings.EqualFold(dir, path) {
-		return true
-	}
-	rel, err := filepath.Rel(dir, path)
-	if err != nil {
-		return false
-	}
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
-}
+Runs the Shadow AI Capture agent. Under the Windows Service Control Manager it runs as the
+ShadowAICapture service; elsewhere it runs in the foreground until SIGINT or SIGTERM. Started by a
+browser as a native-messaging host (with a chrome-extension:// origin argument), it relays the
+browser's messages to the running service.
 
-// resolvedPolicy is the bundle as the agent will enforce it, plus the resolution of the modes an
-// operator asks about in --print-config.
-type resolvedPolicy struct {
-	store   *policy.Store
-	bundle  *policy.Bundle
-	result  policy.Result
-	loadErr error
-}
-
-// loadPolicy verifies the bundle at path and puts it in force. A failure is not fatal: §13.3 keeps
-// the previous bundle (there is none on a fresh start) and falls to M0, which is a reduction in
-// capability and is reported rather than hidden.
-func loadPolicy(cfg Config, refs policy.ArtefactResolver) (*policy.Store, policy.Result, error) {
-	pub, err := hex.DecodeString(strings.TrimSpace(cfg.PolicyKey))
-	if err != nil {
-		return nil, policy.Result{}, fmt.Errorf("decoding --policy-key: %w", err)
-	}
-	verifier, err := policy.NewVerifier(cfg.PolicyKeyID, pub)
-	if err != nil {
-		return nil, policy.Result{}, err
-	}
-	store, err := policy.NewStore(verifier, refs)
-	if err != nil {
-		return nil, policy.Result{}, err
-	}
-	raw, err := os.ReadFile(cfg.BundlePath)
-	if err != nil {
-		return nil, policy.Result{}, fmt.Errorf("reading bundle: %w", err)
-	}
-	return store, store.Apply(raw), nil
-}
-
-// spoolBounds maps the profile flag onto the spool's bound. The default is §12's A16 shape
-// (~25 MB / ~25,000 rows); "dev" is deliberately small so a local run reaches the bound and shows
-// drop-oldest rather than pretending the bound does not exist.
-func spoolBounds(profile string) (int64, int) {
-	switch profile {
-	case "dev":
-		return 1 << 20, 200
-	default:
-		return 25 << 20, 25000
-	}
-}
-
-// stateDir is where the agent keeps what it fetches or generates for itself, or empty when there
-// is nowhere: --state-dir, else the directory the sealed credential lives in.
-func (c Config) stateDir() string {
-	if d := strings.TrimSpace(c.StateDir); d != "" {
-		return d
-	}
-	if strings.TrimSpace(c.DeviceEndpoint) != "" && strings.TrimSpace(c.CredentialFile) != "" {
-		return filepath.Dir(c.CredentialFile)
-	}
-	return ""
-}
-
-// fetchesPolicy reports whether the bundle comes from GET /v1/policy: no --bundle is configured, a
-// pinned key can verify what is fetched, and there is an endpoint to fetch from. A device with no
-// key never fetches, because it could not verify the answer, and stays at M0.
-func (c Config) fetchesPolicy() bool {
-	return c.BundlePath == "" && strings.TrimSpace(c.PolicyKey) != "" && strings.TrimSpace(c.DeviceEndpoint) != ""
-}
-
-// generatesDeviceCA reports whether the per-device CA is the agent's own: something must trust the
-// interception root (the OS store or the CLI shim) and no CA pair is configured. The pair is then
-// generated on first start under the state directory and reused, so the trusted root survives a
-// restart and its key never leaves the device.
-func (c Config) generatesDeviceCA() bool {
-	return (c.TrustInstall || c.CLIShim) && c.CACertFile == "" && c.CAKeyFile == "" && c.stateDir() != ""
-}
-
-// identity is the local run's envelope identity: the flags, with the configured person. A drain
-// run's identity is the issued one, installed by the service once enrolment resolves it.
-func (c Config) identity() core.Identity {
-	userRef := c.UserRef
-	if strings.TrimSpace(userRef) == "" {
-		userRef = unattributedUserRef
-	}
-	subject := ""
-	if c.deviceIdentityMode() == protocol.DeviceIdentityClear {
-		subject = strings.TrimSpace(c.SubjectName)
-	}
-	return core.Identity{TenantID: c.TenantID, DeviceID: c.DeviceID, UserRef: userRef, SubjectName: subject}
-}
-
-// unattributedUserRef is the user_ref of an observation no person can be named for: nobody is at
-// the console, or the tenant has not issued the key a person's reference is derived under. The
-// envelope requires a user_ref, and this one is visibly not a person's (a derived one is "u_…").
-const unattributedUserRef = "unattributed"
-
-// deviceIdentityMode is the setting the device acts on, defaulting to 'clear' (the product default)
-// when nothing configured one. Anything other than the exact 'hashed' value is treated as clear and
-// the server corrects it on the next response.
-func (c Config) deviceIdentityMode() protocol.DeviceIdentity {
-	if strings.TrimSpace(c.DeviceIdentity) == string(protocol.DeviceIdentityHashed) {
-		return protocol.DeviceIdentityHashed
-	}
-	return protocol.DeviceIdentityClear
-}
-
-// resolvedHostname is the clear machine name: the configured value, else the OS hostname, else
-// empty. Empty is reported as absent and never as a placeholder.
-func (c Config) resolvedHostname() string {
-	if h := strings.TrimSpace(c.Hostname); h != "" {
-		return h
-	}
-	if h, err := os.Hostname(); err == nil {
-		return strings.TrimSpace(h)
-	}
-	return ""
-}
-
-// clearHostname is the machine name to send, or empty when the device-identity setting is 'hashed'
-// (ADR 0021).
-func (c Config) clearHostname() string {
-	if c.deviceIdentityMode() != protocol.DeviceIdentityClear {
-		return ""
-	}
-	return c.resolvedHostname()
-}
-
-// hostnameHash is the hashed machine name to send when the device-identity setting is 'hashed'.
-// Lowercased before hashing so two spellings of one machine collapse, and prefixed like every other
-// digest in the system. Empty when the setting is 'clear' or no hostname could be resolved.
-func (c Config) hostnameHash() string {
-	if c.deviceIdentityMode() != protocol.DeviceIdentityHashed {
-		return ""
-	}
-	h := c.resolvedHostname()
-	if h == "" {
-		return ""
-	}
-	sum := sha256.Sum256([]byte(strings.ToLower(h)))
-	return "sha256:" + hex.EncodeToString(sum[:])
-}
-
-// managedState is the configured report, else 'unknown': without an MDM finding nobody established
-// that the device is unmanaged. The service reports 'managed' instead when it finds an Intune
-// enrolment (resolvedManagedState).
-func (c Config) managedState() protocol.ManagedState {
-	if m := protocol.ManagedState(strings.TrimSpace(c.ManagedState)); m.Valid() {
-		return m
-	}
-	return protocol.ManagedStateUnknown
-}
-
-// resolvedManagedState is what the device reports: a configured value wins (an operator who knows
-// better), else 'managed' when the operating system shows an Intune enrolment, else 'unknown' — the
-// absence of Intune is not evidence of no management (ConfigMgr, GPO or another MDM may manage it).
-func (c Config) resolvedManagedState(intuneEnrolled bool) protocol.ManagedState {
-	if m := protocol.ManagedState(strings.TrimSpace(c.ManagedState)); m.Valid() {
-		return m
-	}
-	if intuneEnrolled {
-		return protocol.ManagedStateManaged
-	}
-	return protocol.ManagedStateUnknown
-}
-
-// scopeQuery is the construction-time scope query a provider carries. The pipeline replaces its
-// device and user with the resolved identity at resolution time, so only the configured values
-// belong here.
-func (c Config) scopeQuery(tool string) core.ScopeQuery {
-	q := core.ScopeQuery{
-		ToolFingerprint: tool,
-		Population:      c.Population,
-		DeviceID:        c.DeviceID,
-		UserRef:         c.UserRef,
-	}
-	if c.deviceIdentityMode() == protocol.DeviceIdentityClear {
-		q.SubjectName = strings.TrimSpace(c.SubjectName)
-	}
-	return q
-}
-
-// classifierAddress parses "transport:path" into the address device/protocol expects. It is
-// deliberately explicit about the transport: the frame format is identical on both, but a wrong
-// choice fails at connect time rather than silently talking to nothing.
-func classifierAddress(s string) (classifierlinkAddress, error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return classifierlinkAddress{}, errNoClassifierAddress
-	}
-	for _, transport := range []string{"unix:", "pipe:", "tcp:"} {
-		if strings.HasPrefix(s, transport) {
-			return classifierlinkAddress{Network: strings.TrimSuffix(transport, ":"), Path: strings.TrimPrefix(s, transport)}, nil
-		}
-	}
-	return classifierlinkAddress{}, fmt.Errorf("--classifier-address %q: expected unix:PATH, pipe:NAME or tcp:127.0.0.1:PORT (loopback only)", s)
-}
-
-var errNoClassifierAddress = errors.New("no classifier address configured")
-
-// classifierHostExe is the classifier host the installer lays down beside this binary.
-func classifierHostExe() string {
-	name := "classifier-host"
-	if runtime.GOOS == "windows" {
-		name += ".exe"
-	}
-	self, err := os.Executable()
-	if err != nil {
-		return name
-	}
-	return filepath.Join(filepath.Dir(self), name)
-}
-
-// workDirFor returns the selftest's work directory, resolved against the process's working
-// directory so it never lands in a system temp path the sandbox may deny.
-// workDirFor returns the selftest's work directory. It never writes into the source tree by default:
-// a run artifact inside the repository is a file somebody commits by accident (which happened once,
-// with a spool key in it). Candidates are tried in order and the first writable one wins, because a
-// sandbox can deny the system temp directory while allowing a workspace-scoped one.
-func workDirFor(cfg Config) (string, error) {
-	if strings.TrimSpace(cfg.WorkDir) != "" {
-		return filepath.Abs(cfg.WorkDir)
-	}
-	candidates := []string{
-		filepath.Join(os.TempDir(), "capture-core-selftest"),
-		// The repository's own ignored scratch directory: present in .gitignore by policy, so even a
-		// hard-killed run cannot leave something a person is tempted to commit.
-		filepath.Join(repoRootGuess(), ".tools", "tmp", "capture-core-selftest"),
-		// The harness's workspace temp directory, when it has pointed TMP/TEMP here.
-		filepath.Join(repoRootGuess(), ".testtmp", "capture-core-selftest"),
-		filepath.Join(".", ".selftest"), // last resort: gitignored, and removed on exit either way
-	}
-	var lastErr error
-	for _, candidate := range candidates {
-		if err := probeWritable(candidate); err != nil {
-			lastErr = err
-			continue
-		}
-		return filepath.Abs(candidate)
-	}
-	return "", fmt.Errorf("no writable work directory (last error: %w); pass --work-dir", lastErr)
-}
-
-// probeWritable creates the directory and a file in it, so the selftest discovers an unwritable
-// location before it has started a service rather than half-way through one.
-func probeWritable(dir string) error {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	f, err := os.CreateTemp(dir, "probe-*")
-	if err != nil {
-		return err
-	}
-	name := f.Name()
-	_ = f.Close()
-	_ = os.Remove(name)
-	return nil
-}
-
-// repoRootGuess walks up from the working directory looking for the repository markers the build
-// environment uses (.tools, .git). It returns "." when it finds neither, which keeps the candidate
-// list honest rather than inventing a path.
-func repoRootGuess() string {
-	dir, err := os.Getwd()
-	if err != nil {
-		return "."
-	}
-	for i := 0; i < 6; i++ {
-		for _, marker := range []string{".tools", ".git"} {
-			if st, err := os.Stat(filepath.Join(dir, marker)); err == nil && st.IsDir() {
-				return dir
-			}
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
-	}
-	return "."
-}
-
-// describeMode renders a resolved mode and the axes that produced it, so --print-config can explain
-// an over-restriction instead of just stating it (§11.1's visibility requirement).
-func describeMode(res core.Resolution) string {
-	parts := make([]string, 0, len(res.Contributions))
-	for _, c := range res.Contributions {
-		key := c.Axis
-		if c.Key != "" {
-			key += "=" + c.Key
-		}
-		parts = append(parts, fmt.Sprintf("%s:%s", key, c.Mode))
-	}
-	out := string(res.Mode)
-	if len(parts) > 0 {
-		out += " (" + strings.Join(parts, ", ") + ")"
-	}
-	if len(res.Reasons) > 0 {
-		out += " reasons=" + strings.Join(res.Reasons, ",")
-	}
-	return out
-}
-
-func modeOfTool(b *policy.Bundle, q core.ScopeQuery) core.Resolution {
-	return core.Resolve(b, q)
-}
-
-// printConfig resolves everything and prints it. It starts nothing: this is the "what would this
-// agent do" question answered without side effects.
-func printConfig(cfg Config, logger loggerLike) error {
-	fmt.Printf("capture-core %s\n", version)
-	// The flags are the identity only for a local/offline run. With a drain configured the sealed
-	// credential (or a bounded enrolment) is authoritative and the flags are a validated assertion.
-	identitySource := "local"
-	if strings.TrimSpace(cfg.DeviceEndpoint) != "" {
-		identitySource = "credential"
-	}
-	fmt.Printf("identity:        tenant=%s device=%s user=%s population=%q source=%s\n", cfg.TenantID, cfg.DeviceID, cfg.UserRef, cfg.Population, identitySource)
-	fmt.Printf("spool:           dir=%s key=%s bounds=%s retention=%s\n", cfg.SpoolDir, cfg.SpoolKey, cfg.SpoolBoundsProfile, cfg.Retention)
-
-	var inForce *policy.Bundle
-	if cfg.fetchesPolicy() {
-		cache := policyCache{dir: filepath.Join(cfg.stateDir(), policyCacheDir)}
-		state := "none cached yet -> M0 until the first verified fetch"
-		if raw, _, err := cache.load(); err == nil && len(raw) > 0 {
-			state = fmt.Sprintf("cached at %s (verified again at start)", cache.bundlePath())
-		}
-		fmt.Printf("policy:          fetched from GET /v1/policy after enrolment, verified under key-id=%s; %s\n", cfg.PolicyKeyID, state)
-	} else if cfg.BundlePath == "" {
-		fmt.Printf("policy:          no bundle configured -> M0 (metadata only, no content read; §13.3 rule 5)\n")
-		if strings.TrimSpace(cfg.DeviceEndpoint) != "" {
-			fmt.Printf("policy:          GET /v1/policy is not polled: no --policy-key to verify a fetched bundle with\n")
-		}
-	} else {
-		store, result, err := loadPolicy(cfg, policy.ArtefactResolverFunc(func(policy.ArtefactRef) error { return nil }))
-		if err != nil {
-			fmt.Printf("policy:          FAILED to load: %v\n", err)
-			return err
-		}
-		fmt.Printf("policy:          bundle=%s key-id=%s outcome=%s cause=%q severity=%s\n", cfg.BundlePath, cfg.PolicyKeyID, result.Outcome, result.Cause, result.Severity)
-		if result.Err != nil {
-			fmt.Printf("policy error:    %v\n", result.Err)
-		}
-		if b := store.InForce(); b != nil {
-			inForce = b
-			fmt.Printf("policy version:  %s effective_at=%s actor=%s\n", b.Version, b.EffectiveAt.UTC().Format(time.RFC3339), b.Actor)
-			fmt.Printf("tenant default:  %s\n", b.TenantDefault)
-			fmt.Printf("classifier:      release=%s state=%s\n", b.Classifier.ReleaseID, b.Classifier.State)
-			if b.RequiredNoticeVersion != "" {
-				fmt.Printf("notice gate:     required version %s (users without it resolve to M0)\n", b.RequiredNoticeVersion)
-			}
-			for _, ks := range b.KillSwitches {
-				fmt.Printf("kill switch:     provider=%s mode=%s reason=%s effective_at=%s\n", ks.Provider, ks.Mode, ks.ReasonCode, ks.EffectiveAt.UTC().Format(time.RFC3339))
-			}
-			fmt.Printf("interception:    tenant hosts=%v seed hosts=%v ports=%v body cap=%d promotion window=%ds\n",
-				b.Interception.TenantHosts, b.Interception.SeedHosts, b.Interception.Ports, b.Interception.BodyCapBytes, b.Interception.PromotionWindowSeconds)
-			for _, p := range b.Loopback.Ports {
-				fmt.Printf("loopback port:   tool=%s holds=%d upstream=%d preflight=%s mode=%s\n", p.ToolFingerprint, p.Port, p.UpstreamPort, p.PreflightPath, p.Mode)
-			}
-			fmt.Printf("proc.detect:     signature version=%q image sigs=%d module sigs=%d port map=%d min compute=%d\n",
-				b.ProcDetect.SignatureVersion, len(b.ProcDetect.ImageSignatures), len(b.ProcDetect.ModuleSignatures), len(b.ProcDetect.PortMap), b.ProcDetect.MinComputePermille)
-			fmt.Printf("spool bounds:    max bytes=%d max rows=%d retention hours=%d\n", b.Spool.MaxBytes, b.Spool.MaxRows, b.Spool.DeviceRetentionHours)
-			for _, a := range b.Artefacts {
-				fmt.Printf("artefact:        %s path=%s digest=%s\n", a.Name, a.Path, a.Digest)
-			}
-			tools := map[string]bool{}
-			for tool := range b.ToolModes {
-				tools[tool] = true
-			}
-			for tool := range b.ClassPriors {
-				tools[tool] = true
-			}
-			for tool := range tools {
-				fmt.Printf("effective mode:  %-32s %s\n", tool, describeMode(modeOfTool(b, cfg.scopeQuery(tool))))
-			}
-		}
-	}
-
-	if cfg.ClassifierAddress == "" && cfg.ClassifierRelease != "" {
-		fmt.Printf("classifier host: child on stdio exe=%s release=%s budget=%s\n", classifierHostExe(), cfg.ClassifierRelease, cfg.ClassifierBudget)
-	} else if cfg.ClassifierAddress == "" {
-		fmt.Printf("classifier host: none configured -> rules-only with confidence=degraded (§3.4)\n")
-	} else {
-		addr, err := classifierAddress(cfg.ClassifierAddress)
-		if err != nil {
-			fmt.Printf("classifier host: INVALID: %v\n", err)
-		} else {
-			fmt.Printf("classifier host: transport=%s path=%s budget=%s\n", addr.Network, addr.Path, cfg.ClassifierBudget)
-		}
-	}
-
-	fmt.Printf("providers:       proxy.tls=%v (listen %s, canary %q) proxy.loopback=%v proc.detect=%v\n",
-		cfg.EnableTLS, tlsListen(cfg, inForce), tlsCanary(cfg, inForce), cfg.EnableLoopback, cfg.EnableProcDetect)
-	if cfg.generatesDeviceCA() {
-		dir := filepath.Join(cfg.stateDir(), deviceCADir)
-		state := "generated on first start"
-		if _, err := os.Stat(filepath.Join(dir, deviceCACertFile)); err == nil {
-			state = "present (reused)"
-		}
-		fmt.Printf("device CA:       per-device, kept in %s, key readable by SYSTEM and Administrators only: %s\n", dir, state)
-	}
-	if cfg.TrustInstall {
-		fmt.Printf("trust:           install=true store=%s remove_on_stop=%v ca_cert=%q ca_key=%q\n",
-			cfg.TrustStore, cfg.TrustRemoveOnStop, cfg.CACertFile, cfg.CAKeyFile)
-	} else {
-		fmt.Printf("trust:           install=false (the OS trust store is not touched; §5.2)\n")
-	}
-	fmt.Printf("cli.shim:        enabled=%v dir=%q\n", cfg.CLIShim, cfg.ShimDir)
-	if !cfg.EnableProcDetect {
-		fmt.Printf("named gap:       proc.detect is not started; the route has no coverage row and §4.4 detection does not run\n")
-	}
-	fmt.Printf("native messaging: 4-byte little-endian length prefix on stdin/stdout (Chromium's framing, NOT protocol's local-socket framing)\n")
-	fmt.Printf("health channel:  file=%q interval=%s\n", cfg.HealthFile, cfg.HealthInterval)
-	if strings.TrimSpace(cfg.DeviceEndpoint) == "" {
-		fmt.Printf("device drain:    disabled (no --device-endpoint); the shutdown drain reports what is still spooled\n")
-	} else {
-		fmt.Printf("device drain:    endpoint=%s auth=%s credential=%q ca=%q backoff=%s..%s\n",
-			cfg.DeviceEndpoint, cfg.AuthMode, cfg.CredentialFile, cfg.CAFile, cfg.BackoffBase, cfg.BackoffCap)
-		bootstrap := "none (a sealed credential must already exist)"
-		switch {
-		case strings.TrimSpace(cfg.DeploymentKey) != "":
-			bootstrap = "the tenant's deployment key (set; not printed)"
-		case strings.TrimSpace(cfg.EnrolmentToken) != "":
-			bootstrap = "a single-use enrolment token (set; not printed)"
-		}
-		fmt.Printf("enrolment:       %s\n", bootstrap)
-		facts := collectHostFacts()
-		fmt.Printf("attestation:     intune_device_id=%q entra_device_id=%q serial_number=%q managed_state=%s\n",
-			facts.Attestation.IntuneDeviceID, facts.Attestation.EntraDeviceID, facts.Attestation.SerialNumber, cfg.resolvedManagedState(facts.Managed()))
-		for _, n := range facts.Notes {
-			fmt.Printf("attestation:     note: %s\n", n)
-		}
-	}
-	if strings.TrimSpace(cfg.UserRef) != "" {
-		fmt.Printf("user_ref:        configured (%s); wins over the console user\n", cfg.UserRef)
-	} else {
-		fmt.Printf("user_ref:        derived from the console user (upn, else Entra object id, else DOMAIN\\user) under the tenant's key from enrolment; %q when nobody is signed in\n", unattributedUserRef)
-	}
-	fmt.Printf("local content:   M3 content store is not configured on this host; an M3 observation is refused rather than emitted without its content\n")
-	_ = logger
-	return nil
-}
-
-// loggerLike is the narrow logging seam the printout path takes, so printConfig can be called from
-// the selftest with the same logger as the service.
-type loggerLike interface{ Printf(string, ...any) }
-
-// classifierlinkAddress mirrors classifierlink.Address without importing it into config.go's
-// surface: the binary parses the string once, in one place.
-type classifierlinkAddress struct {
-	Network string
-	Path    string
-}
-
-// healthReportShape documents the wire shape the health channel uses, so --print-config can state
-// it and the selftest can assert it.
-func healthReportShape() string {
-	return "protocol.HealthReport rows (device_id, collector, state, detail, last_success_at, since, counters[7], version) plus spool stats"
+Configuration keys (files and flags):
+  SAC_STATE_DIR          --state-dir          protected state directory (required)
+  SAC_TENANT_ID          --tenant-id          tenant id (required, tenant file)
+  SAC_DEVICE_ENDPOINT    --device-endpoint    device edge base URL (required, tenant file)
+  SAC_DEPLOYMENT_KEY     --deployment-key     tenant deployment key (tenant file)
+  SAC_CA_FILE            --ca-file            extra CA trusted for the device endpoint
+  SAC_POLICY_KEY         --policy-key         Ed25519 policy verification key (hex)
+  SAC_POLICY_KEY_ID      --policy-key-id      policy key id (default policy-key-1)
+  SAC_CLASSIFIER_RELEASE --classifier-release signed classifier release directory
+  SAC_CLASSIFIER_PUBKEY  --classifier-pubkey  Ed25519 classifier release key (hex)
+  SAC_DEVICE_IDENTITY    --device-identity    clear | hashed (default clear)
+  SAC_LOG_LEVEL          --log-level          debug | info | warn | error (default info)
+`)
 }

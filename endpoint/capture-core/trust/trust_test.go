@@ -232,13 +232,13 @@ func TestVerifyLinux(t *testing.T) {
 
 func TestVerifyLinuxUnusableStore(t *testing.T) {
 	der := mustTestCert(t, 5)
-	// A file where a directory is expected makes the store unreadable, which must be an error,
-	// not a silent "not installed".
-	notADir := filepath.Join(t.TempDir(), "file")
-	if err := os.WriteFile(notADir, []byte("x"), 0o644); err != nil {
+	// A directory where the certificate file is expected makes the store unreadable, which must
+	// be an error, not a silent "not installed".
+	certDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(certDir, "ca.crt"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	m := New(Config{OS: OSLinux, CertDir: notADir, Name: "ca"})
+	m := New(Config{OS: OSLinux, CertDir: certDir, Name: "ca"})
 	if _, err := m.Verify(context.Background(), der); err == nil {
 		t.Fatal("verify against an unusable store must return an error")
 	}

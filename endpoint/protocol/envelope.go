@@ -1,30 +1,11 @@
 package protocol
 
 import (
-	"encoding/json"
 	"fmt"
 	"time"
 )
 
-// Envelope is the device-side event record: the contract's deviceSubmission shape,
-// which is the common core with `received_at` forbidden, because a device-supplied
-// receive time would be neither device time nor server time (contract comment on
-// $defs/deviceSubmission; brief §3.6 requires exactly two clocks).
-//
-// The generated types in contracts/generated/go/envelope are the source of field
-// names. This package deliberately keeps the envelope as its JSON representation
-// rather than duplicating the struct: the spool must persist exactly the bytes the
-// device will send, and ingest-api validates the same bytes against the schema. A
-// second Go struct here would be a second source of truth for the wire shape, which
-// is precisely what ADR 0010 exists to prevent.
-//
-// Validation is not performed here. The device validates before emitting, and
-// ingest-api validates again as the one validating write path (ADR 0001). What this
-// package provides is the *shape check* the device uses to avoid spooling something
-// that ingest would certainly reject.
-type Envelope = json.RawMessage
-
-// Kind is the contract's closed kind registry. A new kind is an ADR, not a code change.
+// Kind is the envelope's closed kind registry. A new kind is a contract change.
 type Kind string
 
 const (
@@ -33,15 +14,15 @@ const (
 	KindModelDetection Kind = "model_detection"
 )
 
-// PromptKind is the device's decision about what kind of prompt a captured request is
-// (contract `envelopeCore.prompt_kind`, task 08). It is request-shape metadata, decided on the
-// device from the payload and the text C1 extracted, never from the payload's meaning:
+// PromptKind is the device's decision about what kind of prompt a captured request is. It is
+// request-shape metadata, decided on the device from the payload and the extracted text, never
+// from the payload's meaning:
 //
 //   - PromptKindUser is text a person authored.
 //   - PromptKindClientGenerated is a request the client made for itself — titling, a summary,
 //     telemetry, an injected message — which carries no typed turn.
-//   - PromptKindUnknown is a record whose device could not decide. A device that predates the
-//     field sends nothing, and the read layer treats NULL as unknown.
+//   - PromptKindUnknown is a record whose device could not decide. The read layer treats an
+//     absent value as unknown.
 //
 // The default is PromptKindUser when unsure, so nothing a person typed is hidden.
 type PromptKind string
@@ -64,11 +45,8 @@ func (k PromptKind) Valid() bool {
 	}
 }
 
-// AllPromptKinds is the closed set, for validation and for a read layer that needs to enumerate it.
-var AllPromptKinds = [...]PromptKind{PromptKindUser, PromptKindClientGenerated, PromptKindUnknown}
-
-// Route is the closed collection-route vocabulary. Fidelity ranking per route lives in
-// ref.route_fidelity and decides the winner when two routes observe one submission.
+// Route is the closed collection-route vocabulary. The server ranks routes by fidelity to decide
+// the winner when two routes observe one submission.
 type Route string
 
 const (
@@ -81,10 +59,10 @@ const (
 	RouteCLIShim        Route = "cli.shim"
 )
 
-// CollectionMode is the effective mode resolved on the device from the signed scope
-// matrix, taking the most restrictive applicable value across tool, data class and user
-// population. The mode is applied *before* content is read (docs/01-collectors.md §11.2),
-// so the mode is an input to the content path, never a consequence of it.
+// CollectionMode is the effective mode resolved on the device from the signed scope matrix,
+// taking the most restrictive applicable value across tool, data class and user population. The
+// mode is applied before content is read, so it is an input to the content path, never a
+// consequence of it.
 type CollectionMode string
 
 const (
@@ -94,8 +72,8 @@ const (
 	ModeM3 CollectionMode = "m3" // as M2, plus the content is held locally for grant-bound retrieval.
 )
 
-// readsContent reports whether the mode permits reading the payload at all. M0 does not,
-// and every content path must consult this before touching bytes.
+// ReadsContent reports whether the mode permits reading the payload at all. M0 does not, and
+// every content path consults this before touching bytes.
 func (m CollectionMode) ReadsContent() bool { return m != ModeM0 && m != "" }
 
 // Valid rejects anything outside the closed set rather than defaulting it. A default
@@ -110,9 +88,8 @@ func (m CollectionMode) Valid() bool {
 	}
 }
 
-// Confidence is the classifier confidence band. `degraded` means classification was
-// attempted and did not complete: the explicit signal that a failed classifier is never
-// reported as "no sensitive data found" (contract $defs/envelopeCore.confidence).
+// Confidence is the classifier confidence band. degraded means classification was attempted
+// and did not complete: a failed classifier is never reported as "no sensitive data found".
 type Confidence string
 
 const (
@@ -134,9 +111,8 @@ const (
 	StateTampered CollectorState = "tampered"
 )
 
-// Counter is the closed, small counter set of docs/01-collectors.md §4.3. A provider
-// reports these seven and nothing else: anything richer is the high-cardinality stream
-// problem one level down.
+// Counter is the closed, small per-provider counter set. A provider reports these seven and
+// nothing else: anything richer would turn health into a high-cardinality event stream.
 type Counter string
 
 const (
@@ -157,24 +133,14 @@ var AllCounters = [...]Counter{
 }
 
 // Detail is the closed per-provider detail vocabulary carried as error_code on the health
-// channel, so a coverage report can group by cause without parsing prose.
-//
-// Every value below appears in the document set; a value that appears nowhere and is needed
-// belongs here rather than in a component, because a detail string invented locally is a
-// coverage cause the reporting layer cannot group. The lists:
-//
-//   - proxy and broker states: docs/01-collectors.md §5.4, §5.6, §6.3, §6.4
-//   - proc.detect: §4.4 — enumeration_partial, signature_set_stale
-//   - classifier host: §9.7 — the six "emitted when" reasons degraded is produced
-//   - document parser: §10 — parser_memory, parser_timeout, parser_crash, parser_output_cap
-//   - kill switch: §5.5 — killed
-//   - framing handshake: §3.4 — version_mismatch
+// channel, so a coverage report can group by cause without parsing prose. A cause a component
+// needs is added here rather than invented locally, where the reporting layer could not group it.
 type Detail string
 
 const (
 	DetailNone Detail = ""
 
-	// Proxy and broker (docs/01-collectors.md §5.4, §5.6, §6.3, §6.4)
+	// Proxy and broker.
 	DetailClassifierUnavailable Detail = "classifier_unavailable"
 	DetailSpoolUnwritable       Detail = "spool_unwritable"
 	DetailUpstreamFailure       Detail = "upstream_failure"
@@ -186,28 +152,27 @@ const (
 	DetailCoolingDown           Detail = "cooling_down"
 	DetailKilled                Detail = "killed"
 
-	// proc.detect (§4.4)
+	// Process detection.
 	DetailEnumerationPartial Detail = "enumeration_partial"
 	DetailSignatureSetStale  Detail = "signature_set_stale"
 
-	// Classifier host (§9.7's "emitted when" column, in its order)
+	// Classifier host: the reasons a classification is degraded.
 	DetailBudgetExhausted      Detail = "budget_exhausted"      // a stage was skipped because its budget was exhausted
 	DetailModelUnavailable     Detail = "model_unavailable"     // the model artefact was missing, unloadable or failed to verify
 	DetailNormaliseTruncated   Detail = "normalise_truncated"   // normalisation truncated the payload so a rule could not see all of it
-	DetailParserFailed         Detail = "parser_failed"         // the document parser failed, timed out or was killed (§10; see the specific codes below)
+	DetailParserFailed         Detail = "parser_failed"         // the document parser failed, timed out or was killed (see the specific codes below)
 	DetailContentUnprocessable Detail = "content_unprocessable" // over-cap body or undecodable bytes handed over by a provider
 	DetailHostUnreachable      Detail = "host_unreachable"      // the host was unreachable and the event was emitted unclassified
 	DetailReleaseLoadFailed    Detail = "release_load_failed"   // a release failed to load and rules-only labels came from the retained release
 
-	// Document parser (§10) — the specific causes behind DetailParserFailed
+	// Document parser: the specific causes behind DetailParserFailed.
 	DetailParserMemory    Detail = "parser_memory"
 	DetailParserTimeout   Detail = "parser_timeout"
 	DetailParserCrash     Detail = "parser_crash"
 	DetailParserOutputCap Detail = "parser_output_cap"
 
-	// Policy bundle verification failure (docs/01-collectors.md §13.3 rule 4). These are the four
-	// causes behind the `tampered` state a policy-verification failure produces, and C10's "less
-	// inspection, silently" failure mode: naming the cause is what makes the signal actionable.
+	// Policy bundle verification failure: the four causes behind the tampered state a refused
+	// bundle produces. Naming the cause is what makes the signal actionable.
 	DetailBundleSignatureInvalid  Detail = "bundle_signature_invalid"
 	DetailBundleSchemaInvalid     Detail = "bundle_schema_invalid"
 	DetailBundleVersionRegression Detail = "bundle_version_regression"
@@ -221,34 +186,28 @@ const (
 	DetailVersionMismatch Detail = "version_mismatch"
 	DetailModeViolation   Detail = "mode_violation"
 
-	// Enforcement capability (docs/01-collectors.md §7.4, §15.2). An install that holds the
-	// webRequestBlocking permission but was not *granted* it — which is every unpacked load, and
-	// which the browser reports only as a console message — can still observe but cannot cancel a
-	// request. That is a coverage state, and §15.2 forbids a coverage state with no name: a path
-	// that cannot enforce must say so rather than reporting `healthy` while inspection is silently
-	// wider than enforcement.
+	// Enforcement capability. An extension that holds the webRequestBlocking permission but was
+	// not granted it can observe but cannot cancel a request; it says so rather than reporting
+	// healthy while inspection is wider than enforcement.
 	DetailEnforcementUnavailable Detail = "enforcement_unavailable"
 
-	// Device credential (ADR 0020). An x509 leaf past its NotAfter cannot authenticate, and it
-	// cannot be renewed without a fresh enrolment token; naming the cause keeps the drain from
-	// failing silently on a 401 forever.
+	// Device credential. An x509 leaf past its NotAfter cannot authenticate; naming the cause
+	// keeps the drain from failing silently on a 401.
 	DetailCredentialExpired Detail = "credential_expired"
 
-	// Trust/CA installation and the CLI trust shim (docs/01-collectors.md §4.5, §5.2, §14).
-	// Installing the per-device root CA into the wrong store fails silently, so the install and
-	// its verification are separate reportable causes rather than one "ok". The shim's three
-	// checks — profile present, CA bundle parses and carries the root, environment inherited —
-	// each have a name, because a coverage state with no name is what §15.2 forbids.
+	// Trust store installation and the CLI trust shim. Installing the per-device root CA into
+	// the wrong store fails silently, so the install and its verification are separate causes.
+	// The shim's three checks (profile present, CA bundle parses and carries the root,
+	// environment inherited) each have a name.
 	DetailTrustInstallFailed     Detail = "trust_install_failed"
 	DetailTrustVerifyFailed      Detail = "trust_verify_failed"
 	DetailShimProfileMissing     Detail = "shim_profile_missing"
 	DetailShimCABundleUnreadable Detail = "shim_ca_bundle_unreadable"
 	DetailShimNotInherited       Detail = "shim_not_inherited"
 
-	// Identity. A drain-configured device whose credential has not been issued yet must refuse to
-	// mint an envelope rather than stamp a placeholder identity the write path will reject
-	// (tenant_mismatch). The state is named so the coverage row distinguishes "no credential yet"
-	// from "nothing observed".
+	// Identity. A device whose credential has not been issued yet refuses to mint an envelope
+	// rather than stamp a placeholder identity; the state is named so the coverage row
+	// distinguishes "no credential yet" from "nothing observed".
 	DetailIdentityUnresolved Detail = "identity_unresolved"
 )
 
@@ -302,21 +261,14 @@ const (
 	ActionLogged  = "logged"
 )
 
-// AttachmentDescriptor is the manifest entry sent *before* attachment bytes, so that
-// capture-core can refuse an oversized upload before transfer (docs/01-collectors.md §3.4).
-// A filename alone is still a valid descriptor: attachment_names is metadata obtainable at
-// M1 without reading the file at all.
-//
-// Its field names are the contract's `$defs/attachment` names verbatim, `content_digest`
-// included, so the descriptor that crosses native messaging and the descriptor that ends up in
-// an envelope are one shape. That matters because the contract is closed
-// (`additionalProperties: false`): a local `digest` here and a contract `content_digest` there
-// would be a rename waiting to be forgotten, and the first component to forward the descriptor
-// unchanged would emit a record ingest rejects.
+// AttachmentDescriptor describes one attachment. It is the manifest entry the extension sends
+// before attachment bytes, so capture-core can refuse an oversized upload before transfer, and it
+// is the attachment shape the envelope carries: one shape, with the envelope's field names, so a
+// descriptor forwarded unchanged never becomes a record ingest rejects. A file name alone is a
+// valid descriptor.
 type AttachmentDescriptor struct {
-	Name      string `json:"name"`
-	MediaType string `json:"media_type,omitempty"` // not a contract field: the contract records
-	// the name and the bytes-derived fields, and media type is the collector's own hint.
+	Name          string `json:"name"`
+	MediaType     string `json:"media_type,omitempty"`
 	SizeBytes     int64  `json:"size_bytes,omitempty"`
 	ContentDigest string `json:"content_digest,omitempty"` // sha256:<hex>, present only when bytes were read
 }
@@ -345,9 +297,9 @@ type AttachmentComplete struct {
 	Err        string `json:"error,omitempty"`
 }
 
-// MaxAttachmentBytes is the default cap a manifest is checked against before any byte
-// moves. The effective cap is per-tenant policy data (the bundle's mode cap), so this is
-// a ceiling for the transport, not the policy.
+// MaxAttachmentBytes is the transport ceiling the extension checks a file against before it
+// sends a manifest. capture-core may hold less (no more than the classifier can parse) and says
+// so by refusing the manifest with attachment_too_large.
 const MaxAttachmentBytes = 64 << 20
 
 // HealthReport is what a component sends on the health channel. It is carried on
@@ -361,9 +313,9 @@ type HealthReport struct {
 	Since       time.Time          `json:"since"`
 	Counters    map[Counter]uint64 `json:"counters"`
 	Version     string             `json:"version,omitempty"`
-	// Permissions is the per-required-permission state docs/02 §5.4 asks for
-	// (granted | denied | not-applicable). It is not part of the closed counter set: a permission is
-	// a capability an operator must see, not a throughput count.
+	// Permissions is the state of each permission the collector needs (granted | denied |
+	// not-applicable). It is not part of the closed counter set: a permission is a capability an
+	// operator must see, not a throughput count.
 	Permissions map[string]string `json:"permissions,omitempty"`
 }
 

@@ -40,7 +40,7 @@ func TestAppendAssignsSequenceAndPeekReturnsIt(t *testing.T) {
 }
 
 // The payload is opaque and immutable: Peek must hand back exactly the bytes Append was
-// given, before and after a reopen (ADR 0004). The payload here is not JSON at all — the
+// given, before and after a reopen. The payload here is not JSON at all — the
 // spool has no decoder for it, and a payload it could not parse must still round-trip.
 func TestPayloadIsStoredAndReturnedByteForByte(t *testing.T) {
 	dir := t.TempDir()
@@ -175,8 +175,7 @@ func TestSettleFollowsProtocolOutcomeMapping(t *testing.T) {
 	}{
 		{"accepted", protocol.OutcomeAccepted, "", protocol.SpoolDelivered, false},
 		{"duplicate", protocol.OutcomeDuplicate, "", protocol.SpoolDelivered, false},
-		{"rejected terminal", protocol.OutcomeRejected, protocol.ReasonSchemaViolation, protocol.SpoolRejected, false},
-		{"rejected retryable", protocol.OutcomeRejected, protocol.ReasonDuplicateBatch, protocol.SpoolPending, true},
+		{"rejected", protocol.OutcomeRejected, protocol.ReasonSchemaViolation, protocol.SpoolRejected, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -188,7 +187,7 @@ func TestSettleFollowsProtocolOutcomeMapping(t *testing.T) {
 			if err := sp.MarkInFlight([]uint64{e.Seq}); err != nil {
 				t.Fatalf("MarkInFlight: %v", err)
 			}
-			state, terminal := tc.outcome.SettleState(tc.reason)
+			state, terminal := tc.outcome.SettleState()
 			if state != tc.wantState || terminal == tc.wantRetry {
 				t.Fatalf("Outcome.SettleState = (%q, %v)", state, terminal)
 			}
@@ -269,7 +268,7 @@ func TestReopenKeepsSequenceOrderAndDepth(t *testing.T) {
 }
 
 // Retention expiry is counted separately from an overflow drop: different failures, different
-// fixes (§12.2).
+// fixes.
 func TestExpireIsCountedSeparatelyFromDrops(t *testing.T) {
 	sp := openTest(t, t.TempDir())
 	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
@@ -316,7 +315,7 @@ func TestExpireIsCountedSeparatelyFromDrops(t *testing.T) {
 }
 
 // Append-only: a delivered observation is never rewritten. Every byte that was on disk
-// before the delivery is still on disk, at the same offset, afterwards (§12, ADR 0004).
+// before the delivery is still on disk, at the same offset, afterwards.
 func TestDeliveredRecordsAreNeverRewritten(t *testing.T) {
 	dir := t.TempDir()
 	sp := openTest(t, dir)
@@ -400,7 +399,7 @@ func TestDrainCycleThroughTheStoreInterface(t *testing.T) {
 		{protocol.OutcomeRejected, protocol.ReasonModeViolation},
 	}
 	for i, o := range outcomes {
-		state, _ := o.outcome.SettleState(o.reason)
+		state, _ := o.outcome.SettleState()
 		if err := st.Settle(seqs[i], state, string(o.reason)); err != nil {
 			t.Fatalf("Settle(%s): %v", o.outcome, err)
 		}
@@ -426,9 +425,6 @@ func TestStatsExposeDepthAndDropCounter(t *testing.T) {
 	}
 	if st.DroppedTotal != 0 {
 		t.Fatalf("SpoolStats.DroppedTotal = %d, want 0", st.DroppedTotal)
-	}
-	if st.EncryptionKeySealed {
-		t.Fatal("EncryptionKeySealed is true for an in-memory key; the field must report the truth")
 	}
 	if st.BoundBytes != DefaultBounds().MaxBytes {
 		t.Fatalf("BoundBytes = %d, want the default %d", st.BoundBytes, DefaultBounds().MaxBytes)

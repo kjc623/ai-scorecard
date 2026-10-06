@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// docs/02-ingest-and-transport.md §5.4: a health report is a keyed upsert of current state, not an
+// A health report is a keyed upsert of current state, not an
 // event. These tests pin the two properties the wire type must hold: the server can tell a valid
 // report from an invalid one, and the counters map is the closed seven even when the device omits
 // some.
@@ -48,8 +48,8 @@ func TestHealthRequestValidate(t *testing.T) {
 	}
 }
 
-// The closed counter set is the mechanism that stops a provider inventing a high-cardinality metric
-// (docs/01-collectors.md §4.3, A15). A report that carries all seven is the shape; a report that
+// The closed counter set is the mechanism that stops a provider inventing a high-cardinality
+// metric. A report that carries all seven is the shape; a report that
 // omits one is not confused with one that is genuinely zero because the reader fills the set.
 func TestNewHealthReportCarriesTheClosedCounters(t *testing.T) {
 	rep := NewHealthReport("d", "egress_proxy", "1", time.Now())

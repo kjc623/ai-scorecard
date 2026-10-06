@@ -23,12 +23,12 @@ type nopLogger struct{}
 
 func (nopLogger) Printf(string, ...any) {}
 
-// Registry owns the provider set. It starts providers concurrently (§4.1: one failure
-// degrades one coverage row and nothing else) and is the single place that decides what a
+// Registry owns the provider set. It starts providers concurrently (one failure degrades one
+// coverage row and nothing else) and is the single place that decides what a
 // provider's health row is allowed to say.
 //
 // The registry never restarts a provider. A crash-loop policy is a supervisor decision
-// (§3.5), and keeping it out of the registry is what makes "which provider is running" one
+// , and keeping it out of the registry is what makes "which provider is running" one
 // question with one answer.
 type Registry struct {
 	mu        sync.Mutex
@@ -115,7 +115,7 @@ type StartResult struct {
 
 // StartAll starts every registered provider concurrently and waits for all of them. One
 // failure does not stop the rest: a provider failure degrades one coverage row and nothing
-// else (master §3, Alternative B).
+// else.
 //
 // A panic inside a provider's Start is recovered and converted into that provider's failure,
 // because a provider that can panic the registry can degrade every row at once.
@@ -137,9 +137,8 @@ func (r *Registry) StartAll(ctx context.Context) []StartResult {
 	return results
 }
 
-// StartRoute starts one provider, for the §3.5 ordering dependencies that forbid a blanket
-// concurrent start (the broker binds last; the system proxy is pointed at the proxy only
-// once it is listening).
+// StartRoute starts one provider, for the ordering dependencies that forbid a blanket
+// concurrent start (the loopback broker binds last).
 func (r *Registry) StartRoute(ctx context.Context, route protocol.Route) StartResult {
 	return r.startOne(ctx, route)
 }
@@ -198,7 +197,7 @@ type StopResult struct {
 
 // StopAll stops every provider concurrently. It never returns an error to the caller: Stop
 // never fails visibly, the error is logged and the provider reported `tampered`, because
-// interference is evidence and shutdown must not deadlock on it (§4.1).
+// interference is evidence and shutdown must not deadlock on it.
 func (r *Registry) StopAll(ctx context.Context) []StopResult {
 	r.mu.Lock()
 	routes := append([]protocol.Route(nil), r.order...)
@@ -252,8 +251,8 @@ func (r *Registry) StopRoute(ctx context.Context, route protocol.Route) (res Sto
 }
 
 // ApplyResults reports per-provider policy application. A provider that cannot apply a diff
-// keeps its previous behaviour and reports it; the registry does not restart it (§4.1: apply
-// is a diff, never a restart).
+// keeps its previous behaviour and reports it; the registry does not restart it (applying
+// policy is a diff, never a restart).
 type ApplyResult struct {
 	Route protocol.Route
 	Err   error
@@ -278,7 +277,7 @@ func (r *Registry) ApplyPolicy(b policy.Bundle) []ApplyResult {
 // bookkeeping applied. The overrides are the point:
 //
 //   - a provider that never started, or failed to start, is `absent` regardless of what it
-//     claims — no provider may fail into a state that reports success (C25);
+//     claims — no provider may fail into a state that reports success;
 //   - a provider whose Stop failed is `tampered` (interference is evidence);
 //   - a provider that was stopped can never be `healthy` again;
 //   - a row whose state or counters are outside the closed vocabularies is reported as
@@ -376,8 +375,7 @@ func sanitise(h Health) Health {
 // `tampered` signal because its cause name is unknown to the reporting layer would be worse
 // than sending a cause the server records as unknown, and the cause is what an operator needs
 // to attribute a coverage cliff. The validation error is returned so the caller logs it, and
-// the row still goes. (The four §13.3 policy causes are not in protocol.AllDetails today;
-// that gap is raised with the protocol owner rather than papered over here.)
+// the row still goes.
 func (r *Registry) Reports(deviceID, version string) ([]protocol.HealthReport, []error) {
 	rows := r.Health()
 	reports := make([]protocol.HealthReport, 0, len(rows))

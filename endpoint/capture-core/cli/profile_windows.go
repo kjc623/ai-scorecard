@@ -9,11 +9,13 @@ import (
 	"github.com/shadow-ai-capture/device/protocol"
 )
 
-// defaultManagedDir is the machine-scope directory for the shim's files.
-func defaultManagedDir() string { return `C:\ProgramData\shadow-ai-capture` }
+// defaultManagedDir is the shim's directory: cli beneath the product's ProgramData folder, which
+// the installer makes readable by users (the state and profile folders beside it are not). It has
+// no spaces, because NODE_OPTIONS splits the bootstrap path on whitespace.
+func defaultManagedDir() string { return `C:\ProgramData\ShadowAICapture\cli` }
 
 // defaultProfilePath is the batch profile inside ManagedDir; the machine environment is
-// what Windows shells actually inherit, set via `setx /M` below (§14.1).
+// what Windows shells actually inherit, set via `setx /M` below.
 func defaultProfilePath(dir string) string { return filepath.Join(dir, "shim.cmd") }
 
 // renderProfile is a batch profile on Windows.

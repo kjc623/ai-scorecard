@@ -125,8 +125,6 @@ func (s *stubContentStore) HeldBytes() int64 {
 	return n
 }
 
-// newTestPipeline installs a normaliser by default, because a pipeline *without* one takes the
-// degraded path (that case has its own test).
 func newTestPipeline(t *testing.T, sink Sink, bundle *policy.Bundle) *Pipeline {
 	t.Helper()
 	p, err := NewPipeline(sink, func() time.Time { return time.Unix(1_700_000_100, 0) }, func() string { return "11111111-2222-4333-8444-555555555555" })
@@ -135,7 +133,6 @@ func newTestPipeline(t *testing.T, sink Sink, bundle *policy.Bundle) *Pipeline {
 	}
 	p.SetIdentity(Identity{TenantID: "tenant-1", DeviceID: "device-1", UserRef: "user-1"})
 	p.Bundles = func() *policy.Bundle { return bundle }
-	p.Normalizer = dedup.IdentityNFC{}
 	return p
 }
 
@@ -143,8 +140,7 @@ func m0Bundle() *policy.Bundle {
 	return testBundle("b1", protocol.ModeM0, map[string]protocol.CollectionMode{"tool": protocol.ModeM0})
 }
 
-// The tenant default is the tenant-wide permission ceiling (§11.3: the device resolves
-// downward-only), so a bundle that grants a tool M1 states M3 as the default and M1 for the
+// The tenant default is the tenant-wide permission ceiling (the device resolves downward only), so a bundle that grants a tool M1 states M3 as the default and M1 for the
 // tool — which is how a scope entry lowers a mode rather than raising it.
 func m1Bundle() *policy.Bundle {
 	return testBundle("b2", protocol.ModeM3, map[string]protocol.CollectionMode{"tool": protocol.ModeM1})
@@ -253,7 +249,6 @@ func TestPipelineM1ReadsAndCarriesClassifierOutput(t *testing.T) {
 		Confidence:        protocol.ConfidenceHigh,
 	}}
 	p.Classifier = classifier
-	p.Normalizer = dedup.IdentityNFC{}
 
 	out, err := p.Process(context.Background(), Observation{
 		Route:           protocol.RouteProxyTLS,
@@ -403,7 +398,7 @@ func TestPipelineM3HoldsContentLocallyAndCarriesNoExcerpt(t *testing.T) {
 	if string(env["collection_mode"]) != `"m3"` {
 		t.Fatalf("collection_mode = %s", env["collection_mode"])
 	}
-	// ADR 0017: the content-state marker is device-local and never in the envelope.
+	// The content state is device-local and never in the envelope.
 	for _, forbidden := range []string{"content_local", "content_state", "content_held", "local_content"} {
 		if _, ok := env[forbidden]; ok {
 			t.Errorf("M3 envelope carries a device-local marker field %q", forbidden)
@@ -449,8 +444,8 @@ func TestPipelineClassifierUnavailableStillEmitsDegraded(t *testing.T) {
 	}
 }
 
-// §5.4's spool trigger: the request is carried, and the loss is counted at the provider rather
-// than being invisible.
+// A spool failure: the request is carried, and the loss is counted at the provider rather than
+// being invisible.
 func TestPipelineSpoolFailureCountsDroppedAndCarriesTheRequest(t *testing.T) {
 	sink := &recordingSink{err: errors.New("spool full")}
 	p := newTestPipeline(t, sink, m1Bundle())
@@ -480,8 +475,7 @@ func TestPipelineSpoolFailureCountsDroppedAndCarriesTheRequest(t *testing.T) {
 	}
 }
 
-// §5.3: an over-cap body is not held in memory, is sized, is not classified, and is reported
-// as degraded — never as a silent "clean".
+// An over-cap body is not held in memory, is sized, is not classified, and is reported as degraded — never as a silent "clean".
 func TestPipelineOverCapDegradesAndDoesNotClaimACanonicalDigest(t *testing.T) {
 	sink := &recordingSink{}
 	p := newTestPipeline(t, sink, m1Bundle())
@@ -512,13 +506,13 @@ func TestPipelineOverCapDegradesAndDoesNotClaimACanonicalDigest(t *testing.T) {
 	if err := json.Unmarshal(sink.last().Payload, &env); err != nil {
 		t.Fatalf("envelope: %v", err)
 	}
-	// §5.3 records "a digest of the first N bytes" — deliberately not the canonical content
-	// digest, and the key ladder must not claim Tier T for it.
+	// The prefix digest is deliberately not the canonical content digest, and the key must not
+	// claim Tier T for it.
 	digest := unquoted(env["content_digest"])
 	if digest != SHA256Hex([]byte("prefix-only")) {
 		t.Fatalf("content_digest = %q, want the prefix digest %q", digest, SHA256Hex([]byte("prefix-only")))
 	}
-	wantKey, err := dedup.SurrogateKey("tenant-1", "device-1", "tool", string(protocol.KindPrompt), time.Unix(1_700_000_000, 0), 9<<20, nil, p.Normalizer)
+	wantKey, err := dedup.SurrogateKey("tenant-1", "device-1", "tool", string(protocol.KindPrompt), time.Unix(1_700_000_000, 0), 9<<20, nil)
 	if err != nil {
 		t.Fatalf("SurrogateKey: %v", err)
 	}
@@ -527,69 +521,6 @@ func TestPipelineOverCapDegradesAndDoesNotClaimACanonicalDigest(t *testing.T) {
 	}
 	if string(env["confidence"]) != `"degraded"` {
 		t.Fatalf("confidence = %s, want degraded", env["confidence"])
-	}
-}
-
-// C3 (NFC) is normative and feeds dedup_key, so a device that cannot perform it must say so
-// rather than compute an unnormalised digest as if it were `sac-canon-1`: the observable
-// consequence of getting this wrong is two rows for one submission, which is silent.
-func TestPipelineWithoutCanonicaliserIsDegradedAndNeverClaimsTierT(t *testing.T) {
-	sink := &recordingSink{}
-	p := newTestPipeline(t, sink, m1Bundle())
-	p.Normalizer = nil // no C3 implementation installed
-	p.Classifier = &stubClassifier{resp: protocol.ClassifyResponse{
-		Labels:            []protocol.Label{{Class: "source_code", Score: 0.3}},
-		ClassifierVersion: "rel-1",
-		Confidence:        protocol.ConfidenceLow,
-	}}
-	body := []byte("hello")
-	out, err := p.Process(context.Background(), Observation{
-		Route:           protocol.RouteProxyTLS,
-		Kind:            protocol.KindPrompt,
-		ToolFingerprint: "tool",
-		OccurredAt:      time.Unix(1_700_000_000, 0),
-		SizeBytes:       int64(len(body)),
-		Content:         &countingReader{body: body},
-		Decision:        &protocol.Decision{RuleID: "R", Action: protocol.ActionLogged},
-		Extract: ExtractorFunc(func([]byte, string) (string, []dedup.Attachment, error) {
-			return "hello", nil, nil
-		}),
-	})
-	if err != nil {
-		t.Fatalf("Process: %v", err)
-	}
-	if !out.Degraded || out.Reason != ReasonNoCanonicaliser {
-		t.Fatalf("outcome = %+v, want degraded with %s", out, ReasonNoCanonicaliser)
-	}
-	var env map[string]json.RawMessage
-	if err := json.Unmarshal(sink.last().Payload, &env); err != nil {
-		t.Fatalf("envelope: %v", err)
-	}
-	if string(env["confidence"]) != `"degraded"` {
-		t.Fatalf("confidence = %s, want degraded: an unnormalised digest must not be presented as canonical", env["confidence"])
-	}
-	wantKey, err := dedup.SurrogateKey("tenant-1", "device-1", "tool", string(protocol.KindPrompt), time.Unix(1_700_000_000, 0), int64(len(body)), nil, nil)
-	if err != nil {
-		t.Fatalf("SurrogateKey: %v", err)
-	}
-	if sink.last().DedupKey != wantKey {
-		t.Fatalf("dedup key = %q, want the Tier S surrogate %q", sink.last().DedupKey, wantKey)
-	}
-
-	// The negative half of the ruling: the device *has* a digest, and must still not claim the
-	// exact key built from it. If these two ever coincide the premise of §4.5's Tier T has been
-	// asserted for bytes that were never canonically normalised — a silent over-merge whose two
-	// rows the server and the device would count differently (R9).
-	digest := unquoted(env["content_digest"])
-	if digest == "" {
-		t.Fatal("no content_digest was emitted; the schema requires one at M1 and above")
-	}
-	exactKey, err := dedup.ContentKey("tenant-1", "device-1", "tool", string(protocol.KindPrompt), time.Unix(1_700_000_000, 0), digest)
-	if err != nil {
-		t.Fatalf("ContentKey: %v", err)
-	}
-	if sink.last().DedupKey == exactKey {
-		t.Fatal("a non-canonical digest produced the exact Tier T key; the key must claim only what the device can prove")
 	}
 }
 
@@ -619,9 +550,9 @@ func TestPipelineExtractionFailureDegradesToTheSurrogateTier(t *testing.T) {
 	if !out.Degraded || out.Reason != ReasonExtractionDegraded {
 		t.Fatalf("outcome = %+v, want degraded with %s", out, ReasonExtractionDegraded)
 	}
-	// A route that could not identify the authored segment has no canonical text either, so the
-	// key must be the weak one for the same reason the missing-normaliser case is.
-	wantKey, err := dedup.SurrogateKey("tenant-1", "device-1", "tool", string(protocol.KindPrompt), time.Unix(1_700_000_000, 0), 5, nil, dedup.IdentityNFC{})
+	// A route that could not identify the authored text has no canonical text, so the key must be
+	// the weak one: claiming Tier T for a non-canonical digest would silently over-merge.
+	wantKey, err := dedup.SurrogateKey("tenant-1", "device-1", "tool", string(protocol.KindPrompt), time.Unix(1_700_000_000, 0), 5, nil)
 	if err != nil {
 		t.Fatalf("SurrogateKey: %v", err)
 	}
@@ -630,65 +561,92 @@ func TestPipelineExtractionFailureDegradesToTheSurrogateTier(t *testing.T) {
 	}
 }
 
-// TestPipelineSetIdentityAdoptsIssuedIdentity proves the seam the drain uses: before SetIdentity
-// the pipeline stamps the construction-time flags (the fallback when there is no drain), and after
-// SetIdentity it stamps the server-minted identity.
-func TestPipelineSetIdentityAdoptsIssuedIdentity(t *testing.T) {
+// SetIdentity replaces the identity every later envelope carries.
+func TestPipelineSetIdentityReplacesTheIdentity(t *testing.T) {
 	sink := &recordingSink{}
 	p := newTestPipeline(t, sink, m0Bundle())
-
-	processM0 := func() (tenantID, deviceID string) {
-		t.Helper()
-		size := int64(10)
-		out, err := p.Process(context.Background(), Observation{
-			Route:           protocol.RouteProxyTLS,
-			Kind:            protocol.KindPrompt,
-			ToolFingerprint: "tool",
-			OccurredAt:      time.Unix(1_700_000_000, 0),
-			SizeBytes:       size,
-			Decision:        &protocol.Decision{RuleID: "r", Action: protocol.ActionLogged},
-		})
-		if err != nil {
-			t.Fatalf("Process: %v", err)
-		}
-		if !out.Emitted {
-			t.Fatalf("not emitted: %+v", out)
-		}
-		var env struct {
-			TenantID string `json:"tenant_id"`
-			DeviceID string `json:"device_id"`
-		}
-		if err := json.Unmarshal(sink.last().Payload, &env); err != nil {
-			t.Fatalf("envelope: %v", err)
-		}
-		return env.TenantID, env.DeviceID
-	}
-
-	// No drain (no SetIdentity): the flags are the identity.
-	if tenantID, deviceID := processM0(); tenantID != "tenant-1" || deviceID != "device-1" {
-		t.Fatalf("before SetIdentity, envelope identity = (%q, %q), want flags (tenant-1, device-1)", tenantID, deviceID)
-	}
-
-	// Enrolment completes: the issued identity is adopted.
 	p.SetIdentity(Identity{TenantID: "issued-tenant", DeviceID: "issued-device", UserRef: "user-1"})
-	if tenantID, deviceID := processM0(); tenantID != "issued-tenant" || deviceID != "issued-device" {
-		t.Fatalf("after SetIdentity, envelope identity = (%q, %q), want issued (issued-tenant, issued-device)", tenantID, deviceID)
+	if _, err := p.Process(context.Background(), m0Observation()); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	var env struct {
+		TenantID string `json:"tenant_id"`
+		DeviceID string `json:"device_id"`
+	}
+	if err := json.Unmarshal(sink.last().Payload, &env); err != nil {
+		t.Fatalf("envelope: %v", err)
+	}
+	if env.TenantID != "issued-tenant" || env.DeviceID != "issued-device" {
+		t.Fatalf("envelope identity = (%q, %q), want the issued identity", env.TenantID, env.DeviceID)
 	}
 }
 
-// TestPipelineUnresolvedRefusesToMint proves the fail-closed half of §3.5: a pipeline with no
-// resolved identity refuses to mint rather than stamping a placeholder, and resumes once identity is
-// resolved.
+func m0Observation() Observation {
+	return Observation{
+		Route:           protocol.RouteProxyTLS,
+		Kind:            protocol.KindPrompt,
+		ToolFingerprint: "tool",
+		OccurredAt:      time.Unix(1_700_000_000, 0),
+		SizeBytes:       10,
+		Decision:        &protocol.Decision{RuleID: "r", Action: protocol.ActionLogged},
+	}
+}
+
+// A person set on one observation attributes that observation, and only that one.
+func TestPipelinePersonAttributesOneObservation(t *testing.T) {
+	sink := &recordingSink{}
+	p := newTestPipeline(t, sink, m0Bundle())
+	obs := m0Observation()
+	obs.Person = &Person{UserRef: "u_browser", SubjectName: "bob@contoso"}
+	if _, err := p.Process(context.Background(), obs); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	var env struct {
+		UserRef     string `json:"user_ref"`
+		SubjectName string `json:"subject_name"`
+	}
+	if err := json.Unmarshal(sink.last().Payload, &env); err != nil {
+		t.Fatalf("envelope: %v", err)
+	}
+	if env.UserRef != "u_browser" || env.SubjectName != "bob@contoso" {
+		t.Fatalf("envelope person = (%q, %q), want the observation's person", env.UserRef, env.SubjectName)
+	}
+	if _, err := p.Process(context.Background(), m0Observation()); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	env.UserRef, env.SubjectName = "", ""
+	if err := json.Unmarshal(sink.last().Payload, &env); err != nil {
+		t.Fatalf("envelope: %v", err)
+	}
+	if env.UserRef != "user-1" {
+		t.Fatalf("the next observation's user_ref = %q, want the pipeline identity's", env.UserRef)
+	}
+}
+
+// The bundle's device retention, when it states one, sets the spool record's deadline.
+func TestPipelineRetentionComesFromTheBundle(t *testing.T) {
+	sink := &recordingSink{}
+	b := m0Bundle()
+	b.Spool.DeviceRetentionHours = 24
+	p := newTestPipeline(t, sink, b)
+	if _, err := p.Process(context.Background(), m0Observation()); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	want := dedup.BucketStart(time.Unix(1_700_000_000, 0)).Add(24 * time.Hour)
+	if got := sink.last().ExpiresAt; !got.Equal(want) {
+		t.Fatalf("expires_at = %v, want %v", got, want)
+	}
+}
+
+// A pipeline with no issued identity refuses to mint rather than stamping a placeholder, and
+// resumes once enrolment issues one.
 func TestPipelineUnresolvedRefusesToMint(t *testing.T) {
 	sink := &recordingSink{}
 	p, err := NewPipeline(sink, time.Now, func() string { return "evt-1" })
 	if err != nil {
 		t.Fatalf("NewPipeline: %v", err)
 	}
-	p.Normalizer = dedup.IdentityNFC{}
 	p.Bundles = func() *policy.Bundle { return m0Bundle() }
-	// A drain-configured device demands an issued identity.
-	p.RequireIdentity(true)
 
 	obs := Observation{
 		Route:           protocol.RouteProxyTLS,
@@ -722,71 +680,5 @@ func TestPipelineUnresolvedRefusesToMint(t *testing.T) {
 	}
 	if !out.Emitted {
 		t.Fatalf("not emitted after identity resolved: %+v", out)
-	}
-}
-
-func TestPipelineUsageRollupCarriesNoContentFields(t *testing.T) {
-	sink := &recordingSink{}
-	p := newTestPipeline(t, sink, m1Bundle())
-	start := time.Unix(1_699_999_800, 0)
-	end := start.Add(24 * time.Hour)
-	count := 3
-	bytesTotal := int64(900)
-	key, err := dedup.RollupKey("tenant-1", "device-1", "tool", string(protocol.KindUsageRollup), start, end)
-	if err != nil {
-		t.Fatalf("RollupKey: %v", err)
-	}
-	_, err = p.EmitEnvelope(context.Background(), EnvelopeInput{
-		Kind:            protocol.KindUsageRollup,
-		Route:           protocol.RouteProcDetect,
-		Mode:            protocol.ModeM1,
-		ToolFingerprint: "tool",
-		OccurredAt:      end,
-		DedupKey:        key,
-		WindowStart:     &start,
-		WindowEnd:       &end,
-		SubmissionCount: &count,
-		BytesTotal:      &bytesTotal,
-	})
-	if err != nil {
-		t.Fatalf("EmitEnvelope: %v", err)
-	}
-	var env map[string]json.RawMessage
-	if err := json.Unmarshal(sink.last().Payload, &env); err != nil {
-		t.Fatalf("envelope: %v", err)
-	}
-	for _, forbidden := range []string{"content_digest", "labels", "classifier_version", "confidence", "content_excerpt", "attachments", "size_bytes", "policy_decision"} {
-		if _, ok := env[forbidden]; ok {
-			t.Errorf("usage_rollup envelope carries %q, which the schema forbids for this kind", forbidden)
-		}
-	}
-	if string(env["direction"]) != `"none"` {
-		t.Fatalf("direction = %s, want \"none\" for a rollup", env["direction"])
-	}
-}
-
-// A partially-populated identity (empty tenant/device, non-empty user_ref) must not bypass the
-// fail-closed gate on a drain run: BuildEnvelope's field policy checks presence, not emptiness.
-func TestPipelineEmitEnvelopePartialIdentityDoesNotBypassTheGate(t *testing.T) {
-	sink := &recordingSink{}
-	p, err := NewPipeline(sink, time.Now, func() string { return "evt-1" })
-	if err != nil {
-		t.Fatalf("NewPipeline: %v", err)
-	}
-	p.RequireIdentity(true)
-
-	_, err = p.EmitEnvelope(context.Background(), EnvelopeInput{
-		Kind:            protocol.KindUsageRollup,
-		Route:           protocol.RouteProcDetect,
-		Mode:            protocol.ModeM1,
-		ToolFingerprint: "tool",
-		OccurredAt:      time.Unix(1_700_000_000, 0),
-		Identity:        Identity{UserRef: "user-x"}, // empty tenant/device
-	})
-	if !errors.Is(err, ErrIdentityUnresolved) {
-		t.Fatalf("EmitEnvelope err = %v, want ErrIdentityUnresolved (a partial identity bypassed the gate)", err)
-	}
-	if len(sink.entries) != 0 {
-		t.Fatalf("the sink holds %d entries, want 0", len(sink.entries))
 	}
 }

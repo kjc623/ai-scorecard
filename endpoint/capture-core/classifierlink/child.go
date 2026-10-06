@@ -10,16 +10,13 @@ import (
 	"time"
 )
 
-// ChildDialer returns a Dialer that starts the classifier host as a child process and speaks the
-// §3.4 frames on its stdin/stdout. It is the "stdio" transport: the one classifier-host serves by
-// default on Windows, where it has no named-pipe listener, and the only one under which the host's
-// lifetime is the core's — closing the connection ends the child, and a child that dies is
-// replaced on the next dial because Classify re-dials a dropped connection.
-//
-// stderr receives the child's own log lines; nil discards them.
+// ChildDialer returns a Dialer that starts the classifier host as a child process and speaks
+// frames on its stdin and stdout. The host's lifetime is the connection's: closing it ends the
+// child, and a child that dies is replaced on the next dial because Classify re-dials a dropped
+// connection. stderr receives the child's own log lines; nil discards them.
 func ChildDialer(exe string, args []string, stderr io.Writer) Dialer {
-	return func(ctx context.Context, addr Address) (net.Conn, error) {
-		// Not CommandContext: ctx bounds the dial, and the child must outlive it.
+	return func(context.Context) (net.Conn, error) {
+		// Not CommandContext: the context bounds the dial, and the child must outlive it.
 		cmd := exec.Command(exe, args...)
 		cmd.Stderr = stderr
 		stdin, err := cmd.StdinPipe()
@@ -61,6 +58,11 @@ func (c *childConn) Close() error {
 	})
 	return nil
 }
+
+type pipeAddr string
+
+func (a pipeAddr) Network() string { return "pipe" }
+func (a pipeAddr) String() string  { return string(a) }
 
 func (c *childConn) LocalAddr() net.Addr                { return pipeAddr(c.name) }
 func (c *childConn) RemoteAddr() net.Addr               { return pipeAddr(c.name) }

@@ -1,8 +1,6 @@
-// Package credential is the device's per-device credential at rest: the issued x509 leaf (or the
-// registered DPoP public key) plus the EC private key that never leaves the device. The file is
-// sealed with AES-256-GCM under the key a capturespool.KeyProvider supplies — the same key and
-// AEAD approach the spool uses, so a credential file and a spool directory share one
-// key-protection story (ADR 0020 decision 3: the private key never leaves the device).
+// Package credential is the device credential at rest: the issued X.509 leaf and its chain, plus
+// the EC private key that never leaves the device. The file is sealed with AES-256-GCM under the
+// spool key and written with the state directory's protection.
 package credential
 
 import (
@@ -17,79 +15,58 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
-	"github.com/shadow-ai-capture/device/capture-spool"
+	"github.com/shadow-ai-capture/device/capture-core/state"
 	"github.com/shadow-ai-capture/device/protocol"
 )
 
-// Credential is the device credential as it is sealed on disk. Mode decides which of CertPEM /
-// ChainPEM / NotAfter (x509) or JWK (dpop) are populated; PrivateKey is present for both.
+// Credential is the device credential as it is sealed on disk.
 type Credential struct {
-	Mode     protocol.AuthMode `json:"mode"`
-	DeviceID string            `json:"device_id"`
-	TenantID string            `json:"tenant_id"`
-	Region   string            `json:"region,omitempty"`
+	DeviceID string `json:"device_id"`
+	TenantID string `json:"tenant_id"`
+	Region   string `json:"region,omitempty"`
 
-	// HardwareIdentityHash is the enrolment idempotency key (C11), stored so a re-enrolment uses
-	// the same value it was first issued under.
+	// HardwareIdentityHash is the enrolment idempotency key, kept so a re-enrolment presents the
+	// value the device was first issued under.
 	HardwareIdentityHash string `json:"hardware_identity_hash"`
 
-	// DeviceIdentity is the tenant's identity setting as the server stated it at enrolment
-	// (ADR 0021). It is stored with the credential so a restart keeps acting on the setting the
-	// tenant chose; an empty value means the server did not state one.
+	// DeviceIdentity is the tenant's identity setting as the server stated it at enrolment, so a
+	// restart keeps acting on it. Empty means the server did not state one.
 	DeviceIdentity protocol.DeviceIdentity `json:"device_identity,omitempty"`
 
 	// UserRefKey is the tenant's user-reference key as the enrolment response carried it
-	// (base64url, unpadded; contract §4). It is sealed with the credential because it is issued with
-	// it and a restart must derive the same user_ref; empty means the server issued none.
+	// (base64url, unpadded). A restart must derive the same user_ref, so it is kept with the
+	// credential it was issued with. Empty means the server issued none.
 	UserRefKey string `json:"user_ref_key,omitempty"`
 
-	// PrivateKey is the EC private key in PEM "EC PRIVATE KEY" form. It never leaves the device.
+	// PrivateKey is the EC private key in PEM "EC PRIVATE KEY" form.
 	PrivateKey string `json:"private_key"`
 
-	// x509 mode.
-	CertPEM  string    `json:"cert_pem,omitempty"`
+	CertPEM  string    `json:"cert_pem"`
 	ChainPEM []string  `json:"chain_pem,omitempty"`
-	NotAfter time.Time `json:"not_after,omitempty"`
-
-	// dpop mode.
-	JWK *protocol.JWK `json:"jwk,omitempty"`
+	NotAfter time.Time `json:"not_after"`
 }
 
 // Validate rejects a credential the transport could not use, so a corrupt or half-written
 // credential is refused at load rather than failing mid-request.
 func (c *Credential) Validate() error {
-	if c == nil {
+	switch {
+	case c == nil:
 		return errors.New("credential: nil credential")
-	}
-	if !c.Mode.Valid() {
-		return fmt.Errorf("credential: mode %q outside the closed set {x509,dpop}", c.Mode)
-	}
-	if c.DeviceID == "" {
+	case c.DeviceID == "":
 		return errors.New("credential: device_id is required")
-	}
-	if c.TenantID == "" {
+	case c.TenantID == "":
 		return errors.New("credential: tenant_id is required")
-	}
-	if c.PrivateKey == "" {
+	case c.PrivateKey == "":
 		return errors.New("credential: private_key is required")
-	}
-	switch c.Mode {
-	case protocol.AuthModeX509:
-		if c.CertPEM == "" {
-			return errors.New("credential: x509 credential has no cert_pem")
-		}
-	case protocol.AuthModeDPoP:
-		if c.JWK == nil {
-			return errors.New("credential: dpop credential has no jwk")
-		}
+	case c.CertPEM == "":
+		return errors.New("credential: cert_pem is required")
 	}
 	return nil
 }
 
-// ECPrivateKey parses the stored private key. The private half never leaves the process.
+// ECPrivateKey parses the stored private key.
 func (c *Credential) ECPrivateKey() (*ecdsa.PrivateKey, error) {
 	block, _ := pem.Decode([]byte(c.PrivateKey))
 	if block == nil || block.Type != "EC PRIVATE KEY" {
@@ -102,18 +79,38 @@ func (c *Credential) ECPrivateKey() (*ecdsa.PrivateKey, error) {
 	return key, nil
 }
 
-// KeyPair builds the tls.Certificate the x509 transport presents, from the issued leaf and the
-// stored private key.
+// KeyPair builds the client certificate the transport presents: the issued leaf, its chain and
+// the stored private key.
 func (c *Credential) KeyPair() (tls.Certificate, error) {
-	return tls.X509KeyPair([]byte(c.CertPEM), []byte(c.PrivateKey))
+	certPEM := c.CertPEM
+	for _, p := range c.ChainPEM {
+		certPEM += "\n" + p
+	}
+	return tls.X509KeyPair([]byte(certPEM), []byte(c.PrivateKey))
 }
 
-// Store seals the credential file. It is opened with the same KeyProvider the spool uses, so the
-// credential is protected by exactly the key-protection story the spool reports.
+// Expired reports whether the leaf has passed its NotAfter at now. A zero NotAfter is no stated
+// expiry, not an expiry at the epoch.
+func (c *Credential) Expired(now time.Time) bool {
+	return c != nil && !c.NotAfter.IsZero() && !now.Before(c.NotAfter)
+}
+
+// RenewAt is when the device rotates its certificate: two thirds of the way through the leaf's
+// validity, while the current certificate can still authenticate the rotation. A leaf that cannot
+// be parsed renews a day before NotAfter.
+func (c *Credential) RenewAt() time.Time {
+	if block, _ := pem.Decode([]byte(c.CertPEM)); block != nil {
+		if leaf, err := x509.ParseCertificate(block.Bytes); err == nil && leaf.NotAfter.After(leaf.NotBefore) {
+			return leaf.NotBefore.Add(leaf.NotAfter.Sub(leaf.NotBefore) * 2 / 3)
+		}
+	}
+	return c.NotAfter.Add(-24 * time.Hour)
+}
+
+// Store seals the credential file.
 type Store struct {
-	path   string
-	aead   cipher.AEAD
-	sealed bool
+	path string
+	aead cipher.AEAD
 }
 
 const (
@@ -123,27 +120,12 @@ const (
 	headerLen = 4 + 1 + 12
 )
 
-// Open builds a Store for path under the key supplied by keys. It does not read the file: Load and
-// Save are the I/O, so a caller can decide whether to load or to enrol-and-save.
-func Open(path string, keys spool.KeyProvider) (*Store, error) {
+// Open builds a Store for path under key (32 bytes). It does not read the file: Load and Save are
+// the I/O, so a caller can decide whether to load or to enrol and save.
+func Open(path string, key []byte) (*Store, error) {
 	if path == "" {
 		return nil, errors.New("credential: path is required")
 	}
-	if keys == nil {
-		return nil, errors.New("credential: keys is required")
-	}
-	key, err := keys.Key()
-	if err != nil {
-		return nil, fmt.Errorf("credential: obtaining key: %w", err)
-	}
-	aead, err := newAEAD(key)
-	if err != nil {
-		return nil, err
-	}
-	return &Store{path: path, aead: aead, sealed: keys.Sealed()}, nil
-}
-
-func newAEAD(key []byte) (cipher.AEAD, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, fmt.Errorf("credential: AES: %w", err)
@@ -152,17 +134,15 @@ func newAEAD(key []byte) (cipher.AEAD, error) {
 	if err != nil {
 		return nil, fmt.Errorf("credential: GCM: %w", err)
 	}
-	return aead, nil
+	return &Store{path: path, aead: aead}, nil
 }
-
-// Sealed reports whether the key material is platform-protected (mirrors KeyProvider.Sealed).
-func (s *Store) Sealed() bool { return s.sealed }
 
 // Path returns the credential file path.
 func (s *Store) Path() string { return s.path }
 
-// Load reads and unseals the credential. It returns os.ErrNotExist when there is no file yet,
-// which a caller treats as "not enrolled".
+// Load reads and unseals the credential. It returns an error satisfying
+// errors.Is(err, fs.ErrNotExist) when there is no file yet, which a caller treats as not
+// enrolled.
 func (s *Store) Load() (*Credential, error) {
 	raw, err := os.ReadFile(s.path)
 	if err != nil {
@@ -171,12 +151,9 @@ func (s *Store) Load() (*Credential, error) {
 	return s.unseal(raw)
 }
 
-// Save seals and atomically replaces the credential file, so a crash leaves either the old file or
-// the new one, never a torn credential.
+// Save seals the credential and atomically replaces the file, so a crash leaves the old
+// credential or the new one, never a torn one.
 func (s *Store) Save(c *Credential) error {
-	if c == nil {
-		return errors.New("credential: nil credential")
-	}
 	if err := c.Validate(); err != nil {
 		return err
 	}
@@ -188,44 +165,24 @@ func (s *Store) Save(c *Credential) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
-		return fmt.Errorf("credential: creating directory: %w", err)
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(s.path), ".cred-*")
-	if err != nil {
-		return fmt.Errorf("credential: temp file: %w", err)
-	}
-	name := tmp.Name()
-	defer func() { _ = os.Remove(name) }()
-	if _, err := tmp.Write(sealed); err != nil {
-		tmp.Close()
-		return fmt.Errorf("credential: writing: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return fmt.Errorf("credential: flushing: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("credential: closing: %w", err)
-	}
-	if err := os.Rename(name, s.path); err != nil {
-		return fmt.Errorf("credential: renaming into place: %w", err)
+	if err := state.WriteFile(s.path, sealed); err != nil {
+		return fmt.Errorf("credential: writing %s: %w", s.path, err)
 	}
 	return nil
 }
+
+func aad() []byte { return append([]byte(magic), versionV1) }
 
 func (s *Store) seal(plain []byte) ([]byte, error) {
 	var nonce [12]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return nil, fmt.Errorf("credential: nonce: %w", err)
 	}
-	aad := append([]byte(nil), magic...)
-	aad = append(aad, versionV1)
 	out := make([]byte, 0, headerLen+len(plain)+s.aead.Overhead())
 	out = append(out, magic...)
 	out = append(out, versionV1)
 	out = append(out, nonce[:]...)
-	return s.aead.Seal(out, nonce[:], plain, aad), nil
+	return s.aead.Seal(out, nonce[:], plain, aad()), nil
 }
 
 func (s *Store) unseal(raw []byte) (*Credential, error) {
@@ -238,11 +195,7 @@ func (s *Store) unseal(raw []byte) (*Credential, error) {
 	if raw[4] != versionV1 {
 		return nil, fmt.Errorf("credential: unsupported version %d", raw[4])
 	}
-	var nonce [12]byte
-	copy(nonce[:], raw[5:17])
-	aad := append([]byte(nil), magic...)
-	aad = append(aad, versionV1)
-	plain, err := s.aead.Open(nil, nonce[:], raw[17:], aad)
+	plain, err := s.aead.Open(nil, raw[5:17], raw[17:], aad())
 	if err != nil {
 		return nil, errors.New("credential: failed authentication (tampered, or the wrong key)")
 	}

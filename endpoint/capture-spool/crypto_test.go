@@ -11,16 +11,16 @@ import (
 	"github.com/shadow-ai-capture/device/protocol"
 )
 
-// Encryption at rest (§12, C22): a spool directory another local user can read must expose
+// Encryption at rest: a spool directory another local user can read must expose
 // neither content nor metadata, and the key must not be in it.
 func TestSpoolDirectoryHoldsNoPlaintextAndNoKey(t *testing.T) {
 	dir := t.TempDir()
 	keyPath := filepath.Join(t.TempDir(), "keys", "spool.key")
-	kp, err := NewFileKeyProvider(keyPath, dir)
+	key, err := fileKey(keyPath)
 	if err != nil {
-		t.Fatalf("FileKeyProvider: %v", err)
+		t.Fatalf("key: %v", err)
 	}
-	sp := openTest(t, dir, func(c *Config) { c.Keys = kp })
+	sp := openTest(t, dir, func(c *Config) { c.Key = key })
 
 	appended := appendN(t, sp, 5)
 	// Produce a counter file with drop attribution, to prove the metadata is sealed too.
@@ -43,12 +43,8 @@ func TestSpoolDirectoryHoldsNoPlaintextAndNoKey(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	key := mustRead(t, keyPath)
-	if len(key) != KeySize {
-		t.Fatalf("key file is %d bytes, want %d", len(key), KeySize)
-	}
-	if within(dir, keyPath) {
-		t.Fatalf("the key file %s is inside the spool directory %s", keyPath, dir)
+	if onDisk := mustRead(t, keyPath); len(onDisk) != KeySize {
+		t.Fatalf("key file is %d bytes, want %d", len(onDisk), KeySize)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "counters.json")); err != nil {
 		t.Fatalf("expected a counter file in the spool directory: %v", err)
@@ -75,16 +71,6 @@ func TestSpoolDirectoryHoldsNoPlaintextAndNoKey(t *testing.T) {
 	}
 }
 
-func TestFileKeyProviderRefusesAKeyInsideTheSpool(t *testing.T) {
-	dir := t.TempDir()
-	if _, err := NewFileKeyProvider(filepath.Join(dir, "spool.key"), dir); err == nil {
-		t.Fatal("FileKeyProvider accepted a key path inside the spool directory")
-	}
-	if _, err := NewFileKeyProvider(filepath.Join(dir, "nested", "spool.key"), dir); err == nil {
-		t.Fatal("FileKeyProvider accepted a nested key path inside the spool directory")
-	}
-}
-
 // A modified segment is detected on read and refused, never silently accepted.
 func TestTamperedSegmentIsRefused(t *testing.T) {
 	dir := t.TempDir()
@@ -107,7 +93,7 @@ func TestTamperedSegmentIsRefused(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, err := Open(Config{Dir: dir, Keys: testKey(t), SyncEvery: -1})
+	_, err := Open(Config{Dir: dir, Key: testKey(), SyncEvery: -1})
 	if !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("Open returned %v, want ErrCorrupt: tampering must be loud", err)
 	}
@@ -162,7 +148,7 @@ func TestTamperedTailFrameWithFixedChecksumIsStillRefused(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, err := Open(Config{Dir: dir, Keys: testKey(t), SyncEvery: -1})
+	_, err := Open(Config{Dir: dir, Key: testKey(), SyncEvery: -1})
 	if !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("Open returned %v, want ErrCorrupt", err)
 	}
@@ -182,7 +168,7 @@ func TestWrongKeyFailsLoudly(t *testing.T) {
 	if err := sp.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	_, err := Open(Config{Dir: dir, Keys: otherKey(t), SyncEvery: -1})
+	_, err := Open(Config{Dir: dir, Key: otherKey(t), SyncEvery: -1})
 	if !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("Open returned %v, want ErrCorrupt: a spool that cannot be decrypted is not an empty spool", err)
 	}
@@ -214,7 +200,7 @@ func TestReorderedAndDuplicatedFramesAreDetected(t *testing.T) {
 		if err := os.WriteFile(segs[0], swapped, 0o600); err != nil {
 			t.Fatalf("write: %v", err)
 		}
-		if _, err := Open(Config{Dir: dir, Keys: testKey(t), SyncEvery: -1}); !errors.Is(err, ErrCorrupt) {
+		if _, err := Open(Config{Dir: dir, Key: testKey(), SyncEvery: -1}); !errors.Is(err, ErrCorrupt) {
 			t.Fatalf("Open returned %v, want ErrCorrupt for reordered frames", err)
 		}
 	})
@@ -234,7 +220,7 @@ func TestReorderedAndDuplicatedFramesAreDetected(t *testing.T) {
 		if err := os.WriteFile(segs[0], replayed, 0o600); err != nil {
 			t.Fatalf("write: %v", err)
 		}
-		if _, err := Open(Config{Dir: dir, Keys: testKey(t), SyncEvery: -1}); !errors.Is(err, ErrCorrupt) {
+		if _, err := Open(Config{Dir: dir, Key: testKey(), SyncEvery: -1}); !errors.Is(err, ErrCorrupt) {
 			t.Fatalf("Open returned %v, want ErrCorrupt for a replayed frame", err)
 		}
 	})
@@ -303,7 +289,7 @@ func TestCounterFileIsSealedAndTamperIsDetected(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	if _, err := Open(Config{Dir: dir, Keys: testKey(t), SyncEvery: -1}); !errors.Is(err, ErrCorrupt) {
+	if _, err := Open(Config{Dir: dir, Key: testKey(), SyncEvery: -1}); !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("Open returned %v, want ErrCorrupt for a modified counter file", err)
 	}
 

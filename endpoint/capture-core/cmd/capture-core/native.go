@@ -1,55 +1,43 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
-	"os"
-	"path/filepath"
-	"sort"
-	"strings"
-	"sync"
 	"time"
 
+	"github.com/shadow-ai-capture/device/capture-core/attachments"
 	"github.com/shadow-ai-capture/device/capture-core/core"
 	"github.com/shadow-ai-capture/device/capture-core/dedup"
 	"github.com/shadow-ai-capture/device/protocol"
 )
 
-// The native-messaging transport is Chromium's, not this project's: a 4-byte **little-endian**
-// length prefix followed by one JSON document, on the child process's stdin/stdout.
-//
-// That is deliberately NOT device/protocol's framing, which is a 1-byte version plus a big-endian
-// 32-bit length on a local socket (§3.4). The two are different transports with different peers,
-// and conflating them would put a browser's transport rule inside the classifier wire format. So
-// the adapter lives here, in the binary, and device/protocol is untouched.
+// Native messaging is Chromium's transport: a 4-byte little-endian length prefix, then one JSON
+// document. The same frames travel unchanged between the browser and the relay process (on its
+// stdin and stdout) and between the relay and the service (on the native messaging endpoint).
 const (
-	// maxNativeFrameBytes is Chromium's own limit for one host message. A frame larger than this
-	// cannot arrive, and a length that claims to be is refused before allocating.
-	maxNativeFrameBytes = 1024 * 1024
+	// maxNativeFrameBytes is Chromium's limit for one message to the browser, and the limit the
+	// extension holds itself to. A length that claims more is refused before allocating.
+	maxNativeFrameBytes = 1 << 20
 	nativeHeaderBytes   = 4
 )
 
-// writeNativeFrame writes one Chromium native-messaging frame.
+// writeNativeFrame writes one frame in a single Write, so concurrent writers cannot interleave.
 func writeNativeFrame(w io.Writer, payload []byte) error {
 	if len(payload) > maxNativeFrameBytes {
-		return fmt.Errorf("native message is %d bytes, over Chromium's %d limit", len(payload), maxNativeFrameBytes)
+		return fmt.Errorf("native message is %d bytes, over the %d limit", len(payload), maxNativeFrameBytes)
 	}
-	var hdr [nativeHeaderBytes]byte
-	binary.LittleEndian.PutUint32(hdr[:], uint32(len(payload)))
-	if _, err := w.Write(hdr[:]); err != nil {
-		return err
-	}
-	_, err := w.Write(payload)
+	buf := make([]byte, nativeHeaderBytes+len(payload))
+	binary.LittleEndian.PutUint32(buf, uint32(len(payload)))
+	copy(buf[nativeHeaderBytes:], payload)
+	_, err := w.Write(buf)
 	return err
 }
 
-// readNativeFrame reads one Chromium native-messaging frame.
+// readNativeFrame reads one frame. io.EOF before the first header byte is the peer closing.
 func readNativeFrame(r io.Reader) ([]byte, error) {
 	var hdr [nativeHeaderBytes]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {
@@ -60,7 +48,6 @@ func readNativeFrame(r io.Reader) ([]byte, error) {
 		return nil, fmt.Errorf("native frame declares %d bytes, over the %d limit", n, maxNativeFrameBytes)
 	}
 	if n == 0 {
-		// An empty frame is not a message: it is a defect on the other side.
 		return nil, errors.New("native frame carries no payload")
 	}
 	payload := make([]byte, n)
@@ -70,68 +57,34 @@ func readNativeFrame(r io.Reader) ([]byte, error) {
 	return payload, nil
 }
 
-// nativeHost turns frames into pipeline calls. It is the seam device/integration simulates: a
-// decoded ObservationMessage becomes a core.Observation, and the pipeline decides the mode — this
-// type never decides anything about content.
-type nativeHost struct {
-	pipe     *core.Pipeline
-	store    *policyStoreView
-	deviceID string
-	log      *slog.Logger
-	health   *healthChannel
-	cfg      Config
-
-	mu          sync.Mutex
-	transfers   map[string]*attachmentTransfer
-	lastVersion string
+// nativeSession handles the frames of one browser connection. Observations are attributed to the
+// person the connection belongs to, and the pipeline decides the mode: the session never decides
+// anything about content. Attachment bytes the extension transfers ahead of an observation are
+// held in memory until that observation claims them for classification.
+type nativeSession struct {
+	svc         *service
+	person      core.Person
+	attachments *attachments.Holder
 }
 
-// policyStoreView is the narrow view of the policy store the native host needs, so the host cannot
-// reach into verification or force a bundle.
-type policyStoreView struct {
-	currentVersion func() string
-	currentBytes   func() []byte
+func newNativeSession(svc *service, person core.Person) *nativeSession {
+	return &nativeSession{svc: svc, person: person, attachments: attachments.New(time.Now)}
 }
 
-type attachmentTransfer struct {
-	descriptor protocol.AttachmentDescriptor
-	chunks     int
-	bytes      int64
-	openedAt   time.Time
-}
-
-func newNativeHost(pipe *core.Pipeline, store *policyStoreView, cfg Config, health *healthChannel, log *slog.Logger) *nativeHost {
-	return &nativeHost{
-		pipe:      pipe,
-		store:     store,
-		deviceID:  cfg.DeviceID,
-		log:       log,
-		health:    health,
-		cfg:       cfg,
-		transfers: map[string]*attachmentTransfer{},
-	}
-}
-
-// Handle takes one frame payload and returns the frame payload to write back. It never returns nil
-// and never panics on hostile input: every failure path answers with a typed refusal, which is what
-// "the extension is never left hanging" means in practice.
-func (h *nativeHost) Handle(ctx context.Context, payload []byte) []byte {
+// Handle takes one frame payload and returns the payload to answer with. Every failure is a typed
+// refusal, so the extension is never left without an answer.
+func (h *nativeSession) Handle(ctx context.Context, payload []byte) []byte {
 	var msg protocol.NativeMessage
 	if err := json.Unmarshal(payload, &msg); err != nil {
-		return h.refuse(protocol.RefusalMalformed, "frame is not JSON: %v", err)
+		return refusal(protocol.RefusalMalformed, "frame is not JSON: %v", err)
 	}
-	if msg.Type == "" {
-		return h.refuse(protocol.RefusalMalformed, "frame carries no type discriminator")
+	if msg.Version != protocol.Version {
+		return refusal(protocol.RefusalVersionMismatch, "frame version %d, this agent speaks %d", msg.Version, protocol.Version)
 	}
-
-	// Payloads flow one way and responses are correlated by the frame's id, so the answer always
-	// carries the id it is answering.
 	switch msg.Type {
-	case protocol.TypeObservation:
-		return h.handleObservation(ctx, msg)
-	case protocol.TypeDecisionRecord:
-		// A locally decided warn/block is still an observation: "what did we stop" must be
-		// answerable, so a decision record is processed on the observation path.
+	case protocol.TypeObservation, protocol.TypeDecisionRecord:
+		// A locally decided warn or block is still an observation: "what did we stop" must be
+		// answerable.
 		return h.handleObservation(ctx, msg)
 	case protocol.TypeAttachmentManifest:
 		return h.handleManifest(msg)
@@ -145,131 +98,102 @@ func (h *nativeHost) Handle(ctx context.Context, payload []byte) []byte {
 		return h.handlePolicySync(msg)
 	case protocol.TypeModeQuery:
 		return h.handleModeQuery(msg)
+	case "":
+		return refusal(protocol.RefusalMalformed, "frame carries no type")
 	default:
-		return h.refuse(protocol.RefusalUnknownType, "unknown message type %q", msg.Type)
+		return refusal(protocol.RefusalUnknownType, "unknown message type %q", msg.Type)
 	}
 }
 
-func (h *nativeHost) handleObservation(ctx context.Context, msg protocol.NativeMessage) []byte {
+func (h *nativeSession) handleObservation(ctx context.Context, msg protocol.NativeMessage) []byte {
 	var obs protocol.ObservationMessage
 	if err := json.Unmarshal(msg.Body, &obs); err != nil {
-		return h.refuse(protocol.RefusalMalformed, "observation body is not an ObservationMessage: %v", err)
+		return refusal(protocol.RefusalMalformed, "observation body is not an ObservationMessage: %v", err)
 	}
 	if err := obs.Validate(); err != nil {
-		var refusal *protocol.RefusalError
-		if errors.As(err, &refusal) {
-			return h.refuse(refusal.Reason, "%s", refusal.Message)
+		var r *protocol.RefusalError
+		if errors.As(err, &r) {
+			return refusal(r.Reason, "%s", r.Message)
 		}
-		return h.refuse(protocol.RefusalMalformed, "%v", err)
+		return refusal(protocol.RefusalMalformed, "%v", err)
 	}
-
-	// A manifest that was already refused must not be followed by bytes, and a manifest that names
-	// an oversized attachment is refused here even when the observation carries it inline.
-	for _, a := range obs.Attachments {
-		if a.SizeBytes > h.cfg.AttachmentCap {
-			return h.refuse(protocol.RefusalAttachmentTooLarge, "attachment %q is %d bytes, over the %d cap", a.Name, a.SizeBytes, h.cfg.AttachmentCap)
-		}
-	}
-
 	observation := toCoreObservation(obs)
-	outcome, err := h.pipe.Process(ctx, observation)
+	person := h.person
+	observation.Person = &person
+	// The bytes transferred for this observation are classified under its mode and then dropped.
+	for _, held := range h.attachments.Claim(obs.ClientID, obs.Attachments) {
+		observation.AttachmentContent = append(observation.AttachmentContent,
+			core.AttachmentContent{MediaType: held.Descriptor.MediaType, Content: bytesReader(held.Bytes)})
+	}
+	outcome, err := h.svc.pipe.Process(ctx, observation)
 	if err != nil {
-		// The pipeline returns an error only when the observation was refused before it could be
-		// stored (a mode violation, a spool failure, an invalid envelope). None of those is
-		// "success", so none of them may be answered with an ack.
-		return h.refuse(protocol.RefusalQueueFull, "observation refused: %v", err)
+		// The pipeline errs only when the observation could not be stored (a mode violation, a
+		// spool failure, an unresolved identity); none of those may be answered with an ack.
+		return refusal(protocol.RefusalQueueFull, "observation refused: %v", err)
 	}
-	if !outcome.Emitted {
-		return h.refuse(protocol.RefusalModeForbidsRead, "observation was not emitted: %s", outcome.Reason)
-	}
-	return h.ack(msg.ID, fmt.Sprintf("event=%s seq=%d mode=%s confidence=%s degraded=%v reason=%s",
-		outcome.EventID, outcome.Seq, outcome.Mode, outcome.Confidence, outcome.Degraded, outcome.Reason))
+	return ack(msg.ID, fmt.Sprintf("event=%s mode=%s confidence=%s degraded=%v", outcome.EventID, outcome.Mode, outcome.Confidence, outcome.Degraded))
 }
 
-func (h *nativeHost) handleManifest(msg protocol.NativeMessage) []byte {
+// handleManifest accepts or refuses an attachment before any byte moves. A device whose policy
+// reads no content refuses it: the tenant default bounds every scope entry, so no observation
+// could read the bytes.
+func (h *nativeSession) handleManifest(msg protocol.NativeMessage) []byte {
 	var m protocol.AttachmentManifest
 	if err := json.Unmarshal(msg.Body, &m); err != nil {
-		return h.refuse(protocol.RefusalMalformed, "manifest body is not an AttachmentManifest: %v", err)
+		return refusal(protocol.RefusalMalformed, "manifest body is not an AttachmentManifest: %v", err)
 	}
-	if m.TransferID == "" || m.Descriptor.Name == "" {
-		return h.refuse(protocol.RefusalMalformed, "manifest needs a transfer_id and a descriptor name")
+	if !h.svc.pipe.ResolveMode(core.ScopeQuery{UserRef: h.person.UserRef}).ReadsContent() {
+		return refusal(protocol.RefusalModeForbidsRead, "the collection mode reads no content, so attachment %q is not transferred", m.Descriptor.Name)
 	}
-	// The descriptor arrives BEFORE any byte moves, which is the whole point: an oversized upload
-	// is refused without transferring it (§3.4).
-	if m.Descriptor.SizeBytes > h.cfg.AttachmentCap {
-		return h.refuse(protocol.RefusalAttachmentTooLarge, "attachment %q is %d bytes, over the %d cap", m.Descriptor.Name, m.Descriptor.SizeBytes, h.cfg.AttachmentCap)
+	if err := h.attachments.Open(m); err != nil {
+		return attachmentRefusal(err)
 	}
-	if m.Descriptor.SizeBytes < 0 {
-		return h.refuse(protocol.RefusalMalformed, "attachment %q declares a negative size", m.Descriptor.Name)
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if _, exists := h.transfers[m.TransferID]; exists {
-		return h.refuse(protocol.RefusalMalformed, "transfer %q is already open", m.TransferID)
-	}
-	h.transfers[m.TransferID] = &attachmentTransfer{descriptor: m.Descriptor, openedAt: time.Now()}
-	return h.ack(msg.ID, fmt.Sprintf("transfer=%s accepted manifest for %q (%d bytes, media type %q)",
-		m.TransferID, m.Descriptor.Name, m.Descriptor.SizeBytes, m.Descriptor.MediaType))
+	return ack(msg.ID, fmt.Sprintf("transfer=%s accepted", m.TransferID))
 }
 
-func (h *nativeHost) handleChunk(msg protocol.NativeMessage) []byte {
+func (h *nativeSession) handleChunk(msg protocol.NativeMessage) []byte {
 	var c protocol.AttachmentChunk
 	if err := json.Unmarshal(msg.Body, &c); err != nil {
-		return h.refuse(protocol.RefusalMalformed, "chunk body is not an AttachmentChunk: %v", err)
+		return refusal(protocol.RefusalMalformed, "chunk body is not an AttachmentChunk: %v", err)
 	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	t, ok := h.transfers[c.TransferID]
-	if !ok {
-		// Bytes without an accepted manifest are refused rather than assembled into a partial file.
-		return h.refuse(protocol.RefusalMalformed, "chunk for unknown transfer %q; the manifest must be accepted first", c.TransferID)
+	if err := h.attachments.Append(c); err != nil {
+		return attachmentRefusal(err)
 	}
-	if c.Seq != t.chunks {
-		return h.refuse(protocol.RefusalMalformed, "chunk %d arrived where %d was expected; a gap is refused rather than assembled", c.Seq, t.chunks)
-	}
-	t.bytes += int64(len(c.Data))
-	if t.bytes > h.cfg.AttachmentCap {
-		delete(h.transfers, c.TransferID)
-		return h.refuse(protocol.RefusalAttachmentTooLarge, "transfer %q exceeded the %d cap", c.TransferID, h.cfg.AttachmentCap)
-	}
-	t.chunks++
-	return h.ack(msg.ID, fmt.Sprintf("transfer=%s chunk=%d bytes=%d", c.TransferID, c.Seq, len(c.Data)))
+	return ack(msg.ID, fmt.Sprintf("transfer=%s chunk=%d", c.TransferID, c.Seq))
 }
 
-func (h *nativeHost) handleComplete(msg protocol.NativeMessage) []byte {
+func (h *nativeSession) handleComplete(msg protocol.NativeMessage) []byte {
 	var c protocol.AttachmentComplete
 	if err := json.Unmarshal(msg.Body, &c); err != nil {
-		return h.refuse(protocol.RefusalMalformed, "complete body is not an AttachmentComplete: %v", err)
+		return refusal(protocol.RefusalMalformed, "complete body is not an AttachmentComplete: %v", err)
 	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	t, ok := h.transfers[c.TransferID]
-	if !ok {
-		return h.refuse(protocol.RefusalMalformed, "completion for unknown transfer %q", c.TransferID)
+	held, err := h.attachments.Complete(c)
+	if err != nil {
+		return attachmentRefusal(err)
 	}
-	delete(h.transfers, c.TransferID)
-	return h.ack(msg.ID, fmt.Sprintf("transfer=%s closed with %d chunks and %d bytes%s",
-		c.TransferID, t.chunks, t.bytes, errorSuffix(c.Err)))
+	return ack(msg.ID, fmt.Sprintf("transfer=%s held %d bytes for classification (%s)", c.TransferID, len(held.Bytes), held.Descriptor.ContentDigest))
 }
 
-func errorSuffix(err string) string {
-	if err == "" {
-		return ""
+// attachmentRefusal maps a holder error onto the closed refusal reasons.
+func attachmentRefusal(err error) []byte {
+	switch {
+	case errors.Is(err, attachments.ErrTooLarge):
+		return refusal(protocol.RefusalAttachmentTooLarge, "%v", err)
+	case errors.Is(err, attachments.ErrFull):
+		return refusal(protocol.RefusalQueueFull, "%v", err)
+	default:
+		return refusal(protocol.RefusalMalformed, "%v", err)
 	}
-	// A failed attachment read never fails the submission; it is counted and reported (§3.4).
-	return "; read error reported: " + err
 }
 
-func (h *nativeHost) handleExtensionHealth(msg protocol.NativeMessage) []byte {
+func (h *nativeSession) handleExtensionHealth(msg protocol.NativeMessage) []byte {
 	var rep protocol.HealthReport
 	if err := json.Unmarshal(msg.Body, &rep); err != nil {
-		return h.refuse(protocol.RefusalMalformed, "health body is not a HealthReport: %v", err)
+		return refusal(protocol.RefusalMalformed, "health body is not a HealthReport: %v", err)
 	}
 	if rep.Collector == "" {
 		rep.Collector = "capture-extension"
 	}
-	// The extension cannot read the spool, so its row carries its own queue counters; the shape is
-	// the same closed counter set, which is what lets the coverage report merge them.
 	if rep.Counters == nil {
 		rep.Counters = map[protocol.Counter]uint64{}
 	}
@@ -279,311 +203,114 @@ func (h *nativeHost) handleExtensionHealth(msg protocol.NativeMessage) []byte {
 		}
 	}
 	if err := rep.Validate(); err != nil {
-		return h.refuse(protocol.RefusalMalformed, "%v", err)
+		return refusal(protocol.RefusalMalformed, "%v", err)
 	}
-	if h.health != nil {
-		h.health.SetExtensionReport(rep)
-	}
-	return h.ack(msg.ID, fmt.Sprintf("health recorded for %s state=%s", rep.Collector, rep.State))
+	h.svc.health.SetExtensionReport(rep)
+	return ack(msg.ID, fmt.Sprintf("health recorded for %s state=%s", rep.Collector, rep.State))
 }
 
-func (h *nativeHost) handlePolicySync(msg protocol.NativeMessage) []byte {
+// handlePolicySync hands the extension the verified bundle in force; the extension holds no
+// durable state, so this is how it gets policy after a restart.
+func (h *nativeSession) handlePolicySync(msg protocol.NativeMessage) []byte {
 	var req protocol.PolicySyncRequest
 	if len(msg.Body) > 0 {
 		if err := json.Unmarshal(msg.Body, &req); err != nil {
-			return h.refuse(protocol.RefusalMalformed, "policy_sync body: %v", err)
+			return refusal(protocol.RefusalMalformed, "policy_sync body: %v", err)
 		}
 	}
-	current := ""
-	var bundle json.RawMessage
-	if h.store != nil {
-		current = h.store.currentVersion()
-		bundle = h.store.currentBytes()
+	answer := protocol.PolicyBundleMessage{}
+	if b := h.svc.currentBundle(); b != nil {
+		answer.PolicyVersion = b.Version
+		answer.Unchanged = req.KnownVersion != "" && req.KnownVersion == b.Version
+		if !answer.Unchanged {
+			answer.Bundle = h.svc.store.InForceRaw()
+		}
 	}
-	unchanged := req.KnownVersion != "" && req.KnownVersion == current
-	resp := protocol.NativeMessage{
-		Type:    protocol.TypePolicyBundle,
-		Version: protocol.Version,
-		ID:      msg.ID,
-	}
-	body, err := json.Marshal(protocol.PolicyBundleMessage{
-		PolicyVersion: current,
-		Bundle:        bundle,
-		Unchanged:     unchanged,
-	})
-	if err != nil {
-		return h.refuse(protocol.RefusalMalformed, "encoding policy bundle: %v", err)
-	}
-	resp.Body = body
-	raw, err := json.Marshal(resp)
-	if err != nil {
-		return h.refuse(protocol.RefusalMalformed, "encoding response: %v", err)
-	}
-	return raw
+	return reply(protocol.TypePolicyBundle, msg.ID, answer)
 }
 
-func (h *nativeHost) handleModeQuery(msg protocol.NativeMessage) []byte {
+func (h *nativeSession) handleModeQuery(msg protocol.NativeMessage) []byte {
 	var q protocol.ModeQuery
 	if err := json.Unmarshal(msg.Body, &q); err != nil {
-		return h.refuse(protocol.RefusalMalformed, "mode_query body: %v", err)
+		return refusal(protocol.RefusalMalformed, "mode_query body: %v", err)
 	}
-	res := h.pipe.ResolveMode(core.ScopeQuery{
-		ToolFingerprint: q.ToolFingerprint,
-		DeviceID:        h.cfg.DeviceID,
-		UserRef:         h.cfg.UserRef,
-		Population:      h.cfg.Population,
-	})
+	res := h.svc.pipe.ResolveMode(core.ScopeQuery{ToolFingerprint: q.ToolFingerprint, UserRef: h.person.UserRef})
 	answer, err := res.ModeAnswer(q.Host)
 	if err != nil {
-		return h.refuse(protocol.RefusalMalformed, "%v", err)
+		return refusal(protocol.RefusalMalformed, "%v", err)
 	}
-	resp := protocol.NativeMessage{Type: protocol.TypeModeAnswer, Version: protocol.Version, ID: msg.ID}
-	body, err := json.Marshal(answer)
-	if err != nil {
-		return h.refuse(protocol.RefusalMalformed, "encoding mode answer: %v", err)
-	}
-	resp.Body = body
-	raw, err := json.Marshal(resp)
-	if err != nil {
-		return h.refuse(protocol.RefusalMalformed, "encoding response: %v", err)
-	}
-	return raw
+	return reply(protocol.TypeModeAnswer, msg.ID, answer)
 }
 
-func (h *nativeHost) ack(id, detail string) []byte {
-	resp := protocol.NativeMessage{Type: protocol.TypeAck, Version: protocol.Version, ID: id}
-	body, _ := json.Marshal(protocol.Ack{ID: id, Detail: detail})
-	resp.Body = body
-	raw, err := json.Marshal(resp)
+func reply(typ, id string, body any) []byte {
+	raw, err := json.Marshal(body)
 	if err != nil {
-		return []byte(`{"type":"refusal","version":1}`)
+		return refusal(protocol.RefusalMalformed, "encoding %s: %v", typ, err)
 	}
-	return raw
+	out, err := json.Marshal(protocol.NativeMessage{Type: typ, Version: protocol.Version, ID: id, Body: raw})
+	if err != nil {
+		return refusal(protocol.RefusalMalformed, "encoding %s: %v", typ, err)
+	}
+	return out
 }
 
-func (h *nativeHost) refuse(reason protocol.RefusalReason, format string, args ...any) []byte {
-	resp := protocol.NativeMessage{Type: protocol.TypeRefusal, Version: protocol.Version}
+func ack(id, detail string) []byte {
+	return reply(protocol.TypeAck, id, protocol.Ack{ID: id, Detail: detail})
+}
+
+func refusal(reason protocol.RefusalReason, format string, args ...any) []byte {
 	body, _ := json.Marshal(protocol.Refusal{Reason: reason, Message: fmt.Sprintf(format, args...)})
-	resp.Body = body
-	raw, err := json.Marshal(resp)
+	out, err := json.Marshal(protocol.NativeMessage{Type: protocol.TypeRefusal, Version: protocol.Version, Body: body})
 	if err != nil {
 		return []byte(`{"type":"refusal","version":1}`)
 	}
-	return raw
+	return out
 }
 
-// toCoreObservation is the conversion device/integration simulates, now in the binary that must do
-// it for real: a decoded frame becomes what the pipeline consumes, with a reader rather than bytes.
+// toCoreObservation turns a decoded observation into what the pipeline consumes, with the content
+// behind a reader so the mode is applied before it is read.
 func toCoreObservation(o protocol.ObservationMessage) core.Observation {
 	decision := o.Decision
 	if decision == nil {
 		decision = &protocol.Decision{RuleID: "policy.default", Action: protocol.ActionLogged, DecidedLocally: true}
 	}
+	atts := make([]dedup.Attachment, 0, len(o.Attachments))
+	for _, a := range o.Attachments {
+		atts = append(atts, dedup.Attachment{Name: a.Name, MediaType: a.MediaType, SizeBytes: a.SizeBytes, ContentDigest: a.ContentDigest})
+	}
 	obs := core.Observation{
 		Route:             o.Route,
 		Kind:              protocol.KindPrompt,
 		ToolFingerprint:   o.ToolFingerprint,
-		Population:        "",
 		OccurredAt:        o.OccurredAt,
 		MonotonicOffsetMS: o.MonotonicOffsetMS,
 		SizeBytes:         o.SizeBytes,
 		Decision:          decision,
 		Extract:           extensionExtractor{},
+		Attachments:       atts,
 		ClientID:          o.ClientID,
 		OverCap:           o.OverCap,
 	}
 	if o.HasContent && len(o.Content) > 0 {
-		// Hand over a reader, never the bytes: a pipeline given bytes has already read them, and
-		// §11.2's ordering cannot be enforced after the fact.
-		obs.Content = bytesReader{body: o.Content}
+		obs.Content = bytesReader(o.Content)
 	}
 	return obs
 }
 
-// extensionExtractor is C1 for the extension routes. The extension sends the user-authored payload
-// (it read the compose box or the request body), and it also sends a content digest it computed
-// over those bytes; the canonical text is the payload itself, decoded as UTF-8.
-//
-// The digest the extension computed is deliberately NOT reused as the canonical content digest: the
-// pipeline recomputes it over the canonicalised text, so two routes agree on one digest rather than
-// each trusting the other's arithmetic (docs/02 §4.2).
+// bytesReader is the ContentReader for bytes that arrived over native messaging.
+type bytesReader []byte
+
+func (r bytesReader) Read(context.Context) ([]byte, error) { return r, nil }
+
+// extensionExtractor extracts the text of an extension observation: the extension sends the
+// user-authored payload (the compose box or the request body), decoded here as UTF-8. The digest
+// the extension computed is not reused; the pipeline recomputes it over the canonical text, so two
+// routes agree on one digest rather than each trusting the other's arithmetic.
 type extensionExtractor struct{}
 
 func (extensionExtractor) Extract(payload []byte, _ string) (string, []dedup.Attachment, error) {
 	if len(payload) == 0 {
 		return "", nil, errors.New("native host: no payload to canonicalise")
 	}
-	// C2 decode: ill-formed sequences become U+FFFD so the digest is deterministic, never lossy in
-	// a way that silently changes identity.
 	return dedup.Decode(payload), nil, nil
-}
-
-// runNativeHost is Chromium's entry point: read frames from stdin, answer on stdout, and never
-// write anything else to stdout.
-func runNativeHost(cfg Config, log *slog.Logger) error {
-	svc, err := newService(context.Background(), cfg, log)
-	if err != nil {
-		return err
-	}
-	ctx, cancel := signalContext()
-	defer cancel()
-	if err := svc.Start(ctx); err != nil {
-		return err
-	}
-	defer func() { _ = svc.Stop(context.Background()) }()
-
-	host := svc.nativeHost()
-	log.Info("native-messaging host ready", "framing", "4-byte little-endian length prefix")
-	for {
-		payload, err := readNativeFrame(os.Stdin)
-		if err != nil {
-			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-				return nil // the browser closed the channel
-			}
-			return err
-		}
-		response := host.Handle(ctx, payload)
-		if err := writeNativeFrame(os.Stdout, response); err != nil {
-			return err
-		}
-	}
-}
-
-// runNativeFrames feeds the golden case files through the real framing and dispatch. It exists so
-// the byte-level transport is exercised without a browser: each case's frame is written as a real
-// Chromium frame, read back through the real reader, and handled by the real host.
-func runNativeFrames(cfg Config, log *slog.Logger, dir string) error {
-	svc, err := newService(context.Background(), cfg, log)
-	if err != nil {
-		return err
-	}
-	ctx, cancel := signalContext()
-	defer cancel()
-	if err := svc.Start(ctx); err != nil {
-		return err
-	}
-	host := svc.nativeHost()
-	results, err := driveGoldenFrames(ctx, host, dir, os.Stdout)
-	if err != nil {
-		_ = svc.Stop(context.Background())
-		return err
-	}
-	if err := svc.Stop(context.Background()); err != nil {
-		return err
-	}
-	if results.failed > 0 {
-		return fmt.Errorf("%d of %d golden frames failed", results.failed, results.total)
-	}
-	return nil
-}
-
-// frameResults is a small tally, so a failure is a count rather than a paragraph.
-type frameResults struct {
-	total    int
-	acked    int
-	refused  int
-	failed   int
-	spoolSeq map[string]uint64
-}
-
-// goldenCase is the shape of the case files under device/integration/testdata/native/.
-type goldenCase struct {
-	Name  string          `json:"name"`
-	Why   string          `json:"why"`
-	Frame json.RawMessage `json:"frame"`
-}
-
-// driveGoldenFrames runs every case file in dir through the framing and the host, printing one line
-// per case and returning the tally. The write/read round trip is deliberate: it is the only part of
-// this path that a browser would otherwise be needed to exercise.
-func driveGoldenFrames(ctx context.Context, host *nativeHost, dir string, out io.Writer) (frameResults, error) {
-	res := frameResults{spoolSeq: map[string]uint64{}}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return res, err
-	}
-	var names []string
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
-			names = append(names, e.Name())
-		}
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		raw, err := os.ReadFile(filepath.Join(dir, name))
-		if err != nil {
-			return res, err
-		}
-		var c goldenCase
-		if err := json.Unmarshal(raw, &c); err != nil {
-			return res, fmt.Errorf("%s: %w", name, err)
-		}
-		payload := compactJSON(c.Frame)
-
-		// Write it as Chromium would, read it back with the real reader, then dispatch.
-		var wire bytes.Buffer
-		if err := writeNativeFrame(&wire, payload); err != nil {
-			return res, fmt.Errorf("%s: framing: %w", name, err)
-		}
-		framed, err := readNativeFrame(bytes.NewReader(wire.Bytes()))
-		if err != nil {
-			return res, fmt.Errorf("%s: %w", name, err)
-		}
-		response := host.Handle(ctx, framed)
-
-		var resp protocol.NativeMessage
-		if err := json.Unmarshal(response, &resp); err != nil {
-			return res, fmt.Errorf("%s: response is not a NativeMessage: %w", name, err)
-		}
-		body := summarizeResponse(resp)
-		res.total++
-		switch resp.Type {
-		case protocol.TypeAck:
-			res.acked++
-		case protocol.TypeRefusal:
-			res.refused++
-		default:
-			// A response that is neither an ack nor a refusal is a protocol defect.
-			res.failed++
-		}
-		fmt.Fprintf(out, "  %-32s -> %-9s %s\n", c.Name, resp.Type, body)
-		fmt.Fprintf(out, "      why: %s\n", c.Why)
-	}
-	return res, nil
-}
-
-// summarizeResponsePayload decodes a response payload and summarizes it, for call sites that hold
-// the raw bytes.
-func summarizeResponsePayload(payload []byte) string {
-	var resp protocol.NativeMessage
-	if err := json.Unmarshal(payload, &resp); err != nil {
-		return "unparseable response: " + err.Error()
-	}
-	return summarizeResponse(resp)
-}
-
-func summarizeResponse(resp protocol.NativeMessage) string {
-	switch resp.Type {
-	case protocol.TypeAck:
-		var ack protocol.Ack
-		if err := json.Unmarshal(resp.Body, &ack); err == nil {
-			return ack.Detail
-		}
-	case protocol.TypeRefusal:
-		var ref protocol.Refusal
-		if err := json.Unmarshal(resp.Body, &ref); err == nil {
-			return string(ref.Reason) + ": " + ref.Message
-		}
-	case protocol.TypePolicyBundle:
-		var pb protocol.PolicyBundleMessage
-		if err := json.Unmarshal(resp.Body, &pb); err == nil {
-			return fmt.Sprintf("policy version %q unchanged=%v bundle_bytes=%d", pb.PolicyVersion, pb.Unchanged, len(pb.Bundle))
-		}
-	case protocol.TypeModeAnswer:
-		var ma protocol.ModeAnswer
-		if err := json.Unmarshal(resp.Body, &ma); err == nil {
-			return fmt.Sprintf("mode %s policy %s reason %s", ma.Mode, ma.PolicyVersion, ma.Reason)
-		}
-	}
-	return ""
 }

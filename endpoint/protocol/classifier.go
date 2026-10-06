@@ -6,13 +6,12 @@ import (
 	"time"
 )
 
-// Request and response shapes for the classifier host (docs/01-collectors.md §3.4, §9).
+// Request and response shapes for the classifier host.
 //
-// The defining constraint is structural, not documentary: the classifier receives bytes and
-// returns labels, and it must be unable to see a tool identity, a user_ref or a destination
-// (§3.3). ClassifyRequest below has no field that can carry any of them, and the guard at the
-// bottom of this file makes that a compile-time property: a future edit that adds one breaks
-// the build instead of silently widening what the classifier can see.
+// The classifier receives bytes and returns labels, and it must be unable to see a tool identity,
+// a user_ref or a destination. ClassifyRequest has no field that can carry any of them, and the
+// guard at the bottom of this file keeps it that way: an edit that adds one fails the guard
+// instead of silently widening what the classifier can see.
 
 // ClassifyRequest asks for labels for one observation's content.
 //
@@ -30,11 +29,6 @@ type ClassifyRequest struct {
 
 	// MediaType lets a validator pick a parser without interpreting the bytes as text.
 	MediaType string `json:"media_type,omitempty"`
-
-	// ContentDigest is the sha256 of the normalised content, computed by the caller before the
-	// classifier is involved. It is carried so the response can be matched to the observation
-	// without the classifier recomputing it over bytes it was handed.
-	ContentDigest string `json:"content_digest,omitempty"`
 
 	// ReleaseID names the signed rules/model release to evaluate with. Empty means "the
 	// resident release"; a caller never selects a release, policy does.
@@ -108,25 +102,20 @@ type StageResult struct {
 // reports a confident label after a stage failed, and never reports `degraded` for a
 // classification that completed.
 type ClassifyResponse struct {
-	Labels            []Label           `json:"labels"`
-	ClassifierVersion string            `json:"classifier_version"`
-	Confidence        Confidence        `json:"confidence"`
-	Excerpt           *Excerpt          `json:"content_excerpt,omitempty"`
-	Stages            []StageResult     `json:"stages,omitempty"`
-	Counters          map[string]uint64 `json:"counters,omitempty"`
-	VerdictShadowed   bool              `json:"shadowed,omitempty"` // release state `shadow`: recorded, not enforced
+	Labels            []Label       `json:"labels"`
+	ClassifierVersion string        `json:"classifier_version"`
+	Confidence        Confidence    `json:"confidence"`
+	Excerpt           *Excerpt      `json:"content_excerpt,omitempty"`
+	Stages            []StageResult `json:"stages,omitempty"`
 }
 
 // Validate enforces the cross-field rules a response must satisfy regardless of what the
 // pipeline did. It is called by the core before the response is allowed into an envelope, so a
 // defective classifier cannot widen what the device claims to know.
 //
-// The empty-label rule is subtle and was wrong here once: an event with **no labels** is a
-// legitimate output meaning the classifier ran and found nothing — `confidence: high` with an
-// empty label set (docs/01-collectors.md §9.2, §9.7's "not emitted when" column, and the
-// contract's `labels` has maxItems 64 and no minItems). What is *not* legitimate is an empty
-// label set that is also degraded, because §9.7 requires every exhaustion path to say so, which
-// is the case that would otherwise be reported as "no sensitive data found".
+// An empty label set is a legitimate output meaning the classifier ran and found nothing. What
+// is not legitimate is a degraded answer that names no failed stage: every exhaustion path says
+// which stage did not complete, so it is never mistaken for "no sensitive data found".
 func (r ClassifyResponse) Validate() error {
 	if r.ClassifierVersion == "" {
 		return fmt.Errorf("protocol: classifier response without a classifier_version cannot be attributed to a release")
@@ -179,7 +168,7 @@ func anyStageFailed(stages []StageResult) bool {
 }
 
 // Validate rejects a request that asks the classifier to do something the mode forbids. The
-// caller is expected to have applied the mode before reading content (§11.2); this is the
+// caller is expected to have applied the mode before reading content; this is the
 // second gate, so a defect upstream is refused here rather than becoming a stored fact.
 func (q ClassifyRequest) Validate() error {
 	if !q.Mode.Valid() {
@@ -214,7 +203,7 @@ var _ = func() bool {
 	for _, forbidden := range IdentityFieldNames {
 		if _, present := m[forbidden]; present {
 			panic("protocol: ClassifyRequest carries identity field " + forbidden +
-				"; the classifier must be unable to see identity (docs/01-collectors.md §3.3)")
+				"; the classifier must be unable to see identity")
 		}
 	}
 	return true

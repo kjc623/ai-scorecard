@@ -11,12 +11,12 @@ import (
 
 // The pseudonymous user reference, derived the same way on both sides of the product.
 //
-// The device knows who is signed in to Windows; the customer's identity provider (through SCIM)
-// knows who that person is in the directory. Neither may send the other a name on the event path
-// (docs/06 A6), so both derive user_ref from the identifiers they share — the user principal name,
-// the Entra object id, or a bare account name — under a per-tenant key the server issues at
-// enrolment. Defining the derivation once, here, is what keeps them meeting: capture-core and
-// control-api both import this function, and the test vectors in userref_test.go pin it.
+// The device knows who is signed in to the operating system; the customer's identity provider
+// (through SCIM) knows who that person is in the directory. Neither sends the other a name on the
+// event path, so both derive user_ref from the identifiers they share (the user principal name,
+// the Entra object id, or a bare account name) under a per-tenant key the server issues at
+// enrolment. capture-core and control-api both import this function, and the test vectors in
+// userref_test.go pin it.
 //
 // The device prefers the UPN because every identity provider sends one through SCIM, Entra or
 // not; the object id is the fallback when the device cannot resolve a UPN, and the directory keeps
