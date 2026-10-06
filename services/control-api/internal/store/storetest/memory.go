@@ -761,10 +761,10 @@ func (m *Memory) Settings(_ context.Context, tenantID string) (store.Settings, e
 		ceiling = string(protocol.ModeM0)
 	}
 	out := store.Settings{
-		CeilingMode:     ceiling,
-		CollectionMode:  m.collectionModes[tenantID],
-		ScopeOverrides:  map[string]string{},
-		ContentSearch:   m.contentSearch[tenantID],
+		CeilingMode:       ceiling,
+		CollectionMode:    m.collectionModes[tenantID],
+		ScopeOverrides:    map[string]string{},
+		ContentSearch:     m.contentSearch[tenantID],
 		RetentionDefaults: store.RetentionDefaults{EventDays: 90, ContentDays: 30},
 	}
 	if out.ContentSearch == "" {

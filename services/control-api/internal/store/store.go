@@ -252,15 +252,15 @@ type DeviceMode struct {
 
 // Settings is everything the Settings page reads in one round trip.
 type Settings struct {
-	CeilingMode     string
-	CollectionMode  string            // "" means "follow the ceiling"
-	ScopeOverrides  map[string]string // tool fingerprint -> mode
+	CeilingMode          string
+	CollectionMode       string            // "" means "follow the ceiling"
+	ScopeOverrides       map[string]string // tool fingerprint -> mode
 	EventRetentionDays   *int
 	ContentRetentionDays *int
-	ContentSearch   string
-	RetentionDefaults RetentionDefaults
-	Tools           []ToolDecision
-	Devices         []DeviceMode
+	ContentSearch        string
+	RetentionDefaults    RetentionDefaults
+	Tools                []ToolDecision
+	Devices              []DeviceMode
 }
 
 // Errors callers distinguish. Every other error is an infrastructure failure and is retryable.
