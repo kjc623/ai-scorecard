@@ -1,54 +1,43 @@
-# `contracts/` — the wire contract
+# contracts
 
-The single source of shape for everything that crosses a boundary in this system. One JSON Schema
-describes the event envelope; the TypeScript and Go types are **generated** from it, and a gate fails
-if the committed output drifts from the schema.
+The wire contract for the event envelope: what a device sends to `POST /v1/events`.
 
 | Path | What it is |
 |---|---|
-| [`event-envelope.schema.json`](event-envelope.schema.json) | The contract. JSON Schema 2020-12. A discriminated union over a closed kind registry |
-| [`generated/`](generated/) | The bindings, committed, with their own README |
-| [`tools/`](tools/) | The generator and its suite |
+| `event-envelope.schema.json` | The contract, JSON Schema 2020-12. The only source of envelope field names |
+| `generated/go/` | Go module `github.com/shadow-ai-capture/contracts`, package `envelope`: generated, committed |
+| `tools/` | The generator and its verification suite |
 
 ## The envelope
 
-An observation is what a device saw; the envelope is the record of it. The schema defines a
-discriminated union keyed on `kind` and `collection_mode`, with a **closed** registry: a kind the
-schema does not name is not a new kind, it is an invalid message, and ingest refuses it rather than
-storing something nothing can read. The full reasoning, including why a closed registry was chosen
-over an open one, is [ADR 0010](../docs/adr/0010-the-envelope-is-a-discriminated-union-with-a-closed-kind-registry.md).
+One record per observation, discriminated on `kind` (`prompt`, `usage_rollup`, `model_detection`)
+and, for prompts, on `collection_mode` (`m0`–`m3`). The kind registry is closed: a kind the schema
+does not name is an invalid record, not a new kind. Every field is declared once in
+`$defs/envelopeCore` with `additionalProperties: false`; the `if`/`then` branches decide which
+fields each kind and mode requires and forbids. At `m0` no content-derived field may appear — the
+device may report that a submission happened and how large it was, nothing about its content. A
+device never sends `received_at`; the server assigns it.
 
-The property that constrains everything else: **M0 forbids six content-derived fields**. At the
-metadata-only collection mode a device may report that a submission happened and how large it was,
-and may not report its content, a digest of it, or anything derived from it. That is enforced in the
-schema, in `endpoint/protocol`, and in the database's shape constraints — three independent places,
-because a rule enforced in one place is a rule with one bug away from being no rule.
+## The Go binding
 
-`subject_name` is the one field that reverses an earlier position: the wire was pseudonymous end to
-end (`user_ref` only), and ADR 0021 adds an optional clear account name beside it for tenants that
-choose `device_identity = 'clear'`. It is not content-derived and is permitted at every kind and
-mode; a `hashed` tenant's device sends neither it nor the clear hostname.
+`node contracts/tools/generate.mjs` renders `generated/go/envelope/envelope.go` from the schema and
+copies the schema beside it as `event-envelope.schema.json`, which the package embeds as
+`envelope.Schema`. The package provides one struct per device variant (a required field is a value,
+a permitted one a pointer, a forbidden one absent), the closed enums, and `DecodeDeviceSubmission`,
+which dispatches on `kind` and `collection_mode` and refuses undeclared fields. It does not check
+value constraints: ingest-api validates every record against `envelope.Schema` with a JSON Schema
+library first, then decodes it.
 
-Observations are immutable and the envelope is the record, per
-[ADR 0004](../docs/adr/0004-observations-are-immutable-and-the-closed-envelope-is-the-record.md).
+The output is committed so consumers never run a generator; `--check` fails when it drifts.
 
-## Why the output is committed
+## Commands
 
-A generated file that is not committed makes every consumer's build depend on running a generator
-first. Committing it and checking it for drift gives both: consumers read a file, and
-`node contracts/tools/generate.mjs --check` fails the build the moment the schema and the committed
-types disagree. That check is gate 2 of `node tools/accept.mjs`.
+```sh
+node contracts/tools/generate.mjs           # regenerate
+node contracts/tools/generate.mjs --check   # exit 1 if the committed output differs
+node --test contracts/tools/                # drift, registries, field sets, gofmt, vet, Go tests
+cd contracts/generated/go && go test ./...  # the Go package's own tests
+```
 
-## What this directory is not
-
-It is not a validation library. Ingest validates against the schema **at runtime** rather than
-against generated Go types, and `tools/check-seams.mjs` exists because a component can name a field
-the contract does not define while still compiling on both sides.
-
-## Consumers
-
-The endpoint is the producer: `endpoint/capture-core` mints the envelope, using the
-`endpoint/protocol` vocabulary. `extension/` does not mint envelopes — it hands `capture-core`
-protocol observation messages — but its fields feed the envelope. `ingestion/ingest-api` and the
-database are the consumers. When you change the schema you are changing all of them, which is why the change
-starts here rather than in any one of them.
+Changing the schema changes every consumer: the endpoint (`endpoint/capture-core` mints envelopes),
+ingest-api (validates and decodes them) and the database (`ingest.record_event` stores them).

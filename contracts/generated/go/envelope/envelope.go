@@ -2,55 +2,49 @@
 // Regenerate: node contracts/tools/generate.mjs    Drift is a test failure: node --test contracts/tools/
 //
 // Contract: Shadow AI Capture event envelope. The single record emitted by every collection path.
-// Brief §4.1 fixes the common core; this contract makes `kind` a discriminator with per-kind required
-// fields rather than making prompt-only fields nullable, so a malformed record is rejected at the edge
-// instead of stored (ADR 0010). Two changes to §4.1 are deliberate: `received_at` is server-assigned
-// and a device MUST NOT send it, and `schema_version` is added because §4.3 requires validation
-// against a versioned schema. TypeScript and Go types are generated from this file; it is the only
-// permitted source of field names. Every field is declared in envelopeCore so that
-// `additionalProperties: false` stays meaningful; which fields are *required* is decided by the
-// `if/then` branches in envelopeCore.allOf.
+// `kind` is a discriminator with per-kind required fields rather than prompt-only fields being
+// nullable, so a malformed record is rejected at ingest instead of stored. `received_at` is
+// server-assigned and a device must not send it; `schema_version` names the contract version a record
+// validates against. The Go types are generated from this file; it is the only permitted source of
+// field names. Every field is declared in envelopeCore so that `additionalProperties: false` stays
+// meaningful; which fields are *required* is decided by the `if/then` branches in envelopeCore.allOf.
 //
 // Source of truth: https://shadow-ai-capture.invalid/contracts/event-envelope.schema.json
-// ADR 0010: `kind` is a closed registry and the envelope is a discriminated union on it.
 //
 // Encoding of the contract in Go:
-//   - a field the schema requires is a value field with no `omitempty`, so it is always
-//     marshalled; a field the schema permits but does not require is a pointer with
-//     `omitempty` (an array is a pointer-to-slice so that present-but-empty survives a
-//     round trip); a field the schema forbids for a kind and mode is absent from that
-//     variant's struct entirely, so it cannot be compiled into a record.
-//   - the closed unions are the interfaces below, one implementation per variant, each
-//     asserted at compile time; Decode* refuses an unknown kind or mode instead of
-//     defaulting, and refuses a missing required field or a forbidden field by name.
-//   - `format` is asserted only as non-emptiness; the schema's `pattern` constraints are
-//     enforced as written.
+//   - a field the schema requires is a value field with no `omitempty`; a field the schema
+//     permits but does not require is a pointer with `omitempty` (an array is a
+//     pointer-to-slice so that present-but-empty survives a round trip); a field the schema
+//     forbids for a kind and mode is absent from that variant's struct.
+//   - DeviceSubmission is a closed union, one implementation per variant, each asserted at
+//     compile time. DecodeDeviceSubmission dispatches on kind and collection_mode, refuses an
+//     unknown kind or mode, and refuses a field the variant does not declare. It does not
+//     check the schema's value constraints: validate a record against Schema first.
 //
 // Permitted by the schema but not required, so optional in the structs below:
 //   DevicePromptM0: subject_name
-//   StoredPromptM0: subject_name
 //   DevicePromptM1: subject_name, prompt_kind, content_excerpt, attachments
-//   StoredPromptM1: subject_name, prompt_kind, content_excerpt, attachments
 //   DevicePromptM2: subject_name, prompt_kind, attachments
-//   StoredPromptM2: subject_name, prompt_kind, attachments
 //   DevicePromptM3: subject_name, prompt_kind, attachments
-//   StoredPromptM3: subject_name, prompt_kind, attachments
 //   DeviceUsageRollup: subject_name, confidence
-//   StoredUsageRollup: subject_name, confidence
 //   DeviceModelDetection: subject_name, confidence
-//   StoredModelDetection: subject_name, confidence
 
+// Package envelope is the Go binding of the event envelope contract.
 package envelope
 
 import (
 	"bytes"
+	_ "embed"
 	"encoding/json"
 	"fmt"
-	"regexp"
-	"strings"
 )
 
-// SchemaID is the contract document these types were generated from.
+// Schema is the contract document these types were generated from, byte for byte.
+//
+//go:embed event-envelope.schema.json
+var Schema string
+
+// SchemaID is the $id of Schema.
 const SchemaID = "https://shadow-ai-capture.invalid/contracts/event-envelope.schema.json"
 
 // SchemaVersion is the only schema_version this contract describes; a new value is a new contract.
@@ -64,13 +58,9 @@ type UUID = string
 
 type DateTime = string
 
-var reSha256 = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-var reLabelClass = regexp.MustCompile(`^[a-z][a-z0-9_]{1,63}$`)
-var reLabelRuleID = regexp.MustCompile(`^[A-Z][A-Z0-9_]{2,63}$`)
-
 // Kind is the closed set from envelopeCore.kind. Discriminator. Closed registry, enforced by the
-// ingest API, which is what makes risk R7 structural: a collector defect cannot begin shipping raw
-// per-process telemetry, because no kind exists for it.
+// ingest API: a collector defect cannot begin shipping raw per-process telemetry, because no kind
+// exists for it.
 type Kind string
 
 const (
@@ -79,8 +69,7 @@ const (
 	KindModelDetection Kind = "model_detection"
 )
 
-// Valid reports whether the value is inside the closed set. A value outside it is
-// refused rather than defaulted, which is what keeps the registry closed in practice.
+// Valid reports whether the value is inside the closed set.
 func (v Kind) Valid() bool {
 	switch v {
 	case KindPrompt, KindUsageRollup, KindModelDetection:
@@ -96,7 +85,7 @@ func AllKinds() []Kind {
 
 // Route is the closed set from $defs/route. Which collection route produced this record. Closed
 // vocabulary; fidelity ranking per route lives in ref.route_fidelity and is what decides the
-// winner when two routes observe one submission (brief §4.1).
+// winner when two routes observe one submission.
 type Route string
 
 const (
@@ -109,8 +98,7 @@ const (
 	RouteCLIShim        Route = "cli.shim"
 )
 
-// Valid reports whether the value is inside the closed set. A value outside it is
-// refused rather than defaulted, which is what keeps the registry closed in practice.
+// Valid reports whether the value is inside the closed set.
 func (v Route) Valid() bool {
 	switch v {
 	case RouteExtWebRequest, RouteExtPageContext, RouteExtDOM, RouteProxyTLS, RouteProxyLoopback, RouteProcDetect, RouteCLIShim:
@@ -127,8 +115,7 @@ func AllRoutes() []Route {
 // Direction is the closed set from envelopeCore.direction. 'ingress' is reserved and cannot appear
 // on a v1.0 record at all: the prompt branch pins direction to 'egress', so a collector that emits
 // a response-side record is rejected rather than stored. The value exists so that enabling
-// response capture is a schema_version change rather than a rewrite of this field, which is what
-// brief §1.2 means by leaving the seam without building it.
+// response capture is a schema_version change rather than a rewrite of this field.
 type Direction string
 
 const (
@@ -137,8 +124,7 @@ const (
 	DirectionNone    Direction = "none"
 )
 
-// Valid reports whether the value is inside the closed set. A value outside it is
-// refused rather than defaulted, which is what keeps the registry closed in practice.
+// Valid reports whether the value is inside the closed set.
 func (v Direction) Valid() bool {
 	switch v {
 	case DirectionEgress, DirectionIngress, DirectionNone:
@@ -154,7 +140,7 @@ func AllDirections() []Direction {
 
 // CollectionMode is the closed set from envelopeCore.collection_mode. The effective mode applied
 // to this observation, resolved on the device from the signed scope matrix by taking the most
-// restrictive applicable value across tool, data class and user population (brief §1.1).
+// restrictive applicable value across tool, data class and user population.
 type CollectionMode string
 
 const (
@@ -164,8 +150,7 @@ const (
 	CollectionModeM3 CollectionMode = "m3"
 )
 
-// Valid reports whether the value is inside the closed set. A value outside it is
-// refused rather than defaulted, which is what keeps the registry closed in practice.
+// Valid reports whether the value is inside the closed set.
 func (v CollectionMode) Valid() bool {
 	switch v {
 	case CollectionModeM0, CollectionModeM1, CollectionModeM2, CollectionModeM3:
@@ -180,8 +165,8 @@ func AllCollectionModes() []CollectionMode {
 }
 
 // Confidence is the closed set from envelopeCore.confidence. Overall classifier confidence band.
-// 'degraded' means classification was attempted and did not complete — the explicit signal
-// required by brief §6 so that a failed classifier is never reported as 'no sensitive data found'.
+// 'degraded' means classification was attempted and did not complete — the explicit signal that
+// keeps a failed classifier from being reported as 'no sensitive data found'.
 type Confidence string
 
 const (
@@ -191,8 +176,7 @@ const (
 	ConfidenceDegraded Confidence = "degraded"
 )
 
-// Valid reports whether the value is inside the closed set. A value outside it is
-// refused rather than defaulted, which is what keeps the registry closed in practice.
+// Valid reports whether the value is inside the closed set.
 func (v Confidence) Valid() bool {
 	switch v {
 	case ConfidenceHigh, ConfidenceMedium, ConfidenceLow, ConfidenceDegraded:
@@ -215,8 +199,7 @@ const (
 	PolicyActionLogged  PolicyAction = "logged"
 )
 
-// Valid reports whether the value is inside the closed set. A value outside it is
-// refused rather than defaulted, which is what keeps the registry closed in practice.
+// Valid reports whether the value is inside the closed set.
 func (v PolicyAction) Valid() bool {
 	switch v {
 	case PolicyActionBlocked, PolicyActionWarned, PolicyActionLogged:
@@ -240,8 +223,7 @@ const (
 	ExcerptKindRedactedWindow ExcerptKind = "redacted_window"
 )
 
-// Valid reports whether the value is inside the closed set. A value outside it is
-// refused rather than defaulted, which is what keeps the registry closed in practice.
+// Valid reports whether the value is inside the closed set.
 func (v ExcerptKind) Valid() bool {
 	switch v {
 	case ExcerptKindMatchSpan, ExcerptKindRedactedWindow:
@@ -267,8 +249,7 @@ const (
 	DetectionBasisModuleSignature  DetectionBasis = "module_signature"
 )
 
-// Valid reports whether the value is inside the closed set. A value outside it is
-// refused rather than defaulted, which is what keeps the registry closed in practice.
+// Valid reports whether the value is inside the closed set.
 func (v DetectionBasis) Valid() bool {
 	switch v {
 	case DetectionBasisProcessScan, DetectionBasisEndpointSecurity, DetectionBasisETW, DetectionBasisModuleSignature:
@@ -283,13 +264,13 @@ func AllDetectionBases() []DetectionBasis {
 }
 
 // PromptKind is the closed set from envelopeCore.prompt_kind. What kind of prompt this is, decided
-// on the device from the request shape, not from its meaning (task 08). 'user' is text a person
-// authored; 'client_generated' is a request the client made for itself (titling, summarisation,
-// telemetry, an injected system message) which quotes or carries no typed turn; 'unknown' is a
-// record whose device could not decide, and a record from a device that predates this field reads
-// back as 'unknown'. The device defaults to 'user' when unsure so nothing a person typed is
-// hidden. Present only for kind=prompt at M1 and above: a metadata-only M0 record read no body to
-// decide from, and the field is not part of M0's closed list.
+// on the device from the request shape, not from its meaning. 'user' is text a person authored;
+// 'client_generated' is a request the client made for itself (titling, summarisation, telemetry,
+// an injected system message) which quotes or carries no typed turn; 'unknown' is a record whose
+// device could not decide. A stored record without the field reads back as 'unknown'. The device
+// defaults to 'user' when unsure so nothing a person typed is hidden. Present only for kind=prompt
+// at M1 and above: a metadata-only M0 record read no body to decide from, and the field is not
+// part of M0's closed list.
 type PromptKind string
 
 const (
@@ -298,8 +279,7 @@ const (
 	PromptKindUnknown         PromptKind = "unknown"
 )
 
-// Valid reports whether the value is inside the closed set. A value outside it is
-// refused rather than defaulted, which is what keeps the registry closed in practice.
+// Valid reports whether the value is inside the closed set.
 func (v PromptKind) Valid() bool {
 	switch v {
 	case PromptKindUser, PromptKindClientGenerated, PromptKindUnknown:
@@ -314,38 +294,19 @@ func AllPromptKinds() []PromptKind {
 }
 
 // Label: One classification verdict. A label set, never a boolean and never a bare 'sensitive:
-// yes' (brief §6).
+// yes'.
 type Label struct {
 	// Data class code, from the catalogue in ref.data_class: payment_card, government_id, credential,
 	// source_code, customer_pii, legal_commercial, health.
 	Class string  `json:"class"`
 	Score float64 `json:"score"`
 	// Present when the label came from a deterministic rule, so a customer asking 'why was this
-	// flagged' has an answer (brief §6).
+	// flagged' has an answer.
 	RuleID *string `json:"rule_id,omitempty"`
 }
 
-// Validate checks the constraints the schema places on a Label.
-func (e *Label) Validate() error {
-	if !reLabelClass.MatchString(e.Class) {
-		return fmt.Errorf("envelope: Label: class must match %s", reLabelClass)
-	}
-	if e.Score < 0 {
-		return fmt.Errorf("envelope: Label: score must be >= 0, got %v", e.Score)
-	}
-	if e.Score > 1 {
-		return fmt.Errorf("envelope: Label: score must be <= 1, got %v", e.Score)
-	}
-	if e.RuleID != nil {
-		if !reLabelRuleID.MatchString((*e.RuleID)) {
-			return fmt.Errorf("envelope: Label: rule_id must match %s", reLabelRuleID)
-		}
-	}
-	return nil
-}
-
 // PolicyDecision: What policy did about this event, and where the decision was made. `action`
-// values are never merged (brief §3.2).
+// values are never merged.
 type PolicyDecision struct {
 	RuleID string       `json:"rule_id"`
 	Action PolicyAction `json:"action"`
@@ -354,24 +315,10 @@ type PolicyDecision struct {
 	DecidedLocally bool `json:"decided_locally"`
 }
 
-// Validate checks the constraints the schema places on a PolicyDecision.
-func (e *PolicyDecision) Validate() error {
-	if len(e.RuleID) < 1 {
-		return fmt.Errorf("envelope: PolicyDecision: rule_id must be at least 1 character(s), got %d", len(e.RuleID))
-	}
-	if len(e.RuleID) > 128 {
-		return fmt.Errorf("envelope: PolicyDecision: rule_id must be at most 128 character(s), got %d", len(e.RuleID))
-	}
-	if !e.Action.Valid() {
-		return fmt.Errorf("envelope: PolicyDecision: action is %q, which is outside the closed set", string(e.Action))
-	}
-	return nil
-}
-
 // Attachment: An attachment as the collector saw it. A file upload reports a filename and never
-// bytes (brief E3), so the name is metadata obtainable at M1 without reading the file at all,
-// while the bytes are obtainable only in page context. Attachment names are searchable at the
-// `attachment_names` tier from ADR 0014; the bytes are a separate, costlier decision.
+// bytes, so the name is metadata obtainable at M1 without reading the file at all, while the bytes
+// are obtainable only in page context. Attachment names are searchable at the tenant's
+// `attachment_names` search tier; the bytes are a separate, costlier decision.
 type Attachment struct {
 	// The filename as reported by the request or read from the file object. Recorded as-is rather than
 	// normalised, because the customer searches for the name they recognise; normalisation for
@@ -381,27 +328,6 @@ type Attachment struct {
 	// Digest of the attachment bytes. Present only when the collector could read the file object,
 	// which is the page-context route; a filename alone is still emitted without it.
 	ContentDigest *Sha256 `json:"content_digest,omitempty"`
-}
-
-// Validate checks the constraints the schema places on a Attachment.
-func (e *Attachment) Validate() error {
-	if len(e.Name) < 1 {
-		return fmt.Errorf("envelope: Attachment: name must be at least 1 character(s), got %d", len(e.Name))
-	}
-	if len(e.Name) > 255 {
-		return fmt.Errorf("envelope: Attachment: name must be at most 255 character(s), got %d", len(e.Name))
-	}
-	if e.SizeBytes != nil {
-		if (*e.SizeBytes) < 0 {
-			return fmt.Errorf("envelope: Attachment: size_bytes must be >= 0, got %d", (*e.SizeBytes))
-		}
-	}
-	if e.ContentDigest != nil {
-		if !reSha256.MatchString((*e.ContentDigest)) {
-			return fmt.Errorf("envelope: Attachment: content_digest must match %s", reSha256)
-		}
-	}
-	return nil
 }
 
 // Excerpt: A minimised excerpt, present only at M2 and only when policy permits it. Either a
@@ -418,37 +344,10 @@ type Excerpt struct {
 	RedactionApplied *bool   `json:"redaction_applied,omitempty"`
 }
 
-// Validate checks the constraints the schema places on a Excerpt.
-func (e *Excerpt) Validate() error {
-	if !e.Kind.Valid() {
-		return fmt.Errorf("envelope: Excerpt: kind is %q, which is outside the closed set", string(e.Kind))
-	}
-	if len(e.Text) > 2048 {
-		return fmt.Errorf("envelope: Excerpt: text must be at most 2048 character(s), got %d", len(e.Text))
-	}
-	if e.MatchType != nil {
-		if len((*e.MatchType)) > 64 {
-			return fmt.Errorf("envelope: Excerpt: match_type must be at most 64 character(s), got %d", len((*e.MatchType)))
-		}
-	}
-	if e.OffsetStart != nil {
-		if (*e.OffsetStart) < 0 {
-			return fmt.Errorf("envelope: Excerpt: offset_start must be >= 0, got %d", (*e.OffsetStart))
-		}
-	}
-	if e.OffsetEnd != nil {
-		if (*e.OffsetEnd) < 0 {
-			return fmt.Errorf("envelope: Excerpt: offset_end must be >= 0, got %d", (*e.OffsetEnd))
-		}
-	}
-	return nil
-}
-
-// EnvelopeCore holds the fields required on every envelope, whatever its kind.
-// It is not by itself a valid record: ValidateCore checks the core constraints, and each
-// variant pins kind, direction and collection_mode and adds its own required fields.
+// EnvelopeCore holds the fields required on every envelope, whatever its kind. Each variant
+// embeds it and adds its own fields.
 type EnvelopeCore struct {
-	// Contract version this record validates against (brief §4.3).
+	// Contract version this record validates against.
 	SchemaVersion string `json:"schema_version"`
 	// Identifier for this observation, minted by the collector. Two routes observing one submission
 	// mint two different event_ids; they collapse later through dedup_key, not here.
@@ -459,93 +358,40 @@ type EnvelopeCore struct {
 	// dedup, aggregates, k-suppression and audit. It is not the display name; see subject_name.
 	UserRef string `json:"user_ref"`
 	// Behaviour-derived identifier for the destination or application, not a brand name. Discovery
-	// must classify behaviour rather than match a curated list (brief §2), so this value is computed
-	// from observable signals and the sanctioned/unsanctioned judgement is per-tenant state held in
+	// classifies behaviour rather than matching a curated list, so this value is computed from
+	// observable signals and the sanctioned/unsanctioned judgement is per-tenant state held in
 	// ops.tool.
 	ToolFingerprint string `json:"tool_fingerprint"`
 	// 'ingress' is reserved and cannot appear on a v1.0 record at all: the prompt branch pins
 	// direction to 'egress', so a collector that emits a response-side record is rejected rather than
 	// stored. The value exists so that enabling response capture is a schema_version change rather
-	// than a rewrite of this field, which is what brief §1.2 means by leaving the seam without
-	// building it.
+	// than a rewrite of this field.
 	Direction Direction `json:"direction"`
-	// Discriminator. Closed registry, enforced by the ingest API, which is what makes risk R7
-	// structural: a collector defect cannot begin shipping raw per-process telemetry, because no kind
-	// exists for it.
+	// Discriminator. Closed registry, enforced by the ingest API: a collector defect cannot begin
+	// shipping raw per-process telemetry, because no kind exists for it.
 	Kind Kind `json:"kind"`
 	// Device clock at observation. Retained for ordering and skew analysis; the server stamps
-	// received_at and that is what display uses (brief §3.6).
+	// received_at and that is what display uses.
 	OccurredAt DateTime `json:"occurred_at"`
 	// Milliseconds since an arbitrary device-local monotonic origin. Gives intra-device ordering that
 	// survives clock changes, which wall-clock device time does not.
 	MonotonicOffsetMS int64 `json:"monotonic_offset_ms"`
 	// Which collection route produced this record. Closed vocabulary; fidelity ranking per route lives
-	// in ref.route_fidelity and is what decides the winner when two routes observe one submission
-	// (brief §4.1).
+	// in ref.route_fidelity and is what decides the winner when two routes observe one submission.
 	Source Route `json:"source"`
 	// The effective mode applied to this observation, resolved on the device from the signed scope
 	// matrix by taking the most restrictive applicable value across tool, data class and user
-	// population (brief §1.1).
+	// population.
 	CollectionMode CollectionMode `json:"collection_mode"`
 	// Idempotency key, derived per kind from tenant, device, tool and the best material the mode
 	// permits. At M1 and above it includes the normalised content digest; at M0 the device cannot read
 	// content, so it is derived from an occurred_at bucket and size instead, and dedup is
-	// correspondingly weaker. The canonicalisation is normative and lives in
-	// docs/02-ingest-and-transport.md §4.
+	// correspondingly weaker. The device computes it; ingest stores it verbatim and the database's
+	// unique constraints make it the idempotency key.
 	DedupKey Sha256 `json:"dedup_key"`
 }
 
-// ValidateCore checks the constraints the schema places on the common core alone.
-func (e EnvelopeCore) ValidateCore() error {
-	if e.SchemaVersion != "1.0" {
-		return fmt.Errorf("envelope: EnvelopeCore: schema_version must be %s, got %q", "1.0", e.SchemaVersion)
-	}
-	if e.EventID == "" {
-		return fmt.Errorf("envelope: EnvelopeCore: event_id is required and must not be empty")
-	}
-	if e.TenantID == "" {
-		return fmt.Errorf("envelope: EnvelopeCore: tenant_id is required and must not be empty")
-	}
-	if e.DeviceID == "" {
-		return fmt.Errorf("envelope: EnvelopeCore: device_id is required and must not be empty")
-	}
-	if len(e.UserRef) < 1 {
-		return fmt.Errorf("envelope: EnvelopeCore: user_ref must be at least 1 character(s), got %d", len(e.UserRef))
-	}
-	if len(e.UserRef) > 200 {
-		return fmt.Errorf("envelope: EnvelopeCore: user_ref must be at most 200 character(s), got %d", len(e.UserRef))
-	}
-	if len(e.ToolFingerprint) < 1 {
-		return fmt.Errorf("envelope: EnvelopeCore: tool_fingerprint must be at least 1 character(s), got %d", len(e.ToolFingerprint))
-	}
-	if len(e.ToolFingerprint) > 128 {
-		return fmt.Errorf("envelope: EnvelopeCore: tool_fingerprint must be at most 128 character(s), got %d", len(e.ToolFingerprint))
-	}
-	if !e.Direction.Valid() {
-		return fmt.Errorf("envelope: EnvelopeCore: direction is %q, which is outside the closed set", string(e.Direction))
-	}
-	if !e.Kind.Valid() {
-		return fmt.Errorf("envelope: EnvelopeCore: kind is %q, which is outside the closed set", string(e.Kind))
-	}
-	if e.OccurredAt == "" {
-		return fmt.Errorf("envelope: EnvelopeCore: occurred_at is required and must not be empty")
-	}
-	if e.MonotonicOffsetMS < 0 {
-		return fmt.Errorf("envelope: EnvelopeCore: monotonic_offset_ms must be >= 0, got %d", e.MonotonicOffsetMS)
-	}
-	if !e.Source.Valid() {
-		return fmt.Errorf("envelope: EnvelopeCore: source is %q, which is outside the closed set", string(e.Source))
-	}
-	if !e.CollectionMode.Valid() {
-		return fmt.Errorf("envelope: EnvelopeCore: collection_mode is %q, which is outside the closed set", string(e.CollectionMode))
-	}
-	if !reSha256.MatchString(e.DedupKey) {
-		return fmt.Errorf("envelope: EnvelopeCore: dedup_key must match %s", reSha256)
-	}
-	return nil
-}
-
-// DevicePromptM0 is the device envelope for kind "prompt" at collection mode "m0".
+// DevicePromptM0 is what a device sends for kind "prompt" at collection mode "m0".
 //
 // Required: the common core (direction, kind, collection_mode pinned), plus size_bytes,
 // policy_decision.
@@ -567,95 +413,7 @@ func (*DevicePromptM0) deviceSubmission() {}
 // Core returns the common core of the envelope.
 func (e *DevicePromptM0) Core() EnvelopeCore { return e.EnvelopeCore }
 
-// Validate checks the constraints the schema places on a DevicePromptM0.
-func (e *DevicePromptM0) Validate() error {
-	if err := e.ValidateCore(); err != nil {
-		return fmt.Errorf("envelope: DevicePromptM0: %w", err)
-	}
-	if e.Direction != DirectionEgress {
-		return fmt.Errorf("envelope: DevicePromptM0: direction must be %q, got %q", DirectionEgress, e.Direction)
-	}
-	if e.Kind != KindPrompt {
-		return fmt.Errorf("envelope: DevicePromptM0: kind must be %q, got %q", KindPrompt, e.Kind)
-	}
-	if e.CollectionMode != CollectionModeM0 {
-		return fmt.Errorf("envelope: DevicePromptM0: collection_mode must be %q, got %q", CollectionModeM0, e.CollectionMode)
-	}
-	if e.SubjectName != nil {
-		if len((*e.SubjectName)) < 1 {
-			return fmt.Errorf("envelope: DevicePromptM0: subject_name must be at least 1 character(s), got %d", len((*e.SubjectName)))
-		}
-		if len((*e.SubjectName)) > 200 {
-			return fmt.Errorf("envelope: DevicePromptM0: subject_name must be at most 200 character(s), got %d", len((*e.SubjectName)))
-		}
-	}
-	if e.SizeBytes < 0 {
-		return fmt.Errorf("envelope: DevicePromptM0: size_bytes must be >= 0, got %d", e.SizeBytes)
-	}
-	if err := e.PolicyDecision.Validate(); err != nil {
-		return fmt.Errorf("envelope: DevicePromptM0: policy_decision: %w", err)
-	}
-	return nil
-}
-
-// StoredPromptM0 is the stored envelope for kind "prompt" at collection mode "m0".
-//
-// Required: the common core (direction, kind, collection_mode pinned), plus received_at,
-// size_bytes, policy_decision.
-// Permitted but not required: subject_name.
-// Must not carry, so absent from this struct: prompt_kind, confidence, content_digest, labels,
-// classifier_version, content_excerpt, attachments, window_start, window_end, submission_count,
-// bytes_total, detection_basis.
-type StoredPromptM0 struct {
-	EnvelopeCore
-
-	ReceivedAt     DateTime       `json:"received_at"`
-	SubjectName    *string        `json:"subject_name,omitempty"`
-	SizeBytes      int64          `json:"size_bytes"`
-	PolicyDecision PolicyDecision `json:"policy_decision"`
-}
-
-// storedEnvelope marks StoredPromptM0 as a member of the closed StoredEnvelope union.
-func (*StoredPromptM0) storedEnvelope() {}
-
-// Core returns the common core of the envelope.
-func (e *StoredPromptM0) Core() EnvelopeCore { return e.EnvelopeCore }
-
-// Validate checks the constraints the schema places on a StoredPromptM0.
-func (e *StoredPromptM0) Validate() error {
-	if err := e.ValidateCore(); err != nil {
-		return fmt.Errorf("envelope: StoredPromptM0: %w", err)
-	}
-	if e.Direction != DirectionEgress {
-		return fmt.Errorf("envelope: StoredPromptM0: direction must be %q, got %q", DirectionEgress, e.Direction)
-	}
-	if e.Kind != KindPrompt {
-		return fmt.Errorf("envelope: StoredPromptM0: kind must be %q, got %q", KindPrompt, e.Kind)
-	}
-	if e.CollectionMode != CollectionModeM0 {
-		return fmt.Errorf("envelope: StoredPromptM0: collection_mode must be %q, got %q", CollectionModeM0, e.CollectionMode)
-	}
-	if e.ReceivedAt == "" {
-		return fmt.Errorf("envelope: StoredPromptM0: received_at is required and must not be empty")
-	}
-	if e.SubjectName != nil {
-		if len((*e.SubjectName)) < 1 {
-			return fmt.Errorf("envelope: StoredPromptM0: subject_name must be at least 1 character(s), got %d", len((*e.SubjectName)))
-		}
-		if len((*e.SubjectName)) > 200 {
-			return fmt.Errorf("envelope: StoredPromptM0: subject_name must be at most 200 character(s), got %d", len((*e.SubjectName)))
-		}
-	}
-	if e.SizeBytes < 0 {
-		return fmt.Errorf("envelope: StoredPromptM0: size_bytes must be >= 0, got %d", e.SizeBytes)
-	}
-	if err := e.PolicyDecision.Validate(); err != nil {
-		return fmt.Errorf("envelope: StoredPromptM0: policy_decision: %w", err)
-	}
-	return nil
-}
-
-// DevicePromptM1 is the device envelope for kind "prompt" at collection mode "m1".
+// DevicePromptM1 is what a device sends for kind "prompt" at collection mode "m1".
 //
 // Required: the common core (direction, kind, collection_mode pinned), plus confidence,
 // size_bytes, content_digest, labels, classifier_version, policy_decision.
@@ -683,175 +441,7 @@ func (*DevicePromptM1) deviceSubmission() {}
 // Core returns the common core of the envelope.
 func (e *DevicePromptM1) Core() EnvelopeCore { return e.EnvelopeCore }
 
-// Validate checks the constraints the schema places on a DevicePromptM1.
-func (e *DevicePromptM1) Validate() error {
-	if err := e.ValidateCore(); err != nil {
-		return fmt.Errorf("envelope: DevicePromptM1: %w", err)
-	}
-	if e.Direction != DirectionEgress {
-		return fmt.Errorf("envelope: DevicePromptM1: direction must be %q, got %q", DirectionEgress, e.Direction)
-	}
-	if e.Kind != KindPrompt {
-		return fmt.Errorf("envelope: DevicePromptM1: kind must be %q, got %q", KindPrompt, e.Kind)
-	}
-	if e.CollectionMode != CollectionModeM1 {
-		return fmt.Errorf("envelope: DevicePromptM1: collection_mode must be %q, got %q", CollectionModeM1, e.CollectionMode)
-	}
-	if e.SubjectName != nil {
-		if len((*e.SubjectName)) < 1 {
-			return fmt.Errorf("envelope: DevicePromptM1: subject_name must be at least 1 character(s), got %d", len((*e.SubjectName)))
-		}
-		if len((*e.SubjectName)) > 200 {
-			return fmt.Errorf("envelope: DevicePromptM1: subject_name must be at most 200 character(s), got %d", len((*e.SubjectName)))
-		}
-	}
-	if e.PromptKind != nil {
-		if !(*e.PromptKind).Valid() {
-			return fmt.Errorf("envelope: DevicePromptM1: prompt_kind is %q, which is outside the closed set", string((*e.PromptKind)))
-		}
-	}
-	if !e.Confidence.Valid() {
-		return fmt.Errorf("envelope: DevicePromptM1: confidence is %q, which is outside the closed set", string(e.Confidence))
-	}
-	if e.SizeBytes < 0 {
-		return fmt.Errorf("envelope: DevicePromptM1: size_bytes must be >= 0, got %d", e.SizeBytes)
-	}
-	if !reSha256.MatchString(e.ContentDigest) {
-		return fmt.Errorf("envelope: DevicePromptM1: content_digest must match %s", reSha256)
-	}
-	if e.Labels == nil {
-		return fmt.Errorf("envelope: DevicePromptM1: labels is required and must be present")
-	}
-	for i := range e.Labels {
-		if err := e.Labels[i].Validate(); err != nil {
-			return fmt.Errorf("envelope: DevicePromptM1: labels[%d]: %w", i, err)
-		}
-	}
-	if len(e.ClassifierVersion) < 1 {
-		return fmt.Errorf("envelope: DevicePromptM1: classifier_version must be at least 1 character(s), got %d", len(e.ClassifierVersion))
-	}
-	if len(e.ClassifierVersion) > 64 {
-		return fmt.Errorf("envelope: DevicePromptM1: classifier_version must be at most 64 character(s), got %d", len(e.ClassifierVersion))
-	}
-	if e.ContentExcerpt != nil {
-		if err := (*e.ContentExcerpt).Validate(); err != nil {
-			return fmt.Errorf("envelope: DevicePromptM1: content_excerpt: %w", err)
-		}
-	}
-	if e.Attachments != nil {
-		for i := range *e.Attachments {
-			if err := (*e.Attachments)[i].Validate(); err != nil {
-				return fmt.Errorf("envelope: DevicePromptM1: attachments[%d]: %w", i, err)
-			}
-		}
-	}
-	if err := e.PolicyDecision.Validate(); err != nil {
-		return fmt.Errorf("envelope: DevicePromptM1: policy_decision: %w", err)
-	}
-	return nil
-}
-
-// StoredPromptM1 is the stored envelope for kind "prompt" at collection mode "m1".
-//
-// Required: the common core (direction, kind, collection_mode pinned), plus received_at,
-// confidence, size_bytes, content_digest, labels, classifier_version, policy_decision.
-// Permitted but not required: subject_name, prompt_kind, content_excerpt, attachments.
-// Must not carry, so absent from this struct: window_start, window_end, submission_count,
-// bytes_total, detection_basis.
-type StoredPromptM1 struct {
-	EnvelopeCore
-
-	ReceivedAt        DateTime       `json:"received_at"`
-	SubjectName       *string        `json:"subject_name,omitempty"`
-	PromptKind        *PromptKind    `json:"prompt_kind,omitempty"`
-	Confidence        Confidence     `json:"confidence"`
-	SizeBytes         int64          `json:"size_bytes"`
-	ContentDigest     Sha256         `json:"content_digest"`
-	Labels            []Label        `json:"labels"`
-	ClassifierVersion string         `json:"classifier_version"`
-	ContentExcerpt    *Excerpt       `json:"content_excerpt,omitempty"`
-	Attachments       *[]Attachment  `json:"attachments,omitempty"`
-	PolicyDecision    PolicyDecision `json:"policy_decision"`
-}
-
-// storedEnvelope marks StoredPromptM1 as a member of the closed StoredEnvelope union.
-func (*StoredPromptM1) storedEnvelope() {}
-
-// Core returns the common core of the envelope.
-func (e *StoredPromptM1) Core() EnvelopeCore { return e.EnvelopeCore }
-
-// Validate checks the constraints the schema places on a StoredPromptM1.
-func (e *StoredPromptM1) Validate() error {
-	if err := e.ValidateCore(); err != nil {
-		return fmt.Errorf("envelope: StoredPromptM1: %w", err)
-	}
-	if e.Direction != DirectionEgress {
-		return fmt.Errorf("envelope: StoredPromptM1: direction must be %q, got %q", DirectionEgress, e.Direction)
-	}
-	if e.Kind != KindPrompt {
-		return fmt.Errorf("envelope: StoredPromptM1: kind must be %q, got %q", KindPrompt, e.Kind)
-	}
-	if e.CollectionMode != CollectionModeM1 {
-		return fmt.Errorf("envelope: StoredPromptM1: collection_mode must be %q, got %q", CollectionModeM1, e.CollectionMode)
-	}
-	if e.ReceivedAt == "" {
-		return fmt.Errorf("envelope: StoredPromptM1: received_at is required and must not be empty")
-	}
-	if e.SubjectName != nil {
-		if len((*e.SubjectName)) < 1 {
-			return fmt.Errorf("envelope: StoredPromptM1: subject_name must be at least 1 character(s), got %d", len((*e.SubjectName)))
-		}
-		if len((*e.SubjectName)) > 200 {
-			return fmt.Errorf("envelope: StoredPromptM1: subject_name must be at most 200 character(s), got %d", len((*e.SubjectName)))
-		}
-	}
-	if e.PromptKind != nil {
-		if !(*e.PromptKind).Valid() {
-			return fmt.Errorf("envelope: StoredPromptM1: prompt_kind is %q, which is outside the closed set", string((*e.PromptKind)))
-		}
-	}
-	if !e.Confidence.Valid() {
-		return fmt.Errorf("envelope: StoredPromptM1: confidence is %q, which is outside the closed set", string(e.Confidence))
-	}
-	if e.SizeBytes < 0 {
-		return fmt.Errorf("envelope: StoredPromptM1: size_bytes must be >= 0, got %d", e.SizeBytes)
-	}
-	if !reSha256.MatchString(e.ContentDigest) {
-		return fmt.Errorf("envelope: StoredPromptM1: content_digest must match %s", reSha256)
-	}
-	if e.Labels == nil {
-		return fmt.Errorf("envelope: StoredPromptM1: labels is required and must be present")
-	}
-	for i := range e.Labels {
-		if err := e.Labels[i].Validate(); err != nil {
-			return fmt.Errorf("envelope: StoredPromptM1: labels[%d]: %w", i, err)
-		}
-	}
-	if len(e.ClassifierVersion) < 1 {
-		return fmt.Errorf("envelope: StoredPromptM1: classifier_version must be at least 1 character(s), got %d", len(e.ClassifierVersion))
-	}
-	if len(e.ClassifierVersion) > 64 {
-		return fmt.Errorf("envelope: StoredPromptM1: classifier_version must be at most 64 character(s), got %d", len(e.ClassifierVersion))
-	}
-	if e.ContentExcerpt != nil {
-		if err := (*e.ContentExcerpt).Validate(); err != nil {
-			return fmt.Errorf("envelope: StoredPromptM1: content_excerpt: %w", err)
-		}
-	}
-	if e.Attachments != nil {
-		for i := range *e.Attachments {
-			if err := (*e.Attachments)[i].Validate(); err != nil {
-				return fmt.Errorf("envelope: StoredPromptM1: attachments[%d]: %w", i, err)
-			}
-		}
-	}
-	if err := e.PolicyDecision.Validate(); err != nil {
-		return fmt.Errorf("envelope: StoredPromptM1: policy_decision: %w", err)
-	}
-	return nil
-}
-
-// DevicePromptM2 is the device envelope for kind "prompt" at collection mode "m2".
+// DevicePromptM2 is what a device sends for kind "prompt" at collection mode "m2".
 //
 // Required: the common core (direction, kind, collection_mode pinned), plus confidence,
 // size_bytes, content_digest, labels, classifier_version, content_excerpt, policy_decision.
@@ -879,172 +469,7 @@ func (*DevicePromptM2) deviceSubmission() {}
 // Core returns the common core of the envelope.
 func (e *DevicePromptM2) Core() EnvelopeCore { return e.EnvelopeCore }
 
-// Validate checks the constraints the schema places on a DevicePromptM2.
-func (e *DevicePromptM2) Validate() error {
-	if err := e.ValidateCore(); err != nil {
-		return fmt.Errorf("envelope: DevicePromptM2: %w", err)
-	}
-	if e.Direction != DirectionEgress {
-		return fmt.Errorf("envelope: DevicePromptM2: direction must be %q, got %q", DirectionEgress, e.Direction)
-	}
-	if e.Kind != KindPrompt {
-		return fmt.Errorf("envelope: DevicePromptM2: kind must be %q, got %q", KindPrompt, e.Kind)
-	}
-	if e.CollectionMode != CollectionModeM2 {
-		return fmt.Errorf("envelope: DevicePromptM2: collection_mode must be %q, got %q", CollectionModeM2, e.CollectionMode)
-	}
-	if e.SubjectName != nil {
-		if len((*e.SubjectName)) < 1 {
-			return fmt.Errorf("envelope: DevicePromptM2: subject_name must be at least 1 character(s), got %d", len((*e.SubjectName)))
-		}
-		if len((*e.SubjectName)) > 200 {
-			return fmt.Errorf("envelope: DevicePromptM2: subject_name must be at most 200 character(s), got %d", len((*e.SubjectName)))
-		}
-	}
-	if e.PromptKind != nil {
-		if !(*e.PromptKind).Valid() {
-			return fmt.Errorf("envelope: DevicePromptM2: prompt_kind is %q, which is outside the closed set", string((*e.PromptKind)))
-		}
-	}
-	if !e.Confidence.Valid() {
-		return fmt.Errorf("envelope: DevicePromptM2: confidence is %q, which is outside the closed set", string(e.Confidence))
-	}
-	if e.SizeBytes < 0 {
-		return fmt.Errorf("envelope: DevicePromptM2: size_bytes must be >= 0, got %d", e.SizeBytes)
-	}
-	if !reSha256.MatchString(e.ContentDigest) {
-		return fmt.Errorf("envelope: DevicePromptM2: content_digest must match %s", reSha256)
-	}
-	if e.Labels == nil {
-		return fmt.Errorf("envelope: DevicePromptM2: labels is required and must be present")
-	}
-	for i := range e.Labels {
-		if err := e.Labels[i].Validate(); err != nil {
-			return fmt.Errorf("envelope: DevicePromptM2: labels[%d]: %w", i, err)
-		}
-	}
-	if len(e.ClassifierVersion) < 1 {
-		return fmt.Errorf("envelope: DevicePromptM2: classifier_version must be at least 1 character(s), got %d", len(e.ClassifierVersion))
-	}
-	if len(e.ClassifierVersion) > 64 {
-		return fmt.Errorf("envelope: DevicePromptM2: classifier_version must be at most 64 character(s), got %d", len(e.ClassifierVersion))
-	}
-	if err := e.ContentExcerpt.Validate(); err != nil {
-		return fmt.Errorf("envelope: DevicePromptM2: content_excerpt: %w", err)
-	}
-	if e.Attachments != nil {
-		for i := range *e.Attachments {
-			if err := (*e.Attachments)[i].Validate(); err != nil {
-				return fmt.Errorf("envelope: DevicePromptM2: attachments[%d]: %w", i, err)
-			}
-		}
-	}
-	if err := e.PolicyDecision.Validate(); err != nil {
-		return fmt.Errorf("envelope: DevicePromptM2: policy_decision: %w", err)
-	}
-	return nil
-}
-
-// StoredPromptM2 is the stored envelope for kind "prompt" at collection mode "m2".
-//
-// Required: the common core (direction, kind, collection_mode pinned), plus received_at,
-// confidence, size_bytes, content_digest, labels, classifier_version, content_excerpt,
-// policy_decision.
-// Permitted but not required: subject_name, prompt_kind, attachments.
-// Must not carry, so absent from this struct: window_start, window_end, submission_count,
-// bytes_total, detection_basis.
-type StoredPromptM2 struct {
-	EnvelopeCore
-
-	ReceivedAt        DateTime       `json:"received_at"`
-	SubjectName       *string        `json:"subject_name,omitempty"`
-	PromptKind        *PromptKind    `json:"prompt_kind,omitempty"`
-	Confidence        Confidence     `json:"confidence"`
-	SizeBytes         int64          `json:"size_bytes"`
-	ContentDigest     Sha256         `json:"content_digest"`
-	Labels            []Label        `json:"labels"`
-	ClassifierVersion string         `json:"classifier_version"`
-	ContentExcerpt    Excerpt        `json:"content_excerpt"`
-	Attachments       *[]Attachment  `json:"attachments,omitempty"`
-	PolicyDecision    PolicyDecision `json:"policy_decision"`
-}
-
-// storedEnvelope marks StoredPromptM2 as a member of the closed StoredEnvelope union.
-func (*StoredPromptM2) storedEnvelope() {}
-
-// Core returns the common core of the envelope.
-func (e *StoredPromptM2) Core() EnvelopeCore { return e.EnvelopeCore }
-
-// Validate checks the constraints the schema places on a StoredPromptM2.
-func (e *StoredPromptM2) Validate() error {
-	if err := e.ValidateCore(); err != nil {
-		return fmt.Errorf("envelope: StoredPromptM2: %w", err)
-	}
-	if e.Direction != DirectionEgress {
-		return fmt.Errorf("envelope: StoredPromptM2: direction must be %q, got %q", DirectionEgress, e.Direction)
-	}
-	if e.Kind != KindPrompt {
-		return fmt.Errorf("envelope: StoredPromptM2: kind must be %q, got %q", KindPrompt, e.Kind)
-	}
-	if e.CollectionMode != CollectionModeM2 {
-		return fmt.Errorf("envelope: StoredPromptM2: collection_mode must be %q, got %q", CollectionModeM2, e.CollectionMode)
-	}
-	if e.ReceivedAt == "" {
-		return fmt.Errorf("envelope: StoredPromptM2: received_at is required and must not be empty")
-	}
-	if e.SubjectName != nil {
-		if len((*e.SubjectName)) < 1 {
-			return fmt.Errorf("envelope: StoredPromptM2: subject_name must be at least 1 character(s), got %d", len((*e.SubjectName)))
-		}
-		if len((*e.SubjectName)) > 200 {
-			return fmt.Errorf("envelope: StoredPromptM2: subject_name must be at most 200 character(s), got %d", len((*e.SubjectName)))
-		}
-	}
-	if e.PromptKind != nil {
-		if !(*e.PromptKind).Valid() {
-			return fmt.Errorf("envelope: StoredPromptM2: prompt_kind is %q, which is outside the closed set", string((*e.PromptKind)))
-		}
-	}
-	if !e.Confidence.Valid() {
-		return fmt.Errorf("envelope: StoredPromptM2: confidence is %q, which is outside the closed set", string(e.Confidence))
-	}
-	if e.SizeBytes < 0 {
-		return fmt.Errorf("envelope: StoredPromptM2: size_bytes must be >= 0, got %d", e.SizeBytes)
-	}
-	if !reSha256.MatchString(e.ContentDigest) {
-		return fmt.Errorf("envelope: StoredPromptM2: content_digest must match %s", reSha256)
-	}
-	if e.Labels == nil {
-		return fmt.Errorf("envelope: StoredPromptM2: labels is required and must be present")
-	}
-	for i := range e.Labels {
-		if err := e.Labels[i].Validate(); err != nil {
-			return fmt.Errorf("envelope: StoredPromptM2: labels[%d]: %w", i, err)
-		}
-	}
-	if len(e.ClassifierVersion) < 1 {
-		return fmt.Errorf("envelope: StoredPromptM2: classifier_version must be at least 1 character(s), got %d", len(e.ClassifierVersion))
-	}
-	if len(e.ClassifierVersion) > 64 {
-		return fmt.Errorf("envelope: StoredPromptM2: classifier_version must be at most 64 character(s), got %d", len(e.ClassifierVersion))
-	}
-	if err := e.ContentExcerpt.Validate(); err != nil {
-		return fmt.Errorf("envelope: StoredPromptM2: content_excerpt: %w", err)
-	}
-	if e.Attachments != nil {
-		for i := range *e.Attachments {
-			if err := (*e.Attachments)[i].Validate(); err != nil {
-				return fmt.Errorf("envelope: StoredPromptM2: attachments[%d]: %w", i, err)
-			}
-		}
-	}
-	if err := e.PolicyDecision.Validate(); err != nil {
-		return fmt.Errorf("envelope: StoredPromptM2: policy_decision: %w", err)
-	}
-	return nil
-}
-
-// DevicePromptM3 is the device envelope for kind "prompt" at collection mode "m3".
+// DevicePromptM3 is what a device sends for kind "prompt" at collection mode "m3".
 //
 // Required: the common core (direction, kind, collection_mode pinned), plus confidence,
 // size_bytes, content_digest, labels, classifier_version, policy_decision.
@@ -1071,164 +496,7 @@ func (*DevicePromptM3) deviceSubmission() {}
 // Core returns the common core of the envelope.
 func (e *DevicePromptM3) Core() EnvelopeCore { return e.EnvelopeCore }
 
-// Validate checks the constraints the schema places on a DevicePromptM3.
-func (e *DevicePromptM3) Validate() error {
-	if err := e.ValidateCore(); err != nil {
-		return fmt.Errorf("envelope: DevicePromptM3: %w", err)
-	}
-	if e.Direction != DirectionEgress {
-		return fmt.Errorf("envelope: DevicePromptM3: direction must be %q, got %q", DirectionEgress, e.Direction)
-	}
-	if e.Kind != KindPrompt {
-		return fmt.Errorf("envelope: DevicePromptM3: kind must be %q, got %q", KindPrompt, e.Kind)
-	}
-	if e.CollectionMode != CollectionModeM3 {
-		return fmt.Errorf("envelope: DevicePromptM3: collection_mode must be %q, got %q", CollectionModeM3, e.CollectionMode)
-	}
-	if e.SubjectName != nil {
-		if len((*e.SubjectName)) < 1 {
-			return fmt.Errorf("envelope: DevicePromptM3: subject_name must be at least 1 character(s), got %d", len((*e.SubjectName)))
-		}
-		if len((*e.SubjectName)) > 200 {
-			return fmt.Errorf("envelope: DevicePromptM3: subject_name must be at most 200 character(s), got %d", len((*e.SubjectName)))
-		}
-	}
-	if e.PromptKind != nil {
-		if !(*e.PromptKind).Valid() {
-			return fmt.Errorf("envelope: DevicePromptM3: prompt_kind is %q, which is outside the closed set", string((*e.PromptKind)))
-		}
-	}
-	if !e.Confidence.Valid() {
-		return fmt.Errorf("envelope: DevicePromptM3: confidence is %q, which is outside the closed set", string(e.Confidence))
-	}
-	if e.SizeBytes < 0 {
-		return fmt.Errorf("envelope: DevicePromptM3: size_bytes must be >= 0, got %d", e.SizeBytes)
-	}
-	if !reSha256.MatchString(e.ContentDigest) {
-		return fmt.Errorf("envelope: DevicePromptM3: content_digest must match %s", reSha256)
-	}
-	if e.Labels == nil {
-		return fmt.Errorf("envelope: DevicePromptM3: labels is required and must be present")
-	}
-	for i := range e.Labels {
-		if err := e.Labels[i].Validate(); err != nil {
-			return fmt.Errorf("envelope: DevicePromptM3: labels[%d]: %w", i, err)
-		}
-	}
-	if len(e.ClassifierVersion) < 1 {
-		return fmt.Errorf("envelope: DevicePromptM3: classifier_version must be at least 1 character(s), got %d", len(e.ClassifierVersion))
-	}
-	if len(e.ClassifierVersion) > 64 {
-		return fmt.Errorf("envelope: DevicePromptM3: classifier_version must be at most 64 character(s), got %d", len(e.ClassifierVersion))
-	}
-	if e.Attachments != nil {
-		for i := range *e.Attachments {
-			if err := (*e.Attachments)[i].Validate(); err != nil {
-				return fmt.Errorf("envelope: DevicePromptM3: attachments[%d]: %w", i, err)
-			}
-		}
-	}
-	if err := e.PolicyDecision.Validate(); err != nil {
-		return fmt.Errorf("envelope: DevicePromptM3: policy_decision: %w", err)
-	}
-	return nil
-}
-
-// StoredPromptM3 is the stored envelope for kind "prompt" at collection mode "m3".
-//
-// Required: the common core (direction, kind, collection_mode pinned), plus received_at,
-// confidence, size_bytes, content_digest, labels, classifier_version, policy_decision.
-// Permitted but not required: subject_name, prompt_kind, attachments.
-// Must not carry, so absent from this struct: content_excerpt, window_start, window_end,
-// submission_count, bytes_total, detection_basis.
-type StoredPromptM3 struct {
-	EnvelopeCore
-
-	ReceivedAt        DateTime       `json:"received_at"`
-	SubjectName       *string        `json:"subject_name,omitempty"`
-	PromptKind        *PromptKind    `json:"prompt_kind,omitempty"`
-	Confidence        Confidence     `json:"confidence"`
-	SizeBytes         int64          `json:"size_bytes"`
-	ContentDigest     Sha256         `json:"content_digest"`
-	Labels            []Label        `json:"labels"`
-	ClassifierVersion string         `json:"classifier_version"`
-	Attachments       *[]Attachment  `json:"attachments,omitempty"`
-	PolicyDecision    PolicyDecision `json:"policy_decision"`
-}
-
-// storedEnvelope marks StoredPromptM3 as a member of the closed StoredEnvelope union.
-func (*StoredPromptM3) storedEnvelope() {}
-
-// Core returns the common core of the envelope.
-func (e *StoredPromptM3) Core() EnvelopeCore { return e.EnvelopeCore }
-
-// Validate checks the constraints the schema places on a StoredPromptM3.
-func (e *StoredPromptM3) Validate() error {
-	if err := e.ValidateCore(); err != nil {
-		return fmt.Errorf("envelope: StoredPromptM3: %w", err)
-	}
-	if e.Direction != DirectionEgress {
-		return fmt.Errorf("envelope: StoredPromptM3: direction must be %q, got %q", DirectionEgress, e.Direction)
-	}
-	if e.Kind != KindPrompt {
-		return fmt.Errorf("envelope: StoredPromptM3: kind must be %q, got %q", KindPrompt, e.Kind)
-	}
-	if e.CollectionMode != CollectionModeM3 {
-		return fmt.Errorf("envelope: StoredPromptM3: collection_mode must be %q, got %q", CollectionModeM3, e.CollectionMode)
-	}
-	if e.ReceivedAt == "" {
-		return fmt.Errorf("envelope: StoredPromptM3: received_at is required and must not be empty")
-	}
-	if e.SubjectName != nil {
-		if len((*e.SubjectName)) < 1 {
-			return fmt.Errorf("envelope: StoredPromptM3: subject_name must be at least 1 character(s), got %d", len((*e.SubjectName)))
-		}
-		if len((*e.SubjectName)) > 200 {
-			return fmt.Errorf("envelope: StoredPromptM3: subject_name must be at most 200 character(s), got %d", len((*e.SubjectName)))
-		}
-	}
-	if e.PromptKind != nil {
-		if !(*e.PromptKind).Valid() {
-			return fmt.Errorf("envelope: StoredPromptM3: prompt_kind is %q, which is outside the closed set", string((*e.PromptKind)))
-		}
-	}
-	if !e.Confidence.Valid() {
-		return fmt.Errorf("envelope: StoredPromptM3: confidence is %q, which is outside the closed set", string(e.Confidence))
-	}
-	if e.SizeBytes < 0 {
-		return fmt.Errorf("envelope: StoredPromptM3: size_bytes must be >= 0, got %d", e.SizeBytes)
-	}
-	if !reSha256.MatchString(e.ContentDigest) {
-		return fmt.Errorf("envelope: StoredPromptM3: content_digest must match %s", reSha256)
-	}
-	if e.Labels == nil {
-		return fmt.Errorf("envelope: StoredPromptM3: labels is required and must be present")
-	}
-	for i := range e.Labels {
-		if err := e.Labels[i].Validate(); err != nil {
-			return fmt.Errorf("envelope: StoredPromptM3: labels[%d]: %w", i, err)
-		}
-	}
-	if len(e.ClassifierVersion) < 1 {
-		return fmt.Errorf("envelope: StoredPromptM3: classifier_version must be at least 1 character(s), got %d", len(e.ClassifierVersion))
-	}
-	if len(e.ClassifierVersion) > 64 {
-		return fmt.Errorf("envelope: StoredPromptM3: classifier_version must be at most 64 character(s), got %d", len(e.ClassifierVersion))
-	}
-	if e.Attachments != nil {
-		for i := range *e.Attachments {
-			if err := (*e.Attachments)[i].Validate(); err != nil {
-				return fmt.Errorf("envelope: StoredPromptM3: attachments[%d]: %w", i, err)
-			}
-		}
-	}
-	if err := e.PolicyDecision.Validate(); err != nil {
-		return fmt.Errorf("envelope: StoredPromptM3: policy_decision: %w", err)
-	}
-	return nil
-}
-
-// DeviceUsageRollup is the device envelope for kind "usage_rollup".
+// DeviceUsageRollup is what a device sends for kind "usage_rollup".
 //
 // Required: the common core (direction, kind pinned), plus window_start, window_end,
 // submission_count, bytes_total.
@@ -1253,113 +521,7 @@ func (*DeviceUsageRollup) deviceSubmission() {}
 // Core returns the common core of the envelope.
 func (e *DeviceUsageRollup) Core() EnvelopeCore { return e.EnvelopeCore }
 
-// Validate checks the constraints the schema places on a DeviceUsageRollup.
-func (e *DeviceUsageRollup) Validate() error {
-	if err := e.ValidateCore(); err != nil {
-		return fmt.Errorf("envelope: DeviceUsageRollup: %w", err)
-	}
-	if e.Direction != DirectionNone {
-		return fmt.Errorf("envelope: DeviceUsageRollup: direction must be %q, got %q", DirectionNone, e.Direction)
-	}
-	if e.Kind != KindUsageRollup {
-		return fmt.Errorf("envelope: DeviceUsageRollup: kind must be %q, got %q", KindUsageRollup, e.Kind)
-	}
-	if e.SubjectName != nil {
-		if len((*e.SubjectName)) < 1 {
-			return fmt.Errorf("envelope: DeviceUsageRollup: subject_name must be at least 1 character(s), got %d", len((*e.SubjectName)))
-		}
-		if len((*e.SubjectName)) > 200 {
-			return fmt.Errorf("envelope: DeviceUsageRollup: subject_name must be at most 200 character(s), got %d", len((*e.SubjectName)))
-		}
-	}
-	if e.Confidence != nil {
-		if !(*e.Confidence).Valid() {
-			return fmt.Errorf("envelope: DeviceUsageRollup: confidence is %q, which is outside the closed set", string((*e.Confidence)))
-		}
-	}
-	if e.WindowStart == "" {
-		return fmt.Errorf("envelope: DeviceUsageRollup: window_start is required and must not be empty")
-	}
-	if e.WindowEnd == "" {
-		return fmt.Errorf("envelope: DeviceUsageRollup: window_end is required and must not be empty")
-	}
-	if e.SubmissionCount < 0 {
-		return fmt.Errorf("envelope: DeviceUsageRollup: submission_count must be >= 0, got %d", e.SubmissionCount)
-	}
-	if e.BytesTotal < 0 {
-		return fmt.Errorf("envelope: DeviceUsageRollup: bytes_total must be >= 0, got %d", e.BytesTotal)
-	}
-	return nil
-}
-
-// StoredUsageRollup is the stored envelope for kind "usage_rollup".
-//
-// Required: the common core (direction, kind pinned), plus received_at, window_start, window_end,
-// submission_count, bytes_total.
-// Permitted but not required: subject_name, confidence.
-// Must not carry, so absent from this struct: prompt_kind, size_bytes, content_digest, labels,
-// classifier_version, content_excerpt, attachments, policy_decision, detection_basis.
-type StoredUsageRollup struct {
-	EnvelopeCore
-
-	ReceivedAt      DateTime    `json:"received_at"`
-	SubjectName     *string     `json:"subject_name,omitempty"`
-	Confidence      *Confidence `json:"confidence,omitempty"`
-	WindowStart     DateTime    `json:"window_start"`
-	WindowEnd       DateTime    `json:"window_end"`
-	SubmissionCount int64       `json:"submission_count"`
-	BytesTotal      int64       `json:"bytes_total"`
-}
-
-// storedEnvelope marks StoredUsageRollup as a member of the closed StoredEnvelope union.
-func (*StoredUsageRollup) storedEnvelope() {}
-
-// Core returns the common core of the envelope.
-func (e *StoredUsageRollup) Core() EnvelopeCore { return e.EnvelopeCore }
-
-// Validate checks the constraints the schema places on a StoredUsageRollup.
-func (e *StoredUsageRollup) Validate() error {
-	if err := e.ValidateCore(); err != nil {
-		return fmt.Errorf("envelope: StoredUsageRollup: %w", err)
-	}
-	if e.Direction != DirectionNone {
-		return fmt.Errorf("envelope: StoredUsageRollup: direction must be %q, got %q", DirectionNone, e.Direction)
-	}
-	if e.Kind != KindUsageRollup {
-		return fmt.Errorf("envelope: StoredUsageRollup: kind must be %q, got %q", KindUsageRollup, e.Kind)
-	}
-	if e.ReceivedAt == "" {
-		return fmt.Errorf("envelope: StoredUsageRollup: received_at is required and must not be empty")
-	}
-	if e.SubjectName != nil {
-		if len((*e.SubjectName)) < 1 {
-			return fmt.Errorf("envelope: StoredUsageRollup: subject_name must be at least 1 character(s), got %d", len((*e.SubjectName)))
-		}
-		if len((*e.SubjectName)) > 200 {
-			return fmt.Errorf("envelope: StoredUsageRollup: subject_name must be at most 200 character(s), got %d", len((*e.SubjectName)))
-		}
-	}
-	if e.Confidence != nil {
-		if !(*e.Confidence).Valid() {
-			return fmt.Errorf("envelope: StoredUsageRollup: confidence is %q, which is outside the closed set", string((*e.Confidence)))
-		}
-	}
-	if e.WindowStart == "" {
-		return fmt.Errorf("envelope: StoredUsageRollup: window_start is required and must not be empty")
-	}
-	if e.WindowEnd == "" {
-		return fmt.Errorf("envelope: StoredUsageRollup: window_end is required and must not be empty")
-	}
-	if e.SubmissionCount < 0 {
-		return fmt.Errorf("envelope: StoredUsageRollup: submission_count must be >= 0, got %d", e.SubmissionCount)
-	}
-	if e.BytesTotal < 0 {
-		return fmt.Errorf("envelope: StoredUsageRollup: bytes_total must be >= 0, got %d", e.BytesTotal)
-	}
-	return nil
-}
-
-// DeviceModelDetection is the device envelope for kind "model_detection".
+// DeviceModelDetection is what a device sends for kind "model_detection".
 //
 // Required: the common core (direction, kind pinned), plus detection_basis.
 // Permitted but not required: subject_name, confidence.
@@ -1380,360 +542,15 @@ func (*DeviceModelDetection) deviceSubmission() {}
 // Core returns the common core of the envelope.
 func (e *DeviceModelDetection) Core() EnvelopeCore { return e.EnvelopeCore }
 
-// Validate checks the constraints the schema places on a DeviceModelDetection.
-func (e *DeviceModelDetection) Validate() error {
-	if err := e.ValidateCore(); err != nil {
-		return fmt.Errorf("envelope: DeviceModelDetection: %w", err)
-	}
-	if e.Direction != DirectionNone {
-		return fmt.Errorf("envelope: DeviceModelDetection: direction must be %q, got %q", DirectionNone, e.Direction)
-	}
-	if e.Kind != KindModelDetection {
-		return fmt.Errorf("envelope: DeviceModelDetection: kind must be %q, got %q", KindModelDetection, e.Kind)
-	}
-	if e.SubjectName != nil {
-		if len((*e.SubjectName)) < 1 {
-			return fmt.Errorf("envelope: DeviceModelDetection: subject_name must be at least 1 character(s), got %d", len((*e.SubjectName)))
-		}
-		if len((*e.SubjectName)) > 200 {
-			return fmt.Errorf("envelope: DeviceModelDetection: subject_name must be at most 200 character(s), got %d", len((*e.SubjectName)))
-		}
-	}
-	if e.Confidence != nil {
-		if !(*e.Confidence).Valid() {
-			return fmt.Errorf("envelope: DeviceModelDetection: confidence is %q, which is outside the closed set", string((*e.Confidence)))
-		}
-	}
-	if !e.DetectionBasis.Valid() {
-		return fmt.Errorf("envelope: DeviceModelDetection: detection_basis is %q, which is outside the closed set", string(e.DetectionBasis))
-	}
-	return nil
-}
-
-// StoredModelDetection is the stored envelope for kind "model_detection".
-//
-// Required: the common core (direction, kind pinned), plus received_at, detection_basis.
-// Permitted but not required: subject_name, confidence.
-// Must not carry, so absent from this struct: prompt_kind, size_bytes, content_digest, labels,
-// classifier_version, content_excerpt, attachments, policy_decision, window_start, window_end,
-// submission_count, bytes_total.
-type StoredModelDetection struct {
-	EnvelopeCore
-
-	ReceivedAt     DateTime       `json:"received_at"`
-	SubjectName    *string        `json:"subject_name,omitempty"`
-	Confidence     *Confidence    `json:"confidence,omitempty"`
-	DetectionBasis DetectionBasis `json:"detection_basis"`
-}
-
-// storedEnvelope marks StoredModelDetection as a member of the closed StoredEnvelope union.
-func (*StoredModelDetection) storedEnvelope() {}
-
-// Core returns the common core of the envelope.
-func (e *StoredModelDetection) Core() EnvelopeCore { return e.EnvelopeCore }
-
-// Validate checks the constraints the schema places on a StoredModelDetection.
-func (e *StoredModelDetection) Validate() error {
-	if err := e.ValidateCore(); err != nil {
-		return fmt.Errorf("envelope: StoredModelDetection: %w", err)
-	}
-	if e.Direction != DirectionNone {
-		return fmt.Errorf("envelope: StoredModelDetection: direction must be %q, got %q", DirectionNone, e.Direction)
-	}
-	if e.Kind != KindModelDetection {
-		return fmt.Errorf("envelope: StoredModelDetection: kind must be %q, got %q", KindModelDetection, e.Kind)
-	}
-	if e.ReceivedAt == "" {
-		return fmt.Errorf("envelope: StoredModelDetection: received_at is required and must not be empty")
-	}
-	if e.SubjectName != nil {
-		if len((*e.SubjectName)) < 1 {
-			return fmt.Errorf("envelope: StoredModelDetection: subject_name must be at least 1 character(s), got %d", len((*e.SubjectName)))
-		}
-		if len((*e.SubjectName)) > 200 {
-			return fmt.Errorf("envelope: StoredModelDetection: subject_name must be at most 200 character(s), got %d", len((*e.SubjectName)))
-		}
-	}
-	if e.Confidence != nil {
-		if !(*e.Confidence).Valid() {
-			return fmt.Errorf("envelope: StoredModelDetection: confidence is %q, which is outside the closed set", string((*e.Confidence)))
-		}
-	}
-	if !e.DetectionBasis.Valid() {
-		return fmt.Errorf("envelope: StoredModelDetection: detection_basis is %q, which is outside the closed set", string(e.DetectionBasis))
-	}
-	return nil
-}
-
-// variantRule is the field set the schema requires and forbids for one variant. It is the
-// machine-readable half of the contract that Decode* enforces by name, so a rejection
-// says which field was missing or forbidden rather than just "invalid".
-type variantRule struct {
-	name      string
-	kind      Kind
-	mode      CollectionMode
-	required  []string
-	forbidden []string
-}
-
-// Fields the schema requires of DevicePromptM0.
-var requiredDevicePromptM0 = []string{
-	"schema_version", "event_id", "tenant_id", "device_id", "user_ref", "tool_fingerprint", "direction", "kind",
-	"occurred_at", "monotonic_offset_ms", "source", "collection_mode", "size_bytes", "policy_decision",
-	"dedup_key",
-}
-
-// Fields DevicePromptM0 must not carry.
-var forbiddenDevicePromptM0 = []string{
-	"received_at", "prompt_kind", "confidence", "content_digest", "labels", "classifier_version",
-	"content_excerpt", "attachments", "window_start", "window_end", "submission_count", "bytes_total",
-	"detection_basis",
-}
-
-// Fields the schema requires of StoredPromptM0.
-var requiredStoredPromptM0 = []string{
-	"schema_version", "event_id", "tenant_id", "device_id", "user_ref", "tool_fingerprint", "direction", "kind",
-	"occurred_at", "received_at", "monotonic_offset_ms", "source", "collection_mode", "size_bytes",
-	"policy_decision", "dedup_key",
-}
-
-// Fields StoredPromptM0 must not carry.
-var forbiddenStoredPromptM0 = []string{
-	"prompt_kind", "confidence", "content_digest", "labels", "classifier_version", "content_excerpt",
-	"attachments", "window_start", "window_end", "submission_count", "bytes_total", "detection_basis",
-}
-
-// Fields the schema requires of DevicePromptM1.
-var requiredDevicePromptM1 = []string{
-	"schema_version", "event_id", "tenant_id", "device_id", "user_ref", "tool_fingerprint", "direction", "kind",
-	"occurred_at", "monotonic_offset_ms", "source", "confidence", "collection_mode", "size_bytes",
-	"content_digest", "labels", "classifier_version", "policy_decision", "dedup_key",
-}
-
-// Fields DevicePromptM1 must not carry.
-var forbiddenDevicePromptM1 = []string{
-	"received_at", "window_start", "window_end", "submission_count", "bytes_total", "detection_basis",
-}
-
-// Fields the schema requires of StoredPromptM1.
-var requiredStoredPromptM1 = []string{
-	"schema_version", "event_id", "tenant_id", "device_id", "user_ref", "tool_fingerprint", "direction", "kind",
-	"occurred_at", "received_at", "monotonic_offset_ms", "source", "confidence", "collection_mode",
-	"size_bytes", "content_digest", "labels", "classifier_version", "policy_decision", "dedup_key",
-}
-
-// Fields StoredPromptM1 must not carry.
-var forbiddenStoredPromptM1 = []string{
-	"window_start", "window_end", "submission_count", "bytes_total", "detection_basis",
-}
-
-// Fields the schema requires of DevicePromptM2.
-var requiredDevicePromptM2 = []string{
-	"schema_version", "event_id", "tenant_id", "device_id", "user_ref", "tool_fingerprint", "direction", "kind",
-	"occurred_at", "monotonic_offset_ms", "source", "confidence", "collection_mode", "size_bytes",
-	"content_digest", "labels", "classifier_version", "content_excerpt", "policy_decision", "dedup_key",
-}
-
-// Fields DevicePromptM2 must not carry.
-var forbiddenDevicePromptM2 = []string{
-	"received_at", "window_start", "window_end", "submission_count", "bytes_total", "detection_basis",
-}
-
-// Fields the schema requires of StoredPromptM2.
-var requiredStoredPromptM2 = []string{
-	"schema_version", "event_id", "tenant_id", "device_id", "user_ref", "tool_fingerprint", "direction", "kind",
-	"occurred_at", "received_at", "monotonic_offset_ms", "source", "confidence", "collection_mode",
-	"size_bytes", "content_digest", "labels", "classifier_version", "content_excerpt", "policy_decision",
-	"dedup_key",
-}
-
-// Fields StoredPromptM2 must not carry.
-var forbiddenStoredPromptM2 = []string{
-	"window_start", "window_end", "submission_count", "bytes_total", "detection_basis",
-}
-
-// Fields the schema requires of DevicePromptM3.
-var requiredDevicePromptM3 = []string{
-	"schema_version", "event_id", "tenant_id", "device_id", "user_ref", "tool_fingerprint", "direction", "kind",
-	"occurred_at", "monotonic_offset_ms", "source", "confidence", "collection_mode", "size_bytes",
-	"content_digest", "labels", "classifier_version", "policy_decision", "dedup_key",
-}
-
-// Fields DevicePromptM3 must not carry.
-var forbiddenDevicePromptM3 = []string{
-	"received_at", "content_excerpt", "window_start", "window_end", "submission_count", "bytes_total",
-	"detection_basis",
-}
-
-// Fields the schema requires of StoredPromptM3.
-var requiredStoredPromptM3 = []string{
-	"schema_version", "event_id", "tenant_id", "device_id", "user_ref", "tool_fingerprint", "direction", "kind",
-	"occurred_at", "received_at", "monotonic_offset_ms", "source", "confidence", "collection_mode",
-	"size_bytes", "content_digest", "labels", "classifier_version", "policy_decision", "dedup_key",
-}
-
-// Fields StoredPromptM3 must not carry.
-var forbiddenStoredPromptM3 = []string{
-	"content_excerpt", "window_start", "window_end", "submission_count", "bytes_total", "detection_basis",
-}
-
-// Fields the schema requires of DeviceUsageRollup.
-var requiredDeviceUsageRollup = []string{
-	"schema_version", "event_id", "tenant_id", "device_id", "user_ref", "tool_fingerprint", "direction", "kind",
-	"occurred_at", "monotonic_offset_ms", "source", "collection_mode", "dedup_key", "window_start",
-	"window_end", "submission_count", "bytes_total",
-}
-
-// Fields DeviceUsageRollup must not carry.
-var forbiddenDeviceUsageRollup = []string{
-	"received_at", "prompt_kind", "size_bytes", "content_digest", "labels", "classifier_version",
-	"content_excerpt", "attachments", "policy_decision", "detection_basis",
-}
-
-// Fields the schema requires of StoredUsageRollup.
-var requiredStoredUsageRollup = []string{
-	"schema_version", "event_id", "tenant_id", "device_id", "user_ref", "tool_fingerprint", "direction", "kind",
-	"occurred_at", "received_at", "monotonic_offset_ms", "source", "collection_mode", "dedup_key",
-	"window_start", "window_end", "submission_count", "bytes_total",
-}
-
-// Fields StoredUsageRollup must not carry.
-var forbiddenStoredUsageRollup = []string{
-	"prompt_kind", "size_bytes", "content_digest", "labels", "classifier_version", "content_excerpt",
-	"attachments", "policy_decision", "detection_basis",
-}
-
-// Fields the schema requires of DeviceModelDetection.
-var requiredDeviceModelDetection = []string{
-	"schema_version", "event_id", "tenant_id", "device_id", "user_ref", "tool_fingerprint", "direction", "kind",
-	"occurred_at", "monotonic_offset_ms", "source", "collection_mode", "dedup_key", "detection_basis",
-}
-
-// Fields DeviceModelDetection must not carry.
-var forbiddenDeviceModelDetection = []string{
-	"received_at", "prompt_kind", "size_bytes", "content_digest", "labels", "classifier_version",
-	"content_excerpt", "attachments", "policy_decision", "window_start", "window_end", "submission_count",
-	"bytes_total",
-}
-
-// Fields the schema requires of StoredModelDetection.
-var requiredStoredModelDetection = []string{
-	"schema_version", "event_id", "tenant_id", "device_id", "user_ref", "tool_fingerprint", "direction", "kind",
-	"occurred_at", "received_at", "monotonic_offset_ms", "source", "collection_mode", "dedup_key",
-	"detection_basis",
-}
-
-// Fields StoredModelDetection must not carry.
-var forbiddenStoredModelDetection = []string{
-	"prompt_kind", "size_bytes", "content_digest", "labels", "classifier_version", "content_excerpt",
-	"attachments", "policy_decision", "window_start", "window_end", "submission_count", "bytes_total",
-}
-
-var ruleDevicePromptM0 = variantRule{
-	name:      "DevicePromptM0",
-	kind:      KindPrompt,
-	mode:      CollectionModeM0,
-	required:  requiredDevicePromptM0,
-	forbidden: forbiddenDevicePromptM0,
-}
-
-var ruleStoredPromptM0 = variantRule{
-	name:      "StoredPromptM0",
-	kind:      KindPrompt,
-	mode:      CollectionModeM0,
-	required:  requiredStoredPromptM0,
-	forbidden: forbiddenStoredPromptM0,
-}
-
-var ruleDevicePromptM1 = variantRule{
-	name:      "DevicePromptM1",
-	kind:      KindPrompt,
-	mode:      CollectionModeM1,
-	required:  requiredDevicePromptM1,
-	forbidden: forbiddenDevicePromptM1,
-}
-
-var ruleStoredPromptM1 = variantRule{
-	name:      "StoredPromptM1",
-	kind:      KindPrompt,
-	mode:      CollectionModeM1,
-	required:  requiredStoredPromptM1,
-	forbidden: forbiddenStoredPromptM1,
-}
-
-var ruleDevicePromptM2 = variantRule{
-	name:      "DevicePromptM2",
-	kind:      KindPrompt,
-	mode:      CollectionModeM2,
-	required:  requiredDevicePromptM2,
-	forbidden: forbiddenDevicePromptM2,
-}
-
-var ruleStoredPromptM2 = variantRule{
-	name:      "StoredPromptM2",
-	kind:      KindPrompt,
-	mode:      CollectionModeM2,
-	required:  requiredStoredPromptM2,
-	forbidden: forbiddenStoredPromptM2,
-}
-
-var ruleDevicePromptM3 = variantRule{
-	name:      "DevicePromptM3",
-	kind:      KindPrompt,
-	mode:      CollectionModeM3,
-	required:  requiredDevicePromptM3,
-	forbidden: forbiddenDevicePromptM3,
-}
-
-var ruleStoredPromptM3 = variantRule{
-	name:      "StoredPromptM3",
-	kind:      KindPrompt,
-	mode:      CollectionModeM3,
-	required:  requiredStoredPromptM3,
-	forbidden: forbiddenStoredPromptM3,
-}
-
-var ruleDeviceUsageRollup = variantRule{
-	name:      "DeviceUsageRollup",
-	kind:      KindUsageRollup,
-	mode:      "",
-	required:  requiredDeviceUsageRollup,
-	forbidden: forbiddenDeviceUsageRollup,
-}
-
-var ruleStoredUsageRollup = variantRule{
-	name:      "StoredUsageRollup",
-	kind:      KindUsageRollup,
-	mode:      "",
-	required:  requiredStoredUsageRollup,
-	forbidden: forbiddenStoredUsageRollup,
-}
-
-var ruleDeviceModelDetection = variantRule{
-	name:      "DeviceModelDetection",
-	kind:      KindModelDetection,
-	mode:      "",
-	required:  requiredDeviceModelDetection,
-	forbidden: forbiddenDeviceModelDetection,
-}
-
-var ruleStoredModelDetection = variantRule{
-	name:      "StoredModelDetection",
-	kind:      KindModelDetection,
-	mode:      "",
-	required:  requiredStoredModelDetection,
-	forbidden: forbiddenStoredModelDetection,
-}
-
-// DeviceSubmission is the closed union of what a device is permitted to send. Every member omits
-// `received_at`: a device-supplied receive time would be neither of the two clocks the contract
-// allows.
+// DeviceSubmission is the closed union of what a device is permitted to send: one implementation
+// per kind and, for prompts, per collection mode. Every member omits `received_at`, which the
+// server assigns.
 type DeviceSubmission interface {
 	deviceSubmission()
 	Core() EnvelopeCore
 }
 
-// Compile-time proof that every variant belongs to DeviceSubmission, and that no other type does.
+// Compile-time proof that every variant belongs to DeviceSubmission.
 var _ DeviceSubmission = (*DevicePromptM0)(nil)
 var _ DeviceSubmission = (*DevicePromptM1)(nil)
 var _ DeviceSubmission = (*DevicePromptM2)(nil)
@@ -1741,82 +558,25 @@ var _ DeviceSubmission = (*DevicePromptM3)(nil)
 var _ DeviceSubmission = (*DeviceUsageRollup)(nil)
 var _ DeviceSubmission = (*DeviceModelDetection)(nil)
 
-// StoredEnvelope is the closed union of the envelope as stored: one implementation per kind and,
-// for prompts, per collection mode. A new kind is an ADR, not a new implementation.
-type StoredEnvelope interface {
-	storedEnvelope()
-	Core() EnvelopeCore
-}
-
-// Compile-time proof that every variant belongs to StoredEnvelope, and that no other type does.
-var _ StoredEnvelope = (*StoredPromptM0)(nil)
-var _ StoredEnvelope = (*StoredPromptM1)(nil)
-var _ StoredEnvelope = (*StoredPromptM2)(nil)
-var _ StoredEnvelope = (*StoredPromptM3)(nil)
-var _ StoredEnvelope = (*StoredUsageRollup)(nil)
-var _ StoredEnvelope = (*StoredModelDetection)(nil)
-
-// variantTarget is what decodeVariant fills: a pointer to one concrete variant.
-type variantTarget interface {
-	Core() EnvelopeCore
-	Validate() error
-}
-
 // kindProbe reads only the discriminators, so dispatch never guesses a shape.
 type kindProbe struct {
 	Kind           Kind           `json:"kind"`
 	CollectionMode CollectionMode `json:"collection_mode"`
 }
 
-// checkVariantFields enforces the two rules a struct cannot state in Go: a required field
-// must be present even when its zero value is legal, and a field the kind must not carry
-// must be absent. Absence is checked against the raw JSON, before decoding.
-func checkVariantFields(data []byte, rule variantRule) error {
-	var object map[string]json.RawMessage
-	if err := json.Unmarshal(data, &object); err != nil {
-		return fmt.Errorf("envelope: %s: expected a JSON object: %w", rule.name, err)
-	}
-	if object == nil {
-		return fmt.Errorf("envelope: %s: expected a JSON object, got null", rule.name)
-	}
-	var missing []string
-	for _, name := range rule.required {
-		if _, ok := object[name]; !ok {
-			missing = append(missing, name)
-		}
-	}
-	if len(missing) > 0 {
-		return fmt.Errorf("envelope: %s: missing required field(s): %s", rule.name, strings.Join(missing, ", "))
-	}
-	var forbidden []string
-	for _, name := range rule.forbidden {
-		if _, ok := object[name]; ok {
-			forbidden = append(forbidden, name)
-		}
-	}
-	if len(forbidden) > 0 {
-		return fmt.Errorf("envelope: %s: field(s) not permitted for this kind and mode: %s", rule.name, strings.Join(forbidden, ", "))
-	}
-	return nil
-}
-
-// decodeVariant checks the field set, decodes with unknown fields refused so that a field
-// outside the contract is an error rather than silently dropped, then validates constraints.
-func decodeVariant(data []byte, dst variantTarget, rule variantRule) error {
-	if err := checkVariantFields(data, rule); err != nil {
-		return err
-	}
+// decodeInto decodes data into one variant, refusing a field the variant does not declare.
+func decodeInto(data []byte, dst DeviceSubmission) (DeviceSubmission, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(dst); err != nil {
-		return fmt.Errorf("envelope: %s: %w", rule.name, err)
+		return nil, fmt.Errorf("envelope: %T: %w", dst, err)
 	}
-	return dst.Validate()
+	return dst, nil
 }
 
-// DecodeDeviceSubmission decodes the device submission in data and returns the variant selected by
-// kind, and for prompts by collection_mode. It refuses an unknown kind, an unknown mode, a missing
-// required field, a forbidden field, and a field the contract does not declare.
+// DecodeDeviceSubmission decodes a device submission and returns the variant selected by kind, and
+// for prompts by collection_mode. It refuses an unknown kind, an unknown mode, and a field the
+// variant does not declare.
 func DecodeDeviceSubmission(data []byte) (DeviceSubmission, error) {
 	var probe kindProbe
 	if err := json.Unmarshal(data, &probe); err != nil {
@@ -1826,100 +586,21 @@ func DecodeDeviceSubmission(data []byte) (DeviceSubmission, error) {
 	case KindPrompt:
 		switch probe.CollectionMode {
 		case CollectionModeM0:
-			var v DevicePromptM0
-			if err := decodeVariant(data, &v, ruleDevicePromptM0); err != nil {
-				return nil, err
-			}
-			return &v, nil
+			return decodeInto(data, &DevicePromptM0{})
 		case CollectionModeM1:
-			var v DevicePromptM1
-			if err := decodeVariant(data, &v, ruleDevicePromptM1); err != nil {
-				return nil, err
-			}
-			return &v, nil
+			return decodeInto(data, &DevicePromptM1{})
 		case CollectionModeM2:
-			var v DevicePromptM2
-			if err := decodeVariant(data, &v, ruleDevicePromptM2); err != nil {
-				return nil, err
-			}
-			return &v, nil
+			return decodeInto(data, &DevicePromptM2{})
 		case CollectionModeM3:
-			var v DevicePromptM3
-			if err := decodeVariant(data, &v, ruleDevicePromptM3); err != nil {
-				return nil, err
-			}
-			return &v, nil
+			return decodeInto(data, &DevicePromptM3{})
 		default:
 			return nil, fmt.Errorf("envelope: collection_mode %q is outside the closed set %v for kind %q", probe.CollectionMode, AllCollectionModes(), probe.Kind)
 		}
 	case KindUsageRollup:
-		var v DeviceUsageRollup
-		if err := decodeVariant(data, &v, ruleDeviceUsageRollup); err != nil {
-			return nil, err
-		}
-		return &v, nil
+		return decodeInto(data, &DeviceUsageRollup{})
 	case KindModelDetection:
-		var v DeviceModelDetection
-		if err := decodeVariant(data, &v, ruleDeviceModelDetection); err != nil {
-			return nil, err
-		}
-		return &v, nil
+		return decodeInto(data, &DeviceModelDetection{})
 	default:
-		return nil, fmt.Errorf("envelope: kind %q is outside the closed registry %v: a new kind is an ADR, not a code change", probe.Kind, AllKinds())
-	}
-}
-
-// DecodeStoredEnvelope decodes the stored envelope in data and returns the variant selected by
-// kind, and for prompts by collection_mode. It refuses an unknown kind, an unknown mode, a missing
-// required field, a forbidden field, and a field the contract does not declare.
-func DecodeStoredEnvelope(data []byte) (StoredEnvelope, error) {
-	var probe kindProbe
-	if err := json.Unmarshal(data, &probe); err != nil {
-		return nil, fmt.Errorf("envelope: stored envelope is not a JSON object: %w", err)
-	}
-	switch probe.Kind {
-	case KindPrompt:
-		switch probe.CollectionMode {
-		case CollectionModeM0:
-			var v StoredPromptM0
-			if err := decodeVariant(data, &v, ruleStoredPromptM0); err != nil {
-				return nil, err
-			}
-			return &v, nil
-		case CollectionModeM1:
-			var v StoredPromptM1
-			if err := decodeVariant(data, &v, ruleStoredPromptM1); err != nil {
-				return nil, err
-			}
-			return &v, nil
-		case CollectionModeM2:
-			var v StoredPromptM2
-			if err := decodeVariant(data, &v, ruleStoredPromptM2); err != nil {
-				return nil, err
-			}
-			return &v, nil
-		case CollectionModeM3:
-			var v StoredPromptM3
-			if err := decodeVariant(data, &v, ruleStoredPromptM3); err != nil {
-				return nil, err
-			}
-			return &v, nil
-		default:
-			return nil, fmt.Errorf("envelope: collection_mode %q is outside the closed set %v for kind %q", probe.CollectionMode, AllCollectionModes(), probe.Kind)
-		}
-	case KindUsageRollup:
-		var v StoredUsageRollup
-		if err := decodeVariant(data, &v, ruleStoredUsageRollup); err != nil {
-			return nil, err
-		}
-		return &v, nil
-	case KindModelDetection:
-		var v StoredModelDetection
-		if err := decodeVariant(data, &v, ruleStoredModelDetection); err != nil {
-			return nil, err
-		}
-		return &v, nil
-	default:
-		return nil, fmt.Errorf("envelope: kind %q is outside the closed registry %v: a new kind is an ADR, not a code change", probe.Kind, AllKinds())
+		return nil, fmt.Errorf("envelope: kind %q is outside the closed registry %v", probe.Kind, AllKinds())
 	}
 }

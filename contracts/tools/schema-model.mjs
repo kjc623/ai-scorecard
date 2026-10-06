@@ -1,12 +1,9 @@
 // contracts/tools/schema-model.mjs
 //
 // Reads contracts/event-envelope.schema.json (JSON Schema draft 2020-12) and derives the
-// model that both generated languages are rendered from: the closed `kind` registry, the
-// per-kind and per-collection-mode field rules carried by the `if`/`then` branches inside
-// $defs/envelopeCore.allOf, the two shapes (deviceSubmission and storedEnvelope), and the
-// enum/object definitions.
-//
-// Zero external dependencies; this host has no network access, so nothing is installed.
+// model the Go binding is rendered from: the closed `kind` registry, the per-kind and
+// per-collection-mode field rules carried by the `if`/`then` branches inside
+// $defs/envelopeCore.allOf, the device-submission variants, and the enum/object definitions.
 //
 // The parser is deliberately strict: a schema construct it does not understand is a hard
 // error, because silently ignoring a constraint would generate types that are wrong in a
@@ -43,7 +40,7 @@ const INLINE_ENUM_TYPES = {
   "excerpt.kind": "ExcerptKind",
 };
 
-// Emission order of the enum sections in both languages (stable, not schema order).
+// Emission order of the enum sections (stable, not schema order).
 const ENUM_ORDER = [
   "Kind",
   "Route",
@@ -56,9 +53,10 @@ const ENUM_ORDER = [
   "PromptKind",
 ];
 
-// The two shapes the contract defines on top of the common core.
-const SHAPES = ["device", "stored"];
-export const SHAPE_UNION_NAME = { device: "DeviceSubmission", stored: "StoredEnvelope" };
+// The shape the binding describes: what a device may send. The stored shape adds only the
+// server-assigned received_at, which the database stamps.
+const SHAPES = ["device"];
+export const SHAPE_UNION_NAME = { device: "DeviceSubmission" };
 const RECEIVED_AT = "received_at";
 
 // Go identifiers that must keep their conventional casing.
@@ -66,7 +64,7 @@ const GO_INITIALISMS = new Set([
   "id", "ids", "ms", "tls", "cli", "dom", "etw", "url", "api", "json", "uuid", "http", "https", "utc",
 ]);
 
-/** PascalCase for TypeScript type names: `usage_rollup` -> `UsageRollup`, `m0` -> `M0`. */
+/** PascalCase for variant names: `usage_rollup` -> `UsageRollup`, `m0` -> `M0`. */
 export function pascal(value) {
   return String(value)
     .split(/[^A-Za-z0-9]+/)

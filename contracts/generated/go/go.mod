@@ -1,3 +1,3 @@
-module shadow-ai-capture.invalid/contracts/generated/go
+module github.com/shadow-ai-capture/contracts
 
 go 1.27.0
