@@ -29,6 +29,11 @@ func TestSettingsAgainstPostgres(t *testing.T) {
 		t.Fatalf("collection mode above ceiling: %v", err)
 	}
 
+	// A scope override wider than the ceiling is refused even while following the ceiling.
+	if err := st.SetScopeOverride(ctx, tenant, "tls_b6681b043244c43f", &m2, audit); !errors.Is(err, store.ErrScopeOverrideTooWide) {
+		t.Fatalf("override above the ceiling: %v", err)
+	}
+
 	// full_text needs an M3 ceiling; attachment_names need above M0.
 	if err := st.SetContentSearch(ctx, tenant, "full_text", audit); !errors.Is(err, store.ErrSearchTierRequiresCeiling) {
 		t.Fatalf("full_text on an M1 ceiling: %v", err)
