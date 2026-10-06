@@ -1,0 +1,208 @@
+name: deploy
+
+# Builds the agent release and the images for one commit, deploys them to an environment, and
+# applies the schema. Pushes to main deploy pre-production; production is a manual run, gated by the
+# reviewers on the `prod` GitHub environment.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment
+        type: choice
+        options: [preprod, prod]
+        default: preprod
+      bootstrap:
+        description: First deployment of the environment (platform only, before secrets and images exist)
+        type: boolean
+        default: false
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-${{ inputs.environment || 'preprod' }}
+  cancel-in-progress: false
+
+env:
+  ENVIRONMENT: ${{ inputs.environment || 'preprod' }}
+
+jobs:
+  bootstrap:
+    if: ${{ inputs.bootstrap }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: deploy the platform
+        env:
+          SAC_BOOTSTRAP: 'true'
+          SAC_DEVICE_FQDN: ${{ vars.SAC_DEVICE_FQDN }}
+          SAC_ANALYST_FQDN: ${{ vars.SAC_ANALYST_FQDN }}
+          SAC_ENTRA_APP_CLIENT_ID: ${{ vars.SAC_ENTRA_APP_CLIENT_ID }}
+          SAC_ALERT_EMAILS: ${{ vars.SAC_ALERT_EMAILS }}
+          SAC_KEYVAULT_ADMIN_IPS: ${{ vars.SAC_KEYVAULT_ADMIN_IPS }}
+          SAC_KEYVAULT_ADMIN_PRINCIPALS: ${{ vars.SAC_KEYVAULT_ADMIN_PRINCIPALS }}
+        run: |
+          az bicep install
+          az deployment group create --resource-group "${{ vars.SAC_RESOURCE_GROUP }}" \
+            --template-file azure/main.bicep --parameters "azure/params/${ENVIRONMENT}.bicepparam" \
+            --name "bootstrap-${{ github.run_id }}"
+
+  agent-release:
+    if: ${{ !inputs.bootstrap }}
+    runs-on: windows-latest
+    environment: ${{ inputs.environment || 'preprod' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+          cache-dependency-path: '**/go.sum'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: tools
+        run: |
+          dotnet tool install --global wix --version 7.0.0
+          npm ci --prefix extension
+
+      # Code signing with Azure Trusted Signing, when the environment configures an account.
+      - uses: azure/login@v2
+        if: ${{ vars.SAC_SIGNING_ACCOUNT != '' }}
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: signing client
+        if: ${{ vars.SAC_SIGNING_ACCOUNT != '' }}
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'signing'
+          nuget install Microsoft.Trusted.Signing.Client -OutputDirectory $dir -ExcludeVersion | Out-Null
+          @{ Endpoint = '${{ vars.SAC_SIGNING_ENDPOINT }}'; CodeSigningAccountName = '${{ vars.SAC_SIGNING_ACCOUNT }}'; CertificateProfileName = '${{ vars.SAC_SIGNING_PROFILE }}' } |
+            ConvertTo-Json | Set-Content (Join-Path $dir 'metadata.json')
+          "SAC_SIGN_DLIB=$dir\Microsoft.Trusted.Signing.Client\bin\x64\Azure.CodeSigning.Dlib.dll" >> $env:GITHUB_ENV
+          "SAC_SIGN_METADATA=$dir\metadata.json" >> $env:GITHUB_ENV
+          "SIGN=--sign" >> $env:GITHUB_ENV
+
+      - name: build the MSI and the browser extension
+        shell: pwsh
+        env:
+          CLASSIFIER_KEY: ${{ secrets.SAC_CLASSIFIER_SIGNING_KEY }}
+          EXTENSION_KEY: ${{ secrets.SAC_EXTENSION_SIGNING_KEY }}
+        run: |
+          $keys = Join-Path $env:RUNNER_TEMP 'keys'
+          New-Item -ItemType Directory -Force $keys | Out-Null
+          Set-Content -NoNewline (Join-Path $keys 'policy.pub') '${{ vars.SAC_POLICY_PUBLIC_KEY }}'
+          Set-Content -NoNewline (Join-Path $keys 'classifier.key') $env:CLASSIFIER_KEY
+          Set-Content (Join-Path $keys 'extension.pem') $env:EXTENSION_KEY
+          $out = Join-Path $env:RUNNER_TEMP 'agent-release'
+          node installer/release-msi.mjs --version "1.0.${{ github.run_number }}" `
+            --policy-key-file (Join-Path $keys 'policy.pub') --policy-key-id policy-key-1 `
+            --classifier-key (Join-Path $keys 'classifier.key') `
+            --classifier-rules endpoint/classifier-host/rules/default.json `
+            --classifier-model endpoint/classifier-host/rules/model.json `
+            --extension-key (Join-Path $keys 'extension.pem') `
+            --wix-eula wix7 $env:SIGN --out $out
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Remove-Item -Recurse -Force $keys
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-release
+          path: ${{ runner.temp }}/agent-release
+          if-no-files-found: error
+
+  images:
+    needs: agent-release
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment || 'preprod' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: agent-release
+          path: ${{ runner.temp }}/agent-release
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - uses: docker/setup-buildx-action@v3
+      - name: build and push
+        run: |
+          set -euo pipefail
+          registry="$(az acr list --resource-group "${{ vars.SAC_RESOURCE_GROUP }}" --query '[0].loginServer' --output tsv)"
+          az acr login --name "${registry%%.*}"
+          tag="${{ github.sha }}"
+          build() {
+            docker buildx build --push --tag "$registry/$1:$tag" --file "$2" "${@:3}" .
+          }
+          build ingest-api    ingestion/ingest-api/Dockerfile
+          build control-api   control/control-api/Dockerfile --build-context agent-release="${{ runner.temp }}/agent-release"
+          build content-vault vault/content-vault/Dockerfile
+          build query-api     query/query-api/Dockerfile
+          build dashboard     query/dashboard/Dockerfile
+          build jobs          jobs/Dockerfile
+          build migrate       database/Dockerfile
+
+  deploy:
+    needs: images
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment || 'preprod' }}
+    env:
+      RG: ${{ vars.SAC_RESOURCE_GROUP }}
+      SAC_IMAGE_TAG: ${{ github.sha }}
+      SAC_DEVICE_FQDN: ${{ vars.SAC_DEVICE_FQDN }}
+      SAC_ANALYST_FQDN: ${{ vars.SAC_ANALYST_FQDN }}
+      SAC_ENTRA_APP_CLIENT_ID: ${{ vars.SAC_ENTRA_APP_CLIENT_ID }}
+      SAC_ALERT_EMAILS: ${{ vars.SAC_ALERT_EMAILS }}
+      SAC_KEYVAULT_ADMIN_IPS: ${{ vars.SAC_KEYVAULT_ADMIN_IPS }}
+      SAC_KEYVAULT_ADMIN_PRINCIPALS: ${{ vars.SAC_KEYVAULT_ADMIN_PRINCIPALS }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - run: az bicep install
+
+      - name: what-if
+        run: |
+          az deployment group what-if --resource-group "$RG" \
+            --template-file azure/main.bicep --parameters "azure/params/${ENVIRONMENT}.bicepparam" \
+            --no-pretty-print | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # The schema is migrated before the new revisions start, so new code never meets an old schema
+      # and every workload's database login exists before its first connection. On the first full
+      # deployment the job does not exist yet: a bootstrap deployment with the image tag creates it.
+      - name: migrate
+        run: |
+          set -euo pipefail
+          if az containerapp job show --resource-group "$RG" --name migrate --output none 2>/dev/null; then
+            registry="$(az acr list --resource-group "$RG" --query '[0].loginServer' --output tsv)"
+            az containerapp job update --resource-group "$RG" --name migrate --image "$registry/migrate:$SAC_IMAGE_TAG" --output none
+          else
+            SAC_BOOTSTRAP=true az deployment group create --resource-group "$RG" \
+              --template-file azure/main.bicep --parameters "azure/params/${ENVIRONMENT}.bicepparam" \
+              --name "migrate-job-${{ github.run_id }}"
+          fi
+          azure/scripts/run-job.sh "$RG" migrate
+
+      - name: deploy
+        run: |
+          az deployment group create --resource-group "$RG" \
+            --template-file azure/main.bicep --parameters "azure/params/${ENVIRONMENT}.bicepparam" \
+            --name "deploy-${{ github.run_id }}"
+
+      - name: approve Front Door's private link to the environment
+        run: azure/scripts/approve-private-link.sh "$RG"

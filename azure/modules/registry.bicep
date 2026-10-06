@@ -1,65 +1,47 @@
-// registry.bicep — Container Registry Premium with a private endpoint and geo-replication to the
-// paired region (docs/05-platform-delivery.md §2, §12.1).
+// registry.bicep — the container registry the pipeline pushes to and every app and job pulls from.
 //
-// Images are pulled over Private Link, so the registry is not publicly reachable. Geo-replication is
-// what makes regional failover a redeploy rather than a rebuild (§12.1), which is why the replica
-// region is a parameter rather than a constant.
+// The admin user is disabled: the pipeline pushes with its federated identity and the workloads pull
+// with their managed identities, so no registry password exists. The registry keeps its public
+// endpoint because hosted CI runners push to it; every request still needs an Entra identity with a
+// role on the registry.
 
-@description('Azure region for the registry. Environment-parameterised (§3.2).')
+@description('Azure region.')
 param location string
 
-@description('Base name for the environment.')
+@description('Base name, e.g. sac-prod-eastus. The registry name is derived from it without hyphens.')
 param baseName string
 
-@description('Registry SKU. Premium is required for private endpoints and geo-replication, which §2 requires; the value is still a parameter so cost can be modelled per environment.')
-@allowed(['Basic', 'Standard', 'Premium'])
-param skuName string = 'Premium'
+@description('Premium adds zone redundancy and geo-replication.')
+@allowed(['Standard', 'Premium'])
+param skuName string
 
-@description('Paired region for geo-replication, e.g. centralus for eastus. Empty disables replication, which is the dev setting.')
+@description('Region to geo-replicate to (Premium only), or empty for none.')
 param geoReplicaLocation string = ''
 
-@description('Whether the registry is zone-redundant. Zone redundancy requires the Premium tier, so the composition states both rather than deriving one from the SKU inside the module.')
-param zoneRedundant bool = true
+@description('Principal ids that pull images (the workload identities).')
+param pullPrincipalIds array
 
-@description('Resource id of the private-endpoint subnet from network.bicep.')
-param privateEndpointSubnetId string = ''
+param logAnalyticsWorkspaceId string
 
-@description('Private DNS zone resource ids keyed by zone name, from network.bicep.')
-param privateDnsZoneIds object = {}
-
-@description('Resource id of the Log Analytics workspace for diagnostic settings. Empty skips diagnostics (dev).')
-param logAnalyticsWorkspaceId string = ''
-
-@description('Tags applied to every resource.')
 param tags object = {}
+
+var acrPull = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')
 
 resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
   name: replace('${baseName}acr', '-', '')
   location: location
   tags: tags
-  sku: {
-    name: skuName
-  }
+  sku: { name: skuName }
   properties: {
-    adminUserEnabled: false // no registry password exists: pushes use the federated CI identity (§5.2)
-    publicNetworkAccess: 'Disabled'
-    networkRuleBypassOptions: 'AzureServices'
-    policies: {
-      quarantinePolicy: {
-        status: 'disabled'
-      }
-      trustPolicy: {
-        status: 'enabled' // signed images only: the deployment identity and the image content are separate trust decisions
-        type: 'Notary'
-      }
-    }
-    zoneRedundancy: zoneRedundant ? 'Enabled' : 'Disabled'
+    adminUserEnabled: false
+    zoneRedundancy: skuName == 'Premium' ? 'Enabled' : 'Disabled'
   }
 }
 
-resource geoReplica 'Microsoft.ContainerRegistry/registries/replications@2023-07-01' = if (geoReplicaLocation != '') {
-  name: '${replace('${baseName}acr', '-', '')}/${geoReplicaLocation}'
-  location: geoReplicaLocation
+resource replica 'Microsoft.ContainerRegistry/registries/replications@2023-07-01' = if (skuName == 'Premium' && geoReplicaLocation != '') {
+  parent: registry
+  name: empty(geoReplicaLocation) ? 'none' : geoReplicaLocation
+  location: empty(geoReplicaLocation) ? location : geoReplicaLocation
   tags: tags
   properties: {
     regionEndpointEnabled: true
@@ -67,47 +49,26 @@ resource geoReplica 'Microsoft.ContainerRegistry/registries/replications@2023-07
   }
 }
 
-module privateEndpoint 'private-endpoints.bicep' = if (privateEndpointSubnetId != '') {
-  name: '${baseName}-acr-pe'
-  params: {
-    location: location
-    baseName: '${baseName}-acr'
-    subnetId: privateEndpointSubnetId
-    privateDnsZoneIds: privateDnsZoneIds
-    targets: [
-      {
-        name: 'acr'
-        resourceId: registry.id
-        groupId: 'registry'
-        dnsZoneName: 'privatelink.azurecr.io'
-      }
-    ]
-    tags: tags
+resource pullAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for principalId in pullPrincipalIds: {
+  name: guid(registry.id, principalId, acrPull)
+  scope: registry
+  properties: {
+    roleDefinitionId: acrPull
+    principalId: principalId
+    principalType: 'ServicePrincipal'
   }
-}
+}]
 
-resource diagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (logAnalyticsWorkspaceId != '') {
-  name: '${baseName}-acr-diag'
+resource diagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  name: 'law'
   scope: registry
   properties: {
     workspaceId: logAnalyticsWorkspaceId
     logs: [
-      {
-        category: 'ContainerRegistryRepositoryEvents'
-        enabled: true
-      }
-    ]
-    metrics: [
-      {
-        category: 'AllMetrics'
-        enabled: true
-      }
+      { category: 'ContainerRegistryRepositoryEvents', enabled: true }
+      { category: 'ContainerRegistryLoginEvents', enabled: true }
     ]
   }
 }
 
-@description('Resource id of the registry, for the Container Apps environment’s image pulls.')
-output registryId string = registry.id
-
-@description('The registry login server, e.g. sacprodacr.azurecr.io. Services authenticate by managed identity, not by a registry password.')
 output loginServer string = registry.properties.loginServer
