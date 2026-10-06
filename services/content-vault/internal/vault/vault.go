@@ -29,6 +29,7 @@ const (
 	ActionRetrievalRefused   = "content_retrieval_refused"
 	ActionRetrievalRedeemed  = "content_retrieval_redeemed"
 	ActionSearch             = "content_search"
+	ActionSubjectExport      = "content_subject_export"
 	retentionClassContent    = "content"
 	defaultRetrievalGrantTTL = 5 * time.Minute
 )

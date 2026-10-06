@@ -283,6 +283,20 @@ func (t *tx) ContentForObject(_ context.Context, objectID string) (store.Content
 	return c, nil
 }
 
+func (t *tx) ContentForSubject(_ context.Context, subjectRef string) ([]store.Content, error) {
+	var out []store.Content
+	for _, c := range t.s.content {
+		if c.TenantID != t.tenant {
+			continue
+		}
+		if sub, ok := t.s.submissions[key(t.tenant, c.SubmissionID)]; ok && sub.UserRef == subjectRef {
+			out = append(out, c)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+
 func (t *tx) InsertRetrievalGrant(_ context.Context, g store.RetrievalGrant) error {
 	if g.SecondApprover != "" && g.SecondApprover == g.Principal {
 		return errors.New("storetest: retrieval_grant_second_approver_distinct")

@@ -2202,6 +2202,9 @@ GRANT SELECT ON ref.data_class, ref.retention_class TO sac_vault;
 GRANT SELECT (tenant_id, submission_id, device_id, user_ref, tool_fingerprint,
               collection_mode, content_state, received_at, expires_at, prompt_kind, labels)
   ON ingest.submission TO sac_vault;
+-- A subject export resolves content by the subject's events too, so an object whose submission was
+-- not yet known at upload is still found. Column-level: never excerpts, digests or policy decisions.
+GRANT SELECT (tenant_id, event_id, user_ref) ON ingest.observation TO sac_vault;
 -- Storing content marks its submission uploaded, in the same transaction.
 GRANT UPDATE (content_state) ON ingest.submission TO sac_vault;
 GRANT INSERT ON ops.audit TO sac_vault;

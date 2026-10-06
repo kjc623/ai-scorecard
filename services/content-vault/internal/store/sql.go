@@ -101,6 +101,18 @@ SELECT ` + sqlContentColumns + `, ciphertext
   FROM ops.content
  WHERE tenant_id = $1::uuid AND object_id = $2::uuid`
 
+	// The stored objects of one subject, by their submission or by their event, so an object whose
+	// submission was not yet known at upload is still found.
+	sqlContentForSubject = `
+SELECT ` + sqlContentColumns + `, ciphertext
+  FROM ops.content c
+ WHERE c.tenant_id = $1::uuid
+   AND (c.submission_id IN (SELECT submission_id FROM ingest.submission
+                             WHERE tenant_id = $1::uuid AND user_ref = $2::text)
+        OR c.event_id IN (SELECT event_id FROM ingest.observation
+                           WHERE tenant_id = $1::uuid AND user_ref = $2::text))
+ ORDER BY c.created_at, c.object_id`
+
 	sqlInsertRetrievalGrant = `
 INSERT INTO ops.retrieval_grant (tenant_id, grant_id, event_id, object_id, submission_id, principal,
                                  case_reference, second_approver, issued_at, expires_at, raw_digest)
@@ -133,9 +145,9 @@ SELECT receipt_id::text
 	// The chain hashes are computed by the ops.audit_chain() trigger.
 	sqlAppendAudit = `
 INSERT INTO ops.audit (tenant_id, actor_type, actor_id, action, object_type, object_id,
-                       case_reference, detail, occurred_at)
+                       subject_ref, case_reference, detail, occurred_at)
 VALUES ($1::uuid, $2::text, $3::text, $4::text, $5::text, nullif($6::text, ''),
-        nullif($7::text, ''), $8::jsonb, $9::timestamptz)`
+        nullif($7::text, ''), nullif($8::text, ''), $9::jsonb, $10::timestamptz)`
 )
 
 // The three search statements share one shape: they join the index to the submission so a search
@@ -296,6 +308,24 @@ func (t *sqlTx) ContentForObject(ctx context.Context, objectID string) (Content,
 	return c, notFound("content", err)
 }
 
+func (t *sqlTx) ContentForSubject(ctx context.Context, subjectRef string) ([]Content, error) {
+	rows, err := t.tx.QueryContext(ctx, sqlContentForSubject, t.tenant, subjectRef)
+	if err != nil {
+		return nil, fmt.Errorf("store: content for subject: %w", err)
+	}
+	defer rows.Close()
+	var out []Content
+	for rows.Next() {
+		var c Content
+		if err := rows.Scan(append(contentFields(&c), &c.Ciphertext)...); err != nil {
+			return nil, fmt.Errorf("store: content for subject row: %w", err)
+		}
+		c.TenantID = t.tenant
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 func (t *sqlTx) InsertRetrievalGrant(ctx context.Context, g RetrievalGrant) error {
 	if _, err := t.tx.ExecContext(ctx, sqlInsertRetrievalGrant, t.tenant, g.GrantID, g.EventID, g.ObjectID, g.SubmissionID,
 		g.Principal, g.CaseReference, g.SecondApprover, g.IssuedAt, g.ExpiresAt, g.RawDigest); err != nil {
@@ -375,7 +405,7 @@ func (t *sqlTx) AppendAudit(ctx context.Context, e AuditEntry) error {
 		return fmt.Errorf("store: audit detail: %w", err)
 	}
 	if _, err := t.tx.ExecContext(ctx, sqlAppendAudit, t.tenant, e.ActorType, e.ActorID, e.Action, e.ObjectType,
-		e.ObjectID, e.CaseReference, raw, e.OccurredAt); err != nil {
+		e.ObjectID, e.SubjectRef, e.CaseReference, raw, e.OccurredAt); err != nil {
 		return fmt.Errorf("store: audit: %w", err)
 	}
 	return nil

@@ -53,6 +53,9 @@ type Tx interface {
 	ContentForEvent(ctx context.Context, eventID string) (Content, error)
 	// ContentForObject reads one stored object with its ciphertext.
 	ContentForObject(ctx context.Context, objectID string) (Content, error)
+	// ContentForSubject reads every stored object (with ciphertext) belonging to one subject, by
+	// the subject's submissions or events.
+	ContentForSubject(ctx context.Context, subjectRef string) ([]Content, error)
 
 	// InsertRetrievalGrant records a single-use retrieval grant.
 	InsertRetrievalGrant(ctx context.Context, g RetrievalGrant) error
@@ -225,6 +228,7 @@ type AuditEntry struct {
 	Action        string
 	ObjectType    string
 	ObjectID      string
+	SubjectRef    string
 	CaseReference string
 	Detail        map[string]any
 	OccurredAt    time.Time

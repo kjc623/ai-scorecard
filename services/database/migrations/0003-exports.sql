@@ -53,4 +53,5 @@ GRANT UPDATE (used_at) ON ops.export TO sac_query;
 GRANT SELECT, INSERT ON ops.erasure_request TO sac_query;
 GRANT SELECT (tenant_id, export_id, expires_at), DELETE ON ops.export TO sac_ops;
 GRANT SELECT (tenant_id, object_id, submission_id, event_id, expires_at), DELETE ON ops.content TO sac_ops;
+GRANT SELECT (tenant_id, event_id, user_ref) ON ingest.observation TO sac_vault;
 GRANT SELECT, UPDATE ON ops.erasure_request TO sac_ops;

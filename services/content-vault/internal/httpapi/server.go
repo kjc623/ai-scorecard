@@ -15,6 +15,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -68,6 +69,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/content/retrieval", s.retrieve)
 	mux.HandleFunc("GET "+vault.RetrievalPath+"{tenant}/{grant}", s.redeem)
 	mux.HandleFunc("POST /v1/content-search", s.search)
+	mux.HandleFunc("POST /v1/content/subject-export", s.subjectExport)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -303,6 +305,53 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"state": "available", "effective_tier": string(res.Tier), "unit_kinds": res.UnitKinds,
 		"hits": hits, "truncated": res.NextCursor != "", "next_cursor": res.NextCursor,
+	})
+}
+
+type subjectExportRequest struct {
+	SubjectRef string `json:"subject_ref"`
+}
+
+type subjectPrompt struct {
+	EventID      string `json:"event_id"`
+	SubmissionID string `json:"submission_id"`
+	PromptKind   string `json:"prompt_kind"`
+	RawDigest    string `json:"raw_digest"`
+	SizeBytes    int    `json:"size_bytes"`
+	Plaintext    string `json:"plaintext"` // base64 of the stored bytes
+}
+
+// subjectExport is an admin's read of every stored prompt of one subject. The vault decrypts them
+// and audits the read; the caller (query-api) assembles the archive.
+func (s *Server) subjectExport(w http.ResponseWriter, r *http.Request) {
+	p, ok := s.person(w, r, auth.RoleAdmin)
+	if !ok {
+		return
+	}
+	var req subjectExportRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	if req.SubjectRef == "" || len(req.SubjectRef) > 256 {
+		writeError(w, http.StatusBadRequest, string(vault.ReasonInvalidRequest), "subject_ref is required and at most 256 characters")
+		return
+	}
+	res, err := s.vault.SubjectExport(r.Context(), vault.SubjectExportRequest{
+		TenantID: p.TenantID, SubjectRef: req.SubjectRef, Principal: p.Actor, SessionID: p.SessionID,
+	})
+	if err != nil {
+		s.writeVaultError(w, err)
+		return
+	}
+	prompts := make([]subjectPrompt, 0, len(res.Prompts))
+	for _, pr := range res.Prompts {
+		prompts = append(prompts, subjectPrompt{
+			EventID: pr.EventID, SubmissionID: pr.SubmissionID, PromptKind: pr.PromptKind,
+			RawDigest: pr.RawDigest, SizeBytes: pr.SizeBytes, Plaintext: base64.StdEncoding.EncodeToString(pr.Plaintext),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"state": "available", "prompts": prompts, "skipped": res.Skipped,
 	})
 }
 
