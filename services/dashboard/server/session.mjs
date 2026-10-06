@@ -18,7 +18,7 @@ export const ROLE_CAPABILITIES = Object.freeze({
   viewer: Object.freeze(['aggregate', 'device']),
   analyst: Object.freeze(['aggregate', 'device', 'subject', 'search']),
   content_reader: Object.freeze(['aggregate', 'device', 'subject', 'search', 'content']),
-  admin: Object.freeze(['aggregate', 'audit', 'settings', 'sanction']),
+  admin: Object.freeze(['aggregate', 'audit', 'settings', 'sanction', 'data_subject']),
 });
 
 /** The roles a product token may carry. */

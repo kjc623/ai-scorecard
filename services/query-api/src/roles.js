@@ -20,14 +20,17 @@ import { REASON, QueryError } from './errors.js';
 export const ROLES = Object.freeze(['viewer', 'analyst', 'content_reader', 'admin']);
 
 /** Every capability the read path knows. */
-export const CAPABILITIES = Object.freeze(['aggregate', 'device', 'subject', 'search', 'content', 'audit', 'settings', 'sanction']);
+export const CAPABILITIES = Object.freeze(['aggregate', 'device', 'subject', 'search', 'content', 'audit', 'settings', 'sanction', 'data_subject']);
 
 /** What each role may do. Frozen so a caller cannot widen a role by mutation. */
 export const ROLE_CAPABILITIES = Object.freeze({
   viewer: Object.freeze(['aggregate', 'device']),
   analyst: Object.freeze(['aggregate', 'device', 'subject', 'search']),
   content_reader: Object.freeze(['aggregate', 'device', 'subject', 'search', 'content']),
-  admin: Object.freeze(['aggregate', 'audit', 'settings', 'sanction']),
+  // `data_subject` is the privacy capability: export or erase one person's data. It is distinct
+  // from `subject` (browsing events), so an admin can run a data-subject request without the
+  // general browse capability, and vice versa.
+  admin: Object.freeze(['aggregate', 'audit', 'settings', 'sanction', 'data_subject']),
 });
 
 /**
@@ -56,10 +59,11 @@ export const ENDPOINT_CAPABILITY = Object.freeze({
   '/v1/content-search': 'search',
   '/v1/content/retrieval': 'content',
   '/v1/list-export': 'subject',
-  // The data-subject export and erasure are admin operations; they reuse the `settings`
-  // capability, which only the admin role carries.
-  '/v1/subject-export': 'settings',
-  '/v1/subject-erasure': 'settings',
+  // The data-subject export and erasure are admin operations, gated on the admin-only `data_subject`
+  // capability rather than `subject`, so an admin can run a privacy request without the general
+  // browse capability (and a viewer/analyst cannot).
+  '/v1/subject-export': 'data_subject',
+  '/v1/subject-erasure': 'data_subject',
 });
 
 /** True for the four product roles; false for null and anything unrecognised. */
