@@ -4,6 +4,7 @@ go 1.27
 
 require (
 	github.com/Microsoft/go-winio v0.6.2
+	github.com/godbus/dbus/v5 v5.2.2
 	github.com/shadow-ai-capture/device/capture-spool v0.0.0
 	github.com/shadow-ai-capture/device/protocol v0.0.0
 	golang.org/x/sys v0.48.0
