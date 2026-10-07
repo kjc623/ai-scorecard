@@ -40,7 +40,9 @@ TLS inspection breaks things, so it needs ways to step out of the way:
   - If task 43 found no bypass, record "not needed" and add nothing.
 - **Kill switch**:
   - Database: `ops.kill_switch (tenant_id, route, reason_code, effective_at, set_by)`, with
-    `route` in the interception routes (`proxy.tls`, `proxy.loopback`), RLS, grants and audit.
+    `route` in the interception routes (`proxy.tls`, `proxy.loopback`), RLS, grants and audit,
+    in `services/database/schema.sql` and in the next numbered migration in
+    `services/database/migrations/`.
   - control-api:
     - `PUT /admin/v1/settings/kill-switch/{route}` with `{on, reason_code}`;
     - `compose()` emits `kill_switches` with `mode: "disable"`.
@@ -60,17 +62,18 @@ TLS inspection breaks things, so it needs ways to step out of the way:
 
 - `cd device/capture-core && go test -race ./proxy/...` passes, and the control-api and dashboard
   tests pass.
-- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`, with TLS inspection on:
+- Ready to merge. After merge and deploy (`AGENTS.md`), with TLS inspection on for the test
+  tenant (ask the owner to check the Settings page; wait):
   1. If task 43 called for the QUIC rule:
      `invm.ps1 -Command 'Get-NetFirewallRule -DisplayName "ShadowAICapture QUIC *" | Get-NetFirewallApplicationFilter'`
      lists one rule per app executable. If it didn't, the same command lists none.
-  2. Tripping the `proxy.tls` kill switch in the dashboard makes the next Claude Desktop request,
-     sent at the VM's console, go direct within one policy poll:
-     - the `egress_proxy` row shows `killed`;
-     - the `blind_tunnelled` count in the VM's `health.json` rises, read before and after with
-       `invm.ps1 -Command`.
-  3. Clearing it restores interception.
-  4. Turning TLS inspection off removes the PAC and root within one poll, checked with the same
+  2. Ask the owner to trip the `proxy.tls` kill switch on the Settings page; wait. The next Claude
+     Desktop request, sent by the owner at the VM's console, goes direct within one policy poll:
+     - the `egress_proxy` row shows `killed` (`invm.ps1 -AgentState`), and the owner confirms the
+       same on the dashboard's device view;
+     - the `blind_tunnelled` count rises, read before and after with `invm.ps1 -AgentState`.
+  3. Ask the owner to clear it; interception resumes (`egress_proxy` `healthy`).
+  4. Ask the owner to turn TLS inspection off; within one poll that removes the PAC and root within one poll, checked with the same
      `invm.ps1` commands as task 08, and removes the QUIC rules (the `Get-NetFirewallRule` command
      above lists none).
   5. Record the times.

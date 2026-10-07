@@ -51,15 +51,18 @@ normalizer maps it onto envelopes with the same guarantees as task 26.
 ## Done when
 
 - `cd device/capture-core && go test -race ./otlp/...` passes over all Copilot fixtures.
-- On the reference VM, after deploying with `node localdev/testbed/deploy.mjs` with OTel on for
-  the lab tenant:
+- After merge and deploy (`AGENTS.md`), with OTel on for the test tenant (ask the owner to check
+  the Settings page; wait):
   1. Read the agent's token with `invm.ps1 -Command` (from `otlp.token` in the state directory;
      don't print it in the report).
   2. Point VS Code Copilot by hand at `http://127.0.0.1:47318` with the token header, in the
      console user's settings. These are temporary user settings; task 31 makes them managed.
-  3. A Copilot Chat turn in VS Code at the VM's console gives a `tool.otel` prompt event for
-     `app:github_copilot`. Its `user_ref` is the one derived from the console user's UPN, or its
-     `subject_name` is that UPN if the tenant's device identity is clear.
+  3. A Copilot Chat turn in VS Code at the VM's console (an owner step) raises the
+     `otel_receiver` row's `emitted` counter, and the spool drains with the batch acknowledged
+     (`invm.ps1 -AgentState`). The owner confirms on the dashboard: a `tool.otel` prompt event
+     for `app:github_copilot` (Tools page), attributed to the console user. Its `user_ref` is the
+     one derived from the console user's UPN, or its `subject_name` is that UPN if the tenant's
+     device identity is clear.
   4. The same is shown for the CLI, run with `invm.ps1 -AsUser console -Command 'copilot ...'`,
      with `app:copilot_cli`.
   5. Remove the temporary settings afterwards.

@@ -35,7 +35,9 @@ adapter, or a recorded "not available" with the reason.
     Settings page.
 
   A new tool key (`gemini_cli`) is added to the closed set in the database, control-api, the
-  device bundle validation and the dashboard, as task 07 defined them.
+  device bundle validation and the dashboard, as task 07 defined them. Every schema change
+  (the tool key CHECK, the `ref.collector` row) goes in `services/database/schema.sql` and in the
+  next numbered migration in `services/database/migrations/`.
 - When the answers aren't all yes, nothing is built, and `DECISIONS.md` records which answer
   failed.
 - `DECISIONS.md` gets one entry per tool: version checked, the three answers, and either "adapter
@@ -46,8 +48,9 @@ adapter, or a recorded "not available" with the reason.
 - `DECISIONS.md` has the four entries.
 - For each adapter built:
   - its `go test` passes;
-  - on the reference VM, deployed with `node localdev/testbed/deploy.mjs`, a prompt with an
-    AWS-key-shaped test string is blocked in that tool with the rule's message, run as the console
-    user (`invm.ps1 -AsUser console -Command` for a CLI, or at the console with
+  - after merge and deploy (`AGENTS.md`), with a test-tenant "block `credential`" rule (ask the
+    owner to add it on the Settings page; wait), a prompt with an AWS-key-shaped test string is
+    blocked in that tool with the rule's message, run as the console user
+    (`invm.ps1 -AsUser console -Command` for a CLI, or at the console as an owner step with
     `invm.ps1 -Screenshot`).
 - `node tools/accept.mjs` passes.

@@ -3,8 +3,9 @@
 Needs:
 - a Linux desktop (systemd and logind, for example Ubuntu 24.04 or Fedora 41 with GNOME) usable
   as a test device;
-- the Linux package installed (`device/installer/linux/install.sh`) and enrolled in the lab or
-  pre-prod;
+- the test tenant's file (`TESTBED.md`, "Tenant file") copied to the desktop by the owner, outside
+  the repository;
+- the owner's `gh` CLI signed in on the desktop with read access to the repository's Actions;
 - Cursor, VS Code with the Copilot, Claude Code and Continue extensions, the `claude`, `codex` and
   `gemini` CLIs, and Ollama with two models, installed.
 
@@ -27,6 +28,21 @@ All of it builds with `CGO_ENABLED=0`.
 
 ## Scope
 
+- **A pre-prod release for Linux.** The desktop enrols into pre-prod's test tenant, never the local
+  lab. Its package must carry pre-prod's policy public key and a classifier release signed with
+  the environment's classifier key, which only CI holds (`SAC_CLASSIFIER_SIGNING_KEY`). So no
+  local build can produce it.
+  - Until `.github/workflows/deploy.yml` builds a Linux package, add it, scoped to this:
+    - one step in the `agent-release` job, after the MSI. It stages with
+      `node device/installer/build.mjs --os linux` for amd64 and arm64, using the same key inputs
+      `release-msi.mjs` receives. `build.mjs` cross-compiles and packs the tar.gz on Windows.
+    - It uploads the artifact `agent-release-linux`.
+    - No other step or job changes.
+  - This lands in the first merge of this task. After the deploy run, download the artifact on
+    the desktop with `gh run download`.
+  - **Install.** The owner installs it with the tenant file:
+    `sudo ./install.sh --tenant-env <file>`. There is no Linux MDM in scope, so this is the
+    install path. Record it in `DECISIONS.md`.
 - **Attribution** (`hostinfo`, `_linux.go`):
   - `OwnerOfLocalTCP`: find the socket inode in `/proc/net/tcp` and `/proc/net/tcp6` by local
     and remote address, then scan `/proc/<pid>/fd` for `socket:[inode]`. Cache the inode-to-PID
@@ -66,8 +82,17 @@ All of it builds with `CGO_ENABLED=0`.
 
 - `cd device/capture-core && go test ./hostinfo/ ./userhelper/ ./inventory/ ./procmon/ ./flowmon/`
   passes on the Linux desktop and in CI's Linux job.
-- On the Linux desktop, each Windows task's finish line holds for the tools installed: Cursor
-  found, CLIs with versions, extensions with versions, Cursor start and stop, Ollama with two
-  models, a `curl` attributed to `curl` and the user, and the helper connected. Show each on the
-  dashboard or in the database.
+- Ready to merge. After merge and deploy (`AGENTS.md`), with `main`'s `agent-release-linux`
+  installed on the desktop and enrolled in the test tenant, each Windows task's finish line holds
+  for the tools installed:
+  - Cursor found;
+  - CLIs and extensions with versions;
+  - Cursor start and stop;
+  - Ollama with two models;
+  - a `curl` attributed to `curl` and the user;
+  - the helper connected.
+
+  Show each on the desktop from `/var/lib/shadow-ai-capture/health.json` (the collector's
+  `emitted` counter) and the agent's `envelope spooled` log lines (task 05, `journalctl -u
+  shadow-ai-capture`). Then ask the owner to confirm each on the test tenant's dashboard; wait.
 - `node tools/accept.mjs` passes.

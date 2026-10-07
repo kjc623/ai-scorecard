@@ -21,9 +21,10 @@ the link is usable.
 ## Scope
 
 - For each tool and each of `warn` and `block`:
-  1. Write a lab-tenant rule with a 280-character message and a link.
-  2. Trigger it on the reference VM (deployed with `node localdev/testbed/deploy.mjs`), in the
-     tool's interactive UI at the VM's console. Record how the tool shows it: wrapping,
+  1. Ask the owner to add a test-tenant rule with a 280-character message and a link, on the
+     Settings page; wait for one policy poll.
+  2. Trigger it on the reference VM, running `main`'s release, in the tool's interactive UI at the
+     VM's console (an owner step). Record how the tool shows it: wrapping,
      truncation, Markdown or plain text, link clickable or not. Take screenshots with
      `invm.ps1 -Screenshot`.
 - Adjust only the adapters' `Render` (`capture-core/hooks/claudecode.go`, `cursor.go`):
@@ -36,11 +37,13 @@ the link is usable.
   that is recorded `warned` only where something was shown (otherwise `logged`). Adjust the
   adapter's per-event `canEnforce` for warn accordingly.
 - Golden tests: each adapter's `Render` output for a long message with a link, for both actions.
+- Observation comes first, on the release already deployed. If `Render` changes, report ready to
+  merge, and take the final screenshots after merge and deploy (`AGENTS.md`).
 
 ## Done when
 
 - `cd device/capture-core && go test ./hooks/` passes with the golden tests.
 - `DECISIONS.md` has the observed rendering per tool and action, with versions.
 - The report includes four `invm.ps1 -Screenshot` captures from the VM (2 tools × warn/block),
-  showing the message and link.
+  showing the message and link, taken on the release that contains the final `Render`.
 - `node tools/accept.mjs` passes.

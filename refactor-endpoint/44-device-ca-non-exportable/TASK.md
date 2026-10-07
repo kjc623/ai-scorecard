@@ -48,8 +48,9 @@ Exporting the key fails.
 ## Done when
 
 - `cd device/capture-core && go test -race ./proxy/tlsproxy/` passes on Windows.
-- On the reference VM, deployed with `node localdev/testbed/deploy.mjs` over the previous build
-  (so the migration runs), with TLS inspection on:
+- Ready to merge. After merge and deploy (`AGENTS.md`) — Intune installs the new release over the
+  previous one, so the key migration runs — with TLS inspection on for the test tenant (ask the
+  owner to check the Settings page; wait):
   1. `invm.ps1 -Command 'certutil -store Root'` lists the device root, and only one Shadow AI
      Capture root.
   2. `invm.ps1 -Command 'certutil -csp "Microsoft Software Key Storage Provider" -key'` lists

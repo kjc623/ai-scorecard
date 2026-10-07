@@ -19,7 +19,8 @@ through the emitter (task 15).
 
 - **`device/capture-core/flowmon`**, a `core.Provider`:
   - collector `flow_monitor` (new `protocol.Collector` constant and `ref.collector` row, component
-    `capture_core`, modes `m0`–`m3`);
+    `capture_core`, modes `m0`–`m3`,
+    in `schema.sql` and the next free numbered migration);
   - route `net.flow`;
   - `core.Toggled` on `endpoint.flows.enabled`.
 - **Sources**, through the ETW session helper from task 19 (`etwsession`), one session with two
@@ -63,11 +64,11 @@ through the emitter (task 15).
 - `cd device/capture-core && go test -race ./flowmon/ ./etwsession/` passes on the PC.
 - The elevated test runs in the VM. Build the test binary on the PC (`go test -c`), copy it in with
   `invm.ps1 -CopyTo`, and run it elevated in the VM with `invm.ps1 -Command`.
-- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`, with TLS inspection off
-  for the lab tenant:
+- Ready to merge. After merge and deploy (`AGENTS.md`), with TLS inspection off for the test
+  tenant (the default):
   1. Run `invm.ps1 -AsUser console -Command 'curl.exe -s https://api.openai.com/v1/models'`
      (a 401 is fine).
-  2. Within seconds, an `inference_connection` record arrives with:
+  2. Within seconds, an `inference_connection` record is emitted, shown from the spool log (the agent's `envelope spooled` lines, task 05: `invm.ps1 -Command 'Select-String "envelope spooled" C:\ProgramData\ShadowAICapture\state\capture-core.log | Select -Last 50'`), with the batch acknowledged in `invm.ps1 -AgentState`, with:
      - `app:openai_api`;
      - `destination_host` `api.openai.com`;
      - the `user_ref` derived from the console user's UPN;

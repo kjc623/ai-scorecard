@@ -41,8 +41,11 @@ decided and why, and for a vendor fact the product version checked.
   outside the plan's tasks. Rules allow, warn or block.
 - **OTLP ports are 47318 (HTTP) and 47317 (gRPC) on 127.0.0.1**, not 4318/4317, so a developer's own
   collector on the standard ports is not displaced.
-- **No policy version gating.** Nothing is deployed, so new bundle fields land in the server and
-  the device together, and the lab agent is reinstalled.
+- **No policy version gating.** The only device is the reference VM.
+  - A merge deploys the server and the agent release together.
+  - Until Intune updates the VM, its older agent refuses a bundle with new fields and keeps the
+    bundle it has, which never widens collection. That transient is expected; tasks verify after
+    the VM runs the new release.
 - **Budgets** are as in `DESIGN.md` §13. The owner can change them before task 51.
 - **Tool order.** Claude Code, then Codex, then Copilot, then Cursor.
 - **Network inspection reads requests only** (task 45). The product records prompts; nothing
@@ -50,14 +53,21 @@ decided and why, and for a vendor fact the product version checked.
 
 ## 2026-10-06, owner, after the first draft
 
-- **Testing happens on a VM, not the owner's PC.**
-  - The VM is Hyper-V on the owner's PC, Entra-joined and Intune-managed (`TESTBED.md`).
-  - Agents reach it with PowerShell Direct (`localdev/testbed/invm.ps1`).
-  - Every build reaches it through Intune. The agent publishes it with Microsoft Graph, through a
-    dedicated app registration, to one Win32 app assigned only to a test device group
-    (`localdev/testbed/deploy.mjs`, task 00).
-  - The VM trusts the lab CA through an Intune certificate profile, so the VM's tenant file has no
-    `SAC_CA_FILE`.
-  - Lab builds are versioned `1.1.<build number>`, so every build is an Intune update.
+- **Testing happens on a VM against Azure pre-prod, never the local lab or the owner's PC.**
+  - The VM is Hyper-V on the owner's PC, Entra-joined and Intune-managed, and enrolled into a
+    dedicated "Endpoint Test" tenant in pre-prod (`TESTBED.md`). The owner's tenant stays
+    untouched.
+  - Pre-prod is deployed first (task 00a).
+- **A change reaches the VM through `main`.**
+  1. The owner merges each task branch.
+  2. The push deploys pre-prod (services, migration, signed agent release).
+  3. `tools/testbed/deploy.mjs` publishes that release to the VM through Microsoft Graph, to one
+     Win32 app assigned only to a test device group (task 00b).
+  - Agents never push, run workflows or change Azure.
+- **Agents check the device side** (`tools/testbed/invm.ps1`, PowerShell Direct). The owner
+  changes dashboard settings and confirms what the dashboard shows; agents have no dashboard
+  sign-in and no database access.
+- **Schema changes now ship as numbered migrations** as well as in `schema.sql`, because pre-prod
+  exists.
 - The two users of a check are Entra test users signed in on the VM. The performance budgets
   (`DESIGN.md` §13) are measured on the VM.

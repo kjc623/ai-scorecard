@@ -34,7 +34,8 @@ original. The Windows override gap is a recorded, visible limitation.
   - `Installed()` comes from task 17's facts (`app:codex`);
   - sets `log_user_prompt` true when the resolved mode for `app:codex` is `m1` or higher.
 - **Provider**:
-  - collector `tool_config_codex` (constant and `ref.collector` row);
+  - collector `tool_config_codex` (constant and `ref.collector` row,
+    in `schema.sql` and the next free numbered migration);
   - `core.Toggled` on `endpoint.otel.enabled && endpoint.tools.codex.otel`;
   - health as in task 27.
   - On Windows, when the verified precedence lets a user override the file, check every user
@@ -50,11 +51,10 @@ original. The Windows override gap is a recorded, visible limitation.
 ## Done when
 
 - `cd device/capture-core && go test -race ./toolconfig/` passes.
-- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`, with Codex OTel on for the
-  lab tenant:
+- Ready to merge. After merge and deploy (`AGENTS.md`), with Codex OTel on for the test tenant:
   1. With the temporary user config from task 28 removed, a new Codex session's prompt
-     (`invm.ps1 -AsUser console -Command 'codex exec "..."'`) arrives as a `tool.otel` prompt
-     event for `app:codex`, with the console user's `user_ref`.
+     (`invm.ps1 -AsUser console -Command 'codex exec "..."'`) is emitted as a `tool.otel` prompt
+     event for `app:codex`, with the console user's `user_ref`, shown from the spool log (task 05's `envelope spooled` lines, read with `invm.ps1 -Command`), with the batch acknowledged in `invm.ps1 -AgentState`.
      - Show the machine-wide file with `invm.ps1 -Command`, at the verified path.
   2. Add a user-level `[otel]` override that disables export, in the console user's
      `%USERPROFILE%\.codex\config.toml` via `invm.ps1 -AsUser console`. Remove it afterwards.
@@ -63,5 +63,6 @@ original. The Windows override gap is a recorded, visible limitation.
      - if it doesn't win, the export continues.
 
      Show whichever happened, and that it matches `DECISIONS.md`.
-  3. Switching it off in the dashboard restores the machine file from its backup.
+  3. Ask the owner to switch Codex OTel off on the Settings page; wait. The machine file is
+     restored from its backup within one policy poll (compare with `invm.ps1 -Command`).
 - `node tools/accept.mjs` passes.

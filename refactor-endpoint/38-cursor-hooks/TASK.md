@@ -40,7 +40,8 @@ works, and is recorded.
     `RecordedAction(d, canEnforce=false)`).
   - The adapter carries a per-event `canEnforce` from that finding, and the relay uses it.
 - **Config writer** (`capture-core/toolconfig/cursor.go`):
-  - Collector `tool_config_cursor`, with a `ref.collector` row.
+  - Collector `tool_config_cursor`, with a `ref.collector` row in `services/database/schema.sql`
+    and in the next numbered migration in `services/database/migrations/`.
   - Merge the agent's two hook entries into the enterprise `hooks.json` under `DESIGN.md` §8's
     backup and restore rules.
     - Command: `"<install dir>\bin\capture-core.exe" --hook cursor <event>`.
@@ -56,16 +57,17 @@ works, and is recorded.
 ## Done when
 
 - `cd device/capture-core && go test -race ./hooks/ ./toolconfig/` passes.
-- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`, with a lab-tenant rule
-  "block `credential`":
+- Ready to merge. After merge and deploy (`AGENTS.md`), with a test-tenant rule "block
+  `credential`" (ask the owner to add it on the Settings page; wait for one policy poll):
   1. `invm.ps1 -Command 'Get-Content <enterprise hooks.json path>'` shows the agent's entries
      beside any customer entries.
-  2. In Cursor's chat at the VM's console, a prompt containing an AWS-key-shaped test string
+  2. In Cursor's chat at the VM's console (an owner step), a prompt containing an AWS-key-shaped test string
      either is blocked with the rule's message, or (if verification found blocks not honoured)
      goes through and is recorded as `logged` with the rule id. Capture Cursor with
      `invm.ps1 -Screenshot`.
-  3. Either outcome appears on the dashboard as a `tool.hook` event for `app:cursor`, attributed
-     to the console user. Screenshot the dashboard on the PC.
+  3. The `hook_relay` row's `emitted` counter rises and the spool drains (`invm.ps1 -AgentState`).
+     The owner confirms either outcome on the dashboard as a `tool.hook` event for `app:cursor`,
+     attributed to the console user.
 - `DECISIONS.md` has the verified file path, formats and block behaviour for both events, with
   the Cursor version.
 - `node tools/accept.mjs` passes.

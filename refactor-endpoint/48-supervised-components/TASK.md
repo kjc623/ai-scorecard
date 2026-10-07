@@ -53,11 +53,12 @@ gateway would be a second user. No gateway code is written here.
 
 - `cd device/capture-core && go test -race ./component/ ./classifierlink/ ./cmd/capture-core/ ./core/`
   passes.
-- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`:
+- Ready to merge. After merge and deploy (`AGENTS.md`):
   1. `invm.ps1 -Command 'Stop-Process -Name classifier-host -Force; Start-Sleep -Milliseconds 2000; Get-Process classifier-host'`
      shows a new process within 2 s.
-  2. The VM's `classifier_host` row on the dashboard's device view stays `healthy` after the
-     restart.
+  2. The `classifier_host` row stays `healthy` after the restart (`invm.ps1 -AgentState`), and the
+     owner confirms the same on the dashboard's device view.
   3. Killing it six times in a row, in one `invm.ps1 -Command` loop that waits for each restart,
-     shows `degraded`/`component_crash_loop` on the device view.
+     shows `degraded`/`component_crash_loop` in `invm.ps1 -AgentState`. The owner confirms it on
+     the device view after the next health report.
 - `node tools/accept.mjs` passes.

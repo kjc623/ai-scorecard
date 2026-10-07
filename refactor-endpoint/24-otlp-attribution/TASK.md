@@ -44,7 +44,7 @@ record carries that person.
 - `cd device/capture-core && go test -race ./otlp/` passes.
 - The provider logs one `info` line per new connection, with the sender's PID, image base name
   and `user_ref` only (never a body or attribute value).
-- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`:
+- Ready to merge. After merge and deploy (`AGENTS.md`):
   1. Copy `telemetrygen` (the same release as task 23's) into `C:\ProgramData\SacTestbed\otel\`
      with `invm.ps1 -CopyTo`.
   2. Start it with the device token header in both users' sessions at the same time:

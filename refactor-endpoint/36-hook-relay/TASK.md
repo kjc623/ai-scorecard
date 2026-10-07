@@ -65,8 +65,9 @@ service over the native endpoint, which decides allow, warn or block from the bu
   - At `m0` the text is not classified, and label rules don't match (§9).
   - A disabled tool (`endpoint.tools.<key>.hooks` false) is answered `allow`, and nothing is
     recorded.
-- `ref.collector` row `hook_relay`. Add `protocol.Collector` and the route constant if task 05
-  hasn't already.
+- `ref.collector` row `hook_relay`, in `services/database/schema.sql` and in the next numbered
+  migration in `services/database/migrations/`. Add `protocol.Collector` and the route constant if
+  task 05 hasn't already.
 - **Benchmark** (`capture-core/hooks/bench_windows_test.go`, build tag-free, skipped unless
   `SAC_HOOK_BENCH=1`). It runs on the reference VM, whose resources are the budget's baseline:
   1. Build `capture-core.exe`.
@@ -87,7 +88,8 @@ service over the native endpoint, which decides allow, warn or block from the bu
     a refused frame);
   - a test that a `block` rule on `credential` blocks the AWS-key-shaped prompt and records
     `blocked`.
-- On the reference VM:
+- On the reference VM (test binaries only, so no merge is needed for this check; the product
+  install on the VM is untouched):
   1. On the PC, build the benchmark's binaries: `go test -c -o hooks.test.exe ./hooks/`,
      `capture-core.exe`, and `classifier-host.exe` with a test classifier release.
   2. Copy them into one folder in the VM with `invm.ps1 -CopyTo`.

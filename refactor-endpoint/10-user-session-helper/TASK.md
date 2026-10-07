@@ -53,7 +53,7 @@ The helper's first job is to show a notification the service asks for.
   - Health is `healthy` when every signed-in session has a connected helper.
   - Expose `Notify(sessionID, n) error` for later tasks.
   - Not `Toggled`: the helper always runs, because it collects nothing.
-- `ref.collector` row `user_helper`, and the detail `helper_unavailable`.
+- `ref.collector` row `user_helper` in `schema.sql` and the next free numbered migration, and the detail `helper_unavailable`.
 - On macOS and Linux the provider reports `absent` with `helper_unavailable` (tasks 53 and 55
   port it).
 
@@ -61,7 +61,7 @@ The helper's first job is to show a notification the service asks for.
 
 - `cd device/capture-core && go test -race ./localipc/ ./userhelper/ ./cmd/capture-core/` passes,
   including a test where a client that is not the session's owner is refused for `helper_hello`.
-- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`:
+- Ready to merge. After merge and deploy (`AGENTS.md`):
   1. `invm.ps1 -Command 'Get-Process capture-core -IncludeUserName | Select Id,SessionId,UserName,Path'`
      shows a helper running as the console user in the console session, and one running as the
      second user in the second user's (disconnected) session.

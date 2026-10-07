@@ -1,8 +1,8 @@
 # 22. Discovery volume check
 
 Needs:
-- the reference VM running, with the agent from task 21 deployed by Intune and every endpoint
-  collector on, for one full UTC day;
+- the reference VM running, with `main`'s agent (including task 21) deployed by Intune, and every
+  endpoint collector on for the test tenant, for one full UTC day;
 - during that day, the owner uses the console session for ordinary AI-tool work: opening the
   installed desktop apps, CLIs and VS Code several times;
 - the second user stays signed in.
@@ -26,15 +26,20 @@ collector at fault.
 
 ## Scope
 
-- Measure from the lab database, for the lab tenant and the reference device, over one complete
-  UTC day:
-  - `ingest.observation` rows with `kind = 'discovery'`, grouped by `source` and
-    `discovery_type`;
-  - `ingest.rejected` rows for the device (must be zero);
+- Measure on the device, over one complete UTC day:
+  - the spool log's (task 05) `envelope spooled` lines with `kind` `discovery`, grouped by
+    `source` and `discovery_type`, counted with an `invm.ps1 -Command` script over
+    `C:\ProgramData\ShadowAICapture\state\capture-core.log` and its rotated files;
+  - records the server refused: the spool's `rejected_total` in `health.json`
+    (`invm.ps1 -AgentState`), which must not rise during the day;
   - the `dropped` counters on the `inventory_scanner`, `process_detector` and `flow_monitor`
-    health rows (`ops.collector_state`).
+    health rows (`invm.ps1 -AgentState`).
 
-  Put the SQL in the report.
+  Cross-check the rejections read-only in pre-prod, with
+  `az monitor log-analytics query` over ingest-api's console logs for the device. Ask the owner
+  for the device id from the dashboard's Devices page if the logs need it.
+
+  Put the scripts and queries in the report.
 - If the day exceeds 150 records (75 % of budget) or any record was rejected:
   1. Find the cause (duplicate keys that differ only in a field that shouldn't vary, an invalid
      field).
@@ -48,5 +53,5 @@ collector at fault.
 ## Done when
 
 - One full UTC day has under 150 discovery records from the reference device and zero rejected
-  records. The report shows the query output.
+  records. The report shows the script and query output.
 - Any fix has its regression test, and `node tools/accept.mjs` passes.

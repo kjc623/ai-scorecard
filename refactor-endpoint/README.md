@@ -1,18 +1,21 @@
 # Endpoint agent refactor
 
 This folder breaks the owner's plan (`PLAN.md`) into tasks that each fit one agent session.
-`TESTBED.md` describes the reference VM where every on-device check runs (Hyper-V, Entra-joined,
-Intune-managed) and the owner's one-time setup for it. `DESIGN.md` fixes how the plan maps onto this repository: names, wire shapes, settings, ports and
+`TESTBED.md` describes the test environment: Azure pre-prod with a test tenant, and the reference
+VM where every on-device check runs (Hyper-V, Entra-joined, Intune-managed). It covers how a
+change reaches the VM (merge to `main`, CI deploys, Intune delivers) and the owner's one-time
+setup. The local lab is not used. `DESIGN.md` fixes how the plan maps onto this repository: names, wire shapes, settings, ports and
 dependencies. `DECISIONS.md` records what has been settled and why. `AGENTS.md` holds the rules for
 the agents doing the work.
 
-Tasks run in number order unless "Depends on" allows otherwise. Tasks 13, 30–32, 37–41, 43, 45–47 and 52 include steps the owner does at the VM's console in a desktop app (`AGENTS.md`); the agent stops and asks at those points. Every task that checks its work on a device also depends on task 00, and its "Needs" means on the reference VM, installed and signed in as the console user unless it says otherwise. "Needs" lists what the owner must
+Tasks run in number order unless "Depends on" allows otherwise. Tasks 13, 30–32, 37–41, 43, 45–47 and 52 include steps the owner does at the VM's console in a desktop app (`AGENTS.md`); the agent stops and asks at those points. Every task that checks its work on a device also depends on tasks 00a and 00b, runs in two phases (build, then verify after the owner merges and `main` deploys pre-prod), and leaves dashboard settings and checks to the owner; and its "Needs" means on the reference VM, installed and signed in as the console user unless it says otherwise. "Needs" lists what the owner must
 supply. The Plan column gives the plan's task id.
 
 | # | Task | Plan | Depends on | Needs | Done |
 |---|---|---|---|---|---|
 | **Phase 0: Foundation** | | | | | |
-| 00 | [Reference VM tooling](00-reference-vm/TASK.md) | | | `TESTBED.md` setup done | [ ] |
+| 00a | [Pre-prod environment and test tenant](00a-preprod-environment/TASK.md) | | backlog 25, 26; merge to `main` | `azure/RUNBOOK.md` owner steps | [ ] |
+| 00b | [Reference VM tooling](00b-reference-vm/TASK.md) | | 00a | `TESTBED.md` VM checklist done | [ ] |
 | 01 | [Make the policy drift test run](01-bundle-drift-test/TASK.md) | E03 | | | [ ] |
 | 02 | [Serialise classifier requests](02-classifier-link-serialise/TASK.md) | E24, E25 | | | [ ] |
 | 03 | [Envelope: endpoint routes and kinds](03-envelope-endpoint-kinds/TASK.md) | E02 | | | [ ] |

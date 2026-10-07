@@ -40,6 +40,8 @@ Turning the setting off restores Ollama's original port and releases the broker'
 - **Database and control-api**:
   - Add `ops.endpoint_tool_setting.loopback boolean`, defaulting to false.
   - Accept `ollama` as a `tool_key`.
+  - Both schema changes go in `services/database/schema.sql` and in the next numbered migration in
+    `services/database/migrations/`.
   - `compose()` emits `loopback.ports` for each enabled runtime, with:
     - `tool_fingerprint` `app:ollama`;
     - `port` from the catalog's `listen_port` signal (11434);
@@ -79,17 +81,18 @@ Turning the setting off restores Ollama's original port and releases the broker'
 
 ## Done when
 
-- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`, with the lab tenant's
-  Ollama "Local model capture" switched on in the dashboard and no service restart:
+- Ready to merge. After merge and deploy (`AGENTS.md`), ask the owner to switch the test tenant's
+  Ollama "Local model capture" on, on the Settings page; wait. With no service restart:
   1. After the next policy poll,
      `invm.ps1 -Command '[Environment]::GetEnvironmentVariable("OLLAMA_HOST","Machine")'` shows
      `127.0.0.1:21434`.
   2. `invm.ps1 -Command 'Get-NetTCPConnection -LocalPort 11434 -State Listen'` shows
      `capture-core` holding 11434.
   3. `invm.ps1 -AsUser console -Command 'curl.exe -s http://127.0.0.1:11434/api/generate -d "{\"model\":\"<a pulled model>\",\"prompt\":\"hello\",\"stream\":false}"'`
-     answers, and produces a `proxy.loopback` event for `app:ollama` in the lab tenant, attributed
-     to the console user and visible on the dashboard.
-  4. Switching it off in the dashboard restores `OLLAMA_HOST` to its original value within one
+     answers. The `loopback_broker` row's `emitted` counter rises, and the spool drains
+     (`invm.ps1 -AgentState`). The owner confirms on the dashboard a `proxy.loopback` event for
+     `app:ollama` in the test tenant, attributed to the console user.
+  4. Ask the owner to switch it off; wait. That restores `OLLAMA_HOST` to its original value within one
      poll (the same `-Command`). After Ollama restarts, it answers on 11434 directly, with the
      listener check showing `ollama` and not `capture-core`.
 - `node tools/accept.mjs` passes.

@@ -51,11 +51,11 @@ the same guarantees as the Claude Code normalizer (task 26).
 
 - `cd device/capture-core && go test -race ./otlp/...` passes, with every fixture event converted
   and no unlisted attribute.
-- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`:
+- Ready to merge. After merge and deploy (`AGENTS.md`):
   - Point a Codex session, run as the console user, by hand at `http://127.0.0.1:47318` with the
     token header (read with `invm.ps1 -Command 'Get-Content C:\ProgramData\ShadowAICapture\state\otlp.token'`, never printed in the report). Use the same temporary user config as the capture; task 29
     makes it managed.
   - It gives a `tool.otel` prompt event for `app:codex`, with the `user_ref` derived from the
-    console user's UPN.
+    console user's UPN, shown from the spool log (task 05's `envelope spooled` lines, read with `invm.ps1 -Command`), with the batch acknowledged in `invm.ps1 -AgentState`.
   - Remove the temporary config afterwards.
 - `node tools/accept.mjs` passes.

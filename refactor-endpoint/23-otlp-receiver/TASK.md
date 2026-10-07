@@ -21,7 +21,8 @@ admin switches it on and off from the dashboard.
   for tests only, `go.opentelemetry.io/otel/sdk` with the OTLP log, trace and metric exporters.
 - **`device/capture-core/otlp`**, a `core.Provider`:
   - collector `otel_receiver` (new `protocol.Collector` constant and `ref.collector` row,
-    component `capture_core`, modes `m0`–`m3`), route `tool.otel`;
+    component `capture_core`, modes `m0`–`m3`,
+    in `schema.sql` and the next free numbered migration), route `tool.otel`;
   - `core.Toggled` on `endpoint.otel.enabled`.
   - **Listeners**:
     - HTTP on `endpoint.otel.http_listen` and gRPC on `endpoint.otel.grpc_listen` (§5 defaults
@@ -73,7 +74,7 @@ admin switches it on and off from the dashboard.
 ## Done when
 
 - `cd device/capture-core && go test -race ./otlp/` passes.
-- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`:
+- Ready to merge. After merge and deploy (`AGENTS.md`):
   1. On the PC, download the official `otelcol-contrib` Windows binary and `telemetrygen` from the
      same release, and record the version in `DECISIONS.md`.
      - These are test-only helpers. Copy them into `C:\ProgramData\SacTestbed\otel\` with

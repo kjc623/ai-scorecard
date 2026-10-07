@@ -22,7 +22,8 @@ bundle carries the catalog as `catalog` (§5), and the device decodes and valida
 
 ## Scope
 
-- **Database** (`services/database/schema.sql`):
+- **Database** (`services/database/schema.sql`, and the same change, seed rows included, as the
+  next free numbered migration):
   - Create `ref.app` and `ref.app_signal` exactly as in §4. Grant read to the roles that read
     `ref.tool_catalogue` today.
   - `ref.tool_catalogue`:
@@ -93,7 +94,10 @@ bundle carries the catalog as `catalog` (§5), and the device decodes and valida
 
 - `node services/database/tools/check-schema.mjs` and `node tools/accept.mjs --only database` pass.
 - The drift test (task 01) passes with `catalog`.
-- `GET /v1/policy` on the lab carries all 20 apps. Quote the count from the decoded payload.
+- The migration proof (task 04) shows an empty diff.
+- Ready to merge. After merge and deploy (`AGENTS.md`): the bundle in force on the VM carries all
+  20 apps. `invm.ps1 -Command` decodes the cached bundle's payload from the agent's state directory
+  (`policy\`) and prints the `catalog` entry count and app keys. Quote them.
 - `cd device/capture-core && go test ./policy/ ./enforce/` passes, including the lookup helpers
   and a category rule that matches.
 - `node tools/accept.mjs` passes.

@@ -27,7 +27,7 @@ be:
 - `health.json`;
 - health reports;
 - the content store;
-- the lab database.
+- pre-prod: its service logs, and anything the dashboard can find.
 
 ## Scope
 
@@ -55,10 +55,11 @@ be:
     Expect zero hits at `m0` and at `m1`.
   - At `m1`, also assert that each prompt event carries labels including `credential`, and a
     digest.
-- **On the reference VM**: a script (`localdev/tools/privacy-canary.mjs`, run on the PC) that,
-  against the lab tenant set to `m1`:
+- **On the reference VM**: a script (`tools/testbed/privacy-canary.mjs`, run on the PC) that,
+  against the test tenant set to `m1` (ask the owner to set it on the Settings page, with every
+  endpoint collector, hooks, TLS inspection and Ollama capture on; wait for one policy poll):
   1. Prints a fresh canary.
-  2. Sends it where it can be scripted, through `localdev/testbed/invm.ps1 -AsUser console`:
+  2. Sends it where it can be scripted, through `tools/testbed/invm.ps1 -AsUser console`:
      - `claude -p` (hooks and OTel);
      - `curl.exe` to an intercepted API host (proxy);
      - `curl.exe` to Ollama on 11434 (loopback).
@@ -66,18 +67,24 @@ be:
      into Cursor, Claude Desktop and ChatGPT in the managed browser, capturing each with
      `invm.ps1 -Screenshot`.
   4. Searches for the canary in:
-     - the lab database: all `ingest` and `ops` tables, as the lab's superuser through the lab's
-       database tools, never the owner's tenant;
+     - pre-prod's service logs, read-only:
+       `az monitor log-analytics query` over `ContainerAppConsoleLogs_CL` for the test window,
+       every container app and job, searching for the canary;
      - the VM's agent log (`C:\ProgramData\ShadowAICapture\state\capture-core.log`) and
        `health.json`, copied back with `invm.ps1 -CopyFrom` and deleted from the PC after the
        search.
   5. Prints the hit count per location.
+  6. Asks the owner to search the test tenant's dashboard Search page for the canary string, and
+     records their answer (expected: no results).
+
+  Pre-prod's database has no agent access. What reaches it at `m1` is exactly the envelopes,
+  which the automated test searches, plus the server logs searched above.
 - Any hit is a defect. Report it with its path, but don't fix it in this task unless the fix is
   confined to removing the leak. Otherwise stop and report it.
 
 ## Done when
 
 - `cd device/integration && go test -race -run Privacy ./...` passes, with zero hits.
-- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`, the script reports zero
-  hits for a canary sent through every tool listed. Paste its output.
+- Ready to merge. After merge and deploy (`AGENTS.md`), the script reports zero hits for a canary
+  sent through every tool listed, and the owner reports no Search results. Paste its output.
 - `node tools/accept.mjs` passes.

@@ -51,12 +51,20 @@ seen by only one path still produces exactly one envelope.
 ## Done when
 
 - `cd device/capture-core && go test -race ./merge/ ./hooks/ ./otlp/` passes.
-- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`, with Claude Code's hooks
-  and OTel both on for the lab tenant:
-  1. Send five distinct prompts as the console user, each with
+- Ready to merge. After merge and deploy (`AGENTS.md`), with Claude Code's hooks and OTel both on
+  for the test tenant (ask the owner to check the Settings page; wait):
+  1. Record `invm.ps1 -AgentState`'s `hook_relay` and `otel_receiver` counters.
+  2. Send five distinct prompts as the console user, each with
      `invm.ps1 -AsUser console -Command 'claude -p "<prompt n>"'` (each run is its own session).
-     Then send two more in one interactive `claude` session at the VM's console.
-  2. The lab database shows exactly seven prompt events for `app:claude_code` from the VM's
-     device, each on route `tool.hook`, with a decision, and none on route `tool.otel`.
-  3. Paste the query and its output.
+     Then the owner sends two more in one interactive `claude` session at the VM's console.
+  3. `invm.ps1 -AgentState` shows `hook_relay` `emitted` up by exactly seven, and the spool
+     drained with every batch acknowledged.
+  4. The agent log's `envelope spooled` lines for the test window (task 05), read with
+     `invm.ps1 -Command` from `C:\ProgramData\ShadowAICapture\state\capture-core.log`, show
+     exactly seven `kind=prompt` lines for `app:claude_code`, all `source=tool.hook` with a
+     `policy_decision.action`, and none with `source=tool.otel`. Paste the filtered lines.
+  5. The owner confirms on the dashboard (the event list for `app:claude_code`, filtered to the
+     VM's device and the time of the test): exactly seven prompt events, each on route `tool.hook`
+     with a decision, and none on route `tool.otel`. The `agent_activity` events from the same
+     sessions may appear; they are not prompts.
 - `node tools/accept.mjs` passes.

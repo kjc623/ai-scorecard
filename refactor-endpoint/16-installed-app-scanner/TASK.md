@@ -22,7 +22,8 @@ admin can turn it on and off from the dashboard (task 07) without a restart.
 
 - **`device/capture-core/inventory`**, a `core.Provider`:
   - collector `inventory_scanner` (add the `protocol.Collector` constant and the `ref.collector`
-    row, component `capture_core`, modes `m0`–`m3`);
+    row, component `capture_core`, modes `m0`–`m3`,
+    in `schema.sql` and the next free numbered migration);
   - emits on route `inv.scan`;
   - `core.Toggled` on `endpoint.inventory.enabled` (§5);
   - scans at start, then every `endpoint.inventory.interval_minutes`. An interval change takes
@@ -65,16 +66,23 @@ admin can turn it on and off from the dashboard (task 07) without a restart.
 ## Done when
 
 - `cd device/capture-core && go test -race ./inventory/` passes.
-- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`:
-  1. Within one scan, `app:claude_desktop`, `app:chatgpt_desktop` and `app:cursor` arrive in the
-     lab tenant as `discovery` / `app_installed` with versions, and with the console user's
-     `user_ref` for the per-user installs.
-     - Show them from the lab database or the dashboard.
+- Ready to merge. After merge and deploy (`AGENTS.md`):
+  1. Within one scan, `app:claude_desktop`, `app:chatgpt_desktop` and `app:cursor` are emitted as
+     `discovery` / `app_installed` with versions, and with the console user's `user_ref` for the
+     per-user installs.
+     - Show the agent's spool record lines (task 05):
+       `invm.ps1 -Command 'Select-String "envelope spooled" C:\ProgramData\ShadowAICapture\state\capture-core.log | Select -Last 50'`.
+     - `invm.ps1 -AgentState` shows the batch acknowledged by pre-prod.
+     - The owner confirms on the dashboard's Tools page that the three apps are listed for the
+       test tenant. If no dashboard page shows discovery records, they say so, and the device-side
+       evidence stands. A discovery view is not in this plan.
      - Show the versions the VM itself reports beside them:
        `invm.ps1 -AsUser console -Command 'Get-AppxPackage *ChatGPT*; Get-ItemProperty HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\* | Select DisplayName,DisplayVersion'`.
-  2. In the dashboard, switch "Inventory" off for the lab tenant. After the next policy poll,
+  2. Ask the owner to switch "Inventory" off for the test tenant; wait. After the next policy poll,
      without a restart, the `inventory_scanner` health row is `absent` with
      `disabled_by_policy`. Show that the service's start time didn't change:
      `invm.ps1 -Command 'Get-Process capture-core | Select Id,StartTime'`, before and after.
-  3. Switch it back on, and it returns `healthy`. This is the plan's E03 finish line.
+     Read the row with `invm.ps1 -AgentState`.
+  3. Ask the owner to switch it back on, and it returns `healthy`. This is the plan's E03 finish
+     line.
 - `node tools/accept.mjs` passes.

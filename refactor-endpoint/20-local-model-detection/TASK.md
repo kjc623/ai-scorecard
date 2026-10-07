@@ -54,9 +54,8 @@ record per runtime and user with the model names.
 ## Done when
 
 - `cd device/capture-core && go test -race ./inventory/` passes.
-- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`, with Ollama running and
-  two models pulled:
-  - A `discovery` / `local_model` record for `app:ollama` arrives in the lab tenant, with both
-    model names and the console user's `user_ref`.
+- Ready to merge. After merge and deploy (`AGENTS.md`), with Ollama running and two models pulled:
+  - A `discovery` / `local_model` record for `app:ollama` is emitted, with both model names and
+    the console user's `user_ref`. Show it from the spool log (the agent's `envelope spooled` lines, task 05: `invm.ps1 -Command 'Select-String "envelope spooled" C:\ProgramData\ShadowAICapture\state\capture-core.log | Select -Last 50'`), with the batch acknowledged in `invm.ps1 -AgentState`.
   - Show `invm.ps1 -AsUser console -Command 'ollama list'` beside it.
 - `node tools/accept.mjs` passes.

@@ -40,53 +40,77 @@ repository; where they differ, `DESIGN.md` wins, and your brief wins over both.
   - mark a task done without running its "Done when" check;
   - add telemetry of your own.
 - **Repository rules hold:**
-  - Work on a branch named `refactor-endpoint/<folder-name>`, cut from the previous task's branch
-    unless the owner says otherwise.
-  - Never commit to `main`; don't push or open a pull request unless asked.
+  - Work on a branch named `refactor-endpoint/<folder-name>`, cut from `main`.
+  - Never commit to `main`.
+  - Don't push or open a pull request unless asked. The owner merges.
   - Never commit `.claude/` or `skills-lock.json`.
-  - Never run `node localdev/run.mjs`, and never touch the owner's tenant.
-  - A schema change goes in `services/database/schema.sql` only (no environment exists yet).
+  - Never touch the owner's tenant (`11111111-1111-1111-1111-111111111111`).
+  - The local lab (`localdev/`) is not used for this work: don't run it, depend on it, or verify
+    against it.
+  - Pre-prod exists, so every schema change goes in `services/database/schema.sql` **and** in the
+    next numbered migration in `services/database/migrations/` (see the README there). Seed rows
+    in `ref` tables (collectors, routes, catalog) are schema changes too.
   - An envelope change starts in `contracts/`.
   - `node tools/accept.mjs` passes before you report. A gate reported `SKIPPED` was not checked:
     say so.
 
-## Verifying on the reference VM
+## Verifying against pre-prod on the reference VM
 
-Every on-device check runs on the reference VM described in `TESTBED.md`: a Windows 11 Hyper-V VM,
-Entra-joined and Intune-managed. The owner's PC runs the lab and the browser, and is never the
-test device. Read `TESTBED.md`'s rules before touching the VM or Intune.
+On-device checks run on the reference VM in `TESTBED.md`: a Windows 11 Hyper-V VM, Entra-joined and
+Intune-managed, enrolled into pre-prod's test tenant. Read `TESTBED.md`, including its rules,
+before touching the VM, Intune or Azure.
 
-- **Deploy** the agent to the VM through Intune, exactly as a customer would, with
-  `node localdev/testbed/deploy.mjs`. It builds, publishes, nudges the VM and waits until the VM
-  reports the new version.
-  - Never install by copying or double-clicking an MSI in the VM.
-  - The lab must be running; if it isn't, ask the owner to start it.
-- **Check** inside the VM with `powershell -File localdev/testbed/invm.ps1`:
+A task runs in two phases.
+
+1. **Build.**
+   - Implement the scope, and pass the unit and integration tests and `node tools/accept.mjs` on
+     the PC.
+   - Commit on the task branch, then stop and report **ready to merge**: the branch, what will
+     deploy, and the checks you will run afterwards.
+   - The owner merges to `main`. That deploys pre-prod (services, database migration, and the
+     signed agent release).
+2. **Verify.** When the owner says the deploy finished:
+   - Run `node tools/testbed/deploy.mjs`, which takes that run's release to the VM through Intune
+     and waits until it runs.
+   - Run the brief's Done when checks.
+   - If a check fails, fix it on a new branch from `main` (`refactor-endpoint/<folder-name>-fix-N`)
+     and repeat both phases.
+
+How each kind of check is done:
+
+- **Device side**, with `powershell -File tools/testbed/invm.ps1`:
   - `-Command` runs as the VM administrator: services, files, HKLM, the machine trust store,
-    `certutil`, the agent's state and log.
+    `certutil`, the agent's log.
   - `-AsUser console` or `-AsUser second` runs in that Entra user's own session: HKCU, the user's
-    environment, a tool or `curl.exe` run as that user, the tool's own UI.
+    environment, a tool or `curl.exe` run as that user.
+  - `-AgentState` shows health rows, counters, spool and delivery, and the bundle version in force.
   - `-Screenshot` captures the console screen.
-  - Quote the exact `invm.ps1` command lines in the report.
+  - Quote the exact command lines in the report.
+- **That an event arrived**: on the device, the emitting collector's `emitted` counter rises and the
+  spool drains with the batch acknowledged (`-AgentState`). Then the owner confirms it on the
+  dashboard. Name the page, the tool, and the field values they should see.
+- **Dashboard settings and pages are the owner's.** Agents have no dashboard sign-in.
+  1. When a brief says "switch X on" or "the dashboard shows Y", stop and tell the owner exactly
+     what to change or look at, in the test tenant.
+  2. Wait for them.
+  3. Record their answer in the report.
+- **Azure is read-only** (`TESTBED.md` rules). Container app logs and Log Analytics queries help to
+  diagnose a failure; never change anything.
 - **Users.** "The console user" and "the second user" are the two Entra test users in
   `TESTBED.md`. Both are always signed in.
-- **Tenant.** The lab tenant is `10ca1ab0-0000-4000-8000-000000000001`.
-- **Dashboard checks.** A "Done when" clause about the dashboard is observed in the browser on the
-  PC, at the lab's dashboard address.
+- **Tenant.** The test tenant is `TESTBED.md`'s "Test tenant id".
 - **Console steps are the owner's.** A step "at the VM's console" means using a desktop app's
   window (Cursor, Claude Desktop, ChatGPT Desktop, VS Code chat, the browser, an interactive
   `claude` session). No tool can drive those windows, so the owner does it:
   1. Stop and tell the owner exactly what to do: which app, the exact text to paste (canaries and
      test secrets included), and what to look for.
   2. Wait for them to confirm.
-  3. Capture the result with `invm.ps1 -Screenshot`, and check the events and logs yourself.
-
-  Everything that can run from a command line runs through `invm.ps1` instead.
+  3. Capture the result with `invm.ps1 -Screenshot`, and check the device side yourself.
 - **Needs.** A brief's "Needs:" line lists what the owner must have done on the VM (a tool
   installed and signed in as the console user, a Mac). If it is missing, stop and ask; don't fake
   it.
-- **Timing and resources.** Intune delivery takes minutes, sometimes longer. Batch your changes and
-  deploy once they pass their unit tests, not after every edit. The VM's resources are what the
+- **Timing and resources.** One round is a merge, the deploy workflow, and Intune delivery, so
+  finish the code completely before reporting ready to merge. The VM's resources are what the
   performance budgets are measured against.
 
 ## Report

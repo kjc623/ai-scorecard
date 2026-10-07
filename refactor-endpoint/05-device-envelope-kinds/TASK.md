@@ -41,6 +41,19 @@ spooled, drained to `/v1/events`, and accepted by the contract.
     content.
   - Extend `BuildEnvelope` to build the two kinds, with the field rules of §3. Add unit tests that
     each kind refuses its forbidden fields before the contract sees them.
+  - **Spool record log.** Every envelope appended to the spool, from `finish` and from `Record`,
+    writes one `info` log line, `envelope spooled`.
+    - It carries these fields:
+      - `event_id`, `kind`, `source`, `tool_fingerprint`, `collection_mode`, `user_ref`;
+      - `policy_decision.action` and `rule_id` when present;
+      - `discovery_type`, `activity_type`, `app_version`, `publisher`, `host_app`,
+        `destination_host`, `model_names` and `model` when present.
+    - It never carries `content_digest`, `labels`, `content_excerpt`, attachment names, or any
+      text.
+    - This is how a device-side check shows what a device emitted, since the dashboard and
+      database aren't available to the agents checking it.
+    - A unit test asserts the field set, and that a prompt envelope's log line contains none of
+      its content-derived values.
 - **Tests**:
   - `device/integration/contract_test.go`: every new kind and every `discovery_type` minted
     through `Pipeline.Record` validates against `envelope.Schema`.

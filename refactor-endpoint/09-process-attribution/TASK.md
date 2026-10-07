@@ -57,14 +57,17 @@ each intercepted request to the process owner instead of the console user.
 ## Done when
 
 - `cd device/capture-core && go test -race ./hostinfo/ ./proxy/tlsproxy/` passes on the PC (Windows).
-- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`, with TLS inspection on for
-  the lab tenant:
+- Ready to merge. After merge and deploy (`AGENTS.md`), ask the owner to switch TLS inspection on
+  for the test tenant, and wait one policy poll:
   1. Run `invm.ps1 -AsUser second -Command 'curl.exe -s -o NUL -w "%{http_code}" https://api.openai.com/v1/models'`
      while the console user is at the console.
-  2. It produces a `proxy.tls` event whose `user_ref` is the ref derived from the second user's UPN
-     (`protocol.DeriveUserRef` with kind `upn`, and `subject_name` equal to the UPN while device
-     identity is clear), not the console user's.
-     - Show this from the lab database or the dashboard.
-     - Run the same command with `-AsUser console`, and show the console user's ref on that event,
-       for contrast.
+  2. It produces a `proxy.tls` event attributed to the second user, not the console user:
+     - Device side: `invm.ps1 -AgentState` shows the `egress_proxy` `emitted` counter rising and
+       the batch acknowledged.
+     - The owner confirms on the dashboard's Search page that the newest event to
+       `api.openai.com` names the second user. Its `subject_name` is their UPN while device
+       identity is clear; the `user_ref` is `protocol.DeriveUserRef` of that UPN with kind `upn`.
+     - Run the same command with `-AsUser console`. The owner confirms that event names the
+       console user, for contrast.
+  3. Ask the owner to switch TLS inspection off again.
 - `node tools/accept.mjs` passes.

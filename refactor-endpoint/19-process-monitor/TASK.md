@@ -69,13 +69,13 @@ version and signer. An admin can switch it on and off from the dashboard.
 - The elevated real-session test runs in the VM, and the report shows it ran rather than
   skipped. Build the test binary on the PC (`go test -c`), copy it in with
   `invm.ps1 -CopyTo`, and run it elevated in the VM with `invm.ps1 -Command`.
-- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`:
+- Ready to merge. After merge and deploy (`AGENTS.md`):
   1. Start Claude Desktop as the console user, then quit it:
      `invm.ps1 -AsUser console -Command 'Start-Process "$env:LOCALAPPDATA\AnthropicClaude\claude.exe"'`,
      then after 20 s `invm.ps1 -AsUser console -Command 'Get-Process claude | Stop-Process'`.
      Verify the install path in the VM first.
-  2. Within seconds, an `app_running` record arrives in the lab tenant for `app:claude_desktop`,
-     with its publisher and the console user's `user_ref`.
+  2. Within seconds, an `app_running` record for `app:claude_desktop` is emitted, with its
+     publisher and the console user's `user_ref`. Show it from the spool log (the agent's `envelope spooled` lines, task 05: `invm.ps1 -Command 'Select-String "envelope spooled" C:\ProgramData\ShadowAICapture\state\capture-core.log | Select -Last 50'`), with the batch acknowledged in `invm.ps1 -AgentState`.
   3. The service log shows one line for the start and one for the stop:
      `invm.ps1 -Command 'Get-Content C:\ProgramData\ShadowAICapture\state\capture-core.log -Tail 50'`
      at the default `info` level. The provider logs, for each catalog start

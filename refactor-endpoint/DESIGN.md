@@ -328,8 +328,8 @@ Any other dependency needs the owner's approval: stop and ask. Builds stay `CGO_
 ## 12. Platforms
 
 Every collector task is implemented and verified on Windows, on the reference VM in `TESTBED.md`:
-Hyper-V, Entra-joined and Intune-managed, with the agent delivered by Intune through
-`localdev/testbed/deploy.mjs` (task 00). On macOS and Linux, the same collector compiles and reports
+Hyper-V, Entra-joined and Intune-managed, and enrolled into pre-prod's test tenant. The agent
+reaches it as CI's signed release, through Intune, with `tools/testbed/deploy.mjs` (task 00b). On macOS and Linux, the same collector compiles and reports
 `absent` with detail `tool_version_unsupported` for the tool configs, or `etw_session_failed` for
 ETW, until tasks 53–56 port it. Each new package keeps the existing file-suffix convention
 (`_windows.go`, `_darwin.go`, `_linux.go`, `_other.go`).

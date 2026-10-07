@@ -14,7 +14,8 @@ routes. The database enforces the same per-kind rules as the contract, and every
 
 ## Scope
 
-- **`services/database/schema.sql`** (schema.sql only; no migration, since no environment exists):
+- **`services/database/schema.sql`**, and the same change as the next free numbered migration in
+  `services/database/migrations/` (README there), because pre-prod exists:
   - `ingest.observation`:
     - Add the §3 fields as columns. Use `model_names text[]`, and integers for the token and
       duration fields.
@@ -31,6 +32,17 @@ routes. The database enforces the same per-kind rules as the contract, and every
   - `ops.tool_display_name` and the grants need no change. Check this, and say so in the report.
   - `services/database/invariants.test.sql`: cases for each new kind, one accepted and one
     refused per shape CHECK.
+  - The migration:
+    - replaces the CHECKs in place on the existing tables, drops and recreates
+      `ingest.record_event`, and inserts the `ref.route_fidelity` rows;
+    - must turn a database built from `main`'s `schema.sql` into the same schema the new
+      `schema.sql` builds.
+    - Prove this in a throwaway PostgreSQL 16 container. Build one database from
+      `git show main:services/database/schema.sql` plus the new migration, and one from the new
+      `schema.sql`. Diff `pg_dump --schema-only` of both; the diff must be empty, ignoring the
+      `public.schema_migration` rows. Later briefs refer to this as "the migration proof".
+    - Pre-prod has no `model_detection` rows (nothing emits it), so no data conversion is needed.
+      Assert that in the migration with a guard that fails if any such row exists.
 - **`services/database/tools/check-schema.mjs`**: replace `model_detection` with the new kinds in
   the kind and shape agreement (around line 451), so the check compares the new contract with the
   new CHECKs.
@@ -53,7 +65,11 @@ routes. The database enforces the same per-kind rules as the contract, and every
 
 - `node services/database/tools/check-schema.mjs` passes.
 - The database gate passes: `node tools/accept.mjs --only database` (PostgreSQL in Docker).
+- The migration proof shows an empty diff.
 - `node tools/accept.mjs` passes as a whole.
 - The report shows a `discovery` record and an `agent_activity` record posted to a local
-  ingest-api test server and stored. Use the existing store test harness; don't use the owner's
-  lab.
+  ingest-api test server and stored. Use the existing store test harness (`SAC_TEST_PG_DSN`).
+- This task has no device check. After the owner merges, the deploy workflow's `migrate` job
+  applies the migration in pre-prod. Ask the owner to confirm the deploy run succeeded, then show
+  with `az containerapp job execution list` (read-only) that the latest `migrate` execution
+  succeeded.

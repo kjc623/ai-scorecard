@@ -39,8 +39,11 @@ reverted within 5 s, and uninstall restores the machine.
 
 - `cd device/capture-core && go test ./toolconfig/ ./hooks/` passes on the Linux desktop and in
   CI's Linux job.
-- On the Linux desktop, enrolled in the lab or pre-prod:
-  - a Claude Code prompt and a Codex prompt each appear as normalized events;
+- Ready to merge. After merge and deploy (`AGENTS.md`), with `main`'s `agent-release-linux` (task
+  55) installed and enrolled in the test tenant, and the needed switches on for the test tenant
+  (ask the owner to set them on the Settings page; wait):
+  - a Claude Code prompt and a Codex prompt each appear as normalized events: the agent's
+    `envelope spooled` log lines on the desktop, then the owner's confirmation on the dashboard;
   - an AWS-key-shaped test string is blocked in Claude Code;
   - a hand edit of `/etc/claude-code/managed-settings.json` is reverted within 5 s;
   - `uninstall.sh` followed by the snapshot comparison shows no difference.

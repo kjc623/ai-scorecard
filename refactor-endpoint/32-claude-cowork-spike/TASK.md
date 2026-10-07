@@ -45,9 +45,11 @@ report names the follow-up tasks precisely.
   - whether the existing Claude Code normalizer (task 26) already accepts the events.
 - **Outcome**, exactly one of these:
   - **Covered by existing code**: the Claude Code normalizer and config writer already cover
-    Cowork, for example because Cowork reads the same managed settings `env`. On the VM, deployed
-    with `node localdev/testbed/deploy.mjs`, show a Cowork prompt arriving as a `tool.otel` event,
-    and stop.
+    Cowork, for example because Cowork reads the same managed settings `env`. On the VM, running
+    `main`'s release (deployed with `node tools/testbed/deploy.mjs`), show a Cowork prompt (an owner
+    step at the VM's console) raising the `otel_receiver` row's `emitted` counter and draining
+    (`invm.ps1 -AgentState`). The owner confirms on the dashboard a `tool.otel` event for Cowork.
+    Then stop.
   - **Needs follow-up**: write in the report the exact follow-up tasks (normalizer, config
     writer, the new `tools` key `cowork` in `DESIGN.md` §5, and the catalog row) for the owner
     to add. Write no product code beyond the fixtures.

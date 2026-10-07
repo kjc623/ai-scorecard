@@ -23,9 +23,11 @@ redirect in addition to the PAC path.
 
 ## Scope
 
-- Everything runs on the reference VM, deployed with `node localdev/testbed/deploy.mjs`, with TLS
-  inspection on for the lab tenant (task 08) and attribution in place (task 09).
-- The apps are used at the VM's console as the console user. Captures are taken with
+- Everything runs on the reference VM, running `main`'s release (deployed with
+  `node tools/testbed/deploy.mjs`), with TLS inspection on for the test tenant (task 08; ask the
+  owner to switch it on on the Settings page, and wait for one policy poll) and attribution in
+  place (task 09).
+- The apps are used at the VM's console as the console user (owner steps, `AGENTS.md`). Captures are taken with
   `invm.ps1 -Screenshot`, and machine-level observations with `invm.ps1 -Command`.
 - For each app, record:
   1. whether its API traffic reaches the PAC-routed proxy: the `egress_proxy` counters in the VM's

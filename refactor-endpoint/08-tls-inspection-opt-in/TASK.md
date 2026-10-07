@@ -21,12 +21,12 @@ four up on the next policy poll, without a restart; turning it off removes them.
 
 ## Scope
 
-- **Database**:
+- **Database** (`services/database/schema.sql`, and the same change as the next free numbered
+  migration):
   - `ops.tenant.tls_inspection boolean NOT NULL DEFAULT false`, audited on change like the other
     tenant settings.
-  - The lab seed (`localdev/lab.mjs` or `localdev/seed.mjs`, wherever the tenants' settings are
-    set) sets it `true` for the lab tenant, so a lab device keeps today's behaviour.
-    Leave the sample tenant at the default.
+  - Existing tenants get the default (off). Nothing seeds it on.
+  - The `ref.collector` row `desktop_proxy` (below) is part of the same migration.
 - **control-api**:
   - `policyserve.Bundle.Interception` gains `Enabled bool` (`json:"enabled"`), filled from the
     column.
@@ -56,20 +56,24 @@ four up on the next policy poll, without a restart; turning it off removes them.
 
 ## Done when
 
-- The device tests above pass.
-- On the reference VM, after deploying with `node localdev/testbed/deploy.mjs`:
-  1. With the setting off for the lab tenant, all three are absent:
+- The device tests above pass, and the migration proof (task 04) shows an empty diff.
+- Ready to merge. After merge and deploy (`AGENTS.md`):
+  0. Ask the owner to confirm the test tenant's Settings page shows the "TLS inspection" switch
+     off, with its explanation.
+  1. With the setting off, all three are absent:
      - `invm.ps1 -Command 'certutil -store Root'` lists no Shadow AI Capture root;
      - `invm.ps1 -AsUser console -Command 'reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v AutoConfigURL'`
        shows no PAC;
      - `invm.ps1 -Command '[Environment]::GetEnvironmentVariable("HTTPS_PROXY","Machine")'` is
        empty.
-  2. Switching it on in the dashboard brings all three back within one policy poll (the default
-     interval is 15 minutes; don't restart the service).
+  2. Ask the owner to switch TLS inspection on for the test tenant, and note the time; wait. All
+     three come back within one policy poll (the default interval is 15 minutes; don't restart
+     the service).
      - Run the same three commands repeatedly, and record the time from the change to each one
        appearing.
      - Run the PAC check with `-AsUser second` too: the second user's Internet Settings get the PAC
        as well.
-     - Switching it off removes them within one poll.
-  3. Afterwards, leave the setting on for the lab tenant.
+     - Ask the owner to switch it off again: all three are removed within one poll.
+  3. Afterwards, ask the owner to leave it off. Later tasks that need interception ask for it
+     themselves.
 - `node tools/accept.mjs` passes.

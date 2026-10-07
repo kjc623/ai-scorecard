@@ -23,7 +23,8 @@ in `DESIGN.md` §5, and the device decodes and validates both.
 
 ## Scope
 
-- **Database** (`services/database/schema.sql`):
+- **Database** (`services/database/schema.sql`, and the same change as the next free numbered
+  migration):
   - `ops.enforcement_rule (tenant_id, position int, rule_id text, action text, match jsonb, message text, link text, updated_by, updated_at)`,
     with:
     - PK `(tenant_id, rule_id)` and a unique `(tenant_id, position)`;
@@ -74,8 +75,13 @@ in `DESIGN.md` §5, and the device decodes and validates both.
 - The drift test (task 01) passes with `rules` and `sanctioned_tools`.
 - control-api tests cover replace-list ordering, every refused value, the audit row, and compose
   with rules and sanctioned tools.
-- On the lab, in the browser:
-  1. Create a rule "block `credential` with message 'Remove the credential and try again.'".
-  2. Sanction one tool.
-  3. Show that `GET /v1/policy` for the lab device carries both in its payload.
+- The migration proof (task 04) shows an empty diff.
+- Ready to merge. After merge and deploy (`AGENTS.md`):
+  1. Ask the owner to create, on the test tenant's Settings page, a rule "block `credential`" with
+     the message 'Remove the credential and try again.'. Ask them to confirm the card shows it, and
+     to sanction one tool; wait.
+  2. Within one policy poll, read the bundle in force on the VM:
+     `invm.ps1 -Command` decodes the payload of the cached bundle in the agent's state directory
+     (`policy\`). Policy is not secret, but print only `version`, `rules` and `sanctioned_tools`.
+     It carries both.
 - `node tools/accept.mjs` passes.

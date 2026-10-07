@@ -19,7 +19,8 @@ affected collector without a restart.
 
 ## Scope
 
-- **Database** (`services/database/schema.sql`):
+- **Database** (`services/database/schema.sql`, and the same change as the next free numbered
+  migration in `services/database/migrations/`):
   - `ops.endpoint_setting`: one row per tenant, with boolean columns `inventory`, `processes`,
     `flows`, `otel`, `hooks` and `hooks_managed_only`, and their defaults from §5.
   - `ops.endpoint_tool_setting (tenant_id, tool_key, otel boolean, hooks boolean)`, with
@@ -69,6 +70,12 @@ affected collector without a restart.
   (checked, then reverted).
 - control-api tests cover compose with defaults, with a tenant row and with a tool row, plus both
   PUT routes and their audit rows.
-- The Settings card is observed in the browser on the lab: changing "Inventory" off and back on
-  changes `GET /v1/policy`'s `bundle_version`.
+- The migration proof (task 04) shows an empty diff.
+- Ready to merge. After merge and deploy (`AGENTS.md`):
+  1. Ask the owner to open the test tenant's Settings page and confirm the "Endpoint collectors"
+     card shows the defaults from `DESIGN.md` §5.
+  2. Ask them to switch "Inventory" off, then back on; wait.
+  3. After each change, `invm.ps1 -AgentState` on the VM shows a new policy bundle version in
+     force within one policy poll, without a service restart (the `ShadowAICapture` process start
+     time is unchanged: `invm.ps1 -Command 'Get-Process capture-core | Select Id,StartTime'`).
 - `node tools/accept.mjs` passes.

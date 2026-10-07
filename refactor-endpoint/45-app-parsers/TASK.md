@@ -1,7 +1,8 @@
 # 45. Per-app protocol parsers
 
 Needs: Claude Desktop and ChatGPT Desktop installed on the reference VM and signed in as the
-console user, with TLS inspection on for the lab tenant.
+console user; the owner available for the console steps and the test tenant's TLS inspection
+setting (`AGENTS.md`).
 
 ## Problem
 
@@ -51,17 +52,31 @@ of mis-extracted.
   `ErrUnknownShape`. The observation then goes on with `confidence: degraded` and the
   `content_unprocessable` detail on the provider row. This is the canary that flags format
   changes.
+- **Canary text**: one fixed phrase per app plus an AWS-key-shaped test string, for example
+  `sac canary claude-desktop AKIAIOSFODNN7EXAMPLE`. No real prompts.
 - **Fixtures** (`parsers/<target>/testdata/<app version>/`): request bodies captured on the
-  reference VM through the proxy, with canary prompt text (no real prompts).
-  - Send the canary prompts in each app at the VM's console as the console user.
-  - Capture the bodies with a capture-only build of the agent on a scratch branch that is never
-    merged, which writes intercepted request bodies to a file. Deploy it with
-    `node localdev/testbed/deploy.mjs`, and redeploy the normal build afterwards.
-  - Copy the files back with `invm.ps1 -CopyFrom`.
-  - API fixtures (`anthropic`, `openai`, `gemini`) may instead come from requests sent through the
-    proxy with `invm.ps1 -AsUser console -Command 'curl.exe ...'`. Streaming responses
-  aren't parsed: the agent reads requests only, so `Result` has no response text. Record this in
-  `DECISIONS.md` as a deviation from the plan's "and streamed responses".
+  reference VM with a test-only intercepting proxy. No product build captures bodies, and only
+  `main`'s release is ever deployed to the VM.
+  1. Ask the owner to switch TLS inspection off for the test tenant (Settings page); wait until
+     `invm.ps1 -AgentState` shows the proxy stopped and no PAC is set.
+  2. Copy a pinned release of mitmproxy's `mitmdump.exe` for Windows, plus a small addon script
+     that writes the bodies of POST requests to the allow-listed hosts to files, into
+     `C:\ProgramData\SacTestbed\mitm\` with `invm.ps1 -CopyTo`.
+  3. Start `mitmdump` as the console user (`invm.ps1 -AsUser console`), which generates a
+     throwaway CA. Add that CA to the machine `Root` store with `invm.ps1 -Command`.
+  4. Point the console user's Internet Settings at `mitmdump` (`ProxyServer`, `ProxyEnable`,
+     after recording the previous values) with `invm.ps1 -AsUser console`.
+  5. The owner restarts both apps and sends the canary prompts at the VM's console.
+  6. Copy the bodies back with `invm.ps1 -CopyFrom`.
+  7. Undo everything: stop `mitmdump`, restore the Internet Settings values, remove the
+     throwaway CA from `Root`, and delete `C:\ProgramData\SacTestbed\mitm\`. Ask the owner to
+     switch TLS inspection back on.
+  8. Record the tool, its version and the undo checks in `DECISIONS.md`.
+  - API fixtures (`anthropic`, `openai`, `gemini`) may instead come from requests sent with
+    `invm.ps1 -AsUser console -Command 'curl.exe ...'` through the same `mitmdump`.
+  - Streaming responses aren't parsed: the agent reads requests only, so `Result` has no
+    response text. Record this in `DECISIONS.md` as a deviation from the plan's "and streamed
+    responses".
 - Replace both copies of the extractor in `tlsproxy` and `loopback` with the registry.
 - `core/promptkind.go`'s Claude Code marker phrases stay where they are. They are prompt-kind
   logic, not parsing.
@@ -73,10 +88,16 @@ of mis-extracted.
 ## Done when
 
 - `cd device/capture-core && go test -race ./parsers/... ./proxy/...` passes.
-- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`:
-  1. A canary prompt sent at the VM's console in Claude Desktop, and one in ChatGPT Desktop, each
-     produce a `proxy.tls` event at `m1`+, attributed to the console user.
-  2. Each event's digest matches the canary text's digest. Compute that separately on the PC and
-     show both.
-  3. Add an `invm.ps1 -Screenshot` of each app after sending.
+- The fixture capture's undo is shown: `invm.ps1 -Command 'certutil -store Root'` lists no
+  mitmproxy CA, the console user's `ProxyEnable` and `ProxyServer` have their recorded values, and
+  the `mitm` folder is gone.
+- Ready to merge. After merge and deploy (`AGENTS.md`), with TLS inspection on and the test tenant
+  at `m1` or higher (ask the owner to check the Settings page; wait):
+  1. The owner sends a canary prompt in Claude Desktop and one in ChatGPT Desktop at the VM's
+     console. Add an `invm.ps1 -Screenshot` of each app after sending.
+  2. `invm.ps1 -AgentState` shows the `egress_proxy` `emitted` counter up by two, no new
+     `content_unprocessable`, and the spool drained.
+  3. The owner confirms on the dashboard two `proxy.tls` events (Claude Desktop and ChatGPT
+     Desktop), attributed to the console user, each labelled with the `credential` data class.
+     The label can only come from the parsed canary text.
 - `node tools/accept.mjs` passes.

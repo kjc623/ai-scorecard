@@ -55,7 +55,8 @@ With interception on, Claude Code's connections are blind-tunnelled.
     restored on `Remove`.
 - **Provider** (`toolconfig` exposes one `core.Provider` per tool):
   - collector `tool_config_claude_code` (new `protocol.Collector` constant and `ref.collector`
-    row, component `capture_core`);
+    row, component `capture_core`,
+    in `schema.sql` and the next free numbered migration);
   - `core.Toggled` on `endpoint.otel.enabled && endpoint.tools.claude_code.otel`;
   - `Start` applies, `Stop` removes;
   - `ApplyPolicy` re-applies when the mode, address or token changes;
@@ -83,22 +84,25 @@ With interception on, Claude Code's connections are blind-tunnelled.
 ## Done when
 
 - `cd device/capture-core && go test -race ./toolconfig/ ./proxy/tlsproxy/` passes.
-- On the reference VM, deployed with `node localdev/testbed/deploy.mjs`, with OTel on for the lab
-  tenant and Claude Code:
-  1. Before deploying, put an unrelated key in the managed settings file with `invm.ps1 -Command`,
+- Ready to merge. After merge and deploy (`AGENTS.md`), with OTel on for the test tenant and
+  Claude Code:
+  1. Before running `tools/testbed/deploy.mjs`, put an unrelated key in the managed settings file
+     with `invm.ps1 -Command`,
      to stand in for a customer's own setting.
      After deploying, `invm.ps1 -Command 'Get-Content "C:\Program Files\ClaudeCode\managed-settings.json"'`
      (or the verified path) shows the agent's `env` keys and the unrelated key, unchanged. The
      token value isn't printed in the report.
-  2. A new session's prompt, `invm.ps1 -AsUser console -Command 'claude -p "..."'`, arrives as a
-     `tool.otel` prompt event with the console user's `user_ref`, with no environment variables
-     set by hand.
+  2. A new session's prompt, `invm.ps1 -AsUser console -Command 'claude -p "..."'`, is emitted as
+     a `tool.otel` prompt event with the console user's `user_ref`, with no environment variables
+     set by hand. Show it from the spool log (task 05's `envelope spooled` lines, read with `invm.ps1 -Command`), with the batch acknowledged in `invm.ps1 -AgentState`.
   3. Set `CLAUDE_CODE_ENABLE_TELEMETRY=0` in the console user's
      `%USERPROFILE%\.claude\settings.json` `env` (with `invm.ps1 -AsUser console`) and in the
      session's own environment. The export doesn't stop: show the next prompt arriving. Remove
      the user setting afterwards.
-  4. Switching Claude Code's OTel off in the dashboard removes the agent's keys within one policy
-     poll, and the file matches its backup (compare with `invm.ps1 -Command`).
-  5. With TLS inspection on, a Claude Code prompt produces no `proxy.tls` event, and the
-     `egress_proxy` row's `blind_tunnelled` counter rises.
+  4. Ask the owner to switch Claude Code's OTel off on the Settings page; wait. The agent's keys
+     are removed within one policy poll, and the file matches its backup (compare with `invm.ps1 -Command`).
+  5. Ask the owner to switch Claude Code's OTel back on and TLS inspection on. A Claude Code
+     prompt then produces no `proxy.tls` record in the spool log, and the `egress_proxy` row's
+     `blind_tunnelled` counter rises (`invm.ps1 -AgentState`). Ask the owner to switch TLS
+     inspection off again.
 - `node tools/accept.mjs` passes.
