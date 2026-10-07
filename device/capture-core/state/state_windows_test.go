@@ -81,6 +81,26 @@ func TestReadOrCreateKeyReprotectsAReadableKey(t *testing.T) {
 	}
 }
 
+// Windows renders the local Administrator's SID as the alias "LA", so a descriptor naming it is
+// protected for a process running as that account and refused for any other.
+func TestCheckSDDLAcceptsTheLocalAdministratorAlias(t *testing.T) {
+	sd, err := windows.SecurityDescriptorFromString("O:LA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin, _, err := sd.Owner()
+	if err != nil || admin == nil {
+		t.Fatal("SDDL O:LA has no owner")
+	}
+	sddl := "O:LA" + "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;LA)"
+	if err := checkSDDL(sddl, admin.String()); err != nil {
+		t.Errorf("the local Administrator was refused its own descriptor: %v", err)
+	}
+	if err := checkSDDL(sddl, "S-1-5-21-1-2-3-1001"); err == nil {
+		t.Error("a descriptor owned by the local Administrator passed for another account")
+	}
+}
+
 func TestCheckSDDL(t *testing.T) {
 	self := "S-1-5-21-1-2-3-1001"
 	for _, ok := range []string{
