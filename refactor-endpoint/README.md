@@ -1,7 +1,7 @@
 # Endpoint agent refactor
 
 This folder breaks the owner's plan (`PLAN.md`) into tasks that each fit one agent session.
-`TESTBED.md` describes the test environment: Azure pre-prod with a test tenant, and the reference
+`TESTBED.md` describes the test environment: pre-prod (Fly.io and Supabase) with a test tenant, and the reference
 VM where every on-device check runs (Hyper-V, Entra-joined, Intune-managed). It covers how a
 change reaches the VM (merge to `main`, CI deploys, Intune delivers) and the owner's one-time
 setup. The local lab is not used. `DESIGN.md` fixes how the plan maps onto this repository: names, wire shapes, settings, ports and
@@ -14,7 +14,7 @@ supply. The Plan column gives the plan's task id.
 | # | Task | Plan | Depends on | Needs | Done |
 |---|---|---|---|---|---|
 | **Phase 0: Foundation** | | | | | |
-| 00a | [Pre-prod environment and test tenant](00a-preprod-environment/TASK.md) | | backlog 25, 26; merge to `main` | `azure/RUNBOOK.md` owner steps | [ ] |
+| 00a | [Pre-prod environment and test tenant](00a-preprod-environment/TASK.md) | | backlog 25; merge to `main` | Fly.io and Supabase accounts; `fly/RUNBOOK.md` owner steps | [ ] |
 | 00b | [Reference VM tooling](00b-reference-vm/TASK.md) | | 00a | `TESTBED.md` VM checklist done | [ ] |
 | 01 | [Make the policy drift test run](01-bundle-drift-test/TASK.md) | E03 | | | [ ] |
 | 02 | [Serialise classifier requests](02-classifier-link-serialise/TASK.md) | E24, E25 | | | [ ] |

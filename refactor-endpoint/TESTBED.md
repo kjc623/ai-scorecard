@@ -1,7 +1,8 @@
 # Test environment
 
 Every on-device check in these tasks runs on one Windows 11 virtual machine, enrolled into the
-Azure **pre-prod** environment's test tenant. The VM is Hyper-V on the owner's PC, Entra-joined and
+**pre-prod** environment's test tenant. Pre-prod runs on SaaS: the services on Fly.io and
+PostgreSQL on Supabase (task 00a). The VM is Hyper-V on the owner's PC, Entra-joined and
 Intune-managed, set up the way a customer's device is. The local lab (`localdev/`) is not used.
 The owner's PC builds nothing for the VM: builds come from CI.
 
@@ -23,8 +24,10 @@ rest). Agents read this file and never write a secret into it.
 
 | Name | Value | What it is |
 |---|---|---|
-| Subscription | | Pre-prod's Azure subscription id |
-| Resource group | `rg-sac-preprod-eastus` | Pre-prod's resource group |
+| Fly.io organization | | The Fly.io organization pre-prod's apps run in |
+| Fly.io app prefix | `sac-preprod` | Pre-prod's apps are `<prefix>-<component>`, e.g. `sac-preprod-ingest-api` |
+| Fly.io read-only token | `%USERPROFILE%\.sac-testbed\fly-readonly.token` | A `fly tokens create readonly` token for that organization, for the read-only checks below |
+| Supabase project ref | | Pre-prod's Supabase project, which holds its PostgreSQL database |
 | Device hostname | | `SAC_DEVICE_FQDN`: the device edge |
 | Analyst hostname | | `SAC_ANALYST_FQDN`: the dashboard |
 | Test tenant id | | The "Endpoint Test" product tenant (task 00a) |
@@ -71,10 +74,15 @@ rest). Agents read this file and never write a secret into it.
 ## Rules for agents
 
 - **Pre-prod.**
-  - Read only. Allowed: `az ... show|list`, `az containerapp logs show`,
-    `az monitor log-analytics query`, and `curl` to the public hostnames.
-  - Never create, update, delete, restart or run anything in Azure, and never run a workflow.
-    Deploys happen only when the owner merges to `main`.
+  - Read only. Allowed: `fly status`, `fly machine list`, `fly ips list` and `fly logs` for
+    pre-prod's apps, with `FLY_API_TOKEN` set from the read-only token file; `gh run view` for the
+    deploy workflow's runs; and `curl` to the public hostnames.
+  - Service logs: `fly logs --no-tail` returns only the latest lines. To search a window, start
+    `fly logs -a <app>` writing to a file before the window opens and stop it after it closes. If a
+    window was missed, ask the owner to search it in Fly.io's log search, which keeps 7 days.
+  - Never create, update, delete, restart or run anything on Fly.io or Supabase, and never run a
+    workflow. Deploys happen only when the owner merges to `main`.
+  - The database is the owner's: agents have no Supabase access (dashboard, SQL or logs).
   - Never use the owner's tenant `11111111-1111-1111-1111-111111111111`.
 - **The dashboard is the owner's.**
   - Agents have no dashboard sign-in. When a brief needs a setting changed or a page checked, stop
@@ -92,6 +100,7 @@ rest). Agents read this file and never write a secret into it.
 - **Secrets.** Never print, log or commit:
   - the VM admin credential;
   - the publishing certificate;
+  - the Fly.io read-only token;
   - the deployment key.
 - **Timing.** A merge-to-device round takes the deploy workflow plus Intune delivery. Wait with
   `deploy.mjs --wait`, never with fixed sleeps. If a release hasn't arrived 60 minutes after its

@@ -58,7 +58,7 @@ repository; where they differ, `DESIGN.md` wins, and your brief wins over both.
 
 On-device checks run on the reference VM in `TESTBED.md`: a Windows 11 Hyper-V VM, Entra-joined and
 Intune-managed, enrolled into pre-prod's test tenant. Read `TESTBED.md`, including its rules,
-before touching the VM, Intune or Azure.
+before touching the VM, Intune or pre-prod (Fly.io and Supabase).
 
 A task runs in two phases.
 
@@ -94,8 +94,8 @@ How each kind of check is done:
      what to change or look at, in the test tenant.
   2. Wait for them.
   3. Record their answer in the report.
-- **Azure is read-only** (`TESTBED.md` rules). Container app logs and Log Analytics queries help to
-  diagnose a failure; never change anything.
+- **Pre-prod is read-only** (`TESTBED.md` rules). `fly status` and the services' logs (`fly logs`)
+  help to diagnose a failure; never change anything. The database, on Supabase, is the owner's.
 - **Users.** "The console user" and "the second user" are the two Entra test users in
   `TESTBED.md`. Both are always signed in.
 - **Tenant.** The test tenant is `TESTBED.md`'s "Test tenant id".

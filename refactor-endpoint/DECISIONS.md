@@ -53,7 +53,7 @@ decided and why, and for a vendor fact the product version checked.
 
 ## 2026-10-06, owner, after the first draft
 
-- **Testing happens on a VM against Azure pre-prod, never the local lab or the owner's PC.**
+- **Testing happens on a VM against pre-prod, never the local lab or the owner's PC.**
   - The VM is Hyper-V on the owner's PC, Entra-joined and Intune-managed, and enrolled into a
     dedicated "Endpoint Test" tenant in pre-prod (`TESTBED.md`). The owner's tenant stays
     untouched.
@@ -63,7 +63,7 @@ decided and why, and for a vendor fact the product version checked.
   2. The push deploys pre-prod (services, migration, signed agent release).
   3. `tools/testbed/deploy.mjs` publishes that release to the VM through Microsoft Graph, to one
      Win32 app assigned only to a test device group (task 00b).
-  - Agents never push, run workflows or change Azure.
+  - Agents never push, run workflows or change pre-prod.
 - **Agents check the device side** (`tools/testbed/invm.ps1`, PowerShell Direct). The owner
   changes dashboard settings and confirms what the dashboard shows; agents have no dashboard
   sign-in and no database access.
@@ -71,3 +71,22 @@ decided and why, and for a vendor fact the product version checked.
   exists.
 - The two users of a check are Entra test users signed in on the VM. The performance budgets
   (`DESIGN.md` §13) are measured on the VM.
+
+## 2026-10-07, owner, before task 00a
+
+- **Pre-prod runs on SaaS: the services on Fly.io, PostgreSQL on Supabase.**
+  - One test tenant and one VM don't justify the cost of a self-built cloud environment; this
+    setup costs about $40–45 a month.
+  - Intune and Entra are unchanged: the VM, the Intune app, the Entra test users and the vendor
+    Entra application stay as they are.
+  - The repository's existing deployment (`azure/`) stays as it is and is not deployed by
+    pre-prod.
+- **The device edge becomes a product component** (`services/edge`, from the lab's edge). Fly.io
+  passes the device's TLS connection through untouched, so the edge itself requests the client
+  certificate and forwards it in `X-Client-Cert`, as the product expects.
+- **Agents read pre-prod with a Fly.io read-only token** (`TESTBED.md`): app status, machines,
+  addresses and logs. They still have no database access; Supabase is the owner's.
+- **The environment's keys are kept outside Fly.io** by the owner: the device CA, the policy
+  signing key, the content keys and the directory key. Devices pin the policy key and hold
+  certificates from the device CA, and the content keys decrypt stored prompts, so pre-prod's
+  devices and data survive a later move of the services only if these keys do.

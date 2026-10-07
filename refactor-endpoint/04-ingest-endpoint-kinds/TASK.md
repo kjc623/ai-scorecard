@@ -69,7 +69,7 @@ routes. The database enforces the same per-kind rules as the contract, and every
 - `node tools/accept.mjs` passes as a whole.
 - The report shows a `discovery` record and an `agent_activity` record posted to a local
   ingest-api test server and stored. Use the existing store test harness (`SAC_TEST_PG_DSN`).
-- This task has no device check. After the owner merges, the deploy workflow's `migrate` job
+- This task has no device check. After the owner merges, the deploy workflow's `migrate` step
   applies the migration in pre-prod. Ask the owner to confirm the deploy run succeeded, then show
-  with `az containerapp job execution list` (read-only) that the latest `migrate` execution
-  succeeded.
+  from the run's log (`gh run view <run id> --log`, read-only) that `migrate` applied the new
+  migration.

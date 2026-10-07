@@ -58,7 +58,8 @@ be:
 - **On the reference VM**: a script (`tools/testbed/privacy-canary.mjs`, run on the PC) that,
   against the test tenant set to `m1` (ask the owner to set it on the Settings page, with every
   endpoint collector, hooks, TLS inspection and Ollama capture on; wait for one policy poll):
-  1. Prints a fresh canary.
+  1. Prints a fresh canary, and starts capturing `fly logs` for every pre-prod app
+     (`TESTBED.md`, service logs).
   2. Sends it where it can be scripted, through `tools/testbed/invm.ps1 -AsUser console`:
      - `claude -p` (hooks and OTel);
      - `curl.exe` to an intercepted API host (proxy);
@@ -67,9 +68,9 @@ be:
      into Cursor, Claude Desktop and ChatGPT in the managed browser, capturing each with
      `invm.ps1 -Screenshot`.
   4. Searches for the canary in:
-     - pre-prod's service logs, read-only:
-       `az monitor log-analytics query` over `ContainerAppConsoleLogs_CL` for the test window,
-       every container app and job, searching for the canary;
+     - pre-prod's service logs, read-only: the captures started in step 1, for every app
+       including the edge and the jobs, stopped once the device's spool has drained, searching
+       for the canary;
      - the VM's agent log (`C:\ProgramData\ShadowAICapture\state\capture-core.log`) and
        `health.json`, copied back with `invm.ps1 -CopyFrom` and deleted from the PC after the
        search.

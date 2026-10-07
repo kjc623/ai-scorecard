@@ -35,9 +35,9 @@ collector at fault.
   - the `dropped` counters on the `inventory_scanner`, `process_detector` and `flow_monitor`
     health rows (`invm.ps1 -AgentState`).
 
-  Cross-check the rejections read-only in pre-prod, with
-  `az monitor log-analytics query` over ingest-api's console logs for the device. Ask the owner
-  for the device id from the dashboard's Devices page if the logs need it.
+  Cross-check the rejections read-only in pre-prod's ingest-api logs for the device, captured
+  with `fly logs` across the measured day (`TESTBED.md`, service logs). Ask the owner for the
+  device id from the dashboard's Devices page if the logs need it.
 
   Put the scripts and queries in the report.
 - If the day exceeds 150 records (75 % of budget) or any record was rejected:
