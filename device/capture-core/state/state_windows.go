@@ -106,6 +106,24 @@ var (
 	sidPrefix  = regexp.MustCompile(`^S-1(-[0-9]+)+`)
 )
 
+// resolveTrustee returns the SID string a security descriptor account names. Windows renders a
+// well-known account as a two-letter alias ("LA" is the local Administrator), so an alias is
+// resolved through a one-entry descriptor.
+func resolveTrustee(name string) (string, bool) {
+	if sidPrefix.MatchString(name) {
+		return strings.ToUpper(name), true
+	}
+	sd, err := windows.SecurityDescriptorFromString("O:" + name)
+	if err != nil {
+		return "", false
+	}
+	owner, _, err := sd.Owner()
+	if err != nil || owner == nil {
+		return "", false
+	}
+	return strings.ToUpper(owner.String()), true
+}
+
 // checkSDDL accepts a security descriptor only when its owner and every account an allow entry
 // names are SYSTEM, Administrators or self.
 func checkSDDL(sddl, self string) error {
@@ -113,6 +131,12 @@ func checkSDDL(sddl, self string) error {
 		switch strings.ToUpper(sid) {
 		case "SY", "BA", "S-1-5-18", "S-1-5-32-544", strings.ToUpper(self):
 			return true
+		}
+		if resolved, ok := resolveTrustee(sid); ok {
+			switch resolved {
+			case "S-1-5-18", "S-1-5-32-544", strings.ToUpper(self):
+				return true
+			}
 		}
 		return false
 	}
