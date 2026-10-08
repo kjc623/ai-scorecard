@@ -2269,3 +2269,35 @@ source contradicts the current output, so `Render` and `canEnforce` are unchange
   set (MB = 1,048,576 bytes). It exits 1 at or above 1 % or 150 MB. The counter paths are the
   English names, as on the reference VM. **Not run and not syntax-checked in the build:** this
   machine is Linux with no `pwsh`; the "runs on the PC" check is pending on a Windows host.
+## 2026-10-08, task 52
+
+- **The rig is assembled from the agent's packages.** The service (`cmd/capture-core`) is a `main`
+  package, which the integration module cannot import, and running the built service would touch
+  the machine (trust store, managed settings, the fixed native endpoint). `privacy_test.go` builds
+  the service's graph from the same packages: proxy.tls, the loopback broker, the OTLP receiver and
+  the hook relay in a `core.Registry` started by `core.Supervisor` under one bundle (which passes
+  `Bundle.Validate`), the merge buffer in front of the pipeline for hook and OTel prompts, the real
+  classifier-host, spool, content store and drain, and the native endpoint on `localipc`. The
+  service's native frame dispatch (`serveLocal`, the observation handling of `native.go`) and its
+  `health.json` document are repeated in the test over the same packages; a leak confined to those
+  two `main`-package functions would not be seen by this test. Both were read for one: neither
+  quotes content (a refusal quotes the pipeline's error, whose messages carry no text).
+- **The fake edge** is the module's existing `startTLSIngest` (`/v1/events` and `/v1/health` over
+  mutual TLS), which is the `fakeCloud` pattern without enrolment and policy: the rig saves an
+  issued credential and puts the bundle in force directly.
+- **The hook path is a real hook process**: `capture-core --hook test UserPromptSubmit`, built
+  with `-X main.hookBenchEndpoint=<the rig's endpoint>` as the hook benchmark does, standing in
+  for Claude Code. Its stderr is searched with the logs.
+- **One canary per path** (`SACCANARY-<uuid>`), so a hit names its path. Each prompt carries
+  `AKIAIOSFODNN7EXAMPLE` beside the canary.
+- **Encodings searched:** the text (case-sensitive), hex, standard and URL base64 at each byte
+  alignment, and JSON `\u` escapes in either case. A canary is letters, digits and hyphens, so
+  ordinary JSON escaping leaves it as text.
+- **m0 sends text anyway.** At m0 the extension sends no content and the tool's prompt logging is
+  off; the rig sends the canary through every path at m0 regardless, so the agent's own mode gate
+  is what keeps it out.
+- **The merge hold** (`merge.HoldFor`, a real 10 s timer) is not shortened: the rig closes the
+  buffer before it searches, as the service's stop does, which releases every held prompt to the
+  pipeline. The search covers what was released.
+- **Result:** zero hits at m0 and at m1 for all five paths in every location; at m1 each path's
+  prompt envelope carries a `sha256:` digest and the `credential` label.
