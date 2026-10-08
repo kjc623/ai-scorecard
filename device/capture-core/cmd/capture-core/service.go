@@ -423,9 +423,6 @@ func (s *service) buildProviders() error {
 		return err
 	}
 
-<<<<<<< HEAD
-	return s.buildPAC()
-=======
 	// The listen addresses arrive with the bundle that switches the receiver on.
 	otel, err := otlp.New(otlp.Config{TokenPath: s.dir.Path(otlp.TokenFile), Log: s.logf, Clock: time.Now})
 	if err != nil {
@@ -435,9 +432,7 @@ func (s *service) buildProviders() error {
 		return err
 	}
 
-	s.buildPAC(b)
-	return nil
->>>>>>> refs/heads/refactor-endpoint/23-otlp-receiver
+	return s.buildPAC()
 }
 
 // buildPAC registers the desktop-app PAC where the platform has one. It reads its listen address
