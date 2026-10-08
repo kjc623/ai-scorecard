@@ -33,6 +33,7 @@ function populated(overrides = {}) {
     devices: [{ device_id: 'd-1', hostname: 'LAPTOP-1', collection_mode: 'm2', last_seen_at: '2026-10-01T09:00:00Z' }],
     endpoint: endpointDefaults(),
     tls_inspection: false,
+    kill_switches: [],
     data_classes: ['credential', 'customer_pii', 'government_id', 'health', 'legal_commercial', 'payment_card', 'source_code'],
     app_categories: ['chat_assistant', 'coding_agent', 'ide', 'ide_assistant', 'inference_api', 'local_runtime'],
     ...overrides,
@@ -364,6 +365,125 @@ test('TLS inspection: a refused write is said in the card, and a setting the ser
   assert.doesNotMatch(tlsCard(missing.html()), /data-action="tls-inspection"/);
   await missing.controller.act({ action: 'tls-inspection', value: 'on' });
   assert.equal(missing.requests.filter((r) => r.method === 'PUT').length, 0, 'nothing is written over a setting that was not read');
+});
+
+// ---------------------------------------------------------------------------------------------
+// Kill switch
+// ---------------------------------------------------------------------------------------------
+
+/** The kill switch card of a rendered page. */
+function killCard(page) {
+  const start = page.indexOf('<h3>Kill switch</h3>');
+  assert.ok(start >= 0, 'the page has a kill switch card');
+  return page.slice(start, page.indexOf('</section>', start));
+}
+
+/** A fake admin API whose kill switches change as control-api's would. */
+async function withKillSwitches(extra = {}) {
+  let switches = [];
+  const loadedPage = await loaded({
+    [GET]: () => ({ status: 200, body: populated({ kill_switches: switches }) }),
+    'PUT /admin/v1/settings/kill-switch/proxy.tls': (spec) => {
+      switches = spec.body.on
+        ? [{ route: 'proxy.tls', reason_code: spec.body.reason_code, effective_at: '2026-10-05T10:00:00Z', set_by: 'admin@contoso.example' }]
+        : [];
+      return { status: 204 };
+    },
+    ...extra,
+  });
+  return loadedPage;
+}
+
+test('kill switch: a control per interception route, off by default, with a reason code field', async () => {
+  const { html } = await withKillSwitches();
+  const card = killCard(html());
+  for (const [route, label] of [['proxy.tls', 'TLS proxy'], ['proxy.loopback', 'Local model broker']]) {
+    assert.match(card, new RegExp(`>${label}<`));
+    assert.match(card, new RegExp(`data-kill-switch-reason="${route.replace('.', '\\.')}"`));
+    assert.match(card, new RegExp(`data-action="kill-switch" data-route="${route.replace('.', '\\.')}" data-value="on"`));
+  }
+  assert.doesNotMatch(card, /data-value="off"/, 'nothing to clear while no switch is tripped');
+  assert.match(card, /stops decryption and enforcement/);
+  assert.match(card, /reason code is required/i);
+});
+
+test('kill switch: tripping needs a reason code, sends it, and the card shows the switch tripped; clearing sends off', async () => {
+  const { controller, requests, html } = await withKillSwitches();
+  const puts = () => requests.filter((r) => r.method === 'PUT');
+
+  // No reason, or a malformed one, sends nothing and says why.
+  await controller.act({ action: 'kill-switch', route: 'proxy.tls', value: 'on' });
+  controller.setKillSwitchReason('proxy.tls', 'App breakage!');
+  await controller.act({ action: 'kill-switch', route: 'proxy.tls', value: 'on' });
+  assert.equal(puts().length, 0, 'no write without a valid reason code');
+  assert.match(killCard(html()), /Not changed\./);
+  assert.match(killCard(html()), /invalid_reason_code/);
+
+  controller.setKillSwitchReason('proxy.tls', ' app_breakage ');
+  await controller.act({ action: 'kill-switch', route: 'proxy.tls', value: 'on' });
+  assert.equal(puts().length, 1);
+  assert.equal(puts()[0].path, '/admin/v1/settings/kill-switch/proxy.tls');
+  assert.deepEqual(puts()[0].body, { on: true, reason_code: 'app_breakage' });
+  assert.equal(requests.at(-1).method, 'GET', 'the page re-reads after the write');
+  const card = killCard(html());
+  assert.match(card, /tripped/);
+  assert.match(card, /<code>app_breakage<\/code> by admin@contoso\.example/);
+  assert.match(card, /data-action="kill-switch" data-route="proxy\.tls" data-value="off"/);
+  assert.doesNotMatch(card, /Not changed\./);
+
+  // Clearing sends off without a reason; a switch that is not tripped is not cleared.
+  await controller.act({ action: 'kill-switch', route: 'proxy.tls', value: 'off' });
+  assert.deepEqual(puts().at(-1).body, { on: false });
+  assert.doesNotMatch(killCard(html()), /tripped/);
+  await controller.act({ action: 'kill-switch', route: 'proxy.tls', value: 'off' });
+  await controller.act({ action: 'kill-switch', route: 'cli.shim', value: 'on' });
+  assert.equal(puts().length, 2);
+});
+
+test('kill switch: a refused write is said in the card, and switches the server did not send are not reported', async () => {
+  const { controller, html } = await withKillSwitches({
+    'PUT /admin/v1/settings/kill-switch/proxy.loopback': () => ({ status: 400, body: { error: { code: 'invalid_request', message: 'reason_code is required to trip a kill switch' } } }),
+  });
+  controller.setKillSwitchReason('proxy.loopback', 'local_model_breakage');
+  await controller.act({ action: 'kill-switch', route: 'proxy.loopback', value: 'on' });
+  assert.match(killCard(html()), /reason_code is required to trip a kill switch/);
+
+  const { kill_switches: _drop, ...without } = populated();
+  const missing = await loaded({ [GET]: () => ({ status: 200, body: without }) });
+  assert.match(killCard(missing.html()), /not reported/);
+  assert.doesNotMatch(killCard(missing.html()), /data-action="kill-switch"/);
+  missing.controller.setKillSwitchReason('proxy.tls', 'app_breakage');
+  await missing.controller.act({ action: 'kill-switch', route: 'proxy.tls', value: 'on' });
+  assert.equal(missing.requests.filter((r) => r.method === 'PUT').length, 0, 'nothing is written over switches that were not read');
+  assert.equal(normaliseSettings({}).kill_switches, null, 'kill switches the server did not send are null, never none tripped');
+});
+
+test('kill switch: typing a reason and pressing Trip on the page sends the switch', async () => {
+  let switches = [];
+  const { admin, requests } = fakeAdmin({
+    [GET]: () => ({ status: 200, body: populated({ kill_switches: switches }) }),
+    'PUT /admin/v1/settings/kill-switch/proxy.tls': (spec) => {
+      switches = [{ route: 'proxy.tls', reason_code: spec.body.reason_code, effective_at: '2026-10-05T10:00:00Z', set_by: 'admin@contoso.example' }];
+      return { status: 204 };
+    },
+  });
+  const doc = fakeDocument('#settings');
+  const listeners = [];
+  const add = doc.addEventListener;
+  doc.addEventListener = (type, fn) => { listeners.push({ type, fn }); add(type, fn); };
+  const app = await boot({ document: doc, api: queryApi(), admin, session: session(['admin'], ['posture', 'tools', 'teams', 'audit', 'settings', 'deployment']) });
+  const fire = (type, event) => Promise.all(listeners.filter((l) => l.type === type).map((l) => l.fn(event)));
+  await fire('input', { target: { dataset: { killSwitchReason: 'proxy.tls' }, value: 'app_breakage' } });
+  const button = { tagName: 'BUTTON', disabled: false, dataset: { action: 'kill-switch', route: 'proxy.tls', value: 'on' } };
+  await fire('click', { target: { closest: (sel) => (sel === '[data-action]' ? button : null) }, preventDefault() {} });
+  // The click handler does not return the write; wait for the controller to finish it.
+  for (let i = 0; i < 100 && (app.settings().state.killSwitch.pending || !requests.some((r) => r.method === 'PUT')); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  const put = requests.find((r) => r.method === 'PUT');
+  assert.ok(put, 'the click sent a write');
+  assert.equal(put.path, '/admin/v1/settings/kill-switch/proxy.tls');
+  assert.deepEqual(put.body, { on: true, reason_code: 'app_breakage' });
 });
 
 // ---------------------------------------------------------------------------------------------

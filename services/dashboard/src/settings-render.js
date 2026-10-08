@@ -9,7 +9,7 @@ import { escapeHtml } from './render.js';
 import { formatInstant } from './format.js';
 import {
   COLLECTION_MODES, SEARCH_TIERS, SANCTION_STATES, ENDPOINT_COLLECTORS, ENDPOINT_TOOLS, effectiveMode, modeIncreaseNeedsConfirmation, searchTierAllowed,
-  RULE_ACTIONS, RULE_CATEGORIES, RULE_SANCTIONS, RULE_ROUTES, RULE_MATCH_FIELDS, MAX_RULES, MAX_RULE_MESSAGE,
+  RULE_ACTIONS, RULE_CATEGORIES, RULE_SANCTIONS, RULE_ROUTES, RULE_MATCH_FIELDS, MAX_RULES, MAX_RULE_MESSAGE, KILL_SWITCH_ROUTES,
 } from './settings.js';
 
 const MODE_LABELS = Object.freeze({ m0: 'M0 · metadata', m1: 'M1 · digest & labels', m2: 'M2 · excerpt', m3: 'M3 · prompt' });
@@ -246,6 +246,38 @@ function stTLSInspection(state) {
   return stCard('TLS inspection', body);
 }
 
+function stKillSwitch(state) {
+  const switches = state.data.kill_switches;
+  if (switches === null) {
+    return stCard('Kill switch', '<p><span class="v-absent">not reported</span> The server did not send the kill switches.</p>'
+      + stProblem(state.killSwitch.problem));
+  }
+  const busy = Boolean(state.killSwitch.pending);
+  const rows = KILL_SWITCH_ROUTES.map((route) => {
+    const tripped = switches.find((k) => k.route === route.key);
+    const id = `st-kill-${route.key.replace(/[^a-z]/g, '-')}`;
+    const reason = state.killSwitch.reasons[route.key] ?? '';
+    const status = tripped
+      ? `${stChip('tripped')}<span class="dp-sub">since ${stInstant(tripped.effective_at)}</span>`
+        + `<span class="dp-sub"><code>${escapeHtml(tripped.reason_code ?? '')}</code>${tripped.set_by ? ` by ${escapeHtml(tripped.set_by)}` : ''}</span>`
+      : '<span class="v-text">Off</span>';
+    const control = `<label class="dp-label sr" for="${id}">Reason code for ${escapeHtml(route.label)}</label>`
+      + `<input class="dp-input" id="${id}" data-kill-switch-reason="${escapeHtml(route.key)}" value="${escapeHtml(reason)}" placeholder="${tripped ? 'new reason code' : 'reason code, e.g. app_breakage'}" maxlength="64" autocomplete="off" spellcheck="false"${busy ? ' disabled' : ''}>`
+      + stButton(state.killSwitch.pending === route.key ? 'Saving…' : tripped ? 'Change reason' : 'Trip', { action: 'kill-switch', route: route.key, value: 'on' }, { kind: 'danger', small: true, disabled: busy })
+      + (tripped ? stButton('Clear', { action: 'kill-switch', route: route.key, value: 'off' }, { kind: 'primary', small: true, disabled: busy }) : '');
+    return '<tr>'
+      + `<td><span class="v-text">${escapeHtml(route.label)}</span><span class="dp-sub"><code>${escapeHtml(route.key)}</code></span></td>`
+      + `<td>${status}</td>`
+      + `<td class="dp-action">${control}</td></tr>`;
+  }).join('');
+  const body = '<p>Tripping a route\'s kill switch stops decryption and enforcement on it within one policy poll: devices keep carrying the traffic, unread and unenforced, and report the route as killed. Clearing it resumes them. A reason code is required and goes into the audit trail.</p>'
+    + '<div class="table-scroll dp-flush"><table><thead><tr><th scope="col">Route</th><th scope="col">State</th><th scope="col"><span class="sr">Reason and action</span></th></tr></thead>'
+    + `<tbody>${rows}</tbody></table></div>`
+    + (busy ? '<p class="dp-note" role="status">Saving…</p>' : '')
+    + stProblem(state.killSwitch.problem);
+  return stCard('Kill switch', body);
+}
+
 const ACTION_LABELS = Object.freeze({ allow: 'Allow', warn: 'Warn', block: 'Block' });
 const MATCH_TITLES = Object.freeze({ labels: 'Labels', tools: 'Tools', categories: 'Categories', sanction: 'Sanction', routes: 'Routes' });
 const CATEGORY_LABELS = Object.freeze(Object.fromEntries(RULE_CATEGORIES.map((c) => [c.key, c.label])));
@@ -392,7 +424,7 @@ export function renderSettings(state, { eyebrow = 'Settings' } = {}) {
     + stRetention(state)
     + stOverrides(state)
     + stTools(state)
-    + `<div class="dp-grid">${stTLSInspection(state)}</div>`
+    + `<div class="dp-grid">${stTLSInspection(state)}${stKillSwitch(state)}</div>`
     + stEndpoint(state)
     + stRules(state)
     + stDevices(state)

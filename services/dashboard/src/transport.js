@@ -14,6 +14,7 @@ import {
   ADMIN_SETTINGS_ENDPOINT, ADMIN_SETTINGS_COLLECTION_MODE_ENDPOINT, ADMIN_SETTINGS_SCOPE_OVERRIDE_ENDPOINT,
   ADMIN_SETTINGS_RETENTION_ENDPOINT, ADMIN_SETTINGS_CONTENT_SEARCH_ENDPOINT, ADMIN_SETTINGS_TOOL_SANCTION_ENDPOINT,
   ADMIN_SETTINGS_ENDPOINT_COLLECTORS_ENDPOINT, ADMIN_SETTINGS_TLS_INSPECTION_ENDPOINT, ADMIN_SETTINGS_RULES_ENDPOINT,
+  ADMIN_SETTINGS_KILL_SWITCH_ENDPOINT,
 } from './vocab.js';
 
 /** An error the transport produced, carrying the same shape as an API refusal. */
@@ -361,6 +362,11 @@ export function createAdminApi({ transport }) {
     setRules(rules) {
       return done({ method: 'PUT', path: ADMIN_SETTINGS_RULES_ENDPOINT, body: { rules } });
     },
+    /** Trip (with its reason code) or clear one interception route's kill switch. */
+    setKillSwitch(route, on, reasonCode) {
+      const body = reasonCode ? { on, reason_code: reasonCode } : { on };
+      return done({ method: 'PUT', path: `${ADMIN_SETTINGS_KILL_SWITCH_ENDPOINT}/${encodeURIComponent(String(route))}`, body });
+    },
   });
 }
 
@@ -454,7 +460,19 @@ export function normaliseSettings(body) {
     tools: Object.freeze(tools),
     devices: Object.freeze(devices),
     endpoint: normaliseEndpoint(body.endpoint),
+    kill_switches: normaliseKillSwitches(body.kill_switches),
   });
+}
+
+/** The tripped kill switches: null when the server sent none, each with its route, reason, time and actor. */
+function normaliseKillSwitches(switches) {
+  if (!Array.isArray(switches)) return null;
+  return Object.freeze(switches.filter((k) => k && typeof k === 'object' && typeof k.route === 'string' && k.route !== '').map((k) => Object.freeze({
+    route: k.route,
+    reason_code: nullableText(k.reason_code),
+    effective_at: nullableText(k.effective_at),
+    set_by: nullableText(k.set_by),
+  })));
 }
 
 const nullableBoolean = (value) => (typeof value === 'boolean' ? value : null);

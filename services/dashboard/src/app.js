@@ -393,6 +393,8 @@ export async function boot({ document, api, admin, session: givenSession } = {})
     if (draft && settings) settings.setRetentionDraft(draft, event.target.value);
     const ruleField = event.target?.dataset?.ruleDraft;
     if (ruleField && settings) settings.setRuleDraft(ruleField, event.target.value);
+    const killRoute = event.target?.dataset?.killSwitchReason;
+    if (killRoute && settings) settings.setKillSwitchReason(killRoute, event.target.value);
     const field = event.target?.dataset?.depDraft;
     if (field && deployment) deployment.setDraft(field, event.target.value);
   });

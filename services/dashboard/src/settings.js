@@ -3,8 +3,8 @@
 // The page an admin uses to change what the tenant collects and keeps: the collection mode (within
 // the ceiling) with an optional narrower per-tool override, the event and content retention
 // periods, the sanction decision per tool, the content search tier, which endpoint collectors
-// run on the devices, whether devices inspect TLS, and the ordered enforcement rules. Every read
-// and write goes
+// run on the devices, whether devices inspect TLS, the ordered enforcement rules, and the kill
+// switches that stop decryption and enforcement on an interception route. Every read and write goes
 // through the admin api (transport.js), which control-api answers for an admin only and audits with
 // the real actor, the old value and the new value.
 //
@@ -61,6 +61,15 @@ export const RULE_ROUTES = Object.freeze([
   Object.freeze({ key: 'inv.scan', label: 'Installed-app scan' }),
   Object.freeze({ key: 'net.flow', label: 'Network connections' }),
 ]);
+
+/** The interception routes that have a kill switch, in the order the card shows them. */
+export const KILL_SWITCH_ROUTES = Object.freeze([
+  Object.freeze({ key: 'proxy.tls', label: 'TLS proxy' }),
+  Object.freeze({ key: 'proxy.loopback', label: 'Local model broker' }),
+]);
+
+/** A kill switch's reason code, spelled as control-api accepts it. */
+const REASON_CODE = /^[a-z][a-z0-9_.-]{0,63}$/;
 
 /** A rule's match lists, in the order the editor shows them. */
 export const RULE_MATCH_FIELDS = Object.freeze(['labels', 'tools', 'categories', 'sanction', 'routes']);
@@ -157,6 +166,8 @@ const IDLE = Object.freeze({
   // draft is the list being edited, null while it is the one read; editor is the rule open for
   // editing, at index (null for a new rule).
   rules: Object.freeze({ draft: null, editor: null, pending: null, problem: null }),
+  // reasons holds the reason code typed for each route; pending is the route being written.
+  killSwitch: Object.freeze({ pending: null, problem: null, reasons: Object.freeze({}) }),
 });
 
 /** A switch button's data-value: 'on' or 'off', anything else is no value. */
@@ -165,6 +176,8 @@ const onOff = (value) => (value === 'on' ? true : value === 'off' ? false : null
 const NOT_READ = Object.freeze({ code: 'endpoint_not_reported', message: 'The current endpoint settings were not read; reload the page and try again.' });
 const TLS_NOT_READ = Object.freeze({ code: 'tls_inspection_not_reported', message: 'The current TLS inspection setting was not read; reload the page and try again.' });
 const RULES_NOT_READ = Object.freeze({ code: 'rules_not_reported', message: 'The current rules were not read; reload the page and try again.' });
+const KILL_SWITCHES_NOT_READ = Object.freeze({ code: 'kill_switches_not_reported', message: 'The current kill switches were not read; reload the page and try again.' });
+const REASON_REQUIRED = Object.freeze({ code: 'invalid_reason_code', message: 'Give a reason code: a lower-case letter, then lower-case letters, digits, "_", "." or "-" (at most 64).' });
 
 /**
  * The page's behaviour over one admin api.
@@ -344,6 +357,43 @@ export function createSettings({ admin, onChange = () => {} }) {
     return load({ quiet: true });
   }
 
+  // --- Kill switches: one per interception route, tripped with a reason code --------------------
+
+  /** A typed reason code for a route. Held without a repaint, so the field keeps its focus. */
+  function setKillSwitchReason(route, value) {
+    if (!KILL_SWITCH_ROUTES.some((r) => r.key === route)) return;
+    const reasons = Object.freeze({ ...state.killSwitch.reasons, [route]: String(value ?? '').trim() });
+    state = Object.freeze({ ...state, killSwitch: Object.freeze({ ...state.killSwitch, reasons }) });
+  }
+
+  /**
+   * Trip (on) or clear a route's kill switch. Tripping needs a reason code, and tripping a tripped
+   * switch gives it the new one. Nothing is sent over switches that were not read, or to clear a
+   * switch that is not tripped.
+   */
+  async function setKillSwitch(route, on) {
+    if (!KILL_SWITCH_ROUTES.some((r) => r.key === route) || typeof on !== 'boolean' || state.status !== 'ready' || state.killSwitch.pending) return state;
+    const current = state.data.kill_switches;
+    if (!Array.isArray(current)) {
+      set({ killSwitch: Object.freeze({ ...state.killSwitch, problem: KILL_SWITCHES_NOT_READ }) });
+      return state;
+    }
+    if (!on && !current.some((k) => k.route === route)) return state;
+    const reason = state.killSwitch.reasons[route] ?? '';
+    if (on && !REASON_CODE.test(reason)) {
+      set({ killSwitch: Object.freeze({ ...state.killSwitch, problem: REASON_REQUIRED }) });
+      return state;
+    }
+    set({ killSwitch: Object.freeze({ ...state.killSwitch, pending: route, problem: null }) });
+    const answer = await admin.setKillSwitch(route, on, on ? reason : '');
+    if (answer.state !== 'done') {
+      set({ killSwitch: Object.freeze({ ...state.killSwitch, pending: null, problem: answer.error }) });
+      return state;
+    }
+    set({ killSwitch: Object.freeze({ pending: null, problem: null, reasons: Object.freeze({ ...state.killSwitch.reasons, [route]: '' }) }) });
+    return load({ quiet: true });
+  }
+
   // --- Enforcement rules: edited as a draft list, saved as a whole ------------------------------
 
   /** The list the card shows: the unsaved draft, else the one read. */
@@ -469,6 +519,7 @@ export function createSettings({ admin, onChange = () => {} }) {
       case 'endpoint': return setEndpointCollector(dataset.collector, onOff(dataset.value));
       case 'endpoint-tool': return setEndpointTool(dataset.tool, dataset.collector, onOff(dataset.value));
       case 'tls-inspection': return setTLSInspection(onOff(dataset.value));
+      case 'kill-switch': return setKillSwitch(dataset.route, onOff(dataset.value));
       case 'rule-add': return Promise.resolve(openRule(null));
       case 'rule-edit': return Promise.resolve(index === null ? state : openRule(index));
       case 'rule-delete': return Promise.resolve(deleteRule(index));
@@ -484,5 +535,5 @@ export function createSettings({ admin, onChange = () => {} }) {
     }
   }
 
-  return Object.freeze({ get state() { return state; }, load, chooseMode, setScopeOverride, setRetentionDraft, saveRetention, setContentSearch, setToolSanction, setEndpointCollector, setEndpointTool, setTLSInspection, setRuleDraft, act });
+  return Object.freeze({ get state() { return state; }, load, chooseMode, setScopeOverride, setRetentionDraft, saveRetention, setContentSearch, setToolSanction, setEndpointCollector, setEndpointTool, setTLSInspection, setKillSwitchReason, setKillSwitch, setRuleDraft, act });
 }

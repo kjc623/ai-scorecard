@@ -38,9 +38,10 @@ export const ADMIN_SCIM_TOKENS_ENDPOINT = '/admin/v1/scim/tokens';
 /**
  * The admin API behind Settings → Settings. control-api's, admin-only and audited, like Deployment:
  * collection mode and its narrower per-tool overrides, event and content retention, tool sanction
- * decisions, the content search tier, the endpoint collector switches, TLS inspection and the
- * enforcement rules. These are the only writes this client makes, besides Deployment's. A tool's endpoint switches are at
- * /tools/<tool_key> under the endpoint settings.
+ * decisions, the content search tier, the endpoint collector switches, TLS inspection, the
+ * enforcement rules and the interception routes' kill switches. These are the only writes this client makes, besides Deployment's. A tool's endpoint switches are at
+ * /tools/<tool_key> under the endpoint settings; a route's kill switch is at /<route> under the kill
+ * switch endpoint.
  */
 export const ADMIN_SETTINGS_ENDPOINT = '/admin/v1/settings';
 export const ADMIN_SETTINGS_COLLECTION_MODE_ENDPOINT = '/admin/v1/settings/collection-mode';
@@ -51,6 +52,7 @@ export const ADMIN_SETTINGS_TOOL_SANCTION_ENDPOINT = '/admin/v1/settings/tools';
 export const ADMIN_SETTINGS_ENDPOINT_COLLECTORS_ENDPOINT = '/admin/v1/settings/endpoint';
 export const ADMIN_SETTINGS_TLS_INSPECTION_ENDPOINT = '/admin/v1/settings/tls-inspection';
 export const ADMIN_SETTINGS_RULES_ENDPOINT = '/admin/v1/settings/rules';
+export const ADMIN_SETTINGS_KILL_SWITCH_ENDPOINT = '/admin/v1/settings/kill-switch';
 
 /** k, the small-cell floor. A cell below it arrives suppressed and is never a number. */
 export const K = 5;
