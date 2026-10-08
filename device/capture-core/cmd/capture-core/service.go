@@ -25,6 +25,7 @@ import (
 	"github.com/shadow-ai-capture/device/capture-core/hostinfo"
 	"github.com/shadow-ai-capture/device/capture-core/inventory"
 	"github.com/shadow-ai-capture/device/capture-core/localipc"
+	"github.com/shadow-ai-capture/device/capture-core/merge"
 	"github.com/shadow-ai-capture/device/capture-core/otlp"
 	"github.com/shadow-ai-capture/device/capture-core/otlp/normalizers"
 	"github.com/shadow-ai-capture/device/capture-core/policy"
@@ -449,12 +450,25 @@ func (s *service) buildProviders() error {
 		return err
 	}
 
+	// Claude Code reports a submitted prompt through its hook and its OTel export; the buffer makes
+	// one record of the two. It releases what it holds when the background loops end, before the
+	// shutdown sequence stops the providers and drains the spool.
+	prompts := merge.New(merge.Config{Pipeline: s.pipe, Log: s.logf})
+	s.bgWG.Add(1)
+	go func() {
+		defer s.bgWG.Done()
+		<-s.bgStop
+		prompts.Close()
+	}()
+
 	// The listen addresses arrive with the bundle that switches the receiver on. A sending process's
 	// owner is named the way a browser peer is.
 	otelCounters := core.NewCounterSet(time.Now())
+	deps := s.normalizerDeps(otelCounters)
+	deps.Pipeline = prompts
 	otel, err := otlp.New(otlp.Config{
 		TokenPath:   s.dir.Path(otlp.TokenFile),
-		Normalizers: normalizers.Registered(s.normalizerDeps(otelCounters)),
+		Normalizers: normalizers.Registered(deps),
 		Counters:    otelCounters,
 		Person:      s.peerPerson,
 		Log:         s.logf,
@@ -487,6 +501,7 @@ func (s *service) buildProviders() error {
 	// A hook's account is named the way a browser peer is.
 	s.hooks = hooks.New(hooks.Config{
 		Pipeline:   s.pipe,
+		Prompts:    prompts,
 		Bundles:    s.pipe.Bundles,
 		Classifier: s.pipe.Classifier,
 		Person:     s.peerPerson,
