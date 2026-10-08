@@ -19,6 +19,7 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/shadow-ai-capture/device/capture-core/core"
+	"github.com/shadow-ai-capture/device/capture-core/hostinfo"
 	"github.com/shadow-ai-capture/device/capture-core/policy"
 	"github.com/shadow-ai-capture/device/protocol"
 )
@@ -35,6 +36,10 @@ type Config struct {
 	// Normalizers are consulted in order; the first that accepts a service.name receives it.
 	Normalizers []Normalizer
 
+	// Person names the person a sending process's owner is attributed to. nil attributes every
+	// sender to the unattributed user_ref without looking it up.
+	Person func(hostinfo.User) core.Person
+
 	Log   core.Logger
 	Clock func() time.Time
 }
@@ -46,6 +51,8 @@ var errPortHeld = errors.New(string(protocol.DetailPortHeldByOther))
 type Receiver struct {
 	cfg   Config
 	token string
+	// owner names the process at the client end of an accepted connection.
+	owner func(local, remote net.Addr) (hostinfo.Process, error)
 
 	// life serialises Start, Stop and ApplyPolicy.
 	life sync.Mutex
@@ -87,6 +94,7 @@ func New(cfg Config) (*Receiver, error) {
 	return &Receiver{
 		cfg:       cfg,
 		token:     tok,
+		owner:     processOf,
 		httpAddr:  cfg.HTTPListen,
 		grpcAddr:  cfg.GRPCListen,
 		startedAt: now,
@@ -253,6 +261,9 @@ func (r *Receiver) serveHTTP(ln net.Listener) {
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		IdleTimeout:       2 * time.Minute,
+		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
+			return tagConn(ctx, "http", c.LocalAddr(), c.RemoteAddr())
+		},
 	}
 	r.mu.Lock()
 	r.httpLn, r.httpSrv, r.httpUp = ln, srv, true

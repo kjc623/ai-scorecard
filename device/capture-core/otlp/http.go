@@ -31,7 +31,7 @@ var errTooLarge = errors.New("request body over the limit")
 
 func (r *Receiver) httpHandler() http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("/v1/logs", r.export("logs", func(req *http.Request, body []byte, json bool) (proto.Message, error) {
+	mux.Handle("/v1/logs", r.export("logs", func(req *http.Request, from Sender, body []byte, json bool) (proto.Message, error) {
 		m := &collogspb.ExportLogsServiceRequest{}
 		if err := unmarshal(body, json, m); err != nil {
 			return nil, err
@@ -39,10 +39,10 @@ func (r *Receiver) httpHandler() http.Handler {
 		if json {
 			fixLogIDs(m)
 		}
-		r.routeLogs(req.Context(), Sender{RemoteAddr: req.RemoteAddr}, m)
+		r.routeLogs(req.Context(), from, m)
 		return &collogspb.ExportLogsServiceResponse{}, nil
 	}))
-	mux.Handle("/v1/traces", r.export("traces", func(req *http.Request, body []byte, json bool) (proto.Message, error) {
+	mux.Handle("/v1/traces", r.export("traces", func(req *http.Request, from Sender, body []byte, json bool) (proto.Message, error) {
 		m := &coltracepb.ExportTraceServiceRequest{}
 		if err := unmarshal(body, json, m); err != nil {
 			return nil, err
@@ -50,10 +50,10 @@ func (r *Receiver) httpHandler() http.Handler {
 		if json {
 			fixSpanIDs(m)
 		}
-		r.routeSpans(req.Context(), Sender{RemoteAddr: req.RemoteAddr}, m)
+		r.routeSpans(req.Context(), from, m)
 		return &coltracepb.ExportTraceServiceResponse{}, nil
 	}))
-	mux.Handle("/v1/metrics", r.export("metrics", func(_ *http.Request, body []byte, json bool) (proto.Message, error) {
+	mux.Handle("/v1/metrics", r.export("metrics", func(_ *http.Request, _ Sender, body []byte, json bool) (proto.Message, error) {
 		if err := unmarshal(body, json, &colmetricspb.ExportMetricsServiceRequest{}); err != nil {
 			return nil, err
 		}
@@ -70,10 +70,10 @@ func unmarshal(body []byte, json bool, m proto.Message) error {
 	return proto.Unmarshal(body, m)
 }
 
-type exportFunc func(req *http.Request, body []byte, json bool) (proto.Message, error)
+type exportFunc func(req *http.Request, from Sender, body []byte, json bool) (proto.Message, error)
 
-// export authenticates the request before its body is read, then reads, decodes and routes it and
-// answers in the request's encoding.
+// export authenticates the request before its body is read, resolves the connection's sender, then
+// reads, decodes and routes the request and answers in its encoding.
 func (r *Receiver) export(signal string, handle exportFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		mt, _, _ := mime.ParseMediaType(req.Header.Get("Content-Type"))
@@ -88,6 +88,7 @@ func (r *Receiver) export(signal string, handle exportFunc) http.Handler {
 			r.reject(w, signal, req.ContentLength, http.StatusUnauthorized, codes.Unauthenticated, json, "missing or invalid bearer token")
 			return
 		}
+		from := r.senderOf(req.Context())
 		if mt != contentProtobuf && mt != contentJSON {
 			r.reject(w, signal, req.ContentLength, http.StatusUnsupportedMediaType, codes.InvalidArgument, json, "content type must be application/x-protobuf or application/json")
 			return
@@ -105,7 +106,7 @@ func (r *Receiver) export(signal string, handle exportFunc) http.Handler {
 			r.reject(w, signal, req.ContentLength, http.StatusBadRequest, codes.InvalidArgument, json, "request body could not be read")
 			return
 		}
-		resp, err := handle(req, body, json)
+		resp, err := handle(req, from, body, json)
 		if err != nil {
 			r.reject(w, signal, int64(len(body)), http.StatusBadRequest, codes.InvalidArgument, json, "request body is not a valid OTLP export request")
 			return

@@ -434,3 +434,31 @@ decided and why, and for a vendor fact the product version checked.
   - WiX (wixtoolset/wix main, `Compiler_Package.cs`): `Shortcut` takes `Directory`, `Arguments`,
     `WorkingDirectory`, and targets its parent `File`; `ShortcutProperty` takes `Key` and `Value`.
   - None of it ran here; the device phase checks it on the reference VM.
+
+## 2026-10-08, task 24
+
+- **`peerPerson` stays in `cmd/capture-core`.** It reads the service's console user, user-reference
+  key and identity setting, so the receiver takes it as `otlp.Config.Person` (the way the proxy
+  takes `Config.Person`) rather than moving that state into a shared package. Its behaviour and
+  tests are unchanged.
+- **The lookup runs on a connection's first authenticated request**, not inside `ConnContext` or
+  `TagConn` themselves. Those only tag the connection (local and remote address) in its context;
+  the lookup happens once, while the client waits for its answer. `http.Server` calls
+  `ConnContext` on its accept loop, so a lookup there (the first `ProcessInfo` of an image hashes
+  it) would hold up every other client; an unauthenticated client also causes no lookup. A
+  metrics-only connection is looked up and logged too.
+- **gRPC uses `TagConn` addresses**, not the raw `net.Conn`. grpc-go hands a stats handler the
+  connection's addresses only, and they are all `OwnerOfLocalTCP` needs; the interceptor reads the
+  tag from the call's context, which grpc-go derives from the connection's.
+- **`Sender` drops `RemoteAddr`** and is the brief's `{PID, Image, Publisher, Person, Resolved}`.
+  `Person` is never nil: an unresolved sender carries the `unattributed` user_ref, so a normalizer
+  cannot fall back to the pipeline's identity (the console user).
+- **Errors.** A failed lookup, or a process whose account cannot be read, counts one `errors` for
+  the connection. `hostinfo.ErrUnsupported` (macOS, Linux) counts nothing, as for the proxy; the
+  sender is still `unattributed`.
+- **The connection line** is `otlp: new <http|grpc> connection: pid N, image <base>, user_ref <ref>`,
+  with the lookup's error appended when unresolved.
+- **Tests.** On Linux the dialling-client tests run through a stand-in for the TCP owner table that
+  knows only the connections the test dialled. The Windows test
+  (`TestSenderIsNamedByTheTCPOwnerTable`, real `OwnerOfLocalTCP` and `ProcessInfo`) compiles here
+  but did not run; the device phase runs it.

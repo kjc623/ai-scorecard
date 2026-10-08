@@ -439,8 +439,9 @@ func (s *service) buildProviders() error {
 		return err
 	}
 
-	// The listen addresses arrive with the bundle that switches the receiver on.
-	otel, err := otlp.New(otlp.Config{TokenPath: s.dir.Path(otlp.TokenFile), Log: s.logf, Clock: time.Now})
+	// The listen addresses arrive with the bundle that switches the receiver on. A sending process's
+	// owner is named the way a browser peer is.
+	otel, err := otlp.New(otlp.Config{TokenPath: s.dir.Path(otlp.TokenFile), Person: s.peerPerson, Log: s.logf, Clock: time.Now})
 	if err != nil {
 		return err
 	}

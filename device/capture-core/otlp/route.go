@@ -14,12 +14,6 @@ import (
 	"github.com/shadow-ai-capture/device/protocol"
 )
 
-// Sender is what is known about the client that sent a request.
-type Sender struct {
-	// RemoteAddr is the client's address, host:port, on the loopback interface.
-	RemoteAddr string
-}
-
 // Normalizer turns one tool's telemetry into observations. The receiver hands each resource to the
 // first registered normalizer that accepts the resource's service.name.
 type Normalizer interface {

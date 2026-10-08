@@ -54,7 +54,7 @@ The Plan column gives the plan's task id. "Built" is ticked when the task's "Don
 | 22 | [Discovery volume check](22-discovery-volume-check/TASK.md) | E13 | 16–21 | 24 h of ordinary use on the reference VM | — | [ ] |
 | **Phase 2: Native telemetry** | | | | | | |
 | 23 | [Local OTLP receiver](23-otlp-receiver/TASK.md) | E14 | 06, 07 | | [x] | [ ] |
-| 24 | [OTLP sender attribution](24-otlp-attribution/TASK.md) | E15 | 09, 23 | A second local Windows account | [ ] | [ ] |
+| 24 | [OTLP sender attribution](24-otlp-attribution/TASK.md) | E15 | 09, 23 | A second local Windows account | [x] | [ ] |
 | 25 | [Claude Code telemetry fixtures](25-claude-code-otel-fixtures/TASK.md) | E16 | 23 | Claude Code signed in | [ ] | [ ] |
 | 26 | [Claude Code normalizer](26-claude-code-normalizer/TASK.md) | E17 | 25 | | [ ] | [ ] |
 | 27 | [Claude Code config writer](27-claude-code-config-writer/TASK.md) | E18 | 26 | Claude Code signed in | [ ] | [ ] |

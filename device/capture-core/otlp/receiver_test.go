@@ -108,9 +108,10 @@ func (l *logLines) all() string {
 }
 
 type fixture struct {
-	r    *Receiver
-	norm *fakeNormalizer
-	log  *logLines
+	r     *Receiver
+	norm  *fakeNormalizer
+	log   *logLines
+	owner *ownerTable
 }
 
 func newReceiver(t *testing.T, httpAddr, grpcAddr string) fixture {
@@ -121,12 +122,15 @@ func newReceiver(t *testing.T, httpAddr, grpcAddr string) fixture {
 		HTTPListen:  httpAddr,
 		GRPCListen:  grpcAddr,
 		Normalizers: []Normalizer{f.norm},
+		Person:      testPerson,
 		Log:         f.log,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.r = r
+	f.owner = newOwnerTable(t, r)
+	r.owner = f.owner.lookup
 	t.Cleanup(func() { _ = r.Stop(context.Background()) })
 	return f
 }
@@ -290,9 +294,8 @@ func TestOfficialExportersExportOneBatch(t *testing.T) {
 	}
 	f.norm.mu.Lock()
 	for _, s := range f.norm.senders {
-		host, _, err := net.SplitHostPort(s.RemoteAddr)
-		if err != nil || host != "127.0.0.1" {
-			t.Errorf("sender remote address %q is not the loopback client", s.RemoteAddr)
+		if !s.Resolved || s.PID != uint32(os.Getpid()) || s.Person == nil || s.Person.UserRef != f.owner.ref() {
+			t.Errorf("sender %+v is not this test process, the loopback client", s)
 		}
 	}
 	f.norm.mu.Unlock()
