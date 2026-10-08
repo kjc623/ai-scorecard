@@ -1,0 +1,17 @@
+{
+  "model": "gpt-4.1",
+  "previous_response_id": "resp_123",
+  "store": true,
+  "input": [
+    {
+      "type": "function_call_output",
+      "call_id": "call_1",
+      "output": [{"type": "input_text", "text": "sac canary openai-api"}]
+    },
+    {
+      "type": "custom_tool_call_output",
+      "call_id": "call_2",
+      "output": "AKIAIOSFODNN7EXAMPLE"
+    }
+  ]
+}

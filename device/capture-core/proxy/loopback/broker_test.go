@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/shadow-ai-capture/device/capture-core/core"
-	"github.com/shadow-ai-capture/device/capture-core/dedup"
 	"github.com/shadow-ai-capture/device/capture-core/policy"
 	"github.com/shadow-ai-capture/device/protocol"
 )
@@ -680,39 +679,6 @@ func TestBrokerSkipsNonGenerativeRequestsAndCountsThem(t *testing.T) {
 	})
 	if len(pipe.observations()) != 0 {
 		t.Fatal("a GET produced an observation")
-	}
-}
-
-// The JSON extractor takes the last user-role message, or a top-level prompt.
-func TestJSONExtractorLastUserTurn(t *testing.T) {
-	body := []byte(`{"model":"x","messages":[{"role":"system","content":"sys"},{"role":"user","content":"first"},{"role":"assistant","content":"a"},{"role":"user","content":[{"type":"text","text":"second"}]}]}`)
-	text, atts, err := JSONExtractor{}.Extract(body, "application/json")
-	if err != nil {
-		t.Fatalf("Extract: %v", err)
-	}
-	if text != "second" {
-		t.Fatalf("text = %q, want the last user turn", text)
-	}
-	if len(atts) != 0 {
-		t.Fatalf("attachments = %v, want none", atts)
-	}
-	if _, _, err := (JSONExtractor{}).Extract([]byte(`{"nope":true}`), "application/json"); err == nil {
-		t.Fatal("a body with no identifiable user-authored segment must not be guessed at")
-	}
-}
-
-// The canonicalisation seam is exercised here too: the broker's extractor feeds the same
-// dedup.ContentDigest the pipeline uses, so the two cannot drift.
-func TestBrokerExtractionFeedsCanonicalDigest(t *testing.T) {
-	body := []byte(`{"messages":[{"role":"user","content":"hello world"}]}`)
-	text, atts, err := JSONExtractor{}.Extract(body, "application/json")
-	if err != nil {
-		t.Fatalf("Extract: %v", err)
-	}
-	d1 := dedup.ContentDigest(text, atts)
-	d2 := dedup.ContentDigest("hello world", nil)
-	if d1 != d2 {
-		t.Fatalf("digest through the extractor = %s, want %s", d1, d2)
 	}
 }
 

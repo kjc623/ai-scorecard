@@ -77,7 +77,7 @@ The Plan column gives the plan's task id. "Built" is ticked when the task's "Don
 | 42 | [macOS transparent proxy spike](42-macos-transparent-proxy-spike/TASK.md) | E31 | 08 | A Mac, Xcode, an Apple developer account | — | [ ] |
 | 43 | [Windows desktop path spike](43-windows-desktop-path-spike/TASK.md) | E32 | 08, 09 | Claude Desktop, ChatGPT Desktop | — | [ ] |
 | 44 | [Non-exportable device CA](44-device-ca-non-exportable/TASK.md) | E33 | 08 | | [x] | [ ] |
-| 45 | [Per-app protocol parsers](45-app-parsers/TASK.md) | E34 | 43 | Claude Desktop, ChatGPT Desktop | [ ] | [ ] |
+| 45 | [Per-app protocol parsers](45-app-parsers/TASK.md) | E34 | 43 | Claude Desktop, ChatGPT Desktop | [x] | [ ] |
 | 46 | [Inline policy in the proxy](46-proxy-inline-policy/TASK.md) | E35 | 10, 12, 45 | Claude Desktop | [ ] | [ ] |
 | 47 | [Proxy safety valves](47-proxy-safety-valves/TASK.md) | E36 | 46 | | [ ] | [ ] |
 | **Phase 5: Components, health, uninstall** | | | | | | |

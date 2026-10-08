@@ -1,0 +1,39 @@
+{
+  "model": "claude-opus-5",
+  "max_tokens": 1024,
+  "tools": [
+    {"name": "read_file", "description": "SAC-PLACEHOLDER-5", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}}},
+    {"name": "screenshot", "description": "SAC-PLACEHOLDER-7", "input_schema": {"type": "object", "properties": {}}}
+  ],
+  "messages": [
+    {"role": "user", "content": "SAC-PLACEHOLDER-2"},
+    {
+      "role": "assistant",
+      "content": [
+        {"type": "thinking", "thinking": "SAC-PLACEHOLDER-8", "signature": "SAC-PLACEHOLDER-9"},
+        {"type": "tool_use", "id": "toolu_01", "name": "read_file", "input": {"path": "SAC-PLACEHOLDER-6"}},
+        {"type": "tool_use", "id": "toolu_02", "name": "screenshot", "input": {}}
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_01",
+          "content": [
+            {"type": "text", "text": "sac canary anthropic-api AKIAIOSFODNN7EXAMPLE"}
+          ]
+        },
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_02",
+          "is_error": false,
+          "content": [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}
+          ]
+        }
+      ]
+    }
+  ]
+}

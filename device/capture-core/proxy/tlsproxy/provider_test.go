@@ -42,6 +42,7 @@ type fakePipeline struct {
 	procErr    error
 	degraded   bool
 	reason     string
+	extract    bool // run the observation's extractor over the body, as the real pipeline does
 	mu         sync.Mutex
 	observed   []core.Observation
 	readBodies [][]byte
@@ -67,6 +68,12 @@ func (p *fakePipeline) Process(ctx context.Context, obs core.Observation) (core.
 		p.mu.Lock()
 		p.readBodies = append(p.readBodies, b)
 		p.mu.Unlock()
+		if p.extract {
+			if _, _, err := obs.Extract.Extract(b, obs.MediaType); err != nil {
+				out.Degraded = true
+				out.Reason = core.ReasonExtractionDegraded
+			}
+		}
 	}
 	if p.degraded {
 		out.Degraded = true
@@ -482,6 +489,45 @@ func TestTLSOverCapBodyIsForwardedButNotHeld(t *testing.T) {
 		if len(held) > 128 {
 			t.Fatalf("an over-cap body was read into memory: %d bytes (cap 128)", len(held))
 		}
+	}
+}
+
+// A body its destination's parser does not recognise is a format change: the provider row says
+// content_unprocessable until a body is read again.
+func TestTLSUnknownBodyShapeIsContentUnprocessable(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	upPort := upstream.Listener.Addr().(*net.TCPAddr).Port
+
+	pipe := &fakePipeline{mode: protocol.ModeM1, extract: true}
+	p := newProviderForTest(t, Config{
+		Listen: "127.0.0.1:0", Bundles: func() *policy.Bundle { return bundleIntercepting(upPort) },
+		Pipeline: pipe, UpstreamRoots: upstreamPool(upstream),
+		CanaryHost: "127.0.0.1", CanaryPort: upPort, BodyCap: 1 << 20,
+	})
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	post := func(body string) {
+		t.Helper()
+		conn, _ := dialThroughProxy(t, p.ListenAddr(), fmt.Sprintf("127.0.0.1:%d", upPort), &tls.Config{ServerName: "127.0.0.1", RootCAs: p.CA().Pool()})
+		defer conn.Close()
+		// The Host header names the API, which chooses its parser; the tunnel goes to the stub.
+		n := len(pipe.observations())
+		postThroughTunnel(t, conn, "api.openai.com", body)
+		waitFor(t, 2*time.Second, "the observation", func() bool { return len(pipe.observations()) == n+1 })
+	}
+
+	post(`{"model":"gpt-4.1","msgs":[{"role":"user","content":"hello"}]}`)
+	if h := p.Health(); h.State != protocol.StateDegraded || h.Detail != protocol.DetailContentUnprocessable {
+		t.Fatalf("health = %s/%s, want degraded/content_unprocessable", h.State, h.Detail)
+	}
+	post(`{"model":"gpt-4.1","messages":[{"role":"user","content":"hello"}]}`)
+	if h := p.Health(); h.State != protocol.StateHealthy {
+		t.Fatalf("health = %s/%s, want healthy once a body is read again", h.State, h.Detail)
 	}
 }
 

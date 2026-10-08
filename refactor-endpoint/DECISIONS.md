@@ -993,3 +993,45 @@ decided and why, and for a vendor fact the product version checked.
 - **The service tests check the seams the service builds**, not a proxied connection or an OTLP
   export: the connection-owner lookup that names the process is Windows-only. `buildProviders`
   takes the proxy configuration and the normalizer dependencies from two methods for this.
+
+## 2026-10-08, task 45
+
+- **`claudeai` and `chatgpt` wait for the device phase.** Their private backends' endpoints and
+  body shapes are known only from captures on the reference VM, so this build has no parser for
+  them: the registry reads requests to `claude.ai` and `chatgpt.com` with the generic parser (the
+  moved extractor) until they are built on this task's fix branch. No capture step has run.
+- **Streamed responses are not parsed** (a deviation from the plan's "and streamed responses").
+  The agent reads requests only, so `Result` has no response text.
+- **What a parser reads is the request's turn**: the trailing input after any trailing
+  assistant/model message (Anthropic: the trailing user messages; Chat Completions: trailing user,
+  tool and function messages; Responses: trailing user messages and tool call outputs, or a string
+  `input`; Gemini: trailing `user` or role-less contents). Earlier messages were recorded with the
+  request that first carried them. Tool results (`tool_result`, `mcp_tool_result`,
+  `function_call_output`, `custom_tool_call_output`, a `tool` message, the string values of a
+  Gemini `functionResponse`) are read as text, as are plain-text and content documents and search
+  results. The generic extractor took the last user message, which re-read an old prompt when the
+  turn was only tool results.
+- **No attachment descriptors from the API parsers.** The envelope requires an attachment name,
+  and the APIs' inline documents, files and images carry none or an optional one; `Result.Attachments`
+  stays empty for them. Their bytes are not classified.
+- **Two failures, two meanings.** `ErrUnknownShape` (the destination's parser matched but the body
+  is in none of its documented shapes: an undocumented block, part, item type or role, or a missing
+  required field) sets `content_unprocessable` on the `egress_proxy` row until a body is read
+  again. `ErrNoText` (a known shape whose turn holds no text, or the generic parser finding
+  nothing) degrades the record only. The loopback broker only uses the generic parser, so it never
+  reports `content_unprocessable`. Unknown-shape errors name structure, never body values.
+- **Isolation.** A parser's panic is recovered, the generic parser reads the request, and the route
+  counts `errors`. The registry is assembled in `parsers/targets`, because each target package
+  imports `parsers`.
+- **Vendor facts** (read 2026-10-08; `docs.anthropic.com`, platform.openai.com,
+  developers.openai.com and ai.google.dev are not reachable from the build machine):
+  - Anthropic: the Messages API reference at platform.claude.com (`/docs/en/api/messages/create`
+    and `/docs/en/api/beta/messages/create`, Markdown form), cross-checked with the generated types
+    in `anthropics/anthropic-sdk-python` `main` at `50b78d17` (2026-10-08). `POST /v1/messages`;
+    roles `user`, `assistant` and (beta) `system`.
+  - OpenAI: `openapi.json` (spec 2.3.0) in `openai/openai-openapi` at `c7224137`.
+    `POST /v1/chat/completions` and `POST /v1/responses`.
+  - Gemini: `google/ai/generativelanguage/{v1,v1beta}` protos in `googleapis/googleapis` `master` at
+    `6553725b`. `POST /{v1,v1beta}/{models,tunedModels,dynamic}/*:{generateContent,streamGenerateContent}`;
+    roles `user` and `model`. Both proto3 JSON spellings of a field are accepted.
+- **Depends on 43**, which is a device-phase spike not yet run; nothing here needed its result.

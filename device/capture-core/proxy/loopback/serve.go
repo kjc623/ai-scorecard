@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -14,8 +13,8 @@ import (
 	"time"
 
 	"github.com/shadow-ai-capture/device/capture-core/core"
-	"github.com/shadow-ai-capture/device/capture-core/dedup"
 	"github.com/shadow-ai-capture/device/capture-core/enforce"
+	"github.com/shadow-ai-capture/device/capture-core/parsers/targets"
 	"github.com/shadow-ai-capture/device/protocol"
 )
 
@@ -212,6 +211,7 @@ func (r *portRunner) observe(ctx context.Context, req *http.Request, counted int
 		content = buf
 	}
 	tool := r.currentSpec().ToolFingerprint
+	extract := targets.Registry().For(req.Host, req.URL.Path)
 	// The request has been forwarded by now, so whatever a rule asks for is recorded as logged.
 	obs := core.Observation{
 		Route:           protocol.RouteProxyLoopback,
@@ -224,7 +224,7 @@ func (r *portRunner) observe(ctx context.Context, req *http.Request, counted int
 		Enforce:         enforce.Hook(b.cfg.Bundles, protocol.RouteProxyLoopback, tool, false),
 		Content:         content,
 		OverCap:         buf != nil && buf.overCap(),
-		Extract:         JSONExtractor{},
+		Extract:         extract,
 	}
 	// The monotonic offset is milliseconds since the broker started, which is an arbitrary but
 	// per-device-consistent origin: it gives intra-device ordering that survives clock changes.
@@ -244,82 +244,7 @@ func (r *portRunner) observe(ctx context.Context, req *http.Request, counted int
 		b.setIdentityDetail(protocol.DetailNone)
 		b.counters.Add(protocol.CounterEmitted)
 	}
+	if extract.Panicked() {
+		b.counters.Add(protocol.CounterErrors)
+	}
 }
-
-// JSONExtractor is the route's text extraction for a JSON request body: the last user-role
-// message of `messages[]`, or a top-level `prompt`. A body it cannot interpret returns an error
-// so the observation degrades to the tier S surrogate instead of guessing which characters the
-// user authored.
-type JSONExtractor struct{}
-
-// Extract implements core.Extractor.
-func (JSONExtractor) Extract(payload []byte, mediaType string) (string, []dedup.Attachment, error) {
-	if len(payload) == 0 {
-		return "", nil, errNoExtraction
-	}
-	var body struct {
-		Prompt   string `json:"prompt"`
-		Messages []struct {
-			Role    string          `json:"role"`
-			Content json.RawMessage `json:"content"`
-		} `json:"messages"`
-		Input json.RawMessage `json:"input"`
-	}
-	if err := json.Unmarshal(payload, &body); err != nil {
-		return "", nil, errNoExtraction
-	}
-	if body.Prompt != "" {
-		return body.Prompt, nil, nil
-	}
-	for i := len(body.Messages) - 1; i >= 0; i-- {
-		if body.Messages[i].Role != "user" {
-			continue
-		}
-		if text, ok := decodeContent(body.Messages[i].Content); ok {
-			return text, nil, nil
-		}
-	}
-	if len(body.Input) > 0 {
-		if text, ok := decodeContent(body.Input); ok {
-			return text, nil, nil
-		}
-	}
-	return "", nil, errNoExtraction
-}
-
-// decodeContent accepts both the string form and the content-part array form, because both are
-// in the wild and both address the same authored text.
-func decodeContent(raw json.RawMessage) (string, bool) {
-	if len(raw) == 0 {
-		return "", false
-	}
-	var s string
-	if err := json.Unmarshal(raw, &s); err == nil {
-		return s, true
-	}
-	var parts []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
-	if err := json.Unmarshal(raw, &parts); err == nil {
-		var out string
-		for _, p := range parts {
-			if p.Type == "text" || p.Type == "input_text" {
-				if out != "" {
-					out += " "
-				}
-				out += p.Text
-			}
-		}
-		if out != "" {
-			return out, true
-		}
-	}
-	return "", false
-}
-
-var errNoExtraction = errExtraction("loopback: no user-authored segment identifiable in this body")
-
-type errExtraction string
-
-func (e errExtraction) Error() string { return string(e) }
