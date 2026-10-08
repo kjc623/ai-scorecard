@@ -521,14 +521,15 @@ func TestTLSUnknownBodyShapeIsContentUnprocessable(t *testing.T) {
 		waitFor(t, 2*time.Second, "the observation", func() bool { return len(pipe.observations()) == n+1 })
 	}
 
+	// The observation reaches the pipeline before the provider records the body's outcome on its
+	// health row, so the row is awaited, not read at once.
 	post(`{"model":"gpt-4.1","msgs":[{"role":"user","content":"hello"}]}`)
-	if h := p.Health(); h.State != protocol.StateDegraded || h.Detail != protocol.DetailContentUnprocessable {
-		t.Fatalf("health = %s/%s, want degraded/content_unprocessable", h.State, h.Detail)
-	}
+	waitFor(t, 2*time.Second, "degraded/content_unprocessable", func() bool {
+		h := p.Health()
+		return h.State == protocol.StateDegraded && h.Detail == protocol.DetailContentUnprocessable
+	})
 	post(`{"model":"gpt-4.1","messages":[{"role":"user","content":"hello"}]}`)
-	if h := p.Health(); h.State != protocol.StateHealthy {
-		t.Fatalf("health = %s/%s, want healthy once a body is read again", h.State, h.Detail)
-	}
+	waitFor(t, 2*time.Second, "healthy once a body is read again", func() bool { return p.Health().State == protocol.StateHealthy })
 }
 
 // ---- kill switch and the pinned-client ladder ------------------------------------------
