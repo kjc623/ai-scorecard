@@ -271,13 +271,70 @@ func buildClassifier(t *testing.T, out string) classifierRelease {
 
 // startClassifier runs classifier-host under a component supervisor and connects to it over the
 // classifier link, as the service does.
-func startClassifier(t *testing.T, rel classifierRelease) *classifierlink.Client {
+func startClassifier(t *testing.T, rel classifierRelease) (*classifierlink.Client, *component.Supervisor) {
+	t.Helper()
+	return superviseClassifier(t, rel.exe, "serve", "--release", rel.dir, "--pubkey", rel.pubkey, "--transport", "stdio")
+}
+
+// startSlowClassifier runs this test binary as a classifier host that answers each request after
+// slowHostDelay, under a component supervisor.
+func startSlowClassifier(t *testing.T) (*classifierlink.Client, *component.Supervisor) {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return superviseClassifier(t, exe, slowHostArg)
+}
+
+// The test binary is also a fake classifier host: run with slowHostArg first, it serves the
+// classifier protocol on its stdin and stdout, answering every request after slowHostDelay with
+// the credential label, instead of running the tests.
+const (
+	slowHostArg   = "hooks-test-slow-classifier"
+	slowHostDelay = 100 * time.Millisecond
+)
+
+func TestMain(m *testing.M) {
+	if len(os.Args) > 1 && os.Args[1] == slowHostArg {
+		os.Exit(runSlowHost())
+	}
+	os.Exit(m.Run())
+}
+
+func runSlowHost() int {
+	if _, err := protocol.ReadFrameChecked(os.Stdin); err != nil {
+		return 1
+	}
+	hs, _ := json.Marshal(protocol.HandshakeResponse{OK: true, ClassifierVersion: "slow-1"})
+	if err := protocol.WriteFrame(os.Stdout, hs); err != nil {
+		return 1
+	}
+	answer, _ := json.Marshal(protocol.ClassifyResponse{
+		Labels:            []protocol.Label{{Class: "credential", Score: 0.9, RuleID: "R_SLOW"}},
+		ClassifierVersion: "slow-1",
+		Confidence:        protocol.ConfidenceHigh,
+	})
+	for {
+		if _, err := protocol.ReadFrameChecked(os.Stdin); err != nil {
+			return 0
+		}
+		time.Sleep(slowHostDelay)
+		if err := protocol.WriteFrame(os.Stdout, answer); err != nil {
+			return 1
+		}
+	}
+}
+
+// superviseClassifier runs the classifier host exe under a component supervisor and connects to it
+// over the classifier link.
+func superviseClassifier(t *testing.T, exe string, args ...string) (*classifierlink.Client, *component.Supervisor) {
 	t.Helper()
 	var cl *classifierlink.Client
 	host := component.New(component.Spec{
 		Collector: protocol.CollectorClassifierHost,
-		Path:      rel.exe,
-		Args:      []string{"serve", "--release", rel.dir, "--pubkey", rel.pubkey, "--transport", "stdio"},
+		Path:      exe,
+		Args:      args,
 		Stdio:     true,
 		Ready:     func(ctx context.Context) error { return cl.Connect(ctx) },
 	}, testLogger{t})
@@ -289,5 +346,5 @@ func startClassifier(t *testing.T, rel classifierRelease) *classifierlink.Client
 	if h := host.Health(); h.State != protocol.StateHealthy {
 		t.Fatalf("classifier-host is %s/%s after its handshake, want healthy", h.State, h.Detail)
 	}
-	return cl
+	return cl, host
 }

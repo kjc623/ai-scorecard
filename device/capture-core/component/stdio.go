@@ -8,8 +8,8 @@ import (
 )
 
 // stdioConn is a child's stdin and stdout as a net.Conn. An anonymous pipe has no deadlines, so
-// they are accepted and ignored: a caller bounds its own requests and closes the connection when
-// one runs out, which kills the child.
+// they are accepted and ignored: a caller bounds its own requests, and closes the connection, which
+// kills the child, only when the child stops answering.
 type stdioConn struct {
 	stdin  io.WriteCloser
 	stdout io.ReadCloser

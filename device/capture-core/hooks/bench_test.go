@@ -93,7 +93,7 @@ func TestHookBench(t *testing.T) {
 		t.Skip("the hook benchmark runs with SAC_HOOK_BENCH=1")
 	}
 	exe, rel := benchBinaries(t)
-	classifier := startClassifier(t, rel)
+	classifier, host := startClassifier(t, rel)
 
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
@@ -140,7 +140,7 @@ func TestHookBench(t *testing.T) {
 	secret := run(t, exe, benchPrompt(awsKey), benchSecretRuns, protocol.HookBlock)
 	all := append(slices.Clone(clean), secret...)
 
-	t.Logf("%s/%s, %d logical CPUs", runtime.GOOS, runtime.GOARCH, runtime.NumCPU())
+	t.Logf("%s/%s, %d logical CPUs, classifier-host restarted %d times", runtime.GOOS, runtime.GOARCH, runtime.NumCPU(), host.Restarts())
 	for _, s := range []struct {
 		name string
 		d    []time.Duration

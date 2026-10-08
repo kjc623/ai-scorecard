@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand/v2"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -352,5 +354,78 @@ func TestLinkTimedOutCallDoesNotHandItsAnswerToTheNext(t *testing.T) {
 	timedOut := <-slow
 	if timedOut.Confidence != protocol.ConfidenceDegraded || timedOut.ClassifierVersion != RulesOnlyVersion {
 		t.Errorf("the timed-out call = %+v, want the rules-only degraded fallback", timedOut)
+	}
+}
+
+// Concurrent callers, some of which run out of budget, each get their own answer or the fallback,
+// never another caller's.
+func TestLinkConcurrentCallersWithTimeoutsNeverGetAnotherAnswer(t *testing.T) {
+	delay := func(string) time.Duration { return time.Duration(rand.IntN(4)) * time.Millisecond }
+	c := NewWithDialer(echoDialer(t, delay, nil), "core-1", 5*time.Second)
+	defer c.Close()
+	if err := c.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	var (
+		wg        sync.WaitGroup
+		answered  atomic.Int32
+		fallbacks atomic.Int32
+	)
+	for i := range 100 {
+		wg.Go(func() {
+			marker := fmt.Sprintf("caller-%03d", i)
+			budget := int64(2000)
+			if i%2 == 0 {
+				budget = 3
+			}
+			resp, err := c.Classify(context.Background(), protocol.ClassifyRequest{
+				Content: []byte(marker), Mode: protocol.ModeM1, BudgetMS: budget,
+			})
+			switch {
+			case err != nil:
+				t.Errorf("%s: Classify: %v", marker, err)
+			case resp.Confidence == protocol.ConfidenceDegraded && resp.ClassifierVersion == RulesOnlyVersion:
+				fallbacks.Add(1)
+			case ruleID(resp) != marker:
+				t.Errorf("%s received the answer %s", marker, ruleID(resp))
+			default:
+				answered.Add(1)
+			}
+		})
+	}
+	wg.Wait()
+	t.Logf("%d answered, %d fell back", answered.Load(), fallbacks.Load())
+	if c.session() == nil {
+		t.Error("calls that ran out of budget dropped the connection")
+	}
+}
+
+// A host that answers nothing for stallLimit is hung: its connection is dropped, which ends the
+// child for the supervisor to restart.
+func TestLinkStalledHostIsDropped(t *testing.T) {
+	var now atomic.Int64
+	now.Store(time.Now().UnixNano())
+	conn, _ := newFakeHost(t, fakeHost{handshake: protocol.HandshakeResponse{OK: true, ClassifierVersion: "v1"}, silent: true})
+	c := NewWithDialer(func(context.Context) (net.Conn, error) { return conn, nil }, "core-1", 300*time.Millisecond)
+	c.now = func() time.Time { return time.Unix(0, now.Load()) }
+	if err := c.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	classify := func() {
+		resp, err := c.Classify(context.Background(), protocol.ClassifyRequest{
+			Content: []byte("hello"), Mode: protocol.ModeM1, BudgetMS: 50,
+		})
+		if err != nil || resp.Confidence != protocol.ConfidenceDegraded {
+			t.Fatalf("Classify = %+v, %v; want the fallback", resp, err)
+		}
+	}
+	classify()
+	if c.session() == nil {
+		t.Fatal("one timed-out call dropped the connection")
+	}
+	now.Add(int64(stallLimit))
+	classify()
+	if c.session() != nil {
+		t.Fatalf("a host silent for %s kept its connection", stallLimit)
 	}
 }
