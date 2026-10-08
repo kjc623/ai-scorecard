@@ -67,7 +67,7 @@ The Plan column gives the plan's task id. "Built" is ticked when the task's "Don
 | 34 | [Config drift watcher](34-config-drift-watcher/TASK.md) | E23 | 27, 29, 31 | | [ ] | [ ] |
 | 35 | [OTel content privacy](35-otel-content-privacy/TASK.md) | E24 | 02, 26 | | [x] | — |
 | **Phase 3: Hooks** | | | | | | |
-| 36 | [Hook relay](36-hook-relay/TASK.md) | E25 | 02, 10, 12 | | [ ] | [ ] |
+| 36 | [Hook relay](36-hook-relay/TASK.md) | E25 | 02, 10, 12 | | [x] | [ ] |
 | 37 | [Claude Code hooks](37-claude-code-hooks/TASK.md) | E26 | 27, 36 | Claude Code signed in | [ ] | [ ] |
 | 38 | [Cursor hooks](38-cursor-hooks/TASK.md) | E27 | 36 | Cursor signed in | [ ] | [ ] |
 | 39 | [Other tools' hooks spike](39-other-hooks-spike/TASK.md) | E28 | 36 | Codex, Copilot CLI, Gemini CLI | [ ] | [ ] |

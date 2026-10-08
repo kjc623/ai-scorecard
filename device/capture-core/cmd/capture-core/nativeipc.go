@@ -18,15 +18,16 @@ import (
 // operating-system account, so each browser user's observations are attributed to that user, and
 // handles the frames exactly as Chromium's own stdin/stdout channel would carry them. The
 // user-session helper connects to the same endpoint and opens with helper_hello, which hands the
-// connection to the helper provider.
+// connection to the helper provider; a tool's hook opens with hook_evaluate, which hands it to the
+// hook relay.
 
 // newNativeServer is the service's local endpoint at addr.
 func newNativeServer(svc *service, addr string) *localipc.Server {
 	return localipc.NewServer(addr, svc.serveLocal, svc.log)
 }
 
-// serveLocal handles one identified connection: a user-session helper's, or a browser relay's
-// until either side closes.
+// serveLocal handles one identified connection: a user-session helper's, a hook's, or a browser
+// relay's until either side closes.
 func (s *service) serveLocal(conn net.Conn, peer hostinfo.User) {
 	read := func() ([]byte, bool) {
 		payload, err := localipc.ReadFrame(conn)
@@ -42,6 +43,10 @@ func (s *service) serveLocal(conn net.Conn, peer hostinfo.User) {
 	var first protocol.NativeMessage
 	if json.Unmarshal(payload, &first) == nil && first.Type == protocol.TypeHelperHello {
 		s.helpers.Serve(conn, peer, first)
+		return
+	}
+	if first.Type == protocol.TypeHookEvaluate {
+		s.hooks.Serve(conn, peer, first)
 		return
 	}
 	session := newNativeSession(s, s.peerPerson(peer))

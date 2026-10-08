@@ -107,6 +107,19 @@ holds the agent's keys, `absent` with `tool_not_installed` without Claude Code, 
 With TLS inspection on, the proxy blind-tunnels a connection from a tool whose native collector is
 enabled.
 
+## Tool hooks
+
+A tool's prompt hook runs `capture-core --hook <tool> <event>` as the user, before the tool sends
+the prompt. It reads the tool's JSON from stdin (at most 1 MiB), turns it into one `hook_evaluate`
+(the prompt text up to 256 KiB; a longer one as its length with `over_cap`) through the tool's
+adapter in `capture-core/hooks`, sends it on the native endpoint with the same check that the service
+owns it, and prints the adapter's rendering of the `hook_decision`. Within 400 ms of starting, or on
+any failure, it prints the tool's allow output instead; it writes nothing to stderr and logs
+nothing. The service's `hook_relay` collector, on while the bundle's `endpoint.hooks.enabled` is,
+answers a tool whose `endpoint.tools.<key>.hooks` is on from the bundle's rules (classifying with a
+30 ms budget at `m1` and above), then records the prompt on route `tool.hook` with that decision.
+Anything else is answered `allow` and not recorded.
+
 ## Build and test
 
 ```

@@ -1035,3 +1035,48 @@ decided and why, and for a vendor fact the product version checked.
     `6553725b`. `POST /{v1,v1beta}/{models,tunedModels,dynamic}/*:{generateContent,streamGenerateContent}`;
     roles `user` and `model`. Both proto3 JSON spellings of a field are accepted.
 - **Depends on 43**, which is a device-phase spike not yet run; nothing here needed its result.
+
+## 2026-10-08, task 36
+
+- **The benchmark is `hooks/bench_test.go`, not `bench_windows_test.go`.** A `_windows` file name
+  is a build constraint; the brief wants it build-tag-free and runnable on Linux as well.
+- **How the benchmark's hook finds its service.** Hook mode dials the installed endpoint and trusts
+  only the service's account, so a process the benchmark spawns could not reach an in-process
+  service on a temporary endpoint run as the user. `cmd/capture-core` has a link-time variable,
+  `main.hookBenchEndpoint`, empty in a release (`build.mjs` does not set it). The benchmark links
+  it with `-ldflags "-X main.hookBenchEndpoint=..."`; hook mode then dials that endpoint and
+  accepts it served by the hook's own account (or the service's). There is no runtime flag or
+  environment variable. The endpoint is fixed per OS (`\\.\pipe\ShadowAICapture.native.hookbench`,
+  `$TMPDIR/sac-hookbench/native.sock`) so binaries built on the PC work on the VM.
+- **Prebuilt binaries for the VM.** Without the go tool the benchmark uses, beside the test
+  binary: `capture-core(.exe)` linked as above, `classifier-host(.exe)`, the signed release in
+  `classifier-release/` and its hex public key in `classifier-release.pub`. With the go tool it
+  builds all of them, signing the shipped rules and model with a fresh key through
+  `cmd/classifier-release`.
+- **The test adapter's input is `hook_evaluate`'s own JSON**, whose `tool` names the tool it stands
+  in for; it prints the decision as JSON and exits 0. `endpoint.tools` keys are a closed set without
+  `test`, so a `test` tool would always be answered as a disabled tool.
+- **`hook_evaluate` carries `prompt_bytes`**, the prompt's length, always: it is the envelope's
+  `size_bytes`, and all an over-cap prompt carries. A prompt whose encoded frame would exceed the
+  endpoint's 1 MiB frame is also sent as its length with `over_cap`.
+- **What a hook prints when nothing was evaluated.** A stopped relay, hooks off and a tool whose
+  hooks are off are answered `{action: allow}` with an empty `rule_id`; an evaluation with no
+  matching rule says `policy.default`. A tool without an adapter, or a malformed `--hook` command
+  line, prints nothing and exits 0. Hook mode exits with the adapter's exit code (the test
+  adapter's is 0).
+- **Fingerprint and correlation.** The tool key maps to `app:<key>` literally, as the brief says
+  (so `copilot` is `app:copilot`); `session_id` becomes the record's client id.
+- **Health.** `hook_relay` is healthy while started, absent while stopped; its counters are the
+  pipeline's for route `tool.hook`, so a spool failure is its `dropped`.
+- **The 30 ms classification can cascade under load.** `classifierlink` drops its connection (and
+  so ends the classifier child) when a request outlives its budget, and the 30 ms request budget is
+  also the host's own, so a host near its budget is dropped. In one of seven Linux benchmark runs,
+  taken while other builds loaded the machine (load average above 5 on 4 cores), 51 of the 100
+  AWS-key hooks were answered `allow` (labels unknown) and the p99 was 51 ms. Task 51 should
+  measure this on the reference VM.
+- **First benchmark numbers (Linux, not the reference VM):** Intel Xeon @ 2.80 GHz, 4 vCPU, 15 GiB,
+  Go 1.27, `SAC_HOOK_BENCH=1 go test -run HookBench -v ./hooks/`, 1,100 runs each. Quiet runs: p50
+  9.3–11.1 ms, p95 12.6–19.9 ms, p99 15.1–27.6 ms over all runs (worst single run 48 ms). The noisy
+  run above: p50 11.1 ms, p95 21.9 ms, p99 51.3 ms.
+- **No vendor facts.** This task ships only the test adapter; the Claude Code and Cursor formats are
+  tasks 37 and 38.
