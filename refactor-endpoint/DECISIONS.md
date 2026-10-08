@@ -1915,3 +1915,51 @@ or corrects each answer marked **[device]**.
   The mapped/dropped test walks resource, span, span-event and log attributes, span operations,
   span events and log events. Privacy fixtures: one agent-mode turn per tool, whose dropped values
   include output messages, system prompt, tool arguments, a subagent's input and `host.name`.
+
+## 2026-10-08, task 51
+
+- **`TestHookDecisionBudget` (`hooks/budget_test.go`) gates 40 % of the whole-process budget**:
+  p99 under 20 ms against §13's 50 ms. It times the service's side only (connect, a
+  `hook_evaluate` frame with a 4 KB prompt in, classification by a real classifier-host under its
+  component supervisor, rule evaluation, the decision frame out) over a loopback TCP socket, 2,000
+  decisions, every tenth with an AWS key that must be blocked, recorded to a real spool. The other
+  60 % is what the CI test cannot see and a runner cannot time stably: process creation, the Go
+  runtime's start, reading stdin, the endpoint's peer check and the console write, which task 36's
+  whole-process numbers put at several milliseconds on Linux and which is larger on Windows. On
+  this machine the service's side is p50 3.5 ms and p99 6.5–8.2 ms (5 runs), 9.1 ms under `-race`,
+  so 20 ms leaves a loaded runner about twice the headroom and still fails a 30 ms regression.
+- **Loopback TCP, not the native endpoint.** `localipc.Dial` takes a different trust callback per
+  OS, so a build-tag-free test cannot dial it on both; the relay is served exactly as the service's
+  `serveLocal` hands it a `hook_evaluate` connection. The peer-credential check is not timed.
+- **A decision made with the labels unknown fails the test**, as in task 36's benchmark: a
+  classification that ran out of its 30 ms measured a timeout, not a decision.
+- **`TestOTLPBudget` (`otlp/budget_test.go`)**: `otlploghttp` (retries off, so a failed request
+  is a dropped batch) exports 20 records every 10 ms for 10 s, 20,000 records in 1,000 requests,
+  each record a Claude Code style `user_prompt` with a 1 KB prompt attribute. Request handling time
+  is timed in the exporter's HTTP transport, from sending the request to the response's headers,
+  so it includes loopback transfer and is an upper bound on the receiver's own time. The receiver
+  runs with its real sender lookup; a counting normalizer stands in for the normalizers and
+  pipeline. None dropped means every export succeeded, the normalizer was handed 20,000 records,
+  and the receiver counted 20,000 `observed` and no `errors`. Here: p50 0.6 ms, p99 1.4–3.2 ms
+  (5 runs), 4.1 ms under `-race`.
+- **No single-core scaling.** Neither test failed in five consecutive runs of `go test -count=5`
+  on this shared 4-core Linux machine (load average 0.6–1.8), and both passed in `node
+  tools/accept.mjs`, so the raw thresholds stand and nothing is scaled. **Risk under contention:**
+  in the whole module's `go test -count=1 ./...` (packages run concurrently) while other builds
+  loaded the machine (load average 12–18), `TestHookDecisionBudget` failed 2 of 5 runs (p99 21.0
+  and 64.8 ms, with 1 and 4 secret prompts allowed after the 30 ms classification ran out) and
+  `TestOTLPBudget` passed all 5 (p99 6.6–8.6 ms). Under `-race ./...`, as CI runs the go gate, at
+  load 1–5 both passed twice (decision p99 15.4 and 19.7 ms, request p99 14.2 and 11.8 ms); in a
+  third run, next to another session's `-race` tests, both failed (35.9 ms, 29.5 ms). A hosted
+  runner has no foreign load, but the race detector's margin is thin; if CI flakes, the brief's
+  scaling rule (or a CI-side decision) is the owner's call, since the budgets stay as they are.
+- **Both fail on a 30 ms sleep** in the measured path (in `Relay.Serve` before the answer, in the
+  OTLP/HTTP handler before routing; reverted): decision p99 39.8 ms, request handling p99 34.9 ms.
+- **`device/installer/windows/measure-idle.ps1`** samples the ShadowAICapture service's process (or
+  `-ProcessId`, for a capture-core started by hand) and its descendants every 2 s for 10 minutes
+  with `Get-Counter` (`ID Process`, `% Processor Time`, `Working Set - Private`), re-reading the
+  process tree each sample so a restarted classifier-host or a new session's helper counts. It sums
+  the tree: average CPU as a share of one core, and the peak of the tree's total private working
+  set (MB = 1,048,576 bytes). It exits 1 at or above 1 % or 150 MB. The counter paths are the
+  English names, as on the reference VM. **Not run and not syntax-checked in the build:** this
+  machine is Linux with no `pwsh`; the "runs on the PC" check is pending on a Windows host.
