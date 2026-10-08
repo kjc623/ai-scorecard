@@ -409,6 +409,19 @@ func (b *Bundle) AppByNPM(pkg string) []string {
 	return b.appsWith("", SignalNPMPackage, func(v string) bool { return v == pkg })
 }
 
+// AppByPipx returns the apps published as the Python package pkg, installed with pipx. Names
+// compare as Python normalizes them: case-insensitively, with any run of '-', '_' and '.' alike.
+func (b *Bundle) AppByPipx(pkg string) []string {
+	n := pythonName(pkg)
+	return b.appsWith("", SignalPipxPackage, func(v string) bool { return pythonName(v) == n })
+}
+
+var pythonSeparators = regexp.MustCompile(`[-_.]+`)
+
+func pythonName(n string) string {
+	return pythonSeparators.ReplaceAllString(strings.ToLower(n), "-")
+}
+
 // AppsByPort returns the apps that listen on port by default.
 func (b *Bundle) AppsByPort(port int) []string {
 	p := strconv.Itoa(port)

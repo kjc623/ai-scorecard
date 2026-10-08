@@ -109,7 +109,8 @@ state directory; switching the export or the hooks off removes those keys and re
 they replaced.
 The file keeps its access control unless users could write it; a new file is readable by users and
 writable by administrators only. Its health row is `tool_config_claude_code`: `healthy` while the file
-holds the agent's keys, `absent` with `tool_not_installed` without Claude Code, `degraded` with
+holds the agent's keys, `absent` with `tool_not_installed` when the inventory's CLI scan finds no
+Claude Code in any user profile, `degraded` with
 `config_write_failed` otherwise; on macOS and Linux it is `absent` with `tool_version_unsupported`.
 With TLS inspection on, the proxy blind-tunnels a connection from a tool whose native collector is
 enabled.
@@ -142,6 +143,14 @@ an app the catalog names no other way) and emits each match as a `discovery` rec
 machine-wide install, at most once per day. Its health row is `inventory_scanner`: `healthy` after a
 complete scan, `degraded` with `enumeration_partial` when a key could not be read; on macOS and
 Linux it is `absent` with `tool_version_unsupported`.
+
+The same scan finds the catalog's command-line tools in each user profile under `C:\Users` that has
+a loaded hive or an `NTUSER.DAT`: global npm packages (`%APPDATA%\npm\node_modules` and the prefix
+the user's `.npmrc` sets), the Claude Code native install (`%USERPROFILE%\.local\bin\claude.exe`,
+versioned by `.local\share\claude\versions`), pipx venvs, and command files on the user's and the
+machine's PATH (with the PE file version of an `.exe`). Each is a `discovery` record of type
+`cli_installed`, attributed to the profile's owner. It reads files and metadata only and never runs a
+discovered program; each file checked counts `observed`, each place it cannot read `errors`.
 
 ## The process monitor
 

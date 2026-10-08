@@ -26,9 +26,29 @@ func newTestWriter(t *testing.T) (*ClaudeCode, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w := NewClaudeCodeWriter(dir, filepath.Join(root, "ClaudeCode", "managed-settings.json"))
-	w.installed = func() bool { return true }
+	w := NewClaudeCodeWriter(dir, filepath.Join(root, "ClaudeCode", "managed-settings.json"), func() bool { return true })
 	return w, w.Path()
+}
+
+// Installed is the installed seam's answer, read at each call; without a seam Claude Code is not
+// installed.
+func TestClaudeCodeInstalledIsTheSeam(t *testing.T) {
+	dir, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	w := NewClaudeCodeWriter(dir, filepath.Join(t.TempDir(), "managed-settings.json"), func() bool { return found })
+	if w.Installed() {
+		t.Fatal("installed before the seam finds it")
+	}
+	found = true
+	if !w.Installed() {
+		t.Fatal("not installed once the seam finds it")
+	}
+	if NewClaudeCodeWriter(dir, filepath.Join(t.TempDir(), "managed-settings.json"), nil).Installed() {
+		t.Fatal("installed without a seam")
+	}
 }
 
 func writeFile(t *testing.T, path string, data []byte) {

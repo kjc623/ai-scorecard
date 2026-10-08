@@ -229,3 +229,28 @@ func TestCatalogInstalledAppLookups(t *testing.T) {
 		t.Fatal("a nil bundle matched an app")
 	}
 }
+
+// A pipx package matches by its Python-normalized name.
+func TestCatalogPipxLookup(t *testing.T) {
+	b := &Bundle{Catalog: []CatalogApp{
+		{AppKey: "aider", Category: "coding_agent", Signals: []CatalogSignal{
+			{Platform: "any", Kind: SignalPipxPackage, Value: "aider-chat"},
+		}},
+	}}
+	for name, tc := range map[string]struct {
+		got, want []string
+	}{
+		"same name":         {b.AppByPipx("aider-chat"), []string{"aider"}},
+		"underscores, case": {b.AppByPipx("Aider_Chat"), []string{"aider"}},
+		"dots and runs":     {b.AppByPipx("aider.-chat"), []string{"aider"}},
+		"other package":     {b.AppByPipx("aider"), nil},
+	} {
+		if !reflect.DeepEqual(tc.got, tc.want) {
+			t.Errorf("%s: got %v, want %v", name, tc.got, tc.want)
+		}
+	}
+	var nilBundle *Bundle
+	if nilBundle.AppByPipx("aider-chat") != nil {
+		t.Fatal("a nil bundle matched an app")
+	}
+}

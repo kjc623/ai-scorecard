@@ -7,5 +7,3 @@ package toolconfig
 const claudeCodeSupported = false
 
 func claudeCodeManagedPath() string { return "" }
-
-func claudeCodeInstalled() bool { return false }

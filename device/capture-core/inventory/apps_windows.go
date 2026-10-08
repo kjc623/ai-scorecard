@@ -22,9 +22,13 @@ const (
 	userPackagesPath    = `Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages`
 )
 
-// Scanners is the platform's scan pass: the installed-app scanner over the registry.
+// Scanners is the platform's scan pass: the installed-app scanner over the registry, then the CLI
+// scanner over the user profiles.
 func Scanners(person func(hostinfo.User) core.Person) []Scanner {
-	return []Scanner{NewAppScanner(SystemRegistry(), person)}
+	return []Scanner{
+		NewAppScanner(SystemRegistry(), person),
+		NewCLIScanner(SystemCLIHost(), person),
+	}
 }
 
 // SystemRegistry is the machine's registry, read only.

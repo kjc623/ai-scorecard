@@ -1302,3 +1302,65 @@ decided and why, and for a vendor fact the product version checked.
   version.
 - **Not run here:** nothing new is Windows-only; the existing Windows tests of `toolconfig` compile
   and vet under `GOOS=windows`.
+
+## 2026-10-08, task 17
+
+- **Vendor facts: the Claude Code native install** (code.claude.com `setup` and `troubleshoot-install`,
+  `.md` form, read 2026-10-08; docs.anthropic.com and learn.microsoft.com are blocked here). The
+  Windows launcher is `%USERPROFILE%\.local\bin\claude.exe`; `~/.local/share/claude/` holds "each
+  version it downloads" as `versions/<VERSION>` (the Windows uninstall removes
+  `%USERPROFILE%\.local\share\claude`). On Windows an update renames the old `claude.exe` aside and
+  moves the new one into place, so the launcher is a copy, not a symlink. The version is the highest
+  release-named entry of `.local\share\claude\versions` (with or without `.exe`); failing that, the
+  launcher's PE file version; failing that, empty. **Not verified:** how the entries are named on
+  Windows (the page writes the folder for macOS and Linux). The device phase confirms it.
+- **Vendor facts: npm** (`npm/cli` branch `latest`, `docs/lib/content/configuring-npm/folders.md`
+  and `npmrc.md`, read 2026-10-08): the default Windows prefix is `%AppData%\npm`, global packages are
+  in `{prefix}\node_modules` (no `lib`), and scoped ones are one folder deeper. `.npmrc` is ini
+  (`;` and `#` comments) with `${VAR}` replaced. The scanner takes the last top-level `prefix`. It
+  expands a leading `~` the way npm's path options do, and does not use a prefix that is relative or
+  names an unset variable. `NPM_CONFIG_PREFIX` and `userconfig` are not read.
+- **Deviation: pipx's home.** `pypa/pipx` `main` `src/pipx/paths.py` (read 2026-10-08) uses
+  `~\.local\pipx` when it exists, else `~\pipx` on Windows when it exists, else
+  `platformdirs.user_data_path("pipx")`, which is `%LOCALAPPDATA%\pipx\pipx` (`tox-dev/platformdirs`
+  `windows.py`). The brief names only the first. The scanner chooses as pipx does (`PIPX_HOME`, a user
+  variable, is not read). Venvs keep packages in `Lib\site-packages`. Names compare as Python
+  normalizes them, through a new `policy.Bundle.AppByPipx`. The catalog has no `pipx_package` signal
+  yet, so pipx finds nothing until one is added. The tests use a fixture app.
+- **PATH.** A file `<name>.exe`, `.cmd` or `.ps1` (any case) whose name is a `cli_binary` value
+  matches. npm's extensionless shell shim does not. A user's own PATH is read only from a loaded hive.
+  Its `%VAR%`s expand with the profile's `USERPROFILE`, `APPDATA` and `LOCALAPPDATA` (the default
+  `AppData` folders; folder redirection is not followed), then the service's environment. The machine
+  PATH is `HKLM\...\Session Manager\Environment\Path` (documented: `ProcThread/environment-variables.md`,
+  ms.date 2025-07-14). Relative entries and network paths are skipped, so the service never reads a
+  share as the machine account. As the brief says, a hit on the machine PATH belongs to each profile's
+  owner, not to `unattributed`.
+- **One record per app and profile from the PATH.** A PATH hit for an app that the profile's npm,
+  native or pipx location already found is not reported, and the first PATH folder that has an app
+  wins. npm's shims and the native launcher sit on the PATH, so otherwise every such install would
+  also appear with an empty or four-part version.
+- **The PE version** is `VS_FIXEDFILEINFO`'s file version as `major.minor.build.revision` (for example
+  `1.0.94.0`), not a `StringFileInfo` string. A file with no version resource gives an empty version,
+  not an error. Documented in `MicrosoftDocs/sdk-api` `GetFileVersionInfoW` and `VS_FIXEDFILEINFO`
+  (ms.date 2018-12-05). On Linux the read is a fake. The Windows tests use `cmd.exe` and `kernel32.dll`:
+  a Go test binary has no version resource, and the tests check that it reads as empty.
+- **Profiles** come from `HKLM\...\ProfileList\<SID>\ProfileImagePath`: people's SIDs only (task 16's
+  rule), a folder directly under `FOLDERID_UserProfiles`, and a hive that opens under `HKEY_USERS` or an
+  `NTUSER.DAT`. **Not verified:** no Microsoft documentation of `ProfileList` was reachable. The
+  device phase confirms it.
+- **Counters.** `inventory.go` gains an optional `CountedScanner`. The provider scans such a scanner
+  through `ScanCounted` with its own counter set, so the CLI scanner counts `observed` for each file it
+  checks: each `package.json` read, the native launcher, the matching `dist-info` and each matching
+  PATH file. Other PATH entries are listed, not checked. A `package.json` or `.npmrc` over 1 MiB, or
+  one that is not a regular file, is an error and is not read.
+- **Claude Code's `Installed()`** is now a seam. `NewClaudeCodeWriter` takes `installed func() bool`,
+  and the service wires it to `inventory.CLIInstalled(<bundle in force>, "claude_code")`, which runs
+  the CLI scan on demand (also when `endpoint.inventory` is off) and is false off Windows. Task 27's
+  direct checks are gone, including the WinGet `Packages` folders: a WinGet portable install is found
+  through WinGet's `Links` folder on the PATH (assumed, as task 27 assumed it is portable). Task 27's
+  Windows-only `TestClaudeCodeInstalledUnder` tested the removed function and is removed with it. Its
+  native and npm cases are in the inventory tests, and `TestClaudeCodeInstalledIsTheSeam` covers the
+  seam.
+- **Not run here:** `cli_windows_test.go` (`TestFileVersion`, `TestCLIScannerPathHitWithAFileVersion`,
+  `TestSystemCLIHostReads`) and the remaining Windows tests in `toolconfig`. They compile and vet under
+  `GOOS=windows`.
