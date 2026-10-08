@@ -32,8 +32,12 @@ var (
 	procCryptCATCatalogInfoFromContext       = modwintrust.NewProc("CryptCATCatalogInfoFromContext")
 )
 
-// tcpTableOwnerPIDAll is TCP_TABLE_OWNER_PID_ALL: every connection and listener, with its owner.
-const tcpTableOwnerPIDAll = 5
+// The GetExtendedTcpTable table classes read here: TCP_TABLE_OWNER_PID_LISTENER, the listeners
+// alone, and TCP_TABLE_OWNER_PID_ALL, every connection and listener, each with its owner.
+const (
+	tcpTableOwnerPIDListener = 3
+	tcpTableOwnerPIDAll      = 5
+)
 
 // OwnerOfLocalTCP returns the PID of the process that opened a loopback TCP connection, given the
 // server side's view of it: local is the server's endpoint and remote the client's. Both ends are on
@@ -46,7 +50,7 @@ func OwnerOfLocalTCP(local, remote netip.AddrPort) (uint32, error) {
 	if local.Addr().Is4() && remote.Addr().Is4() {
 		family, parse = windows.AF_INET, parseTCP4Table
 	}
-	buf, err := tcpTable(family)
+	buf, err := tcpTable(family, tcpTableOwnerPIDAll)
 	if err != nil {
 		return 0, err
 	}
@@ -62,7 +66,7 @@ func OwnerOfLocalTCP(local, remote netip.AddrPort) (uint32, error) {
 		mapped := func(a netip.AddrPort) netip.AddrPort {
 			return netip.AddrPortFrom(netip.AddrFrom16(a.Addr().As16()), a.Port())
 		}
-		if buf, err := tcpTable(windows.AF_INET6); err == nil {
+		if buf, err := tcpTable(windows.AF_INET6, tcpTableOwnerPIDAll); err == nil {
 			if rows, err := parseTCP6Table(buf); err == nil {
 				if pid, ok := clientRow(rows, mapped(local), mapped(remote)); ok {
 					return pid, nil
@@ -73,14 +77,38 @@ func OwnerOfLocalTCP(local, remote netip.AddrPort) (uint32, error) {
 	return 0, fmt.Errorf("hostinfo: no TCP connection from %s to %s: %w", remote, local, ErrNotFound)
 }
 
-// tcpTable reads GetExtendedTcpTable for one address family. The table can grow between the call
-// that sizes the buffer and the call that fills it, so a short buffer is retried.
-func tcpTable(family uint32) ([]byte, error) {
+// ListenersOn returns, in ascending order, the PIDs of the processes listening for TCP on a local
+// port, on any address of either family.
+func ListenersOn(port int) ([]uint32, error) {
+	if port < 1 || port > 65535 {
+		return nil, fmt.Errorf("hostinfo: port %d is out of range", port)
+	}
+	var rows []tcpRow
+	for _, t := range []struct {
+		family uint32
+		parse  func([]byte) ([]tcpRow, error)
+	}{{windows.AF_INET, parseTCP4Table}, {windows.AF_INET6, parseTCP6Table}} {
+		buf, err := tcpTable(t.family, tcpTableOwnerPIDListener)
+		if err != nil {
+			return nil, err
+		}
+		r, err := t.parse(buf)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, r...)
+	}
+	return listenerPIDs(rows, uint16(port)), nil
+}
+
+// tcpTable reads one class of GetExtendedTcpTable for one address family. The table can grow
+// between the call that sizes the buffer and the call that fills it, so a short buffer is retried.
+func tcpTable(family, class uint32) ([]byte, error) {
 	size := uint32(16 << 10)
 	for range 4 {
 		buf := make([]byte, size)
 		r, _, _ := procGetExtendedTcpTable.Call(uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&size)),
-			0, uintptr(family), tcpTableOwnerPIDAll, 0)
+			0, uintptr(family), uintptr(class), 0)
 		switch errno := syscall.Errno(r); {
 		case r == 0:
 			return buf, nil

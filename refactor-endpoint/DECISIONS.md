@@ -1411,3 +1411,56 @@ decided and why, and for a vendor fact the product version checked.
 - **The service opens the session through a facility** (`flowEvents`), which the service tests leave
   unset, as `processEvents`. The elevated Windows test resolves `api.openai.com` and connects to it
   on 443, sending nothing.
+
+## 2026-10-08, task 20
+
+- **Vendor facts: Ollama** (`ollama/ollama`, read 2026-10-08 at `main` c2b7368 and release tag
+  `v0.40.2`; ollama.com is blocked here): `docs/faq.mdx` and `docs/windows.mdx` (Windows store
+  `C:\Users\%username%\.ollama\models`, moved by `OLLAMA_MODELS` set "for your account");
+  `envconfig/config.go` (`OLLAMA_MODELS` trimmed of spaces and quotes, else `~/.ollama/models`);
+  `types/model/name.go` (name parts; `library` shown without its prefix); `manifest/paths.go` and
+  `manifest/manifest.go`.
+- **Deviation: Ollama's manifest trees.** The brief names only `manifests\registry.ollama.ai`.
+  Current releases write each pulled model to `manifests-v2\ollama.com\<namespace>\<model>\<tag>`
+  (on Windows as a copied file, not a link) and remove the legacy entry; they still list both
+  trees, v2 first, and treat `registry.ollama.ai` and `ollama.com` as one registry. The scanner reads
+  both trees and both host names, as Ollama does, and names a model as `ollama list` does
+  (`model:tag`, or `namespace/model:tag` outside `library`). A name part Ollama would refuse
+  (including its temporary `.manifest-*` files) and a folder with no tag file name nothing. Models
+  from other registries (`hf.co`, a private host) are not listed: the brief limits the scan to the
+  public registry.
+- **Vendor facts: LM Studio** (`lmstudio-ai/docs` 9b8bc20, read 2026-10-08; lmstudio.ai is
+  blocked): `0_app/5_advanced/import-model.md` gives the store as `~/.lmstudio/models/` with
+  `<publisher>/<model>/<file>.gguf`, and the other Windows paths in those docs are under
+  `%USERPROFILE%\.lmstudio`. `~/.cache/lm-studio/models` appears nowhere in them and is not read.
+  **Needs device confirmation:** the default store on Windows (`%USERPROFILE%\.lmstudio\models`) is
+  inferred from those docs, not seen on a real install; a store moved in the app's My Models tab is
+  not followed. MLX weights are `model*.safetensors`, the files `ml-explore/mlx-lm`
+  (`mlx_lm/utils.py`, `main`, read 2026-10-08) loads and saves.
+- **LM Studio is found only by its store.** The catalog has no `windows_exe` for it, so no process
+  of it is matched and its listener on 1234 is never attributed; its basis is always `model_store`.
+- **Presence and attribution.** Processes come from a process snapshot; only one whose base name is
+  a `local_runtime` app's `windows_exe` is described (`hostinfo.ProcessInfo`). One that cannot be
+  described (it ended) or runs as no person's SID (task 16's rule; the system account) is skipped
+  without an error. Records are per profile (task 17's list), so a runtime process of a user without
+  such a profile is not reported. `hostinfo.ListenersOn` is asked only for a runtime with a running
+  process, since a listener counts only when such a process owns it. With a process but no listener
+  the basis is `model_store`, as the brief says, even when no store exists.
+- **`OLLAMA_MODELS`** is read from the user's own `Environment` key, only when their hive is loaded,
+  and expanded with the profile's folders, then the machine's variables; when set it replaces the
+  catalog's store, as in Ollama. A machine-wide `OLLAMA_MODELS` is not read.
+- **Version** is the PE file version of the listening process's executable, else of the other runtime
+  processes' executables in path order; empty when the runtime is not running. Because the §6 key
+  includes the version, a runtime first seen stopped and later running on the same day is emitted
+  twice that day; a newly pulled model is not re-emitted until the next day (the key has no model
+  list).
+- **Model names** are sorted and de-duplicated; a name over 200 characters is left out. At most 64
+  are kept, and a record that left any out counts one `dropped` (through `CountedScanner`).
+- **`policy.Bundle` gains `AppsInCategory` and `SignalValues`**, outside the brief's files: the
+  scanner needs the local runtimes and each one's ports and stores, and collectors read the catalog
+  only through lookups.
+- **`hostinfo.ListenersOn`** reads `GetExtendedTcpTable`'s `TCP_TABLE_OWNER_PID_LISTENER` class for
+  IPv4 and IPv6 (`tcpTable` now takes the class) and returns each listening PID once, sorted.
+  Elsewhere it returns `ErrUnsupported`.
+- **Not run here:** `inventory/models_windows_test.go` and `TestListenersOnFindsThisProcess` in
+  `hostinfo`. They compile and vet under `GOOS=windows`.

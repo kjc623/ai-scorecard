@@ -230,6 +230,35 @@ func TestCatalogInstalledAppLookups(t *testing.T) {
 	}
 }
 
+// The local model scanner lists a category's apps and reads an app's signal values per platform.
+func TestCatalogCategoryAndSignalValues(t *testing.T) {
+	v, priv := newKeyPair(t, "policy-key-1")
+	b, err := v.Open(signWithMembers(t, priv, "101", map[string]string{"catalog": catalogSection}), nil)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	for name, tc := range map[string]struct {
+		got, want []string
+	}{
+		"category":                 {b.AppsInCategory("local_runtime"), []string{"lm_studio", "ollama"}},
+		"other category":           {b.AppsInCategory("ide"), []string{"vscode", "windsurf"}},
+		"empty category":           {b.AppsInCategory("ai_feature"), nil},
+		"values on the platform":   {b.SignalValues("ollama", "windows", SignalWindowsExe), []string{"ollama app.exe", "ollama.exe"}},
+		"values on any platform":   {b.SignalValues("ollama", "windows", SignalListenPort), []string{"11434"}},
+		"any-platform model store": {b.SignalValues("lm_studio", "windows", SignalModelStore), []string{"~/.lmstudio/models"}},
+		"no values elsewhere":      {b.SignalValues("ollama", "macos", SignalModelStore), nil},
+		"unknown app":              {b.SignalValues("cursor", "windows", SignalWindowsExe), nil},
+	} {
+		if !reflect.DeepEqual(tc.got, tc.want) {
+			t.Errorf("%s: got %v, want %v", name, tc.got, tc.want)
+		}
+	}
+	var nilBundle *Bundle
+	if nilBundle.AppsInCategory("local_runtime") != nil || nilBundle.SignalValues("ollama", "windows", SignalListenPort) != nil {
+		t.Fatal("a nil bundle matched an app")
+	}
+}
+
 // A pipx package matches by its Python-normalized name.
 func TestCatalogPipxLookup(t *testing.T) {
 	b := &Bundle{Catalog: []CatalogApp{

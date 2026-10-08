@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net/netip"
+	"slices"
 	"testing"
 	"time"
 )
@@ -165,5 +166,36 @@ func TestProcessCacheIsBounded(t *testing.T) {
 		if _, ok := c.get(pid, now, later); !ok {
 			t.Fatalf("PID %d was evicted while expired entries remained", pid)
 		}
+	}
+}
+
+// A listener is found on any local address of either family, once per process; connections that
+// merely use the port, and rows with no process, are not listeners of it.
+func TestListenerPIDs(t *testing.T) {
+	v4, err := parseTCP4Table(tcp4Table(
+		tcpRow{local: ap("127.0.0.1:11434"), remote: ap("0.0.0.0:0"), pid: 300},
+		tcpRow{local: ap("0.0.0.0:11434"), remote: ap("0.0.0.0:0"), pid: 200},
+		tcpRow{local: ap("0.0.0.0:1234"), remote: ap("0.0.0.0:0"), pid: 400},
+		tcpRow{local: ap("0.0.0.0:11434"), remote: ap("0.0.0.0:0"), pid: 0},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v6, err := parseTCP6Table(tcp6Table(
+		tcpRow{local: ap("[::1]:11434"), remote: ap("[::]:0"), pid: 200},
+		tcpRow{local: ap("[::]:11434"), remote: ap("[::]:0"), pid: 100},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := append(v4, v6...)
+	if got := listenerPIDs(rows, 11434); !slices.Equal(got, []uint32{100, 200, 300}) {
+		t.Errorf("port 11434: %v, want [100 200 300]", got)
+	}
+	if got := listenerPIDs(rows, 1234); !slices.Equal(got, []uint32{400}) {
+		t.Errorf("port 1234: %v, want [400]", got)
+	}
+	if got := listenerPIDs(rows, 8080); len(got) != 0 {
+		t.Errorf("port 8080: %v, want none", got)
 	}
 }

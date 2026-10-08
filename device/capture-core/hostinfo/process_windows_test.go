@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -82,6 +83,38 @@ func TestOwnerOfLocalTCPFindsTheDiallingProcess(t *testing.T) {
 				t.Fatalf("owner = %d, want the dialling process %d (this process is %d)", got, want, os.Getpid())
 			}
 		})
+	}
+}
+
+// The test process is a listener of the ports it listens on, in either family, and stops being one
+// when it closes them; a port out of range is an error.
+func TestListenersOnFindsThisProcess(t *testing.T) {
+	me := uint32(os.Getpid())
+	for _, network := range []struct{ name, addr string }{{"IPv4", "127.0.0.1:0"}, {"IPv6", "[::1]:0"}} {
+		t.Run(network.name, func(t *testing.T) {
+			ln, err := net.Listen("tcp", network.addr)
+			if err != nil {
+				t.Fatalf("listen on %s: %v", network.addr, err)
+			}
+			port := ln.Addr().(*net.TCPAddr).Port
+			pids, err := ListenersOn(port)
+			if err != nil {
+				t.Fatalf("ListenersOn(%d): %v", port, err)
+			}
+			if !slices.Contains(pids, me) {
+				t.Fatalf("ListenersOn(%d) = %v, want this process %d", port, pids, me)
+			}
+			_ = ln.Close()
+			pids, err = ListenersOn(port)
+			if err != nil || slices.Contains(pids, me) {
+				t.Fatalf("after closing, ListenersOn(%d) = %v, %v; want this process gone", port, pids, err)
+			}
+		})
+	}
+	for _, port := range []int{0, 65536} {
+		if _, err := ListenersOn(port); err == nil {
+			t.Errorf("ListenersOn(%d) has no error", port)
+		}
 	}
 }
 

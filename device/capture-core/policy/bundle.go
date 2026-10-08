@@ -428,6 +428,40 @@ func (b *Bundle) AppsByPort(port int) []string {
 	return b.appsWith("", SignalListenPort, func(v string) bool { return v == p })
 }
 
+// AppsInCategory returns, in catalog order, the apps of a catalog category.
+func (b *Bundle) AppsInCategory(category string) []string {
+	if b == nil {
+		return nil
+	}
+	var out []string
+	for _, a := range b.Catalog {
+		if a.Category == category {
+			out = append(out, a.AppKey)
+		}
+	}
+	return out
+}
+
+// SignalValues returns, in catalog order, the values of the app's signals of kind on platform or on
+// any platform.
+func (b *Bundle) SignalValues(appKey, platform, kind string) []string {
+	if b == nil {
+		return nil
+	}
+	var out []string
+	for _, a := range b.Catalog {
+		if a.AppKey != appKey {
+			continue
+		}
+		for _, s := range a.Signals {
+			if s.Kind == kind && (s.Platform == platform || s.Platform == "any") {
+				out = append(out, s.Value)
+			}
+		}
+	}
+	return out
+}
+
 // Category returns the app's catalog category, or "" for an app the catalog does not hold.
 func (b *Bundle) Category(appKey string) string {
 	if b == nil {

@@ -152,6 +152,16 @@ machine's PATH (with the PE file version of an `.exe`). Each is a `discovery` re
 `cli_installed`, attributed to the profile's owner. It reads files and metadata only and never runs a
 discovered program; each file checked counts `observed`, each place it cannot read `errors`.
 
+It also finds the catalog's local model runtimes (`local_runtime`: Ollama, LM Studio) per user
+profile. A runtime is present for a user when one of its `windows_exe` processes runs as that user or
+its `model_store` folder exists in their profile (Ollama's is the user's `OLLAMA_MODELS` when set).
+The scan lists the models from the store's files and never calls the runtime: Ollama's manifests
+(`manifests-v2\ollama.com` and `manifests\registry.ollama.ai`, as `model:tag` or
+`namespace/model:tag`) and LM Studio's `<publisher>\<model>` folders holding a `.gguf` or MLX
+`model*.safetensors` file. Each is a `discovery` record of type `local_model` with basis
+`port_listen` when the runtime's process listens on its `listen_port`, else `model_store`, the
+process's PE file version, and at most 64 sorted model names (a longer list counts one `dropped`).
+
 ## The process monitor
 
 While the bundle's `endpoint.processes.enabled` is true, the agent watches process start and stop in

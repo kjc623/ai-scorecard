@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net/netip"
+	"slices"
 	"sync"
 	"time"
 )
@@ -185,4 +186,17 @@ func clientRow(rows []tcpRow, local, remote netip.AddrPort) (uint32, bool) {
 
 func sameEndpoint(a, b netip.AddrPort) bool {
 	return a.Port() == b.Port() && a.Addr().WithZone("") == b.Addr().WithZone("")
+}
+
+// listenerPIDs returns, in ascending order and once each, the PIDs of the listener rows bound to
+// port on any local address. A row with PID 0 names no process.
+func listenerPIDs(rows []tcpRow, port uint16) []uint32 {
+	var out []uint32
+	for _, r := range rows {
+		if r.local.Port() == port && r.pid != 0 {
+			out = append(out, r.pid)
+		}
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
 }

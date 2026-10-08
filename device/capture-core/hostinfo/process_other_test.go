@@ -15,4 +15,7 @@ func TestProcessLookupsAreUnsupportedOffWindows(t *testing.T) {
 	if _, err := ProcessInfo(1); !errors.Is(err, ErrUnsupported) {
 		t.Errorf("ProcessInfo err = %v, want ErrUnsupported", err)
 	}
+	if _, err := ListenersOn(11434); !errors.Is(err, ErrUnsupported) {
+		t.Errorf("ListenersOn err = %v, want ErrUnsupported", err)
+	}
 }
