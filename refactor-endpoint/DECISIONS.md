@@ -434,3 +434,40 @@ decided and why, and for a vendor fact the product version checked.
   - WiX (wixtoolset/wix main, `Compiler_Package.cs`): `Shortcut` takes `Directory`, `Arguments`,
     `WorkingDirectory`, and targets its parent `File`; `ShortcutProperty` takes `Key` and `Value`.
   - None of it ran here; the device phase checks it on the reference VM.
+
+## 2026-10-08, task 48
+
+- **Where the row lives.** `component.Supervisor` is a `core.Provider`, but the service holds it
+  rather than the registry. Registered there, `start_collectors` would start it again and
+  `stop_remaining_providers` would stop it before the drain. The core supervisor keeps starting it
+  at `start_classifier_host` and stopping it at `stop_classifier_host` through its `ClassifierHost`
+  field, so `core` is unchanged. Its row follows the extension's, as the synthetic row did.
+- **Health.** The row is `healthy` once `Ready` (the handshake) passes. It is `degraded`/
+  `host_unreachable` while the host starts, waits for a restart or fails `Ready`, and `degraded`/
+  `component_crash_loop` while restarts are suspended. It is `absent` when not started. So a device
+  with no classifier release now reports `absent` instead of `degraded`/`classifier_unavailable`.
+  A refused handshake shows as restarts, and then as a crash loop, instead of `version_mismatch`
+  (the link still records the cause). The row's `version` is still the classifier version.
+  `health.json`'s `classifier` is now that row.
+- **Restart budget.** The first start is not a restart. The delay resets once a child has run for
+  10 minutes. After the 10-minute suspension the host starts at once, and the delay keeps
+  doubling. The crash-loop detail clears when a child next comes up.
+- **Ready is bounded at 30 s.** An anonymous pipe has no deadlines, so a child that has not
+  answered the handshake by then is killed.
+- **Only `Ready` reaches the stdio.** `Dial` serves a child's stdio once, and only within its
+  `Ready` check. The link's own reconnect fails fast to rules-only, and the supervisor reconnects a
+  restarted host. Before, each `Classify` after a failure spawned a new host. A hung or refused
+  host now counts against the restart budget.
+- **The host's stderr is discarded.** Before, it went to the service's stderr.
+- **`classifierlink.New` and `ChildDialer` are gone.** `device/integration/attachment_path_test.go`
+  used `New`; it now runs classifier-host under `component.Supervisor`, the way the service does.
+  That file is outside the brief's list.
+- **Windows.** Go's `os/exec` cannot start a process suspended, so the child joins the job just
+  after it starts. Anything it starts before that is outside the job. The job code compiles and
+  vets under `GOOS=windows`; none of it ran here.
+- **Vendor facts (read 2026-10-08, from the `golang.org/x/sys` v0.48.0 and Go 1.27 `syscall`
+  sources; learn.microsoft.com and man7.org are not reachable from the build machine):**
+  - `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` kills every process in the job when its last handle
+    closes. classifier-host's parser isolation already uses the same calls.
+  - `SysProcAttr.Pdeathsig` (`PR_SET_PDEATHSIG`) exists on Linux only. Darwin gets the process
+    group alone.

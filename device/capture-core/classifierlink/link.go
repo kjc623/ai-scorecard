@@ -1,6 +1,7 @@
 // Package classifierlink is capture-core's connection to classifier-host, which runs as its child
-// process and speaks length-prefixed frames on stdin and stdout. Framing and the handshake shapes
-// come from the protocol package.
+// process and speaks length-prefixed frames on stdin and stdout. The component package owns the
+// process; this package speaks the protocol on its stdio. Framing and the handshake shapes come
+// from the protocol package.
 //
 // The package owns the failure contract: a version mismatch, a hung host or a crashed host marks
 // the link degraded and the answer falls back to rules-only with confidence degraded. "No answer"
@@ -11,7 +12,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"sync"
 	"time"
@@ -23,7 +23,8 @@ import (
 // core.RulesOnlyVersion, which the pipeline uses for the same fallback.
 const RulesOnlyVersion = "rules-only"
 
-// Dialer connects to the host. The production dialer starts the child; a test uses net.Pipe.
+// Dialer connects to the host. The production dialer is the component supervisor's, which hands
+// out the child's stdio; a test uses net.Pipe.
 type Dialer func(ctx context.Context) (net.Conn, error)
 
 // Client is a resident connection to the classifier host. One connection is kept and reused
@@ -49,14 +50,8 @@ type Client struct {
 	connected time.Time
 }
 
-// New returns a client that runs the classifier host exe with args as its child. coreVersion is
-// sent in the handshake so the host can refuse a peer it cannot serve; budget bounds one
-// classification; the child's log lines go to stderr.
-func New(exe string, args []string, stderr io.Writer, coreVersion string, budget time.Duration) *Client {
-	return NewWithDialer(ChildDialer(exe, args, stderr), coreVersion, budget)
-}
-
-// NewWithDialer returns a client over dial.
+// NewWithDialer returns a client over dial. coreVersion is sent in the handshake so the host can
+// refuse a peer it cannot serve; budget bounds one classification.
 func NewWithDialer(dial Dialer, coreVersion string, budget time.Duration) *Client {
 	if budget <= 0 {
 		budget = 2 * time.Second
@@ -223,7 +218,7 @@ func (c *Client) Classify(ctx context.Context, req protocol.ClassifyRequest) (pr
 }
 
 // drop closes conn, which ends the child, and forgets it if it is still the resident connection;
-// the next call starts a new one through Connect.
+// the next connection is made through Connect.
 func (c *Client) drop(conn net.Conn) {
 	_ = conn.Close()
 	c.mu.Lock()

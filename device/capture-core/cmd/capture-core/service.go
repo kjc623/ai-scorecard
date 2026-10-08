@@ -16,6 +16,7 @@ import (
 
 	"github.com/shadow-ai-capture/device/capture-core/classifierlink"
 	"github.com/shadow-ai-capture/device/capture-core/cli"
+	"github.com/shadow-ai-capture/device/capture-core/component"
 	"github.com/shadow-ai-capture/device/capture-core/contentstore"
 	"github.com/shadow-ai-capture/device/capture-core/core"
 	"github.com/shadow-ai-capture/device/capture-core/credential"
@@ -174,13 +175,17 @@ type service struct {
 	spool   *spoolHolder
 	pipe    *core.Pipeline
 	content *contentstore.Store
-	host    *classifierHostController
 	broker  *loopback.Broker
 	drainer *drain.Drainer
 	trust   trustStore
 	health  *healthChannel
 	native  *localipc.Server
 	helpers *userhelper.Provider
+
+	// host supervises the classifier-host child, and classifier is the link to it (nil without a
+	// classifier release).
+	host       *component.Supervisor
+	classifier *classifierlink.Client
 
 	// tlsProv is proxy.tls, and pac the Windows desktop-app PAC that points at it (nil where the
 	// platform has none). Both, and the CLI shim, are policy toggles that run only while the
@@ -277,8 +282,18 @@ func newService(ctx context.Context, cfg Config, log *slog.Logger) (*service, er
 		cancel()
 	}
 
+	// The classifier host's row is reported either way; without a release the host is never
+	// started and classification degrades to rules-only.
+	s.host = component.New(component.Spec{
+		Collector: protocol.CollectorClassifierHost,
+		Path:      classifierHostExe(),
+		Args:      []string{"serve", "--release", cfg.ClassifierRelease, "--pubkey", cfg.ClassifierPubkey, "--transport", "stdio"},
+		Stdio:     true,
+		Ready:     s.connectClassifier,
+	}, logf)
 	if cfg.ClassifierRelease != "" {
-		s.host = &classifierHostController{cfg: cfg, log: log, onReady: func(c *classifierlink.Client) { pipe.Classifier = c }}
+		s.classifier = classifierlink.NewWithDialer(s.host.Dial, "capture-core/"+version, classifierBudget)
+		pipe.Classifier = s.classifier
 	}
 
 	if err := s.buildProviders(); err != nil {
@@ -292,7 +307,7 @@ func newService(ctx context.Context, cfg Config, log *slog.Logger) (*service, er
 	sup.Policy = &policyLoader{svc: s}
 	sup.Spool = s.spool
 	sup.Identity = identityResolver{s}
-	if s.host != nil {
+	if s.classifier != nil {
 		sup.ClassifierHost = s.host
 	}
 	if s.broker != nil {
@@ -763,45 +778,22 @@ func (l *lazySink) Append(e protocol.Entry) (protocol.Entry, error) {
 
 func (l *lazySink) Stats() protocol.SpoolStats { return l.spool.Stats() }
 
-// classifierHostController runs the classifier host beside this binary as a child on stdio. An
-// unavailable host degrades classification to rules-only and never fails a submission.
-type classifierHostController struct {
-	cfg     Config
-	log     *slog.Logger
-	client  *classifierlink.Client
-	onReady func(*classifierlink.Client)
-}
-
-func (c *classifierHostController) Start(ctx context.Context) error {
-	exe := classifierHostExe()
-	c.client = classifierlink.New(exe, []string{
-		"serve", "--release", c.cfg.ClassifierRelease, "--pubkey", c.cfg.ClassifierPubkey, "--transport", "stdio",
-	}, os.Stderr, "capture-core/"+version, classifierBudget)
-	c.onReady(c.client)
-	if err := c.client.Connect(ctx); err != nil {
-		c.log.Warn("classifier host unavailable; classification degrades to rules-only", "error", err)
-		return nil
+// connectClassifier is the classifier host's Ready check: the version handshake on its stdio. A
+// host that refuses it is restarted, and classification is rules-only meanwhile.
+func (s *service) connectClassifier(ctx context.Context) error {
+	if err := s.classifier.Connect(ctx); err != nil {
+		return err
 	}
-	c.log.Info("classifier host connected", "version", c.client.ClassifierVersion())
+	s.log.Info("classifier host connected", "version", s.classifier.ClassifierVersion())
 	return nil
 }
 
-func (c *classifierHostController) Stop(context.Context) error {
-	if c.client == nil {
-		return nil
+// classifierVersion is the version the classifier host reported, or the rules-only baseline.
+func (s *service) classifierVersion() string {
+	if s.classifier == nil {
+		return core.RulesOnlyVersion
 	}
-	return c.client.Close()
-}
-
-// status is what the health snapshot reports about the classifier.
-func (c *classifierHostController) status() (connected bool, version string, detail protocol.Detail) {
-	if c == nil || c.client == nil {
-		return false, core.RulesOnlyVersion, protocol.DetailClassifierUnavailable
-	}
-	if degraded, reason := c.client.Degraded(); degraded {
-		return false, c.client.ClassifierVersion(), reason
-	}
-	return true, c.client.ClassifierVersion(), protocol.DetailNone
+	return s.classifier.ClassifierVersion()
 }
 
 // classifierHostExe is the classifier host the installer lays down beside this binary.

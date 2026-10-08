@@ -334,6 +334,10 @@ const (
 	// User-session helper. A signed-in session has no connected helper: it could not be started,
 	// it keeps exiting, or the platform has none.
 	DetailHelperUnavailable Detail = "helper_unavailable"
+
+	// Supervised components. A child process that exited more often than its restart budget allows
+	// is left stopped until the budget allows another start.
+	DetailComponentCrashLoop Detail = "component_crash_loop"
 )
 
 // AllDetails is the closed vocabulary, for validation and for a coverage report that needs to
@@ -355,7 +359,7 @@ var AllDetails = [...]Detail{
 	DetailTrustInstallFailed, DetailTrustVerifyFailed,
 	DetailShimProfileMissing, DetailShimCABundleUnreadable, DetailShimNotInherited,
 	DetailIdentityUnresolved, DetailDisabledByPolicy,
-	DetailHelperUnavailable,
+	DetailHelperUnavailable, DetailComponentCrashLoop,
 }
 
 // Valid reports whether the detail is in the closed vocabulary. An empty detail is valid: a
