@@ -86,7 +86,7 @@ The Plan column gives the plan's task id. "Built" is ticked when the task's "Don
 | 50 | [Uninstall restores the machine](50-uninstall-cleanup/TASK.md) | E40 | 37, 38, 44 | | [ ] | [ ] |
 | **Phase 6: Verification** | | | | | | |
 | 51 | [Performance budgets](51-performance-budgets/TASK.md) | E42 | 36, 23 | | [ ] | [ ] |
-| 52 | [Privacy canaries](52-privacy-canaries/TASK.md) | E43 | 40, 46 | | [ ] | [ ] |
+| 52 | [Privacy canaries](52-privacy-canaries/TASK.md) | E43 | 40, 46 | | [x] | [ ] |
 | **Phase 7: macOS and Linux** | | | | | | |
 | 53 | [macOS: attribution, helper and discovery](53-macos-discovery/TASK.md) | E04, E05, E07–E12 | 21, backlog 27 | A Mac | [ ] | [ ] |
 | 54 | [macOS: native telemetry and hooks](54-macos-native-telemetry/TASK.md) | E18–E20, E26 | 53, 41 | A Mac with Claude Code, Codex, Cursor | [ ] | [ ] |
