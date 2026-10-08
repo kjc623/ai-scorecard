@@ -159,6 +159,7 @@ const (
 	CollectorClassifierHost   Collector = "classifier_host"
 	CollectorCaptureExtension Collector = "capture_extension"
 	CollectorDesktopProxy     Collector = "desktop_proxy"
+	CollectorOTelReceiver     Collector = "otel_receiver"
 )
 
 // Valid reports whether the collector is in the closed set. control-api refuses a whole health
@@ -167,7 +168,7 @@ func (c Collector) Valid() bool {
 	switch c {
 	case CollectorEgressProxy, CollectorLoopbackBroker, CollectorCLIShim,
 		CollectorProcessDetector, CollectorClassifierHost, CollectorCaptureExtension,
-		CollectorDesktopProxy:
+		CollectorDesktopProxy, CollectorOTelReceiver:
 		return true
 	default:
 		return false

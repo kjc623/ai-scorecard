@@ -21,6 +21,7 @@ import (
 	"github.com/shadow-ai-capture/device/capture-core/credential"
 	"github.com/shadow-ai-capture/device/capture-core/drain"
 	"github.com/shadow-ai-capture/device/capture-core/hostinfo"
+	"github.com/shadow-ai-capture/device/capture-core/otlp"
 	"github.com/shadow-ai-capture/device/capture-core/policy"
 	"github.com/shadow-ai-capture/device/capture-core/proxy/loopback"
 	"github.com/shadow-ai-capture/device/capture-core/proxy/tlsproxy"
@@ -344,7 +345,8 @@ func (s *service) buildDrainer(spoolKey []byte) error {
 	return nil
 }
 
-// buildProviders builds proxy.tls, the loopback broker and the CLI shim over the per-device CA.
+// buildProviders builds proxy.tls, the loopback broker and the CLI shim over the per-device CA, and
+// the OTLP receiver.
 func (s *service) buildProviders() error {
 	b := s.currentBundle()
 	label := s.resolvedHostname()
@@ -421,7 +423,21 @@ func (s *service) buildProviders() error {
 		return err
 	}
 
+<<<<<<< HEAD
 	return s.buildPAC()
+=======
+	// The listen addresses arrive with the bundle that switches the receiver on.
+	otel, err := otlp.New(otlp.Config{TokenPath: s.dir.Path(otlp.TokenFile), Log: s.logf, Clock: time.Now})
+	if err != nil {
+		return err
+	}
+	if err := s.reg.Add(otel); err != nil {
+		return err
+	}
+
+	s.buildPAC(b)
+	return nil
+>>>>>>> refs/heads/refactor-endpoint/23-otlp-receiver
 }
 
 // buildPAC registers the desktop-app PAC where the platform has one. It reads its listen address

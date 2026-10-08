@@ -2382,6 +2382,7 @@ INSERT INTO ref.collector (collector_code, component, modes_supported, descripti
   ('cli_shim',          'capture_core',      ARRAY['m0','m1','m2','m3'], 'Managed shell profile and environment for proxy and trust: coding agents and SDKs.'),
   ('desktop_proxy',     'capture_core',      ARRAY['m0','m1','m2','m3'], 'Per-user proxy auto-config (PAC) that routes the AI traffic of Windows desktop apps through the local TLS proxy.'),
   ('process_detector',  'capture_core',      ARRAY['m0'],                'Process and loaded-module observation. Detection only: establishes that a model ran, never what was said to it.'),
+  ('otel_receiver',     'capture_core',      ARRAY['m0','m1','m2','m3'], 'Loopback OTLP receiver for the telemetry AI tools export about themselves, authenticated by a per-device token.'),
   ('classifier_host',   'classifier_host',   ARRAY['m1','m2','m3'],      'Sandboxed classification host. Not a collection path; its health is reported like a collector''s.');
 
 INSERT INTO ref.retention_class (retention_class, default_ttl_days, description) VALUES

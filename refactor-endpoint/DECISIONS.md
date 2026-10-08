@@ -352,3 +352,31 @@ decided and why, and for a vendor fact the product version checked.
   service builds them; only the PAC's is read at each start, as the brief says. A first start with
   no bundle therefore still binds the proxy on a random port once inspection is turned on.
   `Bundle.Intercepts` does not consult `enabled`: nothing calls it while the proxy is off.
+
+## 2026-10-08, task 23
+
+- **Migration `0005-otel-receiver.sql`** (renumbered at merge; the migration loader refuses gaps,
+  so numbers follow merge order). The integration branch's `schema.sql` plus the migration dumps
+  identically to the new `schema.sql`, and the migration over the new `schema.sql` changes nothing.
+- **OTLP facts** checked against `opentelemetry-proto` `docs/specification.md` (main, read
+  2026-10-08; `go.opentelemetry.io/proto/otlp` v1.11.1): OTLP/JSON carries `traceId` and `spanId`
+  as hex, not protojson's base64, so the receiver converts them after `protojson.Unmarshal`;
+  unknown JSON fields are ignored; the size limit applies after decompression too (413); a 4xx
+  body is a `google.rpc.Status` (built with `grpc/status`, no new dependency); the response uses
+  the request's `Content-Type`. The limit is the brief's 4 MiB, not the spec's suggested 64 MiB.
+- **gRPC token check.** grpc-go decodes the message before a unary interceptor runs, so on gRPC an
+  unauthenticated request is decoded but never routed; over HTTP the token is checked before the
+  body is read (a test proves it). The gzip decompressor is registered for exporters that compress.
+- **Counters.** `observed` per log record and span received, with or without a normalizer;
+  `skipped_not_generative` per metrics request; `errors` per refused request. Refusals are logged
+  with the endpoint, size and outcome; accepted requests are not logged.
+- **Addresses come only from the bundle**, applied before the receiver starts; there is no
+  device-side default. Any bind failure on a loopback address is `port_held_by_other`. A failed
+  `Start` leaves the row `absent` with that detail; a rebind that cannot take one port leaves the
+  other serving and the row `degraded`, and `ApplyPolicy` returns the error.
+- **Normalizers** are `otlp.Config.Normalizers`, consulted in order (the first that accepts the
+  `service.name` wins), and their methods return nothing. `Sender` is `{RemoteAddr string}`.
+- **Versions added:** grpc v1.84.0, protobuf v1.36.12, otlp v1.11.1; for tests the OTel SDK and
+  trace and metric exporters v1.47.0, the log exporters v0.23.0.
+- **Not changed:** control-api's in-memory store (`storetest/memory.go`) still lists the six
+  original collectors; nothing reports `otel_receiver` to it.
