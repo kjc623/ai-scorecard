@@ -38,6 +38,9 @@ type Interception struct {
 	Ports       []int    `json:"ports,omitempty"`
 	ProxyListen string   `json:"proxy_listen,omitempty"`
 	ProxyCanary string   `json:"proxy_canary,omitempty"`
+	// PacListen is the desktop-app PAC's loopback address; it is sent only while Enabled, and
+	// without it the device serves no PAC.
+	PacListen string `json:"pac_listen,omitempty"`
 }
 
 // CLIShim is the CLI trust shim's configuration. The shim is always on and its managed directory is

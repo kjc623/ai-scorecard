@@ -60,6 +60,10 @@ const (
 	actorID        = "control-api"
 )
 
+// PACListen is the fixed loopback port the desktop-app PAC is served on while TLS inspection is on.
+// The PAC URL is written into each user's Internet Settings, so it cannot be a random port.
+const PACListen = "127.0.0.1:8350"
+
 // The endpoint section's values that are not tenant settings.
 const (
 	// OTLPHTTPListen and OTLPGRPCListen are the device's OTLP receiver addresses, off the standard
@@ -263,6 +267,10 @@ func (s *Service) compose(in store.PolicyInputs) (*Bundle, error) {
 		}
 		toolModes[fp] = m
 	}
+	pacListen := ""
+	if in.Tenant.TLSInspection {
+		pacListen = PACListen
+	}
 	return &Bundle{
 		TenantDefault: string(mode),
 		ToolModes:     toolModes,
@@ -272,6 +280,7 @@ func (s *Service) compose(in store.PolicyInputs) (*Bundle, error) {
 			Ports:       []int{443},
 			ProxyListen: s.cfg.ProxyListen,
 			ProxyCanary: canary,
+			PacListen:   pacListen,
 		},
 		CLIShim: CLIShim{
 			ProxyAddr:   s.cfg.ProxyListen,

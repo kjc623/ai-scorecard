@@ -326,10 +326,7 @@ decided and why, and for a vendor fact the product version checked.
   `interception.enabled`, a non-empty `pac_listen` and no proxy.tls kill switch in force; the kill
   switch keeps the suppression `buildPAC` had. `pac_listen` is read at each Start; empty means off,
   and the 8350 fallbacks (service and `winproxy`) are gone.
-- **The server sends no `pac_listen`.** `policyserve.Interception` has no such field and the brief
-  adds none, so every served bundle keeps the desktop-app PAC off, with TLS inspection on too. The
-  PAC checks of the "On the device" section (the AutoConfigURL in steps 1 and 2) cannot pass until
-  control-api serves a `pac_listen`; that is a bundle change for the owner to decide.
+- **control-api sends `pac_listen` while TLS inspection is on.** `policyserve.Interception.PacListen` carries the server constant `policyserve.PACListen` (`127.0.0.1:8350`, the address the device used to fall back to) in every bundle with `interception.enabled` true, and omits it when the setting is off, so turning inspection on brings the desktop-app PAC up with the proxy, shim and root. It is not configurable. `TestComposeInterceptionEnabled` checks it present and equal to the constant, then absent again after the setting is switched off; `TestServedBundleVerifiesWithTheDevicesVerifier` compares the value the device decoded.
 - **PAC health**: healthy while served with proxy.tls in the path; degraded `not_effective_proxy`
   when the proxy is out of it (the PAC then serves every user's original route). `observed` counts
   users the PAC was applied to, `not_cooperative` users left untouched, `errors` a failed user
