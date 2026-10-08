@@ -152,6 +152,14 @@ machine's PATH (with the PE file version of an `.exe`). Each is a `discovery` re
 `cli_installed`, attributed to the profile's owner. It reads files and metadata only and never runs a
 discovered program; each file checked counts `observed`, each place it cannot read `errors`.
 
+In the same profiles it finds the catalog's IDE extensions: VS Code, Cursor and Windsurf extensions
+(`%USERPROFILE%\.vscode\extensions`, `.cursor\extensions`, `.windsurf\extensions`, from the folder's
+`extensions.json`, or its `<publisher>.<name>-<version>` folder names when there is none) and
+JetBrains plugins (`%APPDATA%\JetBrains\<Product><Version>\plugins\<plugin>\lib\*.jar`, from the
+jar's `META-INF/plugin.xml`). Each is a `discovery` record of type `ide_extension` with the IDE as
+`host_app`, attributed to the profile's owner. It reads files only, never loads an extension, and
+caps each `extensions.json` at 4 MiB and each `plugin.xml` at 1 MiB.
+
 ## The process monitor
 
 While the bundle's `endpoint.processes.enabled` is true, the agent watches process start and stop in
