@@ -1635,3 +1635,49 @@ decided and why, and for a vendor fact the product version checked.
   Elsewhere it returns `ErrUnsupported`.
 - **Not run here:** `inventory/models_windows_test.go` and `TestListenersOnFindsThisProcess` in
   `hostinfo`. They compile and vet under `GOOS=windows`.
+
+## 2026-10-08, task 30
+
+- **Sources, read 2026-10-08.** code.visualstudio.com was not used; the VS Code page
+  (`monitoring-agents`) was read in `microsoft/vscode-docs` at `a8848427` (`DateApproved`
+  10/7/2026). Shapes the page leaves open (value types, where content sits, the log events'
+  attributes) follow the extension's source, `extensions/copilot` in `microsoft/vscode` at
+  `f6f19d60` (version 0.70.0; `microsoft/vscode-copilot-chat` is archived). The CLI's section is
+  "OpenTelemetry monitoring" in the CLI command reference, read in `github/docs` at `9f651797`;
+  npm `latest` of `@github/copilot` was 1.0.94 (a loader for a native binary, so its variables
+  could not be read from the package).
+- **Vendor facts.** VS Code exports spans, metrics and log events under `service.name`
+  `copilot-chat` (settings `github.copilot.chat.otel.*`; content `captureContent`, identity
+  `captureIdentity`). The CLI exports spans and metrics only, under `github-copilot`, enabled by
+  `COPILOT_OTEL_ENABLED` or `OTEL_EXPORTER_OTLP_ENDPOINT`, default protocol `http/json`. **Its
+  content switch is `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`, not a `COPILOT_OTEL_*`
+  variable** (`COPILOT_OTEL_CAPTURE_CONTENT` is VS Code's). Background Copilot agent sessions
+  inside VS Code send the Copilot runtime's spans as `github-copilot` too.
+- **The prompt is the root `invoke_agent` span, not the chat span** (a deviation from the brief).
+  Both docs say the root agent span wraps the work for one message the person sent; a VS Code chat
+  span's last user message is the request with its context added, and VS Code's helper requests
+  (title, summaries) are root chat spans ending with a user message. So: a root agent span (no
+  parent span) gives one prompt, its text the latest user message of `gen_ai.input.messages` by
+  task 33's rule (`genai.LatestUserMessage`, newly exported, with `genai.ExtractText`), else
+  `copilot_chat.user_request` (VS Code's inline chat and CLI wrapper spans carry only that). A
+  subagent's agent span has a parent and its input is the model's, so it gives nothing.
+- **With content capture off the prompt is still recorded**, with no text and `size_bytes` 0: at
+  `m1` and above it is degraded, as Claude Code's redacted prompt is; at `m0` it is the prompt event
+  §8 keeps.
+- **Spans.** `chat` gives `model_request` (request model, else response model; the token counts),
+  `execute_tool` gives `tool_call`. Outcome `error` from status `ERROR` or `error.type`.
+  `execute_hook`, agent-span totals and every span event give nothing. The dedup key is task 33's
+  (trace and span ids). Counted on the `otel_receiver` row as task 33 does.
+- **Log events are not converted**: each repeats a span (inference details per chat span, tool
+  call per execute_tool span, agent turn) or is an editor action with no envelope kind. They count
+  `skipped_not_generative`.
+- **Fingerprint by service name**: `copilot-chat` is `app:github_copilot`, `github-copilot`
+  `app:copilot_cli`. `gen_ai.conversation.id` is not the prompt's client id, so the hook/OTel merge
+  buffer does not hold Copilot prompts.
+- **Fixtures.** `testdata/copilot/vscode-documented/` (traces and logs, content on and off) and
+  `cli-documented/` (traces, on and off); no metrics files, since the receiver discards metrics.
+  Each README lists sources, shapes, placeholders and what the device phase must confirm: spans
+  and/or logs per tool, where the prompt sits, and the service name of VS Code's background agent.
+  The mapped/dropped test walks resource, span, span-event and log attributes, span operations,
+  span events and log events. Privacy fixtures: one agent-mode turn per tool, whose dropped values
+  include output messages, system prompt, tool arguments, a subagent's input and `host.name`.
