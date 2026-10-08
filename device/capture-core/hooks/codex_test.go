@@ -130,6 +130,25 @@ func TestCodexCanEnforceThePromptEvent(t *testing.T) {
 	}
 }
 
+// Codex's terminal UI shows a block's reason under "Blocked by hook" and a systemMessage as a hook
+// warning, as plain text with each line of its own. The device phase replaces these files with
+// what Codex is seen to show.
+func TestCodexRendersACoachingMessageWithALink(t *testing.T) {
+	a := codexAdapter(t)
+	for _, c := range []struct {
+		action protocol.HookAction
+		golden string
+		shown  string
+	}{
+		{protocol.HookWarn, "user-prompt-submit-warn.json", "systemMessage"},
+		{protocol.HookBlock, "user-prompt-submit-block.json", "reason"},
+	} {
+		t.Run(c.golden, func(t *testing.T) {
+			renderGolden(t, a, "UserPromptSubmit", coachingDecision(t, c.action), filepath.Join("testdata/codex/render", c.golden), c.shown)
+		})
+	}
+}
+
 // The documented prompt, parsed by the adapter and decided by the relay under a block rule on
 // credential with Codex's hooks on, renders as a blocked turn with the rule's message, and is
 // recorded on tool.hook as blocked for app:codex.

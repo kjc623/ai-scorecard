@@ -2194,3 +2194,31 @@ location a user cannot override or disable.
 - **Device phase to confirm**: that the IDE extension scan finds Copilot Chat in VS Code (the
   extension's source now lives in `microsoft/vscode` and may ship built in rather than in the user's
   extensions folder), and that the installed VS Code and CLI honour the values above.
+
+## 2026-10-08, task 41
+
+Build phase: the golden tests (`hooks/testdata/<tool>/render/`) render a warn and a block with a
+280-character message and an https link for every declared event. Everything below is **from the
+documentation**, read 2026-10-08, for the device phase to confirm on the installed version. No
+source contradicts the current output, so `Render` and `canEnforce` are unchanged.
+
+- **Claude Code** (code.claude.com `hooks`, `hooks-guide`, `interactive-mode`, `.md` form; changelog
+  latest 2.1.295 of 2026-10-08). `systemMessage` is a "warning message shown to the user", and a
+  `UserPromptSubmit` block's `reason` is "shown to the user"; `permissionDecisionReason` on a deny
+  goes to Claude. A warn is therefore shown. `systemMessage` is capped at 10,000 characters, so 280
+  plus a link is not truncated. No page says whether these messages are Markdown or plain text, how
+  they wrap, or whether a URL in them is a hyperlink (the documented hyperlinks are Claude Code's own
+  PR badge and issue references). **[device]** Markdown, wrapping, link clickable.
+- **Cursor** (cursor.com still blocked; the npm sources task 38 lists). `user_message` is "shown to
+  the user" / "in Cursor's UI"; `@vaibot/cursor-circuitbreaker-plugin` shortens a derived one to a
+  160-character line, its own choice, not a documented limit. No source says whether Cursor shows a
+  `user_message` with `continue: true` or `permission: "allow"` (a warn), and `cursor-hooks` 1.1.6's
+  `beforeSubmitPrompt` response has `continue` only. Nothing on Markdown or links. **[device]**
+  whether a warn is shown on each event; if not, warn there is recorded `logged`.
+- **Codex CLI** (`openai/codex` `main` at `780d7ab`, 2026-10-08, `codex-rs/tui/src/history_cell/hook_cell.rs`
+  and `codex-rs/hooks/src/events/user_prompt_submit.rs`; the brief predates task 39, so Codex is
+  covered too). A block's `reason` becomes a feedback entry shown as "Blocked by hook" with the
+  reason's lines below it, plain text split at `\n`; a `systemMessage` becomes a warning shown as
+  "↳ Hook · " and its lines, with ANSI styles interpreted and no Markdown. Neither is truncated (only
+  additional context is). The hook cell writes no hyperlink, so a link is clickable only where the
+  terminal detects URLs. **[device]** both, and link clickability in Windows Terminal.
