@@ -30,6 +30,7 @@ import (
 	"github.com/shadow-ai-capture/device/capture-core/proxy/loopback"
 	"github.com/shadow-ai-capture/device/capture-core/proxy/tlsproxy"
 	"github.com/shadow-ai-capture/device/capture-core/state"
+	"github.com/shadow-ai-capture/device/capture-core/toolconfig"
 	"github.com/shadow-ai-capture/device/capture-core/trust"
 	"github.com/shadow-ai-capture/device/capture-core/userhelper"
 	"github.com/shadow-ai-capture/device/capture-core/winproxy"
@@ -74,6 +75,8 @@ type facilities struct {
 	// userSessions lists the signed-in sessions and starts the user-session helper in them; nil
 	// where the platform has no helper.
 	userSessions userhelper.Platform
+	// claudeCodeSettings is Claude Code's managed settings file; empty is the platform's location.
+	claudeCodeSettings string
 }
 
 // trustStore installs, verifies and removes the per-device CA in the platform trust store.
@@ -381,8 +384,8 @@ func (s *service) buildDrainer(spoolKey []byte) error {
 	return nil
 }
 
-// buildProviders builds proxy.tls, the loopback broker and the CLI shim over the per-device CA, and
-// the OTLP receiver and the user-session helper.
+// buildProviders builds proxy.tls, the loopback broker and the CLI shim over the per-device CA, the
+// OTLP receiver, Claude Code's configuration writer and the user-session helper.
 func (s *service) buildProviders() error {
 	b := s.currentBundle()
 	label := s.resolvedHostname()
@@ -481,12 +484,31 @@ func (s *service) buildProviders() error {
 		return err
 	}
 
+	// Claude Code's managed settings point its telemetry at the receiver while the bundle switches
+	// its OTel export on.
+	claude := toolconfig.NewClaudeCode(toolconfig.NewClaudeCodeWriter(s.dir, platform.claudeCodeSettings), toolconfig.Config{
+		Token: otel.Token,
+		Scope: s.toolScope,
+		Log:   s.logf,
+		Clock: time.Now,
+	})
+	if err := s.reg.Add(claude); err != nil {
+		return err
+	}
+
 	s.helpers = userhelper.New(userhelper.Config{Platform: platform.userSessions, Log: s.logf, Clock: time.Now})
 	if err := s.reg.Add(s.helpers); err != nil {
 		return err
 	}
 
 	return s.buildPAC()
+}
+
+// toolScope is the device and user a tool's machine-wide configuration resolves its collection mode
+// for: the issued identity's.
+func (s *service) toolScope() core.ScopeQuery {
+	id, _ := s.pipe.Identity()
+	return core.ScopeQuery{DeviceID: id.DeviceID, UserRef: id.UserRef}
 }
 
 // buildPAC registers the desktop-app PAC where the platform has one. It reads its listen address

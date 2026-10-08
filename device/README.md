@@ -9,7 +9,7 @@ signed collection policy, spools them encrypted and delivers them to the device 
 | Component | What it is |
 |---|---|
 | `protocol` | The shapes the device components and the device edge agree on: enrolment, policy, events, health, content upload, native messaging, classifier frames, spool records. |
-| `capture-core` | The agent binary (`cmd/capture-core`) and its packages: `core` (pipeline, mode gate, envelope, supervisor), `policy`, `enforce` (evaluates the bundle's enforcement rules), `proxy/tlsproxy`, `proxy/loopback`, `cli` (CLI trust shim), `trust`, `drain` (enrolment, delivery, policy fetch, health, content upload), `credential`, `contentstore`, `state`, `hostinfo`, `dedup`, `classifierlink`, `attachments`, `localipc` (the local endpoint the browser relay and the user-session helper connect to), `userhelper` (the user-session helper), `component` (supervises the child processes capture-core runs, such as classifier-host: restarts with backoff, at most 5 times in 10 minutes, and kills them with the service). |
+| `capture-core` | The agent binary (`cmd/capture-core`) and its packages: `core` (pipeline, mode gate, envelope, supervisor), `policy`, `enforce` (evaluates the bundle's enforcement rules), `proxy/tlsproxy`, `proxy/loopback`, `cli` (CLI trust shim), `trust`, `drain` (enrolment, delivery, policy fetch, health, content upload), `credential`, `contentstore`, `state`, `hostinfo`, `dedup`, `classifierlink`, `attachments`, `localipc` (the local endpoint the browser relay and the user-session helper connect to), `userhelper` (the user-session helper), `toolconfig` (writes AI tools' managed configuration), `component` (supervises the child processes capture-core runs, such as classifier-host: restarts with backoff, at most 5 times in 10 minutes, and kills them with the service). |
 | `capture-spool` | The encrypted, bounded, crash-safe single-writer spool. |
 | `classifier-host` | The on-device classifier, run by capture-core as a child process on stdio. |
 | `extension` | The Chrome/Edge extension that observes browser submissions to AI tools and hands them, with their attachments, to capture-core through the native messaging host. |
@@ -91,6 +91,21 @@ signed in to that session. It shows the notifications the service sends as Windo
 AppUserModelID `ShadowAICapture.Agent`, which the MSI's Start-menu shortcut carries. Its health row
 is `user_helper`: healthy when every signed-in session has a connected helper, else `degraded` with
 `helper_unavailable`; on macOS and Linux it is `absent` with `helper_unavailable`.
+
+## Tool configuration
+
+While the bundle switches the OTLP receiver and Claude Code's OTel export on, the service merges
+Claude Code's telemetry variables (the receiver's address and token, and prompt logging on when the
+mode for `app:claude_code` is `m1` or higher) into the `env` object of
+`C:\Program Files\ClaudeCode\managed-settings.json`, which users cannot override, and touches no
+other key. Before its first write it backs the file up to `toolconfig\claude_code\original` in the
+state directory; switching the export off removes its keys and restores the values they replaced.
+The file keeps its access control unless users could write it; a new file is readable by users and
+writable by administrators only. Its health row is `tool_config_claude_code`: `healthy` while the file
+holds the agent's keys, `absent` with `tool_not_installed` without Claude Code, `degraded` with
+`config_write_failed` otherwise; on macOS and Linux it is `absent` with `tool_version_unsupported`.
+With TLS inspection on, the proxy blind-tunnels a connection from a tool whose native collector is
+enabled.
 
 ## Build and test
 

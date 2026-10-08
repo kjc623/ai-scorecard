@@ -36,6 +36,8 @@ func TestMain(m *testing.M) {
 		shimDir:     shimDir,
 		shimProfile: filepath.Join(shimDir, "profile"),
 		nativeAddr:  testNativeAddr(),
+
+		claudeCodeSettings: filepath.Join(shimDir, "ClaudeCode", "managed-settings.json"),
 	}
 	code := m.Run()
 	_ = os.RemoveAll(shimDir)

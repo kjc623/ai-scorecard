@@ -719,3 +719,77 @@ decided and why, and for a vendor fact the product version checked.
 - **Lifecycle.** The service opens the root once per process; the proxy's Start and Stop only
   install and remove trust. Renewal near expiry overwrites the CNG key. Deleting the key is the
   uninstall's (task 50); this task adds no delete path.
+
+## 2026-10-08, task 27
+
+- **Vendor facts** (code.claude.com `managed-settings`, `monitoring-usage`, `server-managed-settings`,
+  `settings` and `setup`, `.md` form, read 2026-10-08; the pages name features up to v2.1.287, npm
+  `latest` was 2.1.295; docs.anthropic.com is blocked from the build machine):
+  - The Windows managed settings file is `C:\Program Files\ClaudeCode\managed-settings.json`;
+    Claude Code no longer reads `C:\ProgramData\ClaudeCode\managed-settings.json`. The agent takes
+    the folder from `FOLDERID_ProgramFiles`.
+  - `env` merges per variable across admin sources (v2.1.223 and later), so the file's variables
+    apply beside an HKLM or server-managed policy. The telemetry variables (`OTEL_EXPORTER_OTLP_*`,
+    `OTEL_LOG_*`, `OTEL_LOGS_EXPORTER`) are one unit: a higher admin source that sets any of them
+    wins them all. A customer's HKLM or claude.ai telemetry policy therefore overrides the agent's.
+  - A managed file that is present but not a JSON object stops Claude Code from starting, so the
+    writer leaves such a file (or one whose `env` is not an object) untouched and reports
+    `config_write_failed`. An empty file is treated as `{}`.
+  - Variable names are task 25's, unchanged: `CLAUDE_CODE_ENABLE_TELEMETRY`, `OTEL_LOGS_EXPORTER`,
+    `OTEL_METRICS_EXPORTER`, `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_EXPORTER_OTLP_ENDPOINT`,
+    `OTEL_EXPORTER_OTLP_HEADERS` (`Authorization=Bearer <token>`, the documented form) and
+    `OTEL_LOG_USER_PROMPTS`.
+- **Deviation: the agent also owns `OTEL_LOG_ASSISTANT_RESPONSES=0`.** The monitoring page says
+  that when it is unset it follows `OTEL_LOG_USER_PROMPTS`, so switching prompts on would also send
+  assistant responses. The product records prompts only, so it is pinned off. It is backed up,
+  restored and checked like the brief's keys.
+- **`Installed()` checks the documented install locations directly**, because task 17's inventory
+  facts do not exist yet; task 17 replaces it with its scanner functions. It looks in every folder
+  under `FOLDERID_UserProfiles` for the native installer's `.local\bin\claude.exe` (setup page),
+  the npm package under npm's default Windows prefix `AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code`
+  (npm `folders` docs), and a WinGet package folder `AppData\Local\Microsoft\WinGet\Packages\Anthropic.ClaudeCode_*`,
+  and in `%ProgramFiles%\WinGet\Packages\Anthropic.ClaudeCode_*` (WinGet's portable-app spec; the
+  Claude Code WinGet manifest could not be read from here, so that it is a portable package is
+  assumed). A tool installed after the last apply is configured by the next bundle or restart.
+- **The native-first exclusion's app lookup is a seam**, `tlsproxy.Config.AppByExe(base)` (lower-case
+  image base name, as `genai.Config.AppByExe`). `buildProviders` leaves it nil, which matches
+  nothing, because `Bundle.AppByExe` does not exist yet; task 14's merge wires it. The tests cover
+  the exclusion through the seam with a fake process resolver. The tool table is
+  `toolconfig.ToolForApp`; `toolconfig.NativelyCovered` applies §10's rule.
+- **The `Writer` has a fifth method, `Holds(Desired)`**, which health uses to read the file back.
+  `Apply` takes `Desired{HTTPListen, Token, LogPrompts}`.
+- **Backup.** `toolconfig/claude_code/original` is JSON `{"present": bool, "content": <base64>}`,
+  written with the state directory's protection before the first write and never replaced while it
+  exists. A complete `Remove` deletes it, so the next switch-on backs up the file as it is then (a
+  customer edit made while the agent's keys were out is not lost). `Remove` writes the backup's
+  bytes back when the result holds the same JSON values; otherwise it writes the merged file.
+- **Merging** keeps the order and the values of every other key and of the customer's `env`
+  entries, and a UTF-8 byte order mark. The rewritten file is indented by two spaces, so another
+  key's whitespace can change; a file that already holds the agent's values is not rewritten.
+- **Access control.** The new file is written beside the old one and renamed over it. It gets the
+  old file's DACL (and its protection) unless an allow entry gives a write right to anyone but
+  SYSTEM, Administrators or TrustedInstaller; then, and for a new file, it gets
+  `D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;BU)`. A new `ClaudeCode` folder inherits Program Files'
+  read-only access for users.
+- **Mode.** Prompt logging is on when `core.Resolve` gives `m1` or higher for `app:claude_code`
+  under the bundle being applied, for the issued identity's device and user
+  and no population, as the pipeline resolves.
+- **Lifecycle and health.** `Start` applies, and a failed write leaves the provider running and
+  `degraded`/`config_write_failed` (counted in `errors`) rather than failing the start; the next
+  bundle retries. `ApplyPolicy` re-applies when the mode, address or token changes, or the last
+  apply did not complete. `Stop` removes, also for a provider that never started (keys a crashed
+  run left are removed), and the registry stops it at every service stop, as proxy.tls removes its
+  root. Health reads the file: `healthy` when it holds the agent's keys, `degraded`/
+  `config_write_failed` when it does not (task 34 adds tampering), `absent`/`tool_not_installed`
+  without Claude Code. `tool_version_unsupported` is added to the vocabulary too: macOS and Linux
+  report it.
+- **`tool_config_claude_code`'s `ref.collector` row** supports no modes, as `user_helper`'s: it
+  reads nothing. The new details are device-only in `check-vocab`.
+- **Migration proof** (`0008-tool-config-claude-code.sql`, the next free number on this branch):
+  the integration branch's `schema.sql` plus it, the new `schema.sql` plus it, the new `schema.sql`
+  plus `0002`–`0008`, and `main`'s `schema.sql` plus `0002`–`0008` each dump
+  (`pg_dump --schema-only`) identically to the new `schema.sql`, with identical `ref.collector`
+  rows.
+- **Not run here:** the Windows tests (`managedfile_windows_test.go`: the DACL of a new file, a kept
+  DACL and a replaced one; `claudecode_windows_test.go`: the managed path and the install
+  locations). They compile and vet under `GOOS=windows`.

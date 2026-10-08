@@ -24,6 +24,7 @@ import (
 	"github.com/shadow-ai-capture/device/capture-core/core"
 	"github.com/shadow-ai-capture/device/capture-core/enforce"
 	"github.com/shadow-ai-capture/device/capture-core/policy"
+	"github.com/shadow-ai-capture/device/capture-core/toolconfig"
 	"github.com/shadow-ai-capture/device/protocol"
 )
 
@@ -79,8 +80,13 @@ type Config struct {
 	UpstreamRoots *x509.CertPool
 
 	// Process names the client behind a connection, for the per-process exclusion of clients
-	// that pin certificates. It is a seam because process attribution is platform-specific.
+	// that pin certificates and of tools covered by a native collector. It is a seam because process
+	// attribution is platform-specific.
 	Process func(conn net.Conn) string
+
+	// AppByExe names the catalog app whose executable has this lower-case image base name. nil
+	// matches nothing, so no connection is excluded as a native collector's.
+	AppByExe func(base string) (appKey string, ok bool)
 
 	// Person names the owner of the process behind a connection, whom an intercepted request is
 	// attributed to. nil leaves every request to the pipeline's identity (the console user); an
@@ -561,7 +567,24 @@ func (p *Provider) handle(client net.Conn) {
 		return
 	}
 
+	// A tool whose own telemetry or hooks report its prompts is not decrypted as well, so one prompt
+	// is not recorded twice.
+	if p.nativelyCovered(process, bundle) {
+		p.blindTunnel(client, br, req.Host, process, protocol.DetailNone)
+		return
+	}
+
 	p.intercept(client, br, req, host, port, process, p.person(client), bundle)
+}
+
+// nativelyCovered reports whether the client process is a catalog app that the bundle covers with
+// an enabled native collector.
+func (p *Provider) nativelyCovered(process string, bundle *policy.Bundle) bool {
+	if p.cfg.AppByExe == nil {
+		return false
+	}
+	app, ok := p.cfg.AppByExe(strings.ToLower(process))
+	return ok && toolconfig.NativelyCovered(bundle, app)
 }
 
 // person is the owner of the process behind an intercepted connection, or nil to attribute the

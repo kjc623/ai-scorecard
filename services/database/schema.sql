@@ -2436,7 +2436,8 @@ INSERT INTO ref.collector (collector_code, component, modes_supported, descripti
   ('process_detector',  'capture_core',      ARRAY['m0'],                'Process and loaded-module observation. Detection only: establishes that a model ran, never what was said to it.'),
   ('otel_receiver',     'capture_core',      ARRAY['m0','m1','m2','m3'], 'Loopback OTLP receiver for the telemetry AI tools export about themselves, authenticated by a per-device token.'),
   ('classifier_host',   'classifier_host',   ARRAY['m1','m2','m3'],      'Sandboxed classification host. Not a collection path; its health is reported like a collector''s.'),
-  ('user_helper',       'capture_core',      ARRAY[]::text[],            'Helper process in each signed-in user session, which shows that user the agent''s notifications. Not a collection path; it reads nothing.');
+  ('user_helper',       'capture_core',      ARRAY[]::text[],            'Helper process in each signed-in user session, which shows that user the agent''s notifications. Not a collection path; it reads nothing.'),
+  ('tool_config_claude_code', 'capture_core',  ARRAY[]::text[],            'Writes Claude Code''s machine-wide managed settings so it exports its telemetry to the OTLP receiver. Not a collection path; it reads nothing.');
 
 INSERT INTO ref.retention_class (retention_class, default_ttl_days, description) VALUES
   ('standard',   90,  'Default for event metadata.'),
