@@ -132,3 +132,15 @@ func TestMatch(t *testing.T) {
 		}
 	}
 }
+
+// A blocked request is answered in the Messages API's error shape, as a permission_error.
+func TestBlockResponseIsTheAPIErrorShape(t *testing.T) {
+	status, ctype, body := Parser{}.BlockResponse("Remove the credential and try again.", "https://intranet.example/ai")
+	if status != 403 || ctype != "application/json" {
+		t.Fatalf("status, Content-Type = %d, %q", status, ctype)
+	}
+	want := `{"type":"error","error":{"type":"permission_error","message":"Remove the credential and try again. https://intranet.example/ai"}}`
+	if string(body) != want {
+		t.Fatalf("body = %s\nwant   %s", body, want)
+	}
+}

@@ -121,3 +121,15 @@ func TestMatch(t *testing.T) {
 		t.Error("matched another host")
 	}
 }
+
+// A blocked request is answered in the error shape of Google's JSON APIs, as PERMISSION_DENIED.
+func TestBlockResponseIsTheAPIErrorShape(t *testing.T) {
+	status, ctype, body := Parser{}.BlockResponse("Remove the credential and try again.", "")
+	if status != 403 || ctype != "application/json" {
+		t.Fatalf("status, Content-Type = %d, %q", status, ctype)
+	}
+	want := `{"error":{"code":403,"message":"Remove the credential and try again.","status":"PERMISSION_DENIED"}}`
+	if string(body) != want {
+		t.Fatalf("body = %s\nwant   %s", body, want)
+	}
+}

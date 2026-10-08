@@ -10,6 +10,7 @@ package anthropic
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/shadow-ai-capture/device/capture-core/parsers"
@@ -53,6 +54,20 @@ var blocksWithoutText = map[string]bool{
 	// Beta.
 	"advisor_tool_result": true, "mcp_tool_use": true, "compaction": true, "tool_addition": true,
 	"tool_removal": true, "mcp_tool_listing": true, "fallback": true,
+}
+
+// BlockResponse implements parsers.Parser: the API's error shape, with the type it answers a
+// request it does not permit with.
+func (Parser) BlockResponse(message, link string) (int, string, []byte) {
+	type detail struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	}
+	body, _ := json.Marshal(struct {
+		Type  string `json:"type"`
+		Error detail `json:"error"`
+	}{"error", detail{"permission_error", parsers.BlockText(message, link)}})
+	return http.StatusForbidden, "application/json", body
 }
 
 // Parse implements parsers.Parser.

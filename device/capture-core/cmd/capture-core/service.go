@@ -533,6 +533,11 @@ func (s *service) proxyConfig(b *policy.Bundle, ca *tlsproxy.CA, trustRoot core.
 	if owner := platform.connOwner; owner != nil {
 		cfg.Process = func(conn net.Conn) string { return clientProcessName(owner, conn) }
 		cfg.Person = func(conn net.Conn) (core.Person, error) { return s.clientPerson(owner, conn) }
+		cfg.Session = func(conn net.Conn) (uint32, error) {
+			p, err := owner(conn)
+			return p.Session, err
+		}
+		cfg.Notify = func(session uint32, n protocol.Notify) error { return s.helpers.Notify(session, n) }
 	}
 	return cfg
 }

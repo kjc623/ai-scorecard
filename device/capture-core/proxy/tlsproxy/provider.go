@@ -4,11 +4,13 @@
 //
 // It fails open: the user's traffic is never blocked, degraded or delayed by the provider's
 // inability to do its job. Every branch prefers carrying the request over reporting an error,
-// and the only thing that stops interception is signed policy.
+// and the only things that stop a request or interception are signed policy: a block rule, which
+// the proxy answers itself, and the kill switch.
 package tlsproxy
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
@@ -23,6 +25,7 @@ import (
 
 	"github.com/shadow-ai-capture/device/capture-core/core"
 	"github.com/shadow-ai-capture/device/capture-core/enforce"
+	"github.com/shadow-ai-capture/device/capture-core/parsers"
 	"github.com/shadow-ai-capture/device/capture-core/parsers/targets"
 	"github.com/shadow-ai-capture/device/capture-core/policy"
 	"github.com/shadow-ai-capture/device/capture-core/toolconfig"
@@ -93,6 +96,12 @@ type Config struct {
 	// attributed to. nil leaves every request to the pipeline's identity (the console user); an
 	// error does so for that request and is counted.
 	Person func(conn net.Conn) (core.Person, error)
+
+	// Session names the user session of the process behind a connection, and Notify shows a
+	// notification in a session. A block or warning rule's message is shown through them; with
+	// either nil no notification is shown.
+	Session func(conn net.Conn) (uint32, error)
+	Notify  func(session uint32, n protocol.Notify) error
 
 	// PinnedReprobeInterval bounds an exclusion: a client update can change its behaviour, so an
 	// excluded destination is re-probed at this cadence and never silently omitted for good.
@@ -685,16 +694,68 @@ func (p *Provider) serveIntercepted(client *tls.Conn, host string, port int, pro
 	}
 
 	res := p.mode(host)
+	counted := &countingReader{r: req.Body}
+	if !submission || p.cfg.Pipeline == nil {
+		p.forward(client, req, host, port, counted)
+		return
+	}
+
+	r := p.newRuling(req)
 
 	// The mode is applied before content is read.
 	var buf *bodyBuffer
-	var body io.Reader = req.Body
-	if submission && res.ReadsContent() {
-		buf = newBodyBuffer(p.cfg.BodyCap)
-		body = io.TeeReader(req.Body, buf)
+	var body io.Reader = counted
+	if res.ReadsContent() {
+		if buf, err = readBody(counted, p.cfg.BodyCap); err != nil {
+			// The client did not send its body; there is nothing to carry.
+			p.counters.Add(protocol.CounterErrors)
+			return
+		}
+		body = buf.replay(counted)
 	}
-	counted := &countingReader{r: body}
 
+	if buf != nil && !buf.overCap() {
+		// The whole body is held: it is parsed and classified, and the rules decided over its
+		// labels, before anything is forwarded.
+		p.observe(req, int64(len(buf.data)), buf, person, r)
+		r.settle()
+		if r.blocks() {
+			p.block(client, req, r)
+			return
+		}
+		show := p.notifier(client, r)
+		p.forward(client, req, host, port, body)
+		show()
+		return
+	}
+
+	// At M0, and for a body over the cap, nothing is classified, so the rules are decided without
+	// labels before anything is forwarded, as the pipeline would decide them.
+	r.settle()
+	if r.blocks() {
+		// The body is read and discarded, never held: up to a bound, so the client finishes
+		// sending and reads the answer rather than a reset, and to its end when its length is
+		// unknown, which sizes it.
+		rest := body
+		if req.ContentLength >= 0 {
+			rest = io.LimitReader(body, blockDrainLimit)
+		}
+		_, _ = io.Copy(io.Discard, rest)
+		p.block(client, req, r)
+		p.observe(req, counted.n, buf, person, r)
+		return
+	}
+	show := p.notifier(client, r)
+	ok := p.forward(client, req, host, port, body)
+	show()
+	if ok {
+		p.observe(req, counted.n, buf, person, r)
+	}
+}
+
+// forward carries the request to the real destination and streams the response back. It reports
+// whether the exchange completed.
+func (p *Provider) forward(client net.Conn, req *http.Request, host string, port int, body io.Reader) bool {
 	upstream, err := tls.DialWithDialer(&net.Dialer{Timeout: p.cfg.DialTimeout}, "tcp", net.JoinHostPort(host, fmt.Sprint(port)), &tls.Config{
 		ServerName: host,
 		MinVersion: tls.VersionTLS12,
@@ -705,7 +766,7 @@ func (p *Provider) serveIntercepted(client *tls.Conn, host string, port int, pro
 		// substitute a response. Closing without a response IS that error.
 		p.counters.Add(protocol.CounterErrors)
 		p.setDetail(protocol.DetailUpstreamFailure)
-		return
+		return false
 	}
 	defer upstream.Close()
 	_ = upstream.SetDeadline(time.Now().Add(4 * p.cfg.DialTimeout))
@@ -715,7 +776,7 @@ func (p *Provider) serveIntercepted(client *tls.Conn, host string, port int, pro
 	outReq.URL.Host = net.JoinHostPort(host, fmt.Sprint(port))
 	outReq.Host = host
 	outReq.RequestURI = ""
-	outReq.Body = io.NopCloser(counted)
+	outReq.Body = io.NopCloser(body)
 
 	writeDone := make(chan error, 1)
 	go func() { writeDone <- outReq.Write(upstream) }()
@@ -725,7 +786,7 @@ func (p *Provider) serveIntercepted(client *tls.Conn, host string, port int, pro
 		p.counters.Add(protocol.CounterErrors)
 		p.setDetail(protocol.DetailUpstreamFailure)
 		<-writeDone
-		return
+		return false
 	}
 	// Responses stream through unbuffered: responses are not captured.
 	werr := resp.Write(client)
@@ -733,21 +794,149 @@ func (p *Provider) serveIntercepted(client *tls.Conn, host string, port int, pro
 	<-writeDone
 	if werr != nil {
 		p.counters.Add(protocol.CounterErrors)
-		return
+		return false
 	}
 	p.mu.Lock()
 	p.lastSuccess = p.cfg.Clock()
 	p.mu.Unlock()
+	return true
+}
 
-	if !submission || p.cfg.Pipeline == nil {
-		return
+// blockDrainLimit bounds how much of a blocked body of known length is read before the answer.
+const blockDrainLimit = 256 << 10
+
+// notificationTitle is the title of every notification the proxy shows.
+const notificationTitle = "Shadow AI Capture"
+
+// What a block or a warning says when its rule has no message.
+const (
+	defaultBlockMessage = "Your organization's AI policy blocked this request."
+	defaultWarnMessage  = "Your organization's AI policy flagged this request."
+)
+
+// ruling is the enforcement of one submission: the rule decision, taken once, and whether the
+// proxy can act on it.
+type ruling struct {
+	bundles func() *policy.Bundle
+	tool    string
+	parser  parsers.Parser
+	extract *parsers.Extraction
+	// canEnforce holds when the destination's own parser read the body, so a block can be answered
+	// in a shape its app displays, and no kill switch on proxy.tls is in force.
+	canEnforce bool
+	decided    bool
+	decision   enforce.Decision
+}
+
+func (p *Provider) newRuling(req *http.Request) *ruling {
+	parser := targets.Registry().Lookup(req.Host, req.URL.Path)
+	_, generic := parser.(parsers.Generic)
+	return &ruling{
+		bundles:    p.bundle,
+		tool:       toolFingerprint(req.Host, req.URL.Path),
+		parser:     parser,
+		extract:    targets.Registry().For(req.Host, req.URL.Path),
+		canEnforce: !generic && !p.killSwitchActive(),
 	}
-	p.observe(req, counted.n, buf, res, person)
+}
+
+// hook is the pipeline's enforcement hook. The pipeline calls it after classification; a decision
+// already taken without labels is recorded as taken.
+func (r *ruling) hook(labels []string, known bool) protocol.Decision {
+	if !r.decided {
+		r.decide(labels, known)
+	}
+	return enforce.RecordedAction(r.decision, r.canEnforce)
+}
+
+func (r *ruling) decide(labels []string, known bool) {
+	r.decision = enforce.Evaluate(r.bundles(), enforce.Input{Route: protocol.RouteProxyTLS, ToolFingerprint: r.tool, Labels: labels, LabelsKnown: known})
+	r.decided = true
+}
+
+// settle decides without labels when the pipeline did not: nothing is classified, or the pipeline
+// stopped before deciding (no identity, a defect).
+func (r *ruling) settle() {
+	if !r.decided {
+		r.decide(nil, false)
+	}
+}
+
+func (r *ruling) blocks() bool { return r.canEnforce && r.decision.Action == policy.RuleBlock }
+
+// message is what the client and the notification show.
+func (r *ruling) message() string {
+	switch {
+	case r.decision.Message != "":
+		return r.decision.Message
+	case r.decision.Action == policy.RuleBlock:
+		return defaultBlockMessage
+	default:
+		return defaultWarnMessage
+	}
+}
+
+// notifier returns what shows r's notification to the person whose process owns conn, for a block
+// or a warning the proxy acts on, and does nothing otherwise. The session is named now, while the
+// client is connected; the notification is shown in the background, so the client never waits for
+// it. A failure changes nothing about the decision; it is counted.
+func (p *Provider) notifier(conn net.Conn, r *ruling) func() {
+	if !r.canEnforce || (r.decision.Action != policy.RuleBlock && r.decision.Action != policy.RuleWarn) {
+		return func() {}
+	}
+	if p.cfg.Session == nil || p.cfg.Notify == nil {
+		return func() {}
+	}
+	session, err := p.cfg.Session(conn)
+	if err != nil {
+		p.notifyFailed(err)
+		return func() {}
+	}
+	n := protocol.Notify{Title: notificationTitle, Body: r.message(), Link: r.decision.Link}
+	return func() {
+		p.wg.Add(1)
+		go func() {
+			defer p.wg.Done()
+			if err := p.cfg.Notify(session, n); err != nil {
+				p.notifyFailed(err)
+			}
+		}()
+	}
+}
+
+func (p *Provider) notifyFailed(err error) {
+	p.counters.Add(protocol.CounterErrors)
+	p.cfg.Log.Printf("tlsproxy: the rule's notification was not shown: %v", err)
+}
+
+// block answers the client with the destination's error and the rule's message. Nothing has been
+// sent upstream: the upstream connection is opened only for a request that is forwarded.
+func (p *Provider) block(client net.Conn, req *http.Request, r *ruling) {
+	show := p.notifier(client, r)
+	status, contentType, body := r.parser.BlockResponse(r.message(), r.decision.Link)
+	resp := &http.Response{
+		StatusCode:    status,
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		Header:        http.Header{"Content-Type": {contentType}},
+		Body:          io.NopCloser(bytes.NewReader(body)),
+		ContentLength: int64(len(body)),
+		Close:         true,
+		Request:       req,
+	}
+	if err := resp.Write(client); err != nil {
+		p.counters.Add(protocol.CounterErrors)
+	} else {
+		p.mu.Lock()
+		p.lastSuccess = p.cfg.Clock()
+		p.mu.Unlock()
+	}
+	show()
 }
 
 // observe hands the request to the pipeline. Failures here (classifier, spool) are reported and
-// never stop the client's exchange, which has already completed.
-func (p *Provider) observe(req *http.Request, counted int64, buf *bodyBuffer, res core.Resolution, person *core.Person) {
+// never stop the client's exchange.
+func (p *Provider) observe(req *http.Request, counted int64, buf *bodyBuffer, person *core.Person, r *ruling) {
 	size := counted
 	if req.ContentLength > 0 {
 		size = req.ContentLength
@@ -756,21 +945,18 @@ func (p *Provider) observe(req *http.Request, counted int64, buf *bodyBuffer, re
 	if buf != nil {
 		content = buf
 	}
-	tool := toolFingerprint(req.Host, req.URL.Path)
-	extract := targets.Registry().For(req.Host, req.URL.Path)
-	// The exchange has completed by now, so whatever a rule asks for is recorded as logged.
 	obs := core.Observation{
 		Route:           protocol.RouteProxyTLS,
 		Kind:            protocol.KindPrompt,
-		ToolFingerprint: tool,
+		ToolFingerprint: r.tool,
 		Population:      p.cfg.Agent.Population,
 		MediaType:       req.Header.Get("Content-Type"),
 		OccurredAt:      p.cfg.Clock(),
 		SizeBytes:       size,
-		Enforce:         enforce.Hook(p.cfg.Bundles, protocol.RouteProxyTLS, tool, false),
+		Enforce:         r.hook,
 		Content:         content,
 		OverCap:         buf != nil && buf.overCap(),
-		Extract:         extract,
+		Extract:         r.extract,
 		Person:          person,
 	}
 	out, err := p.cfg.Pipeline.Process(context.Background(), obs)
@@ -781,7 +967,7 @@ func (p *Provider) observe(req *http.Request, counted int64, buf *bodyBuffer, re
 		p.counters.Add(protocol.CounterErrors)
 		p.setDetail(protocol.DetailIdentityUnresolved)
 	case err != nil:
-		// Spool unavailable or full: carry the request (already carried) and count the loss.
+		// Spool unavailable or full: carry the request and count the loss.
 		p.counters.Add(protocol.CounterDropped)
 		p.setDetail(protocol.DetailSpoolUnwritable)
 	case out.Emitted:
@@ -795,14 +981,13 @@ func (p *Provider) observe(req *http.Request, counted int64, buf *bodyBuffer, re
 	if out.Degraded && out.Reason == core.ReasonClassifierDegraded {
 		p.setDetail(protocol.DetailClassifierUnavailable)
 	}
-	if extract.Panicked() {
+	if r.extract.Panicked() {
 		p.counters.Add(protocol.CounterErrors)
 	}
-	if extract.UnknownShape() {
+	if r.extract.UnknownShape() {
 		// The destination's parser did not recognise the body: its format has changed.
 		p.setDetail(protocol.DetailContentUnprocessable)
 	}
-	_ = res
 }
 
 func (p *Provider) setDetail(d protocol.Detail) {

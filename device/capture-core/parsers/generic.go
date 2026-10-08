@@ -1,6 +1,9 @@
 package parsers
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"net/http"
+)
 
 // Generic reads a JSON body of no known target: a top-level `prompt`, else the last user-role
 // message of `messages[]`, else `input`. A body it cannot interpret returns ErrNoText so the
@@ -12,6 +15,12 @@ func (Generic) Match(string, string) bool { return true }
 
 // Version implements Parser.
 func (Generic) Version() string { return "1" }
+
+// BlockResponse implements Parser: plain text, because a destination of no known target has no
+// error shape its client is known to display.
+func (Generic) BlockResponse(message, link string) (int, string, []byte) {
+	return http.StatusForbidden, "text/plain; charset=utf-8", []byte(BlockText(message, link))
+}
 
 // Parse implements Parser.
 func (Generic) Parse(payload []byte, _ string) (Result, error) {

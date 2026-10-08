@@ -3,7 +3,7 @@
 //
 // claude.ai (Claude Desktop) and chatgpt.com (ChatGPT Desktop) have no parser of their own yet:
 // their private backends' shapes are known only from captures, so requests to them are read by
-// the generic parser.
+// the generic parser, and the proxy records a block or warning rule there as logged.
 package targets
 
 import (

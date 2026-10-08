@@ -123,6 +123,7 @@ func ProcessInfo(pid uint32) (Process, error) {
 	if u, err := UserOfProcess(pid); err == nil {
 		p.User = &u
 	}
+	_ = windows.ProcessIdToSessionId(pid, &p.Session)
 	processes.put(p, now)
 	return p, nil
 }

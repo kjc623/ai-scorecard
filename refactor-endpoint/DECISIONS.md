@@ -1135,3 +1135,47 @@ decided and why, and for a vendor fact the product version checked.
   fixture value, not a catalog fact.
 - **`device/protocol/envelope.go` is re-run through `gofmt`**: the integration branch's
   `CollectorHookRelay` line was misaligned.
+## 2026-10-08, task 46
+
+- **The body is held, classified and decided before the upstream is dialled.** At `m1`+ a body
+  within the cap goes through the pipeline (parse, classify, rules, spool) first, so its event is
+  recorded before the request is forwarded, and also when the upstream then fails. At `m0`, and
+  for a body over the cap, nothing is classified, so the rules are evaluated without labels before
+  forwarding (the decision the pipeline would record), and the event is recorded after the
+  exchange as before. The upstream connection is opened only for a request that is forwarded, so
+  a blocked request never opens one.
+- **A blocked body that was not read is discarded, never held**: up to 256 KiB when its length is
+  known, so the client finishes sending and reads the 403 rather than a reset, and to its end when
+  it is chunked, which sizes it.
+- **No decision taken by the pipeline** (no identity, a defect before the hook) is decided without
+  labels, so a non-label block rule still applies; a label rule then cannot match and the request
+  is carried.
+- **`canEnforce` is per request**: the destination's own parser matched (not `generic`) and no
+  `proxy.tls` kill switch is in force when the request is decided. Requests to `claude.ai` and
+  `chatgpt.com` stay `logged` until their parsers exist; their block shapes follow their parsers,
+  built from captures in the device phase (task 45's fix branch).
+- **The displayed text** is the rule's message, then a space and its link. A rule with no message
+  shows "Your organization's AI policy blocked this request." (block) or "... flagged this
+  request." (warn), in the response and the notification, because the helper refuses an empty
+  body.
+- **Notification.** The session is named while the client is connected (the TCP owner's process),
+  for a block or warning the proxy acts on only; the toast is shown in the background so the
+  client never waits for the helper's 10 s answer. A failed lookup or notify counts `errors` on
+  the `egress_proxy` row and is logged without content. With no `Session` or `Notify` (macOS,
+  Linux) nothing is shown and nothing is counted.
+- **The session seam**: `hostinfo.Process` gains `Session` (from `ProcessIdToSessionId`, 0 when it
+  cannot be read; the helper never serves session 0). The service wires `tlsproxy.Config.Session`
+  from the same connection owner as `Person`, and `Config.Notify` to `userhelper.Provider.Notify`.
+- **Gemini's block shape** is added beside the brief's two: the error shape of Google's JSON APIs,
+  `{"error":{"code":403,"message":...,"status":"PERMISSION_DENIED"}}`.
+- **Vendor facts** (read 2026-10-08):
+  - Anthropic: "Errors" at platform.claude.com (`/docs/en/api/errors.md`): a JSON body with
+    top-level `type: "error"` and an `error` object with `type` and `message`; 403 is
+    `permission_error`. Its `request_id` is left out: the proxy is not the API.
+  - OpenAI: `openapi.yaml` (spec 2.3.0) in `openai/openai-openapi` at `c7224137`: `ErrorResponse`
+    is `{error: Error}`, and `Error` requires `message`, `type`, `param` and `code` (the last two
+    nullable), so both are sent as `null` beside the brief's `type: "policy_violation"`.
+  - Gemini: AIP-193 (`aip-dev/google.aip.dev` `master` at `615875bf`), the HTTP/JSON error
+    `{"error":{"code","message","status","details"}}` with the HTTP status as `code`;
+    `google/rpc/code.proto` (`googleapis/googleapis` `master` at `6553725b`) maps
+    `PERMISSION_DENIED` to 403. ai.google.dev is not reachable from the build machine.
