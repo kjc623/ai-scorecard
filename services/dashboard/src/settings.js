@@ -2,7 +2,8 @@
 //
 // The page an admin uses to change what the tenant collects and keeps: the collection mode (within
 // the ceiling) with an optional narrower per-tool override, the event and content retention
-// periods, the sanction decision per tool, and the content search tier. Every read and write goes
+// periods, the sanction decision per tool, the content search tier, and which endpoint collectors
+// run on the devices. Every read and write goes
 // through the admin api (transport.js), which control-api answers for an admin only and audits with
 // the real actor, the old value and the new value.
 //
@@ -14,6 +15,20 @@
 export const COLLECTION_MODES = Object.freeze(['m0', 'm1', 'm2', 'm3']);
 export const SEARCH_TIERS = Object.freeze(['disabled', 'attachment_names', 'full_text']);
 export const SANCTION_STATES = Object.freeze(['sanctioned', 'unsanctioned', 'unknown']);
+
+/** The endpoint collector switches, in the order the card shows them. */
+export const ENDPOINT_COLLECTORS = Object.freeze(['inventory', 'processes', 'flows', 'otel', 'hooks', 'hooks_managed_only']);
+
+/**
+ * The tools with native collectors and which of the two each has: Cursor sends no OpenTelemetry,
+ * and Codex and Copilot have no hooks yet. A collector a tool lacks is shown, never offered.
+ */
+export const ENDPOINT_TOOLS = Object.freeze([
+  Object.freeze({ key: 'claude_code', label: 'Claude Code', otel: true, hooks: true }),
+  Object.freeze({ key: 'codex', label: 'Codex', otel: true, hooks: false }),
+  Object.freeze({ key: 'copilot', label: 'Copilot', otel: true, hooks: false }),
+  Object.freeze({ key: 'cursor', label: 'Cursor', otel: false, hooks: true }),
+]);
 
 /** The rank of each collection mode, mirrored from the database's ops.mode_rank. */
 const MODE_RANK = Object.freeze({ m0: 0, m1: 1, m2: 2, m3: 3 });
@@ -47,7 +62,13 @@ const IDLE = Object.freeze({
   retention: Object.freeze({ pending: null, problem: null, drafts: Object.freeze({}) }),
   search: Object.freeze({ pending: null, problem: null }),
   sanction: Object.freeze({ pending: null, problem: null }),
+  endpoint: Object.freeze({ pending: null, problem: null }),
 });
+
+/** A switch button's data-value: 'on' or 'off', anything else is no value. */
+const onOff = (value) => (value === 'on' ? true : value === 'off' ? false : null);
+
+const NOT_READ = Object.freeze({ code: 'endpoint_not_reported', message: 'The current endpoint settings were not read; reload the page and try again.' });
 
 /**
  * The page's behaviour over one admin api.
@@ -169,6 +190,43 @@ export function createSettings({ admin, onChange = () => {} }) {
     return load({ quiet: true });
   }
 
+  async function writeEndpoint(pending, send) {
+    set({ endpoint: Object.freeze({ pending, problem: null }) });
+    const answer = await send();
+    if (answer.state !== 'done') {
+      set({ endpoint: Object.freeze({ pending: null, problem: answer.error }) });
+      return state;
+    }
+    set({ endpoint: IDLE.endpoint });
+    return load({ quiet: true });
+  }
+
+  /** Switch one endpoint collector. The write carries every switch, the others as they were read. */
+  async function setEndpointCollector(name, value) {
+    if (!ENDPOINT_COLLECTORS.includes(name) || typeof value !== 'boolean' || state.status !== 'ready' || state.endpoint.pending) return state;
+    const current = state.data.endpoint;
+    if (!current || ENDPOINT_COLLECTORS.some((c) => typeof current[c] !== 'boolean')) {
+      set({ endpoint: Object.freeze({ pending: null, problem: NOT_READ }) });
+      return state;
+    }
+    if (current[name] === value) return state;
+    const next = Object.fromEntries(ENDPOINT_COLLECTORS.map((c) => [c, c === name ? value : current[c]]));
+    return writeEndpoint(name, () => admin.setEndpointCollectors(next));
+  }
+
+  /** Switch one of a tool's native collectors. The write carries both, the other as it was read. */
+  async function setEndpointTool(key, collector, value) {
+    const tool = ENDPOINT_TOOLS.find((t) => t.key === key);
+    if (!tool || !tool[collector] || typeof value !== 'boolean' || state.status !== 'ready' || state.endpoint.pending) return state;
+    const current = state.data.endpoint?.tools?.[key];
+    if (!current || typeof current.otel !== 'boolean' || typeof current.hooks !== 'boolean') {
+      set({ endpoint: Object.freeze({ pending: null, problem: NOT_READ }) });
+      return state;
+    }
+    if (current[collector] === value) return state;
+    return writeEndpoint(`${key}.${collector}`, () => admin.setEndpointTool(key, { ...current, [collector]: value }));
+  }
+
   /** One entry point for the page's buttons and controls, named by data-action. */
   function act(dataset = {}) {
     switch (dataset.action) {
@@ -180,9 +238,11 @@ export function createSettings({ admin, onChange = () => {} }) {
       case 'save-retention': return saveRetention(dataset.appliesTo);
       case 'search': return setContentSearch(dataset.value);
       case 'sanction': return setToolSanction(dataset.tool, dataset.value);
+      case 'endpoint': return setEndpointCollector(dataset.collector, onOff(dataset.value));
+      case 'endpoint-tool': return setEndpointTool(dataset.tool, dataset.collector, onOff(dataset.value));
       default: return Promise.resolve(state);
     }
   }
 
-  return Object.freeze({ get state() { return state; }, load, chooseMode, setScopeOverride, setRetentionDraft, saveRetention, setContentSearch, setToolSanction, act });
+  return Object.freeze({ get state() { return state; }, load, chooseMode, setScopeOverride, setRetentionDraft, saveRetention, setContentSearch, setToolSanction, setEndpointCollector, setEndpointTool, act });
 }

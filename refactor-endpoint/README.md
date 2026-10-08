@@ -34,7 +34,7 @@ The Plan column gives the plan's task id. "Built" is ticked when the task's "Don
 | 04 | [Server: store the new kinds](04-ingest-endpoint-kinds/TASK.md) | E02 | 03 | | [x] | [ ] |
 | 05 | [Device: mint the new kinds](05-device-envelope-kinds/TASK.md) | E02 | 03, 04 | | [x] | — |
 | 06 | [Collector lifecycle and policy toggles](06-collector-lifecycle/TASK.md) | E01, E03 | 05 | | [x] | — |
-| 07 | [Policy: the endpoint section](07-endpoint-policy-section/TASK.md) | E03 | 01, 06 | | [ ] | [ ] |
+| 07 | [Policy: the endpoint section](07-endpoint-policy-section/TASK.md) | E03 | 01, 06 | | [x] | [ ] |
 | 08 | [TLS inspection becomes opt-in](08-tls-inspection-opt-in/TASK.md) | E36 | 07 | | [ ] | [ ] |
 | 09 | [Process attribution](09-process-attribution/TASK.md) | E04, E15 | 06 | | [x] | [ ] |
 | 10 | [User-session helper](10-user-session-helper/TASK.md) | E05 | 09 | | [ ] | [ ] |

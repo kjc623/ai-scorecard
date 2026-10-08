@@ -414,6 +414,31 @@ CREATE TABLE ops.retention_policy (
   PRIMARY KEY (tenant_id, applies_to, data_class, collection_mode)
 );
 
+-- The tenant's endpoint collector switches, set on the Settings page and delivered in the policy
+-- bundle's endpoint section. A tenant without a row is served these defaults: the policy read
+-- applies them, so no row is inserted for a tenant that never changed a switch.
+CREATE TABLE ops.endpoint_setting (
+  tenant_id          uuid PRIMARY KEY REFERENCES ops.tenant(tenant_id),
+  inventory          boolean NOT NULL DEFAULT true,
+  processes          boolean NOT NULL DEFAULT true,
+  flows              boolean NOT NULL DEFAULT true,
+  otel               boolean NOT NULL DEFAULT true,
+  hooks              boolean NOT NULL DEFAULT true,
+  -- Tools run only the hooks the agent manages, not a user's own.
+  hooks_managed_only boolean NOT NULL DEFAULT false
+);
+
+-- Per-tool native collectors. A tool's switch takes effect only while the collector it names is on
+-- in ops.endpoint_setting. A tool without a row is served its defaults by the policy read: each
+-- collector the tool supports is on.
+CREATE TABLE ops.endpoint_tool_setting (
+  tenant_id  uuid NOT NULL REFERENCES ops.tenant(tenant_id),
+  tool_key   text NOT NULL CHECK (tool_key IN ('claude_code','codex','copilot','cursor')),
+  otel       boolean NOT NULL,
+  hooks      boolean NOT NULL,
+  PRIMARY KEY (tenant_id, tool_key)
+);
+
 -- The append-only audit log: every read of subject-level data, mode change, content grant, content
 -- reveal, export and configuration change, written before the data is returned. Append-only three
 -- ways: no runtime role holds UPDATE or DELETE, a trigger refuses both for every role, and each row
@@ -2082,6 +2107,7 @@ DECLARE
     -- ops
     'ops.user_dim', 'ops.device', 'ops.device_credential', 'ops.collector_state',
     'ops.policy_bundle', 'ops.tool', 'ops.notice_acknowledgement', 'ops.retention_policy',
+    'ops.endpoint_setting', 'ops.endpoint_tool_setting',
     'ops.audit', 'ops.grant', 'ops.content', 'ops.retrieval_grant', 'ops.finding_review',
     'ops.erasure_receipt', 'ops.export', 'ops.erasure_request',
     'ops.aggregate_watermark', 'ops.coverage_snapshot',
@@ -2170,7 +2196,7 @@ GRANT EXECUTE ON FUNCTION ops.current_tenant() TO sac_ingest;
 GRANT SELECT, INSERT, UPDATE ON ops.tenant, ops.user_dim, ops.device, ops.device_credential,
       ops.collector_state, ops.policy_bundle, ops.tool, ops.notice_acknowledgement,
       ops.retention_policy, ops.grant, ops.coverage_snapshot, ops.finding_review,
-      ops.subscription
+      ops.subscription, ops.endpoint_setting, ops.endpoint_tool_setting
   TO sac_control;
 -- Deciding a content grant reads the tenant's budget; a stored upload adds its bytes to the day's
 -- content counter and to nothing else.

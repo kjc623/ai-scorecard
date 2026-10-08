@@ -127,6 +127,9 @@ var Statements = []Statement{
 	{"set_content_search", SQLSetContentSearch},
 	{"current_tool_state", SQLCurrentToolState},
 	{"set_tool_sanction", SQLSetToolSanction},
+	{"endpoint_settings", SQLEndpointSettings},
+	{"set_endpoint_collectors", SQLSetEndpointCollectors},
+	{"set_endpoint_tool", SQLSetEndpointTool},
 }
 
 // SQLStore is the PostgreSQL implementation of Store.

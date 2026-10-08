@@ -1,8 +1,9 @@
 // Package policyserve serves GET /v1/policy and writes ops.policy_bundle.
 //
 // A tenant's bundle is composed from what the database says about it: the tenant's ceiling as the
-// default collection mode and the tool catalogue's TLS hosts as the interception scope. It is signed with the vendor's Ed25519 policy key in the envelope
-// the agent verifies, and stored with the exact signed bytes. A new version is minted only when the
+// default collection mode, the tool catalogue's TLS hosts as the interception scope, and the
+// tenant's endpoint collector settings. It is signed with the vendor's Ed25519 policy key in the
+// envelope the agent verifies, and stored with the exact signed bytes. A new version is minted only when the
 // composition or the signing key differs from the latest stored bundle; otherwise the stored bytes
 // are served again, so the ETag a device holds stays valid until something it would enforce
 // changes. Composition happens on the read path under a per-tenant lock, so the first poll after an
@@ -57,6 +58,18 @@ const (
 	// retention class.
 	retentionClass = "standard"
 	actorID        = "control-api"
+)
+
+// The endpoint section's values that are not tenant settings.
+const (
+	// OTLPHTTPListen and OTLPGRPCListen are the device's OTLP receiver addresses, off the standard
+	// 4318 and 4317 so a developer's own collector keeps those.
+	OTLPHTTPListen = "127.0.0.1:47318"
+	OTLPGRPCListen = "127.0.0.1:47317"
+	// InventoryIntervalMinutes is how often the device rescans installed apps.
+	InventoryIntervalMinutes = 360
+	// DiscoveryDailyBudget is how many discovery records a device sends per UTC day.
+	DiscoveryDailyBudget = 200
 )
 
 // Served is a tenant's bundle as GET /v1/policy serves it.
@@ -265,7 +278,26 @@ func (s *Service) compose(in store.PolicyInputs) (*Bundle, error) {
 			NoProxy:     append([]string(nil), s.cfg.NoProxy...),
 			NodeRequire: true,
 		},
+		Endpoint: composeEndpoint(in.Endpoint),
 	}, nil
+}
+
+// composeEndpoint is the bundle's endpoint section for the tenant's settings.
+func composeEndpoint(e store.EndpointSettings) Endpoint {
+	c := e.Collectors
+	tools := make(map[string]EndpointTool, len(e.Tools))
+	for k, t := range e.Tools {
+		tools[k] = EndpointTool{OTel: t.OTel, Hooks: t.Hooks}
+	}
+	return Endpoint{
+		Inventory:            EndpointInventory{Enabled: c.Inventory, IntervalMinutes: InventoryIntervalMinutes},
+		Processes:            EndpointSwitch{Enabled: c.Processes},
+		Flows:                EndpointSwitch{Enabled: c.Flows},
+		OTel:                 EndpointOTel{Enabled: c.OTel, HTTPListen: OTLPHTTPListen, GRPCListen: OTLPGRPCListen},
+		Hooks:                EndpointHooks{Enabled: c.Hooks, ManagedOnly: c.HooksManagedOnly},
+		Tools:                tools,
+		DiscoveryDailyBudget: DiscoveryDailyBudget,
+	}
 }
 
 // mint signs the candidate as the next version: the larger of the previous version plus one and

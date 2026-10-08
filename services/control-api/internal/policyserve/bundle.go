@@ -25,6 +25,7 @@ type Bundle struct {
 
 	Interception Interception `json:"interception"`
 	CLIShim      CLIShim      `json:"cli_shim"`
+	Endpoint     Endpoint     `json:"endpoint"`
 }
 
 // Interception is the decryption scope. The per-device root CA is deliberately absent: the device
@@ -43,6 +44,51 @@ type CLIShim struct {
 	Runtimes    []string `json:"runtimes,omitempty"`
 	NoProxy     []string `json:"no_proxy,omitempty"`
 	NodeRequire bool     `json:"node_require,omitempty"`
+}
+
+// Endpoint is the endpoint collectors' switches, from the tenant's settings, and the values they run
+// with, which are this service's constants. No field is omitted when false or empty, so the drift
+// test sees every name.
+type Endpoint struct {
+	Inventory EndpointInventory `json:"inventory"`
+	Processes EndpointSwitch    `json:"processes"`
+	Flows     EndpointSwitch    `json:"flows"`
+	OTel      EndpointOTel      `json:"otel"`
+	Hooks     EndpointHooks     `json:"hooks"`
+	// Tools is each tool's native collectors, keyed by tool key. A tool's switch takes effect only
+	// while the collector it names is enabled.
+	Tools                map[string]EndpointTool `json:"tools"`
+	DiscoveryDailyBudget int                     `json:"discovery_daily_budget"`
+}
+
+// EndpointSwitch is a collector with no setting beyond on or off.
+type EndpointSwitch struct {
+	Enabled bool `json:"enabled"`
+}
+
+// EndpointInventory is the installed-app scanner.
+type EndpointInventory struct {
+	Enabled         bool `json:"enabled"`
+	IntervalMinutes int  `json:"interval_minutes"`
+}
+
+// EndpointOTel is the device's OTLP receiver and its loopback listen addresses.
+type EndpointOTel struct {
+	Enabled    bool   `json:"enabled"`
+	HTTPListen string `json:"http_listen"`
+	GRPCListen string `json:"grpc_listen"`
+}
+
+// EndpointHooks is the hook relay. ManagedOnly makes tools run only the hooks the agent manages.
+type EndpointHooks struct {
+	Enabled     bool `json:"enabled"`
+	ManagedOnly bool `json:"managed_only"`
+}
+
+// EndpointTool is one tool's native collectors.
+type EndpointTool struct {
+	OTel  bool `json:"otel"`
+	Hooks bool `json:"hooks"`
 }
 
 // SignedBundle is the envelope capture-core/policy verifies: the Ed25519 signature covers the

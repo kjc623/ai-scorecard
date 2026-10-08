@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -192,6 +193,97 @@ func TestComposeCarriesRequestedModeAndOverrides(t *testing.T) {
 	row := r.store.PolicyBundles(tenantA)[0]
 	if !strings.Contains(string(row.ScopeMatrix), `"tool_modes"`) || !strings.Contains(string(row.ScopeMatrix), `"m0"`) {
 		t.Fatalf("scope matrix %s does not carry the override", row.ScopeMatrix)
+	}
+}
+
+// endpointOf is the served bundle's endpoint section, re-encoded with sorted keys.
+func endpointOf(t *testing.T, envelope []byte) string {
+	t.Helper()
+	p, _ := payloadOf(t, envelope)
+	e, ok := p["endpoint"]
+	if !ok {
+		t.Fatal("the payload has no endpoint section")
+	}
+	b, err := json.Marshal(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// canonical re-encodes a JSON document with sorted keys and no spacing.
+func canonical(t *testing.T, doc string) string {
+	t.Helper()
+	var v any
+	if err := json.Unmarshal([]byte(doc), &v); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(v)
+	return string(b)
+}
+
+// TestComposeEndpointSection: a tenant without rows is served the defaults; a tenant row sets the
+// collector switches and a tool row one tool's, and each change mints a new version.
+func TestComposeEndpointSection(t *testing.T) {
+	r := newRig(t, nil)
+	ctx := context.Background()
+	section := func(inventory, flows, managedOnly, cursorHooks, codexOTel bool) string {
+		return canonical(t, fmt.Sprintf(`{
+		  "inventory": {"enabled": %t, "interval_minutes": 360},
+		  "processes": {"enabled": true},
+		  "flows":     {"enabled": %t},
+		  "otel":      {"enabled": true, "http_listen": "127.0.0.1:47318", "grpc_listen": "127.0.0.1:47317"},
+		  "hooks":     {"enabled": true, "managed_only": %t},
+		  "tools": {
+		    "claude_code": {"otel": true,  "hooks": true},
+		    "codex":       {"otel": %t,    "hooks": false},
+		    "copilot":     {"otel": true,  "hooks": false},
+		    "cursor":      {"otel": false, "hooks": %t}
+		  },
+		  "discovery_daily_budget": 200
+		}`, inventory, flows, managedOnly, codexOTel, cursorHooks))
+	}
+
+	v1, err := r.svc.Current(ctx, tenantA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := endpointOf(t, v1.Envelope), section(true, true, false, true, true); got != want {
+		t.Fatalf("defaults:\n got %s\nwant %s", got, want)
+	}
+
+	audit := store.AuditEntry{TenantID: tenantA, ActorType: store.ActorUser, ActorID: "admin@contoso.example", Action: "test", ObjectType: "tenant", ObjectID: tenantA}
+	if err := r.store.SetEndpointCollectors(ctx, tenantA, store.EndpointCollectors{
+		Inventory: false, Processes: true, Flows: false, OTel: true, Hooks: true, HooksManagedOnly: true,
+	}, audit); err != nil {
+		t.Fatal(err)
+	}
+	v2, err := r.svc.Current(ctx, tenantA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !newer(v2.Version, v1.Version) {
+		t.Fatalf("changed collectors: version %s, want newer than %s", v2.Version, v1.Version)
+	}
+	if got, want := endpointOf(t, v2.Envelope), section(false, false, true, true, true); got != want {
+		t.Fatalf("tenant row:\n got %s\nwant %s", got, want)
+	}
+
+	if err := r.store.SetEndpointTool(ctx, tenantA, "cursor", store.EndpointTool{OTel: false, Hooks: false}, audit); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.store.SetEndpointTool(ctx, tenantA, "codex", store.EndpointTool{OTel: false, Hooks: false}, audit); err != nil {
+		t.Fatal(err)
+	}
+	v3, err := r.svc.Current(ctx, tenantA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !newer(v3.Version, v2.Version) {
+		t.Fatalf("changed tools: version %s, want newer than %s", v3.Version, v2.Version)
+	}
+	if got, want := endpointOf(t, v3.Envelope), section(false, false, true, false, false); got != want {
+		t.Fatalf("tool rows:\n got %s\nwant %s", got, want)
 	}
 }
 
@@ -410,6 +502,13 @@ func TestServedBundleVerifiesWithTheDevicesVerifier(t *testing.T) {
 	}
 
 	r := newRig(t, nil)
+	// Settings off the defaults, so a switch the device decoded as its zero value would show.
+	audit := store.AuditEntry{TenantID: tenantA, ActorType: store.ActorUser, ActorID: "admin@contoso.example", Action: "test", ObjectType: "tenant", ObjectID: tenantA}
+	if err := r.store.SetEndpointCollectors(context.Background(), tenantA, store.EndpointCollectors{
+		Inventory: true, Processes: true, Flows: false, OTel: true, Hooks: true, HooksManagedOnly: true,
+	}, audit); err != nil {
+		t.Fatal(err)
+	}
 	rec := r.get(t, "")
 	var resp protocol.PolicyResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
@@ -427,6 +526,7 @@ func TestServedBundleVerifiesWithTheDevicesVerifier(t *testing.T) {
 import (
 	"crypto/ed25519"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 
@@ -456,7 +556,12 @@ func main() {
 		fmt.Println("ERR", res.Outcome, res.Cause, res.Err)
 		os.Exit(1)
 	}
-	fmt.Println("OK", res.Outcome, b.Version, b.TenantDefault, len(b.Interception.SeedHosts), b.CLIShim.ProxyAddr, b.Intercepts("api.openai.com", 443))
+	// The endpoint section as the device decoded it, in the device's JSON names, keys sorted.
+	var endpoint any
+	raw, _ = json.Marshal(b.Endpoint)
+	_ = json.Unmarshal(raw, &endpoint)
+	raw, _ = json.Marshal(endpoint)
+	fmt.Println("OK", res.Outcome, b.Version, b.TenantDefault, len(b.Interception.SeedHosts), b.CLIShim.ProxyAddr, b.Intercepts("api.openai.com", 443), string(raw))
 }
 `
 	for name, body := range map[string]string{"go.mod": gomod, "main.go": program} {
@@ -475,7 +580,9 @@ func main() {
 	if err != nil {
 		t.Fatalf("capture-core's verifier refused the served bundle: %v\n%s", err, out)
 	}
-	want := "OK accepted " + resp.BundleVersion + " m3 3 " + policyserve.DefaultProxyListen + " true"
+	// The device's re-encoding of the endpoint section equals the served one: every name matched,
+	// and no value was dropped on the way.
+	want := "OK accepted " + resp.BundleVersion + " m3 3 " + policyserve.DefaultProxyListen + " true " + endpointOf(t, resp.SignedBundle)
 	if got := strings.TrimSpace(string(out)); !strings.HasSuffix(got, want) {
 		t.Fatalf("verifier output %q, want %q", got, want)
 	}

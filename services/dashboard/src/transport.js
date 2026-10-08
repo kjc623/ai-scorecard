@@ -13,6 +13,7 @@ import {
   ADMIN_DEPLOYMENT_ENDPOINT, ADMIN_PACKAGE_ENDPOINT, ADMIN_VERIFICATION_ENDPOINT, ADMIN_KEYS_ENDPOINT, ADMIN_SCIM_TOKENS_ENDPOINT,
   ADMIN_SETTINGS_ENDPOINT, ADMIN_SETTINGS_COLLECTION_MODE_ENDPOINT, ADMIN_SETTINGS_SCOPE_OVERRIDE_ENDPOINT,
   ADMIN_SETTINGS_RETENTION_ENDPOINT, ADMIN_SETTINGS_CONTENT_SEARCH_ENDPOINT, ADMIN_SETTINGS_TOOL_SANCTION_ENDPOINT,
+  ADMIN_SETTINGS_ENDPOINT_COLLECTORS_ENDPOINT,
 } from './vocab.js';
 
 /** An error the transport produced, carrying the same shape as an API refusal. */
@@ -341,6 +342,13 @@ export function createAdminApi({ transport }) {
     setToolSanction(toolFingerprint, state) {
       return done({ method: 'PUT', path: `${ADMIN_SETTINGS_TOOL_SANCTION_ENDPOINT}/${encodeURIComponent(String(toolFingerprint))}/sanction`, body: { sanctioned_state: state } });
     },
+    /** Every collector switch at once: control-api requires all six, so none is turned off by omission. */
+    setEndpointCollectors({ inventory, processes, flows, otel, hooks, hooks_managed_only }) {
+      return done({ method: 'PUT', path: ADMIN_SETTINGS_ENDPOINT_COLLECTORS_ENDPOINT, body: { inventory, processes, flows, otel, hooks, hooks_managed_only } });
+    },
+    setEndpointTool(toolKey, { otel, hooks }) {
+      return done({ method: 'PUT', path: `${ADMIN_SETTINGS_ENDPOINT_COLLECTORS_ENDPOINT}/tools/${encodeURIComponent(String(toolKey))}`, body: { otel, hooks } });
+    },
   });
 }
 
@@ -430,6 +438,29 @@ export function normaliseSettings(body) {
     content_search: ['disabled', 'attachment_names', 'full_text'].includes(body.content_search) ? body.content_search : 'disabled',
     tools: Object.freeze(tools),
     devices: Object.freeze(devices),
+    endpoint: normaliseEndpoint(body.endpoint),
+  });
+}
+
+const nullableBoolean = (value) => (typeof value === 'boolean' ? value : null);
+
+/** The endpoint collector switches: null when the server sent none, and null for a switch it left out. */
+function normaliseEndpoint(endpoint) {
+  if (!endpoint || typeof endpoint !== 'object') return null;
+  const tools = {};
+  const sent = endpoint.tools && typeof endpoint.tools === 'object' ? endpoint.tools : {};
+  for (const [key, value] of Object.entries(sent)) {
+    if (!value || typeof value !== 'object') continue;
+    tools[key] = Object.freeze({ otel: nullableBoolean(value.otel), hooks: nullableBoolean(value.hooks) });
+  }
+  return Object.freeze({
+    inventory: nullableBoolean(endpoint.inventory),
+    processes: nullableBoolean(endpoint.processes),
+    flows: nullableBoolean(endpoint.flows),
+    otel: nullableBoolean(endpoint.otel),
+    hooks: nullableBoolean(endpoint.hooks),
+    hooks_managed_only: nullableBoolean(endpoint.hooks_managed_only),
+    tools: Object.freeze(tools),
   });
 }
 

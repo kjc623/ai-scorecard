@@ -280,3 +280,33 @@ decided and why, and for a vendor fact the product version checked.
   `CryptCATAdminCalcHashFromFileHandle2` sizes the hash with a NULL buffer; `CRYPT_PROVIDER_CERT`
   starts with `cbStruct` then `pCert`; `CertGetNameStringW` with `CERT_NAME_ATTR_TYPE` takes an
   ANSI OID (`2.5.4.3`). The `curl.exe` publisher `Microsoft Windows` is checked on Windows.
+## 2026-10-08, task 07
+
+- **`interval_minutes` is a server constant (360)**, beside the OTLP addresses and the discovery
+  budget in `policyserve/service.go`: the brief gives `ops.endpoint_setting` boolean columns only,
+  so nothing else could set it.
+- **The device's `Endpoint` is a value, not a pointer.** A bundle without the section decodes with
+  every endpoint collector off, which never widens collection. `Validate` checks the interval when
+  the scanner is on or an interval is set, and the OTLP addresses when the receiver is on or an
+  address is set, so a bundle without the section still validates.
+- **An OTLP address must be a loopback IP literal** (`127.0.0.0/8` or `::1`) with a port;
+  `localhost` is refused, because what it resolves to is the host's configuration.
+- **Two store write methods**, `SetEndpointCollectors` and `SetEndpointTool`, one per route (the
+  brief says "a write method"). The read is one statement, `endpoint_settings`, used by both
+  `PolicyInputs` and `Settings`; it applies the §5 defaults (a `VALUES` list for the tools, whose
+  defaults differ per tool, so `ops.endpoint_tool_setting` has no column defaults).
+- **Both PUT bodies require every field** (the six collector switches; `otel` and `hooks`), 400
+  otherwise, so a client that leaves one out never turns a collector off. An unknown tool key is
+  404 `not_found`.
+- **The server accepts a switch for a collector a tool lacks** (Cursor OTel, Codex and Copilot
+  hooks): §5 names the keys, not which pairs are allowed, and task 39 may add hooks. The dashboard
+  shows those cells as unavailable and never sends a change for them.
+- **Audit actions** are `tenant.endpoint_collectors.set` (object `tenant`) and
+  `tenant.endpoint_tool.set` (object `endpoint_tool`, id the tool key); `previous` and `new` are
+  objects in the bundle's names.
+- **The drift test also compares values**: the device re-encodes the endpoint section it decoded,
+  and that must equal the served section; the test tenant's switches are off the defaults first.
+- **Migration proof**: the integration branch's `schema.sql` plus `0003`, and `main`'s plus `0002`
+  and `0003`, each dump identically to the new `schema.sql`; `0002` and `0003` applied over the new
+  `schema.sql` change nothing.
+- **Not changed:** `ops.policy_bundle.feature_state` still records only `cli_shim` and `proxy_tls`.
