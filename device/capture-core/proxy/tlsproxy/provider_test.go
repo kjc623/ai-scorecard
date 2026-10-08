@@ -42,10 +42,12 @@ type fakePipeline struct {
 	procErr    error
 	degraded   bool
 	reason     string
-	extract    bool // run the observation's extractor over the body, as the real pipeline does
+	extract    bool     // run the observation's extractor over the body, as the real pipeline does
+	labels     []string // the classes the classification finds, which the enforcement hook is given
 	mu         sync.Mutex
 	observed   []core.Observation
 	readBodies [][]byte
+	decisions  []protocol.Decision
 }
 
 func (p *fakePipeline) ResolveMode(core.ScopeQuery) core.Resolution {
@@ -57,9 +59,6 @@ func (p *fakePipeline) Process(ctx context.Context, obs core.Observation) (core.
 	p.mu.Lock()
 	p.observed = append(p.observed, obs)
 	p.mu.Unlock()
-	if p.procErr != nil {
-		return out, p.procErr
-	}
 	if obs.Content != nil && p.mode.ReadsContent() {
 		b, err := obs.Content.Read(ctx)
 		if err != nil {
@@ -79,7 +78,23 @@ func (p *fakePipeline) Process(ctx context.Context, obs core.Observation) (core.
 		out.Degraded = true
 		out.Reason = p.reason
 	}
+	if obs.Enforce != nil {
+		known := p.mode.ReadsContent() && !obs.OverCap && !out.Degraded
+		d := obs.Enforce(p.labels, known)
+		p.mu.Lock()
+		p.decisions = append(p.decisions, d)
+		p.mu.Unlock()
+	}
+	if p.procErr != nil {
+		return out, p.procErr
+	}
 	return out, nil
+}
+
+func (p *fakePipeline) recorded() []protocol.Decision {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]protocol.Decision(nil), p.decisions...)
 }
 
 func (p *fakePipeline) observations() []core.Observation {
@@ -219,8 +234,9 @@ func TestTLSInterceptsEligibleDestination(t *testing.T) {
 	defer upstream.Close()
 	upPort := upstream.Listener.Addr().(*net.TCPAddr).Port
 
-	pipe := &fakePipeline{mode: protocol.ModeM1}
+	pipe := &fakePipeline{mode: protocol.ModeM1, labels: []string{"credential"}}
 	bundle := bundleIntercepting(upPort)
+	bundle.Rules = []policy.Rule{{RuleID: "block_credentials", Action: policy.RuleBlock, Match: policy.RuleMatch{Labels: []string{"credential"}}}}
 	p := newProviderForTest(t, Config{
 		Listen:        "127.0.0.1:0",
 		Bundles:       func() *policy.Bundle { return bundle },
@@ -259,10 +275,10 @@ func TestTLSInterceptsEligibleDestination(t *testing.T) {
 	if obs.Route != protocol.RouteProxyTLS {
 		t.Fatalf("route = %s", obs.Route)
 	}
-	// The proxy cannot stop a prompt, so a matching block rule is recorded as logged under its id.
-	bundle.Rules = []policy.Rule{{RuleID: "block_credentials", Action: policy.RuleBlock, Match: policy.RuleMatch{Labels: []string{"credential"}}}}
-	if got := obs.Enforce([]string{"credential"}, true); got != (protocol.Decision{RuleID: "block_credentials", Action: protocol.ActionLogged, DecidedLocally: true}) {
-		t.Fatalf("recorded decision = %+v", got)
+	// No app parser reads this destination, so the proxy cannot answer in a shape its client
+	// displays: a matching block rule is recorded as logged under its id, and the request carried.
+	if got := pipe.recorded(); len(got) != 1 || got[0] != (protocol.Decision{RuleID: "block_credentials", Action: protocol.ActionLogged, DecidedLocally: true}) {
+		t.Fatalf("recorded decisions = %+v", got)
 	}
 	if len(pipe.readBodies) != 1 || string(pipe.readBodies[0]) != body {
 		t.Fatalf("the pipeline did not receive the body: %v", pipe.readBodies)

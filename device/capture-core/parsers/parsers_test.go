@@ -64,6 +64,7 @@ func (s stubParser) Version() string           { return "test" }
 func (s stubParser) Parse(b []byte, _ string) (Result, error) {
 	return s.parse(b)
 }
+func (s stubParser) BlockResponse(string, string) (int, string, []byte) { return 403, "", nil }
 
 func TestLookupNormalisesTheHostAndFallsBack(t *testing.T) {
 	stub := stubParser{host: "api.example.com"}
@@ -110,5 +111,19 @@ func TestUnknownShapeIsReported(t *testing.T) {
 	g := r.For("other.example.com", "/")
 	if _, _, err := g.Extract([]byte(`{}`), "application/json"); !errors.Is(err, ErrNoText) || g.UnknownShape() {
 		t.Fatalf("generic: err = %v, unknown = %v", err, g.UnknownShape())
+	}
+}
+
+// A destination of no known target is answered in plain text: the message, then the link.
+func TestGenericBlockResponseIsPlainText(t *testing.T) {
+	status, ctype, body := Generic{}.BlockResponse("Remove the credential and try again.", "https://intranet.example/ai")
+	if status != 403 || ctype != "text/plain; charset=utf-8" {
+		t.Fatalf("status, Content-Type = %d, %q", status, ctype)
+	}
+	if string(body) != "Remove the credential and try again. https://intranet.example/ai" {
+		t.Fatalf("body = %q", body)
+	}
+	if _, _, body := (Generic{}).BlockResponse("Not here.", ""); string(body) != "Not here." {
+		t.Fatalf("body without a link = %q", body)
 	}
 }

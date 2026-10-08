@@ -10,6 +10,7 @@ package openai
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/shadow-ai-capture/device/capture-core/parsers"
@@ -33,6 +34,21 @@ func (Parser) Match(h, p string) bool { return h == host && (p == chatPath || p 
 
 // Version implements parsers.Parser: the date of the API reference the known shapes come from.
 func (Parser) Version() string { return version }
+
+// BlockResponse implements parsers.Parser: the API's error shape, whose param and code are
+// required and null here.
+func (Parser) BlockResponse(message, link string) (int, string, []byte) {
+	type detail struct {
+		Message string  `json:"message"`
+		Type    string  `json:"type"`
+		Param   *string `json:"param"`
+		Code    *string `json:"code"`
+	}
+	body, _ := json.Marshal(struct {
+		Error detail `json:"error"`
+	}{detail{Message: parsers.BlockText(message, link), Type: "policy_violation"}})
+	return http.StatusForbidden, "application/json", body
+}
 
 // Parse implements parsers.Parser. The two APIs' bodies are told apart by their fields, not by
 // the path, which the registry has already matched.

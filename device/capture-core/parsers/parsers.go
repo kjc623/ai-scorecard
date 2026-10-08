@@ -39,6 +39,21 @@ type Parser interface {
 	Parse(body []byte, mediaType string) (Result, error)
 	// Version identifies the set of shapes the parser knows; it changes whenever they change.
 	Version() string
+	// BlockResponse is the answer to a request a rule blocks, in the error shape the target's
+	// clients display: the HTTP status, the Content-Type and the body. The body carries the
+	// message, followed by link when there is one.
+	BlockResponse(message, link string) (status int, contentType string, body []byte)
+}
+
+// BlockText is the text a block response shows: the rule's message, then its link.
+func BlockText(message, link string) string {
+	if link == "" {
+		return message
+	}
+	if message == "" {
+		return link
+	}
+	return message + " " + link
 }
 
 // UnknownShape returns ErrUnknownShape with a reason. The reason names structure only (a field, a

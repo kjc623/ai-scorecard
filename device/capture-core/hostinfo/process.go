@@ -22,6 +22,9 @@ type Process struct {
 	// Started is the process's creation time. A PID is reused once its process ends; the pair
 	// (PID, Started) names one process.
 	Started time.Time
+	// Session is the Remote Desktop Services session the process runs in; 0, the services'
+	// session, when it cannot be read.
+	Session uint32
 }
 
 // ProcessInfo answers are kept this long, for at most this many processes.

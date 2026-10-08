@@ -142,3 +142,15 @@ func TestMatch(t *testing.T) {
 		}
 	}
 }
+
+// A blocked request is answered in the API's error shape, whose param and code are required.
+func TestBlockResponseIsTheAPIErrorShape(t *testing.T) {
+	status, ctype, body := Parser{}.BlockResponse("Remove the credential and try again.", "https://intranet.example/ai")
+	if status != 403 || ctype != "application/json" {
+		t.Fatalf("status, Content-Type = %d, %q", status, ctype)
+	}
+	want := `{"error":{"message":"Remove the credential and try again. https://intranet.example/ai","type":"policy_violation","param":null,"code":null}}`
+	if string(body) != want {
+		t.Fatalf("body = %s\nwant   %s", body, want)
+	}
+}

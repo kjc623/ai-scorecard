@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"regexp"
 	"strings"
 
@@ -39,6 +40,20 @@ func (Parser) Match(h, p string) bool { return h == host && methodPath.MatchStri
 
 // Version implements parsers.Parser: the date of the API reference the known shapes come from.
 func (Parser) Version() string { return version }
+
+// BlockResponse implements parsers.Parser: the error shape of Google's JSON APIs, with the HTTP
+// status as the code and the name of the google.rpc.Code that maps to 403.
+func (Parser) BlockResponse(message, link string) (int, string, []byte) {
+	type status struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+		Status  string `json:"status"`
+	}
+	body, _ := json.Marshal(struct {
+		Error status `json:"error"`
+	}{status{http.StatusForbidden, parsers.BlockText(message, link), "PERMISSION_DENIED"}})
+	return http.StatusForbidden, "application/json", body
+}
 
 type content struct {
 	Role  *string                       `json:"role"`
