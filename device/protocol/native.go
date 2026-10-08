@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 	"unicode"
@@ -57,6 +58,14 @@ const (
 	TypeHelperHello  = "helper_hello"  // helper -> capture-core, the connection's first frame
 	TypeNotify       = "notify"        // capture-core -> helper: show one notification
 	TypeNotifyResult = "notify_result" // helper -> capture-core: whether it was shown
+)
+
+// Native message types between a tool's hook command (capture-core --hook) and capture-core. The
+// hook sends one hook_evaluate on its own connection and waits for the hook_decision; the
+// extension never sends or receives them.
+const (
+	TypeHookEvaluate = "hook_evaluate" // hook -> capture-core: a prompt the tool is about to send
+	TypeHookDecision = "hook_decision" // capture-core -> hook: what the tool does with it
 )
 
 // RefusalReason is the closed set of reasons capture-core refuses an extension message. A
@@ -284,4 +293,121 @@ func notifyText(field, s string, limit int, newlines bool) error {
 type NotifyResult struct {
 	Shown bool   `json:"shown"`
 	Error string `json:"error,omitempty"`
+}
+
+// MaxHookPromptBytes is the most prompt text one hook_evaluate carries. A longer prompt, or one
+// whose frame would exceed the endpoint's frame limit once encoded, is sent as its length only,
+// with OverCap set.
+const MaxHookPromptBytes = 256 << 10
+
+// Hook field limits, in bytes.
+const (
+	maxHookEvent         = 64
+	maxHookSessionID     = 256
+	maxHookToolName      = 128
+	maxHookCwd           = 4096
+	maxHookClientVersion = 64
+	maxHookRuleID        = 128
+)
+
+var hookToolKey = regexp.MustCompile(`^[a-z][a-z0-9_]{1,63}$`)
+
+// HookEvaluate is one prompt a tool's hook hands capture-core before the tool sends it. Tool is
+// the tool key (claude_code, cursor, ...) and Event the tool's own name for the hook event.
+type HookEvaluate struct {
+	Tool       string `json:"tool"`
+	Event      string `json:"event"`
+	SessionID  string `json:"session_id"`
+	PromptText string `json:"prompt_text"`
+	// PromptBytes is the prompt's length in bytes: the length of PromptText or, when OverCap is
+	// set, of the prompt that was not sent.
+	PromptBytes   int64  `json:"prompt_bytes"`
+	OverCap       bool   `json:"over_cap,omitempty"`
+	ToolName      string `json:"tool_name,omitempty"`
+	Cwd           string `json:"cwd,omitempty"`
+	ClientVersion string `json:"client_version,omitempty"`
+}
+
+// CapPrompt sets PromptBytes from PromptText and, when the text is longer than
+// MaxHookPromptBytes, drops it and sets OverCap.
+func (h *HookEvaluate) CapPrompt() {
+	h.PromptBytes = int64(len(h.PromptText))
+	h.OverCap = h.PromptBytes > MaxHookPromptBytes
+	if h.OverCap {
+		h.PromptText = ""
+	}
+}
+
+// Validate refuses a hook_evaluate whose fields are missing, overlong or contradict each other.
+// Its errors never quote the prompt.
+func (h HookEvaluate) Validate() error {
+	if !hookToolKey.MatchString(h.Tool) {
+		return errors.New("hook_evaluate: the tool is not a tool key")
+	}
+	for _, f := range []struct {
+		name, value string
+		limit       int
+		required    bool
+	}{
+		{"event", h.Event, maxHookEvent, true},
+		{"session_id", h.SessionID, maxHookSessionID, true},
+		{"tool_name", h.ToolName, maxHookToolName, false},
+		{"cwd", h.Cwd, maxHookCwd, false},
+		{"client_version", h.ClientVersion, maxHookClientVersion, false},
+	} {
+		if f.required && f.value == "" {
+			return fmt.Errorf("hook_evaluate: the %s is empty", f.name)
+		}
+		if len(f.value) > f.limit {
+			return fmt.Errorf("hook_evaluate: the %s is %d bytes, over the %d limit", f.name, len(f.value), f.limit)
+		}
+	}
+	switch {
+	case h.OverCap && (h.PromptText != "" || h.PromptBytes <= 0):
+		return errors.New("hook_evaluate: an over-cap prompt carries only its length")
+	case !h.OverCap && len(h.PromptText) > MaxHookPromptBytes:
+		return fmt.Errorf("hook_evaluate: the prompt is %d bytes, over the %d limit", len(h.PromptText), MaxHookPromptBytes)
+	case !h.OverCap && h.PromptBytes != int64(len(h.PromptText)):
+		return errors.New("hook_evaluate: prompt_bytes is not the prompt's length")
+	}
+	return nil
+}
+
+// HookAction is what the tool does with the prompt.
+type HookAction string
+
+// The closed set of hook actions.
+const (
+	HookAllow HookAction = "allow"
+	HookWarn  HookAction = "warn"
+	HookBlock HookAction = "block"
+)
+
+// HookDecision answers one hook_evaluate. Message and Link are the matching rule's, for the tool
+// to show; RuleID names the rule, policy.default when none matched.
+type HookDecision struct {
+	Action  HookAction `json:"action"`
+	Message string     `json:"message"`
+	Link    string     `json:"link"`
+	RuleID  string     `json:"rule_id"`
+}
+
+// Validate refuses a decision outside the closed actions, or with an overlong message, link or
+// rule id.
+func (d HookDecision) Validate() error {
+	switch d.Action {
+	case HookAllow, HookWarn, HookBlock:
+	default:
+		return fmt.Errorf("hook_decision: action %q outside the closed set", d.Action)
+	}
+	if n := utf8.RuneCountInString(d.Message); n > MaxNotifyBody {
+		return fmt.Errorf("hook_decision: the message is %d characters, over the %d limit", n, MaxNotifyBody)
+	}
+	if len(d.Link) > MaxNotifyLink {
+		return fmt.Errorf("hook_decision: the link is %d bytes, over the %d limit", len(d.Link), MaxNotifyLink)
+	}
+	if len(d.RuleID) > maxHookRuleID {
+		return fmt.Errorf("hook_decision: the rule id is %d bytes, over the %d limit", len(d.RuleID), maxHookRuleID)
+	}
+	return nil
 }

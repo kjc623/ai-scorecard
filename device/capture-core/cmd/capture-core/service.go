@@ -21,6 +21,7 @@ import (
 	"github.com/shadow-ai-capture/device/capture-core/core"
 	"github.com/shadow-ai-capture/device/capture-core/credential"
 	"github.com/shadow-ai-capture/device/capture-core/drain"
+	"github.com/shadow-ai-capture/device/capture-core/hooks"
 	"github.com/shadow-ai-capture/device/capture-core/hostinfo"
 	"github.com/shadow-ai-capture/device/capture-core/localipc"
 	"github.com/shadow-ai-capture/device/capture-core/otlp"
@@ -185,6 +186,7 @@ type service struct {
 	health  *healthChannel
 	native  *localipc.Server
 	helpers *userhelper.Provider
+	hooks   *hooks.Relay
 
 	// host supervises the classifier-host child, and classifier is the link to it (nil without a
 	// classifier release).
@@ -381,7 +383,7 @@ func (s *service) buildDrainer(spoolKey []byte) error {
 }
 
 // buildProviders builds proxy.tls, the loopback broker and the CLI shim over the per-device CA, and
-// the OTLP receiver and the user-session helper.
+// the OTLP receiver, the user-session helper and the hook relay.
 func (s *service) buildProviders() error {
 	b := s.currentBundle()
 	label := s.resolvedHostname()
@@ -484,6 +486,19 @@ func (s *service) buildProviders() error {
 
 	s.helpers = userhelper.New(userhelper.Config{Platform: platform.userSessions, Log: s.logf, Clock: time.Now})
 	if err := s.reg.Add(s.helpers); err != nil {
+		return err
+	}
+
+	// A hook's account is named the way a browser peer is.
+	s.hooks = hooks.New(hooks.Config{
+		Pipeline:   s.pipe,
+		Bundles:    s.pipe.Bundles,
+		Classifier: s.pipe.Classifier,
+		Person:     s.peerPerson,
+		Log:        s.logf,
+		Clock:      time.Now,
+	})
+	if err := s.reg.Add(s.hooks); err != nil {
 		return err
 	}
 

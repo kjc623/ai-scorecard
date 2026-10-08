@@ -26,9 +26,9 @@ export const VOCABULARIES = [
     // core, CORE_TYPE for core -> extension). That is a clearer structure than one flat set, and it
     // is not drift, so the comparison is against the union of the two.
     js: { file: 'device/extension/src/messages.js', groups: ['TYPE', 'CORE_TYPE'] },
-    // capture-core and its user-session helper speak these on the same endpoint; the extension
-    // never sends or receives them.
-    deviceOnly: ['helper_hello', 'notify', 'notify_result'],
+    // capture-core, its user-session helper and the tools' hook command speak these on the same
+    // endpoint; the extension never sends or receives them.
+    deviceOnly: ['helper_hello', 'notify', 'notify_result', 'hook_evaluate', 'hook_decision'],
   },
   {
     id: 'refusal-reason',

@@ -2,7 +2,7 @@
 // the collectors (the local TLS proxy, the loopback broker and the CLI trust shim), the policy
 // engine, the spool, the classifier host as a child process, and the device-to-cloud drain.
 //
-// It runs in one of four ways:
+// It runs in one of five ways:
 //
 //   - as the service: started by the Windows Service Control Manager, launchd or systemd with
 //     --config-file arguments, until stopped;
@@ -11,6 +11,8 @@
 //     and the running service;
 //   - as the user-session helper: the service starts it with --user-helper in each signed-in
 //     session (Windows), and it shows the notifications the service asks for;
+//   - as a tool's prompt hook: a tool runs it with --hook <tool> <event> before it sends a prompt,
+//     and it asks the running service whether to allow, warn or block;
 //   - as a diagnostic: --print-config or --version.
 package main
 
@@ -37,6 +39,9 @@ func main() {
 			os.Exit(1)
 		}
 		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == hookArg {
+		os.Exit(runHook(processStart, os.Args[2:], os.Stdin, os.Stdout, dialHook))
 	}
 	if len(os.Args) == 2 && os.Args[1] == userHelperArg {
 		if err := runUserHelper(); err != nil {
