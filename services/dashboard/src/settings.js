@@ -34,7 +34,7 @@ export const ENDPOINT_TOOLS = Object.freeze([
 /** What an enforcement rule does to a submission it matches. */
 export const RULE_ACTIONS = Object.freeze(['allow', 'warn', 'block']);
 
-/** The app catalog's categories, which a rule may match. */
+/** The app catalog's categories by display name, in the order the editor offers those the catalog's apps fall in. */
 export const RULE_CATEGORIES = Object.freeze([
   Object.freeze({ key: 'chat_assistant', label: 'Chat assistant' }),
   Object.freeze({ key: 'coding_agent', label: 'Coding agent' }),

@@ -56,6 +56,7 @@ type Memory struct {
 	endpointTools   map[string]map[string]store.EndpointTool
 	rules           map[string][]store.EnforcementRule
 	dataClasses     []string
+	catalog         []store.CatalogApp
 }
 
 var _ store.Store = (*Memory)(nil)
@@ -303,6 +304,14 @@ func (m *Memory) SetDeviceMode(tenantID, deviceID, mode string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.deviceModes[key(tenantID, deviceID)] = mode
+}
+
+// SetCatalog replaces the app catalog, which starts empty. The policy read serves it in the order
+// given, as the SQL store serves ref.app's.
+func (m *Memory) SetCatalog(apps ...store.CatalogApp) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.catalog = copyCatalog(apps)
 }
 
 // SetCatalogueHosts replaces the tool catalogue's TLS hosts.
@@ -748,6 +757,7 @@ func (m *Memory) PolicyInputs(_ context.Context, tenantID string) (store.PolicyI
 		}
 	}
 	sort.Strings(in.SanctionedTools)
+	in.Catalog = copyCatalog(m.catalog)
 	return in, nil
 }
 
@@ -846,6 +856,13 @@ func (m *Memory) Settings(_ context.Context, tenantID string) (store.Settings, e
 	}
 	out.Endpoint = m.endpointLocked(tenantID)
 	out.DataClasses = append([]string(nil), m.dataClasses...)
+	out.AppCategories = []string{}
+	for _, a := range m.catalog {
+		if !slices.Contains(out.AppCategories, a.Category) {
+			out.AppCategories = append(out.AppCategories, a.Category)
+		}
+	}
+	sort.Strings(out.AppCategories)
 	return out, nil
 }
 
@@ -1061,6 +1078,15 @@ func (m *Memory) ReplaceEnforcementRules(_ context.Context, tenantID string, rul
 }
 
 // copyRules copies a rule list with every match list non-nil, as the SQL store reads it back.
+func copyCatalog(apps []store.CatalogApp) []store.CatalogApp {
+	out := make([]store.CatalogApp, 0, len(apps))
+	for _, a := range apps {
+		a.Signals = append([]store.CatalogSignal{}, a.Signals...)
+		out = append(out, a)
+	}
+	return out
+}
+
 func copyRules(rules []store.EnforcementRule) []store.EnforcementRule {
 	out := make([]store.EnforcementRule, 0, len(rules))
 	list := func(v []string) []string { return append([]string{}, v...) }

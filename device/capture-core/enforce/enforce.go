@@ -4,6 +4,7 @@ package enforce
 
 import (
 	"slices"
+	"strings"
 
 	"github.com/shadow-ai-capture/device/capture-core/policy"
 	"github.com/shadow-ai-capture/device/protocol"
@@ -58,10 +59,11 @@ func matches(b *policy.Bundle, m policy.RuleMatch, in Input) bool {
 	if len(m.Tools) > 0 && !slices.Contains(m.Tools, in.ToolFingerprint) {
 		return false
 	}
-	// Categories resolve through the bundle's app catalog, which the bundle does not carry yet, so
-	// no tool has a known category and a rule that lists categories never matches.
 	if len(m.Categories) > 0 {
-		return false
+		c := category(b, in.ToolFingerprint)
+		if c == "" || !slices.Contains(m.Categories, c) {
+			return false
+		}
 	}
 	if len(m.Sanction) > 0 {
 		state := Unsanctioned
@@ -76,6 +78,17 @@ func matches(b *policy.Bundle, m policy.RuleMatch, in Input) bool {
 		return false
 	}
 	return true
+}
+
+// category is the catalog category of a tool fingerprint "app:<app_key>", or "" for any other
+// fingerprint and for an app the catalog does not hold: a tool without a category matches no
+// category rule.
+func category(b *policy.Bundle, tool string) string {
+	key, ok := strings.CutPrefix(tool, "app:")
+	if !ok {
+		return ""
+	}
+	return b.Category(key)
 }
 
 // RecordedAction is what the envelope records for d: what the route did, not what the rule asked

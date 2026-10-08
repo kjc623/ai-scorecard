@@ -139,6 +139,8 @@ var Statements = []Statement{
 	{"insert_enforcement_rule", SQLInsertEnforcementRule},
 	{"sanctioned_tools", SQLSanctionedTools},
 	{"data_classes", SQLDataClasses},
+	{"app_catalog", SQLAppCatalog},
+	{"app_categories", SQLAppCategories},
 }
 
 // SQLStore is the PostgreSQL implementation of Store.

@@ -34,6 +34,7 @@ function populated(overrides = {}) {
     endpoint: endpointDefaults(),
     tls_inspection: false,
     data_classes: ['credential', 'customer_pii', 'government_id', 'health', 'legal_commercial', 'payment_card', 'source_code'],
+    app_categories: ['chat_assistant', 'coding_agent', 'ide', 'ide_assistant', 'inference_api', 'local_runtime'],
     ...overrides,
   };
 }
@@ -434,14 +435,17 @@ test('enforcement rules: the card shows the ordered list, each condition by its 
   assert.match(rulesCard(none.html()), /No rules\. Every submission is logged\./);
 });
 
-test('enforcement rules: the editor offers the data classes, the tools, the fixed categories, sanction and the routes', async () => {
+test('enforcement rules: the editor offers the data classes, the tools, the catalog categories, sanction and the routes', async () => {
   const { controller, html } = await withRules();
   await controller.act({ action: 'rule-edit', index: '0' });
   const card = rulesCard(html());
   const option = (field, value) => new RegExp(`aria-pressed="(true|false)" data-action="rule-match" data-field="${field}" data-value="${value.replace('.', '\\.')}">`);
   for (const c of ['credential', 'customer_pii', 'government_id', 'health', 'legal_commercial', 'payment_card', 'source_code']) assert.match(card, option('labels', c));
   for (const t of ['tls_b6681b043244c43f', 'tls_f32477ff734d70d1']) assert.match(card, option('tools', t));
-  for (const c of ['chat_assistant', 'coding_agent', 'ide_assistant', 'ide', 'local_runtime', 'inference_api', 'ai_feature']) assert.match(card, option('categories', c));
+  for (const c of ['chat_assistant', 'coding_agent', 'ide_assistant', 'ide', 'local_runtime', 'inference_api']) assert.match(card, option('categories', c));
+  assert.doesNotMatch(card, option('categories', 'ai_feature'), 'a category no catalog app falls in is not offered');
+  assert.ok(card.indexOf('data-value="chat_assistant"') < card.indexOf('data-value="local_runtime"'), 'categories are offered in the display order');
+  assert.match(card, />Local model runtime</, 'categories are offered by their display names');
   for (const s of ['sanctioned', 'unsanctioned']) assert.match(card, option('sanction', s));
   for (const r of ['tool.hook', 'ext.page_context', 'tool.otel', 'cli.shim', 'proxy.loopback', 'ext.web_request', 'proxy.tls', 'ext.dom', 'proc.detect', 'inv.scan', 'net.flow']) assert.match(card, option('routes', r));
   assert.match(card, />Browser extension \(page\)</, 'routes are offered by their display names');
@@ -452,6 +456,20 @@ test('enforcement rules: the editor offers the data classes, the tools, the fixe
   assert.match(card, /data-rule-draft="message" value="Remove the credential and try again\."/);
   // While a rule is open the list cannot be reordered or saved.
   assert.match(card, /data-action="rule-down" data-index="0" disabled/);
+});
+
+test('enforcement rules: categories the server did not report are not reported, an empty catalog has none known yet', async () => {
+  for (const [categories, text] of [[undefined, 'not reported'], [[], 'none known yet']]) {
+    const { controller, html } = await loaded({
+      [GET]: () => ({ status: 200, body: populated({ app_categories: categories }) }),
+      [RULES]: () => ({ status: 200, body: { rules: [] } }),
+    });
+    await controller.act({ action: 'rule-add' });
+    const card = rulesCard(html());
+    const picker = card.slice(card.indexOf('>Categories</span>'), card.indexOf('>Sanction</span>'));
+    assert.match(picker, new RegExp(`<span class="v-absent">${text}</span>`));
+    assert.doesNotMatch(picker, /data-field="categories"/);
+  }
 });
 
 test('enforcement rules: add, edit, move and delete change a draft; saving sends the whole list, then re-reads', async () => {
@@ -625,6 +643,7 @@ test('an absent count is null after normalising, never 0', () => {
   assert.equal(data.endpoint, null, 'endpoint settings the server did not send are null, never all off');
   assert.equal(data.tls_inspection, null, 'a TLS inspection setting the server did not send is null, never off');
   assert.equal(data.data_classes, null, 'data classes the server did not send are null, never none');
+  assert.equal(data.app_categories, null, 'app categories the server did not send are null, never none');
   const rules = normaliseRules([{ rule_id: 'r', action: 'warn', match: { labels: ['credential', 7], routes: 'tool.hook' } }, null]);
   assert.deepEqual(JSON.parse(JSON.stringify(rules)), [{ rule_id: 'r', action: 'warn', match: { labels: ['credential'], tools: [], categories: [], sanction: [], routes: [] }, message: '', link: '' }]);
   const partial = normaliseSettings({ endpoint: { inventory: false, tools: { cursor: { hooks: true } } } });

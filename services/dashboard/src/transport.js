@@ -450,6 +450,7 @@ export function normaliseSettings(body) {
     content_search: ['disabled', 'attachment_names', 'full_text'].includes(body.content_search) ? body.content_search : 'disabled',
     tls_inspection: nullableBoolean(body.tls_inspection),
     data_classes: Array.isArray(body.data_classes) ? Object.freeze(body.data_classes.filter((c) => typeof c === 'string' && c !== '')) : null,
+    app_categories: Array.isArray(body.app_categories) ? Object.freeze(body.app_categories.filter((c) => typeof c === 'string' && c !== '')) : null,
     tools: Object.freeze(tools),
     devices: Object.freeze(devices),
     endpoint: normaliseEndpoint(body.endpoint),

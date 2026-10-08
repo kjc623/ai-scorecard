@@ -473,6 +473,77 @@ func TestComposeRulesAndSanctionedTools(t *testing.T) {
 	}
 }
 
+// TestComposeCatalog: a deployment without a catalog serves an empty list, named in the payload;
+// the catalog is served sorted by app key and each app's signals by platform, kind and value,
+// whatever order the store read it in, so re-reading it in another order mints nothing, and a
+// changed signal mints a new version.
+func TestComposeCatalog(t *testing.T) {
+	r := newRig(t, nil)
+	ctx := context.Background()
+
+	v1, err := r.svc.Current(ctx, tenantA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sectionOf(t, v1.Envelope, "catalog"); got != `[]` {
+		t.Fatalf("catalog without any = %s, want []", got)
+	}
+
+	cursor := store.CatalogApp{AppKey: "cursor", Category: "ide", Signals: []store.CatalogSignal{
+		{Platform: "windows", Kind: "publisher", Value: "Anysphere"},
+		{Platform: "macos", Kind: "macos_bundle_id", Value: "com.todesktop.230313mzl4w4u92"},
+	}}
+	ollama := store.CatalogApp{AppKey: "ollama", Category: "local_runtime", Signals: []store.CatalogSignal{
+		{Platform: "windows", Kind: "windows_exe", Value: "ollama.exe"},
+		{Platform: "any", Kind: "listen_port", Value: "11434"},
+		{Platform: "windows", Kind: "windows_exe", Value: "ollama app.exe"},
+	}}
+	bare := store.CatalogApp{AppKey: "claude_code", Category: "coding_agent"}
+	r.store.SetCatalog(ollama, cursor, bare)
+	v2, err := r.svc.Current(ctx, tenantA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !newer(v2.Version, v1.Version) {
+		t.Fatalf("a new catalog: version %s, want newer than %s", v2.Version, v1.Version)
+	}
+	want := canonical(t, `[
+	  {"app_key":"claude_code","category":"coding_agent","signals":[]},
+	  {"app_key":"cursor","category":"ide","signals":[
+	    {"platform":"macos","kind":"macos_bundle_id","value":"com.todesktop.230313mzl4w4u92"},
+	    {"platform":"windows","kind":"publisher","value":"Anysphere"}]},
+	  {"app_key":"ollama","category":"local_runtime","signals":[
+	    {"platform":"any","kind":"listen_port","value":"11434"},
+	    {"platform":"windows","kind":"windows_exe","value":"ollama app.exe"},
+	    {"platform":"windows","kind":"windows_exe","value":"ollama.exe"}]}]`)
+	if got := sectionOf(t, v2.Envelope, "catalog"); got != want {
+		t.Fatalf("catalog:\n got %s\nwant %s", got, want)
+	}
+	// The payload's own bytes carry the order, not only the decoded document.
+	_, payload := payloadOf(t, v2.Envelope)
+	if i, j := bytes.Index(payload, []byte(`"app_key":"cursor"`)), bytes.Index(payload, []byte(`"app_key":"ollama"`)); i < 0 || j < i {
+		t.Fatalf("the served catalog is not in app key order: %s", payload)
+	}
+
+	reordered := ollama
+	reordered.Signals = []store.CatalogSignal{ollama.Signals[2], ollama.Signals[0], ollama.Signals[1]}
+	r.store.SetCatalog(cursor, bare, reordered)
+	if again, _ := r.svc.Current(ctx, tenantA); again.Version != v2.Version {
+		t.Fatalf("the same catalog in another order moved the version to %s", again.Version)
+	}
+
+	changed := cursor
+	changed.Signals = []store.CatalogSignal{{Platform: "windows", Kind: "windows_exe", Value: "Cursor.exe"}}
+	r.store.SetCatalog(changed, bare, ollama)
+	v3, err := r.svc.Current(ctx, tenantA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !newer(v3.Version, v2.Version) || !strings.Contains(sectionOf(t, v3.Envelope, "catalog"), `"value":"Cursor.exe"`) {
+		t.Fatalf("a changed signal: version %s after %s, catalog %s", v3.Version, v2.Version, sectionOf(t, v3.Envelope, "catalog"))
+	}
+}
+
 func TestIfNoneMatchAnswers304(t *testing.T) {
 	r := newRig(t, nil)
 	first := r.get(t, "")
@@ -712,6 +783,18 @@ func TestServedBundleVerifiesWithTheDevicesVerifier(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// A catalog with an app without signals and one with signals of several platforms and kinds.
+	r.store.SetCatalog(
+		store.CatalogApp{AppKey: "ollama", Category: "local_runtime", Signals: []store.CatalogSignal{
+			{Platform: "windows", Kind: "windows_exe", Value: "ollama app.exe"},
+			{Platform: "any", Kind: "listen_port", Value: "11434"},
+			{Platform: "windows", Kind: "model_store", Value: `%USERPROFILE%\.ollama\models`},
+		}},
+		store.CatalogApp{AppKey: "cursor", Category: "ide", Signals: []store.CatalogSignal{
+			{Platform: "macos", Kind: "macos_bundle_id", Value: "com.todesktop.230313mzl4w4u92"},
+		}},
+		store.CatalogApp{AppKey: "continue", Category: "ide_assistant"},
+	)
 	rec := r.get(t, "")
 	var resp protocol.PolicyResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
@@ -759,8 +842,8 @@ func main() {
 		fmt.Println("ERR", res.Outcome, res.Cause, res.Err)
 		os.Exit(1)
 	}
-	// The endpoint section, the rules and the sanctioned tools as the device decoded them, in the
-	// device's JSON names, keys sorted.
+	// The endpoint section, the rules, the sanctioned tools and the catalog as the device decoded
+	// them, in the device's JSON names, keys sorted, and two catalog lookups.
 	sorted := func(v any) string {
 		var doc any
 		raw, _ := json.Marshal(v)
@@ -768,7 +851,7 @@ func main() {
 		raw, _ = json.Marshal(doc)
 		return string(raw)
 	}
-	fmt.Println("OK", res.Outcome, b.Version, b.TenantDefault, b.Interception.Enabled, len(b.Interception.SeedHosts), b.CLIShim.ProxyAddr, b.Interception.PacListen, b.Intercepts("api.openai.com", 443), sorted(b.Endpoint), sorted(b.Rules), sorted(b.SanctionedTools))
+	fmt.Println("OK", res.Outcome, b.Version, b.TenantDefault, b.Interception.Enabled, len(b.Interception.SeedHosts), b.CLIShim.ProxyAddr, b.Interception.PacListen, b.Intercepts("api.openai.com", 443), sorted(b.Endpoint), sorted(b.Rules), sorted(b.SanctionedTools), sorted(b.Catalog), b.AppsByPort(11434), b.Category("cursor"))
 }
 `
 	for name, body := range map[string]string{"go.mod": gomod, "main.go": program} {
@@ -787,12 +870,14 @@ func main() {
 	if err != nil {
 		t.Fatalf("capture-core's verifier refused the served bundle: %v\n%s", err, out)
 	}
-	// The device's re-encoding of the endpoint section, the rules and the sanctioned tools equals the
-	// served one: every name matched, and no value was dropped on the way.
+	// The device's re-encoding of the endpoint section, the rules, the sanctioned tools and the
+	// catalog equals the served one: every name matched, and no value was dropped on the way.
 	want := "OK accepted " + resp.BundleVersion + " m3 true 3 " + policyserve.DefaultProxyListen + " " + policyserve.PACListen + " true " + endpointOf(t, resp.SignedBundle) +
-		" " + sectionOf(t, resp.SignedBundle, "rules") + " " + sectionOf(t, resp.SignedBundle, "sanctioned_tools")
-	if !strings.Contains(want, `"link":"https://intranet.example/ai"`) || !strings.Contains(want, `"routes":["proxy.tls","tool.hook"]`) || !strings.HasSuffix(want, `["app:claude_code","app:cursor"]`) {
-		t.Fatalf("the served bundle does not carry the rules and sanctioned tools under test: %s", want)
+		" " + sectionOf(t, resp.SignedBundle, "rules") + " " + sectionOf(t, resp.SignedBundle, "sanctioned_tools") +
+		" " + sectionOf(t, resp.SignedBundle, "catalog") + " [ollama] ide"
+	if !strings.Contains(want, `"link":"https://intranet.example/ai"`) || !strings.Contains(want, `"routes":["proxy.tls","tool.hook"]`) || !strings.Contains(want, `["app:claude_code","app:cursor"]`) ||
+		!strings.Contains(want, `{"app_key":"continue","category":"ide_assistant","signals":[]}`) || !strings.Contains(want, `"value":"%USERPROFILE%\\.ollama\\models"`) {
+		t.Fatalf("the served bundle does not carry the rules, sanctioned tools and catalog under test: %s", want)
 	}
 	if got := strings.TrimSpace(string(out)); !strings.HasSuffix(got, want) {
 		t.Fatalf("verifier output %q, want %q", got, want)

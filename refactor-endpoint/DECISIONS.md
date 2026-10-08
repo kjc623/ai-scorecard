@@ -585,3 +585,84 @@ decided and why, and for a vendor fact the product version checked.
 - **The extension's decision is kept as sent.**
 - **Outside the named packages:** `device/integration`'s frame conversion sets `Enforce` instead
   of `Decision`, and `device/README.md` lists the `enforce` package.
+
+## 2026-10-08, task 14, app catalog
+
+- **Migration `0008-app-catalog.sql`** (renumbered at merge if needed). Migration proof: the
+  integration branch's `schema.sql` plus it, and `main`'s `schema.sql` plus `0002` to it, each dump
+  (`pg_dump --schema-only`) identically to the new `schema.sql`, and so do the catalog rows
+  (`ref.app`, `ref.app_signal`, `ref.tool_catalogue`); it alone, and `0002` to it, applied over the
+  new `schema.sql` change nothing.
+- **Where signals were checked.** learn.microsoft.com, the vendors' own sites (cursor.com,
+  windsurf.com, lmstudio.ai, ollama.com, openai.com, jetbrains.com, code.visualstudio.com,
+  docs.github.com, ai.google.dev, docs.aws.amazon.com) and formulae.brew.sh are blocked from the
+  build machine. Reachable: code.claude.com, support.claude.com, registry.npmjs.org and GitHub,
+  where several vendors publish their documentation source. Everything was read on 2026-10-08:
+  - code.claude.com `setup`, `network-config`, `desktop`, `vs-code` (`.md` forms); support.claude.com
+    "Deploy Claude Desktop for Windows" (updated 2026-07-13) and "Enterprise configuration for
+    Claude Desktop".
+  - npm `latest`: `@anthropic-ai/claude-code` 2.1.295 (`bin` `claude`), `@openai/codex` 0.162.0
+    (`bin` `codex`; `bin/codex.js` runs `codex.exe` on Windows), `@google/gemini-cli` 0.63.0
+    (`bin` `gemini`), `@github/copilot` 1.0.94 (`bin` `copilot`).
+  - GitHub, default branch that day: `microsoft/vscode-docs` a884842 (`docs/setup/portable.md`,
+    `docs/reference/variables-reference.md`, DateApproved 2026-10-07: `Code.exe`; marketplace
+    item `GitHub.copilot-chat`); `microsoft/vscode` `build/win32/code.iss` (`AppPublisher=Microsoft
+    Corporation`); `microsoft/vscode-copilot-chat` `package.json` 0.44.0 (publisher `GitHub`, name
+    `copilot-chat`); `continuedev/continue` README and `extensions/vscode/package.json` 1.3.40
+    (`Continue.continue`); `github/docs` 9f65179 `install-copilot-cli.md` (`npm install -g
+    @github/copilot`); `openai/codex` 2c3156a README (`npm install -g @openai/codex`) and the
+    `chatgpt.com/backend-api` base URL; `google-gemini/gemini-cli` README; `ollama/ollama`
+    `docs/faq.mdx` (port 11434, model directories per platform), `docs/windows.mdx`,
+    `app/ollama.iss` (`ollama app.exe`, `ollama.exe`); `lmstudio-ai/docs` 9b8bc20 (server on
+    `localhost:1234`, models in `~/.lmstudio/models/`); `openai/openai-python` and
+    `anthropics/anthropic-sdk-python` `_client.py` default base URLs; `googleapis/python-genai`
+    `_api_client.py`; `MicrosoftDocs/azure-ai-docs` 6940f50 (`concepts-endpoints-2.md`, ms.date
+    2026-07-31: `<resource-name>.openai.azure.com`; `<resource-name>.services.ai.azure.com` across
+    the Foundry pages; `hub-configure-private-link.md`: `models.ai.azure.com` for serverless API
+    deployments); `boto/botocore` `bedrock-runtime/2023-09-30/endpoint-rule-set-1.json` and
+    `partitions.json`.
+  - Package registries on GitHub: `microsoft/winget-pkgs` 6e0f54b (`Anthropic.Claude` 2.19675.1:
+    MSIX family `Claude_pzs8sxrjxfjjc`, publisher `Anthropic, PBC`; `Anysphere.Cursor` 3.19.7:
+    publisher `Anysphere`; `Codeium.Windsurf` 2.3.15: publisher `Codeium`;
+    `Microsoft.VisualStudioCode` 1.140.0: publisher `Microsoft Corporation`; the JetBrains IDEs
+    2026.2.x: publisher `JetBrains s.r.o.`, Apps & Features entries `<product> <version>`);
+    `Homebrew/homebrew-cask` 5fa65f8 (`claude` 2.31226.0: `com.anthropic.claudefordesktop`;
+    `chatgpt` 26.1002.52244: `com.openai.codex`; `chatgpt-classic`: `com.openai.chat`; `cursor`
+    3.24.9: `com.todesktop.230313mzl4w4u92`; `visual-studio-code` 1.141.0: `com.microsoft.VSCode`).
+- **Left out, not verifiable from the build machine** (the device phase can add them from a real
+  install): Claude Desktop `windows_exe` and `windows_uninstall_name`; ChatGPT Desktop
+  `windows_appx`, `windows_exe` and `publisher` (Store-only, no registry entry); Cursor
+  `windows_exe`, `windows_uninstall_name` and `inference_domain`; Windsurf `windows_exe`,
+  `windows_uninstall_name` and `macos_bundle_id` (no current cask); VS Code
+  `windows_uninstall_name` (its name comes from the unpublished stable `product.json`); the
+  `github.copilot` extension id (no current documentation names it; only `github.copilot-chat`);
+  LM Studio `windows_exe` (`LM Studio.exe`, `lms.exe`).
+- **Added beyond the brief's list, verified:** Claude Desktop `windows_appx`
+  `Claude_pzs8sxrjxfjjc` (Anthropic deploys it as MSIX); ChatGPT Desktop's two bundle ids (the
+  current app's `com.openai.codex` and the classic app's `com.openai.chat`); Codex's two release
+  executables (`codex-x86_64-pc-windows-msvc.exe`, `codex-aarch64-pc-windows-msvc.exe`) beside
+  `codex.exe`; Ollama's macOS and Linux model directories; Claude Desktop's `publisher`.
+- **Brief values that differ from what was found:** `.aiplatform.googleapis.com` matches only
+  the global Vertex host (`aiplatform.googleapis.com`):
+  regional hosts are `<region>-aiplatform.googleapis.com`, which no host-suffix rule covers and no
+  checked source lists by region, so they are left out. Bedrock has one row per region,
+  `.bedrock-runtime.<region>.amazonaws.com`, for the 36 regions of the `aws` and `aws-us-gov`
+  partitions (the rule set's `bedrock-runtime.{Region}.{dnsSuffix}`); FIPS and dual-stack hosts are
+  left out. `lm_studio`'s model store is `~/.lmstudio/models` on `any` platform, as the docs write
+  it; Ollama's Windows one is `%USERPROFILE%\.ollama\models` (`C:\Users\%username%\.ollama\models`
+  in the FAQ).
+- **Signal conventions:** `publisher` signals are `windows` (installer and Authenticode
+  publisher); extension ids are stored lower case; the JetBrains `windows_uninstall_name` values
+  are the product names that lead the entry name (`IntelliJ IDEA`, `JetBrains Rider`, ...), to be
+  matched as a prefix. Vendors are lower-case slugs, as in the existing catalogue rows.
+- **Lookups return every matching app key**, sorted (`[]string`; `api.anthropic.com` is both
+  `anthropic_api` and `claude_code`). Exe, publisher and extension id compare case-insensitively;
+  CLI binary, npm package and port exactly; domains by `hostMatches`. `Category` returns `""` for an
+  unknown app. A rule category matches only a fingerprint `app:<app_key>` whose app is in the
+  catalog.
+- **The Settings read gains `app_categories`** (the distinct `ref.app.category` values, sorted), the
+  only way the dashboard can know which categories the catalog holds; the picker offers those, in
+  the fixed display order, and says "not reported" when the read lacks them. This touches
+  control-api's `settings` handler and store `Settings`, outside the brief's named packages.
+- **The catalog SQL orders with `COLLATE "C"`** and `compose` sorts again in Go byte order, so the
+  served order never depends on the database's collation.

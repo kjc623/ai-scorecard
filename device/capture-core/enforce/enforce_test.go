@@ -13,6 +13,10 @@ func rule(id string, action policy.RuleAction, m policy.RuleMatch) policy.Rule {
 
 func TestEvaluate(t *testing.T) {
 	sanctioned := []string{"app:claude_code"}
+	catalog := []policy.CatalogApp{
+		{AppKey: "claude_code", Category: "coding_agent", Signals: []policy.CatalogSignal{{Platform: "any", Kind: policy.SignalCLIBinary, Value: "claude"}}},
+		{AppKey: "cursor", Category: "ide"},
+	}
 	tls := Input{Route: protocol.RouteProxyTLS, ToolFingerprint: "chatgpt.com", Labels: []string{"credential"}, LabelsKnown: true}
 
 	for name, tc := range map[string]struct {
@@ -35,7 +39,14 @@ func TestEvaluate(t *testing.T) {
 
 		"tool matches":                             {[]policy.Rule{rule("tool", policy.RuleWarn, policy.RuleMatch{Tools: []string{"x", "chatgpt.com"}})}, tls, "tool"},
 		"tool does not match":                      {[]policy.Rule{rule("tool", policy.RuleWarn, policy.RuleMatch{Tools: []string{"x"}})}, tls, DefaultRuleID},
-		"categories never match without a catalog": {[]policy.Rule{rule("cat", policy.RuleBlock, policy.RuleMatch{Categories: []string{"chat"}})}, tls, DefaultRuleID},
+		"category matches":                         {[]policy.Rule{rule("cat", policy.RuleBlock, policy.RuleMatch{Categories: []string{"ide", "coding_agent"}})}, Input{Route: protocol.RouteToolHook, ToolFingerprint: "app:claude_code"}, "cat"},
+		"category does not match":                  {[]policy.Rule{rule("cat", policy.RuleBlock, policy.RuleMatch{Categories: []string{"ide"}})}, Input{Route: protocol.RouteToolHook, ToolFingerprint: "app:claude_code"}, DefaultRuleID},
+		"a fingerprint outside the catalog":        {[]policy.Rule{rule("cat", policy.RuleBlock, policy.RuleMatch{Categories: []string{"chat_assistant"}})}, tls, DefaultRuleID},
+		"an app the catalog does not hold":         {[]policy.Rule{rule("cat", policy.RuleBlock, policy.RuleMatch{Categories: []string{"ide"}})}, Input{Route: protocol.RouteToolHook, ToolFingerprint: "app:windsurf"}, DefaultRuleID},
+		"an app key without the app: prefix":       {[]policy.Rule{rule("cat", policy.RuleBlock, policy.RuleMatch{Categories: []string{"ide"}})}, Input{Route: protocol.RouteToolHook, ToolFingerprint: "cursor"}, DefaultRuleID},
+		"an empty category matches no unknown app": {[]policy.Rule{rule("cat", policy.RuleBlock, policy.RuleMatch{Categories: []string{""}})}, tls, DefaultRuleID},
+		"category and sanction":                    {[]policy.Rule{rule("cat", policy.RuleWarn, policy.RuleMatch{Categories: []string{"ide"}, Sanction: []string{Unsanctioned}})}, Input{Route: protocol.RouteToolHook, ToolFingerprint: "app:cursor"}, "cat"},
+		"category of a sanctioned app":             {[]policy.Rule{rule("cat", policy.RuleWarn, policy.RuleMatch{Categories: []string{"coding_agent"}, Sanction: []string{Unsanctioned}})}, Input{Route: protocol.RouteToolHook, ToolFingerprint: "app:claude_code"}, DefaultRuleID},
 
 		"unsanctioned matches":                           {[]policy.Rule{rule("shadow", policy.RuleWarn, policy.RuleMatch{Sanction: []string{Unsanctioned}})}, tls, "shadow"},
 		"sanctioned does not match an unsanctioned tool": {[]policy.Rule{rule("ok", policy.RuleAllow, policy.RuleMatch{Sanction: []string{Sanctioned}})}, tls, DefaultRuleID},
@@ -55,7 +66,7 @@ func TestEvaluate(t *testing.T) {
 		}, tls, "first"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			b := &policy.Bundle{Rules: tc.rules, SanctionedTools: sanctioned}
+			b := &policy.Bundle{Rules: tc.rules, SanctionedTools: sanctioned, Catalog: catalog}
 			got := Evaluate(b, tc.in)
 			if got.RuleID != tc.want {
 				t.Fatalf("rule = %q, want %q", got.RuleID, tc.want)

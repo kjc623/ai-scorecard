@@ -222,10 +222,55 @@ type RuleMatch struct {
 	Routes     []protocol.Route `json:"routes"`
 }
 
+// CatalogCategories is the closed set of app catalog categories.
+var CatalogCategories = []string{"chat_assistant", "coding_agent", "ide_assistant", "ide", "local_runtime", "inference_api", "ai_feature"}
+
+// CatalogPlatforms is the closed set of platforms a catalog signal applies to; any applies to all.
+var CatalogPlatforms = []string{"windows", "macos", "linux", "any"}
+
+// The closed set of catalog signal kinds.
+const (
+	SignalWindowsExe           = "windows_exe"
+	SignalWindowsUninstallName = "windows_uninstall_name"
+	SignalWindowsAppx          = "windows_appx"
+	SignalMacOSBundleID        = "macos_bundle_id"
+	SignalLinuxPackage         = "linux_package"
+	SignalPublisher            = "publisher"
+	SignalCLIBinary            = "cli_binary"
+	SignalNPMPackage           = "npm_package"
+	SignalPipxPackage          = "pipx_package"
+	SignalIDEExtensionID       = "ide_extension_id"
+	SignalInferenceDomain      = "inference_domain"
+	SignalListenPort           = "listen_port"
+	SignalModelStore           = "model_store"
+)
+
+// CatalogKinds is the closed set of catalog signal kinds.
+var CatalogKinds = []string{SignalWindowsExe, SignalWindowsUninstallName, SignalWindowsAppx, SignalMacOSBundleID,
+	SignalLinuxPackage, SignalPublisher, SignalCLIBinary, SignalNPMPackage, SignalPipxPackage, SignalIDEExtensionID,
+	SignalInferenceDomain, SignalListenPort, SignalModelStore}
+
+// CatalogApp is one app of the catalog. A discovered app is reported as the tool fingerprint
+// "app:" + AppKey.
+type CatalogApp struct {
+	AppKey   string          `json:"app_key"`
+	Category string          `json:"category"`
+	Signals  []CatalogSignal `json:"signals"`
+}
+
+// CatalogSignal is one thing that identifies an app on a device. An inference_domain value is an
+// exact host or, with a leading dot, a host suffix; a model_store value may begin with
+// %USERPROFILE% or ~, which the collector expands per user.
+type CatalogSignal struct {
+	Platform string `json:"platform"`
+	Kind     string `json:"kind"`
+	Value    string `json:"value"`
+}
+
 // Bundle is the device-side view of the signed policy bundle: the collection mode per scope,
 // the interception allowlist, the loopback port map, kill switches, device retention, the
-// CLI shim configuration, the endpoint collectors, the enforcement rules and the sanctioned
-// tools.
+// CLI shim configuration, the endpoint collectors, the enforcement rules, the sanctioned
+// tools and the app catalog.
 //
 // Unknown fields are rejected rather than ignored (see Open): a device that does not
 // understand a policy field must not enforce a policy it has only partly read, and the
@@ -265,6 +310,84 @@ type Bundle struct {
 	Rules []Rule `json:"rules"`
 	// SanctionedTools is the tool fingerprints the tenant has sanctioned.
 	SanctionedTools []string `json:"sanctioned_tools"`
+
+	// Catalog is the app catalog the discovery collectors match against, through the AppBy
+	// lookups. Collectors never read it directly.
+	Catalog []CatalogApp `json:"catalog"`
+}
+
+// appsWith returns, in catalog order and once each, the keys of the apps with a signal of kind on
+// platform (or on any platform) whose value satisfies match.
+func (b *Bundle) appsWith(platform, kind string, match func(value string) bool) []string {
+	if b == nil {
+		return nil
+	}
+	var out []string
+	for _, a := range b.Catalog {
+		for _, s := range a.Signals {
+			if s.Kind == kind && (platform == "" || s.Platform == platform || s.Platform == "any") && match(s.Value) {
+				out = append(out, a.AppKey)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// AppByExe returns the apps whose executable on platform is base, compared case-insensitively.
+func (b *Bundle) AppByExe(platform, base string) []string {
+	return b.appsWith(platform, SignalWindowsExe, func(v string) bool { return strings.EqualFold(v, base) })
+}
+
+// AppByPublisher returns the apps whose code-signing or installer publisher on platform is
+// subject, compared case-insensitively.
+func (b *Bundle) AppByPublisher(platform, subject string) []string {
+	return b.appsWith(platform, SignalPublisher, func(v string) bool { return strings.EqualFold(v, subject) })
+}
+
+// AppByDomain returns the apps whose inference domains include host, by the interception scope's
+// host rule: an exact host, or a leading dot for the domain and its subdomains.
+func (b *Bundle) AppByDomain(host string) []string {
+	h := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+	if h == "" {
+		return nil
+	}
+	return b.appsWith("", SignalInferenceDomain, func(v string) bool { return hostMatches(h, v) })
+}
+
+// AppByExtensionID returns the apps with the IDE extension id, compared case-insensitively as the
+// marketplaces do.
+func (b *Bundle) AppByExtensionID(id string) []string {
+	return b.appsWith("", SignalIDEExtensionID, func(v string) bool { return strings.EqualFold(v, id) })
+}
+
+// AppByCLI returns the apps whose command-line binary is name.
+func (b *Bundle) AppByCLI(name string) []string {
+	return b.appsWith("", SignalCLIBinary, func(v string) bool { return v == name })
+}
+
+// AppByNPM returns the apps published as the npm package pkg.
+func (b *Bundle) AppByNPM(pkg string) []string {
+	return b.appsWith("", SignalNPMPackage, func(v string) bool { return v == pkg })
+}
+
+// AppsByPort returns the apps that listen on port by default.
+func (b *Bundle) AppsByPort(port int) []string {
+	p := strconv.Itoa(port)
+	return b.appsWith("", SignalListenPort, func(v string) bool { return v == p })
+}
+
+// Category returns the app's catalog category, or "" for an app the catalog does not hold.
+func (b *Bundle) Category(appKey string) string {
+	if b == nil {
+		return ""
+	}
+	for _, a := range b.Catalog {
+		if a.AppKey == appKey {
+			return a.Category
+		}
+	}
+	return ""
 }
 
 // KillSwitchFor returns the kill switch for a route, if one is in force.
@@ -463,7 +586,37 @@ func (b *Bundle) Validate() error {
 	if err := validRules(b.Rules); err != nil {
 		return err
 	}
+	if err := validCatalog(b.Catalog); err != nil {
+		return err
+	}
 	return b.Endpoint.validate()
+}
+
+// validCatalog refuses a catalog the lookups could not apply as written: a category, platform or
+// signal kind outside the closed sets, an empty signal value, or an app listed twice.
+func validCatalog(apps []CatalogApp) error {
+	seen := make(map[string]bool, len(apps))
+	for _, a := range apps {
+		if seen[a.AppKey] {
+			return fmt.Errorf("policy: catalog lists app %q twice", a.AppKey)
+		}
+		seen[a.AppKey] = true
+		if !slices.Contains(CatalogCategories, a.Category) {
+			return fmt.Errorf("policy: catalog app %q has category %q outside the set {%s}", a.AppKey, a.Category, strings.Join(CatalogCategories, ","))
+		}
+		for _, s := range a.Signals {
+			if !slices.Contains(CatalogPlatforms, s.Platform) {
+				return fmt.Errorf("policy: catalog app %q has a signal for platform %q outside the set {%s}", a.AppKey, s.Platform, strings.Join(CatalogPlatforms, ","))
+			}
+			if !slices.Contains(CatalogKinds, s.Kind) {
+				return fmt.Errorf("policy: catalog app %q has a signal of kind %q outside the closed set", a.AppKey, s.Kind)
+			}
+			if strings.TrimSpace(s.Value) == "" {
+				return fmt.Errorf("policy: catalog app %q has an empty %s signal", a.AppKey, s.Kind)
+			}
+		}
+	}
+	return nil
 }
 
 // validRules refuses a rule list the device could not apply as written. Positions in the errors

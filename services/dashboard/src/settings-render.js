@@ -256,7 +256,11 @@ function matchOptions(field, data, current) {
   const known = {
     labels: () => (data.data_classes ?? []).map((c) => [c, c]),
     tools: () => data.tools.map((t) => [t.tool_fingerprint, t.display_name ?? t.tool_fingerprint]),
-    categories: () => RULE_CATEGORIES.map((c) => [c.key, c.label]),
+    categories: () => {
+      const present = data.app_categories ?? [];
+      return RULE_CATEGORIES.filter((c) => present.includes(c.key)).map((c) => [c.key, c.label])
+        .concat(present.filter((c) => !(c in CATEGORY_LABELS)).map((c) => [c, c]));
+    },
     sanction: () => RULE_SANCTIONS.map((s) => [s, s]),
     routes: () => RULE_ROUTES.map((r) => [r.key, r.label]),
   }[field]();
@@ -288,7 +292,7 @@ function stRuleEditor(state) {
     const current = rule.match[f];
     const options = matchOptions(f, data, current);
     const items = options.length === 0
-      ? `<span class="v-absent">${f === 'labels' && data.data_classes === null ? 'not reported' : 'none known yet'}</span>`
+      ? `<span class="v-absent">${(f === 'labels' && data.data_classes === null) || (f === 'categories' && data.app_categories === null) ? 'not reported' : 'none known yet'}</span>`
       : `<div class="seg dp-seg" style="flex-wrap:wrap;border-radius:14px" role="group" aria-label="${escapeHtml(MATCH_TITLES[f])}">`
         + options.map(([value, label]) => `<button type="button" class="seg-item" aria-pressed="${current.includes(value)}" data-action="rule-match" data-field="${f}" data-value="${escapeHtml(value)}">${escapeHtml(label)}</button>`).join('')
         + '</div>';
