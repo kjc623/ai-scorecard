@@ -460,12 +460,14 @@ CREATE TABLE ops.endpoint_setting (
 
 -- Per-tool native collectors. A tool's switch takes effect only while the collector it names is on
 -- in ops.endpoint_setting. A tool without a row is served its defaults by the policy read: each
--- collector the tool supports is on.
+-- collector the tool supports is on. Ollama has no native collector: its one switch, loopback, has
+-- the device move Ollama to another port and hold Ollama's own port with the loopback broker.
 CREATE TABLE ops.endpoint_tool_setting (
   tenant_id  uuid NOT NULL REFERENCES ops.tenant(tenant_id),
-  tool_key   text NOT NULL CHECK (tool_key IN ('claude_code','codex','copilot','cursor')),
+  tool_key   text NOT NULL CHECK (tool_key IN ('claude_code','codex','copilot','cursor','ollama')),
   otel       boolean NOT NULL,
   hooks      boolean NOT NULL,
+  loopback   boolean NOT NULL DEFAULT false,
   PRIMARY KEY (tenant_id, tool_key)
 );
 

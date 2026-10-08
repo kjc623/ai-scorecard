@@ -101,15 +101,18 @@ DO UPDATE SET sanctioned_state = EXCLUDED.sanctioned_state,
 
 	// SQLEndpointSettings is the tenant's endpoint collector settings as the policy bundle serves
 	// them: the tenant's rows where they exist, else the defaults (every collector on; each tool on
-	// for the collectors it has, so Cursor has no OTel and Copilot no hooks). The tools come back as
-	// {tool_key: {"otel": bool, "hooks": bool}}.
+	// for the collectors it has, so Cursor has no OTel and Copilot no hooks; Ollama's local
+	// model capture off). The tools come back as
+	// {tool_key: {"otel": bool, "hooks": bool, "loopback": bool}}.
 	SQLEndpointSettings = `
 SELECT coalesce(e.inventory, true), coalesce(e.processes, true), coalesce(e.flows, true),
        coalesce(e.otel, true), coalesce(e.hooks, true), coalesce(e.hooks_managed_only, false),
        (SELECT jsonb_object_agg(d.tool_key, jsonb_build_object(
-                 'otel', coalesce(s.otel, d.otel), 'hooks', coalesce(s.hooks, d.hooks)))
-          FROM (VALUES ('claude_code', true, true), ('codex', true, true),
-                       ('copilot', true, false), ('cursor', false, true)) AS d(tool_key, otel, hooks)
+                 'otel', coalesce(s.otel, d.otel), 'hooks', coalesce(s.hooks, d.hooks),
+                 'loopback', coalesce(s.loopback, d.loopback)))
+          FROM (VALUES ('claude_code', true, true, false), ('codex', true, true, false),
+                       ('copilot', true, false, false), ('cursor', false, true, false),
+                       ('ollama', false, false, false)) AS d(tool_key, otel, hooks, loopback)
           LEFT JOIN ops.endpoint_tool_setting s
             ON s.tenant_id = t.tenant_id AND s.tool_key = d.tool_key)
   FROM (VALUES ($1::uuid)) AS t(tenant_id)
@@ -127,10 +130,10 @@ DO UPDATE SET inventory          = EXCLUDED.inventory,
               hooks_managed_only = EXCLUDED.hooks_managed_only`
 
 	SQLSetEndpointTool = `
-INSERT INTO ops.endpoint_tool_setting (tenant_id, tool_key, otel, hooks)
-VALUES ($1::uuid, $2::text, $3::boolean, $4::boolean)
+INSERT INTO ops.endpoint_tool_setting (tenant_id, tool_key, otel, hooks, loopback)
+VALUES ($1::uuid, $2::text, $3::boolean, $4::boolean, $5::boolean)
 ON CONFLICT (tenant_id, tool_key)
-DO UPDATE SET otel = EXCLUDED.otel, hooks = EXCLUDED.hooks`
+DO UPDATE SET otel = EXCLUDED.otel, hooks = EXCLUDED.hooks, loopback = EXCLUDED.loopback`
 )
 
 // Settings implements Store.
@@ -196,15 +199,16 @@ func endpointSettings(ctx context.Context, tx *sql.Tx, tenantID string) (Endpoin
 		return EndpointSettings{}, fmt.Errorf("store: endpoint settings: %w", err)
 	}
 	var raw map[string]struct {
-		OTel  bool `json:"otel"`
-		Hooks bool `json:"hooks"`
+		OTel     bool `json:"otel"`
+		Hooks    bool `json:"hooks"`
+		Loopback bool `json:"loopback"`
 	}
 	if err := json.Unmarshal(tools, &raw); err != nil {
 		return EndpointSettings{}, fmt.Errorf("store: endpoint tool settings: %w", err)
 	}
 	out.Tools = make(map[string]EndpointTool, len(raw))
 	for k, v := range raw {
-		out.Tools[k] = EndpointTool{OTel: v.OTel, Hooks: v.Hooks}
+		out.Tools[k] = EndpointTool{OTel: v.OTel, Hooks: v.Hooks, Loopback: v.Loopback}
 	}
 	return out, nil
 }
@@ -407,25 +411,31 @@ func (s *SQLStore) SetEndpointTool(ctx context.Context, tenantID, toolKey string
 		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, SQLSetEndpointTool, tenantID, toolKey, t.OTel, t.Hooks); err != nil {
+		if _, err := tx.ExecContext(ctx, SQLSetEndpointTool, tenantID, toolKey, t.OTel, t.Hooks, t.Loopback); err != nil {
 			if isForeignKeyViolation(err) {
 				return ErrUnknownTenant
 			}
 			return fmt.Errorf("store: set endpoint tool: %w", err)
 		}
 		audit.Detail = mergeDetail(audit.Detail, map[string]any{"tool_key": toolKey})
-		audit = withChange(audit, toolDetail(previous.Tools[toolKey]), toolDetail(t))
+		audit = withChange(audit, ToolDetail(toolKey, previous.Tools[toolKey]), ToolDetail(toolKey, t))
 		return insertAudit(ctx, tx, audit)
 	})
 }
 
-// collectorsDetail and toolDetail are the audit's spelling of a setting: the bundle's JSON names.
+// collectorsDetail and ToolDetail are the audit's spelling of a setting: the settings API's JSON
+// names, which for the collectors and the native tools are the bundle's.
 func collectorsDetail(c EndpointCollectors) map[string]any {
 	return map[string]any{"inventory": c.Inventory, "processes": c.Processes, "flows": c.Flows,
 		"otel": c.OTel, "hooks": c.Hooks, "hooks_managed_only": c.HooksManagedOnly}
 }
 
-func toolDetail(t EndpointTool) map[string]any {
+// ToolDetail is one tool's switches: loopback for a tool of LoopbackToolKeys, otel and hooks for
+// the others.
+func ToolDetail(toolKey string, t EndpointTool) map[string]any {
+	if slices.Contains(LoopbackToolKeys, toolKey) {
+		return map[string]any{"loopback": t.Loopback}
+	}
 	return map[string]any{"otel": t.OTel, "hooks": t.Hooks}
 }
 

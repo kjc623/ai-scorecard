@@ -339,6 +339,7 @@ func DefaultEndpointSettings() store.EndpointSettings {
 			"codex":       {OTel: true, Hooks: true},
 			"copilot":     {OTel: true},
 			"cursor":      {Hooks: true},
+			"ollama":      {},
 		},
 	}
 }
@@ -1076,8 +1077,7 @@ func (m *Memory) SetEndpointTool(_ context.Context, tenantID, toolKey string, t 
 	}
 	m.endpointTools[tenantID][toolKey] = t
 	audit.Detail = merge(audit.Detail, map[string]any{"tool_key": toolKey,
-		"previous": map[string]any{"otel": previous.OTel, "hooks": previous.Hooks},
-		"new":      map[string]any{"otel": t.OTel, "hooks": t.Hooks}})
+		"previous": store.ToolDetail(toolKey, previous), "new": store.ToolDetail(toolKey, t)})
 	m.audit(audit)
 	return nil
 }

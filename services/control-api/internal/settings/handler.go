@@ -176,9 +176,19 @@ type endpointJSON struct {
 	Tools            map[string]endpointToolJSON `json:"tools"`
 }
 
+// endpointToolJSON is one tool's switches: loopback for Ollama, otel and hooks for the tools with
+// native collectors.
 type endpointToolJSON struct {
-	OTel  bool `json:"otel"`
-	Hooks bool `json:"hooks"`
+	OTel     *bool `json:"otel,omitempty"`
+	Hooks    *bool `json:"hooks,omitempty"`
+	Loopback *bool `json:"loopback,omitempty"`
+}
+
+func toolJSONOf(key string, t store.EndpointTool) endpointToolJSON {
+	if slices.Contains(store.LoopbackToolKeys, key) {
+		return endpointToolJSON{Loopback: &t.Loopback}
+	}
+	return endpointToolJSON{OTel: &t.OTel, Hooks: &t.Hooks}
 }
 
 type retentionJSON struct {
@@ -228,7 +238,7 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request) {
 	out.Endpoint = endpointJSON{Inventory: c.Inventory, Processes: c.Processes, Flows: c.Flows, OTel: c.OTel,
 		Hooks: c.Hooks, HooksManagedOnly: c.HooksManagedOnly, Tools: map[string]endpointToolJSON{}}
 	for k, t := range s.Endpoint.Tools {
-		out.Endpoint.Tools[k] = endpointToolJSON{OTel: t.OTel, Hooks: t.Hooks}
+		out.Endpoint.Tools[k] = toolJSONOf(k, t)
 	}
 	h.writeJSON(w, http.StatusOK, out)
 }
@@ -479,19 +489,37 @@ func (h *Handler) handleEndpointTool(w http.ResponseWriter, r *http.Request) {
 			map[string]any{"supported": store.EndpointToolKeys}))
 		return
 	}
-	var req struct {
-		OTel  *bool `json:"otel"`
-		Hooks *bool `json:"hooks"`
-	}
-	if !h.decode(w, r, &req) {
-		return
-	}
-	if req.OTel == nil || req.Hooks == nil {
-		h.fail(w, apierr.New(http.StatusBadRequest, apierr.CodeInvalidRequest, "otel and hooks are both required"))
-		return
+	// Every switch of the tool is required, and only those: Ollama's is loopback, the other tools'
+	// otel and hooks.
+	var t store.EndpointTool
+	if slices.Contains(store.LoopbackToolKeys, toolKey) {
+		var req struct {
+			Loopback *bool `json:"loopback"`
+		}
+		if !h.decode(w, r, &req) {
+			return
+		}
+		if req.Loopback == nil {
+			h.fail(w, apierr.New(http.StatusBadRequest, apierr.CodeInvalidRequest, "loopback is required"))
+			return
+		}
+		t.Loopback = *req.Loopback
+	} else {
+		var req struct {
+			OTel  *bool `json:"otel"`
+			Hooks *bool `json:"hooks"`
+		}
+		if !h.decode(w, r, &req) {
+			return
+		}
+		if req.OTel == nil || req.Hooks == nil {
+			h.fail(w, apierr.New(http.StatusBadRequest, apierr.CodeInvalidRequest, "otel and hooks are both required"))
+			return
+		}
+		t.OTel, t.Hooks = *req.OTel, *req.Hooks
 	}
 	now := h.cfg.Now().UTC()
-	err := h.store.SetEndpointTool(r.Context(), p.Tenant, toolKey, store.EndpointTool{OTel: *req.OTel, Hooks: *req.Hooks},
+	err := h.store.SetEndpointTool(r.Context(), p.Tenant, toolKey, t,
 		h.audit(p, "tenant.endpoint_tool.set", "endpoint_tool", toolKey, now, nil))
 	switch {
 	case errors.Is(err, store.ErrUnknownEndpointTool):

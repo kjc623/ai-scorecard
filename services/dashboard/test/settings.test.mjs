@@ -49,6 +49,7 @@ function endpointDefaults() {
       codex: { otel: true, hooks: true },
       copilot: { otel: true, hooks: false },
       cursor: { otel: false, hooks: true },
+      ollama: { loopback: false },
     },
   };
 }
@@ -234,7 +235,7 @@ function pressed(card, attrs) {
 test('endpoint collectors: the card shows the defaults, and a collector a tool lacks as unavailable', async () => {
   const { html } = await loaded({ [GET]: () => ({ status: 200, body: populated() }) });
   const card = endpointCard(html());
-  for (const label of ['Inventory', 'Processes', 'Network flows', 'OpenTelemetry', 'Hooks', 'Only managed hooks', 'Claude Code', 'Codex', 'Copilot', 'Cursor']) {
+  for (const label of ['Inventory', 'Processes', 'Network flows', 'OpenTelemetry', 'Hooks', 'Only managed hooks', 'Claude Code', 'Codex', 'Copilot', 'Cursor', 'Ollama', 'Local model capture']) {
     assert.match(card, new RegExp(`>${label}<`), `${label} is shown`);
   }
   for (const c of ['inventory', 'processes', 'flows', 'otel', 'hooks']) {
@@ -244,10 +245,40 @@ test('endpoint collectors: the card shows the defaults, and a collector a tool l
   assert.equal(pressed(card, ' data-action="endpoint-tool" data-tool="claude_code" data-collector="hooks"'), 'on');
   assert.equal(pressed(card, ' data-action="endpoint-tool" data-tool="cursor" data-collector="hooks"'), 'on');
   assert.equal(pressed(card, ' data-action="endpoint-tool" data-tool="codex" data-collector="hooks"'), 'on');
-  // Cursor has no OTel and Copilot no hooks: two cells, neither of them a control.
-  assert.equal((card.match(/<span class="v-absent">unavailable<\/span>/g) ?? []).length, 2);
+  // Cursor has no OTel; Copilot has no hooks; only Ollama has local model capture, and it has
+  // nothing else: eight cells, none of them a control.
+  assert.equal((card.match(/<span class="v-absent">unavailable<\/span>/g) ?? []).length, 8);
   assert.doesNotMatch(card, /data-tool="cursor" data-collector="otel"/);
   assert.doesNotMatch(card, /data-tool="copilot" data-collector="hooks"/);
+  assert.doesNotMatch(card, /data-tool="claude_code" data-collector="loopback"/);
+  assert.doesNotMatch(card, /data-tool="ollama" data-collector="(otel|hooks)"/);
+});
+
+test('endpoint collectors: Ollama has a Local model capture switch, off by default, that says it moves Ollama', async () => {
+  let body = populated();
+  const { controller, requests, html } = await loaded({
+    [GET]: () => ({ status: 200, body }),
+    'PUT /admin/v1/settings/endpoint/tools/ollama': (spec) => {
+      body = { ...body, endpoint: { ...body.endpoint, tools: { ...body.endpoint.tools, ollama: spec.body } } };
+      return { status: 204 };
+    },
+  });
+  const card = endpointCard(html());
+  assert.match(card, /<span class="v-text">Ollama<\/span>/);
+  assert.equal(pressed(card, ' data-action="endpoint-tool" data-tool="ollama" data-collector="loopback"'), 'off');
+  assert.match(card, /the device moves Ollama to another port/);
+
+  await controller.act({ action: 'endpoint-tool', tool: 'ollama', collector: 'loopback', value: 'on' });
+  const puts = requests.filter((r) => r.method === 'PUT');
+  assert.equal(puts.length, 1);
+  assert.equal(puts[0].path, '/admin/v1/settings/endpoint/tools/ollama');
+  assert.deepEqual(puts[0].body, { loopback: true });
+  assert.equal(requests.at(-1).method, 'GET', 'the page re-reads after the write');
+  assert.equal(pressed(endpointCard(html()), ' data-action="endpoint-tool" data-tool="ollama" data-collector="loopback"'), 'on');
+  // Ollama has no native collectors, so neither is ever sent for it.
+  await controller.act({ action: 'endpoint-tool', tool: 'ollama', collector: 'otel', value: 'on' });
+  await controller.act({ action: 'endpoint-tool', tool: 'claude_code', collector: 'loopback', value: 'on' });
+  assert.equal(requests.filter((r) => r.method === 'PUT').length, 1);
 });
 
 test('endpoint collectors: switching one sends every switch, and the page re-reads', async () => {

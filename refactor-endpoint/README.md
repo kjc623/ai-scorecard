@@ -49,7 +49,7 @@ The Plan column gives the plan's task id. "Built" is ticked when the task's "Don
 | 18 | [IDE extension scanner](18-ide-extension-scanner/TASK.md) | E09 | 16 | VS Code with Copilot, Claude Code and Continue extensions | [x] | [ ] |
 | 19 | [Process monitor](19-process-monitor/TASK.md) | E10 | 09, 15 | | [x] | [ ] |
 | 20 | [Local model detection](20-local-model-detection/TASK.md) | E11 | 16 | Ollama with two models | [x] | [ ] |
-| 57 | [Local model capture in policy](57-loopback-policy/TASK.md) | E11 | 08, 20 | Ollama with two models | [ ] | [ ] |
+| 57 | [Local model capture in policy](57-loopback-policy/TASK.md) | E11 | 08, 20 | Ollama with two models | [x] | [ ] |
 | 21 | [Connection monitor](21-connection-monitor/TASK.md) | E12 | 19 | | [x] | [ ] |
 | 22 | [Discovery volume check](22-discovery-volume-check/TASK.md) | E13 | 16–21 | 24 h of ordinary use on the reference VM | — | [ ] |
 | **Phase 2: Native telemetry** | | | | | | |

@@ -124,6 +124,7 @@ func TestEndpointSettingsAgainstPostgres(t *testing.T) {
 			"codex":       {OTel: true, Hooks: true},
 			"copilot":     {OTel: true},
 			"cursor":      {Hooks: true},
+			"ollama":      {},
 		},
 	}
 	s, err := st.Settings(ctx, tenant)
@@ -146,7 +147,10 @@ func TestEndpointSettingsAgainstPostgres(t *testing.T) {
 	if err := st.SetEndpointTool(ctx, tenant, "cursor", store.EndpointTool{}, audit("tenant.endpoint_tool.set")); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SetEndpointTool(ctx, tenant, "ollama", store.EndpointTool{}, audit("x")); !errors.Is(err, store.ErrUnknownEndpointTool) {
+	if err := st.SetEndpointTool(ctx, tenant, "ollama", store.EndpointTool{Loopback: true}, audit("tenant.endpoint_tool.set")); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetEndpointTool(ctx, tenant, "lm_studio", store.EndpointTool{}, audit("x")); !errors.Is(err, store.ErrUnknownEndpointTool) {
 		t.Fatalf("unknown tool key: %v", err)
 	}
 	if err := st.SetEndpointCollectors(ctx, pgtest.UUID(t), collectors, audit("x")); !errors.Is(err, store.ErrUnknownTenant) {
@@ -158,6 +162,7 @@ func TestEndpointSettingsAgainstPostgres(t *testing.T) {
 		want.Tools[k] = v
 	}
 	want.Tools["cursor"] = store.EndpointTool{}
+	want.Tools["ollama"] = store.EndpointTool{Loopback: true}
 	in, err = st.PolicyInputs(ctx, tenant)
 	if err != nil || !reflect.DeepEqual(in.Endpoint, want) {
 		t.Fatalf("PolicyInputs endpoint = %+v, %v; want %+v", in.Endpoint, err, want)
@@ -185,6 +190,7 @@ func TestEndpointSettingsAgainstPostgres(t *testing.T) {
 		`tenant.endpoint_collectors.set {"otel": true, "flows": true, "hooks": true, "inventory": true, "processes": true, "hooks_managed_only": false} {"otel": true, "flows": false, "hooks": false, "inventory": false, "processes": true, "hooks_managed_only": true}`,
 		`tenant.endpoint_collectors.set {"otel": true, "flows": false, "hooks": false, "inventory": false, "processes": true, "hooks_managed_only": true} {"otel": true, "flows": true, "hooks": false, "inventory": false, "processes": true, "hooks_managed_only": true}`,
 		`tenant.endpoint_tool.set {"otel": false, "hooks": true} {"otel": false, "hooks": false}`,
+		`tenant.endpoint_tool.set {"loopback": false} {"loopback": true}`,
 	}
 	if !reflect.DeepEqual(got, wantAudits) {
 		t.Fatalf("audits =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(wantAudits, "\n"))

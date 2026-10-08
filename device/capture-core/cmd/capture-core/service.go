@@ -92,6 +92,9 @@ type facilities struct {
 	// codexRequirements is the Codex CLI's system requirements file; empty is the platform's
 	// location.
 	codexRequirements string
+	// machineEnv is the machine-wide environment through which the loopback broker moves a local
+	// model server off its port; nil leaves the servers where they are.
+	machineEnv toolconfig.MachineEnv
 }
 
 // trustStore installs, verifies and removes the per-device CA in the platform trust store.
@@ -114,6 +117,7 @@ var platform = facilities{
 
 	processEvents: procmon.KernelEvents,
 	flowEvents:    flowmon.NetworkEvents,
+	machineEnv:    toolconfig.MachineEnvironment(),
 }
 
 // desktopPAC is the desktop-app PAC on Windows, where desktop apps read the per-user Internet
@@ -430,14 +434,24 @@ func (s *service) buildProviders() error {
 	}
 	s.tlsProv = tlsProv
 
-	s.broker = loopback.New(loopback.Config{
-		Ports:    portsFrom(b),
+	// The broker holds a local model server's port while the bundle names it, with the bundle's
+	// timings, and moves the server to its upstream port first.
+	broker := loopback.Config{
 		Bundles:  s.pipe.Bundles,
 		Pipeline: s.pipe,
 		Log:      s.logf,
 		Clock:    time.Now,
 		BodyCap:  bodyCapFrom(b),
-	})
+	}
+	if b != nil {
+		broker = broker.WithPolicy(b.Loopback)
+	}
+	if platform.machineEnv != nil {
+		broker.Relocators = map[string]loopback.Relocator{
+			toolconfig.OllamaFingerprint: toolconfig.NewOllama(s.dir, platform.machineEnv),
+		}
+	}
+	s.broker = loopback.New(broker)
 	if err := s.reg.Add(s.broker); err != nil {
 		return err
 	}
@@ -1071,13 +1085,6 @@ func splitHostPort(s string) (string, int, bool) {
 		return "", 0, false
 	}
 	return strings.Trim(s[:i], "[]"), port, true
-}
-
-func portsFrom(b *policy.Bundle) []policy.LoopbackPort {
-	if b == nil {
-		return nil
-	}
-	return b.Loopback.Ports
 }
 
 func bodyCapFrom(b *policy.Bundle) int64 {

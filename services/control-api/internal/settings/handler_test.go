@@ -331,9 +331,19 @@ type endpointGot struct {
 	Hooks            bool `json:"hooks"`
 	HooksManagedOnly bool `json:"hooks_managed_only"`
 	Tools            map[string]struct {
-		OTel  bool `json:"otel"`
-		Hooks bool `json:"hooks"`
+		OTel     *bool `json:"otel"`
+		Hooks    *bool `json:"hooks"`
+		Loopback *bool `json:"loopback"`
 	} `json:"tools"`
+}
+
+// on reads a switch the server sent; one it left out fails the test.
+func on(t *testing.T, v *bool) bool {
+	t.Helper()
+	if v == nil {
+		t.Fatal("a tool switch is missing")
+	}
+	return *v
 }
 
 func (r *rig) endpoint(t *testing.T) endpointGot {
@@ -361,9 +371,13 @@ func TestEndpointCollectors(t *testing.T) {
 	if !e.Inventory || !e.Processes || !e.Flows || !e.OTel || !e.Hooks || e.HooksManagedOnly {
 		t.Fatalf("default collectors = %+v", e)
 	}
-	if len(e.Tools) != 4 || !e.Tools["claude_code"].OTel || !e.Tools["claude_code"].Hooks || e.Tools["cursor"].OTel ||
-		!e.Tools["cursor"].Hooks || !e.Tools["codex"].OTel || !e.Tools["codex"].Hooks || e.Tools["copilot"].Hooks {
+	if len(e.Tools) != 5 || !on(t, e.Tools["claude_code"].OTel) || !on(t, e.Tools["claude_code"].Hooks) || on(t, e.Tools["cursor"].OTel) ||
+		!on(t, e.Tools["cursor"].Hooks) || !on(t, e.Tools["codex"].OTel) || !on(t, e.Tools["codex"].Hooks) || on(t, e.Tools["copilot"].Hooks) {
 		t.Fatalf("default tools = %+v", e.Tools)
+	}
+	// Ollama's one switch is local model capture, off by default; the native tools have none.
+	if o := e.Tools["ollama"]; on(t, o.Loopback) || o.OTel != nil || o.Hooks != nil || e.Tools["claude_code"].Loopback != nil {
+		t.Fatalf("default ollama = %+v, claude_code = %+v", o, e.Tools["claude_code"])
 	}
 
 	put := func(body string) *httptest.ResponseRecorder {
@@ -411,19 +425,41 @@ func TestEndpointTool(t *testing.T) {
 		t.Fatalf("set cursor: %d %s", rec.Code, rec.Body)
 	}
 	e := r.endpoint(t)
-	if e.Tools["cursor"].Hooks || e.Tools["cursor"].OTel || !e.Tools["claude_code"].Hooks {
+	if on(t, e.Tools["cursor"].Hooks) || on(t, e.Tools["cursor"].OTel) || !on(t, e.Tools["claude_code"].Hooks) {
 		t.Fatalf("tools after the write = %+v", e.Tools)
 	}
-	if rec := put("ollama", `{"otel":true,"hooks":true}`); rec.Code != http.StatusNotFound || errorCode(t, rec) != apierr.CodeNotFound {
+	if rec := put("lm_studio", `{"loopback":true}`); rec.Code != http.StatusNotFound || errorCode(t, rec) != apierr.CodeNotFound {
 		t.Fatalf("unknown tool: %d %s", rec.Code, rec.Body)
 	}
 	if rec := put("codex", `{"otel":false}`); rec.Code != http.StatusBadRequest || errorCode(t, rec) != apierr.CodeInvalidRequest {
 		t.Fatalf("missing hooks: %d %s", rec.Code, rec.Body)
 	}
+	// A native tool has no loopback switch, and Ollama has only that one.
+	if rec := put("codex", `{"otel":false,"hooks":false,"loopback":true}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("loopback for codex: %d %s", rec.Code, rec.Body)
+	}
+	if rec := put("ollama", `{"otel":true,"hooks":true}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("otel and hooks for ollama: %d %s", rec.Code, rec.Body)
+	}
+	if rec := put("ollama", `{}`); rec.Code != http.StatusBadRequest || errorCode(t, rec) != apierr.CodeInvalidRequest {
+		t.Fatalf("missing loopback: %d %s", rec.Code, rec.Body)
+	}
+	if rec := put("ollama", `{"loopback":true}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("set ollama: %d %s", rec.Code, rec.Body)
+	}
+	if e := r.endpoint(t); !on(t, e.Tools["ollama"].Loopback) || !on(t, e.Tools["claude_code"].Hooks) {
+		t.Fatalf("tools after the ollama write = %+v", e.Tools)
+	}
 
 	audits := r.store.Audits()
-	if len(audits) != 1 {
-		t.Fatalf("audits = %+v, want the one accepted write", audits)
+	if len(audits) != 2 {
+		t.Fatalf("audits = %+v, want the two accepted writes", audits)
+	}
+	o := audits[1]
+	oprev, _ := o.Detail["previous"].(map[string]any)
+	onext, _ := o.Detail["new"].(map[string]any)
+	if o.ObjectID != "ollama" || o.Detail["tool_key"] != "ollama" || len(oprev) != 1 || oprev["loopback"] != false || len(onext) != 1 || onext["loopback"] != true {
+		t.Fatalf("ollama audit = %+v", o)
 	}
 	a := audits[0]
 	if a.Action != "tenant.endpoint_tool.set" || a.ActorID != admin.Actor || a.ObjectType != "endpoint_tool" || a.ObjectID != "cursor" || a.Detail["tool_key"] != "cursor" {

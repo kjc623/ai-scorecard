@@ -42,6 +42,32 @@ type Bundle struct {
 	// device carries that route's traffic unread and enforces nothing on it. Omitted when none is
 	// tripped.
 	KillSwitches []KillSwitch `json:"kill_switches,omitempty"`
+
+	// Loopback is the local model servers the device's loopback broker captures, with the broker's
+	// timings. Omitted when the tenant has local model capture on for none.
+	Loopback *Loopback `json:"loopback,omitempty"`
+}
+
+// Loopback is the loopback broker's section: the ports it holds and its timings, which are this
+// service's constants.
+type Loopback struct {
+	Ports                    []LoopbackPort `json:"ports"`
+	ProbeIntervalSeconds     int            `json:"probe_interval_seconds"`
+	PreflightIntervalSeconds int            `json:"preflight_interval_seconds"`
+	PreflightTimeoutMS       int            `json:"preflight_timeout_ms"`
+	MaxConsecutiveFailures   int            `json:"max_consecutive_failures"`
+	CoolDownSeconds          int            `json:"cool_down_seconds"`
+}
+
+// LoopbackPort is one local model server: the device moves it to UpstreamPort, holds Port, and
+// forwards to UpstreamPort once a read-only request to PreflightPath answers there. Mode is the
+// tool's collection mode.
+type LoopbackPort struct {
+	ToolFingerprint string `json:"tool_fingerprint"`
+	Port            int    `json:"port"`
+	UpstreamPort    int    `json:"upstream_port"`
+	PreflightPath   string `json:"preflight_path"`
+	Mode            string `json:"mode"`
 }
 
 // KillSwitch is one tripped kill switch. Provider names the interception route; Mode is always
