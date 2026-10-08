@@ -53,7 +53,7 @@ func (h *fakeHelper) fail(err error) {
 	h.err = err
 }
 
-func (h *fakeHelper) notifications()([]uint32, []protocol.Notify) {
+func (h *fakeHelper) notifications() ([]uint32, []protocol.Notify) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return append([]uint32(nil), h.sessions...), append([]protocol.Notify(nil), h.shown...)
@@ -198,6 +198,7 @@ func TestTLSBlockRuleAnswersInTheAPIShapeAndForwardsNothing(t *testing.T) {
 			if n := e.upstream.Load(); n != 0 {
 				t.Fatalf("the upstream received %d requests, want none", n)
 			}
+			waitFor(t, 2*time.Second, "the recorded decision", func() bool { return len(e.pipe.recorded()) == 1 })
 			if d := e.pipe.recorded(); len(d) != 1 || d[0] != decided("block_credentials", protocol.ActionBlocked) {
 				t.Fatalf("recorded decisions = %+v, want blocked", d)
 			}
@@ -224,6 +225,8 @@ func TestTLSBlockAtM0ReadsNothingAndForwardsNothing(t *testing.T) {
 	if n := e.upstream.Load(); n != 0 {
 		t.Fatalf("the upstream received %d requests, want none", n)
 	}
+	// The answer goes out before the discarded body's size is known, so the observation is awaited.
+	waitFor(t, 2*time.Second, "the observation", func() bool { return len(e.pipe.observations()) == 1 })
 	obs := e.pipe.observations()
 	if len(obs) != 1 || obs[0].Content != nil || obs[0].SizeBytes != int64(len(body)) {
 		t.Fatalf("observations = %+v, want one without content and of size %d", obs, len(body))
