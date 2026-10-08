@@ -10,11 +10,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/url"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/shadow-ai-capture/device/protocol"
 )
@@ -177,9 +180,52 @@ type EndpointTool struct {
 	Hooks bool `json:"hooks"`
 }
 
+// RuleAction is what an enforcement rule does to a matching submission.
+type RuleAction string
+
+// The closed set of rule actions. The envelope records allow as logged, warn as warned and block
+// as blocked.
+const (
+	RuleAllow RuleAction = "allow"
+	RuleWarn  RuleAction = "warn"
+	RuleBlock RuleAction = "block"
+)
+
+// Valid reports whether the action is in the closed set.
+func (a RuleAction) Valid() bool { return a == RuleAllow || a == RuleWarn || a == RuleBlock }
+
+// MaxRuleMessage is the longest message a rule may carry, in characters.
+const MaxRuleMessage = 280
+
+var ruleIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,127}$`)
+
+// Rule is one enforcement rule. The first rule in the bundle's order whose match matches decides;
+// no match records logged under the rule id policy.default.
+type Rule struct {
+	RuleID  string     `json:"rule_id"`
+	Action  RuleAction `json:"action"`
+	Match   RuleMatch  `json:"match"`
+	Message string     `json:"message"`
+	// Link is an https URL shown with the message, or empty.
+	Link string `json:"link,omitempty"`
+}
+
+// RuleMatch is a rule's conditions. Every non-empty list must match; an empty list matches
+// anything; inside a list any value matches. Labels are classifier classes, Tools tool
+// fingerprints, Categories app catalog categories, and Sanction sanctioned or unsanctioned, decided
+// against the bundle's SanctionedTools.
+type RuleMatch struct {
+	Labels     []string         `json:"labels"`
+	Tools      []string         `json:"tools"`
+	Categories []string         `json:"categories"`
+	Sanction   []string         `json:"sanction"`
+	Routes     []protocol.Route `json:"routes"`
+}
+
 // Bundle is the device-side view of the signed policy bundle: the collection mode per scope,
 // the interception allowlist, the loopback port map, kill switches, device retention, the
-// CLI shim configuration and the endpoint collectors.
+// CLI shim configuration, the endpoint collectors, the enforcement rules and the sanctioned
+// tools.
 //
 // Unknown fields are rejected rather than ignored (see Open): a device that does not
 // understand a policy field must not enforce a policy it has only partly read, and the
@@ -214,6 +260,11 @@ type Bundle struct {
 	Spool        SpoolPolicy    `json:"spool"`
 	CLIShim      CLIShimPolicy  `json:"cli_shim"`
 	Endpoint     EndpointPolicy `json:"endpoint"`
+
+	// Rules is the enforcement rules in order.
+	Rules []Rule `json:"rules"`
+	// SanctionedTools is the tool fingerprints the tenant has sanctioned.
+	SanctionedTools []string `json:"sanctioned_tools"`
 }
 
 // KillSwitchFor returns the kill switch for a route, if one is in force.
@@ -409,7 +460,48 @@ func (b *Bundle) Validate() error {
 	if b.Spool.DeviceRetentionHours < 0 {
 		return fmt.Errorf("policy: spool device_retention_hours is negative")
 	}
+	if err := validRules(b.Rules); err != nil {
+		return err
+	}
 	return b.Endpoint.validate()
+}
+
+// validRules refuses a rule list the device could not apply as written. Positions in the errors
+// are 1-based; no message or link text is quoted.
+func validRules(rules []Rule) error {
+	seen := make(map[string]bool, len(rules))
+	for i, r := range rules {
+		if !ruleIDPattern.MatchString(r.RuleID) {
+			return fmt.Errorf("policy: rule %d has rule_id %q outside the pattern %s", i+1, r.RuleID, ruleIDPattern)
+		}
+		if seen[r.RuleID] {
+			return fmt.Errorf("policy: rule %d repeats rule_id %q", i+1, r.RuleID)
+		}
+		seen[r.RuleID] = true
+		if !r.Action.Valid() {
+			return fmt.Errorf("policy: rule %s has action %q outside the set {allow,warn,block}", r.RuleID, r.Action)
+		}
+		if utf8.RuneCountInString(r.Message) > MaxRuleMessage {
+			return fmt.Errorf("policy: rule %s has a message over %d characters", r.RuleID, MaxRuleMessage)
+		}
+		if r.Link != "" && !httpsURL(r.Link) {
+			return fmt.Errorf("policy: rule %s has a link that is not an https URL", r.RuleID)
+		}
+		for _, route := range r.Match.Routes {
+			if !route.Valid() {
+				return fmt.Errorf("policy: rule %s matches route %q outside the closed vocabulary", r.RuleID, route)
+			}
+		}
+	}
+	return nil
+}
+
+func httpsURL(s string) bool {
+	if !strings.HasPrefix(s, "https://") {
+		return false
+	}
+	u, err := url.Parse(s)
+	return err == nil && u.Scheme == "https" && u.Host != ""
 }
 
 func (e *EndpointPolicy) validate() error {

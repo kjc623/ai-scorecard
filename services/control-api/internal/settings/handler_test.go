@@ -90,6 +90,8 @@ var routes = []struct{ method, path, body string }{
 	{"PUT", "/admin/v1/settings/endpoint", endpointBody},
 	{"PUT", "/admin/v1/settings/endpoint/tools/cursor", `{"otel":false,"hooks":false}`},
 	{"PUT", "/admin/v1/settings/tls-inspection", `{"enabled":true}`},
+	{"GET", "/admin/v1/settings/rules", ""},
+	{"PUT", "/admin/v1/settings/rules", `{"rules":[]}`},
 }
 
 const endpointBody = `{"inventory":false,"processes":true,"flows":false,"otel":true,"hooks":true,"hooks_managed_only":true}`

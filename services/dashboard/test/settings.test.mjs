@@ -8,7 +8,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createAdminApi, createQueryApi, normaliseSettings } from '../src/transport.js';
+import { createAdminApi, createQueryApi, normaliseSettings, normaliseRules } from '../src/transport.js';
 import { createSettings, modeIncreaseNeedsConfirmation, searchTierAllowed, effectiveMode } from '../src/settings.js';
 import { renderSettings } from '../src/settings-render.js';
 import { boot } from '../src/app.js';
@@ -33,6 +33,7 @@ function populated(overrides = {}) {
     devices: [{ device_id: 'd-1', hostname: 'LAPTOP-1', collection_mode: 'm2', last_seen_at: '2026-10-01T09:00:00Z' }],
     endpoint: endpointDefaults(),
     tls_inspection: false,
+    data_classes: ['credential', 'customer_pii', 'government_id', 'health', 'legal_commercial', 'payment_card', 'source_code'],
     ...overrides,
   };
 }
@@ -364,6 +365,218 @@ test('TLS inspection: a refused write is said in the card, and a setting the ser
   assert.equal(missing.requests.filter((r) => r.method === 'PUT').length, 0, 'nothing is written over a setting that was not read');
 });
 
+// ---------------------------------------------------------------------------------------------
+// Enforcement rules
+// ---------------------------------------------------------------------------------------------
+
+const RULES = 'GET /admin/v1/settings/rules';
+const PUT_RULES = 'PUT /admin/v1/settings/rules';
+
+/** Two rules in control-api's spelling: every match list present, no link as absent. */
+function servedRules() {
+  return {
+    rules: [
+      {
+        rule_id: 'block_credentials', action: 'block',
+        match: { labels: ['credential'], tools: ['tls_b6681b043244c43f'], categories: ['coding_agent'], sanction: ['unsanctioned'], routes: ['tool.hook'] },
+        message: 'Remove the credential and try again.', link: 'https://intranet.example/ai',
+      },
+      { rule_id: 'allow_rest', action: 'allow', match: { labels: [], tools: [], categories: [], sanction: [], routes: [] }, message: '' },
+    ],
+  };
+}
+
+/** The enforcement rules card of a rendered page. */
+function rulesCard(page) {
+  const start = page.indexOf('<h3>Enforcement rules</h3>');
+  assert.ok(start >= 0, 'the page has an enforcement rules card');
+  return page.slice(start, page.indexOf('</section>', start));
+}
+
+/** A page whose rules route serves `rules` and whose PUT stores what it is sent. */
+async function withRules(rules = servedRules(), put = null) {
+  let served = rules;
+  const answers = {
+    [GET]: () => ({ status: 200, body: populated() }),
+    [RULES]: () => ({ status: 200, body: served }),
+    [PUT_RULES]: put ?? ((spec) => { served = { rules: spec.body.rules }; return { status: 204 }; }),
+  };
+  return loaded(answers);
+}
+
+const puts = (requests) => requests.filter((r) => r.method === 'PUT');
+
+test('enforcement rules: the card shows the ordered list, each condition by its name', async () => {
+  const { html, requests } = await withRules();
+  assert.ok(requests.some((r) => r.method === 'GET' && r.path === '/admin/v1/settings/rules'), 'the page reads the rules');
+  const card = rulesCard(html());
+  const rows = card.slice(card.indexOf('<tbody>'), card.indexOf('</tbody>')).split('<tr>').slice(1);
+  assert.equal(rows.length, 2);
+  assert.match(rows[0], /<td>1<\/td>/);
+  assert.match(rows[0], /v-vocab-block/);
+  assert.match(rows[0], />credential</);
+  assert.match(rows[0], />Claude Code</, 'a tool is shown by its name');
+  assert.match(rows[0], />Coding agent</, 'a category is shown by its name');
+  assert.match(rows[0], />unsanctioned</);
+  assert.match(rows[0], />Tool hooks</, 'a route is shown by its display name');
+  assert.match(rows[0], /Remove the credential and try again\./);
+  assert.match(rows[0], /https:\/\/intranet\.example\/ai/);
+  assert.match(rows[1], /v-vocab-allow/);
+  assert.match(rows[1], /Any submission/);
+  assert.match(rows[1], /<span class="v-absent">none<\/span>/, 'an allow with no message says none');
+  // The first rule cannot move up, the last cannot move down.
+  assert.match(rows[0], /data-action="rule-up" data-index="0" disabled/);
+  assert.doesNotMatch(rows[0], /data-action="rule-down" data-index="0" disabled/);
+  assert.match(rows[1], /data-action="rule-down" data-index="1" disabled/);
+  assert.doesNotMatch(card, /data-action="rules-save"/, 'nothing to save before a change');
+
+  const none = await withRules({ rules: [] });
+  assert.match(rulesCard(none.html()), /No rules\. Every submission is logged\./);
+});
+
+test('enforcement rules: the editor offers the data classes, the tools, the fixed categories, sanction and the routes', async () => {
+  const { controller, html } = await withRules();
+  await controller.act({ action: 'rule-edit', index: '0' });
+  const card = rulesCard(html());
+  const option = (field, value) => new RegExp(`aria-pressed="(true|false)" data-action="rule-match" data-field="${field}" data-value="${value.replace('.', '\\.')}">`);
+  for (const c of ['credential', 'customer_pii', 'government_id', 'health', 'legal_commercial', 'payment_card', 'source_code']) assert.match(card, option('labels', c));
+  for (const t of ['tls_b6681b043244c43f', 'tls_f32477ff734d70d1']) assert.match(card, option('tools', t));
+  for (const c of ['chat_assistant', 'coding_agent', 'ide_assistant', 'ide', 'local_runtime', 'inference_api', 'ai_feature']) assert.match(card, option('categories', c));
+  for (const s of ['sanctioned', 'unsanctioned']) assert.match(card, option('sanction', s));
+  for (const r of ['tool.hook', 'ext.page_context', 'tool.otel', 'cli.shim', 'proxy.loopback', 'ext.web_request', 'proxy.tls', 'ext.dom', 'proc.detect', 'inv.scan', 'net.flow']) assert.match(card, option('routes', r));
+  assert.match(card, />Browser extension \(page\)</, 'routes are offered by their display names');
+  // The rule's own choices are pressed; the others are not.
+  assert.equal(card.match(option('labels', 'credential'))[1], 'true');
+  assert.equal(card.match(option('labels', 'health'))[1], 'false');
+  assert.equal(card.match(option('routes', 'tool.hook'))[1], 'true');
+  assert.match(card, /data-rule-draft="message" value="Remove the credential and try again\."/);
+  // While a rule is open the list cannot be reordered or saved.
+  assert.match(card, /data-action="rule-down" data-index="0" disabled/);
+});
+
+test('enforcement rules: add, edit, move and delete change a draft; saving sends the whole list, then re-reads', async () => {
+  const { controller, requests, html } = await withRules();
+
+  // Add a warn rule for an unsanctioned coding agent.
+  await controller.act({ action: 'rule-add' });
+  controller.setRuleDraft('rule_id', 'warn_unsanctioned_agents');
+  controller.setRuleDraft('message', 'Use the approved coding agent.');
+  controller.setRuleDraft('link', 'https://intranet.example/agents');
+  await controller.act({ action: 'rule-action', value: 'warn' });
+  await controller.act({ action: 'rule-match', field: 'categories', value: 'coding_agent' });
+  await controller.act({ action: 'rule-match', field: 'sanction', value: 'unsanctioned' });
+  await controller.act({ action: 'rule-match', field: 'routes', value: 'proxy.tls' });
+  await controller.act({ action: 'rule-match', field: 'routes', value: 'proxy.tls' }); // toggled off again
+  await controller.act({ action: 'rule-apply' });
+  assert.equal(controller.state.rules.editor, null, 'a valid rule closes the editor');
+  assert.equal(puts(requests).length, 0, 'nothing is sent until the list is saved');
+  assert.match(rulesCard(html()), /Unsaved changes/);
+
+  // Edit the first rule's message and drop its tool; move the new rule to the top; delete the allow.
+  await controller.act({ action: 'rule-edit', index: '0' });
+  controller.setRuleDraft('message', 'Take the credential out first.');
+  await controller.act({ action: 'rule-match', field: 'tools', value: 'tls_b6681b043244c43f' });
+  await controller.act({ action: 'rule-apply' });
+  await controller.act({ action: 'rule-up', index: '2' });
+  await controller.act({ action: 'rule-up', index: '1' });
+  await controller.act({ action: 'rule-delete', index: '2' });
+  const shown = rulesCard(html());
+  assert.ok(shown.indexOf('Use the approved coding agent.') < shown.indexOf('Take the credential out first.'), 'the moved rule is shown first');
+  assert.doesNotMatch(shown, /Any submission/, 'the deleted rule is gone');
+
+  await controller.act({ action: 'rules-save' });
+  const sent = puts(requests);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].path, '/admin/v1/settings/rules');
+  assert.deepEqual(sent[0].body, {
+    rules: [
+      {
+        rule_id: 'warn_unsanctioned_agents', action: 'warn',
+        match: { labels: [], tools: [], categories: ['coding_agent'], sanction: ['unsanctioned'], routes: [] },
+        message: 'Use the approved coding agent.', link: 'https://intranet.example/agents',
+      },
+      {
+        rule_id: 'block_credentials', action: 'block',
+        match: { labels: ['credential'], tools: [], categories: ['coding_agent'], sanction: ['unsanctioned'], routes: ['tool.hook'] },
+        message: 'Take the credential out first.', link: 'https://intranet.example/ai',
+      },
+    ],
+  });
+  assert.equal(requests.at(-1).path, '/admin/v1/settings/rules', 'the page re-reads the rules after the write');
+  assert.equal(controller.state.rules.draft, null, 'the saved list is the one read back');
+  assert.deepEqual(controller.state.data.rules.map((r) => r.rule_id), ['warn_unsanctioned_agents', 'block_credentials']);
+  assert.doesNotMatch(rulesCard(html()), /Unsaved changes/);
+
+  // Discarding a draft goes back to the list read, and sends nothing.
+  await controller.act({ action: 'rule-delete', index: '0' });
+  await controller.act({ action: 'rules-discard' });
+  assert.equal(controller.state.rules.draft, null);
+  assert.equal(puts(requests).length, 1);
+});
+
+test('enforcement rules: a rule the server would refuse is not kept, and says why', async () => {
+  const { controller, html } = await withRules();
+  const attempt = async (fields, action = 'block') => {
+    await controller.act({ action: 'rule-add' });
+    for (const [k, v] of Object.entries(fields)) controller.setRuleDraft(k, v);
+    await controller.act({ action: 'rule-action', value: action });
+    await controller.act({ action: 'rule-apply' });
+    const problem = controller.state.rules.editor?.problem ?? null;
+    await controller.act({ action: 'rule-cancel' });
+    return problem;
+  };
+  assert.match((await attempt({ rule_id: 'needs_message', message: '' })).message, /needs a message/);
+  assert.match((await attempt({ rule_id: 'needs_message', message: '  ' }, 'warn')).message, /needs a message/);
+  assert.match((await attempt({ rule_id: 'Upper', message: 'x' })).message, /lower-case letter/);
+  assert.match((await attempt({ rule_id: '', message: 'x' })).message, /lower-case letter/);
+  assert.match((await attempt({ rule_id: 'allow_rest', message: 'x' })).message, /already has the id allow_rest/);
+  assert.match((await attempt({ rule_id: 'long', message: 'é'.repeat(281) })).message, /281 characters; at most 280/);
+  assert.match((await attempt({ rule_id: 'plain_http', message: 'x', link: 'http://intranet.example' })).message, /https:\/\//);
+  assert.equal(controller.state.rules.draft, null, 'no refused rule reached the list');
+
+  // An allow needs no message; 280 characters are kept.
+  assert.equal(await attempt({ rule_id: 'quiet_allow', message: '' }, 'allow'), null);
+  assert.equal(await attempt({ rule_id: 'longest', message: 'é'.repeat(280) }, 'warn'), null);
+  assert.deepEqual(controller.state.rules.draft.map((r) => r.rule_id), ['block_credentials', 'allow_rest', 'quiet_allow', 'longest']);
+
+  // The problem is shown in the open editor.
+  await controller.act({ action: 'rule-add' });
+  await controller.act({ action: 'rule-apply' });
+  assert.match(rulesCard(html()), /Not kept\./);
+});
+
+test('enforcement rules: a refused save keeps the draft and says why; rules that were not read cannot be saved over', async () => {
+  const { controller, html } = await withRules(servedRules(),
+    () => ({ status: 400, body: { error: { code: 'invalid_request', message: 'a rule names a label that is not a data class' } } }));
+  await controller.act({ action: 'rule-delete', index: '1' });
+  await controller.act({ action: 'rules-save' });
+  const card = rulesCard(html());
+  assert.match(card, /Not changed\./);
+  assert.match(card, /a rule names a label that is not a data class/);
+  assert.equal(controller.state.rules.draft.length, 1, 'the draft is kept to correct and save again');
+
+  const unread = await loaded({ [GET]: () => ({ status: 200, body: populated() }), [RULES]: () => ({ status: 503, body: { error: 'unavailable' } }) });
+  assert.equal(unread.controller.state.data.rules, null, 'rules that were not read are null, never an empty list');
+  assert.match(rulesCard(unread.html()), /not reported/);
+  assert.doesNotMatch(rulesCard(unread.html()), /data-action="rule-add"/);
+  await unread.controller.act({ action: 'rule-add' });
+  await unread.controller.act({ action: 'rules-save' });
+  assert.equal(puts(unread.requests).length, 0, 'nothing is written over rules that were not read');
+  assert.match(rulesCard(unread.html()), /were not read/);
+});
+
+test('enforcement rules: a message, a rule id and a tool name from the API are escaped', async () => {
+  const rules = servedRules();
+  rules.rules[0].message = '<img src=x onerror=alert(1)>';
+  rules.rules[0].match.tools = ['<b>tool</b>'];
+  const { controller, html } = await withRules(rules);
+  await controller.act({ action: 'rule-edit', index: '0' });
+  const card = rulesCard(html());
+  assert.doesNotMatch(card, /<img src=x/);
+  assert.doesNotMatch(card, /<b>tool<\/b>/);
+  assert.match(card, /&lt;img src=x onerror=alert\(1\)&gt;/);
+});
+
 test('every string from the API is escaped', async () => {
   const body = populated();
   body.tools[0].display_name = '<img src=x onerror=alert(1)>';
@@ -411,6 +624,9 @@ test('an absent count is null after normalising, never 0', () => {
   assert.deepEqual(data.scope_overrides, {});
   assert.equal(data.endpoint, null, 'endpoint settings the server did not send are null, never all off');
   assert.equal(data.tls_inspection, null, 'a TLS inspection setting the server did not send is null, never off');
+  assert.equal(data.data_classes, null, 'data classes the server did not send are null, never none');
+  const rules = normaliseRules([{ rule_id: 'r', action: 'warn', match: { labels: ['credential', 7], routes: 'tool.hook' } }, null]);
+  assert.deepEqual(JSON.parse(JSON.stringify(rules)), [{ rule_id: 'r', action: 'warn', match: { labels: ['credential'], tools: [], categories: [], sanction: [], routes: [] }, message: '', link: '' }]);
   const partial = normaliseSettings({ endpoint: { inventory: false, tools: { cursor: { hooks: true } } } });
   assert.equal(partial.endpoint.inventory, false);
   assert.equal(partial.endpoint.flows, null);

@@ -2784,6 +2784,169 @@ BEGIN
   RAISE NOTICE 'PASS T78 no tenant intercepts TLS by default, and the desktop-app PAC has its collector';
 END $$;
 
+
+-- =====================================================================================
+-- T79-T80  Enforcement rules
+-- =====================================================================================
+
+-- Tenant B's rule, written as the superuser, so tenant A's session has something to not see.
+INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, match, message, updated_by)
+VALUES (:tb, 0, 'block_credentials', 'block', '{"labels": ["credential"]}', 'Remove it.', 'admin-b');
+
+SET ROLE sac_control;
+SET app.tenant_id = '11111111-1111-7111-8111-111111111111';
+
+DO $$
+DECLARE
+  t constant uuid := '11111111-1111-7111-8111-111111111111';
+  m jsonb;
+BEGIN
+  -- Every match list, every action, an empty message and no link are accepted.
+  INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, match, message, link, updated_by) VALUES
+    (t, 0, 'block_credentials', 'block',
+     '{"labels": ["credential", "payment_card"], "tools": ["app:cursor"], "categories": ["coding_agent"], "sanction": ["unsanctioned"], "routes": ["tool.hook"]}',
+     'Remove the credential and try again.', 'https://intranet.example/ai', 'admin-a'),
+    (t, 1, 'warn.unsanctioned-1', 'warn', '{"sanction": ["unsanctioned"]}', 'Use the approved tool.', NULL, 'admin-a'),
+    (t, 2, 'allow_rest', 'allow', '{}', '', NULL, 'admin-a');
+
+  -- Each refused value, one at a time.
+  FOREACH m IN ARRAY ARRAY[
+    '[]', '"labels"', '{"other": []}', '{"labels": "credential"}', '{"tools": [1]}',
+    '{"routes": [null]}', '{"sanction": {"a": 1}}', '{"categories": [["ide"]]}'
+  ]::jsonb[] LOOP
+    BEGIN
+      INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, match, updated_by)
+      VALUES (t, 9, 'refused', 'allow', m, 'admin-a');
+      RAISE EXCEPTION 'FAIL T79 the match % was accepted', m;
+    EXCEPTION WHEN check_violation THEN NULL;
+    END;
+  END LOOP;
+  BEGIN
+    INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, match, updated_by)
+    VALUES (t, 9, 'refused', 'block', '{"labels": ["credential", "secrets"]}', 'admin-a');
+    RAISE EXCEPTION 'FAIL T79 a label outside ref.data_class was accepted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, updated_by)
+    VALUES (t, 9, 'refused', 'redact', 'admin-a');
+    RAISE EXCEPTION 'FAIL T79 the action redact was accepted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, updated_by)
+    VALUES (t, 9, 'Refused', 'allow', 'admin-a');
+    RAISE EXCEPTION 'FAIL T79 a rule id with an upper-case letter was accepted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, updated_by)
+    VALUES (t, 9, '9refused', 'allow', 'admin-a');
+    RAISE EXCEPTION 'FAIL T79 a rule id starting with a digit was accepted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, message, updated_by)
+    VALUES (t, 9, 'refused', 'warn', repeat('x', 281), 'admin-a');
+    RAISE EXCEPTION 'FAIL T79 a message of 281 characters was accepted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, message, updated_by)
+  VALUES (t, 9, 'longest', 'warn', repeat('é', 280), 'admin-a');
+  DELETE FROM ops.enforcement_rule WHERE tenant_id = t AND rule_id = 'longest';
+  FOREACH m IN ARRAY ARRAY['"http://intranet.example/ai"', '"https://"', '"intranet.example"']::jsonb[] LOOP
+    BEGIN
+      INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, link, updated_by)
+      VALUES (t, 9, 'refused', 'allow', m #>> '{}', 'admin-a');
+      RAISE EXCEPTION 'FAIL T79 the link % was accepted', m;
+    EXCEPTION WHEN check_violation THEN NULL;
+    END;
+  END LOOP;
+  BEGIN
+    INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, updated_by)
+    VALUES (t, 1, 'second_at_one', 'allow', 'admin-a');
+    RAISE EXCEPTION 'FAIL T79 two rules took position 1';
+  EXCEPTION WHEN unique_violation THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, updated_by)
+    VALUES (t, 9, 'allow_rest', 'allow', 'admin-a');
+    RAISE EXCEPTION 'FAIL T79 two rules took the id allow_rest';
+  EXCEPTION WHEN unique_violation THEN NULL;
+  END;
+  RAISE NOTICE 'PASS T79 enforcement rules take the three actions and the five match lists, and refuse every malformed value';
+END $$;
+
+DO $$
+DECLARE
+  n int;
+BEGIN
+  -- Tenant A sees and replaces only its own list.
+  SELECT count(*) INTO n FROM ops.enforcement_rule;
+  IF n <> 3 THEN
+    RAISE EXCEPTION 'FAIL T80 tenant A saw % enforcement rules, want its own 3', n;
+  END IF;
+  DELETE FROM ops.enforcement_rule WHERE tenant_id = '22222222-2222-7222-8222-222222222222';
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 0 THEN
+    RAISE EXCEPTION 'FAIL T80 tenant A deleted tenant B''s enforcement rules';
+  END IF;
+  BEGIN
+    INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, updated_by)
+    VALUES ('22222222-2222-7222-8222-222222222222', 5, 'planted', 'allow', 'admin-a');
+    RAISE EXCEPTION 'FAIL T80 tenant A wrote an enforcement rule for tenant B';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+  END;
+  -- Replacing the list in one transaction: delete, then insert in the new order.
+  DELETE FROM ops.enforcement_rule WHERE tenant_id = '11111111-1111-7111-8111-111111111111';
+  INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, match, message, updated_by) VALUES
+    ('11111111-1111-7111-8111-111111111111', 0, 'allow_rest', 'allow', '{}', '', 'admin-a'),
+    ('11111111-1111-7111-8111-111111111111', 1, 'block_credentials', 'block', '{"labels": ["credential"]}', 'Remove it.', 'admin-a');
+  IF (SELECT string_agg(rule_id, ',' ORDER BY position) FROM ops.enforcement_rule) <> 'allow_rest,block_credentials' THEN
+    RAISE EXCEPTION 'FAIL T80 the replaced list is not in its new order';
+  END IF;
+  BEGIN
+    UPDATE ops.enforcement_rule SET message = 'changed' WHERE rule_id = 'allow_rest';
+    RAISE EXCEPTION 'FAIL T80 control-api updated a rule in place; the list is replaced, not edited';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+  END;
+
+  PERFORM set_config('app.tenant_id', '', false);
+  SELECT count(*) INTO n FROM ops.enforcement_rule;
+  IF n <> 0 THEN
+    RAISE EXCEPTION 'FAIL T80 a session with no tenant saw % enforcement rules', n;
+  END IF;
+  PERFORM set_config('app.tenant_id', '11111111-1111-7111-8111-111111111111', false);
+  RAISE NOTICE 'PASS T80 enforcement rules are isolated per tenant, and control-api replaces its own list';
+END $$;
+
+RESET ROLE;
+
+SET ROLE sac_query;
+DO $$
+BEGIN
+  BEGIN
+    PERFORM 1 FROM ops.enforcement_rule;
+    RAISE EXCEPTION 'FAIL T80 query-api can read the enforcement rules';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+  END;
+END $$;
+RESET ROLE;
+
+DO $$
+BEGIN
+  IF (SELECT count(*) FROM ops.enforcement_rule WHERE tenant_id = '22222222-2222-7222-8222-222222222222') <> 1 THEN
+    RAISE EXCEPTION 'FAIL T80 tenant B''s enforcement rule changed under tenant A''s session';
+  END IF;
+  -- The label trigger also guards an update, which no runtime role can make.
+  BEGIN
+    UPDATE ops.enforcement_rule SET match = '{"labels": ["nope"]}'
+     WHERE tenant_id = '22222222-2222-7222-8222-222222222222';
+    RAISE EXCEPTION 'FAIL T79 an update to a label outside ref.data_class was accepted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+END $$;
+
 -- =====================================================================================
 -- Report
 -- =====================================================================================

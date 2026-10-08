@@ -132,6 +132,13 @@ var Statements = []Statement{
 	{"endpoint_settings", SQLEndpointSettings},
 	{"set_endpoint_collectors", SQLSetEndpointCollectors},
 	{"set_endpoint_tool", SQLSetEndpointTool},
+	{"enforcement_rules", SQLEnforcementRules},
+	{"rules_tenant", SQLRulesTenant},
+	{"lock_enforcement_rules", SQLLockEnforcementRules},
+	{"delete_enforcement_rules", SQLDeleteEnforcementRules},
+	{"insert_enforcement_rule", SQLInsertEnforcementRule},
+	{"sanctioned_tools", SQLSanctionedTools},
+	{"data_classes", SQLDataClasses},
 }
 
 // SQLStore is the PostgreSQL implementation of Store.

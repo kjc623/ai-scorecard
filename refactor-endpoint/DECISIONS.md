@@ -380,3 +380,43 @@ decided and why, and for a vendor fact the product version checked.
   trace and metric exporters v1.47.0, the log exporters v0.23.0.
 - **Not changed:** control-api's in-memory store (`storetest/memory.go`) still lists the six
   original collectors; nothing reports `otel_receiver` to it.
+
+## 2026-10-08, task 11
+
+- **Migration `0006-enforcement-rules.sql`** (the next free number on this branch; renumber at
+  merge if task 10 lands one first). Migration proof: the integration branch's `schema.sql` plus
+  it, and `main`'s `schema.sql` plus `0002` to it, each dump (`pg_dump --schema-only`) identically
+  to the new `schema.sql`; it alone, and `0002` to it, applied over the new `schema.sql` change
+  nothing.
+- **The rule routes are `GET` and `PUT /admin/v1/settings/rules`, both `{"rules": [...]}`** in the
+  bundle's spelling. A PUT without `rules` (or with `null`) is refused, so only `[]` clears the
+  list. Refusals are 400 `invalid_request` naming the rule's index and field
+  (`detail.index`, `detail.field`); an unknown member is `schema_violation`. The rules body cap is
+  1 MiB (the other settings routes keep 16 KiB).
+- **control-api refuses what the device would refuse**, so a saved list can never make devices
+  reject the bundle: the `rule_id` pattern, a duplicate id, the action set, a message over 280
+  characters, a link that is not `https://` with a host (lower-case scheme, as the CHECK), and a
+  route outside `protocol.Route`. It also refuses a sanction value other than `sanctioned` or
+  `unsanctioned`, an empty match value and more than 100 rules. Categories and tools are not
+  checked against a set: the catalog does not exist yet, and a tool fingerprint is open.
+- **A warn or block without a message is refused by the dashboard only**, as the brief places it;
+  control-api, the database and the device accept it.
+- **The labels CHECK is a trigger raising `check_violation` under the name
+  `enforcement_rule_labels_known`**; it skips a `labels` value that is not an array and leaves it
+  to the match shape CHECK, because a BEFORE trigger runs before the CHECKs. The shape CHECK uses
+  strict jsonpath: lax mode unwraps arrays, so a lax filter would see the elements.
+- **`message` is `NOT NULL DEFAULT ''`, `link` is nullable**; the bundle always carries `message`
+  and omits an empty `link`, and every match list is sent, empty when it matches anything.
+- **Replacing the list locks the tenant row** (`FOR NO KEY UPDATE`), then deletes and inserts in
+  one transaction; `sac_control` holds `SELECT, INSERT, DELETE` and no `UPDATE`. The audit action
+  is `tenant.enforcement_rules.set` with `previous` and `new` as rule lists.
+- **`GET /admin/v1/settings` gains `data_classes`** (the `ref.data_class` codes, sorted): no
+  existing route served them. The tools picker uses the Settings read's `tools` (the catalogue
+  with the tenant's decisions); the category picker is the fixed set from DESIGN.md §4.
+- **The route display names are the dashboard's** (`RULE_ROUTES` in `settings.js`, in fidelity
+  order): no component held route display names before.
+- **The dashboard reads the rules beside the settings**; when the rules read fails they are
+  "not reported" and nothing can be saved over them. Edits build a draft that is sent whole with
+  "Save rules"; "Discard changes" returns to the list read.
+- **Not changed:** `ops.policy_bundle.feature_state` and the bundle's audit detail do not record
+  the rules; nothing on the device evaluates them (task 12).

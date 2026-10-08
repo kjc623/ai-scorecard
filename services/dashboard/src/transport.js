@@ -13,7 +13,7 @@ import {
   ADMIN_DEPLOYMENT_ENDPOINT, ADMIN_PACKAGE_ENDPOINT, ADMIN_VERIFICATION_ENDPOINT, ADMIN_KEYS_ENDPOINT, ADMIN_SCIM_TOKENS_ENDPOINT,
   ADMIN_SETTINGS_ENDPOINT, ADMIN_SETTINGS_COLLECTION_MODE_ENDPOINT, ADMIN_SETTINGS_SCOPE_OVERRIDE_ENDPOINT,
   ADMIN_SETTINGS_RETENTION_ENDPOINT, ADMIN_SETTINGS_CONTENT_SEARCH_ENDPOINT, ADMIN_SETTINGS_TOOL_SANCTION_ENDPOINT,
-  ADMIN_SETTINGS_ENDPOINT_COLLECTORS_ENDPOINT, ADMIN_SETTINGS_TLS_INSPECTION_ENDPOINT,
+  ADMIN_SETTINGS_ENDPOINT_COLLECTORS_ENDPOINT, ADMIN_SETTINGS_TLS_INSPECTION_ENDPOINT, ADMIN_SETTINGS_RULES_ENDPOINT,
 } from './vocab.js';
 
 /** An error the transport produced, carrying the same shape as an API refusal. */
@@ -352,6 +352,15 @@ export function createAdminApi({ transport }) {
     setTLSInspection(enabled) {
       return done({ method: 'PUT', path: ADMIN_SETTINGS_TLS_INSPECTION_ENDPOINT, body: { enabled } });
     },
+    async rules() {
+      const answer = await call({ method: 'GET', path: ADMIN_SETTINGS_RULES_ENDPOINT });
+      if (!ok(answer.status) || !Array.isArray(answer.body?.rules)) return refused(answer);
+      return { state: 'available', data: normaliseRules(answer.body.rules) };
+    },
+    /** The whole ordered list: control-api replaces the tenant's rules with exactly these. */
+    setRules(rules) {
+      return done({ method: 'PUT', path: ADMIN_SETTINGS_RULES_ENDPOINT, body: { rules } });
+    },
   });
 }
 
@@ -440,6 +449,7 @@ export function normaliseSettings(body) {
     }),
     content_search: ['disabled', 'attachment_names', 'full_text'].includes(body.content_search) ? body.content_search : 'disabled',
     tls_inspection: nullableBoolean(body.tls_inspection),
+    data_classes: Array.isArray(body.data_classes) ? Object.freeze(body.data_classes.filter((c) => typeof c === 'string' && c !== '')) : null,
     tools: Object.freeze(tools),
     devices: Object.freeze(devices),
     endpoint: normaliseEndpoint(body.endpoint),
@@ -447,6 +457,20 @@ export function normaliseSettings(body) {
 }
 
 const nullableBoolean = (value) => (typeof value === 'boolean' ? value : null);
+
+const RULE_MATCH_LISTS = Object.freeze(['labels', 'tools', 'categories', 'sanction', 'routes']);
+
+/** The enforcement rules in their order, every match list an array of strings and no link as ''. */
+export function normaliseRules(rules) {
+  return Object.freeze(rules.filter((r) => r && typeof r === 'object').map((r) => Object.freeze({
+    rule_id: String(r.rule_id ?? ''),
+    action: String(r.action ?? ''),
+    match: Object.freeze(Object.fromEntries(RULE_MATCH_LISTS.map((f) => [f,
+      Object.freeze((Array.isArray(r.match?.[f]) ? r.match[f] : []).filter((v) => typeof v === 'string'))]))),
+    message: typeof r.message === 'string' ? r.message : '',
+    link: typeof r.link === 'string' ? r.link : '',
+  })));
+}
 
 /** The endpoint collector switches: null when the server sent none, and null for a switch it left out. */
 function normaliseEndpoint(endpoint) {

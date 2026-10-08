@@ -443,6 +443,29 @@ CREATE TABLE ops.endpoint_tool_setting (
   PRIMARY KEY (tenant_id, tool_key)
 );
 
+-- The tenant's enforcement rules, in order, delivered in the policy bundle's rules list. The device
+-- applies the first rule whose every non-empty match list matches. The list is replaced as a whole,
+-- so position is dense from 0. A label must be a ref.data_class code (ops.enforce_rule_labels).
+CREATE TABLE ops.enforcement_rule (
+  tenant_id   uuid NOT NULL REFERENCES ops.tenant(tenant_id),
+  position    int NOT NULL CHECK (position >= 0),
+  rule_id     text NOT NULL CHECK (rule_id ~ '^[a-z][a-z0-9_.-]{0,127}$'),
+  action      text NOT NULL CHECK (action IN ('allow','warn','block')),
+  match       jsonb NOT NULL DEFAULT '{}'::jsonb,
+  message     text NOT NULL DEFAULT '' CHECK (char_length(message) <= 280),
+  link        text CHECK (link LIKE 'https://_%'),
+  updated_by  text NOT NULL,
+  updated_at  timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, rule_id),
+  CONSTRAINT enforcement_rule_position_unique UNIQUE (tenant_id, position),
+  -- match holds only the five match lists, each an array of strings.
+  CONSTRAINT enforcement_rule_match_shape CHECK (
+    jsonb_typeof(match) = 'object'
+    AND match - ARRAY['labels','tools','categories','sanction','routes'] = '{}'::jsonb
+    AND NOT jsonb_path_exists(match, 'strict $.* ? (@.type() != "array")')
+    AND NOT jsonb_path_exists(match, 'strict $.*[*] ? (@.type() != "string")', '{}', true))
+);
+
 -- The append-only audit log: every read of subject-level data, mode change, content grant, content
 -- reveal, export and configuration change, written before the data is returned. Append-only three
 -- ways: no runtime role holds UPDATE or DELETE, a trigger refuses both for every role, and each row
@@ -1702,6 +1725,32 @@ CREATE TRIGGER scope_overrides_within_requested
   BEFORE INSERT OR UPDATE OF collection_mode, ceiling_mode, scope_overrides ON ops.tenant
   FOR EACH ROW EXECUTE FUNCTION ops.enforce_scope_overrides();
 
+-- An enforcement rule's labels are classifier classes: a label outside ref.data_class could never
+-- match, so the rule is refused rather than stored silently inert.
+CREATE FUNCTION ops.enforce_rule_labels() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+  v_label text;
+BEGIN
+  -- A labels value that is not an array is left to the match shape CHECK.
+  IF jsonb_typeof(NEW.match->'labels') IS DISTINCT FROM 'array' THEN
+    RETURN NEW;
+  END IF;
+  SELECT l INTO v_label
+    FROM jsonb_array_elements_text(NEW.match->'labels') AS l
+   WHERE NOT EXISTS (SELECT 1 FROM ref.data_class c WHERE c.class_code = l)
+   LIMIT 1;
+  IF FOUND THEN
+    RAISE EXCEPTION 'enforcement rule % names label % outside ref.data_class', NEW.rule_id, v_label
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'enforcement_rule_labels_known';
+  END IF;
+  RETURN NEW;
+END $$;
+
+CREATE TRIGGER enforcement_rule_labels_known
+  BEFORE INSERT OR UPDATE OF match ON ops.enforcement_rule
+  FOR EACH ROW EXECUTE FUNCTION ops.enforce_rule_labels();
+
 -- The audit hash chain: each row hashes its predecessor in the same tenant. The per-tenant advisory
 -- lock stops two concurrent writers from reading the same predecessor and forking the chain.
 CREATE FUNCTION ops.audit_chain() RETURNS trigger
@@ -2111,7 +2160,7 @@ DECLARE
     -- ops
     'ops.user_dim', 'ops.device', 'ops.device_credential', 'ops.collector_state',
     'ops.policy_bundle', 'ops.tool', 'ops.notice_acknowledgement', 'ops.retention_policy',
-    'ops.endpoint_setting', 'ops.endpoint_tool_setting',
+    'ops.endpoint_setting', 'ops.endpoint_tool_setting', 'ops.enforcement_rule',
     'ops.audit', 'ops.grant', 'ops.content', 'ops.retrieval_grant', 'ops.finding_review',
     'ops.erasure_receipt', 'ops.export', 'ops.erasure_request',
     'ops.aggregate_watermark', 'ops.coverage_snapshot',
@@ -2202,6 +2251,9 @@ GRANT SELECT, INSERT, UPDATE ON ops.tenant, ops.user_dim, ops.device, ops.device
       ops.retention_policy, ops.grant, ops.coverage_snapshot, ops.finding_review,
       ops.subscription, ops.endpoint_setting, ops.endpoint_tool_setting
   TO sac_control;
+-- The enforcement rules are replaced as a whole list: the old rows are deleted and the new inserted
+-- in one transaction.
+GRANT SELECT, INSERT, DELETE ON ops.enforcement_rule TO sac_control;
 -- Deciding a content grant reads the tenant's budget; a stored upload adds its bytes to the day's
 -- content counter and to nothing else.
 GRANT SELECT ON ops.usage_daily TO sac_control;
