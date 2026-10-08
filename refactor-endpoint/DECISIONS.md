@@ -955,3 +955,29 @@ decided and why, and for a vendor fact the product version checked.
   control-api's `settings` handler and store `Settings`, outside the brief's named packages.
 - **The catalog SQL orders with `COLLATE "C"`** and `compose` sorts again in Go byte order, so the
   served order never depends on the database's collation.
+
+## 2026-10-08, task 15
+
+- **`Record` gains `Route`.** The brief has the collector pass its route but gives `Emit` no
+  parameter for it; the record carries it, and `Emit` refuses any route but `inv.scan`,
+  `proc.detect` and `net.flow` (counting `errors`), as it refuses a record with no `AppKey` or no
+  time.
+- **`Stop` takes the collector's counter set**, `Stop(ctx, collector, Record)`: the brief's
+  `Stop(ctx, Record)` has no set to count `observed` on. It changes no state; the start key alone
+  decides whether a second start the same day is emitted.
+- **The key's `user_ref` is `Record.UserRef`**, or `Person.UserRef` when `UserRef` is empty. The
+  envelope is attributed to `Person` when set, else to `UserRef` alone (so `unattributed` is never
+  replaced by the console user), else to the pipeline's identity.
+- **The day boundary is the clock's UTC day; the key's day is `OccurredAt`'s.** The seen set is
+  emptied when the clock's day changes, and the budget is the number of keys emitted that day, so
+  a restart neither re-emits nor refills the budget.
+- **A key is marked seen only after `Pipeline.Record` succeeds.** A failed record (`errors`) is
+  retried on the next attempt; a record past the budget is not marked, so each later attempt that
+  day counts `dropped` again. A failed write of the seen file counts `errors` and keeps the key in
+  memory.
+- **A seen file that cannot be read or decoded at construction** (bad JSON or an unparseable day)
+  is replaced with an empty one for today, and counted as one `errors` on the first collector set
+  the emitter next counts on, since construction has none.
+- **No bundle in force means a budget of zero**: every record counts `dropped`.
+- **`monotonic_offset_ms`** is milliseconds since the emitter was built, from its clock, as the
+  OTLP normalizers do.
