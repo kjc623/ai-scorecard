@@ -8,6 +8,7 @@ import (
 
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 
+	"github.com/shadow-ai-capture/device/capture-core/core"
 	"github.com/shadow-ai-capture/device/capture-core/dedup"
 )
 
@@ -66,6 +67,20 @@ func attrMessage(attrs []*commonpb.KeyValue) (msg userMessage, found bool, err e
 	}
 	return nil, false, nil
 }
+
+// LatestUserMessage applies attrMessage's rule for a tool's own normalizer: the latest user
+// message behind a reader, with the length the reader returns, so the text is read only when the
+// pipeline's mode permits. The error never quotes the value.
+func LatestUserMessage(attrs []*commonpb.KeyValue) (msg core.ContentReader, size int64, found bool, err error) {
+	m, found, err := attrMessage(attrs)
+	if !found || err != nil {
+		return nil, 0, found, err
+	}
+	return m, m.size(), true, nil
+}
+
+// ExtractText is the extraction for a prompt whose content is already the user's text.
+var ExtractText core.Extractor = core.ExtractorFunc(extractText)
 
 // lastUserMessage is the text of the last message when it is the user's. A message is the semconv
 // form {role, parts: [{type: "text", content}]} or the older OpenAI form {role, content}, where
