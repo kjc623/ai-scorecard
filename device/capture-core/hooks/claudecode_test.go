@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/shadow-ai-capture/device/capture-core/hooks"
 	"github.com/shadow-ai-capture/device/capture-core/policy"
@@ -139,6 +140,82 @@ func TestClaudeCodeRender(t *testing.T) {
 		if out, code := a.Allow(event); len(out) != 0 || code != 0 {
 			t.Fatalf("Allow(%s) = %q, %d; want no output and exit code 0", event, out, code)
 		}
+	}
+}
+
+// coachingMessage is as long as a rule's message may be, with characters a tool might escape or
+// mangle: an ampersand, a hash and curly quotes.
+const coachingMessage = "Customer data must not go to AI tools we have not approved. Use Contoso Assistant instead: " +
+	"it keeps prompts in our tenant & retains nothing outside it. Paste the same request there, or ask the security " +
+	"team in #ai-help if it cannot help. See “Approved AI tools” at the link below."
+
+const coachingLink = "https://intranet.example/ai/approved-tools?from=hook&rule=redirect_customer_data"
+
+// coachingDecision is a rule's warn or block with the longest message and a link.
+func coachingDecision(t *testing.T, action protocol.HookAction) protocol.HookDecision {
+	t.Helper()
+	if n := utf8.RuneCountInString(coachingMessage); n != policy.MaxRuleMessage {
+		t.Fatalf("the message has %d characters, want %d", n, policy.MaxRuleMessage)
+	}
+	d := protocol.HookDecision{Action: action, RuleID: "redirect_customer_data", Message: coachingMessage, Link: coachingLink}
+	if err := d.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
+// renderGolden renders d for event and compares the output with the golden file. Each field in
+// shown, a dotted path to what the tool's documentation says it shows the user, must carry the
+// whole message with the link on a line of its own.
+func renderGolden(t *testing.T, a hooks.Adapter, event string, d protocol.HookDecision, golden string, shown ...string) {
+	t.Helper()
+	out, code := a.Render(event, d)
+	if code != 0 {
+		t.Fatalf("exit code %d, want 0", code)
+	}
+	want, err := os.ReadFile(golden)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A Windows checkout may end the golden file with CRLF.
+	if got, w := strings.TrimSuffix(string(out), "\n"), strings.TrimRight(string(want), "\r\n"); got != w {
+		t.Fatalf("Render =\n%s\nwant (%s)\n%s", got, golden, w)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(out, &doc); err != nil {
+		t.Fatalf("the output is not a JSON object: %v", err)
+	}
+	for _, path := range shown {
+		var v any = doc
+		for _, key := range strings.Split(path, ".") {
+			obj, _ := v.(map[string]any)
+			v = obj[key]
+		}
+		if v != coachingMessage+"\n"+coachingLink {
+			t.Errorf("%s is %q, want the whole message with the link on its own line", path, v)
+		}
+	}
+}
+
+// The documentation says Claude Code shows systemMessage to the user, and a blocked prompt's
+// reason; a tool call's deny reason goes to Claude, so the deny also carries a systemMessage. The
+// device phase replaces these files with what Claude Code is seen to show.
+func TestClaudeCodeRendersACoachingMessageWithALink(t *testing.T) {
+	a := claudeCodeAdapter(t)
+	for _, c := range []struct {
+		event  string
+		action protocol.HookAction
+		golden string
+		shown  []string
+	}{
+		{"UserPromptSubmit", protocol.HookWarn, "user-prompt-submit-warn.json", []string{"systemMessage"}},
+		{"UserPromptSubmit", protocol.HookBlock, "user-prompt-submit-block.json", []string{"reason"}},
+		{"PreToolUse", protocol.HookWarn, "pre-tool-use-warn.json", []string{"systemMessage"}},
+		{"PreToolUse", protocol.HookBlock, "pre-tool-use-block.json", []string{"systemMessage", "hookSpecificOutput.permissionDecisionReason"}},
+	} {
+		t.Run(c.golden, func(t *testing.T) {
+			renderGolden(t, a, c.event, coachingDecision(t, c.action), filepath.Join("testdata/claude-code/render", c.golden), c.shown...)
+		})
 	}
 }
 

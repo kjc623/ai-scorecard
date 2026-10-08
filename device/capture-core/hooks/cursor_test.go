@@ -152,6 +152,27 @@ func TestCursorCanEnforceBothEvents(t *testing.T) {
 	}
 }
 
+// Cursor shows user_message to the user, by the sources the adapter follows; whether it shows one
+// on a prompt or tool call that goes ahead is not documented. The device phase replaces these files
+// with what Cursor is seen to show.
+func TestCursorRendersACoachingMessageWithALink(t *testing.T) {
+	a := cursorAdapter(t)
+	for _, c := range []struct {
+		event  string
+		action protocol.HookAction
+		golden string
+	}{
+		{"beforeSubmitPrompt", protocol.HookWarn, "before-submit-prompt-warn.json"},
+		{"beforeSubmitPrompt", protocol.HookBlock, "before-submit-prompt-block.json"},
+		{"beforeMCPExecution", protocol.HookWarn, "before-mcp-execution-warn.json"},
+		{"beforeMCPExecution", protocol.HookBlock, "before-mcp-execution-block.json"},
+	} {
+		t.Run(c.golden, func(t *testing.T) {
+			renderGolden(t, a, c.event, coachingDecision(t, c.action), filepath.Join("testdata/cursor/render", c.golden), "user_message")
+		})
+	}
+}
+
 // The documented prompt, parsed by the adapter and decided by the relay under a block rule on
 // credential with Cursor's hooks on, renders as a stopped prompt with the rule's message, and is
 // recorded on tool.hook as blocked for app:cursor.
