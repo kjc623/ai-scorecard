@@ -365,6 +365,114 @@ func TestComposeInterceptionEnabled(t *testing.T) {
 	}
 }
 
+// sectionOf is one top-level member of the served bundle, re-encoded with sorted keys.
+func sectionOf(t *testing.T, envelope []byte, name string) string {
+	t.Helper()
+	p, _ := payloadOf(t, envelope)
+	v, ok := p[name]
+	if !ok {
+		t.Fatalf("the payload has no %s", name)
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// TestComposeRulesAndSanctionedTools: a tenant with neither is served two empty lists, named in the
+// payload; its rules are served in its order with every match list, and its sanctioned tools sorted.
+// A rule change and a sanction change each mint a new version; un-sanctioning a tool takes it out.
+func TestComposeRulesAndSanctionedTools(t *testing.T) {
+	r := newRig(t, nil)
+	ctx := context.Background()
+	audit := store.AuditEntry{TenantID: tenantA, ActorType: store.ActorUser, ActorID: "admin@contoso.example", Action: "test", ObjectType: "tenant", ObjectID: tenantA}
+
+	v1, err := r.svc.Current(ctx, tenantA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sectionOf(t, v1.Envelope, "rules"); got != `[]` {
+		t.Fatalf("rules without any = %s, want []", got)
+	}
+	if got := sectionOf(t, v1.Envelope, "sanctioned_tools"); got != `[]` {
+		t.Fatalf("sanctioned_tools without any = %s, want []", got)
+	}
+
+	rules := []store.EnforcementRule{
+		{RuleID: "block_credentials", Action: "block", Match: store.RuleMatch{Labels: []string{"credential"}},
+			Message: "Remove the credential and try again.", Link: "https://intranet.example/ai"},
+		{RuleID: "warn_unsanctioned", Action: "warn", Match: store.RuleMatch{Categories: []string{"coding_agent"}, Sanction: []string{"unsanctioned"}},
+			Message: "Use the approved coding agent."},
+		{RuleID: "allow_rest", Action: "allow", Match: store.RuleMatch{Routes: []string{"tool.hook"}}},
+	}
+	if err := r.store.ReplaceEnforcementRules(ctx, tenantA, rules, audit); err != nil {
+		t.Fatal(err)
+	}
+	v2, err := r.svc.Current(ctx, tenantA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !newer(v2.Version, v1.Version) {
+		t.Fatalf("changed rules: version %s, want newer than %s", v2.Version, v1.Version)
+	}
+	wantRules := canonical(t, `[
+	  {"rule_id":"block_credentials","action":"block","match":{"labels":["credential"],"tools":[],"categories":[],"sanction":[],"routes":[]},
+	   "message":"Remove the credential and try again.","link":"https://intranet.example/ai"},
+	  {"rule_id":"warn_unsanctioned","action":"warn","match":{"labels":[],"tools":[],"categories":["coding_agent"],"sanction":["unsanctioned"],"routes":[]},
+	   "message":"Use the approved coding agent."},
+	  {"rule_id":"allow_rest","action":"allow","match":{"labels":[],"tools":[],"categories":[],"sanction":[],"routes":["tool.hook"]},"message":""}]`)
+	if got := sectionOf(t, v2.Envelope, "rules"); got != wantRules {
+		t.Fatalf("rules:\n got %s\nwant %s", got, wantRules)
+	}
+
+	sanction := func(fp, state string) {
+		t.Helper()
+		if err := r.store.SetToolSanction(ctx, tenantA, fp, state, audit); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sanction("app:cursor", "sanctioned")
+	sanction("app:claude_code", "sanctioned")
+	sanction("app:windsurf", "unsanctioned")
+	v3, err := r.svc.Current(ctx, tenantA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !newer(v3.Version, v2.Version) {
+		t.Fatalf("changed sanctions: version %s, want newer than %s", v3.Version, v2.Version)
+	}
+	if got := sectionOf(t, v3.Envelope, "sanctioned_tools"); got != `["app:claude_code","app:cursor"]` {
+		t.Fatalf("sanctioned_tools = %s", got)
+	}
+	if again, _ := r.svc.Current(ctx, tenantA); again.Version != v3.Version {
+		t.Fatalf("version moved to %s with no change", again.Version)
+	}
+
+	sanction("app:cursor", "unknown")
+	v4, err := r.svc.Current(ctx, tenantA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !newer(v4.Version, v3.Version) || sectionOf(t, v4.Envelope, "sanctioned_tools") != `["app:claude_code"]` {
+		t.Fatalf("un-sanctioning: version %s after %s, sanctioned_tools %s", v4.Version, v3.Version, sectionOf(t, v4.Envelope, "sanctioned_tools"))
+	}
+
+	// Reordering the same rules is a change too: the first match wins on the device.
+	if err := r.store.ReplaceEnforcementRules(ctx, tenantA, []store.EnforcementRule{rules[2], rules[0], rules[1]}, audit); err != nil {
+		t.Fatal(err)
+	}
+	v5, err := r.svc.Current(ctx, tenantA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, _ := payloadOf(t, v5.Envelope)
+	first := p["rules"].([]any)[0].(map[string]any)["rule_id"]
+	if !newer(v5.Version, v4.Version) || first != "allow_rest" {
+		t.Fatalf("reordered rules: version %s after %s, first rule %v", v5.Version, v4.Version, first)
+	}
+}
+
 func TestIfNoneMatchAnswers304(t *testing.T) {
 	r := newRig(t, nil)
 	first := r.get(t, "")
@@ -590,6 +698,20 @@ func TestServedBundleVerifiesWithTheDevicesVerifier(t *testing.T) {
 	if err := r.store.SetTLSInspection(context.Background(), tenantA, true, audit); err != nil {
 		t.Fatal(err)
 	}
+	// Rules using every field and match list, and two sanctioned tools.
+	if err := r.store.ReplaceEnforcementRules(context.Background(), tenantA, []store.EnforcementRule{
+		{RuleID: "block_credentials", Action: "block", Match: store.RuleMatch{Labels: []string{"credential"}, Tools: []string{"app:cursor"},
+			Categories: []string{"ide"}, Sanction: []string{"unsanctioned"}, Routes: []string{"proxy.tls", "tool.hook"}},
+			Message: "Remove the credential and try again.", Link: "https://intranet.example/ai"},
+		{RuleID: "allow.rest", Action: "allow"},
+	}, audit); err != nil {
+		t.Fatal(err)
+	}
+	for _, fp := range []string{"app:claude_code", "app:cursor"} {
+		if err := r.store.SetToolSanction(context.Background(), tenantA, fp, "sanctioned", audit); err != nil {
+			t.Fatal(err)
+		}
+	}
 	rec := r.get(t, "")
 	var resp protocol.PolicyResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
@@ -637,12 +759,16 @@ func main() {
 		fmt.Println("ERR", res.Outcome, res.Cause, res.Err)
 		os.Exit(1)
 	}
-	// The endpoint section as the device decoded it, in the device's JSON names, keys sorted.
-	var endpoint any
-	raw, _ = json.Marshal(b.Endpoint)
-	_ = json.Unmarshal(raw, &endpoint)
-	raw, _ = json.Marshal(endpoint)
-	fmt.Println("OK", res.Outcome, b.Version, b.TenantDefault, b.Interception.Enabled, len(b.Interception.SeedHosts), b.CLIShim.ProxyAddr, b.Interception.PacListen, b.Intercepts("api.openai.com", 443), string(raw))
+	// The endpoint section, the rules and the sanctioned tools as the device decoded them, in the
+	// device's JSON names, keys sorted.
+	sorted := func(v any) string {
+		var doc any
+		raw, _ := json.Marshal(v)
+		_ = json.Unmarshal(raw, &doc)
+		raw, _ = json.Marshal(doc)
+		return string(raw)
+	}
+	fmt.Println("OK", res.Outcome, b.Version, b.TenantDefault, b.Interception.Enabled, len(b.Interception.SeedHosts), b.CLIShim.ProxyAddr, b.Interception.PacListen, b.Intercepts("api.openai.com", 443), sorted(b.Endpoint), sorted(b.Rules), sorted(b.SanctionedTools))
 }
 `
 	for name, body := range map[string]string{"go.mod": gomod, "main.go": program} {
@@ -661,9 +787,13 @@ func main() {
 	if err != nil {
 		t.Fatalf("capture-core's verifier refused the served bundle: %v\n%s", err, out)
 	}
-	// The device's re-encoding of the endpoint section equals the served one: every name matched,
-	// and no value was dropped on the way.
-	want := "OK accepted " + resp.BundleVersion + " m3 true 3 " + policyserve.DefaultProxyListen + " " + policyserve.PACListen + " true " + endpointOf(t, resp.SignedBundle)
+	// The device's re-encoding of the endpoint section, the rules and the sanctioned tools equals the
+	// served one: every name matched, and no value was dropped on the way.
+	want := "OK accepted " + resp.BundleVersion + " m3 true 3 " + policyserve.DefaultProxyListen + " " + policyserve.PACListen + " true " + endpointOf(t, resp.SignedBundle) +
+		" " + sectionOf(t, resp.SignedBundle, "rules") + " " + sectionOf(t, resp.SignedBundle, "sanctioned_tools")
+	if !strings.Contains(want, `"link":"https://intranet.example/ai"`) || !strings.Contains(want, `"routes":["proxy.tls","tool.hook"]`) || !strings.HasSuffix(want, `["app:claude_code","app:cursor"]`) {
+		t.Fatalf("the served bundle does not carry the rules and sanctioned tools under test: %s", want)
+	}
 	if got := strings.TrimSpace(string(out)); !strings.HasSuffix(got, want) {
 		t.Fatalf("verifier output %q, want %q", got, want)
 	}

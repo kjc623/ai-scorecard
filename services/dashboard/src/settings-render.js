@@ -7,7 +7,10 @@
 
 import { escapeHtml } from './render.js';
 import { formatInstant } from './format.js';
-import { COLLECTION_MODES, SEARCH_TIERS, SANCTION_STATES, ENDPOINT_COLLECTORS, ENDPOINT_TOOLS, effectiveMode, modeIncreaseNeedsConfirmation, searchTierAllowed } from './settings.js';
+import {
+  COLLECTION_MODES, SEARCH_TIERS, SANCTION_STATES, ENDPOINT_COLLECTORS, ENDPOINT_TOOLS, effectiveMode, modeIncreaseNeedsConfirmation, searchTierAllowed,
+  RULE_ACTIONS, RULE_CATEGORIES, RULE_SANCTIONS, RULE_ROUTES, RULE_MATCH_FIELDS, MAX_RULES, MAX_RULE_MESSAGE,
+} from './settings.js';
 
 const MODE_LABELS = Object.freeze({ m0: 'M0 · metadata', m1: 'M1 · digest & labels', m2: 'M2 · excerpt', m3: 'M3 · prompt' });
 const SEARCH_LABELS = Object.freeze({ disabled: 'Off', attachment_names: 'Attachment names', full_text: 'Full text' });
@@ -243,6 +246,109 @@ function stTLSInspection(state) {
   return stCard('TLS inspection', body);
 }
 
+const ACTION_LABELS = Object.freeze({ allow: 'Allow', warn: 'Warn', block: 'Block' });
+const MATCH_TITLES = Object.freeze({ labels: 'Labels', tools: 'Tools', categories: 'Categories', sanction: 'Sanction', routes: 'Routes' });
+const CATEGORY_LABELS = Object.freeze(Object.fromEntries(RULE_CATEGORIES.map((c) => [c.key, c.label])));
+const ROUTE_LABELS = Object.freeze(Object.fromEntries(RULE_ROUTES.map((r) => [r.key, r.label])));
+
+/** The options each condition picker offers, as [value, label]: the known set, plus any value a rule already holds. */
+function matchOptions(field, data, current) {
+  const known = {
+    labels: () => (data.data_classes ?? []).map((c) => [c, c]),
+    tools: () => data.tools.map((t) => [t.tool_fingerprint, t.display_name ?? t.tool_fingerprint]),
+    categories: () => RULE_CATEGORIES.map((c) => [c.key, c.label]),
+    sanction: () => RULE_SANCTIONS.map((s) => [s, s]),
+    routes: () => RULE_ROUTES.map((r) => [r.key, r.label]),
+  }[field]();
+  const extra = current.filter((v) => !known.some(([k]) => k === v)).map((v) => [v, v]);
+  return known.concat(extra);
+}
+
+/** A match value as the table shows it. */
+function matchValueLabel(field, value, data) {
+  if (field === 'tools') return data.tools.find((t) => t.tool_fingerprint === value)?.display_name ?? value;
+  if (field === 'categories') return CATEGORY_LABELS[value] ?? value;
+  if (field === 'routes') return ROUTE_LABELS[value] ?? value;
+  return value;
+}
+
+function ruleConditions(rule, data) {
+  const parts = RULE_MATCH_FIELDS.filter((f) => rule.match[f].length > 0).map((f) => `<span class="dp-sub">${escapeHtml(MATCH_TITLES[f])}</span>`
+    + rule.match[f].map((v) => `<span class="v-text">${escapeHtml(matchValueLabel(f, v, data))}</span>`).join(' or '));
+  return parts.length ? parts.join('') : '<span class="v-text">Any submission</span>';
+}
+
+function stRuleEditor(state) {
+  const { index, rule, problem } = state.rules.editor;
+  const data = state.data;
+  const field = (name, label, value, attrs = '') => `<label class="dp-label" for="st-rule-${name}">${escapeHtml(label)}</label>`
+    + `<input class="dp-input" id="st-rule-${name}" data-rule-draft="${name}" value="${escapeHtml(value)}" autocomplete="off"${attrs}>`;
+  const actions = RULE_ACTIONS.map((a) => segItem(ACTION_LABELS[a], a, rule.action, { action: 'rule-action', value: a })).join('');
+  const pickers = RULE_MATCH_FIELDS.map((f) => {
+    const current = rule.match[f];
+    const options = matchOptions(f, data, current);
+    const items = options.length === 0
+      ? `<span class="v-absent">${f === 'labels' && data.data_classes === null ? 'not reported' : 'none known yet'}</span>`
+      : `<div class="seg dp-seg" style="flex-wrap:wrap;border-radius:14px" role="group" aria-label="${escapeHtml(MATCH_TITLES[f])}">`
+        + options.map(([value, label]) => `<button type="button" class="seg-item" aria-pressed="${current.includes(value)}" data-action="rule-match" data-field="${f}" data-value="${escapeHtml(value)}">${escapeHtml(label)}</button>`).join('')
+        + '</div>';
+    return `<span class="dp-label">${escapeHtml(MATCH_TITLES[f])}</span>${items}`;
+  }).join('');
+  return `<div class="dp-form" data-rule-editor="${index === null ? 'new' : index}">`
+    + `<p class="dp-note"><strong>${index === null ? 'New rule' : `Rule ${index + 1}`}</strong></p>`
+    + field('rule_id', 'Rule id', rule.rule_id, ' placeholder="block_credentials" spellcheck="false"')
+    + '<span class="dp-label">Action</span>'
+    + `<div class="seg dp-seg" role="group" aria-label="Action">${actions}</div>`
+    + '<p class="dp-note">Conditions: a rule matches when every list with a choice matches one of its choices. A list with no choice matches anything.</p>'
+    + pickers
+    + field('message', 'Message', rule.message, ` maxlength="${MAX_RULE_MESSAGE}" placeholder="Shown to the person; needed for warn and block"`)
+    + field('link', 'Link (optional)', rule.link, ' placeholder="https://" spellcheck="false"')
+    + '<div class="dp-actions">'
+    + stButton('Keep rule', { action: 'rule-apply' }, { kind: 'primary', small: true })
+    + stButton('Cancel', { action: 'rule-cancel' }, { kind: 'quiet', small: true })
+    + '</div>'
+    + stProblem(problem, 'Not kept.')
+    + '</div>';
+}
+
+function stRules(state) {
+  const data = state.data;
+  const list = state.rules.draft ?? data.rules;
+  if (list === null) {
+    return stCard('Enforcement rules', '<p><span class="v-absent">not reported</span> The server did not send the enforcement rules.</p>'
+      + stProblem(state.rules.problem), { wide: true });
+  }
+  const busy = Boolean(state.rules.pending);
+  const locked = busy || Boolean(state.rules.editor);
+  const rows = list.map((rule, i) => '<tr>'
+    + `<td>${i + 1}</td>`
+    + `<td>${stChip(rule.action)}</td>`
+    + `<td>${ruleConditions(rule, data)}</td>`
+    + `<td>${rule.message ? `<span class="v-text">${escapeHtml(rule.message)}</span>` : '<span class="v-absent">none</span>'}`
+    + (rule.link ? `<span class="dp-sub">${escapeHtml(rule.link)}</span>` : '') + '</td>'
+    + '<td class="dp-action">'
+    + stButton('Up', { action: 'rule-up', index: String(i) }, { kind: 'quiet', small: true, disabled: locked || i === 0 })
+    + stButton('Down', { action: 'rule-down', index: String(i) }, { kind: 'quiet', small: true, disabled: locked || i === list.length - 1 })
+    + stButton('Edit', { action: 'rule-edit', index: String(i) }, { kind: 'quiet', small: true, disabled: locked })
+    + stButton('Delete', { action: 'rule-delete', index: String(i) }, { kind: 'quiet', small: true, disabled: locked })
+    + '</td></tr>').join('');
+  const empty = list.length === 0 ? '<tr class="row-empty"><td colspan="5">No rules. Every submission is logged.</td></tr>' : '';
+  const unsaved = state.rules.draft !== null;
+  const body = '<p>The first rule that matches a submission decides what happens to it; a submission no rule matches is logged. <em>Warn</em> and <em>block</em> show the message to the person. The list reaches each device on its next policy poll once it is saved.</p>'
+    + '<div class="table-scroll dp-flush"><table><thead><tr><th scope="col">#</th><th scope="col">Action</th><th scope="col">Conditions</th><th scope="col">Message</th><th scope="col"><span class="sr">Order and edit</span></th></tr></thead>'
+    + `<tbody>${rows}${empty}</tbody></table></div>`
+    + (state.rules.editor ? stRuleEditor(state) : '')
+    + '<div class="dp-actions">'
+    + stButton('Add rule', { action: 'rule-add' }, { small: true, disabled: locked || list.length >= MAX_RULES })
+    + (unsaved ? stButton(busy ? 'Saving…' : 'Save rules', { action: 'rules-save' }, { kind: 'primary', small: true, disabled: locked })
+      + stButton('Discard changes', { action: 'rules-discard' }, { kind: 'quiet', small: true, disabled: busy }) : '')
+    + '</div>'
+    + (unsaved && !busy ? '<p class="dp-note" role="status">Unsaved changes: devices keep the saved list until you save.</p>' : '')
+    + (busy ? '<p class="dp-note" role="status">Saving…</p>' : '')
+    + stProblem(state.rules.problem);
+  return stCard('Enforcement rules', body, { wide: true });
+}
+
 function stDevices(state) {
   const devices = state.data.devices;
   const rows = devices.map((d) => '<tr>'
@@ -284,6 +390,7 @@ export function renderSettings(state, { eyebrow = 'Settings' } = {}) {
     + stTools(state)
     + `<div class="dp-grid">${stTLSInspection(state)}</div>`
     + stEndpoint(state)
+    + stRules(state)
     + stDevices(state)
     + notes
     + '</article>';

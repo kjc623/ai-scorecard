@@ -2,8 +2,9 @@
 //
 // A tenant's bundle is composed from what the database says about it: the tenant's ceiling as the
 // default collection mode, its TLS inspection setting and the tool catalogue's TLS hosts as the
-// interception scope, and the tenant's endpoint collector settings. It is signed with the vendor's Ed25519 policy key in the
-// envelope the agent verifies, and stored with the exact signed bytes. A new version is minted only when the
+// interception scope, the tenant's endpoint collector settings, its enforcement rules and the tools
+// it has sanctioned. It is signed with the vendor's Ed25519 policy key in the envelope the agent
+// verifies, and stored with the exact signed bytes. A new version is minted only when the
 // composition or the signing key differs from the latest stored bundle; otherwise the stored bytes
 // are served again, so the ETag a device holds stays valid until something it would enforce
 // changes. Composition happens on the read path under a per-tenant lock, so the first poll after an
@@ -288,8 +289,30 @@ func (s *Service) compose(in store.PolicyInputs) (*Bundle, error) {
 			NoProxy:     append([]string(nil), s.cfg.NoProxy...),
 			NodeRequire: true,
 		},
-		Endpoint: composeEndpoint(in.Endpoint),
+		Endpoint:        composeEndpoint(in.Endpoint),
+		Rules:           composeRules(in.Rules),
+		SanctionedTools: sanctioned(in.SanctionedTools),
 	}, nil
+}
+
+// composeRules is the bundle's rules list, in the tenant's order.
+func composeRules(rules []store.EnforcementRule) []Rule {
+	list := func(v []string) []string { return append([]string{}, v...) }
+	out := make([]Rule, 0, len(rules))
+	for _, r := range rules {
+		m := r.Match
+		out = append(out, Rule{RuleID: r.RuleID, Action: r.Action, Message: r.Message, Link: r.Link,
+			Match: RuleMatch{Labels: list(m.Labels), Tools: list(m.Tools), Categories: list(m.Categories),
+				Sanction: list(m.Sanction), Routes: list(m.Routes)}})
+	}
+	return out
+}
+
+// sanctioned is the sorted sanctioned fingerprints, never nil.
+func sanctioned(fps []string) []string {
+	out := append([]string{}, fps...)
+	sort.Strings(out)
+	return out
 }
 
 // composeEndpoint is the bundle's endpoint section for the tenant's settings.

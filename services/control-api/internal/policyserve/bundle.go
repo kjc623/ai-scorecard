@@ -26,6 +26,32 @@ type Bundle struct {
 	Interception Interception `json:"interception"`
 	CLIShim      CLIShim      `json:"cli_shim"`
 	Endpoint     Endpoint     `json:"endpoint"`
+
+	// Rules is the tenant's enforcement rules in order; the first that matches decides. Never
+	// omitted, so the drift test sees the name.
+	Rules []Rule `json:"rules"`
+	// SanctionedTools is the tool fingerprints the tenant has sanctioned, sorted: what a rule's
+	// sanction list is decided against.
+	SanctionedTools []string `json:"sanctioned_tools"`
+}
+
+// Rule is one enforcement rule. Action is allow, warn or block.
+type Rule struct {
+	RuleID  string    `json:"rule_id"`
+	Action  string    `json:"action"`
+	Match   RuleMatch `json:"match"`
+	Message string    `json:"message"`
+	Link    string    `json:"link,omitempty"`
+}
+
+// RuleMatch is a rule's conditions: every non-empty list must match, with OR inside a list. Every
+// list is sent, empty when it matches anything.
+type RuleMatch struct {
+	Labels     []string `json:"labels"`
+	Tools      []string `json:"tools"`
+	Categories []string `json:"categories"`
+	Sanction   []string `json:"sanction"`
+	Routes     []string `json:"routes"`
 }
 
 // Interception is the decryption scope. The per-device root CA is deliberately absent: the device

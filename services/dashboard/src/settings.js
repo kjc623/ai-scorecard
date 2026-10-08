@@ -3,7 +3,8 @@
 // The page an admin uses to change what the tenant collects and keeps: the collection mode (within
 // the ceiling) with an optional narrower per-tool override, the event and content retention
 // periods, the sanction decision per tool, the content search tier, which endpoint collectors
-// run on the devices, and whether devices inspect TLS. Every read and write goes
+// run on the devices, whether devices inspect TLS, and the ordered enforcement rules. Every read
+// and write goes
 // through the admin api (transport.js), which control-api answers for an admin only and audits with
 // the real actor, the old value and the new value.
 //
@@ -29,6 +30,95 @@ export const ENDPOINT_TOOLS = Object.freeze([
   Object.freeze({ key: 'copilot', label: 'Copilot', otel: true, hooks: false }),
   Object.freeze({ key: 'cursor', label: 'Cursor', otel: false, hooks: true }),
 ]);
+
+/** What an enforcement rule does to a submission it matches. */
+export const RULE_ACTIONS = Object.freeze(['allow', 'warn', 'block']);
+
+/** The app catalog's categories, which a rule may match. */
+export const RULE_CATEGORIES = Object.freeze([
+  Object.freeze({ key: 'chat_assistant', label: 'Chat assistant' }),
+  Object.freeze({ key: 'coding_agent', label: 'Coding agent' }),
+  Object.freeze({ key: 'ide_assistant', label: 'IDE assistant' }),
+  Object.freeze({ key: 'ide', label: 'IDE' }),
+  Object.freeze({ key: 'local_runtime', label: 'Local model runtime' }),
+  Object.freeze({ key: 'inference_api', label: 'Inference API' }),
+  Object.freeze({ key: 'ai_feature', label: 'AI feature' }),
+]);
+
+export const RULE_SANCTIONS = Object.freeze(['sanctioned', 'unsanctioned']);
+
+/** The collection routes, in fidelity order, by the name the page shows. */
+export const RULE_ROUTES = Object.freeze([
+  Object.freeze({ key: 'tool.hook', label: 'Tool hooks' }),
+  Object.freeze({ key: 'ext.page_context', label: 'Browser extension (page)' }),
+  Object.freeze({ key: 'tool.otel', label: 'Tool telemetry' }),
+  Object.freeze({ key: 'cli.shim', label: 'Command-line shim' }),
+  Object.freeze({ key: 'proxy.loopback', label: 'Local model broker' }),
+  Object.freeze({ key: 'ext.web_request', label: 'Browser extension (request)' }),
+  Object.freeze({ key: 'proxy.tls', label: 'TLS proxy' }),
+  Object.freeze({ key: 'ext.dom', label: 'Browser extension (page text)' }),
+  Object.freeze({ key: 'proc.detect', label: 'Process detection' }),
+  Object.freeze({ key: 'inv.scan', label: 'Installed-app scan' }),
+  Object.freeze({ key: 'net.flow', label: 'Network connections' }),
+]);
+
+/** A rule's match lists, in the order the editor shows them. */
+export const RULE_MATCH_FIELDS = Object.freeze(['labels', 'tools', 'categories', 'sanction', 'routes']);
+
+export const MAX_RULES = 100;
+export const MAX_RULE_MESSAGE = 280;
+
+const RULE_ID = /^[a-z][a-z0-9_.-]{0,127}$/;
+
+/** An https URL with a host, spelled as control-api accepts it. */
+function httpsLink(link) {
+  if (!link.startsWith('https://')) return false;
+  try {
+    return new URL(link).hostname !== '';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Why a rule cannot be kept as written, or null. `others` is the rest of the list, whose ids it must
+ * not repeat. A warn or block shows its message to the person, so it needs one; an allow may have
+ * none.
+ */
+export function ruleProblem(rule, others = []) {
+  const problem = (message) => Object.freeze({ code: 'invalid_rule', message });
+  if (!RULE_ID.test(rule.rule_id)) return problem('The rule id must start with a lower-case letter and use only lower-case letters, digits, "_", "." or "-" (at most 128).');
+  if (others.some((r) => r.rule_id === rule.rule_id)) return problem(`Another rule already has the id ${rule.rule_id}.`);
+  if (!RULE_ACTIONS.includes(rule.action)) return problem('Choose allow, warn or block.');
+  const length = [...rule.message].length;
+  if (rule.action !== 'allow' && rule.message.trim() === '') return problem('A warn or block rule needs a message for the person it stops.');
+  if (length > MAX_RULE_MESSAGE) return problem(`The message is ${length} characters; at most ${MAX_RULE_MESSAGE}.`);
+  if (rule.link !== '' && !httpsLink(rule.link)) return problem('The link must be an https:// address.');
+  return null;
+}
+
+const BLANK_RULE = Object.freeze({
+  rule_id: '', action: 'block', message: '', link: '',
+  match: Object.freeze(Object.fromEntries(RULE_MATCH_FIELDS.map((f) => [f, Object.freeze([])]))),
+});
+
+/** A rule as the editor holds it: every field a string, every match list an array. */
+function editable(rule) {
+  return Object.freeze({
+    rule_id: rule.rule_id ?? '',
+    action: rule.action ?? 'block',
+    message: rule.message ?? '',
+    link: rule.link ?? '',
+    match: Object.freeze(Object.fromEntries(RULE_MATCH_FIELDS.map((f) => [f, Object.freeze([...(rule.match?.[f] ?? [])])]))),
+  });
+}
+
+/** A rule as control-api takes it: no link when there is none. */
+function wire(rule) {
+  const out = { rule_id: rule.rule_id, action: rule.action, match: Object.fromEntries(RULE_MATCH_FIELDS.map((f) => [f, [...rule.match[f]]])), message: rule.message };
+  if (rule.link) out.link = rule.link;
+  return out;
+}
 
 /** The rank of each collection mode, mirrored from the database's ops.mode_rank. */
 const MODE_RANK = Object.freeze({ m0: 0, m1: 1, m2: 2, m3: 3 });
@@ -64,6 +154,9 @@ const IDLE = Object.freeze({
   sanction: Object.freeze({ pending: null, problem: null }),
   endpoint: Object.freeze({ pending: null, problem: null }),
   tls: Object.freeze({ pending: null, problem: null }),
+  // draft is the list being edited, null while it is the one read; editor is the rule open for
+  // editing, at index (null for a new rule).
+  rules: Object.freeze({ draft: null, editor: null, pending: null, problem: null }),
 });
 
 /** A switch button's data-value: 'on' or 'off', anything else is no value. */
@@ -71,6 +164,7 @@ const onOff = (value) => (value === 'on' ? true : value === 'off' ? false : null
 
 const NOT_READ = Object.freeze({ code: 'endpoint_not_reported', message: 'The current endpoint settings were not read; reload the page and try again.' });
 const TLS_NOT_READ = Object.freeze({ code: 'tls_inspection_not_reported', message: 'The current TLS inspection setting was not read; reload the page and try again.' });
+const RULES_NOT_READ = Object.freeze({ code: 'rules_not_reported', message: 'The current rules were not read; reload the page and try again.' });
 
 /**
  * The page's behaviour over one admin api.
@@ -92,10 +186,12 @@ export function createSettings({ admin, onChange = () => {} }) {
     const seq = ++loadSeq;
     const keep = quiet && state.data !== null;
     if (!keep) set({ status: 'loading', problem: null, refreshProblem: null });
-    const answer = await admin.settings();
+    const [answer, rules] = await Promise.all([admin.settings(), admin.rules()]);
     if (seq !== loadSeq) return state;
     if (answer.state === 'available') {
-      set({ status: 'ready', data: answer.data, problem: null, refreshProblem: null });
+      // Rules that were not read are null, never an empty list: saving over them would delete them.
+      const data = Object.freeze({ ...answer.data, rules: rules.state === 'available' ? rules.data : null });
+      set({ status: 'ready', data, problem: null, refreshProblem: null });
     } else if (keep) {
       set({ refreshProblem: answer.error });
     } else {
@@ -248,8 +344,119 @@ export function createSettings({ admin, onChange = () => {} }) {
     return load({ quiet: true });
   }
 
+  // --- Enforcement rules: edited as a draft list, saved as a whole ------------------------------
+
+  /** The list the card shows: the unsaved draft, else the one read. */
+  function shownRules() {
+    return state.rules.draft ?? state.data?.rules ?? null;
+  }
+
+  function setRules(patch) {
+    set({ rules: Object.freeze({ ...state.rules, ...patch }) });
+    return state;
+  }
+
+  function rulesEditable() {
+    if (state.status !== 'ready' || state.rules.pending) return false;
+    if (shownRules() === null) {
+      setRules({ problem: RULES_NOT_READ });
+      return false;
+    }
+    return true;
+  }
+
+  function openRule(index) {
+    if (!rulesEditable()) return state;
+    const list = shownRules();
+    if (index === null) {
+      if (list.length >= MAX_RULES) return setRules({ problem: Object.freeze({ code: 'too_many_rules', message: `A list holds at most ${MAX_RULES} rules.` }) });
+      return setRules({ editor: Object.freeze({ index: null, rule: BLANK_RULE, problem: null }), problem: null });
+    }
+    if (!Number.isInteger(index) || !list[index]) return state;
+    return setRules({ editor: Object.freeze({ index, rule: editable(list[index]), problem: null }), problem: null });
+  }
+
+  function editRule(change) {
+    const editor = state.rules.editor;
+    if (!editor || state.rules.pending) return state;
+    return setRules({ editor: Object.freeze({ ...editor, rule: Object.freeze({ ...editor.rule, ...change }), problem: null }) });
+  }
+
+  /** A typed field of the open rule. Held without a repaint, so the field keeps its focus. */
+  function setRuleDraft(field, value) {
+    const editor = state.rules.editor;
+    if (!editor || !['rule_id', 'message', 'link'].includes(field)) return;
+    const rule = Object.freeze({ ...editor.rule, [field]: String(value ?? '') });
+    state = Object.freeze({ ...state, rules: Object.freeze({ ...state.rules, editor: Object.freeze({ ...editor, rule }) }) });
+  }
+
+  function setRuleAction(value) {
+    if (!RULE_ACTIONS.includes(value)) return state;
+    return editRule({ action: value });
+  }
+
+  /** Add the value to one of the open rule's match lists, or take it out. */
+  function toggleRuleMatch(field, value) {
+    const editor = state.rules.editor;
+    if (!editor || !RULE_MATCH_FIELDS.includes(field) || typeof value !== 'string' || value === '') return state;
+    const current = editor.rule.match[field];
+    const next = current.includes(value) ? current.filter((v) => v !== value) : [...current, value];
+    return editRule({ match: Object.freeze({ ...editor.rule.match, [field]: Object.freeze(next) }) });
+  }
+
+  /** Keep the open rule in the draft list, if it is valid; the list is not saved yet. */
+  function applyRule() {
+    const editor = state.rules.editor;
+    if (!editor || state.rules.pending) return state;
+    const list = shownRules();
+    const rule = Object.freeze({ ...editor.rule, rule_id: editor.rule.rule_id.trim(), link: editor.rule.link.trim() });
+    const problem = ruleProblem(rule, list.filter((_, i) => i !== editor.index));
+    if (problem) return setRules({ editor: Object.freeze({ ...editor, rule, problem }) });
+    const draft = editor.index === null ? [...list, rule] : list.map((r, i) => (i === editor.index ? rule : r));
+    return setRules({ draft: Object.freeze(draft), editor: null, problem: null });
+  }
+
+  function cancelRule() {
+    return setRules({ editor: null });
+  }
+
+  function deleteRule(index) {
+    if (!rulesEditable() || state.rules.editor) return state;
+    const list = shownRules();
+    if (!Number.isInteger(index) || !list[index]) return state;
+    return setRules({ draft: Object.freeze(list.filter((_, i) => i !== index)), problem: null });
+  }
+
+  /** Move a rule one place up (-1) or down (+1): the first rule that matches decides. */
+  function moveRule(index, step) {
+    if (!rulesEditable() || state.rules.editor) return state;
+    const list = shownRules();
+    const to = index + step;
+    if (!Number.isInteger(index) || !list[index] || !list[to]) return state;
+    const draft = [...list];
+    [draft[index], draft[to]] = [draft[to], draft[index]];
+    return setRules({ draft: Object.freeze(draft), problem: null });
+  }
+
+  function discardRules() {
+    if (state.rules.pending) return state;
+    return setRules({ draft: null, editor: null, problem: null });
+  }
+
+  /** Save the whole draft list. control-api replaces the tenant's list with it in one write. */
+  async function saveRules() {
+    const draft = state.rules.draft;
+    if (state.status !== 'ready' || state.rules.pending || state.rules.editor || draft === null) return state;
+    setRules({ pending: 'save', problem: null });
+    const answer = await admin.setRules(draft.map(wire));
+    if (answer.state !== 'done') return setRules({ pending: null, problem: answer.error });
+    setRules({ draft: null, pending: null, problem: null });
+    return load({ quiet: true });
+  }
+
   /** One entry point for the page's buttons and controls, named by data-action. */
   function act(dataset = {}) {
+    const index = dataset.index === undefined ? null : Number(dataset.index);
     switch (dataset.action) {
       case 'retry': return load();
       case 'mode': return Promise.resolve(chooseMode(dataset.value));
@@ -262,9 +469,20 @@ export function createSettings({ admin, onChange = () => {} }) {
       case 'endpoint': return setEndpointCollector(dataset.collector, onOff(dataset.value));
       case 'endpoint-tool': return setEndpointTool(dataset.tool, dataset.collector, onOff(dataset.value));
       case 'tls-inspection': return setTLSInspection(onOff(dataset.value));
+      case 'rule-add': return Promise.resolve(openRule(null));
+      case 'rule-edit': return Promise.resolve(index === null ? state : openRule(index));
+      case 'rule-delete': return Promise.resolve(deleteRule(index));
+      case 'rule-up': return Promise.resolve(moveRule(index, -1));
+      case 'rule-down': return Promise.resolve(moveRule(index, 1));
+      case 'rule-action': return Promise.resolve(setRuleAction(dataset.value));
+      case 'rule-match': return Promise.resolve(toggleRuleMatch(dataset.field, dataset.value));
+      case 'rule-apply': return Promise.resolve(applyRule());
+      case 'rule-cancel': return Promise.resolve(cancelRule());
+      case 'rules-discard': return Promise.resolve(discardRules());
+      case 'rules-save': return saveRules();
       default: return Promise.resolve(state);
     }
   }
 
-  return Object.freeze({ get state() { return state; }, load, chooseMode, setScopeOverride, setRetentionDraft, saveRetention, setContentSearch, setToolSanction, setEndpointCollector, setEndpointTool, setTLSInspection, act });
+  return Object.freeze({ get state() { return state; }, load, chooseMode, setScopeOverride, setRetentionDraft, saveRetention, setContentSearch, setToolSanction, setEndpointCollector, setEndpointTool, setTLSInspection, setRuleDraft, act });
 }

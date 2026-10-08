@@ -391,6 +391,8 @@ export async function boot({ document, api, admin, session: givenSession } = {})
   document.addEventListener('input', (event) => {
     const draft = event.target?.dataset?.settingsDraft;
     if (draft && settings) settings.setRetentionDraft(draft, event.target.value);
+    const ruleField = event.target?.dataset?.ruleDraft;
+    if (ruleField && settings) settings.setRuleDraft(ruleField, event.target.value);
     const field = event.target?.dataset?.depDraft;
     if (field && deployment) deployment.setDraft(field, event.target.value);
   });

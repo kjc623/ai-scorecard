@@ -54,6 +54,8 @@ type Memory struct {
 	deviceModes     map[string]string
 	endpoint        map[string]*store.EndpointCollectors
 	endpointTools   map[string]map[string]store.EndpointTool
+	rules           map[string][]store.EnforcementRule
+	dataClasses     []string
 }
 
 var _ store.Store = (*Memory)(nil)
@@ -86,6 +88,9 @@ func New() *Memory {
 		deviceModes:       map[string]string{},
 		endpoint:          map[string]*store.EndpointCollectors{},
 		endpointTools:     map[string]map[string]store.EndpointTool{},
+		rules:             map[string][]store.EnforcementRule{},
+		dataClasses: []string{"credential", "customer_pii", "government_id", "health", "legal_commercial",
+			"payment_card", "source_code"},
 	}
 	for _, c := range []string{"capture_extension", "egress_proxy", "loopback_broker", "cli_shim", "process_detector", "classifier_host", "desktop_proxy"} {
 		m.collectors[c] = true
@@ -735,6 +740,14 @@ func (m *Memory) PolicyInputs(_ context.Context, tenantID string) (store.PolicyI
 	}
 	sort.Strings(in.InterceptionHosts)
 	in.Endpoint = m.endpointLocked(tenantID)
+	in.Rules = copyRules(m.rules[tenantID])
+	in.SanctionedTools = []string{}
+	for fp, state := range m.toolState[tenantID] {
+		if state == "sanctioned" {
+			in.SanctionedTools = append(in.SanctionedTools, fp)
+		}
+	}
+	sort.Strings(in.SanctionedTools)
 	return in, nil
 }
 
@@ -832,6 +845,7 @@ func (m *Memory) Settings(_ context.Context, tenantID string) (store.Settings, e
 		})
 	}
 	out.Endpoint = m.endpointLocked(tenantID)
+	out.DataClasses = append([]string(nil), m.dataClasses...)
 	return out, nil
 }
 
@@ -1012,6 +1026,50 @@ func (m *Memory) SetEndpointTool(_ context.Context, tenantID, toolKey string, t 
 		"new":      map[string]any{"otel": t.OTel, "hooks": t.Hooks}})
 	m.audit(audit)
 	return nil
+}
+
+// EnforcementRules implements store.Store.
+func (m *Memory) EnforcementRules(_ context.Context, tenantID string) ([]store.EnforcementRule, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.tenants[tenantID]; !ok {
+		return nil, store.ErrUnknownTenant
+	}
+	return copyRules(m.rules[tenantID]), nil
+}
+
+// ReplaceEnforcementRules implements store.Store. Like the database's trigger, a label outside the
+// data classes refuses the whole list.
+func (m *Memory) ReplaceEnforcementRules(_ context.Context, tenantID string, rules []store.EnforcementRule, audit store.AuditEntry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.tenants[tenantID]; !ok {
+		return store.ErrUnknownTenant
+	}
+	for _, r := range rules {
+		for _, l := range r.Match.Labels {
+			if !slices.Contains(m.dataClasses, l) {
+				return store.ErrUnknownRuleLabel
+			}
+		}
+	}
+	previous := m.rules[tenantID]
+	m.rules[tenantID] = copyRules(rules)
+	audit.Detail = merge(audit.Detail, map[string]any{"previous": store.RulesDetail(previous), "new": store.RulesDetail(rules)})
+	m.audit(audit)
+	return nil
+}
+
+// copyRules copies a rule list with every match list non-nil, as the SQL store reads it back.
+func copyRules(rules []store.EnforcementRule) []store.EnforcementRule {
+	out := make([]store.EnforcementRule, 0, len(rules))
+	list := func(v []string) []string { return append([]string{}, v...) }
+	for _, r := range rules {
+		r.Match = store.RuleMatch{Labels: list(r.Match.Labels), Tools: list(r.Match.Tools),
+			Categories: list(r.Match.Categories), Sanction: list(r.Match.Sanction), Routes: list(r.Match.Routes)}
+		out = append(out, r)
+	}
+	return out
 }
 
 func collectorsDetail(c store.EndpointCollectors) map[string]any {

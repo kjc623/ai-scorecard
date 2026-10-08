@@ -1,7 +1,7 @@
 // Package settings is the Settings admin API: the audited, admin-only reads and writes behind the
 // dashboard's Settings page. It changes a tenant's collection mode (and its narrower per-tool
 // overrides), event and content retention, tool sanction decisions, the content search tier, the
-// endpoint collector switches and TLS inspection.
+// endpoint collector switches, TLS inspection and the ordered enforcement rules.
 //
 // Every route requires a product access token carrying the admin role (resolved by the injected
 // Authenticator); the tenant is the token's, never the request's. Every write is audited with the
@@ -17,9 +17,14 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
+
+	"github.com/shadow-ai-capture/device/protocol"
 
 	"github.com/shadow-ai-capture/control-api/internal/apierr"
 	"github.com/shadow-ai-capture/control-api/internal/deploy"
@@ -67,9 +72,14 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /admin/v1/settings/endpoint", h.handleEndpoint)
 	mux.HandleFunc("PUT /admin/v1/settings/endpoint/tools/{tool_key}", h.handleEndpointTool)
 	mux.HandleFunc("PUT /admin/v1/settings/tls-inspection", h.handleTLSInspection)
+	mux.HandleFunc("GET /admin/v1/settings/rules", h.handleGetRules)
+	mux.HandleFunc("PUT /admin/v1/settings/rules", h.handlePutRules)
 }
 
 const maxSettingsBody = 16 << 10
+
+// maxRulesBody holds a full list of rules, each with its longest message and its match lists.
+const maxRulesBody = 1 << 20
 
 func (h *Handler) admin(w http.ResponseWriter, r *http.Request) (deploy.Principal, bool) {
 	p, err := h.auth(r)
@@ -137,6 +147,8 @@ type settingsJSON struct {
 	Tools                []toolJSON        `json:"tools"`
 	Devices              []deviceJSON      `json:"devices"`
 	Endpoint             endpointJSON      `json:"endpoint"`
+	// DataClasses is the labels an enforcement rule may name.
+	DataClasses []string `json:"data_classes"`
 }
 
 // endpointJSON is the tenant's endpoint collector switches, with the defaults where it set none.
@@ -182,6 +194,7 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request) {
 		ContentSearch:        s.ContentSearch,
 		TLSInspection:        s.TLSInspection,
 		Tools:                []toolJSON{}, Devices: []deviceJSON{},
+		DataClasses: append([]string{}, s.DataClasses...),
 	}
 	if out.ScopeOverrides == nil {
 		out.ScopeOverrides = map[string]string{}
@@ -507,6 +520,176 @@ func (h *Handler) handleTLSInspection(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// --- GET and PUT /admin/v1/settings/rules --------------------------------------------------
+
+// ruleJSON is one enforcement rule in the policy bundle's spelling. Every match list is sent, empty
+// when it matches anything.
+type ruleJSON struct {
+	RuleID  string        `json:"rule_id"`
+	Action  string        `json:"action"`
+	Match   ruleMatchJSON `json:"match"`
+	Message string        `json:"message"`
+	Link    string        `json:"link,omitempty"`
+}
+
+type ruleMatchJSON struct {
+	Labels     []string `json:"labels"`
+	Tools      []string `json:"tools"`
+	Categories []string `json:"categories"`
+	Sanction   []string `json:"sanction"`
+	Routes     []string `json:"routes"`
+}
+
+type rulesJSON struct {
+	Rules []ruleJSON `json:"rules"`
+}
+
+var ruleIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,127}$`)
+
+// maxRuleMessage is the longest message a rule may carry, in characters.
+const maxRuleMessage = 280
+
+// ruleSanctions is the closed set of a rule's sanction values.
+var ruleSanctions = []string{"sanctioned", "unsanctioned"}
+
+func (h *Handler) handleGetRules(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.admin(w, r)
+	if !ok {
+		return
+	}
+	rules, err := h.store.EnforcementRules(r.Context(), p.Tenant)
+	if errors.Is(err, store.ErrUnknownTenant) {
+		h.fail(w, apierr.New(http.StatusForbidden, apierr.CodeUnknownTenant, "the tenant is unknown to this deployment"))
+		return
+	}
+	if err != nil {
+		h.fail(w, apierr.Internal(fmt.Errorf("read enforcement rules: %w", err)))
+		return
+	}
+	out := rulesJSON{Rules: []ruleJSON{}}
+	for _, rule := range rules {
+		m := rule.Match
+		out.Rules = append(out.Rules, ruleJSON{RuleID: rule.RuleID, Action: rule.Action, Message: rule.Message, Link: rule.Link,
+			Match: ruleMatchJSON{Labels: listJSON(m.Labels), Tools: listJSON(m.Tools), Categories: listJSON(m.Categories),
+				Sanction: listJSON(m.Sanction), Routes: listJSON(m.Routes)}})
+	}
+	h.writeJSON(w, http.StatusOK, out)
+}
+
+func listJSON(v []string) []string {
+	if v == nil {
+		return []string{}
+	}
+	return v
+}
+
+func (h *Handler) handlePutRules(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.admin(w, r)
+	if !ok {
+		return
+	}
+	// The list is required, so a client that sent none does not clear the tenant's rules.
+	var req struct {
+		Rules *[]ruleJSON `json:"rules"`
+	}
+	if !h.decodeLimit(w, r, &req, maxRulesBody) {
+		return
+	}
+	if req.Rules == nil {
+		h.fail(w, apierr.New(http.StatusBadRequest, apierr.CodeInvalidRequest, "rules is required; send [] to remove every rule"))
+		return
+	}
+	rules, err := validRules(*req.Rules)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	now := h.cfg.Now().UTC()
+	err = h.store.ReplaceEnforcementRules(r.Context(), p.Tenant, rules,
+		h.audit(p, "tenant.enforcement_rules.set", "tenant", p.Tenant, now, nil))
+	switch {
+	case errors.Is(err, store.ErrUnknownRuleLabel):
+		h.fail(w, apierr.New(http.StatusBadRequest, apierr.CodeInvalidRequest, "a rule names a label that is not a data class"))
+		return
+	case errors.Is(err, store.ErrUnknownTenant):
+		h.fail(w, apierr.New(http.StatusForbidden, apierr.CodeUnknownTenant, "the tenant is unknown to this deployment"))
+		return
+	case err != nil:
+		h.fail(w, apierr.Internal(fmt.Errorf("replace enforcement rules: %w", err)))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// validRules refuses every value the device's bundle validation would refuse, and the values the
+// database refuses that can be checked here, naming the rule and the field. Labels are checked
+// against ref.data_class by the database.
+func validRules(in []ruleJSON) ([]store.EnforcementRule, error) {
+	if len(in) > store.MaxEnforcementRules {
+		return nil, apierr.Detailed(http.StatusBadRequest, apierr.CodeInvalidRequest,
+			fmt.Sprintf("at most %d rules are allowed", store.MaxEnforcementRules), map[string]any{"max": store.MaxEnforcementRules})
+	}
+	refuse := func(i int, field, message string) error {
+		return apierr.Detailed(http.StatusBadRequest, apierr.CodeInvalidRequest,
+			fmt.Sprintf("rule %d: %s", i+1, message), map[string]any{"index": i, "field": field})
+	}
+	seen := map[string]bool{}
+	out := make([]store.EnforcementRule, 0, len(in))
+	for i, rule := range in {
+		if !ruleIDPattern.MatchString(rule.RuleID) {
+			return nil, refuse(i, "rule_id", "rule_id must start with a lower-case letter and hold at most 128 lower-case letters, digits, '_', '.' or '-'")
+		}
+		if seen[rule.RuleID] {
+			return nil, refuse(i, "rule_id", fmt.Sprintf("rule_id %q is used by an earlier rule", rule.RuleID))
+		}
+		seen[rule.RuleID] = true
+		if !slices.Contains(store.RuleActions, rule.Action) {
+			return nil, refuse(i, "action", "action must be allow, warn or block")
+		}
+		if utf8.RuneCountInString(rule.Message) > maxRuleMessage {
+			return nil, refuse(i, "message", fmt.Sprintf("message is longer than %d characters", maxRuleMessage))
+		}
+		if rule.Link != "" && !httpsURL(rule.Link) {
+			return nil, refuse(i, "link", "link must be an https:// URL")
+		}
+		m := rule.Match
+		for _, list := range []struct {
+			field  string
+			values []string
+		}{{"labels", m.Labels}, {"tools", m.Tools}, {"categories", m.Categories}, {"sanction", m.Sanction}, {"routes", m.Routes}} {
+			for _, v := range list.values {
+				if strings.TrimSpace(v) == "" {
+					return nil, refuse(i, "match."+list.field, "match."+list.field+" holds an empty value")
+				}
+			}
+		}
+		for _, v := range m.Sanction {
+			if !slices.Contains(ruleSanctions, v) {
+				return nil, refuse(i, "match.sanction", fmt.Sprintf("match.sanction %q must be sanctioned or unsanctioned", v))
+			}
+		}
+		for _, v := range m.Routes {
+			if !protocol.Route(v).Valid() {
+				return nil, refuse(i, "match.routes", fmt.Sprintf("match.routes %q is not a collection route", v))
+			}
+		}
+		out = append(out, store.EnforcementRule{RuleID: rule.RuleID, Action: rule.Action, Message: rule.Message, Link: rule.Link,
+			Match: store.RuleMatch{Labels: listJSON(m.Labels), Tools: listJSON(m.Tools), Categories: listJSON(m.Categories),
+				Sanction: listJSON(m.Sanction), Routes: listJSON(m.Routes)}})
+	}
+	return out, nil
+}
+
+// httpsURL reports whether s is an absolute https URL with a host, spelled with the lower-case
+// scheme the database's CHECK requires.
+func httpsURL(s string) bool {
+	if !strings.HasPrefix(s, "https://") {
+		return false
+	}
+	u, err := url.Parse(s)
+	return err == nil && u.Scheme == "https" && u.Host != ""
+}
+
 // --- plumbing -------------------------------------------------------------------------------
 
 func validMode(m string) bool {
@@ -534,7 +717,11 @@ func validSanction(s string) bool {
 }
 
 func (h *Handler) decode(w http.ResponseWriter, r *http.Request, v any) bool {
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxSettingsBody))
+	return h.decodeLimit(w, r, v, maxSettingsBody)
+}
+
+func (h *Handler) decodeLimit(w http.ResponseWriter, r *http.Request, v any, limit int64) bool {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
 	if err != nil {
 		h.fail(w, apierr.New(http.StatusRequestEntityTooLarge, apierr.CodeInvalidRequest, "the request body is over the cap"))
 		return false

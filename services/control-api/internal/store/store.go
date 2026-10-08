@@ -203,6 +203,36 @@ type PolicyInputs struct {
 	// ScopeOverrides is the tenant's narrower per-tool modes, keyed by tool fingerprint.
 	ScopeOverrides map[string]string
 	Endpoint       EndpointSettings
+	// Rules is the tenant's enforcement rules, in order.
+	Rules []EnforcementRule
+	// SanctionedTools is the fingerprints whose ops.tool.sanctioned_state is sanctioned, sorted.
+	SanctionedTools []string
+}
+
+// MaxEnforcementRules is the most rules a tenant's list may hold.
+const MaxEnforcementRules = 100
+
+// RuleActions is the closed set of enforcement rule actions (ops.enforcement_rule.action).
+var RuleActions = []string{"allow", "warn", "block"}
+
+// EnforcementRule is one of the tenant's ordered enforcement rules (ops.enforcement_rule).
+type EnforcementRule struct {
+	RuleID  string
+	Action  string
+	Match   RuleMatch
+	Message string
+	// Link is an https URL shown with the message; "" for none.
+	Link string
+}
+
+// RuleMatch is a rule's match lists. Every non-empty list must match; an empty one matches
+// anything. The store reads every list as non-nil.
+type RuleMatch struct {
+	Labels     []string
+	Tools      []string
+	Categories []string
+	Sanction   []string
+	Routes     []string
 }
 
 // EndpointToolKeys is the closed set of tools with native collectors, the keys of
@@ -293,6 +323,8 @@ type Settings struct {
 	Tools                []ToolDecision
 	Devices              []DeviceMode
 	Endpoint             EndpointSettings
+	// DataClasses is ref.data_class's codes, sorted: the labels an enforcement rule may name.
+	DataClasses []string
 }
 
 // Errors callers distinguish. Every other error is an infrastructure failure and is retryable.
@@ -324,6 +356,8 @@ var (
 	ErrRetentionOutOfRange = errors.New("store: retention period is outside the retention classes")
 	// ErrUnknownEndpointTool is a tool key outside EndpointToolKeys.
 	ErrUnknownEndpointTool = errors.New("store: endpoint tool key unknown")
+	// ErrUnknownRuleLabel is an enforcement rule naming a label outside ref.data_class.
+	ErrUnknownRuleLabel = errors.New("store: enforcement rule label is not a data class")
 )
 
 // Store is control-api's persistence. *SQLStore implements it; tests use storetest.Memory.
@@ -406,6 +440,13 @@ type Store interface {
 	SetEndpointTool(ctx context.Context, tenantID string, toolKey string, t EndpointTool, audit AuditEntry) error
 	// SetTLSInspection turns the tenant's TLS inspection on or off.
 	SetTLSInspection(ctx context.Context, tenantID string, enabled bool, audit AuditEntry) error
+	// EnforcementRules reads the tenant's enforcement rules in order. ErrUnknownTenant when the
+	// tenant does not exist.
+	EnforcementRules(ctx context.Context, tenantID string) ([]EnforcementRule, error)
+	// ReplaceEnforcementRules replaces the tenant's whole ordered list in one transaction and audits
+	// the previous and the new list. ErrUnknownRuleLabel when a rule names a label outside
+	// ref.data_class; the list in force is then unchanged.
+	ReplaceEnforcementRules(ctx context.Context, tenantID string, rules []EnforcementRule, audit AuditEntry) error
 
 	// Ping checks the database is reachable, for readiness.
 	Ping(ctx context.Context) error
