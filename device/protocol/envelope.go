@@ -354,10 +354,12 @@ const (
 	DetailComponentCrashLoop Detail = "component_crash_loop"
 
 	// Tool configuration. The tool is not installed, the platform has no managed location for it
-	// yet, or the agent could not write the configuration it manages.
+	// yet, the agent could not write the configuration it manages, or a user's own configuration
+	// overrides it.
 	DetailToolNotInstalled       Detail = "tool_not_installed"
 	DetailToolVersionUnsupported Detail = "tool_version_unsupported"
 	DetailConfigWriteFailed      Detail = "config_write_failed"
+	DetailConfigTampered         Detail = "config_tampered"
 
 	// ETW. The real-time session a collector reads could not be opened or stopped delivering
 	// events, or the platform has none.
@@ -385,7 +387,7 @@ var AllDetails = [...]Detail{
 	DetailIdentityUnresolved, DetailDisabledByPolicy,
 	DetailHelperUnavailable, DetailComponentCrashLoop,
 	DetailToolNotInstalled, DetailToolVersionUnsupported, DetailConfigWriteFailed,
-	DetailETWSessionFailed,
+	DetailConfigTampered, DetailETWSessionFailed,
 }
 
 // Valid reports whether the detail is in the closed vocabulary. An empty detail is valid: a

@@ -95,6 +95,10 @@ type facilities struct {
 	// machineEnv is the machine-wide environment through which the loopback broker moves a local
 	// model server off its port; nil leaves the servers where they are.
 	machineEnv toolconfig.MachineEnv
+	// codexConfig is the Codex CLI's system config file; empty is the platform's location.
+	codexConfig string
+	// codexUserConfigs lists the users' own Codex config files; nil is the platform's.
+	codexUserConfigs func() []string
 }
 
 // trustStore installs, verifies and removes the per-device CA in the platform trust store.
@@ -530,10 +534,17 @@ func (s *service) buildProviders() error {
 	}
 
 	// The Codex CLI's system requirements declare this executable's prompt hook while the bundle
-	// switches Codex's hooks on. Codex is installed when the inventory's CLI scan finds it in a user
-	// profile.
+	// switches Codex's hooks on, and its system config points its log export at the receiver while
+	// the bundle switches Codex's OTel export on. Codex is installed when the inventory's CLI scan
+	// finds it in a user profile.
 	codexInstalled := func() bool { return inventory.CLIInstalled(s.currentBundle(), "codex") }
-	codex := toolconfig.NewCodex(toolconfig.NewCodexWriter(s.dir, platform.codexRequirements, codexInstalled), toolconfig.Config{
+	codexFiles := toolconfig.NewCodexFiles(
+		toolconfig.NewCodexWriter(s.dir, platform.codexRequirements, codexInstalled),
+		toolconfig.NewCodexConfigWriter(s.dir, platform.codexConfig, platform.codexUserConfigs),
+	)
+	codex := toolconfig.NewCodex(codexFiles, toolconfig.Config{
+		Token: otel.Token,
+		Scope: s.toolScope,
 		Log:   s.logf,
 		Clock: time.Now,
 	})

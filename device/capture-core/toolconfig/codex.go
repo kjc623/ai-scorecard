@@ -386,15 +386,16 @@ func (c *Codex) Remove() error {
 	return c.backup.drop()
 }
 
-// codexTool describes the Codex CLI to its provider: hooks, with a managed-only setting. Its OTel
-// export is not configured by this provider, so its OTel switch does nothing here.
+// codexTool describes the Codex CLI to its provider: an OTel export, and hooks with a managed-only
+// setting.
 var codexTool = tool{
 	key:         CodexTool,
 	collector:   protocol.CollectorToolConfigCodex,
 	fingerprint: CodexFingerprint,
 	supported:   codexSupported,
+	otel:        true,
 	managedOnly: true,
 }
 
-// NewCodex returns the tool_config_codex collector over w.
+// NewCodex returns the tool_config_codex collector over w, which is CodexFiles in the service.
 func NewCodex(w Writer, cfg Config) *Provider { return newProvider(codexTool, w, cfg) }

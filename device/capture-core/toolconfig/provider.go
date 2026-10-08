@@ -25,6 +25,12 @@ type tool struct {
 	managedOnly bool
 }
 
+// overridable is a Writer whose managed file a user's own configuration can override.
+type overridable interface {
+	// Overridden reports whether a user's configuration overrides the agent's keys for d.
+	Overridden(d Desired) bool
+}
+
 // Config is a provider's seams.
 type Config struct {
 	// Token returns the OTLP receiver's bearer token.
@@ -225,7 +231,8 @@ func (p *Provider) apply(d Desired) error {
 	return err
 }
 
-// Health implements core.Provider: healthy only while the file on disk holds the agent's keys.
+// Health implements core.Provider: healthy only while the file on disk holds the agent's keys and
+// no user's configuration overrides them.
 func (p *Provider) Health() core.Health {
 	p.mu.Lock()
 	running, attempted, installed, writeErr := p.running, p.attempted, p.installed, p.writeErr
@@ -243,6 +250,9 @@ func (p *Provider) Health() core.Health {
 	}
 	if ok, err := p.w.Holds(applied); err != nil || !ok {
 		return p.counters.Snapshot(protocol.StateDegraded, protocol.DetailConfigWriteFailed, since, last)
+	}
+	if o, ok := p.w.(overridable); ok && o.Overridden(applied) {
+		return p.counters.Snapshot(protocol.StateDegraded, protocol.DetailConfigTampered, since, last)
 	}
 	return p.counters.Snapshot(protocol.StateHealthy, protocol.DetailNone, since, last)
 }

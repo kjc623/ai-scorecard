@@ -2075,3 +2075,56 @@ location a user cannot override or disable.
   (`pg_dump --schema-only`) identically to the new `schema.sql`.
 - **Not run here:** nothing exercises `machineenv_windows.go` on Windows (a test would change the build
   machine's environment); it compiles and vets under `GOOS=windows`, and task 60's step 1 checks it.
+
+## 2026-10-08, task 29
+
+- **Built on task 39's provider.** `tool_config_codex`, its `ref.collector` row and migration came
+  with task 39; this task adds no migration. The Codex tool is now described with `otel: true`, and
+  its one `Writer` is `CodexFiles`: task 39's requirements writer for the hook fields of a `Desired`
+  and a new `CodexConfig` writer for the OTel fields. A file whose part is switched off is restored
+  as `Remove` restores it, so switching only the export off gives the customer's `config.toml` back
+  byte for byte. Each file has its own backup: `toolconfig\codex\original` (requirements) and
+  `toolconfig\codex\config\original` (config).
+- **Source (vendor fact).** developers.openai.com is blocked from the build machine and the
+  brief's coralogix page is unreachable, so the facts below come from Codex's config loader in
+  `openai/codex`, read 2026-10-08: tag `rust-v0.162.0` (npm `latest` of `@openai/codex` that day)
+  and `main` at `99aa053`, whose loader layering, merge and `[otel]` types are the same
+  (`codex-rs/config/src/loader/mod.rs`, `layer_io.rs` and its README, `config_requirements.rs`,
+  `types.rs`, `merge.rs`, `codex-rs/core/src/config/otel.rs`, `codex-rs/utils/home-dir`). **The
+  device phase confirms the location and the precedence against the installed version.**
+- **Windows machine-wide file (corrects the brief): `%ProgramData%\OpenAI\Codex\config.toml`**,
+  Codex's "system" config layer. `managed_config.toml` is Unix only (`/etc/codex/managed_config.toml`,
+  the top layer, being phased out); on Windows `CODEX_HOME\managed_config.toml` is ignored with a
+  startup warning. `requirements.toml`, which users cannot override, has no `otel` key, so Codex's
+  OTel export cannot be enforced on Windows.
+- **The plan's "Windows machine-wide file can be overridden by users" is confirmed.** Codex's
+  layers, lowest first: packaged defaults, the system `config.toml`, the cloud-managed bundle, the
+  user's `${CODEX_HOME}\config.toml` (`CODEX_HOME` unset: `%USERPROFILE%\.codex`), a selected
+  profile's `${CODEX_HOME}\<name>.config.toml`, project `.codex\config.toml` (which cannot set
+  `otel`: it is on Codex's project denylist) and `-c` flags. Tables merge key by key and any other
+  value replaces, so a user's `[otel]` key, or a key under `otel.exporter`, wins over the system
+  file.
+- **Keys the agent owns** in `config.toml`: `otel.exporter = { otlp-http = { endpoint =
+  "http://<http_listen>/v1/logs", protocol = "binary", headers = { Authorization = "Bearer <token>" } } }`
+  and `otel.log_user_prompt` (true at `m1` and higher for `app:codex`). The trace and metrics
+  exporters, `log_agent_responses` (default false, its own opt-in) and every other key stay the
+  customer's. The file is read and written with `BurntSushi/toml` as task 39's is: a rewrite drops
+  comments, which a restore puts back; a byte-order mark is kept.
+- **Tampering is a user's `[otel]`, laid over the system file as Codex merges, that changes the
+  log exporter** (disables it, or another exporter, endpoint, header or protocol). A user's
+  `log_user_prompt = false` alone is not: the export continues and the prompt event keeps its
+  length. A missing file, or one Codex could not parse (it would not start), overrides nothing. The
+  check reads `<profile>\.codex\config.toml` of every profile the inventory lists, on each health
+  report, never writes it, and runs only while the export is on. The row is
+  `degraded`/`config_tampered`, as the brief says (`DESIGN.md` §1 names the state `tampered`).
+- **Not detected** (narrowest reading of "every user profile's `config.toml`"): a user whose
+  `CODEX_HOME` points elsewhere, a selected profile file, and `-c otel...` flags. The row can be
+  healthy while such a user's sessions export elsewhere.
+- **`config_tampered`** is added to the detail vocabulary (device only in `check-vocab`); task 34
+  reports the same detail. A `Writer` may implement `Overridden(Desired) bool`, which the
+  provider's health reads after `Holds`.
+- **Task 39's provider tests** that pinned the OTel switch as doing nothing for Codex now expect it
+  to switch the provider on and to add the OTel fields to the desired state; their hook assertions
+  are unchanged.
+- **Not run here:** `TestCodexConfigPath` and `TestCodexUserConfigsAreInProfiles` in
+  `toolconfig/codex_windows_test.go`. They compile and vet under `GOOS=windows`.

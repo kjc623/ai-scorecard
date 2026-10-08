@@ -129,9 +129,18 @@ starts it through the user's PowerShell or cmd), pins `features.hooks = true` so
 hooks off, and with `endpoint.hooks.managed_only` sets `allow_managed_hooks_only = true`. Codex runs
 hooks declared there whatever a user's own hook settings say. Every other key and group is kept, with
 the same backup (`toolconfig\codex\original`), restore and access control as Claude Code's file; a
-rewrite drops the file's comments, which a restore puts back. Its health row is `tool_config_codex`,
-with the same states; Codex counts as installed when the inventory's CLI scan finds it in a user
-profile.
+rewrite drops the file's comments, which a restore puts back.
+
+While the bundle switches the OTel receiver and Codex's OTel export on, the same writer sets two keys
+of the `[otel]` table in Codex's system config beside it, `C:\ProgramData\OpenAI\Codex\config.toml`
+(`requirements.toml` has no OTel settings): an `otlp-http` log exporter to the receiver's `/v1/logs`
+with the token, and `log_user_prompt` (true when the mode for `app:codex` is `m1` or higher). Every
+other key and table is kept, with its own backup (`toolconfig\codex\config\original`) and the same
+restore; switching either part off restores that file. Codex lets a user's own `config.toml`
+override the system config, so the service reads (never writes) each profile's
+`.codex\config.toml`. The health row for both files is `tool_config_codex`, with the same states as
+Claude Code's plus `degraded` with `config_tampered` while a user's file disables or redirects the
+log export; Codex counts as installed when the inventory's CLI scan finds it in a user profile.
 
 With TLS inspection on, the proxy blind-tunnels a connection from a tool whose native collector is
 enabled.

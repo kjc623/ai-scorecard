@@ -1,0 +1,2 @@
+# A different token: the receiver refuses every export.
+otel.exporter.otlp-http.headers.Authorization = "Bearer nothing"
