@@ -378,6 +378,401 @@
       }
     },
     {
+      "name": "category matches",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "cat",
+            "action": "block",
+            "match": {
+              "categories": [
+                "ide",
+                "coding_agent"
+              ]
+            },
+            "message": "msg cat",
+            "link": "https://intranet.example/cat"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ],
+        "catalog": [
+          {
+            "app_key": "claude_code",
+            "category": "coding_agent",
+            "signals": [
+              {
+                "platform": "any",
+                "kind": "cli_binary",
+                "value": "claude"
+              }
+            ]
+          },
+          {
+            "app_key": "cursor",
+            "category": "ide",
+            "signals": []
+          }
+        ]
+      },
+      "input": {
+        "route": "tool.hook",
+        "tool_fingerprint": "app:claude_code"
+      },
+      "want": {
+        "rule_id": "cat",
+        "action": "block",
+        "message": "msg cat",
+        "link": "https://intranet.example/cat"
+      }
+    },
+    {
+      "name": "category does not match",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "cat",
+            "action": "block",
+            "match": {
+              "categories": [
+                "ide"
+              ]
+            },
+            "message": "msg cat",
+            "link": "https://intranet.example/cat"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ],
+        "catalog": [
+          {
+            "app_key": "claude_code",
+            "category": "coding_agent",
+            "signals": [
+              {
+                "platform": "any",
+                "kind": "cli_binary",
+                "value": "claude"
+              }
+            ]
+          },
+          {
+            "app_key": "cursor",
+            "category": "ide",
+            "signals": []
+          }
+        ]
+      },
+      "input": {
+        "route": "tool.hook",
+        "tool_fingerprint": "app:claude_code"
+      },
+      "want": {
+        "rule_id": "policy.default",
+        "action": "allow"
+      }
+    },
+    {
+      "name": "a fingerprint outside the catalog",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "cat",
+            "action": "block",
+            "match": {
+              "categories": [
+                "chat_assistant"
+              ]
+            },
+            "message": "msg cat",
+            "link": "https://intranet.example/cat"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ],
+        "catalog": [
+          {
+            "app_key": "claude_code",
+            "category": "coding_agent",
+            "signals": [
+              {
+                "platform": "any",
+                "kind": "cli_binary",
+                "value": "claude"
+              }
+            ]
+          },
+          {
+            "app_key": "cursor",
+            "category": "ide",
+            "signals": []
+          }
+        ]
+      },
+      "input": {
+        "route": "proxy.tls",
+        "tool_fingerprint": "chatgpt.com",
+        "labels": [
+          "credential"
+        ],
+        "labels_known": true
+      },
+      "want": {
+        "rule_id": "policy.default",
+        "action": "allow"
+      }
+    },
+    {
+      "name": "an app the catalog does not hold",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "cat",
+            "action": "block",
+            "match": {
+              "categories": [
+                "ide"
+              ]
+            },
+            "message": "msg cat",
+            "link": "https://intranet.example/cat"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ],
+        "catalog": [
+          {
+            "app_key": "claude_code",
+            "category": "coding_agent",
+            "signals": [
+              {
+                "platform": "any",
+                "kind": "cli_binary",
+                "value": "claude"
+              }
+            ]
+          },
+          {
+            "app_key": "cursor",
+            "category": "ide",
+            "signals": []
+          }
+        ]
+      },
+      "input": {
+        "route": "tool.hook",
+        "tool_fingerprint": "app:windsurf"
+      },
+      "want": {
+        "rule_id": "policy.default",
+        "action": "allow"
+      }
+    },
+    {
+      "name": "an app key without the app: prefix",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "cat",
+            "action": "block",
+            "match": {
+              "categories": [
+                "ide"
+              ]
+            },
+            "message": "msg cat",
+            "link": "https://intranet.example/cat"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ],
+        "catalog": [
+          {
+            "app_key": "claude_code",
+            "category": "coding_agent",
+            "signals": [
+              {
+                "platform": "any",
+                "kind": "cli_binary",
+                "value": "claude"
+              }
+            ]
+          },
+          {
+            "app_key": "cursor",
+            "category": "ide",
+            "signals": []
+          }
+        ]
+      },
+      "input": {
+        "route": "tool.hook",
+        "tool_fingerprint": "cursor"
+      },
+      "want": {
+        "rule_id": "policy.default",
+        "action": "allow"
+      }
+    },
+    {
+      "name": "an empty category matches no unknown app",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "cat",
+            "action": "block",
+            "match": {
+              "categories": [
+                ""
+              ]
+            },
+            "message": "msg cat",
+            "link": "https://intranet.example/cat"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ],
+        "catalog": [
+          {
+            "app_key": "claude_code",
+            "category": "coding_agent",
+            "signals": [
+              {
+                "platform": "any",
+                "kind": "cli_binary",
+                "value": "claude"
+              }
+            ]
+          },
+          {
+            "app_key": "cursor",
+            "category": "ide",
+            "signals": []
+          }
+        ]
+      },
+      "input": {
+        "route": "proxy.tls",
+        "tool_fingerprint": "chatgpt.com",
+        "labels": [
+          "credential"
+        ],
+        "labels_known": true
+      },
+      "want": {
+        "rule_id": "policy.default",
+        "action": "allow"
+      }
+    },
+    {
+      "name": "category and sanction",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "cat",
+            "action": "warn",
+            "match": {
+              "categories": [
+                "ide"
+              ],
+              "sanction": [
+                "unsanctioned"
+              ]
+            },
+            "message": "msg cat",
+            "link": "https://intranet.example/cat"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ],
+        "catalog": [
+          {
+            "app_key": "claude_code",
+            "category": "coding_agent",
+            "signals": [
+              {
+                "platform": "any",
+                "kind": "cli_binary",
+                "value": "claude"
+              }
+            ]
+          },
+          {
+            "app_key": "cursor",
+            "category": "ide",
+            "signals": []
+          }
+        ]
+      },
+      "input": {
+        "route": "tool.hook",
+        "tool_fingerprint": "app:cursor"
+      },
+      "want": {
+        "rule_id": "cat",
+        "action": "warn",
+        "message": "msg cat",
+        "link": "https://intranet.example/cat"
+      }
+    },
+    {
+      "name": "category of a sanctioned app",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "cat",
+            "action": "warn",
+            "match": {
+              "categories": [
+                "coding_agent"
+              ],
+              "sanction": [
+                "unsanctioned"
+              ]
+            },
+            "message": "msg cat",
+            "link": "https://intranet.example/cat"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ],
+        "catalog": [
+          {
+            "app_key": "claude_code",
+            "category": "coding_agent",
+            "signals": [
+              {
+                "platform": "any",
+                "kind": "cli_binary",
+                "value": "claude"
+              }
+            ]
+          },
+          {
+            "app_key": "cursor",
+            "category": "ide",
+            "signals": []
+          }
+        ]
+      },
+      "input": {
+        "route": "tool.hook",
+        "tool_fingerprint": "app:claude_code"
+      },
+      "want": {
+        "rule_id": "policy.default",
+        "action": "allow"
+      }
+    },
+    {
       "name": "unsanctioned matches",
       "bundle": {
         "rules": [

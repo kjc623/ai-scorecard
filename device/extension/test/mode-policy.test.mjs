@@ -132,18 +132,20 @@ test('the cache never persists: snapshot() exposes only what the running bundle 
   assert.equal(policy.snapshot().policy_version, null);
 });
 
-test('the rules, sanctioned tools and seed hosts come from the bundle, empty without one', () => {
+test('the rules, sanctioned tools, catalog and seed hosts come from the bundle, empty without one', () => {
   const policy = createPolicyCache();
-  assert.deepEqual(policy.rules(), { rules: [], sanctioned_tools: [] });
+  assert.deepEqual(policy.rules(), { rules: [], sanctioned_tools: [], catalog: [] });
   assert.deepEqual(policy.discoverySets(), {});
   const rules = [{ rule_id: 'block_credentials', action: 'block', match: { labels: ['credential'] }, message: 'Remove it.' }];
+  const catalog = [{ app_key: 'cursor', category: 'ide', signals: [{ platform: 'windows', kind: 'windows_exe', value: 'Cursor.exe' }] }];
   policy.applyBundle({
     version: 'v1',
     tenant_default_mode: 'm1',
     interception: { enabled: false, seed_hosts: ['chat.example-ai.invalid'] },
     rules,
     sanctioned_tools: ['app:claude_code'],
+    catalog,
   });
-  assert.deepEqual(policy.rules(), { rules, sanctioned_tools: ['app:claude_code'] });
+  assert.deepEqual(policy.rules(), { rules, sanctioned_tools: ['app:claude_code'], catalog });
   assert.deepEqual(policy.discoverySets(), { seed: ['chat.example-ai.invalid'] });
 });

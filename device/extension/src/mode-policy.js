@@ -39,6 +39,7 @@ export const DEFAULT_STALE_AFTER_MS = 6 * 60 * 60 * 1000;
  * @property {{seed_hosts?: string[]}} [interception]
  * @property {object[]} [rules]
  * @property {string[]} [sanctioned_tools]
+ * @property {{app_key: string, category: string}[]} [catalog]   the fields the evaluator reads
  */
 
 /**
@@ -149,13 +150,14 @@ export function createPolicyCache({ now = () => Date.now(), staleAfterMs = DEFAU
     current = null;
   }
 
-  /** The rules and the sanctioned tools, as the evaluator reads them; never authoritative. */
+  /** The rules, the sanctioned tools and the app catalog, as the evaluator reads them; never authoritative. */
   function rules() {
-    if (!current) return { rules: [], sanctioned_tools: [] };
+    if (!current) return { rules: [], sanctioned_tools: [], catalog: [] };
     const b = current.bundle;
     return {
       rules: Array.isArray(b.rules) ? b.rules : [],
       sanctioned_tools: Array.isArray(b.sanctioned_tools) ? b.sanctioned_tools : [],
+      catalog: Array.isArray(b.catalog) ? b.catalog : [],
     };
   }
 
