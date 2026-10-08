@@ -10,13 +10,18 @@ The wire contract for the event envelope: what a device sends to `POST /v1/event
 
 ## The envelope
 
-One record per observation, discriminated on `kind` (`prompt`, `usage_rollup`, `model_detection`)
-and, for prompts, on `collection_mode` (`m0`–`m3`). The kind registry is closed: a kind the schema
-does not name is an invalid record, not a new kind. Every field is declared once in
-`$defs/envelopeCore` with `additionalProperties: false`; the `if`/`then` branches decide which
-fields each kind and mode requires and forbids. At `m0` no content-derived field may appear — the
-device may report that a submission happened and how large it was, nothing about its content. A
-device never sends `received_at`; the server assigns it.
+One record per observation, discriminated on `kind` (`prompt`, `usage_rollup`, `discovery`,
+`agent_activity`) and, for prompts, on `collection_mode` (`m0`–`m3`). The kind registry is closed: a
+kind the schema does not name is an invalid record, not a new kind. A `discovery` record says that an
+AI application, CLI, IDE extension, local model or inference connection exists on the device, with
+how it was found (`discovery_type`, `detection_basis`) and its version, publisher, host IDE, model
+names or destination host, and never anything read from content. An `agent_activity` record is one
+model request or tool call from a tool's own telemetry: its type, the model and token counts or the
+tool name, its duration and its outcome, never the prompt, the arguments or the result. Every field
+is declared once in `$defs/envelopeCore` with `additionalProperties: false`; the `if`/`then`
+branches decide which fields each kind and mode requires and forbids. At `m0` no content-derived
+field may appear — the device may report that a submission happened and how large it was, nothing
+about its content. A device never sends `received_at`; the server assigns it.
 
 ## The Go binding
 

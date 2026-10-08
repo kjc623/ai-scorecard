@@ -133,3 +133,16 @@ decided and why, and for a vendor fact the product version checked.
   hands the client to the pipeline before its first `Connect`, so a `Classify` arriving then can
   dial a second child and one of the two connections is replaced without being closed. No answer
   goes to the wrong caller; the brief keeps the API and scope narrow, so it is left for the owner.
+## 2026-10-08, task 03
+
+- **Branch comments use the schema's existing `comment` key**, not `$comment`: every existing
+  `if`/`then` branch uses `comment`, and the generator reads that key. The new and changed branches
+  follow them.
+- **`destination_host` has a pattern**: lower-case RFC 1123 labels separated by dots
+  (`DESIGN.md` §3 says "lower-case host name"), so an upper-case name, a URL or a path is refused.
+  An IPv4 literal matches; an IPv6 literal does not.
+- **`detection_basis` counts as a discovery field**: `agent_activity` forbids it, as `prompt` and
+  `usage_rollup` already did. `agent_activity` permits `size_bytes`, which §3 does not forbid it.
+- **The rules are per kind only.** The pairings in §3's "Used by" column (`host_app` with
+  `ide_extension`, `model` with `model_request`, and so on) are not enforced by the schema: §3's
+  rules are per kind, and the generator's variants are per kind and collection mode.
