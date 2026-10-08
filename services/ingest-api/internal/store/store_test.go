@@ -17,6 +17,8 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/shadow-ai-capture/contracts/envelope"
 	"github.com/shadow-ai-capture/device/protocol"
+
+	"github.com/shadow-ai-capture/ingest-api/internal/contract"
 )
 
 func TestCheck(t *testing.T) {
@@ -275,5 +277,90 @@ func TestLiveRevocationInsideTheTransactionWritesNothing(t *testing.T) {
 	}
 	if n := l.count(t, "ingest.observation") + l.count(t, "ingest.rejected"); n != 0 {
 		t.Errorf("%d rows written for a revoked credential", n)
+	}
+}
+
+// TestLiveStoresTheEndpointKinds writes one discovery and one agent_activity record, each valid
+// against the contract, and reads every kind-specific column back from the observation.
+func TestLiveStoresTheEndpointKinds(t *testing.T) {
+	l := openLive(t)
+	validator, err := contract.NewValidator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	core := func(eventID, kind, source string) map[string]any {
+		return map[string]any{
+			"schema_version": "1.0", "event_id": eventID, "tenant_id": l.tenant, "device_id": l.device,
+			"user_ref": "unattributed", "tool_fingerprint": "app:ollama", "direction": "none", "kind": kind,
+			"occurred_at": "2026-10-05T12:00:00Z", "monotonic_offset_ms": 1, "source": source,
+			"collection_mode": "m0", "dedup_key": "sha256:" + strings.Repeat(kind[:1], 64),
+		}
+	}
+	discoveryID, activityID := newUUID(t), newUUID(t)
+	discovery := core(discoveryID, "discovery", "inv.scan")
+	for k, v := range map[string]any{
+		"discovery_type": "local_model", "detection_basis": "model_store", "app_version": "0.5.1",
+		"publisher": "Example Publisher", "host_app": "app:vscode", "destination_host": "localhost",
+		"model_names": []string{"llama3:8b", "qwen2.5-coder:7b"},
+	} {
+		discovery[k] = v
+	}
+	activity := core(activityID, "agent_activity", "tool.otel")
+	for k, v := range map[string]any{
+		"activity_type": "model_request", "model": "claude-sonnet", "input_tokens": 1200,
+		"output_tokens": 300, "duration_ms": 4500, "tool_name": "Bash", "outcome": "denied", "size_bytes": 2048,
+	} {
+		activity[k] = v
+	}
+
+	var accepted []AcceptedEvent
+	for i, m := range []map[string]any{discovery, activity} {
+		raw, err := json.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		env, err := contract.Parse(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if viol := validator.Validate(env); viol != nil {
+			t.Fatalf("%s is not a valid envelope: %+v", m["kind"], *viol)
+		}
+		accepted = append(accepted, AcceptedEvent{Index: i, EventID: m["event_id"].(string), Route: m["source"].(string), Envelope: raw})
+	}
+	out, err := l.write(accepted, nil, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("WriteBatch: %v", err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("outcomes = %+v, want two", out)
+	}
+	for i, o := range out {
+		if o.Outcome != OutcomeInserted || o.SubmissionID == "" {
+			t.Errorf("event %d outcome = %+v, want a new submission", i, o)
+		}
+	}
+
+	read := func(eventID, submissionID string) string {
+		t.Helper()
+		var row string
+		err := l.admin.QueryRow(`
+SELECT concat_ws('|', o.kind, s.kind, o.source, o.direction, o.detection_basis, o.discovery_type,
+                 o.app_version, o.publisher, o.host_app, o.destination_host,
+                 array_to_string(o.model_names, ','), o.activity_type, o.model, o.input_tokens,
+                 o.output_tokens, o.duration_ms, o.tool_name, o.outcome, o.size_bytes)
+  FROM ingest.observation o
+  JOIN ingest.submission s ON s.tenant_id = o.tenant_id AND s.submission_id = $3
+ WHERE o.tenant_id = $1 AND o.event_id = $2`, l.tenant, eventID, submissionID).Scan(&row)
+		if err != nil {
+			t.Fatalf("read %s: %v", eventID, err)
+		}
+		return row
+	}
+	if got, want := read(discoveryID, out[0].SubmissionID), "discovery|discovery|inv.scan|none|model_store|local_model|0.5.1|Example Publisher|app:vscode|localhost|llama3:8b,qwen2.5-coder:7b"; got != want {
+		t.Errorf("discovery stored as\n  %s\nwant\n  %s", got, want)
+	}
+	if got, want := read(activityID, out[1].SubmissionID), "agent_activity|agent_activity|tool.otel|none|model_request|claude-sonnet|1200|300|4500|Bash|denied|2048"; got != want {
+		t.Errorf("agent_activity stored as\n  %s\nwant\n  %s", got, want)
 	}
 }

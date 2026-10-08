@@ -116,7 +116,7 @@ type EventResult struct {
 	EventID         string                `json:"event_id"`
 	Outcome         Outcome               `json:"outcome"`
 	SubmissionID    string                `json:"submission_id,omitempty"`
-	DedupTier       string                `json:"dedup_tier,omitempty"` // T or S
+	DedupTier       string                `json:"dedup_tier,omitempty"` // T, S, R, V or A
 	WonFields       *bool                 `json:"won_fields,omitempty"` // true when this observation won the tie-break
 	FirstReceivedAt *time.Time            `json:"first_received_at,omitempty"`
 	Reason          ReasonCode            `json:"reason,omitempty"`

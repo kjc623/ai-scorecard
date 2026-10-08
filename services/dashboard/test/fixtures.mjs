@@ -96,7 +96,7 @@ const ACTIVITY_ROWS = Object.freeze([
     last_occurred_at: '2026-09-30T11:19:50Z',
     subject: 'u_4f21', tool: 'tls_b6681b043244c43f', device: '9f1c0b6e-0000-4000-8000-000000000001',
     mode: 'm0', action: null, content_state: 'not_captured', route: 'proc.detect',
-    detection_basis: 'model_detection', merge_confidence: 'high', confidence: null,
+    detection_basis: 'discovery', merge_confidence: 'high', confidence: null,
     observation_count: 1, size_bytes: null, labels: null, observed_routes: ['proc.detect'],
   }),
 ]);

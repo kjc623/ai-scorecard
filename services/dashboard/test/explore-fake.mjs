@@ -128,7 +128,7 @@ export function buildExploreSample(now) {
       action,
       content_state: contentState,
       route: routes[0],
-      detection_basis: detectionOnly ? 'model_detection' : rand() < 0.08 ? 'usage_rollup' : 'prompt',
+      detection_basis: detectionOnly ? 'discovery' : rand() < 0.08 ? 'usage_rollup' : 'prompt',
       merge_confidence: rand() < 0.08 ? 'low' : 'high',
       confidence: detectionOnly ? null : rand() < 0.07 ? 'degraded' : strong ? 'high' : 'medium',
       observation_count: routes.length,
@@ -255,7 +255,7 @@ function sampleObservations(event) {
     observation_event_id: `obs_${event.submission_id.slice(0, 8)}_${i + 1}`,
     observation_source: route,
     observation_kind: event.detection_basis,
-    direction: event.detection_basis === 'model_detection' ? 'none' : 'egress',
+    direction: event.detection_basis === 'discovery' ? 'none' : 'egress',
     observation_occurred_at: i === 0 ? event.first_occurred_at : event.last_occurred_at,
     observation_size_bytes: event.size_bytes,
   }));

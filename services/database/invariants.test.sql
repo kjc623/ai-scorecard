@@ -340,7 +340,7 @@ BEGIN
   RAISE NOTICE 'PASS T11 exact observation adopted the weak-only row instead of double-counting';
 END $$;
 
--- A rollup and a detection for one tool in one bucket stay two records. Neither carries a size, so
+-- A rollup and a discovery for one tool in one bucket stay two records. Neither carries a size, so
 -- without `kind` in the weak key they would collapse into one.
 DO $$
 DECLARE
@@ -366,20 +366,20 @@ BEGIN
     'tenant_id','11111111-1111-7111-8111-111111111111',
     'device_id','aaaaaaaa-0000-7000-8000-000000000001',
     'user_ref','u_test','tool_fingerprint','ondevice.runtime.v1:ollama',
-    'direction','none','kind','model_detection',
+    'direction','none','kind','discovery',
     'occurred_at','2026-10-04T08:01:00Z','monotonic_offset_ms',60000,
     'source','proc.detect','collection_mode','m0',
     'dedup_key','sha256:' || repeat('c2', 32),
-    'detection_basis','process_scan'
+    'discovery_type','app_running','detection_basis','process_event'
   ), now());
 
   SELECT count(*) INTO n FROM ingest.submission
    WHERE tenant_id = '11111111-1111-7111-8111-111111111111'
      AND tool_fingerprint = 'ondevice.runtime.v1:ollama';
   IF n <> 2 THEN
-    RAISE EXCEPTION 'FAIL T12 expected a rollup and a detection to stay separate, found %', n;
+    RAISE EXCEPTION 'FAIL T12 expected a rollup and a discovery to stay separate, found %', n;
   END IF;
-  RAISE NOTICE 'PASS T12 rollup and detection kept separate (kind is part of the weak key)';
+  RAISE NOTICE 'PASS T12 rollup and discovery kept separate (kind is part of the weak key)';
 END $$;
 
 
@@ -965,7 +965,7 @@ END $$;
 
 
 -- =====================================================================================
--- T38-T42  The kind and mode boundaries match the envelope contract, field for field
+-- T38-T42, T75  The kind and mode boundaries match the envelope contract, field for field
 -- =====================================================================================
 -- services/database/tools/check-schema.mjs proves each forbid-list equals the contract's; these prove each
 -- field is actually enforced. Each block ends with a positive control: a well-formed row of the same
@@ -974,69 +974,160 @@ END $$;
 
 DO $$
 DECLARE
-  -- the contract's model_detection forbid-list
+  -- the contract's discovery forbid-list
   forbids text[] := ARRAY['content_digest','labels','classifier_version','content_excerpt',
-                          'policy_decision','size_bytes','window_start','window_end',
-                          'submission_count','bytes_total','prompt_kind'];
+                          'confidence','prompt_kind','policy_decision','size_bytes',
+                          'window_start','window_end','submission_count','bytes_total',
+                          'activity_type','model','input_tokens','output_tokens','duration_ms',
+                          'tool_name','outcome'];
   vals jsonb := jsonb_build_object(
     'content_digest', 'sha256:' || repeat('a1', 32),
     'labels', jsonb_build_array(jsonb_build_object('class','payment_card','score',0.5)),
     'classifier_version', 'test-2026.01',
     'content_excerpt', 'minimised excerpt',
+    'confidence', 'high',
+    'prompt_kind', 'user',
     'policy_decision', jsonb_build_object('rule_id','R','action','logged','decided_locally',true),
     'size_bytes', 100,
     'window_start', '2026-11-01T00:00:00Z',
     'window_end', '2026-11-02T00:00:00Z',
     'submission_count', 1,
-    'bytes_total', 100,
-    'prompt_kind', 'user');
+    'bytes_total', 100)
+    || jsonb_build_object(
+    'activity_type', 'model_request',
+    'model', 'model-1',
+    'input_tokens', 10,
+    'output_tokens', 20,
+    'duration_ms', 30,
+    'tool_name', 'Bash',
+    'outcome', 'success');
+  good jsonb := jsonb_build_object(
+    'tenant_id','11111111-1111-7111-8111-111111111111',
+    'device_id','aaaaaaaa-0000-7000-8000-000000000001',
+    'user_ref','u_test','tool_fingerprint','app:contract-sweep',
+    'direction','none','kind','discovery',
+    'occurred_at','2026-11-02T09:00:00Z','received_at', now(), 'ingested_at', now(),
+    'monotonic_offset_ms', 1, 'source','inv.scan','collection_mode','m1',
+    'discovery_type','local_model','detection_basis','model_store')
+    || jsonb_build_object(
+    'app_version','0.5.1','publisher','Example Publisher','host_app','app:example-ide',
+    'destination_host','api.example.com','model_names', jsonb_build_array('model-a','model-b'),
+    'dedup_key','sha256:' || repeat('d1', 32),
+    'schema_version','1.0','expires_at', now() + interval '30 days');
   base jsonb;
   f text;
   n int;
 BEGIN
   FOREACH f IN ARRAY forbids LOOP
-    base := jsonb_build_object(
-      'tenant_id','11111111-1111-7111-8111-111111111111',
-      'event_id', gen_random_uuid(),
-      'device_id','aaaaaaaa-0000-7000-8000-000000000001',
-      'user_ref','u_test','tool_fingerprint','ondevice.runtime.v1:contract-sweep',
-      'direction','none','kind','model_detection',
-      'occurred_at','2026-11-02T09:00:00Z','received_at', now(), 'ingested_at', now(),
-      'monotonic_offset_ms', 1, 'source','proc.detect','collection_mode','m1',
-      'detection_basis','process_scan','dedup_key','sha256:' || repeat('d1', 32),
-      'schema_version','1.0','expires_at', now() + interval '30 days')
-      || jsonb_build_object(f, vals -> f);
+    base := good || jsonb_build_object('event_id', gen_random_uuid(), f, vals -> f);
     BEGIN
       INSERT INTO ingest.observation SELECT * FROM jsonb_populate_record(NULL::ingest.observation, base);
-      RAISE EXCEPTION 'FAIL T38 model_detection accepted %, which the contract forbids for this kind', f;
+      RAISE EXCEPTION 'FAIL T38 discovery accepted %, which the contract forbids for this kind', f;
     EXCEPTION WHEN check_violation THEN
       NULL;
     END;
   END LOOP;
 
-  base := jsonb_build_object(
-    'tenant_id','11111111-1111-7111-8111-111111111111',
-    'event_id', gen_random_uuid(),
-    'device_id','aaaaaaaa-0000-7000-8000-000000000001',
-    'user_ref','u_test','tool_fingerprint','ondevice.runtime.v1:contract-sweep',
-    'direction','none','kind','model_detection',
-    'occurred_at','2026-11-02T09:00:00Z','received_at', now(), 'ingested_at', now(),
-    'monotonic_offset_ms', 1, 'source','proc.detect','collection_mode','m1',
-    'detection_basis','process_scan','dedup_key','sha256:' || repeat('d1', 32),
-    'schema_version','1.0','expires_at', now() + interval '30 days');
+  -- the contract requires discovery_type and detection_basis
+  FOREACH f IN ARRAY ARRAY['discovery_type','detection_basis'] LOOP
+    base := (good - f) || jsonb_build_object('event_id', gen_random_uuid());
+    BEGIN
+      INSERT INTO ingest.observation SELECT * FROM jsonb_populate_record(NULL::ingest.observation, base);
+      RAISE EXCEPTION 'FAIL T38 discovery accepted a row without %, which the contract requires', f;
+    EXCEPTION WHEN check_violation THEN
+      NULL;
+    END;
+  END LOOP;
+
+  base := good || jsonb_build_object('event_id', gen_random_uuid());
   INSERT INTO ingest.observation SELECT * FROM jsonb_populate_record(NULL::ingest.observation, base);
   GET DIAGNOSTICS n = ROW_COUNT;
   IF n <> 1 THEN
-    RAISE EXCEPTION 'FAIL T38 the well-formed model_detection was not accepted, so the refusals above prove nothing';
+    RAISE EXCEPTION 'FAIL T38 the well-formed discovery was not accepted, so the refusals above prove nothing';
   END IF;
-  RAISE NOTICE 'PASS T38 model_detection refuses all % contract-forbidden fields and still accepts a valid one', array_length(forbids, 1);
+  RAISE NOTICE 'PASS T38 discovery refuses all % contract-forbidden fields and rows missing a required one, and still accepts a valid one', array_length(forbids, 1);
+END $$;
+
+DO $$
+DECLARE
+  -- the contract's agent_activity forbid-list
+  forbids text[] := ARRAY['content_digest','labels','classifier_version','content_excerpt',
+                          'confidence','prompt_kind','policy_decision',
+                          'window_start','window_end','submission_count','bytes_total',
+                          'detection_basis','discovery_type','app_version','publisher',
+                          'host_app','destination_host','model_names'];
+  vals jsonb := jsonb_build_object(
+    'content_digest', 'sha256:' || repeat('a5', 32),
+    'labels', jsonb_build_array(jsonb_build_object('class','payment_card','score',0.5)),
+    'classifier_version', 'test-2026.01',
+    'content_excerpt', 'minimised excerpt',
+    'confidence', 'high',
+    'prompt_kind', 'user',
+    'policy_decision', jsonb_build_object('rule_id','R','action','logged','decided_locally',true),
+    'window_start', '2026-11-01T00:00:00Z',
+    'window_end', '2026-11-02T00:00:00Z',
+    'submission_count', 1,
+    'bytes_total', 100)
+    || jsonb_build_object(
+    'detection_basis', 'process_event',
+    'discovery_type', 'app_running',
+    'app_version', '1.0.0',
+    'publisher', 'Example Publisher',
+    'host_app', 'app:example-ide',
+    'destination_host', 'api.example.com',
+    'model_names', jsonb_build_array('model-a'));
+  good jsonb := jsonb_build_object(
+    'tenant_id','11111111-1111-7111-8111-111111111111',
+    'device_id','aaaaaaaa-0000-7000-8000-000000000001',
+    'user_ref','u_test','tool_fingerprint','app:contract-sweep',
+    'direction','none','kind','agent_activity',
+    'occurred_at','2026-11-02T09:30:00Z','received_at', now(), 'ingested_at', now(),
+    'monotonic_offset_ms', 1, 'source','tool.otel','collection_mode','m1')
+    || jsonb_build_object(
+    'activity_type','model_request','model','model-1','input_tokens', 1200,
+    'output_tokens', 300,'duration_ms', 4500,'outcome','success','size_bytes', 2048,
+    'dedup_key','sha256:' || repeat('d5', 32),
+    'schema_version','1.0','expires_at', now() + interval '30 days');
+  base jsonb;
+  f text;
+  n int;
+BEGIN
+  FOREACH f IN ARRAY forbids LOOP
+    base := good || jsonb_build_object('event_id', gen_random_uuid(), f, vals -> f);
+    BEGIN
+      INSERT INTO ingest.observation SELECT * FROM jsonb_populate_record(NULL::ingest.observation, base);
+      RAISE EXCEPTION 'FAIL T75 agent_activity accepted %, which the contract forbids for this kind', f;
+    EXCEPTION WHEN check_violation THEN
+      NULL;
+    END;
+  END LOOP;
+
+  -- the contract requires activity_type
+  base := (good - 'activity_type') || jsonb_build_object('event_id', gen_random_uuid());
+  BEGIN
+    INSERT INTO ingest.observation SELECT * FROM jsonb_populate_record(NULL::ingest.observation, base);
+    RAISE EXCEPTION 'FAIL T75 agent_activity accepted a row without activity_type, which the contract requires';
+  EXCEPTION WHEN check_violation THEN
+    NULL;
+  END;
+
+  base := good || jsonb_build_object('event_id', gen_random_uuid());
+  INSERT INTO ingest.observation SELECT * FROM jsonb_populate_record(NULL::ingest.observation, base);
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN
+    RAISE EXCEPTION 'FAIL T75 the well-formed agent_activity was not accepted, so the refusals above prove nothing';
+  END IF;
+  RAISE NOTICE 'PASS T75 agent_activity refuses all % contract-forbidden fields and a row without activity_type, and still accepts a valid one', array_length(forbids, 1);
 END $$;
 
 DO $$
 DECLARE
   -- the contract's usage_rollup forbid-list
   forbids text[] := ARRAY['content_digest','labels','classifier_version','content_excerpt',
-                          'policy_decision','size_bytes','detection_basis','prompt_kind'];
+                          'policy_decision','size_bytes','detection_basis','prompt_kind',
+                          'discovery_type','app_version','publisher','host_app',
+                          'destination_host','model_names','activity_type','model',
+                          'input_tokens','output_tokens','duration_ms','tool_name','outcome'];
   vals jsonb := jsonb_build_object(
     'content_digest', 'sha256:' || repeat('a2', 32),
     'labels', jsonb_build_array(jsonb_build_object('class','payment_card','score',0.5)),
@@ -1044,8 +1135,22 @@ DECLARE
     'content_excerpt', 'minimised excerpt',
     'policy_decision', jsonb_build_object('rule_id','R','action','logged','decided_locally',true),
     'size_bytes', 100,
-    'detection_basis', 'process_scan',
-    'prompt_kind', 'user');
+    'detection_basis', 'process_event',
+    'prompt_kind', 'user')
+    || jsonb_build_object(
+    'discovery_type', 'app_installed',
+    'app_version', '1.0.0',
+    'publisher', 'Example Publisher',
+    'host_app', 'app:example-ide',
+    'destination_host', 'api.example.com',
+    'model_names', jsonb_build_array('model-a'),
+    'activity_type', 'tool_call',
+    'model', 'model-1',
+    'input_tokens', 10,
+    'output_tokens', 20,
+    'duration_ms', 30,
+    'tool_name', 'Bash',
+    'outcome', 'success');
   base jsonb;
   f text;
   n int;
@@ -1094,14 +1199,31 @@ END $$;
 
 DO $$
 DECLARE
-  -- the contract's prompt forbid-list: the window fields and detection_basis
-  forbids text[] := ARRAY['window_start','window_end','submission_count','bytes_total','detection_basis'];
+  -- the contract's prompt forbid-list: the window fields and every discovery and agent_activity field
+  forbids text[] := ARRAY['window_start','window_end','submission_count','bytes_total','detection_basis',
+                          'discovery_type','app_version','publisher','host_app',
+                          'destination_host','model_names','activity_type','model',
+                          'input_tokens','output_tokens','duration_ms','tool_name','outcome'];
   vals jsonb := jsonb_build_object(
     'window_start','2026-11-01T00:00:00Z',
     'window_end','2026-11-02T00:00:00Z',
     'submission_count', 1,
     'bytes_total', 100,
-    'detection_basis','process_scan');
+    'detection_basis','process_event')
+    || jsonb_build_object(
+    'discovery_type', 'app_installed',
+    'app_version', '1.0.0',
+    'publisher', 'Example Publisher',
+    'host_app', 'app:example-ide',
+    'destination_host', 'api.example.com',
+    'model_names', jsonb_build_array('model-a'),
+    'activity_type', 'tool_call',
+    'model', 'model-1',
+    'input_tokens', 10,
+    'output_tokens', 20,
+    'duration_ms', 30,
+    'tool_name', 'Bash',
+    'outcome', 'success');
   base jsonb;
   f text;
   n int;
@@ -2126,11 +2248,11 @@ BEGIN
     'device_id', 'aaaaaaaa-0000-7000-8000-000000000001',
     'user_ref', v_alias,
     'tool_fingerprint', 'probe-alias-1',
-    'direction', 'none', 'kind', 'model_detection',
+    'direction', 'none', 'kind', 'discovery',
     'occurred_at', '2026-10-05T10:00:00Z',
     'monotonic_offset_ms', 1,
     'source', 'proc.detect', 'collection_mode', 'm0',
-    'detection_basis', 'process_scan',
+    'discovery_type', 'app_running', 'detection_basis', 'process_event',
     'dedup_key', 'sha256:' || repeat('e1', 32)
   ), now() + interval '1 hour');
 
@@ -2152,11 +2274,11 @@ BEGIN
     'device_id', 'aaaaaaaa-0000-7000-8000-000000000001',
     'user_ref', v_unknown,
     'tool_fingerprint', 'probe-alias-2',
-    'direction', 'none', 'kind', 'model_detection',
+    'direction', 'none', 'kind', 'discovery',
     'occurred_at', '2026-10-05T10:00:00Z',
     'monotonic_offset_ms', 2,
     'source', 'proc.detect', 'collection_mode', 'm0',
-    'detection_basis', 'process_scan',
+    'discovery_type', 'app_running', 'detection_basis', 'process_event',
     'dedup_key', 'sha256:' || repeat('e2', 32)
   ), now() + interval '2 hours');
 

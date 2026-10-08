@@ -154,7 +154,7 @@ src AS (
          count(*) FILTER (WHERE s.kind = 'prompt' AND s.policy_action = 'blocked')  AS blocked,
          count(*) FILTER (WHERE s.kind = 'prompt' AND s.policy_action = 'warned')   AS warned,
          count(*) FILTER (WHERE s.kind = 'prompt' AND s.policy_action = 'logged')   AS logged,
-         count(*) FILTER (WHERE s.kind = 'model_detection')                         AS detections,
+         count(*) FILTER (WHERE s.kind = 'discovery')                               AS detections,
          count(*) FILTER (WHERE s.kind = 'usage_rollup')                            AS rollup_events,
          count(*) FILTER (WHERE s.confidence = 'degraded')                          AS degraded_events
     FROM ingest.submission s

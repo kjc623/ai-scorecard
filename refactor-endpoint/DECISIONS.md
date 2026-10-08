@@ -146,3 +146,35 @@ decided and why, and for a vendor fact the product version checked.
 - **The rules are per kind only.** The pairings in §3's "Used by" column (`host_app` with
   `ide_extension`, `model` with `model_request`, and so on) are not enforced by the schema: §3's
   rules are per kind, and the generator's variants are per kind and collection mode.
+
+## 2026-10-08, task 04
+
+- **The new `ingest.observation` columns come last** in `schema.sql`, after `expires_at`:
+  `ALTER TABLE ... ADD COLUMN` appends, so a migrated table and a new one only have the same column
+  order this way. The migration proof's `pg_dump --schema-only` diff depends on it.
+- **The `model_detection` guard lifts `FORCE ROW LEVEL SECURITY`** on `ingest.observation` and
+  `ingest.submission` for its check and restores it in the same transaction. Under forced row-level
+  security the owner's query sees no rows, so without this the guard could never fail. The migrator
+  owns the tables because it created them.
+- **The migration is idempotent by construction**: columns are added `IF NOT EXISTS`, each changed
+  CHECK is dropped `IF EXISTS` and added again, the route rows are `ON CONFLICT DO NOTHING`, and
+  `ingest.record_event` is dropped and recreated with its `EXECUTE` grant to `sac_ingest` (the drop
+  removes the grant). Applied over the new `schema.sql`, the dump is unchanged.
+- **Column CHECKs for the new fields are enums and non-negative integers only.** `discovery_type`,
+  `activity_type` and `outcome` take the contract's enums; `input_tokens`, `output_tokens` and
+  `duration_ms` are `bigint >= 0`. String lengths and the `destination_host` pattern are left to
+  ingest's contract validation, as for the existing text columns.
+- **The shape CHECKs also require what the contract requires**: `discovery_type` and
+  `detection_basis` for `discovery`, `activity_type` for `agent_activity`, besides the forbid-lists
+  `check-schema.mjs` compares.
+- **`dedup_tier` is part of the batch response**, so `EventResult.DedupTier`'s comment in
+  `device/protocol/batch.go` now lists `T, S, R, V or A`.
+- **Not changed:** `discovery` and `agent_activity` fold into a submission by the server's weak key
+  (tenant, device, tool, kind, a 300-second bucket and size), as rollups do; the device's
+  `dedup_key` is stored on the observation only. Several `agent_activity` records of one tool in one
+  bucket with the same size (or none) therefore become one submission with a rising
+  `observation_count`; every observation is kept. Changing this is outside the brief.
+- **Not changed:** `ops.tool_display_name` (reads `ops.tool` and `ref.tool_catalogue` only) and the
+  grants (table-level for `sac_ingest`, `sac_query` and `sac_ops`; the column lists of `sac_control`
+  and `sac_vault` name no new column). `localdev/tools/simulate-devices.mjs` still emits
+  `model_detection`, and `device/protocol` still declares it (task 05).

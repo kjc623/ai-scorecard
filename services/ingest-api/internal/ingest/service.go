@@ -264,15 +264,17 @@ func (s *Service) validate(p auth.Principal, routes map[string]bool, idx int, ra
 
 // dedupTier is the material the dedup key was derived from, reported as dedup_tier: T for prompt
 // content (M1 and above carry a content digest), S for a surrogate of size and timing (M0), R for a
-// rollup window, D for a detection.
+// rollup window, V for a discovery, A for an agent activity.
 func dedupTier(sub envelope.DeviceSubmission) string {
 	switch sub.(type) {
 	case *envelope.DevicePromptM0:
 		return "S"
 	case *envelope.DeviceUsageRollup:
 		return "R"
-	case *envelope.DeviceModelDetection:
-		return "D"
+	case *envelope.DeviceDiscovery:
+		return "V"
+	case *envelope.DeviceAgentActivity:
+		return "A"
 	default:
 		return "T"
 	}

@@ -744,7 +744,7 @@ export const SOURCES = Object.freeze({
       route: dim('route', 's.winning_source', 'text', { ...ROUTE_CARD }),
       detection_basis: dim('detection_basis', 's.kind', 'text', {
         ...KIND_CARD,
-        values: ['prompt', 'usage_rollup', 'model_detection'],
+        values: ['prompt', 'usage_rollup', 'discovery', 'agent_activity'],
       }),
       // The request kind. NULL means the device did not decide, so the dimension is
       // compiled through coalesce(..., 'unknown'): a NULL row filters as `unknown`, and the `ne`

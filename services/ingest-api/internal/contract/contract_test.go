@@ -53,6 +53,28 @@ func rollup() map[string]any {
 	return m
 }
 
+func discovery() map[string]any {
+	m := rollup()
+	for _, f := range []string{"window_start", "window_end", "submission_count", "bytes_total"} {
+		delete(m, f)
+	}
+	m["kind"], m["source"] = "discovery", "inv.scan"
+	m["discovery_type"], m["detection_basis"] = "ide_extension", "extension_scan"
+	m["app_version"], m["publisher"], m["host_app"] = "1.2.3", "Example Publisher", "app:vscode"
+	return m
+}
+
+func agentActivity() map[string]any {
+	m := rollup()
+	for _, f := range []string{"window_start", "window_end", "submission_count", "bytes_total"} {
+		delete(m, f)
+	}
+	m["kind"], m["source"] = "agent_activity", "tool.otel"
+	m["activity_type"], m["model"], m["input_tokens"], m["output_tokens"] = "model_request", "model-1", 1200, 300
+	m["duration_ms"], m["outcome"], m["size_bytes"] = 4500, "success", 2048
+	return m
+}
+
 func parse(t *testing.T, m map[string]any) *Envelope {
 	t.Helper()
 	raw, err := json.Marshal(m)
@@ -80,15 +102,9 @@ func TestValidEnvelopesPass(t *testing.T) {
 	m2 := promptM1()
 	m2["collection_mode"] = "m2"
 	m2["content_excerpt"] = map[string]any{"kind": "match_span", "text": "4111"}
-	detection := rollup()
-	for _, f := range []string{"window_start", "window_end", "submission_count", "bytes_total"} {
-		delete(detection, f)
-	}
-	detection["kind"], detection["detection_basis"] = "model_detection", "process_scan"
-
 	for name, m := range map[string]map[string]any{
 		"prompt m0": promptM0(), "prompt m1": promptM1(), "prompt m2": m2,
-		"usage rollup": rollup(), "model detection": detection,
+		"usage rollup": rollup(), "discovery": discovery(), "agent activity": agentActivity(),
 	} {
 		if viol := v.Validate(parse(t, m)); viol != nil {
 			t.Errorf("%s: rejected with %+v", name, *viol)

@@ -301,8 +301,8 @@ func (e events) prompt(n int, user, tool, occurred string, labels []label, actio
 func (e events) detection(n int, user, tool, occurred string) map[string]any {
 	m := e.base(n, user, tool, occurred)
 	for k, v := range map[string]any{
-		"direction": "none", "kind": "model_detection", "source": "proc.detect",
-		"collection_mode": "m0", "detection_basis": "process_scan",
+		"direction": "none", "kind": "discovery", "source": "proc.detect",
+		"collection_mode": "m0", "discovery_type": "app_running", "detection_basis": "process_event",
 	} {
 		m[k] = v
 	}
