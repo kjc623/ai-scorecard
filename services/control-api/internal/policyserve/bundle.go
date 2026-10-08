@@ -33,6 +33,24 @@ type Bundle struct {
 	// SanctionedTools is the tool fingerprints the tenant has sanctioned, sorted: what a rule's
 	// sanction list is decided against.
 	SanctionedTools []string `json:"sanctioned_tools"`
+	// Catalog is the app catalog the device's discovery collectors match against, sorted by app key
+	// and each app's signals by platform, kind and value. Never omitted, so the drift test sees the
+	// name.
+	Catalog []CatalogApp `json:"catalog"`
+}
+
+// CatalogApp is one app of the catalog; the device reports it as the fingerprint "app:" + AppKey.
+type CatalogApp struct {
+	AppKey   string          `json:"app_key"`
+	Category string          `json:"category"`
+	Signals  []CatalogSignal `json:"signals"`
+}
+
+// CatalogSignal is one thing that identifies an app on a device.
+type CatalogSignal struct {
+	Platform string `json:"platform"`
+	Kind     string `json:"kind"`
+	Value    string `json:"value"`
 }
 
 // Rule is one enforcement rule. Action is allow, warn or block.

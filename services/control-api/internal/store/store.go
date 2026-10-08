@@ -207,6 +207,8 @@ type PolicyInputs struct {
 	Rules []EnforcementRule
 	// SanctionedTools is the fingerprints whose ops.tool.sanctioned_state is sanctioned, sorted.
 	SanctionedTools []string
+	// Catalog is the app catalog, by app key, each app's signals by platform, kind and value.
+	Catalog []CatalogApp
 }
 
 // MaxEnforcementRules is the most rules a tenant's list may hold.
@@ -325,6 +327,9 @@ type Settings struct {
 	Endpoint             EndpointSettings
 	// DataClasses is ref.data_class's codes, sorted: the labels an enforcement rule may name.
 	DataClasses []string
+	// AppCategories is the categories of the catalog's apps, sorted: the categories an enforcement
+	// rule may name.
+	AppCategories []string
 }
 
 // Errors callers distinguish. Every other error is an infrastructure failure and is retryable.

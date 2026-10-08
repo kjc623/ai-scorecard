@@ -174,7 +174,10 @@ func (s *SQLStore) Settings(ctx context.Context, tenantID string) (Settings, err
 		if out.Endpoint, err2 = endpointSettings(ctx, tx, tenantID); err2 != nil {
 			return err2
 		}
-		out.DataClasses, err2 = dataClasses(ctx, tx)
+		if out.DataClasses, err2 = dataClasses(ctx, tx); err2 != nil {
+			return err2
+		}
+		out.AppCategories, err2 = appCategories(ctx, tx)
 		return err2
 	})
 	return out, err

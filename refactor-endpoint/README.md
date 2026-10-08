@@ -42,7 +42,7 @@ The Plan column gives the plan's task id. "Built" is ticked when the task's "Don
 | 12 | [Device rule engine](12-device-rule-engine/TASK.md) | E25, E35 | 11 | | [x] | [ ] |
 | 13 | [Extension policy hand-off](13-extension-policy-handoff/TASK.md) | E30 | 12 | Chrome or Edge | [x] | [ ] |
 | **Phase 1: Discovery** | | | | | | |
-| 14 | [App catalog](14-app-catalog/TASK.md) | E06 | 07 | | [ ] | [ ] |
+| 14 | [App catalog](14-app-catalog/TASK.md) | E06 | 07 | | [x] | [ ] |
 | 15 | [Discovery emitter](15-discovery-emitter/TASK.md) | E13 | 05, 06, 14 | | [ ] | — |
 | 16 | [Installed app scanner](16-installed-app-scanner/TASK.md) | E07 | 15 | Claude Desktop, ChatGPT Desktop, Cursor installed | [ ] | [ ] |
 | 17 | [CLI and package scanner](17-cli-scanner/TASK.md) | E08 | 16 | claude, codex, gemini, copilot CLIs installed | [ ] | [ ] |

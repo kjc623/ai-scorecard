@@ -13,6 +13,7 @@ func TestTenantStatementsFilterOnTheTenant(t *testing.T) {
 	global := map[string]bool{
 		"set_tenant": true, "collector_vocabulary": true, "interception_hosts": true,
 		"lock_tenant_policy": true, "retention_defaults": true, "data_classes": true,
+		"app_catalog": true, "app_categories": true,
 	}
 	scoped := regexp.MustCompile(`tenant_id = \$1::uuid|VALUES \(\$1::uuid|\(\$1::uuid, \$2::uuid`)
 	ops := regexp.MustCompile(`(FROM|INTO|UPDATE|JOIN)\s+ops\.`)

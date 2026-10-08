@@ -149,6 +149,8 @@ type settingsJSON struct {
 	Endpoint             endpointJSON      `json:"endpoint"`
 	// DataClasses is the labels an enforcement rule may name.
 	DataClasses []string `json:"data_classes"`
+	// AppCategories is the app catalog's categories, which an enforcement rule may name.
+	AppCategories []string `json:"app_categories"`
 }
 
 // endpointJSON is the tenant's endpoint collector switches, with the defaults where it set none.
@@ -194,7 +196,8 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request) {
 		ContentSearch:        s.ContentSearch,
 		TLSInspection:        s.TLSInspection,
 		Tools:                []toolJSON{}, Devices: []deviceJSON{},
-		DataClasses: append([]string{}, s.DataClasses...),
+		DataClasses:   append([]string{}, s.DataClasses...),
+		AppCategories: append([]string{}, s.AppCategories...),
 	}
 	if out.ScopeOverrides == nil {
 		out.ScopeOverrides = map[string]string{}

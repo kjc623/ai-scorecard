@@ -2948,6 +2948,114 @@ BEGIN
 END $$;
 
 -- =====================================================================================
+-- T81-T82  App catalog
+-- =====================================================================================
+
+DO $$
+DECLARE
+  bad text;
+BEGIN
+  -- Each refused value, one at a time.
+  FOREACH bad IN ARRAY ARRAY['Cursor', 'x', '9cursor', 'cursor-ide', repeat('a', 65)] LOOP
+    BEGIN
+      INSERT INTO ref.app (app_key, display_name, vendor, category, source_url)
+      VALUES (bad, 'Refused', 'test', 'ide', 'https://example.test/');
+      RAISE EXCEPTION 'FAIL T81 the app_key % was accepted', bad;
+    EXCEPTION WHEN check_violation THEN NULL;
+    END;
+  END LOOP;
+  BEGIN
+    INSERT INTO ref.app (app_key, display_name, vendor, category, source_url)
+    VALUES ('refused_app', 'Refused', 'test', 'browser', 'https://example.test/');
+    RAISE EXCEPTION 'FAIL T81 the category browser was accepted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO ref.app_signal (app_key, platform, kind, value) VALUES ('cursor', 'android', 'windows_exe', 'Cursor.exe');
+    RAISE EXCEPTION 'FAIL T81 the platform android was accepted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO ref.app_signal (app_key, platform, kind, value) VALUES ('cursor', 'windows', 'registry_key', 'Cursor');
+    RAISE EXCEPTION 'FAIL T81 the signal kind registry_key was accepted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO ref.app_signal (app_key, platform, kind, value) VALUES ('no_such_app', 'windows', 'windows_exe', 'x.exe');
+    RAISE EXCEPTION 'FAIL T81 a signal for an app outside ref.app was accepted';
+  EXCEPTION WHEN foreign_key_violation THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO ref.tool_catalogue (tool_fingerprint, display_name, signal_kind) VALUES ('refused', 'Refused', 'inventory');
+    RAISE EXCEPTION 'FAIL T81 the tool catalogue signal_kind inventory was accepted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO ref.tool_catalogue (tool_fingerprint, display_name, signal_kind, app_key) VALUES ('app:no_such_app', 'Refused', 'endpoint', 'no_such_app');
+    RAISE EXCEPTION 'FAIL T81 a tool catalogue row naming an app outside ref.app was accepted';
+  EXCEPTION WHEN foreign_key_violation THEN NULL;
+  END;
+  RAISE NOTICE 'PASS T81 the app catalog refuses a malformed app key, category, platform and signal kind';
+END $$;
+
+DO $$
+DECLARE
+  n int;
+  missing text;
+BEGIN
+  SELECT count(*) INTO n FROM ref.app;
+  IF n <> 20 THEN
+    RAISE EXCEPTION 'FAIL T82 ref.app holds % apps, want the 20 seed apps', n;
+  END IF;
+  SELECT string_agg(a.app_key, ', ') INTO missing
+    FROM ref.app a
+   WHERE NOT EXISTS (SELECT 1 FROM ref.tool_catalogue c
+                      WHERE c.tool_fingerprint = 'app:' || a.app_key AND c.app_key = a.app_key
+                        AND c.signal_kind = 'endpoint' AND c.display_name = a.display_name
+                        AND c.vendor = a.vendor);
+  IF missing IS NOT NULL THEN
+    RAISE EXCEPTION 'FAIL T82 apps without their app: row in ref.tool_catalogue: %', missing;
+  END IF;
+  SELECT string_agg(a.app_key, ', ') INTO missing
+    FROM ref.app a WHERE NOT EXISTS (SELECT 1 FROM ref.app_signal s WHERE s.app_key = a.app_key);
+  IF missing IS NOT NULL THEN
+    RAISE EXCEPTION 'FAIL T82 apps without a signal: %', missing;
+  END IF;
+  RAISE NOTICE 'PASS T82 every seed app has a signal and its endpoint fingerprint in ref.tool_catalogue';
+END $$;
+
+SET ROLE sac_control;
+DO $$
+BEGIN
+  IF (SELECT count(*) FROM ref.app a JOIN ref.app_signal s USING (app_key)) = 0 THEN
+    RAISE EXCEPTION 'FAIL T82 control-api reads no app catalog';
+  END IF;
+END $$;
+RESET ROLE;
+SET ROLE sac_query;
+DO $$
+BEGIN
+  IF (SELECT count(*) FROM ref.app a JOIN ref.app_signal s USING (app_key)) = 0 THEN
+    RAISE EXCEPTION 'FAIL T82 query-api reads no app catalog';
+  END IF;
+  IF ops.tool_display_name('app:claude_code') IS DISTINCT FROM 'Claude Code' THEN
+    RAISE EXCEPTION 'FAIL T82 an endpoint fingerprint has no display name';
+  END IF;
+END $$;
+RESET ROLE;
+SET ROLE sac_ingest;
+DO $$
+BEGIN
+  BEGIN
+    PERFORM 1 FROM ref.app_signal;
+    RAISE EXCEPTION 'FAIL T82 ingest-api can read the app catalog';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+  END;
+  RAISE NOTICE 'PASS T82 control-api and query-api read the app catalog, ingest-api does not';
+END $$;
+RESET ROLE;
+
+-- =====================================================================================
 -- Report
 -- =====================================================================================
 

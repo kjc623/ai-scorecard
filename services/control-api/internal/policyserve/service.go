@@ -2,8 +2,8 @@
 //
 // A tenant's bundle is composed from what the database says about it: the tenant's ceiling as the
 // default collection mode, its TLS inspection setting and the tool catalogue's TLS hosts as the
-// interception scope, the tenant's endpoint collector settings, its enforcement rules and the tools
-// it has sanctioned. It is signed with the vendor's Ed25519 policy key in the envelope the agent
+// interception scope, the tenant's endpoint collector settings, its enforcement rules, the tools
+// it has sanctioned and the app catalog. It is signed with the vendor's Ed25519 policy key in the envelope the agent
 // verifies, and stored with the exact signed bytes. A new version is minted only when the
 // composition or the signing key differs from the latest stored bundle; otherwise the stored bytes
 // are served again, so the ETag a device holds stays valid until something it would enforce
@@ -292,7 +292,33 @@ func (s *Service) compose(in store.PolicyInputs) (*Bundle, error) {
 		Endpoint:        composeEndpoint(in.Endpoint),
 		Rules:           composeRules(in.Rules),
 		SanctionedTools: sanctioned(in.SanctionedTools),
+		Catalog:         composeCatalog(in.Catalog),
 	}, nil
+}
+
+// composeCatalog is the bundle's catalog in byte order of app key, then of each signal's platform,
+// kind and value, whatever order the store read it in, so equal catalogs compare equal in current.
+func composeCatalog(apps []store.CatalogApp) []CatalogApp {
+	out := make([]CatalogApp, 0, len(apps))
+	for _, a := range apps {
+		signals := make([]CatalogSignal, 0, len(a.Signals))
+		for _, s := range a.Signals {
+			signals = append(signals, CatalogSignal{Platform: s.Platform, Kind: s.Kind, Value: s.Value})
+		}
+		sort.Slice(signals, func(i, j int) bool {
+			x, y := signals[i], signals[j]
+			if x.Platform != y.Platform {
+				return x.Platform < y.Platform
+			}
+			if x.Kind != y.Kind {
+				return x.Kind < y.Kind
+			}
+			return x.Value < y.Value
+		})
+		out = append(out, CatalogApp{AppKey: a.AppKey, Category: a.Category, Signals: signals})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].AppKey < out[j].AppKey })
+	return out
 }
 
 // composeRules is the bundle's rules list, in the tenant's order.

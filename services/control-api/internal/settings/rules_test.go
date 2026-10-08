@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/shadow-ai-capture/control-api/internal/apierr"
+	"github.com/shadow-ai-capture/control-api/internal/store"
 )
 
 const rulesPath = "/admin/v1/settings/rules"
@@ -201,5 +202,36 @@ func TestGetCarriesTheDataClasses(t *testing.T) {
 	want := []string{"credential", "customer_pii", "government_id", "health", "legal_commercial", "payment_card", "source_code"}
 	if !reflect.DeepEqual(got.DataClasses, want) {
 		t.Fatalf("data_classes = %v, want %v", got.DataClasses, want)
+	}
+}
+
+// TestGetCarriesTheAppCategories: the Settings read names the categories the app catalog's apps
+// fall in, once each and sorted, and an empty list when the catalog is empty.
+func TestGetCarriesTheAppCategories(t *testing.T) {
+	r := newRig(t)
+	read := func() string {
+		t.Helper()
+		rec := r.do(t, "admin", "GET", "/admin/v1/settings", "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%d %s", rec.Code, rec.Body)
+		}
+		var got struct {
+			AppCategories json.RawMessage `json:"app_categories"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		return string(got.AppCategories)
+	}
+	if got := read(); got != `[]` {
+		t.Fatalf("app_categories without a catalog = %s, want []", got)
+	}
+	r.store.SetCatalog(
+		store.CatalogApp{AppKey: "ollama", Category: "local_runtime"},
+		store.CatalogApp{AppKey: "cursor", Category: "ide"},
+		store.CatalogApp{AppKey: "vscode", Category: "ide"},
+	)
+	if got := read(); got != `["ide","local_runtime"]` {
+		t.Fatalf("app_categories = %s", got)
 	}
 }
