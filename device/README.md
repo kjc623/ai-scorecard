@@ -99,9 +99,14 @@ is `user_helper`: healthy when every signed-in session has a connected helper, e
 While the bundle switches the OTLP receiver and Claude Code's OTel export on, the service merges
 Claude Code's telemetry variables (the receiver's address and token, and prompt logging on when the
 mode for `app:claude_code` is `m1` or higher) into the `env` object of
-`C:\Program Files\ClaudeCode\managed-settings.json`, which users cannot override, and touches no
+`C:\Program Files\ClaudeCode\managed-settings.json`, which users cannot override. While the hook
+relay and Claude Code's hooks are on, it also declares its own hooks there: `UserPromptSubmit`, and
+`PreToolUse` for Bash, PowerShell, WebFetch and MCP tools, each running the installed
+`capture-core.exe --hook claude_code <event>` with a 1-second timeout, beside any hooks the
+customer declares; with `endpoint.hooks.managed_only` it sets `allowManagedHooksOnly`. It touches no
 other key. Before its first write it backs the file up to `toolconfig\claude_code\original` in the
-state directory; switching the export off removes its keys and restores the values they replaced.
+state directory; switching the export or the hooks off removes those keys and restores the values
+they replaced.
 The file keeps its access control unless users could write it; a new file is readable by users and
 writable by administrators only. Its health row is `tool_config_claude_code`: `healthy` while the file
 holds the agent's keys, `absent` with `tool_not_installed` without Claude Code, `degraded` with
@@ -120,7 +125,10 @@ any failure, it prints the tool's allow output instead; it writes nothing to std
 nothing. The service's `hook_relay` collector, on while the bundle's `endpoint.hooks.enabled` is,
 answers a tool whose `endpoint.tools.<key>.hooks` is on from the bundle's rules (classifying with a
 30 ms budget at `m1` and above), then records the prompt on route `tool.hook` with that decision.
-Anything else is answered `allow` and not recorded.
+Anything else is answered `allow` and not recorded. Claude Code's adapter sends a `UserPromptSubmit`
+prompt as written and a `PreToolUse` call's `tool_input` as compact JSON, and answers in Claude
+Code's JSON output with exit code 0: a block with the rule's message and link, a warning as a
+`systemMessage`, and no output to allow.
 
 ## Installed apps
 

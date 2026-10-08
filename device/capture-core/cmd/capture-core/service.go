@@ -467,8 +467,8 @@ func (s *service) buildProviders() error {
 		return err
 	}
 
-	// Claude Code's managed settings point its telemetry at the receiver while the bundle switches
-	// its OTel export on.
+	// Claude Code's managed settings point its telemetry at the receiver and declare this
+	// executable's hooks while the bundle switches its OTel export or its hooks on.
 	claude := toolconfig.NewClaudeCode(toolconfig.NewClaudeCodeWriter(s.dir, platform.claudeCodeSettings), toolconfig.Config{
 		Token: otel.Token,
 		Scope: s.toolScope,
