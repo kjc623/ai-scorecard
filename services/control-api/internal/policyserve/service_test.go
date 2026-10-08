@@ -404,9 +404,9 @@ func TestServedBundleVerifiesWithTheDevicesVerifier(t *testing.T) {
 		t.Skip("no go toolchain on PATH")
 	}
 	_, here, _, _ := runtime.Caller(0)
-	endpoint := filepath.Join(filepath.Dir(here), "..", "..", "..", "..", "endpoint")
-	if _, err := os.Stat(filepath.Join(endpoint, "capture-core", "policy", "verify.go")); err != nil {
-		t.Skipf("capture-core is not beside control-api: %v", err)
+	device := filepath.Join(filepath.Dir(here), "..", "..", "..", "..", "device")
+	if _, err := os.Stat(filepath.Join(device, "capture-core", "policy", "verify.go")); err != nil {
+		t.Fatalf("capture-core is missing from this repository: %v", err)
 	}
 
 	r := newRig(t, nil)
@@ -419,9 +419,9 @@ func TestServedBundleVerifiesWithTheDevicesVerifier(t *testing.T) {
 	dir := t.TempDir()
 	abs := func(p string) string { a, _ := filepath.Abs(p); return filepath.ToSlash(a) }
 	gomod := "module sacpolicycheck\n\ngo 1.27\n\nrequire github.com/shadow-ai-capture/device/capture-core v0.0.0\n\n" +
-		"replace github.com/shadow-ai-capture/device/capture-core => " + abs(filepath.Join(endpoint, "capture-core")) + "\n" +
-		"replace github.com/shadow-ai-capture/device/protocol => " + abs(filepath.Join(endpoint, "protocol")) + "\n" +
-		"replace github.com/shadow-ai-capture/device/capture-spool => " + abs(filepath.Join(endpoint, "capture-spool")) + "\n"
+		"replace github.com/shadow-ai-capture/device/capture-core => " + abs(filepath.Join(device, "capture-core")) + "\n" +
+		"replace github.com/shadow-ai-capture/device/protocol => " + abs(filepath.Join(device, "protocol")) + "\n" +
+		"replace github.com/shadow-ai-capture/device/capture-spool => " + abs(filepath.Join(device, "capture-spool")) + "\n"
 	program := `package main
 
 import (

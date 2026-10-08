@@ -112,3 +112,7 @@ decided and why, and for a vendor fact the product version checked.
     apply cleanly over the current `schema.sql`, because the migrator builds an empty database from
     `schema.sql` and then applies every migration, and that is how pre-prod's database is built
     (task 04).
+
+## 2026-10-08, task 01, bundle drift test
+
+- **The drift test fails, not skips, when `device/` is missing.** `TestServedBundleVerifiesWithTheDevicesVerifier` resolves `<repo>/device`; the directory is part of this repository. The `-short` and no-Go-toolchain skips stay. The throwaway module needs no `replace` for `contracts/generated/go`: the build passes without it.

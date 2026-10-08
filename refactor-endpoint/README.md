@@ -28,7 +28,7 @@ The Plan column gives the plan's task id. "Built" is ticked when the task's "Don
 | # | Task | Plan | Depends on | Needs | Built | Device |
 |---|---|---|---|---|---|---|
 | **Phase 0: Foundation** | | | | | | |
-| 01 | [Make the policy drift test run](01-bundle-drift-test/TASK.md) | E03 | | | [ ] | — |
+| 01 | [Make the policy drift test run](01-bundle-drift-test/TASK.md) | E03 | | | [x] | — |
 | 02 | [Serialise classifier requests](02-classifier-link-serialise/TASK.md) | E24, E25 | | | [ ] | — |
 | 03 | [Envelope: endpoint routes and kinds](03-envelope-endpoint-kinds/TASK.md) | E02 | | | [ ] | — |
 | 04 | [Server: store the new kinds](04-ingest-endpoint-kinds/TASK.md) | E02 | 03 | | [ ] | [ ] |
