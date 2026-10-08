@@ -16,6 +16,7 @@ import (
 
 	"github.com/shadow-ai-capture/device/capture-core/hostinfo"
 	"github.com/shadow-ai-capture/device/capture-core/localipc"
+	"github.com/shadow-ai-capture/device/capture-core/policy"
 	"github.com/shadow-ai-capture/device/protocol"
 )
 
@@ -57,12 +58,12 @@ func refusalReason(t *testing.T, payload []byte) protocol.RefusalReason {
 }
 
 func TestToCoreObservationKeepsContentBehindAReader(t *testing.T) {
-	m0 := toCoreObservation(protocol.ObservationMessage{Route: protocol.RouteExtDOM, ToolFingerprint: "t"})
+	m0 := toCoreObservation(protocol.ObservationMessage{Route: protocol.RouteExtDOM, ToolFingerprint: "t"}, nil)
 	if m0.Content != nil {
 		t.Fatal("an observation without content has a content reader")
 	}
 	obs := toCoreObservation(protocol.ObservationMessage{Route: protocol.RouteExtDOM, ToolFingerprint: "t", HasContent: true, Content: []byte("hi"),
-		Attachments: []protocol.AttachmentDescriptor{{Name: "a.pdf", SizeBytes: 3}}})
+		Attachments: []protocol.AttachmentDescriptor{{Name: "a.pdf", SizeBytes: 3}}}, nil)
 	got, err := obs.Content.Read(context.Background())
 	if err != nil || string(got) != "hi" {
 		t.Fatalf("content = %q, %v", got, err)
@@ -70,8 +71,31 @@ func TestToCoreObservationKeepsContentBehindAReader(t *testing.T) {
 	if len(obs.Attachments) != 1 || obs.Attachments[0].Name != "a.pdf" {
 		t.Fatalf("attachments = %+v", obs.Attachments)
 	}
-	if obs.Decision == nil || obs.Decision.Action != protocol.ActionLogged {
-		t.Fatal("an observation without a decision is not recorded as logged")
+	if obs.Enforce == nil || obs.Enforce(nil, false) != (protocol.Decision{RuleID: "policy.default", Action: protocol.ActionLogged, DecidedLocally: true}) {
+		t.Fatal("an observation without a decision is not recorded as logged under the default rule")
+	}
+}
+
+func TestToCoreObservationDecision(t *testing.T) {
+	bundle := &policy.Bundle{Rules: []policy.Rule{
+		{RuleID: "block_credentials", Action: policy.RuleBlock, Match: policy.RuleMatch{Labels: []string{"credential"}, Routes: []protocol.Route{protocol.RouteExtDOM}}},
+	}}
+	bundles := func() *policy.Bundle { return bundle }
+
+	// Without the extension's decision the rules decide, and a block is recorded as logged.
+	obs := toCoreObservation(protocol.ObservationMessage{Route: protocol.RouteExtDOM, ToolFingerprint: "t"}, bundles)
+	if got := obs.Enforce([]string{"credential"}, true); got != (protocol.Decision{RuleID: "block_credentials", Action: protocol.ActionLogged, DecidedLocally: true}) {
+		t.Fatalf("recorded %+v", got)
+	}
+	if got := obs.Enforce([]string{"credential"}, false); got.RuleID != "policy.default" {
+		t.Fatalf("with unknown labels recorded %+v", got)
+	}
+
+	// The extension's own decision is kept whatever the rules say.
+	own := protocol.Decision{RuleID: "ext.warn", Action: protocol.ActionWarned, DecidedLocally: true}
+	obs = toCoreObservation(protocol.ObservationMessage{Route: protocol.RouteExtDOM, ToolFingerprint: "t", Decision: &own}, bundles)
+	if got := obs.Enforce([]string{"credential"}, true); got != own {
+		t.Fatalf("recorded %+v, want the extension's decision", got)
 	}
 }
 

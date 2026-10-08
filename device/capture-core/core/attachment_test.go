@@ -32,7 +32,7 @@ func attachmentObservation(reader ContentReader) Observation {
 		SizeBytes:         40,
 		MediaType:         "application/json",
 		Content:           &countingReader{body: []byte("summarise the attached invoice")},
-		Decision:          &protocol.Decision{RuleID: "R", Action: protocol.ActionLogged},
+		Enforce:           decided(protocol.Decision{RuleID: "R", Action: protocol.ActionLogged}),
 		Attachments:       []dedup.Attachment{desc},
 		AttachmentContent: []AttachmentContent{{MediaType: "text/plain", Content: reader}},
 		Extract: ExtractorFunc(func([]byte, string) (string, []dedup.Attachment, error) {

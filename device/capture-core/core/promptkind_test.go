@@ -69,7 +69,7 @@ func TestPipelineMarksATitlingRequestClientGeneratedAndDoesNotClassify(t *testin
 		SizeBytes:       int64(len(body)),
 		MediaType:       "application/json",
 		Content:         &countingReader{body: body},
-		Decision:        &protocol.Decision{RuleID: "R", Action: protocol.ActionLogged},
+		Enforce:         decided(protocol.Decision{RuleID: "R", Action: protocol.ActionLogged}),
 		Extract: ExtractorFunc(func([]byte, string) (string, []dedup.Attachment, error) {
 			return titling, nil, nil
 		}),
@@ -119,7 +119,7 @@ func TestPipelineClassifiesTheAuthoredTextNotTheWholeBody(t *testing.T) {
 		SizeBytes:       int64(len(body)),
 		MediaType:       "application/json",
 		Content:         &countingReader{body: body},
-		Decision:        &protocol.Decision{RuleID: "R", Action: protocol.ActionLogged},
+		Enforce:         decided(protocol.Decision{RuleID: "R", Action: protocol.ActionLogged}),
 		Extract: ExtractorFunc(func([]byte, string) (string, []dedup.Attachment, error) {
 			return question, nil, nil
 		}),
@@ -162,7 +162,7 @@ func TestPipelineStillLabelsAuthoredSourceCode(t *testing.T) {
 		OccurredAt:      time.Unix(1_700_000_000, 0),
 		SizeBytes:       int64(len(code)),
 		Content:         &countingReader{body: []byte(code)},
-		Decision:        &protocol.Decision{RuleID: "R", Action: protocol.ActionLogged},
+		Enforce:         decided(protocol.Decision{RuleID: "R", Action: protocol.ActionLogged}),
 		Extract: ExtractorFunc(func([]byte, string) (string, []dedup.Attachment, error) {
 			return code, nil, nil
 		}),

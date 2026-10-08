@@ -252,6 +252,11 @@ func TestTLSInterceptsEligibleDestination(t *testing.T) {
 	if obs.Route != protocol.RouteProxyTLS {
 		t.Fatalf("route = %s", obs.Route)
 	}
+	// The proxy cannot stop a prompt, so a matching block rule is recorded as logged under its id.
+	bundle.Rules = []policy.Rule{{RuleID: "block_credentials", Action: policy.RuleBlock, Match: policy.RuleMatch{Labels: []string{"credential"}}}}
+	if got := obs.Enforce([]string{"credential"}, true); got != (protocol.Decision{RuleID: "block_credentials", Action: protocol.ActionLogged, DecidedLocally: true}) {
+		t.Fatalf("recorded decision = %+v", got)
+	}
 	if len(pipe.readBodies) != 1 || string(pipe.readBodies[0]) != body {
 		t.Fatalf("the pipeline did not receive the body: %v", pipe.readBodies)
 	}

@@ -94,7 +94,7 @@ func openSpool(t *testing.T) *capturespool.Spool {
 
 func bundleWith(mode protocol.CollectionMode) *policy.Bundle {
 	return &policy.Bundle{
-		Version:         "integration-1",
+		Version:         "INTEGRATION-1",
 		EffectiveAt:     time.Now().Add(-time.Hour),
 		TenantDefault:   mode,
 		ToolModes:       map[string]protocol.CollectionMode{"genai.web.chat.v1:chatgpt": mode},
@@ -152,9 +152,9 @@ func observationFromFrame(t *testing.T, path string) protocol.ObservationMessage
 // the pipeline consumes. It is a function rather than a method because protocol is not this
 // package's type - and it is here rather than in a component because it IS the seam between them.
 func toCoreObservation(o protocol.ObservationMessage, reader core.ContentReader, ex core.Extractor) core.Observation {
-	decision := o.Decision
-	if decision == nil {
-		decision = &protocol.Decision{RuleID: "INTEGRATION-1", Action: protocol.ActionLogged, DecidedLocally: true}
+	decision := protocol.Decision{RuleID: "INTEGRATION-1", Action: protocol.ActionLogged, DecidedLocally: true}
+	if o.Decision != nil {
+		decision = *o.Decision
 	}
 	obs := core.Observation{
 		Route:             o.Route,
@@ -163,7 +163,7 @@ func toCoreObservation(o protocol.ObservationMessage, reader core.ContentReader,
 		OccurredAt:        o.OccurredAt,
 		MonotonicOffsetMS: o.MonotonicOffsetMS,
 		SizeBytes:         o.SizeBytes,
-		Decision:          decision,
+		Enforce:           func([]string, bool) protocol.Decision { return decision },
 		Extract:           ex,
 		ClientID:          o.ClientID,
 		OverCap:           o.OverCap,

@@ -159,7 +159,7 @@ func TestPipelineM0NeverCallsTheContentReader(t *testing.T) {
 		OccurredAt:      time.Unix(1_700_000_000, 0),
 		SizeBytes:       size,
 		Content:         reader,
-		Decision:        &protocol.Decision{RuleID: "R-1", Action: protocol.ActionLogged, DecidedLocally: true},
+		Enforce:         decided(protocol.Decision{RuleID: "R-1", Action: protocol.ActionLogged, DecidedLocally: true}),
 	})
 	if err != nil {
 		t.Fatalf("Process: %v", err)
@@ -258,7 +258,7 @@ func TestPipelineM1ReadsAndCarriesClassifierOutput(t *testing.T) {
 		SizeBytes:       32,
 		MediaType:       "application/json",
 		Content:         reader,
-		Decision:        &protocol.Decision{RuleID: "R", Action: protocol.ActionLogged},
+		Enforce:         decided(protocol.Decision{RuleID: "R", Action: protocol.ActionLogged}),
 		Extract: ExtractorFunc(func([]byte, string) (string, []dedup.Attachment, error) {
 			return "Summarise this contract.", nil, nil
 		}),
@@ -326,7 +326,7 @@ func TestPipelineM2RequiresAnExcerptAndCapsIt(t *testing.T) {
 		OccurredAt:      time.Unix(1_700_000_000, 0),
 		SizeBytes:       10,
 		Content:         &countingReader{body: []byte("hello")},
-		Decision:        &protocol.Decision{RuleID: "R", Action: protocol.ActionLogged},
+		Enforce:         decided(protocol.Decision{RuleID: "R", Action: protocol.ActionLogged}),
 		Extract: ExtractorFunc(func([]byte, string) (string, []dedup.Attachment, error) {
 			return "hello", nil, nil
 		}),
@@ -380,7 +380,7 @@ func TestPipelineM3HoldsContentLocallyAndCarriesNoExcerpt(t *testing.T) {
 		OccurredAt:      time.Unix(1_700_000_000, 0),
 		SizeBytes:       11,
 		Content:         &countingReader{body: []byte("hello world")},
-		Decision:        &protocol.Decision{RuleID: "R", Action: protocol.ActionLogged},
+		Enforce:         decided(protocol.Decision{RuleID: "R", Action: protocol.ActionLogged}),
 	})
 	if err != nil {
 		t.Fatalf("Process: %v", err)
@@ -421,7 +421,7 @@ func TestPipelineClassifierUnavailableStillEmitsDegraded(t *testing.T) {
 		OccurredAt:      time.Unix(1_700_000_000, 0),
 		SizeBytes:       5,
 		Content:         &countingReader{body: []byte("hello")},
-		Decision:        &protocol.Decision{RuleID: "R", Action: protocol.ActionLogged},
+		Enforce:         decided(protocol.Decision{RuleID: "R", Action: protocol.ActionLogged}),
 	})
 	if err != nil {
 		t.Fatalf("Process returned an error; a classifier outage must not fail the submission: %v", err)
@@ -461,7 +461,7 @@ func TestPipelineSpoolFailureCountsDroppedAndCarriesTheRequest(t *testing.T) {
 		OccurredAt:      time.Unix(1_700_000_000, 0),
 		SizeBytes:       5,
 		Content:         &countingReader{body: []byte("hello")},
-		Decision:        &protocol.Decision{RuleID: "R", Action: protocol.ActionLogged},
+		Enforce:         decided(protocol.Decision{RuleID: "R", Action: protocol.ActionLogged}),
 	})
 	if err == nil {
 		t.Fatal("expected the spool failure to be reported to the caller")
@@ -494,7 +494,7 @@ func TestPipelineOverCapDegradesAndDoesNotClaimACanonicalDigest(t *testing.T) {
 		SizeBytes:       9 << 20,
 		OverCap:         true,
 		Content:         &countingReader{body: []byte("prefix-only")},
-		Decision:        &protocol.Decision{RuleID: "R", Action: protocol.ActionLogged},
+		Enforce:         decided(protocol.Decision{RuleID: "R", Action: protocol.ActionLogged}),
 	})
 	if err != nil {
 		t.Fatalf("Process: %v", err)
@@ -539,7 +539,7 @@ func TestPipelineExtractionFailureDegradesToTheSurrogateTier(t *testing.T) {
 		OccurredAt:      time.Unix(1_700_000_000, 0),
 		SizeBytes:       5,
 		Content:         &countingReader{body: []byte("hello")},
-		Decision:        &protocol.Decision{RuleID: "R", Action: protocol.ActionLogged},
+		Enforce:         decided(protocol.Decision{RuleID: "R", Action: protocol.ActionLogged}),
 		Extract: ExtractorFunc(func([]byte, string) (string, []dedup.Attachment, error) {
 			return "", nil, errors.New("no user-authored segment identifiable")
 		}),
@@ -588,7 +588,7 @@ func m0Observation() Observation {
 		ToolFingerprint: "tool",
 		OccurredAt:      time.Unix(1_700_000_000, 0),
 		SizeBytes:       10,
-		Decision:        &protocol.Decision{RuleID: "r", Action: protocol.ActionLogged},
+		Enforce:         decided(protocol.Decision{RuleID: "r", Action: protocol.ActionLogged}),
 	}
 }
 
@@ -654,7 +654,7 @@ func TestPipelineUnresolvedRefusesToMint(t *testing.T) {
 		ToolFingerprint: "tool",
 		OccurredAt:      time.Unix(1_700_000_000, 0),
 		SizeBytes:       10,
-		Decision:        &protocol.Decision{RuleID: "r", Action: protocol.ActionLogged},
+		Enforce:         decided(protocol.Decision{RuleID: "r", Action: protocol.ActionLogged}),
 		Content:         &tripwireReader{t: t}, // the gate must refuse BEFORE the content is read
 	}
 

@@ -427,6 +427,7 @@ func (s *service) buildProviders() error {
 
 	s.broker = loopback.New(loopback.Config{
 		Ports:    portsFrom(b),
+		Bundles:  s.pipe.Bundles,
 		Pipeline: s.pipe,
 		Log:      s.logf,
 		Clock:    time.Now,

@@ -15,6 +15,7 @@ import (
 
 	"github.com/shadow-ai-capture/device/capture-core/core"
 	"github.com/shadow-ai-capture/device/capture-core/dedup"
+	"github.com/shadow-ai-capture/device/capture-core/enforce"
 	"github.com/shadow-ai-capture/device/protocol"
 )
 
@@ -210,15 +211,17 @@ func (r *portRunner) observe(ctx context.Context, req *http.Request, counted int
 	if buf != nil {
 		content = buf
 	}
+	tool := r.currentSpec().ToolFingerprint
+	// The request has been forwarded by now, so whatever a rule asks for is recorded as logged.
 	obs := core.Observation{
 		Route:           protocol.RouteProxyLoopback,
 		Kind:            protocol.KindPrompt,
-		ToolFingerprint: r.currentSpec().ToolFingerprint,
+		ToolFingerprint: tool,
 		Population:      b.cfg.Agent.Population,
 		MediaType:       req.Header.Get("Content-Type"),
 		OccurredAt:      b.cfg.Clock(),
 		SizeBytes:       size,
-		Decision:        b.cfg.Decide(r.currentSpec().ToolFingerprint),
+		Enforce:         enforce.Hook(b.cfg.Bundles, protocol.RouteProxyLoopback, tool, false),
 		Content:         content,
 		OverCap:         buf != nil && buf.overCap(),
 		Extract:         JSONExtractor{},

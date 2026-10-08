@@ -298,7 +298,10 @@ func TestBrokerBindsAfterPreflightAndBrokersRequests(t *testing.T) {
 	upstream := newStubUpstream(t)
 	held := freePort(t)
 	pipe := &recordingPipeline{mode: protocol.ModeM1}
-	b := New(testConfig(upstream.Port(), held, pipe))
+	cfg := testConfig(upstream.Port(), held, pipe)
+	bundle := &policy.Bundle{}
+	cfg.Bundles = func() *policy.Bundle { return bundle }
+	b := New(cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -340,8 +343,17 @@ func TestBrokerBindsAfterPreflightAndBrokersRequests(t *testing.T) {
 	if !pipe.didRead() {
 		t.Fatal("content was forwarded but never handed to the pipeline at M1")
 	}
-	if obs.Decision == nil {
+	if obs.Enforce == nil {
 		t.Fatal("the broker emitted an observation with no policy decision; policy_decision is required for every prompt")
+	}
+	if got := obs.Enforce([]string{"source_code"}, true); got != (protocol.Decision{RuleID: "policy.default", Action: protocol.ActionLogged, DecidedLocally: true}) {
+		t.Fatalf("with no rules the broker recorded %+v", got)
+	}
+	// The broker cannot stop a prompt, so a matching block rule from the bundle in force is
+	// recorded as logged under its id.
+	bundle.Rules = []policy.Rule{{RuleID: "block_local", Action: policy.RuleBlock, Match: policy.RuleMatch{Tools: []string{"local_inference"}, Routes: []protocol.Route{protocol.RouteProxyLoopback}}}}
+	if got := obs.Enforce(nil, false); got != (protocol.Decision{RuleID: "block_local", Action: protocol.ActionLogged, DecidedLocally: true}) {
+		t.Fatalf("with a block rule the broker recorded %+v", got)
 	}
 	c := b.Counters().Cumulative()
 	if c[protocol.CounterObserved] != 1 || c[protocol.CounterEmitted] != 1 {

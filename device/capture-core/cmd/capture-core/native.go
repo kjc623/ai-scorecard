@@ -10,6 +10,8 @@ import (
 	"github.com/shadow-ai-capture/device/capture-core/attachments"
 	"github.com/shadow-ai-capture/device/capture-core/core"
 	"github.com/shadow-ai-capture/device/capture-core/dedup"
+	"github.com/shadow-ai-capture/device/capture-core/enforce"
+	"github.com/shadow-ai-capture/device/capture-core/policy"
 	"github.com/shadow-ai-capture/device/protocol"
 )
 
@@ -73,7 +75,7 @@ func (h *nativeSession) handleObservation(ctx context.Context, msg protocol.Nati
 		}
 		return refusal(protocol.RefusalMalformed, "%v", err)
 	}
-	observation := toCoreObservation(obs)
+	observation := toCoreObservation(obs, h.svc.pipe.Bundles)
 	person := h.person
 	observation.Person = &person
 	// The bytes transferred for this observation are classified under its mode and then dropped.
@@ -224,11 +226,14 @@ func refusal(reason protocol.RefusalReason, format string, args ...any) []byte {
 }
 
 // toCoreObservation turns a decoded observation into what the pipeline consumes, with the content
-// behind a reader so the mode is applied before it is read.
-func toCoreObservation(o protocol.ObservationMessage) core.Observation {
-	decision := o.Decision
-	if decision == nil {
-		decision = &protocol.Decision{RuleID: "policy.default", Action: protocol.ActionLogged, DecidedLocally: true}
+// behind a reader so the mode is applied before it is read. The extension's own decision is kept.
+// Without one the bundle's rules decide; the answer to an observation carries no decision, so
+// nothing here can stop the prompt and the decision is recorded as logged.
+func toCoreObservation(o protocol.ObservationMessage, bundles func() *policy.Bundle) core.Observation {
+	enforcer := enforce.Hook(bundles, o.Route, o.ToolFingerprint, false)
+	if d := o.Decision; d != nil {
+		decision := *d
+		enforcer = func([]string, bool) protocol.Decision { return decision }
 	}
 	atts := make([]dedup.Attachment, 0, len(o.Attachments))
 	for _, a := range o.Attachments {
@@ -241,7 +246,7 @@ func toCoreObservation(o protocol.ObservationMessage) core.Observation {
 		OccurredAt:        o.OccurredAt,
 		MonotonicOffsetMS: o.MonotonicOffsetMS,
 		SizeBytes:         o.SizeBytes,
-		Decision:          decision,
+		Enforce:           enforcer,
 		Extract:           extensionExtractor{},
 		Attachments:       atts,
 		ClientID:          o.ClientID,

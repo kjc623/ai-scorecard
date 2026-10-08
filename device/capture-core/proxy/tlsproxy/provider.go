@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/shadow-ai-capture/device/capture-core/core"
+	"github.com/shadow-ai-capture/device/capture-core/enforce"
 	"github.com/shadow-ai-capture/device/capture-core/policy"
 	"github.com/shadow-ai-capture/device/protocol"
 )
@@ -54,7 +55,6 @@ type Config struct {
 	Bundles func() *policy.Bundle
 
 	Pipeline Pipeline
-	Decide   func(tool string) *protocol.Decision
 	Agent    core.ScopeQuery
 
 	// TrustRoot installs and removes the device CA. Removal is as reliable as installation.
@@ -121,11 +121,6 @@ func (c Config) withDefaults() Config {
 	}
 	if c.Process == nil {
 		c.Process = func(net.Conn) string { return "unknown" }
-	}
-	if c.Decide == nil {
-		c.Decide = func(string) *protocol.Decision {
-			return &protocol.Decision{RuleID: "policy.default", Action: protocol.ActionLogged, DecidedLocally: true}
-		}
 	}
 	return c
 }
@@ -745,16 +740,17 @@ func (p *Provider) observe(req *http.Request, counted int64, buf *bodyBuffer, re
 	if buf != nil {
 		content = buf
 	}
-	host := req.Host
+	tool := toolFingerprint(req.Host, req.URL.Path)
+	// The exchange has completed by now, so whatever a rule asks for is recorded as logged.
 	obs := core.Observation{
 		Route:           protocol.RouteProxyTLS,
 		Kind:            protocol.KindPrompt,
-		ToolFingerprint: toolFingerprint(host, req.URL.Path),
+		ToolFingerprint: tool,
 		Population:      p.cfg.Agent.Population,
 		MediaType:       req.Header.Get("Content-Type"),
 		OccurredAt:      p.cfg.Clock(),
 		SizeBytes:       size,
-		Decision:        p.cfg.Decide(host),
+		Enforce:         enforce.Hook(p.cfg.Bundles, protocol.RouteProxyTLS, tool, false),
 		Content:         content,
 		OverCap:         buf != nil && buf.overCap(),
 		Extract:         JSONExtractor{},

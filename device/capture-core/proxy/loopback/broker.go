@@ -58,10 +58,9 @@ type Config struct {
 	Pipeline Pipeline
 	Agent    AgentInfo
 
-	// Decide supplies the policy decision a prompt event requires. It is a seam because the
-	// rules engine lives elsewhere; the default records `logged` under a named default rule, so
-	// a decision is never silently absent.
-	Decide func(tool string) *protocol.Decision
+	// Bundles returns the bundle in force, whose rules decide each prompt when it is recorded.
+	// nil means no bundle: every prompt records the default rule.
+	Bundles func() *policy.Bundle
 
 	Log   core.Logger
 	Clock func() time.Time
@@ -97,11 +96,6 @@ func (c Config) withDefaults() Config {
 	}
 	if c.Clock == nil {
 		c.Clock = time.Now
-	}
-	if c.Decide == nil {
-		c.Decide = func(string) *protocol.Decision {
-			return &protocol.Decision{RuleID: "policy.default", Action: protocol.ActionLogged, DecidedLocally: true}
-		}
 	}
 	return c
 }

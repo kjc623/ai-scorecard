@@ -254,7 +254,7 @@ func TestSpoolRecordLogCarriesNoContent(t *testing.T) {
 		OccurredAt:      time.Unix(1_700_000_000, 0),
 		SizeBytes:       int64(len(prompt)),
 		Content:         &countingReader{body: []byte(prompt)},
-		Decision:        &protocol.Decision{RuleID: "block_credentials", Action: protocol.ActionWarned},
+		Enforce:         decided(protocol.Decision{RuleID: "block_credentials", Action: protocol.ActionWarned}),
 		Attachments:     []dedup.Attachment{att},
 		Extract: ExtractorFunc(func([]byte, string) (string, []dedup.Attachment, error) {
 			return prompt, []dedup.Attachment{att}, nil

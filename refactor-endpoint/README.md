@@ -39,7 +39,7 @@ The Plan column gives the plan's task id. "Built" is ticked when the task's "Don
 | 09 | [Process attribution](09-process-attribution/TASK.md) | E04, E15 | 06 | | [x] | [ ] |
 | 10 | [User-session helper](10-user-session-helper/TASK.md) | E05 | 09 | | [x] | [ ] |
 | 11 | [Rules in policy](11-rules-policy/TASK.md) | E03, E30 | 07 | | [x] | [ ] |
-| 12 | [Device rule engine](12-device-rule-engine/TASK.md) | E25, E35 | 11 | | [ ] | [ ] |
+| 12 | [Device rule engine](12-device-rule-engine/TASK.md) | E25, E35 | 11 | | [x] | [ ] |
 | 13 | [Extension policy hand-off](13-extension-policy-handoff/TASK.md) | E30 | 12 | Chrome or Edge | [ ] | [ ] |
 | **Phase 1: Discovery** | | | | | | |
 | 14 | [App catalog](14-app-catalog/TASK.md) | E06 | 07 | | [ ] | [ ] |

@@ -562,3 +562,26 @@ decided and why, and for a vendor fact the product version checked.
   `identity.source`; spans (the brief asks for logs and metrics). Response text, the system
   prompt, MCP server names and hook commands are `SAC-PLACEHOLDER-<n>` as well as the paths,
   command lines and ids the brief names; the folder's README lists each one.
+
+## 2026-10-08, task 12
+
+- **Labels are known when the event's confidence is not degraded.** The pipeline passes
+  `known = false` at M0 and whenever the classification ends degraded: over the body cap, the
+  classifier unavailable, an attachment unclassified, or extraction failed so the whole body was
+  classified. A client-generated request (nothing classified, confidence high) has known, empty
+  labels. Only prompts call the hook.
+- **Categories never match yet.** The bundle carries no catalog until task 14, so a rule with a
+  non-empty `categories` list never matches (commented in `enforce`).
+- **Sanction values** other than `sanctioned` and `unsanctioned` match nothing; the bundle
+  validation does not refuse them.
+- **`Observation.Decision` is gone**, replaced by `Enforce func(labels []string, known bool)
+  protocol.Decision`. A prompt without a hook records no decision and the envelope refuses it, as a
+  nil `Decision` did.
+- **One hook builder, `enforce.Hook(bundles, route, tool, canEnforce)`**, used by every route. The
+  TLS proxy uses its existing `Bundles` (the service passes the same function as `pipe.Bundles`);
+  the loopback broker's `Decide` seam becomes `Bundles`, wired to `pipe.Bundles`; the native
+  endpoint passes `pipe.Bundles`. The proxy's old default received the host; rules match the tool
+  fingerprint.
+- **The extension's decision is kept as sent.**
+- **Outside the named packages:** `device/integration`'s frame conversion sets `Enforce` instead
+  of `Decision`, and `device/README.md` lists the `enforce` package.
