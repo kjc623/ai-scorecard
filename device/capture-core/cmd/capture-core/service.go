@@ -23,6 +23,7 @@ import (
 	"github.com/shadow-ai-capture/device/capture-core/drain"
 	"github.com/shadow-ai-capture/device/capture-core/hooks"
 	"github.com/shadow-ai-capture/device/capture-core/hostinfo"
+	"github.com/shadow-ai-capture/device/capture-core/inventory"
 	"github.com/shadow-ai-capture/device/capture-core/localipc"
 	"github.com/shadow-ai-capture/device/capture-core/otlp"
 	"github.com/shadow-ai-capture/device/capture-core/otlp/normalizers"
@@ -190,6 +191,8 @@ type service struct {
 	native  *localipc.Server
 	helpers *userhelper.Provider
 	hooks   *hooks.Relay
+	// discovery is the discovery emitter the discovery collectors share.
+	discovery *discoveryEmitter
 
 	// host supervises the classifier-host child, and classifier is the link to it (nil without a
 	// classifier release).
@@ -386,7 +389,8 @@ func (s *service) buildDrainer(spoolKey []byte) error {
 }
 
 // buildProviders builds proxy.tls, the loopback broker and the CLI shim over the per-device CA, the
-// OTLP receiver, Claude Code's configuration writer, the user-session helper and the hook relay.
+// OTLP receiver, Claude Code's configuration writer, the user-session helper, the hook relay and the
+// inventory scanner.
 func (s *service) buildProviders() error {
 	b := s.currentBundle()
 	label := s.resolvedHostname()
@@ -484,6 +488,19 @@ func (s *service) buildProviders() error {
 		Clock:      time.Now,
 	})
 	if err := s.reg.Add(s.hooks); err != nil {
+		return err
+	}
+
+	// A per-user install is attributed to the person whose hive holds it, named the way a browser
+	// peer is.
+	s.discovery = &discoveryEmitter{svc: s}
+	if err := s.reg.Add(inventory.New(inventory.Config{
+		Scanners: inventory.Scanners(s.peerPerson),
+		Emitter:  s.discovery,
+		Bundles:  s.currentBundle,
+		Log:      s.logf,
+		Clock:    time.Now,
+	})); err != nil {
 		return err
 	}
 

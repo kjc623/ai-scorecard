@@ -1080,3 +1080,58 @@ decided and why, and for a vendor fact the product version checked.
   run above: p50 11.1 ms, p95 21.9 ms, p99 51.3 ms.
 - **No vendor facts.** This task ships only the test adapter; the Claude Code and Cursor formats are
   tasks 37 and 38.
+
+## 2026-10-08, task 16
+
+- **Migration `0011-inventory-scanner.sql`** (renumbered at merge if taken). Migration proof, on
+  throwaway databases: the integration branch's `schema.sql` plus it, and `main`'s `schema.sql` plus
+  `0002` to it, each dump (`pg_dump --schema-only`, and the rows of `ref.collector`, `ref.app`,
+  `ref.app_signal` and `ref.tool_catalogue`) identically to the new `schema.sql`; it alone, and
+  `0002` to it, applied over the new `schema.sql` change nothing.
+- **Three catalog helpers are added to `policy.Bundle`**, which task 14 left without lookups for two
+  of the four kinds the brief matches: `AppByUninstallName` (the signal's value alone, or followed by
+  a space and more, case-insensitive, so the JetBrains product names match `IntelliJ IDEA 2026.2.1`),
+  `AppByAppx` (the package family name, case-insensitive) and `HasSignal(app, platform, kind)`.
+- **A publisher is the last resort.** An uninstall entry matches by its name, or by the executable
+  its `DisplayIcon` or `InstallLocation` names; only when neither matches does its `Publisher`, and
+  only for an app the catalog gives no `windows_exe` or `windows_uninstall_name`. Otherwise
+  `Microsoft Corporation` would report every Microsoft product as `vscode`. With today's seed, Claude
+  Desktop's and Cursor's per-user installs match by publisher (`Anthropic, PBC`, `Anysphere`); once
+  the device phase adds their names or executables, the publisher stops counting for them.
+- **An executable is taken only from a value that names an `.exe`** (quoted or not, with or without
+  an icon index). The scan reads the registry only, so an `InstallLocation` folder yields none, nor
+  does a Squirrel `DisplayIcon` (`app.ico`). Values are read unexpanded.
+- **Machine-wide packages are `AppxAllUserStore\Applications`** (the provisioned packages, whose
+  subkeys are package full names), attributed `unattributed`. The store's per-SID, `Staged`,
+  `Deleted`, `EndOfLife`, `InboxApplications` and `Deprovisioned` subkeys are not read; each user's
+  packages come from that user's repository. A subkey that is not a five-field package full name is
+  skipped.
+- **The machine's `Uninstall` key is read through both registry views** (`KEY_WOW64_64KEY` and
+  `KEY_WOW64_32KEY`), not through the `Wow6432Node` path, which the documentation calls reserved.
+- **Users** are the `HKEY_USERS` subkeys with `winproxy`'s SID prefixes (the rule is repeated in
+  `inventory`, since `winproxy`'s is unexported), named by `LookupAccountSid`, and attributed through
+  the service's `peerPerson`.
+- **Version** is `DisplayVersion` or the full name's version segment; one longer than the
+  envelope's 64 characters is left out. The record's `publisher` is not filled: the envelope's is a
+  code-signing subject, and an uninstall entry's `Publisher` is not one.
+- **Scheduling and health.** The first scan runs inside `Start`, then a loop rescans; an interval
+  change applies from the next wait (the wait under way keeps its length). Health is `degraded` with
+  `enumeration_partial` until a scan completes and after a partial one, `healthy` after a complete
+  one, and `absent` with `tool_version_unsupported` where the platform has no scanner. An emit
+  failure is counted by the emitter and does not change the state.
+- **One discovery emitter per service**, built at its first use: it needs the device id, which
+  exists once enrolled. Before that an emit counts `errors` and emits nothing.
+- **Vendor facts (MicrosoftDocs on GitHub, read 2026-10-08; learn.microsoft.com is blocked):**
+  `win32` `desktop-src/Msi/uninstall-registry-key.md` (ms.date 2018-05-31): the HKLM `Uninstall`
+  key and `DisplayName`, `DisplayVersion`, `Publisher`, `InstallLocation` (`DisplayIcon` is not
+  listed there); `desktop-src/WinProg64/registry-redirector.md` (ms.date 2018-05-31): `HKLM\Software`
+  is redirected to `Wow6432Node`; `windows-dev-docs` `hub/apps/desktop/modernize/package-identity-overview.md`
+  (ms.date 2023-01-10): full name `<Name>_<Version>_<Architecture>_<ResourceId>_<PublisherId>`,
+  family name `<Name>_<PublisherId>`.
+- **Not verified:** `AppxAllUserStore\Applications` and the per-user
+  `Local Settings\...\AppModel\Repository\Packages`. No Microsoft documentation of either was
+  reachable, and the PC's registry cannot be read from the build machine; they follow the brief.
+  The device phase confirms them on the reference VM. The ChatGPT package family in the tests is a
+  fixture value, not a catalog fact.
+- **`device/protocol/envelope.go` is re-run through `gofmt`**: the integration branch's
+  `CollectorHookRelay` line was misaligned.

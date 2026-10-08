@@ -173,3 +173,59 @@ func TestCatalogLookups(t *testing.T) {
 		t.Fatal("a nil bundle matched an app")
 	}
 }
+
+// Installed-app lookups: an uninstall name matches alone or as the leading words of the entry's
+// name, a package family matches whole, and HasSignal answers per app, platform and kind.
+func TestCatalogInstalledAppLookups(t *testing.T) {
+	b := &Bundle{Catalog: []CatalogApp{
+		{AppKey: "claude_desktop", Category: "chat_assistant", Signals: []CatalogSignal{
+			{Platform: "windows", Kind: SignalPublisher, Value: "Anthropic, PBC"},
+			{Platform: "windows", Kind: SignalWindowsAppx, Value: "Claude_pzs8sxrjxfjjc"},
+		}},
+		{AppKey: "jetbrains", Category: "ide", Signals: []CatalogSignal{
+			{Platform: "windows", Kind: SignalWindowsUninstallName, Value: "IntelliJ IDEA"},
+			{Platform: "windows", Kind: SignalWindowsUninstallName, Value: "PyCharm"},
+		}},
+		{AppKey: "ollama", Category: "local_runtime", Signals: []CatalogSignal{
+			{Platform: "any", Kind: SignalWindowsExe, Value: "ollama.exe"},
+		}},
+	}}
+	for name, tc := range map[string]struct {
+		got, want []string
+	}{
+		"uninstall name alone":           {b.AppByUninstallName("windows", "PyCharm"), []string{"jetbrains"}},
+		"uninstall name and version":     {b.AppByUninstallName("windows", "IntelliJ IDEA 2026.2.1"), []string{"jetbrains"}},
+		"uninstall name in another case": {b.AppByUninstallName("windows", "intellij idea Community Edition 2026.2"), []string{"jetbrains"}},
+		"uninstall name run on":          {b.AppByUninstallName("windows", "PyCharmer 1.0"), nil},
+		"uninstall name shorter":         {b.AppByUninstallName("windows", "IntelliJ"), nil},
+		"uninstall name on macOS":        {b.AppByUninstallName("macos", "PyCharm"), nil},
+		"empty uninstall name":           {b.AppByUninstallName("windows", "  "), nil},
+		"package family":                 {b.AppByAppx("windows", "Claude_pzs8sxrjxfjjc"), []string{"claude_desktop"}},
+		"package family in another case": {b.AppByAppx("windows", "claude_PZS8SXRJXFJJC"), []string{"claude_desktop"}},
+		"package full name":              {b.AppByAppx("windows", "Claude_1.0.0.0_x64__pzs8sxrjxfjjc"), nil},
+		"unknown package family":         {b.AppByAppx("windows", "Microsoft.WindowsCalculator_8wekyb3d8bbwe"), nil},
+	} {
+		if !reflect.DeepEqual(tc.got, tc.want) {
+			t.Errorf("%s: got %v, want %v", name, tc.got, tc.want)
+		}
+	}
+	for _, tc := range []struct {
+		app, platform, kind string
+		want                bool
+	}{
+		{"claude_desktop", "windows", SignalWindowsAppx, true},
+		{"claude_desktop", "windows", SignalWindowsExe, false},
+		{"claude_desktop", "macos", SignalPublisher, false},
+		{"ollama", "windows", SignalWindowsExe, true},
+		{"jetbrains", "windows", SignalWindowsUninstallName, true},
+		{"cursor", "windows", SignalPublisher, false},
+	} {
+		if got := b.HasSignal(tc.app, tc.platform, tc.kind); got != tc.want {
+			t.Errorf("HasSignal(%s, %s, %s) = %v, want %v", tc.app, tc.platform, tc.kind, got, tc.want)
+		}
+	}
+	var nilBundle *Bundle
+	if nilBundle.AppByUninstallName("windows", "PyCharm") != nil || nilBundle.AppByAppx("windows", "Claude_pzs8sxrjxfjjc") != nil || nilBundle.HasSignal("jetbrains", "windows", SignalWindowsUninstallName) {
+		t.Fatal("a nil bundle matched an app")
+	}
+}

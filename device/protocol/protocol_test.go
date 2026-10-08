@@ -613,6 +613,18 @@ func TestToolConfigVocabulary(t *testing.T) {
 	}
 }
 
+// The inventory scanner's collector and the details it reports are in the closed vocabularies.
+func TestInventoryScannerVocabulary(t *testing.T) {
+	if !CollectorInventoryScanner.Valid() || CollectorInventoryScanner != "inventory_scanner" {
+		t.Errorf("collector %q is not the inventory_scanner code", CollectorInventoryScanner)
+	}
+	for _, d := range []Detail{DetailEnumerationPartial, DetailToolVersionUnsupported} {
+		if !d.Valid() {
+			t.Errorf("%s is not in the detail vocabulary", d)
+		}
+	}
+}
+
 // A notification is bounded in characters, holds no control character but a body's line break,
 // and links only to an absolute https URL.
 func TestNotifyValidate(t *testing.T) {

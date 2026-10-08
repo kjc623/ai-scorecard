@@ -9,7 +9,7 @@ signed collection policy, spools them encrypted and delivers them to the device 
 | Component | What it is |
 |---|---|
 | `protocol` | The shapes the device components and the device edge agree on: enrolment, policy, events, health, content upload, native messaging, classifier frames, spool records. |
-| `capture-core` | The agent binary (`cmd/capture-core`) and its packages: `core` (pipeline, mode gate, envelope, supervisor), `policy`, `enforce` (evaluates the bundle's enforcement rules), `proxy/tlsproxy`, `proxy/loopback`, `cli` (CLI trust shim), `trust`, `drain` (enrolment, delivery, policy fetch, health, content upload), `credential`, `contentstore`, `state`, `hostinfo`, `dedup`, `classifierlink`, `attachments`, `localipc` (the local endpoint the browser relay and the user-session helper connect to), `userhelper` (the user-session helper), `toolconfig` (writes AI tools' managed configuration), `component` (supervises the child processes capture-core runs, such as classifier-host: restarts with backoff, at most 5 times in 10 minutes, and kills them with the service). |
+| `capture-core` | The agent binary (`cmd/capture-core`) and its packages: `core` (pipeline, mode gate, envelope, supervisor), `policy`, `enforce` (evaluates the bundle's enforcement rules), `proxy/tlsproxy`, `proxy/loopback`, `cli` (CLI trust shim), `trust`, `drain` (enrolment, delivery, policy fetch, health, content upload), `credential`, `contentstore`, `state`, `hostinfo`, `dedup`, `classifierlink`, `attachments`, `localipc` (the local endpoint the browser relay and the user-session helper connect to), `userhelper` (the user-session helper), `toolconfig` (writes AI tools' managed configuration), `discovery` (de-duplicates and budgets discovery records), `inventory` (the installed-app scanner), `component` (supervises the child processes capture-core runs, such as classifier-host: restarts with backoff, at most 5 times in 10 minutes, and kills them with the service). |
 | `capture-spool` | The encrypted, bounded, crash-safe single-writer spool. |
 | `classifier-host` | The on-device classifier, run by capture-core as a child process on stdio. |
 | `extension` | The Chrome/Edge extension that observes browser submissions to AI tools and hands them, with their attachments, to capture-core through the native messaging host. |
@@ -119,6 +119,19 @@ nothing. The service's `hook_relay` collector, on while the bundle's `endpoint.h
 answers a tool whose `endpoint.tools.<key>.hooks` is on from the bundle's rules (classifying with a
 30 ms budget at `m1` and above), then records the prompt on route `tool.hook` with that decision.
 Anything else is answered `allow` and not recorded.
+
+## Installed apps
+
+While the bundle switches `endpoint.inventory` on, the service scans the installed applications at
+start and then every `interval_minutes`, reading the registry only: the `Uninstall` entries of HKLM
+(both views) and of each signed-in user's hive, the machine's AppX/MSIX packages
+(`Appx\AppxAllUserStore\Applications`) and each user's package repository. It matches them
+against the bundle's app catalog (uninstall name, executable, package family, and the publisher for
+an app the catalog names no other way) and emits each match as a `discovery` record of type
+`app_installed` on `inv.scan`, attributed to the user whose hive holds it or `unattributed` for a
+machine-wide install, at most once per day. Its health row is `inventory_scanner`: `healthy` after a
+complete scan, `degraded` with `enumeration_partial` when a key could not be read; on macOS and
+Linux it is `absent` with `tool_version_unsupported`.
 
 ## Build and test
 

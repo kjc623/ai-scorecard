@@ -163,7 +163,9 @@ const (
 	CollectorUserHelper       Collector = "user_helper"
 	// CollectorToolConfigClaudeCode writes Claude Code's managed settings; it emits nothing itself.
 	CollectorToolConfigClaudeCode Collector = "tool_config_claude_code"
-	CollectorHookRelay        Collector = "hook_relay"
+	CollectorHookRelay            Collector = "hook_relay"
+	// CollectorInventoryScanner scans the installed applications and emits them on inv.scan.
+	CollectorInventoryScanner Collector = "inventory_scanner"
 )
 
 // Valid reports whether the collector is in the closed set. control-api refuses a whole health
@@ -173,7 +175,7 @@ func (c Collector) Valid() bool {
 	case CollectorEgressProxy, CollectorLoopbackBroker, CollectorCLIShim,
 		CollectorProcessDetector, CollectorClassifierHost, CollectorCaptureExtension,
 		CollectorDesktopProxy, CollectorOTelReceiver, CollectorUserHelper,
-		CollectorToolConfigClaudeCode, CollectorHookRelay:
+		CollectorToolConfigClaudeCode, CollectorHookRelay, CollectorInventoryScanner:
 		return true
 	default:
 		return false

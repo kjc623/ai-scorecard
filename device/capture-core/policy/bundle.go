@@ -345,6 +345,44 @@ func (b *Bundle) AppByPublisher(platform, subject string) []string {
 	return b.appsWith(platform, SignalPublisher, func(v string) bool { return strings.EqualFold(v, subject) })
 }
 
+// AppByUninstallName returns the apps whose Windows uninstall entry is named name: the signal's
+// value alone, or followed by a space and more (a version or an edition), as in
+// "IntelliJ IDEA 2026.2.1". Compared case-insensitively.
+func (b *Bundle) AppByUninstallName(platform, name string) []string {
+	n := strings.TrimSpace(name)
+	if n == "" {
+		return nil
+	}
+	return b.appsWith(platform, SignalWindowsUninstallName, func(v string) bool {
+		return len(n) >= len(v) && strings.EqualFold(n[:len(v)], v) && (len(n) == len(v) || n[len(v)] == ' ')
+	})
+}
+
+// AppByAppx returns the apps whose AppX/MSIX package family name is family, compared
+// case-insensitively as Windows compares package names.
+func (b *Bundle) AppByAppx(platform, family string) []string {
+	return b.appsWith(platform, SignalWindowsAppx, func(v string) bool { return strings.EqualFold(v, family) })
+}
+
+// HasSignal reports whether the catalog gives the app a signal of kind on platform or on any
+// platform.
+func (b *Bundle) HasSignal(appKey, platform, kind string) bool {
+	if b == nil {
+		return false
+	}
+	for _, a := range b.Catalog {
+		if a.AppKey != appKey {
+			continue
+		}
+		for _, s := range a.Signals {
+			if s.Kind == kind && (s.Platform == platform || s.Platform == "any") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // AppByDomain returns the apps whose inference domains include host, by the interception scope's
 // host rule: an exact host, or a leading dot for the domain and its subdomains.
 func (b *Bundle) AppByDomain(host string) []string {
