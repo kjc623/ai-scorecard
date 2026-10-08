@@ -2640,12 +2640,18 @@ SET app.tenant_id = '11111111-1111-7111-8111-111111111111';
 DO $$
 DECLARE
   k text;
+  n int;
 BEGIN
-  FOREACH k IN ARRAY ARRAY['claude_code', 'codex', 'copilot', 'cursor'] LOOP
+  FOREACH k IN ARRAY ARRAY['claude_code', 'codex', 'copilot', 'cursor', 'ollama'] LOOP
     INSERT INTO ops.endpoint_tool_setting (tenant_id, tool_key, otel, hooks)
     VALUES ('11111111-1111-7111-8111-111111111111', k, true, false);
   END LOOP;
-  FOREACH k IN ARRAY ARRAY['ollama', 'Claude_Code', 'windsurf', ''] LOOP
+  SELECT count(*) INTO n FROM ops.endpoint_tool_setting
+   WHERE tenant_id = '11111111-1111-7111-8111-111111111111' AND loopback;
+  IF n <> 0 THEN
+    RAISE EXCEPTION 'FAIL T76 % endpoint tool settings have loopback on without being set', n;
+  END IF;
+  FOREACH k IN ARRAY ARRAY['lm_studio', 'Claude_Code', 'windsurf', ''] LOOP
     BEGIN
       INSERT INTO ops.endpoint_tool_setting (tenant_id, tool_key, otel, hooks)
       VALUES ('11111111-1111-7111-8111-111111111111', k, true, true);
@@ -2653,7 +2659,7 @@ BEGIN
     EXCEPTION WHEN check_violation THEN NULL;
     END;
   END LOOP;
-  RAISE NOTICE 'PASS T76 endpoint tool settings accept the four tool keys and refuse any other';
+  RAISE NOTICE 'PASS T76 endpoint tool settings accept the five tool keys, default loopback off, and refuse any other key';
 END $$;
 
 DO $$

@@ -252,9 +252,13 @@ type RuleMatch struct {
 	Routes     []string
 }
 
-// EndpointToolKeys is the closed set of tools with native collectors, the keys of
-// EndpointSettings.Tools and of ops.endpoint_tool_setting.tool_key.
-var EndpointToolKeys = []string{"claude_code", "codex", "copilot", "cursor"}
+// EndpointToolKeys is the closed set of tools with endpoint settings, the keys of
+// EndpointSettings.Tools and of ops.endpoint_tool_setting.tool_key: the tools with native collectors,
+// and Ollama, whose one switch is local model capture.
+var EndpointToolKeys = []string{"claude_code", "codex", "copilot", "cursor", "ollama"}
+
+// LoopbackToolKeys is the tools whose switch is Loopback rather than OTel and Hooks.
+var LoopbackToolKeys = []string{"ollama"}
 
 // EndpointCollectors is the tenant's switch for each endpoint collector (ops.endpoint_setting).
 type EndpointCollectors struct {
@@ -266,10 +270,14 @@ type EndpointCollectors struct {
 	HooksManagedOnly bool
 }
 
-// EndpointTool is one tool's native collector switches (ops.endpoint_tool_setting).
+// EndpointTool is one tool's switches (ops.endpoint_tool_setting). A tool of LoopbackToolKeys has
+// only Loopback, the others only OTel and Hooks.
 type EndpointTool struct {
 	OTel  bool
 	Hooks bool
+	// Loopback has the device move the local model server to another port and hold its own port
+	// with the loopback broker, which records the prompts sent to it.
+	Loopback bool
 }
 
 // EndpointSettings is the tenant's endpoint collector settings as served, with the defaults applied

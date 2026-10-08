@@ -138,11 +138,11 @@ func (r *portRunner) handleConn(ctx context.Context, client net.Conn) {
 
 	// Resolve the mode before any byte of the body is retained.
 	mode := r.currentSpec().Mode
-	if b.cfg.Pipeline != nil {
-		res := b.cfg.Pipeline.ResolveMode(core.ScopeQuery{
+	if r.cfg.Pipeline != nil {
+		res := r.cfg.Pipeline.ResolveMode(core.ScopeQuery{
 			ToolFingerprint: r.currentSpec().ToolFingerprint,
-			Population:      b.cfg.Agent.Population,
-			UserRef:         b.cfg.Agent.UserRef,
+			Population:      r.cfg.Agent.Population,
+			UserRef:         r.cfg.Agent.UserRef,
 		})
 		mode = res.Mode
 	}
@@ -150,12 +150,12 @@ func (r *portRunner) handleConn(ctx context.Context, client net.Conn) {
 	var buf *bodyBuffer
 	var body io.Reader = req.Body
 	if submission && mode.ReadsContent() {
-		buf = newBodyBuffer(b.cfg.BodyCap)
+		buf = newBodyBuffer(r.cfg.BodyCap)
 		body = io.TeeReader(req.Body, buf)
 	}
 	counted := &countingReader{r: body}
 
-	upstream, err := net.DialTimeout("tcp", r.upstreamAddr(), b.cfg.PreflightTimeout)
+	upstream, err := net.DialTimeout("tcp", r.upstreamAddr(), r.cfg.PreflightTimeout)
 	if err != nil {
 		// An upstream failure: the client gets the connection error it
 		// would have seen anyway. Closing without a response is that error; no response is
@@ -164,7 +164,7 @@ func (r *portRunner) handleConn(ctx context.Context, client net.Conn) {
 		return
 	}
 	defer upstream.Close()
-	_ = upstream.SetDeadline(time.Now().Add(2 * b.cfg.PreflightTimeout))
+	_ = upstream.SetDeadline(time.Now().Add(2 * r.cfg.PreflightTimeout))
 
 	outReq := req.Clone(ctx)
 	outReq.URL = &url.URL{Scheme: "http", Host: r.upstreamAddr(), Path: req.URL.Path, RawQuery: req.URL.RawQuery}
@@ -188,16 +188,16 @@ func (r *portRunner) handleConn(ctx context.Context, client net.Conn) {
 	_ = resp.Body.Close()
 	select {
 	case <-writeDone:
-	case <-time.After(2 * b.cfg.PreflightTimeout):
+	case <-time.After(2 * r.cfg.PreflightTimeout):
 		b.counters.Add(protocol.CounterErrors)
 	}
 	if werr != nil {
 		b.counters.Add(protocol.CounterErrors)
 		return
 	}
-	b.markSuccess(b.cfg.Clock())
+	b.markSuccess(r.cfg.Clock())
 
-	if !submission || b.cfg.Pipeline == nil {
+	if !submission || r.cfg.Pipeline == nil {
 		return
 	}
 	r.observe(ctx, req, counted.n, buf, mode)
@@ -207,7 +207,7 @@ func (r *portRunner) handleConn(ctx context.Context, client net.Conn) {
 // closes, and counts the connection blind_tunnelled.
 func (r *portRunner) tunnel(client net.Conn) {
 	b := r.broker
-	upstream, err := net.DialTimeout("tcp", r.upstreamAddr(), b.cfg.PreflightTimeout)
+	upstream, err := net.DialTimeout("tcp", r.upstreamAddr(), r.cfg.PreflightTimeout)
 	if err != nil {
 		// The client sees the connection error it would have seen without the broker.
 		b.counters.Add(protocol.CounterErrors)
@@ -215,7 +215,7 @@ func (r *portRunner) tunnel(client net.Conn) {
 	}
 	defer upstream.Close()
 	b.counters.Add(protocol.CounterBlindTunnelled)
-	b.markSuccess(b.cfg.Clock())
+	b.markSuccess(r.cfg.Clock())
 	done := make(chan struct{}, 2)
 	go func() {
 		_, _ = io.Copy(upstream, client)
@@ -256,11 +256,11 @@ func (r *portRunner) observe(ctx context.Context, req *http.Request, counted int
 		Route:           protocol.RouteProxyLoopback,
 		Kind:            protocol.KindPrompt,
 		ToolFingerprint: tool,
-		Population:      b.cfg.Agent.Population,
+		Population:      r.cfg.Agent.Population,
 		MediaType:       req.Header.Get("Content-Type"),
-		OccurredAt:      b.cfg.Clock(),
+		OccurredAt:      r.cfg.Clock(),
 		SizeBytes:       size,
-		Enforce:         enforce.Hook(b.cfg.Bundles, protocol.RouteProxyLoopback, tool, false),
+		Enforce:         enforce.Hook(r.cfg.Bundles, protocol.RouteProxyLoopback, tool, false),
 		Content:         content,
 		OverCap:         buf != nil && buf.overCap(),
 		Extract:         extract,
@@ -269,7 +269,7 @@ func (r *portRunner) observe(ctx context.Context, req *http.Request, counted int
 	// per-device-consistent origin: it gives intra-device ordering that survives clock changes.
 	obs.MonotonicOffsetMS = obs.OccurredAt.Sub(b.startedAt).Milliseconds()
 
-	out, err := b.cfg.Pipeline.Process(ctx, obs)
+	out, err := r.cfg.Pipeline.Process(ctx, obs)
 	switch {
 	case out.Reason == core.ReasonIdentityUnresolved:
 		// Fail-closed for identity: the request is forwarded, the envelope is not minted, and the

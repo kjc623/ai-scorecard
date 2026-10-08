@@ -347,8 +347,9 @@ export function createAdminApi({ transport }) {
     setEndpointCollectors({ inventory, processes, flows, otel, hooks, hooks_managed_only }) {
       return done({ method: 'PUT', path: ADMIN_SETTINGS_ENDPOINT_COLLECTORS_ENDPOINT, body: { inventory, processes, flows, otel, hooks, hooks_managed_only } });
     },
-    setEndpointTool(toolKey, { otel, hooks }) {
-      return done({ method: 'PUT', path: `${ADMIN_SETTINGS_ENDPOINT_COLLECTORS_ENDPOINT}/tools/${encodeURIComponent(String(toolKey))}`, body: { otel, hooks } });
+    /** One tool's switches: otel and hooks for a tool with native collectors, loopback for Ollama. */
+    setEndpointTool(toolKey, switches) {
+      return done({ method: 'PUT', path: `${ADMIN_SETTINGS_ENDPOINT_COLLECTORS_ENDPOINT}/tools/${encodeURIComponent(String(toolKey))}`, body: { ...switches } });
     },
     setTLSInspection(enabled) {
       return done({ method: 'PUT', path: ADMIN_SETTINGS_TLS_INSPECTION_ENDPOINT, body: { enabled } });
@@ -498,7 +499,7 @@ function normaliseEndpoint(endpoint) {
   const sent = endpoint.tools && typeof endpoint.tools === 'object' ? endpoint.tools : {};
   for (const [key, value] of Object.entries(sent)) {
     if (!value || typeof value !== 'object') continue;
-    tools[key] = Object.freeze({ otel: nullableBoolean(value.otel), hooks: nullableBoolean(value.hooks) });
+    tools[key] = Object.freeze({ otel: nullableBoolean(value.otel), hooks: nullableBoolean(value.hooks), loopback: nullableBoolean(value.loopback) });
   }
   return Object.freeze({
     inventory: nullableBoolean(endpoint.inventory),

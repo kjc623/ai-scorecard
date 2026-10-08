@@ -21,14 +21,17 @@ export const SANCTION_STATES = Object.freeze(['sanctioned', 'unsanctioned', 'unk
 export const ENDPOINT_COLLECTORS = Object.freeze(['inventory', 'processes', 'flows', 'otel', 'hooks', 'hooks_managed_only']);
 
 /**
- * The tools with native collectors and which of the two each has: Cursor sends no OpenTelemetry,
- * and Codex and Copilot have no hooks yet. A collector a tool lacks is shown, never offered.
+ * The tools with endpoint switches and which each has: Cursor sends no OpenTelemetry, Codex and
+ * Copilot have no hooks yet, and Ollama has only local model capture (loopback). A switch a tool
+ * lacks is shown, never offered. `sends` is the switches a write for the tool carries: control-api
+ * requires every one of them.
  */
 export const ENDPOINT_TOOLS = Object.freeze([
-  Object.freeze({ key: 'claude_code', label: 'Claude Code', otel: true, hooks: true }),
-  Object.freeze({ key: 'codex', label: 'Codex', otel: true, hooks: false }),
-  Object.freeze({ key: 'copilot', label: 'Copilot', otel: true, hooks: false }),
-  Object.freeze({ key: 'cursor', label: 'Cursor', otel: false, hooks: true }),
+  Object.freeze({ key: 'claude_code', label: 'Claude Code', otel: true, hooks: true, loopback: false, sends: Object.freeze(['otel', 'hooks']) }),
+  Object.freeze({ key: 'codex', label: 'Codex', otel: true, hooks: false, loopback: false, sends: Object.freeze(['otel', 'hooks']) }),
+  Object.freeze({ key: 'copilot', label: 'Copilot', otel: true, hooks: false, loopback: false, sends: Object.freeze(['otel', 'hooks']) }),
+  Object.freeze({ key: 'cursor', label: 'Cursor', otel: false, hooks: true, loopback: false, sends: Object.freeze(['otel', 'hooks']) }),
+  Object.freeze({ key: 'ollama', label: 'Ollama', otel: false, hooks: false, loopback: true, sends: Object.freeze(['loopback']) }),
 ]);
 
 /** What an enforcement rule does to a submission it matches. */
@@ -325,17 +328,18 @@ export function createSettings({ admin, onChange = () => {} }) {
     return writeEndpoint(name, () => admin.setEndpointCollectors(next));
   }
 
-  /** Switch one of a tool's native collectors. The write carries both, the other as it was read. */
+  /** Switch one of a tool's switches. The write carries every switch the tool sends, the others as they were read. */
   async function setEndpointTool(key, collector, value) {
     const tool = ENDPOINT_TOOLS.find((t) => t.key === key);
     if (!tool || !tool[collector] || typeof value !== 'boolean' || state.status !== 'ready' || state.endpoint.pending) return state;
     const current = state.data.endpoint?.tools?.[key];
-    if (!current || typeof current.otel !== 'boolean' || typeof current.hooks !== 'boolean') {
+    if (!current || tool.sends.some((s) => typeof current[s] !== 'boolean')) {
       set({ endpoint: Object.freeze({ pending: null, problem: NOT_READ }) });
       return state;
     }
     if (current[collector] === value) return state;
-    return writeEndpoint(`${key}.${collector}`, () => admin.setEndpointTool(key, { ...current, [collector]: value }));
+    const next = Object.fromEntries(tool.sends.map((s) => [s, s === collector ? value : current[s]]));
+    return writeEndpoint(`${key}.${collector}`, () => admin.setEndpointTool(key, next));
   }
 
   /** Turn TLS inspection on or off. Nothing is sent over a setting that was not read. */

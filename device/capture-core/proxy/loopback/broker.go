@@ -63,8 +63,31 @@ type Config struct {
 	// nil means no bundle: every prompt records the default rule.
 	Bundles func() *policy.Bundle
 
+	// Relocators move a tool's server to its entry's upstream port, by tool fingerprint. A port
+	// runner relocates its tool before its first preflight and restores it once its port is
+	// released for good. A tool without one is expected to listen on its upstream port already.
+	Relocators map[string]Relocator
+
 	Log   core.Logger
 	Clock func() time.Time
+}
+
+// Relocator moves a local model server to another port and back.
+type Relocator interface {
+	Relocate(upstreamPort int) error
+	Restore() error
+}
+
+// WithPolicy is c with the bundle's port map and timings. A timing the bundle leaves out takes the
+// broker's default.
+func (c Config) WithPolicy(p policy.LoopbackPolicy) Config {
+	c.Ports = append([]policy.LoopbackPort(nil), p.Ports...)
+	c.ProbeInterval = time.Duration(p.ProbeIntervalSeconds) * time.Second
+	c.PreflightInterval = time.Duration(p.PreflightIntervalSeconds) * time.Second
+	c.PreflightTimeout = time.Duration(p.PreflightTimeoutMS) * time.Millisecond
+	c.MaxConsecutiveFailures = p.MaxConsecutiveFailures
+	c.CoolDown = time.Duration(p.CoolDownSeconds) * time.Second
+	return c
 }
 
 func (c Config) withDefaults() Config {
@@ -98,12 +121,23 @@ func (c Config) withDefaults() Config {
 	if c.Clock == nil {
 		c.Clock = time.Now
 	}
+	if c.Log == nil {
+		c.Log = nopLogger{}
+	}
 	return c
 }
 
+type nopLogger struct{}
+
+func (nopLogger) Printf(string, ...any) {}
+
 // Broker is the `proxy.loopback` provider.
 type Broker struct {
-	cfg Config
+	// cfg is the configuration the broker was built with. runCfg is it with the port map and timings
+	// of the bundle last applied while the broker was not running: what the next Start runs with.
+	// Each port runner keeps its own copy, so a run that is winding down never reads a newer one.
+	cfg    Config
+	runCfg Config
 
 	mu        sync.Mutex
 	runners   []*portRunner
@@ -132,6 +166,7 @@ func New(cfg Config) *Broker {
 	now := cfg.Clock()
 	return &Broker{
 		cfg:       cfg,
+		runCfg:    cfg,
 		counters:  core.NewCounterSet(now),
 		startedAt: now,
 		stopCh:    make(chan struct{}),
@@ -142,21 +177,35 @@ func New(cfg Config) *Broker {
 // row cannot invent a name the reporting layer does not know.
 func (b *Broker) Name() protocol.Collector { return protocol.CollectorLoopbackBroker }
 
+// Enabled implements core.Toggled: the broker runs while the bundle in force names a port for it.
+func (b *Broker) Enabled(bundle *policy.Bundle) bool {
+	return bundle != nil && len(bundle.Loopback.Ports) > 0
+}
+
 // Start implements core.Provider.
 //
 // It returns nil even when preflight fails and the port stays RELEASED: refusing to bind is
 // the safe behaviour, and the condition is reported as degraded rather
 // than as an absent provider. It returns after every port has reached its first decision, so
 // the supervisor's ordering (broker last) means something.
+//
+// A broker that was stopped starts again from the bundle last applied, with new port runners.
 func (b *Broker) Start(ctx context.Context) error {
 	b.mu.Lock()
-	if b.started {
+	if b.started && !b.stopped {
 		b.mu.Unlock()
 		return nil
 	}
+	if b.stopped {
+		b.runners = nil
+		b.stopCh = make(chan struct{})
+		b.stopOnce = sync.Once{}
+		b.identityDetail = protocol.DetailNone
+	}
 	b.started = true
 	b.stopped = false
-	specs := append([]policy.LoopbackPort(nil), b.cfg.Ports...)
+	cfg := b.runCfg
+	specs := append([]policy.LoopbackPort(nil), cfg.Ports...)
 	b.mu.Unlock()
 
 	if len(specs) == 0 {
@@ -167,7 +216,7 @@ func (b *Broker) Start(ctx context.Context) error {
 	}
 
 	for _, spec := range specs {
-		r := newPortRunner(b, spec)
+		r := newPortRunner(b, cfg, spec)
 		b.mu.Lock()
 		b.runners = append(b.runners, r)
 		b.mu.Unlock()
@@ -180,7 +229,7 @@ func (b *Broker) Start(ctx context.Context) error {
 
 	// Wait for each port's first decision, bounded by the preflight deadline. A port that is
 	// still deciding is reported as released until it decides.
-	deadline := time.NewTimer(b.cfg.PreflightTimeout + 2*time.Second)
+	deadline := time.NewTimer(cfg.PreflightTimeout + 2*time.Second)
 	defer deadline.Stop()
 	b.mu.Lock()
 	runners := append([]*portRunner(nil), b.runners...)
@@ -267,9 +316,12 @@ func (b *Broker) Health() core.Health {
 		return b.counters.Snapshot(protocol.StateDegraded, identityDetail, b.startedAt, lastOK)
 	}
 
-	var held, reachable, tampered, cooling int
+	var held, reachable, tampered, cooling, relocationFailed int
 	var worst protocol.Detail
 	for _, r := range runners {
+		if r.relocationFailed() {
+			relocationFailed++
+		}
 		switch r.snapshotState() {
 		case StateHolding:
 			held++
@@ -294,6 +346,9 @@ func (b *Broker) Health() core.Health {
 	switch {
 	case tampered > 0:
 		return b.counters.Snapshot(protocol.StateTampered, protocol.DetailPortHeldByOther, b.startedAt, lastOK)
+	case relocationFailed > 0:
+		// The tool's server could not be moved, so the port is not held for it.
+		return b.counters.Snapshot(protocol.StateDegraded, protocol.DetailConfigWriteFailed, b.startedAt, lastOK)
 	case held > 0 && held == reachable:
 		// Port held and upstream reachable: mode F is captured. Any port not held is a named
 		// coverage gap in the outcome of the next operation, not a silent omission.
@@ -345,18 +400,19 @@ func (b *Broker) Coverage() (configured, held, reachable int) {
 func (b *Broker) Counters() *core.CounterSet { return b.counters }
 
 // ApplyPolicy implements core.Provider: a diff, never a restart. A port whose entry changed is
-// released first (a configuration change restarts through release) and re-preflighted.
+// released first (a configuration change restarts through release) and re-preflighted; a port whose
+// entry is gone is released and its tool restored. A broker that is not running records the bundle
+// for its next Start. The timings take effect at the next Start.
 func (b *Broker) ApplyPolicy(bundle policy.Bundle) error {
 	b.mu.Lock()
-	started := b.started
-	b.mu.Unlock()
-	if !started {
-		// Not started yet: the new bundle is picked up by Start.
-		b.mu.Lock()
-		b.cfg.Ports = append([]policy.LoopbackPort(nil), bundle.Loopback.Ports...)
+	running := b.started && !b.stopped
+	if !running {
+		b.runCfg = b.cfg.WithPolicy(bundle.Loopback).withDefaults()
 		b.mu.Unlock()
 		return nil
 	}
+	cfg := b.runCfg
+	b.mu.Unlock()
 
 	byTool := map[string]policy.LoopbackPort{}
 	for _, p := range bundle.Loopback.Ports {
@@ -368,22 +424,27 @@ func (b *Broker) ApplyPolicy(bundle policy.Bundle) error {
 	b.mu.Unlock()
 
 	seen := map[string]bool{}
+	var kept []*portRunner
 	for _, r := range runners {
 		spec, ok := byTool[r.currentSpec().ToolFingerprint]
 		if !ok {
 			r.stopNow()
 			continue
 		}
+		kept = append(kept, r)
 		seen[r.currentSpec().ToolFingerprint] = true
 		if spec != r.currentSpec() {
 			r.updateSpec(spec)
 		}
 	}
+	b.mu.Lock()
+	b.runners = kept
+	b.mu.Unlock()
 	for tool, spec := range byTool {
 		if seen[tool] {
 			continue
 		}
-		nr := newPortRunner(b, spec)
+		nr := newPortRunner(b, cfg, spec)
 		b.mu.Lock()
 		b.runners = append(b.runners, nr)
 		b.mu.Unlock()
@@ -445,6 +506,7 @@ func firstNonEmpty(a, b protocol.Detail) protocol.Detail {
 // never binds.
 type portRunner struct {
 	broker *Broker
+	cfg    Config
 
 	specMu sync.RWMutex
 	spec   policy.LoopbackPort
@@ -454,6 +516,10 @@ type portRunner struct {
 	ln        net.Listener
 	lastFail  protocol.Detail
 	coolUntil time.Time
+	// relocated is the upstream port the tool's server was last moved to, and relocateErr why the
+	// last move failed.
+	relocated   int
+	relocateErr error
 
 	events chan Event
 	conns  chan net.Conn
@@ -477,12 +543,13 @@ func (r *portRunner) setSpec(s policy.LoopbackPort) {
 	r.specMu.Unlock()
 }
 
-func newPortRunner(b *Broker, spec policy.LoopbackPort) *portRunner {
+func newPortRunner(b *Broker, cfg Config, spec policy.LoopbackPort) *portRunner {
 	return &portRunner{
 		broker: b,
+		cfg:    cfg,
 		spec:   spec,
 		machine: NewMachine(MachineConfig{
-			MaxConsecutiveFailures: b.cfg.MaxConsecutiveFailures,
+			MaxConsecutiveFailures: cfg.MaxConsecutiveFailures,
 		}),
 		events: make(chan Event, 16),
 		conns:  make(chan net.Conn, 32),
@@ -509,7 +576,7 @@ func (r *portRunner) tampered() bool {
 func (r *portRunner) cooling() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return !r.coolUntil.IsZero() && r.broker.cfg.Clock().Before(r.coolUntil)
+	return !r.coolUntil.IsZero() && r.cfg.Clock().Before(r.coolUntil)
 }
 
 func (r *portRunner) detail() protocol.Detail {
@@ -519,6 +586,50 @@ func (r *portRunner) detail() protocol.Detail {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.machine.Detail()
+}
+
+func (r *portRunner) relocationFailed() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.relocateErr != nil
+}
+
+// relocate moves the tool's server to the entry's upstream port, unless it is there already. A
+// failure is counted and reported; the runner still preflights, in case the server already listens
+// there.
+func (r *portRunner) relocate() {
+	rel := r.cfg.Relocators[r.currentSpec().ToolFingerprint]
+	if rel == nil {
+		return
+	}
+	port := r.currentSpec().UpstreamPort
+	r.mu.Lock()
+	done := r.relocated == port && r.relocateErr == nil
+	r.mu.Unlock()
+	if done {
+		return
+	}
+	err := rel.Relocate(port)
+	r.mu.Lock()
+	r.relocated, r.relocateErr = port, err
+	r.mu.Unlock()
+	if err != nil {
+		r.broker.counters.Add(protocol.CounterErrors)
+		r.cfg.Log.Printf("loopback: could not move %s to port %d: %v", r.currentSpec().ToolFingerprint, port, err)
+	}
+}
+
+// restore moves the tool's server back. It runs after the port is released, so the server never
+// finds its own port held.
+func (r *portRunner) restore() {
+	rel := r.cfg.Relocators[r.currentSpec().ToolFingerprint]
+	if rel == nil {
+		return
+	}
+	if err := rel.Restore(); err != nil {
+		r.broker.counters.Add(protocol.CounterErrors)
+		r.cfg.Log.Printf("loopback: could not move %s back: %v", r.currentSpec().ToolFingerprint, err)
+	}
 }
 
 func (r *portRunner) lastFailDetail() protocol.Detail {
@@ -573,7 +684,12 @@ func (r *portRunner) run() {
 	var readyOnce sync.Once
 	signalReady := func() { readyOnce.Do(func() { close(r.ready) }) }
 	defer signalReady() // a runner that exits early must still release Start's wait
+	// Deferred calls run in reverse: the port is released before the tool's server is moved back.
+	defer r.restore()
 	defer r.releaseNow()
+
+	// The server moves to its upstream port before the first preflight looks for it there.
+	r.relocate()
 
 	// The watchdog is a separate goroutine: it reports, it never binds.
 	watchdogDone := make(chan struct{})
@@ -595,6 +711,7 @@ func (r *portRunner) run() {
 			ev = e
 		case e := <-r.specs:
 			r.setSpec(e)
+			r.relocate()
 			ev = EvPolicyChanged
 		case <-r.stopCh:
 			shuttingDown = true
@@ -635,7 +752,7 @@ func (r *portRunner) run() {
 		case ActRelease:
 			// Something else holds the port. The broker does not fight for it, and re-checks
 			// only after a cool-down rather than in a tight loop.
-			backoffTimer.Reset(r.broker.cfg.CoolDown)
+			backoffTimer.Reset(r.cfg.CoolDown)
 		default:
 			// ActNone: nothing to do but wait for input.
 		}
@@ -700,7 +817,7 @@ func (r *portRunner) apply(ev Event) Action {
 		r.mu.Unlock()
 		return ActServe
 	case ActReprobe:
-		if err := tcpProbe(r.upstreamAddr(), r.broker.cfg.PreflightTimeout); err != nil {
+		if err := tcpProbe(r.upstreamAddr(), r.cfg.PreflightTimeout); err != nil {
 			r.mu.Lock()
 			a := r.machine.Apply(EvProbeFailed)
 			r.mu.Unlock()
@@ -723,25 +840,25 @@ func (r *portRunner) stateFollow(ev Event) { r.machine.Apply(ev) }
 func (r *portRunner) nextBackoff() time.Duration {
 	r.mu.Lock()
 	failures := r.machine.ConsecutiveFailures()
-	cooling := failures >= r.broker.cfg.MaxConsecutiveFailures
+	cooling := failures >= r.cfg.MaxConsecutiveFailures
 	r.mu.Unlock()
 
 	if cooling {
 		r.mu.Lock()
-		r.coolUntil = r.broker.cfg.Clock().Add(r.broker.cfg.CoolDown)
+		r.coolUntil = r.cfg.Clock().Add(r.cfg.CoolDown)
 		r.lastFail = protocol.DetailCoolingDown
 		r.mu.Unlock()
-		return r.broker.cfg.CoolDown
+		return r.cfg.CoolDown
 	}
-	d := r.broker.cfg.BackoffBase
+	d := r.cfg.BackoffBase
 	for i := 1; i < failures; i++ {
 		d *= 2
-		if d >= r.broker.cfg.BackoffMax {
-			return r.broker.cfg.BackoffMax
+		if d >= r.cfg.BackoffMax {
+			return r.cfg.BackoffMax
 		}
 	}
-	if d > r.broker.cfg.BackoffMax {
-		d = r.broker.cfg.BackoffMax
+	if d > r.cfg.BackoffMax {
+		d = r.cfg.BackoffMax
 	}
 	return d
 }
@@ -750,9 +867,9 @@ func (r *portRunner) nextBackoff() time.Duration {
 // response, including 4xx, is success: a 4xx proves a server is listening and speaking HTTP,
 // and requiring 2xx would fail on a server wanting authentication.
 func (r *portRunner) preflightEvent() Event {
-	ctx, cancel := context.WithTimeout(context.Background(), r.broker.cfg.PreflightTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), r.cfg.PreflightTimeout)
 	defer cancel()
-	if err := Preflight(ctx, r.upstreamAddr(), r.currentSpec().PreflightPath, r.broker.cfg.PreflightTimeout); err != nil {
+	if err := Preflight(ctx, r.upstreamAddr(), r.currentSpec().PreflightPath, r.cfg.PreflightTimeout); err != nil {
 		r.mu.Lock()
 		r.lastFail = protocol.DetailUpstreamUnreachable
 		r.mu.Unlock()
@@ -761,7 +878,7 @@ func (r *portRunner) preflightEvent() Event {
 	r.mu.Lock()
 	r.lastFail = protocol.DetailNone
 	r.mu.Unlock()
-	r.broker.markSuccess(r.broker.cfg.Clock())
+	r.broker.markSuccess(r.cfg.Clock())
 	return EvPreflightOK
 }
 
@@ -810,9 +927,9 @@ func (r *portRunner) startAccepting() {
 // watchdog is the short-interval liveness probe and the long-interval full preflight. It never
 // binds, closes or decides: it sends events.
 func (r *portRunner) watchdog(done chan struct{}) {
-	probe := time.NewTicker(r.broker.cfg.ProbeInterval)
+	probe := time.NewTicker(r.cfg.ProbeInterval)
 	defer probe.Stop()
-	full := time.NewTicker(r.broker.cfg.PreflightInterval)
+	full := time.NewTicker(r.cfg.PreflightInterval)
 	defer full.Stop()
 	for {
 		select {
@@ -822,7 +939,7 @@ func (r *portRunner) watchdog(done chan struct{}) {
 			if r.state() != StateHolding {
 				continue
 			}
-			if err := tcpProbe(r.upstreamAddr(), r.broker.cfg.PreflightTimeout); err != nil {
+			if err := tcpProbe(r.upstreamAddr(), r.cfg.PreflightTimeout); err != nil {
 				r.emit(EvProbeFailed)
 			} else {
 				r.emit(EvProbeOK)
@@ -831,8 +948,8 @@ func (r *portRunner) watchdog(done chan struct{}) {
 			if r.state() != StateHolding {
 				continue
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), r.broker.cfg.PreflightTimeout)
-			err := Preflight(ctx, r.upstreamAddr(), r.currentSpec().PreflightPath, r.broker.cfg.PreflightTimeout)
+			ctx, cancel := context.WithTimeout(context.Background(), r.cfg.PreflightTimeout)
+			err := Preflight(ctx, r.upstreamAddr(), r.currentSpec().PreflightPath, r.cfg.PreflightTimeout)
 			cancel()
 			if err != nil {
 				r.emit(EvPreflightFail)

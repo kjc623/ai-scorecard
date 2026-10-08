@@ -600,6 +600,94 @@ func TestComposeCatalog(t *testing.T) {
 	}
 }
 
+// TestComposeLoopback: the loopback section is served only while the tenant has local model capture
+// on for Ollama. It then holds Ollama's catalog port, the fixed upstream port and preflight path, the
+// tool's resolved mode and the broker's timings; Ollama never appears among the endpoint tools, and
+// switching capture off again drops the section.
+func TestComposeLoopback(t *testing.T) {
+	r := newRig(t, nil)
+	ctx := context.Background()
+	r.store.SetCatalog(store.CatalogApp{AppKey: "ollama", Category: "local_runtime", Signals: []store.CatalogSignal{
+		{Platform: "windows", Kind: "windows_exe", Value: "ollama.exe"},
+		{Platform: "any", Kind: "listen_port", Value: "11434"},
+	}})
+	audit := store.AuditEntry{TenantID: tenantA, ActorType: store.ActorUser, ActorID: "admin@contoso.example", Action: "test", ObjectType: "endpoint_tool", ObjectID: "ollama"}
+	hasLoopback := func(envelope []byte) bool {
+		p, _ := payloadOf(t, envelope)
+		_, ok := p["loopback"]
+		return ok
+	}
+
+	v1, err := r.svc.Current(ctx, tenantA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasLoopback(v1.Envelope) {
+		t.Fatalf("capture off by default, but the bundle has a loopback section: %s", sectionOf(t, v1.Envelope, "loopback"))
+	}
+	if strings.Contains(endpointOf(t, v1.Envelope), "ollama") {
+		t.Fatalf("ollama is among the endpoint tools: %s", endpointOf(t, v1.Envelope))
+	}
+
+	if err := r.store.SetEndpointTool(ctx, tenantA, "ollama", store.EndpointTool{Loopback: true}, audit); err != nil {
+		t.Fatal(err)
+	}
+	v2, err := r.svc.Current(ctx, tenantA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !newer(v2.Version, v1.Version) {
+		t.Fatalf("capture on: version %s, want newer than %s", v2.Version, v1.Version)
+	}
+	section := func(mode string) string {
+		return canonical(t, fmt.Sprintf(`{
+		  "ports": [{"tool_fingerprint": "app:ollama", "port": 11434, "upstream_port": 21434,
+		             "preflight_path": "/api/version", "mode": %q}],
+		  "probe_interval_seconds": 5, "preflight_interval_seconds": 60, "preflight_timeout_ms": 3000,
+		  "max_consecutive_failures": 3, "cool_down_seconds": 300
+		}`, mode))
+	}
+	if got, want := sectionOf(t, v2.Envelope, "loopback"), section("m3"); got != want {
+		t.Fatalf("capture on:\n got %s\nwant %s", got, want)
+	}
+	if strings.Contains(endpointOf(t, v2.Envelope), "ollama") {
+		t.Fatalf("ollama is among the endpoint tools: %s", endpointOf(t, v2.Envelope))
+	}
+
+	// The tool's own mode, where the tenant set one, is the mode the broker records at.
+	m1 := "m1"
+	if err := r.store.SetScopeOverride(ctx, tenantA, "app:ollama", &m1, audit); err != nil {
+		t.Fatal(err)
+	}
+	v3, err := r.svc.Current(ctx, tenantA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := sectionOf(t, v3.Envelope, "loopback"), section("m1"); got != want {
+		t.Fatalf("tool mode:\n got %s\nwant %s", got, want)
+	}
+
+	// A catalog that gives Ollama no port leaves the broker nothing to hold.
+	r.store.SetCatalog(store.CatalogApp{AppKey: "ollama", Category: "local_runtime"})
+	if v, _ := r.svc.Current(ctx, tenantA); hasLoopback(v.Envelope) {
+		t.Fatalf("no listen port, but the bundle has a loopback section: %s", sectionOf(t, v.Envelope, "loopback"))
+	}
+	r.store.SetCatalog(store.CatalogApp{AppKey: "ollama", Category: "local_runtime", Signals: []store.CatalogSignal{
+		{Platform: "any", Kind: "listen_port", Value: "11434"},
+	}})
+
+	if err := r.store.SetEndpointTool(ctx, tenantA, "ollama", store.EndpointTool{Loopback: false}, audit); err != nil {
+		t.Fatal(err)
+	}
+	v4, err := r.svc.Current(ctx, tenantA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !newer(v4.Version, v3.Version) || hasLoopback(v4.Envelope) {
+		t.Fatalf("capture off again: version %s after %s, loopback section present %t", v4.Version, v3.Version, hasLoopback(v4.Envelope))
+	}
+}
+
 func TestIfNoneMatchAnswers304(t *testing.T) {
 	r := newRig(t, nil)
 	first := r.get(t, "")
@@ -851,6 +939,10 @@ func TestServedBundleVerifiesWithTheDevicesVerifier(t *testing.T) {
 		}},
 		store.CatalogApp{AppKey: "continue", Category: "ide_assistant"},
 	)
+	// Local model capture for Ollama, so the loopback section is served.
+	if err := r.store.SetEndpointTool(context.Background(), tenantA, "ollama", store.EndpointTool{Loopback: true}, audit); err != nil {
+		t.Fatal(err)
+	}
 	// Both interception routes' kill switches.
 	for _, route := range store.KillSwitchRoutes {
 		trip := audit
@@ -916,7 +1008,7 @@ func main() {
 		return string(raw)
 	}
 	_, killed := b.KillSwitchFor("proxy.loopback")
-	fmt.Println("OK", res.Outcome, b.Version, b.TenantDefault, b.Interception.Enabled, len(b.Interception.SeedHosts), b.CLIShim.ProxyAddr, b.Interception.PacListen, b.Intercepts("api.openai.com", 443), sorted(b.Endpoint), sorted(b.Rules), sorted(b.SanctionedTools), sorted(b.Catalog), b.AppsByPort(11434), b.Category("cursor"), sorted(b.KillSwitches), killed)
+	fmt.Println("OK", res.Outcome, b.Version, b.TenantDefault, b.Interception.Enabled, len(b.Interception.SeedHosts), b.CLIShim.ProxyAddr, b.Interception.PacListen, b.Intercepts("api.openai.com", 443), sorted(b.Endpoint), sorted(b.Rules), sorted(b.SanctionedTools), sorted(b.Catalog), b.AppsByPort(11434), b.Category("cursor"), sorted(b.KillSwitches), killed, sorted(b.Loopback))
 }
 `
 	for name, body := range map[string]string{"go.mod": gomod, "main.go": program} {
@@ -935,13 +1027,15 @@ func main() {
 	if err != nil {
 		t.Fatalf("capture-core's verifier refused the served bundle: %v\n%s", err, out)
 	}
-	// The device's re-encoding of the endpoint section, the rules, the sanctioned tools and the
-	// catalog equals the served one: every name matched, and no value was dropped on the way.
+	// The device's re-encoding of the endpoint section, the rules, the sanctioned tools, the
+	// catalog and the loopback section equals the served one: every name matched, and no value was dropped on the way.
 	want := "OK accepted " + resp.BundleVersion + " m3 true 3 " + policyserve.DefaultProxyListen + " " + policyserve.PACListen + " true " + endpointOf(t, resp.SignedBundle) +
 		" " + sectionOf(t, resp.SignedBundle, "rules") + " " + sectionOf(t, resp.SignedBundle, "sanctioned_tools") +
-		" " + sectionOf(t, resp.SignedBundle, "catalog") + " [ollama] ide " + sectionOf(t, resp.SignedBundle, "kill_switches") + " true"
+		" " + sectionOf(t, resp.SignedBundle, "catalog") + " [ollama] ide " + sectionOf(t, resp.SignedBundle, "kill_switches") + " true " +
+		sectionOf(t, resp.SignedBundle, "loopback")
 	if !strings.Contains(want, `"link":"https://intranet.example/ai"`) || !strings.Contains(want, `"routes":["proxy.tls","tool.hook"]`) || !strings.Contains(want, `["app:claude_code","app:cursor"]`) ||
-		!strings.Contains(want, `{"app_key":"continue","category":"ide_assistant","signals":[]}`) || !strings.Contains(want, `"value":"%USERPROFILE%\\.ollama\\models"`) {
+		!strings.Contains(want, `{"app_key":"continue","category":"ide_assistant","signals":[]}`) || !strings.Contains(want, `"value":"%USERPROFILE%\\.ollama\\models"`) ||
+		!strings.Contains(want, `"tool_fingerprint":"app:ollama"`) || !strings.Contains(want, `"cool_down_seconds":300`) {
 		t.Fatalf("the served bundle does not carry the rules, sanctioned tools and catalog under test: %s", want)
 	}
 	if got := strings.TrimSpace(string(out)); !strings.HasSuffix(got, want) {

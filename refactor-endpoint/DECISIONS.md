@@ -1915,3 +1915,72 @@ or corrects each answer marked **[device]**.
   The mapped/dropped test walks resource, span, span-event and log attributes, span operations,
   span events and log events. Privacy fixtures: one agent-mode turn per tool, whose dropped values
   include output messages, system prompt, tool arguments, a subagent's input and `host.name`.
+
+## 2026-10-08, task 57
+
+- **Vendor facts: Ollama** (`ollama/ollama` at tag `v0.40.2`, commit b061384, read 2026-10-08;
+  ollama.com is blocked here): `docs/faq.mdx` ("On Windows, Ollama inherits your user and system
+  environment variables": quit the tray app, set the variable, start the app again),
+  `docs/windows.mdx` ("If Ollama is already running, Quit the tray application and relaunch it"),
+  `envconfig/config.go` (`Host()`: `OLLAMA_HOST` is `[scheme://]host[:port]`, default port 11434) and
+  `app/server/server.go` (the Windows app starts `ollama serve` with a copy of its own process
+  environment each time it starts the server).
+  - **Machine or user:** the app reads the environment it was started with, which Windows builds from
+    the machine's variables and then the user's. A user's own `OLLAMA_HOST` wins over the machine's,
+    and the relocation then does not reach that user's Ollama (not handled; the broker stays
+    released and reports `upstream_unreachable`).
+  - **The tray app must restart.** A running Ollama keeps 11434 until it is quit and started again.
+    Until then the broker's preflight to 21434 fails and it never takes 11434.
+  - The app's "Expose Ollama to the network" setting replaces `OLLAMA_HOST` with `0.0.0.0` (port
+    11434) whatever the environment says. With it on, Ollama keeps 11434 and the broker reports the
+    port held by another process.
+  - Ollama's own clients (`ollama run`, the app's chat window) also read `OLLAMA_HOST`, so after the
+    move they reach 21434 directly and are not captured. Only clients that use the default address
+    (other apps, `curl`, IDE extensions) pass through the broker.
+- **Vendor facts: LM Studio** (`lmstudio-ai/docs` 4f8082f, read 2026-10-08; lmstudio.ai is blocked):
+  the server port is set in the app's per-user Server Settings or by `lms server start --port` ("uses
+  the last used port"); only the bind address has an environment variable (`LMS_SERVER_HOST`). No
+  machine-wide setting moves the port, so **LM Studio is left out** of the setting.
+- **The machine environment is written through the registry**
+  (`HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`), not the CLI shim's `setx`,
+  because the original value has to be read back to be restored and `setx` only writes. A value
+  containing `%` is written `REG_EXPAND_SZ`, as Windows' own editor does. Each write broadcasts
+  `WM_SETTINGCHANGE` "Environment", as `setx` does.
+- **Needs device confirmation:** the broadcast reaches only the service's own session, so the signed-in
+  user's Explorer may keep its old environment, and an Ollama started again from the Start menu may
+  still get the old `OLLAMA_HOST` until the user signs in again. If so, task 60 needs a sign-out and
+  sign-in (or a reboot) between switching capture on and step 3, and broadcasting in each session
+  (the user-session helper) is a follow-up.
+- **Backup.** `toolconfig/ollama/original` uses Claude Code's format (`{"present", "content"}`), is
+  taken once before the first write and deleted after a restore. The restore writes the recorded value
+  back (or deletes the variable) whatever `OLLAMA_HOST` holds by then.
+- **When the move happens.** A port runner moves its tool before its first preflight, and again when
+  its entry's upstream port changes. It moves the tool back after its port is released: when the
+  entry leaves the bundle or the broker stops (capture switched off). The shutdown sequence releases
+  the port but does not stop the broker, so a service stop or restart leaves `OLLAMA_HOST` moved;
+  restoring it at uninstall is task 50's. A failed move counts `errors` and reports
+  `degraded`/`config_write_failed`; the runner still preflights.
+- **The broker is a `core.Toggled` provider**, on while `loopback.ports` is non-empty. With no bundle
+  it is off (`absent`/`disabled_by_policy`) where it used to start with no ports. A stopped broker
+  starts again with new port runners (it used to stay stopped), and each runner keeps its own copy of
+  the configuration. The bundle's timings take effect at the broker's next start; a running broker
+  applies only the port diff. A timing the bundle leaves out keeps the broker's default. A runner
+  whose entry left the bundle is dropped, so the entry coming back starts a new one.
+- **Composition.** The `loopback` section is omitted while no runtime is on, so tenants that never
+  switch capture on keep their bundle version. The held port is Ollama's catalog `listen_port` (the
+  lowest valid one; no port, no entry). The mode is the tenant's override for `app:ollama`, else the
+  tenant's collection mode, which is all the bundle carries to resolve from. Ollama is not an
+  `endpoint.tools` key in the bundle.
+- **Settings API.** `GET /admin/v1/settings` lists `endpoint.tools.ollama` as `{loopback}` and the
+  other tools as `{otel, hooks}`. `PUT .../tools/ollama` requires `{loopback}` and nothing else; the
+  other tools refuse `loopback` (unknown field, 400). An Ollama row stores `otel` and `hooks` false.
+  The audit's `previous` and `new` are `{loopback}` for Ollama.
+- **Dashboard.** The tools table gains a "Local model capture" column: a switch for Ollama,
+  "unavailable" for the four native tools, whose OpenTelemetry and Hooks cells are unavailable for
+  Ollama.
+- **Migration proof** (`0015-ollama-loopback.sql`, the next free number on this branch), on throwaway
+  databases: the integration branch's `schema.sql` plus it, the new `schema.sql` plus it, the new
+  `schema.sql` plus `0002`–`0015`, and `main`'s `schema.sql` plus `0002`–`0015` each dump
+  (`pg_dump --schema-only`) identically to the new `schema.sql`.
+- **Not run here:** nothing exercises `machineenv_windows.go` on Windows (a test would change the build
+  machine's environment); it compiles and vets under `GOOS=windows`, and task 60's step 1 checks it.

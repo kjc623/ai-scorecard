@@ -221,13 +221,14 @@ function stEndpoint(state) {
   };
   const toolRows = ENDPOINT_TOOLS.map((tool) => '<tr>'
     + `<td><span class="v-text">${escapeHtml(tool.label)}</span></td>`
-    + cell(tool, 'otel', 'OpenTelemetry') + cell(tool, 'hooks', 'Hooks') + '</tr>').join('');
+    + cell(tool, 'otel', 'OpenTelemetry') + cell(tool, 'hooks', 'Hooks') + cell(tool, 'loopback', 'Local model capture') + '</tr>').join('');
   const body = '<p>Which collectors run on the devices. A change reaches each device on its next policy poll, without a restart. With <em>Only managed hooks</em> on, tools run only the hooks the agent manages, not a user\'s own.</p>'
     + '<div class="table-scroll dp-flush"><table><thead><tr><th scope="col">Collector</th><th scope="col">State</th></tr></thead>'
     + `<tbody>${collectorRows}</tbody></table></div>`
     + '<p>Per tool. A tool\'s switch takes effect only while the collector above is on; <em>unavailable</em> is a collector the tool does not have.</p>'
-    + '<div class="table-scroll dp-flush"><table><thead><tr><th scope="col">Tool</th><th scope="col">OpenTelemetry</th><th scope="col">Hooks</th></tr></thead>'
+    + '<div class="table-scroll dp-flush"><table><thead><tr><th scope="col">Tool</th><th scope="col">OpenTelemetry</th><th scope="col">Hooks</th><th scope="col">Local model capture</th></tr></thead>'
     + `<tbody>${toolRows}</tbody></table></div>`
+    + '<p>While <em>Local model capture</em> is on, the device moves Ollama to another port and takes Ollama\'s own port, so it records the prompts sent to Ollama.</p>'
     + (busy ? '<p class="dp-note" role="status">Saving…</p>' : '')
     + stProblem(state.endpoint.problem);
   return stCard('Endpoint collectors', body, { wide: true });
