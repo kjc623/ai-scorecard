@@ -90,6 +90,41 @@ func TestServerAnswersEachRequestWithAResponse(t *testing.T) {
 	}
 }
 
+// capture-core matches answers to requests by their order on the connection: requests written
+// before any answer is read get one answer each, in the order they were sent, malformed ones
+// included.
+func TestServerAnswersPipelinedRequestsInOrder(t *testing.T) {
+	c := serve(t, newHost(t))
+	handshake(t, c)
+	frames := []any{
+		req(protocol.ModeM1, "text/plain", cardBody),
+		[]byte("{not json"),
+		req(protocol.ModeM1, "text/plain", "nothing to see here"),
+		req(protocol.ModeM1, "text/plain", cardBody),
+	}
+	go func() {
+		for _, f := range frames {
+			body, ok := f.([]byte)
+			if !ok {
+				body, _ = json.Marshal(f)
+			}
+			if protocol.WriteFrame(c, body) != nil {
+				return
+			}
+		}
+	}()
+	if resp := receive[protocol.ClassifyResponse](t, c); classes(resp) != "payment_card" {
+		t.Fatalf("answer 1: %+v", resp)
+	}
+	requireDegraded(t, receive[protocol.ClassifyResponse](t, c), protocol.DetailContentUnprocessable)
+	if resp := receive[protocol.ClassifyResponse](t, c); resp.Validate() != nil || classes(resp) != "" {
+		t.Fatalf("answer 3: %+v", resp)
+	}
+	if resp := receive[protocol.ClassifyResponse](t, c); classes(resp) != "payment_card" {
+		t.Fatalf("answer 4: %+v", resp)
+	}
+}
+
 func TestHandshakeInAnotherVersionIsRefusedAndCloses(t *testing.T) {
 	c := serve(t, newHost(t))
 	send(t, c, protocol.Version+1, protocol.HandshakeRequest{CoreVersion: "core", ProtocolVersion: protocol.Version + 1})

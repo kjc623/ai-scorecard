@@ -1081,6 +1081,35 @@ decided and why, and for a vendor fact the product version checked.
 - **No vendor facts.** This task ships only the test adapter; the Claude Code and Cursor formats are
   tasks 37 and 38.
 
+## 2026-10-08, task 36 fix 1
+
+- **A call that runs out of budget keeps the connection, and so the child.** Since task 48 the
+  supervisor hands out the child's stdio once, so task 02's drop on a timeout ended
+  classifier-host: it was restarted against the crash-loop budget and every call in between fell
+  back to rules-only. Now each connection has one reader goroutine. Requests carry no sequence
+  number: classifier-host answers every request frame exactly once, in the order it read them, or
+  ends the connection (its doc comment and a pipelined-order test in `classify/server_test.go` pin
+  this), so the n-th answer is the n-th request's. The link counts frames written and answers
+  read, hands an answer only to the call registered for that ordinal, and discards answers for
+  calls that gave up. Task 02's single-slot lock still admits one call at a time, and a request a
+  caller gave up on before it was written is never written. No protocol or handshake change, so
+  old and new hosts and cores interoperate.
+- **A hung host is still dropped, after `stallLimit` (10 s).** When a call gives up and the host has
+  answered nothing for 10 s while a request is outstanding, the connection is closed, which kills
+  the child for the supervisor to restart. 10 s is far beyond any request budget (2 s at most).
+- **Degraded clears on an answer.** A timed-out call still marks the link degraded
+  (`host_unreachable`); a valid answer now clears it, since no reconnect follows a timeout any
+  more. An answer that is not JSON is degraded `version_mismatch`, like an invalid answer, and keeps
+  the connection (the framing is intact); before, it dropped the connection.
+- **Benchmark** (`SAC_HOOK_BENCH=1 go test -run HookBench -v ./hooks/`, same Linux machine as task
+  36; it now logs the supervisor's restarts). Load: 8 busy-loop shell processes on 4 vCPUs (the
+  machine is shared, so load averages ran 4 to 14). Quiet, before: p50 7.8, p95 10.0, p99 11.9 ms,
+  0 restarts; after: p50 8.2, p95 11.1, p99 14.6 ms, 0 restarts. Loaded, before (two runs): 100 and
+  13 of 100 AWS-key hooks allowed, 5 restarts (crash loop) and 2 restarts, p99 594 and 112 ms.
+  Loaded, after (two runs): 0 and 1 of 100 allowed, 0 restarts, p99 58.5 and 274 ms. The p99 under
+  load is process scheduling, outside this fix; a hook allowed after the fix ran out of time (the
+  30 ms classification or the hook's 400 ms deadline), which fails open by design.
+
 ## 2026-10-08, task 16
 
 - **Migration `0011-inventory-scanner.sql`** (renumbered at merge if taken). Migration proof, on

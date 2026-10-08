@@ -12,7 +12,9 @@ import (
 )
 
 // Server answers capture-core on one byte stream using protocol's length-prefixed frames: a
-// handshake first, then one protocol.ClassifyResponse per protocol.ClassifyRequest.
+// handshake first, then one protocol.ClassifyResponse per request frame, in the order the frames
+// arrived. capture-core pairs answers with requests by that order, so every request frame is
+// answered exactly once or the connection ends.
 //
 // Malformed input is answered, never fatal: a malformed request gets a degraded response and the
 // connection stays open; a frame in another protocol version, or one declaring more bytes than

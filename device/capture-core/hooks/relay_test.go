@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"slices"
 	"strings"
 	"sync"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/shadow-ai-capture/device/capture-core/core"
 	"github.com/shadow-ai-capture/device/capture-core/hooks"
+	"github.com/shadow-ai-capture/device/capture-core/hostinfo"
+	"github.com/shadow-ai-capture/device/capture-core/localipc"
 	"github.com/shadow-ai-capture/device/capture-core/policy"
 	"github.com/shadow-ai-capture/device/protocol"
 )
@@ -64,7 +67,7 @@ func TestRelayIsTheHookRelayCollector(t *testing.T) {
 // and the prompt is recorded on tool.hook as blocked. A clean prompt is allowed and recorded as
 // logged.
 func TestBlockOnCredentialBlocksAnAWSKeyAndRecordsBlocked(t *testing.T) {
-	classifier := startClassifier(t, buildClassifier(t, t.TempDir()))
+	classifier, _ := startClassifier(t, buildClassifier(t, t.TempDir()))
 	sink := &memSink{}
 	pipe := newPipeline(t, sink, testBundle(protocol.ModeM1, blockCredentials))
 	r := newRelay(t, pipe, classifier)
@@ -96,6 +99,64 @@ func TestBlockOnCredentialBlocksAnAWSKeyAndRecordsBlocked(t *testing.T) {
 	logged := decodeEnvelope(t, entries[1])
 	if logged.Decision == nil || logged.Decision.Action != protocol.ActionLogged || logged.Decision.RuleID != "policy.default" {
 		t.Fatalf("allowed record = %s", entries[1].Payload)
+	}
+}
+
+// Under a classifier host slower than the relay's budget, each hook of a burst is answered from the
+// bundle with the labels unknown, and the host keeps running: a classification that runs out of
+// budget does not end it.
+func TestASlowClassifierDegradesABurstWithoutARestart(t *testing.T) {
+	classifier, host := startSlowClassifier(t)
+	sink := &memSink{}
+	r := newRelay(t, newPipeline(t, sink, testBundle(protocol.ModeM1, blockCredentials)), classifier)
+
+	const burst = 10
+	var wg sync.WaitGroup
+	for i := range burst {
+		wg.Go(func() {
+			client, server := net.Pipe()
+			defer client.Close()
+			go func() {
+				defer server.Close()
+				r.Serve(server, hostinfo.User{Account: "hook-user"}, evaluateFrame(t, "claude_code", "deploy with key "+awsKey))
+			}()
+			_ = client.SetReadDeadline(time.Now().Add(5 * time.Second))
+			payload, err := localipc.ReadFrame(client)
+			if err != nil {
+				t.Errorf("hook %d: no answer: %v", i, err)
+				return
+			}
+			var answer protocol.NativeMessage
+			var d protocol.HookDecision
+			if json.Unmarshal(payload, &answer) != nil || answer.Type != protocol.TypeHookDecision || json.Unmarshal(answer.Body, &d) != nil {
+				t.Errorf("hook %d: the relay answered %s", i, payload)
+				return
+			}
+			if d.Action != protocol.HookAllow || d.RuleID != "policy.default" {
+				t.Errorf("hook %d: decision = %+v, want the default allow of unknown labels", i, d)
+			}
+		})
+	}
+	wg.Wait()
+	// Stopping the relay waits for the answered prompts to be recorded.
+	_ = r.Stop(context.Background())
+	if n := len(sink.all()); n != burst {
+		t.Errorf("recorded %d prompts, want %d", n, burst)
+	}
+
+	// A restart waits a second after the child exits; wait past it.
+	time.Sleep(1500 * time.Millisecond)
+	if n := host.Restarts(); n != 0 {
+		t.Fatalf("classifier-host was restarted %d times", n)
+	}
+	if h := host.Health(); h.State != protocol.StateHealthy {
+		t.Fatalf("classifier-host is %s/%s", h.State, h.Detail)
+	}
+	resp, err := classifier.Classify(context.Background(), protocol.ClassifyRequest{
+		Content: []byte(awsKey), Mode: protocol.ModeM1, BudgetMS: 5000,
+	})
+	if err != nil || resp.Confidence != protocol.ConfidenceHigh || resp.ClassifierVersion != "slow-1" {
+		t.Fatalf("after the burst the host answered %+v, %v; want its own answer", resp, err)
 	}
 }
 

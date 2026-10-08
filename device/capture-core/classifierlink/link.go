@@ -42,13 +42,18 @@ type Client struct {
 	request chan struct{}
 
 	mu        sync.Mutex
-	conn      net.Conn
+	sess      *session
 	version   string
 	degraded  bool
 	reason    protocol.Detail
 	attempts  int
 	connected time.Time
 }
+
+// stallLimit is how long the host may hold an answer before its connection is dropped, which ends
+// the child for its supervisor to restart. It is far beyond any request budget: a call that only
+// runs out of budget leaves the connection, and the child, alone.
+const stallLimit = 10 * time.Second
 
 // NewWithDialer returns a client over dial. coreVersion is sent in the handshake so the host can
 // refuse a peer it cannot serve; budget bounds one classification.
@@ -107,7 +112,7 @@ func (c *Client) Connect(ctx context.Context) error {
 		_ = conn.Close()
 		return fmt.Errorf("classifierlink: host refused the handshake: %s", c.reason)
 	}
-	c.conn = conn
+	c.sess = newSession(conn, c.now)
 	c.version = resp.ClassifierVersion
 	c.degraded = false
 	c.reason = protocol.DetailNone
@@ -137,7 +142,6 @@ func (c *Client) Classify(ctx context.Context, req protocol.ClassifyRequest) (pr
 
 	// The budget covers the wait for the connection as well as the request itself. A call that
 	// gives up while waiting has sent nothing, so the link is not degraded by it.
-	deadline := c.now().Add(budget)
 	timer := time.NewTimer(budget)
 	defer timer.Stop()
 	select {
@@ -152,61 +156,44 @@ func (c *Client) Classify(ctx context.Context, req protocol.ClassifyRequest) (pr
 		return c.rulesOnlyFallback(), nil
 	}
 
-	c.mu.Lock()
-	conn := c.conn
-	c.mu.Unlock()
-	if conn == nil {
+	sess := c.session()
+	if sess == nil {
 		if err := c.Connect(ctx); err != nil {
 			return c.rulesOnlyFallback(), nil
 		}
-		c.mu.Lock()
-		conn = c.conn
-		c.mu.Unlock()
-		if conn == nil {
+		if sess = c.session(); sess == nil {
 			// Closed while connecting.
 			return c.rulesOnlyFallback(), nil
 		}
 	}
 
-	done := make(chan struct{})
-	var (
-		resp    protocol.ClassifyResponse
-		readErr error
-	)
-	go func() {
-		defer close(done)
-		_ = conn.SetDeadline(deadline)
-		if err := protocol.WriteFrame(conn, payload); err != nil {
-			readErr = err
-			return
-		}
-		raw, err := protocol.ReadFrameChecked(conn)
-		if err != nil {
-			readErr = err
-			return
-		}
-		_ = conn.SetDeadline(time.Time{})
-		readErr = json.Unmarshal(raw, &resp)
-	}()
+	cl := &call{answer: make(chan []byte, 1)}
+	go sess.send(cl, payload)
 
-	// A call that gives up drops the connection before it lets the next call in, so the host's late
-	// answer to it can never be read as the answer to another request.
+	var raw []byte
 	select {
-	case <-done:
+	case raw = <-cl.answer:
+	case <-sess.ended:
+		// The answer may have been read just before the connection ended.
+		select {
+		case raw = <-cl.answer:
+		default:
+			c.markDegraded(protocol.DetailHostUnreachable)
+			c.forget(sess)
+			return c.rulesOnlyFallback(), nil
+		}
 	case <-ctx.Done():
-		c.markDegraded(protocol.DetailHostUnreachable)
-		c.drop(conn)
+		c.giveUp(sess, cl)
 		return c.rulesOnlyFallback(), nil
 	case <-timer.C:
 		// A hung host is detected by the request timeout: the child's pipes have no deadlines.
-		c.markDegraded(protocol.DetailHostUnreachable)
-		c.drop(conn)
+		c.giveUp(sess, cl)
 		return c.rulesOnlyFallback(), nil
 	}
 
-	if readErr != nil {
-		c.markDegraded(protocol.DetailHostUnreachable)
-		c.drop(conn)
+	var resp protocol.ClassifyResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		c.markDegraded(protocol.DetailVersionMismatch)
 		return c.rulesOnlyFallback(), nil
 	}
 	if err := resp.Validate(); err != nil {
@@ -214,18 +201,52 @@ func (c *Client) Classify(ctx context.Context, req protocol.ClassifyRequest) (pr
 		c.markDegraded(protocol.DetailVersionMismatch)
 		return c.rulesOnlyFallback(), nil
 	}
+	c.markAnswered()
 	return resp, nil
 }
 
-// drop closes conn, which ends the child, and forgets it if it is still the resident connection;
-// the next connection is made through Connect.
-func (c *Client) drop(conn net.Conn) {
-	_ = conn.Close()
+// giveUp ends a call that ran out of time before its answer. The connection stays, and the host's
+// late answer is read and discarded when it comes: dropping the connection would end the child.
+// Only a host that has answered nothing for stallLimit is dropped.
+func (c *Client) giveUp(sess *session, call *call) {
+	c.markDegraded(protocol.DetailHostUnreachable)
+	if sess.abandon(call) {
+		c.drop(sess)
+	}
+}
+
+// session returns the resident connection, forgetting it once it has ended.
+func (c *Client) session() *session {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.conn == conn {
-		c.conn = nil
+	if c.sess != nil && c.sess.isEnded() {
+		c.sess = nil
 	}
+	return c.sess
+}
+
+// forget stops using sess if it is still the resident connection; the next connection is made
+// through Connect.
+func (c *Client) forget(sess *session) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.sess == sess {
+		c.sess = nil
+	}
+}
+
+// drop closes sess, which ends the child, and forgets it.
+func (c *Client) drop(sess *session) {
+	_ = sess.conn.Close()
+	c.forget(sess)
+}
+
+// markAnswered clears the degradation a timed-out or defective answer recorded: the host answers.
+func (c *Client) markAnswered() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.degraded = false
+	c.reason = protocol.DetailNone
 }
 
 func (c *Client) markDegraded(d protocol.Detail) {
@@ -285,10 +306,109 @@ func (c *Client) rulesOnlyFallback() protocol.ClassifyResponse {
 func (c *Client) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.conn == nil {
+	if c.sess == nil {
 		return nil
 	}
-	err := c.conn.Close()
-	c.conn = nil
+	err := c.sess.conn.Close()
+	c.sess = nil
 	return err
+}
+
+// session is one connection to the host. The host reads request frames in order and answers each
+// one once, in the same order, so the n-th answer on a connection is the answer to the n-th
+// request. An answer whose caller gave up is read here and discarded, and the connection stays.
+type session struct {
+	conn net.Conn
+	now  func() time.Time
+	// write is held while a frame is written. A write can outlive the call that started it, since
+	// a child's stdin has no deadlines.
+	write sync.Mutex
+	// ended is closed when the connection can no longer be read.
+	ended chan struct{}
+
+	mu      sync.Mutex
+	sent    uint64 // request frames written, or being written
+	read    uint64 // answers read
+	waiting *call  // the call that waits for its answer, if any
+	// busy is when the host last answered, or last had a request to answer after answering all.
+	busy time.Time
+}
+
+// call is one request on a session.
+type call struct {
+	n      uint64      // the request's place on the connection
+	answer chan []byte // buffered, so the reader never blocks on a caller
+	gone   bool        // the caller gave up
+}
+
+func newSession(conn net.Conn, now func() time.Time) *session {
+	s := &session{conn: conn, now: now, ended: make(chan struct{})}
+	go s.readAnswers()
+	return s
+}
+
+// send writes call's request unless its caller has already given up. A failed write closes the
+// connection: a partly written frame cannot be resynchronised.
+func (s *session) send(call *call, payload []byte) {
+	s.write.Lock()
+	defer s.write.Unlock()
+	s.mu.Lock()
+	if call.gone || s.isEnded() {
+		s.mu.Unlock()
+		return
+	}
+	if s.read == s.sent {
+		s.busy = s.now()
+	}
+	call.n = s.sent
+	s.sent++
+	s.waiting = call
+	s.mu.Unlock()
+	if err := protocol.WriteFrame(s.conn, payload); err != nil {
+		_ = s.conn.Close()
+	}
+}
+
+// readAnswers hands each answer to the call that waits for it and discards the rest. An answer to
+// no request breaks the pairing, so it ends the connection like a read error does.
+func (s *session) readAnswers() {
+	defer close(s.ended)
+	for {
+		raw, err := protocol.ReadFrameChecked(s.conn)
+		s.mu.Lock()
+		if err != nil || s.read == s.sent {
+			s.mu.Unlock()
+			_ = s.conn.Close()
+			return
+		}
+		n := s.read
+		s.read++
+		s.busy = s.now()
+		if s.waiting != nil && s.waiting.n == n {
+			s.waiting.answer <- raw
+			s.waiting = nil
+		}
+		s.mu.Unlock()
+	}
+}
+
+// abandon records that call's caller gave up, so that its answer is discarded, and reports whether
+// the host has held an answer for stallLimit.
+func (s *session) abandon(call *call) (stalled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	call.gone = true
+	if s.waiting == call {
+		s.waiting = nil
+	}
+	return s.read < s.sent && s.now().Sub(s.busy) >= stallLimit
+}
+
+func (s *session) isEnded() bool {
+	select {
+	case <-s.ended:
+		return true
+	default:
+		return false
+	}
 }
