@@ -36,6 +36,10 @@ type Config struct {
 	// Normalizers are consulted in order; the first that accepts a service.name receives it.
 	Normalizers []Normalizer
 
+	// Counters is the collector's counter set, shared with the normalizers that count what they do
+	// with a record. nil creates one.
+	Counters *core.CounterSet
+
 	// Person names the person a sending process's owner is attributed to. nil attributes every
 	// sender to the unattributed user_ref without looking it up.
 	Person func(hostinfo.User) core.Person
@@ -91,6 +95,9 @@ func New(cfg Config) (*Receiver, error) {
 		return nil, err
 	}
 	now := cfg.Clock()
+	if cfg.Counters == nil {
+		cfg.Counters = core.NewCounterSet(now)
+	}
 	return &Receiver{
 		cfg:       cfg,
 		token:     tok,
@@ -98,7 +105,7 @@ func New(cfg Config) (*Receiver, error) {
 		httpAddr:  cfg.HTTPListen,
 		grpcAddr:  cfg.GRPCListen,
 		startedAt: now,
-		counters:  core.NewCounterSet(now),
+		counters:  cfg.Counters,
 	}, nil
 }
 

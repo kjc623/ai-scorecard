@@ -498,3 +498,58 @@ decided and why, and for a vendor fact the product version checked.
     closes. classifier-host's parser isolation already uses the same calls.
   - `SysProcAttr.Pdeathsig` (`PR_SET_PDEATHSIG`) exists on Linux only. Darwin gets the process
     group alone.
+## 2026-10-08, task 33
+
+- **Semantic conventions followed: v1.41.0** (schema URL `https://opentelemetry.io/schemas/1.41.0`),
+  read 2026-10-08. opentelemetry.io is not reachable from the build machine, so the docs were read
+  in the `open-telemetry/semantic-conventions` repository on GitHub. v1.42.0 moved the GenAI
+  conventions to `open-telemetry/semantic-conventions-genai`, which has no release yet; its `main`
+  keeps every name used here. v1.41.0 is the last release with them and matches
+  `go.opentelemetry.io/otel/semconv/v1.41.0`, which the tests use for the attribute names.
+  - Model request: `gen_ai.operation.name` `chat`, `text_completion` or `generate_content`;
+    `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.usage.input_tokens`,
+    `gen_ai.usage.output_tokens` (int). Tool call: `execute_tool` with `gen_ai.tool.name`.
+  - Messages: `gen_ai.input.messages` (opt-in) is a list of `{role, parts}`, where a text part is
+    `{type: "text", content}`. It is structured on events and may be a JSON string on spans. The
+    event that carries it is `gen_ai.client.inference.operation.details`.
+  - Older forms: `gen_ai.system` was renamed `gen_ai.provider.name` in v1.37.0. `gen_ai.prompt`
+    (a JSON string in the OpenAI messages format, on the `gen_ai.content.prompt` span event)
+    was replaced in v1.28.0 by log events such as `gen_ai.user.message` (body `{content}`).
+    Those events were dropped in v1.37.0.
+- **Outcome comes from the span status alone.** `STATUS_CODE_ERROR` gives `error`. Anything else
+  gives `success`. `error.type` is not read.
+- **Which records give what.** A span gives `agent_activity` when it is a model request or a tool
+  call. A model-request span also gives a prompt when it carries the latest user message.
+  Other GenAI spans give nothing: embeddings, `invoke_agent` and the rest. An agent span repeats
+  the messages its model spans send, so a prompt from it would be reported twice. A log record
+  gives only a prompt, because the activity belongs to its span.
+- **What a prompt is.** A prompt is reported only when the **last** message of the request is the
+  user's, and it holds that message's text parts, joined by new lines. When the request ends with
+  an assistant or tool message, it is a later step of an agent loop, and the user's message went
+  with an earlier request. The older per-message events are judged within one export: a
+  `gen_ai.user.message` event followed by another message event of the same span is an earlier
+  turn. An exporter that sends each record on its own would have every turn reported.
+- **Counting.** The outcomes are counted on the `otel_receiver` row, the counter set the receiver
+  shares with the normalizer through `otlp.Config.Counters`. Each envelope counts `emitted`. A
+  pipeline refusal counts `dropped`, or `errors` when the identity is unresolved. A messages
+  attribute that is not JSON counts `errors`. Every other span or log record that gives nothing
+  counts `skipped_not_generative`, including generative records with nothing to report.
+- **`exe:` fingerprint.** It is used only when the sender is `Resolved` (process and owner named).
+  Otherwise it is `exe:unknown`, even when the image is known, as the brief says. The contract and
+  ingest put no pattern on `tool_fingerprint`. The normalizer's `exe:` envelopes pass ingest's
+  contract validator at `m0`, `m1` and `m3`. `ref.tool_catalogue` has no `exe:` row, so
+  `ops.tool_display_name` shows "Unrecognised tool".
+- **The catalog lookup waits for task 14.** `genai.Config.AppByExe(base)` takes the lower-case
+  image base name. `buildProviders` leaves it nil, which matches nothing, because
+  `Bundle.AppByExe` does not exist yet. Task 14 wires it to `Bundle.AppByExe(<platform>, base)`.
+  The tests cover a catalog hit through the seam.
+- **The decision is fixed at `logged`.** Task 12's evaluator is not merged. Prompts take the
+  `logged` decision under `policy.default` through a `Decide` seam, the same default the proxy
+  and the broker use. Route `tool.otel` cannot enforce anyway.
+- **dedup_key for agent_activity.** It is `sha256:` plus the hex of
+  sha256(`tenant|device|tool_fingerprint|activity_type|<trace id><span id>|duration_ms`), as in
+  §3. The span's ids, in hex, are the tool's own event id. A span with no id uses its start time.
+  An unknown duration is empty.
+- **Tests.** Everything ran on Linux. With no person resolver, the end-to-end export through the
+  real receiver gives `exe:unknown`. The resolved paths (catalog hit, `exe:` hash, POSIX and
+  upper-case paths) replay the SDK's exported spans with a resolved `Sender`.
