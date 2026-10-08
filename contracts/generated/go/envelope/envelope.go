@@ -27,7 +27,8 @@
 //   DevicePromptM2: subject_name, prompt_kind, attachments
 //   DevicePromptM3: subject_name, prompt_kind, attachments
 //   DeviceUsageRollup: subject_name, confidence
-//   DeviceModelDetection: subject_name, confidence
+//   DeviceDiscovery: subject_name, app_version, publisher, host_app, destination_host, model_names
+//   DeviceAgentActivity: subject_name, size_bytes, model, input_tokens, output_tokens, duration_ms, tool_name, outcome
 
 // Package envelope is the Go binding of the event envelope contract.
 package envelope
@@ -64,15 +65,16 @@ type DateTime = string
 type Kind string
 
 const (
-	KindPrompt         Kind = "prompt"
-	KindUsageRollup    Kind = "usage_rollup"
-	KindModelDetection Kind = "model_detection"
+	KindPrompt        Kind = "prompt"
+	KindUsageRollup   Kind = "usage_rollup"
+	KindDiscovery     Kind = "discovery"
+	KindAgentActivity Kind = "agent_activity"
 )
 
 // Valid reports whether the value is inside the closed set.
 func (v Kind) Valid() bool {
 	switch v {
-	case KindPrompt, KindUsageRollup, KindModelDetection:
+	case KindPrompt, KindUsageRollup, KindDiscovery, KindAgentActivity:
 		return true
 	}
 	return false
@@ -80,7 +82,7 @@ func (v Kind) Valid() bool {
 
 // AllKinds returns the closed set in schema order.
 func AllKinds() []Kind {
-	return []Kind{KindPrompt, KindUsageRollup, KindModelDetection}
+	return []Kind{KindPrompt, KindUsageRollup, KindDiscovery, KindAgentActivity}
 }
 
 // Route is the closed set from $defs/route. Which collection route produced this record. Closed
@@ -96,12 +98,16 @@ const (
 	RouteProxyLoopback  Route = "proxy.loopback"
 	RouteProcDetect     Route = "proc.detect"
 	RouteCLIShim        Route = "cli.shim"
+	RouteToolHook       Route = "tool.hook"
+	RouteToolOtel       Route = "tool.otel"
+	RouteInvScan        Route = "inv.scan"
+	RouteNetFlow        Route = "net.flow"
 )
 
 // Valid reports whether the value is inside the closed set.
 func (v Route) Valid() bool {
 	switch v {
-	case RouteExtWebRequest, RouteExtPageContext, RouteExtDOM, RouteProxyTLS, RouteProxyLoopback, RouteProcDetect, RouteCLIShim:
+	case RouteExtWebRequest, RouteExtPageContext, RouteExtDOM, RouteProxyTLS, RouteProxyLoopback, RouteProcDetect, RouteCLIShim, RouteToolHook, RouteToolOtel, RouteInvScan, RouteNetFlow:
 		return true
 	}
 	return false
@@ -109,7 +115,7 @@ func (v Route) Valid() bool {
 
 // AllRoutes returns the closed set in schema order.
 func AllRoutes() []Route {
-	return []Route{RouteExtWebRequest, RouteExtPageContext, RouteExtDOM, RouteProxyTLS, RouteProxyLoopback, RouteProcDetect, RouteCLIShim}
+	return []Route{RouteExtWebRequest, RouteExtPageContext, RouteExtDOM, RouteProxyTLS, RouteProxyLoopback, RouteProcDetect, RouteCLIShim, RouteToolHook, RouteToolOtel, RouteInvScan, RouteNetFlow}
 }
 
 // Direction is the closed set from envelopeCore.direction. 'ingress' is reserved and cannot appear
@@ -237,22 +243,25 @@ func AllExcerptKinds() []ExcerptKind {
 	return []ExcerptKind{ExcerptKindMatchSpan, ExcerptKindRedactedWindow}
 }
 
-// DetectionBasis is the closed set from envelopeCore.detection_basis. How an on-device model was
-// detected. Required for model_detection. Recorded because the four mechanisms have materially
-// different confidence and coverage, and merging them would overstate what is known.
+// DetectionBasis is the closed set from envelopeCore.detection_basis. How a discovery was made.
+// Required for discovery. Recorded because the mechanisms have materially different confidence and
+// coverage, and merging them would overstate what is known.
 type DetectionBasis string
 
 const (
-	DetectionBasisProcessScan      DetectionBasis = "process_scan"
-	DetectionBasisEndpointSecurity DetectionBasis = "endpoint_security"
-	DetectionBasisETW              DetectionBasis = "etw"
-	DetectionBasisModuleSignature  DetectionBasis = "module_signature"
+	DetectionBasisInstalledScan DetectionBasis = "installed_scan"
+	DetectionBasisPackageScan   DetectionBasis = "package_scan"
+	DetectionBasisExtensionScan DetectionBasis = "extension_scan"
+	DetectionBasisProcessEvent  DetectionBasis = "process_event"
+	DetectionBasisModelStore    DetectionBasis = "model_store"
+	DetectionBasisPortListen    DetectionBasis = "port_listen"
+	DetectionBasisFlowMetadata  DetectionBasis = "flow_metadata"
 )
 
 // Valid reports whether the value is inside the closed set.
 func (v DetectionBasis) Valid() bool {
 	switch v {
-	case DetectionBasisProcessScan, DetectionBasisEndpointSecurity, DetectionBasisETW, DetectionBasisModuleSignature:
+	case DetectionBasisInstalledScan, DetectionBasisPackageScan, DetectionBasisExtensionScan, DetectionBasisProcessEvent, DetectionBasisModelStore, DetectionBasisPortListen, DetectionBasisFlowMetadata:
 		return true
 	}
 	return false
@@ -260,7 +269,7 @@ func (v DetectionBasis) Valid() bool {
 
 // AllDetectionBases returns the closed set in schema order.
 func AllDetectionBases() []DetectionBasis {
-	return []DetectionBasis{DetectionBasisProcessScan, DetectionBasisEndpointSecurity, DetectionBasisETW, DetectionBasisModuleSignature}
+	return []DetectionBasis{DetectionBasisInstalledScan, DetectionBasisPackageScan, DetectionBasisExtensionScan, DetectionBasisProcessEvent, DetectionBasisModelStore, DetectionBasisPortListen, DetectionBasisFlowMetadata}
 }
 
 // PromptKind is the closed set from envelopeCore.prompt_kind. What kind of prompt this is, decided
@@ -291,6 +300,80 @@ func (v PromptKind) Valid() bool {
 // AllPromptKinds returns the closed set in schema order.
 func AllPromptKinds() []PromptKind {
 	return []PromptKind{PromptKindUser, PromptKindClientGenerated, PromptKindUnknown}
+}
+
+// DiscoveryType is the closed set from envelopeCore.discovery_type. What was discovered on the
+// device. Required for discovery.
+type DiscoveryType string
+
+const (
+	DiscoveryTypeAppInstalled        DiscoveryType = "app_installed"
+	DiscoveryTypeAppRunning          DiscoveryType = "app_running"
+	DiscoveryTypeCLIInstalled        DiscoveryType = "cli_installed"
+	DiscoveryTypeIdeExtension        DiscoveryType = "ide_extension"
+	DiscoveryTypeLocalModel          DiscoveryType = "local_model"
+	DiscoveryTypeInferenceConnection DiscoveryType = "inference_connection"
+)
+
+// Valid reports whether the value is inside the closed set.
+func (v DiscoveryType) Valid() bool {
+	switch v {
+	case DiscoveryTypeAppInstalled, DiscoveryTypeAppRunning, DiscoveryTypeCLIInstalled, DiscoveryTypeIdeExtension, DiscoveryTypeLocalModel, DiscoveryTypeInferenceConnection:
+		return true
+	}
+	return false
+}
+
+// AllDiscoveryTypes returns the closed set in schema order.
+func AllDiscoveryTypes() []DiscoveryType {
+	return []DiscoveryType{DiscoveryTypeAppInstalled, DiscoveryTypeAppRunning, DiscoveryTypeCLIInstalled, DiscoveryTypeIdeExtension, DiscoveryTypeLocalModel, DiscoveryTypeInferenceConnection}
+}
+
+// ActivityType is the closed set from envelopeCore.activity_type. What an agent did, as its own
+// telemetry reports it. Required for agent_activity.
+type ActivityType string
+
+const (
+	ActivityTypeModelRequest ActivityType = "model_request"
+	ActivityTypeToolCall     ActivityType = "tool_call"
+)
+
+// Valid reports whether the value is inside the closed set.
+func (v ActivityType) Valid() bool {
+	switch v {
+	case ActivityTypeModelRequest, ActivityTypeToolCall:
+		return true
+	}
+	return false
+}
+
+// AllActivityTypes returns the closed set in schema order.
+func AllActivityTypes() []ActivityType {
+	return []ActivityType{ActivityTypeModelRequest, ActivityTypeToolCall}
+}
+
+// Outcome is the closed set from envelopeCore.outcome. How the model request or tool call ended.
+// 'denied' means a permission check or a policy refused it.
+type Outcome string
+
+const (
+	OutcomeSuccess Outcome = "success"
+	OutcomeError   Outcome = "error"
+	OutcomeDenied  Outcome = "denied"
+)
+
+// Valid reports whether the value is inside the closed set.
+func (v Outcome) Valid() bool {
+	switch v {
+	case OutcomeSuccess, OutcomeError, OutcomeDenied:
+		return true
+	}
+	return false
+}
+
+// AllOutcomes returns the closed set in schema order.
+func AllOutcomes() []Outcome {
+	return []Outcome{OutcomeSuccess, OutcomeError, OutcomeDenied}
 }
 
 // Label: One classification verdict. A label set, never a boolean and never a bare 'sensitive:
@@ -398,7 +481,9 @@ type EnvelopeCore struct {
 // Permitted but not required: subject_name.
 // Must not carry, so absent from this struct: received_at, prompt_kind, confidence,
 // content_digest, labels, classifier_version, content_excerpt, attachments, window_start,
-// window_end, submission_count, bytes_total, detection_basis.
+// window_end, submission_count, bytes_total, detection_basis, discovery_type, app_version,
+// publisher, host_app, destination_host, model_names, activity_type, model, input_tokens,
+// output_tokens, duration_ms, tool_name, outcome.
 type DevicePromptM0 struct {
 	EnvelopeCore
 
@@ -419,7 +504,9 @@ func (e *DevicePromptM0) Core() EnvelopeCore { return e.EnvelopeCore }
 // size_bytes, content_digest, labels, classifier_version, policy_decision.
 // Permitted but not required: subject_name, prompt_kind, content_excerpt, attachments.
 // Must not carry, so absent from this struct: received_at, window_start, window_end,
-// submission_count, bytes_total, detection_basis.
+// submission_count, bytes_total, detection_basis, discovery_type, app_version, publisher,
+// host_app, destination_host, model_names, activity_type, model, input_tokens, output_tokens,
+// duration_ms, tool_name, outcome.
 type DevicePromptM1 struct {
 	EnvelopeCore
 
@@ -447,7 +534,9 @@ func (e *DevicePromptM1) Core() EnvelopeCore { return e.EnvelopeCore }
 // size_bytes, content_digest, labels, classifier_version, content_excerpt, policy_decision.
 // Permitted but not required: subject_name, prompt_kind, attachments.
 // Must not carry, so absent from this struct: received_at, window_start, window_end,
-// submission_count, bytes_total, detection_basis.
+// submission_count, bytes_total, detection_basis, discovery_type, app_version, publisher,
+// host_app, destination_host, model_names, activity_type, model, input_tokens, output_tokens,
+// duration_ms, tool_name, outcome.
 type DevicePromptM2 struct {
 	EnvelopeCore
 
@@ -475,7 +564,9 @@ func (e *DevicePromptM2) Core() EnvelopeCore { return e.EnvelopeCore }
 // size_bytes, content_digest, labels, classifier_version, policy_decision.
 // Permitted but not required: subject_name, prompt_kind, attachments.
 // Must not carry, so absent from this struct: received_at, content_excerpt, window_start,
-// window_end, submission_count, bytes_total, detection_basis.
+// window_end, submission_count, bytes_total, detection_basis, discovery_type, app_version,
+// publisher, host_app, destination_host, model_names, activity_type, model, input_tokens,
+// output_tokens, duration_ms, tool_name, outcome.
 type DevicePromptM3 struct {
 	EnvelopeCore
 
@@ -503,7 +594,8 @@ func (e *DevicePromptM3) Core() EnvelopeCore { return e.EnvelopeCore }
 // Permitted but not required: subject_name, confidence.
 // Must not carry, so absent from this struct: received_at, prompt_kind, size_bytes,
 // content_digest, labels, classifier_version, content_excerpt, attachments, policy_decision,
-// detection_basis.
+// detection_basis, discovery_type, app_version, publisher, host_app, destination_host,
+// model_names, activity_type, model, input_tokens, output_tokens, duration_ms, tool_name, outcome.
 type DeviceUsageRollup struct {
 	EnvelopeCore
 
@@ -521,26 +613,62 @@ func (*DeviceUsageRollup) deviceSubmission() {}
 // Core returns the common core of the envelope.
 func (e *DeviceUsageRollup) Core() EnvelopeCore { return e.EnvelopeCore }
 
-// DeviceModelDetection is what a device sends for kind "model_detection".
+// DeviceDiscovery is what a device sends for kind "discovery".
 //
-// Required: the common core (direction, kind pinned), plus detection_basis.
-// Permitted but not required: subject_name, confidence.
-// Must not carry, so absent from this struct: received_at, prompt_kind, size_bytes,
+// Required: the common core (direction, kind pinned), plus detection_basis, discovery_type.
+// Permitted but not required: subject_name, app_version, publisher, host_app, destination_host,
+// model_names.
+// Must not carry, so absent from this struct: received_at, prompt_kind, confidence, size_bytes,
 // content_digest, labels, classifier_version, content_excerpt, attachments, policy_decision,
-// window_start, window_end, submission_count, bytes_total.
-type DeviceModelDetection struct {
+// window_start, window_end, submission_count, bytes_total, activity_type, model, input_tokens,
+// output_tokens, duration_ms, tool_name, outcome.
+type DeviceDiscovery struct {
 	EnvelopeCore
 
-	SubjectName    *string        `json:"subject_name,omitempty"`
-	Confidence     *Confidence    `json:"confidence,omitempty"`
-	DetectionBasis DetectionBasis `json:"detection_basis"`
+	SubjectName     *string        `json:"subject_name,omitempty"`
+	DetectionBasis  DetectionBasis `json:"detection_basis"`
+	DiscoveryType   DiscoveryType  `json:"discovery_type"`
+	AppVersion      *string        `json:"app_version,omitempty"`
+	Publisher       *string        `json:"publisher,omitempty"`
+	HostApp         *string        `json:"host_app,omitempty"`
+	DestinationHost *string        `json:"destination_host,omitempty"`
+	ModelNames      *[]string      `json:"model_names,omitempty"`
 }
 
-// deviceSubmission marks DeviceModelDetection as a member of the closed DeviceSubmission union.
-func (*DeviceModelDetection) deviceSubmission() {}
+// deviceSubmission marks DeviceDiscovery as a member of the closed DeviceSubmission union.
+func (*DeviceDiscovery) deviceSubmission() {}
 
 // Core returns the common core of the envelope.
-func (e *DeviceModelDetection) Core() EnvelopeCore { return e.EnvelopeCore }
+func (e *DeviceDiscovery) Core() EnvelopeCore { return e.EnvelopeCore }
+
+// DeviceAgentActivity is what a device sends for kind "agent_activity".
+//
+// Required: the common core (direction, kind pinned), plus activity_type.
+// Permitted but not required: subject_name, size_bytes, model, input_tokens, output_tokens,
+// duration_ms, tool_name, outcome.
+// Must not carry, so absent from this struct: received_at, prompt_kind, confidence,
+// content_digest, labels, classifier_version, content_excerpt, attachments, policy_decision,
+// window_start, window_end, submission_count, bytes_total, detection_basis, discovery_type,
+// app_version, publisher, host_app, destination_host, model_names.
+type DeviceAgentActivity struct {
+	EnvelopeCore
+
+	SubjectName  *string      `json:"subject_name,omitempty"`
+	SizeBytes    *int64       `json:"size_bytes,omitempty"`
+	ActivityType ActivityType `json:"activity_type"`
+	Model        *string      `json:"model,omitempty"`
+	InputTokens  *int64       `json:"input_tokens,omitempty"`
+	OutputTokens *int64       `json:"output_tokens,omitempty"`
+	DurationMS   *int64       `json:"duration_ms,omitempty"`
+	ToolName     *string      `json:"tool_name,omitempty"`
+	Outcome      *Outcome     `json:"outcome,omitempty"`
+}
+
+// deviceSubmission marks DeviceAgentActivity as a member of the closed DeviceSubmission union.
+func (*DeviceAgentActivity) deviceSubmission() {}
+
+// Core returns the common core of the envelope.
+func (e *DeviceAgentActivity) Core() EnvelopeCore { return e.EnvelopeCore }
 
 // DeviceSubmission is the closed union of what a device is permitted to send: one implementation
 // per kind and, for prompts, per collection mode. Every member omits `received_at`, which the
@@ -556,7 +684,8 @@ var _ DeviceSubmission = (*DevicePromptM1)(nil)
 var _ DeviceSubmission = (*DevicePromptM2)(nil)
 var _ DeviceSubmission = (*DevicePromptM3)(nil)
 var _ DeviceSubmission = (*DeviceUsageRollup)(nil)
-var _ DeviceSubmission = (*DeviceModelDetection)(nil)
+var _ DeviceSubmission = (*DeviceDiscovery)(nil)
+var _ DeviceSubmission = (*DeviceAgentActivity)(nil)
 
 // kindProbe reads only the discriminators, so dispatch never guesses a shape.
 type kindProbe struct {
@@ -598,8 +727,10 @@ func DecodeDeviceSubmission(data []byte) (DeviceSubmission, error) {
 		}
 	case KindUsageRollup:
 		return decodeInto(data, &DeviceUsageRollup{})
-	case KindModelDetection:
-		return decodeInto(data, &DeviceModelDetection{})
+	case KindDiscovery:
+		return decodeInto(data, &DeviceDiscovery{})
+	case KindAgentActivity:
+		return decodeInto(data, &DeviceAgentActivity{})
 	default:
 		return nil, fmt.Errorf("envelope: kind %q is outside the closed registry %v", probe.Kind, AllKinds())
 	}

@@ -23,7 +23,11 @@
         "proxy.tls",
         "proxy.loopback",
         "proc.detect",
-        "cli.shim"
+        "cli.shim",
+        "tool.hook",
+        "tool.otel",
+        "inv.scan",
+        "net.flow"
       ]
     },
 
@@ -173,7 +177,7 @@
 
         "kind": {
           "type": "string",
-          "enum": ["prompt", "usage_rollup", "model_detection"],
+          "enum": ["prompt", "usage_rollup", "discovery", "agent_activity"],
           "description": "Discriminator. Closed registry, enforced by the ingest API: a collector defect cannot begin shipping raw per-process telemetry, because no kind exists for it."
         },
 
@@ -288,14 +292,101 @@
 
         "detection_basis": {
           "type": "string",
-          "enum": ["process_scan", "endpoint_security", "etw", "module_signature"],
-          "description": "How an on-device model was detected. Required for model_detection. Recorded because the four mechanisms have materially different confidence and coverage, and merging them would overstate what is known."
+          "enum": ["installed_scan", "package_scan", "extension_scan", "process_event", "model_store", "port_listen", "flow_metadata"],
+          "description": "How a discovery was made. Required for discovery. Recorded because the mechanisms have materially different confidence and coverage, and merging them would overstate what is known."
+        },
+
+        "discovery_type": {
+          "type": "string",
+          "enum": ["app_installed", "app_running", "cli_installed", "ide_extension", "local_model", "inference_connection"],
+          "description": "What was discovered on the device. Required for discovery."
+        },
+
+        "app_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "The discovered application's version, as the application or its installer reports it."
+        },
+
+        "publisher": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "The code-signing subject (Windows) or team id (macOS) of the discovered application."
+        },
+
+        "host_app": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "For an ide_extension discovery, the app:<app_key> fingerprint of the IDE the extension is installed in."
+        },
+
+        "destination_host": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253,
+          "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$",
+          "description": "For an inference_connection discovery, the lower-case host name the connection was made to. A host name only: never a path, a query or a payload."
+        },
+
+        "model_names": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "description": "For a local_model discovery, the names of the models found in the runtime's model store."
+        },
+
+        "activity_type": {
+          "type": "string",
+          "enum": ["model_request", "tool_call"],
+          "description": "What an agent did, as its own telemetry reports it. Required for agent_activity."
+        },
+
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "For a model_request, the model the request was sent to, as the tool names it."
+        },
+
+        "input_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "For a model_request, the input tokens the tool reports."
+        },
+
+        "output_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "For a model_request, the output tokens the tool reports."
+        },
+
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How long the model request or tool call took, in milliseconds, as the tool reports it."
+        },
+
+        "tool_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "For a tool_call, the name of the tool the agent called. The name only: never its arguments or its result."
+        },
+
+        "outcome": {
+          "type": "string",
+          "enum": ["success", "error", "denied"],
+          "description": "How the model request or tool call ended. 'denied' means a permission check or a policy refused it."
         }
       },
 
       "allOf": [
 
         {
+          "comment": "usage_rollup counts submissions over a window; it describes no single observation, so it carries no content-derived field, no policy decision, and none of the fields that describe one discovery or one agent action.",
           "if": {
             "properties": { "kind": { "const": "usage_rollup" } },
             "required": ["kind"]
@@ -313,20 +404,33 @@
                 { "required": ["size_bytes"] },
                 { "required": ["attachments"] },
                 { "required": ["detection_basis"] },
-                { "required": ["prompt_kind"] }
+                { "required": ["prompt_kind"] },
+                { "required": ["discovery_type"] },
+                { "required": ["app_version"] },
+                { "required": ["publisher"] },
+                { "required": ["host_app"] },
+                { "required": ["destination_host"] },
+                { "required": ["model_names"] },
+                { "required": ["activity_type"] },
+                { "required": ["model"] },
+                { "required": ["input_tokens"] },
+                { "required": ["output_tokens"] },
+                { "required": ["duration_ms"] },
+                { "required": ["tool_name"] },
+                { "required": ["outcome"] }
               ]
             }
           }
         },
 
         {
-          "comment": "model_detection carries no window at all: a detection with window_end, submission_count or bytes_total would be a rollup wearing the detection kind.",
+          "comment": "discovery reports that an AI application, CLI, IDE extension, local model or inference connection exists on the device. It is found from installations, processes, model stores and connection metadata, never by reading content, so no content-derived field, policy decision or size may appear on it. It carries no window, which would make it a rollup wearing the discovery kind, and none of the agent_activity fields.",
           "if": {
-            "properties": { "kind": { "const": "model_detection" } },
+            "properties": { "kind": { "const": "discovery" } },
             "required": ["kind"]
           },
           "then": {
-            "required": ["detection_basis"],
+            "required": ["discovery_type", "detection_basis"],
             "properties": { "direction": { "const": "none" } },
             "not": {
               "anyOf": [
@@ -334,20 +438,64 @@
                 { "required": ["labels"] },
                 { "required": ["classifier_version"] },
                 { "required": ["content_excerpt"] },
+                { "required": ["confidence"] },
+                { "required": ["attachments"] },
+                { "required": ["prompt_kind"] },
                 { "required": ["policy_decision"] },
                 { "required": ["size_bytes"] },
-                { "required": ["attachments"] },
                 { "required": ["window_start"] },
                 { "required": ["window_end"] },
                 { "required": ["submission_count"] },
                 { "required": ["bytes_total"] },
-                { "required": ["prompt_kind"] }
+                { "required": ["activity_type"] },
+                { "required": ["model"] },
+                { "required": ["input_tokens"] },
+                { "required": ["output_tokens"] },
+                { "required": ["duration_ms"] },
+                { "required": ["tool_name"] },
+                { "required": ["outcome"] }
               ]
             }
           }
         },
 
         {
+          "comment": "agent_activity reports one model request or tool call from a tool's own telemetry: what was done, how long it took and how it ended, never the prompt, the arguments or the result. Prompt text a tool reports travels as a prompt record, through the mode gate, so no content-derived field may appear here; nor a policy decision, which belongs to the prompt, nor a window or the fields that describe a discovery.",
+          "if": {
+            "properties": { "kind": { "const": "agent_activity" } },
+            "required": ["kind"]
+          },
+          "then": {
+            "required": ["activity_type"],
+            "properties": { "direction": { "const": "none" } },
+            "not": {
+              "anyOf": [
+                { "required": ["content_digest"] },
+                { "required": ["labels"] },
+                { "required": ["classifier_version"] },
+                { "required": ["content_excerpt"] },
+                { "required": ["confidence"] },
+                { "required": ["attachments"] },
+                { "required": ["prompt_kind"] },
+                { "required": ["policy_decision"] },
+                { "required": ["window_start"] },
+                { "required": ["window_end"] },
+                { "required": ["submission_count"] },
+                { "required": ["bytes_total"] },
+                { "required": ["detection_basis"] },
+                { "required": ["discovery_type"] },
+                { "required": ["app_version"] },
+                { "required": ["publisher"] },
+                { "required": ["host_app"] },
+                { "required": ["destination_host"] },
+                { "required": ["model_names"] }
+              ]
+            }
+          }
+        },
+
+        {
+          "comment": "A prompt is one submission. It carries no window, and none of the fields that describe a discovery or an agent action: those are records of their own kinds, so a prompt cannot carry inventory or telemetry past its kind's rules.",
           "if": {
             "properties": { "kind": { "const": "prompt" } },
             "required": ["kind"]
@@ -361,7 +509,20 @@
                 { "required": ["window_end"] },
                 { "required": ["submission_count"] },
                 { "required": ["bytes_total"] },
-                { "required": ["detection_basis"] }
+                { "required": ["detection_basis"] },
+                { "required": ["discovery_type"] },
+                { "required": ["app_version"] },
+                { "required": ["publisher"] },
+                { "required": ["host_app"] },
+                { "required": ["destination_host"] },
+                { "required": ["model_names"] },
+                { "required": ["activity_type"] },
+                { "required": ["model"] },
+                { "required": ["input_tokens"] },
+                { "required": ["output_tokens"] },
+                { "required": ["duration_ms"] },
+                { "required": ["tool_name"] },
+                { "required": ["outcome"] }
               ]
             }
           }

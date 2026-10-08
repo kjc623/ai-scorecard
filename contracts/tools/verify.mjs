@@ -12,6 +12,8 @@
 //       generated structs field by field, in both directions,
 //   (d) it checks that every variant derived from the schema is present and reachable from the
 //       decoder,
+//   (e) it checks the endpoint kinds against their contract, and checks valid and invalid records
+//       of every kind against the field sets and declarations it read from the schema,
 //   and it runs the generated package through gofmt, go vet and its Go tests.
 //
 // Every expectation is re-derived from contracts/event-envelope.schema.json here, so a
@@ -149,6 +151,7 @@ function readExpectations() {
   const merge = (rule, then) => {
     rule.required.push(...(then.required ?? []));
     rule.forbidden.push(...forbiddenNames(then.not));
+    for (const [name, value] of Object.entries(then.properties ?? {})) rule.pinned[name] = value.const;
   };
   for (const branch of core.allOf ?? []) {
     const ifProperties = branch.if?.properties ?? {};
@@ -159,23 +162,23 @@ function readExpectations() {
       const branchModes = ifProperties.collection_mode.const ? [ifProperties.collection_mode.const] : [...ifProperties.collection_mode.enum];
       if (!modeRules.has(kind)) modeRules.set(kind, new Map());
       for (const mode of branchModes) {
-        const rule = modeRules.get(kind).get(mode) ?? { required: [], forbidden: [] };
+        const rule = modeRules.get(kind).get(mode) ?? { required: [], forbidden: [], pinned: {} };
         merge(rule, then);
         modeRules.get(kind).set(mode, rule);
       }
       continue;
     }
-    const rule = kindRules.get(kind) ?? { required: [], forbidden: [] };
+    const rule = kindRules.get(kind) ?? { required: [], forbidden: [], pinned: {} };
     merge(rule, then);
     kindRules.set(kind, rule);
   }
 
   const variants = [];
   for (const kind of kinds) {
-    const kindRule = kindRules.get(kind) ?? { required: [], forbidden: [] };
+    const kindRule = kindRules.get(kind) ?? { required: [], forbidden: [], pinned: {} };
     const perKindModes = modeRules.get(kind);
     for (const mode of perKindModes ? modes : [null]) {
-      const modeRule = (mode && perKindModes?.get(mode)) || { required: [], forbidden: [] };
+      const modeRule = (mode && perKindModes?.get(mode)) || { required: [], forbidden: [], pinned: {} };
       const required = new Set([...coreRequired, ...kindRule.required, ...modeRule.required]);
       const forbidden = new Set([...kindRule.forbidden, ...modeRule.forbidden, "received_at"]);
       const optional = new Set(properties.filter((name) => !required.has(name) && !forbidden.has(name)));
@@ -186,6 +189,7 @@ function readExpectations() {
         required: [...required],
         optional: [...optional],
         forbidden: [...forbidden],
+        pinned: { ...kindRule.pinned, ...modeRule.pinned, kind, ...(mode ? { collection_mode: mode } : {}) },
       });
     }
   }
@@ -202,6 +206,7 @@ function readExpectations() {
   }));
 
   return {
+    schema,
     kinds,
     // The core type carries exactly the universally required fields: everything else belongs to
     // a variant, so a non-core property in the core would give a kind a field it must not carry.
@@ -222,6 +227,9 @@ function readExpectations() {
       { goType: "ExcerptKind", goAll: "AllExcerptKinds", values: [...defs.excerpt.properties.kind.enum] },
       { goType: "DetectionBasis", goAll: "AllDetectionBases", values: [...core.properties.detection_basis.enum] },
       { goType: "PromptKind", goAll: "AllPromptKinds", values: [...core.properties.prompt_kind.enum] },
+      { goType: "DiscoveryType", goAll: "AllDiscoveryTypes", values: [...core.properties.discovery_type.enum] },
+      { goType: "ActivityType", goAll: "AllActivityTypes", values: [...core.properties.activity_type.enum] },
+      { goType: "Outcome", goAll: "AllOutcomes", values: [...core.properties.outcome.enum] },
     ],
   };
 }
@@ -421,6 +429,278 @@ test("(d) the output uses no any / interface{} escape hatch", () => {
   const code = stripComments(goText);
   assert.doesNotMatch(code, /\bany\b/, "the generated Go uses `any` in a type position");
   assert.doesNotMatch(code, /interface\s*\{\s*\}/, "the generated Go uses the empty interface in a type position");
+});
+
+// ---------------------------------------------------------------------------------------
+// (e) the endpoint kinds, and records of every kind
+// ---------------------------------------------------------------------------------------
+
+const CONTENT_FIELDS = ["content_digest", "labels", "classifier_version", "content_excerpt", "confidence", "attachments", "prompt_kind"];
+const WINDOW_FIELDS = ["window_start", "window_end", "submission_count", "bytes_total"];
+const DISCOVERY_FIELDS = ["discovery_type", "app_version", "publisher", "host_app", "destination_host", "model_names"];
+const ACTIVITY_FIELDS = ["activity_type", "model", "input_tokens", "output_tokens", "duration_ms", "tool_name", "outcome"];
+
+// The endpoint part of the contract, written out so a schema edit that loosens it fails here.
+const ENDPOINT_CONTRACT = {
+  routes: ["tool.hook", "tool.otel", "inv.scan", "net.flow"],
+  kinds: ["prompt", "usage_rollup", "discovery", "agent_activity"],
+  detectionBases: ["installed_scan", "package_scan", "extension_scan", "process_event", "model_store", "port_listen", "flow_metadata"],
+  fields: {
+    discovery_type: { enum: ["app_installed", "app_running", "cli_installed", "ide_extension", "local_model", "inference_connection"] },
+    app_version: { type: "string", minLength: 1, maxLength: 64 },
+    publisher: { type: "string", minLength: 1, maxLength: 200 },
+    host_app: { type: "string", minLength: 1, maxLength: 128 },
+    destination_host: { type: "string", minLength: 1, maxLength: 253 },
+    model_names: { type: "array", maxItems: 64, items: { type: "string", minLength: 1, maxLength: 200 } },
+    activity_type: { enum: ["model_request", "tool_call"] },
+    model: { type: "string", minLength: 1, maxLength: 128 },
+    input_tokens: { type: "integer", minimum: 0 },
+    output_tokens: { type: "integer", minimum: 0 },
+    duration_ms: { type: "integer", minimum: 0 },
+    tool_name: { type: "string", minLength: 1, maxLength: 128 },
+    outcome: { enum: ["success", "error", "denied"] },
+  },
+  variants: {
+    DeviceDiscovery: {
+      required: ["discovery_type", "detection_basis"],
+      direction: "none",
+      forbidden: [...CONTENT_FIELDS, "policy_decision", "size_bytes", ...WINDOW_FIELDS, ...ACTIVITY_FIELDS],
+    },
+    DeviceAgentActivity: {
+      required: ["activity_type"],
+      direction: "none",
+      forbidden: [...CONTENT_FIELDS, "policy_decision", ...WINDOW_FIELDS, "detection_basis", ...DISCOVERY_FIELDS],
+    },
+  },
+  // The kinds that existed before keep their rules and also forbid every new field.
+  alsoForbidNewFields: ["DevicePromptM0", "DevicePromptM1", "DevicePromptM2", "DevicePromptM3", "DeviceUsageRollup"],
+};
+
+test("(e) the routes, kinds, detection bases, endpoint fields and endpoint kind rules are the contract's", () => {
+  const { schema } = expectations;
+  const core = schema.$defs.envelopeCore;
+  const problems = [];
+  for (const route of ENDPOINT_CONTRACT.routes) {
+    if (!schema.$defs.route.enum.includes(route)) problems.push(`route ${route} is missing`);
+  }
+  if (JSON.stringify(core.properties.kind.enum) !== JSON.stringify(ENDPOINT_CONTRACT.kinds)) {
+    problems.push(`kind is ${JSON.stringify(core.properties.kind.enum)}, expected ${JSON.stringify(ENDPOINT_CONTRACT.kinds)}`);
+  }
+  if (JSON.stringify(core.properties.detection_basis.enum) !== JSON.stringify(ENDPOINT_CONTRACT.detectionBases)) {
+    problems.push(`detection_basis is ${JSON.stringify(core.properties.detection_basis.enum)}`);
+  }
+  for (const [name, want] of Object.entries(ENDPOINT_CONTRACT.fields)) {
+    const prop = core.properties[name];
+    if (!prop) {
+      problems.push(`${name} is not declared in envelopeCore`);
+      continue;
+    }
+    for (const [key, value] of Object.entries(want)) {
+      if (JSON.stringify(key === "items" ? { type: prop.items?.type, minLength: prop.items?.minLength, maxLength: prop.items?.maxLength } : prop[key]) !== JSON.stringify(value)) {
+        problems.push(`${name}.${key} is ${JSON.stringify(prop[key])}, expected ${JSON.stringify(value)}`);
+      }
+    }
+    if (core.required.includes(name)) problems.push(`${name} must not be required on every kind`);
+  }
+  if (!new RegExp(core.properties.destination_host.pattern, "u").test("api.openai.com") || new RegExp(core.properties.destination_host.pattern, "u").test("API.OpenAI.com")) {
+    problems.push("destination_host must accept a lower-case host name and refuse an upper-case one");
+  }
+  for (const [name, want] of Object.entries(ENDPOINT_CONTRACT.variants)) {
+    const variant = expectations.variants.find((v) => v.name === name);
+    if (!variant) {
+      problems.push(`no variant ${name}`);
+      continue;
+    }
+    for (const field of want.required) if (!variant.required.includes(field)) problems.push(`${name} must require ${field}`);
+    if (variant.pinned.direction !== want.direction) problems.push(`${name} must pin direction ${want.direction}, pins ${variant.pinned.direction}`);
+    const forbidden = variant.forbidden.filter((field) => field !== "received_at").sort();
+    if (JSON.stringify(forbidden) !== JSON.stringify([...want.forbidden].sort())) {
+      problems.push(`${name} forbids ${JSON.stringify(forbidden)}, expected ${JSON.stringify([...want.forbidden].sort())}`);
+    }
+  }
+  for (const name of ENDPOINT_CONTRACT.alsoForbidNewFields) {
+    const variant = expectations.variants.find((v) => v.name === name);
+    for (const field of [...DISCOVERY_FIELDS, ...ACTIVITY_FIELDS, "detection_basis"]) {
+      if (!variant?.forbidden.includes(field)) problems.push(`${name} must forbid ${field}`);
+    }
+  }
+  assert.deepEqual(problems, [], `the endpoint contract drifted:\n${problems.join("\n")}`);
+});
+
+/**
+ * Checks a record against one variant: the field sets and pins re-derived above, and each field's
+ * declaration in envelopeCore (type, enum, const, length, pattern, minimum, array bounds). Nested
+ * objects are checked for type only. Returns the problems, each naming its field.
+ */
+function check(record, variant) {
+  const { schema } = expectations;
+  const core = schema.$defs.envelopeCore;
+  const problems = [];
+  const permitted = new Set([...variant.required, ...variant.optional]);
+  for (const name of variant.required) if (!(name in record)) problems.push(`${name}: required`);
+  for (const name of Object.keys(record)) {
+    if (variant.forbidden.includes(name)) problems.push(`${name}: forbidden for ${variant.name}`);
+    else if (!permitted.has(name)) problems.push(`${name}: not a property`);
+  }
+  for (const [name, value] of Object.entries(variant.pinned)) {
+    if (name in record && record[name] !== value) problems.push(`${name}: must be ${JSON.stringify(value)}`);
+  }
+  const resolve = (prop) => (prop.$ref ? { ...schema.$defs[prop.$ref.slice("#/$defs/".length)], ...prop, $ref: undefined } : prop);
+  const checkValue = (name, prop, value) => {
+    if (prop.const !== undefined && value !== prop.const) problems.push(`${name}: const ${JSON.stringify(prop.const)}`);
+    if (prop.enum && !prop.enum.includes(value)) problems.push(`${name}: not one of ${JSON.stringify(prop.enum)}`);
+    const type = prop.type ?? (prop.enum || prop.pattern ? "string" : undefined);
+    if (type === "string") {
+      if (typeof value !== "string") return problems.push(`${name}: not a string`);
+      if (prop.minLength !== undefined && value.length < prop.minLength) problems.push(`${name}: shorter than ${prop.minLength}`);
+      if (prop.maxLength !== undefined && value.length > prop.maxLength) problems.push(`${name}: longer than ${prop.maxLength}`);
+      if (prop.pattern !== undefined && !new RegExp(prop.pattern, "u").test(value)) problems.push(`${name}: does not match ${prop.pattern}`);
+    } else if (type === "integer") {
+      if (!Number.isInteger(value)) return problems.push(`${name}: not an integer`);
+      if (prop.minimum !== undefined && value < prop.minimum) problems.push(`${name}: below ${prop.minimum}`);
+    } else if (type === "array") {
+      if (!Array.isArray(value)) return problems.push(`${name}: not an array`);
+      if (prop.maxItems !== undefined && value.length > prop.maxItems) problems.push(`${name}: more than ${prop.maxItems} items`);
+      if (prop.items && !prop.items.$ref) value.forEach((item, i) => checkValue(`${name}[${i}]`, prop.items, item));
+    } else if (type === "object" && (typeof value !== "object" || value === null || Array.isArray(value))) {
+      problems.push(`${name}: not an object`);
+    }
+  };
+  for (const [name, value] of Object.entries(record)) {
+    if (core.properties[name]) checkValue(name, resolve(core.properties[name]), value);
+  }
+  return problems;
+}
+
+const sha = (c) => `sha256:${c.repeat(64)}`;
+
+// A value for every declared property, valid against its declaration.
+const SAMPLE = {
+  received_at: "2026-10-02T13:00:01Z",
+  subject_name: "Ada",
+  prompt_kind: "user",
+  confidence: "high",
+  size_bytes: 42,
+  content_digest: sha("a"),
+  labels: [{ class: "credential", score: 0.9 }],
+  classifier_version: "classifier-1",
+  content_excerpt: { kind: "match_span", text: "abc" },
+  attachments: [],
+  policy_decision: { rule_id: "R-1", action: "logged", decided_locally: true },
+  window_start: "2026-10-02T12:55:00Z",
+  window_end: "2026-10-02T13:00:00Z",
+  submission_count: 3,
+  bytes_total: 4096,
+  detection_basis: "installed_scan",
+  discovery_type: "app_installed",
+  app_version: "1.2.3",
+  publisher: "Vendor, Inc.",
+  host_app: "app:vscode",
+  destination_host: "api.openai.com",
+  model_names: ["llama3.2:3b"],
+  activity_type: "tool_call",
+  model: "claude-sonnet-4",
+  input_tokens: 1200,
+  output_tokens: 300,
+  duration_ms: 2100,
+  tool_name: "Bash",
+  outcome: "success",
+};
+
+function baseRecord(fields) {
+  return {
+    schema_version: "1.0",
+    event_id: "11111111-1111-4111-8111-111111111111",
+    tenant_id: "22222222-2222-4222-8222-222222222222",
+    device_id: "33333333-3333-4333-8333-333333333333",
+    user_ref: "user-1",
+    tool_fingerprint: "app:claude_code",
+    occurred_at: "2026-10-02T13:00:00Z",
+    monotonic_offset_ms: 12,
+    dedup_key: sha("b"),
+    ...fields,
+  };
+}
+
+const classified = { confidence: "high", content_digest: sha("a"), labels: SAMPLE.labels, classifier_version: "classifier-1" };
+const promptRecord = (mode, extra = {}) =>
+  baseRecord({ kind: "prompt", direction: "egress", source: "tool.hook", collection_mode: mode, size_bytes: 42, policy_decision: SAMPLE.policy_decision, ...extra });
+
+// One valid record per variant, and one per discovery type and activity type.
+const VALID = [
+  ["DevicePromptM0", promptRecord("m0")],
+  ["DevicePromptM1", promptRecord("m1", classified)],
+  ["DevicePromptM2", promptRecord("m2", { ...classified, content_excerpt: SAMPLE.content_excerpt })],
+  ["DevicePromptM3", promptRecord("m3", { ...classified, source: "tool.otel" })],
+  ["DeviceUsageRollup", baseRecord({ kind: "usage_rollup", direction: "none", source: "proc.detect", collection_mode: "m1", window_start: SAMPLE.window_start, window_end: SAMPLE.window_end, submission_count: 3, bytes_total: 4096 })],
+  ...[
+    { discovery_type: "app_installed", source: "inv.scan", detection_basis: "installed_scan", tool_fingerprint: "app:cursor", user_ref: "unattributed", app_version: "0.48.1", publisher: "Anysphere, Inc." },
+    { discovery_type: "app_running", source: "proc.detect", detection_basis: "process_event", tool_fingerprint: "app:chatgpt_desktop" },
+    { discovery_type: "cli_installed", source: "inv.scan", detection_basis: "package_scan", tool_fingerprint: "app:codex", app_version: "0.40.0" },
+    { discovery_type: "ide_extension", source: "inv.scan", detection_basis: "extension_scan", tool_fingerprint: "app:github_copilot", host_app: "app:vscode" },
+    { discovery_type: "local_model", source: "inv.scan", detection_basis: "model_store", tool_fingerprint: "app:ollama", model_names: ["llama3.2:3b", "qwen2.5-coder:7b"] },
+    { discovery_type: "inference_connection", source: "net.flow", detection_basis: "flow_metadata", tool_fingerprint: "exe:0123456789abcdef", destination_host: "api.anthropic.com" },
+  ].map((fields) => ["DeviceDiscovery", baseRecord({ kind: "discovery", direction: "none", collection_mode: "m0", ...fields })]),
+  ...[
+    { activity_type: "model_request", source: "tool.otel", model: "claude-sonnet-4", input_tokens: 1200, output_tokens: 300, duration_ms: 2100, outcome: "success" },
+    { activity_type: "tool_call", source: "tool.hook", tool_name: "Bash", duration_ms: 15, outcome: "denied" },
+  ].map((fields) => ["DeviceAgentActivity", baseRecord({ kind: "agent_activity", direction: "none", collection_mode: "m1", ...fields })]),
+];
+
+const variantNamed = (name) => expectations.variants.find((variant) => variant.name === name);
+
+test("(e) one valid record per kind, mode, discovery type and activity type is accepted", () => {
+  const problems = [];
+  for (const [name, record] of VALID) {
+    const found = check(record, variantNamed(name));
+    if (found.length > 0) problems.push(`${name} ${record.discovery_type ?? record.activity_type ?? record.collection_mode}: ${found.join("; ")}`);
+  }
+  const core = expectations.schema.$defs.envelopeCore;
+  const covered = (field) => new Set(VALID.map(([, record]) => record[field]).filter(Boolean));
+  for (const value of core.properties.discovery_type.enum) if (!covered("discovery_type").has(value)) problems.push(`no valid record for discovery_type ${value}`);
+  for (const value of core.properties.activity_type.enum) if (!covered("activity_type").has(value)) problems.push(`no valid record for activity_type ${value}`);
+  for (const variant of expectations.variants) if (!VALID.some(([name]) => name === variant.name)) problems.push(`no valid record for ${variant.name}`);
+  assert.deepEqual(problems, [], problems.join("\n"));
+});
+
+test("(e) one invalid record per forbidden field per kind is refused, naming the field", () => {
+  const problems = [];
+  for (const variant of expectations.variants) {
+    const [, valid] = VALID.find(([name]) => name === variant.name);
+    for (const field of variant.forbidden) {
+      assert.ok(field in SAMPLE, `no sample value for ${field}`);
+      const found = check({ ...valid, [field]: SAMPLE[field] }, variant);
+      if (!found.some((problem) => problem.startsWith(`${field}: forbidden`))) problems.push(`${variant.name} accepted ${field}`);
+    }
+  }
+  assert.deepEqual(problems, [], problems.join("\n"));
+});
+
+test("(e) the endpoint kinds pin direction none and refuse out-of-contract values", () => {
+  const discovery = VALID.find(([name]) => name === "DeviceDiscovery")[1];
+  const activity = VALID.find(([name]) => name === "DeviceAgentActivity")[1];
+  const cases = [
+    ["DeviceDiscovery", { ...discovery, direction: "egress" }, "direction"],
+    ["DeviceDiscovery", { ...discovery, discovery_type: "browser_tab" }, "discovery_type"],
+    ["DeviceDiscovery", { ...discovery, detection_basis: "process_scan" }, "detection_basis"],
+    ["DeviceDiscovery", { ...discovery, destination_host: "API.openai.com" }, "destination_host"],
+    ["DeviceDiscovery", { ...discovery, destination_host: "api.openai.com/v1/chat" }, "destination_host"],
+    ["DeviceDiscovery", { ...discovery, app_version: "x".repeat(65) }, "app_version"],
+    ["DeviceDiscovery", { ...discovery, model_names: Array.from({ length: 65 }, (_, i) => `m${i}`) }, "model_names"],
+    ["DeviceDiscovery", { ...discovery, model_names: [""] }, "model_names[0]"],
+    ["DeviceDiscovery", (({ discovery_type, ...rest }) => rest)(discovery), "discovery_type"],
+    ["DeviceAgentActivity", { ...activity, direction: "egress" }, "direction"],
+    ["DeviceAgentActivity", { ...activity, outcome: "blocked" }, "outcome"],
+    ["DeviceAgentActivity", { ...activity, input_tokens: -1 }, "input_tokens"],
+    ["DeviceAgentActivity", { ...activity, model: "" }, "model"],
+    ["DeviceAgentActivity", (({ activity_type, ...rest }) => rest)(activity), "activity_type"],
+  ];
+  const problems = [];
+  for (const [name, record, field] of cases) {
+    const found = check(record, variantNamed(name));
+    if (!found.some((problem) => problem.startsWith(`${field}:`))) problems.push(`${name}: a bad ${field} was accepted (${found.join("; ") || "no problems"})`);
+  }
+  assert.deepEqual(problems, [], problems.join("\n"));
 });
 
 // ---------------------------------------------------------------------------------------
