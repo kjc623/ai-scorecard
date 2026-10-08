@@ -24,6 +24,13 @@ type Scanner interface {
 	Scan(ctx context.Context, b *policy.Bundle) ([]discovery.Record, []error)
 }
 
+// CountedScanner is a Scanner that also counts each file it checks as observed; the provider scans
+// it through ScanCounted with its own counters.
+type CountedScanner interface {
+	Scanner
+	ScanCounted(ctx context.Context, b *policy.Bundle, counters *core.CounterSet) ([]discovery.Record, []error)
+}
+
 // Emitter is the part of the discovery emitter the provider uses.
 type Emitter interface {
 	Emit(ctx context.Context, collector *core.CounterSet, r discovery.Record) error
@@ -168,7 +175,13 @@ func (p *Provider) scan(ctx context.Context) {
 	now := p.cfg.Clock()
 	failed := 0
 	for _, s := range p.cfg.Scanners {
-		recs, errs := s.Scan(ctx, b)
+		var recs []discovery.Record
+		var errs []error
+		if c, ok := s.(CountedScanner); ok {
+			recs, errs = c.ScanCounted(ctx, b, p.counters)
+		} else {
+			recs, errs = s.Scan(ctx, b)
+		}
 		for _, err := range errs {
 			p.counters.Add(protocol.CounterErrors)
 			p.cfg.Log.Printf("inventory: %v", err)

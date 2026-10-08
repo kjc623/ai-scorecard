@@ -62,23 +62,27 @@ type ClaudeCode struct {
 }
 
 // NewClaudeCodeWriter returns the writer for the managed settings file at path, or at the platform's
-// managed location when path is empty. Its backup is kept in dir.
-func NewClaudeCodeWriter(dir state.Dir, path string) *ClaudeCode {
+// managed location when path is empty. Its backup is kept in dir. installed reports whether Claude
+// Code is installed on the device; nil reports that it is not.
+func NewClaudeCodeWriter(dir state.Dir, path string, installed func() bool) *ClaudeCode {
 	if path == "" {
 		path = claudeCodeManagedPath()
+	}
+	if installed == nil {
+		installed = func() bool { return false }
 	}
 	return &ClaudeCode{
 		path:      path,
 		backup:    backupFor(dir, ClaudeCodeTool),
 		files:     systemFiles{},
-		installed: claudeCodeInstalled,
+		installed: installed,
 	}
 }
 
 // Path implements Writer.
 func (c *ClaudeCode) Path() string { return c.path }
 
-// Installed implements Writer: Claude Code is found at one of its documented install locations.
+// Installed implements Writer, through the installed seam.
 func (c *ClaudeCode) Installed() bool { return c.installed() }
 
 // settings is a parsed managed settings file.

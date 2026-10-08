@@ -462,8 +462,10 @@ func (s *service) buildProviders() error {
 	}
 
 	// Claude Code's managed settings point its telemetry at the receiver while the bundle switches
-	// its OTel export on.
-	claude := toolconfig.NewClaudeCode(toolconfig.NewClaudeCodeWriter(s.dir, platform.claudeCodeSettings), toolconfig.Config{
+	// its OTel export on. Claude Code is installed when the inventory's CLI scan finds it in a user
+	// profile.
+	claudeInstalled := func() bool { return inventory.CLIInstalled(s.currentBundle(), "claude_code") }
+	claude := toolconfig.NewClaudeCode(toolconfig.NewClaudeCodeWriter(s.dir, platform.claudeCodeSettings, claudeInstalled), toolconfig.Config{
 		Token: otel.Token,
 		Scope: s.toolScope,
 		Log:   s.logf,
