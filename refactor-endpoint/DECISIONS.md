@@ -116,3 +116,20 @@ decided and why, and for a vendor fact the product version checked.
 ## 2026-10-08, task 01, bundle drift test
 
 - **The drift test fails, not skips, when `device/` is missing.** `TestServedBundleVerifiesWithTheDevicesVerifier` resolves `<repo>/device`; the directory is part of this repository. The `-short` and no-Go-toolchain skips stay. The throwaway module needs no `replace` for `contracts/generated/go`: the build passes without it.
+## 2026-10-08, task 02
+
+- **A call that gives up while waiting for the classifier connection does not mark the link
+  degraded.** It sent nothing and the host is not at fault; it returns the existing rules-only
+  fallback, whose failed stage then names `host_unreachable`. Only a call that gave up after
+  sending (budget, context or a read error) marks the link degraded and drops the connection.
+- **The tests' fake host reads requests as they arrive**, as the OS pipe to a real child buffers
+  them. A bare `net.Pipe` blocks each writer until the host is free, which serialises callers on
+  its own and hides the defect.
+- **Before the fix a timed-out call already closed the connection.** The late answer reached
+  another call through the request goroutine re-reading the shared connection after a reconnect,
+  and a call that timed out also broke the requests of every concurrent caller on that connection.
+  Both are gone: a call uses only the connection it holds the request lock for.
+- **Not changed:** the public `Connect` is not serialised with `Classify`. capture-core's service
+  hands the client to the pipeline before its first `Connect`, so a `Classify` arriving then can
+  dial a second child and one of the two connections is replaced without being closed. No answer
+  goes to the wrong caller; the brief keeps the API and scope narrow, so it is left for the owner.

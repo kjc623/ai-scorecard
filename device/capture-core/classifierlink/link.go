@@ -10,7 +10,6 @@ package classifierlink
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -36,6 +35,11 @@ type Client struct {
 	budget      time.Duration
 	now         func() time.Time
 
+	// request is held by one Classify call from writing its frame until its answer is read or the
+	// call gives up: the host answers one request at a time, in order, on one pipe. It is a
+	// channel so a waiting caller can give up when its budget or context ends.
+	request chan struct{}
+
 	mu        sync.Mutex
 	conn      net.Conn
 	version   string
@@ -57,7 +61,7 @@ func NewWithDialer(dial Dialer, coreVersion string, budget time.Duration) *Clien
 	if budget <= 0 {
 		budget = 2 * time.Second
 	}
-	return &Client{dial: dial, coreVersion: coreVersion, budget: budget, now: time.Now}
+	return &Client{dial: dial, coreVersion: coreVersion, budget: budget, now: time.Now, request: make(chan struct{}, 1)}
 }
 
 // Connect dials and performs the version handshake. A handshake the host refuses, or a framing
@@ -131,6 +135,28 @@ func (c *Client) Classify(ctx context.Context, req protocol.ClassifyRequest) (pr
 		budget = c.budget
 	}
 
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return protocol.ClassifyResponse{}, err
+	}
+
+	// The budget covers the wait for the connection as well as the request itself. A call that
+	// gives up while waiting has sent nothing, so the link is not degraded by it.
+	deadline := c.now().Add(budget)
+	timer := time.NewTimer(budget)
+	defer timer.Stop()
+	select {
+	case c.request <- struct{}{}:
+	case <-ctx.Done():
+		return c.rulesOnlyFallback(), nil
+	case <-timer.C:
+		return c.rulesOnlyFallback(), nil
+	}
+	defer func() { <-c.request }()
+	if ctx.Err() != nil {
+		return c.rulesOnlyFallback(), nil
+	}
+
 	c.mu.Lock()
 	conn := c.conn
 	c.mu.Unlock()
@@ -141,12 +167,12 @@ func (c *Client) Classify(ctx context.Context, req protocol.ClassifyRequest) (pr
 		c.mu.Lock()
 		conn = c.conn
 		c.mu.Unlock()
+		if conn == nil {
+			// Closed while connecting.
+			return c.rulesOnlyFallback(), nil
+		}
 	}
 
-	payload, err := json.Marshal(req)
-	if err != nil {
-		return protocol.ClassifyResponse{}, err
-	}
 	done := make(chan struct{})
 	var (
 		resp    protocol.ClassifyResponse
@@ -154,43 +180,38 @@ func (c *Client) Classify(ctx context.Context, req protocol.ClassifyRequest) (pr
 	)
 	go func() {
 		defer close(done)
-		c.mu.Lock()
-		cn := c.conn
-		c.mu.Unlock()
-		if cn == nil {
-			readErr = errors.New("classifierlink: not connected")
-			return
-		}
-		_ = cn.SetDeadline(c.now().Add(budget))
-		if err := protocol.WriteFrame(cn, payload); err != nil {
+		_ = conn.SetDeadline(deadline)
+		if err := protocol.WriteFrame(conn, payload); err != nil {
 			readErr = err
 			return
 		}
-		raw, err := protocol.ReadFrameChecked(cn)
+		raw, err := protocol.ReadFrameChecked(conn)
 		if err != nil {
 			readErr = err
 			return
 		}
-		_ = cn.SetDeadline(time.Time{})
+		_ = conn.SetDeadline(time.Time{})
 		readErr = json.Unmarshal(raw, &resp)
 	}()
 
+	// A call that gives up drops the connection before it lets the next call in, so the host's late
+	// answer to it can never be read as the answer to another request.
 	select {
 	case <-done:
 	case <-ctx.Done():
 		c.markDegraded(protocol.DetailHostUnreachable)
-		c.reset()
+		c.drop(conn)
 		return c.rulesOnlyFallback(), nil
-	case <-time.After(budget):
+	case <-timer.C:
 		// A hung host is detected by the request timeout: the child's pipes have no deadlines.
 		c.markDegraded(protocol.DetailHostUnreachable)
-		c.reset()
+		c.drop(conn)
 		return c.rulesOnlyFallback(), nil
 	}
 
 	if readErr != nil {
 		c.markDegraded(protocol.DetailHostUnreachable)
-		c.reset()
+		c.drop(conn)
 		return c.rulesOnlyFallback(), nil
 	}
 	if err := resp.Validate(); err != nil {
@@ -201,12 +222,13 @@ func (c *Client) Classify(ctx context.Context, req protocol.ClassifyRequest) (pr
 	return resp, nil
 }
 
-// reset drops the resident connection, which ends the child; the next call starts a new one.
-func (c *Client) reset() {
+// drop closes conn, which ends the child, and forgets it if it is still the resident connection;
+// the next call starts a new one through Connect.
+func (c *Client) drop(conn net.Conn) {
+	_ = conn.Close()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.conn != nil {
-		_ = c.conn.Close()
+	if c.conn == conn {
 		c.conn = nil
 	}
 }
