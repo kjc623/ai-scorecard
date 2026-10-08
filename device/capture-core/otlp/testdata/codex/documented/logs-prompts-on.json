@@ -1,0 +1,3660 @@
+{
+  "resourceLogs": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "codex_exec"
+            }
+          },
+          {
+            "key": "telemetry.sdk.language",
+            "value": {
+              "stringValue": "rust"
+            }
+          },
+          {
+            "key": "telemetry.sdk.name",
+            "value": {
+              "stringValue": "opentelemetry"
+            }
+          },
+          {
+            "key": "telemetry.sdk.version",
+            "value": {
+              "stringValue": "0.31.0"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "0.162.0"
+            }
+          },
+          {
+            "key": "env",
+            "value": {
+              "stringValue": "dev"
+            }
+          },
+          {
+            "key": "host.name",
+            "value": {
+              "stringValue": "SAC-PLACEHOLDER-4"
+            }
+          }
+        ]
+      },
+      "scopeLogs": [
+        {
+          "scope": {
+            "name": "codex_otel.log_only"
+          },
+          "logRecords": [
+            {
+              "observedTimeUnixNano": "1791460800000000000",
+              "severityNumber": "SEVERITY_NUMBER_INFO",
+              "severityText": "INFO",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "codex.startup_phase"
+                  }
+                },
+                {
+                  "key": "startup.phase",
+                  "value": {
+                    "stringValue": "startup_prewarm_resolve"
+                  }
+                },
+                {
+                  "key": "startup.status",
+                  "value": {
+                    "stringValue": "ready"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "stringValue": "184"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-08T12:00:00.000Z"
+                  }
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {
+                    "stringValue": "019a6f2e-4b1c-7d3a-9e58-2c7f1a0b6d41"
+                  }
+                },
+                {
+                  "key": "app.version",
+                  "value": {
+                    "stringValue": "0.162.0"
+                  }
+                },
+                {
+                  "key": "auth_mode",
+                  "value": {
+                    "stringValue": "Chatgpt"
+                  }
+                },
+                {
+                  "key": "originator",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "user.account_id",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-2"
+                  }
+                },
+                {
+                  "key": "user.email",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-1"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "WindowsTerminal"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                },
+                {
+                  "key": "slug",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                }
+              ]
+            },
+            {
+              "observedTimeUnixNano": "1791460800020000000",
+              "severityNumber": "SEVERITY_NUMBER_INFO",
+              "severityText": "INFO",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "codex.conversation_starts"
+                  }
+                },
+                {
+                  "key": "provider_name",
+                  "value": {
+                    "stringValue": "OpenAI"
+                  }
+                },
+                {
+                  "key": "auth.env_openai_api_key_present",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "auth.env_codex_api_key_present",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "auth.env_codex_api_key_enabled",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "auth.env_provider_key_name",
+                  "value": {
+                    "stringValue": "OPENAI_API_KEY"
+                  }
+                },
+                {
+                  "key": "auth.env_provider_key_present",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "auth.env_refresh_token_url_override_present",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "reasoning_effort",
+                  "value": {
+                    "stringValue": "medium"
+                  }
+                },
+                {
+                  "key": "reasoning_summary",
+                  "value": {
+                    "stringValue": "auto"
+                  }
+                },
+                {
+                  "key": "context_window",
+                  "value": {
+                    "intValue": "272000"
+                  }
+                },
+                {
+                  "key": "auto_compact_token_limit",
+                  "value": {
+                    "intValue": "244800"
+                  }
+                },
+                {
+                  "key": "approval_policy",
+                  "value": {
+                    "stringValue": "on-request"
+                  }
+                },
+                {
+                  "key": "sandbox_policy",
+                  "value": {
+                    "stringValue": "workspace-write"
+                  }
+                },
+                {
+                  "key": "mcp_servers",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-10"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-08T12:00:00.020Z"
+                  }
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {
+                    "stringValue": "019a6f2e-4b1c-7d3a-9e58-2c7f1a0b6d41"
+                  }
+                },
+                {
+                  "key": "app.version",
+                  "value": {
+                    "stringValue": "0.162.0"
+                  }
+                },
+                {
+                  "key": "auth_mode",
+                  "value": {
+                    "stringValue": "Chatgpt"
+                  }
+                },
+                {
+                  "key": "originator",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "user.account_id",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-2"
+                  }
+                },
+                {
+                  "key": "user.email",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-1"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "WindowsTerminal"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                },
+                {
+                  "key": "slug",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                }
+              ]
+            },
+            {
+              "observedTimeUnixNano": "1791460801000000000",
+              "severityNumber": "SEVERITY_NUMBER_INFO",
+              "severityText": "INFO",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "codex.user_prompt"
+                  }
+                },
+                {
+                  "key": "prompt_length",
+                  "value": {
+                    "stringValue": "27"
+                  }
+                },
+                {
+                  "key": "prompt",
+                  "value": {
+                    "stringValue": "SAC-CANARY-7f3a prompt text"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-08T12:00:01.000Z"
+                  }
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {
+                    "stringValue": "019a6f2e-4b1c-7d3a-9e58-2c7f1a0b6d41"
+                  }
+                },
+                {
+                  "key": "app.version",
+                  "value": {
+                    "stringValue": "0.162.0"
+                  }
+                },
+                {
+                  "key": "auth_mode",
+                  "value": {
+                    "stringValue": "Chatgpt"
+                  }
+                },
+                {
+                  "key": "originator",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "user.account_id",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-2"
+                  }
+                },
+                {
+                  "key": "user.email",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-1"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "WindowsTerminal"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                },
+                {
+                  "key": "slug",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                }
+              ]
+            },
+            {
+              "observedTimeUnixNano": "1791460801050000000",
+              "severityNumber": "SEVERITY_NUMBER_INFO",
+              "severityText": "INFO",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "codex.websocket_connect"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "stringValue": "96"
+                  }
+                },
+                {
+                  "key": "http.response.status_code",
+                  "value": {
+                    "intValue": "101"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "stringValue": "true"
+                  }
+                },
+                {
+                  "key": "error.message",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-15"
+                  }
+                },
+                {
+                  "key": "auth.header_attached",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "auth.header_name",
+                  "value": {
+                    "stringValue": "authorization"
+                  }
+                },
+                {
+                  "key": "auth.retry_after_unauthorized",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "auth.recovery_mode",
+                  "value": {
+                    "stringValue": "managed"
+                  }
+                },
+                {
+                  "key": "auth.recovery_phase",
+                  "value": {
+                    "stringValue": "refresh_token"
+                  }
+                },
+                {
+                  "key": "endpoint",
+                  "value": {
+                    "stringValue": "/responses"
+                  }
+                },
+                {
+                  "key": "auth.env_openai_api_key_present",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "auth.env_codex_api_key_present",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "auth.env_codex_api_key_enabled",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "auth.env_provider_key_name",
+                  "value": {
+                    "stringValue": "OPENAI_API_KEY"
+                  }
+                },
+                {
+                  "key": "auth.env_provider_key_present",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "auth.env_refresh_token_url_override_present",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "auth.connection_reused",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "auth.request_id",
+                  "value": {
+                    "stringValue": "req_01SACFIXTURE00000000000001"
+                  }
+                },
+                {
+                  "key": "auth.cf_ray",
+                  "value": {
+                    "stringValue": "8f3e5c2a1b4d6e70-AMS"
+                  }
+                },
+                {
+                  "key": "auth.error",
+                  "value": {
+                    "stringValue": "token_expired"
+                  }
+                },
+                {
+                  "key": "auth.error_code",
+                  "value": {
+                    "stringValue": "token_expired"
+                  }
+                },
+                {
+                  "key": "auth.agent_id",
+                  "value": {
+                    "stringValue": "agent_01SACFIXTURE0000000001"
+                  }
+                },
+                {
+                  "key": "auth.task_id",
+                  "value": {
+                    "stringValue": "task_01SACFIXTURE00000000001"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-08T12:00:01.050Z"
+                  }
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {
+                    "stringValue": "019a6f2e-4b1c-7d3a-9e58-2c7f1a0b6d41"
+                  }
+                },
+                {
+                  "key": "app.version",
+                  "value": {
+                    "stringValue": "0.162.0"
+                  }
+                },
+                {
+                  "key": "auth_mode",
+                  "value": {
+                    "stringValue": "Chatgpt"
+                  }
+                },
+                {
+                  "key": "originator",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "user.account_id",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-2"
+                  }
+                },
+                {
+                  "key": "user.email",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-1"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "WindowsTerminal"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                },
+                {
+                  "key": "slug",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                }
+              ]
+            },
+            {
+              "observedTimeUnixNano": "1791460801100000000",
+              "severityNumber": "SEVERITY_NUMBER_INFO",
+              "severityText": "INFO",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "codex.websocket_request"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "stringValue": "37"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "stringValue": "false"
+                  }
+                },
+                {
+                  "key": "error.message",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-16"
+                  }
+                },
+                {
+                  "key": "auth.env_openai_api_key_present",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "auth.env_codex_api_key_present",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "auth.env_codex_api_key_enabled",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "auth.env_provider_key_name",
+                  "value": {
+                    "stringValue": "OPENAI_API_KEY"
+                  }
+                },
+                {
+                  "key": "auth.env_provider_key_present",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "auth.env_refresh_token_url_override_present",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "auth.connection_reused",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "auth.agent_id",
+                  "value": {
+                    "stringValue": "agent_01SACFIXTURE0000000001"
+                  }
+                },
+                {
+                  "key": "auth.task_id",
+                  "value": {
+                    "stringValue": "task_01SACFIXTURE00000000001"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-08T12:00:01.100Z"
+                  }
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {
+                    "stringValue": "019a6f2e-4b1c-7d3a-9e58-2c7f1a0b6d41"
+                  }
+                },
+                {
+                  "key": "app.version",
+                  "value": {
+                    "stringValue": "0.162.0"
+                  }
+                },
+                {
+                  "key": "auth_mode",
+                  "value": {
+                    "stringValue": "Chatgpt"
+                  }
+                },
+                {
+                  "key": "originator",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "user.account_id",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-2"
+                  }
+                },
+                {
+                  "key": "user.email",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-1"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "WindowsTerminal"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                },
+                {
+                  "key": "slug",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                }
+              ]
+            },
+            {
+              "observedTimeUnixNano": "1791460801150000000",
+              "severityNumber": "SEVERITY_NUMBER_INFO",
+              "severityText": "INFO",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "codex.auth_recovery"
+                  }
+                },
+                {
+                  "key": "auth.mode",
+                  "value": {
+                    "stringValue": "managed"
+                  }
+                },
+                {
+                  "key": "auth.step",
+                  "value": {
+                    "stringValue": "refresh_token"
+                  }
+                },
+                {
+                  "key": "auth.outcome",
+                  "value": {
+                    "stringValue": "recovery_succeeded"
+                  }
+                },
+                {
+                  "key": "auth.request_id",
+                  "value": {
+                    "stringValue": "req_01SACFIXTURE00000000000001"
+                  }
+                },
+                {
+                  "key": "auth.cf_ray",
+                  "value": {
+                    "stringValue": "8f3e5c2a1b4d6e70-AMS"
+                  }
+                },
+                {
+                  "key": "auth.error",
+                  "value": {
+                    "stringValue": "token_expired"
+                  }
+                },
+                {
+                  "key": "auth.error_code",
+                  "value": {
+                    "stringValue": "token_expired"
+                  }
+                },
+                {
+                  "key": "auth.recovery_reason",
+                  "value": {
+                    "stringValue": "unauthorized"
+                  }
+                },
+                {
+                  "key": "auth.state_changed",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-08T12:00:01.150Z"
+                  }
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {
+                    "stringValue": "019a6f2e-4b1c-7d3a-9e58-2c7f1a0b6d41"
+                  }
+                },
+                {
+                  "key": "app.version",
+                  "value": {
+                    "stringValue": "0.162.0"
+                  }
+                },
+                {
+                  "key": "auth_mode",
+                  "value": {
+                    "stringValue": "Chatgpt"
+                  }
+                },
+                {
+                  "key": "originator",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "user.account_id",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-2"
+                  }
+                },
+                {
+                  "key": "user.email",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-1"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "WindowsTerminal"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                },
+                {
+                  "key": "slug",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                }
+              ]
+            },
+            {
+              "observedTimeUnixNano": "1791460801600000000",
+              "severityNumber": "SEVERITY_NUMBER_INFO",
+              "severityText": "INFO",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "codex.api_request"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "stringValue": "412"
+                  }
+                },
+                {
+                  "key": "http.response.status_code",
+                  "value": {
+                    "intValue": "200"
+                  }
+                },
+                {
+                  "key": "attempt",
+                  "value": {
+                    "intValue": "1"
+                  }
+                },
+                {
+                  "key": "auth.header_attached",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "auth.header_name",
+                  "value": {
+                    "stringValue": "authorization"
+                  }
+                },
+                {
+                  "key": "auth.retry_after_unauthorized",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "auth.recovery_mode",
+                  "value": {
+                    "stringValue": "managed"
+                  }
+                },
+                {
+                  "key": "auth.recovery_phase",
+                  "value": {
+                    "stringValue": "refresh_token"
+                  }
+                },
+                {
+                  "key": "endpoint",
+                  "value": {
+                    "stringValue": "/responses"
+                  }
+                },
+                {
+                  "key": "auth.env_openai_api_key_present",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "auth.env_codex_api_key_present",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "auth.env_codex_api_key_enabled",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "auth.env_provider_key_name",
+                  "value": {
+                    "stringValue": "OPENAI_API_KEY"
+                  }
+                },
+                {
+                  "key": "auth.env_provider_key_present",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "auth.env_refresh_token_url_override_present",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "auth.request_id",
+                  "value": {
+                    "stringValue": "req_01SACFIXTURE00000000000001"
+                  }
+                },
+                {
+                  "key": "auth.cf_ray",
+                  "value": {
+                    "stringValue": "8f3e5c2a1b4d6e70-AMS"
+                  }
+                },
+                {
+                  "key": "auth.error",
+                  "value": {
+                    "stringValue": "token_expired"
+                  }
+                },
+                {
+                  "key": "auth.error_code",
+                  "value": {
+                    "stringValue": "token_expired"
+                  }
+                },
+                {
+                  "key": "auth.agent_id",
+                  "value": {
+                    "stringValue": "agent_01SACFIXTURE0000000001"
+                  }
+                },
+                {
+                  "key": "auth.task_id",
+                  "value": {
+                    "stringValue": "task_01SACFIXTURE00000000001"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-08T12:00:01.600Z"
+                  }
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {
+                    "stringValue": "019a6f2e-4b1c-7d3a-9e58-2c7f1a0b6d41"
+                  }
+                },
+                {
+                  "key": "app.version",
+                  "value": {
+                    "stringValue": "0.162.0"
+                  }
+                },
+                {
+                  "key": "auth_mode",
+                  "value": {
+                    "stringValue": "Chatgpt"
+                  }
+                },
+                {
+                  "key": "originator",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "user.account_id",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-2"
+                  }
+                },
+                {
+                  "key": "user.email",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-1"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "WindowsTerminal"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                },
+                {
+                  "key": "slug",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                }
+              ]
+            },
+            {
+              "observedTimeUnixNano": "1791460801700000000",
+              "severityNumber": "SEVERITY_NUMBER_INFO",
+              "severityText": "INFO",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "codex.sse_event"
+                  }
+                },
+                {
+                  "key": "event.kind",
+                  "value": {
+                    "stringValue": "response.created"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "stringValue": "3"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-08T12:00:01.700Z"
+                  }
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {
+                    "stringValue": "019a6f2e-4b1c-7d3a-9e58-2c7f1a0b6d41"
+                  }
+                },
+                {
+                  "key": "app.version",
+                  "value": {
+                    "stringValue": "0.162.0"
+                  }
+                },
+                {
+                  "key": "auth_mode",
+                  "value": {
+                    "stringValue": "Chatgpt"
+                  }
+                },
+                {
+                  "key": "originator",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "user.account_id",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-2"
+                  }
+                },
+                {
+                  "key": "user.email",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-1"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "WindowsTerminal"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                },
+                {
+                  "key": "slug",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                }
+              ]
+            },
+            {
+              "observedTimeUnixNano": "1791460802211000000",
+              "severityNumber": "SEVERITY_NUMBER_INFO",
+              "severityText": "INFO",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "codex.turn_ttft"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "stringValue": "611"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-08T12:00:02.211Z"
+                  }
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {
+                    "stringValue": "019a6f2e-4b1c-7d3a-9e58-2c7f1a0b6d41"
+                  }
+                },
+                {
+                  "key": "app.version",
+                  "value": {
+                    "stringValue": "0.162.0"
+                  }
+                },
+                {
+                  "key": "auth_mode",
+                  "value": {
+                    "stringValue": "Chatgpt"
+                  }
+                },
+                {
+                  "key": "originator",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "user.account_id",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-2"
+                  }
+                },
+                {
+                  "key": "user.email",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-1"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "WindowsTerminal"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                },
+                {
+                  "key": "slug",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                }
+              ]
+            },
+            {
+              "observedTimeUnixNano": "1791460802400000000",
+              "severityNumber": "SEVERITY_NUMBER_INFO",
+              "severityText": "INFO",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "codex.sse_event"
+                  }
+                },
+                {
+                  "key": "event.kind",
+                  "value": {
+                    "stringValue": "response.output_item.done"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "stringValue": "189"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-08T12:00:02.400Z"
+                  }
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {
+                    "stringValue": "019a6f2e-4b1c-7d3a-9e58-2c7f1a0b6d41"
+                  }
+                },
+                {
+                  "key": "app.version",
+                  "value": {
+                    "stringValue": "0.162.0"
+                  }
+                },
+                {
+                  "key": "auth_mode",
+                  "value": {
+                    "stringValue": "Chatgpt"
+                  }
+                },
+                {
+                  "key": "originator",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "user.account_id",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-2"
+                  }
+                },
+                {
+                  "key": "user.email",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-1"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "WindowsTerminal"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                },
+                {
+                  "key": "slug",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                }
+              ]
+            },
+            {
+              "observedTimeUnixNano": "1791460802500000000",
+              "severityNumber": "SEVERITY_NUMBER_INFO",
+              "severityText": "INFO",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "codex.sse_event"
+                  }
+                },
+                {
+                  "key": "event.kind",
+                  "value": {
+                    "stringValue": "response.completed"
+                  }
+                },
+                {
+                  "key": "input_token_count",
+                  "value": {
+                    "stringValue": "10412"
+                  }
+                },
+                {
+                  "key": "output_token_count",
+                  "value": {
+                    "stringValue": "388"
+                  }
+                },
+                {
+                  "key": "cached_token_count",
+                  "value": {
+                    "intValue": "8192"
+                  }
+                },
+                {
+                  "key": "cache_write_token_count",
+                  "value": {
+                    "intValue": "0"
+                  }
+                },
+                {
+                  "key": "reasoning_token_count",
+                  "value": {
+                    "intValue": "128"
+                  }
+                },
+                {
+                  "key": "tool_token_count",
+                  "value": {
+                    "stringValue": "10800"
+                  }
+                },
+                {
+                  "key": "ttft_ms",
+                  "value": {
+                    "intValue": "611"
+                  }
+                },
+                {
+                  "key": "service_tier",
+                  "value": {
+                    "stringValue": "priority"
+                  }
+                },
+                {
+                  "key": "model_reasoning_effort",
+                  "value": {
+                    "stringValue": "medium"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-08T12:00:02.500Z"
+                  }
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {
+                    "stringValue": "019a6f2e-4b1c-7d3a-9e58-2c7f1a0b6d41"
+                  }
+                },
+                {
+                  "key": "app.version",
+                  "value": {
+                    "stringValue": "0.162.0"
+                  }
+                },
+                {
+                  "key": "auth_mode",
+                  "value": {
+                    "stringValue": "Chatgpt"
+                  }
+                },
+                {
+                  "key": "originator",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "user.account_id",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-2"
+                  }
+                },
+                {
+                  "key": "user.email",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-1"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "WindowsTerminal"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                },
+                {
+                  "key": "slug",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                }
+              ]
+            },
+            {
+              "observedTimeUnixNano": "1791460802520000000",
+              "severityNumber": "SEVERITY_NUMBER_INFO",
+              "severityText": "INFO",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "codex.tool_decision"
+                  }
+                },
+                {
+                  "key": "tool_name",
+                  "value": {
+                    "stringValue": "shell"
+                  }
+                },
+                {
+                  "key": "tool_namespace",
+                  "value": {
+                    "stringValue": "functions"
+                  }
+                },
+                {
+                  "key": "call_id",
+                  "value": {
+                    "stringValue": "call_SACFIXTURE0001"
+                  }
+                },
+                {
+                  "key": "decision",
+                  "value": {
+                    "stringValue": "approved"
+                  }
+                },
+                {
+                  "key": "source",
+                  "value": {
+                    "stringValue": "Config"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-08T12:00:02.520Z"
+                  }
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {
+                    "stringValue": "019a6f2e-4b1c-7d3a-9e58-2c7f1a0b6d41"
+                  }
+                },
+                {
+                  "key": "app.version",
+                  "value": {
+                    "stringValue": "0.162.0"
+                  }
+                },
+                {
+                  "key": "auth_mode",
+                  "value": {
+                    "stringValue": "Chatgpt"
+                  }
+                },
+                {
+                  "key": "originator",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "user.account_id",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-2"
+                  }
+                },
+                {
+                  "key": "user.email",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-1"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "WindowsTerminal"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                },
+                {
+                  "key": "slug",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                }
+              ]
+            },
+            {
+              "observedTimeUnixNano": "1791460802600000000",
+              "severityNumber": "SEVERITY_NUMBER_INFO",
+              "severityText": "INFO",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "codex.sandbox_outcome"
+                  }
+                },
+                {
+                  "key": "tool_name",
+                  "value": {
+                    "stringValue": "shell"
+                  }
+                },
+                {
+                  "key": "call_id",
+                  "value": {
+                    "stringValue": "call_SACFIXTURE0001"
+                  }
+                },
+                {
+                  "key": "outcome",
+                  "value": {
+                    "stringValue": "success"
+                  }
+                },
+                {
+                  "key": "initial_duration_ms",
+                  "value": {
+                    "intValue": "58"
+                  }
+                },
+                {
+                  "key": "escalated_duration_ms",
+                  "value": {
+                    "intValue": "0"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-08T12:00:02.600Z"
+                  }
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {
+                    "stringValue": "019a6f2e-4b1c-7d3a-9e58-2c7f1a0b6d41"
+                  }
+                },
+                {
+                  "key": "app.version",
+                  "value": {
+                    "stringValue": "0.162.0"
+                  }
+                },
+                {
+                  "key": "auth_mode",
+                  "value": {
+                    "stringValue": "Chatgpt"
+                  }
+                },
+                {
+                  "key": "originator",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "user.account_id",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-2"
+                  }
+                },
+                {
+                  "key": "user.email",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-1"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "WindowsTerminal"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                },
+                {
+                  "key": "slug",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                }
+              ]
+            },
+            {
+              "observedTimeUnixNano": "1791460802610000000",
+              "severityNumber": "SEVERITY_NUMBER_INFO",
+              "severityText": "INFO",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "codex.tool_result"
+                  }
+                },
+                {
+                  "key": "tool_result_seq",
+                  "value": {
+                    "intValue": "1"
+                  }
+                },
+                {
+                  "key": "tool_name",
+                  "value": {
+                    "stringValue": "shell"
+                  }
+                },
+                {
+                  "key": "tool_namespace",
+                  "value": {
+                    "stringValue": "functions"
+                  }
+                },
+                {
+                  "key": "call_id",
+                  "value": {
+                    "stringValue": "call_SACFIXTURE0001"
+                  }
+                },
+                {
+                  "key": "product_sku",
+                  "value": {
+                    "stringValue": "codex"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "stringValue": "74"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "stringValue": "true"
+                  }
+                },
+                {
+                  "key": "output_truncated",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "agent_name",
+                  "value": {
+                    "stringValue": "/root"
+                  }
+                },
+                {
+                  "key": "arguments",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-5"
+                  }
+                },
+                {
+                  "key": "output",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-8"
+                  }
+                },
+                {
+                  "key": "mcp_server",
+                  "value": {
+                    "stringValue": ""
+                  }
+                },
+                {
+                  "key": "mcp_server_origin",
+                  "value": {
+                    "stringValue": ""
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-08T12:00:02.610Z"
+                  }
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {
+                    "stringValue": "019a6f2e-4b1c-7d3a-9e58-2c7f1a0b6d41"
+                  }
+                },
+                {
+                  "key": "app.version",
+                  "value": {
+                    "stringValue": "0.162.0"
+                  }
+                },
+                {
+                  "key": "auth_mode",
+                  "value": {
+                    "stringValue": "Chatgpt"
+                  }
+                },
+                {
+                  "key": "originator",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "user.account_id",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-2"
+                  }
+                },
+                {
+                  "key": "user.email",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-1"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "WindowsTerminal"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                },
+                {
+                  "key": "slug",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                }
+              ]
+            },
+            {
+              "observedTimeUnixNano": "1791460803000000000",
+              "severityNumber": "SEVERITY_NUMBER_INFO",
+              "severityText": "INFO",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "codex.tool_decision"
+                  }
+                },
+                {
+                  "key": "tool_name",
+                  "value": {
+                    "stringValue": "shell"
+                  }
+                },
+                {
+                  "key": "tool_namespace",
+                  "value": {
+                    "stringValue": "functions"
+                  }
+                },
+                {
+                  "key": "call_id",
+                  "value": {
+                    "stringValue": "call_SACFIXTURE0002"
+                  }
+                },
+                {
+                  "key": "decision",
+                  "value": {
+                    "stringValue": "denied"
+                  }
+                },
+                {
+                  "key": "source",
+                  "value": {
+                    "stringValue": "User"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-08T12:00:03.000Z"
+                  }
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {
+                    "stringValue": "019a6f2e-4b1c-7d3a-9e58-2c7f1a0b6d41"
+                  }
+                },
+                {
+                  "key": "app.version",
+                  "value": {
+                    "stringValue": "0.162.0"
+                  }
+                },
+                {
+                  "key": "auth_mode",
+                  "value": {
+                    "stringValue": "Chatgpt"
+                  }
+                },
+                {
+                  "key": "originator",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "user.account_id",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-2"
+                  }
+                },
+                {
+                  "key": "user.email",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-1"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "WindowsTerminal"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                },
+                {
+                  "key": "slug",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                }
+              ]
+            },
+            {
+              "observedTimeUnixNano": "1791460803010000000",
+              "severityNumber": "SEVERITY_NUMBER_INFO",
+              "severityText": "INFO",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "codex.tool_result"
+                  }
+                },
+                {
+                  "key": "tool_result_seq",
+                  "value": {
+                    "intValue": "2"
+                  }
+                },
+                {
+                  "key": "tool_name",
+                  "value": {
+                    "stringValue": "shell"
+                  }
+                },
+                {
+                  "key": "tool_namespace",
+                  "value": {
+                    "stringValue": "functions"
+                  }
+                },
+                {
+                  "key": "call_id",
+                  "value": {
+                    "stringValue": "call_SACFIXTURE0002"
+                  }
+                },
+                {
+                  "key": "product_sku",
+                  "value": {
+                    "stringValue": "codex"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "stringValue": "4210"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "stringValue": "false"
+                  }
+                },
+                {
+                  "key": "output_truncated",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "agent_name",
+                  "value": {
+                    "stringValue": "/root"
+                  }
+                },
+                {
+                  "key": "arguments",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-6"
+                  }
+                },
+                {
+                  "key": "output",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-9"
+                  }
+                },
+                {
+                  "key": "mcp_server",
+                  "value": {
+                    "stringValue": ""
+                  }
+                },
+                {
+                  "key": "mcp_server_origin",
+                  "value": {
+                    "stringValue": ""
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-08T12:00:03.010Z"
+                  }
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {
+                    "stringValue": "019a6f2e-4b1c-7d3a-9e58-2c7f1a0b6d41"
+                  }
+                },
+                {
+                  "key": "app.version",
+                  "value": {
+                    "stringValue": "0.162.0"
+                  }
+                },
+                {
+                  "key": "auth_mode",
+                  "value": {
+                    "stringValue": "Chatgpt"
+                  }
+                },
+                {
+                  "key": "originator",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "user.account_id",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-2"
+                  }
+                },
+                {
+                  "key": "user.email",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-1"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "WindowsTerminal"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                },
+                {
+                  "key": "slug",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                }
+              ]
+            },
+            {
+              "observedTimeUnixNano": "1791460803100000000",
+              "severityNumber": "SEVERITY_NUMBER_INFO",
+              "severityText": "INFO",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "codex.guardian_assessment"
+                  }
+                },
+                {
+                  "key": "review.id",
+                  "value": {
+                    "stringValue": "review_SACFIXTURE0001"
+                  }
+                },
+                {
+                  "key": "turn.id",
+                  "value": {
+                    "stringValue": "turn_SACFIXTURE0001"
+                  }
+                },
+                {
+                  "key": "item.id",
+                  "value": {
+                    "stringValue": "call_SACFIXTURE0003"
+                  }
+                },
+                {
+                  "key": "status",
+                  "value": {
+                    "stringValue": "denied"
+                  }
+                },
+                {
+                  "key": "outcome",
+                  "value": {
+                    "stringValue": "deny"
+                  }
+                },
+                {
+                  "key": "risk_level",
+                  "value": {
+                    "stringValue": "high"
+                  }
+                },
+                {
+                  "key": "user_authorization",
+                  "value": {
+                    "stringValue": "low"
+                  }
+                },
+                {
+                  "key": "started_at_ms",
+                  "value": {
+                    "intValue": "1791460803020"
+                  }
+                },
+                {
+                  "key": "completed_at_ms",
+                  "value": {
+                    "intValue": "1791460803095"
+                  }
+                },
+                {
+                  "key": "rationale",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-13"
+                  }
+                },
+                {
+                  "key": "rationale_length",
+                  "value": {
+                    "intValue": "18"
+                  }
+                },
+                {
+                  "key": "rationale_truncated",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-08T12:00:03.100Z"
+                  }
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {
+                    "stringValue": "019a6f2e-4b1c-7d3a-9e58-2c7f1a0b6d41"
+                  }
+                },
+                {
+                  "key": "app.version",
+                  "value": {
+                    "stringValue": "0.162.0"
+                  }
+                },
+                {
+                  "key": "auth_mode",
+                  "value": {
+                    "stringValue": "Chatgpt"
+                  }
+                },
+                {
+                  "key": "originator",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "user.account_id",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-2"
+                  }
+                },
+                {
+                  "key": "user.email",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-1"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "WindowsTerminal"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                },
+                {
+                  "key": "slug",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                }
+              ]
+            },
+            {
+              "observedTimeUnixNano": "1791460803105000000",
+              "severityNumber": "SEVERITY_NUMBER_INFO",
+              "severityText": "INFO",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "codex.tool_decision"
+                  }
+                },
+                {
+                  "key": "tool_name",
+                  "value": {
+                    "stringValue": "shell"
+                  }
+                },
+                {
+                  "key": "tool_namespace",
+                  "value": {
+                    "stringValue": "functions"
+                  }
+                },
+                {
+                  "key": "call_id",
+                  "value": {
+                    "stringValue": "call_SACFIXTURE0003"
+                  }
+                },
+                {
+                  "key": "decision",
+                  "value": {
+                    "stringValue": "denied_with_network_policy_deny"
+                  }
+                },
+                {
+                  "key": "source",
+                  "value": {
+                    "stringValue": "AutomatedReviewer"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-08T12:00:03.105Z"
+                  }
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {
+                    "stringValue": "019a6f2e-4b1c-7d3a-9e58-2c7f1a0b6d41"
+                  }
+                },
+                {
+                  "key": "app.version",
+                  "value": {
+                    "stringValue": "0.162.0"
+                  }
+                },
+                {
+                  "key": "auth_mode",
+                  "value": {
+                    "stringValue": "Chatgpt"
+                  }
+                },
+                {
+                  "key": "originator",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "user.account_id",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-2"
+                  }
+                },
+                {
+                  "key": "user.email",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-1"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "WindowsTerminal"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                },
+                {
+                  "key": "slug",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                }
+              ]
+            },
+            {
+              "observedTimeUnixNano": "1791460803110000000",
+              "severityNumber": "SEVERITY_NUMBER_INFO",
+              "severityText": "INFO",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "codex.tool_result"
+                  }
+                },
+                {
+                  "key": "tool_result_seq",
+                  "value": {
+                    "intValue": "3"
+                  }
+                },
+                {
+                  "key": "tool_name",
+                  "value": {
+                    "stringValue": "shell"
+                  }
+                },
+                {
+                  "key": "tool_namespace",
+                  "value": {
+                    "stringValue": "functions"
+                  }
+                },
+                {
+                  "key": "call_id",
+                  "value": {
+                    "stringValue": "call_SACFIXTURE0003"
+                  }
+                },
+                {
+                  "key": "product_sku",
+                  "value": {
+                    "stringValue": "codex"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "stringValue": "92"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "stringValue": "false"
+                  }
+                },
+                {
+                  "key": "output_truncated",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "agent_name",
+                  "value": {
+                    "stringValue": "/root"
+                  }
+                },
+                {
+                  "key": "arguments",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-7"
+                  }
+                },
+                {
+                  "key": "output",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-9"
+                  }
+                },
+                {
+                  "key": "mcp_server",
+                  "value": {
+                    "stringValue": ""
+                  }
+                },
+                {
+                  "key": "mcp_server_origin",
+                  "value": {
+                    "stringValue": ""
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-08T12:00:03.110Z"
+                  }
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {
+                    "stringValue": "019a6f2e-4b1c-7d3a-9e58-2c7f1a0b6d41"
+                  }
+                },
+                {
+                  "key": "app.version",
+                  "value": {
+                    "stringValue": "0.162.0"
+                  }
+                },
+                {
+                  "key": "auth_mode",
+                  "value": {
+                    "stringValue": "Chatgpt"
+                  }
+                },
+                {
+                  "key": "originator",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "user.account_id",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-2"
+                  }
+                },
+                {
+                  "key": "user.email",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-1"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "WindowsTerminal"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                },
+                {
+                  "key": "slug",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                }
+              ]
+            },
+            {
+              "observedTimeUnixNano": "1791460803400000000",
+              "severityNumber": "SEVERITY_NUMBER_INFO",
+              "severityText": "INFO",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "codex.tool_result"
+                  }
+                },
+                {
+                  "key": "tool_result_seq",
+                  "value": {
+                    "intValue": "4"
+                  }
+                },
+                {
+                  "key": "tool_name",
+                  "value": {
+                    "stringValue": "read_issue"
+                  }
+                },
+                {
+                  "key": "tool_namespace",
+                  "value": {
+                    "stringValue": "mcp__SAC-PLACEHOLDER-10__"
+                  }
+                },
+                {
+                  "key": "call_id",
+                  "value": {
+                    "stringValue": "call_SACFIXTURE0004"
+                  }
+                },
+                {
+                  "key": "product_sku",
+                  "value": {
+                    "stringValue": "codex"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "stringValue": "512"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "stringValue": "false"
+                  }
+                },
+                {
+                  "key": "output_truncated",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "agent_name",
+                  "value": {
+                    "stringValue": "/root"
+                  }
+                },
+                {
+                  "key": "arguments",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-11"
+                  }
+                },
+                {
+                  "key": "output",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-12"
+                  }
+                },
+                {
+                  "key": "mcp_server",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-10"
+                  }
+                },
+                {
+                  "key": "mcp_server_origin",
+                  "value": {
+                    "stringValue": "config"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-08T12:00:03.400Z"
+                  }
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {
+                    "stringValue": "019a6f2e-4b1c-7d3a-9e58-2c7f1a0b6d41"
+                  }
+                },
+                {
+                  "key": "app.version",
+                  "value": {
+                    "stringValue": "0.162.0"
+                  }
+                },
+                {
+                  "key": "auth_mode",
+                  "value": {
+                    "stringValue": "Chatgpt"
+                  }
+                },
+                {
+                  "key": "originator",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "user.account_id",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-2"
+                  }
+                },
+                {
+                  "key": "user.email",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-1"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "WindowsTerminal"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                },
+                {
+                  "key": "slug",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                }
+              ]
+            },
+            {
+              "observedTimeUnixNano": "1791460803500000000",
+              "severityNumber": "SEVERITY_NUMBER_INFO",
+              "severityText": "INFO",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "codex.plugin_install_elicitation_sent"
+                  }
+                },
+                {
+                  "key": "plugin_install.tool_type",
+                  "value": {
+                    "stringValue": "connector"
+                  }
+                },
+                {
+                  "key": "plugin_install.tool_id",
+                  "value": {
+                    "stringValue": "connector_SACFIXTURE"
+                  }
+                },
+                {
+                  "key": "plugin_install.tool_name",
+                  "value": {
+                    "stringValue": "Linear"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-08T12:00:03.500Z"
+                  }
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {
+                    "stringValue": "019a6f2e-4b1c-7d3a-9e58-2c7f1a0b6d41"
+                  }
+                },
+                {
+                  "key": "app.version",
+                  "value": {
+                    "stringValue": "0.162.0"
+                  }
+                },
+                {
+                  "key": "auth_mode",
+                  "value": {
+                    "stringValue": "Chatgpt"
+                  }
+                },
+                {
+                  "key": "originator",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "user.account_id",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-2"
+                  }
+                },
+                {
+                  "key": "user.email",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-1"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "WindowsTerminal"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                },
+                {
+                  "key": "slug",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                }
+              ]
+            },
+            {
+              "observedTimeUnixNano": "1791460803600000000",
+              "severityNumber": "SEVERITY_NUMBER_INFO",
+              "severityText": "INFO",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "codex.plugin_install_suggestion"
+                  }
+                },
+                {
+                  "key": "plugin_install.tool_type",
+                  "value": {
+                    "stringValue": "connector"
+                  }
+                },
+                {
+                  "key": "plugin_install.tool_id",
+                  "value": {
+                    "stringValue": "connector_SACFIXTURE"
+                  }
+                },
+                {
+                  "key": "plugin_install.tool_name",
+                  "value": {
+                    "stringValue": "Linear"
+                  }
+                },
+                {
+                  "key": "plugin_install.response_action",
+                  "value": {
+                    "stringValue": "decline"
+                  }
+                },
+                {
+                  "key": "plugin_install.user_confirmed",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "plugin_install.completed",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-08T12:00:03.600Z"
+                  }
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {
+                    "stringValue": "019a6f2e-4b1c-7d3a-9e58-2c7f1a0b6d41"
+                  }
+                },
+                {
+                  "key": "app.version",
+                  "value": {
+                    "stringValue": "0.162.0"
+                  }
+                },
+                {
+                  "key": "auth_mode",
+                  "value": {
+                    "stringValue": "Chatgpt"
+                  }
+                },
+                {
+                  "key": "originator",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "user.account_id",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-2"
+                  }
+                },
+                {
+                  "key": "user.email",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-1"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "WindowsTerminal"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                },
+                {
+                  "key": "slug",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                }
+              ]
+            },
+            {
+              "observedTimeUnixNano": "1791460803700000000",
+              "severityNumber": "SEVERITY_NUMBER_INFO",
+              "severityText": "INFO",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "codex.skill_invocation"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-08T12:00:03.700Z"
+                  }
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {
+                    "stringValue": "019a6f2e-4b1c-7d3a-9e58-2c7f1a0b6d41"
+                  }
+                },
+                {
+                  "key": "turn.id",
+                  "value": {
+                    "stringValue": "turn_SACFIXTURE0001"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-3"
+                  }
+                },
+                {
+                  "key": "user.account_id",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-2"
+                  }
+                },
+                {
+                  "key": "skill.name",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-14"
+                  }
+                },
+                {
+                  "key": "skill.scope",
+                  "value": {
+                    "stringValue": "user"
+                  }
+                },
+                {
+                  "key": "skill.plugin_id",
+                  "value": {
+                    "stringValue": "plugin_SACFIXTURE"
+                  }
+                },
+                {
+                  "key": "skill.invocation_type",
+                  "value": {
+                    "stringValue": "implicit"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                },
+                {
+                  "key": "app.version",
+                  "value": {
+                    "stringValue": "0.162.0"
+                  }
+                },
+                {
+                  "key": "originator",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "auth_mode",
+                  "value": {
+                    "stringValue": "Chatgpt"
+                  }
+                }
+              ]
+            },
+            {
+              "observedTimeUnixNano": "1791460804000000000",
+              "severityNumber": "SEVERITY_NUMBER_INFO",
+              "severityText": "INFO",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "codex.api_request"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "stringValue": "233"
+                  }
+                },
+                {
+                  "key": "http.response.status_code",
+                  "value": {
+                    "intValue": "400"
+                  }
+                },
+                {
+                  "key": "error.message",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-17"
+                  }
+                },
+                {
+                  "key": "attempt",
+                  "value": {
+                    "intValue": "1"
+                  }
+                },
+                {
+                  "key": "auth.header_attached",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "auth.header_name",
+                  "value": {
+                    "stringValue": "authorization"
+                  }
+                },
+                {
+                  "key": "auth.retry_after_unauthorized",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "auth.recovery_mode",
+                  "value": {
+                    "stringValue": "managed"
+                  }
+                },
+                {
+                  "key": "auth.recovery_phase",
+                  "value": {
+                    "stringValue": "refresh_token"
+                  }
+                },
+                {
+                  "key": "endpoint",
+                  "value": {
+                    "stringValue": "/responses"
+                  }
+                },
+                {
+                  "key": "auth.env_openai_api_key_present",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "auth.env_codex_api_key_present",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "auth.env_codex_api_key_enabled",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "auth.env_provider_key_name",
+                  "value": {
+                    "stringValue": "OPENAI_API_KEY"
+                  }
+                },
+                {
+                  "key": "auth.env_provider_key_present",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "auth.env_refresh_token_url_override_present",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "auth.request_id",
+                  "value": {
+                    "stringValue": "req_01SACFIXTURE00000000000001"
+                  }
+                },
+                {
+                  "key": "auth.cf_ray",
+                  "value": {
+                    "stringValue": "8f3e5c2a1b4d6e70-AMS"
+                  }
+                },
+                {
+                  "key": "auth.error",
+                  "value": {
+                    "stringValue": "token_expired"
+                  }
+                },
+                {
+                  "key": "auth.error_code",
+                  "value": {
+                    "stringValue": "token_expired"
+                  }
+                },
+                {
+                  "key": "auth.agent_id",
+                  "value": {
+                    "stringValue": "agent_01SACFIXTURE0000000001"
+                  }
+                },
+                {
+                  "key": "auth.task_id",
+                  "value": {
+                    "stringValue": "task_01SACFIXTURE00000000001"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-08T12:00:04.000Z"
+                  }
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {
+                    "stringValue": "019a6f2e-4b1c-7d3a-9e58-2c7f1a0b6d41"
+                  }
+                },
+                {
+                  "key": "app.version",
+                  "value": {
+                    "stringValue": "0.162.0"
+                  }
+                },
+                {
+                  "key": "auth_mode",
+                  "value": {
+                    "stringValue": "Chatgpt"
+                  }
+                },
+                {
+                  "key": "originator",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "user.account_id",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-2"
+                  }
+                },
+                {
+                  "key": "user.email",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-1"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "WindowsTerminal"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                },
+                {
+                  "key": "slug",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                }
+              ]
+            },
+            {
+              "observedTimeUnixNano": "1791460804300000000",
+              "severityNumber": "SEVERITY_NUMBER_INFO",
+              "severityText": "INFO",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "codex.sse_event"
+                  }
+                },
+                {
+                  "key": "event.kind",
+                  "value": {
+                    "stringValue": "response.failed"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "stringValue": "41"
+                  }
+                },
+                {
+                  "key": "error.message",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-18"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-08T12:00:04.300Z"
+                  }
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {
+                    "stringValue": "019a6f2e-4b1c-7d3a-9e58-2c7f1a0b6d41"
+                  }
+                },
+                {
+                  "key": "app.version",
+                  "value": {
+                    "stringValue": "0.162.0"
+                  }
+                },
+                {
+                  "key": "auth_mode",
+                  "value": {
+                    "stringValue": "Chatgpt"
+                  }
+                },
+                {
+                  "key": "originator",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "user.account_id",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-2"
+                  }
+                },
+                {
+                  "key": "user.email",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-1"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "WindowsTerminal"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                },
+                {
+                  "key": "slug",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                }
+              ]
+            },
+            {
+              "observedTimeUnixNano": "1791460804310000000",
+              "severityNumber": "SEVERITY_NUMBER_INFO",
+              "severityText": "INFO",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "codex.sse_event"
+                  }
+                },
+                {
+                  "key": "event.kind",
+                  "value": {
+                    "stringValue": "response.completed"
+                  }
+                },
+                {
+                  "key": "error.message",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-18"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-08T12:00:04.310Z"
+                  }
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {
+                    "stringValue": "019a6f2e-4b1c-7d3a-9e58-2c7f1a0b6d41"
+                  }
+                },
+                {
+                  "key": "app.version",
+                  "value": {
+                    "stringValue": "0.162.0"
+                  }
+                },
+                {
+                  "key": "auth_mode",
+                  "value": {
+                    "stringValue": "Chatgpt"
+                  }
+                },
+                {
+                  "key": "originator",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "user.account_id",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-2"
+                  }
+                },
+                {
+                  "key": "user.email",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-1"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "WindowsTerminal"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                },
+                {
+                  "key": "slug",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                }
+              ]
+            },
+            {
+              "observedTimeUnixNano": "1791460804500000000",
+              "severityNumber": "SEVERITY_NUMBER_INFO",
+              "severityText": "INFO",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "codex.sse_event"
+                  }
+                },
+                {
+                  "key": "event.kind",
+                  "value": {
+                    "stringValue": "response.completed"
+                  }
+                },
+                {
+                  "key": "input_token_count",
+                  "value": {
+                    "stringValue": "11630"
+                  }
+                },
+                {
+                  "key": "output_token_count",
+                  "value": {
+                    "stringValue": "212"
+                  }
+                },
+                {
+                  "key": "cached_token_count",
+                  "value": {
+                    "intValue": "8192"
+                  }
+                },
+                {
+                  "key": "cache_write_token_count",
+                  "value": {
+                    "intValue": "0"
+                  }
+                },
+                {
+                  "key": "reasoning_token_count",
+                  "value": {
+                    "intValue": "128"
+                  }
+                },
+                {
+                  "key": "tool_token_count",
+                  "value": {
+                    "stringValue": "11842"
+                  }
+                },
+                {
+                  "key": "ttft_ms",
+                  "value": {
+                    "intValue": "611"
+                  }
+                },
+                {
+                  "key": "service_tier",
+                  "value": {
+                    "stringValue": "priority"
+                  }
+                },
+                {
+                  "key": "model_reasoning_effort",
+                  "value": {
+                    "stringValue": "medium"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-08T12:00:04.500Z"
+                  }
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {
+                    "stringValue": "019a6f2e-6d90-7c21-8a4f-5e3b9d0c7a12"
+                  }
+                },
+                {
+                  "key": "app.version",
+                  "value": {
+                    "stringValue": "0.162.0"
+                  }
+                },
+                {
+                  "key": "auth_mode",
+                  "value": {
+                    "stringValue": "Chatgpt"
+                  }
+                },
+                {
+                  "key": "originator",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "user.account_id",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-2"
+                  }
+                },
+                {
+                  "key": "user.email",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-1"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "WindowsTerminal"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                },
+                {
+                  "key": "slug",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                }
+              ]
+            },
+            {
+              "observedTimeUnixNano": "1791460804800000000",
+              "severityNumber": "SEVERITY_NUMBER_INFO",
+              "severityText": "INFO",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "codex.agent_response"
+                  }
+                },
+                {
+                  "key": "agent.type",
+                  "value": {
+                    "stringValue": "subagent"
+                  }
+                },
+                {
+                  "key": "turn.id",
+                  "value": {
+                    "stringValue": "turn_SACFIXTURE0002"
+                  }
+                },
+                {
+                  "key": "item.id",
+                  "value": {
+                    "stringValue": "msg_SACFIXTURE0001"
+                  }
+                },
+                {
+                  "key": "parent.conversation.id",
+                  "value": {
+                    "stringValue": "019a6f2e-4b1c-7d3a-9e58-2c7f1a0b6d41"
+                  }
+                },
+                {
+                  "key": "parent.turn.id",
+                  "value": {
+                    "stringValue": "turn_SACFIXTURE0001"
+                  }
+                },
+                {
+                  "key": "root.turn.id",
+                  "value": {
+                    "stringValue": "turn_SACFIXTURE0001"
+                  }
+                },
+                {
+                  "key": "initiating.agent.path",
+                  "value": {
+                    "stringValue": "/root"
+                  }
+                },
+                {
+                  "key": "response",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-19"
+                  }
+                },
+                {
+                  "key": "response_length",
+                  "value": {
+                    "intValue": "18"
+                  }
+                },
+                {
+                  "key": "response_truncated",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-08T12:00:04.800Z"
+                  }
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {
+                    "stringValue": "019a6f2e-6d90-7c21-8a4f-5e3b9d0c7a12"
+                  }
+                },
+                {
+                  "key": "app.version",
+                  "value": {
+                    "stringValue": "0.162.0"
+                  }
+                },
+                {
+                  "key": "auth_mode",
+                  "value": {
+                    "stringValue": "Chatgpt"
+                  }
+                },
+                {
+                  "key": "originator",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "user.account_id",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-2"
+                  }
+                },
+                {
+                  "key": "user.email",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-1"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "WindowsTerminal"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                },
+                {
+                  "key": "slug",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                }
+              ]
+            },
+            {
+              "observedTimeUnixNano": "1791460805000000000",
+              "severityNumber": "SEVERITY_NUMBER_INFO",
+              "severityText": "INFO",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "codex.turn_cost"
+                  }
+                },
+                {
+                  "key": "turn.id",
+                  "value": {
+                    "stringValue": "turn_SACFIXTURE0001"
+                  }
+                },
+                {
+                  "key": "usage.estimated_usd",
+                  "value": {
+                    "stringValue": "0.031245"
+                  }
+                },
+                {
+                  "key": "turn.interrupted",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "speed",
+                  "value": {
+                    "stringValue": "fast"
+                  }
+                },
+                {
+                  "key": "reasoning_effort",
+                  "value": {
+                    "stringValue": "medium"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-08T12:00:05.000Z"
+                  }
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {
+                    "stringValue": "019a6f2e-4b1c-7d3a-9e58-2c7f1a0b6d41"
+                  }
+                },
+                {
+                  "key": "app.version",
+                  "value": {
+                    "stringValue": "0.162.0"
+                  }
+                },
+                {
+                  "key": "auth_mode",
+                  "value": {
+                    "stringValue": "Chatgpt"
+                  }
+                },
+                {
+                  "key": "originator",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "user.account_id",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-2"
+                  }
+                },
+                {
+                  "key": "user.email",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-1"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "WindowsTerminal"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                },
+                {
+                  "key": "slug",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
