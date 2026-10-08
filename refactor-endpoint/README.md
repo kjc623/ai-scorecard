@@ -79,7 +79,7 @@ The Plan column gives the plan's task id. "Built" is ticked when the task's "Don
 | 44 | [Non-exportable device CA](44-device-ca-non-exportable/TASK.md) | E33 | 08 | | [x] | [ ] |
 | 45 | [Per-app protocol parsers](45-app-parsers/TASK.md) | E34 | 43 | Claude Desktop, ChatGPT Desktop | [x] | [ ] |
 | 46 | [Inline policy in the proxy](46-proxy-inline-policy/TASK.md) | E35 | 10, 12, 45 | Claude Desktop | [x] | [ ] |
-| 47 | [Proxy safety valves](47-proxy-safety-valves/TASK.md) | E36 | 46 | | [ ] | [ ] |
+| 47 | [Proxy safety valves](47-proxy-safety-valves/TASK.md) | E36 | 46 | | [x] | [ ] |
 | **Phase 5: Components, health, uninstall** | | | | | | |
 | 48 | [Supervised components](48-supervised-components/TASK.md) | E37 | 06 | | [x] | [ ] |
 | 49 | [Per-tool health in the cloud](49-collector-health/TASK.md) | E39 | 27, 29, 31, 38 | | [ ] | [ ] |

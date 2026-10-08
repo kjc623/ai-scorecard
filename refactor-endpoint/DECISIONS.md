@@ -1459,3 +1459,51 @@ decided and why, and for a vendor fact the product version checked.
 - **Outside `merge`, `hooks` and the wiring:** `cmd/capture-core/hook_test.go`'s
   `TestHookIsDecidedAndRecordedByTheService` waits up to `merge.HoldFor` plus its 10 s for the
   delivered hook prompt, which no OTel record joins and so goes on after its hold.
+
+## 2026-10-08, task 47
+
+- **Migration `0013-kill-switch.sql`** (the next free number on this branch; renumbered at merge if
+  taken). Migration proof, on throwaway databases: the integration branch's `schema.sql` plus it,
+  `main`'s `schema.sql` plus `0002` to it, and the new `schema.sql` plus it alone and plus `0002` to
+  it each dump (`pg_dump --schema-only`) identically to the new `schema.sql`; the `ref` rows are
+  identical apart from `ref.data_class`'s load timestamp.
+- **A tripped `proxy.tls` kill switch is a blind tunnel, not a stop** (a deviation from the earlier
+  behaviour, which closed the listener and reported `absent`/`killed`). The proxy keeps listening,
+  tunnels every new connection blind (counted `blind_tunnelled`) and reports `degraded`/`killed`. Its
+  root leaves the trust store while the switch is in force, because a proxy that decrypts nothing
+  needs no trusted authority; clearing the switch installs the root again and re-runs the end-to-end
+  probe. A Start under a switch binds, installs nothing and skips the probe until it clears.
+- **The desktop-app PAC stays on under a `proxy.tls` kill switch** (it used to switch off), so
+  desktop apps keep reaching the proxy and are carried blind, which the device check counts. The CLI
+  shim is unchanged: it still removes its files under a `proxy.tls` or `cli.shim` switch, so CLI
+  tools go direct.
+- **The switch is read per connection.** A request still to be decided on a connection that was
+  already decrypted when the switch tripped is carried with enforcement off (`canEnforce`); a
+  keep-alive tunnel stays a tunnel until it closes, so a cleared switch applies to new connections.
+- **The loopback broker's own switch** (`proxy.loopback`): it keeps its ports and pipes each new
+  connection to the upstream as bytes, unread and unrecorded, counted `blind_tunnelled`, and reports
+  `degraded`/`killed`.
+- **"Looks like pinning"** is, after the client's hello, a certificate alert from the client
+  (`bad_certificate`, `unsupported_certificate`, `certificate_revoked`, `certificate_expired`,
+  `certificate_unknown`, `unknown_ca`) or a hang-up (EOF or reset). A timeout, any other alert or a
+  client that is not speaking TLS counts `errors` and excludes nothing. The key is the lower-case
+  process image (as task 09's attribution names it: the image base name) and host; clients that
+  cannot be attributed share the key `unknown`. An exclusion lasts 24 hours, then the client is
+  probed again; an excluded connection counts `not_cooperative` and `blind_tunnelled`, as before.
+- **Leaf expiry (task 44's note) is fixed here**, because it was in this path: an expired cached
+  leaf would be refused with `certificate_expired` and taken for pinning. A cached leaf is presented
+  only while the clock is inside its validity and more than an hour of it remains; otherwise a new
+  one is minted.
+- **Unparseable pass-through needed no change.** A test through the real pipeline shows a body of
+  an unknown shape, one no parser reads and one over the cap reach the server byte for byte with
+  their headers, and their events are `confidence: degraded`.
+- **The reason is a code**, `^[a-z][a-z0-9_.-]{0,63}$` (`ops.kill_switch.reason_code`), required to
+  trip and optional (audited) to clear. Tripping a tripped switch changes its reason and keeps its
+  `effective_at`. `PUT /admin/v1/settings/kill-switch/{route}` takes `{on, reason_code}`; `GET
+  /admin/v1/settings` lists `kill_switches` (`route`, `reason_code`, `effective_at`, `set_by`). The
+  audit action is `tenant.kill_switch.set` on object `kill_switch`/route, with the route and the
+  previous and new state.
+- **Bundle**: `kill_switches` items are `{provider, mode: "disable", effective_at, reason_code}` in
+  route order, `effective_at` in whole UTC seconds, omitted when none is tripped. The device already
+  decoded the field; the drift test now carries both routes' switches.
+- **QUIC**: nothing built; it waits for task 43's note in the device phase.
