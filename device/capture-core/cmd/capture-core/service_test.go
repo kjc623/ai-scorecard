@@ -1,15 +1,21 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"os"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/shadow-ai-capture/device/capture-core/core"
 	"github.com/shadow-ai-capture/device/capture-core/drain"
 	"github.com/shadow-ai-capture/device/capture-core/hostinfo"
 	"github.com/shadow-ai-capture/device/capture-core/state"
@@ -260,5 +266,89 @@ func TestSpooledObservationsAreDeliveredWithTheIssuedIdentity(t *testing.T) {
 	}
 	if env.TenantID != cloudTenant || env.DeviceID != cloudDevice || env.Mode != "m0" || env.UserRef != unattributedUserRef {
 		t.Fatalf("delivered envelope = %+v", env)
+	}
+}
+
+// lockedBuffer is a log destination the service's goroutines can share with the test.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// A discovery recorded on an enrolled service is spooled, logged as spooled, and reaches the edge's
+// /v1/events with the issued identity.
+func TestRecordedDiscoveryReachesTheEdge(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloud := startFakeCloud(t, signedTestBundle(t, priv, "5", protocol.ModeM0))
+	logs := &lockedBuffer{}
+	svc, err := newService(context.Background(), testConfig(t, cloud, pub), newLogger("info", logs))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = svc.Stop(context.Background()) }()
+
+	sum := sha256.Sum256([]byte(cloudTenant + "|" + cloudDevice + "|app:cursor|app_installed"))
+	err = svc.pipe.Record(context.Background(), core.Fact{
+		Kind:            protocol.KindDiscovery,
+		Route:           protocol.RouteInvScan,
+		ToolFingerprint: "app:cursor",
+		Person:          &core.Person{UserRef: unattributedUserRef},
+		OccurredAt:      time.Now(),
+		DedupKey:        "sha256:" + hex.EncodeToString(sum[:]),
+		FactFields: core.FactFields{
+			DiscoveryType:  protocol.DiscoveryTypeAppInstalled,
+			DetectionBasis: protocol.DetectionBasisInstalledScan,
+			AppVersion:     "0.48.1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for len(cloud.receivedEvents()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	events := cloud.receivedEvents()
+	if len(events) != 1 {
+		t.Fatalf("the edge received %d events, want 1", len(events))
+	}
+	var env struct {
+		TenantID      string `json:"tenant_id"`
+		DeviceID      string `json:"device_id"`
+		UserRef       string `json:"user_ref"`
+		Kind          string `json:"kind"`
+		Source        string `json:"source"`
+		Direction     string `json:"direction"`
+		DiscoveryType string `json:"discovery_type"`
+		AppVersion    string `json:"app_version"`
+	}
+	if err := json.Unmarshal(events[0], &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.TenantID != cloudTenant || env.DeviceID != cloudDevice || env.UserRef != unattributedUserRef ||
+		env.Kind != "discovery" || env.Source != "inv.scan" || env.Direction != "none" ||
+		env.DiscoveryType != "app_installed" || env.AppVersion != "0.48.1" {
+		t.Fatalf("delivered envelope = %s", events[0])
+	}
+	if log := logs.String(); !strings.Contains(log, `"msg":"envelope spooled"`) || !strings.Contains(log, `"discovery_type":"app_installed"`) {
+		t.Fatalf("the service did not log the spooled record:\n%s", log)
 	}
 }

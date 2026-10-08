@@ -178,3 +178,30 @@ decided and why, and for a vendor fact the product version checked.
   grants (table-level for `sac_ingest`, `sac_query` and `sac_ops`; the column lists of `sac_control`
   and `sac_vault` name no new column). `localdev/tools/simulate-devices.mjs` still emits
   `model_detection`, and `device/protocol` still declares it (task 05).
+
+## 2026-10-08, task 05
+
+- **Protocol names follow Go initialisms and avoid the batch types**: `DiscoveryTypeIDEExtension`
+  (the generated binding spells it `DiscoveryTypeIdeExtension`), and the `outcome` enum is
+  `protocol.ActivityOutcome` with `ActivityOutcome*` constants, because `protocol.Outcome` is
+  already the per-event batch result.
+- **`core.Fact` carries no size and no population.** The brief's field list and `DESIGN.md` §3's
+  table name neither; the mode is resolved from the tool fingerprint and the person.
+  `BuildEnvelope` still accepts `size_bytes` on `agent_activity`, which the contract permits, but
+  nothing sets it yet.
+- **`BuildEnvelope` checks the metadata kinds' values, not only their fields**: the closed enums,
+  the character caps, the `destination_host` pattern, the `model_names` count and non-negative
+  integers, so a malformed record is refused on the device rather than rejected by ingest and
+  dropped from the spool. On those kinds an empty but non-nil label or attachment list counts as
+  set and is refused.
+- **The spool record log** is `core.Pipeline.Log` (`log/slog`), set to the service's logger. The
+  decision is the group `policy_decision` (`action`, `rule_id`), a nested object in the JSON log.
+  `tool_name`, `outcome`, the token counts and `duration_ms` are not on the line: the brief's field
+  list leaves them out. An envelope the spool refuses writes no line.
+- **`Pipeline.Record` counts like `Process`**: `observed`, then `emitted`, `errors` or `dropped`
+  on the route's counter set, and it marks the route's last success.
+- **`check-vocab` has a device-only route list** (`tool.hook`, `tool.otel`, `inv.scan`,
+  `net.flow`): the extension never emits them, so `messages.js` does not transcribe them. An entry
+  that `device/protocol` no longer defines is a finding.
+- **Not changed:** `localdev/tools/simulate-devices.mjs` still emits `model_detection`; the lab is
+  not used for this work.

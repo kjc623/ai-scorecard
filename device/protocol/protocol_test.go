@@ -519,3 +519,55 @@ func TestModeReadsContent(t *testing.T) {
 		t.Fatal("an unknown mode reported itself as valid")
 	}
 }
+
+// The kind registry holds the four contract kinds and no other; model_detection left the contract.
+func TestKindRegistryIsTheContracts(t *testing.T) {
+	for _, k := range []Kind{KindPrompt, KindUsageRollup, KindDiscovery, KindAgentActivity} {
+		if !k.Valid() {
+			t.Errorf("kind %q is refused", k)
+		}
+	}
+	for _, k := range []Kind{"model_detection", "process_exec", ""} {
+		if k.Valid() {
+			t.Errorf("kind %q is accepted", k)
+		}
+	}
+	for _, r := range []Route{RouteToolHook, RouteToolOTel, RouteInvScan, RouteNetFlow} {
+		if !r.Valid() {
+			t.Errorf("route %q is refused", r)
+		}
+	}
+	if Route("tool.mcp").Valid() {
+		t.Error("an invented route is accepted")
+	}
+}
+
+// The discovery and agent-activity enums accept their closed sets and nothing else.
+func TestDiscoveryAndActivityVocabulariesAreClosed(t *testing.T) {
+	for _, v := range []DiscoveryType{DiscoveryTypeAppInstalled, DiscoveryTypeAppRunning, DiscoveryTypeCLIInstalled,
+		DiscoveryTypeIDEExtension, DiscoveryTypeLocalModel, DiscoveryTypeInferenceConnection} {
+		if !v.Valid() {
+			t.Errorf("discovery type %q is refused", v)
+		}
+	}
+	for _, v := range []DetectionBasis{DetectionBasisInstalledScan, DetectionBasisPackageScan, DetectionBasisExtensionScan,
+		DetectionBasisProcessEvent, DetectionBasisModelStore, DetectionBasisPortListen, DetectionBasisFlowMetadata} {
+		if !v.Valid() {
+			t.Errorf("detection basis %q is refused", v)
+		}
+	}
+	for _, v := range []ActivityType{ActivityTypeModelRequest, ActivityTypeToolCall} {
+		if !v.Valid() {
+			t.Errorf("activity type %q is refused", v)
+		}
+	}
+	for _, v := range []ActivityOutcome{ActivityOutcomeSuccess, ActivityOutcomeError, ActivityOutcomeDenied} {
+		if !v.Valid() {
+			t.Errorf("activity outcome %q is refused", v)
+		}
+	}
+	if DiscoveryType("process_list").Valid() || DetectionBasis("signature").Valid() ||
+		ActivityType("prompt").Valid() || ActivityOutcome("accepted").Valid() || DiscoveryType("").Valid() {
+		t.Error("a value outside a closed set is accepted")
+	}
+}

@@ -37,6 +37,9 @@ const VOCABULARIES = [
     title: 'Collection routes (protocol Route*)',
     go: { file: 'device/protocol/envelope.go', prefix: 'Route' },
     js: { file: 'device/extension/src/messages.js', groups: ['ROUTE'] },
+    // Routes only capture-core's own collectors emit. The extension never sees them, so it does
+    // not transcribe them.
+    deviceOnly: ['tool.hook', 'tool.otel', 'inv.scan', 'net.flow'],
   },
   {
     id: 'collection-mode',
@@ -154,9 +157,22 @@ function main() {
 
     const goValues = new Set(go.values());
     const jsValues = new Set(js.values());
+    const deviceOnly = new Set(vocab.deviceOnly ?? []);
     let count = 0;
 
+    for (const value of deviceOnly) {
+      if (!goValues.has(value)) {
+        findings.push({
+          id: vocab.id,
+          kind: 'stale-device-only',
+          value,
+          detail: `the device-only list names "${value}", which device/protocol does not define`,
+        });
+        count++;
+      }
+    }
     for (const [name, value] of go) {
+      if (deviceOnly.has(value)) continue;
       if (!jsValues.has(value)) {
         findings.push({
           id: vocab.id,

@@ -192,6 +192,7 @@ func newService(ctx context.Context, cfg Config, log *slog.Logger) (*service, er
 	}
 	pipe.Bundles = s.currentBundle
 	pipe.ClassifyBudget = classifierBudget
+	pipe.Log = log
 	if s.content, err = contentstore.Open(dir.Path(state.ContentDir), contentKey, time.Now); err != nil {
 		return nil, err
 	}

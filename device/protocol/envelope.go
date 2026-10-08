@@ -9,10 +9,93 @@ import (
 type Kind string
 
 const (
-	KindPrompt         Kind = "prompt"
-	KindUsageRollup    Kind = "usage_rollup"
-	KindModelDetection Kind = "model_detection"
+	KindPrompt        Kind = "prompt"
+	KindUsageRollup   Kind = "usage_rollup"
+	KindDiscovery     Kind = "discovery"
+	KindAgentActivity Kind = "agent_activity"
 )
+
+// DiscoveryType is what a discovery record reports was found on the device.
+type DiscoveryType string
+
+const (
+	DiscoveryTypeAppInstalled        DiscoveryType = "app_installed"
+	DiscoveryTypeAppRunning          DiscoveryType = "app_running"
+	DiscoveryTypeCLIInstalled        DiscoveryType = "cli_installed"
+	DiscoveryTypeIDEExtension        DiscoveryType = "ide_extension"
+	DiscoveryTypeLocalModel          DiscoveryType = "local_model"
+	DiscoveryTypeInferenceConnection DiscoveryType = "inference_connection"
+)
+
+// Valid reports whether the discovery type is in the closed set.
+func (t DiscoveryType) Valid() bool {
+	switch t {
+	case DiscoveryTypeAppInstalled, DiscoveryTypeAppRunning, DiscoveryTypeCLIInstalled,
+		DiscoveryTypeIDEExtension, DiscoveryTypeLocalModel, DiscoveryTypeInferenceConnection:
+		return true
+	default:
+		return false
+	}
+}
+
+// DetectionBasis is how a discovery was made. The mechanisms differ in confidence and coverage,
+// so a record names the one that found it.
+type DetectionBasis string
+
+const (
+	DetectionBasisInstalledScan DetectionBasis = "installed_scan"
+	DetectionBasisPackageScan   DetectionBasis = "package_scan"
+	DetectionBasisExtensionScan DetectionBasis = "extension_scan"
+	DetectionBasisProcessEvent  DetectionBasis = "process_event"
+	DetectionBasisModelStore    DetectionBasis = "model_store"
+	DetectionBasisPortListen    DetectionBasis = "port_listen"
+	DetectionBasisFlowMetadata  DetectionBasis = "flow_metadata"
+)
+
+// Valid reports whether the detection basis is in the closed set.
+func (b DetectionBasis) Valid() bool {
+	switch b {
+	case DetectionBasisInstalledScan, DetectionBasisPackageScan, DetectionBasisExtensionScan,
+		DetectionBasisProcessEvent, DetectionBasisModelStore, DetectionBasisPortListen,
+		DetectionBasisFlowMetadata:
+		return true
+	default:
+		return false
+	}
+}
+
+// ActivityType is what an agent did, as its own telemetry reports it.
+type ActivityType string
+
+const (
+	ActivityTypeModelRequest ActivityType = "model_request"
+	ActivityTypeToolCall     ActivityType = "tool_call"
+)
+
+// Valid reports whether the activity type is in the closed set.
+func (t ActivityType) Valid() bool {
+	return t == ActivityTypeModelRequest || t == ActivityTypeToolCall
+}
+
+// ActivityOutcome is how a model request or tool call ended. Denied means a permission check or a
+// policy refused it.
+type ActivityOutcome string
+
+const (
+	ActivityOutcomeSuccess ActivityOutcome = "success"
+	ActivityOutcomeError   ActivityOutcome = "error"
+	ActivityOutcomeDenied  ActivityOutcome = "denied"
+)
+
+// Valid reports whether the outcome is in the closed set.
+func (o ActivityOutcome) Valid() bool {
+	switch o {
+	case ActivityOutcomeSuccess, ActivityOutcomeError, ActivityOutcomeDenied:
+		return true
+	default:
+		return false
+	}
+}
 
 // PromptKind is the device's decision about what kind of prompt a captured request is. It is
 // request-shape metadata, decided on the device from the payload and the extracted text, never
@@ -57,6 +140,10 @@ const (
 	RouteProxyLoopback  Route = "proxy.loopback"
 	RouteProcDetect     Route = "proc.detect"
 	RouteCLIShim        Route = "cli.shim"
+	RouteToolHook       Route = "tool.hook"
+	RouteToolOTel       Route = "tool.otel"
+	RouteInvScan        Route = "inv.scan"
+	RouteNetFlow        Route = "net.flow"
 )
 
 // CollectionMode is the effective mode resolved on the device from the signed scope matrix,
