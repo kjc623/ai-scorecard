@@ -1,4 +1,4 @@
-package main
+package localipc
 
 import "golang.org/x/sys/unix"
 

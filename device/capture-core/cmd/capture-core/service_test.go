@@ -145,7 +145,7 @@ func TestServiceEnrolsFetchesItsPolicyAndRuns(t *testing.T) {
 		}
 		names = append(names, rep.Collector)
 	}
-	if got, want := strings.Join(names, ","), "egress_proxy,loopback_broker,cli_shim,capture_extension,classifier_host"; got != want {
+	if got, want := strings.Join(names, ","), "egress_proxy,loopback_broker,cli_shim,user_helper,capture_extension,classifier_host"; got != want {
 		t.Errorf("health rows = %s, want %s", got, want)
 	}
 

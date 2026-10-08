@@ -13,7 +13,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { extensionId } from '../extension/tools/extension-id.mjs';
-import { CONFIG, LAYOUT, NATIVE_HOST, PRODUCT, TENANT_PACKAGE, nativeHostManifest } from './manifest.mjs';
+import { CONFIG, LAYOUT, NATIVE_HOST, PRODUCT, START_MENU_SHORTCUT, TENANT_PACKAGE, nativeHostManifest } from './manifest.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const GENERATED = join(ROOT, 'device', 'installer', 'generated');
@@ -120,6 +120,7 @@ export const DATA_FOLDER_ACL = {
 
 function wixSource() {
   const L = LAYOUT.windows;
+  const S = START_MENU_SHORTCUT;
   const tenantName = TENANT_PACKAGE.fileName;
   const profileName = (file) => file.slice(L.profiledir.length + 1);
   const config = profileName(L.configFile);
@@ -174,7 +175,13 @@ function wixSource() {
     <ComponentGroup Id="Product">
       <!-- The agent: a LocalSystem service that reads the vendor file, then the tenant file. -->
       <Component Id="Cmp_CaptureCore" Directory="BINFOLDER">
-        <File Id="Fil_CaptureCore" Source="$(var.StageDir)\\bin\\capture-core.exe" KeyPath="yes" />
+        <File Id="Fil_CaptureCore" Source="$(var.StageDir)\\bin\\capture-core.exe" KeyPath="yes">
+          <!-- The Start-menu shortcut whose AppUserModelID the agent's notifications are shown under. -->
+          <Shortcut Id="Sc_StartMenu" Directory="ProgramMenuFolder" Name="${S.name}" Description="${S.description}"
+                    Arguments="${S.arguments}" WorkingDirectory="BINFOLDER">
+            <ShortcutProperty Key="System.AppUserModel.ID" Value="${S.appUserModelId}" />
+          </Shortcut>
+        </File>
         <ServiceInstall Id="Svc" Name="${L.serviceName}" DisplayName="${PRODUCT.displayName}"
                         Description="Observes AI submissions on this device and sends them to the tenant."
                         Type="ownProcess" Start="auto" ErrorControl="normal" Account="LocalSystem"

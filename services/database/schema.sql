@@ -2351,7 +2351,8 @@ INSERT INTO ref.collector (collector_code, component, modes_supported, descripti
   ('loopback_broker',   'capture_core',      ARRAY['m0','m1','m2','m3'], 'Local inference broker holding the well-known loopback ports of local model runtimes.'),
   ('cli_shim',          'capture_core',      ARRAY['m0','m1','m2','m3'], 'Managed shell profile and environment for proxy and trust: coding agents and SDKs.'),
   ('process_detector',  'capture_core',      ARRAY['m0'],                'Process and loaded-module observation. Detection only: establishes that a model ran, never what was said to it.'),
-  ('classifier_host',   'classifier_host',   ARRAY['m1','m2','m3'],      'Sandboxed classification host. Not a collection path; its health is reported like a collector''s.');
+  ('classifier_host',   'classifier_host',   ARRAY['m1','m2','m3'],      'Sandboxed classification host. Not a collection path; its health is reported like a collector''s.'),
+  ('user_helper',       'capture_core',      ARRAY[]::text[],            'Helper process in each signed-in user session, which shows that user the agent''s notifications. Not a collection path; it reads nothing.');
 
 INSERT INTO ref.retention_class (retention_class, default_ttl_days, description) VALUES
   ('standard',   90,  'Default for event metadata.'),

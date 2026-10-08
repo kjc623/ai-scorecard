@@ -31,7 +31,13 @@
     <ComponentGroup Id="Product">
       <!-- The agent: a LocalSystem service that reads the vendor file, then the tenant file. -->
       <Component Id="Cmp_CaptureCore" Directory="BINFOLDER">
-        <File Id="Fil_CaptureCore" Source="$(var.StageDir)\bin\capture-core.exe" KeyPath="yes" />
+        <File Id="Fil_CaptureCore" Source="$(var.StageDir)\bin\capture-core.exe" KeyPath="yes">
+          <!-- The Start-menu shortcut whose AppUserModelID the agent's notifications are shown under. -->
+          <Shortcut Id="Sc_StartMenu" Directory="ProgramMenuFolder" Name="Shadow AI Capture" Description="Shows the notifications of the Shadow AI Capture agent."
+                    Arguments="--version" WorkingDirectory="BINFOLDER">
+            <ShortcutProperty Key="System.AppUserModel.ID" Value="ShadowAICapture.Agent" />
+          </Shortcut>
+        </File>
         <ServiceInstall Id="Svc" Name="ShadowAICapture" DisplayName="Shadow AI Capture"
                         Description="Observes AI submissions on this device and sends them to the tenant."
                         Type="ownProcess" Start="auto" ErrorControl="normal" Account="LocalSystem"

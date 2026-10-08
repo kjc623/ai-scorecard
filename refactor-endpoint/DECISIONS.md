@@ -280,3 +280,63 @@ decided and why, and for a vendor fact the product version checked.
   `CryptCATAdminCalcHashFromFileHandle2` sizes the hash with a NULL buffer; `CRYPT_PROVIDER_CERT`
   starts with `cbStruct` then `pCert`; `CertGetNameStringW` with `CERT_NAME_ATTR_TYPE` takes an
   ANSI OID (`2.5.4.3`). The `curl.exe` publisher `Microsoft Windows` is checked on Windows.
+
+## 2026-10-08, task 10
+
+- **Migration `0004-user-helper.sql`, not the next free number.** 0003 is task 07's
+  (`0003-endpoint-settings.sql`, in flight), as the orchestrator directed. On this branch alone the
+  migrator's contiguity check (`services/database`, `TestEmbeddedMigrations`) fails until 07 is
+  merged; the gates were also run on a scratch merge with 07. The row is inserted
+  `ON CONFLICT DO NOTHING`, so it applies over the new `schema.sql`. Its `modes_supported` is
+  empty: the helper reads nothing.
+- **The `localipc` move.** The framing tests moved with the framing into `localipc`; the relay test
+  calls `localipc.WriteFrame`/`ReadFrame`. The trust seams `nativeServerOwnerTrusted` and
+  `nativeServerUIDTrusted` stay in `cmd/capture-core` and are passed to `localipc.Dial`, so the
+  test helpers that replace them are unchanged. The predicate's type stays per platform (owner SID
+  on Windows, server uid elsewhere).
+- **One endpoint, routed by the first frame.** A connection that opens with `helper_hello` is the
+  provider's; any other is a browser relay, handled exactly as before.
+- **The owner check compares SIDs** (the uid elsewhere): the user of `WTSQueryUserToken(session_id)`
+  against the pipe client's token user. A refused hello is answered with a `malformed` refusal (no
+  new refusal reason). A newer helper connection for a session replaces an older one.
+- **Restart budget.** The first start in a session is not a restart; a session gets 5 restarts in
+  a sliding 10 minutes, then none until the window allows one, and reports
+  `degraded`/`helper_unavailable` meanwhile. Restarts happen on the 15 s tick. A session whose user
+  changed is a new session with a fresh budget. Session 0 is never served.
+- **Health.** With no signed-in session the row is healthy once the sessions were listed. A failed
+  listing or start is `degraded`/`helper_unavailable` and counts `errors`.
+- **`notify` limits.** Title 1-64 and body 1-280 characters, no control character except a line
+  break in the body, link an absolute https URL of at most 2,048 bytes with no credentials. The
+  helper validates again. `Notify` waits at most 10 s for `notify_result`.
+- **The toast.** `ToastGeneric` with the title and body as two text lines; a link is an "Open"
+  action with `activationType="protocol"` (the schema documents `activationType` on `action`, not
+  on `toast`). The XML is written as ASCII with character references, because go-ole's
+  `NewHString` passes the rune count where `WindowsCreateString` takes UTF-16 units.
+- **The shortcut.** AppUserModelID `ShadowAICapture.Agent`; a "Shadow AI Capture" shortcut in the
+  all-users Start menu, nested in capture-core.exe's `File` (its target), with arguments `--version`
+  so opening it only prints the version. `verify.mjs` checks the Go constant equals the manifest's.
+- **`check-vocab`.** `helper_hello`, `notify` and `notify_result` are device-only message types and
+  `helper_unavailable` a device-only detail; `messages.js` is unchanged.
+- **The Windows integration test** (`TestNotifyShowsAToastInTheConsoleSession`) runs only as
+  LocalSystem with a signed-in console user and skips otherwise: `WTSQueryUserToken` needs
+  `SE_TCB_NAME`, which an administrator does not hold. The test binary is its own helper
+  (`--user-helper <pipe>`), started in the console session only. The device phase must run it as
+  SYSTEM.
+- **Vendor facts (read 2026-10-08; learn.microsoft.com is not reachable from the build machine):**
+  - Win32 reference (MicrosoftDocs/sdk-api source, pages dated 2018-12-05): `WTSEnumerateSessionsW`
+    (reserved 0, version 1, freed with `WTSFreeMemory`); `WTS_CONNECTSTATE_CLASS` (`WTSDisconnected`
+    is a signed-in user who is not connected); `WTSQueryUserToken` (LocalSystem with
+    `SE_TCB_NAME`; the token is closed by the caller); `CreateProcessAsUserW` (`winsta0\default`
+    for an interactive process, `CREATE_UNICODE_ENVIRONMENT` with a `CreateEnvironmentBlock`
+    block).
+  - WinRT IIDs and method order from Microsoft's windows-rs bindings (master): `IXmlDocument`
+    F7F3A506-..., `IXmlDocumentIO` 6CD0E74E-... (`LoadXml` slot 6), `IToastNotificationFactory`
+    04124B20-... (`CreateToastNotification` 6), `IToastNotificationManagerStatics` 50AC103F-...
+    (`CreateToastNotifierWithId` 7), `IToastNotifier` 75927B93-... (`Show` 6).
+  - `ToastNotificationManager` (MicrosoftDocs/winrt-api): a desktop app's toast needs a Start
+    shortcut with an AppUserModelID. Toast schema (MicrosoftDocs/winrt-related: `toast` 2017-04-05,
+    `action` 2022-03-01, `binding` `ToastGeneric`). Application User Model IDs (MicrosoftDocs/win32,
+    2018-05-31): an MSI sets it with the `MsiShortcutProperty` table.
+  - WiX (wixtoolset/wix main, `Compiler_Package.cs`): `Shortcut` takes `Directory`, `Arguments`,
+    `WorkingDirectory`, and targets its parent `File`; `ShortcutProperty` takes `Key` and `Value`.
+  - None of it ran here; the device phase checks it on the reference VM.

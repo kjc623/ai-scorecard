@@ -9,7 +9,7 @@ signed collection policy, spools them encrypted and delivers them to the device 
 | Component | What it is |
 |---|---|
 | `protocol` | The shapes the device components and the device edge agree on: enrolment, policy, events, health, content upload, native messaging, classifier frames, spool records. |
-| `capture-core` | The agent binary (`cmd/capture-core`) and its packages: `core` (pipeline, mode gate, envelope, supervisor), `policy`, `proxy/tlsproxy`, `proxy/loopback`, `cli` (CLI trust shim), `trust`, `drain` (enrolment, delivery, policy fetch, health, content upload), `credential`, `contentstore`, `state`, `hostinfo`, `dedup`, `classifierlink`, `attachments`. |
+| `capture-core` | The agent binary (`cmd/capture-core`) and its packages: `core` (pipeline, mode gate, envelope, supervisor), `policy`, `proxy/tlsproxy`, `proxy/loopback`, `cli` (CLI trust shim), `trust`, `drain` (enrolment, delivery, policy fetch, health, content upload), `credential`, `contentstore`, `state`, `hostinfo`, `dedup`, `classifierlink`, `attachments`, `localipc` (the local endpoint the browser relay and the user-session helper connect to), `userhelper` (the user-session helper). |
 | `capture-spool` | The encrypted, bounded, crash-safe single-writer spool. |
 | `classifier-host` | The on-device classifier, run by capture-core as a child process on stdio. |
 | `extension` | The Chrome/Edge extension that observes browser submissions to AI tools and hands them, with their attachments, to capture-core through the native messaging host. |
@@ -74,6 +74,18 @@ not name them by digest within two minutes. The observation's bytes are classifi
 (documents go to classifier-host's isolated parser child), the labels join the event's, and the
 bytes are discarded: the envelope carries only the name, size and digest, and nothing is written
 to the spool or the content store.
+
+## The user-session helper
+
+On Windows the service starts `capture-core --user-helper` in every session with a signed-in user
+(active or disconnected), as that user, on `winsta0\default` with no window, and checks every 15
+seconds that each still has one; a helper that exits is started again at most 5 times in 10 minutes
+per session. The helper connects to the same endpoint, with the same check that the service owns
+it, and opens with `helper_hello` naming its session; the service accepts it only from the user
+signed in to that session. It shows the notifications the service sends as Windows toasts under the
+AppUserModelID `ShadowAICapture.Agent`, which the MSI's Start-menu shortcut carries. Its health row
+is `user_helper`: healthy when every signed-in session has a connected helper, else `degraded` with
+`helper_unavailable`; on macOS and Linux it is `absent` with `helper_unavailable`.
 
 ## Build and test
 

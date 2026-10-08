@@ -590,3 +590,47 @@ func TestCollectorVocabularyIsClosed(t *testing.T) {
 		t.Error("disabled_by_policy is not in the detail vocabulary")
 	}
 }
+
+// The user-session helper's collector and detail are in the closed vocabularies.
+func TestUserHelperVocabulary(t *testing.T) {
+	if !CollectorUserHelper.Valid() || CollectorUserHelper != "user_helper" {
+		t.Errorf("collector %q is not the user_helper code", CollectorUserHelper)
+	}
+	if !DetailHelperUnavailable.Valid() {
+		t.Error("helper_unavailable is not in the detail vocabulary")
+	}
+}
+
+// A notification is bounded in characters, holds no control character but a body's line break,
+// and links only to an absolute https URL.
+func TestNotifyValidate(t *testing.T) {
+	ok := []Notify{
+		{Title: "Prompt blocked", Body: "This prompt carries a payment card number."},
+		{Title: strings.Repeat("é", MaxNotifyTitle), Body: strings.Repeat("ß", MaxNotifyBody)},
+		{Title: "Blocked", Body: "Line one\nLine two", Link: "https://intranet.example.com/ai-policy?x=1"},
+	}
+	for _, n := range ok {
+		if err := n.Validate(); err != nil {
+			t.Errorf("%+v refused: %v", n, err)
+		}
+	}
+	bad := map[string]Notify{
+		"empty title":        {Body: "b"},
+		"blank body":         {Title: "t", Body: "  "},
+		"long title":         {Title: strings.Repeat("a", MaxNotifyTitle+1), Body: "b"},
+		"long body":          {Title: "t", Body: strings.Repeat("a", MaxNotifyBody+1)},
+		"title line break":   {Title: "a\nb", Body: "b"},
+		"body control":       {Title: "t", Body: "a\x07b"},
+		"not utf-8":          {Title: "t", Body: "\xff"},
+		"http link":          {Title: "t", Body: "b", Link: "http://example.com/"},
+		"relative link":      {Title: "t", Body: "b", Link: "/policy"},
+		"other scheme":       {Title: "t", Body: "b", Link: "file:///C:/Windows/System32/calc.exe"},
+		"credentials in url": {Title: "t", Body: "b", Link: "https://user:pw@example.com/"},
+		"long link":          {Title: "t", Body: "b", Link: "https://example.com/" + strings.Repeat("a", MaxNotifyLink)},
+	}
+	for name, n := range bad {
+		if err := n.Validate(); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

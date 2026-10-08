@@ -2,11 +2,9 @@ package main
 
 import (
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"time"
 
 	"github.com/shadow-ai-capture/device/capture-core/attachments"
@@ -14,48 +12,6 @@ import (
 	"github.com/shadow-ai-capture/device/capture-core/dedup"
 	"github.com/shadow-ai-capture/device/protocol"
 )
-
-// Native messaging is Chromium's transport: a 4-byte little-endian length prefix, then one JSON
-// document. The same frames travel unchanged between the browser and the relay process (on its
-// stdin and stdout) and between the relay and the service (on the native messaging endpoint).
-const (
-	// maxNativeFrameBytes is Chromium's limit for one message to the browser, and the limit the
-	// extension holds itself to. A length that claims more is refused before allocating.
-	maxNativeFrameBytes = 1 << 20
-	nativeHeaderBytes   = 4
-)
-
-// writeNativeFrame writes one frame in a single Write, so concurrent writers cannot interleave.
-func writeNativeFrame(w io.Writer, payload []byte) error {
-	if len(payload) > maxNativeFrameBytes {
-		return fmt.Errorf("native message is %d bytes, over the %d limit", len(payload), maxNativeFrameBytes)
-	}
-	buf := make([]byte, nativeHeaderBytes+len(payload))
-	binary.LittleEndian.PutUint32(buf, uint32(len(payload)))
-	copy(buf[nativeHeaderBytes:], payload)
-	_, err := w.Write(buf)
-	return err
-}
-
-// readNativeFrame reads one frame. io.EOF before the first header byte is the peer closing.
-func readNativeFrame(r io.Reader) ([]byte, error) {
-	var hdr [nativeHeaderBytes]byte
-	if _, err := io.ReadFull(r, hdr[:]); err != nil {
-		return nil, err
-	}
-	n := binary.LittleEndian.Uint32(hdr[:])
-	if n > maxNativeFrameBytes {
-		return nil, fmt.Errorf("native frame declares %d bytes, over the %d limit", n, maxNativeFrameBytes)
-	}
-	if n == 0 {
-		return nil, errors.New("native frame carries no payload")
-	}
-	payload := make([]byte, n)
-	if _, err := io.ReadFull(r, payload); err != nil {
-		return nil, err
-	}
-	return payload, nil
-}
 
 // nativeSession handles the frames of one browser connection. Observations are attributed to the
 // person the connection belongs to, and the pipeline decides the mode: the session never decides

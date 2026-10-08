@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
 import { extensionId } from '../extension/tools/extension-id.mjs';
-import { CONFIG, LAYOUT, NATIVE_HOST, TENANT_PACKAGE, genericEnv, genericProfile, nativeHostManifest } from './manifest.mjs';
+import { CONFIG, LAYOUT, NATIVE_HOST, START_MENU_SHORTCUT, TENANT_PACKAGE, genericEnv, genericProfile, nativeHostManifest } from './manifest.mjs';
 import { DATA_FOLDER_ACL, drift } from './render.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -121,6 +121,15 @@ check(
   Object.entries(DATA_FOLDER_ACL).every(([d, sddl]) => wxs.includes(`<CreateFolder Directory="${d}"><PermissionEx Sddl="${sddl}" /></CreateFolder>`)) &&
     !/;;;BU\)/.test(DATA_FOLDER_ACL.PROFILEFOLDER + DATA_FOLDER_ACL.STATEFOLDER) &&
     wxs.includes('<Directory Id="CLIFOLDER" Name="cli" />'),
+);
+const S = START_MENU_SHORTCUT;
+const helperAumid = /const AppUserModelID = "([^"]+)"/.exec(read('device/capture-core/userhelper/toast.go'))?.[1];
+check(
+  "Windows: the Start-menu shortcut carries the AppUserModelID capture-core's notifications are shown under",
+  helperAumid === S.appUserModelId &&
+    /<File Id="Fil_CaptureCore"[^>]*>\s*(?:<!--[^>]*-->\s*)?<Shortcut Id="Sc_StartMenu" Directory="ProgramMenuFolder"/.test(wxs) &&
+    wxs.includes(`<ShortcutProperty Key="System.AppUserModel.ID" Value="${S.appUserModelId}" />`),
+  helperAumid ? `${S.appUserModelId}, capture-core ${helperAumid}` : 'AppUserModelID not found in device/capture-core/userhelper/toast.go',
 );
 check('Windows: the MSI version is a build input with no default', wxs.includes('Version="$(var.ProductVersion)"') && !wxs.includes('define ProductVersion'));
 

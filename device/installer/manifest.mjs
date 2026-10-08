@@ -69,6 +69,20 @@ export const NATIVE_HOST = {
   ],
 };
 
+/**
+ * The Windows Start-menu shortcut that gives the agent's notifications their identity. Windows shows
+ * a desktop app's toast only under an AppUserModelID that a Start-menu shortcut carries as its
+ * System.AppUserModel.ID property, and capture-core's user-session helper shows its toasts under
+ * this one (AppUserModelID in device/capture-core/userhelper). Opening the shortcut runs
+ * capture-core with `arguments`, which only prints the version.
+ */
+export const START_MENU_SHORTCUT = {
+  name: 'Shadow AI Capture',
+  description: 'Shows the notifications of the Shadow AI Capture agent.',
+  arguments: '--version',
+  appUserModelId: 'ShadowAICapture.Agent',
+};
+
 /** The host manifest for one platform. Windows resolves `path` against the manifest's own folder. */
 export function nativeHostManifest(os, extensionId) {
   return {

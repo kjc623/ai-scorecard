@@ -7,6 +7,8 @@ import (
 	"io"
 	"net"
 	"time"
+
+	"github.com/shadow-ai-capture/device/capture-core/localipc"
 )
 
 // relayConnectBudget is how long the relay waits for the service's endpoint, which covers a
@@ -59,14 +61,14 @@ func dialWithRetry(ctx context.Context, dial func(context.Context) (net.Conn, er
 // copyFrames moves whole native-messaging frames from src to dst until src ends.
 func copyFrames(dst io.Writer, src io.Reader) error {
 	for {
-		payload, err := readNativeFrame(src)
+		payload, err := localipc.ReadFrame(src)
 		if err != nil {
 			if errors.Is(err, io.ErrUnexpectedEOF) {
 				return io.EOF
 			}
 			return err
 		}
-		if err := writeNativeFrame(dst, payload); err != nil {
+		if err := localipc.WriteFrame(dst, payload); err != nil {
 			return err
 		}
 	}

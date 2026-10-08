@@ -237,6 +237,8 @@ func (s *service) watchPeople(ctx context.Context, stop <-chan struct{}) {
 			if s.pac != nil {
 				_ = s.pac.Refresh(ctx)
 			}
+			// Start a helper in a new session and restart one that exited.
+			s.helpers.Reconcile(ctx)
 		}
 	}
 }

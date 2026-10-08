@@ -6,7 +6,6 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	"github.com/shadow-ai-capture/device/capture-core/hostinfo"
+	"github.com/shadow-ai-capture/device/capture-core/localipc"
 	"github.com/shadow-ai-capture/device/protocol"
 )
 
@@ -54,35 +54,6 @@ func refusalReason(t *testing.T, payload []byte) protocol.RefusalReason {
 		t.Fatalf("answer is not a refusal: %s", payload)
 	}
 	return r.Reason
-}
-
-func TestNativeFramingIsLittleEndianLengthPrefixed(t *testing.T) {
-	var buf bytes.Buffer
-	if err := writeNativeFrame(&buf, []byte(`{"type":"health"}`)); err != nil {
-		t.Fatal(err)
-	}
-	raw := buf.Bytes()
-	if n := binary.LittleEndian.Uint32(raw[:4]); n != 17 {
-		t.Fatalf("length prefix = %d, want 17", n)
-	}
-	got, err := readNativeFrame(&buf)
-	if err != nil || string(got) != `{"type":"health"}` {
-		t.Fatalf("round trip = %q, %v", got, err)
-	}
-}
-
-func TestNativeFramingRefusesOversizeAndEmpty(t *testing.T) {
-	if err := writeNativeFrame(io.Discard, make([]byte, maxNativeFrameBytes+1)); err == nil {
-		t.Fatal("an oversize frame was written")
-	}
-	var hdr [4]byte
-	binary.LittleEndian.PutUint32(hdr[:], maxNativeFrameBytes+1)
-	if _, err := readNativeFrame(bytes.NewReader(hdr[:])); err == nil {
-		t.Fatal("an oversize length was accepted before allocation")
-	}
-	if _, err := readNativeFrame(bytes.NewReader([]byte{0, 0, 0, 0})); err == nil {
-		t.Fatal("an empty frame was accepted")
-	}
 }
 
 func TestToCoreObservationKeepsContentBehindAReader(t *testing.T) {
@@ -336,12 +307,12 @@ func TestRelayCarriesFramesToTheServiceOverTheEndpoint(t *testing.T) {
 	relayDone := make(chan error, 1)
 	go func() { relayDone <- runRelay(stdinR, stdoutW, dialNative) }()
 
-	if err := writeNativeFrame(stdinW, observationFrame(t, "obs-relay", []byte("summarise this contract"))); err != nil {
+	if err := localipc.WriteFrame(stdinW, observationFrame(t, "obs-relay", []byte("summarise this contract"))); err != nil {
 		t.Fatal(err)
 	}
 	answer := make(chan []byte, 1)
 	go func() {
-		payload, _ := readNativeFrame(stdoutR)
+		payload, _ := localipc.ReadFrame(stdoutR)
 		answer <- payload
 	}()
 	select {

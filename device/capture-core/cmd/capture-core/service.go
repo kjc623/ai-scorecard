@@ -21,11 +21,13 @@ import (
 	"github.com/shadow-ai-capture/device/capture-core/credential"
 	"github.com/shadow-ai-capture/device/capture-core/drain"
 	"github.com/shadow-ai-capture/device/capture-core/hostinfo"
+	"github.com/shadow-ai-capture/device/capture-core/localipc"
 	"github.com/shadow-ai-capture/device/capture-core/policy"
 	"github.com/shadow-ai-capture/device/capture-core/proxy/loopback"
 	"github.com/shadow-ai-capture/device/capture-core/proxy/tlsproxy"
 	"github.com/shadow-ai-capture/device/capture-core/state"
 	"github.com/shadow-ai-capture/device/capture-core/trust"
+	"github.com/shadow-ai-capture/device/capture-core/userhelper"
 	"github.com/shadow-ai-capture/device/capture-core/winproxy"
 	capturespool "github.com/shadow-ai-capture/device/capture-spool"
 	"github.com/shadow-ai-capture/device/protocol"
@@ -60,6 +62,9 @@ type facilities struct {
 	// connOwner names the process at the client end of a loopback connection the proxy accepted.
 	// nil where the platform cannot; proxy observations are then attributed to the console user.
 	connOwner func(conn net.Conn) (hostinfo.Process, error)
+	// userSessions lists the signed-in sessions and starts the user-session helper in them; nil
+	// where the platform has no helper.
+	userSessions userhelper.Platform
 }
 
 // trustStore installs, verifies and removes the per-device CA in the platform trust store.
@@ -73,9 +78,19 @@ var platform = facilities{
 	trustStore: func(logf func(string, ...any)) trustStore {
 		return trust.New(trust.Config{OS: trust.HostOS(), Logf: logf})
 	},
-	shimRunner: trust.ExecRunner{},
-	nativeAddr: nativeEndpoint,
-	connOwner:  loopbackAttribution(),
+	shimRunner:   trust.ExecRunner{},
+	nativeAddr:   localipc.Endpoint,
+	connOwner:    loopbackAttribution(),
+	userSessions: helperPlatform(),
+}
+
+// helperPlatform starts this executable in helper mode in each signed-in session.
+func helperPlatform() userhelper.Platform {
+	exe, err := os.Executable()
+	if err != nil {
+		return nil
+	}
+	return userhelper.SystemPlatform(exe, userHelperArg)
 }
 
 // loopbackAttribution is how the platform names a loopback connection's client: the TCP owner table
@@ -150,7 +165,8 @@ type service struct {
 	drainer *drain.Drainer
 	trust   trustStore
 	health  *healthChannel
-	native  *nativeServer
+	native  *localipc.Server
+	helpers *userhelper.Provider
 
 	// tlsProv is proxy.tls, and pac the Windows desktop-app PAC that points at it. The PAC is
 	// not a provider (it produces no observations); it is started and stopped beside the native
@@ -330,7 +346,8 @@ func (s *service) buildDrainer(spoolKey []byte) error {
 	return nil
 }
 
-// buildProviders builds proxy.tls, the loopback broker and the CLI shim over the per-device CA.
+// buildProviders builds proxy.tls, the loopback broker and the CLI shim over the per-device CA, and
+// the user-session helper.
 func (s *service) buildProviders() error {
 	b := s.currentBundle()
 	label := s.resolvedHostname()
@@ -406,6 +423,11 @@ func (s *service) buildProviders() error {
 		return err
 	}
 
+	s.helpers = userhelper.New(userhelper.Config{Platform: platform.userSessions, Log: s.logf, Clock: time.Now})
+	if err := s.reg.Add(s.helpers); err != nil {
+		return err
+	}
+
 	s.buildPAC(b)
 	return nil
 }
@@ -467,7 +489,7 @@ func (s *service) Start(ctx context.Context) error {
 	}()
 	if err := s.native.Start(); err != nil {
 		// The browser relay is one collection path; the others keep running without it.
-		s.log.Error("native messaging endpoint unavailable; the browser extension cannot reach the agent", "endpoint", s.native.addr, "error", err)
+		s.log.Error("native messaging endpoint unavailable; the browser extension cannot reach the agent", "endpoint", s.native.Addr(), "error", err)
 	}
 	if s.pac != nil {
 		if err := s.pac.Start(ctx); err != nil {
