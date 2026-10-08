@@ -60,12 +60,10 @@ type Config struct {
 	// TrustRoot installs and removes the device CA. Removal is as reliable as installation.
 	TrustRoot core.TrustRoot
 
-	// CACertPEM and CAKeyPEM are the device CA the proxy mints leaves from: the per-device CA
-	// the service keeps in its state directory, which is the root the trust store holds. They
-	// are set together; exactly one is a configuration error. With neither, the provider mints
-	// a CA for this run.
-	CACertPEM []byte
-	CAKeyPEM  []byte
+	// CA is the device CA the proxy mints leaves from: the per-device root the service keeps
+	// (OpenDeviceCA), which is the root the trust store holds. It outlives a Stop, so a policy
+	// toggle installs and removes the same root over the same key. nil mints a CA for this run.
+	CA *CA
 
 	// CanaryHost/CanaryPort is the end-to-end probe destination. Healthy requires a successful
 	// handshake through a minted leaf against it; without one the provider reports
@@ -199,19 +197,13 @@ func (p *Provider) ListenAddr() string {
 	return p.ln.Addr().String()
 }
 
-// buildCA produces the device CA: the configured PEM pair when supplied, otherwise a CA minted for
-// this run. Exactly one of the pair is refused rather than silently generating a fallback, because
-// a proxy running a CA the device does not trust must not claim to intercept.
+// buildCA produces the device CA: the configured one when supplied, otherwise a CA minted for this
+// run.
 func (p *Provider) buildCA(deviceID string) (*CA, error) {
-	haveCert, haveKey := len(p.cfg.CACertPEM) > 0, len(p.cfg.CAKeyPEM) > 0
-	switch {
-	case haveCert && haveKey:
-		return NewCAFromPEM(p.cfg.CACertPEM, p.cfg.CAKeyPEM, p.cfg.Clock())
-	case haveCert || haveKey:
-		return nil, fmt.Errorf("tlsproxy: CA certificate and key must be supplied together; refusing a silent generated fallback")
-	default:
-		return NewCA(deviceID, p.cfg.Clock())
+	if p.cfg.CA != nil {
+		return p.cfg.CA, nil
 	}
+	return NewCA(deviceID, p.cfg.Clock())
 }
 
 // Enabled implements core.Toggled: the proxy runs only while the tenant's TLS inspection is on.

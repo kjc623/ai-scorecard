@@ -6,6 +6,7 @@ require (
 	github.com/Microsoft/go-winio v0.6.2
 	github.com/go-ole/go-ole v1.3.0
 	github.com/godbus/dbus/v5 v5.2.2
+	github.com/google/certtostore v1.0.7
 	github.com/shadow-ai-capture/device/capture-spool v0.0.0
 	github.com/shadow-ai-capture/device/protocol v0.0.0
 	go.opentelemetry.io/otel v1.47.0
@@ -28,15 +29,18 @@ require (
 )
 
 require (
+	github.com/StackExchange/wmi v1.2.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
+	github.com/google/deck v1.1.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.31.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.47.0 // indirect
 	go.opentelemetry.io/otel/metric v1.47.0 // indirect
+	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/net v0.59.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260928230214-8a89bd6388cc // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260928230214-8a89bd6388cc // indirect

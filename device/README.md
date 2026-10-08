@@ -50,7 +50,9 @@ agent's own default, never taken from the policy bundle.
 
 On first start the agent enrols with the deployment key (a CSR; the edge returns a device
 certificate), fetches the signed policy bundle, mints its per-device interception CA, and starts the
-providers. TLS inspection is a tenant setting, off by default: only while the bundle's
+providers. The CA's certificate is kept in `device-ca/`; on Windows its private key is a
+non-exportable CNG machine key, `ShadowAICapture-DeviceRoot` in the Microsoft Software Key Storage
+Provider, and elsewhere a file beside the certificate. TLS inspection is a tenant setting, off by default: only while the bundle's
 `interception.enabled` is true does the agent run the TLS proxy, write the CLI trust shim, set the
 Windows desktop-app PAC and keep its CA in the trust store, and a policy change starts or removes
 them without a restart. It rotates the certificate, presenting the current
