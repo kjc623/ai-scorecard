@@ -462,3 +462,28 @@ decided and why, and for a vendor fact the product version checked.
   knows only the connections the test dialled. The Windows test
   (`TestSenderIsNamedByTheTCPOwnerTable`, real `OwnerOfLocalTCP` and `ProcessInfo`) compiles here
   but did not run; the device phase runs it.
+
+## 2026-10-08, task 25
+
+- **Source.** `docs.anthropic.com` is blocked from the build machine (proxy 403), so the fixtures
+  follow https://code.claude.com/docs/en/monitoring-usage (its `.md` form), page `dateModified`
+  2026-10-08T19:00:28Z, read 2026-10-08. The page names features up to Claude Code v2.1.287; npm
+  `latest` that day was 2.1.295, which the fixtures carry as `service.version`.
+- **More events than the brief names.** The page documents 27 log events (from `user_prompt` to
+  `managed_settings_resolved`, plus `system_prompt` under detailed beta tracing); all are in
+  `logs-prompts-on.json`. `prompt_text` (a copy of `prompt`, same gate) is new and is a second
+  attribute that carries prompt text.
+- **Where the event name sits is undocumented.** The fixtures put `claude_code.<name>` in the log
+  record body and `<name>` in `event.name`, and leave the OTLP `eventName` field unset; the
+  logger's scope name is undocumented too (the fixtures use the meter name,
+  `com.anthropic.claude_code`). The capture settles both.
+- **Redacted prompt value.** The page says `prompt` is "redacted" by default and elsewhere that
+  "only prompt length is recorded"; it shows `<REDACTED>` for `response` and the span prompt. The
+  prompts-off fixture uses `<REDACTED>` for `prompt` and `prompt_text`.
+- **Value types.** Quoted documented values (`"true"`) are strings, unquoted or Boolean ones are
+  `boolValue`, integers `intValue`; `status_code` is an integer except on `auth`. Metrics are
+  monotonic delta `asDouble` sums.
+- **Left out:** custom `OTEL_RESOURCE_ATTRIBUTES` keys and the gateway-only `user.groups` and
+  `identity.source`; spans (the brief asks for logs and metrics). Response text, the system
+  prompt, MCP server names and hook commands are `SAC-PLACEHOLDER-<n>` as well as the paths,
+  command lines and ids the brief names; the folder's README lists each one.
