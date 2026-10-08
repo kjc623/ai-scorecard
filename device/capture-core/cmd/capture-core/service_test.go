@@ -145,7 +145,7 @@ func TestServiceEnrolsFetchesItsPolicyAndRuns(t *testing.T) {
 		}
 		names = append(names, rep.Collector)
 	}
-	if got, want := strings.Join(names, ","), "egress_proxy,loopback_broker,cli_shim,otel_receiver,tool_config_claude_code,tool_config_cursor,user_helper,hook_relay,inventory_scanner,process_detector,flow_monitor,capture_extension,classifier_host"; got != want {
+	if got, want := strings.Join(names, ","), "egress_proxy,loopback_broker,cli_shim,otel_receiver,tool_config_claude_code,tool_config_copilot,tool_config_cursor,user_helper,hook_relay,inventory_scanner,process_detector,flow_monitor,capture_extension,classifier_host"; got != want {
 		t.Errorf("health rows = %s, want %s", got, want)
 	}
 

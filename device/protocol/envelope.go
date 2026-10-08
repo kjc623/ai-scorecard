@@ -165,7 +165,10 @@ const (
 	CollectorToolConfigClaudeCode Collector = "tool_config_claude_code"
 	// CollectorToolConfigCursor writes Cursor's enterprise hooks file; it emits nothing itself.
 	CollectorToolConfigCursor Collector = "tool_config_cursor"
-	CollectorHookRelay        Collector = "hook_relay"
+	// CollectorToolConfigCopilot writes GitHub Copilot's machine policies and the Copilot CLI's
+	// machine environment; it emits nothing itself.
+	CollectorToolConfigCopilot Collector = "tool_config_copilot"
+	CollectorHookRelay         Collector = "hook_relay"
 	// CollectorInventoryScanner scans the installed applications and emits them on inv.scan.
 	CollectorInventoryScanner Collector = "inventory_scanner"
 	// CollectorFlowMonitor attributes connections to catalog inference domains and emits them on
@@ -180,7 +183,7 @@ func (c Collector) Valid() bool {
 	case CollectorEgressProxy, CollectorLoopbackBroker, CollectorCLIShim,
 		CollectorProcessDetector, CollectorClassifierHost, CollectorCaptureExtension,
 		CollectorDesktopProxy, CollectorOTelReceiver, CollectorUserHelper,
-		CollectorToolConfigClaudeCode, CollectorToolConfigCursor, CollectorHookRelay,
+		CollectorToolConfigClaudeCode, CollectorToolConfigCursor, CollectorToolConfigCopilot, CollectorHookRelay,
 		CollectorInventoryScanner, CollectorFlowMonitor:
 		return true
 	default:

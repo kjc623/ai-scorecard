@@ -609,6 +609,9 @@ func TestToolConfigVocabulary(t *testing.T) {
 	if !CollectorToolConfigCursor.Valid() || CollectorToolConfigCursor != "tool_config_cursor" {
 		t.Errorf("collector %q is not the tool_config_cursor code", CollectorToolConfigCursor)
 	}
+	if !CollectorToolConfigCopilot.Valid() || CollectorToolConfigCopilot != "tool_config_copilot" {
+		t.Errorf("collector %q is not the tool_config_copilot code", CollectorToolConfigCopilot)
+	}
 	for _, d := range []Detail{DetailToolNotInstalled, DetailToolVersionUnsupported, DetailConfigWriteFailed} {
 		if !d.Valid() {
 			t.Errorf("%s is not in the detail vocabulary", d)

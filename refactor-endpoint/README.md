@@ -61,7 +61,7 @@ The Plan column gives the plan's task id. "Built" is ticked when the task's "Don
 | 28 | [Codex fixtures and normalizer](28-codex-otel-normalizer/TASK.md) | E19 | 27 | Codex CLI signed in | [x] | [ ] |
 | 29 | [Codex config writer](29-codex-config-writer/TASK.md) | E19 | 28 | Codex CLI signed in | [ ] | [ ] |
 | 30 | [Copilot fixtures and normalizer](30-copilot-otel-normalizer/TASK.md) | E20 | 27 | VS Code with Copilot, Copilot CLI, a Copilot licence | [x] | [ ] |
-| 31 | [Copilot config writer](31-copilot-config-writer/TASK.md) | E20 | 30 | as 30 | [ ] | [ ] |
+| 31 | [Copilot config writer](31-copilot-config-writer/TASK.md) | E20 | 30 | as 30 | [x] | [ ] |
 | 32 | [Claude Cowork spike](32-claude-cowork-spike/TASK.md) | E21 | 27 | Claude Desktop with Cowork | [x] | [ ] |
 | 33 | [Generic GenAI normalizer](33-genai-normalizer/TASK.md) | E22 | 24 | | [x] | [ ] |
 | 34 | [Config drift watcher](34-config-drift-watcher/TASK.md) | E23 | 27, 29, 31 | | [ ] | [ ] |

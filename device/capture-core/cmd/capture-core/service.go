@@ -20,6 +20,7 @@ import (
 	"github.com/shadow-ai-capture/device/capture-core/contentstore"
 	"github.com/shadow-ai-capture/device/capture-core/core"
 	"github.com/shadow-ai-capture/device/capture-core/credential"
+	"github.com/shadow-ai-capture/device/capture-core/discovery"
 	"github.com/shadow-ai-capture/device/capture-core/drain"
 	"github.com/shadow-ai-capture/device/capture-core/flowmon"
 	"github.com/shadow-ai-capture/device/capture-core/hooks"
@@ -403,8 +404,8 @@ func (s *service) buildDrainer(spoolKey []byte) error {
 }
 
 // buildProviders builds proxy.tls, the loopback broker and the CLI shim over the per-device CA, the
-// OTLP receiver, Claude Code's and Cursor's configuration writers, the user-session helper, the hook
-// relay, the inventory scanner, the process monitor and the flow monitor.
+// OTLP receiver, Claude Code's, Copilot's and Cursor's configuration writers, the user-session
+// helper, the hook relay, the inventory scanner, the process monitor and the flow monitor.
 func (s *service) buildProviders() error {
 	b := s.currentBundle()
 	label := s.resolvedHostname()
@@ -499,6 +500,32 @@ func (s *service) buildProviders() error {
 		Clock: time.Now,
 	})
 	if err := s.reg.Add(claude); err != nil {
+		return err
+	}
+
+	// Copilot's OTel export is pointed at the receiver through VS Code's machine policies while the
+	// IDE extension scan finds the Copilot extension, and through the machine environment while the
+	// CLI scan finds the Copilot CLI. The installed-app scan gives VS Code's version.
+	copilotInstall := func() toolconfig.CopilotInstall {
+		b := s.currentBundle()
+		if b == nil {
+			return toolconfig.CopilotInstall{}
+		}
+		anyone := func(hostinfo.User) core.Person { return core.Person{} }
+		var found []discovery.Record
+		for _, sc := range inventory.Scanners(anyone) {
+			recs, _ := sc.Scan(context.Background(), b)
+			found = append(found, recs...)
+		}
+		return toolconfig.CopilotInstallFrom(found)
+	}
+	copilot := toolconfig.NewCopilot(toolconfig.NewCopilotWriter(s.dir, copilotInstall), toolconfig.Config{
+		Token: otel.Token,
+		Scope: s.toolScope,
+		Log:   s.logf,
+		Clock: time.Now,
+	})
+	if err := s.reg.Add(copilot); err != nil {
 		return err
 	}
 

@@ -23,6 +23,11 @@ type tool struct {
 	otel bool
 	// managedOnly is whether the tool has a setting that lets only managed hooks run.
 	managedOnly bool
+	// otelOnly is whether the agent declares no hooks for the tool, so its hooks switch does nothing.
+	otelOnly bool
+	// cliFingerprint is the catalog fingerprint of the tool's CLI when that is an app of its own,
+	// whose prompt logging follows its own collection mode.
+	cliFingerprint string
 }
 
 // Config is a provider's seams.
@@ -94,7 +99,12 @@ func (p *Provider) Name() protocol.Collector { return p.tool.collector }
 // Enabled implements core.Toggled: either of the tool's OTel and hooks switches, each effective
 // while its collector is on.
 func (p *Provider) Enabled(b *policy.Bundle) bool {
-	return p.otelOn(b) || hooksOn(b, p.tool.key)
+	return p.otelOn(b) || p.hooksOn(b)
+}
+
+// hooksOn is the tool's hooks switch, for a tool the agent declares hooks for.
+func (p *Provider) hooksOn(b *policy.Bundle) bool {
+	return !p.tool.otelOnly && hooksOn(b, p.tool.key)
 }
 
 // otelOn is the tool's OTel switch, for a tool with an OTel export.
@@ -123,14 +133,19 @@ func (p *Provider) desired(b *policy.Bundle) Desired {
 		if p.cfg.Scope != nil {
 			q = p.cfg.Scope()
 		}
-		q.ToolFingerprint = p.tool.fingerprint
-		mode := core.Resolve(b, q).Mode
+		logs := func(fingerprint string) bool {
+			q.ToolFingerprint = fingerprint
+			return core.ModeRank(core.Resolve(b, q).Mode) >= core.ModeRank(protocol.ModeM1)
+		}
 		d.OTel = true
 		d.HTTPListen = b.Endpoint.OTel.HTTPListen
 		d.Token = p.cfg.Token()
-		d.LogPrompts = core.ModeRank(mode) >= core.ModeRank(protocol.ModeM1)
+		d.LogPrompts = logs(p.tool.fingerprint)
+		if p.tool.cliFingerprint != "" {
+			d.LogCLIPrompts = logs(p.tool.cliFingerprint)
+		}
 	}
-	if hooksOn(b, p.tool.key) {
+	if p.hooksOn(b) {
 		d.Hooks = true
 		d.ManagedOnly = p.tool.managedOnly && b.Endpoint.Hooks.ManagedOnly
 		if exe, err := p.cfg.Executable(); err == nil {
@@ -225,7 +240,9 @@ func (p *Provider) apply(d Desired) error {
 	return err
 }
 
-// Health implements core.Provider: healthy only while the file on disk holds the agent's keys.
+// Health implements core.Provider: healthy only while the file on disk holds the agent's keys, and
+// degraded with tool_version_unsupported while an installed part of the tool has no machine-wide
+// configuration the agent can write.
 func (p *Provider) Health() core.Health {
 	p.mu.Lock()
 	running, attempted, installed, writeErr := p.running, p.attempted, p.installed, p.writeErr
@@ -243,6 +260,9 @@ func (p *Provider) Health() core.Health {
 	}
 	if ok, err := p.w.Holds(applied); err != nil || !ok {
 		return p.counters.Snapshot(protocol.StateDegraded, protocol.DetailConfigWriteFailed, since, last)
+	}
+	if pw, ok := p.w.(partialWriter); ok && pw.Unenforced() {
+		return p.counters.Snapshot(protocol.StateDegraded, protocol.DetailToolVersionUnsupported, since, last)
 	}
 	return p.counters.Snapshot(protocol.StateHealthy, protocol.DetailNone, since, last)
 }
