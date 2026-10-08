@@ -9,3 +9,6 @@ func OwnerOfLocalTCP(local, remote netip.AddrPort) (uint32, error) { return 0, E
 
 // ProcessInfo is not supported here.
 func ProcessInfo(pid uint32) (Process, error) { return Process{}, ErrUnsupported }
+
+// ListenersOn is not supported here.
+func ListenersOn(port int) ([]uint32, error) { return nil, ErrUnsupported }

@@ -23,12 +23,14 @@ const (
 )
 
 // Scanners is the platform's scan pass: the installed-app scanner over the registry, then the CLI
-// and IDE extension scanners over the user profiles.
+// and IDE extension scanners over the user profiles, then the local model scanner over the
+// processes, listeners and model stores.
 func Scanners(person func(hostinfo.User) core.Person) []Scanner {
 	return []Scanner{
 		NewAppScanner(SystemRegistry(), person),
 		NewCLIScanner(SystemCLIHost(), person),
 		NewIDEScanner(SystemCLIHost(), person),
+		NewModelScanner(SystemModelHost(), person),
 	}
 }
 
