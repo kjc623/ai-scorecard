@@ -1459,3 +1459,55 @@ decided and why, and for a vendor fact the product version checked.
 - **Outside `merge`, `hooks` and the wiring:** `cmd/capture-core/hook_test.go`'s
   `TestHookIsDecidedAndRecordedByTheService` waits up to `merge.HoldFor` plus its 10 s for the
   delivered hook prompt, which no OTel record joins and so goes on after its hold.
+
+## 2026-10-08, task 18
+
+- **Vendor facts: VS Code** (GitHub, default branch, read 2026-10-08; code.visualstudio.com is
+  blocked here). `microsoft/vscode-docs` `docs/configure/extensions/extension-marketplace.md`
+  (DateApproved 10/7/2026): extensions are in `%USERPROFILE%\.vscode\extensions` on Windows.
+  `microsoft/vscode` source: `environmentService.ts` (`extensionsPath` is
+  `<home>\<dataFolderName>\extensions`), `node/userDataProfile.ts` (the default profile's list is
+  that folder's `extensions.json`), `extensionsProfileScannerService.ts` (the list is a JSON array of
+  `{identifier:{id,uuid}, version, location, relativeLocation, metadata}`; an empty file is an empty
+  list) and `extensionManagementUtil.ts` (`ExtensionKey`: a folder is named
+  `<id>-<version>[-<targetPlatform>]`, parsed by `^([^.]+\..+)-(\d+\.\d+\.\d+)(-(.+))?$`, which the
+  folder-name fallback uses, so a platform suffix such as `-win32-x64` is not part of the version).
+  Only the default profile's list is read; VS Code's other profiles keep their own lists under
+  `%APPDATA%\Code\User\profiles` and are not scanned.
+- **Not verified: Cursor and Windsurf.** cursor.com, forum.cursor.com and docs.windsurf.com are
+  blocked here and neither vendor publishes these paths on GitHub. `%USERPROFILE%\.cursor\extensions`
+  is supported only by a web-search snippet of a Cursor forum staff reply;
+  `%USERPROFILE%\.windsurf\extensions` is the brief's value with no source found. Both are VS Code
+  forks with VS Code's `extensions.json` and folder naming, assumed. The device phase confirms Cursor
+  on the reference VM; Windsurf is not in the VM's Needs, so it stays unverified.
+- **Vendor facts: JetBrains** (GitHub, default branch, read 2026-10-08; jetbrains.com is blocked
+  here). `JetBrains/intellij-community` `PathManager.java` (`getDefaultPluginPathFor`: on Windows
+  `%APPDATA%\JetBrains\<selector>\plugins`, falling back to `<home>\AppData\Roaming` when `APPDATA`
+  is unset) and `PluginDescriptorLoader.kt` (a plugin folder's descriptor is the
+  `META-INF/plugin.xml` of the first jar in `lib` that has one, more likely jars first).
+  `JetBrains/intellij-sdk-docs` `plugin_content.md` (a plugin with dependencies is
+  `plugins\<plugin>\lib\*.jar`) and `plugin_configuration_file.md` (`<id>` defaults to `<name>`;
+  `<version>` required). The scanner tries the jars whose name starts with the plugin folder's name
+  first, then the rest by name, and identifies a descriptor without `<id>` by its `<name>`, as the IDE
+  does. Not scanned: a plugin shipped as a single jar directly in `plugins` (the documented "plugin
+  without dependencies" layout, which the brief's table leaves out), `.zip` archives in `lib`, and
+  plugins bundled in the IDE's install folder.
+- **Deviation: no `ide_windows.go`.** The per-profile locations are joins on the profile folder, so
+  they live in `ide.go`, as task 17's npm and pipx locations live in `cli.go`, and the fixture trees
+  exercise them on Linux. `%APPDATA%` is the profile's default `AppData\Roaming` (task 17's rule;
+  folder redirection is not followed). The only machine read is the profile list, which the scanner
+  takes from task 17's `SystemCLIHost()` through a new one-method `ProfileLister`, so the profiles are
+  the CLI scanner's: people's SIDs, folders under `C:\Users`, with a loaded hive or an `NTUSER.DAT`.
+- **One record per app, IDE, version and profile.** An `extensions.json` that exists is the IDE's own
+  list and is used alone: an older version's folder awaiting cleanup is not reported. The folder
+  names are read only when the list is absent; a list that cannot be read or decoded is an error,
+  with no fallback.
+- **Reads.** Each `extensions.json` over 4 MiB, each `plugin.xml` entry over 1 MiB (by its header and
+  by what is read), a file that is not a regular file, a jar that is not a zip and XML whose root is
+  not `<idea-plugin>` are errors, one each, and the rest of the scan goes on. Each list, fallback
+  folder and descriptor read counts `observed`.
+- **Fixture values.** The JetBrains plugin ids in the tests (`com.github.copilot`,
+  `com.github.continuedev.continueintellijextension`) are not catalog facts: the catalog has no
+  JetBrains plugin id, so on a device JetBrains plugins match nothing until one is added.
+- **Not run here:** nothing Windows-only was added; the package compiles and vets under
+  `GOOS=windows` and `GOOS=darwin`.
