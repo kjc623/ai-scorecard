@@ -576,7 +576,7 @@ func TestDiscoveryAndActivityVocabulariesAreClosed(t *testing.T) {
 // collector are different keys.
 func TestCollectorVocabularyIsClosed(t *testing.T) {
 	for _, c := range []Collector{CollectorEgressProxy, CollectorLoopbackBroker, CollectorCLIShim,
-		CollectorProcessDetector, CollectorClassifierHost, CollectorCaptureExtension} {
+		CollectorProcessDetector, CollectorClassifierHost, CollectorCaptureExtension, CollectorOTelReceiver} {
 		if !c.Valid() {
 			t.Errorf("collector %q is refused", c)
 		}
