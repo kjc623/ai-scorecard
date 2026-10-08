@@ -550,57 +550,135 @@ func TestTLSUnknownBodyShapeIsContentUnprocessable(t *testing.T) {
 
 // ---- kill switch and the pinned-client ladder ------------------------------------------
 
-// The kill switch stops interception first, then removes the trusted root, then reports absent
-// with detail killed.
-func TestKillSwitchStopsInterceptionThenRemovesTheRoot(t *testing.T) {
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+// killSwitched is b with a proxy.tls kill switch in force since effective.
+func killSwitched(b *policy.Bundle, effective time.Time) *policy.Bundle {
+	out := *b
+	out.KillSwitches = []policy.KillSwitch{{
+		Provider: protocol.RouteProxyTLS, Mode: policy.KillDisable,
+		EffectiveAt: effective, ReasonCode: "fleet_regression_1234",
+	}}
+	return &out
+}
+
+// swappable is a bundle in force that a test replaces, as a policy poll does.
+type swappable struct {
+	mu sync.Mutex
+	b  *policy.Bundle
+}
+
+func (s *swappable) get() *policy.Bundle {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b
+}
+
+func (s *swappable) set(b *policy.Bundle) {
+	s.mu.Lock()
+	s.b = b
+	s.mu.Unlock()
+}
+
+// A kill switch stops decryption and enforcement without stopping the provider: the next request
+// is tunnelled blind (the client sees the upstream's own certificate) and counted
+// blind_tunnelled, the root leaves the trust store, and the row is degraded/killed while the proxy
+// keeps listening. Clearing the switch installs the root again and interception resumes.
+func TestTLSKillSwitchTunnelsTheNextRequestAndClearingResumes(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
 	defer upstream.Close()
 	upPort := upstream.Listener.Addr().(*net.TCPAddr).Port
+	target := fmt.Sprintf("127.0.0.1:%d", upPort)
 
 	trustRoot := &fakeTrust{}
+	pipe := &fakePipeline{mode: protocol.ModeM1}
+	inForce := &swappable{b: bundleIntercepting(upPort)}
 	p := newProviderForTest(t, Config{
-		Listen: "127.0.0.1:0", Bundles: func() *policy.Bundle { return bundleIntercepting(upPort) },
-		Pipeline: &fakePipeline{mode: protocol.ModeM1}, TrustRoot: trustRoot,
+		Listen: "127.0.0.1:0", Bundles: inForce.get,
+		Pipeline: pipe, TrustRoot: trustRoot,
 		UpstreamRoots: upstreamPool(upstream), CanaryHost: "127.0.0.1", CanaryPort: upPort,
 	})
 	if err := p.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if p.ListenAddr() == "" {
-		t.Fatal("precondition: the proxy is not listening")
-	}
+	listen := p.ListenAddr()
+	conn, _ := dialThroughProxy(t, listen, target, &tls.Config{ServerName: "127.0.0.1", RootCAs: p.CA().Pool()})
+	postThroughTunnel(t, conn, "127.0.0.1", `{"messages":[{"role":"user","content":"hi"}]}`)
+	conn.Close()
+	waitFor(t, 2*time.Second, "the intercepted request", func() bool { return len(pipe.observations()) == 1 })
 
-	ks := policy.Bundle{
-		Version:       "2",
-		EffectiveAt:   time.Unix(1_700_000_100, 0),
-		TenantDefault: protocol.ModeM0,
-		KillSwitches: []policy.KillSwitch{{
-			Provider: protocol.RouteProxyTLS, Mode: policy.KillDisable,
-			EffectiveAt: time.Unix(1_700_000_100, 0), ReasonCode: "fleet_regression_1234",
-		}},
-	}
-	if err := p.ApplyPolicy(ks); err != nil {
+	// The poll delivers the switch: the bundle in force changes, then the providers apply it.
+	killed := killSwitched(bundleIntercepting(upPort), time.Now().Add(-time.Minute))
+	inForce.set(killed)
+	if err := p.ApplyPolicy(*killed); err != nil {
 		t.Fatalf("ApplyPolicy: %v", err)
 	}
-
-	want := []string{"stop_interception:kill_switch", "trustroot.Remove", "health:absent:killed"}
-	if got := p.Sequence(); strings.Join(got, " > ") != strings.Join(want, " > ") {
-		t.Fatalf("kill switch ordering\ngot:  %v\nwant: %v", got, want)
+	if got, want := strings.Join(p.Sequence(), " > "), "kill_switch:blind_tunnel > trustroot.Remove"; got != want {
+		t.Fatalf("kill switch steps = %q, want %q", got, want)
 	}
 	if trustRoot.removes != 1 {
 		t.Fatalf("the kill switch called TrustRoot.Remove %d times, want 1", trustRoot.removes)
 	}
-	h := p.Health()
-	if h.State != protocol.StateAbsent || h.Detail != protocol.DetailKilled {
-		t.Fatalf("health after the kill switch = %s/%s, want absent/killed", h.State, h.Detail)
+	before := p.Counters().Cumulative()[protocol.CounterBlindTunnelled]
+	conn, _ = dialThroughProxy(t, listen, target, &tls.Config{ServerName: "127.0.0.1", RootCAs: upstreamPool(upstream)})
+	if _, got := postThroughTunnel(t, conn, "127.0.0.1", `{"messages":[{"role":"user","content":"hi"}]}`); !strings.Contains(got, `"ok":true`) {
+		t.Fatalf("the request under the kill switch was not carried: %q", got)
 	}
-	if p.ListenAddr() != "" {
-		t.Fatal("the proxy is still listening after the kill switch")
+	conn.Close()
+	if got := p.Counters().Cumulative()[protocol.CounterBlindTunnelled] - before; got != 1 {
+		t.Fatalf("blind_tunnelled rose by %d, want 1", got)
+	}
+	if n := len(pipe.observations()); n != 1 {
+		t.Fatalf("%d observations, want only the one before the kill switch", n)
+	}
+	if h := p.Health(); h.State != protocol.StateDegraded || h.Detail != protocol.DetailKilled {
+		t.Fatalf("health under the kill switch = %s/%s, want degraded/killed", h.State, h.Detail)
+	}
+	if p.ListenAddr() != listen {
+		t.Fatal("the kill switch stopped the proxy")
+	}
+
+	// Clearing it: the root is installed again, the probe passes, and the next request is decrypted.
+	trustRoot.installed = nil
+	cleared := bundleIntercepting(upPort)
+	inForce.set(cleared)
+	if err := p.ApplyPolicy(*cleared); err != nil {
+		t.Fatalf("ApplyPolicy: %v", err)
+	}
+	if len(trustRoot.installed) == 0 {
+		t.Fatal("clearing the kill switch did not install the root again")
+	}
+	if h := p.Health(); h.State != protocol.StateHealthy {
+		t.Fatalf("health after clearing = %s/%s, want healthy", h.State, h.Detail)
+	}
+	conn, _ = dialThroughProxy(t, listen, target, &tls.Config{ServerName: "127.0.0.1", RootCAs: p.CA().Pool()})
+	postThroughTunnel(t, conn, "127.0.0.1", `{"messages":[{"role":"user","content":"hi"}]}`)
+	conn.Close()
+	waitFor(t, 2*time.Second, "interception to resume", func() bool { return len(pipe.observations()) == 2 })
+}
+
+// refusingClient connects through the proxy as a client that pins: it trusts only pool, so it
+// refuses the minted leaf with a certificate alert and hangs up.
+func refusingClient(t *testing.T, raw net.Conn, target string, pool *x509.CertPool) {
+	t.Helper()
+	defer raw.Close()
+	if _, err := fmt.Fprintf(raw, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target); err != nil {
+		t.Fatalf("write CONNECT: %v", err)
+	}
+	br := bufio.NewReader(raw)
+	if _, err := http.ReadResponse(br, &http.Request{Method: http.MethodConnect}); err != nil {
+		t.Fatalf("CONNECT: %v", err)
+	}
+	conn := tls.Client(&bufferedConn{Reader: br, Conn: raw}, &tls.Config{ServerName: "127.0.0.1", RootCAs: pool})
+	if err := conn.Handshake(); err == nil {
+		t.Fatal("the pinning client accepted the minted leaf")
 	}
 }
 
-// A client that fails the minted-leaf handshake is excluded per process and
-// destination, and tunnelled blind from then on — never left broken to preserve collection.
+// A client that refuses the minted leaf is excluded for its process and the destination for 24
+// hours: tunnelled blind and counted blind_tunnelled, with the row degraded/client_pinned while
+// the exclusion lasts, then probed again.
 func TestTLSPinnedClientExclusionLadder(t *testing.T) {
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"direct":true}`))
@@ -608,18 +686,154 @@ func TestTLSPinnedClientExclusionLadder(t *testing.T) {
 	defer upstream.Close()
 	upPort := upstream.Listener.Addr().(*net.TCPAddr).Port
 
+	var clock sync.Mutex
+	now := time.Now()
 	p := newProviderForTest(t, Config{
 		Listen: "127.0.0.1:0", Bundles: func() *policy.Bundle { return bundleIntercepting(upPort) },
 		Pipeline:      &fakePipeline{mode: protocol.ModeM1},
 		UpstreamRoots: upstreamPool(upstream), CanaryHost: "127.0.0.1", CanaryPort: upPort,
-		Process: func(net.Conn) string { return "pinned-client" },
+		Process: func(net.Conn) string { return `C:\Program Files\Pinned\Pinned.exe` },
+		Clock: func() time.Time {
+			clock.Lock()
+			defer clock.Unlock()
+			return now
+		},
 	})
 	if err := p.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	if h := p.Health(); h.State != protocol.StateHealthy {
+		t.Fatalf("precondition: health = %s/%s", h.State, h.Detail)
+	}
 	target := fmt.Sprintf("127.0.0.1:%d", upPort)
 
-	// First connection: the client pins a certificate and aborts the handshake.
+	// First connection: the client pins a certificate and refuses the minted leaf.
+	raw, err := net.DialTimeout("tcp", p.ListenAddr(), 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	refusingClient(t, raw, target, upstreamPool(upstream))
+	waitFor(t, 3*time.Second, "the exclusion", func() bool { return p.ExcludedCount() == 1 })
+	if h := p.Health(); h.State != protocol.StateDegraded || h.Detail != protocol.DetailClientPinned {
+		t.Fatalf("health while excluded = %s/%s, want degraded/client_pinned", h.State, h.Detail)
+	}
+
+	// Second connection: the same process is now tunnelled blind, so the *upstream's* certificate
+	// is what the client sees.
+	before := p.Counters().Cumulative()[protocol.CounterBlindTunnelled]
+	conn, _ := dialThroughProxy(t, p.ListenAddr(), target, &tls.Config{
+		ServerName: "127.0.0.1",
+		RootCAs:    upstreamPool(upstream),
+	})
+	if _, got := postThroughTunnel(t, conn, "127.0.0.1", `{"messages":[{"role":"user","content":"hi"}]}`); !strings.Contains(got, `"direct":true`) {
+		t.Fatalf("excluded client did not reach the upstream directly: %q", got)
+	}
+	conn.Close()
+	c := p.Counters().Cumulative()
+	if c[protocol.CounterBlindTunnelled]-before != 1 {
+		t.Fatalf("blind_tunnelled rose by %d, want 1", c[protocol.CounterBlindTunnelled]-before)
+	}
+	if c[protocol.CounterNotCooperative] < 2 {
+		t.Fatalf("not_cooperative = %d, want at least 2 (the refused handshake and the excluded tunnel)", c[protocol.CounterNotCooperative])
+	}
+
+	// Still excluded just before 24 hours; probed again after them, and the row is healthy again.
+	clock.Lock()
+	now = now.Add(24*time.Hour - time.Minute)
+	clock.Unlock()
+	if !p.excluded(`C:\Program Files\Pinned\Pinned.exe`, "127.0.0.1") {
+		t.Fatal("the exclusion ended before 24 hours")
+	}
+	clock.Lock()
+	now = now.Add(2 * time.Minute)
+	clock.Unlock()
+	if h := p.Health(); h.State != protocol.StateHealthy {
+		t.Fatalf("health after the exclusion expired = %s/%s, want healthy", h.State, h.Detail)
+	}
+	if p.excluded(`C:\Program Files\Pinned\Pinned.exe`, "127.0.0.1") || p.ExcludedCount() != 0 {
+		t.Fatal("the expired exclusion still holds; the client is never probed again")
+	}
+}
+
+// The exclusion is keyed by process image and host: one pinning app does not exclude the
+// destination for another process.
+func TestTLSPinnedExclusionIsPerProcess(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+	upPort := upstream.Listener.Addr().(*net.TCPAddr).Port
+	target := fmt.Sprintf("127.0.0.1:%d", upPort)
+
+	// Each client connection, by its local address, belongs to a process image.
+	var mu sync.Mutex
+	images := map[string]string{}
+	pipe := &fakePipeline{mode: protocol.ModeM1}
+	p := newProviderForTest(t, Config{
+		Listen: "127.0.0.1:0", Bundles: func() *policy.Bundle { return bundleIntercepting(upPort) },
+		Pipeline: pipe, UpstreamRoots: upstreamPool(upstream), CanaryHost: "127.0.0.1", CanaryPort: upPort,
+		Process: func(conn net.Conn) string {
+			mu.Lock()
+			defer mu.Unlock()
+			if image, ok := images[conn.RemoteAddr().String()]; ok {
+				return image
+			}
+			return "unknown"
+		},
+	})
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	dialAs := func(image string) net.Conn {
+		t.Helper()
+		raw, err := net.DialTimeout("tcp", p.ListenAddr(), 5*time.Second)
+		if err != nil {
+			t.Fatalf("dial proxy: %v", err)
+		}
+		mu.Lock()
+		images[raw.LocalAddr().String()] = image
+		mu.Unlock()
+		return raw
+	}
+
+	refusingClient(t, dialAs(`C:\Apps\Pinned.exe`), target, upstreamPool(upstream))
+	waitFor(t, 3*time.Second, "the exclusion", func() bool { return p.ExcludedCount() == 1 })
+
+	// Another process to the same destination is still decrypted and observed.
+	conn, _ := connectThrough(t, dialAs(`C:\Python\python.exe`), target, &tls.Config{ServerName: "127.0.0.1", RootCAs: p.CA().Pool()})
+	postThroughTunnel(t, conn, "127.0.0.1", `{"messages":[{"role":"user","content":"hi"}]}`)
+	conn.Close()
+	waitFor(t, 2*time.Second, "the other process's observation", func() bool { return len(pipe.observations()) == 1 })
+
+	// The pinning process itself is tunnelled blind.
+	conn, _ = connectThrough(t, dialAs(`c:\apps\pinned.exe`), target, &tls.Config{ServerName: "127.0.0.1", RootCAs: upstreamPool(upstream)})
+	if _, got := postThroughTunnel(t, conn, "127.0.0.1", `{"messages":[{"role":"user","content":"hi"}]}`); !strings.Contains(got, `"ok":true`) {
+		t.Fatalf("the excluded process was not carried: %q", got)
+	}
+	conn.Close()
+	if n := len(pipe.observations()); n != 1 {
+		t.Fatalf("%d observations, want the excluded process's request unread", n)
+	}
+}
+
+// A handshake that fails for another reason than a refused certificate (a client that is not
+// speaking TLS) excludes nothing: the next connection is intercepted.
+func TestTLSHandshakeFailureThatIsNotPinningExcludesNothing(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer upstream.Close()
+	upPort := upstream.Listener.Addr().(*net.TCPAddr).Port
+	target := fmt.Sprintf("127.0.0.1:%d", upPort)
+
+	p := newProviderForTest(t, Config{
+		Listen: "127.0.0.1:0", Bundles: func() *policy.Bundle { return bundleIntercepting(upPort) },
+		Pipeline:      &fakePipeline{mode: protocol.ModeM1},
+		UpstreamRoots: upstreamPool(upstream), CanaryHost: "127.0.0.1", CanaryPort: upPort,
+		Process: func(net.Conn) string { return "client.exe" },
+	})
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
 	raw, err := net.DialTimeout("tcp", p.ListenAddr(), 5*time.Second)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
@@ -629,22 +843,40 @@ func TestTLSPinnedClientExclusionLadder(t *testing.T) {
 	if _, err := http.ReadResponse(br, &http.Request{Method: http.MethodConnect}); err != nil {
 		t.Fatalf("CONNECT: %v", err)
 	}
+	errorsBefore := p.Counters().Cumulative()[protocol.CounterErrors]
 	_, _ = raw.Write([]byte("not a TLS ClientHello at all\r\n\r\n"))
 	_ = raw.Close()
-	waitFor(t, 3*time.Second, "the exclusion", func() bool { return p.ExcludedCount() == 1 })
-
-	// Second connection: the same process is now tunnelled blind, so the *upstream's* certificate
-	// is what the client sees.
-	conn, _ := dialThroughProxy(t, p.ListenAddr(), target, &tls.Config{
-		ServerName: "127.0.0.1",
-		RootCAs:    upstreamPool(upstream),
+	waitFor(t, 3*time.Second, "the failed handshake to be counted", func() bool {
+		return p.Counters().Cumulative()[protocol.CounterErrors] > errorsBefore
 	})
-	defer conn.Close()
-	if _, got := postThroughTunnel(t, conn, "127.0.0.1", `{"messages":[{"role":"user","content":"hi"}]}`); !strings.Contains(got, `"direct":true`) {
-		t.Fatalf("excluded client did not reach the upstream directly: %q", got)
+	if p.ExcludedCount() != 0 {
+		t.Fatal("a handshake failure that is not a refused certificate excluded the client")
 	}
-	if c := p.Counters().Cumulative(); c[protocol.CounterNotCooperative] < 2 {
-		t.Fatalf("not_cooperative = %d, want at least 2 (the failed handshake and the excluded tunnel)", c[protocol.CounterNotCooperative])
+	conn, _ := dialThroughProxy(t, p.ListenAddr(), target, &tls.Config{ServerName: "127.0.0.1", RootCAs: p.CA().Pool()})
+	conn.Close()
+}
+
+// receivedAlert stands in for crypto/tls's unexported alert type, a uint8 error.
+type receivedAlert uint8
+
+func (a receivedAlert) Error() string { return fmt.Sprintf("tls: alert(%d)", uint8(a)) }
+
+// A certificate alert from the client, or a hang-up after its hello, is a refused leaf; a timeout,
+// another alert or a client that is not speaking TLS is not.
+func TestRejectsLeafRecognisesCertificateRefusals(t *testing.T) {
+	remote := func(code uint8) error { return &net.OpError{Op: "remote error", Err: receivedAlert(code)} }
+	for _, code := range []uint8{42, 43, 44, 45, 46, 48} {
+		if !rejectsLeaf(remote(code)) {
+			t.Errorf("alert %d is not recognised as a refused certificate", code)
+		}
+	}
+	for _, err := range []error{remote(40), remote(70), remote(80), context.DeadlineExceeded, errors.New("tls: first record does not look like a TLS handshake")} {
+		if rejectsLeaf(err) {
+			t.Errorf("%v is taken for a refused certificate", err)
+		}
+	}
+	if !rejectsLeaf(io.EOF) {
+		t.Error("a client hanging up after its hello is not taken for a refused certificate")
 	}
 }
 
@@ -911,6 +1143,45 @@ func TestCAIsPerDeviceAndMintsShortLivedLeaves(t *testing.T) {
 	}
 }
 
+// A cached leaf is presented again only while it has life left: one near its end, past it, or not
+// yet valid (the clock went back) is replaced, so no client is shown a certificate it would refuse.
+func TestCALeafCacheReplacesALeafNearItsEnd(t *testing.T) {
+	start := time.Unix(1_700_000_000, 0)
+	ca, err := NewCA("device-1", start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serial := func(at time.Time) string {
+		t.Helper()
+		leaf, err := ca.Leaf("api.example.invalid", at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parsed, err := x509.ParseCertificate(leaf.Certificate[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if at.Before(parsed.NotBefore) || !at.Before(parsed.NotAfter) {
+			t.Fatalf("the leaf presented at %s is valid only %s to %s", at, parsed.NotBefore, parsed.NotAfter)
+		}
+		return parsed.SerialNumber.String()
+	}
+	first := serial(start)
+	if serial(start.Add(LeafTTL-2*time.Hour)) != first {
+		t.Fatal("a leaf with hours of life left was replaced")
+	}
+	renewed := serial(start.Add(LeafTTL - 30*time.Minute))
+	if renewed == first {
+		t.Fatal("a leaf within an hour of its end was presented again")
+	}
+	if serial(start.Add(3*LeafTTL)) == renewed {
+		t.Fatal("an expired leaf was presented again")
+	}
+	if serial(start.Add(-time.Hour)) == "" {
+		t.Fatal("no leaf for a clock that went back")
+	}
+}
+
 // ---- trust-store installation -----------------------------------------------------------
 
 // fakeVerifyingTrust records an install and then answers the store read-back. A store that does
@@ -969,34 +1240,54 @@ func TestTLSTrustStoreFailureIsNamedInHealth(t *testing.T) {
 	}
 }
 
-// A kill switch in the bundle already in force when the provider starts must suppress it
-// before it binds or installs a root. The supervisor applies the bundle before any provider
-// starts, so a switch that is only honored in ApplyPolicy would be silently defeated at startup.
-func TestTLSKillSwitchInInitialBundleSuppressesStart(t *testing.T) {
-	canaryPort := freePort(t)
-	b := bundleIntercepting(canaryPort)
-	ksAt := time.Unix(1_600_000_000, 0)
-	b.KillSwitches = []policy.KillSwitch{{
-		Provider: protocol.RouteProxyTLS, Mode: policy.KillDisable,
-		EffectiveAt: ksAt, ReasonCode: "fleet_regression",
-	}}
+// A kill switch in the bundle already in force when the provider starts is honoured from the first
+// connection: the proxy binds, so the clients routed to it keep working, but installs no root and
+// tunnels everything blind. The supervisor applies the bundle before any provider starts, so a
+// switch honoured only in ApplyPolicy would be defeated at startup. Clearing it later installs the
+// root and runs the probe the start skipped.
+func TestTLSKillSwitchInInitialBundleStartsBlind(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+	upPort := upstream.Listener.Addr().(*net.TCPAddr).Port
+	inForce := &swappable{b: killSwitched(bundleIntercepting(upPort), time.Unix(1_600_000_000, 0))}
 	trust := &fakeTrust{}
+	pipe := &fakePipeline{mode: protocol.ModeM1}
 	p := newProviderForTest(t, Config{
-		Listen: "127.0.0.1:0", Bundles: func() *policy.Bundle { return b },
-		Pipeline: &fakePipeline{mode: protocol.ModeM1}, TrustRoot: trust,
-		CanaryHost: "127.0.0.1", CanaryPort: canaryPort,
+		Listen: "127.0.0.1:0", Bundles: inForce.get,
+		Pipeline: pipe, TrustRoot: trust,
+		UpstreamRoots: upstreamPool(upstream), CanaryHost: "127.0.0.1", CanaryPort: upPort,
 	})
 	if err := p.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if p.ListenAddr() != "" {
-		t.Fatal("the proxy bound despite a kill switch in the initial bundle")
+	if p.ListenAddr() == "" {
+		t.Fatal("the proxy did not bind under a kill switch; the clients routed to it would break")
 	}
-	if h := p.Health(); h.State != protocol.StateAbsent || h.Detail != protocol.DetailKilled {
-		t.Fatalf("health = %s/%s, want absent/killed", h.State, h.Detail)
+	if h := p.Health(); h.State != protocol.StateDegraded || h.Detail != protocol.DetailKilled {
+		t.Fatalf("health = %s/%s, want degraded/killed", h.State, h.Detail)
 	}
-	if len(trust.installed) != 0 {
-		t.Fatal("the trust root was installed despite the kill switch")
+	if len(trust.installed) != 0 || trust.removes != 1 {
+		t.Fatalf("installed %d bytes and removed %d times; want no root installed and any earlier one removed", len(trust.installed), trust.removes)
+	}
+	conn, _ := dialThroughProxy(t, p.ListenAddr(), fmt.Sprintf("127.0.0.1:%d", upPort), &tls.Config{ServerName: "127.0.0.1", RootCAs: upstreamPool(upstream)})
+	postThroughTunnel(t, conn, "127.0.0.1", `{"messages":[{"role":"user","content":"hi"}]}`)
+	conn.Close()
+	if n := len(pipe.observations()); n != 0 {
+		t.Fatalf("%d observations under the kill switch, want none", n)
+	}
+
+	cleared := bundleIntercepting(upPort)
+	inForce.set(cleared)
+	if err := p.ApplyPolicy(*cleared); err != nil {
+		t.Fatal(err)
+	}
+	if len(trust.installed) == 0 {
+		t.Fatal("clearing the kill switch did not install the root")
+	}
+	if h := p.Health(); h.State != protocol.StateHealthy {
+		t.Fatalf("health after clearing = %s/%s, want healthy once the probe has run", h.State, h.Detail)
 	}
 }
 

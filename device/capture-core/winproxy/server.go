@@ -100,17 +100,11 @@ func (nopLogger) Printf(string, ...any) {}
 func (s *Server) Name() protocol.Collector { return protocol.CollectorDesktopProxy }
 
 // Enabled implements core.Toggled. The PAC runs only while the tenant's TLS inspection is on and the
-// bundle names the address to serve it on (an empty pac_listen turns the desktop-app path off), and
-// not while a kill switch suppresses proxy.tls: with nothing to route to, no user's proxy settings
-// are changed.
+// bundle names the address to serve it on (an empty pac_listen turns the desktop-app path off). A
+// proxy.tls kill switch leaves it running: the proxy keeps serving and tunnels every connection
+// blind, so the apps it routes are carried unread without a change to anyone's proxy settings.
 func (s *Server) Enabled(b *policy.Bundle) bool {
-	if b == nil || !b.Interception.Enabled || strings.TrimSpace(b.Interception.PacListen) == "" {
-		return false
-	}
-	if ks, ok := b.KillSwitchFor(protocol.RouteProxyTLS); ok && ks.Mode == policy.KillDisable {
-		return !ks.EffectiveAt.IsZero() && ks.EffectiveAt.After(s.cfg.Clock())
-	}
-	return true
+	return b != nil && b.Interception.Enabled && strings.TrimSpace(b.Interception.PacListen) != ""
 }
 
 // ApplyPolicy implements core.Provider. The hosts are read on every PAC request and the listen

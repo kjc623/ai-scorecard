@@ -15,12 +15,15 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/shadow-ai-capture/device/capture-core/core"
@@ -83,9 +86,10 @@ type Config struct {
 	// in-process pool rather than touching the OS store.
 	UpstreamRoots *x509.CertPool
 
-	// Process names the client behind a connection, for the per-process exclusion of clients
-	// that pin certificates and of tools covered by a native collector. It is a seam because process
-	// attribution is platform-specific.
+	// Process names the image of the client process behind a connection (its path, or its base
+	// name), for the per-process exclusion of clients that pin certificates and of tools covered by a
+	// native collector. It is a seam because process attribution is platform-specific; "unknown"
+	// names a client that could not be attributed.
 	Process func(conn net.Conn) string
 
 	// AppByExe names the catalog app whose executable has this lower-case image base name. nil
@@ -104,7 +108,8 @@ type Config struct {
 	Notify  func(session uint32, n protocol.Notify) error
 
 	// PinnedReprobeInterval bounds an exclusion: a client update can change its behaviour, so an
-	// excluded destination is re-probed at this cadence and never silently omitted for good.
+	// excluded process and destination are re-probed after this long and never silently omitted for
+	// good.
 	PinnedReprobeInterval time.Duration
 
 	DialTimeout      time.Duration
@@ -122,7 +127,7 @@ func (c Config) withDefaults() Config {
 		c.BodyCap = 4 << 20
 	}
 	if c.PinnedReprobeInterval <= 0 {
-		c.PinnedReprobeInterval = 10 * time.Minute
+		c.PinnedReprobeInterval = 24 * time.Hour
 	}
 	if c.DialTimeout <= 0 {
 		c.DialTimeout = 10 * time.Second
@@ -143,18 +148,20 @@ func (c Config) withDefaults() Config {
 type Provider struct {
 	cfg Config
 
-	mu           sync.Mutex
-	ln           net.Listener
-	ca           *CA
-	startedAt    time.Time
-	started      bool
-	stopped      bool
-	killed       bool
-	enforcing    bool
-	probeOK      bool
+	mu        sync.Mutex
+	ln        net.Listener
+	ca        *CA
+	startedAt time.Time
+	started   bool
+	stopped   bool
+	enforcing bool
+	probeOK   bool
+	// suspended holds while a kill switch has the root out of the trust store; clearing the switch
+	// installs it again and re-runs the probe.
+	suspended    bool
 	lastSuccess  time.Time
 	counters     *core.CounterSet
-	exclusions   map[string]time.Time // process|host -> excluded until
+	exclusions   map[string]time.Time // lower-case process image|host -> excluded until
 	acceptDone   chan struct{}
 	wg           sync.WaitGroup
 	sequence     []string // side effects, for the ordering assertions in tests
@@ -183,7 +190,7 @@ func (p *Provider) step(s string) {
 }
 
 // Sequence returns the side effects performed, in order. It exists so a test can assert the
-// kill-switch ordering literally instead of trusting the order of statements in a function.
+// stop and kill-switch ordering literally instead of trusting the order of statements in a function.
 func (p *Provider) Sequence() []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -224,24 +231,17 @@ func (p *Provider) Enabled(b *policy.Bundle) bool { return b != nil && b.Interce
 // configured, then runs the end-to-end probe. It never fails because interception is
 // unavailable: it reports degraded and the user's traffic stays direct. A Start after a Stop
 // brings the proxy and the root back.
+//
+// Under a kill switch already in force it binds, so the clients routed to it keep working, but
+// tunnels every connection blind and leaves the root out of the trust store; clearing the switch
+// installs the root and runs the probe (ApplyPolicy).
 func (p *Provider) Start(ctx context.Context) error {
 	p.mu.Lock()
 	if p.started && !p.stopped {
 		p.mu.Unlock()
 		return nil
 	}
-	// A kill switch in the bundle already in force at startup suppresses the provider before it
-	// binds or installs a root. The supervisor applies the bundle before any provider starts, so
-	// without this check the switch would be recorded and then ignored.
-	if p.killSwitchActive() {
-		p.started = true
-		p.stopped = false
-		p.killed = true
-		p.mu.Unlock()
-		p.step("start:suppressed_by_kill_switch")
-		return nil
-	}
-	p.killed = false
+	p.suspended = false
 	p.mu.Unlock()
 
 	deviceID := p.cfg.Agent.DeviceID
@@ -267,6 +267,21 @@ func (p *Provider) Start(ctx context.Context) error {
 	p.enforcing = true
 	p.acceptDone = make(chan struct{})
 	p.mu.Unlock()
+
+	if p.killSwitchActive() {
+		p.wg.Add(1)
+		go func() {
+			defer p.wg.Done()
+			p.acceptLoop()
+		}()
+		p.suspend(ctx)
+		p.mu.Lock()
+		p.started = true
+		p.stopped = false
+		p.probeOK = false
+		p.mu.Unlock()
+		return nil
+	}
 
 	if p.cfg.TrustRoot != nil {
 		// Installation is verified by reading the store back, never by the write returning nil:
@@ -301,8 +316,10 @@ func (p *Provider) Start(ctx context.Context) error {
 // in effect now. A future-dated switch does not fire early: EffectiveAt is when the fleet operator
 // asked enforcement to stop, and the bundle carries it so a poll can be scheduled rather than
 // acted on immediately.
-func (p *Provider) killSwitchActive() bool {
-	b := p.bundle()
+func (p *Provider) killSwitchActive() bool { return p.killSwitchIn(p.bundle()) }
+
+// killSwitchIn reports whether b carries a proxy.tls kill switch in effect now.
+func (p *Provider) killSwitchIn(b *policy.Bundle) bool {
 	if b == nil {
 		return false
 	}
@@ -445,42 +462,74 @@ func (p *Provider) stopInterception(reason string) {
 
 // ApplyPolicy implements core.Provider: a diff, never a restart.
 //
-// The kill switch is the one policy change that stops interception. Interception stops first,
-// then the trusted root is removed, then the provider reports absent with detail killed.
+// The kill switch stops enforcement and decryption without stopping the provider: from the next
+// connection on, every client is tunnelled blind (handle reads the switch per connection), and the
+// root leaves the trust store, because a device that decrypts nothing has no reason to trust the
+// interception authority. Clearing the switch installs the root again and re-runs the end-to-end
+// probe, and interception resumes.
 func (p *Provider) ApplyPolicy(b policy.Bundle) error {
-	ks, ok := b.KillSwitchFor(protocol.RouteProxyTLS)
-	if !ok || ks.Mode != policy.KillDisable {
-		return nil
-	}
-	if !ks.EffectiveAt.IsZero() && ks.EffectiveAt.After(p.cfg.Clock()) {
-		return nil // future-dated: in force at EffectiveAt, not before
-	}
 	p.mu.Lock()
-	already := p.killed
-	p.killed = true
+	running := p.started && !p.stopped && p.ln != nil
+	suspended := p.suspended
 	p.mu.Unlock()
-	if already {
-		return nil
+	if !running {
+		return nil // Start reads the bundle in force
 	}
-	p.stopInterception("kill_switch")
-	// The kill switch is exactly when a device must stop trusting the interception authority.
-	// A benign remove error is logged and not escalated.
+	killed := p.killSwitchIn(&b)
+	switch {
+	case killed && !suspended:
+		p.suspend(context.Background())
+	case !killed && suspended:
+		p.resume(context.Background())
+	}
+	return nil
+}
+
+// suspend takes the root out of the trust store for a kill switch. A remove error is logged and not
+// escalated: the proxy decrypts nothing either way.
+func (p *Provider) suspend(ctx context.Context) {
+	p.mu.Lock()
+	p.suspended = true
+	p.mu.Unlock()
+	p.step("kill_switch:blind_tunnel")
 	if p.cfg.TrustRoot != nil {
-		if err := p.cfg.TrustRoot.Remove(context.Background()); err != nil {
+		if err := p.cfg.TrustRoot.Remove(ctx); err != nil {
 			p.cfg.Log.Printf("tlsproxy: kill switch could not remove the trusted root: %v", err)
 		}
 		p.step("trustroot.Remove")
 	}
-	p.step("health:absent:" + string(protocol.DetailKilled))
-	return nil
+}
+
+// resume brings interception back after a kill switch clears: the root is installed and verified
+// again, and the end-to-end probe decides health as at Start.
+func (p *Provider) resume(ctx context.Context) {
+	p.mu.Lock()
+	p.suspended = false
+	ca := p.ca
+	p.mu.Unlock()
+	p.step("kill_switch:cleared")
+	if p.cfg.TrustRoot != nil && ca != nil {
+		if err := p.installTrustRoot(ctx, ca); err != nil {
+			p.cfg.Log.Printf("tlsproxy: could not install the device CA: %v", err)
+		}
+	}
+	ok := p.probe(ctx)
+	p.mu.Lock()
+	p.probeOK = ok
+	p.mu.Unlock()
+	if !ok {
+		p.cfg.Log.Printf("tlsproxy: end-to-end probe failed; reporting degraded with %s", protocol.DetailTLSProbeFailed)
+	}
 }
 
 // Health implements core.Provider. Healthy requires the proxy to be bound and a successful
-// end-to-end probe through a minted leaf.
+// end-to-end probe through a minted leaf. A kill switch in force is degraded with detail killed:
+// the proxy still carries every connection, blind.
 func (p *Provider) Health() core.Health {
+	killed := p.killSwitchActive()
 	p.mu.Lock()
 	ln := p.ln
-	started, stopped, killed := p.started, p.stopped, p.killed
+	started, stopped := p.started, p.stopped
 	probeOK := p.probeOK
 	lastDegraded := p.lastDegraded
 	excluded := 0
@@ -494,15 +543,13 @@ func (p *Provider) Health() core.Health {
 	p.mu.Unlock()
 
 	switch {
-	case !started || stopped:
-		return p.counters.Snapshot(protocol.StateAbsent, protocol.DetailNone, p.startedAt, lastOK)
-	case killed:
-		return p.counters.Snapshot(protocol.StateAbsent, protocol.DetailKilled, p.startedAt, lastOK)
-	case ln == nil:
+	case !started || stopped || ln == nil:
 		return p.counters.Snapshot(protocol.StateAbsent, protocol.DetailNone, p.startedAt, lastOK)
 	}
 
 	switch {
+	case killed:
+		return p.counters.Snapshot(protocol.StateDegraded, protocol.DetailKilled, p.startedAt, lastOK)
 	case !probeOK:
 		return p.counters.Snapshot(protocol.StateDegraded, protocol.DetailTLSProbeFailed, p.startedAt, lastOK)
 	case lastDegraded != protocol.DetailNone:
@@ -562,8 +609,15 @@ func (p *Provider) handle(client net.Conn) {
 	process := p.cfg.Process(client)
 	bundle := p.bundle()
 
+	// A kill switch in force tunnels every connection blind: nothing is decrypted or enforced, and
+	// the client is carried exactly as without the proxy.
+	if p.killSwitchIn(bundle) {
+		p.blindTunnel(client, br, req.Host, process, protocol.DetailKilled)
+		return
+	}
+
 	// The exclusion ladder: a destination excluded for this process is blind-tunnelled, and
-	// the exclusion is re-probed at a slow cadence rather than being permanent.
+	// the exclusion is re-probed after PinnedReprobeInterval rather than being permanent.
 	if p.excluded(process, host) {
 		p.counters.Add(protocol.CounterNotCooperative)
 		p.blindTunnel(client, br, req.Host, process, protocol.DetailClientPinned)
@@ -593,8 +647,13 @@ func (p *Provider) nativelyCovered(process string, bundle *policy.Bundle) bool {
 	if p.cfg.AppByExe == nil {
 		return false
 	}
-	app, ok := p.cfg.AppByExe(strings.ToLower(process))
+	app, ok := p.cfg.AppByExe(imageBase(process))
 	return ok && toolconfig.NativelyCovered(bundle, app)
+}
+
+// imageBase is the lower-case base name of a process image, whichever separator its path uses.
+func imageBase(image string) string {
+	return strings.ToLower(image[strings.LastIndexAny(image, `\/`)+1:])
 }
 
 // person is the owner of the process behind an intercepted connection, or nil to attribute the
@@ -654,21 +713,30 @@ func (p *Provider) intercept(client net.Conn, br *bufio.Reader, req *http.Reques
 		p.counters.Add(protocol.CounterErrors)
 		return
 	}
+	var hello atomic.Bool
 	tlsConn := tls.Server(client, &tls.Config{
 		Certificates: []tls.Certificate{*leaf},
 		MinVersion:   tls.VersionTLS12,
 		NextProtos:   []string{"http/1.1"}, // The proxy does not pretend to support HTTP/3
+		GetConfigForClient: func(*tls.ClientHelloInfo) (*tls.Config, error) {
+			hello.Store(true)
+			return nil, nil
+		},
 	})
 	hctx, cancel := context.WithTimeout(context.Background(), p.cfg.HandshakeTimeout)
 	defer cancel()
 	if err := tlsConn.HandshakeContext(hctx); err != nil {
-		// A TLS alert during the minted-leaf handshake, repeated, means the
-		// client pins a certificate or validates against a bundled CA list. Exclude the
-		// destination for that process and tunnel it blind from then on — never leave the client
-		// broken to preserve collection.
-		p.exclude(process, host)
-		p.counters.Add(protocol.CounterNotCooperative)
-		p.cfg.Log.Printf("tlsproxy: handshake with %s failed for %s; excluding %s for that process: %v", host, process, host, err)
+		if hello.Load() && rejectsLeaf(err) {
+			// The client refused the minted leaf: it pins a certificate or validates against a
+			// bundled CA list. The process and destination are excluded and tunnelled blind from
+			// the next connection on, never left broken to preserve collection.
+			p.exclude(process, host)
+			p.counters.Add(protocol.CounterNotCooperative)
+			p.cfg.Log.Printf("tlsproxy: %s refused the minted leaf for %s; tunnelling that process to it blind for %s: %v", imageBase(process), host, p.cfg.PinnedReprobeInterval, err)
+			return
+		}
+		p.counters.Add(protocol.CounterErrors)
+		p.cfg.Log.Printf("tlsproxy: handshake with %s for %s failed: %v", imageBase(process), host, err)
 		return
 	}
 	defer tlsConn.Close()
@@ -1030,26 +1098,51 @@ func (p *Provider) blindTunnel(client net.Conn, br *bufio.Reader, hostport, proc
 	<-done
 }
 
+// exclusionKey is the exclusion's key: the process image and the destination host, compared
+// case-insensitively as Windows compares paths and DNS compares names.
+func exclusionKey(process, host string) string {
+	return strings.ToLower(process) + "|" + strings.ToLower(host)
+}
+
 func (p *Provider) exclude(process, host string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.exclusions[process+"|"+host] = p.cfg.Clock().Add(p.cfg.PinnedReprobeInterval)
+	p.exclusions[exclusionKey(process, host)] = p.cfg.Clock().Add(p.cfg.PinnedReprobeInterval)
 }
 
 func (p *Provider) excluded(process, host string) bool {
+	key := exclusionKey(process, host)
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	until, ok := p.exclusions[process+"|"+host]
+	until, ok := p.exclusions[key]
 	if !ok {
 		return false
 	}
 	if p.cfg.Clock().After(until) {
 		// The exclusion has expired: the client is re-probed, because a client update can change
 		// its behaviour and this must never be a permanent silent omission.
-		delete(p.exclusions, process+"|"+host)
+		delete(p.exclusions, key)
 		return false
 	}
 	return true
+}
+
+// rejectsLeaf reports whether a failed server handshake, after the client's hello, looks like the
+// client refusing the minted leaf: a certificate alert, or the client hanging up on the
+// certificate without one. A timeout or any other alert is not pinning.
+func rejectsLeaf(err error) bool {
+	var op *net.OpError
+	if errors.As(err, &op) && op.Op == "remote error" {
+		// crypto/tls reports a received alert as an unexported uint8 type.
+		if v := reflect.ValueOf(op.Err); v.Kind() == reflect.Uint8 {
+			switch v.Uint() {
+			case 42, 43, 44, 45, 46, 48: // bad, unsupported, revoked, expired, unknown certificate; unknown CA
+				return true
+			}
+		}
+		return false
+	}
+	return errors.Is(err, io.EOF) || connReset(err)
 }
 
 // ExcludedCount reports how many (process, host) pairs are currently excluded.

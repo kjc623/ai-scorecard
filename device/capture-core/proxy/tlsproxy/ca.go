@@ -41,13 +41,24 @@ type CA struct {
 	pool *x509.CertPool
 
 	mu      sync.Mutex
-	leaves  map[string]*tls.Certificate
+	leaves  map[string]cachedLeaf
 	leafTTL time.Duration
+}
+
+// cachedLeaf is a minted leaf and the window it is valid in.
+type cachedLeaf struct {
+	cert                *tls.Certificate
+	notBefore, notAfter time.Time
 }
 
 // LeafTTL bounds a minted leaf's life. Short-lived is the point: a leaf that outlives the
 // process's need for it is an interception capability lying around.
 const LeafTTL = 12 * time.Hour
+
+// leafRenewal is how much of a cached leaf's life must remain for it to be presented again; a leaf
+// closer to its end is replaced, so no client is shown an expired or nearly expired certificate,
+// which it would refuse as if it pinned.
+const leafRenewal = time.Hour
 
 // NewCA mints a per-device CA valid for three calendar months, the life of a CA minted for one
 // run.
@@ -100,7 +111,7 @@ func mintCA(key crypto.Signer, deviceID string, now time.Time, validity time.Dur
 func newCA(cert *x509.Certificate, der []byte, key crypto.Signer) *CA {
 	pool := x509.NewCertPool()
 	pool.AddCert(cert)
-	return &CA{key: key, cert: cert, der: der, pool: pool, leaves: map[string]*tls.Certificate{}, leafTTL: LeafTTL}
+	return &CA{key: key, cert: cert, der: der, pool: pool, leaves: map[string]cachedLeaf{}, leafTTL: LeafTTL}
 }
 
 // DER returns the CA certificate for the platform trust store. Only the public half.
@@ -121,12 +132,14 @@ func (c *CA) Info() CAInfo {
 }
 
 // Leaf mints (or returns a cached) short-lived certificate for a hostname. Leaves are never
-// written to disk, and the cache is keyed by host so a busy destination costs one mint.
+// written to disk, and the cache is keyed by host so a busy destination costs one mint per
+// leaf lifetime: a cached leaf is replaced once now is outside its validity or within leafRenewal
+// of its end.
 func (c *CA) Leaf(host string, now time.Time) (*tls.Certificate, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if cert, ok := c.leaves[host]; ok {
-		return cert, nil
+	if l, ok := c.leaves[host]; ok && !now.Before(l.notBefore) && now.Add(leafRenewal).Before(l.notAfter) {
+		return l.cert, nil
 	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -154,7 +167,7 @@ func (c *CA) Leaf(host string, now time.Time) (*tls.Certificate, error) {
 		return nil, fmt.Errorf("tlsproxy: minting leaf for %s: %w", host, err)
 	}
 	cert := &tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
-	c.leaves[host] = cert
+	c.leaves[host] = cachedLeaf{cert: cert, notBefore: tmpl.NotBefore, notAfter: tmpl.NotAfter}
 	return cert, nil
 }
 
