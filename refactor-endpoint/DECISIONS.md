@@ -585,3 +585,33 @@ decided and why, and for a vendor fact the product version checked.
 - **The extension's decision is kept as sent.**
 - **Outside the named packages:** `device/integration`'s frame conversion sets `Enforce` instead
   of `Decision`, and `device/README.md` lists the `enforce` package.
+## 2026-10-08, task 26
+
+- **Vendor fact: `tool_result` never says "denied".** https://code.claude.com/docs/en/monitoring-usage
+  (the `.md` form, read 2026-10-08, the page task 25 used) says `tool_result` is "not emitted if the
+  tool call was rejected" and its `decision_type` is always `accept`. A rejected call is a
+  `tool_decision` with `decision` `reject`, so that event becomes the `tool_call` with outcome
+  `denied` (tool name, no duration); an accepted `tool_decision` makes no record, its `tool_result`
+  does. `tool_result` still reads `decision_type` `reject` as `denied`, as the brief asks.
+- **Events.** `user_prompt`, `tool_result`, `tool_decision` (reject), `api_request` and `api_error`
+  are converted; the other 23 events in the fixtures are listed in the test's `droppedEvents` with a
+  reason, and an event in neither fails the test. The event name is read from `event.name`, then
+  the OTLP `eventName`, then a body starting `claude_code.`, so the capture's placement works.
+- **Attribute tables.** The mapped table is in the package (`attributes.go`) and records are read
+  only through it, so a key missing from it is never read; the dropped table (157 keys, one reason
+  each) is in the test, which walks resource and record attributes of every `logs-*.json` under
+  `testdata/claude-code/`. A key dropped as "sent only on events that are not converted" fails the
+  test if it appears on a converted event.
+- **Prompt text.** The reader returns `prompt`, else `prompt_text`, ignoring `<REDACTED>`. With no
+  text (prompt logging off at `m1`+) the extractor fails, so the record is degraded with the Tier S
+  key rather than digesting the redaction marker. Spans are not converted.
+- **`dedup_key` for activity** is sha256 of `tenant|device|app:claude_code|activity_type|<event.timestamp>/<event.sequence>|duration_ms`
+  (`sha256:` prefix, as every key). Both of the record's own fields are used: the docs say
+  `event.sequence` restarts with each process and that the pair orders a session's events.
+- **Decision.** The prompt's `Observation.Enforce` is `enforce.Hook` over the bundle in force
+  (`Config.Bundles`, wired from the pipeline), with `canEnforce` false: route `tool.otel` reports a
+  prompt after Claude Code has sent it, so the matching rule is recorded as `logged`. Without a
+  bundle source (tests) it records `policy.default`.
+- **Registration.** `buildProviders` passes `otlp.Config.Normalizers` with Claude Code's first; task
+  33 appends the generic normalizer after it. Failed records are logged with the event name and the
+  error only; records refused before enrolment are counted by the pipeline, not logged.

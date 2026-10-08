@@ -24,6 +24,7 @@ import (
 	"github.com/shadow-ai-capture/device/capture-core/hostinfo"
 	"github.com/shadow-ai-capture/device/capture-core/localipc"
 	"github.com/shadow-ai-capture/device/capture-core/otlp"
+	"github.com/shadow-ai-capture/device/capture-core/otlp/claudecode"
 	"github.com/shadow-ai-capture/device/capture-core/policy"
 	"github.com/shadow-ai-capture/device/capture-core/proxy/loopback"
 	"github.com/shadow-ai-capture/device/capture-core/proxy/tlsproxy"
@@ -457,7 +458,10 @@ func (s *service) buildProviders() error {
 
 	// The listen addresses arrive with the bundle that switches the receiver on. A sending process's
 	// owner is named the way a browser peer is.
-	otel, err := otlp.New(otlp.Config{TokenPath: s.dir.Path(otlp.TokenFile), Person: s.peerPerson, Log: s.logf, Clock: time.Now})
+	otel, err := otlp.New(otlp.Config{TokenPath: s.dir.Path(otlp.TokenFile), Person: s.peerPerson, Log: s.logf, Clock: time.Now,
+		Normalizers: []otlp.Normalizer{
+			claudecode.New(claudecode.Config{Pipeline: s.pipe, Log: s.logf, Bundles: s.pipe.Bundles}),
+		}})
 	if err != nil {
 		return err
 	}
