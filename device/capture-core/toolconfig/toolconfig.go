@@ -1,11 +1,13 @@
 // Package toolconfig writes the agent's settings into AI tools' machine-wide, admin-managed
-// configuration, so a tool exports its telemetry to the agent and a user cannot switch that off.
+// configuration, so a tool exports its telemetry to the agent and runs the agent's prompt hooks,
+// and a user cannot switch either off.
 //
 // A Writer owns a few keys in one tool's managed file and touches nothing else in it. Before its
 // first write it backs the file up once (or records that there was none) under
 // toolconfig/<tool>/original in the state directory; Remove takes the agent's keys out again and
 // puts back any value the agent replaced. Each tool has one core.Provider, switched by its
-// endpoint.tools entry in the signed bundle.
+// endpoint.tools entry in the signed bundle: on while either of the tool's OTel and hooks switches
+// is in effect.
 //
 // The managed files carry the OTLP bearer token, so nothing here logs a file's content.
 package toolconfig
@@ -14,8 +16,11 @@ import (
 	"github.com/shadow-ai-capture/device/capture-core/policy"
 )
 
-// Desired is what the agent wants a tool configured with.
+// Desired is what the agent wants a tool configured with. The OTel fields apply only with OTel, and
+// the hook fields only with Hooks.
 type Desired struct {
+	// OTel points the tool's telemetry at the OTLP receiver.
+	OTel bool
 	// HTTPListen is the OTLP receiver's OTLP/HTTP address, host:port.
 	HTTPListen string
 	// Token is the OTLP receiver's bearer token.
@@ -23,6 +28,13 @@ type Desired struct {
 	// LogPrompts switches the tool's prompt logging on: the resolved mode for the tool is m1 or
 	// higher, so the text is needed to classify it on the device.
 	LogPrompts bool
+
+	// Hooks declares the agent's prompt hooks, which run HookCommand.
+	Hooks bool
+	// HookCommand is the installed capture-core executable.
+	HookCommand string
+	// ManagedOnly lets only the hooks an administrator declares run.
+	ManagedOnly bool
 }
 
 // Writer is one tool's managed configuration.

@@ -1080,3 +1080,72 @@ decided and why, and for a vendor fact the product version checked.
   run above: p50 11.1 ms, p95 21.9 ms, p99 51.3 ms.
 - **No vendor facts.** This task ships only the test adapter; the Claude Code and Cursor formats are
   tasks 37 and 38.
+
+## 2026-10-08, task 37
+
+- **Vendor facts** (code.claude.com `hooks`, `settings-reference`, `managed-settings`,
+  `tools-reference` and `changelog`, `.md` form, read 2026-10-08; the changelog's latest entry is
+  2.1.295 of 2026-10-08; docs.anthropic.com is blocked from the build machine; no installed version
+  could be checked):
+  - The Windows managed file is still `C:\Program Files\ClaudeCode\managed-settings.json`.
+  - Hooks are `hooks.<event>[]` matcher groups `{matcher, hooks: [{type: "command", command, args,
+    timeout}]}`. `timeout` is in seconds (default 600, and 30 on `UserPromptSubmit`).
+    `UserPromptSubmit` takes no matcher (one is ignored). A matcher with characters other than
+    letters, digits, `_`, `-`, spaces, `,` and `|` is a JavaScript regular expression tested
+    unanchored.
+  - Stdin: the common fields `session_id`, `prompt_id`, `transcript_path`, `cwd`,
+    `permission_mode`, `hook_event_name`; `UserPromptSubmit` adds `prompt` (pasted text expanded);
+    `PreToolUse` adds `tool_name`, `tool_input`, `tool_use_id`, and `mcp_server` for MCP tools
+    (v2.1.274 and later).
+  - Blocking a prompt: exit code 2 with the reason on stderr, or JSON `{"decision": "block",
+    "reason": ...}` with exit code 0; either way the reason is shown to the user and not added to
+    Claude's context. The adapter uses the JSON with exit code 0, as `DESIGN.md` §9 has hooks exit 0.
+    By default the block message ends with the submitted prompt and is written to the session
+    transcript, so the adapter also sets `hookSpecificOutput.suppressOriginalPrompt: true`.
+  - `PreToolUse` deny: `hookSpecificOutput {hookEventName: "PreToolUse", permissionDecision: "deny",
+    permissionDecisionReason}`. The reason goes to Claude, not the user, so the adapter also sets
+    `systemMessage`, the universal field "shown to the user".
+  - Warn: `systemMessage` with no decision. Allow: no output and exit code 0 (on `UserPromptSubmit`
+    plain stdout would be added to Claude's context).
+  - `allowManagedHooksOnly` (managed scope only, boolean, default unset): with `true` only managed
+    hooks, Agent SDK hooks and hooks of plugins the managed settings force-enable run. It also
+    disables command-sourced plugins and marketplace `headersHelper` commands (unless
+    `disableCommandPluginSources` is `false`), narrows `statusLine` and `fileSuggestion` to managed
+    settings, and stops `/goal`.
+  - Under the default `managedSourcesBehavior` (`first-wins`) the file's hooks apply only when no
+    higher admin source (server-managed settings, or HKLM `SOFTWARE\Policies\ClaudeCode`) carries a
+    policy key; `env` still merges per variable. A customer with such a policy gets no agent hooks,
+    and the `tool_config_claude_code` row cannot see that. Not addressed here.
+- **Deviation: the hook runs in exec form.** The brief's command is one shell string. Claude Code runs
+  a shell-form command through Git Bash, or PowerShell where Git Bash is not installed, and in
+  PowerShell a quoted path followed by arguments does not parse. The agent writes `command` as the
+  executable's path and `args` as `["--hook", "claude_code", "<event>"]` (exec form, v2.1.139 and
+  later), which Claude Code spawns without a shell; the documentation says an absolute path with
+  spaces is valid there.
+- **Deviation: the `PreToolUse` matcher is `^(Bash|PowerShell|WebFetch|mcp__.*)$`.** On Windows
+  Claude Code routes shell commands through its PowerShell tool wherever that is enabled, and without
+  Git Bash it does not register the Bash tool at all; the documentation says a hook matching `Bash`
+  alone never fires there. The anchors keep the unanchored regular expression to these tools.
+- **The toggle covers both switch sets.** `tool_config_claude_code` is on while either Claude Code's
+  OTel (with the receiver on) or its hooks (with the relay on) is in effect, and writes only what is
+  on: with OTel alone no hooks, with hooks alone no telemetry variables (the agent's variables go back
+  to the backup's values). `managed_only` takes effect only while the agent's hooks are declared;
+  with the hooks off, `allowManagedHooksOnly` is never set. With both off the registry stops the
+  provider, which restores the file. Each bundle re-applies when anything in `Desired` changes.
+- **What the agent owns.** Its telemetry variables, its own hook groups and `allowManagedHooksOnly`.
+  A key the bundle does not ask for holds the backup's value, or is absent when the backup has none;
+  a change someone makes to one of those keys while the agent keeps a backup is not kept, as for the
+  telemetry variables before. An agent group is a matcher group whose handlers are all command hooks
+  with `args` starting `--hook claude_code` and a `capture-core(.exe)` command, so one written from an
+  earlier install path is replaced in place, and a customer's hook is never touched. A `hooks` that
+  is not an object, or an event's list that is not an array, leaves the file untouched and reports
+  `config_write_failed`, as a malformed `env` does.
+- **The executable's path** is `toolconfig.Config.Executable`, `os.Executable` by default, so the
+  service's wiring is unchanged. A path that cannot be read reports `config_write_failed`.
+- **`Desired` gains `OTel`, `Hooks`, `HookCommand` and `ManagedOnly`**; the OTel fields are zero
+  while OTel is off, so a mode change with only the hooks on rewrites nothing.
+- **The stdin fixtures are documented, not captured** (`hooks/testdata/claude-code/documented/`,
+  marked so in its README). The device phase replaces them with input captured from the installed
+  version.
+- **Not run here:** nothing new is Windows-only; the existing Windows tests of `toolconfig` compile
+  and vet under `GOOS=windows`.

@@ -14,7 +14,7 @@ import (
 const testToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 func testDesired(logPrompts bool) Desired {
-	return Desired{HTTPListen: "127.0.0.1:47318", Token: testToken, LogPrompts: logPrompts}
+	return Desired{OTel: true, HTTPListen: "127.0.0.1:47318", Token: testToken, LogPrompts: logPrompts}
 }
 
 // newTestWriter is a Claude Code writer over a managed file and a state directory in the test's
@@ -162,7 +162,7 @@ func TestClaudeCodeBackupIsTakenOnce(t *testing.T) {
 	if err := w.Apply(testDesired(true)); err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Apply(Desired{HTTPListen: "127.0.0.1:50000", Token: testToken}); err != nil {
+	if err := w.Apply(Desired{OTel: true, HTTPListen: "127.0.0.1:50000", Token: testToken}); err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(readFile(t, w.backup.path), first) {
@@ -277,9 +277,11 @@ func TestClaudeCodeRemoveKeepsOtherChanges(t *testing.T) {
 // A file Claude Code itself could not read is left untouched, and no backup is taken.
 func TestClaudeCodeLeavesAFileThatIsNotAnObject(t *testing.T) {
 	for name, content := range map[string]string{
-		"array":          `[1, 2]`,
-		"broken":         `{"env": {`,
-		"env not object": `{"env": ["A=1"]}`,
+		"array":            `[1, 2]`,
+		"broken":           `{"env": {`,
+		"env not object":   `{"env": ["A=1"]}`,
+		"hooks not object": `{"hooks": [{"hooks": []}]}`,
+		"event not array":  `{"hooks": {"PreToolUse": {"matcher": "Bash"}}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			w, path := newTestWriter(t)

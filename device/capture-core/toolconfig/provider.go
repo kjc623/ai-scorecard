@@ -2,6 +2,7 @@ package toolconfig
 
 import (
 	"context"
+	"os"
 	"sync"
 	"time"
 
@@ -26,14 +27,17 @@ type Config struct {
 	// Scope names the device and the user a tool's collection mode is resolved for. nil resolves
 	// with neither, so the tenant default applies on those axes.
 	Scope func() core.ScopeQuery
-	Log   core.Logger
-	Clock func() time.Time
+	// Executable returns the running capture-core's path, which the tool's hooks run. nil is
+	// os.Executable.
+	Executable func() (string, error)
+	Log        core.Logger
+	Clock      func() time.Time
 }
 
 // Provider is one tool's tool_config_<tool> collector: while the bundle switches the tool's OTel
-// export on, the tool's managed configuration carries the agent's keys. Start applies them, Stop
-// removes them, and a bundle that changes the collection mode, the receiver's address or the token
-// applies them again.
+// export or its hooks on, the tool's managed configuration carries the agent's keys for what is on.
+// Start applies them, Stop removes them, and a bundle that changes what is on, the collection mode,
+// the receiver's address, the token or managed-only hooks applies them again.
 type Provider struct {
 	tool tool
 	w    Writer
@@ -72,6 +76,9 @@ func newProvider(t tool, w Writer, cfg Config) *Provider {
 	if cfg.Token == nil {
 		cfg.Token = func() string { return "" }
 	}
+	if cfg.Executable == nil {
+		cfg.Executable = os.Executable
+	}
 	now := cfg.Clock()
 	return &Provider{tool: t, w: w, cfg: cfg, startedAt: now, counters: core.NewCounterSet(now)}
 }
@@ -79,27 +86,48 @@ func newProvider(t tool, w Writer, cfg Config) *Provider {
 // Name implements core.Provider.
 func (p *Provider) Name() protocol.Collector { return p.tool.collector }
 
-// Enabled implements core.Toggled: the tool's OTel switch, effective while the receiver is on.
+// Enabled implements core.Toggled: either of the tool's OTel and hooks switches, each effective
+// while its collector is on.
 func (p *Provider) Enabled(b *policy.Bundle) bool {
-	return b != nil && b.Endpoint.OTel.Enabled && b.Endpoint.Tools[p.tool.key].OTel
+	return otelOn(b, p.tool.key) || hooksOn(b, p.tool.key)
+}
+
+func otelOn(b *policy.Bundle, tool string) bool {
+	return b != nil && b.Endpoint.OTel.Enabled && b.Endpoint.Tools[tool].OTel
+}
+
+func hooksOn(b *policy.Bundle, tool string) bool {
+	return b != nil && b.Endpoint.Hooks.Enabled && b.Endpoint.Tools[tool].Hooks
 }
 
 // Counters exposes the provider's counter set.
 func (p *Provider) Counters() *core.CounterSet { return p.counters }
 
-// desired is what b asks the tool to be configured with.
+// desired is what b asks the tool to be configured with. Managed-only hooks apply only while the
+// agent's own hooks are declared. An executable path that cannot be read leaves HookCommand empty,
+// which the writer refuses.
 func (p *Provider) desired(b *policy.Bundle) Desired {
-	var q core.ScopeQuery
-	if p.cfg.Scope != nil {
-		q = p.cfg.Scope()
+	var d Desired
+	if otelOn(b, p.tool.key) {
+		var q core.ScopeQuery
+		if p.cfg.Scope != nil {
+			q = p.cfg.Scope()
+		}
+		q.ToolFingerprint = p.tool.fingerprint
+		mode := core.Resolve(b, q).Mode
+		d.OTel = true
+		d.HTTPListen = b.Endpoint.OTel.HTTPListen
+		d.Token = p.cfg.Token()
+		d.LogPrompts = core.ModeRank(mode) >= core.ModeRank(protocol.ModeM1)
 	}
-	q.ToolFingerprint = p.tool.fingerprint
-	mode := core.Resolve(b, q).Mode
-	return Desired{
-		HTTPListen: b.Endpoint.OTel.HTTPListen,
-		Token:      p.cfg.Token(),
-		LogPrompts: core.ModeRank(mode) >= core.ModeRank(protocol.ModeM1),
+	if hooksOn(b, p.tool.key) {
+		d.Hooks = true
+		d.ManagedOnly = b.Endpoint.Hooks.ManagedOnly
+		if exe, err := p.cfg.Executable(); err == nil {
+			d.HookCommand = exe
+		}
 	}
+	return d
 }
 
 // Start applies the configuration the last bundle asked for. A failed write leaves the provider

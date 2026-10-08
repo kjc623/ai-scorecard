@@ -17,7 +17,10 @@ type member struct {
 	value json.RawMessage
 }
 
-var errNotObject = errors.New("not a JSON object")
+var (
+	errNotObject = errors.New("not a JSON object")
+	errNotArray  = errors.New("not a JSON array")
+)
 
 // parseObject reads a JSON object. An empty document is an empty object.
 func parseObject(data []byte) (*object, error) {
@@ -136,14 +139,61 @@ func (o *object) indented() ([]byte, error) {
 }
 
 // marshalString encodes s as a JSON string without escaping HTML characters.
-func marshalString(s string) (json.RawMessage, error) {
+func marshalString(s string) (json.RawMessage, error) { return marshalCompact(s) }
+
+// marshalCompact encodes v on one line without escaping HTML characters.
+func marshalCompact(v any) (json.RawMessage, error) {
 	var b bytes.Buffer
 	enc := json.NewEncoder(&b)
 	enc.SetEscapeHTML(false)
-	if err := enc.Encode(s); err != nil {
+	if err := enc.Encode(v); err != nil {
 		return nil, err
 	}
 	return bytes.TrimRight(b.Bytes(), "\n"), nil
+}
+
+// isNull reports whether a value is JSON null.
+func isNull(v json.RawMessage) bool { return bytes.Equal(bytes.TrimSpace(v), []byte("null")) }
+
+// parseArray reads a JSON array's elements as written. An absent or null value is an empty array.
+func parseArray(data json.RawMessage) ([]json.RawMessage, error) {
+	t := bytes.TrimSpace(data)
+	if len(t) == 0 || isNull(t) {
+		return nil, nil
+	}
+	if t[0] != '[' {
+		return nil, errNotArray
+	}
+	var a []json.RawMessage
+	if err := json.Unmarshal(t, &a); err != nil {
+		return nil, err
+	}
+	return a, nil
+}
+
+// compactArray renders elements as a JSON array on one line.
+func compactArray(elems []json.RawMessage) (json.RawMessage, error) {
+	var b bytes.Buffer
+	b.WriteByte('[')
+	for i, e := range elems {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		if err := json.Compact(&b, e); err != nil {
+			return nil, err
+		}
+	}
+	b.WriteByte(']')
+	return b.Bytes(), nil
+}
+
+// equalJSON reports whether two JSON values are the same, whatever their formatting.
+func equalJSON(a, b json.RawMessage) bool {
+	var va, vb any
+	if json.Unmarshal(a, &va) != nil || json.Unmarshal(b, &vb) != nil {
+		return false
+	}
+	return reflect.DeepEqual(va, vb)
 }
 
 // sameJSON reports whether two objects hold the same values, whatever their formatting.

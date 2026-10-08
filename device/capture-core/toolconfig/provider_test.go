@@ -28,7 +28,10 @@ var supportedTool = tool{key: ClaudeCodeTool, collector: protocol.CollectorToolC
 
 func newTestProvider(t *testing.T, w Writer) *Provider {
 	t.Helper()
-	return newProvider(supportedTool, w, Config{Token: func() string { return testToken }})
+	return newProvider(supportedTool, w, Config{
+		Token:      func() string { return testToken },
+		Executable: func() (string, error) { return testExe, nil },
+	})
 }
 
 // failingFiles reads like the file system and refuses every write.
@@ -68,6 +71,131 @@ func TestProviderNameAndSwitch(t *testing.T) {
 	off.Endpoint.OTel.Enabled = false
 	if p.Enabled(&off) {
 		t.Fatal("enabled with the receiver off: a tool switch takes effect only while its collector is on")
+	}
+	hooksOnly := hooksBundle(false)
+	if !p.Enabled(&hooksOnly) {
+		t.Fatal("not enabled with the hooks and Claude Code's hooks on, OTel off")
+	}
+	hooksOnly.Endpoint.Hooks.Enabled = false
+	if p.Enabled(&hooksOnly) {
+		t.Fatal("enabled with the hook collector off")
+	}
+}
+
+// hooksBundle switches Claude Code's hooks on and its OTel export off.
+func hooksBundle(managedOnly bool) policy.Bundle {
+	return policy.Bundle{
+		Version:       "1",
+		TenantDefault: protocol.ModeM1,
+		Endpoint: policy.EndpointPolicy{
+			OTel:  policy.EndpointOTel{HTTPListen: "127.0.0.1:47318", GRPCListen: "127.0.0.1:47317"},
+			Hooks: policy.EndpointHooks{Enabled: true, ManagedOnly: managedOnly},
+			Tools: map[string]policy.EndpointTool{"claude_code": {OTel: true, Hooks: true}},
+		},
+	}
+}
+
+// Under the registry, the hooks and managed-only follow each bundle without a restart, beside OTel
+// and on their own; with both switches off the file is the customer's again.
+func TestProviderFollowsTheHookSwitches(t *testing.T) {
+	w, path := newTestWriter(t)
+	writeFile(t, path, []byte(customerHooksFile))
+	reg := core.NewRegistry(nil, nil)
+	if err := reg.Add(newTestProvider(t, w)); err != nil {
+		t.Fatal(err)
+	}
+	reg.StartCollectors(context.Background())
+	t.Cleanup(func() { reg.StopAll(context.Background()) })
+	healthy := func(when string) {
+		t.Helper()
+		if h, _ := reg.HealthFor(protocol.CollectorToolConfigClaudeCode); h.State != protocol.StateHealthy {
+			t.Fatalf("%s: row = %s/%s, want healthy", when, h.State, h.Detail)
+		}
+	}
+
+	reg.ApplyPolicy(hooksBundle(false))
+	m := readManaged(t, path)
+	checkGroups(t, m, "UserPromptSubmit", customerPromptHook, agentGroup("UserPromptSubmit", testExe))
+	checkGroups(t, m, "PreToolUse", customerToolHook, agentGroup("PreToolUse", testExe))
+	if m.Env != nil || m.ManagedOnly != nil {
+		t.Fatalf("hooks only wrote env %v and allowManagedHooksOnly %v", m.Env, m.ManagedOnly)
+	}
+	healthy("hooks on")
+
+	reg.ApplyPolicy(hooksBundle(true))
+	if m := readManaged(t, path); m.ManagedOnly == nil || !*m.ManagedOnly {
+		t.Fatal("managed-only on did not set allowManagedHooksOnly")
+	}
+	healthy("managed-only on")
+	reg.ApplyPolicy(hooksBundle(false))
+	if m := readManaged(t, path); m.ManagedOnly != nil {
+		t.Fatal("managed-only off left allowManagedHooksOnly")
+	}
+
+	both := hooksBundle(false)
+	both.Endpoint.OTel.Enabled = true
+	reg.ApplyPolicy(both)
+	if m := readManaged(t, path); m.Env["CLAUDE_CODE_ENABLE_TELEMETRY"] != "1" || len(m.Hooks["PreToolUse"]) != 2 {
+		t.Fatalf("OTel and hooks on: env %v, hooks %v", m.Env, m.Hooks)
+	}
+	healthy("both on")
+
+	otelOnly := both
+	otelOnly.Endpoint.Hooks.Enabled = false
+	reg.ApplyPolicy(otelOnly)
+	m = readManaged(t, path)
+	checkGroups(t, m, "UserPromptSubmit", customerPromptHook)
+	checkGroups(t, m, "PreToolUse", customerToolHook)
+	if m.Env["CLAUDE_CODE_ENABLE_TELEMETRY"] != "1" {
+		t.Fatalf("hooks off took OTel's env with it: %v", m.Env)
+	}
+	healthy("OTel only")
+
+	otelOnly.Endpoint.OTel.Enabled = false
+	reg.ApplyPolicy(otelOnly)
+	if got := string(readFile(t, path)); got != customerHooksFile {
+		t.Fatalf("with both off the file is\n%s\nwant the customer's", got)
+	}
+	if h, _ := reg.HealthFor(protocol.CollectorToolConfigClaudeCode); h.State != protocol.StateAbsent || h.Detail != protocol.DetailDisabledByPolicy {
+		t.Fatalf("row = %s/%s, want absent/disabled_by_policy", h.State, h.Detail)
+	}
+}
+
+// Hooks that cannot be written, because the agent's path is unknown or the file cannot be
+// replaced, leave the row degraded with config_write_failed; hooks taken out of the file are not
+// reported healthy.
+func TestProviderHookWriteFailureIsDegraded(t *testing.T) {
+	w, path := newTestWriter(t)
+	p := newProvider(supportedTool, w, Config{Executable: func() (string, error) { return "", errors.New("no path") }})
+	_ = p.ApplyPolicy(hooksBundle(false))
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if h := p.Health(); h.State != protocol.StateDegraded || h.Detail != protocol.DetailConfigWriteFailed {
+		t.Fatalf("without the executable: health = %s/%s, want degraded/config_write_failed", h.State, h.Detail)
+	}
+	_ = p.Stop(context.Background())
+
+	w.files = failingFiles{}
+	p = newTestProvider(t, w)
+	_ = p.ApplyPolicy(hooksBundle(false))
+	_ = p.Start(context.Background())
+	if h := p.Health(); h.State != protocol.StateDegraded || h.Detail != protocol.DetailConfigWriteFailed {
+		t.Fatalf("on a failed write: health = %s/%s, want degraded/config_write_failed", h.State, h.Detail)
+	}
+	_ = p.Stop(context.Background())
+
+	w.files = systemFiles{}
+	p = newTestProvider(t, w)
+	_ = p.ApplyPolicy(hooksBundle(true))
+	_ = p.Start(context.Background())
+	t.Cleanup(func() { _ = p.Stop(context.Background()) })
+	if h := p.Health(); h.State != protocol.StateHealthy {
+		t.Fatalf("health = %s/%s, want healthy", h.State, h.Detail)
+	}
+	writeFile(t, path, []byte(`{"hooks":{}}`))
+	if h := p.Health(); h.State != protocol.StateDegraded || h.Detail != protocol.DetailConfigWriteFailed {
+		t.Fatalf("with the hooks taken out: health = %s/%s, want degraded/config_write_failed", h.State, h.Detail)
 	}
 }
 

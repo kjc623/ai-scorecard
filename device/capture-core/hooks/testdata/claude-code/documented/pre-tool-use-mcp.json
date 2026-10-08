@@ -1,0 +1,14 @@
+{
+  "session_id": "8f2c1e4a-5b6d-4c7e-9f80-1a2b3c4d5e6f",
+  "prompt_id": "550e8400-e29b-41d4-a716-446655440000",
+  "transcript_path": "C:\\Users\\console\\.claude\\projects\\C--work-app\\8f2c1e4a-5b6d-4c7e-9f80-1a2b3c4d5e6f.jsonl",
+  "cwd": "C:\\work\\app",
+  "permission_mode": "acceptEdits",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "mcp__memory__create_entities",
+  "tool_input": {
+    "entities": [{"name": "deploy", "entityType": "note", "observations": ["key AKIAIOSFODNN7EXAMPLE"]}]
+  },
+  "tool_use_id": "toolu_01MCP789",
+  "mcp_server": {"name": "memory", "source": "user"}
+}
