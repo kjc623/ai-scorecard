@@ -26,6 +26,7 @@ import (
 	"github.com/shadow-ai-capture/device/capture-core/otlp"
 	"github.com/shadow-ai-capture/device/capture-core/otlp/normalizers"
 	"github.com/shadow-ai-capture/device/capture-core/policy"
+	"github.com/shadow-ai-capture/device/capture-core/procmon"
 	"github.com/shadow-ai-capture/device/capture-core/proxy/loopback"
 	"github.com/shadow-ai-capture/device/capture-core/proxy/tlsproxy"
 	"github.com/shadow-ai-capture/device/capture-core/state"
@@ -76,6 +77,9 @@ type facilities struct {
 	userSessions userhelper.Platform
 	// claudeCodeSettings is Claude Code's managed settings file; empty is the platform's location.
 	claudeCodeSettings string
+	// processEvents opens the process start and stop events the process monitor reads; nil leaves
+	// the monitor absent.
+	processEvents func() (procmon.Source, error)
 }
 
 // trustStore installs, verifies and removes the per-device CA in the platform trust store.
@@ -95,6 +99,8 @@ var platform = facilities{
 	connOwner:    loopbackAttribution(),
 	desktopPAC:   desktopPAC(),
 	userSessions: helperPlatform(),
+
+	processEvents: procmon.KernelEvents,
 }
 
 // desktopPAC is the desktop-app PAC on Windows, where desktop apps read the per-user Internet
@@ -188,6 +194,9 @@ type service struct {
 	health  *healthChannel
 	native  *localipc.Server
 	helpers *userhelper.Provider
+
+	// discovery is the emitter the discovery collectors report to.
+	discovery *discoveryEmitter
 
 	// host supervises the classifier-host child, and classifier is the link to it (nil without a
 	// classifier release).
@@ -384,7 +393,8 @@ func (s *service) buildDrainer(spoolKey []byte) error {
 }
 
 // buildProviders builds proxy.tls, the loopback broker and the CLI shim over the per-device CA, the
-// OTLP receiver, Claude Code's configuration writer and the user-session helper.
+// OTLP receiver, Claude Code's configuration writer, the user-session helper and the process
+// monitor.
 func (s *service) buildProviders() error {
 	b := s.currentBundle()
 	label := s.resolvedHostname()
@@ -469,6 +479,21 @@ func (s *service) buildProviders() error {
 
 	s.helpers = userhelper.New(userhelper.Config{Platform: platform.userSessions, Log: s.logf, Clock: time.Now})
 	if err := s.reg.Add(s.helpers); err != nil {
+		return err
+	}
+
+	// A running app is attributed to the account its process runs as, named the way a browser
+	// peer is.
+	s.discovery = &discoveryEmitter{svc: s}
+	procs := procmon.New(procmon.Config{
+		Emitter: s.discovery,
+		Events:  platform.processEvents,
+		Bundles: s.currentBundle,
+		Person:  s.peerPerson,
+		Log:     s.logf,
+		Clock:   time.Now,
+	})
+	if err := s.reg.Add(procs); err != nil {
 		return err
 	}
 

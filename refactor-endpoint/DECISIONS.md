@@ -993,3 +993,59 @@ decided and why, and for a vendor fact the product version checked.
 - **The service tests check the seams the service builds**, not a proxied connection or an OTLP
   export: the connection-owner lookup that names the process is Windows-only. `buildProviders`
   takes the proxy configuration and the normalizer dependencies from two methods for this.
+
+## 2026-10-08, task 19
+
+- **Dependency: `github.com/0xrawsec/golang-etw` v1.6.2** (the latest tag, 2022-09-22, commit
+  `4b60579`), through the module proxy. Its `etw` package is Windows-only and pure Go; it brings
+  `github.com/0xrawsec/golang-utils` v1.3.1 (its `log` and `datastructs`) as an indirect
+  dependency. Only `etwsession` imports it.
+- **Vendor fact, Microsoft-Windows-Kernel-Process** (`{22FB2CD6-0E7B-422B-A0C7-2FAD1FD0E716}`):
+  keyword `WINEVENT_KEYWORD_PROCESS` is `0x10`; event 1 is ProcessStart (`ProcessID`,
+  `CreateTime`, `ParentProcessID`, `SessionID`, `Flags`, `ImageName` as a kernel path such as
+  `\Device\HarddiskVolume3\...\app.exe`, and in later versions more); event 2 is ProcessStop
+  (`ProcessID` first, then times, counters and `ImageName`); both informational. Checked against
+  the provider manifest as extracted from Windows 10 builds 17134 and 18990
+  (`repnz/etw-providers-docs` on GitHub) and golang-etw v1.6.2's own `etwdump` (events 1 and 2,
+  `ProcessID`, `ImageName`). Microsoft's documentation on GitHub (`MicrosoftDocs/sdk-api`,
+  `MicrosoftDocs/win32`) covers the ETW API (StartTrace and EVENT_TRACE_PROPERTIES ms.date
+  2018-12-05, ControlTrace 2022-08-04) but has no payload reference for this provider. The PC's
+  manifest (`wevtutil gp`) was not read: this build ran on Linux. The device phase confirms the
+  fields on the reference VM.
+- **A stale session is stopped by name before the new one starts**, with properties sized for the
+  name ControlTrace writes back. golang-etw's own fallback on `ERROR_ALREADY_EXISTS` passes
+  ControlTrace a copy of the properties without that room. Close does not stop a session that has
+  already ended, since its handle may by then name a newer session.
+- **"Stops delivering" means the session ended** (its ProcessTrace returned), not a quiet period.
+  The monitor is then `degraded` with `etw_session_failed` and opens the session again every
+  minute; one that cannot be opened at start is degraded the same way. Where there is no ETW it is
+  `absent` with `etw_session_failed` (`DESIGN.md` §12).
+- **A running app is an instance, not a process.** A catalog process whose parent is a running
+  process of the same app joins that app's instance; the instance is reported once and stops with
+  its last process. Electron apps (Claude Desktop, Cursor, VS Code) run many processes of one
+  executable, and a Squirrel launcher exits after starting the app; the brief's device check
+  expects one log line for the start and one for the stop.
+- **The start time is the event's timestamp** (when ProcessStart was written), not `CreateTime`;
+  for an app found by the start-up process listing it is the time of the listing.
+- **When several apps share the executable name**, the app whose catalog `publisher` is the
+  observed signer wins, else the first in catalog order. The seed catalog lists `claude.exe` only
+  for `claude_code`, so Claude Desktop's process is reported as `app:claude_code` until the catalog
+  gives it a `windows_exe` signal; the brief's device step expects `app:claude_desktop`.
+- **The version is the image's VS_FIXEDFILEINFO file version** (`major.minor.build.revision`),
+  read with GetFileVersionInfo, which maps the file as data. It lives in `procmon` because task 17,
+  which also needs it, is not built yet.
+- **A process that cannot be opened** (it already exited, or is protected) is still recorded, with
+  `user_ref` `unattributed` and no version or signer.
+- **The running set is reconciled with the process list** (`CreateToolhelp32Snapshot`) at every
+  session open and every 10 minutes, so a stop or start the session lost does not leave it wrong.
+- **One discovery emitter per service.** `cmd/capture-core` builds it at the first record after
+  enrolment (it needs the issued device id) and rebuilds it if the device id changes; before
+  enrolment a record counts `errors`. Every discovery collector must use this one emitter: two
+  would overwrite each other's seen file.
+- **The service opens the session through a facility** (`processEvents`), which the service tests
+  leave unset, so a test run, even elevated, never replaces an installed agent's
+  `ShadowAICapture-process` session.
+- **Counters and log.** A new instance counts `observed` (its stop counts `observed` in the
+  emitter); an event with no readable `ProcessID` counts `errors`. The log has
+  `procmon: app:<key> started (pid N)` and `... stopped (pid N)` at `info`: the app key and the PID
+  only.
