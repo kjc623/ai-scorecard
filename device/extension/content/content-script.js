@@ -6,7 +6,8 @@
  *   2. `capture_upload_check`: resolves the page's file input or drop target to `File` objects and
  *      returns metadata only (no byte is read until a transfer is opened);
  *   3. `capture_upload_send`: runs the chunked transfer;
- *   4. `capture_warn`: the warn confirmation, rendered in the page and answered explicitly.
+ *   4. `capture_warn`: the warn confirmation, rendered in the page and answered explicitly;
+ *   5. `capture_block`: the notice that a request was blocked.
  */
 
 import { createContentScriptAdapter } from '../src/chrome-adapter.js';
@@ -46,7 +47,7 @@ export function bootstrapContentScript(adapter, { document = adapter.document } 
     return registry.collectCandidates();
   }
 
-  // 2/3/4. Messages from the service worker.
+  // 2–5. Messages from the service worker.
   adapter.messages.onMessage(async (msg) => {
     if (!msg || typeof msg !== 'object') return { ok: false };
     switch (msg.type) {
@@ -76,6 +77,10 @@ export function bootstrapContentScript(adapter, { document = adapter.document } 
         const proceeded = await showWarning(document, msg.spec);
         return { ok: true, answered: true, proceeded };
       }
+      case 'capture_block': {
+        // The request is already cancelled: answer once the notice is up, not when it is dismissed.
+        return { ok: showBlocked(document, msg.spec) !== null };
+      }
       default:
         return { ok: false, error: `unknown message type ${msg.type}` };
     }
@@ -85,62 +90,101 @@ export function bootstrapContentScript(adapter, { document = adapter.document } 
 }
 
 /**
- * The warn confirmation, rendered before the request proceeds: an overlay with "Send anyway" and
- * "Cancel request". An unanswered prompt resolves as proceed after `timeout_ms` (fail open).
- *
- * Text is set with `textContent` only: a rule message from a signed bundle is data, not markup.
+ * The warn confirmation, rendered before the request proceeds: the rule's message and link, with
+ * "Send anyway" and "Cancel request". An unanswered prompt resolves as proceed after `timeout_ms`
+ * (fail open).
  */
 export function showWarning(document, spec) {
   return new Promise((resolve) => {
     if (!document || typeof document.createElement !== 'function') return resolve(true);
     const timeout = Number.isFinite(spec && spec.timeout_ms) ? spec.timeout_ms : 300;
 
-    const host = document.createElement('div');
-    host.setAttribute('role', 'dialog');
-    host.setAttribute('aria-modal', 'true');
-    host.style.cssText = [
-      'position:fixed', 'z-index:2147483647', 'inset:auto 16px 16px auto',
-      'max-width:420px', 'padding:16px', 'border-radius:8px',
-      'background:#111827', 'color:#f9fafb', 'font:13px/1.45 system-ui,sans-serif',
-      'box-shadow:0 8px 32px rgba(0,0,0,.4)',
-    ].join(';');
-
-    const title = document.createElement('div');
-    title.textContent = 'Request held for confirmation';
-    title.style.cssText = 'font-weight:600;margin-bottom:6px';
-
-    const body = document.createElement('div');
-    body.textContent = (spec && spec.message) || 'Your organisation\u2019s policy requires confirmation before this request is sent.';
-    body.style.cssText = 'margin-bottom:6px';
-
-    const target = document.createElement('div');
-    target.textContent = `${(spec && spec.host) || ''}${(spec && spec.path) || ''}`;
-    target.style.cssText = 'opacity:.75;margin-bottom:10px;word-break:break-all';
-
-    const send = document.createElement('button');
-    send.textContent = 'Send anyway';
-    send.style.cssText = 'margin-right:8px;padding:6px 10px;border:0;border-radius:6px;background:#374151;color:#f9fafb;cursor:pointer';
-
-    const cancel = document.createElement('button');
-    cancel.textContent = 'Cancel request';
-    cancel.style.cssText = 'padding:6px 10px;border:0;border-radius:6px;background:#b91c1c;color:#fff;cursor:pointer';
+    const { host, buttons } = overlay(document, 'Request held for confirmation', spec, [
+      ['Send anyway', '#374151'],
+      ['Cancel request', '#b91c1c'],
+    ]);
+    const [send, cancel] = buttons;
 
     function finish(proceeded) {
-      try {
-        host.remove();
-      } catch (e) {
-        /* the page may have torn the subtree down already */
-      }
+      dismiss(host);
       clearTimeout(timer);
       resolve(proceeded);
     }
     send.addEventListener('click', () => finish(true));
     cancel.addEventListener('click', () => finish(false));
 
-    host.append(title, body, target, send, cancel);
-    (document.body || document.documentElement).appendChild(host);
-
     // An unanswered prompt fails open, never a silent block or an indefinitely held request.
     const timer = setTimeout(() => finish(true), timeout);
   });
+}
+
+/**
+ * The notice that a request was blocked: the rule's message and link, shown until dismissed.
+ * Returns the overlay, or null when there is no document to render into.
+ */
+export function showBlocked(document, spec) {
+  if (!document || typeof document.createElement !== 'function') return null;
+  const { host, buttons } = overlay(document, 'Request blocked', spec, [['Dismiss', '#374151']]);
+  buttons[0].addEventListener('click', () => dismiss(host));
+  return host;
+}
+
+/**
+ * The overlay both notices share, with one button per `[label, background]`. Text is set with
+ * `textContent` only: a rule's message from a signed bundle is data, not markup, and its link is
+ * offered only when it is an https URL.
+ */
+function overlay(document, titleText, spec, buttonSpecs) {
+  const host = document.createElement('div');
+  host.setAttribute('role', 'dialog');
+  host.setAttribute('aria-modal', 'true');
+  host.style.cssText = [
+    'position:fixed', 'z-index:2147483647', 'inset:auto 16px 16px auto',
+    'max-width:420px', 'padding:16px', 'border-radius:8px',
+    'background:#111827', 'color:#f9fafb', 'font:13px/1.45 system-ui,sans-serif',
+    'box-shadow:0 8px 32px rgba(0,0,0,.4)',
+  ].join(';');
+
+  const title = document.createElement('div');
+  title.textContent = titleText;
+  title.style.cssText = 'font-weight:600;margin-bottom:6px';
+
+  const body = document.createElement('div');
+  body.textContent = (spec && spec.message) || '';
+  body.style.cssText = 'margin-bottom:6px';
+
+  const parts = [title, body];
+  const link = spec && typeof spec.link === 'string' && spec.link.startsWith('https://') ? spec.link : '';
+  if (link) {
+    const a = document.createElement('a');
+    a.textContent = link;
+    a.setAttribute('href', link);
+    a.setAttribute('target', '_blank');
+    a.setAttribute('rel', 'noopener noreferrer');
+    a.style.cssText = 'display:block;margin-bottom:6px;color:#93c5fd;word-break:break-all';
+    parts.push(a);
+  }
+
+  const target = document.createElement('div');
+  target.textContent = `${(spec && spec.host) || ''}${(spec && spec.path) || ''}`;
+  target.style.cssText = 'opacity:.75;margin-bottom:10px;word-break:break-all';
+  const buttons = buttonSpecs.map(([label, background]) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.style.cssText = `margin-right:8px;padding:6px 10px;border:0;border-radius:6px;background:${background};color:#fff;cursor:pointer`;
+    return b;
+  });
+  parts.push(target, ...buttons);
+
+  host.append(...parts);
+  (document.body || document.documentElement).appendChild(host);
+  return { host, buttons };
+}
+
+function dismiss(host) {
+  try {
+    host.remove();
+  } catch (e) {
+    /* the page may have torn the subtree down already */
+  }
 }

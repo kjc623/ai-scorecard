@@ -7,7 +7,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { bootstrapContentScript, showWarning } from '../content/content-script.js';
+import { bootstrapContentScript, showBlocked, showWarning } from '../content/content-script.js';
 import { createContentScriptAdapter } from '../src/chrome-adapter.js';
 import { fakeCrypto } from '../test-support/harness.mjs';
 import { CORE_TYPE, NATIVE_MESSAGE_VERSION, REFUSAL, TYPE } from '../src/messages.js';
@@ -303,6 +303,63 @@ test('an unanswered confirmation resolves rather than holding the request foreve
 
 test('showWarning degrades to a value when there is no document to render into', async () => {
   assert.equal(await showWarning(null, { timeout_ms: 5 }), true);
+});
+
+/** A document that records every element it creates. */
+function recordingDocument() {
+  const elements = [];
+  const doc = {
+    createElement: (tag) => {
+      const el = makeElement();
+      el.tag = tag;
+      el.attributes = {};
+      el.setAttribute = (k, v) => (el.attributes[k] = v);
+      elements.push(el);
+      return el;
+    },
+    body: { appendChild: () => {} },
+    documentElement: {},
+  };
+  return { doc, elements };
+}
+
+test('the confirmation shows the rule\'s message and link, and no text of its own', async () => {
+  const { doc, elements } = recordingDocument();
+  const pending = showWarning(doc, { host: 'x.invalid', path: '/', message: 'Check before you send.', link: 'https://intranet.example/ai', timeout_ms: 5 });
+  const texts = elements[0].children.map((c) => c.textContent);
+  assert.ok(texts.includes('Check before you send.'));
+  const link = elements[0].children.find((c) => c.tag === 'a');
+  assert.equal(link.attributes.href, 'https://intranet.example/ai');
+  assert.equal(link.attributes.rel, 'noopener noreferrer');
+  await pending;
+
+  const bare = recordingDocument();
+  const unlinked = showWarning(bare.doc, { host: 'x.invalid', path: '/', message: '', link: 'javascript:alert(1)', timeout_ms: 5 });
+  assert.equal(bare.elements[0].children.some((c) => c.tag === 'a'), false, 'only an https link is offered');
+  assert.equal(bare.elements[0].children[1].textContent, '', 'no default text stands in for the rule\'s message');
+  await unlinked;
+});
+
+test('capture_block shows the rule\'s message and link with only a way to dismiss it', async () => {
+  const page = recordingDocument();
+  const world = makeWorld({
+    core: { handle: async () => ({ type: CORE_TYPE.ACK, version: 1, body: {} }) },
+    document: { ...page.doc, querySelectorAll: () => [] },
+  });
+  const { doc, elements } = recordingDocument();
+  const host = showBlocked(doc, { host: 'chat.example-ai.invalid', path: '/v1/chat', message: 'Remove the credential and try again.', link: 'https://intranet.example/ai' });
+  assert.equal(host, elements[0]);
+  const texts = host.children.map((c) => c.textContent);
+  assert.ok(texts.includes('Request blocked'));
+  assert.ok(texts.includes('Remove the credential and try again.'));
+  assert.equal(host.children.find((c) => c.tag === 'a').attributes.href, 'https://intranet.example/ai');
+  const buttons = host.children.filter((c) => c.tag === 'button');
+  assert.deepEqual(buttons.map((b) => b.textContent), ['Dismiss'], 'the request is already cancelled: nothing to send anyway');
+  assert.equal(showBlocked(null, {}), null);
+
+  const answer = await world.dispatch({ type: 'capture_block', spec: { message: 'm' } });
+  assert.equal(answer.ok, true, 'the worker is answered once the notice is up');
+  assert.ok(page.elements[0].children.some((c) => c.textContent === 'm'), 'in the page');
 });
 
 // ── routing ─────────────────────────────────────────────────────────────────────────────────

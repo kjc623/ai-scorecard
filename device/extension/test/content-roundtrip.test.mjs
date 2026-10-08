@@ -167,7 +167,7 @@ test('an empty payload produces no content field rather than an empty one', () =
 test('the extension\'s own pipeline output round-trips: bytes in, identical bytes out, digest intact', async () => {
   const h = createHarness();
   await h.app.start();
-  h.app.applyPolicy({ policy_version: 'b1', bundle: { policy_version: 'b1', default_mode: 'm1' } });
+  h.app.applyPolicy({ policy_version: 'b1', bundle: { version: 'b1', tenant_default_mode: 'm1' } });
   await settle();
   h.core.received.length = 0;
 

@@ -9,6 +9,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -102,11 +104,17 @@ func TestToCoreObservationDecision(t *testing.T) {
 // enrolledService is a started service against a fake cloud, with a bundle in force at mode.
 func enrolledService(t *testing.T, mode protocol.CollectionMode) (*service, *fakeCloud) {
 	t.Helper()
+	return enrolledServiceWith(t, func(priv ed25519.PrivateKey) []byte { return signedTestBundle(t, priv, "5", mode) })
+}
+
+// enrolledServiceWith is a started service against a fake cloud serving the bundle sign returns.
+func enrolledServiceWith(t *testing.T, sign func(ed25519.PrivateKey) []byte) (*service, *fakeCloud) {
+	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cloud := startFakeCloud(t, signedTestBundle(t, priv, "5", mode))
+	cloud := startFakeCloud(t, sign(priv))
 	svc, err := newService(context.Background(), testConfig(t, cloud, pub), testLogger(t))
 	if err != nil {
 		t.Fatalf("newService: %v", err)
@@ -296,9 +304,14 @@ func TestNativeSessionClassifiesAttachmentsAndDropsTheBytes(t *testing.T) {
 	}
 }
 
-// The extension is handed the verified bundle in force, and told when it already has it.
+// The extension is handed the decoded payload of the bundle in force, exactly the bytes the
+// signature covered, and told when it already has it.
 func TestNativeSessionPolicySync(t *testing.T) {
-	svc, _ := enrolledService(t, protocol.ModeM1)
+	var signed []byte
+	svc, _ := enrolledServiceWith(t, func(priv ed25519.PrivateKey) []byte {
+		signed = signedTestBundle(t, priv, "5", protocol.ModeM1)
+		return signed
+	})
 	s := newNativeSession(svc, svc.peerPerson(hostinfo.User{}))
 	ask := func(known string) protocol.PolicyBundleMessage {
 		body, _ := json.Marshal(protocol.PolicySyncRequest{KnownVersion: known})
@@ -310,11 +323,85 @@ func TestNativeSessionPolicySync(t *testing.T) {
 		}
 		return pb
 	}
-	if pb := ask(""); pb.PolicyVersion != "5" || len(pb.Bundle) == 0 || pb.Unchanged {
+
+	pb := ask("")
+	if pb.PolicyVersion != "5" || len(pb.Bundle) == 0 || pb.Unchanged {
 		t.Fatalf("first sync = %+v, want version 5 with the bundle", pb)
 	}
+	var envelope policy.SignedBundle
+	if err := json.Unmarshal(signed, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(pb.Bundle, envelope.Payload) {
+		t.Fatalf("the bundle sent is not the signed payload:\n got %s\nwant %s", pb.Bundle, envelope.Payload)
+	}
+	var b policy.Bundle
+	dec := json.NewDecoder(bytes.NewReader(pb.Bundle))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&b); err != nil || b.Version != "5" || b.TenantDefault != protocol.ModeM1 {
+		t.Fatalf("the bundle sent does not decode as the bundle in force (%v): %+v", err, b)
+	}
+
 	if pb := ask("5"); !pb.Unchanged || (len(pb.Bundle) != 0 && string(pb.Bundle) != "null") {
 		t.Fatalf("sync at the current version = %+v, want unchanged with no bundle", pb)
+	}
+}
+
+// goldenPolicyFrame is the policy_bundle frame the extension's tests apply
+// (device/extension/test/golden-frames.test.mjs).
+const goldenPolicyFrame = "../../../integration/testdata/policy/policy-bundle.json"
+
+// capture-core answers a policy_sync with exactly the golden frame when the golden bundle is in
+// force, so the frame the extension is tested against is the one it receives.
+func TestNativeSessionPolicySyncSendsTheGoldenFrame(t *testing.T) {
+	raw, err := os.ReadFile(goldenPolicyFrame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var golden struct {
+		Frame struct {
+			ID   string `json:"id"`
+			Body struct {
+				Bundle json.RawMessage `json:"bundle"`
+			} `json:"body"`
+		} `json:"frame"`
+	}
+	if err := json.Unmarshal(raw, &golden); err != nil {
+		t.Fatalf("golden frame: %v", err)
+	}
+	var b policy.Bundle
+	dec := json.NewDecoder(bytes.NewReader(golden.Frame.Body.Bundle))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&b); err != nil {
+		t.Fatalf("the golden bundle is not a policy bundle: %v", err)
+	}
+	svc, _ := enrolledServiceWith(t, func(priv ed25519.PrivateKey) []byte {
+		signed, err := policy.Sign("policy-key-1", priv, &b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return signed
+	})
+	if got := svc.currentBundle(); got == nil || got.Version != b.Version {
+		t.Fatalf("the golden bundle is not in force: %+v", got)
+	}
+
+	s := newNativeSession(svc, svc.peerPerson(hostinfo.User{}))
+	frame, _ := json.Marshal(protocol.NativeMessage{Type: protocol.TypePolicySync, Version: protocol.Version, ID: golden.Frame.ID})
+	answer := s.Handle(context.Background(), frame)
+
+	var want struct {
+		Frame any `json:"frame"`
+	}
+	if err := json.Unmarshal(raw, &want); err != nil {
+		t.Fatal(err)
+	}
+	var got any
+	if err := json.Unmarshal(answer, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want.Frame) {
+		t.Fatalf("policy_sync answered a frame other than the golden one:\n got %s\nwant the frame in %s", answer, goldenPolicyFrame)
 	}
 }
 

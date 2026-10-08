@@ -191,14 +191,15 @@ type ModeAnswer struct {
 	Reason        string         `json:"reason,omitempty"`
 }
 
-// PolicySyncRequest asks for the current signed bundle. The extension holds no durable state, so
-// this is how it gets policy after a restart.
+// PolicySyncRequest asks for the bundle in force. The extension holds no durable state, so this is
+// how it gets policy after a restart.
 type PolicySyncRequest struct {
 	KnownVersion string `json:"known_version,omitempty"` // 304-aware: the server answers "unchanged"
 }
 
-// PolicyBundleMessage carries a signed bundle to the extension. Verification happens in
-// capture-core, so the extension receives an already-verified bundle and a version to report.
+// PolicyBundleMessage carries the bundle in force to the extension. capture-core verifies the
+// signed envelope; Bundle is its decoded payload, exactly the JSON object the signature covered,
+// never the envelope. The extension trusts capture-core and does not verify it again.
 type PolicyBundleMessage struct {
 	PolicyVersion string          `json:"policy_version"`
 	Bundle        json.RawMessage `json:"bundle"`

@@ -167,8 +167,9 @@ func (h *nativeSession) handleExtensionHealth(msg protocol.NativeMessage) []byte
 	return ack(msg.ID, fmt.Sprintf("health recorded for %s state=%s", rep.Collector, rep.State))
 }
 
-// handlePolicySync hands the extension the verified bundle in force; the extension holds no
-// durable state, so this is how it gets policy after a restart.
+// handlePolicySync hands the extension the payload of the bundle in force, the JSON object its
+// signature covered; the extension holds no durable state, so this is how it gets policy after a
+// restart.
 func (h *nativeSession) handlePolicySync(msg protocol.NativeMessage) []byte {
 	var req protocol.PolicySyncRequest
 	if len(msg.Body) > 0 {
@@ -181,7 +182,12 @@ func (h *nativeSession) handlePolicySync(msg protocol.NativeMessage) []byte {
 		answer.PolicyVersion = b.Version
 		answer.Unchanged = req.KnownVersion != "" && req.KnownVersion == b.Version
 		if !answer.Unchanged {
-			answer.Bundle = h.svc.store.InForceRaw()
+			// The store holds only verified envelopes, so the payload is the verified bundle.
+			var signed policy.SignedBundle
+			if err := json.Unmarshal(h.svc.store.InForceRaw(), &signed); err != nil {
+				return refusal(protocol.RefusalMalformed, "the bundle in force is not a signed bundle: %v", err)
+			}
+			answer.Bundle = signed.Payload
 		}
 	}
 	return reply(protocol.TypePolicyBundle, msg.ID, answer)
