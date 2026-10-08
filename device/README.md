@@ -113,6 +113,20 @@ holds the agent's keys, `absent` with `tool_not_installed` when the inventory's 
 Claude Code in any user profile, `degraded` with
 `config_write_failed` otherwise; on macOS and Linux it is `absent` with `tool_version_unsupported`.
 
+While the receiver and Copilot's OTel export are on, the service points GitHub Copilot at the
+receiver. For the Copilot extension (found by the IDE extension scan) it writes VS Code's machine
+policies under `HKLM\SOFTWARE\Policies\Microsoft\VSCode`: `CopilotOtelEnabled` 1,
+`CopilotOtelEndpoint`, `CopilotOtelHeaders` (the bearer token, as JSON) and
+`CopilotOtelCaptureContent`, 1 when the mode for `app:github_copilot` is `m1` or higher. For the
+Copilot CLI (found by the CLI scan) it writes the machine environment variables
+`COPILOT_OTEL_ENABLED`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS` and
+`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` (from the mode for `app:copilot_cli`), and
+broadcasts the environment change. It owns those values only; each is backed up before its first
+write to `toolconfig\copilot\original`, and switching the export off puts every one back. Its health
+row is `tool_config_copilot`: `healthy` while every installed part holds its values, `degraded` with
+`tool_version_unsupported` while the extension is installed in an IDE that does not read those
+policies (VS Code before 1.127, Cursor, Windsurf), and otherwise as Claude Code's row.
+
 While the bundle switches the hook relay and Cursor's hooks on, the service adds one entry each to
 the `beforeSubmitPrompt` and `beforeMCPExecution` arrays of Cursor's enterprise hooks file,
 `C:\ProgramData\Cursor\hooks.json` (and `"version": 1` when the file has none), running

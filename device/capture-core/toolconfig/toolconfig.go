@@ -2,14 +2,14 @@
 // configuration, so a tool exports its telemetry to the agent and runs the agent's prompt hooks,
 // and a user cannot switch either off.
 //
-// A Writer owns a few keys in one tool's managed file and touches nothing else in it. Before its
-// first write it backs the file up once (or records that there was none) under
-// toolconfig/<tool>/original in the state directory; Remove takes the agent's keys out again and
-// puts back any value the agent replaced. Each tool has one core.Provider, switched by its
-// endpoint.tools entry in the signed bundle: on while either of the tool's OTel and hooks switches
-// is in effect.
+// A Writer owns a few keys in one tool's managed file, or a few registry values for a tool
+// configured through the registry, and touches nothing else. Before its first write it backs the
+// file (or each value) up once, or records that there was none, under toolconfig/<tool>/original in
+// the state directory; Remove takes the agent's keys out again and puts back any value the agent
+// replaced. Each tool has one core.Provider, switched by its endpoint.tools entry in the signed
+// bundle: on while either of the tool's OTel and hooks switches is in effect.
 //
-// The managed files carry the OTLP bearer token, so nothing here logs a file's content.
+// The managed files and values carry the OTLP bearer token, so nothing here logs their content.
 package toolconfig
 
 import (
@@ -30,6 +30,9 @@ type Desired struct {
 	// LogPrompts switches the tool's prompt logging on: the resolved mode for the tool is m1 or
 	// higher, so the text is needed to classify it on the device.
 	LogPrompts bool
+	// LogCLIPrompts is LogPrompts for the tool's CLI, for a tool whose CLI is a catalog app of its
+	// own with its own collection mode.
+	LogCLIPrompts bool
 
 	// Hooks declares the agent's prompt hooks, which run HookCommand.
 	Hooks bool
@@ -58,6 +61,13 @@ type Writer interface {
 	Remove() error
 	// Path is the managed file.
 	Path() string
+}
+
+// partialWriter is a Writer for a tool with more than one installable part, some of which may have
+// no machine-wide configuration the agent can write.
+type partialWriter interface {
+	// Unenforced reports whether, at the last Installed, an installed part had none.
+	Unenforced() bool
 }
 
 // toolByApp maps a catalog app to the endpoint.tools key its native collectors are switched by.

@@ -2071,7 +2071,7 @@ location a user cannot override or disable.
   Ollama.
 - **Migration proof** (`0016-ollama-loopback.sql`, renumbered at merge), on throwaway
   databases: the integration branch's `schema.sql` plus it, the new `schema.sql` plus it, the new
-  `schema.sql` plus `0002`–`0015`, and `main`'s `schema.sql` plus `0002`–`0015` each dump
+  `schema.sql` plus `0002`–`0016`, and `main`'s `schema.sql` plus `0002`–`0016` each dump
   (`pg_dump --schema-only`) identically to the new `schema.sql`.
 - **Not run here:** nothing exercises `machineenv_windows.go` on Windows (a test would change the build
   machine's environment); it compiles and vets under `GOOS=windows`, and task 60's step 1 checks it.
@@ -2128,3 +2128,69 @@ location a user cannot override or disable.
   are unchanged.
 - **Not run here:** `TestCodexConfigPath` and `TestCodexUserConfigsAreInProfiles` in
   `toolconfig/codex_windows_test.go`. They compile and vet under `GOOS=windows`.
+## 2026-10-08, task 31
+
+- **Sources, read 2026-10-08.** `microsoft/vscode` at `f6f19d60`: the policy catalog
+  (`build/lib/policies/policyData.jsonc`), the OTel policies in
+  `src/vs/platform/agentHost/common/agentHostStarter.config.contribution.ts`, the policy services in
+  `src/vs/platform/policy` and `src/vs/code/electron-main/main.ts`, and the Copilot extension
+  `extensions/copilot` 0.70.0 (`package.json`, `otelConfig.ts`, `otelConfigResolution.ts`).
+  `microsoft/vscode-policy-watcher` at `42c46404` (how VS Code reads registry policies).
+  `microsoft/vscode-docs` at `a8848427`, `docs/enterprise/policies.md` (`DateApproved` 10/7/2026).
+  `github/docs` at `9f651797`: the CLI command reference's "OpenTelemetry monitoring", the
+  enterprise managed settings reference and "Deploy managed settings". `github/copilot-cli`
+  `changelog.md` at `a7ae5b0c` (latest 1.0.94).
+- **VS Code policies exist.** The extension's `github.copilot.chat.otel.*` settings declare no
+  `policy` of their own but a `policyReference` to policies VS Code owns, read from VS Code 1.127 at
+  `HKLM\SOFTWARE\Policies\Microsoft\VSCode` (HKCU only when HKLM has none):
+  `CopilotOtelEnabled` (`REG_DWORD`), `CopilotOtelEndpoint` (`REG_SZ`), `CopilotOtelHeaders`
+  (`REG_SZ`, a JSON object) and `CopilotOtelCaptureContent` (`REG_DWORD`), which the agent writes,
+  and protocol, wire protocol, outfile, service name, resource attributes and identity, which it does
+  not. With any of them set the extension takes its whole OTel configuration from the policies and
+  ignores the user's settings. Limitation: the extension still lets environment variables
+  (`COPILOT_OTEL_ENDPOINT`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `COPILOT_OTEL_CAPTURE_CONTENT` and
+  others) override those settings, policy values included.
+- **Degraded case.** `degraded`/`tool_version_unsupported` when the IDE extension scan finds the
+  Copilot extension in Cursor or Windsurf (other products, which do not read VS Code's policy key) or
+  the installed-app scan finds a VS Code older than 1.127. A VS Code whose version is unknown counts
+  as reading the policies. The VS Code values are written whenever the extension is found, so a later
+  VS Code update takes them up.
+- **The CLI** reads its OTel settings from environment variables, or from GitHub's enterprise
+  managed settings (below); it has no other machine-wide file. Its endpoint, header and content
+  switches have no `COPILOT_OTEL_*` names (the brief assumed they had): the agent writes
+  `COPILOT_OTEL_ENABLED=true`, `OTEL_EXPORTER_OTLP_ENDPOINT`,
+  `OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer <token>` and
+  `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` (`true` or `false` from the mode for
+  `app:copilot_cli`) into the machine environment, and only while the CLI scan finds the CLI. For
+  the owner: these standard names reach every OTel-instrumented program on the device, which then
+  exports to the receiver (the generic normalizer takes what it sends); a user variable of the same
+  name overrides the machine one, so a user can turn the CLI's export off or redirect it.
+- **GitHub's enterprise-managed export does not target a cloud collector.** It is the `telemetry`
+  managed setting (CLI 1.0.66 and later, and VS Code): client-side configuration whose endpoint,
+  headers and content capture the administrator chooses, so it can target the device-local receiver.
+  It is delivered server-managed (the enterprise's `.github-private` repository), by native MDM
+  (`REG_SZ` values such as `telemetry.endpoint` under `HKLM\SOFTWARE\Policies\GitHubCopilot`) or
+  as a file (`%ProgramFiles%\GitHubCopilot\managed-settings.json`); MDM wins over server, server
+  over file, file over user settings, and users cannot override it. **Not used**: one setting read by
+  VS Code, the CLI and every other Copilot client cannot carry separate content modes for
+  `app:github_copilot` and `app:copilot_cli`, and VS Code would apply it over its own policies. It is
+  the stronger mechanism for the CLI (not overridable, no effect on other programs); adopting it is
+  the owner's call. A customer's own `telemetry` managed setting overrides what the agent writes,
+  and the health row cannot see that.
+- **Environment writes go through the registry, not `setx`** as the CLI shim's do: restoring a
+  replaced variable needs its kind (`REG_EXPAND_SZ` included) and full length, and removing an added
+  one needs a delete, neither of which `setx` does. The `WM_SETTINGCHANGE` broadcast `setx` makes is
+  sent with `SendMessageTimeoutW` after the writes. From the service it reaches session 0 only, as
+  the shim's does: a process started with a fresh environment block sees the change at once,
+  Explorer in a user's session at the next sign-in.
+- **Backup per value**, each taken before the agent first writes it (a part found later is backed up
+  then), together in `toolconfig\copilot\original`. `Remove` restores or deletes every backed-up
+  value and then drops the backup. A part not installed is not written; one uninstalled after a
+  write keeps the values until the export is switched off.
+- **Provider.** `Desired.LogCLIPrompts` beside `LogPrompts`, resolved for the CLI's fingerprint; a
+  tool flag makes the hooks switches do nothing for Copilot, whose collector follows
+  `endpoint.otel.enabled && endpoint.tools.copilot.otel` only. The migration is the next free number
+  on this branch.
+- **Device phase to confirm**: that the IDE extension scan finds Copilot Chat in VS Code (the
+  extension's source now lives in `microsoft/vscode` and may ship built in rather than in the user's
+  extensions folder), and that the installed VS Code and CLI honour the values above.
