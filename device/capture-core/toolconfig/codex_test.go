@@ -319,7 +319,7 @@ func codexHooksBundle() policy.Bundle {
 // supportedCodex is the Codex CLI on a platform the agent writes its hooks on.
 var supportedCodex = func() tool { t := codexTool; t.supported = true; return t }()
 
-// tool_config_codex follows endpoint.hooks.enabled and endpoint.tools.codex.hooks, not the OTel
+// tool_config_codex follows endpoint.hooks.enabled and endpoint.tools.codex.hooks, and the OTel
 // switches.
 func TestCodexProviderNameAndSwitch(t *testing.T) {
 	p := NewCodex(&Codex{}, Config{})
@@ -333,11 +333,16 @@ func TestCodexProviderNameAndSwitch(t *testing.T) {
 	if p.Enabled(nil) {
 		t.Fatal("enabled with no bundle in force")
 	}
+	otelOnly := codexHooksBundle()
+	otelOnly.Endpoint.Tools["codex"] = policy.EndpointTool{OTel: true}
+	otelOnly.Endpoint.OTel.Enabled = true
+	if !p.Enabled(&otelOnly) {
+		t.Fatal("not enabled with Codex's OTel on and its hooks off")
+	}
 	off := codexHooksBundle()
-	off.Endpoint.Tools["codex"] = policy.EndpointTool{OTel: true}
-	off.Endpoint.OTel.Enabled = true
+	off.Endpoint.Tools["codex"] = policy.EndpointTool{}
 	if p.Enabled(&off) {
-		t.Fatal("enabled with Codex's hooks off")
+		t.Fatal("enabled with Codex's hooks and OTel off")
 	}
 	off = codexHooksBundle()
 	off.Endpoint.Hooks.Enabled = false
@@ -346,7 +351,8 @@ func TestCodexProviderNameAndSwitch(t *testing.T) {
 	}
 }
 
-// The desired state is the hook command and managed-only hooks, whatever the OTel switches say.
+// The desired state is the hook command and managed-only hooks, and with Codex's OTel on, the
+// export as well.
 func TestCodexDesiredIsHooksAndManagedOnly(t *testing.T) {
 	p := newProvider(supportedCodex, &Codex{}, Config{
 		Token:      func() string { return "token" },
@@ -354,12 +360,17 @@ func TestCodexDesiredIsHooksAndManagedOnly(t *testing.T) {
 	})
 	b := codexHooksBundle()
 	b.Endpoint.OTel = policy.EndpointOTel{Enabled: true, HTTPListen: "127.0.0.1:47318"}
-	b.Endpoint.Tools["codex"] = policy.EndpointTool{OTel: true, Hooks: true}
 	if got := p.desired(&b); got != codexDesired {
 		t.Fatalf("desired = %+v, want %+v", got, codexDesired)
 	}
+	b.Endpoint.Tools["codex"] = policy.EndpointTool{OTel: true, Hooks: true}
+	both := codexDesired
+	both.OTel, both.HTTPListen, both.Token, both.LogPrompts = true, "127.0.0.1:47318", "token", true
+	if got := p.desired(&b); got != both {
+		t.Fatalf("desired = %+v, want %+v", got, both)
+	}
 	b.Endpoint.Hooks.ManagedOnly = true
-	want := codexDesired
+	want := both
 	want.ManagedOnly = true
 	if got := p.desired(&b); got != want {
 		t.Fatalf("desired = %+v, want %+v", got, want)

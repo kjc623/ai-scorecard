@@ -612,7 +612,7 @@ func TestToolConfigVocabulary(t *testing.T) {
 	if !CollectorToolConfigCodex.Valid() || CollectorToolConfigCodex != "tool_config_codex" {
 		t.Errorf("collector %q is not the tool_config_codex code", CollectorToolConfigCodex)
 	}
-	for _, d := range []Detail{DetailToolNotInstalled, DetailToolVersionUnsupported, DetailConfigWriteFailed} {
+	for _, d := range []Detail{DetailToolNotInstalled, DetailToolVersionUnsupported, DetailConfigWriteFailed, DetailConfigTampered} {
 		if !d.Valid() {
 			t.Errorf("%s is not in the detail vocabulary", d)
 		}
