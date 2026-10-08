@@ -303,6 +303,12 @@ func TestComposeInterceptionEnabled(t *testing.T) {
 		}
 		return v
 	}
+	pacOf := func(envelope []byte) (any, bool) {
+		t.Helper()
+		p, _ := payloadOf(t, envelope)
+		v, ok := p["interception"].(map[string]any)["pac_listen"]
+		return v, ok
+	}
 	featureOf := func() string {
 		t.Helper()
 		rows := r.store.PolicyBundles(tenantA)
@@ -315,6 +321,9 @@ func TestComposeInterceptionEnabled(t *testing.T) {
 	}
 	if got := enabledOf(v1.Envelope); got != false {
 		t.Fatalf("default interception.enabled = %v, want false", got)
+	}
+	if got, ok := pacOf(v1.Envelope); ok {
+		t.Fatalf("default bundle names pac_listen %v, want it absent", got)
 	}
 	if got := featureOf(); got != `{"cli_shim":false,"proxy_tls":false}` {
 		t.Fatalf("feature state with inspection off = %s", got)
@@ -334,6 +343,9 @@ func TestComposeInterceptionEnabled(t *testing.T) {
 	if got := enabledOf(v2.Envelope); got != true {
 		t.Fatalf("interception.enabled after turning it on = %v, want true", got)
 	}
+	if got, ok := pacOf(v2.Envelope); !ok || got != policyserve.PACListen {
+		t.Fatalf("inspection on: pac_listen = %v (present %v), want %s", got, ok, policyserve.PACListen)
+	}
 	if got := featureOf(); got != `{"cli_shim":true,"proxy_tls":true}` {
 		t.Fatalf("feature state with inspection on = %s", got)
 	}
@@ -347,6 +359,9 @@ func TestComposeInterceptionEnabled(t *testing.T) {
 	}
 	if !newer(v3.Version, v2.Version) || enabledOf(v3.Envelope) != false {
 		t.Fatalf("turning inspection off: version %s after %s, enabled %v", v3.Version, v2.Version, enabledOf(v3.Envelope))
+	}
+	if got, ok := pacOf(v3.Envelope); ok {
+		t.Fatalf("inspection off again: pac_listen %v is still named", got)
 	}
 }
 
@@ -627,7 +642,7 @@ func main() {
 	raw, _ = json.Marshal(b.Endpoint)
 	_ = json.Unmarshal(raw, &endpoint)
 	raw, _ = json.Marshal(endpoint)
-	fmt.Println("OK", res.Outcome, b.Version, b.TenantDefault, b.Interception.Enabled, len(b.Interception.SeedHosts), b.CLIShim.ProxyAddr, b.Intercepts("api.openai.com", 443), string(raw))
+	fmt.Println("OK", res.Outcome, b.Version, b.TenantDefault, b.Interception.Enabled, len(b.Interception.SeedHosts), b.CLIShim.ProxyAddr, b.Interception.PacListen, b.Intercepts("api.openai.com", 443), string(raw))
 }
 `
 	for name, body := range map[string]string{"go.mod": gomod, "main.go": program} {
@@ -648,7 +663,7 @@ func main() {
 	}
 	// The device's re-encoding of the endpoint section equals the served one: every name matched,
 	// and no value was dropped on the way.
-	want := "OK accepted " + resp.BundleVersion + " m3 true 3 " + policyserve.DefaultProxyListen + " true " + endpointOf(t, resp.SignedBundle)
+	want := "OK accepted " + resp.BundleVersion + " m3 true 3 " + policyserve.DefaultProxyListen + " " + policyserve.PACListen + " true " + endpointOf(t, resp.SignedBundle)
 	if got := strings.TrimSpace(string(out)); !strings.HasSuffix(got, want) {
 		t.Fatalf("verifier output %q, want %q", got, want)
 	}
