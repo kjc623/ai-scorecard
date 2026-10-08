@@ -700,4 +700,89 @@ func TestBrokerHealthNeverHealthyWhenStopped(t *testing.T) {
 	}
 }
 
+// A proxy.loopback kill switch makes the next request go through unread: the port stays held, the
+// bytes reach the server unchanged and the answer comes back, nothing is observed, the connection
+// is counted blind_tunnelled, and the row is degraded/killed. Another route's switch changes
+// nothing, and clearing it brings observation back.
+func TestBrokerKillSwitchTunnelsTheNextRequest(t *testing.T) {
+	upstream := newStubUpstream(t)
+	held := freePort(t)
+	pipe := &recordingPipeline{mode: protocol.ModeM1}
+	cfg := testConfig(upstream.Port(), held, pipe)
+	var mu sync.Mutex
+	bundle := &policy.Bundle{}
+	cfg.Bundles = func() *policy.Bundle {
+		mu.Lock()
+		defer mu.Unlock()
+		return bundle
+	}
+	setSwitch := func(route protocol.Route) {
+		mu.Lock()
+		defer mu.Unlock()
+		bundle = &policy.Bundle{}
+		if route != "" {
+			bundle.KillSwitches = []policy.KillSwitch{{Provider: route, Mode: policy.KillDisable,
+				EffectiveAt: time.Now().Add(-time.Minute), ReasonCode: "local_model_breakage"}}
+		}
+	}
+	b := New(cfg)
+	ctx := context.Background()
+	if err := b.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer b.Stop(ctx)
+	waitFor(t, 3*time.Second, "the broker to hold the port", func() bool { return portOpen(held) })
+
+	// A tunnelled connection stays a tunnel until it closes, so each request opens its own.
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	post := func(body string) {
+		t.Helper()
+		resp, err := client.Post(fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", held), "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST through the broker: %v", err)
+		}
+		got, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || !bytes.Contains(got, []byte(`"ok":true`)) {
+			t.Fatalf("response through the broker = %d %q", resp.StatusCode, got)
+		}
+		if string(upstream.lastBody()) != body {
+			t.Fatalf("upstream saw body %q, want the client's bytes unchanged", upstream.lastBody())
+		}
+	}
+
+	// proxy.tls's switch is not the broker's.
+	setSwitch(protocol.RouteProxyTLS)
+	post(`{"model":"local","messages":[{"role":"user","content":"first"}]}`)
+	waitFor(t, 2*time.Second, "the first observation", func() bool { return pipe.processed() == 1 })
+
+	setSwitch(protocol.RouteProxyLoopback)
+	before := b.Counters().Cumulative()
+	post(`{"model":"local","messages":[{"role":"user","content":"second"}]}`)
+	after := b.Counters().Cumulative()
+	if after[protocol.CounterBlindTunnelled]-before[protocol.CounterBlindTunnelled] != 1 {
+		t.Fatalf("blind_tunnelled rose by %d, want 1", after[protocol.CounterBlindTunnelled]-before[protocol.CounterBlindTunnelled])
+	}
+	if after[protocol.CounterObserved] != before[protocol.CounterObserved] {
+		t.Fatal("a request under the kill switch was counted observed")
+	}
+	time.Sleep(50 * time.Millisecond)
+	if n := len(pipe.observations()); n != 1 {
+		t.Fatalf("%d observations, want none under the kill switch", n-1)
+	}
+	if h := b.Health(); h.State != protocol.StateDegraded || h.Detail != protocol.DetailKilled {
+		t.Fatalf("health under the kill switch = %s/%s, want degraded/killed", h.State, h.Detail)
+	}
+	if !portOpen(held) {
+		t.Fatal("the kill switch released the port")
+	}
+
+	setSwitch("")
+	post(`{"model":"local","messages":[{"role":"user","content":"third"}]}`)
+	waitFor(t, 2*time.Second, "observation to resume", func() bool { return pipe.processed() == 2 })
+	if h := b.Health(); h.State != protocol.StateHealthy {
+		t.Fatalf("health after clearing = %s/%s, want healthy", h.State, h.Detail)
+	}
+}
+
 var _ = json.Marshal // keep encoding/json imported for the body literals above

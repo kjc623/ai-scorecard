@@ -1,7 +1,8 @@
 // Package settings is the Settings admin API: the audited, admin-only reads and writes behind the
 // dashboard's Settings page. It changes a tenant's collection mode (and its narrower per-tool
 // overrides), event and content retention, tool sanction decisions, the content search tier, the
-// endpoint collector switches, TLS inspection and the ordered enforcement rules.
+// endpoint collector switches, TLS inspection, the ordered enforcement rules and the interception
+// routes' kill switches.
 //
 // Every route requires a product access token carrying the admin role (resolved by the injected
 // Authenticator); the tenant is the token's, never the request's. Every write is audited with the
@@ -74,6 +75,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /admin/v1/settings/tls-inspection", h.handleTLSInspection)
 	mux.HandleFunc("GET /admin/v1/settings/rules", h.handleGetRules)
 	mux.HandleFunc("PUT /admin/v1/settings/rules", h.handlePutRules)
+	mux.HandleFunc("PUT /admin/v1/settings/kill-switch/{route}", h.handleKillSwitch)
 }
 
 const maxSettingsBody = 16 << 10
@@ -151,6 +153,16 @@ type settingsJSON struct {
 	DataClasses []string `json:"data_classes"`
 	// AppCategories is the app catalog's categories, which an enforcement rule may name.
 	AppCategories []string `json:"app_categories"`
+	// KillSwitches is the tripped kill switches, by route; a route without one is not listed.
+	KillSwitches []killSwitchJSON `json:"kill_switches"`
+}
+
+// killSwitchJSON is one tripped kill switch: its route, why, since when and by whom.
+type killSwitchJSON struct {
+	Route       string    `json:"route"`
+	ReasonCode  string    `json:"reason_code"`
+	EffectiveAt time.Time `json:"effective_at"`
+	SetBy       string    `json:"set_by"`
 }
 
 // endpointJSON is the tenant's endpoint collector switches, with the defaults where it set none.
@@ -198,6 +210,10 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request) {
 		Tools:                []toolJSON{}, Devices: []deviceJSON{},
 		DataClasses:   append([]string{}, s.DataClasses...),
 		AppCategories: append([]string{}, s.AppCategories...),
+		KillSwitches:  []killSwitchJSON{},
+	}
+	for _, k := range s.KillSwitches {
+		out.KillSwitches = append(out.KillSwitches, killSwitchJSON{Route: k.Route, ReasonCode: k.ReasonCode, EffectiveAt: k.EffectiveAt.UTC(), SetBy: k.SetBy})
 	}
 	if out.ScopeOverrides == nil {
 		out.ScopeOverrides = map[string]string{}
@@ -518,6 +534,71 @@ func (h *Handler) handleTLSInspection(w http.ResponseWriter, r *http.Request) {
 		return
 	case err != nil:
 		h.fail(w, apierr.Internal(fmt.Errorf("set TLS inspection: %w", err)))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// --- PUT /admin/v1/settings/kill-switch/{route} ---------------------------------------------
+
+// reasonCodePattern is a kill switch's reason code (ops.kill_switch.reason_code): a short code an
+// operator can attribute a coverage drop to, never free text.
+var reasonCodePattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,63}$`)
+
+// handleKillSwitch trips (on) or clears one interception route's kill switch. Tripping needs a
+// reason code; a clear may carry one, which is audited.
+func (h *Handler) handleKillSwitch(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.admin(w, r)
+	if !ok {
+		return
+	}
+	route := r.PathValue("route")
+	if !slices.Contains(store.KillSwitchRoutes, route) {
+		h.fail(w, apierr.Detailed(http.StatusNotFound, apierr.CodeNotFound, "no kill switch for this route",
+			map[string]any{"supported": store.KillSwitchRoutes}))
+		return
+	}
+	// on is required, so a client that left it out neither trips nor clears the switch.
+	var req struct {
+		On         *bool   `json:"on"`
+		ReasonCode *string `json:"reason_code"`
+	}
+	if !h.decode(w, r, &req) {
+		return
+	}
+	if req.On == nil {
+		h.fail(w, apierr.New(http.StatusBadRequest, apierr.CodeInvalidRequest, "on is required"))
+		return
+	}
+	reason := ""
+	if req.ReasonCode != nil {
+		reason = *req.ReasonCode
+	}
+	switch {
+	case *req.On && reason == "":
+		h.fail(w, apierr.New(http.StatusBadRequest, apierr.CodeInvalidRequest, "reason_code is required to trip a kill switch"))
+		return
+	case reason != "" && !reasonCodePattern.MatchString(reason):
+		h.fail(w, apierr.New(http.StatusBadRequest, apierr.CodeInvalidRequest,
+			"reason_code must start with a lower-case letter and use only lower-case letters, digits, \"_\", \".\" or \"-\" (at most 64)"))
+		return
+	}
+	now := h.cfg.Now().UTC()
+	var detail map[string]any
+	if !*req.On && reason != "" {
+		detail = map[string]any{"reason_code": reason}
+	}
+	err := h.store.SetKillSwitch(r.Context(), p.Tenant, route, *req.On, reason,
+		h.audit(p, "tenant.kill_switch.set", "kill_switch", route, now, detail))
+	switch {
+	case errors.Is(err, store.ErrUnknownKillSwitchRoute):
+		h.fail(w, apierr.New(http.StatusNotFound, apierr.CodeNotFound, "no kill switch for this route"))
+		return
+	case errors.Is(err, store.ErrUnknownTenant):
+		h.fail(w, apierr.New(http.StatusForbidden, apierr.CodeUnknownTenant, "the tenant is unknown to this deployment"))
+		return
+	case err != nil:
+		h.fail(w, apierr.Internal(fmt.Errorf("set kill switch: %w", err)))
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

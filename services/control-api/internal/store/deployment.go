@@ -374,6 +374,9 @@ func (s *SQLStore) PolicyInputs(ctx context.Context, tenantID string) (PolicyInp
 		if in.SanctionedTools, err2 = sanctionedTools(ctx, tx, tenantID); err2 != nil {
 			return err2
 		}
+		if in.KillSwitches, err2 = killSwitches(ctx, tx, tenantID); err2 != nil {
+			return err2
+		}
 		in.Catalog, err2 = appCatalog(ctx, tx)
 		return err2
 	})

@@ -37,7 +37,24 @@ type Bundle struct {
 	// and each app's signals by platform, kind and value. Never omitted, so the drift test sees the
 	// name.
 	Catalog []CatalogApp `json:"catalog"`
+
+	// KillSwitches is the tenant's tripped kill switches, by route: from each one's EffectiveAt the
+	// device carries that route's traffic unread and enforces nothing on it. Omitted when none is
+	// tripped.
+	KillSwitches []KillSwitch `json:"kill_switches,omitempty"`
 }
+
+// KillSwitch is one tripped kill switch. Provider names the interception route; Mode is always
+// KillDisable.
+type KillSwitch struct {
+	Provider    string    `json:"provider"`
+	Mode        string    `json:"mode"`
+	EffectiveAt time.Time `json:"effective_at"`
+	ReasonCode  string    `json:"reason_code"`
+}
+
+// KillDisable is the one kill-switch mode: decryption and enforcement stop on the route.
+const KillDisable = "disable"
 
 // CatalogApp is one app of the catalog; the device reports it as the fingerprint "app:" + AppKey.
 type CatalogApp struct {

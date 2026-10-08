@@ -473,6 +473,62 @@ func TestComposeRulesAndSanctionedTools(t *testing.T) {
 	}
 }
 
+// TestComposeKillSwitches: a tenant with no switch tripped is served no kill_switches; a tripped
+// switch is served with mode disable, its route, reason and the time it was tripped, in route
+// order, and mints a new version; clearing it takes it out again.
+func TestComposeKillSwitches(t *testing.T) {
+	r := newRig(t, nil)
+	ctx := context.Background()
+	at := func(d time.Duration) store.AuditEntry {
+		return store.AuditEntry{TenantID: tenantA, ActorType: store.ActorUser, ActorID: "admin@contoso.example",
+			Action: "tenant.kill_switch.set", ObjectType: "kill_switch", OccurredAt: r.now.Add(d)}
+	}
+
+	v1, err := r.svc.Current(ctx, tenantA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := payloadOf(t, v1.Envelope); p["kill_switches"] != nil {
+		t.Fatalf("kill_switches without any tripped = %v, want none", p["kill_switches"])
+	}
+
+	if err := r.store.SetKillSwitch(ctx, tenantA, "proxy.tls", true, "app_breakage", at(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.store.SetKillSwitch(ctx, tenantA, "proxy.loopback", true, "local_model_breakage", at(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	r.now = r.now.Add(3 * time.Minute)
+	v2, err := r.svc.Current(ctx, tenantA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !newer(v2.Version, v1.Version) {
+		t.Fatalf("tripped switches: version %s, want newer than %s", v2.Version, v1.Version)
+	}
+	want := canonical(t, `[
+	  {"provider":"proxy.loopback","mode":"disable","effective_at":"2026-10-05T12:02:00Z","reason_code":"local_model_breakage"},
+	  {"provider":"proxy.tls","mode":"disable","effective_at":"2026-10-05T12:01:00Z","reason_code":"app_breakage"}]`)
+	if got := sectionOf(t, v2.Envelope, "kill_switches"); got != want {
+		t.Fatalf("kill_switches:\n got %s\nwant %s", got, want)
+	}
+
+	if err := r.store.SetKillSwitch(ctx, tenantA, "proxy.loopback", false, "", at(4*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.store.SetKillSwitch(ctx, tenantA, "proxy.tls", false, "", at(4*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	r.now = r.now.Add(2 * time.Minute)
+	v3, err := r.svc.Current(ctx, tenantA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := payloadOf(t, v3.Envelope); !newer(v3.Version, v2.Version) || p["kill_switches"] != nil {
+		t.Fatalf("cleared switches: version %s after %s, kill_switches %v", v3.Version, v2.Version, p["kill_switches"])
+	}
+}
+
 // TestComposeCatalog: a deployment without a catalog serves an empty list, named in the payload;
 // the catalog is served sorted by app key and each app's signals by platform, kind and value,
 // whatever order the store read it in, so re-reading it in another order mints nothing, and a
@@ -795,6 +851,14 @@ func TestServedBundleVerifiesWithTheDevicesVerifier(t *testing.T) {
 		}},
 		store.CatalogApp{AppKey: "continue", Category: "ide_assistant"},
 	)
+	// Both interception routes' kill switches.
+	for _, route := range store.KillSwitchRoutes {
+		trip := audit
+		trip.OccurredAt = r.now.Add(-time.Minute)
+		if err := r.store.SetKillSwitch(context.Background(), tenantA, route, true, "app_breakage", trip); err != nil {
+			t.Fatal(err)
+		}
+	}
 	rec := r.get(t, "")
 	var resp protocol.PolicyResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
@@ -851,7 +915,8 @@ func main() {
 		raw, _ = json.Marshal(doc)
 		return string(raw)
 	}
-	fmt.Println("OK", res.Outcome, b.Version, b.TenantDefault, b.Interception.Enabled, len(b.Interception.SeedHosts), b.CLIShim.ProxyAddr, b.Interception.PacListen, b.Intercepts("api.openai.com", 443), sorted(b.Endpoint), sorted(b.Rules), sorted(b.SanctionedTools), sorted(b.Catalog), b.AppsByPort(11434), b.Category("cursor"))
+	_, killed := b.KillSwitchFor("proxy.loopback")
+	fmt.Println("OK", res.Outcome, b.Version, b.TenantDefault, b.Interception.Enabled, len(b.Interception.SeedHosts), b.CLIShim.ProxyAddr, b.Interception.PacListen, b.Intercepts("api.openai.com", 443), sorted(b.Endpoint), sorted(b.Rules), sorted(b.SanctionedTools), sorted(b.Catalog), b.AppsByPort(11434), b.Category("cursor"), sorted(b.KillSwitches), killed)
 }
 `
 	for name, body := range map[string]string{"go.mod": gomod, "main.go": program} {
@@ -874,7 +939,7 @@ func main() {
 	// catalog equals the served one: every name matched, and no value was dropped on the way.
 	want := "OK accepted " + resp.BundleVersion + " m3 true 3 " + policyserve.DefaultProxyListen + " " + policyserve.PACListen + " true " + endpointOf(t, resp.SignedBundle) +
 		" " + sectionOf(t, resp.SignedBundle, "rules") + " " + sectionOf(t, resp.SignedBundle, "sanctioned_tools") +
-		" " + sectionOf(t, resp.SignedBundle, "catalog") + " [ollama] ide"
+		" " + sectionOf(t, resp.SignedBundle, "catalog") + " [ollama] ide " + sectionOf(t, resp.SignedBundle, "kill_switches") + " true"
 	if !strings.Contains(want, `"link":"https://intranet.example/ai"`) || !strings.Contains(want, `"routes":["proxy.tls","tool.hook"]`) || !strings.Contains(want, `["app:claude_code","app:cursor"]`) ||
 		!strings.Contains(want, `{"app_key":"continue","category":"ide_assistant","signals":[]}`) || !strings.Contains(want, `"value":"%USERPROFILE%\\.ollama\\models"`) {
 		t.Fatalf("the served bundle does not carry the rules, sanctioned tools and catalog under test: %s", want)

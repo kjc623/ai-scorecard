@@ -39,9 +39,10 @@ func TestServerIsToggledByTLSInspectionAndPacListen(t *testing.T) {
 		{"inspection on", testBundle(), true},
 		{"inspection off", with(func(b *policy.Bundle) { b.Interception.Enabled = false }), false},
 		{"no pac_listen", with(func(b *policy.Bundle) { b.Interception.PacListen = "" }), false},
+		// The proxy tunnels everything blind under a kill switch, so the PAC keeps routing to it.
 		{"proxy killed", with(func(b *policy.Bundle) {
 			b.KillSwitches = []policy.KillSwitch{{Provider: protocol.RouteProxyTLS, Mode: policy.KillDisable, EffectiveAt: time.Unix(1, 0)}}
-		}), false},
+		}), true},
 		{"kill switch not yet in force", with(func(b *policy.Bundle) {
 			b.KillSwitches = []policy.KillSwitch{{Provider: protocol.RouteProxyTLS, Mode: policy.KillDisable, EffectiveAt: time.Now().Add(time.Hour)}}
 		}), true},

@@ -121,7 +121,19 @@ func (e *enforcing) setBundle(b *policy.Bundle) {
 // so its parser is chosen, and returns the response the client sees.
 func (e *enforcing) post(t *testing.T, host, path, headers, body string) (*http.Response, string) {
 	t.Helper()
+	return e.send(t, e.dial(t), host, path, headers, body)
+}
+
+// dial opens an intercepted connection through the proxy.
+func (e *enforcing) dial(t *testing.T) *tls.Conn {
+	t.Helper()
 	conn, _ := dialThroughProxy(t, e.p.ListenAddr(), e.target, &tls.Config{ServerName: "127.0.0.1", RootCAs: e.p.CA().Pool()})
+	return conn
+}
+
+// send sends one request over an intercepted connection and closes it.
+func (e *enforcing) send(t *testing.T, conn *tls.Conn, host, path, headers, body string) (*http.Response, string) {
+	t.Helper()
 	defer conn.Close()
 	req := fmt.Sprintf("POST %s HTTP/1.1\r\nHost: %s\r\nContent-Type: application/json\r\n%s\r\n%s", path, host, headers, body)
 	if _, err := conn.Write([]byte(req)); err != nil {
@@ -274,16 +286,18 @@ func TestTLSGenericDestinationRecordsABlockAsLogged(t *testing.T) {
 	}
 }
 
-// A kill switch on proxy.tls in force when a request is decided disables enforcement: a block is
-// recorded as logged and the request carried.
+// A kill switch on proxy.tls that comes into force on a connection already intercepted disables
+// enforcement for the request still to be decided on it: a block is recorded as logged and the
+// request carried. (Every later connection is tunnelled blind.)
 func TestTLSKillSwitchRecordsEveryRuleAsLogged(t *testing.T) {
 	e := startEnforcing(t, protocol.ModeM1, []string{"credential"}, blockCredentials())
+	conn := e.dial(t)
 	killed := *e.currentBundle()
 	killed.KillSwitches = []policy.KillSwitch{{Provider: protocol.RouteProxyTLS, Mode: policy.KillDisable, ReasonCode: "fleet_regression_1234"}}
 	e.setBundle(&killed)
 
 	body := `{"model":"claude-sonnet-4-5","max_tokens":64,"messages":[{"role":"user","content":"my key is AKIAIOSFODNN7EXAMPLE"}]}`
-	resp, _ := e.post(t, "api.anthropic.com", "/v1/messages", contentLength(body), body)
+	resp, _ := e.send(t, conn, "api.anthropic.com", "/v1/messages", contentLength(body), body)
 	if resp.StatusCode != http.StatusOK || e.upstream.Load() != 1 {
 		t.Fatalf("response = %d with %d upstream requests, want the request carried", resp.StatusCode, e.upstream.Load())
 	}

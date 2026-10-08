@@ -3056,6 +3056,107 @@ END $$;
 RESET ROLE;
 
 -- =====================================================================================
+-- T83-T84  Kill switches
+-- =====================================================================================
+
+-- Tenant B's switch, written as the superuser, so tenant A's session has something to not see.
+INSERT INTO ops.kill_switch (tenant_id, route, reason_code, set_by)
+VALUES (:tb, 'proxy.tls', 'fleet_regression', 'admin-b');
+
+SET ROLE sac_control;
+SET app.tenant_id = '11111111-1111-7111-8111-111111111111';
+
+DO $$
+DECLARE
+  t constant uuid := '11111111-1111-7111-8111-111111111111';
+  bad text;
+BEGIN
+  -- Both interception routes take a switch, and effective_at defaults to the trip.
+  INSERT INTO ops.kill_switch (tenant_id, route, reason_code, set_by) VALUES
+    (t, 'proxy.tls', 'app_breakage', 'admin-a'),
+    (t, 'proxy.loopback', 'local.model-1', 'admin-a');
+  IF EXISTS (SELECT 1 FROM ops.kill_switch WHERE effective_at IS NULL OR effective_at > now()) THEN
+    RAISE EXCEPTION 'FAIL T83 a switch did not take effect when it was tripped';
+  END IF;
+  FOREACH bad IN ARRAY ARRAY['cli.shim', 'tool.hook', 'ext.dom', 'proxy'] LOOP
+    BEGIN
+      INSERT INTO ops.kill_switch (tenant_id, route, reason_code, set_by) VALUES (t, bad, 'x1', 'admin-a');
+      RAISE EXCEPTION 'FAIL T83 the route % took a kill switch', bad;
+    EXCEPTION WHEN check_violation THEN NULL;
+    END;
+  END LOOP;
+  DELETE FROM ops.kill_switch WHERE tenant_id = t AND route = 'proxy.loopback';
+  FOREACH bad IN ARRAY ARRAY['', 'App_breakage', '9breakage', 'app breakage', repeat('a', 65)] LOOP
+    BEGIN
+      INSERT INTO ops.kill_switch (tenant_id, route, reason_code, set_by) VALUES (t, 'proxy.loopback', bad, 'admin-a');
+      RAISE EXCEPTION 'FAIL T83 the reason code "%" was accepted', bad;
+    EXCEPTION WHEN check_violation THEN NULL;
+    END;
+  END LOOP;
+  BEGIN
+    INSERT INTO ops.kill_switch (tenant_id, route, reason_code, set_by) VALUES (t, 'proxy.tls', 'second', 'admin-a');
+    RAISE EXCEPTION 'FAIL T83 a route took two kill switches';
+  EXCEPTION WHEN unique_violation THEN NULL;
+  END;
+  RAISE NOTICE 'PASS T83 a kill switch is one per interception route, with a reason code, in force when tripped';
+END $$;
+
+DO $$
+DECLARE
+  n int;
+BEGIN
+  SELECT count(*) INTO n FROM ops.kill_switch;
+  IF n <> 1 THEN
+    RAISE EXCEPTION 'FAIL T84 tenant A saw % kill switches, want its own 1', n;
+  END IF;
+  UPDATE ops.kill_switch SET reason_code = 'app_breakage_2' WHERE route = 'proxy.tls';
+  DELETE FROM ops.kill_switch WHERE tenant_id = '22222222-2222-7222-8222-222222222222';
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 0 THEN
+    RAISE EXCEPTION 'FAIL T84 tenant A cleared tenant B''s kill switch';
+  END IF;
+  BEGIN
+    INSERT INTO ops.kill_switch (tenant_id, route, reason_code, set_by)
+    VALUES ('22222222-2222-7222-8222-222222222222', 'proxy.loopback', 'planted', 'admin-a');
+    RAISE EXCEPTION 'FAIL T84 tenant A tripped a kill switch for tenant B';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+  END;
+  DELETE FROM ops.kill_switch WHERE route = 'proxy.tls';
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN
+    RAISE EXCEPTION 'FAIL T84 control-api could not clear its own kill switch';
+  END IF;
+
+  PERFORM set_config('app.tenant_id', '', false);
+  SELECT count(*) INTO n FROM ops.kill_switch;
+  IF n <> 0 THEN
+    RAISE EXCEPTION 'FAIL T84 a session with no tenant saw % kill switches', n;
+  END IF;
+  PERFORM set_config('app.tenant_id', '11111111-1111-7111-8111-111111111111', false);
+  RAISE NOTICE 'PASS T84 kill switches are isolated per tenant, and control-api trips, changes and clears its own';
+END $$;
+
+RESET ROLE;
+
+SET ROLE sac_query;
+DO $$
+BEGIN
+  BEGIN
+    PERFORM 1 FROM ops.kill_switch;
+    RAISE EXCEPTION 'FAIL T84 query-api can read the kill switches';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+  END;
+END $$;
+RESET ROLE;
+
+DO $$
+BEGIN
+  IF (SELECT reason_code FROM ops.kill_switch WHERE tenant_id = '22222222-2222-7222-8222-222222222222') IS DISTINCT FROM 'fleet_regression' THEN
+    RAISE EXCEPTION 'FAIL T84 tenant B''s kill switch changed under tenant A''s session';
+  END IF;
+END $$;
+
+-- =====================================================================================
 -- Report
 -- =====================================================================================
 

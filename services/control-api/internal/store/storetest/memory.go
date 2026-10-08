@@ -55,6 +55,7 @@ type Memory struct {
 	endpoint        map[string]*store.EndpointCollectors
 	endpointTools   map[string]map[string]store.EndpointTool
 	rules           map[string][]store.EnforcementRule
+	killSwitches    map[string][]store.KillSwitch
 	dataClasses     []string
 	catalog         []store.CatalogApp
 }
@@ -90,6 +91,7 @@ func New() *Memory {
 		endpoint:          map[string]*store.EndpointCollectors{},
 		endpointTools:     map[string]map[string]store.EndpointTool{},
 		rules:             map[string][]store.EnforcementRule{},
+		killSwitches:      map[string][]store.KillSwitch{},
 		dataClasses: []string{"credential", "customer_pii", "government_id", "health", "legal_commercial",
 			"payment_card", "source_code"},
 	}
@@ -750,6 +752,7 @@ func (m *Memory) PolicyInputs(_ context.Context, tenantID string) (store.PolicyI
 	sort.Strings(in.InterceptionHosts)
 	in.Endpoint = m.endpointLocked(tenantID)
 	in.Rules = copyRules(m.rules[tenantID])
+	in.KillSwitches = append([]store.KillSwitch{}, m.killSwitches[tenantID]...)
 	in.SanctionedTools = []string{}
 	for fp, state := range m.toolState[tenantID] {
 		if state == "sanctioned" {
@@ -863,7 +866,41 @@ func (m *Memory) Settings(_ context.Context, tenantID string) (store.Settings, e
 		}
 	}
 	sort.Strings(out.AppCategories)
+	out.KillSwitches = append([]store.KillSwitch{}, m.killSwitches[tenantID]...)
 	return out, nil
+}
+
+// SetKillSwitch implements store.Store. Like the table, a route holds one switch, the list is kept
+// in route order, and a re-trip keeps the time the switch came into effect.
+func (m *Memory) SetKillSwitch(_ context.Context, tenantID, route string, on bool, reasonCode string, audit store.AuditEntry) error {
+	if !slices.Contains(store.KillSwitchRoutes, route) {
+		return store.ErrUnknownKillSwitchRoute
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.tenants[tenantID]; !ok {
+		return store.ErrUnknownTenant
+	}
+	previous := m.killSwitches[tenantID]
+	next := []store.KillSwitch{}
+	effective := audit.OccurredAt.UTC()
+	for _, k := range previous {
+		if k.Route == route {
+			effective = k.EffectiveAt
+			continue
+		}
+		next = append(next, k)
+	}
+	after := map[string]any{"on": false}
+	if on {
+		next = append(next, store.KillSwitch{Route: route, ReasonCode: reasonCode, EffectiveAt: effective, SetBy: audit.ActorID})
+		after = map[string]any{"on": true, "reason_code": reasonCode}
+	}
+	sort.Slice(next, func(i, j int) bool { return next[i].Route < next[j].Route })
+	m.killSwitches[tenantID] = next
+	audit.Detail = merge(audit.Detail, map[string]any{"route": route, "previous": store.KillSwitchDetail(previous, route), "new": after})
+	m.audit(audit)
+	return nil
 }
 
 // SetCollectionMode implements store.Store.

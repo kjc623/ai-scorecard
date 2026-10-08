@@ -108,6 +108,13 @@ func (r *portRunner) handleConn(ctx context.Context, client net.Conn) {
 	defer client.Close()
 	b := r.broker
 
+	// A kill switch in force carries the connection as bytes: nothing is parsed, read, recorded or
+	// enforced, and the port stays held so the tool's clients keep reaching its server.
+	if b.killSwitchActive() {
+		r.tunnel(client)
+		return
+	}
+
 	br := bufio.NewReader(io.LimitReader(client, maxRequestBytes))
 	req, err := http.ReadRequest(br)
 	if err != nil {
@@ -194,6 +201,38 @@ func (r *portRunner) handleConn(ctx context.Context, client net.Conn) {
 		return
 	}
 	r.observe(ctx, req, counted.n, buf, mode)
+}
+
+// tunnel copies bytes between the client and the upstream in both directions until either side
+// closes, and counts the connection blind_tunnelled.
+func (r *portRunner) tunnel(client net.Conn) {
+	b := r.broker
+	upstream, err := net.DialTimeout("tcp", r.upstreamAddr(), b.cfg.PreflightTimeout)
+	if err != nil {
+		// The client sees the connection error it would have seen without the broker.
+		b.counters.Add(protocol.CounterErrors)
+		return
+	}
+	defer upstream.Close()
+	b.counters.Add(protocol.CounterBlindTunnelled)
+	b.markSuccess(b.cfg.Clock())
+	done := make(chan struct{}, 2)
+	go func() {
+		_, _ = io.Copy(upstream, client)
+		if c, ok := upstream.(*net.TCPConn); ok {
+			_ = c.CloseWrite()
+		}
+		done <- struct{}{}
+	}()
+	go func() {
+		_, _ = io.Copy(client, upstream)
+		if c, ok := client.(*net.TCPConn); ok {
+			_ = c.CloseWrite()
+		}
+		done <- struct{}{}
+	}()
+	<-done
+	<-done
 }
 
 // observe hands the request to the pipeline. The content reader is passed only when the body

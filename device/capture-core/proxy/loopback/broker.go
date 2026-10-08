@@ -58,7 +58,8 @@ type Config struct {
 	Pipeline Pipeline
 	Agent    AgentInfo
 
-	// Bundles returns the bundle in force, whose rules decide each prompt when it is recorded.
+	// Bundles returns the bundle in force, whose rules decide each prompt when it is recorded and
+	// whose proxy.loopback kill switch, while in force, has every connection carried unread.
 	// nil means no bundle: every prompt records the default rule.
 	Bundles func() *policy.Bundle
 
@@ -254,6 +255,12 @@ func (b *Broker) Health() core.Health {
 		return b.counters.Snapshot(protocol.StateAbsent, protocol.DetailNone, b.startedAt, lastOK)
 	}
 
+	// A kill switch in force: the ports are still held and every connection is carried, but nothing
+	// is read or recorded.
+	if b.killSwitchActive() {
+		return b.counters.Snapshot(protocol.StateDegraded, protocol.DetailKilled, b.startedAt, lastOK)
+	}
+
 	// Identity refusal is a degraded state, never healthy: a broker whose pipeline refuses to mint
 	// (identity not yet issued) must not report healthy while dropping every observation.
 	if identityDetail != protocol.DetailNone {
@@ -387,6 +394,19 @@ func (b *Broker) ApplyPolicy(bundle policy.Bundle) error {
 		}(nr)
 	}
 	return nil
+}
+
+// killSwitchActive reports whether the bundle in force carries a proxy.loopback kill switch in
+// effect now. A future-dated switch is in force from its EffectiveAt, not before.
+func (b *Broker) killSwitchActive() bool {
+	if b.cfg.Bundles == nil {
+		return false
+	}
+	ks, ok := b.cfg.Bundles().KillSwitchFor(protocol.RouteProxyLoopback)
+	if !ok || ks.Mode != policy.KillDisable {
+		return false
+	}
+	return ks.EffectiveAt.IsZero() || !ks.EffectiveAt.After(b.cfg.Clock())
 }
 
 func (b *Broker) lastSuccess() time.Time {
