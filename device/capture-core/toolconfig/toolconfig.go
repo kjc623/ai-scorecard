@@ -1,5 +1,6 @@
 // Package toolconfig writes the agent's settings into AI tools' machine-wide, admin-managed
-// configuration, so a tool exports its telemetry to the agent and a user cannot switch that off.
+// configuration, so a tool exports its telemetry to the agent, or runs the agent's hook, and a user
+// cannot switch that off.
 //
 // A Writer owns a few keys in one tool's managed file and touches nothing else in it. Before its
 // first write it backs the file up once (or records that there was none) under

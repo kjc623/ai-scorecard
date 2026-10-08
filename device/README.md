@@ -104,6 +104,15 @@ The file keeps its access control unless users could write it; a new file is rea
 writable by administrators only. Its health row is `tool_config_claude_code`: `healthy` while the file
 holds the agent's keys, `absent` with `tool_not_installed` without Claude Code, `degraded` with
 `config_write_failed` otherwise; on macOS and Linux it is `absent` with `tool_version_unsupported`.
+
+While the bundle switches the hook relay and Cursor's hooks on, the service adds one entry each to
+the `beforeSubmitPrompt` and `beforeMCPExecution` arrays of Cursor's enterprise hooks file,
+`C:\ProgramData\Cursor\hooks.json` (and `"version": 1` when the file has none), running
+`"<install dir>\bin\capture-core.exe" --hook cursor <event>`. Every other entry and key is kept,
+with the same backup (`toolconfig\cursor\original`), restore and access control as Claude Code's
+file. Its health row is `tool_config_cursor`, with the same states; Cursor counts as installed when
+the installed-app scan finds it in the bundle's catalog.
+
 With TLS inspection on, the proxy blind-tunnels a connection from a tool whose native collector is
 enabled.
 

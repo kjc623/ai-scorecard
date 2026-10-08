@@ -1,0 +1,13 @@
+{
+  "conversation_id": "5d3c9f0e-7a41-4b2e-9c6d-1f8e2a3b4c5d",
+  "generation_id": "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
+  "model": "claude-4.5-sonnet",
+  "hook_event_name": "beforeMCPExecution",
+  "cursor_version": "3.24.9",
+  "workspace_roots": ["C:\\work\\app"],
+  "user_email": "console.user@example.com",
+  "transcript_path": null,
+  "tool_name": "create_entities",
+  "tool_input": "{\"entities\": [{\"name\": \"deploy\", \"entityType\": \"note\", \"observations\": [\"key AKIAIOSFODNN7EXAMPLE\"]}]}",
+  "command": "npx -y @modelcontextprotocol/server-memory"
+}

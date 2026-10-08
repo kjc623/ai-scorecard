@@ -17,6 +17,10 @@ type tool struct {
 	fingerprint string
 	// supported is whether the agent writes the tool's configuration on this platform.
 	supported bool
+	// hooks is whether the provider declares the tool's hooks, switched by the tool's hooks entry
+	// while the hook relay is on, rather than pointing its OTel export at the receiver. Its Desired
+	// is empty: the hook command depends on nothing in the bundle.
+	hooks bool
 }
 
 // Config is a provider's seams.
@@ -31,9 +35,9 @@ type Config struct {
 }
 
 // Provider is one tool's tool_config_<tool> collector: while the bundle switches the tool's OTel
-// export on, the tool's managed configuration carries the agent's keys. Start applies them, Stop
-// removes them, and a bundle that changes the collection mode, the receiver's address or the token
-// applies them again.
+// export (or, for a hooks tool, its hooks) on, the tool's managed configuration carries the agent's
+// keys. Start applies them, Stop removes them, and a bundle that changes the collection mode, the
+// receiver's address or the token applies them again.
 type Provider struct {
 	tool tool
 	w    Writer
@@ -79,9 +83,16 @@ func newProvider(t tool, w Writer, cfg Config) *Provider {
 // Name implements core.Provider.
 func (p *Provider) Name() protocol.Collector { return p.tool.collector }
 
-// Enabled implements core.Toggled: the tool's OTel switch, effective while the receiver is on.
+// Enabled implements core.Toggled: the tool's OTel switch, effective while the receiver is on, or
+// for a hooks tool its hooks switch, effective while the hook relay is on.
 func (p *Provider) Enabled(b *policy.Bundle) bool {
-	return b != nil && b.Endpoint.OTel.Enabled && b.Endpoint.Tools[p.tool.key].OTel
+	if b == nil {
+		return false
+	}
+	if p.tool.hooks {
+		return b.Endpoint.Hooks.Enabled && b.Endpoint.Tools[p.tool.key].Hooks
+	}
+	return b.Endpoint.OTel.Enabled && b.Endpoint.Tools[p.tool.key].OTel
 }
 
 // Counters exposes the provider's counter set.
@@ -89,6 +100,9 @@ func (p *Provider) Counters() *core.CounterSet { return p.counters }
 
 // desired is what b asks the tool to be configured with.
 func (p *Provider) desired(b *policy.Bundle) Desired {
+	if p.tool.hooks {
+		return Desired{}
+	}
 	var q core.ScopeQuery
 	if p.cfg.Scope != nil {
 		q = p.cfg.Scope()

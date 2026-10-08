@@ -163,7 +163,9 @@ const (
 	CollectorUserHelper       Collector = "user_helper"
 	// CollectorToolConfigClaudeCode writes Claude Code's managed settings; it emits nothing itself.
 	CollectorToolConfigClaudeCode Collector = "tool_config_claude_code"
-	CollectorHookRelay            Collector = "hook_relay"
+	// CollectorToolConfigCursor writes Cursor's enterprise hooks file; it emits nothing itself.
+	CollectorToolConfigCursor Collector = "tool_config_cursor"
+	CollectorHookRelay        Collector = "hook_relay"
 	// CollectorInventoryScanner scans the installed applications and emits them on inv.scan.
 	CollectorInventoryScanner Collector = "inventory_scanner"
 )
@@ -175,7 +177,7 @@ func (c Collector) Valid() bool {
 	case CollectorEgressProxy, CollectorLoopbackBroker, CollectorCLIShim,
 		CollectorProcessDetector, CollectorClassifierHost, CollectorCaptureExtension,
 		CollectorDesktopProxy, CollectorOTelReceiver, CollectorUserHelper,
-		CollectorToolConfigClaudeCode, CollectorHookRelay, CollectorInventoryScanner:
+		CollectorToolConfigClaudeCode, CollectorToolConfigCursor, CollectorHookRelay, CollectorInventoryScanner:
 		return true
 	default:
 		return false

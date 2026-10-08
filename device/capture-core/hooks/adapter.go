@@ -25,7 +25,8 @@ const TestTool = "test"
 
 // adapters is the registry, keyed by the tool key `capture-core --hook <tool>` names.
 var adapters = map[string]Adapter{
-	TestTool: testAdapter{},
+	TestTool:   testAdapter{},
+	CursorTool: cursor{},
 }
 
 // Lookup returns the adapter for a tool key.

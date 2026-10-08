@@ -1179,3 +1179,69 @@ decided and why, and for a vendor fact the product version checked.
     `{"error":{"code","message","status","details"}}` with the HTTP status as `code`;
     `google/rpc/code.proto` (`googleapis/googleapis` `master` at `6553725b`) maps
     `PERMISSION_DENIED` to 403. ai.google.dev is not reachable from the build machine.
+
+## 2026-10-08, task 38
+
+- **What the vendor facts rest on (read 2026-10-08).** cursor.com and docs.cursor.com are blocked
+  from the build machine, and the `cursor/docs` repository is not readable from here (its raw files
+  answer 404 and git asks for credentials), so no first-party Cursor page was read. The facts below
+  come from npm packages that implement Cursor hooks, which agree with each other except where
+  noted: `cursor-hooks` 1.1.6 (2025-10-09, typings that mirror `cursor.com/docs/agent/hooks` of the
+  Cursor 1.7 era), `@pmatrix/cursor-monitor` 0.6.1 (2026-05-21), `@blekline/cursor-hooks` 0.1.0
+  (2026-07-03), `@cdot65/prisma-airs-cursor-hooks` 0.3.0 (2026-07-08), `@vaibot/cursor-circuitbreaker-plugin`
+  0.2.2 (2026-09-28), `@unshadow/cursor-hook` 0.2.0 and `contexara` 1.2.13 (2026-10-07). No source
+  names the Cursor version it describes; the catalog's newest is 3.24.9 (Homebrew cask, task 14).
+  **Every fact here is for the device phase to confirm against the installed version.**
+- **Enterprise hooks file on Windows: `C:\ProgramData\Cursor\hooks.json`** (`FOLDERID_ProgramData`).
+  Not verified from a reachable source: it is the Windows location Cursor's hooks page gave before
+  this build, beside `/Library/Application Support/Cursor/hooks.json` (macOS) and
+  `/etc/cursor/hooks.json` (Linux), which the AIRS installer's notes repeat. Cursor runs the hooks of
+  every file present (enterprise, project `.cursor/hooks.json`, user `~/.cursor/hooks.json`), so a
+  user-level file adds hooks and cannot take the enterprise ones away.
+- **`hooks.json`**: `{"version": 1, "hooks": {"<event>": [{"command": "..."}]}}`. An entry may also
+  carry `timeout`, `failClosed` and `matcher`; the agent writes `command` only. AIRS says Cursor
+  reads the file when it starts; whether a running Cursor picks up a change is for the device phase
+  (the agent itself applies a bundle change without a restart).
+- **stdin**: every event carries `conversation_id`, `generation_id`, `model`, `hook_event_name`,
+  `cursor_version`, `workspace_roots`, `user_email` and `transcript_path`; `beforeSubmitPrompt` adds
+  `prompt` and `attachments`; `beforeMCPExecution` adds `tool_name`, `tool_input` and the server's
+  `command` or `url`. The packages disagree on `tool_input`: the newer ones read a string holding the
+  JSON, older typings an object. The adapter takes both and sends compact JSON (a string that is not
+  JSON as written). `conversation_id` is the session; input without one is refused, so the hook
+  fails open.
+- **Output**, exit code 0: `beforeSubmitPrompt` answers `{"continue": bool, "user_message": ...}`;
+  `beforeMCPExecution` answers `{"permission": "allow"|"deny"|"ask", "user_message": ...,
+  "agent_message": ...}`. The older packages spell the latter two `userMessage` and `agentMessage`;
+  the newer ones, and the agent, use `user_message` and `agent_message`. A `warn` renders as the
+  event's allow with `user_message`; whether Cursor shows it is task 41's.
+- **Block behaviour**: every source documents both events as blocking (`continue: false` stops the
+  prompt, `deny` stops the MCP call), so the adapter's `CanEnforce(event)` is true for both. The
+  device phase tests each event by hand first and corrects `CanEnforce` and this entry if the
+  installed version differs.
+- **The relay does not read `CanEnforce` yet.** Reading the adapter's per-event value in the relay
+  is task 37's change to `relay.go`, which this task leaves alone; with both events true the relay's
+  `RecordedAction(d, true)` already records what Cursor does. The test asserts the method through an
+  interface, `interface{ CanEnforce(event string) bool }`, which task 37's must match at merge.
+- **The agent's entry is the one whose command is exactly** `"<exe>" --hook cursor <event>`, with
+  `<exe>` the running service's `os.Executable()`. It is added after the customer's entries for each
+  event that lacks it. `"version": 1` is added to a file that has none and taken out again on
+  Remove only when the rest of the file is as the backup had it. A file that is not a JSON object,
+  or whose `hooks` is not an object of arrays, is left untouched and reported `config_write_failed`.
+  Backup and restore are task 27's (`toolconfig/cursor/original`).
+- **Installed** means the installed-app scanner (`inventory.Scanners`, task 16) finds app `cursor`
+  under the bundle in force's catalog, for the machine or a loaded user hive (today by publisher
+  `Anysphere`). The writer takes it as a seam, wired in `buildProviders`.
+- **A provider can be a hooks provider**: `tool.hooks` makes `Enabled` read
+  `endpoint.hooks.enabled` and `endpoint.tools.<key>.hooks`, and its `Desired` is empty, since the
+  hook command depends on nothing in the bundle.
+- **Access control**: a new `C:\ProgramData\Cursor` folder inherits ProgramData's access, which lets
+  users create files in it; the hooks file itself gets the managed DACL, as Claude Code's does.
+- **Fixtures** are written from the sources above under `hooks/testdata/cursor/documented/`, marked
+  so in their README; the device phase replaces them with a capture named after the installed
+  version.
+- **Migration proof** (`0012-tool-config-cursor.sql`, the next free number on this branch): the
+  integration branch's `schema.sql` plus it, the new `schema.sql` plus `0002`–`0012`, and `main`'s
+  `schema.sql` plus `0002`–`0012` each dump (`pg_dump --schema-only`) identically to the new
+  `schema.sql`, with identical `ref.collector` rows.
+- **Not run here:** `toolconfig/cursor_windows_test.go` (the ProgramData path). It compiles and vets
+  under `GOOS=windows`.
