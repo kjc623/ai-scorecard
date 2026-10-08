@@ -186,6 +186,7 @@ type recordingPipeline struct {
 	read   bool
 	over   bool
 	failOn bool
+	done   int // Process calls that have returned
 }
 
 func (p *recordingPipeline) ResolveMode(core.ScopeQuery) core.Resolution {
@@ -193,6 +194,11 @@ func (p *recordingPipeline) ResolveMode(core.ScopeQuery) core.Resolution {
 }
 
 func (p *recordingPipeline) Process(ctx context.Context, obs core.Observation) (core.Outcome, error) {
+	defer func() {
+		p.mu.Lock()
+		p.done++
+		p.mu.Unlock()
+	}()
 	p.mu.Lock()
 	p.obs = append(p.obs, obs)
 	p.mu.Unlock()
@@ -217,6 +223,14 @@ func (p *recordingPipeline) observations() []core.Observation {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return append([]core.Observation(nil), p.obs...)
+}
+
+// processed is the number of observations whose Process call has returned: the observation is
+// recorded on entry, but the content read and the broker's counters follow it.
+func (p *recordingPipeline) processed() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.done
 }
 
 func (p *recordingPipeline) didRead() bool {
@@ -313,8 +327,8 @@ func TestBrokerBindsAfterPreflightAndBrokersRequests(t *testing.T) {
 		t.Fatalf("upstream saw body %q, want the client's bytes unchanged", upstream.lastBody())
 	}
 
-	waitFor(t, 2*time.Second, "the observation to reach the pipeline", func() bool {
-		return len(pipe.observations()) == 1
+	waitFor(t, 2*time.Second, "the pipeline to finish processing the observation", func() bool {
+		return pipe.processed() == 1 && b.Counters().Cumulative()[protocol.CounterEmitted] == 1
 	})
 	obs := pipe.observations()[0]
 	if obs.ToolFingerprint != "local_inference" {
