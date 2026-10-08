@@ -1,0 +1,28 @@
+{
+  "tools": [
+    {
+      "functionDeclarations": [
+        {
+          "name": "read_file",
+          "description": "SAC-PLACEHOLDER-5",
+          "parameters": {"type": "OBJECT", "properties": {"path": {"type": "STRING"}}, "required": ["path"]}
+        }
+      ]
+    }
+  ],
+  "contents": [
+    {"role": "user", "parts": [{"text": "SAC-PLACEHOLDER-2"}]},
+    {
+      "role": "model",
+      "parts": [
+        {"functionCall": {"name": "read_file", "args": {"path": "SAC-PLACEHOLDER-6"}}, "thoughtSignature": "U0FDLVBMQUNFSE9MREVSLTk="}
+      ]
+    },
+    {
+      "role": "user",
+      "parts": [
+        {"functionResponse": {"name": "read_file", "response": {"content": {"text": "sac canary gemini-api AKIAIOSFODNN7EXAMPLE", "lines": 1, "truncated": false}}}}
+      ]
+    }
+  ]
+}

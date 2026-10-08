@@ -1,0 +1,17 @@
+{
+  "systemInstruction": {"parts": [{"text": "SAC-PLACEHOLDER-1"}]},
+  "contents": [
+    {"role": "user", "parts": [{"text": "SAC-PLACEHOLDER-2"}]},
+    {"role": "model", "parts": [{"text": "SAC-PLACEHOLDER-8", "thought": true}, {"text": "SAC-PLACEHOLDER-3"}]},
+    {
+      "role": "user",
+      "parts": [
+        {"text": "sac canary gemini-api AKIAIOSFODNN7EXAMPLE"},
+        {"inlineData": {"mimeType": "image/png", "data": "iVBORw0KGgo="}},
+        {"fileData": {"mimeType": "application/pdf", "fileUri": "https://generativelanguage.googleapis.com/v1beta/files/SAC-PLACEHOLDER-4"}}
+      ]
+    }
+  ],
+  "generationConfig": {"temperature": 0.2, "maxOutputTokens": 1024},
+  "safetySettings": [{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_ONLY_HIGH"}]
+}

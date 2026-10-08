@@ -23,6 +23,7 @@ import (
 
 	"github.com/shadow-ai-capture/device/capture-core/core"
 	"github.com/shadow-ai-capture/device/capture-core/enforce"
+	"github.com/shadow-ai-capture/device/capture-core/parsers/targets"
 	"github.com/shadow-ai-capture/device/capture-core/policy"
 	"github.com/shadow-ai-capture/device/protocol"
 )
@@ -733,6 +734,7 @@ func (p *Provider) observe(req *http.Request, counted int64, buf *bodyBuffer, re
 		content = buf
 	}
 	tool := toolFingerprint(req.Host, req.URL.Path)
+	extract := targets.Registry().For(req.Host, req.URL.Path)
 	// The exchange has completed by now, so whatever a rule asks for is recorded as logged.
 	obs := core.Observation{
 		Route:           protocol.RouteProxyTLS,
@@ -745,7 +747,7 @@ func (p *Provider) observe(req *http.Request, counted int64, buf *bodyBuffer, re
 		Enforce:         enforce.Hook(p.cfg.Bundles, protocol.RouteProxyTLS, tool, false),
 		Content:         content,
 		OverCap:         buf != nil && buf.overCap(),
-		Extract:         JSONExtractor{},
+		Extract:         extract,
 		Person:          person,
 	}
 	out, err := p.cfg.Pipeline.Process(context.Background(), obs)
@@ -769,6 +771,13 @@ func (p *Provider) observe(req *http.Request, counted int64, buf *bodyBuffer, re
 	}
 	if out.Degraded && out.Reason == core.ReasonClassifierDegraded {
 		p.setDetail(protocol.DetailClassifierUnavailable)
+	}
+	if extract.Panicked() {
+		p.counters.Add(protocol.CounterErrors)
+	}
+	if extract.UnknownShape() {
+		// The destination's parser did not recognise the body: its format has changed.
+		p.setDetail(protocol.DetailContentUnprocessable)
 	}
 	_ = res
 }

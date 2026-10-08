@@ -1,0 +1,8 @@
+{
+  "model": "claude-opus-5",
+  "max_tokens": 1024,
+  "system": "SAC-PLACEHOLDER-1",
+  "messages": [
+    {"role": "user", "content": "sac canary anthropic-api AKIAIOSFODNN7EXAMPLE"}
+  ]
+}

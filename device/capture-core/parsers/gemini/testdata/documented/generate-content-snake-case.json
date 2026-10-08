@@ -1,0 +1,19 @@
+{
+  "system_instruction": {"parts": [{"text": "SAC-PLACEHOLDER-1"}]},
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {"inline_data": {"mime_type": "application/pdf", "data": "JVBERi0xLjQK"}},
+        {"text": "sac canary gemini-api"}
+      ]
+    },
+    {
+      "role": "user",
+      "parts": [
+        {"function_response": {"name": "lookup", "response": {"result": "AKIAIOSFODNN7EXAMPLE"}}}
+      ]
+    }
+  ],
+  "generation_config": {"max_output_tokens": 1024}
+}
