@@ -207,9 +207,9 @@ expectCaught('vocab: an extra code in the CHECK',
 // The envelope contract
 expectCaught('kinds: a constraint that stops forbidding a contract-forbidden field',
   'services/database/schema.sql', (s) => s.replace(
-    '      AND window_start IS NULL AND window_end IS NULL AND submission_count IS NULL\n      AND bytes_total IS NULL AND prompt_kind IS NULL))\n);',
-    '      AND window_end IS NULL AND submission_count IS NULL\n      AND bytes_total IS NULL AND prompt_kind IS NULL))\n);'),
-  'kinds.observation_detection_shape.matches-contract');
+    '      AND host_app IS NULL AND destination_host IS NULL AND model_names IS NULL))\n);',
+    '      AND host_app IS NULL AND destination_host IS NULL))\n);'),
+  'kinds.observation_activity_shape.matches-contract');
 expectCaught('kinds: the M0 constraint losing `confidence`',
   'services/database/schema.sql', (s) => s.replace('      AND confidence IS NULL AND content_excerpt IS NULL AND prompt_kind IS NULL)),',
     '      AND content_excerpt IS NULL AND prompt_kind IS NULL)),'),

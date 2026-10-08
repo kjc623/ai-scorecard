@@ -1062,7 +1062,7 @@ CREATE TABLE ingest.observation (
   subject_name      text,
   tool_fingerprint  text NOT NULL,
   direction         text NOT NULL CHECK (direction IN ('egress','ingress','none')),
-  kind              text NOT NULL CHECK (kind IN ('prompt','usage_rollup','model_detection')),
+  kind              text NOT NULL CHECK (kind IN ('prompt','usage_rollup','discovery','agent_activity')),
   -- What the device decided this prompt is, from the shape of the request: text a person typed
   -- ('user'), a request the client made for itself ('client_generated'), or undecided ('unknown').
   -- Present on prompts at M1 and above; NULL otherwise, which reads as 'unknown'.
@@ -1083,13 +1083,30 @@ CREATE TABLE ingest.observation (
   window_end        timestamptz,
   submission_count  bigint CHECK (submission_count >= 0),
   bytes_total       bigint CHECK (bytes_total >= 0),
-  detection_basis   text CHECK (detection_basis IN ('process_scan','endpoint_security','etw','module_signature')),
+  detection_basis   text CHECK (detection_basis IN ('installed_scan','package_scan','extension_scan','process_event','model_store','port_listen','flow_metadata')),
   dedup_key         text NOT NULL CHECK (dedup_key ~ '^sha256:[0-9a-f]{64}$'),
   schema_version    text NOT NULL,
   ingested_at       timestamptz NOT NULL DEFAULT now(),
   -- Materialised at write time from ops.retention_policy, so a later policy change does not
   -- retroactively apply to data collected under a different one.
   expires_at        timestamptz NOT NULL,
+  -- The columns below follow expires_at because migrations append columns: a migrated table and
+  -- one built from this file then have the same column order.
+  -- What a discovery found on the device.
+  discovery_type    text CHECK (discovery_type IN ('app_installed','app_running','cli_installed','ide_extension','local_model','inference_connection')),
+  app_version       text,
+  publisher         text,
+  host_app          text,
+  destination_host  text,
+  model_names       text[],
+  -- One model request or tool call, as the agent's own telemetry reports it.
+  activity_type     text CHECK (activity_type IN ('model_request','tool_call')),
+  model             text,
+  input_tokens      bigint CHECK (input_tokens >= 0),
+  output_tokens     bigint CHECK (output_tokens >= 0),
+  duration_ms       bigint CHECK (duration_ms >= 0),
+  tool_name         text,
+  outcome           text CHECK (outcome IN ('success','error','denied')),
   PRIMARY KEY (tenant_id, event_id),
   FOREIGN KEY (tenant_id, device_id) REFERENCES ops.device(tenant_id, device_id),
 
@@ -1114,31 +1131,52 @@ CREATE TABLE ingest.observation (
     CHECK (kind <> 'prompt' OR (
       direction = 'egress' AND size_bytes IS NOT NULL AND policy_decision IS NOT NULL
       AND window_start IS NULL AND window_end IS NULL AND submission_count IS NULL
-      AND bytes_total IS NULL AND detection_basis IS NULL)),
+      AND bytes_total IS NULL AND detection_basis IS NULL
+      AND discovery_type IS NULL AND app_version IS NULL AND publisher IS NULL
+      AND host_app IS NULL AND destination_host IS NULL AND model_names IS NULL
+      AND activity_type IS NULL AND model IS NULL AND input_tokens IS NULL
+      AND output_tokens IS NULL AND duration_ms IS NULL AND tool_name IS NULL AND outcome IS NULL)),
   CONSTRAINT observation_rollup_shape
     CHECK (kind <> 'usage_rollup' OR (
       direction = 'none' AND window_start IS NOT NULL AND window_end IS NOT NULL
       AND submission_count IS NOT NULL AND bytes_total IS NOT NULL
       AND content_digest IS NULL AND labels IS NULL AND classifier_version IS NULL
       AND content_excerpt IS NULL AND policy_decision IS NULL AND size_bytes IS NULL
-      AND detection_basis IS NULL AND prompt_kind IS NULL)),
-  CONSTRAINT observation_detection_shape
-    CHECK (kind <> 'model_detection' OR (
-      direction = 'none' AND detection_basis IS NOT NULL
+      AND detection_basis IS NULL AND prompt_kind IS NULL
+      AND discovery_type IS NULL AND app_version IS NULL AND publisher IS NULL
+      AND host_app IS NULL AND destination_host IS NULL AND model_names IS NULL
+      AND activity_type IS NULL AND model IS NULL AND input_tokens IS NULL
+      AND output_tokens IS NULL AND duration_ms IS NULL AND tool_name IS NULL AND outcome IS NULL)),
+  CONSTRAINT observation_discovery_shape
+    CHECK (kind <> 'discovery' OR (
+      direction = 'none' AND discovery_type IS NOT NULL AND detection_basis IS NOT NULL
       AND content_digest IS NULL AND labels IS NULL AND classifier_version IS NULL
-      AND content_excerpt IS NULL AND policy_decision IS NULL AND size_bytes IS NULL
+      AND content_excerpt IS NULL AND confidence IS NULL AND prompt_kind IS NULL
+      AND policy_decision IS NULL AND size_bytes IS NULL
       AND window_start IS NULL AND window_end IS NULL AND submission_count IS NULL
-      AND bytes_total IS NULL AND prompt_kind IS NULL))
+      AND bytes_total IS NULL
+      AND activity_type IS NULL AND model IS NULL AND input_tokens IS NULL
+      AND output_tokens IS NULL AND duration_ms IS NULL AND tool_name IS NULL AND outcome IS NULL)),
+  CONSTRAINT observation_activity_shape
+    CHECK (kind <> 'agent_activity' OR (
+      direction = 'none' AND activity_type IS NOT NULL
+      AND content_digest IS NULL AND labels IS NULL AND classifier_version IS NULL
+      AND content_excerpt IS NULL AND confidence IS NULL AND prompt_kind IS NULL
+      AND policy_decision IS NULL
+      AND window_start IS NULL AND window_end IS NULL AND submission_count IS NULL
+      AND bytes_total IS NULL AND detection_basis IS NULL
+      AND discovery_type IS NULL AND app_version IS NULL AND publisher IS NULL
+      AND host_app IS NULL AND destination_host IS NULL AND model_names IS NULL))
 );
 
 -- The expire job deletes per tenant by expires_at.
 CREATE INDEX observation_expiry ON ingest.observation (tenant_id, expires_at);
 
 -- The dedup key for an observation without a content digest (M0, a canvas UI, a WebSocket session,
--- a rollup, a detection): tenant, device, tool, kind, a 300-second bucket and the payload size. The
--- server derives it, so independently written collectors agree. `kind` is part of it because
--- rollups and detections carry no size: without it, a rollup and a detection of one tool in one
--- bucket would collapse into one record.
+-- a rollup, a discovery, an agent activity): tenant, device, tool, kind, a 300-second bucket and the
+-- payload size. The server derives it, so independently written collectors agree. `kind` is part of
+-- it because rollups and discoveries carry no size: without it, a rollup and a discovery of one tool
+-- in one bucket would collapse into one record.
 CREATE FUNCTION ingest.weak_dedup_key(
   p_tenant uuid, p_device uuid, p_tool text, p_kind text, p_occurred timestamptz, p_size bigint
 ) RETURNS text
@@ -1166,8 +1204,8 @@ CREATE TABLE ingest.submission (
   submission_id      uuid NOT NULL,
   dedup_key          text CHECK (dedup_key ~ '^sha256:[0-9a-f]{64}$'),
   dedup_weak_key     text NOT NULL CHECK (dedup_weak_key ~ '^sha256:[0-9a-f]{64}$'),
-  kind               text NOT NULL CHECK (kind IN ('prompt','usage_rollup','model_detection')),
-  -- The winning observation's request kind; NULL for rollups, detections and M0 prompts, read as
+  kind               text NOT NULL CHECK (kind IN ('prompt','usage_rollup','discovery','agent_activity')),
+  -- The winning observation's request kind; NULL for every other kind and for M0 prompts, read as
   -- 'unknown'. A 'client_generated' submission is never indexed for prompt-text search.
   prompt_kind        text CHECK (prompt_kind IS NULL OR (prompt_kind IN ('user','client_generated','unknown') AND kind = 'prompt')),
   device_id          uuid NOT NULL,
@@ -1850,7 +1888,9 @@ BEGIN
     occurred_at, received_at, monotonic_offset_ms, source, confidence, collection_mode,
     size_bytes, content_digest, labels, classifier_version, content_excerpt, policy_decision,
     window_start, window_end, submission_count, bytes_total, detection_basis,
-    prompt_kind, dedup_key, schema_version, expires_at
+    prompt_kind, dedup_key, schema_version, expires_at,
+    discovery_type, app_version, publisher, host_app, destination_host, model_names,
+    activity_type, model, input_tokens, output_tokens, duration_ms, tool_name, outcome
   )
   VALUES (
     v_tenant,
@@ -1881,7 +1921,21 @@ BEGIN
     nullif(p_envelope->>'prompt_kind', ''),
     p_envelope->>'dedup_key',
     p_envelope->>'schema_version',
-    p_received_at + make_interval(days => v_ttl)
+    p_received_at + make_interval(days => v_ttl),
+    p_envelope->>'discovery_type',
+    p_envelope->>'app_version',
+    p_envelope->>'publisher',
+    p_envelope->>'host_app',
+    p_envelope->>'destination_host',
+    CASE WHEN jsonb_typeof(p_envelope->'model_names') = 'array'
+         THEN ARRAY(SELECT jsonb_array_elements_text(p_envelope->'model_names')) END,
+    p_envelope->>'activity_type',
+    p_envelope->>'model',
+    (p_envelope->>'input_tokens')::bigint,
+    (p_envelope->>'output_tokens')::bigint,
+    (p_envelope->>'duration_ms')::bigint,
+    p_envelope->>'tool_name',
+    p_envelope->>'outcome'
   )
   ON CONFLICT (tenant_id, event_id) DO NOTHING;
 
@@ -2278,13 +2332,17 @@ INSERT INTO ref.data_class (class_code, category, description, default_severity,
 
 -- Route fidelity. Lower rank wins.
 INSERT INTO ref.route_fidelity (source, fidelity_rank, yields_content, description) VALUES
+  ('tool.hook',         5, true,  'The tool''s own hook, handed the prompt by the tool itself before it is sent. Exactly what the user submitted, with no reconstruction.'),
   ('ext.page_context', 10, true,  'Extension reading the user-authored payload and attachment bytes in page context, before serialisation. It sees what the user composed, not what the transport did with it.'),
+  ('tool.otel',        15, true,  'The tool''s own OpenTelemetry export, received on the device. Structured by the tool; prompt text is present only when the tool is configured to export it.'),
   ('cli.shim',         20, true,  'Call-site capture from a managed shell environment. Structured arguments rather than a parsed HTTP body, so no reconstruction is involved.'),
   ('proxy.loopback',   30, true,  'Local inference broker observing plaintext HTTP on the loopback interface. Nothing is decrypted and no framing is guessed; coverage is narrow.'),
   ('ext.web_request',  40, true,  'Extension reading the request body as sent. Accurate for the wire form, which may differ from the composed form in encoding and whitespace.'),
   ('proxy.tls',        50, true,  'Egress proxy terminating TLS and reading the HTTP body. The prompt is reconstructed from a provider-specific serialisation, so encoding differences can defeat canonicalisation.'),
   ('ext.dom',          60, true,  'DOM-derived observation, used where the request is not observable. Best-effort: some browser UIs render outside normal DOM structures.'),
-  ('proc.detect',      70, false, 'Process and module observation only. Establishes that a model ran; carries no content.');
+  ('proc.detect',      70, false, 'Process and module observation only. Establishes that a model ran; carries no content.'),
+  ('inv.scan',         75, false, 'Inventory of installed applications, CLIs, IDE extensions and local models. Establishes that a tool is present; carries no content.'),
+  ('net.flow',         80, false, 'Connection metadata only: the host a process connected to. Establishes that a tool was used; carries no content.');
 
 -- Collection components. modes_supported is what each can achieve, not what it is configured to do.
 INSERT INTO ref.collector (collector_code, component, modes_supported, description) VALUES
