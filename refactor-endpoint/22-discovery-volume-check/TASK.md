@@ -1,6 +1,9 @@
 # 22. Discovery volume check
 
-Needs:
+This task has no build step: it runs in the device phase (task 60), after task 21's device
+checks.
+
+Needs, in the device phase (task 60):
 - the reference VM running, with `main`'s agent (including task 21) deployed by Intune, and every
   endpoint collector on for the test tenant, for one full UTC day;
 - during that day, the owner uses the console session for ordinary AI-tool work: opening the

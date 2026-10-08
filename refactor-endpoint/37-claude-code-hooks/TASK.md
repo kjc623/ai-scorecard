@@ -1,6 +1,6 @@
 # 37. Claude Code hooks
 
-Needs: Claude Code installed on the reference VM and signed in as the console user.
+Needs, in the device phase (task 60): Claude Code installed on the reference VM and signed in as the console user.
 
 ## Problem
 
@@ -59,22 +59,25 @@ true.
 ## Done when
 
 - `cd device/capture-core && go test -race ./hooks/ ./toolconfig/` passes.
-- After merge and deploy (`AGENTS.md`). Ask the owner to add a test-tenant rule "block
-  `credential`" on the Settings page, with the tenant at `m1` or higher; wait for one policy poll.
-  Then:
-  1. `invm.ps1 -Command 'Get-Content <managed-settings path>'` shows the agent's hook entries.
-  2. In a new interactive `claude` session at the VM's console (an owner step), a prompt containing an
-     AWS-key-shaped test string is blocked, and Claude Code shows the rule's message. Capture it
-     with `invm.ps1 -Screenshot`.
-  3. A prompt without one goes through.
-  4. As a non-interactive cross-check, run
-     `invm.ps1 -AsUser console -Command 'claude -p "<prompt with the test string>"'` and show
-     that it is refused, with the rule's message in the output.
-  5. The `hook_relay` row's `emitted` counter rises and the spool drains (`invm.ps1 -AgentState`).
-     The owner confirms on the dashboard that the blocked prompt's event shows
-     `source = tool.hook` and `policy_decision.action = blocked`, attributed to the console user's
-     UPN-derived `user_ref`.
-- Ask the owner to turn "only managed hooks" on, then off, on the Settings page; wait. Each change
-  adds or removes `allowManagedHooksOnly` within one policy poll. Show the file before and after,
-  read with `invm.ps1 -Command`.
 - `node tools/accept.mjs` passes.
+
+## On the device
+
+On the reference VM, running `main`'s release. Ask the owner to add a test-tenant rule "block
+`credential`" on the Settings page, with the tenant at `m1` or higher; wait for one policy poll.
+Then:
+1. `invm.ps1 -Command 'Get-Content <managed-settings path>'` shows the agent's hook entries.
+2. In a new interactive `claude` session at the VM's console (an owner step), a prompt containing an
+   AWS-key-shaped test string is blocked, and Claude Code shows the rule's message. Capture it
+   with `invm.ps1 -Screenshot`.
+3. A prompt without one goes through.
+4. As a non-interactive cross-check, run
+   `invm.ps1 -AsUser console -Command 'claude -p "<prompt with the test string>"'` and show
+   that it is refused, with the rule's message in the output.
+5. The `hook_relay` row's `emitted` counter rises and the spool drains (`invm.ps1 -AgentState`).
+   The owner confirms on the dashboard that the blocked prompt's event shows
+   `source = tool.hook` and `policy_decision.action = blocked`, attributed to the console user's
+   UPN-derived `user_ref`.
+6. Ask the owner to turn "only managed hooks" on, then off, on the Settings page; wait. Each
+   change adds or removes `allowManagedHooksOnly` within one policy poll. Show the file before
+   and after, read with `invm.ps1 -Command`.

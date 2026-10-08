@@ -1,6 +1,7 @@
 # 54. macOS: native telemetry and hooks
 
-Needs: the Mac from task 53, with Claude Code, Codex CLI and Cursor installed and signed in, and
+Needs: the Mac from task 53 (for the build as well as the device phase), with Claude Code, Codex
+CLI and Cursor installed and signed in, and
 VS Code with GitHub Copilot and a Copilot licence.
 
 ## Problem
@@ -41,16 +42,19 @@ Code and Cursor, and drift is reverted within 5 s, as on Windows.
 ## Done when
 
 - `cd device/capture-core && go test ./toolconfig/ ./hooks/` passes on the Mac.
-- Ready to merge. After merge and deploy (`AGENTS.md`), with `main`'s `agent-release-macos`
-  (task 53) installed on the Mac and enrolled in the test tenant, and the needed switches on for the
-  test tenant (ask the owner to set them on the Settings page; wait):
-  - a Claude Code prompt and a Codex prompt each appear as normalized `tool.otel` (or merged
-    `tool.hook`) events: the agent log's `envelope spooled` lines on the Mac, then the owner's
-    confirmation on the dashboard;
-  - Copilot's do too, or are recorded as needing E38;
-  - an AWS-key-shaped test string is blocked in Claude Code, and in Cursor if task 38 found it
-    honoured;
-  - a hand edit of the Claude Code managed settings is reverted within 5 s;
-  - the uninstall snapshot comparison shows no difference.
-  Paste the output for each.
 - `node tools/accept.mjs` passes on Windows.
+
+## On the device
+
+On the Mac, with `main`'s `agent-release-macos` (task 53) installed and enrolled in the test
+tenant, and the needed switches on for the test tenant (ask the owner to set them on the Settings
+page; wait):
+- a Claude Code prompt and a Codex prompt each appear as normalized `tool.otel` (or merged
+  `tool.hook`) events: the agent log's `envelope spooled` lines on the Mac, then the owner's
+  confirmation on the dashboard;
+- Copilot's do too, or are recorded as needing E38;
+- an AWS-key-shaped test string is blocked in Claude Code, and in Cursor if task 38 found it
+  honoured;
+- a hand edit of the Claude Code managed settings is reverted within 5 s;
+- the uninstall snapshot comparison shows no difference.
+Paste the output for each.

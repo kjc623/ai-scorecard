@@ -1,6 +1,6 @@
 # 24. OTLP sender attribution
 
-Needs: on the reference VM, the second user from `TESTBED.md` signed in alongside the console user.
+Needs, in the device phase (task 60): on the reference VM, the second user from `TESTBED.md` signed in alongside the console user.
 
 ## Problem
 
@@ -44,15 +44,18 @@ record carries that person.
 - `cd device/capture-core && go test -race ./otlp/` passes.
 - The provider logs one `info` line per new connection, with the sender's PID, image base name
   and `user_ref` only (never a body or attribute value).
-- Ready to merge. After merge and deploy (`AGENTS.md`):
-  1. Copy `telemetrygen` (the same release as task 23's) into `C:\ProgramData\SacTestbed\otel\`
-     with `invm.ps1 -CopyTo`.
-  2. Start it with the device token header in both users' sessions at the same time:
-     `invm.ps1 -AsUser console -Command '<telemetrygen logs ... --duration 60s>'` and
-     `invm.ps1 -AsUser second -Command '<same>'`, started back to back so their runs overlap.
-  3. The log (`invm.ps1 -Command 'Get-Content C:\ProgramData\ShadowAICapture\state\capture-core.log -Tail 100'`)
-     shows two connections with two distinct `user_ref`s. They match the refs derived from the
-     two users' UPNs.
-
-  Events carrying the person follow in task 26.
 - `node tools/accept.mjs` passes.
+
+## On the device
+
+On the reference VM, running `main`'s release:
+1. Copy `telemetrygen` (the same release as task 23's) into `C:\ProgramData\SacTestbed\otel\`
+   with `invm.ps1 -CopyTo`.
+2. Start it with the device token header in both users' sessions at the same time:
+   `invm.ps1 -AsUser console -Command '<telemetrygen logs ... --duration 60s>'` and
+   `invm.ps1 -AsUser second -Command '<same>'`, started back to back so their runs overlap.
+3. The log (`invm.ps1 -Command 'Get-Content C:\ProgramData\ShadowAICapture\state\capture-core.log -Tail 100'`)
+   shows two connections with two distinct `user_ref`s. They match the refs derived from the
+   two users' UPNs.
+
+Events carrying the person follow in task 26.

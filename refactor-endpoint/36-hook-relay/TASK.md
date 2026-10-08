@@ -69,7 +69,8 @@ service over the native endpoint, which decides allow, warn or block from the bu
   migration in `services/database/migrations/`. Add `protocol.Collector` and the route constant if
   task 05 hasn't already.
 - **Benchmark** (`capture-core/hooks/bench_windows_test.go`, build tag-free, skipped unless
-  `SAC_HOOK_BENCH=1`). It runs on the reference VM, whose resources are the budget's baseline:
+  `SAC_HOOK_BENCH=1`). It runs on the PC during the build, for a first number, and on the
+  reference VM in the device phase, whose resources are the budget's baseline:
   1. Build `capture-core.exe`.
   2. Start a service in-process with a test bundle and a real classifier-host release.
   3. Run `capture-core.exe --hook test prompt` 1,000 times with a 4 KB prompt containing no
@@ -88,13 +89,17 @@ service over the native endpoint, which decides allow, warn or block from the bu
     a refused frame);
   - a test that a `block` rule on `credential` blocks the AWS-key-shaped prompt and records
     `blocked`.
-- On the reference VM (test binaries only, so no merge is needed for this check; the product
-  install on the VM is untouched):
-  1. On the PC, build the benchmark's binaries: `go test -c -o hooks.test.exe ./hooks/`,
-     `capture-core.exe`, and `classifier-host.exe` with a test classifier release.
-  2. Copy them into one folder in the VM with `invm.ps1 -CopyTo`.
-  3. Run the benchmark as the console user:
-     `invm.ps1 -AsUser console -Command '$env:SAC_HOOK_BENCH=1; <folder>\hooks.test.exe -test.run HookBench -test.v'`.
-  4. It reports a p99 under 50 ms. Paste the numbers into the report and into `DECISIONS.md`,
-     with the VM's vCPU count and memory.
+- The benchmark runs on the PC with `SAC_HOOK_BENCH=1`, and its p50, p95 and p99 are in the
+  report with the PC's CPU and memory. These are a first number, not the budget's measurement.
 - `node tools/accept.mjs` passes.
+
+## On the device
+
+On the reference VM, with test binaries only (the product install on the VM is untouched):
+1. On the PC, build the benchmark's binaries: `go test -c -o hooks.test.exe ./hooks/`,
+   `capture-core.exe`, and `classifier-host.exe` with a test classifier release.
+2. Copy them into one folder in the VM with `invm.ps1 -CopyTo`.
+3. Run the benchmark as the console user:
+   `invm.ps1 -AsUser console -Command '$env:SAC_HOOK_BENCH=1; <folder>\hooks.test.exe -test.run HookBench -test.v'`.
+4. It reports a p99 under 50 ms. Paste the numbers into the report and into `DECISIONS.md`,
+   with the VM's vCPU count and memory.

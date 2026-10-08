@@ -1,6 +1,9 @@
 # 42. macOS transparent proxy spike
 
-Needs:
+This task has no build step: it runs in the device phase (task 60), on the Mac. It needs no
+pre-prod.
+
+Needs, in the device phase (task 60):
 - a Mac (Apple silicon) with Xcode, Go 1.27, and Claude Desktop and ChatGPT Desktop signed in;
 - an Apple developer account that can sign a Network Extension (system extension) for local
   development, with SIP and system-extension developer mode as Apple's documentation requires.

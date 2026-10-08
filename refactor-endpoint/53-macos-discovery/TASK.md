@@ -2,11 +2,12 @@
 
 Needs:
 - a Mac (Apple silicon) usable as a test device, with Go 1.27, Node 22 and the Xcode command-line
-  tools;
+  tools, for the build as well as the device phase;
 - backlog task 27 done (the macOS package builds and installs on a Mac);
-- the test tenant's file (`TESTBED.md`, "Tenant file") copied to the Mac by the owner, outside the
-  repository;
-- the owner's `gh` CLI signed in on the Mac with read access to the repository's Actions;
+- in the device phase (task 60): the test tenant's file (`TESTBED.md`, "Tenant file") copied to
+  the Mac by the owner, outside the repository;
+- in the device phase: the owner's `gh` CLI signed in on the Mac with read access to the
+  repository's Actions;
 - Claude Desktop, ChatGPT Desktop, Cursor, VS Code with the Copilot, Claude Code and Continue
   extensions, the `claude` and `codex` CLIs, and Ollama with two models, installed.
 
@@ -91,17 +92,20 @@ All of it builds with `CGO_ENABLED=0`.
 
 - `cd device/capture-core && go test ./hostinfo/ ./userhelper/ ./inventory/ ./procmon/ ./flowmon/`
   passes on the Mac.
-- Ready to merge. After merge and deploy (`AGENTS.md`), and with `main`'s `agent-release-macos`
-  installed on the Mac and enrolled in the test tenant, each Windows task's finish line holds:
-  - Claude Desktop, ChatGPT Desktop and Cursor found (16);
-  - `claude`, `codex`, `gemini` and `copilot` with versions, for those installed (17);
-  - the three extensions with versions (18);
-  - Cursor start and stop (19);
-  - Ollama with two models (20);
-  - a `curl` to `api.openai.com` attributed to `curl` and the user (21);
-  - the helper connected (10).
-  Show each on the Mac from `/var/db/shadow-ai-capture/state/health.json` (the collector's
-  `emitted` counter) and the agent log's `envelope spooled` lines (task 05) in
-  `/var/log/shadow-ai-capture/`. Then ask the owner to confirm each on the test tenant's
-  dashboard (the Mac's device view and the event list); wait.
 - `node tools/accept.mjs` passes on Windows. The Go suites also pass on the Mac.
+
+## On the device
+
+On the Mac, with `main`'s `agent-release-macos` installed and enrolled in the test tenant, each
+Windows task's finish line holds:
+- Claude Desktop, ChatGPT Desktop and Cursor found (16);
+- `claude`, `codex`, `gemini` and `copilot` with versions, for those installed (17);
+- the three extensions with versions (18);
+- Cursor start and stop (19);
+- Ollama with two models (20);
+- a `curl` to `api.openai.com` attributed to `curl` and the user (21);
+- the helper connected (10).
+Show each on the Mac from `/var/db/shadow-ai-capture/state/health.json` (the collector's
+`emitted` counter) and the agent log's `envelope spooled` lines (task 05) in
+`/var/log/shadow-ai-capture/`. Then ask the owner to confirm each on the test tenant's
+dashboard (the Mac's device view and the event list); wait.

@@ -74,18 +74,21 @@ admin switches it on and off from the dashboard.
 ## Done when
 
 - `cd device/capture-core && go test -race ./otlp/` passes.
-- Ready to merge. After merge and deploy (`AGENTS.md`):
-  1. On the PC, download the official `otelcol-contrib` Windows binary and `telemetrygen` from the
-     same release, and record the version in `DECISIONS.md`.
-     - These are test-only helpers. Copy them into `C:\ProgramData\SacTestbed\otel\` with
-       `invm.ps1 -CopyTo`, never into the product's folders.
-  2. Read the device token with
-     `invm.ps1 -Command 'Get-Content C:\ProgramData\ShadowAICapture\state\otlp.token'`.
-     Don't print it in the report.
-  3. Write a collector config whose `otlphttp` exporter targets `http://127.0.0.1:47318` with the
-     token in `headers`, and copy it in.
-  4. Run the collector and `telemetrygen logs` as the console user with
-     `invm.ps1 -AsUser console -Command`.
-  5. Show the export succeeding, and a wrong token failing with 401, from the collector's output.
-  6. Remove `C:\ProgramData\SacTestbed\otel\` afterwards.
 - `node tools/accept.mjs` passes.
+
+## On the device
+
+On the reference VM, running `main`'s release:
+1. On the PC, download the official `otelcol-contrib` Windows binary and `telemetrygen` from the
+   same release, and record the version in `DECISIONS.md`.
+   - These are test-only helpers. Copy them into `C:\ProgramData\SacTestbed\otel\` with
+     `invm.ps1 -CopyTo`, never into the product's folders.
+2. Read the device token with
+   `invm.ps1 -Command 'Get-Content C:\ProgramData\ShadowAICapture\state\otlp.token'`.
+   Don't print it in the report.
+3. Write a collector config whose `otlphttp` exporter targets `http://127.0.0.1:47318` with the
+   token in `headers`, and copy it in.
+4. Run the collector and `telemetrygen logs` as the console user with
+   `invm.ps1 -AsUser console -Command`.
+5. Show the export succeeding, and a wrong token failing with 401, from the collector's output.
+6. Remove `C:\ProgramData\SacTestbed\otel\` afterwards.

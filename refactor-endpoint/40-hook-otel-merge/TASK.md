@@ -1,6 +1,6 @@
 # 40. Hook and OTel merge
 
-Needs: Claude Code installed on the reference VM and signed in as the console user.
+Needs, in the device phase (task 60): Claude Code installed on the reference VM and signed in as the console user.
 
 ## Problem
 
@@ -39,7 +39,8 @@ seen by only one path still produces exactly one envelope.
     `merge` instead of directly to the pipeline. Only prompts merge; `agent_activity` records
     don't.
   - Session ids: the hook's `session_id` and the OTel event's `session.id` attribute. Confirm
-    they are the same value on the installed version and record it in `DECISIONS.md`.
+    from the documentation and task 25's fixtures that they are the same value, record it in
+    `DECISIONS.md`, and confirm it on the installed version in the device phase.
 - Tests (`go test -race ./merge/`):
   - hook first, then OTel;
   - OTel first, then hook;
@@ -51,20 +52,23 @@ seen by only one path still produces exactly one envelope.
 ## Done when
 
 - `cd device/capture-core && go test -race ./merge/ ./hooks/ ./otlp/` passes.
-- Ready to merge. After merge and deploy (`AGENTS.md`), with Claude Code's hooks and OTel both on
-  for the test tenant (ask the owner to check the Settings page; wait):
-  1. Record `invm.ps1 -AgentState`'s `hook_relay` and `otel_receiver` counters.
-  2. Send five distinct prompts as the console user, each with
-     `invm.ps1 -AsUser console -Command 'claude -p "<prompt n>"'` (each run is its own session).
-     Then the owner sends two more in one interactive `claude` session at the VM's console.
-  3. `invm.ps1 -AgentState` shows `hook_relay` `emitted` up by exactly seven, and the spool
-     drained with every batch acknowledged.
-  4. The agent log's `envelope spooled` lines for the test window (task 05), read with
-     `invm.ps1 -Command` from `C:\ProgramData\ShadowAICapture\state\capture-core.log`, show
-     exactly seven `kind=prompt` lines for `app:claude_code`, all `source=tool.hook` with a
-     `policy_decision.action`, and none with `source=tool.otel`. Paste the filtered lines.
-  5. The owner confirms on the dashboard (the event list for `app:claude_code`, filtered to the
-     VM's device and the time of the test): exactly seven prompt events, each on route `tool.hook`
-     with a decision, and none on route `tool.otel`. The `agent_activity` events from the same
-     sessions may appear; they are not prompts.
 - `node tools/accept.mjs` passes.
+
+## On the device
+
+On the reference VM, running `main`'s release, with Claude Code's hooks and OTel both on
+for the test tenant (ask the owner to check the Settings page; wait):
+1. Record `invm.ps1 -AgentState`'s `hook_relay` and `otel_receiver` counters.
+2. Send five distinct prompts as the console user, each with
+   `invm.ps1 -AsUser console -Command 'claude -p "<prompt n>"'` (each run is its own session).
+   Then the owner sends two more in one interactive `claude` session at the VM's console.
+3. `invm.ps1 -AgentState` shows `hook_relay` `emitted` up by exactly seven, and the spool
+   drained with every batch acknowledged.
+4. The agent log's `envelope spooled` lines for the test window (task 05), read with
+   `invm.ps1 -Command` from `C:\ProgramData\ShadowAICapture\state\capture-core.log`, show
+   exactly seven `kind=prompt` lines for `app:claude_code`, all `source=tool.hook` with a
+   `policy_decision.action`, and none with `source=tool.otel`. Paste the filtered lines.
+5. The owner confirms on the dashboard (the event list for `app:claude_code`, filtered to the
+   VM's device and the time of the test): exactly seven prompt events, each on route `tool.hook`
+   with a decision, and none on route `tool.otel`. The `agent_activity` events from the same
+   sessions may appear; they are not prompts.

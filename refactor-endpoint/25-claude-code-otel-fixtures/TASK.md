@@ -1,6 +1,6 @@
 # 25. Claude Code telemetry fixtures
 
-Needs: on the reference VM, Claude Code installed and signed in for the console user, able to run
+Needs, in the device phase (task 60): on the reference VM, Claude Code installed and signed in for the console user, able to run
 a short headless session (`claude -p`) that reads a file and runs one shell command. The agent
 may copy test-only helpers (`otelcol-contrib`) into `C:\ProgramData\SacTestbed\` with
 `invm.ps1 -CopyTo`; the product itself is only ever installed through `deploy.mjs`.
@@ -19,13 +19,23 @@ output.
 
 ## Goal
 
-Real Claude Code OTel output, captured with prompt logging on, is saved in the repository as
-fixtures. It covers the prompt, tool result, API request and API error events, with the version
-recorded.
+For the build: a fixture set written from Claude Code's current monitoring documentation, so the
+normalizer (task 26) can be built and tested now. In the device phase: real Claude Code OTel
+output, captured with prompt logging on, replaces it, with the version recorded. Both cover the
+prompt, tool result, API request and API error events.
 
 ## Scope
 
-- **No product code.** Capture with the official collector, not with capture-core:
+- **No product code.**
+- **For the build**: `device/capture-core/otlp/testdata/claude-code/documented/` holds
+  `logs-prompts-on.json`, `logs-prompts-off.json` and `metrics.json`, written by hand from the
+  current monitoring documentation
+  (https://docs.anthropic.com/en/docs/claude-code/monitoring-usage): every documented event,
+  with every documented attribute key and a value of the documented type, in the OTLP JSON
+  shapes below. Its `README.md` names the page, the date and the Claude Code version the page
+  describes. These fixtures carry the placeholders below from the start.
+- **In the device phase** (On the device), capture with the official collector, not with
+  capture-core:
   1. In the VM, run `otelcol-contrib` (the release from task 23, copied in with `invm.ps1 -CopyTo`)
      as the console user, with:
      - an `otlp` receiver on `127.0.0.1:4318` (HTTP);
@@ -55,7 +65,7 @@ recorded.
   - `device/capture-core/otlp/testdata/claude-code/<claude-code-version>/` holds
     `logs-prompts-on.json`, `logs-prompts-off.json` and `metrics.json`, as OTLP JSON
     `ExportLogsServiceRequest` / `ExportMetricsServiceRequest` bodies. One request per file;
-    merge the exporter's lines.
+    merge the exporter's lines. The captured set replaces `documented/`.
   - Before committing, replace every piece of real content with stable placeholders:
     - prompt text with the canary `SAC-CANARY-7f3a prompt text`;
     - file paths, command lines and user, email or account ids with
@@ -63,14 +73,25 @@ recorded.
 
     Keep every attribute key and the value types. Add a `README.md` in the version folder
     listing each event name found, its attribute keys, and which values were replaced.
-- **`DECISIONS.md`**: Claude Code version, OS build, the date, the event names observed, and any
+- **`DECISIONS.md`**: for the build, the documentation version the fixtures follow; in the
+  device phase, the Claude Code version, OS build, the date, the event names observed, and any
   difference from the documentation (for example a renamed attribute, or traces emitted or not).
+  A difference is a fix to task 26's normalizer, on its fix branch.
 
 ## Done when
 
-- The fixture files and their README are in the repository. A reviewer can find in them a
-  `claude_code.user_prompt` (or the name actually observed), a tool result, an API request and an
-  API error event.
+- For the build: the `documented/` fixture files and their README are in the repository. A
+  reviewer can find in them a `claude_code.user_prompt` (or the documented name), a tool result,
+  an API request and an API error event.
+- `node tools/accept.mjs` passes.
+
+## On the device
+
+On the reference VM, with Claude Code installed and signed in for the console user:
+- Run the capture in Scope (steps 1–5) and save the `<claude-code-version>/` fixtures in place
+  of `documented/`.
+- A reviewer can find in them a `claude_code.user_prompt` (or the name actually observed), a
+  tool result, an API request and an API error event.
 - `grep` over the fixtures finds no real user name, path, email or prompt text from the session.
   The report shows the check.
-- `node tools/accept.mjs` passes.
+- Task 26's tests pass over the captured fixtures, or its normalizer is fixed on a fix branch.

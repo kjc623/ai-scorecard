@@ -55,7 +55,8 @@ be:
     Expect zero hits at `m0` and at `m1`.
   - At `m1`, also assert that each prompt event carries labels including `credential`, and a
     digest.
-- **On the reference VM**: a script (`tools/testbed/privacy-canary.mjs`, run on the PC) that,
+- **On the reference VM**, in the device phase: a script (`tools/testbed/privacy-canary.mjs`,
+  written then, because it builds on task 59's tooling, and run on the PC) that,
   against the test tenant set to `m1` (ask the owner to set it on the Settings page, with every
   endpoint collector, hooks, TLS inspection and Ollama capture on; wait for one policy poll):
   1. Prints a fresh canary, and starts capturing `fly logs` for every pre-prod app
@@ -86,6 +87,10 @@ be:
 ## Done when
 
 - `cd device/integration && go test -race -run Privacy ./...` passes, with zero hits.
-- Ready to merge. After merge and deploy (`AGENTS.md`), the script reports zero hits for a canary
-  sent through every tool listed, and the owner reports no Search results. Paste its output.
 - `node tools/accept.mjs` passes.
+
+## On the device
+
+On the reference VM, running `main`'s release: write `tools/testbed/privacy-canary.mjs` as
+Scope describes and run it. It reports zero hits for a canary sent through every tool listed,
+and the owner reports no Search results. Paste its output.

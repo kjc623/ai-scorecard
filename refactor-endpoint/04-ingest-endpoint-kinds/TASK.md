@@ -15,7 +15,7 @@ routes. The database enforces the same per-kind rules as the contract, and every
 ## Scope
 
 - **`services/database/schema.sql`**, and the same change as the next free numbered migration in
-  `services/database/migrations/` (README there), because pre-prod exists:
+  `services/database/migrations/` (README there):
   - `ingest.observation`:
     - Add the §3 fields as columns. Use `model_names text[]`, and integers for the token and
       duration fields.
@@ -41,8 +41,12 @@ routes. The database enforces the same per-kind rules as the contract, and every
       `git show main:services/database/schema.sql` plus the new migration, and one from the new
       `schema.sql`. Diff `pg_dump --schema-only` of both; the diff must be empty, ignoring the
       `public.schema_migration` rows. Later briefs refer to this as "the migration proof".
-    - Pre-prod has no `model_detection` rows (nothing emits it), so no data conversion is needed.
+    - No database has `model_detection` rows (nothing emits it), so no data conversion is needed.
       Assert that in the migration with a guard that fails if any such row exists.
+    - The migrator applies `schema.sql` and then every migration to an empty database
+      (`services/database/database.go`), which is how pre-prod's database is built in task
+      58. So the migration must also apply cleanly, and change nothing, over the new
+      `schema.sql`. The live migrate test (`SAC_TEST_PG_DSN`) proves it.
 - **`services/database/tools/check-schema.mjs`**: replace `model_detection` with the new kinds in
   the kind and shape agreement (around line 451), so the check compares the new contract with the
   new CHECKs.
@@ -69,7 +73,9 @@ routes. The database enforces the same per-kind rules as the contract, and every
 - `node tools/accept.mjs` passes as a whole.
 - The report shows a `discovery` record and an `agent_activity` record posted to a local
   ingest-api test server and stored. Use the existing store test harness (`SAC_TEST_PG_DSN`).
-- This task has no device check. After the owner merges, the deploy workflow's `migrate` step
-  applies the migration in pre-prod. Ask the owner to confirm the deploy run succeeded, then show
-  from the run's log (`gh run view <run id> --log`, read-only) that `migrate` applied the new
-  migration.
+
+## On the device
+
+This task has no device check. After pre-prod's first deploy run (task 58), show from the run's
+log (`gh run view <run id> --log`, read-only) that `migrate` built the database from `schema.sql`
+and applied this migration over it without error.

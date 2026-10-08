@@ -1,6 +1,6 @@
 # 16. Installed app scanner
 
-Needs: on the reference VM, Claude Desktop, ChatGPT Desktop (Microsoft Store / MSIX) and Cursor
+Needs, in the device phase (task 60): on the reference VM, Claude Desktop, ChatGPT Desktop (Microsoft Store / MSIX) and Cursor
 installed for the console user.
 
 ## Problem
@@ -41,8 +41,10 @@ admin can turn it on and off from the dashboard (task 07) without a restart.
     (`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Appx\AppxAllUserStore`) and each loaded
     user's
     `HKU\<SID>\Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages`
-    for package full names. Verify both on the reference VM (`invm.ps1 -Command` for HKLM; HKU of the console user's SID for the per-user store) and record what was found in
-    `DECISIONS.md`.
+    for package full names. Verify both against Microsoft's documentation and, read-only, on the
+    PC's own registry, and record what was found in `DECISIONS.md`. The device phase confirms
+    them on the reference VM (`invm.ps1 -Command` for HKLM; HKU of the console user's SID for
+    the per-user store).
   - Match the uninstall `DisplayName` against `windows_uninstall_name`, the uninstall
     `DisplayIcon`/`InstallLocation` executable against `windows_exe`, the package family name
     against `windows_appx`, and the uninstall `Publisher` against `publisher`, all through the
@@ -66,23 +68,26 @@ admin can turn it on and off from the dashboard (task 07) without a restart.
 ## Done when
 
 - `cd device/capture-core && go test -race ./inventory/` passes.
-- Ready to merge. After merge and deploy (`AGENTS.md`):
-  1. Within one scan, `app:claude_desktop`, `app:chatgpt_desktop` and `app:cursor` are emitted as
-     `discovery` / `app_installed` with versions, and with the console user's `user_ref` for the
-     per-user installs.
-     - Show the agent's spool record lines (task 05):
-       `invm.ps1 -Command 'Select-String "envelope spooled" C:\ProgramData\ShadowAICapture\state\capture-core.log | Select -Last 50'`.
-     - `invm.ps1 -AgentState` shows the batch acknowledged by pre-prod.
-     - The owner confirms on the dashboard's Tools page that the three apps are listed for the
-       test tenant. If no dashboard page shows discovery records, they say so, and the device-side
-       evidence stands. A discovery view is not in this plan.
-     - Show the versions the VM itself reports beside them:
-       `invm.ps1 -AsUser console -Command 'Get-AppxPackage *ChatGPT*; Get-ItemProperty HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\* | Select DisplayName,DisplayVersion'`.
-  2. Ask the owner to switch "Inventory" off for the test tenant; wait. After the next policy poll,
-     without a restart, the `inventory_scanner` health row is `absent` with
-     `disabled_by_policy`. Show that the service's start time didn't change:
-     `invm.ps1 -Command 'Get-Process capture-core | Select Id,StartTime'`, before and after.
-     Read the row with `invm.ps1 -AgentState`.
-  3. Ask the owner to switch it back on, and it returns `healthy`. This is the plan's E03 finish
-     line.
 - `node tools/accept.mjs` passes.
+
+## On the device
+
+On the reference VM, running `main`'s release:
+1. Within one scan, `app:claude_desktop`, `app:chatgpt_desktop` and `app:cursor` are emitted as
+   `discovery` / `app_installed` with versions, and with the console user's `user_ref` for the
+   per-user installs.
+   - Show the agent's spool record lines (task 05):
+     `invm.ps1 -Command 'Select-String "envelope spooled" C:\ProgramData\ShadowAICapture\state\capture-core.log | Select -Last 50'`.
+   - `invm.ps1 -AgentState` shows the batch acknowledged by pre-prod.
+   - The owner confirms on the dashboard's Tools page that the three apps are listed for the
+     test tenant. If no dashboard page shows discovery records, they say so, and the device-side
+     evidence stands. A discovery view is not in this plan.
+   - Show the versions the VM itself reports beside them:
+     `invm.ps1 -AsUser console -Command 'Get-AppxPackage *ChatGPT*; Get-ItemProperty HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\* | Select DisplayName,DisplayVersion'`.
+2. Ask the owner to switch "Inventory" off for the test tenant; wait. After the next policy poll,
+   without a restart, the `inventory_scanner` health row is `absent` with
+   `disabled_by_policy`. Show that the service's start time didn't change:
+   `invm.ps1 -Command 'Get-Process capture-core | Select Id,StartTime'`, before and after.
+   Read the row with `invm.ps1 -AgentState`.
+3. Ask the owner to switch it back on, and it returns `healthy`. This is the plan's E03 finish
+   line.

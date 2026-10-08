@@ -24,8 +24,9 @@ through the emitter (task 15).
   - route `net.flow`;
   - `core.Toggled` on `endpoint.flows.enabled`.
 - **Sources**, through the ETW session helper from task 19 (`etwsession`), one session with two
-  providers. Verify the event ids and field names on the reference VM and record the Windows
-  build checked in `DECISIONS.md`.
+  providers. Verify the event ids and field names against Microsoft's documentation and the
+  PC's own provider manifests (read-only, `wevtutil gp <provider>`), and record the Windows
+  build checked in `DECISIONS.md`; the device phase confirms them on the reference VM.
   - `Microsoft-Windows-DNS-Client` (`{1C95126E-7EEA-49A9-A3FE-A378B03DDB4D}`): query-completed
     events (3008) give the query name, the results (addresses) and the PID. Keep a per-PID map
     `address → name` for names matching `Bundle.AppByDomain`, kept 10 minutes.
@@ -62,18 +63,21 @@ through the emitter (task 15).
 ## Done when
 
 - `cd device/capture-core && go test -race ./flowmon/ ./etwsession/` passes on the PC.
-- The elevated test runs in the VM. Build the test binary on the PC (`go test -c`), copy it in with
-  `invm.ps1 -CopyTo`, and run it elevated in the VM with `invm.ps1 -Command`.
-- Ready to merge. After merge and deploy (`AGENTS.md`), with TLS inspection off for the test
-  tenant (the default):
-  1. Run `invm.ps1 -AsUser console -Command 'curl.exe -s https://api.openai.com/v1/models'`
-     (a 401 is fine).
-  2. Within seconds, an `inference_connection` record is emitted, shown from the spool log (the agent's `envelope spooled` lines, task 05: `invm.ps1 -Command 'Select-String "envelope spooled" C:\ProgramData\ShadowAICapture\state\capture-core.log | Select -Last 50'`), with the batch acknowledged in `invm.ps1 -AgentState`, with:
-     - `app:openai_api`;
-     - `destination_host` `api.openai.com`;
-     - the `user_ref` derived from the console user's UPN;
-     - publisher `Microsoft Windows` (the curl.exe signer).
-  3. Repeat with `-AsUser second`, and show the second user's `user_ref`.
-  - The per-day de-duplication means a repeat by the same user on the same day gives no new
-    record. Run each user's command once.
 - `node tools/accept.mjs` passes.
+
+## On the device
+
+On the reference VM, running `main`'s release, with TLS inspection off for the test
+tenant (the default):
+0. The elevated test runs in the VM. Build the test binary on the PC (`go test -c`), copy it in
+   with `invm.ps1 -CopyTo`, and run it elevated in the VM with `invm.ps1 -Command`.
+1. Run `invm.ps1 -AsUser console -Command 'curl.exe -s https://api.openai.com/v1/models'`
+   (a 401 is fine).
+2. Within seconds, an `inference_connection` record is emitted, shown from the spool log (the agent's `envelope spooled` lines, task 05: `invm.ps1 -Command 'Select-String "envelope spooled" C:\ProgramData\ShadowAICapture\state\capture-core.log | Select -Last 50'`), with the batch acknowledged in `invm.ps1 -AgentState`, with:
+   - `app:openai_api`;
+   - `destination_host` `api.openai.com`;
+   - the `user_ref` derived from the console user's UPN;
+   - publisher `Microsoft Windows` (the curl.exe signer).
+3. Repeat with `-AsUser second`, and show the second user's `user_ref`.
+- The per-day de-duplication means a repeat by the same user on the same day gives no new
+  record. Run each user's command once.

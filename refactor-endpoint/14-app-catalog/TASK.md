@@ -95,9 +95,12 @@ bundle carries the catalog as `catalog` (§5), and the device decodes and valida
 - `node services/database/tools/check-schema.mjs` and `node tools/accept.mjs --only database` pass.
 - The drift test (task 01) passes with `catalog`.
 - The migration proof (task 04) shows an empty diff.
-- Ready to merge. After merge and deploy (`AGENTS.md`): the bundle in force on the VM carries all
-  20 apps. `invm.ps1 -Command` decodes the cached bundle's payload from the agent's state directory
-  (`policy\`) and prints the `catalog` entry count and app keys. Quote them.
 - `cd device/capture-core && go test ./policy/ ./enforce/` passes, including the lookup helpers
   and a category rule that matches.
 - `node tools/accept.mjs` passes.
+
+## On the device
+
+On the reference VM, running `main`'s release: the bundle in force on the VM carries all
+20 apps. `invm.ps1 -Command` decodes the cached bundle's payload from the agent's state directory
+(`policy\`) and prints the `catalog` entry count and app keys. Quote them.

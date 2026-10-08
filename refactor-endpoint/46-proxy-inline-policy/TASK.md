@@ -1,6 +1,6 @@
 # 46. Inline policy in the proxy
 
-Needs: Claude Desktop installed on the reference VM and signed in as the console user; the owner
+Needs, in the device phase (task 60): Claude Desktop installed on the reference VM and signed in as the console user; the owner
 available for the console step and the test tenant's settings (`AGENTS.md`).
 
 ## Problem
@@ -26,7 +26,8 @@ the request goes through, a notification shows the message, and the event record
        added to the interface from task 45):
        - Anthropic `{"type":"error","error":{"type":"permission_error","message":...}}`;
        - OpenAI `{"error":{"message":...,"type":"policy_violation"}}`;
-       - the desktop backends: the shapes their apps display, verified from captures;
+       - the desktop backends: the shapes their apps display, verified from captures, built
+         with their parsers in the device phase (task 45);
        - `generic`: plain text.
     2. Close the upstream connection without sending anything.
   - For a `warn`: forward, then notify.
@@ -49,16 +50,19 @@ the request goes through, a notification shows the message, and the event record
 ## Done when
 
 - `cd device/capture-core && go test -race ./proxy/tlsproxy/ ./parsers/...` passes.
-- Ready to merge. After merge and deploy (`AGENTS.md`):
-  - Ask the owner to switch TLS inspection on for the test tenant, with a "block `credential`"
-    rule and the mode at `m1` or higher (Settings page); wait one policy poll.
-  1. The owner sends an AWS-key-shaped test string in Claude Desktop at the VM's console. It shows the app's
-     error with the rule's message, and a Windows notification appears in the console session.
-     Capture both with `invm.ps1 -Screenshot`, taken while the toast is visible.
-  2. The same secret sent with `curl.exe` to `api.anthropic.com`
-     (`invm.ps1 -AsUser console -Command 'curl.exe ...'`) returns 403 with the Anthropic error
-     shape and the rule's message.
-  3. `invm.ps1 -AgentState` shows the `egress_proxy` `emitted` counter up by two and the spool
-     drained. The owner confirms on the dashboard that both events show `source = proxy.tls`,
-     `policy_decision.action = blocked`, and the console user's `user_ref`.
 - `node tools/accept.mjs` passes.
+
+## On the device
+
+On the reference VM, running `main`'s release:
+- Ask the owner to switch TLS inspection on for the test tenant, with a "block `credential`"
+  rule and the mode at `m1` or higher (Settings page); wait one policy poll.
+1. The owner sends an AWS-key-shaped test string in Claude Desktop at the VM's console. It shows the app's
+   error with the rule's message, and a Windows notification appears in the console session.
+   Capture both with `invm.ps1 -Screenshot`, taken while the toast is visible.
+2. The same secret sent with `curl.exe` to `api.anthropic.com`
+   (`invm.ps1 -AsUser console -Command 'curl.exe ...'`) returns 403 with the Anthropic error
+   shape and the rule's message.
+3. `invm.ps1 -AgentState` shows the `egress_proxy` `emitted` counter up by two and the spool
+   drained. The owner confirms on the dashboard that both events show `source = proxy.tls`,
+   `policy_decision.action = blocked`, and the console user's `user_ref`.

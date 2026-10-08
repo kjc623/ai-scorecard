@@ -2,10 +2,11 @@
 
 Needs:
 - a Linux desktop (systemd and logind, for example Ubuntu 24.04 or Fedora 41 with GNOME) usable
-  as a test device;
-- the test tenant's file (`TESTBED.md`, "Tenant file") copied to the desktop by the owner, outside
-  the repository;
-- the owner's `gh` CLI signed in on the desktop with read access to the repository's Actions;
+  as a test device, for the build as well as the device phase;
+- in the device phase (task 60): the test tenant's file (`TESTBED.md`, "Tenant file") copied to
+  the desktop by the owner, outside the repository;
+- in the device phase: the owner's `gh` CLI signed in on the desktop with read access to the
+  repository's Actions;
 - Cursor, VS Code with the Copilot, Claude Code and Continue extensions, the `claude`, `codex` and
   `gemini` CLIs, and Ollama with two models, installed.
 
@@ -82,17 +83,19 @@ All of it builds with `CGO_ENABLED=0`.
 
 - `cd device/capture-core && go test ./hostinfo/ ./userhelper/ ./inventory/ ./procmon/ ./flowmon/`
   passes on the Linux desktop and in CI's Linux job.
-- Ready to merge. After merge and deploy (`AGENTS.md`), with `main`'s `agent-release-linux`
-  installed on the desktop and enrolled in the test tenant, each Windows task's finish line holds
-  for the tools installed:
-  - Cursor found;
-  - CLIs and extensions with versions;
-  - Cursor start and stop;
-  - Ollama with two models;
-  - a `curl` attributed to `curl` and the user;
-  - the helper connected.
-
-  Show each on the desktop from `/var/lib/shadow-ai-capture/health.json` (the collector's
-  `emitted` counter) and the agent's `envelope spooled` log lines (task 05, `journalctl -u
-  shadow-ai-capture`). Then ask the owner to confirm each on the test tenant's dashboard; wait.
 - `node tools/accept.mjs` passes.
+
+## On the device
+
+On the Linux desktop, with `main`'s `agent-release-linux` installed and enrolled in the test
+tenant, each Windows task's finish line holds for the tools installed:
+- Cursor found;
+- CLIs and extensions with versions;
+- Cursor start and stop;
+- Ollama with two models;
+- a `curl` attributed to `curl` and the user;
+- the helper connected.
+
+Show each on the desktop from `/var/lib/shadow-ai-capture/health.json` (the collector's
+`emitted` counter) and the agent's `envelope spooled` log lines (task 05, `journalctl -u
+shadow-ai-capture`). Then ask the owner to confirm each on the test tenant's dashboard; wait.

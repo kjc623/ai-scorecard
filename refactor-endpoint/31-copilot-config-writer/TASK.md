@@ -1,6 +1,6 @@
 # 31. Copilot config writer
 
-Needs: as task 30.
+Needs, in the device phase (task 60): as task 30.
 
 ## Problem
 
@@ -57,19 +57,22 @@ is recorded and visible in health.
 ## Done when
 
 - `cd device/capture-core && go test -race ./toolconfig/` passes.
-- After merge and deploy (`AGENTS.md`), with Copilot OTel on for the test tenant (ask the owner
-  to check the Settings page; wait), and task 30's temporary user settings removed:
-  1. `invm.ps1 -Command` shows the machine environment variables (and the VS Code policy values,
-     if they exist) the agent wrote.
-  2. A `copilot` prompt run with `invm.ps1 -AsUser console -Command` (a new process, so it reads
-     the machine environment) raises the `otel_receiver` row's `emitted` counter and drains
-     (`invm.ps1 -AgentState`). The owner confirms on the dashboard a `tool.otel` event for
-     `app:copilot_cli`.
-  3. VS Code Copilot, used at the VM's console (an owner step), either arrives as
-     `app:github_copilot` through policy, or the `tool_config_copilot` row is `degraded` /
-     `tool_version_unsupported`, consistent with `DECISIONS.md`. Show it in
-     `invm.ps1 -AgentState`, and have the owner confirm the same state on the dashboard's device
-     view.
-  4. Ask the owner to switch Copilot OTel off on the Settings page; wait. Within one policy poll the
-     backups are restored, shown with `invm.ps1 -Command`.
 - `node tools/accept.mjs` passes.
+
+## On the device
+
+On the reference VM, running `main`'s release, with Copilot OTel on for the test tenant (ask the owner
+to check the Settings page; wait), and task 30's temporary user settings removed:
+1. `invm.ps1 -Command` shows the machine environment variables (and the VS Code policy values,
+   if they exist) the agent wrote.
+2. A `copilot` prompt run with `invm.ps1 -AsUser console -Command` (a new process, so it reads
+   the machine environment) raises the `otel_receiver` row's `emitted` counter and drains
+   (`invm.ps1 -AgentState`). The owner confirms on the dashboard a `tool.otel` event for
+   `app:copilot_cli`.
+3. VS Code Copilot, used at the VM's console (an owner step), either arrives as
+   `app:github_copilot` through policy, or the `tool_config_copilot` row is `degraded` /
+   `tool_version_unsupported`, consistent with `DECISIONS.md`. Show it in
+   `invm.ps1 -AgentState`, and have the owner confirm the same state on the dashboard's device
+   view.
+4. Ask the owner to switch Copilot OTel off on the Settings page; wait. Within one policy poll the
+   backups are restored, shown with `invm.ps1 -Command`.

@@ -1,18 +1,18 @@
-# 00a. Pre-prod environment and test tenant
+# 58. Pre-prod environment and test tenant
 
 Needs:
-- backlog task 25 (CI green) finished;
-- the work on `backlog/15-device-layout` and `refactor-endpoint/plan` merged to `main`, because
-  pre-prod deploys from `main`;
+- the build tasks the owner wants verified merged to `main`, because pre-prod deploys from
+  `main` (`AGENTS.md`, the device phase);
 - the owner available for every step marked **owner**: they create things in Fly.io, Supabase,
   DNS, Entra, GitHub and Intune that an agent may not.
 
 ## Problem
 
-Every on-device check in this plan runs against pre-prod, never the local lab. Pre-prod doesn't
-exist yet, and it runs on SaaS (`DECISIONS.md`, 2026-10-07): the services on Fly.io, PostgreSQL on
-Supabase. Intune and Entra are unchanged. The repository has no deployment for either service, so
-this task writes one, then brings pre-prod up with the owner.
+Every on-device check in this plan runs against pre-prod, never the local lab, in the device
+phase (`AGENTS.md`). Pre-prod doesn't exist yet, and it runs on SaaS (`DECISIONS.md`,
+2026-10-07): the services on Fly.io, PostgreSQL on Supabase. Intune and Entra are unchanged. The
+repository has no deployment for either service, so this task writes one, then brings pre-prod up
+with the owner. It opens the device phase: tasks 59 and 60 follow it.
 
 ## Goal
 
@@ -75,9 +75,9 @@ before relying on it, and record what you checked in `DECISIONS.md` (`AGENTS.md`
 
 ## Scope
 
-Two phases, as in `AGENTS.md`: build, then bring up after the owner merges.
+Two parts: build, then bring up after the owner merges (`AGENTS.md`, the device phase).
 
-### Build (agent, on `refactor-endpoint/00a-preprod-environment`)
+### Build (agent, on `refactor-endpoint/58-preprod-environment`)
 
 1. **`services/edge/`**: move `localdev/edge` here as a product component, with a README in the
    repository's component style.
@@ -121,7 +121,7 @@ Two phases, as in `AGENTS.md`: build, then bring up after the owner merges.
      steps: Entra and Intune are unchanged.
 3. **`.github/workflows/deploy.yml`**: on a push to `main`, deploy pre-prod to Fly.io.
    - Keep the `agent-release` job as it is: artifact `agent-release`, version
-     `1.0.<run number>`. Task 00b depends on both.
+     `1.0.<run number>`. Task 59 depends on both.
    - Replace the jobs that deploy `azure/` with ones that:
      1. push the images to Fly.io's registry, tagged with the commit;
      2. run `migrate`. If it fails, fail the run, with its output in the run's log.
@@ -174,7 +174,7 @@ Two phases, as in `AGENTS.md`: build, then bring up after the owner merges.
    - test tenant id;
    - GitHub repository.
 8. **Agent:** where a `fly/RUNBOOK.md` step turned out wrong or missing, fix it on
-   `refactor-endpoint/00a-preprod-environment-fix-N`. Keep the edit short and factual.
+   `refactor-endpoint/58-preprod-environment-fix-N`. Keep the edit short and factual.
 
 ## Done when
 
@@ -182,8 +182,8 @@ Two phases, as in `AGENTS.md`: build, then bring up after the owner merges.
   configuration check over `fly/`.
 - The deploy run on `main` succeeds: the agent release, `migrate`, and every app.
 - Verify checks 1–6 pass, and the report shows the commands and output. Checks 7 and 8 need the
-  agent on a device: report them as pending. Task 00b's Done when covers check 7; check 8 follows
-  once the VM runs the agent.
+  agent on a device: report them as pending. Task 59's Done when covers check 7; check 8 follows
+  once the VM runs the agent (task 60).
 - The owner confirms they are signed in to the dashboard as admin of the "Endpoint Test" tenant.
 - The tenant file is saved, and `TESTBED.md`'s environment rows are filled in.
 - `node tools/accept.mjs` passes on `main`.

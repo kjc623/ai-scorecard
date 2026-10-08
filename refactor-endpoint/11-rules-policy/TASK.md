@@ -76,12 +76,15 @@ in `DESIGN.md` §5, and the device decodes and validates both.
 - control-api tests cover replace-list ordering, every refused value, the audit row, and compose
   with rules and sanctioned tools.
 - The migration proof (task 04) shows an empty diff.
-- Ready to merge. After merge and deploy (`AGENTS.md`):
-  1. Ask the owner to create, on the test tenant's Settings page, a rule "block `credential`" with
-     the message 'Remove the credential and try again.'. Ask them to confirm the card shows it, and
-     to sanction one tool; wait.
-  2. Within one policy poll, read the bundle in force on the VM:
-     `invm.ps1 -Command` decodes the payload of the cached bundle in the agent's state directory
-     (`policy\`). Policy is not secret, but print only `version`, `rules` and `sanctioned_tools`.
-     It carries both.
 - `node tools/accept.mjs` passes.
+
+## On the device
+
+On the reference VM, running `main`'s release:
+1. Ask the owner to create, on the test tenant's Settings page, a rule "block `credential`" with
+   the message 'Remove the credential and try again.'. Ask them to confirm the card shows it, and
+   to sanction one tool; wait.
+2. Within one policy poll, read the bundle in force on the VM:
+   `invm.ps1 -Command` decodes the payload of the cached bundle in the agent's state directory
+   (`policy\`). Policy is not secret, but print only `version`, `rules` and `sanctioned_tools`.
+   It carries both.

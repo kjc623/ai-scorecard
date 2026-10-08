@@ -55,14 +55,17 @@ done, not what the rule asked for.
 ## Done when
 
 - `cd device/capture-core && go test -race ./enforce/ ./core/ ./proxy/... ./cmd/capture-core/` passes.
-- Ready to merge. After merge and deploy (`AGENTS.md`):
-  - Ask the owner to switch TLS inspection on for the test tenant and keep task 11's "block
-    credential" rule (the test tenant's mode must be `m1` or higher); wait one policy poll.
-  1. `invm.ps1 -AsUser console -Command` runs `curl.exe` to an intercepted host, with an
-     AWS-key-shaped test string (the classifier's `AWS_ACCESS_KEY_ID` rule) in a JSON body. It
-     produces a `proxy.tls` event: the `egress_proxy` `emitted` counter rises and the batch is
-     acknowledged (`invm.ps1 -AgentState`).
-  2. The owner confirms on the dashboard's event detail that the event's `policy_decision` is
-     `{rule_id: <the rule>, action: "logged", decided_locally: true}`.
-  3. Ask the owner to switch TLS inspection off again.
 - `node tools/accept.mjs` passes.
+
+## On the device
+
+On the reference VM, running `main`'s release:
+- Ask the owner to switch TLS inspection on for the test tenant and keep task 11's "block
+  credential" rule (the test tenant's mode must be `m1` or higher); wait one policy poll.
+1. `invm.ps1 -AsUser console -Command` runs `curl.exe` to an intercepted host, with an
+   AWS-key-shaped test string (the classifier's `AWS_ACCESS_KEY_ID` rule) in a JSON body. It
+   produces a `proxy.tls` event: the `egress_proxy` `emitted` counter rises and the batch is
+   acknowledged (`invm.ps1 -AgentState`).
+2. The owner confirms on the dashboard's event detail that the event's `policy_decision` is
+   `{rule_id: <the rule>, action: "logged", decided_locally: true}`.
+3. Ask the owner to switch TLS inspection off again.

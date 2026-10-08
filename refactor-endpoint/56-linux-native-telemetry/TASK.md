@@ -1,7 +1,7 @@
 # 56. Linux: native telemetry and hooks
 
-Needs: the Linux desktop from task 55, with Claude Code, Codex CLI and Cursor installed and signed
-in.
+Needs: the Linux desktop from task 55 (for the build as well as the device phase), with Claude
+Code, Codex CLI and Cursor installed and signed in.
 
 ## Problem
 
@@ -39,13 +39,16 @@ reverted within 5 s, and uninstall restores the machine.
 
 - `cd device/capture-core && go test ./toolconfig/ ./hooks/` passes on the Linux desktop and in
   CI's Linux job.
-- Ready to merge. After merge and deploy (`AGENTS.md`), with `main`'s `agent-release-linux` (task
-  55) installed and enrolled in the test tenant, and the needed switches on for the test tenant
-  (ask the owner to set them on the Settings page; wait):
-  - a Claude Code prompt and a Codex prompt each appear as normalized events: the agent's
-    `envelope spooled` log lines on the desktop, then the owner's confirmation on the dashboard;
-  - an AWS-key-shaped test string is blocked in Claude Code;
-  - a hand edit of `/etc/claude-code/managed-settings.json` is reverted within 5 s;
-  - `uninstall.sh` followed by the snapshot comparison shows no difference.
-  Paste the output for each.
 - `node tools/accept.mjs` passes.
+
+## On the device
+
+On the Linux desktop, with `main`'s `agent-release-linux` (task 55) installed and enrolled in the
+test tenant, and the needed switches on for the test tenant (ask the owner to set them on the
+Settings page; wait):
+- a Claude Code prompt and a Codex prompt each appear as normalized events: the agent's
+  `envelope spooled` log lines on the desktop, then the owner's confirmation on the dashboard;
+- an AWS-key-shaped test string is blocked in Claude Code;
+- a hand edit of `/etc/claude-code/managed-settings.json` is reverted within 5 s;
+- `uninstall.sh` followed by the snapshot comparison shows no difference.
+Paste the output for each.

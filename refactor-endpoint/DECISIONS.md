@@ -57,12 +57,12 @@ decided and why, and for a vendor fact the product version checked.
   - The VM is Hyper-V on the owner's PC, Entra-joined and Intune-managed, and enrolled into a
     dedicated "Endpoint Test" tenant in pre-prod (`TESTBED.md`). The owner's tenant stays
     untouched.
-  - Pre-prod is deployed first (task 00a).
+  - Pre-prod is deployed first (task 00a; superseded on 2026-10-08, below).
 - **A change reaches the VM through `main`.**
   1. The owner merges each task branch.
   2. The push deploys pre-prod (services, migration, signed agent release).
   3. `tools/testbed/deploy.mjs` publishes that release to the VM through Microsoft Graph, to one
-     Win32 app assigned only to a test device group (task 00b).
+     Win32 app assigned only to a test device group (task 00b, now 59).
   - Agents never push, run workflows or change pre-prod.
 - **Agents check the device side** (`tools/testbed/invm.ps1`, PowerShell Direct). The owner
   changes dashboard settings and confirms what the dashboard shows; agents have no dashboard
@@ -72,7 +72,7 @@ decided and why, and for a vendor fact the product version checked.
 - The two users of a check are Entra test users signed in on the VM. The performance budgets
   (`DESIGN.md` §13) are measured on the VM.
 
-## 2026-10-07, owner, before task 00a
+## 2026-10-07, owner, before task 00a (now 58)
 
 - **Pre-prod runs on SaaS: the services on Fly.io, PostgreSQL on Supabase.**
   - One test tenant and one VM don't justify the cost of a self-built cloud environment; this
@@ -90,3 +90,25 @@ decided and why, and for a vendor fact the product version checked.
   signing key, the content keys and the directory key. Devices pin the policy key and hold
   certificates from the device CA, and the content keys decrypt stored prompts, so pre-prod's
   devices and data survive a later move of the services only if these keys do.
+
+## 2026-10-08, owner, before task 01
+
+- **Build first, infrastructure last.** No pre-prod and no device exist while the build tasks
+  (01–57) run. Each task is built and verified on the PC with its tests and `node tools/accept.mjs`;
+  the checks that need a managed device enrolled in a real environment sit in each brief's "On the
+  device" section and wait.
+  - The environment tasks move to the end: 58 (pre-prod), 59 (the reference VM tooling) and 60
+    (device verification), which runs every "On the device" section in task order and fixes what
+    it finds on fix branches.
+  - Vendor facts are checked in the vendor's current documentation during the build and on a real
+    install in the device phase. Where a brief needs a real tool's output (telemetry fixtures, hook
+    input, desktop-app request bodies), the build uses a set written from the documentation, marked
+    `documented`, and the device phase replaces it with a capture. The desktop-backend parsers
+    (task 45), their block shapes (46) and the QUIC firewall rule (47) have no documentation to
+    build from and are built in the device phase, from the captures and task 43's note.
+  - Three tasks have no build step and run only in the device phase: 22 (a measured day), 42 and
+    43 (spikes on real machines).
+  - Schema changes still ship as `schema.sql` plus a numbered migration. A migration must also
+    apply cleanly over the current `schema.sql`, because the migrator builds an empty database from
+    `schema.sql` and then applies every migration, and that is how pre-prod's database is built
+    (task 04).

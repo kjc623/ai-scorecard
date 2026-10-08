@@ -1,6 +1,6 @@
 # 29. Codex config writer
 
-Needs: on the reference VM, the Codex CLI installed and signed in for the console user.
+Needs, in the device phase (task 60): on the reference VM, the Codex CLI installed and signed in for the console user.
 
 ## Problem
 
@@ -51,18 +51,21 @@ original. The Windows override gap is a recorded, visible limitation.
 ## Done when
 
 - `cd device/capture-core && go test -race ./toolconfig/` passes.
-- Ready to merge. After merge and deploy (`AGENTS.md`), with Codex OTel on for the test tenant:
-  1. With the temporary user config from task 28 removed, a new Codex session's prompt
-     (`invm.ps1 -AsUser console -Command 'codex exec "..."'`) is emitted as a `tool.otel` prompt
-     event for `app:codex`, with the console user's `user_ref`, shown from the spool log (task 05's `envelope spooled` lines, read with `invm.ps1 -Command`), with the batch acknowledged in `invm.ps1 -AgentState`.
-     - Show the machine-wide file with `invm.ps1 -Command`, at the verified path.
-  2. Add a user-level `[otel]` override that disables export, in the console user's
-     `%USERPROFILE%\.codex\config.toml` via `invm.ps1 -AsUser console`. Remove it afterwards.
-     - if the verified precedence says it wins, the `tool_config_codex` row goes `degraded` /
-       `config_tampered` within one health interval;
-     - if it doesn't win, the export continues.
-
-     Show whichever happened, and that it matches `DECISIONS.md`.
-  3. Ask the owner to switch Codex OTel off on the Settings page; wait. The machine file is
-     restored from its backup within one policy poll (compare with `invm.ps1 -Command`).
 - `node tools/accept.mjs` passes.
+
+## On the device
+
+On the reference VM, running `main`'s release, with Codex OTel on for the test tenant:
+1. With the temporary user config from task 28 removed, a new Codex session's prompt
+   (`invm.ps1 -AsUser console -Command 'codex exec "..."'`) is emitted as a `tool.otel` prompt
+   event for `app:codex`, with the console user's `user_ref`, shown from the spool log (task 05's `envelope spooled` lines, read with `invm.ps1 -Command`), with the batch acknowledged in `invm.ps1 -AgentState`.
+   - Show the machine-wide file with `invm.ps1 -Command`, at the verified path.
+2. Add a user-level `[otel]` override that disables export, in the console user's
+   `%USERPROFILE%\.codex\config.toml` via `invm.ps1 -AsUser console`. Remove it afterwards.
+   - if the verified precedence says it wins, the `tool_config_codex` row goes `degraded` /
+     `config_tampered` within one health interval;
+   - if it doesn't win, the export continues.
+
+   Show whichever happened, and that it matches `DECISIONS.md`.
+3. Ask the owner to switch Codex OTel off on the Settings page; wait. The machine file is
+   restored from its backup within one policy poll (compare with `invm.ps1 -Command`).

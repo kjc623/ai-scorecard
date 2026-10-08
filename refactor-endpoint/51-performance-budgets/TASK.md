@@ -15,7 +15,8 @@ report and in `DECISIONS.md`.
 ## Scope
 
 - **Hook latency**: task 36's benchmark (`SAC_HOOK_BENCH=1`) stays the measurement, run in the
-  reference VM as the console user, exactly as task 36's Done when describes. The budgets are the
+  reference VM as the console user in the device phase, exactly as task 36's On the device
+  describes. The budgets are the
   VM's numbers. For CI, add a Go benchmark of the service-side decision alone, without process
   spawn: frame in, classify, evaluate, frame out, over a loopback pipe or socket with a 4 KB
   prompt.
@@ -34,12 +35,9 @@ report and in `DECISIONS.md`.
     `Get-Counter '\Process(*)\% Processor Time'` and private working set.
   - Prints the average CPU as a share of one core and the peak private working set.
   - Exits 1 above §13's limits.
-  - Run it on the reference VM, running `main`'s release (deployed with
-    `node tools/testbed/deploy.mjs`), with every endpoint collector on for the test tenant (ask the
-    owner to check the Settings page; wait) and both users idle. The script is a measurement tool,
-    not part of the install: copy it in with `invm.ps1 -CopyTo` and run it with
-    `invm.ps1 -Command`. Record the VM's vCPU count and memory
-    with the result.
+  - It runs on the reference VM in the device phase (On the device). For the build, run it
+    once on the PC against a locally started `capture-core` to prove the script works; that
+    number is not the measurement.
 - Don't change any budget. A budget that can't be met is reported, not loosened.
 
 ## Done when
@@ -47,10 +45,15 @@ report and in `DECISIONS.md`.
 - `TestHookDecisionBudget` and `TestOTLPBudget` pass locally and in `node tools/accept.mjs`. The
   report shows each one failing when a 30 ms sleep is injected into the measured path (then
   reverted).
-- Ready to merge (the budget tests and `measure-idle.ps1`). The idle measurement runs on the
-  release that contains every collector, so take it on `main`'s current release; it doesn't need
-  this branch merged first. `measure-idle.ps1` passes on the reference VM. Its output is in the report, and its numbers are
-  in `DECISIONS.md` with the VM's size.
+- `measure-idle.ps1` runs on the PC and prints its two numbers.
+- `node tools/accept.mjs` passes.
+
+## On the device
+
+On the reference VM, running `main`'s release, with every endpoint collector on for the test
+tenant (ask the owner to check the Settings page; wait) and both users idle:
+- `measure-idle.ps1` is a measurement tool, not part of the install: copy it in with
+  `invm.ps1 -CopyTo` and run it with `invm.ps1 -Command`. It passes. Its output is in the report,
+  and its numbers are in `DECISIONS.md` with the VM's vCPU count and memory.
 - Task 36's whole-process benchmark is rerun on the reference VM as the console user
   (`invm.ps1 -AsUser console`), with p99 under 50 ms.
-- `node tools/accept.mjs` passes.

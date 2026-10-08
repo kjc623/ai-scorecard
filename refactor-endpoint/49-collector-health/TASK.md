@@ -50,16 +50,19 @@ tool config shows as degraded there.
 ## Done when
 
 - The device, query-api and dashboard tests pass.
-- Ready to merge. After merge and deploy (`AGENTS.md`), with Claude Code installed and its OTel on
-  for the test tenant (ask the owner to check the Settings page; wait):
-  1. `invm.ps1 -AgentState` shows `tool_config_claude_code` healthy, and the owner confirms the new
-     "Collectors" table on the VM's device view shows it healthy, with every other collector row
-     the VM reports.
-  2. In one `invm.ps1 -Command` script: stop the `ShadowAICapture` service, remove the OTel `env`
-     block from `managed-settings.json`, and start the service again. Stopping first keeps the
-     drift watcher (task 34) from reverting the edit before the service sees it.
-  3. The first health report after the restart shows the row `degraded` with `config_tampered`,
-     before the revert (`invm.ps1 -AgentState`). Ask the owner to confirm that the device view's
-     Collectors table shows the same row and cause; wait.
-  4. Then let it revert, and confirm the file with `invm.ps1 -Command 'Get-Content <managed-settings path>'`.
 - `node tools/accept.mjs` passes.
+
+## On the device
+
+On the reference VM, running `main`'s release, with Claude Code installed and its OTel on
+for the test tenant (ask the owner to check the Settings page; wait):
+1. `invm.ps1 -AgentState` shows `tool_config_claude_code` healthy, and the owner confirms the new
+   "Collectors" table on the VM's device view shows it healthy, with every other collector row
+   the VM reports.
+2. In one `invm.ps1 -Command` script: stop the `ShadowAICapture` service, remove the OTel `env`
+   block from `managed-settings.json`, and start the service again. Stopping first keeps the
+   drift watcher (task 34) from reverting the edit before the service sees it.
+3. The first health report after the restart shows the row `degraded` with `config_tampered`,
+   before the revert (`invm.ps1 -AgentState`). Ask the owner to confirm that the device view's
+   Collectors table shows the same row and cause; wait.
+4. Then let it revert, and confirm the file with `invm.ps1 -Command 'Get-Content <managed-settings path>'`.

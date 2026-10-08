@@ -1,15 +1,16 @@
 # Test environment
 
-Every on-device check in these tasks runs on one Windows 11 virtual machine, enrolled into the
-**pre-prod** environment's test tenant. Pre-prod runs on SaaS: the services on Fly.io and
-PostgreSQL on Supabase (task 00a). The VM is Hyper-V on the owner's PC, Entra-joined and
-Intune-managed, set up the way a customer's device is. The local lab (`localdev/`) is not used.
+Every on-device check in these tasks runs in the device phase (tasks 58–60, `AGENTS.md`), on one
+Windows 11 virtual machine, enrolled into the **pre-prod** environment's test tenant. Pre-prod
+runs on SaaS: the services on Fly.io and PostgreSQL on Supabase (task 58). The VM is Hyper-V on
+the owner's PC, Entra-joined and Intune-managed, set up the way a customer's device is. The local
+lab (`localdev/`) is not used.
 The owner's PC builds nothing for the VM: builds come from CI.
 
 ## How a change reaches the VM
 
-1. The implementing agent finishes the code and its tests on the task branch, and reports **ready
-   to merge**.
+1. The agent finishes the code and its tests on the branch (a fix branch, in the device phase),
+   and reports **ready to merge**.
 2. The owner merges it to `main`. The push runs the deploy workflow, which builds the signed agent
    release, deploys the services and migrates the database in pre-prod.
 3. The agent runs `node tools/testbed/deploy.mjs`. It takes that run's agent release, publishes it
@@ -19,7 +20,7 @@ The owner's PC builds nothing for the VM: builds come from CI.
 
 ## Values
 
-The owner fills these in once (task 00a for the environment rows, the VM checklist below for the
+The owner fills these in once (task 58 for the environment rows, the VM checklist below for the
 rest). Agents read this file and never write a secret into it.
 
 | Name | Value | What it is |
@@ -30,7 +31,7 @@ rest). Agents read this file and never write a secret into it.
 | Supabase project ref | | Pre-prod's Supabase project, which holds its PostgreSQL database |
 | Device hostname | | `SAC_DEVICE_FQDN`: the device edge |
 | Analyst hostname | | `SAC_ANALYST_FQDN`: the dashboard |
-| Test tenant id | | The "Endpoint Test" product tenant (task 00a) |
+| Test tenant id | | The "Endpoint Test" product tenant (task 58) |
 | Tenant file | `%USERPROFILE%\.sac-testbed\ShadowAICapture.tenant.env` | The test tenant's file from its Intune package; holds the deployment key |
 | GitHub repository | | `<org>/<repo>`, for `gh run` |
 | VM name | | The Hyper-V VM name, as `Get-VM` shows it |
@@ -42,7 +43,7 @@ rest). Agents read this file and never write a secret into it.
 | Intune app registration | | Application (client) id of the publishing app registration |
 | Publishing certificate | | Thumbprint of its certificate, in the owner's `Cert:\CurrentUser\My` |
 | Test device group | | Object id of the Entra group containing only the VM |
-| Intune app id | (task 00b fills this in) | The one Win32 app the testbed publishes to |
+| Intune app id | (task 59 fills this in) | The one Win32 app the testbed publishes to |
 
 ## VM checklist (owner, once)
 
@@ -90,7 +91,7 @@ rest). Agents read this file and never write a secret into it.
   - Event delivery is checked on the device side with `invm.ps1 -AgentState`: events emitted,
     spooled, and acknowledged by `/v1/events`. The owner confirms what the dashboard shows.
 - **Intune.**
-  - Change only the Win32 app whose id is in the table above (or create it once, in task 00b).
+  - Change only the Win32 app whose id is in the table above (or create it once, in task 59).
   - Assign it only to the test device group.
   - Change no other Intune or Entra object.
 - **The VM.**

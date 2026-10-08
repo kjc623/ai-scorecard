@@ -45,14 +45,17 @@ When a file or registry value a config writer owns changes, the agent re-applies
 ## Done when
 
 - `cd device/capture-core && go test -race ./toolconfig/` passes.
-- After merge and deploy (`AGENTS.md`), with Claude Code OTel on for the test tenant (ask the
-  owner to check the Settings page; wait):
-  1. With one `invm.ps1 -Command` script, as the VM administrator: delete the agent's
-     `OTEL_EXPORTER_OTLP_ENDPOINT` entry from the managed settings file and save it, then poll the
-     file every 250 ms for 10 s.
-  2. Within 5 s the entry is back. Show the timestamps from the polling output and from the agent
-     log (`C:\ProgramData\ShadowAICapture\state\capture-core.log`, read with `invm.ps1 -Command`).
-  3. `invm.ps1 -AgentState` shows the `tool_config_claude_code` row `tampered` /
-     `config_tampered`, and the owner confirms the same on the dashboard's device view after the
-     next health report.
 - `node tools/accept.mjs` passes.
+
+## On the device
+
+On the reference VM, running `main`'s release, with Claude Code OTel on for the test tenant (ask the
+owner to check the Settings page; wait):
+1. With one `invm.ps1 -Command` script, as the VM administrator: delete the agent's
+   `OTEL_EXPORTER_OTLP_ENDPOINT` entry from the managed settings file and save it, then poll the
+   file every 250 ms for 10 s.
+2. Within 5 s the entry is back. Show the timestamps from the polling output and from the agent
+   log (`C:\ProgramData\ShadowAICapture\state\capture-core.log`, read with `invm.ps1 -Command`).
+3. `invm.ps1 -AgentState` shows the `tool_config_claude_code` row `tampered` /
+   `config_tampered`, and the owner confirms the same on the dashboard's device view after the
+   next health report.

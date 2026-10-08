@@ -66,26 +66,28 @@ state for every location the agent touched. A script proves it by comparing snap
 
 - `cd device/capture-core && go test -race ./cmd/capture-core/ ./toolconfig/` passes.
 - `node device/installer/verify.mjs` passes.
-- Ready to merge. After merge and deploy (`AGENTS.md`) — `main`'s release contains the cleanup —
-  on the reference VM, through Intune end to end:
-  1. Restore the clean checkpoint with `invm.ps1 -RestoreCheckpoint` (no agent installed).
-  2. Copy `snapshot.ps1` in with `invm.ps1 -CopyTo`, and take the "before" snapshot with
-     `invm.ps1 -Command` (as administrator; it reads every loaded user hive, so both signed-in
-     users' Internet Settings are covered). Copy `before.json` back with `invm.ps1 -CopyFrom`.
-  3. Deploy `main`'s release with `node tools/testbed/deploy.mjs`. Ask the owner to enable every
-     endpoint collector, hooks, TLS inspection and Ollama capture for the test tenant on the
-     Settings page; wait until `invm.ps1 -AgentState` shows the new bundle version in force.
-  4. Exercise the features: one `claude -p` prompt run with `invm.ps1 -AsUser console -Command`,
-     one `curl.exe` through the proxy run with `-AsUser second`, so the second user gets a PAC
-     too, and one notification.
-  5. Uninstall through Intune with `node tools/testbed/deploy.mjs --uninstall`. Wait until
-     `invm.ps1 -Command 'Get-Service ShadowAICapture'` reports no such service.
-  6. Take the "after" snapshot the same way, then run
-     `snapshot.ps1 -Compare before.json after.json` on the PC; it exits 0.
-  7. Paste both commands' output, and the VM's `%WINDIR%\Temp\ShadowAICapture-uninstall.log`
-     (read with `invm.ps1 -Command`).
-
-  Afterwards, run `node tools/testbed/deploy.mjs` again, so the app is assigned as required and
-  the VM is enrolled for the next task. The re-enrolled VM may appear as a new device in the test
-  tenant; tell the owner, so they can revoke the old one if they want.
 - `node tools/accept.mjs` passes.
+
+## On the device
+
+On the reference VM, through Intune end to end:
+1. Restore the clean checkpoint with `invm.ps1 -RestoreCheckpoint` (no agent installed).
+2. Copy `snapshot.ps1` in with `invm.ps1 -CopyTo`, and take the "before" snapshot with
+   `invm.ps1 -Command` (as administrator; it reads every loaded user hive, so both signed-in
+   users' Internet Settings are covered). Copy `before.json` back with `invm.ps1 -CopyFrom`.
+3. Deploy `main`'s release with `node tools/testbed/deploy.mjs`. Ask the owner to enable every
+   endpoint collector, hooks, TLS inspection and Ollama capture for the test tenant on the
+   Settings page; wait until `invm.ps1 -AgentState` shows the new bundle version in force.
+4. Exercise the features: one `claude -p` prompt run with `invm.ps1 -AsUser console -Command`,
+   one `curl.exe` through the proxy run with `-AsUser second`, so the second user gets a PAC
+   too, and one notification.
+5. Uninstall through Intune with `node tools/testbed/deploy.mjs --uninstall`. Wait until
+   `invm.ps1 -Command 'Get-Service ShadowAICapture'` reports no such service.
+6. Take the "after" snapshot the same way, then run
+   `snapshot.ps1 -Compare before.json after.json` on the PC; it exits 0.
+7. Paste both commands' output, and the VM's `%WINDIR%\Temp\ShadowAICapture-uninstall.log`
+   (read with `invm.ps1 -Command`).
+
+Afterwards, run `node tools/testbed/deploy.mjs` again, so the app is assigned as required and
+the VM is enrolled for the next task. The re-enrolled VM may appear as a new device in the test
+tenant; tell the owner, so they can revoke the old one if they want.

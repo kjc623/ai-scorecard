@@ -61,17 +61,20 @@ The helper's first job is to show a notification the service asks for.
 
 - `cd device/capture-core && go test -race ./localipc/ ./userhelper/ ./cmd/capture-core/` passes,
   including a test where a client that is not the session's owner is refused for `helper_hello`.
-- Ready to merge. After merge and deploy (`AGENTS.md`):
-  1. `invm.ps1 -Command 'Get-Process capture-core -IncludeUserName | Select Id,SessionId,UserName,Path'`
-     shows a helper running as the console user in the console session, and one running as the
-     second user in the second user's (disconnected) session.
-  2. Stopping that helper (`invm.ps1 -Command 'Stop-Process -Id <helper pid>'`) brings it back
-     within 15 s. Show the new PID.
-  3. Prove `Notify` with the userhelper package's Windows integration test (not with production
-     code added for the purpose).
-     - Build the test binary on the PC
-       (`go test -c -o userhelper.test.exe ./userhelper/`).
-     - Copy it in with `invm.ps1 -CopyTo`, and run it in the VM with `invm.ps1 -Command`. It
-       starts a helper in the console session and shows a toast.
-     - Capture it with `invm.ps1 -Screenshot`.
 - `node tools/accept.mjs` passes.
+
+## On the device
+
+On the reference VM, running `main`'s release:
+1. `invm.ps1 -Command 'Get-Process capture-core -IncludeUserName | Select Id,SessionId,UserName,Path'`
+   shows a helper running as the console user in the console session, and one running as the
+   second user in the second user's (disconnected) session.
+2. Stopping that helper (`invm.ps1 -Command 'Stop-Process -Id <helper pid>'`) brings it back
+   within 15 s. Show the new PID.
+3. Prove `Notify` with the userhelper package's Windows integration test (not with production
+   code added for the purpose).
+   - Build the test binary on the PC
+     (`go test -c -o userhelper.test.exe ./userhelper/`).
+   - Copy it in with `invm.ps1 -CopyTo`, and run it in the VM with `invm.ps1 -Command`. It
+     starts a helper in the console session and shows a toast.
+   - Capture it with `invm.ps1 -Screenshot`.

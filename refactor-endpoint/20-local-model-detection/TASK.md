@@ -1,6 +1,6 @@
 # 20. Local model detection
 
-Needs: on the reference VM, Ollama for Windows installed for the console user and running in their
+Needs, in the device phase (task 60): on the reference VM, Ollama for Windows installed for the console user and running in their
 session, with two models pulled
 (for example `ollama pull llama3.2:1b` and `ollama pull qwen2.5:0.5b`). Optionally LM Studio
 with one downloaded model.
@@ -54,8 +54,11 @@ record per runtime and user with the model names.
 ## Done when
 
 - `cd device/capture-core && go test -race ./inventory/` passes.
-- Ready to merge. After merge and deploy (`AGENTS.md`), with Ollama running and two models pulled:
-  - A `discovery` / `local_model` record for `app:ollama` is emitted, with both model names and
-    the console user's `user_ref`. Show it from the spool log (the agent's `envelope spooled` lines, task 05: `invm.ps1 -Command 'Select-String "envelope spooled" C:\ProgramData\ShadowAICapture\state\capture-core.log | Select -Last 50'`), with the batch acknowledged in `invm.ps1 -AgentState`.
-  - Show `invm.ps1 -AsUser console -Command 'ollama list'` beside it.
 - `node tools/accept.mjs` passes.
+
+## On the device
+
+On the reference VM, running `main`'s release, with Ollama running and two models pulled:
+- A `discovery` / `local_model` record for `app:ollama` is emitted, with both model names and
+  the console user's `user_ref`. Show it from the spool log (the agent's `envelope spooled` lines, task 05: `invm.ps1 -Command 'Select-String "envelope spooled" C:\ProgramData\ShadowAICapture\state\capture-core.log | Select -Last 50'`), with the batch acknowledged in `invm.ps1 -AgentState`.
+- Show `invm.ps1 -AsUser console -Command 'ollama list'` beside it.

@@ -30,9 +30,10 @@ repository; where they differ, `DESIGN.md` wins, and your brief wins over both.
   - no prompt text appears in a log, a health report or an error message.
 - **Vendor facts are checked.**
   - Verify every setting name, file path, event name and hook format against the vendor's current
-    documentation or a real install before relying on it.
-  - Record the version you checked in `DECISIONS.md`.
-  - If the brief's vendor detail turns out wrong, follow what you observed and record it.
+    documentation before relying on it. A real install is checked in the device phase.
+  - Record what you checked in `DECISIONS.md`: the documentation's version or date during the
+    build, the installed version in the device phase.
+  - If the brief's vendor detail turns out wrong, follow what you found and record it.
 - **Unclear means narrowest.** Take the narrowest reading, state the assumption at the top of your
   report, and continue only if it is low-risk; otherwise stop and ask the owner.
 - **Never:**
@@ -47,34 +48,54 @@ repository; where they differ, `DESIGN.md` wins, and your brief wins over both.
   - Never touch the owner's tenant (`11111111-1111-1111-1111-111111111111`).
   - The local lab (`localdev/`) is not used for this work: don't run it, depend on it, or verify
     against it.
-  - Pre-prod exists, so every schema change goes in `services/database/schema.sql` **and** in the
-    next numbered migration in `services/database/migrations/` (see the README there). Seed rows
-    in `ref` tables (collectors, routes, catalog) are schema changes too.
+  - Every schema change goes in `services/database/schema.sql` **and** in the next numbered
+    migration in `services/database/migrations/` (see the README there). The migration must also
+    apply cleanly over the new `schema.sql`, because that is how pre-prod's database is built
+    (task 04). Seed rows in `ref` tables (collectors, routes, catalog) are schema changes too.
   - An envelope change starts in `contracts/`.
   - `node tools/accept.mjs` passes before you report. A gate reported `SKIPPED` was not checked:
     say so.
 
-## Verifying against pre-prod on the reference VM
+## Two phases: build without infrastructure, then verify on the device
 
-On-device checks run on the reference VM in `TESTBED.md`: a Windows 11 Hyper-V VM, Entra-joined and
-Intune-managed, enrolled into pre-prod's test tenant. Read `TESTBED.md`, including its rules,
-before touching the VM, Intune or pre-prod (Fly.io and Supabase).
+Nothing is deployed while the build tasks (01–57) run: there is no pre-prod and no device. A task
+is built and verified on the PC, and the checks that need a device wait for the device phase.
 
-A task runs in two phases.
+### Build phase
 
-1. **Build.**
-   - Implement the scope, and pass the unit and integration tests and `node tools/accept.mjs` on
-     the PC.
-   - Commit on the task branch, then stop and report **ready to merge**: the branch, what will
-     deploy, and the checks you will run afterwards.
-   - The owner merges to `main`. That deploys pre-prod (services, database migration, and the
-     signed agent release).
-2. **Verify.** When the owner says the deploy finished:
-   - Run `node tools/testbed/deploy.mjs`, which takes that run's release to the VM through Intune
-     and waits until it runs.
-   - Run the brief's Done when checks.
-   - If a check fails, fix it on a new branch from `main` (`refactor-endpoint/<folder-name>-fix-N`)
-     and repeat both phases.
+- Implement the scope, and pass the unit and integration tests and `node tools/accept.mjs` on the
+  PC. The brief's "Done when" is the whole finish line.
+- A brief's "On the device" section is not run, not simulated and not ticked. Task 60 runs it.
+- Vendor facts come from the vendor's current documentation (Rules). Where a brief wants a real
+  tool's output (telemetry fixtures, hook input, a file an app writes), the build uses a set
+  written from the documentation, marked `documented`, and the device phase replaces it with a
+  capture.
+- The PC is the owner's Windows machine. Read it only where a brief says so (a registry location,
+  a provider manifest), read-only, and install nothing on it.
+- Commit on the task branch, then stop and report **done**: the branch, what it changes, and the
+  "On the device" section that stays pending.
+- The owner merges when they choose. A merge deploys nothing until pre-prod exists.
+
+### Device phase
+
+Tasks 58–60. Task 58 brings up pre-prod, task 59 the reference VM tooling, and task 60 runs every
+brief's "On the device" section in task order on the reference VM (`TESTBED.md`: a Windows 11
+Hyper-V VM, Entra-joined and Intune-managed, enrolled into pre-prod's test tenant). Read
+`TESTBED.md`, including its rules, before touching the VM, Intune or pre-prod (Fly.io and
+Supabase).
+
+How a change reaches the VM in this phase:
+
+1. The owner merges to `main`. That deploys pre-prod (services, database migration, and the
+   signed agent release).
+2. The agent runs `node tools/testbed/deploy.mjs`, which takes that run's release to the VM
+   through Intune and waits until it runs.
+3. The agent runs the brief's "On the device" section.
+4. If a check fails, or the section calls for code (a capture that differs from the documented
+   fixtures, a spike that calls for a rule, a `Render` change), fix it on a new branch from `main`
+   (`refactor-endpoint/<folder-name>-fix-N`), to the build phase's finish line, then stop and report
+   **ready to merge**: the branch, what will deploy, and the checks you will run afterwards. The
+   owner merges; repeat from step 2.
 
 How each kind of check is done:
 
@@ -106,7 +127,7 @@ How each kind of check is done:
      test secrets included), and what to look for.
   2. Wait for them to confirm.
   3. Capture the result with `invm.ps1 -Screenshot`, and check the device side yourself.
-- **Needs.** A brief's "Needs:" line lists what the owner must have done on the VM (a tool
+- **Needs.** A brief's "Needs" line lists what the owner must have done on the VM (a tool
   installed and signed in as the console user, a Mac). If it is missing, stop and ask; don't fake
   it.
 - **Timing and resources.** One round is a merge, the deploy workflow, and Intune delivery, so
@@ -122,4 +143,4 @@ Report in the session, not in a file:
 3. Assumptions and deviations (also added to `DECISIONS.md`).
 4. Anything undone or blocked, and what would unblock it.
 
-When the task is done, tick it in `README.md`.
+When the task is done, tick its "Built" box in `README.md`; task 60 ticks "Device".

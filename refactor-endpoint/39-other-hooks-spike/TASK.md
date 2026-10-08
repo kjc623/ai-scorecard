@@ -1,6 +1,6 @@
 # 39. Other tools' hooks: spike
 
-Needs: on the reference VM, installed and signed in as the console user: Codex CLI, Copilot CLI,
+Needs, in the device phase (task 60): on the reference VM, installed and signed in as the console user: Codex CLI, Copilot CLI,
 VS Code with GitHub Copilot, and Gemini CLI.
 
 ## Problem
@@ -16,15 +16,15 @@ adapter, or a recorded "not available" with the reason.
 
 ## Scope
 
-- For each tool, check the current docs and the installed version, and test by hand with a script
-  hook on the reference VM (placed with `invm.ps1 -CopyTo`, the tool run with
-  `invm.ps1 -AsUser console -Command` for CLIs or at the console for VS Code, and the result
-  captured with `invm.ps1 -Screenshot`):
+- For each tool, answer from the current docs now, and in the device phase (On the device)
+  confirm on the installed version by hand with a script hook on the reference VM (placed with
+  `invm.ps1 -CopyTo`, the tool run with `invm.ps1 -AsUser console -Command` for CLIs or at the
+  console for VS Code, and the result captured with `invm.ps1 -Screenshot`):
   1. Is there a hook that runs before a prompt is sent?
   2. Can it block, and does the tool show the hook's reason?
   3. Can the hook be declared in a machine-wide, admin-managed location that a user can't
      override or disable?
-- An adapter is built only when all three answers are yes. It then follows task 36's interface
+- An adapter is built only when all three answers are yes in the docs. It then follows task 36's interface
   and task 37's pattern:
   - `capture-core/hooks/<tool>.go`;
   - stdin fixtures under `testdata/<tool>/<version>/`;
@@ -41,16 +41,21 @@ adapter, or a recorded "not available" with the reason.
 - When the answers aren't all yes, nothing is built, and `DECISIONS.md` records which answer
   failed.
 - `DECISIONS.md` gets one entry per tool: version checked, the three answers, and either "adapter
-  built" or "not available: <reason>".
+  built" or "not available: <reason>". The device phase confirms each entry on the installed
+  version; an adapter the device contradicts is removed, and one the docs missed is built, on
+  this task's fix branch.
 
 ## Done when
 
-- `DECISIONS.md` has the four entries.
-- For each adapter built:
-  - its `go test` passes;
-  - after merge and deploy (`AGENTS.md`), with a test-tenant "block `credential`" rule (ask the
-    owner to add it on the Settings page; wait), a prompt with an AWS-key-shaped test string is
-    blocked in that tool with the rule's message, run as the console user
-    (`invm.ps1 -AsUser console -Command` for a CLI, or at the console as an owner step with
-    `invm.ps1 -Screenshot`).
+- `DECISIONS.md` has the four entries, from the documentation.
+- For each adapter built, its `go test` passes.
 - `node tools/accept.mjs` passes.
+
+## On the device
+
+On the reference VM, running `main`'s release:
+- The hand test in Scope, per tool, confirms or corrects its `DECISIONS.md` entry.
+- For each adapter built, with a test-tenant "block `credential`" rule (ask the owner to add it
+  on the Settings page; wait), a prompt with an AWS-key-shaped test string is blocked in that tool
+  with the rule's message, run as the console user (`invm.ps1 -AsUser console -Command` for a CLI,
+  or at the console as an owner step with `invm.ps1 -Screenshot`).

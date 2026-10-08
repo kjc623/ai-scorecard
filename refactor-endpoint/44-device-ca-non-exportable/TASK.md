@@ -48,18 +48,21 @@ Exporting the key fails.
 ## Done when
 
 - `cd device/capture-core && go test -race ./proxy/tlsproxy/` passes on Windows.
-- Ready to merge. After merge and deploy (`AGENTS.md`) — Intune installs the new release over the
-  previous one, so the key migration runs — with TLS inspection on for the test tenant (ask the
-  owner to check the Settings page; wait):
-  1. `invm.ps1 -Command 'certutil -store Root'` lists the device root, and only one Shadow AI
-     Capture root.
-  2. `invm.ps1 -Command 'certutil -csp "Microsoft Software Key Storage Provider" -key'` lists
-     `ShadowAICapture-DeviceRoot`.
-  3. An export attempt fails, with the error pasted into the report. Run `certutil -exportPFX` of
-     the root as SYSTEM, from an `invm.ps1 -Command` script that registers and runs a one-shot
-     scheduled task under `NT AUTHORITY\SYSTEM`, captures its output, then deletes the task.
-  4. A proxied request still succeeds:
-     `invm.ps1 -AsUser console -Command 'curl.exe -s -o NUL -w "%{http_code}" https://api.openai.com/v1/models'`.
-- No key file remains in the state directory. Listing it with `invm.ps1 -Command`
-  (`Get-ChildItem C:\ProgramData\ShadowAICapture\state -Recurse`) shows no device-root key file.
 - `node tools/accept.mjs` passes.
+
+## On the device
+
+On the reference VM, running `main`'s release (its first install minted the key in CNG; the
+migration from a file key is covered by the unit test), with TLS inspection on for the test
+tenant (ask the owner to check the Settings page; wait):
+1. `invm.ps1 -Command 'certutil -store Root'` lists the device root, and only one Shadow AI
+   Capture root.
+2. `invm.ps1 -Command 'certutil -csp "Microsoft Software Key Storage Provider" -key'` lists
+   `ShadowAICapture-DeviceRoot`.
+3. An export attempt fails, with the error pasted into the report. Run `certutil -exportPFX` of
+   the root as SYSTEM, from an `invm.ps1 -Command` script that registers and runs a one-shot
+   scheduled task under `NT AUTHORITY\SYSTEM`, captures its output, then deletes the task.
+4. A proxied request still succeeds:
+   `invm.ps1 -AsUser console -Command 'curl.exe -s -o NUL -w "%{http_code}" https://api.openai.com/v1/models'`.
+5. No key file remains in the state directory. Listing it with `invm.ps1 -Command`
+   (`Get-ChildItem C:\ProgramData\ShadowAICapture\state -Recurse`) shows no device-root key file.

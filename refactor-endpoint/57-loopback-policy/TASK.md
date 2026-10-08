@@ -1,6 +1,6 @@
 # 57. Local model capture in policy
 
-Needs: on the reference VM, Ollama for Windows installed for the console user with two models
+Needs, in the device phase (task 60): on the reference VM, Ollama for Windows installed for the console user with two models
 pulled (the same setup as task 20).
 
 ## Problem
@@ -81,18 +81,23 @@ Turning the setting off restores Ollama's original port and releases the broker'
 
 ## Done when
 
-- Ready to merge. After merge and deploy (`AGENTS.md`), ask the owner to switch the test tenant's
-  Ollama "Local model capture" on, on the Settings page; wait. With no service restart:
-  1. After the next policy poll,
-     `invm.ps1 -Command '[Environment]::GetEnvironmentVariable("OLLAMA_HOST","Machine")'` shows
-     `127.0.0.1:21434`.
-  2. `invm.ps1 -Command 'Get-NetTCPConnection -LocalPort 11434 -State Listen'` shows
-     `capture-core` holding 11434.
-  3. `invm.ps1 -AsUser console -Command 'curl.exe -s http://127.0.0.1:11434/api/generate -d "{\"model\":\"<a pulled model>\",\"prompt\":\"hello\",\"stream\":false}"'`
-     answers. The `loopback_broker` row's `emitted` counter rises, and the spool drains
-     (`invm.ps1 -AgentState`). The owner confirms on the dashboard a `proxy.loopback` event for
-     `app:ollama` in the test tenant, attributed to the console user.
-  4. Ask the owner to switch it off; wait. That restores `OLLAMA_HOST` to its original value within one
-     poll (the same `-Command`). After Ollama restarts, it answers on 11434 directly, with the
-     listener check showing `ollama` and not `capture-core`.
+- The tests in Scope pass: control-api's compose test, the device's `toolconfig` and
+  `proxy/loopback` tests, and the dashboard test for the new row.
 - `node tools/accept.mjs` passes.
+
+## On the device
+
+On the reference VM, running `main`'s release, ask the owner to switch the test tenant's
+Ollama "Local model capture" on, on the Settings page; wait. With no service restart:
+1. After the next policy poll,
+   `invm.ps1 -Command '[Environment]::GetEnvironmentVariable("OLLAMA_HOST","Machine")'` shows
+   `127.0.0.1:21434`.
+2. `invm.ps1 -Command 'Get-NetTCPConnection -LocalPort 11434 -State Listen'` shows
+   `capture-core` holding 11434.
+3. `invm.ps1 -AsUser console -Command 'curl.exe -s http://127.0.0.1:11434/api/generate -d "{\"model\":\"<a pulled model>\",\"prompt\":\"hello\",\"stream\":false}"'`
+   answers. The `loopback_broker` row's `emitted` counter rises, and the spool drains
+   (`invm.ps1 -AgentState`). The owner confirms on the dashboard a `proxy.loopback` event for
+   `app:ollama` in the test tenant, attributed to the console user.
+4. Ask the owner to switch it off; wait. That restores `OLLAMA_HOST` to its original value within one
+   poll (the same `-Command`). After Ollama restarts, it answers on 11434 directly, with the
+   listener check showing `ollama` and not `capture-core`.

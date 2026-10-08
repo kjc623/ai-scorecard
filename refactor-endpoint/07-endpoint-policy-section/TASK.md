@@ -71,11 +71,14 @@ affected collector without a restart.
 - control-api tests cover compose with defaults, with a tenant row and with a tool row, plus both
   PUT routes and their audit rows.
 - The migration proof (task 04) shows an empty diff.
-- Ready to merge. After merge and deploy (`AGENTS.md`):
-  1. Ask the owner to open the test tenant's Settings page and confirm the "Endpoint collectors"
-     card shows the defaults from `DESIGN.md` §5.
-  2. Ask them to switch "Inventory" off, then back on; wait.
-  3. After each change, `invm.ps1 -AgentState` on the VM shows a new policy bundle version in
-     force within one policy poll, without a service restart (the `ShadowAICapture` process start
-     time is unchanged: `invm.ps1 -Command 'Get-Process capture-core | Select Id,StartTime'`).
 - `node tools/accept.mjs` passes.
+
+## On the device
+
+On the reference VM, running `main`'s release:
+1. Ask the owner to open the test tenant's Settings page and confirm the "Endpoint collectors"
+   card shows the defaults from `DESIGN.md` §5.
+2. Ask them to switch "Inventory" off, then back on; wait.
+3. After each change, `invm.ps1 -AgentState` on the VM shows a new policy bundle version in
+   force within one policy poll, without a service restart (the `ShadowAICapture` process start
+   time is unchanged: `invm.ps1 -Command 'Get-Process capture-core | Select Id,StartTime'`).

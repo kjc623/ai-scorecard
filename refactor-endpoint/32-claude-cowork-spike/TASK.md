@@ -1,6 +1,6 @@
 # 32. Claude Cowork spike
 
-Needs: on the reference VM, Claude Desktop installed and signed in as the console user, with
+Needs, in the device phase (task 60): on the reference VM, Claude Desktop installed and signed in as the console user, with
 Cowork available to that account. If Cowork isn't available on Windows, a Mac with it is
 acceptable for the research half; say which was used.
 
@@ -26,7 +26,8 @@ report names the follow-up tasks precisely.
     page, the Claude Desktop enterprise configuration documentation, and any managed-settings or
     MDM keys);
   - Harmonic's OTel announcement (in `PLAN.md` sources) for what they configure.
-- **Try it on a real install**, on the reference VM as the console user:
+- **Try it on a real install**, in the device phase (On the device), on the reference VM as the
+  console user:
   1. Point Cowork's OTel at an `otelcol-contrib` file exporter (as in task 25), copied in with
      `invm.ps1 -CopyTo` and run with `invm.ps1 -AsUser console -Command`.
   2. Run one Cowork task in Claude Desktop at the VM's console, and take an
@@ -35,7 +36,8 @@ report names the follow-up tasks precisely.
   4. If output arrives, save it as fixtures under
      `device/capture-core/otlp/testdata/cowork/<version>/`, with task 25's placeholder rules and
      README.
-- **Answer in `DECISIONS.md`**:
+- **Answer in `DECISIONS.md`**, from the documentation now and confirmed on the install in the
+  device phase:
   - the platforms Cowork runs on;
   - where its OTel settings live;
   - whether an admin-managed location exists that users can't override (Windows registry
@@ -43,11 +45,11 @@ report names the follow-up tasks precisely.
   - the `service.name` and the event names;
   - whether prompt text is included and under which switch;
   - whether the existing Claude Code normalizer (task 26) already accepts the events.
-- **Outcome**, exactly one of these:
+- **Outcome**, decided in the device phase, exactly one of these:
   - **Covered by existing code**: the Claude Code normalizer and config writer already cover
     Cowork, for example because Cowork reads the same managed settings `env`. On the VM, running
-    `main`'s release (deployed with `node tools/testbed/deploy.mjs`), show a Cowork prompt (an owner
-    step at the VM's console) raising the `otel_receiver` row's `emitted` counter and draining
+    `main`'s release, show a Cowork prompt (an owner step at the VM's console) raising the
+    `otel_receiver` row's `emitted` counter and draining
     (`invm.ps1 -AgentState`). The owner confirms on the dashboard a `tool.otel` event for Cowork.
     Then stop.
   - **Needs follow-up**: write in the report the exact follow-up tasks (normalizer, config
@@ -58,5 +60,12 @@ report names the follow-up tasks precisely.
 
 ## Done when
 
-- The outcome and its evidence are in `DECISIONS.md`, and the report quotes it.
-- Any fixtures added have their README, and `node tools/accept.mjs` passes.
+- For the build: the research answers are in `DECISIONS.md`, marked as from the documentation,
+  and the report quotes them.
+- `node tools/accept.mjs` passes.
+
+## On the device
+
+On the reference VM, running `main`'s release, with Claude Desktop and Cowork signed in as the
+console user: run the real-install steps in Scope, confirm or correct the answers in
+`DECISIONS.md`, and record the outcome with its evidence. Any fixtures added have their README.

@@ -1,6 +1,6 @@
 # 17. CLI and package scanner
 
-Needs: on the reference VM, these installed for the console user: `claude` (Claude Code,
+Needs, in the device phase (task 60): on the reference VM, these installed for the console user: `claude` (Claude Code,
 native installer or npm), `codex` (npm), `gemini` (npm, `@google/gemini-cli`) and `copilot`
 (npm, `@github/copilot`).
 
@@ -55,11 +55,14 @@ discovered program.
 ## Done when
 
 - `cd device/capture-core && go test -race ./inventory/` passes.
-- Ready to merge. After merge and deploy (`AGENTS.md`):
-  - `app:claude_code`, `app:codex`, `app:gemini_cli` and `app:copilot_cli` arrive as
-    `discovery` / `cli_installed`, each with the console user's `user_ref` and the version the
-    tool reports for itself. Show them from the spool log (the agent's `envelope spooled` lines, task 05: `invm.ps1 -Command 'Select-String "envelope spooled" C:\ProgramData\ShadowAICapture\state\capture-core.log | Select -Last 50'`), with the batch acknowledged in `invm.ps1 -AgentState`.
-  - Compare against
-    `invm.ps1 -AsUser console -Command 'claude --version; codex --version; gemini --version; copilot --version'`,
-    run in the console user's session (the agent never runs them), and show both side by side.
 - `node tools/accept.mjs` passes.
+
+## On the device
+
+On the reference VM, running `main`'s release:
+- `app:claude_code`, `app:codex`, `app:gemini_cli` and `app:copilot_cli` arrive as
+  `discovery` / `cli_installed`, each with the console user's `user_ref` and the version the
+  tool reports for itself. Show them from the spool log (the agent's `envelope spooled` lines, task 05: `invm.ps1 -Command 'Select-String "envelope spooled" C:\ProgramData\ShadowAICapture\state\capture-core.log | Select -Last 50'`), with the batch acknowledged in `invm.ps1 -AgentState`.
+- Compare against
+  `invm.ps1 -AsUser console -Command 'claude --version; codex --version; gemini --version; copilot --version'`,
+  run in the console user's session (the agent never runs them), and show both side by side.

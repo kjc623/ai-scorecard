@@ -31,7 +31,8 @@ TLS inspection breaks things, so it needs ways to step out of the way:
 - **Unparseable pass-through**: a body that no parser handles, or that is over the body cap, is
   forwarded unchanged, and the event is `confidence: degraded`. Confirm the existing behaviour
   with a test, and change it only if it holds or rewrites the body.
-- **QUIC**: follow task 43's note in `DECISIONS.md`.
+- **QUIC**: task 43's note in `DECISIONS.md` decides this, and task 43 runs in the device phase,
+  so build nothing for QUIC now. In the device phase, follow the note on this task's fix branch:
   - If it found an app falls back to TCP only when UDP 443 is blocked: while interception is on,
     the agent adds one Windows Firewall rule per such app executable (outbound UDP 443, block),
     named `ShadowAICapture QUIC <app_key>`, through the `INetFwPolicy2` COM API with go-ole
@@ -62,19 +63,23 @@ TLS inspection breaks things, so it needs ways to step out of the way:
 
 - `cd device/capture-core && go test -race ./proxy/...` passes, and the control-api and dashboard
   tests pass.
-- Ready to merge. After merge and deploy (`AGENTS.md`), with TLS inspection on for the test
-  tenant (ask the owner to check the Settings page; wait):
-  1. If task 43 called for the QUIC rule:
-     `invm.ps1 -Command 'Get-NetFirewallRule -DisplayName "ShadowAICapture QUIC *" | Get-NetFirewallApplicationFilter'`
-     lists one rule per app executable. If it didn't, the same command lists none.
-  2. Ask the owner to trip the `proxy.tls` kill switch on the Settings page; wait. The next Claude
-     Desktop request, sent by the owner at the VM's console, goes direct within one policy poll:
-     - the `egress_proxy` row shows `killed` (`invm.ps1 -AgentState`), and the owner confirms the
-       same on the dashboard's device view;
-     - the `blind_tunnelled` count rises, read before and after with `invm.ps1 -AgentState`.
-  3. Ask the owner to clear it; interception resumes (`egress_proxy` `healthy`).
-  4. Ask the owner to turn TLS inspection off; within one poll that removes the PAC and root within one poll, checked with the same
-     `invm.ps1` commands as task 08, and removes the QUIC rules (the `Get-NetFirewallRule` command
-     above lists none).
-  5. Record the times.
 - `node tools/accept.mjs` passes.
+
+## On the device
+
+On the reference VM, running `main`'s release, with TLS inspection on for the test
+tenant (ask the owner to check the Settings page; wait), after task 43's note and any QUIC fix
+branch it called for:
+1. If task 43 called for the QUIC rule:
+   `invm.ps1 -Command 'Get-NetFirewallRule -DisplayName "ShadowAICapture QUIC *" | Get-NetFirewallApplicationFilter'`
+   lists one rule per app executable. If it didn't, the same command lists none.
+2. Ask the owner to trip the `proxy.tls` kill switch on the Settings page; wait. The next Claude
+   Desktop request, sent by the owner at the VM's console, goes direct within one policy poll:
+   - the `egress_proxy` row shows `killed` (`invm.ps1 -AgentState`), and the owner confirms the
+     same on the dashboard's device view;
+   - the `blind_tunnelled` count rises, read before and after with `invm.ps1 -AgentState`.
+3. Ask the owner to clear it; interception resumes (`egress_proxy` `healthy`).
+4. Ask the owner to turn TLS inspection off; within one poll that removes the PAC and root within one poll, checked with the same
+   `invm.ps1` commands as task 08, and removes the QUIC rules (the `Get-NetFirewallRule` command
+   above lists none).
+5. Record the times.

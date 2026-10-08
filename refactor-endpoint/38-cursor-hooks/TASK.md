@@ -1,6 +1,6 @@
 # 38. Cursor hooks
 
-Needs: Cursor installed on the reference VM and signed in as the console user.
+Needs, in the device phase (task 60): Cursor installed on the reference VM and signed in as the console user.
 
 ## Problem
 
@@ -27,9 +27,9 @@ works, and is recorded.
     `tool_name`, `tool_input` or their current names);
   - the response shape (for example `{"continue": false, "user_message": ...}` or
     `{"permission": "deny", ...}`);
-  - whether a block from each event stops the action in practice. Test it before writing any
-    agent code, with a hand-written script hook placed in the VM with `invm.ps1 -CopyTo` and
-    `invm.ps1 -Command`, and Cursor used at the VM's console (`invm.ps1 -Screenshot`).
+  - whether a block from each event stops the action in practice. The documentation answers
+    this for the build; the device phase tests it by hand (On the device) before the agent's
+    own hook is exercised, and corrects `canEnforce` and `DECISIONS.md` if it differs.
 - **Adapter** (`capture-core/hooks/cursor.go`), using task 36's interface:
   - `beforeSubmitPrompt` sends `prompt` as `prompt_text`, with the conversation id as
     `session_id`.
@@ -57,17 +57,24 @@ works, and is recorded.
 ## Done when
 
 - `cd device/capture-core && go test -race ./hooks/ ./toolconfig/` passes.
-- Ready to merge. After merge and deploy (`AGENTS.md`), with a test-tenant rule "block
-  `credential`" (ask the owner to add it on the Settings page; wait for one policy poll):
-  1. `invm.ps1 -Command 'Get-Content <enterprise hooks.json path>'` shows the agent's entries
-     beside any customer entries.
-  2. In Cursor's chat at the VM's console (an owner step), a prompt containing an AWS-key-shaped test string
-     either is blocked with the rule's message, or (if verification found blocks not honoured)
-     goes through and is recorded as `logged` with the rule id. Capture Cursor with
-     `invm.ps1 -Screenshot`.
-  3. The `hook_relay` row's `emitted` counter rises and the spool drains (`invm.ps1 -AgentState`).
-     The owner confirms either outcome on the dashboard as a `tool.hook` event for `app:cursor`,
-     attributed to the console user.
 - `DECISIONS.md` has the verified file path, formats and block behaviour for both events, with
   the Cursor version.
 - `node tools/accept.mjs` passes.
+
+## On the device
+
+On the reference VM, running `main`'s release, with a test-tenant rule "block
+`credential`" (ask the owner to add it on the Settings page; wait for one policy poll):
+0. First, with a hand-written script hook placed in the VM with `invm.ps1 -CopyTo` and
+   `invm.ps1 -Command`, and Cursor used at the VM's console (`invm.ps1 -Screenshot`), confirm
+   whether a block from each event stops the action. Fix `canEnforce` on this task's fix
+   branch if the installed version differs from `DECISIONS.md`.
+1. `invm.ps1 -Command 'Get-Content <enterprise hooks.json path>'` shows the agent's entries
+   beside any customer entries.
+2. In Cursor's chat at the VM's console (an owner step), a prompt containing an AWS-key-shaped test string
+   either is blocked with the rule's message, or (if verification found blocks not honoured)
+   goes through and is recorded as `logged` with the rule id. Capture Cursor with
+   `invm.ps1 -Screenshot`.
+3. The `hook_relay` row's `emitted` counter rises and the spool drains (`invm.ps1 -AgentState`).
+   The owner confirms either outcome on the dashboard as a `tool.hook` event for `app:cursor`,
+   attributed to the console user.

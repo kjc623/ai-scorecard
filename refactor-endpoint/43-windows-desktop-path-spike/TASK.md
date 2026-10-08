@@ -1,6 +1,9 @@
 # 43. Windows desktop path spike
 
-Needs: Claude Desktop and ChatGPT Desktop installed on the reference VM and signed in as the
+This task has no build step: it runs in the device phase (task 60), before task 45's capture
+and task 47's QUIC decision.
+
+Needs, in the device phase (task 60): Claude Desktop and ChatGPT Desktop installed on the reference VM and signed in as the
 console user.
 
 ## Problem

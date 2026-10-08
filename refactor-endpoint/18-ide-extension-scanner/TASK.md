@@ -1,6 +1,6 @@
 # 18. IDE extension scanner
 
-Needs: on the reference VM, VS Code with the GitHub Copilot (and Copilot Chat), Claude Code and
+Needs, in the device phase (task 60): on the reference VM, VS Code with the GitHub Copilot (and Copilot Chat), Claude Code and
 Continue extensions installed for the console user. Cursor (installed for task 16) also has at
 least one AI extension.
 
@@ -28,7 +28,9 @@ for every user profile, with their versions and the IDE they belong to. It emits
   | `app:windsurf` | `%USERPROFILE%\.windsurf\extensions\extensions.json` | as VS Code |
   | `app:jetbrains` | `%APPDATA%\JetBrains\<Product><Version>\plugins\<plugin>\lib\*.jar` → `META-INF/plugin.xml` | `<id>`, `<version>` |
 
-  - Verify each location on a real install and record the versions checked in `DECISIONS.md`. If
+  - Verify each location against the IDE's documentation and on the PC where the IDE is
+    installed, and record the versions checked in `DECISIONS.md`; the device phase confirms them
+    on the reference VM. If
     an `extensions.json` is absent, fall back to the folder names `<publisher>.<name>-<version>`.
   - Read JetBrains `plugin.xml` from inside the jar with `archive/zip`, with a 1 MiB cap per
     entry.
@@ -42,10 +44,13 @@ for every user profile, with their versions and the IDE they belong to. It emits
 ## Done when
 
 - `cd device/capture-core && go test -race ./inventory/` passes.
-- Ready to merge. After merge and deploy (`AGENTS.md`):
-  - `app:github_copilot`, `app:claude_code_vscode` and `app:continue` arrive as
-    `discovery` / `ide_extension`, with `host_app` `app:vscode` and the console user's `user_ref`.
-    Show them from the spool log (the agent's `envelope spooled` lines, task 05: `invm.ps1 -Command 'Select-String "envelope spooled" C:\ProgramData\ShadowAICapture\state\capture-core.log | Select -Last 50'`), with the batch acknowledged in `invm.ps1 -AgentState`.
-  - Their versions match `invm.ps1 -AsUser console -Command 'code --list-extensions --show-versions'`.
-    Show both side by side.
 - `node tools/accept.mjs` passes.
+
+## On the device
+
+On the reference VM, running `main`'s release:
+- `app:github_copilot`, `app:claude_code_vscode` and `app:continue` arrive as
+  `discovery` / `ide_extension`, with `host_app` `app:vscode` and the console user's `user_ref`.
+  Show them from the spool log (the agent's `envelope spooled` lines, task 05: `invm.ps1 -Command 'Select-String "envelope spooled" C:\ProgramData\ShadowAICapture\state\capture-core.log | Select -Last 50'`), with the batch acknowledged in `invm.ps1 -AgentState`.
+- Their versions match `invm.ps1 -AsUser console -Command 'code --list-extensions --show-versions'`.
+  Show both side by side.

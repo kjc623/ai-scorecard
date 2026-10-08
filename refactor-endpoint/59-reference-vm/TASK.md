@@ -1,16 +1,16 @@
-# 00b. Reference VM tooling
+# 59. Reference VM tooling
 
 Needs:
-- task 00a finished;
+- task 58 finished;
 - the owner has completed the VM checklist in `refactor-endpoint/TESTBED.md` and filled in its
   values;
 - the owner's `gh` CLI is signed in on the PC with read access to the repository's Actions.
 
 ## Problem
 
-Every later task checks its work on the reference VM (`TESTBED.md`): a Hyper-V VM, Entra-joined
-and Intune-managed. It enrols into pre-prod's test tenant and receives the agent the way a customer
-device does, through Intune.
+Task 60 checks every build task's work on the reference VM (`TESTBED.md`): a Hyper-V VM,
+Entra-joined and Intune-managed. It enrols into pre-prod's test tenant and receives the agent the
+way a customer device does, through Intune.
 
 Builds come from CI. A push to `main` runs `.github/workflows/deploy.yml`:
 - it builds the signed agent release (artifact `agent-release`, version `1.0.<run number>`);

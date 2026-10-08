@@ -50,19 +50,22 @@ from what the telemetry claims.
 ## Done when
 
 - `cd device/capture-core && go test -race ./otlp/...` passes.
-- After merge and deploy (`AGENTS.md`):
-  1. On the PC, build a small Windows program outside the repository that uses the official
-     OpenTelemetry Go SDK. It emits one `chat` span with `gen_ai.*` attributes and a user message
-     to `http://127.0.0.1:47318`, with the token taken from its environment.
-  2. Copy it in with `invm.ps1 -CopyTo`.
-  3. Read the token with `invm.ps1 -Command` (don't print it in the report), and run the program
-     as the console user with `invm.ps1 -AsUser console -Command`, passing the token in the
-     environment.
-  4. The `otel_receiver` row's `emitted` counter rises by two, and the spool drains with the
-     batch acknowledged (`invm.ps1 -AgentState`).
-  5. The owner confirms on the dashboard (event list, test tenant): an `agent_activity` /
-     `model_request` and a `tool.otel` prompt event, with `tool_fingerprint`
-     `exe:<hash of the program's name>` (shown as "Unrecognised tool"). Its `user_ref` is the one
-     derived from the console user's UPN, or its `subject_name` is that UPN if device identity is
-     clear.
 - `node tools/accept.mjs` passes.
+
+## On the device
+
+On the reference VM, running `main`'s release:
+1. On the PC, build a small Windows program outside the repository that uses the official
+   OpenTelemetry Go SDK. It emits one `chat` span with `gen_ai.*` attributes and a user message
+   to `http://127.0.0.1:47318`, with the token taken from its environment.
+2. Copy it in with `invm.ps1 -CopyTo`.
+3. Read the token with `invm.ps1 -Command` (don't print it in the report), and run the program
+   as the console user with `invm.ps1 -AsUser console -Command`, passing the token in the
+   environment.
+4. The `otel_receiver` row's `emitted` counter rises by two, and the spool drains with the
+   batch acknowledged (`invm.ps1 -AgentState`).
+5. The owner confirms on the dashboard (event list, test tenant): an `agent_activity` /
+   `model_request` and a `tool.otel` prompt event, with `tool_fingerprint`
+   `exe:<hash of the program's name>` (shown as "Unrecognised tool"). Its `user_ref` is the one
+   derived from the console user's UPN, or its `subject_name` is that UPN if device identity is
+   clear.
