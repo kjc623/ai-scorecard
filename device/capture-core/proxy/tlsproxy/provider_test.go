@@ -585,6 +585,101 @@ func TestTLSPinnedClientExclusionLadder(t *testing.T) {
 	}
 }
 
+// A tool covered by an enabled native collector is blind-tunnelled even to a destination the bundle
+// intercepts, so its prompts are not recorded twice; any other client of that destination is
+// decrypted, and so is the tool once its native collector is switched off.
+func TestTLSNativelyCoveredToolIsBlindTunnelled(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+	upPort := upstream.Listener.Addr().(*net.TCPAddr).Port
+	target := fmt.Sprintf("127.0.0.1:%d", upPort)
+
+	var mu sync.Mutex
+	process := "Claude.exe"
+	setProcess := func(name string) {
+		mu.Lock()
+		process = name
+		mu.Unlock()
+	}
+	var looked []string
+	bundle := bundleIntercepting(upPort)
+	bundle.Endpoint = policy.EndpointPolicy{
+		OTel:  policy.EndpointOTel{Enabled: true, HTTPListen: "127.0.0.1:47318", GRPCListen: "127.0.0.1:47317"},
+		Tools: map[string]policy.EndpointTool{"claude_code": {OTel: true}},
+	}
+	var bmu sync.Mutex
+	pipe := &fakePipeline{mode: protocol.ModeM1}
+	p := newProviderForTest(t, Config{
+		Listen: "127.0.0.1:0",
+		Bundles: func() *policy.Bundle {
+			bmu.Lock()
+			defer bmu.Unlock()
+			return bundle
+		},
+		Pipeline:      pipe,
+		UpstreamRoots: upstreamPool(upstream), CanaryHost: "127.0.0.1", CanaryPort: upPort,
+		Process: func(net.Conn) string {
+			mu.Lock()
+			defer mu.Unlock()
+			return process
+		},
+		AppByExe: func(base string) (string, bool) {
+			mu.Lock()
+			looked = append(looked, base)
+			mu.Unlock()
+			if base == "claude.exe" {
+				return "claude_code", true
+			}
+			return "", false
+		},
+	})
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	tunnelled := func() uint64 { return p.Counters().Cumulative()[protocol.CounterBlindTunnelled] }
+	before := tunnelled()
+
+	// Claude Code, with its OTel export on: the client sees the upstream's own certificate.
+	conn, _ := dialThroughProxy(t, p.ListenAddr(), target, &tls.Config{ServerName: "127.0.0.1", RootCAs: upstreamPool(upstream)})
+	if _, got := postThroughTunnel(t, conn, "127.0.0.1", `{"messages":[{"role":"user","content":"hi"}]}`); !strings.Contains(got, `"ok":true`) {
+		t.Fatalf("response = %q", got)
+	}
+	conn.Close()
+	if got := tunnelled() - before; got != 1 {
+		t.Fatalf("blind_tunnelled rose by %d, want 1", got)
+	}
+	if len(pipe.observations()) != 0 {
+		t.Fatal("a natively covered tool's request was decrypted and observed")
+	}
+	mu.Lock()
+	if len(looked) == 0 || looked[len(looked)-1] != "claude.exe" {
+		t.Fatalf("looked up %v, want the lower-case image name", looked)
+	}
+	mu.Unlock()
+
+	// Another process to the same destination is decrypted.
+	setProcess("python.exe")
+	conn, _ = dialThroughProxy(t, p.ListenAddr(), target, &tls.Config{ServerName: "127.0.0.1", RootCAs: p.CA().Pool()})
+	postThroughTunnel(t, conn, "127.0.0.1", `{"messages":[{"role":"user","content":"hi"}]}`)
+	conn.Close()
+	waitFor(t, 2*time.Second, "the observation", func() bool { return len(pipe.observations()) == 1 })
+
+	// Claude Code with its OTel export switched off is decrypted too.
+	setProcess("claude.exe")
+	bmu.Lock()
+	bundle.Endpoint.Tools["claude_code"] = policy.EndpointTool{OTel: false}
+	bmu.Unlock()
+	conn, _ = dialThroughProxy(t, p.ListenAddr(), target, &tls.Config{ServerName: "127.0.0.1", RootCAs: p.CA().Pool()})
+	postThroughTunnel(t, conn, "127.0.0.1", `{"messages":[{"role":"user","content":"hi"}]}`)
+	conn.Close()
+	waitFor(t, 2*time.Second, "the observation", func() bool { return len(pipe.observations()) == 2 })
+	if got := tunnelled() - before; got != 1 {
+		t.Fatalf("blind_tunnelled rose by %d, want 1", got)
+	}
+}
+
 // fakeProcessTable stands in for the operating system's connection owners: each client connection,
 // by its local address, belongs to a process run by a person.
 type fakeProcessTable struct {

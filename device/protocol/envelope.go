@@ -161,6 +161,8 @@ const (
 	CollectorDesktopProxy     Collector = "desktop_proxy"
 	CollectorOTelReceiver     Collector = "otel_receiver"
 	CollectorUserHelper       Collector = "user_helper"
+	// CollectorToolConfigClaudeCode writes Claude Code's managed settings; it emits nothing itself.
+	CollectorToolConfigClaudeCode Collector = "tool_config_claude_code"
 )
 
 // Valid reports whether the collector is in the closed set. control-api refuses a whole health
@@ -169,7 +171,8 @@ func (c Collector) Valid() bool {
 	switch c {
 	case CollectorEgressProxy, CollectorLoopbackBroker, CollectorCLIShim,
 		CollectorProcessDetector, CollectorClassifierHost, CollectorCaptureExtension,
-		CollectorDesktopProxy, CollectorOTelReceiver, CollectorUserHelper:
+		CollectorDesktopProxy, CollectorOTelReceiver, CollectorUserHelper,
+		CollectorToolConfigClaudeCode:
 		return true
 	default:
 		return false
@@ -338,6 +341,12 @@ const (
 	// Supervised components. A child process that exited more often than its restart budget allows
 	// is left stopped until the budget allows another start.
 	DetailComponentCrashLoop Detail = "component_crash_loop"
+
+	// Tool configuration. The tool is not installed, the platform has no managed location for it
+	// yet, or the agent could not write the configuration it manages.
+	DetailToolNotInstalled       Detail = "tool_not_installed"
+	DetailToolVersionUnsupported Detail = "tool_version_unsupported"
+	DetailConfigWriteFailed      Detail = "config_write_failed"
 )
 
 // AllDetails is the closed vocabulary, for validation and for a coverage report that needs to
@@ -360,6 +369,7 @@ var AllDetails = [...]Detail{
 	DetailShimProfileMissing, DetailShimCABundleUnreadable, DetailShimNotInherited,
 	DetailIdentityUnresolved, DetailDisabledByPolicy,
 	DetailHelperUnavailable, DetailComponentCrashLoop,
+	DetailToolNotInstalled, DetailToolVersionUnsupported, DetailConfigWriteFailed,
 }
 
 // Valid reports whether the detail is in the closed vocabulary. An empty detail is valid: a

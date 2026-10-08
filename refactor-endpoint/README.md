@@ -57,7 +57,7 @@ The Plan column gives the plan's task id. "Built" is ticked when the task's "Don
 | 24 | [OTLP sender attribution](24-otlp-attribution/TASK.md) | E15 | 09, 23 | A second local Windows account | [x] | [ ] |
 | 25 | [Claude Code telemetry fixtures](25-claude-code-otel-fixtures/TASK.md) | E16 | 23 | Claude Code signed in | [x] | [ ] |
 | 26 | [Claude Code normalizer](26-claude-code-normalizer/TASK.md) | E17 | 25 | | [x] | [ ] |
-| 27 | [Claude Code config writer](27-claude-code-config-writer/TASK.md) | E18 | 26 | Claude Code signed in | [ ] | [ ] |
+| 27 | [Claude Code config writer](27-claude-code-config-writer/TASK.md) | E18 | 26 | Claude Code signed in | [x] | [ ] |
 | 28 | [Codex fixtures and normalizer](28-codex-otel-normalizer/TASK.md) | E19 | 27 | Codex CLI signed in | [ ] | [ ] |
 | 29 | [Codex config writer](29-codex-config-writer/TASK.md) | E19 | 28 | Codex CLI signed in | [ ] | [ ] |
 | 30 | [Copilot fixtures and normalizer](30-copilot-otel-normalizer/TASK.md) | E20 | 27 | VS Code with Copilot, Copilot CLI, a Copilot licence | [ ] | [ ] |
