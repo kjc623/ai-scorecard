@@ -32,6 +32,7 @@ function populated(overrides = {}) {
     ],
     devices: [{ device_id: 'd-1', hostname: 'LAPTOP-1', collection_mode: 'm2', last_seen_at: '2026-10-01T09:00:00Z' }],
     endpoint: endpointDefaults(),
+    tls_inspection: false,
     ...overrides,
   };
 }
@@ -301,6 +302,68 @@ test('endpoint collectors: a refused write is said in the card, and settings the
   assert.equal(missing.requests.filter((r) => r.method === 'PUT').length, 0, 'nothing is written over settings that were not read');
 });
 
+// ---------------------------------------------------------------------------------------------
+// TLS inspection
+// ---------------------------------------------------------------------------------------------
+
+/** The TLS inspection card of a rendered page. */
+function tlsCard(page) {
+  const start = page.indexOf('<h3>TLS inspection</h3>');
+  assert.ok(start >= 0, 'the page has a TLS inspection card');
+  return page.slice(start, page.indexOf('</section>', start));
+}
+
+test('TLS inspection: the switch shows off by default, with what turning it on installs', async () => {
+  const { html } = await loaded({ [GET]: () => ({ status: 200, body: populated() }) });
+  const card = tlsCard(html());
+  assert.equal(pressed(card, ' data-action="tls-inspection"'), 'off');
+  assert.match(card, /aria-label="TLS inspection"/);
+  assert.match(card, /installs each device's own root certificate in its trust store/);
+  assert.match(card, /local proxy/);
+});
+
+test('TLS inspection: switching it on sends the setting, and the page re-reads', async () => {
+  let body = populated();
+  const { controller, requests, html } = await loaded({
+    [GET]: () => ({ status: 200, body }),
+    'PUT /admin/v1/settings/tls-inspection': (spec) => { body = { ...body, tls_inspection: spec.body.enabled }; return { status: 204 }; },
+  });
+  await controller.act({ action: 'tls-inspection', value: 'on' });
+  const puts = requests.filter((r) => r.method === 'PUT');
+  assert.equal(puts.length, 1);
+  assert.equal(puts[0].path, '/admin/v1/settings/tls-inspection');
+  assert.deepEqual(puts[0].body, { enabled: true });
+  assert.equal(requests.at(-1).method, 'GET', 'the page re-reads after the write');
+  assert.equal(controller.state.data.tls_inspection, true);
+  assert.equal(pressed(tlsCard(html()), ' data-action="tls-inspection"'), 'on');
+  // The switch already in that position sends nothing; a value that is not on or off sends nothing.
+  await controller.act({ action: 'tls-inspection', value: 'on' });
+  await controller.act({ action: 'tls-inspection', value: 'maybe' });
+  assert.equal(requests.filter((r) => r.method === 'PUT').length, 1);
+  await controller.act({ action: 'tls-inspection', value: 'off' });
+  assert.deepEqual(requests.filter((r) => r.method === 'PUT').at(-1).body, { enabled: false });
+  assert.equal(controller.state.data.tls_inspection, false);
+});
+
+test('TLS inspection: a refused write is said in the card, and a setting the server did not send is not reported', async () => {
+  const { controller, html } = await loaded({
+    [GET]: () => ({ status: 200, body: populated() }),
+    'PUT /admin/v1/settings/tls-inspection': () => ({ status: 400, body: { error: { code: 'invalid_request', message: 'enabled is required' } } }),
+  });
+  await controller.act({ action: 'tls-inspection', value: 'on' });
+  const card = tlsCard(html());
+  assert.match(card, /Not changed\./);
+  assert.match(card, /enabled is required/);
+  assert.equal(controller.state.data.tls_inspection, false);
+
+  const { tls_inspection: _drop, ...without } = populated();
+  const missing = await loaded({ [GET]: () => ({ status: 200, body: without }) });
+  assert.match(tlsCard(missing.html()), /not reported/);
+  assert.doesNotMatch(tlsCard(missing.html()), /data-action="tls-inspection"/);
+  await missing.controller.act({ action: 'tls-inspection', value: 'on' });
+  assert.equal(missing.requests.filter((r) => r.method === 'PUT').length, 0, 'nothing is written over a setting that was not read');
+});
+
 test('every string from the API is escaped', async () => {
   const body = populated();
   body.tools[0].display_name = '<img src=x onerror=alert(1)>';
@@ -347,6 +410,7 @@ test('an absent count is null after normalising, never 0', () => {
   assert.equal(data.content_search, 'disabled');
   assert.deepEqual(data.scope_overrides, {});
   assert.equal(data.endpoint, null, 'endpoint settings the server did not send are null, never all off');
+  assert.equal(data.tls_inspection, null, 'a TLS inspection setting the server did not send is null, never off');
   const partial = normaliseSettings({ endpoint: { inventory: false, tools: { cursor: { hooks: true } } } });
   assert.equal(partial.endpoint.inventory, false);
   assert.equal(partial.endpoint.flows, null);

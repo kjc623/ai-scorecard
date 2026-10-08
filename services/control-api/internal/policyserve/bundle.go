@@ -29,8 +29,11 @@ type Bundle struct {
 }
 
 // Interception is the decryption scope. The per-device root CA is deliberately absent: the device
-// generates its own and the server never holds it.
+// generates its own and the server never holds it. Enabled is the tenant's TLS inspection setting:
+// without it the device runs no proxy, shim environment or desktop-app PAC and trusts no root of its
+// own, whatever the other fields say.
 type Interception struct {
+	Enabled     bool     `json:"enabled"`
 	SeedHosts   []string `json:"seed_hosts,omitempty"`
 	Ports       []int    `json:"ports,omitempty"`
 	ProxyListen string   `json:"proxy_listen,omitempty"`

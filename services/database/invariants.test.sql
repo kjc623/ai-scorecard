@@ -2732,6 +2732,59 @@ RESET ROLE;
 
 
 -- =====================================================================================
+-- T78  TLS inspection is off unless a tenant turns it on
+-- =====================================================================================
+
+SET ROLE sac_control;
+SET app.tenant_id = '11111111-1111-7111-8111-111111111111';
+
+DO $$
+DECLARE
+  n int;
+  v boolean;
+BEGIN
+  -- Tenant A was created without the setting: it is off.
+  SELECT tls_inspection INTO v FROM ops.tenant;
+  IF v IS DISTINCT FROM false THEN
+    RAISE EXCEPTION 'FAIL T78 a tenant created without the setting has tls_inspection %, want false', v;
+  END IF;
+  UPDATE ops.tenant SET tls_inspection = true
+   WHERE tenant_id = '11111111-1111-7111-8111-111111111111';
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN
+    RAISE EXCEPTION 'FAIL T78 control-api could not turn TLS inspection on for its tenant';
+  END IF;
+  UPDATE ops.tenant SET tls_inspection = true
+   WHERE tenant_id = '22222222-2222-7222-8222-222222222222';
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 0 THEN
+    RAISE EXCEPTION 'FAIL T78 tenant A turned TLS inspection on for tenant B';
+  END IF;
+  BEGIN
+    UPDATE ops.tenant SET tls_inspection = NULL
+     WHERE tenant_id = '11111111-1111-7111-8111-111111111111';
+    RAISE EXCEPTION 'FAIL T78 tls_inspection accepted NULL';
+  EXCEPTION WHEN not_null_violation THEN NULL;
+  END;
+  UPDATE ops.tenant SET tls_inspection = false
+   WHERE tenant_id = '11111111-1111-7111-8111-111111111111';
+  RAISE NOTICE 'PASS T78 TLS inspection defaults off, and control-api switches it for its own tenant only';
+END $$;
+
+RESET ROLE;
+
+DO $$
+BEGIN
+  IF (SELECT count(*) FROM ops.tenant WHERE tls_inspection) <> 0 THEN
+    RAISE EXCEPTION 'FAIL T78 a tenant has TLS inspection on without anyone turning it on';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM ref.collector WHERE collector_code = 'desktop_proxy' AND component = 'capture_core') THEN
+    RAISE EXCEPTION 'FAIL T78 the desktop_proxy collector is missing, so a device reporting it would be refused';
+  END IF;
+  RAISE NOTICE 'PASS T78 no tenant intercepts TLS by default, and the desktop-app PAC has its collector';
+END $$;
+
+-- =====================================================================================
 -- Report
 -- =====================================================================================
 

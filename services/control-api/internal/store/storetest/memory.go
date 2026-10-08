@@ -48,6 +48,7 @@ type Memory struct {
 	scopeOverrides  map[string]map[string]string
 	retention       map[string]map[string]int
 	contentSearch   map[string]string
+	tlsInspection   map[string]bool
 	toolState       map[string]map[string]string
 	catalogueTools  []store.ToolDecision
 	deviceModes     map[string]string
@@ -80,12 +81,13 @@ func New() *Memory {
 		scopeOverrides:    map[string]map[string]string{},
 		retention:         map[string]map[string]int{},
 		contentSearch:     map[string]string{},
+		tlsInspection:     map[string]bool{},
 		toolState:         map[string]map[string]string{},
 		deviceModes:       map[string]string{},
 		endpoint:          map[string]*store.EndpointCollectors{},
 		endpointTools:     map[string]map[string]store.EndpointTool{},
 	}
-	for _, c := range []string{"capture_extension", "egress_proxy", "loopback_broker", "cli_shim", "process_detector", "classifier_host"} {
+	for _, c := range []string{"capture_extension", "egress_proxy", "loopback_broker", "cli_shim", "process_detector", "classifier_host", "desktop_proxy"} {
 		m.collectors[c] = true
 	}
 	return m
@@ -717,7 +719,7 @@ func (m *Memory) PolicyInputs(_ context.Context, tenantID string) (store.PolicyI
 	}
 	in := store.PolicyInputs{Tenant: store.PolicyTenant{
 		TenantID: tenantID, Status: t.Status, IngestEnabled: t.IngestEnabled,
-		CeilingMode: ceiling, CollectionMode: requested,
+		CeilingMode: ceiling, CollectionMode: requested, TLSInspection: m.tlsInspection[tenantID],
 	}}
 	in.ScopeOverrides = map[string]string{}
 	for k, v := range m.scopeOverrides[tenantID] {
@@ -796,6 +798,7 @@ func (m *Memory) Settings(_ context.Context, tenantID string) (store.Settings, e
 		CollectionMode:    m.collectionModes[tenantID],
 		ScopeOverrides:    map[string]string{},
 		ContentSearch:     m.contentSearch[tenantID],
+		TLSInspection:     m.tlsInspection[tenantID],
 		RetentionDefaults: store.RetentionDefaults{EventDays: 90, ContentDays: 30},
 	}
 	if out.ContentSearch == "" {
@@ -937,6 +940,20 @@ func (m *Memory) SetContentSearch(_ context.Context, tenantID, tier string, audi
 	}
 	m.contentSearch[tenantID] = tier
 	audit.Detail = merge(audit.Detail, map[string]any{"previous": previous, "new": tier})
+	m.audit(audit)
+	return nil
+}
+
+// SetTLSInspection implements store.Store.
+func (m *Memory) SetTLSInspection(_ context.Context, tenantID string, enabled bool, audit store.AuditEntry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.tenants[tenantID]; !ok {
+		return store.ErrUnknownTenant
+	}
+	previous := m.tlsInspection[tenantID]
+	m.tlsInspection[tenantID] = enabled
+	audit.Detail = merge(audit.Detail, map[string]any{"previous": previous, "new": enabled})
 	m.audit(audit)
 	return nil
 }

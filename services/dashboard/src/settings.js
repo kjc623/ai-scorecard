@@ -2,8 +2,8 @@
 //
 // The page an admin uses to change what the tenant collects and keeps: the collection mode (within
 // the ceiling) with an optional narrower per-tool override, the event and content retention
-// periods, the sanction decision per tool, the content search tier, and which endpoint collectors
-// run on the devices. Every read and write goes
+// periods, the sanction decision per tool, the content search tier, which endpoint collectors
+// run on the devices, and whether devices inspect TLS. Every read and write goes
 // through the admin api (transport.js), which control-api answers for an admin only and audits with
 // the real actor, the old value and the new value.
 //
@@ -63,12 +63,14 @@ const IDLE = Object.freeze({
   search: Object.freeze({ pending: null, problem: null }),
   sanction: Object.freeze({ pending: null, problem: null }),
   endpoint: Object.freeze({ pending: null, problem: null }),
+  tls: Object.freeze({ pending: null, problem: null }),
 });
 
 /** A switch button's data-value: 'on' or 'off', anything else is no value. */
 const onOff = (value) => (value === 'on' ? true : value === 'off' ? false : null);
 
 const NOT_READ = Object.freeze({ code: 'endpoint_not_reported', message: 'The current endpoint settings were not read; reload the page and try again.' });
+const TLS_NOT_READ = Object.freeze({ code: 'tls_inspection_not_reported', message: 'The current TLS inspection setting was not read; reload the page and try again.' });
 
 /**
  * The page's behaviour over one admin api.
@@ -227,6 +229,25 @@ export function createSettings({ admin, onChange = () => {} }) {
     return writeEndpoint(`${key}.${collector}`, () => admin.setEndpointTool(key, { ...current, [collector]: value }));
   }
 
+  /** Turn TLS inspection on or off. Nothing is sent over a setting that was not read. */
+  async function setTLSInspection(value) {
+    if (typeof value !== 'boolean' || state.status !== 'ready' || state.tls.pending) return state;
+    const current = state.data.tls_inspection;
+    if (typeof current !== 'boolean') {
+      set({ tls: Object.freeze({ pending: null, problem: TLS_NOT_READ }) });
+      return state;
+    }
+    if (current === value) return state;
+    set({ tls: Object.freeze({ pending: value ? 'on' : 'off', problem: null }) });
+    const answer = await admin.setTLSInspection(value);
+    if (answer.state !== 'done') {
+      set({ tls: Object.freeze({ pending: null, problem: answer.error }) });
+      return state;
+    }
+    set({ tls: IDLE.tls });
+    return load({ quiet: true });
+  }
+
   /** One entry point for the page's buttons and controls, named by data-action. */
   function act(dataset = {}) {
     switch (dataset.action) {
@@ -240,9 +261,10 @@ export function createSettings({ admin, onChange = () => {} }) {
       case 'sanction': return setToolSanction(dataset.tool, dataset.value);
       case 'endpoint': return setEndpointCollector(dataset.collector, onOff(dataset.value));
       case 'endpoint-tool': return setEndpointTool(dataset.tool, dataset.collector, onOff(dataset.value));
+      case 'tls-inspection': return setTLSInspection(onOff(dataset.value));
       default: return Promise.resolve(state);
     }
   }
 
-  return Object.freeze({ get state() { return state; }, load, chooseMode, setScopeOverride, setRetentionDraft, saveRetention, setContentSearch, setToolSanction, setEndpointCollector, setEndpointTool, act });
+  return Object.freeze({ get state() { return state; }, load, chooseMode, setScopeOverride, setRetentionDraft, saveRetention, setContentSearch, setToolSanction, setEndpointCollector, setEndpointTool, setTLSInspection, act });
 }

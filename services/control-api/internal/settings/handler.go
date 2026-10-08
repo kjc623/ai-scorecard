@@ -1,7 +1,7 @@
 // Package settings is the Settings admin API: the audited, admin-only reads and writes behind the
 // dashboard's Settings page. It changes a tenant's collection mode (and its narrower per-tool
-// overrides), event and content retention, tool sanction decisions, the content search tier and the
-// endpoint collector switches.
+// overrides), event and content retention, tool sanction decisions, the content search tier, the
+// endpoint collector switches and TLS inspection.
 //
 // Every route requires a product access token carrying the admin role (resolved by the injected
 // Authenticator); the tenant is the token's, never the request's. Every write is audited with the
@@ -66,6 +66,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /admin/v1/settings/tools/{fingerprint}/sanction", h.handleToolSanction)
 	mux.HandleFunc("PUT /admin/v1/settings/endpoint", h.handleEndpoint)
 	mux.HandleFunc("PUT /admin/v1/settings/endpoint/tools/{tool_key}", h.handleEndpointTool)
+	mux.HandleFunc("PUT /admin/v1/settings/tls-inspection", h.handleTLSInspection)
 }
 
 const maxSettingsBody = 16 << 10
@@ -132,6 +133,7 @@ type settingsJSON struct {
 	ContentRetentionDays *int              `json:"content_retention_days"`
 	RetentionDefaults    retentionJSON     `json:"retention_defaults"`
 	ContentSearch        string            `json:"content_search"`
+	TLSInspection        bool              `json:"tls_inspection"`
 	Tools                []toolJSON        `json:"tools"`
 	Devices              []deviceJSON      `json:"devices"`
 	Endpoint             endpointJSON      `json:"endpoint"`
@@ -178,6 +180,7 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request) {
 		ContentRetentionDays: s.ContentRetentionDays,
 		RetentionDefaults:    retentionJSON{EventDays: s.RetentionDefaults.EventDays, ContentDays: s.RetentionDefaults.ContentDays},
 		ContentSearch:        s.ContentSearch,
+		TLSInspection:        s.TLSInspection,
 		Tools:                []toolJSON{}, Devices: []deviceJSON{},
 	}
 	if out.ScopeOverrides == nil {
@@ -467,6 +470,38 @@ func (h *Handler) handleEndpointTool(w http.ResponseWriter, r *http.Request) {
 		return
 	case err != nil:
 		h.fail(w, apierr.Internal(fmt.Errorf("set endpoint tool: %w", err)))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// --- PUT /admin/v1/settings/tls-inspection -------------------------------------------------
+
+func (h *Handler) handleTLSInspection(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.admin(w, r)
+	if !ok {
+		return
+	}
+	// Required, so a client that left it out does not turn inspection off.
+	var req struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if !h.decode(w, r, &req) {
+		return
+	}
+	if req.Enabled == nil {
+		h.fail(w, apierr.New(http.StatusBadRequest, apierr.CodeInvalidRequest, "enabled is required"))
+		return
+	}
+	now := h.cfg.Now().UTC()
+	err := h.store.SetTLSInspection(r.Context(), p.Tenant, *req.Enabled,
+		h.audit(p, "tenant.tls_inspection.set", "tenant", p.Tenant, now, nil))
+	switch {
+	case errors.Is(err, store.ErrUnknownTenant):
+		h.fail(w, apierr.New(http.StatusForbidden, apierr.CodeUnknownTenant, "the tenant is unknown to this deployment"))
+		return
+	case err != nil:
+		h.fail(w, apierr.Internal(fmt.Errorf("set TLS inspection: %w", err)))
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

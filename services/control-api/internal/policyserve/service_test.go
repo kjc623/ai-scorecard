@@ -287,6 +287,69 @@ func TestComposeEndpointSection(t *testing.T) {
 	}
 }
 
+// TestComposeInterceptionEnabled: a tenant that never turned TLS inspection on is served
+// interception.enabled false, named in the payload; turning it on mints a new version that carries
+// true, and the stored row's feature state follows it.
+func TestComposeInterceptionEnabled(t *testing.T) {
+	r := newRig(t, nil)
+	ctx := context.Background()
+	enabledOf := func(envelope []byte) any {
+		t.Helper()
+		p, _ := payloadOf(t, envelope)
+		ic := p["interception"].(map[string]any)
+		v, ok := ic["enabled"]
+		if !ok {
+			t.Fatalf("interception does not name enabled: %v", ic)
+		}
+		return v
+	}
+	featureOf := func() string {
+		t.Helper()
+		rows := r.store.PolicyBundles(tenantA)
+		return string(rows[len(rows)-1].FeatureState)
+	}
+
+	v1, err := r.svc.Current(ctx, tenantA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := enabledOf(v1.Envelope); got != false {
+		t.Fatalf("default interception.enabled = %v, want false", got)
+	}
+	if got := featureOf(); got != `{"cli_shim":false,"proxy_tls":false}` {
+		t.Fatalf("feature state with inspection off = %s", got)
+	}
+
+	audit := store.AuditEntry{TenantID: tenantA, ActorType: store.ActorUser, ActorID: "admin@contoso.example", Action: "test", ObjectType: "tenant", ObjectID: tenantA}
+	if err := r.store.SetTLSInspection(ctx, tenantA, true, audit); err != nil {
+		t.Fatal(err)
+	}
+	v2, err := r.svc.Current(ctx, tenantA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !newer(v2.Version, v1.Version) {
+		t.Fatalf("turning inspection on: version %s, want newer than %s", v2.Version, v1.Version)
+	}
+	if got := enabledOf(v2.Envelope); got != true {
+		t.Fatalf("interception.enabled after turning it on = %v, want true", got)
+	}
+	if got := featureOf(); got != `{"cli_shim":true,"proxy_tls":true}` {
+		t.Fatalf("feature state with inspection on = %s", got)
+	}
+
+	if err := r.store.SetTLSInspection(ctx, tenantA, false, audit); err != nil {
+		t.Fatal(err)
+	}
+	v3, err := r.svc.Current(ctx, tenantA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !newer(v3.Version, v2.Version) || enabledOf(v3.Envelope) != false {
+		t.Fatalf("turning inspection off: version %s after %s, enabled %v", v3.Version, v2.Version, enabledOf(v3.Envelope))
+	}
+}
+
 func TestIfNoneMatchAnswers304(t *testing.T) {
 	r := newRig(t, nil)
 	first := r.get(t, "")
@@ -509,6 +572,9 @@ func TestServedBundleVerifiesWithTheDevicesVerifier(t *testing.T) {
 	}, audit); err != nil {
 		t.Fatal(err)
 	}
+	if err := r.store.SetTLSInspection(context.Background(), tenantA, true, audit); err != nil {
+		t.Fatal(err)
+	}
 	rec := r.get(t, "")
 	var resp protocol.PolicyResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
@@ -561,7 +627,7 @@ func main() {
 	raw, _ = json.Marshal(b.Endpoint)
 	_ = json.Unmarshal(raw, &endpoint)
 	raw, _ = json.Marshal(endpoint)
-	fmt.Println("OK", res.Outcome, b.Version, b.TenantDefault, len(b.Interception.SeedHosts), b.CLIShim.ProxyAddr, b.Intercepts("api.openai.com", 443), string(raw))
+	fmt.Println("OK", res.Outcome, b.Version, b.TenantDefault, b.Interception.Enabled, len(b.Interception.SeedHosts), b.CLIShim.ProxyAddr, b.Intercepts("api.openai.com", 443), string(raw))
 }
 `
 	for name, body := range map[string]string{"go.mod": gomod, "main.go": program} {
@@ -582,7 +648,7 @@ func main() {
 	}
 	// The device's re-encoding of the endpoint section equals the served one: every name matched,
 	// and no value was dropped on the way.
-	want := "OK accepted " + resp.BundleVersion + " m3 3 " + policyserve.DefaultProxyListen + " true " + endpointOf(t, resp.SignedBundle)
+	want := "OK accepted " + resp.BundleVersion + " m3 true 3 " + policyserve.DefaultProxyListen + " true " + endpointOf(t, resp.SignedBundle)
 	if got := strings.TrimSpace(string(out)); !strings.HasSuffix(got, want) {
 		t.Fatalf("verifier output %q, want %q", got, want)
 	}

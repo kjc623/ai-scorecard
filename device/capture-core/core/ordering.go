@@ -229,8 +229,14 @@ var fixedCollectors = []protocol.Collector{
 	protocol.CollectorCLIShim, protocol.CollectorEgressProxy, protocol.CollectorLoopbackBroker,
 }
 
+// startCollector starts a fixed provider at its step, unless it is Toggled and the bundle in force
+// switches it off; then a policy toggle starts it once start_collectors has run.
 func (s *Supervisor) startCollector(ctx context.Context, c protocol.Collector) bool {
 	if _, ok := s.Registry.Provider(c); !ok {
+		return false
+	}
+	if !s.Registry.Enabled(c) {
+		s.Log.Printf("core: provider %s not started: the bundle in force switches it off", c)
 		return false
 	}
 	res := s.Registry.StartCollector(ctx, c)

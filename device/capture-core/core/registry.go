@@ -121,6 +121,15 @@ func (r *Registry) Provider(c protocol.Collector) (Provider, bool) {
 	return p, ok
 }
 
+// Enabled reports whether the bundle last applied (or none) leaves a collector on. Only a Toggled
+// provider can be switched off.
+func (r *Registry) Enabled(c protocol.Collector) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	row, ok := r.rows[c]
+	return ok && !row.disabled
+}
+
 // StartResult is one provider's start outcome. It is returned for every provider, so the
 // caller can report a row even for the ones that failed.
 type StartResult struct {

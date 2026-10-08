@@ -230,6 +230,19 @@ function stEndpoint(state) {
   return stCard('Endpoint collectors', body, { wide: true });
 }
 
+function stTLSInspection(state) {
+  const current = state.data.tls_inspection;
+  const busy = Boolean(state.tls.pending);
+  const control = current === null
+    ? '<p><span class="v-absent">not reported</span> The server did not send the TLS inspection setting.</p>'
+    : onOffSegment('TLS inspection', current, { action: 'tls-inspection' }, busy);
+  const body = control
+    + '<p class="dp-note">Turning it on installs each device\'s own root certificate in its trust store, runs a local proxy that decrypts traffic to the catalogued AI services, points command-line tools at it and, on Windows, routes desktop apps through it for every signed-in user.</p>'
+    + (busy ? '<p class="dp-note" role="status">Saving…</p>' : '')
+    + stProblem(state.tls.problem);
+  return stCard('TLS inspection', body);
+}
+
 function stDevices(state) {
   const devices = state.data.devices;
   const rows = devices.map((d) => '<tr>'
@@ -269,6 +282,7 @@ export function renderSettings(state, { eyebrow = 'Settings' } = {}) {
     + stRetention(state)
     + stOverrides(state)
     + stTools(state)
+    + `<div class="dp-grid">${stTLSInspection(state)}</div>`
     + stEndpoint(state)
     + stDevices(state)
     + notes

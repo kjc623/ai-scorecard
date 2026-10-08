@@ -13,7 +13,7 @@ import {
   ADMIN_DEPLOYMENT_ENDPOINT, ADMIN_PACKAGE_ENDPOINT, ADMIN_VERIFICATION_ENDPOINT, ADMIN_KEYS_ENDPOINT, ADMIN_SCIM_TOKENS_ENDPOINT,
   ADMIN_SETTINGS_ENDPOINT, ADMIN_SETTINGS_COLLECTION_MODE_ENDPOINT, ADMIN_SETTINGS_SCOPE_OVERRIDE_ENDPOINT,
   ADMIN_SETTINGS_RETENTION_ENDPOINT, ADMIN_SETTINGS_CONTENT_SEARCH_ENDPOINT, ADMIN_SETTINGS_TOOL_SANCTION_ENDPOINT,
-  ADMIN_SETTINGS_ENDPOINT_COLLECTORS_ENDPOINT,
+  ADMIN_SETTINGS_ENDPOINT_COLLECTORS_ENDPOINT, ADMIN_SETTINGS_TLS_INSPECTION_ENDPOINT,
 } from './vocab.js';
 
 /** An error the transport produced, carrying the same shape as an API refusal. */
@@ -349,6 +349,9 @@ export function createAdminApi({ transport }) {
     setEndpointTool(toolKey, { otel, hooks }) {
       return done({ method: 'PUT', path: `${ADMIN_SETTINGS_ENDPOINT_COLLECTORS_ENDPOINT}/tools/${encodeURIComponent(String(toolKey))}`, body: { otel, hooks } });
     },
+    setTLSInspection(enabled) {
+      return done({ method: 'PUT', path: ADMIN_SETTINGS_TLS_INSPECTION_ENDPOINT, body: { enabled } });
+    },
   });
 }
 
@@ -436,6 +439,7 @@ export function normaliseSettings(body) {
       content_days: nullableNumber(body.retention_defaults?.content_days),
     }),
     content_search: ['disabled', 'attachment_names', 'full_text'].includes(body.content_search) ? body.content_search : 'disabled',
+    tls_inspection: nullableBoolean(body.tls_inspection),
     tools: Object.freeze(tools),
     devices: Object.freeze(devices),
     endpoint: normaliseEndpoint(body.endpoint),

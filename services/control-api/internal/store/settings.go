@@ -15,7 +15,7 @@ import (
 // with the actor, old value and new value, so a configuration change is never unattributed.
 const (
 	SQLSettingsTenant = `
-SELECT ceiling_mode, coalesce(collection_mode, ''), scope_overrides, content_search,
+SELECT ceiling_mode, coalesce(collection_mode, ''), scope_overrides, content_search, tls_inspection,
        (SELECT ttl_days FROM ops.retention_policy rp
          WHERE rp.tenant_id = t.tenant_id AND rp.applies_to = 'event' LIMIT 1),
        (SELECT ttl_days FROM ops.retention_policy rp
@@ -81,6 +81,12 @@ DO UPDATE SET ttl_days = EXCLUDED.ttl_days, updated_by = EXCLUDED.updated_by, up
 UPDATE ops.tenant SET content_search = $2::text, updated_at = now()
  WHERE tenant_id = $1::uuid`
 
+	SQLCurrentTLSInspection = `SELECT tls_inspection FROM ops.tenant WHERE tenant_id = $1::uuid`
+
+	SQLSetTLSInspection = `
+UPDATE ops.tenant SET tls_inspection = $2::boolean, updated_at = now()
+ WHERE tenant_id = $1::uuid`
+
 	SQLCurrentToolState = `
 SELECT coalesce((SELECT sanctioned_state FROM ops.tool
                   WHERE tenant_id = $1::uuid AND tool_fingerprint = $2::text), 'unknown')`
@@ -134,7 +140,7 @@ func (s *SQLStore) Settings(ctx context.Context, tenantID string) (Settings, err
 		var scope []byte
 		var event, content sql.NullInt64
 		err := tx.QueryRowContext(ctx, SQLSettingsTenant, tenantID).
-			Scan(&out.CeilingMode, &out.CollectionMode, &scope, &out.ContentSearch, &event, &content)
+			Scan(&out.CeilingMode, &out.CollectionMode, &scope, &out.ContentSearch, &out.TLSInspection, &event, &content)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrUnknownTenant
 		}
@@ -318,6 +324,24 @@ func (s *SQLStore) SetContentSearch(ctx context.Context, tenantID, tier string, 
 			return fmt.Errorf("store: set content search: %w", err)
 		}
 		audit = withChange(audit, previous, tier)
+		return insertAudit(ctx, tx, audit)
+	})
+}
+
+// SetTLSInspection implements Store.
+func (s *SQLStore) SetTLSInspection(ctx context.Context, tenantID string, enabled bool, audit AuditEntry) error {
+	return s.withTenant(ctx, tenantID, func(tx *sql.Tx) error {
+		var previous bool
+		if err := tx.QueryRowContext(ctx, SQLCurrentTLSInspection, tenantID).Scan(&previous); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrUnknownTenant
+			}
+			return fmt.Errorf("store: read TLS inspection: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, SQLSetTLSInspection, tenantID, enabled); err != nil {
+			return fmt.Errorf("store: set TLS inspection: %w", err)
+		}
+		audit = withChange(audit, previous, enabled)
 		return insertAudit(ctx, tx, audit)
 	})
 }

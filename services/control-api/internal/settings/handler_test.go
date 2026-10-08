@@ -89,6 +89,7 @@ var routes = []struct{ method, path, body string }{
 	{"PUT", "/admin/v1/settings/tools/tls_b6681b043244c43f/sanction", `{"sanctioned_state":"unsanctioned"}`},
 	{"PUT", "/admin/v1/settings/endpoint", endpointBody},
 	{"PUT", "/admin/v1/settings/endpoint/tools/cursor", `{"otel":false,"hooks":false}`},
+	{"PUT", "/admin/v1/settings/tls-inspection", `{"enabled":true}`},
 }
 
 const endpointBody = `{"inventory":false,"processes":true,"flows":false,"otel":true,"hooks":true,"hooks_managed_only":true}`
@@ -429,5 +430,74 @@ func TestEndpointTool(t *testing.T) {
 	next, _ := a.Detail["new"].(map[string]any)
 	if prev["otel"] != false || prev["hooks"] != true || next["otel"] != false || next["hooks"] != false {
 		t.Fatalf("audit values: previous %v, new %v", prev, next)
+	}
+}
+
+func (r *rig) tlsInspection(t *testing.T) bool {
+	t.Helper()
+	rec := r.do(t, "admin", "GET", "/admin/v1/settings", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	var got struct {
+		TLSInspection *bool `json:"tls_inspection"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.TLSInspection == nil {
+		t.Fatalf("GET /admin/v1/settings has no tls_inspection: %s", rec.Body)
+	}
+	return *got.TLSInspection
+}
+
+func TestTLSInspection(t *testing.T) {
+	r := newRig(t)
+	// A tenant that never set it reads off.
+	if r.tlsInspection(t) {
+		t.Fatal("TLS inspection is on for a tenant that never turned it on")
+	}
+	put := func(body string) *httptest.ResponseRecorder {
+		return r.do(t, "admin", "PUT", "/admin/v1/settings/tls-inspection", body)
+	}
+	if rec := put(`{"enabled":true}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("turn on: %d %s", rec.Code, rec.Body)
+	}
+	if !r.tlsInspection(t) {
+		t.Fatal("TLS inspection is off after it was turned on")
+	}
+	// A body without the switch, with another type or with an unknown field changes nothing.
+	for _, body := range []string{`{}`, `{"enabled":null}`} {
+		if rec := put(body); rec.Code != http.StatusBadRequest || errorCode(t, rec) != apierr.CodeInvalidRequest {
+			t.Fatalf("body %s: %d %s", body, rec.Code, rec.Body)
+		}
+	}
+	for _, body := range []string{`{"enabled":"false"}`, `{"enabled":false,"hosts":[]}`} {
+		if rec := put(body); rec.Code != http.StatusBadRequest {
+			t.Fatalf("body %s: %d %s", body, rec.Code, rec.Body)
+		}
+	}
+	if !r.tlsInspection(t) {
+		t.Fatal("a refused write changed the setting")
+	}
+	if rec := put(`{"enabled":false}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("turn off: %d %s", rec.Code, rec.Body)
+	}
+	if r.tlsInspection(t) {
+		t.Fatal("TLS inspection is on after it was turned off")
+	}
+
+	audits := r.store.Audits()
+	if len(audits) != 2 {
+		t.Fatalf("audits = %+v, want the two accepted writes", audits)
+	}
+	for i, want := range []struct{ previous, next bool }{{false, true}, {true, false}} {
+		a := audits[i]
+		if a.Action != "tenant.tls_inspection.set" || a.ActorID != admin.Actor || a.ObjectType != "tenant" || a.ObjectID != tenantA || a.Detail["subject"] != admin.Subject {
+			t.Fatalf("audit %d = %+v", i, a)
+		}
+		if a.Detail["previous"] != want.previous || a.Detail["new"] != want.next {
+			t.Fatalf("audit %d values: previous %v, new %v; want %v, %v", i, a.Detail["previous"], a.Detail["new"], want.previous, want.next)
+		}
 	}
 }

@@ -189,6 +189,8 @@ type PolicyTenant struct {
 	CeilingMode   string
 	// CollectionMode is the requested mode, resolved to the ceiling when none is set.
 	CollectionMode string
+	// TLSInspection is whether the tenant's devices intercept TLS (ops.tenant.tls_inspection).
+	TLSInspection bool
 }
 
 // Active mirrors Tenant.Active.
@@ -286,6 +288,7 @@ type Settings struct {
 	EventRetentionDays   *int
 	ContentRetentionDays *int
 	ContentSearch        string
+	TLSInspection        bool
 	RetentionDefaults    RetentionDefaults
 	Tools                []ToolDecision
 	Devices              []DeviceMode
@@ -401,6 +404,8 @@ type Store interface {
 	// SetEndpointTool sets one tool's native collector switches. ErrUnknownEndpointTool when the key
 	// is outside EndpointToolKeys.
 	SetEndpointTool(ctx context.Context, tenantID string, toolKey string, t EndpointTool, audit AuditEntry) error
+	// SetTLSInspection turns the tenant's TLS inspection on or off.
+	SetTLSInspection(ctx context.Context, tenantID string, enabled bool, audit AuditEntry) error
 
 	// Ping checks the database is reachable, for readiness.
 	Ping(ctx context.Context) error

@@ -42,24 +42,27 @@ const (
 	startupBound      = 30 * time.Second // enrolment and the first policy fetch at startup
 	defaultBodyCap    = 4 << 20
 	defaultTLSListen  = "127.0.0.1:0"
-	defaultPACListen  = "127.0.0.1:8350"
 	spoolMaxBytes     = 25 << 20
 	spoolMaxEntries   = 25000
 	serviceStopBudget = drainDeadline + 15*time.Second
 )
 
 // facilities are the operating-system side effects the service performs beyond its own state
-// directory: the trust store, the machine environment the CLI shim writes, and the native
-// messaging endpoint, and the process lookups that attribute a proxied connection. Tests replace
-// them so nothing touches the machine.
+// directory: the trust store, the machine environment the CLI shim writes, the native messaging
+// endpoint, the users' proxy settings the desktop-app PAC writes, and the process lookups that
+// attribute a proxied connection. Tests replace them so nothing touches the machine.
 type facilities struct {
-	trustStore func(logf func(string, ...any)) trustStore
-	shimRunner cli.Runner
-	shimDir    string // empty: the platform default (cli.DefaultManagedDir)
-	nativeAddr string
+	trustStore  func(logf func(string, ...any)) trustStore
+	shimRunner  cli.Runner
+	shimDir     string // empty: the platform default (cli.DefaultManagedDir)
+	shimProfile string // empty: the platform default profile
+	nativeAddr  string
 	// connOwner names the process at the client end of a loopback connection the proxy accepted.
 	// nil where the platform cannot; proxy observations are then attributed to the console user.
 	connOwner func(conn net.Conn) (hostinfo.Process, error)
+	// desktopPAC builds the desktop-app PAC over the platform's user settings. nil where the
+	// platform has none; desktop apps there keep their own proxy behaviour.
+	desktopPAC func(cfg winproxy.Config) *winproxy.Server
 }
 
 // trustStore installs, verifies and removes the per-device CA in the platform trust store.
@@ -76,6 +79,16 @@ var platform = facilities{
 	shimRunner: trust.ExecRunner{},
 	nativeAddr: nativeEndpoint,
 	connOwner:  loopbackAttribution(),
+	desktopPAC: desktopPAC(),
+}
+
+// desktopPAC is the desktop-app PAC on Windows, where desktop apps read the per-user Internet
+// Settings; nothing elsewhere.
+func desktopPAC() func(winproxy.Config) *winproxy.Server {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	return winproxy.New
 }
 
 // loopbackAttribution is how the platform names a loopback connection's client: the TCP owner table
@@ -152,9 +165,10 @@ type service struct {
 	health  *healthChannel
 	native  *nativeServer
 
-	// tlsProv is proxy.tls, and pac the Windows desktop-app PAC that points at it. The PAC is
-	// not a provider (it produces no observations); it is started and stopped beside the native
-	// messaging endpoint and fails open by returning the previous route when the proxy drops out.
+	// tlsProv is proxy.tls, and pac the Windows desktop-app PAC that points at it (nil where the
+	// platform has none). Both, and the CLI shim, are policy toggles that run only while the
+	// tenant's TLS inspection is on. The PAC fails open by returning the previous route when the
+	// proxy drops out.
 	tlsProv *tlsproxy.Provider
 	pac     *winproxy.Server
 
@@ -390,12 +404,13 @@ func (s *service) buildProviders() error {
 	}
 
 	shim := cli.Config{
-		ManagedDir: platform.shimDir,
-		ProxyAddr:  shimProxyAddr(b),
-		RootCAPEM:  caCert,
-		Runner:     platform.shimRunner,
-		Log:        s.logf,
-		Clock:      time.Now,
+		ManagedDir:  platform.shimDir,
+		ProfilePath: platform.shimProfile,
+		ProxyAddr:   shimProxyAddr(b),
+		RootCAPEM:   caCert,
+		Runner:      platform.shimRunner,
+		Log:         s.logf,
+		Clock:       time.Now,
 	}
 	if b != nil {
 		shim.NoProxy = b.CLIShim.NoProxy
@@ -406,33 +421,21 @@ func (s *service) buildProviders() error {
 		return err
 	}
 
-	s.buildPAC(b)
-	return nil
+	return s.buildPAC()
 }
 
-// buildPAC builds the Windows desktop-app PAC when the platform is Windows and a bundle is in
-// force. It is a no-op elsewhere; desktop apps keep the device's existing proxy behaviour.
-func (s *service) buildPAC(b *policy.Bundle) {
-	if runtime.GOOS != "windows" || b == nil {
-		return
+// buildPAC registers the desktop-app PAC where the platform has one. It reads its listen address
+// from the bundle in force each time it starts.
+func (s *service) buildPAC() error {
+	if platform.desktopPAC == nil {
+		return nil
 	}
-	// A kill switch that stops proxy.tls also stops the PAC: there is nothing to route to, and a
-	// suppressed proxy must not cause any user's proxy settings to be changed.
-	if ks, ok := b.KillSwitchFor(protocol.RouteProxyTLS); ok && ks.Mode == policy.KillDisable {
-		if ks.EffectiveAt.IsZero() || !ks.EffectiveAt.After(time.Now()) {
-			return
-		}
-	}
-	listen := b.Interception.PacListen
-	if strings.TrimSpace(listen) == "" {
-		listen = defaultPACListen
-	}
-	s.pac = winproxy.New(winproxy.Config{
-		Listen:    listen,
+	s.pac = platform.desktopPAC(winproxy.Config{
 		Bundles:   s.currentBundle,
 		ProxyAddr: func() string { return s.tlsProv.ListenAddr() },
 		Log:       s.logf,
 	})
+	return s.reg.Add(s.pac)
 }
 
 func (s *service) currentBundle() *policy.Bundle {
@@ -469,11 +472,6 @@ func (s *service) Start(ctx context.Context) error {
 		// The browser relay is one collection path; the others keep running without it.
 		s.log.Error("native messaging endpoint unavailable; the browser extension cannot reach the agent", "endpoint", s.native.addr, "error", err)
 	}
-	if s.pac != nil {
-		if err := s.pac.Start(ctx); err != nil {
-			s.log.Error("desktop-app PAC capture unavailable; desktop apps keep their previous proxy behaviour", "error", err)
-		}
-	}
 	s.health.Start(ctx)
 	s.log.Info("capture-core started", "order", s.sup.Order())
 	return nil
@@ -482,11 +480,6 @@ func (s *service) Start(ctx context.Context) error {
 // Stop ends the background loops, runs the shutdown sequence and releases the spool.
 func (s *service) Stop(ctx context.Context) error {
 	s.native.Stop()
-	// Restore every user's previous proxy settings before the proxy stops enforcing, so no desktop
-	// app is left pointing at a PAC whose proxy is about to go away.
-	if s.pac != nil {
-		_ = s.pac.Stop(ctx)
-	}
 	s.health.Stop()
 	select {
 	case <-s.bgStop:
@@ -496,6 +489,12 @@ func (s *service) Stop(ctx context.Context) error {
 	s.bgWG.Wait()
 	if s.policySync != nil {
 		s.policySync.Stop()
+	}
+	// Restore every user's previous proxy settings before the proxy stops enforcing, so no desktop
+	// app is left pointing at a PAC whose proxy is about to go away. No bundle arrives after the
+	// policy loop has stopped, so nothing starts it again.
+	if s.pac != nil {
+		s.reg.StopCollector(ctx, protocol.CollectorDesktopProxy)
 	}
 	// The background loop ends before the bounded shutdown drain, so that drain is the only
 	// thing sending.

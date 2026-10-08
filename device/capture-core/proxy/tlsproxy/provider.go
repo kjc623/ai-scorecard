@@ -214,12 +214,16 @@ func (p *Provider) buildCA(deviceID string) (*CA, error) {
 	}
 }
 
+// Enabled implements core.Toggled: the proxy runs only while the tenant's TLS inspection is on.
+func (p *Provider) Enabled(b *policy.Bundle) bool { return b != nil && b.Interception.Enabled }
+
 // Start loads the device CA, binds the proxy, installs the CA certificate when a trust root is
 // configured, then runs the end-to-end probe. It never fails because interception is
-// unavailable: it reports degraded and the user's traffic stays direct.
+// unavailable: it reports degraded and the user's traffic stays direct. A Start after a Stop
+// brings the proxy and the root back.
 func (p *Provider) Start(ctx context.Context) error {
 	p.mu.Lock()
-	if p.started {
+	if p.started && !p.stopped {
 		p.mu.Unlock()
 		return nil
 	}
@@ -228,11 +232,13 @@ func (p *Provider) Start(ctx context.Context) error {
 	// without this check the switch would be recorded and then ignored.
 	if p.killSwitchActive() {
 		p.started = true
+		p.stopped = false
 		p.killed = true
 		p.mu.Unlock()
 		p.step("start:suppressed_by_kill_switch")
 		return nil
 	}
+	p.killed = false
 	p.mu.Unlock()
 
 	deviceID := p.cfg.Agent.DeviceID
@@ -242,6 +248,7 @@ func (p *Provider) Start(ctx context.Context) error {
 		// startup: the user's traffic must not be pointed at a proxy that cannot serve.
 		p.mu.Lock()
 		p.started = true
+		p.stopped = false
 		p.probeOK = false
 		p.mu.Unlock()
 		return fmt.Errorf("tlsproxy: device CA unavailable, interception disabled: %w", err)
@@ -278,6 +285,7 @@ func (p *Provider) Start(ctx context.Context) error {
 	ok := p.probe(ctx)
 	p.mu.Lock()
 	p.started = true
+	p.stopped = false
 	p.probeOK = ok
 	p.mu.Unlock()
 	if !ok {
@@ -377,7 +385,10 @@ func (p *Provider) probe(ctx context.Context) bool {
 	return true
 }
 
-// Stop implements core.Provider: interception stops and the listener closes. It is idempotent.
+// Stop implements core.Provider: interception stops, the listener closes, then the device CA is
+// removed from the trust store, so a device whose proxy is not running trusts no root of its own.
+// The removal runs also when the proxy never started, which clears a root an earlier run left. It
+// is idempotent.
 func (p *Provider) Stop(ctx context.Context) error {
 	p.mu.Lock()
 	if p.stopped {
@@ -392,6 +403,12 @@ func (p *Provider) Stop(ctx context.Context) error {
 	p.stopInterception("stop")
 	if ln != nil {
 		_ = ln.Close()
+	}
+	if p.cfg.TrustRoot != nil {
+		if err := p.cfg.TrustRoot.Remove(ctx); err != nil {
+			p.cfg.Log.Printf("tlsproxy: could not remove the trusted root: %v", err)
+		}
+		p.step("trustroot.Remove")
 	}
 	if p.acceptDone != nil {
 		select {

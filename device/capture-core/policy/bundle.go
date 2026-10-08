@@ -42,6 +42,11 @@ type KillSwitch struct {
 // Interception decides what the device is willing to decrypt, never
 // what counts as generative. A destination in none of these sets is blind-tunnelled.
 type Interception struct {
+	// Enabled is the tenant's TLS inspection setting. While it is false the device runs no TLS
+	// proxy, writes no CLI shim environment, sets no desktop-app PAC and keeps its root out of the
+	// trust store, whatever the other fields say. A bundle without it is off.
+	Enabled bool `json:"enabled"`
+
 	TenantHosts []string `json:"tenant_hosts,omitempty"`
 	SeedHosts   []string `json:"seed_hosts,omitempty"`
 

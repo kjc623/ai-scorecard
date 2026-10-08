@@ -125,6 +125,8 @@ var Statements = []Statement{
 	{"set_retention", SQLSetRetention},
 	{"current_content_search", SQLCurrentContentSearch},
 	{"set_content_search", SQLSetContentSearch},
+	{"current_tls_inspection", SQLCurrentTLSInspection},
+	{"set_tls_inspection", SQLSetTLSInspection},
 	{"current_tool_state", SQLCurrentToolState},
 	{"set_tool_sanction", SQLSetToolSanction},
 	{"endpoint_settings", SQLEndpointSettings},

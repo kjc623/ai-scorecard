@@ -49,8 +49,11 @@ a directory users can read, outside the state directory: `C:\ProgramData\ShadowA
 agent's own default, never taken from the policy bundle.
 
 On first start the agent enrols with the deployment key (a CSR; the edge returns a device
-certificate), fetches the signed policy bundle, mints its per-device interception CA and installs
-it in the trust store, and starts the providers. It rotates the certificate, presenting the current
+certificate), fetches the signed policy bundle, mints its per-device interception CA, and starts the
+providers. TLS inspection is a tenant setting, off by default: only while the bundle's
+`interception.enabled` is true does the agent run the TLS proxy, write the CLI trust shim, set the
+Windows desktop-app PAC and keep its CA in the trust store, and a policy change starts or removes
+them without a restart. It rotates the certificate, presenting the current
 one, two thirds of the way through its validity. `capture-core --print-config` shows the resolved
 configuration and the enrolment; `--version` the build.
 

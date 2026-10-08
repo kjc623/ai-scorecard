@@ -850,3 +850,69 @@ func TestTLSFutureKillSwitchDoesNotFireEarly(t *testing.T) {
 		t.Fatal("a future-dated kill switch fired early")
 	}
 }
+
+// The proxy is a policy toggle: it is enabled only by a bundle whose interception.enabled is true.
+func TestTLSProxyIsEnabledByTLSInspection(t *testing.T) {
+	var p core.Provider = New(Config{})
+	toggled, ok := p.(core.Toggled)
+	if !ok {
+		t.Fatal("proxy.tls is not a policy toggle")
+	}
+	on := bundleIntercepting(443)
+	on.Interception.Enabled = true
+	if toggled.Enabled(nil) || toggled.Enabled(bundleIntercepting(443)) || !toggled.Enabled(on) {
+		t.Fatal("proxy.tls is not enabled exactly by interception.enabled")
+	}
+}
+
+// A Stop removes the root it installed and closes the listener; a Start after it binds and installs
+// again, and the proxy is healthy, as a policy toggle off and on needs.
+func TestTLSStopRemovesTheRootAndAStartBringsItBack(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer upstream.Close()
+	upPort := upstream.Listener.Addr().(*net.TCPAddr).Port
+	trustRoot := &fakeTrust{}
+	p := newProviderForTest(t, Config{
+		Listen: "127.0.0.1:0", Bundles: func() *policy.Bundle { return bundleIntercepting(upPort) },
+		Pipeline: &fakePipeline{mode: protocol.ModeM1}, TrustRoot: trustRoot,
+		UpstreamRoots: upstreamPool(upstream), CanaryHost: "127.0.0.1", CanaryPort: upPort,
+	})
+	ctx := context.Background()
+
+	for round := 1; round <= 2; round++ {
+		if err := p.Start(ctx); err != nil {
+			t.Fatalf("round %d Start: %v", round, err)
+		}
+		if p.ListenAddr() == "" || len(trustRoot.installed) == 0 {
+			t.Fatalf("round %d: listening %q, root installed %t", round, p.ListenAddr(), len(trustRoot.installed) > 0)
+		}
+		if h := p.Health(); h.State != protocol.StateHealthy {
+			t.Fatalf("round %d health = %s/%s, want healthy", round, h.State, h.Detail)
+		}
+		if err := p.Stop(ctx); err != nil {
+			t.Fatalf("round %d Stop: %v", round, err)
+		}
+		if p.ListenAddr() != "" {
+			t.Fatalf("round %d: still listening after Stop", round)
+		}
+		if trustRoot.removes != round {
+			t.Fatalf("round %d: TrustRoot.Remove called %d times, want %d", round, trustRoot.removes, round)
+		}
+		if h := p.Health(); h.State != protocol.StateAbsent {
+			t.Fatalf("round %d health after Stop = %s, want absent", round, h.State)
+		}
+	}
+}
+
+// A proxy stopped without ever starting still removes the root, so a root an earlier run left is
+// not kept trusted while inspection is off.
+func TestTLSStopWithoutStartRemovesTheRoot(t *testing.T) {
+	trustRoot := &fakeTrust{}
+	p := New(Config{TrustRoot: trustRoot})
+	if err := p.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if trustRoot.removes != 1 || len(trustRoot.installed) != 0 {
+		t.Fatalf("removes %d, installed %d bytes; want one removal and nothing installed", trustRoot.removes, len(trustRoot.installed))
+	}
+}

@@ -209,6 +209,10 @@ CREATE TABLE ops.tenant (
   status_changed_at            timestamptz,
   created_at                   timestamptz NOT NULL DEFAULT now(),
   updated_at                   timestamptz NOT NULL DEFAULT now(),
+  -- Whether devices intercept TLS: the local proxy, the CLI shim's proxy and CA environment, the
+  -- Windows desktop-app PAC and the per-device root in the trust store. Set by an admin on the
+  -- Settings page and delivered as the bundle's interception.enabled.
+  tls_inspection               boolean NOT NULL DEFAULT false,
   -- A search tier is a capability over data the tenant can collect: filenames cross at M1, prompt
   -- text only at M3.
   CONSTRAINT tenant_search_tier_requires_collection_mode
@@ -2376,6 +2380,7 @@ INSERT INTO ref.collector (collector_code, component, modes_supported, descripti
   ('egress_proxy',      'capture_core',      ARRAY['m0','m1','m2','m3'], 'Local TLS-terminating proxy, for clients that honour the system proxy settings.'),
   ('loopback_broker',   'capture_core',      ARRAY['m0','m1','m2','m3'], 'Local inference broker holding the well-known loopback ports of local model runtimes.'),
   ('cli_shim',          'capture_core',      ARRAY['m0','m1','m2','m3'], 'Managed shell profile and environment for proxy and trust: coding agents and SDKs.'),
+  ('desktop_proxy',     'capture_core',      ARRAY['m0','m1','m2','m3'], 'Per-user proxy auto-config (PAC) that routes the AI traffic of Windows desktop apps through the local TLS proxy.'),
   ('process_detector',  'capture_core',      ARRAY['m0'],                'Process and loaded-module observation. Detection only: establishes that a model ran, never what was said to it.'),
   ('classifier_host',   'classifier_host',   ARRAY['m1','m2','m3'],      'Sandboxed classification host. Not a collection path; its health is reported like a collector''s.');
 

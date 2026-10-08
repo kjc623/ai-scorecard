@@ -49,15 +49,15 @@ func sharedTrust(t *testing.T) *fakeTrustStore {
 
 // A first start of a tenant-packaged device: it enrols with the deployment key and the attestation
 // the OS states, fetches and caches the tenant's bundle before any provider is built, attributes
-// observations to the console user, protects its state directory, installs its own CA, and
-// removes the root again when it stops. A restart with the cloud unreachable enforces the cached
-// bundle.
+// observations to the console user, protects its state directory, installs its own CA (the
+// tenant has TLS inspection on), and removes the root again when it stops. A restart with the
+// cloud unreachable enforces the cached bundle.
 func TestServiceEnrolsFetchesItsPolicyAndRuns(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cloud := startFakeCloud(t, signedTestBundle(t, priv, "5", protocol.ModeM1))
+	cloud := startFakeCloud(t, signedInterceptionBundle(t, priv, "5", true, freeLoopbackAddr(t), ""))
 	withHostFacts(t, hostinfo.Facts{
 		Attestation: protocol.DeviceAttestation{IntuneDeviceID: "9b1c0f2e-3c44-4b5e-9a61-2d7f0e8c1a55", SerialNumber: "PF2X9K7Q"},
 		SystemUUID:  "a2219e09-2c68-6d1d-a831-345a6060843c",

@@ -310,3 +310,45 @@ decided and why, and for a vendor fact the product version checked.
   and `0003`, each dump identically to the new `schema.sql`; `0002` and `0003` applied over the new
   `schema.sql` change nothing.
 - **Not changed:** `ops.policy_bundle.feature_state` still records only `cli_shim` and `proxy_tls`.
+## 2026-10-08, task 08
+
+- **A fixed provider that is `Toggled` waits at its step.** The supervisor's `start_cli.shim` and
+  `start_proxy.tls` steps skip a provider the bundle in force switches off (`Registry.Enabled`); a
+  policy toggle starts it once `start_collectors` has run. The step order is unchanged. Task 06's
+  fixed providers started whatever their switch.
+- **proxy.tls removes the root at every Stop**, a policy stop included, and also when it never
+  started, so a root an earlier run left is removed at the next stop. The supervisor's removal at
+  shutdown stays. A Start after a Stop binds and installs again; a Start that finds no kill switch
+  in force clears an earlier `killed`, so the row never says killed while the proxy runs.
+- **cli.shim and the PAC restart after a Stop**: their Start guard was "started", now "running".
+- **The PAC is the `desktop_proxy` provider** (`winproxy.Server`), registered on Windows only
+  (`facilities.desktopPAC`), so other platforms report no `desktop_proxy` row. Its switch is
+  `interception.enabled`, a non-empty `pac_listen` and no proxy.tls kill switch in force; the kill
+  switch keeps the suppression `buildPAC` had. `pac_listen` is read at each Start; empty means off,
+  and the 8350 fallbacks (service and `winproxy`) are gone.
+- **The server sends no `pac_listen`.** `policyserve.Interception` has no such field and the brief
+  adds none, so every served bundle keeps the desktop-app PAC off, with TLS inspection on too. The
+  PAC checks of the "On the device" section (the AutoConfigURL in steps 1 and 2) cannot pass until
+  control-api serves a `pac_listen`; that is a bundle change for the owner to decide.
+- **PAC health**: healthy while served with proxy.tls in the path; degraded `not_effective_proxy`
+  when the proxy is out of it (the PAC then serves every user's original route). `observed` counts
+  users the PAC was applied to, `not_cooperative` users left untouched, `errors` a failed user
+  enumeration.
+- **`interception.enabled` is never omitted** on either side, so the drift test sees the name. The
+  drift test now turns TLS inspection on and compares the value the device decoded.
+- **`ops.policy_bundle.feature_state`** records `cli_shim` and `proxy_tls` as the bundle's
+  `interception.enabled`; it recorded `true` for every bundle.
+- **`PUT /admin/v1/settings/tls-inspection`** requires `enabled` (400 `invalid_request` when it is
+  missing or null). The audit action is `tenant.tls_inspection.set`, object `tenant`, with
+  `previous` and `new` booleans.
+- **`desktop_proxy`'s `ref.collector` row** supports `m0`–`m3`, as `cli_shim`'s does: it routes
+  traffic and reads none.
+- **`facilities.shimProfile`**: the service tests write the shim profile into their own temporary
+  directory. On Linux its default is `/etc/profile.d`, which the service tests wrote before.
+- **Migration proof** (migration `0005`; `0004` is task 10's): the integration branch's
+  `schema.sql` plus `0005`, and `main`'s plus `0002`, `0003` and `0005`, each dump identically to
+  the new `schema.sql`; `0002`, `0003` and `0005` applied over the new `schema.sql` change nothing.
+- **Not changed:** the proxy's listen address and the shim's proxy address are still read when the
+  service builds them; only the PAC's is read at each start, as the brief says. A first start with
+  no bundle therefore still binds the proxy on a random port once inspection is turned on.
+  `Bundle.Intercepts` does not consult `enabled`: nothing calls it while the proxy is off.

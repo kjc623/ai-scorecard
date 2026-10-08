@@ -1,8 +1,8 @@
 // Package policyserve serves GET /v1/policy and writes ops.policy_bundle.
 //
 // A tenant's bundle is composed from what the database says about it: the tenant's ceiling as the
-// default collection mode, the tool catalogue's TLS hosts as the interception scope, and the
-// tenant's endpoint collector settings. It is signed with the vendor's Ed25519 policy key in the
+// default collection mode, its TLS inspection setting and the tool catalogue's TLS hosts as the
+// interception scope, and the tenant's endpoint collector settings. It is signed with the vendor's Ed25519 policy key in the
 // envelope the agent verifies, and stored with the exact signed bytes. A new version is minted only when the
 // composition or the signing key differs from the latest stored bundle; otherwise the stored bytes
 // are served again, so the ETag a device holds stays valid until something it would enforce
@@ -267,6 +267,7 @@ func (s *Service) compose(in store.PolicyInputs) (*Bundle, error) {
 		TenantDefault: string(mode),
 		ToolModes:     toolModes,
 		Interception: Interception{
+			Enabled:     in.Tenant.TLSInspection,
 			SeedHosts:   hosts,
 			Ports:       []int{443},
 			ProxyListen: s.cfg.ProxyListen,
@@ -338,7 +339,7 @@ func (s *Service) mint(tenantID string, latest *store.PolicyBundle, b Bundle, no
 	if err != nil {
 		return store.MintDecision{}, err
 	}
-	featureJSON, err := json.Marshal(map[string]any{"cli_shim": true, "proxy_tls": true})
+	featureJSON, err := json.Marshal(map[string]any{"cli_shim": b.Interception.Enabled, "proxy_tls": b.Interception.Enabled})
 	if err != nil {
 		return store.MintDecision{}, err
 	}

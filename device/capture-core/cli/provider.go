@@ -182,12 +182,16 @@ func (p *Provider) Sequence() []string {
 // Counters exposes the closed counter set for the coverage row.
 func (p *Provider) Counters() *core.CounterSet { return p.counters }
 
+// Enabled implements core.Toggled: the shim points runtimes at proxy.tls and its root, so it is
+// written only while the tenant's TLS inspection is on.
+func (p *Provider) Enabled(b *policy.Bundle) bool { return b != nil && b.Interception.Enabled }
+
 // Start writes the managed files and performs the platform install. It is idempotent and
 // transactional: a failed Start removes everything it wrote, because a half-written
-// profile is worse than none.
+// profile is worse than none. A Start after a Stop writes them again.
 func (p *Provider) Start(ctx context.Context) error {
 	p.mu.Lock()
-	if p.started {
+	if p.started && !p.stopped {
 		p.mu.Unlock()
 		return nil
 	}

@@ -190,3 +190,67 @@ func TestEndpointSettingsAgainstPostgres(t *testing.T) {
 		t.Fatalf("audits =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(wantAudits, "\n"))
 	}
 }
+
+// TestTLSInspectionAgainstPostgres: a new tenant has TLS inspection off in both the Settings page
+// and the policy inputs; turning it on and off is read back, and each write is audited with the old
+// and the new value.
+func TestTLSInspectionAgainstPostgres(t *testing.T) {
+	owner := pgtest.Open(t)
+	st := store.NewSQL(pgtest.OpenAs(t, "sac_control"))
+	ctx := context.Background()
+	tenant := pgtest.Tenant(t, owner, "eastus")
+	audit := store.AuditEntry{TenantID: tenant, ActorType: store.ActorUser, ActorID: "admin@example.com",
+		Action: "tenant.tls_inspection.set", ObjectType: "tenant", ObjectID: tenant, OccurredAt: time.Now().UTC().Truncate(time.Microsecond)}
+
+	read := func() (bool, bool) {
+		t.Helper()
+		s, err := st.Settings(ctx, tenant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		in, err := st.PolicyInputs(ctx, tenant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s.TLSInspection, in.Tenant.TLSInspection
+	}
+	if page, policy := read(); page || policy {
+		t.Fatalf("a new tenant reads TLS inspection %t (Settings) and %t (policy), want off", page, policy)
+	}
+	if err := st.SetTLSInspection(ctx, tenant, true, audit); err != nil {
+		t.Fatal(err)
+	}
+	if page, policy := read(); !page || !policy {
+		t.Fatalf("after turning it on: %t (Settings) and %t (policy), want on", page, policy)
+	}
+	if err := st.SetTLSInspection(ctx, tenant, false, audit); err != nil {
+		t.Fatal(err)
+	}
+	if page, policy := read(); page || policy {
+		t.Fatalf("after turning it off: %t (Settings) and %t (policy), want off", page, policy)
+	}
+	if err := st.SetTLSInspection(ctx, pgtest.UUID(t), true, audit); !errors.Is(err, store.ErrUnknownTenant) {
+		t.Fatalf("unknown tenant: %v", err)
+	}
+
+	rows, err := owner.QueryContext(ctx, `SELECT detail->>'previous', detail->>'new' FROM ops.audit
+		WHERE tenant_id = $1::uuid AND action = 'tenant.tls_inspection.set' ORDER BY audit_seq`, tenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var previous, next string
+		if err := rows.Scan(&previous, &next); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, previous+">"+next)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"false>true", "true>false"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("audits = %v, want %v", got, want)
+	}
+}

@@ -25,10 +25,11 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	platform = facilities{
-		trustStore: func(func(string, ...any)) trustStore { return &fakeTrustStore{} },
-		shimRunner: &fakeRunner{},
-		shimDir:    shimDir,
-		nativeAddr: testNativeAddr(),
+		trustStore:  func(func(string, ...any)) trustStore { return &fakeTrustStore{} },
+		shimRunner:  &fakeRunner{},
+		shimDir:     shimDir,
+		shimProfile: filepath.Join(shimDir, "profile"),
+		nativeAddr:  testNativeAddr(),
 	}
 	code := m.Run()
 	_ = os.RemoveAll(shimDir)
@@ -86,6 +87,7 @@ func withConsole(t *testing.T, c *fakeConsole) {
 type fakeTrustStore struct {
 	mu        sync.Mutex
 	installed []byte
+	installs  int
 	removes   int
 }
 
@@ -93,6 +95,7 @@ func (f *fakeTrustStore) Install(_ context.Context, der []byte) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.installed = append([]byte(nil), der...)
+	f.installs++
 	return nil
 }
 

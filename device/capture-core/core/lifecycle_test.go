@@ -230,3 +230,69 @@ func TestPanicDuringAPolicyStartIsContainedToOneRow(t *testing.T) {
 		assertRow(t, reg, c, protocol.StateHealthy, protocol.DetailNone)
 	}
 }
+
+// A fixed provider that is Toggled and switched off by the bundle in force is not started at its
+// own step, and reports absent with disabled_by_policy. Once start_collectors has run, a bundle that
+// switches it on starts it and one that switches it off stops it; the step order is unchanged.
+func TestAFixedProviderTheBundleSwitchesOffWaitsForAToggle(t *testing.T) {
+	log := &orderLog{}
+	reg := NewRegistry(testClock, nil)
+	loop := &recordingProvider{collector: protocol.CollectorLoopbackBroker, log: log}
+	off := map[string]bool{"1": true, "3": true}
+	shim := &toggledProvider{collector: protocol.CollectorCLIShim, log: log, off: off}
+	proxy := &toggledProvider{collector: protocol.CollectorEgressProxy, log: log, off: off}
+	for _, p := range []Provider{shim, proxy, loop} {
+		if err := reg.Add(p); err != nil {
+			t.Fatalf("Add(%s): %v", p.Name(), err)
+		}
+	}
+	sup, err := NewSupervisor(reg, nil, testClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sup.Policy = &applyingPolicy{log: log, reg: reg, bundle: &policy.Bundle{Version: "1"}}
+	sup.Spool = &recordingSpool{log: log}
+	sup.Loopback = loop
+
+	if err := sup.Startup(context.Background()); err != nil {
+		t.Fatalf("Startup: %v", err)
+	}
+	assertSequence(t, "startup with both switched off", log.all(), []string{
+		"policy.Load", "spool.Open", "provider.Start:loopback_broker",
+	})
+	assertSequence(t, "recorded startup steps", sup.Order(), StartupOrder())
+	assertRow(t, reg, protocol.CollectorCLIShim, protocol.StateAbsent, protocol.DetailDisabledByPolicy)
+	assertRow(t, reg, protocol.CollectorEgressProxy, protocol.StateAbsent, protocol.DetailDisabledByPolicy)
+
+	log.reset()
+	reg.ApplyPolicy(policy.Bundle{Version: "2"})
+	started := log.all()
+	slices.Sort(started)
+	assertSequence(t, "switched on", started, []string{"provider.Start:cli_shim", "provider.Start:egress_proxy"})
+	assertRow(t, reg, protocol.CollectorCLIShim, protocol.StateHealthy, protocol.DetailNone)
+	assertRow(t, reg, protocol.CollectorEgressProxy, protocol.StateHealthy, protocol.DetailNone)
+
+	log.reset()
+	reg.ApplyPolicy(policy.Bundle{Version: "3"})
+	stopped := log.all()
+	slices.Sort(stopped)
+	assertSequence(t, "switched off", stopped, []string{"provider.Stop:cli_shim", "provider.Stop:egress_proxy"})
+	assertRow(t, reg, protocol.CollectorCLIShim, protocol.StateAbsent, protocol.DetailDisabledByPolicy)
+	assertRow(t, reg, protocol.CollectorEgressProxy, protocol.StateAbsent, protocol.DetailDisabledByPolicy)
+	assertRow(t, reg, protocol.CollectorLoopbackBroker, protocol.StateHealthy, protocol.DetailNone)
+
+	if err := sup.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	for _, p := range []*toggledProvider{shim, proxy} {
+		if starts, _ := p.counts(); starts != 1 {
+			t.Errorf("%s started %d times, want once, by the toggle", p.collector, starts)
+		}
+		p.mu.Lock()
+		running := p.running
+		p.mu.Unlock()
+		if running {
+			t.Errorf("%s is still running after shutdown", p.collector)
+		}
+	}
+}

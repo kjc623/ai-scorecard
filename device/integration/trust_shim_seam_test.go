@@ -110,6 +110,16 @@ func (p *fakeProxyTLS) Health() core.Health {
 }
 func (p *fakeProxyTLS) ApplyPolicy(policy.Bundle) error { return nil }
 
+// inspectionOn is the supervisor's load step with a bundle in force that turns TLS inspection on,
+// as the service applies its cached bundle before any provider starts: the shim and the proxy run
+// only then.
+type inspectionOn struct{ reg *core.Registry }
+
+func (p inspectionOn) Load(context.Context) error {
+	p.reg.ApplyPolicy(policy.Bundle{Version: "integration-0", Interception: policy.Interception{Enabled: true}})
+	return nil
+}
+
 func indexOf(haystack []string, needle string) int {
 	for i, s := range haystack {
 		if s == needle {
@@ -138,6 +148,7 @@ func TestTrustShimSeamStartsTheShimBeforeTheProxy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new supervisor: %v", err)
 	}
+	sup.Policy = inspectionOn{reg}
 	if err := sup.Startup(context.Background()); err != nil {
 		t.Fatalf("Startup: %v", err)
 	}
@@ -206,13 +217,15 @@ func TestTrustShimSeamKillSwitchRemovesShimFilesAndReportsKilled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new supervisor: %v", err)
 	}
+	sup.Policy = inspectionOn{reg}
 	if err := sup.Startup(context.Background()); err != nil {
 		t.Fatalf("Startup: %v", err)
 	}
 
 	b := &policy.Bundle{
-		Version:     "integration-ks-1",
-		EffectiveAt: time.Now().Add(-time.Hour),
+		Version:      "integration-ks-1",
+		EffectiveAt:  time.Now().Add(-time.Hour),
+		Interception: policy.Interception{Enabled: true},
 		KillSwitches: []policy.KillSwitch{{
 			Provider:    protocol.RouteProxyTLS, // proxy.tls disable must also stop the shim
 			Mode:        policy.KillDisable,

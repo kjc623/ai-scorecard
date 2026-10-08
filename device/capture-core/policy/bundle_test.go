@@ -152,6 +152,42 @@ func TestEndpointSectionDecodes(t *testing.T) {
 	}
 }
 
+// TLS inspection is the bundle's interception.enabled: on when the tenant turned it on, and off for
+// a bundle that does not name it.
+func TestInterceptionEnabledDecodes(t *testing.T) {
+	v, priv := newKeyPair(t, "policy-key-1")
+	on := testBundle("50")
+	on.Interception.Enabled = true
+	raw, err := Sign("policy-key-1", priv, on)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := v.Open(raw, nil)
+	if err != nil || !b.Interception.Enabled {
+		t.Fatalf("a bundle with interception.enabled true opened as %+v, %v", b, err)
+	}
+
+	var env map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatal(err)
+	}
+	payload := string(env["payload"])
+	unnamed := strings.Replace(payload, `"interception":{"enabled":true,`, `"interception":{`, 1)
+	if unnamed == payload {
+		t.Fatalf("the payload does not open its interception section with enabled: %s", payload)
+	}
+	env["payload"] = json.RawMessage(unnamed)
+	env["signature"], _ = json.Marshal(base64.StdEncoding.EncodeToString(ed25519.Sign(priv, []byte(unnamed))))
+	raw, err = json.Marshal(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err = v.Open(raw, nil)
+	if err != nil || b.Interception.Enabled {
+		t.Fatalf("a bundle without interception.enabled opened as %+v, %v; want inspection off", b, err)
+	}
+}
+
 func TestEndpointSectionValidation(t *testing.T) {
 	v, priv := newKeyPair(t, "policy-key-1")
 	refused := map[string][2]string{
