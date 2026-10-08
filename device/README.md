@@ -10,6 +10,8 @@ signed collection policy, spools them encrypted and delivers them to the device 
 |---|---|
 | `protocol` | The shapes the device components and the device edge agree on: enrolment, policy, events, health, content upload, native messaging, classifier frames, spool records. |
 | `capture-core` | The agent binary (`cmd/capture-core`) and its packages: `core` (pipeline, mode gate, envelope, supervisor), `policy`, `enforce` (evaluates the bundle's enforcement rules), `proxy/tlsproxy`, `proxy/loopback`, `cli` (CLI trust shim), `trust`, `drain` (enrolment, delivery, policy fetch, health, content upload), `credential`, `contentstore`, `state`, `hostinfo`, `dedup`, `classifierlink`, `attachments`, `localipc` (the local endpoint the browser relay and the user-session helper connect to), `userhelper` (the user-session helper), `toolconfig` (writes AI tools' managed configuration), `discovery` (de-duplicates and budgets discovery records), `inventory` (the installed-app scanner), `component` (supervises the child processes capture-core runs, such as classifier-host: restarts with backoff, at most 5 times in 10 minutes, and kills them with the service). |
+
+| `capture-core` | The agent binary (`cmd/capture-core`) and its packages: `core` (pipeline, mode gate, envelope, supervisor), `policy`, `enforce` (evaluates the bundle's enforcement rules), `proxy/tlsproxy`, `proxy/loopback`, `cli` (CLI trust shim), `trust`, `drain` (enrolment, delivery, policy fetch, health, content upload), `credential`, `contentstore`, `state`, `hostinfo`, `dedup`, `classifierlink`, `attachments`, `localipc` (the local endpoint the browser relay and the user-session helper connect to), `userhelper` (the user-session helper), `toolconfig` (writes AI tools' managed configuration), `etwsession` (real-time ETW sessions), `procmon` (the process monitor), `component` (supervises the child processes capture-core runs, such as classifier-host: restarts with backoff, at most 5 times in 10 minutes, and kills them with the service). |
 | `capture-spool` | The encrypted, bounded, crash-safe single-writer spool. |
 | `classifier-host` | The on-device classifier, run by capture-core as a child process on stdio. |
 | `extension` | The Chrome/Edge extension that observes browser submissions to AI tools and hands them, with their attachments, to capture-core through the native messaging host. |
@@ -132,6 +134,20 @@ an app the catalog names no other way) and emits each match as a `discovery` rec
 machine-wide install, at most once per day. Its health row is `inventory_scanner`: `healthy` after a
 complete scan, `degraded` with `enumeration_partial` when a key could not be read; on macOS and
 Linux it is `absent` with `tool_version_unsupported`.
+
+## The process monitor
+
+While the bundle's `endpoint.processes.enabled` is true, the agent watches process start and stop in
+real time through an ETW session, `ShadowAICapture-process`, on `Microsoft-Windows-Kernel-Process`
+(keyword `WINEVENT_KEYWORD_PROCESS`, events 1 and 2), and lists the running processes once when it
+starts. A process whose executable name is a catalog app's `windows_exe` is attributed to the account
+it runs as and recorded once per app, user and UTC day as an `app_running` discovery with the
+image's file version and its verified signer, even when the signer is not the catalog's publisher.
+Processes of the same app that it starts are part of the same running app. The service log has one
+line, naming the app and the process id, when an app starts and one when it stops. Its health row is
+`process_detector`: `healthy` while the session delivers events, `degraded` with
+`etw_session_failed` while it cannot be opened (it is retried every minute); on macOS and Linux it is
+`absent` with `etw_session_failed`.
 
 ## Build and test
 

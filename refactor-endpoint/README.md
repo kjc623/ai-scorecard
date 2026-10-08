@@ -47,7 +47,7 @@ The Plan column gives the plan's task id. "Built" is ticked when the task's "Don
 | 16 | [Installed app scanner](16-installed-app-scanner/TASK.md) | E07 | 15 | Claude Desktop, ChatGPT Desktop, Cursor installed | [x] | [ ] |
 | 17 | [CLI and package scanner](17-cli-scanner/TASK.md) | E08 | 16 | claude, codex, gemini, copilot CLIs installed | [ ] | [ ] |
 | 18 | [IDE extension scanner](18-ide-extension-scanner/TASK.md) | E09 | 16 | VS Code with Copilot, Claude Code and Continue extensions | [ ] | [ ] |
-| 19 | [Process monitor](19-process-monitor/TASK.md) | E10 | 09, 15 | | [ ] | [ ] |
+| 19 | [Process monitor](19-process-monitor/TASK.md) | E10 | 09, 15 | | [x] | [ ] |
 | 20 | [Local model detection](20-local-model-detection/TASK.md) | E11 | 16 | Ollama with two models | [ ] | [ ] |
 | 57 | [Local model capture in policy](57-loopback-policy/TASK.md) | E11 | 08, 20 | Ollama with two models | [ ] | [ ] |
 | 21 | [Connection monitor](21-connection-monitor/TASK.md) | E12 | 19 | | [ ] | [ ] |

@@ -350,6 +350,10 @@ const (
 	DetailToolNotInstalled       Detail = "tool_not_installed"
 	DetailToolVersionUnsupported Detail = "tool_version_unsupported"
 	DetailConfigWriteFailed      Detail = "config_write_failed"
+
+	// ETW. The real-time session a collector reads could not be opened or stopped delivering
+	// events, or the platform has none.
+	DetailETWSessionFailed Detail = "etw_session_failed"
 )
 
 // AllDetails is the closed vocabulary, for validation and for a coverage report that needs to
@@ -373,6 +377,7 @@ var AllDetails = [...]Detail{
 	DetailIdentityUnresolved, DetailDisabledByPolicy,
 	DetailHelperUnavailable, DetailComponentCrashLoop,
 	DetailToolNotInstalled, DetailToolVersionUnsupported, DetailConfigWriteFailed,
+	DetailETWSessionFailed,
 }
 
 // Valid reports whether the detail is in the closed vocabulary. An empty detail is valid: a

@@ -11,17 +11,42 @@ import (
 	"github.com/shadow-ai-capture/device/protocol"
 )
 
-// discoveryEmitter is the one discovery emitter every discovery collector shares, so the device
-// keeps one seen file and one daily budget. The emitter needs the device id, so it is built at its
-// first use: collectors start only once the identity is resolved, which is after enrolment.
+// discoveryEmitter is the one discovery emitter every discovery collector reports to. It is built
+// for the issued device at the first record after enrolment, and again if the issued device
+// changes. Before enrolment a record is refused and counted as an error, as the pipeline would
+// refuse it.
 type discoveryEmitter struct {
 	svc *service
 
-	mu sync.Mutex
-	e  *discovery.Emitter
+	mu     sync.Mutex
+	device string
+	e      *discovery.Emitter
 }
 
-// Emit implements inventory.Emitter. Before enrolment it counts an error and emits nothing.
+func (d *discoveryEmitter) emitter() (*discovery.Emitter, error) {
+	c := d.svc.issuedCredential()
+	if c == nil {
+		return nil, errors.New("discovery: the device is not enrolled yet")
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.e == nil || d.device != c.DeviceID {
+		e, err := discovery.New(discovery.Config{
+			Pipeline: d.svc.pipe,
+			Dir:      d.svc.dir,
+			Clock:    time.Now,
+			Bundles:  d.svc.currentBundle,
+			DeviceID: c.DeviceID,
+		})
+		if err != nil {
+			return nil, err
+		}
+		d.e, d.device = e, c.DeviceID
+	}
+	return d.e, nil
+}
+
+// Emit implements procmon.Emitter.
 func (d *discoveryEmitter) Emit(ctx context.Context, collector *core.CounterSet, r discovery.Record) error {
 	e, err := d.emitter()
 	if err != nil {
@@ -31,26 +56,12 @@ func (d *discoveryEmitter) Emit(ctx context.Context, collector *core.CounterSet,
 	return e.Emit(ctx, collector, r)
 }
 
-func (d *discoveryEmitter) emitter() (*discovery.Emitter, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.e != nil {
-		return d.e, nil
+// Stop implements procmon.Emitter. A stop is never an envelope, so it is counted with or without
+// an enrolment.
+func (d *discoveryEmitter) Stop(ctx context.Context, collector *core.CounterSet, r discovery.Record) {
+	if e, err := d.emitter(); err == nil {
+		e.Stop(ctx, collector, r)
+		return
 	}
-	c := d.svc.issuedCredential()
-	if c == nil {
-		return nil, errors.New("discovery: the device is not enrolled yet")
-	}
-	e, err := discovery.New(discovery.Config{
-		Pipeline: d.svc.pipe,
-		Dir:      d.svc.dir,
-		Clock:    time.Now,
-		Bundles:  d.svc.currentBundle,
-		DeviceID: c.DeviceID,
-	})
-	if err != nil {
-		return nil, err
-	}
-	d.e = e
-	return e, nil
+	collector.Add(protocol.CounterObserved)
 }

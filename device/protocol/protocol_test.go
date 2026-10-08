@@ -625,6 +625,16 @@ func TestInventoryScannerVocabulary(t *testing.T) {
 	}
 }
 
+// The process monitor's collector and detail are in the closed vocabularies.
+func TestProcessDetectorVocabulary(t *testing.T) {
+	if !CollectorProcessDetector.Valid() || CollectorProcessDetector != "process_detector" {
+		t.Errorf("collector %q is not the process_detector code", CollectorProcessDetector)
+	}
+	if !DetailETWSessionFailed.Valid() || DetailETWSessionFailed != "etw_session_failed" {
+		t.Errorf("detail %q is not the etw_session_failed code", DetailETWSessionFailed)
+	}
+}
+
 // A notification is bounded in characters, holds no control character but a body's line break,
 // and links only to an absolute https URL.
 func TestNotifyValidate(t *testing.T) {
