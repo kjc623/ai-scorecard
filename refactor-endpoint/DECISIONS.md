@@ -1635,3 +1635,119 @@ decided and why, and for a vendor fact the product version checked.
   Elsewhere it returns `ErrUnsupported`.
 - **Not run here:** `inventory/models_windows_test.go` and `TestListenersOnFindsThisProcess` in
   `hostinfo`. They compile and vet under `GOOS=windows`.
+
+## 2026-10-08, task 32
+
+Build phase: research only, no code and no fixtures. Every answer below is **from the documentation**,
+read 2026-10-08 (https://claude.com/docs/cowork/monitoring.md; the Claude Desktop configuration, telemetry
+and MDM pages under https://claude.com/docs/third-party/claude-desktop/, `.md` form; the support articles
+"Monitor Cowork activity with OpenTelemetry" (14477985), "Enterprise configuration for Claude Desktop"
+(12622667, dated 2026-09-02) and "Get started with Cowork" (13345190); https://code.claude.com/docs/en/managed-settings
+and `model-config`). The newest Claude Desktop on the changelog is v2.26454.2 (2026-10-07, bundled Claude
+Code 2.1.293). `docs.anthropic.com` was not tried; the Harmonic page (www.harmonic.security) is blocked from
+the build machine, so only `PLAN.md`'s summary of it is used: OTel is the only way to see Cowork prompts,
+and Anthropic's Compliance API, audit logs and exports do not cover Cowork. It says nothing the plan records
+about what Harmonic configures; the vendor's own pages answer the questions below. The device phase confirms
+or corrects each answer marked **[device]**.
+
+- **Platforms.** Cowork runs in Claude Desktop on macOS and Windows (all paid plans; the support article
+  names no minimum OS) and, as remote sessions, on web and mobile. OTel monitoring is **Team and Enterprise
+  only**. Local sessions need Desktop 1.1.4173 or later; cloud sessions 1.22209.3 or later; the
+  `assistant_response` event and the `otlpContentCapture` defaults below need 1.17377 or later. Local Cowork
+  runs in a workspace VM on macOS and Windows. **[device]** the Desktop version on the reference VM, and that
+  its account is Team or Enterprise (the setting may not exist on other plans).
+- **Where the OTel settings live: two places, split by what they control.**
+  - The collector (`OTLP endpoint`, `OTLP protocol` `http/json` or `http/protobuf`, `OTLP headers`) is set
+    by an administrator in **Admin settings > Cowork** on claude.ai (the support article says
+    "Organization settings > Cowork"). It is server-side, per organisation; the device agent cannot write it,
+    and "events are only exported when an admin configures the OTLP endpoint". It applies to a new session,
+    not a running one, and to every Cowork session on a user's computer in Claude Desktop, Dispatch tasks
+    included, but **not** to Code-tab sessions (those arrive as `service.name` `claude-code-desktop`).
+  - What events carry is a **device** key, `otlpContentCapture` (below).
+- **An admin-managed device location exists.** Claude Desktop reads the same keys from MDM: on Windows
+  `HKLM\SOFTWARE\Policies\Claude` (machine) or `HKCU\SOFTWARE\Policies\Claude`; on macOS the
+  `com.anthropic.claudefordesktop` domain; on Linux `/etc/claude-desktop/managed-settings.json`. Values are
+  `REG_SZ` directly under the key (`REG_DWORD` for booleans and integers; arrays and objects are JSON text;
+  `REG_EXPAND_SZ`, `REG_MULTI_SZ`, `REG_QWORD` and `REG_BINARY` are unreadable). The keys are `otlpEndpoint`,
+  `otlpProtocol` (`http/protobuf` default, `http/json`, `grpc`; Cowork falls back from `grpc` to
+  `http/protobuf` on Windows), `otlpHeaders` (JSON object), `otlpHeadersHelper` (path of an executable that
+  prints the headers as JSON), `otlpAuthMode`, `otlpResourceAttributes`, `otlpContentCapture` and
+  `otlpTracesEnabled`. The reference lists them as "MDM + Bootstrap"; a managed source wins over locally
+  written values, the app reads them at launch and, from 1.46388.1, re-checks every 10 minutes and asks the
+  user to restart (required after 24 hours). Users cannot override an HKLM value. Two cautions for any
+  writer:
+  - when machine policy exists under `HKLM\SOFTWARE\Policies\Claude`, **the app ignores
+    `HKCU\SOFTWARE\Policies\Claude` entirely**, so an agent that creates the HKLM key would silently switch
+    off a customer's HKCU-only policy;
+  - the key reference is written for third-party (3P) deployments. It says 3P reads "the same
+    managed-configuration sources as standard Claude Desktop", and the Cowork page applies
+    `otlpContentCapture` to first-party deployments, but no page says that a first-party install honours
+    `otlpEndpoint` from HKLM, or which wins when the admin console and the registry both set it. **[device]**
+- **Also documented:** Claude Code inside a Cowork session on the user's machine reads the device's MDM
+  policy and `C:\Program Files\ClaudeCode\managed-settings.json` by default (task 27's file); with
+  `requireCoworkFullVmSandbox` (deprecated) set it does not, and remote sessions never do. Server-managed
+  settings are never delivered to Cowork. When `otlpEndpoint` is set, only `otlpTracesEnabled` decides trace
+  export, whatever managed settings say. Whether task 27's `env` keys change a Cowork session's export when
+  no `otlpEndpoint` is set is not documented. **[device]**
+- **`service.name` and events.** Resource attributes: `service.name` = `cowork`, `service.version` (the
+  app version), `host.arch`, `os.type`, `os.version`, `process.owner` (OS login name), and on 3P
+  deployments `enduser.id`. The session types arrive as `cowork`, `claude-code-desktop` and `claude-desktop`
+  (the app's own events, always `http/json`). Event names carry **no `claude_code.` prefix**:
+  `user_prompt`, `assistant_response`, `tool_result`, `tool_decision`, `api_request`, `api_error`. Attributes:
+  `session.id`, `prompt.id`, `organization.id`, `user.account_uuid`, `user.account_id`, `user.id`,
+  `user.email`, `workspace.host_paths`, `terminal.type` (`non-interactive`), `event.timestamp`,
+  `event.sequence`, and per event `prompt_length`, `prompt`; `model`, `request_id`, `response_length`,
+  `response`; `tool_name`, `success`, `duration_ms`, `error`, `decision_type`, `decision_source`,
+  `tool_result_size_bytes`, `mcp_server_scope`, `tool_parameters`, `tool_input`; `cost_usd`, `input_tokens`,
+  `output_tokens`, `cache_read_tokens`, `cache_creation_tokens`, `speed`; `status_code`, `attempt`;
+  `decision`, `source`. Logs and metrics are exported; traces only with `otlpTracesEnabled` (beta,
+  1.22209.0 or later). Metrics export once a minute. **[device]** the names, where the event name sits
+  (attribute or body, as task 25 found for Claude Code), the value types and any undocumented extras.
+- **Prompt text and its switch.** `prompt` carries the text under `otlpContentCapture` (categories
+  `userPrompts`, `assistantResponses`, `toolDetails`, `toolContent`, `rawApiBodies`; a JSON array string; `[]`
+  means metadata only, and an empty string reads as unset). On Desktop 1.17377 or later `userPrompts`
+  always adds model response text. **When the key is unset on a first-party deployment, events carry user
+  prompts, responses and `toolDetails`** (on 3P, nothing); the support article agrees ("prompt content is
+  included by default"). `workspace.host_paths` and, on first-party, `user.email` are always sent. This is
+  the reverse of the product's default (nothing at `m0`; prompt text only on a grant), so a writer must set
+  the key itself: `["userPrompts"]` at `m1` and above for the tool (responses then arrive too and are not
+  used), `[]` otherwise. **[device]** the value of `prompt` when redacted (`<REDACTED>` is documented for
+  `response` only) and that `[]` removes prompt text.
+- **The exporter's location is the decisive open question.** The Cowork page says "the OTel exporter runs
+  inside the Cowork VM, so it is subject to the session's egress rules" and adds the collector host to the
+  egress allowlist itself; the 3P telemetry page says "each device opens its own connection to the collector"
+  and that the collector must present a certificate the OS trusts. If the exporter is in the workspace VM,
+  the agent's receiver on `127.0.0.1:47318` is not reachable: loopback in the VM is the VM, the receiver
+  binds loopback only (`DESIGN.md` §5), and the sender-process attribution (task 24) would see a virtual-NIC
+  peer, not a user process. Cowork would then not be collectable by the local receiver at all. **[device]**
+  first: point the exporter at a listener on the host and read the source address and whether the
+  connection arrives.
+- **Whether the Claude Code normalizer (task 26) already accepts the events: no, as written.**
+  - It `Accepts` only `service.name` `claude-code`; Cowork's is `cowork`, so the events fall through to the
+    generic GenAI normalizer (task 33) or are not routed. Its `tool_fingerprint` is `app:claude_code`, which
+    is wrong for Cowork.
+  - The event name is read from `event.name`, then the OTLP `eventName`, then a `claude_code.` body, so the
+    unprefixed names would match if the name sits in one of the first two. The converted events use
+    attribute keys that Cowork documents under the same names (`prompt`, `prompt_length`, `tool_name`,
+    `success`, `duration_ms`, `decision_type`, `decision`, `model`, `input_tokens`, `output_tokens`,
+    `event.timestamp`, `event.sequence`, `session.id`). `assistant_response` is not a converted event and
+    would need a dropped reason; the resource attributes `process.owner` and `enduser.id` are in no table.
+    Read from `attributes.go` and the tests, not run.
+- **Outcome (provisional, set in the device phase).** Most likely **Needs follow-up**; none is started, in
+  this order:
+  1. A Cowork normalizer for `service.name` `cowork` with fingerprint `app:claude_cowork` (the existing
+     `claude_desktop` app key is the product; Cowork is a feature of it), sharing task 26's event handling,
+     with its own mapped and dropped tables and fixtures under `testdata/cowork/<version>/`.
+  2. A `cowork` tool key in `DESIGN.md` §5 and the policy bundle (`endpoint.tools.cowork.otel`, default on),
+     with `toolconfig.ToolForApp` mapping `claude_desktop` to it; the native-first exclusion (§10) must not
+     blind-tunnel Desktop's chat and Code traffic, which this OTel does not cover.
+  3. A Windows writer, `tool_config_cowork`, that merges into `HKLM\SOFTWARE\Policies\Claude` as `REG_SZ`
+     (`otlpEndpoint`, `otlpProtocol` `http/protobuf`, `otlpHeaders` or `otlpHeadersHelper` for the token,
+     `otlpContentCapture` by mode), backs up and restores like task 27, and copies a customer's HKCU values
+     into HKLM first. It is worth building only if the checks above pass. A collector endpoint that the
+     customer's admin set in the admin console cannot be overridden from the device.
+
+  If the exporter runs in the VM and cannot reach the host, or a first-party install ignores the registry
+  keys, the outcome is **Not collectable**. What would change it: an endpoint reachable from the VM (a
+  host-side listener on an address the VM can reach, which `DESIGN.md` §5 does not allow), or the customer's
+  own collector forwarding to the product.
