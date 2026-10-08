@@ -5,6 +5,9 @@
 //
 // Request bodies carry prompt text, so nothing here logs a body, an attribute value or a decoding
 // error, which can quote the body.
+//
+// Every normalizer in otlp/normalizers' list runs through the canary test in privacy_test.go, so
+// a normalizer added to the list is held to its mode's privacy guarantee without editing the test.
 package otlp
 
 import (

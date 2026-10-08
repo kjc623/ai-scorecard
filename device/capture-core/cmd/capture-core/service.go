@@ -24,8 +24,7 @@ import (
 	"github.com/shadow-ai-capture/device/capture-core/hostinfo"
 	"github.com/shadow-ai-capture/device/capture-core/localipc"
 	"github.com/shadow-ai-capture/device/capture-core/otlp"
-	"github.com/shadow-ai-capture/device/capture-core/otlp/claudecode"
-	"github.com/shadow-ai-capture/device/capture-core/otlp/genai"
+	"github.com/shadow-ai-capture/device/capture-core/otlp/normalizers"
 	"github.com/shadow-ai-capture/device/capture-core/policy"
 	"github.com/shadow-ai-capture/device/capture-core/proxy/loopback"
 	"github.com/shadow-ai-capture/device/capture-core/proxy/tlsproxy"
@@ -460,15 +459,17 @@ func (s *service) buildProviders() error {
 	}
 
 	// The listen addresses arrive with the bundle that switches the receiver on. A sending process's
-	// owner is named the way a browser peer is. The generic GenAI normalizer is last, so it sees only
-	// what no tool's normalizer accepts.
+	// owner is named the way a browser peer is.
 	otelCounters := core.NewCounterSet(time.Now())
 	otel, err := otlp.New(otlp.Config{
 		TokenPath: s.dir.Path(otlp.TokenFile),
-		Normalizers: []otlp.Normalizer{
-			claudecode.New(claudecode.Config{Pipeline: s.pipe, Log: s.logf, Bundles: s.pipe.Bundles}),
-			genai.New(genai.Config{Pipeline: s.pipe, Counters: otelCounters, Bundles: s.pipe.Bundles, Clock: time.Now}),
-		},
+		Normalizers: normalizers.Registered(normalizers.Deps{
+			Pipeline: s.pipe,
+			Bundles:  s.pipe.Bundles,
+			Counters: otelCounters,
+			Log:      s.logf,
+			Clock:    time.Now,
+		}),
 		Counters: otelCounters,
 		Person:   s.peerPerson,
 		Log:      s.logf,

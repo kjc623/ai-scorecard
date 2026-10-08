@@ -719,3 +719,50 @@ decided and why, and for a vendor fact the product version checked.
 - **Lifecycle.** The service opens the root once per process; the proxy's Start and Stop only
   install and remove trust. Renewal near expiry overwrites the CNG key. Deleting the key is the
   uninstall's (task 50); this task adds no delete path.
+
+## 2026-10-08, task 35
+
+- **One registration list.** `otlp/normalizers.Registered(Deps)` returns the normalizers in the
+  receiver's order. `buildProviders` calls it, and both canary tests iterate over it.
+  - A normalizer's canary fixtures are `otlp/testdata/privacy/<Name()>/{logs,traces}-*.json`:
+    OTLP/JSON export requests in which `{{CANARY}}` marks the prompt text and `{{DROPPED_CANARY}}` a
+    value the normalizer drops.
+  - A registered normalizer with no fixtures, or with none carrying a dropped value, fails the test.
+    A later normalizer adds a line to the list and fixture files, not test code.
+  - `Deps.AppByExe` passes through to the generic normalizer. It stays nil until the catalog lookup
+    is wired.
+- **The fixture prompt is a sentence around the canary** ("Check the medical records of
+  SAC-CANARY-...") rather than the canary alone. The shipped rules then label it `health`, so m1 and
+  m2 are checked with real labels.
+  - Claude Code: the documented `user_prompt` record with its prompt replaced. Its dropped value is
+    `user.email`.
+  - GenAI: a chat span with `gen_ai.input.messages` as a JSON string, and an inference-details event
+    whose dropped values are `gen_ai.system_instructions` and `gen_ai.output.messages`.
+- **A second canary marks the dropped value**, so that value is told apart from the prompt even in
+  the content store or an excerpt. It is allowed nowhere at any mode.
+- **Two harnesses, the same matrix.** Neither module can import the other's test code, so the
+  harness is written in both.
+  - `otlp/privacy_test.go` uses a stand-in classifier whose m2 excerpt is the matched canary, so the
+    "only inside `content_excerpt.text`" accounting sees a hit.
+  - `device/integration/otel_privacy_test.go` uses classifier-host under its supervisor. Its m2
+    excerpt is the rule's match ("medical records"), which holds no canary. Every drained envelope
+    is also checked against the contract.
+  - At m2 each uploaded excerpt must be one the classifier returned, or the empty redacted window.
+- **What is searched.** The canary is matched as text, hex, and base64 at each byte alignment.
+  - The spool: each entry through `Peek` (payload and metadata), and the files as stored.
+  - The content store: each object through `Get`, and the files as stored.
+  - The `/v1/events` bodies as the edge received them, and one `/v1/health` report.
+  - Every log line: receiver, normalizers, pipeline, drain and the classifier-host supervisor.
+  - Each run also sends the export cut short after the canary. The receiver refuses it with 400, and
+    its log line must not quote the body.
+- **The health report is assembled in the test** from the providers' rows (the receiver's, and the
+  classifier host's in integration), because the service's health channel is in package `main`. It
+  is sent through the real `drain.ReportHealth`.
+- **Exports are OTLP/HTTP JSON only.** Protobuf and gRPC decode to the same messages before routing.
+- **Leaks found: none.** No normalizer or receiver change was needed. Logging the `prompt`
+  attribute in the Claude Code normalizer fails both tests at every mode (`logs 1`).
+- **Outside `otlp`:** `buildProviders` calls the list; `device/integration` gains
+  `startClassifierHost` (which `realClassifier` wraps), and `startTLSIngest` also serves
+  `/v1/health` and keeps request bodies. The integration module's `go.mod` gains indirect
+  requirements (otlp, grpc, protobuf, genproto, grpc-gateway, x/net, godbus) at capture-core's
+  versions.

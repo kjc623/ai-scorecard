@@ -36,6 +36,14 @@ import (
 // service does.
 func realClassifier(t *testing.T) *classifierlink.Client {
 	t.Helper()
+	cl, _ := startClassifierHost(t, testLogger{t})
+	return cl
+}
+
+// startClassifierHost is realClassifier with the supervisor's log, returning the supervisor too,
+// whose row a health report carries.
+func startClassifierHost(t *testing.T, log core.Logger) (*classifierlink.Client, *component.Supervisor) {
+	t.Helper()
 	goTool, err := exec.LookPath("go")
 	if err != nil {
 		t.Fatalf("the go tool is needed to build classifier-host: %v", err)
@@ -75,7 +83,7 @@ func realClassifier(t *testing.T) *classifierlink.Client {
 		Args:      []string{"serve", "--release", rel, "--pubkey", hex.EncodeToString(pub), "--transport", "stdio"},
 		Stdio:     true,
 		Ready:     func(ctx context.Context) error { return cl.Connect(ctx) },
-	}, testLogger{t})
+	}, log)
 	cl = classifierlink.NewWithDialer(host.Dial, "integration", 30*time.Second)
 	if err := host.Start(context.Background()); err != nil {
 		t.Fatalf("start classifier-host: %v", err)
@@ -84,7 +92,7 @@ func realClassifier(t *testing.T) *classifierlink.Client {
 	if h := host.Health(); h.State != protocol.StateHealthy {
 		t.Fatalf("classifier-host is %s/%s after its handshake, want healthy", h.State, h.Detail)
 	}
-	return cl
+	return cl, host
 }
 
 type testLogger struct{ t *testing.T }

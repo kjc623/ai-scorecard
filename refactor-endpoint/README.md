@@ -65,7 +65,7 @@ The Plan column gives the plan's task id. "Built" is ticked when the task's "Don
 | 32 | [Claude Cowork spike](32-claude-cowork-spike/TASK.md) | E21 | 27 | Claude Desktop with Cowork | [ ] | [ ] |
 | 33 | [Generic GenAI normalizer](33-genai-normalizer/TASK.md) | E22 | 24 | | [x] | [ ] |
 | 34 | [Config drift watcher](34-config-drift-watcher/TASK.md) | E23 | 27, 29, 31 | | [ ] | [ ] |
-| 35 | [OTel content privacy](35-otel-content-privacy/TASK.md) | E24 | 02, 26 | | [ ] | — |
+| 35 | [OTel content privacy](35-otel-content-privacy/TASK.md) | E24 | 02, 26 | | [x] | — |
 | **Phase 3: Hooks** | | | | | | |
 | 36 | [Hook relay](36-hook-relay/TASK.md) | E25 | 02, 10, 12 | | [ ] | [ ] |
 | 37 | [Claude Code hooks](37-claude-code-hooks/TASK.md) | E26 | 27, 36 | Claude Code signed in | [ ] | [ ] |
