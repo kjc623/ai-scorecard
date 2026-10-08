@@ -58,7 +58,9 @@ const (
 // endpoint, the users' proxy settings the desktop-app PAC writes, and the process lookups that
 // attribute a proxied connection. Tests replace them so nothing touches the machine.
 type facilities struct {
-	trustStore  func(logf func(string, ...any)) trustStore
+	trustStore func(logf func(string, ...any)) trustStore
+	// deviceCA opens the per-device root, whose key is in the platform keystore.
+	deviceCA    func(ctx context.Context, dir, label string, now time.Time, trust tlsproxy.RootTrust) (*tlsproxy.CA, bool, error)
 	shimRunner  cli.Runner
 	shimDir     string // empty: the platform default (cli.DefaultManagedDir)
 	shimProfile string // empty: the platform default profile
@@ -85,6 +87,7 @@ var platform = facilities{
 	trustStore: func(logf func(string, ...any)) trustStore {
 		return trust.New(trust.Config{OS: trust.HostOS(), Logf: logf})
 	},
+	deviceCA:     tlsproxy.OpenDeviceCA,
 	shimRunner:   trust.ExecRunner{},
 	nativeAddr:   localipc.Endpoint,
 	connOwner:    loopbackAttribution(),
@@ -386,15 +389,15 @@ func (s *service) buildProviders() error {
 	if c := s.issuedCredential(); c != nil {
 		label = c.DeviceID
 	}
+	trustRoot := platform.trustStore(func(f string, a ...any) { s.log.Warn(fmt.Sprintf(f, a...)) })
+	s.trust = trustRoot
+
 	caDir := s.dir.Path(state.DeviceCADir)
-	caCert, caKey, created, err := ensureDeviceCA(caDir, label, time.Now())
+	ca, created, err := platform.deviceCA(context.Background(), caDir, label, time.Now(), trustRoot)
 	if err != nil {
 		return fmt.Errorf("per-device CA in %s: %w", caDir, err)
 	}
 	s.log.Info("per-device CA ready", "created", created)
-
-	trustRoot := platform.trustStore(func(f string, a ...any) { s.log.Warn(fmt.Sprintf(f, a...)) })
-	s.trust = trustRoot
 
 	canary := ""
 	listen := defaultTLSListen
@@ -413,8 +416,7 @@ func (s *service) buildProviders() error {
 		CanaryHost: canaryHost(canary),
 		CanaryPort: canaryPort(canary),
 		BodyCap:    bodyCapFrom(b),
-		CACertPEM:  caCert,
-		CAKeyPEM:   caKey,
+		CA:         ca,
 		TrustRoot:  trustRoot,
 	}
 	if owner := platform.connOwner; owner != nil {
@@ -443,7 +445,7 @@ func (s *service) buildProviders() error {
 		ManagedDir:  platform.shimDir,
 		ProfilePath: platform.shimProfile,
 		ProxyAddr:   shimProxyAddr(b),
-		RootCAPEM:   caCert,
+		RootCAPEM:   ca.PEM(),
 		Runner:      platform.shimRunner,
 		Log:         s.logf,
 		Clock:       time.Now,

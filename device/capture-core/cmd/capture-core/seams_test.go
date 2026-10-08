@@ -9,14 +9,16 @@ import (
 	"runtime"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/shadow-ai-capture/device/capture-core/hostinfo"
+	"github.com/shadow-ai-capture/device/capture-core/proxy/tlsproxy"
 )
 
 // The service reads the machine's attestation and console user, and changes the trust store, the
-// machine environment and a native messaging endpoint. Every test replaces those seams, so a run on
-// an enrolled, domain-joined machine behaves like one on a build host and nothing outside the
-// test's temporary directories is touched.
+// keystore that holds the device root's key, the machine environment and a native messaging
+// endpoint. Every test replaces those seams, so a run on an enrolled, domain-joined machine behaves
+// like one on a build host and nothing outside the test's temporary directories is touched.
 func TestMain(m *testing.M) {
 	collectHostFacts = func() hostinfo.Facts { return hostinfo.Facts{} }
 	userSources = func() hostinfo.UserSources { return (&fakeConsole{err: hostinfo.ErrNoConsoleUser}).sources() }
@@ -25,7 +27,11 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	platform = facilities{
-		trustStore:  func(func(string, ...any)) trustStore { return &fakeTrustStore{} },
+		trustStore: func(func(string, ...any)) trustStore { return &fakeTrustStore{} },
+		deviceCA: func(_ context.Context, _, label string, now time.Time, _ tlsproxy.RootTrust) (*tlsproxy.CA, bool, error) {
+			ca, err := tlsproxy.NewCA(label, now)
+			return ca, true, err
+		},
 		shimRunner:  &fakeRunner{},
 		shimDir:     shimDir,
 		shimProfile: filepath.Join(shimDir, "profile"),

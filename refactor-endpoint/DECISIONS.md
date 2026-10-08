@@ -671,3 +671,51 @@ decided and why, and for a vendor fact the product version checked.
 - **Tests.** Everything ran on Linux. With no person resolver, the end-to-end export through the
   real receiver gives `exe:unknown`. The resolved paths (catalog hit, `exe:` hash, POSIX and
   upper-case paths) replay the SDK's exported spans with a resolved `Sender`.
+
+## 2026-10-08, task 44
+
+- **Trust is installed by the agent, not by an MDM profile** (a deviation from the plan). The root
+  is minted per device, so a tenant-wide Intune trusted-certificate profile cannot carry it.
+  capture-core installs it in the machine Root store as before (`capture-core/trust`), and only
+  while TLS inspection is on (`DESIGN.md` §10).
+- **P-256.** certtostore v1.0.7 (tagged 2026-07-23) gives neither algorithm an explicit export
+  policy. `WinCertStore.Generate` calls `NCryptCreatePersistedKey` with `NCRYPT_MACHINE_KEY_FLAG`
+  and `NCRYPT_OVERWRITE_KEY_FLAG`, sets only `Length` (RSA) and `Key Usage`, then finalizes. So
+  neither RSA 3072 nor P-256 is better placed. The choice is P-256, which the root and the leaves
+  already use. certtostore packs an ECDSA signature for a digest as long as the curve's
+  components, which holds for P-256 with SHA-256, the pair x509 uses.
+- **Non-exportable is checked, not assumed.** The key is created without `NCRYPT_ALLOW_EXPORT_FLAG`.
+  The store reads `NCRYPT_EXPORT_POLICY_PROPERTY` back after creating or opening the key and refuses
+  a key with any export or archiving flag. An opened key that allows export is replaced.
+- **Vendor facts** (read 2026-10-08 from the MicrosoftDocs `win32` and `sdk-api` sources on GitHub;
+  learn.microsoft.com is not reachable from the build machine):
+  - Key Storage Property Identifiers (ms.date 05/08/2025): `Export Policy` holds
+    `NCRYPT_ALLOW_EXPORT_FLAG` 0x1, `..._PLAINTEXT_EXPORT_FLAG` 0x2, `..._ARCHIVING_FLAG` 0x4 and
+    `..._PLAINTEXT_ARCHIVING_FLAG` 0x8.
+  - `NCryptCreatePersistedKey` (05/29/2024): `NCRYPT_MACHINE_KEY_FLAG` makes a machine key;
+    `NCRYPT_OVERWRITE_KEY_FLAG` replaces a key of the same name.
+  - `NCryptExportKey` (08/21/2025) names `BCRYPT_PRIVATE_KEY_BLOB` and
+    `NCRYPT_PKCS8_PRIVATE_KEY_BLOB`. It does not say which status a non-exportable key returns, and
+    none of these pages states the provider's default export policy. The Windows test accepts
+    `NTE_NOT_SUPPORTED`, `NTE_PERM` or `NTE_BAD_KEY_STATE` (certutil's error for a non-exportable
+    key) and nothing else. It has not run yet.
+- **The kept root moved into `tlsproxy`.** `ensureDeviceCA` (`cmd/capture-core/deviceca.go`) is now
+  `tlsproxy.OpenDeviceCA`, and its tests moved with it, because replacing a file key needs the
+  `caKeyStore` seam.
+  - `tlsproxy.Config` takes the `*CA` in place of `CACertPEM`/`CAKeyPEM`, and `CA.KeyPEM` is gone:
+    a CNG key has no PEM. The test for a half-configured PEM pair went with those fields.
+  - The service tests replace the new `facilities.deviceCA` seam, so they touch no keystore.
+- **Replacing a file key.** It runs on a platform whose key is in a keystore (Windows) when
+  `device-ca/ca.key` exists. The steps:
+  1. Mint a new root in CNG.
+  2. Remove the old root, if the trust store holds it. The store removes only the root it last
+     installed, so the old root is installed again (idempotent) and then removed. A root the store
+     does not hold is never added.
+  3. Delete the key file.
+  4. Write the new `ca.pem`.
+
+  The proxy's Start installs the new root while TLS inspection is on. If step 2 fails, the start
+  fails and leaves the key file and old certificate in place, so the next start tries again.
+- **Lifecycle.** The service opens the root once per process; the proxy's Start and Stop only
+  install and remove trust. Renewal near expiry overwrites the CNG key. Deleting the key is the
+  uninstall's (task 50); this task adds no delete path.
