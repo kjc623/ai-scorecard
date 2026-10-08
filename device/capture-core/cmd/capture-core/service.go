@@ -21,6 +21,7 @@ import (
 	"github.com/shadow-ai-capture/device/capture-core/core"
 	"github.com/shadow-ai-capture/device/capture-core/credential"
 	"github.com/shadow-ai-capture/device/capture-core/drain"
+	"github.com/shadow-ai-capture/device/capture-core/flowmon"
 	"github.com/shadow-ai-capture/device/capture-core/hooks"
 	"github.com/shadow-ai-capture/device/capture-core/hostinfo"
 	"github.com/shadow-ai-capture/device/capture-core/inventory"
@@ -82,6 +83,9 @@ type facilities struct {
 	// processEvents opens the process start and stop events the process monitor reads; nil leaves
 	// the monitor absent.
 	processEvents func() (procmon.Source, error)
+	// flowEvents opens the DNS answers and TCP connects the flow monitor reads; nil leaves the
+	// monitor absent.
+	flowEvents func() (flowmon.Source, error)
 }
 
 // trustStore installs, verifies and removes the per-device CA in the platform trust store.
@@ -103,6 +107,7 @@ var platform = facilities{
 	userSessions: helperPlatform(),
 
 	processEvents: procmon.KernelEvents,
+	flowEvents:    flowmon.NetworkEvents,
 }
 
 // desktopPAC is the desktop-app PAC on Windows, where desktop apps read the per-user Internet
@@ -521,6 +526,19 @@ func (s *service) buildProviders() error {
 		Clock:   time.Now,
 	})
 	if err := s.reg.Add(procs); err != nil {
+		return err
+	}
+
+	// A connection is attributed to the account its process runs as, named the way a browser peer
+	// is.
+	if err := s.reg.Add(flowmon.New(flowmon.Config{
+		Emitter: s.discovery,
+		Events:  platform.flowEvents,
+		Bundles: s.currentBundle,
+		Person:  s.peerPerson,
+		Log:     s.logf,
+		Clock:   time.Now,
+	})); err != nil {
 		return err
 	}
 

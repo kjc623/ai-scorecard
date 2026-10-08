@@ -625,6 +625,13 @@ func TestInventoryScannerVocabulary(t *testing.T) {
 	}
 }
 
+// The flow monitor's collector is in the closed vocabulary.
+func TestFlowMonitorVocabulary(t *testing.T) {
+	if !CollectorFlowMonitor.Valid() || CollectorFlowMonitor != "flow_monitor" {
+		t.Errorf("collector %q is not the flow_monitor code", CollectorFlowMonitor)
+	}
+}
+
 // The process monitor's collector and detail are in the closed vocabularies.
 func TestProcessDetectorVocabulary(t *testing.T) {
 	if !CollectorProcessDetector.Valid() || CollectorProcessDetector != "process_detector" {

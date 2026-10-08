@@ -50,7 +50,7 @@ The Plan column gives the plan's task id. "Built" is ticked when the task's "Don
 | 19 | [Process monitor](19-process-monitor/TASK.md) | E10 | 09, 15 | | [x] | [ ] |
 | 20 | [Local model detection](20-local-model-detection/TASK.md) | E11 | 16 | Ollama with two models | [ ] | [ ] |
 | 57 | [Local model capture in policy](57-loopback-policy/TASK.md) | E11 | 08, 20 | Ollama with two models | [ ] | [ ] |
-| 21 | [Connection monitor](21-connection-monitor/TASK.md) | E12 | 19 | | [ ] | [ ] |
+| 21 | [Connection monitor](21-connection-monitor/TASK.md) | E12 | 19 | | [x] | [ ] |
 | 22 | [Discovery volume check](22-discovery-volume-check/TASK.md) | E13 | 16–21 | 24 h of ordinary use on the reference VM | — | [ ] |
 | **Phase 2: Native telemetry** | | | | | | |
 | 23 | [Local OTLP receiver](23-otlp-receiver/TASK.md) | E14 | 06, 07 | | [x] | [ ] |

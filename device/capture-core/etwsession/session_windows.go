@@ -181,6 +181,7 @@ func convert(e *etw.Event) Event {
 	return Event{
 		Provider:   e.System.Provider.Guid,
 		ID:         e.System.EventID,
+		PID:        e.System.Execution.ProcessID,
 		Time:       e.System.TimeCreated.SystemTime,
 		Properties: props,
 	}
