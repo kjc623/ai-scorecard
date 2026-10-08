@@ -15,7 +15,7 @@
  */
 
 import { ExtError } from './adapter.js';
-import { decideSync, decideWithConfirmation, degradedDetail } from './enforce.js';
+import { CONFIRMATION_WINDOW_MS, DECISION, DEFAULT_RULE_ID, REASON, decideSync, decideWithConfirmation, degradedDetail } from './enforce.js';
 import { sha256Prefixed } from './codec.js';
 import {
   COUNTER,
@@ -62,14 +62,28 @@ export function createPipeline({
 
   /**
    * The mode gate: the only place in this module that decides whether bytes may be touched.
+   * @param {{mode: string}} resolution  from `resolveMode()` or `policy.modeFor()`
    * @returns {{mode: string, resolution: object, bytes: Uint8Array|null, unread_reason: string|null}}
    */
-  function readBodyForMode(target, body) {
-    const resolution = policy.modeFor(target);
+  function readBodyForMode(resolution, body) {
     if (!modeReadsContent(resolution.mode)) {
       return { mode: resolution.mode, resolution, bytes: null, unread_reason: 'mode_forbids_read' };
     }
     return { mode: resolution.mode, resolution, bytes: body ? body.bytes : null, unread_reason: null };
+  }
+
+  /**
+   * The effective mode for a request to a tool: from the bundle when it holds every input, otherwise
+   * capture-core's answer to a `mode_query`. No answer resolves to M0.
+   */
+  async function resolveMode(target) {
+    if (!policy.needsCoreMode()) return policy.modeFor(target);
+    try {
+      const answer = await native.sendRequest(TYPE.MODE_QUERY, { tool_fingerprint: target.tool_fingerprint || '', host: target.host || '' });
+      return policy.modeFor(target, { override: (answer && answer.body && answer.body.mode) || '' });
+    } catch {
+      return { mode: MODE.M0, reason: 'core_unanswered', policy_version: policy.snapshot().policy_version, unsigned: true };
+    }
   }
 
   /** The predicate record, shared by both lanes so they classify identically. */
@@ -128,22 +142,20 @@ export function createPipeline({
       return { cancel: false, queued: false, skipped: true, observation: null, mode: MODE.M0, candidate: null };
     }
 
-    // The mode decides what may be read, and only then is anything read.
-    const gate = readBodyForMode({ host, size_bytes: body.size }, body);
-    const mode = gate.mode;
-
+    // The mode decides what may be read, and only then is anything read. The tool's mode is keyed by
+    // its fingerprint, which is derived under the tenant default (the bound every request shares),
+    // so one tool keeps one fingerprint whatever its own mode is.
     const fingerprint = await computeToolFingerprint(adapter, {
       ...request,
-      body_read: modeReadsContent(mode),
+      body_read: modeReadsContent(policy.modeFor({ host }).mode),
     });
+    const gate = readBodyForMode(await resolveMode({ host, tool_fingerprint: fingerprint.fingerprint }), body);
+    const mode = gate.mode;
 
     const decision = await decide({
       url,
-      method: detail.method,
       host,
       tool_fingerprint: fingerprint.fingerprint,
-      size_bytes: gate.bytes ? gate.bytes.byteLength : body.size,
-      mode,
       tab_id: detail.tabId,
       request_id: detail.requestId,
     });
@@ -236,20 +248,17 @@ export function createPipeline({
       return { cancel: false, queued: false, skipped: true, observation: null, mode: MODE.M0, candidate: null };
     }
 
-    const gate = readBodyForMode({ host, size_bytes: 0 }, null);
     const fingerprint = await computeToolFingerprint(adapter, {
       ...shapeInput(detail, null, tab_context),
       body_read: false,
     });
-    const decision = decideSync({
+    const gate = readBodyForMode(policy.modeFor({ host, tool_fingerprint: fingerprint.fingerprint }), null);
+    const decision = await decide({
       url,
-      method: detail.method,
       host,
       tool_fingerprint: fingerprint.fingerprint,
-      size_bytes: 0,
-      mode: gate.mode,
-      rules: policy.rules(),
-      release_state: policy.releaseState(),
+      tab_id: detail.tabId,
+      request_id: detail.requestId,
     });
 
     const observation = decorate(
@@ -286,16 +295,13 @@ export function createPipeline({
       body_read: false,
       forced_method: 'GET',
     });
-    const mode = policy.modeFor({ host }).mode;
-    const decision = decideSync({
+    const mode = policy.modeFor({ host, tool_fingerprint: fingerprint.fingerprint }).mode;
+    const decision = await decide({
       url: detail.url,
-      method: 'GET',
       host,
       tool_fingerprint: fingerprint.fingerprint,
-      size_bytes: 0,
-      mode,
-      rules: policy.rules(),
-      release_state: policy.releaseState(),
+      tab_id: detail.tabId,
+      request_id: detail.requestId,
     });
     const observation = decorate(
       observationBody({
@@ -365,7 +371,7 @@ export function createPipeline({
         has_content: carriesContent,
         content: carriesContent ? entry.content : undefined,
         content_digest: carriesContent ? entry.content_digest : undefined,
-        decision: entry.decision || { rule_id: 'NONE', action: 'logged', decided_locally: true },
+        decision: entry.decision || { rule_id: DEFAULT_RULE_ID, action: DECISION.LOGGED, decided_locally: true },
       }),
       {
         mode: entry.mode,
@@ -449,36 +455,49 @@ export function createPipeline({
     return observation;
   }
 
-  /** The listener blocks only while it is deciding whether to block. */
+  /**
+   * The listener blocks only while it is deciding whether to block. The extension classifies
+   * nothing, so the rules are evaluated with unknown labels: a rule that lists labels does not
+   * match here.
+   */
   async function decide(input) {
     const base = {
-      url: input.url,
-      method: input.method,
+      bundle: policy.rules(),
+      route: ROUTE.EXT_WEB_REQUEST,
       tool_fingerprint: input.tool_fingerprint,
-      size_bytes: input.size_bytes,
-      mode: input.mode,
-      rules: policy.rules(),
-      release_state: policy.releaseState(),
+      labels: [],
+      labels_known: false,
     };
+    const overlay = (sync) => ({
+      url: input.url,
+      host: input.host,
+      path: pathOf(input.url),
+      rule_id: sync.rule_id,
+      message: sync.message,
+      link: sync.link,
+      tab_id: input.tab_id,
+      timeout_ms: CONFIRMATION_WINDOW_MS,
+      request_id: input.request_id,
+    });
     const sync = decideSync(base);
+    if (sync.reason === REASON.RULE_BLOCK) {
+      // The request is cancelled now; the overlay only tells the user why, and a block nobody was
+      // told about is counted.
+      void Promise.resolve()
+        .then(() => adapter.showBlocked(overlay(sync)))
+        .then((r) => r && r.shown)
+        .catch(() => false)
+        .then((shown) => shown || counters.countError('block_notice_unavailable'));
+      return sync;
+    }
     if (!sync.needs_confirmation) return sync;
 
     // A `warned` verdict is put to the user before the request proceeds. Rule evaluation stays
     // inside the decision budget; the wait for the human is bounded by the confirmation window.
     const confirmed = await decideWithConfirmation({
       ...base,
-      confirm: () =>
-        adapter.warnUser({
-          url: input.url,
-          host: input.host,
-          path: pathOf(input.url),
-          rule_id: sync.rule_id,
-          message: 'Your organisation’s policy requires confirmation before this request is sent.',
-          tab_id: input.tab_id,
-          timeout_ms: policy.confirmationWindowMs(),
-          request_id: input.request_id,
-        }),
-      confirmationWindowMs: policy.confirmationWindowMs(),
+      confirm: (decision) => adapter.warnUser(overlay(decision)),
+      confirmationWindowMs: CONFIRMATION_WINDOW_MS,
     });
     if (confirmed.degraded) counters.countError(confirmed.reason === 'budget_exceeded' ? 'budget_exceeded' : 'warn_unavailable');
     return confirmed;

@@ -228,6 +228,25 @@ export function createChromeAdapter(scope = globalThis) {
         return { proceeded: true, answered: false, reason: 'no_receiver' };
       }
     },
+
+    /**
+     * The block notice, rendered in the page after the request was cancelled. Nothing waits for
+     * it: a tab with no content script shows nothing, and the request stays cancelled.
+     */
+    showBlocked: async (spec) => {
+      try {
+        let tabId = spec.tab_id;
+        if (tabId === undefined || tabId === null || tabId < 0) {
+          const tabs = await api.tabs.query({ active: true, currentWindow: true });
+          tabId = tabs && tabs[0] ? tabs[0].id : undefined;
+        }
+        if (tabId === undefined) return { shown: false };
+        const answer = await api.tabs.sendMessage(tabId, { type: 'capture_block', spec });
+        return { shown: Boolean(answer && answer.ok) };
+      } catch (e) {
+        return { shown: false };
+      }
+    },
   };
 }
 

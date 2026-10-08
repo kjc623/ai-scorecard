@@ -112,10 +112,10 @@ export function bootstrap(adapter, { deviceId = null, version = '0.1.0', capacit
     }
   }
 
+  /** `body` is a `policy_bundle` answer: the decoded bundle capture-core verified and holds in force. */
   function applyPolicy(body) {
     if (!body || body.unchanged) return { applied: false, reason: 'unchanged' };
-    const bundle = body.bundle && typeof body.bundle === 'object' ? { ...body.bundle, policy_version: body.policy_version || body.bundle.policy_version } : null;
-    const applied = policy.applyBundle(bundle);
+    const applied = policy.applyBundle(body.bundle);
     if (!applied.applied) {
       health.counters.countError('evaluation_error');
       return applied;

@@ -585,3 +585,38 @@ decided and why, and for a vendor fact the product version checked.
 - **The extension's decision is kept as sent.**
 - **Outside the named packages:** `device/integration`'s frame conversion sets `Enforce` instead
   of `Decision`, and `device/README.md` lists the `enforce` package.
+
+## 2026-10-08, task 13
+
+- **The hand-off sends the stored envelope's `payload`.** `handlePolicySync` decodes the bytes the
+  store holds (it holds only verified envelopes) as `policy.SignedBundle` and sends `Payload`, the
+  exact bytes the signature covered; the `policy` package is unchanged.
+- **The extension asks capture-core more often than the brief names.** It resolves the mode itself
+  from `tenant_default_mode` and `tool_modes`, and sends `mode_query` when the bundle carries
+  `population_modes`, `device_modes`, `class_priors` or `required_notice_version`: each needs the
+  user, the device or a class ceiling the extension does not hold. An unanswered `mode_query` is
+  `m0`. Every input but the tenant default can only lower the mode, so the body lane is open
+  (`<all_urls>`) exactly while the tenant default reads content.
+- **A tool's `tool_modes` key is its fingerprint derived under the tenant default**, so one tool
+  keeps one fingerprint whatever its own mode is.
+- **The extension classifies nothing, so it matches rules with unknown labels**: a rule that lists
+  `labels` never matches in the browser, the extension records `policy.default`/`logged`, and
+  capture-core keeps the extension's decision (task 12). The "On the device" check (block
+  `credential` on `ext.web_request`) cannot pass until the browser path has labels at decision
+  time; that is not in this brief.
+- **No match is `policy.default`** in the extension too (it was `NONE`).
+- **Every extension lane uses the confirmation.** The metadata lane and WebSocket handshakes
+  recorded `warned` without asking; they now ask as the body lane does.
+- **`block` shows a notice**: a new content-script message `capture_block` renders "Request blocked"
+  with the rule's message, its link (only an `https://` link is offered) and "Dismiss". A notice
+  that could not be shown is counted as the error `block_notice_unavailable`; the request stays
+  cancelled.
+- **Removed with the fields:** the body-lane include list and `NEVER_BODY_BEARING` (applied only to
+  that list), the bundle body cap (the extension's 1 MiB default applies), the release gating and
+  the `hosts`, `paths`, `modes` and `min_size_bytes` matchers.
+- **Golden frames.** The observation frames do not change. A golden `policy_bundle` frame is added
+  in `device/integration/testdata/policy/`: capture-core's `native_test.go` checks that it answers a
+  `policy_sync` with exactly that frame, and `golden-frames.test.mjs` applies it.
+- **Shared evaluator cases** are `device/integration/testdata/enforce/cases.json`: task 12's 21 Go
+  cases plus two extension-route cases. The category case covers only a bundle with no catalog;
+  task 14 adds the catalog cases.

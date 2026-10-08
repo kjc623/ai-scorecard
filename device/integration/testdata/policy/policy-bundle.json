@@ -1,0 +1,76 @@
+{
+  "name": "policy-bundle",
+  "why": "the policy_bundle frame capture-core answers a policy_sync with: its bundle is the decoded payload of the signed bundle in force, never the signed envelope. capture-core's native_test.go checks it sends exactly this frame for this bundle; the extension's golden-frames.test.mjs applies it and checks it resolves as expects says",
+  "frame": {
+    "type": "policy_bundle",
+    "version": 1,
+    "id": "sync-1",
+    "body": {
+      "policy_version": "7",
+      "bundle": {
+        "version": "7",
+        "effective_at": "2026-10-05T00:00:00Z",
+        "tenant_default_mode": "m2",
+        "tool_modes": {
+          "tf1:examplechat": "m1",
+          "tf1:examplequiet": "m0"
+        },
+        "interception": {
+          "enabled": false,
+          "seed_hosts": ["chat.example-ai.invalid", "api.example-ai.invalid"],
+          "proxy_listen": "127.0.0.1:8843",
+          "proxy_canary": "api.anthropic.com:443"
+        },
+        "loopback": {},
+        "spool": {},
+        "cli_shim": {},
+        "endpoint": {
+          "inventory": { "enabled": true, "interval_minutes": 360 },
+          "processes": { "enabled": true },
+          "flows": { "enabled": true },
+          "otel": { "enabled": true, "http_listen": "127.0.0.1:47318", "grpc_listen": "127.0.0.1:47317" },
+          "hooks": { "enabled": true, "managed_only": false },
+          "tools": {
+            "claude_code": { "otel": true, "hooks": true },
+            "codex": { "otel": true, "hooks": false },
+            "copilot": { "otel": true, "hooks": false },
+            "cursor": { "otel": false, "hooks": true }
+          },
+          "discovery_daily_budget": 200
+        },
+        "rules": [
+          {
+            "rule_id": "block_credentials",
+            "action": "block",
+            "match": { "labels": ["credential"], "tools": [], "categories": [], "sanction": [], "routes": ["ext.web_request"] },
+            "message": "Remove the credential and try again.",
+            "link": "https://intranet.example/ai"
+          },
+          {
+            "rule_id": "warn_unsanctioned_browser",
+            "action": "warn",
+            "match": { "labels": [], "tools": [], "categories": [], "sanction": ["unsanctioned"], "routes": ["ext.web_request"] },
+            "message": "This AI tool is not sanctioned. Check the policy before you send company data."
+          }
+        ],
+        "sanctioned_tools": ["app:claude_code"]
+      }
+    }
+  },
+  "expects": {
+    "policy_version": "7",
+    "modes": [
+      { "tool_fingerprint": "tf1:examplechat", "mode": "m1" },
+      { "tool_fingerprint": "tf1:examplequiet", "mode": "m0" },
+      { "tool_fingerprint": "tf1:unlisted", "mode": "m2" }
+    ],
+    "asks_capture_core": false,
+    "seed_hosts": ["chat.example-ai.invalid", "api.example-ai.invalid"],
+    "decision": {
+      "input": { "route": "ext.web_request", "tool_fingerprint": "tf1:unlisted" },
+      "rule_id": "warn_unsanctioned_browser",
+      "action": "warn",
+      "message": "This AI tool is not sanctioned. Check the policy before you send company data."
+    }
+  }
+}

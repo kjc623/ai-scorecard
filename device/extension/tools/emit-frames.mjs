@@ -14,6 +14,10 @@
 // `buildCases()` is exported so `test/golden-frames.test.mjs` can build the same cases without
 // writing anything, assert they stay decodable, and check the committed files have not drifted.
 //
+// The other direction has one golden frame, not emitted here: the `policy_bundle` frame in
+// device/integration/testdata/policy/ (`POLICY_FRAME`). capture-core's native_test.go checks it
+// answers a policy_sync with exactly that frame, and test/golden-frames.test.mjs applies it.
+//
 // Plain ASCII and binary are the easy cases. A payload that is itself valid base64 is the one a
 // "does it error?" test cannot see: raw text that happens to decode is silently different bytes,
 // and the digest then describes content nobody sent. M0 must carry no content at all.
@@ -27,6 +31,7 @@ import { frame, observationBody, TYPE, ROUTE } from '../src/messages.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_OUT = resolve(HERE, '..', '..', 'integration', 'testdata', 'native');
+const POLICY_FRAME = resolve(HERE, '..', '..', 'integration', 'testdata', 'policy', 'policy-bundle.json');
 
 const digestOf = (bytes) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 const bytesOf = (s) => new TextEncoder().encode(s);
@@ -229,7 +234,7 @@ export function emitCases(outDir = DEFAULT_OUT) {
   return written;
 }
 
-export { DEFAULT_OUT };
+export { DEFAULT_OUT, POLICY_FRAME };
 
 // Only run as a script. Importing this module has no filesystem side effect, so a test can build the
 // same frames without touching device/integration's golden directory.
