@@ -13,6 +13,8 @@
 package toolconfig
 
 import (
+	"strings"
+
 	"github.com/shadow-ai-capture/device/capture-core/policy"
 )
 
@@ -35,6 +37,13 @@ type Desired struct {
 	HookCommand string
 	// ManagedOnly lets only the hooks an administrator declares run.
 	ManagedOnly bool
+}
+
+// isCaptureCore reports whether path names a capture-core executable, from wherever the agent is or
+// was installed.
+func isCaptureCore(path string) bool {
+	base := strings.ToLower(path[strings.LastIndexAny(path, `/\`)+1:])
+	return strings.TrimSuffix(base, ".exe") == "capture-core"
 }
 
 // Writer is one tool's managed configuration.

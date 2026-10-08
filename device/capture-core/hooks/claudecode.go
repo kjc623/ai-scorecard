@@ -107,25 +107,5 @@ func (a claudeCode) Render(event string, d protocol.HookDecision) ([]byte, int) 
 // Allow is empty output with exit code 0: the prompt or tool call proceeds as if no hook ran.
 func (claudeCode) Allow(string) ([]byte, int) { return nil, 0 }
 
-// userText is the rule's message with its link on a line of its own.
-func userText(d protocol.HookDecision) string {
-	switch {
-	case d.Link == "":
-		return d.Message
-	case d.Message == "":
-		return d.Link
-	default:
-		return d.Message + "\n" + d.Link
-	}
-}
-
-// marshalJSON encodes v on one line, leaving HTML characters unescaped so a message reads as written.
-func marshalJSON(v any) ([]byte, error) {
-	var b bytes.Buffer
-	enc := json.NewEncoder(&b)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(v); err != nil {
-		return nil, err
-	}
-	return b.Bytes(), nil
-}
+// CanEnforce is true: Claude Code stops the prompt or the tool call a block or deny answers.
+func (claudeCode) CanEnforce(string) bool { return true }

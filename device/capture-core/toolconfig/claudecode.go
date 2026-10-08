@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/shadow-ai-capture/device/capture-core/state"
 	"github.com/shadow-ai-capture/device/protocol"
@@ -107,8 +106,7 @@ func isAgentGroup(raw json.RawMessage) bool {
 		if json.Unmarshal(hr, &h) != nil || h.Type != "command" || len(h.Args) < 2 || h.Args[0] != "--hook" || h.Args[1] != ClaudeCodeTool {
 			return false
 		}
-		base := strings.ToLower(h.Command[strings.LastIndexAny(h.Command, `/\`)+1:])
-		if strings.TrimSuffix(base, ".exe") != "capture-core" {
+		if !isCaptureCore(h.Command) {
 			return false
 		}
 	}
@@ -520,4 +518,6 @@ var claudeCodeTool = tool{
 	collector:   protocol.CollectorToolConfigClaudeCode,
 	fingerprint: ClaudeCodeFingerprint,
 	supported:   claudeCodeSupported,
+	otel:        true,
+	managedOnly: true,
 }

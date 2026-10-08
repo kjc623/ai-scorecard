@@ -601,10 +601,13 @@ func TestUserHelperVocabulary(t *testing.T) {
 	}
 }
 
-// The Claude Code configuration writer's collector and details are in the closed vocabularies.
+// The configuration writers' collectors and details are in the closed vocabularies.
 func TestToolConfigVocabulary(t *testing.T) {
 	if !CollectorToolConfigClaudeCode.Valid() || CollectorToolConfigClaudeCode != "tool_config_claude_code" {
 		t.Errorf("collector %q is not the tool_config_claude_code code", CollectorToolConfigClaudeCode)
+	}
+	if !CollectorToolConfigCursor.Valid() || CollectorToolConfigCursor != "tool_config_cursor" {
+		t.Errorf("collector %q is not the tool_config_cursor code", CollectorToolConfigCursor)
 	}
 	for _, d := range []Detail{DetailToolNotInstalled, DetailToolVersionUnsupported, DetailConfigWriteFailed} {
 		if !d.Valid() {

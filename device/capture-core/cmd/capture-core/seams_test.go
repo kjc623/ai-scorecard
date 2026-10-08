@@ -38,6 +38,7 @@ func TestMain(m *testing.M) {
 		nativeAddr:  testNativeAddr(),
 
 		claudeCodeSettings: filepath.Join(shimDir, "ClaudeCode", "managed-settings.json"),
+		cursorHooks:        filepath.Join(shimDir, "Cursor", "hooks.json"),
 	}
 	code := m.Run()
 	_ = os.RemoveAll(shimDir)

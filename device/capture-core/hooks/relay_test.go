@@ -257,3 +257,38 @@ func TestAMalformedFrameIsRefused(t *testing.T) {
 		t.Fatalf("recorded %d, errors %d", len(sink.all()), r.Health().Counters[protocol.CounterErrors])
 	}
 }
+
+// monitorOnly is an adapter for a tool that runs the hook but goes ahead whatever it answers.
+type monitorOnly struct{}
+
+func (monitorOnly) Parse(string, []byte) (protocol.HookEvaluate, error) {
+	return protocol.HookEvaluate{}, errors.New("not used")
+}
+func (monitorOnly) Render(string, protocol.HookDecision) ([]byte, int) { return nil, 0 }
+func (monitorOnly) Allow(string) ([]byte, int)                         { return nil, 0 }
+func (monitorOnly) CanEnforce(string) bool                             { return false }
+
+// A block from an event the tool cannot enforce is still the hook's answer, and the prompt is
+// recorded as logged with the rule that matched, since the tool went ahead.
+func TestABlockTheToolCannotEnforceIsRecordedLogged(t *testing.T) {
+	hooks.SetAdapter(t, "codex", monitorOnly{})
+	block := policy.Rule{RuleID: "block_codex", Action: policy.RuleBlock, Match: policy.RuleMatch{Tools: []string{"app:codex"}}, Message: "Not here."}
+	b := testBundle(protocol.ModeM1, block)
+	b.Endpoint.Tools["codex"] = policy.EndpointTool{Hooks: true}
+	sink := &memSink{}
+	r := newRelay(t, newPipeline(t, sink, b), &stubClassifier{})
+
+	answer, served := ask(t, r, evaluateFrame(t, "codex", "hello"))
+	if d := decision(t, answer); d != (protocol.HookDecision{Action: protocol.HookBlock, Message: "Not here.", RuleID: "block_codex"}) {
+		t.Fatalf("decision = %+v", d)
+	}
+	waitServed(t, served)
+	entries := sink.all()
+	if len(entries) != 1 {
+		t.Fatalf("spooled %d records, want 1", len(entries))
+	}
+	env := decodeEnvelope(t, entries[0])
+	if env.ToolFingerprint != "app:codex" || env.Decision == nil || env.Decision.Action != protocol.ActionLogged || env.Decision.RuleID != "block_codex" {
+		t.Fatalf("record = %s", entries[0].Payload)
+	}
+}

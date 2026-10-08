@@ -24,7 +24,7 @@ func otelBundle(mode protocol.CollectionMode) policy.Bundle {
 }
 
 // supportedTool is Claude Code on a platform the agent writes its configuration on.
-var supportedTool = tool{key: ClaudeCodeTool, collector: protocol.CollectorToolConfigClaudeCode, fingerprint: ClaudeCodeFingerprint, supported: true}
+var supportedTool = func() tool { t := claudeCodeTool; t.supported = true; return t }()
 
 func newTestProvider(t *testing.T, w Writer) *Provider {
 	t.Helper()
