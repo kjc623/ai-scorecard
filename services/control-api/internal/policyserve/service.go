@@ -3,7 +3,7 @@
 // A tenant's bundle is composed from what the database says about it: the tenant's ceiling as the
 // default collection mode, its TLS inspection setting and the tool catalogue's TLS hosts as the
 // interception scope, the tenant's endpoint collector settings, its enforcement rules, the tools
-// it has sanctioned and the app catalog. It is signed with the vendor's Ed25519 policy key in the envelope the agent
+// it has sanctioned, the app catalog and its tripped kill switches. It is signed with the vendor's Ed25519 policy key in the envelope the agent
 // verifies, and stored with the exact signed bytes. A new version is minted only when the
 // composition or the signing key differs from the latest stored bundle; otherwise the stored bytes
 // are served again, so the ETag a device holds stays valid until something it would enforce
@@ -293,7 +293,21 @@ func (s *Service) compose(in store.PolicyInputs) (*Bundle, error) {
 		Rules:           composeRules(in.Rules),
 		SanctionedTools: sanctioned(in.SanctionedTools),
 		Catalog:         composeCatalog(in.Catalog),
+		KillSwitches:    composeKillSwitches(in.KillSwitches),
 	}, nil
+}
+
+// composeKillSwitches is the bundle's kill switches in route order, nil when none is tripped. The
+// effective time is whole seconds in UTC, so a version minted from the same row compares equal
+// whatever precision the store read it at.
+func composeKillSwitches(switches []store.KillSwitch) []KillSwitch {
+	var out []KillSwitch
+	for _, k := range switches {
+		out = append(out, KillSwitch{Provider: k.Route, Mode: KillDisable,
+			EffectiveAt: k.EffectiveAt.UTC().Truncate(time.Second), ReasonCode: k.ReasonCode})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Provider < out[j].Provider })
+	return out
 }
 
 // composeCatalog is the bundle's catalog in byte order of app key, then of each signal's platform,

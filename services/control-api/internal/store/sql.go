@@ -141,6 +141,9 @@ var Statements = []Statement{
 	{"data_classes", SQLDataClasses},
 	{"app_catalog", SQLAppCatalog},
 	{"app_categories", SQLAppCategories},
+	{"kill_switches", SQLKillSwitches},
+	{"trip_kill_switch", SQLTripKillSwitch},
+	{"clear_kill_switch", SQLClearKillSwitch},
 }
 
 // SQLStore is the PostgreSQL implementation of Store.

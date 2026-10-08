@@ -492,6 +492,18 @@ CREATE TABLE ops.enforcement_rule (
     AND NOT jsonb_path_exists(match, 'strict $.*[*] ? (@.type() != "string")', '{}', true))
 );
 
+-- The tenant's tripped kill switches, one per interception route, set on the Settings page and
+-- delivered in the policy bundle's kill_switches. From effective_at the devices stop decrypting and
+-- enforcing on that route and carry its traffic unread. Clearing a switch deletes its row.
+CREATE TABLE ops.kill_switch (
+  tenant_id     uuid NOT NULL REFERENCES ops.tenant(tenant_id),
+  route         text NOT NULL CHECK (route IN ('proxy.tls','proxy.loopback')),
+  reason_code   text NOT NULL CHECK (reason_code ~ '^[a-z][a-z0-9_.-]{0,63}$'),
+  effective_at  timestamptz NOT NULL DEFAULT now(),
+  set_by        text NOT NULL,
+  PRIMARY KEY (tenant_id, route)
+);
+
 -- The append-only audit log: every read of subject-level data, mode change, content grant, content
 -- reveal, export and configuration change, written before the data is returned. Append-only three
 -- ways: no runtime role holds UPDATE or DELETE, a trigger refuses both for every role, and each row
@@ -2186,7 +2198,7 @@ DECLARE
     -- ops
     'ops.user_dim', 'ops.device', 'ops.device_credential', 'ops.collector_state',
     'ops.policy_bundle', 'ops.tool', 'ops.notice_acknowledgement', 'ops.retention_policy',
-    'ops.endpoint_setting', 'ops.endpoint_tool_setting', 'ops.enforcement_rule',
+    'ops.endpoint_setting', 'ops.endpoint_tool_setting', 'ops.enforcement_rule', 'ops.kill_switch',
     'ops.audit', 'ops.grant', 'ops.content', 'ops.retrieval_grant', 'ops.finding_review',
     'ops.erasure_receipt', 'ops.export', 'ops.erasure_request',
     'ops.aggregate_watermark', 'ops.coverage_snapshot',
@@ -2280,6 +2292,8 @@ GRANT SELECT, INSERT, UPDATE ON ops.tenant, ops.user_dim, ops.device, ops.device
 -- The enforcement rules are replaced as a whole list: the old rows are deleted and the new inserted
 -- in one transaction.
 GRANT SELECT, INSERT, DELETE ON ops.enforcement_rule TO sac_control;
+-- A kill switch is tripped (inserted), given a new reason (updated) and cleared (deleted).
+GRANT SELECT, INSERT, UPDATE, DELETE ON ops.kill_switch TO sac_control;
 -- Deciding a content grant reads the tenant's budget; a stored upload adds its bytes to the day's
 -- content counter and to nothing else.
 GRANT SELECT ON ops.usage_daily TO sac_control;
