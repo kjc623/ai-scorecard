@@ -362,7 +362,10 @@ func (s *SQLStore) PolicyInputs(ctx context.Context, tenantID string) (PolicyInp
 		if err2 != nil {
 			return err2
 		}
-		in.ScopeOverrides, err2 = scopeOverrides(ctx, tx, tenantID)
+		if in.ScopeOverrides, err2 = scopeOverrides(ctx, tx, tenantID); err2 != nil {
+			return err2
+		}
+		in.Endpoint, err2 = endpointSettings(ctx, tx, tenantID)
 		return err2
 	})
 	return in, err

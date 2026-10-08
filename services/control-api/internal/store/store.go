@@ -200,6 +200,34 @@ type PolicyInputs struct {
 	InterceptionHosts []string
 	// ScopeOverrides is the tenant's narrower per-tool modes, keyed by tool fingerprint.
 	ScopeOverrides map[string]string
+	Endpoint       EndpointSettings
+}
+
+// EndpointToolKeys is the closed set of tools with native collectors, the keys of
+// EndpointSettings.Tools and of ops.endpoint_tool_setting.tool_key.
+var EndpointToolKeys = []string{"claude_code", "codex", "copilot", "cursor"}
+
+// EndpointCollectors is the tenant's switch for each endpoint collector (ops.endpoint_setting).
+type EndpointCollectors struct {
+	Inventory        bool
+	Processes        bool
+	Flows            bool
+	OTel             bool
+	Hooks            bool
+	HooksManagedOnly bool
+}
+
+// EndpointTool is one tool's native collector switches (ops.endpoint_tool_setting).
+type EndpointTool struct {
+	OTel  bool
+	Hooks bool
+}
+
+// EndpointSettings is the tenant's endpoint collector settings as served, with the defaults applied
+// where the tenant has no row. Tools holds every key of EndpointToolKeys.
+type EndpointSettings struct {
+	Collectors EndpointCollectors
+	Tools      map[string]EndpointTool
 }
 
 // PolicyBundle is one ops.policy_bundle row. SignedEnvelope is the exact bytes GET /v1/policy
@@ -261,6 +289,7 @@ type Settings struct {
 	RetentionDefaults    RetentionDefaults
 	Tools                []ToolDecision
 	Devices              []DeviceMode
+	Endpoint             EndpointSettings
 }
 
 // Errors callers distinguish. Every other error is an infrastructure failure and is retryable.
@@ -290,6 +319,8 @@ var (
 	ErrSearchTierRequiresCeiling = errors.New("store: content search tier needs a higher ceiling mode")
 	// ErrRetentionOutOfRange is a retention period outside the retention classes' days.
 	ErrRetentionOutOfRange = errors.New("store: retention period is outside the retention classes")
+	// ErrUnknownEndpointTool is a tool key outside EndpointToolKeys.
+	ErrUnknownEndpointTool = errors.New("store: endpoint tool key unknown")
 )
 
 // Store is control-api's persistence. *SQLStore implements it; tests use storetest.Memory.
@@ -365,6 +396,11 @@ type Store interface {
 	// SetToolSanction sets one tool's sanction decision. state is sanctioned, unsanctioned or
 	// unknown; setting unknown clears the attribution.
 	SetToolSanction(ctx context.Context, tenantID string, fingerprint string, state string, audit AuditEntry) error
+	// SetEndpointCollectors sets the tenant's endpoint collector switches.
+	SetEndpointCollectors(ctx context.Context, tenantID string, c EndpointCollectors, audit AuditEntry) error
+	// SetEndpointTool sets one tool's native collector switches. ErrUnknownEndpointTool when the key
+	// is outside EndpointToolKeys.
+	SetEndpointTool(ctx context.Context, tenantID string, toolKey string, t EndpointTool, audit AuditEntry) error
 
 	// Ping checks the database is reachable, for readiness.
 	Ping(ctx context.Context) error

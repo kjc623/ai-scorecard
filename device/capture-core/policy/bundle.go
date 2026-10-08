@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -117,9 +118,63 @@ type CLIShimPolicy struct {
 	NodeRequire bool `json:"node_require,omitempty"`
 }
 
+// EndpointToolKeys is the closed set of tools with native collectors, the keys of
+// EndpointPolicy.Tools.
+var EndpointToolKeys = []string{"claude_code", "codex", "copilot", "cursor"}
+
+// MinInventoryIntervalMinutes is the shortest installed-app rescan interval a bundle may set.
+const MinInventoryIntervalMinutes = 15
+
+// EndpointPolicy switches the endpoint collectors on and off and carries the values they run with.
+// A bundle without the section switches every one of them off.
+type EndpointPolicy struct {
+	Inventory EndpointInventory `json:"inventory"`
+	Processes EndpointSwitch    `json:"processes"`
+	Flows     EndpointSwitch    `json:"flows"`
+	OTel      EndpointOTel      `json:"otel"`
+	Hooks     EndpointHooks     `json:"hooks"`
+
+	// Tools is each tool's native collectors, keyed by a key of EndpointToolKeys. A tool's switch
+	// takes effect only while the collector it names is enabled.
+	Tools map[string]EndpointTool `json:"tools"`
+
+	// DiscoveryDailyBudget is how many discovery records may leave the device per UTC day.
+	DiscoveryDailyBudget int `json:"discovery_daily_budget"`
+}
+
+// EndpointSwitch is a collector with no setting beyond on or off.
+type EndpointSwitch struct {
+	Enabled bool `json:"enabled"`
+}
+
+// EndpointInventory is the installed-app scanner and how often it rescans.
+type EndpointInventory struct {
+	Enabled         bool `json:"enabled"`
+	IntervalMinutes int  `json:"interval_minutes"`
+}
+
+// EndpointOTel is the OTLP receiver. Both listen addresses are loopback host:port.
+type EndpointOTel struct {
+	Enabled    bool   `json:"enabled"`
+	HTTPListen string `json:"http_listen"`
+	GRPCListen string `json:"grpc_listen"`
+}
+
+// EndpointHooks is the hook relay. ManagedOnly makes tools run only the hooks the agent manages.
+type EndpointHooks struct {
+	Enabled     bool `json:"enabled"`
+	ManagedOnly bool `json:"managed_only"`
+}
+
+// EndpointTool is one tool's native collectors.
+type EndpointTool struct {
+	OTel  bool `json:"otel"`
+	Hooks bool `json:"hooks"`
+}
+
 // Bundle is the device-side view of the signed policy bundle: the collection mode per scope,
-// the interception allowlist, the loopback port map, kill switches, device retention and the
-// CLI shim configuration.
+// the interception allowlist, the loopback port map, kill switches, device retention, the
+// CLI shim configuration and the endpoint collectors.
 //
 // Unknown fields are rejected rather than ignored (see Open): a device that does not
 // understand a policy field must not enforce a policy it has only partly read, and the
@@ -153,6 +208,7 @@ type Bundle struct {
 	Loopback     LoopbackPolicy `json:"loopback"`
 	Spool        SpoolPolicy    `json:"spool"`
 	CLIShim      CLIShimPolicy  `json:"cli_shim"`
+	Endpoint     EndpointPolicy `json:"endpoint"`
 }
 
 // KillSwitchFor returns the kill switch for a route, if one is in force.
@@ -348,7 +404,50 @@ func (b *Bundle) Validate() error {
 	if b.Spool.DeviceRetentionHours < 0 {
 		return fmt.Errorf("policy: spool device_retention_hours is negative")
 	}
+	return b.Endpoint.validate()
+}
+
+func (e *EndpointPolicy) validate() error {
+	inv := e.Inventory
+	if (inv.Enabled || inv.IntervalMinutes != 0) && inv.IntervalMinutes < MinInventoryIntervalMinutes {
+		return fmt.Errorf("policy: endpoint inventory interval_minutes %d is below %d", inv.IntervalMinutes, MinInventoryIntervalMinutes)
+	}
+	for _, l := range []struct{ name, addr string }{
+		{"http_listen", e.OTel.HTTPListen},
+		{"grpc_listen", e.OTel.GRPCListen},
+	} {
+		if l.addr == "" && !e.OTel.Enabled {
+			continue
+		}
+		if !loopbackHostPort(l.addr) {
+			return fmt.Errorf("policy: endpoint otel %s %q is not a loopback IP host:port", l.name, l.addr)
+		}
+	}
+	keys := make([]string, 0, len(e.Tools))
+	for k := range e.Tools {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if !slices.Contains(EndpointToolKeys, k) {
+			return fmt.Errorf("policy: endpoint tools names %q outside the set {%s}", k, strings.Join(EndpointToolKeys, ","))
+		}
+	}
+	if e.DiscoveryDailyBudget < 0 {
+		return fmt.Errorf("policy: endpoint discovery_daily_budget is negative")
+	}
 	return nil
+}
+
+// loopbackHostPort reports whether hp is a loopback IP literal and a TCP port in range. A name such
+// as localhost is refused: what it resolves to is the host's configuration, not the bundle's.
+func loopbackHostPort(hp string) bool {
+	if !validHostPort(hp) {
+		return false
+	}
+	host, _, _ := net.SplitHostPort(hp)
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func validMode(where string, m protocol.CollectionMode) error {

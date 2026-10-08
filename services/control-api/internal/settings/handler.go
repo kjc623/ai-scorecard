@@ -1,6 +1,7 @@
 // Package settings is the Settings admin API: the audited, admin-only reads and writes behind the
 // dashboard's Settings page. It changes a tenant's collection mode (and its narrower per-tool
-// overrides), event and content retention, tool sanction decisions and the content search tier.
+// overrides), event and content retention, tool sanction decisions, the content search tier and the
+// endpoint collector switches.
 //
 // Every route requires a product access token carrying the admin role (resolved by the injected
 // Authenticator); the tenant is the token's, never the request's. Every write is audited with the
@@ -63,6 +64,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /admin/v1/settings/retention", h.handleRetention)
 	mux.HandleFunc("PUT /admin/v1/settings/content-search", h.handleContentSearch)
 	mux.HandleFunc("PUT /admin/v1/settings/tools/{fingerprint}/sanction", h.handleToolSanction)
+	mux.HandleFunc("PUT /admin/v1/settings/endpoint", h.handleEndpoint)
+	mux.HandleFunc("PUT /admin/v1/settings/endpoint/tools/{tool_key}", h.handleEndpointTool)
 }
 
 const maxSettingsBody = 16 << 10
@@ -131,6 +134,23 @@ type settingsJSON struct {
 	ContentSearch        string            `json:"content_search"`
 	Tools                []toolJSON        `json:"tools"`
 	Devices              []deviceJSON      `json:"devices"`
+	Endpoint             endpointJSON      `json:"endpoint"`
+}
+
+// endpointJSON is the tenant's endpoint collector switches, with the defaults where it set none.
+type endpointJSON struct {
+	Inventory        bool                        `json:"inventory"`
+	Processes        bool                        `json:"processes"`
+	Flows            bool                        `json:"flows"`
+	OTel             bool                        `json:"otel"`
+	Hooks            bool                        `json:"hooks"`
+	HooksManagedOnly bool                        `json:"hooks_managed_only"`
+	Tools            map[string]endpointToolJSON `json:"tools"`
+}
+
+type endpointToolJSON struct {
+	OTel  bool `json:"otel"`
+	Hooks bool `json:"hooks"`
 }
 
 type retentionJSON struct {
@@ -168,6 +188,12 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, d := range s.Devices {
 		out.Devices = append(out.Devices, deviceJSON{DeviceID: d.DeviceID, Hostname: d.Hostname, CollectionMode: d.CollectionMode, LastSeenAt: d.LastSeenAt})
+	}
+	c := s.Endpoint.Collectors
+	out.Endpoint = endpointJSON{Inventory: c.Inventory, Processes: c.Processes, Flows: c.Flows, OTel: c.OTel,
+		Hooks: c.Hooks, HooksManagedOnly: c.HooksManagedOnly, Tools: map[string]endpointToolJSON{}}
+	for k, t := range s.Endpoint.Tools {
+		out.Endpoint.Tools[k] = endpointToolJSON{OTel: t.OTel, Hooks: t.Hooks}
 	}
 	h.writeJSON(w, http.StatusOK, out)
 }
@@ -360,6 +386,87 @@ func (h *Handler) handleToolSanction(w http.ResponseWriter, r *http.Request) {
 		return
 	case err != nil:
 		h.fail(w, apierr.Internal(fmt.Errorf("set tool sanction: %w", err)))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// --- PUT /admin/v1/settings/endpoint --------------------------------------------------------
+
+func (h *Handler) handleEndpoint(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.admin(w, r)
+	if !ok {
+		return
+	}
+	// Every switch is required, so a client that left one out does not turn a collector off.
+	var req struct {
+		Inventory        *bool `json:"inventory"`
+		Processes        *bool `json:"processes"`
+		Flows            *bool `json:"flows"`
+		OTel             *bool `json:"otel"`
+		Hooks            *bool `json:"hooks"`
+		HooksManagedOnly *bool `json:"hooks_managed_only"`
+	}
+	if !h.decode(w, r, &req) {
+		return
+	}
+	if req.Inventory == nil || req.Processes == nil || req.Flows == nil || req.OTel == nil || req.Hooks == nil || req.HooksManagedOnly == nil {
+		h.fail(w, apierr.New(http.StatusBadRequest, apierr.CodeInvalidRequest,
+			"inventory, processes, flows, otel, hooks and hooks_managed_only are all required"))
+		return
+	}
+	c := store.EndpointCollectors{Inventory: *req.Inventory, Processes: *req.Processes, Flows: *req.Flows,
+		OTel: *req.OTel, Hooks: *req.Hooks, HooksManagedOnly: *req.HooksManagedOnly}
+	now := h.cfg.Now().UTC()
+	err := h.store.SetEndpointCollectors(r.Context(), p.Tenant, c,
+		h.audit(p, "tenant.endpoint_collectors.set", "tenant", p.Tenant, now, nil))
+	switch {
+	case errors.Is(err, store.ErrUnknownTenant):
+		h.fail(w, apierr.New(http.StatusForbidden, apierr.CodeUnknownTenant, "the tenant is unknown to this deployment"))
+		return
+	case err != nil:
+		h.fail(w, apierr.Internal(fmt.Errorf("set endpoint collectors: %w", err)))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// --- PUT /admin/v1/settings/endpoint/tools/{tool_key} ---------------------------------------
+
+func (h *Handler) handleEndpointTool(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.admin(w, r)
+	if !ok {
+		return
+	}
+	toolKey := r.PathValue("tool_key")
+	if !slices.Contains(store.EndpointToolKeys, toolKey) {
+		h.fail(w, apierr.Detailed(http.StatusNotFound, apierr.CodeNotFound, "no such tool",
+			map[string]any{"supported": store.EndpointToolKeys}))
+		return
+	}
+	var req struct {
+		OTel  *bool `json:"otel"`
+		Hooks *bool `json:"hooks"`
+	}
+	if !h.decode(w, r, &req) {
+		return
+	}
+	if req.OTel == nil || req.Hooks == nil {
+		h.fail(w, apierr.New(http.StatusBadRequest, apierr.CodeInvalidRequest, "otel and hooks are both required"))
+		return
+	}
+	now := h.cfg.Now().UTC()
+	err := h.store.SetEndpointTool(r.Context(), p.Tenant, toolKey, store.EndpointTool{OTel: *req.OTel, Hooks: *req.Hooks},
+		h.audit(p, "tenant.endpoint_tool.set", "endpoint_tool", toolKey, now, nil))
+	switch {
+	case errors.Is(err, store.ErrUnknownEndpointTool):
+		h.fail(w, apierr.New(http.StatusNotFound, apierr.CodeNotFound, "no such tool"))
+		return
+	case errors.Is(err, store.ErrUnknownTenant):
+		h.fail(w, apierr.New(http.StatusForbidden, apierr.CodeUnknownTenant, "the tenant is unknown to this deployment"))
+		return
+	case err != nil:
+		h.fail(w, apierr.Internal(fmt.Errorf("set endpoint tool: %w", err)))
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

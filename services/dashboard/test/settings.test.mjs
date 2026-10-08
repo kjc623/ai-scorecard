@@ -31,7 +31,21 @@ function populated(overrides = {}) {
       { tool_fingerprint: 'tls_f32477ff734d70d1', display_name: 'OpenAI API', sanctioned_state: 'unknown' },
     ],
     devices: [{ device_id: 'd-1', hostname: 'LAPTOP-1', collection_mode: 'm2', last_seen_at: '2026-10-01T09:00:00Z' }],
+    endpoint: endpointDefaults(),
     ...overrides,
+  };
+}
+
+/** The endpoint settings control-api serves a tenant that never changed them. */
+function endpointDefaults() {
+  return {
+    inventory: true, processes: true, flows: true, otel: true, hooks: true, hooks_managed_only: false,
+    tools: {
+      claude_code: { otel: true, hooks: true },
+      codex: { otel: true, hooks: false },
+      copilot: { otel: true, hooks: false },
+      cursor: { otel: false, hooks: true },
+    },
   };
 }
 
@@ -195,6 +209,98 @@ test('a tool sanction writes the decision and re-reads', async () => {
   assert.equal(controller.state.data.tools[0].sanctioned_state, 'sanctioned');
 });
 
+// ---------------------------------------------------------------------------------------------
+// Endpoint collectors
+// ---------------------------------------------------------------------------------------------
+
+/** The Endpoint collectors card of a rendered page. */
+function endpointCard(page) {
+  const start = page.indexOf('<h3>Endpoint collectors</h3>');
+  assert.ok(start >= 0, 'the page has an Endpoint collectors card');
+  return page.slice(start, page.indexOf('</section>', start));
+}
+
+/** The pressed button of one switch, by its data attributes. */
+function pressed(card, attrs) {
+  const m = card.match(new RegExp(`aria-pressed="true"${attrs} data-value="(on|off)"`));
+  assert.ok(m, `a pressed button for ${attrs}`);
+  return m[1];
+}
+
+test('endpoint collectors: the card shows the defaults, and a collector a tool lacks as unavailable', async () => {
+  const { html } = await loaded({ [GET]: () => ({ status: 200, body: populated() }) });
+  const card = endpointCard(html());
+  for (const label of ['Inventory', 'Processes', 'Network flows', 'OpenTelemetry', 'Hooks', 'Only managed hooks', 'Claude Code', 'Codex', 'Copilot', 'Cursor']) {
+    assert.match(card, new RegExp(`>${label}<`), `${label} is shown`);
+  }
+  for (const c of ['inventory', 'processes', 'flows', 'otel', 'hooks']) {
+    assert.equal(pressed(card, ` data-action="endpoint" data-collector="${c}"`), 'on', `${c} is on by default`);
+  }
+  assert.equal(pressed(card, ' data-action="endpoint" data-collector="hooks_managed_only"'), 'off');
+  assert.equal(pressed(card, ' data-action="endpoint-tool" data-tool="claude_code" data-collector="hooks"'), 'on');
+  assert.equal(pressed(card, ' data-action="endpoint-tool" data-tool="cursor" data-collector="hooks"'), 'on');
+  // Cursor has no OTel; Codex and Copilot have no hooks: three cells, none of them a control.
+  assert.equal((card.match(/<span class="v-absent">unavailable<\/span>/g) ?? []).length, 3);
+  assert.doesNotMatch(card, /data-tool="cursor" data-collector="otel"/);
+  assert.doesNotMatch(card, /data-tool="codex" data-collector="hooks"/);
+  assert.doesNotMatch(card, /data-tool="copilot" data-collector="hooks"/);
+});
+
+test('endpoint collectors: switching one sends every switch, and the page re-reads', async () => {
+  let body = populated();
+  const { controller, requests, html } = await loaded({
+    [GET]: () => ({ status: 200, body }),
+    'PUT /admin/v1/settings/endpoint': (spec) => { body = { ...body, endpoint: { ...body.endpoint, ...spec.body } }; return { status: 204 }; },
+  });
+  await controller.act({ action: 'endpoint', collector: 'inventory', value: 'off' });
+  const puts = requests.filter((r) => r.method === 'PUT');
+  assert.equal(puts.length, 1);
+  assert.equal(puts[0].path, '/admin/v1/settings/endpoint');
+  assert.deepEqual(puts[0].body, { inventory: false, processes: true, flows: true, otel: true, hooks: true, hooks_managed_only: false });
+  assert.equal(requests.at(-1).method, 'GET', 'the page re-reads after the write');
+  assert.equal(pressed(endpointCard(html()), ' data-action="endpoint" data-collector="inventory"'), 'off');
+  // The switch already in that position sends nothing; a value that is not on or off sends nothing.
+  await controller.act({ action: 'endpoint', collector: 'inventory', value: 'off' });
+  await controller.act({ action: 'endpoint', collector: 'flows', value: 'maybe' });
+  assert.equal(requests.filter((r) => r.method === 'PUT').length, 1);
+});
+
+test('endpoint collectors: a tool switch sends both of its collectors to its own path', async () => {
+  let body = populated();
+  const { controller, requests } = await loaded({
+    [GET]: () => ({ status: 200, body }),
+    'PUT /admin/v1/settings/endpoint/tools/cursor': (spec) => {
+      body = { ...body, endpoint: { ...body.endpoint, tools: { ...body.endpoint.tools, cursor: spec.body } } };
+      return { status: 204 };
+    },
+  });
+  await controller.act({ action: 'endpoint-tool', tool: 'cursor', collector: 'hooks', value: 'off' });
+  const put = requests.find((r) => r.method === 'PUT');
+  assert.equal(put.path, '/admin/v1/settings/endpoint/tools/cursor');
+  assert.deepEqual(put.body, { otel: false, hooks: false });
+  assert.equal(controller.state.data.endpoint.tools.cursor.hooks, false);
+  // A collector the tool does not have is never sent.
+  await controller.act({ action: 'endpoint-tool', tool: 'cursor', collector: 'otel', value: 'on' });
+  assert.equal(requests.filter((r) => r.method === 'PUT').length, 1);
+});
+
+test('endpoint collectors: a refused write is said in the card, and settings the server did not send are not reported', async () => {
+  const { controller, html } = await loaded({
+    [GET]: () => ({ status: 200, body: populated() }),
+    'PUT /admin/v1/settings/endpoint': () => ({ status: 400, body: { error: { code: 'invalid_request', message: 'every switch is required' } } }),
+  });
+  await controller.act({ action: 'endpoint', collector: 'hooks', value: 'off' });
+  const card = endpointCard(html());
+  assert.match(card, /Not changed\./);
+  assert.match(card, /every switch is required/);
+
+  const { endpoint: _drop, ...without } = populated();
+  const missing = await loaded({ [GET]: () => ({ status: 200, body: without }) });
+  assert.match(endpointCard(missing.html()), /not reported/);
+  await missing.controller.act({ action: 'endpoint', collector: 'hooks', value: 'off' });
+  assert.equal(missing.requests.filter((r) => r.method === 'PUT').length, 0, 'nothing is written over settings that were not read');
+});
+
 test('every string from the API is escaped', async () => {
   const body = populated();
   body.tools[0].display_name = '<img src=x onerror=alert(1)>';
@@ -240,4 +346,9 @@ test('an absent count is null after normalising, never 0', () => {
   assert.equal(data.collection_mode, null);
   assert.equal(data.content_search, 'disabled');
   assert.deepEqual(data.scope_overrides, {});
+  assert.equal(data.endpoint, null, 'endpoint settings the server did not send are null, never all off');
+  const partial = normaliseSettings({ endpoint: { inventory: false, tools: { cursor: { hooks: true } } } });
+  assert.equal(partial.endpoint.inventory, false);
+  assert.equal(partial.endpoint.flows, null);
+  assert.equal(partial.endpoint.tools.cursor.otel, null);
 });

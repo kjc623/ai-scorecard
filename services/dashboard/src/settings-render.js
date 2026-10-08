@@ -7,7 +7,7 @@
 
 import { escapeHtml } from './render.js';
 import { formatInstant } from './format.js';
-import { COLLECTION_MODES, SEARCH_TIERS, SANCTION_STATES, effectiveMode, modeIncreaseNeedsConfirmation, searchTierAllowed } from './settings.js';
+import { COLLECTION_MODES, SEARCH_TIERS, SANCTION_STATES, ENDPOINT_COLLECTORS, ENDPOINT_TOOLS, effectiveMode, modeIncreaseNeedsConfirmation, searchTierAllowed } from './settings.js';
 
 const MODE_LABELS = Object.freeze({ m0: 'M0 · metadata', m1: 'M1 · digest & labels', m2: 'M2 · excerpt', m3: 'M3 · prompt' });
 const SEARCH_LABELS = Object.freeze({ disabled: 'Off', attachment_names: 'Attachment names', full_text: 'Full text' });
@@ -178,6 +178,58 @@ function stSearch(state) {
     + stProblem(state.search.problem));
 }
 
+const ENDPOINT_LABELS = Object.freeze({
+  inventory: 'Inventory',
+  processes: 'Processes',
+  flows: 'Network flows',
+  otel: 'OpenTelemetry',
+  hooks: 'Hooks',
+  hooks_managed_only: 'Only managed hooks',
+});
+
+/** An On/Off pair for one switch; a value the server did not send selects neither. */
+function onOffSegment(label, current, data, disabled) {
+  const on = current === true ? 'on' : current === false ? 'off' : null;
+  return `<div class="seg dp-seg" role="group" aria-label="${escapeHtml(label)}">`
+    + segItem('On', 'on', on, { ...data, value: 'on' }, { disabled })
+    + segItem('Off', 'off', on, { ...data, value: 'off' }, { disabled })
+    + '</div>';
+}
+
+function stEndpoint(state) {
+  const endpoint = state.data.endpoint;
+  if (!endpoint) {
+    return stCard('Endpoint collectors', '<p><span class="v-absent">not reported</span> The server did not send the endpoint settings.</p>', { wide: true });
+  }
+  const pending = state.endpoint.pending;
+  const busy = Boolean(pending);
+  const collectorRows = ENDPOINT_COLLECTORS.map((name) => {
+    const label = ENDPOINT_LABELS[name];
+    const current = endpoint[name];
+    return '<tr>'
+      + `<td><span class="v-text">${escapeHtml(label)}</span></td>`
+      + `<td class="dp-action">${current === null ? '<span class="v-absent">not reported</span>' : onOffSegment(label, current, { action: 'endpoint', collector: name }, busy)}</td></tr>`;
+  }).join('');
+  const cell = (tool, collector, label) => {
+    if (!tool[collector]) return '<td><span class="v-absent">unavailable</span></td>';
+    const current = endpoint.tools[tool.key]?.[collector] ?? null;
+    if (current === null) return '<td><span class="v-absent">not reported</span></td>';
+    return `<td class="dp-action">${onOffSegment(`${label} for ${tool.label}`, current, { action: 'endpoint-tool', tool: tool.key, collector }, busy)}</td>`;
+  };
+  const toolRows = ENDPOINT_TOOLS.map((tool) => '<tr>'
+    + `<td><span class="v-text">${escapeHtml(tool.label)}</span></td>`
+    + cell(tool, 'otel', 'OpenTelemetry') + cell(tool, 'hooks', 'Hooks') + '</tr>').join('');
+  const body = '<p>Which collectors run on the devices. A change reaches each device on its next policy poll, without a restart. With <em>Only managed hooks</em> on, tools run only the hooks the agent manages, not a user\'s own.</p>'
+    + '<div class="table-scroll dp-flush"><table><thead><tr><th scope="col">Collector</th><th scope="col">State</th></tr></thead>'
+    + `<tbody>${collectorRows}</tbody></table></div>`
+    + '<p>Per tool. A tool\'s switch takes effect only while the collector above is on; <em>unavailable</em> is a collector the tool does not have.</p>'
+    + '<div class="table-scroll dp-flush"><table><thead><tr><th scope="col">Tool</th><th scope="col">OpenTelemetry</th><th scope="col">Hooks</th></tr></thead>'
+    + `<tbody>${toolRows}</tbody></table></div>`
+    + (busy ? '<p class="dp-note" role="status">Saving…</p>' : '')
+    + stProblem(state.endpoint.problem);
+  return stCard('Endpoint collectors', body, { wide: true });
+}
+
 function stDevices(state) {
   const devices = state.data.devices;
   const rows = devices.map((d) => '<tr>'
@@ -217,6 +269,7 @@ export function renderSettings(state, { eyebrow = 'Settings' } = {}) {
     + stRetention(state)
     + stOverrides(state)
     + stTools(state)
+    + stEndpoint(state)
     + stDevices(state)
     + notes
     + '</article>';

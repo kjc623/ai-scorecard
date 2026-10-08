@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -91,6 +92,39 @@ ON CONFLICT (tenant_id, tool_fingerprint)
 DO UPDATE SET sanctioned_state = EXCLUDED.sanctioned_state,
               decided_by       = EXCLUDED.decided_by,
               decided_at       = EXCLUDED.decided_at`
+
+	// SQLEndpointSettings is the tenant's endpoint collector settings as the policy bundle serves
+	// them: the tenant's rows where they exist, else the defaults (every collector on; each tool on
+	// for the collectors it has, so Cursor has no OTel and Codex and Copilot no hooks). The tools
+	// come back as {tool_key: {"otel": bool, "hooks": bool}}.
+	SQLEndpointSettings = `
+SELECT coalesce(e.inventory, true), coalesce(e.processes, true), coalesce(e.flows, true),
+       coalesce(e.otel, true), coalesce(e.hooks, true), coalesce(e.hooks_managed_only, false),
+       (SELECT jsonb_object_agg(d.tool_key, jsonb_build_object(
+                 'otel', coalesce(s.otel, d.otel), 'hooks', coalesce(s.hooks, d.hooks)))
+          FROM (VALUES ('claude_code', true, true), ('codex', true, false),
+                       ('copilot', true, false), ('cursor', false, true)) AS d(tool_key, otel, hooks)
+          LEFT JOIN ops.endpoint_tool_setting s
+            ON s.tenant_id = t.tenant_id AND s.tool_key = d.tool_key)
+  FROM (VALUES ($1::uuid)) AS t(tenant_id)
+  LEFT JOIN ops.endpoint_setting e ON e.tenant_id = t.tenant_id`
+
+	SQLSetEndpointCollectors = `
+INSERT INTO ops.endpoint_setting (tenant_id, inventory, processes, flows, otel, hooks, hooks_managed_only)
+VALUES ($1::uuid, $2::boolean, $3::boolean, $4::boolean, $5::boolean, $6::boolean, $7::boolean)
+ON CONFLICT (tenant_id)
+DO UPDATE SET inventory          = EXCLUDED.inventory,
+              processes          = EXCLUDED.processes,
+              flows              = EXCLUDED.flows,
+              otel               = EXCLUDED.otel,
+              hooks              = EXCLUDED.hooks,
+              hooks_managed_only = EXCLUDED.hooks_managed_only`
+
+	SQLSetEndpointTool = `
+INSERT INTO ops.endpoint_tool_setting (tenant_id, tool_key, otel, hooks)
+VALUES ($1::uuid, $2::text, $3::boolean, $4::boolean)
+ON CONFLICT (tenant_id, tool_key)
+DO UPDATE SET otel = EXCLUDED.otel, hooks = EXCLUDED.hooks`
 )
 
 // Settings implements Store.
@@ -131,9 +165,33 @@ func (s *SQLStore) Settings(ctx context.Context, tenantID string) (Settings, err
 		if out.Devices, err2 = settingsDevices(ctx, tx, tenantID); err2 != nil {
 			return err2
 		}
-		return nil
+		out.Endpoint, err2 = endpointSettings(ctx, tx, tenantID)
+		return err2
 	})
 	return out, err
+}
+
+// endpointSettings reads the tenant's endpoint settings with the defaults applied.
+func endpointSettings(ctx context.Context, tx *sql.Tx, tenantID string) (EndpointSettings, error) {
+	var out EndpointSettings
+	var tools []byte
+	c := &out.Collectors
+	if err := tx.QueryRowContext(ctx, SQLEndpointSettings, tenantID).
+		Scan(&c.Inventory, &c.Processes, &c.Flows, &c.OTel, &c.Hooks, &c.HooksManagedOnly, &tools); err != nil {
+		return EndpointSettings{}, fmt.Errorf("store: endpoint settings: %w", err)
+	}
+	var raw map[string]struct {
+		OTel  bool `json:"otel"`
+		Hooks bool `json:"hooks"`
+	}
+	if err := json.Unmarshal(tools, &raw); err != nil {
+		return EndpointSettings{}, fmt.Errorf("store: endpoint tool settings: %w", err)
+	}
+	out.Tools = make(map[string]EndpointTool, len(raw))
+	for k, v := range raw {
+		out.Tools[k] = EndpointTool{OTel: v.OTel, Hooks: v.Hooks}
+	}
+	return out, nil
 }
 
 func settingsTools(ctx context.Context, tx *sql.Tx, tenantID string) ([]ToolDecision, error) {
@@ -287,6 +345,57 @@ func (s *SQLStore) SetToolSanction(ctx context.Context, tenantID, fingerprint, s
 	})
 }
 
+// SetEndpointCollectors implements Store.
+func (s *SQLStore) SetEndpointCollectors(ctx context.Context, tenantID string, c EndpointCollectors, audit AuditEntry) error {
+	return s.withTenant(ctx, tenantID, func(tx *sql.Tx) error {
+		previous, err := endpointSettings(ctx, tx, tenantID)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, SQLSetEndpointCollectors, tenantID,
+			c.Inventory, c.Processes, c.Flows, c.OTel, c.Hooks, c.HooksManagedOnly); err != nil {
+			if isForeignKeyViolation(err) {
+				return ErrUnknownTenant
+			}
+			return fmt.Errorf("store: set endpoint collectors: %w", err)
+		}
+		audit = withChange(audit, collectorsDetail(previous.Collectors), collectorsDetail(c))
+		return insertAudit(ctx, tx, audit)
+	})
+}
+
+// SetEndpointTool implements Store.
+func (s *SQLStore) SetEndpointTool(ctx context.Context, tenantID, toolKey string, t EndpointTool, audit AuditEntry) error {
+	if !slices.Contains(EndpointToolKeys, toolKey) {
+		return ErrUnknownEndpointTool
+	}
+	return s.withTenant(ctx, tenantID, func(tx *sql.Tx) error {
+		previous, err := endpointSettings(ctx, tx, tenantID)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, SQLSetEndpointTool, tenantID, toolKey, t.OTel, t.Hooks); err != nil {
+			if isForeignKeyViolation(err) {
+				return ErrUnknownTenant
+			}
+			return fmt.Errorf("store: set endpoint tool: %w", err)
+		}
+		audit.Detail = mergeDetail(audit.Detail, map[string]any{"tool_key": toolKey})
+		audit = withChange(audit, toolDetail(previous.Tools[toolKey]), toolDetail(t))
+		return insertAudit(ctx, tx, audit)
+	})
+}
+
+// collectorsDetail and toolDetail are the audit's spelling of a setting: the bundle's JSON names.
+func collectorsDetail(c EndpointCollectors) map[string]any {
+	return map[string]any{"inventory": c.Inventory, "processes": c.Processes, "flows": c.Flows,
+		"otel": c.OTel, "hooks": c.Hooks, "hooks_managed_only": c.HooksManagedOnly}
+}
+
+func toolDetail(t EndpointTool) map[string]any {
+	return map[string]any{"otel": t.OTel, "hooks": t.Hooks}
+}
+
 // currentText runs a single-column text query and returns the value.
 func currentText(ctx context.Context, tx *sql.Tx, query, tenantID string, args ...any) (string, error) {
 	var v string
@@ -355,6 +464,11 @@ func mergeDetail(base map[string]any, extra map[string]any) map[string]any {
 func isCheckViolation(err error, name string) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23514" && pgErr.ConstraintName == name
+}
+
+func isForeignKeyViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23503"
 }
 
 func isRaiseException(err error) bool {

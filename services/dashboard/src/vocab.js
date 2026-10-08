@@ -38,8 +38,9 @@ export const ADMIN_SCIM_TOKENS_ENDPOINT = '/admin/v1/scim/tokens';
 /**
  * The admin API behind Settings → Settings. control-api's, admin-only and audited, like Deployment:
  * collection mode and its narrower per-tool overrides, event and content retention, tool sanction
- * decisions and the content search tier. These are the only writes this client makes, besides
- * Deployment's.
+ * decisions, the content search tier and the endpoint collector switches. These are the only writes
+ * this client makes, besides Deployment's. A tool's endpoint switches are at /tools/<tool_key>
+ * under the endpoint settings.
  */
 export const ADMIN_SETTINGS_ENDPOINT = '/admin/v1/settings';
 export const ADMIN_SETTINGS_COLLECTION_MODE_ENDPOINT = '/admin/v1/settings/collection-mode';
@@ -47,6 +48,7 @@ export const ADMIN_SETTINGS_SCOPE_OVERRIDE_ENDPOINT = '/admin/v1/settings/scope-
 export const ADMIN_SETTINGS_RETENTION_ENDPOINT = '/admin/v1/settings/retention';
 export const ADMIN_SETTINGS_CONTENT_SEARCH_ENDPOINT = '/admin/v1/settings/content-search';
 export const ADMIN_SETTINGS_TOOL_SANCTION_ENDPOINT = '/admin/v1/settings/tools';
+export const ADMIN_SETTINGS_ENDPOINT_COLLECTORS_ENDPOINT = '/admin/v1/settings/endpoint';
 
 /** k, the small-cell floor. A cell below it arrives suppressed and is never a number. */
 export const K = 5;

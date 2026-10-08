@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -50,6 +51,8 @@ type Memory struct {
 	toolState       map[string]map[string]string
 	catalogueTools  []store.ToolDecision
 	deviceModes     map[string]string
+	endpoint        map[string]*store.EndpointCollectors
+	endpointTools   map[string]map[string]store.EndpointTool
 }
 
 var _ store.Store = (*Memory)(nil)
@@ -79,6 +82,8 @@ func New() *Memory {
 		contentSearch:     map[string]string{},
 		toolState:         map[string]map[string]string{},
 		deviceModes:       map[string]string{},
+		endpoint:          map[string]*store.EndpointCollectors{},
+		endpointTools:     map[string]map[string]store.EndpointTool{},
 	}
 	for _, c := range []string{"capture_extension", "egress_proxy", "loopback_broker", "cli_shim", "process_detector", "classifier_host"} {
 		m.collectors[c] = true
@@ -305,6 +310,31 @@ func (m *Memory) SetScimSummary(tenantID string, users, groups int64, last time.
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.scimUsers[tenantID], m.scimGroups[tenantID], m.scimLast[tenantID] = users, groups, last
+}
+
+// DefaultEndpointSettings is what SQLEndpointSettings serves a tenant without rows.
+func DefaultEndpointSettings() store.EndpointSettings {
+	return store.EndpointSettings{
+		Collectors: store.EndpointCollectors{Inventory: true, Processes: true, Flows: true, OTel: true, Hooks: true},
+		Tools: map[string]store.EndpointTool{
+			"claude_code": {OTel: true, Hooks: true},
+			"codex":       {OTel: true},
+			"copilot":     {OTel: true},
+			"cursor":      {Hooks: true},
+		},
+	}
+}
+
+// endpointLocked is the tenant's endpoint settings with the defaults where it has no row.
+func (m *Memory) endpointLocked(tenantID string) store.EndpointSettings {
+	out := DefaultEndpointSettings()
+	if c := m.endpoint[tenantID]; c != nil {
+		out.Collectors = *c
+	}
+	for k, t := range m.endpointTools[tenantID] {
+		out.Tools[k] = t
+	}
+	return out
 }
 
 // Audits returns every audit row written.
@@ -702,6 +732,7 @@ func (m *Memory) PolicyInputs(_ context.Context, tenantID string) (store.PolicyI
 		}
 	}
 	sort.Strings(in.InterceptionHosts)
+	in.Endpoint = m.endpointLocked(tenantID)
 	return in, nil
 }
 
@@ -797,6 +828,7 @@ func (m *Memory) Settings(_ context.Context, tenantID string) (store.Settings, e
 			CollectionMode: m.deviceModes[key(tenantID, d.DeviceID)],
 		})
 	}
+	out.Endpoint = m.endpointLocked(tenantID)
 	return out, nil
 }
 
@@ -927,6 +959,47 @@ func (m *Memory) SetToolSanction(_ context.Context, tenantID, fingerprint, state
 	audit.Detail = merge(audit.Detail, map[string]any{"tool_fingerprint": fingerprint, "previous": previous, "new": state})
 	m.audit(audit)
 	return nil
+}
+
+// SetEndpointCollectors implements store.Store.
+func (m *Memory) SetEndpointCollectors(_ context.Context, tenantID string, c store.EndpointCollectors, audit store.AuditEntry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.tenants[tenantID]; !ok {
+		return store.ErrUnknownTenant
+	}
+	previous := m.endpointLocked(tenantID).Collectors
+	m.endpoint[tenantID] = &c
+	audit.Detail = merge(audit.Detail, map[string]any{"previous": collectorsDetail(previous), "new": collectorsDetail(c)})
+	m.audit(audit)
+	return nil
+}
+
+// SetEndpointTool implements store.Store.
+func (m *Memory) SetEndpointTool(_ context.Context, tenantID, toolKey string, t store.EndpointTool, audit store.AuditEntry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !slices.Contains(store.EndpointToolKeys, toolKey) {
+		return store.ErrUnknownEndpointTool
+	}
+	if _, ok := m.tenants[tenantID]; !ok {
+		return store.ErrUnknownTenant
+	}
+	previous := m.endpointLocked(tenantID).Tools[toolKey]
+	if m.endpointTools[tenantID] == nil {
+		m.endpointTools[tenantID] = map[string]store.EndpointTool{}
+	}
+	m.endpointTools[tenantID][toolKey] = t
+	audit.Detail = merge(audit.Detail, map[string]any{"tool_key": toolKey,
+		"previous": map[string]any{"otel": previous.OTel, "hooks": previous.Hooks},
+		"new":      map[string]any{"otel": t.OTel, "hooks": t.Hooks}})
+	m.audit(audit)
+	return nil
+}
+
+func collectorsDetail(c store.EndpointCollectors) map[string]any {
+	return map[string]any{"inventory": c.Inventory, "processes": c.Processes, "flows": c.Flows,
+		"otel": c.OTel, "hooks": c.Hooks, "hooks_managed_only": c.HooksManagedOnly}
 }
 
 func modeRank(mode string) int {
