@@ -166,6 +166,20 @@ line, naming the app and the process id, when an app starts and one when it stop
 `etw_session_failed` while it cannot be opened (it is retried every minute); on macOS and Linux it is
 `absent` with `etw_session_failed`.
 
+## The flow monitor
+
+While the bundle's `endpoint.flows.enabled` is true, the agent reads connection metadata, never a
+payload, through an ETW session, `ShadowAICapture-flow`, on `Microsoft-Windows-DNS-Client` (event
+3008, a completed query and its answers, under the process that asked) and
+`Microsoft-Windows-Kernel-Network` (events 12 and 28, a TCP connect over IPv4 or IPv6). It keeps,
+for 10 minutes, the addresses each process resolved from a catalog `inference_domain`. A connect to
+one of them, by that process or failing that by any process, is attributed to the domain's app and
+recorded once per app, host, user and UTC day as an `inference_connection` discovery on `net.flow`,
+with the host name, the connecting process's signer and the account it runs as. Any other connect is
+ignored. Its health row is `flow_monitor`: `healthy` while the session delivers events, `degraded`
+with `etw_session_failed` while it cannot be opened (it is retried every minute); on macOS and Linux
+it is `absent` with `etw_session_failed`.
+
 ## Build and test
 
 ```

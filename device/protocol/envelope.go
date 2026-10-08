@@ -166,6 +166,9 @@ const (
 	CollectorHookRelay            Collector = "hook_relay"
 	// CollectorInventoryScanner scans the installed applications and emits them on inv.scan.
 	CollectorInventoryScanner Collector = "inventory_scanner"
+	// CollectorFlowMonitor attributes connections to catalog inference domains and emits them on
+	// net.flow.
+	CollectorFlowMonitor Collector = "flow_monitor"
 )
 
 // Valid reports whether the collector is in the closed set. control-api refuses a whole health
@@ -175,7 +178,8 @@ func (c Collector) Valid() bool {
 	case CollectorEgressProxy, CollectorLoopbackBroker, CollectorCLIShim,
 		CollectorProcessDetector, CollectorClassifierHost, CollectorCaptureExtension,
 		CollectorDesktopProxy, CollectorOTelReceiver, CollectorUserHelper,
-		CollectorToolConfigClaudeCode, CollectorHookRelay, CollectorInventoryScanner:
+		CollectorToolConfigClaudeCode, CollectorHookRelay, CollectorInventoryScanner,
+		CollectorFlowMonitor:
 		return true
 	default:
 		return false

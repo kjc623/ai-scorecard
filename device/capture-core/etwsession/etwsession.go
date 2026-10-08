@@ -32,6 +32,10 @@ type Event struct {
 	// Provider is the GUID of the provider that wrote it, braced and upper-case.
 	Provider string
 	ID       uint16
+	// PID is the process the event header names: the one in whose context the event was
+	// written. A kernel provider may write in another process's context; its payload then names
+	// the process the event is about.
+	PID uint32
 	// Time is when the provider wrote it.
 	Time time.Time
 	// Properties are the event's payload fields by name, formatted as text by the

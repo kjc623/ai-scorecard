@@ -1364,3 +1364,50 @@ decided and why, and for a vendor fact the product version checked.
 - **Not run here:** `cli_windows_test.go` (`TestFileVersion`, `TestCLIScannerPathHitWithAFileVersion`,
   `TestSystemCLIHostReads`) and the remaining Windows tests in `toolconfig`. They compile and vet under
   `GOOS=windows`.
+
+## 2026-10-08, task 21
+
+- **Migration `0012-flow-monitor.sql`** (renumbered at merge if taken) adds the `flow_monitor`
+  collector row. Migration proof, on throwaway databases: the integration branch's `schema.sql` plus
+  it, and `main`'s `schema.sql` plus `0002` to it, each dump (`pg_dump --schema-only`, and the rows
+  of `ref.collector`, `ref.app`, `ref.app_signal`, `ref.tool_catalogue` and `ref.route_fidelity`)
+  identically to the new `schema.sql`; it alone, and `0002` to it, applied over the new `schema.sql`
+  change nothing.
+- **Vendor fact, Microsoft-Windows-DNS-Client** (`{1C95126E-7EEA-49A9-A3FE-A378B03DDB4D}`): event
+  3008 ("DNS query is completed for the name %1, type %2, query options %3 with status %4 Results
+  %5"), informational, no keyword, fields `QueryName`, `QueryType`, `QueryOptions`, `QueryStatus`,
+  `QueryResults` (strings and integers; no process id in the payload). Checked against the provider
+  manifests as extracted from Windows 10 builds 17134 and 18990 (`repnz/etw-providers-docs`) and
+  Windows 11 22H2 build 22621.963 (`nasbench/EVTX-ETW-Resources`, the `wevtutil gp` content with
+  in and out types). `QueryResults` is the answers separated by `;`, an IPv4 address as
+  `::ffff:a.b.c.d`, any other record as `type:  <n> <data>`: no Microsoft source documents it; it
+  is the format of Sysmon's DNS query event, which carries this field, as Elastic's winlogbeat
+  Sysmon module (branch 7.17) parses it. The PC's manifests were not read: this build ran on Linux.
+  learn.microsoft.com is blocked here. The device phase confirms the fields on the reference VM.
+- **The asking process is the event header's process id.** The DNS client writes 3008 in the
+  context of the process that called it, so `etwsession.Event` gains `PID`, the header's process id.
+  If the device phase finds an answer written under another process (the DNS Client service), the
+  any-process fallback still attributes the connect to the domain.
+- **Vendor fact, Microsoft-Windows-Kernel-Network** (`{7DD42A49-5329-4832-8DFD-43D979153A88}`):
+  keywords `KERNEL_NETWORK_KEYWORD_IPV4` `0x10` and `KERNEL_NETWORK_KEYWORD_IPV6` `0x20`; events 12
+  (TCPv4) and 28 (TCPv6) "Connection attempted", informational, fields `PID`, `size`, `daddr`,
+  `saddr` (`win:UInt32` as `win:IPv4`, or 16-byte `win:Binary` as `win:IPv6`), `dport`, `sport`
+  (`win:UInt16` as `win:Port`), then `mss`, `sackopt`, `tsopt`, `wsopt`, `rcvwin`, `rcvwinscale`,
+  `sndwinscale`, `seqnum`, `connid`. Same sources as DNS-Client (identical in 17134 and 18990;
+  22621 adds the out types). golang-etw v1.6.2 formats each field with `TdhFormatProperty`, so
+  addresses arrive as text, and reads a `win:Binary` field shown as `win:IPv6` as a 16-byte
+  address. The connecting process is the payload's `PID`, not the header's: the kernel
+  writes in whatever context it runs. The port is read by nothing: the record has no port.
+- **A domain two catalog apps share is the first app's in catalog order** (`app_key` order), as
+  the other `AppBy` lookups: `api.anthropic.com` is `app:anthropic_api`, not `app:claude_code`.
+- **The latest answer for an address wins**, in the connecting process's map and then across
+  processes. Expiry is measured on event times; expired answers are pruned at most once a minute.
+  Only answers for catalog domains are kept, and a query whose `QueryStatus` is not 0 is ignored.
+- **A process that cannot be opened** is still recorded, `unattributed` and with no signer, as in the
+  process monitor.
+- **Counters and log.** An attributed connect counts `observed`; a connect with no readable `PID` or
+  `daddr` counts `errors`; DNS answers count nothing. The log has the session's state changes and a
+  record that could not be emitted (app key and PID), never a line per connection.
+- **The service opens the session through a facility** (`flowEvents`), which the service tests leave
+  unset, as `processEvents`. The elevated Windows test resolves `api.openai.com` and connects to it
+  on 443, sending nothing.
