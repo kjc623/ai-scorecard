@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"net"
 	"os"
 	"strings"
 	"sync"
@@ -214,6 +215,56 @@ func TestConsoleUserChangeRestampsTheIdentity(t *testing.T) {
 	svc.refreshPerson()
 	if id, _ := svc.pipe.Identity(); id.UserRef != unattributedUserRef || id.SubjectName != "" {
 		t.Fatalf("identity with nobody at the console = %+v, want unattributed", id)
+	}
+}
+
+// A proxied request is attributed to the account its client process runs as: a second user's
+// process to that user, the console user's process to the console user with the UPN the console
+// lookup resolved. A process whose owner cannot be read is an error, which the proxy answers by
+// falling back to the console user.
+func TestProxiedClientIsAttributedToItsProcessOwner(t *testing.T) {
+	cloud := startFakeCloud(t, nil)
+	console := &fakeConsole{}
+	console.set(hostinfo.User{SID: entraSID, Account: `AzureAD\AdaLovelace`, UPN: "ada@contoso.com"}, nil)
+	withConsole(t, console)
+	svc, err := newService(context.Background(), testConfig(t, cloud, nil), testLogger(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (identityResolver{svc}).Resolve(context.Background()); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	conn, peer := net.Pipe()
+	defer conn.Close()
+	defer peer.Close()
+	ownedBy := func(p hostinfo.Process, err error) func(net.Conn) (hostinfo.Process, error) {
+		return func(net.Conn) (hostinfo.Process, error) { return p, err }
+	}
+
+	grace := hostinfo.User{SID: "S-1-5-21-1-2-3-1002", Account: `CONTOSO\grace`, UPN: "grace@contoso.com", Source: "process"}
+	curl := hostinfo.Process{PID: 4242, Image: `C:\Windows\System32\curl.exe`, User: &grace}
+	got, err := svc.clientPerson(ownedBy(curl, nil), conn)
+	if err != nil || got.UserRef != expectedRef(t, "grace@contoso.com") || got.SubjectName != "grace@contoso.com" {
+		t.Fatalf("second user's process = %+v, %v; want Grace", got, err)
+	}
+	if name := clientProcessName(ownedBy(curl, nil), conn); name != "curl.exe" {
+		t.Fatalf("process name = %q, want curl.exe", name)
+	}
+
+	ada := hostinfo.User{SID: entraSID, Account: `AzureAD\AdaLovelace`, Source: "process"}
+	got, err = svc.clientPerson(ownedBy(hostinfo.Process{PID: 7, Image: `C:\a.exe`, User: &ada}, nil), conn)
+	if err != nil || got.UserRef != expectedRef(t, "ada@contoso.com") {
+		t.Fatalf("console user's process = %+v, %v; want Ada by her UPN", got, err)
+	}
+
+	if _, err := svc.clientPerson(ownedBy(hostinfo.Process{PID: 8, Image: `C:\p.exe`}, nil), conn); err == nil {
+		t.Fatal("a process with an unreadable owner was attributed")
+	}
+	if _, err := svc.clientPerson(ownedBy(hostinfo.Process{}, hostinfo.ErrNotFound), conn); err == nil {
+		t.Fatal("an unattributed connection was attributed")
+	}
+	if name := clientProcessName(ownedBy(hostinfo.Process{}, hostinfo.ErrNotFound), conn); name != "unknown" {
+		t.Fatalf("process name of an unattributed connection = %q, want unknown", name)
 	}
 }
 

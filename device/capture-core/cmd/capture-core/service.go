@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -19,6 +20,7 @@ import (
 	"github.com/shadow-ai-capture/device/capture-core/core"
 	"github.com/shadow-ai-capture/device/capture-core/credential"
 	"github.com/shadow-ai-capture/device/capture-core/drain"
+	"github.com/shadow-ai-capture/device/capture-core/hostinfo"
 	"github.com/shadow-ai-capture/device/capture-core/policy"
 	"github.com/shadow-ai-capture/device/capture-core/proxy/loopback"
 	"github.com/shadow-ai-capture/device/capture-core/proxy/tlsproxy"
@@ -48,12 +50,16 @@ const (
 
 // facilities are the operating-system side effects the service performs beyond its own state
 // directory: the trust store, the machine environment the CLI shim writes, and the native
-// messaging endpoint. Tests replace them so nothing touches the machine.
+// messaging endpoint, and the process lookups that attribute a proxied connection. Tests replace
+// them so nothing touches the machine.
 type facilities struct {
 	trustStore func(logf func(string, ...any)) trustStore
 	shimRunner cli.Runner
 	shimDir    string // empty: the platform default (cli.DefaultManagedDir)
 	nativeAddr string
+	// connOwner names the process at the client end of a loopback connection the proxy accepted.
+	// nil where the platform cannot; proxy observations are then attributed to the console user.
+	connOwner func(conn net.Conn) (hostinfo.Process, error)
 }
 
 // trustStore installs, verifies and removes the per-device CA in the platform trust store.
@@ -69,6 +75,30 @@ var platform = facilities{
 	},
 	shimRunner: trust.ExecRunner{},
 	nativeAddr: nativeEndpoint,
+	connOwner:  loopbackAttribution(),
+}
+
+// loopbackAttribution is how the platform names a loopback connection's client: the TCP owner table
+// on Windows, nothing elsewhere.
+func loopbackAttribution() func(net.Conn) (hostinfo.Process, error) {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	return loopbackClient
+}
+
+// loopbackClient is the process that dialled a loopback connection the service accepted.
+func loopbackClient(conn net.Conn) (hostinfo.Process, error) {
+	local, lok := conn.LocalAddr().(*net.TCPAddr)
+	remote, rok := conn.RemoteAddr().(*net.TCPAddr)
+	if !lok || !rok {
+		return hostinfo.Process{}, fmt.Errorf("a %s connection has no TCP owner", conn.LocalAddr().Network())
+	}
+	pid, err := hostinfo.OwnerOfLocalTCP(local.AddrPort(), remote.AddrPort())
+	if err != nil {
+		return hostinfo.Process{}, err
+	}
+	return hostinfo.ProcessInfo(pid)
 }
 
 // runService runs the agent in the foreground until SIGINT or SIGTERM.
@@ -325,7 +355,7 @@ func (s *service) buildProviders() error {
 			listen = b.Interception.ProxyListen
 		}
 	}
-	tlsProv := tlsproxy.New(tlsproxy.Config{
+	tlsCfg := tlsproxy.Config{
 		Listen:     listen,
 		Bundles:    s.currentBundle,
 		Pipeline:   s.pipe,
@@ -337,7 +367,12 @@ func (s *service) buildProviders() error {
 		CACertPEM:  caCert,
 		CAKeyPEM:   caKey,
 		TrustRoot:  trustRoot,
-	})
+	}
+	if owner := platform.connOwner; owner != nil {
+		tlsCfg.Process = func(conn net.Conn) string { return clientProcessName(owner, conn) }
+		tlsCfg.Person = func(conn net.Conn) (core.Person, error) { return s.clientPerson(owner, conn) }
+	}
+	tlsProv := tlsproxy.New(tlsCfg)
 	if err := s.reg.Add(tlsProv); err != nil {
 		return err
 	}

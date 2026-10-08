@@ -109,6 +109,12 @@ func dialThroughProxy(t *testing.T, proxyAddr, target string, cfg *tls.Config) (
 	if err != nil {
 		t.Fatalf("dial proxy: %v", err)
 	}
+	return connectThrough(t, raw, target, cfg)
+}
+
+// connectThrough performs the CONNECT handshake over a connection already dialled to the proxy.
+func connectThrough(t *testing.T, raw net.Conn, target string, cfg *tls.Config) (*tls.Conn, *http.Response) {
+	t.Helper()
 	if _, err := fmt.Fprintf(raw, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target); err != nil {
 		t.Fatalf("write CONNECT: %v", err)
 	}
@@ -571,6 +577,118 @@ func TestTLSPinnedClientExclusionLadder(t *testing.T) {
 	}
 	if c := p.Counters().Cumulative(); c[protocol.CounterNotCooperative] < 2 {
 		t.Fatalf("not_cooperative = %d, want at least 2 (the failed handshake and the excluded tunnel)", c[protocol.CounterNotCooperative])
+	}
+}
+
+// fakeProcessTable stands in for the operating system's connection owners: each client connection,
+// by its local address, belongs to a process run by a person.
+type fakeProcessTable struct {
+	mu     sync.Mutex
+	owners map[string]core.Person
+	calls  int
+}
+
+func (f *fakeProcessTable) dial(t *testing.T, proxyAddr string, owner core.Person) net.Conn {
+	t.Helper()
+	raw, err := net.DialTimeout("tcp", proxyAddr, 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	f.mu.Lock()
+	f.owners[raw.LocalAddr().String()] = owner
+	f.mu.Unlock()
+	return raw
+}
+
+// person answers for the server's end of a connection: the client is its remote address.
+func (f *fakeProcessTable) person(conn net.Conn) (core.Person, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	who, ok := f.owners[conn.RemoteAddr().String()]
+	if !ok {
+		return core.Person{}, fmt.Errorf("no process owns %s", conn.RemoteAddr())
+	}
+	return who, nil
+}
+
+// Each intercepted request is attributed to the user running the process that dialled the proxy,
+// not to one user for the whole device.
+func TestTLSAttributesEachRequestToTheDiallingProcessOwner(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+	upPort := upstream.Listener.Addr().(*net.TCPAddr).Port
+
+	procs := &fakeProcessTable{owners: map[string]core.Person{}}
+	pipe := &fakePipeline{mode: protocol.ModeM1}
+	p := newProviderForTest(t, Config{
+		Listen: "127.0.0.1:0", Bundles: func() *policy.Bundle { return bundleIntercepting(upPort) },
+		Pipeline: pipe, UpstreamRoots: upstreamPool(upstream),
+		Person: procs.person,
+	})
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	target := fmt.Sprintf("127.0.0.1:%d", upPort)
+	second := core.Person{UserRef: "u_second", SubjectName: "second@contoso.example"}
+	console := core.Person{UserRef: "u_console", SubjectName: "console@contoso.example"}
+	for _, who := range []core.Person{second, console} {
+		conn, _ := connectThrough(t, procs.dial(t, p.ListenAddr(), who), target, &tls.Config{ServerName: "127.0.0.1", RootCAs: p.CA().Pool()})
+		if resp, _ := postThroughTunnel(t, conn, "127.0.0.1", `{"messages":[{"role":"user","content":"hi"}]}`); resp.StatusCode != http.StatusOK {
+			t.Fatalf("the request was not carried: %d", resp.StatusCode)
+		}
+		_ = conn.Close()
+	}
+	waitFor(t, 2*time.Second, "both observations", func() bool { return len(pipe.observations()) == 2 })
+	for i, want := range []core.Person{second, console} {
+		got := pipe.observations()[i].Person
+		if got == nil || *got != want {
+			t.Fatalf("observation %d person = %+v, want the dialling process's owner %+v", i, got, want)
+		}
+	}
+	if c := p.Counters().Cumulative(); c[protocol.CounterErrors] != 0 {
+		t.Fatalf("errors = %d, want 0 when every client is attributed", c[protocol.CounterErrors])
+	}
+}
+
+// When the dialling process cannot be named, the request is still carried and observed, attributed
+// to the pipeline's identity (the console user), and the failure is counted once.
+func TestTLSUnattributedClientFallsBackToTheConsoleUser(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+	upPort := upstream.Listener.Addr().(*net.TCPAddr).Port
+
+	procs := &fakeProcessTable{owners: map[string]core.Person{}}
+	pipe := &fakePipeline{mode: protocol.ModeM1}
+	p := newProviderForTest(t, Config{
+		Listen: "127.0.0.1:0", Bundles: func() *policy.Bundle { return bundleIntercepting(upPort) },
+		Pipeline: pipe, UpstreamRoots: upstreamPool(upstream),
+		Person: procs.person,
+	})
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	conn, _ := dialThroughProxy(t, p.ListenAddr(), fmt.Sprintf("127.0.0.1:%d", upPort), &tls.Config{ServerName: "127.0.0.1", RootCAs: p.CA().Pool()})
+	defer conn.Close()
+	if resp, _ := postThroughTunnel(t, conn, "127.0.0.1", `{"messages":[{"role":"user","content":"hi"}]}`); resp.StatusCode != http.StatusOK {
+		t.Fatalf("an attribution failure blocked the client: %d", resp.StatusCode)
+	}
+	waitFor(t, 2*time.Second, "the observation", func() bool { return len(pipe.observations()) == 1 })
+	if got := pipe.observations()[0].Person; got != nil {
+		t.Fatalf("person = %+v, want nil so the pipeline attributes to the console user", got)
+	}
+	if c := p.Counters().Cumulative(); c[protocol.CounterErrors] != 1 || c[protocol.CounterEmitted] != 1 {
+		t.Fatalf("counters = %v, want errors=1 for the one failed attribution and emitted=1", c)
+	}
+	procs.mu.Lock()
+	calls := procs.calls
+	procs.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("attribution ran %d times for one request, want once", calls)
 	}
 }
 

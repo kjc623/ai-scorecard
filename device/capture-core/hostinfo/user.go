@@ -20,8 +20,9 @@ var (
 	// ErrNotPermitted: this process may not ask (WTSQueryUserToken needs the service's privilege).
 	// A console run falls back to its own user, which is the person who started it.
 	ErrNotPermitted = errors.New("hostinfo: not permitted to query the console user")
-	// ErrUnsupported: the platform has no console-session lookup.
-	ErrUnsupported = errors.New("hostinfo: console user lookup is not supported on this platform")
+	// ErrUnsupported: the platform has no such lookup (the console session, a connection's or a
+	// process's owner).
+	ErrUnsupported = errors.New("hostinfo: the lookup is not supported on this platform")
 )
 
 // User is the person at the device as the operating system names them.

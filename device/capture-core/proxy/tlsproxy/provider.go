@@ -84,6 +84,11 @@ type Config struct {
 	// that pin certificates. It is a seam because process attribution is platform-specific.
 	Process func(conn net.Conn) string
 
+	// Person names the owner of the process behind a connection, whom an intercepted request is
+	// attributed to. nil leaves every request to the pipeline's identity (the console user); an
+	// error does so for that request and is counted.
+	Person func(conn net.Conn) (core.Person, error)
+
 	// PinnedReprobeInterval bounds an exclusion: a client update can change its behaviour, so an
 	// excluded destination is re-probed at this cadence and never silently omitted for good.
 	PinnedReprobeInterval time.Duration
@@ -552,7 +557,23 @@ func (p *Provider) handle(client net.Conn) {
 		return
 	}
 
-	p.intercept(client, br, req, host, port, process, bundle)
+	p.intercept(client, br, req, host, port, process, p.person(client), bundle)
+}
+
+// person is the owner of the process behind an intercepted connection, or nil to attribute the
+// request to the pipeline's identity. It is resolved while the client is still connected, because
+// a closed connection's row no longer names its process.
+func (p *Provider) person(conn net.Conn) *core.Person {
+	if p.cfg.Person == nil {
+		return nil
+	}
+	who, err := p.cfg.Person(conn)
+	if err != nil {
+		p.counters.Add(protocol.CounterErrors)
+		p.cfg.Log.Printf("tlsproxy: the client at %s could not be attributed; attributing to the console user: %v", conn.RemoteAddr(), err)
+		return nil
+	}
+	return &who
 }
 
 func (p *Provider) bundle() *policy.Bundle {
@@ -577,7 +598,7 @@ func (p *Provider) mode(host string) core.Resolution {
 }
 
 // intercept terminates TLS with a minted leaf and reads the request.
-func (p *Provider) intercept(client net.Conn, br *bufio.Reader, req *http.Request, host string, port int, process string, bundle *policy.Bundle) {
+func (p *Provider) intercept(client net.Conn, br *bufio.Reader, req *http.Request, host string, port int, process string, person *core.Person, bundle *policy.Bundle) {
 	p.mu.Lock()
 	ca := p.ca
 	p.mu.Unlock()
@@ -615,10 +636,10 @@ func (p *Provider) intercept(client net.Conn, br *bufio.Reader, req *http.Reques
 	}
 	defer tlsConn.Close()
 
-	p.serveIntercepted(tlsConn, host, port, process, bundle)
+	p.serveIntercepted(tlsConn, host, port, process, person, bundle)
 }
 
-func (p *Provider) serveIntercepted(client *tls.Conn, host string, port int, process string, bundle *policy.Bundle) {
+func (p *Provider) serveIntercepted(client *tls.Conn, host string, port int, process string, person *core.Person, bundle *policy.Bundle) {
 	_ = client.SetDeadline(time.Now().Add(4 * p.cfg.DialTimeout))
 	br := newBufReader(client)
 	req, err := http.ReadRequest(br)
@@ -693,12 +714,12 @@ func (p *Provider) serveIntercepted(client *tls.Conn, host string, port int, pro
 	if !submission || p.cfg.Pipeline == nil {
 		return
 	}
-	p.observe(req, counted.n, buf, res)
+	p.observe(req, counted.n, buf, res, person)
 }
 
 // observe hands the request to the pipeline. Failures here (classifier, spool) are reported and
 // never stop the client's exchange, which has already completed.
-func (p *Provider) observe(req *http.Request, counted int64, buf *bodyBuffer, res core.Resolution) {
+func (p *Provider) observe(req *http.Request, counted int64, buf *bodyBuffer, res core.Resolution, person *core.Person) {
 	size := counted
 	if req.ContentLength > 0 {
 		size = req.ContentLength
@@ -720,6 +741,7 @@ func (p *Provider) observe(req *http.Request, counted int64, buf *bodyBuffer, re
 		Content:         content,
 		OverCap:         buf != nil && buf.overCap(),
 		Extract:         JSONExtractor{},
+		Person:          person,
 	}
 	out, err := p.cfg.Pipeline.Process(context.Background(), obs)
 	switch {

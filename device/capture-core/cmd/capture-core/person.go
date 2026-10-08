@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"net"
 	"os"
 	"strings"
 	"sync"
@@ -16,10 +18,11 @@ import (
 )
 
 // Who observations are attributed to. The service runs as LocalSystem (root elsewhere), so its own
-// account says nothing about who is using the device. Observations from the proxy routes are
-// attributed to the interactive console user, re-read on a short interval so a sign-out, a sign-in
-// or a switch of user moves the attribution with it; observations from the browser are attributed
-// to the account the browser runs as, named by the native-messaging endpoint. Each person's
+// account says nothing about who is using the device. An observation whose process is known is
+// attributed to the account that process runs as: the browser's, named by the native-messaging
+// endpoint, and the client's behind a proxied connection, named by the connection's owner. Other
+// proxy observations are attributed to the interactive console user, re-read on a short interval
+// so a sign-out, a sign-in or a switch of user moves the attribution with it. Each person's
 // user_ref is derived under the tenant's key from enrolment: from the UPN, else the Entra object
 // id, else DOMAIN\user.
 
@@ -136,6 +139,29 @@ func (s *service) peerPerson(u hostinfo.User) core.Person {
 	}
 	p, _ := s.personOf(u, u.SID != "" || u.Account != "", key)
 	return p
+}
+
+// clientPerson is the person a proxied request is attributed to: the account the process behind the
+// connection runs as, named the way a browser peer is.
+func (s *service) clientPerson(owner func(net.Conn) (hostinfo.Process, error), conn net.Conn) (core.Person, error) {
+	p, err := owner(conn)
+	if err != nil {
+		return core.Person{}, err
+	}
+	if p.User == nil {
+		return core.Person{}, fmt.Errorf("the account process %d runs as is unreadable", p.PID)
+	}
+	return s.peerPerson(*p.User), nil
+}
+
+// clientProcessName is the image base name of the process behind a proxied connection, which the
+// proxy's per-process pinning exclusion keys on; "unknown" when the process cannot be named.
+func clientProcessName(owner func(net.Conn) (hostinfo.Process, error), conn net.Conn) string {
+	p, err := owner(conn)
+	if err != nil || p.Image == "" {
+		return "unknown"
+	}
+	return p.Image[strings.LastIndexAny(p.Image, `\/`)+1:]
 }
 
 // currentDeviceIdentity is the tenant's identity setting the device acts on now.

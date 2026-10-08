@@ -247,3 +247,36 @@ decided and why, and for a vendor fact the product version checked.
   `unknown` (or `tampered`). query-api's coverage `gap_reasons` counts every unobserved row
   whatever `expected` says, so such a row still appears there under `unknown`. Fixing it is a
   query-api change (`AND v.expected`) or a schema change, outside the brief.
+
+## 2026-10-08, task 09
+
+- **`OwnerOfLocalTCP` returns `uint32`** as the brief states (`DESIGN.md` §7 says `int`), the type
+  `UserOfProcess` and the Win32 calls take. `Process` carries `Started` beside the §7 fields.
+- **`Publisher` is a verified signer only.** WinVerifyTrust checks the embedded signature first;
+  on `TRUST_E_NOSIGNATURE` the image is verified as a member of the system catalog that lists its
+  hash (SHA-256, then SHA-1, under `DRIVER_ACTION_VERIFY`), because System32 binaries such as
+  `curl.exe` are catalog-signed and carry no embedded signature. Any other trust failure (bad
+  digest, untrusted root) gives `""`, as an unsigned image does. Revocation is not checked and URL
+  retrieval is cache-only, so a lookup never goes to the network.
+- **`ProcessInfo` fails only when the process cannot be opened, timed or its image read.** An
+  unreadable token (a protected process) leaves `User` nil; the proxy treats that as an
+  attribution failure.
+- **The proxy gains a `Config.Person` seam beside `Process`.** It is called once per intercepted
+  connection, before the minted-leaf handshake, while the client is still connected (a closed
+  connection's row names no process). A failure counts `errors` once, is logged without content,
+  and leaves the observation to the pipeline's identity (the console user).
+- **Attribution is wired on Windows only** (`facilities.connOwner`). On macOS and Linux, where
+  `hostinfo` returns `ErrUnsupported`, the proxy keeps the console user and counts nothing, rather
+  than an error on every request.
+- **`ErrUnsupported`'s message names no lookup** ("the lookup is not supported on this
+  platform"); it is returned by the new lookups too.
+- **Cost on the CONNECT path:** the first `ProcessInfo` of a process verifies its signature, which
+  hashes the image, once per process per 10 minutes. The device phase measures it (task 51).
+- **Vendor facts (Win32 reference, MicrosoftDocs/sdk-api source, pages dated 2018-12-05, read
+  2026-10-08; learn.microsoft.com is not reachable from the build machine):**
+  `MIB_TCPROW_OWNER_PID` and `MIB_TCP6ROW_OWNER_PID` field order, addresses and ports in network
+  byte order; `TCP_TABLE_OWNER_PID_ALL` is the sixth `TCP_TABLE_CLASS` value (5);
+  `WINTRUST_CATALOG_INFO.hCatAdmin` is required for a non-SHA-1 hash;
+  `CryptCATAdminCalcHashFromFileHandle2` sizes the hash with a NULL buffer; `CRYPT_PROVIDER_CERT`
+  starts with `cbStruct` then `pCert`; `CertGetNameStringW` with `CERT_NAME_ATTR_TYPE` takes an
+  ANSI OID (`2.5.4.3`). The `curl.exe` publisher `Microsoft Windows` is checked on Windows.
