@@ -83,7 +83,7 @@ export function createBudget({ budgetMs = DECISION_BUDGET_MS, now = nowMs } = {}
 /**
  * The first rule in `bundle` that matches `input`, or the default allow. A null bundle has no rules.
  *
- * @param {{rules?: object[], sanctioned_tools?: string[]}|null} bundle
+ * @param {{rules?: object[], sanctioned_tools?: string[], catalog?: {app_key: string, category: string}[]}|null} bundle
  * @param {{route?: string, tool_fingerprint?: string, labels?: string[], labels_known?: boolean}} input
  *   `labels_known` is false when no classification completed: the absence of a label then says
  *   nothing, so a rule that lists labels does not match.
@@ -115,15 +115,28 @@ function matches(bundle, match, input) {
     if (!input.labels_known || !found.some((l) => labels.includes(l))) return false;
   }
   if (tools.length > 0 && !tools.includes(input.tool_fingerprint)) return false;
-  // Categories resolve through the bundle's app catalog, which the bundle does not carry yet, so no
-  // tool has a known category and a rule that lists categories never matches.
-  if (categories.length > 0) return false;
+  if (categories.length > 0) {
+    const c = category(bundle, input.tool_fingerprint);
+    if (c === '' || !categories.includes(c)) return false;
+  }
   if (sanction.length > 0) {
     const sanctioned = Array.isArray(bundle.sanctioned_tools) && bundle.sanctioned_tools.includes(input.tool_fingerprint);
     if (!sanction.includes(sanctioned ? SANCTION.SANCTIONED : SANCTION.UNSANCTIONED)) return false;
   }
   if (routes.length > 0 && !routes.includes(input.route)) return false;
   return true;
+}
+
+/**
+ * The catalog category of a tool fingerprint `app:<app_key>`, as capture-core's `Bundle.Category`:
+ * '' for any other fingerprint and for an app the catalog does not hold, so a tool without a
+ * category matches no category rule.
+ */
+function category(bundle, tool) {
+  if (typeof tool !== 'string' || !tool.startsWith('app:')) return '';
+  const key = tool.slice('app:'.length);
+  const app = (Array.isArray(bundle.catalog) ? bundle.catalog : []).find((a) => a && a.app_key === key);
+  return app && typeof app.category === 'string' ? app.category : '';
 }
 
 /** A match list as an array: absent and null are empty, anything else that is not a list is null. */
@@ -152,7 +165,7 @@ function decide(action, ruleId, reason, extra = {}) {
  * The synchronous half: decide without asking anyone, inside the decision budget.
  *
  * @param {object} input
- * @param {{rules?: object[], sanctioned_tools?: string[]}} input.bundle   from the bundle in force
+ * @param {{rules?: object[], sanctioned_tools?: string[], catalog?: object[]}} input.bundle   from the bundle in force
  * @param {string} input.route
  * @param {string} input.tool_fingerprint
  * @param {string[]} [input.labels]

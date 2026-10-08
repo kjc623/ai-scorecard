@@ -401,31 +401,7 @@ func (s *service) buildProviders() error {
 	}
 	s.log.Info("per-device CA ready", "created", created)
 
-	canary := ""
-	listen := defaultTLSListen
-	if b != nil {
-		canary = b.Interception.ProxyCanary
-		if strings.TrimSpace(b.Interception.ProxyListen) != "" {
-			listen = b.Interception.ProxyListen
-		}
-	}
-	tlsCfg := tlsproxy.Config{
-		Listen:     listen,
-		Bundles:    s.currentBundle,
-		Pipeline:   s.pipe,
-		Log:        s.logf,
-		Clock:      time.Now,
-		CanaryHost: canaryHost(canary),
-		CanaryPort: canaryPort(canary),
-		BodyCap:    bodyCapFrom(b),
-		CA:         ca,
-		TrustRoot:  trustRoot,
-	}
-	if owner := platform.connOwner; owner != nil {
-		tlsCfg.Process = func(conn net.Conn) string { return clientProcessName(owner, conn) }
-		tlsCfg.Person = func(conn net.Conn) (core.Person, error) { return s.clientPerson(owner, conn) }
-	}
-	tlsProv := tlsproxy.New(tlsCfg)
+	tlsProv := tlsproxy.New(s.proxyConfig(b, ca, trustRoot))
 	if err := s.reg.Add(tlsProv); err != nil {
 		return err
 	}
@@ -465,18 +441,12 @@ func (s *service) buildProviders() error {
 	// owner is named the way a browser peer is.
 	otelCounters := core.NewCounterSet(time.Now())
 	otel, err := otlp.New(otlp.Config{
-		TokenPath: s.dir.Path(otlp.TokenFile),
-		Normalizers: normalizers.Registered(normalizers.Deps{
-			Pipeline: s.pipe,
-			Bundles:  s.pipe.Bundles,
-			Counters: otelCounters,
-			Log:      s.logf,
-			Clock:    time.Now,
-		}),
-		Counters: otelCounters,
-		Person:   s.peerPerson,
-		Log:      s.logf,
-		Clock:    time.Now,
+		TokenPath:   s.dir.Path(otlp.TokenFile),
+		Normalizers: normalizers.Registered(s.normalizerDeps(otelCounters)),
+		Counters:    otelCounters,
+		Person:      s.peerPerson,
+		Log:         s.logf,
+		Clock:       time.Now,
 	})
 	if err != nil {
 		return err
@@ -503,6 +473,67 @@ func (s *service) buildProviders() error {
 	}
 
 	return s.buildPAC()
+}
+
+// proxyConfig is proxy.tls's configuration under b, the bundle in force when the providers are built.
+func (s *service) proxyConfig(b *policy.Bundle, ca *tlsproxy.CA, trustRoot core.TrustRoot) tlsproxy.Config {
+	canary := ""
+	listen := defaultTLSListen
+	if b != nil {
+		canary = b.Interception.ProxyCanary
+		if strings.TrimSpace(b.Interception.ProxyListen) != "" {
+			listen = b.Interception.ProxyListen
+		}
+	}
+	cfg := tlsproxy.Config{
+		Listen:     listen,
+		Bundles:    s.currentBundle,
+		Pipeline:   s.pipe,
+		Log:        s.logf,
+		Clock:      time.Now,
+		CanaryHost: canaryHost(canary),
+		CanaryPort: canaryPort(canary),
+		BodyCap:    bodyCapFrom(b),
+		CA:         ca,
+		TrustRoot:  trustRoot,
+		AppByExe:   s.appByExe,
+	}
+	if owner := platform.connOwner; owner != nil {
+		cfg.Process = func(conn net.Conn) string { return clientProcessName(owner, conn) }
+		cfg.Person = func(conn net.Conn) (core.Person, error) { return s.clientPerson(owner, conn) }
+	}
+	return cfg
+}
+
+// normalizerDeps is what the OTLP receiver's normalizers are built from.
+func (s *service) normalizerDeps(counters *core.CounterSet) normalizers.Deps {
+	return normalizers.Deps{
+		Pipeline: s.pipe,
+		Bundles:  s.pipe.Bundles,
+		Counters: counters,
+		AppByExe: s.appByExe,
+		Log:      s.logf,
+		Clock:    time.Now,
+	}
+}
+
+// appByExe names the app of the bundle in force whose executable on this platform has the image
+// base name (compared case-insensitively), the first in catalog order when several do. It reads
+// the bundle at each call, so a new catalog applies without a restart.
+func (s *service) appByExe(base string) (string, bool) {
+	keys := s.pipe.Bundles().AppByExe(catalogPlatform(runtime.GOOS), base)
+	if len(keys) == 0 {
+		return "", false
+	}
+	return keys[0], true
+}
+
+// catalogPlatform is the catalog's name for a Go platform: darwin is macos.
+func catalogPlatform(goos string) string {
+	if goos == "darwin" {
+		return "macos"
+	}
+	return goos
 }
 
 // toolScope is the device and user a tool's machine-wide configuration resolves its collection mode

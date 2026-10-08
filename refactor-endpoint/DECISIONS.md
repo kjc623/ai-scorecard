@@ -656,10 +656,9 @@ decided and why, and for a vendor fact the product version checked.
   ingest put no pattern on `tool_fingerprint`. The normalizer's `exe:` envelopes pass ingest's
   contract validator at `m0`, `m1` and `m3`. `ref.tool_catalogue` has no `exe:` row, so
   `ops.tool_display_name` shows "Unrecognised tool".
-- **The catalog lookup waits for task 14.** `genai.Config.AppByExe(base)` takes the lower-case
-  image base name. `buildProviders` leaves it nil, which matches nothing, because
-  `Bundle.AppByExe` does not exist yet. Task 14 wires it to `Bundle.AppByExe(<platform>, base)`.
-  The tests cover a catalog hit through the seam.
+- **The catalog lookup.** `genai.Config.AppByExe(base)` takes the lower-case image base name.
+  The service wires it to the bundle in force's `Bundle.AppByExe(<platform>, base)`, the first key
+  when several apps match. The tests cover a catalog hit through the seam.
 - **The decision.** A prompt's `Observation.Enforce` is `enforce.Hook` over the bundle in force
   (`Config.Bundles`, wired from the pipeline at merge with task 12), with `canEnforce` false:
   route `tool.otel` cannot enforce, so the matching rule is recorded as `logged`. Without a bundle
@@ -833,9 +832,9 @@ decided and why, and for a vendor fact the product version checked.
   Claude Code WinGet manifest could not be read from here, so that it is a portable package is
   assumed). A tool installed after the last apply is configured by the next bundle or restart.
 - **The native-first exclusion's app lookup is a seam**, `tlsproxy.Config.AppByExe(base)` (lower-case
-  image base name, as `genai.Config.AppByExe`). `buildProviders` leaves it nil, which matches
-  nothing, because `Bundle.AppByExe` does not exist yet; task 14's merge wires it. The tests cover
-  the exclusion through the seam with a fake process resolver. The tool table is
+  image base name, as `genai.Config.AppByExe`). The service wires it to the bundle in force's
+  `Bundle.AppByExe(<platform>, base)`, as the GenAI normalizer's. The tests cover the exclusion
+  through the seam with a fake process resolver. The tool table is
   `toolconfig.ToolForApp`; `toolconfig.NativelyCovered` applies §10's rule.
 - **The `Writer` has a fifth method, `Holds(Desired)`**, which health uses to read the file back.
   `Apply` takes `Desired{HTTPListen, Token, LogPrompts}`.
@@ -981,3 +980,16 @@ decided and why, and for a vendor fact the product version checked.
 - **No bundle in force means a budget of zero**: every record counts `dropped`.
 - **`monotonic_offset_ms`** is milliseconds since the emitter was built, from its clock, as the
   OTLP normalizers do.
+## 2026-10-08, task 14 fix 1
+
+- **Shared category cases.** Task 14's eight category cases are in
+  `device/integration/testdata/enforce/cases.json`, with a catalog of `claude_code`
+  (`coding_agent`) and `cursor` (`ide`). The extension resolves `match.categories` as
+  `Bundle.Category` does, and its policy cache now hands the evaluator the bundle's `catalog`
+  beside the rules and sanctioned tools.
+- **The `AppByExe` seams** (proxy.tls and the OTel normalizers) read the bundle in force at each
+  call. The platform is the catalog's name for `runtime.GOOS`: `darwin` is `macos`. A signal for
+  `any` platform matches too. Several matching apps give the first in catalog order.
+- **The service tests check the seams the service builds**, not a proxied connection or an OTLP
+  export: the connection-owner lookup that names the process is Windows-only. `buildProviders`
+  takes the proxy configuration and the normalizer dependencies from two methods for this.
