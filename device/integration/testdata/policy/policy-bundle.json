@@ -53,7 +53,8 @@
             "message": "This AI tool is not sanctioned. Check the policy before you send company data."
           }
         ],
-        "sanctioned_tools": ["app:claude_code"]
+        "sanctioned_tools": ["app:claude_code"],
+        "catalog": []
       }
     }
   },
