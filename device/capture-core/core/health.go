@@ -101,8 +101,9 @@ func (h Health) Validate() error {
 	return nil
 }
 
-// Report renders the row for POST /v1/health. The collector name is the route name, so a
-// provider cannot invent a coverage path the reporting layer does not know.
+// Report renders the row for POST /v1/health. The registry sets the collector from the provider's
+// Name, a closed vocabulary, so a provider cannot invent a coverage path the reporting layer does
+// not know.
 func (h Health) Report(deviceID, version string) protocol.HealthReport {
 	rep := protocol.NewHealthReport(deviceID, "", version, h.Since)
 	rep.State = h.State
@@ -246,9 +247,16 @@ func (c *CounterSet) Snapshot(state protocol.CollectorState, detail protocol.Det
 // state that reports success — state derives from a positive observation, never from the
 // absence of errors.
 type Provider interface {
-	Name() protocol.Route
+	Name() protocol.Collector
 	Start(ctx context.Context) error
 	Stop(ctx context.Context) error
 	Health() Health
 	ApplyPolicy(b policy.Bundle) error
+}
+
+// Toggled is implemented by a provider that the signed policy can switch on and off without a
+// restart of the service. A provider that does not implement it is always enabled. Enabled
+// receives nil when no bundle is in force.
+type Toggled interface {
+	Enabled(b *policy.Bundle) bool
 }

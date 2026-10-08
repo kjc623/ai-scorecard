@@ -101,7 +101,7 @@ func (r *fakeRunner) Run(_ context.Context, name string, args ...string) (string
 // fakeProxyTLS stands in for proxy.tls.
 type fakeProxyTLS struct{}
 
-func (p *fakeProxyTLS) Name() protocol.Route { return protocol.RouteProxyTLS }
+func (p *fakeProxyTLS) Name() protocol.Collector { return protocol.CollectorEgressProxy }
 
 func (p *fakeProxyTLS) Start(context.Context) error { return nil }
 func (p *fakeProxyTLS) Stop(context.Context) error  { return nil }
@@ -156,7 +156,7 @@ func TestTrustShimSeamStartsTheShimBeforeTheProxy(t *testing.T) {
 	}
 
 	// The shim's row is healthy.
-	row, ok := reg.HealthFor(protocol.RouteCLIShim)
+	row, ok := reg.HealthFor(protocol.CollectorCLIShim)
 	if !ok {
 		t.Fatal("no health row for cli.shim")
 	}
@@ -230,7 +230,7 @@ func TestTrustShimSeamKillSwitchRemovesShimFilesAndReportsKilled(t *testing.T) {
 		}
 	}
 
-	row, ok := reg.HealthFor(protocol.RouteCLIShim)
+	row, ok := reg.HealthFor(protocol.CollectorCLIShim)
 	if !ok {
 		t.Fatal("no health row for cli.shim after the kill switch")
 	}

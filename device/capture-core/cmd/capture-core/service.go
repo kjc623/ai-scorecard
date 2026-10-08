@@ -578,7 +578,7 @@ func (s *service) policyFetched(res policy.Result) {
 func (s *service) applyBundle(b policy.Bundle) {
 	for _, applied := range s.reg.ApplyPolicy(b) {
 		if applied.Err != nil {
-			s.log.Warn("provider could not apply the bundle", "provider", applied.Route, "error", applied.Err)
+			s.log.Warn("provider could not apply the bundle", "provider", applied.Collector, "error", applied.Err)
 		}
 	}
 }

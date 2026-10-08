@@ -148,7 +148,7 @@ type Provider struct {
 }
 
 // Name implements core.Provider.
-func (p *Provider) Name() protocol.Route { return protocol.RouteProxyTLS }
+func (p *Provider) Name() protocol.Collector { return protocol.CollectorEgressProxy }
 
 // New returns an unstarted provider.
 func New(cfg Config) *Provider {

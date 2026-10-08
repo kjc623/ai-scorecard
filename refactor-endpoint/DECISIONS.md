@@ -205,3 +205,45 @@ decided and why, and for a vendor fact the product version checked.
   that `device/protocol` no longer defines is a finding.
 - **Not changed:** `localdev/tools/simulate-devices.mjs` still emits `model_detection`; the lab is
   not used for this work.
+
+## 2026-10-08, task 06
+
+- **Collector constants** are `CollectorEgressProxy`, `CollectorLoopbackBroker`, `CollectorCLIShim`,
+  `CollectorProcessDetector`, `CollectorClassifierHost` and `CollectorCaptureExtension`, with
+  `Valid()` beside the type in `device/protocol/envelope.go`, as task 05's enums.
+- **The registry API is renamed with its key**: `Collectors()`, `StartCollector`, `StopCollector`,
+  `SortedCollectors`, and a `Collector` field on `StartResult`, `StopResult` and `ApplyResult`. It
+  adds `StartCollectors(ctx, skip...)` (the `start_collectors` step) and `StopExcept(ctx, skip...)`
+  (`stop_remaining_providers`); `StopAll` is `StopExcept` with no skip. Both skip a provider the
+  registry already stopped, so a provider switched off by policy is not stopped twice.
+- **Policy toggles act only between `start_collectors` and `stop_remaining_providers`.** A bundle
+  applied before (the supervisor's load step, the first-start fetch) only records the switch, so
+  nothing starts before the spool opens; one applied during or after shutdown starts nothing. A
+  `Toggled` provider's switch before any bundle is `Enabled(nil)`, read when it is added.
+- **"Enabled by the bundle in force"** in `start_collectors` is the switch the registry recorded
+  from the last `ApplyPolicy`; the load step applies the bundle in force, so the supervisor needs
+  no bundle source of its own.
+- **A toggle's Start and Stop run concurrently under `context.Background()`**: `ApplyPolicy` takes
+  no context, and the provider outlives the poll that delivered the bundle.
+- **The fixed providers keep their own steps** and are started there whether or not they implement
+  `Toggled`; none of the three does yet.
+- **Health**: a `Toggled` provider switched off and not running is `absent` with
+  `disabled_by_policy`, whatever its own row says. A failed Stop is still `tampered` with
+  `stop_failed`, also when policy asked for the stop.
+- **`stop_remaining_providers` stops every provider except `egress_proxy` and `loopback_broker`**,
+  concurrently; it stopped `cli_shim` only.
+- **`disabled_by_policy` is transcribed in the extension's `DETAIL`** (`messages.js`), as every
+  device-only detail already is: the extension's contract test requires each `Detail*` there. So
+  `check-vocab` compares it like any other detail and needs no device-only entry; its file is
+  unchanged.
+- **The extension's row keeps its normalisation** (hyphens to underscores, for the native host's
+  default `capture-extension`); provider rows carry `Name()` unchanged. `device/integration`'s
+  fake `proxy.tls` provider changed with `Name()`.
+- **Coverage reads `ops.collector_state.error_code`**: control-api stores the report's detail
+  there (`detail` is a separate JSON column). The table holds one row per device and collector,
+  the latest report, so that row decides the day.
+- **Not changed:** `ops.coverage_snapshot`'s `coverage_gap_requires_reason` check requires a gap
+  reason on every unobserved row, so a not-expected `disabled_by_policy` row still carries
+  `unknown` (or `tampered`). query-api's coverage `gap_reasons` counts every unobserved row
+  whatever `expected` says, so such a row still appears there under `unknown`. Fixing it is a
+  query-api change (`AND v.expected`) or a schema change, outside the brief.

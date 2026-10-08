@@ -130,8 +130,8 @@ type Provider struct {
 	sequence    []string
 }
 
-// Name implements core.Provider: the collector name is the route.
-func (p *Provider) Name() protocol.Route { return protocol.RouteCLIShim }
+// Name implements core.Provider.
+func (p *Provider) Name() protocol.Collector { return protocol.CollectorCLIShim }
 
 // New returns an unstarted provider.
 func New(cfg Config) *Provider {

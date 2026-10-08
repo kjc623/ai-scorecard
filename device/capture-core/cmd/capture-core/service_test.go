@@ -134,6 +134,19 @@ func TestServiceEnrolsFetchesItsPolicyAndRuns(t *testing.T) {
 	if snap := svc.health.Snapshot(); !snap.Enrolled || snap.ManagedState != "managed" || snap.UserRefSource != "upn" || snap.PolicyFetch == nil {
 		t.Errorf("health snapshot = %+v", snap)
 	}
+	// Each row is named by its collector code: a provider's by its Name, the extension's with the
+	// native host's hyphenated default normalised.
+	svc.health.SetExtensionReport(protocol.NewHealthReport("", "capture-extension", "", time.Now()))
+	var names []string
+	for _, rep := range svc.health.healthRequest().Collectors {
+		if !protocol.Collector(rep.Collector).Valid() {
+			t.Errorf("health row names %q, which is not a collector code", rep.Collector)
+		}
+		names = append(names, rep.Collector)
+	}
+	if got, want := strings.Join(names, ","), "egress_proxy,loopback_broker,cli_shim,capture_extension,classifier_host"; got != want {
+		t.Errorf("health rows = %s, want %s", got, want)
+	}
 
 	if err := svc.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop: %v", err)

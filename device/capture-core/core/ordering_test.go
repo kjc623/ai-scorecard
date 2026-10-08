@@ -45,9 +45,9 @@ func assertSequence(t *testing.T, what string, got, want []string) {
 }
 
 type recordingProvider struct {
-	route    protocol.Route
-	log      *orderLog
-	startErr error
+	collector protocol.Collector
+	log       *orderLog
+	startErr  error
 	// panicOnRelease simulates a provider whose release path has a defect: the supervisor must
 	// contain it rather than let it abort the shutdown sequence.
 	panicOnRelease bool
@@ -55,10 +55,10 @@ type recordingProvider struct {
 	started        bool
 }
 
-func (p *recordingProvider) Name() protocol.Route { return p.route }
+func (p *recordingProvider) Name() protocol.Collector { return p.collector }
 
 func (p *recordingProvider) Start(context.Context) error {
-	p.log.add("provider.Start:" + string(p.route))
+	p.log.add("provider.Start:" + string(p.collector))
 	p.mu.Lock()
 	p.started = true
 	p.mu.Unlock()
@@ -66,7 +66,7 @@ func (p *recordingProvider) Start(context.Context) error {
 }
 
 func (p *recordingProvider) Stop(context.Context) error {
-	p.log.add("provider.Stop:" + string(p.route))
+	p.log.add("provider.Stop:" + string(p.collector))
 	return nil
 }
 
@@ -86,7 +86,7 @@ func (p *recordingProvider) Release(context.Context) error {
 	if p.panicOnRelease {
 		panic("provider release defect (simulated)")
 	}
-	p.log.add("provider.Release:" + string(p.route))
+	p.log.add("provider.Release:" + string(p.collector))
 	return nil
 }
 
@@ -155,10 +155,10 @@ func newOrderingFixture(t *testing.T) *orderingFixture {
 	t.Helper()
 	log := &orderLog{}
 	reg := NewRegistry(testClock, nil)
-	loop := &recordingProvider{route: protocol.RouteProxyLoopback, log: log}
+	loop := &recordingProvider{collector: protocol.CollectorLoopbackBroker, log: log}
 	for _, p := range []Provider{
-		&recordingProvider{route: protocol.RouteCLIShim, log: log},
-		&recordingProvider{route: protocol.RouteProxyTLS, log: log},
+		&recordingProvider{collector: protocol.CollectorCLIShim, log: log},
+		&recordingProvider{collector: protocol.CollectorEgressProxy, log: log},
 		loop,
 	} {
 		if err := reg.Add(p); err != nil {
@@ -192,10 +192,10 @@ func TestStartupSequenceIsLiteral(t *testing.T) {
 		"policy.Load",
 		"spool.Open",
 		"identity.Resolve",
-		"provider.Start:cli.shim",
+		"provider.Start:cli_shim",
 		"classifierhost.Start",
-		"provider.Start:proxy.tls",
-		"provider.Start:proxy.loopback",
+		"provider.Start:egress_proxy",
+		"provider.Start:loopback_broker",
 	})
 	assertSequence(t, "recorded startup steps", f.sup.Order(), StartupOrder())
 }
@@ -212,9 +212,9 @@ func TestShutdownSequenceIsLiteral(t *testing.T) {
 		t.Fatalf("Shutdown: %v", err)
 	}
 	assertSequence(t, "shutdown order", f.log.all(), []string{
-		"provider.Release:proxy.loopback",
-		"provider.Stop:proxy.tls",
-		"provider.Stop:cli.shim",
+		"provider.Release:loopback_broker",
+		"provider.Stop:egress_proxy",
+		"provider.Stop:cli_shim",
 		"spool.Drain",
 		"trustroot.Remove",
 		"classifierhost.Stop",
@@ -277,7 +277,7 @@ func TestShutdownContainsAPanickingProvider(t *testing.T) {
 // produces the typed-nil case.
 type typedNilBroker struct{}
 
-func (*typedNilBroker) Name() protocol.Route            { return protocol.RouteProxyLoopback }
+func (*typedNilBroker) Name() protocol.Collector        { return protocol.CollectorLoopbackBroker }
 func (*typedNilBroker) Start(context.Context) error     { return nil }
 func (*typedNilBroker) Stop(context.Context) error      { return nil }
 func (*typedNilBroker) Health() Health                  { return Health{} }

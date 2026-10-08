@@ -21,6 +21,7 @@ const (
 	StepStartClassifierHost = "start_classifier_host"
 	StepStartProxyTLS       = "start_proxy.tls"
 	StepStartProxyLoopback  = "start_proxy.loopback"
+	StepStartCollectors     = "start_collectors"
 )
 
 // Shutdown steps, in order.
@@ -37,7 +38,7 @@ const (
 func StartupOrder() []string {
 	return []string{
 		StepLoadBundle, StepOpenSpool, StepResolveIdentity, StepStartCLIShim,
-		StepStartClassifierHost, StepStartProxyTLS, StepStartProxyLoopback,
+		StepStartClassifierHost, StepStartProxyTLS, StepStartProxyLoopback, StepStartCollectors,
 	}
 }
 
@@ -112,7 +113,7 @@ type Supervisor struct {
 	ClassifierHost ClassifierHostController
 	TrustRoot      TrustRoot
 
-	// Loopback is the broker provider. It is started last and released first.
+	// Loopback is the broker provider. It is started last of the fixed providers and released first.
 	Loopback Provider
 
 	// RemoveTrustRoot removes the per-device CA at shutdown.
@@ -193,7 +194,7 @@ func (s *Supervisor) Startup(ctx context.Context) error {
 
 	// cli.shim writes files and environment only; it holds no ports.
 	s.record(StepStartCLIShim)
-	s.startRoute(ctx, protocol.RouteCLIShim)
+	s.startCollector(ctx, protocol.CollectorCLIShim)
 
 	// The classifier host idles resident so its spawn cost stays off the interactive path.
 	s.record(StepStartClassifierHost)
@@ -204,22 +205,37 @@ func (s *Supervisor) Startup(ctx context.Context) error {
 	}
 
 	s.record(StepStartProxyTLS)
-	s.startRoute(ctx, protocol.RouteProxyTLS)
+	s.startCollector(ctx, protocol.CollectorEgressProxy)
 
-	// proxy.loopback last. The broker's own Start runs the upstream preflight and stays released
-	// when it fails, so refusing to start is its safe behaviour rather than an error.
+	// proxy.loopback last of the fixed providers. The broker's own Start runs the upstream
+	// preflight and stays released when it fails, so refusing to start is its safe behaviour
+	// rather than an error.
 	s.record(StepStartProxyLoopback)
-	s.startRoute(ctx, protocol.RouteProxyLoopback)
+	s.startCollector(ctx, protocol.CollectorLoopbackBroker)
+
+	// Every other provider, concurrently, unless the bundle in force switches it off. From here a
+	// policy change starts or stops a Toggled provider.
+	s.record(StepStartCollectors)
+	for _, res := range s.Registry.StartCollectors(ctx, fixedCollectors...) {
+		if res.Err != nil {
+			s.Log.Printf("core: provider %s did not start: %v", res.Collector, res.Err)
+		}
+	}
 	return nil
 }
 
-func (s *Supervisor) startRoute(ctx context.Context, route protocol.Route) bool {
-	if _, ok := s.Registry.Provider(route); !ok {
+// fixedCollectors are the providers the startup and shutdown sequences place by name.
+var fixedCollectors = []protocol.Collector{
+	protocol.CollectorCLIShim, protocol.CollectorEgressProxy, protocol.CollectorLoopbackBroker,
+}
+
+func (s *Supervisor) startCollector(ctx context.Context, c protocol.Collector) bool {
+	if _, ok := s.Registry.Provider(c); !ok {
 		return false
 	}
-	res := s.Registry.StartRoute(ctx, route)
+	res := s.Registry.StartCollector(ctx, c)
 	if res.Err != nil {
-		s.Log.Printf("core: provider %s did not start: %v", route, res.Err)
+		s.Log.Printf("core: provider %s did not start: %v", c, res.Err)
 		return false
 	}
 	return true
@@ -241,24 +257,24 @@ func (s *Supervisor) Shutdown(ctx context.Context) error {
 				if err := r.Release(ctx); err != nil {
 					s.Log.Printf("core: loopback release reported an error; the registry will report it tampered: %v", err)
 				}
-			} else if _, ok := s.Registry.Provider(protocol.RouteProxyLoopback); ok {
-				s.Registry.StopRoute(ctx, protocol.RouteProxyLoopback)
+			} else if _, ok := s.Registry.Provider(protocol.CollectorLoopbackBroker); ok {
+				s.Registry.StopCollector(ctx, protocol.CollectorLoopbackBroker)
 			}
 		}
 	})
 
 	s.record(StepStopProxyTLS)
 	s.safeStep("proxy.tls stop", func() {
-		if _, ok := s.Registry.Provider(protocol.RouteProxyTLS); ok {
-			s.Registry.StopRoute(ctx, protocol.RouteProxyTLS)
+		if _, ok := s.Registry.Provider(protocol.CollectorEgressProxy); ok {
+			s.Registry.StopCollector(ctx, protocol.CollectorEgressProxy)
 		}
 	})
 
 	s.record(StepStopProviders)
 	s.safeStep("remaining providers stop", func() {
-		if _, ok := s.Registry.Provider(protocol.RouteCLIShim); ok {
-			s.Registry.StopRoute(ctx, protocol.RouteCLIShim)
-		}
+		// cli.shim and every provider start_collectors started, concurrently. Policy toggles end
+		// here, so a bundle that arrives now starts nothing.
+		s.Registry.StopExcept(ctx, protocol.CollectorEgressProxy, protocol.CollectorLoopbackBroker)
 	})
 
 	s.record(StepDrainSpool)

@@ -141,6 +141,7 @@ export const DETAIL = Object.freeze({
   SHIM_CA_BUNDLE_UNREADABLE: 'shim_ca_bundle_unreadable',
   SHIM_NOT_INHERITED: 'shim_not_inherited',
   IDENTITY_UNRESOLVED: 'identity_unresolved',
+  DISABLED_BY_POLICY: 'disabled_by_policy',
 });
 
 export const DETAILS = Object.freeze(Object.values(DETAIL).filter(Boolean));

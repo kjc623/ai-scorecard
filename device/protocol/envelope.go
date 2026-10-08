@@ -146,6 +146,32 @@ const (
 	RouteNetFlow        Route = "net.flow"
 )
 
+// Collector is the closed collector vocabulary: the component whose health is reported, keyed as
+// ref.collector.collector_code. A route names how an observation was collected; a collector may
+// emit several routes or none.
+type Collector string
+
+const (
+	CollectorEgressProxy      Collector = "egress_proxy"
+	CollectorLoopbackBroker   Collector = "loopback_broker"
+	CollectorCLIShim          Collector = "cli_shim"
+	CollectorProcessDetector  Collector = "process_detector"
+	CollectorClassifierHost   Collector = "classifier_host"
+	CollectorCaptureExtension Collector = "capture_extension"
+)
+
+// Valid reports whether the collector is in the closed set. control-api refuses a whole health
+// report that names a collector ref.collector does not hold.
+func (c Collector) Valid() bool {
+	switch c {
+	case CollectorEgressProxy, CollectorLoopbackBroker, CollectorCLIShim,
+		CollectorProcessDetector, CollectorClassifierHost, CollectorCaptureExtension:
+		return true
+	default:
+		return false
+	}
+}
+
 // CollectionMode is the effective mode resolved on the device from the signed scope matrix,
 // taking the most restrictive applicable value across tool, data class and user population. The
 // mode is applied before content is read, so it is an input to the content path, never a
@@ -296,6 +322,10 @@ const (
 	// rather than stamp a placeholder identity; the state is named so the coverage row
 	// distinguishes "no credential yet" from "nothing observed".
 	DetailIdentityUnresolved Detail = "identity_unresolved"
+
+	// Collector lifecycle. A collector the signed policy switched off is out of the path by
+	// request, which is neither a fault nor interference.
+	DetailDisabledByPolicy Detail = "disabled_by_policy"
 )
 
 // AllDetails is the closed vocabulary, for validation and for a coverage report that needs to
@@ -316,7 +346,7 @@ var AllDetails = [...]Detail{
 	DetailCredentialExpired,
 	DetailTrustInstallFailed, DetailTrustVerifyFailed,
 	DetailShimProfileMissing, DetailShimCABundleUnreadable, DetailShimNotInherited,
-	DetailIdentityUnresolved,
+	DetailIdentityUnresolved, DetailDisabledByPolicy,
 }
 
 // Valid reports whether the detail is in the closed vocabulary. An empty detail is valid: a

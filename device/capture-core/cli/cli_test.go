@@ -480,8 +480,8 @@ func TestNameAndSequence(t *testing.T) {
 	root := testRootPEM(t)
 	cfg := testConfig(t, root)
 	p := New(cfg)
-	if p.Name() != protocol.RouteCLIShim {
-		t.Fatalf("Name() = %s, want cli.shim", p.Name())
+	if p.Name() != protocol.CollectorCLIShim {
+		t.Fatalf("Name() = %s, want cli_shim", p.Name())
 	}
 	if err := p.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)

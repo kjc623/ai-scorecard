@@ -143,9 +143,9 @@ func New(cfg Config) *Broker {
 	}
 }
 
-// Name implements core.Provider. The collector name is the route, so the coverage row cannot
-// invent a name the reporting layer does not know.
-func (b *Broker) Name() protocol.Route { return protocol.RouteProxyLoopback }
+// Name implements core.Provider. The collector is from the closed vocabulary, so the coverage
+// row cannot invent a name the reporting layer does not know.
+func (b *Broker) Name() protocol.Collector { return protocol.CollectorLoopbackBroker }
 
 // Start implements core.Provider.
 //

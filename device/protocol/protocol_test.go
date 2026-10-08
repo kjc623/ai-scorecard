@@ -571,3 +571,22 @@ func TestDiscoveryAndActivityVocabulariesAreClosed(t *testing.T) {
 		t.Error("a value outside a closed set is accepted")
 	}
 }
+
+// The collector vocabulary holds the ref.collector codes and refuses a route name: a route and a
+// collector are different keys.
+func TestCollectorVocabularyIsClosed(t *testing.T) {
+	for _, c := range []Collector{CollectorEgressProxy, CollectorLoopbackBroker, CollectorCLIShim,
+		CollectorProcessDetector, CollectorClassifierHost, CollectorCaptureExtension} {
+		if !c.Valid() {
+			t.Errorf("collector %q is refused", c)
+		}
+	}
+	for _, c := range []Collector{Collector(RouteProxyTLS), Collector(RouteCLIShim), "capture-extension", ""} {
+		if c.Valid() {
+			t.Errorf("collector %q is accepted", c)
+		}
+	}
+	if !DetailDisabledByPolicy.Valid() {
+		t.Error("disabled_by_policy is not in the detail vocabulary")
+	}
+}
