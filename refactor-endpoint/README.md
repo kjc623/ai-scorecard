@@ -81,7 +81,7 @@ The Plan column gives the plan's task id. "Built" is ticked when the task's "Don
 | 46 | [Inline policy in the proxy](46-proxy-inline-policy/TASK.md) | E35 | 10, 12, 45 | Claude Desktop | [ ] | [ ] |
 | 47 | [Proxy safety valves](47-proxy-safety-valves/TASK.md) | E36 | 46 | | [ ] | [ ] |
 | **Phase 5: Components, health, uninstall** | | | | | | |
-| 48 | [Supervised components](48-supervised-components/TASK.md) | E37 | 06 | | [ ] | [ ] |
+| 48 | [Supervised components](48-supervised-components/TASK.md) | E37 | 06 | | [x] | [ ] |
 | 49 | [Per-tool health in the cloud](49-collector-health/TASK.md) | E39 | 27, 29, 31, 38 | | [ ] | [ ] |
 | 50 | [Uninstall restores the machine](50-uninstall-cleanup/TASK.md) | E40 | 37, 38, 44 | | [ ] | [ ] |
 | **Phase 6: Verification** | | | | | | |

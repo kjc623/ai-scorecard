@@ -75,7 +75,7 @@ export const VOCABULARIES = [
     go: { file: 'device/protocol/envelope.go', prefix: 'Detail' },
     js: { file: 'device/extension/src/messages.js', groups: ['DETAIL'] },
     // Details only capture-core's own collectors report.
-    deviceOnly: ['helper_unavailable'],
+    deviceOnly: ['helper_unavailable', 'component_crash_loop'],
   },
 ];
 
