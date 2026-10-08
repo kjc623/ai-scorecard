@@ -10,6 +10,7 @@ import (
 	"github.com/shadow-ai-capture/device/capture-core/core"
 	"github.com/shadow-ai-capture/device/capture-core/otlp"
 	"github.com/shadow-ai-capture/device/capture-core/otlp/claudecode"
+	"github.com/shadow-ai-capture/device/capture-core/otlp/codex"
 	"github.com/shadow-ai-capture/device/capture-core/otlp/genai"
 	"github.com/shadow-ai-capture/device/capture-core/policy"
 )
@@ -38,6 +39,7 @@ type Deps struct {
 func Registered(d Deps) []otlp.Normalizer {
 	return []otlp.Normalizer{
 		claudecode.New(claudecode.Config{Pipeline: d.Pipeline, Log: d.Log, Bundles: d.Bundles}),
+		codex.New(codex.Config{Pipeline: d.Pipeline, Log: d.Log, Bundles: d.Bundles}),
 		// The generic normalizer accepts every service.name, so it comes last and sees only what
 		// no tool's normalizer accepts.
 		genai.New(genai.Config{Pipeline: d.Pipeline, Counters: d.Counters, AppByExe: d.AppByExe, Bundles: d.Bundles, Clock: d.Clock}),

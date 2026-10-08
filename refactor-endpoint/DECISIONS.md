@@ -1751,3 +1751,46 @@ or corrects each answer marked **[device]**.
   keys, the outcome is **Not collectable**. What would change it: an endpoint reachable from the VM (a
   host-side listener on an address the VM can reach, which `DESIGN.md` §5 does not allow), or the customer's
   own collector forwarding to the product.
+## 2026-10-08, task 28
+
+- **Source (vendor fact).** developers.openai.com is blocked from the build machine (proxy 403),
+  so the `documented/` fixtures follow Codex's OpenTelemetry exporter source in `openai/codex`,
+  read 2026-10-08: tag `rust-v0.162.0` (`1f3f934`, npm `latest` of `@openai/codex` that day) and
+  `main` at `99aa053` (2026-10-08T22:42Z), whose event code is the same. The folder's README names
+  the files read.
+- **Config keys (vendor fact, for the capture and task 29).** `[otel]` takes `exporter` (logs),
+  `trace_exporter`, `metrics_exporter` (default `statsig`; set `"none"` to keep metrics local),
+  `log_user_prompt` (default false), `log_agent_responses`, `log_guardian_assessments`,
+  `environment` (default `dev`), `span_attributes`, `tracestate` and `tool_result`. An exporter is
+  `{ otlp-http = { endpoint, protocol = "binary" | "json", headers, tls } }` or
+  `{ otlp-grpc = { endpoint, headers, tls } }`; the HTTP endpoint is used as given, so it names
+  the full `/v1/logs` path.
+- **Service names (vendor fact).** `service.name` is the process's originator: `codex_cli_rs`
+  (interactive CLI), `codex_exec` (`codex exec`), `codex-app-server` (the app server Codex Desktop
+  and the IDE extensions run; a `Codex Desktop` client name does not change it).
+  `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` can change the first two; it is not accepted. The
+  normalizer accepts exactly these three.
+- **Record shape (vendor fact, from the bridge's source).** The event name is the `event.name`
+  attribute (`codex.<name>`); the scope is the tracing target `codex_otel.log_only`; records have
+  an observed time and no time; Display-formatted fields (`duration_ms`, `prompt_length`, token
+  counts, `success` on `tool_result`) are strings. The redacted prompt is `[REDACTED]`, and
+  `prompt_length` counts characters, which the prompt's `size_bytes` carries as is.
+- **Events converted.** `codex.user_prompt` (prompt), `codex.tool_decision` when the call does not
+  run (`denied`, `denied_with_network_policy_deny`, `abort`, `timed_out`: `tool_call` denied),
+  `codex.tool_result` (`tool_call` success or error), and model requests: a failed
+  `codex.api_request` or `codex.websocket_request` (`model_request` error, model, duration), and a
+  `codex.sse_event` of kind `response.completed` (success with model and tokens, or error when it
+  carries `error.message`). A successful request is recorded by its completed response, which
+  alone carries the tokens, over HTTP and websocket alike, so one model call is one record. The
+  12 other events in the fixtures are listed as dropped with a reason.
+- **A denied call is one record.** Codex emits a denied call's `tool_decision` and then a failed
+  `tool_result` with the same `call_id`. The decision becomes the denied record and the normalizer
+  remembers the call (conversation and call id, at most 1024, oldest forgotten first) to skip its
+  result, across exports.
+- **Dedup event id.** Codex sends no event sequence: the activity key's event id is the event
+  name, `conversation.id`, `event.timestamp` (milliseconds), `call_id` and `attempt`.
+- **Spans are not converted** (as for Claude Code); taking Codex's `service.name` keeps its spans,
+  which carry `gen_ai.usage.*`, from reaching the generic normalizer.
+- **Left out of the fixtures:** metrics, traces, and the `codex_otel`-target log events of other
+  crates (network proxy audit, file upload, models endpoint, exec server, agent communication,
+  HTTP client fallbacks, app server shutdown). The capture shows which of them a session sends.
