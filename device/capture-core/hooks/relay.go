@@ -223,7 +223,7 @@ func (r *Relay) decide(ev protocol.HookEvaluate, peer hostinfo.User, received ti
 	}
 	d := enforce.Evaluate(b, enforce.Input{Route: protocol.RouteToolHook, ToolFingerprint: fp, Labels: labels, LabelsKnown: known})
 
-	recorded := enforce.RecordedAction(d, true)
+	recorded := enforce.RecordedAction(d, canEnforce(ev.Tool, ev.Event))
 	obs := &core.Observation{
 		Route:           protocol.RouteToolHook,
 		Kind:            protocol.KindPrompt,
@@ -239,6 +239,13 @@ func (r *Relay) decide(ev protocol.HookEvaluate, peer hostinfo.User, received ti
 		ClientID:        ev.SessionID,
 	}
 	return protocol.HookDecision{Action: hookAction(d.Action), Message: d.Message, Link: d.Link, RuleID: d.RuleID}, obs
+}
+
+// canEnforce reports whether the tool stops the action when the event's hook blocks it. A tool with
+// no adapter has no hook that could have asked.
+func canEnforce(tool, event string) bool {
+	a, ok := Lookup(tool)
+	return ok && a.CanEnforce(event)
 }
 
 // classify labels the prompt within ClassifyBudget. known is false when the classification did not

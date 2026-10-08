@@ -18,6 +18,11 @@ type tool struct {
 	fingerprint string
 	// supported is whether the agent writes the tool's configuration on this platform.
 	supported bool
+	// otel is whether the tool exports OpenTelemetry the agent points at its receiver. A tool
+	// without has hooks only, and its OTel switch does nothing.
+	otel bool
+	// managedOnly is whether the tool has a setting that lets only managed hooks run.
+	managedOnly bool
 }
 
 // Config is a provider's seams.
@@ -89,7 +94,12 @@ func (p *Provider) Name() protocol.Collector { return p.tool.collector }
 // Enabled implements core.Toggled: either of the tool's OTel and hooks switches, each effective
 // while its collector is on.
 func (p *Provider) Enabled(b *policy.Bundle) bool {
-	return otelOn(b, p.tool.key) || hooksOn(b, p.tool.key)
+	return p.otelOn(b) || hooksOn(b, p.tool.key)
+}
+
+// otelOn is the tool's OTel switch, for a tool with an OTel export.
+func (p *Provider) otelOn(b *policy.Bundle) bool {
+	return p.tool.otel && otelOn(b, p.tool.key)
 }
 
 func otelOn(b *policy.Bundle, tool string) bool {
@@ -104,11 +114,11 @@ func hooksOn(b *policy.Bundle, tool string) bool {
 func (p *Provider) Counters() *core.CounterSet { return p.counters }
 
 // desired is what b asks the tool to be configured with. Managed-only hooks apply only while the
-// agent's own hooks are declared. An executable path that cannot be read leaves HookCommand empty,
+// agent's own hooks are declared, for a tool that has the setting. An executable path that cannot be read leaves HookCommand empty,
 // which the writer refuses.
 func (p *Provider) desired(b *policy.Bundle) Desired {
 	var d Desired
-	if otelOn(b, p.tool.key) {
+	if p.otelOn(b) {
 		var q core.ScopeQuery
 		if p.cfg.Scope != nil {
 			q = p.cfg.Scope()
@@ -122,7 +132,7 @@ func (p *Provider) desired(b *policy.Bundle) Desired {
 	}
 	if hooksOn(b, p.tool.key) {
 		d.Hooks = true
-		d.ManagedOnly = b.Endpoint.Hooks.ManagedOnly
+		d.ManagedOnly = p.tool.managedOnly && b.Endpoint.Hooks.ManagedOnly
 		if exe, err := p.cfg.Executable(); err == nil {
 			d.HookCommand = exe
 		}

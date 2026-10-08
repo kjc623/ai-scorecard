@@ -1511,3 +1511,74 @@ decided and why, and for a vendor fact the product version checked.
   JetBrains plugin id, so on a device JetBrains plugins match nothing until one is added.
 - **Not run here:** nothing Windows-only was added; the package compiles and vets under
   `GOOS=windows` and `GOOS=darwin`.
+
+## 2026-10-08, task 38
+
+- **What the vendor facts rest on (read 2026-10-08).** cursor.com and docs.cursor.com are blocked
+  from the build machine, and the `cursor/docs` repository is not readable from here (its raw files
+  answer 404 and git asks for credentials), so no first-party Cursor page was read. The facts below
+  come from npm packages that implement Cursor hooks, which agree with each other except where
+  noted: `cursor-hooks` 1.1.6 (2025-10-09, typings that mirror `cursor.com/docs/agent/hooks` of the
+  Cursor 1.7 era), `@pmatrix/cursor-monitor` 0.6.1 (2026-05-21), `@blekline/cursor-hooks` 0.1.0
+  (2026-07-03), `@cdot65/prisma-airs-cursor-hooks` 0.3.0 (2026-07-08), `@vaibot/cursor-circuitbreaker-plugin`
+  0.2.2 (2026-09-28), `@unshadow/cursor-hook` 0.2.0 and `contexara` 1.2.13 (2026-10-07). No source
+  names the Cursor version it describes; the catalog's newest is 3.24.9 (Homebrew cask, task 14).
+  **Every fact here is for the device phase to confirm against the installed version.**
+- **Enterprise hooks file on Windows: `C:\ProgramData\Cursor\hooks.json`** (`FOLDERID_ProgramData`).
+  Not verified from a reachable source: it is the Windows location Cursor's hooks page gave before
+  this build, beside `/Library/Application Support/Cursor/hooks.json` (macOS) and
+  `/etc/cursor/hooks.json` (Linux), which the AIRS installer's notes repeat. Cursor runs the hooks of
+  every file present (enterprise, project `.cursor/hooks.json`, user `~/.cursor/hooks.json`), so a
+  user-level file adds hooks and cannot take the enterprise ones away.
+- **`hooks.json`**: `{"version": 1, "hooks": {"<event>": [{"command": "..."}]}}`. An entry may also
+  carry `timeout`, `failClosed` and `matcher`; the agent writes `command` only. AIRS says Cursor
+  reads the file when it starts; whether a running Cursor picks up a change is for the device phase
+  (the agent itself applies a bundle change without a restart).
+- **stdin**: every event carries `conversation_id`, `generation_id`, `model`, `hook_event_name`,
+  `cursor_version`, `workspace_roots`, `user_email` and `transcript_path`; `beforeSubmitPrompt` adds
+  `prompt` and `attachments`; `beforeMCPExecution` adds `tool_name`, `tool_input` and the server's
+  `command` or `url`. The packages disagree on `tool_input`: the newer ones read a string holding the
+  JSON, older typings an object. The adapter takes both and sends compact JSON (a string that is not
+  JSON as written). `conversation_id` is the session; input without one is refused, so the hook
+  fails open.
+- **Output**, exit code 0: `beforeSubmitPrompt` answers `{"continue": bool, "user_message": ...}`;
+  `beforeMCPExecution` answers `{"permission": "allow"|"deny"|"ask", "user_message": ...,
+  "agent_message": ...}`. The older packages spell the latter two `userMessage` and `agentMessage`;
+  the newer ones, and the agent, use `user_message` and `agent_message`. A `warn` renders as the
+  event's allow with `user_message`; whether Cursor shows it is task 41's.
+- **Block behaviour**: every source documents both events as blocking (`continue: false` stops the
+  prompt, `deny` stops the MCP call), so the adapter's `CanEnforce(event)` is true for both. The
+  device phase tests each event by hand first and corrects `CanEnforce` and this entry if the
+  installed version differs.
+- **The relay reads `CanEnforce`.** `CanEnforce(event string) bool` is part of the `Adapter`
+  interface (the test adapter and Claude Code answer true), and the relay records
+  `RecordedAction(d, adapter.CanEnforce(event))`; a tool with no adapter records `logged`.
+- **The agent's entry is the one whose command is** `"<exe>" --hook cursor <event>`, with `<exe>` a
+  `capture-core(.exe)` from wherever the agent is or was installed, so one written from an earlier
+  install path is replaced in place, as Claude Code's are. The running service's `os.Executable()`
+  is written; the entry is added after the customer's entries for each event that lacks it.
+  `"version": 1` is added to a file that has none and taken out again on Remove only when the rest
+  of the file is as the backup had it. A file that is not a JSON object, or whose `hooks` is not an
+  object of arrays, is left untouched and reported `config_write_failed`.
+  Backup and restore are task 27's (`toolconfig/cursor/original`).
+- **Installed** means the installed-app scanner (`inventory.Scanners`, task 16) finds app `cursor`
+  under the bundle in force's catalog, for the machine or a loaded user hive (today by publisher
+  `Anysphere`). The writer takes it as a seam, wired in `buildProviders`.
+- **Access control**: a new `C:\ProgramData\Cursor` folder inherits ProgramData's access, which lets
+  users create files in it; the hooks file itself gets the managed DACL, as Claude Code's does.
+- **Fixtures** are written from the sources above under `hooks/testdata/cursor/documented/`, marked
+  so in their README; the device phase replaces them with a capture named after the installed
+  version.
+- **Migration `0013-tool-config-cursor.sql`**, built as `0012` and renumbered at merge after task
+  21's flow monitor. Migration proof, on the task's branch: the integration branch's `schema.sql`
+  plus it, the new `schema.sql` plus `0002` to it, and `main`'s `schema.sql` plus `0002` to it each
+  dump (`pg_dump --schema-only`) identically to the new `schema.sql`, with identical
+  `ref.collector` rows.
+- **Not run here:** `toolconfig/cursor_windows_test.go` (the ProgramData path). It compiles and vets
+  under `GOOS=windows`.
+- **Merged onto task 37's model.** Cursor's provider uses task 37's `Desired`: it is on while its
+  hooks switch is in effect, and asks for `Hooks` and `HookCommand` (from `Config.Executable`) only.
+  A tool's description says whether it has an OTel export (`otel`) and a managed-only setting
+  (`managedOnly`); Cursor has neither, so its OTel switch does nothing and `managed_only` leaves its
+  `Desired` unchanged. The writer takes the command from `Desired`, and `Apply` without `Hooks` takes
+  the agent's entries out.

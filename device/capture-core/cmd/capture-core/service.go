@@ -87,6 +87,8 @@ type facilities struct {
 	// flowEvents opens the DNS answers and TCP connects the flow monitor reads; nil leaves the
 	// monitor absent.
 	flowEvents func() (flowmon.Source, error)
+	// cursorHooks is Cursor's enterprise hooks file; empty is the platform's location.
+	cursorHooks string
 }
 
 // trustStore installs, verifies and removes the per-device CA in the platform trust store.
@@ -401,8 +403,8 @@ func (s *service) buildDrainer(spoolKey []byte) error {
 }
 
 // buildProviders builds proxy.tls, the loopback broker and the CLI shim over the per-device CA, the
-// OTLP receiver, Claude Code's configuration writer, the user-session helper, the hook relay, the
-// inventory scanner and the process monitor.
+// OTLP receiver, Claude Code's and Cursor's configuration writers, the user-session helper, the hook
+// relay, the inventory scanner, the process monitor and the flow monitor.
 func (s *service) buildProviders() error {
 	b := s.currentBundle()
 	label := s.resolvedHostname()
@@ -500,6 +502,16 @@ func (s *service) buildProviders() error {
 		return err
 	}
 
+	// Cursor's enterprise hooks file declares this executable's hooks while the bundle switches
+	// Cursor's hooks on. Cursor has no OTel export to configure.
+	cursor := toolconfig.NewCursor(toolconfig.NewCursorWriter(s.dir, platform.cursorHooks, s.appInstalled("cursor")), toolconfig.Config{
+		Log:   s.logf,
+		Clock: time.Now,
+	})
+	if err := s.reg.Add(cursor); err != nil {
+		return err
+	}
+
 	s.helpers = userhelper.New(userhelper.Config{Platform: platform.userSessions, Log: s.logf, Clock: time.Now})
 	if err := s.reg.Add(s.helpers); err != nil {
 		return err
@@ -560,6 +572,27 @@ func (s *service) buildProviders() error {
 	}
 
 	return s.buildPAC()
+}
+
+// appInstalled reports whether the installed-app scan finds the catalog app appKey, under the
+// bundle in force, for the machine or any signed-in user.
+func (s *service) appInstalled(appKey string) func() bool {
+	return func() bool {
+		b := s.currentBundle()
+		if b == nil {
+			return false
+		}
+		anyone := func(hostinfo.User) core.Person { return core.Person{} }
+		for _, sc := range inventory.Scanners(anyone) {
+			recs, _ := sc.Scan(context.Background(), b)
+			for _, r := range recs {
+				if r.AppKey == appKey {
+					return true
+				}
+			}
+		}
+		return false
+	}
 }
 
 // proxyConfig is proxy.tls's configuration under b, the bundle in force when the providers are built.

@@ -2467,7 +2467,8 @@ INSERT INTO ref.collector (collector_code, component, modes_supported, descripti
   ('flow_monitor',      'capture_core',      ARRAY['m0','m1','m2','m3'], 'The operating system''s DNS answers and TCP connect events: which process connected to a catalog inference domain. Connection metadata only; reads no payload.'),
   ('classifier_host',   'classifier_host',   ARRAY['m1','m2','m3'],      'Sandboxed classification host. Not a collection path; its health is reported like a collector''s.'),
   ('user_helper',       'capture_core',      ARRAY[]::text[],            'Helper process in each signed-in user session, which shows that user the agent''s notifications. Not a collection path; it reads nothing.'),
-  ('tool_config_claude_code', 'capture_core',  ARRAY[]::text[],            'Writes Claude Code''s machine-wide managed settings so it exports its telemetry to the OTLP receiver. Not a collection path; it reads nothing.');
+  ('tool_config_claude_code', 'capture_core',  ARRAY[]::text[],            'Writes Claude Code''s machine-wide managed settings so it exports its telemetry to the OTLP receiver. Not a collection path; it reads nothing.'),
+  ('tool_config_cursor', 'capture_core',       ARRAY[]::text[],            'Writes the agent''s hooks into Cursor''s enterprise hooks file so its prompts and MCP calls reach the hook relay. Not a collection path; it reads nothing.');
 
 INSERT INTO ref.retention_class (retention_class, default_ttl_days, description) VALUES
   ('standard',   90,  'Default for event metadata.'),
