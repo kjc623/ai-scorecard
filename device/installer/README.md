@@ -81,6 +81,7 @@ A tenant that restricts native messaging must allow `com.shadowaicapture.capture
 `C:\ProgramData\ShadowAICapture`, whose `profile` (vendor and tenant files) and `state` (including the
 service log `state\capture-core.log`) only SYSTEM and Administrators can read, and whose `cli` (the CLI
 shim's CA bundle and proxy script) every user can read; the native messaging host keys under `HKLM\SOFTWARE\Google\Chrome` and
-`HKLM\SOFTWARE\Microsoft\Edge`; and, while the service runs, its interception root in the machine
+`HKLM\SOFTWARE\Microsoft\Edge`; a *Shadow AI Capture* Start-menu shortcut for all users, whose
+AppUserModelID (`ShadowAICapture.Agent`) Windows requires before it shows the agent's notifications; and, while the service runs, its interception root in the machine
 trust store and the CLI proxy environment, which stopping the service takes back out. Uninstalling
 removes the service, the files, the keys and the data folder; an upgrade keeps the data folder.

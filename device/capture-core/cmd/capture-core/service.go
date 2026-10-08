@@ -21,12 +21,14 @@ import (
 	"github.com/shadow-ai-capture/device/capture-core/credential"
 	"github.com/shadow-ai-capture/device/capture-core/drain"
 	"github.com/shadow-ai-capture/device/capture-core/hostinfo"
+	"github.com/shadow-ai-capture/device/capture-core/localipc"
 	"github.com/shadow-ai-capture/device/capture-core/otlp"
 	"github.com/shadow-ai-capture/device/capture-core/policy"
 	"github.com/shadow-ai-capture/device/capture-core/proxy/loopback"
 	"github.com/shadow-ai-capture/device/capture-core/proxy/tlsproxy"
 	"github.com/shadow-ai-capture/device/capture-core/state"
 	"github.com/shadow-ai-capture/device/capture-core/trust"
+	"github.com/shadow-ai-capture/device/capture-core/userhelper"
 	"github.com/shadow-ai-capture/device/capture-core/winproxy"
 	capturespool "github.com/shadow-ai-capture/device/capture-spool"
 	"github.com/shadow-ai-capture/device/protocol"
@@ -64,6 +66,9 @@ type facilities struct {
 	// desktopPAC builds the desktop-app PAC over the platform's user settings. nil where the
 	// platform has none; desktop apps there keep their own proxy behaviour.
 	desktopPAC func(cfg winproxy.Config) *winproxy.Server
+	// userSessions lists the signed-in sessions and starts the user-session helper in them; nil
+	// where the platform has no helper.
+	userSessions userhelper.Platform
 }
 
 // trustStore installs, verifies and removes the per-device CA in the platform trust store.
@@ -77,10 +82,11 @@ var platform = facilities{
 	trustStore: func(logf func(string, ...any)) trustStore {
 		return trust.New(trust.Config{OS: trust.HostOS(), Logf: logf})
 	},
-	shimRunner: trust.ExecRunner{},
-	nativeAddr: nativeEndpoint,
-	connOwner:  loopbackAttribution(),
-	desktopPAC: desktopPAC(),
+	shimRunner:   trust.ExecRunner{},
+	nativeAddr:   localipc.Endpoint,
+	connOwner:    loopbackAttribution(),
+	desktopPAC:   desktopPAC(),
+	userSessions: helperPlatform(),
 }
 
 // desktopPAC is the desktop-app PAC on Windows, where desktop apps read the per-user Internet
@@ -90,6 +96,15 @@ func desktopPAC() func(winproxy.Config) *winproxy.Server {
 		return nil
 	}
 	return winproxy.New
+}
+
+// helperPlatform starts this executable in helper mode in each signed-in session.
+func helperPlatform() userhelper.Platform {
+	exe, err := os.Executable()
+	if err != nil {
+		return nil
+	}
+	return userhelper.SystemPlatform(exe, userHelperArg)
 }
 
 // loopbackAttribution is how the platform names a loopback connection's client: the TCP owner table
@@ -164,7 +179,8 @@ type service struct {
 	drainer *drain.Drainer
 	trust   trustStore
 	health  *healthChannel
-	native  *nativeServer
+	native  *localipc.Server
+	helpers *userhelper.Provider
 
 	// tlsProv is proxy.tls, and pac the Windows desktop-app PAC that points at it (nil where the
 	// platform has none). Both, and the CLI shim, are policy toggles that run only while the
@@ -346,7 +362,7 @@ func (s *service) buildDrainer(spoolKey []byte) error {
 }
 
 // buildProviders builds proxy.tls, the loopback broker and the CLI shim over the per-device CA, and
-// the OTLP receiver.
+// the OTLP receiver and the user-session helper.
 func (s *service) buildProviders() error {
 	b := s.currentBundle()
 	label := s.resolvedHostname()
@@ -432,6 +448,11 @@ func (s *service) buildProviders() error {
 		return err
 	}
 
+	s.helpers = userhelper.New(userhelper.Config{Platform: platform.userSessions, Log: s.logf, Clock: time.Now})
+	if err := s.reg.Add(s.helpers); err != nil {
+		return err
+	}
+
 	return s.buildPAC()
 }
 
@@ -481,7 +502,7 @@ func (s *service) Start(ctx context.Context) error {
 	}()
 	if err := s.native.Start(); err != nil {
 		// The browser relay is one collection path; the others keep running without it.
-		s.log.Error("native messaging endpoint unavailable; the browser extension cannot reach the agent", "endpoint", s.native.addr, "error", err)
+		s.log.Error("native messaging endpoint unavailable; the browser extension cannot reach the agent", "endpoint", s.native.Addr(), "error", err)
 	}
 	s.health.Start(ctx)
 	s.log.Info("capture-core started", "order", s.sup.Order())

@@ -160,6 +160,7 @@ const (
 	CollectorCaptureExtension Collector = "capture_extension"
 	CollectorDesktopProxy     Collector = "desktop_proxy"
 	CollectorOTelReceiver     Collector = "otel_receiver"
+	CollectorUserHelper       Collector = "user_helper"
 )
 
 // Valid reports whether the collector is in the closed set. control-api refuses a whole health
@@ -168,7 +169,7 @@ func (c Collector) Valid() bool {
 	switch c {
 	case CollectorEgressProxy, CollectorLoopbackBroker, CollectorCLIShim,
 		CollectorProcessDetector, CollectorClassifierHost, CollectorCaptureExtension,
-		CollectorDesktopProxy, CollectorOTelReceiver:
+		CollectorDesktopProxy, CollectorOTelReceiver, CollectorUserHelper:
 		return true
 	default:
 		return false
@@ -329,6 +330,10 @@ const (
 	// Collector lifecycle. A collector the signed policy switched off is out of the path by
 	// request, which is neither a fault nor interference.
 	DetailDisabledByPolicy Detail = "disabled_by_policy"
+
+	// User-session helper. A signed-in session has no connected helper: it could not be started,
+	// it keeps exiting, or the platform has none.
+	DetailHelperUnavailable Detail = "helper_unavailable"
 )
 
 // AllDetails is the closed vocabulary, for validation and for a coverage report that needs to
@@ -350,6 +355,7 @@ var AllDetails = [...]Detail{
 	DetailTrustInstallFailed, DetailTrustVerifyFailed,
 	DetailShimProfileMissing, DetailShimCABundleUnreadable, DetailShimNotInherited,
 	DetailIdentityUnresolved, DetailDisabledByPolicy,
+	DetailHelperUnavailable,
 }
 
 // Valid reports whether the detail is in the closed vocabulary. An empty detail is valid: a

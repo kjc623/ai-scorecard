@@ -2,8 +2,13 @@ package protocol
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Native messaging between the browser extension and capture-core.
@@ -43,6 +48,15 @@ const (
 	TypePolicyBundle   = "policy_bundle"
 	TypeModeAnswer     = "mode_answer"
 	TypeHealthSnapshot = "health_snapshot"
+)
+
+// Native message types between capture-core and its user-session helper, a capture-core process
+// the service starts in each signed-in session. They travel on the same endpoint as the browser
+// relay; the extension never sends or receives them.
+const (
+	TypeHelperHello  = "helper_hello"  // helper -> capture-core, the connection's first frame
+	TypeNotify       = "notify"        // capture-core -> helper: show one notification
+	TypeNotifyResult = "notify_result" // helper -> capture-core: whether it was shown
 )
 
 // RefusalReason is the closed set of reasons capture-core refuses an extension message. A
@@ -202,3 +216,71 @@ type Ack struct {
 // message. Chromium enforces its own limit; this constant is the one the extension queues
 // against, and attachment bytes never travel whole because of it.
 const MaxNativeMessageBytes = 1 << 20
+
+// HelperHello opens a helper connection. capture-core accepts it only from the user signed in to
+// SessionID, so one user's helper never receives another user's notifications.
+type HelperHello struct {
+	SessionID uint32 `json:"session_id"`
+	PID       uint32 `json:"pid"`
+}
+
+// Notification limits, in characters (the link in bytes).
+const (
+	MaxNotifyTitle = 64
+	MaxNotifyBody  = 280
+	MaxNotifyLink  = 2048
+)
+
+// Notify asks the helper to show one notification to its session's user. Link, when present, is
+// an https URL the notification offers to open.
+type Notify struct {
+	Title string `json:"title"`
+	Body  string `json:"body"`
+	Link  string `json:"link,omitempty"`
+}
+
+// Validate refuses a notification the helper could not show as written: an empty or overlong
+// title or body, a control character, or a link that is not an absolute https URL.
+func (n Notify) Validate() error {
+	if err := notifyText("title", n.Title, MaxNotifyTitle, false); err != nil {
+		return err
+	}
+	if err := notifyText("body", n.Body, MaxNotifyBody, true); err != nil {
+		return err
+	}
+	if n.Link == "" {
+		return nil
+	}
+	if len(n.Link) > MaxNotifyLink {
+		return fmt.Errorf("notify: the link is %d bytes, over the %d limit", len(n.Link), MaxNotifyLink)
+	}
+	u, err := url.Parse(n.Link)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+		return errors.New("notify: the link must be an absolute https URL")
+	}
+	return nil
+}
+
+func notifyText(field, s string, limit int, newlines bool) error {
+	if !utf8.ValidString(s) {
+		return fmt.Errorf("notify: the %s is not UTF-8", field)
+	}
+	if strings.TrimSpace(s) == "" {
+		return fmt.Errorf("notify: the %s is empty", field)
+	}
+	if n := utf8.RuneCountInString(s); n > limit {
+		return fmt.Errorf("notify: the %s is %d characters, over the %d limit", field, n, limit)
+	}
+	for _, r := range s {
+		if unicode.IsControl(r) && !(newlines && r == '\n') {
+			return fmt.Errorf("notify: the %s carries a control character", field)
+		}
+	}
+	return nil
+}
+
+// NotifyResult answers one Notify, correlated by the message id. Error says why it was not shown.
+type NotifyResult struct {
+	Shown bool   `json:"shown"`
+	Error string `json:"error,omitempty"`
+}
