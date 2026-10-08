@@ -17,6 +17,7 @@ import (
 
 	"github.com/shadow-ai-capture/device/capture-core/hooks"
 	"github.com/shadow-ai-capture/device/capture-core/localipc"
+	"github.com/shadow-ai-capture/device/capture-core/merge"
 	"github.com/shadow-ai-capture/device/capture-core/policy"
 	"github.com/shadow-ai-capture/device/protocol"
 )
@@ -288,7 +289,8 @@ func TestHookIsDecidedAndRecordedByTheService(t *testing.T) {
 		SizeBytes       int64              `json:"size_bytes"`
 		Decision        *protocol.Decision `json:"policy_decision"`
 	}
-	deadline := time.Now().Add(10 * time.Second)
+	// No OTel record arrives for the prompt, so it goes on alone once its hold ends.
+	deadline := time.Now().Add(merge.HoldFor + 10*time.Second)
 	var hookEvents []json.RawMessage
 	for time.Now().Before(deadline) {
 		hookEvents = hookEvents[:0]

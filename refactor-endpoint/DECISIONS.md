@@ -1411,3 +1411,51 @@ decided and why, and for a vendor fact the product version checked.
 - **The service opens the session through a facility** (`flowEvents`), which the service tests leave
   unset, as `processEvents`. The elevated Windows test resolves `api.openai.com` and connects to it
   on 443, sending nothing.
+## 2026-10-08, task 40
+
+- **Session ids (vendor fact).** code.claude.com `hooks` and `monitoring-usage` (`.md` form, read
+  2026-10-08, describing versions up to 2.1.295): the hook's `session_id` is the "current session
+  identifier" and the OTel `session.id` the "unique session identifier", on every event by default.
+  Neither page says in so many words that they are the same value; both follow the same session
+  (a new id on `/clear`, the same id on a resume). Task 25's OTel fixtures and task 37's hook
+  fixtures were written independently and carry different ids, so they neither confirm nor refute
+  it. The merge assumes they are equal; the device phase confirms it on the installed version.
+  The documentation also says the hook's `prompt_id` matches the OTel `prompt.id`; the brief's
+  key uses the session id, so `prompt_id` is not read.
+- **Lengths (vendor fact).** `user_prompt`'s `prompt_length` is documented only as "Length of the
+  prompt"; the span's `user_prompt_length` is "in characters". The hook's length is in bytes. If
+  `prompt_length` counts characters, an m0 prompt with non-ASCII text does not merge and is
+  recorded on both routes. The device phase checks it.
+- **What is held.** The buffer holds a prompt on `tool.hook` or `tool.otel` that carries a session
+  id (`ClientID`). Everything else passes straight through: `agent_activity` (`Record`), a prompt
+  on another route, and a prompt without a session id, which is every prompt of the generic OTel
+  normalizer. A Cursor hook prompt is held and released alone after 10 s.
+- **Tool-call checks do not merge.** The relay records a `PreToolUse` check as a prompt with the
+  tool input as its text. OTel never reports one as `user_prompt`, and at m0 one could pair with a
+  prompt of the same length, so the relay sends only prompts without a `tool_name` to the merge
+  (`hooks.Config.Prompts`); tool-call checks go to the pipeline as before.
+- **Matching.** With both texts read (m1+), the key is the sha256 of the text. When either side has
+  no text (m0, a hook prompt over the frame cap, or OTel with prompt logging off) the two match on
+  the length in bytes with `occurred_at` within 2 s. The text is read only when the mode the
+  pipeline resolves for the record reads content. A pair is the earliest held record of the other
+  route with the same tool fingerprint and session id; two records of the same route never pair.
+- **The merged record** is the hook's observation (route, decision, person, size, session) with
+  the earlier `occurred_at`, and the OTel side's reader, extractor and over-cap flag when only it
+  holds the text. It is counted once, on `tool.hook`; the OTel side's prompt is not counted on
+  `tool.otel`. A record released alone keeps its own route, decision and person.
+- **Held text.** At m1+ the buffer reads the text once into its own buffer, hands the pipeline a
+  reader that returns a copy, and zeroes the buffer once the record is released, merged or not.
+  Nothing in `merge` logs or returns text; a failed release logs the tool fingerprint, the route
+  and the outcome's reason.
+- **Privacy test coverage.** Task 35's `otlp/privacy_test.go` builds the registered normalizers
+  over the pipeline directly, so the merge is not in its path; the buffer passes the same reader
+  on and writes nothing itself. `merge`'s own test sends canary prompts through every release
+  path (merged, expired, closed) and checks that the log never quotes them and that the text is
+  cleared after each release.
+- **Shutdown.** `buildProviders` closes the buffer when the background loops end, which `Stop`
+  waits for before the shutdown sequence stops the providers and drains the spool. Close releases
+  every held prompt unmerged, and from then on prompts pass straight through.
+- **The hold is a real 10 s timer per record**; the tests run it on `testing/synctest`'s fake clock.
+- **Outside `merge`, `hooks` and the wiring:** `cmd/capture-core/hook_test.go`'s
+  `TestHookIsDecidedAndRecordedByTheService` waits up to `merge.HoldFor` plus its 10 s for the
+  delivered hook prompt, which no OTel record joins and so goes on after its hold.

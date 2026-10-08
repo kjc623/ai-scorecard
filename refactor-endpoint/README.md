@@ -71,7 +71,7 @@ The Plan column gives the plan's task id. "Built" is ticked when the task's "Don
 | 37 | [Claude Code hooks](37-claude-code-hooks/TASK.md) | E26 | 27, 36 | Claude Code signed in | [x] | [ ] |
 | 38 | [Cursor hooks](38-cursor-hooks/TASK.md) | E27 | 36 | Cursor signed in | [ ] | [ ] |
 | 39 | [Other tools' hooks spike](39-other-hooks-spike/TASK.md) | E28 | 36 | Codex, Copilot CLI, Gemini CLI | [ ] | [ ] |
-| 40 | [Hook and OTel merge](40-hook-otel-merge/TASK.md) | E29 | 26, 37 | Claude Code signed in | [ ] | [ ] |
+| 40 | [Hook and OTel merge](40-hook-otel-merge/TASK.md) | E29 | 26, 37 | Claude Code signed in | [x] | [ ] |
 | 41 | [Coaching messages](41-hook-user-messaging/TASK.md) | E30 | 37, 38 | Claude Code, Cursor | [ ] | [ ] |
 | **Phase 4: Network inspection (opt-in)** | | | | | | |
 | 42 | [macOS transparent proxy spike](42-macos-transparent-proxy-spike/TASK.md) | E31 | 08 | A Mac, Xcode, an Apple developer account | — | [ ] |

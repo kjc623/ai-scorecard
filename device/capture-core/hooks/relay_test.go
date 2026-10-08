@@ -6,10 +6,12 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/shadow-ai-capture/device/capture-core/core"
 	"github.com/shadow-ai-capture/device/capture-core/hooks"
 	"github.com/shadow-ai-capture/device/capture-core/policy"
 	"github.com/shadow-ai-capture/device/protocol"
@@ -255,5 +257,55 @@ func TestAMalformedFrameIsRefused(t *testing.T) {
 	}
 	if len(sink.all()) != 0 || r.Health().Counters[protocol.CounterErrors] != 3 {
 		t.Fatalf("recorded %d, errors %d", len(sink.all()), r.Health().Counters[protocol.CounterErrors])
+	}
+}
+
+// promptsProbe records what reaches the relay's Prompts.
+type promptsProbe struct {
+	mu   sync.Mutex
+	seen []core.Observation
+}
+
+func (p *promptsProbe) Process(_ context.Context, obs core.Observation) (core.Outcome, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.seen = append(p.seen, obs)
+	return core.Outcome{Route: obs.Route}, nil
+}
+
+// A prompt the user submits goes to Prompts, the merge with the tool's other path; a tool call's
+// check goes to the pipeline.
+func TestSubmittedPromptsGoToPromptsAndToolCallsToThePipeline(t *testing.T) {
+	sink := &memSink{}
+	pipe := newPipeline(t, sink, testBundle(protocol.ModeM0))
+	probe := &promptsProbe{}
+	r := hooks.New(hooks.Config{Pipeline: pipe, Prompts: probe, Bundles: pipe.Bundles})
+	if err := r.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Stop(context.Background()) })
+
+	const prompt = "summarise the meeting notes"
+	_, served := ask(t, r, evaluateFrame(t, "claude_code", prompt))
+	waitServed(t, served)
+
+	const toolInput = `{"command":"ls"}`
+	ev := protocol.HookEvaluate{Tool: "claude_code", Event: "PreToolUse", SessionID: "session-1", ToolName: "Bash", PromptText: toolInput}
+	ev.CapPrompt()
+	body, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, served = ask(t, r, protocol.NativeMessage{Type: protocol.TypeHookEvaluate, Version: protocol.Version, ID: "2", Body: body})
+	waitServed(t, served)
+
+	probe.mu.Lock()
+	seen := probe.seen
+	probe.mu.Unlock()
+	if len(seen) != 1 || seen[0].Route != protocol.RouteToolHook || seen[0].ClientID != "session-1" || seen[0].SizeBytes != int64(len(prompt)) {
+		t.Fatalf("Prompts received %+v, want the submitted prompt only", seen)
+	}
+	if got := sink.all(); len(got) != 1 || decodeEnvelope(t, got[0]).SizeBytes != int64(len(toolInput)) {
+		t.Fatalf("the pipeline spooled %d records, want the tool call's only", len(got))
 	}
 }

@@ -40,9 +40,16 @@ type Pipeline interface {
 	Counters(route protocol.Route) *core.CounterSet
 }
 
+// Prompts takes the prompts a user submits, which another path may also report.
+type Prompts interface {
+	Process(ctx context.Context, obs core.Observation) (core.Outcome, error)
+}
+
 // Config is the relay's wiring.
 type Config struct {
 	Pipeline Pipeline
+	// Prompts receives the answered prompts that are not tool calls; nil sends them to Pipeline.
+	Prompts Prompts
 	// Bundles returns the bundle in force; nil means none.
 	Bundles func() *policy.Bundle
 	// Classifier labels the prompt for the decision; nil leaves the labels unknown.
@@ -175,7 +182,7 @@ func (r *Relay) Serve(conn net.Conn, peer hostinfo.User, first protocol.NativeMe
 		r.mu.Unlock()
 	}
 	if rec != nil {
-		r.record(*rec, ev.Tool)
+		r.record(*rec, ev.Tool, ev.ToolName == "")
 	}
 }
 
@@ -260,11 +267,16 @@ func (r *Relay) classify(mode protocol.CollectionMode, text string) (labels []st
 	return labels, true
 }
 
-// record hands an answered prompt to the pipeline. The pipeline counts a record it could not
-// spool as dropped on the route's counters, which are the relay's.
-func (r *Relay) record(obs core.Observation, tool string) {
+// record hands an answered prompt to the pipeline, a prompt the user submitted through Prompts. The
+// pipeline counts a record it could not spool as dropped on the route's counters, which are the
+// relay's.
+func (r *Relay) record(obs core.Observation, tool string, submitted bool) {
 	defer r.endRecord()
-	out, err := r.cfg.Pipeline.Process(context.Background(), obs)
+	var to Prompts = r.cfg.Pipeline
+	if submitted && r.cfg.Prompts != nil {
+		to = r.cfg.Prompts
+	}
+	out, err := to.Process(context.Background(), obs)
 	// Before enrolment every record is refused; the pipeline counts those.
 	if err != nil && !errors.Is(err, core.ErrIdentityUnresolved) {
 		r.cfg.Log.Printf("hooks: a %s prompt was not recorded (%s)", tool, out.Reason)
