@@ -336,7 +336,7 @@ func DefaultEndpointSettings() store.EndpointSettings {
 		Collectors: store.EndpointCollectors{Inventory: true, Processes: true, Flows: true, OTel: true, Hooks: true},
 		Tools: map[string]store.EndpointTool{
 			"claude_code": {OTel: true, Hooks: true},
-			"codex":       {OTel: true},
+			"codex":       {OTel: true, Hooks: true},
 			"copilot":     {OTel: true},
 			"cursor":      {Hooks: true},
 		},

@@ -101,14 +101,14 @@ DO UPDATE SET sanctioned_state = EXCLUDED.sanctioned_state,
 
 	// SQLEndpointSettings is the tenant's endpoint collector settings as the policy bundle serves
 	// them: the tenant's rows where they exist, else the defaults (every collector on; each tool on
-	// for the collectors it has, so Cursor has no OTel and Codex and Copilot no hooks). The tools
-	// come back as {tool_key: {"otel": bool, "hooks": bool}}.
+	// for the collectors it has, so Cursor has no OTel and Copilot no hooks). The tools come back as
+	// {tool_key: {"otel": bool, "hooks": bool}}.
 	SQLEndpointSettings = `
 SELECT coalesce(e.inventory, true), coalesce(e.processes, true), coalesce(e.flows, true),
        coalesce(e.otel, true), coalesce(e.hooks, true), coalesce(e.hooks_managed_only, false),
        (SELECT jsonb_object_agg(d.tool_key, jsonb_build_object(
                  'otel', coalesce(s.otel, d.otel), 'hooks', coalesce(s.hooks, d.hooks)))
-          FROM (VALUES ('claude_code', true, true), ('codex', true, false),
+          FROM (VALUES ('claude_code', true, true), ('codex', true, true),
                        ('copilot', true, false), ('cursor', false, true)) AS d(tool_key, otel, hooks)
           LEFT JOIN ops.endpoint_tool_setting s
             ON s.tenant_id = t.tenant_id AND s.tool_key = d.tool_key)

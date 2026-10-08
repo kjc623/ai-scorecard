@@ -39,6 +39,7 @@ func TestMain(m *testing.M) {
 
 		claudeCodeSettings: filepath.Join(shimDir, "ClaudeCode", "managed-settings.json"),
 		cursorHooks:        filepath.Join(shimDir, "Cursor", "hooks.json"),
+		codexRequirements:  filepath.Join(shimDir, "OpenAI", "Codex", "requirements.toml"),
 	}
 	code := m.Run()
 	_ = os.RemoveAll(shimDir)

@@ -227,7 +227,7 @@ func canonical(t *testing.T, doc string) string {
 func TestComposeEndpointSection(t *testing.T) {
 	r := newRig(t, nil)
 	ctx := context.Background()
-	section := func(inventory, flows, managedOnly, cursorHooks, codexOTel bool) string {
+	section := func(inventory, flows, managedOnly, cursorHooks, codex bool) string {
 		return canonical(t, fmt.Sprintf(`{
 		  "inventory": {"enabled": %t, "interval_minutes": 360},
 		  "processes": {"enabled": true},
@@ -236,12 +236,12 @@ func TestComposeEndpointSection(t *testing.T) {
 		  "hooks":     {"enabled": true, "managed_only": %t},
 		  "tools": {
 		    "claude_code": {"otel": true,  "hooks": true},
-		    "codex":       {"otel": %t,    "hooks": false},
+		    "codex":       {"otel": %t,    "hooks": %t},
 		    "copilot":     {"otel": true,  "hooks": false},
 		    "cursor":      {"otel": false, "hooks": %t}
 		  },
 		  "discovery_daily_budget": 200
-		}`, inventory, flows, managedOnly, codexOTel, cursorHooks))
+		}`, inventory, flows, managedOnly, codex, codex, cursorHooks))
 	}
 
 	v1, err := r.svc.Current(ctx, tenantA)

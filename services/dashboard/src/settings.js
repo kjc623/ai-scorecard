@@ -22,11 +22,11 @@ export const ENDPOINT_COLLECTORS = Object.freeze(['inventory', 'processes', 'flo
 
 /**
  * The tools with native collectors and which of the two each has: Cursor sends no OpenTelemetry,
- * and Codex and Copilot have no hooks yet. A collector a tool lacks is shown, never offered.
+ * and Copilot has no hooks yet. A collector a tool lacks is shown, never offered.
  */
 export const ENDPOINT_TOOLS = Object.freeze([
   Object.freeze({ key: 'claude_code', label: 'Claude Code', otel: true, hooks: true }),
-  Object.freeze({ key: 'codex', label: 'Codex', otel: true, hooks: false }),
+  Object.freeze({ key: 'codex', label: 'Codex', otel: true, hooks: true }),
   Object.freeze({ key: 'copilot', label: 'Copilot', otel: true, hooks: false }),
   Object.freeze({ key: 'cursor', label: 'Cursor', otel: false, hooks: true }),
 ]);

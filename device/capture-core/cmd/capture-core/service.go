@@ -89,6 +89,9 @@ type facilities struct {
 	flowEvents func() (flowmon.Source, error)
 	// cursorHooks is Cursor's enterprise hooks file; empty is the platform's location.
 	cursorHooks string
+	// codexRequirements is the Codex CLI's system requirements file; empty is the platform's
+	// location.
+	codexRequirements string
 }
 
 // trustStore installs, verifies and removes the per-device CA in the platform trust store.
@@ -403,8 +406,8 @@ func (s *service) buildDrainer(spoolKey []byte) error {
 }
 
 // buildProviders builds proxy.tls, the loopback broker and the CLI shim over the per-device CA, the
-// OTLP receiver, Claude Code's and Cursor's configuration writers, the user-session helper, the hook
-// relay, the inventory scanner, the process monitor and the flow monitor.
+// OTLP receiver, Claude Code's, Cursor's and Codex's configuration writers, the user-session helper,
+// the hook relay, the inventory scanner, the process monitor and the flow monitor.
 func (s *service) buildProviders() error {
 	b := s.currentBundle()
 	label := s.resolvedHostname()
@@ -509,6 +512,18 @@ func (s *service) buildProviders() error {
 		Clock: time.Now,
 	})
 	if err := s.reg.Add(cursor); err != nil {
+		return err
+	}
+
+	// The Codex CLI's system requirements declare this executable's prompt hook while the bundle
+	// switches Codex's hooks on. Codex is installed when the inventory's CLI scan finds it in a user
+	// profile.
+	codexInstalled := func() bool { return inventory.CLIInstalled(s.currentBundle(), "codex") }
+	codex := toolconfig.NewCodex(toolconfig.NewCodexWriter(s.dir, platform.codexRequirements, codexInstalled), toolconfig.Config{
+		Log:   s.logf,
+		Clock: time.Now,
+	})
+	if err := s.reg.Add(codex); err != nil {
 		return err
 	}
 

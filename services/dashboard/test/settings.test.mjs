@@ -46,7 +46,7 @@ function endpointDefaults() {
     inventory: true, processes: true, flows: true, otel: true, hooks: true, hooks_managed_only: false,
     tools: {
       claude_code: { otel: true, hooks: true },
-      codex: { otel: true, hooks: false },
+      codex: { otel: true, hooks: true },
       copilot: { otel: true, hooks: false },
       cursor: { otel: false, hooks: true },
     },
@@ -243,10 +243,10 @@ test('endpoint collectors: the card shows the defaults, and a collector a tool l
   assert.equal(pressed(card, ' data-action="endpoint" data-collector="hooks_managed_only"'), 'off');
   assert.equal(pressed(card, ' data-action="endpoint-tool" data-tool="claude_code" data-collector="hooks"'), 'on');
   assert.equal(pressed(card, ' data-action="endpoint-tool" data-tool="cursor" data-collector="hooks"'), 'on');
-  // Cursor has no OTel; Codex and Copilot have no hooks: three cells, none of them a control.
-  assert.equal((card.match(/<span class="v-absent">unavailable<\/span>/g) ?? []).length, 3);
+  assert.equal(pressed(card, ' data-action="endpoint-tool" data-tool="codex" data-collector="hooks"'), 'on');
+  // Cursor has no OTel and Copilot no hooks: two cells, neither of them a control.
+  assert.equal((card.match(/<span class="v-absent">unavailable<\/span>/g) ?? []).length, 2);
   assert.doesNotMatch(card, /data-tool="cursor" data-collector="otel"/);
-  assert.doesNotMatch(card, /data-tool="codex" data-collector="hooks"/);
   assert.doesNotMatch(card, /data-tool="copilot" data-collector="hooks"/);
 });
 

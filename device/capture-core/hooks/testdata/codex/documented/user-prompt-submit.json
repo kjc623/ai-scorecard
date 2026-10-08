@@ -1,0 +1,10 @@
+{
+  "session_id": "0199c3a1-7b2e-7c40-9d1f-3e5a6b7c8d90",
+  "turn_id": "turn-3",
+  "transcript_path": "C:\\Users\\console\\.codex\\sessions\\2026\\10\\08\\rollout-2026-10-08T09-15-02-0199c3a1-7b2e-7c40-9d1f-3e5a6b7c8d90.jsonl",
+  "cwd": "C:\\work\\app",
+  "hook_event_name": "UserPromptSubmit",
+  "model": "gpt-5.5-codex",
+  "permission_mode": "default",
+  "prompt": "Deploy with key AKIAIOSFODNN7EXAMPLE to the \"staging\" bucket <now>"
+}

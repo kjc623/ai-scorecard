@@ -1915,3 +1915,95 @@ or corrects each answer marked **[device]**.
   The mapped/dropped test walks resource, span, span-event and log attributes, span operations,
   span events and log events. Privacy fixtures: one agent-mode turn per tool, whose dropped values
   include output messages, system prompt, tool arguments, a subagent's input and `host.name`.
+
+## 2026-10-08, task 39
+
+Build phase: every answer is **from the documentation**, read 2026-10-08, and is for the device phase to
+confirm on the installed version. The vendor sites (developers.openai.com, docs.github.com,
+code.visualstudio.com, geminicli.com) are blocked from the build machine, so the sources are the vendors'
+GitHub repositories: `openai/codex` `main` at `99aa053` (2026-10-08; the newest release tag is
+`rust-v0.162.0`), `github/copilot-cli` at `a7ae5b0` (its changelog's newest entry is 1.0.94 of 2026-10-08),
+`github/docs` at `9f65179` (2026-10-08; the source of docs.github.com), `microsoft/vscode-docs` at `a884842`
+(2026-10-08; the hooks pages are approved 10/7/2026) and `google-gemini/gemini-cli` at `2ce1a69`
+(2026-10-08; package 0.65.0-nightly.20261006). The three questions are (1) a hook before a prompt is sent,
+(2) it can block and the tool shows the reason, (3) it can be declared in a machine-wide, admin-managed
+location a user cannot override or disable.
+
+- **Codex CLI: adapter built.** The prose hooks page is developers.openai.com's; the repository holds only a
+  `docs/config.md` note (`allow_managed_hooks_only` works only in `requirements.toml`), so the answers rest on
+  the hook schemas the repository publishes (`codex-rs/hooks/schema/generated/`) and its source.
+  1. Yes: `UserPromptSubmit`, with stdin `session_id`, `turn_id`, `transcript_path` (or `null`), `cwd`,
+     `hook_event_name`, `model`, `permission_mode`, `prompt`, and `agent_id`/`agent_type` for a subagent.
+  2. Yes: `{"decision": "block", "reason": ...}` with exit code 0 (or exit code 2 with the reason on stderr)
+     stops the turn, and the TUI shows "Blocked by hook" with the reason. A block whose reason is empty is
+     ignored, so the adapter sends the rule's id when the rule has no message. `systemMessage` shows as a
+     warning; plain stdout is added to the model's context, so allow is empty output.
+  3. Yes: `[hooks]` in `%ProgramData%\OpenAI\Codex\requirements.toml` (no user override of that path; the
+     loader's override is for tests). Managed hooks are always enabled and trusted, whatever a user's
+     per-hook state says, and `allow_managed_hooks_only = true` drops user, project and session hooks. A
+     user's `[features] hooks = false` would switch every hook off, managed ones included, unless the
+     requirements pin `[features] hooks = true`; the writer pins it. Hook events append across requirements
+     layers (system, cloud, MDM), so a customer's cloud requirements do not displace the agent's hook.
+- **Copilot CLI: not available, answer 2 failed.** (1) Yes, `userPromptSubmitted` (`UserPromptSubmit` in the
+  VS Code compatible format) with `prompt`. (2) No: command and HTTP config-file `userPromptSubmitted` hooks
+  "have their output dropped" (only SDK programmatic hooks' `modifiedPrompt` is honoured), and exit code 2 is
+  a warning whose stderr is shown while the run continues. (3) Yes: policy hooks in
+  `C:\ProgramData\GitHub\Copilot\policy.d\*.json` or `HKLM\Software\Policies\GitHub\Copilot`, which
+  `disableAllHooks` does not affect and users cannot modify. `preToolUse` can deny a tool call, but it is not
+  a prompt hook. **[device]** a `userPromptSubmitted` policy hook that prints `{"decision":"block",...}` and
+  one that exits 2: does the prompt still reach the model, and what is shown.
+- **Copilot in VS Code: not available, answers 2 and 3 unclear in the docs.** The hook implementation is the
+  session target's harness. *Local* (extension host): (1) yes, `UserPromptSubmit` with `prompt`; (2) unclear:
+  `continue: false` with `stopReason` ("shown to the user") stops the agent execution and exit code 2 gives
+  stderr to the model, but no page says the prompt is withheld from the model; (3) no file location: Local
+  reads only workspace (`.github/hooks`), user (`~/.copilot/hooks`), custom-agent and plugin hooks, and the
+  admin route is the `ChatAllowManagedHooksOnly` policy plus a plugin force-enabled by `ChatEnabledPlugins`
+  from a marketplace in `ChatExtraMarketplaces` (GitHub shorthand or a Git URI), not a file the agent writes.
+  *Copilot* (Agent Host): Copilot CLI's implementation, policy hooks included, so answer 2 fails as above.
+  *Claude* and *Codex*: those tools' own hooks. **[device]** at the console, Local target, a workspace hook on
+  `UserPromptSubmit` answering `{"continue": false, "stopReason": "..."}`: is the prompt sent, and is the
+  reason shown; whether `ChatExtraMarketplaces` accepts a local `file://` Git repository, so a policy-forced
+  plugin could carry the agent's hook; which session target a new chat uses on the VM; and whether the Claude
+  target reads `C:\Program Files\ClaudeCode\managed-settings.json`.
+- **Gemini CLI: not available, answer 3 failed.** (1) Yes, `BeforeAgent` ("after user submits prompt, before
+  planning") with `prompt`. (2) Yes: `{"decision": "deny", "reason": ...}` (or exit code 2) blocks the turn and
+  discards the prompt, and the UI shows "Agent execution blocked: <systemMessage or reason>". (3) No:
+  `C:\ProgramData\gemini-cli\settings.json` is the system override file, but a user can point
+  `GEMINI_CLI_SYSTEM_SETTINGS_PATH` elsewhere (the enterprise page says so and suggests a wrapper script), and
+  `hooksConfig.disabled` is merged by union from every settings file and applies to system hooks, so a
+  user's `~/.gemini/settings.json` (or `/hooks disable`) turns the agent's hook off by its command. The
+  server-side Admin Controls have no hooks control. No `gemini_cli` tool key, collector or migration is
+  added. **[device]** confirm both bypasses on the installed version.
+- **`tool_config_codex` is created here.** Task 29 has not been built, so the Codex writer gets the
+  collector `DESIGN.md` §2 names, its `ref.collector` row and its wiring in `buildProviders`. The tool is
+  described with `otel: false` and `managedOnly: true`: task 29 adds the OTel export to the same provider
+  (its own file, `config.toml`) and flips `otel`.
+- **Only `UserPromptSubmit` is declared.** Codex also has `PreToolUse`; the brief asks for the pre-prompt hook.
+- **The hook command is `cmd /c "<exe>" --hook codex UserPromptSubmit`.** Codex has no exec form: it runs a
+  command hook through the user's shell, PowerShell (`-NoProfile -Command`) by default on Windows and cmd
+  (`/c`) without one, and a quoted path followed by arguments parses in cmd but not in PowerShell. A nested
+  cmd keeps the quotes in both, for an install path without `&<>()@^|` (the MSI's
+  `C:\Program Files\ShadowAICapture` qualifies). The shell's start-up comes before the hook's 400 ms, so the
+  timeout is 5 seconds; task 51 should measure the added latency. **[device]** under both shells.
+- **What the writer owns** in `requirements.toml`: its `hooks.UserPromptSubmit` group (one whose handlers all
+  run `capture-core(.exe)` that way, so an earlier install path is replaced in place), `features.hooks` and
+  `allow_managed_hooks_only`, as task 37 owns its keys: a key the bundle does not ask for holds the backup's
+  value. It never sets `hooks.windows_managed_dir`, since conflicting values across requirements layers fail
+  closed. A managed hook Codex cannot load stops it starting sessions; the agent's entry is fixed and valid.
+  A file that is not TOML, or whose `hooks`/`features` is not a table or whose `hooks.UserPromptSubmit` is not
+  an array of tables, is left untouched and reported `config_write_failed`. The file is read and written with
+  `github.com/BurntSushi/toml` v1.6.0 (`DESIGN.md` §11; it was already in the module graph at a pseudo-version
+  through grpc-gateway), so a rewrite drops comments; Remove writes the backup's bytes back when the result
+  equals it.
+- **Access control:** the file gets the managed DACL; a new `C:\ProgramData\OpenAI\Codex` folder inherits
+  ProgramData's, which Codex's own diagnostic probe reports as `StandardUserMutationAcl` (diagnostic only in
+  the source). **[device]** whether Codex warns.
+- **Installed** means the inventory's CLI scan finds `codex` in a user profile, as for Claude Code.
+- **Server defaults and Settings:** `codex.hooks` defaults on and the Settings page offers it. `DESIGN.md` §5
+  still says Codex hooks stay off "until task 39 finds them"; it is not edited.
+- **Migration `0015-tool-config-codex.sql`**, built as `0014` and renumbered after rebasing onto the
+  integration branch, which took `0014` for the kill switch. Proof: the integration branch's `schema.sql` plus
+  it, and the new `schema.sql` plus it, each dump (`pg_dump --schema-only`) identically to the new
+  `schema.sql`, with identical `ref.collector` rows.
+- **Not run here:** `toolconfig/codex_windows_test.go` (the ProgramData path). It compiles and vets under
+  `GOOS=windows`.

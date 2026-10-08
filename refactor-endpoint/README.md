@@ -70,7 +70,7 @@ The Plan column gives the plan's task id. "Built" is ticked when the task's "Don
 | 36 | [Hook relay](36-hook-relay/TASK.md) | E25 | 02, 10, 12 | | [x] | [ ] |
 | 37 | [Claude Code hooks](37-claude-code-hooks/TASK.md) | E26 | 27, 36 | Claude Code signed in | [x] | [ ] |
 | 38 | [Cursor hooks](38-cursor-hooks/TASK.md) | E27 | 36 | Cursor signed in | [x] | [ ] |
-| 39 | [Other tools' hooks spike](39-other-hooks-spike/TASK.md) | E28 | 36 | Codex, Copilot CLI, Gemini CLI | [ ] | [ ] |
+| 39 | [Other tools' hooks spike](39-other-hooks-spike/TASK.md) | E28 | 36 | Codex, Copilot CLI, Gemini CLI | [x] | [ ] |
 | 40 | [Hook and OTel merge](40-hook-otel-merge/TASK.md) | E29 | 26, 37 | Claude Code signed in | [x] | [ ] |
 | 41 | [Coaching messages](41-hook-user-messaging/TASK.md) | E30 | 37, 38 | Claude Code, Cursor | [ ] | [ ] |
 | **Phase 4: Network inspection (opt-in)** | | | | | | |

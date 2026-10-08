@@ -31,6 +31,7 @@ var adapters = map[string]Adapter{
 	TestTool:       testAdapter{},
 	ClaudeCodeTool: claudeCode{},
 	CursorTool:     cursor{},
+	CodexTool:      codex{},
 }
 
 // Lookup returns the adapter for a tool key.

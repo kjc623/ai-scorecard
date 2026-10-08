@@ -1,0 +1,12 @@
+{
+  "session_id": "0199c3a1-7b2e-7c40-9d1f-3e5a6b7c8d90",
+  "turn_id": "turn-7",
+  "agent_id": "0199c3a4-1d2c-7e3b-8a4f-5b6c7d8e9f01",
+  "agent_type": "explorer",
+  "transcript_path": null,
+  "cwd": "C:\\work\\app",
+  "hook_event_name": "UserPromptSubmit",
+  "model": "gpt-5.5-codex",
+  "permission_mode": "bypassPermissions",
+  "prompt": "List the files that read AWS_SECRET_ACCESS_KEY"
+}

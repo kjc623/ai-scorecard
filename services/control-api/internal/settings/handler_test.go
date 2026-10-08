@@ -362,7 +362,7 @@ func TestEndpointCollectors(t *testing.T) {
 		t.Fatalf("default collectors = %+v", e)
 	}
 	if len(e.Tools) != 4 || !e.Tools["claude_code"].OTel || !e.Tools["claude_code"].Hooks || e.Tools["cursor"].OTel ||
-		!e.Tools["cursor"].Hooks || !e.Tools["codex"].OTel || e.Tools["codex"].Hooks || e.Tools["copilot"].Hooks {
+		!e.Tools["cursor"].Hooks || !e.Tools["codex"].OTel || !e.Tools["codex"].Hooks || e.Tools["copilot"].Hooks {
 		t.Fatalf("default tools = %+v", e.Tools)
 	}
 

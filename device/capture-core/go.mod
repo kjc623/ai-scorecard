@@ -4,6 +4,7 @@ go 1.27
 
 require (
 	github.com/0xrawsec/golang-etw v1.6.2
+	github.com/BurntSushi/toml v1.6.0
 	github.com/Microsoft/go-winio v0.6.2
 	github.com/go-ole/go-ole v1.3.0
 	github.com/godbus/dbus/v5 v5.2.2

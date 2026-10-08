@@ -121,6 +121,18 @@ with the same backup (`toolconfig\cursor\original`), restore and access control 
 file. Its health row is `tool_config_cursor`, with the same states; Cursor counts as installed when
 the installed-app scan finds it in the bundle's catalog.
 
+While the bundle switches the hook relay and Codex's hooks on, the service adds one
+`hooks.UserPromptSubmit` group to the Codex CLI's system requirements file,
+`C:\ProgramData\OpenAI\Codex\requirements.toml`, running
+`cmd /c "<install dir>\capture-core.exe" --hook codex UserPromptSubmit` with a 5-second timeout (Codex
+starts it through the user's PowerShell or cmd), pins `features.hooks = true` so a user cannot switch
+hooks off, and with `endpoint.hooks.managed_only` sets `allow_managed_hooks_only = true`. Codex runs
+hooks declared there whatever a user's own hook settings say. Every other key and group is kept, with
+the same backup (`toolconfig\codex\original`), restore and access control as Claude Code's file; a
+rewrite drops the file's comments, which a restore puts back. Its health row is `tool_config_codex`,
+with the same states; Codex counts as installed when the inventory's CLI scan finds it in a user
+profile.
+
 With TLS inspection on, the proxy blind-tunnels a connection from a tool whose native collector is
 enabled.
 
@@ -138,7 +150,9 @@ answers a tool whose `endpoint.tools.<key>.hooks` is on from the bundle's rules 
 Anything else is answered `allow` and not recorded. Claude Code's adapter sends a `UserPromptSubmit`
 prompt as written and a `PreToolUse` call's `tool_input` as compact JSON, and answers in Claude
 Code's JSON output with exit code 0: a block with the rule's message and link, a warning as a
-`systemMessage`, and no output to allow.
+`systemMessage`, and no output to allow. Codex's adapter does the same for `UserPromptSubmit`: a
+block is `{"decision": "block", "reason": ...}` (the rule's id when it has no message, since Codex
+ignores a block without a reason).
 
 ## Installed apps
 
