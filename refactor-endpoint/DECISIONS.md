@@ -345,9 +345,9 @@ decided and why, and for a vendor fact the product version checked.
   traffic and reads none.
 - **`facilities.shimProfile`**: the service tests write the shim profile into their own temporary
   directory. On Linux its default is `/etc/profile.d`, which the service tests wrote before.
-- **Migration proof** (migration `0005`; `0004` is task 10's): the integration branch's
-  `schema.sql` plus `0005`, and `main`'s plus `0002`, `0003` and `0005`, each dump identically to
-  the new `schema.sql`; `0002`, `0003` and `0005` applied over the new `schema.sql` change nothing.
+- **Migration proof** (migration `0004`, renumbered at merge): the integration branch's
+  `schema.sql` plus the migration, and `main`'s plus `0002`, `0003` and it, each dump identically to
+  the new `schema.sql`; `0002`, `0003` and it applied over the new `schema.sql` change nothing.
 - **Not changed:** the proxy's listen address and the shim's proxy address are still read when the
   service builds them; only the PAC's is read at each start, as the brief says. A first start with
   no bundle therefore still binds the proxy on a random port once inspection is turned on.
