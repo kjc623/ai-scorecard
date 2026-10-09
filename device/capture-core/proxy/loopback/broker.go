@@ -641,9 +641,10 @@ func (r *portRunner) lastFailDetail() protocol.Detail {
 	return r.lastFail
 }
 
-// releaseNow closes the listening socket and waits until the accept loop has let go of it, so the
-// port is free when this returns. Every restart path goes through here first: a held port is
-// always closed before it is restarted.
+// releaseNow closes the listening socket and returns once the port can be bound again, which is
+// what the tool's returning server needs. Close alone is not that: the accept loop can still hold
+// the socket when Close returns, and Windows keeps a closing listener's port for a moment longer.
+// Every restart path goes through here first: a held port is always closed before it is restarted.
 func (r *portRunner) releaseNow() {
 	r.mu.Lock()
 	ln, accepting := r.ln, r.accepting
@@ -657,6 +658,14 @@ func (r *portRunner) releaseNow() {
 		select {
 		case <-accepting:
 		case <-time.After(2 * time.Second):
+		}
+	}
+	addr := ln.Addr().String()
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		probe, err := net.Listen("tcp", addr)
+		if err == nil {
+			_ = probe.Close()
+			return
 		}
 	}
 }
