@@ -517,6 +517,9 @@ type portRunner struct {
 	// accepting is closed when the accept loop on ln has returned, which is when the listening
 	// socket is really closed: Close can return while an Accept still holds it.
 	accepting chan struct{}
+	// releaseMu serialises releases: the runner's exit (and so its restore) waits for a release
+	// another goroutine began, such as a policy switch's.
+	releaseMu sync.Mutex
 	lastFail  protocol.Detail
 	coolUntil time.Time
 	// relocated is the upstream port the tool's server was last moved to, and relocateErr why the
@@ -646,6 +649,8 @@ func (r *portRunner) lastFailDetail() protocol.Detail {
 // the socket when Close returns, and Windows keeps a closing listener's port for a moment longer.
 // Every restart path goes through here first: a held port is always closed before it is restarted.
 func (r *portRunner) releaseNow() {
+	r.releaseMu.Lock()
+	defer r.releaseMu.Unlock()
 	r.mu.Lock()
 	ln, accepting := r.ln, r.accepting
 	r.ln, r.accepting = nil, nil
