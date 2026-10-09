@@ -24,11 +24,18 @@ import { BuildError, ROOT } from '../build.mjs';
 export const MSI_FILE = 'ShadowAICapture.msi';
 const WXS = join(ROOT, 'device', 'installer', 'generated', 'windows', 'ShadowAICapture.wxs');
 
-function run(cmd, args, what) {
-  const res = spawnSync(cmd, args, { encoding: 'utf8' });
+function run(cmd, args, what, env = process.env) {
+  const res = spawnSync(cmd, args, { encoding: 'utf8', env });
   if (res.error) throw new BuildError(`${what}: ${res.error.message}`);
   if (res.status !== 0) throw new BuildError(`${what} failed (exit ${res.status}):\n${`${res.stdout ?? ''}${res.stderr ?? ''}`.trim()}`);
   return res.stdout ?? '';
+}
+
+/** Windows PowerShell with the module path it builds itself: the one inherited from PowerShell 7
+ *  makes it load PowerShell 7's modules, which fail. */
+function powershell(args, what) {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.toLowerCase() !== 'psmodulepath'));
+  return run('powershell', args, what, env);
 }
 
 function onPath(name) {
@@ -90,12 +97,12 @@ export function buildMsi({ stage, outDir, version, sign = false, wixEula, log = 
 export function readMsi(msi, tables = []) {
   const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(ROOT, 'device', 'installer', 'windows', 'Read-MsiInfo.ps1'), '-Path', msi];
   if (tables.length) args.push('-Table', tables.join(','));
-  return JSON.parse(run('powershell', args, 'Read-MsiInfo.ps1'));
+  return JSON.parse(powershell(args, 'Read-MsiInfo.ps1'));
 }
 
 /** Whether Windows reads a valid Authenticode signature on the file. */
 export function isSigned(file) {
-  const out = run('powershell', ['-NoProfile', '-Command', `(Get-AuthenticodeSignature -LiteralPath '${file.replace(/'/g, "''")}').Status`], 'Get-AuthenticodeSignature');
+  const out = powershell(['-NoProfile', '-Command', `(Get-AuthenticodeSignature -LiteralPath '${file.replace(/'/g, "''")}').Status`], 'Get-AuthenticodeSignature');
   return out.trim() === 'Valid';
 }
 
