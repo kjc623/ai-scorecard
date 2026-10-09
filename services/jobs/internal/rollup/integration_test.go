@@ -132,8 +132,9 @@ func TestFindingsAgainstPostgreSQL(t *testing.T) {
 }
 
 // TestCoverageSnapshotAgainstPostgreSQL checks that every enrolled device gets a row per collector,
-// that only a healthy or degraded report counts as observed, and that a day already observed is
-// not erased when the collector's current state moves on.
+// that only a healthy or degraded report counts as observed, that a collector the policy switched
+// off is not expected, and that a day already observed is not erased when the collector's current
+// state moves on.
 func TestCoverageSnapshotAgainstPostgreSQL(t *testing.T) {
 	tx := pgtest.Tx(t, pgtest.Open(t))
 	tenant, device := pgtest.Tenant(t, tx)
@@ -145,14 +146,16 @@ func TestCoverageSnapshotAgainstPostgreSQL(t *testing.T) {
 	collectors := pgtest.Scalar(t, tx, `SELECT count(*)::text FROM ref.collector`)
 	codes := strings.Split(pgtest.Scalar(t, tx,
 		`SELECT string_agg(collector_code, ',' ORDER BY collector_code) FROM ref.collector`), ",")
-	if len(codes) < 4 {
-		t.Fatalf("ref.collector has %d rows; the test needs four", len(codes))
+	if len(codes) < 5 {
+		t.Fatalf("ref.collector has %d rows; the test needs five", len(codes))
 	}
-	healthy, tampered, absent, silent := codes[0], codes[1], codes[2], codes[3]
+	healthy, tampered, absent, silent, disabled := codes[0], codes[1], codes[2], codes[3], codes[4]
 	for collector, state := range map[string]string{healthy: "healthy", tampered: "tampered", absent: "absent"} {
 		pgtest.Exec(t, tx, `INSERT INTO ops.collector_state (tenant_id, device_id, collector, state, last_report_at)
 		                    VALUES ($1, $2, $3, $4, $5)`, tenant, device, collector, state, now)
 	}
+	pgtest.Exec(t, tx, `INSERT INTO ops.collector_state (tenant_id, device_id, collector, state, error_code, last_report_at)
+	                    VALUES ($1, $2, $3, 'absent', 'disabled_by_policy', $4)`, tenant, device, disabled, now)
 
 	pgtest.AsJobs(t, tx)
 	pgtest.Exec(t, tx, CoverageSnapshotSQL, tenant, window.From, window.To)
@@ -162,11 +165,22 @@ func TestCoverageSnapshotAgainstPostgreSQL(t *testing.T) {
 	gap := func(collector string) string {
 		return pgtest.Scalar(t, tx, `SELECT gap_reason FROM ops.coverage_snapshot WHERE tenant_id = $1 AND collector = $2`, tenant, collector)
 	}
+	expected := func(collector string) string {
+		return pgtest.Scalar(t, tx, `SELECT expected::text FROM ops.coverage_snapshot WHERE tenant_id = $1 AND collector = $2`, tenant, collector)
+	}
 	if got := count("true"); got != collectors {
 		t.Errorf("coverage rows = %s, want one per collector (%s)", got, collectors)
 	}
-	if got := count("expected"); got != collectors {
-		t.Errorf("expected rows = %s, want %s", got, collectors)
+	if got, want := count("expected"), fmt.Sprint(len(codes)-1); got != want {
+		t.Errorf("expected rows = %s, want %s (every collector but the one switched off)", got, want)
+	}
+	if got := expected(disabled); got != "false" {
+		t.Errorf("expected(%s) = %s, want false for a disabled_by_policy row", disabled, got)
+	}
+	for _, collector := range []string{healthy, tampered, absent, silent} {
+		if got := expected(collector); got != "true" {
+			t.Errorf("expected(%s) = %s, want true", collector, got)
+		}
 	}
 	if got := count("observed"); got != "1" {
 		t.Errorf("observed rows = %s, want 1", got)
@@ -185,6 +199,20 @@ func TestCoverageSnapshotAgainstPostgreSQL(t *testing.T) {
 	pgtest.Exec(t, tx, CoverageSnapshotSQL, tenant, window.From, window.To)
 	if got := count("observed"); got != "1" {
 		t.Errorf("observed rows after the state moved on = %s, want 1", got)
+	}
+
+	// The policy switches the collector back on and it reports later the same day: its latest
+	// report decides, so the day is expected and observed.
+	pgtest.AsOwner(t, tx)
+	pgtest.Exec(t, tx, `UPDATE ops.collector_state SET state = 'healthy', error_code = NULL, last_report_at = $3
+	                     WHERE tenant_id = $1 AND collector = $2`, tenant, disabled, now.Add(2*time.Second))
+	pgtest.AsJobs(t, tx)
+	pgtest.Exec(t, tx, CoverageSnapshotSQL, tenant, window.From, window.To)
+	if got := expected(disabled); got != "true" {
+		t.Errorf("expected(%s) after it was switched on = %s, want true", disabled, got)
+	}
+	if got := count("observed"); got != "2" {
+		t.Errorf("observed rows after the collector was switched on = %s, want 2", got)
 	}
 }
 
@@ -301,8 +329,8 @@ func (e events) prompt(n int, user, tool, occurred string, labels []label, actio
 func (e events) detection(n int, user, tool, occurred string) map[string]any {
 	m := e.base(n, user, tool, occurred)
 	for k, v := range map[string]any{
-		"direction": "none", "kind": "model_detection", "source": "proc.detect",
-		"collection_mode": "m0", "detection_basis": "process_scan",
+		"direction": "none", "kind": "discovery", "source": "proc.detect",
+		"collection_mode": "m0", "discovery_type": "app_running", "detection_basis": "process_event",
 	} {
 		m[k] = v
 	}

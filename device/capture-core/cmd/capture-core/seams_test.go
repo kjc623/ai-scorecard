@@ -4,19 +4,23 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/shadow-ai-capture/device/capture-core/hostinfo"
+	"github.com/shadow-ai-capture/device/capture-core/proxy/tlsproxy"
+	"github.com/shadow-ai-capture/device/capture-core/winproxy"
 )
 
 // The service reads the machine's attestation and console user, and changes the trust store, the
-// machine environment and a native messaging endpoint. Every test replaces those seams, so a run on
-// an enrolled, domain-joined machine behaves like one on a build host and nothing outside the
-// test's temporary directories is touched.
+// keystore that holds the device root's key, the machine environment and a native messaging
+// endpoint; the uninstall cleanup also changes users' proxy settings and the firewall. Every test replaces those seams, so a run on an enrolled, domain-joined machine behaves
+// like one on a build host and nothing outside the test's temporary directories is touched.
 func TestMain(m *testing.M) {
 	collectHostFacts = func() hostinfo.Facts { return hostinfo.Facts{} }
 	userSources = func() hostinfo.UserSources { return (&fakeConsole{err: hostinfo.ErrNoConsoleUser}).sources() }
@@ -26,9 +30,25 @@ func TestMain(m *testing.M) {
 	}
 	platform = facilities{
 		trustStore: func(func(string, ...any)) trustStore { return &fakeTrustStore{} },
-		shimRunner: &fakeRunner{},
-		shimDir:    shimDir,
-		nativeAddr: testNativeAddr(),
+		deviceCA: func(_ context.Context, _, label string, now time.Time, _ tlsproxy.RootTrust) (*tlsproxy.CA, bool, error) {
+			ca, err := tlsproxy.NewCA(label, now)
+			return ca, true, err
+		},
+		shimRunner:  &fakeRunner{},
+		shimDir:     shimDir,
+		shimProfile: filepath.Join(shimDir, "profile"),
+		nativeAddr:  testNativeAddr(),
+
+		claudeCodeSettings: filepath.Join(shimDir, "ClaudeCode", "managed-settings.json"),
+		cursorHooks:        filepath.Join(shimDir, "Cursor", "hooks.json"),
+		codexRequirements:  filepath.Join(shimDir, "OpenAI", "Codex", "requirements.toml"),
+		codexConfig:        filepath.Join(shimDir, "OpenAI", "Codex", "config.toml"),
+		codexUserConfigs:   func() []string { return nil },
+	}
+	cleanupPlatform = cleanupFacilities{
+		openUserSettings: func(string) (winproxy.Registry, error) { return nil, errors.New("no user settings in tests") },
+		deleteDeviceKey:  func(string) error { return nil },
+		logPath:          func() string { return filepath.Join(shimDir, uninstallLogName) },
 	}
 	code := m.Run()
 	_ = os.RemoveAll(shimDir)
@@ -86,6 +106,7 @@ func withConsole(t *testing.T, c *fakeConsole) {
 type fakeTrustStore struct {
 	mu        sync.Mutex
 	installed []byte
+	installs  int
 	removes   int
 }
 
@@ -93,6 +114,7 @@ func (f *fakeTrustStore) Install(_ context.Context, der []byte) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.installed = append([]byte(nil), der...)
+	f.installs++
 	return nil
 }
 

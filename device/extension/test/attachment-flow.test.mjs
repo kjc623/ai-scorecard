@@ -33,7 +33,7 @@ const observations = (h) => h.core.received.filter((m) => m.type === TYPE.OBSERV
 async function started(bundle, core = { chunkBytes: 256 }) {
   const h = createHarness({ core });
   await h.app.start();
-  h.app.applyPolicy({ policy_version: bundle.policy_version, bundle });
+  h.app.applyPolicy({ policy_version: bundle.version, bundle });
   await settle();
   h.core.received.length = 0;
   return h;
@@ -47,7 +47,7 @@ function submit(h, requestId = 'r1') {
 }
 
 test('an attached file is transferred to capture-core before the observation that names it', async () => {
-  const h = await started({ policy_version: 'b1', default_mode: 'm2' });
+  const h = await started({ version: 'b1', tenant_default_mode: 'm2' });
   const tab = attachTab(h, TAB, [FILE]);
   await submit(h);
   await waitFor(() => observations(h).length === 1, { label: 'the observation' });
@@ -73,7 +73,7 @@ test('an attached file is transferred to capture-core before the observation tha
 });
 
 test('a file attaches to one submission: the next one does not send it again', async () => {
-  const h = await started({ policy_version: 'b1', default_mode: 'm2' });
+  const h = await started({ version: 'b1', tenant_default_mode: 'm2' });
   attachTab(h, TAB, [FILE]);
   await submit(h, 'r1');
   await waitFor(() => observations(h).length === 1, { label: 'the first observation' });
@@ -86,7 +86,7 @@ test('a file attaches to one submission: the next one does not send it again', a
 });
 
 test('at M0 the tab is not asked for files and no byte moves', async () => {
-  const h = await started({ policy_version: 'b1', default_mode: 'm0' });
+  const h = await started({ version: 'b1', tenant_default_mode: 'm0' });
   const tab = attachTab(h, TAB, [FILE]);
   await h.fake.drive('metadata', chromeRequest({ url: CHAT_URL, tabId: TAB, headers: { 'content-type': 'application/json' } }));
   await settle();
@@ -96,7 +96,7 @@ test('at M0 the tab is not asked for files and no byte moves', async () => {
 });
 
 test('a refused transfer still names the file, without a digest, and the observation is sent', async () => {
-  const h = await started({ policy_version: 'b1', default_mode: 'm2' }, { attachmentCapacityBytes: 16 });
+  const h = await started({ version: 'b1', tenant_default_mode: 'm2' }, { attachmentCapacityBytes: 16 });
   attachTab(h, TAB, [FILE]);
   await submit(h);
   await waitFor(() => observations(h).length === 1, { label: 'the observation' });
@@ -109,7 +109,7 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '
 const GO_PRESENT = spawnSync('go', ['version'], { encoding: 'utf8' }).status === 0;
 
 test('the transfer decodes with the real Go protocol types and matches the observation', { skip: GO_PRESENT ? false : 'no Go toolchain on PATH' }, async () => {
-  const h = await started({ policy_version: 'b1', default_mode: 'm2' });
+  const h = await started({ version: 'b1', tenant_default_mode: 'm2' });
   attachTab(h, TAB, [FILE]);
   await submit(h);
   await waitFor(() => observations(h).length === 1, { label: 'the observation' });

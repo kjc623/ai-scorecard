@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -47,9 +48,16 @@ type Memory struct {
 	scopeOverrides  map[string]map[string]string
 	retention       map[string]map[string]int
 	contentSearch   map[string]string
+	tlsInspection   map[string]bool
 	toolState       map[string]map[string]string
 	catalogueTools  []store.ToolDecision
 	deviceModes     map[string]string
+	endpoint        map[string]*store.EndpointCollectors
+	endpointTools   map[string]map[string]store.EndpointTool
+	rules           map[string][]store.EnforcementRule
+	killSwitches    map[string][]store.KillSwitch
+	dataClasses     []string
+	catalog         []store.CatalogApp
 }
 
 var _ store.Store = (*Memory)(nil)
@@ -77,10 +85,17 @@ func New() *Memory {
 		scopeOverrides:    map[string]map[string]string{},
 		retention:         map[string]map[string]int{},
 		contentSearch:     map[string]string{},
+		tlsInspection:     map[string]bool{},
 		toolState:         map[string]map[string]string{},
 		deviceModes:       map[string]string{},
+		endpoint:          map[string]*store.EndpointCollectors{},
+		endpointTools:     map[string]map[string]store.EndpointTool{},
+		rules:             map[string][]store.EnforcementRule{},
+		killSwitches:      map[string][]store.KillSwitch{},
+		dataClasses: []string{"credential", "customer_pii", "government_id", "health", "legal_commercial",
+			"payment_card", "source_code"},
 	}
-	for _, c := range []string{"capture_extension", "egress_proxy", "loopback_broker", "cli_shim", "process_detector", "classifier_host"} {
+	for _, c := range []string{"capture_extension", "egress_proxy", "loopback_broker", "cli_shim", "process_detector", "classifier_host", "desktop_proxy"} {
 		m.collectors[c] = true
 	}
 	return m
@@ -293,6 +308,14 @@ func (m *Memory) SetDeviceMode(tenantID, deviceID, mode string) {
 	m.deviceModes[key(tenantID, deviceID)] = mode
 }
 
+// SetCatalog replaces the app catalog, which starts empty. The policy read serves it in the order
+// given, as the SQL store serves ref.app's.
+func (m *Memory) SetCatalog(apps ...store.CatalogApp) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.catalog = copyCatalog(apps)
+}
+
 // SetCatalogueHosts replaces the tool catalogue's TLS hosts.
 func (m *Memory) SetCatalogueHosts(hosts ...string) {
 	m.mu.Lock()
@@ -305,6 +328,32 @@ func (m *Memory) SetScimSummary(tenantID string, users, groups int64, last time.
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.scimUsers[tenantID], m.scimGroups[tenantID], m.scimLast[tenantID] = users, groups, last
+}
+
+// DefaultEndpointSettings is what SQLEndpointSettings serves a tenant without rows.
+func DefaultEndpointSettings() store.EndpointSettings {
+	return store.EndpointSettings{
+		Collectors: store.EndpointCollectors{Inventory: true, Processes: true, Flows: true, OTel: true, Hooks: true},
+		Tools: map[string]store.EndpointTool{
+			"claude_code": {OTel: true, Hooks: true},
+			"codex":       {OTel: true, Hooks: true},
+			"copilot":     {OTel: true},
+			"cursor":      {Hooks: true},
+			"ollama":      {},
+		},
+	}
+}
+
+// endpointLocked is the tenant's endpoint settings with the defaults where it has no row.
+func (m *Memory) endpointLocked(tenantID string) store.EndpointSettings {
+	out := DefaultEndpointSettings()
+	if c := m.endpoint[tenantID]; c != nil {
+		out.Collectors = *c
+	}
+	for k, t := range m.endpointTools[tenantID] {
+		out.Tools[k] = t
+	}
+	return out
 }
 
 // Audits returns every audit row written.
@@ -687,7 +736,7 @@ func (m *Memory) PolicyInputs(_ context.Context, tenantID string) (store.PolicyI
 	}
 	in := store.PolicyInputs{Tenant: store.PolicyTenant{
 		TenantID: tenantID, Status: t.Status, IngestEnabled: t.IngestEnabled,
-		CeilingMode: ceiling, CollectionMode: requested,
+		CeilingMode: ceiling, CollectionMode: requested, TLSInspection: m.tlsInspection[tenantID],
 	}}
 	in.ScopeOverrides = map[string]string{}
 	for k, v := range m.scopeOverrides[tenantID] {
@@ -702,6 +751,17 @@ func (m *Memory) PolicyInputs(_ context.Context, tenantID string) (store.PolicyI
 		}
 	}
 	sort.Strings(in.InterceptionHosts)
+	in.Endpoint = m.endpointLocked(tenantID)
+	in.Rules = copyRules(m.rules[tenantID])
+	in.KillSwitches = append([]store.KillSwitch{}, m.killSwitches[tenantID]...)
+	in.SanctionedTools = []string{}
+	for fp, state := range m.toolState[tenantID] {
+		if state == "sanctioned" {
+			in.SanctionedTools = append(in.SanctionedTools, fp)
+		}
+	}
+	sort.Strings(in.SanctionedTools)
+	in.Catalog = copyCatalog(m.catalog)
 	return in, nil
 }
 
@@ -765,6 +825,7 @@ func (m *Memory) Settings(_ context.Context, tenantID string) (store.Settings, e
 		CollectionMode:    m.collectionModes[tenantID],
 		ScopeOverrides:    map[string]string{},
 		ContentSearch:     m.contentSearch[tenantID],
+		TLSInspection:     m.tlsInspection[tenantID],
 		RetentionDefaults: store.RetentionDefaults{EventDays: 90, ContentDays: 30},
 	}
 	if out.ContentSearch == "" {
@@ -797,7 +858,50 @@ func (m *Memory) Settings(_ context.Context, tenantID string) (store.Settings, e
 			CollectionMode: m.deviceModes[key(tenantID, d.DeviceID)],
 		})
 	}
+	out.Endpoint = m.endpointLocked(tenantID)
+	out.DataClasses = append([]string(nil), m.dataClasses...)
+	out.AppCategories = []string{}
+	for _, a := range m.catalog {
+		if !slices.Contains(out.AppCategories, a.Category) {
+			out.AppCategories = append(out.AppCategories, a.Category)
+		}
+	}
+	sort.Strings(out.AppCategories)
+	out.KillSwitches = append([]store.KillSwitch{}, m.killSwitches[tenantID]...)
 	return out, nil
+}
+
+// SetKillSwitch implements store.Store. Like the table, a route holds one switch, the list is kept
+// in route order, and a re-trip keeps the time the switch came into effect.
+func (m *Memory) SetKillSwitch(_ context.Context, tenantID, route string, on bool, reasonCode string, audit store.AuditEntry) error {
+	if !slices.Contains(store.KillSwitchRoutes, route) {
+		return store.ErrUnknownKillSwitchRoute
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.tenants[tenantID]; !ok {
+		return store.ErrUnknownTenant
+	}
+	previous := m.killSwitches[tenantID]
+	next := []store.KillSwitch{}
+	effective := audit.OccurredAt.UTC()
+	for _, k := range previous {
+		if k.Route == route {
+			effective = k.EffectiveAt
+			continue
+		}
+		next = append(next, k)
+	}
+	after := map[string]any{"on": false}
+	if on {
+		next = append(next, store.KillSwitch{Route: route, ReasonCode: reasonCode, EffectiveAt: effective, SetBy: audit.ActorID})
+		after = map[string]any{"on": true, "reason_code": reasonCode}
+	}
+	sort.Slice(next, func(i, j int) bool { return next[i].Route < next[j].Route })
+	m.killSwitches[tenantID] = next
+	audit.Detail = merge(audit.Detail, map[string]any{"route": route, "previous": store.KillSwitchDetail(previous, route), "new": after})
+	m.audit(audit)
+	return nil
 }
 
 // SetCollectionMode implements store.Store.
@@ -909,6 +1013,20 @@ func (m *Memory) SetContentSearch(_ context.Context, tenantID, tier string, audi
 	return nil
 }
 
+// SetTLSInspection implements store.Store.
+func (m *Memory) SetTLSInspection(_ context.Context, tenantID string, enabled bool, audit store.AuditEntry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.tenants[tenantID]; !ok {
+		return store.ErrUnknownTenant
+	}
+	previous := m.tlsInspection[tenantID]
+	m.tlsInspection[tenantID] = enabled
+	audit.Detail = merge(audit.Detail, map[string]any{"previous": previous, "new": enabled})
+	m.audit(audit)
+	return nil
+}
+
 // SetToolSanction implements store.Store.
 func (m *Memory) SetToolSanction(_ context.Context, tenantID, fingerprint, state string, audit store.AuditEntry) error {
 	m.mu.Lock()
@@ -927,6 +1045,99 @@ func (m *Memory) SetToolSanction(_ context.Context, tenantID, fingerprint, state
 	audit.Detail = merge(audit.Detail, map[string]any{"tool_fingerprint": fingerprint, "previous": previous, "new": state})
 	m.audit(audit)
 	return nil
+}
+
+// SetEndpointCollectors implements store.Store.
+func (m *Memory) SetEndpointCollectors(_ context.Context, tenantID string, c store.EndpointCollectors, audit store.AuditEntry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.tenants[tenantID]; !ok {
+		return store.ErrUnknownTenant
+	}
+	previous := m.endpointLocked(tenantID).Collectors
+	m.endpoint[tenantID] = &c
+	audit.Detail = merge(audit.Detail, map[string]any{"previous": collectorsDetail(previous), "new": collectorsDetail(c)})
+	m.audit(audit)
+	return nil
+}
+
+// SetEndpointTool implements store.Store.
+func (m *Memory) SetEndpointTool(_ context.Context, tenantID, toolKey string, t store.EndpointTool, audit store.AuditEntry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !slices.Contains(store.EndpointToolKeys, toolKey) {
+		return store.ErrUnknownEndpointTool
+	}
+	if _, ok := m.tenants[tenantID]; !ok {
+		return store.ErrUnknownTenant
+	}
+	previous := m.endpointLocked(tenantID).Tools[toolKey]
+	if m.endpointTools[tenantID] == nil {
+		m.endpointTools[tenantID] = map[string]store.EndpointTool{}
+	}
+	m.endpointTools[tenantID][toolKey] = t
+	audit.Detail = merge(audit.Detail, map[string]any{"tool_key": toolKey,
+		"previous": store.ToolDetail(toolKey, previous), "new": store.ToolDetail(toolKey, t)})
+	m.audit(audit)
+	return nil
+}
+
+// EnforcementRules implements store.Store.
+func (m *Memory) EnforcementRules(_ context.Context, tenantID string) ([]store.EnforcementRule, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.tenants[tenantID]; !ok {
+		return nil, store.ErrUnknownTenant
+	}
+	return copyRules(m.rules[tenantID]), nil
+}
+
+// ReplaceEnforcementRules implements store.Store. Like the database's trigger, a label outside the
+// data classes refuses the whole list.
+func (m *Memory) ReplaceEnforcementRules(_ context.Context, tenantID string, rules []store.EnforcementRule, audit store.AuditEntry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.tenants[tenantID]; !ok {
+		return store.ErrUnknownTenant
+	}
+	for _, r := range rules {
+		for _, l := range r.Match.Labels {
+			if !slices.Contains(m.dataClasses, l) {
+				return store.ErrUnknownRuleLabel
+			}
+		}
+	}
+	previous := m.rules[tenantID]
+	m.rules[tenantID] = copyRules(rules)
+	audit.Detail = merge(audit.Detail, map[string]any{"previous": store.RulesDetail(previous), "new": store.RulesDetail(rules)})
+	m.audit(audit)
+	return nil
+}
+
+// copyRules copies a rule list with every match list non-nil, as the SQL store reads it back.
+func copyCatalog(apps []store.CatalogApp) []store.CatalogApp {
+	out := make([]store.CatalogApp, 0, len(apps))
+	for _, a := range apps {
+		a.Signals = append([]store.CatalogSignal{}, a.Signals...)
+		out = append(out, a)
+	}
+	return out
+}
+
+func copyRules(rules []store.EnforcementRule) []store.EnforcementRule {
+	out := make([]store.EnforcementRule, 0, len(rules))
+	list := func(v []string) []string { return append([]string{}, v...) }
+	for _, r := range rules {
+		r.Match = store.RuleMatch{Labels: list(r.Match.Labels), Tools: list(r.Match.Tools),
+			Categories: list(r.Match.Categories), Sanction: list(r.Match.Sanction), Routes: list(r.Match.Routes)}
+		out = append(out, r)
+	}
+	return out
+}
+
+func collectorsDetail(c store.EndpointCollectors) map[string]any {
+	return map[string]any{"inventory": c.Inventory, "processes": c.Processes, "flows": c.Flows,
+		"otel": c.OTel, "hooks": c.Hooks, "hooks_managed_only": c.HooksManagedOnly}
 }
 
 func modeRank(mode string) int {

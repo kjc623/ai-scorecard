@@ -120,16 +120,42 @@ CREATE TABLE ref.rule (
   description       text NOT NULL
 );
 
+-- The app catalog: the AI apps a device can find by what is installed or running on it. Devices
+-- receive it in the policy bundle and report a match as the fingerprint 'app:' || app_key.
+-- source_url names where the app's signals were verified.
+CREATE TABLE ref.app (
+  app_key       text PRIMARY KEY CHECK (app_key ~ '^[a-z][a-z0-9_]{1,63}$'),
+  display_name  text NOT NULL,
+  vendor        text NOT NULL,
+  category      text NOT NULL CHECK (category IN ('chat_assistant','coding_agent','ide_assistant',
+                  'ide','local_runtime','inference_api','ai_feature')),
+  source_url    text NOT NULL
+);
+
+-- What identifies an app on a device. An inference_domain is an exact host or, with a leading dot,
+-- a host suffix; a model_store may begin with %USERPROFILE% or ~, expanded per user.
+CREATE TABLE ref.app_signal (
+  app_key   text NOT NULL REFERENCES ref.app,
+  platform  text NOT NULL CHECK (platform IN ('windows','macos','linux','any')),
+  kind      text NOT NULL CHECK (kind IN ('windows_exe','windows_uninstall_name','windows_appx',
+              'macos_bundle_id','linux_package','publisher','cli_binary','npm_package',
+              'pipx_package','ide_extension_id','inference_domain','listen_port','model_store')),
+  value     text NOT NULL,
+  PRIMARY KEY (app_key, platform, kind, value)
+);
+
 -- The shared mapping from a behaviour-derived tool_fingerprint to a display name. Devices never
 -- emit a brand, only a fingerprint of what they observed; this table names the common ones. A
 -- tenant may override a name through ops.tool.display_name. signal_kind and evidence record how a
--- fingerprint was derived, so a row can be regenerated and reviewed.
+-- fingerprint was derived, so a row can be regenerated and reviewed. An `endpoint` row is a catalog
+-- app's fingerprint and names its app_key.
 CREATE TABLE ref.tool_catalogue (
   tool_fingerprint  text PRIMARY KEY,
   display_name      text NOT NULL,
   vendor            text,
-  signal_kind       text NOT NULL CHECK (signal_kind IN ('tls','process','extension','other')),
-  evidence          jsonb NOT NULL DEFAULT '{}'::jsonb
+  signal_kind       text NOT NULL CHECK (signal_kind IN ('tls','process','extension','other','endpoint')),
+  evidence          jsonb NOT NULL DEFAULT '{}'::jsonb,
+  app_key           text REFERENCES ref.app
 );
 
 -- Which of two observations of one submission wins. LOWER RANK IS BETTER, and the rank is about the
@@ -209,6 +235,10 @@ CREATE TABLE ops.tenant (
   status_changed_at            timestamptz,
   created_at                   timestamptz NOT NULL DEFAULT now(),
   updated_at                   timestamptz NOT NULL DEFAULT now(),
+  -- Whether devices intercept TLS: the local proxy, the CLI shim's proxy and CA environment, the
+  -- Windows desktop-app PAC and the per-device root in the trust store. Set by an admin on the
+  -- Settings page and delivered as the bundle's interception.enabled.
+  tls_inspection               boolean NOT NULL DEFAULT false,
   -- A search tier is a capability over data the tenant can collect: filenames cross at M1, prompt
   -- text only at M3.
   CONSTRAINT tenant_search_tier_requires_collection_mode
@@ -412,6 +442,68 @@ CREATE TABLE ops.retention_policy (
   updated_by       text NOT NULL,
   updated_at       timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (tenant_id, applies_to, data_class, collection_mode)
+);
+
+-- The tenant's endpoint collector switches, set on the Settings page and delivered in the policy
+-- bundle's endpoint section. A tenant without a row is served these defaults: the policy read
+-- applies them, so no row is inserted for a tenant that never changed a switch.
+CREATE TABLE ops.endpoint_setting (
+  tenant_id          uuid PRIMARY KEY REFERENCES ops.tenant(tenant_id),
+  inventory          boolean NOT NULL DEFAULT true,
+  processes          boolean NOT NULL DEFAULT true,
+  flows              boolean NOT NULL DEFAULT true,
+  otel               boolean NOT NULL DEFAULT true,
+  hooks              boolean NOT NULL DEFAULT true,
+  -- Tools run only the hooks the agent manages, not a user's own.
+  hooks_managed_only boolean NOT NULL DEFAULT false
+);
+
+-- Per-tool native collectors. A tool's switch takes effect only while the collector it names is on
+-- in ops.endpoint_setting. A tool without a row is served its defaults by the policy read: each
+-- collector the tool supports is on. Ollama has no native collector: its one switch, loopback, has
+-- the device move Ollama to another port and hold Ollama's own port with the loopback broker.
+CREATE TABLE ops.endpoint_tool_setting (
+  tenant_id  uuid NOT NULL REFERENCES ops.tenant(tenant_id),
+  tool_key   text NOT NULL CHECK (tool_key IN ('claude_code','codex','copilot','cursor','ollama')),
+  otel       boolean NOT NULL,
+  hooks      boolean NOT NULL,
+  loopback   boolean NOT NULL DEFAULT false,
+  PRIMARY KEY (tenant_id, tool_key)
+);
+
+-- The tenant's enforcement rules, in order, delivered in the policy bundle's rules list. The device
+-- applies the first rule whose every non-empty match list matches. The list is replaced as a whole,
+-- so position is dense from 0. A label must be a ref.data_class code (ops.enforce_rule_labels).
+CREATE TABLE ops.enforcement_rule (
+  tenant_id   uuid NOT NULL REFERENCES ops.tenant(tenant_id),
+  position    int NOT NULL CHECK (position >= 0),
+  rule_id     text NOT NULL CHECK (rule_id ~ '^[a-z][a-z0-9_.-]{0,127}$'),
+  action      text NOT NULL CHECK (action IN ('allow','warn','block')),
+  match       jsonb NOT NULL DEFAULT '{}'::jsonb,
+  message     text NOT NULL DEFAULT '' CHECK (char_length(message) <= 280),
+  link        text CHECK (link LIKE 'https://_%'),
+  updated_by  text NOT NULL,
+  updated_at  timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, rule_id),
+  CONSTRAINT enforcement_rule_position_unique UNIQUE (tenant_id, position),
+  -- match holds only the five match lists, each an array of strings.
+  CONSTRAINT enforcement_rule_match_shape CHECK (
+    jsonb_typeof(match) = 'object'
+    AND match - ARRAY['labels','tools','categories','sanction','routes'] = '{}'::jsonb
+    AND NOT jsonb_path_exists(match, 'strict $.* ? (@.type() != "array")')
+    AND NOT jsonb_path_exists(match, 'strict $.*[*] ? (@.type() != "string")', '{}', true))
+);
+
+-- The tenant's tripped kill switches, one per interception route, set on the Settings page and
+-- delivered in the policy bundle's kill_switches. From effective_at the devices stop decrypting and
+-- enforcing on that route and carry its traffic unread. Clearing a switch deletes its row.
+CREATE TABLE ops.kill_switch (
+  tenant_id     uuid NOT NULL REFERENCES ops.tenant(tenant_id),
+  route         text NOT NULL CHECK (route IN ('proxy.tls','proxy.loopback')),
+  reason_code   text NOT NULL CHECK (reason_code ~ '^[a-z][a-z0-9_.-]{0,63}$'),
+  effective_at  timestamptz NOT NULL DEFAULT now(),
+  set_by        text NOT NULL,
+  PRIMARY KEY (tenant_id, route)
 );
 
 -- The append-only audit log: every read of subject-level data, mode change, content grant, content
@@ -1062,7 +1154,7 @@ CREATE TABLE ingest.observation (
   subject_name      text,
   tool_fingerprint  text NOT NULL,
   direction         text NOT NULL CHECK (direction IN ('egress','ingress','none')),
-  kind              text NOT NULL CHECK (kind IN ('prompt','usage_rollup','model_detection')),
+  kind              text NOT NULL CHECK (kind IN ('prompt','usage_rollup','discovery','agent_activity')),
   -- What the device decided this prompt is, from the shape of the request: text a person typed
   -- ('user'), a request the client made for itself ('client_generated'), or undecided ('unknown').
   -- Present on prompts at M1 and above; NULL otherwise, which reads as 'unknown'.
@@ -1083,13 +1175,30 @@ CREATE TABLE ingest.observation (
   window_end        timestamptz,
   submission_count  bigint CHECK (submission_count >= 0),
   bytes_total       bigint CHECK (bytes_total >= 0),
-  detection_basis   text CHECK (detection_basis IN ('process_scan','endpoint_security','etw','module_signature')),
+  detection_basis   text CHECK (detection_basis IN ('installed_scan','package_scan','extension_scan','process_event','model_store','port_listen','flow_metadata')),
   dedup_key         text NOT NULL CHECK (dedup_key ~ '^sha256:[0-9a-f]{64}$'),
   schema_version    text NOT NULL,
   ingested_at       timestamptz NOT NULL DEFAULT now(),
   -- Materialised at write time from ops.retention_policy, so a later policy change does not
   -- retroactively apply to data collected under a different one.
   expires_at        timestamptz NOT NULL,
+  -- The columns below follow expires_at because migrations append columns: a migrated table and
+  -- one built from this file then have the same column order.
+  -- What a discovery found on the device.
+  discovery_type    text CHECK (discovery_type IN ('app_installed','app_running','cli_installed','ide_extension','local_model','inference_connection')),
+  app_version       text,
+  publisher         text,
+  host_app          text,
+  destination_host  text,
+  model_names       text[],
+  -- One model request or tool call, as the agent's own telemetry reports it.
+  activity_type     text CHECK (activity_type IN ('model_request','tool_call')),
+  model             text,
+  input_tokens      bigint CHECK (input_tokens >= 0),
+  output_tokens     bigint CHECK (output_tokens >= 0),
+  duration_ms       bigint CHECK (duration_ms >= 0),
+  tool_name         text,
+  outcome           text CHECK (outcome IN ('success','error','denied')),
   PRIMARY KEY (tenant_id, event_id),
   FOREIGN KEY (tenant_id, device_id) REFERENCES ops.device(tenant_id, device_id),
 
@@ -1114,31 +1223,52 @@ CREATE TABLE ingest.observation (
     CHECK (kind <> 'prompt' OR (
       direction = 'egress' AND size_bytes IS NOT NULL AND policy_decision IS NOT NULL
       AND window_start IS NULL AND window_end IS NULL AND submission_count IS NULL
-      AND bytes_total IS NULL AND detection_basis IS NULL)),
+      AND bytes_total IS NULL AND detection_basis IS NULL
+      AND discovery_type IS NULL AND app_version IS NULL AND publisher IS NULL
+      AND host_app IS NULL AND destination_host IS NULL AND model_names IS NULL
+      AND activity_type IS NULL AND model IS NULL AND input_tokens IS NULL
+      AND output_tokens IS NULL AND duration_ms IS NULL AND tool_name IS NULL AND outcome IS NULL)),
   CONSTRAINT observation_rollup_shape
     CHECK (kind <> 'usage_rollup' OR (
       direction = 'none' AND window_start IS NOT NULL AND window_end IS NOT NULL
       AND submission_count IS NOT NULL AND bytes_total IS NOT NULL
       AND content_digest IS NULL AND labels IS NULL AND classifier_version IS NULL
       AND content_excerpt IS NULL AND policy_decision IS NULL AND size_bytes IS NULL
-      AND detection_basis IS NULL AND prompt_kind IS NULL)),
-  CONSTRAINT observation_detection_shape
-    CHECK (kind <> 'model_detection' OR (
-      direction = 'none' AND detection_basis IS NOT NULL
+      AND detection_basis IS NULL AND prompt_kind IS NULL
+      AND discovery_type IS NULL AND app_version IS NULL AND publisher IS NULL
+      AND host_app IS NULL AND destination_host IS NULL AND model_names IS NULL
+      AND activity_type IS NULL AND model IS NULL AND input_tokens IS NULL
+      AND output_tokens IS NULL AND duration_ms IS NULL AND tool_name IS NULL AND outcome IS NULL)),
+  CONSTRAINT observation_discovery_shape
+    CHECK (kind <> 'discovery' OR (
+      direction = 'none' AND discovery_type IS NOT NULL AND detection_basis IS NOT NULL
       AND content_digest IS NULL AND labels IS NULL AND classifier_version IS NULL
-      AND content_excerpt IS NULL AND policy_decision IS NULL AND size_bytes IS NULL
+      AND content_excerpt IS NULL AND confidence IS NULL AND prompt_kind IS NULL
+      AND policy_decision IS NULL AND size_bytes IS NULL
       AND window_start IS NULL AND window_end IS NULL AND submission_count IS NULL
-      AND bytes_total IS NULL AND prompt_kind IS NULL))
+      AND bytes_total IS NULL
+      AND activity_type IS NULL AND model IS NULL AND input_tokens IS NULL
+      AND output_tokens IS NULL AND duration_ms IS NULL AND tool_name IS NULL AND outcome IS NULL)),
+  CONSTRAINT observation_activity_shape
+    CHECK (kind <> 'agent_activity' OR (
+      direction = 'none' AND activity_type IS NOT NULL
+      AND content_digest IS NULL AND labels IS NULL AND classifier_version IS NULL
+      AND content_excerpt IS NULL AND confidence IS NULL AND prompt_kind IS NULL
+      AND policy_decision IS NULL
+      AND window_start IS NULL AND window_end IS NULL AND submission_count IS NULL
+      AND bytes_total IS NULL AND detection_basis IS NULL
+      AND discovery_type IS NULL AND app_version IS NULL AND publisher IS NULL
+      AND host_app IS NULL AND destination_host IS NULL AND model_names IS NULL))
 );
 
 -- The expire job deletes per tenant by expires_at.
 CREATE INDEX observation_expiry ON ingest.observation (tenant_id, expires_at);
 
 -- The dedup key for an observation without a content digest (M0, a canvas UI, a WebSocket session,
--- a rollup, a detection): tenant, device, tool, kind, a 300-second bucket and the payload size. The
--- server derives it, so independently written collectors agree. `kind` is part of it because
--- rollups and detections carry no size: without it, a rollup and a detection of one tool in one
--- bucket would collapse into one record.
+-- a rollup, a discovery, an agent activity): tenant, device, tool, kind, a 300-second bucket and the
+-- payload size. The server derives it, so independently written collectors agree. `kind` is part of
+-- it because rollups and discoveries carry no size: without it, a rollup and a discovery of one tool
+-- in one bucket would collapse into one record.
 CREATE FUNCTION ingest.weak_dedup_key(
   p_tenant uuid, p_device uuid, p_tool text, p_kind text, p_occurred timestamptz, p_size bigint
 ) RETURNS text
@@ -1166,8 +1296,8 @@ CREATE TABLE ingest.submission (
   submission_id      uuid NOT NULL,
   dedup_key          text CHECK (dedup_key ~ '^sha256:[0-9a-f]{64}$'),
   dedup_weak_key     text NOT NULL CHECK (dedup_weak_key ~ '^sha256:[0-9a-f]{64}$'),
-  kind               text NOT NULL CHECK (kind IN ('prompt','usage_rollup','model_detection')),
-  -- The winning observation's request kind; NULL for rollups, detections and M0 prompts, read as
+  kind               text NOT NULL CHECK (kind IN ('prompt','usage_rollup','discovery','agent_activity')),
+  -- The winning observation's request kind; NULL for every other kind and for M0 prompts, read as
   -- 'unknown'. A 'client_generated' submission is never indexed for prompt-text search.
   prompt_kind        text CHECK (prompt_kind IS NULL OR (prompt_kind IN ('user','client_generated','unknown') AND kind = 'prompt')),
   device_id          uuid NOT NULL,
@@ -1635,6 +1765,32 @@ CREATE TRIGGER scope_overrides_within_requested
   BEFORE INSERT OR UPDATE OF collection_mode, ceiling_mode, scope_overrides ON ops.tenant
   FOR EACH ROW EXECUTE FUNCTION ops.enforce_scope_overrides();
 
+-- An enforcement rule's labels are classifier classes: a label outside ref.data_class could never
+-- match, so the rule is refused rather than stored silently inert.
+CREATE FUNCTION ops.enforce_rule_labels() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+  v_label text;
+BEGIN
+  -- A labels value that is not an array is left to the match shape CHECK.
+  IF jsonb_typeof(NEW.match->'labels') IS DISTINCT FROM 'array' THEN
+    RETURN NEW;
+  END IF;
+  SELECT l INTO v_label
+    FROM jsonb_array_elements_text(NEW.match->'labels') AS l
+   WHERE NOT EXISTS (SELECT 1 FROM ref.data_class c WHERE c.class_code = l)
+   LIMIT 1;
+  IF FOUND THEN
+    RAISE EXCEPTION 'enforcement rule % names label % outside ref.data_class', NEW.rule_id, v_label
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'enforcement_rule_labels_known';
+  END IF;
+  RETURN NEW;
+END $$;
+
+CREATE TRIGGER enforcement_rule_labels_known
+  BEFORE INSERT OR UPDATE OF match ON ops.enforcement_rule
+  FOR EACH ROW EXECUTE FUNCTION ops.enforce_rule_labels();
+
 -- The audit hash chain: each row hashes its predecessor in the same tenant. The per-tenant advisory
 -- lock stops two concurrent writers from reading the same predecessor and forking the chain.
 CREATE FUNCTION ops.audit_chain() RETURNS trigger
@@ -1850,7 +2006,9 @@ BEGIN
     occurred_at, received_at, monotonic_offset_ms, source, confidence, collection_mode,
     size_bytes, content_digest, labels, classifier_version, content_excerpt, policy_decision,
     window_start, window_end, submission_count, bytes_total, detection_basis,
-    prompt_kind, dedup_key, schema_version, expires_at
+    prompt_kind, dedup_key, schema_version, expires_at,
+    discovery_type, app_version, publisher, host_app, destination_host, model_names,
+    activity_type, model, input_tokens, output_tokens, duration_ms, tool_name, outcome
   )
   VALUES (
     v_tenant,
@@ -1881,7 +2039,21 @@ BEGIN
     nullif(p_envelope->>'prompt_kind', ''),
     p_envelope->>'dedup_key',
     p_envelope->>'schema_version',
-    p_received_at + make_interval(days => v_ttl)
+    p_received_at + make_interval(days => v_ttl),
+    p_envelope->>'discovery_type',
+    p_envelope->>'app_version',
+    p_envelope->>'publisher',
+    p_envelope->>'host_app',
+    p_envelope->>'destination_host',
+    CASE WHEN jsonb_typeof(p_envelope->'model_names') = 'array'
+         THEN ARRAY(SELECT jsonb_array_elements_text(p_envelope->'model_names')) END,
+    p_envelope->>'activity_type',
+    p_envelope->>'model',
+    (p_envelope->>'input_tokens')::bigint,
+    (p_envelope->>'output_tokens')::bigint,
+    (p_envelope->>'duration_ms')::bigint,
+    p_envelope->>'tool_name',
+    p_envelope->>'outcome'
   )
   ON CONFLICT (tenant_id, event_id) DO NOTHING;
 
@@ -2028,6 +2200,7 @@ DECLARE
     -- ops
     'ops.user_dim', 'ops.device', 'ops.device_credential', 'ops.collector_state',
     'ops.policy_bundle', 'ops.tool', 'ops.notice_acknowledgement', 'ops.retention_policy',
+    'ops.endpoint_setting', 'ops.endpoint_tool_setting', 'ops.enforcement_rule', 'ops.kill_switch',
     'ops.audit', 'ops.grant', 'ops.content', 'ops.retrieval_grant', 'ops.finding_review',
     'ops.erasure_receipt', 'ops.export', 'ops.erasure_request',
     'ops.aggregate_watermark', 'ops.coverage_snapshot',
@@ -2116,8 +2289,13 @@ GRANT EXECUTE ON FUNCTION ops.current_tenant() TO sac_ingest;
 GRANT SELECT, INSERT, UPDATE ON ops.tenant, ops.user_dim, ops.device, ops.device_credential,
       ops.collector_state, ops.policy_bundle, ops.tool, ops.notice_acknowledgement,
       ops.retention_policy, ops.grant, ops.coverage_snapshot, ops.finding_review,
-      ops.subscription
+      ops.subscription, ops.endpoint_setting, ops.endpoint_tool_setting
   TO sac_control;
+-- The enforcement rules are replaced as a whole list: the old rows are deleted and the new inserted
+-- in one transaction.
+GRANT SELECT, INSERT, DELETE ON ops.enforcement_rule TO sac_control;
+-- A kill switch is tripped (inserted), given a new reason (updated) and cleared (deleted).
+GRANT SELECT, INSERT, UPDATE, DELETE ON ops.kill_switch TO sac_control;
 -- Deciding a content grant reads the tenant's budget; a stored upload adds its bytes to the day's
 -- content counter and to nothing else.
 GRANT SELECT ON ops.usage_daily TO sac_control;
@@ -2133,8 +2311,9 @@ GRANT SELECT (tenant_id, submission_id, device_id, user_ref, tool_fingerprint, c
 GRANT INSERT ON ops.audit TO sac_control;
 GRANT SELECT ON ref.data_class, ref.route_fidelity, ref.collector, ref.retention_class, ref.rule
   TO sac_control;
--- The policy bundle's interception hosts come from the catalogue's TLS destinations.
-GRANT SELECT ON ref.tool_catalogue TO sac_control;
+-- The policy bundle's interception hosts come from the catalogue's TLS destinations, and its app
+-- catalog from ref.app and ref.app_signal.
+GRANT SELECT ON ref.tool_catalogue, ref.app, ref.app_signal TO sac_control;
 GRANT EXECUTE ON FUNCTION ops.current_tenant(), ops.mode_rank(text) TO sac_control;
 -- Credentials the audit trail may name (invites, SCIM tokens, deployment keys, connections) are
 -- revoked or disabled, never deleted. DELETE is granted only where removing the row is the
@@ -2221,7 +2400,7 @@ GRANT SELECT ON ops.tenant, ops.user_dim, ops.device, ops.collector_state, ops.t
       ops.retention_policy, ops.notice_acknowledgement, ops.policy_bundle,
       ops.subscription, ops.usage_daily TO sac_query;
 GRANT SELECT ON ref.data_class, ref.rule, ref.route_fidelity, ref.collector TO sac_query;
-GRANT SELECT ON ref.tool_catalogue TO sac_query;
+GRANT SELECT ON ref.tool_catalogue, ref.app, ref.app_signal TO sac_query;
 GRANT INSERT, SELECT ON ops.audit TO sac_query;
 GRANT SELECT, INSERT, UPDATE ON ops.finding_review TO sac_query;
 -- A tool sanction decision commits with its audit entry, beside the read that shows it.
@@ -2278,13 +2457,17 @@ INSERT INTO ref.data_class (class_code, category, description, default_severity,
 
 -- Route fidelity. Lower rank wins.
 INSERT INTO ref.route_fidelity (source, fidelity_rank, yields_content, description) VALUES
+  ('tool.hook',         5, true,  'The tool''s own hook, handed the prompt by the tool itself before it is sent. Exactly what the user submitted, with no reconstruction.'),
   ('ext.page_context', 10, true,  'Extension reading the user-authored payload and attachment bytes in page context, before serialisation. It sees what the user composed, not what the transport did with it.'),
+  ('tool.otel',        15, true,  'The tool''s own OpenTelemetry export, received on the device. Structured by the tool; prompt text is present only when the tool is configured to export it.'),
   ('cli.shim',         20, true,  'Call-site capture from a managed shell environment. Structured arguments rather than a parsed HTTP body, so no reconstruction is involved.'),
   ('proxy.loopback',   30, true,  'Local inference broker observing plaintext HTTP on the loopback interface. Nothing is decrypted and no framing is guessed; coverage is narrow.'),
   ('ext.web_request',  40, true,  'Extension reading the request body as sent. Accurate for the wire form, which may differ from the composed form in encoding and whitespace.'),
   ('proxy.tls',        50, true,  'Egress proxy terminating TLS and reading the HTTP body. The prompt is reconstructed from a provider-specific serialisation, so encoding differences can defeat canonicalisation.'),
   ('ext.dom',          60, true,  'DOM-derived observation, used where the request is not observable. Best-effort: some browser UIs render outside normal DOM structures.'),
-  ('proc.detect',      70, false, 'Process and module observation only. Establishes that a model ran; carries no content.');
+  ('proc.detect',      70, false, 'Process and module observation only. Establishes that a model ran; carries no content.'),
+  ('inv.scan',         75, false, 'Inventory of installed applications, CLIs, IDE extensions and local models. Establishes that a tool is present; carries no content.'),
+  ('net.flow',         80, false, 'Connection metadata only: the host a process connected to. Establishes that a tool was used; carries no content.');
 
 -- Collection components. modes_supported is what each can achieve, not what it is configured to do.
 INSERT INTO ref.collector (collector_code, component, modes_supported, description) VALUES
@@ -2292,8 +2475,18 @@ INSERT INTO ref.collector (collector_code, component, modes_supported, descripti
   ('egress_proxy',      'capture_core',      ARRAY['m0','m1','m2','m3'], 'Local TLS-terminating proxy, for clients that honour the system proxy settings.'),
   ('loopback_broker',   'capture_core',      ARRAY['m0','m1','m2','m3'], 'Local inference broker holding the well-known loopback ports of local model runtimes.'),
   ('cli_shim',          'capture_core',      ARRAY['m0','m1','m2','m3'], 'Managed shell profile and environment for proxy and trust: coding agents and SDKs.'),
+  ('desktop_proxy',     'capture_core',      ARRAY['m0','m1','m2','m3'], 'Per-user proxy auto-config (PAC) that routes the AI traffic of Windows desktop apps through the local TLS proxy.'),
   ('process_detector',  'capture_core',      ARRAY['m0'],                'Process and loaded-module observation. Detection only: establishes that a model ran, never what was said to it.'),
-  ('classifier_host',   'classifier_host',   ARRAY['m1','m2','m3'],      'Sandboxed classification host. Not a collection path; its health is reported like a collector''s.');
+  ('otel_receiver',     'capture_core',      ARRAY['m0','m1','m2','m3'], 'Loopback OTLP receiver for the telemetry AI tools export about themselves, authenticated by a per-device token.'),
+  ('hook_relay',        'capture_core',      ARRAY['m0','m1','m2','m3'], 'Relay for the hooks AI tools run before sending a prompt: decides allow, warn or block on the device and records the prompt.'),
+  ('inventory_scanner', 'capture_core',      ARRAY['m0','m1','m2','m3'], 'Scheduled scan of the installed applications (uninstall entries and AppX/MSIX packages), matched against the app catalog. Establishes that a tool is present; reads no content.'),
+  ('flow_monitor',      'capture_core',      ARRAY['m0','m1','m2','m3'], 'The operating system''s DNS answers and TCP connect events: which process connected to a catalog inference domain. Connection metadata only; reads no payload.'),
+  ('classifier_host',   'classifier_host',   ARRAY['m1','m2','m3'],      'Sandboxed classification host. Not a collection path; its health is reported like a collector''s.'),
+  ('user_helper',       'capture_core',      ARRAY[]::text[],            'Helper process in each signed-in user session, which shows that user the agent''s notifications. Not a collection path; it reads nothing.'),
+  ('tool_config_claude_code', 'capture_core',  ARRAY[]::text[],            'Writes Claude Code''s machine-wide managed settings so it exports its telemetry to the OTLP receiver. Not a collection path; it reads nothing.'),
+  ('tool_config_copilot', 'capture_core',      ARRAY[]::text[],            'Writes VS Code''s machine policies for the Copilot extension and the Copilot CLI''s machine environment variables so both export their telemetry to the OTLP receiver. Not a collection path; it reads nothing.'),
+  ('tool_config_cursor', 'capture_core',       ARRAY[]::text[],            'Writes the agent''s hooks into Cursor''s enterprise hooks file so its prompts and MCP calls reach the hook relay. Not a collection path; it reads nothing.'),
+  ('tool_config_codex', 'capture_core',        ARRAY[]::text[],            'Writes the agent''s prompt hook into the Codex CLI''s system requirements file so its prompts reach the hook relay. Not a collection path; it reads nothing.');
 
 INSERT INTO ref.retention_class (retention_class, default_ttl_days, description) VALUES
   ('standard',   90,  'Default for event metadata.'),
@@ -2367,6 +2560,148 @@ INSERT INTO ref.tool_catalogue (tool_fingerprint, display_name, vendor, signal_k
   ('proc_lmstudio',        'LM Studio (local)', 'lmstudio',  'process', '{"image_signature":"lm studio"}'),
   ('proc_llama',           'llama.cpp (local)', 'llama.cpp', 'process', '{"image_signature":"llama.cpp"}'),
   ('proc_vllm',            'vLLM (local)',      'vllm',      'process', '{"image_signature":"vllm"}');
+
+-- The app catalog. Each signal was checked against its app's source_url or another published
+-- vendor or package-registry source; a signal that could not be checked is left out. The JetBrains
+-- uninstall names are the leading words of an entry named '<product> <version>'. Each app's
+-- endpoint fingerprint is a tool_catalogue row, so display names and sanction apply to it.
+INSERT INTO ref.app (app_key, display_name, vendor, category, source_url) VALUES
+  ('anthropic_api',      'Anthropic API', 'anthropic', 'inference_api',
+   'https://code.claude.com/docs/en/network-config'),
+  ('aws_bedrock',        'Amazon Bedrock', 'amazon', 'inference_api',
+   'https://github.com/boto/botocore/blob/develop/botocore/data/bedrock-runtime/2023-09-30/endpoint-rule-set-1.json'),
+  ('azure_ai_foundry',   'Azure AI Foundry', 'microsoft', 'inference_api',
+   'https://github.com/MicrosoftDocs/azure-ai-docs/blob/main/articles/foundry/foundry-models/includes/concepts-endpoints-2.md'),
+  ('chatgpt_desktop',    'ChatGPT Desktop', 'openai', 'chat_assistant',
+   'https://github.com/Homebrew/homebrew-cask/blob/main/Casks/c/chatgpt.rb'),
+  ('claude_code',        'Claude Code', 'anthropic', 'coding_agent',
+   'https://code.claude.com/docs/en/setup'),
+  ('claude_code_vscode', 'Claude Code for VS Code', 'anthropic', 'ide_assistant',
+   'https://code.claude.com/docs/en/vs-code'),
+  ('claude_desktop',     'Claude Desktop', 'anthropic', 'chat_assistant',
+   'https://code.claude.com/docs/en/desktop'),
+  ('codex',              'Codex CLI', 'openai', 'coding_agent',
+   'https://github.com/openai/codex'),
+  ('continue',           'Continue', 'continue', 'ide_assistant',
+   'https://github.com/continuedev/continue'),
+  ('copilot_cli',        'GitHub Copilot CLI', 'github', 'coding_agent',
+   'https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli'),
+  ('cursor',             'Cursor', 'cursor', 'ide',
+   'https://github.com/Homebrew/homebrew-cask/blob/main/Casks/c/cursor.rb'),
+  ('gemini_cli',         'Gemini CLI', 'google', 'coding_agent',
+   'https://github.com/google-gemini/gemini-cli'),
+  ('github_copilot',     'GitHub Copilot', 'github', 'ide_assistant',
+   'https://github.com/microsoft/vscode-copilot-chat'),
+  ('google_ai_api',      'Google AI API', 'google', 'inference_api',
+   'https://github.com/googleapis/python-genai/blob/main/google/genai/_api_client.py'),
+  ('jetbrains',          'JetBrains IDEs', 'jetbrains', 'ide',
+   'https://github.com/microsoft/winget-pkgs/tree/master/manifests/j/JetBrains'),
+  ('lm_studio',          'LM Studio', 'lmstudio', 'local_runtime',
+   'https://github.com/lmstudio-ai/docs'),
+  ('ollama',             'Ollama', 'ollama', 'local_runtime',
+   'https://github.com/ollama/ollama/blob/main/docs/faq.mdx'),
+  ('openai_api',         'OpenAI API', 'openai', 'inference_api',
+   'https://github.com/openai/openai-python'),
+  ('vscode',             'Visual Studio Code', 'microsoft', 'ide',
+   'https://github.com/microsoft/vscode-docs/blob/main/docs/setup/portable.md'),
+  ('windsurf',           'Windsurf', 'codeium', 'ide',
+   'https://github.com/microsoft/winget-pkgs/tree/master/manifests/c/Codeium/Windsurf');
+
+INSERT INTO ref.app_signal (app_key, platform, kind, value) VALUES
+  ('anthropic_api',      'any',     'inference_domain',       'api.anthropic.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.af-south-1.amazonaws.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.ap-east-1.amazonaws.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.ap-east-2.amazonaws.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.ap-northeast-1.amazonaws.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.ap-northeast-2.amazonaws.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.ap-northeast-3.amazonaws.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.ap-south-1.amazonaws.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.ap-south-2.amazonaws.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.ap-southeast-1.amazonaws.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.ap-southeast-2.amazonaws.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.ap-southeast-3.amazonaws.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.ap-southeast-4.amazonaws.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.ap-southeast-5.amazonaws.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.ap-southeast-6.amazonaws.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.ap-southeast-7.amazonaws.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.ca-central-1.amazonaws.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.ca-west-1.amazonaws.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.eu-central-1.amazonaws.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.eu-central-2.amazonaws.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.eu-north-1.amazonaws.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.eu-south-1.amazonaws.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.eu-south-2.amazonaws.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.eu-west-1.amazonaws.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.eu-west-2.amazonaws.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.eu-west-3.amazonaws.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.il-central-1.amazonaws.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.me-central-1.amazonaws.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.me-south-1.amazonaws.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.mx-central-1.amazonaws.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.sa-east-1.amazonaws.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.us-east-1.amazonaws.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.us-east-2.amazonaws.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.us-gov-east-1.amazonaws.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.us-gov-west-1.amazonaws.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.us-west-1.amazonaws.com'),
+  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.us-west-2.amazonaws.com'),
+  ('azure_ai_foundry',   'any',     'inference_domain',       '.models.ai.azure.com'),
+  ('azure_ai_foundry',   'any',     'inference_domain',       '.openai.azure.com'),
+  ('azure_ai_foundry',   'any',     'inference_domain',       '.services.ai.azure.com'),
+  ('chatgpt_desktop',    'any',     'inference_domain',       'chatgpt.com'),
+  ('chatgpt_desktop',    'macos',   'macos_bundle_id',        'com.openai.chat'),
+  ('chatgpt_desktop',    'macos',   'macos_bundle_id',        'com.openai.codex'),
+  ('claude_code',        'any',     'cli_binary',             'claude'),
+  ('claude_code',        'any',     'inference_domain',       'api.anthropic.com'),
+  ('claude_code',        'any',     'npm_package',            '@anthropic-ai/claude-code'),
+  ('claude_code',        'windows', 'windows_exe',            'claude.exe'),
+  ('claude_code_vscode', 'any',     'ide_extension_id',       'anthropic.claude-code'),
+  ('claude_desktop',     'any',     'inference_domain',       'claude.ai'),
+  ('claude_desktop',     'macos',   'macos_bundle_id',        'com.anthropic.claudefordesktop'),
+  ('claude_desktop',     'windows', 'publisher',              'Anthropic, PBC'),
+  ('claude_desktop',     'windows', 'windows_appx',           'Claude_pzs8sxrjxfjjc'),
+  ('codex',              'any',     'cli_binary',             'codex'),
+  ('codex',              'any',     'npm_package',            '@openai/codex'),
+  ('codex',              'windows', 'windows_exe',            'codex-aarch64-pc-windows-msvc.exe'),
+  ('codex',              'windows', 'windows_exe',            'codex-x86_64-pc-windows-msvc.exe'),
+  ('codex',              'windows', 'windows_exe',            'codex.exe'),
+  ('continue',           'any',     'ide_extension_id',       'continue.continue'),
+  ('copilot_cli',        'any',     'cli_binary',             'copilot'),
+  ('copilot_cli',        'any',     'npm_package',            '@github/copilot'),
+  ('cursor',             'macos',   'macos_bundle_id',        'com.todesktop.230313mzl4w4u92'),
+  ('cursor',             'windows', 'publisher',              'Anysphere'),
+  ('gemini_cli',         'any',     'cli_binary',             'gemini'),
+  ('gemini_cli',         'any',     'npm_package',            '@google/gemini-cli'),
+  ('github_copilot',     'any',     'ide_extension_id',       'github.copilot-chat'),
+  ('google_ai_api',      'any',     'inference_domain',       '.aiplatform.googleapis.com'),
+  ('google_ai_api',      'any',     'inference_domain',       'generativelanguage.googleapis.com'),
+  ('jetbrains',          'windows', 'publisher',              'JetBrains s.r.o.'),
+  ('jetbrains',          'windows', 'windows_uninstall_name', 'CLion'),
+  ('jetbrains',          'windows', 'windows_uninstall_name', 'DataGrip'),
+  ('jetbrains',          'windows', 'windows_uninstall_name', 'GoLand'),
+  ('jetbrains',          'windows', 'windows_uninstall_name', 'IntelliJ IDEA'),
+  ('jetbrains',          'windows', 'windows_uninstall_name', 'JetBrains Rider'),
+  ('jetbrains',          'windows', 'windows_uninstall_name', 'PhpStorm'),
+  ('jetbrains',          'windows', 'windows_uninstall_name', 'PyCharm'),
+  ('jetbrains',          'windows', 'windows_uninstall_name', 'RubyMine'),
+  ('jetbrains',          'windows', 'windows_uninstall_name', 'RustRover'),
+  ('jetbrains',          'windows', 'windows_uninstall_name', 'WebStorm'),
+  ('lm_studio',          'any',     'listen_port',            '1234'),
+  ('lm_studio',          'any',     'model_store',            '~/.lmstudio/models'),
+  ('ollama',             'any',     'listen_port',            '11434'),
+  ('ollama',             'linux',   'model_store',            '/usr/share/ollama/.ollama/models'),
+  ('ollama',             'macos',   'model_store',            '~/.ollama/models'),
+  ('ollama',             'windows', 'model_store',            '%USERPROFILE%\.ollama\models'),
+  ('ollama',             'windows', 'windows_exe',            'ollama app.exe'),
+  ('ollama',             'windows', 'windows_exe',            'ollama.exe'),
+  ('openai_api',         'any',     'inference_domain',       'api.openai.com'),
+  ('vscode',             'macos',   'macos_bundle_id',        'com.microsoft.VSCode'),
+  ('vscode',             'windows', 'publisher',              'Microsoft Corporation'),
+  ('vscode',             'windows', 'windows_exe',            'Code.exe'),
+  ('windsurf',           'windows', 'publisher',              'Codeium');
+
+INSERT INTO ref.tool_catalogue (tool_fingerprint, display_name, vendor, signal_kind, evidence, app_key)
+SELECT 'app:' || app_key, display_name, vendor, 'endpoint', '{}', app_key FROM ref.app;
 
 
 -- =====================================================================================

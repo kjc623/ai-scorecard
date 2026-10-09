@@ -1,0 +1,103 @@
+{
+  "resourceLogs": [
+    {
+      "resource": {
+        "attributes": [
+          {"key":"service.name","value":{"stringValue":"copilot-chat"}},
+          {"key":"service.version","value":{"stringValue":"0.70.0"}},
+          {"key":"session.id","value":{"stringValue":"b7e2d4a1-3c58-4f9e-a0d6-2e81c47f5b39"}}
+        ]
+      },
+      "scopeLogs": [
+        {
+          "scope": {"name":"copilot-chat","version":"0.70.0"},
+          "logRecords": [
+            {
+              "timeUnixNano": "1791460800002000000",
+              "observedTimeUnixNano": "1791460800002000000",
+              "traceId": "3d9b2e7f41c8a6052b1e9f7d4c3a8b60",
+              "spanId": "a1b2c3d4e5f60718",
+              "body": {
+                "stringValue": "copilot_chat.session.start"
+              },
+              "attributes": [
+                {"key":"event.name","value":{"stringValue":"copilot_chat.session.start"}},
+                {"key":"session.id","value":{"stringValue":"6a1f9c3e-2d47-4b85-9e60-c3a8f72d1b04"}},
+                {"key":"gen_ai.request.model","value":{"stringValue":"gpt-4.1"}},
+                {"key":"gen_ai.agent.name","value":{"stringValue":"GitHub Copilot Chat"}}
+              ]
+            },
+            {
+              "timeUnixNano": "1791460803100000000",
+              "observedTimeUnixNano": "1791460803100000000",
+              "traceId": "3d9b2e7f41c8a6052b1e9f7d4c3a8b60",
+              "spanId": "b2c3d4e5f6071829",
+              "body": {
+                "stringValue": "GenAI inference: gpt-4.1"
+              },
+              "attributes": [
+                {"key":"event.name","value":{"stringValue":"gen_ai.client.inference.operation.details"}},
+                {"key":"gen_ai.operation.name","value":{"stringValue":"chat"}},
+                {"key":"gen_ai.request.model","value":{"stringValue":"gpt-4.1"}},
+                {"key":"gen_ai.response.model","value":{"stringValue":"gpt-4.1-2025-04-14"}},
+                {"key":"gen_ai.response.id","value":{"stringValue":"chatcmpl-SAC0000000000000000000001"}},
+                {"key":"gen_ai.response.finish_reasons","value":{"arrayValue":{"values":[{"stringValue":"tool_calls"}]}}},
+                {"key":"gen_ai.usage.input_tokens","value":{"intValue":"9021"}},
+                {"key":"gen_ai.usage.output_tokens","value":{"intValue":"188"}},
+                {"key":"gen_ai.request.temperature","value":{"doubleValue":0.1}},
+                {"key":"gen_ai.request.max_tokens","value":{"intValue":"16384"}}
+              ]
+            },
+            {
+              "timeUnixNano": "1791460803101000000",
+              "observedTimeUnixNano": "1791460803101000000",
+              "traceId": "3d9b2e7f41c8a6052b1e9f7d4c3a8b60",
+              "spanId": "a1b2c3d4e5f60718",
+              "body": {
+                "stringValue": "copilot_chat.agent.turn: 0"
+              },
+              "attributes": [
+                {"key":"event.name","value":{"stringValue":"copilot_chat.agent.turn"}},
+                {"key":"turn.index","value":{"intValue":"0"}},
+                {"key":"gen_ai.usage.input_tokens","value":{"intValue":"9021"}},
+                {"key":"gen_ai.usage.output_tokens","value":{"intValue":"188"}},
+                {"key":"tool_call_count","value":{"intValue":"1"}}
+              ]
+            },
+            {
+              "timeUnixNano": "1791460803170000000",
+              "observedTimeUnixNano": "1791460803170000000",
+              "traceId": "3d9b2e7f41c8a6052b1e9f7d4c3a8b60",
+              "spanId": "c3d4e5f60718293a",
+              "body": {
+                "stringValue": "copilot_chat.tool.call: readFile"
+              },
+              "attributes": [
+                {"key":"event.name","value":{"stringValue":"copilot_chat.tool.call"}},
+                {"key":"gen_ai.tool.name","value":{"stringValue":"readFile"}},
+                {"key":"duration_ms","value":{"intValue":"50"}},
+                {"key":"success","value":{"boolValue":true}}
+              ]
+            },
+            {
+              "timeUnixNano": "1791460806010000000",
+              "observedTimeUnixNano": "1791460806010000000",
+              "traceId": "3d9b2e7f41c8a6052b1e9f7d4c3a8b60",
+              "spanId": "e5f60718293a4b5c",
+              "body": {
+                "stringValue": "copilot_chat.tool.call: mcp_issues_search_issues"
+              },
+              "attributes": [
+                {"key":"event.name","value":{"stringValue":"copilot_chat.tool.call"}},
+                {"key":"gen_ai.tool.name","value":{"stringValue":"mcp_issues_search_issues"}},
+                {"key":"duration_ms","value":{"intValue":"690"}},
+                {"key":"success","value":{"boolValue":false}},
+                {"key":"error.type","value":{"stringValue":"McpError"}}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

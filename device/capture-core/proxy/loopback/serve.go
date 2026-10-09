@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -14,7 +13,8 @@ import (
 	"time"
 
 	"github.com/shadow-ai-capture/device/capture-core/core"
-	"github.com/shadow-ai-capture/device/capture-core/dedup"
+	"github.com/shadow-ai-capture/device/capture-core/enforce"
+	"github.com/shadow-ai-capture/device/capture-core/parsers/targets"
 	"github.com/shadow-ai-capture/device/protocol"
 )
 
@@ -108,6 +108,13 @@ func (r *portRunner) handleConn(ctx context.Context, client net.Conn) {
 	defer client.Close()
 	b := r.broker
 
+	// A kill switch in force carries the connection as bytes: nothing is parsed, read, recorded or
+	// enforced, and the port stays held so the tool's clients keep reaching its server.
+	if b.killSwitchActive() {
+		r.tunnel(client)
+		return
+	}
+
 	br := bufio.NewReader(io.LimitReader(client, maxRequestBytes))
 	req, err := http.ReadRequest(br)
 	if err != nil {
@@ -131,11 +138,11 @@ func (r *portRunner) handleConn(ctx context.Context, client net.Conn) {
 
 	// Resolve the mode before any byte of the body is retained.
 	mode := r.currentSpec().Mode
-	if b.cfg.Pipeline != nil {
-		res := b.cfg.Pipeline.ResolveMode(core.ScopeQuery{
+	if r.cfg.Pipeline != nil {
+		res := r.cfg.Pipeline.ResolveMode(core.ScopeQuery{
 			ToolFingerprint: r.currentSpec().ToolFingerprint,
-			Population:      b.cfg.Agent.Population,
-			UserRef:         b.cfg.Agent.UserRef,
+			Population:      r.cfg.Agent.Population,
+			UserRef:         r.cfg.Agent.UserRef,
 		})
 		mode = res.Mode
 	}
@@ -143,12 +150,12 @@ func (r *portRunner) handleConn(ctx context.Context, client net.Conn) {
 	var buf *bodyBuffer
 	var body io.Reader = req.Body
 	if submission && mode.ReadsContent() {
-		buf = newBodyBuffer(b.cfg.BodyCap)
+		buf = newBodyBuffer(r.cfg.BodyCap)
 		body = io.TeeReader(req.Body, buf)
 	}
 	counted := &countingReader{r: body}
 
-	upstream, err := net.DialTimeout("tcp", r.upstreamAddr(), b.cfg.PreflightTimeout)
+	upstream, err := net.DialTimeout("tcp", r.upstreamAddr(), r.cfg.PreflightTimeout)
 	if err != nil {
 		// An upstream failure: the client gets the connection error it
 		// would have seen anyway. Closing without a response is that error; no response is
@@ -157,7 +164,7 @@ func (r *portRunner) handleConn(ctx context.Context, client net.Conn) {
 		return
 	}
 	defer upstream.Close()
-	_ = upstream.SetDeadline(time.Now().Add(2 * b.cfg.PreflightTimeout))
+	_ = upstream.SetDeadline(time.Now().Add(2 * r.cfg.PreflightTimeout))
 
 	outReq := req.Clone(ctx)
 	outReq.URL = &url.URL{Scheme: "http", Host: r.upstreamAddr(), Path: req.URL.Path, RawQuery: req.URL.RawQuery}
@@ -181,19 +188,51 @@ func (r *portRunner) handleConn(ctx context.Context, client net.Conn) {
 	_ = resp.Body.Close()
 	select {
 	case <-writeDone:
-	case <-time.After(2 * b.cfg.PreflightTimeout):
+	case <-time.After(2 * r.cfg.PreflightTimeout):
 		b.counters.Add(protocol.CounterErrors)
 	}
 	if werr != nil {
 		b.counters.Add(protocol.CounterErrors)
 		return
 	}
-	b.markSuccess(b.cfg.Clock())
+	b.markSuccess(r.cfg.Clock())
 
-	if !submission || b.cfg.Pipeline == nil {
+	if !submission || r.cfg.Pipeline == nil {
 		return
 	}
 	r.observe(ctx, req, counted.n, buf, mode)
+}
+
+// tunnel copies bytes between the client and the upstream in both directions until either side
+// closes, and counts the connection blind_tunnelled.
+func (r *portRunner) tunnel(client net.Conn) {
+	b := r.broker
+	upstream, err := net.DialTimeout("tcp", r.upstreamAddr(), r.cfg.PreflightTimeout)
+	if err != nil {
+		// The client sees the connection error it would have seen without the broker.
+		b.counters.Add(protocol.CounterErrors)
+		return
+	}
+	defer upstream.Close()
+	b.counters.Add(protocol.CounterBlindTunnelled)
+	b.markSuccess(r.cfg.Clock())
+	done := make(chan struct{}, 2)
+	go func() {
+		_, _ = io.Copy(upstream, client)
+		if c, ok := upstream.(*net.TCPConn); ok {
+			_ = c.CloseWrite()
+		}
+		done <- struct{}{}
+	}()
+	go func() {
+		_, _ = io.Copy(client, upstream)
+		if c, ok := client.(*net.TCPConn); ok {
+			_ = c.CloseWrite()
+		}
+		done <- struct{}{}
+	}()
+	<-done
+	<-done
 }
 
 // observe hands the request to the pipeline. The content reader is passed only when the body
@@ -210,24 +249,27 @@ func (r *portRunner) observe(ctx context.Context, req *http.Request, counted int
 	if buf != nil {
 		content = buf
 	}
+	tool := r.currentSpec().ToolFingerprint
+	extract := targets.Registry().For(req.Host, req.URL.Path)
+	// The request has been forwarded by now, so whatever a rule asks for is recorded as logged.
 	obs := core.Observation{
 		Route:           protocol.RouteProxyLoopback,
 		Kind:            protocol.KindPrompt,
-		ToolFingerprint: r.currentSpec().ToolFingerprint,
-		Population:      b.cfg.Agent.Population,
+		ToolFingerprint: tool,
+		Population:      r.cfg.Agent.Population,
 		MediaType:       req.Header.Get("Content-Type"),
-		OccurredAt:      b.cfg.Clock(),
+		OccurredAt:      r.cfg.Clock(),
 		SizeBytes:       size,
-		Decision:        b.cfg.Decide(r.currentSpec().ToolFingerprint),
+		Enforce:         enforce.Hook(r.cfg.Bundles, protocol.RouteProxyLoopback, tool, false),
 		Content:         content,
 		OverCap:         buf != nil && buf.overCap(),
-		Extract:         JSONExtractor{},
+		Extract:         extract,
 	}
 	// The monotonic offset is milliseconds since the broker started, which is an arbitrary but
 	// per-device-consistent origin: it gives intra-device ordering that survives clock changes.
 	obs.MonotonicOffsetMS = obs.OccurredAt.Sub(b.startedAt).Milliseconds()
 
-	out, err := b.cfg.Pipeline.Process(ctx, obs)
+	out, err := r.cfg.Pipeline.Process(ctx, obs)
 	switch {
 	case out.Reason == core.ReasonIdentityUnresolved:
 		// Fail-closed for identity: the request is forwarded, the envelope is not minted, and the
@@ -241,82 +283,7 @@ func (r *portRunner) observe(ctx context.Context, req *http.Request, counted int
 		b.setIdentityDetail(protocol.DetailNone)
 		b.counters.Add(protocol.CounterEmitted)
 	}
+	if extract.Panicked() {
+		b.counters.Add(protocol.CounterErrors)
+	}
 }
-
-// JSONExtractor is the route's text extraction for a JSON request body: the last user-role
-// message of `messages[]`, or a top-level `prompt`. A body it cannot interpret returns an error
-// so the observation degrades to the tier S surrogate instead of guessing which characters the
-// user authored.
-type JSONExtractor struct{}
-
-// Extract implements core.Extractor.
-func (JSONExtractor) Extract(payload []byte, mediaType string) (string, []dedup.Attachment, error) {
-	if len(payload) == 0 {
-		return "", nil, errNoExtraction
-	}
-	var body struct {
-		Prompt   string `json:"prompt"`
-		Messages []struct {
-			Role    string          `json:"role"`
-			Content json.RawMessage `json:"content"`
-		} `json:"messages"`
-		Input json.RawMessage `json:"input"`
-	}
-	if err := json.Unmarshal(payload, &body); err != nil {
-		return "", nil, errNoExtraction
-	}
-	if body.Prompt != "" {
-		return body.Prompt, nil, nil
-	}
-	for i := len(body.Messages) - 1; i >= 0; i-- {
-		if body.Messages[i].Role != "user" {
-			continue
-		}
-		if text, ok := decodeContent(body.Messages[i].Content); ok {
-			return text, nil, nil
-		}
-	}
-	if len(body.Input) > 0 {
-		if text, ok := decodeContent(body.Input); ok {
-			return text, nil, nil
-		}
-	}
-	return "", nil, errNoExtraction
-}
-
-// decodeContent accepts both the string form and the content-part array form, because both are
-// in the wild and both address the same authored text.
-func decodeContent(raw json.RawMessage) (string, bool) {
-	if len(raw) == 0 {
-		return "", false
-	}
-	var s string
-	if err := json.Unmarshal(raw, &s); err == nil {
-		return s, true
-	}
-	var parts []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
-	if err := json.Unmarshal(raw, &parts); err == nil {
-		var out string
-		for _, p := range parts {
-			if p.Type == "text" || p.Type == "input_text" {
-				if out != "" {
-					out += " "
-				}
-				out += p.Text
-			}
-		}
-		if out != "" {
-			return out, true
-		}
-	}
-	return "", false
-}
-
-var errNoExtraction = errExtraction("loopback: no user-authored segment identifiable in this body")
-
-type errExtraction string
-
-func (e errExtraction) Error() string { return string(e) }

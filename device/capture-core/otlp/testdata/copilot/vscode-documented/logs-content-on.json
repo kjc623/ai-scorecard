@@ -1,0 +1,249 @@
+{
+  "resourceLogs": [
+    {
+      "resource": {
+        "attributes": [
+          {"key":"service.name","value":{"stringValue":"copilot-chat"}},
+          {"key":"service.version","value":{"stringValue":"0.70.0"}},
+          {"key":"session.id","value":{"stringValue":"b7e2d4a1-3c58-4f9e-a0d6-2e81c47f5b39"}},
+          {"key":"process.user.name","value":{"stringValue":"SAC-PLACEHOLDER-2"}},
+          {"key":"host.name","value":{"stringValue":"SAC-PLACEHOLDER-3"}}
+        ]
+      },
+      "scopeLogs": [
+        {
+          "scope": {"name":"copilot-chat","version":"0.70.0"},
+          "logRecords": [
+            {
+              "timeUnixNano": "1791460800002000000",
+              "observedTimeUnixNano": "1791460800002000000",
+              "traceId": "3d9b2e7f41c8a6052b1e9f7d4c3a8b60",
+              "spanId": "a1b2c3d4e5f60718",
+              "body": {
+                "stringValue": "copilot_chat.session.start"
+              },
+              "attributes": [
+                {"key":"event.name","value":{"stringValue":"copilot_chat.session.start"}},
+                {"key":"session.id","value":{"stringValue":"6a1f9c3e-2d47-4b85-9e60-c3a8f72d1b04"}},
+                {"key":"gen_ai.request.model","value":{"stringValue":"gpt-4.1"}},
+                {"key":"gen_ai.agent.name","value":{"stringValue":"GitHub Copilot Chat"}}
+              ]
+            },
+            {
+              "timeUnixNano": "1791460803100000000",
+              "observedTimeUnixNano": "1791460803100000000",
+              "traceId": "3d9b2e7f41c8a6052b1e9f7d4c3a8b60",
+              "spanId": "b2c3d4e5f6071829",
+              "body": {
+                "stringValue": "GenAI inference: gpt-4.1"
+              },
+              "attributes": [
+                {"key":"event.name","value":{"stringValue":"gen_ai.client.inference.operation.details"}},
+                {"key":"gen_ai.operation.name","value":{"stringValue":"chat"}},
+                {"key":"gen_ai.request.model","value":{"stringValue":"gpt-4.1"}},
+                {"key":"gen_ai.response.model","value":{"stringValue":"gpt-4.1-2025-04-14"}},
+                {"key":"gen_ai.response.id","value":{"stringValue":"chatcmpl-SAC0000000000000000000001"}},
+                {"key":"gen_ai.response.finish_reasons","value":{"arrayValue":{"values":[{"stringValue":"tool_calls"}]}}},
+                {"key":"gen_ai.usage.input_tokens","value":{"intValue":"9021"}},
+                {"key":"gen_ai.usage.output_tokens","value":{"intValue":"188"}},
+                {"key":"gen_ai.request.temperature","value":{"doubleValue":0.1}},
+                {"key":"gen_ai.request.max_tokens","value":{"intValue":"16384"}},
+                {"key":"gen_ai.input.messages","value":{"stringValue":"[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"SAC-PLACEHOLDER-16\"}]},{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"SAC-PLACEHOLDER-10\"}]},{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"SAC-CANARY-7f3a prompt text\"}]}]"}},
+                {"key":"gen_ai.system_instructions","value":{"stringValue":"[{\"type\":\"text\",\"content\":\"SAC-PLACEHOLDER-11\"}]"}},
+                {"key":"gen_ai.tool.definitions","value":{"stringValue":"[{\"type\":\"function\",\"name\":\"readFile\",\"description\":\"SAC-PLACEHOLDER-12\",\"parameters\":{\"type\":\"object\"}}]"}}
+              ]
+            },
+            {
+              "timeUnixNano": "1791460803101000000",
+              "observedTimeUnixNano": "1791460803101000000",
+              "traceId": "3d9b2e7f41c8a6052b1e9f7d4c3a8b60",
+              "spanId": "a1b2c3d4e5f60718",
+              "body": {
+                "stringValue": "copilot_chat.agent.turn: 0"
+              },
+              "attributes": [
+                {"key":"event.name","value":{"stringValue":"copilot_chat.agent.turn"}},
+                {"key":"turn.index","value":{"intValue":"0"}},
+                {"key":"gen_ai.usage.input_tokens","value":{"intValue":"9021"}},
+                {"key":"gen_ai.usage.output_tokens","value":{"intValue":"188"}},
+                {"key":"tool_call_count","value":{"intValue":"1"}}
+              ]
+            },
+            {
+              "timeUnixNano": "1791460803170000000",
+              "observedTimeUnixNano": "1791460803170000000",
+              "traceId": "3d9b2e7f41c8a6052b1e9f7d4c3a8b60",
+              "spanId": "c3d4e5f60718293a",
+              "body": {
+                "stringValue": "copilot_chat.tool.call: readFile"
+              },
+              "attributes": [
+                {"key":"event.name","value":{"stringValue":"copilot_chat.tool.call"}},
+                {"key":"gen_ai.tool.name","value":{"stringValue":"readFile"}},
+                {"key":"duration_ms","value":{"intValue":"50"}},
+                {"key":"success","value":{"boolValue":true}}
+              ]
+            },
+            {
+              "timeUnixNano": "1791460806010000000",
+              "observedTimeUnixNano": "1791460806010000000",
+              "traceId": "3d9b2e7f41c8a6052b1e9f7d4c3a8b60",
+              "spanId": "e5f60718293a4b5c",
+              "body": {
+                "stringValue": "copilot_chat.tool.call: mcp_issues_search_issues"
+              },
+              "attributes": [
+                {"key":"event.name","value":{"stringValue":"copilot_chat.tool.call"}},
+                {"key":"gen_ai.tool.name","value":{"stringValue":"mcp_issues_search_issues"}},
+                {"key":"duration_ms","value":{"intValue":"690"}},
+                {"key":"success","value":{"boolValue":false}},
+                {"key":"error.type","value":{"stringValue":"McpError"}}
+              ]
+            },
+            {
+              "timeUnixNano": "1791460834900000000",
+              "observedTimeUnixNano": "1791460834900000000",
+              "traceId": "1f2e3d4c5b6a79880a1b2c3d4e5f6071",
+              "spanId": "8f90011223344556",
+              "body": {
+                "stringValue": "GenAI inference: gpt-4o-mini"
+              },
+              "attributes": [
+                {"key":"event.name","value":{"stringValue":"gen_ai.client.inference.operation.details"}},
+                {"key":"gen_ai.operation.name","value":{"stringValue":"chat"}},
+                {"key":"gen_ai.request.model","value":{"stringValue":"gpt-4o-mini"}},
+                {"key":"gen_ai.request.max_tokens","value":{"intValue":"64"}},
+                {"key":"error.type","value":{"stringValue":"ServerError"}},
+                {"key":"gen_ai.input.messages","value":{"stringValue":"[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"SAC-PLACEHOLDER-16\"}]}]"}}
+              ]
+            },
+            {
+              "timeUnixNano": "1791460820000000000",
+              "observedTimeUnixNano": "1791460820000000000",
+              "body": {
+                "stringValue": "copilot_chat.edit.feedback: accepted"
+              },
+              "attributes": [
+                {"key":"event.name","value":{"stringValue":"copilot_chat.edit.feedback"}},
+                {"key":"outcome","value":{"stringValue":"accepted"}},
+                {"key":"language_id","value":{"stringValue":"go"}},
+                {"key":"participant","value":{"stringValue":"GitHub Copilot Chat"}},
+                {"key":"request_id","value":{"stringValue":"req-5b1e9d3c"}},
+                {"key":"edit_surface","value":{"stringValue":"agent"}},
+                {"key":"has_remaining_edits","value":{"boolValue":false}},
+                {"key":"is_notebook","value":{"boolValue":false}},
+                {"key":"copilot_chat.repo.head_branch_name","value":{"stringValue":"SAC-PLACEHOLDER-5"}},
+                {"key":"github.copilot.git.branch","value":{"stringValue":"SAC-PLACEHOLDER-5"}},
+                {"key":"copilot_chat.repo.head_commit_hash","value":{"stringValue":"4e9d2c7b1a6f8e3d5c0b9a7f6e4d3c2b1a0f9e8d"}},
+                {"key":"github.copilot.git.commit_sha","value":{"stringValue":"4e9d2c7b1a6f8e3d5c0b9a7f6e4d3c2b1a0f9e8d"}},
+                {"key":"copilot_chat.repo.remote_url","value":{"stringValue":"SAC-PLACEHOLDER-4"}},
+                {"key":"github.copilot.git.repository","value":{"stringValue":"SAC-PLACEHOLDER-4"}},
+                {"key":"github.copilot.github.org","value":{"stringValue":"SAC-PLACEHOLDER-6"}},
+                {"key":"copilot_chat.file.relative_path","value":{"stringValue":"SAC-PLACEHOLDER-17"}}
+              ]
+            },
+            {
+              "timeUnixNano": "1791460821000000000",
+              "observedTimeUnixNano": "1791460821000000000",
+              "body": {
+                "stringValue": "copilot_chat.edit.hunk.action: accepted"
+              },
+              "attributes": [
+                {"key":"event.name","value":{"stringValue":"copilot_chat.edit.hunk.action"}},
+                {"key":"outcome","value":{"stringValue":"accepted"}},
+                {"key":"language_id","value":{"stringValue":"go"}},
+                {"key":"request_id","value":{"stringValue":"req-5b1e9d3c"}},
+                {"key":"line_count","value":{"intValue":"12"}},
+                {"key":"lines_added","value":{"intValue":"9"}},
+                {"key":"lines_removed","value":{"intValue":"3"}},
+                {"key":"copilot_chat.repo.head_branch_name","value":{"stringValue":"SAC-PLACEHOLDER-5"}},
+                {"key":"github.copilot.git.branch","value":{"stringValue":"SAC-PLACEHOLDER-5"}},
+                {"key":"copilot_chat.repo.head_commit_hash","value":{"stringValue":"4e9d2c7b1a6f8e3d5c0b9a7f6e4d3c2b1a0f9e8d"}},
+                {"key":"github.copilot.git.commit_sha","value":{"stringValue":"4e9d2c7b1a6f8e3d5c0b9a7f6e4d3c2b1a0f9e8d"}},
+                {"key":"copilot_chat.repo.remote_url","value":{"stringValue":"SAC-PLACEHOLDER-4"}},
+                {"key":"github.copilot.git.repository","value":{"stringValue":"SAC-PLACEHOLDER-4"}},
+                {"key":"github.copilot.github.org","value":{"stringValue":"SAC-PLACEHOLDER-6"}},
+                {"key":"copilot_chat.file.relative_path","value":{"stringValue":"SAC-PLACEHOLDER-17"}}
+              ]
+            },
+            {
+              "timeUnixNano": "1791460845000000000",
+              "observedTimeUnixNano": "1791460845000000000",
+              "body": {
+                "stringValue": "copilot_chat.inline.done: accepted"
+              },
+              "attributes": [
+                {"key":"event.name","value":{"stringValue":"copilot_chat.inline.done"}},
+                {"key":"accepted","value":{"boolValue":true}},
+                {"key":"language_id","value":{"stringValue":"go"}},
+                {"key":"edit_count","value":{"intValue":"1"}},
+                {"key":"edit_line_count","value":{"intValue":"4"}},
+                {"key":"reply_type","value":{"stringValue":"edit"}},
+                {"key":"is_notebook","value":{"boolValue":false}},
+                {"key":"copilot_chat.repo.head_branch_name","value":{"stringValue":"SAC-PLACEHOLDER-5"}},
+                {"key":"github.copilot.git.branch","value":{"stringValue":"SAC-PLACEHOLDER-5"}},
+                {"key":"copilot_chat.repo.head_commit_hash","value":{"stringValue":"4e9d2c7b1a6f8e3d5c0b9a7f6e4d3c2b1a0f9e8d"}},
+                {"key":"github.copilot.git.commit_sha","value":{"stringValue":"4e9d2c7b1a6f8e3d5c0b9a7f6e4d3c2b1a0f9e8d"}},
+                {"key":"copilot_chat.repo.remote_url","value":{"stringValue":"SAC-PLACEHOLDER-4"}},
+                {"key":"github.copilot.git.repository","value":{"stringValue":"SAC-PLACEHOLDER-4"}},
+                {"key":"github.copilot.github.org","value":{"stringValue":"SAC-PLACEHOLDER-6"}},
+                {"key":"copilot_chat.file.relative_path","value":{"stringValue":"SAC-PLACEHOLDER-17"}}
+              ]
+            },
+            {
+              "timeUnixNano": "1791461120000000000",
+              "observedTimeUnixNano": "1791461120000000000",
+              "body": {
+                "stringValue": "copilot_chat.edit.survival: chat_editing"
+              },
+              "attributes": [
+                {"key":"event.name","value":{"stringValue":"copilot_chat.edit.survival"}},
+                {"key":"edit_source","value":{"stringValue":"chat_editing"}},
+                {"key":"survival_rate_four_gram","value":{"doubleValue":0.92}},
+                {"key":"survival_rate_no_revert","value":{"doubleValue":1.0}},
+                {"key":"time_delay_ms","value":{"intValue":"300000"}},
+                {"key":"did_branch_change","value":{"boolValue":false}},
+                {"key":"request_id","value":{"stringValue":"req-5b1e9d3c"}},
+                {"key":"copilot_chat.repo.head_branch_name","value":{"stringValue":"SAC-PLACEHOLDER-5"}},
+                {"key":"github.copilot.git.branch","value":{"stringValue":"SAC-PLACEHOLDER-5"}},
+                {"key":"copilot_chat.repo.head_commit_hash","value":{"stringValue":"4e9d2c7b1a6f8e3d5c0b9a7f6e4d3c2b1a0f9e8d"}},
+                {"key":"github.copilot.git.commit_sha","value":{"stringValue":"4e9d2c7b1a6f8e3d5c0b9a7f6e4d3c2b1a0f9e8d"}},
+                {"key":"copilot_chat.repo.remote_url","value":{"stringValue":"SAC-PLACEHOLDER-4"}},
+                {"key":"github.copilot.git.repository","value":{"stringValue":"SAC-PLACEHOLDER-4"}},
+                {"key":"github.copilot.github.org","value":{"stringValue":"SAC-PLACEHOLDER-6"}},
+                {"key":"copilot_chat.file.relative_path","value":{"stringValue":"SAC-PLACEHOLDER-17"}}
+              ]
+            },
+            {
+              "timeUnixNano": "1791460834000000000",
+              "observedTimeUnixNano": "1791460834000000000",
+              "body": {
+                "stringValue": "copilot_chat.user.feedback: up"
+              },
+              "attributes": [
+                {"key":"event.name","value":{"stringValue":"copilot_chat.user.feedback"}},
+                {"key":"rating","value":{"stringValue":"up"}},
+                {"key":"participant","value":{"stringValue":"GitHub Copilot Chat"}},
+                {"key":"conversation_id","value":{"stringValue":"6a1f9c3e-2d47-4b85-9e60-c3a8f72d1b04"}},
+                {"key":"request_id","value":{"stringValue":"req-5b1e9d3c"}}
+              ]
+            },
+            {
+              "timeUnixNano": "1791460860000000000",
+              "observedTimeUnixNano": "1791460860000000000",
+              "body": {
+                "stringValue": "copilot_chat.cloud.session.invoke: copilot-swe-agent"
+              },
+              "attributes": [
+                {"key":"event.name","value":{"stringValue":"copilot_chat.cloud.session.invoke"}},
+                {"key":"partner_agent","value":{"stringValue":"copilot-swe-agent"}},
+                {"key":"model","value":{"stringValue":"gpt-4.1"}},
+                {"key":"request_id","value":{"stringValue":"req-7c2d4e6f"}}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

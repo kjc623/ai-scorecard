@@ -136,7 +136,7 @@ type healthSnapshot struct {
 	PolicyOutcome  string                  `json:"policy_outcome,omitempty"`
 	PolicyCause    string                  `json:"policy_cause,omitempty"`
 	PolicyFetch    *policySyncStatus       `json:"policy_fetch,omitempty"`
-	Classifier     classifierStatus        `json:"classifier"`
+	Classifier     protocol.HealthReport   `json:"classifier"`
 	Reports        []protocol.HealthReport `json:"reports"`
 	Extension      *protocol.HealthReport  `json:"extension,omitempty"`
 	Spool          protocol.SpoolStats     `json:"spool"`
@@ -146,12 +146,6 @@ type healthSnapshot struct {
 	Heartbeats     int                     `json:"heartbeats_published"`
 	LastHeartbeat  *time.Time              `json:"last_heartbeat_at,omitempty"`
 	HeartbeatError string                  `json:"last_heartbeat_error,omitempty"`
-}
-
-type classifierStatus struct {
-	Connected      bool   `json:"connected"`
-	Version        string `json:"version"`
-	DegradedDetail string `json:"degraded_detail,omitempty"`
 }
 
 type drainStatus struct {
@@ -192,8 +186,8 @@ func (h *healthChannel) Snapshot() healthSnapshot {
 		st := svc.policySync.Status()
 		snap.PolicyFetch = &st
 	}
-	connected, classVersion, detail := svc.host.status()
-	snap.Classifier = classifierStatus{Connected: connected, Version: classVersion, DegradedDetail: string(detail)}
+	snap.Classifier = svc.host.Health().Report(snap.DeviceID, svc.classifierVersion())
+	snap.Classifier.Collector = string(svc.host.Name())
 
 	reports, errs := svc.reg.Reports(snap.DeviceID, snap.PolicyVersion)
 	for _, err := range errs {
@@ -226,23 +220,9 @@ func (h *healthChannel) Snapshot() healthSnapshot {
 	return snap
 }
 
-// collectorCodeByRoute maps a collection route onto the collector code the coverage tables key
-// on. Routes name what was observed; collectors name the component that observed it, and the
-// browser routes share the one extension collector.
-var collectorCodeByRoute = map[string]string{
-	"ext.web_request":  "capture_extension",
-	"ext.page_context": "capture_extension",
-	"ext.dom":          "capture_extension",
-	"proxy.tls":        "egress_proxy",
-	"proxy.loopback":   "loopback_broker",
-	"cli.shim":         "cli_shim",
-}
-
-// collectorCode normalises a route name or an extension-style name to a collector code.
-func collectorCode(name string) string {
-	if code, ok := collectorCodeByRoute[name]; ok {
-		return code
-	}
+// extensionCollector normalises the collector name on the extension's row to a collector code:
+// hyphens, as in the native host's default name, become underscores.
+func extensionCollector(name string) string {
 	return strings.ReplaceAll(name, "-", "_")
 }
 
@@ -259,19 +239,18 @@ func baseMode(b *policy.Bundle, deviceID string) protocol.CollectionMode {
 	return ""
 }
 
-// healthRequest renders the POST /v1/health body. Collector names are mapped to collector codes,
-// and the device identity is absent from each row because the credential already names the device.
+// healthRequest renders the POST /v1/health body. A provider's row is named by its Name, the
+// extension's by the name it reports, and the device identity is absent from each row because
+// the credential already names the device.
 func (h *healthChannel) healthRequest() protocol.HealthRequest {
 	snap := h.Snapshot()
 	seen := map[string]bool{}
 	var collectors []protocol.HealthReport
 	add := func(rep protocol.HealthReport) {
-		code := collectorCode(rep.Collector)
-		if seen[code] {
+		if seen[rep.Collector] {
 			return
 		}
-		seen[code] = true
-		rep.Collector = code
+		seen[rep.Collector] = true
 		rep.DeviceID = ""
 		collectors = append(collectors, rep)
 	}
@@ -279,17 +258,13 @@ func (h *healthChannel) healthRequest() protocol.HealthRequest {
 		add(rep)
 	}
 	if snap.Extension != nil {
-		add(*snap.Extension)
+		ext := *snap.Extension
+		ext.Collector = extensionCollector(ext.Collector)
+		add(ext)
 	}
-	// The classifier host is a component rather than a route; it reports its own row, degraded
-	// when no host answers.
-	classifier := protocol.NewHealthReport("", "classifier_host", snap.Classifier.Version, snap.GeneratedAt)
-	classifier.State = protocol.StateDegraded
-	if snap.Classifier.Connected {
-		classifier.State = protocol.StateHealthy
-	}
-	classifier.Detail = protocol.Detail(snap.Classifier.DegradedDetail)
-	add(classifier)
+	// The classifier host is a supervised component rather than a route; its row is its
+	// supervisor's.
+	add(snap.Classifier)
 
 	req := protocol.HealthRequest{
 		SchemaVersion:       protocol.HealthSchemaVersion,

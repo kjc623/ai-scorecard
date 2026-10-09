@@ -12,7 +12,7 @@
 
 import { concatBytes, decodeBody, toBytes } from './codec.js';
 
-/** Default cap for a body the extension holds in memory; the bundle may set a per-tenant cap. */
+/** Default cap for a body the extension holds in memory. */
 export const DEFAULT_BODY_CAP_BYTES = 1 << 20; // 1 MiB
 
 /**

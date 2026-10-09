@@ -110,7 +110,7 @@ func (e Entry) Validate() error {
 // no kind can appear for raw process telemetry.
 func (k Kind) Valid() bool {
 	switch k {
-	case KindPrompt, KindUsageRollup, KindModelDetection:
+	case KindPrompt, KindUsageRollup, KindDiscovery, KindAgentActivity:
 		return true
 	default:
 		return false
@@ -123,7 +123,8 @@ func (k Kind) Valid() bool {
 func (r Route) Valid() bool {
 	switch r {
 	case RouteExtWebRequest, RouteExtPageContext, RouteExtDOM,
-		RouteProxyTLS, RouteProxyLoopback, RouteProcDetect, RouteCLIShim:
+		RouteProxyTLS, RouteProxyLoopback, RouteProcDetect, RouteCLIShim,
+		RouteToolHook, RouteToolOTel, RouteInvScan, RouteNetFlow:
 		return true
 	default:
 		return false

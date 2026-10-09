@@ -7,7 +7,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildTemplate, windowFor, DashboardQueryError } from '../src/dsl.js';
+import { buildListDocument, buildTemplate, windowFor, DashboardQueryError } from '../src/dsl.js';
 import { SOURCES, TEMPLATES, TEMPLATE_NAMES, WINDOWS } from '../src/vocab.js';
 
 const WINDOW = { from: '2026-09-24T00:00:00Z', to: '2026-10-01T00:00:00Z' };
@@ -45,8 +45,22 @@ test('window presets are named, and the label cannot disagree with the request',
   refuses(() => windowFor('d4000'), 'unknown_window');
 });
 
+test('a list document names a windowless list source and filters only on its own dimensions', () => {
+  const device = '00000000-0000-4000-8000-0000000000d1';
+  assert.deepEqual(buildListDocument('ops.collector_state', { device }, 100), {
+    query_version: '1',
+    source: 'ops.collector_state',
+    filters: [{ field: 'device', op: 'eq', value: device }],
+    limit: 100,
+  });
+  refuses(() => buildListDocument('ingest.submission', { device }, 100), 'unknown_source');
+  refuses(() => buildListDocument('nope', {}, 100), 'unknown_source');
+  refuses(() => buildListDocument('ops.collector_state', { subject: 'u_1' }, 100), 'unknown_dimension');
+  refuses(() => buildListDocument('ops.collector_state', { device: '' }, 100), 'type_mismatch');
+});
+
 test('the vocabularies here are complete enough to describe every source and template', () => {
-  assert.equal(Object.keys(SOURCES).length, 12);
+  assert.equal(Object.keys(SOURCES).length, 13);
   assert.equal(TEMPLATE_NAMES.length, 10);
   for (const [name, spec] of Object.entries(SOURCES)) {
     assert.ok(spec.kind === 'aggregate' || spec.kind === 'list', `${name} has a kind`);

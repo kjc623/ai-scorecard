@@ -3,6 +3,8 @@ package store_test
 import (
 	"context"
 	"errors"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -99,5 +101,162 @@ func TestSettingsAgainstPostgres(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("sanctioned tool not in %+v", s.Tools)
+	}
+}
+
+// TestEndpointSettingsAgainstPostgres: a tenant without rows reads the defaults through both the
+// Settings page and the policy inputs; the writes are read back and each writes its audit row.
+func TestEndpointSettingsAgainstPostgres(t *testing.T) {
+	owner := pgtest.Open(t)
+	st := store.NewSQL(pgtest.OpenAs(t, "sac_control"))
+	ctx := context.Background()
+	tenant := pgtest.Tenant(t, owner, "eastus")
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	audit := func(action string) store.AuditEntry {
+		return store.AuditEntry{TenantID: tenant, ActorType: store.ActorUser, ActorID: "admin@example.com",
+			Action: action, ObjectType: "tenant", ObjectID: tenant, OccurredAt: now}
+	}
+
+	defaults := store.EndpointSettings{
+		Collectors: store.EndpointCollectors{Inventory: true, Processes: true, Flows: true, OTel: true, Hooks: true},
+		Tools: map[string]store.EndpointTool{
+			"claude_code": {OTel: true, Hooks: true},
+			"codex":       {OTel: true, Hooks: true},
+			"copilot":     {OTel: true},
+			"cursor":      {Hooks: true},
+			"ollama":      {},
+		},
+	}
+	s, err := st.Settings(ctx, tenant)
+	if err != nil || !reflect.DeepEqual(s.Endpoint, defaults) {
+		t.Fatalf("Settings endpoint = %+v, %v; want the defaults", s.Endpoint, err)
+	}
+	in, err := st.PolicyInputs(ctx, tenant)
+	if err != nil || !reflect.DeepEqual(in.Endpoint, defaults) {
+		t.Fatalf("PolicyInputs endpoint = %+v, %v; want the defaults", in.Endpoint, err)
+	}
+
+	collectors := store.EndpointCollectors{Inventory: false, Processes: true, Flows: false, OTel: true, Hooks: false, HooksManagedOnly: true}
+	if err := st.SetEndpointCollectors(ctx, tenant, collectors, audit("tenant.endpoint_collectors.set")); err != nil {
+		t.Fatal(err)
+	}
+	collectors.Flows = true // the second write updates the row the first inserted
+	if err := st.SetEndpointCollectors(ctx, tenant, collectors, audit("tenant.endpoint_collectors.set")); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetEndpointTool(ctx, tenant, "cursor", store.EndpointTool{}, audit("tenant.endpoint_tool.set")); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetEndpointTool(ctx, tenant, "ollama", store.EndpointTool{Loopback: true}, audit("tenant.endpoint_tool.set")); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetEndpointTool(ctx, tenant, "lm_studio", store.EndpointTool{}, audit("x")); !errors.Is(err, store.ErrUnknownEndpointTool) {
+		t.Fatalf("unknown tool key: %v", err)
+	}
+	if err := st.SetEndpointCollectors(ctx, pgtest.UUID(t), collectors, audit("x")); !errors.Is(err, store.ErrUnknownTenant) {
+		t.Fatalf("unknown tenant: %v", err)
+	}
+
+	want := store.EndpointSettings{Collectors: collectors, Tools: map[string]store.EndpointTool{}}
+	for k, v := range defaults.Tools {
+		want.Tools[k] = v
+	}
+	want.Tools["cursor"] = store.EndpointTool{}
+	want.Tools["ollama"] = store.EndpointTool{Loopback: true}
+	in, err = st.PolicyInputs(ctx, tenant)
+	if err != nil || !reflect.DeepEqual(in.Endpoint, want) {
+		t.Fatalf("PolicyInputs endpoint = %+v, %v; want %+v", in.Endpoint, err, want)
+	}
+
+	// The audit rows carry the old and the new values.
+	rows, err := owner.QueryContext(ctx, `SELECT action, detail->'previous', detail->'new' FROM ops.audit
+		WHERE tenant_id = $1::uuid ORDER BY audit_seq`, tenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var action, previous, next string
+		if err := rows.Scan(&action, &previous, &next); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, action+" "+previous+" "+next)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	wantAudits := []string{
+		`tenant.endpoint_collectors.set {"otel": true, "flows": true, "hooks": true, "inventory": true, "processes": true, "hooks_managed_only": false} {"otel": true, "flows": false, "hooks": false, "inventory": false, "processes": true, "hooks_managed_only": true}`,
+		`tenant.endpoint_collectors.set {"otel": true, "flows": false, "hooks": false, "inventory": false, "processes": true, "hooks_managed_only": true} {"otel": true, "flows": true, "hooks": false, "inventory": false, "processes": true, "hooks_managed_only": true}`,
+		`tenant.endpoint_tool.set {"otel": false, "hooks": true} {"otel": false, "hooks": false}`,
+		`tenant.endpoint_tool.set {"loopback": false} {"loopback": true}`,
+	}
+	if !reflect.DeepEqual(got, wantAudits) {
+		t.Fatalf("audits =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(wantAudits, "\n"))
+	}
+}
+
+// TestTLSInspectionAgainstPostgres: a new tenant has TLS inspection off in both the Settings page
+// and the policy inputs; turning it on and off is read back, and each write is audited with the old
+// and the new value.
+func TestTLSInspectionAgainstPostgres(t *testing.T) {
+	owner := pgtest.Open(t)
+	st := store.NewSQL(pgtest.OpenAs(t, "sac_control"))
+	ctx := context.Background()
+	tenant := pgtest.Tenant(t, owner, "eastus")
+	audit := store.AuditEntry{TenantID: tenant, ActorType: store.ActorUser, ActorID: "admin@example.com",
+		Action: "tenant.tls_inspection.set", ObjectType: "tenant", ObjectID: tenant, OccurredAt: time.Now().UTC().Truncate(time.Microsecond)}
+
+	read := func() (bool, bool) {
+		t.Helper()
+		s, err := st.Settings(ctx, tenant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		in, err := st.PolicyInputs(ctx, tenant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s.TLSInspection, in.Tenant.TLSInspection
+	}
+	if page, policy := read(); page || policy {
+		t.Fatalf("a new tenant reads TLS inspection %t (Settings) and %t (policy), want off", page, policy)
+	}
+	if err := st.SetTLSInspection(ctx, tenant, true, audit); err != nil {
+		t.Fatal(err)
+	}
+	if page, policy := read(); !page || !policy {
+		t.Fatalf("after turning it on: %t (Settings) and %t (policy), want on", page, policy)
+	}
+	if err := st.SetTLSInspection(ctx, tenant, false, audit); err != nil {
+		t.Fatal(err)
+	}
+	if page, policy := read(); page || policy {
+		t.Fatalf("after turning it off: %t (Settings) and %t (policy), want off", page, policy)
+	}
+	if err := st.SetTLSInspection(ctx, pgtest.UUID(t), true, audit); !errors.Is(err, store.ErrUnknownTenant) {
+		t.Fatalf("unknown tenant: %v", err)
+	}
+
+	rows, err := owner.QueryContext(ctx, `SELECT detail->>'previous', detail->>'new' FROM ops.audit
+		WHERE tenant_id = $1::uuid AND action = 'tenant.tls_inspection.set' ORDER BY audit_seq`, tenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var previous, next string
+		if err := rows.Scan(&previous, &next); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, previous+">"+next)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"false>true", "true>false"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("audits = %v, want %v", got, want)
 	}
 }

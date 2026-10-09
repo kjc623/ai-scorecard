@@ -1,0 +1,176 @@
+{
+  "resourceLogs": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "sac-privacy-agent"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "1.0.0"
+            }
+          }
+        ]
+      },
+      "scopeLogs": [
+        {
+          "scope": {
+            "name": "openai.instrumentation",
+            "version": "0.1.0"
+          },
+          "logRecords": [
+            {
+              "timeUnixNano": "1791460801250000000",
+              "observedTimeUnixNano": "1791460801250000000",
+              "eventName": "gen_ai.client.inference.operation.details",
+              "traceId": "5b8efff798038103d269b633813fc60c",
+              "spanId": "eee19b7ec3c1b174",
+              "attributes": [
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "chat"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "stringValue": "gpt-4o"
+                  }
+                },
+                {
+                  "key": "gen_ai.system_instructions",
+                  "value": {
+                    "arrayValue": {
+                      "values": [
+                        {
+                          "kvlistValue": {
+                            "values": [
+                              {
+                                "key": "type",
+                                "value": {
+                                  "stringValue": "text"
+                                }
+                              },
+                              {
+                                "key": "content",
+                                "value": {
+                                  "stringValue": "You are helpful. {{DROPPED_CANARY}}"
+                                }
+                              }
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "key": "gen_ai.input.messages",
+                  "value": {
+                    "arrayValue": {
+                      "values": [
+                        {
+                          "kvlistValue": {
+                            "values": [
+                              {
+                                "key": "role",
+                                "value": {
+                                  "stringValue": "user"
+                                }
+                              },
+                              {
+                                "key": "parts",
+                                "value": {
+                                  "arrayValue": {
+                                    "values": [
+                                      {
+                                        "kvlistValue": {
+                                          "values": [
+                                            {
+                                              "key": "type",
+                                              "value": {
+                                                "stringValue": "text"
+                                              }
+                                            },
+                                            {
+                                              "key": "content",
+                                              "value": {
+                                                "stringValue": "Check the medical records of {{CANARY}}"
+                                              }
+                                            }
+                                          ]
+                                        }
+                                      }
+                                    ]
+                                  }
+                                }
+                              }
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "key": "gen_ai.output.messages",
+                  "value": {
+                    "arrayValue": {
+                      "values": [
+                        {
+                          "kvlistValue": {
+                            "values": [
+                              {
+                                "key": "role",
+                                "value": {
+                                  "stringValue": "assistant"
+                                }
+                              },
+                              {
+                                "key": "parts",
+                                "value": {
+                                  "arrayValue": {
+                                    "values": [
+                                      {
+                                        "kvlistValue": {
+                                          "values": [
+                                            {
+                                              "key": "type",
+                                              "value": {
+                                                "stringValue": "text"
+                                              }
+                                            },
+                                            {
+                                              "key": "content",
+                                              "value": {
+                                                "stringValue": "Here is a summary: {{DROPPED_CANARY}}"
+                                              }
+                                            }
+                                          ]
+                                        }
+                                      }
+                                    ]
+                                  }
+                                }
+                              }
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

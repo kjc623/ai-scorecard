@@ -5,9 +5,10 @@
  *   metadata lane  addListener(handler, {urls}, [...])                          always installed
  *   body lane      addListener(handler, {urls: bodyFilter}, [..., 'requestBody']) gated by policy
  *
- * Destinations the policy resolves to M0 are kept out of the body filter, so Chrome never produces
- * `requestBody` for them. Inside the handler `isBodyBearing(url)` covers the window between a
- * policy change and the filter rebuild, and the pipeline's mode gate is the last check.
+ * While the policy resolves every destination to M0 the body lane is not registered, so Chrome
+ * never produces `requestBody`. Inside the handler `isBodyBearing(url)` covers the window between a
+ * policy change and the filter rebuild, and the pipeline's mode gate, which knows the tool, is the
+ * last check.
  *
  * Blocking: only a force-installed extension is granted `webRequestBlocking`, and a blocking
  * registration without the grant is accepted silently and never invoked. So the lanes register
@@ -21,12 +22,6 @@ export const ALL_URLS = ['<all_urls>'];
 
 /** The request types the extension observes, on every host. */
 export const OBSERVED_TYPES = ['main_frame', 'sub_frame', 'xmlhttprequest', 'websocket', 'other'];
-
-/**
- * Destinations that are never body-bearing, whatever a bundle says: a loopback or link-local
- * destination is not the submission the predicate is looking for.
- */
-export const NEVER_BODY_BEARING = ['http://localhost/*', 'http://127.0.0.1/*', 'http://[::1]/*', 'http://169.254.0.0/16/*'];
 
 export function installLanes({
   adapter,
@@ -48,7 +43,7 @@ export function installLanes({
     if (!policy.isBodyBearing(detail.url)) {
       return toBlockingResponse(await onMetadataLane({ detail, tab_context: tabContextOf(detail) }));
     }
-    const body = normaliseBody(detail.requestBody, { capBytes: capFor(policy) });
+    const body = normaliseBody(detail.requestBody);
     const result = await onBodyLane({ detail, body, body_capable: true, tab_context: tabContextOf(detail) });
     return toBlockingResponse(result);
   }
@@ -124,23 +119,13 @@ export function installLanes({
 }
 
 /**
- * The URL patterns Chrome is given for the body lane:
- *
- *   1. no bundle: `[]`, so the body lane is not installed and no body is requested;
- *   2. a bundle with a body-lane include list: exactly that list (Chrome match patterns cannot
- *      express "everything except");
- *   3. a bundle with no include list: `<all_urls>`, with M0 destinations excluded per request by
- *      the handler guard.
+ * The URL patterns Chrome is given for the body lane: `[]` while no content may be read anywhere
+ * (no bundle, or a tenant default that reads nothing, which no other input can raise), so the body
+ * lane is not installed and no body is requested; otherwise `<all_urls>`, with the handler guard
+ * and the pipeline's mode gate deciding per request.
  */
 export function computeBodyFilter(policy) {
-  const snapshot = typeof policy.snapshot === 'function' ? policy.snapshot() : null;
-  const includes = typeof policy.bodyLanePatterns === 'function' ? policy.bodyLanePatterns() : [];
-  const never = NEVER_BODY_BEARING.slice();
-  if (includes && includes.length > 0) {
-    return includes.filter((p) => !never.includes(p));
-  }
-  if (!snapshot || !snapshot.present) return [];
-  return ALL_URLS.slice();
+  return policy.readsAnyContent() ? ALL_URLS.slice() : [];
 }
 
 function guard(handler) {
@@ -158,11 +143,6 @@ function toBlockingResponse(result) {
   if (!result) return undefined;
   // `blocked` cancels through webRequestBlocking; everything else releases the request.
   return result.cancel ? { cancel: true } : undefined;
-}
-
-function capFor(policy) {
-  const caps = typeof policy.caps === 'function' ? policy.caps() : {};
-  return Number.isFinite(caps.body_bytes) && caps.body_bytes > 0 ? caps.body_bytes : undefined;
 }
 
 /** The automation marker is read from request headers, never from a page global. */

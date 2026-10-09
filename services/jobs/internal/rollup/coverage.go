@@ -13,11 +13,14 @@ const CoverageSnapshotName = "ops.coverage_snapshot"
 // day, whether the collector was expected to report and whether it did. It reads
 // ops.collector_state rather than the event tables.
 //
-// Two rules the statement holds:
+// Three rules the statement holds:
 //
 //   - The expected set comes from the calendar, the enrolled devices and ref.collector, not from
 //     the reports that arrived. A device that reported nothing still produces rows, so its silence
 //     is visible as a gap.
+//   - A collector whose latest report in the day says the signed policy switched it off (detail
+//     disabled_by_policy, stored as error_code) is not expected that day, so it is not a gap. Its
+//     row still names a gap reason when it was not observed, because the table requires one.
 //   - observed is monotonic within a day. ops.collector_state is current state, not history, so a
 //     later pass that reads a newer last_report_at must not turn a day that was observed back into
 //     "not observed".
@@ -38,8 +41,9 @@ grid AS (
 observed AS (
   SELECT cs.tenant_id, cs.device_id, cs.collector,
          (cs.last_report_at AT TIME ZONE 'UTC')::date AS snapshot_day,
-         bool_or(cs.state IN ('healthy','degraded')) AS reported,
-         bool_or(cs.state = 'tampered')             AS tampered
+         bool_or(cs.state IN ('healthy','degraded'))   AS reported,
+         bool_or(cs.state = 'tampered')               AS tampered,
+         bool_or(cs.error_code = 'disabled_by_policy') AS disabled
     FROM ops.collector_state cs
    WHERE cs.tenant_id = $1::uuid
      AND cs.last_report_at >= $2::timestamptz AND cs.last_report_at < $3::timestamptz
@@ -48,7 +52,7 @@ observed AS (
 INSERT INTO ops.coverage_snapshot
   (tenant_id, snapshot_day, device_id, collector, expected, observed, gap_reason)
 SELECT g.tenant_id, g.snapshot_day, g.device_id, g.collector_code,
-       true,
+       NOT coalesce(o.disabled, false),
        coalesce(o.reported, false),
        CASE
          WHEN coalesce(o.reported, false) THEN NULL

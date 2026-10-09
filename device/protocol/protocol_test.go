@@ -519,3 +519,168 @@ func TestModeReadsContent(t *testing.T) {
 		t.Fatal("an unknown mode reported itself as valid")
 	}
 }
+
+// The kind registry holds the four contract kinds and no other; model_detection left the contract.
+func TestKindRegistryIsTheContracts(t *testing.T) {
+	for _, k := range []Kind{KindPrompt, KindUsageRollup, KindDiscovery, KindAgentActivity} {
+		if !k.Valid() {
+			t.Errorf("kind %q is refused", k)
+		}
+	}
+	for _, k := range []Kind{"model_detection", "process_exec", ""} {
+		if k.Valid() {
+			t.Errorf("kind %q is accepted", k)
+		}
+	}
+	for _, r := range []Route{RouteToolHook, RouteToolOTel, RouteInvScan, RouteNetFlow} {
+		if !r.Valid() {
+			t.Errorf("route %q is refused", r)
+		}
+	}
+	if Route("tool.mcp").Valid() {
+		t.Error("an invented route is accepted")
+	}
+}
+
+// The discovery and agent-activity enums accept their closed sets and nothing else.
+func TestDiscoveryAndActivityVocabulariesAreClosed(t *testing.T) {
+	for _, v := range []DiscoveryType{DiscoveryTypeAppInstalled, DiscoveryTypeAppRunning, DiscoveryTypeCLIInstalled,
+		DiscoveryTypeIDEExtension, DiscoveryTypeLocalModel, DiscoveryTypeInferenceConnection} {
+		if !v.Valid() {
+			t.Errorf("discovery type %q is refused", v)
+		}
+	}
+	for _, v := range []DetectionBasis{DetectionBasisInstalledScan, DetectionBasisPackageScan, DetectionBasisExtensionScan,
+		DetectionBasisProcessEvent, DetectionBasisModelStore, DetectionBasisPortListen, DetectionBasisFlowMetadata} {
+		if !v.Valid() {
+			t.Errorf("detection basis %q is refused", v)
+		}
+	}
+	for _, v := range []ActivityType{ActivityTypeModelRequest, ActivityTypeToolCall} {
+		if !v.Valid() {
+			t.Errorf("activity type %q is refused", v)
+		}
+	}
+	for _, v := range []ActivityOutcome{ActivityOutcomeSuccess, ActivityOutcomeError, ActivityOutcomeDenied} {
+		if !v.Valid() {
+			t.Errorf("activity outcome %q is refused", v)
+		}
+	}
+	if DiscoveryType("process_list").Valid() || DetectionBasis("signature").Valid() ||
+		ActivityType("prompt").Valid() || ActivityOutcome("accepted").Valid() || DiscoveryType("").Valid() {
+		t.Error("a value outside a closed set is accepted")
+	}
+}
+
+// The collector vocabulary holds the ref.collector codes and refuses a route name: a route and a
+// collector are different keys.
+func TestCollectorVocabularyIsClosed(t *testing.T) {
+	for _, c := range []Collector{CollectorEgressProxy, CollectorLoopbackBroker, CollectorCLIShim,
+		CollectorProcessDetector, CollectorClassifierHost, CollectorCaptureExtension, CollectorDesktopProxy, CollectorOTelReceiver} {
+		if !c.Valid() {
+			t.Errorf("collector %q is refused", c)
+		}
+	}
+	for _, c := range []Collector{Collector(RouteProxyTLS), Collector(RouteCLIShim), "capture-extension", ""} {
+		if c.Valid() {
+			t.Errorf("collector %q is accepted", c)
+		}
+	}
+	if !DetailDisabledByPolicy.Valid() {
+		t.Error("disabled_by_policy is not in the detail vocabulary")
+	}
+}
+
+// The user-session helper's collector and detail are in the closed vocabularies.
+func TestUserHelperVocabulary(t *testing.T) {
+	if !CollectorUserHelper.Valid() || CollectorUserHelper != "user_helper" {
+		t.Errorf("collector %q is not the user_helper code", CollectorUserHelper)
+	}
+	if !DetailHelperUnavailable.Valid() {
+		t.Error("helper_unavailable is not in the detail vocabulary")
+	}
+}
+
+// The configuration writers' collectors and details are in the closed vocabularies.
+func TestToolConfigVocabulary(t *testing.T) {
+	if !CollectorToolConfigClaudeCode.Valid() || CollectorToolConfigClaudeCode != "tool_config_claude_code" {
+		t.Errorf("collector %q is not the tool_config_claude_code code", CollectorToolConfigClaudeCode)
+	}
+	if !CollectorToolConfigCursor.Valid() || CollectorToolConfigCursor != "tool_config_cursor" {
+		t.Errorf("collector %q is not the tool_config_cursor code", CollectorToolConfigCursor)
+	}
+	if !CollectorToolConfigCodex.Valid() || CollectorToolConfigCodex != "tool_config_codex" {
+		t.Errorf("collector %q is not the tool_config_codex code", CollectorToolConfigCodex)
+	}
+	if !CollectorToolConfigCopilot.Valid() || CollectorToolConfigCopilot != "tool_config_copilot" {
+		t.Errorf("collector %q is not the tool_config_copilot code", CollectorToolConfigCopilot)
+	}
+	for _, d := range []Detail{DetailToolNotInstalled, DetailToolVersionUnsupported, DetailConfigWriteFailed, DetailConfigTampered, DetailNoRecentEvents} {
+		if !d.Valid() {
+			t.Errorf("%s is not in the detail vocabulary", d)
+		}
+	}
+}
+
+// The inventory scanner's collector and the details it reports are in the closed vocabularies.
+func TestInventoryScannerVocabulary(t *testing.T) {
+	if !CollectorInventoryScanner.Valid() || CollectorInventoryScanner != "inventory_scanner" {
+		t.Errorf("collector %q is not the inventory_scanner code", CollectorInventoryScanner)
+	}
+	for _, d := range []Detail{DetailEnumerationPartial, DetailToolVersionUnsupported} {
+		if !d.Valid() {
+			t.Errorf("%s is not in the detail vocabulary", d)
+		}
+	}
+}
+
+// The flow monitor's collector is in the closed vocabulary.
+func TestFlowMonitorVocabulary(t *testing.T) {
+	if !CollectorFlowMonitor.Valid() || CollectorFlowMonitor != "flow_monitor" {
+		t.Errorf("collector %q is not the flow_monitor code", CollectorFlowMonitor)
+	}
+}
+
+// The process monitor's collector and detail are in the closed vocabularies.
+func TestProcessDetectorVocabulary(t *testing.T) {
+	if !CollectorProcessDetector.Valid() || CollectorProcessDetector != "process_detector" {
+		t.Errorf("collector %q is not the process_detector code", CollectorProcessDetector)
+	}
+	if !DetailETWSessionFailed.Valid() || DetailETWSessionFailed != "etw_session_failed" {
+		t.Errorf("detail %q is not the etw_session_failed code", DetailETWSessionFailed)
+	}
+}
+
+// A notification is bounded in characters, holds no control character but a body's line break,
+// and links only to an absolute https URL.
+func TestNotifyValidate(t *testing.T) {
+	ok := []Notify{
+		{Title: "Prompt blocked", Body: "This prompt carries a payment card number."},
+		{Title: strings.Repeat("é", MaxNotifyTitle), Body: strings.Repeat("ß", MaxNotifyBody)},
+		{Title: "Blocked", Body: "Line one\nLine two", Link: "https://intranet.example.com/ai-policy?x=1"},
+	}
+	for _, n := range ok {
+		if err := n.Validate(); err != nil {
+			t.Errorf("%+v refused: %v", n, err)
+		}
+	}
+	bad := map[string]Notify{
+		"empty title":        {Body: "b"},
+		"blank body":         {Title: "t", Body: "  "},
+		"long title":         {Title: strings.Repeat("a", MaxNotifyTitle+1), Body: "b"},
+		"long body":          {Title: "t", Body: strings.Repeat("a", MaxNotifyBody+1)},
+		"title line break":   {Title: "a\nb", Body: "b"},
+		"body control":       {Title: "t", Body: "a\x07b"},
+		"not utf-8":          {Title: "t", Body: "\xff"},
+		"http link":          {Title: "t", Body: "b", Link: "http://example.com/"},
+		"relative link":      {Title: "t", Body: "b", Link: "/policy"},
+		"other scheme":       {Title: "t", Body: "b", Link: "file:///C:/Windows/System32/calc.exe"},
+		"credentials in url": {Title: "t", Body: "b", Link: "https://user:pw@example.com/"},
+		"long link":          {Title: "t", Body: "b", Link: "https://example.com/" + strings.Repeat("a", MaxNotifyLink)},
+	}
+	for name, n := range bad {
+		if err := n.Validate(); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

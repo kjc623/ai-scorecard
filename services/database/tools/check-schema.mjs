@@ -448,7 +448,8 @@ const NO_COLUMN_ON_OBSERVATION = new Set(['attachments']);
 
     for (const [key, constraint] of [
       ['usage_rollup', 'observation_rollup_shape'],
-      ['model_detection', 'observation_detection_shape'],
+      ['discovery', 'observation_discovery_shape'],
+      ['agent_activity', 'observation_activity_shape'],
       ['prompt', 'observation_prompt_shape'],
       ['prompt:m0', 'observation_m0_carries_no_content'],
     ]) {

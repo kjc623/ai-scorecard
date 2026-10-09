@@ -38,6 +38,9 @@ type ingestPeer struct {
 	batches    int
 	clientCNs  []string
 	clientRoot *x509.CertPool
+	// bodies are the /v1/events request bodies and health the /v1/health ones, as received.
+	bodies [][]byte
+	health [][]byte
 }
 
 func TestDrainDeliversOverMutualTLSToTheEdge(t *testing.T) {
@@ -100,9 +103,9 @@ func TestDrainDeliversOverMutualTLSToTheEdge(t *testing.T) {
 	}
 }
 
-// startTLSIngest serves /v1/events over TLS with a server certificate from a throwaway CA written
-// to a file the drain trusts, and verifies each client certificate against the device CA, as the
-// edge does before it forwards the leaf.
+// startTLSIngest serves /v1/events and /v1/health over TLS with a server certificate from a
+// throwaway CA written to a file the drain trusts, and verifies each client certificate against the
+// device CA, as the edge does before it forwards the leaf.
 func startTLSIngest(t *testing.T, peer *ingestPeer) (*httptest.Server, string) {
 	t.Helper()
 	ca, caKey := mustCA(t, "integration edge CA")
@@ -112,6 +115,19 @@ func startTLSIngest(t *testing.T, peer *ingestPeer) (*httptest.Server, string) {
 		t.Fatal(err)
 	}
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/health" {
+			body, err := readGunzip(r)
+			if err != nil {
+				writeIngestJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{"code": protocol.ReasonSchemaViolation}})
+				return
+			}
+			peer.mu.Lock()
+			peer.health = append(peer.health, body)
+			peer.mu.Unlock()
+			now := time.Now().UTC()
+			writeIngestJSON(w, http.StatusOK, protocol.HealthResponse{AckedAt: now, ServerTime: now, NextReportAfterS: 60})
+			return
+		}
 		if r.URL.Path != "/v1/events" {
 			writeIngestJSON(w, http.StatusNotFound, map[string]any{"error": map[string]any{"code": "unknown"}})
 			return
@@ -130,6 +146,7 @@ func startTLSIngest(t *testing.T, peer *ingestPeer) (*httptest.Server, string) {
 			return
 		}
 		peer.mu.Lock()
+		peer.bodies = append(peer.bodies, body)
 		peer.batches++
 		peer.events += len(batch.Events)
 		peer.clientCNs = append(peer.clientCNs, cn)

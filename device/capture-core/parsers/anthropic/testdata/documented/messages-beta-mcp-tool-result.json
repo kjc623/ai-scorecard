@@ -1,0 +1,27 @@
+{
+  "model": "claude-opus-5",
+  "max_tokens": 1024,
+  "mcp_servers": [
+    {"type": "url", "url": "https://example.com/SAC-PLACEHOLDER-15", "name": "SAC-PLACEHOLDER-16"}
+  ],
+  "messages": [
+    {"role": "user", "content": "SAC-PLACEHOLDER-2"},
+    {
+      "role": "assistant",
+      "content": [
+        {"type": "mcp_tool_use", "id": "mcptoolu_01", "name": "lookup", "server_name": "SAC-PLACEHOLDER-16", "input": {"q": "SAC-PLACEHOLDER-12"}}
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "mcp_tool_result",
+          "tool_use_id": "mcptoolu_01",
+          "is_error": false,
+          "content": [{"type": "text", "text": "sac canary anthropic-api AKIAIOSFODNN7EXAMPLE"}]
+        }
+      ]
+    }
+  ]
+}

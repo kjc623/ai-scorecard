@@ -2,60 +2,18 @@ package main
 
 import (
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"time"
 
 	"github.com/shadow-ai-capture/device/capture-core/attachments"
 	"github.com/shadow-ai-capture/device/capture-core/core"
 	"github.com/shadow-ai-capture/device/capture-core/dedup"
+	"github.com/shadow-ai-capture/device/capture-core/enforce"
+	"github.com/shadow-ai-capture/device/capture-core/policy"
 	"github.com/shadow-ai-capture/device/protocol"
 )
-
-// Native messaging is Chromium's transport: a 4-byte little-endian length prefix, then one JSON
-// document. The same frames travel unchanged between the browser and the relay process (on its
-// stdin and stdout) and between the relay and the service (on the native messaging endpoint).
-const (
-	// maxNativeFrameBytes is Chromium's limit for one message to the browser, and the limit the
-	// extension holds itself to. A length that claims more is refused before allocating.
-	maxNativeFrameBytes = 1 << 20
-	nativeHeaderBytes   = 4
-)
-
-// writeNativeFrame writes one frame in a single Write, so concurrent writers cannot interleave.
-func writeNativeFrame(w io.Writer, payload []byte) error {
-	if len(payload) > maxNativeFrameBytes {
-		return fmt.Errorf("native message is %d bytes, over the %d limit", len(payload), maxNativeFrameBytes)
-	}
-	buf := make([]byte, nativeHeaderBytes+len(payload))
-	binary.LittleEndian.PutUint32(buf, uint32(len(payload)))
-	copy(buf[nativeHeaderBytes:], payload)
-	_, err := w.Write(buf)
-	return err
-}
-
-// readNativeFrame reads one frame. io.EOF before the first header byte is the peer closing.
-func readNativeFrame(r io.Reader) ([]byte, error) {
-	var hdr [nativeHeaderBytes]byte
-	if _, err := io.ReadFull(r, hdr[:]); err != nil {
-		return nil, err
-	}
-	n := binary.LittleEndian.Uint32(hdr[:])
-	if n > maxNativeFrameBytes {
-		return nil, fmt.Errorf("native frame declares %d bytes, over the %d limit", n, maxNativeFrameBytes)
-	}
-	if n == 0 {
-		return nil, errors.New("native frame carries no payload")
-	}
-	payload := make([]byte, n)
-	if _, err := io.ReadFull(r, payload); err != nil {
-		return nil, err
-	}
-	return payload, nil
-}
 
 // nativeSession handles the frames of one browser connection. Observations are attributed to the
 // person the connection belongs to, and the pipeline decides the mode: the session never decides
@@ -117,7 +75,7 @@ func (h *nativeSession) handleObservation(ctx context.Context, msg protocol.Nati
 		}
 		return refusal(protocol.RefusalMalformed, "%v", err)
 	}
-	observation := toCoreObservation(obs)
+	observation := toCoreObservation(obs, h.svc.pipe.Bundles)
 	person := h.person
 	observation.Person = &person
 	// The bytes transferred for this observation are classified under its mode and then dropped.
@@ -209,8 +167,9 @@ func (h *nativeSession) handleExtensionHealth(msg protocol.NativeMessage) []byte
 	return ack(msg.ID, fmt.Sprintf("health recorded for %s state=%s", rep.Collector, rep.State))
 }
 
-// handlePolicySync hands the extension the verified bundle in force; the extension holds no
-// durable state, so this is how it gets policy after a restart.
+// handlePolicySync hands the extension the payload of the bundle in force, the JSON object its
+// signature covered; the extension holds no durable state, so this is how it gets policy after a
+// restart.
 func (h *nativeSession) handlePolicySync(msg protocol.NativeMessage) []byte {
 	var req protocol.PolicySyncRequest
 	if len(msg.Body) > 0 {
@@ -223,7 +182,12 @@ func (h *nativeSession) handlePolicySync(msg protocol.NativeMessage) []byte {
 		answer.PolicyVersion = b.Version
 		answer.Unchanged = req.KnownVersion != "" && req.KnownVersion == b.Version
 		if !answer.Unchanged {
-			answer.Bundle = h.svc.store.InForceRaw()
+			// The store holds only verified envelopes, so the payload is the verified bundle.
+			var signed policy.SignedBundle
+			if err := json.Unmarshal(h.svc.store.InForceRaw(), &signed); err != nil {
+				return refusal(protocol.RefusalMalformed, "the bundle in force is not a signed bundle: %v", err)
+			}
+			answer.Bundle = signed.Payload
 		}
 	}
 	return reply(protocol.TypePolicyBundle, msg.ID, answer)
@@ -268,11 +232,14 @@ func refusal(reason protocol.RefusalReason, format string, args ...any) []byte {
 }
 
 // toCoreObservation turns a decoded observation into what the pipeline consumes, with the content
-// behind a reader so the mode is applied before it is read.
-func toCoreObservation(o protocol.ObservationMessage) core.Observation {
-	decision := o.Decision
-	if decision == nil {
-		decision = &protocol.Decision{RuleID: "policy.default", Action: protocol.ActionLogged, DecidedLocally: true}
+// behind a reader so the mode is applied before it is read. The extension's own decision is kept.
+// Without one the bundle's rules decide; the answer to an observation carries no decision, so
+// nothing here can stop the prompt and the decision is recorded as logged.
+func toCoreObservation(o protocol.ObservationMessage, bundles func() *policy.Bundle) core.Observation {
+	enforcer := enforce.Hook(bundles, o.Route, o.ToolFingerprint, false)
+	if d := o.Decision; d != nil {
+		decision := *d
+		enforcer = func([]string, bool) protocol.Decision { return decision }
 	}
 	atts := make([]dedup.Attachment, 0, len(o.Attachments))
 	for _, a := range o.Attachments {
@@ -285,7 +252,7 @@ func toCoreObservation(o protocol.ObservationMessage) core.Observation {
 		OccurredAt:        o.OccurredAt,
 		MonotonicOffsetMS: o.MonotonicOffsetMS,
 		SizeBytes:         o.SizeBytes,
-		Decision:          decision,
+		Enforce:           enforcer,
 		Extract:           extensionExtractor{},
 		Attachments:       atts,
 		ClientID:          o.ClientID,

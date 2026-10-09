@@ -85,6 +85,7 @@
  * @property {(path: string) => string} getURL
  * @property {(n: number) => string[]} randomUUIDs       `n` v4 UUIDs
  * @property {(spec: WarnSpec) => Promise<WarnAnswer>} warnUser  renders the warn confirmation
+ * @property {(spec: WarnSpec) => Promise<{shown: boolean}>} showBlocked  renders the block notice
  */
 
 /**
@@ -93,7 +94,8 @@
  * @property {string} host
  * @property {string} path
  * @property {string} rule_id
- * @property {string} message
+ * @property {string} message   the rule's message
+ * @property {string} [link]    the rule's https link
  * @property {number} tab_id
  * @property {number} timeout_ms
  * @property {string} [request_id]

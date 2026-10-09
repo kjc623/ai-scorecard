@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
 import { extensionId } from '../extension/tools/extension-id.mjs';
-import { CONFIG, LAYOUT, NATIVE_HOST, TENANT_PACKAGE, genericEnv, genericProfile, nativeHostManifest } from './manifest.mjs';
+import { CONFIG, LAYOUT, NATIVE_HOST, START_MENU_SHORTCUT, TENANT_PACKAGE, UNINSTALL_CLEANUP, genericEnv, genericProfile, nativeHostManifest } from './manifest.mjs';
 import { DATA_FOLDER_ACL, drift } from './render.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -121,6 +121,28 @@ check(
   Object.entries(DATA_FOLDER_ACL).every(([d, sddl]) => wxs.includes(`<CreateFolder Directory="${d}"><PermissionEx Sddl="${sddl}" /></CreateFolder>`)) &&
     !/;;;BU\)/.test(DATA_FOLDER_ACL.PROFILEFOLDER + DATA_FOLDER_ACL.STATEFOLDER) &&
     wxs.includes('<Directory Id="CLIFOLDER" Name="cli" />'),
+);
+const S = START_MENU_SHORTCUT;
+const helperAumid = /const AppUserModelID = "([^"]+)"/.exec(read('device/capture-core/userhelper/toast.go'))?.[1];
+check(
+  "Windows: the Start-menu shortcut carries the AppUserModelID capture-core's notifications are shown under",
+  helperAumid === S.appUserModelId &&
+    /<File Id="Fil_CaptureCore"[^>]*>\s*(?:<!--[^>]*-->\s*)?<Shortcut Id="Sc_StartMenu" Directory="ProgramMenuFolder"/.test(wxs) &&
+    wxs.includes(`<ShortcutProperty Key="System.AppUserModel.ID" Value="${S.appUserModelId}" />`),
+  helperAumid ? `${S.appUserModelId}, capture-core ${helperAumid}` : 'AppUserModelID not found in device/capture-core/userhelper/toast.go',
+);
+const U = UNINSTALL_CLEANUP;
+const cleanupArg = /const uninstallCleanupArg = "([^"]+)"/.exec(agentSource)?.[1];
+const cleanupLog = /const uninstallLogName = "([^"]+)"/.exec(agentSource)?.[1];
+const xmlAttr = (v) => v.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+check(
+  "Windows: a full uninstall runs capture-core's cleanup as SYSTEM after the service stops, with the service's files, and ignores its exit code",
+  cleanupArg === U.argument && cleanupLog === U.log &&
+    wxs.includes('<CustomAction Id="UninstallCleanup" FileRef="Fil_CaptureCore" Execute="deferred" Impersonate="no" Return="ignore"') &&
+    wxs.includes(`ExeCommand="${U.argument} --config-file &quot;[PROFILEFOLDER]capture-core.env&quot; --config-file &quot;[PROFILEFOLDER]tenant.env&quot;" />`) &&
+    wxs.includes(`<Custom Action="UninstallCleanup" After="StopServices" Condition="${xmlAttr(U.condition)}" />`) &&
+    U.condition === 'REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE',
+  cleanupArg ? `${U.argument}, capture-core ${cleanupArg}, log ${cleanupLog}` : 'uninstallCleanupArg not found in device/capture-core/cmd/capture-core',
 );
 check('Windows: the MSI version is a build input with no default', wxs.includes('Version="$(var.ProductVersion)"') && !wxs.includes('define ProductVersion'));
 

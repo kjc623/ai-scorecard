@@ -1,0 +1,5 @@
+[otel]
+log_user_prompt = true
+
+[otel.exporter.otlp-grpc]
+endpoint = "https://collector.example.net:4317"

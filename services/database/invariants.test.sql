@@ -340,7 +340,7 @@ BEGIN
   RAISE NOTICE 'PASS T11 exact observation adopted the weak-only row instead of double-counting';
 END $$;
 
--- A rollup and a detection for one tool in one bucket stay two records. Neither carries a size, so
+-- A rollup and a discovery for one tool in one bucket stay two records. Neither carries a size, so
 -- without `kind` in the weak key they would collapse into one.
 DO $$
 DECLARE
@@ -366,20 +366,20 @@ BEGIN
     'tenant_id','11111111-1111-7111-8111-111111111111',
     'device_id','aaaaaaaa-0000-7000-8000-000000000001',
     'user_ref','u_test','tool_fingerprint','ondevice.runtime.v1:ollama',
-    'direction','none','kind','model_detection',
+    'direction','none','kind','discovery',
     'occurred_at','2026-10-04T08:01:00Z','monotonic_offset_ms',60000,
     'source','proc.detect','collection_mode','m0',
     'dedup_key','sha256:' || repeat('c2', 32),
-    'detection_basis','process_scan'
+    'discovery_type','app_running','detection_basis','process_event'
   ), now());
 
   SELECT count(*) INTO n FROM ingest.submission
    WHERE tenant_id = '11111111-1111-7111-8111-111111111111'
      AND tool_fingerprint = 'ondevice.runtime.v1:ollama';
   IF n <> 2 THEN
-    RAISE EXCEPTION 'FAIL T12 expected a rollup and a detection to stay separate, found %', n;
+    RAISE EXCEPTION 'FAIL T12 expected a rollup and a discovery to stay separate, found %', n;
   END IF;
-  RAISE NOTICE 'PASS T12 rollup and detection kept separate (kind is part of the weak key)';
+  RAISE NOTICE 'PASS T12 rollup and discovery kept separate (kind is part of the weak key)';
 END $$;
 
 
@@ -965,7 +965,7 @@ END $$;
 
 
 -- =====================================================================================
--- T38-T42  The kind and mode boundaries match the envelope contract, field for field
+-- T38-T42, T75  The kind and mode boundaries match the envelope contract, field for field
 -- =====================================================================================
 -- services/database/tools/check-schema.mjs proves each forbid-list equals the contract's; these prove each
 -- field is actually enforced. Each block ends with a positive control: a well-formed row of the same
@@ -974,69 +974,160 @@ END $$;
 
 DO $$
 DECLARE
-  -- the contract's model_detection forbid-list
+  -- the contract's discovery forbid-list
   forbids text[] := ARRAY['content_digest','labels','classifier_version','content_excerpt',
-                          'policy_decision','size_bytes','window_start','window_end',
-                          'submission_count','bytes_total','prompt_kind'];
+                          'confidence','prompt_kind','policy_decision','size_bytes',
+                          'window_start','window_end','submission_count','bytes_total',
+                          'activity_type','model','input_tokens','output_tokens','duration_ms',
+                          'tool_name','outcome'];
   vals jsonb := jsonb_build_object(
     'content_digest', 'sha256:' || repeat('a1', 32),
     'labels', jsonb_build_array(jsonb_build_object('class','payment_card','score',0.5)),
     'classifier_version', 'test-2026.01',
     'content_excerpt', 'minimised excerpt',
+    'confidence', 'high',
+    'prompt_kind', 'user',
     'policy_decision', jsonb_build_object('rule_id','R','action','logged','decided_locally',true),
     'size_bytes', 100,
     'window_start', '2026-11-01T00:00:00Z',
     'window_end', '2026-11-02T00:00:00Z',
     'submission_count', 1,
-    'bytes_total', 100,
-    'prompt_kind', 'user');
+    'bytes_total', 100)
+    || jsonb_build_object(
+    'activity_type', 'model_request',
+    'model', 'model-1',
+    'input_tokens', 10,
+    'output_tokens', 20,
+    'duration_ms', 30,
+    'tool_name', 'Bash',
+    'outcome', 'success');
+  good jsonb := jsonb_build_object(
+    'tenant_id','11111111-1111-7111-8111-111111111111',
+    'device_id','aaaaaaaa-0000-7000-8000-000000000001',
+    'user_ref','u_test','tool_fingerprint','app:contract-sweep',
+    'direction','none','kind','discovery',
+    'occurred_at','2026-11-02T09:00:00Z','received_at', now(), 'ingested_at', now(),
+    'monotonic_offset_ms', 1, 'source','inv.scan','collection_mode','m1',
+    'discovery_type','local_model','detection_basis','model_store')
+    || jsonb_build_object(
+    'app_version','0.5.1','publisher','Example Publisher','host_app','app:example-ide',
+    'destination_host','api.example.com','model_names', jsonb_build_array('model-a','model-b'),
+    'dedup_key','sha256:' || repeat('d1', 32),
+    'schema_version','1.0','expires_at', now() + interval '30 days');
   base jsonb;
   f text;
   n int;
 BEGIN
   FOREACH f IN ARRAY forbids LOOP
-    base := jsonb_build_object(
-      'tenant_id','11111111-1111-7111-8111-111111111111',
-      'event_id', gen_random_uuid(),
-      'device_id','aaaaaaaa-0000-7000-8000-000000000001',
-      'user_ref','u_test','tool_fingerprint','ondevice.runtime.v1:contract-sweep',
-      'direction','none','kind','model_detection',
-      'occurred_at','2026-11-02T09:00:00Z','received_at', now(), 'ingested_at', now(),
-      'monotonic_offset_ms', 1, 'source','proc.detect','collection_mode','m1',
-      'detection_basis','process_scan','dedup_key','sha256:' || repeat('d1', 32),
-      'schema_version','1.0','expires_at', now() + interval '30 days')
-      || jsonb_build_object(f, vals -> f);
+    base := good || jsonb_build_object('event_id', gen_random_uuid(), f, vals -> f);
     BEGIN
       INSERT INTO ingest.observation SELECT * FROM jsonb_populate_record(NULL::ingest.observation, base);
-      RAISE EXCEPTION 'FAIL T38 model_detection accepted %, which the contract forbids for this kind', f;
+      RAISE EXCEPTION 'FAIL T38 discovery accepted %, which the contract forbids for this kind', f;
     EXCEPTION WHEN check_violation THEN
       NULL;
     END;
   END LOOP;
 
-  base := jsonb_build_object(
-    'tenant_id','11111111-1111-7111-8111-111111111111',
-    'event_id', gen_random_uuid(),
-    'device_id','aaaaaaaa-0000-7000-8000-000000000001',
-    'user_ref','u_test','tool_fingerprint','ondevice.runtime.v1:contract-sweep',
-    'direction','none','kind','model_detection',
-    'occurred_at','2026-11-02T09:00:00Z','received_at', now(), 'ingested_at', now(),
-    'monotonic_offset_ms', 1, 'source','proc.detect','collection_mode','m1',
-    'detection_basis','process_scan','dedup_key','sha256:' || repeat('d1', 32),
-    'schema_version','1.0','expires_at', now() + interval '30 days');
+  -- the contract requires discovery_type and detection_basis
+  FOREACH f IN ARRAY ARRAY['discovery_type','detection_basis'] LOOP
+    base := (good - f) || jsonb_build_object('event_id', gen_random_uuid());
+    BEGIN
+      INSERT INTO ingest.observation SELECT * FROM jsonb_populate_record(NULL::ingest.observation, base);
+      RAISE EXCEPTION 'FAIL T38 discovery accepted a row without %, which the contract requires', f;
+    EXCEPTION WHEN check_violation THEN
+      NULL;
+    END;
+  END LOOP;
+
+  base := good || jsonb_build_object('event_id', gen_random_uuid());
   INSERT INTO ingest.observation SELECT * FROM jsonb_populate_record(NULL::ingest.observation, base);
   GET DIAGNOSTICS n = ROW_COUNT;
   IF n <> 1 THEN
-    RAISE EXCEPTION 'FAIL T38 the well-formed model_detection was not accepted, so the refusals above prove nothing';
+    RAISE EXCEPTION 'FAIL T38 the well-formed discovery was not accepted, so the refusals above prove nothing';
   END IF;
-  RAISE NOTICE 'PASS T38 model_detection refuses all % contract-forbidden fields and still accepts a valid one', array_length(forbids, 1);
+  RAISE NOTICE 'PASS T38 discovery refuses all % contract-forbidden fields and rows missing a required one, and still accepts a valid one', array_length(forbids, 1);
+END $$;
+
+DO $$
+DECLARE
+  -- the contract's agent_activity forbid-list
+  forbids text[] := ARRAY['content_digest','labels','classifier_version','content_excerpt',
+                          'confidence','prompt_kind','policy_decision',
+                          'window_start','window_end','submission_count','bytes_total',
+                          'detection_basis','discovery_type','app_version','publisher',
+                          'host_app','destination_host','model_names'];
+  vals jsonb := jsonb_build_object(
+    'content_digest', 'sha256:' || repeat('a5', 32),
+    'labels', jsonb_build_array(jsonb_build_object('class','payment_card','score',0.5)),
+    'classifier_version', 'test-2026.01',
+    'content_excerpt', 'minimised excerpt',
+    'confidence', 'high',
+    'prompt_kind', 'user',
+    'policy_decision', jsonb_build_object('rule_id','R','action','logged','decided_locally',true),
+    'window_start', '2026-11-01T00:00:00Z',
+    'window_end', '2026-11-02T00:00:00Z',
+    'submission_count', 1,
+    'bytes_total', 100)
+    || jsonb_build_object(
+    'detection_basis', 'process_event',
+    'discovery_type', 'app_running',
+    'app_version', '1.0.0',
+    'publisher', 'Example Publisher',
+    'host_app', 'app:example-ide',
+    'destination_host', 'api.example.com',
+    'model_names', jsonb_build_array('model-a'));
+  good jsonb := jsonb_build_object(
+    'tenant_id','11111111-1111-7111-8111-111111111111',
+    'device_id','aaaaaaaa-0000-7000-8000-000000000001',
+    'user_ref','u_test','tool_fingerprint','app:contract-sweep',
+    'direction','none','kind','agent_activity',
+    'occurred_at','2026-11-02T09:30:00Z','received_at', now(), 'ingested_at', now(),
+    'monotonic_offset_ms', 1, 'source','tool.otel','collection_mode','m1')
+    || jsonb_build_object(
+    'activity_type','model_request','model','model-1','input_tokens', 1200,
+    'output_tokens', 300,'duration_ms', 4500,'outcome','success','size_bytes', 2048,
+    'dedup_key','sha256:' || repeat('d5', 32),
+    'schema_version','1.0','expires_at', now() + interval '30 days');
+  base jsonb;
+  f text;
+  n int;
+BEGIN
+  FOREACH f IN ARRAY forbids LOOP
+    base := good || jsonb_build_object('event_id', gen_random_uuid(), f, vals -> f);
+    BEGIN
+      INSERT INTO ingest.observation SELECT * FROM jsonb_populate_record(NULL::ingest.observation, base);
+      RAISE EXCEPTION 'FAIL T75 agent_activity accepted %, which the contract forbids for this kind', f;
+    EXCEPTION WHEN check_violation THEN
+      NULL;
+    END;
+  END LOOP;
+
+  -- the contract requires activity_type
+  base := (good - 'activity_type') || jsonb_build_object('event_id', gen_random_uuid());
+  BEGIN
+    INSERT INTO ingest.observation SELECT * FROM jsonb_populate_record(NULL::ingest.observation, base);
+    RAISE EXCEPTION 'FAIL T75 agent_activity accepted a row without activity_type, which the contract requires';
+  EXCEPTION WHEN check_violation THEN
+    NULL;
+  END;
+
+  base := good || jsonb_build_object('event_id', gen_random_uuid());
+  INSERT INTO ingest.observation SELECT * FROM jsonb_populate_record(NULL::ingest.observation, base);
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN
+    RAISE EXCEPTION 'FAIL T75 the well-formed agent_activity was not accepted, so the refusals above prove nothing';
+  END IF;
+  RAISE NOTICE 'PASS T75 agent_activity refuses all % contract-forbidden fields and a row without activity_type, and still accepts a valid one', array_length(forbids, 1);
 END $$;
 
 DO $$
 DECLARE
   -- the contract's usage_rollup forbid-list
   forbids text[] := ARRAY['content_digest','labels','classifier_version','content_excerpt',
-                          'policy_decision','size_bytes','detection_basis','prompt_kind'];
+                          'policy_decision','size_bytes','detection_basis','prompt_kind',
+                          'discovery_type','app_version','publisher','host_app',
+                          'destination_host','model_names','activity_type','model',
+                          'input_tokens','output_tokens','duration_ms','tool_name','outcome'];
   vals jsonb := jsonb_build_object(
     'content_digest', 'sha256:' || repeat('a2', 32),
     'labels', jsonb_build_array(jsonb_build_object('class','payment_card','score',0.5)),
@@ -1044,8 +1135,22 @@ DECLARE
     'content_excerpt', 'minimised excerpt',
     'policy_decision', jsonb_build_object('rule_id','R','action','logged','decided_locally',true),
     'size_bytes', 100,
-    'detection_basis', 'process_scan',
-    'prompt_kind', 'user');
+    'detection_basis', 'process_event',
+    'prompt_kind', 'user')
+    || jsonb_build_object(
+    'discovery_type', 'app_installed',
+    'app_version', '1.0.0',
+    'publisher', 'Example Publisher',
+    'host_app', 'app:example-ide',
+    'destination_host', 'api.example.com',
+    'model_names', jsonb_build_array('model-a'),
+    'activity_type', 'tool_call',
+    'model', 'model-1',
+    'input_tokens', 10,
+    'output_tokens', 20,
+    'duration_ms', 30,
+    'tool_name', 'Bash',
+    'outcome', 'success');
   base jsonb;
   f text;
   n int;
@@ -1094,14 +1199,31 @@ END $$;
 
 DO $$
 DECLARE
-  -- the contract's prompt forbid-list: the window fields and detection_basis
-  forbids text[] := ARRAY['window_start','window_end','submission_count','bytes_total','detection_basis'];
+  -- the contract's prompt forbid-list: the window fields and every discovery and agent_activity field
+  forbids text[] := ARRAY['window_start','window_end','submission_count','bytes_total','detection_basis',
+                          'discovery_type','app_version','publisher','host_app',
+                          'destination_host','model_names','activity_type','model',
+                          'input_tokens','output_tokens','duration_ms','tool_name','outcome'];
   vals jsonb := jsonb_build_object(
     'window_start','2026-11-01T00:00:00Z',
     'window_end','2026-11-02T00:00:00Z',
     'submission_count', 1,
     'bytes_total', 100,
-    'detection_basis','process_scan');
+    'detection_basis','process_event')
+    || jsonb_build_object(
+    'discovery_type', 'app_installed',
+    'app_version', '1.0.0',
+    'publisher', 'Example Publisher',
+    'host_app', 'app:example-ide',
+    'destination_host', 'api.example.com',
+    'model_names', jsonb_build_array('model-a'),
+    'activity_type', 'tool_call',
+    'model', 'model-1',
+    'input_tokens', 10,
+    'output_tokens', 20,
+    'duration_ms', 30,
+    'tool_name', 'Bash',
+    'outcome', 'success');
   base jsonb;
   f text;
   n int;
@@ -2126,11 +2248,11 @@ BEGIN
     'device_id', 'aaaaaaaa-0000-7000-8000-000000000001',
     'user_ref', v_alias,
     'tool_fingerprint', 'probe-alias-1',
-    'direction', 'none', 'kind', 'model_detection',
+    'direction', 'none', 'kind', 'discovery',
     'occurred_at', '2026-10-05T10:00:00Z',
     'monotonic_offset_ms', 1,
     'source', 'proc.detect', 'collection_mode', 'm0',
-    'detection_basis', 'process_scan',
+    'discovery_type', 'app_running', 'detection_basis', 'process_event',
     'dedup_key', 'sha256:' || repeat('e1', 32)
   ), now() + interval '1 hour');
 
@@ -2152,11 +2274,11 @@ BEGIN
     'device_id', 'aaaaaaaa-0000-7000-8000-000000000001',
     'user_ref', v_unknown,
     'tool_fingerprint', 'probe-alias-2',
-    'direction', 'none', 'kind', 'model_detection',
+    'direction', 'none', 'kind', 'discovery',
     'occurred_at', '2026-10-05T10:00:00Z',
     'monotonic_offset_ms', 2,
     'source', 'proc.detect', 'collection_mode', 'm0',
-    'detection_basis', 'process_scan',
+    'discovery_type', 'app_running', 'detection_basis', 'process_event',
     'dedup_key', 'sha256:' || repeat('e2', 32)
   ), now() + interval '2 hours');
 
@@ -2503,6 +2625,542 @@ END $$;
 
 RESET ROLE;
 
+
+-- =====================================================================================
+-- T76-T77  Endpoint collector settings
+-- =====================================================================================
+
+-- Tenant B's rows, written as the superuser, so tenant A's session has something to not see.
+INSERT INTO ops.endpoint_setting (tenant_id, inventory) VALUES (:tb, false);
+INSERT INTO ops.endpoint_tool_setting (tenant_id, tool_key, otel, hooks) VALUES (:tb, 'codex', false, false);
+
+SET ROLE sac_control;
+SET app.tenant_id = '11111111-1111-7111-8111-111111111111';
+
+DO $$
+DECLARE
+  k text;
+  n int;
+BEGIN
+  FOREACH k IN ARRAY ARRAY['claude_code', 'codex', 'copilot', 'cursor', 'ollama'] LOOP
+    INSERT INTO ops.endpoint_tool_setting (tenant_id, tool_key, otel, hooks)
+    VALUES ('11111111-1111-7111-8111-111111111111', k, true, false);
+  END LOOP;
+  SELECT count(*) INTO n FROM ops.endpoint_tool_setting
+   WHERE tenant_id = '11111111-1111-7111-8111-111111111111' AND loopback;
+  IF n <> 0 THEN
+    RAISE EXCEPTION 'FAIL T76 % endpoint tool settings have loopback on without being set', n;
+  END IF;
+  FOREACH k IN ARRAY ARRAY['lm_studio', 'Claude_Code', 'windsurf', ''] LOOP
+    BEGIN
+      INSERT INTO ops.endpoint_tool_setting (tenant_id, tool_key, otel, hooks)
+      VALUES ('11111111-1111-7111-8111-111111111111', k, true, true);
+      RAISE EXCEPTION 'FAIL T76 the tool key % was accepted', quote_literal(k);
+    EXCEPTION WHEN check_violation THEN NULL;
+    END;
+  END LOOP;
+  RAISE NOTICE 'PASS T76 endpoint tool settings accept the five tool keys, default loopback off, and refuse any other key';
+END $$;
+
+DO $$
+DECLARE
+  n int;
+  v boolean;
+BEGIN
+  -- A row in the session's own tenant takes the schema's defaults and can be changed.
+  INSERT INTO ops.endpoint_setting (tenant_id) VALUES ('11111111-1111-7111-8111-111111111111');
+  SELECT inventory AND processes AND flows AND otel AND hooks AND NOT hooks_managed_only INTO v
+    FROM ops.endpoint_setting;
+  IF v IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'FAIL T77 a new endpoint_setting row did not take the defaults';
+  END IF;
+  UPDATE ops.endpoint_setting SET flows = false
+   WHERE tenant_id = '11111111-1111-7111-8111-111111111111';
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN
+    RAISE EXCEPTION 'FAIL T77 control-api could not change its tenant''s endpoint setting';
+  END IF;
+
+  -- Tenant A sees only its own rows.
+  SELECT count(*) INTO n FROM ops.endpoint_setting;
+  IF n <> 1 THEN
+    RAISE EXCEPTION 'FAIL T77 tenant A saw % endpoint_setting rows, want its own 1', n;
+  END IF;
+  SELECT count(*) INTO n FROM ops.endpoint_tool_setting
+   WHERE tenant_id = '22222222-2222-7222-8222-222222222222';
+  IF n <> 0 THEN
+    RAISE EXCEPTION 'FAIL T77 tenant A saw % of tenant B''s endpoint tool settings', n;
+  END IF;
+  UPDATE ops.endpoint_setting SET inventory = true
+   WHERE tenant_id = '22222222-2222-7222-8222-222222222222';
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 0 THEN
+    RAISE EXCEPTION 'FAIL T77 tenant A changed tenant B''s endpoint setting';
+  END IF;
+
+  -- A write naming another tenant is refused by WITH CHECK.
+  BEGIN
+    INSERT INTO ops.endpoint_tool_setting (tenant_id, tool_key, otel, hooks)
+    VALUES ('22222222-2222-7222-8222-222222222222', 'cursor', true, true);
+    RAISE EXCEPTION 'FAIL T77 tenant A wrote an endpoint tool setting for tenant B';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO ops.endpoint_setting (tenant_id) VALUES ('22222222-2222-7222-8222-222222222222');
+    RAISE EXCEPTION 'FAIL T77 tenant A wrote an endpoint setting for tenant B';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+  END;
+
+  -- No tenant set: nothing.
+  PERFORM set_config('app.tenant_id', '', false);
+  SELECT (SELECT count(*) FROM ops.endpoint_setting) + (SELECT count(*) FROM ops.endpoint_tool_setting) INTO n;
+  IF n <> 0 THEN
+    RAISE EXCEPTION 'FAIL T77 a session with no tenant saw % endpoint setting rows', n;
+  END IF;
+  PERFORM set_config('app.tenant_id', '11111111-1111-7111-8111-111111111111', false);
+
+  RAISE NOTICE 'PASS T77 endpoint settings are isolated per tenant, and control-api reads and writes its own';
+END $$;
+
+RESET ROLE;
+
+-- query-api has no grant on the endpoint settings.
+SET ROLE sac_query;
+DO $$
+BEGIN
+  BEGIN
+    PERFORM 1 FROM ops.endpoint_setting;
+    RAISE EXCEPTION 'FAIL T77 query-api can read the endpoint settings';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+  END;
+END $$;
+RESET ROLE;
+
+
+-- =====================================================================================
+-- T78  TLS inspection is off unless a tenant turns it on
+-- =====================================================================================
+
+SET ROLE sac_control;
+SET app.tenant_id = '11111111-1111-7111-8111-111111111111';
+
+DO $$
+DECLARE
+  n int;
+  v boolean;
+BEGIN
+  -- Tenant A was created without the setting: it is off.
+  SELECT tls_inspection INTO v FROM ops.tenant;
+  IF v IS DISTINCT FROM false THEN
+    RAISE EXCEPTION 'FAIL T78 a tenant created without the setting has tls_inspection %, want false', v;
+  END IF;
+  UPDATE ops.tenant SET tls_inspection = true
+   WHERE tenant_id = '11111111-1111-7111-8111-111111111111';
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN
+    RAISE EXCEPTION 'FAIL T78 control-api could not turn TLS inspection on for its tenant';
+  END IF;
+  UPDATE ops.tenant SET tls_inspection = true
+   WHERE tenant_id = '22222222-2222-7222-8222-222222222222';
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 0 THEN
+    RAISE EXCEPTION 'FAIL T78 tenant A turned TLS inspection on for tenant B';
+  END IF;
+  BEGIN
+    UPDATE ops.tenant SET tls_inspection = NULL
+     WHERE tenant_id = '11111111-1111-7111-8111-111111111111';
+    RAISE EXCEPTION 'FAIL T78 tls_inspection accepted NULL';
+  EXCEPTION WHEN not_null_violation THEN NULL;
+  END;
+  UPDATE ops.tenant SET tls_inspection = false
+   WHERE tenant_id = '11111111-1111-7111-8111-111111111111';
+  RAISE NOTICE 'PASS T78 TLS inspection defaults off, and control-api switches it for its own tenant only';
+END $$;
+
+RESET ROLE;
+
+DO $$
+BEGIN
+  IF (SELECT count(*) FROM ops.tenant WHERE tls_inspection) <> 0 THEN
+    RAISE EXCEPTION 'FAIL T78 a tenant has TLS inspection on without anyone turning it on';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM ref.collector WHERE collector_code = 'desktop_proxy' AND component = 'capture_core') THEN
+    RAISE EXCEPTION 'FAIL T78 the desktop_proxy collector is missing, so a device reporting it would be refused';
+  END IF;
+  RAISE NOTICE 'PASS T78 no tenant intercepts TLS by default, and the desktop-app PAC has its collector';
+END $$;
+
+
+-- =====================================================================================
+-- T79-T80  Enforcement rules
+-- =====================================================================================
+
+-- Tenant B's rule, written as the superuser, so tenant A's session has something to not see.
+INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, match, message, updated_by)
+VALUES (:tb, 0, 'block_credentials', 'block', '{"labels": ["credential"]}', 'Remove it.', 'admin-b');
+
+SET ROLE sac_control;
+SET app.tenant_id = '11111111-1111-7111-8111-111111111111';
+
+DO $$
+DECLARE
+  t constant uuid := '11111111-1111-7111-8111-111111111111';
+  m jsonb;
+BEGIN
+  -- Every match list, every action, an empty message and no link are accepted.
+  INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, match, message, link, updated_by) VALUES
+    (t, 0, 'block_credentials', 'block',
+     '{"labels": ["credential", "payment_card"], "tools": ["app:cursor"], "categories": ["coding_agent"], "sanction": ["unsanctioned"], "routes": ["tool.hook"]}',
+     'Remove the credential and try again.', 'https://intranet.example/ai', 'admin-a'),
+    (t, 1, 'warn.unsanctioned-1', 'warn', '{"sanction": ["unsanctioned"]}', 'Use the approved tool.', NULL, 'admin-a'),
+    (t, 2, 'allow_rest', 'allow', '{}', '', NULL, 'admin-a');
+
+  -- Each refused value, one at a time.
+  FOREACH m IN ARRAY ARRAY[
+    '[]', '"labels"', '{"other": []}', '{"labels": "credential"}', '{"tools": [1]}',
+    '{"routes": [null]}', '{"sanction": {"a": 1}}', '{"categories": [["ide"]]}'
+  ]::jsonb[] LOOP
+    BEGIN
+      INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, match, updated_by)
+      VALUES (t, 9, 'refused', 'allow', m, 'admin-a');
+      RAISE EXCEPTION 'FAIL T79 the match % was accepted', m;
+    EXCEPTION WHEN check_violation THEN NULL;
+    END;
+  END LOOP;
+  BEGIN
+    INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, match, updated_by)
+    VALUES (t, 9, 'refused', 'block', '{"labels": ["credential", "secrets"]}', 'admin-a');
+    RAISE EXCEPTION 'FAIL T79 a label outside ref.data_class was accepted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, updated_by)
+    VALUES (t, 9, 'refused', 'redact', 'admin-a');
+    RAISE EXCEPTION 'FAIL T79 the action redact was accepted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, updated_by)
+    VALUES (t, 9, 'Refused', 'allow', 'admin-a');
+    RAISE EXCEPTION 'FAIL T79 a rule id with an upper-case letter was accepted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, updated_by)
+    VALUES (t, 9, '9refused', 'allow', 'admin-a');
+    RAISE EXCEPTION 'FAIL T79 a rule id starting with a digit was accepted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, message, updated_by)
+    VALUES (t, 9, 'refused', 'warn', repeat('x', 281), 'admin-a');
+    RAISE EXCEPTION 'FAIL T79 a message of 281 characters was accepted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, message, updated_by)
+  VALUES (t, 9, 'longest', 'warn', repeat('é', 280), 'admin-a');
+  DELETE FROM ops.enforcement_rule WHERE tenant_id = t AND rule_id = 'longest';
+  FOREACH m IN ARRAY ARRAY['"http://intranet.example/ai"', '"https://"', '"intranet.example"']::jsonb[] LOOP
+    BEGIN
+      INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, link, updated_by)
+      VALUES (t, 9, 'refused', 'allow', m #>> '{}', 'admin-a');
+      RAISE EXCEPTION 'FAIL T79 the link % was accepted', m;
+    EXCEPTION WHEN check_violation THEN NULL;
+    END;
+  END LOOP;
+  BEGIN
+    INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, updated_by)
+    VALUES (t, 1, 'second_at_one', 'allow', 'admin-a');
+    RAISE EXCEPTION 'FAIL T79 two rules took position 1';
+  EXCEPTION WHEN unique_violation THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, updated_by)
+    VALUES (t, 9, 'allow_rest', 'allow', 'admin-a');
+    RAISE EXCEPTION 'FAIL T79 two rules took the id allow_rest';
+  EXCEPTION WHEN unique_violation THEN NULL;
+  END;
+  RAISE NOTICE 'PASS T79 enforcement rules take the three actions and the five match lists, and refuse every malformed value';
+END $$;
+
+DO $$
+DECLARE
+  n int;
+BEGIN
+  -- Tenant A sees and replaces only its own list.
+  SELECT count(*) INTO n FROM ops.enforcement_rule;
+  IF n <> 3 THEN
+    RAISE EXCEPTION 'FAIL T80 tenant A saw % enforcement rules, want its own 3', n;
+  END IF;
+  DELETE FROM ops.enforcement_rule WHERE tenant_id = '22222222-2222-7222-8222-222222222222';
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 0 THEN
+    RAISE EXCEPTION 'FAIL T80 tenant A deleted tenant B''s enforcement rules';
+  END IF;
+  BEGIN
+    INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, updated_by)
+    VALUES ('22222222-2222-7222-8222-222222222222', 5, 'planted', 'allow', 'admin-a');
+    RAISE EXCEPTION 'FAIL T80 tenant A wrote an enforcement rule for tenant B';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+  END;
+  -- Replacing the list in one transaction: delete, then insert in the new order.
+  DELETE FROM ops.enforcement_rule WHERE tenant_id = '11111111-1111-7111-8111-111111111111';
+  INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, match, message, updated_by) VALUES
+    ('11111111-1111-7111-8111-111111111111', 0, 'allow_rest', 'allow', '{}', '', 'admin-a'),
+    ('11111111-1111-7111-8111-111111111111', 1, 'block_credentials', 'block', '{"labels": ["credential"]}', 'Remove it.', 'admin-a');
+  IF (SELECT string_agg(rule_id, ',' ORDER BY position) FROM ops.enforcement_rule) <> 'allow_rest,block_credentials' THEN
+    RAISE EXCEPTION 'FAIL T80 the replaced list is not in its new order';
+  END IF;
+  BEGIN
+    UPDATE ops.enforcement_rule SET message = 'changed' WHERE rule_id = 'allow_rest';
+    RAISE EXCEPTION 'FAIL T80 control-api updated a rule in place; the list is replaced, not edited';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+  END;
+
+  PERFORM set_config('app.tenant_id', '', false);
+  SELECT count(*) INTO n FROM ops.enforcement_rule;
+  IF n <> 0 THEN
+    RAISE EXCEPTION 'FAIL T80 a session with no tenant saw % enforcement rules', n;
+  END IF;
+  PERFORM set_config('app.tenant_id', '11111111-1111-7111-8111-111111111111', false);
+  RAISE NOTICE 'PASS T80 enforcement rules are isolated per tenant, and control-api replaces its own list';
+END $$;
+
+RESET ROLE;
+
+SET ROLE sac_query;
+DO $$
+BEGIN
+  BEGIN
+    PERFORM 1 FROM ops.enforcement_rule;
+    RAISE EXCEPTION 'FAIL T80 query-api can read the enforcement rules';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+  END;
+END $$;
+RESET ROLE;
+
+DO $$
+BEGIN
+  IF (SELECT count(*) FROM ops.enforcement_rule WHERE tenant_id = '22222222-2222-7222-8222-222222222222') <> 1 THEN
+    RAISE EXCEPTION 'FAIL T80 tenant B''s enforcement rule changed under tenant A''s session';
+  END IF;
+  -- The label trigger also guards an update, which no runtime role can make.
+  BEGIN
+    UPDATE ops.enforcement_rule SET match = '{"labels": ["nope"]}'
+     WHERE tenant_id = '22222222-2222-7222-8222-222222222222';
+    RAISE EXCEPTION 'FAIL T79 an update to a label outside ref.data_class was accepted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+END $$;
+
+-- =====================================================================================
+-- T81-T82  App catalog
+-- =====================================================================================
+
+DO $$
+DECLARE
+  bad text;
+BEGIN
+  -- Each refused value, one at a time.
+  FOREACH bad IN ARRAY ARRAY['Cursor', 'x', '9cursor', 'cursor-ide', repeat('a', 65)] LOOP
+    BEGIN
+      INSERT INTO ref.app (app_key, display_name, vendor, category, source_url)
+      VALUES (bad, 'Refused', 'test', 'ide', 'https://example.test/');
+      RAISE EXCEPTION 'FAIL T81 the app_key % was accepted', bad;
+    EXCEPTION WHEN check_violation THEN NULL;
+    END;
+  END LOOP;
+  BEGIN
+    INSERT INTO ref.app (app_key, display_name, vendor, category, source_url)
+    VALUES ('refused_app', 'Refused', 'test', 'browser', 'https://example.test/');
+    RAISE EXCEPTION 'FAIL T81 the category browser was accepted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO ref.app_signal (app_key, platform, kind, value) VALUES ('cursor', 'android', 'windows_exe', 'Cursor.exe');
+    RAISE EXCEPTION 'FAIL T81 the platform android was accepted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO ref.app_signal (app_key, platform, kind, value) VALUES ('cursor', 'windows', 'registry_key', 'Cursor');
+    RAISE EXCEPTION 'FAIL T81 the signal kind registry_key was accepted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO ref.app_signal (app_key, platform, kind, value) VALUES ('no_such_app', 'windows', 'windows_exe', 'x.exe');
+    RAISE EXCEPTION 'FAIL T81 a signal for an app outside ref.app was accepted';
+  EXCEPTION WHEN foreign_key_violation THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO ref.tool_catalogue (tool_fingerprint, display_name, signal_kind) VALUES ('refused', 'Refused', 'inventory');
+    RAISE EXCEPTION 'FAIL T81 the tool catalogue signal_kind inventory was accepted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO ref.tool_catalogue (tool_fingerprint, display_name, signal_kind, app_key) VALUES ('app:no_such_app', 'Refused', 'endpoint', 'no_such_app');
+    RAISE EXCEPTION 'FAIL T81 a tool catalogue row naming an app outside ref.app was accepted';
+  EXCEPTION WHEN foreign_key_violation THEN NULL;
+  END;
+  RAISE NOTICE 'PASS T81 the app catalog refuses a malformed app key, category, platform and signal kind';
+END $$;
+
+DO $$
+DECLARE
+  n int;
+  missing text;
+BEGIN
+  SELECT count(*) INTO n FROM ref.app;
+  IF n <> 20 THEN
+    RAISE EXCEPTION 'FAIL T82 ref.app holds % apps, want the 20 seed apps', n;
+  END IF;
+  SELECT string_agg(a.app_key, ', ') INTO missing
+    FROM ref.app a
+   WHERE NOT EXISTS (SELECT 1 FROM ref.tool_catalogue c
+                      WHERE c.tool_fingerprint = 'app:' || a.app_key AND c.app_key = a.app_key
+                        AND c.signal_kind = 'endpoint' AND c.display_name = a.display_name
+                        AND c.vendor = a.vendor);
+  IF missing IS NOT NULL THEN
+    RAISE EXCEPTION 'FAIL T82 apps without their app: row in ref.tool_catalogue: %', missing;
+  END IF;
+  SELECT string_agg(a.app_key, ', ') INTO missing
+    FROM ref.app a WHERE NOT EXISTS (SELECT 1 FROM ref.app_signal s WHERE s.app_key = a.app_key);
+  IF missing IS NOT NULL THEN
+    RAISE EXCEPTION 'FAIL T82 apps without a signal: %', missing;
+  END IF;
+  RAISE NOTICE 'PASS T82 every seed app has a signal and its endpoint fingerprint in ref.tool_catalogue';
+END $$;
+
+SET ROLE sac_control;
+DO $$
+BEGIN
+  IF (SELECT count(*) FROM ref.app a JOIN ref.app_signal s USING (app_key)) = 0 THEN
+    RAISE EXCEPTION 'FAIL T82 control-api reads no app catalog';
+  END IF;
+END $$;
+RESET ROLE;
+SET ROLE sac_query;
+DO $$
+BEGIN
+  IF (SELECT count(*) FROM ref.app a JOIN ref.app_signal s USING (app_key)) = 0 THEN
+    RAISE EXCEPTION 'FAIL T82 query-api reads no app catalog';
+  END IF;
+  IF ops.tool_display_name('app:claude_code') IS DISTINCT FROM 'Claude Code' THEN
+    RAISE EXCEPTION 'FAIL T82 an endpoint fingerprint has no display name';
+  END IF;
+END $$;
+RESET ROLE;
+SET ROLE sac_ingest;
+DO $$
+BEGIN
+  BEGIN
+    PERFORM 1 FROM ref.app_signal;
+    RAISE EXCEPTION 'FAIL T82 ingest-api can read the app catalog';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+  END;
+  RAISE NOTICE 'PASS T82 control-api and query-api read the app catalog, ingest-api does not';
+END $$;
+RESET ROLE;
+
+-- =====================================================================================
+-- T83-T84  Kill switches
+-- =====================================================================================
+
+-- Tenant B's switch, written as the superuser, so tenant A's session has something to not see.
+INSERT INTO ops.kill_switch (tenant_id, route, reason_code, set_by)
+VALUES (:tb, 'proxy.tls', 'fleet_regression', 'admin-b');
+
+SET ROLE sac_control;
+SET app.tenant_id = '11111111-1111-7111-8111-111111111111';
+
+DO $$
+DECLARE
+  t constant uuid := '11111111-1111-7111-8111-111111111111';
+  bad text;
+BEGIN
+  -- Both interception routes take a switch, and effective_at defaults to the trip.
+  INSERT INTO ops.kill_switch (tenant_id, route, reason_code, set_by) VALUES
+    (t, 'proxy.tls', 'app_breakage', 'admin-a'),
+    (t, 'proxy.loopback', 'local.model-1', 'admin-a');
+  IF EXISTS (SELECT 1 FROM ops.kill_switch WHERE effective_at IS NULL OR effective_at > now()) THEN
+    RAISE EXCEPTION 'FAIL T83 a switch did not take effect when it was tripped';
+  END IF;
+  FOREACH bad IN ARRAY ARRAY['cli.shim', 'tool.hook', 'ext.dom', 'proxy'] LOOP
+    BEGIN
+      INSERT INTO ops.kill_switch (tenant_id, route, reason_code, set_by) VALUES (t, bad, 'x1', 'admin-a');
+      RAISE EXCEPTION 'FAIL T83 the route % took a kill switch', bad;
+    EXCEPTION WHEN check_violation THEN NULL;
+    END;
+  END LOOP;
+  DELETE FROM ops.kill_switch WHERE tenant_id = t AND route = 'proxy.loopback';
+  FOREACH bad IN ARRAY ARRAY['', 'App_breakage', '9breakage', 'app breakage', repeat('a', 65)] LOOP
+    BEGIN
+      INSERT INTO ops.kill_switch (tenant_id, route, reason_code, set_by) VALUES (t, 'proxy.loopback', bad, 'admin-a');
+      RAISE EXCEPTION 'FAIL T83 the reason code "%" was accepted', bad;
+    EXCEPTION WHEN check_violation THEN NULL;
+    END;
+  END LOOP;
+  BEGIN
+    INSERT INTO ops.kill_switch (tenant_id, route, reason_code, set_by) VALUES (t, 'proxy.tls', 'second', 'admin-a');
+    RAISE EXCEPTION 'FAIL T83 a route took two kill switches';
+  EXCEPTION WHEN unique_violation THEN NULL;
+  END;
+  RAISE NOTICE 'PASS T83 a kill switch is one per interception route, with a reason code, in force when tripped';
+END $$;
+
+DO $$
+DECLARE
+  n int;
+BEGIN
+  SELECT count(*) INTO n FROM ops.kill_switch;
+  IF n <> 1 THEN
+    RAISE EXCEPTION 'FAIL T84 tenant A saw % kill switches, want its own 1', n;
+  END IF;
+  UPDATE ops.kill_switch SET reason_code = 'app_breakage_2' WHERE route = 'proxy.tls';
+  DELETE FROM ops.kill_switch WHERE tenant_id = '22222222-2222-7222-8222-222222222222';
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 0 THEN
+    RAISE EXCEPTION 'FAIL T84 tenant A cleared tenant B''s kill switch';
+  END IF;
+  BEGIN
+    INSERT INTO ops.kill_switch (tenant_id, route, reason_code, set_by)
+    VALUES ('22222222-2222-7222-8222-222222222222', 'proxy.loopback', 'planted', 'admin-a');
+    RAISE EXCEPTION 'FAIL T84 tenant A tripped a kill switch for tenant B';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+  END;
+  DELETE FROM ops.kill_switch WHERE route = 'proxy.tls';
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN
+    RAISE EXCEPTION 'FAIL T84 control-api could not clear its own kill switch';
+  END IF;
+
+  PERFORM set_config('app.tenant_id', '', false);
+  SELECT count(*) INTO n FROM ops.kill_switch;
+  IF n <> 0 THEN
+    RAISE EXCEPTION 'FAIL T84 a session with no tenant saw % kill switches', n;
+  END IF;
+  PERFORM set_config('app.tenant_id', '11111111-1111-7111-8111-111111111111', false);
+  RAISE NOTICE 'PASS T84 kill switches are isolated per tenant, and control-api trips, changes and clears its own';
+END $$;
+
+RESET ROLE;
+
+SET ROLE sac_query;
+DO $$
+BEGIN
+  BEGIN
+    PERFORM 1 FROM ops.kill_switch;
+    RAISE EXCEPTION 'FAIL T84 query-api can read the kill switches';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+  END;
+END $$;
+RESET ROLE;
+
+DO $$
+BEGIN
+  IF (SELECT reason_code FROM ops.kill_switch WHERE tenant_id = '22222222-2222-7222-8222-222222222222') IS DISTINCT FROM 'fleet_regression' THEN
+    RAISE EXCEPTION 'FAIL T84 tenant B''s kill switch changed under tenant A''s session';
+  END IF;
+END $$;
 
 -- =====================================================================================
 -- Report

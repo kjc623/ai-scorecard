@@ -36,6 +36,9 @@ const INLINE_ENUM_TYPES = {
   "envelopeCore.collection_mode": "CollectionMode",
   "envelopeCore.detection_basis": "DetectionBasis",
   "envelopeCore.prompt_kind": "PromptKind",
+  "envelopeCore.discovery_type": "DiscoveryType",
+  "envelopeCore.activity_type": "ActivityType",
+  "envelopeCore.outcome": "Outcome",
   "policyDecision.action": "PolicyAction",
   "excerpt.kind": "ExcerptKind",
 };
@@ -51,6 +54,9 @@ const ENUM_ORDER = [
   "ExcerptKind",
   "DetectionBasis",
   "PromptKind",
+  "DiscoveryType",
+  "ActivityType",
+  "Outcome",
 ];
 
 // The shape the binding describes: what a device may send. The stored shape adds only the
@@ -132,6 +138,10 @@ function clean(text) {
     .trim();
 }
 
+// The keywords a string array item may use. Value constraints are the validator's, not the
+// binding's, so they only need to be recognised here.
+const STRING_ITEM_KEYS = ["type", "minLength", "maxLength", "pattern"];
+
 /** Field descriptor for one property of a $defs object. */
 function describeField(schema, ownerDefName, name, prop) {
   const field = { name, owner: ownerDefName, description: clean(prop.description) };
@@ -183,8 +193,17 @@ function describeField(schema, ownerDefName, name, prop) {
       field.type = prop.type;
       return field;
     case "array": {
+      if (prop.items && prop.items.$ref === undefined && prop.items.type === "string") {
+        const unsupported = Object.keys(prop.items).filter((key) => !STRING_ITEM_KEYS.includes(key));
+        if (unsupported.length > 0) {
+          throw new Error(`schema-model: string items of ${ownerDefName}.${name} use unsupported keywords ${unsupported.join(",")}`);
+        }
+        field.type = "array";
+        field.itemsType = "string";
+        return field;
+      }
       if (!prop.items || !prop.items.$ref) {
-        throw new Error(`schema-model: ${ownerDefName}.${name} must declare array items as a local $ref`);
+        throw new Error(`schema-model: ${ownerDefName}.${name} must declare array items as a local $ref or a plain string`);
       }
       const { name: defName, def } = resolveLocalRef(schema, prop.items.$ref);
       if (!OBJECT_DEF_TYPES[defName]) {

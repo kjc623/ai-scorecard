@@ -103,7 +103,7 @@ INSERT INTO ops.audit (tenant_id, actor_type, actor_id, action, object_type, obj
 VALUES ($1::uuid, $2, $3, $4, $5, nullif($6, ''), $7::jsonb, $8::timestamptz)`
 
 	SQLPolicyTenant = `
-SELECT status, ingest_enabled, ceiling_mode, coalesce(collection_mode, ceiling_mode)
+SELECT status, ingest_enabled, ceiling_mode, coalesce(collection_mode, ceiling_mode), tls_inspection
   FROM ops.tenant
  WHERE tenant_id = $1::uuid`
 
@@ -349,7 +349,7 @@ func (s *SQLStore) PolicyInputs(ctx context.Context, tenantID string) (PolicyInp
 	var in PolicyInputs
 	err := s.withTenant(ctx, tenantID, func(tx *sql.Tx) error {
 		t := PolicyTenant{TenantID: tenantID}
-		err := tx.QueryRowContext(ctx, SQLPolicyTenant, tenantID).Scan(&t.Status, &t.IngestEnabled, &t.CeilingMode, &t.CollectionMode)
+		err := tx.QueryRowContext(ctx, SQLPolicyTenant, tenantID).Scan(&t.Status, &t.IngestEnabled, &t.CeilingMode, &t.CollectionMode, &t.TLSInspection)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrUnknownTenant
 		}
@@ -362,7 +362,22 @@ func (s *SQLStore) PolicyInputs(ctx context.Context, tenantID string) (PolicyInp
 		if err2 != nil {
 			return err2
 		}
-		in.ScopeOverrides, err2 = scopeOverrides(ctx, tx, tenantID)
+		if in.ScopeOverrides, err2 = scopeOverrides(ctx, tx, tenantID); err2 != nil {
+			return err2
+		}
+		if in.Endpoint, err2 = endpointSettings(ctx, tx, tenantID); err2 != nil {
+			return err2
+		}
+		if in.Rules, err2 = enforcementRules(ctx, tx, tenantID); err2 != nil {
+			return err2
+		}
+		if in.SanctionedTools, err2 = sanctionedTools(ctx, tx, tenantID); err2 != nil {
+			return err2
+		}
+		if in.KillSwitches, err2 = killSwitches(ctx, tx, tenantID); err2 != nil {
+			return err2
+		}
+		in.Catalog, err2 = appCatalog(ctx, tx)
 		return err2
 	})
 	return in, err

@@ -19,7 +19,7 @@ import {
   renderExploreResults, renderExploreDetail, renderExploreRail, renderExploreProblems, renderExploreSummary,
 } from '../src/explore-render.js';
 import { createQueryApi } from '../src/transport.js';
-import { TEMPLATES } from '../src/vocab.js';
+import { COLLECTOR_DETAILS, TEMPLATES } from '../src/vocab.js';
 import { ROOT } from './helpers.mjs';
 
 const NOW = new Date('2026-10-01T12:00:00Z');
@@ -313,7 +313,50 @@ test('a destroyed record is "no longer available" with its receipt, not a blank 
   assert.match(html, /r_88/);
 });
 
-test('a device or audit row opens without a second read', async () => {
+test('a device row lists every collector the device reported, with its state, cause and last report', async () => {
+  const { explorer, sent, stub } = explorerFor();
+  const tampered = stub.sample.collectors.find((r) => r.error_code === 'config_tampered');
+  await explorer.restore('#devices');
+  const row = explorer.state.rows.find((r) => r.device === tampered.device);
+  await explorer.open(`${row.device}|${row.collector}`);
+
+  const last = sent[sent.length - 1];
+  assert.deepEqual(last, {
+    query_version: '1',
+    source: 'ops.collector_state',
+    filters: [{ field: 'device', op: 'eq', value: tampered.device }],
+    limit: 100,
+  });
+  assert.equal(explorer.state.detail.collectors.status, 'ready');
+  const html = renderExploreDetail(explorer.state);
+  const table = html.slice(html.indexOf('<h3>Collectors</h3>'));
+  for (const r of stub.sample.collectors.filter((c) => c.device === tampered.device)) {
+    assert.ok(table.includes(`>${r.collector}<`), `${r.collector} has a row`);
+  }
+  assert.match(table, /<th scope="col">State<\/th><th scope="col">Cause<\/th><th scope="col">Last report<\/th>/);
+  assert.ok(table.includes(COLLECTOR_DETAILS.config_tampered.replace(/'/g, '&#39;')), 'the cause is in words');
+  assert.ok(table.includes('title="config_tampered"'), 'the detail code stays beside its words');
+  assert.match(table, /<span class="x-chip x-chip-warn">degraded<\/span>/);
+  // Switched off by policy is not a fault: it says so, untinted, and gives no cause.
+  const off = table.slice(table.indexOf('>tool_config_cursor<'));
+  assert.match(off, /^>tool_config_cursor<\/span><\/td><td><span class="x-chip">Off in policy<\/span><\/td><td><span class="x-absent">none<\/span>/);
+  assert.ok(!/x-chip-bad">absent/.test(off.slice(0, off.indexOf('</tr>'))), 'a collector off in policy is not shown as absent');
+  assert.ok(!/audited read/.test(html), 'the collectors read is not audited');
+});
+
+test('a device whose collectors cannot be read says so beside the row it opened', async () => {
+  const { explorer, stub } = explorerFor();
+  await explorer.restore('#devices');
+  const row = explorer.state.rows[0];
+  stub.setScenario('busy');
+  await explorer.open(`${row.device}|${row.collector}`);
+  assert.equal(explorer.state.detail.collectors.status, 'refused');
+  const html = renderExploreDetail(explorer.state);
+  assert.match(html, /<h3>Collectors<\/h3><div class="x-state x-state-refusal" role="alert">/);
+  assert.ok(html.includes(row.device), 'the row itself is still shown');
+});
+
+test('an audit row opens without a second read', async () => {
   const { explorer, sent } = explorerFor();
   await explorer.restore('#audit?window=d30');
   const before = sent.length;

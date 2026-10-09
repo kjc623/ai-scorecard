@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/shadow-ai-capture/device/capture-core/core"
-	"github.com/shadow-ai-capture/device/capture-core/dedup"
 	"github.com/shadow-ai-capture/device/capture-core/policy"
 	"github.com/shadow-ai-capture/device/protocol"
 )
@@ -186,6 +185,7 @@ type recordingPipeline struct {
 	read   bool
 	over   bool
 	failOn bool
+	done   int // Process calls that have returned
 }
 
 func (p *recordingPipeline) ResolveMode(core.ScopeQuery) core.Resolution {
@@ -193,6 +193,11 @@ func (p *recordingPipeline) ResolveMode(core.ScopeQuery) core.Resolution {
 }
 
 func (p *recordingPipeline) Process(ctx context.Context, obs core.Observation) (core.Outcome, error) {
+	defer func() {
+		p.mu.Lock()
+		p.done++
+		p.mu.Unlock()
+	}()
 	p.mu.Lock()
 	p.obs = append(p.obs, obs)
 	p.mu.Unlock()
@@ -217,6 +222,14 @@ func (p *recordingPipeline) observations() []core.Observation {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return append([]core.Observation(nil), p.obs...)
+}
+
+// processed is the number of observations whose Process call has returned: the observation is
+// recorded on entry, but the content read and the broker's counters follow it.
+func (p *recordingPipeline) processed() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.done
 }
 
 func (p *recordingPipeline) didRead() bool {
@@ -284,7 +297,10 @@ func TestBrokerBindsAfterPreflightAndBrokersRequests(t *testing.T) {
 	upstream := newStubUpstream(t)
 	held := freePort(t)
 	pipe := &recordingPipeline{mode: protocol.ModeM1}
-	b := New(testConfig(upstream.Port(), held, pipe))
+	cfg := testConfig(upstream.Port(), held, pipe)
+	bundle := &policy.Bundle{}
+	cfg.Bundles = func() *policy.Bundle { return bundle }
+	b := New(cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -313,8 +329,8 @@ func TestBrokerBindsAfterPreflightAndBrokersRequests(t *testing.T) {
 		t.Fatalf("upstream saw body %q, want the client's bytes unchanged", upstream.lastBody())
 	}
 
-	waitFor(t, 2*time.Second, "the observation to reach the pipeline", func() bool {
-		return len(pipe.observations()) == 1
+	waitFor(t, 2*time.Second, "the pipeline to finish processing the observation", func() bool {
+		return pipe.processed() == 1 && b.Counters().Cumulative()[protocol.CounterEmitted] == 1
 	})
 	obs := pipe.observations()[0]
 	if obs.ToolFingerprint != "local_inference" {
@@ -326,8 +342,17 @@ func TestBrokerBindsAfterPreflightAndBrokersRequests(t *testing.T) {
 	if !pipe.didRead() {
 		t.Fatal("content was forwarded but never handed to the pipeline at M1")
 	}
-	if obs.Decision == nil {
+	if obs.Enforce == nil {
 		t.Fatal("the broker emitted an observation with no policy decision; policy_decision is required for every prompt")
+	}
+	if got := obs.Enforce([]string{"source_code"}, true); got != (protocol.Decision{RuleID: "policy.default", Action: protocol.ActionLogged, DecidedLocally: true}) {
+		t.Fatalf("with no rules the broker recorded %+v", got)
+	}
+	// The broker cannot stop a prompt, so a matching block rule from the bundle in force is
+	// recorded as logged under its id.
+	bundle.Rules = []policy.Rule{{RuleID: "block_local", Action: policy.RuleBlock, Match: policy.RuleMatch{Tools: []string{"local_inference"}, Routes: []protocol.Route{protocol.RouteProxyLoopback}}}}
+	if got := obs.Enforce(nil, false); got != (protocol.Decision{RuleID: "block_local", Action: protocol.ActionLogged, DecidedLocally: true}) {
+		t.Fatalf("with a block rule the broker recorded %+v", got)
 	}
 	c := b.Counters().Cumulative()
 	if c[protocol.CounterObserved] != 1 || c[protocol.CounterEmitted] != 1 {
@@ -657,39 +682,6 @@ func TestBrokerSkipsNonGenerativeRequestsAndCountsThem(t *testing.T) {
 	}
 }
 
-// The JSON extractor takes the last user-role message, or a top-level prompt.
-func TestJSONExtractorLastUserTurn(t *testing.T) {
-	body := []byte(`{"model":"x","messages":[{"role":"system","content":"sys"},{"role":"user","content":"first"},{"role":"assistant","content":"a"},{"role":"user","content":[{"type":"text","text":"second"}]}]}`)
-	text, atts, err := JSONExtractor{}.Extract(body, "application/json")
-	if err != nil {
-		t.Fatalf("Extract: %v", err)
-	}
-	if text != "second" {
-		t.Fatalf("text = %q, want the last user turn", text)
-	}
-	if len(atts) != 0 {
-		t.Fatalf("attachments = %v, want none", atts)
-	}
-	if _, _, err := (JSONExtractor{}).Extract([]byte(`{"nope":true}`), "application/json"); err == nil {
-		t.Fatal("a body with no identifiable user-authored segment must not be guessed at")
-	}
-}
-
-// The canonicalisation seam is exercised here too: the broker's extractor feeds the same
-// dedup.ContentDigest the pipeline uses, so the two cannot drift.
-func TestBrokerExtractionFeedsCanonicalDigest(t *testing.T) {
-	body := []byte(`{"messages":[{"role":"user","content":"hello world"}]}`)
-	text, atts, err := JSONExtractor{}.Extract(body, "application/json")
-	if err != nil {
-		t.Fatalf("Extract: %v", err)
-	}
-	d1 := dedup.ContentDigest(text, atts)
-	d2 := dedup.ContentDigest("hello world", nil)
-	if d1 != d2 {
-		t.Fatalf("digest through the extractor = %s, want %s", d1, d2)
-	}
-}
-
 func TestBrokerHealthNeverHealthyWhenStopped(t *testing.T) {
 	upstream := newStubUpstream(t)
 	held := freePort(t)
@@ -705,6 +697,91 @@ func TestBrokerHealthNeverHealthyWhenStopped(t *testing.T) {
 	_ = b.Stop(ctx)
 	if h := b.Health(); h.State == protocol.StateHealthy {
 		t.Fatal("Health reported healthy after Stop")
+	}
+}
+
+// A proxy.loopback kill switch makes the next request go through unread: the port stays held, the
+// bytes reach the server unchanged and the answer comes back, nothing is observed, the connection
+// is counted blind_tunnelled, and the row is degraded/killed. Another route's switch changes
+// nothing, and clearing it brings observation back.
+func TestBrokerKillSwitchTunnelsTheNextRequest(t *testing.T) {
+	upstream := newStubUpstream(t)
+	held := freePort(t)
+	pipe := &recordingPipeline{mode: protocol.ModeM1}
+	cfg := testConfig(upstream.Port(), held, pipe)
+	var mu sync.Mutex
+	bundle := &policy.Bundle{}
+	cfg.Bundles = func() *policy.Bundle {
+		mu.Lock()
+		defer mu.Unlock()
+		return bundle
+	}
+	setSwitch := func(route protocol.Route) {
+		mu.Lock()
+		defer mu.Unlock()
+		bundle = &policy.Bundle{}
+		if route != "" {
+			bundle.KillSwitches = []policy.KillSwitch{{Provider: route, Mode: policy.KillDisable,
+				EffectiveAt: time.Now().Add(-time.Minute), ReasonCode: "local_model_breakage"}}
+		}
+	}
+	b := New(cfg)
+	ctx := context.Background()
+	if err := b.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer b.Stop(ctx)
+	waitFor(t, 3*time.Second, "the broker to hold the port", func() bool { return portOpen(held) })
+
+	// A tunnelled connection stays a tunnel until it closes, so each request opens its own.
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	post := func(body string) {
+		t.Helper()
+		resp, err := client.Post(fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", held), "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST through the broker: %v", err)
+		}
+		got, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || !bytes.Contains(got, []byte(`"ok":true`)) {
+			t.Fatalf("response through the broker = %d %q", resp.StatusCode, got)
+		}
+		if string(upstream.lastBody()) != body {
+			t.Fatalf("upstream saw body %q, want the client's bytes unchanged", upstream.lastBody())
+		}
+	}
+
+	// proxy.tls's switch is not the broker's.
+	setSwitch(protocol.RouteProxyTLS)
+	post(`{"model":"local","messages":[{"role":"user","content":"first"}]}`)
+	waitFor(t, 2*time.Second, "the first observation", func() bool { return pipe.processed() == 1 })
+
+	setSwitch(protocol.RouteProxyLoopback)
+	before := b.Counters().Cumulative()
+	post(`{"model":"local","messages":[{"role":"user","content":"second"}]}`)
+	after := b.Counters().Cumulative()
+	if after[protocol.CounterBlindTunnelled]-before[protocol.CounterBlindTunnelled] != 1 {
+		t.Fatalf("blind_tunnelled rose by %d, want 1", after[protocol.CounterBlindTunnelled]-before[protocol.CounterBlindTunnelled])
+	}
+	if after[protocol.CounterObserved] != before[protocol.CounterObserved] {
+		t.Fatal("a request under the kill switch was counted observed")
+	}
+	time.Sleep(50 * time.Millisecond)
+	if n := len(pipe.observations()); n != 1 {
+		t.Fatalf("%d observations, want none under the kill switch", n-1)
+	}
+	if h := b.Health(); h.State != protocol.StateDegraded || h.Detail != protocol.DetailKilled {
+		t.Fatalf("health under the kill switch = %s/%s, want degraded/killed", h.State, h.Detail)
+	}
+	if !portOpen(held) {
+		t.Fatal("the kill switch released the port")
+	}
+
+	setSwitch("")
+	post(`{"model":"local","messages":[{"role":"user","content":"third"}]}`)
+	waitFor(t, 2*time.Second, "observation to resume", func() bool { return pipe.processed() == 2 })
+	if h := b.Health(); h.State != protocol.StateHealthy {
+		t.Fatalf("health after clearing = %s/%s, want healthy", h.State, h.Detail)
 	}
 }
 

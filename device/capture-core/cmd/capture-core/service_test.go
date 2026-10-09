@@ -1,17 +1,25 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"net"
 	"os"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/shadow-ai-capture/device/capture-core/core"
 	"github.com/shadow-ai-capture/device/capture-core/drain"
 	"github.com/shadow-ai-capture/device/capture-core/hostinfo"
+	"github.com/shadow-ai-capture/device/capture-core/otlp/normalizers"
 	"github.com/shadow-ai-capture/device/capture-core/state"
 	"github.com/shadow-ai-capture/device/protocol"
 )
@@ -42,15 +50,15 @@ func sharedTrust(t *testing.T) *fakeTrustStore {
 
 // A first start of a tenant-packaged device: it enrols with the deployment key and the attestation
 // the OS states, fetches and caches the tenant's bundle before any provider is built, attributes
-// observations to the console user, protects its state directory, installs its own CA, and
-// removes the root again when it stops. A restart with the cloud unreachable enforces the cached
-// bundle.
+// observations to the console user, protects its state directory, installs its own CA (the
+// tenant has TLS inspection on), and removes the root again when it stops. A restart with the
+// cloud unreachable enforces the cached bundle.
 func TestServiceEnrolsFetchesItsPolicyAndRuns(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cloud := startFakeCloud(t, signedTestBundle(t, priv, "5", protocol.ModeM1))
+	cloud := startFakeCloud(t, signedInterceptionBundle(t, priv, "5", true, freeLoopbackAddr(t), ""))
 	withHostFacts(t, hostinfo.Facts{
 		Attestation: protocol.DeviceAttestation{IntuneDeviceID: "9b1c0f2e-3c44-4b5e-9a61-2d7f0e8c1a55", SerialNumber: "PF2X9K7Q"},
 		SystemUUID:  "a2219e09-2c68-6d1d-a831-345a6060843c",
@@ -128,6 +136,19 @@ func TestServiceEnrolsFetchesItsPolicyAndRuns(t *testing.T) {
 	if snap := svc.health.Snapshot(); !snap.Enrolled || snap.ManagedState != "managed" || snap.UserRefSource != "upn" || snap.PolicyFetch == nil {
 		t.Errorf("health snapshot = %+v", snap)
 	}
+	// Each row is named by its collector code: a provider's by its Name, the extension's with the
+	// native host's hyphenated default normalised.
+	svc.health.SetExtensionReport(protocol.NewHealthReport("", "capture-extension", "", time.Now()))
+	var names []string
+	for _, rep := range svc.health.healthRequest().Collectors {
+		if !protocol.Collector(rep.Collector).Valid() {
+			t.Errorf("health row names %q, which is not a collector code", rep.Collector)
+		}
+		names = append(names, rep.Collector)
+	}
+	if got, want := strings.Join(names, ","), "egress_proxy,loopback_broker,cli_shim,otel_receiver,tool_config_claude_code,tool_config_copilot,tool_config_cursor,tool_config_codex,user_helper,hook_relay,inventory_scanner,process_detector,flow_monitor,capture_extension,classifier_host"; got != want {
+		t.Errorf("health rows = %s, want %s", got, want)
+	}
 
 	if err := svc.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop: %v", err)
@@ -198,6 +219,56 @@ func TestConsoleUserChangeRestampsTheIdentity(t *testing.T) {
 	}
 }
 
+// A proxied request is attributed to the account its client process runs as: a second user's
+// process to that user, the console user's process to the console user with the UPN the console
+// lookup resolved. A process whose owner cannot be read is an error, which the proxy answers by
+// falling back to the console user.
+func TestProxiedClientIsAttributedToItsProcessOwner(t *testing.T) {
+	cloud := startFakeCloud(t, nil)
+	console := &fakeConsole{}
+	console.set(hostinfo.User{SID: entraSID, Account: `AzureAD\AdaLovelace`, UPN: "ada@contoso.com"}, nil)
+	withConsole(t, console)
+	svc, err := newService(context.Background(), testConfig(t, cloud, nil), testLogger(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (identityResolver{svc}).Resolve(context.Background()); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	conn, peer := net.Pipe()
+	defer conn.Close()
+	defer peer.Close()
+	ownedBy := func(p hostinfo.Process, err error) func(net.Conn) (hostinfo.Process, error) {
+		return func(net.Conn) (hostinfo.Process, error) { return p, err }
+	}
+
+	grace := hostinfo.User{SID: "S-1-5-21-1-2-3-1002", Account: `CONTOSO\grace`, UPN: "grace@contoso.com", Source: "process"}
+	curl := hostinfo.Process{PID: 4242, Image: `C:\Windows\System32\curl.exe`, User: &grace}
+	got, err := svc.clientPerson(ownedBy(curl, nil), conn)
+	if err != nil || got.UserRef != expectedRef(t, "grace@contoso.com") || got.SubjectName != "grace@contoso.com" {
+		t.Fatalf("second user's process = %+v, %v; want Grace", got, err)
+	}
+	if name := clientProcessName(ownedBy(curl, nil), conn); name != "curl.exe" {
+		t.Fatalf("process name = %q, want curl.exe", name)
+	}
+
+	ada := hostinfo.User{SID: entraSID, Account: `AzureAD\AdaLovelace`, Source: "process"}
+	got, err = svc.clientPerson(ownedBy(hostinfo.Process{PID: 7, Image: `C:\a.exe`, User: &ada}, nil), conn)
+	if err != nil || got.UserRef != expectedRef(t, "ada@contoso.com") {
+		t.Fatalf("console user's process = %+v, %v; want Ada by her UPN", got, err)
+	}
+
+	if _, err := svc.clientPerson(ownedBy(hostinfo.Process{PID: 8, Image: `C:\p.exe`}, nil), conn); err == nil {
+		t.Fatal("a process with an unreadable owner was attributed")
+	}
+	if _, err := svc.clientPerson(ownedBy(hostinfo.Process{}, hostinfo.ErrNotFound), conn); err == nil {
+		t.Fatal("an unattributed connection was attributed")
+	}
+	if name := clientProcessName(ownedBy(hostinfo.Process{}, hostinfo.ErrNotFound), conn); name != "unknown" {
+		t.Fatalf("process name of an unattributed connection = %q, want unknown", name)
+	}
+}
+
 // A tenant whose setting is hashed receives no clear account name, from the next observation on.
 func TestHashedTenantDropsTheClearName(t *testing.T) {
 	cloud := startFakeCloud(t, nil)
@@ -260,5 +331,102 @@ func TestSpooledObservationsAreDeliveredWithTheIssuedIdentity(t *testing.T) {
 	}
 	if env.TenantID != cloudTenant || env.DeviceID != cloudDevice || env.Mode != "m0" || env.UserRef != unattributedUserRef {
 		t.Fatalf("delivered envelope = %+v", env)
+	}
+}
+
+// lockedBuffer is a log destination the service's goroutines can share with the test.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// A discovery recorded on an enrolled service is spooled, logged as spooled, and reaches the edge's
+// /v1/events with the issued identity.
+func TestRecordedDiscoveryReachesTheEdge(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloud := startFakeCloud(t, signedTestBundle(t, priv, "5", protocol.ModeM0))
+	logs := &lockedBuffer{}
+	svc, err := newService(context.Background(), testConfig(t, cloud, pub), newLogger("info", logs))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = svc.Stop(context.Background()) }()
+
+	sum := sha256.Sum256([]byte(cloudTenant + "|" + cloudDevice + "|app:cursor|app_installed"))
+	err = svc.pipe.Record(context.Background(), core.Fact{
+		Kind:            protocol.KindDiscovery,
+		Route:           protocol.RouteInvScan,
+		ToolFingerprint: "app:cursor",
+		Person:          &core.Person{UserRef: unattributedUserRef},
+		OccurredAt:      time.Now(),
+		DedupKey:        "sha256:" + hex.EncodeToString(sum[:]),
+		FactFields: core.FactFields{
+			DiscoveryType:  protocol.DiscoveryTypeAppInstalled,
+			DetectionBasis: protocol.DetectionBasisInstalledScan,
+			AppVersion:     "0.48.1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for len(cloud.receivedEvents()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	events := cloud.receivedEvents()
+	if len(events) != 1 {
+		t.Fatalf("the edge received %d events, want 1", len(events))
+	}
+	var env struct {
+		TenantID      string `json:"tenant_id"`
+		DeviceID      string `json:"device_id"`
+		UserRef       string `json:"user_ref"`
+		Kind          string `json:"kind"`
+		Source        string `json:"source"`
+		Direction     string `json:"direction"`
+		DiscoveryType string `json:"discovery_type"`
+		AppVersion    string `json:"app_version"`
+	}
+	if err := json.Unmarshal(events[0], &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.TenantID != cloudTenant || env.DeviceID != cloudDevice || env.UserRef != unattributedUserRef ||
+		env.Kind != "discovery" || env.Source != "inv.scan" || env.Direction != "none" ||
+		env.DiscoveryType != "app_installed" || env.AppVersion != "0.48.1" {
+		t.Fatalf("delivered envelope = %s", events[0])
+	}
+	if log := logs.String(); !strings.Contains(log, `"msg":"envelope spooled"`) || !strings.Contains(log, `"discovery_type":"app_installed"`) {
+		t.Fatalf("the service did not log the spooled record:\n%s", log)
+	}
+}
+
+// Each tool's OTel records are looked up under the name of a normalizer the receiver registers.
+func TestToolNormalizersAreRegistered(t *testing.T) {
+	names := map[string]bool{}
+	for _, n := range normalizers.Registered(normalizers.Deps{}) {
+		names[n.Name()] = true
+	}
+	for tool, name := range toolNormalizers {
+		if !names[name] {
+			t.Errorf("%s's telemetry is looked up under %q, which no registered normalizer is named", tool, name)
+		}
 	}
 }

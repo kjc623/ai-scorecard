@@ -1,0 +1,1185 @@
+{
+  "why": "The enforcement rule cases both evaluators pass: capture-core/enforce (Go) and the extension's src/enforce.js. bundle is a policy bundle fragment in its signed JSON spelling; input is what a rule matches on; want is the first matching rule, or policy.default with allow when none matches.",
+  "cases": [
+    {
+      "name": "no rules",
+      "bundle": {
+        "rules": [],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ]
+      },
+      "input": {
+        "route": "proxy.tls",
+        "tool_fingerprint": "chatgpt.com",
+        "labels": [
+          "credential"
+        ],
+        "labels_known": true
+      },
+      "want": {
+        "rule_id": "policy.default",
+        "action": "allow"
+      }
+    },
+    {
+      "name": "empty lists match anything",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "any",
+            "action": "warn",
+            "match": {},
+            "message": "msg any",
+            "link": "https://intranet.example/any"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ]
+      },
+      "input": {
+        "route": "proxy.tls",
+        "tool_fingerprint": "chatgpt.com",
+        "labels": [
+          "credential"
+        ],
+        "labels_known": true
+      },
+      "want": {
+        "rule_id": "any",
+        "action": "warn",
+        "message": "msg any",
+        "link": "https://intranet.example/any"
+      }
+    },
+    {
+      "name": "empty lists match nil lists",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "any",
+            "action": "warn",
+            "match": {
+              "labels": [],
+              "tools": [],
+              "categories": [],
+              "sanction": [],
+              "routes": []
+            },
+            "message": "msg any",
+            "link": "https://intranet.example/any"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ]
+      },
+      "input": {},
+      "want": {
+        "rule_id": "any",
+        "action": "warn",
+        "message": "msg any",
+        "link": "https://intranet.example/any"
+      }
+    },
+    {
+      "name": "label matches",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "cred",
+            "action": "block",
+            "match": {
+              "labels": [
+                "payment_card",
+                "credential"
+              ]
+            },
+            "message": "msg cred",
+            "link": "https://intranet.example/cred"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ]
+      },
+      "input": {
+        "route": "proxy.tls",
+        "tool_fingerprint": "chatgpt.com",
+        "labels": [
+          "credential"
+        ],
+        "labels_known": true
+      },
+      "want": {
+        "rule_id": "cred",
+        "action": "block",
+        "message": "msg cred",
+        "link": "https://intranet.example/cred"
+      }
+    },
+    {
+      "name": "label does not match",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "pci",
+            "action": "block",
+            "match": {
+              "labels": [
+                "payment_card"
+              ]
+            },
+            "message": "msg pci",
+            "link": "https://intranet.example/pci"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ]
+      },
+      "input": {
+        "route": "proxy.tls",
+        "tool_fingerprint": "chatgpt.com",
+        "labels": [
+          "credential"
+        ],
+        "labels_known": true
+      },
+      "want": {
+        "rule_id": "policy.default",
+        "action": "allow"
+      }
+    },
+    {
+      "name": "no labels found",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "cred",
+            "action": "block",
+            "match": {
+              "labels": [
+                "credential"
+              ]
+            },
+            "message": "msg cred",
+            "link": "https://intranet.example/cred"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ]
+      },
+      "input": {
+        "route": "proxy.tls",
+        "labels_known": true
+      },
+      "want": {
+        "rule_id": "policy.default",
+        "action": "allow"
+      }
+    },
+    {
+      "name": "labels unknown",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "cred",
+            "action": "block",
+            "match": {
+              "labels": [
+                "credential"
+              ]
+            },
+            "message": "msg cred",
+            "link": "https://intranet.example/cred"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ]
+      },
+      "input": {
+        "route": "proxy.tls",
+        "labels": [
+          "credential"
+        ]
+      },
+      "want": {
+        "rule_id": "policy.default",
+        "action": "allow"
+      }
+    },
+    {
+      "name": "m0 still matches a tool",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "tool",
+            "action": "block",
+            "match": {
+              "tools": [
+                "chatgpt.com"
+              ]
+            },
+            "message": "msg tool",
+            "link": "https://intranet.example/tool"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ]
+      },
+      "input": {
+        "route": "proxy.tls",
+        "tool_fingerprint": "chatgpt.com"
+      },
+      "want": {
+        "rule_id": "tool",
+        "action": "block",
+        "message": "msg tool",
+        "link": "https://intranet.example/tool"
+      }
+    },
+    {
+      "name": "m0 label and tool rule",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "both",
+            "action": "block",
+            "match": {
+              "labels": [
+                "credential"
+              ],
+              "tools": [
+                "chatgpt.com"
+              ]
+            },
+            "message": "msg both",
+            "link": "https://intranet.example/both"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ]
+      },
+      "input": {
+        "route": "proxy.tls",
+        "tool_fingerprint": "chatgpt.com"
+      },
+      "want": {
+        "rule_id": "policy.default",
+        "action": "allow"
+      }
+    },
+    {
+      "name": "tool matches",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "tool",
+            "action": "warn",
+            "match": {
+              "tools": [
+                "x",
+                "chatgpt.com"
+              ]
+            },
+            "message": "msg tool",
+            "link": "https://intranet.example/tool"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ]
+      },
+      "input": {
+        "route": "proxy.tls",
+        "tool_fingerprint": "chatgpt.com",
+        "labels": [
+          "credential"
+        ],
+        "labels_known": true
+      },
+      "want": {
+        "rule_id": "tool",
+        "action": "warn",
+        "message": "msg tool",
+        "link": "https://intranet.example/tool"
+      }
+    },
+    {
+      "name": "tool does not match",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "tool",
+            "action": "warn",
+            "match": {
+              "tools": [
+                "x"
+              ]
+            },
+            "message": "msg tool",
+            "link": "https://intranet.example/tool"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ]
+      },
+      "input": {
+        "route": "proxy.tls",
+        "tool_fingerprint": "chatgpt.com",
+        "labels": [
+          "credential"
+        ],
+        "labels_known": true
+      },
+      "want": {
+        "rule_id": "policy.default",
+        "action": "allow"
+      }
+    },
+    {
+      "name": "categories never match without a catalog",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "cat",
+            "action": "block",
+            "match": {
+              "categories": [
+                "chat"
+              ]
+            },
+            "message": "msg cat",
+            "link": "https://intranet.example/cat"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ]
+      },
+      "input": {
+        "route": "proxy.tls",
+        "tool_fingerprint": "chatgpt.com",
+        "labels": [
+          "credential"
+        ],
+        "labels_known": true
+      },
+      "want": {
+        "rule_id": "policy.default",
+        "action": "allow"
+      }
+    },
+    {
+      "name": "category matches",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "cat",
+            "action": "block",
+            "match": {
+              "categories": [
+                "ide",
+                "coding_agent"
+              ]
+            },
+            "message": "msg cat",
+            "link": "https://intranet.example/cat"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ],
+        "catalog": [
+          {
+            "app_key": "claude_code",
+            "category": "coding_agent",
+            "signals": [
+              {
+                "platform": "any",
+                "kind": "cli_binary",
+                "value": "claude"
+              }
+            ]
+          },
+          {
+            "app_key": "cursor",
+            "category": "ide",
+            "signals": []
+          }
+        ]
+      },
+      "input": {
+        "route": "tool.hook",
+        "tool_fingerprint": "app:claude_code"
+      },
+      "want": {
+        "rule_id": "cat",
+        "action": "block",
+        "message": "msg cat",
+        "link": "https://intranet.example/cat"
+      }
+    },
+    {
+      "name": "category does not match",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "cat",
+            "action": "block",
+            "match": {
+              "categories": [
+                "ide"
+              ]
+            },
+            "message": "msg cat",
+            "link": "https://intranet.example/cat"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ],
+        "catalog": [
+          {
+            "app_key": "claude_code",
+            "category": "coding_agent",
+            "signals": [
+              {
+                "platform": "any",
+                "kind": "cli_binary",
+                "value": "claude"
+              }
+            ]
+          },
+          {
+            "app_key": "cursor",
+            "category": "ide",
+            "signals": []
+          }
+        ]
+      },
+      "input": {
+        "route": "tool.hook",
+        "tool_fingerprint": "app:claude_code"
+      },
+      "want": {
+        "rule_id": "policy.default",
+        "action": "allow"
+      }
+    },
+    {
+      "name": "a fingerprint outside the catalog",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "cat",
+            "action": "block",
+            "match": {
+              "categories": [
+                "chat_assistant"
+              ]
+            },
+            "message": "msg cat",
+            "link": "https://intranet.example/cat"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ],
+        "catalog": [
+          {
+            "app_key": "claude_code",
+            "category": "coding_agent",
+            "signals": [
+              {
+                "platform": "any",
+                "kind": "cli_binary",
+                "value": "claude"
+              }
+            ]
+          },
+          {
+            "app_key": "cursor",
+            "category": "ide",
+            "signals": []
+          }
+        ]
+      },
+      "input": {
+        "route": "proxy.tls",
+        "tool_fingerprint": "chatgpt.com",
+        "labels": [
+          "credential"
+        ],
+        "labels_known": true
+      },
+      "want": {
+        "rule_id": "policy.default",
+        "action": "allow"
+      }
+    },
+    {
+      "name": "an app the catalog does not hold",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "cat",
+            "action": "block",
+            "match": {
+              "categories": [
+                "ide"
+              ]
+            },
+            "message": "msg cat",
+            "link": "https://intranet.example/cat"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ],
+        "catalog": [
+          {
+            "app_key": "claude_code",
+            "category": "coding_agent",
+            "signals": [
+              {
+                "platform": "any",
+                "kind": "cli_binary",
+                "value": "claude"
+              }
+            ]
+          },
+          {
+            "app_key": "cursor",
+            "category": "ide",
+            "signals": []
+          }
+        ]
+      },
+      "input": {
+        "route": "tool.hook",
+        "tool_fingerprint": "app:windsurf"
+      },
+      "want": {
+        "rule_id": "policy.default",
+        "action": "allow"
+      }
+    },
+    {
+      "name": "an app key without the app: prefix",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "cat",
+            "action": "block",
+            "match": {
+              "categories": [
+                "ide"
+              ]
+            },
+            "message": "msg cat",
+            "link": "https://intranet.example/cat"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ],
+        "catalog": [
+          {
+            "app_key": "claude_code",
+            "category": "coding_agent",
+            "signals": [
+              {
+                "platform": "any",
+                "kind": "cli_binary",
+                "value": "claude"
+              }
+            ]
+          },
+          {
+            "app_key": "cursor",
+            "category": "ide",
+            "signals": []
+          }
+        ]
+      },
+      "input": {
+        "route": "tool.hook",
+        "tool_fingerprint": "cursor"
+      },
+      "want": {
+        "rule_id": "policy.default",
+        "action": "allow"
+      }
+    },
+    {
+      "name": "an empty category matches no unknown app",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "cat",
+            "action": "block",
+            "match": {
+              "categories": [
+                ""
+              ]
+            },
+            "message": "msg cat",
+            "link": "https://intranet.example/cat"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ],
+        "catalog": [
+          {
+            "app_key": "claude_code",
+            "category": "coding_agent",
+            "signals": [
+              {
+                "platform": "any",
+                "kind": "cli_binary",
+                "value": "claude"
+              }
+            ]
+          },
+          {
+            "app_key": "cursor",
+            "category": "ide",
+            "signals": []
+          }
+        ]
+      },
+      "input": {
+        "route": "proxy.tls",
+        "tool_fingerprint": "chatgpt.com",
+        "labels": [
+          "credential"
+        ],
+        "labels_known": true
+      },
+      "want": {
+        "rule_id": "policy.default",
+        "action": "allow"
+      }
+    },
+    {
+      "name": "category and sanction",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "cat",
+            "action": "warn",
+            "match": {
+              "categories": [
+                "ide"
+              ],
+              "sanction": [
+                "unsanctioned"
+              ]
+            },
+            "message": "msg cat",
+            "link": "https://intranet.example/cat"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ],
+        "catalog": [
+          {
+            "app_key": "claude_code",
+            "category": "coding_agent",
+            "signals": [
+              {
+                "platform": "any",
+                "kind": "cli_binary",
+                "value": "claude"
+              }
+            ]
+          },
+          {
+            "app_key": "cursor",
+            "category": "ide",
+            "signals": []
+          }
+        ]
+      },
+      "input": {
+        "route": "tool.hook",
+        "tool_fingerprint": "app:cursor"
+      },
+      "want": {
+        "rule_id": "cat",
+        "action": "warn",
+        "message": "msg cat",
+        "link": "https://intranet.example/cat"
+      }
+    },
+    {
+      "name": "category of a sanctioned app",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "cat",
+            "action": "warn",
+            "match": {
+              "categories": [
+                "coding_agent"
+              ],
+              "sanction": [
+                "unsanctioned"
+              ]
+            },
+            "message": "msg cat",
+            "link": "https://intranet.example/cat"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ],
+        "catalog": [
+          {
+            "app_key": "claude_code",
+            "category": "coding_agent",
+            "signals": [
+              {
+                "platform": "any",
+                "kind": "cli_binary",
+                "value": "claude"
+              }
+            ]
+          },
+          {
+            "app_key": "cursor",
+            "category": "ide",
+            "signals": []
+          }
+        ]
+      },
+      "input": {
+        "route": "tool.hook",
+        "tool_fingerprint": "app:claude_code"
+      },
+      "want": {
+        "rule_id": "policy.default",
+        "action": "allow"
+      }
+    },
+    {
+      "name": "unsanctioned matches",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "shadow",
+            "action": "warn",
+            "match": {
+              "sanction": [
+                "unsanctioned"
+              ]
+            },
+            "message": "msg shadow",
+            "link": "https://intranet.example/shadow"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ]
+      },
+      "input": {
+        "route": "proxy.tls",
+        "tool_fingerprint": "chatgpt.com",
+        "labels": [
+          "credential"
+        ],
+        "labels_known": true
+      },
+      "want": {
+        "rule_id": "shadow",
+        "action": "warn",
+        "message": "msg shadow",
+        "link": "https://intranet.example/shadow"
+      }
+    },
+    {
+      "name": "sanctioned does not match an unsanctioned tool",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "ok",
+            "action": "allow",
+            "match": {
+              "sanction": [
+                "sanctioned"
+              ]
+            },
+            "message": "msg ok",
+            "link": "https://intranet.example/ok"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ]
+      },
+      "input": {
+        "route": "proxy.tls",
+        "tool_fingerprint": "chatgpt.com",
+        "labels": [
+          "credential"
+        ],
+        "labels_known": true
+      },
+      "want": {
+        "rule_id": "policy.default",
+        "action": "allow"
+      }
+    },
+    {
+      "name": "sanctioned matches",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "ok",
+            "action": "allow",
+            "match": {
+              "sanction": [
+                "sanctioned"
+              ]
+            },
+            "message": "msg ok",
+            "link": "https://intranet.example/ok"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ]
+      },
+      "input": {
+        "route": "tool.hook",
+        "tool_fingerprint": "app:claude_code"
+      },
+      "want": {
+        "rule_id": "ok",
+        "action": "allow",
+        "message": "msg ok",
+        "link": "https://intranet.example/ok"
+      }
+    },
+    {
+      "name": "either sanction state",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "all",
+            "action": "warn",
+            "match": {
+              "sanction": [
+                "sanctioned",
+                "unsanctioned"
+              ]
+            },
+            "message": "msg all",
+            "link": "https://intranet.example/all"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ]
+      },
+      "input": {
+        "route": "proxy.tls",
+        "tool_fingerprint": "chatgpt.com",
+        "labels": [
+          "credential"
+        ],
+        "labels_known": true
+      },
+      "want": {
+        "rule_id": "all",
+        "action": "warn",
+        "message": "msg all",
+        "link": "https://intranet.example/all"
+      }
+    },
+    {
+      "name": "route matches",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "route",
+            "action": "warn",
+            "match": {
+              "routes": [
+                "ext.dom",
+                "proxy.tls"
+              ]
+            },
+            "message": "msg route",
+            "link": "https://intranet.example/route"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ]
+      },
+      "input": {
+        "route": "proxy.tls",
+        "tool_fingerprint": "chatgpt.com",
+        "labels": [
+          "credential"
+        ],
+        "labels_known": true
+      },
+      "want": {
+        "rule_id": "route",
+        "action": "warn",
+        "message": "msg route",
+        "link": "https://intranet.example/route"
+      }
+    },
+    {
+      "name": "route does not match",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "route",
+            "action": "warn",
+            "match": {
+              "routes": [
+                "tool.hook"
+              ]
+            },
+            "message": "msg route",
+            "link": "https://intranet.example/route"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ]
+      },
+      "input": {
+        "route": "proxy.tls",
+        "tool_fingerprint": "chatgpt.com",
+        "labels": [
+          "credential"
+        ],
+        "labels_known": true
+      },
+      "want": {
+        "rule_id": "policy.default",
+        "action": "allow"
+      }
+    },
+    {
+      "name": "every list must match",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "and",
+            "action": "block",
+            "match": {
+              "labels": [
+                "credential"
+              ],
+              "tools": [
+                "chatgpt.com"
+              ],
+              "sanction": [
+                "unsanctioned"
+              ],
+              "routes": [
+                "tool.hook"
+              ]
+            },
+            "message": "msg and",
+            "link": "https://intranet.example/and"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ]
+      },
+      "input": {
+        "route": "proxy.tls",
+        "tool_fingerprint": "chatgpt.com",
+        "labels": [
+          "credential"
+        ],
+        "labels_known": true
+      },
+      "want": {
+        "rule_id": "policy.default",
+        "action": "allow"
+      }
+    },
+    {
+      "name": "all lists matching",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "and",
+            "action": "block",
+            "match": {
+              "labels": [
+                "credential"
+              ],
+              "tools": [
+                "chatgpt.com"
+              ],
+              "sanction": [
+                "unsanctioned"
+              ],
+              "routes": [
+                "proxy.tls"
+              ]
+            },
+            "message": "msg and",
+            "link": "https://intranet.example/and"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ]
+      },
+      "input": {
+        "route": "proxy.tls",
+        "tool_fingerprint": "chatgpt.com",
+        "labels": [
+          "credential"
+        ],
+        "labels_known": true
+      },
+      "want": {
+        "rule_id": "and",
+        "action": "block",
+        "message": "msg and",
+        "link": "https://intranet.example/and"
+      }
+    },
+    {
+      "name": "first match wins",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "miss",
+            "action": "block",
+            "match": {
+              "tools": [
+                "x"
+              ]
+            },
+            "message": "msg miss",
+            "link": "https://intranet.example/miss"
+          },
+          {
+            "rule_id": "first",
+            "action": "allow",
+            "match": {
+              "labels": [
+                "credential"
+              ]
+            },
+            "message": "msg first",
+            "link": "https://intranet.example/first"
+          },
+          {
+            "rule_id": "second",
+            "action": "block",
+            "match": {},
+            "message": "msg second",
+            "link": "https://intranet.example/second"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ]
+      },
+      "input": {
+        "route": "proxy.tls",
+        "tool_fingerprint": "chatgpt.com",
+        "labels": [
+          "credential"
+        ],
+        "labels_known": true
+      },
+      "want": {
+        "rule_id": "first",
+        "action": "allow",
+        "message": "msg first",
+        "link": "https://intranet.example/first"
+      }
+    },
+    {
+      "name": "an extension observation has no labels, so a label rule on its route does not match",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "block_credentials",
+            "action": "block",
+            "match": {
+              "labels": [
+                "credential"
+              ],
+              "routes": [
+                "ext.web_request"
+              ]
+            },
+            "message": "msg block_credentials",
+            "link": "https://intranet.example/block_credentials"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ]
+      },
+      "input": {
+        "route": "ext.web_request",
+        "tool_fingerprint": "tf1:abc"
+      },
+      "want": {
+        "rule_id": "policy.default",
+        "action": "allow"
+      }
+    },
+    {
+      "name": "an extension route rule matches without labels",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "browser_unsanctioned",
+            "action": "warn",
+            "match": {
+              "sanction": [
+                "unsanctioned"
+              ],
+              "routes": [
+                "ext.web_request"
+              ]
+            },
+            "message": "msg browser_unsanctioned",
+            "link": "https://intranet.example/browser_unsanctioned"
+          }
+        ],
+        "sanctioned_tools": [
+          "app:claude_code"
+        ]
+      },
+      "input": {
+        "route": "ext.web_request",
+        "tool_fingerprint": "tf1:abc"
+      },
+      "want": {
+        "rule_id": "browser_unsanctioned",
+        "action": "warn",
+        "message": "msg browser_unsanctioned",
+        "link": "https://intranet.example/browser_unsanctioned"
+      }
+    }
+  ]
+}

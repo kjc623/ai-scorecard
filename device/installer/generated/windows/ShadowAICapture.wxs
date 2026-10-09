@@ -31,7 +31,13 @@
     <ComponentGroup Id="Product">
       <!-- The agent: a LocalSystem service that reads the vendor file, then the tenant file. -->
       <Component Id="Cmp_CaptureCore" Directory="BINFOLDER">
-        <File Id="Fil_CaptureCore" Source="$(var.StageDir)\bin\capture-core.exe" KeyPath="yes" />
+        <File Id="Fil_CaptureCore" Source="$(var.StageDir)\bin\capture-core.exe" KeyPath="yes">
+          <!-- The Start-menu shortcut whose AppUserModelID the agent's notifications are shown under. -->
+          <Shortcut Id="Sc_StartMenu" Directory="ProgramMenuFolder" Name="Shadow AI Capture" Description="Shows the notifications of the Shadow AI Capture agent."
+                    Arguments="--version" WorkingDirectory="BINFOLDER">
+            <ShortcutProperty Key="System.AppUserModel.ID" Value="ShadowAICapture.Agent" />
+          </Shortcut>
+        </File>
         <ServiceInstall Id="Svc" Name="ShadowAICapture" DisplayName="Shadow AI Capture"
                         Description="Observes AI submissions on this device and sends them to the tenant."
                         Type="ownProcess" Start="auto" ErrorControl="normal" Account="LocalSystem"
@@ -88,10 +94,17 @@
          tenant.env are not installed files. An upgrade keeps them. -->
     <CustomAction Id="RemoveData" Directory="CommonAppDataFolder" Execute="deferred" Impersonate="no" Return="ignore"
                   ExeCommand="&quot;[System64Folder]cmd.exe&quot; /c rmdir /s /q &quot;[DATAFOLDER]&quot;" />
+    <!-- A full uninstall first puts back what the agent changed outside its own folders: capture-core
+         runs as SYSTEM once the service has stopped, while its files are still installed, and logs
+         each step to %WINDIR%\Temp\ShadowAICapture-uninstall.log. Its exit code is ignored, so it
+         never blocks the uninstall. -->
+    <CustomAction Id="UninstallCleanup" FileRef="Fil_CaptureCore" Execute="deferred" Impersonate="no" Return="ignore"
+                  ExeCommand="--uninstall-cleanup --config-file &quot;[PROFILEFOLDER]capture-core.env&quot; --config-file &quot;[PROFILEFOLDER]tenant.env&quot;" />
     <InstallExecuteSequence>
       <ResolveSource After="CostInitialize" Condition="NOT Installed" />
       <Custom Action="CheckTenantConfig" After="CostFinalize" Condition="NOT Installed" />
       <Custom Action="StartService" After="InstallServices" Condition="NOT REMOVE" />
+      <Custom Action="UninstallCleanup" After="StopServices" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
       <Custom Action="RemoveData" After="RemoveFiles" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
     </InstallExecuteSequence>
 

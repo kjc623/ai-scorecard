@@ -128,7 +128,7 @@ export function buildExploreSample(now) {
       action,
       content_state: contentState,
       route: routes[0],
-      detection_basis: detectionOnly ? 'model_detection' : rand() < 0.08 ? 'usage_rollup' : 'prompt',
+      detection_basis: detectionOnly ? 'discovery' : rand() < 0.08 ? 'usage_rollup' : 'prompt',
       merge_confidence: rand() < 0.08 ? 'low' : 'high',
       confidence: detectionOnly ? null : rand() < 0.07 ? 'degraded' : strong ? 'high' : 'medium',
       observation_count: routes.length,
@@ -190,6 +190,29 @@ export function buildExploreSample(now) {
   }
   devices.sort((a, b) => (a.device === b.device ? String(a.collector).localeCompare(String(b.collector)) : a.device.localeCompare(b.device)));
 
+  // Each device's collector rows as ops.collector_state holds them: the rows above, plus Claude
+  // Code's configuration (tampered on every third device) and Cursor's, switched off by policy, on
+  // a device that reports.
+  const collectors = [];
+  for (const row of devices) {
+    if (row.collector === null) continue;
+    collectors.push(Object.freeze({
+      device: row.device, collector: row.collector, collector_state: row.collector_state,
+      error_code: row.collector_state === 'tampered' ? 'bundle_signature_invalid' : null,
+      last_report_at: row.last_seen_at, last_success_at: row.collector_state === 'healthy' ? row.last_seen_at : null,
+    }));
+    if (row.collector !== 'capture_extension' || row.liveness !== 'reporting') continue;
+    const tampered = parseInt(row.device.slice(-2), 16) % 3 === 0;
+    collectors.push(Object.freeze({
+      device: row.device, collector: 'tool_config_claude_code', collector_state: tampered ? 'degraded' : 'healthy',
+      error_code: tampered ? 'config_tampered' : null, last_report_at: row.last_seen_at, last_success_at: row.last_seen_at,
+    }));
+    collectors.push(Object.freeze({
+      device: row.device, collector: 'tool_config_cursor', collector_state: 'absent',
+      error_code: 'disabled_by_policy', last_report_at: row.last_seen_at, last_success_at: null,
+    }));
+  }
+
   const audit = [];
   let auditMs = end;
   for (let i = 0; i < 44; i += 1) {
@@ -218,6 +241,7 @@ export function buildExploreSample(now) {
     events: Object.freeze(events),
     findings: Object.freeze(findings),
     devices: Object.freeze(devices),
+    collectors: Object.freeze(collectors),
     audit: Object.freeze(audit),
   });
 }
@@ -255,7 +279,7 @@ function sampleObservations(event) {
     observation_event_id: `obs_${event.submission_id.slice(0, 8)}_${i + 1}`,
     observation_source: route,
     observation_kind: event.detection_basis,
-    direction: event.detection_basis === 'model_detection' ? 'none' : 'egress',
+    direction: event.detection_basis === 'discovery' ? 'none' : 'egress',
     observation_occurred_at: i === 0 ? event.first_occurred_at : event.last_occurred_at,
     observation_size_bytes: event.size_bytes,
   }));
@@ -422,7 +446,23 @@ export function createExploreFake({ now = () => new Date(), scenario = 'realisti
     });
   }
 
+  // One device's collector rows: a list document with an equality filter on the device, not audited.
+  function collectorsReply(body) {
+    if (current === 'busy') return STATE_ENVELOPES.busy;
+    const device = (body.filters ?? []).find((f) => f.field === 'device' && f.op === 'eq')?.value;
+    if (!device) return STATE_ENVELOPES.refused_shape;
+    const rows = current === 'empty' ? [] : sample.collectors.filter((row) => row.device === device);
+    return sampleEnvelope(rows.length > 0 ? 'ok' : 'empty', {
+      data: rows,
+      page: Object.freeze({ returned: rows.length, next_cursor: null, snapshot_upper_bound: sampleIso(now().getTime()), newer_events_exist: false }),
+      freshness: freshFor('ops.collector_state'),
+      coverage: coverage(),
+      meta: { source: 'ops.collector_state', kind: 'list' },
+    });
+  }
+
   const answer = (body) => {
+    if (body?.source === 'ops.collector_state') return collectorsReply(body);
     if (SAMPLE_LISTS[body?.template]) return listReply(body);
     if (body?.template === 'q9_event_detail') return recordReply(body);
     return STATE_ENVELOPES.refused_shape;

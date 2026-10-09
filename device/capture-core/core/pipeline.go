@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -95,9 +97,11 @@ type Observation struct {
 	MonotonicOffsetMS int64
 	SizeBytes         int64
 
-	// Decision is what policy did about this observation. A prompt records one at every mode,
-	// including M0: a tenant can block a tool outright without reading content.
-	Decision *protocol.Decision
+	// Enforce decides what policy did about a prompt. The pipeline calls it once, after
+	// classification, with the event's label classes; known is false when no classification
+	// completed (M0, or confidence degraded). A prompt records a decision at every mode, including
+	// M0: a tenant can block a tool outright without reading content.
+	Enforce func(labels []string, known bool) protocol.Decision
 
 	// Content is nil when the provider has nothing to offer (M0, or a metadata-only
 	// observation). A non-nil reader at M0 is never called.
@@ -194,6 +198,9 @@ type Pipeline struct {
 	// defaults to decidePromptKind; a test pins it to isolate the pipeline from a client's exact
 	// wording.
 	PromptKind promptKindFunc
+
+	// Log receives one "envelope spooled" line per envelope the spool accepts; nil writes none.
+	Log *slog.Logger
 
 	mu        sync.Mutex
 	counters  map[protocol.Route]*CounterSet
@@ -376,7 +383,6 @@ func (p *Pipeline) Process(ctx context.Context, obs Observation) (Outcome, error
 		ToolFingerprint:   obs.ToolFingerprint,
 		OccurredAt:        obs.OccurredAt,
 		MonotonicOffsetMS: obs.MonotonicOffsetMS,
-		Decision:          obs.Decision,
 	}
 
 	if obs.Kind == protocol.KindPrompt {
@@ -393,7 +399,8 @@ func (p *Pipeline) Process(ctx context.Context, obs Observation) (Outcome, error
 				return out, err
 			}
 			in.DedupKey = key
-			return p.finish(c, obs, in, out, retention)
+			in.Decision = decide(obs, nil, false)
+			return p.finish(c, obs.ClientID, in, out, retention)
 		}
 
 		body, err := readContent(ctx, res.Mode, obs.Content)
@@ -534,13 +541,71 @@ func (p *Pipeline) Process(ctx context.Context, obs Observation) (Outcome, error
 				c.Add(protocol.CounterDropped)
 			}
 		}
+		in.Decision = decide(obs, in.Labels, in.Confidence != protocol.ConfidenceDegraded)
 	}
 
 	out.Confidence = in.Confidence
-	return p.finish(c, obs, in, out, retention)
+	return p.finish(c, obs.ClientID, in, out, retention)
 }
 
-func (p *Pipeline) finish(c *CounterSet, obs Observation, in EnvelopeInput, out Outcome, retention time.Duration) (Outcome, error) {
+// Fact is a discovery or agent_activity record as a collector observes it. It is metadata only:
+// it has no content and no way to hand any over.
+type Fact struct {
+	Kind            protocol.Kind
+	Route           protocol.Route
+	ToolFingerprint string
+
+	// Person attributes the record to a known person; nil attributes it to the pipeline's
+	// identity (the console user). A machine-wide fact names the unattributed user_ref.
+	Person *Person
+
+	OccurredAt        time.Time
+	MonotonicOffsetMS int64
+
+	// DedupKey is the record's idempotency key, which the caller derives for its kind.
+	DedupKey string
+
+	FactFields
+}
+
+// Record mints a discovery or agent_activity envelope and spools it. It resolves the mode, which
+// the record carries as its collection_mode, and refuses to mint before an identity is issued.
+// It never reads content: a Fact has none to read.
+func (p *Pipeline) Record(_ context.Context, f Fact) error {
+	c := p.Counters(f.Route)
+	c.Add(protocol.CounterObserved)
+	if f.Kind != protocol.KindDiscovery && f.Kind != protocol.KindAgentActivity {
+		c.Add(protocol.CounterErrors)
+		return fmt.Errorf("core: Record mints %s and %s records, not %q", protocol.KindDiscovery, protocol.KindAgentActivity, f.Kind)
+	}
+
+	id, issued := p.identity.get()
+	if f.Person != nil {
+		id.UserRef, id.SubjectName = f.Person.UserRef, f.Person.SubjectName
+	}
+	res := p.resolveWith(ScopeQuery{ToolFingerprint: f.ToolFingerprint, UserRef: id.UserRef}, id)
+	if !issued || id.TenantID == "" {
+		c.Add(protocol.CounterErrors)
+		return ErrIdentityUnresolved
+	}
+
+	in := EnvelopeInput{
+		Identity:          id,
+		EventID:           p.NewID(),
+		Kind:              f.Kind,
+		Route:             f.Route,
+		Mode:              res.Mode,
+		ToolFingerprint:   f.ToolFingerprint,
+		OccurredAt:        f.OccurredAt,
+		MonotonicOffsetMS: f.MonotonicOffsetMS,
+		DedupKey:          f.DedupKey,
+		FactFields:        f.FactFields,
+	}
+	_, err := p.finish(c, "", in, Outcome{Route: f.Route, Mode: res.Mode, Reason: ReasonEmitted}, p.retention())
+	return err
+}
+
+func (p *Pipeline) finish(c *CounterSet, clientID string, in EnvelopeInput, out Outcome, retention time.Duration) (Outcome, error) {
 	raw, err := BuildEnvelope(in)
 	if err != nil {
 		c.Add(protocol.CounterErrors)
@@ -548,7 +613,7 @@ func (p *Pipeline) finish(c *CounterSet, obs Observation, in EnvelopeInput, out 
 		return out, err
 	}
 	entry := protocol.Entry{
-		ClientID:          obs.ClientID,
+		ClientID:          clientID,
 		Kind:              in.Kind,
 		Route:             in.Route,
 		CollectionMode:    in.Mode,
@@ -576,10 +641,54 @@ func (p *Pipeline) finish(c *CounterSet, obs Observation, in EnvelopeInput, out 
 	}
 	c.Add(protocol.CounterEmitted)
 	p.MarkSuccess(in.Route, p.Clock())
+	p.logSpooled(in)
 	out.Emitted = true
 	out.EventID = in.EventID
 	out.Seq = stored.Seq
 	return out, nil
+}
+
+// logSpooled writes the record of one spooled envelope: what the device emitted, never what it
+// read. The fields are named one by one, so no digest, label, excerpt, attachment name or text
+// can reach the log.
+func (p *Pipeline) logSpooled(in EnvelopeInput) {
+	if p.Log == nil {
+		return
+	}
+	attrs := []slog.Attr{
+		slog.String("event_id", in.EventID),
+		slog.String("kind", string(in.Kind)),
+		slog.String("source", string(in.Route)),
+		slog.String("tool_fingerprint", in.ToolFingerprint),
+		slog.String("collection_mode", string(in.Mode)),
+		slog.String("user_ref", in.Identity.UserRef),
+	}
+	if d := in.Decision; d != nil {
+		decision := []any{slog.String("action", d.Action)}
+		if d.RuleID != "" {
+			decision = append(decision, slog.String("rule_id", d.RuleID))
+		}
+		attrs = append(attrs, slog.Group("policy_decision", decision...))
+	}
+	for _, f := range []struct{ key, value string }{
+		{"discovery_type", string(in.DiscoveryType)},
+		{"activity_type", string(in.ActivityType)},
+		{"app_version", in.AppVersion},
+		{"publisher", in.Publisher},
+		{"host_app", in.HostApp},
+		{"destination_host", in.DestinationHost},
+	} {
+		if f.value != "" {
+			attrs = append(attrs, slog.String(f.key, f.value))
+		}
+	}
+	if len(in.ModelNames) > 0 {
+		attrs = append(attrs, slog.Any("model_names", in.ModelNames))
+	}
+	if in.Model != "" {
+		attrs = append(attrs, slog.String("model", in.Model))
+	}
+	p.Log.LogAttrs(context.Background(), slog.LevelInfo, "envelope spooled", attrs...)
 }
 
 // readContent is the single call site of ContentReader.Read in this package, and it refuses to
@@ -619,6 +728,22 @@ func (p *Pipeline) dedupKey(id Identity, tier string, obs Observation, digest st
 		return dedup.ContentKey(id.TenantID, id.DeviceID, obs.ToolFingerprint, string(obs.Kind), obs.OccurredAt, digest)
 	}
 	return dedup.SurrogateKey(id.TenantID, id.DeviceID, obs.ToolFingerprint, string(obs.Kind), obs.OccurredAt, size, atts)
+}
+
+// decide runs the observation's enforcement hook over the event's label classes. Without a hook
+// the prompt carries no decision, and the envelope refuses it.
+func decide(obs Observation, labels []protocol.Label, known bool) *protocol.Decision {
+	if obs.Enforce == nil {
+		return nil
+	}
+	classes := make([]string, 0, len(labels))
+	for _, l := range labels {
+		if !slices.Contains(classes, l.Class) {
+			classes = append(classes, l.Class)
+		}
+	}
+	d := obs.Enforce(classes, known)
+	return &d
 }
 
 // classifyInput is what the classifier sees: the authored text when extraction found it,

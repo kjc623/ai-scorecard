@@ -25,15 +25,109 @@ type Bundle struct {
 
 	Interception Interception `json:"interception"`
 	CLIShim      CLIShim      `json:"cli_shim"`
+	Endpoint     Endpoint     `json:"endpoint"`
+
+	// Rules is the tenant's enforcement rules in order; the first that matches decides. Never
+	// omitted, so the drift test sees the name.
+	Rules []Rule `json:"rules"`
+	// SanctionedTools is the tool fingerprints the tenant has sanctioned, sorted: what a rule's
+	// sanction list is decided against.
+	SanctionedTools []string `json:"sanctioned_tools"`
+	// Catalog is the app catalog the device's discovery collectors match against, sorted by app key
+	// and each app's signals by platform, kind and value. Never omitted, so the drift test sees the
+	// name.
+	Catalog []CatalogApp `json:"catalog"`
+
+	// KillSwitches is the tenant's tripped kill switches, by route: from each one's EffectiveAt the
+	// device carries that route's traffic unread and enforces nothing on it. Omitted when none is
+	// tripped.
+	KillSwitches []KillSwitch `json:"kill_switches,omitempty"`
+
+	// Loopback is the local model servers the device's loopback broker captures, with the broker's
+	// timings. Omitted when the tenant has local model capture on for none.
+	Loopback *Loopback `json:"loopback,omitempty"`
+}
+
+// Loopback is the loopback broker's section: the ports it holds and its timings, which are this
+// service's constants.
+type Loopback struct {
+	Ports                    []LoopbackPort `json:"ports"`
+	ProbeIntervalSeconds     int            `json:"probe_interval_seconds"`
+	PreflightIntervalSeconds int            `json:"preflight_interval_seconds"`
+	PreflightTimeoutMS       int            `json:"preflight_timeout_ms"`
+	MaxConsecutiveFailures   int            `json:"max_consecutive_failures"`
+	CoolDownSeconds          int            `json:"cool_down_seconds"`
+}
+
+// LoopbackPort is one local model server: the device moves it to UpstreamPort, holds Port, and
+// forwards to UpstreamPort once a read-only request to PreflightPath answers there. Mode is the
+// tool's collection mode.
+type LoopbackPort struct {
+	ToolFingerprint string `json:"tool_fingerprint"`
+	Port            int    `json:"port"`
+	UpstreamPort    int    `json:"upstream_port"`
+	PreflightPath   string `json:"preflight_path"`
+	Mode            string `json:"mode"`
+}
+
+// KillSwitch is one tripped kill switch. Provider names the interception route; Mode is always
+// KillDisable.
+type KillSwitch struct {
+	Provider    string    `json:"provider"`
+	Mode        string    `json:"mode"`
+	EffectiveAt time.Time `json:"effective_at"`
+	ReasonCode  string    `json:"reason_code"`
+}
+
+// KillDisable is the one kill-switch mode: decryption and enforcement stop on the route.
+const KillDisable = "disable"
+
+// CatalogApp is one app of the catalog; the device reports it as the fingerprint "app:" + AppKey.
+type CatalogApp struct {
+	AppKey   string          `json:"app_key"`
+	Category string          `json:"category"`
+	Signals  []CatalogSignal `json:"signals"`
+}
+
+// CatalogSignal is one thing that identifies an app on a device.
+type CatalogSignal struct {
+	Platform string `json:"platform"`
+	Kind     string `json:"kind"`
+	Value    string `json:"value"`
+}
+
+// Rule is one enforcement rule. Action is allow, warn or block.
+type Rule struct {
+	RuleID  string    `json:"rule_id"`
+	Action  string    `json:"action"`
+	Match   RuleMatch `json:"match"`
+	Message string    `json:"message"`
+	Link    string    `json:"link,omitempty"`
+}
+
+// RuleMatch is a rule's conditions: every non-empty list must match, with OR inside a list. Every
+// list is sent, empty when it matches anything.
+type RuleMatch struct {
+	Labels     []string `json:"labels"`
+	Tools      []string `json:"tools"`
+	Categories []string `json:"categories"`
+	Sanction   []string `json:"sanction"`
+	Routes     []string `json:"routes"`
 }
 
 // Interception is the decryption scope. The per-device root CA is deliberately absent: the device
-// generates its own and the server never holds it.
+// generates its own and the server never holds it. Enabled is the tenant's TLS inspection setting:
+// without it the device runs no proxy, shim environment or desktop-app PAC and trusts no root of its
+// own, whatever the other fields say.
 type Interception struct {
+	Enabled     bool     `json:"enabled"`
 	SeedHosts   []string `json:"seed_hosts,omitempty"`
 	Ports       []int    `json:"ports,omitempty"`
 	ProxyListen string   `json:"proxy_listen,omitempty"`
 	ProxyCanary string   `json:"proxy_canary,omitempty"`
+	// PacListen is the desktop-app PAC's loopback address; it is sent only while Enabled, and
+	// without it the device serves no PAC.
+	PacListen string `json:"pac_listen,omitempty"`
 }
 
 // CLIShim is the CLI trust shim's configuration. The shim is always on and its managed directory is
@@ -43,6 +137,51 @@ type CLIShim struct {
 	Runtimes    []string `json:"runtimes,omitempty"`
 	NoProxy     []string `json:"no_proxy,omitempty"`
 	NodeRequire bool     `json:"node_require,omitempty"`
+}
+
+// Endpoint is the endpoint collectors' switches, from the tenant's settings, and the values they run
+// with, which are this service's constants. No field is omitted when false or empty, so the drift
+// test sees every name.
+type Endpoint struct {
+	Inventory EndpointInventory `json:"inventory"`
+	Processes EndpointSwitch    `json:"processes"`
+	Flows     EndpointSwitch    `json:"flows"`
+	OTel      EndpointOTel      `json:"otel"`
+	Hooks     EndpointHooks     `json:"hooks"`
+	// Tools is each tool's native collectors, keyed by tool key. A tool's switch takes effect only
+	// while the collector it names is enabled.
+	Tools                map[string]EndpointTool `json:"tools"`
+	DiscoveryDailyBudget int                     `json:"discovery_daily_budget"`
+}
+
+// EndpointSwitch is a collector with no setting beyond on or off.
+type EndpointSwitch struct {
+	Enabled bool `json:"enabled"`
+}
+
+// EndpointInventory is the installed-app scanner.
+type EndpointInventory struct {
+	Enabled         bool `json:"enabled"`
+	IntervalMinutes int  `json:"interval_minutes"`
+}
+
+// EndpointOTel is the device's OTLP receiver and its loopback listen addresses.
+type EndpointOTel struct {
+	Enabled    bool   `json:"enabled"`
+	HTTPListen string `json:"http_listen"`
+	GRPCListen string `json:"grpc_listen"`
+}
+
+// EndpointHooks is the hook relay. ManagedOnly makes tools run only the hooks the agent manages.
+type EndpointHooks struct {
+	Enabled     bool `json:"enabled"`
+	ManagedOnly bool `json:"managed_only"`
+}
+
+// EndpointTool is one tool's native collectors.
+type EndpointTool struct {
+	OTel  bool `json:"otel"`
+	Hooks bool `json:"hooks"`
 }
 
 // SignedBundle is the envelope capture-core/policy verifies: the Ed25519 signature covers the

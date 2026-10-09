@@ -3,7 +3,8 @@
 //
 // device/protocol (Go) is the source of truth; the extension transcribes its vocabularies in
 // device/extension/src/messages.js. A one-letter difference compiles on both sides and fails only at
-// runtime, so this parses both and compares them by value, with the names aligned.
+// runtime, so this parses both and compares them by value, with the names aligned. A value only
+// capture-core uses is listed as deviceOnly; the extension's own contract test reads those lists.
 //
 //   node tools/check-vocab.mjs            # exit 1 on drift
 //   node tools/check-vocab.mjs --json
@@ -16,7 +17,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const JSON_OUT = process.argv.includes('--json');
 
 /** A vocabulary: a Go const block, a JS consumer, and the names on each side. */
-const VOCABULARIES = [
+export const VOCABULARIES = [
   {
     id: 'native-message-type',
     title: 'Native-messaging message types (protocol/native.go Type*)',
@@ -25,6 +26,9 @@ const VOCABULARIES = [
     // core, CORE_TYPE for core -> extension). That is a clearer structure than one flat set, and it
     // is not drift, so the comparison is against the union of the two.
     js: { file: 'device/extension/src/messages.js', groups: ['TYPE', 'CORE_TYPE'] },
+    // capture-core, its user-session helper and the tools' hook command speak these on the same
+    // endpoint; the extension never sends or receives them.
+    deviceOnly: ['helper_hello', 'notify', 'notify_result', 'hook_evaluate', 'hook_decision'],
   },
   {
     id: 'refusal-reason',
@@ -37,6 +41,9 @@ const VOCABULARIES = [
     title: 'Collection routes (protocol Route*)',
     go: { file: 'device/protocol/envelope.go', prefix: 'Route' },
     js: { file: 'device/extension/src/messages.js', groups: ['ROUTE'] },
+    // Routes only capture-core's own collectors emit. The extension never sees them, so it does
+    // not transcribe them.
+    deviceOnly: ['tool.hook', 'tool.otel', 'inv.scan', 'net.flow'],
   },
   {
     id: 'collection-mode',
@@ -67,6 +74,8 @@ const VOCABULARIES = [
     title: 'Health detail vocabulary (protocol Detail*)',
     go: { file: 'device/protocol/envelope.go', prefix: 'Detail' },
     js: { file: 'device/extension/src/messages.js', groups: ['DETAIL'] },
+    // Details only capture-core's own collectors report.
+    deviceOnly: ['helper_unavailable', 'component_crash_loop', 'tool_not_installed', 'tool_version_unsupported', 'config_write_failed', 'config_tampered', 'no_recent_events', 'etw_session_failed'],
   },
 ];
 
@@ -154,9 +163,22 @@ function main() {
 
     const goValues = new Set(go.values());
     const jsValues = new Set(js.values());
+    const deviceOnly = new Set(vocab.deviceOnly ?? []);
     let count = 0;
 
+    for (const value of deviceOnly) {
+      if (!goValues.has(value)) {
+        findings.push({
+          id: vocab.id,
+          kind: 'stale-device-only',
+          value,
+          detail: `the device-only list names "${value}", which device/protocol does not define`,
+        });
+        count++;
+      }
+    }
     for (const [name, value] of go) {
+      if (deviceOnly.has(value)) continue;
       if (!jsValues.has(value)) {
         findings.push({
           id: vocab.id,
@@ -212,4 +234,4 @@ function main() {
   process.exit(findings.length === 0 ? 0 : 1);
 }
 
-main();
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();

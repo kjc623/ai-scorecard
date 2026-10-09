@@ -81,6 +81,30 @@ A tenant that restricts native messaging must allow `com.shadowaicapture.capture
 `C:\ProgramData\ShadowAICapture`, whose `profile` (vendor and tenant files) and `state` (including the
 service log `state\capture-core.log`) only SYSTEM and Administrators can read, and whose `cli` (the CLI
 shim's CA bundle and proxy script) every user can read; the native messaging host keys under `HKLM\SOFTWARE\Google\Chrome` and
-`HKLM\SOFTWARE\Microsoft\Edge`; and, while the service runs, its interception root in the machine
-trust store and the CLI proxy environment, which stopping the service takes back out. Uninstalling
-removes the service, the files, the keys and the data folder; an upgrade keeps the data folder.
+`HKLM\SOFTWARE\Microsoft\Edge`; a *Shadow AI Capture* Start-menu shortcut for all users, whose
+AppUserModelID (`ShadowAICapture.Agent`) Windows requires before it shows the agent's notifications.
+While the service runs, as the tenant's settings switch them on, the agent also changes:
+
+- the tools' machine-wide managed settings: `C:\Program Files\ClaudeCode\managed-settings.json`,
+  `C:\ProgramData\OpenAI\Codex\requirements.toml` and `config.toml`, `C:\ProgramData\Cursor\hooks.json`,
+  and Copilot's values under `HKLM\SOFTWARE\Policies\Microsoft\VSCode` and in the machine environment;
+  each file or value is backed up before the agent first writes it;
+- the machine environment's `OLLAMA_HOST`;
+- each signed-in user's `AutoConfigURL` (Internet Settings), pointed at the desktop-app PAC;
+- its interception root in the machine Root store, whose key is the CNG machine key
+  `ShadowAICapture-DeviceRoot`;
+- the CLI shim's proxy and CA variables in the machine environment;
+- any `ShadowAICapture QUIC *` firewall rule.
+
+Stopping the service takes the root, the PAC, the tools' settings and the CLI environment back out.
+A full uninstall then runs `capture-core --uninstall-cleanup` as SYSTEM, before the files are removed:
+it removes or restores each of the locations above from the backups, also after a crash, restores
+`OLLAMA_HOST`, deletes the CNG key, and writes each step's outcome to
+`%WINDIR%\Temp\ShadowAICapture-uninstall.log`; its exit code is ignored, so it never blocks the
+uninstall. Uninstalling then removes the service, the files, the keys, the shortcut and the data
+folder; an upgrade keeps the data folder and runs no cleanup.
+
+`windows\snapshot.ps1` checks that an uninstall left the machine as it was: run it as an
+administrator before the install and after the uninstall (`-Out before.json`, `-Out after.json`),
+then `snapshot.ps1 -Compare before.json after.json` prints every difference and exits 1 if there is
+one.

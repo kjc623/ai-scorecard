@@ -15,6 +15,7 @@ import { createHarness, settle, waitFor } from '../test-support/harness.mjs';
 import { chromeRequest, INVALID_UTF8 } from '../test-support/fake-chrome.mjs';
 import { CHAT_BODY, DRAFT_BODY, STREAMING_RESPONSE } from '../test-support/fixtures.mjs';
 import { COUNTER, CORE_TYPE, REFUSAL, TYPE } from '../src/messages.js';
+import { normaliseBody } from '../src/request-body.js';
 
 /** A real delay, for the one test that has to let a backoff window elapse. */
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -22,16 +23,12 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const CHAT_URL = 'https://chat.example-ai.invalid/v1/chat/completions';
 const DRAFT_URL = 'https://saas.example-ai.invalid/api/drafts';
 
-/** Start the extension against a bundle that reads bodies for one host and refuses one other. */
+/** Start the extension against a bundle in force, by default one that reads bodies at m1. */
 async function started({ core = {}, capacity = 200, bundle = null, failConnect = false } = {}) {
   const h = createHarness({ core, capacity, failConnect });
   await h.app.start();
-  const policy = bundle || {
-    policy_version: 'bundle-1',
-    default_mode: 'm1',
-    scope: { 'denied.invalid': 'm0' },
-  };
-  h.app.applyPolicy({ policy_version: policy.policy_version, bundle: policy });
+  const policy = bundle || { version: 'bundle-1', tenant_default_mode: 'm1' };
+  h.app.applyPolicy({ policy_version: policy.version, bundle: policy });
   await settle();
   // A clean slate: the counters are cumulative since process start, and the policy sync and lane
   // re-registration above are not what these tests are measuring.
@@ -46,11 +43,63 @@ function observationFrames(core) {
 
 // ── the M0 guarantee ─────────────────────────────────────────────────────────────────────────
 
-test('M0: a destination the policy resolves to M0 is never registered on the body-bearing lane', async () => {
+test('M0: a tenant at M0 has no body-bearing lane; one that reads content has it', async () => {
+  const m0 = await started({ bundle: { version: 'b0', tenant_default_mode: 'm0' } });
+  assert.equal(m0.fake.registration('body'), null, 'no destination may be read, so Chrome is never asked for a body');
+  assert.ok(m0.fake.registration('metadata'), 'observation is still broad: the metadata lane is installed');
+
   const h = await started();
   const body = h.fake.registration('body');
   assert.ok(body, 'a bundle with a readable default must install the body lane');
   assert.deepEqual(body.extra.includes('requestBody'), true, 'the body lane is the one asking for requestBody');
+});
+
+test('a tool whose own mode is M0 is emitted without content, even on the body lane', async () => {
+  const h = await started();
+  const send = (requestId) =>
+    h.fake.drive('body', chromeRequest({ requestId, url: CHAT_URL, headers: { 'content-type': 'application/json' }, body: JSON.stringify(CHAT_BODY) }));
+  await send('before');
+  await settle();
+  const tool = h.core.lastObservation().tool_fingerprint;
+  assert.equal(h.core.lastObservation().has_content, true, 'at the tenant default the body is read');
+
+  h.app.applyPolicy({ policy_version: 'bundle-2', bundle: { version: 'bundle-2', tenant_default_mode: 'm1', tool_modes: { [tool]: 'm0' } } });
+  await send('after');
+  await settle();
+  const obs = h.core.lastObservation();
+  assert.equal(obs.tool_fingerprint, tool, 'one tool keeps one fingerprint whatever its mode');
+  assert.equal(obs.has_content, false);
+  assert.equal(obs.content, undefined);
+  assert.equal(obs.content_digest, undefined, 'not hashed either');
+});
+
+test('with population or device scopes in the bundle the mode is capture-core\'s answer to mode_query', async () => {
+  for (const [answer, reads] of [
+    ['m0', false],
+    ['m2', true],
+  ]) {
+    const h = await started({
+      core: { modeAnswer: { mode: answer, policy_version: 'b1', reason: 'population=' + answer } },
+      bundle: { version: 'b1', tenant_default_mode: 'm2', population_modes: { finance: 'm0' } },
+    });
+    await h.fake.drive('body', chromeRequest({ url: CHAT_URL, headers: { 'content-type': 'application/json' }, body: JSON.stringify(CHAT_BODY) }));
+    await settle();
+    const query = h.core.received.find((m) => m.type === TYPE.MODE_QUERY);
+    assert.ok(query, 'capture-core was asked');
+    assert.match(query.body.tool_fingerprint, /^tf1:/, 'about this tool');
+    assert.equal(h.core.lastObservation().has_content, reads, `answer ${answer}`);
+  }
+});
+
+test('a mode_query nobody answers resolves to M0', async () => {
+  const h = await started({ bundle: { version: 'b1', tenant_default_mode: 'm2', device_modes: { 'dev-1': 'm1' } } });
+  h.core.handle = ((handle) => async (message) =>
+    message.type === TYPE.MODE_QUERY ? { type: CORE_TYPE.REFUSAL, version: 1, id: message.id, body: { reason: REFUSAL.MALFORMED, message: 'no' } } : handle(message))(h.core.handle);
+  await h.fake.drive('body', chromeRequest({ url: CHAT_URL, headers: { 'content-type': 'application/json' }, body: JSON.stringify(CHAT_BODY) }));
+  await settle();
+  const obs = h.core.lastObservation();
+  assert.ok(obs, 'still an event');
+  assert.equal(obs.has_content, false, 'no answer is not a licence to read');
 });
 
 test('M0: with no bundle at all, no body-bearing listener is installed', async () => {
@@ -220,12 +269,13 @@ test('a strict UTF-8 body is carried as text; an invalid one is carried as bytes
 
 test('an over-cap body is sized and hashed, emitted degraded, and never held whole', async () => {
   const cap = 2048;
-  const h = await started({ bundle: { policy_version: 'b1', default_mode: 'm1', mode_caps: { body_bytes: cap } } });
+  const h = await started();
   const huge = Buffer.alloc(64 * 1024, 0x61);
   const prefix = Buffer.from('{"model":"m","messages":[{"role":"user","content":"');
   prefix.copy(huge, 0);
 
-  await h.fake.drive('body', chromeRequest({ url: CHAT_URL, headers: { 'content-type': 'application/json' }, body: huge }));
+  const detail = chromeRequest({ url: CHAT_URL, headers: { 'content-type': 'application/json' }, body: huge });
+  await h.app.pipeline.captureWithBody({ detail, body: normaliseBody(detail.requestBody, { capBytes: cap }) });
   await settle();
 
   const obs = h.core.lastObservation();
@@ -241,77 +291,96 @@ test('an over-cap body is sized and hashed, emitted degraded, and never held who
 
 // ── inline warn/block ───────────────────────────────────────────────────────────────────────
 
-test('a blocked request is CANCELLED and is still an event', async () => {
-  const h = await started({
-    bundle: {
-      policy_version: 'b1',
-      default_mode: 'm1',
-      rules: [{ rule_id: 'BLOCK_EXTERNAL', action: 'blocked', hosts: ['chat.example-ai.invalid'] }],
-      classifier_release: { version: 'c1', state: 'enforcing' },
-    },
-  });
+/** A bundle at m1 holding `rules`; nothing is sanctioned, so every browser tool is unsanctioned. */
+function ruleBundle(rules) {
+  return { version: 'b1', tenant_default_mode: 'm1', rules, sanctioned_tools: [] };
+}
+
+const BLOCK_BROWSER = {
+  rule_id: 'block_unsanctioned_browser',
+  action: 'block',
+  match: { labels: [], tools: [], categories: [], sanction: ['unsanctioned'], routes: ['ext.web_request'] },
+  message: 'This AI tool is not sanctioned.',
+  link: 'https://intranet.example/ai',
+};
+const WARN_BROWSER = { ...BLOCK_BROWSER, rule_id: 'warn_unsanctioned_browser', action: 'warn', message: 'Check before you send company data.' };
+
+test('a blocked request is CANCELLED, the overlay shows the rule\'s message and link, and it is still an event', async () => {
+  const h = await started({ bundle: ruleBundle([BLOCK_BROWSER]) });
+  h.fake.state.tabAnswers.set(1, () => ({ ok: true }));
 
   const response = await h.fake.drive('body', chromeRequest({ url: CHAT_URL, headers: { 'content-type': 'application/json' }, body: JSON.stringify(CHAT_BODY) }));
   await settle();
 
   assert.deepEqual(response, { cancel: true }, 'blocked cancels through webRequestBlocking');
+  const notice = h.fake.state.messages.find((m) => m.message && m.message.type === 'capture_block');
+  assert.ok(notice, 'the tab is told why');
+  assert.equal(notice.message.spec.message, 'This AI tool is not sanctioned.');
+  assert.equal(notice.message.spec.link, 'https://intranet.example/ai');
+  assert.equal(notice.message.spec.rule_id, 'block_unsanctioned_browser');
   const obs = h.core.lastObservation();
   assert.ok(obs, 'a blocked request is still an event, or nothing could answer "what did we stop"');
   assert.equal(obs.decision.action, 'blocked');
-  assert.equal(obs.decision.rule_id, 'BLOCK_EXTERNAL');
+  assert.equal(obs.decision.rule_id, 'block_unsanctioned_browser');
   assert.equal(obs.decision.decided_locally, true, 'the decision is local: no round trip');
 });
 
-test('a shadow release computes the decision but never blocks', async () => {
+test('a block nobody could be shown still cancels, and the missing notice is counted', async () => {
+  const h = await started({ bundle: ruleBundle([BLOCK_BROWSER]) });
+  const response = await h.fake.drive('body', chromeRequest({ url: CHAT_URL, headers: { 'content-type': 'application/json' }, body: JSON.stringify(CHAT_BODY) }));
+  await settle();
+  assert.deepEqual(response, { cancel: true });
+  assert.equal(h.app.health.counters.snapshot().errors_by_code.block_notice_unavailable, 1);
+});
+
+test('the bundle\'s rules match on what the extension knows: a label rule does not match without a classification', async () => {
   const h = await started({
-    bundle: {
-      policy_version: 'b1',
-      default_mode: 'm1',
-      rules: [{ rule_id: 'BLOCK_EXTERNAL', action: 'blocked', hosts: ['chat.example-ai.invalid'] }],
-      classifier_release: { version: 'c1', state: 'shadow' },
-    },
+    bundle: ruleBundle([{ ...BLOCK_BROWSER, rule_id: 'block_credentials', match: { labels: ['credential'], routes: ['ext.web_request'] } }]),
   });
   const response = await h.fake.drive('body', chromeRequest({ url: CHAT_URL, headers: { 'content-type': 'application/json' }, body: JSON.stringify(CHAT_BODY) }));
   await settle();
-  assert.equal(response, undefined, 'a shadow release must not block');
+  assert.equal(response, undefined);
   const obs = h.core.lastObservation();
   assert.equal(obs.decision.action, 'logged');
-  assert.equal(obs.decision.decided_locally, true);
+  assert.equal(obs.decision.rule_id, 'policy.default');
 });
 
-test('a warned request is held, the user answer is recorded, and declining cancels it', async () => {
-  const h = await started({
-    bundle: {
-      policy_version: 'b1',
-      default_mode: 'm1',
-      confirmation_window_ms: 1000,
-      rules: [{ rule_id: 'WARN_PII', action: 'warned', hosts: ['chat.example-ai.invalid'] }],
-      classifier_release: { version: 'c1', state: 'enforcing' },
-    },
+test('a sanctioned tool is not matched by an unsanctioned rule', async () => {
+  const h = await started();
+  await h.fake.drive('body', chromeRequest({ requestId: 'probe', url: CHAT_URL, headers: { 'content-type': 'application/json' }, body: JSON.stringify(CHAT_BODY) }));
+  await settle();
+  const tool = h.core.lastObservation().tool_fingerprint;
+  h.app.applyPolicy({ policy_version: 'b2', bundle: { ...ruleBundle([BLOCK_BROWSER]), version: 'b2', sanctioned_tools: [tool] } });
+  const response = await h.fake.drive('body', chromeRequest({ url: CHAT_URL, headers: { 'content-type': 'application/json' }, body: JSON.stringify(CHAT_BODY) }));
+  await settle();
+  assert.equal(response, undefined, 'the tenant sanctioned this tool');
+  assert.equal(h.core.lastObservation().decision.rule_id, 'policy.default');
+});
+
+test('a warned request is held with the rule\'s message and link, the answer is recorded, and declining cancels it', async () => {
+  const h = await started({ bundle: ruleBundle([WARN_BROWSER]) });
+  let spec = null;
+  h.fake.state.tabAnswers.set(1, (message) => {
+    if (message.type === 'capture_warn') spec = message.spec;
+    return { ok: true, answered: true, proceeded: false };
   });
-  h.fake.state.tabAnswers.set(1, () => ({ ok: true, answered: true, proceeded: false }));
 
   const response = await h.fake.drive('body', chromeRequest({ url: CHAT_URL, headers: { 'content-type': 'application/json' }, body: JSON.stringify(CHAT_BODY) }));
   await settle();
 
   assert.deepEqual(response, { cancel: true }, 'declining the warning cancels the request');
+  assert.equal(spec.message, 'Check before you send company data.', 'the confirmation shows the rule\'s message');
+  assert.equal(spec.link, 'https://intranet.example/ai', 'and its link');
+  assert.equal(spec.timeout_ms, 20_000, 'and waits the extension\'s confirmation window');
   const obs = h.core.lastObservation();
   assert.ok(obs, 'the warned submission is an event either way');
   assert.equal(obs.decision.action, 'blocked');
-  assert.equal(obs.decision.rule_id, 'WARN_PII');
+  assert.equal(obs.decision.rule_id, 'warn_unsanctioned_browser');
   assert.equal(obs.decision.decided_locally, true);
 });
 
 test('proceeding past a warning is recorded as `warned`, with the answer as part of the decision', async () => {
-  const h = await started({
-    bundle: {
-      policy_version: 'b1',
-      default_mode: 'm1',
-      confirmation_window_ms: 1000,
-      rules: [{ rule_id: 'WARN_PII', action: 'warned', hosts: ['chat.example-ai.invalid'] }],
-      classifier_release: { version: 'c1', state: 'enforcing' },
-    },
-  });
+  const h = await started({ bundle: ruleBundle([WARN_BROWSER]) });
   h.fake.state.tabAnswers.set(1, () => ({ ok: true, answered: true, proceeded: true }));
   const response = await h.fake.drive('body', chromeRequest({ url: CHAT_URL, headers: { 'content-type': 'application/json' }, body: JSON.stringify(CHAT_BODY) }));
   await settle();
@@ -322,15 +391,7 @@ test('proceeding past a warning is recorded as `warned`, with the answer as part
 });
 
 test('a warn with no one to ask fails OPEN, degraded, and counts the failure', async () => {
-  const h = await started({
-    bundle: {
-      policy_version: 'b1',
-      default_mode: 'm1',
-      confirmation_window_ms: 40,
-      rules: [{ rule_id: 'WARN_PII', action: 'warned', hosts: ['chat.example-ai.invalid'] }],
-      classifier_release: { version: 'c1', state: 'enforcing' },
-    },
-  });
+  const h = await started({ bundle: ruleBundle([WARN_BROWSER]) });
   // No tab answer is registered: the content script is absent, which is the real case on a page
   // the extension cannot reach.
   const errorsBefore = h.app.health.counters.snapshot().counters.errors;
@@ -345,19 +406,14 @@ test('a warn with no one to ask fails OPEN, degraded, and counts the failure', a
   assert.ok(errorsAfter > errorsBefore, 'the failure is counted, because a silent fail-open is a lie');
 });
 
-test('a logged decision carries decided_locally: true', async () => {
-  const h = await started({
-    bundle: {
-      policy_version: 'b1',
-      default_mode: 'm1',
-      rules: [{ rule_id: 'LOG_ALL', action: 'logged', hosts: ['chat.example-ai.invalid'] }],
-      classifier_release: { version: 'c1', state: 'enforcing' },
-    },
-  });
-  await h.fake.drive('body', chromeRequest({ url: CHAT_URL, headers: { 'content-type': 'application/json' }, body: JSON.stringify(CHAT_BODY) }));
+test('an allow rule records logged under its own id, with decided_locally: true', async () => {
+  const h = await started({ bundle: ruleBundle([{ ...BLOCK_BROWSER, rule_id: 'allow_browser', action: 'allow' }]) });
+  const response = await h.fake.drive('body', chromeRequest({ url: CHAT_URL, headers: { 'content-type': 'application/json' }, body: JSON.stringify(CHAT_BODY) }));
   await settle();
+  assert.equal(response, undefined);
   const obs = h.core.lastObservation();
   assert.equal(obs.decision.action, 'logged');
+  assert.equal(obs.decision.rule_id, 'allow_browser');
   assert.equal(obs.decision.decided_locally, true);
 });
 
@@ -447,7 +503,7 @@ test('when the channel returns, the queued observations are merged out and the r
   // for a reason that is not its claim.
   const h = createHarness({ failConnect: true, connectCooldownMs: 0 });
   await h.app.start();
-  h.app.applyPolicy({ policy_version: 'b1', bundle: { policy_version: 'b1', default_mode: 'm1' } });
+  h.app.applyPolicy({ policy_version: 'b1', bundle: { version: 'b1', tenant_default_mode: 'm1' } });
   await settle();
   const errorsBefore = h.app.health.counters.snapshot().counters.errors;
   await h.fake.drive('body', chromeRequest({ url: CHAT_URL, headers: { 'content-type': 'application/json' }, body: JSON.stringify(CHAT_BODY) }));
@@ -480,7 +536,7 @@ test('a dead native host does not become a retry loop: connects are backed off, 
   // absent host and the next send opening another port: sustained CPU burn for a missing channel.
   const h = createHarness({ failConnect: true, connectCooldownMs: 5000 });
   await h.app.start();
-  h.app.applyPolicy({ policy_version: 'b1', bundle: { policy_version: 'b1', default_mode: 'm1' } });
+  h.app.applyPolicy({ policy_version: 'b1', bundle: { version: 'b1', tenant_default_mode: 'm1' } });
   await settle();
 
   const attemptsBefore = h.fake.state.connectAttempts;
@@ -577,30 +633,37 @@ test('a response for a request the predicate never held changes nothing', async 
 
 // ── policy change ───────────────────────────────────────────────────────────────────────────
 
-test('a policy change re-derives the body lane, so an M0 destination stops being body-bearing', async () => {
+test('a policy change re-derives the body lane: a tenant default of M0 removes it entirely', async () => {
   const h = await started();
-  assert.ok(h.fake.registration('body'));
-  h.app.applyPolicy({
-    policy_version: 'bundle-2',
-    bundle: { policy_version: 'bundle-2', default_mode: 'm1', body_lane_patterns: ['https://chat.example-ai.invalid/*'], scope: { 'saas.example-ai.invalid': 'm0' } },
-  });
+  assert.deepEqual(h.fake.registration('body').urls, ['<all_urls>']);
+  h.app.applyPolicy({ policy_version: 'bundle-2', bundle: { version: 'bundle-2', tenant_default_mode: 'm0' } });
   await settle();
-  const registration = h.fake.registration('body');
-  assert.deepEqual(registration.urls, ['https://chat.example-ai.invalid/*'], 'the include list is what Chrome is given');
-  assert.equal(h.app.policy.snapshot().policy_version, 'bundle-2');
-});
-
-test('a bundle that resolves everything to M0 removes the body lane entirely', async () => {
-  const h = await started();
-  assert.ok(h.fake.registration('body'));
-  h.app.applyPolicy({ policy_version: 'b3', bundle: { policy_version: 'b3', default_mode: 'm1', body_lane_patterns: ['https://only.invalid/*'] } });
-  await settle();
-  h.app.applyPolicy({ policy_version: 'b4', bundle: { policy_version: 'b4', default_mode: 'm1', body_lane_patterns: [] } });
-  h.app.policy.clear();
-  h.app.lanes.refresh();
   assert.equal(h.fake.registration('body'), null, 'the listener is removed, not just ignored');
   const removed = h.fake.registrations.filter((r) => r.action === 'remove');
   assert.ok(removed.length >= 1);
+  assert.equal(h.app.policy.snapshot().policy_version, 'bundle-2');
+
+  h.app.applyPolicy({ policy_version: 'bundle-3', bundle: { version: 'bundle-3', tenant_default_mode: 'm1' } });
+  await settle();
+  assert.deepEqual(h.fake.registration('body').urls, ['<all_urls>'], 'and a mode that reads content brings it back without a restart');
+});
+
+test('the signed envelope is not a bundle: fed to the worker it resolves M0 with no rules', async () => {
+  // What capture-core used to send: the envelope, not the payload it carries.
+  const h = createHarness();
+  await h.app.start();
+  const payload = { version: '5', tenant_default_mode: 'm2', rules: [BLOCK_BROWSER], sanctioned_tools: [] };
+  const envelope = { key_id: 'policy-key-1', algorithm: 'ed25519', payload, signature: 'c2ln' };
+  assert.equal(h.app.applyPolicy({ policy_version: '5', bundle: envelope }).applied, false);
+  assert.equal(h.app.policy.modeFor({}).mode, 'm0');
+  assert.deepEqual(h.app.policy.rules().rules, []);
+  assert.equal(h.fake.registration('body'), null);
+
+  // The payload capture-core now sends resolves as the device does.
+  assert.equal(h.app.applyPolicy({ policy_version: '5', bundle: payload }).applied, true);
+  assert.equal(h.app.policy.modeFor({}).mode, 'm2');
+  assert.equal(h.app.policy.rules().rules.length, 1);
+  assert.ok(h.fake.registration('body'));
 });
 
 test('an unusable bundle leaves the previous policy enforcing and is reported', async () => {
@@ -627,7 +690,7 @@ test('without the grant, the lanes register WITHOUT blocking and observation sti
   const h = createHarness();
   h.fake.state.blockingGranted = false;
   await h.app.start();
-  h.app.applyPolicy({ policy_version: 'b1', bundle: { policy_version: 'b1', default_mode: 'm1' } });
+  h.app.applyPolicy({ policy_version: 'b1', bundle: { version: 'b1', tenant_default_mode: 'm1' } });
   await settle();
 
   assert.equal(h.app.blockingAvailable, false);
@@ -660,12 +723,9 @@ test('the body lane keeps its filter when blocking is unavailable', async () => 
   const h = createHarness();
   h.fake.state.blockingGranted = false;
   await h.app.start();
-  h.app.applyPolicy({
-    policy_version: 'b1',
-    bundle: { policy_version: 'b1', default_mode: 'm1', body_lane_patterns: ['https://chat.example-ai.invalid/*'] },
-  });
+  h.app.applyPolicy({ policy_version: 'b1', bundle: { version: 'b1', tenant_default_mode: 'm1' } });
   await settle();
-  assert.deepEqual(h.fake.registration('body').urls, ['https://chat.example-ai.invalid/*']);
+  assert.deepEqual(h.fake.registration('body').urls, ['<all_urls>']);
   assert.deepEqual(h.fake.registration('body').extra, ['requestBody']);
   assert.equal(h.app.lanes.bodyLaneInstalled, true);
 });
@@ -690,7 +750,7 @@ test('an observation emitted while the channel looks up but cannot deliver ends 
   const h = createHarness({ nativeTimeoutMs: 150 });
   h.fake.chrome.runtime.connectNative = () => blackHolePort();
   await h.app.start();
-  h.app.applyPolicy({ policy_version: 'b1', bundle: { policy_version: 'b1', default_mode: 'm1' } });
+  h.app.applyPolicy({ policy_version: 'b1', bundle: { version: 'b1', tenant_default_mode: 'm1' } });
   await settle();
 
   assert.equal(h.app.native.isConnected(), true, 'the channel looks up, which is the trap');

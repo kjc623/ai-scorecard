@@ -222,10 +222,22 @@ func TestDedupTierFollowsTheVariant(t *testing.T) {
 	}
 	rollup["kind"], rollup["direction"], rollup["source"] = "usage_rollup", "none", "proc.detect"
 	rollup["window_start"], rollup["window_end"], rollup["submission_count"], rollup["bytes_total"] = "2026-10-05T11:55:00Z", "2026-10-05T12:00:00Z", 2, 20
+	discovery := promptM1(eventID(4))
+	for _, f := range []string{"content_digest", "labels", "classifier_version", "confidence", "size_bytes", "policy_decision"} {
+		delete(discovery, f)
+	}
+	discovery["kind"], discovery["direction"], discovery["source"] = "discovery", "none", "proc.detect"
+	discovery["discovery_type"], discovery["detection_basis"] = "app_running", "process_event"
+	activity := promptM1(eventID(5))
+	for _, f := range []string{"content_digest", "labels", "classifier_version", "confidence", "policy_decision"} {
+		delete(activity, f)
+	}
+	activity["kind"], activity["direction"], activity["source"] = "agent_activity", "none", "proc.detect"
+	activity["activity_type"], activity["tool_name"], activity["outcome"] = "tool_call", "Bash", "success"
 
 	svc, _ := newService(t)
-	resp := submit(t, svc, batchOf(t, m0, rollup, promptM1(eventID(3))))
-	for i, want := range []string{"S", "R", "T"} {
+	resp := submit(t, svc, batchOf(t, m0, rollup, promptM1(eventID(3)), discovery, activity))
+	for i, want := range []string{"S", "R", "T", "V", "A"} {
 		if got := resp.Results[i].DedupTier; got != want {
 			t.Errorf("result %d dedup_tier = %q, want %q", i, got, want)
 		}

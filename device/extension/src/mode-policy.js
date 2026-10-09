@@ -1,12 +1,17 @@
 /**
  * mode-policy.js — what the extension may do with a request, decided before it touches the body.
  *
- * capture-core is authoritative for the effective mode; the extension holds a cache of the signed
- * policy it receives over the native channel. The cache fails closed: absent, stale, unparseable or
- * unknown resolves to `m0`, and at `m0` the body is not read at all.
+ * capture-core verifies the signed policy bundle and hands the extension its decoded payload over
+ * the native channel (`policy_bundle`); this module is the in-memory cache of that bundle. The
+ * cache fails closed: absent, stale, unparseable or unknown resolves to `m0`, and at `m0` the body
+ * is not read at all.
  *
- * M0 is enforced at registration: the body-bearing webRequest lane is filtered by
- * `isBodyBearing(url)`, so for an M0 destination Chrome never hands the extension `requestBody`.
+ * The mode is resolved from the bundle fields the device uses: `tenant_default_mode` and
+ * `tool_modes[tool_fingerprint]`, the most restrictive applying, as capture-core's `Resolve` does
+ * for those two inputs. The other inputs of that resolution (population and device scopes, the
+ * notice gate, class priors) need what only capture-core knows; when the bundle carries any of them,
+ * `needsCoreMode()` is true and the caller asks capture-core with `mode_query`. Every other input
+ * can only lower the mode, so the tenant default bounds every request from above.
  *
  * Nothing here persists. The bundle lives in memory only and its version is reported on the health
  * channel.
@@ -21,171 +26,148 @@ export const CONSERVATIVE_MODE = MODE.M0;
 export const DEFAULT_STALE_AFTER_MS = 6 * 60 * 60 * 1000;
 
 /**
+ * The subset of capture-core's policy bundle (device/capture-core/policy/bundle.go) this module
+ * reads, in its JSON spelling.
  * @typedef {object} Bundle
- * @property {string} policy_version
- * @property {number} [effective_at_ms]
- * @property {Record<string,string>} [scope]      pattern -> mode; keys may be `host`, `host:port`, `*.suffix`, `tool:<fp>`
- * @property {object} [mode_caps]                 { attachment_bytes, body_bytes }
- * @property {object} [classifier_release]        { version, state } — shadow / enforcing / rolled_back
- * @property {string} [default_mode]
+ * @property {string} version
+ * @property {string} tenant_default_mode
+ * @property {Record<string,string>} [tool_modes]         tool fingerprint -> mode
+ * @property {Record<string,string>} [population_modes]
+ * @property {Record<string,string>} [device_modes]
+ * @property {Record<string,string[]>} [class_priors]
+ * @property {string} [required_notice_version]
+ * @property {{seed_hosts?: string[]}} [interception]
+ * @property {object[]} [rules]
+ * @property {string[]} [sanctioned_tools]
+ * @property {{app_key: string, category: string}[]} [catalog]   the fields the evaluator reads
  */
 
 /**
  * Build the in-memory policy cache. `now` is injected so expiry is testable without a clock.
- * @returns {{applyBundle: Function, modeFor: Function, isBodyBearing: Function, snapshot: Function, clear: Function}}
  */
 export function createPolicyCache({ now = () => Date.now(), staleAfterMs = DEFAULT_STALE_AFTER_MS } = {}) {
   /** @type {{bundle: Bundle, loadedAt: number, stale: boolean}|null} */
   let current = null;
-  /** Hosts known to resolve to a non-reading mode, so the body lane can be excluded per URL pattern. */
-  let m0Hosts = new Set();
 
   function applyBundle(bundle, { at = now() } = {}) {
-    if (!bundle || typeof bundle !== 'object' || typeof bundle.policy_version !== 'string' || bundle.policy_version === '') {
+    if (!bundle || typeof bundle !== 'object' || Array.isArray(bundle) || typeof bundle.version !== 'string' || bundle.version === '') {
       // An unusable bundle is not "no policy": keep the previous one, marked stale. With none,
       // everything stays at M0.
       current = current ? { ...current, stale: true } : null;
-      rebuildM0();
-      return { applied: false, reason: 'unusable_bundle', policy_version: current ? current.bundle.policy_version : null };
+      return { applied: false, reason: 'unusable_bundle', policy_version: current ? current.bundle.version : null };
     }
     current = { bundle, loadedAt: at, stale: false };
-    rebuildM0();
-    return { applied: true, reason: 'ok', policy_version: bundle.policy_version };
+    return { applied: true, reason: 'ok', policy_version: bundle.version };
   }
 
-  function rebuildM0() {
-    m0Hosts = new Set();
-    if (!current) return;
-    for (const [pattern, mode] of Object.entries(current.bundle.scope || {})) {
-      if (!modeReadsContent(mode)) m0Hosts.add(pattern);
-    }
+  function usable(at) {
+    return current !== null && at - current.loadedAt <= staleAfterMs;
   }
 
-  function expired(at) {
-    return !current || at - current.loadedAt > staleAfterMs;
+  /** The tenant default, or M0 when it is not a mode. */
+  function tenantDefault() {
+    const m = current.bundle.tenant_default_mode;
+    return isMode(m) ? m : CONSERVATIVE_MODE;
   }
 
   /**
-   * Resolve the mode for a request: most restrictive wins over every entry that applies, and any
-   * failure to resolve returns M0 rather than a wider mode.
-   * @param {{host: string, tool_fingerprint?: string, media_type?: string, size_bytes?: number, url?: string}} target
+   * Resolve the mode for a request: the most restrictive of the tenant default and the tool's mode,
+   * and any failure to resolve returns M0 rather than a wider mode. `override` is capture-core's
+   * answer to a `mode_query`, which is authoritative.
+   * @param {{tool_fingerprint?: string}} target
    * @returns {{mode: string, reason: string, policy_version: string|null, unsigned: boolean}}
    */
   function modeFor(target, { at = now(), override } = {}) {
+    const version = current ? current.bundle.version : null;
     if (override !== undefined && override !== null) {
       return {
         mode: isMode(override) ? override : CONSERVATIVE_MODE,
         reason: isMode(override) ? 'core_answer' : 'core_answer_unrecognised',
-        policy_version: current ? current.bundle.policy_version : null,
+        policy_version: version,
         unsigned: false,
       };
     }
     if (!current) return { mode: CONSERVATIVE_MODE, reason: 'no_bundle', policy_version: null, unsigned: true };
-    if (expired(at)) return { mode: CONSERVATIVE_MODE, reason: 'bundle_stale', policy_version: current.bundle.policy_version, unsigned: true };
+    if (!usable(at)) return { mode: CONSERVATIVE_MODE, reason: 'bundle_stale', policy_version: version, unsigned: true };
 
-    const host = String(target.host || '').toLowerCase();
-    const matches = [];
-    for (const [pattern, mode] of Object.entries(current.bundle.scope || {})) {
-      if (!isMode(mode)) continue;
-      if (patternMatches(pattern, host, target.tool_fingerprint)) matches.push({ pattern, mode });
+    let mode = tenantDefault();
+    let reason = 'tenant_default';
+    const tool = target && target.tool_fingerprint;
+    const toolModes = current.bundle.tool_modes;
+    if (tool && toolModes && typeof toolModes === 'object' && Object.hasOwn(toolModes, tool)) {
+      // A tool entry that is not a mode resolves downward.
+      const m = isMode(toolModes[tool]) ? toolModes[tool] : CONSERVATIVE_MODE;
+      if (order(m) < order(mode)) {
+        mode = m;
+        reason = `tool:${tool}`;
+      }
     }
-
-    // The tenant default applies only when no scope entry matches. Folding it into the
-    // most-restrictive reduction would let an M0 default silently override every explicit scope
-    // entry.
-    const entries = matches.length
-      ? matches
-      : [{ pattern: '(default)', mode: isMode(current.bundle.default_mode) ? current.bundle.default_mode : CONSERVATIVE_MODE }];
-
-    // most_restrictive = the lowest value in m0 < m1 < m2 < m3
-    let winner = entries[0];
-    for (const m of entries) if (order(m.mode) < order(winner.mode)) winner = m;
-    return { mode: winner.mode, reason: `scope:${winner.pattern}`, policy_version: current.bundle.policy_version, unsigned: false };
+    return { mode, reason, policy_version: version, unsigned: false };
   }
 
-  /** The gate the body-bearing listener is registered behind. */
+  /**
+   * Whether the bundle carries a mode input only capture-core can resolve: population or device
+   * scopes, the notice gate, or class priors.
+   */
+  function needsCoreMode() {
+    if (!current) return false;
+    const b = current.bundle;
+    return (
+      nonEmptyObject(b.population_modes) ||
+      nonEmptyObject(b.device_modes) ||
+      nonEmptyObject(b.class_priors) ||
+      (typeof b.required_notice_version === 'string' && b.required_notice_version !== '')
+    );
+  }
+
+  /**
+   * Whether any request may have its body read: the tenant default, the upper bound every request
+   * shares, reads content.
+   */
+  function readsAnyContent() {
+    return modeReadsContent(modeFor({}).mode);
+  }
+
+  /**
+   * The gate the body-bearing listener is registered behind. The tool is not known before the body
+   * is read, so this is the bound every request shares.
+   */
   function isBodyBearing(url) {
-    let host = '';
     try {
-      host = new URL(url).host.toLowerCase();
+      new URL(url);
     } catch {
       return false;
     }
-    const resolved = modeFor({ host });
-    if (!modeReadsContent(resolved.mode)) return false;
-    // Belt and braces: even if the scope matrix says otherwise, a pattern that this device
-    // knows to be M0 keeps the body lane off.
-    for (const pattern of m0Hosts) {
-      if (patternMatches(pattern, host, undefined)) return false;
-    }
-    return true;
+    return readsAnyContent();
   }
 
   function snapshot() {
-    if (!current) return { policy_version: null, stale: false, present: false, m0_patterns: [] };
-    return {
-      policy_version: current.bundle.policy_version,
-      stale: current.stale,
-      present: true,
-      classifier_release: current.bundle.classifier_release || null,
-      m0_patterns: [...m0Hosts],
-    };
+    if (!current) return { policy_version: null, stale: false, present: false };
+    return { policy_version: current.bundle.version, stale: current.stale, present: true };
   }
 
   function clear() {
     current = null;
-    m0Hosts = new Set();
   }
 
-  /** Policy data the enforcement path needs; never authoritative, always a cache. */
+  /** The rules, the sanctioned tools and the app catalog, as the evaluator reads them; never authoritative. */
   function rules() {
-    return current ? current.bundle.rules || [] : [];
-  }
-
-  /**
-   * The bundle's body-lane include list, if the deployment supplies one. Chrome match patterns
-   * cannot express "everything except", so a deployment that needs a strict observation set names
-   * it here; otherwise the lane observes broadly and the per-request gate does the work.
-   */
-  function bodyLanePatterns() {
-    const p = current && current.bundle.body_lane_patterns;
-    return Array.isArray(p) ? p.slice() : [];
-  }
-
-  function releaseState() {
-    const r = current && current.bundle.classifier_release;
-    return r && typeof r.state === 'string' ? r.state : 'rolled_back';
-  }
-
-  /**
-   * How long a `warned` request waits for its human. Bundle-overridable, because the right number
-   * is a deployment's decision about its own users; the default is exported from enforce.js.
-   */
-  function confirmationWindowMs() {
-    const v = current && current.bundle.confirmation_window_ms;
-    return Number.isFinite(v) && v > 0 ? v : 20_000;
-  }
-
-  /** The caps come from the bundle; without a bundle there is no cap to exceed, only M0. */
-  function caps() {
-    const c = (current && current.bundle.mode_caps) || {};
+    if (!current) return { rules: [], sanctioned_tools: [], catalog: [] };
+    const b = current.bundle;
     return {
-      body_bytes: Number.isFinite(c.body_bytes) ? c.body_bytes : null,
-      attachment_bytes: Number.isFinite(c.attachment_bytes) ? c.attachment_bytes : null,
+      rules: Array.isArray(b.rules) ? b.rules : [],
+      sanctioned_tools: Array.isArray(b.sanctioned_tools) ? b.sanctioned_tools : [],
+      catalog: Array.isArray(b.catalog) ? b.catalog : [],
     };
   }
 
   /** The bundle's destination sets: evidence for the predicate, never the decision. */
   function discoverySets() {
-    if (!current) return {};
-    return {
-      sanctioned: current.bundle.sanctioned_hosts || [],
-      denied: current.bundle.denied_hosts || [],
-      seed: current.bundle.seed_hosts || [],
-    };
+    const seed = current && current.bundle.interception && current.bundle.interception.seed_hosts;
+    return Array.isArray(seed) ? { seed } : {};
   }
 
-  return { applyBundle, modeFor, isBodyBearing, snapshot, clear, rules, releaseState, caps, discoverySets, confirmationWindowMs, bodyLanePatterns };
+  return { applyBundle, modeFor, needsCoreMode, readsAnyContent, isBodyBearing, snapshot, clear, rules, discoverySets };
 }
 
 function isMode(m) {
@@ -196,15 +178,6 @@ function order(mode) {
   return { m0: 0, m1: 1, m2: 2, m3: 3 }[mode];
 }
 
-/** Scope keys: exact host, host:port, `*.suffix`, or `tool:<fingerprint>`. */
-export function patternMatches(pattern, host, toolFingerprint) {
-  const p = String(pattern || '').toLowerCase();
-  if (!p) return false;
-  if (p.startsWith('tool:')) return Boolean(toolFingerprint) && p.slice(5) === String(toolFingerprint).toLowerCase();
-  if (p === '*' || p === '<all_urls>') return true;
-  if (p.startsWith('*.')) {
-    const suffix = p.slice(2);
-    return host === suffix || host.endsWith(`.${suffix}`);
-  }
-  return p === host;
+function nonEmptyObject(v) {
+  return Boolean(v) && typeof v === 'object' && Object.keys(v).length > 0;
 }

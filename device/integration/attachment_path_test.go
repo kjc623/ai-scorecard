@@ -17,6 +17,7 @@ import (
 
 	"github.com/shadow-ai-capture/device/capture-core/attachments"
 	"github.com/shadow-ai-capture/device/capture-core/classifierlink"
+	"github.com/shadow-ai-capture/device/capture-core/component"
 	"github.com/shadow-ai-capture/device/capture-core/core"
 	"github.com/shadow-ai-capture/device/capture-core/dedup"
 	"github.com/shadow-ai-capture/device/classifier-host/release"
@@ -30,9 +31,18 @@ import (
 // rules, which hands the document to its isolated parser child. The envelope carries the label and
 // the descriptor, never the bytes, and is accepted the way ingest accepts it.
 
-// realClassifier builds classifier-host, signs a release of the shipped rules and model, and
-// connects to the host over the classifier link exactly as the service does.
+// realClassifier builds classifier-host, signs a release of the shipped rules and model, runs the
+// host under a component supervisor and connects to it over the classifier link exactly as the
+// service does.
 func realClassifier(t *testing.T) *classifierlink.Client {
+	t.Helper()
+	cl, _ := startClassifierHost(t, testLogger{t})
+	return cl
+}
+
+// startClassifierHost is realClassifier with the supervisor's log, returning the supervisor too,
+// whose row a health report carries.
+func startClassifierHost(t *testing.T, log core.Logger) (*classifierlink.Client, *component.Supervisor) {
 	t.Helper()
 	goTool, err := exec.LookPath("go")
 	if err != nil {
@@ -66,17 +76,28 @@ func realClassifier(t *testing.T) *classifierlink.Client {
 		t.Fatalf("sign the release: %v", err)
 	}
 
-	var stderr bytes.Buffer
-	cl := classifierlink.New(exe, []string{"serve", "--release", rel, "--pubkey", hex.EncodeToString(pub), "--transport", "stdio"},
-		&stderr, "integration", 30*time.Second)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := cl.Connect(ctx); err != nil {
-		t.Fatalf("connect to classifier-host: %v\n%s", err, stderr.String())
+	var cl *classifierlink.Client
+	host := component.New(component.Spec{
+		Collector: protocol.CollectorClassifierHost,
+		Path:      exe,
+		Args:      []string{"serve", "--release", rel, "--pubkey", hex.EncodeToString(pub), "--transport", "stdio"},
+		Stdio:     true,
+		Ready:     func(ctx context.Context) error { return cl.Connect(ctx) },
+	}, log)
+	cl = classifierlink.NewWithDialer(host.Dial, "integration", 30*time.Second)
+	if err := host.Start(context.Background()); err != nil {
+		t.Fatalf("start classifier-host: %v", err)
 	}
-	t.Cleanup(func() { _ = cl.Close() })
-	return cl
+	t.Cleanup(func() { _ = host.Stop(context.Background()) })
+	if h := host.Health(); h.State != protocol.StateHealthy {
+		t.Fatalf("classifier-host is %s/%s after its handshake, want healthy", h.State, h.Detail)
+	}
+	return cl, host
 }
+
+type testLogger struct{ t *testing.T }
+
+func (l testLogger) Printf(format string, args ...any) { l.t.Logf(format, args...) }
 
 type attachmentCase struct {
 	Frames  []json.RawMessage `json:"frames"`

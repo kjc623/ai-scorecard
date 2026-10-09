@@ -2,24 +2,27 @@ package winproxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/shadow-ai-capture/device/capture-core/core"
 	"github.com/shadow-ai-capture/device/capture-core/policy"
+	"github.com/shadow-ai-capture/device/protocol"
 )
 
 // Config carries the PAC server's inputs and its operating-system seams. Everything that is
-// policy (the interception hosts) or runtime state (the proxy's bound address) is read through
-// functions so the PAC is rendered fresh on every request rather than cached stale.
+// policy (the interception hosts, the listen address) or runtime state (the proxy's bound address)
+// is read through functions so the PAC is rendered fresh on every request rather than cached stale.
 type Config struct {
-	// Listen is the loopback host:port the PAC is served on. Only the port is used; the PAC is
-	// always bound to 127.0.0.1 so it is never reachable off the device.
-	Listen string
-	// Bundles returns the bundle in force, for the interception hosts.
+	// Bundles returns the bundle in force: the interception hosts, and the pac_listen address the
+	// PAC is served on, read at each Start. Only its port is used; the PAC is always bound to
+	// 127.0.0.1 so it is never reachable off the device.
 	Bundles func() *policy.Bundle
 	// ProxyAddr returns proxy.tls's bound loopback address; empty means it is not in the path.
 	ProxyAddr func() string
@@ -28,25 +31,34 @@ type Config struct {
 	Users        func(context.Context) ([]string, error)
 	OpenSettings func(sid string) (Registry, error)
 	FetchPAC     func(ctx context.Context, u string) ([]byte, error)
+	// RecordFile keeps each applied user's previous AutoConfigURL until it is restored, for
+	// RestoreRecorded at uninstall; empty keeps none.
+	RecordFile string
 
-	Log core.Logger
+	Log   core.Logger
+	Clock func() time.Time
 }
 
-// Server serves the PAC and keeps each signed-in user's AutoConfigURL pointed at it. It fails open:
-// stopping it (or a crash of the whole agent) leaves the PAC returning the original route, and a
-// clean Stop restores every user's previous AutoConfigURL.
+// Server is the desktop_proxy collector: it serves the PAC and keeps each signed-in user's
+// AutoConfigURL pointed at it. It fails open: stopping it (or a crash of the whole agent) leaves
+// the PAC returning the original route, and a clean Stop restores every user's previous
+// AutoConfigURL. It observes nothing itself; the traffic it routes is observed by proxy.tls.
 type Server struct {
-	cfg Config
+	cfg      Config
+	counters *core.CounterSet
+	records  *records
 
-	mu        sync.Mutex
-	listener  net.Listener
-	http      *http.Server
-	pacURL    string
-	originals map[string]Original
-	restores  map[string]Restore
-	skips     map[string]string
-	started   bool
-	stopped   bool
+	mu          sync.Mutex
+	startedAt   time.Time
+	lastSuccess time.Time
+	listener    net.Listener
+	http        *http.Server
+	pacURL      string
+	originals   map[string]Original
+	restores    map[string]Restore
+	skips       map[string]string
+	started     bool
+	stopped     bool
 }
 
 // New returns an unstarted server.
@@ -69,11 +81,15 @@ func New(cfg Config) *Server {
 	if cfg.FetchPAC == nil {
 		cfg.FetchPAC = fetchPAC
 	}
-	if cfg.Listen == "" {
-		cfg.Listen = "127.0.0.1:8350"
+	if cfg.Clock == nil {
+		cfg.Clock = time.Now
 	}
+	now := cfg.Clock()
 	return &Server{
 		cfg:       cfg,
+		counters:  core.NewCounterSet(now),
+		records:   &records{path: cfg.RecordFile},
+		startedAt: now,
 		originals: map[string]Original{},
 		restores:  map[string]Restore{},
 		skips:     map[string]string{},
@@ -85,25 +101,70 @@ type nopLogger struct{}
 
 func (nopLogger) Printf(string, ...any) {}
 
-// Start binds the PAC listener on loopback, begins serving, then points each signed-in user's
-// AutoConfigURL at it. A user whose existing settings cannot be reproduced is left untouched
-// (fail open) rather than risk breaking their proxy.
+// Name implements core.Provider.
+func (s *Server) Name() protocol.Collector { return protocol.CollectorDesktopProxy }
+
+// Enabled implements core.Toggled. The PAC runs only while the tenant's TLS inspection is on and the
+// bundle names the address to serve it on (an empty pac_listen turns the desktop-app path off). A
+// proxy.tls kill switch leaves it running: the proxy keeps serving and tunnels every connection
+// blind, so the apps it routes are carried unread without a change to anyone's proxy settings.
+func (s *Server) Enabled(b *policy.Bundle) bool {
+	return b != nil && b.Interception.Enabled && strings.TrimSpace(b.Interception.PacListen) != ""
+}
+
+// ApplyPolicy implements core.Provider. The hosts are read on every PAC request and the listen
+// address at the next Start, so a bundle changes nothing in a running server.
+func (s *Server) ApplyPolicy(policy.Bundle) error { return nil }
+
+// Health implements core.Provider. The PAC is healthy while it is served and the proxy it routes
+// to is in the path; with the proxy out of the path it serves every user's original route, which
+// is degraded with not_effective_proxy.
+func (s *Server) Health() core.Health {
+	s.mu.Lock()
+	running := s.started && !s.stopped && s.listener != nil
+	since, last := s.startedAt, s.lastSuccess
+	s.mu.Unlock()
+	switch {
+	case !running:
+		return s.counters.Snapshot(protocol.StateAbsent, protocol.DetailNone, since, last)
+	case s.cfg.ProxyAddr() == "":
+		return s.counters.Snapshot(protocol.StateDegraded, protocol.DetailNotEffectiveProxy, since, last)
+	default:
+		return s.counters.Snapshot(protocol.StateHealthy, protocol.DetailNone, since, last)
+	}
+}
+
+// Start binds the PAC listener on loopback at the bundle's pac_listen, begins serving, then points
+// each signed-in user's AutoConfigURL at it. A user whose existing settings cannot be reproduced is
+// left untouched (fail open) rather than risk breaking their proxy. A Start after a Stop applies
+// the PAC again, on the address the bundle then in force names.
 func (s *Server) Start(ctx context.Context) error {
 	s.mu.Lock()
-	if s.started {
+	if s.started && !s.stopped {
 		s.mu.Unlock()
 		return nil
 	}
 	s.mu.Unlock()
 
-	ln, err := net.Listen("tcp", loopbackListen(s.cfg.Listen))
+	listen := ""
+	if b := s.cfg.Bundles(); b != nil {
+		listen = strings.TrimSpace(b.Interception.PacListen)
+	}
+	if listen == "" {
+		return errors.New("winproxy: the bundle in force names no pac_listen, so the desktop-app PAC is off")
+	}
+	addr, err := loopbackListen(listen)
+	if err != nil {
+		return err
+	}
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("winproxy: PAC listener: %w", err)
 	}
 	pacURL := pacURLFrom(ln)
 	if pacURL == "" {
 		_ = ln.Close()
-		return fmt.Errorf("winproxy: PAC listener %s has no usable port", s.cfg.Listen)
+		return fmt.Errorf("winproxy: PAC listener %s has no usable port", listen)
 	}
 
 	s.mu.Lock()
@@ -119,12 +180,14 @@ func (s *Server) Start(ctx context.Context) error {
 	go func() { _ = srv.Serve(ln) }()
 
 	if err := s.reconcile(ctx); err != nil {
+		s.counters.Add(protocol.CounterErrors)
 		s.cfg.Log.Printf("winproxy: applying the PAC to signed-in users: %v", err)
 	}
 
 	s.mu.Lock()
 	s.started = true
 	s.stopped = false
+	s.startedAt = s.cfg.Clock()
 	s.mu.Unlock()
 	return nil
 }
@@ -201,7 +264,8 @@ func (s *Server) reconcile(ctx context.Context) error {
 }
 
 // applyOne reads one user's existing proxy settings, fetches and inlines an existing PAC when the
-// user has one, and points their AutoConfigURL at the PAC.
+// user has one, and points their AutoConfigURL at the PAC. A user with a kept record was not
+// restored by an earlier run, so the record, not the setting now in place, is their original.
 func (s *Server) applyOne(ctx context.Context, sid, pacURL string) error {
 	reg, err := s.cfg.OpenSettings(sid)
 	if err != nil {
@@ -212,6 +276,21 @@ func (s *Server) applyOne(ctx context.Context, sid, pacURL string) error {
 	orig, err := ReadOriginal(reg)
 	if err != nil {
 		return err
+	}
+	rec, kept, err := s.records.get(sid)
+	if err != nil {
+		return err
+	}
+	if !kept {
+		prev, had, err := reg.GetString(autoConfigURL)
+		if err != nil {
+			return err
+		}
+		rec = record{HadOriginal: had, Original: prev}
+	}
+	orig.AutoConfigURL = ""
+	if rec.HadOriginal {
+		orig.AutoConfigURL = rec.Original
 	}
 	if orig.AutoConfigURL != "" {
 		body, ferr := s.cfg.FetchPAC(ctx, orig.AutoConfigURL)
@@ -224,16 +303,22 @@ func (s *Server) applyOne(ctx context.Context, sid, pacURL string) error {
 		orig.AutoConfigBody = string(body)
 	}
 
-	restore, err := NewSettings(reg).Apply(pacURL)
-	if err != nil {
+	rec.Applied = pacURL
+	if err := s.records.put(sid, rec); err != nil {
 		return err
 	}
+	if _, err := NewSettings(reg).Apply(pacURL); err != nil {
+		return err
+	}
+	restore := rec.restore()
 
 	s.mu.Lock()
 	s.originals[sid] = orig
 	s.restores[sid] = restore
 	delete(s.skips, sid)
+	s.lastSuccess = s.cfg.Clock()
 	s.mu.Unlock()
+	s.counters.Add(protocol.CounterObserved)
 	s.cfg.Log.Printf("winproxy: desktop apps for %s routed through the PAC", sid)
 	return nil
 }
@@ -257,6 +342,10 @@ func (s *Server) restoreOne(ctx context.Context, sid string) {
 	defer reg.Close()
 	if err := NewSettings(reg).Restore(restore); err != nil {
 		s.cfg.Log.Printf("winproxy: restoring %s's AutoConfigURL: %v", sid, err)
+		return
+	}
+	if err := s.records.drop(sid); err != nil {
+		s.cfg.Log.Printf("winproxy: %v", err)
 	}
 }
 
@@ -280,6 +369,8 @@ func (s *Server) restoreAll(ctx context.Context) {
 		}
 		if err := NewSettings(reg).Restore(restore); err != nil {
 			s.cfg.Log.Printf("winproxy: restoring %s's AutoConfigURL: %v", sid, err)
+		} else if err := s.records.drop(sid); err != nil {
+			s.cfg.Log.Printf("winproxy: %v", err)
 		}
 		_ = reg.Close()
 	}
@@ -292,6 +383,7 @@ func (s *Server) recordSkip(sid string, err error) {
 	if prev, seen := s.skips[sid]; !seen || prev != err.Error() {
 		s.skips[sid] = err.Error()
 		s.mu.Unlock()
+		s.counters.Add(protocol.CounterNotCooperative)
 		s.cfg.Log.Printf("winproxy: leaving %s's proxy settings untouched: %v", sid, err)
 		return
 	}
@@ -332,12 +424,12 @@ func (s *Server) interceptHosts() []string {
 
 // loopbackListen rewrites a host:port to bind on 127.0.0.1 with the same port, so the PAC is never
 // reachable off the device whatever the policy names.
-func loopbackListen(listen string) string {
+func loopbackListen(listen string) (string, error) {
 	_, port, err := net.SplitHostPort(listen)
 	if err != nil {
-		return "127.0.0.1:8350"
+		return "", fmt.Errorf("winproxy: pac_listen %q is not a host:port: %w", listen, err)
 	}
-	return net.JoinHostPort("127.0.0.1", port)
+	return net.JoinHostPort("127.0.0.1", port), nil
 }
 
 // pacURLFrom returns the PAC base URL for a bound loopback listener.

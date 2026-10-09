@@ -45,6 +45,7 @@ const SOURCE_CAPABILITY = Object.freeze({
   'ops.coverage_snapshot': 'aggregate',
   'mart.agg_device_period': 'device',
   'mart.v_device_liveness': 'device',
+  'ops.collector_state': 'device',
   'mart.agg_tool_user_period': 'subject',
   'mart.agg_user_period': 'subject',
   'mart.v_finding': 'subject',

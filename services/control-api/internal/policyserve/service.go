@@ -1,8 +1,11 @@
 // Package policyserve serves GET /v1/policy and writes ops.policy_bundle.
 //
 // A tenant's bundle is composed from what the database says about it: the tenant's ceiling as the
-// default collection mode and the tool catalogue's TLS hosts as the interception scope. It is signed with the vendor's Ed25519 policy key in the envelope
-// the agent verifies, and stored with the exact signed bytes. A new version is minted only when the
+// default collection mode, its TLS inspection setting and the tool catalogue's TLS hosts as the
+// interception scope, the tenant's endpoint collector settings, its enforcement rules, the tools
+// it has sanctioned, the app catalog, its tripped kill switches and the local model servers it
+// captures. It is signed with the vendor's Ed25519 policy key in the envelope the agent
+// verifies, and stored with the exact signed bytes. A new version is minted only when the
 // composition or the signing key differs from the latest stored bundle; otherwise the stored bytes
 // are served again, so the ETag a device holds stays valid until something it would enforce
 // changes. Composition happens on the read path under a per-tenant lock, so the first poll after an
@@ -18,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"strconv"
 	"sync"
@@ -58,6 +62,48 @@ const (
 	retentionClass = "standard"
 	actorID        = "control-api"
 )
+
+// PACListen is the fixed loopback port the desktop-app PAC is served on while TLS inspection is on.
+// The PAC URL is written into each user's Internet Settings, so it cannot be a random port.
+const PACListen = "127.0.0.1:8350"
+
+// The endpoint section's values that are not tenant settings.
+const (
+	// OTLPHTTPListen and OTLPGRPCListen are the device's OTLP receiver addresses, off the standard
+	// 4318 and 4317 so a developer's own collector keeps those.
+	OTLPHTTPListen = "127.0.0.1:47318"
+	OTLPGRPCListen = "127.0.0.1:47317"
+	// InventoryIntervalMinutes is how often the device rescans installed apps.
+	InventoryIntervalMinutes = 360
+	// DiscoveryDailyBudget is how many discovery records a device sends per UTC day.
+	DiscoveryDailyBudget = 200
+)
+
+// The loopback section's values that are not tenant settings.
+const (
+	// OllamaUpstreamPort is where the device moves Ollama while its loopback broker holds Ollama's
+	// own port.
+	OllamaUpstreamPort = 21434
+	// OllamaPreflightPath is Ollama's read-only version endpoint, which the broker asks before it
+	// takes the port.
+	OllamaPreflightPath = "/api/version"
+
+	LoopbackProbeIntervalSeconds     = 5
+	LoopbackPreflightIntervalSeconds = 60
+	LoopbackPreflightTimeoutMS       = 3000
+	LoopbackMaxConsecutiveFailures   = 3
+	LoopbackCoolDownSeconds          = 300
+)
+
+// loopbackRuntimes is each local model server the broker can capture: its endpoint tool key, its
+// catalog app key, the port the device moves it to and its preflight path.
+var loopbackRuntimes = []struct {
+	toolKey, appKey string
+	upstreamPort    int
+	preflightPath   string
+}{
+	{toolKey: "ollama", appKey: "ollama", upstreamPort: OllamaUpstreamPort, preflightPath: OllamaPreflightPath},
+}
 
 // Served is a tenant's bundle as GET /v1/policy serves it.
 type Served struct {
@@ -250,14 +296,20 @@ func (s *Service) compose(in store.PolicyInputs) (*Bundle, error) {
 		}
 		toolModes[fp] = m
 	}
+	pacListen := ""
+	if in.Tenant.TLSInspection {
+		pacListen = PACListen
+	}
 	return &Bundle{
 		TenantDefault: string(mode),
 		ToolModes:     toolModes,
 		Interception: Interception{
+			Enabled:     in.Tenant.TLSInspection,
 			SeedHosts:   hosts,
 			Ports:       []int{443},
 			ProxyListen: s.cfg.ProxyListen,
 			ProxyCanary: canary,
+			PacListen:   pacListen,
 		},
 		CLIShim: CLIShim{
 			ProxyAddr:   s.cfg.ProxyListen,
@@ -265,7 +317,147 @@ func (s *Service) compose(in store.PolicyInputs) (*Bundle, error) {
 			NoProxy:     append([]string(nil), s.cfg.NoProxy...),
 			NodeRequire: true,
 		},
+		Endpoint:        composeEndpoint(in.Endpoint),
+		Rules:           composeRules(in.Rules),
+		SanctionedTools: sanctioned(in.SanctionedTools),
+		Catalog:         composeCatalog(in.Catalog),
+		KillSwitches:    composeKillSwitches(in.KillSwitches),
+		Loopback:        composeLoopback(in.Endpoint, in.Catalog, string(mode), toolModes),
 	}, nil
+}
+
+// composeLoopback is the loopback section for each runtime the tenant has local model capture on
+// for, nil when there is none. The port the broker holds is the runtime's catalog listen_port; a
+// runtime the catalog gives no port is left out, since the broker would have nothing to hold. Mode
+// is the tool's own mode where the tenant set one, else the tenant's.
+func composeLoopback(e store.EndpointSettings, catalog []store.CatalogApp, tenantMode string, toolModes map[string]string) *Loopback {
+	var ports []LoopbackPort
+	for _, rt := range loopbackRuntimes {
+		if !e.Tools[rt.toolKey].Loopback {
+			continue
+		}
+		port := listenPort(catalog, rt.appKey)
+		if port == 0 {
+			continue
+		}
+		fp := "app:" + rt.appKey
+		mode := tenantMode
+		if m, ok := toolModes[fp]; ok {
+			mode = m
+		}
+		ports = append(ports, LoopbackPort{ToolFingerprint: fp, Port: port, UpstreamPort: rt.upstreamPort,
+			PreflightPath: rt.preflightPath, Mode: mode})
+	}
+	if len(ports) == 0 {
+		return nil
+	}
+	return &Loopback{
+		Ports:                    ports,
+		ProbeIntervalSeconds:     LoopbackProbeIntervalSeconds,
+		PreflightIntervalSeconds: LoopbackPreflightIntervalSeconds,
+		PreflightTimeoutMS:       LoopbackPreflightTimeoutMS,
+		MaxConsecutiveFailures:   LoopbackMaxConsecutiveFailures,
+		CoolDownSeconds:          LoopbackCoolDownSeconds,
+	}
+}
+
+// listenPort is an app's lowest listen_port signal that is a usable TCP port, 0 when it has none.
+func listenPort(catalog []store.CatalogApp, appKey string) int {
+	best := 0
+	for _, a := range catalog {
+		if a.AppKey != appKey {
+			continue
+		}
+		for _, sig := range a.Signals {
+			if sig.Kind != "listen_port" {
+				continue
+			}
+			if p, err := strconv.Atoi(sig.Value); err == nil && p > 0 && p <= 65535 && (best == 0 || p < best) {
+				best = p
+			}
+		}
+	}
+	return best
+}
+
+// composeKillSwitches is the bundle's kill switches in route order, nil when none is tripped. The
+// effective time is whole seconds in UTC, so a version minted from the same row compares equal
+// whatever precision the store read it at.
+func composeKillSwitches(switches []store.KillSwitch) []KillSwitch {
+	var out []KillSwitch
+	for _, k := range switches {
+		out = append(out, KillSwitch{Provider: k.Route, Mode: KillDisable,
+			EffectiveAt: k.EffectiveAt.UTC().Truncate(time.Second), ReasonCode: k.ReasonCode})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Provider < out[j].Provider })
+	return out
+}
+
+// composeCatalog is the bundle's catalog in byte order of app key, then of each signal's platform,
+// kind and value, whatever order the store read it in, so equal catalogs compare equal in current.
+func composeCatalog(apps []store.CatalogApp) []CatalogApp {
+	out := make([]CatalogApp, 0, len(apps))
+	for _, a := range apps {
+		signals := make([]CatalogSignal, 0, len(a.Signals))
+		for _, s := range a.Signals {
+			signals = append(signals, CatalogSignal{Platform: s.Platform, Kind: s.Kind, Value: s.Value})
+		}
+		sort.Slice(signals, func(i, j int) bool {
+			x, y := signals[i], signals[j]
+			if x.Platform != y.Platform {
+				return x.Platform < y.Platform
+			}
+			if x.Kind != y.Kind {
+				return x.Kind < y.Kind
+			}
+			return x.Value < y.Value
+		})
+		out = append(out, CatalogApp{AppKey: a.AppKey, Category: a.Category, Signals: signals})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].AppKey < out[j].AppKey })
+	return out
+}
+
+// composeRules is the bundle's rules list, in the tenant's order.
+func composeRules(rules []store.EnforcementRule) []Rule {
+	list := func(v []string) []string { return append([]string{}, v...) }
+	out := make([]Rule, 0, len(rules))
+	for _, r := range rules {
+		m := r.Match
+		out = append(out, Rule{RuleID: r.RuleID, Action: r.Action, Message: r.Message, Link: r.Link,
+			Match: RuleMatch{Labels: list(m.Labels), Tools: list(m.Tools), Categories: list(m.Categories),
+				Sanction: list(m.Sanction), Routes: list(m.Routes)}})
+	}
+	return out
+}
+
+// sanctioned is the sorted sanctioned fingerprints, never nil.
+func sanctioned(fps []string) []string {
+	out := append([]string{}, fps...)
+	sort.Strings(out)
+	return out
+}
+
+// composeEndpoint is the bundle's endpoint section for the tenant's settings.
+func composeEndpoint(e store.EndpointSettings) Endpoint {
+	c := e.Collectors
+	// A tool whose switch is loopback is carried in the loopback section, not here.
+	tools := make(map[string]EndpointTool, len(e.Tools))
+	for k, t := range e.Tools {
+		if slices.Contains(store.LoopbackToolKeys, k) {
+			continue
+		}
+		tools[k] = EndpointTool{OTel: t.OTel, Hooks: t.Hooks}
+	}
+	return Endpoint{
+		Inventory:            EndpointInventory{Enabled: c.Inventory, IntervalMinutes: InventoryIntervalMinutes},
+		Processes:            EndpointSwitch{Enabled: c.Processes},
+		Flows:                EndpointSwitch{Enabled: c.Flows},
+		OTel:                 EndpointOTel{Enabled: c.OTel, HTTPListen: OTLPHTTPListen, GRPCListen: OTLPGRPCListen},
+		Hooks:                EndpointHooks{Enabled: c.Hooks, ManagedOnly: c.HooksManagedOnly},
+		Tools:                tools,
+		DiscoveryDailyBudget: DiscoveryDailyBudget,
+	}
 }
 
 // mint signs the candidate as the next version: the larger of the previous version plus one and
@@ -306,7 +498,7 @@ func (s *Service) mint(tenantID string, latest *store.PolicyBundle, b Bundle, no
 	if err != nil {
 		return store.MintDecision{}, err
 	}
-	featureJSON, err := json.Marshal(map[string]any{"cli_shim": true, "proxy_tls": true})
+	featureJSON, err := json.Marshal(map[string]any{"cli_shim": b.Interception.Enabled, "proxy_tls": b.Interception.Enabled})
 	if err != nil {
 		return store.MintDecision{}, err
 	}

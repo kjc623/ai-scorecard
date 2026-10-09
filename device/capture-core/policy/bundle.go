@@ -10,10 +10,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/url"
+	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/shadow-ai-capture/device/protocol"
 )
@@ -41,6 +45,11 @@ type KillSwitch struct {
 // Interception decides what the device is willing to decrypt, never
 // what counts as generative. A destination in none of these sets is blind-tunnelled.
 type Interception struct {
+	// Enabled is the tenant's TLS inspection setting. While it is false the device runs no TLS
+	// proxy, writes no CLI shim environment, sets no desktop-app PAC and keeps its root out of the
+	// trust store, whatever the other fields say. A bundle without it is off.
+	Enabled bool `json:"enabled"`
+
 	TenantHosts []string `json:"tenant_hosts,omitempty"`
 	SeedHosts   []string `json:"seed_hosts,omitempty"`
 
@@ -117,9 +126,151 @@ type CLIShimPolicy struct {
 	NodeRequire bool `json:"node_require,omitempty"`
 }
 
+// EndpointToolKeys is the closed set of tools with native collectors, the keys of
+// EndpointPolicy.Tools.
+var EndpointToolKeys = []string{"claude_code", "codex", "copilot", "cursor"}
+
+// MinInventoryIntervalMinutes is the shortest installed-app rescan interval a bundle may set.
+const MinInventoryIntervalMinutes = 15
+
+// EndpointPolicy switches the endpoint collectors on and off and carries the values they run with.
+// A bundle without the section switches every one of them off.
+type EndpointPolicy struct {
+	Inventory EndpointInventory `json:"inventory"`
+	Processes EndpointSwitch    `json:"processes"`
+	Flows     EndpointSwitch    `json:"flows"`
+	OTel      EndpointOTel      `json:"otel"`
+	Hooks     EndpointHooks     `json:"hooks"`
+
+	// Tools is each tool's native collectors, keyed by a key of EndpointToolKeys. A tool's switch
+	// takes effect only while the collector it names is enabled.
+	Tools map[string]EndpointTool `json:"tools"`
+
+	// DiscoveryDailyBudget is how many discovery records may leave the device per UTC day.
+	DiscoveryDailyBudget int `json:"discovery_daily_budget"`
+}
+
+// EndpointSwitch is a collector with no setting beyond on or off.
+type EndpointSwitch struct {
+	Enabled bool `json:"enabled"`
+}
+
+// EndpointInventory is the installed-app scanner and how often it rescans.
+type EndpointInventory struct {
+	Enabled         bool `json:"enabled"`
+	IntervalMinutes int  `json:"interval_minutes"`
+}
+
+// EndpointOTel is the OTLP receiver. Both listen addresses are loopback host:port.
+type EndpointOTel struct {
+	Enabled    bool   `json:"enabled"`
+	HTTPListen string `json:"http_listen"`
+	GRPCListen string `json:"grpc_listen"`
+}
+
+// EndpointHooks is the hook relay. ManagedOnly makes tools run only the hooks the agent manages.
+type EndpointHooks struct {
+	Enabled     bool `json:"enabled"`
+	ManagedOnly bool `json:"managed_only"`
+}
+
+// EndpointTool is one tool's native collectors.
+type EndpointTool struct {
+	OTel  bool `json:"otel"`
+	Hooks bool `json:"hooks"`
+}
+
+// RuleAction is what an enforcement rule does to a matching submission.
+type RuleAction string
+
+// The closed set of rule actions. The envelope records allow as logged, warn as warned and block
+// as blocked.
+const (
+	RuleAllow RuleAction = "allow"
+	RuleWarn  RuleAction = "warn"
+	RuleBlock RuleAction = "block"
+)
+
+// Valid reports whether the action is in the closed set.
+func (a RuleAction) Valid() bool { return a == RuleAllow || a == RuleWarn || a == RuleBlock }
+
+// MaxRuleMessage is the longest message a rule may carry, in characters.
+const MaxRuleMessage = 280
+
+var ruleIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,127}$`)
+
+// Rule is one enforcement rule. The first rule in the bundle's order whose match matches decides;
+// no match records logged under the rule id policy.default.
+type Rule struct {
+	RuleID  string     `json:"rule_id"`
+	Action  RuleAction `json:"action"`
+	Match   RuleMatch  `json:"match"`
+	Message string     `json:"message"`
+	// Link is an https URL shown with the message, or empty.
+	Link string `json:"link,omitempty"`
+}
+
+// RuleMatch is a rule's conditions. Every non-empty list must match; an empty list matches
+// anything; inside a list any value matches. Labels are classifier classes, Tools tool
+// fingerprints, Categories app catalog categories, and Sanction sanctioned or unsanctioned, decided
+// against the bundle's SanctionedTools.
+type RuleMatch struct {
+	Labels     []string         `json:"labels"`
+	Tools      []string         `json:"tools"`
+	Categories []string         `json:"categories"`
+	Sanction   []string         `json:"sanction"`
+	Routes     []protocol.Route `json:"routes"`
+}
+
+// CatalogCategories is the closed set of app catalog categories.
+var CatalogCategories = []string{"chat_assistant", "coding_agent", "ide_assistant", "ide", "local_runtime", "inference_api", "ai_feature"}
+
+// CatalogPlatforms is the closed set of platforms a catalog signal applies to; any applies to all.
+var CatalogPlatforms = []string{"windows", "macos", "linux", "any"}
+
+// The closed set of catalog signal kinds.
+const (
+	SignalWindowsExe           = "windows_exe"
+	SignalWindowsUninstallName = "windows_uninstall_name"
+	SignalWindowsAppx          = "windows_appx"
+	SignalMacOSBundleID        = "macos_bundle_id"
+	SignalLinuxPackage         = "linux_package"
+	SignalPublisher            = "publisher"
+	SignalCLIBinary            = "cli_binary"
+	SignalNPMPackage           = "npm_package"
+	SignalPipxPackage          = "pipx_package"
+	SignalIDEExtensionID       = "ide_extension_id"
+	SignalInferenceDomain      = "inference_domain"
+	SignalListenPort           = "listen_port"
+	SignalModelStore           = "model_store"
+)
+
+// CatalogKinds is the closed set of catalog signal kinds.
+var CatalogKinds = []string{SignalWindowsExe, SignalWindowsUninstallName, SignalWindowsAppx, SignalMacOSBundleID,
+	SignalLinuxPackage, SignalPublisher, SignalCLIBinary, SignalNPMPackage, SignalPipxPackage, SignalIDEExtensionID,
+	SignalInferenceDomain, SignalListenPort, SignalModelStore}
+
+// CatalogApp is one app of the catalog. A discovered app is reported as the tool fingerprint
+// "app:" + AppKey.
+type CatalogApp struct {
+	AppKey   string          `json:"app_key"`
+	Category string          `json:"category"`
+	Signals  []CatalogSignal `json:"signals"`
+}
+
+// CatalogSignal is one thing that identifies an app on a device. An inference_domain value is an
+// exact host or, with a leading dot, a host suffix; a model_store value may begin with
+// %USERPROFILE% or ~, which the collector expands per user.
+type CatalogSignal struct {
+	Platform string `json:"platform"`
+	Kind     string `json:"kind"`
+	Value    string `json:"value"`
+}
+
 // Bundle is the device-side view of the signed policy bundle: the collection mode per scope,
-// the interception allowlist, the loopback port map, kill switches, device retention and the
-// CLI shim configuration.
+// the interception allowlist, the loopback port map, kill switches, device retention, the
+// CLI shim configuration, the endpoint collectors, the enforcement rules, the sanctioned
+// tools and the app catalog.
 //
 // Unknown fields are rejected rather than ignored (see Open): a device that does not
 // understand a policy field must not enforce a policy it has only partly read, and the
@@ -153,6 +304,175 @@ type Bundle struct {
 	Loopback     LoopbackPolicy `json:"loopback"`
 	Spool        SpoolPolicy    `json:"spool"`
 	CLIShim      CLIShimPolicy  `json:"cli_shim"`
+	Endpoint     EndpointPolicy `json:"endpoint"`
+
+	// Rules is the enforcement rules in order.
+	Rules []Rule `json:"rules"`
+	// SanctionedTools is the tool fingerprints the tenant has sanctioned.
+	SanctionedTools []string `json:"sanctioned_tools"`
+
+	// Catalog is the app catalog the discovery collectors match against, through the AppBy
+	// lookups. Collectors never read it directly.
+	Catalog []CatalogApp `json:"catalog"`
+}
+
+// appsWith returns, in catalog order and once each, the keys of the apps with a signal of kind on
+// platform (or on any platform) whose value satisfies match.
+func (b *Bundle) appsWith(platform, kind string, match func(value string) bool) []string {
+	if b == nil {
+		return nil
+	}
+	var out []string
+	for _, a := range b.Catalog {
+		for _, s := range a.Signals {
+			if s.Kind == kind && (platform == "" || s.Platform == platform || s.Platform == "any") && match(s.Value) {
+				out = append(out, a.AppKey)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// AppByExe returns the apps whose executable on platform is base, compared case-insensitively.
+func (b *Bundle) AppByExe(platform, base string) []string {
+	return b.appsWith(platform, SignalWindowsExe, func(v string) bool { return strings.EqualFold(v, base) })
+}
+
+// AppByPublisher returns the apps whose code-signing or installer publisher on platform is
+// subject, compared case-insensitively.
+func (b *Bundle) AppByPublisher(platform, subject string) []string {
+	return b.appsWith(platform, SignalPublisher, func(v string) bool { return strings.EqualFold(v, subject) })
+}
+
+// AppByUninstallName returns the apps whose Windows uninstall entry is named name: the signal's
+// value alone, or followed by a space and more (a version or an edition), as in
+// "IntelliJ IDEA 2026.2.1". Compared case-insensitively.
+func (b *Bundle) AppByUninstallName(platform, name string) []string {
+	n := strings.TrimSpace(name)
+	if n == "" {
+		return nil
+	}
+	return b.appsWith(platform, SignalWindowsUninstallName, func(v string) bool {
+		return len(n) >= len(v) && strings.EqualFold(n[:len(v)], v) && (len(n) == len(v) || n[len(v)] == ' ')
+	})
+}
+
+// AppByAppx returns the apps whose AppX/MSIX package family name is family, compared
+// case-insensitively as Windows compares package names.
+func (b *Bundle) AppByAppx(platform, family string) []string {
+	return b.appsWith(platform, SignalWindowsAppx, func(v string) bool { return strings.EqualFold(v, family) })
+}
+
+// HasSignal reports whether the catalog gives the app a signal of kind on platform or on any
+// platform.
+func (b *Bundle) HasSignal(appKey, platform, kind string) bool {
+	if b == nil {
+		return false
+	}
+	for _, a := range b.Catalog {
+		if a.AppKey != appKey {
+			continue
+		}
+		for _, s := range a.Signals {
+			if s.Kind == kind && (s.Platform == platform || s.Platform == "any") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// AppByDomain returns the apps whose inference domains include host, by the interception scope's
+// host rule: an exact host, or a leading dot for the domain and its subdomains.
+func (b *Bundle) AppByDomain(host string) []string {
+	h := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+	if h == "" {
+		return nil
+	}
+	return b.appsWith("", SignalInferenceDomain, func(v string) bool { return hostMatches(h, v) })
+}
+
+// AppByExtensionID returns the apps with the IDE extension id, compared case-insensitively as the
+// marketplaces do.
+func (b *Bundle) AppByExtensionID(id string) []string {
+	return b.appsWith("", SignalIDEExtensionID, func(v string) bool { return strings.EqualFold(v, id) })
+}
+
+// AppByCLI returns the apps whose command-line binary is name.
+func (b *Bundle) AppByCLI(name string) []string {
+	return b.appsWith("", SignalCLIBinary, func(v string) bool { return v == name })
+}
+
+// AppByNPM returns the apps published as the npm package pkg.
+func (b *Bundle) AppByNPM(pkg string) []string {
+	return b.appsWith("", SignalNPMPackage, func(v string) bool { return v == pkg })
+}
+
+// AppByPipx returns the apps published as the Python package pkg, installed with pipx. Names
+// compare as Python normalizes them: case-insensitively, with any run of '-', '_' and '.' alike.
+func (b *Bundle) AppByPipx(pkg string) []string {
+	n := pythonName(pkg)
+	return b.appsWith("", SignalPipxPackage, func(v string) bool { return pythonName(v) == n })
+}
+
+var pythonSeparators = regexp.MustCompile(`[-_.]+`)
+
+func pythonName(n string) string {
+	return pythonSeparators.ReplaceAllString(strings.ToLower(n), "-")
+}
+
+// AppsByPort returns the apps that listen on port by default.
+func (b *Bundle) AppsByPort(port int) []string {
+	p := strconv.Itoa(port)
+	return b.appsWith("", SignalListenPort, func(v string) bool { return v == p })
+}
+
+// AppsInCategory returns, in catalog order, the apps of a catalog category.
+func (b *Bundle) AppsInCategory(category string) []string {
+	if b == nil {
+		return nil
+	}
+	var out []string
+	for _, a := range b.Catalog {
+		if a.Category == category {
+			out = append(out, a.AppKey)
+		}
+	}
+	return out
+}
+
+// SignalValues returns, in catalog order, the values of the app's signals of kind on platform or on
+// any platform.
+func (b *Bundle) SignalValues(appKey, platform, kind string) []string {
+	if b == nil {
+		return nil
+	}
+	var out []string
+	for _, a := range b.Catalog {
+		if a.AppKey != appKey {
+			continue
+		}
+		for _, s := range a.Signals {
+			if s.Kind == kind && (s.Platform == platform || s.Platform == "any") {
+				out = append(out, s.Value)
+			}
+		}
+	}
+	return out
+}
+
+// Category returns the app's catalog category, or "" for an app the catalog does not hold.
+func (b *Bundle) Category(appKey string) string {
+	if b == nil {
+		return ""
+	}
+	for _, a := range b.Catalog {
+		if a.AppKey == appKey {
+			return a.Category
+		}
+	}
+	return ""
 }
 
 // KillSwitchFor returns the kill switch for a route, if one is in force.
@@ -348,7 +668,121 @@ func (b *Bundle) Validate() error {
 	if b.Spool.DeviceRetentionHours < 0 {
 		return fmt.Errorf("policy: spool device_retention_hours is negative")
 	}
+	if err := validRules(b.Rules); err != nil {
+		return err
+	}
+	if err := validCatalog(b.Catalog); err != nil {
+		return err
+	}
+	return b.Endpoint.validate()
+}
+
+// validCatalog refuses a catalog the lookups could not apply as written: a category, platform or
+// signal kind outside the closed sets, an empty signal value, or an app listed twice.
+func validCatalog(apps []CatalogApp) error {
+	seen := make(map[string]bool, len(apps))
+	for _, a := range apps {
+		if seen[a.AppKey] {
+			return fmt.Errorf("policy: catalog lists app %q twice", a.AppKey)
+		}
+		seen[a.AppKey] = true
+		if !slices.Contains(CatalogCategories, a.Category) {
+			return fmt.Errorf("policy: catalog app %q has category %q outside the set {%s}", a.AppKey, a.Category, strings.Join(CatalogCategories, ","))
+		}
+		for _, s := range a.Signals {
+			if !slices.Contains(CatalogPlatforms, s.Platform) {
+				return fmt.Errorf("policy: catalog app %q has a signal for platform %q outside the set {%s}", a.AppKey, s.Platform, strings.Join(CatalogPlatforms, ","))
+			}
+			if !slices.Contains(CatalogKinds, s.Kind) {
+				return fmt.Errorf("policy: catalog app %q has a signal of kind %q outside the closed set", a.AppKey, s.Kind)
+			}
+			if strings.TrimSpace(s.Value) == "" {
+				return fmt.Errorf("policy: catalog app %q has an empty %s signal", a.AppKey, s.Kind)
+			}
+		}
+	}
 	return nil
+}
+
+// validRules refuses a rule list the device could not apply as written. Positions in the errors
+// are 1-based; no message or link text is quoted.
+func validRules(rules []Rule) error {
+	seen := make(map[string]bool, len(rules))
+	for i, r := range rules {
+		if !ruleIDPattern.MatchString(r.RuleID) {
+			return fmt.Errorf("policy: rule %d has rule_id %q outside the pattern %s", i+1, r.RuleID, ruleIDPattern)
+		}
+		if seen[r.RuleID] {
+			return fmt.Errorf("policy: rule %d repeats rule_id %q", i+1, r.RuleID)
+		}
+		seen[r.RuleID] = true
+		if !r.Action.Valid() {
+			return fmt.Errorf("policy: rule %s has action %q outside the set {allow,warn,block}", r.RuleID, r.Action)
+		}
+		if utf8.RuneCountInString(r.Message) > MaxRuleMessage {
+			return fmt.Errorf("policy: rule %s has a message over %d characters", r.RuleID, MaxRuleMessage)
+		}
+		if r.Link != "" && !httpsURL(r.Link) {
+			return fmt.Errorf("policy: rule %s has a link that is not an https URL", r.RuleID)
+		}
+		for _, route := range r.Match.Routes {
+			if !route.Valid() {
+				return fmt.Errorf("policy: rule %s matches route %q outside the closed vocabulary", r.RuleID, route)
+			}
+		}
+	}
+	return nil
+}
+
+func httpsURL(s string) bool {
+	if !strings.HasPrefix(s, "https://") {
+		return false
+	}
+	u, err := url.Parse(s)
+	return err == nil && u.Scheme == "https" && u.Host != ""
+}
+
+func (e *EndpointPolicy) validate() error {
+	inv := e.Inventory
+	if (inv.Enabled || inv.IntervalMinutes != 0) && inv.IntervalMinutes < MinInventoryIntervalMinutes {
+		return fmt.Errorf("policy: endpoint inventory interval_minutes %d is below %d", inv.IntervalMinutes, MinInventoryIntervalMinutes)
+	}
+	for _, l := range []struct{ name, addr string }{
+		{"http_listen", e.OTel.HTTPListen},
+		{"grpc_listen", e.OTel.GRPCListen},
+	} {
+		if l.addr == "" && !e.OTel.Enabled {
+			continue
+		}
+		if !loopbackHostPort(l.addr) {
+			return fmt.Errorf("policy: endpoint otel %s %q is not a loopback IP host:port", l.name, l.addr)
+		}
+	}
+	keys := make([]string, 0, len(e.Tools))
+	for k := range e.Tools {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if !slices.Contains(EndpointToolKeys, k) {
+			return fmt.Errorf("policy: endpoint tools names %q outside the set {%s}", k, strings.Join(EndpointToolKeys, ","))
+		}
+	}
+	if e.DiscoveryDailyBudget < 0 {
+		return fmt.Errorf("policy: endpoint discovery_daily_budget is negative")
+	}
+	return nil
+}
+
+// loopbackHostPort reports whether hp is a loopback IP literal and a TCP port in range. A name such
+// as localhost is refused: what it resolves to is the host's configuration, not the bundle's.
+func loopbackHostPort(hp string) bool {
+	if !validHostPort(hp) {
+		return false
+	}
+	host, _, _ := net.SplitHostPort(hp)
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func validMode(where string, m protocol.CollectionMode) error {

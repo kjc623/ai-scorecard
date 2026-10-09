@@ -480,8 +480,8 @@ func TestNameAndSequence(t *testing.T) {
 	root := testRootPEM(t)
 	cfg := testConfig(t, root)
 	p := New(cfg)
-	if p.Name() != protocol.RouteCLIShim {
-		t.Fatalf("Name() = %s, want cli.shim", p.Name())
+	if p.Name() != protocol.CollectorCLIShim {
+		t.Fatalf("Name() = %s, want cli_shim", p.Name())
 	}
 	if err := p.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -561,5 +561,43 @@ func TestFutureKillSwitchDoesNotFireEarly(t *testing.T) {
 	}
 	if _, err := os.Stat(cfg.CABundlePath); err != nil {
 		t.Errorf("a future-dated kill switch suppressed the shim early: %v", err)
+	}
+}
+
+// The shim is a policy toggle, enabled only by interception.enabled, and a Start after a Stop
+// writes the profile and the CA bundle again, as switching TLS inspection off and on needs.
+func TestShimIsToggledByTLSInspection(t *testing.T) {
+	var prov core.Provider = New(Config{})
+	toggled, ok := prov.(core.Toggled)
+	if !ok {
+		t.Fatal("cli.shim is not a policy toggle")
+	}
+	if toggled.Enabled(nil) || toggled.Enabled(&policy.Bundle{}) ||
+		!toggled.Enabled(&policy.Bundle{Interception: policy.Interception{Enabled: true}}) {
+		t.Fatal("cli.shim is not enabled exactly by interception.enabled")
+	}
+
+	cfg := testConfig(t, testRootPEM(t))
+	p := New(cfg)
+	for round := 1; round <= 2; round++ {
+		if err := p.Start(context.Background()); err != nil {
+			t.Fatalf("round %d Start: %v", round, err)
+		}
+		for _, f := range []string{cfg.ProfilePath, cfg.CABundlePath} {
+			if _, err := os.Stat(f); err != nil {
+				t.Fatalf("round %d: %s missing after Start: %v", round, f, err)
+			}
+		}
+		if h := p.Health(); h.State != protocol.StateHealthy {
+			t.Fatalf("round %d health = %s/%s, want healthy", round, h.State, h.Detail)
+		}
+		if err := p.Stop(context.Background()); err != nil {
+			t.Fatalf("round %d Stop: %v", round, err)
+		}
+		for _, f := range []string{cfg.ProfilePath, cfg.CABundlePath} {
+			if _, err := os.Stat(f); !os.IsNotExist(err) {
+				t.Fatalf("round %d: %s still present after Stop", round, f)
+			}
+		}
 	}
 }

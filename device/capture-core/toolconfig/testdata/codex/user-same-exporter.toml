@@ -1,0 +1,5 @@
+# The agent's own exporter, repeated: the export is unchanged.
+[otel.exporter.otlp-http]
+endpoint = "http://127.0.0.1:47318/v1/logs"
+protocol = "binary"
+headers = { Authorization = "Bearer 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" }

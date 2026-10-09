@@ -15,6 +15,7 @@ import { formatBytes, formatCount, formatDuration, formatInstant, formatScore } 
 import { coverageText, freshnessText, emptyStateFor, fixSentence } from './states.js';
 import { eventView, eventObservations } from './views.js';
 import { EXPLORE_DATASETS, EXPLORE_DATASET_IDS, exploreWindows, TEXT_PAGE_SIZES } from './explore-model.js';
+import { COLLECTOR_DETAILS } from './vocab.js';
 
 /** Which values of which field get a tint. Only real warning and fault states are tinted. */
 const EXPLORE_TONES = Object.freeze({
@@ -451,8 +452,9 @@ function exploreRecord(detail, dataset, state) {
     + (record.audit?.entry_id ? `<p class="x-audit">Opening this record was an audited read: entry ${escapeHtml(record.audit.entry_id)} at ${escapeHtml(formatInstant(record.audit.written_at))}.</p>` : '');
 }
 
-/** A device or audit row: the row already held, laid out in full. No second read is made. */
-function exploreRowDetail(row, dataset) {
+/** A device or audit row: the row already held, laid out in full; a device's also lists its collectors. */
+function exploreRowDetail(detail, dataset) {
+  const row = detail.row;
   const facts = dataset.detailFields.map((c) => [
     c.label,
     `${renderExploreValue(row, c, { full: true })}${exploreFilterButton(dataset, c.key, typeof row[c.key] === 'string' ? row[c.key] : null)}`,
@@ -460,7 +462,43 @@ function exploreRowDetail(row, dataset) {
   const extra = row.detail && typeof row.detail === 'object' && Object.keys(row.detail).length > 0
     ? `<section><h3>Recorded detail</h3><pre class="x-pre">${escapeHtml(JSON.stringify(row.detail, null, 2))}</pre></section>`
     : '';
-  return `<section>${exploreFacts(facts)}</section>${extra}`;
+  return `<section>${exploreFacts(facts)}</section>${exploreCollectors(detail.collectors)}${extra}`;
+}
+
+/**
+ * Every collector the device reported, in the order the server returned them: its state, the cause
+ * it gave in words, and when it last reported. A collector switched off by policy is off, not a
+ * fault, so it is said so and not tinted.
+ */
+function exploreCollectors(collectors) {
+  if (!collectors) return '';
+  if (collectors.status === 'loading') {
+    return '<section aria-busy="true"><h3>Collectors</h3>'
+      + '<div class="x-detail-skel" aria-hidden="true"><span class="x-skel" style="width:76%"></span><span class="x-skel" style="width:54%"></span></div>'
+      + '<p class="x-sr" role="status">Reading the collectors</p></section>';
+  }
+  const result = collectors.result;
+  if (collectors.status === 'refused') {
+    const banner = result.banners?.[0] ?? { title: 'The collectors were not served', text: result.error?.message ?? result.resultState };
+    return `<section><h3>Collectors</h3><div class="x-state x-state-refusal" role="alert"><p><strong>${escapeHtml(banner.title)}</strong> ${escapeHtml(banner.text)}</p>`
+      + `<p class="x-state-code">${escapeHtml(result.resultState)}${result.error?.code ? `, ${escapeHtml(result.error.code)}` : ''}</p></div></section>`;
+  }
+  const rows = result.data ?? [];
+  if (rows.length === 0) return '<section><h3>Collectors</h3><p class="x-absent">This device has not reported any collector.</p></section>';
+  const body = rows.map((r) => {
+    const off = r.error_code === 'disabled_by_policy';
+    const state = off
+      ? '<span class="x-chip">Off in policy</span>'
+      : renderExploreValue(r, { key: 'collector_state', kind: 'vocab' });
+    const cause = off || !r.error_code
+      ? '<span class="x-absent">none</span>'
+      : `<span title="${escapeHtml(r.error_code)}">${escapeHtml(COLLECTOR_DETAILS[r.error_code] ?? r.error_code)}</span>`;
+    return `<tr><td>${renderExploreValue(r, { key: 'collector', kind: 'mono' })}</td><td>${state}</td><td>${cause}</td>`
+      + `<td>${renderExploreValue(r, { key: 'last_report_at', kind: 'server-clock' })}</td></tr>`;
+  }).join('');
+  return '<section><h3>Collectors</h3><table class="x-table x-table-plain"><thead><tr>'
+    + '<th scope="col">Collector</th><th scope="col">State</th><th scope="col">Cause</th><th scope="col">Last report</th>'
+    + `</tr></thead><tbody>${body}</tbody></table></section>`;
 }
 
 export function renderExploreDetail(state) {
@@ -470,7 +508,7 @@ export function renderExploreDetail(state) {
   const title = dataset.noun.charAt(0).toUpperCase() + dataset.noun.slice(1);
 
   if (dataset.detail === 'row') {
-    return exploreDetailHead(title, null) + exploreRowDetail(detail.row, dataset);
+    return exploreDetailHead(title, null) + exploreRowDetail(detail, dataset);
   }
   const id = detail.submissionId;
   if (detail.status === 'loading') {

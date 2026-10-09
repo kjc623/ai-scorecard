@@ -15,7 +15,7 @@ import (
 // fakeProvider is a provider that can be told to lie in every way the contract forbids, so
 // the registry's overrides are tested rather than assumed.
 type fakeProvider struct {
-	route      protocol.Route
+	collector  protocol.Collector
 	startErr   error
 	stopErr    error
 	panicStart bool
@@ -28,7 +28,7 @@ type fakeProvider struct {
 	applyErr   error
 }
 
-func (f *fakeProvider) Name() protocol.Route { return f.route }
+func (f *fakeProvider) Name() protocol.Collector { return f.collector }
 
 func (f *fakeProvider) Start(context.Context) error {
 	f.mu.Lock()
@@ -81,22 +81,22 @@ func newTestRegistry(t *testing.T, ps ...Provider) *Registry {
 	return r
 }
 
-func TestRegistryRejectsDuplicateRoute(t *testing.T) {
+func TestRegistryRejectsDuplicateCollector(t *testing.T) {
 	r := newTestRegistry(t)
-	a := &fakeProvider{route: protocol.RouteProxyTLS, health: healthyRow()}
-	b := &fakeProvider{route: protocol.RouteProxyTLS, health: healthyRow()}
+	a := &fakeProvider{collector: protocol.CollectorEgressProxy, health: healthyRow()}
+	b := &fakeProvider{collector: protocol.CollectorEgressProxy, health: healthyRow()}
 	if err := r.Add(a); err != nil {
 		t.Fatalf("first Add: %v", err)
 	}
 	if err := r.Add(b); err == nil {
-		t.Fatal("second provider on one route was accepted; one provider owns one coverage row")
+		t.Fatal("second provider for one collector was accepted; one provider owns one coverage row")
 	}
 }
 
 func TestRegistryStartFailureDegradesOneRowOnly(t *testing.T) {
-	bad := &fakeProvider{route: protocol.RouteProxyTLS, startErr: errors.New("bind failed")}
-	good := &fakeProvider{route: protocol.RouteProcDetect, health: healthyRow()}
-	other := &fakeProvider{route: protocol.RouteCLIShim, health: healthyRow()}
+	bad := &fakeProvider{collector: protocol.CollectorEgressProxy, startErr: errors.New("bind failed")}
+	good := &fakeProvider{collector: protocol.CollectorProcessDetector, health: healthyRow()}
+	other := &fakeProvider{collector: protocol.CollectorCLIShim, health: healthyRow()}
 	r := newTestRegistry(t, bad, good, other)
 
 	results := r.StartAll(context.Background())
@@ -104,12 +104,12 @@ func TestRegistryStartFailureDegradesOneRowOnly(t *testing.T) {
 		t.Fatalf("expected 3 start results, got %d", len(results))
 	}
 	rows := r.RowsByName()
-	if got := rows[string(protocol.RouteProxyTLS)].State; got != protocol.StateAbsent {
+	if got := rows[string(protocol.CollectorEgressProxy)].State; got != protocol.StateAbsent {
 		t.Errorf("failed provider state = %q, want absent", got)
 	}
-	for _, route := range []protocol.Route{protocol.RouteProcDetect, protocol.RouteCLIShim} {
-		if got := rows[string(route)].State; got != protocol.StateHealthy {
-			t.Errorf("provider %s state = %q, want healthy (one failure must not degrade other rows)", route, got)
+	for _, c := range []protocol.Collector{protocol.CollectorProcessDetector, protocol.CollectorCLIShim} {
+		if got := rows[string(c)].State; got != protocol.StateHealthy {
+			t.Errorf("provider %s state = %q, want healthy (one failure must not degrade other rows)", c, got)
 		}
 	}
 }
@@ -117,10 +117,10 @@ func TestRegistryStartFailureDegradesOneRowOnly(t *testing.T) {
 // A provider that claims healthy after a failed Start must not surface as healthy: "no
 // provider may fail into a state that reports success".
 func TestRegistryNeverReportsHealthyAfterFailedStart(t *testing.T) {
-	p := &fakeProvider{route: protocol.RouteProxyLoopback, startErr: errors.New("preflight refused"), health: healthyRow()}
+	p := &fakeProvider{collector: protocol.CollectorLoopbackBroker, startErr: errors.New("preflight refused"), health: healthyRow()}
 	r := newTestRegistry(t, p)
 	_ = r.StartAll(context.Background())
-	h, ok := r.HealthFor(protocol.RouteProxyLoopback)
+	h, ok := r.HealthFor(protocol.CollectorLoopbackBroker)
 	if !ok {
 		t.Fatal("no health row for a registered provider")
 	}
@@ -134,13 +134,13 @@ func TestRegistryNeverReportsHealthyAfterFailedStart(t *testing.T) {
 	if len(reports) != 1 || reports[0].State != protocol.StateAbsent {
 		t.Fatalf("report = %+v, want one absent row", reports)
 	}
-	if reports[0].Collector != string(protocol.RouteProxyLoopback) {
-		t.Fatalf("collector name = %q, want the route name from ref.collector", reports[0].Collector)
+	if reports[0].Collector != string(protocol.CollectorLoopbackBroker) {
+		t.Fatalf("collector name = %q, want the provider's collector code", reports[0].Collector)
 	}
 }
 
 func TestRegistryStopFailureIsTamperedNotAVisibleError(t *testing.T) {
-	p := &fakeProvider{route: protocol.RouteProxyTLS, stopErr: errors.New("port still bound"), health: healthyRow()}
+	p := &fakeProvider{collector: protocol.CollectorEgressProxy, stopErr: errors.New("port still bound"), health: healthyRow()}
 	r := newTestRegistry(t, p)
 	if err := p.Start(context.Background()); err != nil {
 		t.Fatalf("fake start: %v", err)
@@ -155,29 +155,29 @@ func TestRegistryStopFailureIsTamperedNotAVisibleError(t *testing.T) {
 	if results[0].Err == nil {
 		t.Fatal("the stop error was swallowed entirely; it must be reported so the row can be tampered")
 	}
-	h, _ := r.HealthFor(protocol.RouteProxyTLS)
+	h, _ := r.HealthFor(protocol.CollectorEgressProxy)
 	if h.State != protocol.StateTampered {
 		t.Fatalf("state after failed Stop = %q, want tampered (interference is evidence)", h.State)
 	}
 }
 
 func TestRegistryNeverHealthyAfterStop(t *testing.T) {
-	p := &fakeProvider{route: protocol.RouteCLIShim, health: healthyRow()}
+	p := &fakeProvider{collector: protocol.CollectorCLIShim, health: healthyRow()}
 	r := newTestRegistry(t, p)
 	_ = r.StartAll(context.Background())
-	if h, _ := r.HealthFor(protocol.RouteCLIShim); h.State != protocol.StateHealthy {
+	if h, _ := r.HealthFor(protocol.CollectorCLIShim); h.State != protocol.StateHealthy {
 		t.Fatalf("precondition: state = %q, want healthy", h.State)
 	}
-	r.StopRoute(context.Background(), protocol.RouteCLIShim)
-	h, _ := r.HealthFor(protocol.RouteCLIShim)
+	r.StopCollector(context.Background(), protocol.CollectorCLIShim)
+	h, _ := r.HealthFor(protocol.CollectorCLIShim)
 	if h.State == protocol.StateHealthy {
 		t.Fatal("provider reported healthy after Stop")
 	}
 }
 
 func TestRegistryRecoversPanicsIntoOneRow(t *testing.T) {
-	bad := &fakeProvider{route: protocol.RouteProxyTLS, panicStart: true}
-	good := &fakeProvider{route: protocol.RouteProcDetect, health: healthyRow()}
+	bad := &fakeProvider{collector: protocol.CollectorEgressProxy, panicStart: true}
+	good := &fakeProvider{collector: protocol.CollectorProcessDetector, health: healthyRow()}
 	r := newTestRegistry(t, bad, good)
 	results := r.StartAll(context.Background())
 	var panicked int
@@ -190,16 +190,16 @@ func TestRegistryRecoversPanicsIntoOneRow(t *testing.T) {
 		t.Fatalf("recovered %d panics, want 1", panicked)
 	}
 	rows := r.RowsByName()
-	if rows[string(protocol.RouteProxyTLS)].State != protocol.StateAbsent {
+	if rows[string(protocol.CollectorEgressProxy)].State != protocol.StateAbsent {
 		t.Fatal("a provider that panicked during Start reported something other than absent")
 	}
-	if rows[string(protocol.RouteProcDetect)].State != protocol.StateHealthy {
+	if rows[string(protocol.CollectorProcessDetector)].State != protocol.StateHealthy {
 		t.Fatal("a panic in one provider degraded another row")
 	}
 }
 
 func TestRegistrySanitisesInventedCounters(t *testing.T) {
-	p := &fakeProvider{route: protocol.RouteExtWebRequest, health: Health{
+	p := &fakeProvider{collector: protocol.CollectorCaptureExtension, health: Health{
 		State: protocol.StateHealthy,
 		Counters: map[protocol.Counter]uint64{
 			protocol.CounterObserved: 1,
@@ -208,7 +208,7 @@ func TestRegistrySanitisesInventedCounters(t *testing.T) {
 	}}
 	r := newTestRegistry(t, p)
 	_ = r.StartAll(context.Background())
-	h, _ := r.HealthFor(protocol.RouteExtWebRequest)
+	h, _ := r.HealthFor(protocol.CollectorCaptureExtension)
 	if _, ok := h.Counters["per_tool_requests"]; ok {
 		t.Fatal("an invented counter name reached the health channel")
 	}
@@ -218,10 +218,10 @@ func TestRegistrySanitisesInventedCounters(t *testing.T) {
 }
 
 func TestRegistrySanitisesUnknownState(t *testing.T) {
-	p := &fakeProvider{route: protocol.RouteProcDetect, health: Health{State: "fine", Counters: map[protocol.Counter]uint64{}}}
+	p := &fakeProvider{collector: protocol.CollectorProcessDetector, health: Health{State: "fine", Counters: map[protocol.Counter]uint64{}}}
 	r := newTestRegistry(t, p)
 	_ = r.StartAll(context.Background())
-	h, _ := r.HealthFor(protocol.RouteProcDetect)
+	h, _ := r.HealthFor(protocol.CollectorProcessDetector)
 	if h.State != protocol.StateAbsent {
 		t.Fatalf("state = %q, want absent for an out-of-vocabulary state", h.State)
 	}
@@ -270,7 +270,7 @@ func TestHealthValidateAndReport(t *testing.T) {
 		t.Fatal("a row with an out-of-vocabulary counter validated")
 	}
 	rep := h.Report("dev-1", "bundle-7")
-	rep.Collector = string(protocol.RouteProxyTLS)
+	rep.Collector = string(protocol.CollectorEgressProxy)
 	if err := rep.Validate(); err != nil {
 		t.Fatalf("protocol rejected the report: %v", err)
 	}
@@ -280,8 +280,8 @@ func TestHealthValidateAndReport(t *testing.T) {
 }
 
 func TestApplyPolicyReachesEveryProviderAndNeverRestarts(t *testing.T) {
-	a := &fakeProvider{route: protocol.RouteProxyTLS, health: healthyRow()}
-	b := &fakeProvider{route: protocol.RouteProcDetect, health: healthyRow()}
+	a := &fakeProvider{collector: protocol.CollectorEgressProxy, health: healthyRow()}
+	b := &fakeProvider{collector: protocol.CollectorProcessDetector, health: healthyRow()}
 	r := newTestRegistry(t, a, b)
 	_ = r.StartAll(context.Background())
 	before := a.starts
@@ -291,7 +291,7 @@ func TestApplyPolicyReachesEveryProviderAndNeverRestarts(t *testing.T) {
 	}
 	for _, res := range results {
 		if res.Err != nil {
-			t.Fatalf("apply for %s failed: %v", res.Route, res.Err)
+			t.Fatalf("apply for %s failed: %v", res.Collector, res.Err)
 		}
 	}
 	if a.starts != before {

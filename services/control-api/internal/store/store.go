@@ -189,6 +189,8 @@ type PolicyTenant struct {
 	CeilingMode   string
 	// CollectionMode is the requested mode, resolved to the ceiling when none is set.
 	CollectionMode string
+	// TLSInspection is whether the tenant's devices intercept TLS (ops.tenant.tls_inspection).
+	TLSInspection bool
 }
 
 // Active mirrors Tenant.Active.
@@ -200,6 +202,89 @@ type PolicyInputs struct {
 	InterceptionHosts []string
 	// ScopeOverrides is the tenant's narrower per-tool modes, keyed by tool fingerprint.
 	ScopeOverrides map[string]string
+	Endpoint       EndpointSettings
+	// Rules is the tenant's enforcement rules, in order.
+	Rules []EnforcementRule
+	// SanctionedTools is the fingerprints whose ops.tool.sanctioned_state is sanctioned, sorted.
+	SanctionedTools []string
+	// Catalog is the app catalog, by app key, each app's signals by platform, kind and value.
+	Catalog []CatalogApp
+	// KillSwitches is the tenant's tripped kill switches, by route.
+	KillSwitches []KillSwitch
+}
+
+// KillSwitchRoutes is the closed set of routes a kill switch can be tripped for: the interception
+// routes (ops.kill_switch.route).
+var KillSwitchRoutes = []string{"proxy.tls", "proxy.loopback"}
+
+// KillSwitch is one tripped kill switch (ops.kill_switch). From EffectiveAt the tenant's devices
+// carry the route's traffic unread and enforce nothing on it.
+type KillSwitch struct {
+	Route       string
+	ReasonCode  string
+	EffectiveAt time.Time
+	SetBy       string
+}
+
+// MaxEnforcementRules is the most rules a tenant's list may hold.
+const MaxEnforcementRules = 100
+
+// RuleActions is the closed set of enforcement rule actions (ops.enforcement_rule.action).
+var RuleActions = []string{"allow", "warn", "block"}
+
+// EnforcementRule is one of the tenant's ordered enforcement rules (ops.enforcement_rule).
+type EnforcementRule struct {
+	RuleID  string
+	Action  string
+	Match   RuleMatch
+	Message string
+	// Link is an https URL shown with the message; "" for none.
+	Link string
+}
+
+// RuleMatch is a rule's match lists. Every non-empty list must match; an empty one matches
+// anything. The store reads every list as non-nil.
+type RuleMatch struct {
+	Labels     []string
+	Tools      []string
+	Categories []string
+	Sanction   []string
+	Routes     []string
+}
+
+// EndpointToolKeys is the closed set of tools with endpoint settings, the keys of
+// EndpointSettings.Tools and of ops.endpoint_tool_setting.tool_key: the tools with native collectors,
+// and Ollama, whose one switch is local model capture.
+var EndpointToolKeys = []string{"claude_code", "codex", "copilot", "cursor", "ollama"}
+
+// LoopbackToolKeys is the tools whose switch is Loopback rather than OTel and Hooks.
+var LoopbackToolKeys = []string{"ollama"}
+
+// EndpointCollectors is the tenant's switch for each endpoint collector (ops.endpoint_setting).
+type EndpointCollectors struct {
+	Inventory        bool
+	Processes        bool
+	Flows            bool
+	OTel             bool
+	Hooks            bool
+	HooksManagedOnly bool
+}
+
+// EndpointTool is one tool's switches (ops.endpoint_tool_setting). A tool of LoopbackToolKeys has
+// only Loopback, the others only OTel and Hooks.
+type EndpointTool struct {
+	OTel  bool
+	Hooks bool
+	// Loopback has the device move the local model server to another port and hold its own port
+	// with the loopback broker, which records the prompts sent to it.
+	Loopback bool
+}
+
+// EndpointSettings is the tenant's endpoint collector settings as served, with the defaults applied
+// where the tenant has no row. Tools holds every key of EndpointToolKeys.
+type EndpointSettings struct {
+	Collectors EndpointCollectors
+	Tools      map[string]EndpointTool
 }
 
 // PolicyBundle is one ops.policy_bundle row. SignedEnvelope is the exact bytes GET /v1/policy
@@ -258,9 +343,18 @@ type Settings struct {
 	EventRetentionDays   *int
 	ContentRetentionDays *int
 	ContentSearch        string
+	TLSInspection        bool
 	RetentionDefaults    RetentionDefaults
 	Tools                []ToolDecision
 	Devices              []DeviceMode
+	Endpoint             EndpointSettings
+	// DataClasses is ref.data_class's codes, sorted: the labels an enforcement rule may name.
+	DataClasses []string
+	// AppCategories is the categories of the catalog's apps, sorted: the categories an enforcement
+	// rule may name.
+	AppCategories []string
+	// KillSwitches is the tenant's tripped kill switches, by route.
+	KillSwitches []KillSwitch
 }
 
 // Errors callers distinguish. Every other error is an infrastructure failure and is retryable.
@@ -290,6 +384,12 @@ var (
 	ErrSearchTierRequiresCeiling = errors.New("store: content search tier needs a higher ceiling mode")
 	// ErrRetentionOutOfRange is a retention period outside the retention classes' days.
 	ErrRetentionOutOfRange = errors.New("store: retention period is outside the retention classes")
+	// ErrUnknownEndpointTool is a tool key outside EndpointToolKeys.
+	ErrUnknownEndpointTool = errors.New("store: endpoint tool key unknown")
+	// ErrUnknownRuleLabel is an enforcement rule naming a label outside ref.data_class.
+	ErrUnknownRuleLabel = errors.New("store: enforcement rule label is not a data class")
+	// ErrUnknownKillSwitchRoute is a kill switch for a route outside KillSwitchRoutes.
+	ErrUnknownKillSwitchRoute = errors.New("store: kill switch route unknown")
 )
 
 // Store is control-api's persistence. *SQLStore implements it; tests use storetest.Memory.
@@ -365,6 +465,25 @@ type Store interface {
 	// SetToolSanction sets one tool's sanction decision. state is sanctioned, unsanctioned or
 	// unknown; setting unknown clears the attribution.
 	SetToolSanction(ctx context.Context, tenantID string, fingerprint string, state string, audit AuditEntry) error
+	// SetEndpointCollectors sets the tenant's endpoint collector switches.
+	SetEndpointCollectors(ctx context.Context, tenantID string, c EndpointCollectors, audit AuditEntry) error
+	// SetEndpointTool sets one tool's native collector switches. ErrUnknownEndpointTool when the key
+	// is outside EndpointToolKeys.
+	SetEndpointTool(ctx context.Context, tenantID string, toolKey string, t EndpointTool, audit AuditEntry) error
+	// SetTLSInspection turns the tenant's TLS inspection on or off.
+	SetTLSInspection(ctx context.Context, tenantID string, enabled bool, audit AuditEntry) error
+	// EnforcementRules reads the tenant's enforcement rules in order. ErrUnknownTenant when the
+	// tenant does not exist.
+	EnforcementRules(ctx context.Context, tenantID string) ([]EnforcementRule, error)
+	// ReplaceEnforcementRules replaces the tenant's whole ordered list in one transaction and audits
+	// the previous and the new list. ErrUnknownRuleLabel when a rule names a label outside
+	// ref.data_class; the list in force is then unchanged.
+	ReplaceEnforcementRules(ctx context.Context, tenantID string, rules []EnforcementRule, audit AuditEntry) error
+	// SetKillSwitch trips (on) or clears the tenant's kill switch for one route and audits the
+	// previous and the new state. A switch takes effect at the trip's audit.OccurredAt; tripping a
+	// tripped switch changes its reason and keeps its effective time. ErrUnknownKillSwitchRoute when
+	// the route is outside KillSwitchRoutes.
+	SetKillSwitch(ctx context.Context, tenantID, route string, on bool, reasonCode string, audit AuditEntry) error
 
 	// Ping checks the database is reachable, for readiness.
 	Ping(ctx context.Context) error

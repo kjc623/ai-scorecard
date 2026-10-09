@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -15,15 +16,28 @@ import (
 
 	"github.com/shadow-ai-capture/device/capture-core/classifierlink"
 	"github.com/shadow-ai-capture/device/capture-core/cli"
+	"github.com/shadow-ai-capture/device/capture-core/component"
 	"github.com/shadow-ai-capture/device/capture-core/contentstore"
 	"github.com/shadow-ai-capture/device/capture-core/core"
 	"github.com/shadow-ai-capture/device/capture-core/credential"
+	"github.com/shadow-ai-capture/device/capture-core/discovery"
 	"github.com/shadow-ai-capture/device/capture-core/drain"
+	"github.com/shadow-ai-capture/device/capture-core/flowmon"
+	"github.com/shadow-ai-capture/device/capture-core/hooks"
+	"github.com/shadow-ai-capture/device/capture-core/hostinfo"
+	"github.com/shadow-ai-capture/device/capture-core/inventory"
+	"github.com/shadow-ai-capture/device/capture-core/localipc"
+	"github.com/shadow-ai-capture/device/capture-core/merge"
+	"github.com/shadow-ai-capture/device/capture-core/otlp"
+	"github.com/shadow-ai-capture/device/capture-core/otlp/normalizers"
 	"github.com/shadow-ai-capture/device/capture-core/policy"
+	"github.com/shadow-ai-capture/device/capture-core/procmon"
 	"github.com/shadow-ai-capture/device/capture-core/proxy/loopback"
 	"github.com/shadow-ai-capture/device/capture-core/proxy/tlsproxy"
 	"github.com/shadow-ai-capture/device/capture-core/state"
+	"github.com/shadow-ai-capture/device/capture-core/toolconfig"
 	"github.com/shadow-ai-capture/device/capture-core/trust"
+	"github.com/shadow-ai-capture/device/capture-core/userhelper"
 	"github.com/shadow-ai-capture/device/capture-core/winproxy"
 	capturespool "github.com/shadow-ai-capture/device/capture-spool"
 	"github.com/shadow-ai-capture/device/protocol"
@@ -40,20 +54,52 @@ const (
 	startupBound      = 30 * time.Second // enrolment and the first policy fetch at startup
 	defaultBodyCap    = 4 << 20
 	defaultTLSListen  = "127.0.0.1:0"
-	defaultPACListen  = "127.0.0.1:8350"
 	spoolMaxBytes     = 25 << 20
 	spoolMaxEntries   = 25000
 	serviceStopBudget = drainDeadline + 15*time.Second
 )
 
 // facilities are the operating-system side effects the service performs beyond its own state
-// directory: the trust store, the machine environment the CLI shim writes, and the native
-// messaging endpoint. Tests replace them so nothing touches the machine.
+// directory: the trust store, the machine environment the CLI shim writes, the native messaging
+// endpoint, the users' proxy settings the desktop-app PAC writes, and the process lookups that
+// attribute a proxied connection. Tests replace them so nothing touches the machine.
 type facilities struct {
 	trustStore func(logf func(string, ...any)) trustStore
-	shimRunner cli.Runner
-	shimDir    string // empty: the platform default (cli.DefaultManagedDir)
-	nativeAddr string
+	// deviceCA opens the per-device root, whose key is in the platform keystore.
+	deviceCA    func(ctx context.Context, dir, label string, now time.Time, trust tlsproxy.RootTrust) (*tlsproxy.CA, bool, error)
+	shimRunner  cli.Runner
+	shimDir     string // empty: the platform default (cli.DefaultManagedDir)
+	shimProfile string // empty: the platform default profile
+	nativeAddr  string
+	// connOwner names the process at the client end of a loopback connection the proxy accepted.
+	// nil where the platform cannot; proxy observations are then attributed to the console user.
+	connOwner func(conn net.Conn) (hostinfo.Process, error)
+	// desktopPAC builds the desktop-app PAC over the platform's user settings. nil where the
+	// platform has none; desktop apps there keep their own proxy behaviour.
+	desktopPAC func(cfg winproxy.Config) *winproxy.Server
+	// userSessions lists the signed-in sessions and starts the user-session helper in them; nil
+	// where the platform has no helper.
+	userSessions userhelper.Platform
+	// claudeCodeSettings is Claude Code's managed settings file; empty is the platform's location.
+	claudeCodeSettings string
+	// processEvents opens the process start and stop events the process monitor reads; nil leaves
+	// the monitor absent.
+	processEvents func() (procmon.Source, error)
+	// flowEvents opens the DNS answers and TCP connects the flow monitor reads; nil leaves the
+	// monitor absent.
+	flowEvents func() (flowmon.Source, error)
+	// cursorHooks is Cursor's enterprise hooks file; empty is the platform's location.
+	cursorHooks string
+	// codexRequirements is the Codex CLI's system requirements file; empty is the platform's
+	// location.
+	codexRequirements string
+	// machineEnv is the machine-wide environment through which the loopback broker moves a local
+	// model server off its port; nil leaves the servers where they are.
+	machineEnv toolconfig.MachineEnv
+	// codexConfig is the Codex CLI's system config file; empty is the platform's location.
+	codexConfig string
+	// codexUserConfigs lists the users' own Codex config files; nil is the platform's.
+	codexUserConfigs func() []string
 }
 
 // trustStore installs, verifies and removes the per-device CA in the platform trust store.
@@ -67,8 +113,57 @@ var platform = facilities{
 	trustStore: func(logf func(string, ...any)) trustStore {
 		return trust.New(trust.Config{OS: trust.HostOS(), Logf: logf})
 	},
-	shimRunner: trust.ExecRunner{},
-	nativeAddr: nativeEndpoint,
+	deviceCA:     tlsproxy.OpenDeviceCA,
+	shimRunner:   trust.ExecRunner{},
+	nativeAddr:   localipc.Endpoint,
+	connOwner:    loopbackAttribution(),
+	desktopPAC:   desktopPAC(),
+	userSessions: helperPlatform(),
+
+	processEvents: procmon.KernelEvents,
+	flowEvents:    flowmon.NetworkEvents,
+	machineEnv:    toolconfig.MachineEnvironment(),
+}
+
+// desktopPAC is the desktop-app PAC on Windows, where desktop apps read the per-user Internet
+// Settings; nothing elsewhere.
+func desktopPAC() func(winproxy.Config) *winproxy.Server {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	return winproxy.New
+}
+
+// helperPlatform starts this executable in helper mode in each signed-in session.
+func helperPlatform() userhelper.Platform {
+	exe, err := os.Executable()
+	if err != nil {
+		return nil
+	}
+	return userhelper.SystemPlatform(exe, userHelperArg)
+}
+
+// loopbackAttribution is how the platform names a loopback connection's client: the TCP owner table
+// on Windows, nothing elsewhere.
+func loopbackAttribution() func(net.Conn) (hostinfo.Process, error) {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	return loopbackClient
+}
+
+// loopbackClient is the process that dialled a loopback connection the service accepted.
+func loopbackClient(conn net.Conn) (hostinfo.Process, error) {
+	local, lok := conn.LocalAddr().(*net.TCPAddr)
+	remote, rok := conn.RemoteAddr().(*net.TCPAddr)
+	if !lok || !rok {
+		return hostinfo.Process{}, fmt.Errorf("a %s connection has no TCP owner", conn.LocalAddr().Network())
+	}
+	pid, err := hostinfo.OwnerOfLocalTCP(local.AddrPort(), remote.AddrPort())
+	if err != nil {
+		return hostinfo.Process{}, err
+	}
+	return hostinfo.ProcessInfo(pid)
 }
 
 // runService runs the agent in the foreground until SIGINT or SIGTERM.
@@ -115,16 +210,25 @@ type service struct {
 	spool   *spoolHolder
 	pipe    *core.Pipeline
 	content *contentstore.Store
-	host    *classifierHostController
 	broker  *loopback.Broker
 	drainer *drain.Drainer
 	trust   trustStore
 	health  *healthChannel
-	native  *nativeServer
+	native  *localipc.Server
+	helpers *userhelper.Provider
+	hooks   *hooks.Relay
+	// discovery is the discovery emitter the discovery collectors share.
+	discovery *discoveryEmitter
 
-	// tlsProv is proxy.tls, and pac the Windows desktop-app PAC that points at it. The PAC is
-	// not a provider (it produces no observations); it is started and stopped beside the native
-	// messaging endpoint and fails open by returning the previous route when the proxy drops out.
+	// host supervises the classifier-host child, and classifier is the link to it (nil without a
+	// classifier release).
+	host       *component.Supervisor
+	classifier *classifierlink.Client
+
+	// tlsProv is proxy.tls, and pac the Windows desktop-app PAC that points at it (nil where the
+	// platform has none). Both, and the CLI shim, are policy toggles that run only while the
+	// tenant's TLS inspection is on. The PAC fails open by returning the previous route when the
+	// proxy drops out.
 	tlsProv *tlsproxy.Provider
 	pac     *winproxy.Server
 
@@ -192,6 +296,7 @@ func newService(ctx context.Context, cfg Config, log *slog.Logger) (*service, er
 	}
 	pipe.Bundles = s.currentBundle
 	pipe.ClassifyBudget = classifierBudget
+	pipe.Log = log
 	if s.content, err = contentstore.Open(dir.Path(state.ContentDir), contentKey, time.Now); err != nil {
 		return nil, err
 	}
@@ -215,8 +320,18 @@ func newService(ctx context.Context, cfg Config, log *slog.Logger) (*service, er
 		cancel()
 	}
 
+	// The classifier host's row is reported either way; without a release the host is never
+	// started and classification degrades to rules-only.
+	s.host = component.New(component.Spec{
+		Collector: protocol.CollectorClassifierHost,
+		Path:      classifierHostExe(),
+		Args:      []string{"serve", "--release", cfg.ClassifierRelease, "--pubkey", cfg.ClassifierPubkey, "--transport", "stdio"},
+		Stdio:     true,
+		Ready:     s.connectClassifier,
+	}, logf)
 	if cfg.ClassifierRelease != "" {
-		s.host = &classifierHostController{cfg: cfg, log: log, onReady: func(c *classifierlink.Client) { pipe.Classifier = c }}
+		s.classifier = classifierlink.NewWithDialer(s.host.Dial, "capture-core/"+version, classifierBudget)
+		pipe.Classifier = s.classifier
 	}
 
 	if err := s.buildProviders(); err != nil {
@@ -230,7 +345,7 @@ func newService(ctx context.Context, cfg Config, log *slog.Logger) (*service, er
 	sup.Policy = &policyLoader{svc: s}
 	sup.Spool = s.spool
 	sup.Identity = identityResolver{s}
-	if s.host != nil {
+	if s.classifier != nil {
 		sup.ClassifierHost = s.host
 	}
 	if s.broker != nil {
@@ -299,67 +414,62 @@ func (s *service) buildDrainer(spoolKey []byte) error {
 	return nil
 }
 
-// buildProviders builds proxy.tls, the loopback broker and the CLI shim over the per-device CA.
+// buildProviders builds proxy.tls, the loopback broker and the CLI shim over the per-device CA, the
+// OTLP receiver, Claude Code's, Copilot's, Cursor's and Codex's configuration writers and their
+// drift watcher, the user-session helper, the hook relay, the inventory scanner, the process monitor
+// and the flow monitor.
 func (s *service) buildProviders() error {
 	b := s.currentBundle()
 	label := s.resolvedHostname()
 	if c := s.issuedCredential(); c != nil {
 		label = c.DeviceID
 	}
+	trustRoot := platform.trustStore(func(f string, a ...any) { s.log.Warn(fmt.Sprintf(f, a...)) })
+	s.trust = trustRoot
+
 	caDir := s.dir.Path(state.DeviceCADir)
-	caCert, caKey, created, err := ensureDeviceCA(caDir, label, time.Now())
+	ca, created, err := platform.deviceCA(context.Background(), caDir, label, time.Now(), trustRoot)
 	if err != nil {
 		return fmt.Errorf("per-device CA in %s: %w", caDir, err)
 	}
 	s.log.Info("per-device CA ready", "created", created)
 
-	trustRoot := platform.trustStore(func(f string, a ...any) { s.log.Warn(fmt.Sprintf(f, a...)) })
-	s.trust = trustRoot
-
-	canary := ""
-	listen := defaultTLSListen
-	if b != nil {
-		canary = b.Interception.ProxyCanary
-		if strings.TrimSpace(b.Interception.ProxyListen) != "" {
-			listen = b.Interception.ProxyListen
-		}
-	}
-	tlsProv := tlsproxy.New(tlsproxy.Config{
-		Listen:     listen,
-		Bundles:    s.currentBundle,
-		Pipeline:   s.pipe,
-		Log:        s.logf,
-		Clock:      time.Now,
-		CanaryHost: canaryHost(canary),
-		CanaryPort: canaryPort(canary),
-		BodyCap:    bodyCapFrom(b),
-		CACertPEM:  caCert,
-		CAKeyPEM:   caKey,
-		TrustRoot:  trustRoot,
-	})
+	tlsProv := tlsproxy.New(s.proxyConfig(b, ca, trustRoot))
 	if err := s.reg.Add(tlsProv); err != nil {
 		return err
 	}
 	s.tlsProv = tlsProv
 
-	s.broker = loopback.New(loopback.Config{
-		Ports:    portsFrom(b),
+	// The broker holds a local model server's port while the bundle names it, with the bundle's
+	// timings, and moves the server to its upstream port first.
+	broker := loopback.Config{
+		Bundles:  s.pipe.Bundles,
 		Pipeline: s.pipe,
 		Log:      s.logf,
 		Clock:    time.Now,
 		BodyCap:  bodyCapFrom(b),
-	})
+	}
+	if b != nil {
+		broker = broker.WithPolicy(b.Loopback)
+	}
+	if platform.machineEnv != nil {
+		broker.Relocators = map[string]loopback.Relocator{
+			toolconfig.OllamaFingerprint: toolconfig.NewOllama(s.dir, platform.machineEnv),
+		}
+	}
+	s.broker = loopback.New(broker)
 	if err := s.reg.Add(s.broker); err != nil {
 		return err
 	}
 
 	shim := cli.Config{
-		ManagedDir: platform.shimDir,
-		ProxyAddr:  shimProxyAddr(b),
-		RootCAPEM:  caCert,
-		Runner:     platform.shimRunner,
-		Log:        s.logf,
-		Clock:      time.Now,
+		ManagedDir:  platform.shimDir,
+		ProfilePath: platform.shimProfile,
+		ProxyAddr:   shimProxyAddr(b),
+		RootCAPEM:   ca.PEM(),
+		Runner:      platform.shimRunner,
+		Log:         s.logf,
+		Clock:       time.Now,
 	}
 	if b != nil {
 		shim.NoProxy = b.CLIShim.NoProxy
@@ -370,33 +480,320 @@ func (s *service) buildProviders() error {
 		return err
 	}
 
-	s.buildPAC(b)
-	return nil
+	// Claude Code reports a submitted prompt through its hook and its OTel export; the buffer makes
+	// one record of the two. It releases what it holds when the background loops end, before the
+	// shutdown sequence stops the providers and drains the spool.
+	prompts := merge.New(merge.Config{Pipeline: s.pipe, Log: s.logf})
+	s.bgWG.Add(1)
+	go func() {
+		defer s.bgWG.Done()
+		<-s.bgStop
+		prompts.Close()
+	}()
+
+	// The listen addresses arrive with the bundle that switches the receiver on. A sending process's
+	// owner is named the way a browser peer is.
+	otelCounters := core.NewCounterSet(time.Now())
+	deps := s.normalizerDeps(otelCounters)
+	deps.Pipeline = prompts
+	otel, err := otlp.New(otlp.Config{
+		TokenPath:   s.dir.Path(otlp.TokenFile),
+		Normalizers: normalizers.Registered(deps),
+		Counters:    otelCounters,
+		Person:      s.peerPerson,
+		Log:         s.logf,
+		Clock:       time.Now,
+	})
+	if err != nil {
+		return err
+	}
+	if err := s.reg.Add(otel); err != nil {
+		return err
+	}
+
+	// While a tool config provider runs, a change someone else makes to its managed files or
+	// registry values is put right and reported as tampering.
+	drift := toolconfig.NewWatcher(s.logf)
+	s.bgWG.Add(1)
+	go func() {
+		defer s.bgWG.Done()
+		drift.Run(s.bgStop)
+	}()
+
+	// A per-user install is attributed to the person whose hive holds it, named the way a browser
+	// peer is.
+	s.discovery = &discoveryEmitter{svc: s}
+	scanner := inventory.New(inventory.Config{
+		Scanners: inventory.Scanners(s.peerPerson),
+		Emitter:  s.discovery,
+		Bundles:  s.currentBundle,
+		Log:      s.logf,
+		Clock:    time.Now,
+	})
+
+	// A running app is attributed to the account its process runs as, named the way a browser
+	// peer is.
+	procs := procmon.New(procmon.Config{
+		Emitter: s.discovery,
+		Events:  platform.processEvents,
+		Bundles: s.currentBundle,
+		Person:  s.peerPerson,
+		Log:     s.logf,
+		Clock:   time.Now,
+	})
+
+	// A tool's health reads the version the inventory's last scan found, what the receiver and the
+	// hook relay last had from it, and whether the process monitor saw it run.
+	toolHealth := func(cfg toolconfig.Config) toolconfig.Config {
+		cfg.InstalledVersion = scanner.Installed
+		cfg.LastEvent = func(tool string) time.Time { return s.lastToolEvent(otel, tool) }
+		cfg.LastRunning = procs.LastRunning
+		return cfg
+	}
+
+	// Claude Code's managed settings point its telemetry at the receiver and declare this
+	// executable's hooks while the bundle switches its OTel export or its hooks on. Claude Code is
+	// installed when the inventory's CLI scan finds it in a user profile.
+	claudeInstalled := func() bool { return inventory.CLIInstalled(s.currentBundle(), "claude_code") }
+	claude := toolconfig.NewClaudeCode(toolconfig.NewClaudeCodeWriter(s.dir, platform.claudeCodeSettings, claudeInstalled), toolHealth(toolconfig.Config{
+		Token:   otel.Token,
+		Scope:   s.toolScope,
+		Log:     s.logf,
+		Clock:   time.Now,
+		Watcher: drift,
+	}))
+	if err := s.reg.Add(claude); err != nil {
+		return err
+	}
+
+	// Copilot's OTel export is pointed at the receiver through VS Code's machine policies while the
+	// IDE extension scan finds the Copilot extension, and through the machine environment while the
+	// CLI scan finds the Copilot CLI. The installed-app scan gives VS Code's version.
+	copilotInstall := func() toolconfig.CopilotInstall {
+		b := s.currentBundle()
+		if b == nil {
+			return toolconfig.CopilotInstall{}
+		}
+		anyone := func(hostinfo.User) core.Person { return core.Person{} }
+		var found []discovery.Record
+		for _, sc := range inventory.Scanners(anyone) {
+			recs, _ := sc.Scan(context.Background(), b)
+			found = append(found, recs...)
+		}
+		return toolconfig.CopilotInstallFrom(found)
+	}
+	copilot := toolconfig.NewCopilot(toolconfig.NewCopilotWriter(s.dir, copilotInstall), toolHealth(toolconfig.Config{
+		Token:   otel.Token,
+		Scope:   s.toolScope,
+		Log:     s.logf,
+		Clock:   time.Now,
+		Watcher: drift,
+	}))
+	if err := s.reg.Add(copilot); err != nil {
+		return err
+	}
+
+	// Cursor's enterprise hooks file declares this executable's hooks while the bundle switches
+	// Cursor's hooks on. Cursor has no OTel export to configure.
+	cursor := toolconfig.NewCursor(toolconfig.NewCursorWriter(s.dir, platform.cursorHooks, s.appInstalled("cursor")), toolHealth(toolconfig.Config{
+		Log:     s.logf,
+		Clock:   time.Now,
+		Watcher: drift,
+	}))
+	if err := s.reg.Add(cursor); err != nil {
+		return err
+	}
+
+	// The Codex CLI's system requirements declare this executable's prompt hook while the bundle
+	// switches Codex's hooks on, and its system config points its log export at the receiver while
+	// the bundle switches Codex's OTel export on. Codex is installed when the inventory's CLI scan
+	// finds it in a user profile.
+	codexInstalled := func() bool { return inventory.CLIInstalled(s.currentBundle(), "codex") }
+	codexFiles := toolconfig.NewCodexFiles(
+		toolconfig.NewCodexWriter(s.dir, platform.codexRequirements, codexInstalled),
+		toolconfig.NewCodexConfigWriter(s.dir, platform.codexConfig, platform.codexUserConfigs),
+	)
+	codex := toolconfig.NewCodex(codexFiles, toolHealth(toolconfig.Config{
+		Token:   otel.Token,
+		Scope:   s.toolScope,
+		Log:     s.logf,
+		Clock:   time.Now,
+		Watcher: drift,
+	}))
+	if err := s.reg.Add(codex); err != nil {
+		return err
+	}
+
+	s.helpers = userhelper.New(userhelper.Config{Platform: platform.userSessions, Log: s.logf, Clock: time.Now})
+	if err := s.reg.Add(s.helpers); err != nil {
+		return err
+	}
+
+	// A hook's account is named the way a browser peer is.
+	s.hooks = hooks.New(hooks.Config{
+		Pipeline:   s.pipe,
+		Prompts:    prompts,
+		Bundles:    s.pipe.Bundles,
+		Classifier: s.pipe.Classifier,
+		Person:     s.peerPerson,
+		Log:        s.logf,
+		Clock:      time.Now,
+	})
+	if err := s.reg.Add(s.hooks); err != nil {
+		return err
+	}
+
+	if err := s.reg.Add(scanner); err != nil {
+		return err
+	}
+	if err := s.reg.Add(procs); err != nil {
+		return err
+	}
+
+	// A connection is attributed to the account its process runs as, named the way a browser peer
+	// is.
+	if err := s.reg.Add(flowmon.New(flowmon.Config{
+		Emitter: s.discovery,
+		Events:  platform.flowEvents,
+		Bundles: s.currentBundle,
+		Person:  s.peerPerson,
+		Log:     s.logf,
+		Clock:   time.Now,
+	})); err != nil {
+		return err
+	}
+
+	return s.buildPAC()
 }
 
-// buildPAC builds the Windows desktop-app PAC when the platform is Windows and a bundle is in
-// force. It is a no-op elsewhere; desktop apps keep the device's existing proxy behaviour.
-func (s *service) buildPAC(b *policy.Bundle) {
-	if runtime.GOOS != "windows" || b == nil {
-		return
+// appInstalled reports whether the installed-app scan finds the catalog app appKey, under the
+// bundle in force, for the machine or any signed-in user.
+func (s *service) appInstalled(appKey string) func() bool {
+	return func() bool {
+		b := s.currentBundle()
+		if b == nil {
+			return false
+		}
+		anyone := func(hostinfo.User) core.Person { return core.Person{} }
+		for _, sc := range inventory.Scanners(anyone) {
+			recs, _ := sc.Scan(context.Background(), b)
+			for _, r := range recs {
+				if r.AppKey == appKey {
+					return true
+				}
+			}
+		}
+		return false
 	}
-	// A kill switch that stops proxy.tls also stops the PAC: there is nothing to route to, and a
-	// suppressed proxy must not cause any user's proxy settings to be changed.
-	if ks, ok := b.KillSwitchFor(protocol.RouteProxyTLS); ok && ks.Mode == policy.KillDisable {
-		if ks.EffectiveAt.IsZero() || !ks.EffectiveAt.After(time.Now()) {
-			return
+}
+
+// toolNormalizers names, per endpoint.tools key, the OTLP normalizer the tool's telemetry goes to.
+var toolNormalizers = map[string]string{
+	toolconfig.ClaudeCodeTool: "claude-code",
+	toolconfig.CodexTool:      "codex",
+	toolconfig.CopilotTool:    "copilot",
+}
+
+// lastToolEvent is when the tool last sent the agent an OTel record or a hook.
+func (s *service) lastToolEvent(otel *otlp.Receiver, tool string) time.Time {
+	var last time.Time
+	if s.hooks != nil {
+		last = s.hooks.LastServed(tool)
+	}
+	if name, ok := toolNormalizers[tool]; ok {
+		if t := otel.LastReceived(name); t.After(last) {
+			last = t
 		}
 	}
-	listen := b.Interception.PacListen
-	if strings.TrimSpace(listen) == "" {
-		listen = defaultPACListen
+	return last
+}
+
+// proxyConfig is proxy.tls's configuration under b, the bundle in force when the providers are built.
+func (s *service) proxyConfig(b *policy.Bundle, ca *tlsproxy.CA, trustRoot core.TrustRoot) tlsproxy.Config {
+	canary := ""
+	listen := defaultTLSListen
+	if b != nil {
+		canary = b.Interception.ProxyCanary
+		if strings.TrimSpace(b.Interception.ProxyListen) != "" {
+			listen = b.Interception.ProxyListen
+		}
 	}
-	s.pac = winproxy.New(winproxy.Config{
-		Listen:    listen,
-		Bundles:   s.currentBundle,
-		ProxyAddr: func() string { return s.tlsProv.ListenAddr() },
-		Log:       s.logf,
+	cfg := tlsproxy.Config{
+		Listen:     listen,
+		Bundles:    s.currentBundle,
+		Pipeline:   s.pipe,
+		Log:        s.logf,
+		Clock:      time.Now,
+		CanaryHost: canaryHost(canary),
+		CanaryPort: canaryPort(canary),
+		BodyCap:    bodyCapFrom(b),
+		CA:         ca,
+		TrustRoot:  trustRoot,
+		AppByExe:   s.appByExe,
+	}
+	if owner := platform.connOwner; owner != nil {
+		cfg.Process = func(conn net.Conn) string { return clientProcessName(owner, conn) }
+		cfg.Person = func(conn net.Conn) (core.Person, error) { return s.clientPerson(owner, conn) }
+		cfg.Session = func(conn net.Conn) (uint32, error) {
+			p, err := owner(conn)
+			return p.Session, err
+		}
+		cfg.Notify = func(session uint32, n protocol.Notify) error { return s.helpers.Notify(session, n) }
+	}
+	return cfg
+}
+
+// normalizerDeps is what the OTLP receiver's normalizers are built from.
+func (s *service) normalizerDeps(counters *core.CounterSet) normalizers.Deps {
+	return normalizers.Deps{
+		Pipeline: s.pipe,
+		Bundles:  s.pipe.Bundles,
+		Counters: counters,
+		AppByExe: s.appByExe,
+		Log:      s.logf,
+		Clock:    time.Now,
+	}
+}
+
+// appByExe names the app of the bundle in force whose executable on this platform has the image
+// base name (compared case-insensitively), the first in catalog order when several do. It reads
+// the bundle at each call, so a new catalog applies without a restart.
+func (s *service) appByExe(base string) (string, bool) {
+	keys := s.pipe.Bundles().AppByExe(catalogPlatform(runtime.GOOS), base)
+	if len(keys) == 0 {
+		return "", false
+	}
+	return keys[0], true
+}
+
+// catalogPlatform is the catalog's name for a Go platform: darwin is macos.
+func catalogPlatform(goos string) string {
+	if goos == "darwin" {
+		return "macos"
+	}
+	return goos
+}
+
+// toolScope is the device and user a tool's machine-wide configuration resolves its collection mode
+// for: the issued identity's.
+func (s *service) toolScope() core.ScopeQuery {
+	id, _ := s.pipe.Identity()
+	return core.ScopeQuery{DeviceID: id.DeviceID, UserRef: id.UserRef}
+}
+
+// buildPAC registers the desktop-app PAC where the platform has one. It reads its listen address
+// from the bundle in force each time it starts.
+func (s *service) buildPAC() error {
+	if platform.desktopPAC == nil {
+		return nil
+	}
+	s.pac = platform.desktopPAC(winproxy.Config{
+		Bundles:    s.currentBundle,
+		ProxyAddr:  func() string { return s.tlsProv.ListenAddr() },
+		RecordFile: s.dir.Path(winproxy.StateFile),
+		Log:        s.logf,
 	})
+	return s.reg.Add(s.pac)
 }
 
 func (s *service) currentBundle() *policy.Bundle {
@@ -431,12 +828,7 @@ func (s *service) Start(ctx context.Context) error {
 	}()
 	if err := s.native.Start(); err != nil {
 		// The browser relay is one collection path; the others keep running without it.
-		s.log.Error("native messaging endpoint unavailable; the browser extension cannot reach the agent", "endpoint", s.native.addr, "error", err)
-	}
-	if s.pac != nil {
-		if err := s.pac.Start(ctx); err != nil {
-			s.log.Error("desktop-app PAC capture unavailable; desktop apps keep their previous proxy behaviour", "error", err)
-		}
+		s.log.Error("native messaging endpoint unavailable; the browser extension cannot reach the agent", "endpoint", s.native.Addr(), "error", err)
 	}
 	s.health.Start(ctx)
 	s.log.Info("capture-core started", "order", s.sup.Order())
@@ -446,11 +838,6 @@ func (s *service) Start(ctx context.Context) error {
 // Stop ends the background loops, runs the shutdown sequence and releases the spool.
 func (s *service) Stop(ctx context.Context) error {
 	s.native.Stop()
-	// Restore every user's previous proxy settings before the proxy stops enforcing, so no desktop
-	// app is left pointing at a PAC whose proxy is about to go away.
-	if s.pac != nil {
-		_ = s.pac.Stop(ctx)
-	}
 	s.health.Stop()
 	select {
 	case <-s.bgStop:
@@ -460,6 +847,12 @@ func (s *service) Stop(ctx context.Context) error {
 	s.bgWG.Wait()
 	if s.policySync != nil {
 		s.policySync.Stop()
+	}
+	// Restore every user's previous proxy settings before the proxy stops enforcing, so no desktop
+	// app is left pointing at a PAC whose proxy is about to go away. No bundle arrives after the
+	// policy loop has stopped, so nothing starts it again.
+	if s.pac != nil {
+		s.reg.StopCollector(ctx, protocol.CollectorDesktopProxy)
 	}
 	// The background loop ends before the bounded shutdown drain, so that drain is the only
 	// thing sending.
@@ -577,7 +970,7 @@ func (s *service) policyFetched(res policy.Result) {
 func (s *service) applyBundle(b policy.Bundle) {
 	for _, applied := range s.reg.ApplyPolicy(b) {
 		if applied.Err != nil {
-			s.log.Warn("provider could not apply the bundle", "provider", applied.Route, "error", applied.Err)
+			s.log.Warn("provider could not apply the bundle", "provider", applied.Collector, "error", applied.Err)
 		}
 	}
 }
@@ -696,45 +1089,22 @@ func (l *lazySink) Append(e protocol.Entry) (protocol.Entry, error) {
 
 func (l *lazySink) Stats() protocol.SpoolStats { return l.spool.Stats() }
 
-// classifierHostController runs the classifier host beside this binary as a child on stdio. An
-// unavailable host degrades classification to rules-only and never fails a submission.
-type classifierHostController struct {
-	cfg     Config
-	log     *slog.Logger
-	client  *classifierlink.Client
-	onReady func(*classifierlink.Client)
-}
-
-func (c *classifierHostController) Start(ctx context.Context) error {
-	exe := classifierHostExe()
-	c.client = classifierlink.New(exe, []string{
-		"serve", "--release", c.cfg.ClassifierRelease, "--pubkey", c.cfg.ClassifierPubkey, "--transport", "stdio",
-	}, os.Stderr, "capture-core/"+version, classifierBudget)
-	c.onReady(c.client)
-	if err := c.client.Connect(ctx); err != nil {
-		c.log.Warn("classifier host unavailable; classification degrades to rules-only", "error", err)
-		return nil
+// connectClassifier is the classifier host's Ready check: the version handshake on its stdio. A
+// host that refuses it is restarted, and classification is rules-only meanwhile.
+func (s *service) connectClassifier(ctx context.Context) error {
+	if err := s.classifier.Connect(ctx); err != nil {
+		return err
 	}
-	c.log.Info("classifier host connected", "version", c.client.ClassifierVersion())
+	s.log.Info("classifier host connected", "version", s.classifier.ClassifierVersion())
 	return nil
 }
 
-func (c *classifierHostController) Stop(context.Context) error {
-	if c.client == nil {
-		return nil
+// classifierVersion is the version the classifier host reported, or the rules-only baseline.
+func (s *service) classifierVersion() string {
+	if s.classifier == nil {
+		return core.RulesOnlyVersion
 	}
-	return c.client.Close()
-}
-
-// status is what the health snapshot reports about the classifier.
-func (c *classifierHostController) status() (connected bool, version string, detail protocol.Detail) {
-	if c == nil || c.client == nil {
-		return false, core.RulesOnlyVersion, protocol.DetailClassifierUnavailable
-	}
-	if degraded, reason := c.client.Degraded(); degraded {
-		return false, c.client.ClassifierVersion(), reason
-	}
-	return true, c.client.ClassifierVersion(), protocol.DetailNone
+	return s.classifier.ClassifierVersion()
 }
 
 // classifierHostExe is the classifier host the installer lays down beside this binary.
@@ -800,13 +1170,6 @@ func splitHostPort(s string) (string, int, bool) {
 		return "", 0, false
 	}
 	return strings.Trim(s[:i], "[]"), port, true
-}
-
-func portsFrom(b *policy.Bundle) []policy.LoopbackPort {
-	if b == nil {
-		return nil
-	}
-	return b.Loopback.Ports
 }
 
 func bodyCapFrom(b *policy.Bundle) int64 {

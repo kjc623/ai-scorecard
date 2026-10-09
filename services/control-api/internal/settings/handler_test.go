@@ -87,7 +87,15 @@ var routes = []struct{ method, path, body string }{
 	{"PUT", "/admin/v1/settings/retention", `{"applies_to":"event","ttl_days":90}`},
 	{"PUT", "/admin/v1/settings/content-search", `{"content_search":"attachment_names"}`},
 	{"PUT", "/admin/v1/settings/tools/tls_b6681b043244c43f/sanction", `{"sanctioned_state":"unsanctioned"}`},
+	{"PUT", "/admin/v1/settings/endpoint", endpointBody},
+	{"PUT", "/admin/v1/settings/endpoint/tools/cursor", `{"otel":false,"hooks":false}`},
+	{"PUT", "/admin/v1/settings/tls-inspection", `{"enabled":true}`},
+	{"GET", "/admin/v1/settings/rules", ""},
+	{"PUT", "/admin/v1/settings/rules", `{"rules":[]}`},
+	{"PUT", "/admin/v1/settings/kill-switch/proxy.tls", `{"on":true,"reason_code":"app_breakage"}`},
 }
+
+const endpointBody = `{"inventory":false,"processes":true,"flows":false,"otel":true,"hooks":true,"hooks_managed_only":true}`
 
 func TestEveryRouteRefusesANonAdmin(t *testing.T) {
 	r := newRig(t)
@@ -312,5 +320,223 @@ func TestToolSanction(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("no tool.sanction audit with actor, old and new values")
+	}
+}
+
+type endpointGot struct {
+	Inventory        bool `json:"inventory"`
+	Processes        bool `json:"processes"`
+	Flows            bool `json:"flows"`
+	OTel             bool `json:"otel"`
+	Hooks            bool `json:"hooks"`
+	HooksManagedOnly bool `json:"hooks_managed_only"`
+	Tools            map[string]struct {
+		OTel     *bool `json:"otel"`
+		Hooks    *bool `json:"hooks"`
+		Loopback *bool `json:"loopback"`
+	} `json:"tools"`
+}
+
+// on reads a switch the server sent; one it left out fails the test.
+func on(t *testing.T, v *bool) bool {
+	t.Helper()
+	if v == nil {
+		t.Fatal("a tool switch is missing")
+	}
+	return *v
+}
+
+func (r *rig) endpoint(t *testing.T) endpointGot {
+	t.Helper()
+	rec := r.do(t, "admin", "GET", "/admin/v1/settings", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	var got struct {
+		Endpoint *endpointGot `json:"endpoint"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Endpoint == nil {
+		t.Fatalf("GET /admin/v1/settings has no endpoint: %s", rec.Body)
+	}
+	return *got.Endpoint
+}
+
+func TestEndpointCollectors(t *testing.T) {
+	r := newRig(t)
+	// A tenant that never set them reads the defaults.
+	e := r.endpoint(t)
+	if !e.Inventory || !e.Processes || !e.Flows || !e.OTel || !e.Hooks || e.HooksManagedOnly {
+		t.Fatalf("default collectors = %+v", e)
+	}
+	if len(e.Tools) != 5 || !on(t, e.Tools["claude_code"].OTel) || !on(t, e.Tools["claude_code"].Hooks) || on(t, e.Tools["cursor"].OTel) ||
+		!on(t, e.Tools["cursor"].Hooks) || !on(t, e.Tools["codex"].OTel) || !on(t, e.Tools["codex"].Hooks) || on(t, e.Tools["copilot"].Hooks) {
+		t.Fatalf("default tools = %+v", e.Tools)
+	}
+	// Ollama's one switch is local model capture, off by default; the native tools have none.
+	if o := e.Tools["ollama"]; on(t, o.Loopback) || o.OTel != nil || o.Hooks != nil || e.Tools["claude_code"].Loopback != nil {
+		t.Fatalf("default ollama = %+v, claude_code = %+v", o, e.Tools["claude_code"])
+	}
+
+	put := func(body string) *httptest.ResponseRecorder {
+		return r.do(t, "admin", "PUT", "/admin/v1/settings/endpoint", body)
+	}
+	if rec := put(endpointBody); rec.Code != http.StatusNoContent {
+		t.Fatalf("set: %d %s", rec.Code, rec.Body)
+	}
+	e = r.endpoint(t)
+	if e.Inventory || !e.Processes || e.Flows || !e.OTel || !e.Hooks || !e.HooksManagedOnly {
+		t.Fatalf("collectors after the write = %+v", e)
+	}
+	// A body without every switch, or with an unknown one, changes nothing.
+	if rec := put(`{"inventory":true}`); rec.Code != http.StatusBadRequest || errorCode(t, rec) != apierr.CodeInvalidRequest {
+		t.Fatalf("partial body: %d %s", rec.Code, rec.Body)
+	}
+	if rec := put(`{"inventory":true,"processes":true,"flows":true,"otel":true,"hooks":true,"hooks_managed_only":false,"tls":true}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("unknown field: %d %s", rec.Code, rec.Body)
+	}
+	if e := r.endpoint(t); e.Inventory {
+		t.Fatal("a refused write changed the settings")
+	}
+
+	audits := r.store.Audits()
+	if len(audits) != 1 {
+		t.Fatalf("audits = %+v, want the one accepted write", audits)
+	}
+	a := audits[0]
+	if a.Action != "tenant.endpoint_collectors.set" || a.ActorID != admin.Actor || a.ObjectType != "tenant" || a.ObjectID != tenantA || a.Detail["subject"] != admin.Subject {
+		t.Fatalf("audit = %+v", a)
+	}
+	prev, _ := a.Detail["previous"].(map[string]any)
+	next, _ := a.Detail["new"].(map[string]any)
+	if prev["inventory"] != true || prev["hooks_managed_only"] != false || next["inventory"] != false || next["flows"] != false || next["hooks_managed_only"] != true {
+		t.Fatalf("audit values: previous %v, new %v", prev, next)
+	}
+}
+
+func TestEndpointTool(t *testing.T) {
+	r := newRig(t)
+	put := func(tool, body string) *httptest.ResponseRecorder {
+		return r.do(t, "admin", "PUT", "/admin/v1/settings/endpoint/tools/"+tool, body)
+	}
+	if rec := put("cursor", `{"otel":false,"hooks":false}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("set cursor: %d %s", rec.Code, rec.Body)
+	}
+	e := r.endpoint(t)
+	if on(t, e.Tools["cursor"].Hooks) || on(t, e.Tools["cursor"].OTel) || !on(t, e.Tools["claude_code"].Hooks) {
+		t.Fatalf("tools after the write = %+v", e.Tools)
+	}
+	if rec := put("lm_studio", `{"loopback":true}`); rec.Code != http.StatusNotFound || errorCode(t, rec) != apierr.CodeNotFound {
+		t.Fatalf("unknown tool: %d %s", rec.Code, rec.Body)
+	}
+	if rec := put("codex", `{"otel":false}`); rec.Code != http.StatusBadRequest || errorCode(t, rec) != apierr.CodeInvalidRequest {
+		t.Fatalf("missing hooks: %d %s", rec.Code, rec.Body)
+	}
+	// A native tool has no loopback switch, and Ollama has only that one.
+	if rec := put("codex", `{"otel":false,"hooks":false,"loopback":true}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("loopback for codex: %d %s", rec.Code, rec.Body)
+	}
+	if rec := put("ollama", `{"otel":true,"hooks":true}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("otel and hooks for ollama: %d %s", rec.Code, rec.Body)
+	}
+	if rec := put("ollama", `{}`); rec.Code != http.StatusBadRequest || errorCode(t, rec) != apierr.CodeInvalidRequest {
+		t.Fatalf("missing loopback: %d %s", rec.Code, rec.Body)
+	}
+	if rec := put("ollama", `{"loopback":true}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("set ollama: %d %s", rec.Code, rec.Body)
+	}
+	if e := r.endpoint(t); !on(t, e.Tools["ollama"].Loopback) || !on(t, e.Tools["claude_code"].Hooks) {
+		t.Fatalf("tools after the ollama write = %+v", e.Tools)
+	}
+
+	audits := r.store.Audits()
+	if len(audits) != 2 {
+		t.Fatalf("audits = %+v, want the two accepted writes", audits)
+	}
+	o := audits[1]
+	oprev, _ := o.Detail["previous"].(map[string]any)
+	onext, _ := o.Detail["new"].(map[string]any)
+	if o.ObjectID != "ollama" || o.Detail["tool_key"] != "ollama" || len(oprev) != 1 || oprev["loopback"] != false || len(onext) != 1 || onext["loopback"] != true {
+		t.Fatalf("ollama audit = %+v", o)
+	}
+	a := audits[0]
+	if a.Action != "tenant.endpoint_tool.set" || a.ActorID != admin.Actor || a.ObjectType != "endpoint_tool" || a.ObjectID != "cursor" || a.Detail["tool_key"] != "cursor" {
+		t.Fatalf("audit = %+v", a)
+	}
+	prev, _ := a.Detail["previous"].(map[string]any)
+	next, _ := a.Detail["new"].(map[string]any)
+	if prev["otel"] != false || prev["hooks"] != true || next["otel"] != false || next["hooks"] != false {
+		t.Fatalf("audit values: previous %v, new %v", prev, next)
+	}
+}
+
+func (r *rig) tlsInspection(t *testing.T) bool {
+	t.Helper()
+	rec := r.do(t, "admin", "GET", "/admin/v1/settings", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	var got struct {
+		TLSInspection *bool `json:"tls_inspection"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.TLSInspection == nil {
+		t.Fatalf("GET /admin/v1/settings has no tls_inspection: %s", rec.Body)
+	}
+	return *got.TLSInspection
+}
+
+func TestTLSInspection(t *testing.T) {
+	r := newRig(t)
+	// A tenant that never set it reads off.
+	if r.tlsInspection(t) {
+		t.Fatal("TLS inspection is on for a tenant that never turned it on")
+	}
+	put := func(body string) *httptest.ResponseRecorder {
+		return r.do(t, "admin", "PUT", "/admin/v1/settings/tls-inspection", body)
+	}
+	if rec := put(`{"enabled":true}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("turn on: %d %s", rec.Code, rec.Body)
+	}
+	if !r.tlsInspection(t) {
+		t.Fatal("TLS inspection is off after it was turned on")
+	}
+	// A body without the switch, with another type or with an unknown field changes nothing.
+	for _, body := range []string{`{}`, `{"enabled":null}`} {
+		if rec := put(body); rec.Code != http.StatusBadRequest || errorCode(t, rec) != apierr.CodeInvalidRequest {
+			t.Fatalf("body %s: %d %s", body, rec.Code, rec.Body)
+		}
+	}
+	for _, body := range []string{`{"enabled":"false"}`, `{"enabled":false,"hosts":[]}`} {
+		if rec := put(body); rec.Code != http.StatusBadRequest {
+			t.Fatalf("body %s: %d %s", body, rec.Code, rec.Body)
+		}
+	}
+	if !r.tlsInspection(t) {
+		t.Fatal("a refused write changed the setting")
+	}
+	if rec := put(`{"enabled":false}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("turn off: %d %s", rec.Code, rec.Body)
+	}
+	if r.tlsInspection(t) {
+		t.Fatal("TLS inspection is on after it was turned off")
+	}
+
+	audits := r.store.Audits()
+	if len(audits) != 2 {
+		t.Fatalf("audits = %+v, want the two accepted writes", audits)
+	}
+	for i, want := range []struct{ previous, next bool }{{false, true}, {true, false}} {
+		a := audits[i]
+		if a.Action != "tenant.tls_inspection.set" || a.ActorID != admin.Actor || a.ObjectType != "tenant" || a.ObjectID != tenantA || a.Detail["subject"] != admin.Subject {
+			t.Fatalf("audit %d = %+v", i, a)
+		}
+		if a.Detail["previous"] != want.previous || a.Detail["new"] != want.next {
+			t.Fatalf("audit %d values: previous %v, new %v; want %v, %v", i, a.Detail["previous"], a.Detail["new"], want.previous, want.next)
+		}
 	}
 }

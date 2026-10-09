@@ -1,0 +1,146 @@
+{
+  "resourceLogs": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "codex_exec"
+            }
+          },
+          {
+            "key": "telemetry.sdk.language",
+            "value": {
+              "stringValue": "rust"
+            }
+          },
+          {
+            "key": "telemetry.sdk.name",
+            "value": {
+              "stringValue": "opentelemetry"
+            }
+          },
+          {
+            "key": "telemetry.sdk.version",
+            "value": {
+              "stringValue": "0.31.0"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "0.162.0"
+            }
+          },
+          {
+            "key": "env",
+            "value": {
+              "stringValue": "dev"
+            }
+          },
+          {
+            "key": "host.name",
+            "value": {
+              "stringValue": "SAC-PLACEHOLDER-4"
+            }
+          }
+        ]
+      },
+      "scopeLogs": [
+        {
+          "scope": {
+            "name": "codex_otel.log_only"
+          },
+          "logRecords": [
+            {
+              "observedTimeUnixNano": "1791460801000000000",
+              "severityNumber": "SEVERITY_NUMBER_INFO",
+              "severityText": "INFO",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "codex.user_prompt"
+                  }
+                },
+                {
+                  "key": "prompt_length",
+                  "value": {
+                    "stringValue": "56"
+                  }
+                },
+                {
+                  "key": "prompt",
+                  "value": {
+                    "stringValue": "Check the medical records of {{CANARY}}"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-08T12:00:01.000Z"
+                  }
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {
+                    "stringValue": "019a6f2e-4b1c-7d3a-9e58-2c7f1a0b6d41"
+                  }
+                },
+                {
+                  "key": "app.version",
+                  "value": {
+                    "stringValue": "0.162.0"
+                  }
+                },
+                {
+                  "key": "auth_mode",
+                  "value": {
+                    "stringValue": "Chatgpt"
+                  }
+                },
+                {
+                  "key": "originator",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "user.account_id",
+                  "value": {
+                    "stringValue": "SAC-PLACEHOLDER-2"
+                  }
+                },
+                {
+                  "key": "user.email",
+                  "value": {
+                    "stringValue": "{{DROPPED_CANARY}}"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "WindowsTerminal"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                },
+                {
+                  "key": "slug",
+                  "value": {
+                    "stringValue": "gpt-5.3-codex"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

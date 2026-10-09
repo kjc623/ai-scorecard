@@ -1,0 +1,15 @@
+{
+  "conversation_id": "5d3c9f0e-7a41-4b2e-9c6d-1f8e2a3b4c5d",
+  "generation_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+  "model": "claude-4.5-sonnet",
+  "hook_event_name": "beforeSubmitPrompt",
+  "cursor_version": "3.24.9",
+  "workspace_roots": ["C:\\work\\app"],
+  "user_email": "console.user@example.com",
+  "transcript_path": null,
+  "prompt": "Deploy with key AKIAIOSFODNN7EXAMPLE to the \"staging\" bucket <now>",
+  "attachments": [
+    { "type": "file", "file_path": "C:\\work\\app\\deploy.ps1" },
+    { "type": "rule", "file_path": "C:\\work\\app\\.cursor\\rules\\deploy.mdc" }
+  ]
+}

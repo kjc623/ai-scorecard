@@ -185,7 +185,7 @@ try {
   // 7. At a mode that reads content, the file attached in the page goes with the next submission.
   // With no agent running its bytes cannot be transferred, so the observation names it without a
   // digest; with the agent installed it carries the digest of the bytes capture-core received.
-  await worker.evaluate(`globalThis.__captureApp.applyPolicy({ policy_version: 'in-browser-check', bundle: { policy_version: 'in-browser-check', default_mode: 'm2' } })`);
+  await worker.evaluate(`globalThis.__captureApp.applyPolicy({ policy_version: 'in-browser-check', bundle: { version: 'in-browser-check', tenant_default_mode: 'm2' } })`);
   await page.evaluate('window.send()');
   const withFile = await waitFor(
     () => worker.evaluate(`globalThis.__observations.map((o) => o.payload).find((p) => p && p.attachments) || null`),

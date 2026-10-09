@@ -10,8 +10,15 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { VOCABULARIES } from '../../../tools/check-vocab.mjs';
+
 const HERE = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const REPO_ROOT = resolve(HERE, '..', '..');
+
+/** The values of a shared vocabulary that tools/check-vocab.mjs lists as capture-core's alone. */
+function deviceOnly(id) {
+  return new Set(VOCABULARIES.find((v) => v.id === id)?.deviceOnly ?? []);
+}
 
 const manifest = JSON.parse(readFileSync(join(HERE, 'manifest.json'), 'utf8'));
 
@@ -141,7 +148,8 @@ test('the protocol vocabulary is a verbatim transcription of device/protocol', (
   // Not a spelling check: native.go owns these strings, and a divergence here would be a wire
   // mismatch that only shows up against a real capture-core.
   const go = readFileSync(join(REPO_ROOT, 'device', 'protocol', 'native.go'), 'utf8');
-  const types = [...go.matchAll(/Type\w+\s*=\s*"([a-z_]+)"/g)].map((m) => m[1]);
+  // Types only capture-core and its own processes exchange are not the extension's to transcribe.
+  const types = [...go.matchAll(/Type\w+\s*=\s*"([a-z_]+)"/g)].map((m) => m[1]).filter((t) => !deviceOnly('native-message-type').has(t));
   assert.ok(types.length >= 12, 'native.go must declare both directions');
   const messages = readFileSync(join(HERE, 'src', 'messages.js'), 'utf8');
   for (const t of types) {
@@ -162,7 +170,7 @@ test('the counter set and the detail vocabulary match protocol/envelope.go', () 
   const messages = readFileSync(join(HERE, 'src', 'messages.js'), 'utf8');
   for (const c of counters) assert.ok(messages.includes(`'${c}'`), `counter ${c} must be in the closed set`);
 
-  const details = [...go.matchAll(/Detail\w+\s+Detail\s*=\s*"([a-z_]+)"/g)].map((m) => m[1]);
+  const details = [...go.matchAll(/Detail\w+\s+Detail\s*=\s*"([a-z_]+)"/g)].map((m) => m[1]).filter((d) => !deviceOnly('detail').has(d));
   for (const d of details) assert.ok(messages.includes(`'${d}'`), `detail ${d} must be in the closed set`);
 });
 

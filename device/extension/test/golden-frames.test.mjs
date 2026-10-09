@@ -8,6 +8,10 @@
  *   1. the generator produces six cases, each decodable with a matching digest;
  *   2. the committed golden files still match what the generator produces (a drift check);
  *   3. importing the generator writes nothing; only the CLI writes, where it is told.
+ *
+ * The other direction is the `policy_bundle` frame capture-core answers a policy_sync with
+ * (`POLICY_FRAME`, checked against capture-core's own answer in its native_test.go): the extension
+ * applies it and resolves the mode, the seed hosts and a rule decision the way its `expects` says.
  */
 
 import test from 'node:test';
@@ -19,8 +23,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { buildCases, emitCases, DEFAULT_OUT } from '../tools/emit-frames.mjs';
+import { buildCases, emitCases, DEFAULT_OUT, POLICY_FRAME } from '../tools/emit-frames.mjs';
 import { base64ToBytes } from '../src/codec.js';
+import { decideSync } from '../src/enforce.js';
+import { createHarness } from '../test-support/harness.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PKG = resolve(HERE, '..');
@@ -155,4 +161,30 @@ test('the golden frames are the ones the device-side harness decodes', { skip: e
       assert.ok(jsonByteField(payload.frame.body.content), `${file}: content is valid base64`);
     }
   }
+});
+
+test('the policy_bundle frame capture-core sends resolves in the extension as the device resolves it', async () => {
+  const { frame, expects } = JSON.parse(readFileSync(POLICY_FRAME, 'utf8'));
+  assert.equal(frame.type, 'policy_bundle');
+  assert.equal(frame.version, 1);
+  for (const key of ['key_id', 'algorithm', 'payload', 'signature']) {
+    assert.equal(key in frame.body.bundle, false, `the bundle is the decoded payload, not the signed envelope (${key})`);
+  }
+
+  const h = createHarness();
+  await h.app.start();
+  assert.equal(h.app.applyPolicy(frame.body).applied, true);
+  const policy = h.app.policy;
+  assert.equal(policy.snapshot().policy_version, expects.policy_version);
+  for (const { tool_fingerprint, mode } of expects.modes) {
+    assert.equal(policy.modeFor({ tool_fingerprint }).mode, mode, tool_fingerprint);
+  }
+  assert.equal(policy.needsCoreMode(), expects.asks_capture_core);
+  assert.deepEqual(policy.discoverySets().seed, expects.seed_hosts);
+  assert.deepEqual(h.fake.registration('body').urls, ['<all_urls>'], 'a tenant default that reads content opens the body lane');
+
+  const d = decideSync({ bundle: policy.rules(), ...expects.decision.input, labels: [], labels_known: false });
+  assert.equal(d.rule_id, expects.decision.rule_id);
+  assert.equal(d.message, expects.decision.message);
+  assert.equal(d.decision.action, { block: 'blocked', warn: 'warned', allow: 'logged' }[expects.decision.action]);
 });

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -14,7 +15,7 @@ import (
 // with the actor, old value and new value, so a configuration change is never unattributed.
 const (
 	SQLSettingsTenant = `
-SELECT ceiling_mode, coalesce(collection_mode, ''), scope_overrides, content_search,
+SELECT ceiling_mode, coalesce(collection_mode, ''), scope_overrides, content_search, tls_inspection,
        (SELECT ttl_days FROM ops.retention_policy rp
          WHERE rp.tenant_id = t.tenant_id AND rp.applies_to = 'event' LIMIT 1),
        (SELECT ttl_days FROM ops.retention_policy rp
@@ -80,6 +81,12 @@ DO UPDATE SET ttl_days = EXCLUDED.ttl_days, updated_by = EXCLUDED.updated_by, up
 UPDATE ops.tenant SET content_search = $2::text, updated_at = now()
  WHERE tenant_id = $1::uuid`
 
+	SQLCurrentTLSInspection = `SELECT tls_inspection FROM ops.tenant WHERE tenant_id = $1::uuid`
+
+	SQLSetTLSInspection = `
+UPDATE ops.tenant SET tls_inspection = $2::boolean, updated_at = now()
+ WHERE tenant_id = $1::uuid`
+
 	SQLCurrentToolState = `
 SELECT coalesce((SELECT sanctioned_state FROM ops.tool
                   WHERE tenant_id = $1::uuid AND tool_fingerprint = $2::text), 'unknown')`
@@ -91,6 +98,42 @@ ON CONFLICT (tenant_id, tool_fingerprint)
 DO UPDATE SET sanctioned_state = EXCLUDED.sanctioned_state,
               decided_by       = EXCLUDED.decided_by,
               decided_at       = EXCLUDED.decided_at`
+
+	// SQLEndpointSettings is the tenant's endpoint collector settings as the policy bundle serves
+	// them: the tenant's rows where they exist, else the defaults (every collector on; each tool on
+	// for the collectors it has, so Cursor has no OTel and Copilot no hooks; Ollama's local
+	// model capture off). The tools come back as
+	// {tool_key: {"otel": bool, "hooks": bool, "loopback": bool}}.
+	SQLEndpointSettings = `
+SELECT coalesce(e.inventory, true), coalesce(e.processes, true), coalesce(e.flows, true),
+       coalesce(e.otel, true), coalesce(e.hooks, true), coalesce(e.hooks_managed_only, false),
+       (SELECT jsonb_object_agg(d.tool_key, jsonb_build_object(
+                 'otel', coalesce(s.otel, d.otel), 'hooks', coalesce(s.hooks, d.hooks),
+                 'loopback', coalesce(s.loopback, d.loopback)))
+          FROM (VALUES ('claude_code', true, true, false), ('codex', true, true, false),
+                       ('copilot', true, false, false), ('cursor', false, true, false),
+                       ('ollama', false, false, false)) AS d(tool_key, otel, hooks, loopback)
+          LEFT JOIN ops.endpoint_tool_setting s
+            ON s.tenant_id = t.tenant_id AND s.tool_key = d.tool_key)
+  FROM (VALUES ($1::uuid)) AS t(tenant_id)
+  LEFT JOIN ops.endpoint_setting e ON e.tenant_id = t.tenant_id`
+
+	SQLSetEndpointCollectors = `
+INSERT INTO ops.endpoint_setting (tenant_id, inventory, processes, flows, otel, hooks, hooks_managed_only)
+VALUES ($1::uuid, $2::boolean, $3::boolean, $4::boolean, $5::boolean, $6::boolean, $7::boolean)
+ON CONFLICT (tenant_id)
+DO UPDATE SET inventory          = EXCLUDED.inventory,
+              processes          = EXCLUDED.processes,
+              flows              = EXCLUDED.flows,
+              otel               = EXCLUDED.otel,
+              hooks              = EXCLUDED.hooks,
+              hooks_managed_only = EXCLUDED.hooks_managed_only`
+
+	SQLSetEndpointTool = `
+INSERT INTO ops.endpoint_tool_setting (tenant_id, tool_key, otel, hooks, loopback)
+VALUES ($1::uuid, $2::text, $3::boolean, $4::boolean, $5::boolean)
+ON CONFLICT (tenant_id, tool_key)
+DO UPDATE SET otel = EXCLUDED.otel, hooks = EXCLUDED.hooks, loopback = EXCLUDED.loopback`
 )
 
 // Settings implements Store.
@@ -100,7 +143,7 @@ func (s *SQLStore) Settings(ctx context.Context, tenantID string) (Settings, err
 		var scope []byte
 		var event, content sql.NullInt64
 		err := tx.QueryRowContext(ctx, SQLSettingsTenant, tenantID).
-			Scan(&out.CeilingMode, &out.CollectionMode, &scope, &out.ContentSearch, &event, &content)
+			Scan(&out.CeilingMode, &out.CollectionMode, &scope, &out.ContentSearch, &out.TLSInspection, &event, &content)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrUnknownTenant
 		}
@@ -131,9 +174,43 @@ func (s *SQLStore) Settings(ctx context.Context, tenantID string) (Settings, err
 		if out.Devices, err2 = settingsDevices(ctx, tx, tenantID); err2 != nil {
 			return err2
 		}
-		return nil
+		if out.Endpoint, err2 = endpointSettings(ctx, tx, tenantID); err2 != nil {
+			return err2
+		}
+		if out.DataClasses, err2 = dataClasses(ctx, tx); err2 != nil {
+			return err2
+		}
+		if out.KillSwitches, err2 = killSwitches(ctx, tx, tenantID); err2 != nil {
+			return err2
+		}
+		out.AppCategories, err2 = appCategories(ctx, tx)
+		return err2
 	})
 	return out, err
+}
+
+// endpointSettings reads the tenant's endpoint settings with the defaults applied.
+func endpointSettings(ctx context.Context, tx *sql.Tx, tenantID string) (EndpointSettings, error) {
+	var out EndpointSettings
+	var tools []byte
+	c := &out.Collectors
+	if err := tx.QueryRowContext(ctx, SQLEndpointSettings, tenantID).
+		Scan(&c.Inventory, &c.Processes, &c.Flows, &c.OTel, &c.Hooks, &c.HooksManagedOnly, &tools); err != nil {
+		return EndpointSettings{}, fmt.Errorf("store: endpoint settings: %w", err)
+	}
+	var raw map[string]struct {
+		OTel     bool `json:"otel"`
+		Hooks    bool `json:"hooks"`
+		Loopback bool `json:"loopback"`
+	}
+	if err := json.Unmarshal(tools, &raw); err != nil {
+		return EndpointSettings{}, fmt.Errorf("store: endpoint tool settings: %w", err)
+	}
+	out.Tools = make(map[string]EndpointTool, len(raw))
+	for k, v := range raw {
+		out.Tools[k] = EndpointTool{OTel: v.OTel, Hooks: v.Hooks, Loopback: v.Loopback}
+	}
+	return out, nil
 }
 
 func settingsTools(ctx context.Context, tx *sql.Tx, tenantID string) ([]ToolDecision, error) {
@@ -264,6 +341,24 @@ func (s *SQLStore) SetContentSearch(ctx context.Context, tenantID, tier string, 
 	})
 }
 
+// SetTLSInspection implements Store.
+func (s *SQLStore) SetTLSInspection(ctx context.Context, tenantID string, enabled bool, audit AuditEntry) error {
+	return s.withTenant(ctx, tenantID, func(tx *sql.Tx) error {
+		var previous bool
+		if err := tx.QueryRowContext(ctx, SQLCurrentTLSInspection, tenantID).Scan(&previous); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrUnknownTenant
+			}
+			return fmt.Errorf("store: read TLS inspection: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, SQLSetTLSInspection, tenantID, enabled); err != nil {
+			return fmt.Errorf("store: set TLS inspection: %w", err)
+		}
+		audit = withChange(audit, previous, enabled)
+		return insertAudit(ctx, tx, audit)
+	})
+}
+
 // SetToolSanction implements Store.
 func (s *SQLStore) SetToolSanction(ctx context.Context, tenantID, fingerprint, state string, audit AuditEntry) error {
 	return s.withTenant(ctx, tenantID, func(tx *sql.Tx) error {
@@ -285,6 +380,63 @@ func (s *SQLStore) SetToolSanction(ctx context.Context, tenantID, fingerprint, s
 		audit = withChange(audit, previous, state)
 		return insertAudit(ctx, tx, audit)
 	})
+}
+
+// SetEndpointCollectors implements Store.
+func (s *SQLStore) SetEndpointCollectors(ctx context.Context, tenantID string, c EndpointCollectors, audit AuditEntry) error {
+	return s.withTenant(ctx, tenantID, func(tx *sql.Tx) error {
+		previous, err := endpointSettings(ctx, tx, tenantID)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, SQLSetEndpointCollectors, tenantID,
+			c.Inventory, c.Processes, c.Flows, c.OTel, c.Hooks, c.HooksManagedOnly); err != nil {
+			if isForeignKeyViolation(err) {
+				return ErrUnknownTenant
+			}
+			return fmt.Errorf("store: set endpoint collectors: %w", err)
+		}
+		audit = withChange(audit, collectorsDetail(previous.Collectors), collectorsDetail(c))
+		return insertAudit(ctx, tx, audit)
+	})
+}
+
+// SetEndpointTool implements Store.
+func (s *SQLStore) SetEndpointTool(ctx context.Context, tenantID, toolKey string, t EndpointTool, audit AuditEntry) error {
+	if !slices.Contains(EndpointToolKeys, toolKey) {
+		return ErrUnknownEndpointTool
+	}
+	return s.withTenant(ctx, tenantID, func(tx *sql.Tx) error {
+		previous, err := endpointSettings(ctx, tx, tenantID)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, SQLSetEndpointTool, tenantID, toolKey, t.OTel, t.Hooks, t.Loopback); err != nil {
+			if isForeignKeyViolation(err) {
+				return ErrUnknownTenant
+			}
+			return fmt.Errorf("store: set endpoint tool: %w", err)
+		}
+		audit.Detail = mergeDetail(audit.Detail, map[string]any{"tool_key": toolKey})
+		audit = withChange(audit, ToolDetail(toolKey, previous.Tools[toolKey]), ToolDetail(toolKey, t))
+		return insertAudit(ctx, tx, audit)
+	})
+}
+
+// collectorsDetail and ToolDetail are the audit's spelling of a setting: the settings API's JSON
+// names, which for the collectors and the native tools are the bundle's.
+func collectorsDetail(c EndpointCollectors) map[string]any {
+	return map[string]any{"inventory": c.Inventory, "processes": c.Processes, "flows": c.Flows,
+		"otel": c.OTel, "hooks": c.Hooks, "hooks_managed_only": c.HooksManagedOnly}
+}
+
+// ToolDetail is one tool's switches: loopback for a tool of LoopbackToolKeys, otel and hooks for
+// the others.
+func ToolDetail(toolKey string, t EndpointTool) map[string]any {
+	if slices.Contains(LoopbackToolKeys, toolKey) {
+		return map[string]any{"loopback": t.Loopback}
+	}
+	return map[string]any{"otel": t.OTel, "hooks": t.Hooks}
 }
 
 // currentText runs a single-column text query and returns the value.
@@ -355,6 +507,11 @@ func mergeDetail(base map[string]any, extra map[string]any) map[string]any {
 func isCheckViolation(err error, name string) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23514" && pgErr.ConstraintName == name
+}
+
+func isForeignKeyViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23503"
 }
 
 func isRaiseException(err error) bool {

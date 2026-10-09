@@ -9,10 +9,93 @@ import (
 type Kind string
 
 const (
-	KindPrompt         Kind = "prompt"
-	KindUsageRollup    Kind = "usage_rollup"
-	KindModelDetection Kind = "model_detection"
+	KindPrompt        Kind = "prompt"
+	KindUsageRollup   Kind = "usage_rollup"
+	KindDiscovery     Kind = "discovery"
+	KindAgentActivity Kind = "agent_activity"
 )
+
+// DiscoveryType is what a discovery record reports was found on the device.
+type DiscoveryType string
+
+const (
+	DiscoveryTypeAppInstalled        DiscoveryType = "app_installed"
+	DiscoveryTypeAppRunning          DiscoveryType = "app_running"
+	DiscoveryTypeCLIInstalled        DiscoveryType = "cli_installed"
+	DiscoveryTypeIDEExtension        DiscoveryType = "ide_extension"
+	DiscoveryTypeLocalModel          DiscoveryType = "local_model"
+	DiscoveryTypeInferenceConnection DiscoveryType = "inference_connection"
+)
+
+// Valid reports whether the discovery type is in the closed set.
+func (t DiscoveryType) Valid() bool {
+	switch t {
+	case DiscoveryTypeAppInstalled, DiscoveryTypeAppRunning, DiscoveryTypeCLIInstalled,
+		DiscoveryTypeIDEExtension, DiscoveryTypeLocalModel, DiscoveryTypeInferenceConnection:
+		return true
+	default:
+		return false
+	}
+}
+
+// DetectionBasis is how a discovery was made. The mechanisms differ in confidence and coverage,
+// so a record names the one that found it.
+type DetectionBasis string
+
+const (
+	DetectionBasisInstalledScan DetectionBasis = "installed_scan"
+	DetectionBasisPackageScan   DetectionBasis = "package_scan"
+	DetectionBasisExtensionScan DetectionBasis = "extension_scan"
+	DetectionBasisProcessEvent  DetectionBasis = "process_event"
+	DetectionBasisModelStore    DetectionBasis = "model_store"
+	DetectionBasisPortListen    DetectionBasis = "port_listen"
+	DetectionBasisFlowMetadata  DetectionBasis = "flow_metadata"
+)
+
+// Valid reports whether the detection basis is in the closed set.
+func (b DetectionBasis) Valid() bool {
+	switch b {
+	case DetectionBasisInstalledScan, DetectionBasisPackageScan, DetectionBasisExtensionScan,
+		DetectionBasisProcessEvent, DetectionBasisModelStore, DetectionBasisPortListen,
+		DetectionBasisFlowMetadata:
+		return true
+	default:
+		return false
+	}
+}
+
+// ActivityType is what an agent did, as its own telemetry reports it.
+type ActivityType string
+
+const (
+	ActivityTypeModelRequest ActivityType = "model_request"
+	ActivityTypeToolCall     ActivityType = "tool_call"
+)
+
+// Valid reports whether the activity type is in the closed set.
+func (t ActivityType) Valid() bool {
+	return t == ActivityTypeModelRequest || t == ActivityTypeToolCall
+}
+
+// ActivityOutcome is how a model request or tool call ended. Denied means a permission check or a
+// policy refused it.
+type ActivityOutcome string
+
+const (
+	ActivityOutcomeSuccess ActivityOutcome = "success"
+	ActivityOutcomeError   ActivityOutcome = "error"
+	ActivityOutcomeDenied  ActivityOutcome = "denied"
+)
+
+// Valid reports whether the outcome is in the closed set.
+func (o ActivityOutcome) Valid() bool {
+	switch o {
+	case ActivityOutcomeSuccess, ActivityOutcomeError, ActivityOutcomeDenied:
+		return true
+	default:
+		return false
+	}
+}
 
 // PromptKind is the device's decision about what kind of prompt a captured request is. It is
 // request-shape metadata, decided on the device from the payload and the extracted text, never
@@ -57,7 +140,58 @@ const (
 	RouteProxyLoopback  Route = "proxy.loopback"
 	RouteProcDetect     Route = "proc.detect"
 	RouteCLIShim        Route = "cli.shim"
+	RouteToolHook       Route = "tool.hook"
+	RouteToolOTel       Route = "tool.otel"
+	RouteInvScan        Route = "inv.scan"
+	RouteNetFlow        Route = "net.flow"
 )
+
+// Collector is the closed collector vocabulary: the component whose health is reported, keyed as
+// ref.collector.collector_code. A route names how an observation was collected; a collector may
+// emit several routes or none.
+type Collector string
+
+const (
+	CollectorEgressProxy      Collector = "egress_proxy"
+	CollectorLoopbackBroker   Collector = "loopback_broker"
+	CollectorCLIShim          Collector = "cli_shim"
+	CollectorProcessDetector  Collector = "process_detector"
+	CollectorClassifierHost   Collector = "classifier_host"
+	CollectorCaptureExtension Collector = "capture_extension"
+	CollectorDesktopProxy     Collector = "desktop_proxy"
+	CollectorOTelReceiver     Collector = "otel_receiver"
+	CollectorUserHelper       Collector = "user_helper"
+	// CollectorToolConfigClaudeCode writes Claude Code's managed settings; it emits nothing itself.
+	CollectorToolConfigClaudeCode Collector = "tool_config_claude_code"
+	// CollectorToolConfigCursor writes Cursor's enterprise hooks file; it emits nothing itself.
+	CollectorToolConfigCursor Collector = "tool_config_cursor"
+	// CollectorToolConfigCodex writes the Codex CLI's system requirements; it emits nothing itself.
+	CollectorToolConfigCodex Collector = "tool_config_codex"
+	// CollectorToolConfigCopilot writes GitHub Copilot's machine policies and the Copilot CLI's
+	// machine environment; it emits nothing itself.
+	CollectorToolConfigCopilot Collector = "tool_config_copilot"
+	CollectorHookRelay         Collector = "hook_relay"
+	// CollectorInventoryScanner scans the installed applications and emits them on inv.scan.
+	CollectorInventoryScanner Collector = "inventory_scanner"
+	// CollectorFlowMonitor attributes connections to catalog inference domains and emits them on
+	// net.flow.
+	CollectorFlowMonitor Collector = "flow_monitor"
+)
+
+// Valid reports whether the collector is in the closed set. control-api refuses a whole health
+// report that names a collector ref.collector does not hold.
+func (c Collector) Valid() bool {
+	switch c {
+	case CollectorEgressProxy, CollectorLoopbackBroker, CollectorCLIShim,
+		CollectorProcessDetector, CollectorClassifierHost, CollectorCaptureExtension,
+		CollectorDesktopProxy, CollectorOTelReceiver, CollectorUserHelper,
+		CollectorToolConfigClaudeCode, CollectorToolConfigCursor, CollectorToolConfigCodex,
+		CollectorToolConfigCopilot, CollectorHookRelay, CollectorInventoryScanner, CollectorFlowMonitor:
+		return true
+	default:
+		return false
+	}
+}
 
 // CollectionMode is the effective mode resolved on the device from the signed scope matrix,
 // taking the most restrictive applicable value across tool, data class and user population. The
@@ -209,6 +343,32 @@ const (
 	// rather than stamp a placeholder identity; the state is named so the coverage row
 	// distinguishes "no credential yet" from "nothing observed".
 	DetailIdentityUnresolved Detail = "identity_unresolved"
+
+	// Collector lifecycle. A collector the signed policy switched off is out of the path by
+	// request, which is neither a fault nor interference.
+	DetailDisabledByPolicy Detail = "disabled_by_policy"
+
+	// User-session helper. A signed-in session has no connected helper: it could not be started,
+	// it keeps exiting, or the platform has none.
+	DetailHelperUnavailable Detail = "helper_unavailable"
+
+	// Supervised components. A child process that exited more often than its restart budget allows
+	// is left stopped until the budget allows another start.
+	DetailComponentCrashLoop Detail = "component_crash_loop"
+
+	// Tool configuration. The tool is not installed, the platform has no managed location for it
+	// yet or the installed release is too old for it, the agent could not write the configuration
+	// it manages, a user's own configuration overrides it, or the tool ran with the configuration
+	// in place and sent none of the events it configures.
+	DetailToolNotInstalled       Detail = "tool_not_installed"
+	DetailToolVersionUnsupported Detail = "tool_version_unsupported"
+	DetailConfigWriteFailed      Detail = "config_write_failed"
+	DetailConfigTampered         Detail = "config_tampered"
+	DetailNoRecentEvents         Detail = "no_recent_events"
+
+	// ETW. The real-time session a collector reads could not be opened or stopped delivering
+	// events, or the platform has none.
+	DetailETWSessionFailed Detail = "etw_session_failed"
 )
 
 // AllDetails is the closed vocabulary, for validation and for a coverage report that needs to
@@ -229,7 +389,10 @@ var AllDetails = [...]Detail{
 	DetailCredentialExpired,
 	DetailTrustInstallFailed, DetailTrustVerifyFailed,
 	DetailShimProfileMissing, DetailShimCABundleUnreadable, DetailShimNotInherited,
-	DetailIdentityUnresolved,
+	DetailIdentityUnresolved, DetailDisabledByPolicy,
+	DetailHelperUnavailable, DetailComponentCrashLoop,
+	DetailToolNotInstalled, DetailToolVersionUnsupported, DetailConfigWriteFailed,
+	DetailConfigTampered, DetailNoRecentEvents, DetailETWSessionFailed,
 }
 
 // Valid reports whether the detail is in the closed vocabulary. An empty detail is valid: a

@@ -52,7 +52,7 @@ rejected. A parameter the template does not declare is an error, not a no-op.
 | `dimensions` | string[] | ≤ 3, plus the bucket. Aggregates only. |
 | `measures` | string[] | ≥ 1 on an aggregate; must exist on the chosen source (section 2.2) |
 | `filters` | object[] | ≤ 16; `{field, op, value}` |
-| `window` | `{from,to}` | ISO-8601 UTC; half-open `[from, to)`. Required except on `mart.v_device_liveness`. |
+| `window` | `{from,to}` | ISO-8601 UTC; half-open `[from, to)`. Required except on `mart.v_device_liveness` and `ops.collector_state`. |
 | `order` | `{by,dir}[]` | ≤ 3; only a returned measure or a grouped dimension; aggregates only |
 | `limit` | integer | page size on a list (≤ 500), row cap on an aggregate (≤ 2000) |
 | `cursor` | string | list sources only; opaque, echo it back verbatim (section 7). An aggregate is not paged: a cursor on one is `aggregate_not_paged`. |
@@ -86,6 +86,7 @@ because their presence is an attempt rather than a typo:
 | `mart.agg_user_period` | aggregate | Q6 one subject | PK + `(tenant, user_ref, bucket_start DESC, bucket_size)` |
 | `mart.agg_device_period` | aggregate | Q7 history | PK |
 | `mart.v_device_liveness` | list | Q7 current state | `ops.device (tenant, last_seen_at)`, `ops.collector_state (tenant, state)` |
+| `ops.collector_state` | list | one device's collectors: state, cause (`error_code`), last report | PK |
 | `ops.coverage_snapshot` | list | coverage gaps | PK + partial `(tenant, snapshot_day) WHERE NOT observed` |
 | `ingest.submission` | list | Q8, Q9 | `submission_by_received`/`_by_user`/`_by_tool`/`_by_device`, `submission_labels_gin` |
 | `mart.v_finding` | list | Q5 | `mart.finding (tenant, detected_at DESC, submission_id)` |
@@ -106,6 +107,7 @@ offered is `unknown_dimension` / `unknown_measure`, and the error lists what is 
 | `mart.agg_user_period` | `bucket`, `subject` | `submissions`, `bytes_total`, `tools_used`, `block_events` |
 | `mart.agg_device_period` | `bucket`, `device`, `collector` | `healthy_days`, `degraded_days`, `absent_days`, `tampered_days`, `spool_dropped` |
 | `mart.v_device_liveness` | `device`, `device_os`, `managed_state`, `region`, `liveness`, `collector`, `collector_state` | — (a list) |
+| `ops.collector_state` | `device`, `collector`, `collector_state` | — (a list) |
 | `ops.coverage_snapshot` | `snapshot_day`, `device`, `collector`, `gap_reason`, `observed`, `expected` | — |
 | `ingest.submission` | `subject`, `tool`, `device`, `mode`, `action`, `content_state`, `route`, `detection_basis`, `prompt_kind`, `merge_confidence`, `confidence`, `department`, `population`, `manager` | — |
 | `mart.v_finding` | `severity`, `rule`, `class`, `subject`, `tool`, `review_state`, `mode`, `decided_locally` | — |
@@ -358,7 +360,7 @@ Audited **after** the read and before anything is served: an aggregate whose cel
 than k distinct subjects — the same value section 6 computes for suppression decides it.
 
 Not audited: tool-, class- and team-level aggregates whose cells are k or wider; coverage state;
-reference data.
+a device's collector rows (`ops.collector_state`, which names no person); reference data.
 
 Fail closed: if the audit row cannot be committed the transaction is rolled back, the response is
 `503 audit_unavailable`, and **zero rows** are served. Nothing is streamed; a response is

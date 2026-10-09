@@ -2,7 +2,8 @@
 
 The analyst-facing web application: Overview, Usage (tools, data classes, teams, users), Devices,
 Audit trail, Settings → Deployment, and the Search page, where an analyst lists events, findings,
-devices and audit entries, searches prompt text, and reads an event's stored prompt.
+devices and audit entries, opens a device to see each of its collectors with its state and cause,
+searches prompt text, and reads an event's stored prompt.
 
 It has two halves and no dependencies:
 

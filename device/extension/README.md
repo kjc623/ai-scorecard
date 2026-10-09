@@ -19,12 +19,20 @@ messaging host `com.shadowaicapture.capture_core` for the extension's id, which 
 `key` pins (`ebdiaplaignnfokkkoekjkdajlopdfkk`). With no host the extension keeps observing, holds
 observations in a bounded memory queue and reports the channel absent.
 
+Policy comes from `capture-core`: a `policy_sync` answers with the decoded payload of the signed
+bundle in force, which the extension holds in memory. The mode is `tenant_default_mode` or the
+tool's `tool_modes` entry, whichever is more restrictive; when the bundle also scopes by population,
+device, notice or class prior, the extension asks `capture-core` (`mode_query`). The bundle's
+`rules` and `sanctioned_tools` are matched as `capture-core/enforce` matches them, with no labels
+(the extension classifies nothing); a `warn` holds the request for the user's confirmation and a
+`block` cancels it, each showing the rule's message and link in the page.
+
 | Permission | Why |
 |---|---|
 | `webRequest`, host `<all_urls>` | see every request, including to services nobody listed; requests are never modified |
-| `webRequestBlocking` | cancel a request a local `blocked` rule matches; granted only to a policy-installed extension, and its absence is reported |
+| `webRequestBlocking` | cancel a request a `block` rule matches; granted only to a policy-installed extension, and its absence is reported |
 | `nativeMessaging` | the only channel to `capture-core`; observations leave through it and nowhere else |
-| `tabs` | show a `warned` rule's confirmation in the tab that made the request |
+| `tabs` | show a `warn` rule's confirmation, or a `block` rule's notice, in the tab that made the request |
 | `alarms` | send the health report and refresh policy while the browser is idle |
 
 The content script runs in every frame's isolated world from `document_start`, because a file the

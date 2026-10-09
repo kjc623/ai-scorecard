@@ -38,8 +38,10 @@ export const ADMIN_SCIM_TOKENS_ENDPOINT = '/admin/v1/scim/tokens';
 /**
  * The admin API behind Settings → Settings. control-api's, admin-only and audited, like Deployment:
  * collection mode and its narrower per-tool overrides, event and content retention, tool sanction
- * decisions and the content search tier. These are the only writes this client makes, besides
- * Deployment's.
+ * decisions, the content search tier, the endpoint collector switches, TLS inspection, the
+ * enforcement rules and the interception routes' kill switches. These are the only writes this client makes, besides Deployment's. A tool's endpoint switches are at
+ * /tools/<tool_key> under the endpoint settings; a route's kill switch is at /<route> under the kill
+ * switch endpoint.
  */
 export const ADMIN_SETTINGS_ENDPOINT = '/admin/v1/settings';
 export const ADMIN_SETTINGS_COLLECTION_MODE_ENDPOINT = '/admin/v1/settings/collection-mode';
@@ -47,6 +49,10 @@ export const ADMIN_SETTINGS_SCOPE_OVERRIDE_ENDPOINT = '/admin/v1/settings/scope-
 export const ADMIN_SETTINGS_RETENTION_ENDPOINT = '/admin/v1/settings/retention';
 export const ADMIN_SETTINGS_CONTENT_SEARCH_ENDPOINT = '/admin/v1/settings/content-search';
 export const ADMIN_SETTINGS_TOOL_SANCTION_ENDPOINT = '/admin/v1/settings/tools';
+export const ADMIN_SETTINGS_ENDPOINT_COLLECTORS_ENDPOINT = '/admin/v1/settings/endpoint';
+export const ADMIN_SETTINGS_TLS_INSPECTION_ENDPOINT = '/admin/v1/settings/tls-inspection';
+export const ADMIN_SETTINGS_RULES_ENDPOINT = '/admin/v1/settings/rules';
+export const ADMIN_SETTINGS_KILL_SWITCH_ENDPOINT = '/admin/v1/settings/kill-switch';
 
 /** k, the small-cell floor. A cell below it arrives suppressed and is never a number. */
 export const K = 5;
@@ -125,6 +131,15 @@ export const SOURCES = Object.freeze({
     answers: 'Q7',
     noWindow: true,
     note: 'current state, not a stream: it needs no window and is bounded by its page',
+  }),
+  'ops.collector_state': Object.freeze({
+    kind: 'list',
+    label: "One device's collectors",
+    dimensions: Object.freeze(['device', 'collector', 'collector_state']),
+    measures: Object.freeze([]),
+    answers: 'Q7',
+    noWindow: true,
+    note: 'the latest report per collector, with the cause the device gave; it names no person and is not audited',
   }),
   'ops.coverage_snapshot': Object.freeze({
     kind: 'list',
@@ -272,6 +287,61 @@ export const STATE_PAIRS = Object.freeze({
   review_state: Object.freeze(['open', 'disputed', 'confirmed']),
   sanctioned_state: Object.freeze(['sanctioned', 'unsanctioned', 'unknown']),
   merge_confidence: Object.freeze(['high', 'low']),
+});
+
+/**
+ * What a collector's reported cause (its detail, stored as error_code) means, in the words a
+ * customer reads. test/parity.test.mjs holds its keys equal to the device's closed detail vocabulary.
+ */
+export const COLLECTOR_DETAILS = Object.freeze({
+  classifier_unavailable: 'The classifier was not available',
+  spool_unwritable: 'Events could not be written to the device spool',
+  upstream_failure: 'The upstream service failed',
+  upstream_unreachable: 'The upstream service could not be reached',
+  client_pinned: 'An app pins its certificates, so its traffic cannot be inspected',
+  not_effective_proxy: 'Traffic does not go through the proxy',
+  tls_probe_failed: 'The inspection self-test failed',
+  port_held_by_other: 'Another program holds the port it needs',
+  cooling_down: 'Paused after repeated failures',
+  killed: 'Stopped by the kill switch',
+  enumeration_partial: 'The last scan could not read everything',
+  signature_set_stale: 'Its signature set is out of date',
+  budget_exhausted: 'Classification ran out of time',
+  model_unavailable: 'The classification model was not available',
+  normalise_truncated: 'Content was too long to classify in full',
+  parser_failed: 'A document could not be parsed',
+  content_unprocessable: 'Content could not be processed',
+  host_unreachable: 'The classifier could not be reached',
+  release_load_failed: 'A classifier release failed to load',
+  parser_memory: 'A document parser ran out of memory',
+  parser_timeout: 'A document parser timed out',
+  parser_crash: 'A document parser crashed',
+  parser_output_cap: 'A document produced more text than is read',
+  bundle_signature_invalid: 'The policy signature did not verify',
+  bundle_schema_invalid: 'The policy was malformed',
+  bundle_version_regression: 'An older policy was offered and refused',
+  bundle_artefact_missing: 'A file the policy names was missing',
+  content_over_cap: 'Content was over the size limit',
+  undecodable_content: 'Content could not be decoded',
+  version_mismatch: 'A component runs a different version',
+  mode_violation: 'A component sent more than the collection mode allows',
+  enforcement_unavailable: 'It can observe but not block',
+  credential_expired: 'The device certificate has expired',
+  trust_install_failed: 'The inspection certificate could not be installed',
+  trust_verify_failed: 'The inspection certificate is not trusted',
+  shim_profile_missing: 'The command-line profile is missing',
+  shim_ca_bundle_unreadable: 'The command-line certificate bundle is unreadable',
+  shim_not_inherited: 'Command-line tools do not pick up the settings',
+  identity_unresolved: 'The device is not enrolled yet',
+  disabled_by_policy: 'Off in policy',
+  helper_unavailable: 'The user-session helper is not running',
+  component_crash_loop: 'A component keeps crashing and is held stopped',
+  tool_not_installed: 'The tool is not installed',
+  tool_version_unsupported: 'The installed version is not supported',
+  config_write_failed: "The tool's settings could not be written",
+  config_tampered: "A user's own settings override the tool's settings",
+  no_recent_events: 'The tool ran but sent nothing for 24 hours',
+  etw_session_failed: 'The Windows event session failed',
 });
 
 /** Windows the UI offers, in hours. Named so the label and the request cannot disagree. */

@@ -15,6 +15,7 @@
 
 import { WINDOWS } from './vocab.js';
 import { QUESTIONS, context } from './questions.js';
+import { buildListDocument } from './dsl.js';
 
 const DATA_CLASSES = Object.freeze(['payment_card', 'government_id', 'credential', 'customer_pii', 'source_code', 'legal_commercial', 'health']);
 const SEVERITIES = Object.freeze(['low', 'medium', 'high', 'critical']);
@@ -382,6 +383,11 @@ export function buildExploreRecordRequest({ submissionId, receivedAtHint }) {
   return QUESTIONS.q9_event_detail.request(context({
     filters: { submission_id: submissionId, received_at_hint: receivedAtHint },
   }));
+}
+
+/** Every collector one device has reported, behind a device row. A device reports a few dozen at most. */
+export function buildExploreCollectorsRequest(device) {
+  return buildListDocument('ops.collector_state', { device: String(device ?? '') }, 100);
 }
 
 /** `#events?window=d7&tool=tls_b6681b043244c43f&open=<key>`: the whole page state, so a search can be linked. */

@@ -9,7 +9,9 @@ signed collection policy, spools them encrypted and delivers them to the device 
 | Component | What it is |
 |---|---|
 | `protocol` | The shapes the device components and the device edge agree on: enrolment, policy, events, health, content upload, native messaging, classifier frames, spool records. |
-| `capture-core` | The agent binary (`cmd/capture-core`) and its packages: `core` (pipeline, mode gate, envelope, supervisor), `policy`, `proxy/tlsproxy`, `proxy/loopback`, `cli` (CLI trust shim), `trust`, `drain` (enrolment, delivery, policy fetch, health, content upload), `credential`, `contentstore`, `state`, `hostinfo`, `dedup`, `classifierlink`, `attachments`. |
+| `capture-core` | The agent binary (`cmd/capture-core`) and its packages: `core` (pipeline, mode gate, envelope, supervisor), `policy`, `enforce` (evaluates the bundle's enforcement rules), `proxy/tlsproxy`, `proxy/loopback`, `cli` (CLI trust shim), `trust`, `drain` (enrolment, delivery, policy fetch, health, content upload), `credential`, `contentstore`, `state`, `hostinfo`, `dedup`, `classifierlink`, `attachments`, `localipc` (the local endpoint the browser relay and the user-session helper connect to), `userhelper` (the user-session helper), `toolconfig` (writes AI tools' managed configuration), `discovery` (de-duplicates and budgets discovery records), `inventory` (the installed-app scanner), `component` (supervises the child processes capture-core runs, such as classifier-host: restarts with backoff, at most 5 times in 10 minutes, and kills them with the service). |
+
+| `capture-core` | The agent binary (`cmd/capture-core`) and its packages: `core` (pipeline, mode gate, envelope, supervisor), `policy`, `enforce` (evaluates the bundle's enforcement rules), `proxy/tlsproxy`, `proxy/loopback`, `cli` (CLI trust shim), `trust`, `drain` (enrolment, delivery, policy fetch, health, content upload), `credential`, `contentstore`, `state`, `hostinfo`, `dedup`, `classifierlink`, `attachments`, `localipc` (the local endpoint the browser relay and the user-session helper connect to), `userhelper` (the user-session helper), `toolconfig` (writes AI tools' managed configuration), `etwsession` (real-time ETW sessions), `procmon` (the process monitor), `component` (supervises the child processes capture-core runs, such as classifier-host: restarts with backoff, at most 5 times in 10 minutes, and kills them with the service). |
 | `capture-spool` | The encrypted, bounded, crash-safe single-writer spool. |
 | `classifier-host` | The on-device classifier, run by capture-core as a child process on stdio. |
 | `extension` | The Chrome/Edge extension that observes browser submissions to AI tools and hands them, with their attachments, to capture-core through the native messaging host. |
@@ -49,8 +51,13 @@ a directory users can read, outside the state directory: `C:\ProgramData\ShadowA
 agent's own default, never taken from the policy bundle.
 
 On first start the agent enrols with the deployment key (a CSR; the edge returns a device
-certificate), fetches the signed policy bundle, mints its per-device interception CA and installs
-it in the trust store, and starts the providers. It rotates the certificate, presenting the current
+certificate), fetches the signed policy bundle, mints its per-device interception CA, and starts the
+providers. The CA's certificate is kept in `device-ca/`; on Windows its private key is a
+non-exportable CNG machine key, `ShadowAICapture-DeviceRoot` in the Microsoft Software Key Storage
+Provider, and elsewhere a file beside the certificate. TLS inspection is a tenant setting, off by default: only while the bundle's
+`interception.enabled` is true does the agent run the TLS proxy, write the CLI trust shim, set the
+Windows desktop-app PAC and keep its CA in the trust store, and a policy change starts or removes
+them without a restart. It rotates the certificate, presenting the current
 one, two thirds of the way through its validity. `capture-core --print-config` shows the resolved
 configuration and the enrolment; `--version` the build.
 
@@ -74,6 +81,182 @@ not name them by digest within two minutes. The observation's bytes are classifi
 (documents go to classifier-host's isolated parser child), the labels join the event's, and the
 bytes are discarded: the envelope carries only the name, size and digest, and nothing is written
 to the spool or the content store.
+
+## The user-session helper
+
+On Windows the service starts `capture-core --user-helper` in every session with a signed-in user
+(active or disconnected), as that user, on `winsta0\default` with no window, and checks every 15
+seconds that each still has one; a helper that exits is started again at most 5 times in 10 minutes
+per session. The helper connects to the same endpoint, with the same check that the service owns
+it, and opens with `helper_hello` naming its session; the service accepts it only from the user
+signed in to that session. It shows the notifications the service sends as Windows toasts under the
+AppUserModelID `ShadowAICapture.Agent`, which the MSI's Start-menu shortcut carries. Its health row
+is `user_helper`: healthy when every signed-in session has a connected helper, else `degraded` with
+`helper_unavailable`; on macOS and Linux it is `absent` with `helper_unavailable`.
+
+## Tool configuration
+
+While the bundle switches the OTLP receiver and Claude Code's OTel export on, the service merges
+Claude Code's telemetry variables (the receiver's address and token, and prompt logging on when the
+mode for `app:claude_code` is `m1` or higher) into the `env` object of
+`C:\Program Files\ClaudeCode\managed-settings.json`, which users cannot override. While the hook
+relay and Claude Code's hooks are on, it also declares its own hooks there: `UserPromptSubmit`, and
+`PreToolUse` for Bash, PowerShell, WebFetch and MCP tools, each running the installed
+`capture-core.exe --hook claude_code <event>` with a 1-second timeout, beside any hooks the
+customer declares; with `endpoint.hooks.managed_only` it sets `allowManagedHooksOnly`. It touches no
+other key. Before its first write it backs the file up to `toolconfig\claude_code\original` in the
+state directory; switching the export or the hooks off removes those keys and restores the values
+they replaced.
+The file keeps its access control unless users could write it; a new file is readable by users and
+writable by administrators only. Its health row is `tool_config_claude_code`: `healthy` while the file
+holds the agent's keys, `absent` with `tool_not_installed` when the inventory's CLI scan finds no
+Claude Code in any user profile, `degraded` with
+`config_write_failed` otherwise; on macOS and Linux it is `absent` with `tool_version_unsupported`.
+
+While the receiver and Copilot's OTel export are on, the service points GitHub Copilot at the
+receiver. For the Copilot extension (found by the IDE extension scan) it writes VS Code's machine
+policies under `HKLM\SOFTWARE\Policies\Microsoft\VSCode`: `CopilotOtelEnabled` 1,
+`CopilotOtelEndpoint`, `CopilotOtelHeaders` (the bearer token, as JSON) and
+`CopilotOtelCaptureContent`, 1 when the mode for `app:github_copilot` is `m1` or higher. For the
+Copilot CLI (found by the CLI scan) it writes the machine environment variables
+`COPILOT_OTEL_ENABLED`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS` and
+`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` (from the mode for `app:copilot_cli`), and
+broadcasts the environment change. It owns those values only; each is backed up before its first
+write to `toolconfig\copilot\original`, and switching the export off puts every one back. Its health
+row is `tool_config_copilot`: `healthy` while every installed part holds its values, `degraded` with
+`tool_version_unsupported` while the extension is installed in an IDE that does not read those
+policies (VS Code before 1.127, Cursor, Windsurf), and otherwise as Claude Code's row.
+
+While the bundle switches the hook relay and Cursor's hooks on, the service adds one entry each to
+the `beforeSubmitPrompt` and `beforeMCPExecution` arrays of Cursor's enterprise hooks file,
+`C:\ProgramData\Cursor\hooks.json` (and `"version": 1` when the file has none), running
+`"<install dir>\bin\capture-core.exe" --hook cursor <event>`. Every other entry and key is kept,
+with the same backup (`toolconfig\cursor\original`), restore and access control as Claude Code's
+file. Its health row is `tool_config_cursor`, with the same states; Cursor counts as installed when
+the installed-app scan finds it in the bundle's catalog.
+
+While the bundle switches the hook relay and Codex's hooks on, the service adds one
+`hooks.UserPromptSubmit` group to the Codex CLI's system requirements file,
+`C:\ProgramData\OpenAI\Codex\requirements.toml`, running
+`cmd /c "<install dir>\capture-core.exe" --hook codex UserPromptSubmit` with a 5-second timeout (Codex
+starts it through the user's PowerShell or cmd), pins `features.hooks = true` so a user cannot switch
+hooks off, and with `endpoint.hooks.managed_only` sets `allow_managed_hooks_only = true`. Codex runs
+hooks declared there whatever a user's own hook settings say. Every other key and group is kept, with
+the same backup (`toolconfig\codex\original`), restore and access control as Claude Code's file; a
+rewrite drops the file's comments, which a restore puts back.
+
+While the bundle switches the OTel receiver and Codex's OTel export on, the same writer sets two keys
+of the `[otel]` table in Codex's system config beside it, `C:\ProgramData\OpenAI\Codex\config.toml`
+(`requirements.toml` has no OTel settings): an `otlp-http` log exporter to the receiver's `/v1/logs`
+with the token, and `log_user_prompt` (true when the mode for `app:codex` is `m1` or higher). Every
+other key and table is kept, with its own backup (`toolconfig\codex\config\original`) and the same
+restore; switching either part off restores that file. Codex lets a user's own `config.toml`
+override the system config, so the service reads (never writes) each profile's
+`.codex\config.toml`. The health row for both files is `tool_config_codex`, with the same states as
+Claude Code's plus `degraded` with `config_tampered` while a user's file disables or redirects the
+log export; Codex counts as installed when the inventory's CLI scan finds it in a user profile.
+
+While a tool's configuration is on, the service watches it: the folder of each managed file (so a
+deleted and re-created file is seen) and, for Copilot, its two registry keys. A change is compared
+250 ms after it settles, and every running writer is compared every 60 seconds as well; when the
+agent's keys are no longer what it applied, it writes them again and logs one line naming the tool
+and the file. The tool's row is then `tampered` with `config_tampered` until a health report has
+carried it and a later comparison finds the keys in place. The agent's own writes compare clean.
+
+Each of these rows is also `degraded` with `tool_version_unsupported`, and nothing is written, while
+the inventory scanner's last scan finds the tool older than the first release that honours the
+agent's settings (Claude Code 2.1.49, Codex 0.131.0, the Copilot CLI 1.0.4, Cursor 1.7.0); a version
+the scan could not read does not hold the write back. A row is `degraded` with `no_recent_events`
+when the process monitor saw the tool run in the last 24 hours, the agent's configuration had been in
+place all that time, and neither the OTLP receiver nor the hook relay had anything from the tool.
+
+With TLS inspection on, the proxy blind-tunnels a connection from a tool whose native collector is
+enabled.
+
+## Tool hooks
+
+A tool's prompt hook runs `capture-core --hook <tool> <event>` as the user, before the tool sends
+the prompt. It reads the tool's JSON from stdin (at most 1 MiB), turns it into one `hook_evaluate`
+(the prompt text up to 256 KiB; a longer one as its length with `over_cap`) through the tool's
+adapter in `capture-core/hooks`, sends it on the native endpoint with the same check that the service
+owns it, and prints the adapter's rendering of the `hook_decision`. Within 400 ms of starting, or on
+any failure, it prints the tool's allow output instead; it writes nothing to stderr and logs
+nothing. The service's `hook_relay` collector, on while the bundle's `endpoint.hooks.enabled` is,
+answers a tool whose `endpoint.tools.<key>.hooks` is on from the bundle's rules (classifying with a
+30 ms budget at `m1` and above), then records the prompt on route `tool.hook` with that decision.
+Anything else is answered `allow` and not recorded. Claude Code's adapter sends a `UserPromptSubmit`
+prompt as written and a `PreToolUse` call's `tool_input` as compact JSON, and answers in Claude
+Code's JSON output with exit code 0: a block with the rule's message and link, a warning as a
+`systemMessage`, and no output to allow. Codex's adapter does the same for `UserPromptSubmit`: a
+block is `{"decision": "block", "reason": ...}` (the rule's id when it has no message, since Codex
+ignores a block without a reason).
+
+## Installed apps
+
+While the bundle switches `endpoint.inventory` on, the service scans the installed applications at
+start and then every `interval_minutes`, reading the registry only: the `Uninstall` entries of HKLM
+(both views) and of each signed-in user's hive, the machine's AppX/MSIX packages
+(`Appx\AppxAllUserStore\Applications`) and each user's package repository. It matches them
+against the bundle's app catalog (uninstall name, executable, package family, and the publisher for
+an app the catalog names no other way) and emits each match as a `discovery` record of type
+`app_installed` on `inv.scan`, attributed to the user whose hive holds it or `unattributed` for a
+machine-wide install, at most once per day. Its health row is `inventory_scanner`: `healthy` after a
+complete scan, `degraded` with `enumeration_partial` when a key could not be read; on macOS and
+Linux it is `absent` with `tool_version_unsupported`.
+
+The same scan finds the catalog's command-line tools in each user profile under `C:\Users` that has
+a loaded hive or an `NTUSER.DAT`: global npm packages (`%APPDATA%\npm\node_modules` and the prefix
+the user's `.npmrc` sets), the Claude Code native install (`%USERPROFILE%\.local\bin\claude.exe`,
+versioned by `.local\share\claude\versions`), pipx venvs, and command files on the user's and the
+machine's PATH (with the PE file version of an `.exe`). Each is a `discovery` record of type
+`cli_installed`, attributed to the profile's owner. It reads files and metadata only and never runs a
+discovered program; each file checked counts `observed`, each place it cannot read `errors`.
+
+In the same profiles it finds the catalog's IDE extensions: VS Code, Cursor and Windsurf extensions
+(`%USERPROFILE%\.vscode\extensions`, `.cursor\extensions`, `.windsurf\extensions`, from the folder's
+`extensions.json`, or its `<publisher>.<name>-<version>` folder names when there is none) and
+JetBrains plugins (`%APPDATA%\JetBrains\<Product><Version>\plugins\<plugin>\lib\*.jar`, from the
+jar's `META-INF/plugin.xml`). Each is a `discovery` record of type `ide_extension` with the IDE as
+`host_app`, attributed to the profile's owner. It reads files only, never loads an extension, and
+caps each `extensions.json` at 4 MiB and each `plugin.xml` at 1 MiB.
+
+It also finds the catalog's local model runtimes (`local_runtime`: Ollama, LM Studio) per user
+profile. A runtime is present for a user when one of its `windows_exe` processes runs as that user or
+its `model_store` folder exists in their profile (Ollama's is the user's `OLLAMA_MODELS` when set).
+The scan lists the models from the store's files and never calls the runtime: Ollama's manifests
+(`manifests-v2\ollama.com` and `manifests\registry.ollama.ai`, as `model:tag` or
+`namespace/model:tag`) and LM Studio's `<publisher>\<model>` folders holding a `.gguf` or MLX
+`model*.safetensors` file. Each is a `discovery` record of type `local_model` with basis
+`port_listen` when the runtime's process listens on its `listen_port`, else `model_store`, the
+process's PE file version, and at most 64 sorted model names (a longer list counts one `dropped`).
+
+## The process monitor
+
+While the bundle's `endpoint.processes.enabled` is true, the agent watches process start and stop in
+real time through an ETW session, `ShadowAICapture-process`, on `Microsoft-Windows-Kernel-Process`
+(keyword `WINEVENT_KEYWORD_PROCESS`, events 1 and 2), and lists the running processes once when it
+starts. A process whose executable name is a catalog app's `windows_exe` is attributed to the account
+it runs as and recorded once per app, user and UTC day as an `app_running` discovery with the
+image's file version and its verified signer, even when the signer is not the catalog's publisher.
+Processes of the same app that it starts are part of the same running app. The service log has one
+line, naming the app and the process id, when an app starts and one when it stops. Its health row is
+`process_detector`: `healthy` while the session delivers events, `degraded` with
+`etw_session_failed` while it cannot be opened (it is retried every minute); on macOS and Linux it is
+`absent` with `etw_session_failed`.
+
+## The flow monitor
+
+While the bundle's `endpoint.flows.enabled` is true, the agent reads connection metadata, never a
+payload, through an ETW session, `ShadowAICapture-flow`, on `Microsoft-Windows-DNS-Client` (event
+3008, a completed query and its answers, under the process that asked) and
+`Microsoft-Windows-Kernel-Network` (events 12 and 28, a TCP connect over IPv4 or IPv6). It keeps,
+for 10 minutes, the addresses each process resolved from a catalog `inference_domain`. A connect to
+one of them, by that process or failing that by any process, is attributed to the domain's app and
+recorded once per app, host, user and UTC day as an `inference_connection` discovery on `net.flow`,
+with the host name, the connecting process's signer and the account it runs as. Any other connect is
+ignored. Its health row is `flow_monitor`: `healthy` while the session delivers events, `degraded`
+with `etw_session_failed` while it cannot be opened (it is retried every minute); on macOS and Linux
+it is `absent` with `etw_session_failed`.
 
 ## Build and test
 
