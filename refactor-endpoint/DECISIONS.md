@@ -2464,9 +2464,9 @@ source contradicts the current output, so `Render` and `canEnforce` are unchange
   each detail against `AllDetails`, so `no_recent_events` passes once it is in the vocabulary
   (`TestReportStoresToolCollectorCauses`). `ops.collector_state.error_code` has no CHECK, so there
   is no schema change and no migration. `check-vocab` lists the new detail as device-only.
-- **Task 06's open item is not closed here.** `gap_reasons` is computed by `coverageStatement` in
-  `blocks.js`, not by the new query, so the new query is not the natural place; the fix stays
-  `AND v.expected` there (or the schema change task 06 names).
+- **Task 06's open item is closed at merge.** `gap_reasons` is computed by `coverageStatement` in
+  `blocks.js`; it now counts only expected collectors (`AND v.expected AND NOT v.observed`), so a
+  collector switched off by policy is no gap. The compiled-SQL snapshot was regenerated.
 - **Rebased onto the integration branch with task 34 merged.** The brief's "On the device" step 3
   expects `degraded`/`config_tampered`; since task 34 a drift is reported `tampered` with
   `config_tampered`.

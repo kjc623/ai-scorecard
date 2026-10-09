@@ -70,7 +70,7 @@ export function coverageStatement(window) {
       '             FROM ops.coverage_snapshot v',
       '            WHERE v.tenant_id = ops.current_tenant()',
       '              AND v.snapshot_day >= $1::date AND v.snapshot_day < $2::date',
-      '              AND NOT v.observed',
+      '              AND v.expected AND NOT v.observed',
       '            GROUP BY 1) g) AS gap_reasons',
     ].join('\n'),
     params: Object.freeze([fromDate, toDate]),
