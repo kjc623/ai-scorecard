@@ -9,7 +9,7 @@ the app prefix `sac-preprod`; the scripts take another from `FLY_APP_PREFIX`.
 | App | Runs | Reachable |
 |---|---|---|
 | `sac-preprod-edge` | `services/edge`: TLS with the client certificate forwarded, only the device API | Port 443, raw TCP, on a dedicated IPv4 and an IPv6 address: the device hostname |
-| `sac-preprod-dashboard` | `services/dashboard`, which also forwards `/onboard/*` to control-api | HTTPS on the analyst hostname, with a Fly.io-managed certificate |
+| `sac-preprod-dashboard` | `services/dashboard`, which also forwards `/onboard/*` and the extension's update manifest and CRX (`/v1/extension/*`) to control-api | HTTPS on the analyst hostname, with a Fly.io-managed certificate |
 | `sac-preprod-ingest-api`, `-control-api`, `-content-vault`, `-query-api` | The four APIs | Only on the organization's private network, at `http://<app>.internal:8080` |
 | `sac-preprod-jobs` | One machine: supercronic runs `jobs aggregate`, `erase` and `expire` (`fly/jobs/crontab`) | Nowhere |
 | `sac-preprod-migrate` | No machine: each deploy runs `migrate` once, as its release command | Nowhere |
@@ -160,7 +160,10 @@ invite link. Consent and roles are as `azure/RUNBOOK.md` §6. Pre-prod does not 
 
 ## 9. Devices (Intune)
 
-As `azure/RUNBOOK.md` §7, with the device hostname.
+As `azure/RUNBOOK.md` §7. The extension's update URL is on the analyst hostname:
+`<extension id>;https://<analyst-fqdn>/v1/extension/updates.xml`. The edge asks every client for a
+certificate, which the browsers' extension downloader cannot answer, so it does not serve the
+extension.
 
 ## 10. Verify
 
@@ -172,6 +175,8 @@ As `azure/RUNBOOK.md` §7, with the device hostname.
    the edge's 403), and `curl https://<device-fqdn>/admin/v1/` is refused by the edge with 403.
 4. `curl -sS -o /dev/null -w '%{http_code}\n' https://<analyst-fqdn>/signin` answers 200 with a
    certificate curl accepts, and the page is the dashboard's sign-in.
+   `curl https://<analyst-fqdn>/v1/extension/updates.xml` answers 200 with an update manifest whose
+   `codebase` is `https://<analyst-fqdn>/v1/extension/shadow-ai-capture.crx`.
 5. The deploy run's `migrate` job succeeded (`gh run view <run-id> --log`: `"schema up to date"`), and
    the next run's says `"applied":0`.
 6. `fly logs --app sac-preprod-jobs` shows `pass complete` for `aggregate` (every five minutes),

@@ -237,7 +237,7 @@ func wire(cfg config, db *sql.DB, logger *slog.Logger) (*httpapi.Server, *sessio
 		Store: st, CA: ca, Enrol: enrolSvc, Health: healthSvc, Policy: policy, Content: contentSvc,
 		Admin:      admin,
 		Settings:   settingsHandler,
-		Extensions: deploy.NewExtensions(cfg.AgentReleaseDir, cfg.PublicDeviceEndpoint, logger),
+		Extensions: deploy.NewExtensions(cfg.AgentReleaseDir, cfg.PublicURL, logger),
 		SCIM:       scim.NewHandler(scimSvc, "/scim/v2", logger),
 		Mounts: map[string]http.Handler{
 			"/internal/v1/auth/": internalAPI,

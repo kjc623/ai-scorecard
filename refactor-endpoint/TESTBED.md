@@ -59,7 +59,9 @@ rest). Agents read this file and never write a secret into it.
 3. **Browser extension.**
    - In Intune, create a Settings catalog profile for Microsoft Edge and Google Chrome, assigned to
      the test device group, as `azure/RUNBOOK.md` §7 describes:
-     - `ExtensionInstallForcelist` = `<extension id>;https://<device hostname>/v1/extension/updates.xml`;
+     - `ExtensionInstallForcelist` = `<extension id>;https://<analyst hostname>/v1/extension/updates.xml`
+       (the analyst hostname: the device hostname asks for a client certificate, which the
+       browsers' extension downloader cannot answer);
      - `NativeMessagingAllowlist` = `com.shadowaicapture.capture_core`.
    - The extension id is in the release's `release.json`.
 4. **Publishing app.**

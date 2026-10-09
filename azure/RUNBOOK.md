@@ -102,14 +102,18 @@ users and groups, and start provisioning.
    Windows 10 21H2 or later; assign *Required* to a device group.
 3. Browser extension: a Settings catalog profile for **Google Chrome** and **Microsoft Edge** →
    *Extensions* → *Configure the list of force-installed apps and extensions* with
-   `<extension-id>;https://<device-fqdn>/v1/extension/updates.xml` (the id is in the release's
-   `release.json`). The MSI registers the native messaging host the extension talks to.
+   `<extension-id>;https://<analyst-fqdn>/v1/extension/updates.xml` (the id is in the release's
+   `release.json`). The update URL is on the analyst hostname, not the device hostname: the
+   browsers' extension downloader cannot answer the device edge's client certificate request. The
+   MSI registers the native messaging host the extension talks to.
 
 ## 8. Verify
 
 - Every container app is *Running* and ready; `content-vault` and `query-api` show internal ingress.
 - `curl https://<device-fqdn>/v1/health` reaches control-api; `curl https://<device-fqdn>/admin/v1/`
   is refused at the edge.
+- `curl https://<analyst-fqdn>/v1/extension/updates.xml` answers 200 with an update manifest whose
+  `codebase` is `https://<analyst-fqdn>/v1/extension/shadow-ai-capture.crx`.
 - The `migrate` job's last execution succeeded; a second run logs nothing to apply.
 - On a managed device the app installs, the deployment key's enrolment count rises and the device
   appears on the dashboard's Devices page by hostname.

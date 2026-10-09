@@ -16,7 +16,10 @@ import (
 	"github.com/shadow-ai-capture/control-api/internal/deploy"
 )
 
-const extensionID = "abcdefghijklmnopabcdefghijklmnop"
+const (
+	extensionID = "abcdefghijklmnopabcdefghijklmnop"
+	publicURL   = "https://app.eu.example.com"
+)
 
 var crxBytes = []byte("Cr24\x03\x00\x00\x00 extension payload")
 
@@ -37,9 +40,9 @@ func writeExtensionRelease(t *testing.T, mutate func(*deploy.ReleaseExtension)) 
 	return dir
 }
 
-func extensionMux(dir, deviceEndpoint string) *http.ServeMux {
+func extensionMux(dir, origin string) *http.ServeMux {
 	mux := http.NewServeMux()
-	deploy.NewExtensions(dir, deviceEndpoint, quiet).Register(mux)
+	deploy.NewExtensions(dir, origin, quiet).Register(mux)
 	return mux
 }
 
@@ -50,7 +53,7 @@ func get(mux *http.ServeMux, method, path string) *httptest.ResponseRecorder {
 }
 
 func TestUpdateManifestNamesTheReleasedExtension(t *testing.T) {
-	mux := extensionMux(writeExtensionRelease(t, nil), endpoint+"/")
+	mux := extensionMux(writeExtensionRelease(t, nil), publicURL+"/")
 	rec := get(mux, http.MethodGet, deploy.ExtensionManifestPath)
 	if rec.Code != http.StatusOK || !strings.HasPrefix(rec.Header().Get("Content-Type"), "application/xml") {
 		t.Fatalf("manifest: %d %s", rec.Code, rec.Header().Get("Content-Type"))
@@ -74,7 +77,7 @@ func TestUpdateManifestNamesTheReleasedExtension(t *testing.T) {
 	sum := sha256.Sum256(crxBytes)
 	uc := doc.App.UpdateCheck
 	if doc.Protocol != "2.0" || doc.App.AppID != extensionID || uc.Version != "1.2.3" ||
-		uc.Codebase != endpoint+"/v1/extension/shadow-ai-capture.crx" ||
+		uc.Codebase != publicURL+"/v1/extension/shadow-ai-capture.crx" ||
 		uc.Hash != hex.EncodeToString(sum[:]) || uc.Size != strconv.Itoa(len(crxBytes)) {
 		t.Fatalf("manifest = %+v", doc)
 	}
@@ -84,7 +87,7 @@ func TestUpdateManifestNamesTheReleasedExtension(t *testing.T) {
 }
 
 func TestCRXIsServedOnlyWhenItMatchesTheRelease(t *testing.T) {
-	mux := extensionMux(writeExtensionRelease(t, nil), endpoint)
+	mux := extensionMux(writeExtensionRelease(t, nil), publicURL)
 	rec := get(mux, http.MethodGet, deploy.ExtensionDownloadPath)
 	if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), crxBytes) ||
 		rec.Header().Get("Content-Type") != "application/x-chrome-extension" {
@@ -92,7 +95,7 @@ func TestCRXIsServedOnlyWhenItMatchesTheRelease(t *testing.T) {
 	}
 
 	tampered := writeExtensionRelease(t, func(x *deploy.ReleaseExtension) { x.SHA256 = strings.Repeat("0", 64) })
-	if rec := get(extensionMux(tampered, endpoint), http.MethodGet, deploy.ExtensionDownloadPath); rec.Code != http.StatusNotFound {
+	if rec := get(extensionMux(tampered, publicURL), http.MethodGet, deploy.ExtensionDownloadPath); rec.Code != http.StatusNotFound {
 		t.Fatalf("a CRX that does not match release.json was served: %d", rec.Code)
 	}
 }
@@ -106,7 +109,7 @@ func TestExtensionRoutesRefuseAnIncompleteRelease(t *testing.T) {
 		"no size":      writeExtensionRelease(t, func(x *deploy.ReleaseExtension) { x.Size = 0 }),
 		"no release":   t.TempDir(),
 	} {
-		mux := extensionMux(dir, endpoint)
+		mux := extensionMux(dir, publicURL)
 		for _, path := range []string{deploy.ExtensionManifestPath, deploy.ExtensionDownloadPath} {
 			if rec := get(mux, http.MethodGet, path); rec.Code != http.StatusNotFound {
 				t.Errorf("%s %s: %d", name, path, rec.Code)
@@ -114,9 +117,9 @@ func TestExtensionRoutesRefuseAnIncompleteRelease(t *testing.T) {
 		}
 	}
 	if rec := get(extensionMux(writeExtensionRelease(t, nil), ""), http.MethodGet, deploy.ExtensionManifestPath); rec.Code != http.StatusServiceUnavailable {
-		t.Errorf("no device endpoint: %d", rec.Code)
+		t.Errorf("no public URL: %d", rec.Code)
 	}
-	if rec := get(extensionMux(writeExtensionRelease(t, nil), endpoint), http.MethodPost, deploy.ExtensionManifestPath); rec.Code != http.StatusMethodNotAllowed {
+	if rec := get(extensionMux(writeExtensionRelease(t, nil), publicURL), http.MethodPost, deploy.ExtensionManifestPath); rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("POST: %d", rec.Code)
 	}
 }

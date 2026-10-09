@@ -14,7 +14,7 @@ here against the device CA and matched to the device's live credential on every 
 |---|---|---|
 | `POST /v1/enrol` | device | deployment key (first enrolment) or current certificate (rotation) |
 | `GET /v1/policy`, `POST /v1/health`, `POST /v1/content/grant`, `POST /v1/content` | device | device certificate |
-| `GET /v1/extension/updates.xml`, `GET /v1/extension/shadow-ai-capture.crx` | browser | none |
+| `GET /v1/extension/updates.xml`, `GET /v1/extension/shadow-ai-capture.crx` | browser, through the dashboard server on the analyst hostname | none |
 | `/internal/v1/auth/{begin,complete,token,revoke}` | dashboard server | `Bearer SAC_INTERNAL_TOKEN` |
 | `/admin/v1/*` | dashboard server | product token, audience `sac-control`, role `admin` |
 | `/scim/v2/*` | customer identity provider | SCIM bearer token |
@@ -30,10 +30,10 @@ here against the device CA and matched to the device's live credential on every 
 | `SAC_AUTH_ISSUER` | `iss` of product and service tokens; verifiers fetch `{issuer}/.well-known/jwks.json` |
 | `SAC_SESSION_SIGNING_KEY_FILE` | P-256 key file that signs tokens; further PEM blocks are published for rotation |
 | `SAC_INTERNAL_TOKEN` | the dashboard server's credential for `/internal/v1/auth/*` (at least 32 characters) |
-| `SAC_PUBLIC_URL` | browser origin: sign-in returns to `{SAC_PUBLIC_URL}/callback`; onboarding and SCIM URLs |
+| `SAC_PUBLIC_URL` | browser origin: sign-in returns to `{SAC_PUBLIC_URL}/callback`; onboarding and SCIM URLs; the extension manifest's CRX URL |
 | `SAC_AUTH_REDIRECT_URIS` | optional further exact sign-in redirect URIs (the lab's second dashboard origin) |
 | `SAC_DIRECTORY_KEY` | base64 32-byte key that seals stored secrets and the tenant user-reference keys |
-| `SAC_PUBLIC_DEVICE_ENDPOINT` | device origin written into tenant packages and the extension manifest |
+| `SAC_PUBLIC_DEVICE_ENDPOINT` | device origin written into tenant packages |
 | `SAC_POLICY_SIGNING_KEY_FILE`, `SAC_POLICY_SIGNING_KEY_ID` | Ed25519 policy key and the key id devices pin (default `policy-key-1`) |
 | `SAC_CONTENT_VAULT_URL` | content-vault's internal address; uploads carry a service token (`aud sac-vault`, `svc control-api`) |
 | `SAC_REGION` | Azure region; a tenant pinned elsewhere is refused |
