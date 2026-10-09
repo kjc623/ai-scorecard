@@ -2746,3 +2746,51 @@ pages carry ms.date 08/01/2024), `microsoft/mggraph-intune-samples` `LOB_Applica
 - **Not run here**: the image builds (no Docker), the workflow, and anything against Fly.io or
   Supabase. Left as they are: `services/control-api/README.md` still calls `SAC_ENTRA_CLIENT_SECRET`
   lab-only, and the root `AGENTS.md` still describes an Azure pre-prod.
+
+## 2026-10-09, task 58 bring-up (owner and orchestrator)
+
+What the first bring-up found, and the runbook now says:
+
+- **`fly deploy` allocates no public addresses.** With the edge's dedicated IPv4 allocated first, the
+  deploy added no IPv6, and the dashboard had no address at all, so `fly certs check` reported "no
+  AAAA records". Both apps' addresses are allocated in §1 step 3 (`allocate-v6`, and
+  `allocate-v4 --shared` for the dashboard).
+- **Supabase's dashboard moved.** The Connect dialog offers Framework/Server/Direct/ORM/MCP; the
+  session pooler is under Direct. The CA certificate is on the project's Database → Settings page,
+  not under Project Settings (checked 2026-10-09).
+- **query-api's staged password did not authenticate** through the pooler while the three Go
+  services' did, with `password authentication failed for user "query-api"`. The same Node client
+  authenticated from the owner's PC with a freshly set password, so the client code is fine and the
+  stored secret was not; cause not established (the second `fly secrets import --stage` on that app,
+  or the pooler's credential cache). Workaround in §2: `ALTER ROLE` plus `fly secrets import`.
+- **Git Bash rewrites Unix paths** in arguments to Windows programs: `tenant-admin.sh` sets
+  `MSYS_NO_PATHCONV=1`, and `setup-database.sh` is given the CA path in Windows form.
+- **Certbot no longer supports Windows** (February 2024); the device certificate was issued with
+  Posh-ACME (`New-PACertificate`, Manual DNS plugin), whose `fullchain.cer` and `cert.key` are PEM.
+- **No proxy in front of either hostname** (Cloudflare "DNS only"): the edge needs the client
+  certificate, and Fly.io's certificate validation needs the app's own address.
+- Verify checks 1–6 passed on deploy run 14 (commit 4cde3d2): seven apps with one healthy machine
+  each and migrate with none; public addresses only on edge and dashboard; `/v1/health` 405 and
+  `/admin/v1/` 403 on the device hostname; `/signin` 200 with a valid certificate; migrate's release
+  command succeeded; jobs' `erase` and `aggregate` passes complete with zero failures.
+- Test tenant "Endpoint Test" is `84beb829-b508-437c-9cd2-501f36e28b81`, ceiling `m3`.
+
+## 2026-10-09, task 59 bring-up (owner and orchestrator)
+
+- **One Entra user.** The owner runs the testbed with `kyle@sundial.solutions` alone: the "Second
+  user" row is optional, `invm.ps1 -AsUser second` refuses when it is empty, and device checks that
+  need a second signed-in session are reported as not run. (Owner decision.)
+- **Intune enrolment by hand.** The `sundial.solutions` tenant has no Entra ID P1, which automatic
+  MDM enrolment needs, and the owner declined a trial. The VM was Entra-joined and enrolled in
+  Intune manually; the testbed's Intune delivery is unchanged.
+- **The VM** is the Hyper-V machine `WIN11-TEST`, hostname `WinDev2407Eval` (Microsoft's Windows
+  11 evaluation image), Entra device id `d9d60922-43c4-4da0-9c49-d4df4fac0788`, in the test device
+  group `6a3c290c-2ff1-4c44-bba9-ca6ed29caed6`. PowerShell Direct works with the local `sacadmin`.
+- **Publishing app** `SAC testbed publisher`, client id `6013fcd8-b0fe-4201-9e0c-5bb4a78e7b57`, with
+  a self-signed certificate (thumbprint `300591A257424963C75D23327A40BED95F0156C5`) in the owner's
+  user store.
+- **Browser extension profile.** The settings catalog labels differ from `azure/RUNBOOK.md` §7:
+  Edge's force-install list is "Control which extensions are installed silently" and its native
+  messaging allowlist is "Control which native messaging hosts users can use", both under the
+  "Microsoft Edge" category's Extensions and Native Messaging subcategories. The profile was
+  created for Edge; Chrome is not on the VM.

@@ -117,8 +117,9 @@ How each kind of check is done:
   3. Record their answer in the report.
 - **Pre-prod is read-only** (`TESTBED.md` rules). `fly status` and the services' logs (`fly logs`)
   help to diagnose a failure; never change anything. The database, on Supabase, is the owner's.
-- **Users.** "The console user" and "the second user" are the two Entra test users in
-  `TESTBED.md`. Both are always signed in.
+- **Users.** "The console user" and "the second user" are the Entra test users in `TESTBED.md`.
+  Whoever is listed is always signed in; when no second user is listed, a check that needs a
+  second session is reported as not run.
 - **Tenant.** The test tenant is `TESTBED.md`'s "Test tenant id".
 - **Console steps are the owner's.** A step "at the VM's console" means using a desktop app's
   window (Cursor, Claude Desktop, ChatGPT Desktop, VS Code chat, the browser, an interactive

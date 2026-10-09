@@ -42,15 +42,22 @@ per environment. Each secret is set only on the apps that read it:
    - the project ref (Project settings → General);
    - the session pooler's host: **Connect** → **Session pooler**, the host of that string. Copy it:
      it cannot be worked out from the region;
-   - the server's CA certificate: Database settings → SSL configuration → **Download certificate**.
-3. **The apps**, and the edge's dedicated IPv4 address (billed monthly). Raw TCP needs a dedicated
-   address; allocate it before the first deploy, which then allocates no shared one:
+   - the server's CA certificate: the project's **Database → Settings** page
+     (`/dashboard/project/<ref>/database/settings`), SSL configuration, **Download certificate**.
+     Turn **Enforce SSL on incoming connections** on while there: every connection here uses TLS.
+3. **The apps**, and their public addresses. `fly deploy` allocates none, so the two public apps
+   get theirs here: the edge a dedicated IPv4 (billed monthly; raw TCP needs a dedicated address)
+   and an IPv6, the dashboard a shared IPv4 and an IPv6 (Fly.io issues its certificate against the
+   IPv6):
 
    ```sh
    for c in edge ingest-api control-api content-vault query-api dashboard jobs migrate; do
      fly apps create "sac-preprod-$c" --org <org>
    done
    fly ips allocate-v4 --app sac-preprod-edge
+   fly ips allocate-v6 --app sac-preprod-edge
+   fly ips allocate-v4 --shared --app sac-preprod-dashboard
+   fly ips allocate-v6 --app sac-preprod-dashboard
    ```
 
 4. **DNS names** for the device hostname (`SAC_DEVICE_FQDN`) and the analyst hostname
@@ -71,7 +78,20 @@ fly/scripts/setup-database.sh <project-ref> <session-pooler-host> prod-ca-2021.c
 
 It asks for the project's database password (or reads `SUPABASE_DB_PASSWORD`), creates `sac_admin`,
 the five component logins and the database `shadow` with generated passwords, and stages each
-password on its app; nothing is printed. It refuses to run once any of them exists.
+password on its app; nothing is printed. It refuses to run once any of them exists. In Git Bash,
+write the certificate's path in Windows form with forward slashes (`C:/Users/<you>/prod-ca-2021.crt`):
+`psql` is a Windows program and does not understand `/c/Users/...`.
+
+If an app's log says `password authentication failed` for its login after the deploy, the password
+Fly.io holds for it does not match the server's. Give the login a new one and set it on the app;
+the app restarts with it:
+
+```sh
+openssl rand -hex 32                                  # keep a copy in the password manager
+psql "host=<pooler-host> port=5432 dbname=postgres user=postgres.<ref> sslmode=verify-full sslrootcert=<ca.crt>" \
+  -c "ALTER ROLE \"query-api\" PASSWORD '<new password>'"
+printf 'SAC_PG_PASSWORD=%s\n' '<new password>' | fly secrets import --app sac-preprod-query-api
+```
 
 ## 3. Secrets (once)
 
@@ -105,16 +125,21 @@ Merge to `main`, or run the **deploy** workflow. It builds the agent release (ar
 `agent-release`, version `1.0.<run number>`) on Windows, pushes the eight images to Fly.io's
 registry tagged with the commit, runs `migrate` in the migrate app (its output is in the run's log,
 and a failure stops the run), then deploys each app with that commit's image. Every later release is
-the same run. The first deploy gives the edge an IPv6 address and the dashboard a shared IPv4 and an
-IPv6 address.
+the same run. It allocates no public addresses: §1 step 3 did.
 
 ## 6. DNS and the dashboard's certificate (once)
 
+Neither hostname may sit behind a proxy such as Cloudflare's orange cloud: the edge terminates TLS
+itself and needs the device's client certificate, and Fly.io validates the analyst hostname against
+the dashboard's own address. Create every record as plain DNS.
+
 - `fly ips list --app sac-preprod-edge`: an `A` record (the dedicated IPv4) and an `AAAA` record for
   the device hostname.
-- `fly certs add <analyst-fqdn> --app sac-preprod-dashboard` prints the records for the analyst
-  hostname (`A` and `AAAA`, or a `CNAME`); `fly certs check <analyst-fqdn> --app
-  sac-preprod-dashboard` shows when the certificate is issued.
+- `fly certs add <analyst-fqdn> --app sac-preprod-dashboard`, then
+  `fly certs setup <analyst-fqdn> --app sac-preprod-dashboard` prints the records for the analyst
+  hostname: an `A` (the shared IPv4) and an `AAAA`. `fly certs check <analyst-fqdn> --app
+  sac-preprod-dashboard` shows when the certificate is issued, usually within minutes of the records
+  resolving.
 
 ## 7. The agents' read-only token (once)
 

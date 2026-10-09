@@ -63,7 +63,8 @@ test('an empty required value is refused, by name', () => {
     assert.doesNotMatch(err.message, new RegExp(`"${APP_ID_ROW}"`));
     return true;
   });
-  assert.throws(() => parseTestbed(filled({ 'Second user': '' }), env), /fill in "Second user" in the Values table/);
+  // One signed-in user is enough: the second user is optional.
+  assert.equal(parseTestbed(filled({ 'Second user': '' }), env).secondUser, '');
 });
 
 test('a malformed value is refused, by name', () => {
