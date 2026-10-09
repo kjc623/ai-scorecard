@@ -321,6 +321,28 @@ func TestAMalformedFrameIsRefused(t *testing.T) {
 	}
 }
 
+// LastServed names when a tool's hook last reached the relay with a frame it could read; a refused
+// frame and another tool's hook leave it as it was.
+func TestLastServedFollowsTheTool(t *testing.T) {
+	r := newRelay(t, newPipeline(t, &memSink{}, testBundle(protocol.ModeM1)), &stubClassifier{})
+	bad := evaluateFrame(t, "cursor", "hello")
+	bad.Version = 9
+	_, served := ask(t, r, bad)
+	waitServed(t, served)
+	if got := r.LastServed("cursor"); !got.IsZero() {
+		t.Fatalf("LastServed after a refused frame = %v", got)
+	}
+	before := time.Now()
+	_, served = ask(t, r, evaluateFrame(t, "claude_code", "hello"))
+	waitServed(t, served)
+	if got := r.LastServed("claude_code"); got.Before(before) || got.After(time.Now()) {
+		t.Fatalf("LastServed after a hook = %v, want the time it arrived", got)
+	}
+	if got := r.LastServed("cursor"); !got.IsZero() {
+		t.Fatalf("LastServed of a tool whose hook did not run = %v", got)
+	}
+}
+
 // promptsProbe records what reaches the relay's Prompts.
 type promptsProbe struct {
 	mu   sync.Mutex

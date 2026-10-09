@@ -235,3 +235,46 @@ func TestProviderTogglesThroughTheRegistry(t *testing.T) {
 		t.Fatalf("%d scans, want one per start", scanner.count())
 	}
 }
+
+// fixedScanner returns the same records at every scan.
+type fixedScanner []discovery.Record
+
+func (s fixedScanner) Scan(context.Context, *policy.Bundle) ([]discovery.Record, []error) {
+	return s, nil
+}
+
+// Installed reports what the last scan found, with the lowest release among several installs and
+// an unknown version only when no record carried one; before a scan and after Stop it reports
+// nothing.
+func TestInstalledReadsTheLastScan(t *testing.T) {
+	recs := fixedScanner{
+		{AppKey: "claude_code", Version: "2.1.295"},
+		{AppKey: "claude_code", Version: "2.1.40"},
+		{AppKey: "claude_code", Version: ""},
+		{AppKey: "codex", Version: ""},
+		{AppKey: "cursor", Version: "custom build"},
+		{AppKey: "cursor", Version: "1.7.52"},
+	}
+	ticks := newTicks()
+	p := New(Config{Scanners: []Scanner{recs}, Emitter: &fakeEmitter{}, After: ticks.after})
+	if _, ok := p.Installed("claude_code"); ok {
+		t.Fatal("Installed reports an app before any scan")
+	}
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for app, want := range map[string]string{"claude_code": "2.1.40", "codex": "", "cursor": "1.7.52"} {
+		if v, ok := p.Installed(app); !ok || v != want {
+			t.Errorf("Installed(%s) = %q, %v; want %q", app, v, ok, want)
+		}
+	}
+	if _, ok := p.Installed("copilot_cli"); ok {
+		t.Error("Installed reports an app the scan did not find")
+	}
+	if err := p.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := p.Installed("claude_code"); ok {
+		t.Error("Installed reports the last scan after Stop")
+	}
+}

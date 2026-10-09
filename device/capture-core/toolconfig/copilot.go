@@ -408,7 +408,8 @@ func (c *Copilot) Remove() error {
 }
 
 // copilotTool describes Copilot to its provider: OTel only, with the CLI's prompt logging following
-// the CLI's own collection mode.
+// the CLI's own collection mode. 1.0.4 is the first CLI release with an OTel export; the IDE's
+// version is checked as the extension's part (Unenforced).
 var copilotTool = tool{
 	key:            CopilotTool,
 	collector:      protocol.CollectorToolConfigCopilot,
@@ -417,6 +418,8 @@ var copilotTool = tool{
 	supported:      copilotSupported,
 	otel:           true,
 	otelOnly:       true,
+	versionApp:     "copilot_cli",
+	minVersion:     "1.0.4",
 }
 
 // NewCopilot returns the tool_config_copilot collector over w.

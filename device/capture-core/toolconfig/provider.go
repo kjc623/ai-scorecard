@@ -3,6 +3,8 @@ package toolconfig
 import (
 	"context"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,7 +30,14 @@ type tool struct {
 	// cliFingerprint is the catalog fingerprint of the tool's CLI when that is an app of its own,
 	// whose prompt logging follows its own collection mode.
 	cliFingerprint string
+	// versionApp is the catalog app whose installed version is checked against minVersion, the
+	// first release that honours every setting the agent writes for the tool. Empty checks none.
+	versionApp, minVersion string
 }
+
+// recentEvents is how long a tool that runs with the agent's configuration in place may send no
+// event before its row is degraded with no_recent_events.
+const recentEvents = 24 * time.Hour
 
 // overridable is a Writer whose managed file a user's own configuration can override.
 type overridable interface {
@@ -46,8 +55,17 @@ type Config struct {
 	// Executable returns the running capture-core's path, which the tool's hooks run. nil is
 	// os.Executable.
 	Executable func() (string, error)
-	Log        core.Logger
-	Clock      func() time.Time
+	// InstalledVersion returns the version of a catalog app the inventory's last scan found, ok
+	// false when it found none. nil checks no version.
+	InstalledVersion func(appKey string) (version string, ok bool)
+	// LastEvent returns when the tool (its endpoint.tools key) last sent the agent an OTel record
+	// or a hook, zero when it has not since the service started. LastRunning returns when a
+	// process of a catalog app was last seen running: now while one runs, zero when none was
+	// seen. Without both, no_recent_events is not reported.
+	LastEvent   func(tool string) time.Time
+	LastRunning func(appKey string) time.Time
+	Log         core.Logger
+	Clock       func() time.Time
 	// Watcher, when set, watches the tool's managed configuration while the provider runs and has
 	// it applied again when something else changes it.
 	Watcher *Watcher
@@ -72,10 +90,14 @@ type Provider struct {
 	attempted   bool // an apply ran since Start; applied, installed and writeErr describe it
 	applied     Desired
 	installed   bool
+	unsupported bool // the installed version is older than the tool's minimum, so nothing was written
 	writeErr    error
 	startedAt   time.Time
 	lastSuccess time.Time
-	counters    *core.CounterSet
+	// inPlaceSince is when the configuration was last written after a run of failed, skipped or
+	// no applies, or after a change made outside the agent; zero while it is not in place.
+	inPlaceSince time.Time
+	counters     *core.CounterSet
 	// tampered: a comparison found the applied configuration changed by something other than the
 	// agent. It holds until a health report has carried it and a later comparison is clean.
 	tampered       bool
@@ -180,6 +202,7 @@ func (p *Provider) Start(context.Context) error {
 	}
 	p.running = true
 	p.attempted = false
+	p.inPlaceSince = time.Time{}
 	p.startedAt = p.cfg.Clock()
 	want, have := p.want, p.haveWant
 	p.mu.Unlock()
@@ -228,7 +251,7 @@ func (p *Provider) ApplyPolicy(b policy.Bundle) error {
 	p.mu.Lock()
 	p.want, p.haveWant = d, true
 	running := p.running
-	done := p.attempted && p.applied == d && p.installed && p.writeErr == nil
+	done := p.attempted && p.applied == d && p.installed && !p.unsupported && p.writeErr == nil
 	p.mu.Unlock()
 	if !running || !p.tool.supported || done {
 		return nil
@@ -236,21 +259,34 @@ func (p *Provider) ApplyPolicy(b policy.Bundle) error {
 	return p.apply(d)
 }
 
-// apply writes d when the tool is installed and records the outcome.
+// apply writes d when the tool is installed at a version that honours it, and records the outcome.
 func (p *Provider) apply(d Desired) error {
 	installed := p.w.Installed()
+	unsupported := false
 	var err error
 	if installed {
-		err = p.w.Apply(d)
+		var version string
+		if version, unsupported = p.belowMinimum(); unsupported {
+			p.cfg.Log.Printf("toolconfig: %s: version %s is older than %s, the first that honours the agent's settings; nothing was written",
+				p.tool.key, version, p.tool.minVersion)
+		} else {
+			err = p.w.Apply(d)
+		}
 	}
 	now := p.cfg.Clock()
 	p.mu.Lock()
 	p.attempted = true
 	p.applied = d
 	p.installed = installed
+	p.unsupported = unsupported
 	p.writeErr = err
-	if installed && err == nil {
+	if installed && !unsupported && err == nil {
 		p.lastSuccess = now
+		if p.inPlaceSince.IsZero() {
+			p.inPlaceSince = now
+		}
+	} else {
+		p.inPlaceSince = time.Time{}
 	}
 	p.mu.Unlock()
 	if err != nil {
@@ -263,15 +299,16 @@ func (p *Provider) apply(d Desired) error {
 // checkDrift compares the tool's configuration with what was last applied. When the agent's keys
 // are no longer in place it applies them again and marks the row tampered; a failed re-apply is
 // tried again at the next comparison. A clean comparison after a health report has carried the
-// tamper clears it. A failed apply that no outside change caused waits for the next bundle.
+// tamper clears it. A failed apply that no outside change caused, or a release too old to be
+// written for, waits for the next bundle.
 func (p *Provider) checkDrift() {
 	p.life.Lock()
 	defer p.life.Unlock()
 	p.mu.Lock()
-	running, attempted, installed, writeErr := p.running, p.attempted, p.installed, p.writeErr
+	running, attempted, installed, unsupported, writeErr := p.running, p.attempted, p.installed, p.unsupported, p.writeErr
 	applied, tampered := p.applied, p.tampered
 	p.mu.Unlock()
-	if !p.tool.supported || !running || !attempted || !installed || (writeErr != nil && !tampered) {
+	if !p.tool.supported || !running || !attempted || !installed || unsupported || (writeErr != nil && !tampered) {
 		return
 	}
 	if writeErr == nil {
@@ -285,20 +322,92 @@ func (p *Provider) checkDrift() {
 		}
 		p.mu.Lock()
 		p.tampered, p.tamperReported = true, false
+		p.inPlaceSince = time.Time{}
 		p.mu.Unlock()
 	}
 	p.cfg.Log.Printf("toolconfig: %s: %s was changed outside the agent; applying the agent's settings again", p.tool.key, p.w.Path())
 	_ = p.apply(applied)
 }
 
+// belowMinimum reports whether the inventory's last scan found the tool at a version older than its
+// minimum, and that version. An unknown version is not below it.
+func (p *Provider) belowMinimum() (string, bool) {
+	if p.tool.versionApp == "" || p.cfg.InstalledVersion == nil {
+		return "", false
+	}
+	version, ok := p.cfg.InstalledVersion(p.tool.versionApp)
+	return version, ok && olderRelease(version, p.tool.minVersion)
+}
+
+// olderRelease reports whether version is a lower release than minimum, comparing the leading
+// dotted numbers (2.1.49 is older than 2.1.223, and 2.1.295.0 is not older than 2.1.295). A
+// version that does not start with a number is unknown, and not older.
+func olderRelease(version, minimum string) bool {
+	v, ok := releaseNumbers(version)
+	m, _ := releaseNumbers(minimum)
+	if !ok {
+		return false
+	}
+	for i := 0; i < max(len(v), len(m)); i++ {
+		var a, b int
+		if i < len(v) {
+			a = v[i]
+		}
+		if i < len(m) {
+			b = m[i]
+		}
+		if a != b {
+			return a < b
+		}
+	}
+	return false
+}
+
+// releaseNumbers reads the dotted numbers a version starts with, stopping at the first part that
+// is not a number (the 52 of 1.7.52-beta is read).
+func releaseNumbers(v string) ([]int, bool) {
+	var out []int
+	for _, part := range strings.Split(strings.TrimPrefix(strings.TrimSpace(v), "v"), ".") {
+		digits := part[:len(part)-len(strings.TrimLeft(part, "0123456789"))]
+		n, err := strconv.Atoi(digits)
+		if err != nil {
+			break
+		}
+		out = append(out, n)
+		if len(digits) < len(part) {
+			break
+		}
+	}
+	return out, len(out) > 0
+}
+
+// quiet reports whether a process of the tool was seen running within the last day while the
+// agent's configuration had been in place all that day, and the tool sent no event in it.
+func (p *Provider) quiet(inPlaceSince time.Time) bool {
+	if p.cfg.LastEvent == nil || p.cfg.LastRunning == nil || inPlaceSince.IsZero() {
+		return false
+	}
+	dayAgo := p.cfg.Clock().Add(-recentEvents)
+	if inPlaceSince.After(dayAgo) || p.cfg.LastEvent(p.tool.key).After(dayAgo) {
+		return false
+	}
+	for app, tool := range toolByApp {
+		if tool == p.tool.key && p.cfg.LastRunning(app).After(dayAgo) {
+			return true
+		}
+	}
+	return false
+}
+
 // Health implements core.Provider: tampered while a change made outside the agent is being
-// reported, else healthy only while the file on disk holds the agent's keys, no user's
-// configuration overrides them, and every installed part of the tool has a machine-wide
-// configuration the agent can write (else degraded with tool_version_unsupported).
+// reported, else healthy only while the installed version honours the agent's settings, the file
+// on disk holds the agent's keys, no user's configuration overrides them, every installed part of
+// the tool has a machine-wide configuration the agent can write (else degraded with
+// tool_version_unsupported), and the tool, when it ran in the last day, sent an event in it.
 func (p *Provider) Health() core.Health {
 	p.mu.Lock()
-	running, attempted, installed, writeErr := p.running, p.attempted, p.installed, p.writeErr
-	applied, since, last, tampered := p.applied, p.startedAt, p.lastSuccess, p.tampered
+	running, attempted, installed, unsupported, writeErr := p.running, p.attempted, p.installed, p.unsupported, p.writeErr
+	applied, since, last, tampered, inPlaceSince := p.applied, p.startedAt, p.lastSuccess, p.tampered, p.inPlaceSince
 	p.mu.Unlock()
 	switch {
 	case !p.tool.supported:
@@ -312,6 +421,8 @@ func (p *Provider) Health() core.Health {
 		p.tamperReported = p.tampered
 		p.mu.Unlock()
 		return p.counters.Snapshot(protocol.StateTampered, protocol.DetailConfigTampered, since, last)
+	case unsupported:
+		return p.counters.Snapshot(protocol.StateDegraded, protocol.DetailToolVersionUnsupported, since, last)
 	case writeErr != nil:
 		return p.counters.Snapshot(protocol.StateDegraded, protocol.DetailConfigWriteFailed, since, last)
 	}
@@ -323,6 +434,9 @@ func (p *Provider) Health() core.Health {
 	}
 	if pw, ok := p.w.(partialWriter); ok && pw.Unenforced() {
 		return p.counters.Snapshot(protocol.StateDegraded, protocol.DetailToolVersionUnsupported, since, last)
+	}
+	if p.quiet(inPlaceSince) {
+		return p.counters.Snapshot(protocol.StateDegraded, protocol.DetailNoRecentEvents, since, last)
 	}
 	return p.counters.Snapshot(protocol.StateHealthy, protocol.DetailNone, since, last)
 }

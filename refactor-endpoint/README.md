@@ -82,7 +82,7 @@ The Plan column gives the plan's task id. "Built" is ticked when the task's "Don
 | 47 | [Proxy safety valves](47-proxy-safety-valves/TASK.md) | E36 | 46 | | [x] | [ ] |
 | **Phase 5: Components, health, uninstall** | | | | | | |
 | 48 | [Supervised components](48-supervised-components/TASK.md) | E37 | 06 | | [x] | [ ] |
-| 49 | [Per-tool health in the cloud](49-collector-health/TASK.md) | E39 | 27, 29, 31, 38 | | [ ] | [ ] |
+| 49 | [Per-tool health in the cloud](49-collector-health/TASK.md) | E39 | 27, 29, 31, 38 | | [x] | [ ] |
 | 50 | [Uninstall restores the machine](50-uninstall-cleanup/TASK.md) | E40 | 37, 38, 44 | | [x] | [ ] |
 | **Phase 6: Verification** | | | | | | |
 | 51 | [Performance budgets](51-performance-budgets/TASK.md) | E42 | 36, 23 | | [x] | [ ] |

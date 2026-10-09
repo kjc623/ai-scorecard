@@ -326,12 +326,15 @@ func (c *Cursor) Remove() error {
 	return c.backup.drop()
 }
 
-// cursorTool describes Cursor to its provider: hooks only, with no managed-only setting.
+// cursorTool describes Cursor to its provider: hooks only, with no managed-only setting. 1.7 is the
+// first release with hooks.
 var cursorTool = tool{
 	key:         CursorTool,
 	collector:   protocol.CollectorToolConfigCursor,
 	fingerprint: CursorFingerprint,
 	supported:   cursorSupported,
+	versionApp:  "cursor",
+	minVersion:  "1.7.0",
 }
 
 // NewCursor returns the tool_config_cursor collector over w.

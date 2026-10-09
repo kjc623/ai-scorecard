@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/shadow-ai-capture/device/capture-core/core"
 	"github.com/shadow-ai-capture/device/capture-core/policy"
@@ -349,6 +350,170 @@ func TestProviderHealthReadsTheFile(t *testing.T) {
 	writeFile(t, path, []byte(`{"env":{"CLAUDE_CODE_ENABLE_TELEMETRY":"0"}}`))
 	if h := p.Health(); h.State != protocol.StateDegraded || h.Detail != protocol.DetailConfigWriteFailed {
 		t.Fatalf("health = %s/%s, want degraded/config_write_failed", h.State, h.Detail)
+	}
+}
+
+// A tool the inventory's last scan finds below its minimum version is degraded with
+// tool_version_unsupported and nothing is written; once the scan finds a release that honours the
+// settings, the next bundle writes them. An unknown version, or no scan, does not hold the write
+// back.
+func TestProviderBelowTheMinimumVersionWritesNothing(t *testing.T) {
+	w, path := newTestWriter(t)
+	version, found := "2.1.48", true
+	var asked []string
+	p := newProvider(supportedTool, w, Config{
+		Token:      func() string { return testToken },
+		Executable: func() (string, error) { return testExe, nil },
+		InstalledVersion: func(app string) (string, bool) {
+			asked = append(asked, app)
+			return version, found
+		},
+	})
+	_ = p.ApplyPolicy(otelBundle(protocol.ModeM1))
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Stop(context.Background()) })
+	if h := p.Health(); h.State != protocol.StateDegraded || h.Detail != protocol.DetailToolVersionUnsupported {
+		t.Fatalf("at 2.1.48: health = %s/%s, want degraded/tool_version_unsupported", h.State, h.Detail)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("the managed file was written for a release older than the minimum")
+	}
+	if len(asked) == 0 || asked[0] != "claude_code" {
+		t.Fatalf("the version was asked for %v, want claude_code", asked)
+	}
+	// A file the agent did not write for an old release is not drift.
+	p.checkDrift()
+	if h := p.Health(); h.State != protocol.StateDegraded || h.Detail != protocol.DetailToolVersionUnsupported {
+		t.Fatalf("after a drift check: health = %s/%s, want degraded/tool_version_unsupported", h.State, h.Detail)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("a drift check wrote the file for a release older than the minimum")
+	}
+
+	version = "2.1.49"
+	if err := p.ApplyPolicy(otelBundle(protocol.ModeM1)); err != nil {
+		t.Fatal(err)
+	}
+	if h := p.Health(); h.State != protocol.StateHealthy {
+		t.Fatalf("at the minimum: health = %s/%s, want healthy", h.State, h.Detail)
+	}
+
+	for _, tc := range []struct {
+		version string
+		found   bool
+	}{{"", true}, {"nightly", true}, {"1.0.0", false}} {
+		_ = p.Stop(context.Background())
+		version, found = tc.version, tc.found
+		_ = p.Start(context.Background())
+		if h := p.Health(); h.State != protocol.StateHealthy {
+			t.Fatalf("version %q found %v: health = %s/%s, want healthy", tc.version, tc.found, h.State, h.Detail)
+		}
+	}
+}
+
+// Each tool names the app whose version is checked and a minimum that is a release.
+func TestToolsHaveAMinimumVersion(t *testing.T) {
+	for _, tl := range []tool{claudeCodeTool, codexTool, copilotTool, cursorTool} {
+		if tl.versionApp == "" || olderRelease(tl.minVersion, "0.0.1") {
+			t.Errorf("%s: version app %q, minimum %q", tl.key, tl.versionApp, tl.minVersion)
+		}
+		if got, ok := ToolForApp(tl.versionApp); !ok || got != tl.key {
+			t.Errorf("%s: the version app %s is not one of the tool's apps", tl.key, tl.versionApp)
+		}
+	}
+}
+
+func TestOlderRelease(t *testing.T) {
+	for _, tc := range []struct {
+		version, minimum string
+		older            bool
+	}{
+		{"2.1.48", "2.1.49", true},
+		{"2.1.49", "2.1.49", false},
+		{"2.1.295", "2.1.49", false},
+		{"2.1.295.0", "2.1.295", false},
+		{"2.0", "2.1.49", true},
+		{"v0.130.2", "0.131.0", true},
+		{"1.7.52-beta", "1.7.0", false},
+		{"1.6.99 (user setup)", "1.7.0", true},
+		{"", "1.0.4", false},
+		{"unknown", "1.0.4", false},
+	} {
+		if got := olderRelease(tc.version, tc.minimum); got != tc.older {
+			t.Errorf("olderRelease(%q, %q) = %v, want %v", tc.version, tc.minimum, got, tc.older)
+		}
+	}
+}
+
+// A tool that ran in the last day, with the agent's configuration in place all that day, and sent
+// no OTel record or hook in it is degraded with no_recent_events. A recent event, a tool that did
+// not run, a configuration written less than a day ago, or no process monitor keeps it healthy.
+func TestProviderNoRecentEvents(t *testing.T) {
+	w, _ := newTestWriter(t)
+	start := time.Date(2026, 10, 8, 9, 0, 0, 0, time.UTC)
+	now := start
+	var lastEvent, running time.Time
+	var askedTool string
+	ranApps := map[string]bool{}
+	p := newProvider(supportedTool, w, Config{
+		Token:      func() string { return testToken },
+		Executable: func() (string, error) { return testExe, nil },
+		Clock:      func() time.Time { return now },
+		LastEvent: func(tool string) time.Time {
+			askedTool = tool
+			return lastEvent
+		},
+		LastRunning: func(app string) time.Time {
+			ranApps[app] = true
+			if app == "claude_code" {
+				return running
+			}
+			return time.Time{}
+		},
+	})
+	_ = p.ApplyPolicy(otelBundle(protocol.ModeM1))
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Stop(context.Background()) })
+	check := func(when string, want protocol.CollectorState, detail protocol.Detail) {
+		t.Helper()
+		if h := p.Health(); h.State != want || h.Detail != detail {
+			t.Fatalf("%s: health = %s/%s, want %s/%s", when, h.State, h.Detail, want, detail)
+		}
+	}
+
+	now, running = start.Add(23*time.Hour), start.Add(23*time.Hour)
+	check("configured 23 hours ago", protocol.StateHealthy, protocol.DetailNone)
+
+	now, running = start.Add(25*time.Hour), start.Add(25*time.Hour)
+	check("running, nothing sent for a day", protocol.StateDegraded, protocol.DetailNoRecentEvents)
+	if askedTool != "claude_code" || !ranApps["claude_code"] || ranApps["codex"] {
+		t.Fatalf("asked for the events of %q and the processes of %v", askedTool, ranApps)
+	}
+
+	lastEvent = now.Add(-time.Hour)
+	check("an event an hour ago", protocol.StateHealthy, protocol.DetailNone)
+
+	lastEvent, running = start, now.Add(-25*time.Hour)
+	check("not run in the last day", protocol.StateHealthy, protocol.DetailNone)
+
+	running = now.Add(-23 * time.Hour)
+	check("stopped 23 hours ago, nothing sent since", protocol.StateDegraded, protocol.DetailNoRecentEvents)
+
+	// A restart starts the day again.
+	_ = p.Stop(context.Background())
+	_ = p.Start(context.Background())
+	check("just restarted", protocol.StateHealthy, protocol.DetailNone)
+
+	q := newTestProvider(t, w)
+	_ = q.ApplyPolicy(otelBundle(protocol.ModeM1))
+	_ = q.Start(context.Background())
+	t.Cleanup(func() { _ = q.Stop(context.Background()) })
+	if h := q.Health(); h.State != protocol.StateHealthy {
+		t.Fatalf("without the event and process seams: health = %s/%s", h.State, h.Detail)
 	}
 }
 

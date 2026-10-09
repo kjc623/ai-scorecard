@@ -96,6 +96,44 @@ func TestReportWritesCollectorStateAndDeviceActivity(t *testing.T) {
 	}
 }
 
+// The per-tool collectors' causes are in the shared vocabulary, so a report carrying them passes
+// validation and each row keeps its cause.
+func TestReportStoresToolCollectorCauses(t *testing.T) {
+	st := storetest.New()
+	st.SetCollectors("egress_proxy", "tool_config_claude_code", "tool_config_codex", "tool_config_copilot",
+		"tool_config_cursor", "otel_receiver", "hook_relay")
+	seed(st)
+	svc, err := New(st, Config{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	at := time.Date(2026, 10, 8, 9, 0, 0, 0, time.UTC)
+	req := validReport(at)
+	rows := map[string]struct {
+		state  protocol.CollectorState
+		detail protocol.Detail
+	}{
+		"tool_config_claude_code": {protocol.StateDegraded, protocol.DetailConfigTampered},
+		"tool_config_codex":       {protocol.StateDegraded, protocol.DetailNoRecentEvents},
+		"tool_config_copilot":     {protocol.StateDegraded, protocol.DetailToolVersionUnsupported},
+		"tool_config_cursor":      {protocol.StateAbsent, protocol.DetailDisabledByPolicy},
+		"otel_receiver":           {protocol.StateDegraded, protocol.DetailConfigWriteFailed},
+		"hook_relay":              {protocol.StateAbsent, protocol.DetailToolNotInstalled},
+	}
+	for collector, r := range rows {
+		req.Collectors = append(req.Collectors, protocol.HealthReport{Collector: collector, State: r.state, Detail: r.detail})
+	}
+	if _, err := svc.Report(context.Background(), "tenant-1", "device-1", req); err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+	for collector, r := range rows {
+		row, ok := st.CollectorStateAt("tenant-1", "device-1", collector)
+		if !ok || row.State != string(r.state) || row.ErrorCode != string(r.detail) {
+			t.Errorf("%s: row = %+v (%v), want %s with %s", collector, row, ok, r.state, r.detail)
+		}
+	}
+}
+
 func TestReportRefusesUnknownCollector(t *testing.T) {
 	st := storetest.New()
 	st.SetCollectors("egress_proxy")

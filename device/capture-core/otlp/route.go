@@ -51,6 +51,7 @@ func (r *Receiver) routeLogs(ctx context.Context, from Sender, req *collogspb.Ex
 		}
 		r.counters.Incr(protocol.CounterObserved, n)
 		if norm := r.normalizerFor(serviceName(rl.GetResource())); norm != nil {
+			r.markReceived(norm, n)
 			norm.Logs(ctx, from, rl)
 		}
 	}
@@ -64,6 +65,7 @@ func (r *Receiver) routeSpans(ctx context.Context, from Sender, req *coltracepb.
 		}
 		r.counters.Incr(protocol.CounterObserved, n)
 		if norm := r.normalizerFor(serviceName(rs.GetResource())); norm != nil {
+			r.markReceived(norm, n)
 			norm.Spans(ctx, from, rs)
 		}
 	}

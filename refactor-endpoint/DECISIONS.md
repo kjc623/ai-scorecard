@@ -2405,3 +2405,70 @@ source contradicts the current output, so `Render` and `canEnforce` are unchange
   Windows administrator), the COM firewall removal, the registry and certutil paths of the cleanup,
   the MSI's action and `releaseChecks`, and `snapshot.ps1` (no PowerShell here). They compile and
   vet under `GOOS=windows`; the device phase runs the brief's "On the device" section.
+
+## 2026-10-09, task 49
+
+- **"The device detail view" is the Search page's device row detail** (`explore-render.js`), the
+  only per-device view the dashboard has (narrowest reading). Opening a device row reads that
+  device's collector rows and shows the "Collectors" table: collector, state, cause in words
+  (`COLLECTOR_DETAILS` in `vocab.js`, one entry per device detail, held equal to
+  `device/protocol` by `test/parity.test.mjs`) and last report time. A `disabled_by_policy` row
+  shows "Off in policy", untinted, with no cause.
+- **The closed query is a registry source, `ops.collector_state`**, read as a DSL list document
+  (`dsl.js` `buildListDocument`), not an eleventh template: the templates are the ten questions.
+  It selects device, collector, state, `error_code`, `last_report_at` and `last_success_at`, and
+  needs the `device` capability (viewer and up), as `mart.v_device_liveness` does.
+- **Not person-resolving, so not audited (checked against `audit.js` `auditDecision`):** a read is
+  audited when it filters on `subject`, its source is `subjectBearing`, it is a single-record read,
+  it reads `ops.audit`, or a k-suppressed aggregate resolves below k. The source names no person
+  (no `user_ref`, name or hostname) and is `subjectBearing: false`, so none applies;
+  `audit-plan.test.mjs` asserts the plan writes no audit row.
+- **`inventory.Installed` is a method of the inventory provider**, `(*Provider).Installed(appKey)`:
+  the last scan belongs to the running provider. It gives the lowest release when an app is
+  installed more than once, and nothing before the first scan or after the scanner stops, so with
+  the inventory switched off no version is checked.
+- **Each tool's minimum is in its description in `toolconfig`** (`versionApp`, `minVersion`). Below
+  it the provider writes nothing and the row is `degraded`/`tool_version_unsupported`; a version
+  the scan could not read does not hold the write back. As with `Installed`, an update is picked up
+  by the next bundle or restart. The drift watcher (task 34) does not compare a provider held back
+  this way, since nothing was written.
+- **Minimum versions (vendor facts, read 2026-10-09):**
+  - Claude Code **2.1.49**, from `anthropics/claude-code` `CHANGELOG.md` (newest 2.1.295): 2.0.58
+    first reads `C:\Program Files\ClaudeCode\managed-settings.json`, and 2.1.49 stops non-managed
+    settings disabling managed hooks. `allowManagedHooksOnly` has no introduction entry (it is named
+    from 2.1.101); the 2.1.223 per-key `env` merge matters only beside server-managed or MDM
+    settings and is not required. **[device]** confirm on the installed version.
+  - Codex **0.131.0**, from `openai/codex` release tags (raw files at each tag):
+    `codex-rs/config/src/config_requirements.rs` has managed hooks from 0.124.0 and
+    `allow_managed_hooks_only` from 0.131.0; at 0.131.0 the loader reads the ProgramData layer and
+    `[otel]` has `otlp-http`.
+  - Copilot CLI **1.0.4**, from `github/copilot-cli` `changelog.md` (1.0.4 of 2026-03-11 "Enables
+    OpenTelemetry instrumentation"; newest 1.0.94). Whether 1.0.4 already reads the standard OTLP
+    variable names is not in the changelog. The IDE side keeps task 31's VS Code 1.127 check. The
+    check is per tool, so a CLI below 1.0.4 also holds back the VS Code policy values.
+  - Cursor **1.7.0**: hooks arrived in Cursor 1.7 per task 38's npm sources (`cursor-hooks` 1.1.6
+    mirrors the 1.7-era hooks page); no first-party page is reachable. **[device]** confirm.
+- **`no_recent_events`**: the row is degraded when a process of one of the tool's catalog apps
+  (`toolByApp`) was seen running in the last 24 hours, the agent's configuration had been in place
+  the whole 24 hours (a restart, a failed or skipped apply, or a drift re-apply starts it again),
+  and neither the OTLP receiver nor the hook relay had anything from the tool in that time. The
+  seams are `otlp.Receiver.LastReceived(normalizer)`, `hooks.Relay.LastServed(tool)` and
+  `procmon.Provider.LastRunning(app)`, all in memory since the service started; the service maps
+  each tool to its normalizer (`claude-code`, `codex`, `copilot`). It is checked after every other
+  cause, so it never hides one.
+- **Cursor and the Copilot CLI have no `windows_exe` in the catalog** (Cursor is matched by
+  publisher, the CLI by npm package), so the process monitor never sees them run and their rows do
+  not report `no_recent_events` until the catalog gains one. Adding signals is a schema change
+  outside this brief.
+- **Server**: control-api validates a report with `protocol.HealthRequest.Validate`, which checks
+  each detail against `AllDetails`, so `no_recent_events` passes once it is in the vocabulary
+  (`TestReportStoresToolCollectorCauses`). `ops.collector_state.error_code` has no CHECK, so there
+  is no schema change and no migration. `check-vocab` lists the new detail as device-only.
+- **Task 06's open item is not closed here.** `gap_reasons` is computed by `coverageStatement` in
+  `blocks.js`, not by the new query, so the new query is not the natural place; the fix stays
+  `AND v.expected` there (or the schema change task 06 names).
+- **Rebased onto the integration branch with task 34 merged.** The brief's "On the device" step 3
+  expects `degraded`/`config_tampered`; since task 34 a drift is reported `tampered` with
+  `config_tampered`.
+- **Not run here:** the existing Windows tests of the touched packages. The new device tests are
+  platform-neutral and ran on Linux; the packages compile and vet under `GOOS=windows`.

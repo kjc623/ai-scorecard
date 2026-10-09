@@ -666,6 +666,49 @@ export const SOURCES = Object.freeze({
     ]),
   }),
 
+  'ops.collector_state': Object.freeze({
+    id: 'ops.collector_state',
+    kind: 'list',
+    label: "One device's collectors, each with its state and cause (ops.collector_state)",
+    from: 'ops.collector_state cs',
+    tenantColumn: 'cs.tenant_id',
+    costClass: 'operational',
+    time: null,
+    bucket: null,
+    dimensions: Object.freeze({
+      device: dim('device', 'cs.device_id', 'uuid', { ...DEVICE_CARD }),
+      collector: dim('collector', 'cs.collector', 'text', { ...COLLECTOR_CARD }),
+      collector_state: dim('collector_state', 'cs.state', 'text', {
+        ...COLLECTOR_STATE_CARD,
+        values: ['healthy', 'degraded', 'absent', 'tampered'],
+      }),
+    }),
+    measures: Object.freeze({}),
+    grain: Object.freeze(['device', 'collector']),
+    order: Object.freeze([
+      { dim: 'device', dir: 'asc' },
+      { dim: 'collector', dir: 'asc' },
+    ]),
+    subjectCount: null,
+    kSuppression: false,
+    // No column names a person: the row is a device's component, its state and the cause the
+    // device reported (error_code holds the closed detail vocabulary).
+    subjectBearing: false,
+    requiresSubjectScope: false,
+    indexes: Object.freeze(['ops.collector_state PK (tenant_id, device_id, collector)']),
+    listSelect: Object.freeze([
+      'cs.device_id AS "device"',
+      'cs.collector AS "collector"',
+      'cs.state AS "collector_state"',
+      'cs.error_code AS error_code',
+      'cs.last_report_at AS last_report_at',
+      'cs.last_success_at AS last_success_at',
+    ]),
+    warnings: Object.freeze([
+      'The latest report per collector, not a history: mart.agg_device_period holds the daily rollup.',
+    ]),
+  }),
+
   'ops.coverage_snapshot': Object.freeze({
     id: 'ops.coverage_snapshot',
     kind: 'list',
@@ -1063,6 +1106,7 @@ export const SOURCE_WATERMARK = Object.freeze({
   'mart.agg_user_period': 'mart.agg_user_period',
   'mart.agg_device_period': 'mart.agg_device_period',
   'mart.v_device_liveness': null,
+  'ops.collector_state': null,
   'ops.coverage_snapshot': null,
   'ingest.submission': null,
   'mart.v_finding': null,

@@ -582,6 +582,58 @@ func TestStopClosesTheSource(t *testing.T) {
 	}
 }
 
+// LastRunning is now while an app runs, the time its last instance stopped once none does, and
+// zero for an app never seen; stopping the monitor counts what still runs as stopped then.
+func TestLastRunningFollowsTheApp(t *testing.T) {
+	h := newHarness(t)
+	var mu sync.Mutex
+	now := testNow
+	h.p.cfg.Clock = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return now
+	}
+	advance := func(d time.Duration) time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		now = now.Add(d)
+		return now
+	}
+	h.host.set(hostinfo.Process{PID: 9, Image: `C:\Program Files\cursor\Cursor.exe`, Publisher: "Anysphere", User: ada()})
+	h.start()
+	if got := h.p.LastRunning("cursor"); !got.IsZero() {
+		t.Fatalf("LastRunning before any start = %v", got)
+	}
+
+	h.send(startEvent(9, 1, "Cursor.exe"))
+	h.waitCalls(1, 0)
+	want := advance(time.Hour)
+	if got := h.p.LastRunning("cursor"); !got.Equal(want) {
+		t.Fatalf("LastRunning while running = %v, want now (%v)", got, want)
+	}
+	h.send(stopEvent(9))
+	h.waitCalls(1, 1)
+	stopped := testNow.Add(time.Hour)
+	advance(time.Hour)
+	if got := h.p.LastRunning("cursor"); !got.Equal(stopped) {
+		t.Fatalf("LastRunning after the stop = %v, want %v", got, stopped)
+	}
+
+	h.send(startEvent(10, 1, "Cursor.exe"))
+	h.waitCalls(2, 1)
+	stopped = advance(time.Minute)
+	if err := h.p.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	advance(time.Hour)
+	if got := h.p.LastRunning("cursor"); !got.Equal(stopped) {
+		t.Fatalf("LastRunning after the monitor stopped = %v, want %v", got, stopped)
+	}
+	if got := h.p.LastRunning("claude_code"); !got.IsZero() {
+		t.Fatalf("LastRunning of an app never seen = %v", got)
+	}
+}
+
 // The monitor follows endpoint.processes.enabled.
 func TestEnabledFollowsTheBundle(t *testing.T) {
 	p := New(Config{})

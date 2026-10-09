@@ -163,6 +163,13 @@ agent's keys are no longer what it applied, it writes them again and logs one li
 and the file. The tool's row is then `tampered` with `config_tampered` until a health report has
 carried it and a later comparison finds the keys in place. The agent's own writes compare clean.
 
+Each of these rows is also `degraded` with `tool_version_unsupported`, and nothing is written, while
+the inventory scanner's last scan finds the tool older than the first release that honours the
+agent's settings (Claude Code 2.1.49, Codex 0.131.0, the Copilot CLI 1.0.4, Cursor 1.7.0); a version
+the scan could not read does not hold the write back. A row is `degraded` with `no_recent_events`
+when the process monitor saw the tool run in the last 24 hours, the agent's configuration had been in
+place all that time, and neither the OTLP receiver nor the hook relay had anything from the tool.
+
 With TLS inspection on, the proxy blind-tunnels a connection from a tool whose native collector is
 enabled.
 

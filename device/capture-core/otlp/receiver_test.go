@@ -542,6 +542,33 @@ func TestRecordsWithoutANormalizerAreCountedObserved(t *testing.T) {
 	}
 }
 
+// LastReceived names when the normalizer a tool's records went to last had one; a refused export
+// and records no normalizer took leave it as it was.
+func TestLastReceivedFollowsTheNormalizer(t *testing.T) {
+	f := started(t)
+	now := time.Date(2026, 10, 8, 9, 30, 0, 0, time.UTC)
+	f.r.cfg.Clock = func() time.Time { return now }
+	if got := f.r.LastReceived("fake"); !got.IsZero() {
+		t.Fatalf("LastReceived before any export = %v", got)
+	}
+	url := "http://" + f.r.HTTPAddr() + "/v1/logs"
+	if resp := post(t, url, "application/x-protobuf", "wrong", logsRequest("hello"), false); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("a wrong token got %d", resp.StatusCode)
+	}
+	if got := f.r.LastReceived("fake"); !got.IsZero() {
+		t.Fatalf("LastReceived after a refused export = %v", got)
+	}
+	if resp := post(t, url, "application/x-protobuf", f.r.Token(), logsRequest("hello"), false); resp.StatusCode != http.StatusOK {
+		t.Fatalf("got %d", resp.StatusCode)
+	}
+	if got := f.r.LastReceived("fake"); !got.Equal(now) {
+		t.Fatalf("LastReceived after an export = %v, want %v", got, now)
+	}
+	if got := f.r.LastReceived("codex"); !got.IsZero() {
+		t.Fatalf("LastReceived of a normalizer that had nothing = %v", got)
+	}
+}
+
 // freePort returns a loopback address nothing listens on at the time of the call.
 func freePort(t *testing.T) string {
 	t.Helper()

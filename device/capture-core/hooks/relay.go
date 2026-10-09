@@ -70,6 +70,8 @@ type Relay struct {
 	running     bool
 	startedAt   time.Time
 	lastSuccess time.Time
+	// served is when each tool's hook last reached the relay with an event it could read.
+	served map[string]time.Time
 	// recording counts the answered prompts not yet handed back by the pipeline; idle is closed
 	// whenever it is zero.
 	recording int
@@ -91,7 +93,15 @@ func New(cfg Config) *Relay {
 	}
 	idle := make(chan struct{})
 	close(idle)
-	return &Relay{cfg: cfg, counters: cfg.Pipeline.Counters(protocol.RouteToolHook), startedAt: cfg.Clock(), idle: idle}
+	return &Relay{cfg: cfg, counters: cfg.Pipeline.Counters(protocol.RouteToolHook), startedAt: cfg.Clock(), served: map[string]time.Time{}, idle: idle}
+}
+
+// LastServed reports when a hook of the tool (its endpoint.tools key) last reached the relay with an
+// event it could read, zero when none has since the service started.
+func (r *Relay) LastServed(tool string) time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.served[tool]
 }
 
 // Name implements core.Provider.
@@ -173,6 +183,9 @@ func (r *Relay) Serve(conn net.Conn, peer hostinfo.User, first protocol.NativeMe
 		r.answer(conn, refusal(reason, err))
 		return
 	}
+	r.mu.Lock()
+	r.served[ev.Tool] = received
+	r.mu.Unlock()
 	answer, rec := r.decide(ev, peer, received)
 	if !r.answer(conn, decisionFrame(first.ID, answer)) {
 		r.counters.Add(protocol.CounterErrors)

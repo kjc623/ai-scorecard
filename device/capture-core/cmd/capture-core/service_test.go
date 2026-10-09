@@ -19,6 +19,7 @@ import (
 	"github.com/shadow-ai-capture/device/capture-core/core"
 	"github.com/shadow-ai-capture/device/capture-core/drain"
 	"github.com/shadow-ai-capture/device/capture-core/hostinfo"
+	"github.com/shadow-ai-capture/device/capture-core/otlp/normalizers"
 	"github.com/shadow-ai-capture/device/capture-core/state"
 	"github.com/shadow-ai-capture/device/protocol"
 )
@@ -414,5 +415,18 @@ func TestRecordedDiscoveryReachesTheEdge(t *testing.T) {
 	}
 	if log := logs.String(); !strings.Contains(log, `"msg":"envelope spooled"`) || !strings.Contains(log, `"discovery_type":"app_installed"`) {
 		t.Fatalf("the service did not log the spooled record:\n%s", log)
+	}
+}
+
+// Each tool's OTel records are looked up under the name of a normalizer the receiver registers.
+func TestToolNormalizersAreRegistered(t *testing.T) {
+	names := map[string]bool{}
+	for _, n := range normalizers.Registered(normalizers.Deps{}) {
+		names[n.Name()] = true
+	}
+	for tool, name := range toolNormalizers {
+		if !names[name] {
+			t.Errorf("%s's telemetry is looked up under %q, which no registered normalizer is named", tool, name)
+		}
 	}
 }

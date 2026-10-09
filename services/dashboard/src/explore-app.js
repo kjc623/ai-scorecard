@@ -23,7 +23,7 @@ import { readState } from './states.js';
 import {
   EXPLORE_DATASETS, EXPLORE_DEFAULT_DATASET, exploreDataset, exploreWindowPreset,
   parseExploreQuery, formatExploreQuery, checkExploreFilter,
-  buildExploreRequest, buildExploreRecordRequest, encodeExploreHash, decodeExploreHash, exploreUserInput,
+  buildExploreRequest, buildExploreRecordRequest, buildExploreCollectorsRequest, encodeExploreHash, decodeExploreHash, exploreUserInput,
 } from './explore-model.js';
 import {
   renderExploreDatasets, renderExploreWindow,
@@ -281,7 +281,16 @@ export function createExplorer({ api, content = null, export: exportApi = null, 
     const seq = ++detailSeq;
     if (dataset.detail === 'row') {
       if (!row) return state;
-      set({ detail: Object.freeze({ status: 'ready', key, row, record: null, submissionId: null }) });
+      if (dataset.id !== 'devices') {
+        set({ detail: Object.freeze({ status: 'ready', key, row, record: null, submissionId: null }) });
+        return state;
+      }
+      // A device row also lists every collector the device reported, read on its own.
+      const held = { status: 'ready', key, row, record: null, submissionId: null };
+      set({ detail: Object.freeze({ ...held, collectors: Object.freeze({ status: 'loading', result: null }) }) });
+      const result = await ask(() => buildExploreCollectorsRequest(row.device));
+      if (seq !== detailSeq) return state;
+      set({ detail: Object.freeze({ ...held, collectors: Object.freeze({ status: result.isRefusal ? 'refused' : 'ready', result }) }) });
       return state;
     }
     // A linked record may not be on the page that is loaded; its id is still enough to read it.

@@ -1,11 +1,12 @@
 // dsl.js — the typed builder for template requests.
 //
-// The pages ask the ten questions as templates. A request is checked here so a mistake is a red
-// panel in the browser rather than a 400 round trip; query-api rejects anything outside its closed
-// vocabulary either way, which is the security property. A caller supplies *values*; the template
+// The pages ask the ten questions as templates, and read a device's collectors as a list document.
+// A request is checked here so a mistake is a red panel in the browser rather than a 400 round
+// trip; query-api rejects anything outside its closed vocabulary either way, which is the security
+// property. A caller supplies *values*; the template
 // and parameter names come from vocab.js, which test/parity.test.mjs holds equal to query-api's.
 
-import { QUERY_VERSION, TEMPLATES, WINDOWS } from './vocab.js';
+import { QUERY_VERSION, SOURCES, TEMPLATES, WINDOWS } from './vocab.js';
 
 /** A refusal this client produces itself, shaped exactly like the API's error envelope. */
 export class DashboardQueryError extends Error {
@@ -83,6 +84,32 @@ function checkWindow(window) {
     throw new DashboardQueryError('bad_window', 'The window ends before it begins; it is half-open [from, to).');
   }
   return Object.freeze({ from, to });
+}
+
+/**
+ * Build a list document over a source that needs no window, for a read that is not one of the
+ * questions: equality filters on the source's own dimensions and one page of rows.
+ *
+ * @param {string} source a list source of vocab.js with `noWindow`
+ * @param {Record<string, string>} filters
+ * @param {number} limit
+ */
+export function buildListDocument(source, filters, limit) {
+  const spec = SOURCES[source];
+  if (!spec || spec.kind !== 'list' || !spec.noWindow) {
+    throw new DashboardQueryError('unknown_source', `"${String(source)}" is not a list read that needs no window.`);
+  }
+  const out = [];
+  for (const [field, value] of Object.entries(filters)) {
+    if (!spec.dimensions.includes(field)) {
+      throw new DashboardQueryError('unknown_dimension', `${source} has no field "${field}".`, { known_fields: spec.dimensions });
+    }
+    if (typeof value !== 'string' || value === '') {
+      throw new DashboardQueryError('type_mismatch', `The ${field} filter needs a value.`, { field });
+    }
+    out.push(Object.freeze({ field, op: 'eq', value }));
+  }
+  return Object.freeze({ query_version: QUERY_VERSION, source, filters: Object.freeze(out), limit });
 }
 
 /**

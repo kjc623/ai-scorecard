@@ -387,7 +387,7 @@ func (c *Codex) Remove() error {
 }
 
 // codexTool describes the Codex CLI to its provider: an OTel export, and hooks with a managed-only
-// setting.
+// setting. 0.131.0 is the first release whose requirements take allow_managed_hooks_only.
 var codexTool = tool{
 	key:         CodexTool,
 	collector:   protocol.CollectorToolConfigCodex,
@@ -395,6 +395,8 @@ var codexTool = tool{
 	supported:   codexSupported,
 	otel:        true,
 	managedOnly: true,
+	versionApp:  "codex",
+	minVersion:  "0.131.0",
 }
 
 // NewCodex returns the tool_config_codex collector over w, which is CodexFiles in the service.

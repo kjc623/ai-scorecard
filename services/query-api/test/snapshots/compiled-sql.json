@@ -1866,6 +1866,48 @@
       "bounded_cells": 20
     }
   },
+  "source:ops.collector_state:list": {
+    "result_state_hint": "none",
+    "statements": [
+      {
+        "id": "read",
+        "text": "SELECT cs.device_id AS \"device\",\n       cs.collector AS \"collector\",\n       cs.state AS \"collector_state\",\n       cs.error_code AS error_code,\n       cs.last_report_at AS last_report_at,\n       cs.last_success_at AS last_success_at\n  FROM ops.collector_state cs\n WHERE cs.tenant_id = ops.current_tenant()\n ORDER BY cs.device_id ASC NULLS LAST, cs.collector ASC NULLS LAST\n LIMIT $1::int",
+        "params": [
+          21
+        ]
+      },
+      {
+        "id": "coverage",
+        "text": "SELECT\n  (SELECT count(*) FROM ops.device d\n    WHERE d.tenant_id = ops.current_tenant() AND d.revoked_at IS NULL) AS devices_enrolled,\n  (SELECT count(*) FROM ops.device d\n    WHERE d.tenant_id = ops.current_tenant() AND d.revoked_at IS NULL\n      AND d.last_seen_at > now() - interval '24 hours') AS devices_reporting,\n  (SELECT count(*) FROM ops.coverage_snapshot v\n    WHERE v.tenant_id = ops.current_tenant()\n      AND v.snapshot_day >= $1::date AND v.snapshot_day < $2::date\n      AND v.expected) AS expected_collector_days,\n  (SELECT count(*) FROM ops.coverage_snapshot v\n    WHERE v.tenant_id = ops.current_tenant()\n      AND v.snapshot_day >= $1::date AND v.snapshot_day < $2::date\n      AND v.observed) AS observed_collector_days,\n  (SELECT coalesce(jsonb_object_agg(g.gap_reason, g.n), '{}'::jsonb)\n     FROM (SELECT coalesce(v.gap_reason, 'unknown') AS gap_reason, count(*) AS n\n             FROM ops.coverage_snapshot v\n            WHERE v.tenant_id = ops.current_tenant()\n              AND v.snapshot_day >= $1::date AND v.snapshot_day < $2::date\n              AND NOT v.observed\n            GROUP BY 1) g) AS gap_reasons",
+        "params": [
+          "2026-10-02",
+          "2026-10-03"
+        ]
+      }
+    ],
+    "meta": {
+      "source": "ops.collector_state",
+      "applied_bucket": null,
+      "native_bucket_size": null,
+      "measure_semantics": {},
+      "subject_count_basis": null,
+      "order": [
+        {
+          "by": "device",
+          "dir": "asc",
+          "key": "device"
+        },
+        {
+          "by": "collector",
+          "dir": "asc",
+          "key": "collector"
+        }
+      ],
+      "k": null,
+      "estimated_cells": 20,
+      "bounded_cells": 20
+    }
+  },
   "source:ops.coverage_snapshot:list": {
     "result_state_hint": "none",
     "statements": [

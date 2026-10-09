@@ -222,6 +222,38 @@ test('the device read is subject-level and audited; the coverage read is not', (
   assert.equal(coverageDecision.phase, 'none');
 });
 
+test("one device's collector rows name no person, so the read writes no audit row", async () => {
+  const device = '00000000-0000-4000-8000-0000000000d1';
+  const p = plan(
+    { query_version: '1', source: 'ops.collector_state', filters: [{ field: 'device', op: 'eq', value: device }], limit: 100 },
+    { now: NOW, tenant: 't1', actorId: 'viewer-1' },
+  );
+  assert.equal(p.audit.decision.required, false);
+  assert.equal(p.audit.decision.phase, 'none');
+  const read = p.statements.find((s) => s.id === 'read');
+  for (const column of ['user_ref', 'subject_name', 'hostname', 'detail']) {
+    assert.ok(!new RegExp(`\\b${column}\\b`).test(read.text.split('FROM')[0]), `the collector rows select ${column}`);
+  }
+  assert.match(read.text, /cs\.device_id = \$1::uuid/);
+  assert.deepEqual(read.params.slice(0, 1), [device]);
+
+  const rows = [
+    { device, collector: 'tool_config_claude_code', collector_state: 'degraded', error_code: 'config_tampered', last_report_at: '2026-10-02T11:00:00Z', last_success_at: '2026-10-02T10:00:00Z' },
+    { device, collector: 'tool_config_cursor', collector_state: 'absent', error_code: 'disabled_by_policy', last_report_at: '2026-10-02T11:00:00Z', last_success_at: null },
+  ];
+  const client = fakeClient({
+    read: rows,
+    coverage: [{ devices_enrolled: 1, devices_reporting: 1, expected_collector_days: 1, observed_collector_days: 1, gap_reasons: {} }],
+  });
+  const envelope = await executePlan(p, { client, now: NOW, tenant: 't1' });
+  assert.ok(!client.log.some((e) => e.kind === 'query' && e.id === 'audit_insert'), 'no audit row');
+  assert.equal(envelope.audit, undefined);
+  assert.deepEqual(envelope.data.map((r) => [r.collector, r.collector_state, r.error_code]), [
+    ['tool_config_claude_code', 'degraded', 'config_tampered'],
+    ['tool_config_cursor', 'absent', 'disabled_by_policy'],
+  ]);
+});
+
 test('the audit detail describes the question and puts subject values in subject_ref', () => {
   const validated = validate(
     baseDoc({ filters: [{ field: 'tool', op: 'eq', value: 'claude_web' }, { field: 'sanctioned_state', op: 'eq', value: 'unsanctioned' }] }),

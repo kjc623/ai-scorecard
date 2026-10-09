@@ -512,7 +512,8 @@ func (c *ClaudeCode) Remove() error {
 	return c.backup.drop()
 }
 
-// claudeCodeTool describes Claude Code to its provider.
+// claudeCodeTool describes Claude Code to its provider. 2.1.49 is the first release that reads the
+// Program Files managed file and lets no user setting disable its hooks.
 var claudeCodeTool = tool{
 	key:         ClaudeCodeTool,
 	collector:   protocol.CollectorToolConfigClaudeCode,
@@ -520,4 +521,6 @@ var claudeCodeTool = tool{
 	supported:   claudeCodeSupported,
 	otel:        true,
 	managedOnly: true,
+	versionApp:  "claude_code",
+	minVersion:  "2.1.49",
 }

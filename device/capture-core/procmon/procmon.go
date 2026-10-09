@@ -122,6 +122,14 @@ type Provider struct {
 	failed      bool
 	startedAt   time.Time
 	lastSuccess time.Time
+	// apps is, per catalog app seen since the service started, how many instances run and when
+	// the last one stopped.
+	apps map[string]*appRun
+}
+
+type appRun struct {
+	running int
+	stopped time.Time
 }
 
 type nopLogger struct{}
@@ -149,6 +157,47 @@ func newProvider(cfg Config, h host) *Provider {
 		reopen:    reopenInterval,
 		reconcile: reconcileInterval,
 		startedAt: now,
+		apps:      map[string]*appRun{},
+	}
+}
+
+// LastRunning reports when a process of the catalog app appKey was last seen running: now while
+// one runs, when the last one stopped otherwise, and zero when none was seen since the service
+// started.
+func (p *Provider) LastRunning(appKey string) time.Time {
+	p.mu.Lock()
+	a := p.apps[appKey]
+	var running int
+	var stopped time.Time
+	if a != nil {
+		running, stopped = a.running, a.stopped
+	}
+	p.mu.Unlock()
+	if running > 0 {
+		return p.cfg.Clock()
+	}
+	return stopped
+}
+
+// appStarted and appStopped count an instance of appKey in or out.
+func (p *Provider) appStarted(appKey string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	a := p.apps[appKey]
+	if a == nil {
+		a = &appRun{}
+		p.apps[appKey] = a
+	}
+	a.running++
+}
+
+func (p *Provider) appStopped(appKey string) {
+	now := p.cfg.Clock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if a := p.apps[appKey]; a != nil && a.running > 0 {
+		a.running--
+		a.stopped = now
 	}
 }
 
@@ -256,6 +305,7 @@ func (p *Provider) run(src Source, stop, done chan struct{}) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	m := &monitor{p: p, ctx: ctx, running: map[uint32]*instance{}}
+	defer m.forget()
 	defer func() {
 		if src != nil {
 			src.Close()
@@ -366,6 +416,7 @@ func (m *monitor) started(pr proc) {
 	m.p.counters.Add(protocol.CounterObserved)
 	r := m.describe(pr, keys)
 	m.running[pr.pid] = &instance{record: r, root: pr.pid, members: 1}
+	m.p.appStarted(r.AppKey)
 	m.p.cfg.Log.Printf("procmon: app:%s started (pid %d)", r.AppKey, pr.pid)
 	if err := m.p.cfg.Emitter.Emit(m.ctx, m.p.counters, r); err != nil {
 		m.p.cfg.Log.Printf("procmon: app:%s (pid %d) was not recorded: %v", r.AppKey, pr.pid, err)
@@ -384,7 +435,19 @@ func (m *monitor) stopped(pid uint32) {
 		return
 	}
 	m.p.cfg.Log.Printf("procmon: app:%s stopped (pid %d)", inst.record.AppKey, inst.root)
+	m.p.appStopped(inst.record.AppKey)
 	m.p.cfg.Emitter.Stop(m.ctx, m.p.counters, inst.record)
+}
+
+// forget counts every instance still running as stopped now, when the monitor stops watching.
+func (m *monitor) forget() {
+	seen := map[*instance]bool{}
+	for _, inst := range m.running {
+		if !seen[inst] {
+			seen[inst] = true
+			m.p.appStopped(inst.record.AppKey)
+		}
+	}
 }
 
 // describe is the app_running record of a started process: its app, image version, signer and

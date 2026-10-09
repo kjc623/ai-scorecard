@@ -58,11 +58,14 @@ type Provider struct {
 	// life serialises Start and Stop.
 	life sync.Mutex
 
-	mu          sync.Mutex
-	running     bool
-	interval    time.Duration
-	scanned     bool // a scan finished since Start
-	partial     bool // the last scan could not read everything
+	mu       sync.Mutex
+	running  bool
+	interval time.Duration
+	scanned  bool // a scan finished since Start
+	partial  bool // the last scan could not read everything
+	// found is the last finished scan's catalog apps, each with the lowest version found ("" when
+	// no record of it carried one).
+	found       map[string]string
 	since       time.Time
 	lastSuccess time.Time
 	cancel      context.CancelFunc
@@ -144,6 +147,7 @@ func (p *Provider) Stop(context.Context) error {
 	defer p.life.Unlock()
 	p.mu.Lock()
 	p.running = false
+	p.found = nil
 	cancel, done := p.cancel, p.done
 	p.cancel, p.done = nil, nil
 	p.mu.Unlock()
@@ -174,6 +178,7 @@ func (p *Provider) scan(ctx context.Context) {
 	b := p.cfg.Bundles()
 	now := p.cfg.Clock()
 	failed := 0
+	found := map[string]string{}
 	for _, s := range p.cfg.Scanners {
 		var recs []discovery.Record
 		var errs []error
@@ -188,6 +193,9 @@ func (p *Provider) scan(ctx context.Context) {
 		}
 		failed += len(errs)
 		for _, r := range recs {
+			if v, seen := found[r.AppKey]; !seen || lowerVersion(r.Version, v) {
+				found[r.AppKey] = r.Version
+			}
 			r.Route = protocol.RouteInvScan
 			if r.OccurredAt.IsZero() {
 				r.OccurredAt = now
@@ -200,10 +208,32 @@ func (p *Provider) scan(ctx context.Context) {
 	complete := failed == 0 && ctx.Err() == nil
 	p.mu.Lock()
 	p.scanned, p.partial = true, !complete
+	if ctx.Err() == nil && p.running {
+		p.found = found
+	}
 	if complete {
 		p.lastSuccess = now
 	}
 	p.mu.Unlock()
+}
+
+// Installed reports whether the last scan found the catalog app appKey, and its version: the
+// lowest found when it is installed more than once, "" when no record carried one. It reports
+// nothing before the first scan and while the scanner is switched off.
+func (p *Provider) Installed(appKey string) (version string, ok bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	version, ok = p.found[appKey]
+	return version, ok
+}
+
+// lowerVersion reports whether candidate is a lower release than current. A version that is not a
+// release number is never lower, so a known version replaces an unknown one.
+func lowerVersion(candidate, current string) bool {
+	if !releaseName.MatchString(candidate) {
+		return false
+	}
+	return !releaseName.MatchString(current) || compareRelease(candidate, current) < 0
 }
 
 // Health implements core.Provider: healthy after a complete scan, degraded with

@@ -77,8 +77,10 @@ type Receiver struct {
 	detail      protocol.Detail
 	startedAt   time.Time
 	lastSuccess time.Time
-	counters    *core.CounterSet
-	wg          sync.WaitGroup
+	// received is when each normalizer was last handed a log record or a span.
+	received map[string]time.Time
+	counters *core.CounterSet
+	wg       sync.WaitGroup
 }
 
 type nopLogger struct{}
@@ -108,8 +110,28 @@ func New(cfg Config) (*Receiver, error) {
 		httpAddr:  cfg.HTTPListen,
 		grpcAddr:  cfg.GRPCListen,
 		startedAt: now,
+		received:  map[string]time.Time{},
 		counters:  cfg.Counters,
 	}, nil
+}
+
+// LastReceived reports when the named normalizer was last handed a log record or a span, zero
+// when it has not been since the service started.
+func (r *Receiver) LastReceived(normalizer string) time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.received[normalizer]
+}
+
+// markReceived records that norm was handed n records now.
+func (r *Receiver) markReceived(norm Normalizer, n uint64) {
+	if n == 0 {
+		return
+	}
+	now := r.cfg.Clock()
+	r.mu.Lock()
+	r.received[norm.Name()] = now
+	r.mu.Unlock()
 }
 
 // Name implements core.Provider.

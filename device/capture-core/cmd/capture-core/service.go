@@ -520,17 +520,48 @@ func (s *service) buildProviders() error {
 		drift.Run(s.bgStop)
 	}()
 
+	// A per-user install is attributed to the person whose hive holds it, named the way a browser
+	// peer is.
+	s.discovery = &discoveryEmitter{svc: s}
+	scanner := inventory.New(inventory.Config{
+		Scanners: inventory.Scanners(s.peerPerson),
+		Emitter:  s.discovery,
+		Bundles:  s.currentBundle,
+		Log:      s.logf,
+		Clock:    time.Now,
+	})
+
+	// A running app is attributed to the account its process runs as, named the way a browser
+	// peer is.
+	procs := procmon.New(procmon.Config{
+		Emitter: s.discovery,
+		Events:  platform.processEvents,
+		Bundles: s.currentBundle,
+		Person:  s.peerPerson,
+		Log:     s.logf,
+		Clock:   time.Now,
+	})
+
+	// A tool's health reads the version the inventory's last scan found, what the receiver and the
+	// hook relay last had from it, and whether the process monitor saw it run.
+	toolHealth := func(cfg toolconfig.Config) toolconfig.Config {
+		cfg.InstalledVersion = scanner.Installed
+		cfg.LastEvent = func(tool string) time.Time { return s.lastToolEvent(otel, tool) }
+		cfg.LastRunning = procs.LastRunning
+		return cfg
+	}
+
 	// Claude Code's managed settings point its telemetry at the receiver and declare this
 	// executable's hooks while the bundle switches its OTel export or its hooks on. Claude Code is
 	// installed when the inventory's CLI scan finds it in a user profile.
 	claudeInstalled := func() bool { return inventory.CLIInstalled(s.currentBundle(), "claude_code") }
-	claude := toolconfig.NewClaudeCode(toolconfig.NewClaudeCodeWriter(s.dir, platform.claudeCodeSettings, claudeInstalled), toolconfig.Config{
+	claude := toolconfig.NewClaudeCode(toolconfig.NewClaudeCodeWriter(s.dir, platform.claudeCodeSettings, claudeInstalled), toolHealth(toolconfig.Config{
 		Token:   otel.Token,
 		Scope:   s.toolScope,
 		Log:     s.logf,
 		Clock:   time.Now,
 		Watcher: drift,
-	})
+	}))
 	if err := s.reg.Add(claude); err != nil {
 		return err
 	}
@@ -551,24 +582,24 @@ func (s *service) buildProviders() error {
 		}
 		return toolconfig.CopilotInstallFrom(found)
 	}
-	copilot := toolconfig.NewCopilot(toolconfig.NewCopilotWriter(s.dir, copilotInstall), toolconfig.Config{
+	copilot := toolconfig.NewCopilot(toolconfig.NewCopilotWriter(s.dir, copilotInstall), toolHealth(toolconfig.Config{
 		Token:   otel.Token,
 		Scope:   s.toolScope,
 		Log:     s.logf,
 		Clock:   time.Now,
 		Watcher: drift,
-	})
+	}))
 	if err := s.reg.Add(copilot); err != nil {
 		return err
 	}
 
 	// Cursor's enterprise hooks file declares this executable's hooks while the bundle switches
 	// Cursor's hooks on. Cursor has no OTel export to configure.
-	cursor := toolconfig.NewCursor(toolconfig.NewCursorWriter(s.dir, platform.cursorHooks, s.appInstalled("cursor")), toolconfig.Config{
+	cursor := toolconfig.NewCursor(toolconfig.NewCursorWriter(s.dir, platform.cursorHooks, s.appInstalled("cursor")), toolHealth(toolconfig.Config{
 		Log:     s.logf,
 		Clock:   time.Now,
 		Watcher: drift,
-	})
+	}))
 	if err := s.reg.Add(cursor); err != nil {
 		return err
 	}
@@ -582,13 +613,13 @@ func (s *service) buildProviders() error {
 		toolconfig.NewCodexWriter(s.dir, platform.codexRequirements, codexInstalled),
 		toolconfig.NewCodexConfigWriter(s.dir, platform.codexConfig, platform.codexUserConfigs),
 	)
-	codex := toolconfig.NewCodex(codexFiles, toolconfig.Config{
+	codex := toolconfig.NewCodex(codexFiles, toolHealth(toolconfig.Config{
 		Token:   otel.Token,
 		Scope:   s.toolScope,
 		Log:     s.logf,
 		Clock:   time.Now,
 		Watcher: drift,
-	})
+	}))
 	if err := s.reg.Add(codex); err != nil {
 		return err
 	}
@@ -612,29 +643,9 @@ func (s *service) buildProviders() error {
 		return err
 	}
 
-	// A per-user install is attributed to the person whose hive holds it, named the way a browser
-	// peer is.
-	s.discovery = &discoveryEmitter{svc: s}
-	if err := s.reg.Add(inventory.New(inventory.Config{
-		Scanners: inventory.Scanners(s.peerPerson),
-		Emitter:  s.discovery,
-		Bundles:  s.currentBundle,
-		Log:      s.logf,
-		Clock:    time.Now,
-	})); err != nil {
+	if err := s.reg.Add(scanner); err != nil {
 		return err
 	}
-
-	// A running app is attributed to the account its process runs as, named the way a browser
-	// peer is.
-	procs := procmon.New(procmon.Config{
-		Emitter: s.discovery,
-		Events:  platform.processEvents,
-		Bundles: s.currentBundle,
-		Person:  s.peerPerson,
-		Log:     s.logf,
-		Clock:   time.Now,
-	})
 	if err := s.reg.Add(procs); err != nil {
 		return err
 	}
@@ -674,6 +685,27 @@ func (s *service) appInstalled(appKey string) func() bool {
 		}
 		return false
 	}
+}
+
+// toolNormalizers names, per endpoint.tools key, the OTLP normalizer the tool's telemetry goes to.
+var toolNormalizers = map[string]string{
+	toolconfig.ClaudeCodeTool: "claude-code",
+	toolconfig.CodexTool:      "codex",
+	toolconfig.CopilotTool:    "copilot",
+}
+
+// lastToolEvent is when the tool last sent the agent an OTel record or a hook.
+func (s *service) lastToolEvent(otel *otlp.Receiver, tool string) time.Time {
+	var last time.Time
+	if s.hooks != nil {
+		last = s.hooks.LastServed(tool)
+	}
+	if name, ok := toolNormalizers[tool]; ok {
+		if t := otel.LastReceived(name); t.After(last) {
+			last = t
+		}
+	}
+	return last
 }
 
 // proxyConfig is proxy.tls's configuration under b, the bundle in force when the providers are built.
