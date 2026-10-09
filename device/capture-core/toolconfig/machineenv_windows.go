@@ -11,9 +11,6 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-// machineEnvKey is where Windows keeps the system environment variables.
-const machineEnvKey = `SYSTEM\CurrentControlSet\Control\Session Manager\Environment`
-
 // MachineEnvironment is the system environment in the registry.
 func MachineEnvironment() MachineEnv { return registryEnv{} }
 
@@ -67,8 +64,6 @@ func (registryEnv) Unset(name string) error {
 	announceEnvironment()
 	return nil
 }
-
-var procSendMessageTimeoutW = windows.NewLazySystemDLL("user32.dll").NewProc("SendMessageTimeoutW")
 
 // announceEnvironment broadcasts WM_SETTINGCHANGE for "Environment", as setx does, so top-level
 // windows that listen reload the environment. The broadcast reaches only the windows of the

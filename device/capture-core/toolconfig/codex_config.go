@@ -341,6 +341,11 @@ func NewCodexFiles(requirements *Codex, config *CodexConfig) *CodexFiles {
 // Path implements Writer.
 func (c *CodexFiles) Path() string { return c.requirements.Path() + " and " + c.config.Path() }
 
+// watchedFiles implements watchedFiles.
+func (c *CodexFiles) watchedFiles() []string {
+	return []string{c.requirements.Path(), c.config.Path()}
+}
+
 // Installed implements Writer.
 func (c *CodexFiles) Installed() bool { return c.requirements.Installed() }
 

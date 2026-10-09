@@ -2222,3 +2222,43 @@ source contradicts the current output, so `Render` and `canEnforce` are unchange
   "↳ Hook · " and its lines, with ANSI styles interpreted and no Markdown. Neither is truncated (only
   additional context is). The hook cell writes no hyperlink, so a link is clickable only where the
   terminal detects URLs. **[device]** both, and link clickability in Windows Terminal.
+
+## 2026-10-09, task 34
+
+- **The watcher is one `toolconfig.Watcher` for every tool config provider**, built in
+  `buildProviders` and run on the service's background loops (it stops before the providers do). A
+  provider registers with it when it starts (after its first apply) and leaves it when it stops, so
+  only running writers are watched. Registering schedules a comparison, which is the brief's "on
+  start" comparison; every running provider is also compared every 60 seconds.
+- **What is watched.** A file writer's `Path()`; Codex's `CodexFiles` names both its files. Each
+  file's folder is watched with `github.com/fsnotify/fsnotify` v1.10.1 (2026-05-04, the latest tag;
+  `DESIGN.md` §11), and only write, create, rename and remove events for the file itself (or the
+  folder's own deletion) schedule a comparison, 250 ms after the last one. A folder that does not
+  exist yet, or was deleted, is watched again after the next comparison. If file notifications cannot
+  start, the backstop alone compares.
+- **Registry.** `machineRegistry` gains `watch(key, stop, changed)`; Copilot watches both of its keys
+  (`HKLM\SOFTWARE\Policies\Microsoft\VSCode` and the machine environment). On Windows it is
+  `RegNotifyChangeKeyValue` (`REG_NOTIFY_CHANGE_NAME | REG_NOTIFY_CHANGE_LAST_SET |
+  REG_NOTIFY_THREAD_AGNOSTIC`, asynchronous, re-armed after each signal); a key that does not exist is
+  looked for every second, and its deletion and creation count as changes. Any change in the machine
+  environment key schedules a comparison; the comparison decides.
+- **Compare-then-apply** runs under the provider's lifecycle lock, against what the provider last
+  applied, so a bundle's apply and the watcher never interleave and the agent's own write (its echo
+  included) compares clean. Only a provider whose last apply succeeded is compared: a failed apply
+  that no outside change caused stays `degraded`/`config_write_failed` and waits for the next bundle,
+  as before. A re-apply after an outside change that fails counts `errors`, keeps the row tampered,
+  and is tried again at each later comparison.
+- **"For the rest of the health interval"**: the provider does not know the health interval, so the
+  tamper holds until `Health` has returned it once (a health report carried it) and a later comparison
+  is clean. It has precedence over `config_write_failed`; a stop clears it. Task 29's user override
+  stays `degraded`/`config_tampered`.
+- **One log line per re-apply**, naming the tool key and `Path()` (both Codex files, or both registry
+  keys for Copilot); a failed re-apply also logs the existing write-failure line. No content is logged.
+- **Fix outside the brief's files:** on the integration branch `toolconfig` did not compile for
+  Windows: `machineenv_windows.go` (local model relocation) and task 31's `copilot.go` and
+  `copilot_windows.go` both declared `machineEnvKey` and `procSendMessageTimeoutW`. The duplicates in
+  `machineenv_windows.go` are removed; the values are the same.
+- **Not run here:** `TestWinRegistryWatch` in `toolconfig/copilot_windows_test.go` (the real
+  `RegNotifyChangeKeyValue` watch under HKCU) and the existing Windows `toolconfig` tests. They compile
+  and vet under `GOOS=windows`. The fsnotify tests ran on Linux (inotify) only; Windows'
+  `ReadDirectoryChangesW` backend is for the device phase.

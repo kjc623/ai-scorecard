@@ -75,6 +75,9 @@ type machineRegistry interface {
 	// environmentChanged broadcasts WM_SETTINGCHANGE for "Environment", so programs that rebuild
 	// their environment from the registry, Explorer among them, read the new machine environment.
 	environmentChanged()
+	// watch calls changed whenever a value in key is set or deleted, or the key itself is created
+	// or deleted, until stop is closed.
+	watch(key string, stop <-chan struct{}, changed func())
 }
 
 // copilotSurface is one part of Copilot and the registry values the agent owns for it.
@@ -208,6 +211,19 @@ func NewCopilotWriter(dir state.Dir, install func() CopilotInstall) *Copilot {
 // Path implements Writer.
 func (c *Copilot) Path() string {
 	return `HKLM\` + vsCodePolicyKey + ` and HKLM\` + machineEnvKey
+}
+
+// watchRegistry implements watchedRegistry: both keys the agent writes values in.
+func (c *Copilot) watchRegistry(stop <-chan struct{}, changed func()) {
+	var wg sync.WaitGroup
+	for _, key := range []string{vsCodePolicyKey, machineEnvKey} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c.reg.watch(key, stop, changed)
+		}()
+	}
+	wg.Wait()
 }
 
 // Installed implements Writer: the extension or the CLI is installed. It records where, for Apply,
