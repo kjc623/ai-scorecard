@@ -4,6 +4,6 @@
   "path": "/usr/local/opt/shadow-ai-capture/bin/capture-core",
   "type": "stdio",
   "allowed_origins": [
-    "chrome-extension://ebdiaplaignnfokkkoekjkdajlopdfkk/"
+    "chrome-extension://jnjjgjlbhfleknjpoiiopcaogphghodk/"
   ]
 }
