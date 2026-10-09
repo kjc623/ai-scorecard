@@ -164,6 +164,17 @@ func portOpen(port int) bool {
 	return true
 }
 
+// portHeld reports whether something holds the port: a bind to it fails. Unlike a dial, a bind
+// cannot be fooled by a listener that is closing.
+func portHeld(port int) bool {
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		return true
+	}
+	_ = ln.Close()
+	return false
+}
+
 func waitFor(t *testing.T, timeout time.Duration, what string, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
