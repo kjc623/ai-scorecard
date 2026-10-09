@@ -18,7 +18,8 @@ import (
 // Browser extension delivery. Chrome and Edge install the extension from a force-install policy
 // that names its id and this update manifest; they fetch the manifest and the CRX it points to
 // without credentials, so both routes are unauthenticated and serve only what the release
-// directory holds.
+// directory holds. Browsers reach them on the analyst origin, through the dashboard server: the
+// extension downloader cannot answer the device hostname's request for a client certificate.
 const (
 	ExtensionFileName     = "shadow-ai-capture.crx"
 	ExtensionManifestPath = "/v1/extension/updates.xml"
@@ -33,20 +34,20 @@ var (
 
 // Extensions serves the browser extension's update manifest and CRX.
 type Extensions struct {
-	releaseDir     string
-	deviceEndpoint string
-	logger         *slog.Logger
-	now            func() time.Time
+	releaseDir string
+	publicURL  string
+	logger     *slog.Logger
+	now        func() time.Time
 }
 
-// NewExtensions builds the extension routes. deviceEndpoint is the public device origin the
-// manifest's codebase is built on.
-func NewExtensions(releaseDir, deviceEndpoint string, logger *slog.Logger) *Extensions {
+// NewExtensions builds the extension routes. publicURL is the analyst origin the manifest's
+// codebase is built on.
+func NewExtensions(releaseDir, publicURL string, logger *slog.Logger) *Extensions {
 	return &Extensions{
-		releaseDir:     releaseDir,
-		deviceEndpoint: strings.TrimRight(deviceEndpoint, "/"),
-		logger:         logger,
-		now:            time.Now,
+		releaseDir: releaseDir,
+		publicURL:  strings.TrimRight(publicURL, "/"),
+		logger:     logger,
+		now:        time.Now,
 	}
 }
 
@@ -97,9 +98,9 @@ type updateCheck struct {
 }
 
 func (e *Extensions) handleManifest(w http.ResponseWriter, r *http.Request) {
-	if e.deviceEndpoint == "" {
+	if e.publicURL == "" {
 		e.fail(w, apierr.New(http.StatusServiceUnavailable, apierr.CodeReleaseUnavailable,
-			"this deployment has no public device endpoint configured"))
+			"this deployment has no public URL configured"))
 		return
 	}
 	x, err := e.extension()
@@ -110,7 +111,7 @@ func (e *Extensions) handleManifest(w http.ResponseWriter, r *http.Request) {
 	doc, err := xml.Marshal(gupdate{Protocol: "2.0", Apps: []gupdateA{{
 		AppID: x.ID,
 		UpdateCheck: updateCheck{
-			Codebase:   e.deviceEndpoint + "/v1/extension/" + x.File,
+			Codebase:   e.publicURL + "/v1/extension/" + x.File,
 			Version:    x.Version,
 			HashSHA256: strings.ToLower(strings.TrimPrefix(x.SHA256, "sha256:")),
 			Size:       x.Size,
