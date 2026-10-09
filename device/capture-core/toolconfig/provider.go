@@ -48,6 +48,9 @@ type Config struct {
 	Executable func() (string, error)
 	Log        core.Logger
 	Clock      func() time.Time
+	// Watcher, when set, watches the tool's managed configuration while the provider runs and has
+	// it applied again when something else changes it.
+	Watcher *Watcher
 }
 
 // Provider is one tool's tool_config_<tool> collector: while the bundle switches the tool's OTel
@@ -73,6 +76,10 @@ type Provider struct {
 	startedAt   time.Time
 	lastSuccess time.Time
 	counters    *core.CounterSet
+	// tampered: a comparison found the applied configuration changed by something other than the
+	// agent. It holds until a health report has carried it and a later comparison is clean.
+	tampered       bool
+	tamperReported bool
 }
 
 type nopLogger struct{}
@@ -179,6 +186,9 @@ func (p *Provider) Start(context.Context) error {
 	if p.tool.supported && have {
 		_ = p.apply(want)
 	}
+	if p.tool.supported && p.cfg.Watcher != nil {
+		p.cfg.Watcher.add(p)
+	}
 	return nil
 }
 
@@ -187,9 +197,13 @@ func (p *Provider) Start(context.Context) error {
 func (p *Provider) Stop(context.Context) error {
 	p.life.Lock()
 	defer p.life.Unlock()
+	if p.cfg.Watcher != nil {
+		p.cfg.Watcher.remove(p)
+	}
 	p.mu.Lock()
 	p.running = false
 	p.attempted = false
+	p.tampered, p.tamperReported = false, false
 	p.mu.Unlock()
 	if !p.tool.supported {
 		return nil
@@ -246,13 +260,45 @@ func (p *Provider) apply(d Desired) error {
 	return err
 }
 
-// Health implements core.Provider: healthy only while the file on disk holds the agent's keys, no
-// user's configuration overrides them, and every installed part of the tool has a machine-wide
+// checkDrift compares the tool's configuration with what was last applied. When the agent's keys
+// are no longer in place it applies them again and marks the row tampered; a failed re-apply is
+// tried again at the next comparison. A clean comparison after a health report has carried the
+// tamper clears it. A failed apply that no outside change caused waits for the next bundle.
+func (p *Provider) checkDrift() {
+	p.life.Lock()
+	defer p.life.Unlock()
+	p.mu.Lock()
+	running, attempted, installed, writeErr := p.running, p.attempted, p.installed, p.writeErr
+	applied, tampered := p.applied, p.tampered
+	p.mu.Unlock()
+	if !p.tool.supported || !running || !attempted || !installed || (writeErr != nil && !tampered) {
+		return
+	}
+	if writeErr == nil {
+		if ok, err := p.w.Holds(applied); err == nil && ok {
+			p.mu.Lock()
+			if p.tamperReported {
+				p.tampered, p.tamperReported = false, false
+			}
+			p.mu.Unlock()
+			return
+		}
+		p.mu.Lock()
+		p.tampered, p.tamperReported = true, false
+		p.mu.Unlock()
+	}
+	p.cfg.Log.Printf("toolconfig: %s: %s was changed outside the agent; applying the agent's settings again", p.tool.key, p.w.Path())
+	_ = p.apply(applied)
+}
+
+// Health implements core.Provider: tampered while a change made outside the agent is being
+// reported, else healthy only while the file on disk holds the agent's keys, no user's
+// configuration overrides them, and every installed part of the tool has a machine-wide
 // configuration the agent can write (else degraded with tool_version_unsupported).
 func (p *Provider) Health() core.Health {
 	p.mu.Lock()
 	running, attempted, installed, writeErr := p.running, p.attempted, p.installed, p.writeErr
-	applied, since, last := p.applied, p.startedAt, p.lastSuccess
+	applied, since, last, tampered := p.applied, p.startedAt, p.lastSuccess, p.tampered
 	p.mu.Unlock()
 	switch {
 	case !p.tool.supported:
@@ -261,6 +307,11 @@ func (p *Provider) Health() core.Health {
 		return p.counters.Snapshot(protocol.StateAbsent, protocol.DetailNone, since, last)
 	case !installed:
 		return p.counters.Snapshot(protocol.StateAbsent, protocol.DetailToolNotInstalled, since, last)
+	case tampered:
+		p.mu.Lock()
+		p.tamperReported = p.tampered
+		p.mu.Unlock()
+		return p.counters.Snapshot(protocol.StateTampered, protocol.DetailConfigTampered, since, last)
 	case writeErr != nil:
 		return p.counters.Snapshot(protocol.StateDegraded, protocol.DetailConfigWriteFailed, since, last)
 	}

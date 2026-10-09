@@ -4,6 +4,7 @@ package toolconfig
 
 import (
 	"errors"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -112,4 +113,67 @@ func (winRegistry) environmentChanged() {
 	var result uintptr
 	_, _, _ = procSendMessageTimeoutW.Call(hwndBroadcast, wmSettingChange, 0,
 		uintptr(unsafe.Pointer(param)), smtoAbortIfHung, broadcastTimeout, uintptr(unsafe.Pointer(&result)))
+}
+
+// keyRetry is how often a registry watch looks again for a key that does not exist.
+const keyRetry = time.Second
+
+// watch waits on RegNotifyChangeKeyValue for values set or deleted in key. A key that does not
+// exist is looked for every keyRetry; its deletion and its creation count as changes. A watch that
+// cannot create its events returns at once, and the backstop's comparisons remain.
+func (r winRegistry) watch(key string, stop <-chan struct{}, changed func()) {
+	stopEv, err := windows.CreateEvent(nil, 1, 0, nil)
+	if err != nil {
+		return
+	}
+	defer windows.CloseHandle(stopEv)
+	ev, err := windows.CreateEvent(nil, 0, 0, nil)
+	if err != nil {
+		return
+	}
+	defer windows.CloseHandle(ev)
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-stop:
+			_ = windows.SetEvent(stopEv)
+		case <-done:
+		}
+	}()
+
+	const filter = windows.REG_NOTIFY_CHANGE_NAME | windows.REG_NOTIFY_CHANGE_LAST_SET | windows.REG_NOTIFY_THREAD_AGNOSTIC
+	missing := false
+	for {
+		k, err := registry.OpenKey(r.root, key, registry.NOTIFY|registry.WOW64_64KEY)
+		if err != nil {
+			missing = true
+			if s, _ := windows.WaitForSingleObject(stopEv, uint32(keyRetry/time.Millisecond)); s == windows.WAIT_OBJECT_0 {
+				return
+			}
+			continue
+		}
+		if missing {
+			missing = false
+			changed()
+		}
+		for {
+			// Arming fails once the key is deleted.
+			if err := windows.RegNotifyChangeKeyValue(windows.Handle(k), false, filter, ev, true); err != nil {
+				changed()
+				break
+			}
+			i, err := windows.WaitForMultipleObjects([]windows.Handle{ev, stopEv}, false, windows.INFINITE)
+			if err != nil || i != windows.WAIT_OBJECT_0 {
+				k.Close()
+				return
+			}
+			changed()
+		}
+		k.Close()
+		missing = true
+		if s, _ := windows.WaitForSingleObject(stopEv, uint32(keyRetry/time.Millisecond)); s == windows.WAIT_OBJECT_0 {
+			return
+		}
+	}
 }

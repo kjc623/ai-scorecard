@@ -66,3 +66,65 @@ func TestWinRegistryRoundTrip(t *testing.T) {
 		t.Fatalf("removing a missing value: %v", err)
 	}
 }
+
+// A watch reports the key's creation, a value set in it, a value deleted from it and the key's
+// deletion, and returns when stopped. The test works in a key of its own under
+// HKEY_CURRENT_USER.
+func TestWinRegistryWatch(t *testing.T) {
+	r := winRegistry{root: registry.CURRENT_USER}
+	key := fmt.Sprintf(`Software\ShadowAICaptureTest-toolconfig-watch-%d-%d`, os.Getpid(), time.Now().UnixNano())
+	t.Cleanup(func() {
+		_ = registry.DeleteKey(registry.CURRENT_USER, key)
+	})
+	changes := make(chan struct{}, 64)
+	stop, done := make(chan struct{}), make(chan struct{})
+	go func() {
+		r.watch(key, stop, func() { changes <- struct{}{} })
+		close(done)
+	}()
+	drain := func() {
+		for {
+			select {
+			case <-changes:
+			default:
+				return
+			}
+		}
+	}
+	expect := func(what string) {
+		t.Helper()
+		select {
+		case <-changes:
+		case <-time.After(3 * keyRetry):
+			t.Fatalf("%s was not reported", what)
+		}
+		time.Sleep(100 * time.Millisecond)
+		drain()
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	drain()
+	if err := r.set(key, "CopilotOtelEndpoint", stringValue("http://127.0.0.1:47318")); err != nil {
+		t.Fatal(err)
+	}
+	expect("the key's creation")
+	if err := r.set(key, "CopilotOtelEndpoint", stringValue("https://otel.corp.example")); err != nil {
+		t.Fatal(err)
+	}
+	expect("a value set")
+	if err := r.remove(key, "CopilotOtelEndpoint"); err != nil {
+		t.Fatal(err)
+	}
+	expect("a value deleted")
+	if err := registry.DeleteKey(registry.CURRENT_USER, key); err != nil {
+		t.Fatal(err)
+	}
+	expect("the key's deletion")
+
+	close(stop)
+	select {
+	case <-done:
+	case <-time.After(3 * keyRetry):
+		t.Fatal("the watch did not return when stopped")
+	}
+}

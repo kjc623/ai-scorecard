@@ -156,6 +156,13 @@ override the system config, so the service reads (never writes) each profile's
 Claude Code's plus `degraded` with `config_tampered` while a user's file disables or redirects the
 log export; Codex counts as installed when the inventory's CLI scan finds it in a user profile.
 
+While a tool's configuration is on, the service watches it: the folder of each managed file (so a
+deleted and re-created file is seen) and, for Copilot, its two registry keys. A change is compared
+250 ms after it settles, and every running writer is compared every 60 seconds as well; when the
+agent's keys are no longer what it applied, it writes them again and logs one line naming the tool
+and the file. The tool's row is then `tampered` with `config_tampered` until a health report has
+carried it and a later comparison finds the keys in place. The agent's own writes compare clean.
+
 With TLS inspection on, the proxy blind-tunnels a connection from a tool whose native collector is
 enabled.
 

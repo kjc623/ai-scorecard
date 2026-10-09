@@ -18,6 +18,7 @@ var errNoRegistry = errors.New("toolconfig: this platform has no registry")
 func (noRegistry) get(string, string) (regValue, bool, error) {
 	return regValue{}, false, errNoRegistry
 }
-func (noRegistry) set(string, string, regValue) error { return errNoRegistry }
-func (noRegistry) remove(string, string) error        { return errNoRegistry }
-func (noRegistry) environmentChanged()                {}
+func (noRegistry) set(string, string, regValue) error             { return errNoRegistry }
+func (noRegistry) remove(string, string) error                    { return errNoRegistry }
+func (noRegistry) environmentChanged()                            {}
+func (noRegistry) watch(_ string, stop <-chan struct{}, _ func()) { <-stop }

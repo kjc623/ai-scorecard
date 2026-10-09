@@ -415,8 +415,9 @@ func (s *service) buildDrainer(spoolKey []byte) error {
 }
 
 // buildProviders builds proxy.tls, the loopback broker and the CLI shim over the per-device CA, the
-// OTLP receiver, Claude Code's, Copilot's, Cursor's and Codex's configuration writers, the user-session
-// helper, the hook relay, the inventory scanner, the process monitor and the flow monitor.
+// OTLP receiver, Claude Code's, Copilot's, Cursor's and Codex's configuration writers and their
+// drift watcher, the user-session helper, the hook relay, the inventory scanner, the process monitor
+// and the flow monitor.
 func (s *service) buildProviders() error {
 	b := s.currentBundle()
 	label := s.resolvedHostname()
@@ -510,15 +511,25 @@ func (s *service) buildProviders() error {
 		return err
 	}
 
+	// While a tool config provider runs, a change someone else makes to its managed files or
+	// registry values is put right and reported as tampering.
+	drift := toolconfig.NewWatcher(s.logf)
+	s.bgWG.Add(1)
+	go func() {
+		defer s.bgWG.Done()
+		drift.Run(s.bgStop)
+	}()
+
 	// Claude Code's managed settings point its telemetry at the receiver and declare this
 	// executable's hooks while the bundle switches its OTel export or its hooks on. Claude Code is
 	// installed when the inventory's CLI scan finds it in a user profile.
 	claudeInstalled := func() bool { return inventory.CLIInstalled(s.currentBundle(), "claude_code") }
 	claude := toolconfig.NewClaudeCode(toolconfig.NewClaudeCodeWriter(s.dir, platform.claudeCodeSettings, claudeInstalled), toolconfig.Config{
-		Token: otel.Token,
-		Scope: s.toolScope,
-		Log:   s.logf,
-		Clock: time.Now,
+		Token:   otel.Token,
+		Scope:   s.toolScope,
+		Log:     s.logf,
+		Clock:   time.Now,
+		Watcher: drift,
 	})
 	if err := s.reg.Add(claude); err != nil {
 		return err
@@ -541,10 +552,11 @@ func (s *service) buildProviders() error {
 		return toolconfig.CopilotInstallFrom(found)
 	}
 	copilot := toolconfig.NewCopilot(toolconfig.NewCopilotWriter(s.dir, copilotInstall), toolconfig.Config{
-		Token: otel.Token,
-		Scope: s.toolScope,
-		Log:   s.logf,
-		Clock: time.Now,
+		Token:   otel.Token,
+		Scope:   s.toolScope,
+		Log:     s.logf,
+		Clock:   time.Now,
+		Watcher: drift,
 	})
 	if err := s.reg.Add(copilot); err != nil {
 		return err
@@ -553,8 +565,9 @@ func (s *service) buildProviders() error {
 	// Cursor's enterprise hooks file declares this executable's hooks while the bundle switches
 	// Cursor's hooks on. Cursor has no OTel export to configure.
 	cursor := toolconfig.NewCursor(toolconfig.NewCursorWriter(s.dir, platform.cursorHooks, s.appInstalled("cursor")), toolconfig.Config{
-		Log:   s.logf,
-		Clock: time.Now,
+		Log:     s.logf,
+		Clock:   time.Now,
+		Watcher: drift,
 	})
 	if err := s.reg.Add(cursor); err != nil {
 		return err
@@ -570,10 +583,11 @@ func (s *service) buildProviders() error {
 		toolconfig.NewCodexConfigWriter(s.dir, platform.codexConfig, platform.codexUserConfigs),
 	)
 	codex := toolconfig.NewCodex(codexFiles, toolconfig.Config{
-		Token: otel.Token,
-		Scope: s.toolScope,
-		Log:   s.logf,
-		Clock: time.Now,
+		Token:   otel.Token,
+		Scope:   s.toolScope,
+		Log:     s.logf,
+		Clock:   time.Now,
+		Watcher: drift,
 	})
 	if err := s.reg.Add(codex); err != nil {
 		return err

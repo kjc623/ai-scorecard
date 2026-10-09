@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/shadow-ai-capture/device/capture-core/core"
@@ -16,35 +17,85 @@ import (
 )
 
 // fakeRegistry is HKEY_LOCAL_MACHINE in memory, value names case-insensitive as Windows has them.
+// A set or remove notifies the key's watches, the agent's own writes included, as Windows does.
 type fakeRegistry struct {
+	mu         sync.Mutex
 	values     map[string]regValue // key + "\\" + lower-case name
 	broadcasts int
 	failSet    bool
+	watches    map[string]map[*func()]bool
 }
 
-func newFakeRegistry() *fakeRegistry { return &fakeRegistry{values: map[string]regValue{}} }
+func newFakeRegistry() *fakeRegistry {
+	return &fakeRegistry{values: map[string]regValue{}, watches: map[string]map[*func()]bool{}}
+}
 
 func regPath(key, name string) string { return key + `\` + strings.ToLower(name) }
 
 func (r *fakeRegistry) get(key, name string) (regValue, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	v, ok := r.values[regPath(key, name)]
 	return v, ok, nil
 }
 
 func (r *fakeRegistry) set(key, name string, v regValue) error {
+	r.mu.Lock()
 	if r.failSet {
+		r.mu.Unlock()
 		return errors.New("access is denied")
 	}
 	r.values[regPath(key, name)] = v
+	r.mu.Unlock()
+	r.notify(key)
 	return nil
 }
 
 func (r *fakeRegistry) remove(key, name string) error {
+	r.mu.Lock()
 	delete(r.values, regPath(key, name))
+	r.mu.Unlock()
+	r.notify(key)
 	return nil
 }
 
-func (r *fakeRegistry) environmentChanged() { r.broadcasts++ }
+func (r *fakeRegistry) environmentChanged() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.broadcasts++
+}
+
+func (r *fakeRegistry) watch(key string, stop <-chan struct{}, changed func()) {
+	r.mu.Lock()
+	if r.watches[key] == nil {
+		r.watches[key] = map[*func()]bool{}
+	}
+	r.watches[key][&changed] = true
+	r.mu.Unlock()
+	<-stop
+	r.mu.Lock()
+	delete(r.watches[key], &changed)
+	r.mu.Unlock()
+}
+
+// watching is the number of watches on key.
+func (r *fakeRegistry) watching(key string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.watches[key])
+}
+
+func (r *fakeRegistry) notify(key string) {
+	r.mu.Lock()
+	var fns []func()
+	for f := range r.watches[key] {
+		fns = append(fns, *f)
+	}
+	r.mu.Unlock()
+	for _, f := range fns {
+		f()
+	}
+}
 
 // value is a value's content, or false when it is absent.
 func (r *fakeRegistry) value(t *testing.T, key, name string) (regValue, bool) {
