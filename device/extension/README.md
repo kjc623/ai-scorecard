@@ -16,7 +16,7 @@ records it in `release.json`; control-api serves the CRX and its update manifest
 `https://<device-fqdn>/v1/extension/updates.xml`, and the browsers install it from the
 `ExtensionInstallForcelist` policy (see `device/installer/README.md`). The installers register the native
 messaging host `com.shadowaicapture.capture_core` for the extension's id, which `manifest.json`'s
-`key` pins (`ebdiaplaignnfokkkoekjkdajlopdfkk`). With no host the extension keeps observing, holds
+`key` pins (`jnjjgjlbhfleknjpoiiopcaogphghodk`). With no host the extension keeps observing, holds
 observations in a bounded memory queue and reports the channel absent.
 
 Policy comes from `capture-core`: a `policy_sync` answers with the decoded payload of the signed
