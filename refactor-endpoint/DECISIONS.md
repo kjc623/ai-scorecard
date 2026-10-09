@@ -2746,3 +2746,31 @@ pages carry ms.date 08/01/2024), `microsoft/mggraph-intune-samples` `LOB_Applica
 - **Not run here**: the image builds (no Docker), the workflow, and anything against Fly.io or
   Supabase. Left as they are: `services/control-api/README.md` still calls `SAC_ENTRA_CLIENT_SECRET`
   lab-only, and the root `AGENTS.md` still describes an Azure pre-prod.
+
+## 2026-10-09, task 58 bring-up (owner and orchestrator)
+
+What the first bring-up found, and the runbook now says:
+
+- **`fly deploy` allocates no public addresses.** With the edge's dedicated IPv4 allocated first, the
+  deploy added no IPv6, and the dashboard had no address at all, so `fly certs check` reported "no
+  AAAA records". Both apps' addresses are allocated in §1 step 3 (`allocate-v6`, and
+  `allocate-v4 --shared` for the dashboard).
+- **Supabase's dashboard moved.** The Connect dialog offers Framework/Server/Direct/ORM/MCP; the
+  session pooler is under Direct. The CA certificate is on the project's Database → Settings page,
+  not under Project Settings (checked 2026-10-09).
+- **query-api's staged password did not authenticate** through the pooler while the three Go
+  services' did, with `password authentication failed for user "query-api"`. The same Node client
+  authenticated from the owner's PC with a freshly set password, so the client code is fine and the
+  stored secret was not; cause not established (the second `fly secrets import --stage` on that app,
+  or the pooler's credential cache). Workaround in §2: `ALTER ROLE` plus `fly secrets import`.
+- **Git Bash rewrites Unix paths** in arguments to Windows programs: `tenant-admin.sh` sets
+  `MSYS_NO_PATHCONV=1`, and `setup-database.sh` is given the CA path in Windows form.
+- **Certbot no longer supports Windows** (February 2024); the device certificate was issued with
+  Posh-ACME (`New-PACertificate`, Manual DNS plugin), whose `fullchain.cer` and `cert.key` are PEM.
+- **No proxy in front of either hostname** (Cloudflare "DNS only"): the edge needs the client
+  certificate, and Fly.io's certificate validation needs the app's own address.
+- Verify checks 1–6 passed on deploy run 14 (commit 4cde3d2): seven apps with one healthy machine
+  each and migrate with none; public addresses only on edge and dashboard; `/v1/health` 405 and
+  `/admin/v1/` 403 on the device hostname; `/signin` 200 with a valid certificate; migrate's release
+  command succeeded; jobs' `erase` and `aggregate` passes complete with zero failures.
+- Test tenant "Endpoint Test" is `84beb829-b508-437c-9cd2-501f36e28b81`, ceiling `m3`.

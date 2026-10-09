@@ -23,4 +23,6 @@ for arg in "$@"; do
   command="$command \"${arg//\"/\\\"}\""
 done
 
+# Git Bash would rewrite the command's /usr/local/bin path into a Windows one.
+export MSYS_NO_PATHCONV=1
 flyctl ssh console --quiet --app "$prefix-control-api" --command "$command"

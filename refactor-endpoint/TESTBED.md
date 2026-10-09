@@ -25,15 +25,15 @@ rest). Agents read this file and never write a secret into it.
 
 | Name | Value | What it is |
 |---|---|---|
-| Fly.io organization | | The Fly.io organization pre-prod's apps run in |
+| Fly.io organization | `personal` | The Fly.io organization pre-prod's apps run in |
 | Fly.io app prefix | `sac-preprod` | Pre-prod's apps are `<prefix>-<component>`, e.g. `sac-preprod-ingest-api` |
 | Fly.io read-only token | `%USERPROFILE%\.sac-testbed\fly-readonly.token` | A `fly tokens create readonly` token for that organization, for the read-only checks below |
-| Supabase project ref | | Pre-prod's Supabase project, which holds its PostgreSQL database |
-| Device hostname | | `SAC_DEVICE_FQDN`: the device edge |
-| Analyst hostname | | `SAC_ANALYST_FQDN`: the dashboard |
-| Test tenant id | | The "Endpoint Test" product tenant (task 58) |
+| Supabase project ref | `hbrvtbiifkmgdcmozxcx` | Pre-prod's Supabase project, which holds its PostgreSQL database |
+| Device hostname | `devices.preprod.sundial.solutions` | `SAC_DEVICE_FQDN`: the device edge |
+| Analyst hostname | `console.preprod.sundial.solutions` | `SAC_ANALYST_FQDN`: the dashboard |
+| Test tenant id | `84beb829-b508-437c-9cd2-501f36e28b81` | The "Endpoint Test" product tenant (task 58) |
 | Tenant file | `%USERPROFILE%\.sac-testbed\ShadowAICapture.tenant.env` | The test tenant's file from its Intune package; holds the deployment key |
-| GitHub repository | | `<org>/<repo>`, for `gh run` |
+| GitHub repository | `kjc623/ai-scorecard` | `<org>/<repo>`, for `gh run` |
 | VM name | | The Hyper-V VM name, as `Get-VM` shows it |
 | Clean checkpoint | `clean-enrolled` | A checkpoint of the VM enrolled in Intune with no agent installed |
 | VM admin credential | `%USERPROFILE%\.sac-testbed\vm-admin.xml` | A local administrator on the VM, saved with `Get-Credential \| Export-Clixml` (DPAPI, readable only by the owner's Windows account), for PowerShell Direct |
