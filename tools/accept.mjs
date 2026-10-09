@@ -71,7 +71,8 @@ const GATES = [
     id: 'static',
     decides: 'A cross-component check fails: contract drift, vocabulary disagreement, a broken structural invariant, deployment configuration disagreement, or a schema or infrastructure property regression.',
     run: () => steps([
-      ...tracked('tools/*.test.mjs').concat(tracked('azure/tools/*.test.mjs'), tracked('services/database/tools/*.test.mjs'), tracked('contracts/tools/*.test.mjs'))
+      // A pathspec's * also matches /, so tools/*.test.mjs already lists tools/testbed's: run each once.
+      ...[...new Set(tracked('tools/*.test.mjs').concat(tracked('tools/testbed/*.test.mjs'), tracked('azure/tools/*.test.mjs'), tracked('services/database/tools/*.test.mjs'), tracked('contracts/tools/*.test.mjs')))]
         .map((t) => [t, 'node', ['--test', t]]),
       ['contracts', 'node', ['contracts/tools/verify.mjs']],
       ['vocabularies', 'node', ['tools/check-vocab.mjs']],
