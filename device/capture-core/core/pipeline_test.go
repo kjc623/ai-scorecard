@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -441,6 +442,73 @@ func TestPipelineClassifierUnavailableStillEmitsDegraded(t *testing.T) {
 	}
 	if string(env["classifier_version"]) == `""` {
 		t.Fatal("classifier_version is empty; the fallback must be named")
+	}
+}
+
+// A classification the provider already has is taken only when it is a complete answer for the
+// text the pipeline would classify, at the resolved mode, as the same media type.
+func TestPipelineTakesTheProvidersClassificationOnlyWhenItApplies(t *testing.T) {
+	const text = "deploy with this key"
+	given := protocol.ClassifyResponse{
+		Labels:            []protocol.Label{{Class: "credential", Score: 0.9, RuleID: "R_KEY"}},
+		ClassifierVersion: "given-1",
+		Confidence:        protocol.ConfidenceHigh,
+	}
+	degraded := given
+	degraded.Confidence = protocol.ConfidenceDegraded
+	degraded.Stages = []protocol.StageResult{{Stage: "model", Ran: true, Truncated: true, Detail: protocol.DetailBudgetExhausted, Err: "model stage stopped"}}
+	classified := func(mode protocol.CollectionMode, mediaType, of string, resp protocol.ClassifyResponse) *Classified {
+		return &Classified{Mode: mode, MediaType: mediaType, Digest: sha256.Sum256([]byte(of)), Response: resp}
+	}
+	for _, tc := range []struct {
+		name       string
+		classified *Classified
+		calls      int
+		version    string
+	}{
+		{"none", nil, 1, "pipeline-1"},
+		{"the same text", classified(protocol.ModeM1, "text/plain", text, given), 0, "given-1"},
+		{"another text", classified(protocol.ModeM1, "text/plain", text+".", given), 1, "pipeline-1"},
+		{"another mode", classified(protocol.ModeM2, "text/plain", text, given), 1, "pipeline-1"},
+		{"another media type", classified(protocol.ModeM1, "application/json", text, given), 1, "pipeline-1"},
+		{"a degraded answer", classified(protocol.ModeM1, "text/plain", text, degraded), 1, "pipeline-1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sink := &recordingSink{}
+			p := newTestPipeline(t, sink, m1Bundle())
+			classifier := &stubClassifier{resp: protocol.ClassifyResponse{
+				Labels: []protocol.Label{}, ClassifierVersion: "pipeline-1", Confidence: protocol.ConfidenceHigh,
+			}}
+			p.Classifier = classifier
+			if _, err := p.Process(context.Background(), Observation{
+				Route:           protocol.RouteToolHook,
+				Kind:            protocol.KindPrompt,
+				ToolFingerprint: "tool",
+				OccurredAt:      time.Unix(1_700_000_000, 0),
+				SizeBytes:       int64(len(text)),
+				MediaType:       "text/plain",
+				Content:         &countingReader{body: []byte(text)},
+				Enforce:         decided(protocol.Decision{RuleID: "R", Action: protocol.ActionLogged}),
+				Extract: ExtractorFunc(func(b []byte, _ string) (string, []dedup.Attachment, error) {
+					return string(b), nil, nil
+				}),
+				Classified: tc.classified,
+			}); err != nil {
+				t.Fatalf("Process: %v", err)
+			}
+			if len(classifier.got) != tc.calls {
+				t.Errorf("classifier calls = %d, want %d", len(classifier.got), tc.calls)
+			}
+			var env struct {
+				ClassifierVersion string `json:"classifier_version"`
+			}
+			if err := json.Unmarshal(sink.last().Payload, &env); err != nil {
+				t.Fatalf("envelope: %v", err)
+			}
+			if env.ClassifierVersion != tc.version {
+				t.Errorf("classifier_version = %q, want %q", env.ClassifierVersion, tc.version)
+			}
+		})
 	}
 }
 

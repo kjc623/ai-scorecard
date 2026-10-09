@@ -130,7 +130,30 @@ type Observation struct {
 	// enter the envelope, the spool or the content store. Their descriptors travel in Attachments.
 	AttachmentContent []AttachmentContent
 
+	// Classified is the classifier's answer for this observation's content that the provider
+	// already has, as a hook's decision does. The pipeline takes it instead of classifying the same
+	// text again when it applies (Classified.answers); otherwise it classifies as usual.
+	Classified *Classified
+
 	ClientID string
+}
+
+// Classified is one completed classification of a text, with what it was asked for.
+type Classified struct {
+	Mode      protocol.CollectionMode
+	MediaType string
+	// Digest is the SHA-256 of the bytes classified.
+	Digest   [sha256.Size]byte
+	Response protocol.ClassifyResponse
+}
+
+// answers reports whether c is the classification of input at mode as mediaType. A degraded answer
+// stopped early (a stage ran out of the caller's budget or failed), so it never stands in for the
+// pipeline's own classification.
+func (c *Classified) answers(mode protocol.CollectionMode, mediaType string, input []byte) bool {
+	return c != nil && c.Mode == mode && c.MediaType == mediaType &&
+		c.Response.Confidence != protocol.ConfidenceDegraded && c.Response.Validate() == nil &&
+		c.Digest == sha256.Sum256(input)
 }
 
 // AttachmentContent is one attachment's bytes behind a reader, so the mode decides whether they
@@ -480,7 +503,14 @@ func (p *Pipeline) Process(ctx context.Context, obs Observation) (Outcome, error
 			// carries the client's system prompt and tool definitions, and classifying those
 			// labels a plain question as source code. Where no authored text was found the whole
 			// body is classified and the record is already degraded.
-			resp, cerr := p.classify(ctx, res.Mode, obs.MediaType, classifyInput(text, body, xerr))
+			input := classifyInput(text, body, xerr)
+			var resp protocol.ClassifyResponse
+			var cerr error
+			if obs.Classified.answers(res.Mode, obs.MediaType, input) {
+				resp = obs.Classified.Response
+			} else {
+				resp, cerr = p.classify(ctx, res.Mode, obs.MediaType, input)
+			}
 			if cerr != nil {
 				// Classifier unavailable or over budget: the request is carried unclassified and
 				// the record says classification was attempted and did not complete.

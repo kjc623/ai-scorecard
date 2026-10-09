@@ -2269,6 +2269,63 @@ source contradicts the current output, so `Render` and `canEnforce` are unchange
   set (MB = 1,048,576 bytes). It exits 1 at or above 1 % or 150 MB. The counter paths are the
   English names, as on the reference VM. **Not run and not syntax-checked in the build:** this
   machine is Linux with no `pwsh`; the "runs on the PC" check is pending on a Windows host.
+
+## 2026-10-09, task 51 fix 1
+
+- **Where the hook decision's tail came from: a second classification of every recorded prompt.**
+  The relay answered, then recorded the prompt through the pipeline, which classified it again
+  (2 s budget) on the same classifier link, whose single slot admits one call at a time. The next
+  hook's classification waited for that slot, and the wait counts against its 30 ms budget. Timed
+  inside the relay, the link and the pipeline (temporary instrumentation, removed), Linux, 4 vCPU:
+  idle, the decision's wait for the slot was p50 1.3 ms of a 2.7 ms classification; under four busy
+  processes, p50 1.5 ms and p99 9.6 to 10 ms of a 14 to 16 ms classification. The 4 "wrong"
+  decisions are calls that ran out of 30 ms: in a loaded run here, one waited about 11 ms for the
+  slot and its own round trip was cut off at 19 ms. The service has the same contention: its merge
+  buffer releases the record, with that second classification, while later hooks classify.
+- **Fix.** `core.Observation.Classified` carries a classification the provider already has (mode,
+  media type, SHA-256 of the bytes, response). The pipeline uses it instead of classifying when it
+  was made at the resolved mode, for the same media type and bytes, and is not degraded. Otherwise
+  it classifies as before, so a record's labels are never weaker. The relay passes its decision's
+  classification to the record. A merged hook and OTel record keeps it only while the text is the
+  hook's (the digest decides). A decision whose classification ran out of time is classified again
+  for its record, with the full budget.
+- **A call that gives up still costs the next one.** It keeps the child (0 restarts in every run
+  here), but the host still answers the abandoned request first, so the next request on the
+  connection waits for it. The protocol has no cancel, and this is unchanged. After the fix, the
+  only call that follows a timed-out decision is that prompt's record.
+- **Ruled out, with numbers.**
+  - Disk sync: the spool fsyncs every frame (`FlushFileBuffers` on Windows), which its durability
+    contract requires, but only after the answer is written. Under load, append p99 reached 96 ms
+    while decision p99 stayed 14 ms.
+  - Windows-only code: no `*_windows.go` file on either path syncs or does more than Linux; the
+    classifier child's job object is kill-on-close only.
+  - Nagle and delayed ACK: Go sets `TCP_NODELAY` on every TCP connection, and every native frame,
+    classifier frame and OTLP request is sent in one write.
+  - Rule evaluation and the answer's write: p99 under 25 µs and 0.1 to 1.9 ms.
+  - GC: the OTLP test's process allocates 228 MB in 10 s (the receiver 44 %: `io.ReadAll` growth
+    and protobuf decoding, about 100 KB a request), for 140 cycles and 29 to 44 ms of total pause.
+- **`TestHookDecisionBudget`, before → after**, 5 runs each, same machine:
+  - idle: p50 2.9 to 3.0 → 1.6 to 2.0 ms, p99 4.9 to 5.9 → 2.9 to 4.9 ms;
+  - four busy processes: p99 9.6 to 11.2 → 6.9 to 7.4 ms;
+  - twelve busy processes: p99 9.5 to 11.6 → 6.2 to 8.8 ms.
+  The test still fails with a 30 ms sleep before the answer (p99 34.6 ms).
+- **`TestOTLPBudget`: no product cause found, nothing changed.**
+  - The receiver's own handling, timed inside its handler, was p99 1.1 ms idle and 3.0 ms in the
+    module's parallel `go test ./...`.
+  - All 1,000 requests share one connection, so the sender lookup (TCP table, process, signer on
+    Windows) runs once. That probably explains the Windows run's single 127 ms request; it cannot
+    move the p99.
+  - Request p99 here: 1.1 to 1.6 ms idle, 2.0 to 6.9 ms under 4 to 12 busy processes.
+  - The Windows p95 of 8 ms and p99 of 48 ms are therefore time the test process (exporter and
+    receiver in one) was not running. `go test ./...` runs up to four packages beside the compiler,
+    including the hook test with its classifier child and its `go build`. Windows schedules in
+    clock-tick quanta (15.6 ms). This is not verified on Windows.
+- **Scaling not applied**: the brief allows it only after 5 consecutive flaky CI runs. A faster
+  core would not remove scheduling waits; if CI still flakes, running the budget tests without
+  package parallelism is the more direct remedy, and that is the owner's call. Single-core speed
+  would be measured by timing one fixed CPU-bound loop (SHA-256 of 64 MB in one goroutine, best of
+  5) in the test on the runner and on the reference VM, scaling by their ratio.
+
 ## 2026-10-08, task 52
 
 - **The rig is assembled from the agent's packages.** The service (`cmd/capture-core`) is a `main`
