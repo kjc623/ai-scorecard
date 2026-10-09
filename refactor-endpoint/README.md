@@ -20,8 +20,8 @@ Tasks run in number order unless "Depends on" allows otherwise. Tasks 13, 30–3
 and 52 include steps the owner does at the VM's console in a desktop app (`AGENTS.md`); the agent
 stops and asks at those points. Every task leaves dashboard settings and checks to the owner.
 "Needs" lists what the owner must supply for the task's device checks: on the reference VM,
-installed and signed in as the console user unless it says otherwise. Phase 7's machines are needed
-for the build too. Three tasks have no build step (22, 42, 43) and run only in the device phase.
+installed and signed in as the console user unless it says otherwise. Two tasks have no build step
+(22, 43) and run only in the device phase.
 The Plan column gives the plan's task id. "Built" is ticked when the task's "Done when" is met;
 "Device" when task 60 has run its "On the device" section.
 
@@ -74,7 +74,6 @@ The Plan column gives the plan's task id. "Built" is ticked when the task's "Don
 | 40 | [Hook and OTel merge](40-hook-otel-merge/TASK.md) | E29 | 26, 37 | Claude Code signed in | [x] | [ ] |
 | 41 | [Coaching messages](41-hook-user-messaging/TASK.md) | E30 | 37, 38 | Claude Code, Cursor | [x] | [ ] |
 | **Phase 4: Network inspection (opt-in)** | | | | | | |
-| 42 | [macOS transparent proxy spike](42-macos-transparent-proxy-spike/TASK.md) | E31 | 08 | A Mac, Xcode, an Apple developer account | — | [ ] |
 | 43 | [Windows desktop path spike](43-windows-desktop-path-spike/TASK.md) | E32 | 08, 09 | Claude Desktop, ChatGPT Desktop | — | [ ] |
 | 44 | [Non-exportable device CA](44-device-ca-non-exportable/TASK.md) | E33 | 08 | | [x] | [ ] |
 | 45 | [Per-app protocol parsers](45-app-parsers/TASK.md) | E34 | 43 | Claude Desktop, ChatGPT Desktop | [x] | [ ] |
@@ -87,15 +86,13 @@ The Plan column gives the plan's task id. "Built" is ticked when the task's "Don
 | **Phase 6: Verification** | | | | | | |
 | 51 | [Performance budgets](51-performance-budgets/TASK.md) | E42 | 36, 23 | | [x] | [ ] |
 | 52 | [Privacy canaries](52-privacy-canaries/TASK.md) | E43 | 40, 46 | | [x] | [ ] |
-| **Phase 7: macOS and Linux** | | | | | | |
-| 53 | [macOS: attribution, helper and discovery](53-macos-discovery/TASK.md) | E04, E05, E07–E12 | 21, backlog 27 | A Mac | [ ] | [ ] |
-| 54 | [macOS: native telemetry and hooks](54-macos-native-telemetry/TASK.md) | E18–E20, E26 | 53, 41 | A Mac with Claude Code, Codex, Cursor | [ ] | [ ] |
-| 55 | [Linux: attribution, helper and discovery](55-linux-discovery/TASK.md) | E04, E05, E07–E12 | 21 | A Linux desktop (systemd, logind) | [ ] | [ ] |
-| 56 | [Linux: native telemetry and hooks](56-linux-native-telemetry/TASK.md) | E18–E20, E26 | 55, 41 | A Linux desktop with Claude Code, Codex | [ ] | [ ] |
-| **Phase 8: Pre-prod and device verification** | | | | | | |
+| **Phase 7: Pre-prod and device verification** | | | | | | |
 | 58 | [Pre-prod environment and test tenant](58-preprod-environment/TASK.md) | | the build tasks to verify, merged to `main` | Fly.io and Supabase accounts; `fly/RUNBOOK.md` owner steps | [ ] | — |
 | 59 | [Reference VM tooling](59-reference-vm/TASK.md) | | 58 | `TESTBED.md` VM checklist done | [ ] | — |
 | 60 | [Device verification](60-device-verification/TASK.md) | | 59 | each brief's "Needs", on the VM | — | [ ] |
+
+Everything here runs on Windows. The macOS and Linux ports (tasks 42 and 53–56) are in
+`refactor-endpoint-macos-linux/` and start once Windows is verified end to end.
 
 Deferred by the owner: E38 (signed and notarised packages, MDM profiles, Jamf) and E41 (nightly
 vendor-tool compatibility matrix).

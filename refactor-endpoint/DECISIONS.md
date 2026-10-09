@@ -2472,3 +2472,11 @@ source contradicts the current output, so `Render` and `canEnforce` are unchange
   `config_tampered`.
 - **Not run here:** the existing Windows tests of the touched packages. The new device tests are
   platform-neutral and ran on Linux; the packages compile and vet under `GOOS=windows`.
+
+## 2026-10-09, owner, after task 57
+
+- **Windows first, end to end.** The build tasks, pre-prod (58), the reference VM (59) and the
+  device verification (60) run against Windows only. The macOS and Linux tasks (42 and 53–56) move
+  to `refactor-endpoint-macos-linux/`, unchanged and keeping their numbers, and start after task 60
+  is done. `DESIGN.md` §12 stands: every collector compiles on macOS and Linux and reports `absent`
+  there until those tasks port it.

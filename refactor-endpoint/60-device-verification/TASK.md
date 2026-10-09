@@ -3,8 +3,8 @@
 Needs:
 - tasks 58 and 59 finished, and `TESTBED.md` filled in;
 - the build tasks to verify merged to `main` and deployed;
-- for each brief in turn, its "Needs": the tools installed and signed in on the reference VM (or
-  the Mac or the Linux desktop), and the owner available for the console steps and the dashboard.
+- for each brief in turn, its "Needs": the tools installed and signed in on the reference VM, and
+  the owner available for the console steps and the dashboard.
 
 ## Problem
 
@@ -17,9 +17,8 @@ normalizers and parsers were built against.
 ## Goal
 
 Every "On the device" section in this folder has been run against pre-prod's test tenant, on the
-reference VM (or the Mac or the Linux desktop for tasks 42 and 53–56), and passes. What it found
-wrong has been fixed and merged. The fixture sets written from documentation have been replaced by
-captures.
+reference VM, and passes. What it found wrong has been fixed and merged. The fixture sets written
+from documentation have been replaced by captures.
 
 ## Scope
 
@@ -51,8 +50,6 @@ Order:
 - Task 43 runs before tasks 45 and 47.
 - Task 50 restores the clean checkpoint and uninstalls: run it after task 49, and re-deploy at its
   end as its section says.
-- Tasks 42 and 53–56 need the Mac or the Linux desktop. Run them when the owner has the machine,
-  in their own number order.
 
 The rules of `TESTBED.md` hold throughout: pre-prod is read-only, the dashboard and the database
 are the owner's, and the VM is reached only through `tools/testbed`.

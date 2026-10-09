@@ -128,7 +128,7 @@ How each kind of check is done:
   2. Wait for them to confirm.
   3. Capture the result with `invm.ps1 -Screenshot`, and check the device side yourself.
 - **Needs.** A brief's "Needs" line lists what the owner must have done on the VM (a tool
-  installed and signed in as the console user, a Mac). If it is missing, stop and ask; don't fake
+  installed and signed in as the console user). If it is missing, stop and ask; don't fake
   it.
 - **Timing and resources.** One round is a merge, the deploy workflow, and Intune delivery, so
   finish the code completely before reporting ready to merge. The VM's resources are what the
