@@ -2556,3 +2556,85 @@ source contradicts the current output, so `Render` and `canEnforce` are unchange
   an empty answer; the real-session test now waits for the answer that holds the address it dials.
 - **Fixture searches ignore line endings**, because a Windows checkout converts the fixtures to
   CRLF while Go strips carriage returns from raw string literals.
+
+## 2026-10-09, task 59 (build)
+
+Sources, all fetched 2026-10-09 (`learn.microsoft.com` is blocked here, so the documentation's own
+repositories): `microsoftgraph/microsoft-graph-docs-contrib` at `256c29a` (2026-10-08; the Intune
+pages carry ms.date 08/01/2024), `microsoft/mggraph-intune-samples` `LOB_Application/Win32_Application_Add.ps1`
+(main), `microsoftgraph/msgraph-sdk-powershell` `src/Authentication/docs` at `8adde4f` (2026-10-08),
+`MicrosoftDocs/PowerShell-Docs` `reference/5.1`, `MicrosoftDocs/windows-powershell-docs`
+`docset/winserver2022-ps` and `MicrosoftDocs/entra-docs`. `MicrosoftDocs/memdocs` was not reachable
+(raw files 404, the repository 403 through the proxy).
+
+- **Win32 LOB upload**, as Microsoft's sample does it, on Graph **beta**: create the `win32LobApp`;
+  `POST mobileApps/{id}/microsoft.graph.win32LobApp/contentVersions` with `{}`;
+  `POST .../files` with `name` (Detection.xml's `FileName`), `size` (`UnencryptedContentSize`),
+  `sizeEncrypted`, `manifest` null, `isDependency` false; poll `uploadState` until
+  `azureStorageUriRequestSuccess`; Azure Storage Put Block (`&comp=block&blockid=<base64>`,
+  `x-ms-blob-type: BlockBlob`, 1 MiB blocks) and Put Block List (`&comp=blocklist`,
+  `<BlockList><Latest>`); `POST .../commit` with `fileEncryptionInfo` (Detection.xml's seven
+  `EncryptionInfo` values, `ProfileVersion1`, `SHA256`); poll until `commitFileSuccess`; PATCH
+  `committedContentVersion` to the content version's id (the sample hard-codes `"1"`). The app's
+  rule, command lines and MSI information are PATCHed in the same request, so a failed upload leaves
+  the app describing the content it still has.
+- **Detection**: `rules` with `win32LobAppProductCodeRule` (`ruleType` detection,
+  `productVersionOperator` `greaterThanOrEqual`), not the brief's `detectionRules` with
+  `win32LobAppProductCodeDetection`. Both are documented in beta; `rules` is the one v1.0 also has and
+  the one the sample uses. The product code changes with every build (`MajorUpgrade`), so each
+  publish rewrites the rule and the uninstall command.
+- **Minimum OS**: beta's `windowsMinimumOperatingSystem` documents flags up to `v10_21H1`, not the
+  runbook's 21H2; the app sets `v10_21H1`. v1.0's `minimumSupportedWindowsRelease` documents only an
+  example value, which is why the script is on beta.
+- **Install behaviour**: SYSTEM, `deviceRestartBehavior` `suppress` (Intune must never restart the
+  VM: its users stay signed in), the sample's return codes, x64, `displayVersion` = the release.
+- **Assignment**: `POST mobileApps/{id}/assign` with one `mobileAppAssignment` (`intent` `required` or
+  `uninstall`; the documented intents are available, required, uninstall,
+  availableWithoutEnrollment), target `groupAssignmentTarget`, settings
+  `win32LobAppAssignmentSettings` with `notifications` `hideAll` (no toasts in screenshots).
+  `/assign` replaces the app's assignments, which is the "only the test device group" rule; it is
+  skipped when the one assignment already matches.
+- **Sync**: `managedDevice.azureADDeviceId` is documented, a `$filter` on it is not. The script
+  lists `managedDevices?$select=id,azureADDeviceId,deviceName` (following `@odata.nextLink`) and
+  matches the id `dsregcmd /status` gives (`DeviceId`, with `AzureAdJoined` and `TenantId`; entra-docs
+  `troubleshoot-device-dsregcmd`, ms.date 06/27/2025), then `POST .../syncDevice` with no body
+  (`DeviceManagementManagedDevices.PrivilegedOperations.All`).
+- **Graph sign-in**: `Connect-MgGraph -ClientId -TenantId -CertificateThumbprint -NoWelcome`
+  (AppCertificateParameterSet); `Invoke-MgGraphRequest -OutputType HashTable`.
+- **IntuneWinAppUtil 1.8.7**, the newest tag (`v1.8.7`, commit `1d6cfcbdf8c2`, 2025-08-13). Its
+  `IntuneWinAppUtil.exe` downloaded here by tag and by commit has sha256
+  `c1ba45b5cb939e84af064bb7ff4b38fb3dfe33c8dc1078fd9b157672eae671f6`; `deploy.mjs` pins the
+  commit URL and refuses another hash. `-c <setup folder> -s <setup file> -o <out> -q` writes
+  `ShadowAICapture.intunewin`. Its layout (`IntuneWinPackage/Metadata/Detection.xml`,
+  `IntuneWinPackage/Contents/<FileName>`) is the one control-api's `deploy/intunewin.go` reproduces;
+  the setup folder is the same pair the dashboard's package carries (MSI + `ShadowAICapture.tenant.env`).
+  The package folder holds the deployment key, so it is deleted once the publish ends.
+- **PowerShell Direct**: `Invoke-Command -VMName -Credential`, `New-PSSession -VMName`,
+  `Copy-Item -ToSession/-FromSession` (PowerShell-Docs 5.1). `Restore-VMCheckpoint` is documented as
+  `Restore-VMSnapshot` ("snapshots were renamed to checkpoints", ms.date 12/20/2016); the script
+  calls `Restore-VMSnapshot -VMName -Name` and starts the VM when the checkpoint leaves it off or
+  saved, then waits for PowerShell Direct.
+- **`-AsUser`**: a one-shot task with `New-ScheduledTaskPrincipal -LogonType Interactive` (documented
+  values include `Interactive`) whose `UserId` is the user's SID. The UPN-to-SID mapping reads
+  `HKLM\SOFTWARE\Microsoft\IdentityStore\Cache\<sid>\IdentityCache\<sid>` `UserName`, which no
+  Microsoft page documents, and the user must own an `explorer.exe`. **[device]** the first
+  `invm.ps1 -AsUser second -Command 'whoami /upn'` proves it.
+- **Not verified (memdocs unreachable)**: the service name `IntuneManagementExtension` and the log
+  `C:\ProgramData\Microsoft\IntuneManagementExtension\Logs\AppWorkload*.log`, both from the brief.
+  **[device]**
+- **Run selection**: only `push` runs of `deploy.yml` on `main` count; a manual run on `main` may have
+  built another environment's release (its policy key). The newest such run for the commit decides.
+- **"Acknowledged after the install"**: health.json's `last_heartbeat_at` (set only when pre-prod
+  accepted a report) is at or after the `ShadowAICapture` process's start time, both on the VM's
+  clock, and `agent_version` is the release's.
+- **Tenant file check**: `deploy.mjs` refuses a tenant file whose tenant is not TESTBED.md's test
+  tenant or whose endpoint is not the device hostname, so no other environment's key is published.
+- **`--uninstall`** assigns the recorded app as uninstall without new content (its uninstall command
+  names the installed product code) and waits until no Shadow AI Capture product or service remains.
+- **Tests**: Node 22's `node --test tools/testbed/` loads the directory as a module and fails; the
+  README runs `node --test "tools/testbed/*.test.mjs"`. In the static gate, git's pathspec
+  `tools/*.test.mjs` already matches `tools/testbed/*.test.mjs` (`*` crosses `/`), so the explicit
+  entry is added and the list de-duplicated.
+- **Not run here**: no PowerShell. The worktree isolation guard of this container refuses to run
+  `pwsh`, so the two scripts were not parsed or analysed; they are written for Windows PowerShell 5.1
+  and ASCII.
