@@ -4,7 +4,7 @@
   "version": "1",
   "description": "Observe generative-AI submissions and report matched observations to capture-core. Policy-installed; requests are never changed.",
   "minimum_chrome_version": "110",
-  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxgjCHMt6wGivUwkODN5jjIMWwA8uNvvmxpxQ6Honu0IPbO75pl5WubkQSFFsNYyNpp37HWjwyOuGy9TYqVcyG2NcoPDxP9XyAgiFNXBqq98n7rEZYJ2mbJiPtArogugwowWVYieukQobAipiUZ1311bG78evbo+gEECC8y5GGNjGyS6C1DzEAkOyCJhwIUaAcX6Uk85PE1SFHwsyGvymbfO4xrNZ/4qh0aFlxy67ggH4L6VFaUDf3kO9MJqM5jvamUWVSH1GQGfntv8vwdnwb72Lrp4qvswXvTEiJcpJS6Ur1WHZKhXPBtvX5Pwf75vqlY1M92GuyFMhIxcTfcBYMQIDAQAB",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2Flbjwg0s8yZO+lXkQvAL2QL4mhGTK2aLAOkQb7lM2GCUpZuy5exdPcVwU13lv4fOHqfal9dYKlGeyovdmHWUVOLNIs1IQW/ckQiTdQCoiwOVwNpYOgwXKWMZwP1jDAsUTIN4K83BxfmQzOv4BROHos8k9Mh1IxKPrO7KPyguJy47W40D78Z/bIoa5ABGO2H5BKeLfihFLdPX+SIfJymrlFu8DSXC+3/kSswpg2GnRWOTN5CyTmsr0hLcAiXS+JmKp8UCU4y9/ZFI5naWR1ksa7ZKqNCwPx6NUxfUI8pYCCGHSHd+eO/AJgMDmV2+DY2nht67XV7MM7Z5BPsHf+iiQIDAQAB",
   "background": {
     "service_worker": "background/service-worker.js",
     "type": "module"
