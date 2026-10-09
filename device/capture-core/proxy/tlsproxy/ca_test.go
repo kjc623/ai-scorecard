@@ -444,3 +444,34 @@ func TestFileKeyRootReplacementRetriedWhenTrustRemovalFails(t *testing.T) {
 		t.Fatal("the retried root is not signed for by the keystore's key")
 	}
 }
+
+// At uninstall the kept root leaves the trust store, also when the running agent was not the one
+// that installed it; a root the store does not hold stays out, and a device with no kept root has
+// nothing to remove.
+func TestRetireDeviceRootTakesTheKeptRootOutOfTrust(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), state.DeviceCADir)
+	now := time.Date(2026, 10, 5, 9, 0, 0, 0, time.UTC)
+	var log []string
+	trust := newRecordingTrust(&log, filepath.Join(dir, deviceCAKeyFile))
+
+	if err := RetireDeviceRoot(context.Background(), dir, trust); err != nil || len(log) != 0 {
+		t.Fatalf("with no kept root: err=%v steps=%q; want nothing done", err, log)
+	}
+
+	ca, _, err := openDeviceCA(context.Background(), &fakeKeyStore{}, dir, "DESKTOP-01", now, trust)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RetireDeviceRoot(context.Background(), dir, trust); err != nil || len(trust.roots) != 0 || !slices.Equal(log, []string{"trust.verify"}) {
+		t.Fatalf("an untrusted root: err=%v steps=%q roots=%d; want only the check", err, log, len(trust.roots))
+	}
+
+	log = nil
+	trust.roots[string(ca.cert.Raw)] = true
+	if err := RetireDeviceRoot(context.Background(), dir, trust); err != nil {
+		t.Fatal(err)
+	}
+	if len(trust.roots) != 0 || !slices.Equal(log, []string{"trust.verify", "trust.install", "trust.remove"}) {
+		t.Fatalf("a trusted root: steps=%q roots=%d; want it removed", log, len(trust.roots))
+	}
+}

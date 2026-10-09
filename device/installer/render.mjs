@@ -13,7 +13,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { extensionId } from '../extension/tools/extension-id.mjs';
-import { CONFIG, LAYOUT, NATIVE_HOST, PRODUCT, START_MENU_SHORTCUT, TENANT_PACKAGE, nativeHostManifest } from './manifest.mjs';
+import { CONFIG, LAYOUT, NATIVE_HOST, PRODUCT, START_MENU_SHORTCUT, TENANT_PACKAGE, UNINSTALL_CLEANUP, nativeHostManifest } from './manifest.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const GENERATED = join(ROOT, 'device', 'installer', 'generated');
@@ -121,6 +121,8 @@ export const DATA_FOLDER_ACL = {
 function wixSource() {
   const L = LAYOUT.windows;
   const S = START_MENU_SHORTCUT;
+  const U = UNINSTALL_CLEANUP;
+  const xmlAttr = (v) => v.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
   const tenantName = TENANT_PACKAGE.fileName;
   const profileName = (file) => file.slice(L.profiledir.length + 1);
   const config = profileName(L.configFile);
@@ -230,10 +232,17 @@ ${Object.keys(DATA_FOLDER_ACL).map(dataFolder).join('\n')}
          tenant.env are not installed files. An upgrade keeps them. -->
     <CustomAction Id="RemoveData" Directory="CommonAppDataFolder" Execute="deferred" Impersonate="no" Return="ignore"
                   ExeCommand="${cmd('/c rmdir /s /q &quot;[DATAFOLDER]&quot;')}" />
+    <!-- A full uninstall first puts back what the agent changed outside its own folders: capture-core
+         runs as SYSTEM once the service has stopped, while its files are still installed, and logs
+         each step to %WINDIR%\\Temp\\${U.log}. Its exit code is ignored, so it
+         never blocks the uninstall. -->
+    <CustomAction Id="UninstallCleanup" FileRef="Fil_CaptureCore" Execute="deferred" Impersonate="no" Return="ignore"
+                  ExeCommand="${U.argument} ${serviceArgs}" />
     <InstallExecuteSequence>
       <ResolveSource After="CostInitialize" Condition="NOT Installed" />
       <Custom Action="CheckTenantConfig" After="CostFinalize" Condition="NOT Installed" />
       <Custom Action="StartService" After="InstallServices" Condition="NOT REMOVE" />
+      <Custom Action="UninstallCleanup" After="StopServices" Condition="${xmlAttr(U.condition)}" />
       <Custom Action="RemoveData" After="RemoveFiles" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
     </InstallExecuteSequence>
 

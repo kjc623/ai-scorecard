@@ -83,6 +83,21 @@ export const START_MENU_SHORTCUT = {
   appUserModelId: 'ShadowAICapture.Agent',
 };
 
+/**
+ * The uninstall cleanup. At a full uninstall, not an upgrade, the MSI runs capture-core with
+ * `argument` and the service's configuration files, as SYSTEM, once the service has stopped and before
+ * the files are removed. capture-core puts back what the agent changed outside its own folders (the
+ * tools' managed settings, OLLAMA_HOST, each user's PAC, the device root and its key, the QUIC firewall
+ * rules, the CLI shim's machine environment) and writes each step's outcome to `log` in
+ * %WINDIR%\Temp, outside the data folder the uninstall deletes. Its exit code is ignored, so it never
+ * blocks an uninstall.
+ */
+export const UNINSTALL_CLEANUP = {
+  argument: '--uninstall-cleanup',
+  log: 'ShadowAICapture-uninstall.log',
+  condition: 'REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE',
+};
+
 /** The host manifest for one platform. Windows resolves `path` against the manifest's own folder. */
 export function nativeHostManifest(os, extensionId) {
   return {

@@ -22,7 +22,19 @@ const (
 	ncryptExportPolicyProperty        = "Export Policy" // NCRYPT_EXPORT_POLICY_PROPERTY
 )
 
-var procNCryptGetProperty = windows.NewLazySystemDLL("ncrypt.dll").NewProc("NCryptGetProperty")
+var (
+	ncryptDLL                     = windows.NewLazySystemDLL("ncrypt.dll")
+	procNCryptGetProperty         = ncryptDLL.NewProc("NCryptGetProperty")
+	procNCryptOpenStorageProvider = ncryptDLL.NewProc("NCryptOpenStorageProvider")
+	procNCryptOpenKey             = ncryptDLL.NewProc("NCryptOpenKey")
+	procNCryptDeleteKey           = ncryptDLL.NewProc("NCryptDeleteKey")
+	procNCryptFreeObject          = ncryptDLL.NewProc("NCryptFreeObject")
+)
+
+const (
+	ncryptMachineKeyFlag = 0x20       // NCRYPT_MACHINE_KEY_FLAG
+	nteBadKeyset         = 0x80090016 // NTE_BAD_KEYSET: NCryptOpenKey found no key of that name
+)
 
 // platformKeyStore keeps the device root's key in CNG.
 func platformKeyStore(string) (caKeyStore, error) {
@@ -74,6 +86,40 @@ func (s *cngKeyStore) Generate() (crypto.Signer, error) {
 		return nil, err
 	}
 	return key, nil
+}
+
+// deletePlatformKey deletes the device root's CNG machine key.
+func deletePlatformKey(string) error { return deleteCNGKey(deviceRootKeyName) }
+
+// deleteCNGKey deletes the named machine key from the Microsoft Software Key Storage Provider. A
+// key that does not exist is already deleted.
+func deleteCNGKey(name string) error {
+	provName, err := windows.UTF16PtrFromString(certtostore.ProviderMSSoftware)
+	if err != nil {
+		return err
+	}
+	keyName, err := windows.UTF16PtrFromString(name)
+	if err != nil {
+		return err
+	}
+	var prov, key uintptr
+	if r, _, _ := procNCryptOpenStorageProvider.Call(uintptr(unsafe.Pointer(&prov)), uintptr(unsafe.Pointer(provName)), 0); r != 0 {
+		return fmt.Errorf("tlsproxy: opening the CNG key storage provider: 0x%08X", uint32(r))
+	}
+	defer procNCryptFreeObject.Call(prov)
+	r, _, _ := procNCryptOpenKey.Call(prov, uintptr(unsafe.Pointer(&key)), uintptr(unsafe.Pointer(keyName)), 0, ncryptMachineKeyFlag)
+	if uint32(r) == nteBadKeyset {
+		return nil
+	}
+	if r != 0 {
+		return fmt.Errorf("tlsproxy: opening the CNG key %s: 0x%08X", name, uint32(r))
+	}
+	// NCryptDeleteKey frees the handle when it succeeds, and only then.
+	if r, _, _ := procNCryptDeleteKey.Call(key, 0); r != 0 {
+		procNCryptFreeObject.Call(key)
+		return fmt.Errorf("tlsproxy: deleting the CNG key %s: 0x%08X", name, uint32(r))
+	}
+	return nil
 }
 
 // cngHandle is a certtostore key's NCRYPT_KEY_HANDLE.

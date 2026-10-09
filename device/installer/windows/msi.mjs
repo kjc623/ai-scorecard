@@ -17,7 +17,7 @@ import { join } from 'node:path';
 
 import { extensionId } from '../../extension/tools/extension-id.mjs';
 import { CRX_FILE } from '../../extension/tools/build-crx.mjs';
-import { NATIVE_HOST, PRODUCT, TENANT_PACKAGE, TRUST_ANCHORS } from '../manifest.mjs';
+import { NATIVE_HOST, PRODUCT, TENANT_PACKAGE, TRUST_ANCHORS, UNINSTALL_CLEANUP } from '../manifest.mjs';
 import { DATA_FOLDER_ACL } from '../render.mjs';
 import { BuildError, ROOT } from '../build.mjs';
 
@@ -126,7 +126,7 @@ export function releaseChecks(dir) {
     return rows;
   }
   const release = JSON.parse(readFileSync(releaseJson, 'utf8'));
-  const info = readMsi(msi, ['File', 'MoveFile', 'ServiceInstall', 'Registry', 'MsiLockPermissionsEx']);
+  const info = readMsi(msi, ['File', 'MoveFile', 'ServiceInstall', 'Registry', 'MsiLockPermissionsEx', 'CustomAction', 'InstallExecuteSequence']);
 
   check(
     'release.json describes the MSI',
@@ -155,6 +155,21 @@ export function releaseChecks(dir) {
     'it locks profile and state to SYSTEM and Administrators and lets users read cli',
     Object.entries(DATA_FOLDER_ACL).every(([d, sddl]) => locks[d] === sddl),
     Object.keys(locks).join(', ') || 'no MsiLockPermissionsEx rows',
+  );
+  // The cleanup is an executable from an installed file (base type 18), run from the script (0x400)
+  // as SYSTEM (0x800) with its exit code ignored (0x40), between StopServices and RemoveFiles.
+  const coreFile = info.tables.File.find((f) => f.FileName.split('|').pop().toLowerCase() === 'capture-core.exe');
+  const cleanup = info.tables.CustomAction.find((a) => a.Action === 'UninstallCleanup');
+  const type = Number(cleanup?.Type ?? 0);
+  const seq = Object.fromEntries(info.tables.InstallExecuteSequence.map((r) => [r.Action, r]));
+  const at = (action) => Number(seq[action]?.Sequence ?? NaN);
+  check(
+    'a full uninstall runs capture-core --uninstall-cleanup as SYSTEM after StopServices and before RemoveFiles, ignoring its exit code',
+    cleanup && coreFile && cleanup.Source === coreFile.File && (type & 0x3f) === 18 && (type & 0xc40) === 0xc40 &&
+      cleanup.Target === `${UNINSTALL_CLEANUP.argument} --config-file "[PROFILEFOLDER]capture-core.env" --config-file "[PROFILEFOLDER]tenant.env"` &&
+      seq.UninstallCleanup?.Condition === UNINSTALL_CLEANUP.condition &&
+      at('StopServices') < at('UninstallCleanup') && at('UninstallCleanup') < at('RemoveFiles'),
+    cleanup ? `type ${type}, sequence ${at('StopServices')} < ${at('UninstallCleanup')} < ${at('RemoveFiles')}` : 'no UninstallCleanup custom action',
   );
   check('release.json records whether the MSI is signed', release.signed === isSigned(msi), `signed: ${release.signed}`);
 

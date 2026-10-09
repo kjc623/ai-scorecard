@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -13,11 +14,12 @@ import (
 
 	"github.com/shadow-ai-capture/device/capture-core/hostinfo"
 	"github.com/shadow-ai-capture/device/capture-core/proxy/tlsproxy"
+	"github.com/shadow-ai-capture/device/capture-core/winproxy"
 )
 
 // The service reads the machine's attestation and console user, and changes the trust store, the
 // keystore that holds the device root's key, the machine environment and a native messaging
-// endpoint. Every test replaces those seams, so a run on an enrolled, domain-joined machine behaves
+// endpoint; the uninstall cleanup also changes users' proxy settings and the firewall. Every test replaces those seams, so a run on an enrolled, domain-joined machine behaves
 // like one on a build host and nothing outside the test's temporary directories is touched.
 func TestMain(m *testing.M) {
 	collectHostFacts = func() hostinfo.Facts { return hostinfo.Facts{} }
@@ -42,6 +44,11 @@ func TestMain(m *testing.M) {
 		codexRequirements:  filepath.Join(shimDir, "OpenAI", "Codex", "requirements.toml"),
 		codexConfig:        filepath.Join(shimDir, "OpenAI", "Codex", "config.toml"),
 		codexUserConfigs:   func() []string { return nil },
+	}
+	cleanupPlatform = cleanupFacilities{
+		openUserSettings: func(string) (winproxy.Registry, error) { return nil, errors.New("no user settings in tests") },
+		deleteDeviceKey:  func(string) error { return nil },
+		logPath:          func() string { return filepath.Join(shimDir, uninstallLogName) },
 	}
 	code := m.Run()
 	_ = os.RemoveAll(shimDir)

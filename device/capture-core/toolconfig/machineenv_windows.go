@@ -5,9 +5,7 @@ package toolconfig
 import (
 	"errors"
 	"strings"
-	"unsafe"
 
-	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
 
@@ -68,18 +66,4 @@ func (registryEnv) Unset(name string) error {
 // announceEnvironment broadcasts WM_SETTINGCHANGE for "Environment", as setx does, so top-level
 // windows that listen reload the environment. The broadcast reaches only the windows of the
 // sender's own session.
-func announceEnvironment() {
-	const (
-		hwndBroadcast    = 0xffff
-		wmSettingChange  = 0x001a
-		smtoAbortIfHung  = 0x0002
-		broadcastTimeout = 5000 // milliseconds
-	)
-	param, err := windows.UTF16PtrFromString("Environment")
-	if err != nil {
-		return
-	}
-	var result uintptr
-	_, _, _ = procSendMessageTimeoutW.Call(hwndBroadcast, wmSettingChange, 0, uintptr(unsafe.Pointer(param)),
-		smtoAbortIfHung, broadcastTimeout, uintptr(unsafe.Pointer(&result)))
-}
+func announceEnvironment() { winRegistry{}.environmentChanged() }

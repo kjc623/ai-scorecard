@@ -756,9 +756,10 @@ func (s *service) buildPAC() error {
 		return nil
 	}
 	s.pac = platform.desktopPAC(winproxy.Config{
-		Bundles:   s.currentBundle,
-		ProxyAddr: func() string { return s.tlsProv.ListenAddr() },
-		Log:       s.logf,
+		Bundles:    s.currentBundle,
+		ProxyAddr:  func() string { return s.tlsProv.ListenAddr() },
+		RecordFile: s.dir.Path(winproxy.StateFile),
+		Log:        s.logf,
 	})
 	return s.reg.Add(s.pac)
 }
