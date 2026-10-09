@@ -37,7 +37,7 @@ export const FIELDS = [
   ['Clean checkpoint', 'cleanCheckpoint', 'text', true],
   ['VM admin credential', 'vmAdminCredential', 'text', true],
   ['Console user', 'consoleUser', 'upn', true],
-  ['Second user', 'secondUser', 'upn', true],
+  ['Second user', 'secondUser', 'upn', false],
   ['Entra tenant id', 'entraTenantId', 'guid', true],
   ['Intune app registration', 'intuneClientId', 'guid', true],
   ['Publishing certificate', 'certificateThumbprint', 'thumbprint', true],

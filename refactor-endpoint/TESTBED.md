@@ -34,15 +34,15 @@ rest). Agents read this file and never write a secret into it.
 | Test tenant id | `84beb829-b508-437c-9cd2-501f36e28b81` | The "Endpoint Test" product tenant (task 58) |
 | Tenant file | `%USERPROFILE%\.sac-testbed\ShadowAICapture.tenant.env` | The test tenant's file from its Intune package; holds the deployment key |
 | GitHub repository | `kjc623/ai-scorecard` | `<org>/<repo>`, for `gh run` |
-| VM name | | The Hyper-V VM name, as `Get-VM` shows it |
+| VM name | `WIN11-TEST` | The Hyper-V VM name, as `Get-VM` shows it |
 | Clean checkpoint | `clean-enrolled` | A checkpoint of the VM enrolled in Intune with no agent installed |
 | VM admin credential | `%USERPROFILE%\.sac-testbed\vm-admin.xml` | A local administrator on the VM, saved with `Get-Credential \| Export-Clixml` (DPAPI, readable only by the owner's Windows account), for PowerShell Direct |
-| Console user | | UPN of the Entra test user signed in at the VM's console |
-| Second user | | UPN of a second Entra test user, signed in through fast user switching and left signed in |
-| Entra tenant id | | The Microsoft Entra tenant the VM is joined to |
-| Intune app registration | | Application (client) id of the publishing app registration |
-| Publishing certificate | | Thumbprint of its certificate, in the owner's `Cert:\CurrentUser\My` |
-| Test device group | | Object id of the Entra group containing only the VM |
+| Console user | `kyle@sundial.solutions` | UPN of the Entra test user signed in at the VM's console |
+| Second user | | Optional: UPN of a second Entra test user, signed in through fast user switching and left signed in. Empty: one user, and the checks that need a second session are reported as not run |
+| Entra tenant id | `5ac3954b-f7e1-47af-bbab-2ca027d1948f` | The Microsoft Entra tenant the VM is joined to |
+| Intune app registration | `6013fcd8-b0fe-4201-9e0c-5bb4a78e7b57` | Application (client) id of the publishing app registration |
+| Publishing certificate | `300591A257424963C75D23327A40BED95F0156C5` | Thumbprint of its certificate, in the owner's `Cert:\CurrentUser\My` |
+| Test device group | `6a3c290c-2ff1-4c44-bba9-ca6ed29caed6` | Object id of the Entra group containing only the VM |
 | Intune app id | (task 59 fills this in) | The one Win32 app the testbed publishes to |
 
 ## VM checklist (owner, once)
@@ -55,7 +55,7 @@ rest). Agents read this file and never write a secret into it.
      works; re-export the credential after a rotation.
 2. **Users.**
    - Sign in at the console as the console user.
-   - Switch user, sign in as the second user, and switch back. Both sessions stay signed in.
+   - With a second user: switch user, sign in as them, and switch back. Both sessions stay signed in.
 3. **Browser extension.**
    - In Intune, create a Settings catalog profile for Microsoft Edge and Google Chrome, assigned to
      the test device group, as `azure/RUNBOOK.md` §7 describes:
@@ -97,7 +97,7 @@ rest). Agents read this file and never write a secret into it.
 - **The VM.**
   - Work in it only through `tools/testbed`.
   - Restore `clean-enrolled` only when a brief says so.
-  - Never sign the console user or the second user out.
+  - Never sign the console user, or the second user if there is one, out.
 - **Secrets.** Never print, log or commit:
   - the VM admin credential;
   - the publishing certificate;

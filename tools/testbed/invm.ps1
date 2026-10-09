@@ -119,7 +119,10 @@ $agentStateBlock = {
 
 function Invoke-AsUser([string]$Which, [string]$Script) {
     $upn = $config.consoleUser
-    if ($Which -eq 'second') { $upn = $config.secondUser }
+    if ($Which -eq 'second') {
+        if ([string]::IsNullOrEmpty($config.secondUser)) { throw 'TESTBED.md names no second user: -AsUser second is unavailable' }
+        $upn = $config.secondUser
+    }
     Invoke-Command -VMName $config.vmName -Credential $credential -ScriptBlock $runAsUser -ArgumentList $upn, $Script, $UserTimeoutSeconds
 }
 
