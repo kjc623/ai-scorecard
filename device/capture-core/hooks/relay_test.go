@@ -269,6 +269,38 @@ func TestASlowClassifierLeavesTheLabelsUnknown(t *testing.T) {
 	}
 }
 
+// The record carries the labels the decision was made with, without classifying the prompt again.
+// A prompt whose classification ran out of the decision's budget is classified for the record.
+func TestTheRecordTakesTheDecisionsClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		delay time.Duration
+		calls int32
+		want  protocol.HookAction
+	}{
+		{"classified in time", 0, 1, protocol.HookBlock},
+		{"out of the decision's budget", 4 * hooks.ClassifyBudget, 2, protocol.HookAllow},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			classifier := &stubClassifier{delay: tc.delay}
+			sink := &memSink{}
+			r := newRelay(t, newPipeline(t, sink, testBundle(protocol.ModeM1, blockCredentials)), classifier)
+			answer, served := ask(t, r, evaluateFrame(t, "claude_code", "deploy with key "+awsKey))
+			if d := decision(t, answer); d.Action != tc.want {
+				t.Fatalf("decision = %+v, want %s", d, tc.want)
+			}
+			waitServed(t, served)
+			if n := classifier.calls.Load(); n != tc.calls {
+				t.Errorf("the prompt was classified %d times, want %d", n, tc.calls)
+			}
+			env := decodeEnvelope(t, sink.all()[0])
+			if !slices.ContainsFunc(env.Labels, func(l protocol.Label) bool { return l.Class == "credential" }) {
+				t.Fatalf("the record carries labels %+v, want credential", env.Labels)
+			}
+		})
+	}
+}
+
 // A prompt sent as its length only is not classified, and is recorded with that size.
 func TestAnOverCapPromptIsNotClassified(t *testing.T) {
 	classifier := &stubClassifier{}

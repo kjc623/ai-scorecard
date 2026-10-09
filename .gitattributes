@@ -1,3 +1,6 @@
 # The installer's generated files are compared byte for byte with the manifest's output, which is LF
 # on every platform. Keep them LF in a checkout too, so a Windows runner matches.
 device/installer/generated/** text eol=lf
+
+# The owner runs these in Git Bash on Windows, where a carriage return breaks bash.
+fly/scripts/*.sh text eol=lf

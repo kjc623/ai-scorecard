@@ -25,6 +25,6 @@ component's own tests can do:
 
 | Check | Decides |
 |---|---|
-| `check-config.mjs` | Every environment variable `azure/main.bicep` sets for an app or job is read by that component |
+| `check-config.mjs` | Every environment variable `azure/main.bicep` sets for an app or job, and every setting and secret `fly/` gives an app, is read by that component |
 | `check-invariants.mjs` | Structural properties: devices hold no database credential, the dashboard holds no SQL, query-api binds values, the spool is append-only, only content-vault touches stored content, collector health stays closed |
 | `check-vocab.mjs` | The extension and `device/protocol` spell every shared vocabulary the same way |

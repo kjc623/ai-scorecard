@@ -10,6 +10,7 @@ package hooks
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"net"
@@ -29,6 +30,9 @@ import (
 // ClassifyBudget bounds the classification a decision waits for. The hook's whole process has
 // 400 ms; a classification that does not finish in time leaves the labels unknown.
 const ClassifyBudget = 30 * time.Millisecond
+
+// promptMediaType is the media type a hook's prompt is classified and recorded as.
+const promptMediaType = "text/plain"
 
 // writeTimeout bounds writing the answer to a hook that stopped reading.
 const writeTimeout = time.Second
@@ -230,9 +234,13 @@ func (r *Relay) decide(ev protocol.HookEvaluate, peer hostinfo.User, received ti
 
 	// At m0 nothing is classified, so a rule that lists labels cannot match.
 	var labels []string
-	known := false
+	var classified *core.Classified
 	if res.ReadsContent() && !ev.OverCap && ev.PromptText != "" {
-		labels, known = r.classify(res.Mode, ev.PromptText)
+		classified = r.classify(res.Mode, ev.PromptText)
+	}
+	known := classified != nil
+	if known {
+		labels = classes(classified.Response.Labels)
 	}
 	d := enforce.Evaluate(b, enforce.Input{Route: protocol.RouteToolHook, ToolFingerprint: fp, Labels: labels, LabelsKnown: known})
 
@@ -241,7 +249,7 @@ func (r *Relay) decide(ev protocol.HookEvaluate, peer hostinfo.User, received ti
 		Route:           protocol.RouteToolHook,
 		Kind:            protocol.KindPrompt,
 		ToolFingerprint: fp,
-		MediaType:       "text/plain",
+		MediaType:       promptMediaType,
 		OccurredAt:      received,
 		SizeBytes:       ev.PromptBytes,
 		Enforce:         func([]string, bool) protocol.Decision { return recorded },
@@ -249,7 +257,10 @@ func (r *Relay) decide(ev protocol.HookEvaluate, peer hostinfo.User, received ti
 		Extract:         core.ExtractorFunc(extractPrompt),
 		OverCap:         ev.OverCap,
 		Person:          person,
-		ClientID:        ev.SessionID,
+		// The record takes the decision's classification: classifying the prompt again would
+		// queue in front of the next hook's classification on the one classifier host.
+		Classified: classified,
+		ClientID:   ev.SessionID,
 	}
 	return protocol.HookDecision{Action: hookAction(d.Action), Message: d.Message, Link: d.Link, RuleID: d.RuleID}, obs
 }
@@ -261,30 +272,37 @@ func canEnforce(tool, event string) bool {
 	return ok && a.CanEnforce(event)
 }
 
-// classify labels the prompt within ClassifyBudget. known is false when the classification did not
-// complete.
-func (r *Relay) classify(mode protocol.CollectionMode, text string) (labels []string, known bool) {
+// classify labels the prompt within ClassifyBudget. It returns nil, the labels unknown, when the
+// classification did not complete.
+func (r *Relay) classify(mode protocol.CollectionMode, text string) *core.Classified {
 	if r.cfg.Classifier == nil {
-		return nil, false
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), ClassifyBudget)
 	defer cancel()
+	content := []byte(text)
 	resp, err := r.cfg.Classifier.Classify(ctx, protocol.ClassifyRequest{
-		Content:   []byte(text),
+		Content:   content,
 		Mode:      mode,
-		MediaType: "text/plain",
+		MediaType: promptMediaType,
 		BudgetMS:  ClassifyBudget.Milliseconds(),
 		Budget:    ClassifyBudget,
 	})
 	if err != nil || resp.Validate() != nil || resp.Confidence == protocol.ConfidenceDegraded {
-		return nil, false
+		return nil
 	}
-	for _, l := range resp.Labels {
-		if !slices.Contains(labels, l.Class) {
-			labels = append(labels, l.Class)
+	return &core.Classified{Mode: mode, MediaType: promptMediaType, Digest: sha256.Sum256(content), Response: resp}
+}
+
+// classes is the label classes, each once.
+func classes(labels []protocol.Label) []string {
+	var out []string
+	for _, l := range labels {
+		if !slices.Contains(out, l.Class) {
+			out = append(out, l.Class)
 		}
 	}
-	return labels, true
+	return out
 }
 
 // record hands an answered prompt to the pipeline, a prompt the user submitted through Prompts. The

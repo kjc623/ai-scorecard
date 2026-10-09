@@ -87,7 +87,7 @@ The Plan column gives the plan's task id. "Built" is ticked when the task's "Don
 | 51 | [Performance budgets](51-performance-budgets/TASK.md) | E42 | 36, 23 | | [x] | [ ] |
 | 52 | [Privacy canaries](52-privacy-canaries/TASK.md) | E43 | 40, 46 | | [x] | [ ] |
 | **Phase 7: Pre-prod and device verification** | | | | | | |
-| 58 | [Pre-prod environment and test tenant](58-preprod-environment/TASK.md) | | the build tasks to verify, merged to `main` | Fly.io and Supabase accounts; `fly/RUNBOOK.md` owner steps | [ ] | — |
+| 58 | [Pre-prod environment and test tenant](58-preprod-environment/TASK.md) | | the build tasks to verify, merged to `main` | Fly.io and Supabase accounts; `fly/RUNBOOK.md` owner steps | [x] | — |
 | 59 | [Reference VM tooling](59-reference-vm/TASK.md) | | 58 | `TESTBED.md` VM checklist done | [ ] | — |
 | 60 | [Device verification](60-device-verification/TASK.md) | | 59 | each brief's "Needs", on the VM | — | [ ] |
 

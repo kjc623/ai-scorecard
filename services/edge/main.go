@@ -1,5 +1,5 @@
-// Command edge is the lab's device ingress, standing in for the deployment's Application Gateway
-// (azure/modules/application-gateway.bicep) and behaving as it does:
+// Command edge is the device entry point where the deployment has no Application Gateway
+// (azure/modules/application-gateway.bicep), and it behaves as the gateway does:
 //
 //   - TLS with a client certificate requested but neither required nor verified (passthrough): a
 //     device's first enrolment presents none, and the origins verify the ones that are presented
@@ -34,6 +34,17 @@ import (
 )
 
 const clientCertHeader = "X-Client-Cert"
+
+// Server limits. A request is read, and its answer written, within the gateway's 60 second request
+// timeout; a kept-alive connection idles at most idleTimeout; a device's headers are a few hundred
+// bytes, far below maxHeaderBytes.
+const (
+	readHeaderTimeout = 10 * time.Second
+	readTimeout       = 60 * time.Second
+	writeTimeout      = 60 * time.Second
+	idleTimeout       = 90 * time.Second
+	maxHeaderBytes    = 32 << 10
+)
 
 // allowedPrefixes is the firewall's allow-list: a request URI that begins with none of them
 // (compared in lower case) is refused before routing.
@@ -134,8 +145,11 @@ func run(log *slog.Logger) error {
 			Certificates: []tls.Certificate{cert},
 			ClientAuth:   tls.RequestClientCert,
 		},
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       90 * time.Second,
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
+		MaxHeaderBytes:    maxHeaderBytes,
 	}
 	log.Info("edge listening", "addr", cfg.addr, "ingest", cfg.upstream[upstreamIngest].String(), "control", cfg.upstream[upstreamControl].String())
 	return srv.ListenAndServeTLS("", "")

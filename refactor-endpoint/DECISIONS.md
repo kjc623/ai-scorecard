@@ -2269,6 +2269,63 @@ source contradicts the current output, so `Render` and `canEnforce` are unchange
   set (MB = 1,048,576 bytes). It exits 1 at or above 1 % or 150 MB. The counter paths are the
   English names, as on the reference VM. **Not run and not syntax-checked in the build:** this
   machine is Linux with no `pwsh`; the "runs on the PC" check is pending on a Windows host.
+
+## 2026-10-09, task 51 fix 1
+
+- **Where the hook decision's tail came from: a second classification of every recorded prompt.**
+  The relay answered, then recorded the prompt through the pipeline, which classified it again
+  (2 s budget) on the same classifier link, whose single slot admits one call at a time. The next
+  hook's classification waited for that slot, and the wait counts against its 30 ms budget. Timed
+  inside the relay, the link and the pipeline (temporary instrumentation, removed), Linux, 4 vCPU:
+  idle, the decision's wait for the slot was p50 1.3 ms of a 2.7 ms classification; under four busy
+  processes, p50 1.5 ms and p99 9.6 to 10 ms of a 14 to 16 ms classification. The 4 "wrong"
+  decisions are calls that ran out of 30 ms: in a loaded run here, one waited about 11 ms for the
+  slot and its own round trip was cut off at 19 ms. The service has the same contention: its merge
+  buffer releases the record, with that second classification, while later hooks classify.
+- **Fix.** `core.Observation.Classified` carries a classification the provider already has (mode,
+  media type, SHA-256 of the bytes, response). The pipeline uses it instead of classifying when it
+  was made at the resolved mode, for the same media type and bytes, and is not degraded. Otherwise
+  it classifies as before, so a record's labels are never weaker. The relay passes its decision's
+  classification to the record. A merged hook and OTel record keeps it only while the text is the
+  hook's (the digest decides). A decision whose classification ran out of time is classified again
+  for its record, with the full budget.
+- **A call that gives up still costs the next one.** It keeps the child (0 restarts in every run
+  here), but the host still answers the abandoned request first, so the next request on the
+  connection waits for it. The protocol has no cancel, and this is unchanged. After the fix, the
+  only call that follows a timed-out decision is that prompt's record.
+- **Ruled out, with numbers.**
+  - Disk sync: the spool fsyncs every frame (`FlushFileBuffers` on Windows), which its durability
+    contract requires, but only after the answer is written. Under load, append p99 reached 96 ms
+    while decision p99 stayed 14 ms.
+  - Windows-only code: no `*_windows.go` file on either path syncs or does more than Linux; the
+    classifier child's job object is kill-on-close only.
+  - Nagle and delayed ACK: Go sets `TCP_NODELAY` on every TCP connection, and every native frame,
+    classifier frame and OTLP request is sent in one write.
+  - Rule evaluation and the answer's write: p99 under 25 µs and 0.1 to 1.9 ms.
+  - GC: the OTLP test's process allocates 228 MB in 10 s (the receiver 44 %: `io.ReadAll` growth
+    and protobuf decoding, about 100 KB a request), for 140 cycles and 29 to 44 ms of total pause.
+- **`TestHookDecisionBudget`, before → after**, 5 runs each, same machine:
+  - idle: p50 2.9 to 3.0 → 1.6 to 2.0 ms, p99 4.9 to 5.9 → 2.9 to 4.9 ms;
+  - four busy processes: p99 9.6 to 11.2 → 6.9 to 7.4 ms;
+  - twelve busy processes: p99 9.5 to 11.6 → 6.2 to 8.8 ms.
+  The test still fails with a 30 ms sleep before the answer (p99 34.6 ms).
+- **`TestOTLPBudget`: no product cause found, nothing changed.**
+  - The receiver's own handling, timed inside its handler, was p99 1.1 ms idle and 3.0 ms in the
+    module's parallel `go test ./...`.
+  - All 1,000 requests share one connection, so the sender lookup (TCP table, process, signer on
+    Windows) runs once. That probably explains the Windows run's single 127 ms request; it cannot
+    move the p99.
+  - Request p99 here: 1.1 to 1.6 ms idle, 2.0 to 6.9 ms under 4 to 12 busy processes.
+  - The Windows p95 of 8 ms and p99 of 48 ms are therefore time the test process (exporter and
+    receiver in one) was not running. `go test ./...` runs up to four packages beside the compiler,
+    including the hook test with its classifier child and its `go build`. Windows schedules in
+    clock-tick quanta (15.6 ms). This is not verified on Windows.
+- **Scaling not applied**: the brief allows it only after 5 consecutive flaky CI runs. A faster
+  core would not remove scheduling waits; if CI still flakes, running the budget tests without
+  package parallelism is the more direct remedy, and that is the owner's call. Single-core speed
+  would be measured by timing one fixed CPU-bound loop (SHA-256 of 64 MB in one goroutine, best of
+  5) in the test on the runner and on the reference VM, scaling by their ratio.
+
 ## 2026-10-08, task 52
 
 - **The rig is assembled from the agent's packages.** The service (`cmd/capture-core`) is a `main`
@@ -2499,3 +2556,193 @@ source contradicts the current output, so `Render` and `canEnforce` are unchange
   an empty answer; the real-session test now waits for the answer that holds the address it dials.
 - **Fixture searches ignore line endings**, because a Windows checkout converts the fixtures to
   CRLF while Go strips carriage returns from raw string literals.
+
+## 2026-10-09, task 59 (build)
+
+Sources, all fetched 2026-10-09 (`learn.microsoft.com` is blocked here, so the documentation's own
+repositories): `microsoftgraph/microsoft-graph-docs-contrib` at `256c29a` (2026-10-08; the Intune
+pages carry ms.date 08/01/2024), `microsoft/mggraph-intune-samples` `LOB_Application/Win32_Application_Add.ps1`
+(main), `microsoftgraph/msgraph-sdk-powershell` `src/Authentication/docs` at `8adde4f` (2026-10-08),
+`MicrosoftDocs/PowerShell-Docs` `reference/5.1`, `MicrosoftDocs/windows-powershell-docs`
+`docset/winserver2022-ps` and `MicrosoftDocs/entra-docs`. `MicrosoftDocs/memdocs` was not reachable
+(raw files 404, the repository 403 through the proxy).
+
+- **Win32 LOB upload**, as Microsoft's sample does it, on Graph **beta**: create the `win32LobApp`;
+  `POST mobileApps/{id}/microsoft.graph.win32LobApp/contentVersions` with `{}`;
+  `POST .../files` with `name` (Detection.xml's `FileName`), `size` (`UnencryptedContentSize`),
+  `sizeEncrypted`, `manifest` null, `isDependency` false; poll `uploadState` until
+  `azureStorageUriRequestSuccess`; Azure Storage Put Block (`&comp=block&blockid=<base64>`,
+  `x-ms-blob-type: BlockBlob`, 1 MiB blocks) and Put Block List (`&comp=blocklist`,
+  `<BlockList><Latest>`); `POST .../commit` with `fileEncryptionInfo` (Detection.xml's seven
+  `EncryptionInfo` values, `ProfileVersion1`, `SHA256`); poll until `commitFileSuccess`; PATCH
+  `committedContentVersion` to the content version's id (the sample hard-codes `"1"`). The app's
+  rule, command lines and MSI information are PATCHed in the same request, so a failed upload leaves
+  the app describing the content it still has.
+- **Detection**: `rules` with `win32LobAppProductCodeRule` (`ruleType` detection,
+  `productVersionOperator` `greaterThanOrEqual`), not the brief's `detectionRules` with
+  `win32LobAppProductCodeDetection`. Both are documented in beta; `rules` is the one v1.0 also has and
+  the one the sample uses. The product code changes with every build (`MajorUpgrade`), so each
+  publish rewrites the rule and the uninstall command.
+- **Minimum OS**: beta's `windowsMinimumOperatingSystem` documents flags up to `v10_21H1`, not the
+  runbook's 21H2; the app sets `v10_21H1`. v1.0's `minimumSupportedWindowsRelease` documents only an
+  example value, which is why the script is on beta.
+- **Install behaviour**: SYSTEM, `deviceRestartBehavior` `suppress` (Intune must never restart the
+  VM: its users stay signed in), the sample's return codes, x64, `displayVersion` = the release.
+- **Assignment**: `POST mobileApps/{id}/assign` with one `mobileAppAssignment` (`intent` `required` or
+  `uninstall`; the documented intents are available, required, uninstall,
+  availableWithoutEnrollment), target `groupAssignmentTarget`, settings
+  `win32LobAppAssignmentSettings` with `notifications` `hideAll` (no toasts in screenshots).
+  `/assign` replaces the app's assignments, which is the "only the test device group" rule; it is
+  skipped when the one assignment already matches.
+- **Sync**: `managedDevice.azureADDeviceId` is documented, a `$filter` on it is not. The script
+  lists `managedDevices?$select=id,azureADDeviceId,deviceName` (following `@odata.nextLink`) and
+  matches the id `dsregcmd /status` gives (`DeviceId`, with `AzureAdJoined` and `TenantId`; entra-docs
+  `troubleshoot-device-dsregcmd`, ms.date 06/27/2025), then `POST .../syncDevice` with no body
+  (`DeviceManagementManagedDevices.PrivilegedOperations.All`).
+- **Graph sign-in**: `Connect-MgGraph -ClientId -TenantId -CertificateThumbprint -NoWelcome`
+  (AppCertificateParameterSet); `Invoke-MgGraphRequest -OutputType HashTable`.
+- **IntuneWinAppUtil 1.8.7**, the newest tag (`v1.8.7`, commit `1d6cfcbdf8c2`, 2025-08-13). Its
+  `IntuneWinAppUtil.exe` downloaded here by tag and by commit has sha256
+  `c1ba45b5cb939e84af064bb7ff4b38fb3dfe33c8dc1078fd9b157672eae671f6`; `deploy.mjs` pins the
+  commit URL and refuses another hash. `-c <setup folder> -s <setup file> -o <out> -q` writes
+  `ShadowAICapture.intunewin`. Its layout (`IntuneWinPackage/Metadata/Detection.xml`,
+  `IntuneWinPackage/Contents/<FileName>`) is the one control-api's `deploy/intunewin.go` reproduces;
+  the setup folder is the same pair the dashboard's package carries (MSI + `ShadowAICapture.tenant.env`).
+  The package folder holds the deployment key, so it is deleted once the publish ends.
+- **PowerShell Direct**: `Invoke-Command -VMName -Credential`, `New-PSSession -VMName`,
+  `Copy-Item -ToSession/-FromSession` (PowerShell-Docs 5.1). `Restore-VMCheckpoint` is documented as
+  `Restore-VMSnapshot` ("snapshots were renamed to checkpoints", ms.date 12/20/2016); the script
+  calls `Restore-VMSnapshot -VMName -Name` and starts the VM when the checkpoint leaves it off or
+  saved, then waits for PowerShell Direct.
+- **`-AsUser`**: a one-shot task with `New-ScheduledTaskPrincipal -LogonType Interactive` (documented
+  values include `Interactive`) whose `UserId` is the user's SID. The UPN-to-SID mapping reads
+  `HKLM\SOFTWARE\Microsoft\IdentityStore\Cache\<sid>\IdentityCache\<sid>` `UserName`, which no
+  Microsoft page documents, and the user must own an `explorer.exe`. **[device]** the first
+  `invm.ps1 -AsUser second -Command 'whoami /upn'` proves it.
+- **Not verified (memdocs unreachable)**: the service name `IntuneManagementExtension` and the log
+  `C:\ProgramData\Microsoft\IntuneManagementExtension\Logs\AppWorkload*.log`, both from the brief.
+  **[device]**
+- **Run selection**: only `push` runs of `deploy.yml` on `main` count; a manual run on `main` may have
+  built another environment's release (its policy key). The newest such run for the commit decides.
+- **"Acknowledged after the install"**: health.json's `last_heartbeat_at` (set only when pre-prod
+  accepted a report) is at or after the `ShadowAICapture` process's start time, both on the VM's
+  clock, and `agent_version` is the release's.
+- **Tenant file check**: `deploy.mjs` refuses a tenant file whose tenant is not TESTBED.md's test
+  tenant or whose endpoint is not the device hostname, so no other environment's key is published.
+- **`--uninstall`** assigns the recorded app as uninstall without new content (its uninstall command
+  names the installed product code) and waits until no Shadow AI Capture product or service remains.
+- **Tests**: Node 22's `node --test tools/testbed/` loads the directory as a module and fails; the
+  README runs `node --test "tools/testbed/*.test.mjs"`. In the static gate, git's pathspec
+  `tools/*.test.mjs` already matches `tools/testbed/*.test.mjs` (`*` crosses `/`), so the explicit
+  entry is added and the list de-duplicated.
+- **Not run here**: no PowerShell. The worktree isolation guard of this container refuses to run
+  `pwsh`, so the two scripts were not parsed or analysed; they are written for Windows PowerShell 5.1
+  and ASCII.
+## 2026-10-09, task 58 (build)
+
+- **Sources.** fly.io and supabase.com are unreachable from the build machine (the proxy refuses
+  them), so the vendor facts come from their GitHub sources: `superfly/docs` a2b424b (2026-10-08),
+  `superfly/flyctl` v0.4.115 (a1cf49a, 2026-10-08), `superfly/flyctl-actions` 1.6,
+  `supabase/supabase` 1ee88e0 (2026-10-08: `apps/docs/content`, `packages/shared-data/regions.ts`),
+  `aptible/supercronic` v0.2.49.
+- **Vendor facts, Fly.io** (`superfly/docs`):
+  - `networking/services.mdx`: a `[[services.ports]]` entry with no `handlers` forwards TCP as-is
+    ("TCP pass through"); accepting raw TCP and terminating TLS yourself needs a dedicated IPv4
+    (`fly ips allocate-v4`, opt-in, billed); a first deploy gives an app with public services a
+    dedicated IPv6, and a shared IPv4 only for HTTP on 80 or TLS+HTTP on 443. So the edge's IPv4 is
+    allocated before the first deploy, and the dashboard's `[http_service]` gets shared IPv4 and IPv6.
+  - `networking/custom-domain.mdx`: `fly certs add <hostname>` issues a managed (Let's Encrypt)
+    certificate once A/AAAA or CNAME records point at the app; `fly certs check` shows progress.
+  - `networking/private-networking.mdx`, `app-services.mdx`: `<app>.internal` resolves to the 6PN
+    (IPv6) addresses of started machines; a service is reachable on 6PN when bound to IPv6
+    (`[::]`), and Fly Proxy reaches it over IPv4, which the dual-stack `[::]` bind in Go and Node
+    also accepts. Every HTTP service reads `SAC_HTTP_ADDR` (ingest-api, control-api, content-vault,
+    query-api, dashboard); the edge, reached only through the proxy, keeps `0.0.0.0:8443`.
+  - `reference/configuration.mdx`: `[env]`; top-level `[checks]` for apps without services;
+    `[[http_service.checks]]`; `[[services.tcp_checks]]`; `auto_stop_machines` defaults to `off`;
+    `[[files]]` with `secret_name` writes the base64-decoded secret to `guest_path` (also
+    `apps/secrets.mdx`); `release_command` runs once per deploy in a temporary machine with the
+    app's env and secrets, replaces CMD but not ENTRYPOINT, streams its logs and fails the deploy
+    on a non-zero exit. The docs give no file mode for `[[files]]` (the Machines API has an optional
+    `mode`); that control-api (user nonroot) can read its key files and query-api its CA file is
+    shown by Verify check 1.
+  - `apps/secrets.mdx`, `flyctl/cmd/fly_secrets_*.mdx`: secrets are env vars; `--stage` sets them
+    without restarting; `fly secrets list --json` gives names only; `fly secrets import` reads
+    `NAME=VALUE` from stdin, a value between `"""` may span lines (flyctl `secrets/parser.go`, used
+    to test both scripts' output).
+  - `blueprints/using-the-fly-docker-registry.mdx`, `fly_auth_docker.mdx`: images are pushed to
+    `registry.fly.io/<app>:<tag>` after `fly auth docker`. `fly_tokens_create_org.mdx`: an
+    organization deploy token; `fly_tokens_create_readonly.mdx`: a read-only organization token.
+  - `blueprints/supercronic.mdx`: supercronic is the documented cron, run as exactly one machine.
+  - `fly_ssh_console.mdx` and its examples: `-C` runs one command string, split on the machine with
+    double quotes honoured (`fly ssh console -C '/bin/sh -lc "…\"…\" …"'`); `tenant-admin.sh`
+    double-quotes each argument. No page states the splitting rules beyond the examples.
+- **migrate runs as the migrate app's release command, not `fly machine run`.** In flyctl's source,
+  `fly machine run` takes the app's name from `--config` but none of its `[env]`, and `fly machine
+  wait` reports a state, not an exit code. A release command waits for the exit, prints the logs (the
+  last 100 lines again on failure) and fails the deploy; `fly deploy --update-only` creates no
+  machine for an app that has none, so the migrate app never has a standing machine;
+  `--deploy-retries 0` runs it once. Fly.io passes `release_command` to the image's ENTRYPOINT
+  (`/migrate`) as arguments, which migrate does not read.
+- **Vendor facts, Supabase** (`apps/docs/content`):
+  - `guides/database/connecting-to-postgres.mdx`: the shared pooler's session mode is
+    `aws-[INDEX]-[REGION].pooler.supabase.com:5432`, IPv4-only on every plan; its user for a custom
+    role is `[ROLE].[PROJECT-REF]`; session mode supports prepared statements; the host must be
+    copied from the Connect dialog. `sslmode=require` encrypts without verifying; verifying needs
+    the project's CA certificate from Database settings.
+  - `troubleshooting/supavisor-faq-YyP5tI.mdx`: a pool per user + database + mode, and the
+    database is the connection string's path, with other databases created by `CREATE DATABASE`.
+    So the pooler reaches `shadow`, which is used, as in the lab.
+  - `guides/platform/compute-and-disk.mdx`: the Pro plan's Micro compute allows 60 database
+    connections and 200 pooler clients. Each Go service's pool holds at most 10; pre-prod's load
+    opens a few.
+  - `packages/shared-data/regions.ts`: East US (North Virginia) is `us-east-1`, next to Fly.io's
+    `iad` (Ashburn, Virginia, `reference/regions.mdx`).
+  - `guides/database/postgres/postgres-log-config.mdx`: `log_statement` defaults to `ddl`, and the
+    `postgres` user may `SET log_statement` (supautils). `setup-database.sh` turns it off for its
+    session, so no `CREATE ROLE … PASSWORD` is logged.
+  - `guides/platform/upgrading.mdx`, `temporary-access.mdx`: new projects run Postgres 17; the
+    schema's gate runs 16. The first `migrate` on Supabase is the first run on 17.
+- **query-api trusts Supabase's CA through `NODE_EXTRA_CA_CERTS`.** query-api verifies the server
+  certificate for `require` (`rejectUnauthorized: true`, `services/query-api/src/db.js`), and
+  Supabase's CA is its own, so Node is pointed at the project's CA certificate, a `[[files]]`
+  secret (`SUPABASE_CA_CERT`) that `setup-database.sh` sets. The brief's secrets table has no such
+  row; without it query-api cannot connect. The Go services (pgx) encrypt without verifying, as on
+  Azure.
+- **The database's shape.** `sac_admin` (LOGIN CREATEROLE) owns `shadow`; Supabase has no
+  `azure_pg_admin`. `postgres` is a member of `sac_admin` only while it creates the database. The
+  logins' passwords are 32 random bytes in hex. Checked on a throwaway PostgreSQL 16 cluster with
+  TLS and a non-superuser `postgres.<ref>` (CREATEROLE, CREATEDB, may set `log_statement`):
+  `setup-database.sh` ran with `sslmode=verify-full`, a rerun refused, the server log held no
+  password, and the migrator as `sac_admin` with fly/migrate's `SAC_DB_LOGINS` applied all 17
+  migrations, granted each login its role, and a second run applied 0.
+- **Settings that differ per environment come from GitHub variables**, passed with `-e` by
+  `fly/scripts/deploy-app.sh`: the hostnames and Entra client id (existing `SAC_*` variables), and
+  two new ones, `SAC_PG_HOST` (the pooler's host) and `SUPABASE_PROJECT_REF` (for
+  `<login>.<project-ref>`). The fly.toml files name the apps with the prefix `sac-preprod`, as do
+  their `.internal` addresses; `deploy-app.sh` refuses a fly.toml whose app is not
+  `$FLY_APP_PREFIX-<component>`, and `check-config.mjs` checks that every `.internal` address names
+  an app in `fly/` and that the apps share one prefix. `FLY_ORG` serves the check that the apps exist.
+- **Secrets.** The signing keys are file secrets `SESSION_SIGNING_KEY` and `POLICY_SIGNING_KEY`
+  (base64 PEM) at the paths control-api's `SAC_*_KEY_FILE` settings name. `create-secrets.sh` also
+  sets the edge's certificate (from the owner's files) and `SAC_ENTRA_CLIENT_SECRET` (read from the
+  terminal), so every secret in the table has one owner step; generated keys are copied to a key
+  directory the owner keeps outside Fly.io.
+- **Browser routes.** The dashboard is the only browser-facing app and forwards `/onboard/*`
+  itself. Pre-prod serves neither `/scim/v2/*` nor `/.well-known/*` to browsers: endpoint tests use
+  no directory sync, and token verifiers fetch the keys from the issuer
+  `http://sac-preprod-control-api.internal:8080` on the private network.
+- **supercronic v0.2.49**, SHA256 `a53ae236…4430c1` of `supercronic-linux-amd64`. The release page
+  with its published checksums is unreachable from the build machine; the checksum is that of the
+  asset downloaded from the release, whose build info reads module v0.2.49 built with go1.26.6, the
+  Go version of the repository's release workflow. Verified in the image build with `ADD --checksum`.
+- **One machine per app** (`--ha=false`, autostop off): exactly one jobs machine, and the cost
+  stays small. Shared CPU, 256 MB for the Go apps and 512 MB for control-api, content-vault and the
+  Node apps.
+- **Edge limits**: 10 s headers, 60 s read and 60 s write (Application Gateway's request timeout is
+  60 s), 90 s idle, 32 KiB of headers. It has no health route, so Fly.io checks its TCP port.
+- **deploy.yml**: the `agent-release` job's steps, artifact and version are unchanged; with the
+  workflow's inputs gone, its `if: !inputs.bootstrap` is dropped and its environment is `preprod`.
+- **Not run here**: the image builds (no Docker), the workflow, and anything against Fly.io or
+  Supabase. Left as they are: `services/control-api/README.md` still calls `SAC_ENTRA_CLIENT_SECRET`
+  lab-only, and the root `AGENTS.md` still describes an Azure pre-prod.

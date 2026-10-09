@@ -1,11 +1,13 @@
-# The lab's device ingress. Build context: the repository root.
+# edge: the device entry point. Build context: the repository root.
 #
-#   docker build -f localdev/edge/Dockerfile -t sac/edge:lab .
+#   docker build -f services/edge/Dockerfile -t edge .
+#
+# Configuration is the EDGE_* variables; see services/edge/README.md.
 
 FROM golang:1.27-alpine AS build
 ENV CGO_ENABLED=0
 WORKDIR /src
-COPY localdev/edge/ ./
+COPY services/edge/ ./
 RUN go build -trimpath -ldflags="-s -w" -o /out/edge .
 
 FROM gcr.io/distroless/static-debian12:nonroot

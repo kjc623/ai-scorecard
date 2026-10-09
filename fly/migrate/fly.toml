@@ -1,0 +1,32 @@
+# migrate (services/database): an app with no machines. Each deploy runs the image once, as its
+# release command, as the database administrator; a non-zero exit fails the deploy and prints the
+# output. It is deployed with --update-only, so no standing machine is created.
+#
+# The deploy workflow passes SAC_PG_HOST and SAC_PG_USER (sac_admin.<project-ref>).
+# Secrets: SAC_PG_PASSWORD, the administrator's (fly/scripts/setup-database.sh).
+
+app = "sac-preprod-migrate"
+primary_region = "iad"
+
+# The image's entrypoint is /migrate, which reads no arguments; Fly.io passes the release command
+# to the entrypoint as its arguments.
+[deploy]
+  release_command = "migrate"
+  release_command_timeout = "10m"
+
+  [deploy.release_command_vm]
+    size = "shared-cpu-1x"
+    memory = "256mb"
+
+# The logins exist (fly/scripts/setup-database.sh creates them), so migrate only makes each a
+# member of its role; the object ids are unused.
+[env]
+  SAC_PG_DATABASE = "shadow"
+  SAC_PG_PORT = "5432"
+  SAC_PG_SSLMODE = "require"
+  SAC_DB_LOGINS = '''
+[{"login":"ingest-api","role":"sac_ingest","objectId":"00000000-0000-0000-0000-000000000001"},
+{"login":"control-api","role":"sac_control","objectId":"00000000-0000-0000-0000-000000000002"},
+{"login":"content-vault","role":"sac_vault","objectId":"00000000-0000-0000-0000-000000000003"},
+{"login":"query-api","role":"sac_query","objectId":"00000000-0000-0000-0000-000000000004"},
+{"login":"jobs","role":"sac_ops","objectId":"00000000-0000-0000-0000-000000000005"}]'''

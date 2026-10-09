@@ -1,0 +1,39 @@
+# query-api (services/query-api), reachable only on the private network, by the dashboard.
+#
+# The deploy workflow passes SAC_PG_HOST and SAC_PG_USER (query-api.<project-ref>).
+# Secrets: SAC_CURSOR_KEY (fly/scripts/create-secrets.sh); SAC_PG_PASSWORD and the database's CA
+# certificate as a file (fly/scripts/setup-database.sh).
+
+app = "sac-preprod-query-api"
+primary_region = "iad"
+
+[env]
+  SAC_HTTP_ADDR = "[::]:8080"
+  SAC_PG_DATABASE = "shadow"
+  SAC_PG_PORT = "5432"
+  SAC_PG_SSLMODE = "require"
+  SAC_AUTH_ISSUER = "http://sac-preprod-control-api.internal:8080"
+  SAC_AUTH_AUDIENCE = "sac-query"
+  SAC_CONTENT_VAULT_URL = "http://sac-preprod-content-vault.internal:8080"
+  # query-api verifies the database's certificate, which Supabase issues from its own CA; Node
+  # adds the certificates in this file to the ones it trusts.
+  NODE_EXTRA_CA_CERTS = "/etc/sac/supabase-ca.crt"
+
+# A file's secret holds the file's content, base64-encoded.
+[[files]]
+  guest_path = "/etc/sac/supabase-ca.crt"
+  secret_name = "SUPABASE_CA_CERT"
+
+[checks]
+  [checks.ready]
+    type = "http"
+    port = 8080
+    method = "get"
+    path = "/readyz"
+    grace_period = "10s"
+    interval = "15s"
+    timeout = "5s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
