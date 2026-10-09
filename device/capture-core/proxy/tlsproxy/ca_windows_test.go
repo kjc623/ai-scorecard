@@ -5,31 +5,21 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 	"unsafe"
 
-	"github.com/google/certtostore"
 	"golang.org/x/sys/windows"
 )
 
-var (
-	ncryptDLL                     = windows.NewLazySystemDLL("ncrypt.dll")
-	procNCryptExportKey           = ncryptDLL.NewProc("NCryptExportKey")
-	procNCryptOpenStorageProvider = ncryptDLL.NewProc("NCryptOpenStorageProvider")
-	procNCryptOpenKey             = ncryptDLL.NewProc("NCryptOpenKey")
-	procNCryptDeleteKey           = ncryptDLL.NewProc("NCryptDeleteKey")
-	procNCryptFreeObject          = ncryptDLL.NewProc("NCryptFreeObject")
-)
+var procNCryptExportKey = ncryptDLL.NewProc("NCryptExportKey")
 
 const (
-	nteBadKeyState       = 0x8009000B // NTE_BAD_KEY_STATE, what certutil reports for a key it may not export
-	ntePerm              = 0x80090010 // NTE_PERM
-	nteNotSupported      = 0x80090029 // NTE_NOT_SUPPORTED
-	ncryptMachineKeyFlag = 0x20       // NCRYPT_MACHINE_KEY_FLAG
+	nteBadKeyState  = 0x8009000B // NTE_BAD_KEY_STATE, what certutil reports for a key it may not export
+	ntePerm         = 0x80090010 // NTE_PERM
+	nteNotSupported = 0x80090029 // NTE_NOT_SUPPORTED
 )
 
 // The private-key blob types an export would use: BCRYPT_PRIVATE_KEY_BLOB, BCRYPT_ECCPRIVATE_BLOB
@@ -52,25 +42,6 @@ func exportStatus(h uintptr, blobType string) uint32 {
 	r, _, _ = procNCryptExportKey.Call(h, 0, uintptr(unsafe.Pointer(bt)), 0,
 		uintptr(unsafe.Pointer(&buf[0])), uintptr(size), uintptr(unsafe.Pointer(&size)), 0)
 	return uint32(r)
-}
-
-// deleteCNGKey deletes the named machine key from the Microsoft Software Key Storage Provider.
-func deleteCNGKey(name string) error {
-	provName, _ := windows.UTF16PtrFromString(certtostore.ProviderMSSoftware)
-	keyName, _ := windows.UTF16PtrFromString(name)
-	var prov, key uintptr
-	if r, _, _ := procNCryptOpenStorageProvider.Call(uintptr(unsafe.Pointer(&prov)), uintptr(unsafe.Pointer(provName)), 0); r != 0 {
-		return fmt.Errorf("NCryptOpenStorageProvider: 0x%08X", uint32(r))
-	}
-	defer procNCryptFreeObject.Call(prov)
-	if r, _, _ := procNCryptOpenKey.Call(prov, uintptr(unsafe.Pointer(&key)), uintptr(unsafe.Pointer(keyName)), 0, ncryptMachineKeyFlag); r != 0 {
-		return fmt.Errorf("NCryptOpenKey: 0x%08X", uint32(r))
-	}
-	if r, _, _ := procNCryptDeleteKey.Call(key, 0); r != 0 {
-		procNCryptFreeObject.Call(key)
-		return fmt.Errorf("NCryptDeleteKey: 0x%08X", uint32(r))
-	}
-	return nil
 }
 
 // assertNotExportable checks the key's export policy and that every private-key export fails.
@@ -139,4 +110,35 @@ func TestCNGDeviceRootKeyIsNotExportable(t *testing.T) {
 	}
 	assertNotExportable(t, again)
 	verifyLeaf(t, again, now.Add(time.Hour))
+}
+
+// Deleting the device root's key removes it from the provider, and deleting a key that is not there
+// succeeds, so an uninstall that runs twice, or on a device that never made a root, does not fail.
+// The test uses a key name of its own.
+func TestCNGKeyDeleteRemovesTheKey(t *testing.T) {
+	var b [6]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		t.Fatal(err)
+	}
+	name := deviceRootKeyName + "-test-" + hex.EncodeToString(b[:])
+	keys, err := openCNGKeyStore(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := keys.Generate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := deleteCNGKey(name); err != nil {
+		t.Fatalf("deleting the key: %v", err)
+	}
+	reopened, err := openCNGKeyStore(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reopened.Key(); err == nil {
+		t.Fatal("the key still opens after it was deleted")
+	}
+	if err := deleteCNGKey(name); err != nil {
+		t.Fatalf("deleting a key that is not there: %v", err)
+	}
 }

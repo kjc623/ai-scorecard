@@ -2,7 +2,7 @@
 // the collectors (the local TLS proxy, the loopback broker and the CLI trust shim), the policy
 // engine, the spool, the classifier host as a child process, and the device-to-cloud drain.
 //
-// It runs in one of five ways:
+// It runs in one of six ways:
 //
 //   - as the service: started by the Windows Service Control Manager, launchd or systemd with
 //     --config-file arguments, until stopped;
@@ -13,6 +13,8 @@
 //     session (Windows), and it shows the notifications the service asks for;
 //   - as a tool's prompt hook: a tool runs it with --hook <tool> <event> before it sends a prompt,
 //     and it asks the running service whether to allow, warn or block;
+//   - as the uninstall cleanup: the MSI runs it with --uninstall-cleanup at a full uninstall, and it
+//     returns every location the agent changed outside its own folders to how it found it;
 //   - as a diagnostic: --print-config or --version.
 package main
 
@@ -42,6 +44,9 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == hookArg {
 		os.Exit(runHook(processStart, os.Args[2:], os.Stdin, os.Stdout, dialHook))
+	}
+	if len(os.Args) > 1 && os.Args[1] == uninstallCleanupArg {
+		os.Exit(runUninstallCleanup(os.Args[2:], os.Stdout))
 	}
 	if len(os.Args) == 2 && os.Args[1] == userHelperArg {
 		if err := runUserHelper(); err != nil {

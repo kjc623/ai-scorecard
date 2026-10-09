@@ -31,6 +31,9 @@ type Config struct {
 	Users        func(context.Context) ([]string, error)
 	OpenSettings func(sid string) (Registry, error)
 	FetchPAC     func(ctx context.Context, u string) ([]byte, error)
+	// RecordFile keeps each applied user's previous AutoConfigURL until it is restored, for
+	// RestoreRecorded at uninstall; empty keeps none.
+	RecordFile string
 
 	Log   core.Logger
 	Clock func() time.Time
@@ -43,6 +46,7 @@ type Config struct {
 type Server struct {
 	cfg      Config
 	counters *core.CounterSet
+	records  *records
 
 	mu          sync.Mutex
 	startedAt   time.Time
@@ -84,6 +88,7 @@ func New(cfg Config) *Server {
 	return &Server{
 		cfg:       cfg,
 		counters:  core.NewCounterSet(now),
+		records:   &records{path: cfg.RecordFile},
 		startedAt: now,
 		originals: map[string]Original{},
 		restores:  map[string]Restore{},
@@ -259,7 +264,8 @@ func (s *Server) reconcile(ctx context.Context) error {
 }
 
 // applyOne reads one user's existing proxy settings, fetches and inlines an existing PAC when the
-// user has one, and points their AutoConfigURL at the PAC.
+// user has one, and points their AutoConfigURL at the PAC. A user with a kept record was not
+// restored by an earlier run, so the record, not the setting now in place, is their original.
 func (s *Server) applyOne(ctx context.Context, sid, pacURL string) error {
 	reg, err := s.cfg.OpenSettings(sid)
 	if err != nil {
@@ -270,6 +276,21 @@ func (s *Server) applyOne(ctx context.Context, sid, pacURL string) error {
 	orig, err := ReadOriginal(reg)
 	if err != nil {
 		return err
+	}
+	rec, kept, err := s.records.get(sid)
+	if err != nil {
+		return err
+	}
+	if !kept {
+		prev, had, err := reg.GetString(autoConfigURL)
+		if err != nil {
+			return err
+		}
+		rec = record{HadOriginal: had, Original: prev}
+	}
+	orig.AutoConfigURL = ""
+	if rec.HadOriginal {
+		orig.AutoConfigURL = rec.Original
 	}
 	if orig.AutoConfigURL != "" {
 		body, ferr := s.cfg.FetchPAC(ctx, orig.AutoConfigURL)
@@ -282,10 +303,14 @@ func (s *Server) applyOne(ctx context.Context, sid, pacURL string) error {
 		orig.AutoConfigBody = string(body)
 	}
 
-	restore, err := NewSettings(reg).Apply(pacURL)
-	if err != nil {
+	rec.Applied = pacURL
+	if err := s.records.put(sid, rec); err != nil {
 		return err
 	}
+	if _, err := NewSettings(reg).Apply(pacURL); err != nil {
+		return err
+	}
+	restore := rec.restore()
 
 	s.mu.Lock()
 	s.originals[sid] = orig
@@ -317,6 +342,10 @@ func (s *Server) restoreOne(ctx context.Context, sid string) {
 	defer reg.Close()
 	if err := NewSettings(reg).Restore(restore); err != nil {
 		s.cfg.Log.Printf("winproxy: restoring %s's AutoConfigURL: %v", sid, err)
+		return
+	}
+	if err := s.records.drop(sid); err != nil {
+		s.cfg.Log.Printf("winproxy: %v", err)
 	}
 }
 
@@ -340,6 +369,8 @@ func (s *Server) restoreAll(ctx context.Context) {
 		}
 		if err := NewSettings(reg).Restore(restore); err != nil {
 			s.cfg.Log.Printf("winproxy: restoring %s's AutoConfigURL: %v", sid, err)
+		} else if err := s.records.drop(sid); err != nil {
+			s.cfg.Log.Printf("winproxy: %v", err)
 		}
 		_ = reg.Close()
 	}

@@ -198,6 +198,8 @@ ShadowAICapture service; elsewhere it runs in the foreground until SIGINT or SIG
 browser as a native-messaging host (with a chrome-extension:// origin argument), it relays the
 browser's messages to the running service. Started by the service with --user-helper in a
 signed-in session (Windows), it shows that session's user the notifications the service sends.
+Run by the MSI at a full uninstall as --uninstall-cleanup --config-file FILE ..., it puts back what
+the agent changed outside its own folders and logs each step to ShadowAICapture-uninstall.log.
 
 Configuration keys (files and flags):
   SAC_STATE_DIR          --state-dir          protected state directory (required)

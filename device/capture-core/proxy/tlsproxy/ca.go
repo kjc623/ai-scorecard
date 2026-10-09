@@ -361,6 +361,26 @@ func retireRoot(ctx context.Context, trust RootTrust, certPEM []byte) error {
 	return trust.Remove(ctx)
 }
 
+// RetireDeviceRoot takes the device root kept in dir out of the trust store, when the store holds
+// it. Without a kept root there is nothing to take out.
+func RetireDeviceRoot(ctx context.Context, dir string, trust RootTrust) error {
+	certPEM, err := os.ReadFile(filepath.Join(dir, deviceCACertFile))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("tlsproxy: reading the device CA certificate: %w", err)
+	}
+	if err := retireRoot(ctx, trust, certPEM); err != nil {
+		return fmt.Errorf("tlsproxy: removing the device CA from the trust store: %w", err)
+	}
+	return nil
+}
+
+// DeleteDeviceKey deletes the device root's private key from the platform keystore (or the key
+// file in dir where the platform has none). A key that does not exist is already deleted.
+func DeleteDeviceKey(dir string) error { return deletePlatformKey(dir) }
+
 // fileKeyStore keeps the key as a PEM file in the protected state directory.
 type fileKeyStore struct{ path string }
 

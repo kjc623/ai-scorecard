@@ -2222,3 +2222,67 @@ source contradicts the current output, so `Render` and `canEnforce` are unchange
   "↳ Hook · " and its lines, with ANSI styles interpreted and no Markdown. Neither is truncated (only
   additional context is). The hook cell writes no hyperlink, so a link is clickable only where the
   terminal detects URLs. **[device]** both, and link clickability in Windows Terminal.
+
+## 2026-10-09, task 50
+
+- **The cleanup is `capture-core --uninstall-cleanup`**, read before any other mode, with the
+  service's two configuration files. Only the state directory is used; a missing or incomplete
+  tenant file does not stop it (a step that needs the state directory reports `failed` when there is
+  none). Steps, in order, one log line each: `tool_config_claude_code`, `tool_config_codex`,
+  `tool_config_copilot`, `tool_config_cursor` (each writer's `Remove`, from its backup),
+  `ollama_host` (task 57's `Restore`), `desktop_proxy_pac`, `trust_root`, `device_root_key`,
+  `quic_firewall_rules`, `cli_shim_environment` (the shim's own `Stop`). The log line is
+  `<UTC time> <step>: ok|failed: <error>|skipped, <reason>`, appended to
+  `%WINDIR%\Temp\ShadowAICapture-uninstall.log` and printed; the exit code is always 0. The whole
+  run is bounded at two minutes for the steps that take a context.
+- **The PAC originals are now kept on disk** (`pac-originals.json` in the state directory; a
+  deviation the brief's "winproxy's existing restore" did not foresee). That restore kept each
+  user's original in memory only, so nothing outside the running service could put it back: a
+  user whose hive was unloaded before the service restored it, or a crash, left the agent's PAC
+  URL behind. Each user's previous `AutoConfigURL` and the URL applied are recorded before the PAC
+  replaces it and forgotten when it is restored. The cleanup restores a recorded user whose value
+  is still the applied URL, leaves one who changed it since, and keeps (and reports) one whose hive
+  is not loaded. A run that finds a record applies over it with the recorded original, so the PAC
+  delegates to the user's own PAC rather than to the agent's stale URL.
+- **The device root is retired as task 44 retires a file-key root**: installed again (idempotent)
+  and removed, and only when the store holds it. `tlsproxy.RetireDeviceRoot` and
+  `tlsproxy.DeleteDeviceKey` are the uninstall's; the CNG delete (`NCryptOpenKey` with
+  `NCRYPT_MACHINE_KEY_FLAG`, then `NCryptDeleteKey`) moved from task 44's Windows test into
+  `ca_windows.go`, and a key that is not there (`NTE_BAD_KEYSET`) is already deleted.
+- **QUIC firewall rules**: none exist (task 47 built none). The step removes every rule whose name
+  starts `ShadowAICapture QUIC ` through `INetFwPolicy2` (ProgID `HNetCfg.FwPolicy2`, go-ole's
+  IDispatch), calling `Remove` once for each rule that carries such a name, and reports the count.
+- **The MSI action** `UninstallCleanup`: `FileRef` capture-core.exe, deferred, no impersonation,
+  `Return="ignore"` (type 3154), `After="StopServices"` (so before `RemoveFiles`), condition
+  `REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE`. `manifest.mjs` gains `UNINSTALL_CLEANUP`; `verify.mjs`
+  checks the generated action and that the argument and log name equal capture-core's constants;
+  `releaseChecks` reads `CustomAction` and `InstallExecuteSequence` from a built MSI.
+- **`snapshot.ps1`** records one flat map: the managed files' and the shortcut's SHA-256 (or
+  `absent`), each loaded user hive's Internet Settings values, the machine environment, VS Code's
+  machine policies (Copilot's managed values), the Root store (thumbprint and subject), the machine
+  keys of the Microsoft Software KSP (`NCryptEnumKeys`, P/Invoke) and the firewall rule names with
+  their counts. It records every entry of each location, not only the agent's, so a root Windows
+  fetches on demand between the two snapshots shows as a difference; the device phase judges such
+  a line by its subject.
+- **Integration fix**: `toolconfig/machineenv_windows.go` (task 57) and `copilot*.go` (task 31) both
+  declared `machineEnvKey` and `procSendMessageTimeoutW`, so the integration branch did not build
+  for Windows. The machine environment now uses Copilot's declarations and broadcast.
+- **Left as found, not changed here** (each outside the brief's steps): a folder the agent created
+  for a tool's file (`C:\Program Files\ClaudeCode`, `C:\ProgramData\Cursor`,
+  `C:\ProgramData\OpenAI\Codex`) stays, empty, when the file is deleted, and so does an empty
+  `HKLM\SOFTWARE\Policies\Microsoft\VSCode` key Copilot's writer created; the snapshot compares files
+  and values, so it does not show them. The CLI shim deletes its variable names from the machine
+  environment without a backup, so a customer's own machine `HTTP_PROXY` (or another of its names)
+  overwritten while TLS inspection was on is not restored. A user not signed in at uninstall keeps
+  an unrestored PAC in their unloaded hive.
+- **Vendor facts** (MicrosoftDocs `sdk-api` sources, read 2026-10-09; learn.microsoft.com is not
+  reachable from the build machine): `NCryptOpenKey` (ms.date 12/05/2018: `NCRYPT_MACHINE_KEY_FLAG`
+  opens the machine key, `NTE_BAD_KEYSET` when no key has the name), `NCryptDeleteKey` (12/05/2018:
+  frees the handle on success only), `NCryptEnumKeys` (12/05/2018: `NCRYPT_MACHINE_KEY_FLAG`,
+  `NTE_NO_MORE_ITEMS`, both buffers freed with `NCryptFreeBuffer`), `INetFwRules::Remove`
+  (12/05/2018: removes by name, no effect for an unknown name). The `HNetCfg.FwPolicy2` ProgID is
+  not on a page read here; the device phase confirms it.
+- **Not run here:** `TestCNGKeyDeleteRemovesTheKey` (`proxy/tlsproxy/ca_windows_test.go`, needs a
+  Windows administrator), the COM firewall removal, the registry and certutil paths of the cleanup,
+  the MSI's action and `releaseChecks`, and `snapshot.ps1` (no PowerShell here). They compile and
+  vet under `GOOS=windows`; the device phase runs the brief's "On the device" section.
