@@ -1,0 +1,5 @@
+# The schedule in services/jobs/README.md, in UTC. A job still running at its next start is not
+# started twice. The binary is named by its path: `jobs` alone is the shell's job-control builtin.
+*/5 * * * * /usr/local/bin/jobs aggregate
+* * * * * /usr/local/bin/jobs erase
+30 2 * * * /usr/local/bin/jobs expire

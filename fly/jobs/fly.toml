@@ -1,0 +1,17 @@
+# jobs (services/jobs, with fly/jobs/Dockerfile): one machine running supercronic over
+# fly/jobs/crontab, so no job runs twice. It is deployed with --ha=false and never scaled.
+#
+# The deploy workflow passes SAC_PG_HOST and SAC_PG_USER (jobs.<project-ref>).
+# Secrets: SAC_PG_PASSWORD (fly/scripts/setup-database.sh).
+
+app = "sac-preprod-jobs"
+primary_region = "iad"
+
+[env]
+  SAC_PG_DATABASE = "shadow"
+  SAC_PG_PORT = "5432"
+  SAC_PG_SSLMODE = "require"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

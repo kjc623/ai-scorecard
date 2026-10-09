@@ -1,66 +1,27 @@
 name: deploy
 
-# Builds the agent release and the images for one commit, deploys them to an environment, and
-# applies the schema. Pushes to main deploy pre-production; production is a manual run, gated by the
-# reviewers on the `prod` GitHub environment.
+# Deploys pre-production on every push to main: builds the agent release and the images for the
+# commit, pushes the images to Fly.io's registry, migrates the database (Supabase), then deploys
+# every Fly.io app with the commit's image. fly/RUNBOOK.md sets up the accounts, apps and secrets
+# this expects; the GitHub environment `preprod` holds its variables and secrets.
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      environment:
-        description: Environment
-        type: choice
-        options: [preprod, prod]
-        default: preprod
-      bootstrap:
-        description: First deployment of the environment (platform only, before secrets and images exist)
-        type: boolean
-        default: false
 
 permissions:
   id-token: write
   contents: read
 
 concurrency:
-  group: deploy-${{ inputs.environment || 'preprod' }}
+  group: deploy-preprod
   cancel-in-progress: false
 
-env:
-  ENVIRONMENT: ${{ inputs.environment || 'preprod' }}
-
 jobs:
-  bootstrap:
-    if: ${{ inputs.bootstrap }}
-    runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: azure/login@v2
-        with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - name: deploy the platform
-        env:
-          SAC_BOOTSTRAP: 'true'
-          SAC_DEVICE_FQDN: ${{ vars.SAC_DEVICE_FQDN }}
-          SAC_ANALYST_FQDN: ${{ vars.SAC_ANALYST_FQDN }}
-          SAC_ENTRA_APP_CLIENT_ID: ${{ vars.SAC_ENTRA_APP_CLIENT_ID }}
-          SAC_ALERT_EMAILS: ${{ vars.SAC_ALERT_EMAILS }}
-          SAC_KEYVAULT_ADMIN_IPS: ${{ vars.SAC_KEYVAULT_ADMIN_IPS }}
-          SAC_KEYVAULT_ADMIN_PRINCIPALS: ${{ vars.SAC_KEYVAULT_ADMIN_PRINCIPALS }}
-        run: |
-          az bicep install
-          az deployment group create --resource-group "${{ vars.SAC_RESOURCE_GROUP }}" \
-            --template-file azure/main.bicep --parameters "azure/params/${ENVIRONMENT}.bicepparam" \
-            --name "bootstrap-${{ github.run_id }}"
-
   agent-release:
-    if: ${{ !inputs.bootstrap }}
     runs-on: windows-latest
-    environment: ${{ inputs.environment || 'preprod' }}
+    environment: preprod
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -124,85 +85,101 @@ jobs:
   images:
     needs: agent-release
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment || 'preprod' }}
+    environment: preprod
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      FLY_APP_PREFIX: ${{ vars.FLY_APP_PREFIX }}
+      SAC_IMAGE_TAG: ${{ github.sha }}
+      FLY_ORG: ${{ vars.FLY_ORG }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: agent-release
           path: ${{ runner.temp }}/agent-release
-      - uses: azure/login@v2
+      - uses: superfly/flyctl-actions/setup-flyctl@1.6
         with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - uses: docker/setup-buildx-action@v3
+          version: 0.4.115
+      - name: check the apps exist
+        run: |
+          set -euo pipefail
+          apps="$(flyctl apps list --org "$FLY_ORG" --quiet | awk '{ print $1 }')"
+          for component in edge ingest-api control-api content-vault query-api dashboard jobs migrate; do
+            if ! grep -qxF "$FLY_APP_PREFIX-$component" <<<"$apps"; then
+              echo "::error::the app $FLY_APP_PREFIX-$component does not exist in the Fly.io organization $FLY_ORG (fly/RUNBOOK.md)"
+              exit 1
+            fi
+          done
       - name: build and push
         run: |
           set -euo pipefail
-          registry="$(az acr list --resource-group "${{ vars.SAC_RESOURCE_GROUP }}" --query '[0].loginServer' --output tsv)"
-          az acr login --name "${registry%%.*}"
-          tag="${{ github.sha }}"
+          flyctl auth docker
+          # Each image goes to its app's repository, registry.fly.io/<app>:<commit>.
           build() {
-            docker buildx build --push --tag "$registry/$1:$tag" --file "$2" "${@:3}" .
+            local tag="registry.fly.io/$FLY_APP_PREFIX-$1:$SAC_IMAGE_TAG"
+            docker build --tag "$tag" --file "$2" "${@:3}" .
+            docker push "$tag"
           }
+          build edge          services/edge/Dockerfile
           build ingest-api    services/ingest-api/Dockerfile
           build control-api   services/control-api/Dockerfile --build-context agent-release="${{ runner.temp }}/agent-release"
           build content-vault services/content-vault/Dockerfile
           build query-api     services/query-api/Dockerfile
           build dashboard     services/dashboard/Dockerfile
-          build jobs          services/jobs/Dockerfile
           build migrate       services/database/Dockerfile
+          # The jobs app's image adds the scheduler to the jobs image, built here first.
+          docker build --tag "sac-jobs:$SAC_IMAGE_TAG" --file services/jobs/Dockerfile .
+          build jobs          fly/jobs/Dockerfile --build-arg "JOBS_IMAGE=sac-jobs:$SAC_IMAGE_TAG"
 
-  deploy:
+  # The schema is migrated before any app runs the new image, so new code never meets an old
+  # schema. migrate runs as the migrate app's release command: its output is in this log, and its
+  # failure fails the run.
+  migrate:
     needs: images
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment || 'preprod' }}
+    environment: preprod
     env:
-      RG: ${{ vars.SAC_RESOURCE_GROUP }}
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      FLY_APP_PREFIX: ${{ vars.FLY_APP_PREFIX }}
       SAC_IMAGE_TAG: ${{ github.sha }}
-      SAC_DEVICE_FQDN: ${{ vars.SAC_DEVICE_FQDN }}
-      SAC_ANALYST_FQDN: ${{ vars.SAC_ANALYST_FQDN }}
-      SAC_ENTRA_APP_CLIENT_ID: ${{ vars.SAC_ENTRA_APP_CLIENT_ID }}
-      SAC_ALERT_EMAILS: ${{ vars.SAC_ALERT_EMAILS }}
-      SAC_KEYVAULT_ADMIN_IPS: ${{ vars.SAC_KEYVAULT_ADMIN_IPS }}
-      SAC_KEYVAULT_ADMIN_PRINCIPALS: ${{ vars.SAC_KEYVAULT_ADMIN_PRINCIPALS }}
+      PG_HOST: ${{ vars.SAC_PG_HOST }}
+      PG_REF: ${{ vars.SUPABASE_PROJECT_REF }}
     steps:
       - uses: actions/checkout@v4
-      - uses: azure/login@v2
+      - uses: superfly/flyctl-actions/setup-flyctl@1.6
         with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - run: az bicep install
-
-      - name: what-if
-        run: |
-          az deployment group what-if --resource-group "$RG" \
-            --template-file azure/main.bicep --parameters "azure/params/${ENVIRONMENT}.bicepparam" \
-            --no-pretty-print | tee -a "$GITHUB_STEP_SUMMARY"
-
-      # The schema is migrated before the new revisions start, so new code never meets an old schema
-      # and every workload's database login exists before its first connection. On the first full
-      # deployment the job does not exist yet: a bootstrap deployment with the image tag creates it.
+          version: 0.4.115
       - name: migrate
         run: |
-          set -euo pipefail
-          if az containerapp job show --resource-group "$RG" --name migrate --output none 2>/dev/null; then
-            registry="$(az acr list --resource-group "$RG" --query '[0].loginServer' --output tsv)"
-            az containerapp job update --resource-group "$RG" --name migrate --image "$registry/migrate:$SAC_IMAGE_TAG" --output none
-          else
-            SAC_BOOTSTRAP=true az deployment group create --resource-group "$RG" \
-              --template-file azure/main.bicep --parameters "azure/params/${ENVIRONMENT}.bicepparam" \
-              --name "migrate-job-${{ github.run_id }}"
-          fi
-          azure/scripts/run-job.sh "$RG" migrate
+          fly/scripts/deploy-app.sh migrate --update-only --deploy-retries 0 \
+            -e "SAC_PG_HOST=$PG_HOST" -e "SAC_PG_USER=sac_admin.$PG_REF"
 
-      - name: deploy
+  deploy:
+    needs: migrate
+    runs-on: ubuntu-latest
+    environment: preprod
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      FLY_APP_PREFIX: ${{ vars.FLY_APP_PREFIX }}
+      SAC_IMAGE_TAG: ${{ github.sha }}
+      PG_HOST: ${{ vars.SAC_PG_HOST }}
+      PG_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+      DEVICE_FQDN: ${{ vars.SAC_DEVICE_FQDN }}
+      ANALYST_FQDN: ${{ vars.SAC_ANALYST_FQDN }}
+      ENTRA_CLIENT_ID: ${{ vars.SAC_ENTRA_APP_CLIENT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@1.6
+        with:
+          version: 0.4.115
+      # The settings that differ per environment; fly/<component>/fly.toml holds the rest.
+      - name: deploy the apps
         run: |
-          az deployment group create --resource-group "$RG" \
-            --template-file azure/main.bicep --parameters "azure/params/${ENVIRONMENT}.bicepparam" \
-            --name "deploy-${{ github.run_id }}"
-
-      - name: approve Front Door's private link to the environment
-        run: azure/scripts/approve-private-link.sh "$RG"
+          set -euo pipefail
+          fly/scripts/deploy-app.sh ingest-api -e "SAC_PG_HOST=$PG_HOST" -e "SAC_PG_USER=ingest-api.$PG_REF"
+          fly/scripts/deploy-app.sh content-vault -e "SAC_PG_HOST=$PG_HOST" -e "SAC_PG_USER=content-vault.$PG_REF" -e "SAC_RETRIEVAL_URL_BASE=https://$ANALYST_FQDN"
+          fly/scripts/deploy-app.sh control-api -e "SAC_PG_HOST=$PG_HOST" -e "SAC_PG_USER=control-api.$PG_REF" -e "SAC_PUBLIC_URL=https://$ANALYST_FQDN" -e "SAC_PUBLIC_DEVICE_ENDPOINT=https://$DEVICE_FQDN" -e "SAC_ENTRA_CLIENT_ID=$ENTRA_CLIENT_ID"
+          fly/scripts/deploy-app.sh query-api -e "SAC_PG_HOST=$PG_HOST" -e "SAC_PG_USER=query-api.$PG_REF"
+          fly/scripts/deploy-app.sh dashboard -e "SAC_PUBLIC_URL=https://$ANALYST_FQDN"
+          fly/scripts/deploy-app.sh jobs -e "SAC_PG_HOST=$PG_HOST" -e "SAC_PG_USER=jobs.$PG_REF"
+          fly/scripts/deploy-app.sh edge

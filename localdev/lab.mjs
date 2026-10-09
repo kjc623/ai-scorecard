@@ -55,7 +55,7 @@ export const IMAGES = Object.freeze([
   { name: 'query-api', dockerfile: 'services/query-api/Dockerfile' },
   { name: 'dashboard', dockerfile: 'services/dashboard/Dockerfile' },
   { name: 'jobs', dockerfile: 'services/jobs/Dockerfile' },
-  { name: 'edge', dockerfile: 'localdev/edge/Dockerfile' },
+  { name: 'edge', dockerfile: 'services/edge/Dockerfile' },
   { name: 'oidc', dockerfile: 'localdev/oidc/Dockerfile' },
   { name: 'authlab', dockerfile: 'localdev/authlab/Dockerfile' },
   { name: 'lab-jobs', dockerfile: 'localdev/jobs/Dockerfile' },

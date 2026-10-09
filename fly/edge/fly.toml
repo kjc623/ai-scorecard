@@ -1,0 +1,32 @@
+# edge: the device entry point (services/edge). Fly.io forwards the device's TCP connection on
+# port 443 untouched, on the app's dedicated IPv4 address, so the edge terminates TLS and sees the
+# client certificate.
+#
+# Secrets (fly/scripts/create-secrets.sh): EDGE_TLS_CERT_PEM, EDGE_TLS_KEY_PEM.
+
+app = "sac-preprod-edge"
+primary_region = "iad"
+
+[env]
+  EDGE_INGEST_URL = "http://sac-preprod-ingest-api.internal:8080"
+  EDGE_CONTROL_URL = "http://sac-preprod-control-api.internal:8080"
+
+# No handlers: the connection reaches the edge as raw TCP.
+[[services]]
+  internal_port = 8443
+  protocol = "tcp"
+  auto_stop_machines = "off"
+  auto_start_machines = false
+  min_machines_running = 1
+
+  [[services.ports]]
+    port = 443
+
+  [[services.tcp_checks]]
+    grace_period = "5s"
+    interval = "15s"
+    timeout = "2s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

@@ -104,10 +104,10 @@ agent and makes sealed or encrypted rows unreadable.
 |---|---|
 | `compose.yaml` | The lab |
 | `build.mjs`, `run.mjs`, `seed.mjs`, `lab-msi.mjs` | Build, run, seed, and the lab MSI; `lab.mjs` holds what they share |
-| `edge/`, `oidc/`, `jobs/` | The edge, the identity provider and the job loop |
+| `oidc/`, `jobs/` | The identity provider and the job loop (the edge is `services/edge`) |
 | `authlab/` | The device-side tool: `authlab pki` makes the lab's PKI, `authlab smoke` is the smoke |
 | `tools/simulate-devices.mjs` | Simulated devices |
 | `tools/observe.mjs` | Open one page in a headless browser; save its screenshot, text and DOM |
 | `harness.compose.yaml`, `harness/`, `QUICKSTART.md` | Coding-agent harnesses on the lab network |
 
-Tests: `npm test` in `localdev`, and `go vet ./... && go test ./...` in `authlab`, `edge` and `oidc`.
+Tests: `npm test` in `localdev`, and `go vet ./... && go test ./...` in `authlab` and `oidc`.
