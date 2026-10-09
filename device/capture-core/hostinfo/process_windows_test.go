@@ -152,7 +152,8 @@ func TestProcessInfoDescribesThisTestBinary(t *testing.T) {
 	}
 }
 
-// curl.exe ships with Windows, signed through the system catalog by Microsoft Windows.
+// curl.exe ships with Windows, signed through a system catalog whose signer is Microsoft; the
+// catalog, and so the signer's name, differs between Windows builds.
 func TestProcessInfoNamesCurlsPublisher(t *testing.T) {
 	curl := filepath.Join(os.Getenv("SystemRoot"), "System32", "curl.exe")
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -174,8 +175,8 @@ func TestProcessInfoNamesCurlsPublisher(t *testing.T) {
 	if !sameFile(t, p.Image, curl) {
 		t.Errorf("image = %q, want %q", p.Image, curl)
 	}
-	if p.Publisher != "Microsoft Windows" {
-		t.Errorf("publisher = %q, want %q", p.Publisher, "Microsoft Windows")
+	if !strings.HasPrefix(p.Publisher, "Microsoft") {
+		t.Errorf("publisher = %q, want a Microsoft catalog signer", p.Publisher)
 	}
 	if p.User == nil || !strings.HasPrefix(p.User.SID, "S-1-") {
 		t.Errorf("user = %+v, want curl.exe's owner", p.User)

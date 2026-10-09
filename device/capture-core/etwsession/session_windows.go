@@ -20,6 +20,7 @@ const eventBuffer = 1024
 type Session struct {
 	trace    *etw.RealTimeSession
 	consumer *etw.Consumer
+	filter   eventFilter
 
 	events chan Event
 	// closing is closed by Close; ended when the consumer's ProcessTrace returns, which is when
@@ -48,7 +49,6 @@ func Open(name string, providers []Provider) (*Session, error) {
 			GUID:            g.String(),
 			EnableLevel:     p.Level,
 			MatchAnyKeyword: p.Keywords,
-			Filter:          p.EventIDs,
 		})
 	}
 	if err := stopStale(full); err != nil {
@@ -74,6 +74,7 @@ func Open(name string, providers []Provider) (*Session, error) {
 	s := &Session{
 		trace:     trace,
 		consumer:  consumer,
+		filter:    newEventFilter(providers),
 		events:    make(chan Event, eventBuffer),
 		closing:   make(chan struct{}),
 		ended:     make(chan struct{}),
@@ -143,7 +144,7 @@ func (s *Session) forward() {
 }
 
 func (s *Session) deliver(e *etw.Event) bool {
-	if e == nil {
+	if e == nil || !s.filter.keeps(e.System.Provider.Guid, e.System.EventID) {
 		return true
 	}
 	select {

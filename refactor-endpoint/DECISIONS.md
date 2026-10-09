@@ -2480,3 +2480,19 @@ source contradicts the current output, so `Render` and `canEnforce` are unchange
   to `refactor-endpoint-macos-linux/`, unchanged and keeping their numbers, and start after task 60
   is done. `DESIGN.md` §12 stands: every collector compiles on macOS and Linux and reports `absent`
   there until those tasks port it.
+
+## 2026-10-09, Windows CI, after the first merge to `main`
+
+- **Vendor fact, EnableTraceEx2 and the kernel's providers**: an `EVENT_FILTER_TYPE_EVENT_ID`
+  filter on Microsoft-Windows-Kernel-Process or Microsoft-Windows-DNS-Client fails with
+  `ERROR_INVALID_PARAMETER` (observed on the PC, Windows 11, and on the `windows-2025` runner,
+  elevated in both). Without the filter the same sessions open and deliver. `etwsession` therefore
+  enables a provider by level and keyword only, and discards the event ids a collector did not ask
+  for after decoding; `Provider.EventIDs` keeps its meaning for the collectors.
+- **curl.exe's catalog signer is not one name**: the PC and the runner both report `Microsoft 3rd
+  Party Application Component`, not `Microsoft Windows`. The test accepts any Microsoft signer.
+- **Elevated tests own their pipes as Administrators.** The token's owner, not its user, owns a
+  pipe an elevated process creates; the local IPC test trusts the token owner. `ServiceOwner` was
+  already right.
+- **Fixture searches ignore line endings**, because a Windows checkout converts the fixtures to
+  CRLF while Go strips carriage returns from raw string literals.

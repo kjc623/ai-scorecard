@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"net"
 	"testing"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -19,15 +20,27 @@ func testAddr(t *testing.T) string {
 	return `\\.\pipe\ShadowAICapture.localipc.test-` + hex.EncodeToString(b[:])
 }
 
-// dialSelf dials addr trusting this process's own account when trust is set, and no account
-// otherwise.
+// dialSelf dials addr trusting the account that owns what this process creates when trust is
+// set, and no account otherwise. That is the token's owner: the user, or Administrators when the
+// process is elevated.
 func dialSelf(ctx context.Context, addr string, trust bool) (net.Conn, error) {
-	tu, err := windows.GetCurrentProcessToken().GetTokenUser()
+	self, err := tokenOwner()
 	if err != nil {
 		return nil, err
 	}
-	self := tu.User.Sid.String()
 	return Dial(ctx, addr, func(sid string) bool { return trust && sid == self })
+}
+
+func tokenOwner() (string, error) {
+	token := windows.GetCurrentProcessToken()
+	var n uint32
+	_ = windows.GetTokenInformation(token, windows.TokenOwner, nil, 0, &n)
+	buf := make([]byte, n)
+	if err := windows.GetTokenInformation(token, windows.TokenOwner, &buf[0], n, &n); err != nil {
+		return "", err
+	}
+	// TOKEN_OWNER is one pointer: the owner SID.
+	return (*(**windows.SID)(unsafe.Pointer(&buf[0]))).String(), nil
 }
 
 func TestServiceOwnerIsSystemOrAdministrators(t *testing.T) {

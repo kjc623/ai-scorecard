@@ -75,8 +75,10 @@ func TestAlteredFixturesAreUnknownShapes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			altered := strings.Replace(string(body), c.old, c.new, 1)
-			if altered == string(body) {
+			// A checkout with CRLF line endings must still match the multi-line cases.
+			text := strings.ReplaceAll(string(body), "\r\n", "\n")
+			altered := strings.Replace(text, c.old, c.new, 1)
+			if altered == text {
 				t.Fatalf("%q is not in the fixture", c.old)
 			}
 			if _, err := (Parser{}).Parse([]byte(altered), "application/json"); !errors.Is(err, parsers.ErrUnknownShape) {

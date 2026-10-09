@@ -5,6 +5,7 @@ package etwsession
 
 import (
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -22,9 +23,34 @@ type Provider struct {
 	Level uint8
 	// Keywords is the match-any keyword mask; 0 enables every keyword.
 	Keywords uint64
-	// EventIDs, when set, limits the provider to these events, filtered before they reach the
-	// session's buffers.
+	// EventIDs, when set, limits the provider to these events. The session discards the others
+	// after decoding: EnableTraceEx2 rejects an event-id filter on the kernel's providers.
 	EventIDs []uint16
+}
+
+// eventFilter is the event ids each provider delivers, by the provider's GUID in upper case; a
+// provider without an entry delivers every event.
+type eventFilter map[string]map[uint16]bool
+
+func newEventFilter(providers []Provider) eventFilter {
+	f := eventFilter{}
+	for _, p := range providers {
+		if len(p.EventIDs) == 0 {
+			continue
+		}
+		ids := make(map[uint16]bool, len(p.EventIDs))
+		for _, id := range p.EventIDs {
+			ids[id] = true
+		}
+		f[strings.ToUpper(p.GUID)] = ids
+	}
+	return f
+}
+
+// keeps reports whether an event of provider with id is delivered.
+func (f eventFilter) keeps(provider string, id uint16) bool {
+	ids, limited := f[strings.ToUpper(provider)]
+	return !limited || ids[id]
 }
 
 // Event is one event a session delivered.
