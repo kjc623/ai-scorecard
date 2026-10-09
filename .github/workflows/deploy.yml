@@ -63,9 +63,11 @@ jobs:
         run: |
           $keys = Join-Path $env:RUNNER_TEMP 'keys'
           New-Item -ItemType Directory -Force $keys | Out-Null
-          Set-Content -NoNewline (Join-Path $keys 'policy.pub') '${{ vars.SAC_POLICY_PUBLIC_KEY }}'
-          Set-Content -NoNewline (Join-Path $keys 'classifier.key') $env:CLASSIFIER_KEY
-          Set-Content (Join-Path $keys 'extension.pem') $env:EXTENSION_KEY
+          # Written with .NET directly: Set-Content binds these arguments positionally in the wrong
+          # order and the files never appear.
+          [IO.File]::WriteAllText((Join-Path $keys 'policy.pub'), '${{ vars.SAC_POLICY_PUBLIC_KEY }}')
+          [IO.File]::WriteAllText((Join-Path $keys 'classifier.key'), $env:CLASSIFIER_KEY)
+          [IO.File]::WriteAllText((Join-Path $keys 'extension.pem'), $env:EXTENSION_KEY)
           $out = Join-Path $env:RUNNER_TEMP 'agent-release'
           node device/installer/release-msi.mjs --version "1.0.${{ github.run_number }}" `
             --policy-key-file (Join-Path $keys 'policy.pub') --policy-key-id policy-key-1 `
