@@ -45,13 +45,21 @@ function steps(list) {
   return { status: 'PASS', detail: `${list.length} step(s)` };
 }
 
+// The latency budget tests, which run apart from the other tests of their module.
+const BUDGETS = '^Test(HookDecision|OTLP)Budget$';
+
 const GATES = [
   {
     id: 'go',
     decides: 'A Go module fails go vet or its tests.',
     run: () => steps(tracked('*go.mod').map((mod) => dirname(mod)).flatMap((dir) => [
       [`${dir}: go vet`, 'go', ['vet', './...'], join(ROOT, dir)],
-      [`${dir}: go test`, 'go', ['test', ...(race ? ['-race'] : []), './...'], join(ROOT, dir)],
+      // The budget tests measure latency, so they run after the module's other tests, one package
+      // at a time, rather than beside them.
+      [`${dir}: go test`, 'go', ['test', ...(race ? ['-race'] : []), '-skip', BUDGETS, './...'], join(ROOT, dir)],
+      ...(tracked(`${dir}/*budget_test.go`).length
+        ? [[`${dir}: go test (budgets)`, 'go', ['test', ...(race ? ['-race'] : []), '-p', '1', '-run', BUDGETS, './...'], join(ROOT, dir)]]
+        : []),
     ])),
   },
   {
