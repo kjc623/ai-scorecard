@@ -18,11 +18,13 @@ the backend grants that one event. `docs/architecture.md` describes the system.
 | `services/control-api/` | Enrolment, policy, content grants and upload, sign-in, SCIM, tenant onboarding |
 | `services/content-vault/` | Encrypted prompt storage, retrieval and content search |
 | `services/query-api/`, `services/dashboard/` | The read API and the analyst web app |
+| `services/edge/` | The device entry point where there is no Application Gateway: TLS with the client certificate forwarded, and only the device API reachable |
 | `services/jobs/` | The scheduled `aggregate` and `expire` jobs |
 | `services/database/` | The PostgreSQL schema, its invariant tests, and the `migrate` job |
 | `services/platform/` | Managed-identity tokens and the PostgreSQL connection shared by the Go services |
 | `contracts/` | The event envelope schema and its generated Go binding |
 | `azure/` | The deployment (Bicep), its runbook and scripts |
+| `fly/` | The pre-prod deployment on Fly.io and Supabase, its runbook and scripts |
 | `localdev/` | A local lab of the whole system |
 | `tools/` | The acceptance gate and the cross-component checks |
 
@@ -40,8 +42,9 @@ Each component's README says how to build and test it on its own.
 ## Deploy
 
 `.github/workflows/ci.yml` runs the gate on every change; `.github/workflows/deploy.yml` builds the
-agent release and the images and deploys them. `azure/RUNBOOK.md` takes an environment from an empty
-subscription to a managed device whose events appear on the dashboard.
+agent release and the images and deploys them to pre-prod on Fly.io and Supabase. `fly/RUNBOOK.md`
+takes pre-prod from empty accounts to a managed device whose events appear on the dashboard;
+`azure/RUNBOOK.md` does the same for an Azure environment.
 
 ## Run locally
 

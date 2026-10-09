@@ -2499,3 +2499,112 @@ source contradicts the current output, so `Render` and `canEnforce` are unchange
   an empty answer; the real-session test now waits for the answer that holds the address it dials.
 - **Fixture searches ignore line endings**, because a Windows checkout converts the fixtures to
   CRLF while Go strips carriage returns from raw string literals.
+
+## 2026-10-09, task 58 (build)
+
+- **Sources.** fly.io and supabase.com are unreachable from the build machine (the proxy refuses
+  them), so the vendor facts come from their GitHub sources: `superfly/docs` a2b424b (2026-10-08),
+  `superfly/flyctl` v0.4.115 (a1cf49a, 2026-10-08), `superfly/flyctl-actions` 1.6,
+  `supabase/supabase` 1ee88e0 (2026-10-08: `apps/docs/content`, `packages/shared-data/regions.ts`),
+  `aptible/supercronic` v0.2.49.
+- **Vendor facts, Fly.io** (`superfly/docs`):
+  - `networking/services.mdx`: a `[[services.ports]]` entry with no `handlers` forwards TCP as-is
+    ("TCP pass through"); accepting raw TCP and terminating TLS yourself needs a dedicated IPv4
+    (`fly ips allocate-v4`, opt-in, billed); a first deploy gives an app with public services a
+    dedicated IPv6, and a shared IPv4 only for HTTP on 80 or TLS+HTTP on 443. So the edge's IPv4 is
+    allocated before the first deploy, and the dashboard's `[http_service]` gets shared IPv4 and IPv6.
+  - `networking/custom-domain.mdx`: `fly certs add <hostname>` issues a managed (Let's Encrypt)
+    certificate once A/AAAA or CNAME records point at the app; `fly certs check` shows progress.
+  - `networking/private-networking.mdx`, `app-services.mdx`: `<app>.internal` resolves to the 6PN
+    (IPv6) addresses of started machines; a service is reachable on 6PN when bound to IPv6
+    (`[::]`), and Fly Proxy reaches it over IPv4, which the dual-stack `[::]` bind in Go and Node
+    also accepts. Every HTTP service reads `SAC_HTTP_ADDR` (ingest-api, control-api, content-vault,
+    query-api, dashboard); the edge, reached only through the proxy, keeps `0.0.0.0:8443`.
+  - `reference/configuration.mdx`: `[env]`; top-level `[checks]` for apps without services;
+    `[[http_service.checks]]`; `[[services.tcp_checks]]`; `auto_stop_machines` defaults to `off`;
+    `[[files]]` with `secret_name` writes the base64-decoded secret to `guest_path` (also
+    `apps/secrets.mdx`); `release_command` runs once per deploy in a temporary machine with the
+    app's env and secrets, replaces CMD but not ENTRYPOINT, streams its logs and fails the deploy
+    on a non-zero exit. The docs give no file mode for `[[files]]` (the Machines API has an optional
+    `mode`); that control-api (user nonroot) can read its key files and query-api its CA file is
+    shown by Verify check 1.
+  - `apps/secrets.mdx`, `flyctl/cmd/fly_secrets_*.mdx`: secrets are env vars; `--stage` sets them
+    without restarting; `fly secrets list --json` gives names only; `fly secrets import` reads
+    `NAME=VALUE` from stdin, a value between `"""` may span lines (flyctl `secrets/parser.go`, used
+    to test both scripts' output).
+  - `blueprints/using-the-fly-docker-registry.mdx`, `fly_auth_docker.mdx`: images are pushed to
+    `registry.fly.io/<app>:<tag>` after `fly auth docker`. `fly_tokens_create_org.mdx`: an
+    organization deploy token; `fly_tokens_create_readonly.mdx`: a read-only organization token.
+  - `blueprints/supercronic.mdx`: supercronic is the documented cron, run as exactly one machine.
+  - `fly_ssh_console.mdx` and its examples: `-C` runs one command string, split on the machine with
+    double quotes honoured (`fly ssh console -C '/bin/sh -lc "…\"…\" …"'`); `tenant-admin.sh`
+    double-quotes each argument. No page states the splitting rules beyond the examples.
+- **migrate runs as the migrate app's release command, not `fly machine run`.** In flyctl's source,
+  `fly machine run` takes the app's name from `--config` but none of its `[env]`, and `fly machine
+  wait` reports a state, not an exit code. A release command waits for the exit, prints the logs (the
+  last 100 lines again on failure) and fails the deploy; `fly deploy --update-only` creates no
+  machine for an app that has none, so the migrate app never has a standing machine;
+  `--deploy-retries 0` runs it once. Fly.io passes `release_command` to the image's ENTRYPOINT
+  (`/migrate`) as arguments, which migrate does not read.
+- **Vendor facts, Supabase** (`apps/docs/content`):
+  - `guides/database/connecting-to-postgres.mdx`: the shared pooler's session mode is
+    `aws-[INDEX]-[REGION].pooler.supabase.com:5432`, IPv4-only on every plan; its user for a custom
+    role is `[ROLE].[PROJECT-REF]`; session mode supports prepared statements; the host must be
+    copied from the Connect dialog. `sslmode=require` encrypts without verifying; verifying needs
+    the project's CA certificate from Database settings.
+  - `troubleshooting/supavisor-faq-YyP5tI.mdx`: a pool per user + database + mode, and the
+    database is the connection string's path, with other databases created by `CREATE DATABASE`.
+    So the pooler reaches `shadow`, which is used, as in the lab.
+  - `guides/platform/compute-and-disk.mdx`: the Pro plan's Micro compute allows 60 database
+    connections and 200 pooler clients. Each Go service's pool holds at most 10; pre-prod's load
+    opens a few.
+  - `packages/shared-data/regions.ts`: East US (North Virginia) is `us-east-1`, next to Fly.io's
+    `iad` (Ashburn, Virginia, `reference/regions.mdx`).
+  - `guides/database/postgres/postgres-log-config.mdx`: `log_statement` defaults to `ddl`, and the
+    `postgres` user may `SET log_statement` (supautils). `setup-database.sh` turns it off for its
+    session, so no `CREATE ROLE … PASSWORD` is logged.
+  - `guides/platform/upgrading.mdx`, `temporary-access.mdx`: new projects run Postgres 17; the
+    schema's gate runs 16. The first `migrate` on Supabase is the first run on 17.
+- **query-api trusts Supabase's CA through `NODE_EXTRA_CA_CERTS`.** query-api verifies the server
+  certificate for `require` (`rejectUnauthorized: true`, `services/query-api/src/db.js`), and
+  Supabase's CA is its own, so Node is pointed at the project's CA certificate, a `[[files]]`
+  secret (`SUPABASE_CA_CERT`) that `setup-database.sh` sets. The brief's secrets table has no such
+  row; without it query-api cannot connect. The Go services (pgx) encrypt without verifying, as on
+  Azure.
+- **The database's shape.** `sac_admin` (LOGIN CREATEROLE) owns `shadow`; Supabase has no
+  `azure_pg_admin`. `postgres` is a member of `sac_admin` only while it creates the database. The
+  logins' passwords are 32 random bytes in hex. Checked on a throwaway PostgreSQL 16 cluster with
+  TLS and a non-superuser `postgres.<ref>` (CREATEROLE, CREATEDB, may set `log_statement`):
+  `setup-database.sh` ran with `sslmode=verify-full`, a rerun refused, the server log held no
+  password, and the migrator as `sac_admin` with fly/migrate's `SAC_DB_LOGINS` applied all 17
+  migrations, granted each login its role, and a second run applied 0.
+- **Settings that differ per environment come from GitHub variables**, passed with `-e` by
+  `fly/scripts/deploy-app.sh`: the hostnames and Entra client id (existing `SAC_*` variables), and
+  two new ones, `SAC_PG_HOST` (the pooler's host) and `SUPABASE_PROJECT_REF` (for
+  `<login>.<project-ref>`). The fly.toml files name the apps with the prefix `sac-preprod`, as do
+  their `.internal` addresses; `deploy-app.sh` refuses a fly.toml whose app is not
+  `$FLY_APP_PREFIX-<component>`, and `check-config.mjs` checks that every `.internal` address names
+  an app in `fly/` and that the apps share one prefix. `FLY_ORG` serves the check that the apps exist.
+- **Secrets.** The signing keys are file secrets `SESSION_SIGNING_KEY` and `POLICY_SIGNING_KEY`
+  (base64 PEM) at the paths control-api's `SAC_*_KEY_FILE` settings name. `create-secrets.sh` also
+  sets the edge's certificate (from the owner's files) and `SAC_ENTRA_CLIENT_SECRET` (read from the
+  terminal), so every secret in the table has one owner step; generated keys are copied to a key
+  directory the owner keeps outside Fly.io.
+- **Browser routes.** The dashboard is the only browser-facing app and forwards `/onboard/*`
+  itself. Pre-prod serves neither `/scim/v2/*` nor `/.well-known/*` to browsers: endpoint tests use
+  no directory sync, and token verifiers fetch the keys from the issuer
+  `http://sac-preprod-control-api.internal:8080` on the private network.
+- **supercronic v0.2.49**, SHA256 `a53ae236…4430c1` of `supercronic-linux-amd64`. The release page
+  with its published checksums is unreachable from the build machine; the checksum is that of the
+  asset downloaded from the release, whose build info reads module v0.2.49 built with go1.26.6, the
+  Go version of the repository's release workflow. Verified in the image build with `ADD --checksum`.
+- **One machine per app** (`--ha=false`, autostop off): exactly one jobs machine, and the cost
+  stays small. Shared CPU, 256 MB for the Go apps and 512 MB for control-api, content-vault and the
+  Node apps.
+- **Edge limits**: 10 s headers, 60 s read and 60 s write (Application Gateway's request timeout is
+  60 s), 90 s idle, 32 KiB of headers. It has no health route, so Fly.io checks its TCP port.
+- **deploy.yml**: the `agent-release` job's steps, artifact and version are unchanged; with the
+  workflow's inputs gone, its `if: !inputs.bootstrap` is dropped and its environment is `preprod`.
+- **Not run here**: the image builds (no Docker), the workflow, and anything against Fly.io or
+  Supabase. Left as they are: `services/control-api/README.md` still calls `SAC_ENTRA_CLIENT_SECRET`
+  lab-only, and the root `AGENTS.md` still describes an Azure pre-prod.
