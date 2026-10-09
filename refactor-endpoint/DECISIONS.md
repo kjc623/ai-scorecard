@@ -2494,5 +2494,8 @@ source contradicts the current output, so `Render` and `canEnforce` are unchange
 - **Elevated tests own their pipes as Administrators.** The token's owner, not its user, owns a
   pipe an elevated process creates; the local IPC test trusts the token owner. `ServiceOwner` was
   already right.
+- **A DNS-Client 3008 for a name arrives more than once per lookup**: once per query type, and
+  the answer from the cache or from the other address family is empty. The monitor already skipped
+  an empty answer; the real-session test now waits for the answer that holds the address it dials.
 - **Fixture searches ignore line endings**, because a Windows checkout converts the fixtures to
   CRLF while Go strips carriage returns from raw string literals.

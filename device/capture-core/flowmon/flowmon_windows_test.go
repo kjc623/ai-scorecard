@@ -109,12 +109,15 @@ func TestRealSessionAttributesThisProcessConnection(t *testing.T) {
 				if !strings.EqualFold(strings.TrimSuffix(ev.Properties["QueryName"], "."), realHost) || ev.PID != self {
 					continue
 				}
+				// A lookup completes once per query type, and an answer the cache or the other
+				// address family gave is empty: wait for the one that holds the address dialled.
 				found := false
 				for _, a := range queryAddresses(ev.Properties["QueryResults"]) {
 					found = found || a == dest
 				}
 				if !found {
-					t.Fatalf("this process's answer for %s, %q, does not hold %s", realHost, ev.Properties["QueryResults"], dest)
+					t.Logf("this process's answer for %s, %q, does not hold %s", realHost, ev.Properties["QueryResults"], dest)
+					continue
 				}
 				if ev.Time.IsZero() {
 					t.Fatal("the DNS answer has no time")
