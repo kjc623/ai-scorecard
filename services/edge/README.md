@@ -11,8 +11,10 @@ does (`azure/modules/application-gateway.bicep`).
   is requested but neither required nor verified: a device's first enrolment presents none, and
   ingest-api and control-api verify the ones that are presented against the device CA.
 - **Allow-list.** Only the device API is reachable: `/v1/events` goes to ingest-api; `/v1/enrol`,
-  `/v1/policy`, `/v1/health`, `/v1/content/grant`, `/v1/content` and `/v1/extension/*` go to
-  control-api. Any other path is refused with 403; an allowed prefix that no route serves gets 502.
+  `/v1/policy`, `/v1/health`, `/v1/content/grant` and `/v1/content` go to control-api. Any other
+  path is refused with 403; an allowed prefix that no route serves gets 502. The browser
+  extension's update manifest and CRX are not served here: a browser's extension downloader cannot
+  answer the client certificate request, so the dashboard serves them on the analyst hostname.
 - **Forwarding.** The presented leaf certificate travels URL-encoded in `X-Client-Cert`, with
   `X-Forwarded-Proto: https` and `X-Forwarded-Host`. A copy of any of them sent by the client is
   discarded, so only the edge can supply a certificate.

@@ -13,10 +13,12 @@
 //     untouched, because the invite in it is the credential and there is no session yet;
 //   * forwards a minted retrieval URL straight to content-vault, so content never transits
 //     query-api; the single-use grant in the URL is the capability;
+//   * forwards GET and HEAD of the browser extension's update manifest and CRX to control-api,
+//     with no credential: the browsers' extension downloader fetches them, without a session;
 //   * refuses a state-changing /v1 or /admin/v1 request that did not come from this origin.
 //
 // Every page and read needs a session except the sign-in pages and their two stylesheets,
-// /onboard/*, the minted retrieval URL and the two probes.
+// /onboard/*, the minted retrieval URL, the two extension downloads and the two probes.
 
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
@@ -53,6 +55,14 @@ const CONTENT_RETRIEVAL_PATH = '/v1/content/retrieval';
 // no trailing segment and goes to query-api like every other /v1 request.
 const RETRIEVAL_PREFIX = `${CONTENT_RETRIEVAL_PATH}/`;
 const MAX_BODY_BYTES = 256 * 1024;
+/**
+ * control-api's browser extension downloads: the update manifest and the CRX it names. They are
+ * served here because the extension downloader cannot answer the device hostname's request for a
+ * client certificate.
+ */
+const EXTENSION_PREFIX = '/v1/extension/';
+const EXTENSION_PATHS = new Set([`${EXTENSION_PREFIX}updates.xml`, `${EXTENSION_PREFIX}shadow-ai-capture.crx`]);
+const EXTENSION_HEADERS = Object.freeze(['content-type', 'content-length', 'cache-control']);
 /** The sign-in page's own assets. Everything else served from disk needs a session. */
 const PUBLIC_ASSETS = new Set(['/styles.css', '/signin.css']);
 /** What this server serves from disk: the pages, their stylesheets, and the modules they import. */
@@ -465,6 +475,26 @@ export function createDashboardServer(config) {
     return relayBody(req, res, upstream);
   }
 
+  /**
+   * Forward one extension download to control-api: path and query only, no cookie, header or
+   * credential, and back its status, type, length, caching and body.
+   */
+  async function forwardExtension(req, res, url) {
+    let upstream;
+    try {
+      upstream = await fetchImpl(`${cfg.controlUrl}${url.pathname}${url.search}`, { method: req.method, headers: { 'accept-encoding': 'identity' }, redirect: 'manual', signal: AbortSignal.timeout(60_000) });
+    } catch {
+      return void res.writeHead(503, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' }).end('unavailable');
+    }
+    const headers = {};
+    for (const name of EXTENSION_HEADERS) {
+      const value = upstream.headers.get(name);
+      if (value !== null) headers[name] = value;
+    }
+    res.writeHead(upstream.status, headers);
+    return relayBody(req, res, upstream);
+  }
+
   /** Forward one minted retrieval URL straight to the vault: the grant is the capability, so no principal is added. */
   async function forwardRetrieval(req, res, target) {
     let upstream;
@@ -527,6 +557,11 @@ export function createDashboardServer(config) {
     if (path === '/signout') return handleSignout(req, res);
     if (path === '/login') return handleLogin(res, url);
     if (path === '/onboard' || path.startsWith('/onboard/')) return forwardOnboard(req, res, url);
+    if (path === '/v1/extension' || path.startsWith(EXTENSION_PREFIX)) {
+      if (!EXTENSION_PATHS.has(path)) return void res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }).end('not found');
+      if (req.method !== 'GET' && req.method !== 'HEAD') return void res.writeHead(405, { allow: 'GET, HEAD' }).end();
+      return forwardExtension(req, res, url);
+    }
     if (path.startsWith(RETRIEVAL_PREFIX)) {
       if (req.method !== 'GET') return void res.writeHead(405, { allow: 'GET' }).end();
       return forwardRetrieval(req, res, `${path}${url.search}`);

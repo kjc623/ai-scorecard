@@ -17,7 +17,12 @@ const quiet = { info() {}, warn() {}, error() {} };
 const PUBLIC = 'http://dashboard.test';
 const VAULT = 'http://vault.test';
 
-const ROLE_BY_CODE = Object.freeze({ viewer: ['viewer'], analyst: ['analyst'], reader: ['content_reader'], admin: ['admin'] });
+const EXTENSION_FILES = Object.freeze({
+  '/v1/extension/updates.xml': { type: 'application/xml; charset=utf-8', body: Buffer.from('<?xml version="1.0" encoding="UTF-8"?>\n<gupdate protocol="2.0"></gupdate>') },
+  '/v1/extension/shadow-ai-capture.crx': { type: 'application/x-chrome-extension', body: Buffer.from([0x43, 0x72, 0x32, 0x34, 3, 0, 0, 0, 255, 254]) },
+});
+
+const ROLE_BY_CODE =Object.freeze({ viewer: ['viewer'], analyst: ['analyst'], reader: ['content_reader'], admin: ['admin'] });
 
 function listen(server) {
   return new Promise((resolveListen) => server.listen(0, '127.0.0.1', () => resolveListen(server.address().port)));
@@ -85,6 +90,11 @@ async function fakeControl() {
     if (url.pathname.startsWith('/onboard/')) {
       res.writeHead(302, { location: 'https://login.microsoftonline.com/organizations/v2.0/adminconsent?client_id=x', 'set-cookie': 'onboard_state=abc; HttpOnly; Path=/onboard' });
       return res.end();
+    }
+    const extension = EXTENSION_FILES[url.pathname];
+    if (extension && ['GET', 'HEAD'].includes(req.method)) {
+      res.writeHead(200, { 'content-type': extension.type, 'content-length': String(extension.body.length), 'cache-control': 'no-cache', 'set-cookie': 'leak=1', 'x-upstream-only': '1' });
+      return res.end(req.method === 'HEAD' ? undefined : extension.body);
     }
     return json(404, { error: 'not_found' });
   });
@@ -371,6 +381,49 @@ test('/onboard/* goes to control-api untouched: no session, no bearer, its redir
   assert.equal(seen.body, 'choice=entra');
   assert.equal(seen.headers.authorization, undefined, 'no bearer is added');
   assert.equal(seen.headers.cookie, 'onboard_pref=1', 'this server\'s own cookie is not passed on');
+});
+
+test('the extension\'s update manifest and CRX are relayed from control-api without a session or a cookie', async (t) => {
+  const { port, control, query } = await lab(t);
+  for (const [path, file] of Object.entries(EXTENSION_FILES)) {
+    const res = await send(port, `${path}?x=id%3Dabc%26uc`, { headers: { cookie: 'sac_session=mine; other=1', authorization: 'Bearer forged' } });
+    assert.equal(res.status, 200, path);
+    assert.equal(res.headers['content-type'], file.type);
+    assert.equal(res.headers['content-length'], String(file.body.length));
+    assert.equal(res.headers['cache-control'], 'no-cache');
+    assert.deepEqual(res.raw, file.body, 'the body arrives byte for byte');
+    assert.equal(res.headers['set-cookie'], undefined, 'no upstream cookie is relayed');
+    assert.equal(res.headers['x-upstream-only'], undefined, 'only the download\'s own headers are relayed');
+    const seen = control.state.calls.at(-1);
+    assert.equal(seen.method, 'GET');
+    assert.equal(seen.path, path);
+    assert.equal(seen.search, '?x=id%3Dabc%26uc');
+    assert.equal(seen.headers.cookie, undefined, 'no cookie is forwarded');
+    assert.equal(seen.headers.authorization, undefined, 'no credential is forwarded');
+
+    const head = await send(port, path, { method: 'HEAD' });
+    assert.equal(head.status, 200);
+    assert.equal(head.headers['content-length'], String(file.body.length));
+    assert.equal(head.raw.length, 0);
+    assert.equal(control.state.calls.at(-1).method, 'HEAD');
+  }
+  assert.equal(query.calls.length, 0, 'nothing reached query-api');
+});
+
+test('only GET and HEAD of the two extension downloads are forwarded', async (t) => {
+  const { port, control, query } = await lab(t);
+  const before = control.state.calls.length;
+  for (const method of ['POST', 'PUT', 'DELETE', 'OPTIONS']) {
+    const res = await send(port, '/v1/extension/updates.xml', { method, headers: { 'content-type': 'application/xml' }, body: method === 'POST' || method === 'PUT' ? '<x/>' : undefined });
+    assert.equal(res.status, 405, method);
+    assert.equal(res.headers.allow, 'GET, HEAD');
+  }
+  for (const path of ['/v1/extension', '/v1/extension/', '/v1/extension/other.crx', '/v1/extension/updates.xml/', '/v1/extension/UPDATES.XML']) {
+    const res = await send(port, path, { headers: { cookie: 'sac_session=mine' } });
+    assert.equal(res.status, 404, path);
+  }
+  assert.equal(control.state.calls.length, before, 'nothing reached control-api');
+  assert.equal(query.calls.length, 0, 'nothing reached query-api');
 });
 
 // ---------------------------------------------------------------------------------------------

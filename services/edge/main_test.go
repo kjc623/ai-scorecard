@@ -21,27 +21,27 @@ func TestRouteMirrorsTheGateway(t *testing.T) {
 		upstream string
 		status   int
 	}{
-		"/v1/events":                          {upstreamIngest, 0},
-		"/v1/enrol":                           {upstreamControl, 0},
-		"/v1/policy":                          {upstreamControl, 0},
-		"/v1/health":                          {upstreamControl, 0},
-		"/v1/content/grant":                   {upstreamControl, 0},
-		"/v1/content":                         {upstreamControl, 0},
-		"/v1/extension/updates.xml":           {upstreamControl, 0},
-		"/v1/extension/shadow-ai-capture.crx": {upstreamControl, 0},
+		"/v1/events":        {upstreamIngest, 0},
+		"/v1/enrol":         {upstreamControl, 0},
+		"/v1/policy":        {upstreamControl, 0},
+		"/v1/health":        {upstreamControl, 0},
+		"/v1/content/grant": {upstreamControl, 0},
+		"/v1/content":       {upstreamControl, 0},
 		// Refused by the firewall rule.
-		"/":                       {"", http.StatusForbidden},
-		"/healthz":                {"", http.StatusForbidden},
-		"/v1/query":               {"", http.StatusForbidden},
-		"/admin/v1/deployment":    {"", http.StatusForbidden},
-		"/internal/v1/auth/begin": {"", http.StatusForbidden},
-		"/.well-known/jwks.json":  {"", http.StatusForbidden},
-		"/v1/extension":           {"", http.StatusForbidden},
+		"/":                                   {"", http.StatusForbidden},
+		"/healthz":                            {"", http.StatusForbidden},
+		"/v1/query":                           {"", http.StatusForbidden},
+		"/admin/v1/deployment":                {"", http.StatusForbidden},
+		"/internal/v1/auth/begin":             {"", http.StatusForbidden},
+		"/.well-known/jwks.json":              {"", http.StatusForbidden},
+		"/v1/extension":                       {"", http.StatusForbidden},
+		"/v1/extension/":                      {"", http.StatusForbidden},
+		"/v1/extension/updates.xml":           {"", http.StatusForbidden},
+		"/v1/extension/shadow-ai-capture.crx": {"", http.StatusForbidden},
 		// Allowed by the firewall, served by no path rule.
 		"/v1/events/extra":   {"", http.StatusBadGateway},
 		"/v1/contents":       {"", http.StatusBadGateway},
 		"/v1/content/upload": {"", http.StatusBadGateway},
-		"/v1/extension/":     {"", http.StatusBadGateway},
 	} {
 		upstream, status := route(path)
 		if upstream != want.upstream || status != want.status {

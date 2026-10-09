@@ -12,8 +12,10 @@ the observation carries each file's name, media type, size and digest. Plain ES 
 ## How it runs in production
 
 The release build (`device/installer/release-msi.mjs`) packages `shadow-ai-capture.crx` beside the MSI and
-records it in `release.json`; control-api serves the CRX and its update manifest at
-`https://<device-fqdn>/v1/extension/updates.xml`, and the browsers install it from the
+records it in `release.json`; control-api serves the CRX and its update manifest, which browsers reach
+through the dashboard on the analyst hostname at
+`https://<analyst-fqdn>/v1/extension/updates.xml` (not the device hostname, whose client
+certificate request the extension downloader cannot answer), and the browsers install it from the
 `ExtensionInstallForcelist` policy (see `device/installer/README.md`). The installers register the native
 messaging host `com.shadowaicapture.capture_core` for the extension's id, which `manifest.json`'s
 `key` pins (`jnjjgjlbhfleknjpoiiopcaogphghodk`). With no host the extension keeps observing, holds

@@ -6,7 +6,9 @@
 //     against the device CA.
 //   - Only the device API is reachable. A path outside the allow-list is refused with 403, as the
 //     gateway's firewall rule refuses it; an allowed prefix that no route serves gets 502, as the
-//     gateway's empty default pool answers.
+//     gateway's empty default pool answers. Browser downloads (the extension's update manifest and
+//     CRX) are not served here: a browser's extension downloader cannot answer the client
+//     certificate request, so the dashboard serves them on the analyst hostname.
 //   - The presented leaf certificate is forwarded URL-encoded in X-Client-Cert, with
 //     X-Forwarded-Proto and X-Forwarded-Host. A client-supplied copy of any of them is discarded.
 //
@@ -48,7 +50,7 @@ const (
 
 // allowedPrefixes is the firewall's allow-list: a request URI that begins with none of them
 // (compared in lower case) is refused before routing.
-var allowedPrefixes = []string{"/v1/events", "/v1/enrol", "/v1/policy", "/v1/health", "/v1/content", "/v1/extension/"}
+var allowedPrefixes = []string{"/v1/events", "/v1/enrol", "/v1/policy", "/v1/health", "/v1/content"}
 
 // Upstreams a path can route to.
 const (
@@ -73,9 +75,6 @@ func route(path string) (upstream string, status int) {
 	case "/v1/events":
 		return upstreamIngest, 0
 	case "/v1/enrol", "/v1/policy", "/v1/health", "/v1/content/grant", "/v1/content":
-		return upstreamControl, 0
-	}
-	if rest, ok := strings.CutPrefix(path, "/v1/extension/"); ok && rest != "" {
 		return upstreamControl, 0
 	}
 	return "", http.StatusBadGateway

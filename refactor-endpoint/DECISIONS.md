@@ -2794,3 +2794,26 @@ What the first bring-up found, and the runbook now says:
   messaging allowlist is "Control which native messaging hosts users can use", both under the
   "Microsoft Edge" category's Extensions and Native Messaging subcategories. The profile was
   created for Edge; Chrome is not on the VM.
+
+## 2026-10-09, task 58 fix 5: the extension downloads move to the analyst hostname
+
+- **Observed on the VM.** Edge did not install the force-installed extension. Its log showed
+  `extension_downloader.cc Failed to fetch manifest '.../v1/extension/updates.xml?...' response code:-1`
+  and `force_installed_metrics.cc Forced extension ... failed to install with data=failure_reason: 15;
+  install_stage: 2; downloading_stage: 9; network_error_code: 110` (`ERR_SSL_CLIENT_AUTH_CERT_NEEDED`).
+  The manifest and the CRX were correct (hash and size checked against `release.json`).
+- **Cause.** The manifest and CRX were served on the device hostname, behind `services/edge`, whose
+  TLS listener requests a client certificate (`tls.RequestClientCert`) so that enrolled devices can
+  present theirs. Chromium's extension downloader cannot answer a TLS CertificateRequest, so a
+  hostname that requests client certificates cannot serve browser downloads. Application Gateway's
+  passthrough listener requests one the same way.
+- **Change.** The dashboard server forwards `GET` and `HEAD` of `/v1/extension/updates.xml` and
+  `/v1/extension/shadow-ai-capture.crx` to control-api with no session, cookie or credential, and
+  relays status, `Content-Type`, `Content-Length`, `Cache-Control` and the body; other methods get
+  405 and other paths under `/v1/extension/` 404. control-api keeps the two routes and builds the
+  manifest's `codebase` on `SAC_PUBLIC_URL` instead of `SAC_PUBLIC_DEVICE_ENDPOINT`. The edge and
+  Application Gateway (`application-gateway.bicep`) no longer route `/v1/extension/`; Front Door
+  already sends `/*` on the analyst hostname to the dashboard, so it needs no new route. No setting
+  changed. Intune still installs the extension by its force-install policy, whose value becomes
+  `<extension id>;https://<analyst hostname>/v1/extension/updates.xml`; for pre-prod,
+  `jnjjgjlbhfleknjpoiiopcaogphghodk;https://console.preprod.sundial.solutions/v1/extension/updates.xml`.

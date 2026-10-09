@@ -65,7 +65,7 @@ device keeps its enrolment. An install with no tenant file beside the MSI fails 
 changing anything (`msiexec /l*v` logs the reason under action `CheckTenantConfig`).
 
 **The extension.** Force-install it in both browsers with `ExtensionInstallForcelist`, value
-`<extension id>;https://<device-fqdn>/v1/extension/updates.xml` (the id is `release.json`'s
+`<extension id>;https://<analyst-fqdn>/v1/extension/updates.xml` (the id is `release.json`'s
 `extension.id`). In Intune, Devices → Configuration → Create → Windows 10 and later → Settings catalog:
 
 - Google Chrome → Extensions → *Configure the list of force-installed apps and extensions*

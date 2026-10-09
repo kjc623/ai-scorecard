@@ -9,7 +9,7 @@ into it with a double-clicked MSI.
 | `postgres` | PostgreSQL 16. `db-setup` gives it Azure's shape (a non-superuser administrator with `CREATEROLE`, one login per component); the `migrate` image applies the schema as that administrator and grants each login its role |
 | `control-api`, `ingest-api`, `content-vault`, `query-api`, `dashboard` | The services, each connecting as its own login (`control-api`, `ingest-api`, …), so row-level security applies as in production |
 | `jobs` | The `jobs` binary on a loop: `aggregate` every minute, `expire` every hour |
-| `edge` | The device ingress, as Application Gateway: TLS with a client certificate requested but not required, the certificate forwarded in `X-Client-Cert`, and only the device API reachable (`/v1/events` to ingest-api; `/v1/enrol`, `/v1/policy`, `/v1/health`, `/v1/content/grant`, `/v1/content`, `/v1/extension/*` to control-api; anything else 403) |
+| `edge` | The device ingress, as Application Gateway: TLS with a client certificate requested but not required, the certificate forwarded in `X-Client-Cert`, and only the device API reachable (`/v1/events` to ingest-api; `/v1/enrol`, `/v1/policy`, `/v1/health`, `/v1/content/grant`, `/v1/content` to control-api; anything else 403) |
 | `oidc` | A customer identity provider: an OpenID Connect provider with one realm per lab tenant and no passwords |
 
 ## Run
@@ -74,8 +74,8 @@ and extension key, into `localdev\.msi\`, and writes `ShadowAICapture.tenant.env
 the Lab tenant, the edge, the tenant's deployment key and the lab CA (`SAC_CA_FILE`). Double-click
 `localdev\.msi\ShadowAICapture.msi`: the agent installs as the `ShadowAICapture` service, enrols
 and starts sending. Uninstall it from Settings → Apps. control-api serves the same folder as its
-agent release, so the browser extension's update manifest is at
-`https://127.0.0.1:8443/v1/extension/updates.xml`.
+agent release, and the dashboard forwards its browser extension downloads, so the update manifest is at
+`http://127.0.0.1:8787/v1/extension/updates.xml`.
 
 ## Key material
 

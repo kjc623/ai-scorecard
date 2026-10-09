@@ -14,7 +14,9 @@ It has two halves and no dependencies:
 - **The server** (`server/`) signs people in through control-api's identity service, keeps the
   product access token per session (the browser holds one opaque HttpOnly cookie), and forwards:
   `/v1/*` to query-api and `/admin/v1/*` to control-api with `Authorization: Bearer <product token>`,
-  `/onboard/*` to control-api untouched, and a minted retrieval URL
+  `/onboard/*` to control-api untouched, `GET`/`HEAD` of the browser extension's update manifest
+  and CRX (`/v1/extension/updates.xml`, `/v1/extension/shadow-ai-capture.crx`) to control-api with
+  no credential, and a minted retrieval URL
   (`GET /v1/content/retrieval/<tenant>/<grant>`) straight to content-vault, so content never
   transits query-api. A state-changing `/v1` or `/admin/v1` request from another origin is refused.
 
@@ -27,7 +29,7 @@ The server refuses to start unless every required variable is set.
 
 | Variable | Required | Meaning |
 |---|---|---|
-| `SAC_CONTROL_URL` | yes | control-api: its internal identity API (`/internal/v1/auth/*`), admin API and onboarding pages |
+| `SAC_CONTROL_URL` | yes | control-api: its internal identity API (`/internal/v1/auth/*`), admin API, onboarding pages and extension downloads |
 | `SAC_INTERNAL_TOKEN` | yes | The bearer for control-api's `/internal/*` API (Key Vault secret `sac-internal-token`); never sent to a browser |
 | `SAC_PUBLIC_URL` | yes | The address people use, e.g. `https://shadow.example.com`. The sign-in redirect URI is `{SAC_PUBLIC_URL}/callback`; cookies are `Secure` when it is https |
 | `SAC_QUERY_API_URL` | yes | query-api, for `/v1/*` |
