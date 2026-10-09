@@ -2817,3 +2817,20 @@ What the first bring-up found, and the runbook now says:
   changed. Intune still installs the extension by its force-install policy, whose value becomes
   `<extension id>;https://<analyst hostname>/v1/extension/updates.xml`; for pre-prod,
   `jnjjgjlbhfleknjpoiiopcaogphghodk;https://console.preprod.sundial.solutions/v1/extension/updates.xml`.
+
+## 2026-10-09, task 59 bring-up: the first Intune install
+
+- **Intune app** `Shadow AI Capture (pre-prod test)`, id `3c023904-f50e-4612-81ea-d69d5604fb69`,
+  created by the first `deploy.mjs` run and recorded in `TESTBED.md`.
+- **Result.** From `clean-enrolled`, the Intune Management Extension installed release 1.0.16
+  (`msiexec` exit code 0, detection `applicationDetected: True`, enforcement `Success`). The
+  service runs; `-AgentState` shows the device enrolled in the test tenant, `managed_state managed`,
+  mode m3, the policy bundle accepted and the first health report acknowledged. The elapsed time
+  was not measured: `deploy.mjs` stopped at the Intune Management Extension restart because the
+  extension was not installed yet (fixed on the integration branch), and the install followed the
+  next sync.
+- **Delivery row.** `delivery degraded upstream_unreachable` with an empty spool is the drainer's
+  starting state before its first delivered batch, not a failure; the health and policy calls
+  through the same edge succeeded.
+- **Invocation.** `invm.ps1` is called as `& .\tools\testbed\invm.ps1` from Windows PowerShell:
+  `powershell -File` from a PowerShell prompt re-splits a quoted `-Command` argument.
