@@ -41,7 +41,7 @@ Each component's README says how to build and test it on its own.
 
 ## Deploy
 
-`.github/workflows/ci.yml` runs the gate on every change; `.github/workflows/deploy.yml` builds the
+`.github/workflows/ci.yml` runs the gates each change can affect; `.github/workflows/deploy.yml` builds the
 agent release and the images and deploys them to pre-prod on Fly.io and Supabase. `fly/RUNBOOK.md`
 takes pre-prod from empty accounts to a managed device whose events appear on the dashboard;
 `azure/RUNBOOK.md` does the same for an Azure environment.

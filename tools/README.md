@@ -7,8 +7,13 @@ node tools/accept.mjs --only go  # one gate (or --skip browser)
 ```
 
 It exits non-zero if any gate fails. A gate that cannot run on this host (no Docker, no `az`, not
-Windows, no Chromium) is reported `SKIPPED` with its reason; a skipped gate is not a pass. CI runs it
-on Linux and Windows (`.github/workflows/ci.yml`).
+Windows, no Chromium) is reported `SKIPPED` with its reason; a skipped gate is not a pass.
+
+CI (`.github/workflows/ci.yml`) runs the gates a change can affect: its path filters say which
+files each gate reads, `static` runs on every change, and the Windows job (the agent's Go modules
+and `installer`) runs when `device/` or `contracts/` changes. A change to the workflow, to
+`accept.mjs` or to `.gitattributes`, the weekly run and a manual run check every gate. The `ci` job
+passes only when every selected gate passed.
 
 | Gate | Runs |
 |---|---|

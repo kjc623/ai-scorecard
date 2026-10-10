@@ -6,6 +6,8 @@
 //   node tools/accept.mjs --skip browser   everything but those
 //   node tools/accept.mjs --list           the gates and what a failure means
 //   node tools/accept.mjs --only go --race run each Go module's tests under -race
+//   node tools/accept.mjs --only go --modules device,contracts
+//                                          only the Go modules under those directories
 //
 // A gate that cannot run here (no Docker, no az, not Windows, no Chromium) is reported SKIPPED with
 // its reason. SKIPPED is not a pass: the summary says what was not checked.
@@ -25,6 +27,9 @@ const skip = new Set(listArg('--skip') ?? []);
 // --race runs each Go module's tests under the race detector. It needs cgo (a C compiler), so it
 // is used on the hosted Ubuntu runner and inside a golang container, not on a plain Windows box.
 const race = args.includes('--race');
+// --modules limits the go gate to the modules under these directories: CI's Windows job checks the
+// agent's modules on the agent's platform, while every module runs on Linux.
+const modules = listArg('--modules');
 
 function run(cmd, cmdArgs, cwd = ROOT) {
   const r = spawnSync(cmd, cmdArgs, { cwd, encoding: 'utf8', shell: process.platform === 'win32', maxBuffer: 64 << 20 });
@@ -53,7 +58,8 @@ const GATES = [
   {
     id: 'go',
     decides: 'A Go module fails go vet or its tests.',
-    run: () => steps(tracked('*go.mod').map((mod) => dirname(mod)).flatMap((dir) => [
+    run: () => steps(tracked('*go.mod').map((mod) => dirname(mod))
+      .filter((dir) => !modules || modules.some((m) => dir === m || dir.startsWith(`${m}/`))).flatMap((dir) => [
       [`${dir}: go vet`, 'go', ['vet', './...'], join(ROOT, dir)],
       // The budget tests measure latency, so they run after the module's other tests, one package
       // at a time, rather than beside them.
