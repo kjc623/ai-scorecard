@@ -61,7 +61,7 @@ test('a small count, a zero and an absent measure render into different markup o
   assert.match(html, /<td class="num"><span class="v-absent"[^>]*>—<\/span><\/td>/, 'an absent measure is neither a number nor a zero');
 });
 
-test('a tool cell resolves the name at read time and keeps the raw fingerprint visible', () => {
+test('a tool cell shows the name, and the fingerprint only beside an unrecognised tool', () => {
   const state = readState(envelope('ok', {
     data: [
       { tool: 'tls_b6681b043244c43f', tool_name: 'Claude Code', submissions: 40 },
@@ -76,8 +76,8 @@ test('a tool cell resolves the name at read time and keeps the raw fingerprint v
     rows: state.data.map((row) => ({ row })),
     emptyText: 'none',
   });
-  // The known tool shows its name and its fingerprint.
-  assert.match(html, /Claude Code<\/span> <span class="v-mono v-tool-fp">tls_b6681b043244c43f/);
+  // A known tool shows its name, with the fingerprint on hover only.
+  assert.match(html, /<span class="v-text" title="Tool fingerprint tls_b6681b043244c43f">Claude Code<\/span><\/td>/);
   // An unknown fingerprint is not silently echoed as a plausible name: it says so, and exposes the raw.
   assert.match(html, /Unrecognised tool<\/span> <span class="v-mono v-tool-fp">tls_2a942648fee3bbd5/);
   // A row with no resolved name falls back to the fingerprint, which is all there is.

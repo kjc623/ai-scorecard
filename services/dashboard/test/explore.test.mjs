@@ -16,7 +16,7 @@ import {
 import { createExploreFake, buildExploreSample } from './explore-fake.mjs';
 import { createExplorer } from '../src/explore-app.js';
 import {
-  renderExploreResults, renderExploreDetail, renderExploreRail, renderExploreProblems, renderExploreSummary,
+  renderExploreResults, renderExploreDetail, renderExploreRail, renderExploreProblems, renderExploreSummary, renderExploreValue,
 } from '../src/explore-render.js';
 import { createQueryApi } from '../src/transport.js';
 import { COLLECTOR_DETAILS, TEMPLATES } from '../src/vocab.js';
@@ -503,4 +503,12 @@ test('explore.html loads its modules from src/ and fetches nothing from another 
   assert.match(html, /import \{ bootExplore \} from '\.\/src\/explore-app\.js'/);
   assert.ok(html.includes('<link rel="stylesheet" href="explore.css">'));
   assert.ok(!/https?:\/\//.test(html.replace(/https?:\/\/www\.w3\.org[^"]*/g, '')), 'no remote URL');
+});
+
+test('a tool value shows the name, and the fingerprint only beside an unrecognised tool', () => {
+  const column = { key: 'tool', kind: 'mono' };
+  const known = renderExploreValue({ tool: 'tls_b6681b043244c43f', tool_name: 'Claude Code' }, column);
+  assert.equal(known, '<span title="Tool fingerprint tls_b6681b043244c43f">Claude Code</span>');
+  const unknown = renderExploreValue({ tool: 'tls_2a942648fee3bbd5', tool_name: 'Unrecognised tool' }, column);
+  assert.match(unknown, /Unrecognised tool<\/span> <span class="x-mono x-sub">tls_2a942648fee3bbd5<\/span>/);
 });
