@@ -65,7 +65,7 @@ func TestRollupAgainstPostgreSQL(t *testing.T) {
 	expect(t, tx, "org rows without a directory",
 		`SELECT count(*)::text FROM mart.agg_org_period WHERE tenant_id = $1`, "0", tenant)
 	expect(t, tx, "day watermarks",
-		`SELECT count(*)::text FROM ops.aggregate_watermark WHERE tenant_id = $1 AND bucket_size = 'day'`, "5", tenant)
+		`SELECT count(*)::text FROM ops.aggregate_watermark WHERE tenant_id = $1 AND bucket_size = 'day'`, "6", tenant)
 
 	// A second run over the same inputs leaves the same values and the same number of rows.
 	runBucket(t, tx, tenant, BucketDay, from, to)
@@ -98,6 +98,48 @@ func TestRollupAgainstPostgreSQL(t *testing.T) {
 	expect(t, tx, "rows for days with no data",
 		`SELECT count(*)::text FROM mart.agg_tool_period WHERE tenant_id = $1 AND bucket_start < $2::timestamptz`,
 		"0", tenant, bucket)
+}
+
+func TestRollupTeams(t *testing.T) {
+	tx := pgtest.Tx(t, pgtest.Open(t))
+	tenant, device := pgtest.Tenant(t, tx)
+	ev := events{tenant: tenant, device: device}
+	const from, to = "2026-01-15T00:00:00Z", "2026-01-16T00:00:00Z"
+	ada, grace, bob := "u_"+strings.Repeat("a", 32), "u_"+strings.Repeat("b", 32), "u_"+strings.Repeat("c", 32)
+
+	// Ada is in a console team and the Engineering department; Grace is in the department and in
+	// an OU below the team's unit; Bob is in no team.
+	pgtest.Exec(t, tx, `INSERT INTO ops.user_dim (tenant_id, user_ref, department, org_unit, status) VALUES
+	  ($1, $2, 'Engineering', NULL, 'active'),
+	  ($1, $3, 'engineering', 'OU=Labs,OU=Research,DC=contoso,DC=com', 'active'),
+	  ($1, $4, 'Sales', NULL, 'active')`, tenant, ada, grace, bob)
+	console := pgtest.Scalar(t, tx, `INSERT INTO ops.team (tenant_id, name, source, created_by)
+	  VALUES ($1, 'Pilot', 'console', 'test') RETURNING team_id::text`, tenant)
+	pgtest.Exec(t, tx, `INSERT INTO ops.team_member (tenant_id, team_id, user_ref, added_by) VALUES ($1, $2, $3, 'test')`, tenant, console, ada)
+	dept := pgtest.Scalar(t, tx, `INSERT INTO ops.team (tenant_id, name, source, match_value, created_by)
+	  VALUES ($1, 'Engineering', 'department', 'ENGINEERING', 'test') RETURNING team_id::text`, tenant)
+	ou := pgtest.Scalar(t, tx, `INSERT INTO ops.team (tenant_id, name, source, match_value, created_by)
+	  VALUES ($1, 'Research', 'org_unit', 'OU=Research,DC=contoso,DC=com', 'test') RETURNING team_id::text`, tenant)
+
+	for i, user := range []string{ada, ada, grace, bob} {
+		at := fmt.Sprintf("2026-01-15T1%d:00:00Z", i)
+		ev.record(t, tx, at, ev.prompt(20+i, user, "toolA", at, nil, "logged", "high", 10))
+	}
+
+	pgtest.AsJobs(t, tx)
+	runBucket(t, tx, tenant, BucketDay, from, to)
+	team := `SELECT coalesce(string_agg(submissions||'|'||users, ','), '') FROM mart.agg_team_period
+	          WHERE tenant_id = $1 AND team_id = $2::uuid`
+	expect(t, tx, "console team", team, "2|1", tenant, console)
+	expect(t, tx, "department team", team, "3|2", tenant, dept)
+	expect(t, tx, "org unit team", team, "1|1", tenant, ou)
+
+	// A person leaving a team takes their usage with them on the next pass.
+	pgtest.AsOwner(t, tx)
+	pgtest.Exec(t, tx, `DELETE FROM ops.team_member WHERE tenant_id = $1 AND team_id = $2::uuid`, tenant, console)
+	pgtest.AsJobs(t, tx)
+	runBucket(t, tx, tenant, BucketDay, from, to)
+	expect(t, tx, "emptied console team", team, "", tenant, console)
 }
 
 func TestRollupHourBuckets(t *testing.T) {
@@ -247,7 +289,7 @@ func TestTenantPassAsJobsRole(t *testing.T) {
 		t.Fatal(err)
 	}
 	expect(t, tx, "watermarks", `SELECT count(*)::text FROM ops.aggregate_watermark WHERE tenant_id = $1`,
-		fmt.Sprint(len(BucketSizes)*5), tenant)
+		fmt.Sprint(len(BucketSizes)*6), tenant)
 	expect(t, tx, "prompts in today's day bucket",
 		`SELECT sum(submissions)::text FROM mart.agg_tool_period
 		  WHERE tenant_id = $1 AND bucket_size = 'day' AND tool_fingerprint = 'toolA'`, "1", tenant)
