@@ -9,7 +9,7 @@ into it with a double-clicked MSI.
 | `postgres` | PostgreSQL 16. `db-setup` gives it Azure's shape (a non-superuser administrator with `CREATEROLE`, one login per component); the `migrate` image applies the schema as that administrator and grants each login its role |
 | `control-api`, `ingest-api`, `content-vault`, `query-api`, `dashboard` | The services, each connecting as its own login (`control-api`, `ingest-api`, …), so row-level security applies as in production |
 | `jobs` | The `jobs` binary on a loop: `aggregate` every minute, `expire` every hour |
-| `edge` | The device ingress, as Application Gateway: TLS with a client certificate requested but not required, the certificate forwarded in `X-Client-Cert`, and only the device API reachable (`/v1/events` to ingest-api; `/v1/enrol`, `/v1/policy`, `/v1/health`, `/v1/content/grant`, `/v1/content` to control-api; anything else 403) |
+| `edge` | The device ingress, as Application Gateway: TLS with a client certificate requested but not required, the certificate forwarded in `X-Client-Cert`, and only the device API reachable (`/v1/events` to ingest-api; `/v1/enrol`, `/v1/policy`, `/v1/health`, `/v1/content/grant`, `/v1/content`, `/v1/agent/release`, `/v1/agent/package` to control-api; anything else 403) |
 | `oidc` | A customer identity provider: an OpenID Connect provider with one realm per lab tenant and no passwords |
 
 ## Run

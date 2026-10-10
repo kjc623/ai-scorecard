@@ -57,6 +57,10 @@
           <RegistryValue Type="string" Value="[#Fil_NativeHost]" />
         </RegistryKey>
       </Component>
+      <!-- The installed version, which MDM detection rules compare: it follows the agent's updates. -->
+      <Component Id="Cmp_InstalledVersion" Directory="INSTALLFOLDER">
+        <RegistryValue Root="HKLM" Key="SOFTWARE\ShadowAICapture" Name="Version" Type="string" Value="[ProductVersion]" KeyPath="yes" />
+      </Component>
       <!-- profile and state hold the deployment key, the device credential and the spool: SYSTEM and
            Administrators only. Users may read cli. A component keyed by a folder needs a fixed GUID. -->
       <Component Id="Cmp_DataFolders" Directory="DATAFOLDER" Guid="5B0F5E53-2C0B-4B4B-9E3C-6D7C1C2F9A10">

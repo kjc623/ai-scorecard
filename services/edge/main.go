@@ -50,7 +50,7 @@ const (
 
 // allowedPrefixes is the firewall's allow-list: a request URI that begins with none of them
 // (compared in lower case) is refused before routing.
-var allowedPrefixes = []string{"/v1/events", "/v1/enrol", "/v1/policy", "/v1/health", "/v1/content"}
+var allowedPrefixes = []string{"/v1/events", "/v1/enrol", "/v1/policy", "/v1/health", "/v1/content", "/v1/agent/"}
 
 // Upstreams a path can route to.
 const (
@@ -74,7 +74,7 @@ func route(path string) (upstream string, status int) {
 	switch path {
 	case "/v1/events":
 		return upstreamIngest, 0
-	case "/v1/enrol", "/v1/policy", "/v1/health", "/v1/content/grant", "/v1/content":
+	case "/v1/enrol", "/v1/policy", "/v1/health", "/v1/content/grant", "/v1/content", "/v1/agent/release", "/v1/agent/package":
 		return upstreamControl, 0
 	}
 	return "", http.StatusBadGateway

@@ -247,7 +247,7 @@ func TestZipPackageContentsAndKey(t *testing.T) {
 	}
 	key := checkTenantEnv(t, files[deploy.TenantEnvFileName])
 	readme := string(files[deploy.ReadmeFileName])
-	for _, want := range []string{"msiexec /i ShadowAICapture.msi /qn", "msiexec /x " + productCode + " /qn", productCode, "0.2.0"} {
+	for _, want := range []string{"msiexec /i ShadowAICapture.msi /qn", deploy.UninstallCommand, `HKEY_LOCAL_MACHINE\SOFTWARE\ShadowAICapture, value Version`, "0.2.0"} {
 		if !strings.Contains(readme, want) {
 			t.Errorf("README lacks %q", want)
 		}

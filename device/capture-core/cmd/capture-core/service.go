@@ -236,6 +236,10 @@ type service struct {
 	policySync *policySync
 	policyNext time.Duration
 
+	// updater replaces the agent with a newer release the deployment offers (nil where the
+	// platform has no installer for it).
+	updater *agentUpdater
+
 	// people is the console user observations are attributed to.
 	people  *people
 	managed protocol.ManagedState
@@ -411,6 +415,7 @@ func (s *service) buildDrainer(spoolKey []byte) error {
 	if s.store != nil {
 		s.policySync = newPolicySync(s.store, policyCache{dir: s.dir.Path(state.PolicyDir)}, d, s.policyFetched, s.log)
 	}
+	s.updater = s.buildAgentUpdater(d)
 	return nil
 }
 
@@ -821,6 +826,9 @@ func (s *service) Start(ctx context.Context) error {
 		}
 		s.policySync.Start(ctx, first)
 	}
+	if s.updater != nil {
+		s.updater.Start(ctx, agentUpdateFirst)
+	}
 	s.bgWG.Add(1)
 	go func() {
 		defer s.bgWG.Done()
@@ -847,6 +855,9 @@ func (s *service) Stop(ctx context.Context) error {
 	s.bgWG.Wait()
 	if s.policySync != nil {
 		s.policySync.Stop()
+	}
+	if s.updater != nil {
+		s.updater.Stop()
 	}
 	// Restore every user's previous proxy settings before the proxy stops enforcing, so no desktop
 	// app is left pointing at a PAC whose proxy is about to go away. No bundle arrives after the

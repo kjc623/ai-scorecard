@@ -180,3 +180,19 @@ export const PRODUCT = {
   // own ProductCode, which release-msi.mjs reads back into release.json.
   upgradeCode: '7E9C2B7A-6D0E-4C6A-9F2B-1A6E6C2D44A1',
 };
+
+/**
+ * How an MDM detects and removes the Windows agent whatever version it has updated itself to. The
+ * agent replaces itself with each newer release, and every build has its own ProductCode, so neither
+ * names one: the MSI records its version under `registryKey` (HKLM, 64-bit view), and the uninstall
+ * removes whichever product carries the UpgradeCode. msiexec's exit code is the command's, so 3010
+ * still asks for a restart.
+ */
+export const INSTALLED = {
+  registryKey: 'SOFTWARE\\ShadowAICapture',
+  versionValue: 'Version',
+  uninstallCommand:
+    'powershell.exe -NoProfile -NonInteractive -Command "foreach ($p in (New-Object -ComObject WindowsInstaller.Installer).RelatedProducts(' +
+    `'{${PRODUCT.upgradeCode}}'` +
+    ")) { $r = (Start-Process msiexec.exe -ArgumentList '/x',$p,'/qn' -Wait -PassThru).ExitCode; if ($r -ne 0) { exit $r } }\"",
+};

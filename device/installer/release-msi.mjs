@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // device/installer/release-msi.mjs - build the agent release control-api serves: the generic Windows MSI,
-// the browser extension CRX, and release.json describing both.
+// the browser extension CRX, release.json describing both, and agent-release.json, the signed
+// statement installed agents update themselves from.
 //
 //   node device/installer/release-msi.mjs --version 1.4.0 \
 //     --policy-key-file policy-signing.pub --policy-key-id policy-key-1 \
@@ -23,8 +24,9 @@ import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 
 import { buildCrx } from '../extension/tools/build-crx.mjs';
+import { AGENT_RELEASE_FILE, signAgentRelease } from './agent-release.mjs';
 import { BuildError, ROOT, STAGE_OPTIONS, buildStage, resolveInputs } from './build.mjs';
-import { TENANT_PACKAGE } from './manifest.mjs';
+import { INSTALLED, TENANT_PACKAGE } from './manifest.mjs';
 import { MSI_FILE, buildMsi, isSigned, readMsi, releaseChecks } from './windows/msi.mjs';
 
 const log = (msg) => console.log(`release-msi: ${msg}`);
@@ -73,7 +75,8 @@ try {
     size: bytes.length,
     signed: isSigned(msi),
     install_command: `msiexec /i ${MSI_FILE} /qn`,
-    uninstall_command: `msiexec /x ${info.product_code} /qn`,
+    uninstall_command: INSTALLED.uninstallCommand,
+    detection: { registry_key: `HKEY_LOCAL_MACHINE\\${INSTALLED.registryKey}`, value: INSTALLED.versionValue },
     tenant_file: TENANT_PACKAGE.fileName,
     trust: {
       policy_key: anchors.SAC_POLICY_KEY,
@@ -85,6 +88,8 @@ try {
     built_at: new Date().toISOString(),
   };
   writeFileSync(join(out, 'release.json'), JSON.stringify(release, null, 2) + '\n');
+  // What an installed agent updates itself from, signed with the classifier release's key.
+  writeFileSync(join(out, AGENT_RELEASE_FILE), signAgentRelease(readFileSync(inputs.classifierKey, 'utf8'), release));
 
   const failed = releaseChecks(out).filter(([, ok]) => !ok);
   if (failed.length) throw new BuildError(`the built release fails its checks:\n${failed.map(([name, , detail]) => `  ${name}: ${detail}`).join('\n')}`);

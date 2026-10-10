@@ -11,7 +11,8 @@ does (`azure/modules/application-gateway.bicep`).
   is requested but neither required nor verified: a device's first enrolment presents none, and
   ingest-api and control-api verify the ones that are presented against the device CA.
 - **Allow-list.** Only the device API is reachable: `/v1/events` goes to ingest-api; `/v1/enrol`,
-  `/v1/policy`, `/v1/health`, `/v1/content/grant` and `/v1/content` go to control-api. Any other
+  `/v1/policy`, `/v1/health`, `/v1/content/grant`, `/v1/content`, `/v1/agent/release` and
+  `/v1/agent/package` go to control-api. Any other
   path is refused with 403; an allowed prefix that no route serves gets 502. The browser
   extension's update manifest and CRX are not served here: a browser's extension downloader cannot
   answer the client certificate request, so the dashboard serves them on the analyst hostname.

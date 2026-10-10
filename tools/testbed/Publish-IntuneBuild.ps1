@@ -11,8 +11,8 @@ only through Invoke-MgGraphRequest.
 
 Without -AppId it creates the app and prints "app-id <id>" as soon as it exists, so deploy.mjs
 records it. With -AppId it changes that app only, after checking it is the testbed's app. With
--IntuneWinFile it uploads the package as a new content version, sets the MSI product code and
-version detection, and commits it. It then makes the one assignment (-Intent) to -GroupId and, with
+-IntuneWinFile it uploads the package as a new content version, sets the registry version
+detection, and commits it. It then makes the one assignment (-Intent) to -GroupId and, with
 -EntraDeviceId, syncs that managed device.
 
 Nothing secret is printed: not the package's encryption info, not the upload URI.
@@ -83,17 +83,24 @@ function Read-IntuneWin([string]$Path) {
     }
 }
 
-# The app's properties: the MSI from Detection.xml, installed as SYSTEM, detected by its product
-# code at this version or later, never restarting the VM (its users stay signed in).
+# The app's properties: the MSI from Detection.xml, installed as SYSTEM, never restarting the VM (its
+# users stay signed in). The agent updates itself, so it is detected by the version the MSI records
+# in the registry, at this release or later, and removed by its UpgradeCode, never by this build's
+# ProductCode (INSTALLED in device/installer/manifest.mjs).
 function New-AppBody($Info) {
     $msi = $Info.MsiInfo
     $rule = @{
-        '@odata.type'          = '#microsoft.graph.win32LobAppProductCodeRule'
-        ruleType               = 'detection'
-        productCode            = $msi.MsiProductCode
-        productVersionOperator = 'greaterThanOrEqual'
-        productVersion         = $msi.MsiProductVersion
+        '@odata.type'        = '#microsoft.graph.win32LobAppRegistryRule'
+        ruleType             = 'detection'
+        check32BitOn64System = $false
+        keyPath              = 'HKEY_LOCAL_MACHINE\SOFTWARE\ShadowAICapture'
+        valueName            = 'Version'
+        operationType        = 'version'
+        operator             = 'greaterThanOrEqual'
+        comparisonValue      = $msi.MsiProductVersion
     }
+    $uninstall = 'powershell.exe -NoProfile -NonInteractive -Command "foreach ($p in (New-Object -ComObject WindowsInstaller.Installer).RelatedProducts(''' +
+        '{' + ($msi.MsiUpgradeCode -replace '[{}]', '') + '}' + ''')) { $r = (Start-Process msiexec.exe -ArgumentList ''/x'',$p,''/qn'' -Wait -PassThru).ExitCode; if ($r -ne 0) { exit $r } }"'
     $codes = @(
         @{ returnCode = 0; type = 'success' },
         @{ returnCode = 1707; type = 'success' },
@@ -110,7 +117,7 @@ function New-AppBody($Info) {
         fileName                        = $Info.FileName
         setupFilePath                   = $Info.SetupFile
         installCommandLine              = "msiexec /i `"$($Info.SetupFile)`" /qn"
-        uninstallCommandLine            = "msiexec /x $($msi.MsiProductCode) /qn"
+        uninstallCommandLine            = $uninstall
         applicableArchitectures         = 'x64'
         minimumSupportedOperatingSystem = @{ v10_21H1 = $true }
         installExperience               = @{ runAsAccount = 'system'; deviceRestartBehavior = 'suppress' }

@@ -102,6 +102,9 @@ test('the VM runs a release once it is installed, running, enrolled and reportin
   assert.deepEqual(evaluateInstall(done, release), { done: true, waiting: [] });
   const older = { ...done, products: [{ product_code: '{0D0D0D0D-0000-4000-8000-000000000001}', version: '1.0.200' }] };
   assert.match(evaluateInstall(older, release).waiting[0], /install of 1\.0\.201 \(installed: 1\.0\.200\)/);
+  const refused = { ...older, health: { ...done.health, agent_version: '1.0.200', update: { last_answer: 'error', offered_version: '1.0.201', last_error: 'the package differs' } } };
+  assert.match(evaluateInstall(refused, release).waiting[0], /installed: 1\.0\.200; the agent's last update check: error 1\.0\.201, the package differs\)/,
+    "a self-update that did not happen says why, from the agent's health");
   const stale = { ...done, health: { ...done.health, last_heartbeat_at: '2026-10-09T09:59:00Z' } };
   assert.deepEqual(evaluateInstall(stale, release).waiting, ['a health report acknowledged by pre-prod']);
   const unenrolled = { ...done, health: { ...done.health, enrolled: false, device_id: false } };

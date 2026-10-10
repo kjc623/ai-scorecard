@@ -35,9 +35,9 @@ param tags object = {}
 var name = '${baseName}-agw'
 var zones = zoneRedundant ? ['1', '2', '3'] : []
 var ingestPaths = ['/v1/events']
-var controlPaths = ['/v1/enrol', '/v1/policy', '/v1/health', '/v1/content/grant']
+var controlPaths = ['/v1/enrol', '/v1/policy', '/v1/health', '/v1/content/grant', '/v1/agent/release', '/v1/agent/package']
 var contentPaths = ['/v1/content']
-var allowedPrefixes = ['/v1/events', '/v1/enrol', '/v1/policy', '/v1/health', '/v1/content']
+var allowedPrefixes = ['/v1/events', '/v1/enrol', '/v1/policy', '/v1/health', '/v1/content', '/v1/agent/']
 
 var managedRules = {
   managedRuleSets: [

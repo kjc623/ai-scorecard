@@ -2,7 +2,8 @@
 
 The control plane. For devices: enrolment (a device certificate signed by the device CA), the signed
 policy bundle, health reports, content-upload grants and the forwarding of granted content to
-content-vault, and the browser extension's update manifest and CRX. For people: the OpenID Connect
+content-vault, the agent's own updates (the release build's signed statement and the MSI it
+names, from the release this deployment runs), and the browser extension's update manifest and CRX. For people: the OpenID Connect
 relying party for every customer identity provider, sessions, the short-lived product access tokens
 query-api and content-vault verify, onboarding, the directory (SCIM provisioning, or a read of the
 customer's Microsoft Entra ID through Microsoft Graph) and teams, and the admin API.
@@ -15,6 +16,7 @@ here against the device CA and matched to the device's live credential on every 
 |---|---|---|
 | `POST /v1/enrol` | device | deployment key (first enrolment) or current certificate (rotation) |
 | `GET /v1/policy`, `POST /v1/health`, `POST /v1/content/grant`, `POST /v1/content` | device | device certificate |
+| `GET /v1/agent/release`, `GET /v1/agent/package` | device | device certificate |
 | `GET /v1/extension/updates.xml`, `GET /v1/extension/shadow-ai-capture.crx` | browser, through the dashboard server on the analyst hostname | none |
 | `/internal/v1/auth/{begin,complete,token,revoke}` | dashboard server | `Bearer SAC_INTERNAL_TOKEN` |
 | `/admin/v1/*` | dashboard server | product token, audience `sac-control`, role `admin` |

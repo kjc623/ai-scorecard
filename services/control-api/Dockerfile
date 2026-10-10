@@ -4,7 +4,7 @@
 # device/protocol and platform with their paths in the repository:
 #
 #   docker build -f services/control-api/Dockerfile \
-#     --build-context agent-release=<dir with release.json, ShadowAICapture.msi, shadow-ai-capture.crx> \
+#     --build-context agent-release=<dir with release.json, agent-release.json, ShadowAICapture.msi, shadow-ai-capture.crx> \
 #     -t control-api .
 #
 # The agent-release context is copied to /opt/sac/agent-release, where the tenant package and the

@@ -13,8 +13,12 @@ The owner's PC builds nothing for the VM: builds come from CI.
    and reports **ready to merge**.
 2. The owner merges it to `main`. The push runs the deploy workflow, which builds the signed agent
    release, deploys the services and migrates the database in pre-prod.
-3. The agent runs `node tools/testbed/deploy.mjs`. It takes that run's agent release, publishes it
-   to the VM through Intune, and waits until the VM runs it.
+3. The agent on the VM updates itself, as on a customer's device: it asks pre-prod for the
+   release every 15 minutes, verifies the release's signature and the MSI against it, and installs
+   it over itself. Nothing is run on the PC. The Devices page shows the new `1.0.<run number>`.
+   `node tools/testbed/deploy.mjs` only waits for it and says when the VM runs it and reports.
+   `deploy.mjs --install` publishes the release through Intune instead, for a VM with no agent (a
+   restored `clean-enrolled`) or one older than the self-updating agent.
 4. The browser extension updates itself: Edge checks its `update_url` (the analyst hostname's
    `/v1/extension/updates.xml`) about every five hours; restarting Edge does not check. The
    version under "Shadow AI Capture" on `edge://extensions` is the run's `1.0.<run number>`.
@@ -108,6 +112,7 @@ rest). Agents read this file and never write a secret into it.
   - the publishing certificate;
   - the Fly.io read-only token;
   - the deployment key.
-- **Timing.** A merge-to-device round takes the deploy workflow plus Intune delivery. Wait with
-  `deploy.mjs --wait`, never with fixed sleeps. If a release hasn't arrived 60 minutes after its
-  workflow finished, stop and report it.
+- **Timing.** A merge-to-device round takes the deploy workflow plus up to 15 minutes for the
+  agent's update check. Wait with `deploy.mjs`, never with fixed sleeps. If a release hasn't
+  arrived 60 minutes after its workflow finished, stop and report it: the waiting line carries the
+  agent's last update check and its error.
