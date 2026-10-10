@@ -24,7 +24,6 @@ import {
   predicateRequest,
   predicateResponse,
   registeredDomain,
-  shapeVector,
 } from '../src/predicate.js';
 import { tabContextOf } from '../src/registration.js';
 import {
@@ -262,27 +261,6 @@ test('registered domain collapses subdomains so one tool yields one destination'
   assert.equal(registeredDomain('example.co.uk'), 'example.co.uk');
   assert.equal(registeredDomain('a.example.co.uk'), 'example.co.uk');
   assert.equal(hostOf('https://Chat.Example-INVALID/x'), 'chat.example-invalid');
-});
-
-test('the shape vector excludes route-specific signals so two routes agree', () => {
-  const v = shapeVector(chatRequest());
-  assert.deepEqual(Object.keys(v).sort(), [
-    'body_shape',
-    'content_type',
-    'destination',
-    'has_model_params',
-    'has_tool_declarations',
-    'message_count_bucket',
-    'method',
-    'path_shape',
-    'role_values',
-    'v',
-  ]);
-  for (const forbidden of ['tab_id', 'request_id', 'url', 'time', 'automation_marker', 'client_hello']) {
-    assert.equal(Object.prototype.hasOwnProperty.call(v, forbidden), false, `${forbidden} must not define a fingerprint`);
-  }
-  assert.equal(v.message_count_bucket, '2-3');
-  assert.deepEqual(v.role_values, ['system', 'user']);
 });
 
 test('the automation marker is read from request headers, and is never required', () => {

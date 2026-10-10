@@ -86,7 +86,7 @@ test('with population or device scopes in the bundle the mode is capture-core\'s
     await settle();
     const query = h.core.received.find((m) => m.type === TYPE.MODE_QUERY);
     assert.ok(query, 'capture-core was asked');
-    assert.match(query.body.tool_fingerprint, /^tf1:/, 'about this tool');
+    assert.match(query.body.tool_fingerprint, /^tf2:/, 'about this tool');
     assert.equal(h.core.lastObservation().has_content, reads, `answer ${answer}`);
   }
 });
@@ -180,7 +180,7 @@ test('a chat submission on the body lane is emitted with content, digest and ide
   assert.equal(Buffer.from(decoded).toString('utf8'), bodyText, 'the decoded content is the payload as sent');
   assert.equal(await h.core.lastComputedDigest(), obs.content_digest, 'and its digest matches content_digest');
   assert.equal(obs.content_is_binary, undefined);
-  assert.ok(obs.tool_fingerprint.startsWith('tf1:'), 'the versioned fingerprint prefix');
+  assert.ok(obs.tool_fingerprint.startsWith('tf2:'), 'the versioned fingerprint prefix');
   assert.equal(obs.route, 'ext.web_request');
   assert.equal(obs.size_bytes, Buffer.byteLength(bodyText));
 });
@@ -437,7 +437,7 @@ test('a WebSocket handshake is captured as identity and volume only, and the fra
   assert.ok(obs, 'the handshake is captured, so tool identity and a session count are obtainable');
   assert.equal(obs.has_content, false);
   assert.equal(obs.content, undefined);
-  assert.match(obs.tool_fingerprint, /^tf1:/);
+  assert.match(obs.tool_fingerprint, /^tf2:/);
   const queued = h.app.queue.size();
   assert.equal(queued, 0);
 });
@@ -838,5 +838,5 @@ test('an automation marker raises the context evidence but is never required', a
   await settle();
   const obs = h.core.lastObservation();
   assert.ok(obs, 'identity and volume are mandatory for mode C and are met without any DOM access');
-  assert.match(obs.tool_fingerprint, /^tf1:/);
+  assert.match(obs.tool_fingerprint, /^tf2:/);
 });

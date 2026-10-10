@@ -459,36 +459,6 @@ export function classifyWithResponse(req, res, threshold = DEFAULT_THRESHOLD) {
   return { match: false, score: combined, response_score: s.score, structural: r.structural, reason: r.match ? 'structure_without_response_contract' : 'below_threshold', signals: [...r.signals, ...s.signals] };
 }
 
-/**
- * The fingerprint's signal vector: destination, method, path shape and body shape only. Signals
- * that exist on one route alone are excluded, so one tool seen through two routes yields one
- * vector. The tenant-declared label never enters the derivation.
- */
-export function shapeVector(req) {
-  const r = predicateRequest(req, Number.POSITIVE_INFINITY);
-  const host = hostOf(req.url) || String(req.host || '').toLowerCase();
-  return {
-    v: 1,
-    destination: registeredDomain(host),
-    method: String(req.forced_method || req.method || 'GET').toUpperCase(),
-    path_shape: r.path_signal || normalisePath(pathnameOf(req.url)),
-    content_type: contentTypeClass(req.headers || {}).base,
-    body_shape: r.structure,
-    message_count_bucket: bucket(r.messages ? r.messages.count : 0),
-    role_values: r.messages ? [...r.messages.role_values].sort() : [],
-    has_model_params: r.signals.some((s) => s.id === 'body_model_params'),
-    has_tool_declarations: r.signals.some((s) => s.id === 'body_tool_declarations'),
-  };
-}
-
-function bucket(n) {
-  if (!n) return '0';
-  if (n === 1) return '1';
-  if (n <= 3) return '2-3';
-  if (n <= 10) return '4-10';
-  return '11+';
-}
-
 /** eTLD+1 approximation. A suffix list is not shipped: this is a stable label for a fingerprint, never a security decision. */
 export function registeredDomain(host) {
   const h = String(host || '').toLowerCase().replace(/:\d+$/, '');
