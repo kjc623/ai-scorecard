@@ -276,6 +276,8 @@ try {
             Write-Step "created app $AppId"
         }
         # The detection rule and the command lines change with the content they describe, in one PATCH.
+        # Graph sets the architecture only when the app is created; a PATCH that names it is refused.
+        $body.Remove('applicableArchitectures')
         $body.committedContentVersion = Publish-Content $AppId $package
         Invoke-Graph 'PATCH' "deviceAppManagement/mobileApps/$AppId" $body | Out-Null
         Write-Step "app $AppId now delivers $Version"
