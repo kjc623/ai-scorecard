@@ -2,13 +2,15 @@
 // aggregates and their freshness watermarks, the findings, and the fleet coverage snapshot.
 //
 // Every aggregate is written with INSERT .. ON CONFLICT DO UPDATE that replaces the bucket rather
-// than incrementing it. Devices go offline and flush in bursts, and an erasure or a retention
-// expiry must be able to make a count fall; recomputing a trailing window and replacing each
-// bucket in it handles both, and makes a re-run idempotent.
+// than incrementing it, and a bucket the source no longer has data for is deleted. Devices go
+// offline and flush in bursts, and an erasure or a retention expiry must be able to make a count
+// fall or a bucket disappear; recomputing a trailing window this way handles both, and makes a
+// re-run idempotent. A bucket is written only where there is data: a tool first seen today has no
+// row for yesterday.
 //
 // The statements are fixed text. The only input that selects SQL is the bucket size, which is
-// checked against a closed set; the date_trunc field and the series step it selects come from a
-// table in this package, never from caller data.
+// checked against a closed set; the date_trunc field it selects comes from a table in this
+// package, never from caller data.
 package rollup
 
 import (
@@ -22,16 +24,15 @@ const (
 	BucketDay  = "day"
 )
 
-// bucketSpec is the fixed SQL for one bucket size: the field date_trunc takes and the interval
-// generate_series advances by, both as SQL literals.
+// bucketSpec is the fixed SQL for one bucket size: the field date_trunc takes, as a SQL literal,
+// which is also the bucket_size value the rows carry.
 type bucketSpec struct {
 	trunc string
-	step  string
 }
 
 var bucketSpecs = map[string]bucketSpec{
-	BucketHour: {trunc: "'hour'", step: "'1 hour'"},
-	BucketDay:  {trunc: "'day'", step: "'1 day'"},
+	BucketHour: {trunc: "'hour'"},
+	BucketDay:  {trunc: "'day'"},
 }
 
 // BucketSizes is the closed set, in the order a pass computes them (finest first).
@@ -54,13 +55,13 @@ func Aggregates(bucketSize string) ([]Aggregate, error) {
 	if !ok {
 		return nil, fmt.Errorf("rollup: unknown bucket size %q (want %q or %q)", bucketSize, BucketHour, BucketDay)
 	}
-	trunc, step := spec.trunc, spec.step
+	trunc := spec.trunc
 	return []Aggregate{
-		{Name: "mart.agg_tool_period", SQL: fmt.Sprintf(toolPeriodSQL, trunc, step, trunc)},
-		{Name: "mart.agg_tool_user_period", SQL: fmt.Sprintf(toolUserPeriodSQL, trunc, step, trunc)},
-		{Name: "mart.agg_class_period", SQL: fmt.Sprintf(classPeriodSQL, trunc, step, trunc)},
-		{Name: "mart.agg_org_period", SQL: fmt.Sprintf(orgPeriodSQL, trunc, step, trunc)},
-		{Name: "mart.agg_user_period", SQL: fmt.Sprintf(userPeriodSQL, trunc, step, trunc)},
+		{Name: "mart.agg_tool_period", SQL: fmt.Sprintf(toolPeriodSQL, trunc)},
+		{Name: "mart.agg_tool_user_period", SQL: fmt.Sprintf(toolUserPeriodSQL, trunc)},
+		{Name: "mart.agg_class_period", SQL: fmt.Sprintf(classPeriodSQL, trunc)},
+		{Name: "mart.agg_org_period", SQL: fmt.Sprintf(orgPeriodSQL, trunc)},
+		{Name: "mart.agg_user_period", SQL: fmt.Sprintf(userPeriodSQL, trunc)},
 	}, nil
 }
 
@@ -124,26 +125,16 @@ func LastCompleteBucket(bucketSize string, now time.Time) (time.Time, error) {
 	}
 }
 
-// Each aggregate builds its bucket grid from the calendar and the known dimension members, then
-// LEFT JOINs the source, so a bucket that becomes empty after a retention expiry or an erasure is
-// written with zeroes rather than keeping its last value.
+// Each aggregate computes the window's cells from the source, deletes the rows of cells the source
+// no longer has (a retention expiry or an erasure emptied them), and upserts the rest. The DELETE is
+// a data-modifying CTE, so one statement replaces the window. %[1]s is the date_trunc field, which
+// is also the bucket_size value the rows carry.
 
 // toolPeriodSQL is the per-tool usage behind the tool inventory. It is the only aggregate that
 // also carries the detection, rollup and degraded measures, because a tool known only from a
 // process detection has no submissions and would otherwise vanish from the inventory.
 var toolPeriodSQL = `
-WITH buckets AS (
-  SELECT generate_series(
-           date_trunc(%[1]s, $2::timestamptz),
-           date_trunc(%[1]s, $3::timestamptz) - interval %[2]s,
-           interval %[2]s) AS bucket_start
-),
-tools AS (
-  SELECT DISTINCT tool_fingerprint FROM ingest.submission
-   WHERE tenant_id = $1 AND received_at >= $2 AND received_at < $3
-),
-grid AS (SELECT b.bucket_start, t.tool_fingerprint FROM buckets b CROSS JOIN tools t),
-src AS (
+WITH src AS (
   SELECT date_trunc(%[1]s, s.received_at) AS bucket_start,
          s.tool_fingerprint,
          count(*) FILTER (WHERE s.kind = 'prompt')                                  AS submissions,
@@ -158,16 +149,20 @@ src AS (
     FROM ingest.submission s
    WHERE s.tenant_id = $1 AND s.received_at >= $2 AND s.received_at < $3
    GROUP BY 1, 2
+),
+gone AS (
+  DELETE FROM mart.agg_tool_period m
+   WHERE m.tenant_id = $1 AND m.bucket_size = %[1]s
+     AND m.bucket_start >= $2 AND m.bucket_start < $3
+     AND NOT EXISTS (SELECT 1 FROM src
+                      WHERE src.bucket_start = m.bucket_start AND src.tool_fingerprint = m.tool_fingerprint)
 )
 INSERT INTO mart.agg_tool_period (tenant_id, bucket_start, bucket_size, tool_fingerprint,
   submissions, users, bytes_total, blocked, warned, logged, detections, rollup_events, degraded_events)
-SELECT $1, g.bucket_start, %[3]s, g.tool_fingerprint,
-       coalesce(src.submissions, 0), coalesce(src.users, 0), coalesce(src.bytes_total, 0),
-       coalesce(src.blocked, 0), coalesce(src.warned, 0), coalesce(src.logged, 0),
-       coalesce(src.detections, 0), coalesce(src.rollup_events, 0), coalesce(src.degraded_events, 0)
-  FROM grid g
-  LEFT JOIN src ON src.bucket_start = g.bucket_start
-               AND src.tool_fingerprint = g.tool_fingerprint
+SELECT $1, src.bucket_start, %[1]s, src.tool_fingerprint,
+       src.submissions, src.users, src.bytes_total, src.blocked, src.warned, src.logged,
+       src.detections, src.rollup_events, src.degraded_events
+  FROM src
 ON CONFLICT (tenant_id, bucket_start, bucket_size, tool_fingerprint) DO UPDATE
   SET submissions = EXCLUDED.submissions, users = EXCLUDED.users,
       bytes_total = EXCLUDED.bytes_total, blocked = EXCLUDED.blocked,
@@ -175,38 +170,29 @@ ON CONFLICT (tenant_id, bucket_start, bucket_size, tool_fingerprint) DO UPDATE
       detections = EXCLUDED.detections, rollup_events = EXCLUDED.rollup_events,
       degraded_events = EXCLUDED.degraded_events`
 
-// toolUserPeriodSQL is usage per tool per person. Its cells name a person, so the read side
-// suppresses cells smaller than k; it counts prompts only, because a rollup or a detection is not
-// a submission by a person.
+// toolUserPeriodSQL is usage per tool per person. It counts prompts only, because a rollup or a
+// detection is not a submission by a person.
 var toolUserPeriodSQL = `
-WITH buckets AS (
-  SELECT generate_series(
-           date_trunc(%[1]s, $2::timestamptz),
-           date_trunc(%[1]s, $3::timestamptz) - interval %[2]s,
-           interval %[2]s) AS bucket_start
-),
-members AS (
-  SELECT DISTINCT tool_fingerprint, user_ref
-    FROM ingest.submission
-   WHERE tenant_id = $1 AND received_at >= $2 AND received_at < $3 AND kind = 'prompt'
-),
-grid AS (SELECT b.bucket_start, m.tool_fingerprint, m.user_ref FROM buckets b CROSS JOIN members m),
-src AS (
+WITH src AS (
   SELECT date_trunc(%[1]s, s.received_at) AS bucket_start, s.tool_fingerprint, s.user_ref,
          count(*) AS submissions,
          coalesce(sum(s.size_bytes), 0)::bigint AS bytes_total
     FROM ingest.submission s
    WHERE s.tenant_id = $1 AND s.received_at >= $2 AND s.received_at < $3 AND s.kind = 'prompt'
    GROUP BY 1, 2, 3
+),
+gone AS (
+  DELETE FROM mart.agg_tool_user_period m
+   WHERE m.tenant_id = $1 AND m.bucket_size = %[1]s
+     AND m.bucket_start >= $2 AND m.bucket_start < $3
+     AND NOT EXISTS (SELECT 1 FROM src
+                      WHERE src.bucket_start = m.bucket_start AND src.tool_fingerprint = m.tool_fingerprint
+                        AND src.user_ref = m.user_ref)
 )
 INSERT INTO mart.agg_tool_user_period (tenant_id, bucket_start, bucket_size, tool_fingerprint,
   user_ref, submissions, bytes_total)
-SELECT $1, g.bucket_start, %[3]s, g.tool_fingerprint, g.user_ref,
-       coalesce(src.submissions, 0), coalesce(src.bytes_total, 0)
-  FROM grid g
-  LEFT JOIN src ON src.bucket_start = g.bucket_start
-               AND src.tool_fingerprint = g.tool_fingerprint
-               AND src.user_ref = g.user_ref
+SELECT $1, src.bucket_start, %[1]s, src.tool_fingerprint, src.user_ref, src.submissions, src.bytes_total
+  FROM src
 ON CONFLICT (tenant_id, bucket_start, bucket_size, tool_fingerprint, user_ref) DO UPDATE
   SET submissions = EXCLUDED.submissions, bytes_total = EXCLUDED.bytes_total`
 
@@ -216,13 +202,7 @@ ON CONFLICT (tenant_id, bucket_start, bucket_size, tool_fingerprint, user_ref) D
 // classifier_version is in the key, so a classifier change shows as a version change rather than
 // an unexplained shift in the numbers.
 var classPeriodSQL = `
-WITH buckets AS (
-  SELECT generate_series(
-           date_trunc(%[1]s, $2::timestamptz),
-           date_trunc(%[1]s, $3::timestamptz) - interval %[2]s,
-           interval %[2]s) AS bucket_start
-),
-labelled AS (
+WITH labelled AS (
   SELECT date_trunc(%[1]s, s.received_at) AS bucket_start,
          l.value->>'class' AS class_code,
          s.tool_fingerprint,
@@ -238,9 +218,6 @@ labelled AS (
      AND s.kind = 'prompt'
      AND s.labels IS NOT NULL AND jsonb_typeof(s.labels) = 'array'
 ),
-members AS (
-  SELECT DISTINCT class_code, tool_fingerprint, severity, classifier_version FROM labelled
-),
 src AS (
   SELECT bucket_start, class_code, tool_fingerprint, severity, classifier_version,
          count(DISTINCT submission_id) AS submissions,
@@ -249,19 +226,21 @@ src AS (
          count(DISTINCT submission_id) FILTER (WHERE confidence = 'degraded') AS degraded_events
     FROM labelled
    GROUP BY 1, 2, 3, 4, 5
+),
+gone AS (
+  DELETE FROM mart.agg_class_period m
+   WHERE m.tenant_id = $1 AND m.bucket_size = %[1]s
+     AND m.bucket_start >= $2 AND m.bucket_start < $3
+     AND NOT EXISTS (SELECT 1 FROM src
+                      WHERE src.bucket_start = m.bucket_start AND src.class_code = m.class_code
+                        AND src.tool_fingerprint = m.tool_fingerprint AND src.severity = m.severity
+                        AND src.classifier_version = m.classifier_version)
 )
 INSERT INTO mart.agg_class_period (tenant_id, bucket_start, bucket_size, class_code,
   tool_fingerprint, severity, classifier_version, submissions, users, max_score, degraded_events)
-SELECT $1, g.bucket_start, %[3]s, g.class_code, g.tool_fingerprint, g.severity, g.classifier_version,
-       coalesce(src.submissions, 0), coalesce(src.users, 0),
-       src.max_score, coalesce(src.degraded_events, 0)
-  FROM (SELECT b.bucket_start, m.class_code, m.tool_fingerprint, m.severity, m.classifier_version
-          FROM buckets b CROSS JOIN members m) g
-  LEFT JOIN src ON src.bucket_start = g.bucket_start
-               AND src.class_code = g.class_code
-               AND src.tool_fingerprint = g.tool_fingerprint
-               AND src.severity = g.severity
-               AND src.classifier_version = g.classifier_version
+SELECT $1, src.bucket_start, %[1]s, src.class_code, src.tool_fingerprint, src.severity, src.classifier_version,
+       src.submissions, src.users, src.max_score, src.degraded_events
+  FROM src
 ON CONFLICT (tenant_id, bucket_start, bucket_size, class_code, tool_fingerprint, severity,
              classifier_version) DO UPDATE
   SET submissions = EXCLUDED.submissions, users = EXCLUDED.users,
@@ -272,20 +251,7 @@ ON CONFLICT (tenant_id, bucket_start, bucket_size, class_code, tool_fingerprint,
 // attributed to a team. The aggregate's primary key makes population NOT NULL, so a missing
 // population is written as the empty string, which the read side shows as unmapped.
 var orgPeriodSQL = `
-WITH buckets AS (
-  SELECT generate_series(
-           date_trunc(%[1]s, $2::timestamptz),
-           date_trunc(%[1]s, $3::timestamptz) - interval %[2]s,
-           interval %[2]s) AS bucket_start
-),
-members AS (
-  SELECT DISTINCT ud.department, s.tool_fingerprint, coalesce(ud.population, '') AS population
-    FROM ingest.submission s
-    JOIN ops.user_dim ud ON ud.tenant_id = s.tenant_id AND ud.user_ref = s.user_ref
-   WHERE s.tenant_id = $1 AND s.received_at >= $2 AND s.received_at < $3
-     AND s.kind = 'prompt' AND ud.department IS NOT NULL
-),
-src AS (
+WITH src AS (
   SELECT date_trunc(%[1]s, s.received_at) AS bucket_start, ud.department, s.tool_fingerprint,
          coalesce(ud.population, '') AS population,
          count(*) AS submissions,
@@ -295,17 +261,20 @@ src AS (
    WHERE s.tenant_id = $1 AND s.received_at >= $2 AND s.received_at < $3
      AND s.kind = 'prompt' AND ud.department IS NOT NULL
    GROUP BY 1, 2, 3, 4
+),
+gone AS (
+  DELETE FROM mart.agg_org_period m
+   WHERE m.tenant_id = $1 AND m.bucket_size = %[1]s
+     AND m.bucket_start >= $2 AND m.bucket_start < $3
+     AND NOT EXISTS (SELECT 1 FROM src
+                      WHERE src.bucket_start = m.bucket_start AND src.department = m.department
+                        AND src.population = m.population AND src.tool_fingerprint = m.tool_fingerprint)
 )
 INSERT INTO mart.agg_org_period (tenant_id, bucket_start, bucket_size, department, population,
   tool_fingerprint, submissions, users)
-SELECT $1, g.bucket_start, %[3]s, g.department, g.population, g.tool_fingerprint,
-       coalesce(src.submissions, 0), coalesce(src.users, 0)
-  FROM (SELECT b.bucket_start, m.department, m.population, m.tool_fingerprint
-          FROM buckets b CROSS JOIN members m) g
-  LEFT JOIN src ON src.bucket_start = g.bucket_start
-               AND src.department = g.department
-               AND src.population = g.population
-               AND src.tool_fingerprint = g.tool_fingerprint
+SELECT $1, src.bucket_start, %[1]s, src.department, src.population, src.tool_fingerprint,
+       src.submissions, src.users
+  FROM src
 ON CONFLICT (tenant_id, bucket_start, bucket_size, department, tool_fingerprint, population)
   DO UPDATE SET submissions = EXCLUDED.submissions, users = EXCLUDED.users`
 
@@ -313,17 +282,7 @@ ON CONFLICT (tenant_id, bucket_start, bucket_size, department, tool_fingerprint,
 // measure: the product reports AI usage, not productivity, and this is the table that could most
 // easily be turned into a productivity ranking.
 var userPeriodSQL = `
-WITH buckets AS (
-  SELECT generate_series(
-           date_trunc(%[1]s, $2::timestamptz),
-           date_trunc(%[1]s, $3::timestamptz) - interval %[2]s,
-           interval %[2]s) AS bucket_start
-),
-members AS (
-  SELECT DISTINCT user_ref FROM ingest.submission
-   WHERE tenant_id = $1 AND received_at >= $2 AND received_at < $3 AND kind = 'prompt'
-),
-src AS (
+WITH src AS (
   SELECT date_trunc(%[1]s, s.received_at) AS bucket_start, s.user_ref,
          count(*) AS submissions,
          coalesce(sum(s.size_bytes), 0)::bigint AS bytes_total,
@@ -332,14 +291,18 @@ src AS (
     FROM ingest.submission s
    WHERE s.tenant_id = $1 AND s.received_at >= $2 AND s.received_at < $3 AND s.kind = 'prompt'
    GROUP BY 1, 2
+),
+gone AS (
+  DELETE FROM mart.agg_user_period m
+   WHERE m.tenant_id = $1 AND m.bucket_size = %[1]s
+     AND m.bucket_start >= $2 AND m.bucket_start < $3
+     AND NOT EXISTS (SELECT 1 FROM src
+                      WHERE src.bucket_start = m.bucket_start AND src.user_ref = m.user_ref)
 )
 INSERT INTO mart.agg_user_period (tenant_id, bucket_start, bucket_size, user_ref,
   submissions, bytes_total, tools_used, block_events)
-SELECT $1, g.bucket_start, %[3]s, g.user_ref,
-       coalesce(src.submissions, 0), coalesce(src.bytes_total, 0),
-       coalesce(src.tools_used, 0), coalesce(src.block_events, 0)
-  FROM (SELECT b.bucket_start, m.user_ref FROM buckets b CROSS JOIN members m) g
-  LEFT JOIN src ON src.bucket_start = g.bucket_start AND src.user_ref = g.user_ref
+SELECT $1, src.bucket_start, %[1]s, src.user_ref, src.submissions, src.bytes_total, src.tools_used, src.block_events
+  FROM src
 ON CONFLICT (tenant_id, bucket_start, bucket_size, user_ref) DO UPDATE
   SET submissions = EXCLUDED.submissions, bytes_total = EXCLUDED.bytes_total,
       tools_used = EXCLUDED.tools_used, block_events = EXCLUDED.block_events`

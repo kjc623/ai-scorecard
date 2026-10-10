@@ -84,6 +84,20 @@ func TestRollupAgainstPostgreSQL(t *testing.T) {
 		  WHERE tenant_id = $1 AND tool_fingerprint = 'toolA' AND bucket_start = $2::timestamptz`,
 		"4|3|360", tenant, bucket)
 	expect(t, tx, "tool rows after late arrival", toolRows, "2", tenant, bucket)
+
+	// A source that goes (an erasure, a retention expiry) takes its bucket's row with it, and a
+	// window with no source at all writes nothing: no zero rows stand in for data that never was.
+	pgtest.AsOwner(t, tx)
+	if _, err := tx.Exec(`DELETE FROM ingest.submission WHERE tenant_id = $1 AND tool_fingerprint = 'ollama_local'`, tenant); err != nil {
+		t.Fatal(err)
+	}
+	pgtest.AsJobs(t, tx)
+	runBucket(t, tx, tenant, BucketDay, from, to)
+	expect(t, tx, "tool rows after the detection is erased", toolRows, "1", tenant, bucket)
+	runBucket(t, tx, tenant, BucketDay, "2026-01-10T00:00:00Z", from)
+	expect(t, tx, "rows for days with no data",
+		`SELECT count(*)::text FROM mart.agg_tool_period WHERE tenant_id = $1 AND bucket_start < $2::timestamptz`,
+		"0", tenant, bucket)
 }
 
 func TestRollupHourBuckets(t *testing.T) {
@@ -96,7 +110,7 @@ func TestRollupHourBuckets(t *testing.T) {
 		[]label{{Class: "customer_pii", Score: 0.7}}, "logged", "high", 10))
 
 	pgtest.AsJobs(t, tx)
-	runBucket(t, tx, tenant, BucketHour, "2026-01-15T10:00:00Z", "2026-01-15T12:00:00Z")
+	runBucket(t, tx, tenant, BucketHour, "2026-01-15T08:00:00Z", "2026-01-15T12:00:00Z")
 	expect(t, tx, "hour buckets",
 		`SELECT count(*)::text FROM mart.agg_tool_period WHERE tenant_id = $1 AND tool_fingerprint = 'toolA'`, "2", tenant)
 	for _, hour := range []string{"2026-01-15T10:00:00Z", "2026-01-15T11:00:00Z"} {
@@ -241,8 +255,8 @@ func TestTenantPassAsJobsRole(t *testing.T) {
 	if got := fmt.Sprint(written[CoverageSnapshotName]); got != wantCoverage {
 		t.Errorf("coverage rows written = %s, want %s (collectors x %d days)", got, wantCoverage, CoverageDayLookback)
 	}
-	if written["mart.agg_tool_period day"] != DayLookback {
-		t.Errorf("day buckets written for one tool = %d, want %d", written["mart.agg_tool_period day"], DayLookback)
+	if written["mart.agg_tool_period day"] != 1 {
+		t.Errorf("day buckets written for one tool = %d, want 1: only the bucket with data", written["mart.agg_tool_period day"])
 	}
 }
 
