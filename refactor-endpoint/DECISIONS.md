@@ -2845,3 +2845,22 @@ What the first bring-up found, and the runbook now says:
   capability in query-api's `roles.js` and the dashboard's `server/session.mjs`, and content-vault's
   retrieval and search routes accept it. Roles remain a set that is checked by capability, never
   ranked; the other three roles are unchanged.
+
+## 2026-10-10, task 60: one sanction decision per tool
+
+- **Observed.** Settings → Tool sanction listed nine "ChatGPT (web)" rows, one per catalogue
+  fingerprint (six extension variants, three egress-proxy variants), each with its own decision.
+- **Decision (owner).** One entry per tool: the product manages the fingerprints, the user makes one
+  decision per tool.
+- **Change.** Every `ref.tool_catalogue` fingerprint names its tool (`app_key`, now NOT NULL; the
+  web, API and local-runtime tools gain `ref.app` rows with their domains or ports as signals). The
+  decision lives in `ops.tool_sanction`, keyed by tool, and `ops.tool` is dropped: nothing wrote it
+  but the two sanction paths, and the per-tenant display-name override went with it. The policy
+  bundle keeps naming fingerprints (`sanctioned_tools`, and a rule's `tools`, now stored as tool keys
+  and expanded through the catalogue), so devices are unchanged. query-api's `POST /v1/tool-sanction`
+  and the `sanction` capability go: control-api's Settings endpoint is the one write path. Migration
+  `0018-tool-sanction.sql` carries existing decisions over (a tool takes the latest decision among
+  its fingerprints) and rewrites rules' tools lists to keys.
+- **The per-tool collection-mode override** follows the same rule: set per tool key, carried in the
+  bundle's `tool_modes` per fingerprint. The migration folds overrides on a tool's fingerprints into
+  one at the narrowest mode.

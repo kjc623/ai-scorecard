@@ -601,8 +601,8 @@ END $$;
 DO $$
 BEGIN
   BEGIN
-    INSERT INTO ops.tool (tenant_id, tool_fingerprint, sanctioned_state, decided_by, decided_at)
-    VALUES ('11111111-1111-7111-8111-111111111111', 'x', 'unsanctioned', NULL, NULL);
+    INSERT INTO ops.tool_sanction (tenant_id, tool_key, sanctioned_state, decided_by, decided_at)
+    VALUES ('11111111-1111-7111-8111-111111111111', 'cursor', 'unsanctioned', NULL, NULL);
     RAISE EXCEPTION 'FAIL T26 an unsanctioned decision with no actor was accepted';
   EXCEPTION WHEN others THEN
     IF SQLERRM LIKE 'FAIL%' THEN RAISE; END IF;
@@ -610,22 +610,23 @@ BEGIN
   END;
 END $$;
 
--- A newly discovered tool is `unknown`, not `unsanctioned`: the latter would report every new tool
--- as prohibited.
+-- A decision names a tool of the catalogue, and every catalogued fingerprint belongs to one, so a
+-- decision on a tool reaches each of its fingerprints and none is left to decide on its own.
 DO $$
 DECLARE n int;
 BEGIN
-  INSERT INTO ops.tool (tenant_id, tool_fingerprint)
-  VALUES ('11111111-1111-7111-8111-111111111111', 'genai.web.chat.v1:newtool');
-
-  SELECT count(*) INTO n FROM ops.tool
-   WHERE tenant_id = '11111111-1111-7111-8111-111111111111'
-     AND tool_fingerprint = 'genai.web.chat.v1:newtool'
-     AND sanctioned_state = 'unknown';
-  IF n <> 1 THEN
-    RAISE EXCEPTION 'FAIL T27 a newly discovered tool did not default to unknown';
+  BEGIN
+    INSERT INTO ops.tool_sanction (tenant_id, tool_key, sanctioned_state, decided_by, decided_at)
+    VALUES ('11111111-1111-7111-8111-111111111111', 'tls_b6681b043244c43f', 'sanctioned', 'admin-a', now());
+    RAISE EXCEPTION 'FAIL T27 a decision on a fingerprint rather than a tool was accepted';
+  EXCEPTION WHEN others THEN
+    IF SQLERRM LIKE 'FAIL%' THEN RAISE; END IF;
+  END;
+  SELECT count(*) INTO n FROM ref.tool_catalogue WHERE app_key IS NULL;
+  IF n <> 0 THEN
+    RAISE EXCEPTION 'FAIL T27 % catalogued fingerprints belong to no tool', n;
   END IF;
-  RAISE NOTICE 'PASS T27 newly discovered tool defaults to unknown, not unsanctioned';
+  RAISE NOTICE 'PASS T27 a sanction decision names a tool, and every catalogued fingerprint belongs to one';
 END $$;
 
 
@@ -2810,7 +2811,7 @@ BEGIN
   -- Every match list, every action, an empty message and no link are accepted.
   INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, match, message, link, updated_by) VALUES
     (t, 0, 'block_credentials', 'block',
-     '{"labels": ["credential", "payment_card"], "tools": ["app:cursor"], "categories": ["coding_agent"], "sanction": ["unsanctioned"], "routes": ["tool.hook"]}',
+     '{"labels": ["credential", "payment_card"], "tools": ["cursor"], "categories": ["coding_agent"], "sanction": ["unsanctioned"], "routes": ["tool.hook"]}',
      'Remove the credential and try again.', 'https://intranet.example/ai', 'admin-a'),
     (t, 1, 'warn.unsanctioned-1', 'warn', '{"sanction": ["unsanctioned"]}', 'Use the approved tool.', NULL, 'admin-a'),
     (t, 2, 'allow_rest', 'allow', '{}', '', NULL, 'admin-a');
@@ -2992,7 +2993,7 @@ BEGIN
   EXCEPTION WHEN foreign_key_violation THEN NULL;
   END;
   BEGIN
-    INSERT INTO ref.tool_catalogue (tool_fingerprint, display_name, signal_kind) VALUES ('refused', 'Refused', 'inventory');
+    INSERT INTO ref.tool_catalogue (tool_fingerprint, display_name, signal_kind, app_key) VALUES ('refused', 'Refused', 'inventory', 'cursor');
     RAISE EXCEPTION 'FAIL T81 the tool catalogue signal_kind inventory was accepted';
   EXCEPTION WHEN check_violation THEN NULL;
   END;
@@ -3010,8 +3011,8 @@ DECLARE
   missing text;
 BEGIN
   SELECT count(*) INTO n FROM ref.app;
-  IF n <> 20 THEN
-    RAISE EXCEPTION 'FAIL T82 ref.app holds % apps, want the 20 seed apps', n;
+  IF n <> 33 THEN
+    RAISE EXCEPTION 'FAIL T82 ref.app holds % apps, want the 33 seed apps', n;
   END IF;
   SELECT string_agg(a.app_key, ', ') INTO missing
     FROM ref.app a

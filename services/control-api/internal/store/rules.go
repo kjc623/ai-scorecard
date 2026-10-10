@@ -29,10 +29,22 @@ SELECT rule_id, action, match, message, coalesce(link, '')
 INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, match, message, link, updated_by, updated_at)
 VALUES ($1::uuid, $2::int, $3::text, $4::text, $5::jsonb, $6::text, nullif($7::text, ''), $8::text, $9::timestamptz)`
 
+	// SQLSanctionedTools is every catalogue fingerprint of a tool the tenant has sanctioned: what
+	// the bundle names, since devices match fingerprints.
 	SQLSanctionedTools = `
-SELECT tool_fingerprint FROM ops.tool
- WHERE tenant_id = $1::uuid AND sanctioned_state = 'sanctioned'
- ORDER BY tool_fingerprint`
+SELECT c.tool_fingerprint
+  FROM ops.tool_sanction s
+  JOIN ref.tool_catalogue c ON c.app_key = s.tool_key
+ WHERE s.tenant_id = $1::uuid AND s.sanctioned_state = 'sanctioned'
+ ORDER BY c.tool_fingerprint COLLATE "C"`
+
+	// SQLToolFingerprints is the catalogue's fingerprints by tool key, which a rule's tools list
+	// expands to.
+	SQLToolFingerprints = `
+SELECT app_key, jsonb_agg(tool_fingerprint ORDER BY tool_fingerprint COLLATE "C")
+  FROM ref.tool_catalogue
+ GROUP BY app_key
+ ORDER BY app_key COLLATE "C"`
 
 	SQLDataClasses = `SELECT class_code FROM ref.data_class ORDER BY class_code`
 )
@@ -122,6 +134,28 @@ func sanctionedTools(ctx context.Context, tx *sql.Tx, tenantID string) ([]string
 		return nil, fmt.Errorf("store: sanctioned tools: %w", err)
 	}
 	return out, nil
+}
+
+func toolFingerprints(ctx context.Context, tx *sql.Tx) (map[string][]string, error) {
+	rows, err := tx.QueryContext(ctx, SQLToolFingerprints)
+	if err != nil {
+		return nil, fmt.Errorf("store: tool fingerprints: %w", err)
+	}
+	defer rows.Close()
+	out := map[string][]string{}
+	for rows.Next() {
+		var key string
+		var fingerprints []byte
+		if err := rows.Scan(&key, &fingerprints); err != nil {
+			return nil, fmt.Errorf("store: tool fingerprints: %w", err)
+		}
+		var list []string
+		if err := json.Unmarshal(fingerprints, &list); err != nil {
+			return nil, fmt.Errorf("store: tool fingerprints: %w", err)
+		}
+		out[key] = list
+	}
+	return out, rows.Err()
 }
 
 func dataClasses(ctx context.Context, tx *sql.Tx) ([]string, error) {

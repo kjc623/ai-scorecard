@@ -264,16 +264,16 @@ func (m *Memory) SeedCollectionMode(tenantID, mode string) {
 }
 
 // SeedScopeOverride seeds one tool's narrower override; "" clears it.
-func (m *Memory) SeedScopeOverride(tenantID, fingerprint, mode string) {
+func (m *Memory) SeedScopeOverride(tenantID, toolKey, mode string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.scopeOverrides[tenantID] == nil {
 		m.scopeOverrides[tenantID] = map[string]string{}
 	}
 	if mode == "" {
-		delete(m.scopeOverrides[tenantID], fingerprint)
+		delete(m.scopeOverrides[tenantID], toolKey)
 	} else {
-		m.scopeOverrides[tenantID][fingerprint] = mode
+		m.scopeOverrides[tenantID][toolKey] = mode
 	}
 }
 
@@ -294,7 +294,8 @@ func (m *Memory) SeedContentSearch(tenantID, tier string) {
 	m.contentSearch[tenantID] = tier
 }
 
-// SetCatalogueTools replaces the tool catalogue the Settings page reads.
+// SetCatalogueTools replaces the tool catalogue: the tools the Settings page lists, the keys a
+// sanction may name, and the fingerprints a decision or a rule expands to.
 func (m *Memory) SetCatalogueTools(tools ...store.ToolDecision) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -755,9 +756,11 @@ func (m *Memory) PolicyInputs(_ context.Context, tenantID string) (store.PolicyI
 	in.Rules = copyRules(m.rules[tenantID])
 	in.KillSwitches = append([]store.KillSwitch{}, m.killSwitches[tenantID]...)
 	in.SanctionedTools = []string{}
-	for fp, state := range m.toolState[tenantID] {
-		if state == "sanctioned" {
-			in.SanctionedTools = append(in.SanctionedTools, fp)
+	in.ToolFingerprints = map[string][]string{}
+	for _, c := range m.catalogueTools {
+		in.ToolFingerprints[c.ToolKey] = append([]string{}, c.Fingerprints...)
+		if m.toolState[tenantID][c.ToolKey] == "sanctioned" {
+			in.SanctionedTools = append(in.SanctionedTools, c.Fingerprints...)
 		}
 	}
 	sort.Strings(in.SanctionedTools)
@@ -844,10 +847,10 @@ func (m *Memory) Settings(_ context.Context, tenantID string) (store.Settings, e
 	}
 	for _, c := range m.catalogueTools {
 		state := "unknown"
-		if s, ok := m.toolState[tenantID][c.ToolFingerprint]; ok {
+		if s, ok := m.toolState[tenantID][c.ToolKey]; ok {
 			state = s
 		}
-		out.Tools = append(out.Tools, store.ToolDecision{ToolFingerprint: c.ToolFingerprint, DisplayName: c.DisplayName, SanctionedState: state})
+		out.Tools = append(out.Tools, store.ToolDecision{ToolKey: c.ToolKey, DisplayName: c.DisplayName, SanctionedState: state, Fingerprints: append([]string{}, c.Fingerprints...)})
 	}
 	for _, d := range m.devices {
 		if d.TenantID != tenantID || d.RevokedAt != nil {
@@ -930,7 +933,7 @@ func (m *Memory) SetCollectionMode(_ context.Context, tenantID string, mode *str
 }
 
 // SetScopeOverride implements store.Store.
-func (m *Memory) SetScopeOverride(_ context.Context, tenantID, fingerprint string, mode *string, audit store.AuditEntry) error {
+func (m *Memory) SetScopeOverride(_ context.Context, tenantID, toolKey string, mode *string, audit store.AuditEntry) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.tenants[tenantID]; !ok {
@@ -944,24 +947,27 @@ func (m *Memory) SetScopeOverride(_ context.Context, tenantID, fingerprint strin
 	if requested == "" {
 		requested = ceiling
 	}
+	if mode != nil && !slices.ContainsFunc(m.catalogueTools, func(c store.ToolDecision) bool { return c.ToolKey == toolKey }) {
+		return store.ErrUnknownTool
+	}
 	if m.scopeOverrides[tenantID] == nil {
 		m.scopeOverrides[tenantID] = map[string]string{}
 	}
-	previous, had := m.scopeOverrides[tenantID][fingerprint]
+	previous, had := m.scopeOverrides[tenantID][toolKey]
 	next := ""
 	if mode != nil {
 		next = *mode
 		if modeRank(next) > modeRank(requested) || modeRank(next) > modeRank(ceiling) {
 			return store.ErrScopeOverrideTooWide
 		}
-		m.scopeOverrides[tenantID][fingerprint] = next
+		m.scopeOverrides[tenantID][toolKey] = next
 	} else {
-		delete(m.scopeOverrides[tenantID], fingerprint)
+		delete(m.scopeOverrides[tenantID], toolKey)
 	}
 	if !had {
 		previous = ""
 	}
-	audit.Detail = merge(audit.Detail, map[string]any{"tool_fingerprint": fingerprint, "previous": previous, "new": next})
+	audit.Detail = merge(audit.Detail, map[string]any{"tool_key": toolKey, "previous": previous, "new": next})
 	m.audit(audit)
 	return nil
 }
@@ -1028,21 +1034,24 @@ func (m *Memory) SetTLSInspection(_ context.Context, tenantID string, enabled bo
 }
 
 // SetToolSanction implements store.Store.
-func (m *Memory) SetToolSanction(_ context.Context, tenantID, fingerprint, state string, audit store.AuditEntry) error {
+func (m *Memory) SetToolSanction(_ context.Context, tenantID, toolKey, state string, audit store.AuditEntry) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.tenants[tenantID]; !ok {
 		return store.ErrUnknownTenant
 	}
+	if !slices.ContainsFunc(m.catalogueTools, func(c store.ToolDecision) bool { return c.ToolKey == toolKey }) {
+		return store.ErrUnknownTool
+	}
 	if m.toolState[tenantID] == nil {
 		m.toolState[tenantID] = map[string]string{}
 	}
-	previous := m.toolState[tenantID][fingerprint]
+	previous := m.toolState[tenantID][toolKey]
 	if previous == "" {
 		previous = "unknown"
 	}
-	m.toolState[tenantID][fingerprint] = state
-	audit.Detail = merge(audit.Detail, map[string]any{"tool_fingerprint": fingerprint, "previous": previous, "new": state})
+	m.toolState[tenantID][toolKey] = state
+	audit.Detail = merge(audit.Detail, map[string]any{"tool_key": toolKey, "previous": previous, "new": state})
 	m.audit(audit)
 	return nil
 }

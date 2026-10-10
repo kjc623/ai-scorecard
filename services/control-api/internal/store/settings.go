@@ -27,13 +27,16 @@ SELECT ceiling_mode, coalesce(collection_mode, ''), scope_overrides, content_sea
 SELECT coalesce((SELECT default_ttl_days FROM ref.retention_class WHERE retention_class = 'standard'), 90),
        coalesce((SELECT default_ttl_days FROM ref.retention_class WHERE retention_class = 'content'), 30)`
 
+	// SQLSettingsTools is one row per tool of the catalogue, with the tenant's decision and the
+	// fingerprints the decision covers.
 	SQLSettingsTools = `
-SELECT c.tool_fingerprint, coalesce(t.display_name, c.display_name) AS display_name,
-       coalesce(t.sanctioned_state, 'unknown') AS sanctioned_state
-  FROM ref.tool_catalogue c
-  LEFT JOIN ops.tool t
-    ON t.tenant_id = $1::uuid AND t.tool_fingerprint = c.tool_fingerprint
- ORDER BY display_name, c.tool_fingerprint`
+SELECT a.app_key, a.display_name, coalesce(s.sanctioned_state, 'unknown') AS sanctioned_state,
+       (SELECT coalesce(jsonb_agg(c.tool_fingerprint ORDER BY c.tool_fingerprint COLLATE "C"), '[]'::jsonb)
+          FROM ref.tool_catalogue c WHERE c.app_key = a.app_key) AS fingerprints
+  FROM ref.app a
+  LEFT JOIN ops.tool_sanction s
+    ON s.tenant_id = $1::uuid AND s.tool_key = a.app_key
+ ORDER BY a.display_name, a.app_key`
 
 	SQLSettingsDevices = `
 SELECT device_id::text, coalesce(hostname, ''), coalesce(collection_mode, ''), last_seen_at
@@ -48,6 +51,8 @@ UPDATE ops.tenant SET collection_mode = nullif($2::text, ''), updated_at = now()
  WHERE tenant_id = $1::uuid`
 
 	SQLCurrentScopeOverrides = `SELECT scope_overrides FROM ops.tenant WHERE tenant_id = $1::uuid`
+
+	SQLToolKnown = `SELECT EXISTS (SELECT 1 FROM ref.app WHERE app_key = $1::text)`
 
 	SQLSetScopeOverride = `
 UPDATE ops.tenant SET scope_overrides = scope_overrides || jsonb_build_object($2::text, $3::text), updated_at = now()
@@ -88,13 +93,13 @@ UPDATE ops.tenant SET tls_inspection = $2::boolean, updated_at = now()
  WHERE tenant_id = $1::uuid`
 
 	SQLCurrentToolState = `
-SELECT coalesce((SELECT sanctioned_state FROM ops.tool
-                  WHERE tenant_id = $1::uuid AND tool_fingerprint = $2::text), 'unknown')`
+SELECT coalesce((SELECT sanctioned_state FROM ops.tool_sanction
+                  WHERE tenant_id = $1::uuid AND tool_key = $2::text), 'unknown')`
 
 	SQLSetToolSanction = `
-INSERT INTO ops.tool (tenant_id, tool_fingerprint, sanctioned_state, decided_by, decided_at)
+INSERT INTO ops.tool_sanction (tenant_id, tool_key, sanctioned_state, decided_by, decided_at)
 VALUES ($1::uuid, $2::text, $3::text, nullif($4::text, ''), $5::timestamptz)
-ON CONFLICT (tenant_id, tool_fingerprint)
+ON CONFLICT (tenant_id, tool_key)
 DO UPDATE SET sanctioned_state = EXCLUDED.sanctioned_state,
               decided_by       = EXCLUDED.decided_by,
               decided_at       = EXCLUDED.decided_at`
@@ -222,8 +227,12 @@ func settingsTools(ctx context.Context, tx *sql.Tx, tenantID string) ([]ToolDeci
 	var out []ToolDecision
 	for rows.Next() {
 		var d ToolDecision
-		if err := rows.Scan(&d.ToolFingerprint, &d.DisplayName, &d.SanctionedState); err != nil {
+		var fingerprints []byte
+		if err := rows.Scan(&d.ToolKey, &d.DisplayName, &d.SanctionedState, &fingerprints); err != nil {
 			return nil, fmt.Errorf("store: settings tools: %w", err)
+		}
+		if err := json.Unmarshal(fingerprints, &d.Fingerprints); err != nil {
+			return nil, fmt.Errorf("store: settings tools: fingerprints: %w", err)
 		}
 		out = append(out, d)
 	}
@@ -276,17 +285,21 @@ func (s *SQLStore) SetCollectionMode(ctx context.Context, tenantID string, mode 
 }
 
 // SetScopeOverride implements Store.
-func (s *SQLStore) SetScopeOverride(ctx context.Context, tenantID, fingerprint string, mode *string, audit AuditEntry) error {
+func (s *SQLStore) SetScopeOverride(ctx context.Context, tenantID, toolKey string, mode *string, audit AuditEntry) error {
 	return s.withTenant(ctx, tenantID, func(tx *sql.Tx) error {
-		previous, err := scopeOverrideValue(ctx, tx, tenantID, fingerprint)
+		previous, err := scopeOverrideValue(ctx, tx, tenantID, toolKey)
 		if err != nil {
 			return err
 		}
 		if mode == nil {
-			if _, err := tx.ExecContext(ctx, SQLClearScopeOverride, tenantID, fingerprint); err != nil {
+			if _, err := tx.ExecContext(ctx, SQLClearScopeOverride, tenantID, toolKey); err != nil {
 				return fmt.Errorf("store: clear scope override: %w", err)
 			}
-		} else if _, err := tx.ExecContext(ctx, SQLSetScopeOverride, tenantID, fingerprint, *mode); err != nil {
+		} else if known, err := toolKnown(ctx, tx, toolKey); err != nil {
+			return err
+		} else if !known {
+			return ErrUnknownTool
+		} else if _, err := tx.ExecContext(ctx, SQLSetScopeOverride, tenantID, toolKey, *mode); err != nil {
 			if isRaiseException(err) {
 				return ErrScopeOverrideTooWide
 			}
@@ -296,7 +309,7 @@ func (s *SQLStore) SetScopeOverride(ctx context.Context, tenantID, fingerprint s
 		if mode != nil {
 			newValue = *mode
 		}
-		detail := map[string]any{"tool_fingerprint": fingerprint}
+		detail := map[string]any{"tool_key": toolKey}
 		audit.Detail = mergeDetail(audit.Detail, detail)
 		audit = withChange(audit, previous, newValue)
 		return insertAudit(ctx, tx, audit)
@@ -360,9 +373,9 @@ func (s *SQLStore) SetTLSInspection(ctx context.Context, tenantID string, enable
 }
 
 // SetToolSanction implements Store.
-func (s *SQLStore) SetToolSanction(ctx context.Context, tenantID, fingerprint, state string, audit AuditEntry) error {
+func (s *SQLStore) SetToolSanction(ctx context.Context, tenantID, toolKey, state string, audit AuditEntry) error {
 	return s.withTenant(ctx, tenantID, func(tx *sql.Tx) error {
-		previous, err := currentText(ctx, tx, SQLCurrentToolState, tenantID, fingerprint)
+		previous, err := currentText(ctx, tx, SQLCurrentToolState, tenantID, toolKey)
 		if err != nil {
 			return err
 		}
@@ -372,10 +385,13 @@ func (s *SQLStore) SetToolSanction(ctx context.Context, tenantID, fingerprint, s
 			decidedBy = audit.ActorID
 			decidedAt = audit.OccurredAt.UTC()
 		}
-		if _, err := tx.ExecContext(ctx, SQLSetToolSanction, tenantID, fingerprint, state, decidedBy, decidedAt); err != nil {
+		if _, err := tx.ExecContext(ctx, SQLSetToolSanction, tenantID, toolKey, state, decidedBy, decidedAt); err != nil {
+			if isForeignKeyViolation(err) {
+				return ErrUnknownTool
+			}
 			return fmt.Errorf("store: set tool sanction: %w", err)
 		}
-		detail := map[string]any{"tool_fingerprint": fingerprint}
+		detail := map[string]any{"tool_key": toolKey}
 		audit.Detail = mergeDetail(audit.Detail, detail)
 		audit = withChange(audit, previous, state)
 		return insertAudit(ctx, tx, audit)
@@ -440,6 +456,14 @@ func ToolDetail(toolKey string, t EndpointTool) map[string]any {
 }
 
 // currentText runs a single-column text query and returns the value.
+func toolKnown(ctx context.Context, tx *sql.Tx, toolKey string) (bool, error) {
+	var known bool
+	if err := tx.QueryRowContext(ctx, SQLToolKnown, toolKey).Scan(&known); err != nil {
+		return false, fmt.Errorf("store: tool known: %w", err)
+	}
+	return known, nil
+}
+
 func currentText(ctx context.Context, tx *sql.Tx, query, tenantID string, args ...any) (string, error) {
 	var v string
 	if err := tx.QueryRowContext(ctx, query, append([]any{tenantID}, args...)...).Scan(&v); err != nil {

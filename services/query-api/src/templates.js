@@ -142,7 +142,7 @@ export const TEMPLATES = Object.freeze({
           order: [{ by: 'submissions', dir: 'desc' }],
           limit: limitOf(params, 400, 2000),
         },
-        // A tool with no ops.tool row still appears (the view LEFT JOINs), reporting
+        // A tool with no decision still appears (the view LEFT JOINs), reporting
         // sanctioned_state NULL, which the response must render as `unknown` and never as
         // `unsanctioned`.
         notes: [
@@ -187,7 +187,7 @@ export const TEMPLATES = Object.freeze({
           'Subject-bearing: this read is audited as it is served. It is not paged: one response is bounded by limit.',
           'An unscoped window beyond 7 days is refused by the cost guard, naming the narrowing that would make it servable.',
           'Three states, not two: `unsanctioned`, `unknown` and `sanctioned` are separate answers, and `unknown` gets its own count and list. The default here is `unsanctioned`, the template\'s own question.',
-          'The unsanctioned tool set is resolved from the tool fingerprint joined to ops.tool at read time (mart.agg_tool_user_period ⋈ ops.tool); its display name comes from ref.tool_catalogue. Both precomputed, nothing scans raw events.',
+          'The unsanctioned tool set is resolved at read time from the decision on the tool each fingerprint belongs to (mart.agg_tool_user_period ⋈ ref.tool_catalogue ⋈ ops.tool_sanction); its display name comes from ref.tool_catalogue. Both precomputed, nothing scans raw events.',
           'The k-suppression cell is the (bucket, tool) group, not the person: a tool used by fewer than k people is suppressed, and a tool with enough people publishes the rows that name them.',
           'Ordered by tool and then by person, never by volume: this is a list, not a leaderboard.',
         ],
