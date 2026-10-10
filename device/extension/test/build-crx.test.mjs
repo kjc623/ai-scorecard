@@ -43,27 +43,37 @@ function crxEntries(crx) {
   return entries;
 }
 
+const UPDATE_URL = 'https://console.example.invalid/v1/extension/updates.xml';
+
 test('the CRX is signed under the pinned id and carries the release version and only what a browser loads', async (t) => {
   const { dir, root, key, id } = fixture(t);
   const out = join(dir, 'out');
-  const result = await buildCrx({ keyPem: key, version: '2.5.7', outDir: out, root });
+  const result = await buildCrx({ keyPem: key, version: '2.5.7', updateUrl: UPDATE_URL, outDir: out, root });
   const crx = readFileSync(join(out, CRX_FILE));
   assert.deepEqual(result, { id, version: '2.5.7', file: CRX_FILE, sha256: createHash('sha256').update(crx).digest('hex'), size: crx.length });
 
   const entries = crxEntries(crx);
-  assert.equal(JSON.parse(entries.get('manifest.json')).version, '2.5.7');
+  const packaged = JSON.parse(entries.get('manifest.json'));
+  assert.equal(packaged.version, '2.5.7');
+  assert.equal(packaged.update_url, UPDATE_URL, 'an installed extension checks for updates at its own update_url');
   assert.ok(entries.has('background/service-worker.js') && entries.has('content/content-boot.js') && entries.has('src/native.js'));
   assert.deepEqual([...entries.keys()].filter((n) => n.startsWith('test/')), [], 'tests are not packaged');
 
-  const again = await buildCrx({ keyPem: key, version: '2.5.7', outDir: join(dir, 'again'), root });
+  const again = await buildCrx({ keyPem: key, version: '2.5.7', updateUrl: UPDATE_URL, outDir: join(dir, 'again'), root });
   assert.equal(again.sha256, result.sha256, 'the same inputs give the same CRX');
 });
 
 test('a key that is not the private half of manifest.json\'s key is refused', async (t) => {
   const { dir, root } = fixture(t);
   const other = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' });
-  await assert.rejects(buildCrx({ keyPem: other, outDir: join(dir, 'out'), root }), /not manifest\.json's "key"/);
-  await assert.rejects(buildCrx({ keyPem: undefined, outDir: join(dir, 'out'), root }), /no signing key/);
+  await assert.rejects(buildCrx({ keyPem: other, updateUrl: UPDATE_URL, outDir: join(dir, 'out'), root }), /not manifest\.json's "key"/);
+  await assert.rejects(buildCrx({ keyPem: undefined, updateUrl: UPDATE_URL, outDir: join(dir, 'out'), root }), /no signing key/);
+});
+
+test('a CRX without an absolute update URL is refused: the installed extension would never update', async (t) => {
+  const { dir, root, key } = fixture(t);
+  await assert.rejects(buildCrx({ keyPem: key, outDir: join(dir, 'out'), root }), /not an absolute http\(s\) URL/);
+  await assert.rejects(buildCrx({ keyPem: key, updateUrl: 'console.example.invalid/updates.xml', outDir: join(dir, 'out'), root }), /not an absolute http\(s\) URL/);
 });
 
 test('versions follow Chromium\'s format', () => {

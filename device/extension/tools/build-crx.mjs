@@ -2,14 +2,18 @@
 // Packages the extension as a signed CRX3, the file control-api serves for the Chrome and Edge
 // force-install policy.
 //
-//   node tools/build-crx.mjs --key extension-signing.pem --version 1.4.0 --out dist
-//   SAC_EXTENSION_SIGNING_KEY="<PEM>" node tools/build-crx.mjs --version 1.4.0 --out dist
+//   node tools/build-crx.mjs --key extension-signing.pem --version 1.4.0 \
+//     --update-url https://<analyst-fqdn>/v1/extension/updates.xml --out dist
+//   SAC_EXTENSION_SIGNING_KEY="<PEM>" node tools/build-crx.mjs --version 1.4.0 --update-url ... --out dist
 //
 // The signing key must be the private half of manifest.json's `key`. Chromium derives the extension
 // id from the key that signs the CRX, and the native messaging host's allowed_origins and the
 // force-install policy both name the id pinned by manifest.json, so a different key is refused.
 // The packaged manifest carries --version (default: manifest.json's), which is what an update
-// manifest compares. Prints {id, version, file, sha256, size} as JSON.
+// manifest compares. The packaged manifest also carries --update-url: the force-install policy's URL
+// serves only the first install, and an installed extension checks for updates at its manifest's
+// update_url (with none, at the browser's store, which does not know it). Prints
+// {id, version, file, sha256, size} as JSON.
 
 import { createHash, createPrivateKey, createPublicKey } from 'node:crypto';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -34,14 +38,24 @@ export function isExtensionVersion(v) {
   return typeof v === 'string' && /^(0|[1-9]\d{0,4})(\.(0|[1-9]\d{0,4})){0,3}$/.test(v) && v.split('.').every((n) => Number(n) <= 65535);
 }
 
+function isUpdateUrl(u) {
+  try {
+    const { protocol } = new URL(u);
+    return protocol === 'https:' || protocol === 'http:';
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Build <outDir>/shadow-ai-capture.crx from the extension at `root`, signed with `keyPem`.
  * @returns {Promise<{id: string, version: string, file: string, sha256: string, size: number}>}
  */
-export async function buildCrx({ keyPem, version, outDir, root = PACKAGE_ROOT }) {
+export async function buildCrx({ keyPem, version, updateUrl, outDir, root = PACKAGE_ROOT }) {
   const manifest = JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8'));
   const packagedVersion = version ?? manifest.version;
   if (!isExtensionVersion(packagedVersion)) throw new Error(`version ${packagedVersion} is not a Chromium extension version (1 to 4 integers, each 0-65535)`);
+  if (!isUpdateUrl(updateUrl)) throw new Error(`update URL ${updateUrl} is not an absolute http(s) URL: pass --update-url https://<analyst-fqdn>/v1/extension/updates.xml`);
   if (!keyPem) throw new Error('no signing key: pass --key FILE or set SAC_EXTENSION_SIGNING_KEY');
 
   let publicKey;
@@ -60,7 +74,7 @@ export async function buildCrx({ keyPem, version, outDir, root = PACKAGE_ROOT })
   try {
     const stage = join(work, 'extension');
     for (const entry of PACKAGED) cpSync(join(root, entry), join(stage, entry), { recursive: true });
-    writeFileSync(join(stage, 'manifest.json'), JSON.stringify({ ...manifest, version: packagedVersion }, null, 2) + '\n');
+    writeFileSync(join(stage, 'manifest.json'), JSON.stringify({ ...manifest, version: packagedVersion, update_url: updateUrl }, null, 2) + '\n');
     const keyPath = join(work, 'signing.pem');
     writeFileSync(keyPath, keyPem, { mode: 0o600 });
 
@@ -92,7 +106,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const keyFile = argValue(args, '--key');
   try {
     const keyPem = keyFile ? readFileSync(keyFile, 'utf8') : process.env.SAC_EXTENSION_SIGNING_KEY;
-    const result = await buildCrx({ keyPem, version: argValue(args, '--version'), outDir: argValue(args, '--out') ?? join(PACKAGE_ROOT, 'dist') });
+    const result = await buildCrx({ keyPem, version: argValue(args, '--version'), updateUrl: argValue(args, '--update-url'), outDir: argValue(args, '--out') ?? join(PACKAGE_ROOT, 'dist') });
     console.log(JSON.stringify(result, null, 2));
   } catch (err) {
     console.error(`build-crx: ${err.message}`);

@@ -8,10 +8,12 @@
 //     --classifier-rules device/classifier-host/rules/default.json \
 //     --classifier-model device/classifier-host/rules/model.json \
 //     --extension-key extension-signing.pem \
+//     --extension-update-url https://<analyst-fqdn>/v1/extension/updates.xml \
 //     [--wix-eula wix7] [--sign] [--out device/installer/dist/release]
 //
 // Every input is required; --extension-key may instead come from SAC_EXTENSION_SIGNING_KEY (the PEM
-// itself). --wix-eula accepts the WiX Open Source Maintenance Fee EULA for an unattended build;
+// itself). --extension-update-url is the update manifest the installed extension checks for updates,
+// on the deployment's analyst hostname. --wix-eula accepts the WiX Open Source Maintenance Fee EULA for an unattended build;
 // --sign signs the executables and the MSI with the signer msi.mjs reads from the environment.
 // release.json is read back out of the built package, and the build fails if any release check does.
 
@@ -33,6 +35,7 @@ try {
     options: {
       ...STAGE_OPTIONS,
       'extension-key': { type: 'string' },
+      'extension-update-url': { type: 'string' },
       'wix-eula': { type: 'string' },
       sign: { type: 'boolean', default: false },
       out: { type: 'string', default: join(ROOT, 'device', 'installer', 'dist', 'release') },
@@ -41,6 +44,8 @@ try {
   const inputs = resolveInputs(values);
   const extensionKey = values['extension-key'] ? readFileSync(values['extension-key'], 'utf8') : process.env.SAC_EXTENSION_SIGNING_KEY;
   if (!extensionKey) throw new BuildError('missing required input: --extension-key (or SAC_EXTENSION_SIGNING_KEY)');
+  const extensionUpdateUrl = values['extension-update-url'];
+  if (!extensionUpdateUrl) throw new BuildError('missing required input: --extension-update-url');
   const out = resolve(values.out);
 
   const { stage, anchors, generic } = buildStage({ os: 'windows', arch: 'amd64', inputs, log });
@@ -50,7 +55,7 @@ try {
   log(`build ${MSI_FILE} ${inputs.version}`);
   const msi = buildMsi({ stage, outDir: out, version: inputs.version, sign: values.sign, wixEula: values['wix-eula'], log });
   log('package the extension');
-  const extension = await buildCrx({ keyPem: extensionKey, version: inputs.version, outDir: out }).catch((err) => {
+  const extension = await buildCrx({ keyPem: extensionKey, version: inputs.version, updateUrl: extensionUpdateUrl, outDir: out }).catch((err) => {
     throw new BuildError(`extension: ${err.message}`);
   });
 

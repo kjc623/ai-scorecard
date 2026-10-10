@@ -75,6 +75,7 @@ jobs:
             --classifier-rules device/classifier-host/rules/default.json `
             --classifier-model device/classifier-host/rules/model.json `
             --extension-key (Join-Path $keys 'extension.pem') `
+            --extension-update-url 'https://${{ vars.SAC_ANALYST_FQDN }}/v1/extension/updates.xml' `
             --wix-eula wix7 $env:SIGN --out $out
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Remove-Item -Recurse -Force $keys
