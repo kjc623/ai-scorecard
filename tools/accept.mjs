@@ -45,8 +45,9 @@ function steps(list) {
   return { status: 'PASS', detail: `${list.length} step(s)` };
 }
 
-// The latency budget tests, which run apart from the other tests of their module.
-const BUDGETS = '^Test(HookDecision|OTLP)Budget$';
+// The latency budget tests, which run apart from the other tests of their module. On Windows the
+// command goes through cmd.exe, which would read the pattern's | as a pipe: the quotes stop it.
+const BUDGETS = process.platform === 'win32' ? '"^Test(HookDecision|OTLP)Budget$"' : '^Test(HookDecision|OTLP)Budget$';
 
 const GATES = [
   {

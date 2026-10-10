@@ -43,7 +43,7 @@ rest). Agents read this file and never write a secret into it.
 | Intune app registration | `6013fcd8-b0fe-4201-9e0c-5bb4a78e7b57` | Application (client) id of the publishing app registration |
 | Publishing certificate | `300591A257424963C75D23327A40BED95F0156C5` | Thumbprint of its certificate, in the owner's `Cert:\CurrentUser\My` |
 | Test device group | `6a3c290c-2ff1-4c44-bba9-ca6ed29caed6` | Object id of the Entra group containing only the VM |
-| Intune app id | (task 59 fills this in) | The one Win32 app the testbed publishes to |
+| Intune app id | `3c023904-f50e-4612-81ea-d69d5604fb69` | The one Win32 app the testbed publishes to |
 
 ## VM checklist (owner, once)
 
