@@ -124,6 +124,8 @@ function dim(name, sql, type, opts = {}) {
     nullable: opts.nullable ?? false,
     startsWith: opts.startsWith ?? false,
     cardinality: opts.cardinality ?? 100,
+    // An array column holds one value per element; eq and in test membership, is_null emptiness.
+    array: opts.array ?? false,
     values: opts.values ? Object.freeze([...opts.values]) : undefined,
     operators,
   });
@@ -525,8 +527,8 @@ export const SOURCES = Object.freeze({
   'mart.v_device_liveness': Object.freeze({
     id: 'mart.v_device_liveness',
     kind: 'list',
-    label: 'Devices with liveness and current collector state (mart.v_device_liveness ⋈ ops.collector_state)',
-    from: 'mart.v_device_liveness d LEFT JOIN ops.collector_state cs ON cs.tenant_id = d.tenant_id AND cs.device_id = d.device_id',
+    label: 'Devices with liveness and their collectors\' states (mart.v_device_liveness)',
+    from: 'mart.v_device_liveness d',
     tenantColumn: 'd.tenant_id',
     costClass: 'operational',
     time: null,
@@ -554,28 +556,25 @@ export const SOURCES = Object.freeze({
         ...LIVENESS_CARD,
         values: ['reporting', 'stale', 'never_reported', 'revoked'],
       }),
-      collector: dim('collector', 'cs.collector', 'text', {
-        nullable: true,
-        ...COLLECTOR_CARD,
-        orderSql: "coalesce(cs.collector, chr(1))",
-      }),
-      collector_state: dim('collector_state', 'cs.state', 'text', {
-        nullable: true,
+      // The device's collectors and their states, as arrays: a filter asks whether the device has
+      // such a collector, or a collector in such a state, and never multiplies the device's row.
+      collector: dim('collector', 'd.collectors', 'text', { ...COLLECTOR_CARD, array: true }),
+      collector_state: dim('collector_state', 'd.collector_states', 'text', {
         ...COLLECTOR_STATE_CARD,
+        array: true,
         values: ['healthy', 'degraded', 'absent', 'tampered'],
       }),
     }),
     measures: Object.freeze({}),
-    grain: Object.freeze(['device', 'collector']),
+    grain: Object.freeze(['device']),
     order: Object.freeze([
       { dim: 'device', dir: 'asc' },
-      { dim: 'collector', dir: 'asc' },
     ]),
     subjectBearing: true,
     requiresSubjectScope: false,
     indexes: Object.freeze([
       'ops.device PK (tenant_id, device_id), ops.device (tenant_id, last_seen_at)',
-      'ops.collector_state PK (tenant_id, device_id, collector), ops.collector_state (tenant_id, state)',
+      'ops.collector_state PK (tenant_id, device_id, collector)',
     ]),
     joins: Object.freeze([
       Object.freeze({
@@ -612,17 +611,18 @@ export const SOURCES = Object.freeze({
       // sync stores no clear name then). See ops.user_dim.display_name.
       '(SELECT ud.display_name FROM ops.user_dim ud WHERE ud.tenant_id = d.tenant_id AND ud.user_ref = d.last_user_ref) AS "directory_name"',
       "CASE WHEN d.revoked_at IS NOT NULL THEN 'revoked' WHEN d.last_seen_at IS NULL THEN 'never_reported' WHEN d.last_seen_at < now() - interval '24 hours' THEN 'stale' ELSE 'reporting' END AS \"liveness\"",
-      'cs.collector AS "collector"',
-      'cs.state AS "collector_state"',
       'd.enrolled_at AS enrolled_at',
       'd.revoked_at AS revoked_at',
       'd.last_seen_at AS last_seen_at',
       'd.collectors_reporting AS collectors_reporting',
-      'cs.spool_depth AS spool_depth',
-      'cs.spool_dropped_total AS spool_dropped_total',
-      'cs.last_success_at AS last_success_at',
-      'cs.last_report_at AS last_report_at',
-      'cs.error_code AS error_code',
+      'd.collectors_healthy AS collectors_healthy',
+      'd.collectors_degraded AS collectors_degraded',
+      'd.collectors_absent AS collectors_absent',
+      'd.collectors_tampered AS collectors_tampered',
+      'd.collectors AS collectors',
+      'd.spool_depth AS spool_depth',
+      'd.spool_dropped_total AS spool_dropped_total',
+      'd.last_report_at AS last_report_at',
     ]),
     columns: Object.freeze({
       user_ref: dim('user_ref', 'd.last_user_ref', 'text', { nullable: true }),
@@ -630,12 +630,12 @@ export const SOURCES = Object.freeze({
       enrolled_at: dim('enrolled_at', 'd.enrolled_at', 'timestamp'),
       last_seen_at: dim('last_seen_at', 'd.last_seen_at', 'timestamp', { nullable: true }),
       revoked_at: dim('revoked_at', 'd.revoked_at', 'timestamp', { nullable: true }),
-      spool_dropped_total: dim('spool_dropped_total', 'cs.spool_dropped_total', 'number', { nullable: true }),
-      spool_depth: dim('spool_depth', 'cs.spool_depth', 'number', { nullable: true }),
+      spool_dropped_total: dim('spool_dropped_total', 'd.spool_dropped_total', 'number', { nullable: true }),
+      spool_depth: dim('spool_depth', 'd.spool_depth', 'number', { nullable: true }),
     }),
     warnings: Object.freeze([
       'Coverage is not joined here: ops.coverage_snapshot is one row per device per collector per day, so the join would multiply every device row by the days in the window. Coverage is its own source (ops.coverage_snapshot), and the gap_reason breakdown is read from it.',
-      'The row grain is (device_id, collector), because the join fans out per collector, so the cursor is (device_id, collector): a device-only key would not be total and a keyset page would be inexact.',
+      'The row grain is the device: its collectors are summed beside it (counts by state, the collector list, the spool totals), and one device\'s collectors are read in full from ops.collector_state.',
       'Liveness keeps four distinct values (reporting, stale, never_reported, revoked): revoked is never merged with stale, and health is never inferred from silence.',
     ]),
   }),

@@ -85,7 +85,7 @@ because their presence is an attempt rather than a typo:
 | `mart.agg_class_period` | aggregate | Q4 classes | PK |
 | `mart.agg_user_period` | aggregate | Q6 one subject | PK + `(tenant, user_ref, bucket_start DESC, bucket_size)` |
 | `mart.agg_device_period` | aggregate | Q7 history | PK |
-| `mart.v_device_liveness` | list | Q7 current state | `ops.device (tenant, last_seen_at)`, `ops.collector_state (tenant, state)` |
+| `mart.v_device_liveness` | list | Q7 current state, one row per device with its collectors summed | `ops.device (tenant, last_seen_at)` |
 | `ops.collector_state` | list | one device's collectors: state, cause (`error_code`), last report | PK |
 | `ops.coverage_snapshot` | list | coverage gaps | PK + partial `(tenant, snapshot_day) WHERE NOT observed` |
 | `ingest.submission` | list | Q8, Q9 | `submission_by_received`/`_by_user`/`_by_tool`/`_by_device`, `submission_labels_gin` |
@@ -106,7 +106,7 @@ offered is `unknown_dimension` / `unknown_measure`, and the error lists what is 
 | `mart.agg_class_period` | `bucket`, `class`, `tool`, `severity`, `classifier_version` | `submissions`, `users`, `max_score`, `degraded_events` |
 | `mart.agg_user_period` | `bucket`, `subject` | `submissions`, `bytes_total`, `tools_used`, `block_events` |
 | `mart.agg_device_period` | `bucket`, `device`, `collector` | `healthy_days`, `degraded_days`, `absent_days`, `tampered_days`, `spool_dropped` |
-| `mart.v_device_liveness` | `device`, `device_os`, `managed_state`, `region`, `liveness`, `collector`, `collector_state` | — (a list) |
+| `mart.v_device_liveness` | `device`, `device_os`, `managed_state`, `region`, `liveness`, `collector` (set), `collector_state` (set) | — (a list) |
 | `ops.collector_state` | `device`, `collector`, `collector_state` | — (a list) |
 | `ops.coverage_snapshot` | `snapshot_day`, `device`, `collector`, `gap_reason`, `observed`, `expected` | — |
 | `ingest.submission` | `subject`, `tool`, `device`, `mode`, `action`, `content_state`, `route`, `detection_basis`, `prompt_kind`, `merge_confidence`, `confidence`, `department`, `population`, `manager` | — |
@@ -203,7 +203,7 @@ Every template declares exactly these parameters; anything else is an error.
 | `q4_class_mix` | `mart.agg_class_period` | `window`, `bucket`, `limit`, `dimensions`, `class`, `severity` | `dimensions` ⊆ `{class, tool, severity, classifier_version}`, ≤ 3; default `[class, severity]` |
 | `q5_findings` | `mart.v_finding` | `window`, `limit`, `cursor`, `severity`, `rule`, `review_state`, `subject`, `tool`, `class` | review state `open` means nobody has looked |
 | `q6_subject_series` | `mart.agg_user_period` | `subject` (**required**), `window`, `bucket`, `limit` | carries `meta.extras.flush_check` |
-| `q7_devices` | `mart.v_device_liveness` | `limit`, `cursor`, `liveness`, `collector_state`, `collector`, `device_os`, `managed_state`, `region` | **no window**; four liveness values stay distinct; the row grain and cursor are `(device, collector)`; fleet-wide counts in `meta.extras.device_status` |
+| `q7_devices` | `mart.v_device_liveness` | `limit`, `cursor`, `liveness`, `collector_state`, `collector`, `device_os`, `managed_state`, `region` | **no window**; four liveness values stay distinct; one row per device, with its collectors' states summed; `collector` and `collector_state` filter on the device's set; fleet-wide counts in `meta.extras.device_status` |
 | `q8_activity` | `ingest.submission` | `window`, `limit`, `cursor`, `subject`, `tool`, `device`, `class`, `content_state`, `action`, `mode`, `department`, `prompt_kind`, `prompt_kind_not` | window ≤ 31 days; both clocks returned; `prompt_kind` includes only that kind and `prompt_kind_not` excludes it |
 | `q9_event_detail` | `ingest.submission` | `submission_id` (**required**), `received_at_hint` | single record; `data` is one row per observation, each carrying the submission's columns |
 | `q10_audit_trail` | `ops.audit` | `window`, `limit`, `cursor`, `actor`, `action`, `object_type`, `subject`, `case` | hash links verified in SQL before the page is returned |

@@ -185,13 +185,13 @@ test('revoked is not stale, and never_reported is not absent', () => {
 
 test('a silent device is never rendered as healthy', () => {
   const silent = readState(envelope('ok', {
-    data: [{ device: 'd', liveness: 'never_reported', collector: null, collector_state: null, last_seen_at: null, spool_dropped_total: null }],
+    data: [{ device: 'd', liveness: 'never_reported', collectors_reporting: 0, collectors_healthy: 0, collectors_degraded: 0, collectors_absent: 0, collectors_tampered: 0, collectors: [], last_seen_at: null, spool_dropped_total: null }],
     freshness: FRESH, coverage: PARTIAL, meta: { source: 'mart.v_device_liveness' },
   }));
   const html = renderScreen(devicesView(silent), SHELL);
   assert.ok(/never_reported/.test(html));
   assert.ok(!/healthy/.test(html), 'no health is inferred from the absence of a signal');
-  assert.ok(/unknown/.test(html), 'a null collector state renders as unknown, not as a blank');
+  assert.ok(/Never checked in/.test(html), 'silence is named as silence');
 });
 
 // ── no clock-skew normalisation ──────────────────────────────────────────────────────────────

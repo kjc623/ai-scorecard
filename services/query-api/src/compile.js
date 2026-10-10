@@ -371,6 +371,25 @@ function compileFilter(filter, source, bind) {
     return `${expr} @> jsonb_build_array(jsonb_build_object('class', ${bind(filter.value)}${cast}))`;
   }
 
+  // An array column: equality and membership test whether any element matches, and is_null asks
+  // whether the array is empty. Ordering comparisons have no meaning over a set.
+  if (dimension.array) {
+    switch (filter.op) {
+      case 'eq':
+        return `${bind(filter.value)}${cast} = ANY(${expr})`;
+      case 'ne':
+        return `NOT (${bind(filter.value)}${cast} = ANY(${expr}))`;
+      case 'in':
+        return `${expr} && ${bind(filter.value)}${arrayCast}`;
+      case 'not_in':
+        return `NOT (${expr} && ${bind(filter.value)}${arrayCast})`;
+      case 'is_null':
+        return `cardinality(${expr}) = 0`;
+      default:
+        throw unsupported(REASON.OPERATOR_NOT_APPLICABLE, `"${filter.field}" is a set: it supports eq, ne, in, not_in and is_null.`, { field: filter.field, operator: filter.op });
+    }
+  }
+
   switch (filter.op) {
     case 'eq':
       return `${expr} = ${bind(filter.value)}${cast}`;

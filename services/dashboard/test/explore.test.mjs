@@ -249,13 +249,15 @@ test('device states render as themselves, and silence is not health', async () =
   const { explorer } = explorerFor();
   await explorer.restore('#devices');
   const html = renderExploreResults(explorer.state);
-  for (const value of ['reporting', 'stale', 'never_reported', 'revoked', 'healthy', 'degraded', 'absent', 'tampered']) {
+  for (const value of ['reporting', 'stale', 'never_reported', 'revoked']) {
     assert.ok(html.includes(`>${value}<`), `${value} must appear`);
   }
+  assert.equal(explorer.state.rows.length, new Set(explorer.state.rows.map((r) => r.device)).size, 'one row per device');
   await explorer.setFilter('liveness', 'never_reported');
   const silent = renderExploreResults(explorer.state);
   assert.ok(!/healthy/.test(silent));
-  assert.match(silent, />unknown</, 'a null collector state is unknown, not blank');
+  assert.equal(explorer.state.rows.length, 1);
+  assert.equal(explorer.state.rows[0].collectors_reporting, 0, 'a silent device has no collector to count');
 });
 
 // ── detail ───────────────────────────────────────────────────────────────────────────────────
@@ -318,7 +320,7 @@ test('a device row lists every collector the device reported, with its state, ca
   const tampered = stub.sample.collectors.find((r) => r.error_code === 'config_tampered');
   await explorer.restore('#devices');
   const row = explorer.state.rows.find((r) => r.device === tampered.device);
-  await explorer.open(`${row.device}|${row.collector}`);
+  await explorer.open(row.device);
 
   const last = sent[sent.length - 1];
   assert.deepEqual(last, {
@@ -349,7 +351,7 @@ test('a device whose collectors cannot be read says so beside the row it opened'
   await explorer.restore('#devices');
   const row = explorer.state.rows[0];
   stub.setScenario('busy');
-  await explorer.open(`${row.device}|${row.collector}`);
+  await explorer.open(row.device);
   assert.equal(explorer.state.detail.collectors.status, 'refused');
   const html = renderExploreDetail(explorer.state);
   assert.match(html, /<h3>Collectors<\/h3><div class="x-state x-state-refusal" role="alert">/);

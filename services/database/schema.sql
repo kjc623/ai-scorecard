@@ -1555,8 +1555,9 @@ CREATE TABLE mart.agg_device_period (
 );
 
 -- Device liveness. A device that has stopped sends nothing, so its silence is turned into an
--- explicit state here. `stale`, `never_reported` and `revoked` are different facts. The view carries
--- the most recent user, so a read of it is subject-level and audited.
+-- explicit state here. `stale`, `never_reported` and `revoked` are different facts. One row per
+-- device: its collectors' states are summed beside it, so a read never fans out per collector.
+-- The view carries the most recent user, so a read of it is subject-level and audited.
 CREATE VIEW mart.v_device_liveness
 WITH (security_invoker = true) AS
 SELECT d.tenant_id,
@@ -1578,9 +1579,30 @@ SELECT d.tenant_id,
          WHEN d.last_seen_at < now() - interval '24 hours' THEN 'stale'
          ELSE 'reporting'
        END AS liveness,
-       (SELECT count(*) FROM ops.collector_state cs
-         WHERE cs.tenant_id = d.tenant_id AND cs.device_id = d.device_id) AS collectors_reporting
-  FROM ops.device d;
+       c.collectors_reporting,
+       c.collectors_healthy,
+       c.collectors_degraded,
+       c.collectors_absent,
+       c.collectors_tampered,
+       c.collectors,
+       c.collector_states,
+       c.spool_depth,
+       c.spool_dropped_total,
+       c.last_report_at
+  FROM ops.device d
+  LEFT JOIN LATERAL (
+    SELECT count(*)::int                                            AS collectors_reporting,
+           count(*) FILTER (WHERE cs.state = 'healthy')::int        AS collectors_healthy,
+           count(*) FILTER (WHERE cs.state = 'degraded')::int       AS collectors_degraded,
+           count(*) FILTER (WHERE cs.state = 'absent')::int         AS collectors_absent,
+           count(*) FILTER (WHERE cs.state = 'tampered')::int       AS collectors_tampered,
+           coalesce(array_agg(cs.collector ORDER BY cs.collector), ARRAY[]::text[]) AS collectors,
+           coalesce(array_agg(DISTINCT cs.state), ARRAY[]::text[])  AS collector_states,
+           sum(cs.spool_depth)::bigint                               AS spool_depth,
+           sum(cs.spool_dropped_total)::bigint                       AS spool_dropped_total,
+           max(cs.last_report_at)                                    AS last_report_at
+      FROM ops.collector_state cs
+     WHERE cs.tenant_id = d.tenant_id AND cs.device_id = d.device_id) c ON true;
 
 -- Usage with present-tense sanction state: the decision on the tool the fingerprint belongs to.
 -- LEFT JOINs, so a fingerprint outside the catalogue, or a tool with no decision, still appears with

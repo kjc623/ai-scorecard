@@ -148,7 +148,8 @@ test('q7 needs no window and keeps four liveness values distinct', () => {
   for (const value of ['revoked', 'never_reported', 'stale', 'reporting']) {
     assert.ok(read.text.includes(`'${value}'`), `liveness must keep ${value}`);
   }
-  assert.match(read.text, /ORDER BY d\.device_id ASC NULLS LAST, coalesce\(cs\.collector, chr\(1\)\) ASC NULLS LAST/);
+  assert.match(read.text, /ORDER BY d\.device_id ASC NULLS LAST\s*\n/, 'one row per device: the device is the whole ordering');
+  assert.ok(!read.text.includes('ops.collector_state'), 'the list never fans out per collector');
   // Fleet-wide counts by status, so the Devices cards describe the same population as the cursor
   // page. If this disappears, "Need attention" silently reverts to the page count.
   const status = p.statements.find((s) => s.id === 'device_status');

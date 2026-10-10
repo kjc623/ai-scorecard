@@ -161,57 +161,64 @@ export function buildExploreSample(now) {
     }
   }
 
+  // Each device's collector rows as ops.collector_state holds them: capture-core and the extension
+  // on every device that checked in, plus Claude Code's configuration (tampered on every third
+  // device) and Cursor's, switched off by policy, on a device that reports. The device rows sum
+  // them, one row per device.
+  const collectors = [];
   const devices = [];
   for (let i = 0; i < 14; i += 1) {
     const device = sampleUuid(0xd0, i);
     const os = i % 3 === 0 ? 'macos' : 'windows';
     const region = i % 4 === 0 ? 'us' : 'eu';
+    const base = { device, device_os: os, managed_state: i === 7 ? 'unknown' : 'managed', region };
     if (i === 11) {
-      devices.push(Object.freeze({ device, device_os: os, managed_state: 'unmanaged', region, liveness: 'never_reported', collector: null, collector_state: null, spool_depth: null, spool_dropped_total: null, last_seen_at: null }));
+      devices.push(Object.freeze({ ...base, managed_state: 'unmanaged', liveness: 'never_reported', collectors_reporting: 0, collectors_healthy: 0, collectors_degraded: 0, collectors_absent: 0, collectors_tampered: 0, collectors: [], spool_depth: null, spool_dropped_total: null, last_seen_at: null }));
       continue;
     }
     const liveness = i === 5 ? 'stale' : i === 9 ? 'revoked' : 'reporting';
     const seen = liveness === 'reporting' ? end - Math.floor(rand() * 600_000) : end - Math.floor((2 + rand() * 16) * 86_400_000);
+    const last_seen_at = sampleIso(seen);
+    const own = [];
     for (const collector of ['capture_core', 'capture_extension']) {
       const state = liveness === 'revoked' ? 'absent' : liveness === 'stale' ? 'degraded' : i === 2 && collector === 'capture_extension' ? 'tampered' : 'healthy';
-      devices.push(Object.freeze({
-        device,
-        device_os: os,
-        managed_state: i === 7 ? 'unknown' : 'managed',
-        region,
-        liveness,
-        collector,
-        collector_state: state,
+      own.push(Object.freeze({
+        device, collector, collector_state: state,
+        error_code: state === 'tampered' ? 'bundle_signature_invalid' : null,
+        last_report_at: last_seen_at, last_success_at: state === 'healthy' ? last_seen_at : null,
         spool_depth: state === 'degraded' ? Math.floor(200 + rand() * 900) : 0,
-        spool_dropped_total: liveness === 'revoked' ? 4412 : 0,
-        last_seen_at: sampleIso(seen),
       }));
     }
+    if (liveness === 'reporting') {
+      const tampered = parseInt(device.slice(-2), 16) % 3 === 0;
+      own.push(Object.freeze({
+        device, collector: 'tool_config_claude_code', collector_state: tampered ? 'degraded' : 'healthy',
+        error_code: tampered ? 'config_tampered' : null, last_report_at: last_seen_at, last_success_at: last_seen_at, spool_depth: 0,
+      }));
+      own.push(Object.freeze({
+        device, collector: 'tool_config_cursor', collector_state: 'absent',
+        error_code: 'disabled_by_policy', last_report_at: last_seen_at, last_success_at: null, spool_depth: 0,
+      }));
+    }
+    const by = (state) => own.filter((c) => c.collector_state === state).length;
+    devices.push(Object.freeze({
+      ...base,
+      liveness,
+      collectors_reporting: own.length,
+      collectors_healthy: by('healthy'),
+      collectors_degraded: by('degraded'),
+      collectors_absent: by('absent'),
+      collectors_tampered: by('tampered'),
+      collectors: own.map((c) => c.collector).sort(),
+      spool_depth: own.reduce((n, c) => n + c.spool_depth, 0),
+      spool_dropped_total: liveness === 'revoked' ? 4412 : 0,
+      last_seen_at,
+    }));
+    for (const c of own) {
+      collectors.push(Object.freeze({ device: c.device, collector: c.collector, collector_state: c.collector_state, error_code: c.error_code, last_report_at: c.last_report_at, last_success_at: c.last_success_at }));
+    }
   }
-  devices.sort((a, b) => (a.device === b.device ? String(a.collector).localeCompare(String(b.collector)) : a.device.localeCompare(b.device)));
-
-  // Each device's collector rows as ops.collector_state holds them: the rows above, plus Claude
-  // Code's configuration (tampered on every third device) and Cursor's, switched off by policy, on
-  // a device that reports.
-  const collectors = [];
-  for (const row of devices) {
-    if (row.collector === null) continue;
-    collectors.push(Object.freeze({
-      device: row.device, collector: row.collector, collector_state: row.collector_state,
-      error_code: row.collector_state === 'tampered' ? 'bundle_signature_invalid' : null,
-      last_report_at: row.last_seen_at, last_success_at: row.collector_state === 'healthy' ? row.last_seen_at : null,
-    }));
-    if (row.collector !== 'capture_extension' || row.liveness !== 'reporting') continue;
-    const tampered = parseInt(row.device.slice(-2), 16) % 3 === 0;
-    collectors.push(Object.freeze({
-      device: row.device, collector: 'tool_config_claude_code', collector_state: tampered ? 'degraded' : 'healthy',
-      error_code: tampered ? 'config_tampered' : null, last_report_at: row.last_seen_at, last_success_at: row.last_seen_at,
-    }));
-    collectors.push(Object.freeze({
-      device: row.device, collector: 'tool_config_cursor', collector_state: 'absent',
-      error_code: 'disabled_by_policy', last_report_at: row.last_seen_at, last_success_at: null,
-    }));
-  }
+  devices.sort((a, b) => a.device.localeCompare(b.device));
 
   const audit = [];
   let auditMs = end;
