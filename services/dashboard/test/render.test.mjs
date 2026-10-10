@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { renderScreen, renderValue, renderTable, renderSeries, escapeHtml } from '../src/render.js';
 import { readState } from '../src/states.js';
-import { devicesView, classesView, teamsView, toolsView, eventView } from '../src/views.js';
+import { devicesView, classesView, postureView, teamsView, toolsView, eventView } from '../src/views.js';
 import { STATE_ENVELOPES, SCENARIO_NAMES, RECORD_ROWS, fixtureTransport } from './fixtures.mjs';
 import { createDashboard, SCREENS, refusalFrom } from '../src/app.js';
 import { createQueryApi } from '../src/transport.js';
@@ -124,6 +124,14 @@ test('the overview summarises usage, data classes and findings beside the enroll
   assert.equal(view.tables[0].href, '#tools');
   const titles = view.banners.map((b) => b.title);
   assert.equal(new Set(titles).size, titles.length, 'a warning every read carries is said once');
+  assert.ok(!view.banners.some((b) => b.about === 'coverage'), 'coverage is said by the devices reporting tile, not a banner');
+});
+
+test('an overview panel whose read is not yet covered says so instead of "none"', () => {
+  const blind = { resultState: 'not_yet_covered', data: [], banners: [], meta: {} };
+  const view = postureView({ devices: null, tools: blind, classes: null, findings: null });
+  assert.match(view.tables[0].emptyText, /^Not yet covered\./);
+  assert.equal(view.tables[2].emptyText, 'No finding was raised in this window.');
 });
 
 test('Usage switches between tools, data classes and unsanctioned use, and Devices narrows to what needs attention', async () => {

@@ -22,7 +22,7 @@ export const SIGNIN_MESSAGES = Object.freeze({
   }),
   tenant_not_onboarded: Object.freeze({
     status: 403, level: 'refusal', title: 'Your organisation is not set up yet',
-    text: 'You signed in, but your organisation has not finished setting up Shadow AI Capture. Your administrator completes it from the onboarding link they were sent.',
+    text: 'You signed in, but your organisation has not finished setting up Sundial. Your administrator completes it from the onboarding link they were sent.',
   }),
   no_role: Object.freeze({
     status: 403, level: 'refusal', title: 'No access has been assigned to you',
@@ -127,7 +127,7 @@ export function renderSigninPage({ code = null, detail = null, next = '/', email
     + '<p class="si-lead">Use your organisation\'s account.</p>'
     + banner + forms
     + '</div></section>'
-    + '<p class="si-foot">You sign in with your organisation\'s identity provider. Shadow AI Capture never sees your password.</p>');
+    + '<p class="si-foot">You sign in with your organisation\'s identity provider. Sundial never sees your password.</p>');
 }
 
 /** A signed-in person asked for a page their role does not include: a way back, not a sign-in form. */
@@ -146,10 +146,10 @@ function pageShell(title, body) {
   return '<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
     + '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
     + '<meta name="robots" content="noindex">\n'
-    + `<title>${escapeHtml(title)} | Shadow AI Capture</title>\n`
+    + `<title>${escapeHtml(title)} | Sundial</title>\n`
     + '<link rel="icon" href="data:,">\n<link rel="stylesheet" href="/styles.css">\n<link rel="stylesheet" href="/signin.css">\n</head>\n<body>\n'
     + '<main class="si">'
-    + '<div class="brand si-brand"><span class="brand-mark" aria-hidden="true"></span><h1>Shadow AI Capture</h1></div>'
+    + '<div class="brand si-brand"><span class="brand-mark" aria-hidden="true"></span><h1>Sundial</h1></div>'
     + body
     + '</main>\n</body>\n</html>\n';
 }
