@@ -6,13 +6,13 @@ bound, and a name outside the closed vocabulary is rejected rather than escaped.
 one transaction scoped to the caller's tenant (`set_config('app.tenant_id', …, true)`, enforced by
 row-level security), writes its audit row before anything is served, and returns one envelope that
 carries the data with its freshness, coverage and suppression state. It also accepts two audited
-writes (finding review, tool sanction) and forwards the two content requests to `content-vault`,
+writes (finding review) and forwards the two content requests to `content-vault`,
 which decides everything about content.
 
 | Route | |
 |---|---|
 | `POST /v1/query` | a template or a DSL document (`DSL.md`) |
-| `POST /v1/finding-review`, `POST /v1/tool-sanction` | audited configuration writes |
+| `POST /v1/finding-review` | audited configuration writes |
 | `POST /v1/content-search`, `POST /v1/content/retrieval` | forwarded to content-vault with the caller's token |
 | `POST /v1/list-export` | the current filtered events or findings list as a bounded CSV, stored server-side and returned as a single-use, short-lived download link (role `analyst`, `content_reader` or `admin`); audited with the filters |
 | `POST /v1/subject-export`, `POST /v1/subject-erasure` | an admin's data-subject export (an archive of one person's events, findings and stored prompts, the prompts decrypted by content-vault) and a request to erase one person's data (performed by the `jobs erase` job, which writes the receipt) |

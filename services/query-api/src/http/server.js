@@ -13,7 +13,6 @@ import { QUERY_CLASSES } from '../registry.js';
 import { inTransaction } from '../db.js';
 import { CONTENT_PATHS, createContentForwarder } from './content.js';
 import { validateReviewRequest, FINDING_FOR_REVIEW_SQL, UPSERT_REVIEW_SQL, findingReviewAuditStatement } from '../review.js';
-import { validateSanctionRequest, TOOL_SANCTION_FOR_REVIEW_SQL, UPSERT_TOOL_SANCTION_SQL, toolSanctionAuditStatement } from '../sanction.js';
 import { capabilityForEndpoint, capabilityForSource, rolesAllow, unauthorisedRole } from '../roles.js';
 import { planListExport, EXPORT_MAX_ROWS, EXPORT_TTL_MS, exportTooLarge, listExportCsv } from '../export.js';
 import {
@@ -30,7 +29,6 @@ export const PATHS = Object.freeze({
   READINESS: '/readyz',
   QUERY: '/v1/query',
   FINDING_REVIEW: '/v1/finding-review',
-  TOOL_SANCTION: '/v1/tool-sanction',
   LIST_EXPORT: '/v1/list-export',
   SUBJECT_EXPORT: '/v1/subject-export',
   SUBJECT_ERASURE: '/v1/subject-erasure',
@@ -422,43 +420,6 @@ export function createHandler({
     };
   }
 
-  /** POST /v1/tool-sanction: record a tool's sanction state. */
-  async function sanctionTool(client, principal, sanction, auditing) {
-    // The previous decision, for the audit detail. An absent row is `unknown`, a real answer.
-    const existing = await client.query(TOOL_SANCTION_FOR_REVIEW_SQL, [sanction.toolFingerprint]);
-    const previousState = existing.rows[0]?.sanctioned_state ?? 'unknown';
-    const saved = await client.query(UPSERT_TOOL_SANCTION_SQL, [sanction.toolFingerprint, sanction.displayName, sanction.sanctionedState, principal.actorId]);
-    const audit = toolSanctionAuditStatement({
-      actorId: principal.actorId,
-      toolFingerprint: sanction.toolFingerprint,
-      sanctionedState: sanction.sanctionedState,
-      previousState,
-      displayName: sanction.displayName,
-      note: sanction.note,
-      caseReference: principal.caseReference ?? null,
-      sessionId: principal.sessionId ?? null,
-    });
-    auditing();
-    const auditRow = await client.query(audit.text, audit.params);
-    const row = saved.rows[0] ?? {};
-    return {
-      status: 200,
-      body: {
-        api_version: '1',
-        result_state: 'ok',
-        data: {
-          tool_fingerprint: row.tool_fingerprint ?? sanction.toolFingerprint,
-          display_name: row.display_name ?? sanction.displayName,
-          sanctioned_state: row.sanctioned_state ?? sanction.sanctionedState,
-          previous_state: previousState,
-          decided_by: row.decided_by ?? (sanction.sanctionedState === 'unknown' ? null : principal.actorId),
-          decided_at: isoOrNull(row.decided_at),
-        },
-        ...auditBlock(auditRow.rows[0]),
-      },
-    };
-  }
-
   /**
    * The two content reads (content.js), forwarded to the vault, which decides everything. They
    * share the admission gate with /v1/query so a slow vault cannot exhaust the process.
@@ -788,7 +749,6 @@ export function createHandler({
     [`GET ${PATHS.READINESS}`, (req, res) => readiness(res)],
     [`POST ${PATHS.QUERY}`, query],
     [`POST ${PATHS.FINDING_REVIEW}`, (req, res) => auditedWrite(req, res, PATHS.FINDING_REVIEW, validateReviewRequest, reviewFinding)],
-    [`POST ${PATHS.TOOL_SANCTION}`, (req, res) => auditedWrite(req, res, PATHS.TOOL_SANCTION, validateSanctionRequest, sanctionTool)],
     [`POST ${CONTENT_PATHS.SEARCH}`, (req, res) => content(req, res, CONTENT_PATHS.SEARCH)],
     [`POST ${CONTENT_PATHS.RETRIEVAL}`, (req, res) => content(req, res, CONTENT_PATHS.RETRIEVAL)],
     [`POST ${PATHS.LIST_EXPORT}`, listExport],

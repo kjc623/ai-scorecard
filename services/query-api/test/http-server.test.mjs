@@ -12,7 +12,6 @@ import { loadConfig } from '../src/http/config.js';
 import { createVerifier } from '../src/http/auth.js';
 import { createContentForwarder, CONTENT_PATHS } from '../src/http/content.js';
 import { FINDING_FOR_REVIEW_SQL, UPSERT_REVIEW_SQL } from '../src/review.js';
-import { TOOL_SANCTION_FOR_REVIEW_SQL, UPSERT_TOOL_SANCTION_SQL } from '../src/sanction.js';
 import { createTestIssuer, TENANT } from './helpers.mjs';
 
 const SILENT = Object.freeze({ info() {}, warn() {}, error() {} });
@@ -23,8 +22,6 @@ const DEVICES = { query_version: '1', template: 'q7_devices', params: {} };
 const AUDIT = { query_version: '1', template: 'q10_audit_trail', params: { window: WINDOW } };
 const REVIEW_SUBMISSION = '80385a3a-ed3d-4950-bd21-3606c6f97fc5';
 const REVIEW_BODY = { submission_id: REVIEW_SUBMISSION, rule_id: 'PAYMENT_CARD_PAN', review_state: 'confirmed' };
-const TOOL_FP = 'tls_b6681b043244c43f';
-const SANCTION_BODY = { tool_fingerprint: TOOL_FP, sanctioned_state: 'sanctioned' };
 const RETRIEVAL_EVENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const HIT = '06f2b95e-def2-42ea-824b-926d74b59b97';
 
@@ -32,8 +29,6 @@ const HIT = '06f2b95e-def2-42ea-824b-926d74b59b97';
 function defaultAnswer(text) {
   if (text === FINDING_FOR_REVIEW_SQL) return [{ user_ref: 'u_4f21' }];
   if (text === UPSERT_REVIEW_SQL) return [{ review_state: 'confirmed', reviewed_by: 'reader@lab.test', reviewed_at: new Date('2026-10-05T01:00:00Z') }];
-  if (text === TOOL_SANCTION_FOR_REVIEW_SQL) return [];
-  if (text === UPSERT_TOOL_SANCTION_SQL) return [{ tool_fingerprint: TOOL_FP, display_name: null, sanctioned_state: 'sanctioned', decided_by: 'reader@lab.test', decided_at: new Date('2026-10-05T01:00:00Z') }];
   if (text.startsWith('INSERT INTO ops.audit')) return [{ audit_seq: 42, occurred_at: new Date('2026-10-05T01:00:01Z') }];
   return [];
 }
@@ -184,7 +179,6 @@ test('a tenant in any request body is refused as a validation error, not honoure
   for (const [path, body, roles] of [
     [PATHS.QUERY, { ...AGGREGATE, tenant_id: TENANT }, ['viewer']],
     [PATHS.FINDING_REVIEW, { ...REVIEW_BODY, tenant_id: TENANT }, ['analyst']],
-    [PATHS.TOOL_SANCTION, { ...SANCTION_BODY, tenant_id: TENANT }, ['admin']],
   ]) {
     const res = await call(path, body, bearer(roles));
     assert.equal(res.status, 400, path);
@@ -391,20 +385,6 @@ test('reviewing a finding that does not exist is 404 and writes nothing; open is
   assert.equal((await open.json()).error.code, 'type_mismatch');
 });
 
-test('a sanction decision is upserted and audited in one transaction', async (t) => {
-  const { call, bearer, pool } = await withServer(t);
-  const res = await call(PATHS.TOOL_SANCTION, { ...SANCTION_BODY, note: 'approved' }, bearer(['admin']));
-  assert.equal(res.status, 200);
-  const body = await res.json();
-  assert.equal(body.data.sanctioned_state, 'sanctioned');
-  assert.equal(body.data.previous_state, 'unknown', 'an absent row is unknown, a real answer');
-  const upsert = pool.calls.query.find((c) => c.text === UPSERT_TOOL_SANCTION_SQL);
-  assert.deepEqual(upsert.params, [TOOL_FP, null, 'sanctioned', 'reader@lab.test']);
-  const audit = pool.calls.query.find((c) => c.text.startsWith('INSERT INTO ops.audit'));
-  assert.equal(audit.params[2], 'tool.sanction');
-  assert.equal(pool.calls.query.at(-1).text, 'COMMIT');
-});
-
 test("the token's sid is written into the audit row of a read and of a write", async (t) => {
   const { call, bearer, pool } = await withServer(t);
   const analyst = bearer(['analyst'], { sid: 'ABCDEF0123456789' });
@@ -429,7 +409,6 @@ const ROUTE_CLASSES = [
   { name: 'subject-level read', path: PATHS.QUERY, body: EVENTS, allowed: ['analyst', 'content_reader', 'admin'] },
   { name: 'audit trail read', path: PATHS.QUERY, body: AUDIT, allowed: ['admin'] },
   { name: 'finding review write', path: PATHS.FINDING_REVIEW, body: REVIEW_BODY, allowed: ['analyst', 'content_reader', 'admin'] },
-  { name: 'tool sanction write', path: PATHS.TOOL_SANCTION, body: SANCTION_BODY, allowed: ['admin'] },
   { name: 'prompt-text search', path: CONTENT_PATHS.SEARCH, body: { query: 'capital' }, allowed: ['analyst', 'content_reader', 'admin'] },
   { name: 'content retrieval mint', path: CONTENT_PATHS.RETRIEVAL, body: { event_ids: [RETRIEVAL_EVENT] }, allowed: ['content_reader', 'admin'] },
 ];
@@ -455,7 +434,7 @@ test('a token carrying several roles has the union of their reach', async (t) =>
   const both = bearer(['viewer', 'analyst']);
   assert.equal((await call(PATHS.QUERY, DEVICES, both)).status, 200, 'device list via viewer');
   assert.equal((await call(PATHS.QUERY, EVENTS, both)).status, 200, 'subject-level read via analyst');
-  assert.equal((await call(PATHS.TOOL_SANCTION, SANCTION_BODY, both)).status, 403, 'neither carries sanction writes');
+  assert.equal((await call(PATHS.QUERY, AUDIT, both)).status, 403, 'neither carries the audit trail');
 });
 
 test('without a valid session every route class answers 401 and touches nothing', async (t) => {

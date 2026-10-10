@@ -144,18 +144,18 @@ CREATE TABLE ref.app_signal (
   PRIMARY KEY (app_key, platform, kind, value)
 );
 
--- The shared mapping from a behaviour-derived tool_fingerprint to a display name. Devices never
--- emit a brand, only a fingerprint of what they observed; this table names the common ones. A
--- tenant may override a name through ops.tool.display_name. signal_kind and evidence record how a
--- fingerprint was derived, so a row can be regenerated and reviewed. An `endpoint` row is a catalog
--- app's fingerprint and names its app_key.
+-- The shared mapping from a behaviour-derived tool_fingerprint to the tool it belongs to. Devices
+-- never emit a brand, only a fingerprint of what they observed; this table names the common ones
+-- and links each to its app in ref.app, the unit a tenant sanctions. signal_kind and evidence record
+-- how a fingerprint was derived, so a row can be regenerated and reviewed. An `endpoint` row is a
+-- catalog app's own fingerprint, `app:<app_key>`.
 CREATE TABLE ref.tool_catalogue (
   tool_fingerprint  text PRIMARY KEY,
   display_name      text NOT NULL,
   vendor            text,
   signal_kind       text NOT NULL CHECK (signal_kind IN ('tls','process','extension','other','endpoint')),
   evidence          jsonb NOT NULL DEFAULT '{}'::jsonb,
-  app_key           text REFERENCES ref.app
+  app_key           text NOT NULL REFERENCES ref.app
 );
 
 -- Which of two observations of one submission wins. LOWER RANK IS BETTER, and the rank is about the
@@ -199,7 +199,7 @@ CREATE TABLE ops.tenant (
   -- The requested collection mode, set by an admin on the Settings page and delivered to devices as
   -- the bundle's tenant_default_mode. NULL means "follow the ceiling"; a value must not exceed it.
   collection_mode              text CHECK (collection_mode IN ('m0','m1','m2','m3')),
-  -- Narrower per-tool modes (tool_fingerprint -> mode), applied on top of collection_mode. An
+  -- Narrower per-tool modes (ref.app key -> mode), applied on top of collection_mode. An
   -- override must not exceed the requested mode, so it can never widen collection; enforced by
   -- enforce_scope_overrides (section 8).
   scope_overrides              jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -403,20 +403,17 @@ CREATE TABLE ops.policy_bundle (
            OR signed_digest = 'sha256:' || encode(sha256(signed_envelope), 'hex'))
 );
 
--- Per-tenant sanction state for each tool fingerprint. The same tool may be sanctioned by one tenant
--- and not by another, and `unknown` is a first-class value distinct from `unsanctioned`.
-CREATE TABLE ops.tool (
+-- Per-tenant sanction decision for each tool (ref.app), one decision covering every fingerprint of
+-- the tool. The same tool may be sanctioned by one tenant and not by another, and `unknown` is a
+-- first-class value distinct from `unsanctioned`. A tool with no row is `unknown`.
+CREATE TABLE ops.tool_sanction (
   tenant_id         uuid NOT NULL REFERENCES ops.tenant(tenant_id),
-  tool_fingerprint  text NOT NULL,
-  display_name      text,
-  sanctioned_state  text NOT NULL DEFAULT 'unknown' CHECK (sanctioned_state IN ('sanctioned','unsanctioned','unknown')),
-  first_seen_at     timestamptz NOT NULL DEFAULT now(),
-  last_seen_at      timestamptz,
-  evidence          jsonb NOT NULL DEFAULT '{}'::jsonb,
+  tool_key          text NOT NULL REFERENCES ref.app,
+  sanctioned_state  text NOT NULL CHECK (sanctioned_state IN ('sanctioned','unsanctioned','unknown')),
   decided_by        text,
   decided_at        timestamptz,
-  PRIMARY KEY (tenant_id, tool_fingerprint),
-  CONSTRAINT tool_decision_attributed
+  PRIMARY KEY (tenant_id, tool_key),
+  CONSTRAINT tool_sanction_attributed
     CHECK (sanctioned_state = 'unknown' OR (decided_by IS NOT NULL AND decided_at IS NOT NULL))
 );
 
@@ -1464,8 +1461,8 @@ CREATE TABLE ops.finding_review (
 -- increments it: devices flush late in bursts, so late events are normal, and a replaced bucket is
 -- correct however often it is recomputed.
 
--- Usage per tool. Sanction state is joined from ops.tool at read time (mart.v_tool_usage), so
--- re-classifying a tool does not change the meaning of history.
+-- Usage per tool. Sanction state is joined from ops.tool_sanction at read time (mart.v_tool_usage),
+-- so re-classifying a tool does not change the meaning of history.
 CREATE TABLE mart.agg_tool_period (
   tenant_id        uuid NOT NULL,
   bucket_start     timestamptz NOT NULL,
@@ -1585,16 +1582,17 @@ SELECT d.tenant_id,
          WHERE cs.tenant_id = d.tenant_id AND cs.device_id = d.device_id) AS collectors_reporting
   FROM ops.device d;
 
--- Usage with present-tense sanction state. A LEFT JOIN, so a tool with no ops.tool row still appears
--- with a NULL state, which the read layer renders as `unknown`.
+-- Usage with present-tense sanction state: the decision on the tool the fingerprint belongs to.
+-- LEFT JOINs, so a fingerprint outside the catalogue, or a tool with no decision, still appears with
+-- a NULL state, which the read layer renders as `unknown`.
 CREATE VIEW mart.v_tool_usage
 WITH (security_invoker = true) AS
 SELECT a.tenant_id,
        a.bucket_start,
        a.bucket_size,
        a.tool_fingerprint,
-       coalesce(t.display_name, a.tool_fingerprint) AS display_name,
-       t.sanctioned_state,
+       coalesce(c.display_name, a.tool_fingerprint) AS display_name,
+       s.sanctioned_state,
        a.submissions,
        a.users,
        a.bytes_total,
@@ -1602,22 +1600,19 @@ SELECT a.tenant_id,
        a.warned,
        a.logged
   FROM mart.agg_tool_period a
-  LEFT JOIN ops.tool t
-    ON t.tenant_id = a.tenant_id
-   AND t.tool_fingerprint = a.tool_fingerprint;
+  LEFT JOIN ref.tool_catalogue c
+    ON c.tool_fingerprint = a.tool_fingerprint
+  LEFT JOIN ops.tool_sanction s
+    ON s.tenant_id = a.tenant_id
+   AND s.tool_key = c.app_key;
 
--- A fingerprint's display name: the tenant's own label, else the shared catalogue, else
--- "Unrecognised tool". The raw fingerprint is never shown as a name, because it would read like a
--- known tool with a bad label; it travels separately on every row.
+-- A fingerprint's display name: the shared catalogue's, else "Unrecognised tool". The raw
+-- fingerprint is never shown as a name, because it would read like a known tool with a bad label;
+-- it travels separately on every row.
 CREATE FUNCTION ops.tool_display_name(p_tool_fingerprint text)
 RETURNS text
 LANGUAGE sql STABLE AS $$
   SELECT coalesce(
-    (SELECT t.display_name
-       FROM ops.tool t
-      WHERE t.tenant_id = ops.current_tenant()
-        AND t.tool_fingerprint = p_tool_fingerprint
-        AND t.display_name IS NOT NULL),
     (SELECT c.display_name
        FROM ref.tool_catalogue c
       WHERE c.tool_fingerprint = p_tool_fingerprint),
@@ -2199,7 +2194,7 @@ DECLARE
   tenant_tables text[] := ARRAY[
     -- ops
     'ops.user_dim', 'ops.device', 'ops.device_credential', 'ops.collector_state',
-    'ops.policy_bundle', 'ops.tool', 'ops.notice_acknowledgement', 'ops.retention_policy',
+    'ops.policy_bundle', 'ops.tool_sanction', 'ops.notice_acknowledgement', 'ops.retention_policy',
     'ops.endpoint_setting', 'ops.endpoint_tool_setting', 'ops.enforcement_rule', 'ops.kill_switch',
     'ops.audit', 'ops.grant', 'ops.content', 'ops.retrieval_grant', 'ops.finding_review',
     'ops.erasure_receipt', 'ops.export', 'ops.erasure_request',
@@ -2287,7 +2282,7 @@ GRANT EXECUTE ON FUNCTION ops.current_tenant() TO sac_ingest;
 -- control-api: enrolment, policy, health, grant decisions, identity. The submission read is
 -- column-level, so it cannot become a read of labels or content.
 GRANT SELECT, INSERT, UPDATE ON ops.tenant, ops.user_dim, ops.device, ops.device_credential,
-      ops.collector_state, ops.policy_bundle, ops.tool, ops.notice_acknowledgement,
+      ops.collector_state, ops.policy_bundle, ops.tool_sanction, ops.notice_acknowledgement,
       ops.retention_policy, ops.grant, ops.coverage_snapshot, ops.finding_review,
       ops.subscription, ops.endpoint_setting, ops.endpoint_tool_setting
   TO sac_control;
@@ -2395,7 +2390,7 @@ GRANT SELECT ON mart.finding, mart.agg_tool_period, mart.agg_tool_user_period,
       mart.agg_class_period, mart.agg_org_period, mart.agg_user_period, mart.agg_device_period,
       mart.v_device_liveness, mart.v_tool_usage, mart.v_finding,
       mart.v_tenant_suspension_impact TO sac_query;
-GRANT SELECT ON ops.tenant, ops.user_dim, ops.device, ops.collector_state, ops.tool,
+GRANT SELECT ON ops.tenant, ops.user_dim, ops.device, ops.collector_state, ops.tool_sanction,
       ops.grant, ops.erasure_receipt, ops.coverage_snapshot, ops.aggregate_watermark,
       ops.retention_policy, ops.notice_acknowledgement, ops.policy_bundle,
       ops.subscription, ops.usage_daily TO sac_query;
@@ -2403,8 +2398,6 @@ GRANT SELECT ON ref.data_class, ref.rule, ref.route_fidelity, ref.collector TO s
 GRANT SELECT ON ref.tool_catalogue, ref.app, ref.app_signal TO sac_query;
 GRANT INSERT, SELECT ON ops.audit TO sac_query;
 GRANT SELECT, INSERT, UPDATE ON ops.finding_review TO sac_query;
--- A tool sanction decision commits with its audit entry, beside the read that shows it.
-GRANT INSERT, UPDATE ON ops.tool TO sac_query;
 GRANT EXECUTE ON FUNCTION ops.current_tenant(), ops.tool_display_name(text) TO sac_query;
 -- Exports are this service's artifacts: it writes a generated CSV or archive and serves it once.
 GRANT SELECT, INSERT ON ops.export TO sac_query;
@@ -2430,7 +2423,7 @@ GRANT SELECT, INSERT, UPDATE ON ops.erasure_receipt, ops.aggregate_watermark,
 GRANT SELECT, UPDATE ON ops.usage_daily TO sac_ops;
 GRANT SELECT ON ops.subscription TO sac_ops;
 GRANT SELECT ON ops.tenant, ops.user_dim, ops.device, ops.collector_state,
-      ops.retention_policy, ops.tool TO sac_ops;
+      ops.retention_policy TO sac_ops;
 GRANT SELECT ON ref.data_class, ref.rule, ref.route_fidelity,
       ref.collector, ref.retention_class TO sac_ops;
 GRANT INSERT ON ops.audit TO sac_ops;
@@ -2507,60 +2500,6 @@ INSERT INTO ref.rule (rule_id, class_code, detector_kind, severity, title, descr
   ('LEGAL_CLAUSE_VOCABULARY','legal_commercial','deterministic','medium','Contract language','Contract drafting vocabulary: whereas, hereinafter, witnesseth, indemnify, governing law, force majeure.'),
   ('SOURCE_DECLARATION','source_code','deterministic','high','Source code','A line declaring a function, class, package, import or C include.');
 
--- The shared tool catalogue:
---   * `tls` rows: the egress proxy's fingerprint of a destination, "tls_" + the first eight bytes
---     (lowercase hex) of sha256("tls|" + lowercased host + "|" + path without leading or trailing
---     slashes). One tool may have several paths, so several rows. evidence names the host and path.
---   * `extension` rows: the browser extension's "tf1:" + base32(sha256(canonical signal vector)).
---     The vector includes the body shape, so one tool yields one row per body-shape variant: `unread`
---     at M0 and the parsed body shape at M1+. evidence names the host, path and body shape.
---   * `process` rows: the process detector's "proc_" + image signature.
--- A fingerprint not listed here renders as "Unrecognised tool".
-INSERT INTO ref.tool_catalogue (tool_fingerprint, display_name, vendor, signal_kind, evidence) VALUES
-  ('tls_b6681b043244c43f', 'Claude Code', 'anthropic', 'tls', '{"host":"api.anthropic.com","path":"/v1/messages"}'),
-  ('tls_5a5a41ed0bf50d9d', 'Claude Code', 'anthropic', 'tls', '{"host":"api.anthropic.com","path":"/v1/messages/count_tokens"}'),
-  ('tls_69f6ab029df3c019', 'Claude Code', 'anthropic', 'tls', '{"host":"api.anthropic.com","path":"/api/event_logging/v2/batch"}'),
-  ('tls_31299ef7601928f7', 'Claude Code', 'anthropic', 'tls', '{"host":"api.anthropic.com","path":"/api/event_logging/batch"}'),
-  ('tls_cb53d2b2add3d450', 'Claude Code', 'anthropic', 'tls', '{"host":"api.anthropic.com","path":"/api/claude_cli_profile"}'),
-  ('tls_f32477ff734d70d1', 'OpenAI API', 'openai', 'tls', '{"host":"api.openai.com","path":"/v1/chat/completions"}'),
-  ('tls_4a602150609f427e', 'OpenAI API', 'openai', 'tls', '{"host":"api.openai.com","path":"/v1/responses"}'),
-  ('tls_15ab95c6f0615e12', 'OpenAI API', 'openai', 'tls', '{"host":"api.openai.com","path":"/v1/models"}'),
-  ('tls_8a9512eae8499418', 'OpenAI API', 'openai', 'tls', '{"host":"api.openai.com","path":"/v1/completions"}'),
-  ('tls_11574658dafb8805', 'ChatGPT (web)', 'openai', 'tls', '{"host":"chatgpt.com","path":"/backend-api/conversation"}'),
-  ('tls_fd863543bed5e1fd', 'ChatGPT (web)', 'openai', 'tls', '{"host":"chatgpt.com","path":"/backend-api/chat/completions"}'),
-  ('tls_2af2dd0ea445e033', 'ChatGPT (web)', 'openai', 'tls', '{"host":"chat.openai.com","path":"/backend-api/conversation"}'),
-  ('tls_f412811be7ac6539', 'GitHub Copilot', 'github', 'tls', '{"host":"api.githubcopilot.com","path":"/chat/completions"}'),
-  ('tls_336b980c5f15d4f0', 'GitHub Copilot', 'github', 'tls', '{"host":"api.githubcopilot.com","path":"/v1/chat/completions"}'),
-  ('tls_ba5b03450233e3fc', 'GitHub Copilot', 'github', 'tls', '{"host":"api.githubcopilot.com","path":"/models"}'),
-  ('tls_3a0703d7a0dc3a68', 'GitHub Copilot', 'github', 'tls', '{"host":"copilot.microsoft.com","path":"/chat/completions"}'),
-  ('tls_7659f7a5e64cd885', 'Gemini (web)', 'google', 'tls', '{"host":"gemini.google.com","path":"/"}'),
-  ('tls_0320fa08a4f64851', 'Gemini API', 'google', 'tls', '{"host":"generativelanguage.googleapis.com","path":"/v1beta/models"}'),
-  ('tls_a40a04ef6e27de9f', 'Perplexity (web)', 'perplexity', 'tls', '{"host":"www.perplexity.ai","path":"/"}'),
-  ('tls_aefb9cd055abfffb', 'Perplexity API', 'perplexity', 'tls', '{"host":"api.perplexity.ai","path":"/chat/completions"}'),
-  ('tls_9230903190dcf0dc', 'Cursor', 'cursor', 'tls', '{"host":"api2.cursor.sh","path":"/"}'),
-  ('tls_14a9086e088f0d82', 'Cursor', 'cursor', 'tls', '{"host":"api.cursor.com","path":"/"}'),
-  ('tls_84160351478923e0', 'Mistral API', 'mistral', 'tls', '{"host":"api.mistral.ai","path":"/v1/chat/completions"}'),
-  ('tls_41b7a7dd22bb3bae', 'Groq API', 'groq', 'tls', '{"host":"api.groq.com","path":"/openai/v1/chat/completions"}'),
-  ('tls_823b80bdeef13f38', 'OpenRouter', 'openrouter', 'tls', '{"host":"openrouter.ai","path":"/api/v1/chat/completions"}'),
-  ('tls_ce5fbce2b73c1868', 'DeepSeek API', 'deepseek', 'tls', '{"host":"api.deepseek.com","path":"/chat/completions"}'),
-  ('tls_d829c7e9598888f9', 'xAI API', 'xai', 'tls', '{"host":"api.x.ai","path":"/v1/chat/completions"}'),
-  ('tls_544b80dcc1446f8b', 'Together AI', 'together', 'tls', '{"host":"api.together.xyz","path":"/v1/chat/completions"}'),
-  ('tls_4fb4f5cb98d7a1c3', 'Cohere API', 'cohere', 'tls', '{"host":"api.cohere.ai","path":"/v1/chat"}'),
-  ('tf1:hlognixbimq6jqlfcheehwxezyv2vtyogd3smjsgk77zwjifb2ea', 'ChatGPT (web)', 'openai', 'extension', '{"host":"chatgpt.com","path":"/backend-api/conversation","body_shape":"object"}'),
-  ('tf1:xiomqpsllfipvhz6w2xwx2l3zdik3ngbdxvofzaxux62523edvkq', 'ChatGPT (web)', 'openai', 'extension', '{"host":"chatgpt.com","path":"/backend-api/conversation","body_shape":"unread"}'),
-  ('tf1:x27bqogmznppw26owgvccwfqezl4i3cugvad7sycdk2uqk62gvia', 'ChatGPT (web)', 'openai', 'extension', '{"host":"chatgpt.com","path":"/backend-api/chat/completions","body_shape":"object"}'),
-  ('tf1:ydl5lxopbtwsnmghjc2lwxk3slkjrvscd4ouvgfb3pmmxunk5sta', 'ChatGPT (web)', 'openai', 'extension', '{"host":"chatgpt.com","path":"/backend-api/chat/completions","body_shape":"unread"}'),
-  ('tf1:kq55tcqzzdlrwxhti5pdrscxyk5dog6xfyg7ug6thghamyrqopea', 'ChatGPT (web)', 'openai', 'extension', '{"host":"chat.openai.com","path":"/backend-api/conversation","body_shape":"object"}'),
-  ('tf1:ohbm5fgfrvf4arkilu24wkkad7wirfo7mrm5w3xmy2hjfvbqhj7a', 'ChatGPT (web)', 'openai', 'extension', '{"host":"chat.openai.com","path":"/backend-api/conversation","body_shape":"unread"}'),
-  ('tf1:nf5drcrnmwyfqnmyduciaqvohsp2c4t4dz6qaxf4g4duu3vc3mga', 'Gemini (web)', 'google', 'extension', '{"host":"gemini.google.com","path":"/","body_shape":"object"}'),
-  ('tf1:ob5qgeqi2s5ex44u3lpaf4qbynapejw7yps7sotdhx2xgyv4j3qq', 'Gemini (web)', 'google', 'extension', '{"host":"gemini.google.com","path":"/","body_shape":"unread"}'),
-  ('tf1:qv3h3ufruluti57ac7llyqt7f4r4u2qtehffb3a5345yhxdp3qqq', 'Perplexity (web)', 'perplexity', 'extension', '{"host":"www.perplexity.ai","path":"/","body_shape":"object"}'),
-  ('tf1:dtd56ngekt7ismxxikxqfqko4ifxuvcl2yxdek3cqozqbx4mv4va', 'Perplexity (web)', 'perplexity', 'extension', '{"host":"www.perplexity.ai","path":"/","body_shape":"unread"}'),
-  ('proc_ollama',          'Ollama (local)',    'ollama',    'process', '{"image_signature":"ollama"}'),
-  ('proc_lmstudio',        'LM Studio (local)', 'lmstudio',  'process', '{"image_signature":"lm studio"}'),
-  ('proc_llama',           'llama.cpp (local)', 'llama.cpp', 'process', '{"image_signature":"llama.cpp"}'),
-  ('proc_vllm',            'vLLM (local)',      'vllm',      'process', '{"image_signature":"vllm"}');
-
 -- The app catalog. Each signal was checked against its app's source_url or another published
 -- vendor or package-registry source; a signal that could not be checked is left out. The JetBrains
 -- uninstall names are the leading words of an entry named '<product> <version>'. Each app's
@@ -2574,6 +2513,8 @@ INSERT INTO ref.app (app_key, display_name, vendor, category, source_url) VALUES
    'https://github.com/MicrosoftDocs/azure-ai-docs/blob/main/articles/foundry/foundry-models/includes/concepts-endpoints-2.md'),
   ('chatgpt_desktop',    'ChatGPT Desktop', 'openai', 'chat_assistant',
    'https://github.com/Homebrew/homebrew-cask/blob/main/Casks/c/chatgpt.rb'),
+  ('chatgpt_web',        'ChatGPT (web)', 'openai', 'chat_assistant',
+   'https://chatgpt.com'),
   ('claude_code',        'Claude Code', 'anthropic', 'coding_agent',
    'https://code.claude.com/docs/en/setup'),
   ('claude_code_vscode', 'Claude Code for VS Code', 'anthropic', 'ide_assistant',
@@ -2582,123 +2523,216 @@ INSERT INTO ref.app (app_key, display_name, vendor, category, source_url) VALUES
    'https://code.claude.com/docs/en/desktop'),
   ('codex',              'Codex CLI', 'openai', 'coding_agent',
    'https://github.com/openai/codex'),
+  ('cohere_api',         'Cohere API', 'cohere', 'inference_api',
+   'https://docs.cohere.com/reference/chat'),
   ('continue',           'Continue', 'continue', 'ide_assistant',
    'https://github.com/continuedev/continue'),
   ('copilot_cli',        'GitHub Copilot CLI', 'github', 'coding_agent',
    'https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli'),
   ('cursor',             'Cursor', 'cursor', 'ide',
    'https://github.com/Homebrew/homebrew-cask/blob/main/Casks/c/cursor.rb'),
+  ('deepseek_api',       'DeepSeek API', 'deepseek', 'inference_api',
+   'https://api-docs.deepseek.com'),
   ('gemini_cli',         'Gemini CLI', 'google', 'coding_agent',
    'https://github.com/google-gemini/gemini-cli'),
+  ('gemini_web',         'Gemini (web)', 'google', 'chat_assistant',
+   'https://gemini.google.com'),
   ('github_copilot',     'GitHub Copilot', 'github', 'ide_assistant',
    'https://github.com/microsoft/vscode-copilot-chat'),
   ('google_ai_api',      'Google AI API', 'google', 'inference_api',
    'https://github.com/googleapis/python-genai/blob/main/google/genai/_api_client.py'),
+  ('groq_api',           'Groq API', 'groq', 'inference_api',
+   'https://console.groq.com/docs/api-reference'),
   ('jetbrains',          'JetBrains IDEs', 'jetbrains', 'ide',
    'https://github.com/microsoft/winget-pkgs/tree/master/manifests/j/JetBrains'),
+  ('llama_cpp',          'llama.cpp', 'llama.cpp', 'local_runtime',
+   'https://github.com/ggml-org/llama.cpp'),
   ('lm_studio',          'LM Studio', 'lmstudio', 'local_runtime',
    'https://github.com/lmstudio-ai/docs'),
+  ('mistral_api',        'Mistral API', 'mistral', 'inference_api',
+   'https://docs.mistral.ai/api'),
   ('ollama',             'Ollama', 'ollama', 'local_runtime',
    'https://github.com/ollama/ollama/blob/main/docs/faq.mdx'),
   ('openai_api',         'OpenAI API', 'openai', 'inference_api',
    'https://github.com/openai/openai-python'),
+  ('openrouter',         'OpenRouter', 'openrouter', 'inference_api',
+   'https://openrouter.ai/docs/api-reference/overview'),
+  ('perplexity_api',     'Perplexity API', 'perplexity', 'inference_api',
+   'https://docs.perplexity.ai/api-reference/chat-completions-post'),
+  ('perplexity_web',     'Perplexity (web)', 'perplexity', 'chat_assistant',
+   'https://www.perplexity.ai'),
+  ('together_ai',        'Together AI', 'together', 'inference_api',
+   'https://docs.together.ai/reference/chat-completions-1'),
+  ('vllm',               'vLLM', 'vllm', 'local_runtime',
+   'https://github.com/vllm-project/vllm'),
   ('vscode',             'Visual Studio Code', 'microsoft', 'ide',
    'https://github.com/microsoft/vscode-docs/blob/main/docs/setup/portable.md'),
   ('windsurf',           'Windsurf', 'codeium', 'ide',
-   'https://github.com/microsoft/winget-pkgs/tree/master/manifests/c/Codeium/Windsurf');
+   'https://github.com/microsoft/winget-pkgs/tree/master/manifests/c/Codeium/Windsurf'),
+  ('xai_api',            'xAI API', 'xai', 'inference_api',
+   'https://docs.x.ai/docs/api-reference');
 
 INSERT INTO ref.app_signal (app_key, platform, kind, value) VALUES
-  ('anthropic_api',      'any',     'inference_domain',       'api.anthropic.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.af-south-1.amazonaws.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.ap-east-1.amazonaws.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.ap-east-2.amazonaws.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.ap-northeast-1.amazonaws.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.ap-northeast-2.amazonaws.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.ap-northeast-3.amazonaws.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.ap-south-1.amazonaws.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.ap-south-2.amazonaws.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.ap-southeast-1.amazonaws.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.ap-southeast-2.amazonaws.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.ap-southeast-3.amazonaws.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.ap-southeast-4.amazonaws.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.ap-southeast-5.amazonaws.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.ap-southeast-6.amazonaws.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.ap-southeast-7.amazonaws.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.ca-central-1.amazonaws.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.ca-west-1.amazonaws.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.eu-central-1.amazonaws.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.eu-central-2.amazonaws.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.eu-north-1.amazonaws.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.eu-south-1.amazonaws.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.eu-south-2.amazonaws.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.eu-west-1.amazonaws.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.eu-west-2.amazonaws.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.eu-west-3.amazonaws.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.il-central-1.amazonaws.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.me-central-1.amazonaws.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.me-south-1.amazonaws.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.mx-central-1.amazonaws.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.sa-east-1.amazonaws.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.us-east-1.amazonaws.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.us-east-2.amazonaws.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.us-gov-east-1.amazonaws.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.us-gov-west-1.amazonaws.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.us-west-1.amazonaws.com'),
-  ('aws_bedrock',        'any',     'inference_domain',       '.bedrock-runtime.us-west-2.amazonaws.com'),
-  ('azure_ai_foundry',   'any',     'inference_domain',       '.models.ai.azure.com'),
-  ('azure_ai_foundry',   'any',     'inference_domain',       '.openai.azure.com'),
-  ('azure_ai_foundry',   'any',     'inference_domain',       '.services.ai.azure.com'),
-  ('chatgpt_desktop',    'any',     'inference_domain',       'chatgpt.com'),
-  ('chatgpt_desktop',    'macos',   'macos_bundle_id',        'com.openai.chat'),
-  ('chatgpt_desktop',    'macos',   'macos_bundle_id',        'com.openai.codex'),
-  ('claude_code',        'any',     'cli_binary',             'claude'),
-  ('claude_code',        'any',     'inference_domain',       'api.anthropic.com'),
-  ('claude_code',        'any',     'npm_package',            '@anthropic-ai/claude-code'),
-  ('claude_code',        'windows', 'windows_exe',            'claude.exe'),
-  ('claude_code_vscode', 'any',     'ide_extension_id',       'anthropic.claude-code'),
-  ('claude_desktop',     'any',     'inference_domain',       'claude.ai'),
-  ('claude_desktop',     'macos',   'macos_bundle_id',        'com.anthropic.claudefordesktop'),
-  ('claude_desktop',     'windows', 'publisher',              'Anthropic, PBC'),
-  ('claude_desktop',     'windows', 'windows_appx',           'Claude_pzs8sxrjxfjjc'),
-  ('codex',              'any',     'cli_binary',             'codex'),
-  ('codex',              'any',     'npm_package',            '@openai/codex'),
-  ('codex',              'windows', 'windows_exe',            'codex-aarch64-pc-windows-msvc.exe'),
-  ('codex',              'windows', 'windows_exe',            'codex-x86_64-pc-windows-msvc.exe'),
-  ('codex',              'windows', 'windows_exe',            'codex.exe'),
-  ('continue',           'any',     'ide_extension_id',       'continue.continue'),
-  ('copilot_cli',        'any',     'cli_binary',             'copilot'),
-  ('copilot_cli',        'any',     'npm_package',            '@github/copilot'),
-  ('cursor',             'macos',   'macos_bundle_id',        'com.todesktop.230313mzl4w4u92'),
-  ('cursor',             'windows', 'publisher',              'Anysphere'),
-  ('gemini_cli',         'any',     'cli_binary',             'gemini'),
-  ('gemini_cli',         'any',     'npm_package',            '@google/gemini-cli'),
-  ('github_copilot',     'any',     'ide_extension_id',       'github.copilot-chat'),
-  ('google_ai_api',      'any',     'inference_domain',       '.aiplatform.googleapis.com'),
-  ('google_ai_api',      'any',     'inference_domain',       'generativelanguage.googleapis.com'),
-  ('jetbrains',          'windows', 'publisher',              'JetBrains s.r.o.'),
-  ('jetbrains',          'windows', 'windows_uninstall_name', 'CLion'),
-  ('jetbrains',          'windows', 'windows_uninstall_name', 'DataGrip'),
-  ('jetbrains',          'windows', 'windows_uninstall_name', 'GoLand'),
-  ('jetbrains',          'windows', 'windows_uninstall_name', 'IntelliJ IDEA'),
-  ('jetbrains',          'windows', 'windows_uninstall_name', 'JetBrains Rider'),
-  ('jetbrains',          'windows', 'windows_uninstall_name', 'PhpStorm'),
-  ('jetbrains',          'windows', 'windows_uninstall_name', 'PyCharm'),
-  ('jetbrains',          'windows', 'windows_uninstall_name', 'RubyMine'),
-  ('jetbrains',          'windows', 'windows_uninstall_name', 'RustRover'),
-  ('jetbrains',          'windows', 'windows_uninstall_name', 'WebStorm'),
-  ('lm_studio',          'any',     'listen_port',            '1234'),
-  ('lm_studio',          'any',     'model_store',            '~/.lmstudio/models'),
-  ('ollama',             'any',     'listen_port',            '11434'),
-  ('ollama',             'linux',   'model_store',            '/usr/share/ollama/.ollama/models'),
-  ('ollama',             'macos',   'model_store',            '~/.ollama/models'),
-  ('ollama',             'windows', 'model_store',            '%USERPROFILE%\.ollama\models'),
-  ('ollama',             'windows', 'windows_exe',            'ollama app.exe'),
-  ('ollama',             'windows', 'windows_exe',            'ollama.exe'),
-  ('openai_api',         'any',     'inference_domain',       'api.openai.com'),
-  ('vscode',             'macos',   'macos_bundle_id',        'com.microsoft.VSCode'),
-  ('vscode',             'windows', 'publisher',              'Microsoft Corporation'),
-  ('vscode',             'windows', 'windows_exe',            'Code.exe'),
-  ('windsurf',           'windows', 'publisher',              'Codeium');
+  ('anthropic_api',       'any',       'inference_domain',        'api.anthropic.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.af-south-1.amazonaws.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.ap-east-1.amazonaws.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.ap-east-2.amazonaws.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.ap-northeast-1.amazonaws.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.ap-northeast-2.amazonaws.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.ap-northeast-3.amazonaws.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.ap-south-1.amazonaws.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.ap-south-2.amazonaws.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.ap-southeast-1.amazonaws.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.ap-southeast-2.amazonaws.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.ap-southeast-3.amazonaws.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.ap-southeast-4.amazonaws.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.ap-southeast-5.amazonaws.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.ap-southeast-6.amazonaws.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.ap-southeast-7.amazonaws.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.ca-central-1.amazonaws.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.ca-west-1.amazonaws.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.eu-central-1.amazonaws.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.eu-central-2.amazonaws.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.eu-north-1.amazonaws.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.eu-south-1.amazonaws.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.eu-south-2.amazonaws.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.eu-west-1.amazonaws.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.eu-west-2.amazonaws.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.eu-west-3.amazonaws.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.il-central-1.amazonaws.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.me-central-1.amazonaws.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.me-south-1.amazonaws.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.mx-central-1.amazonaws.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.sa-east-1.amazonaws.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.us-east-1.amazonaws.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.us-east-2.amazonaws.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.us-gov-east-1.amazonaws.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.us-gov-west-1.amazonaws.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.us-west-1.amazonaws.com'),
+  ('aws_bedrock',         'any',       'inference_domain',        '.bedrock-runtime.us-west-2.amazonaws.com'),
+  ('azure_ai_foundry',    'any',       'inference_domain',        '.models.ai.azure.com'),
+  ('azure_ai_foundry',    'any',       'inference_domain',        '.openai.azure.com'),
+  ('azure_ai_foundry',    'any',       'inference_domain',        '.services.ai.azure.com'),
+  ('chatgpt_desktop',     'any',       'inference_domain',        'chatgpt.com'),
+  ('chatgpt_desktop',     'macos',     'macos_bundle_id',         'com.openai.chat'),
+  ('chatgpt_desktop',     'macos',     'macos_bundle_id',         'com.openai.codex'),
+  ('chatgpt_web',         'any',       'inference_domain',        'chat.openai.com'),
+  ('chatgpt_web',         'any',       'inference_domain',        'chatgpt.com'),
+  ('claude_code',         'any',       'cli_binary',              'claude'),
+  ('claude_code',         'any',       'inference_domain',        'api.anthropic.com'),
+  ('claude_code',         'any',       'npm_package',             '@anthropic-ai/claude-code'),
+  ('claude_code',         'windows',   'windows_exe',             'claude.exe'),
+  ('claude_code_vscode',  'any',       'ide_extension_id',        'anthropic.claude-code'),
+  ('claude_desktop',      'any',       'inference_domain',        'claude.ai'),
+  ('claude_desktop',      'macos',     'macos_bundle_id',         'com.anthropic.claudefordesktop'),
+  ('claude_desktop',      'windows',   'publisher',               'Anthropic, PBC'),
+  ('claude_desktop',      'windows',   'windows_appx',            'Claude_pzs8sxrjxfjjc'),
+  ('codex',               'any',       'cli_binary',              'codex'),
+  ('codex',               'any',       'npm_package',             '@openai/codex'),
+  ('codex',               'windows',   'windows_exe',             'codex-aarch64-pc-windows-msvc.exe'),
+  ('codex',               'windows',   'windows_exe',             'codex-x86_64-pc-windows-msvc.exe'),
+  ('codex',               'windows',   'windows_exe',             'codex.exe'),
+  ('cohere_api',          'any',       'inference_domain',        'api.cohere.ai'),
+  ('continue',            'any',       'ide_extension_id',        'continue.continue'),
+  ('copilot_cli',         'any',       'cli_binary',              'copilot'),
+  ('copilot_cli',         'any',       'npm_package',             '@github/copilot'),
+  ('cursor',              'macos',     'macos_bundle_id',         'com.todesktop.230313mzl4w4u92'),
+  ('cursor',              'windows',   'publisher',               'Anysphere'),
+  ('deepseek_api',        'any',       'inference_domain',        'api.deepseek.com'),
+  ('gemini_cli',          'any',       'cli_binary',              'gemini'),
+  ('gemini_cli',          'any',       'npm_package',             '@google/gemini-cli'),
+  ('gemini_web',          'any',       'inference_domain',        'gemini.google.com'),
+  ('github_copilot',      'any',       'ide_extension_id',        'github.copilot-chat'),
+  ('google_ai_api',       'any',       'inference_domain',        '.aiplatform.googleapis.com'),
+  ('google_ai_api',       'any',       'inference_domain',        'generativelanguage.googleapis.com'),
+  ('groq_api',            'any',       'inference_domain',        'api.groq.com'),
+  ('jetbrains',           'windows',   'publisher',               'JetBrains s.r.o.'),
+  ('jetbrains',           'windows',   'windows_uninstall_name',  'CLion'),
+  ('jetbrains',           'windows',   'windows_uninstall_name',  'DataGrip'),
+  ('jetbrains',           'windows',   'windows_uninstall_name',  'GoLand'),
+  ('jetbrains',           'windows',   'windows_uninstall_name',  'IntelliJ IDEA'),
+  ('jetbrains',           'windows',   'windows_uninstall_name',  'JetBrains Rider'),
+  ('jetbrains',           'windows',   'windows_uninstall_name',  'PhpStorm'),
+  ('jetbrains',           'windows',   'windows_uninstall_name',  'PyCharm'),
+  ('jetbrains',           'windows',   'windows_uninstall_name',  'RubyMine'),
+  ('jetbrains',           'windows',   'windows_uninstall_name',  'RustRover'),
+  ('jetbrains',           'windows',   'windows_uninstall_name',  'WebStorm'),
+  ('llama_cpp',           'any',       'listen_port',             '8080'),
+  ('lm_studio',           'any',       'listen_port',             '1234'),
+  ('lm_studio',           'any',       'model_store',             '~/.lmstudio/models'),
+  ('mistral_api',         'any',       'inference_domain',        'api.mistral.ai'),
+  ('ollama',              'any',       'listen_port',             '11434'),
+  ('ollama',              'linux',     'model_store',             '/usr/share/ollama/.ollama/models'),
+  ('ollama',              'macos',     'model_store',             '~/.ollama/models'),
+  ('ollama',              'windows',   'model_store',             '%USERPROFILE%\.ollama\models'),
+  ('ollama',              'windows',   'windows_exe',             'ollama app.exe'),
+  ('ollama',              'windows',   'windows_exe',             'ollama.exe'),
+  ('openai_api',          'any',       'inference_domain',        'api.openai.com'),
+  ('openrouter',          'any',       'inference_domain',        'openrouter.ai'),
+  ('perplexity_api',      'any',       'inference_domain',        'api.perplexity.ai'),
+  ('perplexity_web',      'any',       'inference_domain',        'www.perplexity.ai'),
+  ('together_ai',         'any',       'inference_domain',        'api.together.xyz'),
+  ('vllm',                'any',       'listen_port',             '8000'),
+  ('vscode',              'macos',     'macos_bundle_id',         'com.microsoft.VSCode'),
+  ('vscode',              'windows',   'publisher',               'Microsoft Corporation'),
+  ('vscode',              'windows',   'windows_exe',             'Code.exe'),
+  ('windsurf',            'windows',   'publisher',               'Codeium'),
+  ('xai_api',             'any',       'inference_domain',        'api.x.ai');
+
+-- The shared tool catalogue. Every fingerprint belongs to one tool, its app_key in ref.app, which is
+-- what a tenant sanctions and what a rule names; the fingerprints are what devices observe.
+--   * `tls` rows: the egress proxy's fingerprint of a destination, "tls_" + the first eight bytes
+--     (lowercase hex) of sha256("tls|" + lowercased host + "|" + path without leading or trailing
+--     slashes). One tool may have several paths, so several rows. evidence names the host and path.
+--   * `extension` rows: the browser extension's "tf1:" + base32(sha256(canonical signal vector)).
+--     The vector includes the body shape, so one tool yields one row per body-shape variant: `unread`
+--     at M0 and the parsed body shape at M1+. evidence names the host, path and body shape.
+--   * `process` rows: the process detector's "proc_" + image signature.
+-- A fingerprint not listed here renders as "Unrecognised tool" and belongs to no tool.
+INSERT INTO ref.tool_catalogue (tool_fingerprint, display_name, vendor, signal_kind, evidence, app_key) VALUES
+  ('tls_b6681b043244c43f', 'Claude Code', 'anthropic', 'tls', '{"host":"api.anthropic.com","path":"/v1/messages"}', 'claude_code'),
+  ('tls_5a5a41ed0bf50d9d', 'Claude Code', 'anthropic', 'tls', '{"host":"api.anthropic.com","path":"/v1/messages/count_tokens"}', 'claude_code'),
+  ('tls_69f6ab029df3c019', 'Claude Code', 'anthropic', 'tls', '{"host":"api.anthropic.com","path":"/api/event_logging/v2/batch"}', 'claude_code'),
+  ('tls_31299ef7601928f7', 'Claude Code', 'anthropic', 'tls', '{"host":"api.anthropic.com","path":"/api/event_logging/batch"}', 'claude_code'),
+  ('tls_cb53d2b2add3d450', 'Claude Code', 'anthropic', 'tls', '{"host":"api.anthropic.com","path":"/api/claude_cli_profile"}', 'claude_code'),
+  ('tls_f32477ff734d70d1', 'OpenAI API', 'openai', 'tls', '{"host":"api.openai.com","path":"/v1/chat/completions"}', 'openai_api'),
+  ('tls_4a602150609f427e', 'OpenAI API', 'openai', 'tls', '{"host":"api.openai.com","path":"/v1/responses"}', 'openai_api'),
+  ('tls_15ab95c6f0615e12', 'OpenAI API', 'openai', 'tls', '{"host":"api.openai.com","path":"/v1/models"}', 'openai_api'),
+  ('tls_8a9512eae8499418', 'OpenAI API', 'openai', 'tls', '{"host":"api.openai.com","path":"/v1/completions"}', 'openai_api'),
+  ('tls_11574658dafb8805', 'ChatGPT (web)', 'openai', 'tls', '{"host":"chatgpt.com","path":"/backend-api/conversation"}', 'chatgpt_web'),
+  ('tls_fd863543bed5e1fd', 'ChatGPT (web)', 'openai', 'tls', '{"host":"chatgpt.com","path":"/backend-api/chat/completions"}', 'chatgpt_web'),
+  ('tls_2af2dd0ea445e033', 'ChatGPT (web)', 'openai', 'tls', '{"host":"chat.openai.com","path":"/backend-api/conversation"}', 'chatgpt_web'),
+  ('tls_f412811be7ac6539', 'GitHub Copilot', 'github', 'tls', '{"host":"api.githubcopilot.com","path":"/chat/completions"}', 'github_copilot'),
+  ('tls_336b980c5f15d4f0', 'GitHub Copilot', 'github', 'tls', '{"host":"api.githubcopilot.com","path":"/v1/chat/completions"}', 'github_copilot'),
+  ('tls_ba5b03450233e3fc', 'GitHub Copilot', 'github', 'tls', '{"host":"api.githubcopilot.com","path":"/models"}', 'github_copilot'),
+  ('tls_3a0703d7a0dc3a68', 'GitHub Copilot', 'github', 'tls', '{"host":"copilot.microsoft.com","path":"/chat/completions"}', 'github_copilot'),
+  ('tls_7659f7a5e64cd885', 'Gemini (web)', 'google', 'tls', '{"host":"gemini.google.com","path":"/"}', 'gemini_web'),
+  ('tls_0320fa08a4f64851', 'Gemini API', 'google', 'tls', '{"host":"generativelanguage.googleapis.com","path":"/v1beta/models"}', 'google_ai_api'),
+  ('tls_a40a04ef6e27de9f', 'Perplexity (web)', 'perplexity', 'tls', '{"host":"www.perplexity.ai","path":"/"}', 'perplexity_web'),
+  ('tls_aefb9cd055abfffb', 'Perplexity API', 'perplexity', 'tls', '{"host":"api.perplexity.ai","path":"/chat/completions"}', 'perplexity_api'),
+  ('tls_9230903190dcf0dc', 'Cursor', 'cursor', 'tls', '{"host":"api2.cursor.sh","path":"/"}', 'cursor'),
+  ('tls_14a9086e088f0d82', 'Cursor', 'cursor', 'tls', '{"host":"api.cursor.com","path":"/"}', 'cursor'),
+  ('tls_84160351478923e0', 'Mistral API', 'mistral', 'tls', '{"host":"api.mistral.ai","path":"/v1/chat/completions"}', 'mistral_api'),
+  ('tls_41b7a7dd22bb3bae', 'Groq API', 'groq', 'tls', '{"host":"api.groq.com","path":"/openai/v1/chat/completions"}', 'groq_api'),
+  ('tls_823b80bdeef13f38', 'OpenRouter', 'openrouter', 'tls', '{"host":"openrouter.ai","path":"/api/v1/chat/completions"}', 'openrouter'),
+  ('tls_ce5fbce2b73c1868', 'DeepSeek API', 'deepseek', 'tls', '{"host":"api.deepseek.com","path":"/chat/completions"}', 'deepseek_api'),
+  ('tls_d829c7e9598888f9', 'xAI API', 'xai', 'tls', '{"host":"api.x.ai","path":"/v1/chat/completions"}', 'xai_api'),
+  ('tls_544b80dcc1446f8b', 'Together AI', 'together', 'tls', '{"host":"api.together.xyz","path":"/v1/chat/completions"}', 'together_ai'),
+  ('tls_4fb4f5cb98d7a1c3', 'Cohere API', 'cohere', 'tls', '{"host":"api.cohere.ai","path":"/v1/chat"}', 'cohere_api'),
+  ('tf1:hlognixbimq6jqlfcheehwxezyv2vtyogd3smjsgk77zwjifb2ea', 'ChatGPT (web)', 'openai', 'extension', '{"host":"chatgpt.com","path":"/backend-api/conversation","body_shape":"object"}', 'chatgpt_web'),
+  ('tf1:xiomqpsllfipvhz6w2xwx2l3zdik3ngbdxvofzaxux62523edvkq', 'ChatGPT (web)', 'openai', 'extension', '{"host":"chatgpt.com","path":"/backend-api/conversation","body_shape":"unread"}', 'chatgpt_web'),
+  ('tf1:x27bqogmznppw26owgvccwfqezl4i3cugvad7sycdk2uqk62gvia', 'ChatGPT (web)', 'openai', 'extension', '{"host":"chatgpt.com","path":"/backend-api/chat/completions","body_shape":"object"}', 'chatgpt_web'),
+  ('tf1:ydl5lxopbtwsnmghjc2lwxk3slkjrvscd4ouvgfb3pmmxunk5sta', 'ChatGPT (web)', 'openai', 'extension', '{"host":"chatgpt.com","path":"/backend-api/chat/completions","body_shape":"unread"}', 'chatgpt_web'),
+  ('tf1:kq55tcqzzdlrwxhti5pdrscxyk5dog6xfyg7ug6thghamyrqopea', 'ChatGPT (web)', 'openai', 'extension', '{"host":"chat.openai.com","path":"/backend-api/conversation","body_shape":"object"}', 'chatgpt_web'),
+  ('tf1:ohbm5fgfrvf4arkilu24wkkad7wirfo7mrm5w3xmy2hjfvbqhj7a', 'ChatGPT (web)', 'openai', 'extension', '{"host":"chat.openai.com","path":"/backend-api/conversation","body_shape":"unread"}', 'chatgpt_web'),
+  ('tf1:nf5drcrnmwyfqnmyduciaqvohsp2c4t4dz6qaxf4g4duu3vc3mga', 'Gemini (web)', 'google', 'extension', '{"host":"gemini.google.com","path":"/","body_shape":"object"}', 'gemini_web'),
+  ('tf1:ob5qgeqi2s5ex44u3lpaf4qbynapejw7yps7sotdhx2xgyv4j3qq', 'Gemini (web)', 'google', 'extension', '{"host":"gemini.google.com","path":"/","body_shape":"unread"}', 'gemini_web'),
+  ('tf1:qv3h3ufruluti57ac7llyqt7f4r4u2qtehffb3a5345yhxdp3qqq', 'Perplexity (web)', 'perplexity', 'extension', '{"host":"www.perplexity.ai","path":"/","body_shape":"object"}', 'perplexity_web'),
+  ('tf1:dtd56ngekt7ismxxikxqfqko4ifxuvcl2yxdek3cqozqbx4mv4va', 'Perplexity (web)', 'perplexity', 'extension', '{"host":"www.perplexity.ai","path":"/","body_shape":"unread"}', 'perplexity_web'),
+  ('proc_ollama',          'Ollama (local)',    'ollama',    'process', '{"image_signature":"ollama"}', 'ollama'),
+  ('proc_lmstudio',        'LM Studio (local)', 'lmstudio',  'process', '{"image_signature":"lm studio"}', 'lm_studio'),
+  ('proc_llama',           'llama.cpp (local)', 'llama.cpp', 'process', '{"image_signature":"llama.cpp"}', 'llama_cpp'),
+  ('proc_vllm',            'vLLM (local)',      'vllm',      'process', '{"image_signature":"vllm"}', 'vllm');
 
 INSERT INTO ref.tool_catalogue (tool_fingerprint, display_name, vendor, signal_kind, evidence, app_key)
 SELECT 'app:' || app_key, display_name, vendor, 'endpoint', '{}', app_key FROM ref.app;
