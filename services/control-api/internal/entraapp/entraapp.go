@@ -1,10 +1,10 @@
 // Package entraapp is the vendor's multi-tenant Microsoft Entra application as a client: the
 // credential it authenticates with, and the app-only tokens it obtains in a customer's tenant.
 //
-// One application serves both sign-in (internal/identity redeems authorization codes with it) and the
-// one Graph application permission the product asks for, DeviceManagementManagedDevices.Read.All,
-// which the enrolment path uses for the Intune check. The customer grants it by admin consent during
-// onboarding; nothing here asks for User.Read.All, because people reach the product through SCIM.
+// One application serves sign-in (internal/identity redeems authorization codes with it) and the
+// Graph application permissions the product asks for: DeviceManagementManagedDevices.Read.All for
+// the enrolment path's Intune check, and User.Read.All and GroupMember.Read.All for the directory
+// pull (internal/graphsync). The customer grants them by admin consent during onboarding.
 //
 // Two credentials, exactly one configured:
 //

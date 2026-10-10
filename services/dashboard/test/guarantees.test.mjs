@@ -24,13 +24,19 @@ function dashboardFor(scenario = 'realistic') {
 
 // ── no per-employee scoring, ranking or efficiency reporting ─────────────────────────────────
 
-test('no per-person ranking: a per-person source refuses a read without a subject', () => {
-  const dashboard = dashboardFor();
-  return dashboard.load('person', { filters: {} }).then(({ view }) => {
-    // With no subject, the screen asks nothing at all: it cannot build a request that would
-    // enumerate people, because dsl.js refuses one.
-    assert.equal(view.needsInput, true);
-  });
+test('no per-person ranking: without a subject the Users page lists people by name, with no usage to sort by', async () => {
+  const sent = [];
+  const transport = fixtureTransport();
+  const dashboard = createDashboard({ api: createQueryApi({ transport: { send: (body) => { sent.push(body); return transport.send(body); } } }), now: () => new Date('2026-10-01T12:00:00Z') });
+  const { view } = await dashboard.load('person', { filters: {} });
+  assert.deepEqual(sent.map((b) => b.source ?? b.template), ['mart.v_person'], 'the per-person series is never read without a subject');
+  assert.equal(sent[0].measures, undefined);
+  assert.equal(sent[0].order, undefined, 'the list keeps the API\'s order, by name');
+  const table = view.tables[0];
+  assert.deepEqual(table.rows.map((r) => r.row.name), ['Ada Lovelace', 'Grace Hopper', 'u_1b77']);
+  assert.ok(table.columns.every((c) => !['submissions', 'bytes_total', 'tools_used'].includes(c.key)), 'no usage column to rank by');
+  const html = renderScreen(view, SHELL);
+  assert.ok(html.includes('href="#person?subject=u_9a02"'), 'a name opens the person');
 });
 
 test('the unsanctioned table is ordered by tool and person, never by volume', async () => {
@@ -318,11 +324,12 @@ test('no file in this package contains a statement or a database driver', () => 
   assert.deepEqual(hits, [], 'the dashboard tree must contain no statement and no driver');
 });
 
-test('the only endpoints the pages call are the query endpoint, the two content reads and the deployment admin API', () => {
+test('the only endpoints the pages call are the query endpoint, the two content reads and the admin API', () => {
   // The query endpoint takes a closed query document and never returns content. The two content
   // reads are forwarded to content-vault, which decides and audits. The admin endpoints are
-  // Settings → Deployment's and Settings → Settings', control-api's, admin-only and audited; they
-  // read configuration and never data. Anything else named here would be another way in.
+  // Settings → Deployment's, Settings → Settings' and Settings → Directory & teams', control-api's,
+  // admin-only and audited; they read configuration and never data. Anything else named here would
+  // be another way in.
   const files = sourceFiles().filter((rel) => rel.startsWith('src/'));
   const allowed = [
     ['/v1/', 'query'], ['/v1/', 'content-search'], ['/v1/', 'content/retrieval'], ['/v1/', 'list-export'],
@@ -331,7 +338,7 @@ test('the only endpoints the pages call are the query endpoint, the two content 
     ['/admin/v1/', 'settings'], ['/admin/v1/', 'settings/collection-mode'], ['/admin/v1/', 'settings/scope-override'],
     ['/admin/v1/', 'settings/retention'], ['/admin/v1/', 'settings/content-search'], ['/admin/v1/', 'settings/tools'],
     ['/admin/v1/', 'settings/endpoint'], ['/admin/v1/', 'settings/tls-inspection'], ['/admin/v1/', 'settings/rules'],
-    ['/admin/v1/', 'settings/kill-switch'],
+    ['/admin/v1/', 'settings/kill-switch'], ['/admin/v1/', 'directory'], ['/admin/v1/', 'teams'],
   ].map((parts) => parts.join(''));
   const others = files.map((rel) => readFileSync(join(ROOT, rel), 'utf8')).join('\n');
   const urls = [...others.matchAll(/['"](\/(?:admin\/)?v1\/[a-z/-]+)['"]/g)].map((m) => m[1]);

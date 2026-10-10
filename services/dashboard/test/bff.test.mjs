@@ -87,6 +87,10 @@ async function fakeControl() {
       return res.end(Buffer.from([0, 1, 2, 3, 250, 251]));
     }
     if (url.pathname === '/admin/v1/deployment/verification') return json(204);
+    if (url.pathname.startsWith('/scim/v2/')) {
+      res.writeHead(201, { 'content-type': 'application/scim+json', location: 'https://console.example.test/scim/v2/Users/1', 'set-cookie': 'leak=1' });
+      return res.end(JSON.stringify({ id: '1' }));
+    }
     if (url.pathname.startsWith('/onboard/')) {
       res.writeHead(302, { location: 'https://login.microsoftonline.com/organizations/v2.0/adminconsent?client_id=x', 'set-cookie': 'onboard_state=abc; HttpOnly; Path=/onboard' });
       return res.end();
@@ -381,6 +385,22 @@ test('/onboard/* goes to control-api untouched: no session, no bearer, its redir
   assert.equal(seen.body, 'choice=entra');
   assert.equal(seen.headers.authorization, undefined, 'no bearer is added');
   assert.equal(seen.headers.cookie, 'onboard_pref=1', 'this server\'s own cookie is not passed on');
+});
+
+test('/scim/v2/* goes to control-api with the provider\'s bearer token and no cookie', async (t) => {
+  const { port, control, query } = await lab(t);
+  const res = await send(port, '/scim/v2/Users?x=1', { method: 'POST', headers: { authorization: 'Bearer sacscim_t.s', cookie: 'sac_session=mine; other=1', 'content-type': 'application/scim+json' }, body: '{"userName":"a@b.test"}' });
+  assert.equal(res.status, 201);
+  assert.equal(res.headers['content-type'], 'application/scim+json');
+  assert.equal(res.headers.location, 'https://console.example.test/scim/v2/Users/1');
+  assert.equal(res.headers['set-cookie'], undefined, 'no upstream cookie is relayed');
+  const seen = control.state.calls.at(-1);
+  assert.equal(seen.path, '/scim/v2/Users');
+  assert.equal(seen.search, '?x=1');
+  assert.equal(seen.body, '{"userName":"a@b.test"}');
+  assert.equal(seen.headers.authorization, 'Bearer sacscim_t.s', 'the provider\'s token is the credential');
+  assert.equal(seen.headers.cookie, undefined, 'no cookie is passed on');
+  assert.equal(query.calls.length, 0);
 });
 
 test('the extension\'s update manifest and CRX are relayed from control-api without a session or a cookie', async (t) => {

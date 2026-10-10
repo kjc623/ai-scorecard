@@ -348,6 +348,7 @@ tr.row-empty td { color: var(--ink-soft); font-style: italic; }
 .needs-form { display: flex; gap: 8px; margin-top: 22px; max-width: 440px; padding: 5px; border-radius: 9999px; background: var(--tray); border: 1px solid var(--line); }
 .search-form { margin-top: 0; max-width: 520px; }
 .search-form input::-webkit-search-cancel-button { display: none; }
+.screen-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 0; }
 /* A change within a screen is not an arrival: nothing replays its entrance. */
 .same-screen *, .switched * { animation: none !important; }
 .switched > .screen, .switched > .needs { animation: fade .25s var(--ease) both !important; }
@@ -520,3 +521,10 @@ td.dp-action { text-align: right; white-space: nowrap; }
   .tile:first-child .tile-value { font-size: 40px; }
   .axis, .bars { height: 150px; }
 }
+
+/* Directory & teams */
+.dir-results { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-width: 680px; }
+.dir-results li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 10px; background: var(--tray); }
+.dir-results li .dp-sub { display: inline; margin: 0; }
+.dir-results li .btn { margin-left: auto; }
+.dir-team { padding-top: 16px; border-top: 1px solid var(--line); }

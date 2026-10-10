@@ -8,8 +8,8 @@ import (
 	"github.com/shadow-ai-capture/control-api/internal/session"
 )
 
-// Groups are stored so an identity provider that pushes them is answered faithfully; no product
-// decision reads them. A group is stored as its name, its externalId and its members (ops.scim_group,
+// Groups are stored so an identity provider that pushes them is answered faithfully, and a team
+// imported from a group takes its members from them (ops.v_team_member). A group is stored as its name, its externalId and its members (ops.scim_group,
 // ops.scim_group_member), not as a sealed resource: a group name is the customer's organisation, not a
 // person, and its membership is a list of this provider's own user ids.
 

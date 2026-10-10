@@ -26,7 +26,8 @@
 // returns what the identity provider sent and the provider's own diffing stays quiet; the lookups
 // a provider makes (userName eq, externalId eq) go through HMACs under the tenant key, so the table
 // holds no clear identifier. A password, when a provider sends one, is dropped before anything is
-// sealed. Groups are stored as the provider sends them; no product decision reads them.
+// sealed. Groups are stored as the provider sends them; a team imported from a group takes its
+// members from them.
 //
 // # Retire, never delete
 //

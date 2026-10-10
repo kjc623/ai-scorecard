@@ -40,6 +40,7 @@ func (s *Service) resourceTypes() []map[string]any {
 		"schema":      SchemaUser,
 		"schemaExtensions": []any{
 			map[string]any{"schema": SchemaEnterpriseUser, "required": false},
+			map[string]any{"schema": SchemaDirectoryUser, "required": false},
 		},
 		"meta": map[string]any{"resourceType": "ResourceType"},
 	}
@@ -144,6 +145,14 @@ func (s *Service) schemas() []map[string]any {
 				attribute("division", "string", false, false),
 				attribute("department", "string", false, false),
 				manager,
+			},
+		},
+		{
+			"id": SchemaDirectoryUser, "name": "DirectoryUser", "description": "Where the person sits in the directory",
+			"attributes": []any{
+				// The parent of the person's on-premises distinguished name, such as
+				// `OU=Sales,DC=contoso,DC=com`.
+				attribute("orgUnit", "string", false, false),
 			},
 		},
 		{

@@ -37,6 +37,7 @@ const PAGE_CAPABILITY = Object.freeze({
   audit: 'audit',
   explore: 'search',
   deployment: 'settings',
+  directory: 'settings',
   settings: 'settings',
 });
 

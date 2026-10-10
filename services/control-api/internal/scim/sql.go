@@ -96,16 +96,17 @@ ON CONFLICT (tenant_id, alias_ref) DO UPDATE
  WHERE ops.user_ref_alias.user_ref IS DISTINCT FROM EXCLUDED.user_ref`
 
 	// SQLUpsertUserDim writes the person's ops.user_dim row. COALESCE keeps a previously sealed
-	// directory identifier when this write has none; the department is overwritten, because a NULL
-	// department is the meaningful "unmapped" value, not a missing one. $1 tenant, $2 user_ref,
-	// $3 sealed directory id, $4 department, $5 display name, $6 status, $7 at.
+	// directory identifier when this write has none; the department and unit are overwritten,
+	// because NULL is the meaningful "unmapped" value, not a missing one. $1 tenant, $2 user_ref,
+	// $3 sealed directory id, $4 department, $5 display name, $6 status, $7 at, $8 org unit.
 	SQLUpsertUserDim = `
-INSERT INTO ops.user_dim (tenant_id, user_ref, directory_object_id_enc, department, display_name, status, synced_at)
-VALUES ($1::uuid, $2::text, $3::bytea, $4::text, $5::text, $6::text, $7::timestamptz)
+INSERT INTO ops.user_dim (tenant_id, user_ref, directory_object_id_enc, department, display_name, status, synced_at, org_unit)
+VALUES ($1::uuid, $2::text, $3::bytea, $4::text, $5::text, $6::text, $7::timestamptz, $8::text)
 ON CONFLICT (tenant_id, user_ref) DO UPDATE
    SET directory_object_id_enc = COALESCE(EXCLUDED.directory_object_id_enc,
                                           ops.user_dim.directory_object_id_enc),
        department   = EXCLUDED.department,
+       org_unit     = EXCLUDED.org_unit,
        display_name = EXCLUDED.display_name,
        status       = EXCLUDED.status,
        synced_at    = EXCLUDED.synced_at`
@@ -420,7 +421,7 @@ func (x *sqlTx) PutAlias(alias, canonical string, at time.Time) error {
 
 func (x *sqlTx) UpsertUserDim(row UserDimRow) error {
 	_, err := x.exec(SQLUpsertUserDim, x.tenant, row.UserRef, bytea(row.DirectoryObjectIDEnc),
-		row.Department, row.DisplayName, row.Status, row.SyncedAt)
+		row.Department, row.DisplayName, row.Status, row.SyncedAt, row.OrgUnit)
 	return err
 }
 

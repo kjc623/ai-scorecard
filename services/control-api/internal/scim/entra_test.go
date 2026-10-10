@@ -2,6 +2,7 @@ package scim
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -137,6 +138,17 @@ func TestEntraProvisioningLifecycle(t *testing.T) {
 	  "Operations":[{"op":"Add","path":"urn:ietf:params:scim:schemas:extension:enterprise:2.0:User.department","value":"Legal"}]}`)
 	if d := h.dim(tenantA, vectorUPN); deref(d.Department) != "Legal" {
 		t.Fatalf("department after the dotted extension path = %s", deref(d.Department))
+	}
+
+	// The product's own extension carries the organisational unit.
+	h.mustDo(200, "PATCH", "/scim/v2/Users/"+id, tok, `{"schemas":["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+	  "Operations":[{"op":"Add","path":"urn:ietf:params:scim:schemas:extension:sundial:2.0:User:orgUnit","value":"OU=Sales,DC=contoso,DC=com"}]}`)
+	if d := h.dim(tenantA, vectorUPN); deref(d.OrgUnit) != "OU=Sales,DC=contoso,DC=com" {
+		t.Fatalf("org unit after the extension path = %s", deref(d.OrgUnit))
+	}
+	got = h.mustDo(200, "GET", "/scim/v2/Users/"+id, tok, nil)
+	if schemas := fmt.Sprint(got["schemas"]); !strings.Contains(schemas, SchemaDirectoryUser) {
+		t.Fatalf("schemas after adding the org unit = %s", schemas)
 	}
 
 	// A manager set, then removed with a value-less path; a department cleared the same way is the

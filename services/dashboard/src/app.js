@@ -12,15 +12,18 @@ import { readState } from './states.js';
 import { QUESTIONS, context } from './questions.js';
 import {
   postureView, toolsView, unsanctionedView, teamsView, classesView,
-  personView, devicesView, eventView, auditView, refusalView,
+  personView, peopleView, devicesView, eventView, auditView, refusalView,
   needsInputView,
 } from './views.js';
+import { buildPeopleDocument } from './dsl.js';
 import { renderScreen, renderNav } from './render.js';
 import { shellNavItems, groupOf, readCollapsed, wireShell } from './shell.js';
 import { allowedPageIds, filterNavItems, mayOpen } from './session.js';
 import { createDeployment } from './deployment.js';
 import { renderDeployment } from './deployment-render.js';
 import { createSettings } from './settings.js';
+import { createDirectory } from './directory.js';
+import { renderDirectory } from './directory-render.js';
 import { renderSettings } from './settings-render.js';
 
 /**
@@ -39,6 +42,8 @@ export const SCREENS = Object.freeze([
   Object.freeze({ id: 'deployment', label: 'Deployment', question: null, kind: 'admin' }),
   // Settings → Settings is the other admin screen, over the same admin API (settings.js).
   Object.freeze({ id: 'settings', label: 'Settings', question: null, kind: 'admin' }),
+  // Settings → Directory & teams: reading the directory and managing teams (directory.js).
+  Object.freeze({ id: 'directory', label: 'Directory & teams', question: null, kind: 'admin' }),
   Object.freeze({ id: 'event', label: 'Event detail', question: 9, kind: 'input', questionId: 'q9_event_detail' }),
 ]);
 
@@ -138,9 +143,21 @@ export function createDashboard({ api, now = () => new Date() }) {
         case 'input': {
           if (screen.id === 'person') {
             const subject = params.filters?.subject;
-            if (!subject) return { view: needsInputView({ id: 'person', title: 'Users', question: null, hint: null, search: Object.freeze({ value: '' }) }), shell: shell() };
+            if (!subject) {
+              const search = String(params.filters?.q ?? '').trim();
+              const people = readState(await api.run(buildPeopleDocument({ search, cursor: params.filters?.cursor ?? null })));
+              return { view: peopleView(people, { search }), shell: shell() };
+            }
             const state = await ask('q6_subject_series', context({ preset: ctx.preset, filters: { subject }, now: now() }));
-            return { view: personView(state, { subject }), shell: shell() };
+            // The person's name and place come from the people list; without them the page still
+            // shows the series under the reference.
+            let person = null;
+            try {
+              person = readState(await api.run(buildPeopleDocument({ subject, limit: 1 }))).data[0] ?? null;
+            } catch {
+              person = null;
+            }
+            return { view: personView(state, { subject, person }), shell: shell() };
           }
           const submissionId = params.filters?.submission_id;
           if (!submissionId) return { view: needsInputView({ id: 'event', title: 'Event detail', question: null, hint: 'Reached from a row that names a submission.' }), shell: shell() };
@@ -158,7 +175,7 @@ export function createDashboard({ api, now = () => new Date() }) {
 
   function viewFor(screenId, state, params) {
     switch (screenId) {
-      case 'teams': return teamsView(state);
+      case 'teams': return teamsView(state, { manageHref: params.mayManage ? '#directory' : null });
       case 'devices': return devicesView(state, { filters: params.filters ?? {}, now: now() });
       case 'audit': return state.resultState === 'audit_chain_broken' ? refusalView(state, { title: 'Audit' }) : auditView(state);
       default: return refusalView(state, { title: screenId });
@@ -276,6 +293,7 @@ export async function boot({ document, api, admin, session: givenSession } = {})
   let paintedScreen = null;
   let deployment = null;
   let settings = null;
+  let directory = null;
 
   function paintDeployment(state) {
     if (paintedScreen === 'deployment') root.innerHTML = renderDeployment(state, { eyebrow: groupOf('deployment') });
@@ -298,6 +316,15 @@ export async function boot({ document, api, admin, session: givenSession } = {})
   function settingsController() {
     settings ??= createSettings({ admin: adminApi, onChange: paintSettings });
     return settings;
+  }
+
+  function paintDirectory(state) {
+    if (paintedScreen === 'directory') root.innerHTML = renderDirectory(state, { eyebrow: groupOf('directory') });
+  }
+
+  function directoryController() {
+    directory ??= createDirectory({ admin: adminApi, query: active, onChange: paintDirectory });
+    return directory;
   }
 
   async function render() {
@@ -323,6 +350,12 @@ export async function boot({ document, api, admin, session: givenSession } = {})
       return;
     }
     if (screen.kind === 'admin') {
+      if (screen.id === 'directory') {
+        const controller = directoryController();
+        paintDirectory(controller.state);
+        if (!sameScreen || controller.state.status !== 'ready') await controller.load();
+        return;
+      }
       if (screen.id === 'settings') {
         const controller = settingsController();
         paintSettings(controller.state);
@@ -335,7 +368,7 @@ export async function boot({ document, api, admin, session: givenSession } = {})
       return;
     }
     const typing = sameScreen && document.activeElement?.name === 'subject';
-    const { view, shell } = await dashboard.load(screen.id, { preset, filters });
+    const { view, shell } = await dashboard.load(screen.id, { preset, filters, mayManage: mayOpen(allowed, 'directory') });
     const { preset: _preset, ...others } = filters;
     root.innerHTML = renderScreen(view, { ...shell, eyebrow: groupOf(screen.id), switch: switchFor(screen, preset, others), presets: presetsFor(screen, preset, others) });
     if (typing) root.querySelector?.('input[name="subject"]')?.focus();
@@ -357,17 +390,24 @@ export async function boot({ document, api, admin, session: givenSession } = {})
       if (field && settings) settings.act({ action: 'save-retention', appliesTo: field.dataset.settingsDraft });
       return;
     }
+    // Directory's forms: Enter runs the search or creates the team the form is for.
+    if (form?.dataset?.dirForm !== undefined) {
+      event.preventDefault();
+      if (directory) directory.act({ dir: form.dataset.dirForm });
+      return;
+    }
     // Deployment's forms act through their buttons; Enter in the token label creates the token.
     if (form?.dataset?.depForm !== undefined) {
       event.preventDefault();
       if (deployment && form.dataset.depForm !== 'none') deployment.act({ dep: form.dataset.depForm });
       return;
     }
-    // The person screen's one input: put the reference in the address, which is what renders it.
+    // The person screen's one input: a reference opens that person, anything else searches names.
     if (form?.dataset?.screen !== 'person') return;
     event.preventDefault();
-    const subject = form.elements.subject.value.trim();
-    document.location.hash = subject ? `#person?subject=${encodeURIComponent(subject)}` : '#person';
+    const value = form.elements.subject.value.trim();
+    document.location.hash = /^u_[0-9a-f]{32}$/.test(value) ? `#person?subject=${encodeURIComponent(value)}`
+      : value ? `#person?q=${encodeURIComponent(value)}` : '#person';
   });
   // Deployment's buttons name their action in data-dep; Settings' controls name theirs in data-action.
   document.addEventListener('click', (event) => {
@@ -375,6 +415,12 @@ export async function boot({ document, api, admin, session: givenSession } = {})
     if (action && settings && action.tagName !== 'SELECT' && !action.disabled) {
       event.preventDefault();
       settings.act({ ...action.dataset });
+      return;
+    }
+    const dirTarget = event.target?.closest?.('[data-dir]');
+    if (dirTarget && directory && !dirTarget.disabled) {
+      event.preventDefault();
+      directory.act({ ...dirTarget.dataset });
       return;
     }
     const target = event.target?.closest?.('[data-dep]');
@@ -397,8 +443,10 @@ export async function boot({ document, api, admin, session: givenSession } = {})
     if (killRoute && settings) settings.setKillSwitchReason(killRoute, event.target.value);
     const field = event.target?.dataset?.depDraft;
     if (field && deployment) deployment.setDraft(field, event.target.value);
+    const dirField = event.target?.dataset?.dirDraft;
+    if (dirField && directory) directory.setDraft(dirField, event.target.value);
   });
   await render();
 
-  return { render, dashboard, deployment: () => deployment, settings: () => settings };
+  return { render, dashboard, deployment: () => deployment, settings: () => settings, directory: () => directory };
 }

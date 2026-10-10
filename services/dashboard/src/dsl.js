@@ -113,6 +113,20 @@ export function buildListDocument(source, filters, limit) {
 }
 
 /**
+ * The people list: everyone, a case-insensitive name prefix, or one reference. The search is
+ * lower-cased here because `name_key` is the lower-cased name.
+ *
+ * @param {{search?: string, subject?: string, cursor?: string|null, limit?: number}} input
+ */
+export function buildPeopleDocument({ search = '', subject = '', cursor = null, limit = 50 } = {}) {
+  const filters = [];
+  const term = String(search).trim().toLowerCase();
+  if (term !== '') filters.push(Object.freeze({ field: 'name_key', op: 'starts_with', value: term.slice(0, 120) }));
+  if (subject !== '') filters.push(Object.freeze({ field: 'subject', op: 'eq', value: String(subject) }));
+  return Object.freeze({ query_version: QUERY_VERSION, source: 'mart.v_person', filters: Object.freeze(filters), limit, ...(cursor ? { cursor } : {}) });
+}
+
+/**
  * Build a template request. A template parameter that the template does not declare is refused,
  * because a typo in a parameter name would otherwise answer a broader question than the one asked.
  *

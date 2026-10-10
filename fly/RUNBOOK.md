@@ -155,8 +155,11 @@ fly/scripts/tenant-admin.sh tenant invite --tenant <tenant-id> --domain contoso.
 ```
 
 Each runs control-api's command in its machine and prints the output: the new tenant id, then the
-invite link. Consent and roles are as `azure/RUNBOOK.md` §6. Pre-prod does not serve `/scim/v2/*` or
-`/.well-known/*` to browsers, so it has no directory sync.
+invite link. Consent and roles are as `azure/RUNBOOK.md` §6. People and groups reach the tenant
+either way Settings → Deployment offers: SCIM at `https://<analyst-fqdn>/scim/v2` (the dashboard
+forwards it to control-api), or reading the directory from Microsoft Entra, which needs the app's
+`User.Read.All` and `GroupMember.Read.All` application permissions consented in the customer's tenant.
+Pre-prod does not serve `/.well-known/*` to browsers.
 
 ## 9. Devices (Intune)
 

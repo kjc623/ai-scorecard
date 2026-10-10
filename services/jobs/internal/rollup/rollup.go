@@ -61,6 +61,7 @@ func Aggregates(bucketSize string) ([]Aggregate, error) {
 		{Name: "mart.agg_tool_user_period", SQL: fmt.Sprintf(toolUserPeriodSQL, trunc)},
 		{Name: "mart.agg_class_period", SQL: fmt.Sprintf(classPeriodSQL, trunc)},
 		{Name: "mart.agg_org_period", SQL: fmt.Sprintf(orgPeriodSQL, trunc)},
+		{Name: "mart.agg_team_period", SQL: fmt.Sprintf(teamPeriodSQL, trunc)},
 		{Name: "mart.agg_user_period", SQL: fmt.Sprintf(userPeriodSQL, trunc)},
 	}, nil
 }
@@ -276,6 +277,34 @@ SELECT $1, src.bucket_start, %[1]s, src.department, src.population, src.tool_fin
        src.submissions, src.users
   FROM src
 ON CONFLICT (tenant_id, bucket_start, bucket_size, department, tool_fingerprint, population)
+  DO UPDATE SET submissions = EXCLUDED.submissions, users = EXCLUDED.users`
+
+// teamPeriodSQL is usage by team. Membership is the team's current one (ops.v_team_member), so a
+// recomputed window attributes a person's past prompts to the teams they belong to now; a person
+// in two teams counts in both.
+var teamPeriodSQL = `
+WITH src AS (
+  SELECT date_trunc(%[1]s, s.received_at) AS bucket_start, tm.team_id, s.tool_fingerprint,
+         count(*) AS submissions,
+         count(DISTINCT s.user_ref) AS users
+    FROM ingest.submission s
+    JOIN ops.v_team_member tm ON tm.tenant_id = s.tenant_id AND tm.user_ref = s.user_ref
+   WHERE s.tenant_id = $1 AND s.received_at >= $2 AND s.received_at < $3 AND s.kind = 'prompt'
+   GROUP BY 1, 2, 3
+),
+gone AS (
+  DELETE FROM mart.agg_team_period m
+   WHERE m.tenant_id = $1 AND m.bucket_size = %[1]s
+     AND m.bucket_start >= $2 AND m.bucket_start < $3
+     AND NOT EXISTS (SELECT 1 FROM src
+                      WHERE src.bucket_start = m.bucket_start AND src.team_id = m.team_id
+                        AND src.tool_fingerprint = m.tool_fingerprint)
+)
+INSERT INTO mart.agg_team_period (tenant_id, bucket_start, bucket_size, team_id, tool_fingerprint,
+  submissions, users)
+SELECT $1, src.bucket_start, %[1]s, src.team_id, src.tool_fingerprint, src.submissions, src.users
+  FROM src
+ON CONFLICT (tenant_id, bucket_start, bucket_size, team_id, tool_fingerprint)
   DO UPDATE SET submissions = EXCLUDED.submissions, users = EXCLUDED.users`
 
 // userPeriodSQL is usage per person. It deliberately carries no score, rank or efficiency

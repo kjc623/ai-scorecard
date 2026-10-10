@@ -49,7 +49,7 @@ export const SCALAR_OPERATORS = Object.freeze(['eq', 'ne', 'lt', 'lte', 'gt', 'g
 
 /**
  * Operator applicability by field type. `starts_with` is deliberately absent everywhere: it is
- * granted per dimension, on `tool` alone, where an index serves the prefix.
+ * granted per dimension, on `tool` and on a person's lower-cased name.
  */
 const OPS_BY_TYPE = Object.freeze({
   text: Object.freeze(['eq', 'ne', 'in', 'not_in', 'is_null']),
@@ -181,6 +181,7 @@ function measure(name, column, opts = {}) {
 const TOOL_CARD = { cardinality: 200 };
 const USER_CARD = { cardinality: 4000 };
 const DEPT_CARD = { cardinality: 40 };
+const TEAM_CARD = { cardinality: 60 };
 const CLASS_CARD = { cardinality: 7 };
 const SEVERITY_CARD = { cardinality: 4 };
 const ACTION_CARD = { cardinality: 3 };
@@ -400,6 +401,51 @@ export const SOURCES = Object.freeze({
     ]),
   }),
 
+  'mart.agg_team_period': Object.freeze({
+    id: 'mart.agg_team_period',
+    kind: 'aggregate',
+    label: 'Usage per team per bucket (mart.agg_team_period)',
+    from: 'mart.agg_team_period tp',
+    tenantColumn: 'tp.tenant_id',
+    costClass: 'aggregate',
+    time: null,
+    bucket: { startColumn: 'tp.bucket_start', sizeColumn: 'tp.bucket_size', sizes: NATIVE_BUCKETS },
+    dimensions: Object.freeze({
+      bucket: dim('bucket', 'tp.bucket_start', 'timestamp'),
+      team: dim('team', 'tp.team_id', 'uuid', { ...TEAM_CARD }),
+      tool: dim('tool', 'tp.tool_fingerprint', 'text', { startsWith: true, ...TOOL_CARD }),
+    }),
+    measures: Object.freeze({
+      submissions: measure('submissions', 'tp.submissions'),
+      users: measure('users', 'tp.users', { agg: 'max', semantics: 'distinct_lower_bound' }),
+    }),
+    grain: Object.freeze(['bucket', 'team', 'tool']),
+    order: Object.freeze([
+      { dim: 'bucket', dir: 'desc' },
+      { dim: 'team', dir: 'asc' },
+      { dim: 'tool', dir: 'asc' },
+    ]),
+    subjectBearing: false,
+    requiresSubjectScope: false,
+    indexes: Object.freeze([
+      'mart.agg_team_period PK (tenant_id, bucket_start, bucket_size, team_id, tool_fingerprint)',
+      'mart.agg_team_period agg_team_period_by_team (tenant_id, team_id, bucket_start DESC)',
+    ]),
+    // The team's name is present-tense, joined at read time, so a renamed team reads under its new
+    // name across its whole history.
+    extraSelect: Object.freeze([
+      Object.freeze({
+        sql: '(SELECT tt.name FROM ops.team tt WHERE tt.tenant_id = ops.current_tenant() AND tt.team_id = tp.team_id) AS "team_name"',
+        whenDimensions: Object.freeze(['team']),
+      }),
+      Object.freeze({ sql: 'ops.tool_display_name(tp.tool_fingerprint) AS "tool_name"', whenDimensions: Object.freeze(['tool']) }),
+    ]),
+    warnings: Object.freeze([
+      'A team counts the usage of its current members: membership is read when the rollup runs, not when a prompt was sent.',
+      'A person in two teams counts in both, so team rows are not additive across teams.',
+    ]),
+  }),
+
   // -------------------------------------------------------------------------------------------
   // Q4 — data classes.
   // -------------------------------------------------------------------------------------------
@@ -486,6 +532,62 @@ export const SOURCES = Object.freeze({
     warnings: Object.freeze([
       'Carries no score, rank or efficiency measure, by construction; the DSL cannot express one either.',
       'Requires a subject filter: an unfiltered read would enumerate people.',
+    ]),
+  }),
+
+  // -------------------------------------------------------------------------------------------
+  // The people the directory and the devices know, to find one person's page. Subject-bearing and
+  // audited; it carries no measure, so it cannot be sorted by usage.
+  // -------------------------------------------------------------------------------------------
+  'mart.v_person': Object.freeze({
+    id: 'mart.v_person',
+    kind: 'list',
+    label: 'People (mart.v_person)',
+    from: 'mart.v_person p',
+    tenantColumn: 'p.tenant_id',
+    costClass: 'operational',
+    time: null,
+    bucket: null,
+    dimensions: Object.freeze({
+      subject: dim('subject', 'p.user_ref', 'text', { ...USER_CARD }),
+      name: dim('name', 'p.name', 'text', { ...USER_CARD }),
+      // The name lower-cased, so a search is a case-insensitive prefix.
+      name_key: dim('name_key', 'lower(p.name)', 'text', { startsWith: true, ...USER_CARD }),
+      department: dim('department', 'p.department', 'text', { nullable: true, ...DEPT_CARD }),
+      directory_status: dim('directory_status', 'p.directory_status', 'text', {
+        nullable: true,
+        cardinality: 3,
+        values: ['active', 'inactive', 'unknown'],
+      }),
+    }),
+    measures: Object.freeze({}),
+    grain: Object.freeze(['subject']),
+    order: Object.freeze([
+      { dim: 'name', dir: 'asc' },
+      { dim: 'subject', dir: 'asc' },
+    ]),
+    subjectBearing: true,
+    requiresSubjectScope: false,
+    indexes: Object.freeze([
+      'ops.user_dim PK (tenant_id, user_ref)',
+      'mart.agg_user_period (tenant_id, user_ref, bucket_start DESC, bucket_size)',
+    ]),
+    listSelect: Object.freeze([
+      'p.user_ref AS "subject"',
+      'p.name AS "name"',
+      'p.directory_name AS "directory_name"',
+      'p.subject_name AS "subject_name"',
+      'p.department AS "department"',
+      'p.org_unit AS org_unit',
+      'p.directory_status AS "directory_status"',
+      'p.last_active_day AS last_active_day',
+    ]),
+    columns: Object.freeze({
+      last_active_day: dim('last_active_day', 'p.last_active_day', 'timestamp', { nullable: true }),
+    }),
+    warnings: Object.freeze([
+      'name is the directory display name, else the name the device reported, else the user_ref: a hashed tenant lists references, not names.',
+      'Ordered by name, never by usage: this is a directory, not a ranking.',
     ]),
   }),
 
@@ -1064,10 +1166,12 @@ export const SOURCE_WATERMARK = Object.freeze({
   'mart.agg_tool_period': 'mart.agg_tool_period',
   'mart.agg_tool_user_period': 'mart.agg_tool_user_period',
   'mart.agg_org_period': 'mart.agg_org_period',
+  'mart.agg_team_period': 'mart.agg_team_period',
   'mart.agg_class_period': 'mart.agg_class_period',
   'mart.agg_user_period': 'mart.agg_user_period',
   'mart.agg_device_period': 'mart.agg_device_period',
   'mart.v_device_liveness': null,
+  'mart.v_person': null,
   'ops.collector_state': null,
   'ops.coverage_snapshot': null,
   'ingest.submission': null,

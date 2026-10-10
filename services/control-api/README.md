@@ -4,7 +4,8 @@ The control plane. For devices: enrolment (a device certificate signed by the de
 policy bundle, health reports, content-upload grants and the forwarding of granted content to
 content-vault, and the browser extension's update manifest and CRX. For people: the OpenID Connect
 relying party for every customer identity provider, sessions, the short-lived product access tokens
-query-api and content-vault verify, onboarding, SCIM provisioning and the deployment admin API.
+query-api and content-vault verify, onboarding, the directory (SCIM provisioning, or a read of the
+customer's Microsoft Entra ID through Microsoft Graph) and teams, and the admin API.
 Devices authenticate with the certificate Application Gateway forwards in `X-Client-Cert`, verified
 here against the device CA and matched to the device's live credential on every request.
 
@@ -20,6 +21,26 @@ here against the device CA and matched to the device's live credential on every 
 | `/scim/v2/*` | customer identity provider | SCIM bearer token |
 | `/onboard/*`, `/.well-known/{jwks.json,openid-configuration}` | browser, verifiers | invite token / none |
 | `GET /healthz`, `GET /readyz` | platform | none (`/readyz` includes a database round trip) |
+
+## The directory
+
+People and groups reach `ops.scim_user`, `ops.user_dim` and `ops.scim_group` in one of two ways,
+both through the SCIM service (`internal/scim`), so a person has one record and one user reference
+whichever way they arrived:
+
+- **SCIM**: the customer's identity provider pushes them to `/scim/v2/*` with a token created on
+  Settings → Deployment.
+- **Microsoft Graph** (`internal/graphsync`): once an admin turns it on (Settings → Directory &
+  teams), control-api reads the tenant's Entra directory with the vendor application's own token,
+  an hour apart and on demand, and writes it through the same service. It needs the application
+  permissions `User.Read.All` and `GroupMember.Read.All`, granted in the customer's tenant. It reads
+  each member's name, UPN, object id, department, enabled flag and the parent of their on-premises
+  distinguished name (their organisational unit); guests are skipped. Someone gone from a complete
+  listing is retired, never deleted. Only the groups a team follows are read.
+
+Teams (`/admin/v1/teams`, `internal/directoryadmin`) are made in the console with chosen members,
+or follow a group, a department or an organisational unit; `ops.v_team_member` resolves each to its
+current members, and `jobs aggregate` rolls usage up per team.
 
 ## Configuration
 

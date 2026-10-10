@@ -263,3 +263,52 @@ test('the tool display name resolves a catalogue entry and an unknown fingerprin
     },
   );
 });
+
+test('teams read under their current name, and people list by name with a case-insensitive prefix', { skip: SKIP }, async () => {
+  const ada = `u_${'a'.repeat(32)}`;
+  const bob = `u_${'b'.repeat(32)}`;
+  let team = null;
+  await scratch(
+    async (client) => {
+      await client.query(
+        `INSERT INTO ops.user_dim (tenant_id, user_ref, department, display_name, status)
+         VALUES (ops.current_tenant(), $1, 'Engineering', 'Ada Lovelace', 'active'),
+                (ops.current_tenant(), $2, 'Sales', NULL, 'active')`,
+        [ada, bob],
+      );
+      team = (await client.query(
+        "INSERT INTO ops.team (tenant_id, name, source, created_by) VALUES (ops.current_tenant(), 'Pilot', 'console', 'db-test') RETURNING team_id::text",
+      )).rows[0].team_id;
+      await client.query("INSERT INTO ops.team_member (tenant_id, team_id, user_ref, added_by) VALUES (ops.current_tenant(), $1, $2, 'db-test')", [team, ada]);
+      for (const user of [ada, bob]) {
+        await client.query(
+          "INSERT INTO mart.agg_user_period (tenant_id, bucket_start, bucket_size, user_ref, submissions, bytes_total, tools_used) VALUES (ops.current_tenant(), '2026-09-02', 'day', $1, 3, 30, 1)",
+          [user],
+        );
+      }
+      await client.query(
+        "INSERT INTO mart.agg_team_period (tenant_id, bucket_start, bucket_size, team_id, tool_fingerprint, submissions, users) VALUES (ops.current_tenant(), '2026-09-02', 'day', $1, 'tool_a', 3, 1)",
+        [team],
+      );
+    },
+    async (client, tenant) => {
+      const ctx = { now: NOW, tenant, actorId: 'db-test', cursorKey: KEY };
+      const teams = await executePlan(plan({ query_version: '1', template: 'q3_team_growth', params: { window: WINDOW, limit: 100 } }, ctx), { ...ctx, client: nested(client) });
+      assert.equal(teams.data.length, 1);
+      assert.equal(teams.data[0].team, team);
+      assert.equal(teams.data[0].team_name, 'Pilot');
+      const coverage = teams.meta.extras.team_coverage[0];
+      assert.deepEqual([Number(coverage.users_all), Number(coverage.users_in_teams), Number(coverage.teams)], [2, 1, 1]);
+
+      const people = await executePlan(plan({ query_version: '1', source: 'mart.v_person', filters: [], limit: 50 }, ctx), { ...ctx, client: nested(client) });
+      assert.deepEqual(people.data.map((p) => p.name), ['Ada Lovelace', bob], 'by name; a person with no name is listed by reference');
+      assert.ok(people.audit?.entry_id, 'listing people is audited');
+      const found = await executePlan(
+        plan({ query_version: '1', source: 'mart.v_person', filters: [{ field: 'name_key', op: 'starts_with', value: 'ada l' }], limit: 50 }, ctx),
+        { ...ctx, client: nested(client) },
+      );
+      assert.deepEqual(found.data.map((p) => p.subject), [ada]);
+      assert.equal(found.data[0].department, 'Engineering');
+    },
+  );
+});

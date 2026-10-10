@@ -17,7 +17,7 @@ export const NAV_GROUPS = Object.freeze([
   { group: 'Usage', icon: 'usage', ids: ['tools', 'teams', 'person'], labels: { tools: 'Tools & data classes', teams: 'Teams', person: 'Users' } },
   { group: null, icon: 'collection', ids: ['devices'], labels: { devices: 'Devices' } },
   { group: null, icon: 'governance', ids: ['audit'], labels: { audit: 'Audit trail' } },
-  { group: 'Settings', icon: 'settings', ids: ['settings', 'deployment'], labels: { settings: 'Settings', deployment: 'Deployment' } },
+  { group: 'Settings', icon: 'settings', ids: ['settings', 'deployment', 'directory'], labels: { settings: 'Settings', deployment: 'Deployment', directory: 'Directory & teams' } },
 ]);
 
 const NAV_FOLDED = Object.freeze(NAV_GROUPS.filter((g) => g.folded).map((g) => g.group));

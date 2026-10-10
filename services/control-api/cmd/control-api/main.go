@@ -26,8 +26,10 @@ import (
 	"github.com/shadow-ai-capture/control-api/internal/deploy"
 	"github.com/shadow-ai-capture/control-api/internal/deviceca"
 	"github.com/shadow-ai-capture/control-api/internal/directory"
+	"github.com/shadow-ai-capture/control-api/internal/directoryadmin"
 	"github.com/shadow-ai-capture/control-api/internal/enrol"
 	"github.com/shadow-ai-capture/control-api/internal/entraapp"
+	"github.com/shadow-ai-capture/control-api/internal/graphsync"
 	"github.com/shadow-ai-capture/control-api/internal/health"
 	"github.com/shadow-ai-capture/control-api/internal/httpapi"
 	"github.com/shadow-ai-capture/control-api/internal/identity"
@@ -74,9 +76,14 @@ func serve(logger *slog.Logger) error {
 	}
 	defer db.Close()
 
-	srv, issuer, err := wire(cfg, db, logger)
+	srv, issuer, directorySync, err := wire(cfg, db, logger)
 	if err != nil {
 		return err
+	}
+	syncCtx, stopSync := context.WithCancel(context.Background())
+	defer stopSync()
+	if directorySync != nil {
+		go directorySync.Run(syncCtx)
 	}
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -99,49 +106,51 @@ func serve(logger *slog.Logger) error {
 		}
 	case <-stop:
 	}
+	stopSync()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	logger.Info("shutting down")
 	return httpServer.Shutdown(ctx)
 }
 
-// wire builds every service over the database and mounts it on one server.
-func wire(cfg config, db *sql.DB, logger *slog.Logger) (*httpapi.Server, *session.Issuer, error) {
+// wire builds every service over the database and mounts it on one server. The directory pull's
+// runner is nil on a deployment with no Entra application.
+func wire(cfg config, db *sql.DB, logger *slog.Logger) (*httpapi.Server, *session.Issuer, *graphsync.Runner, error) {
 	st := store.NewSQL(db)
 
 	ca, err := deviceca.New(cfg.CACertPEM, cfg.CAKeyPEM)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%s/%s: %w", EnvCACertPEM, EnvCAKeyPEM, err)
+		return nil, nil, nil, fmt.Errorf("%s/%s: %w", EnvCACertPEM, EnvCAKeyPEM, err)
 	}
 	key, err := directory.DecodeKey(cfg.DirectoryKey)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", EnvDirectoryKey, err)
+		return nil, nil, nil, fmt.Errorf("%s: %w", EnvDirectoryKey, err)
 	}
 	cipher, err := directory.NewCipher(key)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", EnvDirectoryKey, err)
+		return nil, nil, nil, fmt.Errorf("%s: %w", EnvDirectoryKey, err)
 	}
 	userRefKeys, err := directory.NewUserRefKeys(directory.NewKeyStore(db), cipher)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	keys, err := session.LoadKeyFile(cfg.SessionSigningKey)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", EnvSessionSigningKey, err)
+		return nil, nil, nil, fmt.Errorf("%s: %w", EnvSessionSigningKey, err)
 	}
 	issuer, err := session.NewIssuer(keys, session.IssuerConfig{Issuer: cfg.AuthIssuer})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	policyKey, err := policyserve.LoadSigningKey(cfg.PolicySigningKey)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", EnvPolicySigningKey, err)
+		return nil, nil, nil, fmt.Errorf("%s: %w", EnvPolicySigningKey, err)
 	}
 	policy, err := policyserve.New(st, policyKey, policyserve.Config{KeyID: cfg.PolicySigningKeyID, Logger: logger})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	logger.Info("policy signing key loaded", "kid", policy.KeyID(), "public_key_hex", policy.PublicKeyHex())
 
@@ -152,7 +161,7 @@ func wire(cfg config, db *sql.DB, logger *slog.Logger) (*httpapi.Server, *sessio
 	case errors.Is(err, entraapp.ErrNotConfigured):
 		app = nil
 	case err != nil:
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	var checker intune.Checker
 	var entraID *identity.EntraConfig
@@ -160,7 +169,7 @@ func wire(cfg config, db *sql.DB, logger *slog.Logger) (*httpapi.Server, *sessio
 	if app != nil {
 		gc, err := intune.NewGraphChecker(app, nil)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		checker = gc
 		entraID = &identity.EntraConfig{ClientID: app.ClientID(), Auth: app}
@@ -178,20 +187,20 @@ func wire(cfg config, db *sql.DB, logger *slog.Logger) (*httpapi.Server, *sessio
 		Region: cfg.Region, Intune: checker, UserRefKeys: userRefKeys, PolicyETag: policy,
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	healthSvc, err := health.New(st, health.Config{})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	contentSvc, err := content.New(content.NewSQL(db), content.NewHTTPVault(cfg.ContentVaultURL, issuer))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	sessions, err := session.NewManager(session.NewSQL(db), session.ManagerConfig{})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	idStore := identity.NewSQL(db)
 	idSvc, err := identity.New(identity.Config{
@@ -199,25 +208,25 @@ func wire(cfg config, db *sql.DB, logger *slog.Logger) (*httpapi.Server, *sessio
 		RedirectURIs: cfg.RedirectURIs, AllowInsecureIdP: cfg.AllowInsecureIdP, Logger: logger,
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	internalAPI, err := idSvc.InternalHandler(cfg.InternalToken)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", EnvInternalToken, err)
+		return nil, nil, nil, fmt.Errorf("%s: %w", EnvInternalToken, err)
 	}
 	onboarding, err := onboard.New(onboard.Config{
 		Store: idStore, Cipher: cipher, PublicURL: cfg.PublicURL, Entra: entraOnboard,
 		AllowInsecureIssuers: cfg.AllowInsecureIdP, Logger: logger,
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	scimStore := scim.NewSQL(db)
 	scimBase := cfg.PublicURL + "/scim/v2"
 	scimSvc, err := scim.NewService(scimStore, userRefKeys, cipher, scim.Config{BaseURL: scimBase})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	scimSvc.Logger = logger
 
@@ -226,17 +235,37 @@ func wire(cfg config, db *sql.DB, logger *slog.Logger) (*httpapi.Server, *sessio
 		ReleaseDir: cfg.AgentReleaseDir, DeviceEndpoint: cfg.PublicDeviceEndpoint, ScimBaseURL: scimBase, Logger: logger,
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	settingsHandler, err := settings.NewHandler(st, adminAuthenticator(verifier), settings.Config{Logger: logger})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
+	}
+
+	// The directory pull reads Graph with the vendor's Entra app and writes through the SCIM service.
+	dirCfg := directoryadmin.Config{Logger: logger}
+	var runner *graphsync.Runner
+	if app != nil {
+		graph, err := graphsync.NewClient(app, nil)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		runner, err = graphsync.NewRunner(&graphsync.Syncer{Directory: graph, Provisioner: scimSvc, Logger: logger}, graphsync.NewSQL(db), logger)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		dirCfg.Directory, dirCfg.Groups, dirCfg.Sync = graph, scimSvc, runner
+	}
+	directoryHandler, err := directoryadmin.NewHandler(directoryadmin.NewSQL(db), adminAuthenticator(verifier), dirCfg)
+	if err != nil {
+		return nil, nil, nil, err
 	}
 
 	return &httpapi.Server{
 		Store: st, CA: ca, Enrol: enrolSvc, Health: healthSvc, Policy: policy, Content: contentSvc,
 		Admin:      admin,
 		Settings:   settingsHandler,
+		Directory:  directoryHandler,
 		Extensions: deploy.NewExtensions(cfg.AgentReleaseDir, cfg.PublicURL, logger),
 		SCIM:       scim.NewHandler(scimSvc, "/scim/v2", logger),
 		Mounts: map[string]http.Handler{
@@ -245,7 +274,7 @@ func wire(cfg config, db *sql.DB, logger *slog.Logger) (*httpapi.Server, *sessio
 			"/.well-known/":      issuer.WellKnownHandler(),
 		},
 		Logger: logger,
-	}, issuer, nil
+	}, issuer, runner, nil
 }
 
 // adminAuthenticator resolves an admin request's principal from its product access token

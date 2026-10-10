@@ -27,12 +27,14 @@ type UserRow struct {
 }
 
 // UserDimRow is the person's ops.user_dim row as SCIM writes it: the sealed externalId (else
-// userName), the department from the enterprise extension, the display name only while the tenant's
-// device_identity is 'clear', and the status from `active`. A nil pointer is SQL NULL.
+// userName), the department from the enterprise extension, the organisational unit from the
+// product's extension, the display name only while the tenant's device_identity is 'clear', and
+// the status from `active`. A nil pointer is SQL NULL.
 type UserDimRow struct {
 	UserRef              string
 	DirectoryObjectIDEnc []byte
 	Department           *string
+	OrgUnit              *string
 	DisplayName          *string
 	Status               string
 	SyncedAt             time.Time

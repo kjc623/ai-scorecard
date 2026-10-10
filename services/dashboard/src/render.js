@@ -88,6 +88,13 @@ function renderCell(row, column, max = 0) {
     }
     return `<span class="v-text" title="${escapeHtml(uuid)}">${escapeHtml(String(raw))}</span>`;
   }
+  // A person's name opens their page; a person with no known name is listed by reference.
+  if (kind === 'person') {
+    const ref = row.subject ? String(row.subject) : '';
+    const label = raw === null || raw === undefined || raw === '' ? ref : String(raw);
+    if (!ref) return renderValue({ kind: 'absent' });
+    return `<a class="cell-link" href="#person?subject=${encodeURIComponent(ref)}" title="${escapeHtml(ref)}">${escapeHtml(label)}</a>`;
+  }
   if (kind === 'link') {
     return raw ? `<a class="cell-link" href="${escapeHtml(String(raw))}">${escapeHtml(column.linkLabel ?? 'Open')}</a>` : '';
   }
@@ -163,7 +170,7 @@ export function renderTable(table) {
     ? `<tr class="row-empty"><td colspan="${table.columns.length}">${escapeHtml(table.emptyText ?? 'No rows.')}</td></tr>`
     : '';
   const count = table.rows.length > 0 ? `<span class="block-count">${table.rows.length}</span>` : '';
-  const more = table.href ? `<a class="block-link" href="${escapeHtml(table.href)}">View all</a>` : '';
+  const more = table.href ? `<a class="block-link" href="${escapeHtml(table.href)}">${escapeHtml(table.moreLabel ?? 'View all')}</a>` : '';
   return `<section class="table-block card"><div class="card-core"><header class="block-head"><h3>${escapeHtml(table.title)}</h3>${count}${more}</header>`
     + (table.breakdowns === false ? '' : renderBreakdowns(table))
     + `<div class="table-scroll"><table><thead><tr>${head}</tr></thead><tbody>${body}${empty}</tbody></table></div></div></section>`;
@@ -221,7 +228,7 @@ export function renderNeeds(view) {
 function renderSearch(search) {
   if (!search) return '';
   return '<form class="needs-form search-form" data-screen="person" role="search">'
-    + `<input name="subject" type="search" aria-label="User reference" placeholder="Enter a user reference, such as u_4f21" value="${escapeHtml(search.value ?? '')}" autocomplete="off" spellcheck="false">`
+    + `<input name="subject" type="search" aria-label="Find a person" placeholder="Search by name, or enter a user reference" value="${escapeHtml(search.value ?? '')}" autocomplete="off" spellcheck="false">`
     + '<button type="submit">Search</button></form>';
 }
 
@@ -265,7 +272,10 @@ export function renderScreen(view, shell = {}) {
     + '</div>'
     + (view.sourceLabel ? `<p class="source" title="Where this screen reads from">Source <code>${escapeHtml(view.sourceLabel)}</code></p>` : '')
     + '</div></header>';
-  return `<article class="screen">${header}${renderSearch(view.search)}${banners}${tiles}${series}${filters}${tables}${notes}</article>`;
+  const actions = (view.actions ?? []).length > 0
+    ? `<nav class="screen-actions">${view.actions.map((a) => `<a class="btn btn-small" href="${escapeHtml(a.href)}">${escapeHtml(a.label)}</a>`).join('')}</nav>`
+    : '';
+  return `<article class="screen">${header}${renderSearch(view.search)}${actions}${banners}${tiles}${series}${filters}${tables}${notes}</article>`;
 }
 
 /** Thin-line icons for the navigation: one stroke weight, no fills. */
