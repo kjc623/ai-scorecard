@@ -38,11 +38,11 @@ SELECT d.tenant_id,
        c.last_report_at
   FROM ops.device d
   LEFT JOIN LATERAL (
-    SELECT count(*)::int                                            AS collectors_reporting,
-           count(*) FILTER (WHERE cs.state = 'healthy')::int        AS collectors_healthy,
-           count(*) FILTER (WHERE cs.state = 'degraded')::int       AS collectors_degraded,
-           count(*) FILTER (WHERE cs.state = 'absent')::int         AS collectors_absent,
-           count(*) FILTER (WHERE cs.state = 'tampered')::int       AS collectors_tampered,
+    SELECT count(*)                                                 AS collectors_reporting,
+           count(*) FILTER (WHERE cs.state = 'healthy')             AS collectors_healthy,
+           count(*) FILTER (WHERE cs.state = 'degraded')            AS collectors_degraded,
+           count(*) FILTER (WHERE cs.state = 'absent')              AS collectors_absent,
+           count(*) FILTER (WHERE cs.state = 'tampered')            AS collectors_tampered,
            coalesce(array_agg(cs.collector ORDER BY cs.collector), ARRAY[]::text[]) AS collectors,
            coalesce(array_agg(DISTINCT cs.state), ARRAY[]::text[])  AS collector_states,
            sum(cs.spool_depth)::bigint                               AS spool_depth,
