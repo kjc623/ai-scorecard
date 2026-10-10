@@ -16,7 +16,9 @@ records it in `release.json`; control-api serves the CRX and its update manifest
 through the dashboard on the analyst hostname at
 `https://<analyst-fqdn>/v1/extension/updates.xml` (not the device hostname, whose client
 certificate request the extension downloader cannot answer), and the browsers install it from the
-`ExtensionInstallForcelist` policy (see `device/installer/README.md`). The installers register the native
+`ExtensionInstallForcelist` policy (see `device/installer/README.md`). The packaged manifest's
+`update_url` names the same update manifest: the policy's URL serves only the first install, and
+without `update_url` the browser looks for updates in its own store. The installers register the native
 messaging host `com.shadowaicapture.capture_core` for the extension's id, which `manifest.json`'s
 `key` pins (`jnjjgjlbhfleknjpoiiopcaogphghodk`). With no host the extension keeps observing, holds
 observations in a bounded memory queue and reports the channel absent.
@@ -46,7 +48,7 @@ user attaches exists only in the page. The extension stores nothing and loads no
 npm ci
 npm test                                   # unit suite, Node 22, no browser
 npm run check:browser                      # the extension in a real Chrome, Edge or Chromium (SAC_BROWSER)
-node tools/build-crx.mjs --key extension.pem --version 1.4.0 --out dist
+node tools/build-crx.mjs --key extension.pem --version 1.4.0 --update-url https://<analyst-fqdn>/v1/extension/updates.xml --out dist
 node tools/emit-frames.mjs                 # regenerate device/integration's golden native frames
 ```
 

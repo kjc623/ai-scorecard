@@ -18,6 +18,7 @@ package for each download; the installer copies it to `tenant.env`, read after t
 | Classifier signing key | `--classifier-key` | hex Ed25519 seed the classifier release is signed with |
 | Classifier rules and model | `--classifier-rules`, `--classifier-model` | `device/classifier-host/rules/default.json` and `model.json` |
 | Extension signing key | `--extension-key` or `SAC_EXTENSION_SIGNING_KEY` | RSA key whose public half is `device/extension/manifest.json`'s `key` |
+| Extension update URL | `--extension-update-url` | `https://<analyst-fqdn>/v1/extension/updates.xml`, packaged as the extension's `update_url` |
 
 Windows release, on Windows with Go 1.27, Node 22 and WiX 7 (`dotnet tool install --global wix`):
 
@@ -26,7 +27,7 @@ npm ci --prefix extension
 node device/installer/release-msi.mjs --version 1.4.0 --policy-key-file policy.pub --policy-key-id policy-key-1 \
   --classifier-key classifier.key --classifier-rules device/classifier-host/rules/default.json \
   --classifier-model device/classifier-host/rules/model.json --extension-key extension.pem \
-  --wix-eula wix7 [--sign]
+  --extension-update-url https://<analyst-fqdn>/v1/extension/updates.xml --wix-eula wix7 [--sign]
 ```
 
 `device/installer/dist/release/` then holds `ShadowAICapture.msi`, `shadow-ai-capture.crx` and
@@ -71,7 +72,9 @@ changing anything (`msiexec /l*v` logs the reason under action `CheckTenantConfi
 - Google Chrome → Extensions → *Configure the list of force-installed apps and extensions*
 - Microsoft Edge → Extensions → *Control which extensions are installed silently*
 
-Chrome and Edge install an extension from outside their stores only on a managed device, which an
+The policy's URL serves the first install only; the installed extension checks for updates at its
+packaged `update_url`, the same manifest, so a deploy reaches browsers at their next update check
+(about every five hours). Chrome and Edge install an extension from outside their stores only on a managed device, which an
 Intune-enrolled device is, and only a policy-installed extension is granted `webRequestBlocking`.
 A tenant that restricts native messaging must allow `com.shadowaicapture.capture_core`
 (`NativeMessagingAllowlist`).

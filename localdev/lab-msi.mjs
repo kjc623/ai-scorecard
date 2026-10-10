@@ -52,7 +52,7 @@ function main() {
   if (!existsSync(caFile)) throw new Error('the lab has no CA yet: start it once with node localdev/run.mjs');
   ensureLabIdentity(IDENTITY_DIR, TENANT_IDS);
   const identity = readLabIdentity(IDENTITY_DIR, TENANT_IDS);
-  const { deviceEndpoint } = labAddresses(JSON.parse(run('docker', ['compose', '-f', COMPOSE_FILE, 'config', '--format', 'json'])));
+  const { dashboard, deviceEndpoint } = labAddresses(JSON.parse(run('docker', ['compose', '-f', COMPOSE_FILE, 'config', '--format', 'json'])));
   if (!existsSync(join(ROOT, 'device', 'extension', 'node_modules', 'crx3'))) run('npm', ['ci', '--prefix', 'device/extension', '--no-audit', '--no-fund']);
 
   const version = labVersion();
@@ -68,6 +68,7 @@ function main() {
       '--classifier-rules', join(ROOT, 'device', 'classifier-host', 'rules', 'default.json'),
       '--classifier-model', join(ROOT, 'device', 'classifier-host', 'rules', 'model.json'),
       '--extension-key', join(ROOT, 'device', 'extension', 'tools', 'extension-key.pem'),
+      '--extension-update-url', `${dashboard.replace(/\/+$/, '')}/v1/extension/updates.xml`,
       '--wix-eula', 'wix7',
       '--out', out,
     ], { cwd: ROOT, stdio: 'inherit' });
