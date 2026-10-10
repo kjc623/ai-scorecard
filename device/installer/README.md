@@ -73,9 +73,8 @@ changing anything (`msiexec /l*v` logs the reason under action `CheckTenantConfi
 - Microsoft Edge → Extensions → *Control which extensions are installed silently*
 
 The policy's URL serves the first install only; the installed extension checks for updates at its
-packaged `update_url`, the same manifest, so a deploy reaches browsers within their update check
-(about five hours, or at once from Update on `edge://extensions` / `chrome://extensions` with
-Developer mode on). Chrome and Edge install an extension from outside their stores only on a managed device, which an
+packaged `update_url`, the same manifest, so a deploy reaches browsers at their next update check
+(about every five hours). Chrome and Edge install an extension from outside their stores only on a managed device, which an
 Intune-enrolled device is, and only a policy-installed extension is granted `webRequestBlocking`.
 A tenant that restricts native messaging must allow `com.shadowaicapture.capture_core`
 (`NativeMessagingAllowlist`).

@@ -16,9 +16,8 @@ The owner's PC builds nothing for the VM: builds come from CI.
 3. The agent runs `node tools/testbed/deploy.mjs`. It takes that run's agent release, publishes it
    to the VM through Intune, and waits until the VM runs it.
 4. The browser extension updates itself: Edge checks its `update_url` (the analyst hostname's
-   `/v1/extension/updates.xml`) about every five hours. To take it at once, the owner opens
-   `edge://extensions` in the VM, turns on **Developer mode** and clicks **Update**; the version
-   under "Shadow AI Capture" is the run's `1.0.<run number>`. Restarting Edge does not check.
+   `/v1/extension/updates.xml`) about every five hours; restarting Edge does not check. The
+   version under "Shadow AI Capture" on `edge://extensions` is the run's `1.0.<run number>`.
 5. The agent checks the device side with `tools/testbed/invm.ps1`. The owner checks the dashboard
    and changes settings there when a brief asks.
 
