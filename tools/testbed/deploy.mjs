@@ -402,8 +402,11 @@ async function main(argv, log) {
     // The package carries the deployment key; nothing keeps it once Intune has the content.
     rmSync(work, { recursive: true, force: true });
   }
+  // A device that has never had a Win32 app assigned has no Intune Management Extension yet:
+  // Intune installs it on the sync just requested, and the extension then installs the app.
   log.line('restart the Intune Management Extension in the VM');
-  tools.invm(['-Command', "Restart-Service -Name 'IntuneManagementExtension' -Force"], 'restarting the Intune Management Extension');
+  const restarted = tools.invm(['-Command', "if (Get-Service -Name 'IntuneManagementExtension' -ErrorAction SilentlyContinue) { Restart-Service -Name 'IntuneManagementExtension' -Force; 'restarted' } else { 'absent' }"], 'restarting the Intune Management Extension');
+  if (String(restarted).trim() === 'absent') log.line('the Intune Management Extension is not installed yet; Intune installs it with the first assigned app');
 
   if (values['no-wait']) {
     log.line(`published; elapsed ${elapsed(Date.now() - started)}; not waiting`);

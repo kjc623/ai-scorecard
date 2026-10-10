@@ -14,6 +14,8 @@ import (
 )
 
 // fakeRelocator records each move and, at each restore, whether the broker still held its port.
+// Held means the port cannot be bound, which is what the tool's returning server needs: a dial can
+// still connect for a moment after a listener closes, and Windows accepts into the closed backlog.
 type fakeRelocator struct {
 	held int // the port the broker holds for the tool
 
@@ -26,12 +28,12 @@ type fakeRelocator struct {
 func (f *fakeRelocator) Relocate(upstreamPort int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.events = append(f.events, fmt.Sprintf("relocate %d (held %t)", upstreamPort, portOpen(f.held)))
+	f.events = append(f.events, fmt.Sprintf("relocate %d (held %t)", upstreamPort, portHeld(f.held)))
 	return f.err
 }
 
 func (f *fakeRelocator) Restore() error {
-	open := portOpen(f.held)
+	open := portHeld(f.held)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.events = append(f.events, "restore")

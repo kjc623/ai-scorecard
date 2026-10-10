@@ -511,9 +511,15 @@ type portRunner struct {
 	specMu sync.RWMutex
 	spec   policy.LoopbackPort
 
-	mu        sync.Mutex
-	machine   *Machine
-	ln        net.Listener
+	mu      sync.Mutex
+	machine *Machine
+	ln      net.Listener
+	// accepting is closed when the accept loop on ln has returned, which is when the listening
+	// socket is really closed: Close can return while an Accept still holds it.
+	accepting chan struct{}
+	// releaseMu serialises releases: the runner's exit (and so its restore) waits for a release
+	// another goroutine began, such as a policy switch's.
+	releaseMu sync.Mutex
 	lastFail  protocol.Detail
 	coolUntil time.Time
 	// relocated is the upstream port the tool's server was last moved to, and relocateErr why the
@@ -638,15 +644,34 @@ func (r *portRunner) lastFailDetail() protocol.Detail {
 	return r.lastFail
 }
 
-// releaseNow closes the listening socket immediately. Every restart path goes through here
-// first: a held port is always closed before it is restarted.
+// releaseNow closes the listening socket and returns once the port can be bound again, which is
+// what the tool's returning server needs. Close alone is not that: the accept loop can still hold
+// the socket when Close returns, and Windows keeps a closing listener's port for a moment longer.
+// Every restart path goes through here first: a held port is always closed before it is restarted.
 func (r *portRunner) releaseNow() {
+	r.releaseMu.Lock()
+	defer r.releaseMu.Unlock()
 	r.mu.Lock()
-	ln := r.ln
-	r.ln = nil
+	ln, accepting := r.ln, r.accepting
+	r.ln, r.accepting = nil, nil
 	r.mu.Unlock()
-	if ln != nil {
-		_ = ln.Close()
+	if ln == nil {
+		return
+	}
+	_ = ln.Close()
+	if accepting != nil {
+		select {
+		case <-accepting:
+		case <-time.After(2 * time.Second):
+		}
+	}
+	addr := ln.Addr().String()
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		probe, err := net.Listen("tcp", addr)
+		if err == nil {
+			_ = probe.Close()
+			return
+		}
 	}
 }
 
@@ -885,14 +910,26 @@ func (r *portRunner) preflightEvent() Event {
 func (r *portRunner) startAccepting() {
 	r.mu.Lock()
 	ln := r.ln
+	accepting := make(chan struct{})
+	if ln != nil {
+		r.accepting = accepting
+	}
 	r.mu.Unlock()
 	if ln == nil {
 		return
 	}
 	go func() {
+		defer close(accepting)
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
+				// A listener this runner released on purpose is not a serve error.
+				r.mu.Lock()
+				released := r.ln != ln
+				r.mu.Unlock()
+				if released {
+					return
+				}
 				select {
 				case <-r.stopCh:
 					return
