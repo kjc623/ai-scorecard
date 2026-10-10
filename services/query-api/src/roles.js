@@ -8,11 +8,11 @@
 //   analyst         everything a viewer may, plus event and finding lists, the per-person screens
 //                   and prompt-text search. Not stored-content retrieval.
 //   content_reader  everything an analyst may, plus opening one event's stored prompt.
-//   admin           configuration, sanction decisions and the audit trail. It reads no events,
-//                   no findings and no content.
+//   admin           every capability: everything a content_reader may, plus configuration,
+//                   sanction decisions, the audit trail and data-subject requests.
 //
-// Roles are not a ladder (content_reader is not "above" admin), so every check asks whether a role
-// carries a capability, never how roles rank.
+// Roles are not a ladder (an analyst is not "above" a viewer in some rank the checks consult), so
+// every check asks whether a role carries a capability, never how roles rank.
 
 import { REASON, QueryError } from './errors.js';
 
@@ -28,9 +28,8 @@ export const ROLE_CAPABILITIES = Object.freeze({
   analyst: Object.freeze(['aggregate', 'device', 'subject', 'search']),
   content_reader: Object.freeze(['aggregate', 'device', 'subject', 'search', 'content']),
   // `data_subject` is the privacy capability: export or erase one person's data. It is distinct
-  // from `subject` (browsing events), so an admin can run a data-subject request without the
-  // general browse capability, and vice versa.
-  admin: Object.freeze(['aggregate', 'audit', 'settings', 'sanction', 'data_subject']),
+  // from `subject` (browsing events), so a viewer or an analyst cannot run a privacy request.
+  admin: CAPABILITIES,
 });
 
 /**

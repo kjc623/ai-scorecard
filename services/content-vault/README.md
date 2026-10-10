@@ -14,10 +14,11 @@ can decrypt it. It has **internal ingress only**: no device, browser or edge rou
   `attachment_names` and above, nothing for a `client_generated` request), and writes `ops.audit`.
   Repeating an upload already stored under the same grant with the same digest answers 200.
 - **Retrieval.** query-api forwards an analyst's `POST /v1/content/retrieval` with their token
-  (role `content_reader`). The vault records a single-use `ops.retrieval_grant` and answers with a
+  (role `content_reader` or `admin`). The vault records a single-use `ops.retrieval_grant` and answers with a
   five-minute URL, `GET /v1/content/retrieval/{tenant_id}/{grant_id}`, which the dashboard server
   forwards from the browser. Redeeming it claims the grant, decrypts and audits in one transaction.
-- **Search.** query-api forwards `POST /v1/content-search` (role `analyst` or `content_reader`). The
+- **Search.** query-api forwards `POST /v1/content-search` (role `analyst`, `content_reader` or `admin`).
+  The
   tier comes from `ops.tenant.content_search`; the audit row commits with the results.
 - **Subject export.** query-api forwards `POST /v1/content/subject-export` (role `admin`). The vault
   decrypts every stored prompt of one subject and returns them, so the archive query-api assembles

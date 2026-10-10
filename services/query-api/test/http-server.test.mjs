@@ -425,13 +425,13 @@ test("the token's sid is written into the audit row of a read and of a write", a
 /** Every route class, the body that reaches its role gate, and the roles that may pass it. */
 const ROUTE_CLASSES = [
   { name: 'aggregate read', path: PATHS.QUERY, body: AGGREGATE, allowed: ['viewer', 'analyst', 'content_reader', 'admin'] },
-  { name: 'device read', path: PATHS.QUERY, body: DEVICES, allowed: ['viewer', 'analyst', 'content_reader'] },
-  { name: 'subject-level read', path: PATHS.QUERY, body: EVENTS, allowed: ['analyst', 'content_reader'] },
+  { name: 'device read', path: PATHS.QUERY, body: DEVICES, allowed: ['viewer', 'analyst', 'content_reader', 'admin'] },
+  { name: 'subject-level read', path: PATHS.QUERY, body: EVENTS, allowed: ['analyst', 'content_reader', 'admin'] },
   { name: 'audit trail read', path: PATHS.QUERY, body: AUDIT, allowed: ['admin'] },
-  { name: 'finding review write', path: PATHS.FINDING_REVIEW, body: REVIEW_BODY, allowed: ['analyst', 'content_reader'] },
+  { name: 'finding review write', path: PATHS.FINDING_REVIEW, body: REVIEW_BODY, allowed: ['analyst', 'content_reader', 'admin'] },
   { name: 'tool sanction write', path: PATHS.TOOL_SANCTION, body: SANCTION_BODY, allowed: ['admin'] },
-  { name: 'prompt-text search', path: CONTENT_PATHS.SEARCH, body: { query: 'capital' }, allowed: ['analyst', 'content_reader'] },
-  { name: 'content retrieval mint', path: CONTENT_PATHS.RETRIEVAL, body: { event_ids: [RETRIEVAL_EVENT] }, allowed: ['content_reader'] },
+  { name: 'prompt-text search', path: CONTENT_PATHS.SEARCH, body: { query: 'capital' }, allowed: ['analyst', 'content_reader', 'admin'] },
+  { name: 'content retrieval mint', path: CONTENT_PATHS.RETRIEVAL, body: { event_ids: [RETRIEVAL_EVENT] }, allowed: ['content_reader', 'admin'] },
 ];
 
 test('every role boundary holds on every route class', async (t) => {
@@ -452,10 +452,10 @@ test('every role boundary holds on every route class', async (t) => {
 
 test('a token carrying several roles has the union of their reach', async (t) => {
   const { call, bearer } = await withServer(t);
-  const both = bearer(['viewer', 'admin']);
+  const both = bearer(['viewer', 'analyst']);
   assert.equal((await call(PATHS.QUERY, DEVICES, both)).status, 200, 'device list via viewer');
-  assert.equal((await call(PATHS.TOOL_SANCTION, SANCTION_BODY, both)).status, 200, 'sanction via admin');
-  assert.equal((await call(PATHS.QUERY, EVENTS, both)).status, 403, 'neither carries subject-level reads');
+  assert.equal((await call(PATHS.QUERY, EVENTS, both)).status, 200, 'subject-level read via analyst');
+  assert.equal((await call(PATHS.TOOL_SANCTION, SANCTION_BODY, both)).status, 403, 'neither carries sanction writes');
 });
 
 test('without a valid session every route class answers 401 and touches nothing', async (t) => {

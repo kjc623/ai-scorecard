@@ -108,7 +108,7 @@ ciphertext lives in `ops.content`, which only content-vault's role can read. Mas
 versioned keyring: a new key encrypts new content, old keys keep old content readable until it
 expires.
 
-Retrieval needs a signed-in person with the `content_reader` role. content-vault writes the audit
+Retrieval needs a signed-in person with the `content_reader` or `admin` role. content-vault writes the audit
 entry first and serves the content once, through a short-lived single-use URL that the dashboard
 server forwards; an optional case reference and justification are recorded with it. Search over
 content is a per-tenant setting
