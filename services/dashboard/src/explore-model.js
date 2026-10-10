@@ -458,9 +458,13 @@ function exploreStripInjected(text) {
   return String(text ?? '').replace(EXPLORE_INJECTED_BLOCK, '').trim();
 }
 
-/** A message's text: a string, or the text blocks of a block list. Tool results are not typed text. */
+/**
+ * A message's text: a string, the text blocks of a block list, or the string parts of ChatGPT's
+ * `{content_type, parts}` object. Tool results and images are not typed text.
+ */
 function exploreMessageText(content) {
   if (typeof content === 'string') return content;
+  if (Array.isArray(content?.parts)) return content.parts.filter((part) => typeof part === 'string' && part.trim() !== '').join('\n');
   if (!Array.isArray(content)) return '';
   return content
     .filter((block) => block && block.type === 'text' && typeof block.text === 'string' && block.text.trim() !== '')
@@ -491,7 +495,8 @@ export function exploreUserInput(content) {
   if (!body || typeof body !== 'object') return Object.freeze({ typed: exploreStripInjected(trimmed), kind: 'prompt' });
   const messages = Array.isArray(body.messages) ? body.messages : [];
   for (let i = messages.length - 1; i >= 0; i -= 1) {
-    if (messages[i]?.role !== 'user') continue;
+    // The model APIs name the sender as `role`; ChatGPT's web requests as `author.role`.
+    if (messages[i]?.role !== 'user' && messages[i]?.author?.role !== 'user') continue;
     const typed = exploreStripInjected(exploreMessageText(messages[i].content));
     if (typed !== '') return Object.freeze({ typed, kind: 'prompt' });
   }

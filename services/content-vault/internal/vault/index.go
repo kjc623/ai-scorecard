@@ -59,15 +59,20 @@ func typedText(text string) string {
 }
 
 func typedFromBody(body map[string]json.RawMessage) string {
+	// A message names its sender as "role" in the model APIs, and as "author": {"role"} in
+	// ChatGPT's web conversation requests.
 	var messages []struct {
-		Role    string          `json:"role"`
+		Role   string `json:"role"`
+		Author struct {
+			Role string `json:"role"`
+		} `json:"author"`
 		Content json.RawMessage `json:"content"`
 	}
 	if raw, ok := body["messages"]; !ok || json.Unmarshal(raw, &messages) != nil {
 		return ""
 	}
 	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role != "user" {
+		if messages[i].Role != "user" && messages[i].Author.Role != "user" {
 			continue
 		}
 		if typed := stripInjected(messageText(messages[i].Content)); typed != "" {
@@ -77,12 +82,24 @@ func typedFromBody(body map[string]json.RawMessage) string {
 	return ""
 }
 
-// messageText is a message's text: a string, or the text blocks of a block list. Tool results and
-// images are not typed text.
+// messageText is a message's text: a string, the text blocks of a block list, or the string parts
+// of ChatGPT's {"content_type", "parts"} object. Tool results and images are not typed text.
 func messageText(content json.RawMessage) string {
 	var plain string
 	if json.Unmarshal(content, &plain) == nil {
 		return plain
+	}
+	var chatgpt struct {
+		Parts []json.RawMessage `json:"parts"`
+	}
+	if json.Unmarshal(content, &chatgpt) == nil && chatgpt.Parts != nil {
+		var parts []string
+		for _, raw := range chatgpt.Parts {
+			if json.Unmarshal(raw, &plain) == nil && strings.TrimSpace(plain) != "" {
+				parts = append(parts, plain)
+			}
+		}
+		return strings.Join(parts, "\n")
 	}
 	var blocks []struct {
 		Type string `json:"type"`

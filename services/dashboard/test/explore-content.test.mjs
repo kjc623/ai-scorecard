@@ -59,6 +59,21 @@ test('in a request body the latest user message that carries text is the input o
   assert.deepEqual(exploreUserInput(body), { typed: 'second question', kind: 'prompt' });
 });
 
+test('a ChatGPT web request names the sender as author.role and holds the text in content.parts', () => {
+  const body = JSON.stringify({
+    action: 'next',
+    messages: [{
+      id: 'm1',
+      author: { role: 'user' },
+      content: { content_type: 'multimodal_text', parts: [{ content_type: 'image_asset_pointer', asset_pointer: 'file-service://f' }, 'describe this chart'] },
+      metadata: {},
+    }],
+    parent_message_id: 'client-created-root',
+    model: 'auto',
+  });
+  assert.deepEqual(exploreUserInput(body), { typed: 'describe this chart', kind: 'prompt' });
+});
+
 test('a capture nobody typed says what it is rather than showing an empty box', () => {
   assert.deepEqual(exploreUserInput('{"events":[{"event_type":"ClaudeCodeInternalEvent"}]}'), { typed: '', kind: 'internal' });
   assert.deepEqual(exploreUserInput('{"model":"m","messages":[]}'), { typed: '', kind: 'other' });
