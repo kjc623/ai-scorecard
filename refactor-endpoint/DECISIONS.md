@@ -2888,3 +2888,16 @@ dashboard.
   derivation hashes `{v: 2, host}` alone: one fingerprint per host, predictable from the catalogue,
   with the predicate still deciding what is a submission. Migration `0019-extension-fingerprints.sql`
   swaps the catalogue rows; decisions and overrides are per tool, so none is lost.
+
+## 2026-10-10, task 60: one row per device
+
+- **Observed.** The Devices page listed the reference VM sixteen times. The device source joined
+  `mart.v_device_liveness` to `ops.collector_state` and declared its grain as (device, collector),
+  so a device fanned out into one row per collector it reports.
+- **Change.** The view sums each device's collector states beside it (counts by state, the
+  collector list, the spool totals, the last report); the source reads one row per device, keyed
+  and paged by the device alone; the `collector` and `collector_state` filters are set membership
+  over the device's collectors (eq, ne, in, not_in, is_null), never a join. The Devices page shows
+  one row per device with its status from the worst collector state and a "1 degraded · 12 healthy"
+  cell; a device's collectors themselves are still listed in full from `ops.collector_state`.
+  Migration `0020-device-list-grain.sql` replaces the view, appending the new columns.

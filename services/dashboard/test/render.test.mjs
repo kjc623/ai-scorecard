@@ -145,7 +145,8 @@ test('the devices screen says the fleet, what needs attention, and each device i
   assert.deepEqual(view.tiles[0].split.map((p) => [p.label, p.count]), [['Reporting', 4180], ['Not reporting', 440]]);
   assert.equal(view.tiles[1].href, '#devices?status=attention');
   assert.deepEqual(view.tables.map((x) => x.title), ['Devices']);
-  assert.deepEqual(view.tables[0].columns.map((c) => c.label), ['Device', 'User', 'Directory name', 'Status', 'Last seen', 'Agent version', 'Mode', 'OS', 'Management', '']);
+  assert.deepEqual(view.tables[0].columns.map((c) => c.label), ['Device', 'User', 'Directory name', 'Status', 'Collectors', 'Last seen', 'Agent version', 'Mode', 'OS', 'Management', '']);
+  assert.equal(view.tables[0].rows.length, 4, 'one row per device');
   assert.deepEqual(view.filters.map((f) => f.label), ['Status', 'OS', 'Management']);
   const html = renderScreen(view, SHELL);
   assert.match(html, /Never checked in/);
@@ -159,7 +160,9 @@ test('the devices screen says the fleet, what needs attention, and each device i
   assert.match(html, /Alice Smith/, 'the directory display name is shown beside the account name');
   assert.match(html, /1\.4\.2/);
   assert.match(html, /m3/);
-  assert.ok(!/Spool|watermark|Collector/i.test(html), 'pipeline internals are not on this screen');
+  assert.match(html, /2 healthy/, 'a device sums its collectors by state');
+  assert.match(html, /1 degraded · 1 healthy/, 'the worst state leads');
+  assert.ok(!/Spool|watermark/i.test(html), 'pipeline internals are not on this screen');
   const windowsOnly = (await dashboard.load('devices', { filters: { device_os: 'windows' } })).view;
   assert.ok(windowsOnly.tables[0].rows.every(({ row }) => row.device_os === 'windows'));
 });
@@ -170,8 +173,8 @@ test('the devices screen says the fleet, what needs attention, and each device i
 test('the two Devices cards agree when the read returns fleet-wide counts by status', async () => {
   const state = readState(envelope('ok', {
     data: [
-      { device: 'd1', liveness: 'reporting', collector: 'egress_proxy', collector_state: 'healthy', last_seen_at: '2026-10-04T11:00:00Z' },
-      { device: 'd2', liveness: 'stale', collector: null, collector_state: null, last_seen_at: '2026-09-29T02:11:00Z' },
+      { device: 'd1', liveness: 'reporting', collectors_reporting: 1, collectors_healthy: 1, collectors_degraded: 0, collectors_absent: 0, collectors_tampered: 0, last_seen_at: '2026-10-04T11:00:00Z' },
+      { device: 'd2', liveness: 'stale', collectors_reporting: 0, collectors_healthy: 0, collectors_degraded: 0, collectors_absent: 0, collectors_tampered: 0, last_seen_at: '2026-09-29T02:11:00Z' },
     ],
     freshness: FRESH,
     coverage: PARTIAL,

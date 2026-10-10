@@ -404,14 +404,27 @@ export function personView(state, { subject }) {
   });
 }
 
-/** One device's state in the words a customer uses. The key keeps the vocabulary value's colour. */
+const count = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : Number(v) || 0);
+
+/**
+ * One device's state in the words a customer uses, from its liveness and the worst state among
+ * its collectors. The key keeps the vocabulary value's colour.
+ */
 function deviceStatus(row) {
   if (row.liveness === 'revoked') return { key: 'revoked', text: 'Revoked' };
-  if (row.collector_state === 'tampered') return { key: 'tampered', text: 'Tampered' };
+  if (count(row.collectors_tampered) > 0) return { key: 'tampered', text: 'Tampered' };
   if (row.liveness === 'never_reported') return { key: 'never_reported', text: 'Never checked in' };
   if (row.liveness === 'stale') return { key: 'stale', text: row.last_seen_at ? `Quiet since ${formatInstant(row.last_seen_at).slice(0, 10)}` : 'Quiet' };
-  if (row.liveness === 'reporting') return row.collector_state === 'degraded' ? { key: 'degraded', text: 'Degraded' } : { key: 'reporting', text: 'Reporting' };
+  if (row.liveness === 'reporting') return count(row.collectors_degraded) > 0 ? { key: 'degraded', text: 'Degraded' } : { key: 'reporting', text: 'Reporting' };
   return { key: 'unknown', text: 'Unknown' };
+}
+
+/** The device's collectors by state, worst first, as "1 tampered · 12 healthy"; null when none reported. */
+function collectorsSummary(row) {
+  const parts = [['tampered', row.collectors_tampered], ['degraded', row.collectors_degraded], ['absent', row.collectors_absent], ['healthy', row.collectors_healthy]]
+    .filter(([, n]) => count(n) > 0)
+    .map(([state, n]) => `${formatCount(count(n))} ${state}`);
+  return parts.length ? parts.join(' · ') : null;
 }
 
 /** How long ago an instant was, in the coarsest unit that is still true. */
@@ -454,6 +467,7 @@ export function devicesView(state, { filters = {}, now = new Date(), exploreHref
       user: row.subject_name ?? row.user_ref ?? null,
       directory_name: row.directory_name ?? null,
       mode: row.collection_mode ?? null,
+      collectors: collectorsSummary(row),
       activity: row.device ? `${exploreHref}#events?device=${encodeURIComponent(String(row.device))}` : null,
     };
   });
@@ -533,6 +547,7 @@ export function devicesView(state, { filters = {}, now = new Date(), exploreHref
             column('user', 'User'),
             column('directory_name', 'Directory name'),
             column('status', 'Status', 'status'),
+            column('collectors', 'Collectors'),
             column('last_seen_at', 'Last seen', 'ago'),
             column('agent_version', 'Agent version'),
             column('mode', 'Mode', 'vocab'),
@@ -548,6 +563,7 @@ export function devicesView(state, { filters = {}, now = new Date(), exploreHref
     series: Object.freeze([]),
     ...shared(state, [
       'Reporting, quiet, never checked in and revoked are four different facts, and none is inferred from silence.',
+      'One row per device. Its status is the worst of its collectors\' states; the collectors themselves are listed from the device\'s activity.',
     ]),
   });
 }

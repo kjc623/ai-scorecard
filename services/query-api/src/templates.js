@@ -375,6 +375,7 @@ export const TEMPLATES = Object.freeze({
         },
         notes: [
           'Four liveness values stay distinct: `stale`, `never_reported`, `revoked` and `reporting` are four facts, and a revoked device is not a quiet one.',
+          'One row per device: its collectors are summed beside it, and a collector filter asks whether the device has one in that state.',
           'The denominator is the enrolled fleet and is stated, never implied.',
           'Coverage is read as its own source (ops.coverage_snapshot): joining a per-day snapshot would multiply device rows by the number of days in the window.',
         ],
