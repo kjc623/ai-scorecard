@@ -264,6 +264,7 @@ func TestRetrievalOverHTTP(t *testing.T) {
 	}{
 		"no token":           {"", http.StatusUnauthorized},
 		"analyst only":       {r.iss.Person(t, tenantID, "carol", "analyst"), http.StatusForbidden},
+		"an admin":           {r.iss.Person(t, tenantID, "dave", "admin"), http.StatusOK},
 		"a service token":    {r.iss.Service(t, "control-api"), http.StatusForbidden},
 		"another tenant's":   {r.iss.Person(t, "c2b1f0e4-5d6a-4b7c-8e9f-0a1b2c3d4e5f", "alice", "content_reader"), http.StatusForbidden},
 		"unknown body field": {reader, http.StatusBadRequest},

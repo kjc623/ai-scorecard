@@ -2817,3 +2817,14 @@ What the first bring-up found, and the runbook now says:
   changed. Intune still installs the extension by its force-install policy, whose value becomes
   `<extension id>;https://<analyst hostname>/v1/extension/updates.xml`; for pre-prod,
   `jnjjgjlbhfleknjpoiiopcaogphghodk;https://console.preprod.sundial.solutions/v1/extension/updates.xml`.
+
+## 2026-10-10, task 60: an admin carries every capability
+
+- **Observed.** Signed in to pre-prod as the test tenant's only person, with the `admin` role, the
+  Overview page showed two refusal banners (`Role "admin" may not use device` and `subject`) and no
+  "Devices reporting" figure, because `admin` carried only configuration, sanction, audit and
+  data-subject capabilities and the Overview reads devices and findings.
+- **Decision (owner).** An admin has the permissions of every role. `admin` now carries every
+  capability in query-api's `roles.js` and the dashboard's `server/session.mjs`, and content-vault's
+  retrieval and search routes accept it. Roles remain a set that is checked by capability, never
+  ranked; the other three roles are unchanged.

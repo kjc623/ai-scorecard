@@ -2,8 +2,8 @@
 // caller is another service inside the environment:
 //
 //	PUT  /internal/v1/tenants/{tenant}/content/{event}  control-api's service token
-//	POST /v1/content/retrieval                          a person's token (content_reader), forwarded by query-api
-//	POST /v1/content-search                             a person's token (analyst or content_reader), forwarded by query-api
+//	POST /v1/content/retrieval                          a person's token (content_reader or admin), forwarded by query-api
+//	POST /v1/content-search                             a person's token (analyst, content_reader or admin), forwarded by query-api
 //	GET  /v1/content/retrieval/{tenant}/{grant}         no token: the single-use URL is the credential;
 //	                                                    the dashboard server forwards it from the browser
 //	GET  /healthz, GET /readyz
@@ -196,7 +196,7 @@ type retrievalRequest struct {
 }
 
 func (s *Server) retrieve(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.person(w, r, auth.RoleContentReader)
+	p, ok := s.person(w, r, auth.RoleContentReader, auth.RoleAdmin)
 	if !ok {
 		return
 	}
@@ -277,7 +277,7 @@ type searchHit struct {
 }
 
 func (s *Server) search(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.person(w, r, auth.RoleAnalyst, auth.RoleContentReader)
+	p, ok := s.person(w, r, auth.RoleAnalyst, auth.RoleContentReader, auth.RoleAdmin)
 	if !ok {
 		return
 	}

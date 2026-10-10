@@ -14,7 +14,7 @@ which decides everything about content.
 | `POST /v1/query` | a template or a DSL document (`DSL.md`) |
 | `POST /v1/finding-review`, `POST /v1/tool-sanction` | audited configuration writes |
 | `POST /v1/content-search`, `POST /v1/content/retrieval` | forwarded to content-vault with the caller's token |
-| `POST /v1/list-export` | the current filtered events or findings list as a bounded CSV, stored server-side and returned as a single-use, short-lived download link (role `analyst`); audited with the filters |
+| `POST /v1/list-export` | the current filtered events or findings list as a bounded CSV, stored server-side and returned as a single-use, short-lived download link (role `analyst`, `content_reader` or `admin`); audited with the filters |
 | `POST /v1/subject-export`, `POST /v1/subject-erasure` | an admin's data-subject export (an archive of one person's events, findings and stored prompts, the prompts decrypted by content-vault) and a request to erase one person's data (performed by the `jobs erase` job, which writes the receipt) |
 | `GET /v1/export/{id}` | one single-use, short-lived download of a generated export |
 | `GET /healthz`, `GET /readyz` | liveness; readiness (one database round trip) |

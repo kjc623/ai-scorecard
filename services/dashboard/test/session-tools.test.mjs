@@ -45,8 +45,7 @@ test('each role maps to the pages it may open', () => {
   }
   assert.ok(pagesFor('admin').includes('audit'), 'admin reads the audit trail');
   assert.ok(pagesFor('admin').includes('deployment'), 'admin opens Settings → Deployment');
-  assert.equal(pagesFor('admin').includes('person'), false, 'admin reads no per-person page');
-  assert.equal(pagesFor('admin').includes('explore'), false, 'admin does not search prompt text');
+  for (const id of ['person', 'explore', 'devices']) assert.ok(pagesFor('admin').includes(id), `admin opens ${id}`);
   assert.equal(pagesFor('viewer').includes('audit'), false);
   assert.equal(pagesFor('viewer').includes('explore'), false, 'a viewer is not offered Search');
 });
@@ -56,10 +55,12 @@ test('several roles open the union of their pages, because roles are not a ladde
   for (const id of ['audit', 'deployment', 'explore', 'person', 'devices']) assert.ok(pages.includes(id), id);
   assert.deepEqual(pagesForRoles([]), []);
   assert.equal(primaryRole(['viewer', 'content_reader']), 'content_reader');
+  assert.equal(primaryRole(['content_reader', 'admin']), 'admin');
 });
 
 test('content_reader carries the content capability; analyst does not', () => {
   assert.equal(can('content_reader', 'content'), true);
+  assert.equal(can('admin', 'content'), true, 'admin carries every capability');
   assert.equal(can('analyst', 'content'), false);
   assert.equal(can('analyst', 'search'), true, 'search is an analyst capability');
   assert.equal(can('viewer', 'search'), false);
