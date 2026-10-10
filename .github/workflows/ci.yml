@@ -105,6 +105,8 @@ jobs:
     name: accept (Linux)
     needs: changes
     runs-on: ubuntu-latest
+    # Every gate passes in a few minutes; a hung test fails the run instead of holding it for hours.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -125,6 +127,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.windows == 'true'
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
