@@ -436,11 +436,11 @@ function resolveFilters(doc, source) {
       });
     }
     if (!dimension.operators.includes(op)) {
-      // `starts_with` is permitted only on tool fingerprints. Anything else is refused
+      // `starts_with` is permitted only where a dimension grants it. Anything else is refused
       // with the reason, never quietly re-interpreted as equality.
       const detail = { path, field, operator: op, permitted: dimension.operators };
       if (op === 'starts_with' && !dimension.startsWith) {
-        throw unsupported(REASON.OPERATOR_NOT_APPLICABLE, `starts_with is permitted only on tool fingerprints; "${field}" does not support it.`, detail);
+        throw unsupported(REASON.OPERATOR_NOT_APPLICABLE, `starts_with is permitted only on tool fingerprints and a person's name_key; "${field}" does not support it.`, detail);
       }
       throw unsupported(REASON.OPERATOR_NOT_APPLICABLE, `Operator "${op}" does not apply to "${field}" (${dimension.type}).`, detail);
     }

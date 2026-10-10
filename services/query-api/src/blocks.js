@@ -166,34 +166,30 @@ export function classTotalStatement(query) {
 }
 
 /**
- * Users with no department are an explicit `unmapped` series, always present, beside
- * `mapped_user_share` for the window.
+ * The people with usage in the window, how many of them are in at least one team, and how many
+ * teams exist, so people in no team are an explicit number beside the per-team series.
  *
- * `mart.agg_org_period.department` is NOT NULL, so an unmapped user is *absent* from it rather
- * than present with a NULL. The residual is therefore a difference of two sums over the same
- * window, and both numbers are returned so the reader can see the arithmetic rather than a
- * derived percentage with no provenance.
+ * Each count is of distinct people over mart.agg_user_period's rows in the window, not a sum of
+ * per-team `users`: a person in two teams would otherwise be counted twice.
  *
  * @param {{from:string,to:string,bucket:string|null}} query
  */
-export function orgCoverageStatement(query) {
+export function teamCoverageStatement(query) {
   const bucketSize = query.bucket && NATIVE_BUCKETS.includes(query.bucket) ? query.bucket : 'day';
   return Object.freeze({
-    id: 'org_coverage',
+    id: 'team_coverage',
     text: [
+      'WITH active AS (',
+      '  SELECT DISTINCT u.user_ref FROM mart.agg_user_period u',
+      '   WHERE u.tenant_id = ops.current_tenant()',
+      '     AND u.bucket_start >= $1::timestamptz AND u.bucket_start < $2::timestamptz',
+      '     AND u.bucket_size = $3::text)',
       'SELECT',
-      '  (SELECT coalesce(sum(t.users), 0)::bigint FROM mart.agg_tool_period t',
-      '    WHERE t.tenant_id = ops.current_tenant()',
-      '      AND t.bucket_start >= $1::timestamptz AND t.bucket_start < $2::timestamptz',
-      '      AND t.bucket_size = $3::text) AS users_all,',
-      '  (SELECT coalesce(sum(o.users), 0)::bigint FROM mart.agg_org_period o',
-      '    WHERE o.tenant_id = ops.current_tenant()',
-      '      AND o.bucket_start >= $1::timestamptz AND o.bucket_start < $2::timestamptz',
-      '      AND o.bucket_size = $3::text) AS users_mapped,',
-      '  (SELECT count(*)::bigint FROM mart.agg_org_period o',
-      '    WHERE o.tenant_id = ops.current_tenant()',
-      '      AND o.bucket_start >= $1::timestamptz AND o.bucket_start < $2::timestamptz',
-      '      AND o.bucket_size = $3::text) AS org_rows',
+      '  (SELECT count(*)::bigint FROM active) AS users_all,',
+      '  (SELECT count(*)::bigint FROM active a',
+      '    WHERE EXISTS (SELECT 1 FROM ops.v_team_member m',
+      '                   WHERE m.tenant_id = ops.current_tenant() AND m.user_ref = a.user_ref)) AS users_in_teams,',
+      '  (SELECT count(*)::bigint FROM ops.team t WHERE t.tenant_id = ops.current_tenant()) AS teams',
     ].join('\n'),
     params: Object.freeze([query.window.from, query.window.to, bucketSize]),
   });

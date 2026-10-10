@@ -87,12 +87,15 @@ test('q2 refuses an unscoped subject window beyond seven days, naming the narrow
   assert.ok(error.detail.fix.add_filter.includes('tool eq/in'));
 });
 
-test('q3 carries the unmapped residual and the mapped-user arithmetic', () => {
+test('q3 reads teams and carries the people in no team beside them', () => {
   const p = plan({ query_version: '1', template: 'q3_team_growth', params: PARAMS.q3_team_growth }, { now: NOW });
-  const org = p.statements.find((s) => s.id === 'org_coverage');
-  assert.ok(org, 'the unmapped series must travel with the per-team series');
-  assert.ok(org.text.includes('users_all') && org.text.includes('users_mapped'));
-  assert.equal(org.params.length, 3);
+  assert.equal(p.query.source, 'mart.agg_team_period');
+  const cov = p.statements.find((s) => s.id === 'team_coverage');
+  assert.ok(cov, 'the people in no team must travel with the per-team series');
+  assert.ok(cov.text.includes('users_all') && cov.text.includes('users_in_teams') && cov.text.includes('ops.v_team_member'));
+  assert.ok(!cov.text.includes('sum('), 'people are counted distinctly, never summed across teams');
+  assert.equal(cov.params.length, 3);
+  assert.ok(p.compiled.text.includes('AS "team_name"'));
 });
 
 test('q4 carries the non-additive total as a second, separately-labelled number', () => {

@@ -52,7 +52,7 @@ rejected. A parameter the template does not declare is an error, not a no-op.
 | `dimensions` | string[] | ≤ 3, plus the bucket. Aggregates only. |
 | `measures` | string[] | ≥ 1 on an aggregate; must exist on the chosen source (section 2.2) |
 | `filters` | object[] | ≤ 16; `{field, op, value}` |
-| `window` | `{from,to}` | ISO-8601 UTC; half-open `[from, to)`. Required except on `mart.v_device_liveness` and `ops.collector_state`. |
+| `window` | `{from,to}` | ISO-8601 UTC; half-open `[from, to)`. Required except on `mart.v_device_liveness`, `ops.collector_state` and `mart.v_person`. |
 | `order` | `{by,dir}[]` | ≤ 3; only a returned measure or a grouped dimension; aggregates only |
 | `limit` | integer | page size on a list (≤ 500), row cap on an aggregate (≤ 2000) |
 | `cursor` | string | list sources only; opaque, echo it back verbatim (section 7). An aggregate is not paged: a cursor on one is `aggregate_not_paged`. |
@@ -81,11 +81,13 @@ because their presence is an attempt rather than a typo:
 | `mart.v_tool_usage` | aggregate | Q1, Q2 tool set | `mart.agg_tool_period` PK |
 | `mart.agg_tool_period` | aggregate | Q1 including `detections`/`rollup_events`/`degraded_events` | PK |
 | `mart.agg_tool_user_period` | aggregate | Q2 people | PK + `(tenant, tool_fingerprint, bucket_start DESC, bucket_size)` |
-| `mart.agg_org_period` | aggregate | Q3 teams | PK + `(tenant, department, bucket_start DESC)` |
+| `mart.agg_org_period` | aggregate | usage by department | PK + `(tenant, department, bucket_start DESC)` |
+| `mart.agg_team_period` | aggregate | Q3 teams | PK + `(tenant, team_id, bucket_start DESC)` |
 | `mart.agg_class_period` | aggregate | Q4 classes | PK |
 | `mart.agg_user_period` | aggregate | Q6 one subject | PK + `(tenant, user_ref, bucket_start DESC, bucket_size)` |
 | `mart.agg_device_period` | aggregate | Q7 history | PK |
 | `mart.v_device_liveness` | list | Q7 current state, one row per device with its collectors summed | `ops.device (tenant, last_seen_at)` |
+| `mart.v_person` | list | the people the directory and the devices know, by name | `ops.user_dim` PK |
 | `ops.collector_state` | list | one device's collectors: state, cause (`error_code`), last report | PK |
 | `ops.coverage_snapshot` | list | coverage gaps | PK + partial `(tenant, snapshot_day) WHERE NOT observed` |
 | `ingest.submission` | list | Q8, Q9 | `submission_by_received`/`_by_user`/`_by_tool`/`_by_device`, `submission_labels_gin` |
@@ -103,10 +105,12 @@ offered is `unknown_dimension` / `unknown_measure`, and the error lists what is 
 | `mart.agg_tool_period` | `bucket`, `tool`, `sanctioned_state` | the six above plus `detections`, `rollup_events`, `degraded_events` |
 | `mart.agg_tool_user_period` | `bucket`, `tool`, `sanctioned_state`, `subject` | `submissions`, `bytes_total` |
 | `mart.agg_org_period` | `bucket`, `department`, `population`, `tool` | `submissions`, `users` |
+| `mart.agg_team_period` | `bucket`, `team`, `tool` | `submissions`, `users` |
 | `mart.agg_class_period` | `bucket`, `class`, `tool`, `severity`, `classifier_version` | `submissions`, `users`, `max_score`, `degraded_events` |
 | `mart.agg_user_period` | `bucket`, `subject` | `submissions`, `bytes_total`, `tools_used`, `block_events` |
 | `mart.agg_device_period` | `bucket`, `device`, `collector` | `healthy_days`, `degraded_days`, `absent_days`, `tampered_days`, `spool_dropped` |
 | `mart.v_device_liveness` | `device`, `device_os`, `managed_state`, `region`, `liveness`, `collector` (set), `collector_state` (set) | — (a list) |
+| `mart.v_person` | `subject`, `name`, `name_key` (lower-cased name, `starts_with`), `department`, `directory_status` | — (a list) |
 | `ops.collector_state` | `device`, `collector`, `collector_state` | — (a list) |
 | `ops.coverage_snapshot` | `snapshot_day`, `device`, `collector`, `gap_reason`, `observed`, `expected` | — |
 | `ingest.submission` | `subject`, `tool`, `device`, `mode`, `action`, `content_state`, `route`, `detection_basis`, `prompt_kind`, `merge_confidence`, `confidence`, `department`, `population`, `manager` | — |
@@ -117,7 +121,7 @@ Extra filter-only columns (not groupable): on `ingest.submission` — `submissio
 `first_occurred_at`, `last_occurred_at`, `expires_at`, `size_bytes`, `observation_count`, and the
 predicate `class`; on `mart.v_finding` — `detected_at`, `submission_id`, `rule_id`; on
 `ops.audit` — `audit_seq`, `occurred_at`, `object_id`; on `mart.v_device_liveness` — `enrolled_at`,
-`last_seen_at`, `revoked_at`, `spool_depth`, `spool_dropped_total`.
+`last_seen_at`, `revoked_at`, `spool_depth`, `spool_dropped_total`; on `mart.v_person` — `last_active_day`.
 
 Every source that shows a tool returns the raw fingerprint in `tool` and a display name in
 `tool_name`, resolved at read time from the shared `ref.tool_catalogue`, falling back to
@@ -141,7 +145,8 @@ The window column is filterable under its own name (`received_at`, `detected_at`
 * `between` takes exactly `[low, high]`.
 * `is_null` takes no value. `eq: null` is rejected — use `is_null` (a `= NULL` predicate that
   silently matches nothing is exactly the class of bug this DSL exists to prevent).
-* `starts_with` is permitted **only** on `tool` fingerprints, and only on aggregate sources; on
+* `starts_with` is permitted **only** on `tool` fingerprints, on aggregate sources, and on
+  `mart.v_person`'s `name_key`, a lower-cased name for a case-insensitive search; on
   `ingest.submission` and `mart.v_finding` it is `unsupported_query_shape / no_covering_index`,
   and the error names `fix.alternative_source: mart.agg_tool_period`.
 * Type rules: text/uuid → `eq ne in not_in is_null`; timestamp/date/number → those plus
@@ -199,7 +204,7 @@ Every template declares exactly these parameters; anything else is an error.
 |---|---|---|---|
 | `q1_tools_ranked` | `mart.v_tool_usage` | `window`, `bucket`, `limit`, `tool`, `sanctioned_state` | rank by `submissions`, tie-break `tool`; `mart.v_tool_usage` has no `detections`/`rollup_events`/`degraded_events` (`meta.warnings` says so; use `mart.agg_tool_period`) |
 | `q2_unsanctioned_users` | `mart.agg_tool_user_period` | `window`, `bucket`, `limit`, `tool`, `subject`, `sanctioned_state` | subject-bearing → audited; the state defaults to `unsanctioned`, and `unknown` is a separate call; the k cell is the `(bucket, tool)` group; ordered by tool then person, never by volume; one response bounded by `limit` (default and maximum 500); > 7 days unscoped is refused |
-| `q3_team_growth` | `mart.agg_org_period` | `window`, `bucket`, `limit`, `department`, `population` | carries the `unmapped` residual in `meta.extras.org_coverage`; `not_yet_covered` before the directory sync |
+| `q3_team_growth` | `mart.agg_team_period` | `window`, `bucket`, `limit`, `team` | one series per team, named in `team_name`; the people with usage, those in any team, and the number of teams in `meta.extras.team_coverage` |
 | `q4_class_mix` | `mart.agg_class_period` | `window`, `bucket`, `limit`, `dimensions`, `class`, `severity` | `dimensions` ⊆ `{class, tool, severity, classifier_version}`, ≤ 3; default `[class, severity]` |
 | `q5_findings` | `mart.v_finding` | `window`, `limit`, `cursor`, `severity`, `rule`, `review_state`, `subject`, `tool`, `class` | review state `open` means nobody has looked |
 | `q6_subject_series` | `mart.agg_user_period` | `subject` (**required**), `window`, `bucket`, `limit` | carries `meta.extras.flush_check` |

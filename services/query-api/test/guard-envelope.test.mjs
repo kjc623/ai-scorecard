@@ -172,7 +172,7 @@ test('result states never merge "we looked and found nothing" with "we cannot sa
 
 test('the q3 shape reports not_yet_covered for a missing watermark rather than a zero line', () => {
   const p = plan({ query_version: '1', template: 'q3_team_growth', params: { window: { from: day(0), to: day(7) }, limit: 100 } }, { now: NOW });
-  assert.equal(p.source.id, 'mart.agg_org_period');
+  assert.equal(p.source.id, 'mart.agg_team_period');
   const freshness = p.statements.find((s) => s.id === 'freshness');
-  assert.equal(freshness.params[0], 'mart.agg_org_period');
+  assert.equal(freshness.params[0], 'mart.agg_team_period');
 });

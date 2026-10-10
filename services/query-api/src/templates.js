@@ -16,7 +16,7 @@ import {
   deviceStatusStatement,
   erasureEvidenceStatement,
   flushCheckStatement,
-  orgCoverageStatement,
+  teamCoverageStatement,
   submissionDetailStatement,
 } from './blocks.js';
 
@@ -198,31 +198,29 @@ export const TEMPLATES = Object.freeze({
     name: 'q3_team_growth',
     question: 3,
     title: 'How much is usage growing, per team?',
-    source: 'mart.agg_org_period',
+    source: 'mart.agg_team_period',
     kind: 'aggregate',
-    params: ['window', 'bucket', 'limit', 'department', 'population'],
+    params: ['window', 'bucket', 'limit', 'team'],
     build(params) {
       const query = {
         query_version: '1',
-        source: 'mart.agg_org_period',
+        source: 'mart.agg_team_period',
         bucket: bucketOf(params, 'day'),
-        dimensions: ['department'],
+        dimensions: ['team'],
         measures: ['submissions', 'users'],
-        filters: filtersOf([
-          eq('department', optionalStr(params, 'department')),
-          eq('population', optionalStr(params, 'population')),
-        ]),
+        filters: filtersOf([eq('team', optionalStr(params, 'team'))]),
         window: windowOf(params),
         order: [{ by: 'submissions', dir: 'desc' }],
         limit: limitOf(params, 2000, 2000),
       };
       return {
         document: query,
-        // The unmapped residual and mapped_user_share travel with the per-team series, so
-        // a per-team view cannot silently cover 60% of usage.
-        extras: [(q) => orgCoverageStatement(q)],
+        // The people in no team and the number of teams travel with the per-team series, so a
+        // per-team view cannot silently cover 60% of usage.
+        extras: [(q) => teamCoverageStatement(q)],
         notes: [
-          'Empty until the directory sync: the response is not_yet_covered with reason directory_not_synced, never a flat zero line.',
+          'Teams are created in the console, imported from a directory group, or matched on a department or an organisational unit; a tenant with no team has no rows here, and team_coverage says so.',
+          'A person in two teams counts in both: team rows are not additive.',
         ],
       };
     },
