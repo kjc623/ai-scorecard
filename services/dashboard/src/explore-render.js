@@ -10,7 +10,7 @@
 //   * a record's detail shows metadata and what its content state permits. Content appears only
 //     after a retrieval the content vault approved for that record, and never from a query.
 
-import { escapeHtml } from './render.js';
+import { UNRECOGNISED_TOOL, escapeHtml } from './render.js';
 import { formatBytes, formatCount, formatDuration, formatInstant, formatScore } from './format.js';
 import { coverageText, freshnessText, emptyStateFor, fixSentence } from './states.js';
 import { eventView, eventObservations } from './views.js';
@@ -84,11 +84,12 @@ export function renderExploreValue(row, column, { full = false } = {}) {
     case 'rule':
       return `<span class="x-rule">${escapeHtml(raw)}</span>${row.rule ? ` <span class="x-mono x-sub">${escapeHtml(row.rule)}</span>` : ''}`;
     case 'mono':
-      // The tool column resolves a behaviour-derived fingerprint to a name at read time; the
-      // fingerprint stays beside it so an unknown tool is visibly unknown rather than
-      // mislabelled. Other mono columns render the raw value.
+      // The tool column shows the catalogue's name, with the fingerprint on hover; an unrecognised
+      // tool also shows its fingerprint, the only thing that tells two of them apart. Other mono
+      // columns render the raw value.
       if (column.key === 'tool' && row.tool_name && String(row.tool_name) !== String(raw)) {
-        return `<span title="Tool fingerprint ${escapeHtml(raw)}">${escapeHtml(row.tool_name)}</span> <span class="x-mono x-sub">${escapeHtml(raw)}</span>`;
+        const label = `<span title="Tool fingerprint ${escapeHtml(raw)}">${escapeHtml(row.tool_name)}</span>`;
+        return row.tool_name === UNRECOGNISED_TOOL ? `${label} <span class="x-mono x-sub">${escapeHtml(raw)}</span>` : label;
       }
       return `<span class="x-mono">${escapeHtml(raw)}</span>`;
     default:
